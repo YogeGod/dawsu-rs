@@ -507,6 +507,25 @@ fn render_plan_reuses_note_velocity_and_preserves_unmapped_hits() {
         k
     });
 }
+/// Timing (set `DAWSU_DRUM_TIME`): a portable map at the audio limit, two 32 MiB samples, about
+/// 85 MB of text.
+#[test]
+fn timing_a_dawsudrum_file_at_the_audio_limit() {
+    if std::env::var("DAWSU_DRUM_TIME").is_err() {
+        eprintln!("skipped: DAWSU_DRUM_TIME is not set");
+        return;
+    }
+    let mut m = map(vec![row(1, "Kick", Some("Skin|drum-hitnormal"), Some(36)), row(2, "Snare", Some("Skin|drum-hitclap"), Some(38))]);
+    for (i, lane) in ["Skin|drum-hitnormal", "Skin|drum-hitclap"].into_iter().enumerate() {
+        m.audio.push(DrumAudio { lane: lane.into(), slot: lane.into(), bytes: (0..32 * 1024 * 1024).map(|b: usize| (b * 7 + i) as u8).collect() });
+    }
+    let started = std::time::Instant::now();
+    let text = write_dawsudrum(&m).unwrap();
+    let wrote = started.elapsed();
+    let started = std::time::Instant::now();
+    assert_eq!(read_dawsudrum(&text).unwrap(), m);
+    eprintln!("{} MB written in {wrote:?}, read in {:?}", text.len() / (1024 * 1024), started.elapsed());
+}
 /// The corpus files with one extension, or `None` (skipped, with a note) when the variable is unset.
 fn corpus(extension: &str) -> Option<Vec<std::path::PathBuf>> {
     let Ok(dir) = std::env::var("DAWSU_DRUM_CORPUS") else {
