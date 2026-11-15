@@ -306,6 +306,76 @@ fn the_local_corpus_ggd_exports_read_or_are_refused_by_their_header() {
         }
     }
 }
+// ---------------------------------------------------------------- Task 4: Cubase .drm
+
+/// A `.drm` file's XML as Cubase writes it: one Map item per (I-Note, O-Note, name), then the
+/// Order list when given.
+fn drm(name: &str, items: &[(i32, i32, &str)], order: Option<&[i32]>) -> String {
+    let mut x = format!("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<DrumMap>\n   <string name=\"Name\" value=\"{name}\" wide=\"true\"/>\n   <list name=\"Quantize\" type=\"list\">\n      <item>\n         <int name=\"Grid\" value=\"4\"/>\n      </item>\n   </list>\n   <list name=\"Map\" type=\"list\">\n");
+    for (i, o, n) in items {
+        x += &format!("      <item>\n         <int name=\"INote\" value=\"{i}\"/>\n         <int name=\"ONote\" value=\"{o}\"/>\n         <int name=\"Channel\" value=\"9\"/>\n         <float name=\"Length\" value=\"200\"/>\n         <int name=\"DisplayNote\" value=\"{i}\"/>\n         <string name=\"Name\" value=\"{n}\" wide=\"true\"/>\n      </item>\n");
+    }
+    x += "   </list>\n";
+    if let Some(order) = order {
+        x += "   <list name=\"Order\" type=\"int\">\n";
+        for o in order {
+            x += &format!("      <item value=\"{o}\"/>\n");
+        }
+        x += "   </list>\n";
+    }
+    x + "</DrumMap>\n"
+}
+
+fn rows_of(m: &DrumMap) -> Vec<(String, Option<u8>)> {
+    m.rows.iter().map(|r| (r.name.clone(), r.midi_note)).collect()
+}
+
+#[test]
+fn a_drm_file_gives_its_named_rows_in_order_with_their_o_notes() {
+    // Position 2 has I-Note 3: reading Order values as I-Notes would put Kick (I-Note 2) first.
+    let items = [(0, 0, ""), (1, 1, "Sound 2"), (3, 40, "Snare "), (2, 36, "Kick"), (4, 4, "Sound 3"), (5, 50, "Snare")];
+    let m = read_drm(&drm("My Kit", &items, Some(&[2, 3, 1, 0, 4, 5])), "file", &mut ids()).unwrap();
+    assert_eq!(m.name, "My Kit");
+    assert_eq!(rows_of(&m), [("Snare".into(), Some(40)), ("Kick".into(), Some(36)), ("Sound 3".into(), Some(4)), ("Snare".into(), Some(50))], "blank and placeholder rows dropped, names trimmed, a name twice kept");
+    assert!(m.rows.iter().all(|r| r.lane.is_none() && r.slot.is_none()));
+    m.validate().unwrap();
+}
+
+#[test]
+fn a_drm_file_without_an_order_list_or_a_name_still_reads() {
+    let m = read_drm(&drm("  ", &[(0, 0, "Kick"), (1, 38, "Snare")], None), "GGD Map", &mut ids()).unwrap();
+    assert_eq!(m.name, "GGD Map", "a blank map name takes the file's name");
+    assert_eq!(rows_of(&m), [("Kick".into(), Some(0)), ("Snare".into(), Some(38))], "the Map's own order");
+}
+
+#[test]
+fn a_broken_drm_file_is_refused() {
+    let items = [(0, 0, "Kick"), (1, 1, "Snare")];
+    refused(read_drm(&drm("Kit", &items, Some(&[0, 128])), "f", &mut ids()));
+    refused(read_drm(&drm("Kit", &items, Some(&[0, 0])), "f", &mut ids()));
+    refused(read_drm(&drm("Kit", &items, Some(&[0, 5])), "f", &mut ids()));
+    refused(read_drm(&drm("Kit", &[(0, 200, "Kick")], None), "f", &mut ids()));
+    refused(read_drm("<KeyCommands/>", "f", &mut ids()));
+    refused(read_drm("not xml", "f", &mut ids()));
+    refused(read_drm("<!DOCTYPE d [<!ENTITY a \"aaaa\">]><DrumMap/>", "f", &mut ids()));
+    // A dropped row may hold anything; only kept rows are checked.
+    assert!(read_drm(&drm("Kit", &[(0, 200, ""), (1, 1, "Snare")], None), "f", &mut ids()).is_ok());
+}
+
+#[test]
+fn the_local_corpus_drm_files_read() {
+    let Some(files) = corpus("drm") else { return };
+    assert_eq!(files.len(), 5, "the corpus's .drm files");
+    for path in files {
+        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        let stem = path.file_stem().unwrap().to_string_lossy().into_owned();
+        let m = read_drm(&std::fs::read_to_string(&path).unwrap(), &stem, &mut ids()).unwrap_or_else(|e| panic!("{name}: {e}"));
+        if name == "p2-GGD Invasion Cubase Map.drm" {
+            assert_eq!(m.rows.iter().take(6).map(|r| r.name.as_str()).collect::<Vec<_>>(), ["Kick", "Snare", "Flam", "Wires Off", "Ruff", "Sidestick"]);
+        }
+        eprintln!("{name}: map \"{}\", {} rows kept: {}", m.name, m.rows.len(), m.rows.iter().take(8).map(|r| format!("{} {}", r.name, r.midi_note.unwrap())).collect::<Vec<_>>().join(", "));
+    }
+}
 /// The corpus files with one extension, or `None` (skipped, with a note) when the variable is unset.
 fn corpus(extension: &str) -> Option<Vec<std::path::PathBuf>> {
     let Ok(dir) = std::env::var("DAWSU_DRUM_CORPUS") else {

@@ -576,6 +576,71 @@ pub fn ggd_matt_garstka() -> Vec<Articulation> {
         a("STACK", "Hit", None),
     ]
 }
+// ---------------------------------------------------------------- Cubase .drm (Responsibility 20a)
+
+const DRM_MAX_BYTES: usize = 16 * 1024 * 1024;
+
+/// A child element such as `<int name="ONote" value="40"/>`.
+fn named<'a, 'i>(node: roxmltree::Node<'a, 'i>, tag: &str, name: &str) -> Option<roxmltree::Node<'a, 'i>> {
+    node.children().find(|c| c.is_element() && c.tag_name().name() == tag && c.attribute("name") == Some(name))
+}
+
+fn items<'a, 'i>(node: roxmltree::Node<'a, 'i>) -> Vec<roxmltree::Node<'a, 'i>> {
+    node.children().filter(|c| c.is_element() && c.tag_name().name() == "item").collect()
+}
+
+/// Builds a drum map from a Cubase `.drm` file's XML (ADR 0046), as Yoge decided on 2026-11-15:
+/// the rows in the Order list's order, where each Order value is a row's position in the Map
+/// list (Cubase keys rows by pitch), or in the Map's own order when there is no Order list; only
+/// named rows, a name being neither blank nor Cubase's placeholder `Sound <position + 1>`; each
+/// with its output note (O-Note), the note that plays, and no lane. Every other field is dropped.
+/// A blank map name takes `fallback_name` (the caller passes the file's name).
+pub fn read_drm(text: &str, fallback_name: &str, new_id: &mut dyn FnMut() -> String) -> Result<DrumMap, DrumFileRefusal> {
+    if text.len() > DRM_MAX_BYTES {
+        return Err(DrumFileRefusal::TooLarge { limit_bytes: DRM_MAX_BYTES });
+    }
+    let not_drm = |why: String| DrumFileRefusal::NotThisFormat(format!("this isn't a Cubase drum map: {why}"));
+    // DTDs are refused (roxmltree's default), so no entity expands.
+    let doc = roxmltree::Document::parse(text.strip_prefix('\u{feff}').unwrap_or(text)).map_err(|e| not_drm(e.to_string()))?;
+    let root = doc.root_element();
+    if root.tag_name().name() != "DrumMap" {
+        return Err(not_drm("its root is not DrumMap".into()));
+    }
+    let list = |name: &str| named(root, "list", name);
+    let map = items(list("Map").ok_or_else(|| not_drm("it has no Map list".into()))?);
+    let order: Vec<usize> = match list("Order") {
+        None => (0..map.len()).collect(),
+        Some(o) => {
+            let mut seen = HashSet::new();
+            items(o)
+                .iter()
+                .map(|item| {
+                    let pos = item.attribute("value").and_then(|v| v.trim().parse::<usize>().ok()).filter(|p| *p <= 127 && *p < map.len());
+                    pos.filter(|p| seen.insert(*p)).ok_or_else(|| invalid("the Order list names a row that is not in the map, or one row twice"))
+                })
+                .collect::<Result<_, _>>()?
+        }
+    };
+    let mut rows = Vec::new();
+    for pos in order {
+        let item = map[pos];
+        let name = named(item, "string", "Name").and_then(|n| n.attribute("value")).unwrap_or("").trim();
+        if name.is_empty() || name == format!("Sound {}", pos + 1) {
+            continue;
+        }
+        let note = named(item, "int", "ONote")
+            .and_then(|n| n.attribute("value"))
+            .and_then(|v| v.trim().parse::<i32>().ok())
+            .and_then(|n| u8::try_from(n).ok())
+            .filter(|n| *n <= 127)
+            .ok_or_else(|| invalid(format!("row \"{name}\" has no output note in 0-127")))?;
+        rows.push(DrumRow { id: new_id(), name: name.to_string(), lane: None, slot: None, midi_note: Some(note) });
+    }
+    let title = named(root, "string", "Name").and_then(|n| n.attribute("value")).unwrap_or("").trim();
+    let m = DrumMap { id: new_id(), name: if title.is_empty() { fallback_name.trim().to_string() } else { title.to_string() }, rows, audio: Vec::new() };
+    m.validate()?;
+    Ok(m)
+}
 // ---------------------------------------------------------------- base64 (ADR 0047: our own code)
 
 const BASE64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
