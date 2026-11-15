@@ -98,8 +98,8 @@ fn invariant_9b_an_out_of_range_sample_set_gives_lazer_s_answer() {
     }
     // A timing line's out-of-range set is kept as its number, which an object with set 0 takes:
     // lazer then looks up "7-hitnormal", then "hitnormal" (LegacyBeatmapDecoder.cs:502-528,
-    // LegacySkin.cs:610-634). Invariant 9(b) does not say this; the code follows lazer (ADR 0008,
-    // invariant 7a), and the gap is in todo.md section 4.
+    // LegacySkin.cs:610-634). The code follows lazer (ADR 0008, invariant 7a), as
+    // invariant 9(b) says.
     let file = map("0,500,4,7,0,100,1,0", "256,192,100,1,0,0:0:0:0:");
     let s = &objects(&file, &[])[0].samples[0];
     assert_eq!(s.lazer.bank, "7");

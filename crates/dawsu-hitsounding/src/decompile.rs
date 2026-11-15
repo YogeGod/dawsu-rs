@@ -36,8 +36,8 @@ pub fn decompile(file: &OsuFile, folder_files: &[String], cancel: &dyn Fn() -> b
             lanes.insert(SampleIdentity::Standard { set, sound: Sound::Hit(sound), index: CustomIndex::new(0) }, LaneSource::Skin);
         }
     }
-    // Which folder files count as samples is not written down (todo.md section 4, "which folder
-    // files are sample lanes"): here every .wav, .mp3 and .ogg file except the song.
+    // Sample files: every .wav, .mp3 and .ogg file, sub-folders included, except the song
+    // (hitsound domain Responsibility 8).
     let song = file.general("AudioFilename").map(|s| s.to_lowercase());
     for name in folder_files {
         let lower = name.to_lowercase();
@@ -150,8 +150,9 @@ pub(crate) fn identity(s: &Sample) -> SampleIdentity {
     let set = match l.bank.as_str() {
         "soft" => SampleSet::Soft,
         "drum" => SampleSet::Drum,
-        // A timing line's out-of-range set keeps its number as lazer's bank name; the model
-        // reads it as Normal, the set invariant 9(b) names (todo.md section 4, invariant 9(b)).
+        // A timing line's out-of-range set keeps its number as lazer's bank name (rules invariant
+        // 9(b)). The model's three sets have no place for it, so its hits sit on the Normal lanes
+        // (todo.md section 4, "odd sets in the model").
         _ => SampleSet::Normal,
     };
     SampleIdentity::Standard { set, sound, index: CustomIndex::new(l.custom_sample_bank().max(0) as u32) }

@@ -3,14 +3,12 @@
 //! cannot encode as a save problem; the rest is written and each problem moment keeps its old line.
 //! Blocking, with a cancel check and a progress report (ADR 0035).
 //!
-//! Where a value goes is not spelled out by the design docs (todo.md section 4, "how compile places
-//! a moment"). The cautious reading taken here: a value the object's own line can hold (sample sets,
-//! and on circles and spinners the index and volume) is written there, since that line changes
-//! anyway and no other line need change (invariant 3). A green line is added only for what the
-//! object cannot hold (a slider node's index or volume, or index 0 under a timing line with an
-//! index), and only with green-line placement; it is followed by a line restoring the earlier
-//! values 6 ms later, so no other part's lookup changes. On-object placement reports such a moment
-//! as a save problem instead.
+//! Where a value goes follows ADR 0041 (draft, Yoge, 2026-11-15): a value the object's own line
+//! can hold (sample sets, and on circles and spinners the index and volume) is written there. A
+//! green line is added only for what the object cannot hold (a slider node's index or volume, or
+//! index 0 under a timing line with an index), and only with green-line placement; it is followed
+//! by a line restoring the earlier values 6 ms later, so no other part's lookup changes. On-object
+//! placement reports such a moment as a save problem instead.
 
 use crate::lazer::control_points::{offset_for, ControlPoints, SamplePointData, CONTROL_POINT_LENIENCY};
 use crate::lazer::samples::bank_of;
