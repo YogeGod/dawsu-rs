@@ -155,7 +155,7 @@ impl DrumMaps {
     }
 }
 
-fn utf16_len(s: &str) -> usize {
+pub(crate) fn utf16_len(s: &str) -> usize {
     s.encode_utf16().count()
 }
 
@@ -168,7 +168,7 @@ fn check_name(name: &str, what: &str) -> Result<(), DrumFileRefusal> {
 }
 
 /// A GUID in its usual 8-4-4-4-12 text form and not the nil GUID: the form System.Text.Json reads.
-fn check_id(id: &str, what: &str) -> Result<(), DrumFileRefusal> {
+pub(crate) fn check_id(id: &str, what: &str) -> Result<(), DrumFileRefusal> {
     let groups: Vec<&str> = id.split('-').collect();
     let shape = groups.len() == 5 && groups.iter().zip([8, 4, 4, 4, 12]).all(|(g, n)| g.len() == n && g.bytes().all(|b| b.is_ascii_hexdigit()));
     if !shape || id.bytes().all(|b| b == b'0' || b == b'-') {

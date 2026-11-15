@@ -13,6 +13,7 @@ pub mod hs;
 pub mod lazer;
 pub mod model;
 pub mod rules;
+pub mod sound_sets;
 
 pub use compile::{compile, Compiled, Placement, ProblemKind, SaveProblem};
 pub use cues::cue_list;
