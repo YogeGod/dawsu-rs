@@ -7,9 +7,9 @@
 
 use crate::model::{Lane, LaneSource};
 use crate::rules::{read_sample_file_name, set_word, sound_word};
-use dawsu_foundation::{SampleIdentity, Sound};
+use dawsu_foundation::{Hitsound, SampleIdentity, Sound};
 use serde::{Deserialize, Deserializer, Serialize};
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::fmt;
 
 // ---------------------------------------------------------------- the model (Responsibility 17)
@@ -358,6 +358,224 @@ pub fn default_drum_maps(new_id: &mut dyn FnMut() -> String) -> DrumMaps {
     DrumMaps { active: Some(maps[0].id.clone()), maps, enabled: false }
 }
 
+// ---------------------------------------------------------------- rows from a kit (Responsibility 19)
+
+/// One articulation as a drum instrument lists it: its group ("SNARE"), its item ("Flam",
+/// "Rack Tom 1: Hit") and its note, `None` when the instrument leaves it unmapped.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Articulation {
+    pub group: String,
+    pub item: String,
+    pub note: Option<u8>,
+}
+
+/// An instrument row made from a kit: the row's name, its note and the osu! hitsound it goes to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KitRow {
+    pub name: String,
+    pub note: u8,
+    pub sound: Hitsound,
+}
+
+/// Articulations from the names an instrument reports for its notes, in note order; notes
+/// outside 0-127 and blank names are left out.
+pub fn kit_from_note_names(names: &BTreeMap<i32, String>) -> Vec<Articulation> {
+    names
+        .iter()
+        .filter(|(n, name)| (0..=127).contains(*n) && !name.trim().is_empty())
+        .map(|(n, name)| Articulation { group: String::new(), item: name.trim().into(), note: Some(*n as u8) })
+        .collect()
+}
+
+pub fn is_choke(a: &Articulation) -> bool {
+    a.item.to_lowercase().contains("choke")
+}
+
+/// The row's name: "Hit" alone is its group ("Kick"), "Choke" alone is "China Choke", "Rack Tom
+/// 1: Hit" is "Rack Tom 1", "Main Crash L: Choke" is "Main Crash L Choke", and any other
+/// articulation keeps its own name ("Flam").
+pub fn label(a: &Articulation) -> String {
+    let item = a.item.trim();
+    if item.eq_ignore_ascii_case("hit") {
+        return title(&a.group);
+    }
+    if item.eq_ignore_ascii_case("choke") {
+        return format!("{} Choke", title(&a.group)).trim().to_string();
+    }
+    if let Some(colon) = item.rfind(':').filter(|&c| c > 0) {
+        let (head, tail) = (item[..colon].trim(), item[colon + 1..].trim());
+        return if tail.eq_ignore_ascii_case("hit") { head.to_string() } else { format!("{head} {tail}") };
+    }
+    item.to_string()
+}
+
+/// The hitsound an instrument goes to, as hitsounders usually map a kit: kick and toms on
+/// hitnormal, the snare and its articulations on hitclap, hats and ride on hitwhistle, crashes,
+/// splashes, china and stack on hitfinish.
+pub fn kit_sound(a: &Articulation) -> Hitsound {
+    let text = format!("{} {}", a.group, a.item).to_lowercase();
+    let has = |words: &[&str]| words.iter().any(|w| text.contains(w));
+    if has(&["crash", "splash", "china", "stack", "cymbal"]) {
+        Hitsound::Finish
+    } else if has(&["hat", "ride", "bell", "tip", "edge", "open", "pedal", "cc"]) {
+        Hitsound::Whistle
+    } else if has(&["snare", "flam", "ruff", "rim", "sidestick", "side stick", "wires", "stick", "clap", "aux"]) {
+        Hitsound::Clap
+    } else {
+        Hitsound::Normal
+    }
+}
+
+/// The rows to make, in the kit's order: mapped notes only, chokes only when asked for, one row
+/// per name (a repeated name gets its group in front, or is left out).
+pub fn kit_rows(kit: &[Articulation], include_chokes: bool) -> Vec<KitRow> {
+    let mut rows = Vec::new();
+    let mut names = HashSet::new();
+    for a in kit {
+        let Some(note) = a.note.filter(|n| *n <= 127) else { continue };
+        if !include_chokes && is_choke(a) {
+            continue;
+        }
+        let mut name = label(a);
+        if name.is_empty() || utf16_len(&name) > MAX_NAME_UTF16 {
+            continue;
+        }
+        if !names.insert(name.to_lowercase()) {
+            if a.group.is_empty() {
+                continue;
+            }
+            name = format!("{} {name}", title(&a.group));
+            if !names.insert(name.to_lowercase()) {
+                continue;
+            }
+        }
+        rows.push(KitRow { name, note, sound: kit_sound(a) });
+    }
+    rows
+}
+
+/// The kit row an existing drum-map row stands for: the same name; else the starter names' usual
+/// kit names (T1, Right Crash, Ghost Notes...); else the same words in any order, ignoring
+/// "hi-hat" (Tight Tip and Tip Tight, Hi-Hat Open 1 and Open 1). `None` when the kit has nothing.
+pub fn match_row<'a>(row_name: &str, kit: &'a [KitRow]) -> Option<&'a KitRow> {
+    let named = |name: &str| kit.iter().find(|k| k.name.to_lowercase() == name.to_lowercase());
+    let row = row_name.trim();
+    if let Some(k) = named(row) {
+        return Some(k);
+    }
+    let aliases: &[&str] = match row.to_lowercase().as_str() {
+        "kick" => &["Kick", "Bass Drum"],
+        "ghost notes" => &["Snare"],
+        "t1" => &["Rack Tom 1", "Tom 1", "High Tom"],
+        "t2" => &["Rack Tom 2", "Tom 2", "Mid Tom"],
+        "t3" => &["Floor Tom 1", "Tom 3", "Low Tom"],
+        "t4" => &["Floor Tom 2", "Tom 4", "Floor Tom"],
+        "ride bell" => &["Bell", "Ride Bell"],
+        "bow ride (low)" | "bow ride (high)" => &["Ride", "Ride Bow"],
+        "right crash" => &["Main Crash R", "Crash R", "Crash 2"],
+        "left crash" => &["Main Crash L", "Crash L", "Crash 1"],
+        "splash" => &["Splash L", "Splash C", "Splash"],
+        "mini stack left" | "mini stack right" => &["Stack"],
+        _ => &[],
+    };
+    if let Some(k) = aliases.iter().find_map(|a| named(a)) {
+        return Some(k);
+    }
+    let words = words(row_name);
+    if words.is_empty() {
+        return None;
+    }
+    kit.iter().find(|k| self::words(&k.name) == words)
+}
+
+fn words(name: &str) -> HashSet<String> {
+    name.to_lowercase().replace("hi-hat", " ").replace("hihat", " ").split([' ', '-', '(', ')']).filter(|w| !w.is_empty() && *w != "hat" && *w != "hats").map(String::from).collect()
+}
+
+fn title(group: &str) -> String {
+    group
+        .split(' ')
+        .filter(|w| !w.is_empty())
+        .map(|w| {
+            let mut c = w.chars();
+            match (c.next(), w.chars().count()) {
+                (Some(first), n) if n > 1 => first.to_uppercase().chain(c.as_str().to_lowercase().chars()).collect::<String>(),
+                _ => w.to_uppercase(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// The header line of a GGD map export (`.nka`, saved by EXPORT MAP on a GGD library's Mappings page).
+pub const GGD_HEADER: &str = "%ART__articulation_map";
+const GGD_MAX_BYTES: usize = 65536;
+
+/// Which line of a GGD export is which articulation, in the order the Mappings page shows them
+/// (old `GgdMapFile.Lines`, worked out from a P4 Kit "Invasion" export).
+const GGD_LINES: [(usize, &str, &str); 36] = [
+    (1, "KICK", "Hit"),
+    (4, "SNARE", "Hit"), (3, "SNARE", "Flam"), (6, "SNARE", "Wires Off"), (5, "SNARE", "Ruff"), (2, "SNARE", "Sidestick"),
+    (7, "TOMS", "Rack Tom 1: Hit"), (8, "TOMS", "Rack Tom 2: Hit"), (9, "TOMS", "Floor Tom 1: Hit"), (10, "TOMS", "Floor Tom 2: Hit"),
+    (37, "AUX", "Stick Click"),
+    (19, "HATS", "Tip Tight"), (13, "HATS", "Edge Tight"), (18, "HATS", "Tip Closed"), (12, "HATS", "Edge Closed"),
+    (14, "HATS", "Open 1"), (15, "HATS", "Open 2"), (16, "HATS", "Open 3"), (17, "HATS", "Pedal"), (20, "HATS", "CC"),
+    (21, "RIDE", "Bell"), (22, "RIDE", "Ride"),
+    (30, "CHINA", "Hit"), (29, "CHINA", "Choke"),
+    (24, "CRASHES", "Main Crash L: Hit"), (23, "CRASHES", "Main Crash L: Choke"),
+    (26, "CRASHES", "Wide Crash L: Hit"), (25, "CRASHES", "Wide Crash L: Choke"),
+    (28, "CRASHES", "Main Crash R: Hit"), (27, "CRASHES", "Main Crash R: Choke"),
+    (32, "SPLASHES", "Splash L: Hit"), (31, "SPLASHES", "Splash L: Choke"),
+    (34, "SPLASHES", "Splash C: Hit"), (33, "SPLASHES", "Splash C: Choke"),
+    (35, "MINI HATS", "Hit"),
+    (36, "STACK", "Hit"),
+];
+
+/// A GGD library's own mapping from its exported map's text: the header, then one note per line
+/// (-1 is unmapped), blank lines skipped, at least one line for every articulation.
+pub fn ggd_kit(text: &str) -> Result<Vec<Articulation>, DrumFileRefusal> {
+    if text.len() > GGD_MAX_BYTES {
+        return Err(DrumFileRefusal::TooLarge { limit_bytes: GGD_MAX_BYTES });
+    }
+    let lines: Vec<&str> = text.split(['\r', '\n']).map(str::trim).filter(|l| !l.is_empty()).collect();
+    let last = GGD_LINES.iter().map(|l| l.0).max().unwrap_or(0);
+    if lines.len() < last + 2 || lines[0].trim_start_matches('\u{feff}') != GGD_HEADER {
+        return Err(DrumFileRefusal::NotThisFormat("this isn't a GGD map export (EXPORT MAP on the library's Mappings page)".into()));
+    }
+    let notes = lines[1..]
+        .iter()
+        .enumerate()
+        .map(|(i, l)| match l.parse::<i32>() {
+            Ok(-1) => Ok(None),
+            Ok(n @ 0..=127) => Ok(Some(n as u8)),
+            _ => Err(invalid(format!("line {} of the GGD map isn't a MIDI note", i + 2))),
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(GGD_LINES.iter().map(|(line, group, item)| Articulation { group: (*group).into(), item: (*item).into(), note: notes[*line] }).collect())
+}
+
+/// GGD Matt Garstka Signature Drums, mapping preset "GGD", as the instrument's Mappings page shows it.
+pub fn ggd_matt_garstka() -> Vec<Articulation> {
+    let a = |group: &str, item: &str, note: Option<u8>| Articulation { group: group.into(), item: item.into(), note };
+    vec![
+        a("KICK", "Hit", Some(36)),
+        a("SNARE", "Hit", Some(37)), a("SNARE", "Flam", Some(38)), a("SNARE", "Wires Off", Some(41)), a("SNARE", "Ruff", Some(39)), a("SNARE", "Sidestick", Some(40)),
+        a("TOMS", "Rack Tom 1: Hit", Some(42)), a("TOMS", "Rack Tom 2: Hit", Some(45)), a("TOMS", "Floor Tom 1: Hit", Some(43)), a("TOMS", "Floor Tom 2: Hit", Some(46)),
+        a("AUX", "Stick Click", None),
+        a("HATS", "Tip Tight", Some(48)), a("HATS", "Edge Tight", Some(54)), a("HATS", "Tip Closed", Some(49)), a("HATS", "Edge Closed", None),
+        a("HATS", "Open 1", Some(52)), a("HATS", "Open 2", Some(53)), a("HATS", "Open 3", Some(57)), a("HATS", "Pedal", Some(55)),
+        a("HATS", "Pedal Ching", None), a("HATS", "CC", None),
+        a("RIDE", "Bell", Some(74)), a("RIDE", "Ride", Some(73)),
+        a("CHINA", "Hit", Some(71)), a("CHINA", "Choke", Some(72)),
+        a("CRASHES", "Main Crash L: Hit", Some(58)), a("CRASHES", "Main Crash L: Choke", Some(59)),
+        a("CRASHES", "Wide Crash L: Hit", None), a("CRASHES", "Wide Crash L: Choke", None),
+        a("CRASHES", "Main Crash R: Hit", Some(61)), a("CRASHES", "Main Crash R: Choke", Some(62)),
+        a("SPLASHES", "Splash L: Hit", Some(77)), a("SPLASHES", "Splash L: Choke", Some(83)),
+        a("SPLASHES", "Splash C: Hit", None), a("SPLASHES", "Splash C: Choke", None),
+        a("MINI HATS", "Hit", None),
+        a("STACK", "Hit", None),
+    ]
+}
 // ---------------------------------------------------------------- base64 (ADR 0047: our own code)
 
 const BASE64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";

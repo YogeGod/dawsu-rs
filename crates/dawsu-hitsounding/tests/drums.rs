@@ -179,6 +179,133 @@ fn the_local_corpus_dawsudrum_files_read_and_round_trip() {
     }
 }
 
+// ---------------------------------------------------------------- Task 3: rows from a kit
+
+/// GGD P4 Kit, mapping preset "Invasion", exported with EXPORT MAP (old `GgdMapFileTests`).
+fn p4_invasion() -> String {
+    "%ART__articulation_map\n-1\n24\n30\n27\n26\n28\n29\n33\n34\n35\n36\n-1\n44\n42\n45\n46\n47\n48\n43\n41\n17\n61\n62\n53\n52\n57\n56\n55\n54\n66\n65\n74\n73\n76\n75\n77\n78\n79\n".to_string() + &"-1\n".repeat(90)
+}
+
+#[test]
+fn an_export_reads_as_the_notes_its_mappings_page_shows() {
+    let kit: std::collections::HashMap<String, Option<u8>> = ggd_kit(&p4_invasion()).unwrap().iter().map(|a| (label(a), a.note)).collect();
+    for (name, note) in [
+        ("Kick", 24), ("Snare", 26), ("Flam", 27), ("Wires Off", 29), ("Ruff", 28), ("Sidestick", 30), ("Rack Tom 1", 33), ("Floor Tom 2", 36), ("Stick Click", 79),
+        ("Tip Tight", 41), ("Edge Tight", 42), ("Tip Closed", 43), ("Edge Closed", 44), ("Open 3", 47), ("Pedal", 48), ("CC", 17), ("Bell", 61), ("Ride", 62),
+        ("China", 65), ("China Choke", 66), ("Main Crash L", 52), ("Main Crash L Choke", 53), ("Wide Crash L", 56), ("Main Crash R", 54), ("Main Crash R Choke", 55),
+        ("Splash L", 73), ("Splash C", 75), ("Splash C Choke", 76), ("Mini Hats", 77), ("Stack", 78),
+    ] {
+        assert_eq!(kit[name], Some(note), "{name}");
+    }
+}
+
+#[test]
+fn an_exported_map_fills_the_starter_drum_map() {
+    let rows = kit_rows(&ggd_kit(&p4_invasion()).unwrap(), false);
+    for (row, note) in [("Kick", 24), ("Closed Edge", 44), ("Left Crash", 52), ("Stack", 78)] {
+        assert_eq!(match_row(row, &rows).map(|k| k.note), Some(note), "{row}");
+    }
+}
+
+#[test]
+fn other_files_are_refused() {
+    for text in ["%ArticulationMap\n-1\n24\n", "hello"] {
+        refused(ggd_kit(text));
+    }
+    refused(ggd_kit(&p4_invasion().replace("\n24\n", "\n128\n")));
+    refused(ggd_kit(&p4_invasion().replace("\n24\n", "\nC0\n")));
+    refused(ggd_kit(&("%ART__articulation_map\n".to_string() + &"-1\n".repeat(70_000))));
+}
+
+#[test]
+fn a_map_too_short_for_every_articulation_is_refused_not_misread() {
+    let text = "%ART__articulation_map\n".to_string() + &"24\n".repeat(37);
+    refused(ggd_kit(&text));
+    assert!(!ggd_kit(&(text + "24\n")).unwrap().is_empty());
+    // Blank lines and CRLF are skipped, as the old reader skips them.
+    assert!(ggd_kit(&p4_invasion().replace('\n', "\r\n\r\n")).is_ok());
+}
+
+#[test]
+fn hits_are_named_after_their_drum_and_other_articulations_keep_their_own_name() {
+    for (group, item, name) in [
+        ("KICK", "Hit", "Kick"), ("SNARE", "Hit", "Snare"), ("SNARE", "Flam", "Flam"), ("SNARE", "Wires Off", "Wires Off"), ("TOMS", "Rack Tom 1: Hit", "Rack Tom 1"),
+        ("CRASHES", "Main Crash L: Choke", "Main Crash L Choke"), ("CHINA", "Choke", "China Choke"), ("MINI HATS", "Hit", "Mini Hats"), ("RIDE", "Bell", "Bell"),
+    ] {
+        assert_eq!(label(&Articulation { group: group.into(), item: item.into(), note: Some(1) }), name);
+    }
+}
+
+#[test]
+fn the_ggd_matt_garstka_kit_maps_its_mapped_notes_and_leaves_chokes_out() {
+    let rows = kit_rows(&ggd_matt_garstka(), false);
+    assert_eq!(
+        rows.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(),
+        ["Kick", "Snare", "Flam", "Wires Off", "Ruff", "Sidestick", "Rack Tom 1", "Rack Tom 2", "Floor Tom 1", "Floor Tom 2", "Tip Tight", "Edge Tight", "Tip Closed", "Open 1", "Open 2", "Open 3", "Pedal", "Bell", "Ride", "China", "Main Crash L", "Main Crash R", "Splash L"]
+    );
+    assert_eq!(rows[0].note, 36);
+    assert_eq!(rows.iter().find(|r| r.name == "Snare").unwrap().note, 37);
+    assert_eq!(rows.iter().find(|r| r.name == "Bell").unwrap().note, 74);
+}
+
+#[test]
+fn chokes_are_added_when_asked_for() {
+    let rows = kit_rows(&ggd_matt_garstka(), true);
+    assert_eq!(rows.iter().filter(|r| r.name.ends_with("Choke")).map(|r| r.name.as_str()).collect::<Vec<_>>(), ["China Choke", "Main Crash L Choke", "Main Crash R Choke", "Splash L Choke"]);
+    assert_eq!(rows.iter().find(|r| r.name == "Main Crash L Choke").unwrap().note, 59);
+}
+
+#[test]
+fn each_kind_of_drum_goes_to_the_usual_osu_sound() {
+    use dawsu_foundation::Hitsound::*;
+    let rows = kit_rows(&ggd_matt_garstka(), false);
+    let sound = |n: &str| rows.iter().find(|r| r.name == n).unwrap().sound;
+    for (name, want) in [("Kick", Normal), ("Floor Tom 2", Normal), ("Snare", Clap), ("Sidestick", Clap), ("Tip Tight", Whistle), ("Pedal", Whistle), ("Bell", Whistle), ("China", Finish), ("Splash L", Finish)] {
+        assert_eq!(sound(name), want, "{name}");
+    }
+}
+
+#[test]
+fn the_starter_drum_map_rows_find_their_kit_instrument() {
+    let rows = kit_rows(&ggd_matt_garstka(), false);
+    for (row, kit) in [
+        ("Kick", "Kick"), ("Snare", "Snare"), ("Ghost Notes", "Snare"), ("T1", "Rack Tom 1"), ("T4", "Floor Tom 2"), ("Tight Tip", "Tip Tight"), ("Tight Edge", "Edge Tight"), ("Closed Tip", "Tip Closed"),
+        ("Hi-Hat Open 2", "Open 2"), ("Ride Bell", "Bell"), ("Bow Ride (Low)", "Ride"), ("Right Crash", "Main Crash R"), ("Left Crash", "Main Crash L"), ("China", "China"), ("Splash", "Splash L"),
+    ] {
+        assert_eq!(match_row(row, &rows).map(|k| k.name.as_str()), Some(kit), "{row}");
+    }
+}
+
+#[test]
+fn rows_the_kit_has_nothing_for_stay_unmatched() {
+    let rows = kit_rows(&ggd_matt_garstka(), false);
+    for name in ["Closed Edge", "Stack", "Ride Crash", "Mini Stack Left"] {
+        assert!(match_row(name, &rows).is_none(), "{name}");
+    }
+}
+
+#[test]
+fn reported_note_names_become_rows_in_note_order_and_unknown_kits_have_no_table() {
+    let names = std::collections::BTreeMap::from([(38, "Snare".to_string()), (36, "Kick".to_string()), (40, " ".to_string()), (200, "Bad".to_string()), (-1, "Low".to_string())]);
+    let rows = kit_rows(&kit_from_note_names(&names), false);
+    assert_eq!(rows.iter().map(|r| (r.name.as_str(), r.note, r.sound)).collect::<Vec<_>>(), [("Kick", 36, dawsu_foundation::Hitsound::Normal), ("Snare", 38, dawsu_foundation::Hitsound::Clap)]);
+}
+
+#[test]
+fn the_local_corpus_ggd_exports_read_or_are_refused_by_their_header() {
+    let Some(files) = corpus("nka") else { return };
+    assert_eq!(files.len(), 3, "the corpus's .nka files");
+    for path in files {
+        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        let result = ggd_kit(&std::fs::read_to_string(&path).unwrap());
+        if name == "martin_mapping.nka" {
+            assert!(result.is_err(), "{name}: its header is %ArticulationMap");
+        } else {
+            let rows = kit_rows(&result.unwrap_or_else(|e| panic!("{name}: {e}")), true);
+            eprintln!("{name}: {} rows with chokes", rows.len());
+        }
+    }
+}
 /// The corpus files with one extension, or `None` (skipped, with a note) when the variable is unset.
 fn corpus(extension: &str) -> Option<Vec<std::path::PathBuf>> {
     let Ok(dir) = std::env::var("DAWSU_DRUM_CORPUS") else {
