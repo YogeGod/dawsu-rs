@@ -1,0 +1,10 @@
+[package]
+name = "dawsu-hitsounding"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+dawsu-foundation = { path = "../dawsu-foundation" }
+dawsu-osu-format = { path = "../dawsu-osu-format" }

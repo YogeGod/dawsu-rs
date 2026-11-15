@@ -1,0 +1,9 @@
+[package]
+name = "dawsu-foundation"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+# The module map allows the standard library only: no dependencies.
+[dependencies]

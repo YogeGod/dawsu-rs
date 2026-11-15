@@ -1,0 +1,12 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/dawsu-foundation",
+    "crates/dawsu-osu-format",
+    "crates/dawsu-hitsounding",
+]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.100.0"
+publish = false
