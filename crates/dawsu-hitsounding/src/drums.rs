@@ -5,9 +5,9 @@
 //! a file's text and gives text back. A file that cannot be read is a refusal, an expected outcome
 //! (ADR 0034 point 2), never a half-read map.
 
-use crate::model::{Lane, LaneSource};
-use crate::rules::{read_sample_file_name, set_word, sound_word};
-use dawsu_foundation::{Hitsound, SampleIdentity, Sound};
+use crate::model::{Hitsounds, Lane, LaneSource, MomentId};
+use crate::rules::{played_volume, read_sample_file_name, set_word, sound_word};
+use dawsu_foundation::{Hitsound, SampleIdentity, SongTime, Sound};
 use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::{BTreeMap, HashSet};
 use std::fmt;
@@ -640,6 +640,108 @@ pub fn read_drm(text: &str, fallback_name: &str, new_id: &mut dyn FnMut() -> Str
     let m = DrumMap { id: new_id(), name: if title.is_empty() { fallback_name.trim().to_string() } else { title.to_string() }, rows, audio: Vec::new() };
     m.validate()?;
     Ok(m)
+}
+// ---------------------------------------------------------------- the view rows (invariant 9)
+
+/// One row of the drum-map view.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum DrumViewRow<'a> {
+    /// A drum-map row and the lane it plays, shown under the row's name.
+    Instrument { row: &'a DrumRow, lane: &'a Lane },
+    /// A row whose lane is not among the lanes: shown, and no lane is made for it.
+    Unassigned(&'a DrumRow),
+    /// A lane no row names, after the rows, so no sample or hit is ever out of reach.
+    Other(&'a Lane),
+}
+
+/// The drum-map view's rows for `lanes`: every row of the map in its order, then every lane no
+/// row names, in the lanes' own order. Applying a drum map never adds, removes or renames a lane
+/// (invariant 9): the view's lanes are exactly `lanes`, a lane several rows name (an alias) shows
+/// once per row, and turning the map off (`None`) shows the lanes as they are.
+pub fn drum_rows<'a>(map: Option<&'a DrumMap>, lanes: &'a [Lane]) -> Vec<DrumViewRow<'a>> {
+    let keys: Vec<String> = lanes.iter().map(lane_key).collect();
+    let find = |key: &Option<String>| key.as_ref().and_then(|k| keys.iter().position(|l| l == k));
+    let rows = map.map_or(&[][..], |m| &m.rows);
+    let mut named = vec![false; lanes.len()];
+    let mut out: Vec<DrumViewRow<'a>> = rows
+        .iter()
+        .map(|row| match find(&row.lane) {
+            Some(i) => {
+                named[i] = true;
+                DrumViewRow::Instrument { row, lane: &lanes[i] }
+            }
+            None => DrumViewRow::Unassigned(row),
+        })
+        .collect();
+    out.extend(lanes.iter().zip(named).filter(|(_, n)| !n).map(|(l, _)| DrumViewRow::Other(l)));
+    out
+}
+
+// ---------------------------------------------------------------- the render plan (Responsibility 20)
+
+/// The instrument note each lane renders with: a skin lane's sound starts on its General MIDI
+/// note (hitnormal 36, hitclap 38, hitwhistle 42, hitfinish 49), then the map's rows override
+/// it; the first row on a lane wins, so aliases play one sound, and a row with no note takes its
+/// lane out of the render (old `MainWindow.DrumVstNotes`).
+pub fn render_notes(map: Option<&DrumMap>, lanes: &[Lane]) -> BTreeMap<SampleIdentity, u8> {
+    let mut notes = BTreeMap::new();
+    for lane in lanes {
+        if let (LaneSource::Skin, SampleIdentity::Standard { sound: Sound::Hit(h), .. }) = (&lane.source, &lane.identity) {
+            let note = match h {
+                Hitsound::Normal => 36,
+                Hitsound::Clap => 38,
+                Hitsound::Whistle => 42,
+                Hitsound::Finish => 49,
+            };
+            notes.insert(lane.identity.clone(), note);
+        }
+    }
+    let keys: Vec<String> = lanes.iter().map(lane_key).collect();
+    let mut assigned = HashSet::new();
+    for row in map.map_or(&[][..], |m| &m.rows) {
+        let Some(i) = row.lane.as_ref().and_then(|k| keys.iter().position(|l| l == k)) else { continue };
+        if !assigned.insert(i) {
+            continue;
+        }
+        match row.midi_note {
+            Some(n) => notes.insert(lanes[i].identity.clone(), n),
+            None => notes.remove(&lanes[i].identity),
+        };
+    }
+    notes
+}
+
+/// One hit to render: which moment and lane, at which time, with which note and velocity.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RenderHit {
+    pub moment: MomentId,
+    pub time: SongTime,
+    pub lane: SampleIdentity,
+    pub note: u8,
+    pub velocity: u8,
+}
+
+/// Every hit on a lane with a note, in moment order, for the instrument engine. The velocity is
+/// the hit's played volume (the rules object, R5) scaled to 0-127, rounded half to even as the old
+/// app's `Math.Round`; times are the moments' own. The old app's floor was stable's 8; the played
+/// volume's floor here is lazer's 5.
+pub fn drum_render_plan(hitsounds: &Hitsounds, notes: &BTreeMap<SampleIdentity, u8>) -> Vec<RenderHit> {
+    let mut plan = Vec::new();
+    for (i, m) in hitsounds.moments().iter().enumerate() {
+        let velocity = (f64::from(played_volume(m.volume())) * 127.0 / 100.0).round_ties_even().clamp(0.0, 127.0) as u8;
+        for lane in m.hits() {
+            if let Some(&note) = notes.get(lane) {
+                plan.push(RenderHit { moment: MomentId(i), time: m.time(), lane: lane.clone(), note, velocity });
+            }
+        }
+    }
+    plan
+}
+
+/// The distinct (note, velocity) pairs a plan needs rendered, by note then velocity.
+pub fn render_keys(plan: &[RenderHit]) -> Vec<(u8, u8)> {
+    let keys: std::collections::BTreeSet<(u8, u8)> = plan.iter().map(|p| (p.note, p.velocity)).collect();
+    keys.into_iter().collect()
 }
 // ---------------------------------------------------------------- base64 (ADR 0047: our own code)
 

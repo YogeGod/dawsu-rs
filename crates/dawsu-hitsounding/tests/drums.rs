@@ -376,6 +376,137 @@ fn the_local_corpus_drm_files_read() {
         eprintln!("{name}: map \"{}\", {} rows kept: {}", m.name, m.rows.len(), m.rows.iter().take(8).map(|r| format!("{} {}", r.name, r.midi_note.unwrap())).collect::<Vec<_>>().join(", "));
     }
 }
+// ---------------------------------------------------------------- Task 5: view rows and the render plan
+
+use dawsu_foundation::{CustomIndex, Hitsound, SampleIdentity, SampleSet, Sound};
+use dawsu_hitsounding::{decompile, Decompiled, Hitsounds, Lane, LaneSource, MomentId};
+use dawsu_osu_format::OsuFile;
+
+fn dec(text: &[u8]) -> Hitsounds {
+    match decompile(&OsuFile::read(text.to_vec()).file, &[], &|| false, &mut |_, _| {}) {
+        Decompiled::Done(h) => h,
+        other => panic!("{other:?}"),
+    }
+}
+
+fn small_map() -> Hitsounds {
+    dec(b"osu file format v14\r\n\r\n[General]\r\nSampleSet: Drum\r\n\r\n[Difficulty]\r\nSliderMultiplier:1.4\r\nSliderTickRate:1\r\n\r\n[TimingPoints]\r\n0,500,4,3,0,70,1,0\r\n\r\n[HitObjects]\r\n256,192,1000,1,0,0:0:0:0:\r\n256,192,1500,1,8,0:0:0:0:\r\n256,192,2000,1,2,0:0:0:0:\r\n256,192,2500,1,4,0:0:0:0:\r\n")
+}
+
+fn skin(set: SampleSet, sound: Hitsound, index: u32) -> Lane {
+    Lane { identity: SampleIdentity::Standard { set, sound: Sound::Hit(sound), index: CustomIndex::new(index) }, source: LaneSource::Skin }
+}
+
+/// Invariant 9: the view's distinct lanes are exactly the given lanes, unchanged; a lane rows
+/// name shows once per row (aliases), a lane no row names shows once after the rows in its own
+/// order, and each unassigned row shows once.
+fn check_view(map: &DrumMap, lanes: &[Lane]) {
+    let view = drum_rows(Some(map), lanes);
+    let shown: Vec<&Lane> = view.iter().filter_map(|v| match v { DrumViewRow::Instrument { lane, .. } | DrumViewRow::Other(lane) => Some(*lane), DrumViewRow::Unassigned(_) => None }).collect();
+    for lane in lanes {
+        assert!(shown.iter().any(|l| *l == lane), "every lane stays reachable");
+    }
+    assert!(shown.iter().all(|l| lanes.contains(l)), "no lane is made up");
+    let keys: Vec<String> = lanes.iter().map(lane_key).collect();
+    for (r, v) in map.rows.iter().zip(view.iter()) {
+        match v {
+            DrumViewRow::Instrument { row, lane } => assert!(std::ptr::eq(*row, r) && r.lane.as_deref() == Some(lane_key(lane).as_str())),
+            DrumViewRow::Unassigned(row) => assert!(std::ptr::eq(*row, r) && !r.lane.as_ref().is_some_and(|k| keys.contains(k))),
+            DrumViewRow::Other(_) => panic!("rows come first, one each"),
+        }
+    }
+    let others: Vec<&Lane> = view[map.rows.len()..].iter().map(|v| match v { DrumViewRow::Other(l) => *l, _ => panic!("only other lanes after the rows") }).collect();
+    let unnamed: Vec<&Lane> = lanes.iter().filter(|l| !map.rows.iter().any(|r| r.lane.as_deref() == Some(lane_key(l).as_str()))).collect();
+    assert_eq!(others, unnamed, "every other lane once, in its own order");
+}
+
+#[test]
+fn missing_assignments_are_explicit_and_never_create_fake_note_lanes() {
+    let h = small_map();
+    let m = map(vec![row(1, "Kick", Some("Skin|drum-hitnormal"), Some(36)), row(2, "Boom", Some("BeatmapFile|boom.wav"), Some(35)), row(3, "Ghost Notes", None, Some(38))]);
+    let view = drum_rows(Some(&m), h.lanes());
+    assert!(matches!(view[0], DrumViewRow::Instrument { lane, .. } if *lane == skin(SampleSet::Drum, Hitsound::Normal, 0)));
+    assert!(matches!(view[1], DrumViewRow::Unassigned(r) if r.name == "Boom"));
+    assert!(matches!(view[2], DrumViewRow::Unassigned(r) if r.name == "Ghost Notes"));
+    check_view(&m, h.lanes());
+    assert_eq!(drum_rows(None, h.lanes()).len(), h.lanes().len(), "with no map, the lanes as they are");
+}
+
+#[test]
+fn invariant_9_on_every_save_pack_map_and_the_corpus_drum_maps() {
+    let mut maps = default_drum_maps(&mut ids()).maps;
+    if let Some(files) = corpus("dawsudrum") {
+        maps.extend(files.iter().map(|p| read_dawsudrum(&std::fs::read_to_string(p).unwrap()).unwrap()));
+    }
+    for (name, path) in dawsu_test_support::save_pack_files() {
+        let file = OsuFile::read(std::fs::read(&path).unwrap()).file;
+        let Decompiled::Done(h) = decompile(&file, &[], &|| false, &mut |_, _| {}) else { continue };
+        let lanes = h.lanes();
+        // A map that names every lane, the first one twice (an alias), plus an unassigned row.
+        let mut every = map(lanes.iter().enumerate().map(|(i, l)| row(i as u32 + 10, &format!("Row {i}"), Some(&lane_key(l)), None)).collect());
+        if let Some(first) = lanes.first() {
+            every.rows.insert(1, row(1, "Alias", Some(&lane_key(first)), None));
+        }
+        every.rows.push(row(2, "Nothing", Some("BeatmapFile|nothing.wav"), None));
+        for m in maps.iter().chain([&every]) {
+            check_view(m, lanes);
+        }
+        let _ = name;
+    }
+}
+
+#[test]
+fn lane_keys_are_the_old_app_s_keys() {
+    assert_eq!(lane_key(&skin(SampleSet::Soft, Hitsound::Clap, 0)), "Skin|soft-hitclap");
+    assert_eq!(lane_key(&Lane { identity: SampleIdentity::File("kick.wav".into()), source: LaneSource::File("kick.wav".into()) }), "BeatmapFile|kick.wav");
+    assert_eq!(lane_key(&Lane { identity: SampleIdentity::File("gone.wav".into()), source: LaneSource::Skin }), "BeatmapFile|gone.wav", "a named file missing from the folder");
+    assert_eq!(lane_key(&skin(SampleSet::Drum, Hitsound::Clap, 2)), "Skin|drum-hitclap2", "a numbered file missing from the folder");
+}
+
+#[test]
+fn render_notes_take_skin_fallbacks_the_first_row_per_lane_and_drop_unnoted_lanes() {
+    let lanes = vec![
+        skin(SampleSet::Drum, Hitsound::Normal, 0), skin(SampleSet::Drum, Hitsound::Clap, 0), skin(SampleSet::Drum, Hitsound::Whistle, 0), skin(SampleSet::Drum, Hitsound::Finish, 0),
+        skin(SampleSet::Soft, Hitsound::Clap, 3),
+        Lane { identity: SampleIdentity::File("gone.wav".into()), source: LaneSource::Skin },
+        Lane { identity: SampleIdentity::File("kick.wav".into()), source: LaneSource::File("kick.wav".into()) },
+    ];
+    let notes = render_notes(None, &lanes);
+    assert_eq!(notes.values().copied().collect::<Vec<_>>().len(), 5, "skin lanes with a standard sound only");
+    assert_eq!(notes[&lanes[0].identity], 36);
+    assert_eq!(notes[&lanes[1].identity], 38);
+    assert_eq!(notes[&lanes[2].identity], 42);
+    assert_eq!(notes[&lanes[3].identity], 49);
+    assert_eq!(notes[&lanes[4].identity], 38, "a numbered missing file plays as the skin's sound");
+    assert!(!notes.contains_key(&lanes[5].identity) && !notes.contains_key(&lanes[6].identity));
+
+    let m = map(vec![row(1, "Kick", Some("Skin|drum-hitnormal"), Some(35)), row(2, "Subkick", Some("Skin|drum-hitnormal"), Some(24)), row(3, "Snare", Some("Skin|drum-hitclap"), None), row(4, "Boom", Some("BeatmapFile|kick.wav"), Some(41))]);
+    let notes = render_notes(Some(&m), &lanes);
+    assert_eq!(notes[&lanes[0].identity], 35, "the first row on a lane wins");
+    assert!(!notes.contains_key(&lanes[1].identity), "a row with no note takes its lane out");
+    assert_eq!(notes[&lanes[6].identity], 41);
+}
+
+#[test]
+fn render_plan_reuses_note_velocity_and_preserves_unmapped_hits() {
+    let mut h = small_map();
+    for (i, v) in [5, 50, 70, 100].into_iter().enumerate() {
+        h.set_volume(MomentId(i), v);
+    }
+    let m = map(vec![row(1, "Kick", Some("Skin|drum-hitnormal"), Some(36)), row(2, "Clap", Some("Skin|drum-hitclap"), None)]);
+    let plan = drum_render_plan(&h, &render_notes(Some(&m), h.lanes()));
+    let kicks: Vec<(f64, u8, u8)> = plan.iter().filter(|p| p.note == 36).map(|p| (p.time.ms(), p.note, p.velocity)).collect();
+    assert_eq!(kicks, [(1000.0, 36, 6), (1500.0, 36, 64), (2000.0, 36, 89), (2500.0, 36, 127)], "velocity from the played volume");
+    let clap = SampleIdentity::Standard { set: SampleSet::Drum, sound: Sound::Hit(Hitsound::Clap), index: CustomIndex::new(0) };
+    assert!(h.moments()[1].has_hit(&clap) && plan.iter().all(|p| p.lane != clap), "a lane with no note is not rendered");
+    assert!(plan.iter().any(|p| p.note == 42), "the whistle keeps its skin fallback");
+    assert_eq!(render_keys(&plan), {
+        let mut k: Vec<(u8, u8)> = plan.iter().map(|p| (p.note, p.velocity)).collect();
+        k.sort();
+        k.dedup();
+        k
+    });
+}
 /// The corpus files with one extension, or `None` (skipped, with a note) when the variable is unset.
 fn corpus(extension: &str) -> Option<Vec<std::path::PathBuf>> {
     let Ok(dir) = std::env::var("DAWSU_DRUM_CORPUS") else {
