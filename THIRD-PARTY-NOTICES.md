@@ -60,3 +60,7 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
+
+## Mapping Tools (OliBomby/Mapping_Tools)
+
+`crates/dawsu-hitsounding/src/copy.rs` follows the behaviour and options of the Hitsound Copier in Mapping Tools (https://github.com/OliBomby/Mapping_Tools), by OliBomby and contributors, licensed under the MIT Licence. Its licence file holds no copyright line; the permission notice is the one above.

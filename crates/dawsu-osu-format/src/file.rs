@@ -99,6 +99,15 @@ pub enum Refusal {
     LineBreak,
 }
 
+/// One line as it was at a moment, to be put back (see [`OsuFile::snapshot_line`]).
+#[derive(Debug, Clone)]
+pub struct LineSnapshot {
+    id: LineId,
+    content: Vec<u8>,
+    ending: LineEnding,
+    edited: bool,
+}
+
 /// A storyboard sample line of `[Events]`, read as lazer reads it
 /// (`LegacyStoryboardDecoder.cs:186-194` at 131fe72): `Sample,time,layer,"path",volume`, or `5,...`.
 #[derive(Debug, Clone, PartialEq)]
@@ -429,8 +438,8 @@ impl OsuFile {
 
     fn records_in(&self, section_name: &str) -> Vec<(usize, LineId, String)> {
         let mut out = Vec::new();
-        for (i, (line, section)) in self.lines.iter().zip(self.sections()).enumerate() {
-            if section.as_deref() != Some(section_name) {
+        for (i, line) in self.lines.iter().enumerate() {
+            if line.section.as_deref() != Some(section_name) {
                 continue;
             }
             let Some(text) = logical_text(&line.content, Some(section_name)) else { continue };
@@ -642,6 +651,52 @@ impl OsuFile {
         }
         self.remove_line(id, "HitObjects");
         Ok(())
+    }
+
+    /// Appends hit-object lines after the last line of `[HitObjects]`, in the order given (the
+    /// caller gives them in time order), adding the section when it is missing. For a new hitsound
+    /// difficulty, whose section is empty; one pass instead of a search per line.
+    pub fn append_hit_objects(&mut self, texts: &[String]) -> Vec<LineId> {
+        let mut after = self.last_line_of("HitObjects");
+        texts
+            .iter()
+            .map(|text| {
+                let id = self.insert_after(Some(after), text);
+                after += 1;
+                id
+            })
+            .collect()
+    }
+
+    /// A copy of one line as it is now, to put back with [`OsuFile::restore_line`] when a group
+    /// of edits to it has to be undone.
+    pub fn snapshot_line(&self, id: LineId) -> Option<LineSnapshot> {
+        let line = &self.lines[self.index_of(id)?];
+        Some(LineSnapshot { id, content: line.content.clone(), ending: line.ending, edited: line.edited })
+    }
+
+    /// The id the next added line gets; lines added later have ids at or after it.
+    pub fn next_line_id(&self) -> LineId {
+        LineId(self.next_id)
+    }
+
+    /// Removes every line added since [`OsuFile::next_line_id`] gave `mark`, a header included.
+    pub fn remove_lines_added_since(&mut self, mark: LineId) {
+        let added: Vec<LineId> = self.lines.iter().filter(|l| l.id >= mark).map(|l| l.id).collect();
+        for id in added.into_iter().rev() {
+            // An added line is never in the change summary's removed list, so the section is unused.
+            self.remove_line(id, "");
+        }
+    }
+
+    /// Puts a line back as a snapshot holds it.
+    pub fn restore_line(&mut self, snapshot: LineSnapshot) {
+        if let Some(i) = self.index_of(snapshot.id) {
+            let line = &mut self.lines[i];
+            line.content = snapshot.content;
+            line.ending = snapshot.ending;
+            line.edited = snapshot.edited;
+        }
     }
 
     /// Removes every `[HitObjects]` record line, those lazer cannot read included; blank lines,

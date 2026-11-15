@@ -125,20 +125,26 @@ pub fn compile(file: &OsuFile, hitsounds: &Hitsounds, placement: Placement, canc
         };
         match (objects.get(&id.0), answers.get(&id.0)) {
             (Some(obj), Some(answer)) => {
-                // shortcut: each object is patched on a copy of the file, so a refused edit leaves
-                // no half-patched line; use an undo log if Generate's many objects make it slow.
-                let mut trial = out.clone();
+                // An object's edits touch only its own line and add green lines, so a refused edit
+                // is undone by putting the line back and removing what was added.
+                let (before, mark) = (out.snapshot_line(obj.line()), out.next_line_id());
                 let ok = match obj.kind() {
-                    ObjectKind::Slider(fields) => ctx.slider(&mut trial, &cp, obj, fields, answer, moments, *body, &mut problems),
-                    _ => ctx.circle_or_spinner(&mut trial, &cp, obj, answer, moments[0], &mut problems),
+                    ObjectKind::Slider(fields) => ctx.slider(&mut out, &cp, obj, fields, answer, moments, *body, &mut problems),
+                    _ => ctx.circle_or_spinner(&mut out, &cp, obj, answer, moments[0], &mut problems),
                 };
                 match ok {
-                    Ok(true) => {
-                        out = trial;
-                        cp = ControlPoints::from_file(&out);
+                    Ok(true) if out.next_line_id() != mark => cp = ControlPoints::from_file(&out),
+                    Ok(true) => {}
+                    // Ok(false) kept nothing before either: whatever it touched is put back.
+                    _ => {
+                        out.remove_lines_added_since(mark);
+                        if let Some(before) = before {
+                            out.restore_line(before);
+                        }
+                        if ok.is_err() {
+                            refuse(&mut problems);
+                        }
                     }
-                    Ok(false) => {}
-                    Err(()) => refuse(&mut problems),
                 }
             }
             _ => refuse(&mut problems),
@@ -171,6 +177,13 @@ enum Slot {
 
 fn mix_plan(m: &Moment) -> ProblemKind {
     ProblemKind::NeedsSampleMix(m.hits().map(|h| (h.clone(), saved_volume(m.volume()))).collect())
+}
+
+/// The save problem for layers one moment cannot hold, each at its own volume (more than one
+/// volume, or a lane twice): the sample mix that would play them, as data (ADR 0037 point 4).
+/// Generate and Copy call this for their groups and pile-ups, so mix planning stays here.
+pub fn mix_problem(layers: &[(SampleIdentity, i32)]) -> ProblemKind {
+    ProblemKind::NeedsSampleMix(layers.iter().map(|(lane, volume)| (lane.clone(), saved_volume(*volume))).collect())
 }
 
 /// One hitnormal (or one sample file) plus additions that share one set and one index, all at the

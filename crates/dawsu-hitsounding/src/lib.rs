@@ -2,6 +2,7 @@
 //! decompile, compile and the cue list.
 
 pub mod compile;
+pub mod copy;
 pub mod cues;
 pub mod decompile;
 pub mod error;
