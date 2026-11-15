@@ -111,10 +111,22 @@ fn typed_timing_point_and_hit_object_fields() {
     assert_eq!(slider.slides, 3);
     assert_eq!(slider.length, Some(100.0));
     assert_eq!(slider.edge_sounds.as_deref(), Some(&["2", "4", "8", "0"].map(String::from)[..]));
-    assert_eq!(slider.edge_sets.as_deref(), Some(&[Some((1, 2)), Some((2, 1)), Some((0, 0)), Some((3, 3))][..]));
+    let banks: Vec<Option<(i32, i32)>> = slider.edge_sets.as_ref().unwrap().iter().map(|s| s.as_ref().map(|h| (h.normal_set, h.addition_set))).collect();
+    assert_eq!(banks, vec![Some((1, 2)), Some((2, 1)), Some((0, 0)), Some((3, 3))]);
 
     assert_eq!(objects[3].spinner_end(), Some(3500.0));
     assert_eq!(objects[4].hit_sample().unwrap().filename.as_deref(), Some("dir/sub sample.ogg"));
+}
+
+#[test]
+fn a_slider_node_entry_is_read_in_full() {
+    // lazer reads a node entry's third, fourth and fifth parts as its own index, volume and file
+    // name (ConvertHitObjectParser.cs:127 and :231-237 at 131fe72).
+    let read = OsuFile::read(b"osu file format v14\r\n\r\n[HitObjects]\r\n100,100,1000,2,0,L|300:100,2,200,0|8|0,2:0:3:40|0:0:0:-5|1:0:2:0:kick.wav,0:0:0:0:\r\n".to_vec());
+    let objects = read.file.hit_objects();
+    let sets = objects[0].slider().unwrap().edge_sets.clone().unwrap();
+    let parts: Vec<(i32, i32, i32, i32, Option<String>)> = sets.into_iter().map(|s| s.map(|h| (h.normal_set, h.addition_set, h.index, h.volume, h.filename)).unwrap()).collect();
+    assert_eq!(parts, vec![(2, 0, 3, 40, None), (0, 0, 0, 0, None), (1, 0, 2, 0, Some("kick.wav".into()))], "a negative volume reads as 0");
 }
 
 // ---- Responsibility 8: numbers read the way lazer reads them

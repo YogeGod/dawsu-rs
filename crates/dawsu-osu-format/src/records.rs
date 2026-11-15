@@ -108,8 +108,10 @@ pub struct SliderFields {
     pub length: Option<f64>,
     /// Per-node hitsounds as written; lazer reads each with `int.TryParse`.
     pub edge_sounds: Option<Vec<String>>,
-    /// Per-node banks; `None` for a node whose edge set is empty, which keeps the slider's own banks.
-    pub edge_sets: Option<Vec<Option<(i32, i32)>>>,
+    /// Per-node entries, read in full as lazer reads them (`ConvertHitObjectParser.cs:117-129`): the
+    /// banks, and from a longer entry the node's own index, volume and file name. `None` for a node
+    /// whose entry is empty, which keeps the slider's own banks.
+    pub edge_sets: Option<Vec<Option<HitSample>>>,
 }
 
 /// What kind of object a line is.
@@ -254,8 +256,8 @@ pub(crate) fn parse_hit_object(line: LineId, text: &str) -> Result<HitObject, St
                 if i >= nodes {
                     break;
                 }
-                let banks = read_banks(set, false)?;
-                sets.push(banks.map(|b| (b.normal_set, b.addition_set)));
+                // Read in full: a node entry may carry its own index, volume and file name.
+                sets.push(read_banks(set, false)?);
             }
             Some(sets)
         } else {

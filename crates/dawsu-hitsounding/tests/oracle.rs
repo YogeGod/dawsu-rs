@@ -156,8 +156,9 @@ fn every_save_pack_map_matches_lazer() {
 
 #[test]
 fn the_hand_made_slider_velocity_cases_match_lazer() {
-    // before-first-line, at-red-and-green-pair, after-red-following-green, green-before-first-red
-    assert_eq!(oracle_case_files().len(), 4);
+    // before-first-line, at-red-and-green-pair, after-red-following-green, green-before-first-red,
+    // slider-node-long-entries (a node entry's own index, volume and file name)
+    assert_eq!(oracle_case_files().len(), 5);
     assert_agrees("oracle-cases", oracle_case_files(), &oracle_results_dir());
 }
 

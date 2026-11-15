@@ -1,0 +1,253 @@
+//! The second M2 slice (roadmap, Yoge 2026-11-15): the crate's error type, changing a slider
+//! body's sample set and volume, and compiling hold notes and zero-length sliders.
+
+use dawsu_foundation::{CustomIndex, Hitsound, SampleIdentity, SampleSet, SliderSound, Sound, SongTime};
+use dawsu_hitsounding::rules::{answer, Answer};
+use dawsu_hitsounding::{compile, cue_list, decompile, Compiled, Decompiled, Error, Hitsounds, MomentId, Place, Placement, ProblemKind, SaveProblem};
+use dawsu_osu_format::OsuFile;
+use dawsu_test_support::save_pack_files;
+
+fn read(bytes: &[u8]) -> OsuFile {
+    OsuFile::read(bytes.to_vec()).file
+}
+
+fn map(objects: &str) -> OsuFile {
+    read(format!("osu file format v14\r\n\r\n[General]\r\nSampleSet: Normal\r\n\r\n[Difficulty]\r\nSliderMultiplier:1.4\r\nSliderTickRate:1\r\n\r\n[TimingPoints]\r\n0,500,4,2,1,60,1,0\r\n\r\n[HitObjects]\r\n{objects}\r\n").as_bytes())
+}
+
+fn dec(file: &OsuFile) -> Hitsounds {
+    match decompile(file, &[], &|| false, &mut |_, _| {}) {
+        Decompiled::Done(h) => h,
+        other => panic!("{other:?}"),
+    }
+}
+
+fn comp(file: &OsuFile, h: &Hitsounds, placement: Placement) -> (OsuFile, Vec<SaveProblem>) {
+    match compile(file, h, placement, &|| false, &mut |_, _| {}) {
+        Compiled::Done { file, problems } => (file, problems),
+        Compiled::Cancelled => panic!("cancelled"),
+    }
+}
+
+fn reopen(file: &OsuFile) -> OsuFile {
+    read(&file.to_bytes())
+}
+
+fn set_of(identity: &SampleIdentity) -> SampleSet {
+    match identity {
+        SampleIdentity::Standard { set, .. } => *set,
+        other => panic!("{other:?}"),
+    }
+}
+
+fn hits(h: &Hitsounds) -> Vec<Vec<SampleIdentity>> {
+    h.moments().iter().map(|m| m.hits().cloned().collect()).collect()
+}
+
+fn std(set: SampleSet, sound: Hitsound, index: u32) -> SampleIdentity {
+    SampleIdentity::Standard { set, sound: Sound::Hit(sound), index: CustomIndex::new(index) }
+}
+
+// ---------------------------------------------------------------- the error type
+
+#[test]
+fn the_crate_error_holds_the_format_crate_s_error_unchanged() {
+    let format = dawsu_osu_format::Error::Io { step: "reading the map", path: "map.osu".into(), source: std::io::Error::new(std::io::ErrorKind::NotFound, "gone") };
+    let e: Error = format.into();
+    assert!(matches!(&e, Error::Format(dawsu_osu_format::Error::Io { step: "reading the map", .. })));
+    assert_eq!(e.to_string(), "reading the map failed for map.osu: gone");
+    assert!(std::error::Error::source(&e).is_some());
+}
+
+// ---------------------------------------------------------------- slider bodies
+
+#[test]
+fn the_slider_whistle_plays_from_the_slider_s_addition_set() {
+    // Own banks normal 1 (Normal), addition 2 (Soft): lazer renames the hitwhistle, whose bank is
+    // the addition bank, to sliderwhistle.
+    let file = map("100,100,1000,2,2,L|300:100,1,200,0|0,0:0|0:0,1:2:0:0:");
+    let h = dec(&file);
+    let body = &h.bodies()[0];
+    assert!(body.whistle());
+    assert_eq!(set_of(body.slide()), SampleSet::Normal);
+    assert_eq!(set_of(&body.whistle_lane()), SampleSet::Soft);
+    let Answer::Objects(objects) = answer(&file, &[]) else { unreachable!() };
+    let lazer_whistle = objects[0].slider.as_ref().unwrap().sliding_samples.iter().find(|s| s.lazer.name == "sliderwhistle").unwrap();
+    assert_eq!(lazer_whistle.lazer.bank, "soft");
+}
+
+#[test]
+fn changing_a_slider_body_s_sample_set_reads_back_and_leaves_the_nodes_alone() {
+    for object in [
+        "100,100,1000,2,2,L|300:100,2,200,0|8|0,0:0|2:0|0:0,1:2:0:0:",
+        "100,100,1000,2,0,L|300:100,2,200",
+        "100,100,1000,2,0,L|300:100,2,200,0|0|0,1:0|1:0|1:0,0:0:0:0:",
+    ] {
+        let file = map(object);
+        let before = dec(&file);
+        let mut h = before.clone();
+        h.set_body_set(0, SampleSet::Drum);
+        assert_eq!(set_of(h.bodies()[0].slide()), SampleSet::Drum, "the model follows the edit");
+        let (out, problems) = comp(&file, &h, Placement::GreenLines);
+        assert!(problems.is_empty(), "{object}: {problems:?}");
+        let summary = out.change_summary();
+        assert_eq!((summary.lines.len(), summary.hit_objects_changed, summary.green_lines_added), (1, 1, 0), "{object}: {summary:?}");
+        let after = dec(&reopen(&out));
+        let (b, a) = (&before.bodies()[0], &after.bodies()[0]);
+        assert_eq!(set_of(a.slide()), SampleSet::Drum, "{object}");
+        assert_eq!(set_of(a.tick()), SampleSet::Drum, "{object}: ticks follow the body");
+        assert_eq!(set_of(&a.whistle_lane()), set_of(&b.whistle_lane()), "{object}: the whistle keeps its set");
+        assert_eq!((a.volume(), a.whistle(), a.ticks()), (b.volume(), b.whistle(), b.ticks()), "{object}");
+        assert_eq!(hits(&after), hits(&before), "{object}: every node keeps its sounds");
+    }
+}
+
+#[test]
+fn changing_a_slider_body_s_volume_needs_a_green_line_the_head_would_read() {
+    // A body reads its volume at start + 6 ms, the head at start + 5 ms, so a green line for the
+    // body is read by the head too: a save problem (ADR 0041 point 4).
+    let file = map("100,100,1000,2,0,L|300:100,1,200,0|0,0:0|0:0,0:0:0:0:");
+    let mut h = dec(&file);
+    h.set_body_volume(0, 80);
+    assert!(cue_list(&h, &[], &[]).iter().any(|c| c.loop_end().is_some() && c.gain() == 0.8), "the cue list plays the unsaved volume");
+    let (out, problems) = comp(&file, &h, Placement::GreenLines);
+    assert_eq!(problems.iter().map(|p| &p.kind).collect::<Vec<_>>(), vec![&ProblemKind::LookupWindowTaken]);
+    assert!(out.change_summary().is_empty());
+    let (_, problems) = comp(&file, &h, Placement::OnObjects);
+    assert_eq!(problems.iter().map(|p| &p.kind).collect::<Vec<_>>(), vec![&ProblemKind::NeedsGreenLine]);
+}
+
+#[test]
+fn slider_body_sets_read_back_over_the_save_pack() {
+    let maps = save_pack_files().into_iter().map(|(name, path)| (name, read(&std::fs::read(path).unwrap()))).collect::<Vec<_>>();
+    let edited = body_set_round_trip(&maps);
+    assert!(edited > 100, "only {edited} bodies edited");
+}
+
+/// The local corpus (not committed): set `DAWSU_CORPUS` to its folder.
+#[test]
+fn slider_body_sets_read_back_over_the_local_corpus() {
+    let Ok(corpus) = std::env::var("DAWSU_CORPUS") else {
+        eprintln!("skipped: DAWSU_CORPUS is not set");
+        return;
+    };
+    let maps: Vec<(String, OsuFile)> = std::fs::read_dir(&corpus)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.extension().is_some_and(|e| e == "osu"))
+        .map(|p| (p.file_name().unwrap().to_string_lossy().into_owned(), read(&std::fs::read(&p).unwrap())))
+        .collect();
+    let edited = body_set_round_trip(&maps);
+    eprintln!("corpus: {edited} slider bodies changed set and read back");
+}
+
+/// Changes the set of every third slider body of every osu! map, compiles, reopens and
+/// decompiles: the edited bodies read back with the new set and everything else as before.
+fn body_set_round_trip(maps: &[(String, OsuFile)]) -> usize {
+    let mut edited = 0;
+    for (name, file) in maps {
+        if !matches!(answer(file, &[]), Answer::Objects(_)) {
+            continue;
+        }
+        let before = dec(&file);
+        let mut h = before.clone();
+        let mut wanted = Vec::new();
+        for (i, b) in before.bodies().iter().enumerate().filter(|(i, _)| i % 3 == 0) {
+            let next = match set_of(b.slide()) {
+                SampleSet::Normal => SampleSet::Soft,
+                SampleSet::Soft => SampleSet::Drum,
+                SampleSet::Drum => SampleSet::Normal,
+            };
+            h.set_body_set(i, next);
+            wanted.push((i, next));
+        }
+        let (out, problems) = comp(file, &h, Placement::GreenLines);
+        assert!(problems.is_empty(), "{name}: {problems:?}");
+        let summary = out.change_summary();
+        assert_eq!((summary.red_lines_changed, summary.green_lines_added, summary.hit_objects_added), (0, 0, 0), "{name}");
+        let after = dec(&reopen(&out));
+        assert_eq!(hits(&after), hits(&before), "{name}: every moment keeps its sounds");
+        for (i, (b, a)) in before.bodies().iter().zip(after.bodies()).enumerate() {
+            let want = wanted.iter().find(|(j, _)| *j == i).map_or(set_of(b.slide()), |(_, s)| *s);
+            assert_eq!(set_of(a.slide()), want, "{name}: body {i}");
+            assert_eq!(set_of(&a.whistle_lane()), set_of(&b.whistle_lane()), "{name}: body {i} whistle");
+            assert_eq!((a.volume(), a.whistle()), (b.volume(), b.whistle()), "{name}: body {i}");
+        }
+        edited += wanted.len();
+    }
+    edited
+}
+
+// ---------------------------------------------------------------- holds and zero-length sliders
+
+#[test]
+fn a_hold_note_in_an_osu_map_compiles_like_a_spinner() {
+    // lazer converts anything with a duration in an osu! map to a spinner; a hold keeps its
+    // samples after its end time in field 5.
+    let file = map("256,192,1000,128,0,1500:0:0:0:0:");
+    let mut h = dec(&file);
+    assert_eq!(h.moments()[0].time(), SongTime::from_ms(1500.0));
+    assert!(matches!(h.moments()[0].place(), Place::SpinnerEnd(_)));
+    h.add_hit(MomentId(0), std(SampleSet::Soft, Hitsound::Clap, 1));
+    h.set_volume(MomentId(0), 70);
+    let (out, problems) = comp(&file, &h, Placement::GreenLines);
+    assert!(problems.is_empty(), "{problems:?}");
+    let summary = out.change_summary();
+    assert_eq!(summary.lines.len(), 1);
+    assert_eq!(summary.lines[0].2.as_deref(), Some("256,192,1000,128,8,1500:0:0:0:70:"));
+    let after = dec(&reopen(&out));
+    assert_eq!(after.moments()[0].hits().collect::<Vec<_>>(), h.moments()[0].hits().collect::<Vec<_>>());
+    assert_eq!(after.moments()[0].volume(), 70);
+}
+
+#[test]
+fn a_zero_length_slider_compiles_its_first_and_last_node() {
+    // lazer reads a slider of length 0 as one span, keeping only the first and the last node's
+    // sounds; the last of four nodes in the file is the tail.
+    let file = map("100,100,1000,2,0,L|100:100,3,0,0|0|0|0,0:0|0:0|0:0|0:0,0:0:0:0:");
+    let mut h = dec(&file);
+    let tail = h.moments().iter().position(|m| matches!(m.place(), Place::SliderNode { node: 1, .. })).expect("the tail");
+    let set = set_of(h.moments()[tail].hits().next().unwrap());
+    h.add_hit(MomentId(tail), std(set, Hitsound::Clap, 1));
+    let (out, problems) = comp(&file, &h, Placement::GreenLines);
+    assert!(problems.is_empty(), "{problems:?}");
+    let summary = out.change_summary();
+    assert_eq!(summary.lines[0].2.as_deref(), Some("100,100,1000,2,0,L|100:100,3,0,0|0|0|8,0:0|0:0|0:0|0:0,0:0:0:0:"));
+    let after = dec(&reopen(&out));
+    assert_eq!(hits(&after), hits(&h));
+}
+
+#[test]
+fn a_long_node_entry_keeps_its_own_index_and_volume_through_compile() {
+    // Node 0's entry holds index 3 and volume 40 of its own (lazer reads them: the oracle case
+    // slider-node-long-entries).
+    let file = map("100,100,1000,2,0,L|300:100,2,200,0|0|0,2:0:3:40|0:0|0:0,0:0:0:0:");
+    let mut h = dec(&file);
+    let head = h.moments().iter().position(|m| matches!(m.place(), Place::SliderNode { node: 0, .. })).unwrap();
+    assert_eq!(h.moments()[head].volume(), 40);
+    assert!(h.moments()[head].hits().all(|l| matches!(l, SampleIdentity::Standard { index, .. } if index.get() == 3)));
+
+    // A clap at the same index and volume changes the sounds only; the entry keeps its parts.
+    let mut clap = h.clone();
+    clap.add_hit(MomentId(head), std(SampleSet::Soft, Hitsound::Clap, 3));
+    let (out, problems) = comp(&file, &clap, Placement::GreenLines);
+    assert!(problems.is_empty(), "{problems:?}");
+    assert_eq!(out.change_summary().lines[0].2.as_deref(), Some("100,100,1000,2,0,L|300:100,2,200,8|0|0,2:0:3:40|0:0|0:0,0:0:0:0:"));
+    assert_eq!(hits(&dec(&reopen(&out))), hits(&clap));
+
+    // A new volume would need a green line the entry overrides: a save problem, line untouched.
+    h.set_volume(MomentId(head), 90);
+    let (out, problems) = comp(&file, &h, Placement::GreenLines);
+    assert_eq!(problems.iter().map(|p| &p.kind).collect::<Vec<_>>(), vec![&ProblemKind::LineRefused]);
+    assert!(out.change_summary().is_empty());
+}
+
+#[test]
+fn slider_bodies_are_their_own_lanes_with_the_slider_sounds() {
+    let file = map("100,100,1000,2,2,L|300:100,1,200,0|0,0:0|0:0,0:0:0:0:");
+    let h = dec(&file);
+    let body = &h.bodies()[0];
+    assert!(matches!(body.slide(), SampleIdentity::Standard { sound: Sound::Slider(SliderSound::Slide), .. }));
+    assert!(matches!(body.whistle_lane(), SampleIdentity::Standard { sound: Sound::Slider(SliderSound::Whistle), .. }));
+    assert!(h.lane(&body.whistle_lane()).is_some());
+}

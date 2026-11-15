@@ -6,7 +6,7 @@
 
 use crate::lazer::control_points::{offset_for, ControlPoints, SamplePointData, CONTROL_POINT_LENIENCY};
 use crate::lazer::path_approximator::almost_equals_f64;
-use crate::lazer::samples::{convert_sound_type, LegacySample, SampleBankInfo, HIT_NORMAL, HIT_WHISTLE};
+use crate::lazer::samples::{convert_sound_type, LegacySample, SampleBankInfo, HIT_NORMAL, HIT_WHISTLE, WHISTLE};
 use crate::lazer::slider_events::{self, SliderEventType};
 use crate::lazer::slider_path::{self, FIRST_LAZER_VERSION};
 use crate::lazer::vector::Vector2;
@@ -95,6 +95,9 @@ pub struct SliderAnswer {
     pub tail_samples: Vec<Sample>,
     /// The body's sounds: the slider slide and, with a whistle, the slider whistle.
     pub sliding_samples: Vec<Sample>,
+    /// The slider whistle the body plays while its whistle is on: the slider's own hitwhistle,
+    /// from its addition bank, renamed (`Slider.UpdateNestedSamples`), whether or not it is on now.
+    pub whistle_sample: Sample,
     /// When each node's samples were looked up: the decoder's own slider timing plus 5 ms.
     pub node_lookup_times: Vec<f64>,
 }
@@ -257,9 +260,10 @@ fn slider_answer(
     let nodes = repeat_count + 2;
     let mut node_banks = vec![bank.clone(); nodes];
     if let Some(sets) = &fields.edge_sets {
+        // readCustomSampleBanks(sets[i], nodeBankInfos[i]) reads the whole entry, not only its banks.
         for (i, set) in sets.iter().enumerate().take(nodes) {
-            if let Some((n, a)) = set {
-                node_banks[i] = node_banks[i].clone().read_edge_set(*n, *a);
+            if set.is_some() {
+                node_banks[i] = node_banks[i].clone().read(set.as_ref(), false);
             }
         }
     }
@@ -336,6 +340,9 @@ fn slider_answer(
     if let Some(w) = samples.iter().find(|s| s.name == HIT_WHISTLE) {
         sliding.push(w.renamed("sliderwhistle"));
     }
+    // The same slider with its whistle flag on: the whistle sample it would play.
+    let with_whistle = applied(&convert_sound_type(WHISTLE, &bank), point);
+    let whistle_sample = with_whistle.iter().find(|s| s.name == HIT_WHISTLE).map(|w| w.renamed("sliderwhistle"));
 
     Some(ObjectAnswer {
         line: o.line(),
@@ -358,6 +365,8 @@ fn slider_answer(
             parts,
             tail_samples: resolve(&node(repeat_count + 1), folder_files),
             sliding_samples: resolve(&sliding, folder_files),
+            // A slider's own hit sample is read for its banks only, so no file replaces the whistle.
+            whistle_sample: resolve_one(&whistle_sample.expect("convertSoundType adds the hitwhistle for the whistle flag"), folder_files),
             node_lookup_times,
         }),
     })

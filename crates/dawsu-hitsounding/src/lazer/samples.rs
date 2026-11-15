@@ -18,7 +18,7 @@ pub const HIT_CLAP: &str = "hitclap";
 pub const DEFAULT_BANK: &str = "normal";
 
 const NORMAL: i32 = 1;
-const WHISTLE: i32 = 2;
+pub(crate) const WHISTLE: i32 = 2;
 const FINISH: i32 = 4;
 const CLAP: i32 = 8;
 
@@ -63,22 +63,12 @@ impl SampleBankInfo {
         if banks_only {
             return self;
         }
+        // A missing index or volume part reads as 0 here, where lazer keeps the earlier value; the
+        // two agree because every caller starts from 0 (a default bank info, or a slider's, whose
+        // own index and volume lazer never reads).
         self.custom_sample_bank = s.index;
         self.volume = s.volume.max(0);
         self.filename = s.filename.clone();
-        self
-    }
-
-    /// Only the banks, from a slider node's edge set (`readCustomSampleBanks(sets[i], info)`).
-    pub fn read_edge_set(mut self, normal_set: i32, addition_set: i32) -> SampleBankInfo {
-        let normal = bank_of(normal_set);
-        let addition = bank_of(addition_set);
-        self.editor_auto_bank = addition.is_none();
-        self.bank_for_additions = addition.or_else(|| normal.clone());
-        self.bank_for_normal = normal;
-        // An edge set like "1:2" has no index, volume or file part: lazer leaves those as they were,
-        // except the file name, which it sets to null when there is no fifth part.
-        self.filename = None;
         self
     }
 }

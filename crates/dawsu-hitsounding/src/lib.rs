@@ -4,6 +4,7 @@
 pub mod compile;
 pub mod cues;
 pub mod decompile;
+pub mod error;
 pub mod lazer;
 pub mod model;
 pub mod rules;
@@ -11,4 +12,5 @@ pub mod rules;
 pub use compile::{compile, Compiled, Placement, ProblemKind, SaveProblem};
 pub use cues::cue_list;
 pub use decompile::{decompile, Decompiled};
+pub use error::Error;
 pub use model::{Hitsounds, Lane, LaneSource, Moment, MomentId, ObjectId, Place, SliderBody};

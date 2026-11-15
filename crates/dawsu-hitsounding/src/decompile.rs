@@ -89,16 +89,22 @@ pub fn decompile(file: &OsuFile, folder_files: &[String], cancel: &dyn Fn() -> b
                 if let Some(slide) = slide {
                     let slide_id = identity(slide);
                     let tick = tick_sample.map(identity).unwrap_or_else(|| crate::model::with_sound(&slide_id, Sound::Slider(SliderSound::Tick)));
+                    let set = match &slide_id {
+                        SampleIdentity::Standard { set, .. } => Some(*set),
+                        SampleIdentity::File(_) => None,
+                    };
+                    let volume = slide.lazer.volume;
                     bodies.push(SliderBody {
                         object: id,
                         start: SongTime::from_ms(o.start_time),
                         end: SongTime::from_ms(o.end_time.unwrap_or(o.start_time)),
-                        volume: slide.lazer.volume,
+                        volume,
                         slide: slide_id,
+                        whistle_lane: identity(&s.whistle_sample),
                         whistle,
-                        decompiled_whistle: whistle,
                         ticks,
                         tick,
+                        decompiled: (set, volume, whistle),
                     });
                 }
             }

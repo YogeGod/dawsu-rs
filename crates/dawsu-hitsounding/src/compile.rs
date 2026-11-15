@@ -16,7 +16,7 @@ use crate::model::{set_name, Hitsounds, Moment, ObjectId, Place, SliderBody};
 use crate::rules::{self, saved_volume, Answer, ObjectAnswer};
 use dawsu_foundation::{Hitsound, SampleIdentity, SampleSet, Sound, SongTime};
 use dawsu_osu_format::number::try_parse_int;
-use dawsu_osu_format::{HitObject, LineId, ObjectKind, OsuFile, SliderFields};
+use dawsu_osu_format::{HitObject, HitSample, LineId, ObjectKind, OsuFile, SliderFields};
 use std::collections::{BTreeMap, HashMap};
 
 /// How compile places a moment (Responsibility 9a).
@@ -64,7 +64,6 @@ const WHISTLE: i32 = 2;
 const FINISH: i32 = 4;
 const CLAP: i32 = 8;
 const ADDITIONS: i32 = WHISTLE | FINISH | CLAP;
-const HOLD: i32 = 128;
 /// A green line's own lookup window: a node looks up at its time + 5 ms, a slider body at + 6 ms.
 const WINDOW: f64 = CONTROL_POINT_LENIENCY + 1.0;
 
@@ -126,7 +125,6 @@ pub fn compile(file: &OsuFile, hitsounds: &Hitsounds, placement: Placement, canc
                 let mut trial = out.clone();
                 let ok = match obj.kind() {
                     ObjectKind::Slider(fields) => ctx.slider(&mut trial, &cp, obj, fields, answer, moments, *body, &mut problems),
-                    _ if obj.type_bits() & HOLD != 0 => Err(()),
                     _ => ctx.circle_or_spinner(&mut trial, &cp, obj, answer, moments[0], &mut problems),
                 };
                 match ok {
@@ -334,8 +332,18 @@ impl Context {
             trial.set_field(line, 4, &field4.to_string()).map_err(|_| ())?;
         }
         if (n, a, i, v, file.as_str()) != (n_raw, a_raw, i_raw, v_raw, file_raw.as_str()) {
-            let at = if matches!(obj.kind(), ObjectKind::Spinner { .. }) { 6 } else { 5 };
-            trial.set_field(line, at, &format!("{n}:{a}:{i}:{v}:{file}")).map_err(|_| ())?;
+            let sample = format!("{n}:{a}:{i}:{v}:{file}");
+            match obj.kind() {
+                ObjectKind::Spinner { .. } => trial.set_field(line, 6, &sample),
+                // A hold note keeps its end time in front of its samples: `end:normal:addition:...`.
+                ObjectKind::Hold { .. } => {
+                    let text = trial.line_text(line).ok_or(())?;
+                    let end = text.split(',').nth(5).and_then(|f| f.split(':').next()).ok_or(())?.to_string();
+                    trial.set_field(line, 5, &format!("{end}:{sample}"))
+                }
+                _ => trial.set_field(line, 5, &sample),
+            }
+            .map_err(|_| ())?;
         }
         Ok(true)
     }
@@ -354,14 +362,17 @@ impl Context {
     ) -> Result<bool, ()> {
         let Some(s) = &answer.slider else { return Err(()) };
         let nodes = (fields.slides - 1).max(0) as usize + 2;
-        // A slider lazer reads as zero length keeps only its first and last node's sounds.
-        if s.repeat_count + 2 != nodes {
-            return Err(());
-        }
+        // A slider lazer reads as zero length keeps only its first and last node's sounds, so the
+        // answer's node 1 is the file's last node.
+        let collapsed = s.repeat_count + 2 != nodes;
+        let file_node = |node: usize| if collapsed && node > 0 { nodes - 1 } else { node };
         let own = obj.hit_sample().map_or((0, 0), |h| (h.normal_set, h.addition_set));
         let mut sounds: Vec<i32> = (0..nodes).map(|i| fields.edge_sounds.as_ref().and_then(|e| e.get(i)).map_or(obj.hitsound(), |t| try_parse_int(t))).collect();
-        let mut sets: Vec<(i32, i32)> = (0..nodes).map(|i| fields.edge_sets.as_ref().and_then(|e| e.get(i).copied().flatten()).unwrap_or(own)).collect();
+        let entries: Vec<Option<&HitSample>> = (0..nodes).map(|i| fields.edge_sets.as_ref().and_then(|e| e.get(i)).and_then(Option::as_ref)).collect();
+        let mut sets: Vec<(i32, i32)> = entries.iter().map(|e| e.map_or(own, |h| (h.normal_set, h.addition_set))).collect();
         let (original_sounds, original_sets) = (sounds.clone(), sets.clone());
+        let raw_entries: Vec<String> = trial.line_text(obj.line()).and_then(|t| t.split(',').nth(9).map(|f| f.split('|').map(String::from).collect())).unwrap_or_default();
+        let mut edited_nodes = vec![false; nodes];
         let mut changed = false;
 
         for m in moments {
@@ -381,15 +392,27 @@ impl Context {
             let Slot::Normal(set) = want.slot else { continue };
             let lookup = s.node_lookup_times[node];
             let point = Point(cp.sample_point_at(lookup));
+            let node = file_node(node);
             let banks = encode_banks(sets[node].0, sets[node].1, Some(set), want.addition_set, &point.bank());
             let index = want.index.unwrap_or(0) as i32;
-            if index != point.index() || want.volume != point.volume() {
+            // A longer node entry can hold the node's own index and volume, which win over the
+            // timing line's (ConvertHitObjectParser.cs:127, :231-235).
+            let (entry_index, entry_volume) = entries[node].map_or((0, 0), |h| (h.index, h.volume));
+            let eff_index = if entry_index > 0 { entry_index } else { point.index() };
+            let eff_volume = if entry_volume > 0 { entry_volume } else { point.volume() };
+            if (index != eff_index && entry_index > 0) || (want.volume != eff_volume && entry_volume > 0) {
+                // A green line cannot change what the entry holds, and ADR 0041 writes a node's
+                // index and volume only on green lines.
+                problem(problems, ProblemKind::LineRefused);
+                continue;
+            }
+            if index != eff_index || want.volume != eff_volume {
                 if let Err(kind) = self.needs_green() {
                     problem(problems, kind);
                     continue;
                 }
-                // The node's index and volume come only from timing lines (lazer reads only a
-                // slider's banks from its own hit sample).
+                // Otherwise the node's index and volume come from the timing line (lazer reads
+                // only a slider's banks from its own hit sample).
                 let g = Green { lookup, index, volume: want.volume };
                 if let Err(kind) = self.place_green(trial, cp, answer.line, &g) {
                     problem(problems, kind);
@@ -398,20 +421,63 @@ impl Context {
             }
             sets[node] = banks;
             sounds[node] = (sounds[node] & !ADDITIONS) | want.additions;
+            edited_nodes[node] = true;
             changed = true;
         }
 
-        let whistle = body.map(|b| b.whistle());
-        let sounds_complete = fields.edge_sounds.as_ref().is_some_and(|e| e.len() >= nodes);
+        // The body: its whistle is the slider's own hitsound flag, its set the slider's own normal
+        // bank, both shared with every node that has no edge entry of its own; its volume comes
+        // only from the timing line at the slider's lookup time.
+        let body_problem = |problems: &mut Vec<SaveProblem>, b: &SliderBody, kind| {
+            problems.push(SaveProblem { time: b.start(), place: Place::SliderNode { object: b.object(), node: 0 }, kind });
+        };
+        let point = Point(cp.sample_point_at(answer.lookup_time));
+        let whistle = body.filter(|b| b.whistle_changed()).map(SliderBody::whistle);
+        let mut own_new = own;
+        if let Some(b) = body.filter(|b| b.set_changed()) {
+            let whistle_set = match b.whistle_lane() {
+                SampleIdentity::Standard { set, .. } => Some(set),
+                SampleIdentity::File(_) => None,
+            };
+            own_new = encode_banks(own.0, own.1, b.set(), whistle_set, &point.bank());
+        }
+        if let Some(b) = body.filter(|b| b.volume_changed()) {
+            let g = Green { lookup: answer.lookup_time, index: point.index(), volume: saved_volume(b.volume()) };
+            match self.needs_green().and_then(|()| self.place_green(trial, cp, answer.line, &g)) {
+                Ok(()) => changed = true,
+                Err(kind) => body_problem(problems, b, kind),
+            }
+        }
+
         let line = obj.line();
+        let sounds_complete = fields.edge_sounds.as_ref().is_some_and(|e| e.len() >= nodes);
         if sounds != original_sounds || (whistle.is_some() && !sounds_complete) {
             let text = sounds.iter().map(i32::to_string).collect::<Vec<_>>().join("|");
             trial.set_field(line, 8, &text).map_err(|_| ())?;
             changed = true;
         }
-        if sets != original_sets {
-            let text = sets.iter().map(|(n, a)| format!("{n}:{a}")).collect::<Vec<_>>().join("|");
+        // Nodes without an edge set of their own read the slider's banks, so those are written
+        // out before the slider's banks change.
+        let sets_explicit = fields.edge_sets.as_ref().is_some_and(|e| e.len() >= nodes && e.iter().take(nodes).all(Option::is_some));
+        if sets != original_sets || (own_new != own && !sets_explicit) {
+            // An untouched entry is kept as written; an edited one keeps its parts after the banks.
+            let entry_text = |i: usize| -> String {
+                let (n, a) = sets[i];
+                match raw_entries.get(i).filter(|r| !r.is_empty()) {
+                    Some(raw) if !edited_nodes[i] => raw.clone(),
+                    Some(raw) => std::iter::once(format!("{n}:{a}")).chain(raw.split(':').skip(2).map(String::from)).collect::<Vec<_>>().join(":"),
+                    None => format!("{n}:{a}"),
+                }
+            };
+            let text = (0..nodes).map(entry_text).collect::<Vec<_>>().join("|");
             trial.set_field(line, 9, &text).map_err(|_| ())?;
+            changed = true;
+        }
+        if own_new != own {
+            let raw = obj.hit_sample();
+            let (i, v) = raw.map_or((0, 0), |h| (h.index, h.volume));
+            let file = raw.and_then(|h| h.filename.clone()).unwrap_or_default();
+            trial.set_field(line, 10, &format!("{}:{}:{i}:{v}:{file}", own_new.0, own_new.1)).map_err(|_| ())?;
             changed = true;
         }
         if let Some(w) = whistle {

@@ -99,10 +99,13 @@ pub struct SliderBody {
     pub(crate) end: SongTime,
     pub(crate) volume: i32,
     pub(crate) slide: SampleIdentity,
+    /// The slider whistle's lane, from the slider's addition bank (the rules' `whistle_sample`).
+    pub(crate) whistle_lane: SampleIdentity,
     pub(crate) whistle: bool,
-    pub(crate) decompiled_whistle: bool,
     pub(crate) ticks: Vec<SongTime>,
     pub(crate) tick: SampleIdentity,
+    /// The set, volume and whistle decompile found, to tell an edited body from an untouched one.
+    pub(crate) decompiled: (Option<SampleSet>, i32, bool),
 }
 
 impl SliderBody {
@@ -121,9 +124,14 @@ impl SliderBody {
     pub fn slide(&self) -> &SampleIdentity {
         &self.slide
     }
-    /// The slider whistle's lane: the slide's set and index with the whistle sound.
+    /// The slider whistle's lane: lazer plays the slider whistle from the slider's addition bank,
+    /// which may differ from the slide's set.
     pub fn whistle_lane(&self) -> SampleIdentity {
-        with_sound(&self.slide, Sound::Slider(SliderSound::Whistle))
+        self.whistle_lane.clone()
+    }
+    /// The body's sample set: the set of its slide and ticks.
+    pub fn set(&self) -> Option<SampleSet> {
+        set_of(&self.slide)
     }
     pub fn whistle(&self) -> bool {
         self.whistle
@@ -135,7 +143,16 @@ impl SliderBody {
         &self.tick
     }
     pub fn is_changed(&self) -> bool {
-        self.whistle != self.decompiled_whistle
+        (self.set(), self.volume, self.whistle) != self.decompiled
+    }
+    pub(crate) fn whistle_changed(&self) -> bool {
+        self.whistle != self.decompiled.2
+    }
+    pub(crate) fn set_changed(&self) -> bool {
+        self.set() != self.decompiled.0
+    }
+    pub(crate) fn volume_changed(&self) -> bool {
+        self.volume != self.decompiled.1
     }
 }
 
@@ -143,6 +160,20 @@ pub(crate) fn with_sound(identity: &SampleIdentity, sound: Sound) -> SampleIdent
     match identity {
         SampleIdentity::Standard { set, index, .. } => SampleIdentity::Standard { set: *set, sound, index: *index },
         other => other.clone(),
+    }
+}
+
+fn with_set(identity: &SampleIdentity, set: SampleSet) -> SampleIdentity {
+    match identity {
+        SampleIdentity::Standard { sound, index, .. } => SampleIdentity::Standard { set, sound: *sound, index: *index },
+        other => other.clone(),
+    }
+}
+
+fn set_of(identity: &SampleIdentity) -> Option<SampleSet> {
+    match identity {
+        SampleIdentity::Standard { set, .. } => Some(*set),
+        SampleIdentity::File(_) => None,
     }
 }
 
@@ -218,6 +249,22 @@ impl Hitsounds {
             self.ensure_lane(&lane);
         }
         self.bodies[body].whistle = whistle;
+    }
+
+    /// Sets the sample set of a slider body's slide and ticks; the slider whistle keeps its set
+    /// (roadmap, Yoge 2026-11-15). The index is not changed here (todo.md, slider body index).
+    pub fn set_body_set(&mut self, body: usize, set: SampleSet) {
+        let b = &mut self.bodies[body];
+        b.slide = with_set(&b.slide, set);
+        b.tick = with_set(&b.tick, set);
+        let (slide, tick) = (b.slide.clone(), b.tick.clone());
+        self.ensure_lane(&slide);
+        self.ensure_lane(&tick);
+    }
+
+    /// Sets the volume of a slider body's slide, whistle and ticks.
+    pub fn set_body_volume(&mut self, body: usize, volume: i32) {
+        self.bodies[body].volume = volume;
     }
 }
 
