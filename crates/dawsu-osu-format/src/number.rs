@@ -1,5 +1,6 @@
 //! Numbers read the way lazer reads them (Responsibility 8): lazer's `Parsing` class at the
 //! pin, `osu.Game/Beatmaps/Formats/Parsing.cs:14-50` (ppy/osu 131fe72, unchanged since b77b028).
+//! Follows osu!lazer (ppy/osu) at 131fe72a15581049401a588a13684938d4d0e0c7; copyright (c) ppy Pty Ltd <contact@ppy.sh>, MIT Licence (ADR 0027, THIRD-PARTY-NOTICES.md).
 
 /// `Parsing.MAX_PARSE_VALUE`: `int.MaxValue`.
 pub const MAX_PARSE_VALUE: f64 = i32::MAX as f64;

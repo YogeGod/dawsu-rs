@@ -1,6 +1,6 @@
 {
   "header": {
-    "result_format_version": 1,
+    "result_format_version": 2,
     "input": "save-pack/synthetic/storyboard-and-colours.osu",
     "input_sha256": "5e01549cdec9d38bf43850669676c5ae6258f3214156eeeb07d273bee05386b4",
     "lazer_version": "2026.1026.0\u002Bb94ee4d835d65683d027ae8f47a3e61fa4899ad4",
@@ -155,6 +155,24 @@
           "lookup_names": [
             "Gameplay/soft-sliderslide",
             "Gameplay/sliderslide"
+          ]
+        }
+      ],
+      "tail_samples": [
+        {
+          "kind": "legacy",
+          "name": "hitnormal",
+          "bank": "soft",
+          "suffix": null,
+          "volume": 60,
+          "editor_auto_bank": true,
+          "use_beatmap_samples": true,
+          "custom_sample_bank": 1,
+          "is_layered": false,
+          "bank_specified": true,
+          "lookup_names": [
+            "Gameplay/soft-hitnormal",
+            "Gameplay/hitnormal"
           ]
         }
       ],

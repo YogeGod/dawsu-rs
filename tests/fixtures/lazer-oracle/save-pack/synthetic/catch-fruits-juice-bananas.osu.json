@@ -1,6 +1,6 @@
 {
   "header": {
-    "result_format_version": 1,
+    "result_format_version": 2,
     "input": "save-pack/synthetic/catch-fruits-juice-bananas.osu",
     "input_sha256": "00f2b09d06bc1a1a4b3bfc84353ed1a7f3829aa6ba521aa0323f2d08b5e45141",
     "lazer_version": "2026.1026.0\u002Bb94ee4d835d65683d027ae8f47a3e61fa4899ad4",

@@ -1,6 +1,6 @@
 {
   "header": {
-    "result_format_version": 1,
+    "result_format_version": 2,
     "input": "save-pack/synthetic/v128-lazer-style.osu",
     "input_sha256": "adf69e46ff49518a8ee4234c951d25e114d42c57beef58400fce37e8a67d6c4d",
     "lazer_version": "2026.1026.0\u002Bb94ee4d835d65683d027ae8f47a3e61fa4899ad4",
@@ -155,6 +155,24 @@
           "lookup_names": [
             "Gameplay/soft-sliderslide",
             "Gameplay/sliderslide"
+          ]
+        }
+      ],
+      "tail_samples": [
+        {
+          "kind": "legacy",
+          "name": "hitnormal",
+          "bank": "soft",
+          "suffix": null,
+          "volume": 70,
+          "editor_auto_bank": true,
+          "use_beatmap_samples": false,
+          "custom_sample_bank": 0,
+          "is_layered": false,
+          "bank_specified": true,
+          "lookup_names": [
+            "Gameplay/soft-hitnormal",
+            "Gameplay/hitnormal"
           ]
         }
       ],

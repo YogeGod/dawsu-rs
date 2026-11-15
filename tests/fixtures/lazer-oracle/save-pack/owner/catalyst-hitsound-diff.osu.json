@@ -1,6 +1,6 @@
 {
   "header": {
-    "result_format_version": 1,
+    "result_format_version": 2,
     "input": "save-pack/owner/catalyst-hitsound-diff.osu",
     "input_sha256": "0506672e28332ec88c494f6857d26a38acefcd2305acb42e0546452460d31111",
     "lazer_version": "2026.1026.0\u002Bb94ee4d835d65683d027ae8f47a3e61fa4899ad4",

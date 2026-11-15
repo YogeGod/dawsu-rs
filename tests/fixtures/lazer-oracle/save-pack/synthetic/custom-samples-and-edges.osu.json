@@ -1,6 +1,6 @@
 {
   "header": {
-    "result_format_version": 1,
+    "result_format_version": 2,
     "input": "save-pack/synthetic/custom-samples-and-edges.osu",
     "input_sha256": "1f749280323da21f6398c00f177f8b3a1f59ee5abd64f1e94ab9a7b80c716c5e",
     "lazer_version": "2026.1026.0\u002Bb94ee4d835d65683d027ae8f47a3e61fa4899ad4",
@@ -194,6 +194,24 @@
           "lookup_names": [
             "Gameplay/soft-sliderslide",
             "Gameplay/sliderslide"
+          ]
+        }
+      ],
+      "tail_samples": [
+        {
+          "kind": "legacy",
+          "name": "hitnormal",
+          "bank": "drum",
+          "suffix": null,
+          "volume": 60,
+          "editor_auto_bank": true,
+          "use_beatmap_samples": true,
+          "custom_sample_bank": 1,
+          "is_layered": false,
+          "bank_specified": true,
+          "lookup_names": [
+            "Gameplay/drum-hitnormal",
+            "Gameplay/hitnormal"
           ]
         }
       ],

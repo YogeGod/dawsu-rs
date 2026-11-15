@@ -1,6 +1,6 @@
 {
   "header": {
-    "result_format_version": 1,
+    "result_format_version": 2,
     "input": "save-pack/synthetic/taiko-don-kat-finishers.osu",
     "input_sha256": "2648fd15d994598361c57133d238ba3b450b5205c1f3d0b6e680ad445483ff02",
     "lazer_version": "2026.1026.0\u002Bb94ee4d835d65683d027ae8f47a3e61fa4899ad4",

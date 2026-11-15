@@ -1,0 +1,359 @@
+{
+  "header": {
+    "result_format_version": 2,
+    "input": "oracle-cases/green-before-first-red.osu",
+    "input_sha256": "b44368398bb5d7c4b97035843d1b6bc35614c2bed9db41d4da9573f93f92ec14",
+    "lazer_version": "2026.1026.0\u002Bb94ee4d835d65683d027ae8f47a3e61fa4899ad4",
+    "mode": 0,
+    "ruleset": "osu",
+    "format_version": 14
+  },
+  "hit_objects": [
+    {
+      "type": "Slider",
+      "start_time": 400,
+      "end_time": 935.7142857142857,
+      "slider": {
+        "beat_length": 375,
+        "slider_velocity_multiplier": 1,
+        "velocity": 0.37333333333333335,
+        "path_distance": 200,
+        "span_duration": 535.7142857142857,
+        "tick_distance": 140,
+        "tick_distance_multiplier": 1,
+        "generate_ticks": true,
+        "repeat_count": 0
+      },
+      "samples": [
+        {
+          "kind": "legacy",
+          "name": "hitnormal",
+          "bank": "normal",
+          "suffix": null,
+          "volume": 60,
+          "editor_auto_bank": true,
+          "use_beatmap_samples": false,
+          "custom_sample_bank": 0,
+          "is_layered": false,
+          "bank_specified": true,
+          "lookup_names": [
+            "Gameplay/normal-hitnormal",
+            "Gameplay/hitnormal"
+          ]
+        }
+      ],
+      "auxiliary_samples": [
+        {
+          "kind": "legacy",
+          "name": "sliderslide",
+          "bank": "normal",
+          "suffix": null,
+          "volume": 60,
+          "editor_auto_bank": true,
+          "use_beatmap_samples": false,
+          "custom_sample_bank": 0,
+          "is_layered": false,
+          "bank_specified": true,
+          "lookup_names": [
+            "Gameplay/normal-sliderslide",
+            "Gameplay/sliderslide"
+          ]
+        },
+        {
+          "kind": "legacy",
+          "name": "hitnormal",
+          "bank": "normal",
+          "suffix": null,
+          "volume": 60,
+          "editor_auto_bank": true,
+          "use_beatmap_samples": false,
+          "custom_sample_bank": 0,
+          "is_layered": false,
+          "bank_specified": true,
+          "lookup_names": [
+            "Gameplay/normal-hitnormal",
+            "Gameplay/hitnormal"
+          ]
+        }
+      ],
+      "sliding_samples": [
+        {
+          "kind": "legacy",
+          "name": "sliderslide",
+          "bank": "normal",
+          "suffix": null,
+          "volume": 60,
+          "editor_auto_bank": true,
+          "use_beatmap_samples": false,
+          "custom_sample_bank": 0,
+          "is_layered": false,
+          "bank_specified": true,
+          "lookup_names": [
+            "Gameplay/normal-sliderslide",
+            "Gameplay/sliderslide"
+          ]
+        }
+      ],
+      "tail_samples": [
+        {
+          "kind": "legacy",
+          "name": "hitnormal",
+          "bank": "normal",
+          "suffix": null,
+          "volume": 60,
+          "editor_auto_bank": true,
+          "use_beatmap_samples": false,
+          "custom_sample_bank": 0,
+          "is_layered": false,
+          "bank_specified": true,
+          "lookup_names": [
+            "Gameplay/normal-hitnormal",
+            "Gameplay/hitnormal"
+          ]
+        }
+      ],
+      "nested": [
+        {
+          "type": "SliderHeadCircle",
+          "start_time": 400,
+          "samples": [
+            {
+              "kind": "legacy",
+              "name": "hitnormal",
+              "bank": "normal",
+              "suffix": null,
+              "volume": 60,
+              "editor_auto_bank": true,
+              "use_beatmap_samples": false,
+              "custom_sample_bank": 0,
+              "is_layered": false,
+              "bank_specified": true,
+              "lookup_names": [
+                "Gameplay/normal-hitnormal",
+                "Gameplay/hitnormal"
+              ]
+            }
+          ],
+          "auxiliary_samples": [],
+          "nested": []
+        },
+        {
+          "type": "SliderTick",
+          "start_time": 775,
+          "samples": [
+            {
+              "kind": "legacy",
+              "name": "slidertick",
+              "bank": "normal",
+              "suffix": null,
+              "volume": 60,
+              "editor_auto_bank": true,
+              "use_beatmap_samples": false,
+              "custom_sample_bank": 0,
+              "is_layered": false,
+              "bank_specified": true,
+              "lookup_names": [
+                "Gameplay/normal-slidertick",
+                "Gameplay/slidertick"
+              ]
+            }
+          ],
+          "auxiliary_samples": [],
+          "nested": []
+        },
+        {
+          "type": "SliderTailCircle",
+          "start_time": 935.7142857142857,
+          "samples": [],
+          "auxiliary_samples": [],
+          "nested": []
+        }
+      ]
+    },
+    {
+      "type": "Slider",
+      "start_time": 1002,
+      "end_time": 1894.8571701049805,
+      "slider": {
+        "beat_length": 375,
+        "slider_velocity_multiplier": 0.5999999999999988,
+        "velocity": 0.22399999316406272,
+        "path_distance": 200,
+        "span_duration": 892.8571701049805,
+        "tick_distance": 83.99999743652351,
+        "tick_distance_multiplier": 1,
+        "generate_ticks": true,
+        "repeat_count": 0
+      },
+      "samples": [
+        {
+          "kind": "legacy",
+          "name": "hitnormal",
+          "bank": "normal",
+          "suffix": null,
+          "volume": 60,
+          "editor_auto_bank": true,
+          "use_beatmap_samples": false,
+          "custom_sample_bank": 0,
+          "is_layered": false,
+          "bank_specified": true,
+          "lookup_names": [
+            "Gameplay/normal-hitnormal",
+            "Gameplay/hitnormal"
+          ]
+        }
+      ],
+      "auxiliary_samples": [
+        {
+          "kind": "legacy",
+          "name": "sliderslide",
+          "bank": "normal",
+          "suffix": null,
+          "volume": 60,
+          "editor_auto_bank": true,
+          "use_beatmap_samples": false,
+          "custom_sample_bank": 0,
+          "is_layered": false,
+          "bank_specified": true,
+          "lookup_names": [
+            "Gameplay/normal-sliderslide",
+            "Gameplay/sliderslide"
+          ]
+        },
+        {
+          "kind": "legacy",
+          "name": "hitnormal",
+          "bank": "normal",
+          "suffix": null,
+          "volume": 60,
+          "editor_auto_bank": true,
+          "use_beatmap_samples": false,
+          "custom_sample_bank": 0,
+          "is_layered": false,
+          "bank_specified": true,
+          "lookup_names": [
+            "Gameplay/normal-hitnormal",
+            "Gameplay/hitnormal"
+          ]
+        }
+      ],
+      "sliding_samples": [
+        {
+          "kind": "legacy",
+          "name": "sliderslide",
+          "bank": "normal",
+          "suffix": null,
+          "volume": 60,
+          "editor_auto_bank": true,
+          "use_beatmap_samples": false,
+          "custom_sample_bank": 0,
+          "is_layered": false,
+          "bank_specified": true,
+          "lookup_names": [
+            "Gameplay/normal-sliderslide",
+            "Gameplay/sliderslide"
+          ]
+        }
+      ],
+      "tail_samples": [
+        {
+          "kind": "legacy",
+          "name": "hitnormal",
+          "bank": "normal",
+          "suffix": null,
+          "volume": 60,
+          "editor_auto_bank": true,
+          "use_beatmap_samples": false,
+          "custom_sample_bank": 0,
+          "is_layered": false,
+          "bank_specified": true,
+          "lookup_names": [
+            "Gameplay/normal-hitnormal",
+            "Gameplay/hitnormal"
+          ]
+        }
+      ],
+      "nested": [
+        {
+          "type": "SliderHeadCircle",
+          "start_time": 1002,
+          "samples": [
+            {
+              "kind": "legacy",
+              "name": "hitnormal",
+              "bank": "normal",
+              "suffix": null,
+              "volume": 60,
+              "editor_auto_bank": true,
+              "use_beatmap_samples": false,
+              "custom_sample_bank": 0,
+              "is_layered": false,
+              "bank_specified": true,
+              "lookup_names": [
+                "Gameplay/normal-hitnormal",
+                "Gameplay/hitnormal"
+              ]
+            }
+          ],
+          "auxiliary_samples": [],
+          "nested": []
+        },
+        {
+          "type": "SliderTick",
+          "start_time": 1377,
+          "samples": [
+            {
+              "kind": "legacy",
+              "name": "slidertick",
+              "bank": "normal",
+              "suffix": null,
+              "volume": 60,
+              "editor_auto_bank": true,
+              "use_beatmap_samples": false,
+              "custom_sample_bank": 0,
+              "is_layered": false,
+              "bank_specified": true,
+              "lookup_names": [
+                "Gameplay/normal-slidertick",
+                "Gameplay/slidertick"
+              ]
+            }
+          ],
+          "auxiliary_samples": [],
+          "nested": []
+        },
+        {
+          "type": "SliderTick",
+          "start_time": 1752,
+          "samples": [
+            {
+              "kind": "legacy",
+              "name": "slidertick",
+              "bank": "normal",
+              "suffix": null,
+              "volume": 60,
+              "editor_auto_bank": true,
+              "use_beatmap_samples": false,
+              "custom_sample_bank": 0,
+              "is_layered": false,
+              "bank_specified": true,
+              "lookup_names": [
+                "Gameplay/normal-slidertick",
+                "Gameplay/slidertick"
+              ]
+            }
+          ],
+          "auxiliary_samples": [],
+          "nested": []
+        },
+        {
+          "type": "SliderTailCircle",
+          "start_time": 1894.8571701049805,
+          "samples": [],
+          "auxiliary_samples": [],
+          "nested": []
+        }
+      ]
+    }
+  ]
+}

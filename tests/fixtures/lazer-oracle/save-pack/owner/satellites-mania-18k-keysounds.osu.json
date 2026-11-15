@@ -1,6 +1,6 @@
 {
   "header": {
-    "result_format_version": 1,
+    "result_format_version": 2,
     "input": "save-pack/owner/satellites-mania-18k-keysounds.osu",
     "input_sha256": "738571170e149286f00c65cc8f7f4c1a5120d27b208623b581ae9705e005b6c0",
     "lazer_version": "2026.1026.0\u002Bb94ee4d835d65683d027ae8f47a3e61fa4899ad4",

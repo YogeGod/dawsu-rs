@@ -20,7 +20,7 @@ using Decoder = osu.Game.Beatmaps.Formats.Decoder;
 public static class Program
 {
     // Bumped whenever the shape of the JSON changes.
-    private const int ResultFormatVersion = 1;
+    private const int ResultFormatVersion = 2;
 
     public static int Main(string[] args)
     {
@@ -157,8 +157,12 @@ public static class Program
 
         WriteSamples(w, "samples", obj.Samples);
         WriteSamples(w, "auxiliary_samples", obj.AuxiliarySamples);
-        if (obj is Slider)
+        if (obj is Slider sliderWithTail)
+        {
             WriteSamples(w, "sliding_samples", obj.CreateSlidingSamples());
+            // The slider plays these at its end itself; its tail circle carries none (Slider.UpdateNestedSamples).
+            WriteSamples(w, "tail_samples", sliderWithTail.TailSamples);
+        }
 
         w.WritePropertyName("nested");
         w.WriteStartArray();

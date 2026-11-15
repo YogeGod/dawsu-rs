@@ -8,3 +8,6 @@ publish.workspace = true
 [dependencies]
 dawsu-foundation = { path = "../dawsu-foundation" }
 dawsu-osu-format = { path = "../dawsu-osu-format" }
+
+[dev-dependencies]
+dawsu-test-support = { path = "../dawsu-test-support" }

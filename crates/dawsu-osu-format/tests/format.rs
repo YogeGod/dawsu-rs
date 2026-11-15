@@ -111,7 +111,7 @@ fn typed_timing_point_and_hit_object_fields() {
     assert_eq!(slider.slides, 3);
     assert_eq!(slider.length, Some(100.0));
     assert_eq!(slider.edge_sounds.as_deref(), Some(&["2", "4", "8", "0"].map(String::from)[..]));
-    assert_eq!(slider.edge_sets.as_deref(), Some(&[(1, 2), (2, 1), (0, 0), (3, 3)][..]));
+    assert_eq!(slider.edge_sets.as_deref(), Some(&[Some((1, 2)), Some((2, 1)), Some((0, 0)), Some((3, 3))][..]));
 
     assert_eq!(objects[3].spinner_end(), Some(3500.0));
     assert_eq!(objects[4].hit_sample().unwrap().filename.as_deref(), Some("dir/sub sample.ogg"));

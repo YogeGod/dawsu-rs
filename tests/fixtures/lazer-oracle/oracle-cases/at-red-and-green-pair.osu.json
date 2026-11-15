@@ -1,0 +1,198 @@
+{
+  "header": {
+    "result_format_version": 2,
+    "input": "oracle-cases/at-red-and-green-pair.osu",
+    "input_sha256": "ff784e9a286ca423dd63e2fc2c746ca388b4a281ea8cf80c8ca92adf0deed902",
+    "lazer_version": "2026.1026.0\u002Bb94ee4d835d65683d027ae8f47a3e61fa4899ad4",
+    "mode": 0,
+    "ruleset": "osu",
+    "format_version": 14
+  },
+  "hit_objects": [
+    {
+      "type": "Slider",
+      "start_time": 1345,
+      "end_time": 2237.8571701049805,
+      "slider": {
+        "beat_length": 375,
+        "slider_velocity_multiplier": 0.5999999999999988,
+        "velocity": 0.22399999316406272,
+        "path_distance": 200,
+        "span_duration": 892.8571701049805,
+        "tick_distance": 83.99999743652351,
+        "tick_distance_multiplier": 1,
+        "generate_ticks": true,
+        "repeat_count": 0
+      },
+      "samples": [
+        {
+          "kind": "legacy",
+          "name": "hitnormal",
+          "bank": "normal",
+          "suffix": null,
+          "volume": 60,
+          "editor_auto_bank": true,
+          "use_beatmap_samples": false,
+          "custom_sample_bank": 0,
+          "is_layered": false,
+          "bank_specified": true,
+          "lookup_names": [
+            "Gameplay/normal-hitnormal",
+            "Gameplay/hitnormal"
+          ]
+        }
+      ],
+      "auxiliary_samples": [
+        {
+          "kind": "legacy",
+          "name": "sliderslide",
+          "bank": "normal",
+          "suffix": null,
+          "volume": 60,
+          "editor_auto_bank": true,
+          "use_beatmap_samples": false,
+          "custom_sample_bank": 0,
+          "is_layered": false,
+          "bank_specified": true,
+          "lookup_names": [
+            "Gameplay/normal-sliderslide",
+            "Gameplay/sliderslide"
+          ]
+        },
+        {
+          "kind": "legacy",
+          "name": "hitnormal",
+          "bank": "normal",
+          "suffix": null,
+          "volume": 60,
+          "editor_auto_bank": true,
+          "use_beatmap_samples": false,
+          "custom_sample_bank": 0,
+          "is_layered": false,
+          "bank_specified": true,
+          "lookup_names": [
+            "Gameplay/normal-hitnormal",
+            "Gameplay/hitnormal"
+          ]
+        }
+      ],
+      "sliding_samples": [
+        {
+          "kind": "legacy",
+          "name": "sliderslide",
+          "bank": "normal",
+          "suffix": null,
+          "volume": 60,
+          "editor_auto_bank": true,
+          "use_beatmap_samples": false,
+          "custom_sample_bank": 0,
+          "is_layered": false,
+          "bank_specified": true,
+          "lookup_names": [
+            "Gameplay/normal-sliderslide",
+            "Gameplay/sliderslide"
+          ]
+        }
+      ],
+      "tail_samples": [
+        {
+          "kind": "legacy",
+          "name": "hitnormal",
+          "bank": "normal",
+          "suffix": null,
+          "volume": 60,
+          "editor_auto_bank": true,
+          "use_beatmap_samples": false,
+          "custom_sample_bank": 0,
+          "is_layered": false,
+          "bank_specified": true,
+          "lookup_names": [
+            "Gameplay/normal-hitnormal",
+            "Gameplay/hitnormal"
+          ]
+        }
+      ],
+      "nested": [
+        {
+          "type": "SliderHeadCircle",
+          "start_time": 1345,
+          "samples": [
+            {
+              "kind": "legacy",
+              "name": "hitnormal",
+              "bank": "normal",
+              "suffix": null,
+              "volume": 60,
+              "editor_auto_bank": true,
+              "use_beatmap_samples": false,
+              "custom_sample_bank": 0,
+              "is_layered": false,
+              "bank_specified": true,
+              "lookup_names": [
+                "Gameplay/normal-hitnormal",
+                "Gameplay/hitnormal"
+              ]
+            }
+          ],
+          "auxiliary_samples": [],
+          "nested": []
+        },
+        {
+          "type": "SliderTick",
+          "start_time": 1720,
+          "samples": [
+            {
+              "kind": "legacy",
+              "name": "slidertick",
+              "bank": "normal",
+              "suffix": null,
+              "volume": 60,
+              "editor_auto_bank": true,
+              "use_beatmap_samples": false,
+              "custom_sample_bank": 0,
+              "is_layered": false,
+              "bank_specified": true,
+              "lookup_names": [
+                "Gameplay/normal-slidertick",
+                "Gameplay/slidertick"
+              ]
+            }
+          ],
+          "auxiliary_samples": [],
+          "nested": []
+        },
+        {
+          "type": "SliderTick",
+          "start_time": 2095,
+          "samples": [
+            {
+              "kind": "legacy",
+              "name": "slidertick",
+              "bank": "normal",
+              "suffix": null,
+              "volume": 60,
+              "editor_auto_bank": true,
+              "use_beatmap_samples": false,
+              "custom_sample_bank": 0,
+              "is_layered": false,
+              "bank_specified": true,
+              "lookup_names": [
+                "Gameplay/normal-slidertick",
+                "Gameplay/slidertick"
+              ]
+            }
+          ],
+          "auxiliary_samples": [],
+          "nested": []
+        },
+        {
+          "type": "SliderTailCircle",
+          "start_time": 2237.8571701049805,
+          "samples": [],
+          "auxiliary_samples": [],
+          "nested": []
+        }
+      ]
+    }
+  ]
+}

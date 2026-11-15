@@ -4,6 +4,7 @@
 //! `osu.Game/Rulesets/Objects/Legacy/ConvertHitObjectParser.cs:55-240` (hit objects).
 //! A line these rules cannot read is one lazer skips; the reason is returned as text.
 //! The values are the file's own: no sample-set default is resolved here (Non-goals).
+//! Follows osu!lazer (ppy/osu) at 131fe72a15581049401a588a13684938d4d0e0c7; copyright (c) ppy Pty Ltd <contact@ppy.sh>, MIT Licence (ADR 0027, THIRD-PARTY-NOTICES.md).
 
 use crate::number::{parse_double, parse_float, parse_int, MAX_COORDINATE_VALUE, MAX_PARSE_VALUE};
 use crate::LineId;
@@ -107,7 +108,8 @@ pub struct SliderFields {
     pub length: Option<f64>,
     /// Per-node hitsounds as written; lazer reads each with `int.TryParse`.
     pub edge_sounds: Option<Vec<String>>,
-    pub edge_sets: Option<Vec<(i32, i32)>>,
+    /// Per-node banks; `None` for a node whose edge set is empty, which keeps the slider's own banks.
+    pub edge_sets: Option<Vec<Option<(i32, i32)>>>,
 }
 
 /// What kind of object a line is.
@@ -253,7 +255,7 @@ pub(crate) fn parse_hit_object(line: LineId, text: &str) -> Result<HitObject, St
                     break;
                 }
                 let banks = read_banks(set, false)?;
-                sets.push(banks.map_or((0, 0), |b| (b.normal_set, b.addition_set)));
+                sets.push(banks.map(|b| (b.normal_set, b.addition_set)));
             }
             Some(sets)
         } else {

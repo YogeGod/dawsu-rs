@@ -1,6 +1,6 @@
 {
   "header": {
-    "result_format_version": 1,
+    "result_format_version": 2,
     "input": "save-pack/synthetic/mania-4k-holds-keysounds.osu",
     "input_sha256": "abb0be5f836b3a32ecd1d813e7e0bbb1fb73b217512a89f22933bd8cd4972ffa",
     "lazer_version": "2026.1026.0\u002Bb94ee4d835d65683d027ae8f47a3e61fa4899ad4",

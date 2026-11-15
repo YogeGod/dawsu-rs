@@ -311,11 +311,16 @@ impl OsuFile {
 
     /// A `[General]` value, trimmed, as lazer splits `key: value`.
     pub fn general(&self, key: &str) -> Option<String> {
-        for (line, section) in self.lines.iter().zip(self.sections()) {
-            if section.as_deref() != Some("General") {
+        self.value("General", key)
+    }
+
+    /// A `key: value` from `section` (such as `[Difficulty] SliderMultiplier`), trimmed.
+    pub fn value(&self, section_name: &str, key: &str) -> Option<String> {
+        for line in &self.lines {
+            if line.section.as_deref() != Some(section_name) {
                 continue;
             }
-            let Some(text) = logical_text(&line.content, Some("General")) else { continue };
+            let Some(text) = logical_text(&line.content, Some(section_name)) else { continue };
             if let Some((k, v)) = text.split_once(':') {
                 if k.trim() == key {
                     return Some(v.trim().to_string());
