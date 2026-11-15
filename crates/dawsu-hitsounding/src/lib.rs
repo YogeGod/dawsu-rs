@@ -5,6 +5,7 @@ pub mod compile;
 pub mod cues;
 pub mod decompile;
 pub mod error;
+pub mod generate;
 pub mod lazer;
 pub mod model;
 pub mod rules;

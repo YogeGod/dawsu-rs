@@ -644,6 +644,14 @@ impl OsuFile {
         Ok(())
     }
 
+    /// Removes every `[HitObjects]` record line, those lazer cannot read included; blank lines,
+    /// comments and the header stay. For a new hitsound difficulty, which starts from a copy.
+    pub fn remove_all_hit_objects(&mut self) {
+        for (_, id, _) in self.records_in("HitObjects") {
+            self.remove_line(id, "HitObjects");
+        }
+    }
+
     fn remove_line(&mut self, id: LineId, section: &str) {
         let i = self.index_of(id).unwrap();
         let line = self.lines.remove(i);
