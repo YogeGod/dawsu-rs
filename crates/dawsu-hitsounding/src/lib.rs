@@ -1,6 +1,7 @@
 //! The Hitsound domain: the hitsound rules, lanes, hits and moments,
 //! decompile, compile and the cue list.
 
+pub mod cleanup;
 pub mod compile;
 pub mod copy;
 pub mod cues;

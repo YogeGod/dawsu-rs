@@ -75,7 +75,7 @@ pub fn offset_for(format_version: Option<u32>) -> f64 {
 
 /// The `LegacySampleBank` name for a timing line's sample set: lazer lowercases the enum's
 /// `ToString()`, which is the number itself for values outside the enum; "none" plays "normal".
-fn bank_name(sample_set: i32) -> String {
+pub(crate) fn bank_name(sample_set: i32) -> String {
     match sample_set {
         0 | 1 => "normal".into(),
         2 => "soft".into(),
@@ -85,7 +85,7 @@ fn bank_name(sample_set: i32) -> String {
 }
 
 /// `[General] SampleSet`, read with `Enum.Parse<LegacySampleBank>`: a name or a number.
-fn default_sample_set(file: &OsuFile) -> i32 {
+pub(crate) fn default_sample_set(file: &OsuFile) -> i32 {
     match file.general("SampleSet").as_deref() {
         None => 0,
         Some(v) => match v {
