@@ -6,5 +6,6 @@ Small maps written for the lazer oracle, committed with their results in `tests/
 - `at-red-and-green-pair.osu`: a slider exactly at a red line and a green line (x0.6) at the same time, where the green line wins.
 - `after-red-following-green.osu`: a slider after a green line (x0.5), and one after a later red line, which resets the velocity to 1.
 - `green-before-first-red.osu`: a slider before a green line placed before the first red line (velocity 1), and one after it (velocity 0.6 with the red line's beat length).
+- `slider-node-long-entries.osu`: slider node entries with three to five parts, which lazer reads as the node's own index, volume and file name (`ConvertHitObjectParser.cs:127` and `:231-237`); one has a negative volume, read as 0.
 
 The rules are in "lazer facts for M2" in the design vault (`dawsu-rewrite/research/osu-rules/lazer-facts-for-m2.md`).
