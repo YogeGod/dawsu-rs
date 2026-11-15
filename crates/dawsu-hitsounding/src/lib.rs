@@ -9,6 +9,7 @@ pub mod decompile;
 pub mod drums;
 pub mod error;
 pub mod generate;
+pub mod hs;
 pub mod lazer;
 pub mod model;
 pub mod rules;
