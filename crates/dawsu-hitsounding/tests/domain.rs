@@ -195,7 +195,12 @@ fn the_cue_list_applies_the_played_volume_and_leaves_out_muted_and_unsoloed_lane
 /// compiles, reopens and decompiles: each edited moment reads back as edited at the saved volume
 /// floor or above, unless it is listed as a save problem, and every other moment as before.
 fn clap_round_trip(placement: Placement) {
-    let (edited, _, _) = round_trip(placement, |m, h, i| {
+    let (edited, _, _) = round_trip(placement, &osu_pack(), clap_edit);
+    assert!(edited > 1000, "only {edited} edits read back");
+}
+
+/// Adds a clap to, or removes the claps from, every fifth moment.
+fn clap_edit(m: &dawsu_hitsounding::Moment, h: &mut Hitsounds, i: usize) -> bool {
         if i % 5 != 0 {
             return false;
         }
@@ -208,29 +213,32 @@ fn clap_round_trip(placement: Placement) {
             h.add_hit(MomentId(i), SampleIdentity::Standard { set: *set, sound: Sound::Hit(Hitsound::Clap), index: *index });
         }
         true
-    });
-    assert!(edited > 1000, "only {edited} edits read back");
+}
+
+/// Sets the volume of the slider nodes among every fourth moment to 77.
+fn node_volume_edit(m: &dawsu_hitsounding::Moment, h: &mut Hitsounds, i: usize) -> bool {
+    if i % 4 != 0 || !matches!(m.place(), Place::SliderNode { .. }) {
+        return false;
+    }
+    h.set_volume(MomentId(i), 77);
+    true
 }
 
 #[test]
 fn slider_node_volumes_read_back_through_green_lines() {
-    let (edited, green_lines, problems) = round_trip(Placement::GreenLines, |m, h, i| {
-        if i % 4 != 0 || !matches!(m.place(), Place::SliderNode { .. }) {
-            return false;
-        }
-        h.set_volume(MomentId(i), 77);
-        true
-    });
+    let (edited, green_lines, problems) = round_trip(Placement::GreenLines, &osu_pack(), node_volume_edit);
     assert!(edited > 100 && green_lines > 100, "{edited} edits, {green_lines} green lines");
     assert!(problems < edited, "{problems} problems");
 }
 
 /// Applies `edit` (given the decompiled moment, the hitsounds to edit and the moment's place in
-/// the list; true when it edited) to every osu! save-pack map, compiles, reopens and decompiles.
-/// Returns (edits read back, green lines added, save problems).
-fn round_trip(placement: Placement, edit: impl Fn(&dawsu_hitsounding::Moment, &mut Hitsounds, usize) -> bool) -> (usize, usize, usize) {
+/// the list; true when it edited) to every map, compiles, reopens and decompiles.
+/// Returns (edits read back, green lines added, save problems), and prints the problems by kind.
+fn round_trip(placement: Placement, maps: &[(String, OsuFile)], edit: fn(&dawsu_hitsounding::Moment, &mut Hitsounds, usize) -> bool) -> (usize, usize, usize) {
     let (mut edited_total, mut green_lines, mut problem_total) = (0, 0, 0);
-    for (name, file) in osu_pack() {
+    let mut kinds: std::collections::BTreeMap<String, usize> = Default::default();
+    for (name, file) in maps {
+        let file = file.clone();
         let before = dec(&file);
         let mut h = before.clone();
         let mut edited = Vec::new();
@@ -267,8 +275,11 @@ fn round_trip(placement: Placement, edit: impl Fn(&dawsu_hitsounding::Moment, &m
         }
         green_lines += summary.green_lines_added;
         problem_total += problems.len();
+        for p in &problems {
+            *kinds.entry(format!("{:?}", p.kind).split('(').next().unwrap().to_string()).or_default() += 1;
+        }
     }
-    eprintln!("{placement:?}: {edited_total} edits read back, {green_lines} green lines added, {problem_total} save problems");
+    eprintln!("{placement:?}: {edited_total} edits read back, {green_lines} green lines added, {problem_total} save problems {kinds:?}");
     (edited_total, green_lines, problem_total)
 }
 
@@ -364,6 +375,54 @@ fn spot(p: Place) -> (u8, usize) {
     }
 }
 
+#[test]
+fn a_green_line_never_changes_another_part_of_the_same_short_slider() {
+    // Spans of about 3.6 ms: a green line for node 1 would also be read by the head and the body.
+    let file = slider_map("100,100,1000,2,0,L|101:100,3,1");
+    let mut h = dec(&file);
+    let node1 = h.moments().iter().position(|m| matches!(m.place(), Place::SliderNode { node: 1, .. })).unwrap();
+    h.set_volume(MomentId(node1), 77);
+    let (out, problems) = comp(&file, &h, Placement::GreenLines);
+    assert_eq!(problems.iter().map(|p| &p.kind).collect::<Vec<_>>(), vec![&ProblemKind::LookupWindowTaken]);
+    let before = dec(&file);
+    let after = dec(&reopen(&out));
+    for (b, a) in before.moments().iter().zip(after.moments()) {
+        assert_eq!(a.volume(), b.volume(), "invariant 8 at {:?}", b.time());
+    }
+    assert_eq!(after.bodies()[0].volume(), before.bodies()[0].volume());
+}
+
+#[test]
+fn a_green_line_on_the_first_timing_line_never_changes_the_parts_before_it() {
+    // Parts before the first timing line read the first one (SamplePointAt), so a green line at
+    // that line's time would reach the circle at 500 ms. Found by the corpus run.
+    let file = read(CIRCLES.replace("0,500,4,2,1,60,1,0", "1000,500,4,2,1,60,1,0").replace("256,192,2000,1,0,0:0:0:3:\r\n", "100,100,1000,2,0,L|300:100,1,200,0|0,0:0|0:0,0:0:0:0:\r\n").replace("256,192,1000,1,0,0:0:0:3:", "256,192,500,1,0,0:0:0:0:").as_bytes());
+    let mut h = dec(&file);
+    let head = h.moments().iter().position(|m| matches!(m.place(), Place::SliderNode { node: 0, .. })).unwrap();
+    h.set_volume(MomentId(head), 77);
+    let (out, problems) = comp(&file, &h, Placement::GreenLines);
+    assert_eq!(problems.iter().map(|p| &p.kind).collect::<Vec<_>>(), vec![&ProblemKind::LookupWindowTaken]);
+    let before = dec(&file);
+    let after = dec(&reopen(&out));
+    for (b, a) in before.moments().iter().zip(after.moments()) {
+        assert_eq!(a.volume(), b.volume(), "invariant 8 at {:?}", b.time());
+    }
+}
+
+#[test]
+fn invariants_4_and_5_compile_never_edits_a_red_line_or_removes_a_green_line() {
+    let file = slider_map("100,100,1000,2,0,L|300:100,2,200,0|0|0,0:0|0:0|0:0,0:0:0:0:");
+    let mut h = dec(&file);
+    for i in 0..h.moments().len() {
+        h.set_volume(MomentId(i), 90);
+        h.add_hit(MomentId(i), std(SampleSet::Drum, Hitsound::Finish, 1));
+    }
+    let (out, _) = comp(&file, &h, Placement::GreenLines);
+    let summary = out.change_summary();
+    assert!(summary.green_lines_added > 0, "{summary:?}");
+    assert_eq!((summary.red_lines_changed, summary.green_lines_removed, summary.green_lines_edited), (0, 0, 0), "{summary:?}");
+}
+
 fn m_object(h: &Hitsounds) -> dawsu_hitsounding::ObjectId {
     match h.moments()[0].place() {
         Place::SliderNode { object, .. } => object,
@@ -442,4 +501,31 @@ fn a_save_with_no_changes_writes_nothing_and_makes_no_backup() {
     assert!(!backups.exists(), "no backup folder");
     assert_eq!(std::fs::read(&path).unwrap(), original);
     assert_eq!(std::fs::metadata(&path).unwrap().modified().unwrap(), modified);
+}
+
+/// The local corpus (not committed, ADR 0026 point 2): set `DAWSU_CORPUS` to its folder. Every
+/// osu!-mode map compiles back unchanged with no edits, and the clap and slider-node-volume edits
+/// read back (hitsound domain, "Rules when building this").
+#[test]
+fn the_local_corpus_compiles_back_unchanged_and_its_edits_read_back() {
+    let Ok(corpus) = std::env::var("DAWSU_CORPUS") else {
+        eprintln!("skipped: DAWSU_CORPUS is not set");
+        return;
+    };
+    let mut maps: Vec<(String, OsuFile)> = std::fs::read_dir(&corpus)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.extension().is_some_and(|e| e == "osu"))
+        .map(|p| (p.file_name().unwrap().to_string_lossy().into_owned(), read(&std::fs::read(&p).unwrap())))
+        .filter(|(_, f)| matches!(answer(f, &[]), Answer::Objects(_)))
+        .collect();
+    maps.sort_by(|a, b| a.0.cmp(&b.0));
+    for (name, file) in &maps {
+        let (out, problems) = comp(file, &dec(file), Placement::GreenLines);
+        assert!(problems.is_empty() && out.to_bytes() == file.original_bytes(), "{name}: invariant 1");
+    }
+    eprintln!("corpus: {} osu! maps compile back unchanged", maps.len());
+    round_trip(Placement::GreenLines, &maps, clap_edit);
+    round_trip(Placement::OnObjects, &maps, clap_edit);
+    round_trip(Placement::GreenLines, &maps, node_volume_edit);
 }

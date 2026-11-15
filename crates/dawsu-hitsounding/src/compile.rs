@@ -437,7 +437,17 @@ impl Context {
         }) {
             return Err(ProblemKind::LookupWindowTaken);
         }
-        if self.lookups.iter().any(|(t, line)| *line != own && *t >= at && *t <= restore_at) {
+        // Any other lookup before the restoring line would read the new values, including another
+        // part of the same object (a short slider's head, body or next node); one exactly at the
+        // restoring line reads that line.
+        let other = |t: f64, line: LineId| !(line == own && t == g.lookup);
+        if self.lookups.iter().any(|(t, line)| other(*t, *line) && *t >= at && *t < restore_at) {
+            return Err(ProblemKind::LookupWindowTaken);
+        }
+        // Parts before the first timing line read the first one (SamplePointAt), so a line at or
+        // before it would reach them too.
+        let first = lines.iter().map(|t| t.time() + self.offset).fold(f64::INFINITY, f64::min);
+        if at <= first && self.lookups.iter().any(|(t, line)| other(*t, *line) && *t < at) {
             return Err(ProblemKind::LookupWindowTaken);
         }
         let before = Point(cp.sample_point_at(g.lookup));

@@ -35,7 +35,9 @@ impl Lane {
         match (&self.source, &self.identity) {
             (LaneSource::File(name), _) => SampleIdentity::File(name.clone()),
             (LaneSource::Skin, SampleIdentity::Standard { set, sound, .. }) => SampleIdentity::Standard { set: *set, sound: *sound, index: CustomIndex::new(0) },
-            // A map's own sample file that is not in the folder: lazer falls back to the skin's hitnormal.
+            // A map's own sample file that is not in the folder: after the file's names, lazer's
+            // lookup names go on to the normal hitnormal (ConvertHitObjectParser.cs:691 and
+            // :696-700 at 131fe72), which the skin answers (hitsound rules R13).
             (LaneSource::Skin, SampleIdentity::File(_)) => SampleIdentity::Standard { set: SampleSet::Normal, sound: Sound::Hit(Hitsound::Normal), index: CustomIndex::new(0) },
         }
     }

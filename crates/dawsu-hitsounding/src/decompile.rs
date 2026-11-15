@@ -36,6 +36,8 @@ pub fn decompile(file: &OsuFile, folder_files: &[String], cancel: &dyn Fn() -> b
             lanes.insert(SampleIdentity::Standard { set, sound: Sound::Hit(sound), index: CustomIndex::new(0) }, LaneSource::Skin);
         }
     }
+    // Which folder files count as samples is not written down (todo.md section 4, "which folder
+    // files are sample lanes"): here every .wav, .mp3 and .ogg file except the song.
     let song = file.general("AudioFilename").map(|s| s.to_lowercase());
     for name in folder_files {
         let lower = name.to_lowercase();
