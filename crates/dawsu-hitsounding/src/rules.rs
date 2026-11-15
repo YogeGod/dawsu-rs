@@ -163,7 +163,7 @@ fn resolve(samples: &[LegacySample], folder_files: &[String]) -> Vec<Sample> {
 
 /// Which file plays (R11 to R13): from index 1, the map folder by the beatmap skin's lookup
 /// names, each with R12's extensions; otherwise, or when nothing matches, the skin.
-fn resolve_one(sample: &LegacySample, folder_files: &[String]) -> Sample {
+pub(crate) fn resolve_one(sample: &LegacySample, folder_files: &[String]) -> Sample {
     let plays = beatmap_file(sample, folder_files)
         .map(Plays::BeatmapFile)
         .unwrap_or_else(|| Plays::Skin { lookup_names: sample.legacy_lookup_names(false) });

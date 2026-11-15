@@ -40,7 +40,7 @@ impl Default for SampleBankInfo {
 }
 
 /// A `LegacySampleBank` read from a hit sample: values outside the enum play Normal.
-fn bank_of(n: i32) -> Option<String> {
+pub(crate) fn bank_of(n: i32) -> Option<String> {
     match n {
         1 => Some("normal".into()),
         2 => Some("soft".into()),

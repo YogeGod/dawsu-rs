@@ -1,0 +1,487 @@
+//! Compile (hitsound domain Responsibilities 9-13, ADR 0037): the one encoder of hits into file
+//! fields. It patches a copy of the difficulty through `dawsu-osu-format` and lists every moment it
+//! cannot encode as a save problem; the rest is written and each problem moment keeps its old line.
+//! Blocking, with a cancel check and a progress report (ADR 0035).
+//!
+//! Where a value goes is not spelled out by the design docs (todo.md section 4, "how compile places
+//! a moment"). The cautious reading taken here: a value the object's own line can hold (sample sets,
+//! and on circles and spinners the index and volume) is written there, since that line changes
+//! anyway and no other line need change (invariant 3). A green line is added only for what the
+//! object cannot hold (a slider node's index or volume, or index 0 under a timing line with an
+//! index), and only with green-line placement; it is followed by a line restoring the earlier
+//! values 6 ms later, so no other part's lookup changes. On-object placement reports such a moment
+//! as a save problem instead.
+
+use crate::lazer::control_points::{offset_for, ControlPoints, SamplePointData, CONTROL_POINT_LENIENCY};
+use crate::lazer::samples::bank_of;
+use crate::model::{set_name, Hitsounds, Moment, ObjectId, Place, SliderBody};
+use crate::rules::{self, saved_volume, Answer, ObjectAnswer};
+use dawsu_foundation::{Hitsound, SampleIdentity, SampleSet, Sound, SongTime};
+use dawsu_osu_format::number::try_parse_int;
+use dawsu_osu_format::{HitObject, LineId, ObjectKind, OsuFile, SliderFields};
+use std::collections::{BTreeMap, HashMap};
+
+/// How compile places a moment (Responsibility 9a).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Placement {
+    /// Save and Copy hitsounds: green lines may be added.
+    GreenLines,
+    /// Generate hitsound diff, New hitsound diff and HS mode: values on each object only.
+    OnObjects,
+}
+
+/// A moment compile could not encode (Responsibility 12). The moment keeps its old values.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SaveProblem {
+    pub time: SongTime,
+    pub place: Place,
+    pub kind: ProblemKind,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ProblemKind {
+    /// The hits do not fit osu!'s native combination. The plan says which samples a mix would
+    /// hold and at which volume; M2 cannot make the mix file yet (Responsibility 11, ADR 0037).
+    NeedsSampleMix(Vec<(SampleIdentity, i32)>),
+    /// Hits with no object: only HS mode creates objects, and M2 has no HS mode (invariant 6).
+    NoObject,
+    /// The moment needs a green line, and the placement writes values on objects only.
+    NeedsGreenLine,
+    /// Another timing line or another object's lookup sits where the green line would go.
+    LookupWindowTaken,
+    /// The object's line could not be patched, or is a kind compile does not write.
+    LineRefused,
+}
+
+/// The outcome of compile.
+#[derive(Debug, Clone)]
+pub enum Compiled {
+    /// The patched difficulty, ready for the one write, and the moments it could not encode.
+    Done { file: OsuFile, problems: Vec<SaveProblem> },
+    /// The cancel check asked to stop; nothing is kept.
+    Cancelled,
+}
+
+const WHISTLE: i32 = 2;
+const FINISH: i32 = 4;
+const CLAP: i32 = 8;
+const ADDITIONS: i32 = WHISTLE | FINISH | CLAP;
+const HOLD: i32 = 128;
+/// A green line's own lookup window: a node looks up at its time + 5 ms, a slider body at + 6 ms.
+const WINDOW: f64 = CONTROL_POINT_LENIENCY + 1.0;
+
+/// Compiles `hitsounds` back into a copy of `file`, the difficulty it was decompiled from.
+/// `cancel` is looked at between objects; `progress` gets (objects done, objects to write).
+pub fn compile(file: &OsuFile, hitsounds: &Hitsounds, placement: Placement, cancel: &dyn Fn() -> bool, progress: &mut dyn FnMut(usize, usize)) -> Compiled {
+    let mut out = file.clone();
+    let mut problems = Vec::new();
+    let mut groups: BTreeMap<ObjectId, (Vec<&Moment>, Option<&SliderBody>)> = BTreeMap::new();
+    for m in hitsounds.moments().iter().filter(|m| m.is_changed()) {
+        match m.place() {
+            Place::NoObject => problems.push(SaveProblem { time: m.time(), place: m.place(), kind: ProblemKind::NoObject }),
+            Place::Circle(id) | Place::SpinnerEnd(id) | Place::SliderNode { object: id, .. } => groups.entry(id).or_default().0.push(m),
+        }
+    }
+    for b in hitsounds.bodies().iter().filter(|b| b.is_changed()) {
+        groups.entry(b.object()).or_default().1 = Some(b);
+    }
+    if cancel() {
+        return Compiled::Cancelled;
+    }
+    if groups.is_empty() {
+        progress(0, 0);
+        return Compiled::Done { file: out, problems };
+    }
+
+    let objects: HashMap<LineId, HitObject> = file.hit_objects().into_iter().map(|o| (o.line(), o)).collect();
+    let answers: HashMap<LineId, ObjectAnswer> = match rules::answer(file, &hitsounds.folder_files) {
+        Answer::Objects(list) => list.into_iter().map(|a| (a.line, a)).collect(),
+        Answer::UnsupportedMode { .. } => HashMap::new(),
+    };
+    let mut lookups: Vec<(f64, LineId)> = Vec::new();
+    for a in answers.values() {
+        lookups.push((a.lookup_time, a.line));
+        if let Some(s) = &a.slider {
+            lookups.extend(s.node_lookup_times.iter().map(|t| (*t, a.line)));
+        }
+    }
+    let ctx = Context { offset: offset_for(file.format_version()), placement, lookups };
+    let mut cp = ControlPoints::from_file(&out);
+
+    let total = groups.len();
+    for (done, (id, (moments, body))) in groups.iter().enumerate() {
+        if cancel() {
+            return Compiled::Cancelled;
+        }
+        let refuse = |problems: &mut Vec<SaveProblem>| {
+            for m in moments {
+                problems.push(SaveProblem { time: m.time(), place: m.place(), kind: ProblemKind::LineRefused });
+            }
+            if let Some(b) = body {
+                problems.push(SaveProblem { time: b.start(), place: Place::SliderNode { object: *id, node: 0 }, kind: ProblemKind::LineRefused });
+            }
+        };
+        match (objects.get(&id.0), answers.get(&id.0)) {
+            (Some(obj), Some(answer)) => {
+                // shortcut: each object is patched on a copy of the file, so a refused edit leaves
+                // no half-patched line; use an undo log if Generate's many objects make it slow.
+                let mut trial = out.clone();
+                let ok = match obj.kind() {
+                    ObjectKind::Slider(fields) => ctx.slider(&mut trial, &cp, obj, fields, answer, moments, *body, &mut problems),
+                    _ if obj.type_bits() & HOLD != 0 => Err(()),
+                    _ => ctx.circle_or_spinner(&mut trial, &cp, obj, answer, moments[0], &mut problems),
+                };
+                match ok {
+                    Ok(true) => {
+                        out = trial;
+                        cp = ControlPoints::from_file(&out);
+                    }
+                    Ok(false) => {}
+                    Err(()) => refuse(&mut problems),
+                }
+            }
+            _ => refuse(&mut problems),
+        }
+        progress(done + 1, total);
+    }
+    problems.sort_by(|a, b| a.time.ms().total_cmp(&b.time.ms()));
+    Compiled::Done { file: out, problems }
+}
+
+struct Context {
+    offset: f64,
+    placement: Placement,
+    lookups: Vec<(f64, LineId)>,
+}
+
+/// What the hits at a moment ask for, when they fit the native combination (Responsibility 10).
+struct Native {
+    slot: Slot,
+    additions: i32,
+    addition_set: Option<SampleSet>,
+    index: Option<u32>,
+    volume: i32,
+}
+
+enum Slot {
+    Normal(SampleSet),
+    File(String),
+}
+
+fn mix_plan(m: &Moment) -> ProblemKind {
+    ProblemKind::NeedsSampleMix(m.hits().map(|h| (h.clone(), saved_volume(m.volume()))).collect())
+}
+
+/// One hitnormal (or one sample file) plus additions that share one set and one index, all at the
+/// moment's volume; the hitnormal's index is the object's one index too.
+fn native(m: &Moment) -> Result<Native, ProblemKind> {
+    let mut slot = None;
+    let mut slot_index = None;
+    let mut additions = 0;
+    let mut addition: Option<(SampleSet, u32)> = None;
+    for h in m.hits() {
+        match h {
+            SampleIdentity::File(f) if slot.is_none() => slot = Some(Slot::File(f.clone())),
+            SampleIdentity::Standard { set, sound: Sound::Hit(Hitsound::Normal), index } if slot.is_none() => {
+                slot = Some(Slot::Normal(*set));
+                slot_index = Some(index.get());
+            }
+            SampleIdentity::Standard { set, sound: Sound::Hit(s @ (Hitsound::Whistle | Hitsound::Finish | Hitsound::Clap)), index } => {
+                let bit = match s {
+                    Hitsound::Whistle => WHISTLE,
+                    Hitsound::Finish => FINISH,
+                    _ => CLAP,
+                };
+                if addition.is_some_and(|a| a != (*set, index.get())) {
+                    return Err(mix_plan(m));
+                }
+                addition = Some((*set, index.get()));
+                additions |= bit;
+            }
+            _ => return Err(mix_plan(m)),
+        }
+    }
+    let Some(slot) = slot else { return Err(mix_plan(m)) };
+    let index = match (slot_index, addition) {
+        (Some(n), Some((_, a))) if n != a => return Err(mix_plan(m)),
+        (Some(n), _) => Some(n),
+        (None, a) => a.map(|a| a.1),
+    };
+    Ok(Native { slot, additions, addition_set: addition.map(|a| a.0), index, volume: saved_volume(m.volume()) })
+}
+
+/// The timing point an object part reads, with lazer's defaults when there is none.
+struct Point<'a>(Option<&'a SamplePointData>);
+
+impl Point<'_> {
+    fn bank(&self) -> String {
+        self.0.map_or_else(|| "normal".to_string(), |p| p.bank.clone())
+    }
+    fn index(&self) -> i32 {
+        self.0.map_or(0, |p| p.custom_sample_bank).max(0)
+    }
+    fn volume(&self) -> i32 {
+        self.0.map_or(100, |p| p.volume)
+    }
+    fn bank_number(&self) -> String {
+        match self.bank().as_str() {
+            "normal" => "1".into(),
+            "soft" => "2".into(),
+            "drum" => "3".into(),
+            other => other.to_string(),
+        }
+    }
+}
+
+fn set_number(set: SampleSet) -> i32 {
+    match set {
+        SampleSet::Normal => 1,
+        SampleSet::Soft => 2,
+        SampleSet::Drum => 3,
+    }
+}
+
+/// The normal and addition set fields that make the sets play as asked, changing as little as possible.
+fn encode_banks(n_raw: i32, a_raw: i32, normal: Option<SampleSet>, addition: Option<SampleSet>, point_bank: &str) -> (i32, i32) {
+    let eff_normal = |n: i32| bank_of(n).unwrap_or_else(|| point_bank.to_string());
+    let n = match normal {
+        Some(s) if eff_normal(n_raw) != set_name(s) => set_number(s),
+        _ => n_raw,
+    };
+    let eff_addition = bank_of(a_raw).or_else(|| bank_of(n)).unwrap_or_else(|| point_bank.to_string());
+    let a = match addition {
+        Some(s) if eff_addition != set_name(s) => {
+            if eff_normal(n) == set_name(s) {
+                0
+            } else {
+                set_number(s)
+            }
+        }
+        _ => a_raw,
+    };
+    (n, a)
+}
+
+/// A green line to add before a part's lookup (green-line placement only).
+struct Green {
+    lookup: f64,
+    index: i32,
+    volume: i32,
+}
+
+impl Context {
+    fn needs_green(&self) -> Result<(), ProblemKind> {
+        match self.placement {
+            Placement::GreenLines => Ok(()),
+            Placement::OnObjects => Err(ProblemKind::NeedsGreenLine),
+        }
+    }
+
+    /// Returns Ok(true) when the trial file changed.
+    fn circle_or_spinner(&self, trial: &mut OsuFile, cp: &ControlPoints, obj: &HitObject, answer: &ObjectAnswer, m: &Moment, problems: &mut Vec<SaveProblem>) -> Result<bool, ()> {
+        let problem = |problems: &mut Vec<SaveProblem>, kind| problems.push(SaveProblem { time: m.time(), place: m.place(), kind });
+        let want = match native(m) {
+            Ok(w) => w,
+            Err(kind) => {
+                problem(problems, kind);
+                return Ok(false);
+            }
+        };
+        let point = Point(cp.sample_point_at(answer.lookup_time));
+        let raw = obj.hit_sample();
+        let (n_raw, a_raw, i_raw, v_raw) = raw.map_or((0, 0, 0, 0), |h| (h.normal_set, h.addition_set, h.index, h.volume));
+        let file_raw = raw.and_then(|h| h.filename.clone()).unwrap_or_default();
+
+        let normal = match &want.slot {
+            Slot::Normal(s) => Some(*s),
+            Slot::File(_) => None,
+        };
+        let (n, a) = encode_banks(n_raw, a_raw, normal, want.addition_set, &point.bank());
+        let mut green = None;
+        let i = match want.index {
+            None => i_raw,
+            Some(w) => {
+                let w = w as i32;
+                let eff = if i_raw > 0 { i_raw } else { point.index() };
+                if eff == w {
+                    i_raw
+                } else if w > 0 || point.index() == 0 {
+                    w
+                } else {
+                    if let Err(kind) = self.needs_green() {
+                        problem(problems, kind);
+                        return Ok(false);
+                    }
+                    green = Some(Green { lookup: answer.lookup_time, index: 0, volume: point.volume() });
+                    0
+                }
+            }
+        };
+        let eff_volume = if v_raw > 0 { v_raw } else { point.volume() };
+        let v = if eff_volume == want.volume { v_raw } else { want.volume };
+        let file = match &want.slot {
+            Slot::File(f) => f.clone(),
+            Slot::Normal(_) => String::new(),
+        };
+        let field4 = (obj.hitsound() & !ADDITIONS) | want.additions;
+
+        if let Some(g) = green {
+            if let Err(kind) = self.place_green(trial, cp, answer.line, &g) {
+                problem(problems, kind);
+                return Ok(false);
+            }
+        }
+        let line = obj.line();
+        if field4 != obj.hitsound() {
+            trial.set_field(line, 4, &field4.to_string()).map_err(|_| ())?;
+        }
+        if (n, a, i, v, file.as_str()) != (n_raw, a_raw, i_raw, v_raw, file_raw.as_str()) {
+            let at = if matches!(obj.kind(), ObjectKind::Spinner { .. }) { 6 } else { 5 };
+            trial.set_field(line, at, &format!("{n}:{a}:{i}:{v}:{file}")).map_err(|_| ())?;
+        }
+        Ok(true)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn slider(
+        &self,
+        trial: &mut OsuFile,
+        cp: &ControlPoints,
+        obj: &HitObject,
+        fields: &SliderFields,
+        answer: &ObjectAnswer,
+        moments: &[&Moment],
+        body: Option<&SliderBody>,
+        problems: &mut Vec<SaveProblem>,
+    ) -> Result<bool, ()> {
+        let Some(s) = &answer.slider else { return Err(()) };
+        let nodes = (fields.slides - 1).max(0) as usize + 2;
+        // A slider lazer reads as zero length keeps only its first and last node's sounds.
+        if s.repeat_count + 2 != nodes {
+            return Err(());
+        }
+        let own = obj.hit_sample().map_or((0, 0), |h| (h.normal_set, h.addition_set));
+        let mut sounds: Vec<i32> = (0..nodes).map(|i| fields.edge_sounds.as_ref().and_then(|e| e.get(i)).map_or(obj.hitsound(), |t| try_parse_int(t))).collect();
+        let mut sets: Vec<(i32, i32)> = (0..nodes).map(|i| fields.edge_sets.as_ref().and_then(|e| e.get(i).copied().flatten()).unwrap_or(own)).collect();
+        let (original_sounds, original_sets) = (sounds.clone(), sets.clone());
+        let mut changed = false;
+
+        for m in moments {
+            let Place::SliderNode { node, .. } = m.place() else { continue };
+            let problem = |problems: &mut Vec<SaveProblem>, kind| problems.push(SaveProblem { time: m.time(), place: m.place(), kind });
+            let want = match native(m) {
+                Ok(Native { slot: Slot::File(_), .. }) => {
+                    problem(problems, mix_plan(m));
+                    continue;
+                }
+                Ok(w) => w,
+                Err(kind) => {
+                    problem(problems, kind);
+                    continue;
+                }
+            };
+            let Slot::Normal(set) = want.slot else { continue };
+            let lookup = s.node_lookup_times[node];
+            let point = Point(cp.sample_point_at(lookup));
+            let banks = encode_banks(sets[node].0, sets[node].1, Some(set), want.addition_set, &point.bank());
+            let index = want.index.unwrap_or(0) as i32;
+            if index != point.index() || want.volume != point.volume() {
+                if let Err(kind) = self.needs_green() {
+                    problem(problems, kind);
+                    continue;
+                }
+                // The node's index and volume come only from timing lines (lazer reads only a
+                // slider's banks from its own hit sample).
+                let g = Green { lookup, index, volume: want.volume };
+                if let Err(kind) = self.place_green(trial, cp, answer.line, &g) {
+                    problem(problems, kind);
+                    continue;
+                }
+            }
+            sets[node] = banks;
+            sounds[node] = (sounds[node] & !ADDITIONS) | want.additions;
+            changed = true;
+        }
+
+        let whistle = body.map(|b| b.whistle());
+        let sounds_complete = fields.edge_sounds.as_ref().is_some_and(|e| e.len() >= nodes);
+        let line = obj.line();
+        if sounds != original_sounds || (whistle.is_some() && !sounds_complete) {
+            let text = sounds.iter().map(i32::to_string).collect::<Vec<_>>().join("|");
+            trial.set_field(line, 8, &text).map_err(|_| ())?;
+            changed = true;
+        }
+        if sets != original_sets {
+            let text = sets.iter().map(|(n, a)| format!("{n}:{a}")).collect::<Vec<_>>().join("|");
+            trial.set_field(line, 9, &text).map_err(|_| ())?;
+            changed = true;
+        }
+        if let Some(w) = whistle {
+            let field4 = (obj.hitsound() & !WHISTLE) | if w { WHISTLE } else { 0 };
+            trial.set_field(line, 4, &field4.to_string()).map_err(|_| ())?;
+            changed = true;
+        }
+        Ok(changed)
+    }
+
+    /// Adds a green line at `g.lookup - 5 ms` giving the part `g.index` and `g.volume`, with the
+    /// sample set, slider velocity, meter and effects already in force there, and a line 6 ms later
+    /// restoring what was in force before.
+    fn place_green(&self, trial: &mut OsuFile, cp: &ControlPoints, own: LineId, g: &Green) -> Result<(), ProblemKind> {
+        let at = g.lookup - CONTROL_POINT_LENIENCY;
+        let restore_at = at + WINDOW;
+        let lines = trial.timing_points();
+        if lines.iter().any(|t| {
+            let time = t.time() + self.offset;
+            time > at && time <= restore_at
+        }) {
+            return Err(ProblemKind::LookupWindowTaken);
+        }
+        if self.lookups.iter().any(|(t, line)| *line != own && *t >= at && *t <= restore_at) {
+            return Err(ProblemKind::LookupWindowTaken);
+        }
+        let before = Point(cp.sample_point_at(g.lookup));
+        if before.index() == g.index && before.volume() == g.volume {
+            return Ok(());
+        }
+        let after = Point(cp.sample_point_at(restore_at));
+        let text = |time: f64, point: &Point, index: i32, volume: i32| -> String {
+            let (meter, effects) = self.meter_and_effects(trial, time);
+            format!("{},{},{},{},{},{},0,{}", time_text(time - self.offset), self.beat_length_text(trial, time), meter, point.bank_number(), index, volume, effects)
+        };
+        let ours = text(at, &before, g.index, g.volume);
+        let restore = text(restore_at, &after, after.index(), after.volume());
+        trial.insert_green_line(&ours);
+        trial.insert_green_line(&restore);
+        Ok(())
+    }
+
+    /// The raw lines at the latest time at or before `time`, in file order.
+    fn lines_at_or_before(&self, trial: &OsuFile, time: f64) -> Vec<String> {
+        let points = trial.timing_points();
+        let latest = points.iter().map(|t| t.time() + self.offset).filter(|t| *t <= time).fold(f64::NEG_INFINITY, f64::max);
+        points.iter().filter(|t| t.time() + self.offset == latest).filter_map(|t| trial.line_text(t.line())).collect()
+    }
+
+    /// The beat length that keeps the slider velocity in force at `time`: the green line there,
+    /// or -100 (velocity 1) after a red line or before any line.
+    fn beat_length_text(&self, trial: &OsuFile, time: f64) -> String {
+        let at_latest = self.lines_at_or_before(trial, time);
+        at_latest
+            .iter()
+            .rev()
+            .find(|l| l.split(',').nth(6).is_some_and(|u| u.trim() == "0"))
+            .and_then(|l| l.split(',').nth(1).map(|b| b.trim().to_string()))
+            .unwrap_or_else(|| "-100".to_string())
+    }
+
+    fn meter_and_effects(&self, trial: &OsuFile, time: f64) -> (String, String) {
+        let last = self.lines_at_or_before(trial, time).pop();
+        let field = |i: usize, default: &str| last.as_ref().and_then(|l| l.split(',').nth(i).map(|f| f.trim().to_string())).unwrap_or_else(|| default.to_string());
+        (field(2, "4"), field(7, "0"))
+    }
+}
+
+fn time_text(ms: f64) -> String {
+    if ms.fract() == 0.0 && ms.abs() < 1e15 { format!("{}", ms as i64) } else { format!("{ms}") }
+}
