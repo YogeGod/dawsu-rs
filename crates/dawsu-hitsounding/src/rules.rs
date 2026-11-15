@@ -374,7 +374,7 @@ fn slider_answer(
 
 // ---------------------------------------------------------------- sample file names (Responsibility 4)
 
-fn set_word(set: SampleSet) -> &'static str {
+pub(crate) fn set_word(set: SampleSet) -> &'static str {
     match set {
         SampleSet::Normal => "normal",
         SampleSet::Soft => "soft",
@@ -382,7 +382,7 @@ fn set_word(set: SampleSet) -> &'static str {
     }
 }
 
-fn sound_word(sound: Sound) -> &'static str {
+pub(crate) fn sound_word(sound: Sound) -> &'static str {
     match sound {
         Sound::Hit(Hitsound::Normal) => "hitnormal",
         Sound::Hit(Hitsound::Whistle) => "hitwhistle",
