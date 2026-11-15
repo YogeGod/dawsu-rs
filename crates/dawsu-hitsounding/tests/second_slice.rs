@@ -102,19 +102,47 @@ fn changing_a_slider_body_s_sample_set_reads_back_and_leaves_the_nodes_alone() {
     }
 }
 
+fn volumes(h: &Hitsounds) -> Vec<i32> {
+    h.moments().iter().map(|m| m.volume()).collect()
+}
+
 #[test]
-fn changing_a_slider_body_s_volume_needs_a_green_line_the_head_would_read() {
-    // A body reads its volume at start + 6 ms, the head at start + 5 ms, so a green line for the
-    // body is read by the head too: a save problem (ADR 0041 point 4).
-    let file = map("100,100,1000,2,0,L|300:100,1,200,0|0,0:0|0:0,0:0:0:0:");
+fn changing_a_slider_body_s_volume_changes_its_head_too() {
+    // A body reads its volume at start + 6 ms and the head at start + 5 ms, so one green line at
+    // the slider's start sets both, with the old values back 7 ms later (Yoge, 2026-11-15).
+    let file = map("100,100,1000,2,0,L|300:100,2,200,0|0|0,0:0|0:0|0:0,0:0:0:0:");
+    let before = dec(&file);
+    let mut h = before.clone();
+    h.set_body_volume(0, 80);
+    let head = h.moments().iter().position(|m| matches!(m.place(), Place::SliderNode { node: 0, .. })).unwrap();
+    assert_eq!(h.moments()[head].volume(), 80, "the head follows the body in the model");
+    assert!(cue_list(&h, &[], &[]).iter().any(|c| c.loop_end().is_some() && c.gain() == 0.8), "the cue list plays the unsaved volume");
+
+    let (out, problems) = comp(&file, &h, Placement::GreenLines);
+    assert!(problems.is_empty(), "{problems:?}");
+    let summary = out.change_summary();
+    assert_eq!((summary.green_lines_added, summary.hit_objects_changed, summary.red_lines_changed), (2, 0, 0), "{summary:?}");
+    let added: Vec<&str> = summary.lines.iter().filter_map(|l| l.2.as_deref()).collect();
+    assert_eq!(added, vec!["1000,-100,4,2,1,80,0,0", "1007,-100,4,2,1,60,0,0"]);
+    let after = dec(&reopen(&out));
+    assert_eq!(after.bodies()[0].volume(), 80);
+    assert_eq!(volumes(&after), volumes(&h), "the head reads 80, the repeat and the tail keep 60");
+    assert_eq!(hits(&after), hits(&before));
+
+    let (_, problems) = comp(&file, &h, Placement::OnObjects);
+    assert!(problems.iter().all(|p| p.kind == ProblemKind::NeedsGreenLine) && !problems.is_empty(), "{problems:?}");
+}
+
+#[test]
+fn a_body_volume_change_is_refused_when_another_part_reads_inside_its_window() {
+    // A circle at 1001 ms looks up at 1006 ms, inside the window from 1000 to the restoring line
+    // at 1007, so it would read the new volume: the change is refused.
+    let file = map("100,100,1000,2,0,L|300:100,1,200,0|0,0:0|0:0,0:0:0:0:\r\n256,192,1001,1,0,0:0:0:0:");
     let mut h = dec(&file);
     h.set_body_volume(0, 80);
-    assert!(cue_list(&h, &[], &[]).iter().any(|c| c.loop_end().is_some() && c.gain() == 0.8), "the cue list plays the unsaved volume");
     let (out, problems) = comp(&file, &h, Placement::GreenLines);
-    assert_eq!(problems.iter().map(|p| &p.kind).collect::<Vec<_>>(), vec![&ProblemKind::LookupWindowTaken]);
+    assert!(!problems.is_empty() && problems.iter().all(|p| p.kind == ProblemKind::LookupWindowTaken), "{problems:?}");
     assert!(out.change_summary().is_empty());
-    let (_, problems) = comp(&file, &h, Placement::OnObjects);
-    assert_eq!(problems.iter().map(|p| &p.kind).collect::<Vec<_>>(), vec![&ProblemKind::NeedsGreenLine]);
 }
 
 #[test]
@@ -139,6 +167,66 @@ fn slider_body_sets_read_back_over_the_local_corpus() {
         .collect();
     let edited = body_set_round_trip(&maps);
     eprintln!("corpus: {edited} slider bodies changed set and read back");
+}
+
+#[test]
+fn slider_body_volumes_read_back_over_the_save_pack() {
+    let maps = save_pack_files().into_iter().map(|(name, path)| (name, read(&std::fs::read(path).unwrap()))).collect::<Vec<_>>();
+    let (edited, refused) = body_volume_round_trip(&maps);
+    assert!(edited > 100, "only {edited} bodies read back ({refused} refused)");
+}
+
+#[test]
+fn slider_body_volumes_read_back_over_the_local_corpus() {
+    let Ok(corpus) = std::env::var("DAWSU_CORPUS") else {
+        eprintln!("skipped: DAWSU_CORPUS is not set");
+        return;
+    };
+    let maps: Vec<(String, OsuFile)> = std::fs::read_dir(&corpus)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.extension().is_some_and(|e| e == "osu"))
+        .map(|p| (p.file_name().unwrap().to_string_lossy().into_owned(), read(&std::fs::read(&p).unwrap())))
+        .collect();
+    let (edited, refused) = body_volume_round_trip(&maps);
+    eprintln!("corpus: {edited} slider body volumes read back with their heads, {refused} refused");
+}
+
+/// Sets every third slider body's volume to 77: each body that is not a save problem reads back
+/// at 77 with its head, and every other moment and body as before. Returns (read back, refused).
+fn body_volume_round_trip(maps: &[(String, OsuFile)]) -> (usize, usize) {
+    let (mut edited, mut refused) = (0, 0);
+    for (name, file) in maps {
+        if !matches!(answer(file, &[]), Answer::Objects(_)) {
+            continue;
+        }
+        let before = dec(file);
+        let mut h = before.clone();
+        let wanted: Vec<usize> = (0..before.bodies().len()).filter(|i| i % 3 == 0).collect();
+        for &i in &wanted {
+            h.set_body_volume(i, 77);
+        }
+        let (out, problems) = comp(file, &h, Placement::GreenLines);
+        assert!(problems.iter().all(|p| matches!(p.kind, ProblemKind::LookupWindowTaken | ProblemKind::BodyVolumeNeedsHead)), "{name}: {problems:?}");
+        let summary = out.change_summary();
+        assert_eq!((summary.red_lines_changed, summary.green_lines_removed, summary.hit_objects_changed), (0, 0, 0), "{name}");
+        let after = dec(&reopen(&out));
+        assert_eq!(hits(&after), hits(&before), "{name}");
+        let saved = |b: &dawsu_hitsounding::SliderBody| !problems.iter().any(|p| p.place == Place::SliderNode { object: b.object(), node: 0 } && p.time == b.start());
+        for (i, (b, a)) in before.bodies().iter().zip(after.bodies()).enumerate() {
+            let want = if wanted.contains(&i) && saved(b) { 77 } else { b.volume() };
+            assert_eq!(a.volume(), want, "{name}: body {i}");
+        }
+        for (i, (m, a)) in h.moments().iter().zip(after.moments()).enumerate() {
+            let refused_here = problems.iter().any(|p| p.place == m.place() && p.time == m.time());
+            let want = if refused_here { before.moments()[i].volume() } else { m.volume() };
+            assert_eq!(a.volume(), want, "{name}: moment {i}");
+        }
+        let n_refused = wanted.iter().filter(|&&i| !saved(&before.bodies()[i])).count();
+        refused += n_refused;
+        edited += wanted.len() - n_refused;
+    }
+    (edited, refused)
 }
 
 /// Changes the set of every third slider body of every osu! map, compiles, reopens and

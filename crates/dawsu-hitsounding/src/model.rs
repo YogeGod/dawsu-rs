@@ -262,9 +262,14 @@ impl Hitsounds {
         self.ensure_lane(&tick);
     }
 
-    /// Sets the volume of a slider body's slide, whistle and ticks.
+    /// Sets the volume of a slider body's slide, whistle and ticks, and of its head: the head reads
+    /// its volume 1 ms before the body, so one green line sets both (ADR 0042 point 6).
     pub fn set_body_volume(&mut self, body: usize, volume: i32) {
+        let object = self.bodies[body].object;
         self.bodies[body].volume = volume;
+        if let Some(head) = self.moments.iter_mut().find(|m| m.place == Place::SliderNode { object, node: 0 }) {
+            head.volume = volume;
+        }
     }
 }
 

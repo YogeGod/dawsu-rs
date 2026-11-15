@@ -3,12 +3,14 @@
 //! cannot encode as a save problem; the rest is written and each problem moment keeps its old line.
 //! Blocking, with a cancel check and a progress report (ADR 0035).
 //!
-//! Where a value goes follows ADR 0041 (draft, Yoge, 2026-11-15): a value the object's own line
+//! Where a value goes follows ADR 0042 (which supersedes ADR 0041): a value the object's own line
 //! can hold (sample sets, and on circles and spinners the index and volume) is written there. A
 //! green line is added only for what the object cannot hold (a slider node's index or volume, or
 //! index 0 under a timing line with an index), and only with green-line placement; it is followed
-//! by a line restoring the earlier values 6 ms later, so no other part's lookup changes. On-object
-//! placement reports such a moment as a save problem instead.
+//! by a line restoring the earlier values 6 ms later, so no other part's lookup changes. A slider
+//! body's volume change sets its head's volume too, with one line restored 7 ms later; a node
+//! entry that holds its own index or volume is kept as written. On-object placement reports a
+//! moment that needs a green line as a save problem instead.
 
 use crate::lazer::control_points::{offset_for, ControlPoints, SamplePointData, CONTROL_POINT_LENIENCY};
 use crate::lazer::samples::bank_of;
@@ -49,6 +51,9 @@ pub enum ProblemKind {
     LookupWindowTaken,
     /// The object's line could not be patched, or is a kind compile does not write.
     LineRefused,
+    /// A slider body's volume goes with its head's (one green line both read), and the head asks
+    /// for another volume or index, or cannot be saved itself.
+    BodyVolumeNeedsHead,
 }
 
 /// The outcome of compile.
@@ -263,6 +268,23 @@ struct Green {
     lookup: f64,
     index: i32,
     volume: i32,
+    /// How long after the line the restoring line comes.
+    restore_after: f64,
+    /// This object's own lookups that are meant to read the line.
+    readers: Vec<f64>,
+}
+
+impl Green {
+    /// For one part: the line at its lookup minus 5 ms, restored 6 ms later (ADR 0042 points 2-3).
+    fn part(lookup: f64, index: i32, volume: i32) -> Green {
+        Green { lookup, index, volume, restore_after: WINDOW, readers: vec![lookup] }
+    }
+
+    /// For a slider's head and body together: the line at the head's lookup minus 5 ms, restored
+    /// 7 ms later, just after the body's lookup (ADR 0042 point 6).
+    fn head_and_body(head_lookup: f64, body_lookup: f64, index: i32, volume: i32) -> Green {
+        Green { lookup: head_lookup, index, volume, restore_after: WINDOW + 1.0, readers: vec![head_lookup, body_lookup] }
+    }
 }
 
 impl Context {
@@ -308,7 +330,7 @@ impl Context {
                         problem(problems, kind);
                         return Ok(false);
                     }
-                    green = Some(Green { lookup: answer.lookup_time, index: 0, volume: point.volume() });
+                    green = Some(Green::part(answer.lookup_time, 0, point.volume()));
                     0
                 }
             }
@@ -375,9 +397,49 @@ impl Context {
         let mut edited_nodes = vec![false; nodes];
         let mut changed = false;
 
+        // A body volume change sets the head's volume too, through one green line both read
+        // (ADR 0042 point 6). It is decided first: if it cannot be saved, the head keeps its line.
+        let head_lookup = s.node_lookup_times[0];
+        let head_moment = moments.iter().find(|m| matches!(m.place(), Place::SliderNode { node: 0, .. }));
+        let mut body_volume_blocked = None;
+        let mut body_volume_placed = false;
+        if let Some(b) = body.filter(|b| b.volume_changed()) {
+            let volume = saved_volume(b.volume());
+            let head_point = Point(cp.sample_point_at(head_lookup));
+            let head_ok = match head_moment {
+                None => true,
+                Some(hm) => match native(hm) {
+                    Ok(Native { slot: Slot::Normal(_), volume: v, index, .. }) => {
+                        let (entry_index, entry_volume) = entries[0].map_or((0, 0), |h| (h.index, h.volume));
+                        let eff_index = if entry_index > 0 { entry_index } else { head_point.index() };
+                        v == volume && entry_volume == 0 && index.unwrap_or(0) as i32 == eff_index
+                    }
+                    _ => false,
+                },
+            };
+            let g = Green::head_and_body(head_lookup, answer.lookup_time, head_point.index(), volume);
+            body_volume_blocked = if !head_ok {
+                Some(ProblemKind::BodyVolumeNeedsHead)
+            } else {
+                self.needs_green().and_then(|()| self.place_green(trial, cp, answer.line, &g)).err()
+            };
+            body_volume_placed = body_volume_blocked.is_none();
+            if let Some(kind) = &body_volume_blocked {
+                problems.push(SaveProblem { time: b.start(), place: Place::SliderNode { object: b.object(), node: 0 }, kind: kind.clone() });
+            } else {
+                changed = true;
+            }
+        }
+
         for m in moments {
             let Place::SliderNode { node, .. } = m.place() else { continue };
             let problem = |problems: &mut Vec<SaveProblem>, kind| problems.push(SaveProblem { time: m.time(), place: m.place(), kind });
+            if node == 0 {
+                if let Some(kind) = &body_volume_blocked {
+                    problem(problems, kind.clone());
+                    continue;
+                }
+            }
             let want = match native(m) {
                 Ok(Native { slot: Slot::File(_), .. }) => {
                     problem(problems, mix_plan(m));
@@ -392,6 +454,8 @@ impl Context {
             let Slot::Normal(set) = want.slot else { continue };
             let lookup = s.node_lookup_times[node];
             let point = Point(cp.sample_point_at(lookup));
+            // The head's volume and index were placed with the body's green line.
+            let placed_with_body = node == 0 && body_volume_placed;
             let node = file_node(node);
             let banks = encode_banks(sets[node].0, sets[node].1, Some(set), want.addition_set, &point.bank());
             let index = want.index.unwrap_or(0) as i32;
@@ -401,19 +465,19 @@ impl Context {
             let eff_index = if entry_index > 0 { entry_index } else { point.index() };
             let eff_volume = if entry_volume > 0 { entry_volume } else { point.volume() };
             if (index != eff_index && entry_index > 0) || (want.volume != eff_volume && entry_volume > 0) {
-                // A green line cannot change what the entry holds, and ADR 0041 writes a node's
+                // A green line cannot change what the entry holds, and ADR 0042 writes a node's
                 // index and volume only on green lines.
                 problem(problems, ProblemKind::LineRefused);
                 continue;
             }
-            if index != eff_index || want.volume != eff_volume {
+            if !placed_with_body && (index != eff_index || want.volume != eff_volume) {
                 if let Err(kind) = self.needs_green() {
                     problem(problems, kind);
                     continue;
                 }
                 // Otherwise the node's index and volume come from the timing line (lazer reads
                 // only a slider's banks from its own hit sample).
-                let g = Green { lookup, index, volume: want.volume };
+                let g = Green::part(lookup, index, want.volume);
                 if let Err(kind) = self.place_green(trial, cp, answer.line, &g) {
                     problem(problems, kind);
                     continue;
@@ -426,11 +490,8 @@ impl Context {
         }
 
         // The body: its whistle is the slider's own hitsound flag, its set the slider's own normal
-        // bank, both shared with every node that has no edge entry of its own; its volume comes
-        // only from the timing line at the slider's lookup time.
-        let body_problem = |problems: &mut Vec<SaveProblem>, b: &SliderBody, kind| {
-            problems.push(SaveProblem { time: b.start(), place: Place::SliderNode { object: b.object(), node: 0 }, kind });
-        };
+        // bank, both shared with every node that has no edge entry of its own; its volume was
+        // placed above with the head's.
         let point = Point(cp.sample_point_at(answer.lookup_time));
         let whistle = body.filter(|b| b.whistle_changed()).map(SliderBody::whistle);
         let mut own_new = own;
@@ -441,14 +502,6 @@ impl Context {
             };
             own_new = encode_banks(own.0, own.1, b.set(), whistle_set, &point.bank());
         }
-        if let Some(b) = body.filter(|b| b.volume_changed()) {
-            let g = Green { lookup: answer.lookup_time, index: point.index(), volume: saved_volume(b.volume()) };
-            match self.needs_green().and_then(|()| self.place_green(trial, cp, answer.line, &g)) {
-                Ok(()) => changed = true,
-                Err(kind) => body_problem(problems, b, kind),
-            }
-        }
-
         let line = obj.line();
         let sounds_complete = fields.edge_sounds.as_ref().is_some_and(|e| e.len() >= nodes);
         if sounds != original_sounds || (whistle.is_some() && !sounds_complete) {
@@ -488,12 +541,12 @@ impl Context {
         Ok(changed)
     }
 
-    /// Adds a green line at `g.lookup - 5 ms` giving the part `g.index` and `g.volume`, with the
-    /// sample set, slider velocity, meter and effects already in force there, and a line 6 ms later
-    /// restoring what was in force before.
+    /// Adds a green line at `g.lookup - 5 ms` giving its readers `g.index` and `g.volume`, with the
+    /// sample set, slider velocity, meter and effects already in force there, and a line
+    /// `g.restore_after` later restoring what was in force before.
     fn place_green(&self, trial: &mut OsuFile, cp: &ControlPoints, own: LineId, g: &Green) -> Result<(), ProblemKind> {
         let at = g.lookup - CONTROL_POINT_LENIENCY;
-        let restore_at = at + WINDOW;
+        let restore_at = at + g.restore_after;
         let lines = trial.timing_points();
         if lines.iter().any(|t| {
             let time = t.time() + self.offset;
@@ -504,7 +557,7 @@ impl Context {
         // Any other lookup before the restoring line would read the new values, including another
         // part of the same object (a short slider's head, body or next node); one exactly at the
         // restoring line reads that line.
-        let other = |t: f64, line: LineId| !(line == own && t == g.lookup);
+        let other = |t: f64, line: LineId| !(line == own && g.readers.contains(&t));
         if self.lookups.iter().any(|(t, line)| other(*t, *line) && *t >= at && *t < restore_at) {
             return Err(ProblemKind::LookupWindowTaken);
         }
