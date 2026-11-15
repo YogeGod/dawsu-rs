@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- The lazer oracle (ADRs 0026, 0032): runs lazer's own packages over .osu files and writes
+       lazer's expected results as JSON. It is a tool, never shipped with dawsu!. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <!-- The pinned lazer release (2026.1026.0) targets net10.0 (ADR 0026 point 5). -->
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- All four rulesets, at the one pinned release (ADR 0032 point 1). -->
+    <PackageReference Include="ppy.osu.Game" Version="2026.1026.0" />
+    <PackageReference Include="ppy.osu.Game.Rulesets.Osu" Version="2026.1026.0" />
+    <PackageReference Include="ppy.osu.Game.Rulesets.Taiko" Version="2026.1026.0" />
+    <PackageReference Include="ppy.osu.Game.Rulesets.Catch" Version="2026.1026.0" />
+    <PackageReference Include="ppy.osu.Game.Rulesets.Mania" Version="2026.1026.0" />
+  </ItemGroup>
+</Project>

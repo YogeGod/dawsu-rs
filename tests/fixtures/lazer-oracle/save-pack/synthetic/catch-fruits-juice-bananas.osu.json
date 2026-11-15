@@ -1,0 +1,599 @@
+{
+  "header": {
+    "result_format_version": 1,
+    "input": "save-pack/synthetic/catch-fruits-juice-bananas.osu",
+    "input_sha256": "00f2b09d06bc1a1a4b3bfc84353ed1a7f3829aa6ba521aa0323f2d08b5e45141",
+    "lazer_version": "2026.1026.0\u002Bb94ee4d835d65683d027ae8f47a3e61fa4899ad4",
+    "mode": 2,
+    "ruleset": "fruits",
+    "format_version": 14
+  },
+  "hit_objects": [
+    {
+      "type": "Fruit",
+      "start_time": 0,
+      "samples": [
+        {
+          "kind": "legacy",
+          "name": "hitnormal",
+          "bank": "soft",
+          "suffix": null,
+          "volume": 70,
+          "editor_auto_bank": true,
+          "use_beatmap_samples": false,
+          "custom_sample_bank": 0,
+          "is_layered": false,
+          "bank_specified": true,
+          "lookup_names": [
+            "Gameplay/soft-hitnormal",
+            "Gameplay/hitnormal"
+          ]
+        }
+      ],
+      "auxiliary_samples": [],
+      "nested": []
+    },
+    {
+      "type": "Fruit",
+      "start_time": 500,
+      "samples": [
+        {
+          "kind": "legacy",
+          "name": "hitnormal",
+          "bank": "soft",
+          "suffix": null,
+          "volume": 70,
+          "editor_auto_bank": true,
+          "use_beatmap_samples": false,
+          "custom_sample_bank": 0,
+          "is_layered": true,
+          "bank_specified": true,
+          "lookup_names": [
+            "Gameplay/soft-hitnormal",
+            "Gameplay/hitnormal"
+          ]
+        },
+        {
+          "kind": "legacy",
+          "name": "hitwhistle",
+          "bank": "soft",
+          "suffix": null,
+          "volume": 70,
+          "editor_auto_bank": true,
+          "use_beatmap_samples": false,
+          "custom_sample_bank": 0,
+          "is_layered": false,
+          "bank_specified": true,
+          "lookup_names": [
+            "Gameplay/soft-hitwhistle",
+            "Gameplay/hitwhistle"
+          ]
+        }
+      ],
+      "auxiliary_samples": [],
+      "nested": []
+    },
+    {
+      "type": "JuiceStream",
+      "start_time": 1000,
+      "end_time": 1500,
+      "samples": [
+        {
+          "kind": "legacy",
+          "name": "hitnormal",
+          "bank": "soft",
+          "suffix": null,
+          "volume": 70,
+          "editor_auto_bank": true,
+          "use_beatmap_samples": false,
+          "custom_sample_bank": 0,
+          "is_layered": false,
+          "bank_specified": true,
+          "lookup_names": [
+            "Gameplay/soft-hitnormal",
+            "Gameplay/hitnormal"
+          ]
+        }
+      ],
+      "auxiliary_samples": [],
+      "nested": [
+        {
+          "type": "Fruit",
+          "start_time": 1000,
+          "samples": [
+            {
+              "kind": "legacy",
+              "name": "hitnormal",
+              "bank": "normal",
+              "suffix": null,
+              "volume": 70,
+              "editor_auto_bank": true,
+              "use_beatmap_samples": false,
+              "custom_sample_bank": 0,
+              "is_layered": true,
+              "bank_specified": true,
+              "lookup_names": [
+                "Gameplay/normal-hitnormal",
+                "Gameplay/hitnormal"
+              ]
+            },
+            {
+              "kind": "legacy",
+              "name": "hitwhistle",
+              "bank": "normal",
+              "suffix": null,
+              "volume": 70,
+              "editor_auto_bank": true,
+              "use_beatmap_samples": false,
+              "custom_sample_bank": 0,
+              "is_layered": false,
+              "bank_specified": true,
+              "lookup_names": [
+                "Gameplay/normal-hitwhistle",
+                "Gameplay/hitwhistle"
+              ]
+            }
+          ],
+          "auxiliary_samples": [],
+          "nested": []
+        },
+        {
+          "type": "TinyDroplet",
+          "start_time": 1058,
+          "samples": [],
+          "auxiliary_samples": [],
+          "nested": []
+        },
+        {
+          "type": "TinyDroplet",
+          "start_time": 1116,
+          "samples": [],
+          "auxiliary_samples": [],
+          "nested": []
+        },
+        {
+          "type": "TinyDroplet",
+          "start_time": 1174,
+          "samples": [],
+          "auxiliary_samples": [],
+          "nested": []
+        },
+        {
+          "type": "TinyDroplet",
+          "start_time": 1232,
+          "samples": [],
+          "auxiliary_samples": [],
+          "nested": []
+        },
+        {
+          "type": "TinyDroplet",
+          "start_time": 1290,
+          "samples": [],
+          "auxiliary_samples": [],
+          "nested": []
+        },
+        {
+          "type": "TinyDroplet",
+          "start_time": 1348,
+          "samples": [],
+          "auxiliary_samples": [],
+          "nested": []
+        },
+        {
+          "type": "TinyDroplet",
+          "start_time": 1406,
+          "samples": [],
+          "auxiliary_samples": [],
+          "nested": []
+        },
+        {
+          "type": "Fruit",
+          "start_time": 1500,
+          "samples": [
+            {
+              "kind": "legacy",
+              "name": "hitnormal",
+              "bank": "soft",
+              "suffix": null,
+              "volume": 70,
+              "editor_auto_bank": true,
+              "use_beatmap_samples": false,
+              "custom_sample_bank": 0,
+              "is_layered": false,
+              "bank_specified": true,
+              "lookup_names": [
+                "Gameplay/soft-hitnormal",
+                "Gameplay/hitnormal"
+              ]
+            }
+          ],
+          "auxiliary_samples": [],
+          "nested": []
+        }
+      ]
+    },
+    {
+      "type": "BananaShower",
+      "start_time": 2000,
+      "end_time": 3000,
+      "samples": [
+        {
+          "kind": "legacy",
+          "name": "hitnormal",
+          "bank": "soft",
+          "suffix": null,
+          "volume": 60,
+          "editor_auto_bank": true,
+          "use_beatmap_samples": true,
+          "custom_sample_bank": 1,
+          "is_layered": false,
+          "bank_specified": true,
+          "lookup_names": [
+            "Gameplay/soft-hitnormal",
+            "Gameplay/hitnormal"
+          ]
+        }
+      ],
+      "auxiliary_samples": [],
+      "nested": [
+        {
+          "type": "Banana",
+          "start_time": 2000,
+          "samples": [
+            {
+              "kind": "plain",
+              "name": "hitnormal",
+              "bank": "soft",
+              "suffix": null,
+              "volume": 60,
+              "editor_auto_bank": true,
+              "use_beatmap_samples": true,
+              "lookup_names": [
+                "Gameplay/metronomelow",
+                "Gameplay/catch-banana"
+              ]
+            }
+          ],
+          "auxiliary_samples": [],
+          "nested": []
+        },
+        {
+          "type": "Banana",
+          "start_time": 2062.5,
+          "samples": [
+            {
+              "kind": "plain",
+              "name": "hitnormal",
+              "bank": "soft",
+              "suffix": null,
+              "volume": 60,
+              "editor_auto_bank": true,
+              "use_beatmap_samples": true,
+              "lookup_names": [
+                "Gameplay/metronomelow",
+                "Gameplay/catch-banana"
+              ]
+            }
+          ],
+          "auxiliary_samples": [],
+          "nested": []
+        },
+        {
+          "type": "Banana",
+          "start_time": 2125,
+          "samples": [
+            {
+              "kind": "plain",
+              "name": "hitnormal",
+              "bank": "soft",
+              "suffix": null,
+              "volume": 60,
+              "editor_auto_bank": true,
+              "use_beatmap_samples": true,
+              "lookup_names": [
+                "Gameplay/metronomelow",
+                "Gameplay/catch-banana"
+              ]
+            }
+          ],
+          "auxiliary_samples": [],
+          "nested": []
+        },
+        {
+          "type": "Banana",
+          "start_time": 2187.5,
+          "samples": [
+            {
+              "kind": "plain",
+              "name": "hitnormal",
+              "bank": "soft",
+              "suffix": null,
+              "volume": 60,
+              "editor_auto_bank": true,
+              "use_beatmap_samples": true,
+              "lookup_names": [
+                "Gameplay/metronomelow",
+                "Gameplay/catch-banana"
+              ]
+            }
+          ],
+          "auxiliary_samples": [],
+          "nested": []
+        },
+        {
+          "type": "Banana",
+          "start_time": 2250,
+          "samples": [
+            {
+              "kind": "plain",
+              "name": "hitnormal",
+              "bank": "soft",
+              "suffix": null,
+              "volume": 60,
+              "editor_auto_bank": true,
+              "use_beatmap_samples": true,
+              "lookup_names": [
+                "Gameplay/metronomelow",
+                "Gameplay/catch-banana"
+              ]
+            }
+          ],
+          "auxiliary_samples": [],
+          "nested": []
+        },
+        {
+          "type": "Banana",
+          "start_time": 2312.5,
+          "samples": [
+            {
+              "kind": "plain",
+              "name": "hitnormal",
+              "bank": "soft",
+              "suffix": null,
+              "volume": 60,
+              "editor_auto_bank": true,
+              "use_beatmap_samples": true,
+              "lookup_names": [
+                "Gameplay/metronomelow",
+                "Gameplay/catch-banana"
+              ]
+            }
+          ],
+          "auxiliary_samples": [],
+          "nested": []
+        },
+        {
+          "type": "Banana",
+          "start_time": 2375,
+          "samples": [
+            {
+              "kind": "plain",
+              "name": "hitnormal",
+              "bank": "soft",
+              "suffix": null,
+              "volume": 60,
+              "editor_auto_bank": true,
+              "use_beatmap_samples": true,
+              "lookup_names": [
+                "Gameplay/metronomelow",
+                "Gameplay/catch-banana"
+              ]
+            }
+          ],
+          "auxiliary_samples": [],
+          "nested": []
+        },
+        {
+          "type": "Banana",
+          "start_time": 2437.5,
+          "samples": [
+            {
+              "kind": "plain",
+              "name": "hitnormal",
+              "bank": "soft",
+              "suffix": null,
+              "volume": 60,
+              "editor_auto_bank": true,
+              "use_beatmap_samples": true,
+              "lookup_names": [
+                "Gameplay/metronomelow",
+                "Gameplay/catch-banana"
+              ]
+            }
+          ],
+          "auxiliary_samples": [],
+          "nested": []
+        },
+        {
+          "type": "Banana",
+          "start_time": 2500,
+          "samples": [
+            {
+              "kind": "plain",
+              "name": "hitnormal",
+              "bank": "soft",
+              "suffix": null,
+              "volume": 60,
+              "editor_auto_bank": true,
+              "use_beatmap_samples": true,
+              "lookup_names": [
+                "Gameplay/metronomelow",
+                "Gameplay/catch-banana"
+              ]
+            }
+          ],
+          "auxiliary_samples": [],
+          "nested": []
+        },
+        {
+          "type": "Banana",
+          "start_time": 2562.5,
+          "samples": [
+            {
+              "kind": "plain",
+              "name": "hitnormal",
+              "bank": "soft",
+              "suffix": null,
+              "volume": 60,
+              "editor_auto_bank": true,
+              "use_beatmap_samples": true,
+              "lookup_names": [
+                "Gameplay/metronomelow",
+                "Gameplay/catch-banana"
+              ]
+            }
+          ],
+          "auxiliary_samples": [],
+          "nested": []
+        },
+        {
+          "type": "Banana",
+          "start_time": 2625,
+          "samples": [
+            {
+              "kind": "plain",
+              "name": "hitnormal",
+              "bank": "soft",
+              "suffix": null,
+              "volume": 60,
+              "editor_auto_bank": true,
+              "use_beatmap_samples": true,
+              "lookup_names": [
+                "Gameplay/metronomelow",
+                "Gameplay/catch-banana"
+              ]
+            }
+          ],
+          "auxiliary_samples": [],
+          "nested": []
+        },
+        {
+          "type": "Banana",
+          "start_time": 2687.5,
+          "samples": [
+            {
+              "kind": "plain",
+              "name": "hitnormal",
+              "bank": "soft",
+              "suffix": null,
+              "volume": 60,
+              "editor_auto_bank": true,
+              "use_beatmap_samples": true,
+              "lookup_names": [
+                "Gameplay/metronomelow",
+                "Gameplay/catch-banana"
+              ]
+            }
+          ],
+          "auxiliary_samples": [],
+          "nested": []
+        },
+        {
+          "type": "Banana",
+          "start_time": 2750,
+          "samples": [
+            {
+              "kind": "plain",
+              "name": "hitnormal",
+              "bank": "soft",
+              "suffix": null,
+              "volume": 60,
+              "editor_auto_bank": true,
+              "use_beatmap_samples": true,
+              "lookup_names": [
+                "Gameplay/metronomelow",
+                "Gameplay/catch-banana"
+              ]
+            }
+          ],
+          "auxiliary_samples": [],
+          "nested": []
+        },
+        {
+          "type": "Banana",
+          "start_time": 2812.5,
+          "samples": [
+            {
+              "kind": "plain",
+              "name": "hitnormal",
+              "bank": "soft",
+              "suffix": null,
+              "volume": 60,
+              "editor_auto_bank": true,
+              "use_beatmap_samples": true,
+              "lookup_names": [
+                "Gameplay/metronomelow",
+                "Gameplay/catch-banana"
+              ]
+            }
+          ],
+          "auxiliary_samples": [],
+          "nested": []
+        },
+        {
+          "type": "Banana",
+          "start_time": 2875,
+          "samples": [
+            {
+              "kind": "plain",
+              "name": "hitnormal",
+              "bank": "soft",
+              "suffix": null,
+              "volume": 60,
+              "editor_auto_bank": true,
+              "use_beatmap_samples": true,
+              "lookup_names": [
+                "Gameplay/metronomelow",
+                "Gameplay/catch-banana"
+              ]
+            }
+          ],
+          "auxiliary_samples": [],
+          "nested": []
+        },
+        {
+          "type": "Banana",
+          "start_time": 2937.5,
+          "samples": [
+            {
+              "kind": "plain",
+              "name": "hitnormal",
+              "bank": "soft",
+              "suffix": null,
+              "volume": 60,
+              "editor_auto_bank": true,
+              "use_beatmap_samples": true,
+              "lookup_names": [
+                "Gameplay/metronomelow",
+                "Gameplay/catch-banana"
+              ]
+            }
+          ],
+          "auxiliary_samples": [],
+          "nested": []
+        },
+        {
+          "type": "Banana",
+          "start_time": 3000,
+          "samples": [
+            {
+              "kind": "plain",
+              "name": "hitnormal",
+              "bank": "soft",
+              "suffix": null,
+              "volume": 60,
+              "editor_auto_bank": true,
+              "use_beatmap_samples": true,
+              "lookup_names": [
+                "Gameplay/metronomelow",
+                "Gameplay/catch-banana"
+              ]
+            }
+          ],
+          "auxiliary_samples": [],
+          "nested": []
+        }
+      ]
+    }
+  ]
+}

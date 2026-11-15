@@ -1,0 +1,272 @@
+{
+  "header": {
+    "result_format_version": 1,
+    "input": "save-pack/synthetic/mania-4k-holds-keysounds.osu",
+    "input_sha256": "abb0be5f836b3a32ecd1d813e7e0bbb1fb73b217512a89f22933bd8cd4972ffa",
+    "lazer_version": "2026.1026.0\u002Bb94ee4d835d65683d027ae8f47a3e61fa4899ad4",
+    "mode": 3,
+    "ruleset": "mania",
+    "format_version": 14
+  },
+  "hit_objects": [
+    {
+      "type": "Note",
+      "start_time": 0,
+      "samples": [
+        {
+          "kind": "legacy",
+          "name": "hitnormal",
+          "bank": "soft",
+          "suffix": null,
+          "volume": 70,
+          "editor_auto_bank": true,
+          "use_beatmap_samples": false,
+          "custom_sample_bank": 0,
+          "is_layered": false,
+          "bank_specified": true,
+          "lookup_names": [
+            "Gameplay/soft-hitnormal",
+            "Gameplay/hitnormal"
+          ]
+        }
+      ],
+      "auxiliary_samples": [],
+      "nested": []
+    },
+    {
+      "type": "HoldNote",
+      "start_time": 500,
+      "end_time": 1000,
+      "samples": [
+        {
+          "kind": "legacy",
+          "name": "hitnormal",
+          "bank": "soft",
+          "suffix": null,
+          "volume": 70,
+          "editor_auto_bank": true,
+          "use_beatmap_samples": false,
+          "custom_sample_bank": 0,
+          "is_layered": false,
+          "bank_specified": true,
+          "lookup_names": [
+            "Gameplay/soft-hitnormal",
+            "Gameplay/hitnormal"
+          ]
+        }
+      ],
+      "auxiliary_samples": [],
+      "nested": [
+        {
+          "type": "HeadNote",
+          "start_time": 500,
+          "samples": [
+            {
+              "kind": "legacy",
+              "name": "hitnormal",
+              "bank": "soft",
+              "suffix": null,
+              "volume": 70,
+              "editor_auto_bank": true,
+              "use_beatmap_samples": false,
+              "custom_sample_bank": 0,
+              "is_layered": false,
+              "bank_specified": true,
+              "lookup_names": [
+                "Gameplay/soft-hitnormal",
+                "Gameplay/hitnormal"
+              ]
+            }
+          ],
+          "auxiliary_samples": [],
+          "nested": []
+        },
+        {
+          "type": "HoldNoteBody",
+          "start_time": 500,
+          "end_time": 1000,
+          "samples": [],
+          "auxiliary_samples": [],
+          "nested": []
+        },
+        {
+          "type": "TailNote",
+          "start_time": 1000,
+          "samples": [],
+          "auxiliary_samples": [],
+          "nested": []
+        }
+      ]
+    },
+    {
+      "type": "Note",
+      "start_time": 500,
+      "samples": [
+        {
+          "kind": "file",
+          "name": "hitnormal",
+          "bank": "normal",
+          "suffix": null,
+          "volume": 70,
+          "editor_auto_bank": false,
+          "use_beatmap_samples": true,
+          "custom_sample_bank": 1,
+          "is_layered": false,
+          "bank_specified": true,
+          "filename": "key-a.wav",
+          "lookup_names": [
+            "key-a.wav",
+            "key-a",
+            "Gameplay/normal-hitnormal",
+            "Gameplay/hitnormal"
+          ]
+        },
+        {
+          "kind": "legacy",
+          "name": "hitwhistle",
+          "bank": "soft",
+          "suffix": null,
+          "volume": 70,
+          "editor_auto_bank": true,
+          "use_beatmap_samples": false,
+          "custom_sample_bank": 0,
+          "is_layered": false,
+          "bank_specified": true,
+          "lookup_names": [
+            "Gameplay/soft-hitwhistle",
+            "Gameplay/hitwhistle"
+          ]
+        }
+      ],
+      "auxiliary_samples": [],
+      "nested": []
+    },
+    {
+      "type": "HoldNote",
+      "start_time": 1000,
+      "end_time": 1800,
+      "samples": [
+        {
+          "kind": "file",
+          "name": "hitnormal",
+          "bank": "normal",
+          "suffix": null,
+          "volume": 80,
+          "editor_auto_bank": false,
+          "use_beatmap_samples": true,
+          "custom_sample_bank": 1,
+          "is_layered": false,
+          "bank_specified": true,
+          "filename": "key-hold.wav",
+          "lookup_names": [
+            "key-hold.wav",
+            "key-hold",
+            "Gameplay/normal-hitnormal",
+            "Gameplay/hitnormal"
+          ]
+        },
+        {
+          "kind": "legacy",
+          "name": "hitclap",
+          "bank": "normal",
+          "suffix": null,
+          "volume": 80,
+          "editor_auto_bank": false,
+          "use_beatmap_samples": false,
+          "custom_sample_bank": 0,
+          "is_layered": false,
+          "bank_specified": true,
+          "lookup_names": [
+            "Gameplay/normal-hitclap",
+            "Gameplay/hitclap"
+          ]
+        }
+      ],
+      "auxiliary_samples": [],
+      "nested": [
+        {
+          "type": "HeadNote",
+          "start_time": 1000,
+          "samples": [
+            {
+              "kind": "file",
+              "name": "hitnormal",
+              "bank": "normal",
+              "suffix": null,
+              "volume": 80,
+              "editor_auto_bank": false,
+              "use_beatmap_samples": true,
+              "custom_sample_bank": 1,
+              "is_layered": false,
+              "bank_specified": true,
+              "filename": "key-hold.wav",
+              "lookup_names": [
+                "key-hold.wav",
+                "key-hold",
+                "Gameplay/normal-hitnormal",
+                "Gameplay/hitnormal"
+              ]
+            },
+            {
+              "kind": "legacy",
+              "name": "hitclap",
+              "bank": "normal",
+              "suffix": null,
+              "volume": 80,
+              "editor_auto_bank": false,
+              "use_beatmap_samples": false,
+              "custom_sample_bank": 0,
+              "is_layered": false,
+              "bank_specified": true,
+              "lookup_names": [
+                "Gameplay/normal-hitclap",
+                "Gameplay/hitclap"
+              ]
+            }
+          ],
+          "auxiliary_samples": [],
+          "nested": []
+        },
+        {
+          "type": "HoldNoteBody",
+          "start_time": 1000,
+          "end_time": 1800,
+          "samples": [],
+          "auxiliary_samples": [],
+          "nested": []
+        },
+        {
+          "type": "TailNote",
+          "start_time": 1800,
+          "samples": [],
+          "auxiliary_samples": [],
+          "nested": []
+        }
+      ]
+    },
+    {
+      "type": "Note",
+      "start_time": 1500,
+      "samples": [
+        {
+          "kind": "legacy",
+          "name": "hitnormal",
+          "bank": "soft",
+          "suffix": null,
+          "volume": 70,
+          "editor_auto_bank": true,
+          "use_beatmap_samples": false,
+          "custom_sample_bank": 0,
+          "is_layered": false,
+          "bank_specified": true,
+          "lookup_names": [
+            "Gameplay/soft-hitnormal",
+            "Gameplay/hitnormal"
+          ]
+        }
+      ],
+      "auxiliary_samples": [],
+      "nested": []
+    }
+  ]
+}

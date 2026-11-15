@@ -1,0 +1,415 @@
+{
+  "header": {
+    "result_format_version": 1,
+    "input": "save-pack/synthetic/mixed-line-endings.osu",
+    "input_sha256": "682222e368bfa1ace23465983660e39a3218f7f38fd3ffeb22f4546f5f202fbe",
+    "lazer_version": "2026.1026.0\u002Bb94ee4d835d65683d027ae8f47a3e61fa4899ad4",
+    "mode": 0,
+    "ruleset": "osu",
+    "format_version": 14
+  },
+  "hit_objects": [
+    {
+      "type": "HitCircle",
+      "start_time": 0,
+      "samples": [
+        {
+          "kind": "legacy",
+          "name": "hitnormal",
+          "bank": "soft",
+          "suffix": null,
+          "volume": 70,
+          "editor_auto_bank": true,
+          "use_beatmap_samples": false,
+          "custom_sample_bank": 0,
+          "is_layered": false,
+          "bank_specified": true,
+          "lookup_names": [
+            "Gameplay/soft-hitnormal",
+            "Gameplay/hitnormal"
+          ]
+        }
+      ],
+      "auxiliary_samples": [],
+      "nested": []
+    },
+    {
+      "type": "HitCircle",
+      "start_time": 500,
+      "samples": [
+        {
+          "kind": "legacy",
+          "name": "hitnormal",
+          "bank": "normal",
+          "suffix": null,
+          "volume": 70,
+          "editor_auto_bank": true,
+          "use_beatmap_samples": false,
+          "custom_sample_bank": 0,
+          "is_layered": true,
+          "bank_specified": true,
+          "lookup_names": [
+            "Gameplay/normal-hitnormal",
+            "Gameplay/hitnormal"
+          ]
+        },
+        {
+          "kind": "legacy",
+          "name": "hitwhistle",
+          "bank": "soft",
+          "suffix": null,
+          "volume": 70,
+          "editor_auto_bank": false,
+          "use_beatmap_samples": false,
+          "custom_sample_bank": 0,
+          "is_layered": false,
+          "bank_specified": true,
+          "lookup_names": [
+            "Gameplay/soft-hitwhistle",
+            "Gameplay/hitwhistle"
+          ]
+        }
+      ],
+      "auxiliary_samples": [],
+      "nested": []
+    },
+    {
+      "type": "Slider",
+      "start_time": 1000,
+      "end_time": 2000,
+      "slider": {
+        "beat_length": 500,
+        "slider_velocity_multiplier": 1,
+        "velocity": 0.28,
+        "path_distance": 140,
+        "span_duration": 500,
+        "tick_distance": 140,
+        "tick_distance_multiplier": 1,
+        "generate_ticks": true,
+        "repeat_count": 1
+      },
+      "samples": [
+        {
+          "kind": "legacy",
+          "name": "hitnormal",
+          "bank": "soft",
+          "suffix": null,
+          "volume": 70,
+          "editor_auto_bank": true,
+          "use_beatmap_samples": false,
+          "custom_sample_bank": 0,
+          "is_layered": false,
+          "bank_specified": true,
+          "lookup_names": [
+            "Gameplay/soft-hitnormal",
+            "Gameplay/hitnormal"
+          ]
+        }
+      ],
+      "auxiliary_samples": [
+        {
+          "kind": "legacy",
+          "name": "sliderslide",
+          "bank": "soft",
+          "suffix": null,
+          "volume": 70,
+          "editor_auto_bank": true,
+          "use_beatmap_samples": false,
+          "custom_sample_bank": 0,
+          "is_layered": false,
+          "bank_specified": true,
+          "lookup_names": [
+            "Gameplay/soft-sliderslide",
+            "Gameplay/sliderslide"
+          ]
+        },
+        {
+          "kind": "legacy",
+          "name": "hitnormal",
+          "bank": "soft",
+          "suffix": null,
+          "volume": 60,
+          "editor_auto_bank": true,
+          "use_beatmap_samples": true,
+          "custom_sample_bank": 1,
+          "is_layered": false,
+          "bank_specified": true,
+          "lookup_names": [
+            "Gameplay/soft-hitnormal",
+            "Gameplay/hitnormal"
+          ]
+        }
+      ],
+      "sliding_samples": [
+        {
+          "kind": "legacy",
+          "name": "sliderslide",
+          "bank": "soft",
+          "suffix": null,
+          "volume": 70,
+          "editor_auto_bank": true,
+          "use_beatmap_samples": false,
+          "custom_sample_bank": 0,
+          "is_layered": false,
+          "bank_specified": true,
+          "lookup_names": [
+            "Gameplay/soft-sliderslide",
+            "Gameplay/sliderslide"
+          ]
+        }
+      ],
+      "nested": [
+        {
+          "type": "SliderHeadCircle",
+          "start_time": 1000,
+          "samples": [
+            {
+              "kind": "legacy",
+              "name": "hitnormal",
+              "bank": "normal",
+              "suffix": null,
+              "volume": 70,
+              "editor_auto_bank": true,
+              "use_beatmap_samples": false,
+              "custom_sample_bank": 0,
+              "is_layered": true,
+              "bank_specified": true,
+              "lookup_names": [
+                "Gameplay/normal-hitnormal",
+                "Gameplay/hitnormal"
+              ]
+            },
+            {
+              "kind": "legacy",
+              "name": "hitwhistle",
+              "bank": "normal",
+              "suffix": null,
+              "volume": 70,
+              "editor_auto_bank": true,
+              "use_beatmap_samples": false,
+              "custom_sample_bank": 0,
+              "is_layered": false,
+              "bank_specified": true,
+              "lookup_names": [
+                "Gameplay/normal-hitwhistle",
+                "Gameplay/hitwhistle"
+              ]
+            }
+          ],
+          "auxiliary_samples": [],
+          "nested": []
+        },
+        {
+          "type": "SliderRepeat",
+          "start_time": 1500,
+          "samples": [
+            {
+              "kind": "legacy",
+              "name": "hitnormal",
+              "bank": "soft",
+              "suffix": null,
+              "volume": 70,
+              "editor_auto_bank": true,
+              "use_beatmap_samples": false,
+              "custom_sample_bank": 0,
+              "is_layered": true,
+              "bank_specified": true,
+              "lookup_names": [
+                "Gameplay/soft-hitnormal",
+                "Gameplay/hitnormal"
+              ]
+            },
+            {
+              "kind": "legacy",
+              "name": "hitclap",
+              "bank": "drum",
+              "suffix": null,
+              "volume": 70,
+              "editor_auto_bank": false,
+              "use_beatmap_samples": false,
+              "custom_sample_bank": 0,
+              "is_layered": false,
+              "bank_specified": true,
+              "lookup_names": [
+                "Gameplay/drum-hitclap",
+                "Gameplay/hitclap"
+              ]
+            }
+          ],
+          "auxiliary_samples": [],
+          "nested": []
+        },
+        {
+          "type": "SliderTailCircle",
+          "start_time": 2000,
+          "samples": [],
+          "auxiliary_samples": [],
+          "nested": []
+        }
+      ]
+    },
+    {
+      "type": "Spinner",
+      "start_time": 2000,
+      "end_time": 3000,
+      "samples": [
+        {
+          "kind": "legacy",
+          "name": "hitnormal",
+          "bank": "soft",
+          "suffix": null,
+          "volume": 60,
+          "editor_auto_bank": true,
+          "use_beatmap_samples": true,
+          "custom_sample_bank": 1,
+          "is_layered": false,
+          "bank_specified": true,
+          "lookup_names": [
+            "Gameplay/soft-hitnormal",
+            "Gameplay/hitnormal"
+          ]
+        }
+      ],
+      "auxiliary_samples": [
+        {
+          "kind": "legacy",
+          "name": "spinnerspin",
+          "bank": "soft",
+          "suffix": null,
+          "volume": 60,
+          "editor_auto_bank": true,
+          "use_beatmap_samples": true,
+          "custom_sample_bank": 1,
+          "is_layered": false,
+          "bank_specified": true,
+          "lookup_names": [
+            "Gameplay/soft-spinnerspin",
+            "Gameplay/spinnerspin"
+          ]
+        }
+      ],
+      "nested": [
+        {
+          "type": "SpinnerTick",
+          "start_time": 2166.6666716337204,
+          "samples": [],
+          "auxiliary_samples": [],
+          "nested": []
+        },
+        {
+          "type": "SpinnerTick",
+          "start_time": 2333.333343267441,
+          "samples": [],
+          "auxiliary_samples": [],
+          "nested": []
+        },
+        {
+          "type": "SpinnerTick",
+          "start_time": 2500,
+          "samples": [],
+          "auxiliary_samples": [],
+          "nested": []
+        },
+        {
+          "type": "SpinnerTick",
+          "start_time": 2666.6666865348816,
+          "samples": [],
+          "auxiliary_samples": [],
+          "nested": []
+        },
+        {
+          "type": "SpinnerBonusTick",
+          "start_time": 2833.3333134651184,
+          "samples": [
+            {
+              "kind": "legacy",
+              "name": "spinnerbonus",
+              "bank": "soft",
+              "suffix": null,
+              "volume": 60,
+              "editor_auto_bank": true,
+              "use_beatmap_samples": true,
+              "custom_sample_bank": 1,
+              "is_layered": false,
+              "bank_specified": true,
+              "lookup_names": [
+                "Gameplay/soft-spinnerbonus",
+                "Gameplay/spinnerbonus"
+              ]
+            }
+          ],
+          "auxiliary_samples": [],
+          "nested": []
+        },
+        {
+          "type": "SpinnerBonusTick",
+          "start_time": 3000,
+          "samples": [
+            {
+              "kind": "legacy",
+              "name": "spinnerbonus",
+              "bank": "soft",
+              "suffix": null,
+              "volume": 60,
+              "editor_auto_bank": true,
+              "use_beatmap_samples": true,
+              "custom_sample_bank": 1,
+              "is_layered": false,
+              "bank_specified": true,
+              "lookup_names": [
+                "Gameplay/soft-spinnerbonus",
+                "Gameplay/spinnerbonus"
+              ]
+            }
+          ],
+          "auxiliary_samples": [],
+          "nested": []
+        }
+      ]
+    },
+    {
+      "type": "HitCircle",
+      "start_time": 3500,
+      "samples": [
+        {
+          "kind": "file",
+          "name": "hitnormal",
+          "bank": "normal",
+          "suffix": null,
+          "volume": 40,
+          "editor_auto_bank": false,
+          "use_beatmap_samples": true,
+          "custom_sample_bank": 1,
+          "is_layered": false,
+          "bank_specified": true,
+          "filename": "clap-custom.wav",
+          "lookup_names": [
+            "clap-custom.wav",
+            "clap-custom",
+            "Gameplay/normal-hitnormal",
+            "Gameplay/hitnormal"
+          ]
+        },
+        {
+          "kind": "legacy",
+          "name": "hitclap",
+          "bank": "soft",
+          "suffix": "3",
+          "volume": 40,
+          "editor_auto_bank": true,
+          "use_beatmap_samples": true,
+          "custom_sample_bank": 3,
+          "is_layered": false,
+          "bank_specified": true,
+          "lookup_names": [
+            "Gameplay/soft-hitclap3",
+            "Gameplay/soft-hitclap",
+            "Gameplay/hitclap"
+          ]
+        }
+      ],
+      "auxiliary_samples": [],
+      "nested": []
+    }
+  ]
+}

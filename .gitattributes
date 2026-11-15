@@ -1,2 +1,5 @@
 # The save pack must keep its exact bytes: git never changes its line endings (ADR 0033).
 tests/fixtures/save-pack/** -text
+# The lazer oracle's results and its hand-made input maps keep their exact bytes too.
+tests/fixtures/lazer-oracle/** -text
+tests/fixtures/oracle-cases/** -text
