@@ -9,7 +9,7 @@ pub mod number;
 mod records;
 
 pub use error::Error;
-pub use file::{round_trip_check, ChangeSummary, LineEnding, LineView, OsuFile, Read, ReadWarning, Refusal, RoundTripReport, SaveOutcome, SetOutcome};
+pub use file::{round_trip_check, ChangeSummary, LineEnding, LineView, OsuFile, Read, ReadWarning, Refusal, RoundTripReport, SaveOutcome, SetOutcome, StoryboardSample};
 pub use folder::{check_map_path, find_case_insensitive, list_folder, PathRefusal};
 pub use records::{HitObject, HitSample, ObjectKind, SliderFields, TimingPoint};
 

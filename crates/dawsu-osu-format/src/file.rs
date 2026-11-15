@@ -95,6 +95,22 @@ pub enum Refusal {
     WrongKind,
     /// A field before the one to set is missing and cannot be filled with what osu! played.
     CannotFill,
+    /// The text holds a line break, which would make it two lines.
+    LineBreak,
+}
+
+/// A storyboard sample line of `[Events]`, read as lazer reads it
+/// (`LegacyStoryboardDecoder.cs:186-194` at 131fe72): `Sample,time,layer,"path",volume`, or `5,...`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StoryboardSample {
+    pub line: LineId,
+    pub time: f64,
+    /// The layer as written (a number or a name).
+    pub layer: String,
+    /// The path with its quotes removed.
+    pub path: String,
+    /// 100 when the line has no volume.
+    pub volume: f32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -314,20 +330,101 @@ impl OsuFile {
         self.value("General", key)
     }
 
-    /// A `key: value` from `section` (such as `[Difficulty] SliderMultiplier`), trimmed.
+    /// A `key: value` from `section` (such as `[Difficulty] SliderMultiplier`), trimmed. Of several
+    /// lines for one key the last counts, since lazer assigns the value for every line it reads
+    /// (`LegacyBeatmapDecoder.cs:351-380` at 131fe72).
     pub fn value(&self, section_name: &str, key: &str) -> Option<String> {
-        for line in &self.lines {
+        let i = self.value_line(section_name, key)?;
+        let text = logical_text(&self.lines[i].content, Some(section_name))?;
+        text.split_once(':').map(|(_, v)| v.trim().to_string())
+    }
+
+    /// The index of the last `key:value` line for `key` in `section`.
+    fn value_line(&self, section_name: &str, key: &str) -> Option<usize> {
+        self.lines.iter().enumerate().rev().find_map(|(i, line)| {
             if line.section.as_deref() != Some(section_name) {
-                continue;
+                return None;
             }
-            let Some(text) = logical_text(&line.content, Some(section_name)) else { continue };
-            if let Some((k, v)) = text.split_once(':') {
-                if k.trim() == key {
-                    return Some(v.trim().to_string());
+            let text = logical_text(&line.content, Some(section_name))?;
+            let (k, _) = text.split_once(':')?;
+            (k.trim() == key).then_some(i)
+        })
+    }
+
+    /// Sets the value of the last `key:value` line for `key` in `section`, keeping the key and the
+    /// spacing after its colon. A missing line is added at the end of the section, and a missing
+    /// section in osu!'s order (Responsibility 4).
+    pub fn set_value(&mut self, section_name: &str, key: &str, text: &str) -> Result<SetOutcome, Refusal> {
+        if text.contains(['\r', '\n']) {
+            return Err(Refusal::LineBreak);
+        }
+        match self.value_line(section_name, key) {
+            Some(i) => {
+                let content = std::str::from_utf8(&self.lines[i].content).map_err(|_| Refusal::NotUtf8)?;
+                let colon = content.find(':').ok_or(Refusal::WrongKind)?;
+                let rest = &content[colon + 1..];
+                let spacing = &rest[..rest.len() - rest.trim_start().len()];
+                let new = format!("{}{spacing}{text}", &content[..=colon]);
+                if new.as_bytes() == self.lines[i].content.as_slice() {
+                    return Ok(SetOutcome::Unchanged);
                 }
+                let line = &mut self.lines[i];
+                line.content = new.into_bytes();
+                line.edited = line.content != line.original || line.origin == Origin::Inserted;
+                Ok(SetOutcome::Changed)
+            }
+            None => {
+                // osu! writes `[General]` and `[Editor]` values after ": ", the others after ":".
+                let separator = if matches!(section_name, "General" | "Editor") { ": " } else { ":" };
+                let after = self.last_line_of(section_name);
+                self.insert_after(Some(after), &format!("{key}{separator}{text}"));
+                Ok(SetOutcome::Changed)
             }
         }
-        None
+    }
+
+    /// The index of the last non-blank line of `section` (its header when it has none), adding
+    /// the section when it is missing.
+    fn last_line_of(&mut self, section_name: &str) -> usize {
+        let header = self.ensure_section(section_name);
+        let mut after = header;
+        for i in header + 1..self.lines.len() {
+            if self.lines[i].section.as_deref() != Some(section_name) {
+                break;
+            }
+            if logical_text(&self.lines[i].content, Some(section_name)).is_some() {
+                after = i;
+            }
+        }
+        after
+    }
+
+    /// Every storyboard sample line of `[Events]` lazer can read, in file order (Responsibility 11).
+    pub fn storyboard_samples(&self) -> Vec<StoryboardSample> {
+        self.records_in("Events")
+            .into_iter()
+            .filter_map(|(_, line, text)| {
+                let split: Vec<&str> = text.split(',').collect();
+                if !matches!(split.first().map(|s| s.trim()), Some("Sample" | "5")) || split.len() < 4 {
+                    return None;
+                }
+                let time = crate::number::parse_double(split[1], crate::number::MAX_PARSE_VALUE, false).ok()?;
+                let volume = match split.get(4) {
+                    Some(v) => crate::number::parse_float(v, crate::number::MAX_PARSE_VALUE).ok()?,
+                    None => 100.0,
+                };
+                Some(StoryboardSample { line, time, layer: split[2].trim().to_string(), path: split[3].trim().trim_matches('"').to_string(), volume })
+            })
+            .collect()
+    }
+
+    /// Removes one storyboard sample line (Responsibility 5).
+    pub fn remove_storyboard_sample(&mut self, id: LineId) -> Result<(), Refusal> {
+        if !self.storyboard_samples().iter().any(|s| s.line == id) {
+            return Err(if self.index_of(id).is_some() { Refusal::WrongKind } else { Refusal::NotFound });
+        }
+        self.remove_line(id, "Events");
+        Ok(())
     }
 
     fn records_in(&self, section_name: &str) -> Vec<(usize, LineId, String)> {
@@ -582,17 +679,7 @@ impl OsuFile {
 
     /// Adds a storyboard sample line at the end of `[Events]`.
     pub fn insert_storyboard_sample(&mut self, text: &str) -> LineId {
-        let header = self.ensure_section("Events");
-        let sections = self.sections();
-        let mut after = header;
-        for i in header + 1..self.lines.len() {
-            if sections[i].as_deref() != Some("Events") {
-                break;
-            }
-            if logical_text(&self.lines[i].content, Some("Events")).is_some() {
-                after = i;
-            }
-        }
+        let after = self.last_line_of("Events");
         self.insert_after(Some(after), text)
     }
 
