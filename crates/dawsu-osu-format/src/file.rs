@@ -116,10 +116,30 @@ pub struct StoryboardSample {
     pub time: f64,
     /// The layer as written (a number or a name).
     pub layer: String,
-    /// The path with its quotes removed.
+    /// The path lazer looks up: variables replaced, `\\` made `\`, quotes trimmed, `\` made `/`.
     pub path: String,
-    /// 100 when the line has no volume.
+    /// The path field as written, variables and quotes kept, for writing the line again.
+    pub raw_path: String,
+    /// 100 when the line has no volume; truncated and never clamped, as lazer reads it.
     pub volume: f32,
+}
+
+/// A storyboard sample event (`Sample` or `5`) at no indent, or `None`.
+fn sample_line(line: LineId, text: &str, as_written: &str) -> Option<StoryboardSample> {
+    if text.starts_with([' ', '_']) {
+        return None;
+    }
+    let split: Vec<&str> = text.split(',').collect();
+    if !matches!(split.first().map(|s| s.trim()), Some("Sample" | "5")) || split.len() < 4 {
+        return None;
+    }
+    let time = crate::number::parse_double(split[1], crate::number::MAX_PARSE_VALUE, false).ok()?;
+    let volume = match split.get(4) {
+        Some(v) => crate::number::parse_float(v, crate::number::MAX_PARSE_VALUE).ok()?.trunc(),
+        None => 100.0,
+    };
+    let path = split[3].replace("\\\\", "\\").trim_matches('"').replace('\\', "/");
+    Some(StoryboardSample { line, time, layer: split[2].trim().to_string(), path, raw_path: as_written.split(',').nth(3).unwrap_or(split[3]).to_string(), volume })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -408,23 +428,53 @@ impl OsuFile {
         after
     }
 
-    /// Every storyboard sample line of `[Events]` lazer can read, in file order (Responsibility 11).
+    /// Every storyboard sample line of `[Events]` lazer can read, in file order (Responsibility 11),
+    /// with this file's own `[Variables]`. For a `.osb`, use [`OsuFile::storyboard_samples_after`].
     pub fn storyboard_samples(&self) -> Vec<StoryboardSample> {
-        self.records_in("Events")
-            .into_iter()
-            .filter_map(|(_, line, text)| {
-                let split: Vec<&str> = text.split(',').collect();
-                if !matches!(split.first().map(|s| s.trim()), Some("Sample" | "5")) || split.len() < 4 {
-                    return None;
+        self.samples_with(Vec::new()).0
+    }
+
+    /// The storyboard samples of a `.osb` read after its `.osu`: lazer reads both with one
+    /// storyboard decoder, the `.osu` first, so the `.osu`'s variables carry into the `.osb`, never
+    /// back (`LegacyStoryboardDecoder.cs` and `WorkingBeatmapCache.cs` at 131fe72).
+    pub fn storyboard_samples_after(&self, earlier: &OsuFile) -> Vec<StoryboardSample> {
+        self.samples_with(earlier.samples_with(Vec::new()).1).0
+    }
+
+    /// The sample lines, and the variables in force at the end. As lazer at 131fe72: a variable
+    /// line is split at its first `=` with nothing trimmed (no `=`: the whole line, empty value);
+    /// a name defined again keeps its place with the new value; a variable applies only to the
+    /// lines after it; an `[Events]` line holding `$` has each variable replaced in turn, plainly,
+    /// before it is split.
+    fn samples_with(&self, mut vars: Vec<(String, String)>) -> (Vec<StoryboardSample>, Vec<(String, String)>) {
+        let mut out = Vec::new();
+        for line in &self.lines {
+            let section = line.section.as_deref();
+            let Some(text) = logical_text(&line.content, section) else { continue };
+            if header_name(&text).is_some() {
+                continue;
+            }
+            match section {
+                Some("Variables") => {
+                    let (key, value) = text.split_once('=').unwrap_or((&text, ""));
+                    match vars.iter_mut().find(|(k, _)| k == key) {
+                        Some(v) => v.1 = value.to_string(),
+                        None => vars.push((key.to_string(), value.to_string())),
+                    }
                 }
-                let time = crate::number::parse_double(split[1], crate::number::MAX_PARSE_VALUE, false).ok()?;
-                let volume = match split.get(4) {
-                    Some(v) => crate::number::parse_float(v, crate::number::MAX_PARSE_VALUE).ok()?,
-                    None => 100.0,
-                };
-                Some(StoryboardSample { line, time, layer: split[2].trim().to_string(), path: split[3].trim().trim_matches('"').to_string(), volume })
-            })
-            .collect()
+                Some("Events") => {
+                    let mut replaced = text.clone();
+                    if replaced.contains('$') {
+                        for (k, v) in &vars {
+                            replaced = replaced.replace(k.as_str(), v);
+                        }
+                    }
+                    out.extend(sample_line(line.id, &replaced, &text));
+                }
+                _ => {}
+            }
+        }
+        (out, vars)
     }
 
     /// Removes one storyboard sample line (Responsibility 5).

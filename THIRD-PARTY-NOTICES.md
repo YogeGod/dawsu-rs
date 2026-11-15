@@ -74,3 +74,20 @@ Each is used under its MIT Licence (where a crate offers a choice, MIT is the on
 - serde 1.0.229, serde_core 1.0.229, serde_derive 1.0.229 and serde_json 1.0.154 (read and write `.dawsudrum` files, ADR 0047): Erick Tryzelaar and David Tolnay; no copyright line in the licence file
 - itoa 1.0.19 and zmij 1.0.23 (used by serde_json): David Tolnay; no copyright line in the licence file
 - At build time only (procedural macros, not shipped): proc-macro2, quote, syn and unicode-ident (MIT; unicode-ident's Unicode data is under the Unicode License v3)
+
+## Rust crates used by `dawsu-osu-format`
+
+Used to read and write `.osz` archives (ADR 0048). Each is used under its MIT Licence where it offers a choice; the permission notice is the one above, and the copyright lines are those of each crate's licence file.
+
+- zip 9.6.0: Copyright (c) 2014 Mathijs van de Nes
+- flate2 1.1.11: Copyright (c) 2014-2026 Alex Crichton
+- crc32fast 1.5.5: Copyright (c) 2018 Sam Rijs, Alex Crichton and contributors
+- cfg-if 1.0.5: Copyright (c) 2014 Alex Crichton
+- hashbrown 0.17.1: Copyright (c) 2016 Amanieu d'Antras
+- indexmap 2.14.2 and equivalent 1.0.3: the indexmap authors (licence files without a name)
+- typed-path 0.13.0: Chip Senkbeil (no copyright line in the licence file)
+- zeroize 1.9.1 and zeroize_derive 1.5.0: Copyright (c) 2018-2026 The RustCrypto Project Developers
+- getrandom 0.4.3: Copyright (c) 2018-2026 The rust-random Project Developers
+- windows-sys 0.61.2 and windows-link 0.2.1 (Windows only): Copyright (c) Microsoft Corporation
+- constant_time_eq 0.6.1: used under MIT-0, which asks for no notice; listed for completeness
+- zlib-rs 0.6.8: (C) 2024 Trifecta Tech Foundation, under the zlib licence, which asks only that its origin is not misrepresented and that its notice stays in its source

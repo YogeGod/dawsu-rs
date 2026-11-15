@@ -539,7 +539,8 @@ fn copy_storyboard_samples(source_file: &OsuFile, file: &mut OsuFile, to: &Hitso
         if !existing.insert(key(s.time, &s.layer, &s.path, s.volume)) {
             continue;
         }
-        file.insert_storyboard_sample(&format!("Sample,{},{},\"{}\",{}", number(s.time), s.layer, s.path, number(f64::from(s.volume))));
+        // The path field as the source writes it (old app `HitsoundCopier`), quotes and all.
+        file.insert_storyboard_sample(&format!("Sample,{},{},{},{}", number(s.time), s.layer, s.raw_path, number(f64::from(s.volume))));
     }
 }
 

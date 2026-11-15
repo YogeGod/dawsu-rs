@@ -99,3 +99,26 @@ fn storyboard_samples_are_listed_in_both_forms_and_removed_one_by_one() {
     assert!(whole.storyboard_samples().is_empty());
     assert_eq!(whole.remove_storyboard_sample(line), Err(Refusal::NotFound));
 }
+
+// ---------------------------------------------------------------- .osb samples and [Variables]
+// (last-four-parts plan, part C; lazer's LegacyStoryboardDecoder at 131fe72)
+
+#[test]
+fn osb_variables_are_replaced_before_a_sample_line_is_read_and_the_raw_text_is_kept() {
+    let osb = OsuFile::read(b"[Variables]\r\n$fx=sfx/boom\r\n$v=70\r\n$fx=sfx/bang\r\n\r\n[Events]\r\nSample,1000,0,\"$fx.wav\",$v\r\n5,2000,3,\"a\\\\b.wav\"\r\n Sample,3000,0,\"indented.wav\"\r\nSample,4000,0,\"loud.wav\",150.7\r\n".to_vec()).file;
+    let s = osb.storyboard_samples();
+    assert_eq!(s.iter().map(|s| (s.time, s.path.as_str(), s.volume)).collect::<Vec<_>>(), [(1000.0, "sfx/bang.wav", 70.0), (2000.0, "a/b.wav", 100.0), (4000.0, "loud.wav", 150.0)], "last definition wins, no indent, truncated and not clamped");
+    assert_eq!(s[0].raw_path, "\"$fx.wav\"", "the field as written, for writing back");
+}
+
+#[test]
+fn a_variable_applies_only_after_it_and_the_osu_s_variables_carry_into_the_osb() {
+    let osu = OsuFile::read(b"osu file format v14\r\n\r\n[Events]\r\nSample,500,0,\"$late.wav\"\r\n\r\n[Variables]\r\n$late=early\r\n$from_osu=shared\r\n".to_vec()).file;
+    assert_eq!(osu.storyboard_samples()[0].path, "$late.wav", "defined after the line, so not replaced");
+    let osb = OsuFile::read(b"[Events]\r\nSample,1000,0,\"$from_osu.wav\"\r\n".to_vec()).file;
+    assert_eq!(osb.storyboard_samples()[0].path, "$from_osu.wav", "alone, the .osb has no such variable");
+    assert_eq!(osb.storyboard_samples_after(&osu)[0].path, "shared.wav");
+    // Plain replacement: `$var` also matches inside `$var56` (lazer's variable-with-suffix test).
+    let osb = OsuFile::read(b"[Variables]\r\n$var=34\r\n[Events]\r\nSample,1000,0,\"$var56.wav\"\r\n".to_vec()).file;
+    assert_eq!(osb.storyboard_samples()[0].path, "3456.wav");
+}
