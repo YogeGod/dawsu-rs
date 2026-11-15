@@ -19,4 +19,9 @@ name = "dawsu-osu-format"
 version = "0.1.0"
 dependencies = [
  "dawsu-foundation",
+ "dawsu-test-support",
 ]
+
+[[package]]
+name = "dawsu-test-support"
+version = "0.1.0"

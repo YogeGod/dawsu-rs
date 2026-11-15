@@ -7,3 +7,6 @@ publish.workspace = true
 
 [dependencies]
 dawsu-foundation = { path = "../dawsu-foundation" }
+
+[dev-dependencies]
+dawsu-test-support = { path = "../dawsu-test-support" }

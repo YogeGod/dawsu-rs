@@ -4,6 +4,7 @@ members = [
     "crates/dawsu-foundation",
     "crates/dawsu-osu-format",
     "crates/dawsu-hitsounding",
+    "crates/dawsu-test-support",
 ]
 
 [workspace.package]
