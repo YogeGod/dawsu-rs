@@ -64,3 +64,13 @@ THE SOFTWARE.
 ## Mapping Tools (OliBomby/Mapping_Tools)
 
 `crates/dawsu-hitsounding/src/copy.rs` follows the behaviour and options of the Hitsound Copier in Mapping Tools (https://github.com/OliBomby/Mapping_Tools), by OliBomby and contributors, licensed under the MIT Licence. Its licence file holds no copyright line; the permission notice is the one above.
+
+## Rust crates used by `dawsu-hitsounding`
+
+Each is used under its MIT Licence (where a crate offers a choice, MIT is the one taken). The permission notice is the one above; the copyright lines are those of each crate's `LICENSE-MIT` file, and the crates whose file has none are listed by their authors.
+
+- roxmltree 0.21.2 (reads Cubase `.drm` files, ADR 0046): Copyright (c) 2018 Yevhenii Reizner
+- memchr 2.8.3 (used by roxmltree and serde_json): Copyright (c) 2015 Andrew Gallant
+- serde 1.0.229, serde_core 1.0.229, serde_derive 1.0.229 and serde_json 1.0.154 (read and write `.dawsudrum` files, ADR 0047): Erick Tryzelaar and David Tolnay; no copyright line in the licence file
+- itoa 1.0.19 and zmij 1.0.23 (used by serde_json): David Tolnay; no copyright line in the licence file
+- At build time only (procedural macros, not shipped): proc-macro2, quote, syn and unicode-ident (MIT; unicode-ident's Unicode data is under the Unicode License v3)
