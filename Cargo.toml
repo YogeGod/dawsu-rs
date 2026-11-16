@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "crates/dawsu-foundation",
+    "crates/dawsu-editor",
     "crates/dawsu-osu-format",
     "crates/dawsu-hitsounding",
     "crates/dawsu-test-support",
