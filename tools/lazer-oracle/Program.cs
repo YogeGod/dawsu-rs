@@ -1,12 +1,15 @@
 // The lazer oracle (ADRs 0026, 0032): writes lazer's expected results for .osu files as JSON.
 // Usage: LazerOracle <output folder> <input folder>...
+//        LazerOracle --audio <output folder> <input folder>...
 // Every .osu file under each input folder gets <output folder>/<input folder name>/<relative path>.json.
+// With --audio, every .mp3, .ogg and .wav file gets the same, describing where lazer's decode of it starts.
 // Output is written to a temporary folder and moved into place only when every file succeeded.
 
 using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using ManagedBass;
 using osu.Game.Audio;
 using osu.Game.Beatmaps;
 using osu.Game.IO;
@@ -24,11 +27,18 @@ public static class Program
 
     public static int Main(string[] args)
     {
+        bool audio = args.Length > 0 && args[0] == "--audio";
+        if (audio)
+            args = args.Skip(1).ToArray();
+
         if (args.Length < 2)
         {
-            Console.Error.WriteLine("usage: LazerOracle <output folder> <input folder>...");
+            Console.Error.WriteLine("usage: LazerOracle [--audio] <output folder> <input folder>...");
             return 2;
         }
+
+        if (audio)
+            InitBassAsLazerDoes();
 
         string output = Path.GetFullPath(args[0]);
         string staging = output + ".staging-" + Guid.NewGuid().ToString("N");
@@ -40,12 +50,17 @@ public static class Program
             foreach (string input in args.Skip(1).Select(Path.GetFullPath))
             {
                 string group = Path.GetFileName(input.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
-                foreach (string file in Directory.EnumerateFiles(input, "*.osu", SearchOption.AllDirectories).OrderBy(f => f, StringComparer.Ordinal))
+                var files = Directory.EnumerateFiles(input, "*", SearchOption.AllDirectories)
+                                     .Where(f => audio ? AudioExtensions.Contains(Path.GetExtension(f).ToLowerInvariant()) : f.EndsWith(".osu", StringComparison.Ordinal))
+                                     .OrderBy(f => f, StringComparer.Ordinal);
+
+                foreach (string file in files)
                 {
                     string relative = Path.GetRelativePath(input, file).Replace('\\', '/');
                     string target = Path.Combine(staging, group, relative + ".json");
                     Directory.CreateDirectory(Path.GetDirectoryName(target)!);
-                    File.WriteAllBytes(target, Describe(File.ReadAllBytes(file), group + "/" + relative, lazerVersion));
+                    byte[] bytes = File.ReadAllBytes(file);
+                    File.WriteAllBytes(target, audio ? DescribeAudio(file, bytes, group + "/" + relative, lazerVersion) : Describe(bytes, group + "/" + relative, lazerVersion));
                     count++;
                 }
             }
@@ -62,6 +77,101 @@ public static class Program
             if (Directory.Exists(staging))
                 Directory.Delete(staging, recursive: true);
             return 1;
+        }
+    }
+
+    private static readonly string[] AudioExtensions = [".mp3", ".ogg", ".wav"];
+
+    // The thresholds the first non-silent frame is reported at; 0 means the first frame with any sample not exactly zero.
+    private static readonly float[] Thresholds = [0f, 1e-4f, 1e-3f, 1e-2f];
+
+    // osu!framework's AudioManager.InitBass sets option 68 (BASS_CONFIG_MP3_OLDGAPS) to 1 before BASS starts
+    // (osu-framework 06e28ec, osu.Framework/Audio/AudioManager.cs:430-434). The oracle does the same, then
+    // starts BASS on the no-sound device, since it only decodes.
+    private static void InitBassAsLazerDoes()
+    {
+        Bass.Configure((Configuration)68, 1);
+        if (!Bass.Init(0))
+            throw new InvalidOperationException($"BASS did not start: {Bass.LastError}");
+    }
+
+    // Where lazer's decode of a song starts: lazer's tracks are decode streams with BassFlags.Decode | BassFlags.Prescan
+    // (TrackBass.cs:159). Samples are read as floats here so the thresholds compare with dawsu!'s decoder;
+    // the sample format does not move the start.
+    private static byte[] DescribeAudio(string path, byte[] bytes, string name, string lazerVersion)
+    {
+        int stream = Bass.CreateStream(path, 0, 0, BassFlags.Decode | BassFlags.Prescan | BassFlags.Float);
+        if (stream == 0)
+            throw new InvalidOperationException($"{name}: BASS could not open it: {Bass.LastError}");
+
+        try
+        {
+            Bass.ChannelGetInfo(stream, out ChannelInfo info);
+            int channels = info.Channels;
+            long frames = 0;
+            long?[] first = new long?[Thresholds.Length];
+            float[] chunk = new float[channels * 4096];
+
+            while (true)
+            {
+                int got = Bass.ChannelGetData(stream, chunk, chunk.Length * sizeof(float) | (int)DataFlags.Float);
+                if (got <= 0)
+                    break;
+
+                int samples = got / sizeof(float);
+                for (int i = 0; i < samples; i++)
+                {
+                    float a = Math.Abs(chunk[i]);
+                    for (int t = 0; t < Thresholds.Length; t++)
+                    {
+                        if (first[t] == null && a > Thresholds[t])
+                            first[t] = frames + i / channels;
+                    }
+                }
+
+                frames += samples / channels;
+            }
+
+            var buffer = new MemoryStream();
+            using (var w = new Utf8JsonWriter(buffer, new JsonWriterOptions { Indented = true, NewLine = "\n" }))
+            {
+                w.WriteStartObject();
+                w.WritePropertyName("header");
+                w.WriteStartObject();
+                w.WriteNumber("result_format_version", ResultFormatVersion);
+                w.WriteString("input", name);
+                w.WriteString("input_sha256", Convert.ToHexStringLower(SHA256.HashData(bytes)));
+                w.WriteString("lazer_version", lazerVersion);
+                w.WriteString("bass_version", Bass.Version.ToString());
+                w.WriteNumber("mp3_oldgaps", Bass.GetConfig((Configuration)68));
+                w.WriteEndObject();
+
+                w.WriteNumber("sample_rate", info.Frequency);
+                w.WriteNumber("channels", channels);
+                w.WriteNumber("decoded_frames", frames);
+                w.WritePropertyName("first_frame_above");
+                w.WriteStartArray();
+                for (int t = 0; t < Thresholds.Length; t++)
+                {
+                    w.WriteStartObject();
+                    w.WriteNumber("threshold", Thresholds[t]);
+                    if (first[t] is long f)
+                        w.WriteNumber("frame", f);
+                    else
+                        w.WriteNull("frame");
+                    w.WriteEndObject();
+                }
+
+                w.WriteEndArray();
+                w.WriteEndObject();
+            }
+
+            buffer.WriteByte((byte)'\n');
+            return buffer.ToArray();
+        }
+        finally
+        {
+            Bass.StreamFree(stream);
         }
     }
 
