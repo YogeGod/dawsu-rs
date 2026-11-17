@@ -16,6 +16,14 @@ dotnet run -c Release --project tools/lazer-oracle -- tests/fixtures/lazer-oracl
 
 The save pack's and the hand-made cases' results are committed (ADR 0026 point 2, ADR 0039). Results for the local corpus are not: write them under `target/`, which git ignores, for example `dotnet run -c Release --project tools/lazer-oracle -- target/lazer-oracle-corpus <corpus folder>`.
 
+### Where a song's decode starts (`--audio`)
+
+```
+dotnet run -c Release --project tools/lazer-oracle -- --audio target/lazer-oracle-audio <song folder>
+```
+
+Every `.mp3`, `.ogg` and `.wav` file is decoded with BASS the way lazer's tracks are: option 68 (`BASS_CONFIG_MP3_OLDGAPS`) set to 1 before BASS starts (osu!framework `AudioManager.cs:430-434`), then a decode stream with `Decode | Prescan` (`TrackBass.cs:159`), read as floats. The JSON gives the sample rate, the channel count, the number of decoded frames, and the first frame whose sample is above 0, 0.0001, 0.001 and 0.01. dawsu!'s decoder must give the same figures (TDD: Audio, Responsibility 12). Songs are not committed; write results under `target/`.
+
 Whoever moves the lazer pin runs it again and commits the new results in the same change (ADR 0026 point 4).
 
 ## Notes
