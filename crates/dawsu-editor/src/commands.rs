@@ -417,12 +417,15 @@ impl KeyMap {
         KeyMap::default()
     }
 
-    /// The preset's keys of every definition, in definition order; a key already taken stays with
-    /// the first command (the old `Keymap.Build`'s `Take`).
+    /// The preset's keys of every definition. A key may sit on commands of scopes that never
+    /// meet (Hitsound and Keysound); `CommandCatalog::build` rejects clashes in one scope.
     pub fn from_preset(definitions: &[CommandDefinition], preset: KeyPreset) -> KeyMap {
         let mut map = KeyMap::new();
         for d in definitions {
-            map.take(&d.id, d.keys_for(preset));
+            let keys = d.keys_for(preset);
+            if !keys.is_empty() {
+                map.keys.push((d.id.clone(), keys.to_vec()));
+            }
         }
         map
     }
@@ -450,6 +453,14 @@ impl KeyMap {
         }
         self.keys.retain(|(i, _)| i != id);
         self.keys.push((id.to_owned(), combinations.to_vec()));
+    }
+
+    /// Every command the combination is on, in map order.
+    pub fn commands_for(&self, combination: KeyCombination) -> impl Iterator<Item = &str> {
+        self.keys
+            .iter()
+            .filter(move |(_, k)| k.contains(&combination))
+            .map(|(i, _)| i.as_str())
     }
 
     pub fn command_for(&self, combination: KeyCombination) -> Option<&str> {
@@ -585,9 +596,16 @@ impl<C> CommandCatalog<C> {
         chord: KeyChord,
         focused: EditorScope,
     ) -> Option<&CommandDefinition> {
-        let id = keys.command_for(chord.combination())?;
-        self.binding_for(id, focused)
-            .map(|b| &self.definitions[b.definition])
+        // The focused scope wins over Global when a key sits on commands of both.
+        let ids: Vec<&str> = keys.commands_for(chord.combination()).collect();
+        let in_scope = |scope: EditorScope| {
+            ids.iter().find_map(|id| {
+                self.binding_for(id, focused)
+                    .filter(|b| b.area.scope == scope)
+                    .map(|b| &self.definitions[b.definition])
+            })
+        };
+        in_scope(focused).or_else(|| in_scope(EditorScope::Global))
     }
 
     /// Whether command `id` could run now in the focused scope.

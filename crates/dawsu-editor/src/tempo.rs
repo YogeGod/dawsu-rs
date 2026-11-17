@@ -210,15 +210,24 @@ impl TempoMap {
 
     /// The previous (`direction` < 0) or next grid line from `time`; never before 0.
     pub fn grid_step(&self, time: SongTime, direction: i32, spacing: SnapSpacing) -> SongTime {
-        let dir = direction.signum() as f64;
-        let step = spacing.step_ms(self.beat_length_at(time));
-        let target = self
-            .snap(SongTime::from_ms(time.ms() + dir * step * 0.51), spacing)
-            .ms();
-        let target = if (target - time.ms()).abs() < 1e-6 {
-            time.ms() + dir * step
+        const EPS: f64 = 1e-6;
+        let t = time.ms();
+        let target = if direction >= 0 {
+            let section = self.section_at(time);
+            let step = spacing.step_ms(section.beat_length_ms);
+            let n = ((t - section.start.ms()) / step + EPS).floor() + 1.0;
+            let next = section.start.ms() + n * step;
+            match self.section_after(time) {
+                // A red line before the next grid line is the next line.
+                Some(after) if after.start.ms() <= next + EPS => after.start.ms(),
+                _ => next,
+            }
         } else {
-            target
+            // Stepping back from a red line uses the section before it.
+            let section = self.section_at(SongTime::from_ms(t - EPS));
+            let step = spacing.step_ms(section.beat_length_ms);
+            let n = ((t - section.start.ms()) / step - EPS).ceil() - 1.0;
+            section.start.ms() + n * step
         };
         SongTime::from_ms(target.max(0.0))
     }

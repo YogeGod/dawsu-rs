@@ -248,7 +248,7 @@ fn select_click_selects_and_ctrl_toggles_and_shift_adds() {
     tb.down(&mut f, shift);
     tb.up(&mut f, shift);
     assert_eq!(f.selection.items(), &HashSet::from([0, 1]));
-    assert_eq!(f.selection.primary(), Some(&1));
+    assert_eq!(f.selection.primary(), Some(&0), "Shift keeps the anchor");
     let ctrl = with(p(500.0, 0), |e| e.mods = Mods::CTRL);
     tb.down(&mut f, ctrl);
     tb.up(&mut f, ctrl);
@@ -487,4 +487,52 @@ fn every_tool_has_its_3_1_x_command_and_mouse_actions() {
         ]
     );
     assert!(ToolKind::ALL.iter().all(|k| !k.mouse_actions().is_empty()));
+}
+
+#[test]
+fn shift_click_selects_the_range_from_the_primary() {
+    let mut f = Fake::new(&[
+        (1000.0, 0),
+        (1500.0, 1),
+        (2000.0, 2),
+        (3000.0, 0),
+        (4000.0, 0),
+    ]);
+    let mut tb = tool(ToolKind::Select, &mut f);
+    tb.down(&mut f, p(1000.0, 0));
+    tb.up(&mut f, p(1000.0, 0));
+    let shift = with(p(3000.0, 0), |e| e.mods = Mods::SHIFT);
+    tb.down(&mut f, shift);
+    tb.up(&mut f, shift);
+    assert_eq!(f.selection.items(), &HashSet::from([0, 1, 2, 3]));
+    assert_eq!(
+        f.selection.primary(),
+        Some(&0),
+        "the anchor stays for the next Shift+click"
+    );
+}
+
+#[test]
+fn removing_the_primary_passes_it_to_the_last_selected_item() {
+    let mut f = Fake::new(&[(500.0, 0), (1000.0, 0), (1500.0, 0)]);
+    f.selection.replace([0, 1, 2]);
+    f.selection.remove(&0);
+    assert_eq!(f.selection.primary(), Some(&2));
+}
+
+#[test]
+fn esc_on_an_erase_stroke_or_a_marquee_puts_the_selection_back() {
+    let mut f = Fake::new(&[(500.0, 0), (1000.0, 0)]);
+    f.selection.replace([0, 1]);
+    let mut tb = tool(ToolKind::Erase, &mut f);
+    tb.down(&mut f, p(500.0, 0));
+    tb.cancel(&mut f);
+    assert_eq!(f.hits().len(), 2);
+    assert_eq!(f.selection.items(), &HashSet::from([0, 1]));
+    assert_eq!(f.selection.primary(), Some(&0));
+
+    let mut tb = tool(ToolKind::Select, &mut f);
+    tb.down(&mut f, p(3000.0, 0));
+    tb.cancel(&mut f);
+    assert_eq!(f.selection.items(), &HashSet::from([0, 1]));
 }

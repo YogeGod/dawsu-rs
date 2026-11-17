@@ -284,6 +284,8 @@ enum Stroke<I> {
 pub struct ToolBox<I> {
     active: ToolKind,
     stroke: Option<Stroke<I>>,
+    /// The selection before the open stroke changed it, put back on cancel.
+    saved_selection: Option<(Vec<I>, Option<I>)>,
     /// The Ramp tool's curve.
     pub ramp_shape: RampShape,
 }
@@ -293,6 +295,7 @@ impl<I: Clone + Eq + Hash> ToolBox<I> {
         ToolBox {
             active: ToolKind::Select,
             stroke: None,
+            saved_selection: None,
             ramp_shape: RampShape::Linear,
         }
     }
@@ -322,6 +325,7 @@ impl<I: Clone + Eq + Hash> ToolBox<I> {
         if e.button != PointerButton::Left {
             return;
         }
+        self.saved_selection = Some(target.selection().snapshot());
         // Alt draws with any tool, in the grid.
         let tool = if e.mods.alt() && e.surface == PointerSurface::Grid {
             ToolKind::Draw
@@ -411,7 +415,23 @@ impl<I: Clone + Eq + Hash> ToolBox<I> {
                 if e.mods.ctrl() {
                     target.selection().toggle(item.clone());
                 } else if e.mods.shift() {
-                    target.selection().add(item.clone());
+                    // shortcut: the range spans every row, as items carry no row here; narrow it
+                    // when ToolTarget gets an item row.
+                    let anchor = target.selection().primary().cloned();
+                    if let Some(anchor) = anchor.filter(|a| *a != item) {
+                        let (from, to) =
+                            ordered(target.item_time(&anchor), target.item_time(&item));
+                        for i in target.in_range(from, to, i32::MIN, i32::MAX) {
+                            if i != anchor {
+                                target.selection().add(i);
+                            }
+                        }
+                        // Keep the anchor for the next Shift+click.
+                        target.selection().add(anchor);
+                    }
+                    if !target.selection().contains(&item) {
+                        target.selection().add(item.clone());
+                    }
                 } else if !target.selection().contains(&item) {
                     target.selection().replace([item.clone()]);
                 } else {
@@ -536,6 +556,7 @@ impl<I: Clone + Eq + Hash> ToolBox<I> {
     }
 
     pub fn up<T: ToolTarget<Item = I>>(&mut self, target: &mut T, e: PointerInput) {
+        self.saved_selection = None;
         let Some(stroke) = self.stroke.take() else {
             return;
         };
@@ -604,9 +625,23 @@ impl<I: Clone + Eq + Hash> ToolBox<I> {
 
     /// Esc, focus lost or capture lost: rolls back the open stroke's transaction.
     pub fn cancel<T: ToolTarget<Item = I>>(&mut self, target: &mut T) {
+        let saved = self.saved_selection.take();
         let Some(stroke) = self.stroke.take() else {
             return;
         };
+        // Only strokes that changed the selection as a side effect put it back.
+        if matches!(
+            stroke,
+            Stroke::Wipe
+                | Stroke::Erase { .. }
+                | Stroke::Marquee {
+                    additive: false,
+                    ..
+                }
+        ) && let Some(saved) = saved
+        {
+            target.selection().restore(saved);
+        }
         match stroke {
             Stroke::Move { moved: true, .. }
             | Stroke::Paint { .. }

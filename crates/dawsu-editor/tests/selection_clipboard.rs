@@ -16,7 +16,7 @@ fn r3_the_selection_keeps_a_primary_item_and_bumps_its_version() {
     assert_eq!(s.primary(), Some(&2));
     s.toggle(2);
     assert!(!s.contains(&2));
-    assert_eq!(s.primary(), None);
+    assert_eq!(s.primary(), Some(&1), "the primary passes to the last item still selected");
     s.toggle(3);
     assert!(s.contains(&3) && s.contains(&1));
     s.replace([7, 8]);
@@ -47,13 +47,14 @@ fn r3_items_removed_by_undo_drop_out_of_the_selection_which_is_no_undo_step() {
 }
 
 #[test]
-fn r3_retain_clears_a_removed_primary() {
+fn r3_retain_passes_a_removed_primary_on_and_clears_it_when_nothing_is_left() {
     let mut s = Selection::new();
     s.add(1);
     s.add(2);
     s.retain(|i| *i != 2);
+    assert_eq!(s.primary(), Some(&1));
+    s.retain(|_| false);
     assert_eq!(s.primary(), None);
-    assert!(s.contains(&1));
 }
 
 #[test]

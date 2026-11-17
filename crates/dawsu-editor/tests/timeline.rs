@@ -249,3 +249,16 @@ fn r5_bookmarks_stay_sorted_with_optional_labels() {
     assert!(!b.remove_at(t(2500.0)));
     assert_eq!(b.items().len(), 2);
 }
+
+#[test]
+fn r4_grid_steps_back_across_a_red_line_land_on_the_earlier_sections_grid() {
+    let map = TempoMap::new(vec![section(0.0, 1000.0, 4), section(4000.0, 200.0, 4)]);
+    let whole = SnapSpacing::fraction(1).unwrap();
+    assert!(close(map.grid_step(t(4000.0), -1, whole), 3000.0));
+    assert!(close(map.grid_step(t(3000.0), 1, whole), 4000.0));
+    assert!(
+        close(map.grid_step(t(3500.0), 1, whole), 4000.0),
+        "the red line comes first"
+    );
+    assert!(close(map.grid_step(t(4000.0), 1, whole), 4200.0));
+}

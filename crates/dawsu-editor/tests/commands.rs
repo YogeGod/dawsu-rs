@@ -703,3 +703,30 @@ fn key_names_print_as_on_the_keyboard() {
         "Ctrl+Shift+Z"
     );
 }
+
+#[test]
+fn a_key_shared_by_hitsound_and_keysound_runs_the_focused_editors_command() {
+    let k = [KeyCombination::plain(Key::F5)];
+    let mut r = CommandRegistry::<App>::new();
+    r.bind(
+        &CommandDefinition::new("ks", "y").keys(&k),
+        areas::KS_OUTPUT,
+        nothing,
+        None,
+    );
+    r.bind(
+        &CommandDefinition::new("hs", "x").keys(&k),
+        areas::HS_LANES,
+        nothing,
+        None,
+    );
+    let catalog = CommandCatalog::build(r).unwrap();
+    let keys = KeyMap::from_preset(catalog.definitions(), KeyPreset::DawLike);
+    let mut app = App::default();
+    for (scope, id) in [(EditorScope::Hitsound, "hs"), (EditorScope::Keysound, "ks")] {
+        match catalog.handle_key(&mut app, &keys, press(Key::F5, Mods::NONE), scope) {
+            KeyOutcome::Command { id: ran, .. } => assert_eq!(ran, id),
+            other => panic!("{scope:?}: {other:?}"),
+        }
+    }
+}
