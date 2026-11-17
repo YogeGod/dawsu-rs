@@ -9,6 +9,7 @@
 pub mod clipboard;
 pub mod commands;
 pub mod editing_commands;
+pub mod editor_state;
 pub mod history;
 pub mod keys;
 pub mod selection;
@@ -19,5 +20,6 @@ pub mod transport;
 pub mod volume_ramp;
 
 pub use clipboard::Clipboard;
+pub use editor_state::{EditorState, ItemDocument};
 pub use history::{EditError, EditHistory};
 pub use selection::Selection;
