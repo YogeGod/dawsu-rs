@@ -1365,7 +1365,46 @@ impl EditorUi {
                 })
                 .collect();
             let details = plan.details.clone();
-            egui::Window::new(title).collapsible(false).default_width(650.0).show(ctx,|ui|{ui.strong("Files this action will write");for(path,overwrite,summary)in &files{ui.label(format!("{} {path}",if *overwrite{"Replace:"}else{"Create:"}));ui.label(RichText::new(format!("{} objects changed · {} added · {} removed · {} timing lines affected",summary.hit_objects_changed,summary.hit_objects_added,summary.hit_objects_removed,summary.green_lines_added+summary.green_lines_edited+summary.green_lines_removed+summary.red_lines_changed)).size(11.0).color(MUTED));}for detail in details{ui.label(detail);}ui.horizontal(|ui|{if ui.button("Write these files").clicked(){self.application.apply_output();}if ui.button("Cancel").clicked(){self.application.output_review=None;}});});
+            let mixes = plan.mix_paths().map(|path| path.display().to_string()).collect::<Vec<_>>();
+            egui::Window::new(title)
+                .collapsible(false)
+                .default_width(650.0)
+                .show(ctx, |ui| {
+                    ui.strong("Files this action will write");
+                    for (path, overwrite, summary) in &files {
+                        ui.label(format!("{} {path}", if *overwrite { "Replace:" } else { "Create:" }));
+                        let timing = summary.green_lines_added + summary.green_lines_edited
+                            + summary.green_lines_removed + summary.red_lines_changed;
+                        ui.label(RichText::new(format!(
+                            "{} objects changed · {} added · {} removed · {timing} timing lines affected",
+                            summary.hit_objects_changed, summary.hit_objects_added, summary.hit_objects_removed,
+                        )).size(11.0).color(MUTED));
+                    }
+                    if !mixes.is_empty() {
+                        ui.strong("Sample mixes");
+                        for (index, path) in mixes.iter().enumerate() {
+                            ui.horizontal(|ui| {
+                                if ui.button("Audition mix").clicked()
+                                    && let Err(error) = self.application.audition_output_mix(index)
+                                {
+                                    self.application.error = Some(error);
+                                }
+                                ui.label(path);
+                            });
+                        }
+                    }
+                    for detail in details {
+                        ui.label(detail);
+                    }
+                    ui.horizontal(|ui| {
+                        if ui.button("Write these files").clicked() {
+                            self.application.apply_output();
+                        }
+                        if ui.button("Cancel").clicked() {
+                            self.application.output_review = None;
+                        }
+                    });
+                });
         }
         if self.show_settings {
             let mut open = true;

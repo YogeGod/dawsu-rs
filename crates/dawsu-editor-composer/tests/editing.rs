@@ -151,3 +151,31 @@ fn nudge_and_ruler_follow_the_tempo_change() {
         .collect();
     assert_eq!(ticks, [1000.0, 1100.0, 1350.0, 1600.0]);
 }
+
+#[test]
+fn quantize_moves_only_off_grid_loose_hits_and_keeps_them_selected() {
+    use dawsu_editor::tempo::{TempoMap, TimingSection};
+    use dawsu_foundation::SongTime;
+    let map = OsuFile::read(b"osu file format v14\n[General]\nMode:0\n[TimingPoints]\n0,500,4,1,0,100,1,0\n[HitObjects]\n256,192,1270,1,0,0:0:0:0:\n".to_vec()).file;
+    let Decompiled::Done(hits) = decompile(&map, &[], &|| false, &mut |_, _| {}) else {
+        panic!("fixture");
+    };
+    let mut c = Composer::new(hits);
+    c.tempo = TempoMap::new(vec![TimingSection {
+        start: SongTime::from_ms(0.0), beat_length_ms: 500.0, beats_per_bar: 4,
+    }]);
+    c.add(1160.0, clap(), 80, 0.0);
+    c.mark_saved();
+    c.select_all();
+    c.quantize();
+    assert_eq!(c.hitsounds().moments()[0].hits().count(), 1, "the off-grid circle keeps its hit");
+    assert_eq!(c.hitsounds().moments()[0].time().ms(), 1270.0);
+
+    let moved = c.hitsounds().moments().iter().position(|m| m.has_hit(&clap())).unwrap();
+    assert_eq!(c.hitsounds().moments()[moved].time().ms(), 1125.0);
+    assert!(c.selected.items().iter().any(|key| key.moment == moved));
+    assert_eq!(c.selected.items().len(), 2);
+    c.mark_saved();
+    c.quantize();
+    assert!(!c.dirty(), "another quantize of the same hits is a no-op");
+}

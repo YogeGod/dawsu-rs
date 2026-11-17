@@ -326,11 +326,10 @@ impl<I: Clone + Eq + Hash> ToolBox<I> {
             return;
         }
         self.saved_selection = Some(target.selection().snapshot());
-        // Alt draws with any tool, in the grid.
-        let tool = if e.mods.alt() && e.surface == PointerSurface::Grid {
-            ToolKind::Draw
-        } else {
-            self.active
+        let tool = match e.surface {
+            PointerSurface::ValueLane if e.mods.shift() => ToolKind::Ramp,
+            PointerSurface::Grid if e.mods.alt() => ToolKind::Draw,
+            _ => self.active,
         };
         // The Ramp tool acts as Select in the grid.
         let tool = if tool == ToolKind::Ramp && e.surface == PointerSurface::Grid {

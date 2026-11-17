@@ -8,7 +8,7 @@ The UI uses real map data, the existing domain/compiler, the shared editing kern
 
 Open a copied `.osu` or `.osz`; use the seven tools, selection/clipboard, undo/redo, snap modes, volume editing, lane mute/solo/audition, transport, cycle and pitch-preserving speed. Save goes through the format crate with a backup and an observed-disk-version check. New difficulty, Generate and Copy prepare a review before writing.
 
-**Limits:** sample mixes are refused rather than silently omitted from a save/export. Per-map project persistence, sample replacement/folder watching, full command coverage, sound sets, movable tabs and other M3 requirements remain incomplete. Hits with no object are stored in the editor project. Use HS mode or Generate to materialise them in a difficulty. Do not use this development build as the only copy of a project.
+**Limits:** Ordinary and HS-mode Save support sample mixes on circles and spinner ends. Generate and Copy stage supported mixes for review and audition before writing. Slider-node mixes remain open. Per-map project persistence, sample replacement, full command coverage, sound sets, movable tabs and other M3 requirements remain incomplete. Hits with no object are stored in the editor project. Use HS mode or Generate to materialise them in a difficulty. Do not use this development build as the only copy of a project.
 
 The Windows timeline preview (executable SHA-256 `b7f62afacb0f2cb424997ba88066c96c058a574765dc40b07cf449dc4f7b0696`) was checked with the native picker on a copied difficulty. The recorded checks cover overview navigation, a volume edit and History restore. Three audio warnings appeared. Physical listening, plug-ins, osu! import and macOS/Linux runtime still need verification. See [the feature ledger](FEATURE-COVERAGE.md) for coverage by workflow.
 
@@ -19,6 +19,15 @@ Use the toolchain pinned by `rust-toolchain.toml` and the versions in `Cargo.loc
 - `cargo test --workspace --locked`
 - `cargo build -p dawsu-desktop --release --locked`
 - `cargo run -p dawsu-desktop --release -- "path/to/a/copied-difficulty.osu"`
+
+The Tauri desktop beta candidate is built from its own workspace. Use a copied map when testing.
+
+- `cargo build --manifest-path apps/tauri/Cargo.toml --locked`
+- `cargo run --manifest-path apps/tauri/Cargo.toml --locked -- "path/to/a/copied-difficulty.osu"`
+- `cargo test --manifest-path apps/tauri/Cargo.toml --locked`
+- `node --test apps/tauri/tests/*.test.mjs`
+
+The Windows binary is `dawsu-tauri.exe`. The existing desktop build remains the default until Tauri passes the Windows workflow checks and the macOS and Linux build and launch checks.
 
 signalsmith-stretch needs a C++ compiler and libclang at build time. On this machine, set `LIBCLANG_PATH` to `E:/Claude/drum-onnx/venv311/Lib/site-packages/clang/native`. Cargo is `C:/Users/yogem/.cargo/bin/cargo.exe`. The shared dependency cache is `E:/dawsu-rewrite-spikes/egui-ui/.cargo-home`; build/temp files stay on E:.
 

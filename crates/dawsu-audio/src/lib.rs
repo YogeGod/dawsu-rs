@@ -396,6 +396,31 @@ fn collect_retired(slots: &mut Vec<Retired>) -> bool {
 
 const MAX_COMMANDS_PER_BUFFER: usize = 16;
 
+fn validate_buffer_ms(ms: u32) -> Result<(), String> {
+    if (10..=500).contains(&ms) {
+        Ok(())
+    } else {
+        Err("Enter an audio buffer between 10 and 500 ms.".into())
+    }
+}
+
+fn buffer_request(
+    ms: u32,
+    rate: cpal::SampleRate,
+    supported: &cpal::SupportedBufferSize,
+) -> Result<cpal::BufferSize, String> {
+    validate_buffer_ms(ms)?;
+    let frames = ((u64::from(ms) * u64::from(rate) + 500) / 1000) as u32;
+    if let cpal::SupportedBufferSize::Range { min, max } = *supported
+        && !(min..=max).contains(&frames)
+    {
+        return Err(format!(
+            "This device supports {min}–{max} buffer frames at {rate} Hz. The {ms} ms request needs {frames} frames."
+        ));
+    }
+    Ok(cpal::BufferSize::Fixed(frames))
+}
+
 enum Command {
     Load(Schedule, Retired),
     Play(bool),
@@ -417,6 +442,14 @@ pub struct AudioEngine {
 }
 impl AudioEngine {
     pub fn open(device_name: Option<&str>) -> Result<Self, String> {
+        Self::open_with_buffer(device_name, None)
+    }
+
+    /// Requests a device buffer in milliseconds. The host chooses the actual callback size.
+    pub fn open_with_buffer(device_name: Option<&str>, buffer_ms: Option<u32>) -> Result<Self, String> {
+        if let Some(ms) = buffer_ms {
+            validate_buffer_ms(ms)?;
+        }
         let host = cpal::default_host();
         let device = if let Some(name) = device_name {
             host.output_devices()
@@ -432,7 +465,10 @@ impl AudioEngine {
             .map(|d| d.name().to_string())
             .unwrap_or_else(|_| "Audio output".into());
         let supported = device.default_output_config().map_err(|e| e.to_string())?;
-        let config = supported.config();
+        let mut config = supported.config();
+        if let Some(ms) = buffer_ms {
+            config.buffer_size = buffer_request(ms, config.sample_rate, supported.buffer_size())?;
+        }
         let (send, receive) = mpsc::channel();
         let position = Arc::new(AtomicU64::new(0));
         let playing = Arc::new(AtomicBool::new(false));
@@ -702,5 +738,22 @@ mod callback_benchmark {
             "Same callback with a prepared schedule replacement: median {:?}, max {:?}",
             times[100], times[199]
         );
+    }
+}
+
+
+#[cfg(test)]
+mod buffer_tests {
+    use super::*;
+
+    #[test]
+    fn buffer_requests_use_frames_and_respect_reported_device_limits() {
+        use cpal::{BufferSize, SupportedBufferSize};
+        let limited = SupportedBufferSize::Range { min: 128, max: 512 };
+        assert_eq!(buffer_request(10, 48_000, &limited), Ok(BufferSize::Fixed(480)));
+        assert_eq!(buffer_request(11, 44_100, &SupportedBufferSize::Unknown), Ok(BufferSize::Fixed(485)));
+        assert!(buffer_request(30, 48_000, &limited).unwrap_err().contains("1440 frames"));
+        assert!(buffer_request(0, 48_000, &SupportedBufferSize::Unknown).is_err());
+        assert!(buffer_request(501, 48_000, &SupportedBufferSize::Unknown).is_err());
     }
 }

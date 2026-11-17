@@ -1,6 +1,6 @@
 //! Reviewable map output. Planning reads snapshots; applying checks every target again.
-use crate::Document;
-use dawsu_foundation::safe_write::BackupPolicy;
+use crate::{Document, OutputProblem, generate_receipt, mixes};
+use dawsu_foundation::safe_write::{self, BackupPolicy};
 use dawsu_hitsounding::{
     Hitsounds,
     copy::{CopyOptions, CopyOutcome, TargetOutcome},
@@ -36,11 +36,30 @@ pub struct PlannedFile {
 pub struct WritePlan {
     pub label: String,
     pub files: Vec<PlannedFile>,
+    pub(super) mixes: Vec<mixes::StagedMix>,
+    pub(super) combinations: Vec<crate::ExportCombination>,
+    pub(super) generation: Option<PathBuf>,
+    include_slider_audio: bool,
     pub details: Vec<String>,
     pub source: PathBuf,
     pub version: u64,
 }
 impl WritePlan {
+    pub fn export_combinations(&self) -> &[crate::ExportCombination] {
+        &self.combinations
+    }
+
+    pub fn includes_slider_audio(&self) -> bool {
+        self.include_slider_audio
+    }
+
+    pub fn mix_paths(&self) -> impl Iterator<Item = &Path> {
+        self.mixes.iter().map(|mix| mix.path.as_path())
+    }
+
+    pub(super) fn mix_clip(&self, index: usize) -> Option<dawsu_audio::AudioClip> {
+        self.mixes.get(index).map(mixes::StagedMix::clip)
+    }
     pub fn apply(&self, backups: &Path, cancel: &dyn Fn() -> bool) -> Result<usize, String> {
         for target in &self.files {
             let current = std::fs::read(&target.path).ok();
@@ -51,6 +70,7 @@ impl WritePlan {
                 ));
             }
         }
+        let publication = mixes::publish(&self.mixes, cancel)?;
         let policy = BackupPolicy::new(backups, 20);
         let mut written: Vec<&PlannedFile> = Vec::new();
         for target in &self.files {
@@ -62,7 +82,9 @@ impl WritePlan {
                         .file
                         .save_over_expected(&target.path, expected, &policy)
                 } else {
-                    target.file.save_new(&target.path)
+                    safe_write::create(&target.path, &target.file.to_bytes())
+                        .map(|()| SaveOutcome::Saved { warnings: Vec::new() })
+                        .map_err(dawsu_osu_format::Error::Write)
                 };
                 result
                     .map_err(|e| e.to_string())
@@ -95,6 +117,10 @@ impl WritePlan {
                         kept.push(previous.path.display().to_string());
                     }
                 }
+                // A target that could not be restored may still reference these files.
+                if !kept.is_empty() {
+                    publication.keep();
+                }
                 return Err(if kept.is_empty() {
                     format!("{error}. Previous targets were restored.")
                 } else {
@@ -106,6 +132,7 @@ impl WritePlan {
             }
             written.push(target);
         }
+        publication.keep();
         Ok(written.len())
     }
 }
@@ -128,16 +155,37 @@ fn folder(source: &Source) -> Result<Vec<(String, Option<String>)>, String> {
     Ok(result)
 }
 pub fn generate(source: &Source, cancel: &dyn Fn() -> bool) -> Result<WritePlan, String> {
+    generate_report(source, Path::new(""), None, None, false, cancel, &mut Vec::new())
+}
+pub(super) fn generate_report(
+    source: &Source,
+    defaults: &Path,
+    settings: Option<&crate::ExportSettings>,
+    projects: Option<&Path>,
+    include_slider_audio: bool,
+    cancel: &dyn Fn() -> bool,
+    diagnostics: &mut Vec<OutputProblem>,
+) -> Result<WritePlan, String> {
     let name = source
         .path
         .file_name()
         .ok_or("Missing source filename")?
         .to_string_lossy();
+    let root = source.path.parent().ok_or("Missing mapset folder")?;
+    let file_name = dawsu_hitsounding::generate::file_name_for(
+        &source.file, &name, dawsu_hitsounding::generate::HITSOUNDS_VERSION,
+    );
+    let generation = projects.map(|projects| generate_receipt::path(projects, &source.path));
+    let previous = generate_receipt::previous(generation.as_deref(), &root.join(&file_name))?;
+    let mut siblings = folder(source)?;
+    if previous.is_some() {
+        siblings.retain(|(sibling, _)| sibling != &file_name);
+    }
     match dawsu_hitsounding::generate::generate(
         &source.hits,
         &source.file,
         &name,
-        &folder(source)?,
+        &siblings,
         cancel,
         &mut |_, _| {},
     ) {
@@ -146,23 +194,58 @@ pub fn generate(source: &Source, cancel: &dyn Fn() -> bool) -> Result<WritePlan,
             file_name,
             problems,
         } => {
-            if !problems.is_empty() {
-                return Err(format!(
-                    "Generate needs sample-mix review: {} problems; no files written",
+            let target = root.join(file_name);
+            let old_bytes = previous.as_ref().map_or(&[][..], |output| output.bytes.as_slice());
+            let old_mixes = previous.as_ref().map_or(&[][..], |output| output.mixes.as_slice());
+            let staged = if problems.is_empty() {
+                Ok((file, mixes::MixFiles::default()))
+            } else if problems.iter().all(|problem| crate::mixes::can_render(problem, dawsu_hitsounding::Placement::OnObjects)) {
+                crate::mixes::stage_in_file(
+                    &source.hits,
+                    file,
+                    &problems,
+                    root,
+                    defaults,
+                    old_bytes,
+                    dawsu_hitsounding::Placement::OnObjects,
+                    &[],
+                    settings,
+                    old_mixes,
+                    cancel,
+                )
+            } else {
+                Err(format!(
+                    "Generate needs fixes at {} places. No files were written.",
                     problems.len()
-                ));
+                ))
+            };
+            let (mut file, mut mixes) = staged.inspect_err(|_| {
+                diagnostics.extend(
+                    problems
+                        .iter()
+                        .map(|problem| OutputProblem::new(problem, &target, &source.path)),
+                );
+            })?;
+            if include_slider_audio {
+                mixes.staged.extend(crate::slider_export::stage(source, &mut file, root, defaults, old_bytes, cancel)?);
             }
+            let details = if previous.is_some() {
+                "The earlier generated difficulty will be replaced after creating a backup."
+            } else {
+                "A new hitsound difficulty is created. The editing difficulty is unchanged."
+            };
             Ok(WritePlan {
                 label: "Generate hitsound difficulty".into(),
                 files: vec![PlannedFile {
-                    path: source.path.parent().unwrap().join(file_name),
+                    path: target,
                     file,
-                    expected: None,
+                    expected: previous.map(|output| output.bytes),
                 }],
-                details: vec![
-                    "A new hitsound difficulty is created. The editing difficulty is unchanged."
-                        .into(),
-                ],
+                mixes: mixes.staged,
+                combinations: mixes.combinations,
+                generation,
+                include_slider_audio,
+                details: vec![details.into()],
                 source: source.path.clone(),
                 version: source.version,
             })
@@ -172,7 +255,7 @@ pub fn generate(source: &Source, cancel: &dyn Fn() -> bool) -> Result<WritePlan,
 }
 pub fn new_diff(source: &Source, name: &str) -> Result<WritePlan, String> {
     match dawsu_hitsounding::generate::new_hitsound_diff(&source.file,&source.path.file_name().unwrap().to_string_lossy(),name,&folder(source)?){
-        NewDiff::Planned{file,file_name}=>Ok(WritePlan{label:"New hitsound difficulty".into(),files:vec![PlannedFile{path:source.path.parent().unwrap().join(file_name),file,expected:None}],details:vec!["All gameplay objects are removed in the new difficulty; the source stays unchanged.".into()],source:source.path.clone(),version:source.version}),other=>Err(format!("New difficulty refused: {other:?}"))
+        NewDiff::Planned{file,file_name}=>Ok(WritePlan{label:"New hitsound difficulty".into(),mixes:Vec::new(),combinations:Vec::new(),generation:None,include_slider_audio:false,files:vec![PlannedFile{path:source.path.parent().unwrap().join(file_name),file,expected:None}],details:vec!["All gameplay objects are removed in the new difficulty; the source stays unchanged.".into()],source:source.path.clone(),version:source.version}),other=>Err(format!("New difficulty refused: {other:?}"))
     }
 }
 pub fn copy(
@@ -180,6 +263,16 @@ pub fn copy(
     targets: &[PathBuf],
     options: &CopyOptions,
     cancel: &dyn Fn() -> bool,
+) -> Result<WritePlan, String> {
+    copy_report(source, Path::new(""), targets, options, cancel, &mut Vec::new())
+}
+pub(super) fn copy_report(
+    source: &Source,
+    defaults: &Path,
+    targets: &[PathBuf],
+    options: &CopyOptions,
+    cancel: &dyn Fn() -> bool,
+    diagnostics: &mut Vec<OutputProblem>,
 ) -> Result<WritePlan, String> {
     if targets.is_empty() {
         return Err("Choose at least one target difficulty".into());
@@ -221,36 +314,64 @@ pub fn copy(
     };
     let mut plan = WritePlan {
         label: "Copy hitsounds".into(),
+        mixes: Vec::new(),
+        combinations: Vec::new(),
+        generation: None,
+        include_slider_audio: false,
         files: Vec::new(),
         details: Vec::new(),
         source: source.path.clone(),
         version: source.version,
     };
+    let mut refused = None;
     for ((outcome, path), original) in outcomes.into_iter().zip(paths).zip(files) {
         match outcome {
             TargetOutcome::Planned(target) => {
-                if !target.problems.is_empty() {
-                    return Err(format!(
-                        "{} needs {} sample-mix or placement fixes before Copy",
-                        path.display(),
-                        target.problems.len()
-                    ));
-                }
+                let expected = original.original_bytes().to_vec();
+                let staged = if target.problems.is_empty() {
+                    Ok((target.file, mixes::MixFiles::default()))
+                } else if target.problems.iter().all(|problem| mixes::can_render(problem, dawsu_hitsounding::Placement::GreenLines)) {
+                    mixes::stage_in_file(
+                        &source.hits,
+                        target.file,
+                        &target.problems,
+                        &root,
+                        defaults,
+                        &expected,
+                        dawsu_hitsounding::Placement::GreenLines,
+                        &plan.mixes,
+                        None,
+                        &[],
+                        cancel,
+                    )
+                } else {
+                    Err(format!("{} sample-mix or placement fixes needed before Copy", target.problems.len()))
+                };
+                let (file, mixes) = match staged {
+                    Ok(staged) => staged,
+                    Err(error) => {
+                        refused.get_or_insert_with(|| format!("{}: {error}", path.display()));
+                        diagnostics.extend(target.problems.iter().map(|problem| {
+                            OutputProblem::new(problem, &path, &path)
+                        }));
+                        continue;
+                    }
+                };
                 plan.details.push(format!(
-                    "{}: {} changed, {} matched, {} unmatched source moments",
+                    "{}: {} matched, {} unmatched source moments",
                     path.file_name().unwrap().to_string_lossy(),
-                    target.changed,
                     target.matched,
                     target.dropped.len()
                 ));
+                plan.mixes.extend(mixes.staged);
                 plan.files.push(PlannedFile {
                     path,
-                    file: target.file,
-                    expected: Some(original.original_bytes().to_vec()),
+                    file,
+                    expected: Some(expected),
                 });
             }
             other => return Err(format!("{}: {other:?}", path.display())),
         }
     }
-    Ok(plan)
+    refused.map_or(Ok(plan), Err)
 }

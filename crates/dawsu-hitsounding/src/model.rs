@@ -6,7 +6,7 @@ use crate::lazer::samples::LegacySample;
 use crate::rules::{self, Plays};
 use dawsu_foundation::{CustomIndex, Hitsound, SampleIdentity, SampleSet, SliderSound, Sound, SongTime};
 use dawsu_osu_format::LineId;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// The object of the difficulty a moment or a slider body belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -188,6 +188,7 @@ pub struct Hitsounds {
     pub(crate) moments: Vec<Moment>,
     pub(crate) bodies: Vec<SliderBody>,
     pub(crate) folder_files: Vec<String>,
+    pub(crate) lane_slots: BTreeMap<SampleIdentity, SampleIdentity>,
 }
 
 impl Hitsounds {
@@ -198,6 +199,34 @@ impl Hitsounds {
     pub fn lane(&self, identity: &SampleIdentity) -> Option<&Lane> {
         self.lanes.iter().find(|l| &l.identity == identity)
     }
+    /// The logical slot originally occupied by this lane's hits.
+    pub fn lane_slot(&self, lane: &SampleIdentity) -> Option<&SampleIdentity> {
+        self.lane_slots.get(lane)
+    }
+
+    /// Bindings from a sample's backing lane to its original logical slot.
+    pub fn lane_slots(&self) -> impl Iterator<Item = (&SampleIdentity, &SampleIdentity)> {
+        self.lane_slots.iter()
+    }
+
+    pub fn bind_lane_slot(&mut self, source: SampleIdentity, slot: SampleIdentity) {
+        if source != slot && self.lane(&source).is_some() {
+            self.ensure_lane(&slot);
+            self.lane_slots.insert(source, slot);
+        }
+    }
+
+    /// Moves every editable hit without changing its position or shared volume.
+    pub fn replace_lane(&mut self, source: &SampleIdentity, replacement: SampleIdentity) {
+        let slot = self.lane_slots.remove(source).unwrap_or_else(|| source.clone());
+        self.bind_lane_slot(replacement.clone(), slot);
+        for moment in &mut self.moments {
+            if moment.hits.remove(source) {
+                moment.hits.insert(replacement.clone());
+            }
+        }
+    }
+
     /// Every moment, in time order as decompile found them, then moments added since.
     pub fn moments(&self) -> &[Moment] {
         &self.moments
@@ -220,6 +249,31 @@ impl Hitsounds {
         };
         let at = self.lanes.partition_point(|l| l.identity < *identity);
         self.lanes.insert(at, Lane { identity: identity.clone(), source });
+    }
+
+    /// Registers files added to the mapset, keeping hits and existing lane identities.
+    pub fn add_folder_samples(&mut self, names: &[String]) {
+        self.folder_files.extend_from_slice(names);
+        self.folder_files.sort();
+        self.folder_files.dedup();
+        let identities: BTreeSet<_> = names.iter().map(|name| {
+            rules::read_sample_file_name(name).unwrap_or_else(|| SampleIdentity::File(name.clone()))
+        }).collect();
+        for lane in &mut self.lanes {
+            let matched_filename = match &lane.identity {
+                SampleIdentity::File(file) => dawsu_osu_format::find_case_insensitive(names, file).is_some(),
+                _ => false,
+            };
+            if identities.contains(&lane.identity) || matched_filename {
+                lane.source = match rules::resolve_one(&legacy_sample(&lane.identity), &self.folder_files).plays {
+                    Plays::BeatmapFile(name) => LaneSource::File(name),
+                    Plays::Skin { .. } => LaneSource::Skin,
+                };
+            }
+        }
+        for identity in identities {
+            self.ensure_lane(&identity);
+        }
     }
 
     /// Adds a hit on `lane` at a moment; it sounds at the moment's volume (invariant 2).

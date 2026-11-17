@@ -7,6 +7,9 @@ use dawsu_foundation::{Hitsound, SampleIdentity, SongTime, Sound};
 use dawsu_hitsounding::{Hitsounds, MomentId};
 use std::convert::Infallible;
 
+mod workflows;
+pub use workflows::{RangeOperation, VolumeScope};
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct HitKey {
     pub moment: usize,
@@ -307,30 +310,6 @@ impl Composer {
             .step_ms(self.tempo.beat_length_at(SongTime::from_ms(last)));
         self.copy();
         self.paste(last + step);
-    }
-    pub fn quantize(&mut self) {
-        if self.selected.is_empty() {
-            return;
-        }
-        let selected: Vec<_> = self.selected.items().iter().cloned().collect();
-        let tempo = self.tempo.clone();
-        let spacing = self.spacing;
-        self.apply("Quantize hits", |h| {
-            let values: Vec<_> = selected
-                .iter()
-                .map(|key| {
-                    let m = &h.moments()[key.moment];
-                    (key.clone(), tempo.snap(m.time(), spacing).ms(), m.volume())
-                })
-                .collect();
-            for (k, _, _) in &values {
-                h.remove_hit(MomentId(k.moment), &k.lane);
-            }
-            for (k, t, v) in values {
-                insert(h, t, k.lane, v, 5.0);
-            }
-        });
-        self.selected.clear();
     }
 }
 

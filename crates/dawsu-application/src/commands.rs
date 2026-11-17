@@ -4,6 +4,19 @@ use dawsu_editor::editing_commands as kernel;
 use dawsu_editor::keys::{Key, KeyCombination as K, Mods};
 use dawsu_editor::tools::ToolKind;
 
+fn can_edit(app: &Application) -> bool {
+    app.document().is_some() && !app.busy && !app.is_stroke_open()
+}
+
+fn can_edit_selection(app: &Application) -> bool {
+    can_edit(app) && app.document().is_some_and(|d| !d.composer.selected.is_empty())
+}
+
+fn request_edit(app: &mut Application, id: &'static str) -> Result<(), String> {
+    app.edit_dialog = Some(id);
+    Ok(())
+}
+
 pub fn catalogue() -> CommandCatalog<Application> {
     let mut registry = CommandRegistry::<Application>::new();
     macro_rules! doc {
@@ -21,8 +34,28 @@ pub fn catalogue() -> CommandCatalog<Application> {
             );
         };
     }
-    doc!(kernel::undo(), d, { d.composer.undo() });
-    doc!(kernel::redo(), d, { d.composer.redo() });
+    registry.bind(
+        &kernel::undo(),
+        areas::HS_HIT_EDITING,
+        |app| {
+            let slot = app.active_lane_slot();
+            app.document.as_mut().ok_or("Open a difficulty first")?.composer.undo();
+            app.restore_active_lane(slot);
+            Ok(())
+        },
+        Some(|app| app.document.is_some() && !app.busy),
+    );
+    registry.bind(
+        &kernel::redo(),
+        areas::HS_HIT_EDITING,
+        |app| {
+            let slot = app.active_lane_slot();
+            app.document.as_mut().ok_or("Open a difficulty first")?.composer.redo();
+            app.restore_active_lane(slot);
+            Ok(())
+        },
+        Some(|app| app.document.is_some() && !app.busy),
+    );
     doc!(kernel::copy(), d, { d.composer.copy() });
     doc!(kernel::cut(), d, {
         d.composer.copy();
@@ -30,7 +63,10 @@ pub fn catalogue() -> CommandCatalog<Application> {
     });
     doc!(kernel::delete(), d, { d.composer.remove_selected() });
     doc!(kernel::select_all(), d, { d.composer.select_all() });
-    doc!(kernel::deselect(), d, { d.composer.selected.clear() });
+    doc!(kernel::deselect(), d, {
+        d.composer.selected.clear();
+        d.composer.range = None;
+    });
     registry.bind(
         &kernel::paste(),
         areas::HS_HIT_EDITING,
@@ -44,10 +80,42 @@ pub fn catalogue() -> CommandCatalog<Application> {
         Some(|app| app.document.is_some() && !app.busy),
     );
     doc!(kernel::duplicate(), d, { d.composer.duplicate() });
-    doc!(
-        CommandDefinition::new("quantize", "Quantize selected hits"),
-        d,
-        { d.composer.quantize() }
+    registry.bind(
+        &CommandDefinition::new("quantize", "Quantize selected hits").keys(&[K::plain(Key::Q)]),
+        areas::HS_HIT_EDITING,
+        |app| {
+            if let Some(doc) = app.document.as_mut()
+                && !doc.composer.quantize_with_strength(app.quantize_strength)
+            {
+                app.status = "Select off-grid loose hits to quantize".into();
+            }
+            Ok(())
+        },
+        Some(|app| app.document.is_some() && !app.busy && !app.is_stroke_open()),
+    );
+    registry.bind(
+        &CommandDefinition::new("quantizeDialog", "Quantize with a chosen strength"),
+        areas::HS_HIT_EDITING,
+        |app| request_edit(app, "quantize"),
+        Some(can_edit_selection),
+    );
+    registry.bind(
+        &CommandDefinition::new("repeat", "Repeat selected hits").keys(&[K::new(Key::R, Mods::CTRL)]),
+        areas::HS_HIT_EDITING,
+        |app| request_edit(app, "repeat"),
+        Some(can_edit_selection),
+    );
+    registry.bind(
+        &CommandDefinition::new("editRange", "Copy, move or delete hits in the marked range"),
+        areas::HS_HIT_EDITING,
+        |app| request_edit(app, "range"),
+        Some(|app| can_edit(app) && app.document().is_some_and(|d| d.composer.range.is_some())),
+    );
+    registry.bind(
+        &CommandDefinition::new("scaleByVolume", "Scale hits in a volume range"),
+        areas::HS_HIT_EDITING,
+        |app| request_edit(app, "scale"),
+        Some(can_edit),
     );
     doc!(
         CommandDefinition::new("volumeUp", "Increase volume by 5")
@@ -116,6 +184,12 @@ pub fn catalogue() -> CommandCatalog<Application> {
         { d.composer.select_neighbour(1, true) }
     );
     registry.bind(
+        &CommandDefinition::new("addNumberedLayer", "Add a numbered sample layer"),
+        areas::HS_LANES,
+        Application::add_numbered_layer,
+        Some(|app| app.document.is_some() && !app.busy),
+    );
+    registry.bind(
         &CommandDefinition::new("rowsOut", "Smaller lanes").keys(&[K::new(Key::Up, Mods::CTRL)]),
         areas::HS_LANES,
         |a| {
@@ -168,6 +242,65 @@ pub fn catalogue() -> CommandCatalog<Application> {
             Ok(())
         },
         None,
+    );
+    registry.bind(
+        &kernel::seek_back_far(),
+        areas::HS_TIMELINE,
+        |app| {
+            app.grid_seek_steps(-1, 4);
+            Ok(())
+        },
+        None,
+    );
+    registry.bind(
+        &kernel::seek_forward_far(),
+        areas::HS_TIMELINE,
+        |app| {
+            app.grid_seek_steps(1, 4);
+            Ok(())
+        },
+        None,
+    );
+    let can_bookmark: Option<fn(&Application) -> bool> = Some(|app| app.document.is_some() && !app.busy);
+    registry.bind(
+        &kernel::add_bookmark(),
+        areas::HS_TIMELINE,
+        |app| app.add_bookmark(None),
+        can_bookmark,
+    );
+    registry.bind(
+        &kernel::remove_bookmark(),
+        areas::HS_TIMELINE,
+        |app| app.remove_bookmark(app.position_ms()),
+        can_bookmark,
+    );
+    registry.bind(
+        &kernel::previous_bookmark(),
+        areas::HS_TIMELINE,
+        |app| {
+            app.step_bookmark(false);
+            Ok(())
+        },
+        can_bookmark,
+    );
+    registry.bind(
+        &kernel::next_bookmark(),
+        areas::HS_TIMELINE,
+        |app| {
+            app.step_bookmark(true);
+            Ok(())
+        },
+        can_bookmark,
+    );
+    registry.bind_family(
+        &kernel::SNAP_TO,
+        areas::HS_TIMELINE,
+        |app, division| {
+            let enabled = app.document().is_some_and(|d| d.composer.snap_enabled);
+            app.set_snap(enabled, division);
+            Ok(())
+        },
+        Some(|app, _| app.document().is_some() && !app.busy),
     );
     doc!(kernel::snap_toggle(), d, {
         d.composer.snap_enabled = !d.composer.snap_enabled

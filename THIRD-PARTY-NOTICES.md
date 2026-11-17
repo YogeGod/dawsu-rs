@@ -13,6 +13,7 @@ Ported at commit `131fe72a15581049401a588a13684938d4d0e0c7` (release 2026.1026.0
 - `crates/dawsu-hitsounding/src/rules.rs` follows osu.Game.Rulesets.Osu/Objects/Slider.cs, osu.Game.Rulesets.Osu/Beatmaps/OsuBeatmapConverter.cs, osu.Game/Rulesets/Objects/Legacy/ConvertSlider.cs and osu.Game/Rulesets/Objects/Legacy/LegacyRulesetExtensions.cs
 - `crates/dawsu-osu-format/src/number.rs` and `records.rs` follow osu.Game/Beatmaps/Formats/Parsing.cs and ConvertHitObjectParser.cs
 - `crates/dawsu-editor/src/tempo.rs` (section lookup and snapping) follows osu.Game/Beatmaps/ControlPoints/ControlPointInfo.cs
+- `apps/tauri/dist/app.js` (snap colours) follows osu.Game/Screens/Edit/BindableBeatDivisor.cs and osu.Game/Graphics/OsuColour.cs
 
 ```
 Copyright (c) 2025 ppy Pty Ltd <contact@ppy.sh>.

@@ -114,7 +114,7 @@ pub fn decompile(file: &OsuFile, folder_files: &[String], cancel: &dyn Fn() -> b
     // Moments in time order, ties in object order (the rules' order).
     moments.sort_by(|a, b| a.time.ms().total_cmp(&b.time.ms()));
     let lanes = lanes.into_iter().map(|(identity, source)| Lane { identity, source }).collect();
-    Decompiled::Done(Hitsounds { lanes, moments, bodies, folder_files: folder_files.to_vec() })
+    Decompiled::Done(Hitsounds { lanes, moments, bodies, folder_files: folder_files.to_vec(), lane_slots: BTreeMap::new() })
 }
 
 fn push_moment(lanes: &mut BTreeMap<SampleIdentity, LaneSource>, moments: &mut Vec<Moment>, time: f64, place: Place, samples: &[Sample]) {

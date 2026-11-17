@@ -1,9 +1,10 @@
 //! One edit history per document (Responsibilities 1, 2, 13, 13a; invariants 1-5).
 //!
-//! The history owns the document and hands out `&mut` access only inside a transaction, so no
-//! editor can change its document any other way (invariant 1). Undo steps are whole-document
-//! copies (Responsibility 13a, Yoge 2026-11-15): a step keeps the document as it was on the other
-//! side of the step, and undo or redo swaps it with the current one.
+//! The history owns the document and gives the editor mutable access for edits inside a
+//! transaction (invariant 1). Undo steps are whole-document copies (Responsibility 13a,
+//! Yoge 2026-11-15): undo or redo swaps the step's other-side snapshot with the current
+//! document. External metadata can be refreshed across all snapshots without adding an edit.
+
 
 use std::fmt;
 
@@ -213,6 +214,19 @@ impl<D: Clone> EditHistory<D> {
         while self.done.len() < target {
             self.redo();
         }
+    }
+
+    /// Refreshes external metadata in the current document and all retained snapshots.
+    /// The change must preserve undoable and saved document content.
+    pub fn update_external(&mut self, update: impl Fn(&mut D)) {
+        update(&mut self.doc);
+        for step in self.done.iter_mut().chain(&mut self.undone) {
+            update(&mut step.other);
+        }
+        if let Some(open) = &mut self.open {
+            update(&mut open.before);
+        }
+        self.version += 1;
     }
 
     /// The number of done steps.
