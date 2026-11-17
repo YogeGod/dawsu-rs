@@ -75,3 +75,57 @@ fn i9_no_command_dispatch_is_a_match_over_id_strings() {
         }
     }
 }
+
+/// The DON'T rule: no UI toolkit, lazer package or domain module in the sources. The snap maths
+/// ported from lazer (`tempo.rs`) may name lazer in its notice (ADR 0060), but not use a package.
+#[test]
+fn no_ui_toolkit_lazer_package_or_domain_reference_in_the_sources() {
+    let banned = [
+        "egui",
+        "eframe",
+        "winit",
+        "tauri",
+        "iced",
+        "slint",
+        "dawsu_hitsounding",
+        "dawsu_keysounding",
+        "dawsu_osu_format",
+        "dawsu_audio",
+        "dawsu_graph",
+        "dawsu_application",
+        "dawsu_ui",
+        "osu_game",
+        "osu.Game",
+        "osu_framework",
+        "rosu",
+    ];
+    for (name, text) in sources() {
+        for (n, line) in text.lines().enumerate() {
+            // A reference is code; a comment may name a source, as the ported file's notice does.
+            if !line.trim_start().starts_with("//") {
+                for word in banned {
+                    assert!(
+                        !line.contains(word),
+                        "{name}:{}: names {word}: {line}",
+                        n + 1
+                    );
+                }
+            }
+            let names_lazer = line.to_lowercase().contains("lazer");
+            if names_lazer && name != "tempo.rs" {
+                panic!(
+                    "{name}:{}: names lazer outside the ported snap file: {line}",
+                    n + 1
+                );
+            }
+            if names_lazer {
+                let t = line.trim_start();
+                assert!(
+                    t.starts_with("//"),
+                    "{name}:{}: lazer outside a comment: {line}",
+                    n + 1
+                );
+            }
+        }
+    }
+}

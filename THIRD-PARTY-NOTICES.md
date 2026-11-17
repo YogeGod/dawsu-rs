@@ -4,7 +4,7 @@ dawsu! ships with no licence of its own (ADR 0023). Some of its code is ported f
 
 ## osu!lazer (ppy/osu)
 
-Ported at commit `131fe72a15581049401a588a13684938d4d0e0c7` (release 2026.1026.0), into `crates/dawsu-hitsounding/src/lazer/`:
+Ported at commit `131fe72a15581049401a588a13684938d4d0e0c7` (release 2026.1026.0). Short file names are in `crates/dawsu-hitsounding/src/lazer/`; files elsewhere are named by their full path:
 
 - `control_points.rs`: osu.Game/Beatmaps/Formats/LegacyBeatmapDecoder.cs, osu.Game/Beatmaps/Legacy/LegacyControlPointInfo.cs, osu.Game/Beatmaps/ControlPoints/
 - `samples.rs`: osu.Game/Rulesets/Objects/Legacy/ConvertHitObjectParser.cs, osu.Game/Audio/HitSampleInfo.cs, osu.Game/Skinning/LegacySkin.cs, osu.Game/Skinning/LegacyBeatmapSkin.cs
