@@ -1,0 +1,12 @@
+[package]
+name = "dawsu-editor-composer"
+version = "0.1.0"
+edition.workspace = true
+
+[dependencies]
+dawsu-foundation = { path = "../dawsu-foundation" }
+dawsu-editor = { path = "../dawsu-editor" }
+dawsu-hitsounding = { path = "../dawsu-hitsounding" }
+
+[dev-dependencies]
+dawsu-osu-format = { path = "../dawsu-osu-format" }

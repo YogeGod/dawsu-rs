@@ -6,6 +6,11 @@ members = [
     "crates/dawsu-osu-format",
     "crates/dawsu-hitsounding",
     "crates/dawsu-test-support",
+    "crates/dawsu-editor-composer",
+    "crates/dawsu-audio",
+    "crates/dawsu-application",
+    "crates/dawsu-ui",
+    "crates/dawsu-desktop",
 ]
 
 [workspace.package]

@@ -1,0 +1,17 @@
+[package]
+name = "dawsu-application"
+version = "0.1.0"
+edition.workspace = true
+
+[dependencies]
+dawsu-foundation = { path = "../dawsu-foundation" }
+dawsu-osu-format = { path = "../dawsu-osu-format" }
+dawsu-hitsounding = { path = "../dawsu-hitsounding" }
+dawsu-editor = { path = "../dawsu-editor" }
+dawsu-editor-composer = { path = "../dawsu-editor-composer" }
+dawsu-audio = { path = "../dawsu-audio" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+[dev-dependencies]
+dawsu-test-support = { path = "../dawsu-test-support" }

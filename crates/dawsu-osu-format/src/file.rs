@@ -855,6 +855,22 @@ impl OsuFile {
         }
     }
 
+    /// Writes a compiled document against the most recent successfully read/written disk version.
+    /// An editor can keep its original compile baseline for undo without treating an earlier save
+    /// as an external edit. `expected` must be the caller's last observed bytes, never a fresh read
+    /// taken merely to make a changed-on-disk check pass.
+    pub fn save_over_expected(&self, target: &Path, expected: &[u8], backups: &BackupPolicy) -> Result<SaveOutcome, Error> {
+        let bytes = self.to_bytes();
+        if bytes == expected {
+            let actual = std::fs::read(target).map_err(|e| Error::io("checking the saved difficulty", target, e))?;
+            return Ok(if actual == expected { SaveOutcome::NothingToSave } else { SaveOutcome::ChangedOnDisk });
+        }
+        match safe_write::replace(target, expected, &bytes, backups).map_err(Error::Write)? {
+            WriteOutcome::Saved { warnings } => Ok(SaveOutcome::Saved { warnings }),
+            WriteOutcome::ChangedOnDisk => Ok(SaveOutcome::ChangedOnDisk),
+        }
+    }
+
     /// Writes this difficulty as a new file; a file already at the target is left alone.
     pub fn save_new(&self, target: &Path) -> Result<SaveOutcome, Error> {
         if target.exists() {

@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>dawsu!</title><link rel="stylesheet" href="style.css"><script defer src="app.js"></script></head>
+<body>
+<header class="chrome">
+  <strong class="brand">dawsu<span>!</span></strong>
+  <button id="open">Open…</button>
+  <button data-action="save" data-doc>Save</button>
+  <button data-command="undo" id="undo" data-doc title="Undo (Ctrl+Z)">↶</button>
+  <button data-command="redo" id="redo" data-doc title="Redo (Ctrl+Shift+Z)">↷</button>
+  <button data-command="revert" data-doc>Revert…</button>
+  <div class="title" id="title"></div>
+  <button id="help" title="Keyboard shortcuts">Shortcuts</button>
+</header>
+<section id="home">
+  <div class="home-panel"><div class="brand">dawsu<span>!</span></div><h1>Hitsound editor</h1><p>Open an osu! difficulty or mapset to start editing.</p><button id="home-open" class="primary">Open difficulty or mapset…</button><div id="recent"></div></div>
+</section>
+<section id="workspace" hidden>
+  <div class="tools chrome">
+    <div id="tools" role="toolbar" aria-label="Editing tools"></div>
+    <div class="spacer"></div>
+    <label class="toggle"><input id="snap" type="checkbox"> Snap</label>
+    <select aria-label="Snap mode" id="snap-mode"><option value="grid">Grid</option><option value="relative">Relative</option><option value="objects">Objects</option></select>
+    <label class="toggle">Beat <input id="beats" type="number" min="1" max="64" aria-label="Snap beats"> / <input id="divisor" type="number" min="1" max="64" aria-label="Snap divisor"></label>
+  </div>
+  <main class="dock">
+    <div class="arrange">
+      <div class="ruler"><div class="lane-title">Sample lanes</div><canvas id="ruler" aria-label="Time ruler and song waveform"></canvas></div>
+      <div class="scroll" id="scroll"><div id="lanes"></div><canvas id="grid" aria-label="Hitsound timeline"></canvas></div>
+      <div class="controller"><div class="lane-title">Volume</div><canvas id="controller" aria-label="Hit volume lane"></canvas></div>
+      <div class="overview"><div class="lane-title">Overview</div><canvas id="overview" aria-label="Song overview"></canvas></div>
+    </div>
+    <aside>
+      <section><h2>Selection <span id="selected" class="dim"></span></h2>
+        <label>Set volume <input type="number" min="0" max="100" id="volume" value="100"></label>
+        <div class="row"><button id="set-volume">Apply</button><button data-volume="-5">−5</button><button data-volume="5">+5</button></div>
+        <label>Insert volume <input type="number" min="0" max="100" id="insert"></label>
+        <label><span>Protect normals</span><input type="checkbox" id="protect"></label>
+        <label><span>Audition</span><input type="checkbox" id="audition"></label>
+      </section>
+      <section><h2>Difficulty</h2><select id="difficulty" aria-label="Open sibling difficulty"></select>
+        <label><span>Hitsounding mode</span><input type="checkbox" id="hs"></label>
+        <div class="row"><button data-action="generate">Generate…</button><button id="new">New…</button><button id="copy">Copy…</button></div>
+      </section>
+      <section><h2>History</h2><div id="history"></div></section>
+    </aside>
+  </main>
+  <footer class="transport chrome">
+    <button data-action="play" id="play">▶ Play</button><button data-action="stop">■ Stop</button>
+    <span id="position">00:00.000</span>
+    <label>Speed <select id="speed"><option value=".5">0.5×</option><option value=".75">0.75×</option><option value="1">1×</option><option value="1.25">1.25×</option><option value="1.5">1.5×</option><option value="2">2×</option></select></label>
+    <label>Zoom <input type="range" min="-2.699" max=".477" step=".01" id="zoom" aria-label="Timeline zoom"></label>
+    <label><input type="checkbox" id="cycle"> Cycle</label><button data-locator="left" title="Set left locator, Shift to jump">L</button><button data-locator="right" title="Set right locator, Shift to jump">R</button>
+    <div class="spacer"></div>
+    <button id="audio">Audio…</button>
+  </footer>
+</section>
+<div id="statusbar"><span id="status" role="status"></span><button id="warnings" hidden>Audio warnings</button><button id="cancel-job" data-action="cancel_job" hidden>Cancel job</button></div>
+<dialog id="dialog"><h2 id="dialog-title"></h2><div id="dialog-body"></div><div class="row" id="dialog-actions"></div></dialog>
+</body></html>

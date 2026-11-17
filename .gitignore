@@ -1,3 +1,4 @@
 /target
+/.handoff/
 /tools/lazer-oracle/bin/
 /tools/lazer-oracle/obj/

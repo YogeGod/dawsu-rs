@@ -5,6 +5,7 @@
 //! (foundation invariants 1 and 2).
 
 pub mod cue;
+pub mod digest;
 pub mod error;
 pub mod safe_write;
 pub mod samples;

@@ -54,6 +54,14 @@ pub fn write_new(target: &Path, bytes: &[u8]) -> Result<(), Error> {
     })
 }
 
+/// Publishes a new file atomically without replacing an existing destination.
+pub fn create(target: &Path, bytes: &[u8]) -> Result<(), Error> {
+    let temp = write_temporary(target, bytes)?;
+    let result = fs::hard_link(&temp, target);
+    let _ = fs::remove_file(&temp);
+    result.map_err(|e| Error::io("creating the file", target, e))
+}
+
 /// Writes `new_bytes` over `target`, which the caller read as `read_bytes`, in the order of
 /// Responsibility 3a: check, backup, temporary file, check again, replace, prune.
 pub fn replace(target: &Path, read_bytes: &[u8], new_bytes: &[u8], backups: &BackupPolicy) -> Result<WriteOutcome, Error> {
