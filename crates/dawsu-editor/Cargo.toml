@@ -1,0 +1,10 @@
+[package]
+name = "dawsu-editor"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+# The module map allows dawsu-foundation only: no domain module, engine, use case or UI toolkit.
+[dependencies]
+dawsu-foundation = { path = "../dawsu-foundation" }

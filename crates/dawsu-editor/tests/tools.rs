@@ -1,0 +1,538 @@
+//! The mouse tools driven by scripted pointer input against a fake editor (Responsibility 6).
+
+use dawsu_editor::keys::Mods;
+use dawsu_editor::tempo::{Snap, SnapSpacing, TempoMap, TimingSection};
+use dawsu_editor::tools::{
+    PointerButton, PointerInput, PointerSurface, TimeRange, ToolBox, ToolKind, ToolPreview,
+    ToolTarget,
+};
+use dawsu_editor::{EditHistory, Selection};
+use dawsu_foundation::SongTime;
+use std::collections::HashSet;
+
+#[derive(Debug, Clone, PartialEq)]
+struct Hit {
+    id: u32,
+    time: f64,
+    row: i32,
+    value: i32,
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
+struct Doc {
+    hits: Vec<Hit>,
+    next_id: u32,
+}
+
+/// A fake editor: 120 BPM, snap 1/4 (125 ms), hits 20 ms wide for hit testing.
+struct Fake {
+    history: EditHistory<Doc>,
+    selection: Selection<u32>,
+    tempo: TempoMap,
+    snap: Snap,
+    muted: HashSet<u32>,
+    auditioned: Vec<u32>,
+    pan: (f64, f64),
+    range: Option<TimeRange>,
+    pickers: u32,
+    preview: ToolPreview,
+}
+
+impl Fake {
+    fn new(hits: &[(f64, i32)]) -> Fake {
+        let doc = Doc {
+            hits: hits
+                .iter()
+                .enumerate()
+                .map(|(i, (t, r))| Hit {
+                    id: i as u32,
+                    time: *t,
+                    row: *r,
+                    value: 50,
+                })
+                .collect(),
+            next_id: hits.len() as u32,
+        };
+        Fake {
+            history: EditHistory::new(doc),
+            selection: Selection::new(),
+            tempo: TempoMap::new(vec![TimingSection {
+                start: SongTime::from_ms(0.0),
+                beat_length_ms: 500.0,
+                beats_per_bar: 4,
+            }]),
+            snap: Snap {
+                spacing: SnapSpacing::fraction(4).unwrap(),
+                ..Snap::default()
+            },
+            muted: HashSet::new(),
+            auditioned: Vec::new(),
+            pan: (0.0, 0.0),
+            range: None,
+            pickers: 0,
+            preview: ToolPreview::None,
+        }
+    }
+
+    fn hits(&self) -> Vec<(f64, i32)> {
+        let mut v: Vec<(f64, i32)> = self
+            .history
+            .document()
+            .hits
+            .iter()
+            .map(|h| (h.time, h.row))
+            .collect();
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        v
+    }
+
+    fn change(&mut self, f: impl FnOnce(&mut Doc)) {
+        self.history
+            .edit(true, |d: &mut Doc| -> Result<(), ()> {
+                f(d);
+                Ok(())
+            })
+            .expect("a tool changes the document only inside a transaction");
+    }
+}
+
+impl ToolTarget for Fake {
+    type Item = u32;
+
+    fn hit_test(&self, at: &PointerInput) -> Option<u32> {
+        self.history
+            .document()
+            .hits
+            .iter()
+            .find(|h| h.row == at.row && (h.time - at.time.ms()).abs() <= 10.0)
+            .map(|h| h.id)
+    }
+
+    fn in_range(&self, from: SongTime, to: SongTime, from_row: i32, to_row: i32) -> Vec<u32> {
+        self.history
+            .document()
+            .hits
+            .iter()
+            .filter(|h| {
+                h.time >= from.ms() && h.time <= to.ms() && h.row >= from_row && h.row <= to_row
+            })
+            .map(|h| h.id)
+            .collect()
+    }
+
+    fn item_time(&self, item: &u32) -> SongTime {
+        SongTime::from_ms(
+            self.history
+                .document()
+                .hits
+                .iter()
+                .find(|h| h.id == *item)
+                .unwrap()
+                .time,
+        )
+    }
+
+    fn selection(&mut self) -> &mut Selection<u32> {
+        &mut self.selection
+    }
+
+    fn snap(&self, time: SongTime) -> SongTime {
+        self.snap.time(&self.tempo, &[], time)
+    }
+
+    fn snap_offset(&self, from: SongTime, raw_ms: f64) -> f64 {
+        self.snap.offset(&self.tempo, &[], from, raw_ms)
+    }
+
+    fn begin(&mut self, label: &str) {
+        self.history.begin(label);
+    }
+
+    fn commit(&mut self) {
+        self.history.commit();
+    }
+
+    fn cancel(&mut self) {
+        self.history.cancel();
+    }
+
+    fn insert(&mut self, at: SongTime, row: i32) -> Option<u32> {
+        let id = self.history.document().next_id;
+        self.change(|d| {
+            d.hits.push(Hit {
+                id,
+                time: at.ms(),
+                row,
+                value: 50,
+            });
+            d.next_id += 1;
+        });
+        Some(id)
+    }
+
+    fn delete(&mut self, items: &[u32]) {
+        let items = items.to_vec();
+        self.change(|d| d.hits.retain(|h| !items.contains(&h.id)));
+    }
+
+    fn move_by(&mut self, items: &[u32], delta_ms: f64, delta_rows: i32) {
+        let items = items.to_vec();
+        self.change(|d| {
+            for h in d.hits.iter_mut().filter(|h| items.contains(&h.id)) {
+                h.time += delta_ms;
+                h.row += delta_rows;
+            }
+        });
+    }
+
+    fn set_values(&mut self, values: &[(u32, i32)]) {
+        let values = values.to_vec();
+        self.change(|d| {
+            for (id, v) in &values {
+                d.hits.iter_mut().find(|h| h.id == *id).unwrap().value = *v;
+            }
+        });
+    }
+
+    fn toggle_listen_mute(&mut self, item: &u32) {
+        if !self.muted.remove(item) {
+            self.muted.insert(*item);
+        }
+    }
+
+    fn audition(&mut self, item: &u32) {
+        self.auditioned.push(*item);
+    }
+
+    fn pan(&mut self, delta_ms: f64, delta_rows: f64) {
+        self.pan.0 += delta_ms;
+        self.pan.1 += delta_rows;
+    }
+
+    fn set_range(&mut self, range: Option<TimeRange>) {
+        self.range = range;
+    }
+
+    fn open_tool_picker(&mut self, _at: &PointerInput) {
+        self.pickers += 1;
+    }
+
+    fn show_preview(&mut self, preview: ToolPreview) {
+        self.preview = preview;
+    }
+}
+
+fn p(ms: f64, row: i32) -> PointerInput {
+    PointerInput::at(ms, row)
+}
+
+fn with(mut e: PointerInput, f: impl FnOnce(&mut PointerInput)) -> PointerInput {
+    f(&mut e);
+    e
+}
+
+fn tool(kind: ToolKind, target: &mut Fake) -> ToolBox<u32> {
+    let mut tb = ToolBox::new();
+    tb.select_tool(kind, target);
+    tb
+}
+
+#[test]
+fn select_click_selects_and_ctrl_toggles_and_shift_adds() {
+    let mut f = Fake::new(&[(500.0, 0), (1000.0, 1)]);
+    let mut tb = tool(ToolKind::Select, &mut f);
+    tb.down(&mut f, p(500.0, 0));
+    tb.up(&mut f, p(500.0, 0));
+    assert_eq!(f.selection.items(), &HashSet::from([0]));
+    let shift = with(p(1000.0, 1), |e| e.mods = Mods::SHIFT);
+    tb.down(&mut f, shift);
+    tb.up(&mut f, shift);
+    assert_eq!(f.selection.items(), &HashSet::from([0, 1]));
+    assert_eq!(f.selection.primary(), Some(&0), "Shift keeps the anchor");
+    let ctrl = with(p(500.0, 0), |e| e.mods = Mods::CTRL);
+    tb.down(&mut f, ctrl);
+    tb.up(&mut f, ctrl);
+    assert_eq!(f.selection.items(), &HashSet::from([1]));
+    assert!(f.history.steps().is_empty(), "selecting makes no undo step");
+}
+
+#[test]
+fn select_drag_on_empty_space_selects_the_marquee_contents() {
+    let mut f = Fake::new(&[(500.0, 0), (1000.0, 1), (2000.0, 1)]);
+    let mut tb = tool(ToolKind::Select, &mut f);
+    tb.down(&mut f, p(400.0, 0));
+    tb.moved(&mut f, p(1200.0, 1));
+    assert!(matches!(f.preview, ToolPreview::Marquee { .. }));
+    tb.up(&mut f, p(1200.0, 1));
+    assert_eq!(f.selection.items(), &HashSet::from([0, 1]));
+    assert_eq!(f.preview, ToolPreview::None);
+}
+
+#[test]
+fn select_drag_moves_the_selection_snapped_as_one_undo_step() {
+    let mut f = Fake::new(&[(500.0, 0), (750.0, 0)]);
+    let mut tb = tool(ToolKind::Select, &mut f);
+    f.selection.replace([0, 1]);
+    tb.down(&mut f, p(500.0, 0));
+    tb.moved(&mut f, p(540.0, 0));
+    assert_eq!(
+        f.hits(),
+        vec![(500.0, 0), (750.0, 0)],
+        "less than half a step: no move yet"
+    );
+    tb.moved(&mut f, p(570.0, 0));
+    assert_eq!(
+        f.hits(),
+        vec![(625.0, 0), (875.0, 0)],
+        "visible while dragging, snapped to 1/4"
+    );
+    tb.moved(&mut f, p(760.0, 1));
+    tb.up(&mut f, p(760.0, 1));
+    assert_eq!(f.hits(), vec![(750.0, 1), (1000.0, 1)]);
+    assert_eq!(f.history.steps(), vec!["Move"]);
+    f.history.undo();
+    assert_eq!(f.hits(), vec![(500.0, 0), (750.0, 0)]);
+}
+
+#[test]
+fn esc_during_a_select_drag_restores_the_positions() {
+    let mut f = Fake::new(&[(500.0, 0)]);
+    let mut tb = tool(ToolKind::Select, &mut f);
+    tb.down(&mut f, p(500.0, 0));
+    tb.moved(&mut f, p(1000.0, 2));
+    assert_eq!(f.hits(), vec![(1000.0, 2)]);
+    tb.cancel(&mut f);
+    assert_eq!(f.hits(), vec![(500.0, 0)]);
+    assert!(f.history.steps().is_empty());
+    assert!(!f.history.is_dirty());
+    assert!(!tb.is_stroke_open());
+}
+
+#[test]
+fn select_double_click_previews_a_hit_and_inserts_on_empty_grid() {
+    let mut f = Fake::new(&[(500.0, 0)]);
+    let mut tb = tool(ToolKind::Select, &mut f);
+    let double = |ms, row| with(p(ms, row), |e| e.click_count = 2);
+    tb.down(&mut f, double(500.0, 0));
+    tb.up(&mut f, double(500.0, 0));
+    assert_eq!(f.auditioned, vec![0]);
+    assert!(f.history.steps().is_empty());
+    tb.down(&mut f, double(1010.0, 3));
+    tb.up(&mut f, double(1010.0, 3));
+    assert_eq!(f.hits(), vec![(500.0, 0), (1000.0, 3)]);
+    assert_eq!(f.history.steps(), vec!["Insert"]);
+}
+
+#[test]
+fn grab_pans_time_and_rows_and_makes_no_step() {
+    let mut f = Fake::new(&[]);
+    let mut tb = tool(ToolKind::Grab, &mut f);
+    tb.down(&mut f, p(1000.0, 5));
+    tb.moved(&mut f, p(900.0, 4));
+    tb.moved(&mut f, p(800.0, 4));
+    tb.up(&mut f, p(800.0, 4));
+    assert_eq!(f.pan, (200.0, 1.0));
+    assert!(f.history.steps().is_empty());
+}
+
+#[test]
+fn range_drag_marks_a_range_and_a_click_clears_it() {
+    let mut f = Fake::new(&[(500.0, 0)]);
+    let mut tb = tool(ToolKind::Range, &mut f);
+    tb.down(&mut f, p(2000.0, 3));
+    tb.moved(&mut f, p(1000.0, 1));
+    tb.up(&mut f, p(1000.0, 1));
+    assert_eq!(
+        f.range,
+        Some(TimeRange {
+            from: SongTime::from_ms(1000.0),
+            to: SongTime::from_ms(2000.0),
+            from_row: 1,
+            to_row: 3
+        })
+    );
+    tb.down(&mut f, p(1500.0, 2));
+    tb.up(&mut f, p(1500.0, 2));
+    assert_eq!(f.range, None);
+    assert!(f.history.steps().is_empty());
+}
+
+#[test]
+fn a_draw_stroke_is_one_undo_step() {
+    let mut f = Fake::new(&[]);
+    let mut tb = tool(ToolKind::Draw, &mut f);
+    tb.down(&mut f, p(10.0, 2));
+    tb.moved(&mut f, p(130.0, 2));
+    tb.moved(&mut f, p(140.0, 5)); // same grid line: no second hit; stays on the stroke's row
+    tb.moved(&mut f, p(250.0, 2));
+    tb.up(&mut f, p(250.0, 2));
+    assert_eq!(f.hits(), vec![(0.0, 2), (125.0, 2), (250.0, 2)]);
+    assert_eq!(f.history.steps(), vec!["Draw"]);
+}
+
+#[test]
+fn a_draw_stroke_starting_on_a_hit_erases() {
+    let mut f = Fake::new(&[(500.0, 0), (625.0, 0), (2000.0, 0)]);
+    let mut tb = tool(ToolKind::Draw, &mut f);
+    tb.down(&mut f, p(505.0, 0));
+    tb.moved(&mut f, p(620.0, 0));
+    tb.up(&mut f, p(620.0, 0));
+    assert_eq!(f.hits(), vec![(2000.0, 0)]);
+    assert_eq!(f.history.steps(), vec!["Erase"]);
+}
+
+#[test]
+fn an_erase_stroke_deletes_every_hit_crossed_in_one_step_and_drops_them_from_the_selection() {
+    let mut f = Fake::new(&[(500.0, 0), (700.0, 1), (900.0, 1), (3000.0, 1)]);
+    f.selection.replace([1, 3]);
+    let mut tb = tool(ToolKind::Erase, &mut f);
+    tb.down(&mut f, p(400.0, 0));
+    tb.moved(&mut f, p(1000.0, 1));
+    tb.up(&mut f, p(1000.0, 1));
+    assert_eq!(f.hits(), vec![(3000.0, 1)]);
+    assert_eq!(f.history.steps(), vec!["Erase"]);
+    assert_eq!(f.selection.items(), &HashSet::from([3]));
+}
+
+#[test]
+fn mute_is_listening_only_never_an_undo_step_or_a_saved_change() {
+    let mut f = Fake::new(&[(500.0, 0)]);
+    let mut tb = tool(ToolKind::Mute, &mut f);
+    tb.down(&mut f, p(500.0, 0));
+    tb.up(&mut f, p(500.0, 0));
+    assert!(f.muted.contains(&0));
+    assert!(f.history.steps().is_empty());
+    assert!(!f.history.is_dirty());
+    tb.down(&mut f, p(500.0, 0));
+    tb.up(&mut f, p(500.0, 0));
+    assert!(f.muted.is_empty());
+}
+
+#[test]
+fn ramp_sets_values_along_the_ramp_as_one_step_and_acts_as_select_in_the_grid() {
+    let mut f = Fake::new(&[(0.0, 0), (500.0, 1), (1000.0, 2), (3000.0, 0)]);
+    let mut tb = tool(ToolKind::Ramp, &mut f);
+    let lane = |ms, v| {
+        with(p(ms, 0), |e| {
+            e.surface = PointerSurface::ValueLane;
+            e.row_value = Some(v);
+        })
+    };
+    tb.down(&mut f, lane(0.0, 20.0));
+    tb.moved(&mut f, lane(1000.0, 80.0));
+    assert!(matches!(f.preview, ToolPreview::RampLine { .. }));
+    tb.up(&mut f, lane(1000.0, 80.0));
+    let values: Vec<i32> = f.history.document().hits.iter().map(|h| h.value).collect();
+    assert_eq!(values, vec![20, 50, 80, 50]);
+    assert_eq!(f.history.steps(), vec!["Ramp"]);
+    // In the grid, the Ramp tool selects.
+    tb.down(&mut f, p(3000.0, 0));
+    tb.up(&mut f, p(3000.0, 0));
+    assert_eq!(f.selection.items(), &HashSet::from([3]));
+}
+
+#[test]
+fn right_click_opens_the_tool_picker_and_never_deletes() {
+    for kind in ToolKind::ALL {
+        let mut f = Fake::new(&[(500.0, 0)]);
+        let mut tb = tool(kind, &mut f);
+        let right = with(p(500.0, 0), |e| e.button = PointerButton::Right);
+        tb.down(&mut f, right);
+        tb.up(&mut f, right);
+        assert_eq!(f.pickers, 1, "{kind:?}");
+        assert_eq!(
+            f.hits(),
+            vec![(500.0, 0)],
+            "{kind:?} must not delete on right-click"
+        );
+        assert!(f.history.steps().is_empty());
+    }
+}
+
+#[test]
+fn alt_draws_with_any_tool() {
+    let mut f = Fake::new(&[]);
+    let mut tb = tool(ToolKind::Select, &mut f);
+    let alt = with(p(250.0, 1), |e| e.mods = Mods::ALT);
+    tb.down(&mut f, alt);
+    tb.up(&mut f, alt);
+    assert_eq!(f.hits(), vec![(250.0, 1)]);
+    assert_eq!(tb.active(), ToolKind::Select);
+}
+
+#[test]
+fn switching_tool_mid_stroke_rolls_the_stroke_back() {
+    let mut f = Fake::new(&[]);
+    let mut tb = tool(ToolKind::Draw, &mut f);
+    tb.down(&mut f, p(0.0, 0));
+    tb.moved(&mut f, p(125.0, 0));
+    tb.select_tool(ToolKind::Erase, &mut f);
+    assert!(f.hits().is_empty());
+    assert!(f.history.steps().is_empty());
+}
+
+#[test]
+fn every_tool_has_its_3_1_x_command_and_mouse_actions() {
+    let ids: Vec<String> = ToolKind::ALL.iter().map(|k| k.command().id).collect();
+    assert_eq!(
+        ids,
+        [
+            "toolSelect",
+            "toolGrab",
+            "toolRange",
+            "toolDraw",
+            "toolErase",
+            "toolMute",
+            "toolRamp"
+        ]
+    );
+    assert!(ToolKind::ALL.iter().all(|k| !k.mouse_actions().is_empty()));
+}
+
+#[test]
+fn shift_click_selects_the_range_from_the_primary() {
+    let mut f = Fake::new(&[
+        (1000.0, 0),
+        (1500.0, 1),
+        (2000.0, 2),
+        (3000.0, 0),
+        (4000.0, 0),
+    ]);
+    let mut tb = tool(ToolKind::Select, &mut f);
+    tb.down(&mut f, p(1000.0, 0));
+    tb.up(&mut f, p(1000.0, 0));
+    let shift = with(p(3000.0, 0), |e| e.mods = Mods::SHIFT);
+    tb.down(&mut f, shift);
+    tb.up(&mut f, shift);
+    assert_eq!(f.selection.items(), &HashSet::from([0, 1, 2, 3]));
+    assert_eq!(
+        f.selection.primary(),
+        Some(&0),
+        "the anchor stays for the next Shift+click"
+    );
+}
+
+#[test]
+fn removing_the_primary_passes_it_to_the_last_selected_item() {
+    let mut f = Fake::new(&[(500.0, 0), (1000.0, 0), (1500.0, 0)]);
+    f.selection.replace([0, 1, 2]);
+    f.selection.remove(&0);
+    assert_eq!(f.selection.primary(), Some(&2));
+}
+
+#[test]
+fn esc_on_an_erase_stroke_or_a_marquee_puts_the_selection_back() {
+    let mut f = Fake::new(&[(500.0, 0), (1000.0, 0)]);
+    f.selection.replace([0, 1]);
+    let mut tb = tool(ToolKind::Erase, &mut f);
+    tb.down(&mut f, p(500.0, 0));
+    tb.cancel(&mut f);
+    assert_eq!(f.hits().len(), 2);
+    assert_eq!(f.selection.items(), &HashSet::from([0, 1]));
+    assert_eq!(f.selection.primary(), Some(&0));
+
+    let mut tb = tool(ToolKind::Select, &mut f);
+    tb.down(&mut f, p(3000.0, 0));
+    tb.cancel(&mut f);
+    assert_eq!(f.selection.items(), &HashSet::from([0, 1]));
+}

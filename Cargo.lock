@@ -45,6 +45,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "dawsu-editor"
+version = "0.1.0"
+dependencies = [
+ "dawsu-foundation",
+]
+
+[[package]]
 name = "dawsu-foundation"
 version = "0.1.0"
 
