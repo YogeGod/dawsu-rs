@@ -2,15 +2,15 @@
 
 This branch contains the first real native Hitsound editor slice. It is **not the completed full-feature rewrite**. The complete target still includes the node graph, Live/Record, Keysound, VST3/SoundFont/SFZ instruments, mixer/effects, stems, client link and the rest of the feature ledger.
 
-The UI uses real map data, the existing domain/compiler, the shared editing kernel, cpal playback, Symphonia decoding and signalsmith time stretching. A compiled Windows executable is prepared separately under `E:/Codex-releases/dawsu-rs-first-editor/`.
+The UI uses real map data, the existing domain/compiler, the shared editing kernel, cpal playback, Symphonia decoding and signalsmith time stretching. The previously tested Windows package is in `E:/Codex-releases/dawsu-rs-timeline-preview/`. Build this branch to exercise subsequent source changes.
 
 ## Current testing path
 
 Open a copied `.osu` or `.osz`; use the seven tools, selection/clipboard, undo/redo, snap modes, volume editing, lane mute/solo/audition, transport, cycle and pitch-preserving speed. Save goes through the format crate with a backup and an observed-disk-version check. New difficulty, Generate and Copy prepare a review before writing.
 
-**Limits:** sample mixes are refused rather than silently omitted from a save/export. Per-map project persistence, sample replacement/folder watching, full command coverage, sound sets, movable tabs and other M3 requirements remain incomplete. Hits with no object need HS mode or Generate. Do not use this development build as the only copy of a project.
+**Limits:** sample mixes are refused rather than silently omitted from a save/export. Per-map project persistence, sample replacement/folder watching, full command coverage, sound sets, movable tabs and other M3 requirements remain incomplete. Hits with no object are stored in the editor project. Use HS mode or Generate to materialise them in a difficulty. Do not use this development build as the only copy of a project.
 
-Native window launch/interaction could not be checked: the computer-use tool denied access to `dawsu` twice, including after the user explicitly approved it in chat. UI tests are headless behaviour tests, not native-picker, physical-keyboard or listening proof. No macOS/Linux runtime, plug-in or osu! import proof is claimed.
+The Windows timeline preview (executable SHA-256 `b7f62afacb0f2cb424997ba88066c96c058a574765dc40b07cf449dc4f7b0696`) was checked with the native picker on a copied difficulty. The recorded checks cover overview navigation, a volume edit and History restore. Three audio warnings appeared. Physical listening, plug-ins, osu! import and macOS/Linux runtime still need verification. See [the feature ledger](FEATURE-COVERAGE.md) for coverage by workflow.
 
 ## Build
 
@@ -24,8 +24,8 @@ signalsmith-stretch needs a C++ compiler and libclang at build time. On this mac
 
 ## User data and assets
 
-The rewrite uses its own `dawsu-rs` app-data folder. This first slice saves its own preferences; old preferences and editor-project migration have not been implemented yet. Backups go in that separate folder, outside the mapset.
+The rewrite uses its own `dawsu-rs` app-data folder. This first slice saves its own preferences; legacy project import covers offset, locators, cycle and hits with no object. Other project fields and old preferences remain incomplete. Backups go in that separate folder, outside the mapset.
 
 Default samples can be selected in Preferences. On this development machine, an available read-only copy in the old app's source is used as a fallback. Those assets are CC BY-NC and are **not bundled**. The supplied test map is a local staging copy and is not a licence grant to redistribute it.
 
-See `FEATURE-COVERAGE.md` for the full target. Code is on `codex/complete-editor`; no merge, commit, push or publication was performed by this work.
+See [the feature ledger](FEATURE-COVERAGE.md) for the full target.

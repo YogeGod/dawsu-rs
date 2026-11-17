@@ -232,6 +232,56 @@ impl TempoMap {
         SongTime::from_ms(target.max(0.0))
     }
 
+    /// Move by a grid interval, retaining a hit's fractional position between ticks.
+    pub fn nudge(&self, time: SongTime, direction: i32, spacing: SnapSpacing) -> SongTime {
+        if (self.snap(time, spacing).ms() - time.ms()).abs() < 1e-6 {
+            return self.grid_step(time, direction, spacing);
+        }
+        let left = self.grid_step(time, -1, spacing);
+        let right = self.grid_step(time, 1, spacing);
+        if right.ms() <= left.ms() {
+            return time;
+        }
+        let fraction = (time.ms() - left.ms()) / (right.ms() - left.ms());
+        let (start, end) = if direction < 0 {
+            (self.grid_step(left, -1, spacing), left)
+        } else {
+            (right, self.grid_step(right, 1, spacing))
+        };
+        SongTime::from_ms(start.ms() + fraction * (end.ms() - start.ms()))
+    }
+
+    /// Visible ruler ticks use the active section's beat or bar at the requested zoom.
+    pub fn ruler_ticks(
+        &self,
+        start: f64,
+        end: f64,
+        pixels_per_ms: f64,
+    ) -> impl Iterator<Item = SongTime> + '_ {
+        let spacing_at = move |time| {
+            let section = self.section_at(time);
+            let beats = if section.beat_length_ms * pixels_per_ms < 35.0 {
+                section.beats_per_bar.max(1)
+            } else {
+                1
+            };
+            SnapSpacing::new(beats, 1).unwrap()
+        };
+        let left = SongTime::from_ms(start);
+        let snapped = self.snap(left, spacing_at(left));
+        let first = if (snapped.ms() - start).abs() < 1e-6 {
+            left
+        } else {
+            self.grid_step(left, 1, spacing_at(left))
+        };
+        std::iter::successors(Some(first), move |&time| {
+            let next = self.grid_step(time, 1, spacing_at(time));
+            (next.ms() > time.ms()).then_some(next)
+        })
+        .take_while(move |t| t.ms() <= end)
+        .take(2000)
+    }
+
     /// The bar and beat at `time`. Each red line starts a new bar, as in osu!.
     pub fn bar_beat_at(&self, time: SongTime) -> BarBeat {
         let current = self.section_at(time);

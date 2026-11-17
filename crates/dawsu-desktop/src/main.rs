@@ -23,6 +23,13 @@ impl eframe::App for Desktop {
             ui.ctx()
                 .send_viewport_cmd(eframe::egui::ViewportCommand::CancelClose);
             self.editor.confirm_close = true;
+        } else if ui.ctx().input(|i| i.viewport().close_requested()) {
+            if let Err(error) = self.editor.application.save_session() {
+                ui.ctx()
+                    .send_viewport_cmd(eframe::egui::ViewportCommand::CancelClose);
+                self.editor.allow_close = false;
+                self.editor.application.error = Some(error);
+            }
         }
         for request in std::mem::take(&mut self.editor.application.requests) {
             match request {
@@ -80,9 +87,6 @@ impl eframe::App for Desktop {
             .send_viewport_cmd(eframe::egui::ViewportCommand::Title(title));
     }
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
-        if let Err(error) = self.editor.application.save_session() {
-            eprintln!("{error}");
-        }
         self.editor.application.save_preferences();
     }
 }

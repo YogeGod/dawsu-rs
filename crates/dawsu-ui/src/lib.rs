@@ -122,9 +122,10 @@ impl EditorUi {
             }
         });
         self.overlays(&ctx);
+        let cleaning_audio = self.application.collect_retired_audio();
         if self.application.is_playing() {
             ctx.request_repaint_after(Duration::from_millis(16));
-        } else if self.application.busy {
+        } else if self.application.busy || cleaning_audio {
             ctx.request_repaint_after(Duration::from_millis(40));
         }
     }
@@ -625,20 +626,13 @@ impl EditorUi {
             egui::FontId::proportional(13.0),
             MUTED,
         );
-        let beat = d.composer.tempo.beat_length_at(SongTime::from_ms(start));
-        let section = d.composer.tempo.section_at(SongTime::from_ms(start));
-        let step = if beat * scale < 35.0 {
-            beat * 4.0
-        } else {
-            beat
-        };
-        let first = ((start - section.start.ms()) / step).floor() as i64;
-        for index in first..first + ((grid.width() as f64 / scale / step) as i64 + 3).min(2000) {
-            let time = section.start.ms() + index as f64 * step;
+        for tick in d
+            .composer
+            .tempo
+            .ruler_ticks(start, start + grid.width() as f64 / scale, scale)
+        {
+            let time = tick.ms();
             let x = grid.left() + ((time - start) * scale) as f32;
-            if x < grid.left() {
-                continue;
-            }
             painter.line_segment(
                 [Pos2::new(x, grid.top()), Pos2::new(x, grid.bottom())],
                 Stroke::new(1.0, Color32::from_rgb(56, 64, 76)),
@@ -1205,7 +1199,7 @@ impl EditorUi {
                 .collapsible(false)
                 .resizable(false)
                 .show(ctx, |ui| {
-                    ui.label("Discard unsaved edits and reload the difficulty from disk.");
+                    ui.label("Discard local edits and session settings, then reopen the saved difficulty and session from disk.");
                     ui.horizontal(|ui| {
                         if ui.button("Cancel").clicked() {
                             self.application.revert_requested = false;
@@ -1216,7 +1210,7 @@ impl EditorUi {
                     });
                 });
         }
-        if self.application.pending_open.is_some() {
+        if self.application.pending_open.is_some() && !self.application.busy {
             egui::Window::new("Keep your unsaved edits?")
                 .collapsible(false)
                 .resizable(false)

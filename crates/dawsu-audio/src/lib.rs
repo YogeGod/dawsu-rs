@@ -4,7 +4,7 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use std::fs::File;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use std::sync::{Arc, mpsc};
+use std::sync::{Arc, Mutex, OnceLock, mpsc};
 use symphonia::core::codecs::audio::AudioDecoderOptions;
 use symphonia::core::formats::probe::Hint;
 use symphonia::core::formats::{FormatOptions, TrackType};
@@ -152,6 +152,68 @@ struct Voice {
     gain: f32,
 }
 
+// The maximum end time in each subtree lets a seek skip whole blocks of
+// expired cues, including gaps underneath a long-running loop.
+#[derive(Default)]
+struct CueIndex {
+    max_end: Vec<f64>,
+    leaves: usize,
+}
+
+impl CueIndex {
+    const BLOCK: usize = 32;
+
+    fn build(cues: &[ScheduledSound], speed: f64) -> Self {
+        let leaves = cues.len().div_ceil(Self::BLOCK).next_power_of_two();
+        let mut max_end = vec![f64::NEG_INFINITY; 2 * leaves];
+        for (i, block) in cues.chunks(Self::BLOCK).enumerate() {
+            max_end[leaves + i] = block
+                .iter()
+                .map(|c| cue_end(c, speed))
+                .fold(f64::NEG_INFINITY, f64::max);
+        }
+        for i in (1..leaves).rev() {
+            max_end[i] = max_end[i * 2].max(max_end[i * 2 + 1]);
+        }
+        Self { max_end, leaves }
+    }
+
+    fn overlaps(
+        &self,
+        cues: &[ScheduledSound],
+        limit: usize,
+        time: f64,
+        speed: f64,
+        out: &mut Vec<usize>,
+    ) {
+        let mut node = 1;
+        // Walk left-to-right without recursion or callback allocations.
+        while self.leaves != 0 {
+            if self.max_end[node] > time {
+                if node < self.leaves {
+                    node *= 2;
+                    continue;
+                }
+                let first = (node - self.leaves) * Self::BLOCK;
+                if first >= limit {
+                    break;
+                }
+                out.extend(
+                    (first..limit.min(first + Self::BLOCK))
+                        .filter(|&i| time < cue_end(&cues[i], speed)),
+                );
+            }
+            while node > 1 && node % 2 == 1 {
+                node /= 2;
+            }
+            if node == 1 {
+                break;
+            }
+            node += 1;
+        }
+    }
+}
+
 pub struct Mixer {
     pub song: Option<Arc<AudioClip>>,
     pub cues: Vec<ScheduledSound>,
@@ -165,6 +227,7 @@ pub struct Mixer {
     sample_rate: u32,
     voices: Vec<Voice>,
     active_cues: Vec<usize>,
+    cue_index: CueIndex,
     next_cue: usize,
     indexed: bool,
 }
@@ -183,6 +246,7 @@ impl Mixer {
             sample_rate,
             voices: Vec::with_capacity(32),
             active_cues: Vec::with_capacity(256),
+            cue_index: CueIndex::default(),
             next_cue: 0,
             indexed: false,
         }
@@ -213,10 +277,21 @@ impl Mixer {
                     self.next_cue = self
                         .cues
                         .partition_point(|cue| cue.at_ms <= self.position_ms);
-                    self.active_cues.extend(
-                        (0..self.next_cue)
-                            .filter(|i| self.position_ms < cue_end(&self.cues[*i], self.speed)),
-                    );
+                    if self.cue_index.leaves == 0 {
+                        // Direct mixer users may supply their own cue vector.
+                        self.active_cues
+                            .extend((0..self.next_cue).filter(|i| {
+                                self.position_ms < cue_end(&self.cues[*i], self.speed)
+                            }));
+                    } else {
+                        self.cue_index.overlaps(
+                            &self.cues,
+                            self.next_cue,
+                            self.position_ms,
+                            self.speed,
+                            &mut self.active_cues,
+                        );
+                    }
                     self.indexed = true;
                 }
                 while self.next_cue < self.cues.len()
@@ -280,8 +355,49 @@ impl Mixer {
     }
 }
 
+struct Schedule {
+    song: Option<Arc<AudioClip>>,
+    cues: Vec<ScheduledSound>,
+    active: Vec<usize>,
+    index: CueIndex,
+    speed: f64,
+}
+
+impl Schedule {
+    fn prepare(song: Option<Arc<AudioClip>>, mut cues: Vec<ScheduledSound>, speed: f64) -> Self {
+        cues.sort_by(|a, b| a.at_ms.total_cmp(&b.at_ms));
+        let active = Vec::with_capacity(cues.len());
+        let index = CueIndex::build(&cues, speed);
+        Self {
+            song,
+            cues,
+            active,
+            index,
+            speed,
+        }
+    }
+
+    fn swap_into(mut self, mixer: &mut Mixer) -> Self {
+        std::mem::swap(&mut self.song, &mut mixer.song);
+        std::mem::swap(&mut self.cues, &mut mixer.cues);
+        std::mem::swap(&mut self.active, &mut mixer.active_cues);
+        std::mem::swap(&mut self.index, &mut mixer.cue_index);
+        std::mem::swap(&mut self.speed, &mut mixer.speed);
+        mixer.indexed = false;
+        self
+    }
+}
+
+type Retired = Arc<OnceLock<Schedule>>;
+fn collect_retired(slots: &mut Vec<Retired>) -> bool {
+    slots.retain(|slot| Arc::strong_count(slot) > 1);
+    !slots.is_empty()
+}
+
+const MAX_COMMANDS_PER_BUFFER: usize = 16;
+
 enum Command {
-    Load(Option<Arc<AudioClip>>, Vec<ScheduledSound>, Vec<usize>, f64),
+    Load(Schedule, Retired),
     Play(bool),
     Seek(f64),
     Audition(Arc<AudioClip>, f32),
@@ -292,6 +408,7 @@ enum Command {
 pub struct AudioEngine {
     _stream: cpal::Stream,
     send: mpsc::Sender<Command>,
+    retirements: Mutex<Vec<Retired>>,
     position: Arc<AtomicU64>,
     playing: Arc<AtomicBool>,
     pub errors: Arc<AtomicU64>,
@@ -354,6 +471,7 @@ impl AudioEngine {
         stream.play().map_err(|e| e.to_string())?;
         Ok(Self {
             _stream: stream,
+            retirements: Mutex::new(Vec::new()),
             send,
             position,
             playing,
@@ -377,13 +495,25 @@ impl AudioEngine {
     pub fn load_at_speed(
         &self,
         song: Option<Arc<AudioClip>>,
-        mut cues: Vec<ScheduledSound>,
+        cues: Vec<ScheduledSound>,
         speed: f64,
     ) {
-        cues.sort_by(|a, b| a.at_ms.total_cmp(&b.at_ms));
-        let active = Vec::with_capacity(cues.len());
-        let _ = self.send.send(Command::Load(song, cues, active, speed));
+        let schedule = Schedule::prepare(song, cues, speed);
+        let slot = Arc::new(OnceLock::new());
+        // Only producers touch this mutex. Keep ownership until the callback
+        // has released its handle, so old clips and vectors are freed here.
+        let mut retirements = self.retirements.lock().unwrap_or_else(|e| e.into_inner());
+        collect_retired(&mut retirements);
+        retirements.push(slot.clone());
+        let _ = self.send.send(Command::Load(schedule, slot));
     }
+    /// Release completed schedules on the caller thread; request another poll
+    /// if a callback has yet to hand one back.
+    pub fn collect_retired(&self) -> bool {
+        let mut slots = self.retirements.lock().unwrap_or_else(|e| e.into_inner());
+        collect_retired(&mut slots)
+    }
+
     pub fn play(&self, on: bool) {
         let _ = self.send.send(Command::Play(on));
     }
@@ -428,14 +558,11 @@ fn stream<T: cpal::SizedSample + cpal::FromSample<f32>>(
         .build_output_stream::<T, _, _>(
             config,
             move |out, _| {
-                while let Ok(command) = receive.try_recv() {
+                for command in receive.try_iter().take(MAX_COMMANDS_PER_BUFFER) {
                     match command {
-                        Command::Load(song, cues, active, speed) => {
-                            mixer.song = song;
-                            mixer.cues = cues;
-                            mixer.active_cues = active;
-                            mixer.speed = speed;
-                            mixer.indexed = false;
+                        Command::Load(schedule, slot) => {
+                            let old = schedule.swap_into(&mut mixer);
+                            let _ = slot.set(old);
                         }
                         Command::Play(on) => mixer.playing = on,
                         Command::Seek(ms) => mixer.seek(ms),
@@ -471,4 +598,109 @@ fn stream<T: cpal::SizedSample + cpal::FromSample<f32>>(
 fn cue_end(cue: &ScheduledSound, speed: f64) -> f64 {
     cue.end_ms
         .unwrap_or(cue.at_ms + cue.clip.duration_ms() * speed)
+}
+
+#[cfg(test)]
+mod callback_benchmark {
+    use super::*;
+
+    #[test]
+    fn polling_releases_replaced_song_without_another_load() {
+        let song = Arc::new(AudioClip {
+            samples: vec![0.1],
+            channels: 1,
+            sample_rate: 48_000,
+        });
+        let weak = Arc::downgrade(&song);
+        let mut mixer = Mixer::new(48_000);
+        mixer.song = Some(song);
+        let slot = Arc::new(OnceLock::new());
+        let mut slots = vec![slot.clone()];
+        let old = Schedule::prepare(None, vec![], 1.0).swap_into(&mut mixer);
+        assert!(slot.set(old).is_ok());
+        assert!(collect_retired(&mut slots));
+        drop(slot);
+        assert!(!collect_retired(&mut slots));
+        assert!(weak.upgrade().is_none());
+    }
+
+    #[test]
+    fn prepared_overlap_index_matches_scan_across_blocks_and_long_tails() {
+        let clip = Arc::new(AudioClip {
+            samples: vec![0.1; 4],
+            channels: 1,
+            sample_rate: 1000,
+        });
+        let cues: Vec<_> = (0..500)
+            .map(|i| ScheduledSound {
+                at_ms: i as f64,
+                end_ms: (i % 69 == 0).then_some(i as f64 + 92.0),
+                clip: clip.clone(),
+                gain: 1.0,
+            })
+            .collect();
+        let index = CueIndex::build(&cues, 0.75);
+        for time in (0..550).map(|i| i as f64 + 0.5) {
+            let limit = cues.partition_point(|cue| cue.at_ms <= time);
+            let expected: Vec<_> = (0..limit)
+                .filter(|&i| cue_end(&cues[i], 0.75) > time)
+                .collect();
+            let mut found = Vec::new();
+            index.overlaps(&cues, limit, time, 0.75, &mut found);
+            assert_eq!(found, expected, "seek to {time}");
+        }
+    }
+
+    #[test]
+    #[ignore = "explicit offline callback timing measurement"]
+    fn dense_late_loop() {
+        let clip = Arc::new(AudioClip {
+            samples: vec![0.1; 48],
+            channels: 1,
+            sample_rate: 48_000,
+        });
+        let mut mixer = Mixer::new(48_000);
+        mixer.cues = (0..100_000)
+            .map(|i| ScheduledSound {
+                at_ms: i as f64,
+                end_ms: None,
+                clip: clip.clone(),
+                gain: 1.0,
+            })
+            .collect();
+        let cues = std::mem::take(&mut mixer.cues);
+        let mut replacement = Schedule::prepare(None, cues.clone(), 1.0);
+        Schedule::prepare(None, cues, 1.0).swap_into(&mut mixer);
+        mixer.cycle = Some((99_990.0, 99_991.0));
+        mixer.playing = true;
+        let mut buffer = [0.0; 128];
+        let mut times = Vec::new();
+        for _ in 0..200 {
+            mixer.seek(99_990.0);
+            let start = std::time::Instant::now();
+            mixer.render(&mut buffer, 2);
+            times.push(start.elapsed());
+            assert!(buffer[0] > 0.0);
+        }
+        times.sort();
+        eprintln!(
+            "100k cues, 64 frames at 48 kHz, 200 callbacks: median {:?}, max {:?}",
+            times[100], times[199]
+        );
+        times.clear();
+        for _ in 0..200 {
+            let slot = OnceLock::new();
+            mixer.seek(99_990.0);
+            let start = std::time::Instant::now();
+            let _ = slot.set(replacement.swap_into(&mut mixer));
+            mixer.render(&mut buffer, 2);
+            times.push(start.elapsed());
+            replacement = slot.into_inner().unwrap();
+        }
+        times.sort();
+        eprintln!(
+            "Same callback with a prepared schedule replacement: median {:?}, max {:?}",
+            times[100], times[199]
+        );
+    }
 }

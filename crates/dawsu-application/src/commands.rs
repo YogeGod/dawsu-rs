@@ -3,7 +3,6 @@ use dawsu_editor::commands::{CommandCatalog, CommandDefinition, CommandRegistry,
 use dawsu_editor::editing_commands as kernel;
 use dawsu_editor::keys::{Key, KeyCombination as K, Mods};
 use dawsu_editor::tools::ToolKind;
-use dawsu_foundation::SongTime;
 
 pub fn catalogue() -> CommandCatalog<Application> {
     let mut registry = CommandRegistry::<Application>::new();
@@ -67,26 +66,14 @@ pub fn catalogue() -> CommandCatalog<Application> {
             .legacy(&["moveLeft"])
             .keys(&[K::new(Key::Left, Mods::CTRL)]),
         d,
-        {
-            let step = d
-                .composer
-                .spacing
-                .step_ms(d.composer.tempo.beat_length_at(SongTime::from_ms(0.0)));
-            d.composer.move_selected(-step, None, 5.0)
-        }
+        { d.composer.nudge(-1) }
     );
     doc!(
         CommandDefinition::new("nudgeRight", "Move hits to the next grid step")
             .legacy(&["moveRight"])
             .keys(&[K::new(Key::Right, Mods::CTRL)]),
         d,
-        {
-            let step = d
-                .composer
-                .spacing
-                .step_ms(d.composer.tempo.beat_length_at(SongTime::from_ms(0.0)));
-            d.composer.move_selected(step, None, 5.0)
-        }
+        { d.composer.nudge(1) }
     );
     doc!(
         CommandDefinition::new("navUp", "Move selected hits to the lane above")

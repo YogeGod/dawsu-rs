@@ -109,3 +109,45 @@ fn object_and_relative_snapping_use_the_kernel_settings() {
     c.snap_mode = SnapMode::Objects;
     assert_eq!(c.snap(SongTime::from_ms(1380.0)).ms(), 1500.0);
 }
+
+#[test]
+fn nudge_and_ruler_follow_the_tempo_change() {
+    use dawsu_editor::tempo::{TempoMap, TimingSection};
+    use dawsu_foundation::SongTime;
+    let mut c = composer();
+    c.tempo = TempoMap::new(vec![
+        TimingSection {
+            start: SongTime::from_ms(0.0),
+            beat_length_ms: 500.0,
+            beats_per_bar: 4,
+        },
+        TimingSection {
+            start: SongTime::from_ms(1100.0),
+            beat_length_ms: 250.0,
+            beats_per_bar: 3,
+        },
+    ]);
+    c.add(1350.0, clap(), 80, 0.0);
+    c.nudge(1);
+    let key = c.selected.items().iter().next().unwrap();
+    assert_eq!(c.hitsounds().moments()[key.moment].time().ms(), 1412.5);
+    c.add(1360.0, clap(), 70, 0.0);
+    let a = c.selected.primary().unwrap().clone();
+    c.add(1370.0, clap(), 70, 0.0);
+    c.selected.add(a);
+    c.nudge(1);
+    let mut times: Vec<_> = c
+        .selected
+        .items()
+        .iter()
+        .map(|k| c.hitsounds().moments()[k.moment].time().ms())
+        .collect();
+    times.sort_by(f64::total_cmp);
+    assert_eq!(times, [1422.5, 1432.5]);
+    let ticks: Vec<_> = c
+        .tempo
+        .ruler_ticks(950.0, 1650.0, 1.0)
+        .map(|t| t.ms())
+        .collect();
+    assert_eq!(ticks, [1000.0, 1100.0, 1350.0, 1600.0]);
+}

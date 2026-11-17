@@ -10,7 +10,7 @@ use std::{
 };
 
 const VERSION: u32 = 1;
-const MAX_PROJECT_BYTES: u64 = 64 * 1024;
+const MAX_PROJECT_BYTES: u64 = 192 * 1024 * 1024;
 const MAX_LEGACY_BYTES: u64 = 192 * 1024 * 1024;
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -23,6 +23,17 @@ pub(crate) struct SessionSettings {
     pub zoom: Option<f64>,
     pub row_height: Option<f32>,
     pub view_start: f64,
+    pub unanchored: Option<Vec<ProjectHit>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub(crate) struct ProjectHit {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group: Option<usize>,
+    pub lane: String,
+    pub time: f64,
+    pub volume: Option<i32>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -34,6 +45,7 @@ struct FileData {
 #[derive(Default, Deserialize)]
 #[serde(default, rename_all = "PascalCase")]
 struct LegacyProject {
+    unanchored: Vec<ProjectHit>,
     locator_left: Option<f64>,
     locator_right: Option<f64>,
     cycle: bool,
@@ -55,7 +67,14 @@ impl Project {
             if data.version != VERSION {
                 return Err(format!("Unsupported session file version {}", data.version));
             }
-            data.settings
+            let mut settings = data.settings;
+            if settings.unanchored.is_none() {
+                if let Some(root) = legacy_root {
+                    settings.unanchored =
+                        legacy_settings(root, map)?.and_then(|legacy| legacy.unanchored);
+                }
+            }
+            settings
         } else if let Some(root) = legacy_root {
             legacy_settings(root, map)?.unwrap_or_default()
         } else {
@@ -77,13 +96,16 @@ impl Project {
             settings: settings.clone(),
         })
         .map_err(|e| e.to_string())?;
+        if bytes.len() as u64 > MAX_PROJECT_BYTES {
+            return Err("Session exceeds the supported size limit".into());
+        }
         let folder = self.path.parent().expect("project path has a folder");
         fs::create_dir_all(folder).map_err(|e| e.to_string())?;
         if let Some(expected) = &self.expected {
             match safe_write::replace(&self.path, expected, &bytes, &BackupPolicy::new(folder.join("backups"), 5))
                 .map_err(|e| e.to_string())? {
                 WriteOutcome::Saved { .. } => {},
-                WriteOutcome::ChangedOnDisk => return Err("The session file changed on disk. Reopen the difficulty to load the latest settings.".into()),
+                WriteOutcome::ChangedOnDisk => return Err("The session file changed on disk. Use Revert to last saved to discard local changes and load the latest settings.".into()),
             }
         } else {
             safe_write::create(&self.path, &bytes).map_err(|e| e.to_string())?;
@@ -157,6 +179,7 @@ fn legacy_settings(root: &Path, map: &Path) -> Result<Option<SessionSettings>, S
     };
     let legacy: LegacyProject = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
     Ok(Some(SessionSettings {
+        unanchored: Some(legacy.unanchored),
         song_offset: legacy.song_offset,
         locator_left: legacy.locator_left.unwrap_or_default(),
         locator_right: legacy.locator_right,

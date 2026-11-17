@@ -126,25 +126,50 @@ impl Composer {
         destination: Option<SampleIdentity>,
         tolerance: f64,
     ) {
-        let keys: Vec<_> = self.selected.items().iter().cloned().collect();
+        self.move_to(destination, tolerance, |_, time| (time + delta).max(0.0));
+    }
+
+    pub fn nudge(&mut self, direction: i32) {
+        let spacing = self.spacing;
+        self.move_to(None, 5.0, |tempo, time| {
+            tempo
+                .nudge(SongTime::from_ms(time), direction, spacing)
+                .ms()
+        });
+    }
+
+    fn move_to(
+        &mut self,
+        destination: Option<SampleIdentity>,
+        tolerance: f64,
+        target: impl Fn(&TempoMap, f64) -> f64,
+    ) {
+        let keys: Vec<_> = self
+            .selected
+            .items()
+            .iter()
+            .map(|key| {
+                (
+                    key.clone(),
+                    target(
+                        &self.tempo,
+                        self.hitsounds().moments()[key.moment].time().ms(),
+                    ),
+                )
+            })
+            .collect();
         let mut moved = Vec::new();
         self.apply("Move hits", |h| {
             let values: Vec<_> = keys
                 .iter()
-                .map(|k| {
-                    (
-                        k.clone(),
-                        h.moments()[k.moment].time().ms(),
-                        h.moments()[k.moment].volume(),
-                    )
-                })
+                .map(|(k, time)| (k.clone(), *time, h.moments()[k.moment].volume()))
                 .collect();
             for (key, _, _) in &values {
                 h.remove_hit(MomentId(key.moment), &key.lane);
             }
             for (key, time, volume) in values {
                 let lane = destination.clone().unwrap_or(key.lane);
-                let moment = insert(h, (time + delta).max(0.0), lane.clone(), volume, tolerance);
+                let moment = insert(h, time, lane.clone(), volume, tolerance);
                 moved.push(HitKey { moment, lane });
             }
         });
