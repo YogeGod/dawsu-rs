@@ -111,7 +111,7 @@ button[data-layout-height]{height:var(--layout-height)!important;min-height:0;ov
 .dock{display:grid;min-height:0;grid-template-columns:minmax(0,1fr) 242px}.arrange{display:grid;min-height:0;--ruler-row:min(calc(21px + max(26px,var(--wave-height,56px))),max(47px,calc(100% - var(--timeline-reserve,144px))));grid-template-rows:minmax(20px,max-content) var(--ruler-row) minmax(0,1fr);--lane-default-width:clamp(170px,15vw,216px);--lanes:clamp(99px,var(--layout-lane-width,var(--lane-default-width)),max(99px,calc(100cqw - 140px)));background:var(--field)}.ruler,.overview,.scroll{display:grid;grid-template-columns:var(--lanes) minmax(0,1fr);min-width:0}.scroll{overflow:auto;align-items:start;scrollbar-gutter:stable}.ruler,.overview{padding-right:12px}.ruler{background:var(--ruler);border-bottom:1px solid var(--line)}.overview{background:var(--lane);border-top:1px solid var(--line)}.lane-title{background:var(--lane);color:var(--muted);display:flex;align-items:center;padding:0 12px;border-right:1px solid var(--line)}#lanes{border-right:1px solid var(--line)}.lane{display:flex;gap:4px;align-items:center;padding:0 5px;border-bottom:1px solid var(--line);background:var(--lane)}.lane:nth-child(even){background:var(--lane-alt)}.lane.active{box-shadow:inset 3px 0 var(--hi);background:var(--control)}.lane button{padding:0 4px;min-height:19px}.lane .name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;text-align:left;background:transparent;border:0}.lane .name:hover{background:var(--control)}
 canvas{display:block;width:100%;height:100%;min-width:0;touch-action:none}#grid,#controller,#ruler,#overview{cursor:default}
 aside{overflow:auto;border-left:1px solid var(--line);background:var(--panel)}aside section{padding:12px;border-bottom:1px solid var(--line)}h2{font-size:13px;margin:0 0 10px}.dim{font-weight:400;margin-left:4px}aside label{display:flex;justify-content:space-between;align-items:center;gap:6px;margin:8px 0}#difficulty{width:100%}#history{display:grid;gap:4px;max-height:230px;overflow:auto}#history button{text-align:left;overflow:hidden;text-overflow:ellipsis}
-.transport{background:var(--lane);border-bottom:1px solid var(--line);flex-wrap:wrap}.transport label{margin-left:4px}.transport input[type=range]{width:90px}#position{font:13px "Roboto Mono",Consolas,monospace;color:var(--text);margin:0 6px;min-width:76px}#statusbar{background:var(--control);border-top:1px solid var(--line);color:var(--muted);min-height:26px;padding:3px 12px;display:flex;gap:8px;align-items:center}#status{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}#statusbar button{min-height:22px}
+.transport{background:var(--lane);border-bottom:1px solid var(--line);flex-wrap:wrap}.transport label{margin-left:4px}.transport input[type=range]{width:90px}#position{font:13px "Roboto Mono",Consolas,monospace;color:var(--text);margin:0 6px;min-width:76px}#statusbar{background:var(--control);border-top:1px solid var(--line);color:var(--title-text);min-height:26px;padding:3px 12px;display:flex;gap:8px;align-items:center}#status{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}#statusbar button{min-height:22px}
 dialog{color:var(--text);background:var(--raised);border:1px solid var(--button-border);border-radius:10px;padding:20px;width:min(620px,92vw);max-height:82vh}dialog::backdrop{background:#111111a8}dialog h2{font-size:18px}#dialog-body{margin-bottom:16px;max-height:55vh;overflow:auto;overflow-wrap:anywhere}#dialog-body p{margin:0 0 9px}#dialog-actions{justify-content:flex-end;flex-wrap:wrap}#dialog-body input[type=text]{display:block;width:100%;padding:8px;background:var(--base);border:1px solid var(--line);border-radius:4px}#dialog-body label{display:flex;gap:8px;align-items:center;margin:8px 0}
 #grid{position:sticky;top:0} .scroll::-webkit-scrollbar{width:12px} .scroll::-webkit-scrollbar-thumb{background:var(--divider);border:2px solid var(--lane-alt);border-radius:5px}
 .volume-title{flex-direction:column;align-items:stretch;justify-content:center;gap:4px;min-width:0}
@@ -277,7 +277,7 @@ button[aria-label="Undo"] .button-icon,button[aria-label="Redo"] .button-icon{ma
 .dock-preview[data-placement="tabs"] { background: #77bdfa1c; }
 
 /* Shared control surfaces from the desktop editor component sheet. */
-.transport.chrome { background:var(--chrome); padding-block:5px; gap:8px; }
+.transport.chrome { background:var(--panel); padding-block:5px; gap:8px; }
 .transport-cluster { display: inline-flex; align-items: center; gap: 2px; padding: 4px; background: #2c2c2c; border-radius: 8px; }
 .transport-cluster button { position: relative; width: 34px; height: 30px; padding: 0; border: 0; background: transparent; }
 .transport-cluster .button-icon { margin: 0; vertical-align: middle; }
@@ -325,7 +325,9 @@ header #layout-edit-entry:not(:hover) { background:transparent; color:var(--mute
 header [data-action="review_save"]:not(:disabled) { background:var(--hi); color:var(--on-accent); }
 header [data-action="review_save"]:not(:disabled) .button-icon { filter:brightness(.24); }
 header [data-action="review_save"]:hover:not(:disabled) { background:var(--hi-hover); }
-.tools.chrome { background:var(--chrome); gap:5px; padding:4px 8px; flex-wrap:nowrap; overflow-x:auto; scrollbar-width:thin; }
+/* Top-bar buttons sit on --chrome, so they get an --editor-selected edge (1.5:1 against the bar). */
+header.chrome button, header #editor-menus button { border-color:#454545; }
+.tools.chrome { background:var(--panel); gap:5px; padding:4px 8px; flex-wrap:nowrap; overflow-x:auto; scrollbar-width:thin; }
 .tools .ribbon-group { flex:none; align-content:center; }
 .tools .ribbon-controls, .tools #tools { flex-wrap:nowrap; }
 .tools .ribbon-group[aria-label="View"] { margin-left:auto; }

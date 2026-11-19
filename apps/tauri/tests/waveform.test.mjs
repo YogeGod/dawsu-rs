@@ -6,12 +6,12 @@ import { createContext, runInContext } from "node:vm";
 const app = await readFile(new URL("../dist/app.js", import.meta.url), "utf8");
 const css = await readFile(new URL("../dist/style.css", import.meta.url), "utf8");
 
-test("workstation chrome uses the Slate surfaces and shared blue accent", () => {
+test("workstation chrome uses the design's neutral grey surfaces and shared blue accent", () => {
   assert.match(css, /:root\s*\{[^}]*--base:\s*#151515\b/);
   assert.match(css, /:root\s*\{[^}]*--panel:\s*#1c1c1c\b/);
   assert.match(css, /:root\s*\{[^}]*--hi:\s*#77bdfa\b/);
 });
-test("the ruler and overview paint neutral backgrounds under the waveform frequency colors", async () => {
+test("the ruler paints a teal-tint and the overview a neutral background under the teal waveform frequency shades", async () => {
   const elements = new Map();
   function element() {
     const bands = [];

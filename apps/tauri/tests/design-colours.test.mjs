@@ -33,6 +33,59 @@ test("every :root block gives the editor surfaces the design's neutral greys", (
   for (const hex of blueGreys) assert.ok(!css.toLowerCase().includes(hex), `style.css still uses ${hex}`);
 });
 
+// WCAG 2 relative luminance and contrast ratio.
+function luminance(hex) {
+  const [r, g, b] = [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16) / 255)
+    .map(c => c <= .03928 ? c / 12.92 : ((c + .055) / 1.055) ** 2.4);
+  return .2126 * r + .7152 * g + .0722 * b;
+}
+function contrast(first, second) {
+  const [light, dark] = [luminance(first), luminance(second)].sort((a, b) => b - a);
+  return (light + .05) / (dark + .05);
+}
+const root = Object.fromEntries([...css.matchAll(/:root\s*\{([^}]*)\}/g)]
+  .flatMap(match => [...match[1].matchAll(/(--[a-z-]+):\s*(#[0-9a-f]{6})\b/gi)].map(([, name, value]) => [name, value])));
+// The value a property takes in the last rule for this exact selector that sets it.
+function lastDeclared(selector, property) {
+  const escaped = selector.replace(/[.#[\]"=]/g, "\\$&");
+  const rules = [...css.matchAll(new RegExp(`(?:^|[}\\s])${escaped}\\s*\\{([^}]*)\\}`, "g"))];
+  const values = rules.flatMap(([, body]) =>
+    [...body.matchAll(new RegExp(`(?:^|[;{\\s])${property}:\\s*var\\((--[a-z-]+)\\)`, "g"))].map(match => match[1]));
+  return values.at(-1);
+}
+
+test("the top bar stays chrome while the ribbon and transport sit on the darker panel", () => {
+  assert.equal(root[lastDeclared("header.chrome", "background")], "#292929");
+  assert.equal(root[lastDeclared(".tools.chrome", "background")], "#1c1c1c");
+  assert.equal(root[lastDeclared(".transport.chrome", "background")], "#1c1c1c");
+});
+
+test("muted and secondary text reads at 4.5:1 or better on every bar", () => {
+  const status = lastDeclared("#statusbar", "color");
+  const bars = {
+    "header.chrome": ["--muted", "--title-text"],
+    ".tools.chrome": ["--muted", "--title-text"],
+    ".transport.chrome": ["--muted", "--title-text"],
+    // The status bar's text takes its own colour; nothing muted sits on it.
+    "#statusbar": [status, "--title-text"],
+  };
+  for (const [bar, texts] of Object.entries(bars)) {
+    const background = root[lastDeclared(bar, "background")];
+    for (const text of texts) {
+      const ratio = contrast(root[text], background);
+      assert.ok(ratio >= 4.5, `${text} on ${bar} is ${ratio.toFixed(2)}:1`);
+    }
+  }
+});
+
+test("top-bar buttons have an edge that shows against the bar", () => {
+  const edges = [...css.matchAll(/([^{}]*)\{[^}]*border-color:\s*(#[0-9a-f]{6})\b[^}]*\}/gi)]
+    .filter(([, selector]) => /header[^,{]*#editor-menus button/.test(selector) && /header(\.chrome)? button\b/.test(selector));
+  assert.equal(edges.length, 1, "one rule edges every top-bar button, menu triggers included");
+  const ratio = contrast(edges[0][2], root[lastDeclared("header.chrome", "background")]);
+  assert.ok(ratio >= 1.5, `edge is ${ratio.toFixed(2)}:1`);
+});
+
 async function paintedCanvases() {
   const elements = new Map();
   function element() {
