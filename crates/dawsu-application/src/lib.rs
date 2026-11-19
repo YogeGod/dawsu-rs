@@ -1903,6 +1903,7 @@ impl Application {
         if let Some(d) = self.document.as_mut() {
             d.composer.protect_normals = on;
         }
+        self.save_preferences();
     }
     pub fn set_snap_options(
         &mut self,
@@ -3901,6 +3902,17 @@ mod project_workflow {
         assert_eq!(app.zoom, 0.35);
         assert_eq!(app.document().unwrap().composer.view_start, 125.0);
         assert_eq!(std::fs::read(&map).unwrap(), data);
+    }
+
+    #[test]
+    fn protect_hitnormals_is_saved_like_the_other_preferences() {
+        let fixture = Scratch::new("protect-normals-preference");
+        let data = fixture.path("data");
+        let mut app = Application::create(Preferences::default(), false, None, None, true, data.clone());
+        app.set_normal_protection(true);
+        assert!(app.error.is_none(), "{:?}", app.error);
+        let (saved, _) = preferences::load(&data.join("preferences.json"), None);
+        assert!(saved.protect_hitnormals);
     }
 
     #[test]
