@@ -353,7 +353,7 @@ impl Composer {
         }
         self.apply("Scale by volume", |hits| {
             for (id, volume) in changes {
-                hits.set_volume(id, volume);
+                hits.move_volume(id, volume);
             }
         });
         true

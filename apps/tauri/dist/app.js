@@ -2664,7 +2664,7 @@ function showTimelineEdit(kind) {
     const percent = input("number", 100, 0, "", "any");
     openEdit("Scale by volume", [labeled("Applies to", scope), labeled("From volume (%)", low),
       labeled("To volume (%)", high), labeled("Scale by (%)", percent),
-      paragraph("A moment has one volume. Scaling it changes every sound at that time.")], () => {
+      paragraph("Scaling moves every sound at that time by the same amount, so sounds with their own volume keep their difference. A sound stops at 0% or 100%.")], () => {
       const min = low.valueAsNumber, max = high.valueAsNumber, scale = percent.valueAsNumber;
       if ([min, max].every(value => Number.isInteger(value) && value >= 0 && value <= 100) &&
           Number.isFinite(scale) && scale >= 0) {
