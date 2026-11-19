@@ -1114,6 +1114,7 @@ function drawGameplay(ctx, gameplay, xOf, y, width, diameter) {
     ctx.fill();
     ctx.stroke();
   }
+  ctx.lineWidth = 1;
 }
 
 function laneTint(lane) {

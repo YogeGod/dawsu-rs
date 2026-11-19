@@ -137,3 +137,14 @@ test("the cycle region is a faint accent band under a warning-yellow bar on the 
   assert.ok(rects().some(rect => rect.join() === ["#f0aa7046", 25, 0, 150, 20].join()));
   assert.ok(!rects().some(rect => rect[0] === "#efc16a"));
 });
+
+test("the 2 px object ring leaves the ruler's ticks and locator lines at 1 px", async () => {
+  const { get, paint } = await canvases();
+  const ruler = get("ruler");
+  paint("scene.zoom = .25; Object.assign(view, { left: 100, right: 700, cycle: true })");
+  const strokes = ruler.calls.filter(call => call.name === "stroke");
+  assert.ok(strokes.some(call => call.stroke === "#1c2727" && call.lineWidth === 2), "object ring");
+  const lines = strokes.filter(call => call.stroke !== "#1c2727");
+  assert.ok(lines.some(call => call.stroke === "#858585"), "locator lines");
+  assert.deepEqual([...new Set(lines.map(call => call.lineWidth))], [1]);
+});
