@@ -245,6 +245,90 @@ fn drum_view_uses_a_preset_without_changing_the_mapset_and_follows_sibling_diffi
 }
 
 #[test]
+fn drum_view_rows_follow_a_replaced_lane_and_leave_hidden_lanes_hidden() {
+    use dawsu_hitsounding::drums::{DrumMap, DrumRow, lane_key, write_dawsudrum};
+
+    let fixture = Fixture::new("drum-view-replaced");
+    let mapset = fixture.0.join("mapset");
+    fs::create_dir(&mapset).unwrap();
+    let path = mapset.join("Hard.osu");
+    let bytes = b"osu file format v14\n\n[General]\nMode:0\n\n[TimingPoints]\n0,500,4,1,0,100,1,0\n\n[HitObjects]\n256,192,1000,1,8,0:0:0:0:\n256,192,2000,1,2,0:0:0:0:\n";
+    fs::write(&path, bytes).unwrap();
+    let external = fixture.0.join("snare.wav");
+    fs::write(&external, b"RIFF\x26\0\0\0WAVEfmt \x10\0\0\0\x01\0\x01\0\x80\xbb\0\0\0w\x01\0\x02\0\x10\0data\x02\0\0\0\x00\x40").unwrap();
+    let mut app = Application::headless();
+    open(&mut app, &path);
+    let map = app.document().unwrap().path.clone();
+    let lanes = snapshot(&app, true)["scene"]["lanes"].clone();
+    let identity = |name: &str| {
+        let row = lanes.as_array().unwrap().iter().position(|lane| lane["name"] == name).unwrap();
+        app.document().unwrap().composer.lanes[row].clone()
+    };
+    let (clap, whistle) = (identity("normal-hitclap"), identity("normal-hitwhistle"));
+    let key = |app: &Application, lane| lane_key(app.document().unwrap().composer.hitsounds().lane(lane).unwrap());
+    let mut drums = super::drum_view::DrumView::default();
+    let load = |drums: &mut super::drum_view::DrumView, app: &Application, rows: Vec<(&str, Option<String>)>| {
+        let kit = DrumMap {
+            id: "bbbbbbbb-0000-4000-8000-000000000002".into(),
+            name: "Kit".into(),
+            rows: rows.into_iter().enumerate().map(|(id, (name, lane))| DrumRow {
+                id: format!("aaaaaaaa-0000-4000-8000-{id:012}"), name: name.into(), lane, slot: None, midi_note: None,
+            }).collect(),
+            audio: Vec::new(),
+        };
+        let preset = fixture.0.join("Kit.dawsudrum");
+        fs::write(&preset, write_dawsudrum(&kit).unwrap()).unwrap();
+        drums.load(app, &map, &preset).unwrap();
+    };
+    load(&mut drums, &app, vec![
+        ("Snare", Some(key(&app, &clap))), ("Ride", Some(key(&app, &whistle))), ("Ghost notes", None),
+    ]);
+
+    app.active_lane = app.document().unwrap().composer.lanes.iter().position(|lane| lane == &clap).unwrap();
+    app.replace_lane_sample(&map, &clap, &external).unwrap();
+    let replacement = app.document().unwrap().composer.lanes[app.active_lane].clone();
+    let revision = app.document().unwrap().composer.history.version();
+    app.delete_lane(&map, &whistle, revision).unwrap();
+
+    let plain = snapshot(&app, true);
+    let order = plain["scene"]["laneOrder"].as_array().unwrap().clone();
+    let read = |drums: &super::drum_view::DrumView| {
+        let mut shown = plain.clone();
+        drums.decorate(&app, &mut shown);
+        assert_eq!(shown["scene"]["lanes"], plain["scene"]["lanes"]);
+        assert_eq!(shown["scene"]["laneOrder"], plain["scene"]["laneOrder"]);
+        shown["scene"]["drumRows"].as_array().unwrap().clone()
+    };
+    let row_of = |rows: &[serde_json::Value], name: &str| rows.iter().find(|row| row["name"] == name).map(|row| row["row"].clone());
+    // The view never adds or drops a lane: each shown lane appears once, except under an alias.
+    let lanes_once = |rows: &[serde_json::Value], aliases: usize| {
+        let mut shown: Vec<_> = rows.iter().filter_map(|row| row["row"].as_u64()).collect();
+        let mut expected: Vec<_> = order.iter().filter_map(serde_json::Value::as_u64).collect();
+        shown.sort_unstable();
+        shown.dedup();
+        expected.sort_unstable();
+        assert_eq!(shown, expected, "{rows:?}");
+        assert_eq!(rows.iter().filter(|row| !row["row"].is_null()).count(), expected.len() + aliases, "{rows:?}");
+    };
+
+    let rows = read(&drums);
+    let snare = row_of(&rows, "Snare").unwrap();
+    assert!(order.contains(&snare), "Snare reads Unassigned on the replaced lane: {rows:?}");
+    assert_eq!(plain["scene"]["lanes"][snare.as_u64().unwrap() as usize]["name"], "normal-hitclap");
+    assert_eq!(row_of(&rows, "Ride"), None, "a hidden lane's row shows: {rows:?}");
+    assert_eq!(row_of(&rows, "Ghost notes"), Some(serde_json::Value::Null));
+    lanes_once(&rows, 0);
+
+    // A row may also name the replacement sample itself; both rows show the one lane.
+    load(&mut drums, &app, vec![("Snare", Some(key(&app, &clap))), ("Rim", Some(key(&app, &replacement)))]);
+    let rows = read(&drums);
+    assert_eq!(row_of(&rows, "Rim"), Some(snare.clone()), "{rows:?}");
+    assert_eq!(row_of(&rows, "Snare"), Some(snare), "{rows:?}");
+    lanes_once(&rows, 1);
+    assert_eq!(fs::read(&path).unwrap(), bytes);
+}
+
+#[test]
 fn lane_actions_hide_restore_and_undo_without_removing_the_sample() {
     let fixture = Fixture::new("lane-actions");
     let map_path = fixture.0.join("Lane.osu");
