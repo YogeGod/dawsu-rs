@@ -118,6 +118,9 @@ test("lane header styles stay within what every platform's web view draws", () =
   // Group M and S stay in the row and reachable by Tab: dimmed while off, never removed.
   assert.doesNotMatch(css, /sample-folder[^{]*lane-(mute|solo)[^{]*\{[^}]*display:\s*none/);
   assert.match(css, /\.lane\.sample-folder > :is\(\.lane-mute,\.lane-solo\)\s*\{[^}]*opacity:\s*\.45/);
+  // With names hidden, lane rows keep their ▶ whole while a group row's name shrinks to leave room for M and S.
+  assert.match(css, /\.arrange\[data-lane-names="false"\] \.lane:not\(\.sample-folder\) \.name \{ flex:1 0 auto; \}/);
+  assert.doesNotMatch(css, /\.arrange\[data-lane-names="false"\] \.lane \.name \{/);
   // The design's 250px lane column, still clamped and still resizable.
   assert.match(css, /--lane-default-width:clamp\(170px,18vw,250px\)/);
 });

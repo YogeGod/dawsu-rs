@@ -443,5 +443,5 @@ button.editor-tool-button.active{color:var(--hi);background:#454545}
 .arrange[data-lane-names="false"] #lanes > .lane { gap:2px; padding-inline:3px; }
 .arrange[data-lane-names="false"] .lane-count { display:none; }
 .arrange[data-lane-names="false"] .lane :is(.lane-mute,.lane-solo) { width:18px; }
-.arrange[data-lane-names="false"] .lane .name { flex:1 0 auto; }
+.arrange[data-lane-names="false"] .lane:not(.sample-folder) .name { flex:1 0 auto; }
 .arrange[data-lane-names="false"] .lane .lane-disclosure { width:12px; min-width:12px; padding:0; }
