@@ -816,6 +816,10 @@ function renderBookmarks() {
     list.dataset.path = scene?.path ?? "";
   }
   list.disabled = !!view.busy || marks.length === 0;
+  // A list box needs two rows or more; size 1 turns it back into a drop-down.
+  list.size = limit(marks.length, 2, 6);
+  list.hidden = marks.length === 0;
+  $("bookmarks-empty").hidden = marks.length > 0;
   for (const id of ["jump-bookmark", "rename-bookmark", "remove-bookmark"]) {
     $(id).disabled = !!view.busy || !selectedBookmark();
   }
@@ -884,10 +888,31 @@ function renderActiveLane() {
   sample.hidden = !lane?.sample || lane.sample === lane.name;
   const colour = laneColours.get(lane?.colourKey);
   const swatch = $("active-lane-colour-swatch");
-  swatch.hidden = !colour;
-  if (colour) swatch.style.backgroundColor = colour;
+  swatch.hidden = !lane;
+  if (lane) swatch.style.backgroundColor = laneColour(lane);
+  $("active-lane-colour-name").textContent = !lane ? "" : colour ?? "Sound colour";
   $("replace-sample").disabled = !!view.busy || !lane?.canReplace;
   $("lane-colour").disabled = !!view.busy || !lane?.colourKey;
+}
+
+let selectedHitsScene = null;
+let selectedHits = { lanes: [], volumes: [] };
+
+// The lanes and volumes of the selected hits, worked out once per scene from its moments.
+function selectedHitDetails() {
+  if (selectedHitsScene === scene) return selectedHits;
+  const lanes = new Set();
+  const volumes = new Set();
+  for (const [, volume, , hits] of scene?.moments ?? []) {
+    for (const [row, selected, , gain] of hits) {
+      if (!selected) continue;
+      lanes.add(row);
+      volumes.add(gain ?? volume);
+    }
+  }
+  selectedHitsScene = scene;
+  selectedHits = { lanes: [...lanes], volumes: [...volumes].sort((a, b) => a - b) };
+  return selectedHits;
 }
 
 function renderSelection() {
@@ -895,6 +920,11 @@ function renderSelection() {
   $("selected").textContent = selection
     ? selection.count + (selection.count === 1 ? " hit" : " hits")
     : "Nothing selected";
+  const { lanes, volumes } = selection ? selectedHitDetails() : { lanes: [], volumes: [] };
+  $("selected-lanes").textContent = lanes.length > 1 ? " · " + lanes.length + " lanes"
+    : lanes.length ? " · " + laneDisplayName(scene.lanes?.[lanes[0]]) : "";
+  $("selection-volume-value").textContent = !volumes.length ? ""
+    : volumes.length === 1 ? volumes[0] + "%" : volumes[0] + "–" + volumes.at(-1) + "%";
   $("selection-fields").hidden = !selection;
   $("selection-fields").disabled = !!view.busy;
   const body = selection?.sliderBody;
