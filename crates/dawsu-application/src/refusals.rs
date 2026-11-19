@@ -1,6 +1,6 @@
 //! The words a mapper reads when Open, New difficulty, Generate, Copy, Import or a write is
-//! refused. All of them live here, so no message shows a Rust variant name. The arms for an
-//! outcome that went through are only there to keep each match complete.
+//! refused. All of them live here, so no message shows a Rust variant name. Every caller handles
+//! the outcome that went through before it asks for words, so those arms are unreachable.
 
 use dawsu_editor::tempo::SnapSpacingError;
 use dawsu_hitsounding::Decompiled;
@@ -20,7 +20,7 @@ fn mode_name(mode: i32) -> String {
 
 pub(crate) fn open(outcome: &Decompiled) -> String {
     match outcome {
-        Decompiled::Done(_) => "The difficulty was read.".into(),
+        Decompiled::Done(_) => unreachable!("a read difficulty is not a refusal"),
         Decompiled::UnsupportedMode { mode } => format!(
             "This is {} difficulty. dawsu! edits osu!standard difficulties only.",
             mode_name(*mode)
@@ -31,7 +31,7 @@ pub(crate) fn open(outcome: &Decompiled) -> String {
 
 pub(crate) fn new_difficulty(outcome: &NewDiff) -> String {
     match outcome {
-        NewDiff::Planned { .. } => "The new difficulty is ready to write.".into(),
+        NewDiff::Planned { .. } => unreachable!("a planned difficulty is not a refusal"),
         NewDiff::BlankName => "Type a name for the new difficulty.".into(),
         NewDiff::VersionTaken => {
             "A difficulty with that name already exists in this mapset. Choose another name.".into()
@@ -45,7 +45,7 @@ pub(crate) fn new_difficulty(outcome: &NewDiff) -> String {
 
 pub(crate) fn generate(outcome: &GenerateOutcome) -> String {
     match outcome {
-        GenerateOutcome::Planned { .. } => "The hitsound difficulty is ready to write.".into(),
+        GenerateOutcome::Planned { .. } => unreachable!("a planned Generate is not a refusal"),
         GenerateOutcome::NameTaken => "A difficulty in this mapset already has the hitsound difficulty's file name, and dawsu! did not make it. Rename that difficulty, then generate again.".into(),
         GenerateOutcome::VersionTaken => "A difficulty in this mapset is already called \"Hitsounds\". Rename it, then generate again.".into(),
         GenerateOutcome::Cancelled => "Generate was cancelled.".into(),
@@ -54,7 +54,7 @@ pub(crate) fn generate(outcome: &GenerateOutcome) -> String {
 
 pub(crate) fn copy(outcome: &CopyOutcome) -> String {
     match outcome {
-        CopyOutcome::Targets(_) => "Copy is ready to write.".into(),
+        CopyOutcome::Targets(_) => unreachable!("planned Copy targets are not a refusal"),
         CopyOutcome::InvalidOptions(why) => format!("Check the Copy settings: {why}"),
         CopyOutcome::Cancelled => "Copy was cancelled.".into(),
     }
@@ -63,7 +63,7 @@ pub(crate) fn copy(outcome: &CopyOutcome) -> String {
 /// Follows the target's file name and a colon.
 pub(crate) fn copy_target(outcome: &TargetOutcome) -> String {
     match outcome {
-        TargetOutcome::Planned(_) => "ready to write".into(),
+        TargetOutcome::Planned(_) => unreachable!("a planned Copy target is not a refusal"),
         TargetOutcome::UnsupportedMode { mode } => format!(
             "this is {} difficulty, and Copy writes to osu!standard difficulties only",
             mode_name(*mode)
@@ -74,7 +74,7 @@ pub(crate) fn copy_target(outcome: &TargetOutcome) -> String {
 
 pub(crate) fn import(outcome: &OszImport) -> String {
     match outcome {
-        OszImport::Imported { .. } => "The .osz file was imported.".into(),
+        OszImport::Imported { .. } => unreachable!("an imported .osz is not a refusal"),
         OszImport::NotAnArchive(why) => format!("This .osz file could not be unpacked: {why}"),
         OszImport::TooLarge => "This .osz file is too large to import.".into(),
         OszImport::TooManyEntries => "This .osz file holds too many files to import.".into(),
@@ -88,8 +88,7 @@ pub(crate) fn import(outcome: &OszImport) -> String {
 /// Follows the written file's path and a colon.
 pub(crate) fn write(outcome: &SaveOutcome) -> String {
     match outcome {
-        SaveOutcome::Saved { .. } => "saved".into(),
-        SaveOutcome::NothingToSave => "nothing to save".into(),
+        SaveOutcome::Saved { .. } | SaveOutcome::NothingToSave => unreachable!("a finished write is not a refusal"),
         SaveOutcome::ChangedOnDisk => {
             "the file changed on disk after the review, so it was not written. Review again.".into()
         }
@@ -140,6 +139,12 @@ mod tests {
             let (name, text) = (variant(value), message(value));
             assert!(!text.contains(&name), "{text:?} shows the variant name {name}");
         }
+    }
+
+    #[test]
+    #[should_panic]
+    fn an_outcome_that_went_through_is_never_worded_as_a_refusal() {
+        write(&SaveOutcome::NothingToSave);
     }
 
     #[test]
