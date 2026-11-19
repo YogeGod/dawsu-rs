@@ -220,13 +220,12 @@ fn drum_view_uses_a_preset_without_changing_the_mapset_and_follows_sibling_diffi
     assert_eq!(shown["scene"]["lanes"], original["scene"]["lanes"]);
     assert_eq!(shown["scene"]["moments"], original["scene"]["moments"]);
     let rows = shown["scene"]["drumRows"].as_array().unwrap();
-    assert_eq!(rows[0]["name"], "Snare");
+    // Two rows on one lane show as one row under both names, so the lane shows once.
+    assert_eq!(rows[0]["name"], "Snare / Rim");
     assert!(rows[1]["row"].is_null());
     assert_eq!(rows[1]["name"], "Ghost notes");
-    assert_eq!(rows[2]["name"], "Rim");
-    assert_eq!(rows[0]["row"], rows[2]["row"]);
     assert_ne!(rows[0]["row"], serde_json::Value::Null);
-    assert_eq!(rows.len(), original["scene"]["laneOrder"].as_array().unwrap().len() + 2);
+    assert_eq!(rows.len(), original["scene"]["laneOrder"].as_array().unwrap().len() + 1);
 
     drums.toggle(&app, &expected, false).unwrap();
     assert!(read(&drums, &app)["scene"]["drumRows"].is_null());
@@ -300,15 +299,13 @@ fn drum_view_rows_follow_a_replaced_lane_and_leave_hidden_lanes_hidden() {
         shown["scene"]["drumRows"].as_array().unwrap().clone()
     };
     let row_of = |rows: &[serde_json::Value], name: &str| rows.iter().find(|row| row["name"] == name).map(|row| row["row"].clone());
-    // The view never adds or drops a lane: each shown lane appears once, except under an alias.
-    let lanes_once = |rows: &[serde_json::Value], aliases: usize| {
+    // The view never adds, drops or repeats a lane: each shown lane appears exactly once.
+    let lanes_once = |rows: &[serde_json::Value]| {
         let mut shown: Vec<_> = rows.iter().filter_map(|row| row["row"].as_u64()).collect();
         let mut expected: Vec<_> = order.iter().filter_map(serde_json::Value::as_u64).collect();
         shown.sort_unstable();
-        shown.dedup();
         expected.sort_unstable();
         assert_eq!(shown, expected, "{rows:?}");
-        assert_eq!(rows.iter().filter(|row| !row["row"].is_null()).count(), expected.len() + aliases, "{rows:?}");
     };
 
     let rows = read(&drums);
@@ -317,14 +314,13 @@ fn drum_view_rows_follow_a_replaced_lane_and_leave_hidden_lanes_hidden() {
     assert_eq!(plain["scene"]["lanes"][snare.as_u64().unwrap() as usize]["name"], "normal-hitclap");
     assert_eq!(row_of(&rows, "Ride"), None, "a hidden lane's row shows: {rows:?}");
     assert_eq!(row_of(&rows, "Ghost notes"), Some(serde_json::Value::Null));
-    lanes_once(&rows, 0);
+    lanes_once(&rows);
 
-    // A row may also name the replacement sample itself; both rows show the one lane.
+    // A row may also name the replacement sample itself; the one lane shows once, under both names.
     load(&mut drums, &app, vec![("Snare", Some(key(&app, &clap))), ("Rim", Some(key(&app, &replacement)))]);
     let rows = read(&drums);
-    assert_eq!(row_of(&rows, "Rim"), Some(snare.clone()), "{rows:?}");
-    assert_eq!(row_of(&rows, "Snare"), Some(snare), "{rows:?}");
-    lanes_once(&rows, 1);
+    assert_eq!(row_of(&rows, "Snare / Rim"), Some(snare), "{rows:?}");
+    lanes_once(&rows);
     assert_eq!(fs::read(&path).unwrap(), bytes);
 }
 

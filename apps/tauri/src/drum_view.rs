@@ -81,18 +81,25 @@ impl DrumView {
             .filter_map(|lane| definitions.get(lane).map(|lane| lane_key(lane)))
             .collect();
         let entries = drum_rows(Some(&kit.preset), &lanes);
-        let named: HashSet<_> = entries.iter().filter_map(|entry| match entry {
-            DrumViewRow::Instrument { lane, .. } => Some(rows[&lane.identity]),
-            _ => None,
-        }).collect();
-        let mut others = HashSet::new();
-        let shown = entries.into_iter().filter_map(|entry| match entry {
-            DrumViewRow::Instrument { row, lane } => Some(json!({"row": rows[&lane.identity], "name": row.name})),
+        // Several drum-map rows on one lane show as one row, at the first of them and under all
+        // their names, so the view never shows a lane twice.
+        let mut names: HashMap<usize, Vec<&str>> = HashMap::new();
+        for entry in &entries {
+            if let DrumViewRow::Instrument { row, lane } = entry {
+                names.entry(rows[&lane.identity]).or_default().push(&row.name);
+            }
+        }
+        let mut shown_rows = HashSet::new();
+        let shown = entries.iter().filter_map(|entry| match entry {
+            DrumViewRow::Instrument { lane, .. } => {
+                let row = rows[&lane.identity];
+                shown_rows.insert(row).then(|| json!({"row": row, "name": names[&row].join(" / ")}))
+            }
             DrumViewRow::Unassigned(row) if row.lane.as_ref().is_some_and(|key| hidden.contains(key)) => None,
             DrumViewRow::Unassigned(row) => Some(json!({"row": null, "name": row.name})),
             DrumViewRow::Other(lane) => {
                 let row = rows[&lane.identity];
-                (!named.contains(&row) && others.insert(row)).then(|| json!({"row": row, "name": null}))
+                shown_rows.insert(row).then(|| json!({"row": row, "name": null}))
             }
         }).collect::<Vec<_>>();
         view["scene"]["drumRows"] = json!(shown);
