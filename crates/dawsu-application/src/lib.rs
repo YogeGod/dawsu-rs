@@ -191,6 +191,9 @@ impl Document {
 }
 const DIFFICULTY_CHANGED: &str =
     "The difficulty changed on disk. Your edits are kept. Reopen or save a separate copy.";
+/// The farthest the timeline zooms out, in pixels per millisecond: low enough that Fit shows a
+/// 30-minute song in a 1000 px timeline. The view, Zoom out and reopening all use it.
+pub const MIN_ZOOM: f64 = 0.0005;
 
 pub struct SaveReport {
     pub file: OsuFile,
@@ -1254,7 +1257,7 @@ impl Application {
                         .clamp(0.0, duration);
                     self.cycle = settings.cycle && self.locator_left < self.locator_right;
                     self.song_offset = settings.song_offset;
-                    self.zoom = settings.zoom.unwrap_or(0.12).clamp(0.005, 3.0);
+                    self.zoom = settings.zoom.unwrap_or(0.12).clamp(MIN_ZOOM, 3.0);
                     self.row_height = settings.row_height.unwrap_or(30.0).clamp(20.0, 65.0);
                     self.set_view_start(settings.view_start.clamp(0.0, duration));
                     self.seek(0.0);
@@ -3897,5 +3900,27 @@ mod project_workflow {
         assert_eq!(app.zoom, 0.35);
         assert_eq!(app.document().unwrap().composer.view_start, 125.0);
         assert_eq!(std::fs::read(&map).unwrap(), data);
+    }
+
+    #[test]
+    fn fit_zoom_of_a_30_minute_song_survives_zoom_out_and_reopening() {
+        let fixture = Scratch::new("fit-zoom");
+        let map = fixture.path("map.osu");
+        let other = fixture.path("other.osu");
+        let data = include_bytes!("../tests/project-fixture.osu");
+        std::fs::write(&map, data).unwrap();
+        std::fs::write(&other, data).unwrap();
+        let mut app = Application::headless();
+        app.project_root = Some(fixture.path("application-data"));
+        open(&mut app, map.clone());
+        // Fit shows a 30-minute song in a 1000 px timeline.
+        let fit = 1000.0 / (30.0 * 60_000.0);
+        app.zoom = fit;
+        app.command("zoomOut");
+        assert!(app.zoom <= fit, "Zoom out zoomed in to {}", app.zoom);
+        app.zoom = fit;
+        open(&mut app, other);
+        open(&mut app, map);
+        assert_eq!(app.zoom, fit);
     }
 }

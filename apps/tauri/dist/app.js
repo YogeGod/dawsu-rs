@@ -1754,7 +1754,7 @@ function resizeLaneHeaders(height) {
 }
 
 function changeView(start, zoom, rowHeight = scene.rowHeight, rowAnchorY = 0) {
-  zoom = limit(zoom, .002, 3);
+  zoom = limit(zoom, .0005, 3);
   rowHeight = limit(rowHeight, 20, 65);
   const path = scene.path;
   return run(async () => {
@@ -1831,7 +1831,7 @@ $("scroll").addEventListener("wheel", (event) => {
   } else if (snap) {
     stepWheelSnap(deltaY < 0);
   } else if (zoomTime) {
-    const zoom = limit(scene.zoom * Math.exp(-deltaY * .003), .002, 3);
+    const zoom = limit(scene.zoom * Math.exp(-deltaY * .003), .0005, 3);
     changeView(scene.viewStart + Math.max(0, x) * (1 / scene.zoom - 1 / zoom), zoom);
   } else if (pan) {
     changeView(scene.viewStart + (deltaX || deltaY) / scene.zoom, scene.zoom);

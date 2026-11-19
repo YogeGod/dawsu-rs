@@ -362,7 +362,7 @@ pub fn catalogue() -> CommandCatalog<Application> {
         &kernel::zoom_out(),
         areas::HS_TIMELINE,
         |a| {
-            a.zoom = (a.zoom / 1.3).max(0.005);
+            a.zoom = (a.zoom / 1.3).max(crate::MIN_ZOOM);
             Ok(())
         },
         None,

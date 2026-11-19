@@ -843,7 +843,7 @@ impl Action {
                 row_height,
             } => {
                 app.set_view_start(start.clamp(0.0, app.duration_ms()));
-                app.zoom = zoom.clamp(0.002, 3.0);
+                app.zoom = zoom.clamp(dawsu_application::MIN_ZOOM, 3.0);
                 app.row_height = row_height.clamp(20.0, 65.0);
             }
             Self::KeyPreset { name } => {

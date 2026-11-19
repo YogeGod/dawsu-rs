@@ -496,6 +496,20 @@ fn library_sample_actions_scope_paths_and_preserve_the_assignment_target() {
 }
 
 #[test]
+fn view_keeps_the_fit_zoom_of_a_30_minute_song() {
+    let fixture = Fixture::new("fit-zoom");
+    let path = fixture.0.join("Hard.osu");
+    fs::write(&path, b"osu file format v14\n\n[TimingPoints]\n0,500,4,1,0,100,1,0\n\n[HitObjects]\n256,192,1000,1,0,0:0:0:0:\n").unwrap();
+    let mut app = Application::headless();
+    open(&mut app, &path);
+    // Fit shows a 30-minute song in a 1000 px timeline.
+    let fit = 1000.0 / (30.0 * 60_000.0);
+    serde_json::from_value::<Action>(serde_json::json!({"kind": "view", "start": 0.0, "zoom": fit, "row_height": 30.0}))
+        .unwrap().run(&mut app);
+    assert_eq!(app.zoom, fit);
+}
+
+#[test]
 fn time_signature_action_changes_ruler_and_position_without_changing_map() {
     let fixture = Fixture::new("time-signature");
     let path = fixture.0.join("Meter.osu");
