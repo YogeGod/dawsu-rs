@@ -51,7 +51,7 @@ impl Lane {
 }
 
 /// Where a moment sits (Responsibility 4).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Place {
     Circle(ObjectId),
     /// A slider's head (node 0), a repeat, or its tail (the last node).
@@ -236,6 +236,28 @@ impl SliderBody {
     pub(crate) fn volume_changed(&self) -> bool {
         self.volume != self.decompiled.1
     }
+
+    /// The body's editable sound now.
+    pub fn state(&self) -> BodyState {
+        BodyState { set: self.set(), volume: self.volume, whistle: self.whistle, whistle_set: self.whistle_set, whistle_lane: self.whistle_lane.clone() }
+    }
+
+    /// The body's sound as decompile found it.
+    pub fn decompiled_state(&self) -> BodyState {
+        let (set, volume, whistle) = self.decompiled;
+        BodyState { set, volume, whistle, whistle_set: self.decompiled_whistle.0, whistle_lane: self.decompiled_whistle.1.clone() }
+    }
+}
+
+/// A slider body's editable sound: the set of its slide and ticks, its volume, and its whistle
+/// with the whistle's own set and lane.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BodyState {
+    pub set: Option<SampleSet>,
+    pub volume: i32,
+    pub whistle: bool,
+    pub whistle_set: Option<SampleSet>,
+    pub whistle_lane: SampleIdentity,
 }
 
 pub(crate) fn with_sound(identity: &SampleIdentity, sound: Sound) -> SampleIdentity {
@@ -451,6 +473,58 @@ impl Hitsounds {
             self.add_hit_with_volume(id, lane, volume);
         }
         self.moments[id.0].remember_baseline();
+    }
+
+    /// Sets a moment's hits and gains without touching what decompile found, so the moment still
+    /// counts as changed where it differs from the file. A hidden lane stays hidden.
+    pub fn set_moment_state(&mut self, id: MomentId, default_volume: i32, hits: impl IntoIterator<Item = (SampleIdentity, i32)>) {
+        let hits: Vec<_> = hits.into_iter().collect();
+        for (lane, _) in &hits {
+            self.ensure_lane(lane);
+        }
+        let moment = &mut self.moments[id.0];
+        moment.hits.clear();
+        moment.set_volume(default_volume);
+        for (lane, volume) in hits {
+            moment.hits.insert(lane.clone());
+            moment.set_hit_volume(&lane, volume);
+        }
+    }
+
+    /// Puts a moment back to what decompile found. A moment with no object loses its hits.
+    pub fn reset_moment(&mut self, id: MomentId) {
+        let moment = &mut self.moments[id.0];
+        match moment.baseline.clone() {
+            Some(baseline) => {
+                moment.hits = baseline.hits;
+                moment.volume = baseline.volume;
+                moment.hit_volumes = baseline.hit_volumes;
+            }
+            None => {
+                moment.hits.clear();
+                moment.hit_volumes.clear();
+            }
+        }
+    }
+
+    /// Sets a slider body's sound. Unlike [`Hitsounds::set_body_volume`], the head's volume stays.
+    pub fn set_body_state(&mut self, body: usize, state: BodyState) {
+        let b = &mut self.bodies[body];
+        if let Some(set) = state.set {
+            b.slide = with_set(&b.slide, set);
+            b.tick = with_set(&b.tick, set);
+        }
+        b.volume = state.volume;
+        b.whistle = state.whistle;
+        b.whistle_set = state.whistle_set;
+        b.whistle_lane = state.whistle_lane;
+        let mut lanes = vec![b.slide.clone(), b.tick.clone()];
+        if b.whistle {
+            lanes.push(b.whistle_lane.clone());
+        }
+        for lane in lanes {
+            self.ensure_lane(&lane);
+        }
     }
 
     /// Adds a moment with no object, for hits placed where the map has none (Responsibility 5).

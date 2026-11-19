@@ -22,6 +22,7 @@ mod shortcuts;
 mod problems;
 mod recovery;
 mod refusals;
+mod roll_back;
 mod sample_watch;
 pub mod waveform;
 use dawsu_editor::commands::{
@@ -64,6 +65,9 @@ pub struct Document {
     pub difficulties: Vec<PathBuf>,
     pub hs_mode: bool,
     compile_base: OsuFile,
+    /// The hits as last written: the final compile input of the last Save, or the hits as opened.
+    /// A part Save cannot write as drawn goes back to its state here (F052).
+    written: Hitsounds,
     owned_hs_circles: BTreeSet<LineId>,
     bookmarks: BookmarkList,
     bookmark_override: bool,
@@ -135,6 +139,7 @@ impl Document {
             .map(|e| e.path())
             .filter(|p| p.extension().is_some_and(|s| s.eq_ignore_ascii_case("osu")))
             .collect();
+        let written = h.clone();
         let mut composer = Composer::new(h);
         composer.tempo = TempoMap::new(sections);
         let bookmarks = bookmarks::import(&read.file);
@@ -142,6 +147,7 @@ impl Document {
             path,
             file: read.file,
             compile_base,
+            written,
             owned_hs_circles: BTreeSet::new(),
             bookmarks,
             bookmark_override: false,
@@ -219,8 +225,30 @@ fn compile_for_save(
     cancel: &dyn Fn() -> bool,
     progress: &mut dyn FnMut(usize, usize),
 ) -> Result<(OsuFile, Vec<SaveProblem>, BTreeSet<LineId>), String> {
+    compile_pass(file, hits, hs, owned, loose_hits_saved_in_project, cancel, progress)
+        .map(|pass| (pass.out, pass.problems, pass.owned))
+}
+/// One compile of Save: the patched difficulty, its problems, the HS circles it owns, and the HS
+/// group (by its file time) of each circle it made.
+struct Pass {
+    out: OsuFile,
+    problems: Vec<SaveProblem>,
+    owned: BTreeSet<LineId>,
+    circles: std::collections::BTreeMap<LineId, i64>,
+}
+fn compile_pass(
+    file: &OsuFile,
+    hits: &Hitsounds,
+    hs: bool,
+    owned: &BTreeSet<LineId>,
+    loose_hits_saved_in_project: bool,
+    cancel: &dyn Fn() -> bool,
+    progress: &mut dyn FnMut(usize, usize),
+) -> Result<Pass, String> {
     let mut owned = owned.clone();
+    let mut circles = std::collections::BTreeMap::new();
     let (out, mut problems) = if hs {
+        let groups = dawsu_hitsounding::hs::hs_groups(file, hits);
         match dawsu_hitsounding::hs::compile_hs(file, hits, Placement::OnObjects, cancel, progress) {
             dawsu_hitsounding::hs::CompiledHs::Done { mut file, mut problems, created } => {
                 let mut removed = BTreeSet::new();
@@ -238,6 +266,7 @@ fn compile_for_save(
                     }
                 }
                 problems.retain(|problem| !matches!(problem.place, dawsu_hitsounding::Place::Circle(id) if removed.contains(&id)));
+                circles = created.iter().map(|id| id.line()).zip(groups.into_keys()).collect();
                 owned.extend(created.into_iter().map(dawsu_hitsounding::ObjectId::line));
                 (file, problems)
             }
@@ -252,7 +281,7 @@ fn compile_for_save(
     if loose_hits_saved_in_project && !hs {
         problems.retain(|problem| !matches!(problem.kind, dawsu_hitsounding::ProblemKind::NoObject));
     }
-    Ok((out, problems, owned))
+    Ok(Pass { out, problems, owned, circles })
 }
 /// Save's first compile pass, without sample mixes or writing. Recovery checks the last save with it.
 fn compile_snapshot(
