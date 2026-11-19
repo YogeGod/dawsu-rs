@@ -3209,57 +3209,183 @@ async function showHelp() {
 
 $("help").addEventListener("click", () => run(showHelp));
 
+// A key's name as the editor's key list writes it ("Ctrl+Shift+1", "Numpad *"), following
+// keyboard::chord and Key::name in Rust, or null for a key that can't be a shortcut.
+function shortcutName(chord) {
+  const pad = chord.code.startsWith("Numpad") ? chord.code.slice(6) : "";
+  const padKey = {Divide: "/", Multiply: "*", Subtract: "-", Add: "+", Decimal: ".", Enter: "Enter"}[pad] ??
+    (/^\d$/.test(pad) ? pad : "");
+  const named = (value) => {
+    value = {" ": "Space", Escape: "Esc", Delete: "Del", BracketLeft: "[", BracketRight: "]", Slash: "/",
+      Period: ".", Comma: ",", Minus: "-", Equal: "=", Backslash: "\\", Semicolon: ";", Quote: "'",
+      Backquote: "`"}[value] ?? value.replace(/^Arrow/, "");
+    if (/^[a-z]$/i.test(value)) return value.toUpperCase();
+    return /^([0-9[\]/.,\-=\\;'`]|Space|Enter|Esc|Backspace|Del|Home|End|PageUp|PageDown|Insert|Tab|Left|Right|Up|Down|F([1-9]|1[0-2]))$/
+      .test(value) ? value : "";
+  };
+  const key = padKey ? "Numpad " + padKey : named(chord.key) || named(chord.code.replace(/^(Key|Digit)/, ""));
+  return key ? [chord.ctrl && "Ctrl", chord.shift && "Shift", chord.alt && "Alt", key].filter(Boolean).join("+") : null;
+}
+
 async function showShortcutEditor() {
   let state = await invoke("editor_shortcuts");
-  let chord = null;
+  // Command ids carry no group, so each row goes under the area F1 help lists it in.
+  const groupOf = new Map();
+  for (const [title, entries] of await invoke("editor_help")) {
+    if (title.endsWith("(mouse)")) continue;
+    for (const [, description] of entries) if (!groupOf.has(description)) groupOf.set(description, title);
+  }
+  // {id} while a row waits for a key; with chord, name and owner while it asks to take another command's key.
+  let editing = null;
+  let focusId = null;
+  const rows = new Map();
   const search = document.createElement("input");
   search.type = "search";
   search.value = "";
-  const command = document.createElement("select");
-  const preset = document.createElement("select");
-  for (const [label, value] of [["DAW-like", "DAW"], ["osu!", "osu!"]]) {
-    const option = document.createElement("option");
-    option.textContent = label;
-    option.value = value;
-    preset.append(option);
+  search.placeholder = "Search commands or keys";
+  search.setAttribute("aria-label", "Search commands or keys");
+  const presets = document.createElement("div");
+  presets.className = "shortcut-presets";
+  presets.setAttribute("role", "group");
+  presets.setAttribute("aria-label", "Key preset");
+  for (const [label, name] of [["DAW-like keys", "DAW"], ["osu! editor controls", "osu!"]]) {
+    const button = makeButton(label, () => {
+      if (state.preset !== name) refresh(() => update({ kind: "key_preset", name }));
+    });
+    button.dataset.preset = name;
+    presets.append(button);
   }
-  preset.value = state.preset;
-  const current = document.createElement("output");
+  const toolbar = document.createElement("div");
+  toolbar.className = "shortcut-toolbar";
+  toolbar.append(presets, search);
+  const note = paragraph("Click a command's keys, then press the key to add. It applies at once. Each preset keeps its own keys.");
+  note.className = "shortcut-note";
+  const table = document.createElement("div");
+  table.className = "shortcut-table";
   const summary = document.createElement("p");
   summary.className = "dim";
   summary.setAttribute("role", "status");
-  const capture = document.createElement("input");
-  capture.type = "text";
-  capture.readOnly = true;
-  capture.placeholder = "Press a key";
-  const add = makeButton("Add key", () => change(chord));
-  const clear = makeButton("Clear keys", () => change(null));
-  const controls = document.createElement("div");
-  controls.className = "row";
-  controls.append(add, clear);
 
-  function selectCommand() {
-    const entry = state.entries.find(([id]) => id === command.value);
-    current.textContent = entry?.[2].join(", ") || "Unassigned";
-    capture.disabled = clear.disabled = !entry;
-    add.disabled = !entry || !chord;
+  function keyChips(label) {
+    const combo = document.createElement("span");
+    combo.className = "key-combo";
+    const [, ctrl, shift, alt, key] = /^(Ctrl\+)?(Shift\+)?(Alt\+)?(.+)$/.exec(label);
+    [ctrl && "Ctrl", shift && "Shift", alt && "Alt", key].filter(Boolean).forEach((part, index) => {
+      const chip = document.createElement("kbd");
+      chip.textContent = part;
+      combo.append(...(index ? ["+", chip] : [chip]));
+    });
+    return combo;
   }
 
-  function filter() {
-    const selected = command.value;
+  // Redraws the row being left and the row being edited; returns the edited row's control.
+  function edit(id, next) {
+    const previous = editing?.id;
+    editing = next;
+    if (previous && previous !== id) rows.get(previous)?.();
+    return rows.get(id)();
+  }
+
+  function press(event, entry, capture) {
+    if (["Control", "Meta", "Alt", "Shift"].includes(event.key) || event.repeat) return;
+    const chord = keyInput(event);
+    if (chord.key === "Tab" && !chord.ctrl && !chord.alt) return;
+    event.preventDefault();
+    const [id, , keys] = entry;
+    const name = shortcutName(chord);
+    if (!name) {
+      capture.textContent = "That key can't be a shortcut. Press another.";
+      return;
+    }
+    if (keys.includes(name)) return edit(id, null).focus();
+    const owner = state.entries.find(([, , other]) => other.includes(name));
+    if (owner) return edit(id, { id, chord, name, owner }).focus();
+    editing = null;
+    focusId = id;
+    refresh(() => update({ kind: "change_shortcut", id, chord }));
+  }
+
+  function fillRow(row, entry) {
+    const [id, description, keys] = entry;
+    const mine = editing?.id === id ? editing : null;
+    row.className = "shortcut-row" + (mine ? (mine.owner ? " conflict" : " capturing") : "");
+    const command = document.createElement("span");
+    command.className = "shortcut-command";
+    command.textContent = description;
+    command.title = id;
+    let target;
+    if (mine?.owner) {
+      const conflict = document.createElement("span");
+      conflict.className = "shortcut-conflict";
+      conflict.textContent = "Also " + mine.owner[1].replace(/^[A-Z](?=[a-z])/, (c) => c.toLowerCase()) + " · " + mine.name;
+      target = makeButton("Move here", () => {
+        editing = null;
+        focusId = id;
+        refresh(() => update({ kind: "change_shortcut", id, chord: mine.chord }));
+      });
+      target.setAttribute("aria-label", `Move ${mine.name} to ${description}`);
+      row.replaceChildren(command, conflict, keyChips(mine.name), target, makeButton("Cancel", () => edit(id, null).focus()));
+    } else if (mine) {
+      target = document.createElement("span");
+      target.className = "shortcut-capture";
+      target.tabIndex = 0;
+      target.setAttribute("role", "textbox");
+      target.setAttribute("aria-label", "Press the new key for " + description);
+      target.textContent = "Press keys…";
+      target.addEventListener("keydown", (event) => press(event, entry, target));
+      target.addEventListener("blur", () => { if (editing === mine) edit(id, null); });
+      row.replaceChildren(command, target);
+    } else {
+      target = document.createElement("button");
+      target.className = "shortcut-keys";
+      target.title = "Add a key";
+      target.setAttribute("aria-label", `${description}: ${keys.join(", ") || "no keys"}. Add a key`);
+      if (keys.length) target.append(...keys.map(keyChips));
+      else target.textContent = "Unassigned";
+      target.addEventListener("click", () => edit(id, { id }).focus());
+      const clear = makeButton("Clear", () => {
+        focusId = id;
+        refresh(() => update({ kind: "change_shortcut", id, chord: null }));
+      });
+      clear.className = "shortcut-clear";
+      clear.disabled = !keys.length;
+      clear.setAttribute("aria-label", "Clear the keys of " + description);
+      row.replaceChildren(command, target, clear);
+    }
+    return target;
+  }
+
+  function render() {
+    for (const button of presets.children) button.setAttribute("aria-pressed", String(button.dataset.preset === state.preset));
     const terms = search.value.trim().toLowerCase().split(/\s+/).filter(Boolean);
-    const options = state.entries.filter(([id, description, keys]) => {
+    const groups = new Map([...new Set(groupOf.values())].map((title) => [title, []]));
+    rows.clear();
+    for (const entry of state.entries) {
+      const [id, description, keys] = entry;
       const text = [id, description, ...keys].join(" ").toLowerCase();
-      return terms.every(term => text.includes(term));
-    }).map(([id, description]) => {
-      const option = document.createElement("option");
-      option.value = id;
-      option.textContent = description;
-      return option;
+      if (!terms.every((term) => text.includes(term))) continue;
+      const row = document.createElement("div");
+      row.dataset.command = id;
+      rows.set(id, () => fillRow(row, entry));
+      rows.get(id)();
+      const title = groupOf.get(description) ?? "Other";
+      if (!groups.has(title)) groups.set(title, []);
+      groups.get(title).push(row);
+    }
+    const sections = [...groups].filter(([, list]) => list.length).map(([title, list]) => {
+      const section = document.createElement("section");
+      section.className = "shortcut-group";
+      const heading = document.createElement("h3");
+      heading.textContent = title;
+      section.append(heading, ...list);
+      return section;
     });
-    command.replaceChildren(...options);
-    command.value = options.some(option => option.value === selected) ? selected : options[0]?.value ?? "";
-    selectCommand();
+    const body = $("dialog-body");
+    const top = body.scrollTop;
+    table.replaceChildren(...(sections.length ? sections : [paragraph("No commands match.")]));
+    body.scrollTop = top;
+    if (focusId && rows.has(focusId)) rows.get(focusId)().focus();
+    focusId = null;
   }
 
   function refresh(task) {
@@ -3269,44 +3395,22 @@ async function showShortcutEditor() {
         if (modalKind !== "shortcut-editor" || view.error) return;
         state = await invoke("editor_shortcuts");
         summary.textContent = view.status ?? "";
-        chord = null;
-        capture.value = "";
-        filter();
+        editing = null;
+        render();
       } catch (error) {
         summary.textContent = String(error);
       }
     });
   }
 
-  function change(key) {
-    if (!command.value || (key && add.disabled)) return;
-    const id = command.value;
-    refresh(() => update({ kind: "change_shortcut", id, chord: key }));
-  }
-
-  search.addEventListener("input", filter);
-  command.addEventListener("change", selectCommand);
-  preset.addEventListener("change", () => {
-    const name = preset.value;
-    refresh(() => update({ kind: "key_preset", name }));
-  });
-  capture.addEventListener("keydown", (event) => {
-    if (["Control", "Meta", "Alt", "Shift"].includes(event.key) || event.repeat) return;
-    chord = keyInput(event);
-    if (chord.key !== "Tab" || chord.ctrl || chord.alt) event.preventDefault();
-    capture.value = [chord.ctrl ? "Ctrl" : "", chord.shift ? "Shift" : "", chord.alt ? "Alt" : "",
-      chord.key === " " ? "Space" : chord.key].filter(Boolean).join("+");
-    selectCommand();
-  });
-  filter();
-  modal("shortcut-editor", "Customise shortcuts", [
-    labeled("Preset", preset), labeled("Search", search), labeled("Command", command),
-    labeled("Assigned keys", current), labeled("New shortcut", capture), controls, summary,
-  ], [
+  search.addEventListener("input", render);
+  render();
+  modal("shortcut-editor", "Customise shortcuts", [toolbar, note, table, summary], [
     ["Import…", () => refresh(async () => { if (await invoke("import_key_file")) await update(null, false); })],
     ["Export…", () => refresh(async () => { if (await invoke("export_key_file")) await update(null, false); })],
     ["Close", closeModal, true],
   ]);
+  $("dialog-body").scrollTop = 0;
   search.focus();
 }
 

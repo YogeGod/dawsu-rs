@@ -84,18 +84,16 @@ test("F1 help searches active command bindings and mouse actions", async () => {
   const click = label => actions.children.find(node => node.textContent === label).click();
   click("Customise shortcuts…");
   await runInContext("pending", context);
-  assert.equal(calls.at(-1), "editor_shortcuts");
-  const [, searchLabel, commandLabel, , captureLabel, controls] = body.children;
-  const commandSearch = searchLabel.children[1];
-  const command = commandLabel.children[1];
-  const capture = captureLabel.children[1];
-  commandSearch.value = "play";
-  commandSearch.handlers.get("input")();
-  assert.equal(command.value, "play");
+  assert.deepEqual(calls.slice(-2), ["editor_shortcuts", "editor_help"]);
+  // The shortcut editor's rows, capture and conflicts are covered in shortcut-editor.test.mjs.
+  const nodes = (node) => [node, ...(node.children ?? []).flatMap(child => typeof child === "object" ? nodes(child) : [])];
+  const row = nodes(body).find(node => node.dataset?.command === "play");
+  const keys = row.children.find(node => node.className === "shortcut-keys");
+  keys.click();
+  const capture = row.children.find(node => node.className === "shortcut-capture");
   capture.handlers.get("keydown")({
     key: "1", code: "Digit1", ctrlKey: true, shiftKey: true, preventDefault() {},
   });
-  controls.children[0].click();
   await runInContext("pending", context);
   assert.deepEqual(edits.at(-1), {kind: "change_shortcut", id: "play",
     chord: {key: "1", code: "Digit1", ctrl: true, shift: true, alt: false}});
