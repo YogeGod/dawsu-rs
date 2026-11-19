@@ -8,6 +8,8 @@ Real `.osu` opening and `.osz` import; difficulty switching with unsaved-edit pr
 
 Native-window and listening checks remain for several workflows. Ordinary Save, HS-mode Save, Generate and Copy render supported sample mixes. Green-line Save and Copy support indexed mixes where the compiler can isolate the slider node's lookup.
 
+Tauri crash recovery passed the two-process Windows check. The start screen offered the recovery copy, Restore reopened the last completed edit as unsaved, and Save archived the copy. [Windows relaunch check](apps/tauri/tests/recovery-relaunch.mjs)
+
 ## Missing from this build
 
 The node graph and classic detection parity, Live and Record/MIDI, Keysound mode and `.dawsuks`, VST3, SoundFont/SFZ and drum rendering, mixer/effect returns, stem splitting, osu! client link and live reload, map preview, licensed sound packs and map search, installer and updater, and cross-platform runtime proof remain open. Remaining M3 work includes audio output backends and native verification. Linked Sound sets were deferred for this pass.

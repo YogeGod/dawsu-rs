@@ -16,7 +16,18 @@
 
 <div id="editor-menu" role="menu" hidden></div>
 <section id="home">
-  <div class="home-panel"><div class="brand"><img src="studio-assets/dawsu.png" alt="">dawsu<span>!</span></div><h1>Hitsound editor</h1><p>Open an osu! difficulty or mapset to start editing.</p><button id="home-open" class="primary">Open difficulty or mapset…</button><button id="home-resume" hidden>Resume editing</button><div id="recent"></div></div>
+  <div class="home-panel">
+    <div class="brand"><img src="studio-assets/dawsu.png" alt="">dawsu<span>!</span></div>
+    <h1>Hitsound editor</h1>
+    <p>Open an osu! difficulty or mapset to start editing.</p>
+    <button id="home-open" class="primary">Open difficulty or mapset…</button>
+    <button id="home-resume" hidden>Resume editing</button>
+    <section id="recovery" aria-labelledby="recovery-title" hidden>
+      <h2 id="recovery-title">Recovery copies</h2>
+      <div id="recovery-entries"></div>
+    </section>
+    <div id="recent"></div>
+  </div>
 </section>
 <section id="workspace" hidden>
   <section id="layout-editor" class="chrome" aria-label="Edit layout" data-dock-control hidden>

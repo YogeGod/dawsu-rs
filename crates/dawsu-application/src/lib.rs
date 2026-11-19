@@ -20,6 +20,7 @@ pub use dawsu_audio::{OutputBackend, OutputDevice};
 mod preferences;
 mod shortcuts;
 mod problems;
+mod recovery;
 mod sample_watch;
 pub mod waveform;
 use dawsu_editor::commands::{
@@ -31,6 +32,7 @@ pub use problems::OutputProblem;
 pub use editor_meter::{EditorBarSection, EditorTimeSignature};
 pub use export_settings::{ExportCombination, ExportSettings};
 pub use project::LaneLayout;
+pub use recovery::RecoveryOffer;
 pub use waveform::WaveBin;
 pub use edit_workflows::{RangeOperation, TimelineEdit, VolumeScope};
 
@@ -71,16 +73,41 @@ pub struct Document {
 }
 impl Document {
     pub fn read(path: &Path) -> Result<Self, String> {
-        let path = path
-            .canonicalize()
-            .map_err(|e| format!("Opening {}: {e}", path.display()))?;
-        let read = OsuFile::read(std::fs::read(&path).map_err(|e| e.to_string())?);
+        Self::read_matching(path, None)
+    }
+    fn read_matching(
+        path: &Path,
+        recovery: Option<&recovery::RecoveryCopy>,
+    ) -> Result<Self, String> {
+        let canonical = path.canonicalize().map_err(|e| {
+            if recovery.is_some() && e.kind() == std::io::ErrorKind::NotFound {
+                format!(
+                    "The difficulty is missing or moved. Put it back at {} and retry.",
+                    path.display()
+                )
+            } else {
+                format!("Opening {}: {e}", path.display())
+            }
+        })?;
+        let bytes = std::fs::read(&canonical).map_err(|e| e.to_string())?;
+        if let Some(copy) = recovery {
+            copy.verify_source(&canonical, &bytes)?;
+        }
+        let path = canonical;
+        let read = OsuFile::read(bytes);
         if read.file.format_version().is_none() {
             return Err("This is not an osu! difficulty".into());
         }
         let root = path.parent().ok_or("Missing mapset folder")?;
-        let files = list_folder(root).map_err(|e| e.to_string())?;
-        let h = match decompile(&read.file, &files, &|| false, &mut |_, _| {}) {
+        let files = match recovery {
+            Some(copy) => copy.files().to_vec(),
+            None => list_folder(root).map_err(|e| e.to_string())?,
+        };
+        let compile_base = match recovery.and_then(recovery::RecoveryCopy::original) {
+            Some(original) => OsuFile::read(original.to_vec()).file,
+            None => read.file.clone(),
+        };
+        let h = match decompile(&compile_base, &files, &|| false, &mut |_, _| {}) {
             Decompiled::Done(h) => h,
             other => return Err(format!("Cannot open difficulty: {other:?}")),
         };
@@ -112,8 +139,8 @@ impl Document {
         let bookmarks = bookmarks::import(&read.file);
         Ok(Self {
             path,
-            file: read.file.clone(),
-            compile_base: read.file,
+            file: read.file,
+            compile_base,
             owned_hs_circles: BTreeSet::new(),
             bookmarks,
             bookmark_override: false,
@@ -173,7 +200,7 @@ pub struct SaveReport {
 }
 pub fn save_document(document: &Document, backups: PathBuf) -> Result<SaveReport, String> {
     prepare_save(
-        document.compile_base.clone(), document.composer.hitsounds().clone(),
+        document.compile_base.clone(), document.composer.hitsounds(),
         document.file.original_bytes().to_vec(), &document.path, backups, document.hs_mode,
         &document.owned_hs_circles, Path::new(""), None, false,
         &|| false, &mut Vec::new(), &mut |_, _| {},
@@ -223,9 +250,23 @@ fn compile_for_save(
     }
     Ok((out, problems, owned))
 }
+/// Save's first compile pass, without sample mixes or writing. Recovery checks the last save with it.
+fn compile_snapshot(
+    document: &Document,
+    hits: &Hitsounds,
+    hs: bool,
+    loose_hits_saved_in_project: bool,
+    cancel: &dyn Fn() -> bool,
+) -> Result<(OsuFile, Vec<SaveProblem>), String> {
+    compile_for_save(
+        &document.compile_base, hits, hs, &document.owned_hs_circles,
+        loose_hits_saved_in_project, cancel, &mut |_, _| {},
+    )
+    .map(|(file, problems, _)| (file, problems))
+}
 fn prepare_save(
     file: OsuFile,
-    hits: Hitsounds,
+    hits: &Hitsounds,
     expected: Vec<u8>,
     path: &Path,
     backups: PathBuf,
@@ -517,6 +558,11 @@ struct Loaded {
     samples: HashMap<SampleIdentity, Arc<AudioClip>>,
     waveform: Vec<WaveBin>,
     warnings: Vec<String>,
+    recovery: Option<recovery::RecoveryCopy>,
+}
+enum OpenSource {
+    Map(PathBuf),
+    Recovery(PathBuf),
 }
 struct PendingSave {
     version: u64,
@@ -524,6 +570,7 @@ struct PendingSave {
     plan: PreparedSave,
     project: Option<project::Project>,
     settings: Option<project::SessionSettings>,
+    hits: Hitsounds,
 }
 
 impl PendingSave {
@@ -531,8 +578,8 @@ impl PendingSave {
         let path = self.plan.path.clone();
         let result = self.plan.apply(self.project.as_mut(), cancel);
         JobResult::Save {
-            version: self.version, path, project: self.project, settings: self.settings,
-            result, diagnostics: Vec::new(),
+            version: self.version, path, hs_mode: self.hs, project: self.project, settings: self.settings,
+            result: result.map(|report| (report, self.hits)), diagnostics: Vec::new(),
         }
     }
 }
@@ -542,9 +589,10 @@ enum JobResult {
     Save {
         version: u64,
         path: PathBuf,
+        hs_mode: bool,
         settings: Option<project::SessionSettings>,
         project: Option<project::Project>,
-        result: Result<SaveReport, String>,
+        result: Result<(SaveReport, Hitsounds), String>,
         diagnostics: Vec<OutputProblem>,
     },
     SaveCheck {
@@ -629,10 +677,16 @@ pub struct Application {
     pub keymap: KeyMap,
     pub help_requested: bool,
     persist_preferences: bool,
+    data_root: PathBuf,
+    checkpoint: Option<recovery::Checkpoint>,
+    restored_recovery: Option<String>,
 }
 impl Application {
     pub fn new() -> Self {
-        let file = data_folder().join("preferences.json");
+        Self::with_data_root(data_folder())
+    }
+    pub fn with_data_root(data_root: PathBuf) -> Self {
+        let file = data_root.join("preferences.json");
         let legacy = std::env::var_os("LOCALAPPDATA")
             .map(|base| PathBuf::from(base).join("OsuHitsoundEditor").join("preferences.json"));
         let (mut preferences, first_launch) = preferences::load(&file, legacy.as_deref());
@@ -667,10 +721,10 @@ impl Application {
         if let Some(a) = &audio {
             a.gains(preferences.effective_song_gain(), preferences.master_gain);
         }
-        Self::create(preferences, first_launch, audio, error, true)
+        Self::create(preferences, first_launch, audio, error, true, data_root)
     }
     pub fn headless() -> Self {
-        Self::create(Preferences::default(), false, None, None, false)
+        Self::create(Preferences::default(), false, None, None, false, data_folder())
     }
     fn create(
         preferences: Preferences,
@@ -678,6 +732,7 @@ impl Application {
         audio: Option<AudioEngine>,
         error: Option<String>,
         persist_preferences: bool,
+        data_root: PathBuf,
     ) -> Self {
         let catalogue = Arc::new(commands::catalogue());
         let keymap = shortcuts::keymap(catalogue.definitions(), &preferences);
@@ -732,8 +787,11 @@ impl Application {
             keymap,
             help_requested: false,
             persist_preferences,
-            project_root: persist_preferences.then(|| data_folder().join("projects")),
+            project_root: persist_preferences.then(|| data_root.join("projects")),
+            data_root,
             project: None,
+            checkpoint: None,
+            restored_recovery: None,
         }
     }
 
@@ -742,6 +800,29 @@ impl Application {
     }
     pub fn is_dirty(&self) -> bool {
         self.document.as_ref().is_some_and(|d| d.composer.dirty())
+    }
+    /// Writes the last completed state, even if the live editor was interrupted mid-edit.
+    pub fn write_recovery_copy(&self) -> Result<Option<RecoveryOffer>, String> {
+        self.checkpoint
+            .as_ref()
+            .map(|copy| copy.write(&self.data_root))
+            .transpose()
+    }
+    pub fn recovery_offers(&self) -> Result<Vec<RecoveryOffer>, String> {
+        recovery::offers(&self.data_root)
+    }
+    pub fn restore_recovery(&mut self, id: &str) -> Result<(), String> {
+        if self.busy || self.document.is_some() {
+            return Err("Restore a recovery copy from the start screen.".into());
+        }
+        let path = recovery::pending_path(&self.data_root, id)?;
+        self.open_now(OpenSource::Recovery(path));
+        Ok(())
+    }
+    fn refresh_recovery_edit(&mut self) {
+        if let (Some(copy), Some(document)) = (&mut self.checkpoint, &self.document) {
+            copy.refresh(document);
+        }
     }
     pub fn is_playing(&self) -> bool {
         self.audio.as_ref().is_some_and(|a| a.is_playing())
@@ -949,8 +1030,8 @@ impl Application {
         if !self.persist_preferences {
             return;
         }
-        let root = data_folder();
-        let result = std::fs::create_dir_all(&root)
+        let root = &self.data_root;
+        let result = std::fs::create_dir_all(root)
             .map_err(|e| e.to_string())
             .and_then(|_| serde_json::to_vec_pretty(&self.preferences).map_err(|e| e.to_string()))
             .and_then(|bytes| {
@@ -969,7 +1050,7 @@ impl Application {
             self.pending_open = Some(path);
             return;
         }
-        self.open_now(path);
+        self.open_now(OpenSource::Map(path));
     }
     pub fn confirm_revert(&mut self) {
         if self.busy || !std::mem::take(&mut self.revert_requested) {
@@ -977,7 +1058,7 @@ impl Application {
         }
         if let Some(path) = self.document.as_ref().map(|d| d.path.clone()) {
             self.pending_open = None;
-            self.start_open(path, false);
+            self.start_open(OpenSource::Map(path), false);
         }
     }
 
@@ -986,14 +1067,14 @@ impl Application {
             return;
         }
         if let Some(path) = self.pending_open.take() {
-            self.open_now(path);
+            self.open_now(OpenSource::Map(path));
         }
     }
-    fn open_now(&mut self, path: PathBuf) {
-        self.start_open(path, true);
+    fn open_now(&mut self, source: OpenSource) {
+        self.start_open(source, true);
     }
 
-    fn start_open(&mut self, path: PathBuf, keep_settings: bool) {
+    fn start_open(&mut self, source: OpenSource, keep_settings: bool) {
         self.cancel_timeline_edit();
         if keep_settings && let Err(error) = self.save_session() {
             self.error = Some(error);
@@ -1009,6 +1090,7 @@ impl Application {
         let cancel = self.cancel.clone();
         let defaults = self.preferences.default_samples.clone();
         let project_root = self.project_root.clone();
+        let imports = self.data_root.join("imports");
         let legacy_root = self
             .persist_preferences
             .then(|| std::env::var_os("LOCALAPPDATA"))
@@ -1025,11 +1107,17 @@ impl Application {
         self.status = "Opening map and decoding audio…".into();
         std::thread::spawn(move || {
             let result = (|| {
+                let (path, recovery) = match source {
+                    OpenSource::Map(path) => (path, None),
+                    OpenSource::Recovery(path) => {
+                        let copy = recovery::read_copy(&path)?;
+                        (copy.source().to_owned(), Some(copy))
+                    }
+                };
                 let path = if path
                     .extension()
                     .is_some_and(|e| e.eq_ignore_ascii_case("osz"))
                 {
-                    let imports = data_folder().join("imports");
                     std::fs::create_dir_all(&imports).map_err(|e| e.to_string())?;
                     match dawsu_osu_format::import_osz(
                         &path,
@@ -1061,6 +1149,7 @@ impl Application {
                     &cancel,
                     project_root.as_deref(),
                     legacy_root.as_deref(),
+                    recovery,
                 )
             })();
             let _ = send.send(JobResult::Open(outgoing, keep_settings, result));
@@ -1084,6 +1173,8 @@ impl Application {
     }
 
     pub fn poll(&mut self) {
+        // Edits made outside the refreshing entry points still reach the recovery checkpoint.
+        self.refresh_recovery_edit();
         if !self.cancel.load(Ordering::Relaxed)
             && let Some(progress) = &self.job_progress
             && let Ok(mut current) = progress.current.try_lock()
@@ -1122,6 +1213,8 @@ impl Application {
                         return;
                     }
                     let path = loaded.document.path.clone();
+                    let mut checkpoint = recovery::Checkpoint::new(&loaded.document);
+                    let restored_id = loaded.recovery.map(|copy| copy.resume(&mut checkpoint));
                     self.document = Some(loaded.document);
                     self.pending_save_review = None;
                     self.last_endpoint_jump = None;
@@ -1167,8 +1260,14 @@ impl Application {
                     self.seek(0.0);
                     self.cycle_changed();
                     self.sync_audio();
-                    self.status = "Difficulty loaded".into();
+                    self.status = if restored_id.is_some() {
+                        "Recovery copy restored. Save the difficulty to clear the offer.".into()
+                    } else {
+                        "Difficulty loaded".into()
+                    };
                     self.save_preferences();
+                    self.checkpoint = Some(checkpoint);
+                    self.restored_recovery = restored_id;
                 }
                 JobResult::Open(_, _, Err(e)) => {
                     self.error = Some(e);
@@ -1254,6 +1353,7 @@ impl Application {
                 JobResult::Save {
                     version,
                     path,
+                    hs_mode,
                     settings,
                     project,
                     result,
@@ -1264,17 +1364,31 @@ impl Application {
                         self.project = project;
                     }
                     match result {
-                        Ok(report) => {
-                            if let Some(d) = self.document.as_mut() {
-                                if d.path == path {
-                                    d.file = report.file;
+                        Ok((report, hits)) => {
+                            let mut archive_error = None;
+                            if let Some(d) = self.document.as_mut().filter(|d| d.path == path) {
+                                d.file = report.file;
+                                // The difficulty is written, even when a step below returns early.
+                                self.checkpoint =
+                                    Some(recovery::Checkpoint::after_save(d, &hits, hs_mode));
+                                if let Some(id) = &self.restored_recovery {
+                                    match recovery::archive(&self.data_root, id) {
+                                        Ok(()) => self.restored_recovery = None,
+                                        Err(error) => archive_error = Some(error),
+                                    }
                                 }
                             }
+                            let with_archive_error = |error: String| match &archive_error {
+                                Some(archive) => {
+                                    format!("{error}\nCould not archive the recovery copy: {archive}")
+                                }
+                                None => error,
+                            };
                             let current = self.document.as_ref().is_some_and(|d| {
                                 d.path == path && d.composer.history.version() == version
                             });
                             if let Some(error) = report.gain_recovery_warning {
-                                self.error = Some(error);
+                                self.error = Some(with_archive_error(error));
                                 self.status = "Difficulty saved. Gain recovery could not be finalized.".into();
                                 return;
                             }
@@ -1282,20 +1396,32 @@ impl Application {
                                 settings.hs_circle_ownership = report.hs_circle_ownership;
                                 settings.gain_recovery = project.settings.gain_recovery.clone();
                                 if let Err(error) = project.save(settings) {
-                                    self.error = Some(format!("Saving session settings: {error}"));
+                                    self.error = Some(with_archive_error(format!("Saving session settings: {error}")));
                                     self.status = "Difficulty saved. Session settings could not be saved.".into();
                                     return;
                                 }
+                            }
+                            if let Some(error) = &archive_error {
+                                self.error = Some(format!(
+                                    "Difficulty saved. Could not archive the recovery copy: {error}"
+                                ));
                             }
                             if !current {
                                 self.status =
                                     "Saved the earlier revision. Newer edits are still open.".into();
                                 return;
                             }
-                            self.document.as_mut().unwrap().composer.mark_saved();
-                            self.status = "Saved with backup".into();
+                            let document = self.document.as_mut().unwrap();
+                            document.composer.mark_saved();
+                            self.checkpoint =
+                                Some(recovery::Checkpoint::after_save(document, &hits, hs_mode));
+                            self.status = if archive_error.is_some() {
+                                "Difficulty saved. Recovery copy is still pending.".into()
+                            } else {
+                                "Saved with backup".into()
+                            };
                             if let Some(path) = self.pending_open.take() {
-                                self.open_now(path);
+                                self.open_now(OpenSource::Map(path));
                             }
                         }
                         Err(e) => {
@@ -1345,7 +1471,7 @@ impl Application {
     }
 
     pub fn review_save(&mut self) {
-        self.begin_save(data_folder().join("backups"), true);
+        self.begin_save(self.data_root.join("backups"), true);
     }
 
     pub fn save_review_files(&self) -> Option<Vec<(&'static str, &Path)>> {
@@ -1397,7 +1523,7 @@ impl Application {
     }
 
     pub fn save(&mut self) {
-        self.save_with_backups(data_folder().join("backups"));
+        self.save_with_backups(self.data_root.join("backups"));
     }
 
     fn save_with_backups(&mut self, backups: PathBuf) {
@@ -1445,7 +1571,7 @@ impl Application {
             let cancelled = || cancel.load(Ordering::Relaxed);
             let mut diagnostics = Vec::new();
             let result = prepare_save(
-                file, hits, expected, &path, backups, hs, &owned, &defaults,
+                file, &hits, expected, &path, backups, hs, &owned, &defaults,
                 project.as_ref(), review, &cancelled, &mut diagnostics,
                 &mut |done, total| progress.report(done, total),
             ).map(|plan| {
@@ -1453,7 +1579,7 @@ impl Application {
                     settings.hs_circle_ownership = plan.ownership.clone();
                     settings
                 });
-                PendingSave { version, hs, plan, project: project.clone(), settings }
+                PendingSave { version, hs, plan, project: project.clone(), settings, hits }
             });
             let job = if review {
                 JobResult::SaveCheck { version, path, hs, result, diagnostics }
@@ -1461,7 +1587,7 @@ impl Application {
                 match result {
                     Ok(plan) => plan.finish(&cancelled),
                     Err(error) => JobResult::Save {
-                        version, path, project, settings: None, result: Err(error), diagnostics,
+                        version, path, hs_mode: hs, project, settings: None, result: Err(error), diagnostics,
                     },
                 }
             };
@@ -1627,6 +1753,7 @@ impl Application {
         if let Some(d) = self.document.as_mut() {
             self.tools.select_tool(tool, &mut d.composer);
         }
+        self.refresh_recovery_edit();
     }
     pub fn tool(&self) -> ToolKind {
         self.tools.active()
@@ -1648,6 +1775,10 @@ impl Application {
         }
     }
     pub fn pointer(&mut self, phase: PointerPhase, input: PointerInput) {
+        self.pointer_input(phase, input);
+        self.refresh_recovery_edit();
+    }
+    fn pointer_input(&mut self, phase: PointerPhase, input: PointerInput) {
         if self.busy {
             return;
         }
@@ -1725,6 +1856,7 @@ impl Application {
             document.composer.selected.clear();
         }
         self.restore_active_lane(slot);
+        self.refresh_recovery_edit();
     }
 
     fn active_lane_slot(&self) -> Option<SampleIdentity> {
@@ -1804,6 +1936,7 @@ impl Application {
         if let Some(d) = self.document.as_mut() {
             d.composer.volume_for_lanes(v, relative, self.selection_lane_scope.as_ref());
         }
+        self.refresh_recovery_edit();
     }
     pub fn set_hs_mode(&mut self, hs: bool) {
         if self.busy {
@@ -1812,6 +1945,7 @@ impl Application {
         if let Some(d) = self.document.as_mut() {
             d.hs_mode = hs;
         }
+        self.refresh_recovery_edit();
     }
     /// Selects the hits attached to one waveform object or one of its nodes.
     pub fn select_waveform_object(&mut self, map: &Path, object: usize, time: f64, node: bool, preview: bool) {
@@ -1936,7 +2070,7 @@ impl Application {
     }
 
     pub fn apply_output(&mut self) {
-        self.apply_output_in(data_folder().join("backups"));
+        self.apply_output_in(self.data_root.join("backups"));
     }
 
     fn apply_output_in(&mut self, backups: PathBuf) {
@@ -1972,6 +2106,7 @@ impl Application {
         if let RunOutcome::Failed { message, .. } = catalogue.run(self, id, EditorScope::Hitsound) {
             self.error = Some(message);
         }
+        self.refresh_recovery_edit();
     }
     pub fn key(&mut self, chord: KeyChord) {
         let catalogue = self.catalogue.clone();
@@ -1983,6 +2118,7 @@ impl Application {
         {
             self.error = Some(message);
         }
+        self.refresh_recovery_edit();
     }
     pub fn key_with_lane_view(&mut self, chord: KeyChord, path: PathBuf, rows: Vec<usize>, span: f64) {
         self.key_lane_view = Some((path, rows, span));
@@ -2259,8 +2395,9 @@ fn load(
     cancel: &AtomicBool,
     project_root: Option<&Path>,
     legacy_root: Option<&Path>,
+    recovery: Option<recovery::RecoveryCopy>,
 ) -> Result<Loaded, String> {
-    let mut document = Document::read(path)?;
+    let mut document = Document::read_matching(path, recovery.as_ref())?;
     let mut warnings = Vec::new();
     let project = project_root.and_then(|root| {
         match project::Project::load(root, legacy_root, &document.path) {
@@ -2273,14 +2410,24 @@ fn load(
             }
         }
     });
+    // A recovery copy is matched against the decoded difficulty. It already holds the
+    // loose hits from the project, and its row order and HS mode win over the project's.
+    let recovered_view = match &recovery {
+        Some(copy) => {
+            copy.apply(&mut document, project.is_some(), cancel)?;
+            Some((document.composer.lanes.clone(), document.hs_mode))
+        }
+        None => None,
+    };
     if let Some(recovery) = project.as_ref().and_then(|p| p.settings.gain_recovery.as_ref())
         && let Err(error) = gain_recovery::restore(&mut document, recovery, defaults)
     {
         warnings.push(format!("Editable hit gains could not be restored: {error}"));
     }
-    if let Some(saved) = project
-        .as_ref()
-        .and_then(|p| p.settings.unanchored.as_deref())
+    if recovery.is_none()
+        && let Some(saved) = project
+            .as_ref()
+            .and_then(|p| p.settings.unanchored.as_deref())
     {
         restore_project_hits(&mut document.composer, saved)?;
     }
@@ -2320,6 +2467,10 @@ fn load(
     document.export_settings = project.as_ref().and_then(|p| p.settings.export_settings.clone());
     if let Some(layout) = &mut document.lane_layout {
         layout.normalise();
+    }
+    if let Some((lanes, hs_mode)) = recovered_view {
+        document.composer.lanes = lanes;
+        document.hs_mode = hs_mode;
     }
     let folder = document.path.parent().ok_or("Missing folder")?;
     let song = if let Some(name) = document.file.general("AudioFilename") {
@@ -2372,6 +2523,7 @@ fn load(
         samples,
         waveform,
         warnings,
+        recovery,
     })
 }
 
@@ -3284,7 +3436,7 @@ mod project_workflow {
             wav.extend(amplitude.to_le_bytes());
             std::fs::write(path, wav).unwrap();
         }
-        let loaded = load(&map, &defaults, &AtomicBool::new(false), None, None).unwrap();
+        let loaded = load(&map, &defaults, &AtomicBool::new(false), None, None, None).unwrap();
         let mut app = Application::headless();
         app.document = Some(loaded.document);
         app.samples = loaded.samples;
@@ -3596,6 +3748,7 @@ mod project_workflow {
                 &AtomicBool::new(false),
                 Some(&root),
                 Some(&legacy),
+                None,
             )
             .unwrap()
         };
