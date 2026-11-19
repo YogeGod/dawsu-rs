@@ -359,15 +359,9 @@ aside section > :last-child { margin-bottom:0; }
 
 .ribbon-options:not(:popover-open) { display:none; }
 .ribbon-options:popover-open { position:fixed; inset:auto; top:94px; left:clamp(12px,40vw,700px); max-width:min(450px,90vw); margin:0; padding:12px; border:1px solid var(--line); border-radius:8px; background:var(--panel); color:var(--text); flex-wrap:wrap; gap:10px; box-shadow:0 6px 20px #0007; }
-[data-sample-set="normal"] { --sample-set-accent:#6ebcb6; }
-[data-sample-set="soft"] { --sample-set-accent:#b499d8; }
-[data-sample-set="drum"] { --sample-set-accent:#daa173; }
-.lane.sample-folder[data-sample-set] { border-inline-start:1px solid var(--sample-set-accent); background:var(--chrome); }
-.sample-folder .name { color:var(--sample-set-accent,var(--text)); font-size:11px; font-weight:650; }
 .arrange:not([data-lane-names="false"]) .lane-layer .name { padding-inline-start:14px; }
 .lane .name:focus-visible { outline-offset:-2px; }
 .lane button:not(.name) { font-size:11px; }
-.lane .name[data-sample]::after { content:attr(data-sample); display:block; overflow:hidden; text-overflow:ellipsis; font-size:10px; color:var(--muted); }
 .lane button[aria-label^="Mute "][aria-pressed=true], #song-mute[aria-pressed=true] { background:#efc16a; color:#111; }
 .lane button[aria-label^="Solo "][aria-pressed=true], #song-solo[aria-pressed=true] { background:#69d995; color:#111; }
 .tint-palette { display:grid; grid-template-columns:repeat(18,minmax(0,1fr)); gap:8px; padding:8px 0 16px; }
@@ -426,3 +420,34 @@ button.editor-tool-button.active{color:var(--hi);background:#454545}
 #bookmarks option { padding:5px 8px; border-radius:3px; color:var(--text); }
 #bookmarks option:checked { background:var(--control) linear-gradient(var(--control),var(--control)); }
 #bookmarks-empty { margin:2px 0 6px; font-size:12px; }
+
+/* Lane headers (design LaneHeader.svelte): icon tile, M, S, sound name, set tag. Name, M and S stay first in the
+   DOM for the lane menu and keyboard order; flex order lays them out as the design draws them. */
+#lanes > .lane { gap:3px; padding:0 5px 0 7px; background-color:var(--panel); border-bottom-color:var(--base); }
+#lanes > .lane:hover { background-color:var(--button); }
+#lanes > .lane.active { background-color:#454545; }
+#lanes .name:hover { background:transparent; }
+.lane .lane-icon { order:1; flex:none; display:grid; place-items:center; height:22px; max-height:calc(100% - 4px); aspect-ratio:1; border-radius:4px; background:color-mix(in srgb,var(--lane-sound) 14%,var(--panel)); color:var(--lane-sound); }
+.lane .lane-icon svg { width:14px; height:14px; max-height:100%; fill:none; stroke:currentColor; stroke-width:1.6; stroke-linecap:round; stroke-linejoin:round; }
+.lane .lane-mute { order:2; }
+.lane .lane-solo { order:3; }
+.lane .lane-disclosure { order:4; flex:none; width:14px; min-height:18px; padding:0; border:0; background:transparent; color:var(--muted); }
+.lane .name { order:5; flex:0 1 auto; padding:0 2px; font-size:13px; font-weight:600; color:var(--text); }
+.lane .lane-add-layer { order:6; margin-left:auto; }
+.lane :is(.lane-mute,.lane-solo,.lane-add-layer) { flex:none; width:20px; height:18px; min-height:18px; padding:0; border:0; border-radius:4px; font-weight:600; line-height:18px; text-align:center; }
+.lane :is(.lane-mute,.lane-solo) { background:var(--button); color:var(--title-text); }
+.lane .lane-add-layer { width:16px; background:transparent; color:var(--muted); }
+.lane .lane-tag { float:right; margin:1px 0 0 5px; padding:0 4px; border:1px solid var(--line); border-radius:4px; background:color-mix(in srgb,var(--lane-sound) 14%,var(--panel)); color:var(--lane-sound); font-size:11px; font-weight:400; line-height:15px; }
+#lanes > .lane.sample-folder { gap:6px; padding:0 6px 0 8px; background-color:var(--group); }
+.lane.sample-folder .name { order:0; flex:1; font-size:12px; font-weight:500; color:var(--title-text); }
+.lane.sample-folder .name::before { content:""; display:inline-block; width:5px; height:5px; margin:0 9px 2px 2px; border:solid currentColor; border-width:0 1.5px 1.5px 0; transform:rotate(-45deg); }
+.lane.sample-folder .name[aria-expanded="true"]::before { margin-bottom:4px; transform:rotate(45deg); }
+.lane .lane-count { order:1; flex:none; font-size:11px; color:var(--muted); white-space:nowrap; }
+/* Group M and S have no place in the design's group row: they show on hover, on focus, or while on. */
+.lane.sample-folder > :is(.lane-mute,.lane-solo) { order:2; display:none; }
+.lane.sample-folder:is(:hover,:focus-within) > :is(.lane-mute,.lane-solo), .lane.sample-folder > [aria-pressed="true"] { display:block; }
+.arrange[data-lane-names="false"] #lanes > .lane { gap:2px; padding-inline:3px; }
+.arrange[data-lane-names="false"] .lane-count { display:none; }
+.arrange[data-lane-names="false"] .lane :is(.lane-mute,.lane-solo) { width:18px; }
+.arrange[data-lane-names="false"] .lane .name { flex:1 0 auto; }
+.arrange[data-lane-names="false"] .lane .lane-disclosure { width:12px; min-width:12px; padding:0; }
