@@ -421,13 +421,16 @@ fn ramp_moves_every_lane_together_and_keeps_their_difference() {
 }
 
 #[test]
-fn scale_by_volume_moves_every_lane_together_and_keeps_their_difference() {
+fn scale_by_volume_multiplies_every_lane_and_keeps_their_balance() {
     use dawsu_editor_composer::VolumeScope;
 
     let (mut c, normal) = normal_80_clap_50();
-    assert!(c.scale_by_volume(VolumeScope::All, 0, 100, 112.5));
-    assert_eq!(normal_and_clap(&c, &normal), (90, 60));
+    assert!(c.scale_by_volume(VolumeScope::All, 0, 100, 50.0));
+    assert_eq!(normal_and_clap(&c, &normal), (40, 25));
     c.undo();
-    assert!(c.scale_by_volume(VolumeScope::All, 0, 100, 25.0));
-    assert_eq!(normal_and_clap(&c, &normal), (20, 0));
+    assert!(c.scale_by_volume(VolumeScope::All, 0, 100, 150.0));
+    assert_eq!(normal_and_clap(&c, &normal), (100, 75), "the hitnormal stops at 100");
+    c.undo();
+    assert!(c.scale_by_volume(VolumeScope::All, 0, 100, 1.0));
+    assert_eq!(normal_and_clap(&c, &normal), (1, 1), "no sound goes below Scale's 1% floor");
 }
