@@ -241,10 +241,21 @@ function show(next) {
   const title = $("title");
   title.textContent = path ? (view.dirty ? "● " : "") + nameOf(path) : "";
   title.title = path;
+  title.setAttribute?.("data-placeholder", view.hasDocument ? "" : "No map open");
   $("status").textContent = view.status || (view.busy ? "Working…" : "");
   $("status").title = $("status").textContent;
-  $("musical-position").textContent = view.musicalPosition ?? "";
-  $("musical-position").hidden = !view.musicalPosition;
+  // The playhead readout is "bar.beat.tick · 190.0 BPM · 4/4 · snap"; the backend sends no separate fields.
+  const [bar, tempo, meter] = (scene && view.musicalPosition?.split(" · ")) || [];
+  $("musical-position").textContent = bar ?? "–";
+  $("transport-bpm").textContent = tempo?.replace(/ BPM$/, "") ?? "–";
+  $("transport-meter").textContent = meter ?? "–";
+  const time = (ms) => scene && Number.isFinite(ms) ? clock(ms) : "00:00.000";
+  $("position").textContent = time(view.position);
+  $("locator-left").textContent = time(view.left);
+  $("locator-right").textContent = time(view.right);
+  $("editor-header").dataset.empty = String(!scene);
+  for (const control of document.querySelectorAll("[data-map]")) control.disabled = !scene;
+  $("status-view").hidden = !scene;
   $("warnings").hidden = !(view.warnings?.length);
   const problems = view.outputProblems ?? [];
   const listKey = JSON.stringify(problems);
@@ -302,7 +313,6 @@ function show(next) {
       $("play-label").textContent = view.playing ? "Pause" : "Play";
       $("play").dataset.playing = String(!!view.playing);
     }
-    $("position").textContent = clock(view.position);
     for (const button of document.querySelectorAll(".editor-tool-button")) button.classList.toggle("active", button.textContent === view.tool);
   }
   refreshLaneDelete();

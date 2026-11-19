@@ -10,8 +10,27 @@
   <button id="menu-map" aria-haspopup="menu" aria-expanded="false" aria-controls="editor-menu">Map</button>
   <button id="menu-view" aria-haspopup="menu" aria-expanded="false" aria-controls="editor-menu">View</button>
 </nav>
-  <button id="layout-edit-entry" type="button" data-doc>Layout…</button>
   <div class="title" id="title"></div>
+  <div id="top-transport" class="top-transport" role="group" aria-label="Playback controls">
+    <div class="transport-cluster" role="group" aria-label="Transport">
+      <button data-action="start" data-doc aria-label="Go to start" title="Go to start"><img class="button-icon" src="studio-assets/icons/SkipBack.svg" alt=""></button>
+      <button data-action="stop" id="stop" data-map title="Stop"><img class="button-icon" src="studio-assets/icons/Square.svg" alt=""><span>Stop</span></button>
+      <button data-action="play" id="play" data-map title="Play or pause"><img id="play-icon" class="button-icon" src="studio-assets/icons/Play.svg" alt=""><span id="play-label">Play</span></button>
+      <input type="checkbox" id="cycle" class="toggle-input" data-map><label for="cycle" class="transport-cycle" title="Cycle between L and R"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 6.5h10l-2.5-2.5M13.5 9.5h-10l2.5 2.5"/></svg><span>Cycle</span></label>
+    </div>
+    <div class="transport-display">
+      <span id="position" aria-label="Elapsed time">00:00.000</span>
+      <span class="transport-readout" title="Tempo at the playhead"><span id="transport-bpm">–</span><small>BPM</small></span>
+      <span class="transport-readout" title="Time signature at the playhead"><span id="transport-meter">–</span><small>TIME</small></span>
+      <span class="transport-readout transport-bar" title="Bar, beat and tick at the playhead"><span id="musical-position">–</span><small>BAR</small></span>
+    </div>
+    <div class="transport-locators" role="group" aria-label="Locators">
+      <button data-locator="left" data-map aria-label="Set left locator" title="Set left locator, Shift to jump"><b>L</b><span id="locator-left">00:00.000</span></button>
+      <button data-locator="right" data-map aria-label="Set right locator" title="Set right locator, Shift to jump"><b>R</b><span id="locator-right">00:00.000</span></button>
+    </div>
+  </div>
+  <span class="spacer"></span>
+  <button id="layout-edit-entry" type="button" data-doc>Layout…</button>
       <button data-action="review_save" data-doc><img class="button-icon" src="studio-assets/icons/Save.svg" alt="">Save <span id="save-problem-badge" hidden></span></button>
 </header>
 
@@ -37,7 +56,6 @@
     <label>Ribbon group <select id="layout-ribbon-group"></select></label>
     <button id="layout-left" type="button" aria-label="Move ribbon group left">Move left</button>
     <button id="layout-right" type="button" aria-label="Move ribbon group right">Move right</button>
-    <label>Transport <select id="layout-transport"><option value="below">Below timeline</option><option value="above">Above timeline</option></select></label>
     <span class="spacer"></span>
     <button id="layout-reset" type="button">Reset</button>
     <button id="layout-cancel" type="button">Cancel</button>
@@ -53,7 +71,7 @@
       <label>Location <select id="layout-button-location">
         <option value="original">Original group</option><option value="header">Header</option>
         <option value="ribbon">Ribbon</option><option value="ruler">Ruler</option>
-        <option value="transport">Transport</option><option value="inspector">Inspector</option>
+        <option value="inspector">Inspector</option>
         <option value="browser">Browser</option><option value="status">Status bar</option>
       </select></label>
       <button id="layout-button-before" type="button">Earlier</button>
@@ -285,22 +303,6 @@
       <section><h2>History</h2><div id="history"></div></section>
     </aside>
   </main>
-  <section id="editor-transport" class="transport chrome" aria-label="Playback controls">
-    <div class="transport-cluster" role="group" aria-label="Transport">
-    <button data-action="start" data-doc aria-label="Go to start" title="Go to start"><img class="button-icon" src="studio-assets/icons/SkipBack.svg" alt=""></button>
-    <button data-action="play" id="play"><img id="play-icon" class="button-icon" src="studio-assets/icons/Play.svg" alt=""><span id="play-label">Play</span></button><button data-action="stop"><img class="button-icon" src="studio-assets/icons/Square.svg" alt=""><span>Stop</span></button>
-    </div>
-    <div class="transport-flags">
-      <label><input type="checkbox" id="cycle"> Cycle</label>
-      <button data-locator="left" aria-label="Set left locator" title="Set left locator, Shift to jump">L</button><button data-locator="right" aria-label="Set right locator" title="Set right locator, Shift to jump">R</button>
-    </div>
-    <div class="transport-display"><span id="position" aria-label="Elapsed time">00:00.000</span><span id="musical-position" hidden></span></div>
-    <div class="transport-navigation">
-      <button id="fit" title="Fit the difficulty in the timeline" data-doc>Fit</button>
-      <input type="range" min="-3.301" max=".477" step=".01" id="zoom" aria-label="Timeline zoom" title="Timeline zoom">
-      <button id="audio">Audio…</button>
-    </div>
-  </section>
 </section>
 <div id="statusbar">
   <div id="playback-rates" class="playback-rates" role="group" aria-label="Playback speed" title="Playback speed with pitch preserved" hidden>
@@ -314,7 +316,14 @@
   <span id="status" role="status"></span>
   <span id="problem-summary" class="problem-summary" hidden><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.5 14.5 13.5h-13zM8 6.5v3M8 11.5v.01"/></svg><span id="problem-summary-text"></span></span>
   <button id="next-output-problem" hidden>Next problem</button><button id="warnings" hidden>Audio warnings</button><button id="cancel-job" data-action="cancel_job" hidden>Cancel job</button>
-  <span id="hit-lane-counts" class="status-counts" hidden></span>
+  <div class="status-right">
+    <span id="hit-lane-counts" class="status-counts" hidden></span>
+    <div id="status-view" class="status-view" role="group" aria-label="Timeline zoom" hidden>
+      <button id="fit" title="Fit the difficulty in the timeline" data-doc>Fit</button>
+      <input type="range" min="-3.301" max=".477" step=".01" id="zoom" aria-label="Timeline zoom" title="Timeline zoom" data-map>
+    </div>
+    <button id="audio" title="Audio output">Audio…</button>
+  </div>
 </div>
 <dialog id="dialog"><h2 id="dialog-title"></h2><div id="dialog-body"></div><div class="row" id="dialog-actions"></div></dialog>
 </body></html>
