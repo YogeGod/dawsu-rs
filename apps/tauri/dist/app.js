@@ -1017,11 +1017,13 @@ function drawTimingGrid(ctx, start, end, zoom, top, bottom, ruler = false) {
 function waveform(ctx, width, center, height, start, span) {
   const bins = scene.waveform;
   if (!bins.length || !view.duration) return;
+  // Playback reads the song at position - offset, so the drawn song moves by the same offset.
+  const songStart = start - (view.offset ?? 0);
   for (const [channel, color] of [[0, "#315c59"], [1, "#3c7673"], [2, "#46908c"], [3, "#51aaa5"]]) {
     ctx.fillStyle = color;
     for (let x = 0; x < width; x += 2) {
-      const a = Math.floor((start + x * span / width) / view.duration * bins.length);
-      const b = Math.min(bins.length, Math.ceil((start + (x + 2) * span / width) / view.duration * bins.length));
+      const a = Math.floor((songStart + x * span / width) / view.duration * bins.length);
+      const b = Math.min(bins.length, Math.ceil((songStart + (x + 2) * span / width) / view.duration * bins.length));
       let peak = 0;
       for (let i = Math.max(0, a); i < b; i++) peak = Math.max(peak, bins[i][channel]);
       const extent = limit(peak, 0, 1) * height;

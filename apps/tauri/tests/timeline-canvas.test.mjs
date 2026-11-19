@@ -91,3 +91,30 @@ test("object circles never grow past the waveform lane", async () => {
   paint("scene.zoom = .25");
   assert.deepEqual(circles(ruler).map(circle => circle.diameter), [20, 20, 13.2, 20]);
 });
+
+// The x range of waveform columns that draw a bar taller than nothing.
+function loudColumns(canvas) {
+  const shades = ["#315c59", "#3c7673", "#46908c", "#51aaa5"];
+  const xs = canvas.calls.filter(call => call.name === "fillRect" && shades.includes(call.fill) && call.args[3] > 0)
+    .map(call => call.args[0]);
+  return [Math.min(...xs), Math.max(...xs)];
+}
+
+test("the drawn waveform moves with the song offset on the ruler and the overview", async () => {
+  const { get, paint } = await canvases();
+  // One loud bin from 300 to 600 ms of the song; 0.25 px/ms on both canvases.
+  paint(`view.duration = 1200; scene.zoom = .25; scene.gameplay = null;
+    scene.waveform = [[0, 0, 0, 0], [1, 1, 1, 1], [0, 0, 0, 0], [0, 0, 0, 0]]`);
+  const before = { ruler: loudColumns(get("ruler")), overview: loudColumns(get("overview")) };
+  assert.deepEqual(before.ruler, [74, 148]);
+  assert.deepEqual(before.overview, [74, 148]);
+  // Playback reads the song at position - offset, so +400 ms draws it 100 px later.
+  paint("view.offset = 400");
+  for (const id of ["ruler", "overview"]) {
+    assert.deepEqual(loudColumns(get(id)), before[id].map(x => x + 100), id);
+  }
+  paint("view.offset = -200");
+  for (const id of ["ruler", "overview"]) {
+    assert.deepEqual(loudColumns(get(id)), before[id].map(x => x - 50), id);
+  }
+});
