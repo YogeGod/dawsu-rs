@@ -329,6 +329,8 @@ impl Composer {
                 .round()
                 .clamp(1.0, 100.0) as i32
         };
+        // "Lanes of selected hits" changes only those lanes, each picked by its own volume.
+        let lanes_only = matches!(scope, VolumeScope::SelectedLanes);
         let changes: Vec<_> = self
             .hitsounds()
             .moments()
@@ -340,6 +342,11 @@ impl Composer {
                 // Every sound is multiplied by the same factor, so their balance stays.
                 let gains: Vec<_> = moment
                     .hits()
+                    .filter(|lane| {
+                        !lanes_only
+                            || selected_lanes.contains(lane)
+                                && (min..=max).contains(&moment.hit_volume(lane))
+                    })
                     .map(|lane| (lane.clone(), scale(moment.hit_volume(lane))))
                     .collect();
                 let in_scope = match scope {
@@ -350,11 +357,11 @@ impl Composer {
                     VolumeScope::All => moment.hits().next().is_some(),
                 };
                 (moment.place() != Place::NoObject
-                    && (min..=max).contains(&before)
+                    && (lanes_only || (min..=max).contains(&before))
                     && in_scope
-                    && (volume != before
+                    && (!lanes_only && volume != before
                         || gains.iter().any(|(lane, gain)| *gain != moment.hit_volume(lane))))
-                    .then_some((MomentId(index), volume, gains))
+                    .then_some((MomentId(index), (!lanes_only).then_some(volume), gains))
             })
             .collect();
         if changes.is_empty() {
@@ -362,7 +369,9 @@ impl Composer {
         }
         self.apply("Scale by volume", |hits| {
             for (id, volume, gains) in changes {
-                hits.set_volume(id, volume);
+                if let Some(volume) = volume {
+                    hits.set_volume(id, volume);
+                }
                 for (lane, gain) in gains {
                     hits.set_hit_volume(id, &lane, gain);
                 }

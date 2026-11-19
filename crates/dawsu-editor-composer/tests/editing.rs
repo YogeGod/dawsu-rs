@@ -434,3 +434,18 @@ fn scale_by_volume_multiplies_every_lane_and_keeps_their_balance() {
     assert!(c.scale_by_volume(VolumeScope::All, 0, 100, 1.0));
     assert_eq!(normal_and_clap(&c, &normal), (1, 1), "no sound goes below Scale's 1% floor");
 }
+
+#[test]
+fn scale_by_volume_on_lanes_of_selected_hits_changes_only_those_lanes() {
+    use dawsu_editor_composer::VolumeScope;
+
+    let (mut c, normal) = normal_80_clap_50();
+    assert!(
+        !c.scale_by_volume(VolumeScope::SelectedLanes, 60, 100, 50.0),
+        "From and To pick lanes by their own volume: the clap is at 50"
+    );
+    assert!(c.scale_by_volume(VolumeScope::SelectedLanes, 0, 100, 50.0));
+    assert_eq!(normal_and_clap(&c, &normal), (80, 25), "the hitnormal is not a selected lane");
+    assert_eq!(c.hitsounds().moments()[0].volume(), 80);
+    assert_eq!(c.hitsounds().moments()[1].hit_volume(&normal), 100);
+}
