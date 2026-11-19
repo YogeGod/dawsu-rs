@@ -120,7 +120,7 @@ function run(task) {
 
 async function update(action, full = true) {
   let next = await invoke("editor_view", { scene: full, action: action ?? null });
-  if (!full && (view.busy !== next.busy || view.hasDocument !== next.hasDocument ||
+  if (!next.fault && !full && (view.busy !== next.busy || view.hasDocument !== next.hasDocument ||
       view.laneCount !== next.laneCount || view.showHome !== next.showHome)) {
     next = await invoke("editor_view", { scene: true, action: null });
   }
@@ -199,6 +199,13 @@ function saveLaneLayout(persist = false) {
 }
 
 function show(next) {
+  if (next.fault) {
+    view.fault = next.fault;
+    $("status").textContent = next.fault;
+    const close = () => run(() => invoke("close_editor", { discard: false }));
+    modal("fault", "Editor stopped", [paragraph(next.fault)], [["Close dawsu!", close, true]], close);
+    return;
+  }
   const previousTool = view.tool;
   const wasPlaying = view.playing;
   const wasBusy = view.busy;
@@ -267,6 +274,12 @@ function show(next) {
   renderActiveLane();
   renderPanelLayout();
   if (!scene && view.recent) renderRecent(view.recent);
+  if (!scene && view.recovery) renderRecovery(view.recovery);
+  else if (view.hasDocument && !$("recovery").hidden) {
+    // Home with an open difficulty cannot restore, so hide the start-screen offers.
+    $("recovery").hidden = true;
+    $("recovery-entries").dataset.state = "";
+  }
   if (view.scene) renderScene();
   else renderSelection();
   $("edit-range").disabled = !!view.busy || !scene?.range;
@@ -306,6 +319,31 @@ function renderRecent(paths) {
     button.title = path;
     return button;
   }));
+}
+
+function renderRecovery({ offers = [], error }) {
+  const section = $("recovery");
+  const entries = $("recovery-entries");
+  const state = JSON.stringify([offers, error, view.busy]);
+  if (entries.dataset.state === state) return;
+  entries.dataset.state = state;
+  section.hidden = !error && offers.length === 0;
+  entries.replaceChildren();
+  entries.style.maxHeight = "200px";
+  entries.style.overflowY = "auto";
+  if (error) entries.append(paragraph(error));
+  for (const offer of offers) {
+    const name = offer.mapset + " [" + offer.difficulty + "]";
+    const date = new Date(offer.created_ms);
+    const label = paragraph(name);
+    const time = document.createElement("time");
+    time.textContent = date.toLocaleString();
+    label.append(document.createElement("br"), time);
+    const restore = makeButton("Restore", () => act({ kind: "restore_recovery", id: offer.id }));
+    restore.setAttribute("aria-label", "Restore " + name);
+    restore.disabled = view.busy;
+    entries.append(label, restore);
+  }
 }
 
 function renderPanelLayout() {
@@ -3207,6 +3245,7 @@ window.__TAURI__.event.listen("tauri://drag-drop", ({ payload }) => {
 });
 
 window.__TAURI__.event.listen("editor-close-requested", ({ payload }) => {
+  if (view.fault) return;
   if (view.busy) {
     modal("close-busy", "Job in progress", [paragraph(payload)], [["Keep editor open", closeModal, true]]);
     return;
@@ -3226,7 +3265,7 @@ window.__TAURI__.event.listen("editor-close-requested", ({ payload }) => {
 let quitAfterSave = false;
 setInterval(async () => {
   const now = performance.now();
-  if (requests || refreshing || now - lastRefresh < (view.playing || view.busy ? 85 : 1000)) return;
+  if (view.fault || requests || refreshing || now - lastRefresh < (view.playing || view.busy ? 85 : 1000)) return;
   refreshing = true;
   lastRefresh = now;
   await run(() => update(null, false));

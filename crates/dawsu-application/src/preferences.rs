@@ -123,7 +123,7 @@ mod tests {
         assert_eq!(pref.key_overrides["DAW"]["undo"], ["None+F6"]);
         assert!(pref.key_overrides["osu!"]["undo"].is_empty());
         assert_eq!(pref.key_overrides["osu!"]["nudgeLeft"], ["Alt+OemComma"]);
-        let app = crate::Application::create(pref.clone(), false, None, None, false);
+        let app = crate::Application::create(pref.clone(), false, None, None, false, crate::data_folder());
         assert_eq!(
             app.keymap
                 .command_for(dawsu_editor::keys::KeyCombination::plain(

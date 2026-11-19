@@ -21,8 +21,17 @@ use dawsu_hitsounding::{
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
-use std::{collections::BTreeSet, path::{Path, PathBuf}, sync::mpsc, time::Duration};
+use std::{
+    collections::BTreeSet,
+    panic::{AssertUnwindSafe, catch_unwind},
+    path::{Path, PathBuf},
+    sync::mpsc,
+    time::Duration,
+};
 use tauri::{Emitter, Manager, State};
+
+#[cfg(feature = "recovery-smoke")]
+const RECOVERY_SMOKE_DATA: &str = "DAWSU_RECOVERY_SMOKE_DATA";
 
 #[derive(Clone, Copy, Default, Deserialize, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -276,6 +285,11 @@ enum Action {
     Open {
         path: PathBuf,
     },
+    RestoreRecovery {
+        id: String,
+    },
+    #[cfg(feature = "recovery-smoke")]
+    RecoverySmokePanic,
     Pending {
         choice: String,
     },
@@ -491,6 +505,18 @@ impl Action {
                 if map_path(&path) {
                     app.request_open(path);
                 }
+            }
+            Self::RestoreRecovery { id } => {
+                if let Err(error) = app.restore_recovery(&id) {
+                    app.error = Some(error);
+                }
+            }
+            #[cfg(feature = "recovery-smoke")]
+            Self::RecoverySmokePanic => {
+                if std::env::var_os(RECOVERY_SMOKE_DATA).is_some_and(|path| !path.is_empty()) {
+                    panic!("Controlled crash recovery smoke test");
+                }
+                app.error = Some("The smoke test needs an isolated app data folder.".into());
             }
             Self::BrowserStyle { classic } => {
                 app.preferences.classic_browser = classic;
@@ -1201,12 +1227,18 @@ fn snapshot(app: &Application, include_scene: bool) -> Value {
         })
     }).collect::<Vec<_>>();
     result["tabRoutes"] = json!(tab_routes);
+    if include_scene && document.is_none() {
+        result["recovery"] = match app.recovery_offers() {
+            Ok(offers) => json!({ "offers": offers }),
+            Err(error) => json!({ "error": format!("Could not list recovery copies. {error}") }),
+        };
+    }
     result
 }
 
 enum Request {
     View(bool, Option<Action>, mpsc::Sender<Value>),
-    Help(mpsc::Sender<Value>),
+    Help(mpsc::Sender<Result<Value, String>>),
     AudioOutputs(Option<OutputBackend>, mpsc::Sender<Value>),
     Shortcuts(mpsc::Sender<Value>),
     ExportSettings(mpsc::Sender<Option<(PathBuf, ExportSettings)>>),
@@ -1223,111 +1255,169 @@ enum Request {
 }
 struct Editor(mpsc::Sender<Request>);
 
+fn guard<T>(
+    app: &mut Application,
+    fault: &mut Option<String>,
+    operation: impl FnOnce(&mut Application) -> T,
+) -> Result<T, String> {
+    if let Some(message) = fault {
+        return Err(message.clone());
+    }
+    // A faulted worker only answers status and close requests. Recovery reads its
+    // owned checkpoint without using the editor state touched by the panic.
+    catch_unwind(AssertUnwindSafe(|| operation(app))).map_err(|_| {
+        let message = match app.write_recovery_copy() {
+            Ok(Some(copy)) => format!(
+                "Saved a recovery copy for {} [{}]. Reopen dawsu! to restore it.",
+                copy.mapset, copy.difficulty
+            ),
+            Ok(None) => "No difficulty was open when the editor stopped.".into(),
+            Err(error) => format!("Could not save a recovery copy. {error}"),
+        };
+        *fault = Some(message.clone());
+        message
+    })
+}
+
 fn editor_thread(initial: Option<PathBuf>) -> Editor {
     let (send, receive) = mpsc::channel();
     std::thread::spawn(move || {
-        let mut app = Application::new();
+        let data_root = dawsu_application::data_folder();
+        #[cfg(feature = "recovery-smoke")]
+        let data_root = std::env::var_os(RECOVERY_SMOKE_DATA)
+            .filter(|path| !path.is_empty())
+            .map_or(data_root, PathBuf::from);
+        let mut app = Application::with_data_root(data_root);
+        let mut fault = None;
         let mut playback_start = PlaybackStart::default();
         let mut home = home::Route::default();
         let mut drums = drum_view::DrumView::default();
         let mut pending_initial_open = initial.filter(|path| map_path(path));
         if !app.first_launch && let Some(path) = pending_initial_open.take() {
-            app.request_open(path);
+            let _ = guard(&mut app, &mut fault, |app| app.request_open(path));
         }
         loop {
             match receive.recv_timeout(Duration::from_millis(25)) {
                 Ok(Request::View(scene, action, response)) => {
-                    match action {
-                        Some(Action::Open { path }) if app.first_launch => {
-                            if map_path(&path) {
-                                pending_initial_open = Some(path);
+                    let view = guard(&mut app, &mut fault, |app| {
+                        match action {
+                            Some(Action::Open { path }) if app.first_launch => {
+                                if map_path(&path) {
+                                    pending_initial_open = Some(path);
+                                }
                             }
-                        }
-                        Some(action) => {
-                            if let Some(action) = home.handle(action, &mut app) {
-                                action.run_with_start(&mut app, &mut playback_start);
+                            Some(action) => {
+                                if let Some(action) = home.handle(action, app) {
+                                    action.run_with_start(app, &mut playback_start);
+                                }
                             }
+                            None => {}
                         }
-                        None => {}
-                    }
-                    if !app.first_launch && let Some(path) = pending_initial_open.take() {
-                        app.request_open(path);
-                    }
-                    app.poll();
-                    home.settle(&mut app);
-                    let mut view = snapshot(&app, scene && !home.visible());
-                    home.add_status(&mut view);
-                    drums.decorate(&app, &mut view);
-                    view["playbackStart"] = json!(playback_start);
-                    if let Some(request @ ("filter" | "newDiff" | "openFolder" | "importOsz" | "openHitsoundFolder" | "reviewOutput")) = app.requested_edit() {
-                        view["shortcutAction"] = json!(request);
-                        view["editDialog"] = Value::Null;
-                        app.cancel_timeline_edit();
-                    }
-                    view["shortcutHelp"] = json!(std::mem::take(&mut app.help_requested));
-                    view["shortcutOpen"] = json!(std::mem::take(&mut app.requests).iter()
-                        .any(|request| matches!(request, PlatformRequest::OpenMap)));
+                        if !app.first_launch && let Some(path) = pending_initial_open.take() {
+                            app.request_open(path);
+                        }
+                        app.poll();
+                        home.settle(app);
+                        let mut view = snapshot(app, scene && !home.visible());
+                        home.add_status(&mut view);
+                        drums.decorate(app, &mut view);
+                        view["playbackStart"] = json!(playback_start);
+                        if let Some(request @ ("filter" | "newDiff" | "openFolder" | "importOsz" | "openHitsoundFolder" | "reviewOutput")) = app.requested_edit() {
+                            view["shortcutAction"] = json!(request);
+                            view["editDialog"] = Value::Null;
+                            app.cancel_timeline_edit();
+                        }
+                        view["shortcutHelp"] = json!(std::mem::take(&mut app.help_requested));
+                        view["shortcutOpen"] = json!(std::mem::take(&mut app.requests).iter()
+                            .any(|request| matches!(request, PlatformRequest::OpenMap)));
+                        view
+                    })
+                    .unwrap_or_else(|message| json!({ "fault": message }));
                     let _ = response.send(view);
                 }
+                // After a fault, a request without an error channel gets no answer.
                 Ok(Request::Shortcuts(response)) => {
-                    let _ = response.send(json!({
+                    if let Ok(value) = guard(&mut app, &mut fault, |app| json!({
                         "preset": app.preferences.key_preset, "entries": app.shortcuts(),
-                    }));
+                    })) {
+                        let _ = response.send(value);
+                    }
                 }
                 Ok(Request::KeyFile(path, import, response)) => {
-                    let result = if import { app.import_shortcuts(&path) } else { app.export_shortcuts(&path) };
+                    let result = guard(&mut app, &mut fault, |app| {
+                        if import { app.import_shortcuts(&path) } else { app.export_shortcuts(&path) }
+                    })
+                    .and_then(|result| result);
                     let _ = response.send(result);
                 }
                 Ok(Request::AudioOutputs(requested, response)) => {
-                    let _ = response.send(audio_output_settings(&app, requested));
+                    if let Ok(value) = guard(&mut app, &mut fault, |app| audio_output_settings(app, requested)) {
+                        let _ = response.send(value);
+                    }
                 }
                 Ok(Request::Help(response)) => {
-                    let _ = response.send(json!(
-                        app.help()
-                            .iter()
-                            .map(|group| json!([
-                                group.title,
-                                group
-                                    .entries
-                                    .iter()
-                                    .map(|e| json!([e.keys, e.description]))
-                                    .collect::<Vec<_>>()
-                            ]))
-                            .collect::<Vec<_>>()
-                    ));
+                    let result = guard(&mut app, &mut fault, |app| {
+                        json!(
+                            app.help()
+                                .iter()
+                                .map(|group| json!([
+                                    group.title,
+                                    group
+                                        .entries
+                                        .iter()
+                                        .map(|e| json!([e.keys, e.description]))
+                                        .collect::<Vec<_>>()
+                                ]))
+                                .collect::<Vec<_>>()
+                        )
+                    });
+                    let _ = response.send(result);
                 }
                 Ok(Request::ExportSettings(response)) => {
-                    let value = app.document().map(|document| {
-                        (document.path.clone(), document.export_settings().cloned().unwrap_or_default())
-                    });
-                    let _ = response.send(value);
+                    if let Ok(value) = guard(&mut app, &mut fault, |app| {
+                        app.document().map(|document| {
+                            (document.path.clone(), document.export_settings().cloned().unwrap_or_default())
+                        })
+                    }) {
+                        let _ = response.send(value);
+                    }
                 }
                 Ok(Request::SongsDirectory(response)) => {
-                    let folder = &app.preferences.songs_folder;
-                    let _ = response.send(folder.is_dir().then(|| folder.clone()));
+                    if let Ok(value) = guard(&mut app, &mut fault, |app| {
+                        let folder = &app.preferences.songs_folder;
+                        folder.is_dir().then(|| folder.clone())
+                    }) {
+                        let _ = response.send(value);
+                    }
                 }
                 Ok(Request::SetSongsDirectory(folder, response)) => {
-                    let result = if app.first_launch {
-                        Err("Choose a keyboard preset first.".into())
-                    } else if !folder.is_dir() {
-                        Err("The selected Songs folder is unavailable.".into())
-                    } else {
-                        app.preferences.songs_folder = folder;
-                        app.save_preferences();
-                        let mut view = snapshot(&app, false);
-                        home.add_status(&mut view);
-                        drums.decorate(&app, &mut view);
-                        view["playbackStart"] = json!(playback_start);
-                        Ok(view)
-                    };
+                    let result = guard(&mut app, &mut fault, |app| {
+                        if app.first_launch {
+                            Err("Choose a keyboard preset first.".into())
+                        } else if !folder.is_dir() {
+                            Err("The selected Songs folder is unavailable.".into())
+                        } else {
+                            app.preferences.songs_folder = folder;
+                            app.save_preferences();
+                            let mut view = snapshot(app, false);
+                            home.add_status(&mut view);
+                            drums.decorate(app, &mut view);
+                            view["playbackStart"] = json!(playback_start);
+                            Ok(view)
+                        }
+                    })
+                    .and_then(|result| result);
                     let _ = response.send(result);
                 }
                 Ok(Request::LibraryDirectory(response)) => {
-                    let folder = app.preferences.hitsound_library.as_ref().filter(|path| path.is_dir());
-                    let _ = response.send(folder.cloned());
+                    if let Ok(value) = guard(&mut app, &mut fault, |app| {
+                        app.preferences.hitsound_library.as_ref().filter(|path| path.is_dir()).cloned()
+                    }) {
+                        let _ = response.send(value);
+                    }
                 }
                 Ok(Request::SetLibraryDirectory(folder, response)) => {
-                    let result = (|| {
+                    let result = guard(&mut app, &mut fault, |app| {
                         if app.first_launch {
                             return Err("Choose a keyboard preset first.".into());
                         }
@@ -1337,58 +1427,82 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                         }
                         app.preferences.hitsound_library = Some(folder);
                         app.save_preferences();
-                        let mut view = snapshot(&app, false);
+                        let mut view = snapshot(app, false);
                         home.add_status(&mut view);
-                        drums.decorate(&app, &mut view);
+                        drums.decorate(app, &mut view);
                         view["playbackStart"] = json!(playback_start);
                         Ok(view)
-                    })();
+                    })
+                    .and_then(|result| result);
                     let _ = response.send(result);
                 }
                 Ok(Request::LibraryEntries(location, response)) => {
-                    let _ = response.send(location.entries(app.preferences.hitsound_library.as_deref()));
+                    let result = guard(&mut app, &mut fault, |app| {
+                        location.entries(app.preferences.hitsound_library.as_deref())
+                    })
+                    .and_then(|result| result);
+                    let _ = response.send(result);
                 }
                 Ok(Request::LaneAddCandidates(map, response)) => {
-                    let _ = response.send(lane_add_choices(&app, &map));
+                    let result = guard(&mut app, &mut fault, |app| lane_add_choices(app, &map))
+                        .and_then(|result| result);
+                    let _ = response.send(result);
                 }
                 Ok(Request::DrumView(map, preset, on, response)) => {
-                    let result = match preset {
-                        Some(path) => drums.load(&app, &map, &path),
-                        None => drums.toggle(&app, &map, on),
-                    }.map(|()| {
-                        let mut view = snapshot(&app, !home.visible());
-                        home.add_status(&mut view);
-                        drums.decorate(&app, &mut view);
-                        view["playbackStart"] = json!(playback_start);
-                        view
-                    });
+                    let result = guard(&mut app, &mut fault, |app| {
+                        match preset {
+                            Some(path) => drums.load(app, &map, &path),
+                            None => drums.toggle(app, &map, on),
+                        }.map(|()| {
+                            let mut view = snapshot(app, !home.visible());
+                            home.add_status(&mut view);
+                            drums.decorate(app, &mut view);
+                            view["playbackStart"] = json!(playback_start);
+                            view
+                        })
+                    })
+                    .and_then(|result| result);
                     let _ = response.send(result);
                 }
                 Ok(Request::Folder(folder, response)) => {
-                    let path = folder.resolve(
-                        app.document().map(|d| d.path.as_path()),
-                        app.preferences.hitsound_library.as_deref(),
-                        &dawsu_application::data_folder(),
-                    );
-                    let _ = response.send(path);
+                    let result = guard(&mut app, &mut fault, |app| {
+                        folder.resolve(
+                            app.document().map(|d| d.path.as_path()),
+                            app.preferences.hitsound_library.as_deref(),
+                            &dawsu_application::data_folder(),
+                        )
+                    })
+                    .and_then(|result| result);
+                    let _ = response.send(result);
                 }
                 Ok(Request::Close(discard, response)) => {
-                    let result = if app.busy {
-                        Err("Wait for the current job to finish.".into())
-                    } else if app.is_dirty() && !discard {
-                        Err("Save or discard the current difficulty before quitting.".into())
+                    let result = if fault.is_some() {
+                        Ok(())
                     } else {
-                        app.save_session().map(|()| {
-                            if !app.first_launch {
-                                app.save_preferences();
+                        guard(&mut app, &mut fault, |app| {
+                            if app.busy {
+                                Err("Wait for the current job to finish.".into())
+                            } else if app.is_dirty() && !discard {
+                                Err("Save or discard the current difficulty before quitting.".into())
+                            } else {
+                                app.save_session().map(|()| {
+                                    if !app.first_launch {
+                                        app.save_preferences();
+                                    }
+                                })
                             }
                         })
+                        .and_then(|result| result)
                     };
                     let _ = response.send(result);
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {
-                    app.poll();
-                    home.settle(&mut app);
+                    if fault.is_none() {
+                        let _ = guard(&mut app, &mut fault, |app| {
+                            app.poll();
+                            home.settle(app);
+                        });
+                    }
                 }
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
             }
@@ -1419,7 +1533,7 @@ fn editor_view(
 
 #[tauri::command]
 fn editor_help(state: State<'_, Editor>) -> Result<Value, String> {
-    ask(&state, Request::Help)
+    ask(&state, Request::Help)?
 }
 
 #[tauri::command]
