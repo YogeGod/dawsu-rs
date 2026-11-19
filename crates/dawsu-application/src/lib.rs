@@ -233,7 +233,7 @@ fn compile_for_save(
                             return Err("Save cancelled".into());
                         }
                         file.remove_hit_object(id.line())
-                            .map_err(|error| format!("Could not remove an empty hitsound circle: {}.", refusals::line(&error)))?;
+                            .map_err(|error| format!("Could not remove an empty circle that HS mode made: {}.", refusals::line(&error)))?;
                         removed.insert(id);
                     }
                 }
