@@ -56,9 +56,9 @@ let rulerWarningMarkers = [];
 // Canvas surfaces match the surrounding editor chrome.
 const slateTimeline = {
   arrange: "#151515", alternateRow: "#1c1c1c", activeRow: "#454545", group: "#292929",
-  ruler: "#252525", rulerBar: "#eeeeee", overview: "#1c1c1c",
+  ruler: "#252525", rulerBar: "#c4c4c4", overview: "#1c1c1c", waveform: "#1c2727",
   volume: "#151515", divider: "#383838", beatLine: "#383838", barLine: "#545454",
-  cycle: "#2fbf4a", locator: "#8e8e93", playhead: "#ffffff",
+  cycle: "#2fbf4a", locator: "#858585", playhead: "#a1d0f7",
 };
 const levelColours = [[58, 108, 240], [154, 72, 216], [236, 58, 58]];
 const volumePalette = Array.from({ length: 101 }, (_, volume) => {
@@ -1017,7 +1017,7 @@ function drawTimingGrid(ctx, start, end, zoom, top, bottom, ruler = false) {
 function waveform(ctx, width, center, height, start, span) {
   const bins = scene.waveform;
   if (!bins.length || !view.duration) return;
-  for (const [channel, color] of [[0, "#334a63"], [1, "#47618b"], [2, "#657ab5"], [3, "#7aaac6"]]) {
+  for (const [channel, color] of [[0, "#315c59"], [1, "#3c7673"], [2, "#46908c"], [3, "#51aaa5"]]) {
     ctx.fillStyle = color;
     for (let x = 0; x < width; x += 2) {
       const a = Math.floor((start + x * span / width) / view.duration * bins.length);
@@ -1066,17 +1066,17 @@ function drawGameplay(ctx, gameplay, xOf, y, width) {
     const right = xOf(end);
     if (right < 0 || left > width) continue;
     const height = kind === "slider" ? 11 : 5;
-    ctx.fillStyle = kind === "slider" ? "#536a89d9" : "#9e86c8";
+    ctx.fillStyle = kind === "slider" ? "#62d6cfd9" : "#e6eef2";
     const from = Math.max(0, left);
     const to = Math.min(width, right);
     ctx.fillRect(from, y - height / 2, Math.max(1, to - from), height);
   }
   ctx.lineWidth = 1;
-  ctx.strokeStyle = "#dddddd";
+  ctx.strokeStyle = "#1c2727";
   for (const [kind, time] of gameplay.points) {
     const x = xOf(time);
     if (x < -6 || x > width + 6) continue;
-    ctx.fillStyle = kind === "circle" ? "#26364b" : "#405a7a";
+    ctx.fillStyle = "#e6eef2";
     ctx.beginPath();
     ctx.arc(x, y, kind === "circle" ? 6 : 4, 0, Math.PI * 2);
     ctx.fill();
@@ -1109,7 +1109,7 @@ function drawOverviewHits({ ctx, width, height }, { moments, lanes }, duration) 
   }
 
   const bandHeight = (height - 6) / overviewGroups.length;
-  ctx.fillStyle = "#aaaaaa";
+  ctx.fillStyle = "#a3a3a3";
   for (const [band, columns] of overviewHitCache.columns.entries()) {
     const y = 3 + band * bandHeight;
     for (const x of columns) ctx.fillRect(x, y, 1.2, Math.max(1, bandHeight - 1));
@@ -1139,7 +1139,7 @@ function paint() {
     for (const percent of [100, 50, 0]) {
       const y = v.height - 1 - percent * (v.height - 3) / 100;
       line(v.ctx, slateTimeline.beatLine, 0, y, v.width, y);
-      v.ctx.fillStyle = "#a6b0bf";
+      v.ctx.fillStyle = "#a3a3a3";
       if (v.height >= 64) v.ctx.fillText(String(percent), 5, percent === 0 ? y - 3 : y + 11);
     }
   }
@@ -1158,7 +1158,7 @@ function paint() {
     if (lane !== undefined) line(g.ctx, slateTimeline.divider, 0, y + rowHeight - .5, g.width, y + rowHeight - .5);
   }
   if (range) {
-    g.ctx.fillStyle = "#4eafbb35";
+    g.ctx.fillStyle = "#77bdfa35";
     const width = xOf(range[1]) - xOf(range[0]);
     if (markedRange?.path === scene.path) {
       for (const row of markedRange.rows) {
@@ -1177,7 +1177,7 @@ function paint() {
     if (x < -8 || x > g.width + 8) continue;
     const objectPixel = Math.round(x);
     if (object && view.objectLines && objectPixel !== lastObjectPixel) {
-      line(g.ctx, "#69809965", objectPixel, 0, objectPixel, g.height);
+      line(g.ctx, "#62d6cf1a", objectPixel, 0, objectPixel, g.height);
       lastObjectPixel = objectPixel;
     }
     const colour = volumeColour(volume);
@@ -1194,7 +1194,7 @@ function paint() {
         if (y < -8 || y > g.height + 8) continue;
         g.ctx.save();
         g.ctx.globalAlpha *= .3;
-        g.ctx.fillStyle = listenMuted ? "#637484" : volumeColour(hitVolume ?? volume);
+        g.ctx.fillStyle = listenMuted ? "#858585" : volumeColour(hitVolume ?? volume);
         fillHitDiamond(g.ctx, x, y);
         g.ctx.restore();
       }
@@ -1203,11 +1203,11 @@ function paint() {
       for (const visibleRow of laneVisualPositions.get(row) ?? []) {
         const y = (visibleRow + .5) * rowHeight - scrollTop;
         if (y < -8 || y > g.height + 8) continue;
-        g.ctx.fillStyle = listenMuted ? "#637484" : volumeColour(hitVolume ?? volume);
+        g.ctx.fillStyle = listenMuted ? "#858585" : volumeColour(hitVolume ?? volume);
         fillHitDiamond(g.ctx, x, y);
         if (selected) {
           g.ctx.lineWidth = 2;
-          g.ctx.strokeStyle = "#e5fbff";
+          g.ctx.strokeStyle = "#ffffff";
           g.ctx.stroke();
           g.ctx.lineWidth = 1;
         }
@@ -1220,14 +1220,14 @@ function paint() {
     const width = drag.lastPoint.x - x;
     const height = drag.lastPoint.y - drag.firstPoint.y;
     if ((view.tool === "Range" || !drag.hit) && Math.hypot(width, height) > 3) {
-      g.ctx.fillStyle = "#74d3e02f";
+      g.ctx.fillStyle = "#77bdfa14";
       g.ctx.fillRect(x, y, width, height);
-      g.ctx.strokeStyle = "#87dbe7";
+      g.ctx.strokeStyle = "#77bdfa";
       g.ctx.strokeRect(x, y, width, height);
     }
   }
   if (v && scene.rampPreview?.length) {
-    v.ctx.strokeStyle = "#a5feff";
+    v.ctx.strokeStyle = "#62d6cf";
     v.ctx.beginPath();
     for (const [i, [time, volume]] of scene.rampPreview.entries()) {
       const x = xOf(time);
@@ -1237,7 +1237,7 @@ function paint() {
     }
     v.ctx.stroke();
   }
-  r.ctx.fillStyle = slateTimeline.ruler;
+  r.ctx.fillStyle = slateTimeline.waveform;
   r.ctx.fillRect(0, 0, r.width, r.height);
   const waveformMiddle = (r.height + rulerBandHeight) / 2;
   const waveAmplitude = Math.min(waveformHeight, Math.max(0, r.height - rulerBandHeight)) / 2;
@@ -1284,9 +1284,9 @@ function paint() {
   if (view.duration > 0) {
     const overviewX = start * o.width / view.duration;
     const overviewWidth = (g.width / zoom) * o.width / view.duration;
-    o.ctx.fillStyle = "#72e3ed3b";
+    o.ctx.fillStyle = "#ffffff14";
     o.ctx.fillRect(overviewX, 0, overviewWidth, o.height);
-    o.ctx.strokeStyle = "#6ebdc7";
+    o.ctx.strokeStyle = "#858585";
     o.ctx.strokeRect(overviewX, .5, overviewWidth, o.height - 1);
     const playX = view.position * o.width / view.duration;
     line(o.ctx, slateTimeline.playhead, playX, 0, playX, o.height);
