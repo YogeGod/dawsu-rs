@@ -479,3 +479,30 @@ header #editor-menus button{min-height:26px;padding:3px 10px;border-radius:4px}
 .arrange[data-lane-names="false"] .lane :is(.lane-mute,.lane-solo) { width:18px; }
 .arrange[data-lane-names="false"] .lane:not(.sample-folder) .name { flex:1 0 auto; }
 .arrange[data-lane-names="false"] .lane .lane-disclosure { width:12px; min-width:12px; padding:0; }
+/* Shortcut editor (design f13): preset switch and search, then each command under its area with key chips. A row waiting for a key shows a blue "Press keys…" pill; a key that belongs to another command tints the row and names that command. */
+#dialog.dialog-shortcut-editor{width:min(760px,94vw)}
+#dialog.dialog-shortcut-editor #dialog-body{max-height:62vh}
+.shortcut-toolbar{position:sticky;top:0;z-index:1;display:flex;gap:12px;align-items:center;padding-bottom:10px;background:var(--raised)}
+.shortcut-presets{display:flex;flex:none;gap:2px;padding:3px;border-radius:6px;background:var(--button)}
+.shortcut-presets button{min-height:26px;padding:3px 12px;border:0;background:transparent;color:var(--text)}
+.shortcut-presets button:hover:not(:disabled){background:var(--button-border)}
+.shortcut-presets button[aria-pressed=true],.shortcut-presets button[aria-pressed=true]:hover:not(:disabled){background:var(--control);color:var(--hi);font-weight:600}
+#dialog-body .shortcut-toolbar input[type=search]{flex:1;min-width:0;min-height:32px;padding:4px 10px;border:1px solid var(--line);border-radius:6px;background:var(--base)}
+#dialog-body .shortcut-note{color:var(--muted)}
+.shortcut-group h3{margin:14px 0 2px;padding:0 12px 6px;border-bottom:1px solid var(--line);font-size:13px;font-weight:600}
+.shortcut-row{display:flex;align-items:center;gap:10px;min-height:36px;padding:3px 6px 3px 12px;border-radius:6px}
+.shortcut-row:hover{background:var(--button)}
+.shortcut-row.capturing{background:var(--control)}
+.shortcut-row.conflict{background:#241f23}
+.shortcut-command{flex:1;min-width:0}
+.shortcut-conflict{color:#fa838c;text-align:right}
+.shortcut-keys{display:flex;flex-wrap:wrap;align-items:center;justify-content:flex-end;gap:10px;min-height:30px;padding:2px 6px;border:0;background:transparent;color:var(--muted)}
+.shortcut-keys:hover:not(:disabled){background:var(--control)}
+.key-combo{display:inline-flex;align-items:center;gap:4px;color:var(--muted)}
+.shortcut-row kbd{min-width:24px;padding:2px 7px;border:1px solid #545454;border-radius:4px;background:var(--base);color:var(--text);font:12px "Roboto Mono",ui-monospace,monospace;text-align:center}
+.shortcut-capture{display:inline-flex;align-items:center;gap:8px;min-height:30px;padding:2px 12px;border:1px solid var(--hi);border-radius:5px;color:var(--hi);outline:0}
+.shortcut-capture::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--hi)}
+.shortcut-clear{min-height:24px;padding:2px 6px;border:0;background:transparent;color:var(--muted);font-size:12px}
+.shortcut-clear:disabled{visibility:hidden}
+#dialog.dialog-shortcut-editor #dialog-body > p[role=status]{position:sticky;bottom:0;margin:0;padding:8px 0 2px;background:var(--raised)}
+#dialog.dialog-shortcut-editor #dialog-body > p[role=status]:empty{display:none}
