@@ -1105,28 +1105,35 @@ function drawGameplay(ctx, gameplay, xOf, y, width, diameterAt) {
     const to = Math.min(width, right);
     ctx.fillRect(from, y - 2.5, Math.max(1, to - from), 5);
   }
-  // A slider's first and last nodes are full circles; repeats between them sit on the track.
-  const sliderEnds = new Map();
-  for (const [kind, time, object] of gameplay.points) {
-    if (kind !== "slider") continue;
-    const ends = sliderEnds.get(object);
-    if (ends) sliderEnds.set(object, [Math.min(ends[0], time), Math.max(ends[1], time)]);
-    else sliderEnds.set(object, [time, time]);
-  }
+  const radiusOf = nodeRadii(gameplay.points, diameterAt);
   ctx.lineWidth = 2;
   ctx.strokeStyle = "#1c2727";
   for (const [kind, time, object] of gameplay.points) {
     const x = xOf(time);
     if (x < -objectReach || x > width + objectReach) continue;
-    const ends = kind === "slider" ? sliderEnds.get(object) : null;
-    const repeat = ends && time !== ends[0] && time !== ends[1];
     ctx.fillStyle = "#e6eef2";
     ctx.beginPath();
-    ctx.arc(x, y, repeat ? diameterAt(ends[0]) * .66 / 2 : diameterAt(time) / 2, 0, Math.PI * 2);
+    ctx.arc(x, y, radiusOf(kind, time, object), 0, Math.PI * 2);
     ctx.fill();
     ctx.stroke();
   }
   ctx.lineWidth = 1;
+}
+
+// A slider's first and last nodes are full circles; repeats between them sit on the track.
+function nodeRadii(points, diameterAt) {
+  const sliderEnds = new Map();
+  for (const [kind, time, object] of points) {
+    if (kind !== "slider") continue;
+    const ends = sliderEnds.get(object);
+    if (ends) sliderEnds.set(object, [Math.min(ends[0], time), Math.max(ends[1], time)]);
+    else sliderEnds.set(object, [time, time]);
+  }
+  return (kind, time, object) => {
+    const ends = kind === "slider" ? sliderEnds.get(object) : null;
+    const repeat = ends && time !== ends[0] && time !== ends[1];
+    return repeat ? diameterAt(ends[0]) * .66 / 2 : diameterAt(time) / 2;
+  };
 }
 
 function laneTint(lane) {
@@ -1644,11 +1651,12 @@ function waveformTarget(ms, y, height) {
   if (!scene.gameplay || dy > objectReach) return null;
   // Hit the circles and slider tracks at the sizes drawGameplay() draws them.
   const diameterAt = time => objectDiameter(scene.sections, time, scene.zoom, height - rulerBandHeight);
+  const radiusOf = nodeRadii(scene.gameplay.points, diameterAt);
   let target = null;
   let nearest = Infinity;
-  for (const [, time, object] of scene.gameplay.points) {
+  for (const [kind, time, object] of scene.gameplay.points) {
     const distance = Math.hypot((time - ms) * scene.zoom, dy);
-    if (distance > objectReach || distance > diameterAt(time) / 2) continue;
+    if (distance > objectReach || distance > radiusOf(kind, time, object)) continue;
     if (distance < nearest) {
       target = { object, time, node: true };
       nearest = distance;

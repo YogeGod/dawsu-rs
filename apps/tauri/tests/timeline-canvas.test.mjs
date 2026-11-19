@@ -194,3 +194,14 @@ test("the 2 px object ring leaves the ruler's ticks and locator lines at 1 px", 
   assert.ok(lines.some(call => call.stroke === "#858585"), "locator lines");
   assert.deepEqual([...new Set(lines.map(call => call.lineWidth))], [1]);
 });
+
+test("a click on a slider repeat counts only inside its drawn size", async () => {
+  const { evaluate } = await canvases();
+  evaluate("scene.zoom = .1");
+  const target = (ms, y) => evaluate(`JSON.stringify(waveformTarget(${ms}, ${y}, 80))`);
+  const pick = (object, time, node) => JSON.stringify({ object, time, node });
+  // The repeat at 600 ms is drawn at the track's 13.2 px, not the 20 px of the head and end.
+  assert.equal(target(600, 56.5), pick(1, 600, true), "6 px below the repeat's centre");
+  assert.equal(target(680, 50.5), pick(1, 400, false), "8 px beside it is the track");
+  assert.equal(target(600, 58.5), "null", "8 px below misses");
+});
