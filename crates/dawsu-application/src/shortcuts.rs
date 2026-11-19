@@ -1,4 +1,5 @@
 use crate::{Application, Preferences, commands};
+use dawsu_foundation::safe_write::{self, BackupPolicy, WriteOutcome};
 use dawsu_editor::{
     commands::{CommandDefinition, KeyMap, KeyPreset},
     keys::{Key, KeyCombination, Mods},
@@ -458,9 +459,25 @@ impl Application {
             keys,
         };
         let bytes = serde_json::to_vec_pretty(&output).map_err(|error| error.to_string())?;
-        dawsu_foundation::safe_write::create(path, &bytes)
-            .map_err(|error| format!("Exporting shortcuts: {error}"))?;
-        self.status = format!("Exported shortcuts to {}", path.display());
+        let exporting = |error: dawsu_foundation::Error| format!("Exporting shortcuts: {error}");
+        // The save dialog already asked before replacing a file; keep the old one as a
+        // backup in the same folder and count as map saves.
+        self.status = match std::fs::read(path) {
+            Ok(old) => {
+                let backups = BackupPolicy::new(self.data_root.join("backups"), 20);
+                if safe_write::replace(path, &old, &bytes, &backups).map_err(exporting)?
+                    == WriteOutcome::ChangedOnDisk
+                {
+                    return Err("The shortcut file changed while exporting. Nothing was written.".into());
+                }
+                format!("Exported shortcuts to {} and kept a backup of the old file", path.display())
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                safe_write::create(path, &bytes).map_err(exporting)?;
+                format!("Exported shortcuts to {}", path.display())
+            }
+            Err(error) => return Err(format!("Exporting shortcuts: {error}")),
+        };
         Ok(())
     }
 
@@ -535,8 +552,16 @@ mod tests {
         assert_eq!(value["version"], 1);
         assert_eq!(value["preset"], "Cubase");
         assert_eq!(value["keys"]["play"][0], "Control,Shift+D1");
-        assert!(app.export_shortcuts(&output).is_err());
-        assert_eq!(std::fs::read(&output).unwrap(), exported);
+        // Exporting over the file (after the save dialog's Replace) replaces it and keeps
+        // the old file as a backup, the way map saves do.
+        app.data_root = fixture.path("data");
+        app.change_shortcut("play", Some(KeyCombination::plain(Key::F8))).unwrap();
+        app.export_shortcuts(&output).unwrap();
+        let replaced: Value = serde_json::from_slice(&std::fs::read(&output).unwrap()).unwrap();
+        assert_eq!(replaced["keys"]["play"][1], "None+F8");
+        let folder = std::fs::read_dir(fixture.path("data").join("backups")).unwrap().next().unwrap().unwrap().path();
+        let backup = std::fs::read_dir(folder).unwrap().next().unwrap().unwrap().path();
+        assert_eq!(std::fs::read(backup).unwrap(), exported);
         let mut reopened = Application::headless();
         reopened.import_shortcuts(&output).unwrap();
         assert_eq!(reopened.shortcuts(), app.shortcuts());
