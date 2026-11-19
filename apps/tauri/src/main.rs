@@ -10,8 +10,16 @@ use dawsu_foundation::SongTime;
 use dawsu_hitsounding::{Place, copy::CopyOptions};
 use serde::Deserialize;
 use serde_json::{Value, json};
-use std::{path::PathBuf, sync::mpsc, time::Duration};
+use std::{
+    panic::{AssertUnwindSafe, catch_unwind},
+    path::PathBuf,
+    sync::mpsc,
+    time::Duration,
+};
 use tauri::{Emitter, Manager, State};
+
+#[cfg(feature = "recovery-smoke")]
+const RECOVERY_SMOKE_DATA: &str = "DAWSU_RECOVERY_SMOKE_DATA";
 
 #[derive(Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -19,6 +27,11 @@ enum Action {
     Open {
         path: PathBuf,
     },
+    RestoreRecovery {
+        id: String,
+    },
+    #[cfg(feature = "recovery-smoke")]
+    RecoverySmokePanic,
     Pending {
         choice: String,
     },
@@ -126,6 +139,18 @@ impl Action {
                 if map_path(&path) {
                     app.request_open(path);
                 }
+            }
+            Self::RestoreRecovery { id } => {
+                if let Err(error) = app.restore_recovery(&id) {
+                    app.error = Some(error);
+                }
+            }
+            #[cfg(feature = "recovery-smoke")]
+            Self::RecoverySmokePanic => {
+                if std::env::var_os(RECOVERY_SMOKE_DATA).is_some_and(|path| !path.is_empty()) {
+                    panic!("Controlled crash recovery smoke test");
+                }
+                app.error = Some("The smoke test needs an isolated app data folder.".into());
             }
             Self::Pending { choice } => match choice.as_str() {
                 "save" => app.save(),
@@ -342,7 +367,7 @@ fn snapshot(app: &Application, include_scene: bool) -> Value {
             "files": p.files.iter().map(|f| f.path.as_path()).collect::<Vec<_>>()
         })
     });
-    json!({
+    let mut state = json!({
         "scene": scene, "hasDocument": document.is_some(), "busy": app.busy, "playing": app.is_playing(),
         "position": app.position_ms(), "duration": app.duration_ms(), "dirty": app.is_dirty(),
         "status": app.status, "error": app.error, "warnings": app.warnings, "speed": app.playback_speed,
@@ -352,58 +377,114 @@ fn snapshot(app: &Application, include_scene: bool) -> Value {
         "tool": format!("{:?}", app.tool()), "pendingOpen": app.pending_open.is_some(),
         "revert": app.revert_requested, "review": review, "activeLane": app.active_lane,
         "recent": app.preferences.recent, "firstLaunch": app.first_launch,
-    })
+    });
+    if include_scene && document.is_none() {
+        state["recovery"] = match app.recovery_offers() {
+            Ok(offers) => json!({ "offers": offers }),
+            Err(error) => json!({ "error": format!("Could not list recovery copies. {error}") }),
+        };
+    }
+    state
 }
 
 enum Request {
     View(bool, Option<Action>, mpsc::Sender<Value>),
-    Help(mpsc::Sender<Value>),
+    Help(mpsc::Sender<Result<Value, String>>),
     Close(bool, mpsc::Sender<Result<(), String>>),
 }
 struct Editor(mpsc::Sender<Request>);
 
+fn guard<T>(
+    app: &mut Application,
+    fault: &mut Option<String>,
+    operation: impl FnOnce(&mut Application) -> T,
+) -> Result<T, String> {
+    if let Some(message) = fault {
+        return Err(message.clone());
+    }
+    // A faulted worker only answers status and close requests. Recovery reads its
+    // owned checkpoint without using the editor state touched by the panic.
+    catch_unwind(AssertUnwindSafe(|| operation(app))).map_err(|_| {
+        let message = match app.write_recovery_copy() {
+            Ok(Some(copy)) => format!(
+                "Saved a recovery copy for {} [{}]. Reopen dawsu! to restore it.",
+                copy.mapset, copy.difficulty
+            ),
+            Ok(None) => "No difficulty was open when the editor stopped.".into(),
+            Err(error) => format!("Could not save a recovery copy. {error}"),
+        };
+        *fault = Some(message.clone());
+        message
+    })
+}
+
 fn editor_thread(initial: Option<PathBuf>) -> Editor {
     let (send, receive) = mpsc::channel();
     std::thread::spawn(move || {
-        let mut app = Application::new();
+        let data_root = dawsu_application::data_folder();
+        #[cfg(feature = "recovery-smoke")]
+        let data_root = std::env::var_os(RECOVERY_SMOKE_DATA)
+            .filter(|path| !path.is_empty())
+            .map_or(data_root, PathBuf::from);
+        let mut app = Application::with_data_root(data_root);
+        let mut fault = None;
         if let Some(path) = initial.filter(|p| map_path(p)) {
-            app.request_open(path);
+            let _ = guard(&mut app, &mut fault, |app| app.request_open(path));
         }
         loop {
             match receive.recv_timeout(Duration::from_millis(25)) {
                 Ok(Request::View(scene, action, response)) => {
-                    if let Some(action) = action {
-                        action.run(&mut app);
-                    }
-                    app.poll();
-                    let _ = response.send(snapshot(&app, scene));
+                    let state = guard(&mut app, &mut fault, |app| {
+                        if let Some(action) = action {
+                            action.run(app);
+                        }
+                        app.poll();
+                        snapshot(app, scene)
+                    })
+                    .unwrap_or_else(|message| json!({ "fault": message }));
+                    let _ = response.send(state);
                 }
                 Ok(Request::Help(response)) => {
-                    let _ = response.send(json!(
-                        app.help()
-                            .iter()
-                            .map(|group| json!([
-                                group.title,
-                                group
-                                    .entries
-                                    .iter()
-                                    .map(|e| json!([e.keys, e.description]))
-                                    .collect::<Vec<_>>()
-                            ]))
-                            .collect::<Vec<_>>()
-                    ));
+                    let result = guard(&mut app, &mut fault, |app| {
+                        json!(
+                            app.help()
+                                .iter()
+                                .map(|group| json!([
+                                    group.title,
+                                    group
+                                        .entries
+                                        .iter()
+                                        .map(|e| json!([e.keys, e.description]))
+                                        .collect::<Vec<_>>()
+                                ]))
+                                .collect::<Vec<_>>()
+                        )
+                    });
+                    let _ = response.send(result);
                 }
                 Ok(Request::Close(discard, response)) => {
-                    let result = if app.busy {
-                        Err("Wait for the current job to finish.".into())
-                    } else if app.is_dirty() && !discard {
-                        Err("Save or discard the current difficulty before quitting.".into())
+                    let result = if fault.is_some() {
+                        Ok(())
                     } else {
-                        app.save_session().map(|()| app.save_preferences())
+                        guard(&mut app, &mut fault, |app| {
+                            if app.busy {
+                                Err("Wait for the current job to finish.".into())
+                            } else if app.is_dirty() && !discard {
+                                Err("Save or discard the current difficulty before quitting."
+                                    .into())
+                            } else {
+                                app.save_session().map(|()| app.save_preferences())
+                            }
+                        })
+                        .and_then(|result| result)
                     };
                     let _ = response.send(result);
                 }
-                Err(mpsc::RecvTimeoutError::Timeout) => app.poll(),
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    if fault.is_none() {
+                        let _ = guard(&mut app, &mut fault, Application::poll);
+                    }
+                }
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
             }
         }
@@ -433,7 +514,7 @@ fn editor_view(
 
 #[tauri::command]
 fn editor_help(state: State<'_, Editor>) -> Result<Value, String> {
-    ask(&state, Request::Help)
+    ask(&state, Request::Help)?
 }
 
 #[tauri::command]

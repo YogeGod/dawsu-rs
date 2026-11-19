@@ -8,6 +8,8 @@ Real `.osu` opening and `.osz` import; difficulty switching with unsaved-edit pr
 
 These features still need native-window and listening checks. Some are partial implementations of larger parity rows. Sample-mix rendering is not implemented, and an operation needing it is refused before any map write.
 
+Tauri crash recovery passed the two-process Windows check. The start screen offered the recovery copy, Restore reopened the last completed edit as unsaved, and Save archived the copy. [Windows relaunch check](apps/tauri/tests/recovery-relaunch.mjs)
+
 ## Missing from this build
 
 The node graph and classic detection parity; Live and Record/MIDI; Keysound mode and `.dawsuks`; VST3, SoundFont/SFZ and drum rendering; mixer/effect returns; stem splitting; osu! client link/live reload; map preview; licensed sound packs/map search; installer/updater and cross-platform runtime proof. Remaining M3 work includes complete project/legacy persistence, sound sets, sample replacement/watching, movable tabs, full command/key customisation, full timeline navigation/markers, export settings and sample-mix materialisation.
