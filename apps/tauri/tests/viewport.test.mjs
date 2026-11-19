@@ -73,8 +73,13 @@ test("Fit shows a 30-minute song in a 1000 px timeline, and wheel zoom out never
   get("scroll").events.get("wheel")({ ctrlKey: true, deltaY: 100, deltaX: 0, clientX: 500, clientY: 0, preventDefault() {} });
   await settle();
   assert.ok(calls.pop().action.zoom <= 1000 / duration);
+});
+
+test("the zoom slider starts at the timeline's zoom-out limit", async () => {
+  const { evaluate } = await frontend();
   const sliderMin = +html.match(/<input[^>]*min="([^"]+)"[^>]*id="zoom"/)[1];
-  assert.ok(sliderMin <= Math.log10(1000 / duration), "the zoom slider reaches the Fit zoom");
+  assert.equal(sliderMin, +Math.log10(evaluate("minZoom")).toFixed(3));
+  assert.ok(evaluate("minZoom") <= 1000 / (30 * 60_000), "Fit shows a 30-minute song in 1000 px");
 });
 
 test("the transport Return switch toggles the shared playback preference", async () => {
