@@ -1848,6 +1848,7 @@ function modal(kind, title, content, buttons, cancel = null) {
   if (modalKind === kind && dialog.open) return;
   modalKind = kind;
   modalClose = cancel;
+  dialog.className = "dialog-" + kind;
   $("dialog-title").textContent = title;
   $("dialog-body").replaceChildren(...content);
   $("dialog-actions").replaceChildren(...buttons.map(([label, task, primary]) => {
@@ -1935,9 +1936,12 @@ function paragraph(value) {
   return node;
 }
 
+function outputProblemTime(problem) {
+  return (problem.time < 0 ? "−" : "") + clock(Math.abs(problem.time));
+}
+
 function describeOutputProblem(problem) {
-  const time = (problem.time < 0 ? "−" : "") + clock(Math.abs(problem.time));
-  return time + " · " + nameOf(problem.target) + " · " + problem.message;
+  return outputProblemTime(problem) + " · " + nameOf(problem.target) + " · " + problem.message;
 }
 
 async function showOutputProblem(index) {
@@ -1971,12 +1975,47 @@ function renderDialogs() {
       ...files.length ? files : [paragraph("No files need to change.")],
     ], [["Cancel", () => answer(false)], [files.length ? "Save" : "Done", () => answer(true), true]], () => answer(false));
   } else if (view.saveProblemReview) {
+    const problems = view.outputProblems ?? [];
     const dismiss = () => { closeModal(); return act({ kind: "dismiss_save_problem_review" }); };
-    const first = async () => { await dismiss(); await showOutputProblem(0); };
+    const showProblem = (index) => async () => { await dismiss(); await showOutputProblem(index); };
     const save = () => { closeModal(); act({ kind: "save" }); };
-    modal("save-problems", "Review problems before saving",
-      (view.outputProblems ?? []).map(problem => paragraph(describeOutputProblem(problem))),
-      [["Cancel", dismiss], ["Show first problem", first], ["Continue to Save", save, true]], dismiss);
+    const difficulty = document.createElement("div");
+    difficulty.className = "save-problem-difficulty";
+    const label = document.createElement("span");
+    label.textContent = "Difficulty";
+    const file = document.createElement("strong");
+    file.textContent = nameOf(scene?.path ?? "");
+    difficulty.append(label, file);
+    const list = document.createElement("div");
+    list.className = "save-problem-list";
+    list.setAttribute("role", "list");
+    list.append(...problems.map((problem, index) => {
+      const row = document.createElement("div");
+      row.className = "save-problem";
+      row.setAttribute("role", "listitem");
+      const message = document.createElement("span");
+      message.textContent = problem.message;
+      if (problem.target !== scene?.path) {
+        const target = document.createElement("small");
+        target.className = "save-problem-target";
+        target.textContent = nameOf(problem.target);
+        message.append(target);
+      }
+      const time = document.createElement("time");
+      time.textContent = outputProblemTime(problem);
+      const button = makeButton("Show", showProblem(index));
+      button.setAttribute("aria-label", "Show the problem at " + time.textContent);
+      row.append(message, time, button);
+      return row;
+    }));
+    // When Save writes the rest (planned), update this copy and the button.
+    const note = paragraph("These moments can't be written to the difficulty as drawn. Save writes nothing until they are fixed.");
+    modal("save-problems", "Save hitsounds", [difficulty, note, list],
+      [["Cancel", dismiss], ["Show first problem", showProblem(0)], ["Continue to Save", save, true]], dismiss);
+    const count = document.createElement("span");
+    count.className = "problem-count";
+    count.textContent = problems.length + (problems.length === 1 ? " problem" : " problems");
+    $("dialog-title").replaceChildren("Save hitsounds", count);
   } else if (view.pendingHome) {
     const resolve = (choice) => { closeModal(); act({ kind: "home_choice", choice }); };
     modal("pending-home", "Save changes before going Home?", [paragraph("The open difficulty has unsaved changes.")],
