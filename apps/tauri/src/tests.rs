@@ -1,4 +1,4 @@
-use super::{Action, PlaybackStart, lane_add_choices, snapshot};
+use super::{Action, PlaybackStart, lane_add_choices, lane_by_key, scene_lane_key, snapshot};
 use dawsu_application::{Application, WaveBin};
 use std::fmt::Write as _;
 use std::fs;
@@ -573,6 +573,27 @@ fn library_sample_actions_scope_paths_and_preserve_the_assignment_target() {
     assert_eq!(fs::read_dir(&mapset).unwrap().count(), 2);
     assert_eq!(fs::read(&path).unwrap(), original);
     assert_eq!(fs::read(library.join("drums/snare.WAV")).unwrap(), wave);
+}
+
+#[test]
+fn every_lane_key_the_scene_sends_comes_from_one_helper_and_finds_its_lane() {
+    let fixture = Fixture::new("lane-keys");
+    let path = fixture.0.join("Hard.osu");
+    fs::write(&path, b"osu file format v14
+
+[TimingPoints]
+0,500,4,1,0,100,1,0
+
+[HitObjects]
+256,192,1000,1,8,0:0:0:0:
+").unwrap();
+    let mut app = Application::headless();
+    open(&mut app, &path);
+    let scene = snapshot(&app, true);
+    for (row, lane) in app.document().unwrap().composer.lanes.iter().enumerate() {
+        assert_eq!(scene["scene"]["lanes"][row]["sourceKey"], scene_lane_key(lane));
+        assert_eq!(&lane_by_key(&app, &scene_lane_key(lane)).unwrap(), lane);
+    }
 }
 
 #[test]

@@ -732,7 +732,7 @@ impl Action {
                 if let Err(error) = lane_by_key(app, &target.lane)
                     .or_else(|_| {
                         app.scan_lane_add_candidates(&target.map)?.into_iter()
-                            .find(|lane| format!("{lane:?}") == target.lane)
+                            .find(|lane| scene_lane_key(lane) == target.lane)
                             .ok_or_else(|| "The selected sample is unavailable.".into())
                     })
                     .and_then(|lane| app.show_lane(&target.map, &lane))
@@ -919,7 +919,7 @@ fn lane_selection_mix(app: &mut Application, target: &SampleTarget, operation: &
     let mut members = Vec::new();
     let mut clicked = None;
     for lane in &document.composer.lanes {
-        let key = format!("{lane:?}");
+        let key = scene_lane_key(lane);
         if keys.remove(&key) {
             if key == target.lane {
                 clicked = Some(lane.clone());
@@ -932,9 +932,14 @@ fn lane_selection_mix(app: &mut Application, target: &SampleTarget, operation: &
     }
 }
 
+/// A lane's key in the scene: the text the front end holds for a lane and sends back to name it.
+fn scene_lane_key(lane: &SampleIdentity) -> String {
+    format!("{lane:?}")
+}
+
 fn lane_by_key(app: &Application, key: &str) -> Result<SampleIdentity, String> {
     app.document()
-        .and_then(|document| document.composer.lanes.iter().find(|lane| format!("{lane:?}") == key))
+        .and_then(|document| document.composer.lanes.iter().find(|lane| scene_lane_key(lane) == key))
         .cloned()
         .ok_or_else(|| "The lane changed. Choose a lane again.".into())
 }
@@ -954,7 +959,7 @@ fn lane_add_choices(app: &Application, map: &Path) -> Result<Value, String> {
     let candidates = app.scan_lane_add_candidates(map)?;
     let model = app.document().ok_or("Open a difficulty first.")?.composer.hitsounds();
     Ok(json!(candidates.iter().map(|lane| json!({
-        "key": format!("{lane:?}"),
+        "key": scene_lane_key(lane),
         "name": lane_name(model.lane_slot(lane).unwrap_or(lane)),
     })).collect::<Vec<_>>()))
 }
@@ -962,7 +967,7 @@ fn lane_add_choices(app: &Application, map: &Path) -> Result<Value, String> {
 fn assign_sample(app: &mut Application, target: SampleTarget, path: PathBuf, mapset: bool) -> Result<(), String> {
     let document = app.document().ok_or("Open a difficulty first.")?;
     let lane = document.composer.lanes.get(app.active_lane).ok_or("Choose an active lane.")?;
-    if document.path != target.map || format!("{lane:?}") != target.lane {
+    if document.path != target.map || scene_lane_key(lane) != target.lane {
         return Err("The active lane changed while choosing a sample.".into());
     }
     let lane = lane.clone();
@@ -1080,8 +1085,8 @@ fn snapshot(app: &Application, include_scene: bool) -> Value {
                 let protected = c.protect_normals && hit_count > 0
                     && matches!(slot, SampleIdentity::Standard { sound: Sound::Hit(dawsu_foundation::Hitsound::Normal), .. });
                 json!({
-                    "family": family, "index": index, "group": group, "key": format!("{slot:?}"),
-                    "sourceKey": format!("{lane:?}"), "sample": sample,
+                    "family": family, "index": index, "group": group, "key": scene_lane_key(slot),
+                    "sourceKey": scene_lane_key(lane), "sample": sample,
                     "colourKey": dawsu_application::lane_layout_key(slot),
                     "name": lane_name(slot), "muted": app.is_muted(lane), "solo": app.is_solo(lane),
                     "canAddLayer": index.is_some(),

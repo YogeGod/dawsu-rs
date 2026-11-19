@@ -66,7 +66,7 @@ impl DrumView {
         let filled = |row: usize| {
             let shown = &view["scene"]["lanes"][row];
             let key = shown["key"].as_str().filter(|key| Some(*key) != shown["sourceKey"].as_str())?;
-            model.lanes().iter().find(|lane| format!("{:?}", lane.identity) == key)
+            model.lanes().iter().find(|lane| super::scene_lane_key(&lane.identity) == key)
         };
         let available: Vec<_> = order.iter().filter_map(|value| {
             let row = value.as_u64()? as usize;
