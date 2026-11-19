@@ -6,11 +6,12 @@ import { createContext, runInContext } from "node:vm";
 const app = await readFile(new URL("../dist/app.js", import.meta.url), "utf8");
 
 // Loads the editor with fake canvases that record every 2D call and the paint state it used.
-async function canvases() {
+// `roundRect: false` fakes an older WebView whose canvas has no roundRect().
+async function canvases({ roundRect = true } = {}) {
   const elements = new Map();
   function element() {
     const calls = [];
-    const ctx = new Proxy({}, {
+    const ctx = new Proxy(roundRect ? {} : { roundRect: undefined }, {
       get(target, name) {
         if (name in target) return target[name];
         return (...args) => calls.push({ name, args,
@@ -49,7 +50,7 @@ async function canvases() {
     for (const canvas of elements.values()) canvas.calls.length = 0;
     runInContext(code + "; paint()", context);
   };
-  return { get, paint };
+  return { get, paint, evaluate: code => runInContext(code, context) };
 }
 
 const round = value => Math.round(value * 100) / 100;
@@ -79,9 +80,18 @@ test("object circles scale with zoom: half a beat on screen × 0.8, between 18 a
   assert.ok(circles(ruler).filter(circle => circle.diameter !== 19.8).every(circle => circle.diameter === 30), "30 px cap");
   paint("scene.zoom = .05");
   assert.ok(circles(ruler).filter(circle => circle.diameter !== 11.88).every(circle => circle.diameter === 18), "18 px floor");
-  // The timing at the view's left edge sets the size: 250 ms beats after 2000 ms.
-  paint("scene.zoom = .1; scene.viewStart = 2100; scene.gameplay.points.push(['circle', 2200, 3])");
-  assert.deepEqual(circles(ruler).map(circle => circle.diameter), [18]);
+  // Without timing every circle is 18 px.
+  paint("scene.zoom = .1; scene.sections = []");
+  assert.deepEqual(circles(ruler).map(circle => circle.diameter), [18, 18, 11.88, 18]);
+});
+
+test("each circle takes its size from the timing at its own time", async () => {
+  const { get, paint } = await canvases();
+  const ruler = get("ruler");
+  // At 0.2 px/ms, 500 ms beats give 30 px circles and the 250 ms beats from 2000 ms give 20 px.
+  paint(`scene.zoom = .2; scene.viewStart = 1800;
+    scene.gameplay.points.push(["circle", 1900, 3], ["circle", 2200, 4])`);
+  assert.deepEqual(circles(ruler).map(circle => [circle.x, circle.diameter]), [[20, 30], [80, 20]]);
 });
 
 test("object circles never grow past the waveform lane", async () => {

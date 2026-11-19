@@ -1062,7 +1062,8 @@ function fillHitDiamond(ctx, x, y) {
 }
 
 // Object circles grow with zoom as in the design (f11): half a beat on screen × 0.8, kept
-// between 18 and 30 px, from the timing at the view's left edge and never taller than the lane.
+// between 18 and 30 px, from the timing at the object's own time and never taller than the lane.
+const objectReach = 15;
 function objectDiameter(sections, time, zoom, laneHeight) {
   let beat = 0;
   for (const [origin, length] of sections ?? []) {
@@ -1073,15 +1074,14 @@ function objectDiameter(sections, time, zoom, laneHeight) {
   return Math.max(0, Math.min(size, laneHeight));
 }
 
-function drawGameplay(ctx, gameplay, xOf, y, width, diameter) {
+function drawGameplay(ctx, gameplay, xOf, y, width, diameterAt) {
   if (!gameplay) return;
-  const radius = diameter / 2;
-  const track = diameter * .66;
   for (const [kind, start, end] of gameplay.spans) {
     const left = xOf(start);
     const right = xOf(end);
-    if (right < -radius || left > width + radius) continue;
+    if (right < -objectReach || left > width + objectReach) continue;
     if (kind === "slider") {
+      const track = diameterAt(start) * .66;
       ctx.fillStyle = "#62d6cfd9";
       ctx.beginPath();
       ctx.roundRect(left, y - track / 2, right - left, track, track / 2);
@@ -1105,12 +1105,12 @@ function drawGameplay(ctx, gameplay, xOf, y, width, diameter) {
   ctx.strokeStyle = "#1c2727";
   for (const [kind, time, object] of gameplay.points) {
     const x = xOf(time);
-    if (x < -radius || x > width + radius) continue;
+    if (x < -objectReach || x > width + objectReach) continue;
     const ends = kind === "slider" ? sliderEnds.get(object) : null;
     const repeat = ends && time !== ends[0] && time !== ends[1];
     ctx.fillStyle = "#e6eef2";
     ctx.beginPath();
-    ctx.arc(x, y, repeat ? track / 2 : radius, 0, Math.PI * 2);
+    ctx.arc(x, y, repeat ? diameterAt(ends[0]) * .66 / 2 : diameterAt(time) / 2, 0, Math.PI * 2);
     ctx.fill();
     ctx.stroke();
   }
@@ -1275,7 +1275,7 @@ function paint() {
   const waveformMiddle = (r.height + rulerBandHeight) / 2;
   const waveAmplitude = Math.min(waveformHeight, Math.max(0, r.height - rulerBandHeight)) / 2;
   if (waveAmplitude > 0) waveform(r.ctx, r.width, waveformMiddle, waveAmplitude, start, r.width / zoom);
-  const objectSize = objectDiameter(scene.sections, start, zoom, r.height - rulerBandHeight);
+  const objectSize = time => objectDiameter(scene.sections, time, zoom, r.height - rulerBandHeight);
   drawGameplay(r.ctx, scene.gameplay, xOf, waveformMiddle, r.width, objectSize);
   r.ctx.fillStyle = slateTimeline.ruler;
   r.ctx.fillRect(0, 0, r.width, rulerBandHeight);
