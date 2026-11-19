@@ -2,6 +2,7 @@
 //! refused. All of them live here, so no message shows a Rust variant name. The arms for an
 //! outcome that went through are only there to keep each match complete.
 
+use dawsu_editor::tempo::SnapSpacingError;
 use dawsu_hitsounding::Decompiled;
 use dawsu_hitsounding::copy::{CopyOutcome, TargetOutcome};
 use dawsu_hitsounding::generate::{GenerateOutcome, NewDiff};
@@ -116,6 +117,15 @@ pub(crate) fn file_name(refusal: &PathRefusal) -> String {
     format!("\"{}\" is not a safe file name: {}", refusal.path, refusal.reason)
 }
 
+pub(crate) fn snap(beats: u32, divisions: u32, error: SnapSpacingError) -> String {
+    match error {
+        SnapSpacingError::Zero => format!("Snap {beats}/{divisions} is not available. Both numbers must be 1 or more."),
+        SnapSpacingError::LongAndFraction => format!(
+            "Snap {beats}/{divisions} is not available. Use a fraction of a beat, like 1/4, or whole beats, like 2/1."
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -169,6 +179,7 @@ mod tests {
         );
         let path = PathRefusal { path: "C:/a.wav".into(), reason: "absolute and network paths are not allowed" };
         assert_plain(&[path], file_name);
+        assert_plain(&[SnapSpacingError::Zero, SnapSpacingError::LongAndFraction], |error| snap(2, 3, *error));
         assert_eq!(open(&Decompiled::UnsupportedMode { mode: 3 }), "This is an osu!mania difficulty. dawsu! edits osu!standard difficulties only.");
     }
 }

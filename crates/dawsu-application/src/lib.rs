@@ -1913,10 +1913,13 @@ impl Application {
         mode: dawsu_editor::tempo::SnapMode,
     ) {
         if let Some(d) = self.document.as_mut() {
-            if let Ok(spacing) = SnapSpacing::new(beats, divisions) {
-                d.composer.snap_enabled = enabled;
-                d.composer.spacing = spacing;
-                d.composer.snap_mode = mode;
+            match SnapSpacing::new(beats, divisions) {
+                Ok(spacing) => {
+                    d.composer.snap_enabled = enabled;
+                    d.composer.spacing = spacing;
+                    d.composer.snap_mode = mode;
+                }
+                Err(error) => self.error = Some(refusals::snap(beats, divisions, error)),
             }
         }
     }
@@ -3913,6 +3916,29 @@ mod project_workflow {
         assert!(app.error.is_none(), "{:?}", app.error);
         let (saved, _) = preferences::load(&data.join("preferences.json"), None);
         assert!(saved.protect_hitnormals);
+    }
+
+    #[test]
+    fn a_snap_spacing_osu_cannot_use_is_reported_and_changes_nothing() {
+        let fixture = Scratch::new("mixed-snap");
+        let map = fixture.path("map.osu");
+        std::fs::write(&map, include_bytes!("../tests/project-fixture.osu")).unwrap();
+        let mut app = Application::headless();
+        open(&mut app, map);
+        let spacing = |app: &Application| {
+            let composer = &app.document().unwrap().composer;
+            (composer.snap_enabled, composer.spacing.beats(), composer.spacing.divisions())
+        };
+        let before = spacing(&app);
+        app.set_snap_options(!before.0, 2, 3, dawsu_editor::tempo::SnapMode::Grid);
+        assert_eq!(
+            app.error.take().as_deref(),
+            Some("Snap 2/3 is not available. Use a fraction of a beat, like 1/4, or whole beats, like 2/1.")
+        );
+        assert_eq!(spacing(&app), before);
+        app.set_snap_options(true, 1, 3, dawsu_editor::tempo::SnapMode::Grid);
+        assert!(app.error.is_none(), "{:?}", app.error);
+        assert_eq!(spacing(&app), (true, 1, 3));
     }
 
     #[test]
