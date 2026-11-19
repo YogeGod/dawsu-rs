@@ -68,6 +68,8 @@ pub struct Document {
     /// The hits as last written: the final compile input of the last Save, or the hits as opened.
     /// A part Save cannot write as drawn goes back to its state here (F052).
     written: Hitsounds,
+    /// What the last Save left out of the `.osu`, listed while each part still holds it.
+    left_out: Vec<roll_back::LeftOut>,
     owned_hs_circles: BTreeSet<LineId>,
     bookmarks: BookmarkList,
     bookmark_override: bool,
@@ -148,6 +150,7 @@ impl Document {
             file: read.file,
             compile_base,
             written,
+            left_out: Vec::new(),
             owned_hs_circles: BTreeSet::new(),
             bookmarks,
             bookmark_override: false,
@@ -205,6 +208,8 @@ pub const MIN_ZOOM: f64 = 0.0005;
 pub struct SaveReport {
     pub file: OsuFile,
     pub problems: Vec<SaveProblem>,
+    written: Hitsounds,
+    left_out: Vec<roll_back::LeftOut>,
     hs_circle_ownership: Option<project::HsCircleOwnership>,
     gain_recovery_warning: Option<String>,
 }
@@ -393,6 +398,17 @@ fn prepare_save(
         ));
     }
     let (out, owned, effective, left_out) = (rolled.out, rolled.owned, rolled.effective, rolled.left_out);
+    // Outside HS mode loose hits are kept in the project, never as circles, so they are not part of
+    // what was written: a group that was never a circle must not come back as one.
+    let mut written = effective.clone();
+    if !hs {
+        let loose: Vec<_> = written.moments().iter().enumerate()
+            .filter(|(_, m)| m.place() == dawsu_hitsounding::Place::NoObject)
+            .map(|(index, _)| dawsu_hitsounding::MomentId(index)).collect();
+        for id in loose {
+            written.reset_moment(id);
+        }
+    }
     let recovery = gain_recovery::Captured::read(&effective, root, defaults)?;
     if cancel() {
         return Err("Save cancelled before writing".into());
@@ -410,7 +426,7 @@ fn prepare_save(
     let map_changed = bytes != expected;
     let plan = PreparedSave {
         path: path.to_path_buf(), backups, expected, out, mix_files, recovery_revision,
-        ownership, inputs, map_changed, left_out,
+        ownership, inputs, map_changed, left_out, written,
     };
     plan.check_current(project, cancel)?;
     // Left-out parts are listed for the Save hitsounds summary, which every Save shows first.
@@ -436,6 +452,8 @@ struct PreparedSave {
     map_changed: bool,
     /// The parts Save leaves out of the `.osu`.
     left_out: Vec<roll_back::LeftOut>,
+    /// The final compile input: what this Save writes.
+    written: Hitsounds,
 }
 
 impl PreparedSave {
@@ -494,6 +512,8 @@ impl PreparedSave {
                 Ok(SaveReport {
                     file: OsuFile::read(bytes).file,
                     problems: Vec::new(),
+                    written: self.written,
+                    left_out: self.left_out,
                     hs_circle_ownership: self.ownership,
                     gain_recovery_warning,
                 })
@@ -1430,6 +1450,8 @@ impl Application {
                             let mut archive_error = None;
                             if let Some(d) = self.document.as_mut().filter(|d| d.path == path) {
                                 d.file = report.file;
+                                d.written = report.written;
+                                d.left_out = report.left_out;
                                 // The difficulty is written, even when a step below returns early.
                                 self.checkpoint =
                                     Some(recovery::Checkpoint::after_save(d, &hits, hs_mode));
@@ -1512,16 +1534,27 @@ impl Application {
             }
         }
     }
-    pub fn output_problems(&self) -> &[OutputProblem] {
+    /// The problems of the last check of this revision, then each moment the last Save left out
+    /// (F052), which stays listed after other edits.
+    pub fn output_problems(&self) -> Vec<OutputProblem> {
         let revision = self
             .document
             .as_ref()
             .map(|doc| (doc.composer.history.version(), doc.hs_mode));
-        if revision == self.output_problem_revision {
-            &self.output_problems
+        let mut problems = if revision == self.output_problem_revision {
+            self.output_problems.clone()
         } else {
-            &[]
+            Vec::new()
+        };
+        if let Some(doc) = &self.document {
+            for entry in doc.left_out.iter().filter(|entry| entry.hs == doc.hs_mode) {
+                let problem = OutputProblem::new(&entry.problem, &doc.path, &doc.path);
+                if !problems.iter().any(|p| p.target == problem.target && p.time == problem.time) {
+                    problems.push(problem);
+                }
+            }
         }
+        problems
     }
 
     pub fn save_problem_review(&self) -> bool {
@@ -1564,6 +1597,7 @@ impl Application {
         let Some(review) = self.pending_save_review.take() else {
             return;
         };
+        self.save_problem_review = false;
         if !apply {
             self.status = "Save review cancelled".into();
             return;
@@ -2945,6 +2979,70 @@ mod project_workflow {
         assert_eq!(line(&saved, "100,100,2000,"), line(SLIDER_MAP, "100,100,2000,"), "the slider keeps its line");
         assert_ne!(line(&saved, "256,192,1000,"), line(SLIDER_MAP, "256,192,1000,"), "the circle's finish is written");
         assert!(!app.is_dirty());
+        assert_eq!(app.output_problems().iter().map(|p| p.time).collect::<Vec<_>>(), [2500.0], "the left-out moment stays listed");
+        assert!(!app.save_problem_review());
+    }
+
+    #[test]
+    fn written_follows_a_save_even_with_newer_edits_open_and_reproduces_the_file() {
+        let scratch = Scratch::new("written-newer-revision");
+        let (mut app, map) = open_left_out_fixture(&scratch, true);
+        app.save_with_backups(scratch.path("backups"));
+        wait(&mut app);
+        app.answer_save_review(true);
+        assert!(app.busy);
+        // A newer edit lands while the reviewed plan is written.
+        app.document.as_mut().unwrap().composer.apply("Newer edit", |hits| hits.set_volume(dawsu_hitsounding::MomentId(0), 55));
+        wait(&mut app);
+        assert!(app.error.is_none(), "{:?}", app.error);
+        assert!(app.status.contains("earlier revision"), "{}", app.status);
+        let doc = app.document().unwrap();
+        let (again, problems, _) = compile_for_save(&doc.compile_base, &doc.written, true, &BTreeSet::new(), true, &|| false, &mut |_, _| {}).unwrap();
+        assert!(problems.is_empty(), "{problems:?}");
+        assert_eq!(again.to_bytes(), std::fs::read(&map).unwrap(), "the hits as last written reproduce the file");
+        assert!(!doc.written.moment(tail_id(&doc.written)).is_changed(), "the left-out tail is written as opened");
+    }
+
+    #[test]
+    fn a_node_written_by_one_save_keeps_those_fields_when_the_next_save_leaves_it_out() {
+        let scratch = Scratch::new("node-keeps-written");
+        let (mut app, map) = open_left_out_fixture(&scratch, true);
+        app.document.as_mut().unwrap().composer.apply("Drum clap only later", |hits| {
+            hits.remove_hit(tail_id(hits), &skin(SampleSet::Drum, Hitsound::Clap));
+        });
+        save_through_summary(&mut app, scratch.path("backups"));
+        let first = std::fs::read(&map).unwrap();
+        assert_ne!(line(&first, "100,100,2000,"), line(SLIDER_MAP, "100,100,2000,"), "save 1 writes the soft clap");
+        app.document.as_mut().unwrap().composer.apply("Drum clap", |hits| {
+            hits.add_hit(tail_id(hits), skin(SampleSet::Drum, Hitsound::Clap));
+        });
+        save_through_summary(&mut app, scratch.path("backups"));
+        assert_eq!(app.output_problems().len(), 1);
+        assert_eq!(line(&std::fs::read(&map).unwrap(), "100,100,2000,"), line(&first, "100,100,2000,"));
+    }
+
+    /// Under a timing line with custom index 2, a circle cannot ask for the skin's index 0.
+    const INDEXED_MAP: &[u8] = b"osu file format v14\r\n\r\n[General]\r\nSampleSet: Soft\r\n\r\n[TimingPoints]\r\n0,500,4,2,2,70,1,0\r\n\r\n[HitObjects]\r\n256,192,1000,1,0,0:0:0:0:\r\n";
+
+    #[test]
+    fn loose_hits_saved_outside_hs_mode_never_count_as_a_written_circle() {
+        let scratch = Scratch::new("loose-never-a-circle");
+        let folder = scratch.path("mapset");
+        std::fs::create_dir(&folder).unwrap();
+        let map = folder.join("a.osu");
+        std::fs::write(&map, INDEXED_MAP).unwrap();
+        wav(&folder.join("voice.wav"), 8192);
+        let mut app = Application::headless();
+        app.project_root = Some(scratch.path("projects"));
+        open(&mut app, map.clone());
+        app.document.as_mut().unwrap().composer.add(3000.0, SampleIdentity::File("voice.wav".into()), 80, 0.0);
+        save_through_summary(&mut app, scratch.path("backups"));
+        assert_eq!(std::fs::read(&map).unwrap(), INDEXED_MAP, "outside HS mode a loose hit stays in the project");
+        app.set_hs_mode(true);
+        app.document.as_mut().unwrap().composer.add(3000.0, skin(SampleSet::Soft, Hitsound::Clap), 80, 0.0);
+        save_through_summary(&mut app, scratch.path("backups"));
+        assert_eq!(std::fs::read(&map).unwrap(), INDEXED_MAP, "the group was never a circle, so none is made");
+        assert_eq!(app.output_problems().len(), 1);
     }
 
     #[test]
