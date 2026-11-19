@@ -324,6 +324,17 @@ impl Composer {
             self.selected.items().iter().map(|hit| hit.moment).collect();
         let selected_lanes: HashSet<_> =
             self.selected.items().iter().map(|hit| &hit.lane).collect();
+        // A silent sound stays silent; the 1% floor is for sounds above 0.
+        let scale = |volume: i32| {
+            if volume == 0 {
+                return 0;
+            }
+            (f64::from(volume) * percent / 100.0)
+                .round()
+                .clamp(1.0, 100.0) as i32
+        };
+        // "Lanes of selected hits" changes only those lanes, each picked by its own volume.
+        let lanes_only = matches!(scope, VolumeScope::SelectedLanes);
         let changes: Vec<_> = self
             .hitsounds()
             .moments()
@@ -331,9 +342,17 @@ impl Composer {
             .enumerate()
             .filter_map(|(index, moment)| {
                 let before = moment.volume();
-                let volume = (f64::from(before) * percent / 100.0)
-                    .round()
-                    .clamp(1.0, 100.0) as i32;
+                let volume = scale(before);
+                // Every sound is multiplied by the same factor, so their balance stays.
+                let gains: Vec<_> = moment
+                    .hits()
+                    .filter(|lane| {
+                        !lanes_only
+                            || selected_lanes.contains(lane)
+                                && (min..=max).contains(&moment.hit_volume(lane))
+                    })
+                    .map(|lane| (lane.clone(), scale(moment.hit_volume(lane))))
+                    .collect();
                 let in_scope = match scope {
                     VolumeScope::Selected => selected_moments.contains(&index),
                     VolumeScope::SelectedLanes => {
@@ -342,18 +361,24 @@ impl Composer {
                     VolumeScope::All => moment.hits().next().is_some(),
                 };
                 (moment.place() != Place::NoObject
-                    && (min..=max).contains(&before)
+                    && (lanes_only || (min..=max).contains(&before))
                     && in_scope
-                    && volume != before)
-                    .then_some((MomentId(index), volume))
+                    && (!lanes_only && volume != before
+                        || gains.iter().any(|(lane, gain)| *gain != moment.hit_volume(lane))))
+                    .then_some((MomentId(index), (!lanes_only).then_some(volume), gains))
             })
             .collect();
         if changes.is_empty() {
             return false;
         }
         self.apply("Scale by volume", |hits| {
-            for (id, volume) in changes {
-                hits.set_volume(id, volume);
+            for (id, volume, gains) in changes {
+                if let Some(volume) = volume {
+                    hits.set_volume(id, volume);
+                }
+                for (lane, gain) in gains {
+                    hits.set_hit_volume(id, &lane, gain);
+                }
             }
         });
         true

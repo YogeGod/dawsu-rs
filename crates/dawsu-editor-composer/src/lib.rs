@@ -264,6 +264,7 @@ impl Composer {
             desired.clamp(i32::from(lanes.is_some()), 100)
         };
         let mut shared = Vec::new();
+        let mut moved = Vec::new();
         let mut individual = Vec::new();
         for index in moments {
             let id = MomentId(index);
@@ -282,8 +283,8 @@ impl Composer {
             } else {
                 let volume = edit(moment.volume());
                 if !relative || !moment.has_hit_volume_overrides() {
-                    if volume != moment.volume() || moment.has_hit_volume_overrides() {
-                        shared.push((id, volume));
+                    if volume != moment.volume() {
+                        moved.push((id, volume));
                     }
                     continue;
                 }
@@ -299,12 +300,15 @@ impl Composer {
                 }
             }
         }
-        if shared.is_empty() && individual.is_empty() {
+        if shared.is_empty() && moved.is_empty() && individual.is_empty() {
             return false;
         }
         self.apply("Change volume", |hits| {
             for (id, volume) in shared {
                 hits.set_volume(id, volume);
+            }
+            for (id, volume) in moved {
+                hits.move_volume(id, volume);
             }
             for (id, lane, volume) in individual {
                 hits.set_hit_volume(id, &lane, volume);
@@ -531,7 +535,8 @@ impl ToolTarget for Composer {
     fn set_values(&mut self, values: &[(HitKey, i32)]) {
         let _ = self.history.edit(true, |h| {
             for (key, v) in values {
-                h.set_volume(MomentId(key.moment), (*v).clamp(0, 100));
+                // Each hit at a moment brings the same value, so moving to it again changes nothing.
+                h.move_volume(MomentId(key.moment), (*v).clamp(0, 100));
             }
             Ok::<_, Infallible>(())
         });

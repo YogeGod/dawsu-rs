@@ -365,3 +365,100 @@ fn restored_gains_are_a_baseline_and_lane_scope_follows_the_replacement_slot() {
     assert_eq!(c.hitsounds().moment(id).hit_volume(&rim), 25);
     assert!(!c.hitsounds().moment(id).is_changed());
 }
+
+/// Hitnormal 80 at the moment's own volume, clap 50 with its own volume.
+fn normal_80_clap_50() -> (Composer, SampleIdentity) {
+    use std::collections::BTreeSet;
+
+    let mut c = composer();
+    let normal = c.hitsounds().moments()[0].hits().next().unwrap().clone();
+    c.add(1000.0, clap(), 80, 5.0);
+    c.volume(80, false);
+    assert!(c.volume_for_lanes(50, false, Some(&BTreeSet::from([clap()]))));
+    assert_eq!(normal_and_clap(&c, &normal), (80, 50));
+    (c, normal)
+}
+
+fn normal_and_clap(c: &Composer, normal: &SampleIdentity) -> (i32, i32) {
+    let moment = &c.hitsounds().moments()[0];
+    (moment.hit_volume(normal), moment.hit_volume(&clap()))
+}
+
+#[test]
+fn set_all_moves_every_lane_together_and_keeps_their_difference() {
+    let (mut c, normal) = normal_80_clap_50();
+    assert!(!c.volume_for_lanes(80, false, None), "the volume the moment already has changes nothing");
+    c.volume(90, false);
+    assert_eq!(normal_and_clap(&c, &normal), (90, 60));
+    c.volume(100, false);
+    assert_eq!(normal_and_clap(&c, &normal), (100, 70));
+    c.volume(20, false);
+    assert_eq!(normal_and_clap(&c, &normal), (20, 0), "the clap stops at 0");
+    c.undo();
+    assert_eq!(normal_and_clap(&c, &normal), (100, 70));
+}
+
+#[test]
+fn ramp_moves_every_lane_together_and_keeps_their_difference() {
+    use dawsu_editor::tools::ToolTarget;
+    use dawsu_editor_composer::HitKey;
+
+    let (mut c, normal) = normal_80_clap_50();
+    let ramp = |c: &mut Composer, value: i32| {
+        // The Ramp tool gives every hit at the moment, so the moment comes twice.
+        let values = [
+            (HitKey { moment: 0, lane: normal.clone() }, value),
+            (HitKey { moment: 0, lane: clap() }, value),
+        ];
+        c.begin("Ramp");
+        c.set_values(&values);
+        c.commit();
+    };
+    ramp(&mut c, 90);
+    assert_eq!(normal_and_clap(&c, &normal), (90, 60));
+    ramp(&mut c, 20);
+    assert_eq!(normal_and_clap(&c, &normal), (20, 0));
+}
+
+#[test]
+fn scale_by_volume_multiplies_every_lane_and_keeps_their_balance() {
+    use dawsu_editor_composer::VolumeScope;
+
+    let (mut c, normal) = normal_80_clap_50();
+    assert!(c.scale_by_volume(VolumeScope::All, 0, 100, 50.0));
+    assert_eq!(normal_and_clap(&c, &normal), (40, 25));
+    c.undo();
+    assert!(c.scale_by_volume(VolumeScope::All, 0, 100, 150.0));
+    assert_eq!(normal_and_clap(&c, &normal), (100, 75), "the hitnormal stops at 100");
+    c.undo();
+    assert!(c.scale_by_volume(VolumeScope::All, 0, 100, 1.0));
+    assert_eq!(normal_and_clap(&c, &normal), (1, 1), "no sound goes below Scale's 1% floor");
+}
+
+#[test]
+fn scale_by_volume_on_lanes_of_selected_hits_changes_only_those_lanes() {
+    use dawsu_editor_composer::VolumeScope;
+
+    let (mut c, normal) = normal_80_clap_50();
+    assert!(
+        !c.scale_by_volume(VolumeScope::SelectedLanes, 60, 100, 50.0),
+        "From and To pick lanes by their own volume: the clap is at 50"
+    );
+    assert!(c.scale_by_volume(VolumeScope::SelectedLanes, 0, 100, 50.0));
+    assert_eq!(normal_and_clap(&c, &normal), (80, 25), "the hitnormal is not a selected lane");
+    assert_eq!(c.hitsounds().moments()[0].volume(), 80);
+    assert_eq!(c.hitsounds().moments()[1].hit_volume(&normal), 100);
+}
+
+#[test]
+fn scale_by_volume_leaves_a_silent_sound_silent() {
+    use dawsu_editor_composer::VolumeScope;
+
+    let (mut c, normal) = normal_80_clap_50();
+    c.apply("Mute the clap", |hits| {
+        hits.set_hit_volume(dawsu_hitsounding::MomentId(0), &clap(), 0);
+    });
+    assert_eq!(normal_and_clap(&c, &normal), (80, 0));
+    assert!(c.scale_by_volume(VolumeScope::All, 0, 100, 50.0));
+    assert_eq!(normal_and_clap(&c, &normal), (40, 0), "0 times any factor stays 0");
+}

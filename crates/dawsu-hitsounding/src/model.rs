@@ -130,6 +130,17 @@ impl Moment {
         self.hit_volumes.clear();
     }
 
+    fn move_volume(&mut self, volume: i32) {
+        let change = volume - self.volume;
+        let gains: Vec<_> = self.hit_volumes.iter()
+            .map(|(lane, gain)| (lane.clone(), (gain + change).clamp(0, 100)))
+            .collect();
+        self.set_volume(volume);
+        for (lane, gain) in gains {
+            self.set_hit_volume(&lane, gain);
+        }
+    }
+
     pub fn hits(&self) -> impl Iterator<Item = &SampleIdentity> {
         self.hits.iter()
     }
@@ -420,6 +431,12 @@ impl Hitsounds {
         self.moments[moment.0].set_volume(volume);
     }
 
+    /// Sets a moment's volume and moves every hit with its own volume by the same amount, so the
+    /// hits keep their difference. A hit stops at 0 or 100 and keeps that value afterwards.
+    pub fn move_volume(&mut self, moment: MomentId, volume: i32) {
+        self.moments[moment.0].move_volume(volume);
+    }
+
     /// Restores the editable hit state certified against the decoded object's saved representation.
     pub fn restore_moment_hits(
         &mut self,
@@ -480,7 +497,7 @@ impl Hitsounds {
         let object = self.bodies[body].object;
         self.bodies[body].volume = volume;
         if let Some(head) = self.moments.iter_mut().find(|m| m.place == Place::SliderNode { object, node: 0 }) {
-            head.set_volume(volume);
+            head.move_volume(volume);
         }
     }
 }
