@@ -324,7 +324,11 @@ impl Composer {
             self.selected.items().iter().map(|hit| hit.moment).collect();
         let selected_lanes: HashSet<_> =
             self.selected.items().iter().map(|hit| &hit.lane).collect();
+        // A silent sound stays silent; the 1% floor is for sounds above 0.
         let scale = |volume: i32| {
+            if volume == 0 {
+                return 0;
+            }
             (f64::from(volume) * percent / 100.0)
                 .round()
                 .clamp(1.0, 100.0) as i32

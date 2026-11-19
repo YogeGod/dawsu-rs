@@ -449,3 +449,16 @@ fn scale_by_volume_on_lanes_of_selected_hits_changes_only_those_lanes() {
     assert_eq!(c.hitsounds().moments()[0].volume(), 80);
     assert_eq!(c.hitsounds().moments()[1].hit_volume(&normal), 100);
 }
+
+#[test]
+fn scale_by_volume_leaves_a_silent_sound_silent() {
+    use dawsu_editor_composer::VolumeScope;
+
+    let (mut c, normal) = normal_80_clap_50();
+    c.apply("Mute the clap", |hits| {
+        hits.set_hit_volume(dawsu_hitsounding::MomentId(0), &clap(), 0);
+    });
+    assert_eq!(normal_and_clap(&c, &normal), (80, 0));
+    assert!(c.scale_by_volume(VolumeScope::All, 0, 100, 50.0));
+    assert_eq!(normal_and_clap(&c, &normal), (40, 0), "0 times any factor stays 0");
+}
