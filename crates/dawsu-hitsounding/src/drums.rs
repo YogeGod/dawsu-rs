@@ -656,8 +656,10 @@ pub enum DrumViewRow<'a> {
 
 /// The drum-map view's rows for `lanes`: every row of the map in its order, then every lane no
 /// row names, in the lanes' own order. Applying a drum map never adds, removes or renames a lane
-/// (invariant 9): the view's lanes are exactly `lanes`, a lane several rows name (an alias) shows
-/// once per row, and turning the map off (`None`) shows the lanes as they are.
+/// (invariant 9): the view's lanes are exactly `lanes`, and turning the map off (`None`) shows the
+/// lanes as they are. A lane several rows name (an alias) is listed here once per row; the editor's
+/// view (`apps/tauri/src/drum_view.rs`) shows it once, at the first such row, under the joined
+/// names ("Kick / Subkick") (Yoge, 2026-11-19).
 pub fn drum_rows<'a>(map: Option<&'a DrumMap>, lanes: &'a [Lane]) -> Vec<DrumViewRow<'a>> {
     let keys: Vec<String> = lanes.iter().map(lane_key).collect();
     let find = |key: &Option<String>| key.as_ref().and_then(|k| keys.iter().position(|l| l == k));
