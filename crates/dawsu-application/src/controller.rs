@@ -230,7 +230,7 @@ mod tests {
     }
 
     #[test]
-    fn dragging_a_bar_moves_every_lane_together_and_keeps_their_difference() {
+    fn dragging_a_bar_moves_every_lane_together_and_a_lane_stopped_at_0_stays_there_after_release() {
         let (mut c, normal) = normal_80_clap_50();
         let mut stroke = ControllerStroke::start(&mut c, bar(1000.0, 90.0, Mods::NONE), 1.0).unwrap();
         assert_eq!(normal_and_clap(&c, &normal), (90, 60));
@@ -276,5 +276,25 @@ mod tests {
         stroke.finish(&mut c, bar(900.0, 90.0, Mods::ALT));
         assert_eq!(normal_and_clap(&c, &normal), (90, 60), "painting back over it in the same stroke");
         assert_eq!(c.hitsounds().moments()[1].volume(), 100, "the stroke never reached the second circle");
+    }
+
+    #[test]
+    fn painting_two_moments_in_one_stroke_moves_each_from_its_own_start() {
+        let (mut c, normal) = normal_80_clap_50();
+        c.add(1500.0, clap(), 80, 5.0);
+        assert!(c.volume_for_lanes(90, false, Some(&BTreeSet::from([clap()]))));
+        let second = |c: &Composer| {
+            let moment = &c.hitsounds().moments()[1];
+            (moment.hit_volume(&normal), moment.hit_volume(&clap()))
+        };
+        assert_eq!((normal_and_clap(&c, &normal), second(&c)), ((80, 50), (100, 90)));
+        let mut stroke = ControllerStroke::start(&mut c, bar(900.0, 20.0, Mods::ALT), 1.0).unwrap();
+        stroke.apply(&mut c, bar(1600.0, 20.0, Mods::ALT));
+        assert_eq!((normal_and_clap(&c, &normal), second(&c)), ((20, 0), (20, 10)));
+        stroke.apply(&mut c, bar(1600.0, 60.0, Mods::ALT));
+        stroke.finish(&mut c, bar(900.0, 60.0, Mods::ALT));
+        assert_eq!((normal_and_clap(&c, &normal), second(&c)), ((60, 30), (60, 50)));
+        c.undo();
+        assert_eq!((normal_and_clap(&c, &normal), second(&c)), ((80, 50), (100, 90)), "one stroke is one undo step");
     }
 }
