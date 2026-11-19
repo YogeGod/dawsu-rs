@@ -497,7 +497,7 @@ impl Hitsounds {
         let object = self.bodies[body].object;
         self.bodies[body].volume = volume;
         if let Some(head) = self.moments.iter_mut().find(|m| m.place == Place::SliderNode { object, node: 0 }) {
-            head.set_volume(volume);
+            head.move_volume(volume);
         }
     }
 }

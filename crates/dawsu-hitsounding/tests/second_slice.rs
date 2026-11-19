@@ -107,6 +107,22 @@ fn volumes(h: &Hitsounds) -> Vec<i32> {
 }
 
 #[test]
+fn changing_a_slider_body_s_volume_moves_every_sound_at_its_head_together() {
+    let file = map("100,100,1000,2,0,L|300:100,2,200,8|0|0,0:0|0:0|0:0,0:0:0:0:");
+    let mut h = dec(&file);
+    let head = MomentId(h.moments().iter().position(|m| matches!(m.place(), Place::SliderNode { node: 0, .. })).unwrap());
+    let lane = |h: &Hitsounds, sound: Hitsound| {
+        h.moment(head).hits().find(|l| matches!(l, SampleIdentity::Standard { sound: Sound::Hit(s), .. } if *s == sound)).unwrap().clone()
+    };
+    let (normal, clap) = (lane(&h, Hitsound::Normal), lane(&h, Hitsound::Clap));
+    h.set_hit_volume(head, &clap, 30);
+    assert_eq!((h.moment(head).volume(), h.moment(head).hit_volume(&normal), h.moment(head).hit_volume(&clap)), (60, 60, 30));
+    h.set_body_volume(0, 80);
+    let moment = h.moment(head);
+    assert_eq!((moment.volume(), moment.hit_volume(&normal), moment.hit_volume(&clap)), (80, 80, 50), "the clap stays 30 below");
+}
+
+#[test]
 fn changing_a_slider_body_s_volume_changes_its_head_too() {
     // A body reads its volume at start + 6 ms and the head at start + 5 ms, so one green line at
     // the slider's start sets both, with the old values back 7 ms later (Yoge, 2026-11-15).
