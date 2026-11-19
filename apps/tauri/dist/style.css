@@ -479,3 +479,32 @@ input.toggle-input:disabled+.transport-cycle{cursor:default;background:transpare
 @media (max-width:1399px){#editor-header .transport-bar{display:none}}
 @media (max-width:1279px){.transport-locators button span{display:none}}
 @media (max-width:1139px){#editor-header .transport-readout{display:none}#editor-header #position{padding:0 10px;font-size:18px}.top-transport{flex-shrink:1}}
+/* Start and empty screen (design f4): three primary actions, a dashed drop zone and recent maps by name. */
+#home{min-height:0;place-items:start center;padding:12vh 24px 32px;overflow:auto}
+#home .home-panel{display:grid;justify-items:center;gap:16px;width:min(760px,100%);padding:0;border:0;border-radius:0;background:transparent;text-align:center}
+.home-logo{width:40px;height:40px;border-radius:8px}
+#home .home-panel h1{margin:0;font-size:20px;font-weight:650}
+#home .home-panel>p{max-width:520px;margin:-8px 0 8px;color:#c4c4c4}
+#home-resume{min-height:32px;padding:4px 16px}
+.home-actions{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px;width:min(680px,100%)}
+.home-action{display:flex;align-items:center;gap:12px;min-height:76px;padding:12px 16px;border:0;border-radius:8px;background:#292929;color:var(--text);text-align:left;white-space:normal}
+.home-action:hover:not(:disabled){background:#3c3c3c}
+.home-action strong{display:block;font-weight:600}
+.home-action small{display:block;margin-top:4px;font-size:12px;color:#c4c4c4}
+.home-action svg,.home-drop svg{width:24px;height:24px;flex:none;fill:none;stroke:currentColor;stroke-width:1.4;stroke-linecap:round;stroke-linejoin:round}
+.home-action svg{color:var(--hi)}
+.home-drop{display:grid;justify-items:center;gap:8px;width:100%;padding:28px 16px;border:1.5px dashed #454545;border-radius:8px;color:#c4c4c4}
+#home #recovery{width:100%;text-align:left}
+.home-recent{width:100%;text-align:left}
+.home-recent h2{margin:8px 0 0;padding:0 12px 8px;border-bottom:1px solid #383838;font-size:13px;font-weight:600}
+#home #recent{display:grid;gap:0;margin-top:4px}
+#home .home-recent-map{display:flex;align-items:center;gap:10px;min-width:0;min-height:40px;padding:0 12px;border:0;border-radius:6px;background:transparent;text-align:left}
+#home .home-recent-map:hover:not(:disabled){background:#2c2c2c}
+.home-recent-map::before{content:"";width:14px;height:14px;flex:none;background:#62d6cf;clip-path:polygon(0 43%,22% 43%,32% 13%,46% 76%,59% 22%,70% 50%,100% 50%,100% 62%,68% 62%,60% 46%,45% 95%,32% 41%,27% 58%,0 58%)}
+.home-recent-map:nth-child(5n+1)::before{background:#e28dd1}
+.home-recent-map:nth-child(5n+3)::before{background:#9c9cfc}
+.home-recent-map:nth-child(5n+4)::before{background:#f1ad67}
+.home-recent-map:nth-child(5n+5)::before{background:#a7d67d}
+.home-recent-map strong{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}
+.home-recent-map span{flex:none;color:#a3a3a3}
+@media (max-width:760px){.home-actions{grid-template-columns:minmax(0,1fr)}}

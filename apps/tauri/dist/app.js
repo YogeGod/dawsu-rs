@@ -285,6 +285,7 @@ function show(next) {
   $("song-mute").ariaPressed = String(!!view.songMuted);
   $("song-solo").ariaPressed = String(!!view.songSolo);
   $("open").disabled = $("home-open").disabled = $("folders").disabled = !!view.busy;
+  $("home-import").disabled = $("home-folders").disabled = !!view.busy;
 
   renderActiveLane();
   renderPanelLayout();
@@ -325,12 +326,27 @@ function setValue(id, value) {
   if (document.activeElement !== $(id)) $(id).value = value;
 }
 
+// "Artist - Title (Creator) [Difficulty].osu" gives the map name and "[Difficulty]"; other names show whole.
+function recentMapName(path) {
+  const file = nameOf(path).replace(/\.osu$/i, "");
+  const parts = /^(.+?)\s*\([^()]*\)\s*(\[[^\]]*\])$/.exec(file);
+  return parts ? [parts[1], parts[2]] : [file, ""];
+}
+
 function renderRecent(paths) {
   const panel = $("recent");
+  $("home-recent").hidden = paths.length === 0;
   if (panel.dataset.paths === JSON.stringify(paths)) return;
   panel.dataset.paths = JSON.stringify(paths);
   panel.replaceChildren(...paths.map((path) => {
-    const button = makeButton(nameOf(path), () => act({ kind: "open", path }));
+    const button = makeButton("", () => act({ kind: "open", path }));
+    const [name, difficulty] = recentMapName(path);
+    const title = document.createElement("strong");
+    title.textContent = name;
+    const detail = document.createElement("span");
+    detail.textContent = difficulty;
+    button.append(title, detail);
+    button.className = "home-recent-map";
     button.title = path;
     return button;
   }));
@@ -2493,6 +2509,8 @@ $("open").addEventListener("click", open);
 $("home-open").addEventListener("click", open);
 $("go-home").addEventListener("click", () => { if (!drag && !view.busy) act({ kind: "home" }); });
 $("home-resume").addEventListener("click", () => { if (!view.busy) act({ kind: "resume" }); });
+$("home-import").addEventListener("click", () => run(async () => show(await invoke("pick_map", { archiveOnly: true }))));
+$("home-folders").addEventListener("click", () => $("folders").click());
 $("folders").addEventListener("click", () => {
   if (view.busy) return;
   const openFolder = (folder) => {
