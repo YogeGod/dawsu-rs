@@ -108,7 +108,7 @@ button[data-layout-height]{height:var(--layout-height)!important;min-height:0;ov
 @media (max-width:1320px){.ribbon-caption{display:none}}
 @media (max-width:1230px){.ribbon-secondary-label{display:none}#open .button-icon{margin:0}}
 @media (max-width:1140px){.ribbon-tool-label{display:none}#tools .button-icon{margin:0}}
-.dock{display:grid;min-height:0;grid-template-columns:minmax(0,1fr) 242px}.arrange{display:grid;min-height:0;--ruler-row:min(calc(21px + max(26px,var(--wave-height,56px))),max(47px,calc(100% - var(--timeline-reserve,144px))));grid-template-rows:minmax(20px,max-content) var(--ruler-row) minmax(0,1fr);--lane-default-width:clamp(170px,15vw,216px);--lanes:clamp(99px,var(--layout-lane-width,var(--lane-default-width)),max(99px,calc(100cqw - 140px)));background:var(--field)}.ruler,.overview,.scroll{display:grid;grid-template-columns:var(--lanes) minmax(0,1fr);min-width:0}.scroll{overflow:auto;align-items:start;scrollbar-gutter:stable}.ruler,.overview{padding-right:12px}.ruler{background:var(--ruler);border-bottom:1px solid var(--line)}.overview{background:var(--lane);border-top:1px solid var(--line)}.lane-title{background:var(--lane);color:var(--muted);display:flex;align-items:center;padding:0 12px;border-right:1px solid var(--line)}#lanes{border-right:1px solid var(--line)}.lane{display:flex;gap:4px;align-items:center;padding:0 5px;border-bottom:1px solid var(--line);background:var(--lane)}.lane:nth-child(even){background:var(--lane-alt)}.lane.active{box-shadow:inset 3px 0 var(--hi);background:var(--control)}.lane button{padding:0 4px;min-height:19px}.lane .name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;text-align:left;background:transparent;border:0}.lane .name:hover{background:var(--control)}
+.dock{display:grid;min-height:0;grid-template-columns:minmax(0,1fr) 242px}.arrange{display:grid;min-height:0;--ruler-row:min(calc(21px + max(26px,var(--wave-height,56px))),max(47px,calc(100% - var(--timeline-reserve,144px))));grid-template-rows:minmax(20px,max-content) var(--ruler-row) minmax(0,1fr);--lane-default-width:clamp(170px,18vw,250px);--lanes:clamp(99px,var(--layout-lane-width,var(--lane-default-width)),max(99px,calc(100cqw - 140px)));background:var(--field)}.ruler,.overview,.scroll{display:grid;grid-template-columns:var(--lanes) minmax(0,1fr);min-width:0}.scroll{overflow:auto;align-items:start;scrollbar-gutter:stable}.ruler,.overview{padding-right:12px}.ruler{background:var(--ruler);border-bottom:1px solid var(--line)}.overview{background:var(--lane);border-top:1px solid var(--line)}.lane-title{background:var(--lane);color:var(--muted);display:flex;align-items:center;padding:0 12px;border-right:1px solid var(--line)}#lanes{border-right:1px solid var(--line)}.lane{display:flex;gap:4px;align-items:center;padding:0 5px;border-bottom:1px solid var(--line);background:var(--lane)}.lane:nth-child(even){background:var(--lane-alt)}.lane.active{box-shadow:inset 3px 0 var(--hi);background:var(--control)}.lane button{padding:0 4px;min-height:19px}.lane .name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;text-align:left;background:transparent;border:0}.lane .name:hover{background:var(--control)}
 canvas{display:block;width:100%;height:100%;min-width:0;touch-action:none}#grid,#controller,#ruler,#overview{cursor:default}
 aside{overflow:auto;border-left:1px solid var(--line);background:var(--panel)}aside section{padding:12px;border-bottom:1px solid var(--line)}h2{font-size:13px;margin:0 0 10px}.dim{font-weight:400;margin-left:4px}aside label{display:flex;justify-content:space-between;align-items:center;gap:6px;margin:8px 0}#difficulty{width:100%}#history{display:grid;gap:4px;max-height:230px;overflow:auto}#history button{text-align:left;overflow:hidden;text-overflow:ellipsis}
 .transport{background:var(--lane);border-bottom:1px solid var(--line);flex-wrap:wrap}.transport label{margin-left:4px}.transport input[type=range]{width:90px}#position{font:13px "Roboto Mono",Consolas,monospace;color:var(--text);margin:0 6px;min-width:76px}#statusbar{background:var(--control);border-top:1px solid var(--line);color:var(--title-text);min-height:26px;padding:3px 12px;display:flex;gap:8px;align-items:center}#status{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}#statusbar button{min-height:22px}
@@ -421,31 +421,28 @@ button.editor-tool-button.active{color:var(--hi);background:#454545}
 #bookmarks option:checked { background:var(--control) linear-gradient(var(--control),var(--control)); }
 #bookmarks-empty { margin:2px 0 6px; font-size:12px; }
 
-/* Lane headers (design LaneHeader.svelte): icon tile, M, S, sound name, set tag. Name, M and S stay first in the
-   DOM for the lane menu and keyboard order; flex order lays them out as the design draws them. */
+/* Lane headers (design LaneHeader.svelte), drawn in page order: icon tile, M, S, layer chevron, sound name, set tag,
+   +. The sound colour and its tint come from code as hex values, which every platform's web view draws. */
 #lanes > .lane { gap:3px; padding:0 5px 0 7px; background-color:var(--panel); border-bottom-color:var(--base); }
 #lanes > .lane:hover { background-color:var(--button); }
 #lanes > .lane.active { background-color:#454545; }
 #lanes .name:hover { background:transparent; }
-.lane .lane-icon { order:1; flex:none; display:grid; place-items:center; height:22px; max-height:calc(100% - 4px); aspect-ratio:1; border-radius:4px; background:color-mix(in srgb,var(--lane-sound) 14%,var(--panel)); color:var(--lane-sound); }
-.lane .lane-icon svg { width:14px; height:14px; max-height:100%; fill:none; stroke:currentColor; stroke-width:1.6; stroke-linecap:round; stroke-linejoin:round; }
-.lane .lane-mute { order:2; }
-.lane .lane-solo { order:3; }
-.lane .lane-disclosure { order:4; flex:none; width:14px; min-height:18px; padding:0; border:0; background:transparent; color:var(--muted); }
-.lane .name { order:5; flex:0 1 auto; padding:0 2px; font-size:13px; font-weight:600; color:var(--text); }
-.lane .lane-add-layer { order:6; margin-left:auto; }
+.lane .lane-icon { flex:none; display:flex; align-items:center; justify-content:center; width:var(--lane-tile,22px); height:var(--lane-tile,22px); border-radius:4px; background:var(--lane-sound-tint); color:var(--lane-sound); }
+.lane .lane-icon svg { width:14px; height:14px; max-width:100%; max-height:100%; fill:none; stroke:currentColor; stroke-width:1.6; stroke-linecap:round; stroke-linejoin:round; }
+.lane .lane-disclosure { flex:none; width:14px; min-height:18px; padding:0; border:0; background:transparent; color:var(--muted); }
+.lane .name { flex:0 1 auto; padding:0 2px; font-size:13px; font-weight:600; color:var(--text); }
 .lane :is(.lane-mute,.lane-solo,.lane-add-layer) { flex:none; width:20px; height:18px; min-height:18px; padding:0; border:0; border-radius:4px; font-weight:600; line-height:18px; text-align:center; }
 .lane :is(.lane-mute,.lane-solo) { background:var(--button); color:var(--title-text); }
-.lane .lane-add-layer { width:16px; background:transparent; color:var(--muted); }
-.lane .lane-tag { float:right; margin:1px 0 0 5px; padding:0 4px; border:1px solid var(--line); border-radius:4px; background:color-mix(in srgb,var(--lane-sound) 14%,var(--panel)); color:var(--lane-sound); font-size:11px; font-weight:400; line-height:15px; }
+.lane .lane-add-layer { width:16px; margin-left:auto; background:transparent; color:var(--muted); }
+.lane .lane-tag { flex:none; margin-left:2px; padding:0 4px; border:1px solid var(--line); border-radius:4px; background:var(--lane-sound-tint); color:var(--lane-sound); font-size:11px; font-weight:400; line-height:15px; white-space:nowrap; }
 #lanes > .lane.sample-folder { gap:6px; padding:0 6px 0 8px; background-color:var(--group); }
-.lane.sample-folder .name { order:0; flex:1; font-size:12px; font-weight:500; color:var(--title-text); }
+.lane.sample-folder .name { flex:1; font-size:12px; font-weight:500; color:var(--title-text); }
 .lane.sample-folder .name::before { content:""; display:inline-block; width:5px; height:5px; margin:0 9px 2px 2px; border:solid currentColor; border-width:0 1.5px 1.5px 0; transform:rotate(-45deg); }
 .lane.sample-folder .name[aria-expanded="true"]::before { margin-bottom:4px; transform:rotate(45deg); }
-.lane .lane-count { order:1; flex:none; font-size:11px; color:var(--muted); white-space:nowrap; }
-/* Group M and S have no place in the design's group row: they show on hover, on focus, or while on. */
-.lane.sample-folder > :is(.lane-mute,.lane-solo) { order:2; display:none; }
-.lane.sample-folder:is(:hover,:focus-within) > :is(.lane-mute,.lane-solo), .lane.sample-folder > [aria-pressed="true"] { display:block; }
+.lane .lane-count { flex:none; font-size:11px; color:var(--muted); white-space:nowrap; }
+/* Group M and S have no place in the design's group row: they stay in the row and in Tab order, dimmed while off. */
+.lane.sample-folder > :is(.lane-mute,.lane-solo) { opacity:.45; }
+.lane.sample-folder:is(:hover,:focus-within) > :is(.lane-mute,.lane-solo), .lane.sample-folder > :is(.lane-mute,.lane-solo)[aria-pressed="true"] { opacity:1; }
 .arrange[data-lane-names="false"] #lanes > .lane { gap:2px; padding-inline:3px; }
 .arrange[data-lane-names="false"] .lane-count { display:none; }
 .arrange[data-lane-names="false"] .lane :is(.lane-mute,.lane-solo) { width:18px; }

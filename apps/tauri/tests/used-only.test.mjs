@@ -49,6 +49,11 @@ async function frontend() {
   return { calls, evaluate, get };
 }
 
+// Lane rows are laid out in page order (icon, M, S, layer chevron, name, set tag, +), so tests find
+// their parts by class rather than by position.
+const lanePart = (row, name) => row.children.find(child => child.className?.split(" ").includes(name));
+const laneName = row => lanePart(row, "name");
+
 test("Add restores a chosen lane and Delete keeps its confirmed difficulty, identity and revision", async () => {
   const { calls, evaluate, get } = await frontend();
   evaluate(`
@@ -140,16 +145,16 @@ test("Drums view keeps aliases at distinct positions and routes them to the same
     renderLanes();
   `);
   const rows = get("lanes").children;
-  assert.deepEqual(rows.map(row => row.children[0].textContent), ["Snare", "Ghost snare", "Rim", "Finish"]);
+  assert.deepEqual(rows.map(row => laneName(row).textContent), ["Snare", "Ghost snare", "Rim", "Finish"]);
   assert.equal(evaluate("JSON.stringify(laneVisualPositions.get(0))"), "[0,2]");
-  rows[2].children[0].events.get("click")();
+  laneName(rows[2]).events.get("click")();
   await evaluate("pending");
   assert.deepEqual(calls.pop().action, { kind: "lane", row: 0, operation: "audition" });
   const action = evaluate(`drag = { surface: grid, start: 0, zoom: 1, rows: laneRows };
     pointer({clientX: 1000, clientY: 75}, "down")`);
   assert.equal(action.row, 0);
   evaluate("drag = null; view.drumView = { enabled: false, name: 'Kit' }; renderLanes();");
-  assert.deepEqual(get("lanes").children.map(row => row.children[0].textContent), ["Clap", "Finish"]);
+  assert.deepEqual(get("lanes").children.map(row => laneName(row).textContent), ["Clap", "Finish"]);
   get("drums-view").events.get("click")();
   await evaluate("pending");
   assert.deepEqual(calls.pop(), { map: "fixture.osu", on: true });
@@ -174,7 +179,7 @@ test("lane selection scopes volume independently of hit selection and skips invi
   scope.events.get("change")();
   await evaluate("pending");
   assert.deepEqual(calls.pop().action, {kind: "volume_scope", path: "Scope.osu", lanes: []});
-  const click = (row, event = {}) => get("lanes").children[row].children[0].events.get("click")(event);
+  const click = (row, event = {}) => laneName(get("lanes").children[row]).events.get("click")(event);
   click(0);
   await evaluate("pending");
   calls.length = 0;
@@ -205,7 +210,7 @@ test("lane mix buttons send the selected sample identities or select a new singl
     ]};
     renderLanes();
   `);
-  const click = (row, button, event) => get("lanes").children[row].children[button].events.get("click")(event);
+  const click = (row, button, event) => lanePart(get("lanes").children[row], ["name", "lane-mute", "lane-solo"][button]).events.get("click")(event);
   click(0, 0, {});
   click(1, 0, { ctrlKey: true });
   await evaluate("pending");
@@ -267,13 +272,13 @@ test("filtering by lane name or source preserves the original lane row", async (
   const field = get("lane-filter");
   field.value = "  SNARE ";
   field.events.get("input")();
-  assert.deepEqual(get("lanes").children.map(row => row.children[0].textContent), ["Clap"]);
-  get("lanes").children[0].children[1].events.get("click")();
+  assert.deepEqual(get("lanes").children.map(row => laneName(row).textContent), ["Clap"]);
+  lanePart(get("lanes").children[0], "lane-mute").events.get("click")();
   await evaluate("pending");
   assert.equal(calls.at(-1).action.target.lane, "snare-file");
   field.value = "kick";
   field.events.get("input")();
-  assert.deepEqual(get("lanes").children.map(row => row.children[0].textContent), ["Kick"]);
+  assert.deepEqual(get("lanes").children.map(row => laneName(row).textContent), ["Kick"]);
 });
 
 test("Used only compacts rows without renumbering the lanes sent to Rust", async () => {
@@ -291,8 +296,8 @@ test("Used only compacts rows without renumbering the lanes sent to Rust", async
   assert.equal(typeof toggle, "function");
   get("used-only").checked = true;
   toggle();
-  assert.deepEqual(get("lanes").children.map(row => row.children[0].textContent), ["A", "C"]);
-  get("lanes").children[1].children[1].events.get("click")();
+  assert.deepEqual(get("lanes").children.map(row => laneName(row).textContent), ["A", "C"]);
+  lanePart(get("lanes").children[1], "lane-mute").events.get("click")();
   await evaluate("pending");
   assert.deepEqual(calls.pop(), { scene: true, action: { kind: "lane_selection_mix", target: { map: "fixture.osu", lane: "sample-c" }, operation: "mute", lanes: ["sample-c"] } });
 
@@ -304,13 +309,13 @@ test("Used only compacts rows without renumbering the lanes sent to Rust", async
   assert.equal(pointer.row, 2);
   assert.equal(evaluate("lanePositions.get(2)"), 1);
   evaluate("drag = null; scene.moments[0][3] = [[2, false]]; renderLanes();");
-  assert.deepEqual(get("lanes").children.map(row => row.children[0].textContent), ["A", "C"]);
+  assert.deepEqual(get("lanes").children.map(row => laneName(row).textContent), ["A", "C"]);
   get("used-only").checked = false;
   toggle();
-  assert.deepEqual(get("lanes").children.map(row => row.children[0].textContent), ["A", "B", "C"]);
+  assert.deepEqual(get("lanes").children.map(row => laneName(row).textContent), ["A", "B", "C"]);
   get("used-only").checked = true;
   toggle();
-  assert.deepEqual(get("lanes").children.map(row => row.children[0].textContent), ["C"]);
+  assert.deepEqual(get("lanes").children.map(row => laneName(row).textContent), ["C"]);
 });
 
 
@@ -337,11 +342,11 @@ test("collapsing sample layers keeps their model rows separate and lets them exp
     value: { folder_order: ["normal", "soft", "drum"], collapsed_folders: [], collapsed_families: ["clap"], lane_colours: {} }
   }]);
 
-  const disclosure = get("lanes").children[0].children[0];
+  const disclosure = lanePart(get("lanes").children[0], "lane-disclosure");
   disclosure.events.get("click")();
   assert.equal(evaluate("JSON.stringify(laneRows)"), "[0,1,2,3]");
   assert.equal(evaluate("previewParents.has(2)"), false);
-  get("lanes").children[2].children[1].events.get("click")();
+  lanePart(get("lanes").children[2], "lane-mute").events.get("click")();
   await evaluate("pending");
   assert.deepEqual(calls.pop(), { scene: true, action: { kind: "lane_selection_mix", target: { map: "fixture.osu", lane: "sample-c" }, operation: "mute", lanes: ["sample-c"] } });
   assert.equal(calls.pop().action.value.collapsed_families.length, 0);
@@ -367,7 +372,7 @@ test("sample-set folders reorder headers and send group controls without changin
   assert.equal(evaluate("JSON.stringify(laneRows)"), '["normal",0,"soft",1,"drum",2,3]');
 
   const normal = get("lanes").children[0];
-  normal.children[1].events.get("click")();
+  lanePart(normal, "lane-mute").events.get("click")();
   await evaluate("pending");
   assert.deepEqual(calls.pop(), { scene: true, action: { kind: "group_mix", set: "normal", operation: "mute" } });
 

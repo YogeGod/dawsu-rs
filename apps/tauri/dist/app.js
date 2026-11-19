@@ -432,7 +432,7 @@ function sampleFolderHeader(group) {
   const count = document.createElement("span");
   count.className = "lane-count";
   count.textContent = rows.length + (rows.length === 1 ? " lane" : " lanes") + (collapsed ? " · " + used + " used" : "");
-  header.append(disclosure, mix("M", "mute", "muted"), mix("S", "solo", "solo"), count);
+  header.append(disclosure, count, mix("M", "mute", "muted"), mix("S", "solo", "solo"));
   header.addEventListener("dragstart", event => {
     event.dataTransfer.setData(sampleFolderDragType, group);
     event.dataTransfer.effectAllowed = "move";
@@ -456,8 +456,8 @@ function laneDisplayName(lane) {
 
 const laneSounds = {
   hitnormal: ["Normal", "normal"], hitwhistle: ["Whistle", "whistle"], hitfinish: ["Finish", "finish"],
-  hitclap: ["Clap", "clap"], sliderslide: ["Slider slide", "slide"], sliderwhistle: ["Slider whistle", "whistle"],
-  slidertick: ["Slider tick", "tick"],
+  hitclap: ["Clap", "clap"], sliderslide: ["Slide", "slide"], sliderwhistle: ["Slide whistle", "whistle"],
+  slidertick: ["Tick", "tick"],
 };
 // 16px line icons for the lane header's tile, drawn in the lane's sound colour.
 const laneIcons = {
@@ -470,11 +470,11 @@ const laneIcons = {
   file: '<path d="M4 2.5h5l3 3v8H4z"/><path d="M6.5 11V9M8.5 11.5V8M10.5 11V9.5"/>',
 };
 
-// A set lane reads as its sound ("Clap", or "Clap 2" for a numbered layer) with the set as a tag.
-// A map file lane keeps its file name and takes the tag "File".
+// A set lane reads as its sound ("Clap", or "Clap 2" for a numbered layer) with the set as a tag;
+// the skin's default sample adds "skin" to the tag. A map file lane keeps its file name and the tag "File".
 function laneSound(lane) {
   if (!lane?.group) return { name: lane?.name ?? "", set: "File", icon: "file" };
-  const set = lane.group[0].toUpperCase() + lane.group.slice(1);
+  const set = lane.group[0].toUpperCase() + lane.group.slice(1) + (lane.index === 0 ? " · skin" : "");
   const [sound, icon] = laneSounds[lane.family?.slice(lane.family.indexOf("-") + 1)] ?? [];
   return sound ? { name: sound + (lane.index > 1 ? " " + lane.index : ""), set, icon }
     : { name: lane.name, set, icon: "file" };
@@ -483,8 +483,8 @@ function laneSound(lane) {
 // The lane's name in the Inspector and the lane filter: "Soft Clap", or the mapper's own name.
 function laneTitle(lane) {
   if (!lane || renamedLanes.has(lane.colourKey)) return laneDisplayName(lane);
-  const { name, set } = laneSound(lane);
-  return lane.group ? set + " " + name : name;
+  const { name } = laneSound(lane);
+  return lane.group ? lane.group[0].toUpperCase() + lane.group.slice(1) + " " + name : name;
 }
 
 function orderedLaneRows() {
@@ -662,29 +662,6 @@ function renderLanes() {
       };
       const name = makeButton(showNames ? visibleName : "▶", select);
       name.className = "name";
-      // Design lane header: the set rides as a tag after the name; the file name stays in the tooltip.
-      let icon = null;
-      if (showNames) {
-        strip.style.setProperty("--lane-sound", soundColour(lane));
-        icon = document.createElement("span");
-        icon.className = "lane-icon";
-        icon.dataset.sound = sound.icon;
-        icon.setAttribute("aria-hidden", "true");
-        // Inline SVG: the editor's content policy blocks data: images. The markup is fixed, never lane text.
-        icon.innerHTML = '<svg viewBox="0 0 16 16">' + laneIcons[sound.icon] + "</svg>";
-        if (!view.drumView?.enabled) {
-          const tag = document.createElement("span");
-          tag.className = "lane-tag";
-          tag.textContent = sound.set;
-          // First in the button so it can float right of the name; the name, not the tag, then ellipsizes.
-          name.prepend(tag);
-        }
-        // The name no longer fills the row, so the rest of the row still selects the lane.
-        strip.dataset.laneRow = row;
-        strip.addEventListener("click", event => {
-          if (!event.target.closest?.("button")) select(event);
-        });
-      }
       name.dataset.laneRow = row;
       name.setAttribute("aria-haspopup", "menu");
       name.setAttribute("aria-expanded", "false");
@@ -699,6 +676,27 @@ function renderLanes() {
       solo.className = "lane-solo";
       solo.setAttribute("aria-label", "Solo " + displayName);
       solo.setAttribute("aria-pressed", lane.solo);
+      // Design lane header, in page and Tab order: icon tile, M, S, layer chevron, name, set tag, +.
+      // The file name stays in the name's tooltip.
+      if (showNames) {
+        const colour = soundColour(lane);
+        strip.style.setProperty("--lane-sound", colour);
+        strip.style.setProperty("--lane-sound-tint", colour + "24");
+        strip.style.setProperty("--lane-tile", Math.min(22, scene.rowHeight - 4) + "px");
+        const icon = document.createElement("span");
+        icon.className = "lane-icon";
+        icon.dataset.sound = sound.icon;
+        icon.setAttribute("aria-hidden", "true");
+        // Inline SVG: the editor's content policy blocks data: images. The markup is fixed, never lane text.
+        icon.innerHTML = '<svg viewBox="0 0 16 16">' + laneIcons[sound.icon] + "</svg>";
+        strip.append(icon);
+      }
+      // The name takes only its own width, so the rest of the row still selects the lane.
+      strip.dataset.laneRow = row;
+      strip.addEventListener("click", event => {
+        if (!event.target.closest?.("button")) select(event);
+      });
+      strip.append(mute, solo);
       if (familyParents.has(row)) {
         const family = familyParents.get(row);
         const collapsed = collapsedFamilies.has(family);
@@ -714,7 +712,13 @@ function renderLanes() {
         disclosure.setAttribute("aria-label", (collapsed ? "Expand " : "Collapse ") + lane.name + " layers");
         strip.append(disclosure);
       }
-      strip.append(name, mute, solo);
+      strip.append(name);
+      if (showNames && !view.drumView?.enabled) {
+        const tag = document.createElement("span");
+        tag.className = "lane-tag";
+        tag.textContent = sound.set;
+        strip.append(tag);
+      }
       if (lane.canAddLayer) {
         const layer = makeButton("+", () => {
           if (!view.busy) laneAction("add_layer");
@@ -726,8 +730,6 @@ function renderLanes() {
         layer.setAttribute("aria-label", layer.title);
         strip.append(layer);
       }
-      // Appended last so older code and tests still find the name, M and S first; CSS puts it first.
-      if (icon) strip.append(icon);
       return strip;
     }));
   }
@@ -991,7 +993,7 @@ function renderSelection() {
   $("selected-lanes").textContent = lanes.length > 1 ? " · " + lanes.length + " lanes"
     : lanes.length ? " · " + laneTitle(scene.lanes?.[lanes[0]]) : "";
   $("selection-volume-value").textContent = !volumes.length ? ""
-    : volumes.length === 1 ? volumes[0] + "%" : volumes[0] + "–" + volumes.at(-1) + "%";
+    : volumes.length === 1 ? volumes[0] + "%" : volumes[0] + "–" + volumes[volumes.length - 1] + "%";
   $("selection-fields").hidden = !selection;
   $("selection-fields").disabled = !!view.busy;
   const body = selection?.sliderBody;
