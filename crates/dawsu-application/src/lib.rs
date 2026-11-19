@@ -382,12 +382,7 @@ fn prepare_save(
         cancel,
         progress,
     )?;
-    let refused: Vec<SaveProblem> = if rolled.refused.is_empty() {
-        // Until Save writes the rest, a left-out part still stops it.
-        rolled.left_out.iter().map(|entry| entry.problem.clone()).collect()
-    } else {
-        rolled.refused
-    };
+    let refused = rolled.refused;
     if !refused.is_empty() {
         diagnostics.extend(refused.iter().map(|problem| OutputProblem::new(problem, path, path)));
         return Err(format!(
@@ -397,7 +392,7 @@ fn prepare_save(
             problem_description(&refused[0].kind)
         ));
     }
-    let (out, owned, effective) = (rolled.out, rolled.owned, rolled.effective);
+    let (out, owned, effective, left_out) = (rolled.out, rolled.owned, rolled.effective, rolled.left_out);
     let recovery = gain_recovery::Captured::read(&effective, root, defaults)?;
     if cancel() {
         return Err("Save cancelled before writing".into());
@@ -415,9 +410,11 @@ fn prepare_save(
     let map_changed = bytes != expected;
     let plan = PreparedSave {
         path: path.to_path_buf(), backups, expected, out, mix_files, recovery_revision,
-        ownership, inputs, map_changed,
+        ownership, inputs, map_changed, left_out,
     };
     plan.check_current(project, cancel)?;
+    // Left-out parts are listed for the Save hitsounds summary, which every Save shows first.
+    diagnostics.extend(plan.left_out.iter().map(|entry| OutputProblem::new(&entry.problem, path, path)));
     Ok(plan)
 }
 
@@ -437,6 +434,8 @@ struct PreparedSave {
     ownership: Option<project::HsCircleOwnership>,
     inputs: Vec<(PathBuf, String)>,
     map_changed: bool,
+    /// The parts Save leaves out of the `.osu`.
+    left_out: Vec<roll_back::LeftOut>,
 }
 
 impl PreparedSave {
@@ -1371,8 +1370,13 @@ impl Application {
                         self.output_problems = diagnostics;
                         match result {
                             Ok(plan) => {
+                                if !plan.plan.left_out.is_empty() {
+                                    self.save_problem_review = true;
+                                    self.status = "Review the moments Save leaves out".into();
+                                } else {
+                                    self.status = "Review Save before writing".into();
+                                }
                                 self.pending_save_review = Some(plan);
-                                self.status = "Review Save before writing".into();
                             }
                             Err(_) if !self.output_problems.is_empty() => {
                                 self.status = "Review problems before saving".into();
@@ -1524,8 +1528,10 @@ impl Application {
         self.save_problem_review && !self.output_problems().is_empty()
     }
 
+    /// Cancel or Show in the Save hitsounds summary: the reviewed plan is dropped with it.
     pub fn dismiss_save_problem_review(&mut self) {
         self.save_problem_review = false;
+        self.pending_save_review = None;
     }
 
     pub fn review_save(&mut self) {
@@ -1644,6 +1650,10 @@ impl Application {
                 JobResult::SaveCheck { version, path, hs, result, diagnostics }
             } else {
                 match result {
+                    // Every Save that leaves moments out shows the Save hitsounds summary first.
+                    Ok(plan) if !plan.plan.left_out.is_empty() => {
+                        JobResult::SaveCheck { version, path, hs, result: Ok(plan), diagnostics }
+                    }
                     Ok(plan) => plan.finish(&cancelled),
                     Err(error) => JobResult::Save {
                         version, path, hs_mode: hs, project, settings: None, result: Err(error), diagnostics,
@@ -2670,6 +2680,9 @@ fn problem_description(problem: &dawsu_hitsounding::ProblemKind) -> &'static str
     use dawsu_hitsounding::ProblemKind::*;
     match problem {
         NoObject => "This hit has no object. Enable HS mode or Generate a hitsound difficulty.",
+        NeedsSampleMix(layers) if layers.is_empty() => {
+            "This object has no hits left, and osu! always plays a sound here. Its old sound stays in the difficulty."
+        }
         NeedsSampleMix(_) => {
             "This hit needs a sample mix that the current Save mode cannot write."
         }
@@ -2847,9 +2860,10 @@ mod project_workflow {
         let scratch = Scratch::new("mix-beside-left-out");
         let (document, hits, project) = mix_and_unwritable(&scratch, "b.wav");
         let mut diagnostics = Vec::new();
-        let result = prepare(&scratch, &document, &hits, Some(&project), &mut diagnostics);
-        assert!(result.is_err(), "Save still waits for the left-out parts");
+        let plan = prepare(&scratch, &document, &hits, Some(&project), &mut diagnostics).unwrap();
         assert_eq!(diagnostics.iter().map(|p| p.time).collect::<Vec<_>>(), [2500.0], "the rendered mix is not a problem");
+        assert_eq!(plan.left_out.len(), 1);
+        assert_eq!(plan.mix_files.staged.len(), 1, "the circle's mix is rendered");
     }
 
     #[test]
@@ -2861,6 +2875,104 @@ mod project_workflow {
         assert!(error.contains("Could not mix"), "{error}");
         assert_eq!(diagnostics.iter().map(|p| p.time).collect::<Vec<_>>(), [1000.0]);
         assert!(diagnostics[0].message.contains("Could not mix"));
+    }
+
+    fn wait(app: &mut Application) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while app.busy {
+            app.poll();
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    /// Saves like Ctrl+S, confirming the Save hitsounds summary when Save leaves moments out.
+    fn save_through_summary(app: &mut Application, backups: PathBuf) {
+        app.save_with_backups(backups);
+        wait(app);
+        if app.save_problem_review() {
+            app.answer_save_review(true);
+            wait(app);
+        }
+        assert!(app.error.is_none(), "{:?}", app.error);
+    }
+
+    fn tail_id(hits: &Hitsounds) -> dawsu_hitsounding::MomentId {
+        dawsu_hitsounding::MomentId(hits.moments().iter().position(|m| matches!(m.place(), dawsu_hitsounding::Place::SliderNode { node: 1, .. })).unwrap())
+    }
+
+    /// HS mode with a soft and a drum clap on the slider's tail, which no object line can hold, and
+    /// a finish on the circle, which Save can write.
+    fn open_left_out_fixture(scratch: &Scratch, project: bool) -> (Application, PathBuf) {
+        let folder = scratch.path("mapset");
+        std::fs::create_dir_all(&folder).unwrap();
+        let map = folder.join("a.osu");
+        std::fs::write(&map, SLIDER_MAP).unwrap();
+        let mut app = Application::headless();
+        if project {
+            app.project_root = Some(scratch.path("projects"));
+        }
+        open(&mut app, map.clone());
+        app.set_hs_mode(true);
+        app.document.as_mut().unwrap().composer.apply("Draw claps", |hits| {
+            let tail = tail_id(hits);
+            hits.add_hit(tail, skin(SampleSet::Soft, Hitsound::Clap));
+            hits.add_hit(tail, skin(SampleSet::Drum, Hitsound::Clap));
+            hits.add_hit(dawsu_hitsounding::MomentId(0), skin(SampleSet::Normal, Hitsound::Finish));
+        });
+        (app, map)
+    }
+
+    fn line(bytes: &[u8], start: &str) -> String {
+        String::from_utf8_lossy(bytes).lines().find(|line| line.starts_with(start)).unwrap().to_string()
+    }
+
+    #[test]
+    fn ctrl_s_with_left_out_moments_shows_the_summary_and_its_save_writes_the_rest() {
+        let scratch = Scratch::new("save-leaves-out");
+        let (mut app, map) = open_left_out_fixture(&scratch, true);
+        app.save_with_backups(scratch.path("backups"));
+        wait(&mut app);
+        assert!(app.error.is_none(), "{:?}", app.error);
+        assert!(app.save_problem_review(), "Ctrl+S shows the Save hitsounds summary first");
+        assert!(app.save_review_files().is_some(), "the summary's Save writes the reviewed plan");
+        assert_eq!(app.output_problems().iter().map(|p| p.time).collect::<Vec<_>>(), [2500.0]);
+        assert_eq!(std::fs::read(&map).unwrap(), SLIDER_MAP, "nothing is written before the summary's Save");
+        app.answer_save_review(true);
+        wait(&mut app);
+        assert!(app.error.is_none(), "{:?}", app.error);
+        let saved = std::fs::read(&map).unwrap();
+        assert_eq!(line(&saved, "100,100,2000,"), line(SLIDER_MAP, "100,100,2000,"), "the slider keeps its line");
+        assert_ne!(line(&saved, "256,192,1000,"), line(SLIDER_MAP, "256,192,1000,"), "the circle's finish is written");
+        assert!(!app.is_dirty());
+    }
+
+    #[test]
+    fn cancel_or_show_in_the_summary_drops_the_pending_save() {
+        let scratch = Scratch::new("summary-cancel");
+        let (mut app, map) = open_left_out_fixture(&scratch, true);
+        app.review_save();
+        wait(&mut app);
+        assert!(app.save_problem_review());
+        assert!(app.save_review_files().is_some());
+        app.dismiss_save_problem_review();
+        assert!(!app.save_problem_review());
+        assert!(app.save_review_files().is_none(), "Review Save must not pop up straight after");
+        app.answer_save_review(true);
+        wait(&mut app);
+        assert_eq!(std::fs::read(&map).unwrap(), SLIDER_MAP);
+        assert!(app.is_dirty());
+    }
+
+    #[test]
+    fn without_a_project_save_still_refuses_to_leave_moments_out() {
+        let scratch = Scratch::new("no-project-refuses");
+        let (mut app, map) = open_left_out_fixture(&scratch, false);
+        app.save_with_backups(scratch.path("backups"));
+        wait(&mut app);
+        assert!(app.error.as_deref().is_some_and(|e| e.contains("cannot be written")), "{:?}", app.error);
+        assert_eq!(std::fs::read(&map).unwrap(), SLIDER_MAP);
+        assert!(app.is_dirty());
     }
 
     #[test]
@@ -3739,7 +3851,17 @@ mod project_workflow {
             assert!(Instant::now() < deadline);
             std::thread::sleep(Duration::from_millis(5));
         }
-        assert!(stale.error.is_some(), "the compiler cannot encode an empty gameplay circle");
+        // The circle is not provably HS mode's, and the compiler cannot encode an empty gameplay
+        // circle: Save leaves it out with its old hit, lists it, and writes the rest.
+        assert!(stale.error.is_none(), "{:?}", stale.error);
+        assert!(stale.save_problem_review());
+        let problems = stale.output_problems();
+        assert_eq!(problems.len(), 1);
+        assert!(!problems[0].message.contains("sample mix"), "{}", problems[0].message);
+        stale.answer_save_review(true);
+        wait(&mut stale);
+        assert!(stale.error.is_none(), "{:?}", stale.error);
+        assert!(!stale.is_dirty());
         assert_eq!(std::fs::read(&map).unwrap(), external);
         assert_eq!(stale.document().unwrap().file.hit_objects().len(), 2);
         assert_eq!(std::fs::read(folder.join("voice.wav")).unwrap(), wav);
