@@ -1681,9 +1681,15 @@ function waveformTarget(ms, y, height) {
     }
   }
   if (target) return target;
-  const span = scene.gameplay.spans.findLast(([kind, start, end]) =>
-    start <= ms && ms <= end && dy <= (kind === "slider" ? diameterAt(start) * .66 / 2 : 2.5));
-  return span ? { object: span[3], time: span[1], node: false } : null;
+  // The last matching span wins; a reverse loop, as older WebKit WebViews lack findLast().
+  const spans = scene.gameplay.spans;
+  for (let i = spans.length - 1; i >= 0; i--) {
+    const [kind, start, end, object] = spans[i];
+    if (start <= ms && ms <= end && dy <= (kind === "slider" ? diameterAt(start) * .66 / 2 : 2.5)) {
+      return { object, time: start, node: false };
+    }
+  }
+  return null;
 }
 
 function bookmarkNearFlag(ms, y) {

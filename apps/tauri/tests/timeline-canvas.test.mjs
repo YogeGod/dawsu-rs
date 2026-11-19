@@ -223,3 +223,14 @@ test("circle sizes and clicks stay right with thousands of timing sections", asy
     assert.equal(evaluate(`waveformTarget(${outside}, 50.5, 80)`), null, `click outside at ${time} ms`);
   }
 });
+
+test("slider-track clicks work where arrays have no findLast()", async () => {
+  const { evaluate } = await canvases();
+  // Older WebKit WebViews on macOS and Linux lack Array.prototype.findLast.
+  evaluate("scene.zoom = .1; delete Array.prototype.findLast");
+  assert.equal(evaluate("JSON.stringify(waveformTarget(700, 56.5, 80))"),
+    JSON.stringify({ object: 1, time: 400, node: false }));
+  // Overlapping spans: the later one wins, as before.
+  evaluate("scene.gameplay.spans.push(['slider', 650, 750, 5])");
+  assert.equal(evaluate("waveformTarget(700, 56.5, 80).object"), 5);
+});
