@@ -551,6 +551,11 @@ fn ramp_after_deleting_the_hitnormal_moves_from_the_hit_left() {
     use dawsu_editor_composer::HitKey;
 
     let mut c = clap_50_at_a_moment_of_80();
+    let before = c.hitsounds().moments()[0].clone();
+    c.begin("Ramp");
+    c.set_values(&[(HitKey { moment: 0, lane: clap() }, 50)]);
+    c.commit();
+    assert_eq!(c.hitsounds().moments()[0], before, "a Ramp to where the clap plays leaves the moment as it was");
     c.begin("Ramp");
     c.set_values(&[(HitKey { moment: 0, lane: clap() }, 90)]);
     c.commit();
