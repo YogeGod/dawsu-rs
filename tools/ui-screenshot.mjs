@@ -5,6 +5,8 @@
 //   [--eval "<js>"]       run in the page before the shot, e.g. act({ kind: "view", start: 23300,
 //                         zoom: scene.zoom, row_height: scene.rowHeight })
 //   [--wait <ms>]         extra settle time before the shot (default 2500)
+//   [--preset <name>]     key preset chosen at the first-launch question (default DAW)
+//   [--timeout <ms>]      how long to wait for the map's lanes (default 60000)
 //
 // The map's whole folder is copied into the profile first and the copy is opened, so the
 // original mapset is never touched. Each run picks a free debugging port, so several runs
@@ -60,8 +62,14 @@ try {
   }
   if (!browser) throw new Error("the editor's WebView2 never opened its debugging port");
   const page = browser.contexts()[0].pages()[0];
-  const loaded = await page.waitForFunction(() => document.querySelectorAll("#lanes .lane").length > 0,
-    null, { timeout: 30000 }).then(() => true, () => false);
+  const lanesShown = timeout => page.waitForFunction(() => document.querySelectorAll("#lanes .lane").length > 0,
+    null, { timeout }).then(() => true, () => false);
+  // A fresh profile first asks for a key preset and holds the map until one is chosen.
+  let loaded = await lanesShown(8000);
+  if (!loaded) {
+    await page.evaluate(name => act({ kind: "key_preset", name }), args.preset ?? "DAW").catch(() => {});
+    loaded = await lanesShown(Number(args.timeout ?? 60000));
+  }
   if (!loaded) console.log("no lanes appeared; page text:", (await page.evaluate(() => document.body.innerText)).slice(0, 400));
   await sleep(Number(args.wait ?? 2500));
   if (args.eval) { await page.evaluate(args.eval); await sleep(1000); }
