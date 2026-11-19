@@ -379,3 +379,7 @@ aside section > :last-child { margin-bottom:0; }
 .tint-preview i:nth-of-type(3) { border:2px solid white; }
 
 button.editor-tool-button.active{color:var(--hi);background:#384454}
+/* Design handoff lanes: a 3px bar in the lane's sound colour; the active lane is lit grey. */
+.lane.lane-tinted{box-shadow:inset 3px 0 var(--lane-colour)}
+.lane.active{background-color:#454545}
+.lane .name{font-weight:600}

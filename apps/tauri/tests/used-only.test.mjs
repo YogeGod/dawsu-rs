@@ -92,7 +92,7 @@ test("the active lane colour picker applies and resets a faint tint for its diff
   evaluate(`
     view = { busy: false, hasDocument: true, activeLane: 0 };
     scene = { path: "first.osu", rowHeight: 30,
-      lanes: [{ name: "Clap", colourKey: "Skin|normal-hitclap" }], moments: [] };
+      lanes: [{ name: "Clap", family: "normal-hitclap", colourKey: "Skin|normal-hitclap" }], moments: [] };
     let opened;
     modal = (...args) => { opened = args; };
     closeModal = () => {};
@@ -115,7 +115,8 @@ test("the active lane colour picker applies and resets a faint tint for its diff
   open();
   evaluate('opened[3].find(([label]) => label === "Clear tint")[1]()');
   await evaluate("pending");
-  assert.equal(get("lanes").children[0].style["--lane-tint"], undefined);
+  // Clearing the mapper's tint falls back to the sound's design colour.
+  assert.equal(get("lanes").children[0].style["--lane-tint"], "#e28dd114");
   assert.deepEqual(calls.pop().action.value.lane_colours, {});
 
   open();

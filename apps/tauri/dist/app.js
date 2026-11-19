@@ -72,6 +72,23 @@ const volumePalette = Array.from({ length: 101 }, (_, volume) => {
 function volumeColour(volume) {
   return volumePalette[limit(Math.round(volume), 0, 100)];
 }
+
+// Design handoff lane colours by sound (tokens.css --editor-kick/hat/percussion/clap/teal).
+const soundColours = {
+  hitnormal: "#f1ad67", hitwhistle: "#9c9cfc", sliderwhistle: "#9c9cfc",
+  hitfinish: "#a7d67d", hitclap: "#e28dd1",
+};
+const fileLaneColour = "#62d6cf";
+
+function soundColour(lane) {
+  const sound = lane?.family?.slice(lane.family.indexOf("-") + 1);
+  return soundColours[sound] ?? fileLaneColour;
+}
+
+// Only the lane bar and row tint use it; hit diamonds keep the volume colours (Yoge, 2026-11-19).
+function laneColour(lane) {
+  return laneColours.get(lane?.colourKey) ?? soundColour(lane);
+}
 let pending = Promise.resolve();
 let requests = 0;
 let refreshing = false;
@@ -540,6 +557,7 @@ function renderLanes() {
       if (tint) {
         strip.classList.add("lane-tinted");
         strip.style.setProperty("--lane-tint", tint);
+        strip.style.setProperty("--lane-colour", laneColour(lane));
       }
       if (row === null) {
         const name = document.createElement("span");
@@ -1029,8 +1047,9 @@ function drawGameplay(ctx, gameplay, xOf, y, width) {
 }
 
 function laneTint(lane) {
-  const colour = laneColours.get(lane?.colourKey);
-  return colour ? colour + "1f" : null;
+  if (!lane) return null;
+  const colour = laneColours.get(lane.colourKey);
+  return colour ? colour + "1f" : soundColour(lane) + "14";
 }
 
 const overviewGroups = ["soft", "normal", "drum", null, "skin"];
@@ -1803,7 +1822,7 @@ $("lane-colour").addEventListener("click", () => {
   if (!lane?.colourKey || view.busy || drag) return;
   const input = document.createElement("input");
   input.type = "color";
-  input.value = laneColours.get(lane.colourKey) ?? "#78bfff";
+  input.value = laneColour(lane);
   const label = document.createElement("label");
   label.append("Custom colour", input);
   const palette = document.createElement("div");

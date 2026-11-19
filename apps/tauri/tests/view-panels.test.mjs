@@ -22,7 +22,8 @@ test("View switches hide panels and reclaim their timeline tracks, then restore 
         setAttribute() {},
         replaceChildren(...children) { this.children = children; },
         children: [],
-        style: {},
+        style: { setProperty(name, value) { this[name] = value; } },
+        classList: { add() {} },
         dataset: {},
       });
     }

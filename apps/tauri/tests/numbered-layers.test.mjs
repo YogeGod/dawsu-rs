@@ -10,7 +10,8 @@ test("the plus button adds a numbered layer to its sample family", async () => {
   const calls = [];
   function element() {
     return {
-      events: new Map(), children: [], dataset: {}, style: {}, classList: { toggle() {} },
+      events: new Map(), children: [], dataset: {}, classList: { toggle() {}, add() {} },
+      style: { setProperty(name, value) { this[name] = value; } },
       addEventListener(name, listener) { this.events.set(name, listener); },
       setAttribute(name, value) { this[name] = value; },
       append(...children) { this.children.push(...children); },

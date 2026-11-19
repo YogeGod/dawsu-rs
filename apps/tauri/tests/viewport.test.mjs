@@ -286,6 +286,23 @@ test("hit and controller levels use the legacy blue-purple-red palette", async (
   ]);
 });
 
+test("lanes take their sound's design colour unless the mapper picked one", async () => {
+  const { evaluate } = await frontend();
+  const result = evaluate(`
+    laneColours.set("picked", "#123456");
+    const clap = { family: "soft-hitclap", colourKey: "unpicked" };
+    JSON.stringify([
+      ["normal-hitnormal", "soft-hitwhistle", "drum-hitfinish", "soft-hitclap", null]
+        .map(family => laneColour({ family, colourKey: "unpicked" })),
+      laneColour({ family: "soft-hitclap", colourKey: "picked" }),
+      laneTint(clap), laneTint({ family: "soft-hitclap", colourKey: "picked" }),
+    ])`);
+  assert.deepEqual(JSON.parse(result), [
+    ["#f1ad67", "#9c9cfc", "#a7d67d", "#e28dd1", "#62d6cf"], "#123456",
+    "#e28dd114", "#1234561f",
+  ]);
+});
+
 test("lane height buttons and slider send the same viewport action as wheel zoom", async () => {
   const { calls, get, settle } = await frontend();
   const larger = get("lane-height-in").events.get("click");
