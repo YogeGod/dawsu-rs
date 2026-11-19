@@ -1845,6 +1845,7 @@ function modal(kind, title, content, buttons, cancel = null) {
   if (modalKind === kind && dialog.open) return;
   modalKind = kind;
   modalClose = cancel;
+  dialog.className = "dialog-" + kind;
   $("dialog-title").textContent = title;
   $("dialog-body").replaceChildren(...content);
   $("dialog-actions").replaceChildren(...buttons.map(([label, task, primary]) => {
@@ -1973,14 +1974,14 @@ function renderDialogs() {
   } else if (view.saveProblemReview) {
     const problems = view.outputProblems ?? [];
     const dismiss = () => { closeModal(); return act({ kind: "dismiss_save_problem_review" }); };
-    const show = (index) => async () => { await dismiss(); await showOutputProblem(index); };
+    const showProblem = (index) => async () => { await dismiss(); await showOutputProblem(index); };
     const save = () => { closeModal(); act({ kind: "save" }); };
     const difficulty = document.createElement("div");
     difficulty.className = "save-problem-difficulty";
     const label = document.createElement("span");
     label.textContent = "Difficulty";
     const file = document.createElement("strong");
-    file.textContent = nameOf(problems[0]?.target ?? scene?.path ?? "");
+    file.textContent = nameOf(scene?.path ?? "");
     difficulty.append(label, file);
     const list = document.createElement("div");
     list.className = "save-problem-list";
@@ -1991,18 +1992,23 @@ function renderDialogs() {
       row.setAttribute("role", "listitem");
       const message = document.createElement("span");
       message.textContent = problem.message;
+      if (problem.target !== scene?.path) {
+        const target = document.createElement("small");
+        target.className = "save-problem-target";
+        target.textContent = nameOf(problem.target);
+        message.append(target);
+      }
       const time = document.createElement("time");
       time.textContent = outputProblemTime(problem);
-      const button = makeButton("Show", show(index));
+      const button = makeButton("Show", showProblem(index));
       button.setAttribute("aria-label", "Show the problem at " + time.textContent);
       row.append(message, time, button);
       return row;
     }));
-    modal("save-problems", "Save hitsounds", [
-      difficulty,
-      paragraph("These moments can't be written to the difficulty as drawn. Save writes nothing until they are fixed."),
-      list,
-    ], [["Cancel", dismiss], ["Show first problem", show(0)], ["Continue to Save", save, true]], dismiss);
+    // When Save writes the rest (planned), update this copy and the button.
+    const note = paragraph("These moments can't be written to the difficulty as drawn. Save writes nothing until they are fixed.");
+    modal("save-problems", "Save hitsounds", [difficulty, note, list],
+      [["Cancel", dismiss], ["Show first problem", showProblem(0)], ["Continue to Save", save, true]], dismiss);
     const count = document.createElement("span");
     count.className = "problem-count";
     count.textContent = problems.length + (problems.length === 1 ? " problem" : " problems");

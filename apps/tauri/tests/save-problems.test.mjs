@@ -4,6 +4,7 @@ import { test } from "node:test";
 import { createContext, runInContext } from "node:vm";
 
 const app = await readFile(new URL("../dist/app.js", import.meta.url), "utf8");
+const css = await readFile(new URL("../dist/style.css", import.meta.url), "utf8");
 
 function element(type = "div") {
   return {
@@ -84,28 +85,46 @@ test("Save review shows two timed problems and requires an explicit continuation
 
 test("Save hitsounds counts the problems and lists each with its time and a Show button", async () => {
   const calls = [];
-  const { context, get } = await load(twoProblems(), calls);
+  const problems = [
+    ...twoProblems(),
+    { target: "Insane.osu", timeline: "Insane.osu", time: 3000, message: "Another lookup overlaps." },
+  ];
+  const { context, get } = await load(problems, calls);
   const render = () => runInContext("renderDialogs()", context);
-  runInContext('scene = { path: "A different difficulty.osu" }; view = { saveProblemReview: true, outputProblems: problems };', context);
+  runInContext('scene = { path: "Hard.osu" }; view = { saveProblemReview: true, outputProblems: problems };', context);
   render();
   const title = get("dialog-title");
-  assert.equal(title.textContent, "Save hitsounds2 problems");
+  assert.equal(title.textContent, "Save hitsounds3 problems");
   assert.equal(title.children.filter(child => child.className === "problem-count").length, 1);
   render();
   assert.equal(title.children.filter(child => child.className === "problem-count").length, 1, "re-rendering keeps one chip");
+  assert.match(get("dialog").className, /\bdialog-save-problems\b/, "the dialog gets its width from a class, not :has()");
 
-  const list = get("dialog-body").children.find(child => child.className === "save-problem-list");
+  const body = get("dialog-body").children;
+  assert.equal(body.find(child => child.className === "save-problem-difficulty").textContent, "DifficultyHard.osu");
+  const list = body.find(child => child.className === "save-problem-list");
   assert.ok(list, "the dialog body holds a problem list");
   const rows = list.children;
-  assert.equal(rows.length, 2);
+  assert.equal(rows.length, 3);
   const cells = row => row.children.map(child => child.textContent);
   assert.deepEqual(cells(rows[0]), ["Cannot use this timing window.", "00:01.000", "Show"]);
   assert.deepEqual(cells(rows[1]), ["This object cannot hold the change.", "00:02.000", "Show"]);
+  const other = rows[2].children[0].children.at(-1);
+  assert.equal(other?.className, "save-problem-target", "a problem in another difficulty names it on its row");
+  assert.equal(other.textContent, "Insane.osu");
+  assert.equal(rows[0].children[0].children.length, 0, "rows in the open difficulty don't repeat its name");
   const actions = get("dialog-actions").children.map(button => button.textContent);
   assert.deepEqual(actions, ["Cancel", "Show first problem", "Continue to Save"]);
 
-  await rows[1].children[2].click();
+  await rows[2].children[2].click();
   await runInContext("pending", context);
   assert.equal(calls[0].kind, "dismiss_save_problem_review", "Show leaves the save review before jumping");
-  assert.equal(title.textContent, "Problem 2 of 2");
+  assert.equal(title.textContent, "Problem 3 of 3");
+  assert.doesNotMatch(get("dialog").className, /\bdialog-save-problems\b/);
+});
+
+test("the Save hitsounds styles avoid :has() and color-mix(), which macOS and Linux WebViews may lack", () => {
+  const block = css.slice(css.indexOf("/* Save with problems (design f8)"));
+  assert.match(block, /#dialog\.dialog-save-problems\{/);
+  assert.doesNotMatch(block, /:has\(|color-mix\(/);
 });
