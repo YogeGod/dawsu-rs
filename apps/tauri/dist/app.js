@@ -1641,20 +1641,22 @@ ruler.addEventListener("pointerleave", () => {
 });
 function waveformTarget(ms, y, height) {
   const dy = Math.abs(y - (height + rulerBandHeight) / 2);
-  if (!scene.gameplay || dy > 6) return null;
+  if (!scene.gameplay || dy > objectReach) return null;
+  // Hit the circles and slider tracks at the sizes drawGameplay() draws them.
+  const diameterAt = time => objectDiameter(scene.sections, time, scene.zoom, height - rulerBandHeight);
   let target = null;
   let nearest = Infinity;
-  for (const [kind, time, object] of scene.gameplay.points) {
-    const radius = kind === "circle" ? 6 : 4;
+  for (const [, time, object] of scene.gameplay.points) {
     const distance = Math.hypot((time - ms) * scene.zoom, dy);
-    if (distance <= radius && distance < nearest) {
+    if (distance > objectReach || distance > diameterAt(time) / 2) continue;
+    if (distance < nearest) {
       target = { object, time, node: true };
       nearest = distance;
     }
   }
   if (target) return target;
   const span = scene.gameplay.spans.findLast(([kind, start, end]) =>
-    dy <= (kind === "slider" ? 5.5 : 2.5) && start <= ms && ms <= end);
+    start <= ms && ms <= end && dy <= (kind === "slider" ? diameterAt(start) * .66 / 2 : 2.5));
   return span ? { object: span[3], time: span[1], node: false } : null;
 }
 

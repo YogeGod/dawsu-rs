@@ -114,6 +114,22 @@ test("slider tracks keep their rounded ends where the canvas has no roundRect()"
   assert.equal(ruler.calls[start + 6].fill, "#62d6cfd9");
 });
 
+test("clicking anywhere on a drawn circle or slider track picks that object", async () => {
+  const { evaluate } = await canvases();
+  // Ruler 80 px tall: the waveform lane's middle is y 50.5. At 0.1 px/ms circles are 20 px
+  // and the slider track 13.2 px; after 2000 ms the faster timing makes circles 18 px.
+  evaluate("scene.zoom = .1; scene.gameplay.points.push(['circle', 2200, 3])");
+  const target = (ms, y) => evaluate(`JSON.stringify(waveformTarget(${ms}, ${y}, 80))`);
+  const pick = (object, time, node) => JSON.stringify({ object, time, node });
+  assert.equal(target(190, 50.5), pick(0, 100, true), "9 px right of the circle's centre");
+  assert.equal(target(100, 59.5), pick(0, 100, true), "9 px below the circle's centre");
+  assert.equal(target(210, 50.5), "null", "11 px away misses");
+  assert.equal(target(700, 56.5), pick(1, 400, false), "the track 6 px below its middle");
+  assert.equal(target(700, 57.5), "null", "7 px below misses the 13.2 px track");
+  assert.equal(target(2285, 50.5), pick(3, 2200, true), "8.5 px into an 18 px circle");
+  assert.equal(target(2295, 50.5), "null", "9.5 px misses an 18 px circle");
+});
+
 test("object circles never grow past the waveform lane", async () => {
   const { get, paint } = await canvases();
   const ruler = get("ruler");
