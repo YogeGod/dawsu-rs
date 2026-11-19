@@ -436,10 +436,11 @@ input[type=checkbox].toggle-input{position:absolute;width:1px;height:1px;margin:
 input[type=checkbox].toggle-input:focus-visible+label{outline:2px solid #a1d0f7;outline-offset:1px}
 #editor-ribbon #grid-options,#editor-ribbon [popovertarget="options-Lanes"]{height:30px;min-height:30px;padding:0 10px;border-radius:6px;background:#2c2c2c}
 #editor-ribbon .row[aria-label="Lane view"] button{height:26px;min-height:26px;padding:0 12px}
-@media (max-width:1899px){#editor-ribbon .ribbon-secondary-label{display:none}#editor-ribbon .button-icon{margin:0}}
-@media (max-width:1759px){#editor-ribbon .toolbar-toggle-label{display:none}#editor-ribbon .toolbar-toggle{padding:0 7px}}
-@media (max-width:1599px){#editor-ribbon #tools button:not(.active) .ribbon-tool-label{display:none}#editor-ribbon #tools button{padding:0 7px}}
-@media (max-width:1279px){#editor-ribbon #tools button.active .ribbon-tool-label{display:none}#editor-ribbon #tools button,#editor-ribbon .toolbar-toggle{padding:0 6px}#editor-ribbon #difficulty{max-width:7rem}#editor-ribbon .ribbon-group+.ribbon-group{padding-left:4px}#editor-ribbon #grid-options,#editor-ribbon [popovertarget="options-Lanes"],#editor-ribbon .row[aria-label="Lane view"] button{padding:0 7px}}
+#editor-ribbon #difficulty{max-width:180px}
+@media (max-width:2099px){#editor-ribbon .ribbon-secondary-label{display:none}#editor-ribbon .button-icon{margin:0}}
+@media (max-width:1779px){#editor-ribbon .toolbar-toggle-label{display:none}#editor-ribbon .toolbar-toggle{padding:0 7px}}
+@media (max-width:1619px){#editor-ribbon #tools button:not(.active) .ribbon-tool-label{display:none}#editor-ribbon #tools button{padding:0 7px}}
+@media (max-width:1349px){#editor-ribbon #tools button.active .ribbon-tool-label{display:none}#editor-ribbon #tools button,#editor-ribbon .toolbar-toggle{padding:0 6px}#editor-ribbon #difficulty{max-width:7rem}#editor-ribbon .ribbon-group+.ribbon-group{padding-left:4px}#editor-ribbon #grid-options,#editor-ribbon [popovertarget="options-Lanes"],#editor-ribbon .row[aria-label="Lane view"] button{padding:0 7px}}
 #statusbar{--layout-min-height:32px;gap:10px;padding:0 12px}
 #statusbar #status{flex:0 1 auto;min-width:0}
 #statusbar .playback-rates{grid-template-rows:none;grid-template-columns:none;grid-auto-flow:column;gap:2px;padding:0;background:transparent}
