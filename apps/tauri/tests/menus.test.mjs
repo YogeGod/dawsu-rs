@@ -5,6 +5,11 @@ import { createContext, runInContext } from "node:vm";
 
 const code = await readFile(new URL("../dist/menus.js", import.meta.url), "utf8");
 const html = await readFile(new URL("../dist/index.html", import.meta.url), "utf8");
+const css = await readFile(new URL("../dist/style.css", import.meta.url), "utf8");
+const catalogue = (await Promise.all([
+  "../../../crates/dawsu-application/src/commands.rs",
+  "../../../crates/dawsu-editor/src/editing_commands.rs",
+].map(path => readFile(new URL(path, import.meta.url), "utf8")))).join(" ");
 
 function fixture() {
   const elements = new Map();
@@ -319,4 +324,48 @@ test("menu switches drive the existing toggles and the difficulty row opens a si
   item("Insane").click();
   assert.deepEqual(calls.at(-1), { sibling: "Insane.osu" });
   assert.equal(popup.hidden, true);
+});
+
+test("the bar-menu look stays off the right-click tool picker and the lane menu", () => {
+  const block = css.slice(css.indexOf("/* Menus (design f6)"), css.indexOf("/* Save with problems (design f8)"));
+  const rules = [...block.matchAll(/([^{}]+)\{[^}]*\}/g)].map(match => match[1].replace(/\/\*.*?\*\//s, "").trim());
+  assert.ok(rules.length > 10);
+  for (const selector of rules.flatMap(rule => rule.split(","))) {
+    assert.match(selector.trim(), /^(?:header #editor-menus\b|#editor-menu\[aria-labelledby\](?: |$))/, selector);
+  }
+  assert.doesNotMatch(block, /:has\(|color-mix\(/, "macOS and Linux WebViews may lack :has() and color-mix()");
+
+  const { get, scene } = fixture();
+  const popup = get("editor-menu");
+  get("menu-edit").click();
+  assert.equal(popup.attributes["aria-labelledby"], "menu-edit");
+  const plain = menuButtons(popup).find(button => button.textContent === "Protect hitnormals from deletion");
+  const icon = menuButtons(popup).find(button => button.textContent === "Select all");
+  assert.match(plain.className, /\bmenu-item-plain\b/);
+  assert.doesNotMatch(icon.className, /\bmenu-item-plain\b/);
+
+  const grid = get("grid");
+  grid.events.get("contextmenu")({ clientX: 10, clientY: 10, preventDefault() {} });
+  assert.equal(popup.attributes["aria-labelledby"], undefined);
+  assert.equal(popup.attributes["aria-label"], "Timeline tools");
+
+  const lanes = get("lanes"), name = get("second-name");
+  name.dataset = { laneRow: "1" };
+  name.closest = () => name;
+  lanes.events.get("contextmenu")({ target: name, clientX: 10, clientY: 10, preventDefault() {} });
+  assert.equal(popup.attributes["aria-labelledby"], undefined);
+  assert.equal(popup.attributes["aria-label"], "Lane actions");
+  assert.ok(scene);
+});
+
+test("every command a menu runs or shows a key for is in the editor's command catalogue", () => {
+  const known = new Set([...catalogue.matchAll(/(?:CommandDefinition::new|\bdef)\(\s*"(\w+)"/g)].map(match => match[1]));
+  for (const id of ["undo", "save", "importOsz", "addBookmark", "start", "cycle"]) assert.ok(known.has(id), "catalogue reader finds " + id);
+  assert.ok(!known.has("notACommand"));
+  const used = [
+    ...code.matchAll(/menuCommand\(.*?,\s*(?:null|"\w+"),\s*"(\w+)"/g),
+    ...code.matchAll(/shortcut: "(\w+)"\s*[,}]/g),
+  ].map(match => match[1]);
+  assert.ok(used.length > 25, "menus.js commands are found");
+  for (const id of used) assert.ok(known.has(id), id + " is not a catalogue command");
 });

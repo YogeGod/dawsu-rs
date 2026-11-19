@@ -26,7 +26,7 @@ function menuItem(label, glyph, execute, {
     refreshEditorMenu();
   });
   button.tabIndex = -1;
-  button.className = radio ? "menu-choice" : "menu-item";
+  button.className = radio ? "menu-choice" : glyph ? "menu-item" : "menu-item menu-item-plain";
   button.setAttribute("role", radio ? "menuitemradio" : checked ? "menuitemcheckbox" : "menuitem");
   if (glyph) button.prepend(menuIcon(glyph));
   const chip = shortcut ? document.createElement("kbd") : null;
