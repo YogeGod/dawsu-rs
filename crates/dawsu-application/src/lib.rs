@@ -21,6 +21,7 @@ mod preferences;
 mod shortcuts;
 mod problems;
 mod recovery;
+mod refusals;
 mod sample_watch;
 pub mod waveform;
 use dawsu_editor::commands::{
@@ -109,7 +110,7 @@ impl Document {
         };
         let h = match decompile(&compile_base, &files, &|| false, &mut |_, _| {}) {
             Decompiled::Done(h) => h,
-            other => return Err(format!("Cannot open difficulty: {other:?}")),
+            other => return Err(refusals::open(&other)),
         };
         let sections = read
             .file
@@ -232,7 +233,7 @@ fn compile_for_save(
                             return Err("Save cancelled".into());
                         }
                         file.remove_hit_object(id.line())
-                            .map_err(|error| format!("Removing an empty HS circle: {error:?}"))?;
+                            .map_err(|error| format!("Could not remove an empty hitsound circle: {}.", refusals::line(&error)))?;
                         removed.insert(id);
                     }
                 }
@@ -1141,7 +1142,7 @@ impl Application {
                                 })
                                 .ok_or("Archive contains no difficulty")?
                         }
-                        other => return Err(format!("Import refused: {other:?}")),
+                        other => return Err(refusals::import(&other)),
                     }
                 } else {
                     path
@@ -2360,7 +2361,7 @@ pub fn lane_name(identity: &SampleIdentity) -> String {
     }
 }
 fn safe_child(root: &Path, name: &str) -> Result<PathBuf, String> {
-    check_map_path(name).map_err(|e| format!("Unsafe file name: {e:?}"))?;
+    check_map_path(name).map_err(|e| refusals::file_name(&e))?;
     let root = root.canonicalize().map_err(|e| e.to_string())?;
     let child = root
         .join(name.replace('\\', "/"))

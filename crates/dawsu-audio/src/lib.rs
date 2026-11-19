@@ -678,7 +678,7 @@ impl AudioEngine {
             cpal::SampleFormat::I24 => stream::<cpal::I24>(&device, config, render, errors.clone()),
             cpal::SampleFormat::I32 => stream::<i32>(&device, config, render, errors.clone()),
             cpal::SampleFormat::U16 => stream::<u16>(&device, config, render, errors.clone()),
-            other => return Err(format!("Unsupported output sample format: {other:?}")),
+            other => return Err(format!("This audio device uses a sample format dawsu! cannot play ({other}). Choose another device.")),
         }?;
         stream.play().map_err(|e| e.to_string())?;
         Ok(Self {

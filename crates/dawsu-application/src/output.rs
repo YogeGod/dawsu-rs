@@ -90,7 +90,7 @@ impl WritePlan {
                     .map_err(|e| e.to_string())
                     .and_then(|outcome| match outcome {
                         SaveOutcome::Saved { .. } | SaveOutcome::NothingToSave => Ok(()),
-                        other => Err(format!("{}: {other:?}", target.path.display())),
+                        other => Err(format!("{}: {}", target.path.display(), crate::refusals::write(&other))),
                     })
             };
             if let Err(error) = outcome {
@@ -254,12 +254,12 @@ pub(super) fn generate_report(
                 version: source.version,
             })
         }
-        other => Err(format!("Generate refused: {other:?}")),
+        other => Err(crate::refusals::generate(&other)),
     }
 }
 pub fn new_diff(source: &Source, name: &str) -> Result<WritePlan, String> {
     match dawsu_hitsounding::generate::new_hitsound_diff(&source.file,&source.path.file_name().unwrap().to_string_lossy(),name,&folder(source)?){
-        NewDiff::Planned{file,file_name}=>Ok(WritePlan{label:"New hitsound difficulty".into(),mixes:Vec::new(),combinations:Vec::new(),generation:None,include_slider_audio:false,files:vec![PlannedFile{path:source.path.parent().unwrap().join(file_name),file,expected:None}],details:vec!["All gameplay objects are removed in the new difficulty; the source stays unchanged.".into()],source:source.path.clone(),version:source.version}),other=>Err(format!("New difficulty refused: {other:?}"))
+        NewDiff::Planned{file,file_name}=>Ok(WritePlan{label:"New hitsound difficulty".into(),mixes:Vec::new(),combinations:Vec::new(),generation:None,include_slider_audio:false,files:vec![PlannedFile{path:source.path.parent().unwrap().join(file_name),file,expected:None}],details:vec!["All gameplay objects are removed in the new difficulty; the source stays unchanged.".into()],source:source.path.clone(),version:source.version}),other=>Err(crate::refusals::new_difficulty(&other))
     }
 }
 pub fn copy(
@@ -324,7 +324,7 @@ pub(super) fn copy_report(
         progress,
     ) {
         CopyOutcome::Targets(outcomes) => outcomes,
-        other => return Err(format!("Copy refused: {other:?}")),
+        other => return Err(crate::refusals::copy(&other)),
     };
     let mut plan = WritePlan {
         label: "Copy hitsounds".into(),
@@ -408,7 +408,7 @@ pub(super) fn copy_report(
                     expected: Some(expected),
                 });
             }
-            other => return Err(format!("{}: {other:?}", path.display())),
+            other => return Err(format!("{}: {}", path.display(), crate::refusals::copy_target(&other))),
         }
     }
     refused.map_or(Ok(plan), Err)
