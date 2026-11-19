@@ -89,7 +89,7 @@
       <div id="tools" role="toolbar" aria-label="Editing tools"></div>
     </div>
     <div class="ribbon-group" role="group" aria-label="Grid">
-      <button id="grid-options" type="button" popovertarget="options-Grid" aria-label="Grid and snapping" title="Grid and snapping">Grid ▾</button><div popover id="options-Grid" class="ribbon-controls ribbon-options">
+      <button id="grid-options" type="button" popovertarget="options-Grid" aria-label="Grid and snapping" title="Grid and snapping">Snap ▾</button><div popover id="options-Grid" class="ribbon-controls ribbon-options">
         <label class="toggle"><input id="object-lines" type="checkbox"> Object lines</label>
         <label class="toggle"><input id="snap" type="checkbox"> Snap</label>
         <select aria-label="Snap mode" id="snap-mode"><option value="grid">Grid</option><option value="relative">Grid relative</option><option value="objects">Objects</option></select>
@@ -98,12 +98,19 @@
         <button id="time-signatures" data-doc aria-haspopup="dialog">Time signatures…</button>
       </div>
     </div>
+    <div class="ribbon-group" role="group" aria-label="Audition">
+      <div class="ribbon-controls toolbar-track">
+      <button id="toolbar-audition" type="button" class="toolbar-toggle" aria-pressed="false" title="Audition when placing hits" data-doc><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 6h2l3-2.5v9l-3-2.5h-2zM10.5 5.5a3.5 3.5 0 0 1 0 5M12.5 3.5a6 6 0 0 1 0 9"/></svg><span class="toolbar-toggle-label">Audition</span></button>
+      </div>
+    </div>
+    <div class="ribbon-group" role="group" aria-label="Playhead">
+      <div class="ribbon-controls toolbar-track">
+        <input type="checkbox" id="follow" class="toggle-input" aria-label="Follow playback" data-doc><label for="follow" class="toolbar-toggle" title="Scroll the timeline to keep the playhead visible"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2v12M2 8h3m6 0h3M5 3H3v2m8-2h2v2M3 11v2h2m8-2v2h-2"/></svg><span class="toolbar-toggle-label">Follow</span></label>
+        <button id="transport-return" type="button" class="toolbar-toggle" aria-label="Return on stop" aria-pressed="false" title="Return to the playback start when stopping" data-doc><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 10 3 7l3-3M3 7h7a3.5 3.5 0 0 1 0 7H8"/></svg><span class="toolbar-toggle-label">Return</span></button>
+      </div>
+    </div>
     <div class="ribbon-group" role="group" aria-label="Lanes">
       <button type="button" popovertarget="options-Lanes">Lanes ▾</button><div popover id="options-Lanes" class="ribbon-controls ribbon-options">
-        <div class="row" role="group" aria-label="Lane view">
-          <button id="samples-view" type="button" aria-pressed="true" data-doc>Samples</button>
-          <button id="drums-view" type="button" aria-pressed="false" data-doc>Drums</button>
-        </div>
         <div class="row" role="group" aria-label="Lane zoom">
           <button type="button" id="lane-height-out" aria-label="Shorter lanes" data-doc>−</button>
           <label class="toggle">Lane height <input type="range" min="20" max="65" step="1" id="lane-height" data-doc></label>
@@ -127,6 +134,12 @@
       </div>
       <button id="panel-view" aria-haspopup="dialog" aria-label="View settings" title="View settings" data-doc><img class="button-icon" src="studio-assets/icons/Settings.svg" alt=""><span class="ribbon-secondary-label">View…</span></button>
       <button id="help" aria-label="Keyboard shortcuts" title="Keyboard shortcuts"><img class="button-icon" src="studio-assets/icons/Info.svg" alt=""><span class="ribbon-secondary-label">Shortcuts</span></button>
+    </div>
+  </div>
+  <div class="ribbon-group" role="group" aria-label="Lane mode">
+    <div class="row" role="group" aria-label="Lane view">
+      <button id="samples-view" type="button" aria-pressed="true" data-doc>Samples</button>
+      <button id="drums-view" type="button" aria-pressed="false" data-doc>Drums</button>
     </div>
   </div>
   </div>
@@ -277,17 +290,7 @@
     <button data-action="start" data-doc aria-label="Go to start" title="Go to start"><img class="button-icon" src="studio-assets/icons/SkipBack.svg" alt=""></button>
     <button data-action="play" id="play"><img id="play-icon" class="button-icon" src="studio-assets/icons/Play.svg" alt=""><span id="play-label">Play</span></button><button data-action="stop"><img class="button-icon" src="studio-assets/icons/Square.svg" alt=""><span>Stop</span></button>
     </div>
-    <div class="playback-rates" role="group" aria-label="Playback speed" title="Playback speed with pitch preserved">
-      <button type="button" data-playback-speed=".25" aria-label="Playback speed 25%" aria-pressed="false" data-doc>25%</button>
-      <button type="button" data-playback-speed=".5" aria-label="Playback speed 50%" aria-pressed="false" data-doc>50%</button>
-      <button type="button" data-playback-speed=".75" aria-label="Playback speed 75%" aria-pressed="false" data-doc>75%</button>
-      <button type="button" data-playback-speed="1" aria-label="Playback speed 100%" aria-pressed="true" data-doc>100%</button>
-      <button type="button" data-playback-speed="1.25" aria-label="Playback speed 125%" aria-pressed="false" data-doc>125%</button>
-      <button type="button" data-playback-speed="1.5" aria-label="Playback speed 150%" aria-pressed="false" data-doc>150%</button>
-    </div>
     <div class="transport-flags">
-      <label title="Scroll the timeline to keep the playhead visible"><input type="checkbox" id="follow" aria-label="Follow playback" data-doc> Follow</label>
-      <button id="transport-return" type="button" aria-label="Return on stop" aria-pressed="false" title="Return to the playback start when stopping" data-doc>Return</button>
       <label><input type="checkbox" id="cycle"> Cycle</label>
       <button data-locator="left" aria-label="Set left locator" title="Set left locator, Shift to jump">L</button><button data-locator="right" aria-label="Set right locator" title="Set right locator, Shift to jump">R</button>
     </div>
@@ -299,6 +302,19 @@
     </div>
   </section>
 </section>
-<div id="statusbar"><span id="status" role="status"></span><button id="next-output-problem" hidden>Next problem</button><button id="warnings" hidden>Audio warnings</button><button id="cancel-job" data-action="cancel_job" hidden>Cancel job</button></div>
+<div id="statusbar">
+  <div id="playback-rates" class="playback-rates" role="group" aria-label="Playback speed" title="Playback speed with pitch preserved" hidden>
+    <button type="button" data-playback-speed=".25" aria-label="Playback speed 25%" aria-pressed="false" data-doc>25%</button>
+    <button type="button" data-playback-speed=".5" aria-label="Playback speed 50%" aria-pressed="false" data-doc>50%</button>
+    <button type="button" data-playback-speed=".75" aria-label="Playback speed 75%" aria-pressed="false" data-doc>75%</button>
+    <button type="button" data-playback-speed="1" aria-label="Playback speed 100%" aria-pressed="true" data-doc>100%</button>
+    <button type="button" data-playback-speed="1.25" aria-label="Playback speed 125%" aria-pressed="false" data-doc>125%</button>
+    <button type="button" data-playback-speed="1.5" aria-label="Playback speed 150%" aria-pressed="false" data-doc>150%</button>
+  </div>
+  <span id="status" role="status"></span>
+  <span id="problem-summary" class="problem-summary" hidden><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.5 14.5 13.5h-13zM8 6.5v3M8 11.5v.01"/></svg><span id="problem-summary-text"></span></span>
+  <button id="next-output-problem" hidden>Next problem</button><button id="warnings" hidden>Audio warnings</button><button id="cancel-job" data-action="cancel_job" hidden>Cancel job</button>
+  <span id="hit-lane-counts" class="status-counts" hidden></span>
+</div>
 <dialog id="dialog"><h2 id="dialog-title"></h2><div id="dialog-body"></div><div class="row" id="dialog-actions"></div></dialog>
 </body></html>

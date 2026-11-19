@@ -419,3 +419,33 @@ header #editor-menus button{min-height:26px;padding:3px 10px;border-radius:4px}
 .save-problem time{font-family:"Roboto Mono",ui-monospace,monospace}
 .save-problem button{min-height:24px;padding:2px 4px;border:0;background:transparent;color:var(--hi)}
 .save-problem button:hover:not(:disabled){background:transparent;text-decoration:underline}
+/* Toolbar and status bar (design f1): tool pills with the label beside the icon, Snap, Audition, Follow/Return and the lane view switch; the status bar holds speeds, status, problems and counts. */
+#editor-ribbon{--layout-min-height:43px}
+#editor-ribbon.tools.chrome{gap:4px;padding-block:4px}
+#editor-ribbon .ribbon-caption{display:none}
+#editor-ribbon .ribbon-group{align-content:center}
+#editor-ribbon .ribbon-group+.ribbon-group{padding-left:6px}
+#editor-ribbon #tools,#editor-ribbon .toolbar-track{gap:2px;padding:2px;border-radius:6px;background:#2c2c2c}
+#editor-ribbon #tools button,#editor-ribbon .toolbar-toggle{display:inline-flex;align-items:center;gap:6px;height:26px;min-height:26px;padding:0 9px;border:0;border-radius:4px;background:transparent;color:#c4c4c4;font-size:13px;cursor:pointer;white-space:nowrap}
+#editor-ribbon #tools button:hover:not(:disabled),#editor-ribbon .toolbar-toggle:hover{background:#3c3c3c;color:var(--text)}
+#editor-ribbon #tools button.active,#editor-ribbon .toolbar-toggle[aria-pressed=true],#editor-ribbon input.toggle-input:checked+.toolbar-toggle{background:#454545;color:var(--hi)}
+#editor-ribbon #tools .ribbon-tool-label{font-size:13px}
+#editor-ribbon .toolbar-toggle svg{width:14px;height:14px;flex:none;fill:none;stroke:currentColor;stroke-width:1.4;stroke-linecap:round;stroke-linejoin:round}
+#editor-ribbon .toolbar-toggle:disabled,#editor-ribbon input.toggle-input:disabled+.toolbar-toggle{opacity:.45;cursor:default;background:transparent}
+input[type=checkbox].toggle-input{position:absolute;width:1px;height:1px;margin:0;padding:0;opacity:0;pointer-events:none}
+input[type=checkbox].toggle-input:focus-visible+label{outline:2px solid #a1d0f7;outline-offset:1px}
+#editor-ribbon #grid-options,#editor-ribbon [popovertarget="options-Lanes"]{height:30px;min-height:30px;padding:0 10px;border-radius:6px;background:#2c2c2c}
+#editor-ribbon .row[aria-label="Lane view"] button{height:26px;min-height:26px;padding:0 12px}
+@media (max-width:1899px){#editor-ribbon .ribbon-secondary-label{display:none}#editor-ribbon .button-icon{margin:0}}
+@media (max-width:1759px){#editor-ribbon .toolbar-toggle-label{display:none}#editor-ribbon .toolbar-toggle{padding:0 7px}}
+@media (max-width:1599px){#editor-ribbon #tools button:not(.active) .ribbon-tool-label{display:none}#editor-ribbon #tools button{padding:0 7px}}
+@media (max-width:1279px){#editor-ribbon #tools button.active .ribbon-tool-label{display:none}#editor-ribbon #tools button,#editor-ribbon .toolbar-toggle{padding:0 6px}#editor-ribbon #difficulty{max-width:7rem}#editor-ribbon .ribbon-group+.ribbon-group{padding-left:4px}#editor-ribbon #grid-options,#editor-ribbon [popovertarget="options-Lanes"],#editor-ribbon .row[aria-label="Lane view"] button{padding:0 7px}}
+#statusbar{--layout-min-height:32px;gap:10px;padding:0 12px}
+#statusbar #status{flex:0 1 auto;min-width:0}
+#statusbar .playback-rates{grid-template-rows:none;grid-template-columns:none;grid-auto-flow:column;gap:2px;padding:0;background:transparent}
+#statusbar .playback-rates>button{min-height:22px;height:22px;padding:0 6px;border:0;border-radius:4px;background:transparent;font-size:11px}
+#statusbar .playback-rates>button:hover:not(:disabled){background:#454545}
+#statusbar .playback-rates>button[aria-pressed=true]{background:#454545;color:var(--hi)}
+.problem-summary{display:inline-flex;align-items:center;gap:6px;min-width:0;color:#fa838c;white-space:nowrap}
+.problem-summary svg{width:14px;height:14px;flex:none;fill:none;stroke:currentColor;stroke-width:1.4;stroke-linecap:round;stroke-linejoin:round}
+.status-counts{margin-left:auto;white-space:nowrap;font-variant-numeric:tabular-nums}

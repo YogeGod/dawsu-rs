@@ -258,8 +258,12 @@ function show(next) {
   $("save-problem-badge").hidden = problems.length === 0;
   $("save-problem-badge").textContent = problems.length ? String(problems.length) : "";
   $("save-problem-badge").title = problems.length + " output problems";
+  $("problem-summary").hidden = problems.length === 0;
+  $("problem-summary-text").textContent = problems.length + (problems.length === 1 ? " moment" : " moments") + " can't be saved";
   $("next-output-problem").hidden = problems.length === 0;
   $("next-output-problem").disabled = !!view.busy;
+  $("playback-rates").hidden = !scene;
+  $("hit-lane-counts").hidden = !scene;
   $("cancel-job").hidden = !view.busy;
   $("difficulty").hidden = !scene;
   for (const button of document.querySelectorAll("[data-doc]")) button.disabled = !scene || !!view.busy;
@@ -292,6 +296,7 @@ function show(next) {
     $("ruler-follow").setAttribute?.("aria-pressed", String(!!view.follow));
     followPlayhead();
     $("audition").checked = view.audition;
+    $("toolbar-audition").ariaPressed = String(!!view.audition);
     if (wasPlaying !== view.playing) {
       $("play-icon").src = view.playing ? "studio-assets/icons/Pause.svg" : "studio-assets/icons/Play.svg";
       $("play-label").textContent = view.playing ? "Pause" : "Play";
@@ -836,10 +841,13 @@ function drawBookmarks(ctx, marks, start, zoom, width) {
 function renderScene() {
   renderLanes();
   $("snap").checked = scene.snap;
-  const gridLabel = scene.snap ? "Grid · " + scene.beats + "/" + scene.divisor : "Grid · Snap off";
+  const gridLabel = scene.snap ? "Snap " + scene.beats + "/" + scene.divisor : "Snap off";
   const gridOptions = $("grid-options");
   gridOptions.textContent = gridLabel + " ▾";
   gridOptions.ariaLabel = gridLabel + ", grid and snapping settings";
+  const hits = (scene.moments ?? []).reduce((sum, moment) => sum + (moment[3]?.length ?? 0), 0);
+  const lanes = scene.lanes?.length ?? 0;
+  $("hit-lane-counts").textContent = hits + (hits === 1 ? " hit · " : " hits · ") + lanes + (lanes === 1 ? " lane" : " lanes");
   $("object-lines").checked = view.objectLines;
   setValue("snap-mode", scene.snapMode);
   setValue("beats", scene.beats);
@@ -2635,6 +2643,9 @@ $("used-only").addEventListener("change", () => {
 });
 toggle("cycle", "cycle");
 toggle("audition", "audition");
+$("toolbar-audition").addEventListener("click", () => {
+  if (scene && !view.busy) act({ kind: "audition", on: !view.audition });
+});
 function openSiblingDifficulty(path) {
   if (scene && !view.busy && !drag && path && path !== scene.path) act({ kind: "open", path });
 }
