@@ -83,11 +83,11 @@ test("View switches hide panels and reclaim their timeline tracks, then restore 
   const info = controls.find(item => item.text === "Lane info (sample indexes)").control;
   info.checked = true;
   info.listeners.get("change")();
-  assert.deepEqual(element("lanes").children.map(row => row.children[0].textContent),
+  assert.deepEqual(element("lanes").children.map(row => row.children.find(child => child.className === "name").textContent),
     ["soft-hitclap · skin", "soft-hitclap2 · idx 2"]);
   info.checked = false;
   info.listeners.get("change")();
-  assert.deepEqual(element("lanes").children.map(row => row.children[0].textContent),
+  assert.deepEqual(element("lanes").children.map(row => row.children.find(child => child.className === "name").textContent),
     ["soft-hitclap", "soft-hitclap2"]);
   assert.match(style, /\.dock\[data-inspector="false"\]\{grid-template-columns:minmax\(0,1fr\)\}/);
   assert.match(style, /\.arrange\[data-controller="false"\]\{[^}]*grid-template-rows:var\(--layout-timeline-rows,minmax\(20px,max-content\) var\(--ruler-row\) minmax\(0,1fr\)\)\}/);

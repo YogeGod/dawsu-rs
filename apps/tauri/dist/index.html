@@ -203,73 +203,75 @@
 
     </div>
     <aside id="editor-inspector" aria-label="Inspector">
-      <section><h2>Selection</h2>
-        <p id="selected" class="dim">Nothing selected</p>
+      <section><details open><summary><h2>Selection</h2></summary>
+        <p class="inspector-summary"><span id="selected">Nothing selected</span><span id="selected-lanes"></span></p>
         <fieldset id="selection-fields" hidden>
-          <form id="selection-start-edit">
-            <label>Start (ms) <input id="selection-start-input" type="number" step="any" required></label>
+          <form id="selection-start-edit" class="inspector-row">
+            <label for="selection-start-input">Start</label>
+            <input id="selection-start-input" type="text" required spellcheck="false" autocomplete="off" placeholder="00:00.000" aria-label="Start" title="Start, as 01:45.263 or in milliseconds">
             <button type="submit">Move</button>
           </form>
-          <div class="selection-value">Object <output id="selection-object"></output></div>
-          <form id="selection-volume">
-            <label>Change <select id="volume-mode"><option value="absolute">Set all</option><option value="relative">Relative</option></select></label>
-            <label>Volume (%) <input type="number" min="0" max="100" id="volume" value="100" required></label>
-            <label>Applies to <select id="selection-volume-scope">
-              <option value="all">All lanes</option><option value="selected">Selected lanes</option>
-            </select></label>
+          <div class="inspector-row"><span>Volume</span><output id="selection-volume-value"></output></div>
+          <div class="inspector-row"><span>On object</span><output id="selection-object"></output></div>
+          <form id="selection-volume" class="inspector-group" aria-label="Change volume">
+            <p class="inspector-caption">Change volume</p>
+            <div class="inspector-controls">
+              <select id="volume-mode" aria-label="Change"><option value="absolute">Set all</option><option value="relative">Relative</option></select>
+              <input type="number" min="0" max="100" id="volume" value="100" required aria-label="Volume (%)">
+              <button type="submit">Apply</button>
+            </div>
+            <div class="inspector-controls">
+              <button type="button" data-volume="-5">−5</button><button type="button" data-volume="5">+5</button>
+              <select id="selection-volume-scope" aria-label="Applies to">
+                <option value="all">All lanes</option><option value="selected">Selected lanes</option>
+              </select>
+            </div>
             <p class="dim" id="selection-volume-hint">Changes all sounds at the selected times.</p>
-            <div class="row"><button type="submit">Apply</button><button type="button" data-volume="-5">−5</button><button type="button" data-volume="5">+5</button></div>
           </form>
-          <div class="row"><button data-command="quantizeDialog">Quantize…</button><button data-command="repeat">Repeat…</button><button data-command="duplicate">Duplicate</button><button data-command="delete">Delete</button></div>
+          <div class="row inspector-actions"><button data-command="quantizeDialog">Quantize…</button><button data-command="repeat">Repeat…</button><button data-command="duplicate">Duplicate</button><button data-command="delete">Delete</button></div>
         </fieldset>
-        <div class="row"><button id="edit-range" data-command="editRange" disabled>Edit range…</button><button data-command="scaleByVolume" data-doc>Scale by volume…</button></div>
-        <fieldset id="slider-body-fields" hidden>
-          <legend>Slider body sounds</legend>
-          <label>Slide and tick sample set
+        <div class="row inspector-actions"><button id="edit-range" data-command="editRange" disabled>Edit range…</button><button data-command="scaleByVolume" data-doc>Scale by volume…</button></div>
+        <fieldset id="slider-body-fields" class="inspector-group" hidden>
+          <legend class="inspector-caption">Slider body sounds</legend>
+          <label class="inspector-row">Slide and tick sample set
             <select id="slider-body-set"><option value="normal">Normal</option><option value="soft">Soft</option><option value="drum">Drum</option><option value="" disabled>Current sample</option></select>
           </label>
-          <label>Whistle on slide <input type="checkbox" id="slider-body-whistle"></label>
-          <label>Whistle sample set
+          <label class="inspector-row">Whistle on slide <input type="checkbox" id="slider-body-whistle"></label>
+          <label class="inspector-row">Whistle sample set
             <select id="slider-body-whistle-set"><option value="auto">Auto</option><option value="normal">Normal</option><option value="soft">Soft</option><option value="drum">Drum</option></select>
           </label>
-          <label>Body and head volume (%) <input type="number" min="0" max="100" id="slider-body-volume"></label>
+          <label class="inspector-row">Body and head volume <span class="inspector-value"><input type="number" min="0" max="100" id="slider-body-volume">%</span></label>
           <button id="apply-slider-body">Apply</button>
         </fieldset>
-        <label>Insert volume <input type="number" min="0" max="100" id="insert"></label>
-        <label><span>Protect normals</span><input type="checkbox" id="protect"></label>
-        <label><span>Audition</span><input type="checkbox" id="audition"></label>
-      </section>
-      <section><h2>Active lane</h2>
-        <div class="active-lane-identity">
-          <span id="active-lane-colour-swatch" aria-hidden="true" hidden></span>
-          <output id="active-lane-name"></output>
-        </div>
+        <label class="inspector-row">Insert volume <span class="inspector-value"><input type="number" min="0" max="100" id="insert">%</span></label>
+        <label class="inspector-row"><span>Protect normals</span><input type="checkbox" id="protect"></label>
+        <label class="inspector-row"><span>Audition</span><input type="checkbox" id="audition"></label>
+      </details></section>
+      <section><details open><summary><h2>Lane</h2></summary>
+        <output id="active-lane-name"></output>
         <output id="active-lane-sample" hidden></output>
-        <div class="row active-lane-actions">
-          <button id="replace-sample" data-doc>Replace sample…</button>
-          <button id="lane-colour" type="button" data-doc aria-haspopup="dialog">Lane colour…</button>
-        </div>
-      </section>
-      <section><h2>Difficulty</h2>
-        <label><span>Hitsounding mode</span><input type="checkbox" id="hs"></label>
-        <div class="row"><button id="generate" data-doc>Generate…</button><button id="new">New…</button><button id="copy">Copy…</button></div>
-        <button id="merge-settings" data-doc aria-haspopup="dialog">Merge settings…</button>
-      </section>
-      <section><h2>Bookmarks</h2>
-        <div class="row">
-          <button id="add-bookmark" data-doc>Add…</button>
-          <button data-command="previousBookmark" data-doc>Previous</button>
-          <button data-command="nextBookmark" data-doc>Next</button>
-        </div>
-        <select id="bookmarks" aria-label="Bookmarks" disabled></select>
-        <div class="row">
+        <div class="inspector-row"><span>Lane tint</span><button id="lane-colour" type="button" class="inspector-value-button" data-doc aria-haspopup="dialog" aria-label="Lane colour…" title="Lane colour…"><span id="active-lane-colour-swatch" aria-hidden="true" hidden></span><span id="active-lane-colour-name"></span></button></div>
+        <div class="row inspector-actions"><button id="replace-sample" data-doc>Replace sample…</button></div>
+      </details></section>
+      <section><details open><summary><h2>Difficulty</h2></summary>
+        <label class="inspector-row"><span>Hitsounding mode</span><input type="checkbox" id="hs"></label>
+        <div class="row inspector-actions"><button id="generate" data-doc>Generate…</button><button id="new">New…</button><button id="copy">Copy…</button><button id="merge-settings" data-doc aria-haspopup="dialog">Merge settings…</button></div>
+      </details></section>
+      <section class="inspector-bookmarks"><details open><summary><h2>Bookmarks</h2></summary>
+        <select id="bookmarks" aria-label="Bookmarks" size="2" disabled></select>
+        <p id="bookmarks-empty" class="dim" hidden>No bookmarks. Add one at the playhead with +.</p>
+        <div class="row inspector-actions">
           <button id="jump-bookmark" disabled>Go to</button>
           <button id="rename-bookmark" disabled>Rename…</button>
           <button id="remove-bookmark" disabled>Remove</button>
         </div>
-      </section>
+        <div class="row inspector-actions">
+          <button data-command="previousBookmark" data-doc>Previous</button>
+          <button data-command="nextBookmark" data-doc>Next</button>
+        </div>
+      </details><button id="add-bookmark" class="inspector-header-action" data-doc aria-label="Add bookmark" title="Add bookmark at the playhead">+</button></section>
       <div id="classic-browser-host" hidden></div>
-      <section><h2>History</h2><div id="history"></div></section>
+      <section><details open><summary><h2>History</h2></summary><div id="history"></div></details></section>
     </aside>
   </main>
   <section id="editor-transport" class="transport chrome" aria-label="Playback controls">

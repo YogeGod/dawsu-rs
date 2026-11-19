@@ -394,7 +394,7 @@ function sampleFolderHeader(group) {
   header.draggable = true;
 
   const collapsed = collapsedFolders.has(group);
-  const disclosure = makeButton((collapsed ? "▸ " : "▾ ") + title, () => {
+  const disclosure = makeButton(title, () => {
     if (view.busy || drag) return;
     if (!collapsedFolders.delete(group)) collapsedFolders.add(group);
     renderLanes();
@@ -421,11 +421,18 @@ function sampleFolderHeader(group) {
     const button = makeButton(label, () => {
       if (!view.busy && !drag) act({ kind: "group_mix", set: group, operation });
     });
+    button.className = "lane-" + operation;
     button.setAttribute("aria-label", (operation === "mute" ? "Mute " : "Solo ") + title);
     button.setAttribute("aria-pressed", members.every(lane => lane[flag]));
     return button;
   };
-  header.append(disclosure, mix("M", "mute", "muted"), mix("S", "solo", "solo"));
+  // Design group row: "4 lanes", and how many have hits while the set is folded away.
+  const rows = orderedLaneRows().filter(row => scene.lanes[row]?.group === group);
+  const used = rows.filter(row => scene.lanes[row].hitCount > 0).length;
+  const count = document.createElement("span");
+  count.className = "lane-count";
+  count.textContent = rows.length + (rows.length === 1 ? " lane" : " lanes") + (collapsed ? " · " + used + " used" : "");
+  header.append(disclosure, count, mix("M", "mute", "muted"), mix("S", "solo", "solo"));
   header.addEventListener("dragstart", event => {
     event.dataTransfer.setData(sampleFolderDragType, group);
     event.dataTransfer.effectAllowed = "move";
@@ -445,6 +452,39 @@ function sampleFolderHeader(group) {
 
 function laneDisplayName(lane) {
   return renamedLanes.get(lane?.colourKey) ?? lane?.name ?? "";
+}
+
+const laneSounds = {
+  hitnormal: ["Normal", "normal"], hitwhistle: ["Whistle", "whistle"], hitfinish: ["Finish", "finish"],
+  hitclap: ["Clap", "clap"], sliderslide: ["Slide", "slide"], sliderwhistle: ["Slide whistle", "whistle"],
+  slidertick: ["Tick", "tick"],
+};
+// 16px line icons for the lane header's tile, drawn in the lane's sound colour.
+const laneIcons = {
+  normal: '<circle cx="8" cy="8" r="5.5"/><circle cx="8" cy="8" r="1.4" fill="currentColor"/>',
+  whistle: '<path d="M2.5 6H10a2 2 0 1 0-2-2M2.5 10H12a2 2 0 1 1-2 2M2.5 8h4"/>',
+  finish: '<ellipse cx="8" cy="9.5" rx="6" ry="2.2"/><path d="M8 7.3V3"/>',
+  clap: '<path d="M5.5 9V4a1 1 0 0 1 2 0v4M7.5 7.5V3a1 1 0 0 1 2 0v4.5M9.5 7V4.5a1 1 0 0 1 2 0V10a4 4 0 0 1-4 4h-.5a3.5 3.5 0 0 1-2.8-1.4L2.5 10.3a1 1 0 0 1 1.6-1.2L5.5 11"/>',
+  slide: '<path d="M2 9.5c2-3.5 4-3.5 6 0s4 3.5 6 0"/>',
+  tick: '<circle cx="8" cy="8" r="2.2" fill="currentColor"/>',
+  file: '<path d="M4 2.5h5l3 3v8H4z"/><path d="M6.5 11V9M8.5 11.5V8M10.5 11V9.5"/>',
+};
+
+// A set lane reads as its sound ("Clap", or "Clap 2" for a numbered layer) with the set as a tag;
+// the skin's default sample adds "skin" to the tag. A map file lane keeps its file name and the tag "File".
+function laneSound(lane) {
+  if (!lane?.group) return { name: lane?.name ?? "", set: "File", icon: "file" };
+  const set = lane.group[0].toUpperCase() + lane.group.slice(1) + (lane.index === 0 ? " · skin" : "");
+  const [sound, icon] = laneSounds[lane.family?.slice(lane.family.indexOf("-") + 1)] ?? [];
+  return sound ? { name: sound + (lane.index > 1 ? " " + lane.index : ""), set, icon }
+    : { name: lane.name, set, icon: "file" };
+}
+
+// The lane's name in the Inspector and the lane filter: "Soft Clap", or the mapper's own name.
+function laneTitle(lane) {
+  if (!lane || renamedLanes.has(lane.colourKey)) return laneDisplayName(lane);
+  const { name } = laneSound(lane);
+  return lane.group ? lane.group[0].toUpperCase() + lane.group.slice(1) + " " + name : name;
 }
 
 function orderedLaneRows() {
@@ -553,7 +593,8 @@ function renderLanes() {
   const eligible = (row, alias) => {
     const lane = scene.lanes[row];
     if (usedLaneKeys !== null && (!lane || !usedLaneKeys.has(lane.key))) return false;
-    return !filter || [alias, laneDisplayName(lane), lane?.name, lane?.sample].some(name => name?.toLowerCase().includes(filter));
+    return !filter || [alias, laneDisplayName(lane), laneTitle(lane), lane?.name, lane?.sample]
+      .some(name => name?.toLowerCase().includes(filter));
   };
   familyParents = new Map();
   previewParents = new Map();
@@ -610,20 +651,17 @@ function renderLanes() {
       const laneLabel = showLaneInfo && lane.index != null
         ? displayName + (lane.index === 0 ? " · skin" : " · idx " + lane.index)
         : displayName;
-      const groupPrefix = lane.group + "-";
-      const visibleName = !showLaneInfo && !view.drumView?.enabled &&
-        !renamedLanes.has(lane.colourKey) && laneLabel.startsWith(groupPrefix + "hit")
-        ? laneLabel.slice(groupPrefix.length)
+      const sound = laneSound(lane);
+      const visibleName = !showLaneInfo && !view.drumView?.enabled && !renamedLanes.has(lane.colourKey)
+        ? sound.name
         : laneLabel;
-      const name = makeButton(showNames ? visibleName : "▶", (event = {}) => {
+      const select = (event = {}) => {
         if (view.busy || drag) return;
         selectVolumeLane(row, event);
         if (!event.ctrlKey && !event.metaKey && !event.shiftKey) laneAction("audition");
-      });
+      };
+      const name = makeButton(showNames ? visibleName : "▶", select);
       name.className = "name";
-      const sourceFile = lane.sample ? nameOf(lane.sample) : "";
-      if (showNames && scene.rowHeight >= 34 && sourceFile &&
-          sourceFile.replace(/\.[^.]+$/, "") !== lane.name) name.dataset.sample = sourceFile;
       name.dataset.laneRow = row;
       name.setAttribute("aria-haspopup", "menu");
       name.setAttribute("aria-expanded", "false");
@@ -631,11 +669,34 @@ function renderLanes() {
       name.setAttribute("aria-pressed", String(laneSelected));
       name.title = (lane.sample ?? laneLabel) + " · Select and audition · Ctrl/Cmd toggles · Shift selects a range";
       const mute = makeButton("M", () => mixSelectedLanes(row, "mute"));
+      mute.className = "lane-mute";
       mute.setAttribute("aria-label", "Mute " + displayName);
       mute.setAttribute("aria-pressed", lane.muted);
       const solo = makeButton("S", () => mixSelectedLanes(row, "solo"));
+      solo.className = "lane-solo";
       solo.setAttribute("aria-label", "Solo " + displayName);
       solo.setAttribute("aria-pressed", lane.solo);
+      // Design lane header, in page and Tab order: icon tile, M, S, layer chevron, name, set tag, +.
+      // The file name stays in the name's tooltip.
+      if (showNames) {
+        const colour = soundColour(lane);
+        strip.style.setProperty("--lane-sound", colour);
+        strip.style.setProperty("--lane-sound-tint", colour + "24");
+        strip.style.setProperty("--lane-tile", Math.min(22, scene.rowHeight - 4) + "px");
+        const icon = document.createElement("span");
+        icon.className = "lane-icon";
+        icon.dataset.sound = sound.icon;
+        icon.setAttribute("aria-hidden", "true");
+        // Inline SVG: the editor's content policy blocks data: images. The markup is fixed, never lane text.
+        icon.innerHTML = '<svg viewBox="0 0 16 16">' + laneIcons[sound.icon] + "</svg>";
+        strip.append(icon);
+      }
+      // The name takes only its own width, so the rest of the row still selects the lane.
+      strip.dataset.laneRow = row;
+      strip.addEventListener("click", event => {
+        if (!event.target.closest?.("button")) select(event);
+      });
+      strip.append(mute, solo);
       if (familyParents.has(row)) {
         const family = familyParents.get(row);
         const collapsed = collapsedFamilies.has(family);
@@ -646,15 +707,23 @@ function renderLanes() {
           paintSoon();
           saveLaneLayout();
         });
+        disclosure.className = "lane-disclosure";
         disclosure.setAttribute("aria-expanded", !collapsed);
         disclosure.setAttribute("aria-label", (collapsed ? "Expand " : "Collapse ") + lane.name + " layers");
         strip.append(disclosure);
       }
-      strip.append(name, mute, solo);
+      strip.append(name);
+      if (showNames && !view.drumView?.enabled) {
+        const tag = document.createElement("span");
+        tag.className = "lane-tag";
+        tag.textContent = sound.set;
+        strip.append(tag);
+      }
       if (lane.canAddLayer) {
         const layer = makeButton("+", () => {
           if (!view.busy) laneAction("add_layer");
         });
+        layer.className = "lane-add-layer";
         layer.dataset.doc = "";
         layer.disabled = !!view.busy;
         layer.title = "Add numbered " + lane.name + " layer";
@@ -816,6 +885,10 @@ function renderBookmarks() {
     list.dataset.path = scene?.path ?? "";
   }
   list.disabled = !!view.busy || marks.length === 0;
+  // A list box needs two rows or more; size 1 turns it back into a drop-down.
+  list.size = limit(marks.length, 2, 6);
+  list.hidden = marks.length === 0;
+  $("bookmarks-empty").hidden = marks.length > 0;
   for (const id of ["jump-bookmark", "rename-bookmark", "remove-bookmark"]) {
     $(id).disabled = !!view.busy || !selectedBookmark();
   }
@@ -878,16 +951,38 @@ function renderScene() {
 function renderActiveLane() {
   const lane = scene?.lanes?.[view.activeLane];
   const name = $("active-lane-name");
-  name.textContent = name.title = laneDisplayName(lane);
+  name.textContent = name.title = laneTitle(lane);
   const sample = $("active-lane-sample");
   sample.textContent = sample.title = lane?.sample ?? "";
   sample.hidden = !lane?.sample || lane.sample === lane.name;
   const colour = laneColours.get(lane?.colourKey);
   const swatch = $("active-lane-colour-swatch");
-  swatch.hidden = !colour;
-  if (colour) swatch.style.backgroundColor = colour;
+  swatch.hidden = !lane;
+  if (lane) swatch.style.backgroundColor = laneColour(lane);
+  $("active-lane-colour-name").textContent = !lane ? "" : colour ?? "Sound colour";
+  $("lane-colour").ariaLabel = lane ? "Lane colour: " + (colour ?? "Sound colour") : "Lane colour…";
   $("replace-sample").disabled = !!view.busy || !lane?.canReplace;
   $("lane-colour").disabled = !!view.busy || !lane?.colourKey;
+}
+
+let selectedHitsScene = null;
+let selectedHits = { lanes: [], volumes: [] };
+
+// The lanes and volumes of the selected hits, worked out once per scene from its moments.
+function selectedHitDetails() {
+  if (selectedHitsScene === scene) return selectedHits;
+  const lanes = new Set();
+  const volumes = new Set();
+  for (const [, volume, , hits] of scene?.moments ?? []) {
+    for (const [row, selected, , gain] of hits) {
+      if (!selected) continue;
+      lanes.add(row);
+      volumes.add(gain ?? volume);
+    }
+  }
+  selectedHitsScene = scene;
+  selectedHits = { lanes: [...lanes], volumes: [...volumes].sort((a, b) => a - b) };
+  return selectedHits;
 }
 
 function renderSelection() {
@@ -895,6 +990,11 @@ function renderSelection() {
   $("selected").textContent = selection
     ? selection.count + (selection.count === 1 ? " hit" : " hits")
     : "Nothing selected";
+  const { lanes, volumes } = selection ? selectedHitDetails() : { lanes: [], volumes: [] };
+  $("selected-lanes").textContent = lanes.length > 1 ? " · " + lanes.length + " lanes"
+    : lanes.length ? " · " + laneTitle(scene.lanes?.[lanes[0]]) : "";
+  $("selection-volume-value").textContent = !volumes.length ? ""
+    : volumes.length === 1 ? volumes[0] + "%" : volumes[0] + "–" + volumes[volumes.length - 1] + "%";
   $("selection-fields").hidden = !selection;
   $("selection-fields").disabled = !!view.busy;
   const body = selection?.sliderBody;
@@ -915,7 +1015,7 @@ function renderSelection() {
     delete fields.dataset.state;
   }
   if (!selection) return;
-  setValue("selection-start-input", +selection.start.toFixed(3));
+  setValue("selection-start-input", clock(selection.start));
   $("selection-object").textContent = selection.object;
 }
 
@@ -924,6 +1024,18 @@ function clock(ms) {
   const minutes = Math.floor(rounded / 60000);
   const seconds = (rounded % 60000 / 1000).toFixed(3);
   return String(minutes).padStart(2, "0") + ":" + seconds.padStart(6, "0");
+}
+
+// Reads an osu! editor time ("01:45.263", or "01:45:263" as in modding timestamps) or plain milliseconds.
+function parseClock(text) {
+  const value = String(text).trim();
+  const time = value.match(/^(\d+):(\d{1,2})(?:([.:])(\d{1,3}))?(?![\d.:a-z])/i);
+  if (time) {
+    const [, minutes, seconds, mark, part = ""] = time;
+    const milliseconds = mark === "." ? Number(part.padEnd(3, "0")) : Number(part || 0);
+    return Number(minutes) * 60000 + Number(seconds) * 1000 + milliseconds;
+  }
+  return /^\d+(\.\d+)?$/.test(value) ? Number(value) : NaN;
 }
 
 function prepare(canvas, height = canvas.clientHeight) {
@@ -2714,8 +2826,11 @@ $("volume-mode").addEventListener("change", () => {
 $("selection-start-edit").addEventListener("submit", (event) => {
   event.preventDefault();
   const field = $("selection-start-input");
-  const position = field.valueAsNumber;
-  if (!scene?.selection || view.busy || !Number.isFinite(position)) return;
+  if (!scene?.selection || view.busy) return;
+  // The time already shown is the hits' start rounded to the millisecond; moving there would only round them.
+  if (field.value.trim() === clock(scene.selection.start)) return;
+  const position = parseClock(field.value);
+  if (!Number.isFinite(position)) return;
   field.blur();
   act({ kind: "timeline_edit", path: scene.path, edit: { kind: "selection_start", position } });
 });
