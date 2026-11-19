@@ -210,7 +210,7 @@ pub struct SaveReport {
 }
 pub fn save_document(document: &Document, backups: PathBuf) -> Result<SaveReport, String> {
     prepare_save(
-        document.compile_base.clone(), document.composer.hitsounds(),
+        document.compile_base.clone(), document.composer.hitsounds(), &document.written,
         document.file.original_bytes().to_vec(), &document.path, backups, document.hs_mode,
         &document.owned_hs_circles, Path::new(""), None, false,
         &|| false, &mut Vec::new(), &mut |_, _| {},
@@ -300,6 +300,7 @@ fn compile_snapshot(
 fn prepare_save(
     file: OsuFile,
     hits: &Hitsounds,
+    written: &Hitsounds,
     expected: Vec<u8>,
     path: &Path,
     backups: PathBuf,
@@ -331,49 +332,73 @@ fn prepare_save(
     } else {
         Vec::new()
     };
-    let recovery = gain_recovery::Captured::read(&hits, root, defaults)?;
-    if recovery.needs_recovery() && project.is_none() {
+    if project.is_none() && gain_recovery::Captured::read(hits, root, defaults)?.needs_recovery() {
         return Err("Editable hit gains need a writable editor project to save safely.".into());
     }
-    let (mut out, mut problems, owned) =
-        compile_for_save(&file, &hits, hs, owned, project.is_some(), cancel, progress)?;
-    let mut mix_files = mixes::MixFiles::default();
     let placement = if hs { Placement::OnObjects } else { Placement::GreenLines };
-    if !problems.is_empty() && problems.iter().all(|problem| mixes::can_render(problem, placement)) {
-        // Check before touching the mapset. The format writer checks again before replacement.
-        if std::fs::read(path).map_err(|error| error.to_string())? != expected {
-            return Err(DIFFICULTY_CHANGED.into());
-        }
-        let root = path.parent().ok_or("Missing mapset folder")?;
-        let files = list_folder(root).map_err(|error| error.to_string())?;
-        // This snapshot includes circles added by HS mode and all edits the first pass encoded.
-        let mut target = match decompile(&out, &files, cancel, &mut |_, _| {}) {
-            Decompiled::Done(target) => target,
-            Decompiled::Cancelled => return Err("Save cancelled".into()),
-            Decompiled::UnsupportedMode { .. } => return Err("Cannot mix this difficulty".into()),
-        };
-        if let Err(error) = mix_files.prepare(
-            &hits, &mut target, &problems, root, defaults, &expected, &[], 2, cancel,
-        ) {
-            diagnostics.extend(problems.iter().map(|problem| {
-                OutputProblem::new(problem, path, path).with_message(&error)
-            }));
-            return Err(error);
-        }
-        (out, problems) = match compile(&out, &target, placement, cancel, &mut |_, _| {}) {
-            Compiled::Done { file, problems } => (file, problems),
-            Compiled::Cancelled => return Err("Save cancelled".into()),
-        };
-    }
-    if !problems.is_empty() {
-        diagnostics.extend(problems.iter().map(|problem| OutputProblem::new(problem, path, path)));
+    let mut mix_files = mixes::MixFiles::default();
+    let mut checked = false;
+    // A part that can't be written as drawn is rolled back first; the mixes the rest needs are
+    // then rendered afresh each round. Without a project nothing could keep a left-out part.
+    let inputs_for_compile = roll_back::Inputs {
+        base: &file, drawn: hits, written, hs, owned, loose_in_project: project.is_some(), roll_back: project.is_some(),
+    };
+    let rolled = roll_back::compile_with_roll_back(
+        &inputs_for_compile,
+        &|problem| mixes::can_render(problem, placement),
+        &mut |pass, effective, mixable| {
+            mix_files = mixes::MixFiles::default();
+            if mixable.is_empty() {
+                return Ok(Ok(pass.out.clone()));
+            }
+            // Check before touching the mapset. The format writer checks again before replacement.
+            if !checked {
+                if std::fs::read(path).map_err(|error| error.to_string())? != expected {
+                    return Err(DIFFICULTY_CHANGED.into());
+                }
+                checked = true;
+            }
+            let files = list_folder(root).map_err(|error| error.to_string())?;
+            // This snapshot includes circles added by HS mode and all edits the pass encoded.
+            let mut target = match decompile(&pass.out, &files, cancel, &mut |_, _| {}) {
+                Decompiled::Done(target) => target,
+                Decompiled::Cancelled => return Err("Save cancelled".into()),
+                Decompiled::UnsupportedMode { .. } => return Err("Cannot mix this difficulty".into()),
+            };
+            if let Err(error) = mix_files.prepare(
+                effective, &mut target, &mixable, root, defaults, &expected, &[], 2, cancel,
+            ) {
+                diagnostics.extend(mixable.iter().map(|problem| {
+                    OutputProblem::new(problem, path, path).with_message(&error)
+                }));
+                return Err(error);
+            }
+            match compile(&pass.out, &target, placement, cancel, &mut |_, _| {}) {
+                Compiled::Done { file, problems } if problems.is_empty() => Ok(Ok(file)),
+                Compiled::Done { problems, .. } => Ok(Err(problems)),
+                Compiled::Cancelled => Err("Save cancelled".into()),
+            }
+        },
+        cancel,
+        progress,
+    )?;
+    let refused: Vec<SaveProblem> = if rolled.refused.is_empty() {
+        // Until Save writes the rest, a left-out part still stops it.
+        rolled.left_out.iter().map(|entry| entry.problem.clone()).collect()
+    } else {
+        rolled.refused
+    };
+    if !refused.is_empty() {
+        diagnostics.extend(refused.iter().map(|problem| OutputProblem::new(problem, path, path)));
         return Err(format!(
             "Save needs review: {} hits cannot be written. First problem at {:.0} ms: {}",
-            problems.len(),
-            problems[0].time.ms(),
-            problem_description(&problems[0].kind)
+            refused.len(),
+            refused[0].time.ms(),
+            problem_description(&refused[0].kind)
         ));
     }
+    let (out, owned, effective) = (rolled.out, rolled.owned, rolled.effective);
+    let recovery = gain_recovery::Captured::read(&effective, root, defaults)?;
     if cancel() {
         return Err("Save cancelled before writing".into());
     }
@@ -381,7 +406,7 @@ fn prepare_save(
         .and_then(|project| project.settings.gain_recovery.as_ref())
         .is_some_and(|record| record.has_authored_for(&expected))
     {
-        Some(recovery.revision(&hits, &out, root, defaults, &mix_files.staged, cancel)?)
+        Some(recovery.revision(&effective, &out, root, defaults, &mix_files.staged, cancel)?)
     } else {
         None
     };
@@ -1577,6 +1602,7 @@ impl Application {
         let file = d.compile_base.clone();
         let expected = d.file.original_bytes().to_vec();
         let hits = d.composer.hitsounds().clone();
+        let written = d.written.clone();
         let path = d.path.clone();
         let version = d.composer.history.version();
         let hs = d.hs_mode;
@@ -1604,7 +1630,7 @@ impl Application {
             let cancelled = || cancel.load(Ordering::Relaxed);
             let mut diagnostics = Vec::new();
             let result = prepare_save(
-                file, &hits, expected, &path, backups, hs, &owned, &defaults,
+                file, &hits, &written, expected, &path, backups, hs, &owned, &defaults,
                 project.as_ref(), review, &cancelled, &mut diagnostics,
                 &mut |done, total| progress.report(done, total),
             ).map(|plan| {
@@ -2775,6 +2801,67 @@ mod project_workflow {
         assert_eq!(std::fs::read(path).unwrap(), written);
     }
 
+
+    const SLIDER_MAP: &[u8] = b"osu file format v14\r\n\r\n[General]\r\nSampleSet: Normal\r\n\r\n[Difficulty]\r\nSliderMultiplier:1.4\r\nSliderTickRate:1\r\n\r\n[TimingPoints]\r\n0,500,4,1,0,70,1,0\r\n\r\n[HitObjects]\r\n256,192,1000,1,0,0:0:0:0:\r\n100,100,2000,2,0,L|200:100,1,140\r\n";
+
+    fn wav(path: &Path, frame: i16) {
+        let mut wav = b"RIFF\x26\0\0\0WAVEfmt \x10\0\0\0\x01\0\x01\0\x80\xbb\0\0\0w\x01\0\x02\0\x10\0data\x02\0\0\0".to_vec();
+        wav.extend(frame.to_le_bytes());
+        std::fs::write(path, wav).unwrap();
+    }
+
+    fn skin(set: SampleSet, sound: Hitsound) -> SampleIdentity {
+        SampleIdentity::Standard { set, sound: Sound::Hit(sound), index: dawsu_foundation::CustomIndex::new(0) }
+    }
+
+    /// HS mode: the circle needs a sample mix of two files, which Save renders; the slider's tail
+    /// asks for a soft and a drum clap, which no object line can hold.
+    fn mix_and_unwritable(scratch: &Scratch, second: &str) -> (Document, Hitsounds, project::Project) {
+        let folder = scratch.path("mapset");
+        std::fs::create_dir(&folder).unwrap();
+        let map = folder.join("a.osu");
+        std::fs::write(&map, SLIDER_MAP).unwrap();
+        wav(&folder.join("a.wav"), 8192);
+        wav(&folder.join("b.wav"), 4096);
+        let document = Document::read(&map).unwrap();
+        let mut hits = document.composer.hitsounds().clone();
+        hits.set_moment_state(dawsu_hitsounding::MomentId(0), 80, [
+            (SampleIdentity::File("a.wav".into()), 80), (SampleIdentity::File(second.into()), 40),
+        ]);
+        let tail = hits.moments().iter().position(|m| matches!(m.place(), dawsu_hitsounding::Place::SliderNode { node: 1, .. })).unwrap();
+        hits.add_hit(dawsu_hitsounding::MomentId(tail), skin(SampleSet::Soft, Hitsound::Clap));
+        hits.add_hit(dawsu_hitsounding::MomentId(tail), skin(SampleSet::Drum, Hitsound::Clap));
+        let project = project::Project::load(&scratch.path("projects"), None, &document.path).unwrap();
+        (document, hits, project)
+    }
+
+    fn prepare(scratch: &Scratch, document: &Document, hits: &Hitsounds, project: Option<&project::Project>, diagnostics: &mut Vec<OutputProblem>) -> Result<PreparedSave, String> {
+        prepare_save(
+            document.compile_base.clone(), hits, &document.written, document.file.original_bytes().to_vec(), &document.path,
+            scratch.path("backups"), true, &BTreeSet::new(), Path::new(""), project, false, &|| false, diagnostics, &mut |_, _| {},
+        )
+    }
+
+    #[test]
+    fn save_renders_the_mixes_it_can_and_lists_only_the_parts_it_leaves_out() {
+        let scratch = Scratch::new("mix-beside-left-out");
+        let (document, hits, project) = mix_and_unwritable(&scratch, "b.wav");
+        let mut diagnostics = Vec::new();
+        let result = prepare(&scratch, &document, &hits, Some(&project), &mut diagnostics);
+        assert!(result.is_err(), "Save still waits for the left-out parts");
+        assert_eq!(diagnostics.iter().map(|p| p.time).collect::<Vec<_>>(), [2500.0], "the rendered mix is not a problem");
+    }
+
+    #[test]
+    fn a_failed_mix_render_stops_the_whole_save() {
+        let scratch = Scratch::new("mix-render-fails");
+        let (document, hits, project) = mix_and_unwritable(&scratch, "missing.wav");
+        let mut diagnostics = Vec::new();
+        let error = prepare(&scratch, &document, &hits, Some(&project), &mut diagnostics).err().unwrap();
+        assert!(error.contains("Could not mix"), "{error}");
+        assert_eq!(diagnostics.iter().map(|p| p.time).collect::<Vec<_>>(), [1000.0]);
+        assert!(diagnostics[0].message.contains("Could not mix"));
+    }
 
     #[test]
     fn save_and_save_check_publish_object_progress() {
