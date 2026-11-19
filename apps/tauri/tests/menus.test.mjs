@@ -4,6 +4,7 @@ import { test } from "node:test";
 import { createContext, runInContext } from "node:vm";
 
 const code = await readFile(new URL("../dist/menus.js", import.meta.url), "utf8");
+const html = await readFile(new URL("../dist/index.html", import.meta.url), "utf8");
 
 function fixture() {
   const elements = new Map();
@@ -20,6 +21,7 @@ function fixture() {
       addEventListener(name, handler) { this.events.set(name, handler); },
       setAttribute(name, value) { this.attributes[name] = value; },
       removeAttribute(name) { delete this.attributes[name]; },
+      getAttribute(name) { return this.attributes[name] ?? null; },
       append(...children) { this.children.push(...children); },
       prepend(child) { this.children.unshift(child); },
       replaceChildren(...children) { this.children = children; },
@@ -33,7 +35,7 @@ function fixture() {
     if (!elements.has(id)) elements.set(id, Object.assign(element("div"), { id }));
     return elements.get(id);
   }
-  get("editor-menus").append(...["map", "edit", "view", "playback"].map(name => get("menu-" + name)));
+  get("editor-menus").append(...["file", "edit", "playback", "map", "view"].map(name => get("menu-" + name)));
   get("editor-menu").offsetWidth = 330;
   get("editor-menu").offsetHeight = 220;
   get("redo").disabled = true;
@@ -71,6 +73,7 @@ function fixture() {
       if (action.kind === "follow") view.follow = action.on;
     },
     invoke: async () => commands,
+    openSiblingDifficulty(path) { calls.push({ sibling: path }); },
   });
   runInContext(code, context);
   function key(key, handler = listeners.get("keydown")) {
@@ -78,7 +81,7 @@ function fixture() {
     handler(event);
     return !!event.defaultPrevented;
   }
-  return { document, get, view, window, calls, listeners, key };
+  return { document, get, view, scene, window, calls, listeners, key };
 }
 
 test("menus read current shortcut chips and keep arrow, Escape, Tab and outside-click handling local", async () => {
@@ -161,7 +164,7 @@ test("right-click opens the seven timeline tools without invoking an edit", () =
   assert.equal(document.activeElement, grid);
 });
 
-test("Playback keeps its segmented choices and switches open, and Map keeps Generate per-object", () => {
+test("Playback keeps its segmented choices and switches open, Map keeps Generate per-object and File saves", () => {
   const { get, calls } = fixture();
   const popup = get("editor-menu");
   get("menu-playback").click();
@@ -172,12 +175,12 @@ test("Playback keeps its segmented choices and switches open, and Map keeps Gene
   left.click();
   assert.equal(left.attributes["aria-checked"], "true");
   assert.equal(popup.hidden, false);
-  const follow = popup.children.find(child => child.textContent === "Follow playback");
+  const follow = popup.children.find(child => child.textContent === "Follow playhead");
   assert.equal(follow.attributes.role, "menuitemcheckbox");
   follow.click();
   assert.equal(follow.attributes["aria-checked"], "true");
-  assert.equal(choices("Speed").length, 6);
-  choices("Speed").at(-1).click();
+  assert.equal(choices("Speed · pitch stays the same").length, 6);
+  choices("Speed · pitch stays the same").at(-1).click();
   assert.deepEqual(calls, [
     { kind: "playback_start", value: "left" }, { kind: "follow", on: true }, { kind: "speed", value: 1.5 },
   ]);
@@ -187,7 +190,133 @@ test("Playback keeps its segmented choices and switches open, and Map keeps Gene
   assert.equal(style.textContent, "Per-object");
   assert.equal(style.attributes["aria-checked"], "true");
   assert.equal(style.disabled, true);
+  get("menu-file").click();
   popup.children.find(child => child.textContent === "Save").click();
   assert.deepEqual(calls.at(-1), { id: "save" });
+  assert.equal(popup.hidden, true);
+});
+
+const menuButtons = popup => popup.children.flatMap(child =>
+  child.className === "menu-choice-group" ? child.children[1].children : [child])
+  .filter(child => child.type === "button");
+const menuLabels = popup => popup.children.map(child => child.className === "menu-choice-group"
+  ? child.attributes["aria-label"] + ": " + child.children[1].children.map(choice => choice.textContent).join(" | ")
+  : child.attributes.role === "separator" ? "—" : child.textContent);
+
+test("the menu bar runs File, Edit, Playback, Map and View in the design's order", () => {
+  const menus = html.match(/<nav id="editor-menus"[^>]*>(.*?)<\/nav>/s)?.[1];
+  assert.deepEqual([...menus.matchAll(/id="menu-(\w+)"/g)].map(match => match[1]),
+    ["file", "edit", "playback", "map", "view"]);
+  const { document, get, key } = fixture();
+  get("menu-file").focus();
+  key("ArrowRight", get("menu-file").events.get("keydown"));
+  assert.equal(document.activeElement, get("menu-edit"));
+  key("ArrowRight", get("menu-edit").events.get("keydown"));
+  assert.equal(document.activeElement, get("menu-playback"));
+  key("ArrowLeft", get("menu-file").events.get("keydown"));
+  assert.equal(document.activeElement, get("menu-view"));
+  key("ArrowRight", get("menu-view").events.get("keydown"));
+  assert.equal(document.activeElement, get("menu-file"));
+});
+
+test("each menu groups the editor's existing commands like the design, with no submenus", () => {
+  const { get } = fixture();
+  get("difficulty").options = [{ value: "Test.osu", text: "Hard" }, { value: "Insane.osu", text: "Insane" }];
+  const popup = get("editor-menu");
+  const open = name => { get("menu-" + name).click(); return menuLabels(popup); };
+  assert.deepEqual(open("file"), [
+    "Open map…", "Import .osz…", "Open map folder", "—",
+    "Save", "Revert to saved…", "—",
+    "Start screen", "Folders…",
+  ]);
+  assert.deepEqual(open("edit"), [
+    "Undo", "Redo", "—",
+    "Cut", "Copy", "Paste at playhead", "Duplicate", "Delete", "Select all", "—",
+    "Quantize…", "Repeat…", "Edit range…", "Scale by volume…", "—",
+    "Protect hitnormals from deletion", "Audition when placing hits",
+  ]);
+  assert.deepEqual(open("playback"), [
+    "Play / pause", "Stop", "Go to start", "—",
+    "Start playing from: Cursor | Left locator | Selection | Selection or left locator", "—",
+    "Return on stop", "Follow playhead", "Cycle between L and R", "—",
+    "Speed · pitch stays the same: 25 | 50 | 75 | 100 | 125 | 150", "—",
+    "Mute song", "Audio output…",
+  ]);
+  assert.deepEqual(open("map"), [
+    "Difficulty: Hard | Insane", "—",
+    "New hitsound difficulty…", "—",
+    "Generate hitsound difficulty…", "Copy hitsounds…",
+    "Generate export style: Per-object", "—",
+    "Add bookmark", "Previous bookmark", "Next bookmark", "—",
+    "Add lane…", "Delete active lane…",
+  ]);
+  assert.deepEqual(open("view"), [
+    "Browser", "Inspector", "Volume panel", "Lane names", "—",
+    "Song waveform", "Object lines", "Used lanes only", "Collapse sample layers", "—",
+    "Zoom in", "Zoom out", "Fit difficulty", "—",
+    "Time signatures…", "Open drum map…", "Edit layout…", "View settings…", "—",
+    "Shortcuts",
+  ]);
+  for (const name of ["file", "edit", "playback", "map", "view"]) {
+    get("menu-" + name).click();
+    for (const button of menuButtons(popup)) assert.notEqual(button.attributes["aria-haspopup"], "menu");
+  }
+});
+
+test("menus only click ribbon controls that exist in the window", () => {
+  const ids = new Set([...code.matchAll(/(?:click|\$)\("([\w-]+)"\)/g)].map(match => match[1]));
+  for (const id of ["folders", "audio", "open", "go-home", "used-only", "ruler-waveform"]) assert.ok(ids.has(id), id);
+  for (const id of ids) assert.match(html, new RegExp('id="' + id + '"'), id);
+});
+
+test("Undo and Redo name the edit they would change", () => {
+  const { get, scene } = fixture();
+  const popup = get("editor-menu");
+  Object.assign(scene, { history: ["Draw hit", "Move 4 hits"], historyPosition: 2 });
+  get("menu-edit").click();
+  assert.deepEqual(menuLabels(popup).slice(0, 2), ["Undo · Move 4 hits", "Redo"]);
+  scene.historyPosition = 1;
+  get("menu-edit").click();
+  get("menu-edit").click();
+  assert.deepEqual(menuLabels(popup).slice(0, 2), ["Undo · Draw hit", "Redo · Move 4 hits"]);
+});
+
+test("menu switches drive the existing toggles and the difficulty row opens a sibling", () => {
+  const { get, calls, view, scene } = fixture();
+  const popup = get("editor-menu");
+  const item = label => menuButtons(popup).find(button => button.textContent === label);
+  Object.assign(view, { audition: true, cycle: false });
+  scene.protect = false;
+  get("menu-edit").click();
+  assert.equal(item("Protect hitnormals from deletion").attributes.role, "menuitemcheckbox");
+  assert.equal(item("Protect hitnormals from deletion").attributes["aria-checked"], "false");
+  assert.equal(item("Audition when placing hits").attributes["aria-checked"], "true");
+  item("Protect hitnormals from deletion").click();
+  item("Audition when placing hits").click();
+  get("menu-playback").click();
+  item("Cycle between L and R").click();
+  item("Go to start").click();
+  assert.deepEqual(calls, [
+    { kind: "protect", on: true }, { kind: "audition", on: false }, { kind: "cycle", on: true }, { id: "start" },
+  ]);
+
+  let waveform = 0, used = 0;
+  get("ruler-waveform").attributes["aria-pressed"] = "true";
+  get("ruler-waveform").addEventListener("click", () => { waveform++; });
+  get("used-only").addEventListener("click", () => { used++; get("used-only").checked = true; });
+  get("menu-view").click();
+  assert.equal(item("Song waveform").attributes["aria-checked"], "true");
+  assert.equal(item("Used lanes only").attributes["aria-checked"], "false");
+  item("Song waveform").click();
+  item("Used lanes only").click();
+  assert.deepEqual([waveform, used], [1, 1]);
+  assert.equal(item("Used lanes only").attributes["aria-checked"], "true");
+  assert.equal(popup.hidden, false);
+
+  get("difficulty").options = [{ value: "Test.osu", text: "Hard" }, { value: "Insane.osu", text: "Insane" }];
+  get("menu-map").click();
+  assert.equal(item("Hard").attributes["aria-checked"], "true");
+  item("Insane").click();
+  assert.deepEqual(calls.at(-1), { sibling: "Insane.osu" });
   assert.equal(popup.hidden, true);
 });

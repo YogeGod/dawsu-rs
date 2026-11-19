@@ -1,7 +1,7 @@
 "use strict";
 
 const menuPopup = $("editor-menu");
-const menuNames = ["map", "edit", "view", "playback"];
+const menuNames = ["file", "edit", "playback", "map", "view"];
 let editorMenu = null;
 
 function canEditFromMenu() {
@@ -48,14 +48,14 @@ function menuCommand(label, glyph, id, enabled) {
   return menuItem(label, glyph, () => command(id), { shortcut: id, enabled });
 }
 
-function menuChoices(label, glyph, choices, current, choose, enabled) {
+function menuChoices(label, choices, current, choose, enabled) {
   const group = document.createElement("div");
   group.className = "menu-choice-group";
   group.setAttribute("role", "group");
   group.setAttribute("aria-label", label);
   const heading = document.createElement("div");
   heading.className = "menu-choice-label";
-  heading.append(menuIcon(glyph), document.createTextNode(label));
+  heading.append(document.createTextNode(label));
   const row = document.createElement("div");
   row.className = "menu-choices";
   for (const [value, text] of choices) {
@@ -124,68 +124,118 @@ function menuItems(name, target) {
         checked: () => view.tool === tool,
       }));
   }
-  if (name === "map") {
+  const separator = () => {
+    const line = document.createElement("div");
+    line.className = "menu-separator";
+    line.setAttribute("role", "separator");
+    return line;
+  };
+  const flag = (label, glyph, kind, on) => menuItem(label, glyph, () => act({ kind, on: !on() }),
+    { checked: () => !!on() });
+  const control = (label, glyph, id, on) => menuItem(label, glyph, click(id), { checked: on });
+  const step = offset => scene?.history?.[scene.historyPosition + offset];
+  const named = (label, action) => action ? label + " · " + action : label;
+  if (name === "file") {
     return [
       menuItem("Open map…", "FolderOpen", click("open"), { shortcut: "open", enabled: idle }),
-      menuItem("Folders…", "FolderOpen", click("folders"), { enabled: idle }),
+      menuCommand("Import .osz…", "FolderOpen", "importOsz", idle),
+      menuCommand("Open map folder", "FolderOpen", "openFolder"),
+      separator(),
       menuCommand("Save", "Save", "save"),
-      menuCommand("Revert…", "Undo2", "revert"),
+      menuCommand("Revert to saved…", "Undo2", "revert"),
+      separator(),
+      menuItem("Start screen", "House", click("go-home")),
+      menuItem("Folders…", "Settings", click("folders"), { enabled: idle }),
+    ];
+  }
+  if (name === "map") {
+    const difficulties = scene?.path ? Array.from($("difficulty").options ?? [], option => [option.value, option.text]) : [];
+    return [
+      ...difficulties.length ? [menuChoices("Difficulty", difficulties, () => scene?.path, path => {
+        closeEditorMenu();
+        openSiblingDifficulty(path);
+      }), separator()] : [],
       menuItem("New hitsound difficulty…", "Drumstick", click("new"), { shortcut: "newDiff" }),
+      separator(),
       menuItem("Generate hitsound difficulty…", "TrendingUp", click("generate"), { shortcut: "generate" }),
       menuItem("Copy hitsounds…", "Redo2", click("copy")),
+      menuChoices("Generate export style", [["objects", "Per-object"]],
+        () => "objects", () => {}, () => false),
+      separator(),
+      menuCommand("Add bookmark", null, "addBookmark"),
+      menuCommand("Previous bookmark", null, "previousBookmark"),
+      menuCommand("Next bookmark", null, "nextBookmark"),
+      separator(),
       menuItem("Add lane…", "Drumstick", click("add-lane")),
       menuItem("Delete active lane…", "Eraser", click("delete-lane"),
         { enabled: () => canEditFromMenu() && !$("delete-lane").disabled }),
-      menuChoices("Generate export style", "Scan", [["objects", "Per-object"]],
-        () => "objects", () => {}, () => false),
     ];
   }
   if (name === "edit") {
     return [
-      menuCommand("Undo", "Undo2", "undo", () => canEditFromMenu() && !$("undo").disabled),
-      menuCommand("Redo", "Redo2", "redo", () => canEditFromMenu() && !$("redo").disabled),
+      menuCommand(named("Undo", step(-1)), "Undo2", "undo", () => canEditFromMenu() && !$("undo").disabled),
+      menuCommand(named("Redo", step(0)), "Redo2", "redo", () => canEditFromMenu() && !$("redo").disabled),
+      separator(),
       menuCommand("Cut", "Eraser", "cut", selection),
       menuCommand("Copy", "Redo2", "copy", selection),
       menuCommand("Paste at playhead", "Redo2", "paste"),
       menuCommand("Duplicate", "Redo2", "duplicate", selection),
       menuCommand("Delete", "Eraser", "delete", selection),
       menuCommand("Select all", "MousePointer2", "selectAll"),
+      separator(),
       menuCommand("Quantize…", "Scan", "quantizeDialog", selection),
       menuCommand("Repeat…", "Redo2", "repeat", selection),
       menuCommand("Edit range…", "Scan", "editRange", () => canEditFromMenu() && !!scene.range),
       menuCommand("Scale by volume…", "TrendingUp", "scaleByVolume"),
+      separator(),
+      flag("Protect hitnormals from deletion", null, "protect", () => scene?.protect),
+      flag("Audition when placing hits", null, "audition", () => view.audition),
     ];
   }
   if (name === "view") {
     return [
+      panel("Browser", "PanelLeft", "browser", "browser"),
+      panel("Inspector", "PanelRight", "inspector", "inspector"),
+      panel("Volume panel", "TrendingUp", "controller", "controller"),
+      panel("Lane names", "Scan", "lane_names", "laneNames"),
+      separator(),
+      control("Song waveform", null, "ruler-waveform", () => $("ruler-waveform").getAttribute("aria-pressed") === "true"),
+      menuItem("Object lines", "Scan", () => act({ kind: "object_lines", on: !view.objectLines }),
+        { checked: () => !!view.objectLines }),
+      control("Used lanes only", null, "used-only", () => !!$("used-only").checked),
+      menuItem("Collapse sample layers", "Scan", click("collapse-layers")),
+      separator(),
       menuCommand("Zoom in", "Scan", "zoomIn"),
       menuCommand("Zoom out", "Scan", "zoomOut"),
       menuItem("Fit difficulty", "Scan", click("fit")),
-      menuItem("Collapse sample layers", "Scan", click("collapse-layers")),
-      menuItem("Object lines", "Scan", () => act({ kind: "object_lines", on: !view.objectLines }),
-        { checked: () => !!view.objectLines }),
-      panel("Inspector", "Scan", "inspector", "inspector"),
-      panel("Volume controller", "TrendingUp", "controller", "controller"),
-      panel("Lane names", "Scan", "lane_names", "laneNames"),
-      panel("File browser", "FolderOpen", "browser", "browser"),
+      separator(),
       menuItem("Time signatures…", "Drumstick", click("time-signatures")),
       menuItem("Open drum map…", "Drumstick", () => requestDrumMap()),
       menuItem("Edit layout…", "Scan", () => dock?.editLayout()),
-      menuItem("View settings…", "Scan", click("panel-view")),
-      menuItem("Shortcuts and help", "MousePointer2", click("help"), { shortcut: "help", enabled: idle }),
+      menuItem("View settings…", "Settings", click("panel-view")),
+      separator(),
+      menuItem("Shortcuts", "Info", click("help"), { shortcut: "help", enabled: idle }),
     ];
   }
-  const speeds = speedButtons.map(button => [Number(button.dataset.playbackSpeed), button.textContent]);
+  if (name !== "playback") return [];
+  const speeds = speedButtons.map(button =>
+    [Number(button.dataset.playbackSpeed), button.textContent.replace("%", "")]);
   return [
-    menuItem("Play or pause", "Play", () => act({ kind: "play" }), { shortcut: "play" }),
+    menuItem("Play / pause", "Play", () => act({ kind: "play" }), { shortcut: "play" }),
     menuItem("Stop", "Square", () => act({ kind: "stop" }), { shortcut: "stop" }),
-    menuChoices("Start playing from", "Play", playbackStartChoices, () => view.playbackStart ?? "cursor",
+    menuCommand("Go to start", "SkipBack", "start"),
+    separator(),
+    menuChoices("Start playing from", playbackStartChoices, () => view.playbackStart ?? "cursor",
       value => act({ kind: "playback_start", value }, false)),
+    separator(),
     toggle("Return on stop", "Undo2", "return_on_stop", "returnOnStop"),
-    toggle("Follow playback", "Scan", "follow", "follow"),
-    menuChoices("Speed", "TrendingUp", speeds, () => view.speed, value => act({ kind: "speed", value })),
+    toggle("Follow playhead", "Scan", "follow", "follow"),
+    flag("Cycle between L and R", null, "cycle", () => view.cycle),
+    separator(),
+    menuChoices("Speed · pitch stays the same", speeds, () => view.speed, value => act({ kind: "speed", value })),
+    separator(),
     toggle("Mute song", "VolumeX", "song_muted", "songMuted"),
-    menuItem("Audio settings…", "TrendingUp", click("audio"), { enabled: idle }),
+    menuItem("Audio output…", "Settings", click("audio"), { enabled: idle }),
   ];
 }
 
