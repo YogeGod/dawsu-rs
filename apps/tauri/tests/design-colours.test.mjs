@@ -103,8 +103,9 @@ test("timeline canvases paint with the design's colours", async () => {
   assert.ok(grid.strokes.includes("#383838"), "beat lines");
   assert.ok(grid.strokes.includes("#545454"), "bar lines");
   for (const canvas of [grid, ruler, overview, volume]) assert.ok(canvas.strokes.includes("#a1d0f7"), "playhead");
-  // Object lines, marked range and marquee follow timeline-spec.md.
-  assert.ok(grid.strokes.includes("#62d6cf1a"), "object lines");
+  // Object lines take the spec's teal at the old 40% strength (10% vanishes on the rows);
+  // the marked range and marquee use the accent.
+  assert.ok(grid.strokes.includes("#62d6cf65"), "object lines");
   assert.ok(grid.fills.includes("#77bdfa35"), "marked range");
   assert.ok(grid.fills.includes("#77bdfa14"), "marquee fill");
   assert.ok(grid.strokes.includes("#77bdfa"), "marquee edge");

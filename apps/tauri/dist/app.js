@@ -1177,7 +1177,7 @@ function paint() {
     if (x < -8 || x > g.width + 8) continue;
     const objectPixel = Math.round(x);
     if (object && view.objectLines && objectPixel !== lastObjectPixel) {
-      line(g.ctx, "#62d6cf1a", objectPixel, 0, objectPixel, g.height);
+      line(g.ctx, "#62d6cf65", objectPixel, 0, objectPixel, g.height);
       lastObjectPixel = objectPixel;
     }
     const colour = volumeColour(volume);
