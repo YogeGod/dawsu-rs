@@ -21,6 +21,8 @@ pub(super) enum ControllerStroke {
 pub(super) struct VolumeBar {
     moment: MomentId,
     shared: i32,
+    /// Where the bar stood when the stroke began (`Moment::reference_volume`).
+    reference: i32,
     gains: Vec<(SampleIdentity, i32)>,
 }
 
@@ -29,6 +31,7 @@ impl VolumeBar {
         Self {
             moment: id,
             shared: moment.volume(),
+            reference: moment.reference_volume(),
             gains: moment.hits().map(|lane| (lane.clone(), moment.hit_volume(lane))).collect(),
         }
     }
@@ -57,6 +60,7 @@ impl VolumeSpread {
             Some(VolumeBar {
                 moment: MomentId(index),
                 shared: moment.volume(),
+                reference: moment.reference_volume(),
                 gains: moment.hits().map(|lane| (lane.clone(), moment.hit_volume(lane))).collect(),
             })
         }).collect();
@@ -152,7 +156,7 @@ impl ControllerStroke {
                 .iter()
                 .map(|bar| {
                     let value = if originals.len() > 1 {
-                        (bar.shared + current.1 - *start).clamp(0, 100)
+                        (bar.reference + current.1 - *start).clamp(0, 100)
                     } else {
                         current.1
                     };
@@ -176,7 +180,7 @@ impl ControllerStroke {
                 values.into_iter().map(|(id, value)| (&originals[&id.0], value)).collect()
             }
         };
-        if values.iter().any(|(bar, value)| composer.hitsounds().moments()[bar.moment.0].volume() != *value) {
+        if values.iter().any(|(bar, value)| composer.hitsounds().moments()[bar.moment.0].reference_volume() != *value) {
             let _ = composer.history.edit(true, |hits| {
                 for (bar, value) in values {
                     bar.move_to(hits, value);
@@ -264,6 +268,36 @@ mod tests {
         assert_eq!((normal_and_clap(&c, &normal), second(&c)), ((90, 60), 100));
         stroke.finish(&mut c, bar(1000.0, 20.0, Mods::NONE));
         assert_eq!((normal_and_clap(&c, &normal), second(&c)), ((20, 0), 40));
+    }
+
+    /// `normal_80_clap_50` after its hitnormal is deleted: the moment keeps 80, the clap plays at 50.
+    fn clap_50_at_a_moment_of_80() -> Composer {
+        let (mut c, normal) = normal_80_clap_50();
+        c.selected.replace([HitKey { moment: 0, lane: normal }]);
+        c.remove_selected();
+        assert_eq!((c.hitsounds().moments()[0].volume(), c.hitsounds().moments()[0].hit_volume(&clap())), (80, 50));
+        c
+    }
+
+    #[test]
+    fn dragging_a_bar_no_hit_plays_at_moves_from_the_hit_that_plays() {
+        let mut c = clap_50_at_a_moment_of_80();
+        let clap_volume = |c: &Composer| c.hitsounds().moments()[0].hit_volume(&clap());
+        let mut stroke = ControllerStroke::start(&mut c, bar(1000.0, 80.0, Mods::NONE), 1.0).unwrap();
+        assert_eq!(clap_volume(&c), 80, "the moment's own 80 is not where the clap plays");
+        stroke.finish(&mut c, bar(1000.0, 90.0, Mods::NONE));
+        assert_eq!(clap_volume(&c), 90);
+        c.undo();
+        assert_eq!(clap_volume(&c), 50);
+
+        // Several bars move by the pointer's change from where each one plays.
+        let normal = c.hitsounds().moments()[1].hits().next().unwrap().clone();
+        c.selected.replace([HitKey { moment: 0, lane: clap() }, HitKey { moment: 1, lane: normal }]);
+        let second = |c: &Composer| c.hitsounds().moments()[1].volume();
+        let mut stroke = ControllerStroke::start(&mut c, bar(1000.0, 80.0, Mods::NONE), 1.0).unwrap();
+        assert_eq!((clap_volume(&c), second(&c)), (50, 100), "a click without a move changes nothing");
+        stroke.finish(&mut c, bar(1000.0, 70.0, Mods::NONE));
+        assert_eq!((clap_volume(&c), second(&c)), (40, 90));
     }
 
     #[test]

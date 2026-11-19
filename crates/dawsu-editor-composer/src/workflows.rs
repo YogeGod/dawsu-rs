@@ -341,7 +341,7 @@ impl Composer {
             .iter()
             .enumerate()
             .filter_map(|(index, moment)| {
-                let before = moment.volume();
+                let before = moment.reference_volume();
                 let volume = scale(before);
                 // Every sound is multiplied by the same factor, so their balance stays.
                 let gains: Vec<_> = moment

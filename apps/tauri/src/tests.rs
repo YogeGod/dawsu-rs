@@ -871,6 +871,37 @@ fn selection_volume_scope_applies_to_the_chosen_lane_and_shortcut() {
 }
 
 #[test]
+fn a_volume_bar_shows_where_its_hits_play_when_none_plays_at_the_moment_s_own_volume() {
+    use serde_json::json;
+
+    let root = Fixture::new("volume-bar-reference");
+    let path = root.0.join("Bar.osu");
+    let map = "osu file format v14\n\n[General]\nMode:0\n\n[TimingPoints]\n0,500,4,1,0,100,1,0\n\n[HitObjects]\n256,192,1000,1,0,0:0:0:0:\n";
+    fs::write(&path, map).unwrap();
+    let mut app = Application::headless();
+    open(&mut app, &path);
+    let scene = snapshot(&app, true)["scene"].clone();
+    let normal = scene["lanes"].as_array().unwrap().iter().position(|lane| {
+        lane["name"].as_str().unwrap().to_lowercase().contains("hitnormal")
+    }).unwrap();
+    for phase in ["down", "up"] {
+        Action::Pointer {
+            phase: phase.into(), ms: 1000.0, row: normal as i32, x: 0.0, y: 0.0,
+            value: None, shift: false, ctrl: false, alt: false,
+        }.run(&mut app);
+    }
+    let action: Action = serde_json::from_value(json!({
+        "kind": "volume_scope", "path": scene["path"], "lanes": [scene["lanes"][normal]["key"]],
+    })).unwrap();
+    action.run(&mut app);
+    Action::Volume { value: 50, relative: false }.run(&mut app);
+    let moment = snapshot(&app, true)["scene"]["moments"][0].clone();
+    assert_eq!(moment[1], 50, "the bar stands where the only hit plays, not at the moment's own 100");
+    assert_eq!(moment[3], json!([[normal, true, false, 50]]));
+    assert_eq!(fs::read_to_string(&path).unwrap(), map);
+}
+
+#[test]
 fn ramp_shape_action_applies_curves_through_the_volume_controller() {
     let root = Fixture::new("ramp-shapes");
     let path = root.0.join("Ramp.osu");

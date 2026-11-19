@@ -117,6 +117,15 @@ impl Moment {
         !self.hit_volumes.is_empty()
     }
 
+    /// Volume edits move from the moment's own volume while a hit plays at it, else from its loudest hit.
+    pub fn reference_volume(&self) -> i32 {
+        if self.hits.iter().all(|lane| self.hit_volumes.contains_key(lane)) {
+            self.hits.iter().map(|lane| self.hit_volume(lane)).max().unwrap_or(self.volume)
+        } else {
+            self.volume
+        }
+    }
+
     fn set_hit_volume(&mut self, lane: &SampleIdentity, volume: i32) {
         if volume == self.volume {
             self.hit_volumes.remove(lane);
@@ -131,7 +140,14 @@ impl Moment {
     }
 
     fn move_volume(&mut self, volume: i32) {
-        let change = volume - self.volume;
+        let reference = self.reference_volume();
+        if volume != reference {
+            self.move_volume_from(reference, volume);
+        }
+    }
+
+    fn move_volume_from(&mut self, from: i32, volume: i32) {
+        let change = volume - from;
         let gains: Vec<_> = self.hit_volumes.iter()
             .map(|(lane, gain)| (lane.clone(), (gain + change).clamp(0, 100)))
             .collect();
@@ -497,7 +513,8 @@ impl Hitsounds {
         let object = self.bodies[body].object;
         self.bodies[body].volume = volume;
         if let Some(head) = self.moments.iter_mut().find(|m| m.place == Place::SliderNode { object, node: 0 }) {
-            head.move_volume(volume);
+            // The body plays at the head's own volume, so the head's hits move by the body's change.
+            head.move_volume_from(head.volume, volume);
         }
     }
 }

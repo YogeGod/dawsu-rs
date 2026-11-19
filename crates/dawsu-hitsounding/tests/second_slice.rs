@@ -120,6 +120,13 @@ fn changing_a_slider_body_s_volume_moves_every_sound_at_its_head_together() {
     h.set_body_volume(0, 80);
     let moment = h.moment(head);
     assert_eq!((moment.volume(), moment.hit_volume(&normal), moment.hit_volume(&clap)), (80, 80, 50), "the clap stays 30 below");
+
+    // The body plays at the head's own volume, so the head's hits move by the body's change even
+    // when no hit at the head plays at that volume.
+    h.remove_hit(head, &normal);
+    h.set_body_volume(0, 60);
+    let moment = h.moment(head);
+    assert_eq!((moment.volume(), moment.hit_volume(&clap)), (60, 30), "the clap stays 30 below the body");
 }
 
 #[test]

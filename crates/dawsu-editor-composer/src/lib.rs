@@ -283,7 +283,7 @@ impl Composer {
             } else {
                 let volume = edit(moment.volume());
                 if !relative || !moment.has_hit_volume_overrides() {
-                    if volume != moment.volume() {
+                    if volume != moment.reference_volume() {
                         moved.push((id, volume));
                     }
                     continue;

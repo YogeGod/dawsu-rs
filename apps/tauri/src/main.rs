@@ -1112,7 +1112,7 @@ fn snapshot(app: &Application, include_scene: bool) -> Value {
                             json!([row, selected])
                         }
                     })).collect::<Vec<_>>();
-                json!([moment.time().ms(), moment.volume(), moment.place() != Place::NoObject, hits])
+                json!([moment.time().ms(), moment.reference_volume(), moment.place() != Place::NoObject, hits])
             }).collect::<Vec<_>>();
             let sections = c.tempo.sections().iter()
                 .map(|s| json!([s.start.ms(), s.beat_length_ms, s.beats_per_bar]))

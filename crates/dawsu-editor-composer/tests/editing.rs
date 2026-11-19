@@ -462,3 +462,117 @@ fn scale_by_volume_leaves_a_silent_sound_silent() {
     assert!(c.scale_by_volume(VolumeScope::All, 0, 100, 50.0));
     assert_eq!(normal_and_clap(&c, &normal), (40, 0), "0 times any factor stays 0");
 }
+
+/// The `normal_80_clap_50` moment after its hitnormal is deleted: the moment keeps 80, but the
+/// only hit left plays at 50.
+fn clap_50_at_a_moment_of_80() -> Composer {
+    use dawsu_editor_composer::HitKey;
+
+    let (mut c, normal) = normal_80_clap_50();
+    c.selected.replace([HitKey { moment: 0, lane: normal.clone() }]);
+    c.remove_selected();
+    let moment = &c.hitsounds().moments()[0];
+    assert!(!moment.has_hit(&normal));
+    assert_eq!((moment.volume(), moment.hit_volume(&clap())), (80, 50));
+    c.selected.replace([HitKey { moment: 0, lane: clap() }]);
+    c
+}
+
+#[test]
+fn set_all_after_a_lane_scoped_set_moves_from_the_volume_the_hit_plays_at() {
+    use dawsu_editor_composer::HitKey;
+    use std::collections::BTreeSet;
+
+    let mut c = composer();
+    let normal = c.hitsounds().moments()[0].hits().next().unwrap().clone();
+    // Undo clears the selection, so each Set selects the hitnormal again.
+    let select = |c: &mut Composer| c.selected.replace([HitKey { moment: 0, lane: normal.clone() }]);
+    select(&mut c);
+    assert!(c.volume_for_lanes(50, false, Some(&BTreeSet::from([normal.clone()]))));
+    let hitnormal = |c: &Composer| c.hitsounds().moments()[0].hit_volume(&normal);
+    assert_eq!((c.hitsounds().moments()[0].volume(), hitnormal(&c)), (100, 50));
+
+    assert!(c.volume_for_lanes(80, false, None));
+    assert_eq!(hitnormal(&c), 80);
+    c.undo();
+    select(&mut c);
+    assert!(c.volume_for_lanes(100, false, None), "no hit plays at the moment's own 100");
+    assert_eq!(hitnormal(&c), 100);
+    c.undo();
+    select(&mut c);
+    assert!(!c.volume_for_lanes(50, false, None), "the hitnormal already plays at 50");
+    assert_eq!(hitnormal(&c), 50);
+}
+
+#[test]
+fn set_all_after_deleting_the_hitnormal_moves_from_the_hit_left() {
+    use dawsu_editor_composer::HitKey;
+
+    let mut c = clap_50_at_a_moment_of_80();
+    // Undo clears the selection, so each Set selects the clap again.
+    let select = |c: &mut Composer| c.selected.replace([HitKey { moment: 0, lane: clap() }]);
+    let clap_volume = |c: &Composer| c.hitsounds().moments()[0].hit_volume(&clap());
+    assert!(c.volume_for_lanes(80, false, None), "no hit plays at the deleted hitnormal's 80");
+    assert_eq!(clap_volume(&c), 80);
+    c.undo();
+    select(&mut c);
+    c.volume(90, false);
+    assert_eq!(clap_volume(&c), 90);
+    c.undo();
+    select(&mut c);
+    assert!(!c.volume_for_lanes(50, false, None), "the clap already plays at 50");
+    assert_eq!(clap_volume(&c), 50);
+}
+
+#[test]
+fn set_all_puts_the_loudest_hit_at_the_value_and_keeps_every_gap() {
+    use dawsu_editor_composer::HitKey;
+    use std::collections::BTreeSet;
+
+    let (mut c, normal) = normal_80_clap_50();
+    let whistle = SampleIdentity::Standard {
+        set: SampleSet::Normal,
+        sound: Sound::Hit(Hitsound::Whistle),
+        index: CustomIndex::new(0),
+    };
+    c.add(1000.0, whistle.clone(), 80, 5.0);
+    assert!(c.volume_for_lanes(30, false, Some(&BTreeSet::from([whistle.clone()]))));
+    c.selected.replace([HitKey { moment: 0, lane: normal.clone() }]);
+    c.remove_selected();
+    c.selected.replace([HitKey { moment: 0, lane: clap() }]);
+    c.volume(90, false);
+    let moment = &c.hitsounds().moments()[0];
+    assert_eq!((moment.hit_volume(&clap()), moment.hit_volume(&whistle)), (90, 70));
+}
+
+#[test]
+fn ramp_after_deleting_the_hitnormal_moves_from_the_hit_left() {
+    use dawsu_editor::tools::ToolTarget;
+    use dawsu_editor_composer::HitKey;
+
+    let mut c = clap_50_at_a_moment_of_80();
+    c.begin("Ramp");
+    c.set_values(&[(HitKey { moment: 0, lane: clap() }, 90)]);
+    c.commit();
+    assert_eq!(c.hitsounds().moments()[0].hit_volume(&clap()), 90);
+}
+
+#[test]
+fn scale_by_volume_picks_a_moment_by_the_volume_its_hits_play_at() {
+    use dawsu_editor_composer::{HitKey, VolumeScope};
+
+    let mut c = clap_50_at_a_moment_of_80();
+    let clap_volume = |c: &Composer| c.hitsounds().moments()[0].hit_volume(&clap());
+    assert!(
+        !c.scale_by_volume(VolumeScope::All, 70, 90, 50.0),
+        "no hit at the first circle plays at the deleted hitnormal's 80"
+    );
+    assert_eq!(clap_volume(&c), 50);
+    assert!(c.scale_by_volume(VolumeScope::All, 40, 60, 50.0), "the clap plays at 50");
+    assert_eq!(clap_volume(&c), 25);
+    c.undo();
+    c.selected.replace([HitKey { moment: 0, lane: clap() }]);
+    assert!(!c.scale_by_volume(VolumeScope::Selected, 70, 90, 50.0));
+    assert!(c.scale_by_volume(VolumeScope::Selected, 40, 60, 50.0));
+    assert_eq!(clap_volume(&c), 25);
+}
