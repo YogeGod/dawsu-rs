@@ -6,12 +6,12 @@ import { createContext, runInContext } from "node:vm";
 const app = await readFile(new URL("../dist/app.js", import.meta.url), "utf8");
 const css = await readFile(new URL("../dist/style.css", import.meta.url), "utf8");
 
-test("workstation chrome uses the Slate surfaces and shared blue accent", () => {
-  assert.match(css, /:root\s*\{[^}]*--base:\s*#171b22\b/);
-  assert.match(css, /:root\s*\{[^}]*--panel:\s*#20252e\b/);
+test("workstation chrome uses the design's neutral grey surfaces and shared blue accent", () => {
+  assert.match(css, /:root\s*\{[^}]*--base:\s*#151515\b/);
+  assert.match(css, /:root\s*\{[^}]*--panel:\s*#1c1c1c\b/);
   assert.match(css, /:root\s*\{[^}]*--hi:\s*#77bdfa\b/);
 });
-test("the ruler and overview paint neutral backgrounds under the waveform frequency colors", async () => {
+test("the ruler paints a teal-tint and the overview a neutral background under the teal waveform frequency shades", async () => {
   const elements = new Map();
   function element() {
     const bands = [];
@@ -22,8 +22,8 @@ test("the ruler and overview paint neutral backgrounds under the waveform freque
       arc(x, y, radius) { objects.push({ x, y, radius, afterWaveform: bands.length > 0 }); },
       fillRect(x, y, width, height) {
         fills.push(this.fillStyle);
-        if (this.fillStyle === "#aaaaaa") hitMarks.push([x, y]);
-        if (["#334a63", "#47618b", "#657ab5", "#7aaac6"].includes(this.fillStyle)) {
+        if (this.fillStyle === "#a3a3a3") hitMarks.push([x, y]);
+        if (["#315c59", "#3c7673", "#46908c", "#51aaa5"].includes(this.fillStyle)) {
           bands.push({color: this.fillStyle, x, y, width, height});
         }
       },
@@ -53,7 +53,7 @@ test("the ruler and overview paint neutral backgrounds under the waveform freque
     scene = {path: "fixture.osu", viewStart: 0, zoom: .25, rowHeight: 30, moments: [], sections: [],
       waveform: [[.4,.38,.12,.02], [.6,.18,.54,.17], [.8,.025,.19,.68]]};
     paint();`, context);
-  assert.equal(get("ruler").fills[0], "#252525");
+  assert.equal(get("ruler").fills[0], "#1c2727");
   assert.equal(get("overview").fills[0], "#1c1c1c");
   assert.equal(get("grid").fills[0], "#151515");
   const waveformBands = { ruler: [...get("ruler").bands], overview: [...get("overview").bands] };
@@ -64,8 +64,8 @@ test("the ruler and overview paint neutral backgrounds under the waveform freque
     { x: 50, y: 50.5, radius: 6, afterWaveform: true },
     { x: 150, y: 50.5, radius: 4, afterWaveform: true },
   ]);
-  assert.ok(get("ruler").fills.includes("#536a89d9"));
-  assert.ok(get("ruler").fills.includes("#9e86c8"));
+  assert.ok(get("ruler").fills.includes("#62d6cfd9"));
+  assert.ok(get("ruler").fills.includes("#e6eef2"));
   assert.deepEqual(get("overview").objects, []);
   get("grid").fills.length = 0;
   runInContext(`
@@ -98,7 +98,7 @@ test("the ruler and overview paint neutral backgrounds under the waveform freque
   runInContext("paint()", context);
   assert.deepEqual(overview.hitMarks.map(([x]) => x), [150]);
 
-  const expected = ["#47618b", "#657ab5", "#7aaac6"];
+  const expected = ["#3c7673", "#46908c", "#51aaa5"];
   for (const id of ["ruler", "overview"]) {
     for (const [segment, x] of [48, 148, 248].entries()) {
       const levels = waveformBands[id].filter(rect => rect.x === x);
