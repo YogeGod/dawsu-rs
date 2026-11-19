@@ -425,8 +425,8 @@ header #editor-menus button{min-height:26px;padding:3px 10px;border-radius:4px}
 .shortcut-toolbar{position:sticky;top:0;z-index:1;display:flex;gap:12px;align-items:center;padding-bottom:10px;background:var(--raised)}
 .shortcut-presets{display:flex;flex:none;gap:2px;padding:3px;border-radius:6px;background:var(--button)}
 .shortcut-presets button{min-height:26px;padding:3px 12px;border:0;background:transparent;color:var(--text)}
-.shortcut-presets button:hover:not(:disabled){background:var(--control)}
-.shortcut-presets button[aria-pressed=true],.shortcut-presets button[aria-pressed=true]:hover:not(:disabled){background:#454545;color:var(--hi);font-weight:600}
+.shortcut-presets button:hover:not(:disabled){background:var(--button-border)}
+.shortcut-presets button[aria-pressed=true],.shortcut-presets button[aria-pressed=true]:hover:not(:disabled){background:var(--control);color:var(--hi);font-weight:600}
 #dialog-body .shortcut-toolbar input[type=search]{flex:1;min-width:0;min-height:32px;padding:4px 10px;border:1px solid var(--line);border-radius:6px;background:var(--base)}
 #dialog-body .shortcut-note{color:var(--muted)}
 .shortcut-group h3{margin:14px 0 2px;padding:0 12px 6px;border-bottom:1px solid var(--line);font-size:13px;font-weight:600}

@@ -134,7 +134,7 @@ test("clicking a row's keys waits for a key and adds a free key at once", async 
   ui.keys("undo").click();
   const capture = ui.capture("undo");
   assert.ok(capture, "the row should wait for keys");
-  assert.equal(ui.text(capture), "Press keys…");
+  assert.equal(ui.text(capture), "Press keys… · Esc cancels");
   assert.equal(ui.focused(), capture);
   assert.match(ui.row("undo").className, /capturing/);
   capture.handlers.get("keydown")({ key: "Shift", code: "ShiftLeft", shiftKey: true, preventDefault() {} });
@@ -185,6 +185,23 @@ test("pressing a key the command already has, or leaving the row, changes nothin
   ui.keys("play").click();
   ui.capture("play").handlers.get("keydown")({ key: "F13", code: "F13", preventDefault() {} });
   assert.match(ui.text(ui.capture("play")), /can't/);
+  await ui.settle();
+  assert.equal(ui.edits.length, 0);
+});
+
+test("Tab leaves the row to the browser and Escape cancels instead of being assigned", async () => {
+  const ui = await editor();
+  ui.keys("play").click();
+  assert.equal(ui.text(ui.capture("play")), "Press keys… · Esc cancels");
+  let prevented = false;
+  ui.capture("play").handlers.get("keydown")({ key: "Tab", code: "Tab", shiftKey: true, preventDefault() { prevented = true; } });
+  assert.equal(prevented, false, "Tab and Shift+Tab move focus; the blur then cancels");
+  assert.ok(ui.capture("play"));
+  ui.capture("play").handlers.get("keydown")({ key: "Escape", code: "Escape", preventDefault() { prevented = true; } });
+  assert.ok(prevented, "Escape must not also close the window");
+  assert.equal(ui.capture("play"), undefined);
+  assert.equal(ui.focused(), ui.keys("play"));
+  assert.deepEqual(ui.chips("play"), ["Space"]);
   await ui.settle();
   assert.equal(ui.edits.length, 0);
 });

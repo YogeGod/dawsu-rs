@@ -3292,6 +3292,8 @@ async function showShortcutEditor() {
     if (chord.key === "Tab" && !chord.ctrl && !chord.alt) return;
     event.preventDefault();
     const [id, , keys] = entry;
+    // A plain Escape cancels waiting; it can't be assigned from the editor.
+    if (chord.key === "Escape" && !chord.ctrl && !chord.shift && !chord.alt) return edit(id, null).focus();
     const name = shortcutName(chord);
     if (!name) {
       capture.textContent = "That key can't be a shortcut. Press another.";
@@ -3331,7 +3333,7 @@ async function showShortcutEditor() {
       target.tabIndex = 0;
       target.setAttribute("role", "textbox");
       target.setAttribute("aria-label", "Press the new key for " + description);
-      target.textContent = "Press keys…";
+      target.textContent = "Press keys… · Esc cancels";
       target.addEventListener("keydown", (event) => press(event, entry, target));
       target.addEventListener("blur", () => { if (editing === mine) edit(id, null); });
       row.replaceChildren(command, target);
