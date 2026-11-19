@@ -960,6 +960,7 @@ function renderActiveLane() {
   swatch.hidden = !lane;
   if (lane) swatch.style.backgroundColor = laneColour(lane);
   $("active-lane-colour-name").textContent = !lane ? "" : colour ?? "Sound colour";
+  $("lane-colour").ariaLabel = lane ? "Lane colour: " + (colour ?? "Sound colour") : "Lane colour…";
   $("replace-sample").disabled = !!view.busy || !lane?.canReplace;
   $("lane-colour").disabled = !!view.busy || !lane?.colourKey;
 }
@@ -1014,7 +1015,7 @@ function renderSelection() {
     delete fields.dataset.state;
   }
   if (!selection) return;
-  setValue("selection-start-input", +selection.start.toFixed(3));
+  setValue("selection-start-input", clock(selection.start));
   $("selection-object").textContent = selection.object;
 }
 
@@ -1023,6 +1024,18 @@ function clock(ms) {
   const minutes = Math.floor(rounded / 60000);
   const seconds = (rounded % 60000 / 1000).toFixed(3);
   return String(minutes).padStart(2, "0") + ":" + seconds.padStart(6, "0");
+}
+
+// Reads an osu! editor time ("01:45.263", or "01:45:263" as in modding timestamps) or plain milliseconds.
+function parseClock(text) {
+  const value = String(text).trim();
+  const time = value.match(/^(\d+):(\d{1,2})(?:([.:])(\d{1,3}))?(?![\d.:a-z])/i);
+  if (time) {
+    const [, minutes, seconds, mark, part = ""] = time;
+    const milliseconds = mark === "." ? Number(part.padEnd(3, "0")) : Number(part || 0);
+    return Number(minutes) * 60000 + Number(seconds) * 1000 + milliseconds;
+  }
+  return /^\d+(\.\d+)?$/.test(value) ? Number(value) : NaN;
 }
 
 function prepare(canvas, height = canvas.clientHeight) {
@@ -2683,8 +2696,11 @@ $("volume-mode").addEventListener("change", () => {
 $("selection-start-edit").addEventListener("submit", (event) => {
   event.preventDefault();
   const field = $("selection-start-input");
-  const position = field.valueAsNumber;
-  if (!scene?.selection || view.busy || !Number.isFinite(position)) return;
+  if (!scene?.selection || view.busy) return;
+  // The time already shown is the hits' start rounded to the millisecond; moving there would only round them.
+  if (field.value.trim() === clock(scene.selection.start)) return;
+  const position = parseClock(field.value);
+  if (!Number.isFinite(position)) return;
   field.blur();
   act({ kind: "timeline_edit", path: scene.path, edit: { kind: "selection_start", position } });
 });

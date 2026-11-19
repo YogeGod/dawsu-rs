@@ -40,7 +40,7 @@ test("selection card shows its first hit and distinguishes relative and absolute
   calls.length = 0;
   runInContext('view = { busy: false }; scene = { selection: { count: 2, start: 1250.5, object: "Circle" } }; renderSelection();', context);
   assert.equal(element("selected").textContent, "2 hits");
-  assert.equal(element("selection-start-input").value, 1250.5);
+  assert.equal(element("selection-start-input").value, "00:01.251");
   assert.equal(element("selection-object").textContent, "Circle");
 
   element("volume-mode").value = "relative";
@@ -88,8 +88,8 @@ test("selection card shows its first hit and distinguishes relative and absolute
     'closeModal = () => {}; renderDialogs();', context);
   assert.equal(context.editModal.title, "Repeat");
   runInContext('view.editDialog = null; scene.path = "Selected.osu"; scene.selection = { count: 2, start: 1120, object: "2 moments" }; renderSelection();', context);
-  assert.equal(element("selection-start-input").value, 1120);
-  element("selection-start-input").valueAsNumber = 1330.5;
+  assert.equal(element("selection-start-input").value, "00:01.120");
+  element("selection-start-input").value = "1330.5";
   element("selection-start-edit").listeners.get("submit")({ preventDefault() {} });
   await runInContext("pending", context);
   assert.deepEqual(JSON.parse(JSON.stringify(calls.at(-1))), {

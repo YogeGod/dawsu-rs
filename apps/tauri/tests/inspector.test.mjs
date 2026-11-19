@@ -59,6 +59,8 @@ test("each Inspector section folds under a plain heading and keeps every control
   assert.match(inspector, /data-volume="-5"/);
   assert.match(inspector, /data-volume="5"/);
   assert.match(css, /#editor-inspector summary::-webkit-details-marker\s*\{\s*display:\s*none/);
+  // Rules for the old Inspector markup are gone with it.
+  for (const dead of [".selection-value", ".active-lane-identity", ".active-lane-actions"]) assert.ok(!css.includes(dead), dead);
 });
 
 test("Selection shows Start, Volume and On object as rows with the selected lanes", async () => {
@@ -73,7 +75,7 @@ test("Selection shows Start, Volume and On object as rows with the selected lane
   `);
   assert.equal(get("selected").textContent, "2 hits");
   assert.equal(get("selected-lanes").textContent, " · Kick");
-  assert.equal(get("selection-start-input").value, 1000);
+  assert.equal(get("selection-start-input").value, "00:01.000");
   assert.equal(get("selection-volume-value").textContent, "60–80%");
   assert.equal(get("selection-object").textContent, "2 object moments");
 
@@ -102,13 +104,16 @@ test("Lane shows the active lane's tint as a row, from the sound colour until th
   assert.equal(get("active-lane-colour-swatch").hidden, false);
   assert.equal(get("active-lane-colour-swatch").style.backgroundColor, "#62d6cf");
   assert.equal(get("active-lane-colour-name").textContent, "Sound colour");
+  assert.equal(get("lane-colour").ariaLabel, "Lane colour: Sound colour");
   assert.equal(get("lane-colour").disabled, false);
   evaluate('laneColours.set("File|kick.wav", "#cc50a2"); renderActiveLane();');
   assert.equal(get("active-lane-colour-swatch").style.backgroundColor, "#cc50a2");
   assert.equal(get("active-lane-colour-name").textContent, "#cc50a2");
+  assert.equal(get("lane-colour").ariaLabel, "Lane colour: #cc50a2");
   evaluate("view.activeLane = null; renderActiveLane();");
   assert.equal(get("active-lane-colour-swatch").hidden, true);
   assert.equal(get("active-lane-colour-name").textContent, "");
+  assert.equal(get("lane-colour").ariaLabel, "Lane colour…");
 });
 
 test("Bookmarks list as rows sized to the marks and say when there are none", async () => {
@@ -124,4 +129,29 @@ test("Bookmarks list as rows sized to the marks and say when there are none", as
   evaluate('scene = { path: "c.osu", bookmarks: [] }; renderBookmarks();');
   assert.equal(get("bookmarks").hidden, true);
   assert.equal(get("bookmarks-empty").hidden, false);
+});
+
+test("Start shows and takes osu! editor times, and plain milliseconds", async () => {
+  const { evaluate, get } = await frontend();
+  const calls = [];
+  evaluate(`view = { busy: false, hasDocument: true };
+    scene = { path: "a.osu", lanes: [], moments: [], selection: { count: 1, start: 105263, object: "Circle" } };
+    renderSelection();`);
+  const field = get("selection-start-input");
+  assert.equal(field.value, "01:45.263");
+  field.blur = () => {};
+  evaluate("act = action => { globalThis.moved = action.edit.position; };");
+  const move = text => {
+    evaluate("globalThis.moved = null;");
+    field.value = text;
+    get("selection-start-edit").events.get("submit")({ preventDefault() {} });
+    return evaluate("globalThis.moved");
+  };
+  assert.equal(move("01:45.263"), null, "the time already shown moves nothing");
+  assert.equal(move("01:46.5"), 106500);
+  assert.equal(move("1:05:020 (1,2) -"), 65020, "a modding timestamp");
+  assert.equal(move("1330.5"), 1330.5);
+  assert.equal(move(" 2000 "), 2000);
+  assert.equal(move("soon"), null);
+  assert.equal(move("12:3x"), null);
 });

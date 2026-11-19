@@ -138,7 +138,7 @@ body{font-family:Inter,"Segoe UI",system-ui,sans-serif}
 .home-panel .brand img{width:40px;height:40px;margin-right:10px}
 .button-icon{width:16px;height:16px;vertical-align:-3px;margin-right:5px}
 button[aria-label="Undo"] .button-icon,button[aria-label="Redo"] .button-icon{margin-right:0}
-#selection-fields{border:0;margin:0;padding:0;min-width:0}#selection-volume{margin-bottom:6px}.selection-value{display:flex;justify-content:space-between;gap:8px;margin:4px 0}.selection-value output{color:var(--muted)}
+#selection-fields{border:0;margin:0;padding:0;min-width:0}#selection-volume{margin-bottom:6px}
 
 #selection-start-edit{display:flex;align-items:center;gap:6px}
 #selection-start-edit label{flex:1;min-width:0;margin:0}
@@ -148,12 +148,9 @@ button[aria-label="Undo"] .button-icon,button[aria-label="Redo"] .button-icon{ma
 #selection-volume-hint{margin:5px 0 8px}
 #selection-fields > .row{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));margin-bottom:6px}
 #editor-inspector .row{flex-wrap:wrap}
-.active-lane-identity{display:flex;align-items:center;gap:7px;font-weight:700}
 #active-lane-colour-swatch{width:10px;height:10px;flex:none;border-radius:2px}
 #active-lane-name,#active-lane-sample{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 #active-lane-sample{display:block;margin-top:4px;color:var(--muted)}
-.active-lane-actions{margin-top:8px}
-.active-lane-actions button{padding-inline:6px}
 
 #musical-position{font:12px "Roboto Mono",Consolas,monospace;white-space:nowrap;padding-right:8px;border-right:1px solid var(--line)}
 #audio-buffer{width:112px}
@@ -350,7 +347,6 @@ input[type=checkbox]:checked::before { background:#111; transform:translateX(12p
 aside { background:var(--panel); }
 aside h2 { font-size:12px; font-weight:650; padding-bottom:6px; border-bottom:1px solid var(--line); }
 aside section > :last-child { margin-bottom:0; }
-.selection-value { padding:7px 8px; border-radius:4px; background:var(--chrome); }
 #sample-browser-entries button:not([aria-expanded])::before { content:""; display:inline-block; width:14px; height:14px; vertical-align:-2px; margin-right:7px; background:var(--hi); clip-path:polygon(0 43%,22% 43%,32% 13%,46% 76%,59% 22%,70% 50%,100% 50%,100% 62%,68% 62%,60% 46%,45% 95%,32% 41%,27% 58%,0 58%); }
 #sample-browser-entries button[aria-pressed=true]::after { content:"✓"; float:right; color:var(--hi); }
 .dock-tab[aria-selected=true] { border-bottom-color:var(--line); background:var(--chrome); }
@@ -397,8 +393,9 @@ button.editor-tool-button.active{color:var(--hi);background:#454545}
 #editor-inspector .inspector-value { display:inline-flex; align-items:center; gap:2px; font-size:11px; }
 #editor-inspector .inspector-row input[type=number] { width:52px; min-height:24px; padding:0 4px; text-align:right; background:var(--base); }
 #editor-inspector input[type=number]::-webkit-inner-spin-button { display:none; }
-#editor-inspector #selection-start-input { width:64px; }
+#editor-inspector #selection-start-input { width:72px; min-height:24px; padding:0 4px; border:1px solid transparent; border-radius:4px; background:var(--base); text-align:right; font-variant-numeric:tabular-nums; }
 #editor-inspector #selection-start-edit label { flex:1 0 auto; }
+#editor-inspector #selection-start-edit button { padding:0 6px; }
 #editor-inspector .inspector-row select { max-width:96px; min-height:24px; padding:0 4px; background:var(--base); }
 #editor-inspector .inspector-row button { min-height:24px; padding:0 8px; }
 #editor-inspector .inspector-group { min-width:0; margin:10px 0 6px; padding:0; border:0; }
