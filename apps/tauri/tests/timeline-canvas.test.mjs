@@ -118,3 +118,22 @@ test("the drawn waveform moves with the song offset on the ruler and the overvie
     assert.deepEqual(loudColumns(get(id)), before[id].map(x => x - 50), id);
   }
 });
+
+test("the cycle region is a faint accent band under a warning-yellow bar on the ruler", async () => {
+  const { get, paint } = await canvases();
+  const ruler = get("ruler");
+  const rects = () => ruler.calls.filter(call => call.name === "fillRect").map(call => [call.fill, ...call.args]);
+  // Locators at 100 and 700 ms at 0.25 px/ms: the region runs from x 25 to 175.
+  paint("scene.zoom = .25; Object.assign(view, { left: 100, right: 700, cycle: true })");
+  assert.ok(rects().some(rect => rect.join() === ["#77bdfa0f", 25, 0, 150, 20].join()), "faint accent band");
+  assert.ok(rects().some(rect => rect.join() === ["#efc16a", 25, 1, 150, 4].join()), "warning-yellow bar");
+  assert.ok(!ruler.calls.some(call => [call.fill, call.stroke].some(colour => colour?.startsWith("#2fbf4a"))), "no green");
+  assert.ok(ruler.calls.some(call => call.name === "stroke" && call.stroke === "#858585"), "locator lines stay");
+  // With the cycle off the locator span stays grey; reversed locators stay orange.
+  paint("view.cycle = false");
+  assert.ok(rects().some(rect => rect.join() === ["#85858522", 25, 0, 150, 20].join()));
+  assert.ok(!rects().some(rect => rect[0] === "#efc16a"));
+  paint("Object.assign(view, { left: 700, right: 100, cycle: true })");
+  assert.ok(rects().some(rect => rect.join() === ["#f0aa7046", 25, 0, 150, 20].join()));
+  assert.ok(!rects().some(rect => rect[0] === "#efc16a"));
+});

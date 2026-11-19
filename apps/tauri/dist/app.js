@@ -58,7 +58,7 @@ const slateTimeline = {
   arrange: "#151515", alternateRow: "#1c1c1c", activeRow: "#454545", group: "#292929",
   ruler: "#252525", rulerBar: "#c4c4c4", overview: "#1c1c1c", waveform: "#1c2727",
   volume: "#151515", divider: "#383838", beatLine: "#383838", barLine: "#545454",
-  cycle: "#2fbf4a", locator: "#858585", playhead: "#a1d0f7",
+  cycle: "#efc16a", loop: "#77bdfa0f", locator: "#858585", playhead: "#a1d0f7",
 };
 const levelColours = [[58, 108, 240], [154, 72, 216], [236, 58, 58]];
 const volumePalette = Array.from({ length: 101 }, (_, volume) => {
@@ -1290,13 +1290,21 @@ function paint() {
   }
   const preview = rulerDrag?.path === scene.path ? rulerDrag.preview : null;
   const [left, right, cycling] = preview ?? [view.left, view.right, view.cycle];
-  const colour = left > right ? "#f0aa70" : cycling ? slateTimeline.cycle : slateTimeline.locator;
   const spanStart = xOf(Math.min(left, right));
   const spanWidth = xOf(Math.max(left, right)) - spanStart;
-  r.ctx.fillStyle = colour + (cycling ? "46" : "22");
-  r.ctx.fillRect(spanStart, 0, spanWidth, rulerBandHeight - 1);
-  r.ctx.fillStyle = colour;
-  r.ctx.fillRect(spanStart, 0, spanWidth, 2);
+  if (cycling && left <= right) {
+    // The design's loop region: a faint accent band under a warning-yellow bar.
+    r.ctx.fillStyle = slateTimeline.loop;
+    r.ctx.fillRect(spanStart, 0, spanWidth, rulerBandHeight - 1);
+    r.ctx.fillStyle = slateTimeline.cycle;
+    r.ctx.fillRect(spanStart, 1, spanWidth, 4);
+  } else {
+    const colour = left > right ? "#f0aa70" : slateTimeline.locator;
+    r.ctx.fillStyle = colour + (cycling ? "46" : "22");
+    r.ctx.fillRect(spanStart, 0, spanWidth, rulerBandHeight - 1);
+    r.ctx.fillStyle = colour;
+    r.ctx.fillRect(spanStart, 0, spanWidth, 2);
+  }
   for (const time of [left, right]) {
     line(r.ctx, slateTimeline.locator, xOf(time), 0, xOf(time), r.height);
   }
