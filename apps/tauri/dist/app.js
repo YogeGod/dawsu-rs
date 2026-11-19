@@ -1932,9 +1932,12 @@ function paragraph(value) {
   return node;
 }
 
+function outputProblemTime(problem) {
+  return (problem.time < 0 ? "−" : "") + clock(Math.abs(problem.time));
+}
+
 function describeOutputProblem(problem) {
-  const time = (problem.time < 0 ? "−" : "") + clock(Math.abs(problem.time));
-  return time + " · " + nameOf(problem.target) + " · " + problem.message;
+  return outputProblemTime(problem) + " · " + nameOf(problem.target) + " · " + problem.message;
 }
 
 async function showOutputProblem(index) {
@@ -1968,12 +1971,42 @@ function renderDialogs() {
       ...files.length ? files : [paragraph("No files need to change.")],
     ], [["Cancel", () => answer(false)], [files.length ? "Save" : "Done", () => answer(true), true]], () => answer(false));
   } else if (view.saveProblemReview) {
+    const problems = view.outputProblems ?? [];
     const dismiss = () => { closeModal(); return act({ kind: "dismiss_save_problem_review" }); };
-    const first = async () => { await dismiss(); await showOutputProblem(0); };
+    const show = (index) => async () => { await dismiss(); await showOutputProblem(index); };
     const save = () => { closeModal(); act({ kind: "save" }); };
-    modal("save-problems", "Review problems before saving",
-      (view.outputProblems ?? []).map(problem => paragraph(describeOutputProblem(problem))),
-      [["Cancel", dismiss], ["Show first problem", first], ["Continue to Save", save, true]], dismiss);
+    const difficulty = document.createElement("div");
+    difficulty.className = "save-problem-difficulty";
+    const label = document.createElement("span");
+    label.textContent = "Difficulty";
+    const file = document.createElement("strong");
+    file.textContent = nameOf(problems[0]?.target ?? scene?.path ?? "");
+    difficulty.append(label, file);
+    const list = document.createElement("div");
+    list.className = "save-problem-list";
+    list.setAttribute("role", "list");
+    list.append(...problems.map((problem, index) => {
+      const row = document.createElement("div");
+      row.className = "save-problem";
+      row.setAttribute("role", "listitem");
+      const message = document.createElement("span");
+      message.textContent = problem.message;
+      const time = document.createElement("time");
+      time.textContent = outputProblemTime(problem);
+      const button = makeButton("Show", show(index));
+      button.setAttribute("aria-label", "Show the problem at " + time.textContent);
+      row.append(message, time, button);
+      return row;
+    }));
+    modal("save-problems", "Save hitsounds", [
+      difficulty,
+      paragraph("These moments can't be written to the difficulty as drawn. Save writes nothing until they are fixed."),
+      list,
+    ], [["Cancel", dismiss], ["Show first problem", show(0)], ["Continue to Save", save, true]], dismiss);
+    const count = document.createElement("span");
+    count.className = "problem-count";
+    count.textContent = problems.length + (problems.length === 1 ? " problem" : " problems");
+    $("dialog-title").replaceChildren("Save hitsounds", count);
   } else if (view.pendingHome) {
     const resolve = (choice) => { closeModal(); act({ kind: "home_choice", choice }); };
     modal("pending-home", "Save changes before going Home?", [paragraph("The open difficulty has unsaved changes.")],
