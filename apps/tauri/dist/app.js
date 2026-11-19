@@ -58,7 +58,7 @@ const slateTimeline = {
   arrange: "#151515", alternateRow: "#1c1c1c", activeRow: "#454545", group: "#292929",
   ruler: "#252525", rulerBar: "#c4c4c4", overview: "#1c1c1c", waveform: "#1c2727",
   volume: "#151515", divider: "#383838", beatLine: "#383838", barLine: "#545454",
-  cycle: "#2fbf4a", locator: "#858585", playhead: "#a1d0f7",
+  cycle: "#efc16a", loop: "#77bdfa0f", locator: "#858585", playhead: "#a1d0f7",
 };
 const levelColours = [[58, 108, 240], [154, 72, 216], [236, 58, 58]];
 const volumePalette = Array.from({ length: 101 }, (_, volume) => {
@@ -1017,11 +1017,13 @@ function drawTimingGrid(ctx, start, end, zoom, top, bottom, ruler = false) {
 function waveform(ctx, width, center, height, start, span) {
   const bins = scene.waveform;
   if (!bins.length || !view.duration) return;
+  // Playback reads the song at position - offset, so the drawn song moves by the same offset.
+  const songStart = start - (view.offset ?? 0);
   for (const [channel, color] of [[0, "#315c59"], [1, "#3c7673"], [2, "#46908c"], [3, "#51aaa5"]]) {
     ctx.fillStyle = color;
     for (let x = 0; x < width; x += 2) {
-      const a = Math.floor((start + x * span / width) / view.duration * bins.length);
-      const b = Math.min(bins.length, Math.ceil((start + (x + 2) * span / width) / view.duration * bins.length));
+      const a = Math.floor((songStart + x * span / width) / view.duration * bins.length);
+      const b = Math.min(bins.length, Math.ceil((songStart + (x + 2) * span / width) / view.duration * bins.length));
       let peak = 0;
       for (let i = Math.max(0, a); i < b; i++) peak = Math.max(peak, bins[i][channel]);
       const extent = limit(peak, 0, 1) * height;
@@ -1059,29 +1061,95 @@ function fillHitDiamond(ctx, x, y) {
   ctx.fill();
 }
 
-function drawGameplay(ctx, gameplay, xOf, y, width) {
+// Object circles grow with zoom as in the design (f11): half a beat on screen × 0.8, kept
+// between 18 and 30 px, from the timing at the object's own time and never taller than the lane.
+const objectReach = 15;
+let beatLengthCache = null;
+
+// [start, beat length] of each timing, sorted by start: built once per timing snapshot.
+function beatLengths(sections) {
+  if (beatLengthCache?.sections !== sections) {
+    const beats = (sections ?? []).filter(([, beat]) => beat > 0).map(([origin, beat]) => [origin, beat])
+      .sort((first, second) => first[0] - second[0]);
+    beatLengthCache = { sections, beats };
+  }
+  return beatLengthCache.beats;
+}
+
+function objectDiameter(beats, time, zoom, laneHeight) {
+  // Binary search for the last timing starting at or before the time; before it, the first timing.
+  let low = 0;
+  let high = beats.length;
+  while (low < high) {
+    const middle = (low + high) >> 1;
+    if (beats[middle][0] <= time) low = middle + 1;
+    else high = middle;
+  }
+  const beat = beats[Math.max(0, low - 1)]?.[1];
+  const size = beat ? limit(Math.round(beat * zoom / 2 * .8), 18, 30) : 18;
+  return Math.max(0, Math.min(size, laneHeight));
+}
+
+function drawGameplay(ctx, gameplay, xOf, y, width, diameterAt) {
   if (!gameplay) return;
   for (const [kind, start, end] of gameplay.spans) {
     const left = xOf(start);
     const right = xOf(end);
-    if (right < 0 || left > width) continue;
-    const height = kind === "slider" ? 11 : 5;
-    ctx.fillStyle = kind === "slider" ? "#62d6cfd9" : "#e6eef2";
+    if (right < -objectReach || left > width + objectReach) continue;
+    if (kind === "slider") {
+      const track = diameterAt(start) * .66;
+      const top = y - track / 2;
+      const bottom = top + track;
+      const corner = Math.min(track, right - left) / 2;
+      ctx.fillStyle = "#62d6cfd9";
+      ctx.beginPath();
+      if (ctx.roundRect) ctx.roundRect(left, top, right - left, track, corner);
+      else {
+        // Older macOS and Linux WebViews have no roundRect(); arcTo() draws the same shape.
+        ctx.moveTo(left + corner, top);
+        ctx.arcTo(right, top, right, bottom, corner);
+        ctx.arcTo(right, bottom, left, bottom, corner);
+        ctx.arcTo(left, bottom, left, top, corner);
+        ctx.arcTo(left, top, right, top, corner);
+        ctx.closePath();
+      }
+      ctx.fill();
+      continue;
+    }
+    ctx.fillStyle = "#e6eef2";
     const from = Math.max(0, left);
     const to = Math.min(width, right);
-    ctx.fillRect(from, y - height / 2, Math.max(1, to - from), height);
+    ctx.fillRect(from, y - 2.5, Math.max(1, to - from), 5);
   }
-  ctx.lineWidth = 1;
+  const radiusOf = nodeRadii(gameplay.points, diameterAt);
+  ctx.lineWidth = 2;
   ctx.strokeStyle = "#1c2727";
-  for (const [kind, time] of gameplay.points) {
+  for (const [kind, time, object] of gameplay.points) {
     const x = xOf(time);
-    if (x < -6 || x > width + 6) continue;
+    if (x < -objectReach || x > width + objectReach) continue;
     ctx.fillStyle = "#e6eef2";
     ctx.beginPath();
-    ctx.arc(x, y, kind === "circle" ? 6 : 4, 0, Math.PI * 2);
+    ctx.arc(x, y, radiusOf(kind, time, object), 0, Math.PI * 2);
     ctx.fill();
     ctx.stroke();
   }
+  ctx.lineWidth = 1;
+}
+
+// A slider's first and last nodes are full circles; repeats between them sit on the track.
+function nodeRadii(points, diameterAt) {
+  const sliderEnds = new Map();
+  for (const [kind, time, object] of points) {
+    if (kind !== "slider") continue;
+    const ends = sliderEnds.get(object);
+    if (ends) sliderEnds.set(object, [Math.min(ends[0], time), Math.max(ends[1], time)]);
+    else sliderEnds.set(object, [time, time]);
+  }
+  return (kind, time, object) => {
+    const ends = kind === "slider" ? sliderEnds.get(object) : null;
+    const repeat = ends && time !== ends[0] && time !== ends[1];
+    return repeat ? diameterAt(ends[0]) * .66 / 2 : diameterAt(time) / 2;
+  };
 }
 
 function laneTint(lane) {
@@ -1242,7 +1310,9 @@ function paint() {
   const waveformMiddle = (r.height + rulerBandHeight) / 2;
   const waveAmplitude = Math.min(waveformHeight, Math.max(0, r.height - rulerBandHeight)) / 2;
   if (waveAmplitude > 0) waveform(r.ctx, r.width, waveformMiddle, waveAmplitude, start, r.width / zoom);
-  drawGameplay(r.ctx, scene.gameplay, xOf, waveformMiddle, r.width);
+  const beats = beatLengths(scene.sections);
+  const objectSize = time => objectDiameter(beats, time, zoom, r.height - rulerBandHeight);
+  drawGameplay(r.ctx, scene.gameplay, xOf, waveformMiddle, r.width, objectSize);
   r.ctx.fillStyle = slateTimeline.ruler;
   r.ctx.fillRect(0, 0, r.width, rulerBandHeight);
   r.ctx.font = "11px Consolas, monospace";
@@ -1257,13 +1327,21 @@ function paint() {
   }
   const preview = rulerDrag?.path === scene.path ? rulerDrag.preview : null;
   const [left, right, cycling] = preview ?? [view.left, view.right, view.cycle];
-  const colour = left > right ? "#f0aa70" : cycling ? slateTimeline.cycle : slateTimeline.locator;
   const spanStart = xOf(Math.min(left, right));
   const spanWidth = xOf(Math.max(left, right)) - spanStart;
-  r.ctx.fillStyle = colour + (cycling ? "46" : "22");
-  r.ctx.fillRect(spanStart, 0, spanWidth, rulerBandHeight - 1);
-  r.ctx.fillStyle = colour;
-  r.ctx.fillRect(spanStart, 0, spanWidth, 2);
+  if (cycling && left <= right) {
+    // The design's loop region: a faint accent band under a warning-yellow bar.
+    r.ctx.fillStyle = slateTimeline.loop;
+    r.ctx.fillRect(spanStart, 0, spanWidth, rulerBandHeight - 1);
+    r.ctx.fillStyle = slateTimeline.cycle;
+    r.ctx.fillRect(spanStart, 1, spanWidth, 4);
+  } else {
+    const colour = left > right ? "#f0aa70" : slateTimeline.locator;
+    r.ctx.fillStyle = colour + (cycling ? "46" : "22");
+    r.ctx.fillRect(spanStart, 0, spanWidth, rulerBandHeight - 1);
+    r.ctx.fillStyle = colour;
+    r.ctx.fillRect(spanStart, 0, spanWidth, 2);
+  }
   for (const time of [left, right]) {
     line(r.ctx, slateTimeline.locator, xOf(time), 0, xOf(time), r.height);
   }
@@ -1587,21 +1665,31 @@ ruler.addEventListener("pointerleave", () => {
 });
 function waveformTarget(ms, y, height) {
   const dy = Math.abs(y - (height + rulerBandHeight) / 2);
-  if (!scene.gameplay || dy > 6) return null;
+  if (!scene.gameplay || dy > objectReach) return null;
+  // Hit the circles and slider tracks at the sizes drawGameplay() draws them.
+  const beats = beatLengths(scene.sections);
+  const diameterAt = time => objectDiameter(beats, time, scene.zoom, height - rulerBandHeight);
+  const radiusOf = nodeRadii(scene.gameplay.points, diameterAt);
   let target = null;
   let nearest = Infinity;
   for (const [kind, time, object] of scene.gameplay.points) {
-    const radius = kind === "circle" ? 6 : 4;
     const distance = Math.hypot((time - ms) * scene.zoom, dy);
-    if (distance <= radius && distance < nearest) {
+    if (distance > objectReach || distance > radiusOf(kind, time, object)) continue;
+    if (distance < nearest) {
       target = { object, time, node: true };
       nearest = distance;
     }
   }
   if (target) return target;
-  const span = scene.gameplay.spans.findLast(([kind, start, end]) =>
-    dy <= (kind === "slider" ? 5.5 : 2.5) && start <= ms && ms <= end);
-  return span ? { object: span[3], time: span[1], node: false } : null;
+  // The last matching span wins; a reverse loop, as older WebKit WebViews lack findLast().
+  const spans = scene.gameplay.spans;
+  for (let i = spans.length - 1; i >= 0; i--) {
+    const [kind, start, end, object] = spans[i];
+    if (start <= ms && ms <= end && dy <= (kind === "slider" ? diameterAt(start) * .66 / 2 : 2.5)) {
+      return { object, time: start, node: false };
+    }
+  }
+  return null;
 }
 
 function bookmarkNearFlag(ms, y) {
