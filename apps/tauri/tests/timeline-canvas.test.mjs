@@ -94,6 +94,26 @@ test("each circle takes its size from the timing at its own time", async () => {
   assert.deepEqual(circles(ruler).map(circle => [circle.x, circle.diameter]), [[20, 30], [80, 20]]);
 });
 
+test("slider tracks keep their rounded ends where the canvas has no roundRect()", async () => {
+  const { get, paint } = await canvases({ roundRect: false });
+  const ruler = get("ruler");
+  paint("scene.zoom = .1");
+  assert.ok(!ruler.calls.some(call => call.name === "roundRect"));
+  const start = ruler.calls.findIndex(call => call.name === "moveTo" && call.fill === "#62d6cfd9");
+  const path = ruler.calls.slice(start, start + 7).map(call => [call.name, ...call.args.map(round)]);
+  // A 40 × 13.2 px track from x 40 with 6.6 px corners: two half circles joined by straight edges.
+  assert.deepEqual(path, [
+    ["moveTo", 46.6, 43.9],
+    ["arcTo", 80, 43.9, 80, 57.1, 6.6],
+    ["arcTo", 80, 57.1, 40, 57.1, 6.6],
+    ["arcTo", 40, 57.1, 40, 43.9, 6.6],
+    ["arcTo", 40, 43.9, 80, 43.9, 6.6],
+    ["closePath"],
+    ["fill"],
+  ]);
+  assert.equal(ruler.calls[start + 6].fill, "#62d6cfd9");
+});
+
 test("object circles never grow past the waveform lane", async () => {
   const { get, paint } = await canvases();
   const ruler = get("ruler");

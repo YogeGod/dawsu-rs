@@ -1082,9 +1082,21 @@ function drawGameplay(ctx, gameplay, xOf, y, width, diameterAt) {
     if (right < -objectReach || left > width + objectReach) continue;
     if (kind === "slider") {
       const track = diameterAt(start) * .66;
+      const top = y - track / 2;
+      const bottom = top + track;
+      const corner = Math.min(track, right - left) / 2;
       ctx.fillStyle = "#62d6cfd9";
       ctx.beginPath();
-      ctx.roundRect(left, y - track / 2, right - left, track, track / 2);
+      if (ctx.roundRect) ctx.roundRect(left, top, right - left, track, corner);
+      else {
+        // Older macOS and Linux WebViews have no roundRect(); arcTo() draws the same shape.
+        ctx.moveTo(left + corner, top);
+        ctx.arcTo(right, top, right, bottom, corner);
+        ctx.arcTo(right, bottom, left, bottom, corner);
+        ctx.arcTo(left, bottom, left, top, corner);
+        ctx.arcTo(left, top, right, top, corner);
+        ctx.closePath();
+      }
       ctx.fill();
       continue;
     }
