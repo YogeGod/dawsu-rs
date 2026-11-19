@@ -10,9 +10,9 @@ async function frontend() {
   const calls = [];
   function element() {
     return {
-      events: new Map(), children: [], dataset: {}, style: {}, classList: { toggle() {} },
+      events: new Map(), children: [], dataset: {}, style: { setProperty(key, value) { this[key] = value; } }, classList: { add() {}, toggle() {} },
       addEventListener(name, listener) { this.events.set(name, listener); },
-      setAttribute() {},
+      setAttribute() {}, focus() {},
       append(...children) { this.children.push(...children); },
       prepend() {},
       replaceChildren(...children) { this.children = children; },
@@ -29,6 +29,10 @@ async function frontend() {
     window: { __TAURI__: {
       core: { invoke: async (_name, args) => {
         calls.push(JSON.parse(JSON.stringify(args)));
+        if (_name === "lane_add_candidates") {
+          return [{ key: "snare", name: "Snare" }, { key: "new-kick", name: "New kick.wav" }];
+        }
+        if (_name === "pick_drum_map") return null;
         return { busy: false, hasDocument: true, position: 0 };
       } },
       event: { listen() {} },
@@ -44,6 +48,181 @@ async function frontend() {
   const evaluate = (code) => runInContext(code, context);
   return { calls, evaluate, get };
 }
+
+test("Add restores a chosen lane and Delete keeps its confirmed difficulty, identity and revision", async () => {
+  const { calls, evaluate, get } = await frontend();
+  evaluate(`
+    view = { busy: false, hasDocument: true, activeLane: 0 };
+    scene = { path: "first.osu", laneRevision: 7, rowHeight: 30,
+      lanes: [
+        { sourceKey: "clap", name: "Clap", hitCount: 2, canDelete: true },
+        { sourceKey: "snare", name: "Snare", hitCount: 0, canDelete: true }
+      ],
+      laneOrder: [0],
+      moments: []
+    };
+    let opened;
+    modal = (...args) => { opened = args; };
+    closeModal = () => {};
+    renderLanes();
+  `);
+  get("add-lane").events.get("click")();
+  await evaluate("pending");
+  assert.deepEqual(calls.shift(), { map: "first.osu" });
+  assert.equal(evaluate("opened[1]"), "Add lane");
+  evaluate('opened[2][0].children[1].value = "new-kick"');
+  evaluate('opened[3].find(([label]) => label === "Add")[1]()');
+  await evaluate("pending");
+  assert.deepEqual(calls.pop().action, { kind: "show_lane", target: { map: "first.osu", lane: "new-kick" } });
+
+  evaluate("view.activeLane = 0;");
+  get("delete-lane").events.get("click")();
+  assert.equal(evaluate("opened[1]"), "Delete lane");
+  assert.match(evaluate("opened[2][0].textContent"), /Clap.*2 hits/);
+  assert.equal(calls.length, 0);
+  evaluate('view.activeLane = 1; scene.laneRevision = 8; opened[3].find(([label]) => label === "Delete")[1]()');
+  await evaluate("pending");
+  assert.deepEqual(calls.pop().action, {
+    kind: "delete_lane", target: { map: "first.osu", lane: "clap" }, revision: 7,
+  });
+});
+
+test("the active lane colour picker applies and resets a faint tint for its difficulty", async () => {
+  const { calls, evaluate, get } = await frontend();
+  evaluate(`
+    view = { busy: false, hasDocument: true, activeLane: 0 };
+    scene = { path: "first.osu", rowHeight: 30,
+      lanes: [{ name: "Clap", colourKey: "Skin|normal-hitclap" }], moments: [] };
+    let opened;
+    modal = (...args) => { opened = args; };
+    closeModal = () => {};
+  `);
+  const open = () => {
+    evaluate("view.activeLane = 0");
+    get("lane-colour").events.get("click")();
+  };
+  open();
+  assert.equal(evaluate("opened[2][0].children.length"), 72);
+  evaluate('opened[2][0].children[12].events.get("change")()');
+  evaluate('opened[3].find(([label]) => label === "Apply")[1]()');
+  await evaluate("pending");
+  assert.equal(get("lanes").children[0].style["--lane-tint"], "#388ada1f");
+  const saved = calls.pop().action;
+  assert.equal(saved.path, "first.osu");
+  assert.equal(saved.persist, true);
+  assert.deepEqual(saved.value.lane_colours, { "Skin|normal-hitclap": "#388ada" });
+
+  open();
+  evaluate('opened[3].find(([label]) => label === "Clear tint")[1]()');
+  await evaluate("pending");
+  assert.equal(get("lanes").children[0].style["--lane-tint"], undefined);
+  assert.deepEqual(calls.pop().action.value.lane_colours, {});
+
+  open();
+  evaluate('scene.path = "second.osu"; opened[3].find(([label]) => label === "Apply")[1]()');
+  await evaluate("pending");
+  assert.equal(calls.length, 0);
+});
+
+test("Drums view keeps aliases at distinct positions and routes them to the same sample lane", async () => {
+  const { calls, evaluate, get } = await frontend();
+  evaluate(`
+    view = { busy: false, hasDocument: true, activeLane: 0, drumView: { enabled: true, name: "Kit" } };
+    scene = { path: "fixture.osu", rowHeight: 30, viewStart: 0, zoom: 1, lanes: [
+      {key: "clap", name: "Clap", sample: "clap.wav"},
+      {key: "finish", name: "Finish"},
+    ], laneOrder: [0, 1], moments: [[1000, 100, true, [[0, false]]]],
+    drumRows: [
+      {row: 0, name: "Snare"}, {row: null, name: "Ghost snare"},
+      {row: 0, name: "Rim"}, {row: 1, name: null}
+    ]};
+    renderLanes();
+  `);
+  const rows = get("lanes").children;
+  assert.deepEqual(rows.map(row => row.children[0].textContent), ["Snare", "Ghost snare", "Rim", "Finish"]);
+  assert.equal(evaluate("JSON.stringify(laneVisualPositions.get(0))"), "[0,2]");
+  rows[2].children[0].events.get("click")();
+  await evaluate("pending");
+  assert.deepEqual(calls.pop().action, { kind: "lane", row: 0, operation: "audition" });
+  const action = evaluate(`drag = { surface: grid, start: 0, zoom: 1, rows: laneRows };
+    pointer({clientX: 1000, clientY: 75}, "down")`);
+  assert.equal(action.row, 0);
+  evaluate("drag = null; view.drumView = { enabled: false, name: 'Kit' }; renderLanes();");
+  assert.deepEqual(get("lanes").children.map(row => row.children[0].textContent), ["Clap", "Finish"]);
+  get("drums-view").events.get("click")();
+  await evaluate("pending");
+  assert.deepEqual(calls.pop(), { map: "fixture.osu", on: true });
+  evaluate("delete view.drumView;");
+  get("drums-view").events.get("click")();
+  await evaluate("pending");
+  assert.deepEqual(calls.pop(), { map: "fixture.osu" });
+});
+
+test("lane selection scopes volume independently of hit selection and skips invisible rows in a Shift range", async () => {
+  const { calls, evaluate, get } = await frontend();
+  evaluate(`
+    view = { busy: false, hasDocument: true, activeLane: 1 };
+    scene = { path: "Scope.osu", rowHeight: 30, lanes: [
+      {key: "A", name: "A"}, {key: "hidden", name: "Hidden"},
+      {key: "C", name: "C"}, {key: "D", name: "D"}
+    ], laneOrder: [0, 2, 3], selection: {count: 2, start: 1000, object: "Circle"}, moments: [] };
+    renderLanes();
+  `);
+  const scope = get("selection-volume-scope");
+  scope.value = "selected";
+  scope.events.get("change")();
+  await evaluate("pending");
+  assert.deepEqual(calls.pop().action, {kind: "volume_scope", path: "Scope.osu", lanes: []});
+  const click = (row, event = {}) => get("lanes").children[row].children[0].events.get("click")(event);
+  click(0);
+  await evaluate("pending");
+  calls.length = 0;
+  click(2, {shiftKey: true});
+  await evaluate("pending");
+  assert.deepEqual(calls.splice(0).map(call => call.action), [
+    {kind: "volume_scope", path: "Scope.osu", lanes: ["A", "C", "D"]},
+  ]);
+  assert.equal(evaluate("scene.selection.count"), 2);
+  assert.ok(get("lanes").children[1].className.includes("lane-selected"));
+  click(1, {metaKey: true});
+  await evaluate("pending");
+  assert.deepEqual(calls.pop().action.lanes, ["A", "D"]);
+  scope.value = "all";
+  scope.events.get("change")();
+  await evaluate("pending");
+  assert.deepEqual(calls.pop().action.lanes, null);
+});
+
+test("lane mix buttons send the selected sample identities or select a new single lane", async () => {
+  const { calls, evaluate, get } = await frontend();
+  evaluate(`
+    view = { busy: false, hasDocument: true };
+    scene = { path: "Mix.osu", rowHeight: 30, moments: [], lanes: [
+      {key: "slot-a", sourceKey: "sample-a", name: "A"},
+      {key: "slot-b", sourceKey: "sample-b", name: "B"},
+      {key: "slot-c", sourceKey: "sample-c", name: "C"}
+    ]};
+    renderLanes();
+  `);
+  const click = (row, button, event) => get("lanes").children[row].children[button].events.get("click")(event);
+  click(0, 0, {});
+  click(1, 0, { ctrlKey: true });
+  await evaluate("pending");
+  calls.length = 0;
+  click(1, 1);
+  await evaluate("pending");
+  assert.deepEqual(calls.pop().action, {
+    kind: "lane_selection_mix", target: { map: "Mix.osu", lane: "sample-b" },
+    operation: "mute", lanes: ["sample-a", "sample-b"],
+  });
+  click(2, 2);
+  await evaluate("pending");
+  assert.deepEqual(calls.pop().action, {
+    kind: "lane_selection_mix", target: { map: "Mix.osu", lane: "sample-c" },
+    operation: "solo", lanes: ["sample-c"],
+  });
+  assert.equal(evaluate("JSON.stringify([...selectionLaneKeys])"), '["slot-c"]');
+});
 
 test("loading another difficulty restores its own saved folder order and collapsed rows", async () => {
   const { calls, evaluate } = await frontend();
@@ -80,7 +259,7 @@ test("filtering by lane name or source preserves the original lane row", async (
     view = { busy: false, hasDocument: true, activeLane: 0, tool: "Draw" };
     scene = {
       path: "fixture.osu", rowHeight: 30,
-      lanes: [{ key: "A", name: "Kick" }, { key: "B", name: "Clap", sample: "percussion/snare.wav" }],
+      lanes: [{ key: "A", name: "Kick" }, { key: "B", name: "Clap", sourceKey: "snare-file", sample: "percussion/snare.wav" }],
       moments: [[1000, 80, true, [[1, false]]]]
     };
   `);
@@ -90,7 +269,7 @@ test("filtering by lane name or source preserves the original lane row", async (
   assert.deepEqual(get("lanes").children.map(row => row.children[0].textContent), ["Clap"]);
   get("lanes").children[0].children[1].events.get("click")();
   await evaluate("pending");
-  assert.equal(calls.at(-1).action.row, 1);
+  assert.equal(calls.at(-1).action.target.lane, "snare-file");
   field.value = "kick";
   field.events.get("input")();
   assert.deepEqual(get("lanes").children.map(row => row.children[0].textContent), ["Kick"]);
@@ -102,7 +281,7 @@ test("Used only compacts rows without renumbering the lanes sent to Rust", async
     view = { busy: false, hasDocument: true, activeLane: 0, tool: "Draw" };
     scene = {
       path: "fixture.osu", rowHeight: 30, viewStart: 0, zoom: 1,
-      lanes: [{ key: "A", name: "A" }, { key: "B", name: "B" }, { key: "C", name: "C" }],
+      lanes: [{ key: "A", name: "A" }, { key: "B", name: "B" }, { key: "C", sourceKey: "sample-c", name: "C" }],
       moments: [[1000, 80, true, [[0, false], [2, false]]]]
     };
   `);
@@ -114,7 +293,7 @@ test("Used only compacts rows without renumbering the lanes sent to Rust", async
   assert.deepEqual(get("lanes").children.map(row => row.children[0].textContent), ["A", "C"]);
   get("lanes").children[1].children[1].events.get("click")();
   await evaluate("pending");
-  assert.deepEqual(calls.pop(), { scene: true, action: { kind: "lane", row: 2, operation: "mute" } });
+  assert.deepEqual(calls.pop(), { scene: true, action: { kind: "lane_selection_mix", target: { map: "fixture.osu", lane: "sample-c" }, operation: "mute", lanes: ["sample-c"] } });
 
   const event = { clientX: 160, clientY: 44 };
   const pointer = evaluate(`
@@ -142,7 +321,7 @@ test("collapsing sample layers keeps their model rows separate and lets them exp
     'scene = { path: "fixture.osu", rowHeight: 30,' +
     ' lanes: [{ key:"A", name:"Default clap", family:"clap", index:0 },' +
     ' { key:"B", name:"Map clap", family:"clap", index:1 },' +
-    ' { key:"C", name:"Clap 2", family:"clap", index:2 }, { key:"D", name:"Free sample" }],' +
+    ' { key:"C", sourceKey:"sample-c", name:"Clap 2", family:"clap", index:2 }, { key:"D", name:"Free sample" }],' +
     ' moments: [[1000, 80, true, [[2, false]]]] }; renderLanes();'
   );
   const collapse = get("collapse-layers").events.get("click");
@@ -153,8 +332,8 @@ test("collapsing sample layers keeps their model rows separate and lets them exp
   assert.equal(evaluate("scene.moments[0][3][0][0]"), 2);
   await evaluate("pending");
   assert.deepEqual(calls.splice(0).map(call => call.action), [{
-    kind: "lane_layout",
-    value: { folder_order: ["normal", "soft", "drum"], collapsed_folders: [], collapsed_families: ["clap"] }
+    kind: "lane_layout", path: "fixture.osu", persist: false,
+    value: { folder_order: ["normal", "soft", "drum"], collapsed_folders: [], collapsed_families: ["clap"], lane_colours: {} }
   }]);
 
   const disclosure = get("lanes").children[0].children[0];
@@ -163,7 +342,7 @@ test("collapsing sample layers keeps their model rows separate and lets them exp
   assert.equal(evaluate("previewParents.has(2)"), false);
   get("lanes").children[2].children[1].events.get("click")();
   await evaluate("pending");
-  assert.deepEqual(calls.pop(), { scene: true, action: { kind: "lane", row: 2, operation: "mute" } });
+  assert.deepEqual(calls.pop(), { scene: true, action: { kind: "lane_selection_mix", target: { map: "fixture.osu", lane: "sample-c" }, operation: "mute", lanes: ["sample-c"] } });
   assert.equal(calls.pop().action.value.collapsed_families.length, 0);
 
   collapse();
@@ -213,4 +392,49 @@ test("sample-set folders reorder headers and send group controls without changin
   assert.deepEqual(calls.map(call => call.action.kind), ["lane_layout", "lane_layout", "lane_layout"]);
   assert.deepEqual(calls.map(call => call.action.value.collapsed_folders), [[], ["drum"], []]);
   assert.deepEqual(calls.at(-1).action.value.folder_order, ["drum", "normal", "soft"]);
+});
+
+test("lane names and moves keep sample identities and persist within one difficulty", async () => {
+  const { calls, evaluate, get } = await frontend();
+  evaluate(`
+    view = { busy: false, hasDocument: true, activeLane: 0 };
+    scene = { path: "Layout.osu", rowHeight: 30, moments: [],
+      lanes: [{colourKey:"Skin|normal-hitnormal", key:"normal", name:"Kick", group:"normal"},
+        {colourKey:"Skin|normal-hitclap", key:"clap", name:"Clap", group:"normal"},
+        {colourKey:"Skin|soft-hitnormal", key:"soft", name:"Soft", group:"soft"}] };
+    modal = (_kind, title, content, buttons) => { globalThis.renameDialog = { title, content, buttons }; };
+    closeModal = () => {};
+    renderLanes();
+    renameLane(1);
+  `);
+  const rename = evaluate("renameDialog");
+  assert.equal(rename.title, "Rename lane");
+  rename.content[0].children[1].value = "  Snare  ";
+  rename.buttons[1][1]();
+  await evaluate("pending");
+  assert.equal(calls.at(-1).action.value.lane_names["Skin|normal-hitclap"], "Snare");
+  const filter = get("lane-filter");
+  filter.value = "snare";
+  filter.events.get("input")();
+  assert.equal(evaluate("JSON.stringify(laneRows)"), '["normal",1]');
+  filter.value = "";
+  filter.events.get("input")();
+  evaluate("moveLane(1,-1); moveLane(1,-1); moveLane(2,-1)");
+  await evaluate("pending");
+  const saved = calls.at(-1).action;
+  assert.equal(saved.persist, true);
+  assert.deepEqual(saved.value.lane_order, ["Skin|normal-hitclap", "Skin|normal-hitnormal", "Skin|soft-hitnormal"]);
+  assert.equal(evaluate("JSON.stringify(laneRows)"), '["normal",1,0,"soft",2]');
+  evaluate("hydrateLaneLayout(null); renderLanes()");
+  assert.equal(evaluate("laneDisplayName(scene.lanes[1])"), "Clap");
+  assert.equal(evaluate("JSON.stringify(laneRows)"), '["normal",0,1,"soft",2]');
+  evaluate("hydrateLaneLayout(" + JSON.stringify(saved.value) + "); renderLanes(); renameLane(1);");
+  assert.equal(evaluate("laneDisplayName(scene.lanes[1])"), "Snare");
+  assert.equal(evaluate("JSON.stringify(laneRows)"), '["normal",1,0,"soft",2]');
+  const reset = evaluate("renameDialog");
+  reset.content[0].children[1].value = "";
+  reset.buttons[1][1]();
+  await evaluate("pending");
+  assert.equal(calls.at(-1).action.value.lane_names, undefined);
+  assert.equal(evaluate("laneDisplayName(scene.lanes[1])"), "Clap");
 });

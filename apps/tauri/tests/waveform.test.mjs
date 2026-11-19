@@ -4,19 +4,32 @@ import { test } from "node:test";
 import { createContext, runInContext } from "node:vm";
 
 const app = await readFile(new URL("../dist/app.js", import.meta.url), "utf8");
-test("the editor paints bass, middle and treble colors in ruler and overview canvases", async () => {
+const css = await readFile(new URL("../dist/style.css", import.meta.url), "utf8");
+
+test("workstation chrome uses the Slate surfaces and shared blue accent", () => {
+  assert.match(css, /:root\s*\{[^}]*--base:\s*#171b22\b/);
+  assert.match(css, /:root\s*\{[^}]*--panel:\s*#20252e\b/);
+  assert.match(css, /:root\s*\{[^}]*--hi:\s*#77bdfa\b/);
+});
+test("the ruler and overview paint neutral backgrounds under the waveform frequency colors", async () => {
   const elements = new Map();
   function element() {
     const bands = [];
+    const fills = [];
+    const objects = [];
+    const hitMarks = [];
     const ctx = new Proxy({
+      arc(x, y, radius) { objects.push({ x, y, radius, afterWaveform: bands.length > 0 }); },
       fillRect(x, y, width, height) {
+        fills.push(this.fillStyle);
+        if (this.fillStyle === "#aaaaaa") hitMarks.push([x, y]);
         if (["#334a63", "#47618b", "#657ab5", "#7aaac6"].includes(this.fillStyle)) {
           bands.push({color: this.fillStyle, x, y, width, height});
         }
       },
     }, {get: (target, name) => target[name] ?? (() => {})});
     return {
-      bands, getContext: () => ctx, clientWidth: 300, clientHeight: 80, scrollTop: 0,
+      bands, fills, objects, hitMarks, getContext: () => ctx, clientWidth: 300, clientHeight: 80, scrollTop: 0,
       dataset: {}, style: {}, children: [], addEventListener() {}, append() {}, prepend() {},
     };
   }
@@ -40,10 +53,55 @@ test("the editor paints bass, middle and treble colors in ruler and overview can
     scene = {path: "fixture.osu", viewStart: 0, zoom: .25, rowHeight: 30, moments: [], sections: [],
       waveform: [[.4,.38,.12,.02], [.6,.18,.54,.17], [.8,.025,.19,.68]]};
     paint();`, context);
+  assert.equal(get("ruler").fills[0], "#252525");
+  assert.equal(get("overview").fills[0], "#1c1c1c");
+  assert.equal(get("grid").fills[0], "#151515");
+  const waveformBands = { ruler: [...get("ruler").bands], overview: [...get("overview").bands] };
+  runInContext(`
+    scene.gameplay = {points: [["circle", 200], ["slider", 600]], spans: [["slider", 600, 800], ["spinner", 900, 1000]]};
+    paint();`, context);
+  assert.deepEqual(get("ruler").objects, [
+    { x: 50, y: 50.5, radius: 6, afterWaveform: true },
+    { x: 150, y: 50.5, radius: 4, afterWaveform: true },
+  ]);
+  assert.ok(get("ruler").fills.includes("#536a89d9"));
+  assert.ok(get("ruler").fills.includes("#9e86c8"));
+  assert.deepEqual(get("overview").objects, []);
+  get("grid").fills.length = 0;
+  runInContext(`
+    scene.lanes = [{colourKey: "Skin|normal-hitclap"}, {colourKey: "Skin|normal-hitfinish"}];
+    laneRows = [0, 1];
+    hydrateLaneLayout({lane_colours: {"Skin|normal-hitclap": "#ff5500"}});
+    paint();`, context);
+  assert.deepEqual(get("grid").fills.slice(0, 3), ["#151515", "#ff55001f", "#1c1c1c"]);
+  get("grid").fills.length = 0;
+  runInContext("hydrateLaneLayout(null); paint()", context);
+  assert.ok(!get("grid").fills.includes("#ff55001f"));
+  runInContext(`
+    scene.lanes = [{group: "soft"}, {group: "normal"}, {group: "drum"}, {group: null}];
+    scene.moments = [[200, 50, true, [[0], [1]]], [201, 50, false, [[1]]],
+      [900, 50, true, [[2], [3]]], [1000, 50, true, []]];
+    scene.zoom = 1;
+    paint();`, context);
+  const overview = get("overview");
+  const marks = [[50, 3], [50, 17.8], [225, 32.6], [225, 47.4]];
+  assert.deepEqual(overview.hitMarks.map(([x, y]) => [x, Math.round(y * 10) / 10]),
+    marks);
+  overview.hitMarks.length = 0;
+  runInContext("scene.viewStart = 800; view.position = 900; paint()", context);
+  assert.deepEqual(overview.hitMarks.map(([x]) => x), [50, 50, 225, 225]);
+  overview.hitMarks.length = 0;
+  runInContext("scene = {...scene, moments: [[900, 50, true, [[2]]]]}; paint()", context);
+  assert.deepEqual(overview.hitMarks.map(([x]) => x), [225]);
+  overview.hitMarks.length = 0;
+  overview.clientWidth = 200;
+  runInContext("paint()", context);
+  assert.deepEqual(overview.hitMarks.map(([x]) => x), [150]);
+
   const expected = ["#47618b", "#657ab5", "#7aaac6"];
   for (const id of ["ruler", "overview"]) {
     for (const [segment, x] of [48, 148, 248].entries()) {
-      const levels = get(id).bands.filter(rect => rect.x === x);
+      const levels = waveformBands[id].filter(rect => rect.x === x);
       assert.equal(levels.length, 4);
       const ordered = levels.slice(1).sort((a, b) => b.height - a.height);
       assert.equal(ordered[0].color, expected[segment]);

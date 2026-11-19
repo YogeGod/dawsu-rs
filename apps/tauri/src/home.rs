@@ -50,9 +50,9 @@ impl Route {
                 }
             }
             action @ Action::Key { .. } if self.visible() || app.document().is_none() => {
-                if let Action::Key { key, code, ctrl, shift, alt } = &action
+                if let Action::Key { key, code, ctrl, shift, alt, .. } = &action
                     && let Some(chord) = super::keyboard::chord(key, code, *ctrl, *shift, *alt)
-                    && matches!(app.keymap.command_for(chord.combination()), Some("open" | "help"))
+                    && matches!(app.keymap.command_for(chord.combination()), Some("open" | "help" | "importOsz" | "openHitsoundFolder"))
                 {
                     return Some(action);
                 }

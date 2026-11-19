@@ -15,7 +15,7 @@ pub fn cue_list(hitsounds: &Hitsounds, muted: &[SampleIdentity], soloed: &[Sampl
     let mut cues = Vec::new();
     for m in hitsounds.moments() {
         for lane in m.hits().filter(|l| audible(l)) {
-            cues.push(Cue::new(m.time(), plays(lane), gain(m.volume()), None));
+            cues.push(Cue::new(m.time(), plays(lane), gain(m.hit_volume(lane)), None));
         }
     }
     for b in hitsounds.bodies() {

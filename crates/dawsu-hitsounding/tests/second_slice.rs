@@ -339,3 +339,60 @@ fn slider_bodies_are_their_own_lanes_with_the_slider_sounds() {
     assert!(matches!(body.whistle_lane(), SampleIdentity::Standard { sound: Sound::Slider(SliderSound::Whistle), .. }));
     assert!(h.lane(&body.whistle_lane()).is_some());
 }
+
+#[test]
+fn independent_whistle_set_and_auto_keep_other_slider_sounds() {
+    for (object, initial) in [
+        ("100,100,1000,2,2,L|300:100,2,200", None),
+        ("100,100,1000,2,2,L|300:100,2,200,0|2|0,0:0:1:77:|2:0|0:0,2:2:0:0:", Some(SampleSet::Soft)),
+    ] {
+        let file = map(object);
+        let before = dec(&file);
+        assert_eq!(before.bodies()[0].whistle_set(), initial);
+        let mut edited = before.clone();
+        for choice in [Some(SampleSet::Drum), Some(SampleSet::Soft), None] {
+            edited.set_body_whistle_set(0, choice);
+            let (out, problems) = comp(&file, &edited, Placement::GreenLines);
+            assert!(problems.is_empty(), "{object}: {problems:?}");
+            let after = dec(&reopen(&out));
+            let (a, b) = (&after.bodies()[0], &before.bodies()[0]);
+            assert_eq!(a.whistle_set(), choice);
+            assert_eq!(set_of(&a.whistle_lane()), choice.unwrap_or(SampleSet::Soft));
+            assert_eq!((a.slide(), a.tick(), a.volume()), (b.slide(), b.tick(), b.volume()));
+            assert_eq!(hits(&after), hits(&before), "every node keeps its sounds");
+            assert_eq!(volumes(&after), volumes(&before), "every node keeps its volume");
+            assert_eq!(out.timing_points().iter().map(|p| out.line_text(p.line())).collect::<Vec<_>>(),
+                       file.timing_points().iter().map(|p| file.line_text(p.line())).collect::<Vec<_>>());
+            let line = out.line_text(out.hit_objects()[0].line()).unwrap();
+            if object.contains("0:0:1:77:") {
+                assert!(line.contains(",0|2|0,0:0:1:77:|2:0|0:0,"), "{line}");
+            }
+        }
+    }
+}
+
+#[test]
+fn compile_keeps_equal_effective_gains_native_and_plans_a_mix_for_distinct_layers() {
+    let source = map("256,192,1000,1,8,0:0:0:60:\r\n256,192,1500,1,8,0:0:0:60:");
+    let mut edited = dec(&source);
+    let clap = |moment: usize, hits: &Hitsounds| {
+        hits.moments()[moment].hits().find(|lane| matches!(lane,
+            SampleIdentity::Standard { sound: Sound::Hit(Hitsound::Clap), .. }
+        )).unwrap().clone()
+    };
+    let first_clap = clap(0, &edited);
+    let second_clap = clap(1, &edited);
+    edited.set_hit_volume(MomentId(0), &first_clap, 35);
+    edited.set_volume(MomentId(1), 2);
+    edited.set_hit_volume(MomentId(1), &second_clap, 5);
+
+    let (encoded, problems) = comp(&source, &edited, Placement::OnObjects);
+    let [SaveProblem { kind: ProblemKind::NeedsSampleMix(layers), .. }] = problems.as_slice() else {
+        panic!("only the first object should require a mix: {problems:?}");
+    };
+    assert!(layers.contains(&(first_clap, 35)));
+    assert_eq!(layers.iter().map(|(_, volume)| *volume).sum::<i32>(), 95);
+    let decoded = dec(&reopen(&encoded));
+    assert_eq!(decoded.moments()[1].volume(), 5);
+    assert_eq!(decoded.moments()[1].hits().count(), 2);
+}

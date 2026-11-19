@@ -176,7 +176,7 @@ enum Slot {
 }
 
 fn mix_plan(m: &Moment) -> ProblemKind {
-    ProblemKind::NeedsSampleMix(m.hits().map(|h| (h.clone(), saved_volume(m.volume()))).collect())
+    ProblemKind::NeedsSampleMix(m.hits().map(|h| (h.clone(), saved_volume(m.hit_volume(h)))).collect())
 }
 
 /// The save problem for layers one moment cannot hold, each at its own volume (more than one
@@ -186,14 +186,18 @@ pub fn mix_problem(layers: &[(SampleIdentity, i32)]) -> ProblemKind {
     ProblemKind::NeedsSampleMix(layers.iter().map(|(lane, volume)| (lane.clone(), saved_volume(*volume))).collect())
 }
 
-/// One hitnormal (or one sample file) plus additions that share one set and one index, all at the
-/// moment's volume; the hitnormal's index is the object's one index too.
+/// One hitnormal (or one sample file) plus additions that share one set, one index and one
+/// effective volume; the hitnormal's index is the object's one index too.
 fn native(m: &Moment) -> Result<Native, ProblemKind> {
+    let volume = m.hits().next().map_or_else(|| saved_volume(m.volume()), |lane| saved_volume(m.hit_volume(lane)));
     let mut slot = None;
     let mut slot_index = None;
     let mut additions = 0;
     let mut addition: Option<(SampleSet, u32)> = None;
     for h in m.hits() {
+        if saved_volume(m.hit_volume(h)) != volume {
+            return Err(mix_plan(m));
+        }
         match h {
             SampleIdentity::File(f) if slot.is_none() => slot = Some(Slot::File(f.clone())),
             SampleIdentity::Standard { set, sound: Sound::Hit(Hitsound::Normal), index } if slot.is_none() => {
@@ -221,7 +225,7 @@ fn native(m: &Moment) -> Result<Native, ProblemKind> {
         (Some(n), _) => Some(n),
         (None, a) => a.map(|a| a.1),
     };
-    Ok(Native { slot, additions, addition_set: addition.map(|a| a.0), index, volume: saved_volume(m.volume()) })
+    Ok(Native { slot, additions, addition_set: addition.map(|a| a.0), index, volume })
 }
 
 /// The timing point an object part reads, with lazer's defaults when there is none.
@@ -514,6 +518,10 @@ impl Context {
                 SampleIdentity::File(_) => None,
             };
             own_new = encode_banks(own.0, own.1, b.set(), whistle_set, &point.bank());
+        }
+        if let Some(b) = body.filter(|b| b.whistle_set_changed()) {
+            // Explicit and Auto must remain distinct even when the effective set is the same.
+            own_new.1 = b.whistle_set.map_or(0, set_number);
         }
         let line = obj.line();
         let sounds_complete = fields.edge_sounds.as_ref().is_some_and(|e| e.len() >= nodes);

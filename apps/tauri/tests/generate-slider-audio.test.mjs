@@ -44,8 +44,8 @@ test("Generate reviews hits only by default and includes slider audio only on re
       'closeModal = () => {};', context);
     get("generate").events.get("click")();
     assert.equal(context.generate.title, "Generate hitsound difficulty");
-    const [label, checkbox] = context.generate.content[0].children;
-    assert.match(label, /slider slide, whistle and tick audio/i);
+    assert.equal(context.generate.content[0].textContent, "Generate from Sliders.osu");
+    const [, checkbox] = context.generate.content.find(node => node.children[0] === "Include slider slide, whistle and tick audio").children;
     assert.equal(checkbox.checked, false);
     checkbox.checked = include;
     context.generate.buttons.find(([label]) => label === "Review output")[1]();

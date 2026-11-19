@@ -11,6 +11,89 @@ use symphonia::core::formats::{FormatOptions, TrackType};
 use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
 
+#[cfg(windows)]
+mod directsound;
+#[cfg(windows)]
+mod mme;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OutputBackend {
+    #[default]
+    System,
+    Mme,
+    DirectSound,
+    Asio,
+}
+
+impl OutputBackend {
+    pub fn available() -> &'static [Self] {
+        #[cfg(all(windows, feature = "asio-local"))]
+        return &[Self::System, Self::DirectSound, Self::Mme, Self::Asio];
+        #[cfg(all(windows, not(feature = "asio-local")))]
+        return &[Self::System, Self::DirectSound, Self::Mme];
+        #[cfg(not(windows))]
+        return &[Self::System];
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::System if cfg!(windows) => "WASAPI",
+            Self::System => "System",
+            Self::Mme => "MME",
+            Self::DirectSound => "DirectSound",
+            Self::Asio => "ASIO",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct OutputDevice {
+    pub id: String,
+    pub name: String,
+}
+
+#[cfg(all(windows, feature = "asio-local"))]
+fn registered_asio_devices() -> Vec<OutputDevice> {
+    // Iterating CPAL's ASIO devices loads each driver to query capabilities. Settings only
+    // needs registered names. CPAL uses the same driver name as its backend device ID.
+    asio_sys::Asio::new()
+        .driver_names()
+        .into_iter()
+        .map(|name| {
+            let id = cpal::DeviceId::new(cpal::HostId::Asio, &name).to_string();
+            OutputDevice { id, name }
+        })
+        .collect()
+}
+
+#[cfg(windows)]
+const NATIVE_SAMPLE_RATE: u32 = 48_000;
+
+#[cfg(windows)]
+struct NativeStream {
+    name: String,
+    buffer_ms: u32,
+    stop: Arc<AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+#[cfg(windows)]
+impl Drop for NativeStream {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+enum OutputStream {
+    System { _stream: cpal::Stream },
+    #[cfg(windows)]
+    Native { _stream: NativeStream },
+}
+
 #[derive(Debug, Clone)]
 pub struct AudioClip {
     pub samples: Vec<f32>,
@@ -431,7 +514,9 @@ enum Command {
     Offset(f64),
 }
 pub struct AudioEngine {
-    _stream: cpal::Stream,
+    _stream: OutputStream,
+    backend: OutputBackend,
+    effective_buffer_ms: Option<u32>,
     send: mpsc::Sender<Command>,
     retirements: Mutex<Vec<Retired>>,
     position: Arc<AtomicU64>,
@@ -439,6 +524,7 @@ pub struct AudioEngine {
     pub errors: Arc<AtomicU64>,
     pub peak: Arc<AtomicU32>,
     pub device_name: String,
+    device_id: Option<String>,
 }
 impl AudioEngine {
     pub fn open(device_name: Option<&str>) -> Result<Self, String> {
@@ -447,11 +533,117 @@ impl AudioEngine {
 
     /// Requests a device buffer in milliseconds. The host chooses the actual callback size.
     pub fn open_with_buffer(device_name: Option<&str>, buffer_ms: Option<u32>) -> Result<Self, String> {
+        Self::open_cpal(
+            OutputBackend::System,
+            cpal::default_host(),
+            device_name,
+            None,
+            buffer_ms,
+        )
+    }
+
+    pub fn open_output(
+        backend: OutputBackend, device_id: Option<&str>, buffer_ms: Option<u32>,
+    ) -> Result<Self, String> {
+        if backend == OutputBackend::System {
+            return Self::open_cpal(backend, cpal::default_host(), None, device_id, buffer_ms);
+        }
+        if backend == OutputBackend::Asio {
+            #[cfg(all(windows, feature = "asio-local"))]
+            {
+                let id = device_id.ok_or("Choose an ASIO driver")?;
+                if !registered_asio_devices().iter().any(|device| device.id == id) {
+                    return Err("Selected ASIO driver is unavailable".into());
+                }
+                let host = cpal::host_from_id(cpal::HostId::Asio)
+                    .map_err(|error| error.to_string())?;
+                return Self::open_cpal(backend, host, None, Some(id), buffer_ms);
+            }
+            #[cfg(not(all(windows, feature = "asio-local")))]
+            return Err("ASIO is unavailable in this build".into());
+        }
+        #[cfg(windows)]
+        {
+            if let Some(ms) = buffer_ms {
+                validate_buffer_ms(ms)?;
+            }
+            let (send, receive) = mpsc::channel();
+            let position = Arc::new(AtomicU64::new(0));
+            let playing = Arc::new(AtomicBool::new(false));
+            let errors = Arc::new(AtomicU64::new(0));
+            let peak = Arc::new(AtomicU32::new(0));
+            let mut state = StreamRender::new(NATIVE_SAMPLE_RATE, 2, receive,
+                position.clone(), playing.clone(), peak.clone());
+            let render = move |out: &mut [i16]| state.fill(out);
+            let stream = match backend {
+                OutputBackend::Mme => mme::open(device_id, buffer_ms, render, errors.clone()),
+                OutputBackend::DirectSound => directsound::open(device_id, buffer_ms, render, errors.clone()),
+                OutputBackend::System | OutputBackend::Asio => unreachable!("CPAL output opened above"),
+            }?;
+            return Ok(Self {
+                backend,
+                effective_buffer_ms: Some(stream.buffer_ms),
+                device_name: stream.name.clone(),
+                device_id: device_id.map(str::to_owned),
+                _stream: OutputStream::Native { _stream: stream },
+                send, position, playing, errors, peak,
+                retirements: Mutex::new(Vec::new()),
+            });
+        }
+        #[cfg(not(windows))]
+        Err(format!("{} output is available only on Windows", backend.label()))
+    }
+
+    pub fn output_devices(backend: OutputBackend) -> Result<Vec<OutputDevice>, String> {
+        match backend {
+            OutputBackend::System => cpal::default_host().output_devices()
+                .map_err(|error| error.to_string())
+                .map(|devices| devices.filter_map(|device| {
+                    let id = device.id().ok()?.to_string();
+                    let name = device.description().ok()?.name().to_owned();
+                    Some(OutputDevice { id, name })
+                }).collect()),
+            OutputBackend::Asio => {
+                #[cfg(all(windows, feature = "asio-local"))]
+                return Ok(registered_asio_devices());
+                #[cfg(not(all(windows, feature = "asio-local")))]
+                return Err("ASIO is unavailable in this build".into());
+            }
+            #[cfg(windows)]
+            OutputBackend::Mme => mme::devices(),
+            #[cfg(windows)]
+            OutputBackend::DirectSound => directsound::devices(),
+            #[cfg(not(windows))]
+            other => Err(format!("{} output is available only on Windows", other.label())),
+        }
+    }
+
+    pub fn backend(&self) -> OutputBackend {
+        self.backend
+    }
+
+    pub fn effective_buffer_ms(&self) -> Option<u32> {
+        self.effective_buffer_ms
+    }
+
+    pub fn device_id(&self) -> Option<&str> {
+        self.device_id.as_deref()
+    }
+
+    fn open_cpal(
+        backend: OutputBackend,
+        host: cpal::Host,
+        device_name: Option<&str>,
+        device_id: Option<&str>,
+        buffer_ms: Option<u32>,
+    ) -> Result<Self, String> {
         if let Some(ms) = buffer_ms {
             validate_buffer_ms(ms)?;
         }
-        let host = cpal::default_host();
-        let device = if let Some(name) = device_name {
+        let device = if let Some(id) = device_id {
+            let id = id.parse::<cpal::DeviceId>().map_err(|error| error.to_string())?;
+            host.device_by_id(&id).ok_or("Selected output device is unavailable")?
+        } else if let Some(name) = device_name {
             host.output_devices()
                 .map_err(|e| e.to_string())?
                 .find(|d| d.description().is_ok_and(|desc| desc.name() == name))
@@ -464,6 +656,7 @@ impl AudioEngine {
             .description()
             .map(|d| d.name().to_string())
             .unwrap_or_else(|_| "Audio output".into());
+        let device_id = device.id().ok().map(|id| id.to_string());
         let supported = device.default_output_config().map_err(|e| e.to_string())?;
         let mut config = supported.config();
         if let Some(ms) = buffer_ms {
@@ -474,39 +667,24 @@ impl AudioEngine {
         let playing = Arc::new(AtomicBool::new(false));
         let errors = Arc::new(AtomicU64::new(0));
         let peak = Arc::new(AtomicU32::new(0));
+        let render = StreamRender::new(
+            config.sample_rate, config.channels as usize, receive,
+            position.clone(), playing.clone(), peak.clone(),
+        );
         let stream = match supported.sample_format() {
-            cpal::SampleFormat::F32 => stream::<f32>(
-                &device,
-                config,
-                receive,
-                position.clone(),
-                playing.clone(),
-                errors.clone(),
-                peak.clone(),
-            ),
-            cpal::SampleFormat::I16 => stream::<i16>(
-                &device,
-                config,
-                receive,
-                position.clone(),
-                playing.clone(),
-                errors.clone(),
-                peak.clone(),
-            ),
-            cpal::SampleFormat::U16 => stream::<u16>(
-                &device,
-                config,
-                receive,
-                position.clone(),
-                playing.clone(),
-                errors.clone(),
-                peak.clone(),
-            ),
+            cpal::SampleFormat::F32 => stream::<f32>(&device, config, render, errors.clone()),
+            cpal::SampleFormat::F64 => stream::<f64>(&device, config, render, errors.clone()),
+            cpal::SampleFormat::I16 => stream::<i16>(&device, config, render, errors.clone()),
+            cpal::SampleFormat::I24 => stream::<cpal::I24>(&device, config, render, errors.clone()),
+            cpal::SampleFormat::I32 => stream::<i32>(&device, config, render, errors.clone()),
+            cpal::SampleFormat::U16 => stream::<u16>(&device, config, render, errors.clone()),
             other => return Err(format!("Unsupported output sample format: {other:?}")),
         }?;
         stream.play().map_err(|e| e.to_string())?;
         Ok(Self {
-            _stream: stream,
+            _stream: OutputStream::System { _stream: stream },
+            backend,
+            effective_buffer_ms: None,
             retirements: Mutex::new(Vec::new()),
             send,
             position,
@@ -514,6 +692,7 @@ impl AudioEngine {
             errors,
             peak,
             device_name: name,
+            device_id,
         })
     }
     pub fn devices() -> Vec<String> {
@@ -574,56 +753,90 @@ impl AudioEngine {
         f64::from_bits(self.position.load(Ordering::Relaxed))
     }
     pub fn is_playing(&self) -> bool {
+        #[cfg(windows)]
+        if let OutputStream::Native { _stream: stream } = &self._stream
+            && stream.thread.as_ref().is_some_and(|thread| thread.is_finished())
+        {
+            return false;
+        }
         self.playing.load(Ordering::Relaxed)
     }
 }
-fn stream<T: cpal::SizedSample + cpal::FromSample<f32>>(
-    device: &cpal::Device,
-    config: cpal::StreamConfig,
+struct StreamRender {
+    mixer: Mixer,
     receive: mpsc::Receiver<Command>,
     position: Arc<AtomicU64>,
     playing: Arc<AtomicBool>,
-    errors: Arc<AtomicU64>,
     peak: Arc<AtomicU32>,
+    channels: usize,
+    scratch: Vec<f32>,
+}
+
+impl StreamRender {
+    fn new(
+        rate: u32,
+        channels: usize,
+        receive: mpsc::Receiver<Command>,
+        position: Arc<AtomicU64>,
+        playing: Arc<AtomicBool>,
+        peak: Arc<AtomicU32>,
+    ) -> Self {
+        // Reused, frame-aligned scratch space. Callbacks never allocate sample buffers.
+        let samples = (262144 / channels).max(1) * channels;
+        Self {
+            mixer: Mixer::new(rate),
+            receive,
+            position,
+            playing,
+            peak,
+            channels,
+            scratch: vec![0.0; samples],
+        }
+    }
+
+    fn fill<T: cpal::SizedSample + cpal::FromSample<f32>>(&mut self, out: &mut [T]) {
+        for command in self.receive.try_iter().take(MAX_COMMANDS_PER_BUFFER) {
+            match command {
+                Command::Load(schedule, slot) => {
+                    let old = schedule.swap_into(&mut self.mixer);
+                    let _ = slot.set(old);
+                }
+                Command::Play(on) => self.mixer.playing = on,
+                Command::Seek(ms) => self.mixer.seek(ms),
+                Command::Audition(clip, gain) => self.mixer.audition(clip, gain),
+                Command::Gains(song, master) => {
+                    self.mixer.song_gain = song;
+                    self.mixer.master_gain = master;
+                }
+                Command::Cycle(range) => self.mixer.cycle = range,
+                Command::Offset(ms) => self.mixer.song_offset = ms,
+            }
+        }
+        let mut highest = 0.0_f32;
+        for chunk in out.chunks_mut(self.scratch.len()) {
+            let buffer = &mut self.scratch[..chunk.len()];
+            self.mixer.render(buffer, self.channels);
+            for (sample, value) in chunk.iter_mut().zip(buffer.iter()) {
+                *sample = T::from_sample(*value);
+                highest = highest.max(value.abs());
+            }
+        }
+        self.peak.store(highest.to_bits(), Ordering::Relaxed);
+        self.position.store(self.mixer.position_ms.to_bits(), Ordering::Relaxed);
+        self.playing.store(self.mixer.playing, Ordering::Relaxed);
+    }
+}
+
+fn stream<T: cpal::SizedSample + cpal::FromSample<f32>>(
+    device: &cpal::Device,
+    config: cpal::StreamConfig,
+    mut render: StreamRender,
+    errors: Arc<AtomicU64>,
 ) -> Result<cpal::Stream, String> {
-    let channels = config.channels as usize;
-    let mut mixer = Mixer::new(config.sample_rate);
-    // Reused scratch space: output callbacks never allocate sample buffers.
-    let mut scratch = vec![0.0f32; 262144];
     device
         .build_output_stream::<T, _, _>(
             config,
-            move |out, _| {
-                for command in receive.try_iter().take(MAX_COMMANDS_PER_BUFFER) {
-                    match command {
-                        Command::Load(schedule, slot) => {
-                            let old = schedule.swap_into(&mut mixer);
-                            let _ = slot.set(old);
-                        }
-                        Command::Play(on) => mixer.playing = on,
-                        Command::Seek(ms) => mixer.seek(ms),
-                        Command::Audition(clip, gain) => mixer.audition(clip, gain),
-                        Command::Gains(song, master) => {
-                            mixer.song_gain = song;
-                            mixer.master_gain = master;
-                        }
-                        Command::Cycle(range) => mixer.cycle = range,
-                        Command::Offset(ms) => mixer.song_offset = ms,
-                    }
-                }
-                for chunk in out.chunks_mut(scratch.len()) {
-                    let buffer = &mut scratch[..chunk.len()];
-                    mixer.render(buffer, channels);
-                    let mut highest = 0.0f32;
-                    for (sample, v) in chunk.iter_mut().zip(buffer.iter()) {
-                        *sample = T::from_sample(*v);
-                        highest = highest.max(v.abs());
-                    }
-                    peak.store(highest.to_bits(), Ordering::Relaxed);
-                }
-                position.store(mixer.position_ms.to_bits(), Ordering::Relaxed);
-                playing.store(mixer.playing, Ordering::Relaxed);
-            },
+            move |out, _| render.fill(out),
             move |_error| {
                 errors.fetch_add(1, Ordering::Relaxed);
             },
@@ -637,8 +850,96 @@ fn cue_end(cue: &ScheduledSound, speed: f64) -> f64 {
 }
 
 #[cfg(test)]
+mod asio_tests {
+    use super::*;
+    use serde::Deserialize;
+
+    #[test]
+    fn saved_asio_backend_is_readable_even_without_local_sdk_support() {
+        let saved = serde::de::value::StrDeserializer::<serde::de::value::Error>::new("asio");
+        assert_eq!(OutputBackend::deserialize(saved).unwrap(), OutputBackend::Asio);
+        assert_eq!(
+            OutputBackend::available().contains(&OutputBackend::Asio),
+            cfg!(all(windows, feature = "asio-local")),
+        );
+        assert!(AudioEngine::open_output(OutputBackend::Asio, None, None).is_err());
+    }
+
+    #[cfg(all(windows, feature = "asio-local"))]
+    #[test]
+    fn asio_registration_listing_uses_cpal_ids_without_opening_drivers() {
+        let devices = AudioEngine::output_devices(OutputBackend::Asio).unwrap();
+        for device in &devices {
+            let id = device.id.parse::<cpal::DeviceId>().unwrap();
+            assert_eq!(id.host(), cpal::HostId::Asio);
+            assert_eq!(id.id(), device.name);
+        }
+        assert!(AudioEngine::open_output(OutputBackend::Asio, Some("wasapi:invalid"), None).is_err());
+        println!("{} ASIO registrations from the SDK name query", devices.len());
+    }
+}
+
+#[cfg(test)]
 mod callback_benchmark {
     use super::*;
+
+    #[test]
+    fn shared_renderer_produces_native_stereo_pcm_and_updates_telemetry() {
+        let (send, receive) = mpsc::channel();
+        let position = Arc::new(AtomicU64::new(0));
+        let playing = Arc::new(AtomicBool::new(false));
+        let peak = Arc::new(AtomicU32::new(0));
+        let mut render = StreamRender::new(48_000, 2, receive, position.clone(), playing, peak.clone());
+        send.send(Command::Seek(400.0)).unwrap();
+        send.send(Command::Audition(Arc::new(AudioClip {
+            samples: vec![0.25; 2], channels: 1, sample_rate: 48_000,
+        }), 1.0)).unwrap();
+        let mut pcm = [0_i16; 4];
+        render.fill(&mut pcm);
+        assert_eq!(pcm, [8192; 4]);
+        assert_eq!(f32::from_bits(peak.load(Ordering::Relaxed)), 0.25);
+        assert_eq!(f64::from_bits(position.load(Ordering::Relaxed)), 400.0);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "opens Windows audio devices"]
+    fn native_outputs_process_silent_transport_commands() {
+        use std::time::{Duration, Instant};
+
+        fn wait_for(condition: impl Fn() -> bool) {
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while !condition() {
+                assert!(Instant::now() < deadline, "audio worker did not process its command");
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+
+        for backend in [OutputBackend::Mme, OutputBackend::DirectSound] {
+            let devices = AudioEngine::output_devices(backend).unwrap();
+            assert!(!devices.is_empty(), "{} returned no devices", backend.label());
+            let invalid = AudioEngine::open_output(backend, Some("nonexistent-device-id"), Some(80));
+            assert!(invalid.is_err(), "{} accepted an invalid device ID", backend.label());
+            for device in [None, devices.first()] {
+                let audio = AudioEngine::open_output(backend, device.map(|item| item.id.as_str()), Some(80))
+                    .unwrap_or_else(|error| panic!("{} could not open: {error}", backend.label()));
+                assert_eq!(audio.backend(), backend);
+                if let Some(device) = device {
+                    assert_eq!(audio.device_name, device.name);
+                }
+                assert!(audio.effective_buffer_ms().unwrap() >= 60);
+                // An empty schedule exercises the actual callback without producing audible samples.
+                audio.seek(1000.0);
+                wait_for(|| audio.position_ms() == 1000.0);
+                audio.play(true);
+                wait_for(|| audio.is_playing() && audio.position_ms() > 1000.0);
+                assert_eq!(audio.peak.load(Ordering::Relaxed), 0);
+                audio.play(false);
+                wait_for(|| !audio.is_playing());
+                assert_eq!(audio.errors.load(Ordering::Relaxed), 0, "{} stream errored", backend.label());
+            }
+        }
+    }
 
     #[test]
     fn polling_releases_replaced_song_without_another_load() {

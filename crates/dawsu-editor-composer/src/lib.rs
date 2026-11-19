@@ -4,9 +4,10 @@ use dawsu_editor::tempo::{Snap, SnapMode, SnapSpacing, TempoMap};
 use dawsu_editor::tools::{PointerInput, TimeRange, ToolPreview, ToolTarget};
 use dawsu_editor::{Clipboard, EditHistory, Selection};
 use dawsu_foundation::{Hitsound, SampleIdentity, SongTime, Sound};
-use dawsu_hitsounding::{Hitsounds, MomentId};
-use std::convert::Infallible;
+use dawsu_hitsounding::{Hitsounds, MomentId, Place};
+use std::{collections::BTreeSet, convert::Infallible};
 
+mod lane_edit;
 mod workflows;
 pub use workflows::{RangeOperation, VolumeScope};
 
@@ -101,7 +102,9 @@ impl Composer {
     pub fn add(&mut self, time: f64, lane: SampleIdentity, volume: i32, tolerance: f64) {
         let mut id = 0;
         self.apply("Draw hit", |h| {
-            id = insert(h, time, lane.clone(), volume, tolerance);
+            let moment = destination_at(h, time, volume, tolerance);
+            h.add_hit(moment, lane.clone());
+            id = moment.0;
         });
         if !self.lanes.contains(&lane) {
             self.lanes.push(lane.clone());
@@ -109,19 +112,25 @@ impl Composer {
         self.selected.replace([HitKey { moment: id, lane }]);
     }
     pub fn remove_selected(&mut self) {
-        if self.selected.is_empty() {
+        let (removed, kept): (Vec<_>, Vec<_>) = self
+            .selected_keys_in_order()
+            .into_iter()
+            .partition(|key| self.can_remove_hit(key));
+        if removed.is_empty() {
             return;
         }
-        let keys: Vec<_> = self.selected.items().iter().cloned().collect();
-        let protect = self.protect_normals;
-        self.apply("Delete hits", |h| {
-            for key in keys {
-                if !protect || !normal(&key.lane) {
-                    h.remove_hit(MomentId(key.moment), &key.lane);
-                }
+        self.apply("Delete hits", |hits| {
+            for key in removed {
+                hits.remove_hit(MomentId(key.moment), &key.lane);
             }
         });
-        self.selected.clear();
+        self.selected.replace(kept);
+    }
+
+    fn can_remove_hit(&self, key: &HitKey) -> bool {
+        (!self.protect_normals || !normal(&key.lane))
+            && self.hitsounds().moments().get(key.moment)
+                .is_some_and(|moment| moment.has_hit(&key.lane))
     }
     pub fn move_selected(
         &mut self,
@@ -148,9 +157,8 @@ impl Composer {
         target: impl Fn(&TempoMap, f64) -> f64,
     ) {
         let keys: Vec<_> = self
-            .selected
-            .items()
-            .iter()
+            .selected_keys_in_order()
+            .into_iter()
             .map(|key| {
                 (
                     key.clone(),
@@ -165,15 +173,16 @@ impl Composer {
         self.apply("Move hits", |h| {
             let values: Vec<_> = keys
                 .iter()
-                .map(|(k, time)| (k.clone(), *time, h.moments()[k.moment].volume()))
+                .map(|(k, time)| (k.clone(), *time, h.moments()[k.moment].hit_volume(&k.lane)))
                 .collect();
             for (key, _, _) in &values {
                 h.remove_hit(MomentId(key.moment), &key.lane);
             }
             for (key, time, volume) in values {
                 let lane = destination.clone().unwrap_or(key.lane);
-                let moment = insert(h, time, lane.clone(), volume, tolerance);
-                moved.push(HitKey { moment, lane });
+                let moment = destination_at(h, time, volume, tolerance);
+                h.add_hit_with_volume(moment, lane.clone(), volume);
+                moved.push(HitKey { moment: moment.0, lane });
             }
         });
         if let Some(lane) = destination {
@@ -236,23 +245,72 @@ impl Composer {
         }
     }
     pub fn volume(&mut self, value: i32, relative: bool) {
-        if self.selected.is_empty() {
-            return;
+        self.volume_for_lanes(value, relative, None);
+    }
+
+    /// Applies volume at the selected hit moments. A lane scope uses logical slot identities.
+    pub fn volume_for_lanes(
+        &mut self,
+        value: i32,
+        relative: bool,
+        lanes: Option<&BTreeSet<SampleIdentity>>,
+    ) -> bool {
+        let hits = self.hitsounds();
+        let moments: BTreeSet<_> = self.selected.items().iter().filter_map(|key| {
+            hits.moments().get(key.moment)?.has_hit(&key.lane).then_some(key.moment)
+        }).collect();
+        let edit = |before: i32| {
+            let desired = if relative { before.saturating_add(value) } else { value };
+            desired.clamp(i32::from(lanes.is_some()), 100)
+        };
+        let mut shared = Vec::new();
+        let mut individual = Vec::new();
+        for index in moments {
+            let id = MomentId(index);
+            let moment = hits.moment(id);
+            if let Some(lanes) = lanes {
+                if moment.place() == Place::NoObject {
+                    continue;
+                }
+                for lane in moment.hits() {
+                    let before = moment.hit_volume(lane);
+                    let after = edit(before);
+                    if lanes.contains(hits.lane_slot(lane).unwrap_or(lane)) && after != before {
+                        individual.push((id, lane.clone(), after));
+                    }
+                }
+            } else {
+                let volume = edit(moment.volume());
+                if !relative || !moment.has_hit_volume_overrides() {
+                    if volume != moment.volume() || moment.has_hit_volume_overrides() {
+                        shared.push((id, volume));
+                    }
+                    continue;
+                }
+                let volumes: Vec<_> = moment.hits().map(|lane| {
+                    let before = moment.hit_volume(lane);
+                    (lane, before, edit(before))
+                }).collect();
+                if volumes.iter().any(|(_, before, after)| before != after) {
+                    shared.push((id, volume));
+                    individual.extend(volumes.into_iter()
+                        .filter(|(_, _, after)| *after != volume)
+                        .map(|(lane, _, after)| (id, lane.clone(), after)));
+                }
+            }
         }
-        let keys: Vec<_> = self.selected.items().iter().cloned().collect();
-        self.apply("Change volume", |h| {
-            let mut moments: Vec<_> = keys.iter().map(|k| k.moment).collect();
-            moments.sort_unstable();
-            moments.dedup();
-            for id in moments {
-                let v = if relative {
-                    h.moments()[id].volume() + value
-                } else {
-                    value
-                };
-                h.set_volume(MomentId(id), v.clamp(0, 100));
+        if shared.is_empty() && individual.is_empty() {
+            return false;
+        }
+        self.apply("Change volume", |hits| {
+            for (id, volume) in shared {
+                hits.set_volume(id, volume);
+            }
+            for (id, lane, volume) in individual {
+                hits.set_hit_volume(id, &lane, volume);
             }
         });
+        true
     }
     pub fn select_all(&mut self) {
         self.selected.replace(
@@ -271,12 +329,11 @@ impl Composer {
     }
     pub fn copy(&mut self) {
         let items: Vec<_> = self
-            .selected
-            .items()
-            .iter()
+            .selected_keys_in_order()
+            .into_iter()
             .map(|k| {
                 let m = &self.hitsounds().moments()[k.moment];
-                (m.time(), (k.lane.clone(), m.volume()))
+                (m.time(), (k.lane.clone(), m.hit_volume(&k.lane)))
             })
             .collect();
         self.clipboard.copy(items);
@@ -289,27 +346,12 @@ impl Composer {
         let mut added = Vec::new();
         self.apply("Paste hits", |h| {
             for (time, (lane, v)) in clipboard {
-                let moment = insert(h, time.ms(), lane.clone(), v, 5.0);
-                added.push(HitKey { moment, lane });
+                let moment = destination_at(h, time.ms(), v, 5.0);
+                h.add_hit_with_volume(moment, lane.clone(), v);
+                added.push(HitKey { moment: moment.0, lane });
             }
         });
         self.selected.replace(added);
-    }
-    pub fn duplicate(&mut self) {
-        let Some(last) = self
-            .selected
-            .items()
-            .iter()
-            .map(|k| self.hitsounds().moments()[k.moment].time().ms())
-            .reduce(f64::max)
-        else {
-            return;
-        };
-        let step = self
-            .spacing
-            .step_ms(self.tempo.beat_length_at(SongTime::from_ms(last)));
-        self.copy();
-        self.paste(last + step);
     }
 }
 
@@ -322,15 +364,13 @@ fn normal(lane: &SampleIdentity) -> bool {
         }
     )
 }
-fn insert(
-    h: &mut Hitsounds,
-    time: f64,
-    lane: SampleIdentity,
-    volume: i32,
-    tolerance: f64,
-) -> usize {
-    let id = h
-        .moments()
+fn destination_at(h: &mut Hitsounds, time: f64, volume: i32, tolerance: f64) -> MomentId {
+    nearest_moment(h, time, tolerance)
+        .unwrap_or_else(|| h.add_moment(SongTime::from_ms(time), volume))
+}
+
+fn nearest_moment(h: &Hitsounds, time: f64, tolerance: f64) -> Option<MomentId> {
+    h.moments()
         .iter()
         .enumerate()
         .filter(|(_, m)| (m.time().ms() - time).abs() <= tolerance)
@@ -340,9 +380,6 @@ fn insert(
                 .total_cmp(&(b.time().ms() - time).abs())
         })
         .map(|(i, _)| MomentId(i))
-        .unwrap_or_else(|| h.add_moment(SongTime::from_ms(time), volume));
-    h.add_hit(id, lane);
-    id.0
 }
 
 impl ToolTarget for Composer {
@@ -417,21 +454,30 @@ impl ToolTarget for Composer {
     fn insert(&mut self, at: SongTime, row: i32) -> Option<HitKey> {
         let lane = self.lanes.get(row.max(0) as usize)?.clone();
         let volume = self.insert_volume;
+        let existing = nearest_moment(self.hitsounds(), at.ms(), 5.0);
+        if let Some(id) = existing
+            && self.hitsounds().moments()[id.0].has_hit(&lane)
+        {
+            return Some(HitKey { moment: id.0, lane });
+        }
         let mut moment = 0;
         let _ = self.history.edit(true, |h| {
-            moment = insert(h, at.ms(), lane.clone(), volume, 5.0);
+            let id = existing.unwrap_or_else(|| h.add_moment(at, volume));
+            h.add_hit(id, lane.clone());
+            moment = id.0;
             Ok::<_, Infallible>(())
         });
         self.audition_requests.push(lane.clone());
         Some(HitKey { moment, lane })
     }
     fn delete(&mut self, items: &[HitKey]) {
-        let protect = self.protect_normals;
-        let _ = self.history.edit(true, |h| {
-            for k in items {
-                if !protect || !normal(&k.lane) {
-                    h.remove_hit(MomentId(k.moment), &k.lane);
-                }
+        let removable: Vec<_> = items.iter().filter(|key| self.can_remove_hit(key)).collect();
+        if removable.is_empty() {
+            return;
+        }
+        let _ = self.history.edit(true, |hits| {
+            for key in removable {
+                hits.remove_hit(MomentId(key.moment), &key.lane);
             }
             Ok::<_, Infallible>(())
         });
@@ -439,25 +485,40 @@ impl ToolTarget for Composer {
     fn move_by(&mut self, items: &[HitKey], delta: f64, rows: i32) {
         let lanes = self.lanes.clone();
         let mut new = Vec::new();
+        let primary = self.selected.primary().cloned();
         let _ = self.history.edit(true, |h| {
-            let values: Vec<_> = items
+            let mut values: Vec<_> = items
                 .iter()
                 .map(|k| {
                     (
                         k.clone(),
                         h.moments()[k.moment].time().ms(),
-                        h.moments()[k.moment].volume(),
+                        h.moments()[k.moment].hit_volume(&k.lane),
                     )
                 })
                 .collect();
+            values.sort_unstable_by(|(a, _, _), (b, _, _)| {
+                (Some(a) != primary.as_ref(), a.moment, &a.lane)
+                    .cmp(&(Some(b) != primary.as_ref(), b.moment, &b.lane))
+            });
             for (k, _, _) in &values {
                 h.remove_hit(MomentId(k.moment), &k.lane);
             }
             for (k, t, v) in values {
                 let old = lanes.iter().position(|l| *l == k.lane).unwrap_or(0) as i32;
-                let lane = lanes[(old + rows).clamp(0, lanes.len() as i32 - 1) as usize].clone();
-                let moment = insert(h, (t + delta).max(0.0), lane.clone(), v, 5.0);
-                new.push(HitKey { moment, lane });
+                let mut row = (old + rows).clamp(0, lanes.len() as i32 - 1);
+                while rows != 0 && h.is_lane_hidden(&lanes[row as usize]) {
+                    let next = row + rows.signum();
+                    if !(0..lanes.len() as i32).contains(&next) {
+                        row = old;
+                        break;
+                    }
+                    row = next;
+                }
+                let lane = lanes[row as usize].clone();
+                let moment = destination_at(h, (t + delta).max(0.0), v, 5.0);
+                h.add_hit_with_volume(moment, lane.clone(), v);
+                new.push(HitKey { moment: moment.0, lane });
             }
             Ok::<_, Infallible>(())
         });

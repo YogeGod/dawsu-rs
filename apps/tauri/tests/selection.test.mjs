@@ -63,18 +63,25 @@ test("selection card shows its first hit and distinguishes relative and absolute
   assert.equal(element("selection-fields").hidden, true);
   assert.equal(element("slider-body-fields").hidden, true);
 
-  runInContext('scene = { path: "Slider.osu", selection: { count: 1, start: 1000, object: "Slider head", sliderBody: { index: 2, set: "soft", whistle: false, volume: 60 } } }; renderSelection();', context);
+  runInContext('scene = { path: "Slider.osu", selection: { count: 1, start: 1000, object: "Slider head", sliderBody: { index: 2, set: "soft", whistleSet: "auto", whistle: false, volume: 60 } } }; renderSelection();', context);
   assert.equal(element("slider-body-fields").hidden, false);
   assert.equal(element("slider-body-volume").value, 60);
   assert.equal(element("slider-body-set").value, "soft");
+  assert.equal(element("slider-body-whistle-set").value, "auto");
+  element("slider-body-whistle-set").value = "normal";
   element("slider-body-set").value = "drum";
   element("slider-body-whistle").checked = true;
   element("slider-body-volume").valueAsNumber = 80;
   element("apply-slider-body").listeners.get("click")();
   await runInContext("pending", context);
   assert.deepEqual(JSON.parse(JSON.stringify(calls[2])), {
-    kind: "slider_body", path: "Slider.osu", index: 2, set: "drum", whistle: true, volume: 80,
+    kind: "slider_body", path: "Slider.osu", index: 2, set: "drum", whistle_set: "normal", whistle: true, volume: 80,
   });
+
+  element("slider-body-whistle-set").value = "auto";
+  element("apply-slider-body").listeners.get("click")();
+  await runInContext("pending", context);
+  assert.equal(calls.at(-1).whistle_set, "auto");
 
   runInContext('view.editDialog = "repeat"; scene.repeatGap = 3; ' +
     'modal = (_kind, title, content, buttons) => { globalThis.editModal = { title, content, buttons }; }; ' +

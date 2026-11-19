@@ -9,10 +9,14 @@ mod controller;
 mod editor_meter;
 mod export_settings;
 mod generate_receipt;
+mod gain_recovery;
+mod lane_edit;
 mod layers;
 mod mixes;
 pub mod output;
 mod project;
+pub use project::lane_key as lane_layout_key;
+pub use dawsu_audio::{OutputBackend, OutputDevice};
 mod preferences;
 mod shortcuts;
 mod problems;
@@ -21,7 +25,7 @@ pub mod waveform;
 use dawsu_editor::commands::{
     CommandCatalog, EditorScope, HelpGroup, KeyMap, KeyOutcome, RunOutcome,
 };
-use dawsu_editor::keys::KeyChord;
+use dawsu_editor::keys::{KeyChord, Mods};
 use dawsu_editor::transport::BookmarkList;
 pub use problems::OutputProblem;
 pub use editor_meter::{EditorBarSection, EditorTimeSignature};
@@ -32,7 +36,7 @@ pub use edit_workflows::{RangeOperation, TimelineEdit, VolumeScope};
 
 use dawsu_audio::{AudioClip, AudioEngine, ScheduledSound};
 use dawsu_editor::tempo::{SnapSpacing, TempoMap, TimingSection};
-use dawsu_editor::tools::{PointerInput, PointerSurface, ToolBox, ToolKind};
+use dawsu_editor::tools::{PointerButton, PointerInput, PointerSurface, ToolBox, ToolKind, ToolTarget};
 use dawsu_editor::volume_ramp::RampShape;
 use dawsu_editor_composer::{Composer, HitKey};
 use dawsu_foundation::safe_write::BackupPolicy;
@@ -41,12 +45,12 @@ use dawsu_hitsounding::{
     Compiled, Decompiled, Hitsounds, Lane, LaneSource, Placement, SaveProblem, compile, cue_list,
     decompile,
 };
-use dawsu_osu_format::{OsuFile, SaveOutcome, check_map_path, find_case_insensitive, list_folder};
+use dawsu_osu_format::{LineId, OsuFile, SaveOutcome, check_map_path, find_case_insensitive, list_folder};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, mpsc};
+use std::sync::{Arc, Mutex, mpsc};
 
 pub struct Document {
     pub path: PathBuf,
@@ -57,6 +61,7 @@ pub struct Document {
     pub difficulties: Vec<PathBuf>,
     pub hs_mode: bool,
     compile_base: OsuFile,
+    owned_hs_circles: BTreeSet<LineId>,
     bookmarks: BookmarkList,
     bookmark_override: bool,
     lane_layout: Option<LaneLayout>,
@@ -109,6 +114,7 @@ impl Document {
             path,
             file: read.file.clone(),
             compile_base: read.file,
+            owned_hs_circles: BTreeSet::new(),
             bookmarks,
             bookmark_override: false,
             composer,
@@ -162,35 +168,52 @@ const DIFFICULTY_CHANGED: &str =
 pub struct SaveReport {
     pub file: OsuFile,
     pub problems: Vec<SaveProblem>,
+    hs_circle_ownership: Option<project::HsCircleOwnership>,
+    gain_recovery_warning: Option<String>,
 }
 pub fn save_document(document: &Document, backups: PathBuf) -> Result<SaveReport, String> {
-    save_snapshot(
-        document.compile_base.clone(),
-        document.composer.hitsounds().clone(),
-        document.file.original_bytes().to_vec(),
-        &document.path,
-        backups,
-        document.hs_mode,
-        false,
-        Path::new(""),
-        &|| false,
-        &mut Vec::new(),
-    )
+    prepare_save(
+        document.compile_base.clone(), document.composer.hitsounds().clone(),
+        document.file.original_bytes().to_vec(), &document.path, backups, document.hs_mode,
+        &document.owned_hs_circles, Path::new(""), None, false,
+        &|| false, &mut Vec::new(), &mut |_, _| {},
+    )?.apply(None, &|| false)
 }
 fn compile_for_save(
     file: &OsuFile,
     hits: &Hitsounds,
     hs: bool,
+    owned: &BTreeSet<LineId>,
     loose_hits_saved_in_project: bool,
     cancel: &dyn Fn() -> bool,
-) -> Result<(OsuFile, Vec<SaveProblem>), String> {
+    progress: &mut dyn FnMut(usize, usize),
+) -> Result<(OsuFile, Vec<SaveProblem>, BTreeSet<LineId>), String> {
+    let mut owned = owned.clone();
     let (out, mut problems) = if hs {
-        match dawsu_hitsounding::hs::compile_hs(file, hits, Placement::OnObjects, cancel, &mut |_, _| {}) {
-            dawsu_hitsounding::hs::CompiledHs::Done { file, problems, .. } => (file, problems),
+        match dawsu_hitsounding::hs::compile_hs(file, hits, Placement::OnObjects, cancel, progress) {
+            dawsu_hitsounding::hs::CompiledHs::Done { mut file, mut problems, created } => {
+                let mut removed = BTreeSet::new();
+                for moment in hits.moments() {
+                    if let dawsu_hitsounding::Place::Circle(id) = moment.place()
+                        && moment.hits().next().is_none()
+                        && owned.remove(&id.line())
+                    {
+                        if cancel() {
+                            return Err("Save cancelled".into());
+                        }
+                        file.remove_hit_object(id.line())
+                            .map_err(|error| format!("Removing an empty HS circle: {error:?}"))?;
+                        removed.insert(id);
+                    }
+                }
+                problems.retain(|problem| !matches!(problem.place, dawsu_hitsounding::Place::Circle(id) if removed.contains(&id)));
+                owned.extend(created.into_iter().map(dawsu_hitsounding::ObjectId::line));
+                (file, problems)
+            }
             _ => return Err("Save cancelled".into()),
         }
     } else {
-        match compile(file, hits, Placement::GreenLines, cancel, &mut |_, _| {}) {
+        match compile(file, hits, Placement::GreenLines, cancel, progress) {
             Compiled::Done { file, problems } => (file, problems),
             _ => return Err("Save cancelled".into()),
         }
@@ -198,22 +221,48 @@ fn compile_for_save(
     if loose_hits_saved_in_project && !hs {
         problems.retain(|problem| !matches!(problem.kind, dawsu_hitsounding::ProblemKind::NoObject));
     }
-    Ok((out, problems))
+    Ok((out, problems, owned))
 }
-fn save_snapshot(
+fn prepare_save(
     file: OsuFile,
     hits: Hitsounds,
     expected: Vec<u8>,
     path: &Path,
     backups: PathBuf,
     hs: bool,
-    loose_hits_saved_in_project: bool,
+    owned: &BTreeSet<LineId>,
     defaults: &Path,
+    project: Option<&project::Project>,
+    review: bool,
     cancel: &dyn Fn() -> bool,
     diagnostics: &mut Vec<OutputProblem>,
-) -> Result<SaveReport, String> {
-    let (mut out, mut problems) =
-        compile_for_save(&file, &hits, hs, loose_hits_saved_in_project, cancel)?;
+    progress: &mut dyn FnMut(usize, usize),
+) -> Result<PreparedSave, String> {
+    let root = path.parent().ok_or("Missing mapset folder")?;
+    let inputs = if review {
+        let defaults_list = list_folder(defaults).unwrap_or_default();
+        let samples: BTreeSet<_> = hits.moments().iter().flat_map(|moment| moment.hits()).collect();
+        let paths: BTreeSet<_> = samples.into_iter().filter_map(|sample| {
+            sample_path(hits.lane(sample)?, root, defaults, &defaults_list).ok()
+        }).collect();
+        let mut inputs = Vec::new();
+        for path in paths {
+            if cancel() {
+                return Err("Save review cancelled".into());
+            }
+            let digest = sample_digest(&path)?;
+            inputs.push((path, digest));
+        }
+        inputs
+    } else {
+        Vec::new()
+    };
+    let recovery = gain_recovery::Captured::read(&hits, root, defaults)?;
+    if recovery.needs_recovery() && project.is_none() {
+        return Err("Editable hit gains need a writable editor project to save safely.".into());
+    }
+    let (mut out, mut problems, owned) =
+        compile_for_save(&file, &hits, hs, owned, project.is_some(), cancel, progress)?;
     let mut mix_files = mixes::MixFiles::default();
     let placement = if hs { Placement::OnObjects } else { Placement::GreenLines };
     if !problems.is_empty() && problems.iter().all(|problem| mixes::can_render(problem, placement)) {
@@ -230,7 +279,7 @@ fn save_snapshot(
             Decompiled::UnsupportedMode { .. } => return Err("Cannot mix this difficulty".into()),
         };
         if let Err(error) = mix_files.prepare(
-            &hits, &mut target, &problems, root, defaults, &expected, &[], cancel,
+            &hits, &mut target, &problems, root, defaults, &expected, &[], 2, cancel,
         ) {
             diagnostics.extend(problems.iter().map(|problem| {
                 OutputProblem::new(problem, path, path).with_message(&error)
@@ -254,23 +303,109 @@ fn save_snapshot(
     if cancel() {
         return Err("Save cancelled before writing".into());
     }
-    let publication = mixes::publish(&mix_files.staged, cancel)?;
-    match out
-        .save_over_expected(path, &expected, &BackupPolicy::new(backups, 20))
-        .map_err(|e| e.to_string())?
+    let recovery_revision = if recovery.needs_recovery() || project
+        .and_then(|project| project.settings.gain_recovery.as_ref())
+        .is_some_and(|record| record.has_authored_for(&expected))
     {
-        SaveOutcome::Saved { .. } | SaveOutcome::NothingToSave => {
-            publication.keep();
-            Ok(SaveReport {
-                file: OsuFile::read(out.to_bytes()).file,
-                problems,
-            })
-        }
-        SaveOutcome::ChangedOnDisk => Err(DIFFICULTY_CHANGED.into()),
-        SaveOutcome::AlreadyExists => Err("The target already exists".into()),
-    }
+        Some(recovery.revision(&hits, &out, root, defaults, &mix_files.staged, cancel)?)
+    } else {
+        None
+    };
+    let bytes = out.to_bytes();
+    let ownership = project::HsCircleOwnership::capture(&out, &bytes, &owned);
+    let map_changed = bytes != expected;
+    let plan = PreparedSave {
+        path: path.to_path_buf(), backups, expected, out, mix_files, recovery_revision,
+        ownership, inputs, map_changed,
+    };
+    plan.check_current(project, cancel)?;
+    Ok(plan)
 }
 
+fn sample_digest(path: &Path) -> Result<String, String> {
+    std::fs::read(path)
+        .map(|bytes| dawsu_foundation::digest::sha256_hex(&bytes))
+        .map_err(|error| format!("Reading {}: {error}", path.display()))
+}
+
+struct PreparedSave {
+    path: PathBuf,
+    backups: PathBuf,
+    expected: Vec<u8>,
+    out: OsuFile,
+    mix_files: mixes::MixFiles,
+    recovery_revision: Option<gain_recovery::Revision>,
+    ownership: Option<project::HsCircleOwnership>,
+    inputs: Vec<(PathBuf, String)>,
+    map_changed: bool,
+}
+
+impl PreparedSave {
+    fn check_current(&self, project: Option<&project::Project>, cancel: &dyn Fn() -> bool) -> Result<(), String> {
+        if std::fs::read(&self.path).map_err(|error| error.to_string())? != self.expected {
+            return Err(DIFFICULTY_CHANGED.into());
+        }
+        if let Some(project) = project {
+            project.check_current()?;
+        }
+        for (path, expected) in &self.inputs {
+            if cancel() {
+                return Err("Save cancelled before writing".into());
+            }
+            if sample_digest(path).as_ref() != Ok(expected) {
+                return Err(format!("{} changed since the Save review. Review Save again.", path.display()));
+            }
+        }
+        if cancel() {
+            return Err("Save cancelled before writing".into());
+        }
+        Ok(())
+    }
+
+    fn apply(self, mut project: Option<&mut project::Project>, cancel: &dyn Fn() -> bool) -> Result<SaveReport, String> {
+        self.check_current(project.as_deref(), cancel)?;
+        let needs_recovery_write = self.recovery_revision.is_some();
+        if let Some(revision) = self.recovery_revision {
+            let project = project.as_mut().expect("gain recovery requires a project");
+            let mut settings = project.settings.clone();
+            settings.gain_recovery.get_or_insert_with(Default::default).stage(&self.expected, revision);
+            project.save(settings)?;
+        }
+
+        let publication = mixes::publish(&self.mix_files.staged, cancel)?;
+        if needs_recovery_write
+            && let Err(error) = project.as_ref().expect("staged gain recovery has a project").check_current()
+        {
+            return Err(publication.failed(error));
+        }
+        if cancel() {
+            return Err(publication.failed("Save cancelled before writing".into()));
+        }
+        match self.out.save_over_expected(&self.path, &self.expected, &BackupPolicy::new(self.backups, 20)) {
+            Ok(SaveOutcome::Saved { .. } | SaveOutcome::NothingToSave) => {
+                publication.keep();
+                let bytes = self.out.to_bytes();
+                let gain_recovery_warning = if needs_recovery_write {
+                    let project = project.expect("staged gain recovery has a project");
+                    let mut settings = project.settings.clone();
+                    settings.gain_recovery.as_mut().expect("recovery was staged").promote(&bytes);
+                    project.save(settings).err()
+                } else {
+                    None
+                };
+                Ok(SaveReport {
+                    file: OsuFile::read(bytes).file,
+                    problems: Vec::new(),
+                    hs_circle_ownership: self.ownership,
+                    gain_recovery_warning,
+                })
+            }
+            Ok(SaveOutcome::ChangedOnDisk) => Err(publication.failed(DIFFICULTY_CHANGED.into())),
+            Ok(SaveOutcome::AlreadyExists) => Err(publication.failed("The target already exists".into())),
+            Err(error) => Err(publication.failed(error.to_string())),
+        }
+    }
+}
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Preferences {
@@ -280,6 +415,10 @@ pub struct Preferences {
     pub hitsound_library: Option<PathBuf>,
     pub default_samples: PathBuf,
     pub device: Option<String>,
+    #[serde(skip_serializing_if = "system_audio_backend")]
+    pub audio_backend: OutputBackend,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub audio_device_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub audio_buffer_ms: Option<u32>,
     pub song_gain: f32,
@@ -301,6 +440,17 @@ pub struct Preferences {
     pub key_overrides: std::collections::BTreeMap<String, std::collections::BTreeMap<String, Vec<String>>>,
     pub protect_hitnormals: bool,
 }
+fn system_audio_backend(backend: &OutputBackend) -> bool {
+    *backend == OutputBackend::System
+}
+
+fn open_preferred_audio(preferences: &Preferences, buffer_ms: Option<u32>) -> Result<AudioEngine, String> {
+    match (preferences.audio_backend, preferences.audio_device_id.as_deref(), preferences.device.as_deref()) {
+        (OutputBackend::System, None, Some(legacy_name)) => AudioEngine::open_with_buffer(Some(legacy_name), buffer_ms),
+        (backend, device, _) => AudioEngine::open_output(backend, device, buffer_ms),
+    }
+}
+
 impl Preferences {
     fn effective_song_gain(&self) -> f32 {
         if self.song_muted { 0.0 } else { self.song_gain }
@@ -315,6 +465,8 @@ impl Default for Preferences {
             hitsound_library: None,
             default_samples: PathBuf::new(),
             device: None,
+            audio_backend: OutputBackend::System,
+            audio_device_id: None,
             audio_buffer_ms: None,
             song_gain: 0.7,
             song_muted: false,
@@ -366,13 +518,32 @@ struct Loaded {
     waveform: Vec<WaveBin>,
     warnings: Vec<String>,
 }
+struct PendingSave {
+    version: u64,
+    hs: bool,
+    plan: PreparedSave,
+    project: Option<project::Project>,
+    settings: Option<project::SessionSettings>,
+}
+
+impl PendingSave {
+    fn finish(mut self, cancel: &dyn Fn() -> bool) -> JobResult {
+        let path = self.plan.path.clone();
+        let result = self.plan.apply(self.project.as_mut(), cancel);
+        JobResult::Save {
+            version: self.version, path, project: self.project, settings: self.settings,
+            result, diagnostics: Vec::new(),
+        }
+    }
+}
+
 enum JobResult {
     Open(Option<u64>, bool, Result<Loaded, String>),
     Save {
         version: u64,
         path: PathBuf,
-        saved_hits: Option<Vec<project::ProjectHit>>,
-        saved_slots: Option<std::collections::BTreeMap<String, String>>,
+        settings: Option<project::SessionSettings>,
+        project: Option<project::Project>,
         result: Result<SaveReport, String>,
         diagnostics: Vec<OutputProblem>,
     },
@@ -380,7 +551,8 @@ enum JobResult {
         version: u64,
         path: PathBuf,
         hs: bool,
-        result: Result<Vec<OutputProblem>, String>,
+        result: Result<PendingSave, String>,
+        diagnostics: Vec<OutputProblem>,
     },
     Review(Result<output::WritePlan, String>, Vec<OutputProblem>),
     Output(Result<(usize, Option<String>), String>),
@@ -390,6 +562,20 @@ enum JobResult {
         result: Result<Arc<AudioClip>, String>,
     },
 }
+#[derive(Clone)]
+struct JobProgress {
+    label: &'static str,
+    current: Arc<Mutex<Option<(usize, usize)>>>,
+}
+
+impl JobProgress {
+    fn report(&self, done: usize, total: usize) {
+        if let Ok(mut current) = self.current.lock() {
+            *current = Some((done, total));
+        }
+    }
+}
+
 pub struct Application {
     sample_watch: sample_watch::Watch,
     document: Option<Document>,
@@ -410,15 +596,18 @@ pub struct Application {
     pub revert_requested: bool,
     pub busy: bool,
     pub output_review: Option<output::WritePlan>,
+    pending_save_review: Option<PendingSave>,
     output_problems: Vec<OutputProblem>,
     output_problem_revision: Option<(u64, bool)>,
     save_problem_review: bool,
     tools: ToolBox<HitKey>,
     controller_stroke: Option<controller::ControllerStroke>,
     jobs: Option<mpsc::Receiver<JobResult>>,
+    job_progress: Option<JobProgress>,
     cancel: Arc<AtomicBool>,
     muted: Vec<SampleIdentity>,
     solo: Vec<SampleIdentity>,
+    song_solo: bool,
     cached_version: u64,
     cached_listen_version: u64,
     pub zoom: f64,
@@ -430,8 +619,11 @@ pub struct Application {
     pub cycle: bool,
     pub song_offset: f64,
     pub active_lane: usize,
+    selection_lane_scope: Option<BTreeSet<SampleIdentity>>,
     playback_start: f64,
     return_position: f64,
+    last_endpoint_jump: Option<(bool, std::time::Instant)>,
+    key_lane_view: Option<(PathBuf, Vec<usize>, f64)>,
     pub first_launch: bool,
     catalogue: Arc<CommandCatalog<Application>>,
     pub keymap: KeyMap,
@@ -452,15 +644,25 @@ impl Application {
         if preferences.default_samples.as_os_str().is_empty() && local.is_dir() {
             preferences.default_samples = local;
         }
-        let device = preferences.device.as_deref();
-        let output = AudioEngine::open_with_buffer(device, preferences.audio_buffer_ms);
+        let output = open_preferred_audio(&preferences, preferences.audio_buffer_ms);
         let (audio, error) = match output {
-            Ok(a) => (Some(a), None),
-            Err(error) if preferences.audio_buffer_ms.is_some() => match AudioEngine::open(device) {
-                Ok(a) => (Some(a), Some(format!("Using the default audio buffer. {error}"))),
-                Err(fallback) => (None, Some(format!("{error} Device default: {fallback}"))),
-            },
-            Err(error) => (None, Some(error)),
+            Ok(engine) => (Some(engine), None),
+            Err(error) => {
+                let same_device = preferences.audio_buffer_ms.is_some()
+                    .then(|| open_preferred_audio(&preferences, None));
+                match same_device {
+                    Some(Ok(engine)) => (Some(engine), Some(format!("Using the default audio buffer. {error}"))),
+                    _ if preferences.audio_backend != OutputBackend::System
+                        || preferences.audio_device_id.is_some() || preferences.device.is_some() => {
+                        match AudioEngine::open_output(OutputBackend::System, None, None) {
+                            Ok(engine) => (Some(engine), Some(format!("Using the default system output. {error}"))),
+                            Err(fallback) => (None, Some(format!("{error} System default: {fallback}"))),
+                        }
+                    }
+                    Some(Err(fallback)) => (None, Some(format!("{error} Device default: {fallback}"))),
+                    None => (None, Some(error)),
+                }
+            }
         };
         if let Some(a) = &audio {
             a.gains(preferences.effective_song_gain(), preferences.master_gain);
@@ -499,15 +701,18 @@ impl Application {
             revert_requested: false,
             busy: false,
             output_review: None,
+            pending_save_review: None,
             output_problems: Vec::new(),
             output_problem_revision: None,
             save_problem_review: false,
             tools: ToolBox::new(),
             controller_stroke: None,
             jobs: None,
+            job_progress: None,
             cancel: Arc::new(AtomicBool::new(false)),
             muted: Vec::new(),
             solo: Vec::new(),
+            song_solo: false,
             cached_version: 0,
             cached_listen_version: 0,
             zoom: 0.12,
@@ -517,8 +722,11 @@ impl Application {
             cycle: false,
             song_offset: 0.0,
             active_lane: 0,
+            selection_lane_scope: None,
             playback_start: 0.0,
             return_position: 0.0,
+            last_endpoint_jump: None,
+            key_lane_view: None,
             first_launch,
             catalogue,
             keymap,
@@ -564,25 +772,77 @@ impl Application {
     pub fn devices(&self) -> Vec<String> {
         AudioEngine::devices()
     }
+    pub fn output_devices(&self, backend: OutputBackend) -> Result<Vec<OutputDevice>, String> {
+        if backend == OutputBackend::Asio
+            && let Some(audio) = self.audio.as_ref().filter(|audio| audio.backend() == backend)
+        {
+            // CPAL ASIO enumerates by loading drivers. Keep the live driver intact.
+            return Ok(audio.device_id().map(|id| OutputDevice {
+                id: id.to_owned(),
+                name: audio.device_name.clone(),
+            }).into_iter().collect());
+        }
+        AudioEngine::output_devices(backend)
+    }
+
+    pub fn active_output_backend(&self) -> Option<OutputBackend> {
+        self.audio.as_ref().map(AudioEngine::backend)
+    }
+
+    pub fn effective_output_buffer_ms(&self) -> Option<u32> {
+        self.audio.as_ref().and_then(AudioEngine::effective_buffer_ms)
+    }
+
     pub fn select_device(&mut self, name: String) {
-        if let Err(error) = self.configure_audio_output(Some(name), self.preferences.audio_buffer_ms) {
+        let mut preferences = self.preferences.clone();
+        preferences.audio_backend = OutputBackend::System;
+        preferences.audio_device_id = None;
+        preferences.device = Some(name);
+        if let Err(error) = self.configure_audio_output(preferences) {
             self.error = Some(error);
         }
     }
 
     pub fn set_output_buffer(&mut self, buffer_ms: Option<u32>) -> Result<(), String> {
-        self.configure_audio_output(self.preferences.device.clone(), buffer_ms)
+        let mut preferences = self.preferences.clone();
+        preferences.audio_buffer_ms = buffer_ms;
+        self.configure_audio_output(preferences)
     }
 
-    fn configure_audio_output(&mut self, device: Option<String>, buffer_ms: Option<u32>) -> Result<(), String> {
+    pub fn set_output_settings(
+        &mut self, backend: OutputBackend, device_id: Option<String>, buffer_ms: Option<u32>,
+    ) -> Result<(), String> {
+        let mut preferences = self.preferences.clone();
+        preferences.audio_backend = backend;
+        preferences.audio_device_id = device_id;
+        preferences.audio_buffer_ms = buffer_ms;
+        if backend == OutputBackend::System {
+            preferences.device = None;
+        }
+        self.configure_audio_output(preferences)
+    }
+
+    fn configure_audio_output(&mut self, mut preferences: Preferences) -> Result<(), String> {
         if self.busy || self.is_playing() {
             return Err("Stop playback and finish the current job before changing audio output.".into());
         }
+        if preferences.audio_backend == OutputBackend::Asio
+            && self.active_output_backend() == Some(OutputBackend::Asio)
+        {
+            if preferences.audio_device_id == self.preferences.audio_device_id
+                && preferences.audio_buffer_ms == self.preferences.audio_buffer_ms
+            {
+                return Ok(());
+            }
+            return Err("Select WASAPI before changing the ASIO device or buffer.".into());
+        }
         let cursor = self.position_ms();
-        let audio = AudioEngine::open_with_buffer(device.as_deref(), buffer_ms)?;
+        let audio = open_preferred_audio(&preferences, preferences.audio_buffer_ms)?;
+        if preferences.audio_backend == OutputBackend::System && preferences.audio_device_id.is_some() {
+            preferences.device = Some(audio.device_name.clone());
+        }
         self.audio = Some(audio);
-        self.preferences.device = device;
-        self.preferences.audio_buffer_ms = buffer_ms;
+        self.preferences = preferences;
         self.error = None;
         self.sync_audio();
         self.seek(cursor);
@@ -602,7 +862,7 @@ impl Application {
     }
 
     pub fn save_session(&mut self) -> Result<(), String> {
-        self.write_session(None, None)
+        self.write_session(None, None, None)
     }
 
     pub fn set_export_settings(&mut self, settings: ExportSettings) -> Result<(), String> {
@@ -628,15 +888,14 @@ impl Application {
         Ok(())
     }
 
-    fn write_session(
-        &mut self,
+    fn session_settings(
+        &self,
         saved_hits: Option<Vec<project::ProjectHit>>,
         saved_slots: Option<std::collections::BTreeMap<String, String>>,
-    ) -> Result<(), String> {
-        let Some(document) = &self.document else {
-            return Ok(());
-        };
-        let settings = project::SessionSettings {
+        saved_ownership: Option<Option<project::HsCircleOwnership>>,
+    ) -> Option<project::SessionSettings> {
+        let document = self.document.as_ref()?;
+        Some(project::SessionSettings {
             unanchored: saved_hits.or_else(|| {
                 self.project
                     .as_ref()
@@ -656,15 +915,32 @@ impl Application {
                 }).collect()
             }),
             lane_layout: document.lane_layout.clone(),
+            hidden_lanes: {
+                let items: std::collections::BTreeSet<_> = document.composer.hitsounds()
+                    .hidden_lanes().map(project::lane_key).collect();
+                (!items.is_empty() || self.project.as_ref().is_some_and(|p| p.settings.hidden_lanes.is_some()))
+                    .then_some(items)
+            },
             hs_mode: Some(document.hs_mode),
+            hs_circle_ownership: saved_ownership.unwrap_or_else(|| {
+                self.project.as_ref().and_then(|p| p.settings.hs_circle_ownership.clone())
+            }),
+            gain_recovery: self.project.as_ref().and_then(|p| p.settings.gain_recovery.clone()),
             time_signatures: Some(document.time_signatures.clone()),
             export_settings: document.export_settings.clone(),
             lane_slots: saved_slots.or_else(|| self.project.as_ref().and_then(|p| p.settings.lane_slots.clone())),
-        };
-        if let Some(project) = &mut self.project {
-            project
-                .save(settings)
-                .map_err(|e| format!("Saving session settings: {e}"))?;
+        })
+    }
+
+    fn write_session(
+        &mut self,
+        saved_hits: Option<Vec<project::ProjectHit>>,
+        saved_slots: Option<std::collections::BTreeMap<String, String>>,
+        saved_ownership: Option<Option<project::HsCircleOwnership>>,
+    ) -> Result<(), String> {
+        let settings = self.session_settings(saved_hits, saved_slots, saved_ownership);
+        if let (Some(project), Some(settings)) = (&mut self.project, settings) {
+            project.save(settings).map_err(|e| format!("Saving session settings: {e}"))?;
         }
         Ok(())
     }
@@ -800,12 +1076,27 @@ impl Application {
             .is_some_and(AudioEngine::collect_retired)
     }
 
+    fn track_progress(&mut self, label: &'static str) -> JobProgress {
+        let progress = JobProgress { label, current: Arc::new(Mutex::new(None)) };
+        self.status = label.into();
+        self.job_progress = Some(progress.clone());
+        progress
+    }
+
     pub fn poll(&mut self) {
+        if !self.cancel.load(Ordering::Relaxed)
+            && let Some(progress) = &self.job_progress
+            && let Ok(mut current) = progress.current.try_lock()
+            && let Some((done, total)) = current.take()
+        {
+            self.status = format!("{} {done} / {total} objects", progress.label);
+        }
         let result = match self.jobs.as_ref().map(|r| r.try_recv()) {
             Some(Ok(result)) => Some(result),
             Some(Err(mpsc::TryRecvError::Disconnected)) => {
                 self.jobs = None;
                 self.busy = false;
+                self.job_progress = None;
                 self.error = Some(
                     "The background job stopped unexpectedly. Your open edits are kept.".into(),
                 );
@@ -814,6 +1105,7 @@ impl Application {
             _ => None,
         };
         if let Some(result) = result {
+            self.job_progress = None;
             self.jobs = None;
             self.busy = false;
             match result {
@@ -831,6 +1123,9 @@ impl Application {
                     }
                     let path = loaded.document.path.clone();
                     self.document = Some(loaded.document);
+                    self.pending_save_review = None;
+                    self.last_endpoint_jump = None;
+                    self.selection_lane_scope = None;
                     self.output_problems.clear();
                     self.output_problem_revision = None;
                     self.save_problem_review = false;
@@ -846,7 +1141,9 @@ impl Application {
                     self.warnings = loaded.warnings;
                     self.muted.clear();
                     self.solo.clear();
+                    self.song_solo = false;
                     self.active_lane = 0;
+                    self.restore_active_lane(None);
                     self.preferences.recent.retain(|p| p != &path);
                     self.preferences.recent.insert(0, path);
                     self.preferences.recent.truncate(20);
@@ -908,17 +1205,20 @@ impl Application {
                         }
                     }
                 }
-                JobResult::SaveCheck { version, path, hs, result } => {
+                JobResult::SaveCheck { version, path, hs, result, diagnostics } => {
                     if !self.document.as_ref().is_some_and(|d| {
                         d.path == path && d.composer.history.version() == version && d.hs_mode == hs
                     }) {
                         self.status = "The difficulty changed. Review Save again.".into();
                     } else {
+                        self.output_problems = diagnostics;
                         match result {
-                            Ok(problems) if problems.is_empty() => self.save(),
-                            Ok(problems) => {
+                            Ok(plan) => {
+                                self.pending_save_review = Some(plan);
+                                self.status = "Review Save before writing".into();
+                            }
+                            Err(_) if !self.output_problems.is_empty() => {
                                 self.status = "Review problems before saving".into();
-                                self.output_problems = problems;
                                 self.save_problem_review = true;
                             }
                             Err(error) => {
@@ -927,8 +1227,7 @@ impl Application {
                             }
                         }
                     }
-                }
-                JobResult::Output(result) => match result {
+                }                JobResult::Output(result) => match result {
                     Ok((count, tracking_warning)) => {
                         self.status = format!("Wrote {count} reviewed files with backups");
                         if let Some(warning) = tracking_warning {
@@ -955,12 +1254,15 @@ impl Application {
                 JobResult::Save {
                     version,
                     path,
-                    saved_hits,
-                    saved_slots,
+                    settings,
+                    project,
                     result,
                     diagnostics,
                 } => {
                     self.output_problems = diagnostics;
+                    if project.is_some() {
+                        self.project = project;
+                    }
                     match result {
                         Ok(report) => {
                             if let Some(d) = self.document.as_mut() {
@@ -971,11 +1273,19 @@ impl Application {
                             let current = self.document.as_ref().is_some_and(|d| {
                                 d.path == path && d.composer.history.version() == version
                             });
-                            if let Err(error) = self.write_session(saved_hits, saved_slots) {
+                            if let Some(error) = report.gain_recovery_warning {
                                 self.error = Some(error);
-                                self.status =
-                                    "Difficulty saved. Session settings could not be saved.".into();
+                                self.status = "Difficulty saved. Gain recovery could not be finalized.".into();
                                 return;
+                            }
+                            if let (Some(mut settings), Some(project)) = (settings, self.project.as_mut()) {
+                                settings.hs_circle_ownership = report.hs_circle_ownership;
+                                settings.gain_recovery = project.settings.gain_recovery.clone();
+                                if let Err(error) = project.save(settings) {
+                                    self.error = Some(format!("Saving session settings: {error}"));
+                                    self.status = "Difficulty saved. Session settings could not be saved.".into();
+                                    return;
+                                }
                             }
                             if !current {
                                 self.status =
@@ -1035,39 +1345,54 @@ impl Application {
     }
 
     pub fn review_save(&mut self) {
+        self.begin_save(data_folder().join("backups"), true);
+    }
+
+    pub fn save_review_files(&self) -> Option<Vec<(&'static str, &Path)>> {
+        let review = self.pending_save_review.as_ref()?;
+        let plan = &review.plan;
+        let mut files = Vec::new();
+        if plan.map_changed {
+            files.push(("Replace difficulty", plan.path.as_path()));
+            files.push(("Backup folder", plan.backups.as_path()));
+        }
+        for mix in &plan.mix_files.staged {
+            files.push((if mix.is_reused() { "Reuse WAV" } else { "Create WAV" }, mix.path.as_path()));
+        }
+        if let (Some(project), Some(settings)) = (&review.project, &review.settings)
+            && (plan.recovery_revision.is_some() || *settings != project.settings)
+        {
+            files.push(("Write editor project", project.path()));
+        }
+        Some(files)
+    }
+
+    pub fn answer_save_review(&mut self, apply: bool) {
         if self.busy {
             return;
         }
-        if self.is_stroke_open() {
-            self.error = Some("Finish or cancel the current drag before saving.".into());
-            return;
-        }
-        let Some(d) = &self.document else {
+        let Some(review) = self.pending_save_review.take() else {
             return;
         };
-        let file = d.compile_base.clone();
-        let hits = d.composer.hitsounds().clone();
-        let path = d.path.clone();
-        let version = d.composer.history.version();
-        let hs = d.hs_mode;
-        let has_project = self.project.is_some();
+        if !apply {
+            self.status = "Save review cancelled".into();
+            return;
+        }
+        if self.is_stroke_open() || !self.document.as_ref().is_some_and(|doc| {
+            doc.path == review.plan.path && doc.composer.history.version() == review.version
+                && doc.hs_mode == review.hs
+        }) {
+            self.error = Some("The difficulty changed. Review Save again.".into());
+            return;
+        }
         let (send, receive) = mpsc::channel();
         self.jobs = Some(receive);
         self.busy = true;
-        self.save_problem_review = false;
-        self.output_problems.clear();
-        self.output_problem_revision = Some((version, hs));
-        self.status = "Checking Save…".into();
+        self.status = "Writing reviewed Save…".into();
         let cancel = Arc::new(AtomicBool::new(false));
         self.cancel = cancel.clone();
         std::thread::spawn(move || {
-            let result = compile_for_save(&file, &hits, hs, has_project, &|| cancel.load(Ordering::Relaxed))
-                .map(|(_, problems)| {
-                    let placement = if hs { Placement::OnObjects } else { Placement::GreenLines };
-                    problems.iter().filter(|problem| !mixes::can_render(problem, placement))
-                        .map(|problem| OutputProblem::new(problem, &path, &path)).collect()
-                });
-            let _ = send.send(JobResult::SaveCheck { version, path, hs, result });
+            let _ = send.send(review.finish(&|| cancel.load(Ordering::Relaxed)));
         });
     }
 
@@ -1076,6 +1401,10 @@ impl Application {
     }
 
     fn save_with_backups(&mut self, backups: PathBuf) {
+        self.begin_save(backups, false);
+    }
+
+    fn begin_save(&mut self, backups: PathBuf, review: bool) {
         if self.busy {
             return;
         }
@@ -1092,51 +1421,51 @@ impl Application {
         let path = d.path.clone();
         let version = d.composer.history.version();
         let hs = d.hs_mode;
-        // A successful HS save puts all loose hits in the difficulty, including merged voices.
-        // Clear the saved loose rows only when the write completes.
-        let saved_hits = self.project.as_ref().map(|_| {
-            if hs {
-                Vec::new()
-            } else {
-                project_hits(d)
-            }
+        let owned = d.owned_hs_circles.clone();
+        let project = self.project.clone();
+        let settings = project.as_ref().and_then(|_| {
+            let saved_hits = if hs { Vec::new() } else { project_hits(d) };
+            let saved_slots = hits.lane_slots()
+                .map(|(source, slot)| (project::lane_key(source), project::lane_key(slot))).collect();
+            self.session_settings(Some(saved_hits), Some(saved_slots), None)
         });
-        let has_project = saved_hits.is_some();
-        let saved_slots = has_project.then(|| hits.lane_slots()
-            .map(|(source, slot)| (project::lane_key(source), project::lane_key(slot)))
-            .collect());
         let defaults = self.preferences.default_samples.clone();
         let (send, receive) = mpsc::channel();
         self.jobs = Some(receive);
         self.busy = true;
+        self.pending_save_review = None;
         self.save_problem_review = false;
         self.output_problems.clear();
         self.output_problem_revision = Some((version, hs));
-        self.status = "Compiling and saving…".into();
+        let label = if review { "Preparing Save review…" } else { "Compiling and saving…" };
+        let progress = self.track_progress(label);
         let cancel = Arc::new(AtomicBool::new(false));
         self.cancel = cancel.clone();
         std::thread::spawn(move || {
+            let cancelled = || cancel.load(Ordering::Relaxed);
             let mut diagnostics = Vec::new();
-            let result = save_snapshot(
-                file,
-                hits,
-                expected,
-                &path,
-                backups,
-                hs,
-                has_project,
-                &defaults,
-                &|| cancel.load(Ordering::Relaxed),
-                &mut diagnostics,
-            );
-            let _ = send.send(JobResult::Save {
-                version,
-                path,
-                saved_hits,
-                saved_slots,
-                result,
-                diagnostics,
+            let result = prepare_save(
+                file, hits, expected, &path, backups, hs, &owned, &defaults,
+                project.as_ref(), review, &cancelled, &mut diagnostics,
+                &mut |done, total| progress.report(done, total),
+            ).map(|plan| {
+                let settings = settings.map(|mut settings| {
+                    settings.hs_circle_ownership = plan.ownership.clone();
+                    settings
+                });
+                PendingSave { version, hs, plan, project: project.clone(), settings }
             });
+            let job = if review {
+                JobResult::SaveCheck { version, path, hs, result, diagnostics }
+            } else {
+                match result {
+                    Ok(plan) => plan.finish(&cancelled),
+                    Err(error) => JobResult::Save {
+                        version, path, project, settings: None, result: Err(error), diagnostics,
+                    },
+                }
+            };
+            let _ = send.send(job);
         });
     }
     pub fn play_pause(&mut self) {
@@ -1175,13 +1504,18 @@ impl Application {
             a.seek(ms);
         }
     }
+    fn playback_song_gain(&self) -> f32 {
+        if !self.solo.is_empty() && !self.song_solo {
+            0.0
+        } else {
+            self.preferences.effective_song_gain()
+        }
+    }
+
     pub fn gains_changed(&mut self) {
         self.preferences.master_gain = self.preferences.master_gain.clamp(0.2, 1.0);
         if let Some(a) = &self.audio {
-            a.gains(
-                self.preferences.effective_song_gain(),
-                self.preferences.master_gain,
-            );
+            a.gains(self.playback_song_gain(), self.preferences.master_gain);
         }
     }
     pub fn cycle_changed(&mut self) {
@@ -1198,8 +1532,11 @@ impl Application {
         self.samples.get(&model.plays_as())
     }
     pub fn audition(&self, lane: &SampleIdentity) {
+        self.audition_lane(lane, 1.0);
+    }
+    fn audition_lane(&self, lane: &SampleIdentity, gain: f32) {
         if let (Some(a), Some(clip)) = (&self.audio, self.clip_for_lane(lane)) {
-            a.audition(clip.clone(), 1.0);
+            a.audition(clip.clone(), gain);
         }
     }
     pub fn audition_sample_file(&self, source: &Path) -> Result<(), String> {
@@ -1226,6 +1563,17 @@ impl Application {
         toggle(&mut self.solo, lane);
         self.sync_audio();
     }
+    pub fn song_solo(&self) -> bool {
+        self.song_solo
+    }
+
+    pub fn set_song_solo(&mut self, on: bool) {
+        if self.document.is_some() && self.song_solo != on {
+            self.song_solo = on;
+            self.sync_audio();
+        }
+    }
+
     pub fn set_speed(&mut self, speed: f64) {
         if self.busy {
             return;
@@ -1303,14 +1651,25 @@ impl Application {
         if self.busy {
             return;
         }
+        if input.click_count >= 2 {
+            if matches!(phase, PointerPhase::Down)
+                && input.button == PointerButton::Left
+                && input.surface == PointerSurface::Grid
+                && input.mods == Mods::NONE
+                && self.tools.active() == ToolKind::Select
+                && !self.is_stroke_open()
+            {
+                self.select_double_click(input);
+            }
+            return;
+        }
         let Some(d) = self.document.as_mut() else { return };
         if let Some(stroke) = &mut self.controller_stroke {
             match phase {
                 PointerPhase::Down => {}
                 PointerPhase::Move => stroke.apply(&mut d.composer, input),
                 PointerPhase::Up => {
-                    stroke.apply(&mut d.composer, input);
-                    d.composer.history.commit();
+                    stroke.finish(&mut d.composer, input);
                     self.controller_stroke = None;
                 }
                 PointerPhase::Cancel => self.cancel_controller_stroke(),
@@ -1334,6 +1693,28 @@ impl Application {
             PointerPhase::Cancel => self.tools.cancel(&mut d.composer),
         }
     }
+    fn select_double_click(&mut self, input: PointerInput) {
+        let Some(document) = self.document.as_mut() else { return };
+        let composer = &mut document.composer;
+        let Ok(row) = usize::try_from(input.row) else { return };
+        if row >= composer.lanes.len() {
+            return;
+        }
+        self.active_lane = row;
+        if let Some(hit) = composer.hit_test(&input) {
+            let moment = &composer.hitsounds().moments()[hit.moment];
+            let time = moment.time().ms();
+            let gain = moment.hit_volume(&hit.lane) as f32 / 100.0;
+            let lane = hit.lane.clone();
+            composer.selected.replace([hit]);
+            self.seek(time);
+            self.audition_lane(&lane, gain);
+        } else {
+            self.tools.down(composer, input);
+            self.tools.up(composer, input);
+        }
+    }
+
     pub fn go_to_history(&mut self, position: usize) {
         if self.busy || self.is_stroke_open() {
             return;
@@ -1353,13 +1734,21 @@ impl Application {
     }
 
     fn restore_active_lane(&mut self, slot: Option<SampleIdentity>) {
-        if let (Some(slot), Some(document)) = (slot, &self.document) {
-            let hits = document.composer.hitsounds();
-            let physical = hits.lane_slots().find_map(|(source, logical)| (logical == &slot).then_some(source)).unwrap_or(&slot);
-            if let Some(row) = document.composer.lanes.iter().position(|lane| lane == physical) {
-                self.active_lane = row;
-            }
-        }
+        let Some(document) = &self.document else { return };
+        let composer = &document.composer;
+        let hits = composer.hitsounds();
+        let visible = |lane: &SampleIdentity| {
+            !hits.is_lane_hidden(lane) && !hits.lane_slots().any(|(_, logical)| logical == lane)
+        };
+        let wanted = slot.as_ref().map(|slot| {
+            hits.lane_slots().find_map(|(source, logical)| (logical == slot).then_some(source)).unwrap_or(slot)
+        });
+        self.active_lane = wanted.and_then(|wanted| {
+            composer.lanes.iter().position(|lane| lane == wanted && visible(lane))
+        }).or_else(|| {
+            composer.lanes.iter().enumerate().filter(|(_, lane)| visible(lane))
+                .min_by_key(|(row, _)| row.abs_diff(self.active_lane)).map(|(row, _)| row)
+        }).unwrap_or(composer.lanes.len());
     }
 
     pub fn set_view_start(&mut self, ms: f64) {
@@ -1399,12 +1788,21 @@ impl Application {
             d.composer.insert_volume = v.clamp(0, 100);
         }
     }
+    pub fn set_selection_lane_scope(&mut self, lanes: Option<BTreeSet<SampleIdentity>>) -> Result<(), String> {
+        if self.busy || self.is_stroke_open() {
+            return Err("Finish the current edit before changing volume scope".into());
+        }
+        self.document.as_ref().ok_or("Open a difficulty first")?;
+        self.selection_lane_scope = lanes;
+        Ok(())
+    }
+
     pub fn selection_volume(&mut self, v: i32, relative: bool) {
-        if self.busy {
+        if self.busy || self.is_stroke_open() {
             return;
         }
         if let Some(d) = self.document.as_mut() {
-            d.composer.volume(v, relative);
+            d.composer.volume_for_lanes(v, relative, self.selection_lane_scope.as_ref());
         }
     }
     pub fn set_hs_mode(&mut self, hs: bool) {
@@ -1415,6 +1813,51 @@ impl Application {
             d.hs_mode = hs;
         }
     }
+    /// Selects the hits attached to one waveform object or one of its nodes.
+    pub fn select_waveform_object(&mut self, map: &Path, object: usize, time: f64, node: bool, preview: bool) {
+        if self.busy || self.is_stroke_open() || !time.is_finite() {
+            return;
+        }
+        let Some(document) = self.document.as_mut().filter(|document| document.path == map) else {
+            return;
+        };
+        let Some(object_line) = document.file.hit_objects().get(object).map(|object| object.line()) else {
+            return;
+        };
+        let composer = &mut document.composer;
+        let mut hits = Vec::new();
+        let mut found = false;
+        for (index, moment) in composer.hitsounds().moments().iter().enumerate() {
+            let object = match moment.place() {
+                dawsu_hitsounding::Place::Circle(object)
+                | dawsu_hitsounding::Place::SliderNode { object, .. }
+                | dawsu_hitsounding::Place::SpinnerEnd(object) => object,
+                dawsu_hitsounding::Place::NoObject => continue,
+            };
+            if object.line() != object_line || (node && moment.time().ms() != time) {
+                continue;
+            }
+            found = true;
+            hits.extend(moment.hits().map(|lane| {
+                let gain = moment.hit_volume(lane) as f32 / 100.0;
+                (HitKey { moment: index, lane: lane.clone() }, gain)
+            }));
+            if node {
+                break;
+            }
+        }
+        if !found {
+            return;
+        }
+        composer.selected.replace(hits.iter().map(|(hit, _)| hit.clone()));
+        self.seek(time);
+        if preview {
+            for (hit, gain) in hits {
+                self.audition_lane(&hit.lane, gain);
+            }
+        }
+    }
+
     pub fn select_hit(&mut self, key: HitKey, add: bool) {
         if let Some(d) = self.document.as_mut() {
             if add {
@@ -1426,7 +1869,7 @@ impl Application {
     }
     fn review_job(
         &mut self,
-        prepare: impl FnOnce(output::Source, Arc<AtomicBool>, &mut Vec<OutputProblem>) -> Result<output::WritePlan, String>
+        prepare: impl FnOnce(output::Source, Arc<AtomicBool>, &mut Vec<OutputProblem>, &mut dyn FnMut(usize, usize)) -> Result<output::WritePlan, String>
         + Send
         + 'static,
     ) {
@@ -1448,10 +1891,12 @@ impl Application {
         let (send, receive) = mpsc::channel();
         self.jobs = Some(receive);
         self.busy = true;
-        self.status = "Preparing output review…".into();
+        let progress = self.track_progress("Preparing output review…");
         std::thread::spawn(move || {
             let mut diagnostics = Vec::new();
-            let result = prepare(source, cancel, &mut diagnostics);
+            let result = prepare(source, cancel, &mut diagnostics, &mut |done, total| {
+                progress.report(done, total);
+            });
             let _ = send.send(JobResult::Review(result, diagnostics));
         });
     }
@@ -1463,13 +1908,13 @@ impl Application {
         let defaults = self.preferences.default_samples.clone();
         let settings = self.document.as_ref().and_then(|document| document.export_settings.clone());
         let projects = self.project_root.clone();
-        self.review_job(move |source, cancel, diagnostics| {
+        self.review_job(move |source, cancel, diagnostics, progress| {
             output::generate_report(&source, &defaults, settings.as_ref(), projects.as_deref(),
-                include_slider_audio, &|| cancel.load(Ordering::Relaxed), diagnostics)
+                include_slider_audio, &|| cancel.load(Ordering::Relaxed), diagnostics, progress)
         });
     }
     pub fn new_diff(&mut self, name: String) {
-        self.review_job(move |source, _, _| output::new_diff(&source, &name));
+        self.review_job(move |source, _, _, _| output::new_diff(&source, &name));
     }
     pub fn copy_hitsounds(
         &mut self,
@@ -1477,8 +1922,8 @@ impl Application {
         options: dawsu_hitsounding::copy::CopyOptions,
     ) {
         let defaults = self.preferences.default_samples.clone();
-        self.review_job(move |source, cancel, diagnostics| {
-            output::copy_report(&source, &defaults, &targets, &options, &|| cancel.load(Ordering::Relaxed), diagnostics)
+        self.review_job(move |source, cancel, diagnostics, progress| {
+            output::copy_report(&source, &defaults, &targets, &options, &|| cancel.load(Ordering::Relaxed), diagnostics, progress)
         });
     }
     pub fn audition_output_mix(&self, index: usize) -> Result<(), String> {
@@ -1539,6 +1984,12 @@ impl Application {
             self.error = Some(message);
         }
     }
+    pub fn key_with_lane_view(&mut self, chord: KeyChord, path: PathBuf, rows: Vec<usize>, span: f64) {
+        self.key_lane_view = Some((path, rows, span));
+        self.key(chord);
+        self.key_lane_view = None;
+    }
+
     pub fn help(&self) -> Vec<HelpGroup> {
         self.catalogue.help(&self.keymap)
     }
@@ -1651,7 +2102,8 @@ impl Application {
         let Some(document) = &self.document else {
             return;
         };
-        let additions = self.sample_watch.poll(document);
+        let mut additions = self.sample_watch.poll(document);
+        additions.retain(|(name, _)| document.files.binary_search(name).is_err());
         self.register_added_samples(additions);
     }
 
@@ -1680,6 +2132,9 @@ impl Application {
     }
 
     fn scheduled_sounds(&self, d: &Document) -> Vec<ScheduledSound> {
+        if self.song_solo && self.solo.is_empty() {
+            return Vec::new();
+        }
         let composer = &d.composer;
         let hits = composer.hitsounds();
         // Per-hit mute is keyed by moment and lane. Apply it before the cue list
@@ -1719,10 +2174,7 @@ impl Application {
                     cues,
                     self.playback_speed,
                 );
-                a.gains(
-                    self.preferences.effective_song_gain(),
-                    self.preferences.master_gain,
-                );
+                a.gains(self.playback_song_gain(), self.preferences.master_gain);
             }
         }
     }
@@ -1821,6 +2273,11 @@ fn load(
             }
         }
     });
+    if let Some(recovery) = project.as_ref().and_then(|p| p.settings.gain_recovery.as_ref())
+        && let Err(error) = gain_recovery::restore(&mut document, recovery, defaults)
+    {
+        warnings.push(format!("Editable hit gains could not be restored: {error}"));
+    }
     if let Some(saved) = project
         .as_ref()
         .and_then(|p| p.settings.unanchored.as_deref())
@@ -1847,8 +2304,16 @@ fn load(
         }
         document.bookmark_override = true;
     }
+    if let Some(hidden) = project.as_ref().and_then(|p| p.settings.hidden_lanes.as_ref()) {
+        document.composer.history.update_external(|hits| {
+            hits.restore_hidden_lanes(hidden.iter().filter_map(|key| project::lane_identity(key)));
+        });
+    }
     document.lane_layout = project.as_ref().and_then(|p| p.settings.lane_layout.clone());
     document.hs_mode = project.as_ref().and_then(|p| p.settings.hs_mode).unwrap_or(false);
+    if let Some(ownership) = project.as_ref().and_then(|p| p.settings.hs_circle_ownership.as_ref()) {
+        document.owned_hs_circles = ownership.verified_lines(&document.compile_base);
+    }
     if let Some(signatures) = project.as_ref().and_then(|p| p.settings.time_signatures.clone()) {
         document.update_time_signatures(signatures);
     }
@@ -1924,9 +2389,10 @@ fn project_hits(document: &Document) -> Vec<project::ProjectHit> {
             let key = project::lane_key(lane);
             saved.push(project::ProjectHit {
                 group: Some(group),
+                default_volume: moment.has_hit_volume_overrides().then(|| moment.volume()),
                 lane: key,
                 time: moment.time().ms(),
-                volume: Some(moment.volume()),
+                volume: Some(moment.hit_volume(lane)),
             });
         }
     }
@@ -1945,7 +2411,7 @@ fn restore_project_hits(
     for m in hits.moments() {
         for lane in m.hits() {
             anchored
-                .entry((m.time().ms().to_bits(), lane.clone(), m.volume()))
+                .entry((m.time().ms().to_bits(), lane.clone(), m.hit_volume(lane)))
                 .and_modify(|count| *count += 1)
                 .or_insert(1usize);
         }
@@ -1957,7 +2423,9 @@ fn restore_project_hits(
             .ok_or_else(|| format!("Cannot restore project hit on lane {}", hit.lane))?;
         let volume = hit.volume.unwrap_or(100).clamp(0, 100);
         let time = hit.time.to_bits();
-        if let Some(count) = anchored.get_mut(&(time, lane.clone(), volume)) {
+        if hit.default_volume.is_none()
+            && let Some(count) = anchored.get_mut(&(time, lane.clone(), volume))
+        {
             if *count > 0 {
                 *count -= 1;
                 continue;
@@ -1971,10 +2439,11 @@ fn restore_project_hits(
             *voice += 1;
             index
         });
+        let default = hit.default_volume.unwrap_or(volume).clamp(0, 100);
         let moment = groups
-            .entry((time, volume, group))
-            .or_insert_with(|| hits.add_moment(SongTime::from_ms(hit.time), volume));
-        hits.add_hit(*moment, lane);
+            .entry((time, default, group))
+            .or_insert_with(|| hits.add_moment(SongTime::from_ms(hit.time), default));
+        hits.add_hit_with_volume(*moment, lane, volume);
     }
     let tempo = std::mem::take(&mut composer.tempo);
     *composer = Composer::new(hits);
@@ -2011,6 +2480,160 @@ mod project_workflow {
             std::thread::sleep(Duration::from_millis(5));
         }
         assert!(app.error.is_none(), "{:?}", app.error);
+    }
+
+    #[test]
+    fn selected_lane_volume_and_shortcut_leave_other_voices_at_the_moment() {
+        let fixture = Scratch::new("selected-lane-volume");
+        let path = fixture.path("map.osu");
+        let map = b"osu file format v14\n[General]\nMode:0\n[TimingPoints]\n0,500,4,1,1,70,1,0\n[HitObjects]\n256,192,1000,1,8,1:1:1:70:\n128,192,1000,1,0,1:1:1:70:\n";
+        std::fs::write(&path, map).unwrap();
+        let wav_head = b"RIFF\x26\0\0\0WAVEfmt \x10\0\0\0\x01\0\x01\0\x80\xbb\0\0\0w\x01\0\x02\0\x10\0data\x02\0\0\0";
+        for (name, sample) in [("normal-hitnormal.wav", 8192_i16), ("normal-hitclap.wav", 16384)] {
+            let mut wav = wav_head.to_vec();
+            wav.extend(sample.to_le_bytes());
+            std::fs::write(fixture.path(name), wav).unwrap();
+        }
+        let mut app = Application::headless();
+        app.project_root = Some(fixture.path("sessions"));
+        open(&mut app, path.clone());
+        let lanes: Vec<_> = app.document().unwrap().composer.hitsounds().moments()[0].hits().cloned().collect();
+        let normal = lanes.iter().find(|lane| matches!(lane,
+            SampleIdentity::Standard { sound: Sound::Hit(Hitsound::Normal), .. })).unwrap().clone();
+        let clap = lanes.iter().find(|lane| *lane != &normal).unwrap().clone();
+        app.select_hit(HitKey { moment: 0, lane: clap.clone() }, false);
+        app.set_selection_lane_scope(Some(BTreeSet::from([normal.clone()]))).unwrap();
+        app.selection_volume(30, false);
+        app.command("volumeUp");
+        let gains = |app: &Application| {
+            let moment = &app.document().unwrap().composer.hitsounds().moments()[0];
+            (moment.hit_volume(&normal), moment.hit_volume(&clap))
+        };
+        assert_eq!(gains(&app), (35, 70));
+        use dawsu_editor::keys::{Key, Mods};
+        let fine = Mods::ALT.union(Mods::SHIFT);
+        app.key(KeyChord::new(Key::Up, fine));
+        assert_eq!(gains(&app), (36, 70));
+        app.key(KeyChord::new(Key::Down, fine));
+        assert_eq!(gains(&app), (35, 70));
+        app.command("undo");
+        assert_eq!(gains(&app), (36, 70));
+        app.command("undo");
+        assert_eq!(gains(&app), (35, 70));
+        app.command("undo");
+        assert_eq!(gains(&app), (30, 70));
+        app.command("undo");
+        assert_eq!(gains(&app), (70, 70));
+        app.command("redo");
+        app.command("redo");
+        let save = |app: &mut Application| {
+            app.save_with_backups(fixture.path("backups"));
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while app.busy {
+                app.poll();
+                assert!(Instant::now() < deadline);
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            assert!(app.error.is_none(), "{:?}", app.error);
+        };
+        save(&mut app);
+        let written = std::fs::read(&path).unwrap();
+        assert_ne!(written, map);
+        assert!(written.ends_with(b"128,192,1000,1,0,1:1:1:70:\n"));
+        let decoded = Document::read(&path).unwrap();
+        let backing = decoded.composer.hitsounds().moments()[0].hits().next().unwrap();
+        let SampleIdentity::File(name) = backing else { panic!("expected a mix file") };
+        let pcm = dawsu_audio::decode(&fixture.path(name)).unwrap();
+        assert!((pcm.samples[0] - (0.25 * 0.35 + 0.5 * 0.7)).abs() < 0.0001);
+        let mut reopened = Application::headless();
+        reopened.project_root = app.project_root.clone();
+        open(&mut reopened, path.clone());
+        assert_eq!(gains(&reopened), (35, 70));
+        save(&mut reopened);
+        assert_eq!(std::fs::read(&path).unwrap(), written);
+
+        // A pending recovery record must stay inactive if the map write fails.
+        reopened.select_hit(HitKey { moment: 0, lane: clap.clone() }, false);
+        reopened.set_selection_lane_scope(Some(BTreeSet::from([normal.clone()]))).unwrap();
+        reopened.selection_volume(55, false);
+        let blocked_backup = fixture.path("blocked");
+        std::fs::write(&blocked_backup, b"not a backup directory").unwrap();
+        reopened.save_with_backups(blocked_backup);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while reopened.busy {
+            reopened.poll();
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(reopened.error.is_some());
+        assert!(reopened.is_dirty());
+        assert_eq!(std::fs::read(&path).unwrap(), written);
+
+        let mut retry = Application::headless();
+        retry.project_root = app.project_root.clone();
+        open(&mut retry, path.clone());
+        assert_eq!(gains(&retry), (35, 70));
+
+        let original_sample = fixture.path("normal-hitclap.wav");
+        let mut changed = std::fs::read(&original_sample).unwrap();
+        changed[44] ^= 1;
+        std::fs::write(&original_sample, changed).unwrap();
+        let mut external = Application::headless();
+        external.project_root = app.project_root.clone();
+        open(&mut external, path.clone());
+        assert!(external.warnings.iter().any(|warning| warning.contains("An original sample changed")));
+        assert!(!external.document().unwrap().composer.hitsounds().moments()[0].has_hit(&clap));
+        assert_eq!(std::fs::read(path).unwrap(), written);
+    }
+
+
+    #[test]
+    fn save_and_save_check_publish_object_progress() {
+        let fixture = Scratch::new("save-progress");
+        let original = b"osu file format v14\n[General]\nMode:0\n[HitObjects]\n256,192,1000,1,0,0:0:0:50:\n256,192,2000,1,0,0:0:0:60:\n";
+        for check_only in [true, false] {
+            let path = fixture.path(if check_only { "checked.osu" } else { "saved.osu" });
+            std::fs::write(&path, original).unwrap();
+            let mut app = Application::headless();
+            open(&mut app, path.clone());
+            app.document.as_mut().unwrap().composer.apply("Change both objects", |hits| {
+                hits.set_volume(dawsu_hitsounding::MomentId(0), 75);
+                hits.set_volume(dawsu_hitsounding::MomentId(1), 80);
+            });
+            if check_only {
+                app.review_save();
+            } else {
+                app.save_with_backups(fixture.path("backups"));
+            }
+            assert!(app.busy);
+            let progress = app.job_progress.as_ref().expect("Save should track object progress");
+            let result = app.jobs.as_ref().unwrap().recv_timeout(Duration::from_secs(3)).unwrap();
+            assert!(matches!(result, JobResult::SaveCheck { result: Ok(_), .. } | JobResult::Save { result: Ok(_), .. }));
+            assert_eq!(*progress.current.lock().unwrap(), Some((2, 2)));
+            assert_eq!(std::fs::read(path).unwrap() == original, check_only);
+        }
+    }
+
+    #[test]
+    fn review_progress_reaches_status_while_worker_is_active() {
+        let fixture = Scratch::new("review-progress");
+        let path = fixture.path("map.osu");
+        std::fs::write(&path, b"osu file format v14\n[General]\nMode:0\n[HitObjects]\n").unwrap();
+        let mut app = Application::headless();
+        open(&mut app, path);
+        let (release, wait) = mpsc::channel();
+        let (reported, ready) = mpsc::channel();
+        app.review_job(move |_, _, _, progress| {
+            progress(2, 5);
+            reported.send(()).unwrap();
+            wait.recv().unwrap();
+            Err("test complete".into())
+        });
+        ready.recv_timeout(Duration::from_secs(3)).unwrap();
+        app.poll();
+        assert!(app.busy);
+        assert!(app.status.contains("2 / 5"), "{}", app.status);
+        release.send(()).unwrap();
     }
 
     #[test]
@@ -2060,7 +2683,7 @@ mod project_workflow {
         assert_eq!(std::fs::read(&target).unwrap(), initial);
         app.apply_output_in(backups.clone());
         wait(&mut app);
-        assert!(app.error.is_none());
+        assert!(app.error.is_none(), "{:?}", app.error);
         assert_ne!(std::fs::read(&target).unwrap(), initial);
         assert_eq!(std::fs::read(&mix).unwrap(), rendered);
         let backup_dir = std::fs::read_dir(&backups).unwrap().next().unwrap().unwrap().path();
@@ -2200,6 +2823,102 @@ mod project_workflow {
     }
 
     #[test]
+    fn add_lane_registers_a_new_sample_before_the_watcher_runs() {
+        let fixture = Scratch::new("add-lane-immediate");
+        let path = fixture.path("first.osu");
+        let map = b"osu file format v14\n[General]\nAudioFilename: song.wav\n[HitObjects]\n256,192,1000,1,0,0:0:0:0:\n";
+        let wav = b"RIFF\x26\0\0\0WAVEfmt \x10\0\0\0\x01\0\x01\0\x80\xbb\0\0\0w\x01\0\x02\0\x10\0data\x02\0\0\0\0\x40";
+        std::fs::write(&path, map).unwrap();
+        let mut app = Application::headless();
+        open(&mut app, path.clone());
+        let path = path.canonicalize().unwrap();
+        let lane = SampleIdentity::File("late.WAV".into());
+        std::fs::write(fixture.path("late.WAV"), wav).unwrap();
+        std::fs::write(fixture.path("song.wav"), wav).unwrap();
+        assert!(!app.document().unwrap().composer.lanes.contains(&lane));
+        assert_eq!(app.scan_lane_add_candidates(&path).unwrap(), [lane.clone()]);
+        // No poll occurs between copy and explicit Add.
+        app.show_lane(&path, &lane).unwrap();
+        let doc = app.document().unwrap();
+        assert_eq!(doc.composer.lanes[app.active_lane], lane);
+        assert!(app.samples.contains_key(&lane));
+        assert!(!app.is_dirty());
+        assert!(app.scan_lane_add_candidates(&path).unwrap().is_empty());
+        app.command("undo");
+        assert!(app.document().unwrap().composer.hitsounds().is_lane_hidden(&lane));
+        assert_eq!(app.scan_lane_add_candidates(&path).unwrap(), [lane.clone()]);
+        app.command("redo");
+        assert!(!app.document().unwrap().composer.hitsounds().is_lane_hidden(&lane));
+        assert_eq!(std::fs::read(&path).unwrap(), map);
+        assert_eq!(std::fs::read(fixture.path("late.WAV")).unwrap(), wav);
+    }
+
+    #[test]
+    fn deleting_a_lane_preserves_its_file_and_supports_undo_reopen_and_add() {
+        let fixture = Scratch::new("delete-lane");
+        let path = fixture.path("first.osu");
+        let other = fixture.path("second.osu");
+        let sample = fixture.path("soft-hitclap.wav");
+        let original = b"osu file format v14\r\n[General]\r\nMode:0\r\n[TimingPoints]\r\n0,500,4,2,1,75,1,0\r\n[HitObjects]\r\n256,192,1000,1,8,0:0:0:75:\r\n256,192,2000,1,0,0:0:0:50:\r\n";
+        let wav = b"RIFF\x26\0\0\0WAVEfmt \x10\0\0\0\x01\0\x01\0\x80\xbb\0\0\0w\x01\0\x02\0\x10\0data\x02\0\0\0\0\x40";
+        std::fs::write(&sample, wav).unwrap();
+        std::fs::write(&path, original).unwrap();
+        std::fs::write(&other, original).unwrap();
+        let mut app = Application::headless();
+        app.project_root = Some(fixture.path("projects"));
+        open(&mut app, path.clone());
+        let path = path.canonicalize().unwrap();
+        let lane = dawsu_hitsounding::rules::read_sample_file_name("soft-hitclap.wav").unwrap();
+        let protected = app.document().unwrap().composer.hitsounds().moments()[1].hits().next().unwrap().clone();
+        app.set_normal_protection(true);
+        let revision = app.document().unwrap().composer.history.version();
+        assert!(app.delete_lane(&path, &protected, revision).is_err());
+        assert!(app.delete_lane(&path, &lane, revision + 1).is_err());
+        assert!(!app.is_dirty());
+
+        app.active_lane = app.document().unwrap().composer.lanes.iter().position(|row| row == &lane).unwrap();
+        let hidden = |app: &Application| app.document().unwrap().composer.hitsounds().is_lane_hidden(&lane);
+        let has_hit = |app: &Application| app.document().unwrap().composer.hitsounds().moments()[0].has_hit(&lane);
+        app.delete_lane(&path, &lane, revision).unwrap();
+        assert!(hidden(&app));
+        assert!(!has_hit(&app));
+        assert_ne!(app.document().unwrap().composer.lanes[app.active_lane], lane);
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        // Simulates a watcher payload that arrives after Delete, including after a later rescan.
+        app.register_added_samples(vec![("soft-hitclap.wav".into(), dawsu_audio::decode(&sample).unwrap())]);
+        assert!(hidden(&app));
+        app.command("undo");
+        assert!(!hidden(&app) && has_hit(&app));
+        app.command("redo");
+        assert!(hidden(&app) && !has_hit(&app));
+
+        app.save_with_backups(fixture.path("backups"));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while app.busy {
+            app.poll();
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(app.error.is_none(), "{:?}", app.error);
+        assert!(!app.is_dirty());
+        open(&mut app, other.clone());
+        assert!(!hidden(&app) && has_hit(&app));
+        open(&mut app, path.clone());
+        assert!(hidden(&app) && !has_hit(&app));
+        assert!(app.lane_add_candidates().contains(&lane));
+        app.show_lane(&path, &lane).unwrap();
+        assert!(!hidden(&app) && !has_hit(&app));
+        assert_eq!(app.document().unwrap().composer.lanes[app.active_lane], lane);
+        assert!(!app.is_dirty(), "showing an empty lane never dirties the map");
+        app.command("undo");
+        assert!(hidden(&app));
+        app.command("redo");
+        assert!(!hidden(&app));
+        assert_eq!(std::fs::read(sample).unwrap(), wav);
+        assert_eq!(std::fs::read(other).unwrap(), original);
+    }
+
+    #[test]
     fn lane_layout_is_read_per_difficulty_without_writing_the_map() {
         let fixture = Scratch::new("lane-layout");
         let path = fixture.path("first.osu");
@@ -2216,6 +2935,8 @@ mod project_workflow {
                 folder_order: vec!["drum".into(), "normal".into(), "soft".into()],
                 collapsed_folders: ["normal".into()].into(),
                 collapsed_families: ["soft-hitclap".into()].into(),
+                lane_colours: Default::default(),
+                ..Default::default()
             }),
             ..Default::default()
         };
@@ -2226,6 +2947,9 @@ mod project_workflow {
             folder_order: vec!["soft".into(), "drum".into(), "normal".into()],
             collapsed_folders: ["drum".into()].into(),
             collapsed_families: ["normal-hitfinish".into()].into(),
+            lane_colours: [("Skin|normal-hitclap".into(), "#e65420".into())].into(),
+            lane_names: [("Skin|normal-hitclap".into(), "Backup snare".into())].into(),
+            lane_order: vec!["Skin|normal-hitclap".into(), "Skin|normal-hitnormal".into()],
         };
         app.set_lane_layout(updated.clone()).unwrap();
         app.save_session().unwrap();
@@ -2442,6 +3166,102 @@ mod project_workflow {
     }
 
     #[test]
+    fn repeating_an_endpoint_shortcut_seeks_to_the_song_boundary() {
+        use dawsu_editor::keys::{Key, Mods};
+        let scratch = Scratch::new("endpoint-shortcuts");
+        let map = scratch.path("Hard.osu");
+        let original = b"osu file format v14\n\n[TimingPoints]\n0,500,4,1,0,100,1,0\n\n[HitObjects]\n256,192,1000,1,0,0:0:0:0:\n256,192,2000,1,0,0:0:0:0:\n";
+        std::fs::write(&map, original).unwrap();
+        let mut app = Application::headless();
+        open(&mut app, map.clone());
+        let press = |app: &mut Application, key| app.key(KeyChord::new(key, Mods::NONE));
+        press(&mut app, Key::Z);
+        assert_eq!(app.position_ms(), 1000.0);
+        press(&mut app, Key::Z);
+        assert_eq!(app.position_ms(), 0.0);
+        press(&mut app, Key::V);
+        assert_eq!(app.position_ms(), 2000.0);
+        press(&mut app, Key::V);
+        assert_eq!(app.position_ms(), 4000.0);
+        assert!(!app.is_dirty());
+
+        let lane = SampleIdentity::Standard {
+            set: SampleSet::Normal, sound: Sound::Hit(Hitsound::Clap),
+            index: dawsu_foundation::CustomIndex::new(0),
+        };
+        let composer = &mut app.document.as_mut().unwrap().composer;
+        composer.add(800.0, lane.clone(), 40, 0.0);
+        composer.add(2200.0, lane, 60, 0.0);
+        press(&mut app, Key::Z);
+        assert_eq!(app.position_ms(), 800.0);
+        app.last_endpoint_jump = Some((true, Instant::now() - Duration::from_millis(401)));
+        press(&mut app, Key::Z);
+        assert_eq!(app.position_ms(), 800.0);
+        press(&mut app, Key::V);
+        assert_eq!(app.position_ms(), 2200.0, "changing direction starts a fresh jump");
+        assert_eq!(std::fs::read(map).unwrap(), original);
+    }
+
+    #[test]
+    fn grid_alignment_shortcuts_shift_the_whole_selection_in_one_undo_step() {
+        use dawsu_editor::keys::{Key, Mods};
+        use dawsu_editor::tempo::SnapMode;
+
+        let scratch = Scratch::new("grid-alignment");
+        let map = scratch.path("Hard.osu");
+        let original = b"osu file format v14\n\n[TimingPoints]\n0,500,4,1,0,100,1,0\n1150,360,4,1,0,100,1,0\n\n[HitObjects]\n256,192,1000,1,0,0:0:0:0:\n256,192,1200,1,0,0:0:0:0:\n256,192,1318,1,0,0:0:0:0:\n";
+        std::fs::write(&map, original).unwrap();
+        for (mode, next, previous) in [
+            (SnapMode::Grid, [1150.0, 1320.0], [1125.0, 1295.0]),
+            (SnapMode::GridRelative, [1150.0, 1320.0], [1125.0, 1295.0]),
+            (SnapMode::Objects, [1200.0, 1370.0], [1000.0, 1170.0]),
+        ] {
+            let mut app = Application::headless();
+            app.choose_key_preset("DAW");
+            open(&mut app, map.clone());
+            let lane = SampleIdentity::Standard {
+                set: SampleSet::Normal, sound: Sound::Hit(Hitsound::Clap),
+                index: dawsu_foundation::CustomIndex::new(0),
+            };
+            let composer = &mut app.document.as_mut().unwrap().composer;
+            composer.snap_mode = mode;
+            composer.spacing = SnapSpacing::new(1, 4).unwrap();
+            composer.add(1300.0, lane.clone(), 70, 0.0);
+            composer.add(1130.0, lane.clone(), 40, 0.0);
+            let moments = composer.hitsounds().moments();
+            let selected: Vec<_> = moments.iter().enumerate()
+                .filter(|(_, moment)| moment.has_hit(&lane))
+                .map(|(moment, _)| HitKey { moment, lane: lane.clone() }).collect();
+            composer.selected.replace(selected);
+            let state = |app: &Application| {
+                let mut values: Vec<_> = app.document().unwrap().composer.hitsounds().moments().iter()
+                    .filter(|moment| moment.has_hit(&lane))
+                    .map(|moment| (moment.time().ms(), moment.hit_volume(&lane))).collect();
+                values.sort_by(|a, b| a.0.total_cmp(&b.0));
+                values
+            };
+            let expected = |times: [f64; 2]| vec![(times[0], 40), (times[1], 70)];
+            app.seek(500.0);
+            app.key(KeyChord::new(Key::Space, Mods::ALT));
+            assert_eq!(app.position_ms(), 1130.0);
+            let mods = Mods::CTRL.union(Mods::ALT);
+            app.key(KeyChord::new(Key::Right, mods));
+            assert_eq!(state(&app), expected(next), "{mode:?}");
+            app.key(KeyChord::new(Key::Left, mods));
+            assert_eq!(state(&app), expected(previous), "{mode:?}");
+            if mode == SnapMode::Objects {
+                app.key(KeyChord::new(Key::Left, mods));
+                assert_eq!(state(&app), expected(previous), "there is no earlier object");
+            }
+            app.command("undo");
+            assert_eq!(state(&app), expected(next));
+            app.command("undo");
+            assert_eq!(state(&app), expected([1130.0, 1300.0]));
+            assert_eq!(std::fs::read(&map).unwrap(), original);
+        }
+    }
+
+    #[test]
     fn transport_plays_numbered_map_additions_alongside_default_hitnormal() {
         let dir = Scratch::new("addition-playback");
         let folder = dir.path("mapset");
@@ -2452,7 +3272,7 @@ mod project_workflow {
         let map = folder.join("test.osu");
         let fixture = include_str!("../tests/project-fixture.osu")
             .replace("256,192,1000,1,8,0:0:0:0:", "256,192,1000,1,14,1:2:2:50:");
-        std::fs::write(&map, fixture).unwrap();
+        std::fs::write(&map, &fixture).unwrap();
         let header = b"RIFF\x26\0\0\0WAVEfmt \x10\0\0\0\x01\0\x01\0\x80\xbb\0\0\0w\x01\0\x02\0\x10\0data\x02\0\0\0";
         for (path, amplitude) in [
             (defaults.join("normal-hitnormal.wav"), 4096i16),
@@ -2470,6 +3290,8 @@ mod project_workflow {
         app.samples = loaded.samples;
         let mix = |app: &Application| {
             let mut mixer = dawsu_audio::Mixer::new(48_000);
+            mixer.song = app.song.clone();
+            mixer.song_gain = app.playback_song_gain();
             mixer.cues = app.scheduled_sounds(app.document().unwrap());
             mixer.seek(1000.0);
             mixer.playing = true;
@@ -2487,9 +3309,31 @@ mod project_workflow {
         assert_eq!(clip.samples[0], 0.5);
         app.document.as_mut().unwrap().composer.listen_muted.push(HitKey {
             moment: 0,
-            lane: clap,
+            lane: clap.clone(),
         });
         assert_eq!(mix(&app), (3, 0.375));
+
+        app.document.as_mut().unwrap().composer.listen_muted.clear();
+        app.song = Some(Arc::new(AudioClip {
+            samples: vec![0.25; 48_002],
+            channels: 1,
+            sample_rate: 48_000,
+        }));
+        app.preferences.song_gain = 1.0;
+        assert_eq!(mix(&app), (4, 0.875));
+        app.set_song_solo(true);
+        assert_eq!(mix(&app), (0, 0.25));
+        app.solo(clap.clone());
+        assert_eq!(mix(&app), (1, 0.5));
+        app.preferences.song_muted = true;
+        assert_eq!(mix(&app), (1, 0.25), "explicit song mute takes priority");
+        app.preferences.song_muted = false;
+        app.set_song_solo(false);
+        assert_eq!(mix(&app), (1, 0.25), "lane solo suppresses the unsoloed song");
+        app.solo(clap);
+        assert_eq!(mix(&app), (4, 0.875));
+        assert!(!app.is_dirty());
+        assert_eq!(std::fs::read(map).unwrap(), fixture.as_bytes());
     }
 
     #[test]
@@ -2546,6 +3390,83 @@ mod project_workflow {
         for path in [a, b] {
             assert_eq!(std::fs::read(path).unwrap(), original);
         }
+    }
+
+    #[test]
+    fn reopened_hs_ownership_removes_only_created_circles_and_survives_undo() {
+        let scratch = Scratch::new("hs-circle-ownership");
+        let folder = scratch.path("mapset");
+        std::fs::create_dir(&folder).unwrap();
+        let map = folder.join("test.osu");
+        let original = include_bytes!("../tests/project-fixture.osu");
+        std::fs::write(&map, original).unwrap();
+        let lane = SampleIdentity::File("voice.wav".into());
+        let wav = b"RIFF\x26\0\0\0WAVEfmt \x10\0\0\0\x01\0\x01\0\x80\xbb\0\0\0w\x01\0\x02\0\x10\0data\x02\0\0\0\0\x40";
+        std::fs::write(folder.join("voice.wav"), wav).unwrap();
+
+        let launch = || {
+            let mut app = Application::headless();
+            app.project_root = Some(scratch.path("projects"));
+            open(&mut app, map.clone());
+            app
+        };
+        let wait = |app: &mut Application| {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while app.busy {
+                app.poll();
+                assert!(Instant::now() < deadline);
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            assert!(app.error.is_none(), "{:?}", app.error);
+        };
+        let save = |app: &mut Application| {
+            app.save_with_backups(scratch.path("backups"));
+            wait(app);
+        };
+        let mut app = launch();
+        app.set_hs_mode(true);
+        // It rounds to the original, also centered circle's file time.
+        app.document.as_mut().unwrap().composer.add(1000.25, lane.clone(), 67, 0.0);
+        save(&mut app);
+        let saved = std::fs::read(&map).unwrap();
+        assert_eq!(app.document().unwrap().file.hit_objects().len(), 2);
+
+        let erase = |app: &mut Application| {
+            let composer = &mut app.document.as_mut().unwrap().composer;
+            let id = composer.hitsounds().moments().iter().position(|m| m.has_hit(&lane)).unwrap();
+            composer.apply("Erase owned hit", |hits| hits.remove_hit(dawsu_hitsounding::MomentId(id), &lane));
+        };
+        let mut reopened = launch();
+        erase(&mut reopened);
+        let doc = reopened.document().unwrap();
+        let (reviewed, problems, _) = compile_for_save(
+            &doc.compile_base, doc.composer.hitsounds(), true, &doc.owned_hs_circles, true, &|| false, &mut |_, _| {},
+        ).unwrap();
+        assert!(problems.is_empty());
+        assert_eq!(reviewed.to_bytes(), original);
+        assert_eq!(std::fs::read(&map).unwrap(), saved);
+        save(&mut reopened);
+        assert_eq!(std::fs::read(&map).unwrap(), original);
+        reopened.command("undo");
+        save(&mut reopened);
+        assert_eq!(std::fs::read(&map).unwrap(), saved);
+
+        let mut external = saved.clone();
+        external.extend(b"// This map was edited elsewhere\n");
+        std::fs::write(&map, &external).unwrap();
+        let mut stale = launch();
+        erase(&mut stale);
+        stale.save_with_backups(scratch.path("backups"));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while stale.busy {
+            stale.poll();
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(stale.error.is_some(), "the compiler cannot encode an empty gameplay circle");
+        assert_eq!(std::fs::read(&map).unwrap(), external);
+        assert_eq!(stale.document().unwrap().file.hit_objects().len(), 2);
+        assert_eq!(std::fs::read(folder.join("voice.wav")).unwrap(), wav);
     }
 
     #[test]
@@ -2630,6 +3551,7 @@ mod project_workflow {
             time: 1000.0,
             volume: Some(75),
             group: None,
+            default_volume: None,
         });
         restore_project_hits(&mut doc.composer, &rows).unwrap();
         let grouped = project_hits(&doc);

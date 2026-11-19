@@ -18,7 +18,7 @@ test("the ribbon compacts its grouped controls while keeping Save labeled", () =
 });
 
 test("the sibling difficulty picker is available from the ribbon with the inspector hidden", () => {
-  const ribbon = html.match(/<header[^>]*>(.*?)<\/header>/s)?.[1];
+  const ribbon = html.match(/<div id="editor-ribbon"[^>]*>(.*?)<main id="editor-dock"/s)?.[1];
   assert.match(ribbon, /<select id="difficulty"[^>]*data-doc/);
   assert.equal([...html.matchAll(/id="difficulty"/g)].length, 1);
 });

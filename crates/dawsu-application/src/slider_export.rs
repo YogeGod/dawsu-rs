@@ -27,6 +27,7 @@ pub(super) fn stage(
     root: &Path,
     defaults: &Path,
     previous: &[u8],
+    already_staged: &[StagedMix],
     cancel: &dyn Fn() -> bool,
 ) -> Result<Vec<StagedMix>, String> {
     let offset = offset_for(file.format_version());
@@ -68,6 +69,7 @@ pub(super) fn stage(
     let mut clips = HashMap::<SampleIdentity, Arc<AudioClip>>::new();
     let mut rendered = BTreeMap::<Vec<Layer>, String>::new();
     let mut staged = Vec::new();
+    let mut names = mixes::reserved_mix_names(root, already_staged)?;
 
     // Keep existing object lines verbatim. On a tie write the separate passive circle first.
     let mut objects: Vec<_> = file
@@ -113,7 +115,7 @@ pub(super) fn stage(
                 });
             }
             let wav = mixes::render(cues, cancel)?;
-            let (name, mix) = StagedMix::new_generated(root, wav, existing.iter())?;
+            let (name, mix) = StagedMix::new_generated(root, wav, existing.iter(), &mut names)?;
             staged.push(mix);
             rendered.insert(layers, name.clone());
             name
@@ -218,6 +220,7 @@ mod tests {
             &root,
             &scratch.path("defaults"),
             &[],
+            &[],
             &|| false,
         )
         .unwrap();
@@ -267,6 +270,7 @@ mod tests {
             &root,
             &scratch.path("defaults"),
             &file.to_bytes(),
+            &[],
             &|| false,
         )
         .unwrap();

@@ -12,9 +12,9 @@ async function frontend() {
   const calls = [];
   function element() {
     return {
-      events: new Map(), children: [], dataset: {}, style: {},
+      events: new Map(), children: [], dataset: {}, style: { setProperty(name, value) { this[name] = value; } },
       addEventListener(name, listener) { this.events.set(name, listener); },
-      append() {}, prepend() {},
+      append() {}, prepend() {}, setAttribute(name, value) { this[name] = value; },
       getBoundingClientRect: () => ({ x: 0, top: 100, width: 1000 }),
     };
   }
@@ -33,6 +33,7 @@ async function frontend() {
       core: { invoke: async (_name, args) => {
         calls.push(JSON.parse(JSON.stringify(args)));
         if (args.action?.kind === "follow") status.follow = args.action.on;
+        if (args.action?.kind === "return_on_stop") status.returnOnStop = args.action.on;
         if (args.action?.kind === "ramp_shape") status.rampShape = args.action.value;
         return { ...status };
       } },
@@ -59,6 +60,21 @@ test("Fit shows the whole difficulty from zero without changing lane height", as
   fit();
   await settle();
   assert.deepEqual(calls, [{ scene: false, action: { kind: "view", start: 0, zoom: 0.1, row_height: 30 } }]);
+});
+
+test("the transport Return switch toggles the shared playback preference", async () => {
+  const { calls, get, settle } = await frontend();
+  const toggle = get("transport-return");
+  const click = toggle.events.get("click");
+  assert.equal(typeof click, "function");
+  click();
+  await settle();
+  assert.deepEqual(calls.at(-1), { scene: false, action: { kind: "return_on_stop", on: true } });
+  assert.equal(toggle.ariaPressed, "true");
+  click();
+  await settle();
+  assert.deepEqual(calls.at(-1), { scene: false, action: { kind: "return_on_stop", on: false } });
+  assert.equal(toggle.ariaPressed, "false");
 });
 
 test("volume pointer values use the same scale as the rendered bars", async () => {
@@ -172,6 +188,48 @@ test("Ctrl+Shift+wheel zooms lane heights around the pointer without panning", a
   assert.ok(Math.abs(get("scroll").scrollTop - (160 * 35 / 30 - 60)) < 0.001);
 });
 
+test("wheel follows the active keyboard preset and stops at the snap limits", async () => {
+  const { calls, get, evaluate, status, settle } = await frontend();
+  const wheel = get("scroll").events.get("wheel");
+  get("grid").getBoundingClientRect = () => ({ x: 100 });
+  const roll = async (options = {}) => {
+    let prevented = false;
+    wheel({
+      ctrlKey: false, shiftKey: false, altKey: false, deltaX: 0, deltaY: 120, clientX: 300,
+      ...options, preventDefault() { prevented = true; },
+    });
+    await settle();
+    return { prevented, action: calls.pop()?.action };
+  };
+  const setPreset = (preset) => {
+    status.keyPreset = preset;
+    evaluate(`view.keyPreset = "${preset}"`);
+  };
+  evaluate('Object.assign(scene, { snap: false, snapMode: "relative", beats: 1, divisor: 4 })');
+  setPreset("osu!");
+  assert.deepEqual(await roll(), { prevented: true, action: { kind: "command", id: "seekForward" } });
+  assert.deepEqual(await roll({ deltaY: -120, shiftKey: true }), {
+    prevented: true, action: { kind: "command", id: "seekBackFar" },
+  });
+  assert.deepEqual(await roll({ clientX: 50 }), { prevented: false, action: undefined });
+  assert.deepEqual(await roll({ ctrlKey: true, deltaY: -120 }), {
+    prevented: true, action: { kind: "snap", on: false, mode: "relative", beats: 1, divisor: 8 },
+  });
+  get("triplet-snap").checked = true;
+  assert.equal((await roll({ ctrlKey: true, deltaY: -120 })).action.divisor, 6);
+  assert.equal((await roll({ altKey: true, deltaY: -120 })).action.kind, "view");
+  assert.equal((await roll({ deltaX: 35, deltaY: 0 })).action.kind, "view");
+
+  setPreset("DAW");
+  get("triplet-snap").checked = false;
+  assert.deepEqual(await roll(), { prevented: false, action: undefined });
+  assert.equal((await roll({ shiftKey: true })).action.kind, "view");
+  assert.equal((await roll({ ctrlKey: true })).action.kind, "view");
+  assert.equal((await roll({ altKey: true, deltaY: -120 })).action.divisor, 8);
+  evaluate("scene.divisor = 16");
+  assert.deepEqual(await roll({ altKey: true, deltaY: -120 }), { prevented: true, action: undefined });
+});
+
 
 test("ruler colours distinguish reduced beat divisions and reset at a tempo change", async () => {
   const { evaluate } = await frontend();
@@ -244,4 +302,30 @@ test("lane height buttons and slider send the same viewport action as wheel zoom
   get("lane-height").events.get("change")();
   await settle();
   assert.equal(calls.pop().action.row_height, 42);
+});
+
+test("ruler controls hide and restore the waveform and reuse timeline actions", async () => {
+  const { calls, evaluate, get, settle } = await frontend();
+  assert.match(html, /class="lane-title ruler-controls"[\s\S]*?id="ruler-waveform"[\s\S]*?id="ruler-fit"[\s\S]*?id="overview"/);
+  const click = id => get(id).events.get("click")();
+  evaluate("setWaveformHeight(88)");
+  click("ruler-waveform");
+  assert.equal(get("editor-arrange").style["--wave-height"], "0px");
+  assert.equal(get("ruler-waveform")["aria-pressed"], "false");
+  click("ruler-waveform");
+  assert.equal(get("editor-arrange").style["--wave-height"], "88px");
+  assert.equal(get("ruler-waveform")["aria-pressed"], "true");
+  click("ruler-follow");
+  await settle();
+  assert.deepEqual(calls.pop().action, {kind:"follow", on:true});
+  assert.equal(get("ruler-follow")["aria-pressed"], "true");
+  click("ruler-zoom-out");
+  click("ruler-zoom-in");
+  await settle();
+  assert.deepEqual(calls.splice(0).map(call=>call.action), [
+    {kind:"command",id:"zoomOut"}, {kind:"command",id:"zoomIn"},
+  ]);
+  click("ruler-fit");
+  await settle();
+  assert.deepEqual(calls.pop().action, {kind:"view",start:0,zoom:.1,row_height:30});
 });

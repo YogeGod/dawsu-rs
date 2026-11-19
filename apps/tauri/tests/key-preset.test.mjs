@@ -9,6 +9,8 @@ async function launch(preferences) {
   const elements = new Map();
   const options = [];
   const actions = [];
+  const keys = [];
+  const documentEvents = new Map();
   const createElement = () => ({
     events: new Map(), dataset: {}, children: [], open: false,
     append() {}, prepend() {},
@@ -25,7 +27,7 @@ async function launch(preferences) {
     },
     createElement,
     querySelectorAll: () => [],
-    addEventListener() {},
+    addEventListener(name, handler) { documentEvents.set(name, handler); },
   };
   const context = createContext({
     document,
@@ -37,6 +39,7 @@ async function launch(preferences) {
             actions.push(action.name);
             preferences.preset = action.name;
           }
+          if (action?.kind === "key") keys.push(action);
           return { firstLaunch: preferences.preset == null, busy: false, hasDocument: false };
         },
       },
@@ -51,9 +54,42 @@ async function launch(preferences) {
   return {
     dialog: document.getElementById("dialog"),
     title: document.getElementById("dialog-title").textContent,
-    options, actions, settle: () => runInContext("pending", context),
+    options, actions, keys, settle: () => runInContext("pending", context),
+    openTimeline: () => runInContext("scene = {}", context),
+    pressKey(key, code, { ctrlKey = false, target = "button" } = {}) {
+      const event = {
+        key, code, ctrlKey, target: { closest: selector => selector.split(", ").includes(target) },
+        defaultPrevented: false, preventDefault() { this.defaultPrevented = true; },
+      };
+      documentEvents.get("keydown")(event);
+      return event.defaultPrevented;
+    },
   };
 }
+
+test("a focused button preserves plain Enter and routes numeric or modified Enter shortcuts", async () => {
+  const editor = await launch({ preset: "DAW" });
+  assert.equal(editor.pressKey("Enter", "Enter"), false);
+  assert.equal(editor.pressKey("Enter", "NumpadEnter"), true);
+  assert.equal(editor.pressKey("Enter", "Enter", { ctrlKey: true }), true);
+  await editor.settle();
+  assert.deepEqual(editor.keys.map(({ code, ctrl }) => [code, ctrl]), [
+    ["NumpadEnter", false], ["Enter", true],
+  ]);
+});
+
+test("Space routes to the timeline shortcut from a focused button", async () => {
+  const editor = await launch({ preset: "DAW" });
+  assert.equal(editor.pressKey(" ", "Space"), false);
+  editor.openTimeline();
+  assert.equal(editor.pressKey(" ", "Space", { target: "input" }), false);
+  editor.dialog.showModal();
+  assert.equal(editor.pressKey(" ", "Space"), false);
+  editor.dialog.close();
+  assert.equal(editor.pressKey(" ", "Space"), true);
+  await editor.settle();
+  assert.deepEqual(editor.keys.map(({ key, code }) => [key, code]), [[" ", "Space"]]);
+});
 
 for (const [label, preset] of [["DAW-like", "DAW"], ["osu!", "osu!"]]) {
   test("chooses and remembers the " + label + " keyboard preset", async () => {

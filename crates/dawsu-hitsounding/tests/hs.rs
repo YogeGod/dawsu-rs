@@ -133,3 +133,46 @@ fn with_no_moment_to_place_it_is_plain_compile_and_a_stop_stops() {
     h.add_hit(a, hit(Hitsound::Normal));
     assert!(matches!(compile_hs(&file, &h, Placement::GreenLines, &|| true, &mut |_, _| {}), CompiledHs::Cancelled));
 }
+
+#[test]
+fn materialising_a_loose_hit_preserves_whistle_set_and_independent_head_volume() {
+    let file = read(concat!(
+        "osu file format v14\r\n[Difficulty]\r\nSliderMultiplier:1.4\r\nSliderTickRate:1\r\n",
+        "[TimingPoints]\r\n0,500,4,1,0,50,1,0\r\n[HitObjects]\r\n",
+        "100,100,2000,2,2,L|300:100,1,200,0|0,2:0:0:77:|2:0,2:0:0:0:\r\n",
+    ).as_bytes());
+    let mut hits = dec(&file);
+    assert_eq!(hits.moments()[0].volume(), 77);
+    hits.set_body_whistle_set(0, Some(SampleSet::Drum));
+    let loose = hits.add_moment(SongTime::from_ms(5000.0), 50);
+    hits.add_hit(loose, hit(Hitsound::Normal));
+    let (output, problems, created) = done(compile_hs(&file, &hits, Placement::OnObjects, &|| false, &mut |_, _| {}));
+    assert!(problems.is_empty(), "{problems:?}");
+    assert_eq!(created, 1);
+    let reopened = dec(&read(&output.to_bytes()));
+    assert_eq!(reopened.bodies()[0].whistle_set(), Some(SampleSet::Drum));
+    assert_eq!(reopened.bodies()[0].volume(), 50);
+    assert_eq!(reopened.moments()[0].volume(), 77);
+    assert!(output.line_text(output.hit_objects()[0].line()).unwrap().contains("2:0:0:77:|2:0"));
+}
+
+#[test]
+fn hs_compile_keeps_individual_gains_on_existing_and_created_circles() {
+    let file = map(14);
+    let mut edited = dec(&file);
+    let clap = hit(Hitsound::Clap);
+    edited.add_hit(MomentId(0), clap.clone());
+    edited.set_hit_volume(MomentId(0), &clap, 38);
+    let loose = edited.add_moment(SongTime::from_ms(3000.0), 85);
+    edited.add_hit(loose, hit(Hitsound::Normal));
+    edited.add_hit(loose, clap.clone());
+    edited.set_hit_volume(loose, &clap, 45);
+
+    let (out, problems, created) = done(compile_hs(&file, &edited, Placement::OnObjects, &|| false, &mut |_, _| {}));
+    assert_eq!((created, out.hit_objects().len()), (1, 3));
+    let [existing, created] = problems.as_slice() else { panic!("expected two mixes: {problems:?}") };
+    assert_eq!(existing.time.ms(), 1000.0);
+    assert_eq!(existing.kind, ProblemKind::NeedsSampleMix(vec![(hit(Hitsound::Normal), 70), (clap.clone(), 38)]));
+    assert_eq!(created.time.ms(), 3000.0);
+    assert_eq!(created.kind, ProblemKind::NeedsSampleMix(vec![(hit(Hitsound::Normal), 85), (clap, 45)]));
+}

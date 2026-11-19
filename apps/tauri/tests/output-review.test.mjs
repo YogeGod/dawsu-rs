@@ -37,7 +37,7 @@ test("review shows what will change for each file before applying the write", as
 
   const review = {
     label: "Write difficulties",
-    details: ["Check each difficulty before writing."],
+    details: ["Check each difficulty before writing.", "Hard.osu · 1,250 ms · slider tick · sample.wav"],
     mixes: ["Mapset/mix.wav"],
     files: [
       { path: "New.osu", replace: false, changed: 0, added: 4, removed: 0, timing: 2 },
@@ -50,11 +50,13 @@ test("review shows what will change for each file before applying the write", as
       globalThis.output = { kind, title, text: content.map(node => node.textContent).filter(Boolean), content, buttons };
     };
     closeModal = () => {};
+    scene = { path: "Mapset/Source.osu" };
     view = { review };
     renderDialogs();
   `, context);
 
   assert.deepEqual(Array.from(context.output.text), [
+    "Editing Source.osu",
     "Files this action will write",
     "Create: New.osu",
     "0 objects changed · 4 added · 0 removed · 2 timing lines affected",
@@ -62,11 +64,11 @@ test("review shows what will change for each file before applying the write", as
     "3 objects changed · 0 added · 1 removed · 5 timing lines affected",
     "Sample mixes",
     "Check each difficulty before writing.",
+    "Hard.osu · 1,250 ms · slider tick · sample.wav",
   ]);
   assert.equal(calls.length, 0);
   const [mixLabel, audition] = context.output.content.find(node => node.className === "row").children;
-  assert.equal(mixLabel.textContent, "mix.wav");
-  assert.equal(mixLabel.title, "Mapset/mix.wav");
+  assert.equal(mixLabel.textContent, "Mapset/mix.wav");
   audition.events.get("click")();
   await runInContext("pending", context);
   assert.equal(calls[0].args.action.kind, "audition_output_mix");

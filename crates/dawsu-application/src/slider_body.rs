@@ -14,7 +14,9 @@ impl Document {
         if selected.any(|hit| object_of(hit.moment) != Some(slider)) {
             return None;
         }
-        hits.bodies().iter().position(|body| body.object() == slider)
+        hits.bodies()
+            .iter()
+            .position(|body| body.object() == slider)
     }
 }
 
@@ -23,6 +25,7 @@ impl Application {
         &mut self,
         index: usize,
         set: Option<SampleSet>,
+        whistle_set: Option<Option<SampleSet>>,
         whistle: bool,
         volume: i32,
     ) -> Result<(), String> {
@@ -38,12 +41,22 @@ impl Application {
         let changed_set = set.filter(|&set| body.set().is_some_and(|before| before != set));
         let changed_volume = body.volume() != volume;
         let changed_whistle = body.whistle() != whistle;
-        if changed_set.is_none() && !changed_volume && !changed_whistle {
+        let changed_whistle_set = whistle_set.filter(|requested| {
+            *requested != body.whistle_set() || requested.is_none() && changed_set.is_some()
+        });
+        if changed_set.is_none()
+            && changed_whistle_set.is_none()
+            && !changed_volume
+            && !changed_whistle
+        {
             return Ok(());
         }
         doc.composer.apply("Slider body sounds", |hits| {
             if let Some(set) = changed_set {
                 hits.set_body_set(index, set);
+            }
+            if let Some(set) = changed_whistle_set {
+                hits.set_body_whistle_set(index, set);
             }
             if changed_whistle {
                 hits.set_body_whistle(index, whistle);
@@ -63,7 +76,11 @@ impl Application {
         let folder = doc.path.parent().ok_or("Missing mapset folder")?;
         let defaults = &self.preferences.default_samples;
         let defaults_list = dawsu_osu_format::list_folder(defaults).unwrap_or_default();
-        for lane in playable_lanes.into_iter().flatten().filter_map(|id| hits.lane(&id)) {
+        for lane in playable_lanes
+            .into_iter()
+            .flatten()
+            .filter_map(|id| hits.lane(&id))
+        {
             if !doc.composer.lanes.contains(&lane.identity) {
                 doc.composer.lanes.push(lane.identity.clone());
             }
@@ -86,12 +103,14 @@ impl Application {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use dawsu_test_support::Scratch;
-    use std::{fs, time::{Duration, Instant}};
+    use std::{
+        fs,
+        time::{Duration, Instant},
+    };
 
     #[test]
     fn edited_slider_cues_load_and_play_new_slide_whistle_and_tick_samples() {
@@ -109,6 +128,8 @@ mod tests {
             ("soft-slidertick.wav", 4096),
             ("drum-sliderslide.wav", 8192),
             ("soft-sliderwhistle.wav", 16384),
+            ("normal-sliderwhistle.wav", 4096),
+            ("drum-sliderwhistle.wav", 20480),
             ("drum-slidertick.wav", 24576),
         ] {
             let mut wave = header.to_vec();
@@ -126,16 +147,44 @@ mod tests {
         }
         assert!(app.error.is_none(), "{:?}", app.error);
         app.command("selectAll");
-        app.edit_slider_body(0, Some(SampleSet::Drum), true, 80).unwrap();
+        app.edit_slider_body(0, Some(SampleSet::Drum), None, true, 80)
+            .unwrap();
 
         let doc = app.document().unwrap();
         let end = doc.composer.hitsounds().bodies()[0].end().ms();
         let cues = app.scheduled_sounds(doc);
         for amplitude in [0.25, 0.5] {
-            assert!(cues.iter().any(|cue| cue.at_ms == 1000.0 && cue.end_ms == Some(end)
-                && cue.gain == 0.8 && cue.clip.samples == [amplitude]), "missing {amplitude} loop");
+            assert!(
+                cues.iter().any(|cue| cue.at_ms == 1000.0
+                    && cue.end_ms == Some(end)
+                    && cue.gain == 0.8
+                    && cue.clip.samples == [amplitude]),
+                "missing {amplitude} loop"
+            );
         }
-        assert!(cues.iter().any(|cue| cue.at_ms > 1000.0 && cue.end_ms.is_none()
-            && cue.clip.samples == [0.75]), "missing changed tick");
+        assert!(
+            cues.iter().any(|cue| cue.at_ms > 1000.0
+                && cue.end_ms.is_none()
+                && cue.clip.samples == [0.75]),
+            "missing changed tick"
+        );
+
+        for (choice, amplitude) in [(Some(SampleSet::Normal), 0.125), (None, 0.625)] {
+            app.edit_slider_body(0, None, Some(choice), true, 80)
+                .unwrap();
+            let doc = app.document().unwrap();
+            assert_eq!(doc.composer.hitsounds().bodies()[0].whistle_set(), choice);
+            assert!(
+                app.scheduled_sounds(doc)
+                    .iter()
+                    .any(|cue| cue.at_ms == 1000.0
+                        && cue.end_ms == Some(end)
+                        && cue.gain == 0.8
+                        && cue.clip.samples == [amplitude])
+            );
+        }
+        app.command("undo");
+        let choice = app.document().unwrap().composer.hitsounds().bodies()[0].whistle_set();
+        assert_eq!(choice, Some(SampleSet::Normal));
     }
 }

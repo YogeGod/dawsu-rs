@@ -56,6 +56,11 @@ fn generate_stages_a_mix_without_writing_until_review_is_accepted() {
     assert_eq!(plan.mix_paths().collect::<Vec<_>>(), [mix_path.as_path()]);
     assert!(!target.path.exists());
     assert!(!mix_path.exists());
+    let repeat = output::generate(&output::Source::from_document(&source), &|| false).unwrap();
+    assert_eq!(repeat.mix_paths().collect::<Vec<_>>(), [mix_path.as_path()]);
+    assert_eq!(repeat.files[0].file.to_bytes(), target.file.to_bytes());
+    assert!(!target.path.exists());
+    assert!(!mix_path.exists());
 
     assert!(plan.apply(&scratch.path("backups"), &|| true).is_err());
     assert!(!target.path.exists());
@@ -74,6 +79,31 @@ fn generate_stages_a_mix_without_writing_until_review_is_accepted() {
     assert_eq!(fs::read(&mix_path).unwrap(), b"existing sample");
     assert!(!target.path.exists());
     fs::remove_file(&mix_path).unwrap();
+
+    // Case and format variants reserve the same sample stem on every platform.
+    let other_format = mix_path.with_extension("OGG");
+    fs::write(&other_format, b"unrelated sample").unwrap();
+    assert!(plan.apply(&scratch.path("backups"), &|| false).is_err());
+    let alternative = output::generate(&output::Source::from_document(&source), &|| false).unwrap();
+    let new_path = alternative.mix_paths().next().unwrap();
+    assert_ne!(new_path, mix_path);
+    let again = output::generate(&output::Source::from_document(&source), &|| false).unwrap();
+    assert_eq!(again.mix_paths().next(), Some(new_path));
+
+    // An absent sample already named by a sibling map is reserved too.
+    let sibling = scratch.path("sibling.osu");
+    let sibling_map = std::str::from_utf8(MAP).unwrap()
+        .replace("Version:Hard", "Version:Sibling")
+        .replace("0:0:0:0:", &format!("0:0:0:0:{}", new_path.file_name().unwrap().to_string_lossy()));
+    fs::write(&sibling, &sibling_map).unwrap();
+    assert!(alternative.apply(&scratch.path("backups"), &|| false).is_err());
+    let without_conflict = output::generate(&output::Source::from_document(&source), &|| false).unwrap();
+    assert_ne!(without_conflict.mix_paths().next(), Some(new_path));
+    assert!(!new_path.exists());
+    assert_eq!(fs::read(&sibling).unwrap(), sibling_map.as_bytes());
+    assert_eq!(fs::read(&other_format).unwrap(), b"unrelated sample");
+    fs::remove_file(&sibling).unwrap();
+    fs::remove_file(&other_format).unwrap();
 
     plan.apply(&scratch.path("backups"), &|| false).unwrap();
     let written = Document::read(&target.path).unwrap();

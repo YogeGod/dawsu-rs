@@ -94,13 +94,20 @@ pub fn decompile(file: &OsuFile, folder_files: &[String], cancel: &dyn Fn() -> b
                         SampleIdentity::File(_) => None,
                     };
                     let volume = slide.lazer.volume;
+                    let whistle_lane = identity(&s.whistle_sample);
+                    let whistle_set = match &whistle_lane {
+                        SampleIdentity::Standard { set, .. } if !s.whistle_sample.lazer.editor_auto_bank => Some(*set),
+                        _ => None,
+                    };
                     bodies.push(SliderBody {
                         object: id,
                         start: SongTime::from_ms(o.start_time),
                         end: SongTime::from_ms(o.end_time.unwrap_or(o.start_time)),
                         volume,
                         slide: slide_id,
-                        whistle_lane: identity(&s.whistle_sample),
+                        decompiled_whistle: (whistle_set, whistle_lane.clone()),
+                        whistle_lane,
+                        whistle_set,
                         whistle,
                         ticks,
                         tick,
@@ -114,7 +121,7 @@ pub fn decompile(file: &OsuFile, folder_files: &[String], cancel: &dyn Fn() -> b
     // Moments in time order, ties in object order (the rules' order).
     moments.sort_by(|a, b| a.time.ms().total_cmp(&b.time.ms()));
     let lanes = lanes.into_iter().map(|(identity, source)| Lane { identity, source }).collect();
-    Decompiled::Done(Hitsounds { lanes, moments, bodies, folder_files: folder_files.to_vec(), lane_slots: BTreeMap::new() })
+    Decompiled::Done(Hitsounds { lanes, moments, bodies, folder_files: folder_files.to_vec(), lane_slots: BTreeMap::new(), hidden_lanes: BTreeSet::new() })
 }
 
 fn push_moment(lanes: &mut BTreeMap<SampleIdentity, LaneSource>, moments: &mut Vec<Moment>, time: f64, place: Place, samples: &[Sample]) {
@@ -128,7 +135,7 @@ fn push_moment(lanes: &mut BTreeMap<SampleIdentity, LaneSource>, moments: &mut V
         .collect();
     // All samples at one node share the object's bank volume in lazer (invariant 2).
     let volume = samples.first().map_or(100, |s| s.lazer.volume);
-    moments.push(Moment { time: SongTime::from_ms(time), place, volume, hits: hits.clone(), decompiled: Some((hits, volume)) });
+    moments.push(Moment::decoded(SongTime::from_ms(time), place, volume, hits));
 }
 
 fn source(plays: &Plays) -> LaneSource {

@@ -98,7 +98,7 @@ fn start_scan(folder: PathBuf, known: Vec<String>, song: Option<String>) -> Scan
     Scan { result, cancel }
 }
 
-fn file_stamp(path: &Path) -> Option<(u64, std::time::SystemTime)> {
+pub(super) fn file_stamp(path: &Path) -> Option<(u64, std::time::SystemTime)> {
     let metadata = std::fs::metadata(path).ok()?;
     Some((metadata.len(), metadata.modified().ok()?))
 }

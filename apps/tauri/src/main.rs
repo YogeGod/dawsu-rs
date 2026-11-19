@@ -1,16 +1,17 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod drum_view;
 mod folders;
 mod home;
 mod keyboard;
 mod library;
 mod selection;
 
-use dawsu_application::{Application, ExportSettings, PlatformRequest, EditorTimeSignature, LaneLayout, PointerPhase, RangeOperation, TimelineEdit, VolumeScope, lane_name};
+use dawsu_application::{Application, OutputBackend, ExportSettings, PlatformRequest, EditorTimeSignature, LaneLayout, PointerPhase, RangeOperation, TimelineEdit, VolumeScope, lane_name};
 use dawsu_editor::{
     keys::{Key, KeyCombination, Mods},
     tempo::SnapMode,
-    tools::{PointerButton, PointerInput, PointerSurface, ToolKind, ToolPreview},
+    tools::{PointerButton, PointerInput, PointerSurface, ToolKind, ToolPreview, ToolTarget},
     volume_ramp::{RampShape, ramp_at},
 };
 use dawsu_foundation::{CustomIndex, SampleIdentity, SampleSet, SongTime, Sound};
@@ -20,7 +21,7 @@ use dawsu_hitsounding::{
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
-use std::{path::PathBuf, sync::mpsc, time::Duration};
+use std::{collections::BTreeSet, path::{Path, PathBuf}, sync::mpsc, time::Duration};
 use tauri::{Emitter, Manager, State};
 
 #[derive(Clone, Copy, Default, Deserialize, serde::Serialize)]
@@ -84,6 +85,26 @@ fn deserialize_sample_set<'de, D: serde::Deserializer<'de>>(input: D) -> Result<
     }))
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum WhistleSetJson {
+    Auto,
+    Normal,
+    Soft,
+    Drum,
+}
+
+impl WhistleSetJson {
+    fn sample_set(self) -> Option<SampleSet> {
+        match self {
+            Self::Auto => None,
+            Self::Normal => Some(SampleSet::Normal),
+            Self::Soft => Some(SampleSet::Soft),
+            Self::Drum => Some(SampleSet::Drum),
+        }
+    }
+}
+
 /// Tauri JSON adapter for the application's existing Copy options.
 #[derive(Deserialize)]
 #[serde(remote = "CopyOptions")]
@@ -91,8 +112,16 @@ struct CopyOptionsJson {
     #[serde(with = "CopyModeJson")]
     mode: CopyMode,
     leniency: f64,
+    #[serde(default = "default_copy_start_index")]
+    start_index: u32,
+    #[serde(default)]
+    never_silent_hitnormals: bool,
     copy_hitsounds: bool,
     copy_body_hitsounds: bool,
+    #[serde(default)]
+    copy_to_slider_ticks: bool,
+    #[serde(default)]
+    copy_to_slider_slides: bool,
     copy_sample_sets: bool,
     copy_volumes: bool,
     always_preserve_5_volume: bool,
@@ -106,6 +135,10 @@ struct CopyOptionsJson {
     muted_index: Option<u32>,
     #[serde(deserialize_with = "deserialize_sample_set")]
     muted_sample_set: Option<SampleSet>,
+}
+
+fn default_copy_start_index() -> u32 {
+    CopyOptions::default().start_index
 }
 
 #[derive(Deserialize)]
@@ -162,6 +195,65 @@ struct SampleTarget {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum RulerGesture {
+    Left,
+    Right,
+    Draw,
+    Move,
+    Toggle,
+}
+
+impl RulerGesture {
+    fn apply(self, app: &mut Application, path: &Path, from: f64, to: f64) {
+        if app.busy || !from.is_finite() || !to.is_finite() {
+            return;
+        }
+        let Some(document) = app.document().filter(|document| document.path == path) else {
+            return;
+        };
+        let duration = app.duration_ms();
+        let snap = |ms: f64| {
+            document.composer.snap(SongTime::from_ms(ms.clamp(0.0, duration)))
+                .ms().clamp(0.0, duration)
+        };
+        let (mut left, mut right, mut enabled) = (app.locator_left, app.locator_right, app.cycle);
+        match self {
+            Self::Left => left = snap(to),
+            Self::Right => right = snap(to),
+            Self::Draw => {
+                let (first, last) = (snap(from), snap(to));
+                if first == last {
+                    return;
+                }
+                (left, right, enabled) = (first.min(last), first.max(last), true);
+            }
+            Self::Move => {
+                let requested = snap(left + (to - from)) - left;
+                let shift = requested.clamp(-left.min(right), (duration - left.max(right)).max(0.0));
+                left += shift;
+                right += shift;
+            }
+            Self::Toggle => {
+                if left == right || to < left.min(right) || to > left.max(right) {
+                    return;
+                }
+                enabled = !enabled;
+            }
+        }
+        (app.locator_left, app.locator_right, app.cycle) = (left, right, enabled);
+        app.cycle_changed();
+    }
+}
+
+#[derive(Deserialize)]
+struct KeyLaneView {
+    path: PathBuf,
+    rows: Vec<usize>,
+    span: f64,
+}
+
+#[derive(Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum Action {
     Home,
@@ -198,12 +290,15 @@ enum Action {
         ctrl: bool,
         shift: bool,
         alt: bool,
+        lane_view: Option<KeyLaneView>,
     },
     Save,
     ReviewSave,
+    AnswerSaveReview { apply: bool },
     BookmarkAdd { path: PathBuf, time: f64, label: String },
     BookmarkEdit { path: PathBuf, time: f64, label: Option<String> },
     BookmarkJump { time: f64 },
+    WaveformObject { path: PathBuf, object: usize, time: f64, node: bool, preview: bool },
     Panel {
         panel: EditorPanel,
         on: bool,
@@ -252,7 +347,12 @@ enum Action {
         row: usize,
         operation: String,
     },
+    ShowLane { target: SampleTarget },
+    DeleteLane { target: SampleTarget, revision: u64 },
     LaneLayout {
+        path: Option<PathBuf>,
+        #[serde(default)]
+        persist: bool,
         value: LaneLayout,
     },
     TimeSignatures {
@@ -263,6 +363,11 @@ enum Action {
         map: PathBuf,
         value: ExportSettings,
     },
+    LaneSelectionMix {
+        target: SampleTarget,
+        operation: String,
+        lanes: Vec<String>,
+    },
     GroupMix {
         set: String,
         operation: String,
@@ -270,6 +375,10 @@ enum Action {
     Volume {
         value: i32,
         relative: bool,
+    },
+    VolumeScope {
+        path: PathBuf,
+        lanes: Option<Vec<String>>,
     },
     InsertVolume {
         value: i32,
@@ -279,6 +388,7 @@ enum Action {
         index: usize,
         #[serde(default, deserialize_with = "deserialize_sample_set")]
         set: Option<SampleSet>,
+        whistle_set: Option<WhistleSetJson>,
         whistle: bool,
         volume: i32,
     },
@@ -289,10 +399,12 @@ enum Action {
     SongMuted {
         on: bool,
     },
-    OutputDevice {
-        name: String,
+    SongSolo {
+        on: bool,
     },
-    OutputBuffer {
+    OutputSettings {
+        backend: OutputBackend,
+        device_id: Option<String>,
         ms: Option<u32>,
     },
     Audition {
@@ -313,6 +425,12 @@ enum Action {
     Locator {
         end: String,
         jump: bool,
+    },
+    RulerLocators {
+        path: PathBuf,
+        gesture: RulerGesture,
+        from: f64,
+        to: f64,
     },
     Cycle {
         on: bool,
@@ -418,10 +536,13 @@ impl Action {
                 ctrl,
                 shift,
                 alt,
+                lane_view,
             } => {
                 if let Some(chord) = keyboard::chord(&key, &code, ctrl, shift, alt) {
                     if app.keymap.command_for(chord.combination()) == Some("play") {
                         app.play_pause_from(playback_start.position(app));
+                    } else if let Some(view) = lane_view {
+                        app.key_with_lane_view(chord, view.path, view.rows, view.span);
                     } else {
                         app.key(chord);
                     }
@@ -429,6 +550,7 @@ impl Action {
             }
             Self::Save => app.save(),
             Self::ReviewSave => app.review_save(),
+            Self::AnswerSaveReview { apply } => app.answer_save_review(apply),
             Self::Panel { panel, on } => {
                 match panel {
                     EditorPanel::Browser => {
@@ -456,14 +578,8 @@ impl Action {
                 app.preferences.return_on_stop = on;
                 app.save_preferences();
             }
-            Self::Stop => {
-                if app.is_playing() {
-                    app.stop();
-                } else {
-                    app.seek(0.0);
-                }
-            }
-            Self::Start => app.seek(0.0),
+            Self::Stop => app.command("stop"),
+            Self::Start => app.command("start"),
             Self::Seek { ms } => app.seek(ms),
             Self::BookmarkAdd { path, time, label } => {
                 if app.document().is_some_and(|doc| doc.path == path)
@@ -484,6 +600,9 @@ impl Action {
                 }
             }
             Self::BookmarkJump { time } => app.jump_to_bookmark(time),
+            Self::WaveformObject { path, object, time, node, preview } => {
+                app.select_waveform_object(&path, object, time, node, preview);
+            }
             Self::Snap {
                 on,
                 mode,
@@ -526,11 +645,12 @@ impl Action {
                 ctrl,
                 alt,
             } => {
-                let phase = match phase.as_str() {
-                    "down" => PointerPhase::Down,
-                    "move" => PointerPhase::Move,
-                    "up" => PointerPhase::Up,
-                    _ => PointerPhase::Cancel,
+                let (phase, click_count) = match phase.as_str() {
+                    "down" => (PointerPhase::Down, 1),
+                    "double_click" => (PointerPhase::Down, 2),
+                    "move" => (PointerPhase::Move, 1),
+                    "up" => (PointerPhase::Up, 1),
+                    _ => (PointerPhase::Cancel, 1),
                 };
                 let mut mods = Mods::NONE;
                 for (on, flag) in [(shift, Mods::SHIFT), (ctrl, Mods::CTRL), (alt, Mods::ALT)] {
@@ -551,7 +671,7 @@ impl Action {
                         },
                         button: PointerButton::Left,
                         mods,
-                        click_count: 1,
+                        click_count,
                         x,
                         y,
                     },
@@ -573,6 +693,8 @@ impl Action {
                         }
                         "add_layer" => {}
                         "preview_sample" => app.audition(&lane),
+                        "activate" if !app.busy => app.active_lane = row,
+                        "activate" => {},
                         _ => {
                             app.active_lane = row;
                             app.audition(&lane);
@@ -580,9 +702,35 @@ impl Action {
                     }
                 }
             }
+            Self::ShowLane { target } => {
+                if let Err(error) = lane_by_key(app, &target.lane)
+                    .or_else(|_| {
+                        app.scan_lane_add_candidates(&target.map)?.into_iter()
+                            .find(|lane| format!("{lane:?}") == target.lane)
+                            .ok_or_else(|| "The selected sample is unavailable.".into())
+                    })
+                    .and_then(|lane| app.show_lane(&target.map, &lane))
+                {
+                    app.error = Some(error);
+                }
+            }
+            Self::DeleteLane { target, revision } => {
+                if let Err(error) = lane_by_key(app, &target.lane)
+                    .and_then(|lane| app.delete_lane(&target.map, &lane, revision))
+                {
+                    app.error = Some(error);
+                }
+            }
+            Self::LaneSelectionMix { target, operation, lanes } => {
+                lane_selection_mix(app, &target, &operation, lanes);
+            }
             Self::GroupMix { set, operation } => group_mix(app, &set, &operation),
-            Self::LaneLayout { value } => {
-                if let Err(error) = app.set_lane_layout(value) {
+            Self::LaneLayout { path, persist, value } => {
+                if path.as_ref().is_some_and(|path| app.document().is_none_or(|doc| &doc.path != path)) {
+                    app.error = Some("The difficulty changed. Edit the lane layout again.".into());
+                    return;
+                }
+                if let Err(error) = app.set_lane_layout(value).and_then(|()| if persist { app.save_session() } else { Ok(()) }) {
                     app.error = Some(error);
                 }
             }
@@ -601,10 +749,15 @@ impl Action {
                 }
             }
             Self::Volume { value, relative } => app.selection_volume(value, relative),
+            Self::VolumeScope { path, lanes } => {
+                if let Err(error) = set_volume_lane_scope(app, &path, lanes) {
+                    app.error = Some(error);
+                }
+            }
             Self::InsertVolume { value } => app.set_insert_volume(value),
-            Self::SliderBody { path, index, set, whistle, volume } => {
+            Self::SliderBody { path, index, set, whistle_set, whistle, volume } => {
                 if app.document().is_some_and(|doc| doc.path == path)
-                    && let Err(error) = app.edit_slider_body(index, set, whistle, volume)
+                    && let Err(error) = app.edit_slider_body(index, set, whistle_set.map(WhistleSetJson::sample_set), whistle, volume)
                 {
                     app.error = Some(error);
                 }
@@ -614,9 +767,8 @@ impl Action {
                 app.preferences.master_gain = main.clamp(0.2, 1.0);
                 app.gains_changed();
             }
-            Self::OutputDevice { name } => app.select_device(name),
-            Self::OutputBuffer { ms } => {
-                if let Err(error) = app.set_output_buffer(ms) {
+            Self::OutputSettings { backend, device_id, ms } => {
+                if let Err(error) = app.set_output_settings(backend, device_id, ms) {
                     app.error = Some(error);
                 }
             }
@@ -624,6 +776,7 @@ impl Action {
                 app.preferences.song_muted = on;
                 app.gains_changed();
             }
+            Self::SongSolo { on } => app.set_song_solo(on),
             Self::Audition { on } => app.preferences.audition = on,
             Self::Offset { ms } => {
                 app.song_offset = ms.clamp(-60_000.0, 60_000.0);
@@ -649,6 +802,7 @@ impl Action {
                     app.cycle_changed();
                 }
             }
+            Self::RulerLocators { path, gesture, from, to } => gesture.apply(app, &path, from, to),
             Self::Cycle { on } => {
                 app.cycle = on;
                 app.cycle_changed();
@@ -703,28 +857,80 @@ fn sample_set_name(set: SampleSet) -> &'static str {
     }
 }
 
-fn group_mix(app: &mut Application, set: &str, operation: &str) {
-    if app.busy {
-        return;
-    }
+fn mix_lanes(app: &mut Application, lanes: Vec<SampleIdentity>, operation: &str, clicked: Option<SampleIdentity>) {
     let (enabled, toggle): (fn(&Application, &SampleIdentity) -> bool, fn(&mut Application, SampleIdentity)) =
         match operation {
             "mute" => (Application::is_muted, Application::mute),
             "solo" => (Application::is_solo, Application::solo),
             _ => return,
         };
-    let Some(document) = app.document() else {
-        return;
+    let on = match &clicked {
+        Some(lane) => !enabled(app, lane),
+        None => lanes.iter().any(|lane| !enabled(app, lane)),
     };
-    let lanes = document.composer.lanes.iter().filter(|lane| {
-        matches!(lane, SampleIdentity::Standard { set: lane_set, .. } if sample_set_name(*lane_set) == set)
-    }).cloned().collect::<Vec<_>>();
-    let on = lanes.iter().any(|lane| !enabled(app, lane));
     for lane in lanes {
         if enabled(app, &lane) != on {
             toggle(app, lane);
         }
     }
+}
+
+fn group_mix(app: &mut Application, set: &str, operation: &str) {
+    let Some(document) = app.document().filter(|_| !app.busy) else {
+        return;
+    };
+    let lanes = document.composer.lanes.iter().filter(|lane| {
+        matches!(lane, SampleIdentity::Standard { set: lane_set, .. } if sample_set_name(*lane_set) == set)
+    }).cloned().collect();
+    mix_lanes(app, lanes, operation, None);
+}
+
+fn lane_selection_mix(app: &mut Application, target: &SampleTarget, operation: &str, lanes: Vec<String>) {
+    let Some(document) = app.document().filter(|doc| !app.busy && doc.path == target.map) else {
+        return;
+    };
+    let mut keys: std::collections::HashSet<_> = lanes.into_iter().collect();
+    let mut members = Vec::new();
+    let mut clicked = None;
+    for lane in &document.composer.lanes {
+        let key = format!("{lane:?}");
+        if keys.remove(&key) {
+            if key == target.lane {
+                clicked = Some(lane.clone());
+            }
+            members.push(lane.clone());
+        }
+    }
+    if let Some(clicked) = clicked.filter(|_| keys.is_empty()) {
+        mix_lanes(app, members, operation, Some(clicked));
+    }
+}
+
+fn lane_by_key(app: &Application, key: &str) -> Result<SampleIdentity, String> {
+    app.document()
+        .and_then(|document| document.composer.lanes.iter().find(|lane| format!("{lane:?}") == key))
+        .cloned()
+        .ok_or_else(|| "The lane changed. Choose a lane again.".into())
+}
+
+fn set_volume_lane_scope(app: &mut Application, path: &Path, lanes: Option<Vec<String>>) -> Result<(), String> {
+    let document = app.document().filter(|document| document.path == path)
+        .ok_or("The open difficulty changed. Select the volume lanes again.")?;
+    let model = document.composer.hitsounds();
+    let scope = lanes.map(|keys| keys.into_iter().map(|key| {
+        let lane = lane_by_key(app, &key)?;
+        Ok(model.lane_slot(&lane).cloned().unwrap_or(lane))
+    }).collect::<Result<BTreeSet<_>, String>>()).transpose()?;
+    app.set_selection_lane_scope(scope)
+}
+
+fn lane_add_choices(app: &Application, map: &Path) -> Result<Value, String> {
+    let candidates = app.scan_lane_add_candidates(map)?;
+    let model = app.document().ok_or("Open a difficulty first.")?.composer.hitsounds();
+    Ok(json!(candidates.iter().map(|lane| json!({
+        "key": format!("{lane:?}"),
+        "name": lane_name(model.lane_slot(lane).unwrap_or(lane)),
+    })).collect::<Vec<_>>()))
 }
 
 fn assign_sample(app: &mut Application, target: SampleTarget, path: PathBuf, mapset: bool) -> Result<(), String> {
@@ -754,6 +960,39 @@ fn assign_sample(app: &mut Application, target: SampleTarget, path: PathBuf, map
 }
 
 
+fn gameplay_overlay(document: &dawsu_application::Document) -> Value {
+    let model = document.composer.hitsounds();
+    let objects = document.file.hit_objects();
+    let index_by_line: std::collections::HashMap<_, _> = objects.iter().enumerate()
+        .map(|(index, object)| (object.line(), index)).collect();
+    let mut points = Vec::new();
+    let mut spans: Vec<_> = model.bodies().iter().filter_map(|body| {
+        let &index = index_by_line.get(&body.object().line())?;
+        Some(("slider", body.start().ms(), body.end().ms(), index))
+    }).collect();
+    for moment in model.moments() {
+        let time = moment.time().ms();
+        match moment.place() {
+            Place::Circle(object) | Place::SliderNode { object, .. } => {
+                if let Some(&index) = index_by_line.get(&object.line()) {
+                    let kind = if matches!(moment.place(), Place::Circle(_)) { "circle" } else { "slider" };
+                    points.push((kind, time, index));
+                }
+            }
+            Place::SpinnerEnd(object) => {
+                if let Some(&index) = index_by_line.get(&object.line()) {
+                    let raw = &objects[index];
+                    let end = raw.spinner_end().or_else(|| raw.hold_end()).unwrap_or(raw.time());
+                    // Keep the rendered start aligned with the decoded end.
+                    spans.push(("spinner", time - (end - raw.time()).max(0.0), time, index));
+                }
+            }
+            Place::NoObject => {}
+        }
+    }
+    json!({ "points": points, "spans": spans })
+}
+
 fn snapshot(app: &Application, include_scene: bool) -> Value {
     let document = app.document();
     let position = app.position_ms();
@@ -779,11 +1018,14 @@ fn snapshot(app: &Application, include_scene: bool) -> Value {
             let model = c.hitsounds();
             let row_by_lane: std::collections::HashMap<_, _> =
                 c.lanes.iter().enumerate().map(|(row, lane)| (lane, row)).collect();
-            let used: std::collections::HashSet<_> = model.moments().iter().flat_map(|moment| moment.hits()).collect();
+            let mut hit_counts = std::collections::HashMap::new();
+            for lane in model.moments().iter().flat_map(|moment| moment.hits()) {
+                *hit_counts.entry(lane).or_insert(0) += 1;
+            }
             let mut slot_rows = std::collections::HashMap::new();
             let mut backing_slots = std::collections::HashMap::new();
             for (source, slot) in model.lane_slots() {
-                if !used.contains(slot) && let (Some(&from), Some(&to)) = (row_by_lane.get(source), row_by_lane.get(slot))
+                if !hit_counts.contains_key(slot) && let (Some(&from), Some(&to)) = (row_by_lane.get(source), row_by_lane.get(slot))
                     && let std::collections::hash_map::Entry::Vacant(entry) = slot_rows.entry(to)
                 {
                     entry.insert(from);
@@ -791,7 +1033,9 @@ fn snapshot(app: &Application, include_scene: bool) -> Value {
                 }
             }
             let lane_order = (0..c.lanes.len()).filter(|row| !backing_slots.contains_key(row))
-                .map(|row| slot_rows.get(&row).copied().unwrap_or(row)).collect::<Vec<_>>();
+                .map(|row| slot_rows.get(&row).copied().unwrap_or(row))
+                .filter(|&row| !model.is_lane_hidden(&c.lanes[row]))
+                .collect::<Vec<_>>();
             let lanes = c.lanes.iter().enumerate().map(|(row, lane)| {
                 let slot = backing_slots.get(&row).copied().unwrap_or(lane);
                 let (family, index, group) = match slot {
@@ -805,12 +1049,18 @@ fn snapshot(app: &Application, include_scene: bool) -> Value {
                     LaneSource::File(name) => Some(name),
                     LaneSource::Skin => None,
                 });
+                let hit_count = hit_counts.get(lane).copied().unwrap_or(0);
+                let read_only = matches!(slot, SampleIdentity::Standard { sound: Sound::Slider(_), .. });
+                let protected = c.protect_normals && hit_count > 0
+                    && matches!(slot, SampleIdentity::Standard { sound: Sound::Hit(dawsu_foundation::Hitsound::Normal), .. });
                 json!({
                     "family": family, "index": index, "group": group, "key": format!("{slot:?}"),
                     "sourceKey": format!("{lane:?}"), "sample": sample,
+                    "colourKey": dawsu_application::lane_layout_key(slot),
                     "name": lane_name(slot), "muted": app.is_muted(lane), "solo": app.is_solo(lane),
                     "canAddLayer": index.is_some(),
                     "canReplace": !matches!(lane, SampleIdentity::Standard { sound: Sound::Slider(_), .. }),
+                    "hitCount": hit_count, "canDelete": !read_only && !protected,
                 })
             }).collect::<Vec<_>>();
             let selected: std::collections::HashSet<_> = c.selected.items().iter()
@@ -821,7 +1071,11 @@ fn snapshot(app: &Application, include_scene: bool) -> Value {
                 let hits = moment.hits().filter_map(|lane| row_by_lane.get(lane)
                     .map(|row| {
                         let selected = selected.contains(&(i, lane));
-                        if listen_muted.contains(&(i, lane)) {
+                        let muted = listen_muted.contains(&(i, lane));
+                        let gain = moment.hit_volume(lane);
+                        if gain != moment.volume() {
+                            json!([row, selected, muted, gain])
+                        } else if muted {
                             json!([row, selected, true])
                         } else {
                             json!([row, selected])
@@ -855,12 +1109,15 @@ fn snapshot(app: &Application, include_scene: bool) -> Value {
                     "start": body.start().ms(),
                     "set": body.set().map(sample_set_name),
                     "whistle": body.whistle(),
+                    "whistleSet": body.whistle_set().map_or("auto", sample_set_name),
                     "volume": body.volume(),
                 });
             }
             json!({
                 "title": d.title, "path": d.path, "difficulties": d.difficulties,
                 "lanes": lanes, "laneOrder": lane_order, "moments": moments, "sections": sections, "waveform": waveform,
+                "gameplay": gameplay_overlay(d),
+                "laneRevision": c.history.version(),
                 "selection": selection, "history": c.history.steps(), "historyPosition": c.history.position(),
                 "snap": c.snap_enabled, "snapMode": match c.snap_mode { SnapMode::Grid => "grid", SnapMode::GridRelative => "relative", SnapMode::Objects => "objects" },
                 "beats": c.spacing.beats(), "divisor": c.spacing.divisions(),
@@ -903,9 +1160,11 @@ fn snapshot(app: &Application, include_scene: bool) -> Value {
         "position": position, "musicalPosition": musical_position, "duration": app.duration_ms(), "dirty": app.is_dirty(),
         "status": app.status, "error": app.error, "warnings": app.warnings, "speed": app.playback_speed,
         "song": app.preferences.song_gain, "main": app.preferences.master_gain,
-        "returnOnStop": app.preferences.return_on_stop, "songMuted": app.preferences.song_muted, "audition": app.preferences.audition, "offset": app.song_offset,
+        "returnOnStop": app.preferences.return_on_stop, "songMuted": app.preferences.song_muted,
+        "audition": app.preferences.audition, "offset": app.song_offset,
         "left": app.locator_left, "right": app.locator_right, "cycle": app.cycle, "follow": app.preferences.follow,
         "tool": format!("{:?}", app.tool()), "pendingOpen": app.pending_open.is_some(),
+        "keyPreset": app.preferences.key_preset,
         "rampShape": format!("{:?}", app.ramp_shape()),
         "revert": app.revert_requested, "review": review, "activeLane": app.active_lane,
         "saveProblemReview": app.save_problem_review(), "objectLines": app.preferences.object_lines,
@@ -923,6 +1182,8 @@ fn snapshot(app: &Application, include_scene: bool) -> Value {
         })).collect::<Vec<_>>(),
         "recent": app.preferences.recent, "firstLaunch": app.first_launch,
     });
+    result["saveReview"] = json!(app.save_review_files());
+    result["songSolo"] = json!(app.song_solo());
     result["editDialog"] = json!(app.requested_edit());
     result["quantizeStrength"] = json!(app.quantize_strength());
     let tab_routes = [false, true].into_iter().flat_map(|ctrl| {
@@ -946,7 +1207,7 @@ fn snapshot(app: &Application, include_scene: bool) -> Value {
 enum Request {
     View(bool, Option<Action>, mpsc::Sender<Value>),
     Help(mpsc::Sender<Value>),
-    AudioOutputs(mpsc::Sender<Value>),
+    AudioOutputs(Option<OutputBackend>, mpsc::Sender<Value>),
     Shortcuts(mpsc::Sender<Value>),
     ExportSettings(mpsc::Sender<Option<(PathBuf, ExportSettings)>>),
     KeyFile(PathBuf, bool, mpsc::Sender<Result<(), String>>),
@@ -955,6 +1216,8 @@ enum Request {
     LibraryDirectory(mpsc::Sender<Option<PathBuf>>),
     SetLibraryDirectory(PathBuf, mpsc::Sender<Result<Value, String>>),
     LibraryEntries(library::Location, mpsc::Sender<Result<Vec<(String, bool)>, String>>),
+    LaneAddCandidates(PathBuf, mpsc::Sender<Result<Value, String>>),
+    DrumView(PathBuf, Option<PathBuf>, bool, mpsc::Sender<Result<Value, String>>),
     Folder(folders::Folder, mpsc::Sender<Result<PathBuf, String>>),
     Close(bool, mpsc::Sender<Result<(), String>>),
 }
@@ -966,6 +1229,7 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
         let mut app = Application::new();
         let mut playback_start = PlaybackStart::default();
         let mut home = home::Route::default();
+        let mut drums = drum_view::DrumView::default();
         let mut pending_initial_open = initial.filter(|path| map_path(path));
         if !app.first_launch && let Some(path) = pending_initial_open.take() {
             app.request_open(path);
@@ -993,7 +1257,13 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                     home.settle(&mut app);
                     let mut view = snapshot(&app, scene && !home.visible());
                     home.add_status(&mut view);
+                    drums.decorate(&app, &mut view);
                     view["playbackStart"] = json!(playback_start);
+                    if let Some(request @ ("filter" | "newDiff" | "openFolder" | "importOsz" | "openHitsoundFolder" | "reviewOutput")) = app.requested_edit() {
+                        view["shortcutAction"] = json!(request);
+                        view["editDialog"] = Value::Null;
+                        app.cancel_timeline_edit();
+                    }
                     view["shortcutHelp"] = json!(std::mem::take(&mut app.help_requested));
                     view["shortcutOpen"] = json!(std::mem::take(&mut app.requests).iter()
                         .any(|request| matches!(request, PlatformRequest::OpenMap)));
@@ -1008,14 +1278,8 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                     let result = if import { app.import_shortcuts(&path) } else { app.export_shortcuts(&path) };
                     let _ = response.send(result);
                 }
-                Ok(Request::AudioOutputs(response)) => {
-                    let mut devices = app.devices();
-                    devices.sort();
-                    devices.dedup();
-                    let _ = response.send(json!({
-                        "current": app.device_name(), "devices": devices,
-                        "bufferMs": app.preferences.audio_buffer_ms,
-                    }));
+                Ok(Request::AudioOutputs(requested, response)) => {
+                    let _ = response.send(audio_output_settings(&app, requested));
                 }
                 Ok(Request::Help(response)) => {
                     let _ = response.send(json!(
@@ -1052,6 +1316,7 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                         app.save_preferences();
                         let mut view = snapshot(&app, false);
                         home.add_status(&mut view);
+                        drums.decorate(&app, &mut view);
                         view["playbackStart"] = json!(playback_start);
                         Ok(view)
                     };
@@ -1074,6 +1339,7 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                         app.save_preferences();
                         let mut view = snapshot(&app, false);
                         home.add_status(&mut view);
+                        drums.decorate(&app, &mut view);
                         view["playbackStart"] = json!(playback_start);
                         Ok(view)
                     })();
@@ -1081,6 +1347,22 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                 }
                 Ok(Request::LibraryEntries(location, response)) => {
                     let _ = response.send(location.entries(app.preferences.hitsound_library.as_deref()));
+                }
+                Ok(Request::LaneAddCandidates(map, response)) => {
+                    let _ = response.send(lane_add_choices(&app, &map));
+                }
+                Ok(Request::DrumView(map, preset, on, response)) => {
+                    let result = match preset {
+                        Some(path) => drums.load(&app, &map, &path),
+                        None => drums.toggle(&app, &map, on),
+                    }.map(|()| {
+                        let mut view = snapshot(&app, !home.visible());
+                        home.add_status(&mut view);
+                        drums.decorate(&app, &mut view);
+                        view["playbackStart"] = json!(playback_start);
+                        view
+                    });
+                    let _ = response.send(result);
                 }
                 Ok(Request::Folder(folder, response)) => {
                     let path = folder.resolve(
@@ -1181,9 +1463,42 @@ fn save_merge_preset(window: tauri::WebviewWindow, value: ExportSettings) -> Res
     Ok(true)
 }
 
+fn audio_output_settings(app: &Application, requested: Option<OutputBackend>) -> Value {
+    let available = OutputBackend::available();
+    let preferred = app.preferences.audio_backend;
+    let backend = requested.unwrap_or_else(|| {
+        if available.contains(&preferred) { preferred } else { OutputBackend::System }
+    });
+    let (mut devices, error) = match app.output_devices(backend) {
+        Ok(devices) => (devices, None),
+        Err(error) => (Vec::new(), Some(error)),
+    };
+    devices.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.id.cmp(&b.id)));
+    let qualified_id = (preferred == backend).then_some(app.preferences.audio_device_id.as_deref()).flatten();
+    let device = if let Some(id) = qualified_id {
+        devices.iter().find(|device| device.id == id)
+    } else if backend == OutputBackend::System {
+        app.preferences.device.as_ref().and_then(|name| devices.iter().find(|device| &device.name == name))
+    } else {
+        None
+    };
+
+    json!({
+        "backend": backend,
+        "available": available.iter().map(|choice| json!({"id": choice, "label": choice.label()})).collect::<Vec<_>>(),
+        "current": app.device_name(),
+        "currentBackend": app.active_output_backend().map(OutputBackend::label),
+        "devices": devices,
+        "device": device.map(|device| &device.id),
+        "bufferMs": app.preferences.audio_buffer_ms,
+        "effectiveBufferMs": app.effective_output_buffer_ms(),
+        "error": error,
+    })
+}
+
 #[tauri::command]
-fn audio_outputs(state: State<'_, Editor>) -> Result<Value, String> {
-    ask(&state, Request::AudioOutputs)
+fn audio_outputs(state: State<'_, Editor>, backend: Option<OutputBackend>) -> Result<Value, String> {
+    ask(&state, |response| Request::AudioOutputs(backend, response))
 }
 
 #[tauri::command]
@@ -1214,10 +1529,20 @@ fn export_key_file(window: tauri::WebviewWindow, state: State<'_, Editor>) -> Re
 }
 
 #[tauri::command]
-fn pick_map(window: tauri::WebviewWindow, state: State<'_, Editor>) -> Result<Value, String> {
-    let selected = songs_dialog(&window, &state)?
-        .add_filter("osu! difficulty or mapset", &["osu", "osz"])
-        .pick_file();
+fn pick_map(
+    window: tauri::WebviewWindow,
+    state: State<'_, Editor>,
+    archive_only: Option<bool>,
+) -> Result<Value, String> {
+    let dialog = songs_dialog(&window, &state)?;
+    let selected = if archive_only == Some(true) {
+        dialog.set_title("Import an .osz")
+            .add_filter("osu! beatmap archive", &["osz"])
+            .pick_file()
+            .filter(|path| path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("osz")))
+    } else {
+        dialog.add_filter("osu! difficulty or mapset", &["osu", "osz"]).pick_file()
+    };
     ask(&state, |tx| {
         Request::View(true, selected.map(|path| Action::Open { path }), tx)
     })
@@ -1270,6 +1595,27 @@ fn list_library(location: library::Location, state: State<'_, Editor>) -> Result
 }
 
 #[tauri::command]
+fn lane_add_candidates(map: PathBuf, state: State<'_, Editor>) -> Result<Value, String> {
+    ask(&state, |tx| Request::LaneAddCandidates(map, tx))?
+}
+
+#[tauri::command]
+fn pick_drum_map(
+    map: PathBuf,
+    window: tauri::WebviewWindow,
+    state: State<'_, Editor>,
+) -> Result<Option<Value>, String> {
+    let Some(path) = rfd::FileDialog::new().set_parent(&window).set_title("Open drum map")
+        .add_filter("Drum map", &["dawsudrum"]).pick_file() else { return Ok(None) };
+    ask(&state, |tx| Request::DrumView(map, Some(path), true, tx))?.map(Some)
+}
+
+#[tauri::command]
+fn set_drum_view(map: PathBuf, on: bool, state: State<'_, Editor>) -> Result<Value, String> {
+    ask(&state, |tx| Request::DrumView(map, None, on, tx))?
+}
+
+#[tauri::command]
 fn open_editor_folder(folder: folders::Folder, state: State<'_, Editor>) -> Result<(), String> {
     let path = ask(&state, |tx| Request::Folder(folder, tx))??;
     folder.open(&path)
@@ -1314,6 +1660,9 @@ fn main() {
             pick_songs_folder,
             pick_hitsound_library,
             list_library,
+            lane_add_candidates,
+            pick_drum_map,
+            set_drum_view,
             open_editor_folder,
             close_editor
         ])

@@ -9,9 +9,9 @@ members = [
     "crates/dawsu-editor-composer",
     "crates/dawsu-audio",
     "crates/dawsu-application",
-    "crates/dawsu-ui",
-    "crates/dawsu-desktop",
+    "apps/tauri",
 ]
+default-members = ["apps/tauri"]
 
 [workspace.package]
 edition = "2024"

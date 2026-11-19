@@ -14,13 +14,10 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 const SAMPLE_RATE: u32 = 48_000;
 const CHANNELS: usize = 2;
 const PREFIX: &str = "dawsu-mix-";
-static NEXT: AtomicU64 = AtomicU64::new(0);
 
 pub(crate) fn can_render(problem: &SaveProblem, placement: Placement) -> bool {
     (matches!(problem.place, Place::Circle(_) | Place::SpinnerEnd(_))
@@ -50,17 +47,26 @@ pub(super) struct StagedMix {
 }
 
 impl StagedMix {
+    pub(super) fn is_reused(&self) -> bool {
+        self.reuse
+    }
+
+    pub(super) fn digest(&self) -> String {
+        sha256_hex(&self.wav)
+    }
+
     pub(super) fn new_generated<'a>(
         root: &Path,
         wav: Vec<u8>,
         mut existing: impl Iterator<Item = &'a String>,
+        names: &mut BTreeSet<String>,
     ) -> Result<(String, Self), String> {
         let stem = format!("{PREFIX}{}-", sha256_hex(&wav));
         let reusable =
             existing.find(|name| name.starts_with(&stem) && has_contents(root, name, &wav));
         let name = match reusable {
             Some(name) => name.clone(),
-            None => new_name(&stem)?,
+            None => reserve_name(&stem, names)?,
         };
         let mix = Self {
             path: root.join(&name),
@@ -95,6 +101,7 @@ pub(super) fn stage_in_file(
     already_staged: &[StagedMix],
     settings: Option<&ExportSettings>,
     previous_mixes: &[String],
+    start_index: u32,
     cancel: &dyn Fn() -> bool,
 ) -> Result<(OsuFile, MixFiles), String> {
     let listing = list_folder(root).map_err(|error| error.to_string())?;
@@ -124,6 +131,7 @@ pub(super) fn stage_in_file(
             defaults,
             expected,
             already_staged,
+            start_index,
             cancel,
         )?;
     }
@@ -159,7 +167,7 @@ impl MixFiles {
             .enumerate()
             .filter_map(|(index, moment)| Some((mix_place(moment.place())?, MomentId(index))))
             .collect();
-        let mut indexes = IndexedMixes::read(root, &OsuFile::read(Vec::new()).file, &[])?;
+        let mut indexes = IndexedMixes::read(root, &OsuFile::read(Vec::new()).file, &[], 2)?;
         let previous_mixes = previous_mixes
             .iter()
             .map(String::as_str)
@@ -342,6 +350,7 @@ impl MixFiles {
         defaults: &Path,
         expected: &[u8],
         already_staged: &[StagedMix],
+        start_index: u32,
         cancel: &dyn Fn() -> bool,
     ) -> Result<(), String> {
         let defaults_list = list_folder(defaults).unwrap_or_default();
@@ -362,9 +371,14 @@ impl MixFiles {
             .iter()
             .any(|problem| matches!(problem.place, Place::SliderNode { .. }))
         {
-            Some(IndexedMixes::read(root, &expected, already_staged)?)
+            Some(IndexedMixes::read(root, &expected, already_staged, start_index)?)
         } else {
             None
+        };
+        let mut names = if problems.iter().any(|problem| !matches!(problem.place, Place::SliderNode { .. })) {
+            reserved_mix_names(root, already_staged)?
+        } else {
+            BTreeSet::new()
         };
         let mut clips = HashMap::new();
         let mut rendered = HashMap::<(bool, &[(SampleIdentity, i32)]), SampleIdentity>::new();
@@ -384,30 +398,7 @@ impl MixFiles {
             let sample = if let Some(sample) = rendered.get(&key) {
                 sample.clone()
             } else {
-                let mut cues = Vec::with_capacity(layers.len());
-                for (identity, volume) in layers {
-                    if !clips.contains_key(identity) {
-                        let lane = source
-                            .lane(identity)
-                            .or_else(|| target.lane(identity))
-                            .ok_or("Sample mix lane is missing")?;
-                        let path =
-                            sample_path(lane, root, defaults, &defaults_list).map_err(|error| {
-                                format!("Could not mix {}: {error}", lane_name(identity))
-                            })?;
-                        let clip = decode_with_cancel(&path, cancel).map_err(|error| {
-                            format!("Could not mix {}: {error}", lane_name(identity))
-                        })?;
-                        clips.insert(identity.clone(), clip);
-                    }
-                    cues.push(ScheduledSound {
-                        at_ms: 0.0,
-                        end_ms: None,
-                        clip: clips[identity].clone(),
-                        gain: *volume as f32 / 100.0,
-                    });
-                }
-                let wav = render(cues, cancel)?;
+                let wav = render_layers(source, Some(target), layers, root, defaults, &defaults_list, &mut clips, cancel)?;
                 let (sample, staged) = if let Some(indexes) = indexes.as_mut().filter(|_| slider) {
                     let (index, reuse) = indexes.allocate(root, &wav)?;
                     let identity = SampleIdentity::Standard {
@@ -425,7 +416,7 @@ impl MixFiles {
                         },
                     )
                 } else {
-                    let (name, staged) = StagedMix::new_generated(root, wav, existing.iter())?;
+                    let (name, staged) = StagedMix::new_generated(root, wav, existing.iter(), &mut names)?;
                     (SampleIdentity::File(name), staged)
                 };
                 self.staged.push(staged);
@@ -436,6 +427,88 @@ impl MixFiles {
         }
         Ok(())
     }
+}
+
+fn render_layers(
+    source: &Hitsounds, target: Option<&Hitsounds>, layers: &[(SampleIdentity, i32)],
+    root: &Path, defaults: &Path, defaults_list: &[String],
+    clips: &mut HashMap<SampleIdentity, Arc<AudioClip>>, cancel: &dyn Fn() -> bool,
+) -> Result<Vec<u8>, String> {
+    let mut cues = Vec::with_capacity(layers.len());
+    for (identity, volume) in layers {
+        if !clips.contains_key(identity) {
+            let lane = source
+                .lane(identity)
+                .or_else(|| target.and_then(|target| target.lane(identity)))
+                .ok_or("Sample mix lane is missing")?;
+            let path =
+                sample_path(lane, root, defaults, defaults_list).map_err(|error| {
+                    format!("Could not mix {}: {error}", lane_name(identity))
+                })?;
+            let clip = decode_with_cancel(&path, cancel).map_err(|error| {
+                format!("Could not mix {}: {error}", lane_name(identity))
+            })?;
+            clips.insert(identity.clone(), clip);
+        }
+        cues.push(ScheduledSound {
+            at_ms: 0.0,
+            end_ms: None,
+            clip: clips[identity].clone(),
+            gain: *volume as f32 / 100.0,
+        });
+    }
+    render(cues, cancel)
+}
+
+pub(super) fn stage_timed_copy(
+    source: &Hitsounds, file: &mut OsuFile, path: &Path, defaults: &Path,
+    placements: &[dawsu_hitsounding::copy::SliderCopyPlacement],
+    staged: &mut Vec<StagedMix>, details: &mut Vec<String>, cancel: &dyn Fn() -> bool,
+) -> Result<(), String> {
+    if placements.is_empty() {
+        return Ok(());
+    }
+    let root = path.parent().ok_or("Missing mapset folder")?;
+    let defaults_list = list_folder(defaults).unwrap_or_default();
+    let mut names = reserved_mix_names(root, staged)?;
+    let events = file.storyboard_samples();
+    let existing: Vec<_> = events.iter().map(|event| event.path.clone()).collect();
+    let mut clips = HashMap::new();
+    let mut rendered = BTreeMap::<&[(SampleIdentity, i32)], String>::new();
+    for placement in placements {
+        if cancel() {
+            return Err("Copy cancelled during timed sample review.".into());
+        }
+        let layers = placement.layers.as_slice();
+        let name = if let Some(name) = rendered.get(layers) {
+            name.clone()
+        } else {
+            let wav = render_layers(source, None, layers, root, defaults, &defaults_list, &mut clips, cancel)?;
+            let name = if let Some(previous) = staged.iter().find(|mix| mix.index.is_none() && mix.wav == wav) {
+                previous.path.file_name().ok_or("Missing staged filename")?.to_string_lossy().into_owned()
+            } else {
+                let (name, mix) = StagedMix::new_generated(root, wav, existing.iter(), &mut names)?;
+                staged.push(mix);
+                name
+            };
+            rendered.insert(layers, name.clone());
+            name
+        };
+        // Storyboard events use song time directly, including for pre-v5 difficulties.
+        let time = placement.time.ms();
+        let role = match placement.role {
+            dawsu_foundation::SliderSound::Tick => "tick",
+            dawsu_foundation::SliderSound::Slide => "slide",
+            _ => return Err("Unsupported timed slider sound.".into()),
+        };
+        if !events.iter().any(|event| event.time == time && event.path == name && event.volume == placement.volume as f32
+            && (event.layer == "0" || event.layer.eq_ignore_ascii_case("Background"))) {
+            file.insert_storyboard_sample(&format!("Sample,{time},0,\"{name}\",{}", placement.volume));
+        }
+        details.push(format!("{} · {time} ms · {role} · timed storyboard sample {name}",
+            path.file_name().unwrap_or_default().to_string_lossy()));
+    }
+    Ok(())
 }
 
 fn reusable_export_index(
@@ -509,7 +582,7 @@ fn occupied_indexes(root: &Path) -> Result<BTreeSet<u32>, String> {
 }
 
 impl IndexedMixes {
-    fn read(root: &Path, expected: &OsuFile, already_staged: &[StagedMix]) -> Result<Self, String> {
+    fn read(root: &Path, expected: &OsuFile, already_staged: &[StagedMix], start_index: u32) -> Result<Self, String> {
         let mut reserved = occupied_indexes(root)?;
         reserved.extend(already_staged.iter().filter_map(|mix| mix.index));
         let reuse = expected
@@ -521,7 +594,7 @@ impl IndexedMixes {
             .collect();
         Ok(Self {
             reserved,
-            next: 2,
+            next: start_index,
             reuse,
         })
     }
@@ -575,23 +648,35 @@ pub(super) fn publish<'a>(
             ));
         }
     }
+    let mut direct = staged.iter().filter(|mix| !mix.reuse && mix.index.is_none()).peekable();
+    if let Some(first) = direct.peek() {
+        let root = first.path.parent().ok_or("Missing mapset folder")?;
+        let reserved = reserved_mix_names(root, &[])?;
+        if let Some(collision) = direct.find(|mix| {
+            mix.path.file_name().is_some_and(|name| name_is_reserved(&name.to_string_lossy(), &reserved))
+        }) {
+            return Err(format!("{} is now used in this mapset. Review again before applying.", collision.path.display()));
+        }
+    }
     let mut publication = PublishedMixes {
         staged,
         created: Vec::new(),
     };
     for (index, mix) in staged.iter().enumerate() {
         if cancel() {
-            return Err("Sample mix publishing cancelled".into());
+            return Err(publication.failed("Sample mix publishing cancelled".into()));
         }
         if mix.reuse {
             if !fs::read(&mix.path).is_ok_and(|bytes| bytes == mix.wav) {
-                return Err(format!(
+                return Err(publication.failed(format!(
                     "{} changed since sample review",
                     mix.path.display()
-                ));
+                )));
             }
         } else {
-            safe_write::create(&mix.path, &mix.wav).map_err(|error| error.to_string())?;
+            if let Err(error) = safe_write::create(&mix.path, &mix.wav) {
+                return Err(publication.failed(error.to_string()));
+            }
             publication.created.push(index);
         }
     }
@@ -602,29 +687,71 @@ impl PublishedMixes<'_> {
     pub(super) fn keep(mut self) {
         self.created.clear();
     }
+
+    pub(super) fn failed(mut self, error: String) -> String {
+        let kept = self.rollback();
+        if kept.is_empty() {
+            error
+        } else {
+            format!("{error}. Sample files kept during rollback: {}", kept.join(", "))
+        }
+    }
+
+    fn rollback(&mut self) -> Vec<String> {
+        let mut kept = Vec::new();
+        for index in self.created.drain(..).rev() {
+            let mix = &self.staged[index];
+            let result = match fs::read(&mix.path) {
+                Ok(bytes) if bytes == mix.wav => fs::remove_file(&mix.path),
+                Err(error) => Err(error),
+                Ok(_) => {
+                    kept.push(mix.path.display().to_string());
+                    continue;
+                }
+            };
+            if let Err(error) = result
+                && error.kind() != std::io::ErrorKind::NotFound
+            {
+                kept.push(mix.path.display().to_string());
+            }
+        }
+        kept
+    }
 }
 
 impl Drop for PublishedMixes<'_> {
     fn drop(&mut self) {
-        for index in &self.created {
-            let mix = &self.staged[*index];
-            if fs::read(&mix.path).is_ok_and(|bytes| bytes == mix.wav) {
-                let _ = fs::remove_file(&mix.path);
-            }
-        }
+        self.rollback();
     }
 }
 
-fn new_name(stem: &str) -> Result<String, String> {
-    let time = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|error| error.to_string())?
-        .as_nanos();
-    let id = NEXT.fetch_add(1, Ordering::Relaxed);
-    Ok(format!(
-        "{stem}{time:x}-{:x}-{id:x}.wav",
-        std::process::id()
-    ))
+pub(super) fn reserved_mix_names(root: &Path, staged: &[StagedMix]) -> Result<BTreeSet<String>, String> {
+    let files = list_folder(root).map_err(|error| error.to_string())?;
+    let (_, mut names) = crate::layers::reservations(root, &files)?;
+    // Directory entries also claim names, including case-only variants on case-sensitive systems.
+    for entry in fs::read_dir(root).map_err(|error| error.to_string())? {
+        let entry = entry.map_err(|error| error.to_string())?;
+        names.insert(entry.file_name().to_string_lossy().to_ascii_lowercase());
+    }
+    names.extend(staged.iter().filter_map(|mix| {
+        mix.path.file_name().map(|name| name.to_string_lossy().to_ascii_lowercase())
+    }));
+    Ok(names)
+}
+
+fn name_is_reserved(name: &str, names: &BTreeSet<String>) -> bool {
+    let stem = name.to_ascii_lowercase();
+    let stem = stem.strip_suffix(".wav").unwrap_or(&stem);
+    ["wav", "ogg", "mp3"].into_iter().any(|extension| names.contains(&format!("{stem}.{extension}")))
+}
+
+fn reserve_name(stem: &str, names: &mut BTreeSet<String>) -> Result<String, String> {
+    let name = (1..=u32::MAX)
+        .map(|number| format!("{stem}{number}.wav"))
+        .find(|name| !name_is_reserved(name, names))
+        .ok_or("No safe sample filename is available for this mix.")?;
+    names.insert(name.clone());
+    Ok(name)
 }
 
 pub(super) fn render(
@@ -690,6 +817,29 @@ pub(super) fn render(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cancelled_publish_reports_a_sample_it_could_not_remove() {
+        let scratch = dawsu_test_support::Scratch::new("mix-rollback-report");
+        let first = scratch.path("first.wav");
+        let second = scratch.path("second.wav");
+        let staged = [
+            StagedMix { path: first.clone(), wav: vec![1], reuse: false, index: None },
+            StagedMix { path: second.clone(), wav: vec![2], reuse: false, index: None },
+        ];
+        let result = publish(&staged, &|| {
+            if !first.exists() {
+                return false;
+            }
+            fs::write(&first, b"externally edited").unwrap();
+            true
+        });
+        let error = result.err().expect("publishing was cancelled");
+        assert!(error.contains("cancelled"), "{error}");
+        assert!(error.contains("first.wav"), "{error}");
+        assert_eq!(fs::read(first).unwrap(), b"externally edited");
+        assert!(!second.exists());
+    }
 
     #[test]
     fn staged_mix_preview_uses_the_same_pcm_without_opening_its_output_path() {

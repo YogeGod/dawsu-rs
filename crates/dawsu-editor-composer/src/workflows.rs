@@ -4,7 +4,7 @@ use dawsu_foundation::{SampleIdentity, SongTime};
 use dawsu_hitsounding::{Hitsounds, MomentId, Place};
 use std::{
     cmp::Ordering,
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
 };
 
 #[derive(Clone, Copy)]
@@ -22,7 +22,7 @@ pub enum VolumeScope {
 }
 
 impl Composer {
-    fn selected_keys_in_order(&self) -> Vec<HitKey> {
+    pub(super) fn selected_keys_in_order(&self) -> Vec<HitKey> {
         let mut keys: Vec<_> = self.selected.items().iter().cloned().collect();
         let primary = self.selected.primary();
         keys.sort_unstable_by(|a, b| {
@@ -53,7 +53,7 @@ impl Composer {
                 let target = self.tempo.snap(time, self.spacing);
                 let time_shift = (target.ms() - time.ms()) * strength;
                 let moved = (moment.place() == Place::NoObject && time_shift.abs() > 1e-6)
-                    .then(|| (time.ms() + time_shift, moment.volume()));
+                    .then(|| (time.ms() + time_shift, moment.hit_volume(&key.lane)));
                 Some((key, moved))
             })
             .collect();
@@ -102,7 +102,83 @@ impl Composer {
         offset.abs() >= 0.5 && self.offset_hits(&keys, &[offset], true, "Move selection start")
     }
 
+    pub fn select_across_lanes(&mut self, rows: &[usize], direction: isize, max_distance: f64) {
+        let keys = self.selected_keys_in_order();
+        let moments = self.hitsounds().moments();
+        let Some((anchor, time)) = keys
+            .iter()
+            .filter_map(|key| {
+                let moment = moments.get(key.moment)?;
+                moment.has_hit(&key.lane).then(|| (key, moment.time().ms()))
+            })
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+        else {
+            return;
+        };
+        let Some(start) = rows
+            .iter()
+            .position(|&row| self.lanes.get(row) == Some(&anchor.lane))
+        else {
+            return;
+        };
+        let mut rank = HashMap::new();
+        for offset in 1..rows.len() {
+            let Some(row) = start
+                .checked_add_signed(offset as isize * direction)
+                .and_then(|index| rows.get(index))
+            else {
+                break;
+            };
+            if let Some(lane) = self.lanes.get(*row).filter(|lane| *lane != &anchor.lane) {
+                rank.entry(lane).or_insert(offset);
+            }
+        }
+
+        let mut closest = None;
+        for (index, moment) in moments.iter().enumerate() {
+            let distance = (moment.time().ms() - time).abs();
+            if distance > max_distance {
+                continue;
+            }
+            for lane in moment.hits() {
+                let Some(&lane_rank) = rank.get(lane) else {
+                    continue;
+                };
+                let score = (lane_rank, distance, index);
+                if closest.as_ref().is_none_or(|(best, _)| score < *best) {
+                    closest = Some((score, lane));
+                }
+            }
+        }
+        if let Some(((_, _, moment), lane)) = closest {
+            let hit = HitKey {
+                moment,
+                lane: lane.clone(),
+            };
+            if !self.selected.contains(&hit) {
+                self.selected.replace(keys.into_iter().chain([hit]));
+            }
+        }
+    }
+
+    pub fn duplicate(&mut self) {
+        let Some((start, step, gap)) = self.selection_gap() else {
+            return;
+        };
+        let shift = if self.spacing.is_long() {
+            self.step_forward(start, gap).ms() - start.ms()
+        } else {
+            step * f64::from(gap)
+        };
+        let keys = self.selected_keys_in_order();
+        self.offset_hits(&keys, &[shift], false, "Duplicate hits");
+    }
+
     pub fn repeat_gap(&self) -> Option<u32> {
+        self.selection_gap().map(|(_, _, gap)| gap.min(1024))
+    }
+
+    fn selection_gap(&self) -> Option<(SongTime, f64, u32)> {
         let times = self
             .selected
             .items()
@@ -111,10 +187,17 @@ impl Composer {
             .map(|moment| moment.time().ms());
         let first = times.clone().reduce(f64::min)?;
         let last = times.reduce(f64::max)?;
-        let step = self
-            .spacing
-            .step_ms(self.tempo.beat_length_at(SongTime::from_ms(first)));
-        Some((((last - first) / step + 0.5).ceil() as u32).clamp(1, 1024))
+        let start = SongTime::from_ms(first);
+        let step = self.spacing.step_ms(self.tempo.beat_length_at(start));
+        let gap = (((last - first) / step + 0.5).ceil() as u32).max(1);
+        Some((start, step, gap))
+    }
+
+    fn step_forward(&self, mut cursor: SongTime, count: u32) -> SongTime {
+        for _ in 0..count {
+            cursor = self.tempo.grid_step(cursor, 1, self.spacing);
+        }
+        cursor
     }
 
     pub fn repeat_selected(&mut self, copies: u32, gap_steps: u32) -> bool {
@@ -133,9 +216,7 @@ impl Composer {
         let mut cursor = SongTime::from_ms(first);
         let shifts: Vec<_> = (0..copies)
             .map(|_| {
-                for _ in 0..gap_steps {
-                    cursor = self.tempo.grid_step(cursor, 1, self.spacing);
-                }
+                cursor = self.step_forward(cursor, gap_steps);
                 cursor.ms() - first
             })
             .collect();
@@ -196,7 +277,7 @@ impl Composer {
                 let moment = self.hitsounds().moments().get(key.moment)?;
                 moment
                     .has_hit(&key.lane)
-                    .then(|| (key, moment.time().ms(), moment.volume()))
+                    .then(|| (key, moment.time().ms(), moment.hit_volume(&key.lane)))
             })
             .collect();
         if originals.is_empty() || shifts.iter().all(|shift| shift.abs() < 1e-6) {
@@ -331,7 +412,7 @@ impl Destinations {
                 self.exact.insert(key, id);
                 id
             });
-        hits.add_hit(id, lane);
+        hits.add_hit_with_volume(id, lane, volume);
         id
     }
 }

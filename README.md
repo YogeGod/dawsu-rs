@@ -8,7 +8,7 @@ The UI uses real map data, the existing domain/compiler, the shared editing kern
 
 Open a copied `.osu` or `.osz`; use the seven tools, selection/clipboard, undo/redo, snap modes, volume editing, lane mute/solo/audition, transport, cycle and pitch-preserving speed. Save goes through the format crate with a backup and an observed-disk-version check. New difficulty, Generate and Copy prepare a review before writing.
 
-**Limits:** Ordinary and HS-mode Save support sample mixes on circles and spinner ends. Generate and Copy stage supported mixes for review and audition before writing. Slider-node mixes remain open. Per-map project persistence, sample replacement, full command coverage, sound sets, movable tabs and other M3 requirements remain incomplete. Hits with no object are stored in the editor project. Use HS mode or Generate to materialise them in a difficulty. Do not use this development build as the only copy of a project.
+Save supports mixes on circles and spinner ends. Save and Copy support slider-node mixes where the compiler can safely place a restoring timing line. Generate and Copy stage supported mixes for review and audition. Copy can also stage timed storyboard samples at slider ticks and during slides. Hits with no object are stored in the editor project. Use HS mode or Generate to materialise them in a difficulty. Test this development build with copied mapsets.
 
 The Windows timeline preview (executable SHA-256 `b7f62afacb0f2cb424997ba88066c96c058a574765dc40b07cf449dc4f7b0696`) was checked with the native picker on a copied difficulty. The recorded checks cover overview navigation, a volume edit and History restore. Three audio warnings appeared. Physical listening, plug-ins, osu! import and macOS/Linux runtime still need verification. See [the feature ledger](FEATURE-COVERAGE.md) for coverage by workflow.
 
@@ -16,20 +16,22 @@ The Windows timeline preview (executable SHA-256 `b7f62afacb0f2cb424997ba88066c9
 
 Use the toolchain pinned by `rust-toolchain.toml` and the versions in `Cargo.lock`.
 
+The root workspace builds the Tauri editor from `apps/tauri`, following ADR 0063. Use a copied map when testing.
+
 - `cargo test --workspace --locked`
-- `cargo build -p dawsu-desktop --release --locked`
-- `cargo run -p dawsu-desktop --release -- "path/to/a/copied-difficulty.osu"`
-
-The Tauri desktop beta candidate is built from its own workspace. Use a copied map when testing.
-
-- `cargo build --manifest-path apps/tauri/Cargo.toml --locked`
-- `cargo run --manifest-path apps/tauri/Cargo.toml --locked -- "path/to/a/copied-difficulty.osu"`
-- `cargo test --manifest-path apps/tauri/Cargo.toml --locked`
+- `cargo build -p dawsu-tauri --locked`
+- `cargo run -p dawsu-tauri --locked -- "path/to/a/copied-difficulty.osu"`
 - `node --test apps/tauri/tests/*.test.mjs`
 
-The Windows binary is `dawsu-tauri.exe`. The existing desktop build remains the default until Tauri passes the Windows workflow checks and the macOS and Linux build and launch checks.
+The Windows binary is `dawsu-tauri.exe`. The macOS and Linux build and launch checks remain open.
 
-signalsmith-stretch needs a C++ compiler and libclang at build time. On this machine, set `LIBCLANG_PATH` to `E:/Claude/drum-onnx/venv311/Lib/site-packages/clang/native`. Cargo is `C:/Users/yogem/.cargo/bin/cargo.exe`. The shared dependency cache is `E:/dawsu-rewrite-spikes/egui-ui/.cargo-home`; build/temp files stay on E:.
+signalsmith-stretch needs a C++ compiler and libclang at build time. On this machine, set `LIBCLANG_PATH` to `E:/Claude/drum-onnx/venv311/Lib/site-packages/clang/native`. Cargo is `C:/Users/yogem/.cargo/bin/cargo.exe`. The isolated dependency cache for the unified workspace is `E:/dawsu-mixed-save-20261117/asio-local/cargo-home`. Keep build and temporary files on E:.
+
+### Local ASIO build on Windows
+
+ASIO is available in the optional Tauri development build with `--features asio-local`. Set `CPAL_ASIO_DIR` to the extracted Steinberg ASIO SDK, set `LIBCLANG_PATH`, and load the MSVC x64 developer environment before running Cargo. Use a separate target directory for this build. The standard Windows build uses WASAPI, DirectSound and MME.
+
+The ASIO driver is loaded when selected. While it is active, switch to WASAPI before changing the ASIO driver or buffer. Publication of an ASIO build requires the agreement and attribution recorded in the vault's ASIO decision.
 
 ## User data and assets
 

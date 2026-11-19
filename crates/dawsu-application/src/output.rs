@@ -118,17 +118,14 @@ impl WritePlan {
                     }
                 }
                 // A target that could not be restored may still reference these files.
-                if !kept.is_empty() {
-                    publication.keep();
+                if kept.is_empty() {
+                    return Err(publication.failed(format!("{error}. Previous targets were restored.")));
                 }
-                return Err(if kept.is_empty() {
-                    format!("{error}. Previous targets were restored.")
-                } else {
-                    format!(
-                        "{error}. These files had newer changes or could not be restored and were kept: {}",
-                        kept.join(", ")
-                    )
-                });
+                publication.keep();
+                return Err(format!(
+                    "{error}. These files had newer changes or could not be restored and were kept: {}",
+                    kept.join(", ")
+                ));
             }
             written.push(target);
         }
@@ -155,7 +152,7 @@ fn folder(source: &Source) -> Result<Vec<(String, Option<String>)>, String> {
     Ok(result)
 }
 pub fn generate(source: &Source, cancel: &dyn Fn() -> bool) -> Result<WritePlan, String> {
-    generate_report(source, Path::new(""), None, None, false, cancel, &mut Vec::new())
+    generate_report(source, Path::new(""), None, None, false, cancel, &mut Vec::new(), &mut |_, _| {})
 }
 pub(super) fn generate_report(
     source: &Source,
@@ -165,6 +162,7 @@ pub(super) fn generate_report(
     include_slider_audio: bool,
     cancel: &dyn Fn() -> bool,
     diagnostics: &mut Vec<OutputProblem>,
+    progress: &mut dyn FnMut(usize, usize),
 ) -> Result<WritePlan, String> {
     let name = source
         .path
@@ -187,7 +185,7 @@ pub(super) fn generate_report(
         &name,
         &siblings,
         cancel,
-        &mut |_, _| {},
+        progress,
     ) {
         GenerateOutcome::Planned {
             file,
@@ -197,9 +195,12 @@ pub(super) fn generate_report(
             let target = root.join(file_name);
             let old_bytes = previous.as_ref().map_or(&[][..], |output| output.bytes.as_slice());
             let old_mixes = previous.as_ref().map_or(&[][..], |output| output.mixes.as_slice());
+            let can_mix = problems.iter().all(|problem| {
+                mixes::can_render(problem, dawsu_hitsounding::Placement::OnObjects)
+            });
             let staged = if problems.is_empty() {
                 Ok((file, mixes::MixFiles::default()))
-            } else if problems.iter().all(|problem| crate::mixes::can_render(problem, dawsu_hitsounding::Placement::OnObjects)) {
+            } else if can_mix {
                 crate::mixes::stage_in_file(
                     &source.hits,
                     file,
@@ -211,6 +212,7 @@ pub(super) fn generate_report(
                     &[],
                     settings,
                     old_mixes,
+                    2,
                     cancel,
                 )
             } else {
@@ -219,15 +221,17 @@ pub(super) fn generate_report(
                     problems.len()
                 ))
             };
-            let (mut file, mut mixes) = staged.inspect_err(|_| {
-                diagnostics.extend(
-                    problems
-                        .iter()
-                        .map(|problem| OutputProblem::new(problem, &target, &source.path)),
-                );
+            let (mut file, mut mixes) = staged.inspect_err(|error| {
+                diagnostics.extend(problems.iter().map(|problem| {
+                    let diagnostic = OutputProblem::new(problem, &target, &source.path);
+                    if can_mix { diagnostic.with_message(error) } else { diagnostic }
+                }));
             })?;
             if include_slider_audio {
-                mixes.staged.extend(crate::slider_export::stage(source, &mut file, root, defaults, old_bytes, cancel)?);
+                let slider_mixes = crate::slider_export::stage(
+                    source, &mut file, root, defaults, old_bytes, &mixes.staged, cancel,
+                )?;
+                mixes.staged.extend(slider_mixes);
             }
             let details = if previous.is_some() {
                 "The earlier generated difficulty will be replaced after creating a backup."
@@ -264,7 +268,7 @@ pub fn copy(
     options: &CopyOptions,
     cancel: &dyn Fn() -> bool,
 ) -> Result<WritePlan, String> {
-    copy_report(source, Path::new(""), targets, options, cancel, &mut Vec::new())
+    copy_report(source, Path::new(""), targets, options, cancel, &mut Vec::new(), &mut |_, _| {})
 }
 pub(super) fn copy_report(
     source: &Source,
@@ -273,6 +277,7 @@ pub(super) fn copy_report(
     options: &CopyOptions,
     cancel: &dyn Fn() -> bool,
     diagnostics: &mut Vec<OutputProblem>,
+    progress: &mut dyn FnMut(usize, usize),
 ) -> Result<WritePlan, String> {
     if targets.is_empty() {
         return Err("Choose at least one target difficulty".into());
@@ -300,14 +305,23 @@ pub(super) fn copy_report(
         files.push(OsuFile::read(std::fs::read(&path).map_err(|e| e.to_string())?).file);
         paths.push(path);
     }
-    let outcomes = match dawsu_hitsounding::copy::copy_hitsounds(
+    let mut silence = std::collections::HashMap::new();
+    let mut is_silent = |file: &str| {
+        *silence.entry(file.to_owned()).or_insert_with(|| {
+            crate::safe_child(&root, file)
+                .and_then(|path| dawsu_audio::decode_with_cancel(&path, cancel))
+                .is_ok_and(|clip| clip.samples.iter().all(|sample| sample.abs() < 1.0e-4))
+        })
+    };
+    let outcomes = match dawsu_hitsounding::copy::copy_hitsounds_with_silence(
         &source.hits,
         &source.file,
         &files,
         &source.folder_files,
         options,
+        &mut is_silent,
         cancel,
-        &mut |_, _| {},
+        progress,
     ) {
         CopyOutcome::Targets(outcomes) => outcomes,
         other => return Err(format!("Copy refused: {other:?}")),
@@ -328,9 +342,12 @@ pub(super) fn copy_report(
         match outcome {
             TargetOutcome::Planned(target) => {
                 let expected = original.original_bytes().to_vec();
+                let can_mix = target.problems.iter().all(|problem| {
+                    mixes::can_render(problem, dawsu_hitsounding::Placement::GreenLines)
+                });
                 let staged = if target.problems.is_empty() {
                     Ok((target.file, mixes::MixFiles::default()))
-                } else if target.problems.iter().all(|problem| mixes::can_render(problem, dawsu_hitsounding::Placement::GreenLines)) {
+                } else if can_mix {
                     mixes::stage_in_file(
                         &source.hits,
                         target.file,
@@ -342,17 +359,19 @@ pub(super) fn copy_report(
                         &plan.mixes,
                         None,
                         &[],
+                        options.start_index,
                         cancel,
                     )
                 } else {
                     Err(format!("{} sample-mix or placement fixes needed before Copy", target.problems.len()))
                 };
-                let (file, mixes) = match staged {
+                let (mut file, mixes) = match staged {
                     Ok(staged) => staged,
                     Err(error) => {
                         refused.get_or_insert_with(|| format!("{}: {error}", path.display()));
                         diagnostics.extend(target.problems.iter().map(|problem| {
-                            OutputProblem::new(problem, &path, &path)
+                            let diagnostic = OutputProblem::new(problem, &path, &path);
+                            if can_mix { diagnostic.with_message(&error) } else { diagnostic }
                         }));
                         continue;
                     }
@@ -363,7 +382,26 @@ pub(super) fn copy_report(
                     target.matched,
                     target.dropped.len()
                 ));
+                for collision in &target.collisions {
+                    let displaced = collision.displaced_source_times.iter()
+                        .map(|time| format!("{} ms", time.ms()))
+                        .collect::<Vec<_>>().join(", ");
+                    plan.details.push(format!(
+                        "{} · {} ms: source at {} ms won; replaced {displaced}.",
+                        path.file_name().unwrap().to_string_lossy(),
+                        collision.target_time.ms(),
+                        collision.winning_source_time.ms(),
+                    ));
+                }
+                if target.kept_from_silent > 0 {
+                    plan.details.push(format!(
+                        "{}: {} hit points kept their own sound to avoid a silent hitnormal.",
+                        path.file_name().unwrap().to_string_lossy(), target.kept_from_silent,
+                    ));
+                }
                 plan.mixes.extend(mixes.staged);
+                mixes::stage_timed_copy(&source.hits, &mut file, &path, defaults, &target.slider_placements,
+                    &mut plan.mixes, &mut plan.details, cancel)?;
                 plan.files.push(PlannedFile {
                     path,
                     file,

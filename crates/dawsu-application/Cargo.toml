@@ -3,6 +3,9 @@ name = "dawsu-application"
 version = "0.1.0"
 edition.workspace = true
 
+[features]
+asio-local = ["dawsu-audio/asio-local"]
+
 [dependencies]
 dawsu-foundation = { path = "../dawsu-foundation" }
 dawsu-osu-format = { path = "../dawsu-osu-format" }

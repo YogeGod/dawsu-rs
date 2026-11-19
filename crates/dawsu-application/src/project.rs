@@ -35,11 +35,51 @@ pub(crate) struct SessionSettings {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub lane_slots: Option<BTreeMap<String, String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub hidden_lanes: Option<BTreeSet<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub hs_mode: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hs_circle_ownership: Option<HsCircleOwnership>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gain_recovery: Option<super::gain_recovery::Recovery>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub time_signatures: Option<Vec<super::EditorTimeSignature>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub export_settings: Option<super::ExportSettings>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct HsCircleOwnership {
+    map_digest: String,
+    object_ordinals: Vec<usize>,
+}
+
+impl HsCircleOwnership {
+    pub(super) fn capture(
+        file: &dawsu_osu_format::OsuFile,
+        bytes: &[u8],
+        owned: &BTreeSet<dawsu_osu_format::LineId>,
+    ) -> Option<Self> {
+        let object_ordinals = file.hit_objects().iter().enumerate()
+            .filter_map(|(ordinal, object)| (owned.contains(&object.line()) && owned_circle(object)).then_some(ordinal))
+            .collect::<Vec<_>>();
+        (!object_ordinals.is_empty()).then(|| Self { map_digest: sha256_hex(bytes), object_ordinals })
+    }
+
+    pub(super) fn verified_lines(&self, file: &dawsu_osu_format::OsuFile) -> BTreeSet<dawsu_osu_format::LineId> {
+        if !self.map_digest.eq_ignore_ascii_case(&sha256_hex(file.original_bytes())) {
+            return BTreeSet::new();
+        }
+        let objects = file.hit_objects();
+        self.object_ordinals.iter()
+            .map(|ordinal| objects.get(*ordinal).filter(|object| owned_circle(object)).map(|object| object.line()))
+            .collect::<Option<_>>().unwrap_or_default()
+    }
+}
+
+fn owned_circle(object: &dawsu_osu_format::HitObject) -> bool {
+    matches!(object.kind(), dawsu_osu_format::ObjectKind::Circle)
+        && object.x() == 256.0 && object.y() == 192.0
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -48,12 +88,35 @@ pub struct LaneLayout {
     pub folder_order: Vec<String>,
     pub collapsed_folders: BTreeSet<String>,
     pub collapsed_families: BTreeSet<String>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub lane_colours: BTreeMap<String, String>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub lane_names: BTreeMap<String, String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub lane_order: Vec<String>,
 }
 
 const SAMPLE_FOLDERS: [&str; 3] = ["normal", "soft", "drum"];
 
 impl LaneLayout {
     pub(crate) fn normalise(&mut self) {
+        self.lane_colours.retain(|key, colour| {
+            lane_identity(key).is_some() && colour.len() == 7 && colour.starts_with('#')
+                && colour.as_bytes()[1..].iter().all(u8::is_ascii_hexdigit)
+        });
+        self.lane_names = std::mem::take(&mut self.lane_names).into_iter()
+            .filter_map(|(key, name)| {
+                let lane = lane_identity(&key)?;
+                let name = name.trim();
+                (!name.is_empty() && name.chars().count() <= 120 && !name.chars().any(char::is_control)
+                    && name != super::lane_name(&lane)).then(|| (lane_key(&lane), name.to_owned()))
+            })
+            .collect();
+        let mut ordered = BTreeSet::new();
+        self.lane_order = self.lane_order.iter().filter_map(|key| {
+            let key = lane_key(&lane_identity(key)?);
+            ordered.insert(key.clone()).then_some(key)
+        }).collect();
         let mut seen = BTreeSet::new();
         self.folder_order
             .retain(|group| SAMPLE_FOLDERS.contains(&group.as_str()) && seen.insert(group.clone()));
@@ -75,7 +138,7 @@ impl LaneLayout {
     }
 }
 
-pub(crate) fn lane_key(lane: &SampleIdentity) -> String {
+pub fn lane_key(lane: &SampleIdentity) -> String {
     match lane {
         SampleIdentity::File(name) => format!("File|{name}"),
         SampleIdentity::Standard { index, .. } if index.get() == 0 => {
@@ -117,6 +180,8 @@ pub(crate) struct ProjectBookmark {
 pub(crate) struct ProjectHit {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub group: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_volume: Option<i32>,
     pub lane: String,
     pub time: f64,
     pub volume: Option<i32>,
@@ -133,8 +198,10 @@ struct FileData {
 struct LegacyProject {
     version: u32,
     lane_order: Vec<String>,
+    lane_names: BTreeMap<String, String>,
     collapsed_families: Vec<String>,
     lane_slots: Option<BTreeMap<String, String>>,
+    hidden_lanes: Option<BTreeSet<String>>,
     unanchored: Vec<ProjectHit>,
     locator_left: Option<f64>,
     locator_right: Option<f64>,
@@ -149,6 +216,30 @@ struct LegacyProject {
 #[serde(rename_all = "PascalCase")]
 struct LegacyHsMode {
     enabled: bool,
+    file_hash: Option<String>,
+    moments: Option<Vec<LegacyHsMoment>>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct LegacyHsMoment {
+    object_index: Option<i64>,
+    node: Option<i64>,
+    #[serde(default)]
+    owned: bool,
+}
+
+impl LegacyHsMode {
+    fn ownership(&self) -> Option<HsCircleOwnership> {
+        let object_ordinals = self.moments.as_ref()?.iter()
+            .filter(|moment| moment.owned && moment.node == Some(0))
+            .filter_map(|moment| usize::try_from(moment.object_index?).ok())
+            .collect::<Vec<_>>();
+        if object_ordinals.is_empty() {
+            return None;
+        }
+        Some(HsCircleOwnership { map_digest: self.file_hash.clone()?, object_ordinals })
+    }
 }
 
 #[derive(Deserialize)]
@@ -159,6 +250,7 @@ struct LegacyTimeSignature {
     denominator: i32,
 }
 
+#[derive(Clone)]
 pub(crate) struct Project {
     path: PathBuf,
     expected: Option<Vec<u8>>,
@@ -179,7 +271,9 @@ impl Project {
                 && (settings.unanchored.is_none()
                     || settings.lane_layout.is_none()
                     || settings.lane_slots.is_none()
+                    || settings.hidden_lanes.is_none()
                     || settings.hs_mode.is_none()
+                    || settings.hs_circle_ownership.is_none()
                     || settings.time_signatures.is_none()
                     || settings.export_settings.is_none())
             {
@@ -195,7 +289,9 @@ impl Project {
                     settings.unanchored = settings.unanchored.or(legacy.unanchored);
                     settings.lane_layout = settings.lane_layout.or(legacy.lane_layout);
                     settings.lane_slots = settings.lane_slots.or(legacy.lane_slots);
+                    settings.hidden_lanes = settings.hidden_lanes.or(legacy.hidden_lanes);
                     settings.hs_mode = settings.hs_mode.or(legacy.hs_mode);
+                    settings.hs_circle_ownership = settings.hs_circle_ownership.or(legacy.hs_circle_ownership);
                     settings.time_signatures = settings.time_signatures.or(legacy.time_signatures);
                     settings.export_settings = settings.export_settings.or(legacy.export_settings);
                 }
@@ -211,6 +307,17 @@ impl Project {
             expected,
             settings,
         })
+    }
+
+    pub(super) fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub(super) fn check_current(&self) -> Result<(), String> {
+        if read_bounded(&self.path, MAX_PROJECT_BYTES)? != self.expected {
+            return Err("The session file changed on disk. Reopen the latest session before saving.".into());
+        }
+        Ok(())
     }
 
     pub fn save(&mut self, settings: SessionSettings) -> Result<(), String> {
@@ -306,6 +413,11 @@ fn legacy_settings(root: &Path, map: &Path) -> Result<Option<SessionSettings>, S
     let legacy: LegacyProject = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
     let mut layout = LaneLayout::default();
     if legacy.version >= 3 {
+        let slot_for = |key: &String| legacy.lane_slots.as_ref()
+            .and_then(|slots| slots.get(key)).unwrap_or(key).clone();
+        layout.lane_names = legacy.lane_names.iter()
+            .map(|(key, name)| (slot_for(key), name.clone())).collect();
+        layout.lane_order = legacy.lane_order.iter().map(slot_for).collect();
         for key in &legacy.lane_order {
             let slot = legacy
                 .lane_slots
@@ -346,6 +458,8 @@ fn legacy_settings(root: &Path, map: &Path) -> Result<Option<SessionSettings>, S
         unanchored: Some(legacy.unanchored),
         lane_layout,
         lane_slots: legacy.lane_slots,
+        hidden_lanes: legacy.hidden_lanes,
+        hs_circle_ownership: legacy.hs_mode.as_ref().and_then(LegacyHsMode::ownership),
         hs_mode: legacy.hs_mode.map(|state| state.enabled),
         export_settings: legacy.export_settings
             .and_then(|value| serde_json::from_value::<super::ExportSettings>(value).ok())
@@ -381,7 +495,7 @@ mod tests {
         let hash = sha256_hex(expected_key.as_bytes());
         let legacy = legacy_root.join(format!("Hard-{}.json", hash[..12].to_uppercase()));
         fs::create_dir(&legacy_root).unwrap();
-        let contents = br#"{"Version":3,"LocatorLeft":21,"LocatorRight":400,"SongOffset":-3.5,"Cycle":true,"Unanchored":[{"Lane":"Skin|soft-hitclap","Time":250}],"LaneOrder":["BeatmapFile|soft-hitclap2.wav","Skin|normal-hitnormal"],"CollapsedFamilies":["Soft:hitclap"],"LaneSlots":{"BeatmapFile|replacement.wav":"BeatmapFile|soft-hitclap2.wav"},"HsMode":{"Enabled":true},"TimeSignatures":[{"Bar":2,"Numerator":7,"Denominator":8}]}"#;
+        let contents = br#"{"Version":3,"LocatorLeft":21,"LocatorRight":400,"SongOffset":-3.5,"Cycle":true,"Unanchored":[{"Lane":"Skin|soft-hitclap","Time":250}],"LaneOrder":["BeatmapFile|soft-hitclap2.wav","Skin|normal-hitnormal"],"CollapsedFamilies":["Soft:hitclap"],"HiddenLanes":["BeatmapFile|replacement.wav"],"LaneSlots":{"BeatmapFile|replacement.wav":"BeatmapFile|soft-hitclap2.wav"},"HsMode":{"Enabled":true},"TimeSignatures":[{"Bar":2,"Numerator":7,"Denominator":8}]}"#;
         fs::write(&legacy, contents).unwrap();
         let mut project = Project::load(&project_root, Some(&legacy_root), map).unwrap();
         assert_eq!(project.settings.song_offset, -3.5);
@@ -390,6 +504,7 @@ mod tests {
         let layout = project.settings.lane_layout.as_ref().unwrap();
         assert_eq!(layout.folder_order, ["soft", "normal", "drum"]);
         assert!(layout.collapsed_families.contains("soft-hitclap"));
+        assert_eq!(project.settings.hidden_lanes.as_ref().unwrap(), &BTreeSet::from(["BeatmapFile|replacement.wav".to_owned()]));
         assert_eq!(
             project
                 .settings
@@ -415,6 +530,37 @@ mod tests {
                 .settings,
             settings
         );
+    }
+
+    #[test]
+    fn legacy_hs_ownership_requires_the_exact_digest_and_valid_circle_ordinals() {
+        use dawsu_osu_format::OsuFile;
+        let bytes = b"osu file format v14\n[HitObjects]\n256,192,1000,1,8,0:0:0:0:\n256,192,1000,1,0,0:0:0:67:voice.wav\n128,192,2000,1,0,0:0:0:0:\n";
+        let file = OsuFile::read(bytes.to_vec()).file;
+        let legacy: LegacyHsMode = serde_json::from_value(serde_json::json!({
+            "Enabled": true, "FileHash": sha256_hex(bytes).to_uppercase(),
+            "Moments": [
+                {"ObjectIndex":0,"Node":0,"Owned":false},
+                {"ObjectIndex":1,"Node":0,"Owned":true},
+                {"ObjectIndex":2,"Node":1,"Owned":true},
+                {"ObjectIndex":-1,"Node":0,"Owned":true}
+            ]
+        })).unwrap();
+        let ownership = legacy.ownership().unwrap();
+        let objects = file.hit_objects();
+        assert_eq!(ownership.verified_lines(&file), BTreeSet::from([objects[1].line()]));
+        let mut mismatch = bytes.to_vec();
+        mismatch.extend_from_slice(b"// same objects, different exact bytes\n");
+        let changed = OsuFile::read(mismatch).file;
+        assert!(ownership.verified_lines(&changed).is_empty());
+
+        for ordinal in [2, 3] {
+            let invalid = HsCircleOwnership {
+                map_digest: sha256_hex(bytes),
+                object_ordinals: vec![1, ordinal],
+            };
+            assert!(invalid.verified_lines(&file).is_empty());
+        }
     }
 
     #[test]
@@ -459,5 +605,23 @@ mod tests {
                 .song_offset,
             15.0
         );
+    }
+}
+
+#[cfg(test)]
+mod lane_layout_tests {
+    use super::LaneLayout;
+    use serde_json::json;
+
+    #[test]
+    fn lane_names_and_order_survive_layout_round_trip() {
+        let mut layout: LaneLayout = serde_json::from_value(json!({
+            "lane_names": {"Skin|normal-hitclap": "  Snare  ", "not a lane": "Invalid"},
+            "lane_order": ["Skin|normal-hitclap", "Skin|normal-hitnormal", "Skin|normal-hitclap", "bad"]
+        })).unwrap();
+        layout.normalise();
+        let result = serde_json::to_value(layout).unwrap();
+        assert_eq!(result["lane_names"], json!({"Skin|normal-hitclap": "Snare"}));
+        assert_eq!(result["lane_order"], json!(["Skin|normal-hitclap", "Skin|normal-hitnormal"]));
     }
 }

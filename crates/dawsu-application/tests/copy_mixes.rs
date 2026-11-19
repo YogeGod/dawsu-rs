@@ -19,6 +19,44 @@ fn write_tone(path: &Path, value: i16) -> Vec<u8> {
 }
 
 #[test]
+fn timed_copy_reviews_tick_and_slide_samples_and_reapplies_without_duplicates() {
+    let scratch = Scratch::new("copy-timed-samples");
+    let source_path = scratch.path("source.osu");
+    let target = scratch.path("target.osu");
+    let bytes = format!("{HEADER}256,192,1503,1,0,0:0:0:80:one.wav\n256,192,1750,1,0,0:0:0:80:one.wav\n");
+    fs::write(&source_path, &bytes).unwrap();
+    let slider = "256,192,1000,2,0,L|536:192,1,280,0|0,0:0|0:0,0:0:0:0:";
+    let original = format!("{HEADER}{slider}\n[Events]\n// preserve this line\n");
+    fs::write(&target, &original).unwrap();
+    let tone = write_tone(&scratch.path("one.wav"), 8192);
+    let source = output::Source::from_document(&Document::read(&source_path).unwrap());
+    let options = CopyOptions {
+        mode: CopyMode::OverwriteOnlyDefined, copy_to_slider_ticks: true,
+        copy_to_slider_slides: true, ..CopyOptions::default()
+    };
+    let review = || output::copy(&source, std::slice::from_ref(&target), &options, &|| false).unwrap();
+    let plan = review();
+    let paths: Vec<_> = plan.mix_paths().collect();
+    assert_eq!(paths.len(), 1);
+    assert!(!paths[0].exists());
+    assert_eq!(fs::read_to_string(&target).unwrap(), original);
+    assert!(plan.details.iter().any(|detail| detail.contains("1500") && detail.contains("tick")));
+    assert!(plan.details.iter().any(|detail| detail.contains("1750") && detail.contains("slide")));
+    plan.apply(&scratch.path("backups"), &|| false).unwrap();
+    let written = fs::read_to_string(&target).unwrap();
+    assert!(written.contains(slider) && written.contains("// preserve this line"));
+    let events = Document::read(&target).unwrap().file.storyboard_samples();
+    assert_eq!(events.iter().map(|event| event.time).collect::<Vec<_>>(), [1500.0, 1750.0]);
+    assert_eq!(events[0].path, events[1].path);
+    let clip = dawsu_audio::decode(paths[0]).unwrap();
+    assert!((clip.samples[0] * events[0].volume as f32 / 100.0 - 0.2).abs() < 0.0001);
+    review().apply(&scratch.path("backups"), &|| false).unwrap();
+    assert_eq!(fs::read_to_string(&target).unwrap(), written);
+    assert_eq!(fs::read_to_string(source_path).unwrap(), bytes);
+    assert_eq!(fs::read(scratch.path("one.wav")).unwrap(), tone);
+}
+
+#[test]
 fn mixed_copy_reviews_without_writes_and_rolls_back_unfinished_targets() {
     let scratch = Scratch::new("mixed-copy-review");
     let mapset = scratch.path("mapset");
@@ -113,7 +151,11 @@ fn indexed_slider_tail_copy_checks_sibling_reservations_and_plans_unique_files()
         fs::write(target, &original).unwrap();
     }
     let source = output::Source::from_document(&Document::read(&source_path).unwrap());
-    let opts = CopyOptions { mode: CopyMode::OverwriteOnlyDefined, ..CopyOptions::default() };
+    let default = CopyOptions { mode: CopyMode::OverwriteOnlyDefined, ..CopyOptions::default() };
+    let default_plan = output::copy(&source, &targets, &default, &|| false).unwrap();
+    assert_eq!(default.start_index, 100);
+    assert_eq!(default_plan.mix_paths().next().unwrap().file_name().unwrap(), "normal-hitnormal100.wav");
+    let opts = CopyOptions { start_index: 2, ..default };
     let plan = output::copy(&source, &targets, &opts, &|| false).unwrap();
     let paths = plan.mix_paths().collect::<Vec<_>>();
     assert_eq!(paths.iter().map(|path| path.file_name().unwrap()).collect::<Vec<_>>(),
@@ -143,4 +185,77 @@ fn indexed_slider_tail_copy_checks_sibling_reservations_and_plans_unique_files()
     }
     assert_eq!(fs::read_to_string(&source_path).unwrap(), source_bytes);
     assert_eq!(fs::read_to_string(&sibling).unwrap(), reservation);
+}
+
+
+#[test]
+fn copy_can_keep_original_hitnormals_for_silent_samples_and_piles() {
+    let scratch = Scratch::new("copy-silent-normal");
+    let source_path = scratch.path("source.osu");
+    let target_path = scratch.path("target.osu");
+    let source_header = HEADER.replace("0,500,4,1,0", "0,500,4,1,4");
+    let source_map = format!(
+        "{source_header}256,192,1000,1,0,1:0:0:33:blank.wav\n\
+         256,192,1500,1,0,1:0:0:40:blank.wav\n\
+         300,192,1500,1,0,1:0:0:80:other-blank.wav\n\
+         256,192,3000,1,0,1:0:0:50:unreadable.wav\n\
+         256,192,4000,1,0,1:0:0:40:blank.wav\n\
+         300,192,4000,1,0,1:0:0:80:tone.wav\n"
+    );
+    fs::write(&source_path, &source_map).unwrap();
+    let protected = [
+        "256,192,1000,1,8,1:1:0:63:",
+        "256,192,1500,1,8,1:1:0:72:",
+        "256,192,2500,1,8,1:1:0:81:",
+    ];
+    let target_map = format!(
+        "{HEADER}{}\n256,192,3000,1,8,1:1:0:61:\n256,192,4000,1,8,1:1:0:61:\n",
+        protected.join("\n"),
+    );
+    fs::write(&target_path, &target_map).unwrap();
+    for name in ["blank.wav", "other-blank.wav", "normal-hitnormal4.wav"] {
+        write_tone(&scratch.path(name), 0);
+    }
+    let tone = write_tone(&scratch.path("tone.wav"), 16384);
+    fs::write(scratch.path("unreadable.wav"), b"invalid audio").unwrap();
+    let source = output::Source::from_document(&Document::read(&source_path).unwrap());
+    let targets = [target_path.clone()];
+    let default = output::copy(&source, &targets, &CopyOptions::default(), &|| false).unwrap();
+    assert_eq!(default.mix_paths().count(), 2);
+    let protected_options = CopyOptions { never_silent_hitnormals: true, ..CopyOptions::default() };
+    let plan = output::copy(&source, &targets, &protected_options, &|| false).unwrap();
+    assert!(plan.details.iter().any(|detail| detail.contains("3 hit points kept their own sound")));
+    let [mix] = plan.mix_paths().collect::<Vec<_>>()[..] else {
+        panic!("only the partially audible pile should still be mixed");
+    };
+    assert!(!mix.exists());
+    assert_eq!(fs::read_to_string(&target_path).unwrap(), target_map);
+    plan.apply(&scratch.path("backups"), &|| false).unwrap();
+    let written = fs::read_to_string(&target_path).unwrap();
+    for line in protected {
+        assert!(written.lines().any(|candidate| candidate == line), "{line}");
+    }
+    assert!(written.contains("unreadable.wav"));
+    assert_eq!(dawsu_audio::decode(mix).unwrap().samples, [13_107.0 / 32_768.0; 4]);
+    assert_eq!(fs::read_to_string(&source_path).unwrap(), source_map);
+    assert_eq!(fs::read(scratch.path("tone.wav")).unwrap(), tone);
+}
+#[test]
+fn copy_review_names_the_winner_and_every_replaced_source_without_writing() {
+    let scratch = Scratch::new("copy-collision-review");
+    let source_path = scratch.path("Easy.osu");
+    let target = scratch.path("Hard.osu");
+    let source_bytes = format!("{HEADER}256,192,1998,1,4,0:0:0:60:\n256,192,1999,1,8,0:0:0:60:\n256,192,2002,1,2,0:0:0:60:\n");
+    let original = format!("{HEADER}100,100,2000,1,0,0:0:0:60:\n");
+    fs::write(&source_path, &source_bytes).unwrap();
+    fs::write(&target, &original).unwrap();
+    let source = output::Source::from_document(&Document::read(&source_path).unwrap());
+    let plan = output::copy(&source, std::slice::from_ref(&target), &CopyOptions::default(), &|| false).unwrap();
+
+    assert!(plan.details.iter().any(|detail| detail ==
+        "Hard.osu · 2000 ms: source at 2002 ms won; replaced 1998 ms, 1999 ms."), "{:?}", plan.details);
+    assert_eq!(fs::read_to_string(&target).unwrap(), original);
+    assert_eq!(fs::read_to_string(&source_path).unwrap(), source_bytes);
+    assert!(plan.mix_paths().next().is_none());
+    assert!(plan.files[0].file.hit_objects()[0].hitsound() & 2 != 0, "the winning whistle reaches the target");
 }

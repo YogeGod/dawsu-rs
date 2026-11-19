@@ -9,6 +9,7 @@ use crate::copy::set_moment;
 use crate::decompile::{decompile, Decompiled};
 use crate::lazer::control_points::offset_for;
 use crate::model::{Hitsounds, MomentId, ObjectId, Place};
+use crate::rules::saved_volume;
 use dawsu_foundation::SampleIdentity;
 use dawsu_osu_format::OsuFile;
 use std::collections::{BTreeMap, BTreeSet};
@@ -32,7 +33,7 @@ pub fn compile_hs(file: &OsuFile, hitsounds: &Hitsounds, placement: Placement, c
     let offset = offset_for(file.format_version());
     let mut groups: BTreeMap<i64, Vec<(SampleIdentity, i32)>> = BTreeMap::new();
     for m in hitsounds.moments().iter().filter(|m| m.place() == Place::NoObject && m.hits().next().is_some()) {
-        groups.entry((m.time().ms() - offset).round_ties_even() as i64).or_default().extend(m.hits().map(|h| (h.clone(), m.volume())));
+        groups.entry((m.time().ms() - offset).round_ties_even() as i64).or_default().extend(m.hits().map(|h| (h.clone(), m.hit_volume(h))));
     }
     if groups.is_empty() {
         return match compile(file, hitsounds, placement, cancel, progress) {
@@ -57,18 +58,28 @@ pub fn compile_hs(file: &OsuFile, hitsounds: &Hitsounds, placement: Placement, c
 
     // Line ids are stable, so a place names the same object and node in the copy.
     let at: BTreeMap<String, MomentId> = target.moments().iter().enumerate().map(|(i, m)| (format!("{:?}", m.place()), MomentId(i))).collect();
+    for b in hitsounds.bodies().iter().filter(|b| b.is_changed()) {
+        if let Some(i) = target.bodies().iter().position(|t| t.object() == b.object()) {
+            if b.whistle_changed() {
+                target.set_body_whistle(i, b.whistle());
+            }
+            if b.set_changed() && let Some(set) = b.set() {
+                target.set_body_set(i, set);
+            }
+            if b.whistle_set_changed() {
+                target.set_body_whistle_set(i, b.whistle_set);
+            }
+            if b.volume_changed() {
+                target.set_body_volume(i, b.volume());
+            }
+        }
+    }
     for m in hitsounds.moments().iter().filter(|m| m.is_changed() && m.place() != Place::NoObject) {
         if let Some(&id) = at.get(&format!("{:?}", m.place())) {
             set_moment(&mut target, id, &m.hits().cloned().collect::<Vec<_>>(), m.volume());
-        }
-    }
-    for b in hitsounds.bodies().iter().filter(|b| b.is_changed()) {
-        if let Some(i) = target.bodies().iter().position(|t| t.object() == b.object()) {
-            target.set_body_whistle(i, b.whistle());
-            if let Some(set) = b.set() {
-                target.set_body_set(i, set);
+            for lane in m.hits() {
+                target.set_hit_volume(id, lane, m.hit_volume(lane));
             }
-            target.set_body_volume(i, b.volume());
         }
     }
     let mut problems = Vec::new();
@@ -77,7 +88,7 @@ pub fn compile_hs(file: &OsuFile, hitsounds: &Hitsounds, placement: Placement, c
             return CompiledHs::Cancelled;
         }
         let Some(&id) = at.get(&format!("{:?}", Place::Circle(*circle))) else { continue };
-        let volumes: BTreeSet<i32> = layers.iter().map(|l| l.1).collect();
+        let volumes: BTreeSet<i32> = layers.iter().map(|l| saved_volume(l.1)).collect();
         let lanes: BTreeSet<SampleIdentity> = layers.iter().map(|l| l.0.clone()).collect();
         if volumes.len() > 1 || lanes.len() < layers.len() {
             let m = target.moment(id);

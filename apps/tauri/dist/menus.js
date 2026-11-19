@@ -1,6 +1,5 @@
 "use strict";
 
-const menuBar = $("editor-menus");
 const menuPopup = $("editor-menu");
 const menuNames = ["map", "edit", "view", "playback"];
 let editorMenu = null;
@@ -68,7 +67,22 @@ function menuChoices(label, glyph, choices, current, choose, enabled) {
   return group;
 }
 
-function menuItems(name) {
+function laneMenuRow(target) {
+  if (!canEditFromMenu() || scene.path !== target.map) return -1;
+  const row = scene.lanes.findIndex(lane => lane.sourceKey === target.key);
+  return lanePositions.has(row) ? row : -1;
+}
+
+function laneMenuAction(target, invokeAction) {
+  run(async () => {
+    const row = laneMenuRow(target);
+    if (row === -1) return;
+    await update({ kind: "lane", row, operation: "activate" }, false);
+    if (laneMenuRow(target) === view.activeLane) invokeAction(row);
+  });
+}
+
+function menuItems(name, target) {
   const click = (id) => () => $(id).click();
   const idle = () => !view.busy && !drag;
   const selection = () => canEditFromMenu() && !!scene.selection?.count;
@@ -78,15 +92,50 @@ function menuItems(name) {
   });
   const toggle = (label, glyph, kind, field) => menuItem(label, glyph, () =>
     act({ kind, on: !view[field] }, false), { checked: () => !!view[field] });
+  if (name === "lane") {
+    const allowed = predicate => () => {
+      const row = laneMenuRow(target);
+      return row !== -1 && predicate(scene.lanes[row], row);
+    };
+    const onLane = (label, glyph, action, predicate) =>
+      menuItem(label, glyph, () => laneMenuAction(target, action), { enabled: allowed(predicate) });
+    return [
+      menuItem("Rename…", null, () => renameLane(laneMenuRow(target)),
+        { enabled: allowed(lane => !!lane.colourKey && !view.drumView?.enabled) }),
+      menuItem("Move up", null, () => moveLane(laneMenuRow(target), -1),
+        { enabled: allowed((_, row) => adjacentLaneForMove(row, -1) !== null) }),
+      menuItem("Move down", null, () => moveLane(laneMenuRow(target), 1),
+        { enabled: allowed((_, row) => adjacentLaneForMove(row, 1) !== null) }),
+      onLane("Replace sample…", "FolderOpen", click("replace-sample"), lane => lane.canReplace),
+      onLane("Lane colour…", null, click("lane-colour"), lane => lane.colourKey),
+      onLane("Add numbered layer", "Drumstick", row => act({ kind: "lane", row, operation: "add_layer" }), lane => lane.canAddLayer),
+      menuItem("Add lane…", null, click("add-lane"), { enabled: allowed(() => true) }),
+      onLane("Delete lane…", "Eraser", click("delete-lane"), lane => lane.canDelete),
+    ];
+  }
+  if (name === "tool") {
+    return Object.entries(toolIcons).map(([tool, glyph]) =>
+      menuItem(tool, glyph, () => {
+        closeEditorMenu();
+        act({ kind: "tool", name: tool });
+      }, {
+        shortcut: "tool" + tool,
+        radio: true,
+        checked: () => view.tool === tool,
+      }));
+  }
   if (name === "map") {
     return [
       menuItem("Open map…", "FolderOpen", click("open"), { shortcut: "open", enabled: idle }),
       menuItem("Folders…", "FolderOpen", click("folders"), { enabled: idle }),
-      menuItem("Save", "Save", () => act({ kind: "review_save" }), { shortcut: "save" }),
+      menuCommand("Save", "Save", "save"),
       menuCommand("Revert…", "Undo2", "revert"),
-      menuItem("New hitsound difficulty…", "Drumstick", click("new")),
-      menuItem("Generate hitsound difficulty…", "TrendingUp", () => act({ kind: "generate" }), { shortcut: "generate" }),
+      menuItem("New hitsound difficulty…", "Drumstick", click("new"), { shortcut: "newDiff" }),
+      menuItem("Generate hitsound difficulty…", "TrendingUp", click("generate"), { shortcut: "generate" }),
       menuItem("Copy hitsounds…", "Redo2", click("copy")),
+      menuItem("Add lane…", "Drumstick", click("add-lane")),
+      menuItem("Delete active lane…", "Eraser", click("delete-lane"),
+        { enabled: () => canEditFromMenu() && !$("delete-lane").disabled }),
       menuChoices("Generate export style", "Scan", [["objects", "Per-object"]],
         () => "objects", () => {}, () => false),
     ];
@@ -120,11 +169,13 @@ function menuItems(name) {
       panel("Lane names", "Scan", "lane_names", "laneNames"),
       panel("File browser", "FolderOpen", "browser", "browser"),
       menuItem("Time signatures…", "Drumstick", click("time-signatures")),
+      menuItem("Open drum map…", "Drumstick", () => requestDrumMap()),
+      menuItem("Edit layout…", "Scan", () => dock?.editLayout()),
       menuItem("View settings…", "Scan", click("panel-view")),
       menuItem("Shortcuts and help", "MousePointer2", click("help"), { shortcut: "help", enabled: idle }),
     ];
   }
-  const speeds = [...$("speed").options].map(option => [Number(option.value), option.textContent]);
+  const speeds = speedButtons.map(button => [Number(button.dataset.playbackSpeed), button.textContent]);
   return [
     menuItem("Play or pause", "Play", () => act({ kind: "play" }), { shortcut: "play" }),
     menuItem("Stop", "Square", () => act({ kind: "stop" }), { shortcut: "stop" }),
@@ -159,19 +210,30 @@ function refreshEditorMenu() {
   }
 }
 
-function openEditorMenu(name, last = false) {
+function openEditorMenu(name, last = false, point = null) {
   closeEditorMenu(false);
-  const trigger = $("menu-" + name);
+  const trigger = point?.trigger ?? $("menu-" + name);
   const menu = { name, trigger, items: [] };
   editorMenu = menu;
-  menuPopup.replaceChildren(...menuItems(name));
-  menuPopup.setAttribute("aria-labelledby", trigger.id);
+  menuPopup.replaceChildren(...menuItems(name, point?.target));
+  if (point) {
+    menuPopup.removeAttribute("aria-labelledby");
+    menuPopup.setAttribute("aria-label", point.label);
+  } else {
+    menuPopup.removeAttribute("aria-label");
+    menuPopup.setAttribute("aria-labelledby", trigger.id);
+  }
   menuPopup.hidden = false;
   trigger.setAttribute("aria-expanded", "true");
   const bounds = trigger.getBoundingClientRect();
-  menuPopup.style.left = Math.max(4, Math.min(bounds.left, window.innerWidth - menuPopup.offsetWidth - 4)) + "px";
-  menuPopup.style.top = bounds.bottom + "px";
-  menuPopup.style.maxHeight = Math.max(0, window.innerHeight - bounds.bottom - 4) + "px";
+  const left = point?.x ?? bounds.left;
+  const availableHeight = window.innerHeight - 4;
+  menuPopup.style.maxHeight = Math.max(0, availableHeight - (point ? 4 : bounds.bottom)) + "px";
+  const top = point
+    ? Math.max(4, Math.min(point.y, availableHeight - menuPopup.offsetHeight))
+    : bounds.bottom;
+  menuPopup.style.left = Math.max(4, Math.min(left, window.innerWidth - menuPopup.offsetWidth - 4)) + "px";
+  menuPopup.style.top = top + "px";
   refreshEditorMenu();
   const items = menu.items.filter(item => !item.button.disabled);
   (last ? items.at(-1) : items[0])?.button.focus();
@@ -186,6 +248,38 @@ function openEditorMenu(name, last = false) {
     }
   }).catch(() => {});
 }
+
+$("grid").addEventListener("contextmenu", event => {
+  if (!scene) return;
+  event.preventDefault();
+  if (canEditFromMenu() && !dialog.open) {
+    openEditorMenu("tool", false, {
+      x: event.clientX, y: event.clientY, trigger: $("grid"), label: "Timeline tools",
+    });
+  }
+});
+
+function openLaneMenu(event, keyboard = false) {
+  const trigger = event.target.closest("[data-lane-row]");
+  if (!trigger || !canEditFromMenu() || dialog.open) return;
+  const row = Number(trigger.dataset.laneRow);
+  const lane = scene.lanes[row];
+  if (!lane?.sourceKey || !lanePositions.has(row)) return;
+  event.preventDefault();
+  const bounds = trigger.getBoundingClientRect();
+  openEditorMenu("lane", false, {
+    x: keyboard ? bounds.left : event.clientX,
+    y: keyboard ? bounds.bottom : event.clientY,
+    trigger, label: "Lane actions", target: { map: scene.path, key: lane.sourceKey },
+  });
+}
+
+$("lanes").addEventListener("contextmenu", event => openLaneMenu(event));
+$("lanes").addEventListener("keydown", event => {
+  if (event.key === "ContextMenu" || (event.key === "F10" && event.shiftKey)) {
+    openLaneMenu(event, true);
+  }
+});
 
 for (const name of menuNames) {
   const trigger = $("menu-" + name);
@@ -230,7 +324,7 @@ document.addEventListener("keydown", event => {
 }, true);
 
 document.addEventListener("pointerdown", event => {
-  if (editorMenu && !menuPopup.contains(event.target) && !menuBar.contains(event.target)) closeEditorMenu(false);
+  if (editorMenu && !menuPopup.contains(event.target) && !menuNames.some(name => $("menu-" + name).contains(event.target))) closeEditorMenu(false);
 }, true);
 window.addEventListener("resize", () => closeEditorMenu(false));
 window.refreshEditorMenu = refreshEditorMenu;

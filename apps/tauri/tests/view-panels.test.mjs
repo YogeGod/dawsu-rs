@@ -9,6 +9,7 @@ const style = await readFile(new URL("../dist/style.css", import.meta.url), "utf
 test("View switches hide panels and reclaim their timeline tracks, then restore them", async () => {
   const elements = new Map();
   const calls = [];
+  let openDocument = false;
   const enabled = { inspector: true, controller: true, laneNames: true };
   const panels = { ...enabled };
   function element(id) {
@@ -41,7 +42,7 @@ test("View switches hide panels and reclaim their timeline tracks, then restore 
           const key = args.action.panel === "lane_names" ? "laneNames" : args.action.panel;
           panels[key] = args.action.on;
         }
-        return { busy: false, hasDocument: false, panels: { ...panels } };
+        return { busy: false, hasDocument: openDocument, panels: { ...panels } };
       } },
       event: { listen() {} },
     } },
@@ -88,7 +89,40 @@ test("View switches hide panels and reclaim their timeline tracks, then restore 
   assert.deepEqual(element("lanes").children.map(row => row.children[0].textContent),
     ["soft-hitclap", "soft-hitclap2"]);
   assert.match(style, /\.dock\[data-inspector="false"\]\{grid-template-columns:minmax\(0,1fr\)\}/);
-  assert.match(style, /\.arrange\[data-controller="false"\]\{grid-template-rows:77px minmax\(0,1fr\) 28px\}/);
-  assert.match(style, /\.arrange\[data-lane-names="false"\]\{--lanes:99px\}/);
+  assert.match(style, /\.arrange\[data-controller="false"\]\{[^}]*grid-template-rows:var\(--layout-timeline-rows,minmax\(20px,max-content\) var\(--ruler-row\) minmax\(0,1fr\)\)\}/);
+  assert.match(style, /\.arrange\[data-lane-names="false"\]\{--lane-default-width:99px\}/);
+  assert.match(style, /--lanes:clamp\(99px,var\(--layout-lane-width,var\(--lane-default-width\)\),/);
   assert.deepEqual(panels, enabled);
+  openDocument = true;
+  runInContext('scene = { path: "Fixture.osu", lanes: [] }; renderSampleBrowser = () => {}; renderPanelLayout();', context);
+  const laneNamesToggle = element("toggle-lane-names");
+  assert.equal(laneNamesToggle.ariaExpanded, "true");
+  assert.equal(laneNamesToggle.ariaLabel, "Hide lane names");
+  laneNamesToggle.listeners.get("click")();
+  await runInContext("pending", context);
+  assert.equal(calls.at(-1).panel, "lane_names");
+  assert.equal(calls.at(-1).on, false);
+  assert.equal(element("editor-arrange").dataset.laneNames, "false");
+  assert.equal(laneNamesToggle.ariaExpanded, "false");
+  assert.equal(laneNamesToggle.ariaLabel, "Show lane names");
+  laneNamesToggle.listeners.get("click")();
+  await runInContext("pending", context);
+  assert.equal(calls.at(-1).on, true);
+  assert.equal(laneNamesToggle.ariaExpanded, "true");
+  for (const [id, panel, shown, track] of [
+    ["view-inspector", "inspector", true, "true"],
+    ["view-browser", "browser", false, "off"],
+  ]) {
+    const toggle = element(id);
+    assert.equal(toggle.ariaPressed, String(shown));
+    toggle.listeners.get("click")();
+    await runInContext("pending", context);
+    assert.equal(calls.at(-1).panel, panel);
+    assert.equal(calls.at(-1).on, !shown);
+    assert.equal(toggle.ariaPressed, String(!shown));
+    toggle.listeners.get("click")();
+    await runInContext("pending", context);
+    assert.equal(element("editor-dock").dataset[panel], track);
+    assert.equal(toggle.ariaPressed, String(shown));
+  }
 });

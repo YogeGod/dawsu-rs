@@ -1,4 +1,4 @@
-use super::{Action, PlaybackStart, snapshot};
+use super::{Action, PlaybackStart, lane_add_choices, snapshot};
 use dawsu_application::{Application, WaveBin};
 use std::fmt::Write as _;
 use std::fs;
@@ -35,6 +35,280 @@ fn wait_for_job(app: &mut Application) {
 fn open(app: &mut Application, path: &Path) {
     Action::Open { path: path.into() }.run(app);
     wait_for_job(app);
+}
+
+#[test]
+fn ruler_gestures_snap_and_move_locators_without_seeking_or_dirtying_the_map() {
+    let fixture = Fixture::new("ruler-locators");
+    let path = fixture.0.join("Hard.osu");
+    let map = b"osu file format v14\n\n[TimingPoints]\n0,500,4,1,0,100,1,0\n\n[HitObjects]\n256,192,2000,1,0,0:0:0:60:\n";
+    fs::write(&path, map).unwrap();
+    let mut app = Application::headless();
+    open(&mut app, &path);
+    app.seek(500.0);
+    let scene = snapshot(&app, true);
+    let map_path = &scene["scene"]["path"];
+    let drag = |app: &mut Application, path: &serde_json::Value, gesture, from, to| {
+        serde_json::from_value::<Action>(serde_json::json!({
+            "kind": "ruler_locators", "path": path, "gesture": gesture, "from": from, "to": to,
+        })).expect("Tauri must accept ruler locator gestures").run(app);
+    };
+    let range = |app: &Application| (app.locator_left, app.locator_right, app.cycle);
+    drag(&mut app, map_path, "left", 0.0, 1115.0);
+    drag(&mut app, map_path, "right", 0.0, 2390.0);
+    assert_eq!(range(&app), (1125.0, 2375.0, false));
+
+    drag(&mut app, map_path, "draw", 860.0, 385.0);
+    assert_eq!(range(&app), (375.0, 875.0, true));
+    drag(&mut app, map_path, "move", 620.0, 920.0);
+    assert_eq!(range(&app), (625.0, 1125.0, true));
+    drag(&mut app, map_path, "move", 1000.0, 0.0);
+    assert_eq!(range(&app), (0.0, 500.0, true));
+
+    drag(&mut app, &serde_json::json!("Stale.osu"), "right", 0.0, 1500.0);
+    assert_eq!(range(&app), (0.0, 500.0, true));
+    assert_eq!(app.position_ms(), 500.0);
+    assert!(!app.is_dirty());
+    assert_eq!(fs::read(&path).unwrap(), map);
+}
+
+#[test]
+fn select_double_click_seeks_to_an_existing_hit_and_inserts_once_on_empty_space() {
+    let fixture = Fixture::new("select-double-click");
+    let path = fixture.0.join("Hard.osu");
+    let map = b"osu file format v14\n\n[TimingPoints]\n0,500,4,1,0,100,1,0\n\n[HitObjects]\n256,192,1000,1,8,0:0:0:60:\n256,192,2000,1,0,0:0:0:80:\n";
+    fs::write(&path, map).unwrap();
+    let mut app = Application::headless();
+    open(&mut app, &path);
+    let scene = snapshot(&app, true);
+    let row = scene["scene"]["lanes"].as_array().unwrap().iter()
+        .position(|lane| lane["name"] == "normal-hitclap").unwrap() as i32;
+    let click = |app: &mut Application, ms, ctrl| {
+        Action::Pointer {
+            phase: "double_click".into(), ms, row, x: 12.0, y: 12.0, value: None,
+            shift: false, ctrl, alt: false,
+        }.run(app);
+    };
+
+    click(&mut app, 1004.0, false);
+    assert_eq!(app.position_ms(), 1000.0);
+    assert_eq!(snapshot(&app, true)["scene"]["selection"]["count"], 1);
+    assert!(!app.is_playing());
+    assert!(!app.is_dirty());
+    click(&mut app, 1370.0, true);
+    assert!(!app.is_dirty());
+    click(&mut app, 1030.0, false);
+    assert!(!app.is_dirty(), "an occupied snapped position needs no edit");
+
+    click(&mut app, 1370.0, false);
+    let scene = snapshot(&app, true);
+    assert_eq!(scene["scene"]["historyPosition"], 1);
+    assert!(scene["scene"]["moments"].as_array().unwrap().iter()
+        .any(|moment| moment[0] == 1375.0 && moment[3][0][0] == row));
+    Action::Command { id: "undo".into() }.run(&mut app);
+    assert!(!app.is_dirty());
+    assert_eq!(fs::read(&path).unwrap(), map);
+}
+
+#[test]
+fn waveform_object_click_selects_the_clicked_node_or_the_whole_slider() {
+    let fixture = Fixture::new("waveform-selection");
+    let path = fixture.0.join("Selection.osu");
+    let map = b"osu file format v14\n\n[Difficulty]\nSliderMultiplier:1.4\nSliderTickRate:1\n\n[TimingPoints]\n0,500,4,1,0,100,1,0\n\n[HitObjects]\n256,192,1000,1,8,0:0:0:60:\n256,192,1500,2,0,L|396:192,2,140\n";
+    fs::write(&path, map).unwrap();
+    let mut app = Application::headless();
+    open(&mut app, &path);
+    let scene = snapshot(&app, true)["scene"].clone();
+    let click = |app: &mut Application, path: &serde_json::Value, object, time, node, preview| {
+        serde_json::from_value::<Action>(serde_json::json!({
+            "kind":"waveform_object", "path":path, "object":object, "time":time, "node":node, "preview":preview
+        })).expect("Tauri waveform selection action").run(app);
+    };
+    let selected_times = |app: &Application| {
+        let c = &app.document().unwrap().composer;
+        let mut times: Vec<_> = c.selected.items().iter()
+            .map(|key| c.hitsounds().moments()[key.moment].time().ms()).collect();
+        times.sort_by(f64::total_cmp);
+        times.dedup();
+        times
+    };
+    click(&mut app, &scene["path"], 1, 2000.0, true, false);
+    assert_eq!(app.position_ms(), 2000.0);
+    assert_eq!(selected_times(&app), [2000.0]);
+    click(&mut app, &scene["path"], 1, 1500.0, false, true);
+    assert_eq!(app.position_ms(), 1500.0);
+    assert_eq!(selected_times(&app), [1500.0, 2000.0, 2500.0]);
+    click(&mut app, &serde_json::json!("Stale.osu"), 0, 1000.0, true, false);
+    assert_eq!(app.position_ms(), 1500.0);
+    assert!(!app.is_dirty());
+    assert_eq!(fs::read(&path).unwrap(), map);
+}
+
+#[test]
+fn gameplay_overlay_projects_objects_and_skips_unanchored_hits() {
+    let fixture = Fixture::new("gameplay-overlay");
+    let path = fixture.0.join("Hard.osu");
+    let bytes = b"osu file format v14\n\n[General]\nMode:0\n\n[Difficulty]\nSliderMultiplier:1.4\nSliderTickRate:1\n\n[TimingPoints]\n0,500,4,1,0,100,1,0\n\n[HitObjects]\n256,192,1000,1,0,0:0:0:0:\n256,192,1500,2,0,L|396:192,2,140\n256,192,3000,8,0,3800,0:0:0:0:\n";
+    fs::write(&path, bytes).unwrap();
+    let mut app = Application::headless();
+    open(&mut app, &path);
+    Action::Tool { name: "Draw".into() }.run(&mut app);
+    for phase in ["down", "up"] {
+        Action::Pointer {
+            phase: phase.into(), ms: 4250.0, row: 1, x: 4250.0, y: 12.0, value: None,
+            shift: false, ctrl: false, alt: false,
+        }.run(&mut app);
+    }
+    assert!(app.document().unwrap().composer.hitsounds().moments().iter().any(|moment|
+        moment.place() == dawsu_hitsounding::Place::NoObject && moment.hits().next().is_some()));
+    assert_eq!(snapshot(&app, true)["scene"]["gameplay"], serde_json::json!({
+        "points": [["circle", 1000.0, 0], ["slider", 1500.0, 1], ["slider", 2000.0, 1], ["slider", 2500.0, 1]],
+        "spans": [["slider", 1500.0, 2500.0, 1], ["spinner", 3000.0, 3800.0, 2]],
+    }));
+    assert_eq!(fs::read(path).unwrap(), bytes);
+}
+
+#[test]
+fn drum_view_uses_a_preset_without_changing_the_mapset_and_follows_sibling_difficulties() {
+    use dawsu_hitsounding::drums::{DrumMap, DrumRow, write_dawsudrum};
+
+    let fixture = Fixture::new("drum-view");
+    let path = fixture.0.join("Hard.osu");
+    let sibling = fixture.0.join("Expert.osu");
+    let other = fixture.0.join("other");
+    fs::create_dir(&other).unwrap();
+    let foreign = other.join("Hard.osu");
+    let bytes = b"osu file format v14\n\n[General]\nMode:0\n\n[TimingPoints]\n0,500,4,1,0,100,1,0\n\n[HitObjects]\n256,192,1000,1,8,0:0:0:0:\n";
+    for map in [&path, &sibling, &foreign] {
+        fs::write(map, bytes).unwrap();
+    }
+    let preset = fixture.0.join("Kit.dawsudrum");
+    let row = |id, name: &str, lane: Option<&str>| DrumRow {
+        id: format!("aaaaaaaa-0000-4000-8000-{id:012}"),
+        name: name.into(),
+        lane: lane.map(str::to_owned),
+        slot: None,
+        midi_note: None,
+    };
+    let kit = DrumMap {
+        id: "bbbbbbbb-0000-4000-8000-000000000001".into(),
+        name: "Kit".into(),
+        rows: vec![
+            row(1, "Snare", Some("Skin|normal-hitclap")),
+            row(2, "Ghost notes", None),
+            row(3, "Rim", Some("Skin|normal-hitclap")),
+        ],
+        audio: Vec::new(),
+    };
+    let preset_bytes = write_dawsudrum(&kit).unwrap();
+    fs::write(&preset, &preset_bytes).unwrap();
+
+    let mut app = Application::headless();
+    let mut drums = super::drum_view::DrumView::default();
+    open(&mut app, &path);
+    let expected = app.document().unwrap().path.clone();
+    let original = snapshot(&app, true);
+    assert!(drums.load(&app, &sibling, &preset).is_err());
+    drums.load(&app, &expected, &preset).unwrap();
+    let read = |drums: &super::drum_view::DrumView, app: &Application| {
+        let mut scene = snapshot(app, true);
+        drums.decorate(app, &mut scene);
+        scene
+    };
+    let shown = read(&drums, &app);
+    assert_eq!(shown["drumView"]["enabled"], true);
+    assert_eq!(shown["scene"]["lanes"], original["scene"]["lanes"]);
+    assert_eq!(shown["scene"]["moments"], original["scene"]["moments"]);
+    let rows = shown["scene"]["drumRows"].as_array().unwrap();
+    assert_eq!(rows[0]["name"], "Snare");
+    assert!(rows[1]["row"].is_null());
+    assert_eq!(rows[1]["name"], "Ghost notes");
+    assert_eq!(rows[2]["name"], "Rim");
+    assert_eq!(rows[0]["row"], rows[2]["row"]);
+    assert_ne!(rows[0]["row"], serde_json::Value::Null);
+    assert_eq!(rows.len(), original["scene"]["laneOrder"].as_array().unwrap().len() + 2);
+
+    drums.toggle(&app, &expected, false).unwrap();
+    assert!(read(&drums, &app)["scene"]["drumRows"].is_null());
+    drums.toggle(&app, &expected, true).unwrap();
+    open(&mut app, &sibling);
+    assert_eq!(read(&drums, &app)["drumView"]["name"], "Kit");
+    open(&mut app, &foreign);
+    assert!(read(&drums, &app)["drumView"].is_null());
+    open(&mut app, &path);
+    assert_eq!(read(&drums, &app)["drumView"]["enabled"], true);
+    assert!(!app.is_dirty());
+    assert_eq!(fs::read_to_string(preset).unwrap(), preset_bytes);
+    for map in [&path, &sibling, &foreign] {
+        assert_eq!(fs::read(map).unwrap(), bytes);
+    }
+}
+
+#[test]
+fn lane_actions_hide_restore_and_undo_without_removing_the_sample() {
+    let fixture = Fixture::new("lane-actions");
+    let map_path = fixture.0.join("Lane.osu");
+    let sample_path = fixture.0.join("normal-hitclap.wav");
+    let original = b"osu file format v14\n\n[General]\nMode:0\n\n[TimingPoints]\n0,500,4,1,1,100,1,0\n\n[HitObjects]\n256,192,1000,1,8,0:0:0:0:\n";
+    let wave = b"RIFF\x26\0\0\0WAVEfmt \x10\0\0\0\x01\0\x01\0\x80\xbb\0\0\0w\x01\0\x02\0\x10\0data\x02\0\0\0\x00\x40";
+    fs::write(&map_path, original).unwrap();
+    fs::write(&sample_path, wave).unwrap();
+    let mut app = Application::headless();
+    open(&mut app, &map_path);
+    let scene = |app: &Application| snapshot(app, true)["scene"].clone();
+    let before = scene(&app);
+    let row = before["lanes"].as_array().unwrap().iter()
+        .position(|lane| lane["sample"] == "normal-hitclap.wav").unwrap();
+    let key = &before["lanes"][row]["sourceKey"];
+    let target = serde_json::json!({"map": before["path"], "lane": key});
+    let visible = |scene: &serde_json::Value| scene["laneOrder"].as_array().unwrap().iter()
+        .any(|value| value.as_u64() == Some(row as u64));
+    assert!(visible(&before));
+    assert_eq!(before["lanes"][row]["hitCount"], 1);
+    let revision = before["laneRevision"].as_u64().unwrap();
+    let remove = |app: &mut Application, revision| {
+        serde_json::from_value::<Action>(serde_json::json!({
+            "kind": "delete_lane", "target": target, "revision": revision,
+        })).unwrap().run(app);
+    };
+    remove(&mut app, revision + 1);
+    assert!(app.error.take().is_some());
+    assert!(visible(&scene(&app)));
+    remove(&mut app, revision);
+    assert!(app.error.is_none(), "{:?}", app.error);
+    let after = scene(&app);
+    assert!(!visible(&after));
+    assert_eq!(after["lanes"][row]["hitCount"], 0);
+    let map = app.document().unwrap().path.clone();
+    assert!(lane_add_choices(&app, &map).unwrap().as_array().unwrap().iter().any(|lane| lane["key"] == *key));
+
+    Action::Command { id: "undo".into() }.run(&mut app);
+    let undone = scene(&app);
+    assert!(visible(&undone));
+    assert_eq!(undone["lanes"][row]["hitCount"], 1);
+    Action::Command { id: "redo".into() }.run(&mut app);
+    serde_json::from_value::<Action>(serde_json::json!({
+        "kind": "show_lane", "target": target,
+    })).unwrap().run(&mut app);
+    assert!(app.error.is_none(), "{:?}", app.error);
+    let restored = scene(&app);
+    assert!(visible(&restored));
+    assert_eq!(restored["lanes"][row]["hitCount"], 0);
+    let fresh_path = fixture.0.join("fresh.wav");
+    fs::write(&fresh_path, wave).unwrap();
+    let choices = lane_add_choices(&app, &map).unwrap();
+    let fresh = choices.as_array().unwrap().iter().find(|lane| lane["name"] == "fresh.wav").unwrap();
+    serde_json::from_value::<Action>(serde_json::json!({
+        "kind": "show_lane", "target": {"map": map, "lane": fresh["key"]},
+    })).unwrap().run(&mut app);
+    assert!(app.error.is_none(), "{:?}", app.error);
+    let state = scene(&app);
+    assert!(state["laneOrder"].as_array().unwrap().iter().any(|index| {
+        state["lanes"][index.as_u64().unwrap() as usize]["sourceKey"] == fresh["key"]
+    }));
+    assert_eq!(fs::read(&fresh_path).unwrap(), wave);
+    assert_eq!(fs::read(&sample_path).unwrap(), wave);
+    assert_eq!(fs::read(&map_path).unwrap(), original);
 }
 
 #[test]
@@ -269,6 +543,111 @@ fn volume_scene_contains_one_shared_level_per_circle_and_slider_node() {
 }
 
 #[test]
+fn ctrl_drag_spreads_and_squeezes_volumes_with_different_effective_gains() {
+    let root = Fixture::new("volume-spread");
+    let path = root.0.join("Controller.osu");
+    let map = "osu file format v14\n\n[TimingPoints]\n0,500,4,1,0,100,1,0\n\n[HitObjects]\n256,192,1000,1,8,0:0:0:60:\n256,192,1500,1,8,0:0:0:80:\n";
+    fs::write(&path, map).unwrap();
+    let mut app = Application::headless();
+    open(&mut app, &path);
+    let scene = snapshot(&app, true)["scene"].clone();
+    let clap = scene["lanes"].as_array().unwrap().iter().position(|lane| lane["name"] == "normal-hitclap").unwrap();
+    let normal = scene["lanes"].as_array().unwrap().iter().position(|lane| lane["name"] == "normal-hitnormal").unwrap();
+    for phase in ["down", "up"] {
+        Action::Pointer {
+            phase: phase.into(), ms: 1000.0, row: clap as i32, x: 120.0, y: 12.0,
+            value: None, shift: false, ctrl: false, alt: false,
+        }.run(&mut app);
+    }
+    let set_scope = |app: &mut Application, lanes: serde_json::Value| {
+        serde_json::from_value::<Action>(serde_json::json!({
+            "kind":"volume_scope", "path":scene["path"], "lanes":lanes,
+        })).unwrap().run(app);
+    };
+    set_scope(&mut app, serde_json::json!([scene["lanes"][clap]["key"]]));
+    Action::Volume { value: 40, relative: false }.run(&mut app);
+    set_scope(&mut app, serde_json::Value::Null);
+    Action::Command { id: "selectAll".into() }.run(&mut app);
+    let levels = |app: &Application| {
+        let c = &app.document().unwrap().composer;
+        c.hitsounds().moments().iter().map(|m| {
+            [m.hit_volume(&c.lanes[normal]), m.hit_volume(&c.lanes[clap])]
+        }).collect::<Vec<_>>()
+    };
+    let drag = |app: &mut Application, phase: &str, y: f64| {
+        Action::Pointer {
+            phase: phase.into(), ms: 1000.0, row: 0, x: 120.0, y,
+            value: Some(100.0-y), shift: false, ctrl: true, alt: false,
+        }.run(app);
+    };
+    let originals = [[60,40],[80,80]];
+    assert_eq!(levels(&app), originals);
+    drag(&mut app, "down", 60.0);
+    assert_eq!(levels(&app), originals);
+    drag(&mut app, "move", 30.0);
+    assert_eq!(levels(&app), [[58,28],[88,88]]);
+    drag(&mut app, "up", 60.0);
+    assert_eq!(levels(&app), originals);
+    assert_eq!(snapshot(&app, true)["scene"]["historyPosition"], 1);
+
+    drag(&mut app, "down", 30.0);
+    drag(&mut app, "move", 90.0);
+    assert_eq!(levels(&app), [[65,65],[65,65]]);
+    drag(&mut app, "cancel", 90.0);
+    assert_eq!(levels(&app), originals);
+
+    drag(&mut app, "down", 30.0);
+    drag(&mut app, "up", 90.0);
+    assert_eq!(levels(&app), [[65,65],[65,65]]);
+    assert_eq!(snapshot(&app, true)["scene"]["historyPosition"], 2);
+    Action::Command { id: "undo".into() }.run(&mut app);
+    assert_eq!(levels(&app), originals);
+    assert_eq!(fs::read_to_string(&path).unwrap(), map);
+}
+
+#[test]
+fn protect_normals_keeps_noop_deletes_clean_and_still_removes_additions() {
+    let fixture = Fixture::new("protect-normals");
+    let path = fixture.0.join("Protection.osu");
+    let map = b"osu file format v14\n\n[TimingPoints]\n0,500,4,1,0,100,1,0\n\n[HitObjects]\n256,192,1000,1,8,0:0:0:60:\n256,192,1500,1,0,0:0:0:80:\n";
+    fs::write(&path, map).unwrap();
+    let mut app = Application::headless();
+    open(&mut app, &path);
+    Action::Protect { on:true }.run(&mut app);
+    let scene = snapshot(&app, true)["scene"].clone();
+    let row = scene["lanes"].as_array().unwrap().iter()
+        .position(|lane| lane["name"] == "normal-hitnormal").unwrap() as i32;
+    let click = |app: &mut Application| {
+        for phase in ["down","up"] {
+            Action::Pointer {
+                phase:phase.into(), ms:1000.0, row, x:120.0, y:12.0, value:None,
+                shift:false, ctrl:false, alt:false,
+            }.run(app);
+        }
+    };
+    let command = |app: &mut Application, id: &str| Action::Command { id:id.into() }.run(app);
+    click(&mut app);
+    command(&mut app,"delete");
+    assert!(!app.is_dirty());
+    assert_eq!(snapshot(&app,true)["scene"]["selection"]["count"],1);
+    for tool in ["Erase","Draw"] {
+        Action::Tool {name:tool.into()}.run(&mut app);
+        click(&mut app);
+        assert!(!app.is_dirty(), "{tool} on a protected hit");
+        assert_eq!(snapshot(&app,true)["scene"]["historyPosition"],0);
+    }
+    command(&mut app,"selectAll");
+    command(&mut app,"delete");
+    let after = snapshot(&app,true);
+    assert_eq!(after["scene"]["selection"]["count"],2);
+    assert_eq!(after["scene"]["historyPosition"],1);
+    assert!(after["scene"]["moments"].as_array().unwrap().iter().all(|m| m[3][0][0] == row && m[3].as_array().unwrap().len() == 1));
+    command(&mut app,"undo");
+    assert!(!app.is_dirty());
+    assert_eq!(fs::read(&path).unwrap(),map);
+}
+
+#[test]
 fn controller_drags_paint_shared_moments_and_undo_as_one_gesture() {
     let root = Fixture::new("volume-drags");
     let path = root.0.join("Controller.osu");
@@ -322,6 +701,61 @@ fn controller_drags_paint_shared_moments_and_undo_as_one_gesture() {
 }
 
 #[test]
+fn selection_volume_scope_applies_to_the_chosen_lane_and_shortcut() {
+    use serde_json::{Value, json};
+
+    let root = Fixture::new("selection-volume-scope");
+    let path = root.0.join("Scope.osu");
+    let map = "osu file format v14\n\n[General]\nMode:0\n\n[TimingPoints]\n0,500,4,1,0,100,1,0\n\n[HitObjects]\n256,192,1000,1,8,0:0:0:60:\n";
+    fs::write(&path, map).unwrap();
+    let mut app = Application::headless();
+    open(&mut app, &path);
+    let scene = snapshot(&app, true)["scene"].clone();
+    let lanes = scene["lanes"].as_array().unwrap();
+    let row = |sound: &str| lanes.iter().position(|lane| {
+        lane["name"].as_str().unwrap().to_lowercase().contains(sound)
+    }).unwrap();
+    let normal = row("hitnormal");
+    let clap = row("clap");
+    for phase in ["down", "up"] {
+        Action::Pointer {
+            phase: phase.into(), ms: 1000.0, row: normal as i32, x: 0.0, y: 0.0,
+            value: None, shift: false, ctrl: false, alt: false,
+        }.run(&mut app);
+    }
+    let apply_scope = |app: &mut Application, path: &Value, lanes: Value| {
+        let action: Action = serde_json::from_value(json!({
+            "kind": "volume_scope", "path": path, "lanes": lanes,
+        })).unwrap();
+        action.run(app);
+    };
+    apply_scope(&mut app, &scene["path"], json!([lanes[clap]["key"]]));
+    Action::Volume { value: 35, relative: false }.run(&mut app);
+    let levels = |app: &Application, normal_volume, clap_volume| {
+        let scene = snapshot(app, true)["scene"].clone();
+        let moment = &scene["moments"][0];
+        assert_eq!(moment[1], normal_volume);
+        let hits = moment[3].as_array().unwrap();
+        assert_eq!(hits.iter().find(|hit| hit[0] == normal).unwrap(), &json!([normal, true]));
+        assert_eq!(hits.iter().find(|hit| hit[0] == clap).unwrap(), &json!([clap, false, false, clap_volume]));
+        assert_eq!(scene["selection"]["count"], 1);
+    };
+    levels(&app, 60, 35);
+
+    Action::Key {
+        key: "ArrowUp".into(), code: "ArrowUp".into(), ctrl: false, shift: false, alt: true, lane_view: None,
+    }.run(&mut app);
+    levels(&app, 60, 40);
+
+    apply_scope(&mut app, &json!("Stale.osu"), Value::Null);
+    assert!(app.error.is_some());
+    apply_scope(&mut app, &scene["path"], json!([]));
+    Action::Volume { value: 90, relative: false }.run(&mut app);
+    levels(&app, 60, 40);
+    assert_eq!(fs::read_to_string(&path).unwrap(), map);
+}
+
+#[test]
 fn ramp_shape_action_applies_curves_through_the_volume_controller() {
     let root = Fixture::new("ramp-shapes");
     let path = root.0.join("Ramp.osu");
@@ -371,6 +805,38 @@ fn ramp_shape_action_applies_curves_through_the_volume_controller() {
         Action::Command { id: "undo".into() }.run(&mut app);
     }
     assert_eq!(fs::read_to_string(&path).unwrap(), map);
+}
+
+#[test]
+fn legacy_transport_keys_share_the_toolbar_behaviour_and_playback_start() {
+    let fixture = Fixture::new("transport-shortcuts");
+    let path = fixture.0.join("Hard.osu");
+    let bytes = b"osu file format v14\n\n[TimingPoints]\n0,500,4,1,0,100,1,0\n\n[HitObjects]\n256,192,1000,1,0,0:0:0:0:\n";
+    fs::write(&path, bytes).unwrap();
+    let mut app = Application::headless();
+    open(&mut app, &path);
+    let press = |app: &mut Application, key: &str, code: &str, mode: &mut PlaybackStart| {
+        Action::Key {
+            key: key.into(), code: code.into(), ctrl: false, shift: false, alt: false, lane_view: None,
+        }.run_with_start(app, mode);
+    };
+    let mut mode = PlaybackStart::Left;
+    for preset in ["DAW", "osu!"] {
+        app.choose_key_preset(preset);
+        for (key, code) in [("Insert", "Numpad0"), ("Home", "Home")] {
+            app.seek(1200.0);
+            press(&mut app, key, code, &mut mode);
+            assert_eq!(app.position_ms(), 0.0, "{preset}: {code}");
+        }
+    }
+    app.locator_left = 750.0;
+    for (key, code) in [("x", "KeyX"), ("c", "KeyC"), (" ", "Space")] {
+        app.seek(100.0);
+        press(&mut app, key, code, &mut mode);
+        assert_eq!(app.position_ms(), 750.0, "{code}");
+    }
+    assert!(!app.is_dirty());
+    assert_eq!(fs::read(path).unwrap(), bytes);
 }
 
 #[test]
@@ -431,6 +897,7 @@ fn dense_scene_and_dirty_switch_use_the_real_editor_state() {
         ctrl: false,
         shift: false,
         alt: false,
+        lane_view: None,
     }
     .run_with_start(&mut app, &mut start_mode);
     assert_eq!(app.position_ms(), 1000.0);
@@ -449,6 +916,7 @@ fn dense_scene_and_dirty_switch_use_the_real_editor_state() {
             ctrl,
             shift,
             alt: false,
+            lane_view: None,
         }
         .run(app);
     };
@@ -464,10 +932,15 @@ fn dense_scene_and_dirty_switch_use_the_real_editor_state() {
     send_key(&mut app, "2", "Numpad2", false, false);
     assert_eq!(app.position_ms(), 1200.0);
     app.choose_key_preset("osu!");
+    assert_eq!(snapshot(&app, false)["keyPreset"], "osu!");
     send_key(&mut app, "ArrowRight", "ArrowRight", false, true);
     assert_eq!(app.position_ms(), 3000.0);
     send_key(&mut app, "ArrowLeft", "ArrowLeft", false, true);
     assert_eq!(app.position_ms(), 1000.0);
+    Action::Command { id: "seekForward".into() }.run(&mut app);
+    assert_eq!(app.position_ms(), 1500.0);
+    Action::Command { id: "seekForwardFar".into() }.run(&mut app);
+    assert_eq!(app.position_ms(), 3500.0);
 
     let clap = full["scene"]["lanes"]
         .as_array()
@@ -543,6 +1016,45 @@ fn dense_scene_and_dirty_switch_use_the_real_editor_state() {
     open(&mut app, &expert);
     assert!(app.document().unwrap().title.contains("Expert"));
     assert_eq!(fs::read_to_string(&hard).unwrap(), map);
+}
+
+#[test]
+fn selected_lane_mix_follows_the_clicked_lane_and_rejects_stale_targets() {
+    let root = Fixture::new("selected-lane-mix");
+    let map = root.0.join("Hard.osu");
+    let original = b"osu file format v14\n\n[General]\nMode:0\n\n[HitObjects]\n256,192,1000,1,0,0:0:0:0:\n";
+    fs::write(&map, original).unwrap();
+    let mut app = Application::headless();
+    open(&mut app, &map);
+    let map = app.document().unwrap().path.clone();
+    let lanes = app.document().unwrap().composer.lanes.clone();
+    let [first, second, other] = [&lanes[0], &lanes[1], &lanes[2]];
+    let click = |app: &mut Application, path: &Path, lane: &str, operation: &str, selected: &[String]| {
+        let action: Action = serde_json::from_value(serde_json::json!({
+            "kind": "lane_selection_mix", "target": {"map": path, "lane": lane},
+            "operation": operation, "lanes": selected,
+        })).unwrap();
+        action.run(app);
+    };
+    let key = format!("{first:?}");
+    let selected = vec![format!("{first:?}"), format!("{second:?}")];
+    app.mute(first.clone());
+    app.mute(other.clone());
+    click(&mut app, &map, &key, "mute", &selected);
+    assert!(!app.is_muted(first) && !app.is_muted(second));
+    assert!(app.is_muted(other));
+    click(&mut app, &map, &key, "mute", &selected);
+    assert!(app.is_muted(first) && app.is_muted(second));
+
+    app.solo(second.clone());
+    click(&mut app, &map.with_file_name("Stale.osu"), &key, "solo", &selected);
+    assert!(!app.is_solo(first) && app.is_solo(second));
+    click(&mut app, &map, &key, "solo", &[key.clone(), "stale".into()]);
+    assert!(!app.is_solo(first) && app.is_solo(second));
+    click(&mut app, &map, &key, "solo", &selected);
+    assert!(app.is_solo(first) && app.is_solo(second) && !app.is_solo(other));
+    assert!(!app.is_dirty());
+    assert_eq!(fs::read(&map).unwrap(), original);
 }
 
 #[test]
@@ -636,8 +1148,12 @@ fn copy_review_uses_the_exact_requested_options() {
         "options": {
             "mode": "overwrite_only_defined",
             "leniency": 5.0,
+            "start_index": 123,
+            "never_silent_hitnormals": true,
             "copy_hitsounds": true,
             "copy_body_hitsounds": false,
+            "copy_to_slider_ticks": true,
+            "copy_to_slider_slides": true,
             "copy_sample_sets": true,
             "copy_volumes": false,
             "always_preserve_5_volume": false,
@@ -658,8 +1174,12 @@ fn copy_review_uses_the_exact_requested_options() {
     assert_eq!(*options, CopyOptions {
         mode: CopyMode::OverwriteOnlyDefined,
         leniency: 5.0,
+        start_index: 123,
+        never_silent_hitnormals: true,
         copy_hitsounds: true,
         copy_body_hitsounds: false,
+        copy_to_slider_ticks: true,
+        copy_to_slider_slides: true,
         copy_sample_sets: true,
         copy_volumes: false,
         always_preserve_5_volume: false,
@@ -781,6 +1301,7 @@ fn slider_body_selection_exposes_its_slide_whistle_and_ticked_set() {
     assert_eq!(selection["sliderBody"]["start"].as_f64(), Some(1000.0));
     assert_eq!(selection["sliderBody"]["set"], "soft");
     assert_eq!(selection["sliderBody"]["whistle"], false);
+    assert_eq!(selection["sliderBody"]["whistleSet"], "auto");
     assert_eq!(selection["sliderBody"]["volume"], 60);
 
     let select = || Action::Command { id: "selectAll".into() };
@@ -823,6 +1344,26 @@ fn slider_body_selection_exposes_its_slide_whistle_and_ticked_set() {
     assert!(written.contains("100,100,1000,2,2,L|300:100,2,200,0|0|0,0:0|0:0|0:0,3:2:0:0:"));
     open(&mut app, &path);
     check(&app);
+
+    for choice in ["normal", "auto"] {
+        select().run(&mut app);
+        let action = serde_json::from_value::<Action>(serde_json::json!({
+            "kind": "slider_body", "path": path.canonicalize().unwrap(), "index": 0,
+            "whistle_set": choice, "whistle": true, "volume": 80,
+        })).unwrap();
+        action.run(&mut app);
+        assert!(app.error.is_none(), "{:?}", app.error);
+        let state = snapshot(&app, true);
+        assert_eq!(state["scene"]["selection"]["sliderBody"]["whistleSet"], choice);
+        assert_eq!(state["scene"]["selection"]["sliderBody"]["set"], "drum");
+        Action::Save.run(&mut app);
+        wait_for_job(&mut app);
+        open(&mut app, &path);
+        select().run(&mut app);
+        let state = snapshot(&app, true);
+        assert_eq!(state["scene"]["selection"]["sliderBody"]["whistleSet"], choice);
+        assert_eq!(state["scene"]["selection"]["sliderBody"]["set"], "drum");
+    }
 }
 
 
@@ -882,6 +1423,60 @@ fn save_applies_volume_floor_only_to_the_edited_hit() {
 
 
 #[test]
+fn shortcut_adds_the_nearest_hit_in_the_next_eligible_visible_lane() {
+    let fixture = Fixture::new("select-adjacent-lane");
+    let path = fixture.0.join("Selection.osu");
+    let map = concat!(
+        "osu file format v14\n\n[TimingPoints]\n0,500,4,1,0,100,1,0\n\n[HitObjects]\n",
+        "256,192,1000,1,8,1:1:0:50:\n256,192,1050,1,8,1:3:0:50:\n",
+        "256,192,1100,1,8,1:2:0:50:\n256,192,1150,1,2,1:1:0:50:\n",
+        "256,192,1275,1,8,1:2:0:50:\n256,192,4000,1,4,1:1:0:50:\n",
+    );
+    fs::write(&path, map).unwrap();
+    let mut app = Application::headless();
+    open(&mut app, &path);
+    let scene = snapshot(&app, true)["scene"].clone();
+    let row = |name| scene["lanes"].as_array().unwrap().iter()
+        .position(|lane| lane["name"] == name).unwrap();
+    let anchor = row("normal-hitclap");
+    let above = row("normal-hitwhistle");
+    let far = row("normal-hitfinish");
+    let below = row("soft-hitclap");
+    for phase in ["down", "up"] {
+        Action::Pointer {
+            phase: phase.into(), ms: 1000.0, row: anchor as i32, x: 10.0, y: 10.0,
+            value: None, shift: false, ctrl: false, alt: false,
+        }.run(&mut app);
+    }
+
+    let selected = |app: &Application| {
+        let composer = &app.document().unwrap().composer;
+        let mut times: Vec<_> = composer.selected.items().iter()
+            .map(|hit| composer.hitsounds().moments()[hit.moment].time().ms()).collect();
+        times.sort_by(f64::total_cmp);
+        times
+    };
+    let press = |app: &mut Application, key, path: &serde_json::Value, rows: &[usize], span| {
+        serde_json::from_value::<Action>(serde_json::json!({
+            "kind": "key", "key": key, "code": key, "ctrl": false, "shift": true, "alt": false,
+            "lane_view": {"path": path, "rows": rows, "span": span}
+        })).unwrap().run(app);
+    };
+    let rows = [above, anchor, anchor, far, below];
+    assert_eq!(selected(&app), [1000.0]);
+    press(&mut app, "ArrowDown", &serde_json::json!("Stale.osu"), &rows, 700.0);
+    press(&mut app, "ArrowDown", &scene["path"], &rows, 150.0);
+    assert_eq!(selected(&app), [1000.0]);
+
+    press(&mut app, "ArrowDown", &scene["path"], &rows, 700.0);
+    assert_eq!(selected(&app), [1000.0, 1100.0]);
+    press(&mut app, "ArrowUp", &scene["path"], &rows, 700.0);
+    assert_eq!(selected(&app), [1000.0, 1100.0, 1150.0]);
+    assert!(!app.is_dirty());
+    assert_eq!(fs::read_to_string(&path).unwrap(), map);
+}
+
+#[test]
 fn shortcut_change_routes_the_new_f1_alternative_on_home() {
     let mut app = Application::headless();
     let mut route = super::home::Route::default();
@@ -894,7 +1489,7 @@ fn shortcut_change_routes_the_new_f1_alternative_on_home() {
     assert!(app.error.is_none());
 
     let key = |name: &str| Action::Key {
-        key: name.into(), code: name.into(), ctrl: false, shift: false, alt: false,
+        key: name.into(), code: name.into(), ctrl: false, shift: false, alt: false, lane_view: None,
     };
     assert!(route.handle(key("F1"), &mut app).is_none());
     let action = route.handle(key("F5"), &mut app).unwrap();
@@ -958,7 +1553,9 @@ fn timeline_edit_actions_quantize_repeat_edit_the_range_and_scale_once() {
     tool(&mut app, "Select");
     point(&mut app, "down", 1000.0);
     point(&mut app, "up", 1000.0);
-    Action::Key { key: "r".into(), code: "KeyR".into(), ctrl: true, shift: false, alt: false }.run(&mut app);
+    Action::Key {
+        key: "r".into(), code: "KeyR".into(), ctrl: true, shift: false, alt: false, lane_view: None,
+    }.run(&mut app);
     assert_eq!(snapshot(&app, false)["editDialog"], "repeat");
     assert_eq!(snapshot(&app, true)["scene"]["repeatGap"], 1);
     apply(&mut app, json!({"kind": "repeat", "copies": 2, "gap_steps": 2}));
@@ -1008,7 +1605,7 @@ fn output_device_change_is_refused_during_a_job_without_changing_transport() {
     app.preferences.device = Some("Original device".into());
     app.busy = true;
     let action = serde_json::from_value::<Action>(serde_json::json!({
-        "kind": "output_device", "name": "Other device",
+        "kind": "output_settings", "backend": "mme", "device_id": "mme:other", "ms": 30,
     })).unwrap();
     action.run(&mut app);
     assert!(app.error.as_deref().unwrap().contains("finish the current job"));
@@ -1129,7 +1726,10 @@ fn opened_song_exposes_three_frequency_bands_at_their_original_positions() {
 }
 
 #[test]
-fn rejected_buffer_request_keeps_the_device_preferences_and_transport() {
+fn rejected_output_settings_keep_the_device_preferences_and_transport() {
+    use dawsu_application::OutputBackend;
+    use serde_json::json;
+
     let mut app = Application::headless();
     app.seek(350.0);
     app.locator_left = 200.0;
@@ -1141,7 +1741,8 @@ fn rejected_buffer_request_keeps_the_device_preferences_and_transport() {
     app.preferences.audio_buffer_ms = Some(40);
     let saved = serde_json::to_vec(&app.preferences).unwrap();
 
-    Action::OutputBuffer { ms: Some(0) }.run(&mut app);
+    let sent = json!({"kind": "output_settings", "backend": "system", "device_id": "system:test", "ms": 0});
+    serde_json::from_value::<Action>(sent).unwrap().run(&mut app);
     assert!(app.error.as_deref().unwrap().contains("10 and 500"));
     assert_eq!(app.position_ms(), 350.0);
     assert_eq!((app.locator_left, app.locator_right, app.cycle), (200.0, 450.0, true));
@@ -1150,6 +1751,18 @@ fn rejected_buffer_request_keeps_the_device_preferences_and_transport() {
 
     let restored: dawsu_application::Preferences = serde_json::from_slice(&saved).unwrap();
     assert_eq!(restored.audio_buffer_ms, Some(40));
+    assert_eq!(restored.audio_backend, OutputBackend::System);
+    assert!(restored.audio_device_id.is_none());
+    assert_eq!(restored.device.as_deref(), Some("Original device"));
+
+    let profile: dawsu_application::Preferences = serde_json::from_value(json!({
+        "audio_backend": "direct_sound", "audio_device_id": "direct_sound:test", "audio_buffer_ms": 50,
+        "device": "Original device"
+    })).unwrap();
+    assert_eq!(profile.audio_backend, OutputBackend::DirectSound);
+    assert_eq!(profile.audio_device_id.as_deref(), Some("direct_sound:test"));
+    assert_eq!(profile.device.as_deref(), Some("Original device"));
+    assert_eq!(serde_json::to_value(profile).unwrap()["audio_backend"], "direct_sound");
 }
 
 
@@ -1163,12 +1776,12 @@ fn displayed_tab_and_plain_home_shortcuts_reach_the_command_resolver() {
     assert_eq!(state["tabRoutes"], serde_json::json!([[true, false, false, true]]));
     let mut route = super::home::Route::default();
     let tab = Action::Key {
-        key: "Tab".into(), code: "Tab".into(), ctrl: true, shift: false, alt: false,
+        key: "Tab".into(), code: "Tab".into(), ctrl: true, shift: false, alt: false, lane_view: None,
     };
     route.handle(tab, &mut app).unwrap().run(&mut app);
     assert!(app.help_requested);
     let open = Action::Key {
-        key: "h".into(), code: "KeyH".into(), ctrl: false, shift: false, alt: false,
+        key: "h".into(), code: "KeyH".into(), ctrl: false, shift: false, alt: false, lane_view: None,
     };
     route.handle(open, &mut app).unwrap().run(&mut app);
     assert!(matches!(app.requests.last(), Some(dawsu_application::PlatformRequest::OpenMap)));

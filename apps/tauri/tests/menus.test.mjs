@@ -19,6 +19,7 @@ function fixture() {
       type, children: [], style: {}, events: new Map(), attributes: {}, textContent: "",
       addEventListener(name, handler) { this.events.set(name, handler); },
       setAttribute(name, value) { this.attributes[name] = value; },
+      removeAttribute(name) { delete this.attributes[name]; },
       append(...children) { this.children.push(...children); },
       prepend(child) { this.children.unshift(child); },
       replaceChildren(...children) { this.children = children; },
@@ -34,17 +35,25 @@ function fixture() {
   }
   get("editor-menus").append(...["map", "edit", "view", "playback"].map(name => get("menu-" + name)));
   get("editor-menu").offsetWidth = 330;
+  get("editor-menu").offsetHeight = 220;
   get("redo").disabled = true;
-  get("speed").options = [
-    { value: ".25", textContent: "0.25×" }, { value: ".5", textContent: "0.5×" },
-    { value: ".75", textContent: "0.75×" }, { value: "1", textContent: "1×" },
-    { value: "1.25", textContent: "1.25×" }, { value: "1.5", textContent: "1.5×" },
-  ];
-  const view = { speed: 1, playbackStart: "cursor", follow: false };
+  const speedButtons = [.25, .5, .75, 1, 1.25, 1.5].map(value => ({
+    dataset: { playbackSpeed: String(value) }, textContent: (value * 100) + "%",
+  }));
+  const view = { speed: 1, playbackStart: "cursor", follow: false, activeLane: 0 };
+  const scene = { path: "Test.osu", selection: {count:1}, lanes: [
+    {sourceKey:"first", canDelete:false}, {sourceKey:"second", canDelete:true, canReplace:true, canAddLayer:true, colourKey:"second"},
+  ] };
   const commands = { entries: [["undo", "Undo", ["Alt+U"]], ["save", "Save", ["Ctrl+S"]]] };
   const window = { innerWidth: 900, innerHeight: 640, addEventListener() {} };
   const context = createContext({
-    $: get, document, window, view, scene: { selection: { count: 1 } }, drag: null, dialog: {},
+    $: get, document, window, view, scene, speedButtons, drag: null, dialog: {},
+    lanePositions: new Map([[0,0],[1,1]]),
+    adjacentLaneForMove: () => null,
+    run(task) { return task(); },
+    async update(action) { calls.push(JSON.parse(JSON.stringify(action))); view.activeLane = action.row; },
+    toolIcons: { Select: "MousePointer2", Draw: "Drumstick", Erase: "Eraser", Mute: "VolumeX",
+      Grab: "Hand", Range: "Scan", Ramp: "TrendingUp" },
     playbackStartChoices: [
       ["cursor", "Cursor"], ["left", "Left locator"], ["selection", "Selection"],
       ["selection_or_left", "Selection or left locator"],
@@ -102,6 +111,56 @@ test("menus read current shortcut chips and keep arrow, Escape, Tab and outside-
   assert.equal(popup.hidden, true);
 });
 
+test("lane menu activates the right-clicked lane without audition before opening an existing action", async () => {
+  const {document,get,calls,key}=fixture();
+  const lanes=get("lanes"), name=get("second-name"), menu=get("editor-menu");
+  name.dataset={laneRow:"1"}; name.closest=()=>name; lanes.append(name);
+  const event={target:name,clientX:100,clientY:140,preventDefault(){this.defaultPrevented=true;}};
+  assert.equal(typeof lanes.events.get("contextmenu"),"function");
+  lanes.events.get("contextmenu")(event);
+  assert.equal(event.defaultPrevented,true);
+  assert.equal(menu.attributes["aria-label"],"Lane actions");
+  assert.deepEqual(calls,[]);
+  assert.equal(key("Escape"),true);
+  assert.equal(document.activeElement,name);
+
+  lanes.events.get("contextmenu")(event);
+  let deleted=false;
+  get("delete-lane").addEventListener("click",()=>{deleted=true;});
+  menu.children.find(button=>button.textContent==="Delete lane…").click();
+  await new Promise(setImmediate);
+  assert.deepEqual(calls,[{kind:"lane",row:1,operation:"activate"}]);
+  assert.equal(deleted,true);
+});
+
+test("right-click opens the seven timeline tools without invoking an edit", () => {
+  const { document, get, calls, key, view } = fixture();
+  const popup = get("editor-menu"), grid = get("grid");
+  view.tool = "Erase";
+  const click = { clientX: 895, clientY: 637, preventDefault() { this.defaultPrevented = true; } };
+  assert.equal(typeof grid.events.get("contextmenu"), "function", "grid registers a tool picker");
+  grid.events.get("contextmenu")(click);
+  assert.equal(click.defaultPrevented, true);
+  assert.equal(popup.attributes["aria-label"], "Timeline tools");
+  assert.equal(popup.style.left, "566px");
+  assert.equal(popup.style.top, "416px");
+  assert.deepEqual(popup.children.map(button => button.textContent), [
+    "Select", "Draw", "Erase", "Mute", "Grab", "Range", "Ramp",
+  ]);
+  assert.equal(popup.children[2].attributes["aria-checked"], "true");
+  assert.deepEqual(calls, []);
+  assert.equal(key("Escape"), true);
+  assert.equal(document.activeElement, grid);
+
+  grid.events.get("contextmenu")(click);
+  key("ArrowDown");
+  assert.equal(document.activeElement.textContent, "Draw");
+  document.activeElement.click();
+  assert.deepEqual(calls, [{ kind: "tool", name: "Draw" }]);
+  assert.equal(popup.hidden, true);
+  assert.equal(document.activeElement, grid);
+});
+
 test("Playback keeps its segmented choices and switches open, and Map keeps Generate per-object", () => {
   const { get, calls } = fixture();
   const popup = get("editor-menu");
@@ -129,6 +188,6 @@ test("Playback keeps its segmented choices and switches open, and Map keeps Gene
   assert.equal(style.attributes["aria-checked"], "true");
   assert.equal(style.disabled, true);
   popup.children.find(child => child.textContent === "Save").click();
-  assert.deepEqual(calls.at(-1), { kind: "review_save" });
+  assert.deepEqual(calls.at(-1), { id: "save" });
   assert.equal(popup.hidden, true);
 });

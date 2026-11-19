@@ -1,6 +1,7 @@
 use dawsu_editor::tools::{PointerButton, PointerInput};
 use dawsu_editor::volume_ramp::{RampShape, ramp};
 use dawsu_editor_composer::Composer;
+use dawsu_foundation::SampleIdentity;
 use dawsu_hitsounding::MomentId;
 use std::convert::Infallible;
 
@@ -12,6 +13,67 @@ pub(super) enum ControllerStroke {
     Paint {
         last: (f64, i32),
     },
+    Spread(VolumeSpread),
+}
+
+struct VolumeBar {
+    moment: MomentId,
+    shared: i32,
+    gains: Vec<(SampleIdentity, i32)>,
+}
+
+pub(super) struct VolumeSpread {
+    start_y: f64,
+    mean: f64,
+    bars: Vec<VolumeBar>,
+}
+
+impl VolumeSpread {
+    fn new(composer: &Composer, targets: Vec<usize>, start_y: f64) -> Option<Self> {
+        let bars: Vec<_> = targets.into_iter().filter_map(|index| {
+            let moment = composer.hitsounds().moments().get(index)?;
+            Some(VolumeBar {
+                moment: MomentId(index),
+                shared: moment.volume(),
+                gains: moment.hits().map(|lane| (lane.clone(), moment.hit_volume(lane))).collect(),
+            })
+        }).collect();
+        let gains = bars.iter().flat_map(|bar| bar.gains.iter().map(|(_, gain)| *gain));
+        let count = gains.clone().count();
+        if count == 0 {
+            return None;
+        }
+        let mean = gains.map(f64::from).sum::<f64>() / count as f64;
+        Some(Self { start_y, mean, bars })
+    }
+
+    fn matches(&self, composer: &Composer, scale: impl Fn(i32) -> i32) -> bool {
+        self.bars.iter().all(|bar| {
+            let current = &composer.hitsounds().moments()[bar.moment.0];
+            current.volume() == scale(bar.shared)
+                && bar.gains.iter().all(|(lane, gain)| current.hit_volume(lane) == scale(*gain))
+        })
+    }
+
+    fn apply(&self, composer: &mut Composer, y: f64) {
+        let factor = (1.0 + (self.start_y - y) / 60.0).clamp(0.0, 4.0);
+        let scale = |gain: i32| {
+            (self.mean + (f64::from(gain) - self.mean) * factor)
+                .round_ties_even().clamp(0.0, 100.0) as i32
+        };
+        if self.matches(composer, scale) {
+            return;
+        }
+        let _ = composer.history.edit(true, |hits| {
+            for bar in &self.bars {
+                hits.set_volume(bar.moment, scale(bar.shared));
+                for (lane, gain) in &bar.gains {
+                    hits.set_hit_volume(bar.moment, lane, scale(*gain));
+                }
+            }
+            Ok::<_, Infallible>(())
+        });
+    }
 }
 
 impl ControllerStroke {
@@ -37,20 +99,33 @@ impl ControllerStroke {
             if !targets.contains(&nearest) {
                 targets = vec![nearest];
             }
-            let originals = targets
-                .into_iter()
-                .filter_map(|id| moments.get(id).map(|moment| (MomentId(id), moment.volume())))
-                .collect();
-            ("Volume", Self::Drag { start: point.1, originals })
+            if input.mods.ctrl() && targets.len() > 1 {
+                ("Spread volumes", Self::Spread(VolumeSpread::new(composer, targets, input.y)?))
+            } else {
+                let originals = targets.into_iter()
+                    .filter_map(|id| moments.get(id).map(|moment| (MomentId(id), moment.volume())))
+                    .collect();
+                ("Volume", Self::Drag { start: point.1, originals })
+            }
         };
         composer.history.begin(label);
         stroke.apply(composer, input);
         Some(stroke)
     }
 
+    pub(super) fn finish(&mut self, composer: &mut Composer, input: PointerInput) {
+        self.apply(composer, input);
+        if matches!(self, Self::Spread(spread) if spread.matches(composer, |gain| gain)) {
+            composer.history.cancel();
+        } else {
+            composer.history.commit();
+        }
+    }
+
     pub(super) fn apply(&mut self, composer: &mut Composer, input: PointerInput) {
         let current = point(input);
         let values: Vec<_> = match self {
+            Self::Spread(spread) => return spread.apply(composer, input.y),
             Self::Drag { start, originals } => originals
                 .iter()
                 .map(|&(id, original)| {

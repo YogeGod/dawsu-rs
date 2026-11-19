@@ -93,4 +93,21 @@ mod tests {
         assert!(app.output_problems().is_empty());
         assert!(!app.save_problem_review());
     }
+
+    #[test]
+    fn writable_toolbar_review_does_not_save_until_the_mapper_confirms() {
+        let scratch = Scratch::new("staged-toolbar-save");
+        let map = scratch.path("test.osu");
+        let original = include_bytes!("../tests/project-fixture.osu");
+        std::fs::write(&map, original).unwrap();
+        let mut app = Application::headless();
+        app.document = Some(Document::read(&map).unwrap());
+        app.document.as_mut().unwrap().composer.apply("Change volume", |hits| {
+            hits.set_volume(dawsu_hitsounding::MomentId(0), 75);
+        });
+        app.review_save();
+        wait(&mut app);
+        assert!(app.is_dirty());
+        assert_eq!(std::fs::read(&map).unwrap(), original);
+    }
 }

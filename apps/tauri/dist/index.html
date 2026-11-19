@@ -1,15 +1,65 @@
 <!DOCTYPE html>
-<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>dawsu!</title><link rel="icon" href="studio-assets/dawsu.png"><link rel="stylesheet" href="style.css"><script defer src="app.js"></script><script defer src="menus.js"></script></head>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>dawsu!</title><link rel="icon" href="studio-assets/dawsu.png"><link rel="stylesheet" href="style.css"><script defer src="docking.js"></script><script defer src="app.js"></script><script defer src="menus.js"></script></head>
 <body>
-<header class="chrome">
+<header id="editor-header" class="chrome">
   <strong class="brand"><img src="studio-assets/dawsu.png" alt="">dawsu<span>!</span></strong>
+<nav id="editor-menus" aria-label="Editor menus">
+  <button id="menu-map" aria-haspopup="menu" aria-expanded="false" aria-controls="editor-menu"><img class="button-icon" src="studio-assets/icons/FolderOpen.svg" alt="">Map</button>
+  <button id="menu-edit" aria-haspopup="menu" aria-expanded="false" aria-controls="editor-menu"><img class="button-icon" src="studio-assets/icons/Undo2.svg" alt="">Edit</button>
+  <button id="menu-view" aria-haspopup="menu" aria-expanded="false" aria-controls="editor-menu"><img class="button-icon" src="studio-assets/icons/Scan.svg" alt="">View</button>
+  <button id="menu-playback" aria-haspopup="menu" aria-expanded="false" aria-controls="editor-menu"><img class="button-icon" src="studio-assets/icons/Play.svg" alt="">Playback</button>
+</nav>
+  <button id="layout-edit-entry" type="button" data-doc>Layout…</button>
+  <div class="title" id="title"></div>
+      <button data-action="review_save" data-doc><img class="button-icon" src="studio-assets/icons/Save.svg" alt="">Save <span id="save-problem-badge" hidden></span></button>
+</header>
+
+<div id="editor-menu" role="menu" hidden></div>
+<section id="home">
+  <div class="home-panel"><div class="brand"><img src="studio-assets/dawsu.png" alt="">dawsu<span>!</span></div><h1>Hitsound editor</h1><p>Open an osu! difficulty or mapset to start editing.</p><button id="home-open" class="primary">Open difficulty or mapset…</button><button id="home-resume" hidden>Resume editing</button><div id="recent"></div></div>
+</section>
+<section id="workspace" hidden>
+  <section id="layout-editor" class="chrome" aria-label="Edit layout" data-dock-control hidden>
+    <strong>Edit layout</strong>
+    <span>Drag the grip on a whole bar to move it. Drag its edge to resize.</span>
+    <label>Ribbon group <select id="layout-ribbon-group"></select></label>
+    <button id="layout-left" type="button" aria-label="Move ribbon group left">Move left</button>
+    <button id="layout-right" type="button" aria-label="Move ribbon group right">Move right</button>
+    <label>Transport <select id="layout-transport"><option value="below">Below timeline</option><option value="above">Above timeline</option></select></label>
+    <span class="spacer"></span>
+    <button id="layout-reset" type="button">Reset</button>
+    <button id="layout-cancel" type="button">Cancel</button>
+    <button id="layout-keep" type="button" class="primary">Keep layout</button>
+    <div class="layout-button-controls" role="group" aria-label="Customize bars and sidebars">
+      <label>Bar or sidebar <select id="layout-bar"></select></label>
+      <button id="layout-bar-earlier" type="button">Move up</button>
+      <button id="layout-bar-later" type="button">Move down</button>
+      <label><input id="layout-bar-hidden" type="checkbox"> Hide bar or sidebar</label>
+    </div>
+    <div class="layout-button-controls" role="group" aria-label="Customize buttons">
+      <label>Button <select id="layout-button"></select></label>
+      <label>Location <select id="layout-button-location">
+        <option value="original">Original group</option><option value="header">Header</option>
+        <option value="ribbon">Ribbon</option><option value="ruler">Ruler</option>
+        <option value="transport">Transport</option><option value="inspector">Inspector</option>
+        <option value="browser">Browser</option><option value="status">Status bar</option>
+      </select></label>
+      <button id="layout-button-before" type="button">Earlier</button>
+      <button id="layout-button-after" type="button">Later</button>
+      <label><input id="layout-button-hidden" type="checkbox"> Hide</label>
+      <label>Width <input id="layout-button-width" type="number" placeholder="Auto" min="16" max="320" aria-label="Button width in pixels"></label>
+      <label>Height <input id="layout-button-height" type="number" placeholder="Auto" min="16" max="100" aria-label="Button height in pixels"></label>
+    </div>
+  </section>
+
+  <div id="editor-ribbon" class="tools chrome">
   <div class="ribbon-group" role="group" aria-label="Map">
     <span class="ribbon-caption" aria-hidden="true">Map</span>
     <div class="ribbon-controls">
       <button id="go-home" data-doc hidden title="Back to the start screen" aria-label="Home"><img class="button-icon" src="studio-assets/icons/House.svg" alt=""></button>
       <button id="open" aria-label="Open difficulty or mapset" title="Open difficulty or mapset"><img class="button-icon" src="studio-assets/icons/FolderOpen.svg" alt=""><span class="ribbon-secondary-label">Open…</span></button>
-      <button id="folders">Folders…</button>
-      <button data-action="review_save" data-doc><img class="button-icon" src="studio-assets/icons/Save.svg" alt="">Save <span id="save-problem-badge" hidden></span></button>
+      <button id="folders" aria-label="Folders" title="Folders"><img class="button-icon" src="studio-assets/icons/FolderOpen.svg" alt=""><span class="ribbon-secondary-label">Folders…</span></button>
+
       <select id="difficulty" aria-label="Open sibling difficulty" data-doc hidden></select>
     </div>
   </div>
@@ -21,44 +71,27 @@
       <button data-command="revert" data-doc>Revert…</button>
     </div>
   </div>
-  <div class="title" id="title"></div>
-  <div class="ribbon-group" role="group" aria-label="View">
-    <span class="ribbon-caption" aria-hidden="true">View</span>
-    <div class="ribbon-controls">
-      <button id="panel-view" aria-haspopup="dialog" data-doc>View…</button>
-      <button id="help" title="Keyboard shortcuts">Shortcuts</button>
-    </div>
-  </div>
-</header>
-<nav id="editor-menus" aria-label="Editor menus">
-  <button id="menu-map" aria-haspopup="menu" aria-expanded="false" aria-controls="editor-menu"><img class="button-icon" src="studio-assets/icons/FolderOpen.svg" alt="">Map</button>
-  <button id="menu-edit" aria-haspopup="menu" aria-expanded="false" aria-controls="editor-menu"><img class="button-icon" src="studio-assets/icons/Undo2.svg" alt="">Edit</button>
-  <button id="menu-view" aria-haspopup="menu" aria-expanded="false" aria-controls="editor-menu"><img class="button-icon" src="studio-assets/icons/Scan.svg" alt="">View</button>
-  <button id="menu-playback" aria-haspopup="menu" aria-expanded="false" aria-controls="editor-menu"><img class="button-icon" src="studio-assets/icons/Play.svg" alt="">Playback</button>
-</nav>
-<div id="editor-menu" role="menu" hidden></div>
-<section id="home">
-  <div class="home-panel"><div class="brand"><img src="studio-assets/dawsu.png" alt="">dawsu<span>!</span></div><h1>Hitsound editor</h1><p>Open an osu! difficulty or mapset to start editing.</p><button id="home-open" class="primary">Open difficulty or mapset…</button><button id="home-resume" hidden>Resume editing</button><div id="recent"></div></div>
-</section>
-<section id="workspace" hidden>
-  <div class="tools chrome">
+
     <div class="ribbon-group" role="group" aria-label="Tool">
       <span class="ribbon-caption" aria-hidden="true">Tool</span>
       <div id="tools" role="toolbar" aria-label="Editing tools"></div>
     </div>
     <div class="ribbon-group" role="group" aria-label="Grid">
-      <span class="ribbon-caption" aria-hidden="true">Grid</span>
-      <div class="ribbon-controls">
+      <button id="grid-options" type="button" popovertarget="options-Grid" aria-label="Grid and snapping" title="Grid and snapping">Grid ▾</button><div popover id="options-Grid" class="ribbon-controls ribbon-options">
         <label class="toggle"><input id="object-lines" type="checkbox"> Object lines</label>
         <label class="toggle"><input id="snap" type="checkbox"> Snap</label>
         <select aria-label="Snap mode" id="snap-mode"><option value="grid">Grid</option><option value="relative">Grid relative</option><option value="objects">Objects</option></select>
         <label class="toggle">Beat <input id="beats" type="number" min="1" max="64" aria-label="Snap beats"> / <input id="divisor" type="number" min="1" max="64" aria-label="Snap divisor"></label>
+        <label class="toggle" title="Use triplet spacing when changing snap with the wheel"><input id="triplet-snap" type="checkbox" data-doc> Triplets</label>
         <button id="time-signatures" data-doc aria-haspopup="dialog">Time signatures…</button>
       </div>
     </div>
     <div class="ribbon-group" role="group" aria-label="Lanes">
-      <span class="ribbon-caption" aria-hidden="true">Lanes</span>
-      <div class="ribbon-controls">
+      <button type="button" popovertarget="options-Lanes">Lanes ▾</button><div popover id="options-Lanes" class="ribbon-controls ribbon-options">
+        <div class="row" role="group" aria-label="Lane view">
+          <button id="samples-view" type="button" aria-pressed="true" data-doc>Samples</button>
+          <button id="drums-view" type="button" aria-pressed="false" data-doc>Drums</button>
+        </div>
         <div class="row" role="group" aria-label="Lane zoom">
           <button type="button" id="lane-height-out" aria-label="Shorter lanes" data-doc>−</button>
           <label class="toggle">Lane height <input type="range" min="20" max="65" step="1" id="lane-height" data-doc></label>
@@ -69,6 +102,21 @@
         <input id="lane-filter" type="search" aria-label="Filter lanes" placeholder="Filter lanes" size="13" data-doc>
       </div>
     </div>
+  <div class="ribbon-group" role="group" aria-label="View">
+    <span class="ribbon-caption" aria-hidden="true">View</span>
+    <div class="ribbon-controls">
+      <div class="row view-panel-toggles" role="group" aria-label="Panels">
+        <button id="view-browser" type="button" data-doc aria-label="File browser" aria-controls="sample-browser" aria-pressed="false" title="File browser">
+          <span class="view-panel-icon" aria-hidden="true"></span><span class="ribbon-secondary-label">Files</span>
+        </button>
+        <button id="view-inspector" type="button" data-doc aria-label="Inspector" aria-controls="editor-inspector" aria-pressed="false" title="Inspector">
+          <span class="view-panel-icon" aria-hidden="true"></span><span class="ribbon-secondary-label">Inspector</span>
+        </button>
+      </div>
+      <button id="panel-view" aria-haspopup="dialog" aria-label="View settings" title="View settings" data-doc><img class="button-icon" src="studio-assets/icons/Settings.svg" alt=""><span class="ribbon-secondary-label">View…</span></button>
+      <button id="help" aria-label="Keyboard shortcuts" title="Keyboard shortcuts"><img class="button-icon" src="studio-assets/icons/Info.svg" alt=""><span class="ribbon-secondary-label">Shortcuts</span></button>
+    </div>
+  </div>
   </div>
   <main id="editor-dock" class="dock">
     <aside id="tree-browser-host" aria-label="Sample browser" hidden>
@@ -79,7 +127,7 @@
             <option value="mapset">Map folder</option>
             <option value="library">Hitsound library</option>
           </select>
-          <input type="search" id="sample-browser-filter" aria-label="Filter shown samples" placeholder="Filter shown samples">
+          <input type="search" id="sample-browser-filter" aria-label="Filter shown samples" placeholder="Search samples">
         </div>
         <div class="row sample-browser-controls">
           <button type="button" id="sample-browser-up" hidden>Up</button>
@@ -94,8 +142,40 @@
       </section>
     </aside>
     <div id="editor-arrange" class="arrange">
-      <div class="ruler"><div class="lane-title">Sample lanes</div><canvas id="ruler" aria-label="Time ruler and song waveform"></canvas></div>
-      <div class="scroll" id="scroll"><div id="lanes"></div><canvas id="grid" aria-label="Hitsound timeline"></canvas></div>
+      <div class="overview">
+        <div class="lane-title ruler-controls" role="group" aria-label="Timeline view">
+          <button id="ruler-waveform" type="button" aria-label="Show waveform" aria-pressed="true" title="Show waveform" data-doc><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 6v4m3-7v10m3-8v6m3-8v10m3-7v4"/></svg></button>
+          <button id="ruler-follow" type="button" aria-label="Follow playhead" aria-pressed="false" title="Follow playhead" data-doc><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2v12M2 8h3m6 0h3M5 3H3v2m8-2h2v2M3 11v2h2m8-2v2h-2"/></svg></button>
+          <button id="ruler-zoom-out" type="button" aria-label="Zoom timeline out" title="Zoom timeline out" data-doc>−</button>
+          <button id="ruler-zoom-in" type="button" aria-label="Zoom timeline in" title="Zoom timeline in" data-doc>+</button>
+          <button id="ruler-fit" type="button" aria-label="Fit whole song" title="Fit whole song" data-doc><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4v8m12-8v8M4 8h8m-6-2L4 8l2 2m4-4 2 2-2 2"/></svg></button>
+        </div>
+        <canvas id="overview" aria-label="Song overview"></canvas>
+      </div>
+      <div class="ruler">
+        <div class="ruler-sidebar">
+          <div class="lane-title lane-title-controls">
+            <span>Sample lanes</span>
+            <div class="row">
+              <button id="add-lane" type="button" aria-label="Add lane" title="Add lane" data-doc>+</button>
+              <button id="delete-lane" type="button" aria-label="Delete active lane" title="Delete active lane" data-doc>−</button>
+              <button id="toggle-lane-names" type="button" aria-controls="lanes" aria-expanded="true" aria-label="Hide lane names" title="Hide lane names" data-doc>‹</button>
+            </div>
+          </div>
+          <div class="lane-title song-row">
+            <span>Song audio</span>
+            <div class="row">
+              <button id="song-mute" type="button" aria-label="Mute song" aria-pressed="false" title="Mute song" data-doc>M</button>
+              <button id="song-solo" type="button" aria-label="Solo song" aria-pressed="false" title="Solo song" data-doc>S</button>
+            </div>
+          </div>
+        </div>
+        <canvas id="ruler" aria-label="Time ruler, song waveform and gameplay objects"></canvas>
+        <div id="waveform-resize" role="separator" tabindex="0" aria-orientation="horizontal"
+             aria-label="Waveform height" aria-valuemin="0" aria-valuemax="200" aria-valuenow="56"
+             title="Drag to resize waveform. Double-click to reset."></div>
+      </div>
+      <div class="scroll" id="scroll"><div id="lanes"></div><canvas id="grid" tabindex="-1" aria-label="Hitsound timeline" aria-haspopup="menu" aria-expanded="false"></canvas></div>
       <div id="volume-controller-panel" class="controller">
         <div class="lane-title volume-title">
           <span>Volume</span>
@@ -108,7 +188,7 @@
         </div>
         <canvas id="controller" aria-label="Hit volume lane"></canvas>
       </div>
-      <div class="overview"><div class="lane-title">Overview</div><canvas id="overview" aria-label="Song overview"></canvas></div>
+
     </div>
     <aside id="editor-inspector" aria-label="Inspector">
       <section><h2>Selection</h2>
@@ -122,7 +202,10 @@
           <form id="selection-volume">
             <label>Change <select id="volume-mode"><option value="absolute">Set all</option><option value="relative">Relative</option></select></label>
             <label>Volume (%) <input type="number" min="0" max="100" id="volume" value="100" required></label>
-            <p class="dim">Changes all sounds at the selected times.</p>
+            <label>Applies to <select id="selection-volume-scope">
+              <option value="all">All lanes</option><option value="selected">Selected lanes</option>
+            </select></label>
+            <p class="dim" id="selection-volume-hint">Changes all sounds at the selected times.</p>
             <div class="row"><button type="submit">Apply</button><button type="button" data-volume="-5">−5</button><button type="button" data-volume="5">+5</button></div>
           </form>
           <div class="row"><button data-command="quantizeDialog">Quantize…</button><button data-command="repeat">Repeat…</button><button data-command="duplicate">Duplicate</button><button data-command="delete">Delete</button></div>
@@ -134,6 +217,9 @@
             <select id="slider-body-set"><option value="normal">Normal</option><option value="soft">Soft</option><option value="drum">Drum</option><option value="" disabled>Current sample</option></select>
           </label>
           <label>Whistle on slide <input type="checkbox" id="slider-body-whistle"></label>
+          <label>Whistle sample set
+            <select id="slider-body-whistle-set"><option value="auto">Auto</option><option value="normal">Normal</option><option value="soft">Soft</option><option value="drum">Drum</option></select>
+          </label>
           <label>Body and head volume (%) <input type="number" min="0" max="100" id="slider-body-volume"></label>
           <button id="apply-slider-body">Apply</button>
         </fieldset>
@@ -141,14 +227,21 @@
         <label><span>Protect normals</span><input type="checkbox" id="protect"></label>
         <label><span>Audition</span><input type="checkbox" id="audition"></label>
       </section>
+      <section><h2>Active lane</h2>
+        <div class="active-lane-identity">
+          <span id="active-lane-colour-swatch" aria-hidden="true" hidden></span>
+          <output id="active-lane-name"></output>
+        </div>
+        <output id="active-lane-sample" hidden></output>
+        <div class="row active-lane-actions">
+          <button id="replace-sample" data-doc>Replace sample…</button>
+          <button id="lane-colour" type="button" data-doc aria-haspopup="dialog">Lane colour…</button>
+        </div>
+      </section>
       <section><h2>Difficulty</h2>
         <label><span>Hitsounding mode</span><input type="checkbox" id="hs"></label>
         <div class="row"><button id="generate" data-doc>Generate…</button><button id="new">New…</button><button id="copy">Copy…</button></div>
         <button id="merge-settings" data-doc aria-haspopup="dialog">Merge settings…</button>
-      </section>
-      <section><h2>Active lane</h2>
-        <output id="active-lane-sample"></output>
-        <button id="replace-sample" data-doc>Replace sample…</button>
       </section>
       <section><h2>Bookmarks</h2>
         <div class="row">
@@ -167,19 +260,33 @@
       <section><h2>History</h2><div id="history"></div></section>
     </aside>
   </main>
-  <footer class="transport chrome">
+  <section id="editor-transport" class="transport chrome" aria-label="Playback controls">
+    <div class="transport-cluster" role="group" aria-label="Transport">
     <button data-action="start" data-doc aria-label="Go to start" title="Go to start"><img class="button-icon" src="studio-assets/icons/SkipBack.svg" alt=""></button>
-    <button data-action="play" id="play"><img id="play-icon" class="button-icon" src="studio-assets/icons/Play.svg" alt=""><span id="play-label">Play</span></button><button data-action="stop"><img class="button-icon" src="studio-assets/icons/Square.svg" alt="">Stop</button>
-    <span id="position">00:00.000</span>
-    <label>Speed <select id="speed"><option value=".25">0.25×</option><option value=".5">0.5×</option><option value=".75">0.75×</option><option value="1">1×</option><option value="1.25">1.25×</option><option value="1.5">1.5×</option></select></label>
-    <button id="fit" title="Fit the difficulty in the timeline" data-doc>Fit</button>
-    <label>Zoom <input type="range" min="-2.699" max=".477" step=".01" id="zoom" aria-label="Timeline zoom"></label>
-    <label title="Scroll the timeline to keep the playhead visible"><input type="checkbox" id="follow" data-doc> Follow playback</label>
-    <label><input type="checkbox" id="cycle"> Cycle</label><button data-locator="left" title="Set left locator, Shift to jump">L</button><button data-locator="right" title="Set right locator, Shift to jump">R</button>
-    <div class="spacer"></div>
-    <button id="audio">Audio…</button>
-  </footer>
+    <button data-action="play" id="play"><img id="play-icon" class="button-icon" src="studio-assets/icons/Play.svg" alt=""><span id="play-label">Play</span></button><button data-action="stop"><img class="button-icon" src="studio-assets/icons/Square.svg" alt=""><span>Stop</span></button>
+    </div>
+    <div class="playback-rates" role="group" aria-label="Playback speed" title="Playback speed with pitch preserved">
+      <button type="button" data-playback-speed=".25" aria-label="Playback speed 25%" aria-pressed="false" data-doc>25%</button>
+      <button type="button" data-playback-speed=".5" aria-label="Playback speed 50%" aria-pressed="false" data-doc>50%</button>
+      <button type="button" data-playback-speed=".75" aria-label="Playback speed 75%" aria-pressed="false" data-doc>75%</button>
+      <button type="button" data-playback-speed="1" aria-label="Playback speed 100%" aria-pressed="true" data-doc>100%</button>
+      <button type="button" data-playback-speed="1.25" aria-label="Playback speed 125%" aria-pressed="false" data-doc>125%</button>
+      <button type="button" data-playback-speed="1.5" aria-label="Playback speed 150%" aria-pressed="false" data-doc>150%</button>
+    </div>
+    <div class="transport-flags">
+      <label title="Scroll the timeline to keep the playhead visible"><input type="checkbox" id="follow" aria-label="Follow playback" data-doc> Follow</label>
+      <button id="transport-return" type="button" aria-label="Return on stop" aria-pressed="false" title="Return to the playback start when stopping" data-doc>Return</button>
+      <label><input type="checkbox" id="cycle"> Cycle</label>
+      <button data-locator="left" aria-label="Set left locator" title="Set left locator, Shift to jump">L</button><button data-locator="right" aria-label="Set right locator" title="Set right locator, Shift to jump">R</button>
+    </div>
+    <div class="transport-display"><span id="position" aria-label="Elapsed time">00:00.000</span><span id="musical-position" hidden></span></div>
+    <div class="transport-navigation">
+      <button id="fit" title="Fit the difficulty in the timeline" data-doc>Fit</button>
+      <input type="range" min="-2.699" max=".477" step=".01" id="zoom" aria-label="Timeline zoom" title="Timeline zoom">
+      <button id="audio">Audio…</button>
+    </div>
+  </section>
 </section>
-<div id="statusbar"><span id="musical-position" hidden></span><span id="status" role="status"></span><button id="next-output-problem" hidden>Next problem</button><button id="warnings" hidden>Audio warnings</button><button id="cancel-job" data-action="cancel_job" hidden>Cancel job</button></div>
+<div id="statusbar"><span id="status" role="status"></span><button id="next-output-problem" hidden>Next problem</button><button id="warnings" hidden>Audio warnings</button><button id="cancel-job" data-action="cancel_job" hidden>Cancel job</button></div>
 <dialog id="dialog"><h2 id="dialog-title"></h2><div id="dialog-body"></div><div class="row" id="dialog-actions"></div></dialog>
 </body></html>

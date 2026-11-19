@@ -12,6 +12,7 @@ use crate::copy::set_moment;
 use crate::decompile::{decompile, Decompiled};
 use crate::lazer::control_points::offset_for;
 use crate::model::{Hitsounds, MomentId};
+use crate::rules::saved_volume;
 use dawsu_foundation::SampleIdentity;
 use dawsu_osu_format::OsuFile;
 use std::collections::{BTreeMap, BTreeSet};
@@ -64,7 +65,7 @@ pub fn generate(
             continue;
         }
         let key = (m.time().ms() - offset).round_ties_even() as i64;
-        groups.entry(key).or_default().extend(m.hits().map(|h| (h.clone(), m.volume())));
+        groups.entry(key).or_default().extend(m.hits().map(|h| (h.clone(), m.hit_volume(h))));
     }
 
     let mut file = empty_copy(source_file, HITSOUNDS_VERSION);
@@ -82,7 +83,7 @@ pub fn generate(
         if cancel() {
             return GenerateOutcome::Cancelled;
         }
-        let volumes: BTreeSet<i32> = layers.iter().map(|l| l.1).collect();
+        let volumes: BTreeSet<i32> = layers.iter().map(|l| saved_volume(l.1)).collect();
         let lanes: BTreeSet<SampleIdentity> = layers.iter().map(|l| l.0.clone()).collect();
         if volumes.len() > 1 || lanes.len() < layers.len() {
             // One circle holds one volume and each lane once: this group needs a sample mix.

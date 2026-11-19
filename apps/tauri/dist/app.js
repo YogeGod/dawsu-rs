@@ -7,9 +7,19 @@ const controller = $("controller");
 const ruler = $("ruler");
 const overview = $("overview");
 const dialog = $("dialog");
+const dock = window.editorDocking?.attach($("editor-dock"));
 let view = { busy: false };
 let scene = null;
 let drag = null;
+let rulerDrag = null;
+let overviewDrag = null;
+let overviewTarget = null;
+let overviewNavigation = null;
+const rulerBandHeight = 21;
+const defaultWaveformHeight = 56;
+let waveformHeight = defaultWaveformHeight;
+let visibleWaveformHeight = defaultWaveformHeight;
+const bookmarkFlagHeight = 22;
 let markedRange = null;
 let browserMap = "";
 let browserFolder = "";
@@ -24,9 +34,15 @@ let usedLaneKeys = null;
 let showLaneInfo = false;
 let laneRows = [];
 let lanePositions = new Map();
+let laneVisualPositions = new Map();
+const selectionLaneKeys = new Set();
+let selectionLaneAnchor = null;
+let selectionLanesOnly = false;
 const collapsedFamilies = new Set();
+const laneColours = new Map();
 let familyParents = new Map();
 let previewParents = new Map();
+const speedButtons = [...document.querySelectorAll("[data-playback-speed]")];
 const sampleFolderNames = { normal: "Normal set", soft: "Soft set", drum: "Drum set" };
 let sampleFolderOrder = Object.keys(sampleFolderNames);
 let layoutWrites = 0;
@@ -37,6 +53,13 @@ let modalClose = null;
 let outputProblemIndex = -1;
 let outputProblemList = "";
 let rulerWarningMarkers = [];
+// Canvas surfaces match the surrounding editor chrome.
+const slateTimeline = {
+  arrange: "#151515", alternateRow: "#1c1c1c", activeRow: "#454545", group: "#292929",
+  ruler: "#252525", rulerBar: "#eeeeee", overview: "#1c1c1c",
+  volume: "#151515", divider: "#383838", beatLine: "#383838", barLine: "#545454",
+  cycle: "#2fbf4a", locator: "#8e8e93", playhead: "#ffffff",
+};
 const levelColours = [[58, 108, 240], [154, 72, 216], [236, 58, 58]];
 const volumePalette = Array.from({ length: 101 }, (_, volume) => {
   const index = volume < 50 ? 0 : 1;
@@ -86,32 +109,72 @@ async function update(action, full = true) {
   }
   show(next);
   if (next.shortcutHelp) await showHelp();
-  if (next.shortcutOpen && !next.busy) show(await invoke("pick_map"));
+  if (next.shortcutOpen && !next.busy && !chooseSiblingDifficulty()) show(await invoke("pick_map"));
+  if (!next.busy) {
+    switch (next.shortcutAction) {
+      case "filter": {
+        const filter = $("lane-filter");
+        const panel = filter.closest("[popover]");
+        if (panel && !panel.matches(":popover-open")) panel.showPopover();
+        filter.focus();
+        break;
+      }
+      case "newDiff":
+        $("new").click();
+        break;
+      case "openFolder":
+        await invoke("open_editor_folder", { folder: "map" });
+        break;
+      case "importOsz":
+        show(await invoke("pick_map", { archiveOnly: true }));
+        break;
+      case "openHitsoundFolder":
+        if (next.hitsoundLibrary) await invoke("open_editor_folder", { folder: "library" });
+        else $("folders").click();
+        break;
+      case "reviewOutput":
+        await openMergeSettings();
+        break;
+    }
+  }
 }
 
 function act(action, full = true) {
   return run(() => update(action, full));
 }
 
+let orderedLaneKeys = [];
+const renamedLanes = new Map();
+
 function hydrateLaneLayout(layout) {
+  orderedLaneKeys = [...layout?.lane_order ?? []];
+  renamedLanes.clear();
+  for (const [key, name] of Object.entries(layout?.lane_names ?? {})) renamedLanes.set(key, name);
   sampleFolderOrder = layout?.folder_order?.slice() ?? Object.keys(sampleFolderNames);
   collapsedFolders.clear();
   for (const group of layout?.collapsed_folders ?? []) collapsedFolders.add(group);
+  laneColours.clear();
+  for (const [key, colour] of Object.entries(layout?.lane_colours ?? {})) {
+    if (/^#[\da-f]{6}$/i.test(colour)) laneColours.set(key, colour);
+  }
   collapsedFamilies.clear();
   for (const family of layout?.collapsed_families ?? []) collapsedFamilies.add(family);
 }
 
-function saveLaneLayout() {
+function saveLaneLayout(persist = false) {
   const path = scene.path;
   const value = {
     folder_order: [...sampleFolderOrder],
     collapsed_folders: [...collapsedFolders],
     collapsed_families: [...collapsedFamilies],
+    lane_colours: Object.fromEntries(laneColours),
+    ...(renamedLanes.size ? { lane_names: Object.fromEntries(renamedLanes) } : {}),
+    ...(orderedLaneKeys.length ? { lane_order: [...orderedLaneKeys] } : {}),
   };
   layoutWrites++;
   run(async () => {
     try {
-      if (path === scene?.path) await update({ kind: "lane_layout", value }, false);
+      if (path === scene?.path) await update({ kind: "lane_layout", path, persist, value }, false);
     } finally {
       layoutWrites--;
     }
@@ -119,21 +182,32 @@ function saveLaneLayout() {
 }
 
 function show(next) {
+  const previousTool = view.tool;
   const wasPlaying = view.playing;
   const wasBusy = view.busy;
   view = next;
+  if (view.tool !== previousTool) refreshToolCursor();
   if (!view.hasDocument || view.showHome) scene = null;
   if (view.scene) {
     const loaded = view.scene.path !== scene?.path || (wasBusy && view.status === "Difficulty loaded");
     if (loaded) {
+      overviewDrag = null;
+      overviewTarget = null;
       usedLaneKeys = null;
       markedRange = null;
+      selectionLaneKeys.clear();
+      selectionLaneAnchor = null;
+      if (selectionLanesOnly) act({ kind: "volume_scope", path: view.scene.path, lanes: null }, false);
+      selectionLanesOnly = false;
+      $("selection-volume-scope").value = "all";
+      $("selection-volume-hint").textContent = "Changes all sounds at the selected times.";
       $("used-only").checked = false;
       $("lane-filter").value = "";
     }
     if (loaded || !layoutWrites) hydrateLaneLayout(view.scene.laneLayout);
     scene = view.scene;
   }
+  if (rulerPointer || rulerDrag) refreshRulerCursor();
   $("home").hidden = !!scene;
   $("workspace").hidden = !scene;
   $("go-home").hidden = !scene;
@@ -165,12 +239,15 @@ function show(next) {
   $("cancel-job").hidden = !view.busy;
   $("difficulty").hidden = !scene;
   for (const button of document.querySelectorAll("[data-doc]")) button.disabled = !scene || !!view.busy;
+  $("samples-view").ariaPressed = String(!view.drumView?.enabled);
+  $("drums-view").ariaPressed = String(!!view.drumView?.enabled);
+  $("drums-view").title = view.drumView?.name ?? "Open a drum map";
   $("ramp-shape").value = view.rampShape ?? "Linear";
+  $("song-mute").ariaPressed = String(!!view.songMuted);
+  $("song-solo").ariaPressed = String(!!view.songSolo);
   $("open").disabled = $("home-open").disabled = $("folders").disabled = !!view.busy;
 
-  const lane = scene?.lanes?.[view.activeLane];
-  $("active-lane-sample").textContent = lane?.sample ?? lane?.name ?? "";
-  $("replace-sample").disabled = !!view.busy || !lane?.canReplace;
+  renderActiveLane();
   renderPanelLayout();
   if (!scene && view.recent) renderRecent(view.recent);
   if (view.scene) renderScene();
@@ -178,18 +255,22 @@ function show(next) {
   $("edit-range").disabled = !!view.busy || !scene?.range;
   renderBookmarks();
   if (scene) {
-    setValue("speed", String(view.speed).replace(/^0\./, "."));
+    for (const button of speedButtons) button.ariaPressed = String(Number(button.dataset.playbackSpeed) === view.speed);
     $("cycle").checked = view.cycle;
     $("follow").checked = !!view.follow;
+    $("transport-return").ariaPressed = String(!!view.returnOnStop);
+    $("ruler-follow").setAttribute?.("aria-pressed", String(!!view.follow));
     followPlayhead();
     $("audition").checked = view.audition;
     if (wasPlaying !== view.playing) {
       $("play-icon").src = view.playing ? "studio-assets/icons/Pause.svg" : "studio-assets/icons/Play.svg";
       $("play-label").textContent = view.playing ? "Pause" : "Play";
+      $("play").dataset.playing = String(!!view.playing);
     }
     $("position").textContent = clock(view.position);
-    for (const button of $("tools").children) button.classList.toggle("active", button.textContent === view.tool);
+    for (const button of document.querySelectorAll(".editor-tool-button")) button.classList.toggle("active", button.textContent === view.tool);
   }
+  refreshLaneDelete();
   renderDialogs();
   window.refreshEditorMenu?.();
   paintSoon();
@@ -212,22 +293,32 @@ function renderRecent(paths) {
 
 function renderPanelLayout() {
   if (!view.panels) return;
-  const { inspector, controller, laneNames } = view.panels;
+  const { inspector, controller, laneNames, browser: showBrowser } = view.panels;
+  $("view-inspector").ariaPressed = String(!!scene && !!inspector);
+  $("view-browser").ariaPressed = String(!!scene && !!showBrowser);
   $("editor-dock").dataset.inspector = String(inspector);
   $("editor-arrange").dataset.controller = String(controller);
   $("editor-arrange").dataset.laneNames = String(laneNames);
-  $("editor-inspector").hidden = !inspector;
+  const namesToggle = $("toggle-lane-names");
+  namesToggle.ariaExpanded = String(laneNames !== false);
+  namesToggle.title = namesToggle.ariaLabel = laneNames === false ? "Show lane names" : "Hide lane names";
+  namesToggle.textContent = laneNames === false ? "›" : "‹";
   $("volume-controller-panel").hidden = !controller;
-  const browser = scene && view.panels.browser ? (view.classicBrowser ? "classic" : "tree") : "off";
+  const browser = scene && showBrowser ? (view.classicBrowser ? "classic" : "tree") : "off";
   $("editor-dock").dataset.browser = browser;
-  $("tree-browser-host").hidden = browser !== "tree";
-  $("classic-browser-host").hidden = browser !== "classic";
-  if (browser !== "off") {
-    const host = $(browser + "-browser-host");
-    const panel = $("sample-browser");
-    if (panel.parentNode !== host) host.append(panel);
-    renderSampleBrowser();
+  if (dock) {
+    if (scene) dock(browser, !!inspector);
+  } else {
+    $("editor-inspector").hidden = !inspector;
+    $("tree-browser-host").hidden = browser !== "tree";
+    $("classic-browser-host").hidden = browser !== "classic";
+    if (browser !== "off") {
+      const host = $(browser + "-browser-host");
+      const panel = $("sample-browser");
+      if (panel.parentNode !== host) host.append(panel);
+    }
   }
+  if (browser !== "off") renderSampleBrowser();
 }
 
 function reorderSampleFolder(from, to, after) {
@@ -243,6 +334,7 @@ function sampleFolderHeader(group) {
   const title = sampleFolderNames[group];
   const header = document.createElement("div");
   header.className = "lane sample-folder";
+  header.dataset.sampleSet = group;
   header.style.height = scene.rowHeight + "px";
   header.draggable = true;
 
@@ -296,22 +388,80 @@ function sampleFolderHeader(group) {
   return header;
 }
 
-function renderLanes() {
-  const filter = ($("lane-filter").value ?? "").trim().toLowerCase();
-  const eligible = [];
-  const families = new Map();
-  for (const row of scene.laneOrder ?? scene.lanes.map((_, row) => row)) {
-    const lane = scene.lanes[row];
-    if (usedLaneKeys !== null && !usedLaneKeys.has(lane.key)) continue;
-    if (filter && ![lane.name, lane.sample].some(name => name?.toLowerCase().includes(filter))) continue;
-    eligible.push(row);
-    if (lane.family == null) continue;
-    if (!families.has(lane.family)) families.set(lane.family, []);
-    families.get(lane.family).push(row);
-  }
+function laneDisplayName(lane) {
+  return renamedLanes.get(lane?.colourKey) ?? lane?.name ?? "";
+}
 
-  familyParents = new Map();
-  previewParents = new Map();
+function orderedLaneRows() {
+  const rows = scene.laneOrder ?? scene.lanes.map((_, row) => row);
+  if (!orderedLaneKeys.length) return rows;
+  const rank = new Map(orderedLaneKeys.map((key, index) => [key, index]));
+  const position = row => rank.get(scene.lanes[row].colourKey) ?? rank.size;
+  return [...rows].sort((left, right) => position(left) - position(right));
+}
+
+function adjacentLaneForMove(row, direction) {
+  if (view.drumView?.enabled || !scene?.lanes[row]?.colourKey) return null;
+  const position = laneRows.indexOf(row);
+  if (position < 0) return null;
+  const adjacent = laneRows[position + direction];
+  return typeof adjacent === "number" && scene.lanes[adjacent].colourKey &&
+    scene.lanes[adjacent].group === scene.lanes[row].group ? adjacent : null;
+}
+
+function moveLane(row, direction) {
+  const adjacent = adjacentLaneForMove(row, direction);
+  if (adjacent === null || view.busy || drag) return;
+  const rows = orderedLaneRows().filter(candidate => candidate !== row);
+  rows.splice(rows.indexOf(adjacent) + (direction > 0 ? 1 : 0), 0, row);
+  const present = new Set(rows.map(candidate => scene.lanes[candidate].colourKey));
+  orderedLaneKeys = [...rows.map(candidate => scene.lanes[candidate].colourKey),
+    ...orderedLaneKeys.filter(key => !present.has(key))];
+  refreshLanePresentation();
+}
+
+function renameLane(row) {
+  const lane = scene?.lanes[row];
+  if (!lane?.colourKey || view.busy || drag || view.drumView?.enabled) return;
+  const path = scene.path;
+  const field = input("text", renamedLanes.get(lane.colourKey) ?? "", "", "");
+  field.placeholder = lane.name;
+  field.maxLength = 120;
+  const apply = () => {
+    if (view.busy || scene?.path !== path || !scene.lanes.some(item => item.colourKey === lane.colourKey)) return;
+    const name = field.value.trim();
+    if (name && name !== lane.name) renamedLanes.set(lane.colourKey, name);
+    else renamedLanes.delete(lane.colourKey);
+    closeModal();
+    refreshLanePresentation();
+  };
+  field.addEventListener("keydown", event => {
+    if (event.key === "Enter" && !event.isComposing) {
+      event.preventDefault();
+      apply();
+    }
+  });
+  modal("rename-lane", "Rename lane", [labeled("Display name", field),
+    paragraph("Leave blank to restore the sample name.")],
+    [["Cancel", closeModal], ["Rename", apply, true]]);
+  field.focus();
+}
+
+function refreshLanePresentation() {
+  renderLanes();
+  renderActiveLane();
+  paintSoon();
+  saveLaneLayout(true);
+}
+
+function groupedLaneRows(eligible) {
+  const families = new Map();
+  for (const row of eligible) {
+    const family = scene.lanes[row].family;
+    if (family == null) continue;
+    if (!families.has(family)) families.set(family, []);
+    families.get(family).push(row);
+  }
   for (const [family, rows] of families) {
     if (rows.length < 2) continue;
     const parent = rows.find(row => scene.lanes[row].index === 1) ??
@@ -341,32 +491,94 @@ function renderLanes() {
     }
   }
   laneRows.push(...looseRows.filter(row => !previewParents.has(row)));
-  lanePositions = new Map(laneRows.map((row, position) => [row, position]));
+}
+
+function renderLanes() {
+  const filter = ($("lane-filter").value ?? "").trim().toLowerCase();
+  const eligible = (row, alias) => {
+    const lane = scene.lanes[row];
+    if (usedLaneKeys !== null && (!lane || !usedLaneKeys.has(lane.key))) return false;
+    return !filter || [alias, laneDisplayName(lane), lane?.name, lane?.sample].some(name => name?.toLowerCase().includes(filter));
+  };
+  familyParents = new Map();
+  previewParents = new Map();
+  let drumNames = [];
+  if (view.drumView?.enabled && scene.drumRows) {
+    const rows = scene.drumRows.filter(({ row, name }) => eligible(row, name));
+    laneRows = rows.map(({ row }) => row);
+    drumNames = rows.map(({ name }) => name);
+  } else {
+    groupedLaneRows(orderedLaneRows().filter(row => eligible(row)));
+  }
+  lanePositions = new Map();
+  laneVisualPositions = new Map();
+  for (const [position, row] of laneRows.entries()) {
+    if (!lanePositions.has(row)) lanePositions.set(row, position);
+    if (typeof row !== "number") continue;
+    if (!laneVisualPositions.has(row)) laneVisualPositions.set(row, []);
+    laneVisualPositions.get(row).push(position);
+  }
+  refreshLaneDelete();
   const lanePanel = $("lanes");
   const showNames = view.panels?.laneNames !== false;
-  const laneKey = JSON.stringify([laneRows, scene.lanes, view.activeLane, scene.rowHeight,
-    [...familyParents], showNames, showLaneInfo]);
+  const laneKey = JSON.stringify([laneRows, drumNames, scene.lanes, view.activeLane, scene.rowHeight, [...selectionLaneKeys],
+    [...familyParents], showNames, showLaneInfo, [...laneColours], [...renamedLanes]]);
   if (lanePanel.dataset.state !== laneKey) {
     lanePanel.dataset.state = laneKey;
-    lanePanel.replaceChildren(...laneRows.map((row) => {
+    lanePanel.replaceChildren(...laneRows.map((row, position) => {
       if (typeof row === "string") return sampleFolderHeader(row);
       const lane = scene.lanes[row];
       const strip = document.createElement("div");
-      strip.className = "lane" + (view.activeLane === row ? " active" : "");
+      const laneSelected = selectionLaneKeys.has(lane?.key);
+      strip.className = "lane" + (view.activeLane === row ? " active" : "") + (laneSelected ? " lane-selected" : "");
       strip.style.height = scene.rowHeight + "px";
+      if (!view.drumView?.enabled && lane?.group) {
+        strip.dataset.sampleSet = lane.group;
+        if (lane.index > 1) strip.classList.add("lane-layer");
+      }
+      const tint = laneTint(lane);
+      if (tint) {
+        strip.classList.add("lane-tinted");
+        strip.style.setProperty("--lane-tint", tint);
+      }
+      if (row === null) {
+        const name = document.createElement("span");
+        name.className = "name unassigned-drum";
+        name.textContent = showNames ? drumNames[position] : "–";
+        name.title = drumNames[position] + " · Unassigned";
+        strip.append(name);
+        return strip;
+      }
       const laneAction = (operation) => act({ kind: "lane", row, operation });
+      const displayName = drumNames[position] ?? laneDisplayName(lane);
       const laneLabel = showLaneInfo && lane.index != null
-        ? lane.name + (lane.index === 0 ? " · skin" : " · idx " + lane.index)
-        : lane.name;
-      const name = makeButton(showNames ? laneLabel : "▶", () => laneAction("audition"));
+        ? displayName + (lane.index === 0 ? " · skin" : " · idx " + lane.index)
+        : displayName;
+      const groupPrefix = lane.group + "-";
+      const visibleName = !showLaneInfo && !view.drumView?.enabled &&
+        !renamedLanes.has(lane.colourKey) && laneLabel.startsWith(groupPrefix + "hit")
+        ? laneLabel.slice(groupPrefix.length)
+        : laneLabel;
+      const name = makeButton(showNames ? visibleName : "▶", (event = {}) => {
+        if (view.busy || drag) return;
+        selectVolumeLane(row, event);
+        if (!event.ctrlKey && !event.metaKey && !event.shiftKey) laneAction("audition");
+      });
       name.className = "name";
-      name.title = (lane.sample ?? laneLabel) + " · Audition";
-      name.setAttribute("aria-label", "Audition " + laneLabel);
-      const mute = makeButton("M", () => laneAction("mute"));
-      mute.setAttribute("aria-label", "Mute " + lane.name);
+      const sourceFile = lane.sample ? nameOf(lane.sample) : "";
+      if (showNames && scene.rowHeight >= 34 && sourceFile &&
+          sourceFile.replace(/\.[^.]+$/, "") !== lane.name) name.dataset.sample = sourceFile;
+      name.dataset.laneRow = row;
+      name.setAttribute("aria-haspopup", "menu");
+      name.setAttribute("aria-expanded", "false");
+      name.setAttribute("aria-label", "Select and audition " + laneLabel);
+      name.setAttribute("aria-pressed", String(laneSelected));
+      name.title = (lane.sample ?? laneLabel) + " · Select and audition · Ctrl/Cmd toggles · Shift selects a range";
+      const mute = makeButton("M", () => mixSelectedLanes(row, "mute"));
+      mute.setAttribute("aria-label", "Mute " + displayName);
       mute.setAttribute("aria-pressed", lane.muted);
-      const solo = makeButton("S", () => laneAction("solo"));
-      solo.setAttribute("aria-label", "Solo " + lane.name);
+      const solo = makeButton("S", () => mixSelectedLanes(row, "solo"));
+      solo.setAttribute("aria-label", "Solo " + displayName);
       solo.setAttribute("aria-pressed", lane.solo);
       if (familyParents.has(row)) {
         const family = familyParents.get(row);
@@ -398,6 +610,139 @@ function renderLanes() {
   }
 }
 
+function mixSelectedLanes(row, operation) {
+  const lane = scene?.lanes[row];
+  if (!lane || view.busy || drag) return;
+  if (!selectionLaneKeys.has(lane.key)) selectVolumeLane(row, {});
+  const lanes = scene.lanes.filter(lane => selectionLaneKeys.has(lane.key)).map(lane => lane.sourceKey);
+  act({ kind: "lane_selection_mix", target: { map: scene.path, lane: lane.sourceKey }, operation, lanes });
+}
+
+function updateVolumeScope() {
+  $("selection-volume-hint").textContent = selectionLanesOnly
+    ? (selectionLaneKeys.size ? "Changes selected lanes at the selected times." : "Select lanes to change their volume.")
+    : "Changes all sounds at the selected times.";
+  if (scene) {
+    const lanes = selectionLanesOnly ? [...selectionLaneKeys] : null;
+    act({ kind: "volume_scope", path: scene.path, lanes }, false);
+  }
+}
+
+function selectVolumeLane(row, event) {
+  const key = scene.lanes[row].key;
+  const toggle = !!(event.ctrlKey || event.metaKey);
+  if (!toggle) selectionLaneKeys.clear();
+  const visible = event.shiftKey
+    ? [...new Set(laneRows.filter(row => typeof row === "number").map(row => scene.lanes[row].key))]
+    : [];
+  const start = visible.indexOf(selectionLaneAnchor);
+  const end = visible.indexOf(key);
+  if (start >= 0 && end >= 0) {
+    for (const key of visible.slice(Math.min(start, end), Math.max(start, end) + 1)) {
+      selectionLaneKeys.add(key);
+    }
+  } else {
+    if (!toggle || !selectionLaneKeys.delete(key)) selectionLaneKeys.add(key);
+    selectionLaneAnchor = key;
+  }
+  if (selectionLanesOnly) updateVolumeScope();
+  renderLanes();
+}
+
+$("selection-volume-scope").addEventListener("change", () => {
+  if (!scene || view.busy || drag) return;
+  selectionLanesOnly = $("selection-volume-scope").value === "selected";
+  updateVolumeScope();
+});
+
+function requestDrumMap() {
+  if (!scene || view.busy || drag) return;
+  const map = scene.path;
+  run(async () => {
+    if (scene?.path !== map || view.busy || drag) return;
+    const next = await invoke("pick_drum_map", { map });
+    if (next) show(next);
+  });
+}
+
+function setDrumView(on) {
+  const map = scene.path;
+  run(async () => {
+    if (scene?.path === map && !view.busy && !drag) show(await invoke("set_drum_view", { map, on }));
+  });
+}
+
+$("samples-view").addEventListener("click", () => {
+  if (scene && !view.busy && !drag && view.drumView?.enabled) {
+    setDrumView(false);
+  }
+});
+$("drums-view").addEventListener("click", () => {
+  if (!scene || view.busy || drag || view.drumView?.enabled) return;
+  if (view.drumView?.name) setDrumView(true);
+  else requestDrumMap();
+});
+
+function deletableLane() {
+  if (!scene || view.busy || drag || !lanePositions.has(view.activeLane)) return null;
+  const lane = scene.lanes?.[view.activeLane];
+  return lane?.canDelete ? lane : null;
+}
+
+function refreshLaneDelete() {
+  const button = $("delete-lane");
+  button.disabled = !deletableLane();
+  const lane = scene?.lanes?.[view.activeLane];
+  button.title = lane?.canDelete === false
+    ? "Protected hitnormals and slider body lanes cannot be deleted here"
+    : "Delete active lane";
+}
+
+$("add-lane").addEventListener("click", () => {
+  if (!scene || view.busy || drag) return;
+  const map = scene.path;
+  run(async () => {
+    if (scene?.path !== map || view.busy || drag) return;
+    const candidates = await invoke("lane_add_candidates", { map });
+    if (scene?.path !== map || view.busy || drag) return;
+    if (!candidates.length) {
+      modal("add-lane", "Add lane", [paragraph("No new samples or hidden lanes. Put a WAV, OGG, or MP3 file in the map folder to add a lane.")],
+        [["Done", closeModal, true]]);
+      return;
+    }
+    const lane = document.createElement("select");
+    lane.append(...candidates.map(candidate => new Option(candidate.name, candidate.key)));
+    lane.value = candidates[0].key;
+    modal("add-lane", "Add lane", [labeled("Sample", lane)], [
+      ["Cancel", closeModal],
+      ["Add", () => {
+        const target = { map, lane: lane.value };
+        closeModal();
+        act({ kind: "show_lane", target });
+      }, true],
+    ]);
+  });
+});
+
+$("delete-lane").addEventListener("click", () => {
+  const lane = deletableLane();
+  if (!lane) return;
+  const target = { map: scene.path, lane: lane.sourceKey };
+  const revision = scene.laneRevision;
+  const remove = () => act({ kind: "delete_lane", target, revision });
+  if (!lane.hitCount) {
+    remove();
+    return;
+  }
+  modal("delete-lane", "Delete lane", [
+    paragraph("Delete " + lane.name + " and its " + lane.hitCount + (lane.hitCount === 1 ? " hit?" : " hits?")),
+    paragraph("Undo restores the lane and its hits. The sample file stays in the map folder."),
+  ], [
+    ["Cancel", closeModal, true],
+    ["Delete", () => { closeModal(); remove(); }],
+  ]);
+});
+
 function selectedBookmark() {
   return scene?.bookmarks?.[$("bookmarks").selectedIndex];
 }
@@ -425,8 +770,8 @@ function drawBookmarks(ctx, marks, start, zoom, width) {
     .filter(([, x]) => x >= 0 && x <= width);
   ctx.fillStyle = "#79d7dc";
   for (const [i, [mark, x]] of visible.entries()) {
-    ctx.fillRect(x, 21, 2, 22);
-    ctx.fillRect(x, 21, 9, 5);
+    ctx.fillRect(x, rulerBandHeight, 2, bookmarkFlagHeight);
+    ctx.fillRect(x, rulerBandHeight, 9, 5);
     const labelWidth = Math.min(180, (visible[i + 1]?.[1] ?? width) - x - 10);
     if (mark.label && labelWidth > 24) ctx.fillText(mark.label, x + 5, 36, labelWidth);
   }
@@ -435,6 +780,10 @@ function drawBookmarks(ctx, marks, start, zoom, width) {
 function renderScene() {
   renderLanes();
   $("snap").checked = scene.snap;
+  const gridLabel = scene.snap ? "Grid · " + scene.beats + "/" + scene.divisor : "Grid · Snap off";
+  const gridOptions = $("grid-options");
+  gridOptions.textContent = gridLabel + " ▾";
+  gridOptions.ariaLabel = gridLabel + ", grid and snapping settings";
   $("object-lines").checked = view.objectLines;
   setValue("snap-mode", scene.snapMode);
   setValue("beats", scene.beats);
@@ -470,6 +819,21 @@ function renderScene() {
   }
 }
 
+function renderActiveLane() {
+  const lane = scene?.lanes?.[view.activeLane];
+  const name = $("active-lane-name");
+  name.textContent = name.title = laneDisplayName(lane);
+  const sample = $("active-lane-sample");
+  sample.textContent = sample.title = lane?.sample ?? "";
+  sample.hidden = !lane?.sample || lane.sample === lane.name;
+  const colour = laneColours.get(lane?.colourKey);
+  const swatch = $("active-lane-colour-swatch");
+  swatch.hidden = !colour;
+  if (colour) swatch.style.backgroundColor = colour;
+  $("replace-sample").disabled = !!view.busy || !lane?.canReplace;
+  $("lane-colour").disabled = !!view.busy || !lane?.colourKey;
+}
+
 function renderSelection() {
   const selection = scene?.selection;
   $("selected").textContent = selection
@@ -487,6 +851,7 @@ function renderSelection() {
       $("slider-body-set").value = body.set ?? "";
       $("slider-body-set").disabled = !body.set;
       $("slider-body-whistle").checked = body.whistle;
+      $("slider-body-whistle-set").value = body.whistleSet ?? "auto";
       $("slider-body-volume").value = body.volume;
       fields.dataset.state = state;
     }
@@ -571,7 +936,7 @@ function drawTimingGrid(ctx, start, end, zoom, top, bottom, ruler = false) {
       const x = (origin + n * step - start) * zoom;
       const bar = !scene.editorBars?.length && tick % meter === 0;
       const longSnap = useSnap && scene.beats > 1 && tick % scene.beats === 0;
-      const color = ruler ? snapColours[1] : bar || longSnap ? "#4b6276" : "#29384a";
+      const color = ruler ? snapColours[1] : bar || longSnap ? slateTimeline.barLine : slateTimeline.beatLine;
       line(ctx, color, x, ruler ? bottom - (bar || longSnap ? 9 : 7) : top, x, bottom);
     }
   }
@@ -584,9 +949,9 @@ function drawTimingGrid(ctx, start, end, zoom, top, bottom, ruler = false) {
     if (begin >= until || !Number.isFinite(step) || step <= 0) continue;
     for (let n = Math.ceil((begin - section.start) / step); section.start + n * step < until; n++) {
       const x = (section.start + n * step - start) * zoom;
-      line(ctx, "#607189", x, ruler ? 3 : top, x, bottom);
+      line(ctx, slateTimeline.barLine, x, ruler ? 3 : top, x, bottom);
       if (ruler) {
-        ctx.fillStyle = "#c6d3e4";
+        ctx.fillStyle = slateTimeline.rulerBar;
         ctx.fillText(String(section.bar + n * stride), x + 5, 14);
       }
     }
@@ -638,8 +1003,64 @@ function fillHitDiamond(ctx, x, y) {
   ctx.fill();
 }
 
+function drawGameplay(ctx, gameplay, xOf, y, width) {
+  if (!gameplay) return;
+  for (const [kind, start, end] of gameplay.spans) {
+    const left = xOf(start);
+    const right = xOf(end);
+    if (right < 0 || left > width) continue;
+    const height = kind === "slider" ? 11 : 5;
+    ctx.fillStyle = kind === "slider" ? "#536a89d9" : "#9e86c8";
+    const from = Math.max(0, left);
+    const to = Math.min(width, right);
+    ctx.fillRect(from, y - height / 2, Math.max(1, to - from), height);
+  }
+  ctx.lineWidth = 1;
+  ctx.strokeStyle = "#dddddd";
+  for (const [kind, time] of gameplay.points) {
+    const x = xOf(time);
+    if (x < -6 || x > width + 6) continue;
+    ctx.fillStyle = kind === "circle" ? "#26364b" : "#405a7a";
+    ctx.beginPath();
+    ctx.arc(x, y, kind === "circle" ? 6 : 4, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+  }
+}
+
+function laneTint(lane) {
+  const colour = laneColours.get(lane?.colourKey);
+  return colour ? colour + "1f" : null;
+}
+
+const overviewGroups = ["soft", "normal", "drum", null, "skin"];
+let overviewHitCache = null;
+
+function drawOverviewHits({ ctx, width, height }, { moments, lanes }, duration) {
+  if (width <= 0 || height <= 6 || duration <= 0) return;
+  if (overviewHitCache?.moments !== moments || overviewHitCache.lanes !== lanes ||
+      overviewHitCache.width !== width || overviewHitCache.duration !== duration) {
+    const columns = overviewGroups.map(() => new Set());
+    const laneBands = lanes?.map(lane => overviewGroups.indexOf(lane.group));
+    const scale = width / duration;
+    for (const [time, , , hits] of moments) {
+      if (time < 0 || time > duration) continue;
+      const x = Math.min(width - 1, Math.floor(time * scale));
+      for (const [row] of hits) columns[laneBands?.[row]]?.add(x);
+    }
+    overviewHitCache = { moments, lanes, width, duration, columns };
+  }
+
+  const bandHeight = (height - 6) / overviewGroups.length;
+  ctx.fillStyle = "#aaaaaa";
+  for (const [band, columns] of overviewHitCache.columns.entries()) {
+    const y = 3 + band * bandHeight;
+    for (const x of columns) ctx.fillRect(x, y, 1.2, Math.max(1, bandHeight - 1));
+  }
+}
+
 function paint() {
-  if (!scene || $("workspace").hidden) return;
+  if (!scene || $("workspace").hidden || $("editor-arrange").hidden) return;
   const rowHeight = scene.rowHeight;
   const contentHeight = Math.max($("scroll").clientHeight, laneRows.length * rowHeight);
   const scrollTop = $("scroll").scrollTop;
@@ -647,33 +1068,46 @@ function paint() {
   grid.style.height = canvasHeight + "px";
   const g = prepare(grid, canvasHeight);
   const r = prepare(ruler);
-  const v = $("volume-controller-panel").hidden ? null : prepare(controller);
+  const volumePanel = $("volume-controller-panel");
+  const v = volumePanel.hidden || volumePanel.dataset?.layoutBarHidden !== undefined ? null : prepare(controller);
   const o = prepare(overview);
   const { start, zoom } = { start: scene.viewStart, zoom: scene.zoom };
   const xOf = (time) => (time - start) * zoom;
   const end = start + g.width / zoom;
   const range = scene.range;
   if (v) {
-    v.ctx.fillStyle = "#172230";
+    v.ctx.fillStyle = slateTimeline.volume;
     v.ctx.fillRect(0, 0, v.width, v.height);
-    line(v.ctx, "#304054", 0, v.height / 2, v.width, v.height / 2);
+    v.ctx.font = '10px "Roboto Mono", monospace';
+    for (const percent of [100, 50, 0]) {
+      const y = v.height - 1 - percent * (v.height - 3) / 100;
+      line(v.ctx, slateTimeline.beatLine, 0, y, v.width, y);
+      v.ctx.fillStyle = "#a6b0bf";
+      if (v.height >= 64) v.ctx.fillText(String(percent), 5, percent === 0 ? y - 3 : y + 11);
+    }
   }
   for (let row = Math.floor(scrollTop / rowHeight); row <= Math.ceil((scrollTop + g.height) / rowHeight); row++) {
     const y = row * rowHeight - scrollTop;
     const lane = laneRows[row];
-    g.ctx.fillStyle = lane === view.activeLane ? "#1d3440" : row % 2 ? "#192532" : "#15212e";
-    if (lane === undefined) g.ctx.fillStyle = "#121a24";
-    else if (typeof lane === "string") g.ctx.fillStyle = "#233246";
+    g.ctx.fillStyle = lane === view.activeLane ? slateTimeline.activeRow : row % 2 ? slateTimeline.alternateRow : slateTimeline.arrange;
+    if (lane === undefined) g.ctx.fillStyle = slateTimeline.arrange;
+    else if (typeof lane === "string") g.ctx.fillStyle = slateTimeline.group;
     g.ctx.fillRect(0, y, g.width, rowHeight);
-    if (lane !== undefined) line(g.ctx, "#304054", 0, y + rowHeight - .5, g.width, y + rowHeight - .5);
+    const tint = typeof lane === "number" ? laneTint(scene.lanes?.[lane]) : null;
+    if (tint) {
+      g.ctx.fillStyle = tint;
+      g.ctx.fillRect(0, y, g.width, rowHeight);
+    }
+    if (lane !== undefined) line(g.ctx, slateTimeline.divider, 0, y + rowHeight - .5, g.width, y + rowHeight - .5);
   }
   if (range) {
     g.ctx.fillStyle = "#4eafbb35";
     const width = xOf(range[1]) - xOf(range[0]);
     if (markedRange?.path === scene.path) {
       for (const row of markedRange.rows) {
-        const position = lanePositions.get(row);
-        if (position !== undefined) g.ctx.fillRect(xOf(range[0]), position * rowHeight - scrollTop, width, rowHeight);
+        for (const position of laneVisualPositions.get(row) ?? []) {
+          g.ctx.fillRect(xOf(range[0]), position * rowHeight - scrollTop, width, rowHeight);
+        }
       }
     } else {
       g.ctx.fillRect(xOf(range[0]), 0, width, g.height);
@@ -696,30 +1130,30 @@ function paint() {
       v.ctx.fillRect(x - 1, v.height - volumeHeight, 2, volumeHeight);
     }
     if (previewParents.size) {
-      for (const [row, , listenMuted] of hits) {
+      for (const [row, , listenMuted, hitVolume] of hits) {
         const parent = previewParents.get(row);
         if (parent === undefined) continue;
         const y = (lanePositions.get(parent) + .5) * rowHeight - scrollTop;
         if (y < -8 || y > g.height + 8) continue;
         g.ctx.save();
         g.ctx.globalAlpha *= .3;
-        g.ctx.fillStyle = listenMuted ? "#637484" : colour;
+        g.ctx.fillStyle = listenMuted ? "#637484" : volumeColour(hitVolume ?? volume);
         fillHitDiamond(g.ctx, x, y);
         g.ctx.restore();
       }
     }
-    for (const [row, selected, listenMuted] of hits) {
-      const visibleRow = lanePositions.get(row);
-      if (visibleRow === undefined) continue;
-      const y = (visibleRow + .5) * rowHeight - scrollTop;
-      if (y < -8 || y > g.height + 8) continue;
-      g.ctx.fillStyle = listenMuted ? "#637484" : colour;
-      fillHitDiamond(g.ctx, x, y);
-      if (selected) {
-        g.ctx.lineWidth = 2;
-        g.ctx.strokeStyle = "#e5fbff";
-        g.ctx.stroke();
-        g.ctx.lineWidth = 1;
+    for (const [row, selected, listenMuted, hitVolume] of hits) {
+      for (const visibleRow of laneVisualPositions.get(row) ?? []) {
+        const y = (visibleRow + .5) * rowHeight - scrollTop;
+        if (y < -8 || y > g.height + 8) continue;
+        g.ctx.fillStyle = listenMuted ? "#637484" : volumeColour(hitVolume ?? volume);
+        fillHitDiamond(g.ctx, x, y);
+        if (selected) {
+          g.ctx.lineWidth = 2;
+          g.ctx.strokeStyle = "#e5fbff";
+          g.ctx.stroke();
+          g.ctx.lineWidth = 1;
+        }
       }
     }
   }
@@ -746,40 +1180,50 @@ function paint() {
     }
     v.ctx.stroke();
   }
-  r.ctx.fillStyle = "#192532";
+  r.ctx.fillStyle = slateTimeline.ruler;
   r.ctx.fillRect(0, 0, r.width, r.height);
-  waveform(r.ctx, r.width, (r.height + 20) / 2, (r.height - 21) / 2, start, r.width / zoom);
-  r.ctx.fillStyle = "#1f2b3b";
-  r.ctx.fillRect(0, 0, r.width, 21);
+  const waveformMiddle = (r.height + rulerBandHeight) / 2;
+  const waveAmplitude = Math.min(waveformHeight, Math.max(0, r.height - rulerBandHeight)) / 2;
+  if (waveAmplitude > 0) waveform(r.ctx, r.width, waveformMiddle, waveAmplitude, start, r.width / zoom);
+  drawGameplay(r.ctx, scene.gameplay, xOf, waveformMiddle, r.width);
+  r.ctx.fillStyle = slateTimeline.ruler;
+  r.ctx.fillRect(0, 0, r.width, rulerBandHeight);
   r.ctx.font = "11px Consolas, monospace";
-  drawTimingGrid(r.ctx, start, end, zoom, 0, 21, true);
+  drawTimingGrid(r.ctx, start, end, zoom, 0, rulerBandHeight, true);
   const rulerSteps = [25, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 30000, 60000];
   const labelStep = rulerSteps.find((step) => step * zoom >= 76) ?? 120000;
   for (let time = Math.ceil(start / labelStep) * labelStep; !scene.editorBars?.length && time < end; time += labelStep) {
     const x = xOf(time);
-    line(r.ctx, "#607189", x, 3, x, 21);
-    r.ctx.fillStyle = "#c6d3e4";
+    line(r.ctx, slateTimeline.barLine, x, 3, x, 21);
+    r.ctx.fillStyle = slateTimeline.rulerBar;
     r.ctx.fillText(clock(time), x + 5, 14);
   }
-  if (view.cycle) {
-    r.ctx.fillStyle = "#4eafbb46";
-    r.ctx.fillRect(xOf(view.left), 0, xOf(view.right) - xOf(view.left), 20);
-  }
-  for (const time of [view.left, view.right]) {
-    line(r.ctx, "#8bcaac", xOf(time), 0, xOf(time), r.height);
+  const preview = rulerDrag?.path === scene.path ? rulerDrag.preview : null;
+  const [left, right, cycling] = preview ?? [view.left, view.right, view.cycle];
+  const colour = left > right ? "#f0aa70" : cycling ? slateTimeline.cycle : slateTimeline.locator;
+  const spanStart = xOf(Math.min(left, right));
+  const spanWidth = xOf(Math.max(left, right)) - spanStart;
+  r.ctx.fillStyle = colour + (cycling ? "46" : "22");
+  r.ctx.fillRect(spanStart, 0, spanWidth, rulerBandHeight - 1);
+  r.ctx.fillStyle = colour;
+  r.ctx.fillRect(spanStart, 0, spanWidth, 2);
+  for (const time of [left, right]) {
+    line(r.ctx, slateTimeline.locator, xOf(time), 0, xOf(time), r.height);
   }
   drawBookmarks(r.ctx, scene.bookmarks ?? [], start, zoom, r.width);
-  line(g.ctx, "#64e1e8", xOf(view.position), 0, xOf(view.position), g.height);
-  line(r.ctx, "#64e1e8", xOf(view.position), 0, xOf(view.position), r.height);
+  line(g.ctx, slateTimeline.playhead, xOf(view.position), 0, xOf(view.position), g.height);
+  line(r.ctx, slateTimeline.playhead, xOf(view.position), 0, xOf(view.position), r.height);
   rulerWarningMarkers = visibleWarningMarkers(view.outputProblems ?? [], scene.path, start, zoom, r.width);
+  refreshRulerWarningTooltip();
   r.ctx.fillStyle = "#f0aa70";
   for (const marker of rulerWarningMarkers) {
     r.ctx.fillRect(marker.x - 3, r.height - 9, 6, 6);
   }
-  if (v) line(v.ctx, "#64e1e8", xOf(view.position), 0, xOf(view.position), v.height);
-  o.ctx.fillStyle = "#192532";
+  if (v) line(v.ctx, slateTimeline.playhead, xOf(view.position), 0, xOf(view.position), v.height);
+  o.ctx.fillStyle = slateTimeline.overview;
   o.ctx.fillRect(0, 0, o.width, o.height);
   waveform(o.ctx, o.width, o.height / 2, o.height / 2 - 2, 0, view.duration);
+  drawOverviewHits(o, scene, view.duration);
   if (view.duration > 0) {
     const overviewX = start * o.width / view.duration;
     const overviewWidth = (g.width / zoom) * o.width / view.duration;
@@ -788,29 +1232,34 @@ function paint() {
     o.ctx.strokeStyle = "#6ebdc7";
     o.ctx.strokeRect(overviewX, .5, overviewWidth, o.height - 1);
     const playX = view.position * o.width / view.duration;
-    line(o.ctx, "#a5feff", playX, 0, playX, o.height);
+    line(o.ctx, slateTimeline.playhead, playX, 0, playX, o.height);
   }
 }
 
-function pointer(event, phase) {
-  const rect = drag.surface.getBoundingClientRect();
+function pointer(event, phase, gesture = drag) {
+  const rect = gesture.surface.getBoundingClientRect();
   const x = event.clientX - rect.x;
-  const valueLane = drag.surface === controller;
-  const y = event.clientY - rect.y + (valueLane || drag.panning ? 0 : $("scroll").scrollTop);
-  const visibleRow = limit(Math.floor(y / scene.rowHeight), 0, drag.rows.length - 1);
-  const lane = drag.rows[visibleRow];
-  if (typeof lane === "number") drag.lastRow = lane;
-  const row = valueLane || drag.panning ? view.activeLane : drag.lastRow;
-  let ms = drag.start + x / drag.zoom;
-  if (phase === "down" && !valueLane && ["Select", "Erase", "Mute", "Ramp"].includes(view.tool)) {
-    let best = 6.5 / drag.zoom;
+  const valueLane = gesture.surface === controller;
+  const y = event.clientY - rect.y + (valueLane || gesture.panning ? 0 : $("scroll").scrollTop);
+  const rowUnderPointer = Math.floor(y / scene.rowHeight);
+  const visibleRow = phase === "double_click" ? rowUnderPointer : limit(rowUnderPointer, 0, gesture.rows.length - 1);
+  const lane = gesture.rows[visibleRow];
+  if (typeof lane === "number") {
+    gesture.lastRow = lane;
+    gesture.lastVisualRow = visibleRow;
+  }
+  const row = valueLane || gesture.panning ? view.activeLane : gesture.lastRow;
+  let ms = gesture.start + x / gesture.zoom;
+  if ((phase === "down" || phase === "double_click") && !valueLane &&
+      ["Select", "Erase", "Mute", "Ramp"].includes(view.tool)) {
+    let best = 6.5 / gesture.zoom;
     for (const [time, , , hits] of scene.moments) {
       if (Math.abs(time - ms) < best && hits.some(([lane]) => row === lane)) {
         best = Math.abs(time - ms);
-        drag.hit = time;
+        gesture.hit = time;
       }
     }
-    if (drag.hit != null) ms = drag.hit;
+    if (gesture.hit != null) ms = gesture.hit;
   }
   return {
     kind: "pointer", phase, ms, row, x, y,
@@ -854,9 +1303,51 @@ function scrollGrab(point) {
   if (drag.panning) $("scroll").scrollTop = drag.scrollTop + drag.firstPoint.y - point.y;
 }
 
+let cursorSurface = null;
+let cursorAltDraw = false;
+
+function refreshToolCursor() {
+  if (!cursorSurface) return;
+  const tool = view.tool === "Grab" || !cursorAltDraw ? view.tool : "Draw";
+  const cursor = {
+    Select: "default",
+    Grab: "pointer",
+    Draw: 'url("studio-assets/icons/cursor-draw.svg") 4 4, crosshair',
+    Erase: 'url("studio-assets/icons/cursor-erase.svg") 5 27, crosshair',
+  }[tool] ?? "crosshair";
+  if (cursorSurface.style.cursor !== cursor) cursorSurface.style.cursor = cursor;
+}
+
+function updateCursorModifiers(event) {
+  const altDraw = event.altKey && !event.ctrlKey && !event.metaKey && !event.getModifierState?.("AltGraph");
+  if (altDraw === cursorAltDraw) return;
+  cursorAltDraw = altDraw;
+  refreshToolCursor();
+}
+
+window.addEventListener?.("keydown", updateCursorModifiers, true);
+window.addEventListener?.("keyup", updateCursorModifiers, true);
+window.addEventListener?.("blur", () => {
+  cursorAltDraw = false;
+  refreshToolCursor();
+});
+
+for (const surface of [grid, controller]) {
+  const trackToolCursor = (event) => {
+    cursorSurface = surface;
+    updateCursorModifiers(event);
+    refreshToolCursor();
+  };
+  surface.addEventListener("pointerenter", trackToolCursor);
+  surface.addEventListener("pointermove", trackToolCursor);
+  surface.addEventListener("pointerleave", () => {
+    if (cursorSurface === surface) cursorSurface = null;
+  });
+}
+
 for (const surface of [grid, controller]) {
   surface.addEventListener("pointerdown", (event) => {
-    if (!scene || view.busy || drag || event.button !== 0) return;
+    if (!scene || view.busy || drag || rulerDrag || event.button !== 0) return;
     const panning = surface === grid && view.tool === "Grab" && !event.altKey;
     if (surface === grid && !panning) {
       const rect = grid.getBoundingClientRect();
@@ -876,6 +1367,7 @@ for (const surface of [grid, controller]) {
     drag = { surface, id: event.pointerId, start: scene.viewStart, zoom: scene.zoom,
       rows: laneRows, last: 0, panning, scrollTop: $("scroll").scrollTop };
     drag.firstPoint = pointer(event, "down");
+    drag.firstVisualRow = drag.lastVisualRow;
     drag.markingRange = surface === grid && view.tool === "Range";
     act(drag.firstPoint);
   });
@@ -893,12 +1385,12 @@ for (const surface of [grid, controller]) {
       const end = pointer(event, released ? "up" : "cancel");
       const moved = released && Math.hypot(end.x - drag.firstPoint.x, end.y - drag.firstPoint.y) > 3;
       if (released && drag.markingRange) {
-        const first = drag.rows.indexOf(drag.firstPoint.row);
-        const last = drag.rows.indexOf(end.row);
+        const first = drag.firstVisualRow ?? -1;
+        const last = drag.lastVisualRow ?? -1;
         markedRange = moved && first >= 0 && last >= 0 ? {
           path: scene.path,
-          rows: drag.rows.slice(Math.min(first, last), Math.max(first, last) + 1)
-            .filter(row => typeof row === "number"),
+          rows: [...new Set(drag.rows.slice(Math.min(first, last), Math.max(first, last) + 1)
+            .filter(row => typeof row === "number"))],
         } : null;
       }
       if (moved) {
@@ -910,36 +1402,290 @@ for (const surface of [grid, controller]) {
     });
   }
 }
+grid.addEventListener("dblclick", (event) => {
+  if (!scene || view.busy || drag || view.tool !== "Select" || event.button !== 0 ||
+      event.shiftKey || event.ctrlKey || event.metaKey || event.altKey) return;
+  const gesture = { surface: grid, start: scene.viewStart, zoom: scene.zoom, rows: laneRows };
+  const point = pointer(event, "double_click", gesture);
+  if (Number.isInteger(point.row)) {
+    event.preventDefault();
+    act(point);
+  }
+});
 $("scroll").addEventListener("scroll", paintSoon);
 new ResizeObserver(paintSoon).observe($("scroll"));
-ruler.addEventListener("pointermove", (event) => {
+
+const waveformGrip = $("waveform-resize");
+let waveformDrag = null;
+
+function setWaveformHeight(requested) {
+  waveformHeight = limit(Math.round(requested), 0, 200);
+  if (waveformHeight) visibleWaveformHeight = waveformHeight;
+  $("ruler-waveform").setAttribute?.("aria-pressed", String(waveformHeight > 0));
+  $("editor-arrange").style.setProperty("--wave-height", waveformHeight + "px");
+  waveformGrip.setAttribute("aria-valuenow", String(waveformHeight));
+  waveformGrip.setAttribute("aria-valuetext", waveformHeight ? waveformHeight + " pixels" : "Waveform hidden");
+  paintSoon();
+}
+
+function finishWaveformDrag(cancel) {
+  const previous = waveformDrag;
+  waveformDrag = null;
+  delete waveformGrip.dataset.dragging;
+  if (cancel) setWaveformHeight(previous.height);
+  if (waveformGrip.hasPointerCapture(previous.id)) waveformGrip.releasePointerCapture(previous.id);
+}
+
+waveformGrip.addEventListener("pointerdown", event => {
+  if (event.button !== 0 || drag || rulerDrag || waveformDrag) return;
+  const growsDown = !waveformGrip.parentElement?.hasAttribute("data-layout-size-from-top");
+  waveformDrag = { id: event.pointerId, y: event.clientY, height: waveformHeight, direction: growsDown ? 1 : -1 };
+  waveformGrip.dataset.dragging = "";
+  waveformGrip.setPointerCapture(event.pointerId);
+});
+waveformGrip.addEventListener("pointermove", event => {
+  if (waveformDrag && waveformDrag.id === event.pointerId) {
+    setWaveformHeight(waveformDrag.height + (event.clientY - waveformDrag.y) * waveformDrag.direction);
+  }
+});
+for (const type of ["pointerup", "pointercancel", "lostpointercapture"]) {
+  waveformGrip.addEventListener(type, event => {
+    if (waveformDrag && waveformDrag.id === event.pointerId) {
+      if (type === "pointerup") setWaveformHeight(waveformDrag.height + (event.clientY - waveformDrag.y) * waveformDrag.direction);
+      finishWaveformDrag(type !== "pointerup");
+    }
+  });
+}
+waveformGrip.addEventListener("dblclick", () => setWaveformHeight(defaultWaveformHeight));
+waveformGrip.addEventListener("keydown", event => {
+  if (event.key === "Escape" && waveformDrag) {
+    finishWaveformDrag(true);
+  } else {
+    const step = waveformGrip.parentElement?.hasAttribute("data-layout-size-from-top") ? -8 : 8;
+    const heights = { ArrowUp: waveformHeight - step, ArrowDown: waveformHeight + step,
+      Home: 0, End: 200, Enter: defaultWaveformHeight };
+    if (!Object.hasOwn(heights, event.key)) return;
+    setWaveformHeight(heights[event.key]);
+  }
+  event.preventDefault();
+});
+
+let rulerPointer = null;
+
+function refreshRulerCursor() {
+  let gesture = rulerDrag?.mode;
+  if (!gesture && scene && rulerPointer) {
+    const { left, top, width } = ruler.getBoundingClientRect();
+    const x = rulerPointer.clientX - left;
+    const y = rulerPointer.clientY - top;
+    if (x >= 0 && x < width && y >= 0 && y < rulerBandHeight) gesture = rulerGestureAt(x);
+  }
+  const cursor = gesture === "left" || gesture === "right" ? "ew-resize"
+    : gesture === "move" ? "pointer" : "default";
+  if (ruler.style.cursor !== cursor) ruler.style.cursor = cursor;
+}
+
+function trackRulerPointer(event) {
+  const bounds = ruler.getBoundingClientRect();
+  const x = event.clientX - bounds.left;
+  rulerPointer = { clientX: event.clientX, clientY: event.clientY };
+  refreshRulerCursor();
+  if (rulerDrag && rulerDrag.id === event.pointerId) {
+    rulerDrag.preview = locatorPreview(rulerDrag, x);
+    paintSoon();
+    return;
+  }
+  refreshRulerWarningTooltip(bounds);
+}
+
+function refreshRulerWarningTooltip(bounds) {
+  let nearest = null;
+  if (rulerPointer && !rulerDrag && rulerWarningMarkers.length) {
+    const rect = bounds ?? ruler.getBoundingClientRect();
+    const x = rulerPointer.clientX - rect.left;
+    const y = rulerPointer.clientY - rect.top;
+    if (x >= 0 && x < rect.width && y >= rect.height - 13 && y < rect.height) {
+      let distance = Infinity;
+      for (const marker of rulerWarningMarkers) {
+        const gap = Math.abs(marker.x - x);
+        if (gap <= 7 && gap < distance) {
+          nearest = marker;
+          distance = gap;
+        }
+      }
+    }
+  }
+  const nearby = nearest?.problems ?? [];
+  const lines = nearby.slice(0, 8).map(describeOutputProblem);
+  if (nearby.length > lines.length) lines.push("…and " + (nearby.length - lines.length) + " more.");
+  const title = lines.join("\n");
+  if (ruler.title !== title) ruler.title = title;
+}
+ruler.addEventListener("pointerenter", trackRulerPointer);
+ruler.addEventListener("pointermove", trackRulerPointer);
+ruler.addEventListener("pointerleave", () => {
+  ruler.title = "";
+  rulerPointer = null;
+  refreshRulerCursor();
+});
+function waveformTarget(ms, y, height) {
+  const dy = Math.abs(y - (height + rulerBandHeight) / 2);
+  if (!scene.gameplay || dy > 6) return null;
+  let target = null;
+  let nearest = Infinity;
+  for (const [kind, time, object] of scene.gameplay.points) {
+    const radius = kind === "circle" ? 6 : 4;
+    const distance = Math.hypot((time - ms) * scene.zoom, dy);
+    if (distance <= radius && distance < nearest) {
+      target = { object, time, node: true };
+      nearest = distance;
+    }
+  }
+  if (target) return target;
+  const span = scene.gameplay.spans.findLast(([kind, start, end]) =>
+    dy <= (kind === "slider" ? 5.5 : 2.5) && start <= ms && ms <= end);
+  return span ? { object: span[3], time: span[1], node: false } : null;
+}
+
+function bookmarkNearFlag(ms, y) {
+  if (y >= rulerBandHeight + bookmarkFlagHeight) return null;
+  let nearest = 5 / scene.zoom;
+  let bookmark = null;
+  for (const mark of scene.bookmarks ?? []) {
+    const distance = Math.abs(mark.time - ms);
+    if (distance <= nearest) {
+      nearest = distance;
+      bookmark = mark;
+    }
+  }
+  return bookmark;
+}
+
+function rulerGestureAt(x) {
+  const left = (view.left - scene.viewStart) * scene.zoom;
+  const right = (view.right - scene.viewStart) * scene.zoom;
+  if (left === right) return "draw";
+  if (Math.abs(x - left) <= 5) return "left";
+  if (Math.abs(x - right) <= 5) return "right";
+  return x > Math.min(left, right) && x < Math.max(left, right) ? "move" : "draw";
+}
+
+function locatorPreview(gesture, x) {
+  if (Math.abs(x - gesture.x) < 3) return null;
+  const { left, right, cycling, duration } = gesture;
+  const to = limit(gesture.start + x / gesture.zoom, 0, duration);
+  if (gesture.mode === "left") return [to, right, cycling];
+  if (gesture.mode === "right") return [left, to, cycling];
+  if (gesture.mode === "move") {
+    const shift = limit((x - gesture.x) / gesture.zoom, -Math.min(left, right), Math.max(0, duration - Math.max(left, right)));
+    return [left + shift, right + shift, cycling];
+  }
+  const from = limit(gesture.start + gesture.x / gesture.zoom, 0, duration);
+  return [Math.min(from, to), Math.max(from, to), true];
+}
+
+function endRulerDrag(event) {
+  const current = rulerDrag;
+  rulerDrag = null;
+  if (ruler.hasPointerCapture(current.id)) ruler.releasePointerCapture(current.id);
+  rulerPointer = { clientX: event.clientX, clientY: event.clientY };
+  refreshRulerCursor();
+  paintSoon();
+  return current;
+}
+
+ruler.addEventListener("pointerdown", (event) => {
+  if (!scene || view.busy || drag || rulerDrag || event.button !== 0) return;
   const bounds = ruler.getBoundingClientRect();
   const x = event.clientX - bounds.left;
   const y = event.clientY - bounds.top;
-  const marker = y >= bounds.height - 13 ? rulerWarningMarkers.find(marker => Math.abs(marker.x - x) <= 7) : null;
-  const nearby = marker?.problems ?? [];
-  const lines = nearby.slice(0, 8).map(describeOutputProblem);
-  if (nearby.length > lines.length) lines.push("…and " + (nearby.length - lines.length) + " more.");
-  ruler.title = lines.join("\n");
+  const ms = scene.viewStart + x / scene.zoom;
+  const side = event.ctrlKey || event.metaKey ? "left" : event.altKey ? "right" : null;
+  if (side) {
+    act({ kind: "ruler_locators", path: scene.path, gesture: side, from: ms, to: ms }, false);
+  } else if (y < rulerBandHeight) {
+    ruler.setPointerCapture(event.pointerId);
+    rulerDrag = { path: scene.path, id: event.pointerId, x, start: scene.viewStart,
+      zoom: scene.zoom, mode: rulerGestureAt(x), left: view.left, right: view.right, cycling: view.cycle,
+      duration: view.duration };
+    refreshRulerCursor();
+  } else {
+    const bookmark = bookmarkNearFlag(ms, y);
+    const target = bookmark ? null : waveformTarget(ms, y, bounds.height);
+    if (target) act({ kind: "waveform_object", path: scene.path, ...target, preview: false });
+    else act({ kind: "seek", ms: limit(bookmark?.time ?? ms, 0, view.duration) }, false);
+  }
 });
-ruler.addEventListener("pointerleave", () => { ruler.title = ""; });
-ruler.addEventListener("pointerdown", (event) => {
-  if (!scene) return;
-  const x = event.clientX - ruler.getBoundingClientRect().x;
-  act({ kind: "seek", ms: limit(scene.viewStart + x / scene.zoom, 0, view.duration) }, false);
+ruler.addEventListener("dblclick", event => {
+  if (!scene || view.busy || drag || rulerDrag || event.button !== 0 ||
+      event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return;
+  const bounds = ruler.getBoundingClientRect();
+  const ms = scene.viewStart + (event.clientX - bounds.left) / scene.zoom;
+  const y = event.clientY - bounds.top;
+  if (bookmarkNearFlag(ms, y)) return;
+  const target = waveformTarget(ms, y, bounds.height);
+  if (target) act({ kind: "waveform_object", path: scene.path, ...target, preview: true });
 });
-overview.addEventListener("pointerdown", (event) => {
-  if (!scene) return;
-  const position = (event.clientX - overview.getBoundingClientRect().x) / overview.clientWidth * view.duration;
-  changeView(position - grid.clientWidth / scene.zoom / 2, scene.zoom);
+ruler.addEventListener("pointerup", event => {
+  if (!rulerDrag || rulerDrag.id !== event.pointerId) return;
+  const gesture = endRulerDrag(event);
+  const x = event.clientX - ruler.getBoundingClientRect().left;
+  const moved = Math.abs(x - gesture.x) >= 3;
+  if (!moved && gesture.mode !== "move") return;
+  act({ kind: "ruler_locators", path: gesture.path, gesture: moved ? gesture.mode : "toggle",
+    from: gesture.start + gesture.x / gesture.zoom, to: gesture.start + x / gesture.zoom }, false);
 });
+for (const type of ["pointercancel", "lostpointercapture"]) {
+  ruler.addEventListener(type, event => {
+    if (rulerDrag && rulerDrag.id === event.pointerId) endRulerDrag(event);
+  });
+}
+async function drainOverviewNavigation() {
+  while (overviewTarget) {
+    const { path, fraction } = overviewTarget;
+    overviewTarget = null;
+    if (scene?.path !== path || view.busy) continue;
+    const zoom = scene.zoom;
+    const start = timelineStart(fraction * view.duration - grid.clientWidth / zoom / 2, zoom);
+    if (start !== scene.viewStart) await changeView(start, zoom);
+  }
+}
+
+function panOverview(event) {
+  if (!overviewDrag || overviewDrag.id !== event.pointerId ||
+      overviewDrag.path !== scene?.path || !overview.clientWidth) return;
+  const fraction = limit((event.clientX - overview.getBoundingClientRect().left) / overview.clientWidth, 0, 1);
+  overviewTarget = { path: overviewDrag.path, fraction };
+  // Keep the latest position while the previous viewport update is pending.
+  overviewNavigation ??= drainOverviewNavigation().finally(() => { overviewNavigation = null; });
+}
+
+overview.addEventListener("pointerdown", event => {
+  if (!scene || view.busy || drag || rulerDrag || overviewDrag || event.button !== 0) return;
+  overviewDrag = { id: event.pointerId, path: scene.path };
+  overview.setPointerCapture(event.pointerId);
+  panOverview(event);
+});
+overview.addEventListener("pointermove", panOverview);
+overview.addEventListener("pointerup", event => {
+  if (overviewDrag?.id !== event.pointerId) return;
+  panOverview(event);
+  overviewDrag = null;
+});
+for (const type of ["pointercancel", "lostpointercapture"]) {
+  overview.addEventListener(type, event => {
+    if (overviewDrag?.id !== event.pointerId) return;
+    overviewDrag = null;
+    overviewTarget = null;
+  });
+}
 
 function timelineStart(start, zoom) {
   return limit(start, 0, view.duration - grid.clientWidth / zoom);
 }
 
 function followPlayhead() {
-  if (!view.follow || !view.playing || view.busy || drag || !grid.clientWidth) return;
+  if (!view.follow || !view.playing || view.busy || drag || rulerDrag || overviewDrag || !grid.clientWidth) return;
   const visible = grid.clientWidth / scene.zoom;
   if (view.position >= scene.viewStart && view.position <= scene.viewStart + visible * .98) return;
   const start = timelineStart(view.position - visible * .02, scene.zoom);
@@ -991,24 +1737,51 @@ function changeView(start, zoom, rowHeight = scene.rowHeight, rowAnchorY = 0) {
   });
 }
 
-$("scroll").addEventListener("wheel", (event) => {
-  if (!scene || !event.ctrlKey || !event.shiftKey) return;
-  event.preventDefault();
-  if (requests > 1 || view.busy || drag || !event.deltaY) return;
-  const height = Math.round(scene.rowHeight * (event.deltaY < 0 ? 1.15 : 1 / 1.15));
-  const anchor = event.clientY - $("scroll").getBoundingClientRect().top;
-  changeView(scene.viewStart, scene.zoom, height, anchor);
-}, { passive: false });
+// The legacy straight and triplet sequences, ordered from coarse to fine.
+const straightWheelSnap = [[4, 1], [2, 1], [1, 1], [1, 2], [1, 4], [1, 8], [1, 16]];
+const tripletWheelSnap = [[3, 1], [1, 1], [1, 3], [1, 6], [1, 12]];
 
-grid.addEventListener("wheel", (event) => {
-  if (!scene || (event.ctrlKey && event.shiftKey) || !(event.ctrlKey || event.shiftKey)) return;
-  event.preventDefault();
-  if (requests > 1) return;
+function stepWheelSnap(finer) {
+  const options = $("triplet-snap").checked ? tripletWheelSnap : straightWheelSnap;
+  const current = scene.beats / scene.divisor;
+  const [beats, divisor] = finer
+    ? options.find(([n, d]) => n / d < current) ?? options.at(-1)
+    : options.findLast(([n, d]) => n / d > current) ?? options[0];
+  if (beats !== scene.beats || divisor !== scene.divisor) {
+    act({ kind: "snap", on: scene.snap, mode: scene.snapMode, beats, divisor });
+  }
+}
+
+$("scroll").addEventListener("wheel", (event) => {
+  if (!scene) return;
+  const { ctrlKey, shiftKey, altKey, deltaX, deltaY } = event;
+  const osu = view.keyPreset === "osu!";
   const x = event.clientX - grid.getBoundingClientRect().x;
-  const zoom = event.ctrlKey ? limit(scene.zoom * Math.exp(-event.deltaY * .003), .002, 3) : scene.zoom;
-  const start = event.ctrlKey ? scene.viewStart + x * (1 / scene.zoom - 1 / zoom) :
-    scene.viewStart + (event.deltaX || event.deltaY) / scene.zoom;
-  changeView(start, zoom);
+  const rows = ctrlKey && shiftKey;
+  const horizontal = deltaX && !deltaY;
+  const snap = !horizontal && (osu ? ctrlKey : altKey && !ctrlKey);
+  const zoomTime = !horizontal && (osu ? altKey && !ctrlKey : ctrlKey);
+  const pan = horizontal || (!osu && shiftKey);
+  const seek = osu && (shiftKey || x >= 0);
+  if (!(rows || snap || zoomTime || pan || seek) || (!deltaX && !deltaY)) return;
+  event.preventDefault();
+  if (requests > 1 || view.busy || drag) return;
+  if (rows) {
+    if (!deltaY) return;
+    const height = Math.round(scene.rowHeight * (deltaY < 0 ? 1.15 : 1 / 1.15));
+    const anchor = event.clientY - $("scroll").getBoundingClientRect().top;
+    changeView(scene.viewStart, scene.zoom, height, anchor);
+  } else if (snap) {
+    stepWheelSnap(deltaY < 0);
+  } else if (zoomTime) {
+    const zoom = limit(scene.zoom * Math.exp(-deltaY * .003), .002, 3);
+    changeView(scene.viewStart + Math.max(0, x) * (1 / scene.zoom - 1 / zoom), zoom);
+  } else if (pan) {
+    changeView(scene.viewStart + (deltaX || deltaY) / scene.zoom, scene.zoom);
+  } else {
+    const id = (deltaY < 0 ? "seekBack" : "seekForward") + (shiftKey ? "Far" : "");
+    act({ kind: "command", id }, false);
+  }
 }, { passive: false });
 
 function modal(kind, title, content, buttons, cancel = null) {
@@ -1024,6 +1797,67 @@ function modal(kind, title, content, buttons, cancel = null) {
   }));
   if (!dialog.open) dialog.showModal();
 }
+$("lane-colour").addEventListener("click", () => {
+  const path = scene?.path;
+  const lane = scene?.lanes?.[view.activeLane];
+  if (!lane?.colourKey || view.busy || drag) return;
+  const input = document.createElement("input");
+  input.type = "color";
+  input.value = laneColours.get(lane.colourKey) ?? "#78bfff";
+  const label = document.createElement("label");
+  label.append("Custom colour", input);
+  const palette = document.createElement("div");
+  palette.className = "tint-palette";
+  palette.setAttribute("role", "radiogroup");
+  palette.setAttribute("aria-label", "Lane tint");
+  const preview = document.createElement("div");
+  preview.className = "tint-preview";
+  const caption = document.createElement("span");
+  caption.textContent = lane.name;
+  const sample = document.createElement("small");
+  sample.textContent = lane.sample ?? "";
+  caption.append(sample);
+  preview.append(caption);
+  for (let i = 0; i < 5; i++) preview.append(document.createElement("i"));
+  const refresh = () => {
+    preview.style.setProperty("--preview-colour", input.value);
+    for (const radio of palette.children) radio.checked = radio.value === input.value;
+  };
+  const shades = [
+    "d04932 db642b d78628 deab27 c9bc30 a6be32 70be3d 44ba4b 23b76c 21af91 24abb2 289dc9 388ada 5776d4 7464ce 945ac5 b751bb cc50a2",
+    "b0412e b95728 b57326 bb9125 aa9f2c 8da12e 61a137 3d9e43 229b5e 20957c 239197 2686aa 3376b8 4c66b3 6457ae 7e4fa7 9b479e ac478a",
+    "91392b 984b26 966124 9a7923 8d8429 76862b 538632 36833b 218150 1f7c68 21797e 24708d 2e6498 435794 554b90 6a458a 813f84 8f3e73",
+    "74342a 794126 775125 7a6224 706a29 606b2a 476b2f 326935 226845 226456 236266 255c70 2c5378 3b4976 494173 583c6f 68386a 72385e",
+  ];
+  for (const shade of shades.join(" ").split(" ")) {
+    const radio = document.createElement("input");
+    radio.type = "radio";
+    radio.name = "lane-swatch";
+    radio.value = "#" + shade;
+    radio.title = radio.value;
+    radio.setAttribute("aria-label", radio.value);
+    radio.style.backgroundColor = radio.value;
+    radio.addEventListener("change", () => { input.value = radio.value; refresh(); });
+    palette.append(radio);
+  }
+  input.addEventListener("input", refresh);
+  refresh();
+  const change = (colour) => {
+    closeModal();
+    if (scene?.path !== path || view.busy || drag) return;
+    if (colour) laneColours.set(lane.colourKey, colour);
+    else laneColours.delete(lane.colourKey);
+    renderActiveLane();
+    renderLanes();
+    paintSoon();
+    saveLaneLayout(true);
+  };
+  const buttons = [["Cancel", closeModal]];
+  if (laneColours.has(lane.colourKey)) buttons.push(["Clear tint", () => change(null)]);
+  buttons.push(["Apply", () => change(input.value), true]);
+  modal("lane-colour", "Lane colour · " + lane.name, [palette, preview, label], buttons);
+});
+
 function closeModal() {
   modalKind = "";
   modalClose = null;
@@ -1069,6 +1903,13 @@ function renderDialogs() {
   if (view.error) {
     const dismiss = () => { closeModal(); act({ kind: "dismiss_error" }); };
     modal("error", "Editor message", [paragraph(view.error)], [["OK", dismiss, true]], dismiss);
+  } else if (view.saveReview) {
+    const answer = (apply) => { closeModal(); act({ kind: "answer_save_review", apply }); };
+    const files = view.saveReview.map(([operation, path]) => paragraph(operation + " · " + path));
+    modal("save-review", "Review Save", [
+      paragraph("Editing " + nameOf(scene.path)),
+      ...files.length ? files : [paragraph("No files need to change.")],
+    ], [["Cancel", () => answer(false)], [files.length ? "Save" : "Done", () => answer(true), true]], () => answer(false));
   } else if (view.saveProblemReview) {
     const dismiss = () => { closeModal(); return act({ kind: "dismiss_save_problem_review" }); };
     const first = async () => { await dismiss(); await showOutputProblem(0); };
@@ -1103,8 +1944,7 @@ function renderDialogs() {
     const mixes = (view.review.mixes ?? []).map((path, index) => {
       const row = document.createElement("div");
       row.className = "row";
-      const label = paragraph(nameOf(path));
-      label.title = path;
+      const label = paragraph(path);
       row.append(label, makeButton("Audition mix", () => act({ kind: "audition_output_mix", index }, false)));
       return row;
     });
@@ -1120,7 +1960,8 @@ function renderDialogs() {
         await openMergeSettings(combinations, true, includeSliderAudio);
       });
     }]] : [];
-    modal("review", view.review.label, [heading, ...files, ...mixSection, ...details],
+    const source = scene ? [paragraph("Editing " + nameOf(scene.path))] : [];
+    modal("review", view.review.label, [...source, heading, ...files, ...mixSection, ...details],
       [["Cancel", () => answer(false)], ...choices, ["Write files", () => answer(true), true]], () => answer(false));
   } else if (view.editDialog && scene) {
     showTimelineEdit(view.editDialog);
@@ -1130,7 +1971,7 @@ function renderDialogs() {
       paragraph("DAW-like uses the editor’s default timeline shortcuts."),
       paragraph("osu! lets you seek through the beat grid with the arrow keys."),
     ], [["DAW-like", () => choose("DAW"), true], ["osu!", () => choose("osu!")]], () => {});
-  } else if (["error", "pending", "pending-home", "revert", "review", "save-problems", "key-preset", "timeline-edit"].includes(modalKind)) {
+  } else if (["error", "pending", "pending-home", "revert", "review", "save-review", "save-problems", "key-preset", "timeline-edit"].includes(modalKind)) {
     closeModal();
   }
 }
@@ -1504,6 +2345,7 @@ for (const [name, glyph] of Object.entries(toolIcons)) {
   button.prepend(label);
   button.prepend(icon);
   $("tools").append(button);
+  button.className = "editor-tool-button";
 }
 for (const button of document.querySelectorAll("[data-action]")) {
   button.addEventListener("click", () => act({ kind: button.dataset.action }));
@@ -1606,21 +2448,76 @@ $("used-only").addEventListener("change", () => {
 });
 toggle("cycle", "cycle");
 toggle("audition", "audition");
+function openSiblingDifficulty(path) {
+  if (scene && !view.busy && !drag && path && path !== scene.path) act({ kind: "open", path });
+}
+
+function chooseSiblingDifficulty() {
+  const ribbon = $("difficulty");
+  if (!scene || !ribbon.getClientRects().length || !ribbon.options.length) return false;
+  const currentPath = scene.path;
+  const choices = document.createElement("select");
+  choices.id = "difficulty-choice";
+  choices.size = Math.min(8, ribbon.options.length);
+  choices.setAttribute("aria-label", "Difficulty in the current mapset");
+  choices.append(...[...ribbon.options].map(option => new Option(option.text, option.value)));
+  choices.value = currentPath;
+  const open = () => {
+    closeModal();
+    if (scene?.path === currentPath) openSiblingDifficulty(choices.value);
+  };
+  choices.addEventListener("keydown", event => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    open();
+  });
+  choices.addEventListener("dblclick", open);
+  modal("difficulty-chooser", "Switch difficulty", [choices],
+    [["Cancel", closeModal], ["Open", open, true]]);
+  choices.focus();
+  return true;
+}
+
 $("difficulty").addEventListener("change", () => {
   if (!scene) return;
   const path = $("difficulty").value;
   $("difficulty").value = scene.path;
-  if (!view.busy && !drag && path && path !== scene.path) act({ kind: "open", path });
+  openSiblingDifficulty(path);
 });
-$("fit").addEventListener("click", () => {
-  if (scene && view.duration > 0 && grid.clientWidth > 0) changeView(0, grid.clientWidth / view.duration);
+function fitTimeline() {
+  if (scene && !view.busy && view.duration > 0 && grid.clientWidth > 0) {
+    changeView(0, grid.clientWidth / view.duration);
+  }
+}
+$("fit").addEventListener("click", fitTimeline);
+$("ruler-fit").addEventListener("click", fitTimeline);
+$("toggle-lane-names").addEventListener("click", () => {
+  if (scene && !view.busy) act({ kind: "panel", panel: "lane_names", on: view.panels?.laneNames === false });
 });
+$("ruler-waveform").addEventListener("click", () => {
+  if (scene && !view.busy && !waveformDrag) {
+    setWaveformHeight(waveformHeight ? 0 : visibleWaveformHeight);
+  }
+});
+$("ruler-follow").addEventListener("click", () => {
+  if (scene && !view.busy) act({ kind: "follow", on: !view.follow }, false);
+});
+for (const [id, action] of [["ruler-zoom-out", "zoomOut"], ["ruler-zoom-in", "zoomIn"]]) {
+  $(id).addEventListener("click", () => {
+    if (scene && !view.busy) command(action);
+  });
+}
 $("follow").addEventListener("change", () => act({ kind: "follow", on: $("follow").checked }, false));
+$("transport-return").addEventListener("click", () => {
+  if (scene && !view.busy) act({ kind: "return_on_stop", on: !view.returnOnStop }, false);
+});
 $("zoom").addEventListener("input", () => {
   if (requests < 2) changeView(scene.viewStart, 10 ** +$("zoom").value);
 });
 $("zoom").addEventListener("change", () => changeView(scene.viewStart, 10 ** +$("zoom").value));
-$("speed").addEventListener("change", () => act({ kind: "speed", value: +$("speed").value }));
+for (const button of speedButtons) {
+  button.addEventListener("click", () => act({ kind: "speed", value: Number(button.dataset.playbackSpeed) }));
+}
 $("insert").addEventListener("change", () => act({ kind: "insert_volume", value: limit(number("insert", 100), 0, 100) }));
 $("volume-mode").addEventListener("change", () => {
   const relative = $("volume-mode").value === "relative";
@@ -1727,7 +2624,7 @@ $("generate").addEventListener("click", () => {
   const sliderAudio = input("checkbox", "", 0, 0);
   sliderAudio.checked = false;
   modal("generate", "Generate hitsound difficulty",
-    [labeled("Include slider slide, whistle and tick audio", sliderAudio)],
+    [paragraph("Generate from " + nameOf(scene.path)), labeled("Include slider slide, whistle and tick audio", sliderAudio)],
     [["Cancel", closeModal], ["Review output", () => {
       closeModal();
       act({ kind: "generate", include_slider_audio: sliderAudio.checked });
@@ -1768,7 +2665,7 @@ $("apply-slider-body").addEventListener("click", () => {
   const volume = $("slider-body-volume").valueAsNumber;
   if (!body || view.busy || !Number.isInteger(volume) || volume < 0 || volume > 100) return;
   act({ kind: "slider_body", path: scene.path, index: body.index, set: $("slider-body-set").value || null,
-    whistle: $("slider-body-whistle").checked, volume });
+    whistle_set: $("slider-body-whistle-set").value, whistle: $("slider-body-whistle").checked, volume });
 });
 $("add-bookmark").addEventListener("click", () => editBookmark(null));
 $("rename-bookmark").addEventListener("click", () => {
@@ -1794,6 +2691,7 @@ $("copy").addEventListener("click", () => {
   const checkboxes = paths.map(() => input("checkbox", "", 0, 0));
   const choices = paths.map((path, i) => labeled(nameOf(path), checkboxes[i]));
   const leniency = input("number", 5, 0, 1000, "any");
+  const startIndex = input("number", 100, 2, 2147483647);
   const mode = document.createElement("select");
   for (const [value, label] of [
     ["overwrite_everything", "Overwrite everything"], ["overwrite_only_defined", "Keep unmatched hits"],
@@ -1812,9 +2710,12 @@ $("copy").addEventListener("click", () => {
   };
   const hitsounds = check(true);
   const bodies = check(true);
+  const ticks = check(false);
+  const slides = check(false);
   const sets = check(true);
   const volumes = check(true);
   const keep5 = check(true);
+  const neverSilent = check(false);
   const storyboard = check(false);
   const satisfied = check(true);
   const whenever = check(false);
@@ -1837,15 +2738,17 @@ $("copy").addEventListener("click", () => {
   }
   mutedSet.value = "";
 
+  const copySliderAudio = () => mode.value === "overwrite_only_defined" && hitsounds.checked && sets.checked;
   const updateEnabled = () => {
     bodies.disabled = !hitsounds.checked;
+    ticks.disabled = slides.disabled = !copySliderAudio();
     keep5.disabled = !volumes.checked;
     satisfied.disabled = whenever.disabled = !storyboard.checked;
     for (const field of [divisors, mutedDivisors, minLength, mutedIndex, mutedSet]) {
       field.disabled = !mute.checked;
     }
   };
-  for (const field of [hitsounds, volumes, storyboard, mute]) field.addEventListener("change", updateEnabled);
+  for (const field of [mode, hitsounds, sets, volumes, storyboard, mute]) field.addEventListener("change", updateEnabled);
   updateEnabled();
 
   const positiveDivisors = (text) => {
@@ -1859,6 +2762,11 @@ $("copy").addEventListener("click", () => {
     const targets = paths.filter((_, i) => checkboxes[i].checked);
     if (!targets.length) {
       error.textContent = "Select at least one target difficulty.";
+      return;
+    }
+    const start = startIndex.valueAsNumber;
+    if (!Number.isInteger(start) || start < 2 || start > 2147483647) {
+      error.textContent = "The start index must be a whole number from 2 to 2147483647.";
       return;
     }
     const tolerance = leniency.valueAsNumber;
@@ -1885,7 +2793,10 @@ $("copy").addEventListener("click", () => {
     closeModal();
     act({ kind: "copy", targets, options: {
       mode: mode.value, leniency: tolerance,
+      start_index: start, never_silent_hitnormals: neverSilent.checked,
       copy_hitsounds: hitsounds.checked, copy_body_hitsounds: bodies.checked, copy_sample_sets: sets.checked,
+      copy_to_slider_ticks: copySliderAudio() && ticks.checked,
+      copy_to_slider_slides: copySliderAudio() && slides.checked,
       copy_volumes: volumes.checked, always_preserve_5_volume: keep5.checked,
       copy_storyboarded_samples: storyboard.checked,
       ignore_hitsound_satisfied_samples: satisfied.checked, ignore_whenever_hitsound: whenever.checked,
@@ -1897,12 +2808,17 @@ $("copy").addEventListener("click", () => {
   const details = document.createElement("details");
   const summary = document.createElement("summary");
   summary.textContent = "Advanced options";
-  details.append(summary, labeled("Copy storyboard samples", storyboard),
+  details.append(summary, labeled("Start index", startIndex), labeled("Never create silent hitnormals", neverSilent),
+    labeled("Copy storyboard samples", storyboard),
+    labeled("Add timed samples at slider ticks", ticks), labeled("Add timed samples during slides", slides),
+    paragraph("Timed storyboard samples play independently of slider tracking and preserve the existing slider sounds."),
+    paragraph("Enable Keep unmatched hits, Copy hitsounds, and Copy sample sets and indexes to add timed samples."),
     labeled("Skip samples a target hit already plays", satisfied), labeled("Skip samples at any hit", whenever),
     labeled("Mute unmatched slider and spinner ends", mute), labeled("Beat divisors (highest priority first)", divisors),
     labeled("Muted beat divisors", mutedDivisors), labeled("Minimum slider length (beats)", minLength),
     labeled("Muted sample index", mutedIndex), labeled("Muted sample set", mutedSet));
   modal("copy", "Copy hitsounds", [
+    paragraph("Copy from " + nameOf(scene.path)),
     ...choices, labeled("Timing tolerance (ms)", leniency), labeled("Unmatched target hits", mode),
     labeled("Copy hitsounds", hitsounds), labeled("Copy slider-body sounds", bodies),
     labeled("Copy sample sets and indexes", sets), labeled("Copy volumes", volumes), labeled("Keep target hits at 5%", keep5),
@@ -1919,40 +2835,75 @@ const playbackStartChoices = [
 ];
 
 $("audio").addEventListener("click", () => run(async () => {
-  const { current, devices, bufferMs } = await invoke("audio_outputs");
+  const settings = await invoke("audio_outputs", { backend: null });
+  const backend = document.createElement("select");
   const output = document.createElement("select");
-  if (!devices.includes(current)) {
-    const placeholder = document.createElement("option");
-    placeholder.value = "";
-    placeholder.textContent = current;
-    placeholder.disabled = true;
-    output.append(placeholder);
-  }
-  for (const name of devices) {
+  const buffer = input("number", settings.bufferMs ?? "", 10, 500);
+  const current = paragraph("");
+  const outputError = paragraph("");
+  const locked = () => Boolean(view.playing || view.busy);
+  let loadedBackend = null;
+
+  function addOption(select, value, label) {
     const option = document.createElement("option");
-    option.value = name;
-    option.textContent = name;
-    output.append(option);
+    option.value = value;
+    option.textContent = label;
+    select.append(option);
   }
-  output.value = devices.includes(current) ? current : "";
-  output.disabled = !!view.playing || !!view.busy || !devices.length;
-  output.addEventListener("change", () => {
-    if (!view.playing && !view.busy && output.value) act({ kind: "output_device", name: output.value }, false);
-  });
-  const buffer = input("number", bufferMs ?? "", 10, 500);
-  buffer.id = "audio-buffer";
-  buffer.placeholder = "Device default";
-  buffer.title = "Clear to use the device default buffer";
-  buffer.disabled = output.disabled;
-  buffer.addEventListener("change", () => {
-    if (view.playing || view.busy) return;
+  function showDevices(config) {
+    output.replaceChildren();
+    addOption(output, "", config.backend === "asio" ? "Choose an ASIO driver" : "Device default");
+    for (const device of config.devices) addOption(output, device.id, device.name);
+    output.value = config.device ?? "";
+    current.textContent = [config.currentBackend, config.current,
+      config.effectiveBufferMs == null ? null : config.effectiveBufferMs + " ms effective buffer"
+    ].filter(Boolean).join(" · ");
+    const error = config.error ?? "";
+    outputError.textContent = error;
+    outputError.hidden = !error;
+    loadedBackend = error ? null : config.backend;
+    output.disabled = locked() || Boolean(error);
+    applyOutput.disabled = output.disabled || (config.backend === "asio" && !output.value);
+  }
+
+  const applyOutput = makeButton("Apply output", () => {
+    if (locked() || applyOutput.disabled || loadedBackend !== backend.value) return;
     const ms = buffer.value === "" ? null : Number(buffer.value);
     if (ms !== null && (!Number.isInteger(ms) || ms < 10 || ms > 500)) {
       buffer.reportValidity();
       return;
     }
-    act({ kind: "output_buffer", ms }, false);
+    const action = { kind: "output_settings", backend: backend.value, device_id: output.value || null, ms };
+    applyOutput.disabled = true;
+    run(async () => {
+      await update(action, false);
+      if (!view.error && modalKind === "audio" && backend.value === action.backend) {
+        showDevices(await invoke("audio_outputs", { backend: action.backend }));
+      }
+    });
   });
+  output.addEventListener("change", () => {
+    applyOutput.disabled = locked() || loadedBackend !== backend.value || (backend.value === "asio" && !output.value);
+  });
+  for (const choice of settings.available) addOption(backend, choice.id, choice.label);
+  backend.value = settings.backend;
+  backend.disabled = locked() || settings.available.length < 2;
+  backend.addEventListener("change", () => {
+    if (locked()) return;
+    const requested = backend.value;
+    loadedBackend = null;
+    output.disabled = true;
+    applyOutput.disabled = true;
+    run(async () => {
+      const config = await invoke("audio_outputs", { backend: requested });
+      if (requested === backend.value && modalKind === "audio") showDevices(config);
+    });
+  });
+  buffer.id = "audio-buffer";
+  buffer.placeholder = "Device default";
+  buffer.title = "Clear to use the device default buffer";
+  buffer.disabled = locked();
+  showDevices(settings);
 
   const song = input("range", view.song, 0, 1, .01);
   const main = input("range", view.main, .2, 1, .01);
@@ -1977,13 +2928,24 @@ $("audio").addEventListener("click", () => run(async () => {
   mute.addEventListener("change", () => act({ kind: "song_muted", on: mute.checked }, false));
   offset.addEventListener("change", () => act({ kind: "offset", ms: offset.valueAsNumber || 0 }, false));
   modal("audio", "Audio", [
-    labeled("Output device", output), labeled("Requested buffer (ms)", buffer),
+    current, labeled("Output backend", backend), labeled("Output device", output),
+    labeled("Requested buffer (ms)", buffer), applyOutput, outputError,
     ...(view.playing ? [paragraph("Stop playback to change audio output.")] : []),
     labeled("Song volume", song), labeled("Master volume", main),
     labeled("Mute song", mute), labeled("Song offset (ms)", offset),
     labeled("Start from", start), labeled("Return on stop", returnOnStop),
   ], [["Done", closeModal, true]]);
 }));
+
+$("song-mute").addEventListener("click", () => act({ kind: "song_muted", on: !view.songMuted }, false));
+$("song-solo").addEventListener("click", () => act({ kind: "song_solo", on: !view.songSolo }, false));
+
+for (const panel of ["browser", "inspector"]) {
+  $("view-" + panel).addEventListener("click", () => {
+    if (!scene || !view.panels || view.busy) return;
+    act({ kind: "panel", panel, on: !view.panels[panel] });
+  });
+}
 
 $("panel-view").addEventListener("click", () => {
   if (!scene || !view.panels || view.busy) return;
@@ -2169,6 +3131,13 @@ document.addEventListener("keydown", (event) => {
   if (event.defaultPrevented || event.repeat || event.isComposing || dialog.open ||
       event.target.closest("input, select, textarea, [contenteditable]")) return;
   const { key, code, ctrl, shift, alt } = keyInput(event);
+  if (rulerDrag) {
+    if (key === "Escape" && !ctrl && !shift && !alt) {
+      event.preventDefault();
+      endRulerDrag(event);
+    }
+    return;
+  }
   if (key === "Escape" && drag && !ctrl && !shift && !alt) {
     event.preventDefault();
     const { surface, firstPoint, lastPoint, id } = drag;
@@ -2183,8 +3152,11 @@ document.addEventListener("keydown", (event) => {
     act({ kind: "resume" });
     return;
   }
-  if (view.busy || ((key === " " || key === "Enter") && event.target.closest("button"))) return;
+  const activatesButton = !ctrl && !shift && !alt &&
+    ((key === " " && !scene) || (key === "Enter" && code !== "NumpadEnter"));
+  if (view.busy || (activatesButton && event.target.closest("button"))) return;
   if (key === "Tab") {
+    if (!ctrl && !alt && event.target.closest("[data-dock-control]")) return;
     const bound = view.tabRoutes?.some(([control, shifted, alternate, global]) =>
       control === ctrl && shifted === shift && alternate === alt && (scene || global));
     if (!bound) return;
@@ -2193,7 +3165,15 @@ document.addEventListener("keydown", (event) => {
       !code.startsWith("Numpad")) return;
 
   event.preventDefault();
-  act({ kind: "key", key, code, ctrl, shift, alt });
+  const action = { kind: "key", key, code, ctrl, shift, alt };
+  if (scene?.path && grid.clientWidth > 0 && scene.zoom > 0) {
+    action.lane_view = {
+      path: scene.path,
+      rows: [...new Set(laneRows.filter(Number.isInteger))],
+      span: grid.clientWidth / scene.zoom,
+    };
+  }
+  act(action);
 });
 
 window.__TAURI__.event.listen("tauri://drag-drop", ({ payload }) => {

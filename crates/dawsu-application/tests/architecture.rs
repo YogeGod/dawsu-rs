@@ -3,9 +3,9 @@ use dawsu_test_support::workspace_root;
 #[test]
 fn new_modules_keep_the_vaults_reference_boundaries() {
     let cases: [(&str, &[&str]); 4] = [
-        ("dawsu-audio", &["dawsu-foundation"]),
+        ("crates/dawsu-audio", &["dawsu-foundation"]),
         (
-            "dawsu-editor-composer",
+            "crates/dawsu-editor-composer",
             &[
                 "dawsu-foundation",
                 "dawsu-editor",
@@ -14,7 +14,7 @@ fn new_modules_keep_the_vaults_reference_boundaries() {
             ],
         ),
         (
-            "dawsu-application",
+            "crates/dawsu-application",
             &[
                 "dawsu-foundation",
                 "dawsu-osu-format",
@@ -25,7 +25,7 @@ fn new_modules_keep_the_vaults_reference_boundaries() {
             ],
         ),
         (
-            "dawsu-ui",
+            "apps/tauri",
             &[
                 "dawsu-foundation",
                 "dawsu-editor",
@@ -37,7 +37,6 @@ fn new_modules_keep_the_vaults_reference_boundaries() {
     for (name, allowed) in cases {
         let text = std::fs::read_to_string(
             workspace_root()
-                .join("crates")
                 .join(name)
                 .join("Cargo.toml"),
         )

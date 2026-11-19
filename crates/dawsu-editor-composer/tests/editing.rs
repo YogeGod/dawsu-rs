@@ -1,5 +1,6 @@
+use dawsu_editor::tempo::{SnapSpacing, TempoMap, TimingSection};
 use dawsu_editor_composer::Composer;
-use dawsu_foundation::{CustomIndex, Hitsound, SampleIdentity, SampleSet, Sound};
+use dawsu_foundation::{CustomIndex, Hitsound, SampleIdentity, SampleSet, SongTime, Sound};
 use dawsu_hitsounding::{Decompiled, decompile};
 use dawsu_osu_format::OsuFile;
 
@@ -13,6 +14,88 @@ fn copying_an_empty_selection_keeps_the_clipboard() {
     c.paste(1500.0);
     assert!(c.hitsounds().moments()[1].has_hit(&clap()));
 }
+#[test]
+fn duplicate_uses_a_snapped_offset_and_preserves_the_clipboard() {
+    let mut c = composer();
+    c.tempo = TempoMap::new(vec![TimingSection {
+        beat_length_ms: 500.0,
+        ..TimingSection::DEFAULT
+    }]);
+    c.add(900.0, clap(), 80, 0.0);
+    c.copy();
+
+    let whistle = SampleIdentity::Standard {
+        set: SampleSet::Normal,
+        sound: Sound::Hit(Hitsound::Whistle),
+        index: CustomIndex::new(0),
+    };
+    c.add(1110.0, whistle.clone(), 35, 0.0);
+    let first = c.selected.primary().unwrap().clone();
+    c.add(1400.0, whistle.clone(), 60, 0.0);
+    let second = c.selected.primary().unwrap().clone();
+    c.selected.replace([first, second]);
+
+    let whistle_hits = |c: &Composer| {
+        let mut hits: Vec<_> = c
+            .hitsounds()
+            .moments()
+            .iter()
+            .filter(|moment| moment.has_hit(&whistle))
+            .map(|moment| (moment.time().ms(), moment.hit_volume(&whistle)))
+            .collect();
+        hits.sort_by(|a, b| a.0.total_cmp(&b.0));
+        hits
+    };
+    c.duplicate();
+    let duplicated = [(1110.0, 35), (1400.0, 60), (1485.0, 35), (1775.0, 60)];
+    assert_eq!(whistle_hits(&c), duplicated);
+    c.undo();
+    assert_eq!(whistle_hits(&c), duplicated[..2]);
+    c.redo();
+    assert_eq!(whistle_hits(&c), duplicated);
+
+    c.paste(2000.0);
+    assert_eq!(whistle_hits(&c), duplicated);
+    let pasted = c
+        .hitsounds()
+        .moments()
+        .iter()
+        .find(|moment| moment.time().ms() == 2000.0)
+        .expect("pasted clipboard hit");
+    assert!(pasted.has_hit(&clap()));
+    assert_eq!(pasted.hit_volume(&clap()), 80);
+}
+
+#[test]
+fn duplicate_with_long_snap_steps_across_tempo_changes() {
+    let mut c = composer();
+    c.spacing = SnapSpacing::new(2, 1).unwrap();
+    c.tempo = TempoMap::new(vec![
+        TimingSection {
+            beat_length_ms: 500.0,
+            ..TimingSection::DEFAULT
+        },
+        TimingSection {
+            start: SongTime::from_ms(1400.0),
+            beat_length_ms: 400.0,
+            ..TimingSection::DEFAULT
+        },
+    ]);
+    c.add(1000.0, clap(), 70, 0.0);
+    c.add(1800.0, clap(), 70, 0.0);
+    c.select_all();
+
+    c.duplicate();
+    let times: Vec<_> = c
+        .hitsounds()
+        .moments()
+        .iter()
+        .filter(|moment| moment.has_hit(&clap()))
+        .map(|moment| moment.time().ms())
+        .collect();
+    assert_eq!(times, [1000.0, 1800.0, 2200.0, 3000.0]);
+}
+
 #[test]
 fn empty_edits_do_not_dirty_the_document() {
     let mut c = composer();
@@ -164,7 +247,12 @@ fn quantize_moves_only_off_grid_loose_hits_and_keeps_them_selected() {
     c.tempo = TempoMap::new(vec![TimingSection {
         start: SongTime::from_ms(0.0), beat_length_ms: 500.0, beats_per_bar: 4,
     }]);
+    let normal = c.hitsounds().moments()[0].hits().next().unwrap().clone();
     c.add(1160.0, clap(), 80, 0.0);
+    c.add(1160.0, normal.clone(), 80, 0.0);
+    c.apply("Change gain", |hits| {
+        hits.set_hit_volume(dawsu_hitsounding::MomentId(1), &clap(), 30);
+    });
     c.mark_saved();
     c.select_all();
     c.quantize();
@@ -172,10 +260,108 @@ fn quantize_moves_only_off_grid_loose_hits_and_keeps_them_selected() {
     assert_eq!(c.hitsounds().moments()[0].time().ms(), 1270.0);
 
     let moved = c.hitsounds().moments().iter().position(|m| m.has_hit(&clap())).unwrap();
-    assert_eq!(c.hitsounds().moments()[moved].time().ms(), 1125.0);
+    let quantized = &c.hitsounds().moments()[moved];
+    assert_eq!(quantized.time().ms(), 1125.0);
+    assert_eq!((quantized.hit_volume(&normal), quantized.hit_volume(&clap())), (80, 30));
     assert!(c.selected.items().iter().any(|key| key.moment == moved));
-    assert_eq!(c.selected.items().len(), 2);
+    assert_eq!(c.selected.items().len(), 3);
     c.mark_saved();
     c.quantize();
     assert!(!c.dirty(), "another quantize of the same hits is a no-op");
+}
+
+#[test]
+fn selected_lane_gain_edits_other_hits_at_selected_moments_and_undoes_as_one_step() {
+    use std::collections::BTreeSet;
+
+    let mut c = composer();
+    let normal = c.hitsounds().moments()[0].hits().next().unwrap().clone();
+    c.add(1000.0, clap(), 80, 5.0);
+    c.volume(70, false);
+    c.mark_saved();
+    let selected_lanes = BTreeSet::from([normal.clone()]);
+
+    assert!(c.volume_for_lanes(30, false, Some(&selected_lanes)));
+    let edited = &c.hitsounds().moments()[0];
+    assert_eq!((edited.hit_volume(&normal), edited.hit_volume(&clap())), (30, 70));
+    assert_eq!(c.hitsounds().moments()[1].hit_volume(&normal), 100);
+    assert!(!c.volume_for_lanes(30, false, Some(&selected_lanes)));
+    assert!(!c.volume_for_lanes(30, false, Some(&BTreeSet::new())));
+
+    c.undo();
+    assert_eq!(c.hitsounds().moments()[0].hit_volume(&normal), 70);
+    assert!(!c.dirty());
+    c.redo();
+    assert_eq!(c.hitsounds().moments()[0].hit_volume(&normal), 30);
+    c.add(1000.0, clap(), 80, 5.0);
+    c.volume(5, true);
+    let relative = &c.hitsounds().moments()[0];
+    assert_eq!((relative.hit_volume(&normal), relative.hit_volume(&clap())), (35, 75));
+    assert!(c.volume_for_lanes(0, false, Some(&selected_lanes)));
+    let scoped = &c.hitsounds().moments()[0];
+    assert_eq!((scoped.hit_volume(&normal), scoped.hit_volume(&clap())), (1, 75));
+    c.volume(0, false);
+    let shared = &c.hitsounds().moments()[0];
+    assert_eq!((shared.hit_volume(&normal), shared.hit_volume(&clap())), (0, 0));
+    assert!(!shared.has_hit_volume_overrides());
+}
+
+#[test]
+fn copied_moved_and_replaced_hits_keep_their_gain() {
+    use dawsu_hitsounding::MomentId;
+    use std::collections::BTreeSet;
+
+    let mut c = composer();
+    let normal = c.hitsounds().moments()[0].hits().next().unwrap().clone();
+    c.add(1000.0, clap(), 80, 5.0);
+    assert!(c.volume_for_lanes(30, false, Some(&BTreeSet::from([clap()]))));
+    c.copy();
+    c.paste(1500.0);
+    let pasted = &c.hitsounds().moments()[1];
+    assert_eq!((pasted.hit_volume(&normal), pasted.hit_volume(&clap())), (100, 30));
+
+    let destination = SampleIdentity::File("rim.wav".into());
+    c.move_selected(0.0, Some(destination.clone()), 5.0);
+    let moved = &c.hitsounds().moments()[1];
+    assert!(!moved.has_hit(&clap()));
+    assert_eq!((moved.hit_volume(&normal), moved.hit_volume(&destination)), (100, 30));
+
+    let replacement = SampleIdentity::File("snare.wav".into());
+    c.apply("Replace sample", |hits| {
+        hits.replace_lane(&destination, replacement.clone());
+    });
+    let replaced = c.hitsounds().moment(MomentId(1));
+    assert!(!replaced.has_hit(&destination));
+    assert_eq!(replaced.hit_volume(&replacement), 30);
+    c.undo();
+    assert_eq!(c.hitsounds().moment(MomentId(1)).hit_volume(&destination), 30);
+}
+
+#[test]
+fn restored_gains_are_a_baseline_and_lane_scope_follows_the_replacement_slot() {
+    use dawsu_hitsounding::MomentId;
+    use std::collections::BTreeSet;
+
+    let mut c = composer();
+    let id = MomentId(0);
+    let normal = c.hitsounds().moment(id).hits().next().unwrap().clone();
+    let rim = SampleIdentity::File("rim.wav".into());
+    c.history = {
+        let mut hits = c.hitsounds().clone();
+        hits.restore_moment_hits(id, 70, [(normal.clone(), 70), (rim.clone(), 25)]);
+        hits.bind_lane_slot(rim.clone(), clap());
+        dawsu_editor::EditHistory::new(hits)
+    };
+    let restored = c.hitsounds().moment(id);
+    assert!(!restored.is_changed());
+    assert_eq!((restored.hit_volume(&normal), restored.hit_volume(&rim)), (70, 25));
+
+    c.select_all();
+    assert!(c.volume_for_lanes(5, true, Some(&BTreeSet::from([clap()]))));
+    assert_eq!(c.hitsounds().moment(id).hit_volume(&rim), 30);
+    assert_eq!(c.hitsounds().moment(id).hit_volume(&normal), 70);
+    assert!(c.hitsounds().moment(id).is_changed());
+    c.undo();
+    assert_eq!(c.hitsounds().moment(id).hit_volume(&rim), 25);
+    assert!(!c.hitsounds().moment(id).is_changed());
 }

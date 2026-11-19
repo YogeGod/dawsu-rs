@@ -270,3 +270,17 @@ fn the_local_corpus_generates_every_group_or_names_its_problem() {
     }
     eprintln!("corpus: {maps} maps generated; {native} groups read back, problems {kinds:?}");
 }
+#[test]
+fn generate_offers_a_mix_for_two_lanes_with_independent_gains() {
+    let source = map("0,500,4,2,1,60,1,0", "256,192,1000,1,8,0:0:0:60:");
+    let mut edited = dec(&source);
+    let clap = std(SampleSet::Soft, Hitsound::Clap, 1);
+    edited.set_hit_volume(MomentId(0), &clap, 35);
+
+    let (_, problems) = generated(&edited, &source);
+    let [SaveProblem { kind: ProblemKind::NeedsSampleMix(layers), .. }] = problems.as_slice() else {
+        panic!("expected a generated mix: {problems:?}");
+    };
+    assert!(layers.contains(&(clap, 35)));
+    assert!(layers.contains(&(std(SampleSet::Soft, Hitsound::Normal, 1), 60)));
+}
