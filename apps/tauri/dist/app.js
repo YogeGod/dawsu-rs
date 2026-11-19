@@ -1064,12 +1064,28 @@ function fillHitDiamond(ctx, x, y) {
 // Object circles grow with zoom as in the design (f11): half a beat on screen × 0.8, kept
 // between 18 and 30 px, from the timing at the object's own time and never taller than the lane.
 const objectReach = 15;
-function objectDiameter(sections, time, zoom, laneHeight) {
-  let beat = 0;
-  for (const [origin, length] of sections ?? []) {
-    if (beat && origin > time) break;
-    if (length > 0) beat = length;
+let beatLengthCache = null;
+
+// [start, beat length] of each timing, sorted by start: built once per timing snapshot.
+function beatLengths(sections) {
+  if (beatLengthCache?.sections !== sections) {
+    const beats = (sections ?? []).filter(([, beat]) => beat > 0).map(([origin, beat]) => [origin, beat])
+      .sort((first, second) => first[0] - second[0]);
+    beatLengthCache = { sections, beats };
   }
+  return beatLengthCache.beats;
+}
+
+function objectDiameter(beats, time, zoom, laneHeight) {
+  // Binary search for the last timing starting at or before the time; before it, the first timing.
+  let low = 0;
+  let high = beats.length;
+  while (low < high) {
+    const middle = (low + high) >> 1;
+    if (beats[middle][0] <= time) low = middle + 1;
+    else high = middle;
+  }
+  const beat = beats[Math.max(0, low - 1)]?.[1];
   const size = beat ? limit(Math.round(beat * zoom / 2 * .8), 18, 30) : 18;
   return Math.max(0, Math.min(size, laneHeight));
 }
@@ -1294,7 +1310,8 @@ function paint() {
   const waveformMiddle = (r.height + rulerBandHeight) / 2;
   const waveAmplitude = Math.min(waveformHeight, Math.max(0, r.height - rulerBandHeight)) / 2;
   if (waveAmplitude > 0) waveform(r.ctx, r.width, waveformMiddle, waveAmplitude, start, r.width / zoom);
-  const objectSize = time => objectDiameter(scene.sections, time, zoom, r.height - rulerBandHeight);
+  const beats = beatLengths(scene.sections);
+  const objectSize = time => objectDiameter(beats, time, zoom, r.height - rulerBandHeight);
   drawGameplay(r.ctx, scene.gameplay, xOf, waveformMiddle, r.width, objectSize);
   r.ctx.fillStyle = slateTimeline.ruler;
   r.ctx.fillRect(0, 0, r.width, rulerBandHeight);
@@ -1650,7 +1667,8 @@ function waveformTarget(ms, y, height) {
   const dy = Math.abs(y - (height + rulerBandHeight) / 2);
   if (!scene.gameplay || dy > objectReach) return null;
   // Hit the circles and slider tracks at the sizes drawGameplay() draws them.
-  const diameterAt = time => objectDiameter(scene.sections, time, scene.zoom, height - rulerBandHeight);
+  const beats = beatLengths(scene.sections);
+  const diameterAt = time => objectDiameter(beats, time, scene.zoom, height - rulerBandHeight);
   const radiusOf = nodeRadii(scene.gameplay.points, diameterAt);
   let target = null;
   let nearest = Infinity;

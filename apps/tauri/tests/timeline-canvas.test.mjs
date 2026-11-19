@@ -205,3 +205,21 @@ test("a click on a slider repeat counts only inside its drawn size", async () =>
   assert.equal(target(680, 50.5), pick(1, 400, false), "8 px beside it is the track");
   assert.equal(target(600, 58.5), "null", "8 px below misses");
 });
+
+test("circle sizes and clicks stay right with thousands of timing sections", async () => {
+  const { get, paint, evaluate } = await canvases();
+  const ruler = get("ruler");
+  // 2000 sections a second apart from 100 ms, alternating 500 ms and 250 ms beats:
+  // at 0.2 px/ms those give 30 px and 20 px circles. Before the first section its timing applies.
+  paint("scene.zoom = .2; scene.sections = Array.from({ length: 2000 }, (_, i) => [100 + i * 1000, i % 2 ? 250 : 500, 4])");
+  const cases = [[50, 30], [600, 30], [1600, 20], [999_600, 20], [1_000_600, 30], [1_999_600, 20], [2_100_000, 20]];
+  for (const [time, diameter] of cases) {
+    paint(`scene.viewStart = ${time - 100}; scene.gameplay = { points: [["circle", ${time}, 0]], spans: [] }`);
+    assert.deepEqual(circles(ruler).map(circle => circle.diameter), [diameter], `drawn at ${time} ms`);
+    // A click just inside the circle's edge picks it; just outside misses.
+    const inside = time + (diameter / 2 - .5) / .2;
+    const outside = time + (diameter / 2 + .5) / .2;
+    assert.equal(evaluate(`waveformTarget(${inside}, 50.5, 80)?.time`), time, `click inside at ${time} ms`);
+    assert.equal(evaluate(`waveformTarget(${outside}, 50.5, 80)`), null, `click outside at ${time} ms`);
+  }
+});
