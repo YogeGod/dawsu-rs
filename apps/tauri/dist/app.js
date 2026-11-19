@@ -1059,26 +1059,56 @@ function fillHitDiamond(ctx, x, y) {
   ctx.fill();
 }
 
-function drawGameplay(ctx, gameplay, xOf, y, width) {
+// Object circles grow with zoom as in the design (f11): half a beat on screen × 0.8, kept
+// between 18 and 30 px, from the timing at the view's left edge and never taller than the lane.
+function objectDiameter(sections, time, zoom, laneHeight) {
+  let beat = 0;
+  for (const [origin, length] of sections ?? []) {
+    if (beat && origin > time) break;
+    if (length > 0) beat = length;
+  }
+  const size = beat ? limit(Math.round(beat * zoom / 2 * .8), 18, 30) : 18;
+  return Math.max(0, Math.min(size, laneHeight));
+}
+
+function drawGameplay(ctx, gameplay, xOf, y, width, diameter) {
   if (!gameplay) return;
+  const radius = diameter / 2;
+  const track = diameter * .66;
   for (const [kind, start, end] of gameplay.spans) {
     const left = xOf(start);
     const right = xOf(end);
-    if (right < 0 || left > width) continue;
-    const height = kind === "slider" ? 11 : 5;
-    ctx.fillStyle = kind === "slider" ? "#62d6cfd9" : "#e6eef2";
+    if (right < -radius || left > width + radius) continue;
+    if (kind === "slider") {
+      ctx.fillStyle = "#62d6cfd9";
+      ctx.beginPath();
+      ctx.roundRect(left, y - track / 2, right - left, track, track / 2);
+      ctx.fill();
+      continue;
+    }
+    ctx.fillStyle = "#e6eef2";
     const from = Math.max(0, left);
     const to = Math.min(width, right);
-    ctx.fillRect(from, y - height / 2, Math.max(1, to - from), height);
+    ctx.fillRect(from, y - 2.5, Math.max(1, to - from), 5);
   }
-  ctx.lineWidth = 1;
+  // A slider's first and last nodes are full circles; repeats between them sit on the track.
+  const sliderEnds = new Map();
+  for (const [kind, time, object] of gameplay.points) {
+    if (kind !== "slider") continue;
+    const ends = sliderEnds.get(object);
+    if (ends) sliderEnds.set(object, [Math.min(ends[0], time), Math.max(ends[1], time)]);
+    else sliderEnds.set(object, [time, time]);
+  }
+  ctx.lineWidth = 2;
   ctx.strokeStyle = "#1c2727";
-  for (const [kind, time] of gameplay.points) {
+  for (const [kind, time, object] of gameplay.points) {
     const x = xOf(time);
-    if (x < -6 || x > width + 6) continue;
+    if (x < -radius || x > width + radius) continue;
+    const ends = kind === "slider" ? sliderEnds.get(object) : null;
+    const repeat = ends && time !== ends[0] && time !== ends[1];
     ctx.fillStyle = "#e6eef2";
     ctx.beginPath();
-    ctx.arc(x, y, kind === "circle" ? 6 : 4, 0, Math.PI * 2);
+    ctx.arc(x, y, repeat ? track / 2 : radius, 0, Math.PI * 2);
     ctx.fill();
     ctx.stroke();
   }
@@ -1242,7 +1272,8 @@ function paint() {
   const waveformMiddle = (r.height + rulerBandHeight) / 2;
   const waveAmplitude = Math.min(waveformHeight, Math.max(0, r.height - rulerBandHeight)) / 2;
   if (waveAmplitude > 0) waveform(r.ctx, r.width, waveformMiddle, waveAmplitude, start, r.width / zoom);
-  drawGameplay(r.ctx, scene.gameplay, xOf, waveformMiddle, r.width);
+  const objectSize = objectDiameter(scene.sections, start, zoom, r.height - rulerBandHeight);
+  drawGameplay(r.ctx, scene.gameplay, xOf, waveformMiddle, r.width, objectSize);
   r.ctx.fillStyle = slateTimeline.ruler;
   r.ctx.fillRect(0, 0, r.width, rulerBandHeight);
   r.ctx.font = "11px Consolas, monospace";

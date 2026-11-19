@@ -20,6 +20,7 @@ test("the ruler paints a teal-tint and the overview a neutral background under t
     const hitMarks = [];
     const ctx = new Proxy({
       arc(x, y, radius) { objects.push({ x, y, radius, afterWaveform: bands.length > 0 }); },
+      fill() { fills.push(this.fillStyle); },
       fillRect(x, y, width, height) {
         fills.push(this.fillStyle);
         if (this.fillStyle === "#a3a3a3") hitMarks.push([x, y]);
@@ -61,8 +62,8 @@ test("the ruler paints a teal-tint and the overview a neutral background under t
     scene.gameplay = {points: [["circle", 200], ["slider", 600]], spans: [["slider", 600, 800], ["spinner", 900, 1000]]};
     paint();`, context);
   assert.deepEqual(get("ruler").objects, [
-    { x: 50, y: 50.5, radius: 6, afterWaveform: true },
-    { x: 150, y: 50.5, radius: 4, afterWaveform: true },
+    { x: 50, y: 50.5, radius: 9, afterWaveform: true },
+    { x: 150, y: 50.5, radius: 9, afterWaveform: true },
   ]);
   assert.ok(get("ruler").fills.includes("#62d6cfd9"));
   assert.ok(get("ruler").fills.includes("#e6eef2"));
