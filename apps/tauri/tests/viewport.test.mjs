@@ -62,6 +62,26 @@ test("Fit shows the whole difficulty from zero without changing lane height", as
   assert.deepEqual(calls, [{ scene: false, action: { kind: "view", start: 0, zoom: 0.1, row_height: 30 } }]);
 });
 
+test("Fit shows a 30-minute song in a 1000 px timeline, and wheel zoom out never zooms in", async () => {
+  const { calls, evaluate, get, settle } = await frontend();
+  const duration = 30 * 60_000;
+  evaluate(`view.duration = ${duration}`);
+  get("fit").events.get("click")();
+  await settle();
+  assert.deepEqual(calls.pop(), { scene: false, action: { kind: "view", start: 0, zoom: 1000 / duration, row_height: 30 } });
+  evaluate(`scene.zoom = ${1000 / duration}; scene.viewStart = 0`);
+  get("scroll").events.get("wheel")({ ctrlKey: true, deltaY: 100, deltaX: 0, clientX: 500, clientY: 0, preventDefault() {} });
+  await settle();
+  assert.ok(calls.pop().action.zoom <= 1000 / duration);
+});
+
+test("the zoom slider starts at the timeline's zoom-out limit", async () => {
+  const { evaluate } = await frontend();
+  const sliderMin = +html.match(/<input[^>]*min="([^"]+)"[^>]*id="zoom"/)[1];
+  assert.equal(sliderMin, +Math.log10(evaluate("minZoom")).toFixed(3));
+  assert.ok(evaluate("minZoom") <= 1000 / (30 * 60_000), "Fit shows a 30-minute song in 1000 px");
+});
+
 test("the transport Return switch toggles the shared playback preference", async () => {
   const { calls, get, settle } = await frontend();
   const toggle = get("transport-return");

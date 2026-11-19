@@ -1753,8 +1753,11 @@ function resizeLaneHeaders(height) {
   for (const lane of $("lanes").children) lane.style.height = height + "px";
 }
 
+// The farthest zoom out, in px per ms, as the editor's MIN_ZOOM; the zoom slider's min is its log10.
+const minZoom = .0005;
+
 function changeView(start, zoom, rowHeight = scene.rowHeight, rowAnchorY = 0) {
-  zoom = limit(zoom, .002, 3);
+  zoom = limit(zoom, minZoom, 3);
   rowHeight = limit(rowHeight, 20, 65);
   const path = scene.path;
   return run(async () => {
@@ -1831,7 +1834,7 @@ $("scroll").addEventListener("wheel", (event) => {
   } else if (snap) {
     stepWheelSnap(deltaY < 0);
   } else if (zoomTime) {
-    const zoom = limit(scene.zoom * Math.exp(-deltaY * .003), .002, 3);
+    const zoom = limit(scene.zoom * Math.exp(-deltaY * .003), minZoom, 3);
     changeView(scene.viewStart + Math.max(0, x) * (1 / scene.zoom - 1 / zoom), zoom);
   } else if (pan) {
     changeView(scene.viewStart + (deltaX || deltaY) / scene.zoom, scene.zoom);

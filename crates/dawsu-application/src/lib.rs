@@ -21,6 +21,7 @@ mod preferences;
 mod shortcuts;
 mod problems;
 mod recovery;
+mod refusals;
 mod sample_watch;
 pub mod waveform;
 use dawsu_editor::commands::{
@@ -109,7 +110,7 @@ impl Document {
         };
         let h = match decompile(&compile_base, &files, &|| false, &mut |_, _| {}) {
             Decompiled::Done(h) => h,
-            other => return Err(format!("Cannot open difficulty: {other:?}")),
+            other => return Err(refusals::open(&other)),
         };
         let sections = read
             .file
@@ -191,6 +192,9 @@ impl Document {
 }
 const DIFFICULTY_CHANGED: &str =
     "The difficulty changed on disk. Your edits are kept. Reopen or save a separate copy.";
+/// The farthest the timeline zooms out, in pixels per millisecond: low enough that Fit shows a
+/// 30-minute song in a 1000 px timeline. The view, Zoom out and reopening all use it.
+pub const MIN_ZOOM: f64 = 0.0005;
 
 pub struct SaveReport {
     pub file: OsuFile,
@@ -229,7 +233,7 @@ fn compile_for_save(
                             return Err("Save cancelled".into());
                         }
                         file.remove_hit_object(id.line())
-                            .map_err(|error| format!("Removing an empty HS circle: {error:?}"))?;
+                            .map_err(|error| format!("Could not remove an empty circle that HS mode made: {}.", refusals::line(&error)))?;
                         removed.insert(id);
                     }
                 }
@@ -1138,7 +1142,7 @@ impl Application {
                                 })
                                 .ok_or("Archive contains no difficulty")?
                         }
-                        other => return Err(format!("Import refused: {other:?}")),
+                        other => return Err(refusals::import(&other)),
                     }
                 } else {
                     path
@@ -1254,7 +1258,7 @@ impl Application {
                         .clamp(0.0, duration);
                     self.cycle = settings.cycle && self.locator_left < self.locator_right;
                     self.song_offset = settings.song_offset;
-                    self.zoom = settings.zoom.unwrap_or(0.12).clamp(0.005, 3.0);
+                    self.zoom = settings.zoom.unwrap_or(0.12).clamp(MIN_ZOOM, 3.0);
                     self.row_height = settings.row_height.unwrap_or(30.0).clamp(20.0, 65.0);
                     self.set_view_start(settings.view_start.clamp(0.0, duration));
                     self.seek(0.0);
@@ -1899,6 +1903,7 @@ impl Application {
         if let Some(d) = self.document.as_mut() {
             d.composer.protect_normals = on;
         }
+        self.save_preferences();
     }
     pub fn set_snap_options(
         &mut self,
@@ -1908,10 +1913,13 @@ impl Application {
         mode: dawsu_editor::tempo::SnapMode,
     ) {
         if let Some(d) = self.document.as_mut() {
-            if let Ok(spacing) = SnapSpacing::new(beats, divisions) {
-                d.composer.snap_enabled = enabled;
-                d.composer.spacing = spacing;
-                d.composer.snap_mode = mode;
+            match SnapSpacing::new(beats, divisions) {
+                Ok(spacing) => {
+                    d.composer.snap_enabled = enabled;
+                    d.composer.spacing = spacing;
+                    d.composer.snap_mode = mode;
+                }
+                Err(error) => self.error = Some(refusals::snap(beats, divisions, error)),
             }
         }
     }
@@ -2357,7 +2365,7 @@ pub fn lane_name(identity: &SampleIdentity) -> String {
     }
 }
 fn safe_child(root: &Path, name: &str) -> Result<PathBuf, String> {
-    check_map_path(name).map_err(|e| format!("Unsafe file name: {e:?}"))?;
+    check_map_path(name).map_err(|e| refusals::file_name(&e))?;
     let root = root.canonicalize().map_err(|e| e.to_string())?;
     let child = root
         .join(name.replace('\\', "/"))
@@ -3897,5 +3905,61 @@ mod project_workflow {
         assert_eq!(app.zoom, 0.35);
         assert_eq!(app.document().unwrap().composer.view_start, 125.0);
         assert_eq!(std::fs::read(&map).unwrap(), data);
+    }
+
+    #[test]
+    fn protect_hitnormals_is_saved_like_the_other_preferences() {
+        let fixture = Scratch::new("protect-normals-preference");
+        let data = fixture.path("data");
+        let mut app = Application::create(Preferences::default(), false, None, None, true, data.clone());
+        app.set_normal_protection(true);
+        assert!(app.error.is_none(), "{:?}", app.error);
+        let (saved, _) = preferences::load(&data.join("preferences.json"), None);
+        assert!(saved.protect_hitnormals);
+    }
+
+    #[test]
+    fn a_snap_spacing_osu_cannot_use_is_reported_and_changes_nothing() {
+        let fixture = Scratch::new("mixed-snap");
+        let map = fixture.path("map.osu");
+        std::fs::write(&map, include_bytes!("../tests/project-fixture.osu")).unwrap();
+        let mut app = Application::headless();
+        open(&mut app, map);
+        let spacing = |app: &Application| {
+            let composer = &app.document().unwrap().composer;
+            (composer.snap_enabled, composer.spacing.beats(), composer.spacing.divisions())
+        };
+        let before = spacing(&app);
+        app.set_snap_options(!before.0, 2, 3, dawsu_editor::tempo::SnapMode::Grid);
+        assert_eq!(
+            app.error.take().as_deref(),
+            Some("Snap 2/3 is not available. Use a fraction of a beat, like 1/4, or whole beats, like 2/1.")
+        );
+        assert_eq!(spacing(&app), before);
+        app.set_snap_options(true, 1, 3, dawsu_editor::tempo::SnapMode::Grid);
+        assert!(app.error.is_none(), "{:?}", app.error);
+        assert_eq!(spacing(&app), (true, 1, 3));
+    }
+
+    #[test]
+    fn fit_zoom_of_a_30_minute_song_survives_zoom_out_and_reopening() {
+        let fixture = Scratch::new("fit-zoom");
+        let map = fixture.path("map.osu");
+        let other = fixture.path("other.osu");
+        let data = include_bytes!("../tests/project-fixture.osu");
+        std::fs::write(&map, data).unwrap();
+        std::fs::write(&other, data).unwrap();
+        let mut app = Application::headless();
+        app.project_root = Some(fixture.path("application-data"));
+        open(&mut app, map.clone());
+        // Fit shows a 30-minute song in a 1000 px timeline.
+        let fit = 1000.0 / (30.0 * 60_000.0);
+        app.zoom = fit;
+        app.command("zoomOut");
+        assert!(app.zoom <= fit, "Zoom out zoomed in to {}", app.zoom);
+        app.zoom = fit;
+        open(&mut app, other);
+        open(&mut app, map);
+        assert_eq!(app.zoom, fit);
     }
 }

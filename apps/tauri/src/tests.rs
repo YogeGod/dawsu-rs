@@ -1,4 +1,4 @@
-use super::{Action, PlaybackStart, lane_add_choices, snapshot};
+use super::{Action, PlaybackStart, lane_add_choices, lane_by_key, scene_lane_key, snapshot};
 use dawsu_application::{Application, WaveBin};
 use std::fmt::Write as _;
 use std::fs;
@@ -220,13 +220,12 @@ fn drum_view_uses_a_preset_without_changing_the_mapset_and_follows_sibling_diffi
     assert_eq!(shown["scene"]["lanes"], original["scene"]["lanes"]);
     assert_eq!(shown["scene"]["moments"], original["scene"]["moments"]);
     let rows = shown["scene"]["drumRows"].as_array().unwrap();
-    assert_eq!(rows[0]["name"], "Snare");
+    // Two rows on one lane show as one row under both names, so the lane shows once.
+    assert_eq!(rows[0]["name"], "Snare / Rim");
     assert!(rows[1]["row"].is_null());
     assert_eq!(rows[1]["name"], "Ghost notes");
-    assert_eq!(rows[2]["name"], "Rim");
-    assert_eq!(rows[0]["row"], rows[2]["row"]);
     assert_ne!(rows[0]["row"], serde_json::Value::Null);
-    assert_eq!(rows.len(), original["scene"]["laneOrder"].as_array().unwrap().len() + 2);
+    assert_eq!(rows.len(), original["scene"]["laneOrder"].as_array().unwrap().len() + 1);
 
     drums.toggle(&app, &expected, false).unwrap();
     assert!(read(&drums, &app)["scene"]["drumRows"].is_null());
@@ -242,6 +241,87 @@ fn drum_view_uses_a_preset_without_changing_the_mapset_and_follows_sibling_diffi
     for map in [&path, &sibling, &foreign] {
         assert_eq!(fs::read(map).unwrap(), bytes);
     }
+}
+
+#[test]
+fn drum_view_rows_follow_a_replaced_lane_and_leave_hidden_lanes_hidden() {
+    use dawsu_hitsounding::drums::{DrumMap, DrumRow, lane_key, write_dawsudrum};
+
+    let fixture = Fixture::new("drum-view-replaced");
+    let mapset = fixture.0.join("mapset");
+    fs::create_dir(&mapset).unwrap();
+    let path = mapset.join("Hard.osu");
+    let bytes = b"osu file format v14\n\n[General]\nMode:0\n\n[TimingPoints]\n0,500,4,1,0,100,1,0\n\n[HitObjects]\n256,192,1000,1,8,0:0:0:0:\n256,192,2000,1,2,0:0:0:0:\n";
+    fs::write(&path, bytes).unwrap();
+    let external = fixture.0.join("snare.wav");
+    fs::write(&external, b"RIFF\x26\0\0\0WAVEfmt \x10\0\0\0\x01\0\x01\0\x80\xbb\0\0\0w\x01\0\x02\0\x10\0data\x02\0\0\0\x00\x40").unwrap();
+    let mut app = Application::headless();
+    open(&mut app, &path);
+    let map = app.document().unwrap().path.clone();
+    let lanes = snapshot(&app, true)["scene"]["lanes"].clone();
+    let identity = |name: &str| {
+        let row = lanes.as_array().unwrap().iter().position(|lane| lane["name"] == name).unwrap();
+        app.document().unwrap().composer.lanes[row].clone()
+    };
+    let (clap, whistle) = (identity("normal-hitclap"), identity("normal-hitwhistle"));
+    let key = |app: &Application, lane| lane_key(app.document().unwrap().composer.hitsounds().lane(lane).unwrap());
+    let mut drums = super::drum_view::DrumView::default();
+    let load = |drums: &mut super::drum_view::DrumView, app: &Application, rows: Vec<(&str, Option<String>)>| {
+        let kit = DrumMap {
+            id: "bbbbbbbb-0000-4000-8000-000000000002".into(),
+            name: "Kit".into(),
+            rows: rows.into_iter().enumerate().map(|(id, (name, lane))| DrumRow {
+                id: format!("aaaaaaaa-0000-4000-8000-{id:012}"), name: name.into(), lane, slot: None, midi_note: None,
+            }).collect(),
+            audio: Vec::new(),
+        };
+        let preset = fixture.0.join("Kit.dawsudrum");
+        fs::write(&preset, write_dawsudrum(&kit).unwrap()).unwrap();
+        drums.load(app, &map, &preset).unwrap();
+    };
+    load(&mut drums, &app, vec![
+        ("Snare", Some(key(&app, &clap))), ("Ride", Some(key(&app, &whistle))), ("Ghost notes", None),
+    ]);
+
+    app.active_lane = app.document().unwrap().composer.lanes.iter().position(|lane| lane == &clap).unwrap();
+    app.replace_lane_sample(&map, &clap, &external).unwrap();
+    let replacement = app.document().unwrap().composer.lanes[app.active_lane].clone();
+    let revision = app.document().unwrap().composer.history.version();
+    app.delete_lane(&map, &whistle, revision).unwrap();
+
+    let plain = snapshot(&app, true);
+    let order = plain["scene"]["laneOrder"].as_array().unwrap().clone();
+    let read = |drums: &super::drum_view::DrumView| {
+        let mut shown = plain.clone();
+        drums.decorate(&app, &mut shown);
+        assert_eq!(shown["scene"]["lanes"], plain["scene"]["lanes"]);
+        assert_eq!(shown["scene"]["laneOrder"], plain["scene"]["laneOrder"]);
+        shown["scene"]["drumRows"].as_array().unwrap().clone()
+    };
+    let row_of = |rows: &[serde_json::Value], name: &str| rows.iter().find(|row| row["name"] == name).map(|row| row["row"].clone());
+    // The view never adds, drops or repeats a lane: each shown lane appears exactly once.
+    let lanes_once = |rows: &[serde_json::Value]| {
+        let mut shown: Vec<_> = rows.iter().filter_map(|row| row["row"].as_u64()).collect();
+        let mut expected: Vec<_> = order.iter().filter_map(serde_json::Value::as_u64).collect();
+        shown.sort_unstable();
+        expected.sort_unstable();
+        assert_eq!(shown, expected, "{rows:?}");
+    };
+
+    let rows = read(&drums);
+    let snare = row_of(&rows, "Snare").unwrap();
+    assert!(order.contains(&snare), "Snare reads Unassigned on the replaced lane: {rows:?}");
+    assert_eq!(plain["scene"]["lanes"][snare.as_u64().unwrap() as usize]["name"], "normal-hitclap");
+    assert_eq!(row_of(&rows, "Ride"), None, "a hidden lane's row shows: {rows:?}");
+    assert_eq!(row_of(&rows, "Ghost notes"), Some(serde_json::Value::Null));
+    lanes_once(&rows);
+
+    // A row may also name the replacement sample itself; the one lane shows once, under both names.
+    load(&mut drums, &app, vec![("Snare", Some(key(&app, &clap))), ("Rim", Some(key(&app, &replacement)))]);
+    let rows = read(&drums);
+    assert_eq!(row_of(&rows, "Snare / Rim"), Some(snare), "{rows:?}");
+    lanes_once(&rows);
+    assert_eq!(fs::read(&path).unwrap(), bytes);
 }
 
 #[test]
@@ -493,6 +573,41 @@ fn library_sample_actions_scope_paths_and_preserve_the_assignment_target() {
     assert_eq!(fs::read_dir(&mapset).unwrap().count(), 2);
     assert_eq!(fs::read(&path).unwrap(), original);
     assert_eq!(fs::read(library.join("drums/snare.WAV")).unwrap(), wave);
+}
+
+#[test]
+fn every_lane_key_the_scene_sends_comes_from_one_helper_and_finds_its_lane() {
+    let fixture = Fixture::new("lane-keys");
+    let path = fixture.0.join("Hard.osu");
+    fs::write(&path, b"osu file format v14
+
+[TimingPoints]
+0,500,4,1,0,100,1,0
+
+[HitObjects]
+256,192,1000,1,8,0:0:0:0:
+").unwrap();
+    let mut app = Application::headless();
+    open(&mut app, &path);
+    let scene = snapshot(&app, true);
+    for (row, lane) in app.document().unwrap().composer.lanes.iter().enumerate() {
+        assert_eq!(scene["scene"]["lanes"][row]["sourceKey"], scene_lane_key(lane));
+        assert_eq!(&lane_by_key(&app, &scene_lane_key(lane)).unwrap(), lane);
+    }
+}
+
+#[test]
+fn view_keeps_the_fit_zoom_of_a_30_minute_song() {
+    let fixture = Fixture::new("fit-zoom");
+    let path = fixture.0.join("Hard.osu");
+    fs::write(&path, b"osu file format v14\n\n[TimingPoints]\n0,500,4,1,0,100,1,0\n\n[HitObjects]\n256,192,1000,1,0,0:0:0:0:\n").unwrap();
+    let mut app = Application::headless();
+    open(&mut app, &path);
+    // Fit shows a 30-minute song in a 1000 px timeline.
+    let fit = 1000.0 / (30.0 * 60_000.0);
+    serde_json::from_value::<Action>(serde_json::json!({"kind": "view", "start": 0.0, "zoom": fit, "row_height": 30.0}))
+        .unwrap().run(&mut app);
+    assert_eq!(app.zoom, fit);
 }
 
 #[test]

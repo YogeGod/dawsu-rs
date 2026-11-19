@@ -138,9 +138,9 @@ pub(super) fn stage_in_file(
     match compile(&file, &hits, placement, cancel, &mut |_, _| {}) {
         Compiled::Done { file, problems } if problems.is_empty() => Ok((file, files)),
         Compiled::Done { problems, .. } => Err(format!(
-            "Could not encode sample mix at {:.0} ms: {:?}",
+            "Could not make the sample mix at {:.0} ms: {}",
             problems[0].time.ms(),
-            problems[0].kind,
+            crate::problem_description(&problems[0].kind),
         )),
         Compiled::Cancelled => Err("Sample mix preparation cancelled".into()),
     }

@@ -103,3 +103,28 @@ fn cancellation_after_one_copy_target_restores_it_but_preserves_a_newer_external
     assert_eq!(std::fs::read(&first).unwrap(), b"newer external edit");
     assert_eq!(std::fs::read(&second).unwrap(), plain.as_bytes());
 }
+#[test]
+fn new_difficulty_and_generate_refusals_are_worded_for_mappers() {
+    let scratch = Scratch::new("output-plain-refusals");
+    let path = scratch.path("source.osu");
+    std::fs::write(&path, MAP).unwrap();
+    let taken_file = String::from_utf8(MAP.to_vec()).unwrap().replace("Version:Hard", "Version:Insane");
+    std::fs::write(scratch.path("Artist - Title (Mapper) [Taken].osu"), taken_file).unwrap();
+    let source = output::Source::from_document(&Document::read(&path).unwrap());
+    let refusal = |result: Result<output::WritePlan, String>| result.err().expect("a refusal");
+    assert_eq!(refusal(output::new_diff(&source, " ")), "Type a name for the new difficulty.");
+    assert_eq!(
+        refusal(output::new_diff(&source, "hard")),
+        "A difficulty with that name already exists in this mapset. Choose another name."
+    );
+    assert_eq!(
+        refusal(output::new_diff(&source, "Taken")),
+        "A difficulty file with that name is already in the mapset folder. Choose another name."
+    );
+    let hitsounds = String::from_utf8(MAP.to_vec()).unwrap().replace("Version:Hard", "Version:Hitsounds");
+    std::fs::write(scratch.path("other.osu"), hitsounds).unwrap();
+    assert_eq!(
+        refusal(output::generate(&source, &|| false)),
+        "A difficulty in this mapset is already called \"Hitsounds\". Rename it, then generate again."
+    );
+}

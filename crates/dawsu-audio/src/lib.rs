@@ -69,6 +69,9 @@ fn registered_asio_devices() -> Vec<OutputDevice> {
 
 #[cfg(windows)]
 const NATIVE_SAMPLE_RATE: u32 = 48_000;
+/// Shown when the output device's sample format has no player here; cpal's names for formats
+/// (such as `I24`) mean nothing to a mapper, so the message leaves the format out.
+const UNSUPPORTED_SAMPLE_FORMAT: &str = "This audio device uses a sample format dawsu! cannot play. Choose another device.";
 
 #[cfg(windows)]
 struct NativeStream {
@@ -678,7 +681,7 @@ impl AudioEngine {
             cpal::SampleFormat::I24 => stream::<cpal::I24>(&device, config, render, errors.clone()),
             cpal::SampleFormat::I32 => stream::<i32>(&device, config, render, errors.clone()),
             cpal::SampleFormat::U16 => stream::<u16>(&device, config, render, errors.clone()),
-            other => return Err(format!("Unsupported output sample format: {other:?}")),
+            _ => return Err(UNSUPPORTED_SAMPLE_FORMAT.into()),
         }?;
         stream.play().map_err(|e| e.to_string())?;
         Ok(Self {
@@ -863,6 +866,16 @@ mod asio_tests {
             cfg!(all(windows, feature = "asio-local")),
         );
         assert!(AudioEngine::open_output(OutputBackend::Asio, None, None).is_err());
+    }
+
+    #[test]
+    fn an_unplayable_sample_format_is_not_named_by_its_code_name() {
+        use cpal::SampleFormat::*;
+        for format in [I8, I24, I64, U8, U24, U32, U64, F64] {
+            for name in [format!("{format:?}"), format.to_string()] {
+                assert!(!UNSUPPORTED_SAMPLE_FORMAT.contains(&name), "{UNSUPPORTED_SAMPLE_FORMAT} names {name}");
+            }
+        }
     }
 
     #[cfg(all(windows, feature = "asio-local"))]

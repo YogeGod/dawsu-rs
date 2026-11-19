@@ -1,8 +1,8 @@
 use dawsu_application::Application;
-use dawsu_hitsounding::drums::{DrumMap, DrumViewRow, MAX_DAWSUDRUM_BYTES, drum_rows, read_dawsudrum};
+use dawsu_hitsounding::drums::{DrumMap, DrumViewRow, MAX_DAWSUDRUM_BYTES, drum_rows, lane_key, read_dawsudrum};
 use serde_json::{Value, json};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs::File,
     io::Read,
     path::{Path, PathBuf},
@@ -61,17 +61,46 @@ impl DrumView {
         let composer = &document.composer;
         let model = composer.hitsounds();
         let definitions: HashMap<_, _> = model.lanes().iter().map(|lane| (&lane.identity, lane)).collect();
+        // A replaced lane shows in the place of the lane it fills (the scene's `key`). A drum-map row
+        // may name either lane; both stand for the one shown row.
+        let filled = |row: usize| {
+            let shown = &view["scene"]["lanes"][row];
+            let key = shown["key"].as_str().filter(|key| Some(*key) != shown["sourceKey"].as_str())?;
+            model.lanes().iter().find(|lane| super::scene_lane_key(&lane.identity) == key)
+        };
         let available: Vec<_> = order.iter().filter_map(|value| {
             let row = value.as_u64()? as usize;
             let identity = composer.lanes.get(row)?;
             Some((row, *definitions.get(identity)?))
-        }).collect();
+        }).flat_map(|(row, lane)| std::iter::once((row, lane)).chain(filled(row).map(|slot| (row, slot)))).collect();
         let lanes = available.iter().map(|(_, lane)| (*lane).clone()).collect::<Vec<_>>();
         let rows: HashMap<_, _> = available.iter().map(|(row, lane)| (&lane.identity, *row)).collect();
-        let shown = drum_rows(Some(&kit.preset), &lanes).into_iter().map(|entry| match entry {
-            DrumViewRow::Instrument { row, lane } => json!({"row": rows[&lane.identity], "name": row.name}),
-            DrumViewRow::Unassigned(row) => json!({"row": null, "name": row.name}),
-            DrumViewRow::Other(lane) => json!({"row": rows[&lane.identity], "name": null}),
+        // A row on a hidden lane stays hidden, as the lane does with the drum map off.
+        let hidden: HashSet<_> = composer.lanes.iter().filter(|lane| model.is_lane_hidden(lane))
+            .flat_map(|lane| [Some(lane), model.lane_slot(lane)].into_iter().flatten())
+            .filter_map(|lane| definitions.get(lane).map(|lane| lane_key(lane)))
+            .collect();
+        let entries = drum_rows(Some(&kit.preset), &lanes);
+        // Several drum-map rows on one lane show as one row, at the first of them and under all
+        // their names, so the view never shows a lane twice.
+        let mut names: HashMap<usize, Vec<&str>> = HashMap::new();
+        for entry in &entries {
+            if let DrumViewRow::Instrument { row, lane } = entry {
+                names.entry(rows[&lane.identity]).or_default().push(&row.name);
+            }
+        }
+        let mut shown_rows = HashSet::new();
+        let shown = entries.iter().filter_map(|entry| match entry {
+            DrumViewRow::Instrument { lane, .. } => {
+                let row = rows[&lane.identity];
+                shown_rows.insert(row).then(|| json!({"row": row, "name": names[&row].join(" / ")}))
+            }
+            DrumViewRow::Unassigned(row) if row.lane.as_ref().is_some_and(|key| hidden.contains(key)) => None,
+            DrumViewRow::Unassigned(row) => Some(json!({"row": null, "name": row.name})),
+            DrumViewRow::Other(lane) => {
+                let row = rows[&lane.identity];
+                shown_rows.insert(row).then(|| json!({"row": row, "name": null}))
+            }
         }).collect::<Vec<_>>();
         view["scene"]["drumRows"] = json!(shown);
     }
