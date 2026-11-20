@@ -2022,39 +2022,125 @@ fn home_save_with_left_out_moments_goes_home_after_the_summarys_save() {
 }
 
 #[test]
-fn drum_hit_detection_offers_the_map_lanes_and_reports_a_missing_song() {
-    let fixture = Fixture::new("drum-detect");
+fn drum_window_requests_answer_with_its_view_and_never_touch_main_errors() {
+    use super::drum_window::{DrumRequest, OptionsJson, SourceJson, answer};
+    let fixture = Fixture::new("drum-window");
     let map = fixture.0.join("map.osu");
     fs::write(&map, "osu file format v14\n[General]\nMode:0\nSampleSet:Soft\n[TimingPoints]\n0,500,4,2,0,100,1,0\n[HitObjects]\n256,192,500,1,10,0:0:0:0:\n").unwrap();
     let mut app = Application::headless();
     open(&mut app, &map);
-    let view = snapshot(&app, false);
-    let drum = &view["drumDetect"];
-    assert_eq!(drum["state"], "idle");
-    let keys: Vec<String> = drum["lanes"].as_array().unwrap().iter()
+    assert!(snapshot(&app, false)["drumDetect"].is_null(), "main's view no longer carries drum detection");
+    let view = answer(&mut app, DrumRequest::Context { known: None }).unwrap();
+    assert_eq!(view["state"], "idle");
+    assert_eq!(view["hasSong"], false);
+    assert_eq!(view["options"]["sensitivity"], 50);
+    assert_eq!(view["editorGrid"], 4);
+    let keys: Vec<String> = view["lanes"].as_array().unwrap().iter()
         .map(|lane| lane["key"].as_str().unwrap().to_owned()).collect();
     let lanes = app.document().unwrap().composer.hitsounds().lanes().iter()
         .map(|lane| scene_lane_key(&lane.identity)).collect::<Vec<_>>();
     assert_eq!(keys, lanes);
-    assert!(drum["lanes"].as_array().unwrap().iter().all(|lane| lane["hidden"] == false));
+    assert!(view["lanes"].as_array().unwrap().iter().all(|lane| lane["hidden"] == false));
     let kick = keys.iter().find(|key| key.contains("Whistle")).unwrap().clone();
-    let map = app.document().unwrap().path.clone();
-    let start: Action = serde_json::from_value(serde_json::json!({
-        "kind": "drum_detect_start", "map": map, "kick": kick, "snare": null,
-    })).unwrap();
-    start.run(&mut app);
-    assert_eq!(app.error.take().as_deref(), Some("This difficulty's song could not be loaded."));
-    let other: Action = serde_json::from_value(serde_json::json!({
-        "kind": "drum_detect_start", "map": fixture.0.join("other.osu"), "kick": kick, "snare": null,
-    })).unwrap();
-    other.run(&mut app);
-    assert!(app.error.take().unwrap().contains("difficulty changed"));
-    let apply: Action = serde_json::from_value(serde_json::json!({ "kind": "drum_apply", "map": map, "review": "1" })).unwrap();
-    apply.run(&mut app);
-    assert_eq!(app.error.take().as_deref(), Some("Detect drum hits first."));
-    let cancel: Action = serde_json::from_value(serde_json::json!({ "kind": "drum_detect_cancel" })).unwrap();
-    cancel.run(&mut app);
-    assert!(app.error.is_none());
+    let path = app.document().unwrap().path.clone();
+    let options = |kick: &str, snare: Option<&str>| OptionsJson {
+        kick: Some(kick.to_owned()), snare: snare.map(str::to_owned), sensitivity: 50, object_ms: 30.0, grid: None, stem_offset: 0.0,
+    };
+    let view = answer(&mut app, DrumRequest::Review { map: path.clone(), options: options(&kick, None) }).unwrap();
+    assert_eq!(view["options"]["kick"], kick.as_str());
+    assert_eq!(answer(&mut app, DrumRequest::Review { map: path.clone(), options: options(&kick, Some(&kick)) }).unwrap_err(),
+        "Pick different lanes for kicks and snares.");
+    assert_eq!(answer(&mut app, DrumRequest::Start { map: path.clone(), source: SourceJson::Song }).unwrap_err(),
+        "This difficulty's song could not be loaded. Pick a drum stem.");
+    let other = DrumRequest::Start { map: fixture.0.join("other.osu"), source: SourceJson::Song };
+    assert!(answer(&mut app, other).unwrap_err().contains("difficulty changed"));
+    let apply = DrumRequest::Apply { map: path.clone(), review: "1".into(), ticked: Vec::new() };
+    assert_eq!(answer(&mut app, apply).unwrap_err(), "Detect drum hits first.");
+    assert!(app.error.is_none(), "drum requests answer the drum window, not main");
+
+    // A drum stem (the detector's test pattern at half level): the rows come once per review, and
+    // Apply adds the checked ones.
+    let pattern = concat!(env!("CARGO_MANIFEST_DIR"), "/../../crates/dawsu-graph-audio/tests/fixtures/classic-3.1.4/pattern.f32");
+    let pcm: Vec<u8> = fs::read(pattern).unwrap().chunks_exact(4)
+        .flat_map(|b| (((f32::from_le_bytes(b.try_into().unwrap()) * 0.5).clamp(-1.0, 1.0) * 32767.0) as i16).to_le_bytes()).collect();
+    let mut wav = b"RIFF".to_vec();
+    wav.extend((36 + pcm.len() as u32).to_le_bytes());
+    wav.extend(b"WAVEfmt ");
+    for field in [16_u32, 1 | 1 << 16, 44_100, 88_200, 2 | 16 << 16] {
+        wav.extend(field.to_le_bytes());
+    }
+    wav.extend(b"data");
+    wav.extend((pcm.len() as u32).to_le_bytes());
+    wav.extend(pcm);
+    let stem = fixture.0.join("drums.wav");
+    fs::write(&stem, wav).unwrap();
+    answer(&mut app, DrumRequest::Start { map: path.clone(), source: SourceJson::Stem { path: stem } }).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let view = loop {
+        let view = answer(&mut app, DrumRequest::Context { known: None }).unwrap();
+        if view["state"] == "ready" {
+            break view;
+        }
+        assert_eq!(view["state"], "running", "{view}");
+        assert!(Instant::now() < deadline, "detection did not finish");
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    assert_eq!(view["source"]["name"], "drums.wav");
+    let review = view["review"].as_str().unwrap().to_owned();
+    let rows = view["rows"].as_array().unwrap();
+    assert_eq!(rows[0]["drum"], "kick");
+    assert_eq!(rows[0]["lands"], "circle");
+    assert!(rows.iter().any(|row| row["drum"] == "snare" && row["lands"] == "noLane"));
+    let again = answer(&mut app, DrumRequest::Context { known: Some(review.clone()) }).unwrap();
+    assert!(again.get("rows").is_none(), "rows are sent only when the review changed");
+    let ticked = vec![rows[0]["id"].as_str().unwrap().to_owned()];
+    let view = answer(&mut app, DrumRequest::Apply { map: path, review, ticked }).unwrap();
+    assert_eq!(view["state"], "idle");
+    assert!(app.status.starts_with("Added 1 drum hits: 1 on objects"), "{}", app.status);
+}
+
+#[test]
+fn drum_window_lanes_carry_the_numbers_their_lane_headers_show() {
+    use super::drum_window::{DrumRequest, answer};
+    let fixture = Fixture::new("drum-window-numbers");
+    let map = fixture.0.join("map.osu");
+    // Soft hitnormal at custom index 0 and 1 share the name "soft-hitnormal"; a whistle lane is hidden.
+    fs::write(&map, "osu file format v14\n[General]\nMode:0\nSampleSet:Soft\n[TimingPoints]\n0,500,4,2,0,100,1,0\n[HitObjects]\n256,192,500,1,2,0:0:0:0:\n256,192,1000,1,0,2:0:1:0:\n256,192,1500,1,0,1:0:0:0:\n").unwrap();
+    let mut app = Application::headless();
+    open(&mut app, &map);
+    let whistle = app.document().unwrap().composer.hitsounds().lanes().iter()
+        .find(|lane| dawsu_application::lane_name(&lane.identity).contains("whistle")).unwrap().identity.clone();
+    let revision = app.document().unwrap().composer.history.version();
+    let path = app.document().unwrap().path.clone();
+    app.delete_lane(&path, &whistle, revision).unwrap();
+    assert!(app.document().unwrap().composer.hitsounds().is_lane_hidden(&whistle), "Delete lane hides it");
+    let view = answer(&mut app, DrumRequest::Context { known: None }).unwrap();
+    let lanes = view["lanes"].as_array().unwrap();
+    // The header numbers: each row's place in the scene's lane order.
+    let scene = &snapshot(&app, true)["scene"];
+    let headers: std::collections::HashMap<String, u64> = scene["laneOrder"].as_array().unwrap().iter().enumerate()
+        .map(|(n, row)| (scene["lanes"][row.as_u64().unwrap() as usize]["sourceKey"].as_str().unwrap().to_owned(), n as u64 + 1))
+        .collect();
+    for lane in lanes {
+        let key = lane["key"].as_str().unwrap();
+        assert_eq!(lane["number"].as_u64(), headers.get(key).copied(), "{key}");
+    }
+    let soft: Vec<&serde_json::Value> = lanes.iter().filter(|lane| lane["name"] == "soft-hitnormal").collect();
+    assert_eq!(soft.len(), 2);
+    assert_ne!(soft[0]["number"], soft[1]["number"]);
+    assert!(soft.iter().all(|lane| lane["number"].is_u64()));
+    let hidden = lanes.iter().find(|lane| lane["hidden"] == true).unwrap();
+    assert!(hidden["number"].is_null(), "a hidden lane has no header, so no number");
+    // A lane order saved by moving lanes reorders the numbers the same way.
+    let layout_keys: Vec<String> = scene["laneOrder"].as_array().unwrap().iter().rev()
+        .map(|row| scene["lanes"][row.as_u64().unwrap() as usize]["colourKey"].as_str().unwrap().to_owned()).collect();
+    app.set_lane_layout(dawsu_application::LaneLayout { lane_order: layout_keys, ..Default::default() }).unwrap();
+    let view = answer(&mut app, DrumRequest::Context { known: None }).unwrap();
+    let count = headers.len() as u64;
+    for lane in view["lanes"].as_array().unwrap() {
+        let key = lane["key"].as_str().unwrap();
+        assert_eq!(lane["number"].as_u64(), headers.get(key).map(|n| count + 1 - n), "{key} reversed");
+    }
 }
 
 #[test]
@@ -2101,7 +2187,8 @@ fn only_closing_the_main_window_closes_the_editor() {
     let (send, receive) = std::sync::mpsc::channel();
     let editor = Editor(send);
     assert_eq!(close_requested("drum", &editor), CloseDecision::Allow);
-    assert!(receive.try_recv().is_err(), "another window sent a request to the editor");
+    assert!(matches!(receive.try_recv(), Ok(Request::DrumClose)), "closing drum detection stops its run and Listen");
+    assert!(receive.try_recv().is_err());
     assert_eq!(close_requested("export", &editor), CloseDecision::Allow);
     assert!(matches!(receive.try_recv(), Ok(Request::ExportClose)), "closing Export cancels its preview");
     assert!(receive.try_recv().is_err());

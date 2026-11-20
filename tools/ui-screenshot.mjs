@@ -10,8 +10,8 @@
 //   [--csp]               reload with a listener from the start and fail on any content security
 //                         policy violation ("Refused to ...") in any of the editor's windows
 //   [--width <px>]        lay the editor's page out at this width (and --height <px>) for the shot
-//   [--window export]     shoot the Export window instead: --eval should open it, for example
-//                         `document.getElementById("export-entry").click()`
+//   [--window <name>]     shoot another window (export, drum) instead: --eval should open it, for
+//                         example `document.getElementById("export-entry").click()`
 //   [--eval-window "<js>"] run in that window before its shot
 //
 // The value --eval returns is printed. The map's whole folder is copied into the profile first

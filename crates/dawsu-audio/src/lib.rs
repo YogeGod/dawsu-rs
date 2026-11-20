@@ -312,6 +312,8 @@ pub struct Mixer {
     pub speed: f64,
     sample_rate: u32,
     voices: Vec<Voice>,
+    /// The one Listen clip (drum hit detection's review): a new one replaces it.
+    listen: Option<Voice>,
     active_cues: Vec<usize>,
     cue_index: CueIndex,
     next_cue: usize,
@@ -331,6 +333,7 @@ impl Mixer {
             speed: 1.0,
             sample_rate,
             voices: Vec::with_capacity(32),
+            listen: None,
             active_cues: Vec::with_capacity(256),
             cue_index: CueIndex::default(),
             next_cue: 0,
@@ -349,6 +352,11 @@ impl Mixer {
                 gain,
             });
         }
+    }
+    /// Plays `clip` in place of the current Listen clip, or stops Listen with `None`. Lane
+    /// auditions keep playing either way.
+    pub fn listen(&mut self, clip: Option<Arc<AudioClip>>) {
+        self.listen = clip.map(|clip| Voice { clip, frame: 0.0, gain: 1.0 });
     }
     pub fn render(&mut self, out: &mut [f32], channels: usize) {
         for frame in out.chunks_mut(channels.max(1)) {
@@ -424,16 +432,19 @@ impl Mixer {
                         mix += cue.clip.sample(source, channel) * cue.gain;
                     }
                 }
-                for voice in &self.voices {
+                for voice in self.voices.iter().chain(&self.listen) {
                     mix += voice.clip.sample(voice.frame, channel) * voice.gain;
                 }
                 *value = (mix * self.master_gain).clamp(-1.0, 1.0);
             }
-            for voice in &mut self.voices {
+            for voice in self.voices.iter_mut().chain(&mut self.listen) {
                 voice.frame += voice.clip.sample_rate as f64 / self.sample_rate as f64;
             }
             self.voices
                 .retain(|v| v.frame < (v.clip.samples.len() / v.clip.channels) as f64);
+            if self.listen.as_ref().is_some_and(|v| v.frame >= (v.clip.samples.len() / v.clip.channels.max(1)) as f64) {
+                self.listen = None;
+            }
             if self.playing {
                 self.position_ms += self.speed * 1000.0 / self.sample_rate as f64;
             }
@@ -475,6 +486,38 @@ impl Schedule {
 }
 
 type Retired = Arc<OnceLock<Schedule>>;
+
+/// The caller's side of Listen. A Listen clip can be a whole song, so the audio thread never holds
+/// its last handle: the slot keeps one until the audio thread lets go, then frees it on the caller's
+/// thread in [`ListenSlot::collect`].
+#[derive(Default)]
+struct ListenSlot(Mutex<(Option<Arc<AudioClip>>, Vec<Arc<AudioClip>>)>);
+
+impl ListenSlot {
+    /// Makes `clip` the current one and returns the handle to send to the audio thread.
+    fn start(&self, clip: Option<Arc<AudioClip>>) -> Option<Arc<AudioClip>> {
+        let mut slot = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        slot.1.retain(|old| Arc::strong_count(old) > 1);
+        if let Some(old) = std::mem::replace(&mut slot.0, clip.clone()) {
+            slot.1.push(old);
+        }
+        clip
+    }
+    /// Whether the audio thread still holds (or is about to receive) the current clip.
+    fn is_listening(&self) -> bool {
+        let slot = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        slot.0.as_ref().is_some_and(|clip| Arc::strong_count(clip) > 1)
+    }
+    /// Frees the clips the audio thread let go of; true while one is still held there.
+    fn collect(&self) -> bool {
+        let mut slot = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        slot.1.retain(|clip| Arc::strong_count(clip) > 1);
+        if slot.0.as_ref().is_some_and(|clip| Arc::strong_count(clip) == 1) {
+            slot.0 = None;
+        }
+        slot.0.is_some() || !slot.1.is_empty()
+    }
+}
 fn collect_retired(slots: &mut Vec<Retired>) -> bool {
     slots.retain(|slot| Arc::strong_count(slot) > 1);
     !slots.is_empty()
@@ -512,6 +555,7 @@ enum Command {
     Play(bool),
     Seek(f64),
     Audition(Arc<AudioClip>, f32),
+    Listen(Option<Arc<AudioClip>>),
     Gains(f32, f32),
     Cycle(Option<(f64, f64)>),
     Offset(f64),
@@ -522,6 +566,7 @@ pub struct AudioEngine {
     effective_buffer_ms: Option<u32>,
     send: mpsc::Sender<Command>,
     retirements: Mutex<Vec<Retired>>,
+    listen: ListenSlot,
     position: Arc<AtomicU64>,
     playing: Arc<AtomicBool>,
     pub errors: Arc<AtomicU64>,
@@ -591,6 +636,7 @@ impl AudioEngine {
                 _stream: OutputStream::Native { _stream: stream },
                 send, position, playing, errors, peak,
                 retirements: Mutex::new(Vec::new()),
+                listen: ListenSlot::default(),
             });
         }
         #[cfg(not(windows))]
@@ -689,6 +735,7 @@ impl AudioEngine {
             backend,
             effective_buffer_ms: None,
             retirements: Mutex::new(Vec::new()),
+            listen: ListenSlot::default(),
             send,
             position,
             playing,
@@ -729,7 +776,18 @@ impl AudioEngine {
     /// if a callback has yet to hand one back.
     pub fn collect_retired(&self) -> bool {
         let mut slots = self.retirements.lock().unwrap_or_else(|e| e.into_inner());
-        collect_retired(&mut slots)
+        let listening = self.listen.collect();
+        collect_retired(&mut slots) || listening
+    }
+
+    /// Plays `clip` in place of the current Listen clip; `None` stops Listen.
+    pub fn listen(&self, clip: Option<Arc<AudioClip>>) {
+        let clip = self.listen.start(clip);
+        let _ = self.send.send(Command::Listen(clip));
+    }
+    /// Whether a Listen clip is still playing.
+    pub fn is_listening(&self) -> bool {
+        self.listen.is_listening()
     }
 
     pub fn play(&self, on: bool) {
@@ -807,6 +865,7 @@ impl StreamRender {
                 Command::Play(on) => self.mixer.playing = on,
                 Command::Seek(ms) => self.mixer.seek(ms),
                 Command::Audition(clip, gain) => self.mixer.audition(clip, gain),
+                Command::Listen(clip) => self.mixer.listen(clip),
                 Command::Gains(song, master) => {
                     self.mixer.song_gain = song;
                     self.mixer.master_gain = master;
@@ -1069,5 +1128,67 @@ mod buffer_tests {
         assert!(buffer_request(30, 48_000, &limited).unwrap_err().contains("1440 frames"));
         assert!(buffer_request(0, 48_000, &SupportedBufferSize::Unknown).is_err());
         assert!(buffer_request(501, 48_000, &SupportedBufferSize::Unknown).is_err());
+    }
+}
+#[cfg(test)]
+mod listen_tests {
+    use super::*;
+
+    fn clip(value: f32, frames: usize) -> Arc<AudioClip> {
+        Arc::new(AudioClip { samples: vec![value; frames * 2], channels: 2, sample_rate: 1000 })
+    }
+
+    fn render(mixer: &mut Mixer, frames: usize) -> Vec<f32> {
+        let mut out = vec![0.0; frames * 2];
+        mixer.render(&mut out, 2);
+        out
+    }
+
+    #[test]
+    fn listen_replaces_and_stops_its_one_clip_and_leaves_auditions_alone() {
+        let mut mixer = Mixer::new(1000);
+        mixer.listen(Some(clip(0.25, 10)));
+        assert_eq!(render(&mut mixer, 2), [0.25; 4]);
+        // A second Listen replaces the first instead of mixing with it.
+        mixer.listen(Some(clip(0.5, 10)));
+        assert_eq!(render(&mut mixer, 1), [0.5; 2]);
+        mixer.audition(clip(0.125, 10), 1.0);
+        assert_eq!(render(&mut mixer, 1), [0.625; 2]);
+        mixer.listen(None);
+        assert_eq!(render(&mut mixer, 1), [0.125; 2]);
+        // A clip that runs out ends on its own.
+        mixer.listen(Some(clip(0.25, 2)));
+        render(&mut mixer, 3);
+        assert!(mixer.listen.is_none());
+    }
+
+    #[test]
+    fn the_caller_frees_listen_clips_never_the_audio_thread() {
+        let slot = ListenSlot::default();
+        let first = clip(0.1, 1000);
+        let freed = Arc::downgrade(&first);
+        // `audio` stands for the audio thread's handle.
+        let audio = slot.start(Some(first));
+        assert!(slot.is_listening());
+        // Replaced: the old clip waits in the slot until the audio thread lets go of it.
+        let second = slot.start(Some(clip(0.2, 1000)));
+        assert!(slot.collect());
+        assert!(freed.upgrade().is_some());
+        drop(audio);
+        assert!(slot.collect(), "the second clip still plays");
+        assert!(freed.upgrade().is_none(), "freed by collect, on the caller's thread");
+        // A clip the audio thread let go of is also freed by the next Listen.
+        let third = slot.start(Some(clip(0.3, 1000)));
+        let replaced = slot.start(Some(clip(0.4, 1000)));
+        drop(third);
+        let last = slot.start(None);
+        assert!(last.is_none());
+        assert_eq!(slot.0.lock().unwrap().1.len(), 2, "the third clip is freed; the two still held wait");
+        drop(replaced);
+        // The audio thread finished the clip: Listen is over and the slot releases it here.
+        drop(second);
+        assert!(!slot.is_listening());
+        assert!(!slot.collect());
+        assert!(slot.start(None).is_none() && !slot.is_listening());
     }
 }

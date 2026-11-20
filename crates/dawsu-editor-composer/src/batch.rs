@@ -150,9 +150,12 @@ impl Composer {
     fn planned(&self, hits: &[BatchHit], options: &BatchOptions) -> Planned {
         let model = self.hitsounds();
         let inside = |time: f64| options.range.is_none_or(|(from, to)| time >= from && time < to);
-        let objects: Vec<(MomentId, f64)> = model.moments().iter().enumerate()
+        // Sorted by time, so each hit finds its nearest object by a binary search: the drum window
+        // re-plans thousands of hits after every edit.
+        let mut objects: Vec<(MomentId, f64)> = model.moments().iter().enumerate()
             .filter(|(_, m)| m.place() != Place::NoObject && inside(m.time().ms()))
             .map(|(i, m)| (MomentId(i), m.time().ms())).collect();
+        objects.sort_by(|a, b| a.1.total_cmp(&b.1).then(a.0.0.cmp(&b.0.0)));
         let loose_existing: Vec<(MomentId, f64)> = model.moments().iter().enumerate()
             .filter(|(_, m)| m.place() == Place::NoObject)
             .map(|(i, m)| (MomentId(i), m.time().ms())).collect();
@@ -177,10 +180,15 @@ impl Composer {
         let mut counts = BatchCounts::default();
         let mut order: Vec<usize> = (0..hits.len()).collect();
         order.sort_by(|&a, &b| hits[b].strength.total_cmp(&hits[a].strength).then(hits[a].time.total_cmp(&hits[b].time)));
-        let nearest_object = |time: f64| objects.iter()
-            .map(|&(id, t)| (id, t, (t - time).abs()))
-            .min_by(|a, b| a.2.total_cmp(&b.2))
-            .filter(|o| o.2 <= options.object_ms);
+        let nearest_object = |time: f64| {
+            let at = objects.partition_point(|o| o.1 < time);
+            // The last object before the time (the first at that time) and the first after it.
+            let before = at.checked_sub(1).map(|i| objects.partition_point(|o| o.1 < objects[i].1));
+            [before, Some(at)].into_iter().flatten().filter_map(|i| objects.get(i))
+                .map(|&(id, t)| (id, t, (t - time).abs()))
+                .min_by(|a, b| a.2.total_cmp(&b.2))
+                .filter(|o| o.2 <= options.object_ms)
+        };
         for index in order {
             let hit = &hits[index];
             if !hit.time.is_finite() || !hit.strength.is_finite() || hit.time < 0.0 || !inside(hit.time) {
