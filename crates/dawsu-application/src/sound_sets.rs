@@ -411,7 +411,7 @@ pub(crate) struct LinkRecord {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-struct PlacementRecord {
+pub(crate) struct PlacementRecord {
     id: u64,
     set_id: String,
     set_digest: String,
@@ -492,7 +492,7 @@ fn location(place: dawsu_hitsounding::Place) -> Option<(dawsu_osu_format::LineId
 /// a moment with no object is bound to the circle its group became (`circles`, by group time).
 pub(crate) fn build_links(
     drawn: &dawsu_hitsounding::Hitsounds, base: &dawsu_osu_format::OsuFile, out: &dawsu_osu_format::OsuFile,
-    circles: &std::collections::BTreeMap<i64, dawsu_osu_format::LineId>, hs: bool,
+    circles: &std::collections::BTreeMap<i64, dawsu_osu_format::LineId>, hs: bool, kept: &[PlacementRecord],
 ) -> LinkRecord {
     let ordinals: std::collections::HashMap<_, _> = out.hit_objects().iter().enumerate().map(|(i, o)| (o.line(), i)).collect();
     // A placement whose added hits were all deleted links nothing any more.
@@ -516,62 +516,64 @@ pub(crate) fn build_links(
             time_bits: moment.time().ms().to_bits(),
             applied: p.applied.iter().map(|a| AppliedRecord { member_id: a.member_id.clone(), lane: crate::project::lane_key(&a.lane), volume: a.volume, added: a.added }).collect(),
         }
-    }).collect();
+    }).chain(kept.iter().cloned()).collect();
     LinkRecord { map_digest: sha256_hex(&out.to_bytes()), placements }
 }
 
 /// Puts the links of the record for the opened file back, last on open, without an undo step. A
-/// placement on an object is found by the object's ordinal; one with no object by its time and its
-/// added hits. One that can't be found is not linked and named in a warning; the project keeps the
-/// record until the next Save.
-pub(crate) fn restore_links(document: &mut super::Document, links: &Links) -> Result<(), String> {
+/// placement on an object is found by the object's ordinal; one with no object by its time. Either
+/// way one of the hits it added must still be there. Returns the placements that could not be put
+/// back, which the project keeps and the next Save writes again (M3), and a warning naming them.
+pub(crate) fn restore_links(document: &mut super::Document, links: &Links) -> (Vec<PlacementRecord>, Option<String>) {
     let digest = sha256_hex(document.file.original_bytes());
     let Some(record) = links.for_digest(&digest) else {
-        return if links.is_empty() {
-            Ok(())
-        } else {
-            Err("The difficulty changed outside dawsu!, so its sound set links were not restored. The hits stay; the project keeps the links until the next Save.".into())
-        };
+        let kept = links.current.as_ref().or(links.pending.as_ref()).map(|r| r.placements.clone()).unwrap_or_default();
+        let warning = (!kept.is_empty()).then(|| "The difficulty changed outside dawsu!, so its sound set links were not restored. The hits stay; the project keeps the links.".to_string());
+        return (kept, warning);
     };
     let objects = document.file.hit_objects();
     let hits = document.composer.hitsounds();
-    let mut restored = Vec::new();
+    let mut restored: Vec<dawsu_hitsounding::sound_sets::SoundSetPlacement> = Vec::new();
+    let mut kept = Vec::new();
     let mut missing = Vec::new();
     for saved in &record.placements {
         let time = f64::from_bits(saved.time_bits);
         let applied = saved.applied.iter().map(|a| Some(dawsu_hitsounding::sound_sets::Applied {
             member_id: a.member_id.clone(), lane: crate::project::lane_identity(&a.lane)?, volume: a.volume, added: a.added,
         })).collect::<Option<Vec<_>>>();
-        let holds = |m: &dawsu_hitsounding::Moment, applied: &[dawsu_hitsounding::sound_sets::Applied]| applied.iter().filter(|a| a.added).all(|a| m.has_hit(&a.lane));
+        let holds = |m: &dawsu_hitsounding::Moment, applied: &[dawsu_hitsounding::sound_sets::Applied]| {
+            let mut added = applied.iter().filter(|a| a.added).peekable();
+            added.peek().is_none() || added.any(|a| m.has_hit(&a.lane))
+        };
         let found = applied.and_then(|applied| {
             let moment = match saved.object {
                 Some(ordinal) => {
                     let line = objects.get(ordinal)?.line();
-                    // The ordinal in the file this record names is the moment; a hit edited
-                    // by hand since keeps the link (D3).
-                    hits.moments().iter().position(|m| location(m.place()) == Some((line, saved.node)))
+                    hits.moments().iter().position(|m| location(m.place()) == Some((line, saved.node)) && holds(m, &applied))
                 }
                 None => hits.moments().iter().enumerate()
                     .filter(|(_, m)| (m.time().ms() - time).abs() < 1.0 && holds(m, &applied))
                     .min_by(|(_, a), (_, b)| (a.time().ms() - time).abs().total_cmp(&(b.time().ms() - time).abs()))
                     .map(|(i, _)| i),
             }?;
+            // Records kept from an earlier open may share an id with a newer placement.
+            let id = if restored.iter().any(|p| p.id == saved.id) { restored.iter().map(|p| p.id).max().unwrap_or(0) + 1 } else { saved.id };
             Some(dawsu_hitsounding::sound_sets::SoundSetPlacement {
-                id: saved.id, set_id: saved.set_id.clone(), set_digest: saved.set_digest.clone(), accepted_digest: saved.accepted_digest.clone(),
+                id, set_id: saved.set_id.clone(), set_digest: saved.set_digest.clone(), accepted_digest: saved.accepted_digest.clone(),
                 moment: dawsu_hitsounding::MomentId(moment), gain: saved.gain, applied,
             })
         });
         match found {
             Some(placement) => restored.push(placement),
-            None => missing.push(clock(time)),
+            None => {
+                missing.push(clock(time));
+                kept.push(saved.clone());
+            }
         }
     }
     document.composer.history.update_external(|hits| hits.restore_placements(restored.clone()));
-    if missing.is_empty() {
-        Ok(())
-    } else {
-        Err(format!("Link not restored for the sound set placed at {}: its hits changed. The hits stay; the project keeps the link until the next Save.", missing.join(", ")))
-    }
+    let warning = (!missing.is_empty()).then(|| format!("Link not restored for the sound set placed at {}: its hits changed. The hits stay; the project keeps the link.", missing.join(", ")));
+    (kept, warning)
 }
 
 fn clock(ms: f64) -> String {
@@ -885,7 +887,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn gain_recovery_keeps_a_placed_moment_even_when_every_hit_plays_at_one_volume() {
+    fn gain_recovery_keeps_a_placed_moment_at_one_volume_only_when_the_save_mixes_it() {
         let f = fixture("links-gain-recovery");
         let mut app = app(&f);
         let map = open(&mut app, &f.map);
@@ -899,8 +901,13 @@ pub(crate) mod tests {
         let defaults = f.scratch.path("defaults");
         std::fs::create_dir(&defaults).unwrap();
         std::fs::write(defaults.join("normal-hitnormal.wav"), wav(100)).unwrap();
-        let captured = crate::gain_recovery::Captured::read(hits, map.parent().unwrap(), &defaults).unwrap();
-        assert!(captured.needs_recovery());
+        let circle = match hits.moment(moment).place() {
+            dawsu_hitsounding::Place::Circle(id) => (id.line(), None),
+            other => panic!("{other:?}"),
+        };
+        let read = |mixed: &crate::gain_recovery::Locations| crate::gain_recovery::Captured::read(hits, map.parent().unwrap(), &defaults, mixed).unwrap().needs_recovery();
+        assert!(read(&[circle].into()), "a placed moment the Save mixes");
+        assert!(!read(&Default::default()), "a placed moment written natively needs no record");
     }
 
     #[test]
@@ -1095,5 +1102,154 @@ pub(crate) mod tests {
         assert_eq!(library_id(&path, &std::fs::metadata(&path).unwrap()).as_deref(), Some(SET_ID));
         std::fs::write(&path, "x").unwrap();
         assert_eq!(library_id(&path, &std::fs::metadata(&path).unwrap()), None, "a changed size reads it again");
+    }
+
+    // ------------------------------------------------------------ links: mixes, kept links, left-out moments
+
+    fn set_with_volumes(name: &str, members: &[(&str, i16, i32)]) -> String {
+        let members = members.iter().enumerate().map(|(i, (lane, frame, volume))| SetMember {
+            id: format!("aaaaaaaa-0000-4000-8000-{i:012}"),
+            original_key: format!("BeatmapFile|{lane}"),
+            lane: SetLane { source: SetSource::File, name: lane.to_string(), missing: false, kept: Kept::default() },
+            slot: lane.trim_end_matches(".wav").to_string(),
+            volume: *volume,
+            audio: wav(*frame),
+            kept: Kept::default(),
+        }).collect();
+        write_dawsuset(&SoundSet { id: SET_ID.into(), name: name.into(), members, library_id: None, kept: Kept::default() }).unwrap()
+    }
+
+    fn sounds_at(app: &Application, moment: usize) -> Vec<(String, i32)> {
+        let m = app.document().unwrap().composer.hitsounds().moment(dawsu_hitsounding::MomentId(moment));
+        m.hits().map(|l| (crate::lane_name(l), m.hit_volume(l))).collect()
+    }
+
+    #[test]
+    fn a_set_saved_as_a_mix_reopens_with_its_sounds_and_a_link_whose_hits_changed_is_kept_until_they_come_back() {
+        let f = fixture("links-mixed");
+        std::fs::write(&f.set, set_with_volumes("Kick and clap", &[("drum-hitnormal.wav", 8000, 60), ("drum-hitclap.wav", 4000, 30)])).unwrap();
+        let mut app = app(&f);
+        let map = open(&mut app, &f.map);
+        app.seek(1000.0);
+        app.place_sound_set_file(&map, &f.set).unwrap();
+        save(&mut app, &f);
+        assert_eq!(mapset_files(&f).len(), 4, "the two copies and one rendered mix: {:?}", mapset_files(&f));
+        // Saving again with nothing changed writes no project record and keeps no new backup.
+        let (project, backups) = (project_bytes(&f), walk(&f.scratch.path("projects")).len());
+        save(&mut app, &f);
+        assert_eq!((project_bytes(&f), walk(&f.scratch.path("projects")).len()), (project, backups));
+        let reopened = reopen(&f);
+        assert_eq!(links(&reopened), [(0, SET_ID.to_string())]);
+        assert_eq!(sounds_at(&reopened, 0), [("drum-hitnormal2".to_string(), 60), ("drum-hitclap2".to_string(), 30)]);
+        // A copied sample changed: gain recovery can't put the sounds back, so neither can the link.
+        let clap = f.map.with_file_name("drum-hitclap2.wav");
+        std::fs::write(&clap, wav(1)).unwrap();
+        let mut changed = reopen(&f);
+        assert!(links(&changed).is_empty());
+        assert!(changed.warnings.iter().any(|w| w.contains("Link not restored")), "{:?}", changed.warnings);
+        // The next Save keeps the link it could not restore (M3).
+        save(&mut changed, &f);
+        let record = serde_json::to_value(changed.project.as_ref().unwrap().settings.sound_sets.as_ref().unwrap()).unwrap();
+        assert_eq!(record["current"]["placements"].as_array().map(Vec::len), Some(1), "{record}");
+        assert!(reopen(&f).warnings.iter().any(|w| w.contains("Link not restored")), "still named on the next open");
+    }
+
+    #[test]
+    fn a_set_written_natively_saves_no_gain_recovery() {
+        let f = fixture("links-native-no-recovery");
+        // At the map's own volume, so no hit has a volume of its own either.
+        std::fs::write(&f.set, set_text_at("Kick and clap", &[("drum-hitnormal.wav", 8000), ("drum-hitclap.wav", 4000)], 70)).unwrap();
+        let mut app = app(&f);
+        let map = open(&mut app, &f.map);
+        app.seek(1000.0);
+        app.place_sound_set_file(&map, &f.set).unwrap();
+        save(&mut app, &f);
+        let bytes = std::fs::read(&f.map).unwrap();
+        let settings = &app.project.as_ref().unwrap().settings;
+        assert!(!settings.gain_recovery.as_ref().is_some_and(|r| r.has_authored_for(&bytes)), "nothing to recover");
+        assert!(settings.sound_sets.as_ref().is_some_and(|l| !l.is_empty()));
+    }
+
+    #[test]
+    fn without_a_project_a_loose_placement_is_refused_by_name() {
+        let f = fixture("links-no-project-loose");
+        let mut app = app(&f);
+        let map = open(&mut app, &f.map);
+        app.seek(1500.0);
+        app.place_sound_set_file(&map, &f.set).unwrap();
+        app.project = None;
+        app.save_with_backups(f.scratch.path("backups"));
+        wait(&mut app);
+        assert!(app.error.as_deref().is_some_and(|e| e.contains("Sound set links need a writable editor project")), "{:?}", app.error);
+        assert_eq!(std::fs::read(&f.map).unwrap(), MAP);
+    }
+
+    const SLIDER_MAP: &[u8] = b"osu file format v14\r\n\r\n[General]\r\nSampleSet: Normal\r\n\r\n[Difficulty]\r\nSliderMultiplier:1.4\r\nSliderTickRate:1\r\n\r\n[TimingPoints]\r\n0,500,4,1,0,70,1,0\r\n\r\n[HitObjects]\r\n256,192,1000,1,0,0:0:0:0:\r\n100,100,2000,2,0,L|200:100,1,140\r\n";
+
+    /// HS mode; a set placed on a slider tail that also has a soft clap, which no tail can hold
+    /// beside the set's drum sounds, so Save leaves the tail out (F052).
+    fn left_out_placement(name: &str) -> (Fixture, Application, Vec<(String, i32)>) {
+        let f = fixture(name);
+        std::fs::write(&f.map, SLIDER_MAP).unwrap();
+        let mut app = app(&f);
+        let map = open(&mut app, &f.map);
+        app.set_hs_mode(true);
+        let tail = app.document().unwrap().composer.hitsounds().moments().iter()
+            .position(|m| matches!(m.place(), dawsu_hitsounding::Place::SliderNode { node: 1, .. })).unwrap();
+        let time = app.document().unwrap().composer.hitsounds().moment(dawsu_hitsounding::MomentId(tail)).time().ms();
+        app.seek(time);
+        app.place_sound_set_file(&map, &f.set).unwrap();
+        assert_eq!(app.document().unwrap().composer.hitsounds().placements()[0].moment.0, tail);
+        app.document.as_mut().unwrap().composer.apply("Soft clap", |h| {
+            h.add_hit(dawsu_hitsounding::MomentId(tail), dawsu_hitsounding::rules::read_sample_file_name("soft-hitclap.wav").map(|l| match l {
+                SampleIdentity::Standard { set, sound, .. } => SampleIdentity::Standard { set, sound, index: dawsu_foundation::CustomIndex::new(0) },
+                other => other,
+            }).unwrap());
+        });
+        let drawn = sounds_at(&app, tail);
+        save(&mut app, &f);
+        assert!(!app.document().unwrap().left_out.is_empty(), "the tail is left out");
+        (f, app, drawn)
+    }
+
+    #[test]
+    fn a_placement_on_a_moment_save_leaves_out_comes_back_with_the_moment() {
+        let (f, app, drawn) = left_out_placement("links-left-out");
+        let tail = app.document().unwrap().composer.hitsounds().placements()[0].moment.0;
+        let reopened = reopen(&f);
+        assert_eq!(sounds_at(&reopened, tail), drawn);
+        assert_eq!(links(&reopened), [(tail, SET_ID.to_string())], "{:?}", reopened.warnings);
+    }
+
+    #[test]
+    fn a_recovery_copy_after_a_save_that_left_the_placement_out_restores_the_drawn_link() {
+        let (f, mut app, drawn) = left_out_placement("links-left-out-recovery");
+        let tail = app.document().unwrap().composer.hitsounds().placements()[0].moment.0;
+        app.document.as_mut().unwrap().composer.apply("Later edit", |h| h.set_volume(dawsu_hitsounding::MomentId(0), 33));
+        app.poll();
+        let offer = app.write_recovery_copy().unwrap().unwrap();
+        let copy: serde_json::Value = serde_json::from_slice(&std::fs::read(crate::recovery::pending_path(&f.scratch.path("data"), &offer.id).unwrap()).unwrap()).unwrap();
+        assert!(copy["checkpoint"]["last_save"]["drawn"]["placements"].as_array().is_some_and(|p| p.len() == 1), "the drawn hits carry the link");
+        let mut restored = Application::with_data_root(f.scratch.path("data"));
+        restored.error = None;
+        restored.audio = None;
+        restored.project_root = app.project_root.clone();
+        restored.restore_recovery(&offer.id).unwrap();
+        wait(&mut restored);
+        assert!(restored.error.is_none(), "{:?}", restored.error);
+        restored.command("undo");
+        // A recovery copy keeps no volumes of single hits, so only the sounds are compared.
+        let names = |sounds: Vec<(String, i32)>| sounds.into_iter().map(|s| s.0).collect::<Vec<_>>();
+        assert_eq!(names(sounds_at(&restored, tail)), names(drawn), "undo returns to the hits as drawn at that Save");
+        assert_eq!(links(&restored), [(tail, SET_ID.to_string())]);
+    }
+
+    #[test]
+    fn a_failed_record_write_names_every_record_it_held() {
+        assert_eq!(crate::unfinished_record(true, false, false), "Gain recovery could not be finalized.");
+        assert_eq!(crate::unfinished_record(false, true, false), "Left-out moments could not be recorded.");
+        assert_eq!(crate::unfinished_record(true, true, false), "Gain recovery and left-out moments could not be recorded.");
+        assert_eq!(crate::unfinished_record(false, false, true), "Sound set links could not be recorded.");
+        assert_eq!(crate::unfinished_record(true, true, true), "Gain recovery, left-out moments and sound set links could not be recorded.");
     }
 }

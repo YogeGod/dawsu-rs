@@ -216,7 +216,7 @@ pub struct SaveReport {
     hs_circle_ownership: Option<project::HsCircleOwnership>,
     gain_recovery_warning: Option<String>,
     /// What the failed project write after the `.osu` write held, for the status line.
-    unfinished_record: &'static str,
+    unfinished_record: String,
 }
 pub fn save_document(document: &Document, backups: PathBuf) -> Result<SaveReport, String> {
     prepare_save(
@@ -342,7 +342,10 @@ fn prepare_save(
     } else {
         Vec::new()
     };
-    if project.is_none() && gain_recovery::Captured::read(hits, root, defaults)?.needs_recovery() {
+    if project.is_none() && !hits.placements().is_empty() {
+        return Err("Sound set links need a writable editor project to save safely.".into());
+    }
+    if project.is_none() && gain_recovery::Captured::read(hits, root, defaults, &BTreeSet::new())?.needs_recovery() {
         return Err("Editable hit gains need a writable editor project to save safely.".into());
     }
     let placement = if hs { Placement::OnObjects } else { Placement::GreenLines };
@@ -404,7 +407,13 @@ fn prepare_save(
     }
     let (out, owned, effective, left_out, circles) = (rolled.out, rolled.owned, rolled.effective, rolled.left_out, rolled.circles);
     let written = effective.clone();
-    let recovery = gain_recovery::Captured::read(&effective, root, defaults)?;
+    // A sound set placement's moment needs gain recovery only when this Save mixes it.
+    let mixed = if hits.placements().is_empty() {
+        gain_recovery::Locations::new()
+    } else {
+        gain_recovery::mixed_locations(&out, root, &mix_files.staged, cancel)?
+    };
+    let recovery = gain_recovery::Captured::read(&effective, root, defaults, &mixed)?;
     if cancel() {
         return Err("Save cancelled before writing".into());
     }
@@ -429,13 +438,17 @@ fn prepare_save(
     };
     // The sound set links go to the project too; an old record with links is replaced.
     let sound_sets = project.and_then(|project| {
-        let record = sound_sets::build_links(hits, &file, &out, &circles, hs);
+        let record = sound_sets::build_links(hits, &file, &out, &circles, hs, &project.kept_links);
         let replaces = project.settings.sound_sets.as_ref().is_some_and(|old| !old.is_empty());
         (!record.is_empty() || replaces).then_some(record)
     });
     let bytes = out.to_bytes();
     let ownership = project::HsCircleOwnership::capture(&out, &bytes, &owned);
     let map_changed = bytes != expected;
+    // With the map unchanged, a revision the project already holds is not written again.
+    let recovery_revision = recovery_revision.filter(|revision| map_changed || !project
+        .and_then(|project| project.settings.gain_recovery.as_ref())
+        .is_some_and(|record| record.is_current(&expected, revision)));
     let plan = PreparedSave {
         path: path.to_path_buf(), backups, expected, out, mix_files, recovery_revision,
         ownership, inputs, map_changed, left_out, written, unwritten, sound_sets, loose, drawn: hits.clone(),
@@ -444,6 +457,23 @@ fn prepare_save(
     // Left-out parts are listed for the Save hitsounds summary, which every Save shows first.
     diagnostics.extend(plan.left_out.iter().map(|entry| left_out_problem(entry, path)));
     Ok(plan)
+}
+
+/// The status line's words for project records a failed write after the `.osu` write could not keep.
+fn unfinished_record(recovery: bool, left_out: bool, links: bool) -> String {
+    if recovery && !left_out && !links {
+        return "Gain recovery could not be finalized.".into();
+    }
+    let parts: Vec<&str> = [(recovery, "gain recovery"), (left_out, "left-out moments"), (links, "sound set links")]
+        .into_iter().filter_map(|(on, name)| on.then_some(name)).collect();
+    let named = match parts.as_slice() {
+        [one] => one.to_string(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+        [] => "the project record".to_string(),
+    };
+    let mut chars = named.chars();
+    let first = chars.next().map(|c| c.to_uppercase().collect::<String>()).unwrap_or_default();
+    format!("{first}{} could not be recorded.", chars.as_str())
 }
 
 /// What a Save wrote into the `.osu`, for the next Save to fall back on. Outside HS mode loose hits
@@ -577,12 +607,7 @@ impl PreparedSave {
                 } else {
                     None
                 };
-                let unfinished_record = match (needs_recovery_write, promote_unwritten, promote_links) {
-                    (true, true, _) => "Gain recovery and left-out moments could not be recorded.",
-                    (false, true, _) => "Left-out moments could not be recorded.",
-                    (false, false, true) => "Sound set links could not be recorded.",
-                    _ => "Gain recovery could not be finalized.",
-                };
+                let unfinished_record = unfinished_record(needs_recovery_write, promote_unwritten, promote_links);
                 Ok(SaveReport {
                     file: OsuFile::read(bytes).file,
                     problems: Vec::new(),
@@ -2605,7 +2630,7 @@ fn load(
 ) -> Result<Loaded, String> {
     let mut document = Document::read_matching(path, recovery.as_ref())?;
     let mut warnings = Vec::new();
-    let project = project_root.and_then(|root| {
+    let mut project = project_root.and_then(|root| {
         match project::Project::load(root, legacy_root, &document.path) {
             Ok(project) => Some(project),
             Err(error) => {
@@ -2695,10 +2720,12 @@ fn load(
     // Sound set links come back last, once every hit they name is in place; a recovery copy
     // brings its own.
     if recovery.is_none()
-        && let Some(links) = project.as_ref().and_then(|p| p.settings.sound_sets.as_ref())
-        && let Err(warning) = sound_sets::restore_links(&mut document, links)
+        && let Some(project) = project.as_mut()
+        && let Some(links) = project.settings.sound_sets.clone()
     {
-        warnings.push(warning);
+        let (kept, warning) = sound_sets::restore_links(&mut document, &links);
+        project.kept_links = kept;
+        warnings.extend(warning);
     }
     // The moments the last Save left out are listed again before any Save: those put back from
     // the project or a recovery copy, and in HS mode loose hits kept in the project because they

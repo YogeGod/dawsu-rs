@@ -261,6 +261,8 @@ pub(crate) struct Project {
     path: PathBuf,
     expected: Option<Vec<u8>>,
     pub settings: SessionSettings,
+    /// Sound set links the last open could not put back; each Save writes them again (M3).
+    pub kept_links: Vec<super::sound_sets::PlacementRecord>,
 }
 
 impl Project {
@@ -312,6 +314,7 @@ impl Project {
             path,
             expected,
             settings,
+            kept_links: Vec::new(),
         })
     }
 
