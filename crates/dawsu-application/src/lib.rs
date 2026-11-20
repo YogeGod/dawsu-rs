@@ -5132,6 +5132,63 @@ Title:");
     }
 
     #[test]
+    fn an_old_mix_no_ledger_lists_is_cleaned_up_when_nothing_plays_it() {
+        let mix = |tag: &str| {
+            let bytes = format!("old mix {tag}").into_bytes();
+            (format!("dawsu-mix-{}-1.wav", dawsu_foundation::digest::sha256_hex(&bytes)), bytes)
+        };
+        let scratch = Scratch::new("sweep-old-mixes");
+        let (mut app, _, folder) = two_layers(&scratch, true);
+        let (unused, unused_bytes) = mix("unused");
+        let (other, other_bytes) = mix("other difficulty");
+        let (mania, mania_bytes) = mix("mania");
+        let (story, story_bytes) = mix("storyboard");
+        let (copied, copied_bytes) = mix("recovery copy");
+        let (changed, _) = mix("changed");
+        for (name, bytes) in [(&unused, &unused_bytes), (&other, &other_bytes), (&mania, &mania_bytes), (&story, &story_bytes), (&copied, &copied_bytes)] {
+            std::fs::write(folder.join(name), bytes).unwrap();
+        }
+        std::fs::write(folder.join(&changed), b"edited by the mapper").unwrap();
+        // An old numbered file no ledger lists stays, played or not.
+        std::fs::write(folder.join("normal-hitnormal7.wav"), TONE).unwrap();
+        let fixture = include_str!("../tests/project-fixture.osu");
+        std::fs::write(folder.join("other.osu"), fixture.replace("Version:Hard", "Version:Other").replace("0:0:0:0:", &format!("0:0:0:0:{other}"))).unwrap();
+        std::fs::write(folder.join("mania.osu"), fixture.replace("Mode:0", "Mode:3").replace("Version:Hard", "Version:Mania").replace("0:0:0:0:", &format!("0:0:0:0:{mania}"))).unwrap();
+        std::fs::write(folder.join("Artist - Title (Mapper).osb"), format!("[Events]
+Sample,0,0,\"{story}\",100
+")).unwrap();
+        // A stopped session's recovery copy lists it as one of its pending files.
+        let mut crashed = Application::headless();
+        crashed.project_root = Some(scratch.path("projects"));
+        open(&mut crashed, folder.join("other.osu"));
+        crashed.document.as_mut().unwrap().pending.add(&copied, &copied_bytes).unwrap();
+        crashed.document.as_mut().unwrap().composer.apply("Edit", |hits| hits.set_volume(dawsu_hitsounding::MomentId(0), 80));
+        crashed.poll();
+        crashed.write_recovery_copy().unwrap().unwrap();
+        drop(crashed);
+
+        // While another session has the mapset open, nothing leaves.
+        let live = pending::Presence::enter(&app.data_root, &folder.canonicalize().unwrap()).unwrap();
+        use_layer_2(&mut app);
+        save_through_summary(&mut app, scratch.path("backups"));
+        assert!(folder.join(&unused).exists(), "another session is open");
+        drop(live);
+
+        app.document.as_mut().unwrap().composer.apply("Louder", |hits| hits.set_volume(dawsu_hitsounding::MomentId(0), 90));
+        save_through_summary(&mut app, scratch.path("backups"));
+        assert!(!folder.join(&unused).exists(), "the unused old mix left the mapset");
+        let kept = app.data_root.join("removed-samples").join(format!("{}.wav", dawsu_foundation::digest::sha256_hex(&unused_bytes)));
+        assert_eq!(std::fs::read(kept).unwrap(), unused_bytes, "kept in removed-samples");
+        for (name, why) in [(&other, "another difficulty plays it"), (&mania, "a mania difficulty plays it"), (&story, "the storyboard plays it"),
+            (&copied, "a recovery copy lists it"), (&changed, "its bytes are not the ones its name gives")]
+        {
+            assert!(folder.join(name).exists(), "{why}");
+        }
+        assert_eq!(std::fs::read(folder.join("normal-hitnormal7.wav")).unwrap(), TONE, "old numbered files stay");
+        assert!(ledger(&app).iter().all(|name| !name.starts_with("dawsu-mix-")), "{:?}", ledger(&app));
+    }
+
+    #[test]
     fn a_file_a_crashed_sessions_recovery_copy_plays_stays_in_the_mapset() {
         let scratch = Scratch::new("sweep-recovery-copy");
         let (mut crashed, map, folder) = two_layers(&scratch, true);

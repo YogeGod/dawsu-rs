@@ -1,9 +1,10 @@
 //! Cleans up the sample files dawsu! wrote into a mapset that nothing plays any more (Yoge,
 //! 2026-11-20). Only files on the ledger are touched, and only while their bytes are still the
 //! ones dawsu! wrote. A file a hit of the open difficulty still plays leaves the mapset and
-//! becomes a pending file again; any other goes to `data_root/removed-samples`.
+//! becomes a pending file again; any other goes to `data_root/removed-samples`. Mix files from
+//! builds before the ledger (`dawsu-mix-…`) are cleaned up the same way.
 
-use super::{Application, layers, pending, project, recovery, safe_child};
+use super::{Application, layers, mixes, pending, project, recovery, safe_child};
 use dawsu_foundation::{SampleIdentity, digest::sha256_hex, safe_write};
 use dawsu_hitsounding::LaneSource;
 use dawsu_hitsounding::rules::read_sample_file_name;
@@ -32,6 +33,20 @@ fn folder_uses(root: &Path) -> Result<(BTreeSet<String>, BTreeSet<u32>), String>
     Ok((used, indexes))
 }
 
+/// The mix files in the mapset that no ledger lists, from builds before the ledger (Yoge,
+/// 2026-11-20). Only dawsu! names files `dawsu-mix-<sha256 of the bytes>-<n>.wav`, so the name
+/// carries the checksum the cleanup checks the bytes against.
+#[allow(clippy::disallowed_methods)]
+fn old_mixes(root: &Path) -> Vec<pending::PendingSample> {
+    list_folder(root).unwrap_or_default().into_iter().filter_map(|name| {
+        let lower = name.to_ascii_lowercase();
+        let rest = lower.strip_prefix(mixes::PREFIX)?.strip_suffix(".wav")?;
+        let (sha256, n) = rest.split_once('-')?;
+        (sha256.len() == 64 && sha256.bytes().all(|b| b.is_ascii_hexdigit()) && !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+            .then(|| pending::PendingSample { sha256: sha256.to_string(), name })
+    }).collect()
+}
+
 /// The raw text of every project of the mapset's difficulties but `except`, lowercased: a file
 /// any of them names stays where it is.
 fn project_texts(project_root: Option<&Path>, root: &Path, except: Option<&Path>) -> Vec<String> {
@@ -58,7 +73,9 @@ impl Application {
         if document.presence.as_ref().is_none_or(|presence| presence.others_live()) {
             return 0;
         }
-        let entries = ledger.entries();
+        let mut entries = ledger.entries();
+        let listed: BTreeSet<String> = entries.iter().map(|entry| entry.name.to_ascii_lowercase()).collect();
+        entries.extend(old_mixes(&root).into_iter().filter(|mix| !listed.contains(&mix.name.to_ascii_lowercase())));
         if entries.is_empty() {
             return 0;
         }

@@ -18,7 +18,7 @@ use std::sync::Arc;
 
 const SAMPLE_RATE: u32 = 48_000;
 const CHANNELS: usize = 2;
-const PREFIX: &str = "dawsu-mix-";
+pub(super) const PREFIX: &str = "dawsu-mix-";
 
 pub(crate) fn can_render(problem: &SaveProblem, placement: Placement) -> bool {
     (matches!(problem.place, Place::Circle(_) | Place::SpinnerEnd(_))
