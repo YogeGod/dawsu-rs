@@ -399,17 +399,7 @@ fn prepare_save(
         ));
     }
     let (out, owned, effective, left_out, circles) = (rolled.out, rolled.owned, rolled.effective, rolled.left_out, rolled.circles);
-    // Outside HS mode loose hits are kept in the project, never as circles, so they are not part of
-    // what was written: a group that was never a circle must not come back as one.
-    let mut written = effective.clone();
-    if !hs {
-        let loose: Vec<_> = written.moments().iter().enumerate()
-            .filter(|(_, m)| m.place() == dawsu_hitsounding::Place::NoObject)
-            .map(|(index, _)| dawsu_hitsounding::MomentId(index)).collect();
-        for id in loose {
-            written.reset_moment(id);
-        }
-    }
+    let written = effective.clone();
     let recovery = gain_recovery::Captured::read(&effective, root, defaults)?;
     if cancel() {
         return Err("Save cancelled before writing".into());
@@ -427,7 +417,7 @@ fn prepare_save(
     let (unwritten, loose) = match project {
         Some(project) => {
             let files = if left_out.is_empty() { Vec::new() } else { list_folder(root).map_err(|error| error.to_string())? };
-            let built = unwritten::build(&left_out, hits, &out, &files, &circles)?;
+            let built = unwritten::build(&left_out, &out, &files, &circles)?;
             let replaces = project.settings.unwritten.as_ref().is_some_and(|old| !old.is_empty());
             ((!built.record.is_empty() || replaces).then_some(built.record), built.loose)
         }
@@ -444,6 +434,22 @@ fn prepare_save(
     // Left-out parts are listed for the Save hitsounds summary, which every Save shows first.
     diagnostics.extend(plan.left_out.iter().map(|entry| OutputProblem::new(&entry.problem, path, path)));
     Ok(plan)
+}
+
+/// What a Save wrote into the `.osu`, for the next Save to fall back on. Outside HS mode loose hits
+/// are kept in the project, never as circles, so a group that was never a circle can't come back
+/// as one.
+fn last_written(compiled: &Hitsounds, hs: bool) -> Hitsounds {
+    let mut written = compiled.clone();
+    if !hs {
+        let loose: Vec<_> = written.moments().iter().enumerate()
+            .filter(|(_, m)| m.place() == dawsu_hitsounding::Place::NoObject)
+            .map(|(index, _)| dawsu_hitsounding::MomentId(index)).collect();
+        for id in loose {
+            written.reset_moment(id);
+        }
+    }
+    written
 }
 
 fn sample_digest(path: &Path) -> Result<String, String> {
@@ -464,7 +470,7 @@ struct PreparedSave {
     map_changed: bool,
     /// The parts Save leaves out of the `.osu`.
     left_out: Vec<roll_back::LeftOut>,
-    /// The final compile input: what this Save writes.
+    /// The final compile input: what this Save writes, with the loose hits kept in the project.
     written: Hitsounds,
     /// The project record of the left-out parts, when the project needs a new one.
     unwritten: Option<unwritten::Record>,
@@ -1484,13 +1490,16 @@ impl Application {
                     match result {
                         Ok(report) => {
                             let mut archive_error = None;
+                            // A recovery copy keeps the whole compile input, loose hits included, as
+                            // the state Undo returns to.
+                            let compiled = report.written;
                             if let Some(d) = self.document.as_mut().filter(|d| d.path == path) {
                                 d.file = report.file;
-                                d.written = report.written;
+                                d.written = last_written(&compiled, hs_mode);
                                 d.left_out = report.left_out;
                                 // The difficulty is written, even when a step below returns early.
                                 self.checkpoint =
-                                    Some(recovery::Checkpoint::after_save(d, &d.written, hs_mode));
+                                    Some(recovery::Checkpoint::after_save(d, &compiled, hs_mode));
                                 if let Some(id) = &self.restored_recovery {
                                     match recovery::archive(&self.data_root, id) {
                                         Ok(()) => self.restored_recovery = None,
@@ -1535,7 +1544,7 @@ impl Application {
                             let document = self.document.as_mut().unwrap();
                             document.composer.mark_saved();
                             self.checkpoint =
-                                Some(recovery::Checkpoint::after_save(document, &document.written, hs_mode));
+                                Some(recovery::Checkpoint::after_save(document, &compiled, hs_mode));
                             let left_out = document.left_out.len();
                             self.status = if archive_error.is_some() {
                                 "Difficulty saved. Recovery copy is still pending.".into()
@@ -3306,6 +3315,74 @@ mod project_workflow {
         save_through_summary(&mut reopened, scratch.path("backups"));
         assert_eq!(record_json(&reopened)["current"]["moments"].as_array().map(Vec::len), Some(1));
         assert_eq!(std::fs::read(&map).unwrap(), SLIDER_MAP);
+    }
+
+    #[test]
+    fn undo_after_restoring_a_recovery_copy_keeps_loose_hits() {
+        let scratch = Scratch::new("recovery-undo-loose");
+        let folder = scratch.path("mapset");
+        std::fs::create_dir(&folder).unwrap();
+        let map = folder.join("a.osu");
+        std::fs::write(&map, SLIDER_MAP).unwrap();
+        let mut app = Application::headless();
+        app.project_root = Some(scratch.path("projects"));
+        app.data_root = scratch.path("data");
+        open(&mut app, map.clone());
+        app.document.as_mut().unwrap().composer.add(3000.0, skin(SampleSet::Soft, Hitsound::Clap), 80, 0.0);
+        save_through_summary(&mut app, scratch.path("backups"));
+        app.document.as_mut().unwrap().composer.apply("Later edit", |hits| hits.set_volume(dawsu_hitsounding::MomentId(0), 33));
+        app.poll();
+        let offer = app.write_recovery_copy().unwrap().unwrap();
+        let mut restored = Application::create(Preferences::default(), false, None, None, false, scratch.path("data"));
+        restored.project_root = app.project_root.clone();
+        restored.restore_recovery(&offer.id).unwrap();
+        wait(&mut restored);
+        assert!(restored.error.is_none(), "{:?}", restored.error);
+        restored.command("undo");
+        let loose = |app: &Application| app.document().unwrap().composer.hitsounds().moments().iter()
+            .filter(|m| m.place() == dawsu_hitsounding::Place::NoObject && m.hits().next().is_some()).count();
+        assert_eq!(loose(&restored), 1, "the last Save's loose hit is still drawn after undo");
+        assert!(!restored.is_dirty());
+        let doc = restored.document().unwrap();
+        assert!(doc.written.moments().iter().all(|m| m.place() != dawsu_hitsounding::Place::NoObject || m.hits().next().is_none()),
+            "loose hits never count as written outside HS mode");
+    }
+
+    #[test]
+    fn a_body_volume_left_out_in_normal_mode_keeps_the_head_written_beside_it() {
+        let scratch = Scratch::new("record-body-green-lines");
+        let folder = scratch.path("mapset");
+        std::fs::create_dir(&folder).unwrap();
+        let map = folder.join("a.osu");
+        std::fs::write(&map, SLIDER_MAP).unwrap();
+        let mut app = Application::headless();
+        app.project_root = Some(scratch.path("projects"));
+        open(&mut app, map.clone());
+        app.document.as_mut().unwrap().composer.apply("Body 40, head 60", |hits| {
+            hits.set_body_volume(0, 40);
+            let head = hits.moments().iter().position(|m| matches!(m.place(), dawsu_hitsounding::Place::SliderNode { node: 0, .. })).unwrap();
+            hits.set_volume(dawsu_hitsounding::MomentId(head), 60);
+        });
+        save_through_summary(&mut app, scratch.path("backups"));
+        let saved = std::fs::read(&map).unwrap();
+        let text = String::from_utf8_lossy(&saved);
+        assert!(text.contains(",60,0,0\r\n"), "the head's green line is written:\n{text}");
+        assert_eq!(line(&saved, "100,100,2000,"), line(SLIDER_MAP, "100,100,2000,"));
+        let record = record_json(&app);
+        assert_eq!(record["current"]["bodies"].as_array().map(Vec::len), Some(1), "{record}");
+        assert_eq!(record["current"]["moments"], serde_json::json!([]), "{record}");
+        assert_eq!(app.output_problems().len(), 1);
+        let project = app.project.as_ref().unwrap().path().to_path_buf();
+        let json = std::fs::read(&project).unwrap();
+        let mut reopened = reopen(&app, &map);
+        let hits = reopened.document().unwrap().composer.hitsounds();
+        assert_eq!(hits.bodies()[0].volume(), 40);
+        let head = hits.moments().iter().find(|m| matches!(m.place(), dawsu_hitsounding::Place::SliderNode { node: 0, .. })).unwrap();
+        assert_eq!(head.volume(), 60);
+        assert_eq!(reopened.output_problems().len(), 1, "listed again on reopen");
+        save_through_summary(&mut reopened, scratch.path("backups"));
+        assert_eq!(std::fs::read(&map).unwrap(), saved);
+        assert_eq!(std::fs::read(&project).unwrap(), json);
     }
 
     #[test]

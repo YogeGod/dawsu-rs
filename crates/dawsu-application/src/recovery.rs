@@ -360,7 +360,8 @@ impl RecoveryCopy {
         };
 
         // The hits the copy's last Save wrote are what a part Save leaves out goes back to.
-        document.written = saved.clone();
+        let hs = self.checkpoint.last_save.as_ref().is_some_and(|last| last.hs_mode);
+        document.written = super::last_written(&saved, hs);
         if working.dirty {
             document.composer.history = EditHistory::new(saved);
             document

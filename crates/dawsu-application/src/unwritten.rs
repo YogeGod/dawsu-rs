@@ -6,7 +6,7 @@ use super::Document;
 use super::project::{lane_identity, lane_key};
 use super::roll_back::{Held, LeftOut, MomentState, Part};
 use dawsu_foundation::{SampleIdentity, SampleSet, digest::sha256_hex};
-use dawsu_hitsounding::{BodyState, Decompiled, Hitsounds, MomentId, Place, decompile};
+use dawsu_hitsounding::{BodyState, Decompiled, MomentId, Place, decompile};
 use dawsu_osu_format::{LineId, OsuFile};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -45,8 +45,6 @@ struct HitRecord {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 struct BodyRecord {
     object: usize,
-    /// The slider's start, to check the object and to name it in a warning.
-    time_bits: u64,
     volume: i32,
     whistle: bool,
     set: Option<String>,
@@ -92,15 +90,16 @@ impl Unwritten {
         self.before = None;
     }
 
-    /// The times of the parts this record holds, for a warning.
-    fn times(&self) -> Vec<f64> {
-        let mut times: Vec<f64> = self.current.iter().chain(self.pending.iter())
-            .flat_map(|record| record.moments.iter().map(|m| m.time_bits).chain(record.bodies.iter().map(|b| b.time_bits)))
-            .map(f64::from_bits)
+    /// The times of the moments this record holds, and how many slider bodies, for a warning.
+    fn times(&self) -> (Vec<f64>, usize) {
+        let records: Vec<_> = self.current.iter().chain(self.pending.iter()).collect();
+        let mut times: Vec<f64> = records.iter()
+            .flat_map(|record| record.moments.iter().map(|m| f64::from_bits(m.time_bits)))
             .collect();
         times.sort_by(f64::total_cmp);
         times.dedup();
-        times
+        let bodies = records.iter().map(|record| record.bodies.len()).max().unwrap_or(0);
+        (times, bodies)
     }
 }
 
@@ -147,10 +146,10 @@ pub(crate) struct Built {
     pub loose: Vec<MomentState>,
 }
 
-/// Builds the record of `left_out` for `out`, the file this Save writes. `drawn` gives each
-/// body's start; `circles` the circle each HS group became, if any.
+/// Builds the record of `left_out` for `out`, the file this Save writes. `circles` names the
+/// circle each HS group became, if any.
 pub(crate) fn build(
-    left_out: &[LeftOut], drawn: &Hitsounds, out: &OsuFile, files: &[String], circles: &BTreeMap<i64, LineId>,
+    left_out: &[LeftOut], out: &OsuFile, files: &[String], circles: &BTreeMap<i64, LineId>,
 ) -> Result<Built, String> {
     let bytes = out.to_bytes();
     let ordinals: HashMap<LineId, usize> = out.hit_objects().iter().enumerate().map(|(i, o)| (o.line(), i)).collect();
@@ -167,9 +166,8 @@ pub(crate) fn build(
                 });
             }
             (Part::Body(object), Held::Body(state)) => {
-                let body = drawn.bodies().iter().find(|b| b.object() == object).ok_or("A left-out slider body is missing.")?;
                 record.bodies.push(BodyRecord {
-                    object: ordinal(object.line())?, time_bits: body.start().ms().to_bits(), volume: state.volume, whistle: state.whistle,
+                    object: ordinal(object.line())?, volume: state.volume, whistle: state.whistle,
                     set: set_name(state.set), whistle_set: set_name(state.whistle_set), whistle_lane: lane_key(&state.whistle_lane),
                 });
             }
@@ -226,10 +224,16 @@ pub(crate) fn restore(document: &mut Document, unwritten: &Unwritten) -> Result<
         if unwritten.is_empty() {
             return Ok(false);
         }
-        let times: Vec<_> = unwritten.times().into_iter().map(clock).collect();
+        let (times, bodies) = unwritten.times();
+        let mut named: Vec<_> = times.into_iter().map(clock).collect();
+        match bodies {
+            0 => {}
+            1 => named.push("a slider body".into()),
+            n => named.push(format!("{n} slider bodies")),
+        }
         return Err(format!(
             "The difficulty changed outside dawsu!, so the moments the last Save left out were not put back ({}). The project keeps them until the next Save.",
-            times.join(", ")
+            named.join(", ")
         ));
     };
     if record.is_empty() {
@@ -280,9 +284,6 @@ fn check(document: &Document, record: &Record) -> Result<Checked, String> {
     for saved in &record.bodies {
         let object = objects.get(saved.object).ok_or("a slider is missing")?;
         let index = hits.bodies().iter().position(|b| b.object().line() == object.line()).ok_or("a slider body is missing")?;
-        if hits.bodies()[index].start().ms().to_bits() != saved.time_bits {
-            return Err("a slider moved".into());
-        }
         let whistle_lane = lane_identity(&saved.whistle_lane).ok_or_else(|| format!("unknown lane {}", saved.whistle_lane))?;
         bodies.push((index, BodyState {
             set: set_of(&saved.set)?, volume: volume(saved.volume)?, whistle: saved.whistle,
@@ -322,7 +323,7 @@ mod tests {
         assert!(unwritten.for_digest(&sha256_hex(new)).is_some_and(|r| r.moments[0].object == 1), "the same bytes keep the old record until promoted");
         unwritten.promote(new);
         assert!(unwritten.is_empty());
-        assert_eq!(unwritten.times(), Vec::<f64>::new());
+        assert_eq!(unwritten.times(), (Vec::<f64>::new(), 0));
     }
 
     #[test]
