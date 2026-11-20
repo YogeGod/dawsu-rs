@@ -2624,6 +2624,18 @@ impl Application {
         };
         let mut additions = self.sample_watch.poll(document);
         additions.retain(|(name, _)| document.files.binary_search(name).is_err());
+        // A file another program wrote under a pending name leaves the lane on its kept copy.
+        // Save uses the file when it holds the same bytes and otherwise refuses and names it.
+        let (clashes, additions): (Vec<_>, Vec<_>) = additions.into_iter().partition(|(name, _)| document.pending.get(name).is_some());
+        let root = document.path.parent().map(Path::to_path_buf);
+        let differing: Vec<String> = clashes.into_iter().map(|(name, _)| name).filter(|name| {
+            let kept = document.pending.get(name).and_then(|file| std::fs::read(&file.path).ok());
+            let on_disk = root.as_ref().and_then(|root| safe_child(root, name).ok()).and_then(|path| std::fs::read(path).ok());
+            kept != on_disk
+        }).collect();
+        if !differing.is_empty() {
+            self.status = format!("Another program wrote {} in the mapset. dawsu!'s new sample of that name keeps playing; rename or remove the other file before saving.", differing.join(", "));
+        }
         self.register_added_samples(additions);
     }
 
@@ -5046,6 +5058,24 @@ Title:");
         let stored = project::Project::load(app.project_root.as_ref().unwrap(), None, &document.path).unwrap().settings;
         let kept = stored.pending_samples.expect("listed before the .osu write");
         assert!(kept.iter().any(|file| file.name == "normal-hitnormal3.wav"));
+    }
+
+    #[test]
+    fn a_file_another_program_writes_under_a_pending_name_keeps_the_layers_sound() {
+        let scratch = Scratch::new("pending-watch-clash");
+        let (mut app, _, folder) = two_layers(&scratch, false);
+        let mut louder = TONE.to_vec();
+        *louder.last_mut().unwrap() = 0x60;
+        std::fs::write(folder.join("normal-hitnormal3.wav"), &louder).unwrap();
+        let deadline = Instant::now() + Duration::from_millis(2500);
+        while Instant::now() < deadline {
+            app.poll();
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let document = app.document().unwrap();
+        assert!(!document.files.iter().any(|name| name == "normal-hitnormal3.wav"), "still a pending file");
+        assert_eq!(app.clip_for_lane(&hitnormal(3)).unwrap().samples, [0.5], "the layer keeps its own sound");
+        assert!(app.status.contains("normal-hitnormal3.wav"), "{}", app.status);
     }
 
     #[test]
