@@ -71,7 +71,7 @@
     tabindex="0"
     aria-label="Snap"
     aria-valuemin={STOPS[0]}
-    aria-valuemax={STOPS.at(-1)}
+    aria-valuemax={STOPS[STOPS.length - 1]}
     aria-valuenow={STOPS[index]}
     aria-valuetext={value + (scene && !scene.snap ? ", snap off" : "")}
     aria-disabled={disabled}

@@ -47,6 +47,8 @@ test("the bundle keeps to the editor's content security policy", { skip: noBundl
     }
   }
   const script = read(new URL("ui.js", bundle));
+  // The target includes Safari 15.0 and older WebKitGTK, which lack these (Safari 15.4 added them).
+  for (const missing of ["findLast", ".at("]) assert.ok(!script.includes(missing), "ui.js uses " + missing);
   assert.match(script, /^(?:\/\*[^]*?\*\/\s*)?var dawsuUi\s*=/, "ui.js is a classic script that sets window.dawsuUi");
   assert.doesNotMatch(script, /^\s*(?:import|export)\b/m);
 });

@@ -24,7 +24,11 @@ export function stepStop(beats, divisor, key) {
     const index = STOPS.findIndex(stop => 1 / stop < length);
     return index < 0 ? STOPS.length - 1 : index;
   }
-  if (coarser.includes(key)) return Math.max(0, STOPS.findLastIndex(stop => 1 / stop > length));
+  if (coarser.includes(key)) {
+    // A reverse loop: Safari before 15.4 lacks findLastIndex.
+    for (let index = STOPS.length - 1; index >= 0; index--) if (1 / STOPS[index] > length) return index;
+    return 0;
+  }
   return null;
 }
 
