@@ -490,11 +490,12 @@ fn every_tool_has_its_3_1_x_command_and_mouse_actions() {
 }
 
 #[test]
-fn shift_click_selects_the_range_from_the_primary() {
+fn shift_click_selects_the_range_from_the_primary_on_the_clicked_row_only() {
     let mut f = Fake::new(&[
         (1000.0, 0),
         (1500.0, 1),
         (2000.0, 2),
+        (2500.0, 0),
         (3000.0, 0),
         (4000.0, 0),
     ]);
@@ -504,12 +505,29 @@ fn shift_click_selects_the_range_from_the_primary() {
     let shift = with(p(3000.0, 0), |e| e.mods = Mods::SHIFT);
     tb.down(&mut f, shift);
     tb.up(&mut f, shift);
-    assert_eq!(f.selection.items(), &HashSet::from([0, 1, 2, 3]));
+    assert_eq!(
+        f.selection.items(),
+        &HashSet::from([0, 3, 4]),
+        "hits on other rows in between stay unselected"
+    );
     assert_eq!(
         f.selection.primary(),
         Some(&0),
         "the anchor stays for the next Shift+click"
     );
+}
+
+#[test]
+fn shift_click_on_another_row_selects_that_row_from_the_anchor_time() {
+    let mut f = Fake::new(&[(1000.0, 0), (1500.0, 0), (1200.0, 1), (1800.0, 1), (2500.0, 1)]);
+    let mut tb = tool(ToolKind::Select, &mut f);
+    tb.down(&mut f, p(1000.0, 0));
+    tb.up(&mut f, p(1000.0, 0));
+    let shift = with(p(1800.0, 1), |e| e.mods = Mods::SHIFT);
+    tb.down(&mut f, shift);
+    tb.up(&mut f, shift);
+    assert_eq!(f.selection.items(), &HashSet::from([0, 2, 3]));
+    assert_eq!(f.selection.primary(), Some(&0));
 }
 
 #[test]
