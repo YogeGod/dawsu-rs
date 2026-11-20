@@ -209,7 +209,6 @@ function show(next) {
     return;
   }
   const previousTool = view.tool;
-  const wasPlaying = view.playing;
   const wasBusy = view.busy;
   view = next;
   if (view.tool !== previousTool) refreshToolCursor();
@@ -246,15 +245,6 @@ function show(next) {
   title.setAttribute("data-placeholder", view.hasDocument ? "" : "No map open");
   $("status").textContent = missingUiParts() || view.status || (view.busy ? "Working…" : "");
   $("status").title = $("status").textContent;
-  // The playhead readout is "bar.beat.tick · 190.0 BPM · 4/4 · snap"; the backend sends no separate fields.
-  const [bar, tempo, meter] = (scene && view.musicalPosition?.split(" · ")) || [];
-  $("musical-position").textContent = bar ?? "–";
-  $("transport-bpm").textContent = tempo?.replace(/ BPM$/, "") ?? "–";
-  $("transport-meter").textContent = meter ?? "–";
-  const time = (ms) => scene && Number.isFinite(ms) ? clock(ms) : "00:00.000";
-  $("position").textContent = time(view.position);
-  $("locator-left").textContent = time(view.left);
-  $("locator-right").textContent = time(view.right);
   $("editor-header").dataset.empty = String(!scene);
   for (const control of document.querySelectorAll("[data-map]")) control.disabled = !scene;
   $("status-view").hidden = !scene;
@@ -304,17 +294,11 @@ function show(next) {
   renderBookmarks();
   if (scene) {
     for (const button of speedButtons) button.ariaPressed = String(Number(button.dataset.playbackSpeed) === view.speed);
-    $("cycle").checked = view.cycle;
     $("follow").checked = !!view.follow;
     $("transport-return").ariaPressed = String(!!view.returnOnStop);
     $("ruler-follow").setAttribute?.("aria-pressed", String(!!view.follow));
     followPlayhead();
     $("audition").checked = view.audition;
-    if (wasPlaying !== view.playing) {
-      $("play-icon").src = view.playing ? "studio-assets/icons/Pause.svg" : "studio-assets/icons/Play.svg";
-      $("play-label").textContent = view.playing ? "Pause" : "Play";
-      $("play").dataset.playing = String(!!view.playing);
-    }
   }
   refreshLaneDelete();
   renderDialogs();
@@ -932,6 +916,28 @@ function renderBookmarks() {
   }
 }
 
+function drawLocatorFlags(ctx, width, left, right, cycling) {
+  const flags = locatorFlags(width, left, right);
+  ctx.font = "600 10px Inter, system-ui, sans-serif";
+  for (const [side, letter] of [["left", "L"], ["right", "R"]]) {
+    const { x, from } = flags[side];
+    // The flag's box runs from `from`; a flag pushed off its line keeps to its own box.
+    const pointsRight = from >= x;
+    const [base, tip] = pointsRight ? [from, from + locatorFlagWidth] : [from + locatorFlagWidth, from];
+    ctx.fillStyle = cycling ? slateTimeline.cycle : slateTimeline.locator;
+    ctx.beginPath();
+    ctx.moveTo(base, 0);
+    ctx.lineTo(tip, 0);
+    ctx.lineTo(tip + (pointsRight ? -3 : 3), locatorFlagHeight / 2);
+    ctx.lineTo(tip, locatorFlagHeight);
+    ctx.lineTo(base, locatorFlagHeight);
+    ctx.closePath();
+    ctx.fill();
+    ctx.fillStyle = slateTimeline.ruler;
+    ctx.fillText(letter, from + (pointsRight ? 3 : 5), 10);
+  }
+}
+
 function drawBookmarks(ctx, marks, start, zoom, width) {
   const visible = marks.map(mark => [mark, (mark.time - start) * zoom])
     .filter(([, x]) => x >= 0 && x <= width);
@@ -1494,6 +1500,7 @@ function paint() {
   for (const time of [left, right]) {
     line(r.ctx, slateTimeline.locator, xOf(time), 0, xOf(time), r.height);
   }
+  drawLocatorFlags(r.ctx, r.width, left, right, cycling && left <= right);
   drawBookmarks(r.ctx, scene.bookmarks ?? [], start, zoom, r.width);
   line(g.ctx, slateTimeline.playhead, xOf(view.position), 0, xOf(view.position), g.height);
   line(r.ctx, slateTimeline.playhead, xOf(view.position), 0, xOf(view.position), r.height);
@@ -1762,7 +1769,7 @@ function refreshRulerCursor() {
     const { left, top, width } = ruler.getBoundingClientRect();
     const x = rulerPointer.clientX - left;
     const y = rulerPointer.clientY - top;
-    if (x >= 0 && x < width && y >= 0 && y < rulerBandHeight) gesture = rulerGestureAt(x);
+    if (x >= 0 && x < width && y >= 0 && y < rulerBandHeight) gesture = rulerGestureAt(x, y);
   }
   const cursor = gesture === "left" || gesture === "right" ? "ew-resize"
     : gesture === "move" ? "pointer" : "default";
@@ -1855,7 +1862,41 @@ function bookmarkNearFlag(ms, y) {
   return bookmark;
 }
 
-function rulerGestureAt(x) {
+const locatorFlagWidth = 14;
+const locatorFlagHeight = 13;
+
+// The L and R flags at the top of the ruler: L hangs right of its line, R left of its line. Near an
+// edge a flag flips to stay on screen; on a range too short for both, they hang outward. A flag
+// never covers the other one.
+function locatorFlags(width, leftTime = view.left, rightTime = view.right) {
+  const flag = (time, side) => {
+    const x = (time - scene.viewStart) * scene.zoom;
+    const from = side > 0 ? x : x - locatorFlagWidth;
+    const flipped = from < 0 || from + locatorFlagWidth > width;
+    return { x, from: flipped ? (side > 0 ? x - locatorFlagWidth : x) : from, flipped };
+  };
+  const left = flag(leftTime, 1);
+  const right = flag(rightTime, -1);
+  const overlap = () => Math.abs(left.from - right.from) < locatorFlagWidth;
+  if (overlap()) {
+    if (left.flipped) left.from = right.from - locatorFlagWidth;
+    else if (right.flipped) right.from = left.from + locatorFlagWidth;
+    else {
+      if (left.x >= locatorFlagWidth) left.from = left.x - locatorFlagWidth;
+      if (right.x + locatorFlagWidth <= width) right.from = right.x;
+      if (overlap()) right.from = left.from + locatorFlagWidth;
+    }
+  }
+  return { left, right };
+}
+
+function rulerGestureAt(x, y = Infinity) {
+  if (y < locatorFlagHeight) {
+    const flags = locatorFlags(ruler.clientWidth || ruler.getBoundingClientRect().width);
+    for (const side of ["left", "right"]) {
+      if (x >= flags[side].from && x <= flags[side].from + locatorFlagWidth) return side;
+    }
+  }
   const left = (view.left - scene.viewStart) * scene.zoom;
   const right = (view.right - scene.viewStart) * scene.zoom;
   if (left === right) return "draw";
@@ -1868,14 +1909,26 @@ function locatorPreview(gesture, x) {
   if (Math.abs(x - gesture.x) < 3) return null;
   const { left, right, cycling, duration } = gesture;
   const to = limit(gesture.start + x / gesture.zoom, 0, duration);
-  if (gesture.mode === "left") return [to, right, cycling];
-  if (gesture.mode === "right") return [left, to, cycling];
+  if (gesture.mode === "left" || gesture.mode === "right") {
+    const moved = locatorDragTo(gesture, x);
+    return gesture.mode === "left" ? [moved, right, cycling] : [left, moved, cycling];
+  }
   if (gesture.mode === "move") {
     const shift = limit((x - gesture.x) / gesture.zoom, -Math.min(left, right), Math.max(0, duration - Math.max(left, right)));
     return [left + shift, right + shift, cycling];
   }
   const from = limit(gesture.start + gesture.x / gesture.zoom, 0, duration);
   return [Math.min(from, to), Math.max(from, to), true];
+}
+
+// A locator follows the pointer's distance from where its flag or line was grabbed, and stops at
+// the other locator: L never passes R, R never passes L.
+function locatorDragTo(gesture, x) {
+  const to = gesture[gesture.mode] + (x - gesture.x) / gesture.zoom;
+  // Locators already reversed by the set shortcuts drag freely, as the backend lets them.
+  const ordered = gesture.left <= gesture.right;
+  if (gesture.mode === "left") return limit(to, 0, ordered ? gesture.right : gesture.duration);
+  return limit(to, ordered ? gesture.left : 0, gesture.duration);
 }
 
 function endRulerDrag(event) {
@@ -1895,12 +1948,15 @@ ruler.addEventListener("pointerdown", (event) => {
   const y = event.clientY - bounds.top;
   const ms = scene.viewStart + x / scene.zoom;
   const side = event.ctrlKey || event.metaKey ? "left" : event.altKey ? "right" : null;
-  if (side) {
+  const flag = event.shiftKey && !side && y < rulerBandHeight ? rulerGestureAt(x, y) : null;
+  if (flag === "left" || flag === "right") {
+    act({ kind: "locator", end: flag }, false);
+  } else if (side) {
     act({ kind: "ruler_locators", path: scene.path, gesture: side, from: ms, to: ms }, false);
   } else if (y < rulerBandHeight) {
     ruler.setPointerCapture(event.pointerId);
     rulerDrag = { path: scene.path, id: event.pointerId, x, start: scene.viewStart,
-      zoom: scene.zoom, mode: rulerGestureAt(x), left: view.left, right: view.right, cycling: view.cycle,
+      zoom: scene.zoom, mode: rulerGestureAt(x, y), left: view.left, right: view.right, cycling: view.cycle,
       duration: view.duration };
     refreshRulerCursor();
   } else {
@@ -1926,8 +1982,10 @@ ruler.addEventListener("pointerup", event => {
   const x = event.clientX - ruler.getBoundingClientRect().left;
   const moved = Math.abs(x - gesture.x) >= 3;
   if (!moved && gesture.mode !== "move") return;
+  const locator = gesture.mode === "left" || gesture.mode === "right";
   act({ kind: "ruler_locators", path: gesture.path, gesture: moved ? gesture.mode : "toggle",
-    from: gesture.start + gesture.x / gesture.zoom, to: gesture.start + x / gesture.zoom }, false);
+    from: gesture.start + gesture.x / gesture.zoom,
+    to: locator ? locatorDragTo(gesture, x) : gesture.start + x / gesture.zoom }, false);
 });
 for (const type of ["pointercancel", "lostpointercapture"]) {
   ruler.addEventListener(type, event => {
@@ -2688,9 +2746,6 @@ for (const button of document.querySelectorAll("[data-command]")) {
 for (const button of document.querySelectorAll("[data-volume]")) {
   button.addEventListener("click", () => act({ kind: "volume", relative: true, value: +button.dataset.volume }));
 }
-for (const button of document.querySelectorAll("[data-locator]")) {
-  button.addEventListener("click", (event) => act({ kind: "locator", end: button.dataset.locator, jump: event.shiftKey }));
-}
 for (const id of ["snap", "snap-mode", "beats", "divisor"]) {
   $(id).addEventListener("change", () => {
     act({ kind: "snap", on: $("snap").checked, mode: $("snap-mode").value,
@@ -2778,7 +2833,6 @@ $("used-only").addEventListener("change", () => {
   renderLanes();
   paintSoon();
 });
-toggle("cycle", "cycle");
 toggle("audition", "audition");
 function openSiblingDifficulty(path) {
   if (scene && !view.busy && !drag && path && path !== scene.path) act({ kind: "open", path });

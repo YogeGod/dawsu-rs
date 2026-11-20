@@ -57,6 +57,22 @@ fn ruler_gestures_snap_and_move_locators_without_seeking_or_dirtying_the_map() {
     drag(&mut app, map_path, "left", 0.0, 1115.0);
     drag(&mut app, map_path, "right", 0.0, 2390.0);
     assert_eq!(range(&app), (1125.0, 2375.0, false));
+    // A drag never carries L past R or R past L: it stops on the other locator.
+    drag(&mut app, map_path, "left", 1125.0, 3000.0);
+    assert_eq!(range(&app), (2375.0, 2375.0, false));
+    drag(&mut app, map_path, "left", 2375.0, 1115.0);
+    drag(&mut app, map_path, "right", 2375.0, 600.0);
+    assert_eq!(range(&app), (1125.0, 1125.0, false));
+    drag(&mut app, map_path, "right", 1125.0, 2390.0);
+    // Ctrl- or Alt-click (from == to) sets a locator where it lands, as the set shortcuts do.
+    drag(&mut app, map_path, "left", 3000.0, 3000.0);
+    assert_eq!(range(&app), (3000.0, 2375.0, false));
+    drag(&mut app, map_path, "left", 1115.0, 1115.0);
+    // Shift-click on a flag jumps the playhead to its locator.
+    serde_json::from_value::<Action>(serde_json::json!({"kind": "locator", "end": "right"})).unwrap().run(&mut app);
+    assert_eq!(app.position_ms(), 2375.0);
+    app.seek(500.0);
+    assert_eq!(range(&app), (1125.0, 2375.0, false));
 
     drag(&mut app, map_path, "draw", 860.0, 385.0);
     assert_eq!(range(&app), (375.0, 875.0, true));
@@ -608,6 +624,23 @@ fn view_keeps_the_fit_zoom_of_a_30_minute_song() {
     serde_json::from_value::<Action>(serde_json::json!({"kind": "view", "start": 0.0, "zoom": fit, "row_height": 30.0}))
         .unwrap().run(&mut app);
     assert_eq!(app.zoom, fit);
+}
+
+#[test]
+fn go_to_end_seeks_to_the_duration_the_view_reports() {
+    let fixture = Fixture::new("go-to-end");
+    let path = fixture.0.join("Hard.osu");
+    fs::write(&path, b"osu file format v14\n\n[TimingPoints]\n0,500,4,1,0,100,1,0\n\n[HitObjects]\n256,192,1000,1,0,0:0:0:0:\n").unwrap();
+    let mut app = Application::headless();
+    open(&mut app, &path);
+    // The transport's Go to end sends a seek to view.duration; past it, seek stops at the end.
+    let duration = snapshot(&app, false)["duration"].as_f64().unwrap();
+    assert!(duration > 1000.0);
+    for ms in [duration, duration + 5000.0] {
+        app.seek(0.0);
+        serde_json::from_value::<Action>(serde_json::json!({"kind": "seek", "ms": ms})).unwrap().run(&mut app);
+        assert_eq!(snapshot(&app, false)["position"].as_f64(), Some(duration));
+    }
 }
 
 #[test]

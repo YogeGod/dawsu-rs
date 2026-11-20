@@ -6,9 +6,10 @@ import Boundary from "./lib/Boundary.svelte";
 import AuditionPill from "./parts/AuditionPill.svelte";
 import SnapSlider from "./parts/SnapSlider.svelte";
 import ToolPills from "./parts/ToolPills.svelte";
+import TransportBar from "./parts/TransportBar.svelte";
 
 // Each part replaces the children of its [data-ui-mount="name"] host in index.html.
-const parts = { tools: ToolPills, snap: SnapSlider, audition: AuditionPill };
+const parts = { tools: ToolPills, snap: SnapSlider, audition: AuditionPill, transport: TransportBar };
 
 for (const host of document.querySelectorAll("[data-ui-mount]")) {
   const part = parts[host.dataset.uiMount];

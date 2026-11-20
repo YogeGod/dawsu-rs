@@ -253,7 +253,7 @@ test("each menu groups the editor's existing commands like the design, with no s
     "Protect hitnormals from deletion", "Audition when placing hits",
   ]);
   assert.deepEqual(open("playback"), [
-    "Play / pause", "Stop", "Go to start", "—",
+    "Play / pause", "Stop", "Go to start", "Go to end", "—",
     "Start playing from: Cursor | Left locator | Selection | Selection or left locator", "—",
     "Return on stop", "Follow playhead", "Cycle between L and R", "—",
     "Speed · pitch stays the same: 25 | 50 | 75 | 100 | 125 | 150", "—",
@@ -452,8 +452,12 @@ test("menu switches drive the existing toggles and the difficulty row opens a si
   get("menu-playback").click();
   item("Cycle between L and R").click();
   item("Go to start").click();
+  view.duration = 201500;
+  get("menu-playback").click();
+  item("Go to end").click();
   assert.deepEqual(calls, [
     { kind: "protect", on: true }, { kind: "audition", on: false }, { kind: "cycle", on: true }, { id: "start" },
+    { kind: "seek", ms: 201500 },
   ]);
 
   let waveform = 0, used = 0;

@@ -227,9 +227,11 @@ impl RulerGesture {
                 .ms().clamp(0.0, duration)
         };
         let (mut left, mut right, mut enabled) = (app.locator_left, app.locator_right, app.cycle);
+        // A drag stops on the other locator; a Ctrl- or Alt-click (from == to) sets it where it lands.
+        let dragged = from != to;
         match self {
-            Self::Left => left = snap(to),
-            Self::Right => right = snap(to),
+            Self::Left => left = if dragged && left <= right { snap(to).min(right) } else { snap(to) },
+            Self::Right => right = if dragged && left <= right { snap(to).max(left) } else { snap(to) },
             Self::Draw => {
                 let (first, last) = (snap(from), snap(to));
                 if first == last {
@@ -447,9 +449,9 @@ enum Action {
     Protect {
         on: bool,
     },
+    /// Shift-click on a ruler flag: jump the playhead to that locator.
     Locator {
         end: String,
-        jump: bool,
     },
     RulerLocators {
         path: PathBuf,
@@ -856,22 +858,8 @@ impl Action {
             Self::Speed { value } => app.set_speed(value),
             Self::HsMode { on } => app.set_hs_mode(on),
             Self::Protect { on } => app.set_normal_protection(on),
-            Self::Locator { end, jump } => {
-                if jump {
-                    app.seek(if end == "left" {
-                        app.locator_left
-                    } else {
-                        app.locator_right
-                    });
-                } else {
-                    let position = app.position_ms();
-                    if end == "left" {
-                        app.locator_left = position;
-                    } else {
-                        app.locator_right = position;
-                    }
-                    app.cycle_changed();
-                }
+            Self::Locator { end } => {
+                app.seek(if end == "left" { app.locator_left } else { app.locator_right });
             }
             Self::RulerLocators { path, gesture, from, to } => gesture.apply(app, &path, from, to),
             Self::Cycle { on } => {

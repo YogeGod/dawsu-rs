@@ -386,6 +386,7 @@ function menuItems(name, target) {
     menuItem("Play / pause", "Play", () => act({ kind: "play" }), { shortcut: "play" }),
     menuItem("Stop", "Square", () => act({ kind: "stop" }), { shortcut: "stop" }),
     menuCommand("Go to start", "SkipBack", "start"),
+    menuItem("Go to end", "SkipForward", () => act({ kind: "seek", ms: view.duration })),
     separator(),
     menuChoices("Start playing from", playbackStartChoices, () => view.playbackStart ?? "cursor",
       value => act({ kind: "playback_start", value }, false)),
