@@ -41,6 +41,12 @@
   outline: 2px solid var(--editor-focus);
   outline-offset: 0;
 }
+/* An icon-only pill is a 26 px square, like the v3 icon toggles. */
+.ui-pill[aria-label] {
+  justify-content: center;
+  width: 26px;
+  padding: 0;
+}
 .ui-pill svg {
   width: 14px;
   height: 14px;

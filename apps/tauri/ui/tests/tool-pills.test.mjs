@@ -35,9 +35,12 @@ test("the current tool's pill is pressed; an off-toolbar tool gets a fourth pres
   assert.doesNotMatch(html, /disabled/);
 
   html = shown(ToolPills, { tool: "Ramp", busy: false });
-  assert.deepEqual(labels(html), ["Select", "Draw", "Erase", "Ramp"]);
-  assert.deepEqual(pressed(html), ["Ramp"]);
-  assert.match(html, /aria-haspopup="menu"[^>]*>[^]*?Ramp/);
+  // The fourth pill is icon only, so the toolbar still fits; its name is in the tooltip and aria-label.
+  assert.deepEqual(labels(html), ["Select", "Draw", "Erase", ""]);
+  const fourth = html.match(/<button[^>]*aria-haspopup="menu"[^>]*>/)?.[0] ?? "";
+  assert.match(fourth, /aria-pressed="true"/);
+  assert.match(fourth, /aria-label="Ramp"/);
+  assert.match(fourth, /title="Ramp"/);
   assert.equal([...html.matchAll(/aria-haspopup/g)].length, 1, "only the off-toolbar pill opens the picker");
   assert.equal([...html.matchAll(/<svg/g)].length, 4, "every pill has its icon");
   assert.doesNotMatch(html, /\sstyle=|\sid=/);
