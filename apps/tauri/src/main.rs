@@ -1,13 +1,14 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod drum_view;
+mod drum_window;
 mod folders;
 mod home;
 mod keyboard;
 mod library;
 mod selection;
 
-use dawsu_application::{Application, DrumDetectState, OutputBackend, ExportOptions, ExportSettings, PlatformRequest, EditorTimeSignature, LaneLayout, PointerPhase, RangeOperation, TimelineEdit, VolumeScope, lane_name};
+use dawsu_application::{Application, OutputBackend, ExportOptions, ExportSettings, PlatformRequest, EditorTimeSignature, LaneLayout, PointerPhase, RangeOperation, TimelineEdit, VolumeScope, lane_name};
 use dawsu_editor::{
     keys::{Key, KeyCombination, Mods},
     tempo::SnapMode,
@@ -384,9 +385,6 @@ enum Action {
         operation: String,
     },
     ShowLane { target: SampleTarget },
-    DrumDetectStart { map: PathBuf, kick: Option<String>, snare: Option<String> },
-    DrumDetectCancel,
-    DrumApply { map: PathBuf, review: String },
     DeleteLane { target: SampleTarget, revision: u64 },
     LaneLayout {
         path: Option<PathBuf>,
@@ -818,30 +816,6 @@ impl Action {
                     app.error = Some(error);
                 }
             }
-            Self::DrumDetectStart { map, kick, snare } => {
-                let lane = |key: Option<String>| key.map(|key| drum_lane(app, &key)).transpose();
-                let result = if app.document().is_some_and(|document| document.path == map) {
-                    lane(kick).and_then(|kick| Ok((kick, lane(snare)?)))
-                        .and_then(|(kick, snare)| app.start_drum_detection(kick, snare))
-                } else {
-                    Err("The open difficulty changed. Open Drum hit detection again.".into())
-                };
-                if let Err(error) = result {
-                    app.error = Some(error);
-                }
-            }
-            Self::DrumDetectCancel => app.cancel_drum_detection(),
-            Self::DrumApply { map, review } => {
-                let result = if app.document().is_some_and(|document| document.path == map) {
-                    review.parse().map_err(|_| "Detect drum hits first.".to_owned())
-                        .and_then(|review| app.apply_drum_detection(review))
-                } else {
-                    Err("The open difficulty changed. Nothing was applied.".into())
-                };
-                if let Err(error) = result {
-                    app.error = Some(error);
-                }
-            }
             Self::TimeSignatures { map, value } => {
                 if !app.document().is_some_and(|document| document.path == map) {
                     app.error = Some("The open difficulty changed. Reopen Time signatures to try again.".into());
@@ -1000,49 +974,36 @@ fn lane_selection_mix(app: &mut Application, target: &SampleTarget, operation: &
     }
 }
 
+/// The difficulty's lane rows (composer lanes) that get a lane header, in order, and the slots that rows stand in for:
+/// an unused slot lane is shown on its source's row. Hidden lanes get no header. `used` says
+/// whether a lane has hits. The scene's `laneOrder` and the drum window's lane numbers share it.
+fn lane_header_rows<'a>(
+    document: &'a dawsu_application::Document,
+    used: &dyn Fn(&SampleIdentity) -> bool,
+) -> (Vec<usize>, std::collections::HashMap<usize, &'a SampleIdentity>) {
+    let c = &document.composer;
+    let model = c.hitsounds();
+    let row_by_lane: std::collections::HashMap<_, _> = c.lanes.iter().enumerate().map(|(row, lane)| (lane, row)).collect();
+    let mut slot_rows = std::collections::HashMap::new();
+    let mut backing_slots = std::collections::HashMap::new();
+    for (source, slot) in model.lane_slots() {
+        if !used(slot) && let (Some(&from), Some(&to)) = (row_by_lane.get(source), row_by_lane.get(slot))
+            && let std::collections::hash_map::Entry::Vacant(entry) = slot_rows.entry(to)
+        {
+            entry.insert(from);
+            backing_slots.insert(from, slot);
+        }
+    }
+    let lane_order = (0..c.lanes.len()).filter(|row| !backing_slots.contains_key(row))
+        .map(|row| slot_rows.get(&row).copied().unwrap_or(row))
+        .filter(|&row| !model.is_lane_hidden(&c.lanes[row]))
+        .collect();
+    (lane_order, backing_slots)
+}
+
 /// A lane's key in the scene: the text the front end holds for a lane and sends back to name it.
 fn scene_lane_key(lane: &SampleIdentity) -> String {
     format!("{lane:?}")
-}
-
-/// A lane drum hit detection may fill: any lane of the difficulty, hidden ones too.
-fn drum_lane(app: &Application, key: &str) -> Result<SampleIdentity, String> {
-    app.document()
-        .and_then(|document| document.composer.hitsounds().lanes().iter()
-            .find(|lane| scene_lane_key(&lane.identity) == key))
-        .map(|lane| lane.identity.clone())
-        .ok_or_else(|| "A chosen lane no longer exists. Pick the lanes again.".into())
-}
-
-fn drum_detect_view(app: &Application) -> Value {
-    let view = app.drum_detection();
-    let mut result = json!({
-        "state": "idle",
-        "lanes": view.lanes.iter().map(|(lane, name, hidden)| json!({ "key": scene_lane_key(lane), "name": name, "hidden": hidden }))
-            .collect::<Vec<_>>(),
-        "kick": view.kick.as_ref().map(scene_lane_key),
-        "snare": view.snare.as_ref().map(scene_lane_key),
-    });
-    match view.state {
-        DrumDetectState::Idle => {}
-        DrumDetectState::Running { done, total } => {
-            result["state"] = json!("running");
-            result["done"] = json!(done);
-            result["total"] = json!(total);
-        }
-        DrumDetectState::Ready { review, counts, kicks, snares, unhides } => {
-            result["unhides"] = json!(unhides);
-            result["state"] = json!("ready");
-            result["review"] = json!(review.to_string());
-            result["kicks"] = json!(kicks);
-            result["snares"] = json!(snares);
-            result["counts"] = json!({
-                "added": counts.added, "onObjects": counts.on_objects, "loose": counts.loose,
-                "flagged": counts.flagged, "duplicates": counts.duplicates,
-            });
-        }
-    }
-    result
 }
 
 fn lane_by_key(app: &Application, key: &str) -> Result<SampleIdentity, String> {
@@ -1161,20 +1122,7 @@ fn snapshot(app: &Application, include_scene: bool) -> Value {
             for lane in model.moments().iter().flat_map(|moment| moment.hits()) {
                 *hit_counts.entry(lane).or_insert(0) += 1;
             }
-            let mut slot_rows = std::collections::HashMap::new();
-            let mut backing_slots = std::collections::HashMap::new();
-            for (source, slot) in model.lane_slots() {
-                if !hit_counts.contains_key(slot) && let (Some(&from), Some(&to)) = (row_by_lane.get(source), row_by_lane.get(slot))
-                    && let std::collections::hash_map::Entry::Vacant(entry) = slot_rows.entry(to)
-                {
-                    entry.insert(from);
-                    backing_slots.insert(from, slot);
-                }
-            }
-            let lane_order = (0..c.lanes.len()).filter(|row| !backing_slots.contains_key(row))
-                .map(|row| slot_rows.get(&row).copied().unwrap_or(row))
-                .filter(|&row| !model.is_lane_hidden(&c.lanes[row]))
-                .collect::<Vec<_>>();
+            let (lane_order, backing_slots) = lane_header_rows(d, &|lane| hit_counts.contains_key(lane));
             let lanes = c.lanes.iter().enumerate().map(|(row, lane)| {
                 let slot = backing_slots.get(&row).copied().unwrap_or(lane);
                 let (family, index, group) = match slot {
@@ -1330,7 +1278,6 @@ fn snapshot(app: &Application, include_scene: bool) -> Value {
     result["songSolo"] = json!(app.song_solo());
     result["editDialog"] = json!(app.requested_edit());
     result["quantizeStrength"] = json!(app.quantize_strength());
-    result["drumDetect"] = drum_detect_view(app);
     let tab_routes = [false, true].into_iter().flat_map(|ctrl| {
         [false, true].into_iter().flat_map(move |shift| {
             [false, true].into_iter().filter_map(move |alt| {
@@ -1381,6 +1328,10 @@ enum Request {
     ExportRun(u64, mpsc::Sender<Result<u64, String>>),
     /// The Export window closed: its preview stops and is forgotten. Needs no answer.
     ExportClose,
+    /// The drum detection window's requests, answered with its view.
+    Drum(drum_window::DrumRequest, mpsc::Sender<Result<Value, String>>),
+    /// The drum detection window closed: its run, result and Listen go. Needs no answer.
+    DrumClose,
 }
 struct Editor(mpsc::Sender<Request>);
 
@@ -1477,6 +1428,8 @@ fn export_snapshot(app: &Application, cache: &mut ExportCache) -> Value {
             "leftOut": choices.left_out,
             "matchWithin": choices.match_within,
             "copyVolumes": choices.copy_volumes,
+            "base": choices.base,
+            "sliderAudio": choices.slider_audio,
         })),
         "error": status.error,
         "writing": status.writing,
@@ -1491,11 +1444,18 @@ fn export_snapshot(app: &Application, cache: &mut ExportCache) -> Value {
             "id": preview.id,
             "origin": "export",
             "stale": status.stale,
+            "staleReason": status.stale_reason.map(|reason| match reason {
+                dawsu_application::Stale::Map => "map",
+                dawsu_application::Stale::MergeSettings => "mergeSettings",
+            }),
             "source": preview.plan.source,
             "version": preview.plan.version,
             "label": preview.plan.label,
             "details": preview.plan.details,
             "files": preview.plan.files.iter().map(|file| &file.path).collect::<Vec<_>>(),
+            // The base hitsound difficulty, and whether it replaces the one Generate made before.
+            "base": preview.plan.generated_file().and_then(|path| preview.plan.files.iter().find(|file| file.path == path))
+                .map(|file| json!({ "path": file.path, "replaces": file.expected.is_some() })),
             "mixes": preview.plan.mix_paths().collect::<Vec<_>>(),
             "targets": preview.plan.targets.iter().map(|counts| json!({
                 "path": counts.path,
@@ -1765,8 +1725,8 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                             } else if app.is_dirty() && !discard {
                                 Err("Save or discard the current difficulty before quitting.".into())
                             } else {
-                                app.cancel_drum_detection();
                                 app.save_session().map(|()| {
+                                    app.cancel_drum_detection();
                                     app.cancel_export_preview();
                                     // Frees the numbers of new samples nothing keeps.
                                     app.close_document();
@@ -1786,6 +1746,15 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                 Ok(Request::ExportClose) => {
                     if fault.is_none() {
                         let _ = guard(&mut app, &mut fault, Application::cancel_export_preview);
+                    }
+                }
+                Ok(Request::Drum(request, response)) => {
+                    let result = guard(&mut app, &mut fault, |app| drum_window::answer(app, request)).and_then(|result| result);
+                    let _ = response.send(result);
+                }
+                Ok(Request::DrumClose) => {
+                    if fault.is_none() {
+                        let _ = guard(&mut app, &mut fault, Application::cancel_drum_detection);
                     }
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {
@@ -1842,6 +1811,11 @@ struct ExportOptionsJson {
     targets: Vec<PathBuf>,
     #[serde(with = "CopyOptionsJson")]
     options: CopyOptions,
+    /// Also write the base hitsound difficulty (Generate), with or without its slider audio.
+    #[serde(default)]
+    base: bool,
+    #[serde(default, rename = "sliderAudio")]
+    slider_audio: bool,
 }
 
 /// "Export · <map title> [<difficulty>]", or "Export" with no map open.
@@ -1869,7 +1843,9 @@ fn export_view(window: tauri::WebviewWindow, state: State<'_, Editor>) -> Result
 #[tauri::command]
 fn export_preview(state: State<'_, Editor>, options: ExportOptionsJson) -> Result<u64, String> {
     let source = options.source;
-    let options = ExportOptions { targets: options.targets, copy: options.options };
+    let options = ExportOptions {
+        targets: options.targets, copy: options.options, base: options.base, slider_audio: options.slider_audio,
+    };
     ask(&state, |tx| Request::ExportPreview(source, options, tx))?
 }
 
@@ -1913,6 +1889,78 @@ fn show_in_editor(app: tauri::AppHandle) -> Result<(), String> {
     let main = app.get_webview_window("main").ok_or("The editor window is closed.")?;
     let _ = main.unminimize();
     main.set_focus().map_err(|error| error.to_string())
+}
+
+/// Opens the drum detection window beside the editor, or brings it forward when it is open.
+/// Async, so building the window never runs on the main thread that drives it.
+#[tauri::command]
+async fn drum_window_open(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("drum") {
+        let _ = window.unminimize();
+        return window.set_focus().map_err(|error| error.to_string());
+    }
+    let built = tauri::WebviewWindowBuilder::new(&app, "drum", tauri::WebviewUrl::App("drum.html".into()))
+        .title("Drum hit detection")
+        .inner_size(1200.0, 760.0)
+        .min_inner_size(960.0, 600.0)
+        .disable_drag_drop_handler()
+        .build();
+    match (built, app.get_webview_window("drum")) {
+        (Ok(_), _) => Ok(()),
+        // A second open raced the first one: the window exists now, so bring it forward.
+        (Err(_), Some(window)) => window.set_focus().map_err(|error| error.to_string()),
+        (Err(error), None) => Err(error.to_string()),
+    }
+}
+
+/// Closes the drum detection window the way its title bar does, so its run and Listen stop too.
+#[tauri::command]
+fn close_drum_window(app: tauri::AppHandle) -> Result<(), String> {
+    match app.get_webview_window("drum") {
+        Some(window) => window.close().map_err(|error| error.to_string()),
+        None => Ok(()),
+    }
+}
+
+fn ask_drum(state: &Editor, request: drum_window::DrumRequest) -> Result<Value, String> {
+    ask(state, |tx| Request::Drum(request, tx))?
+}
+
+#[tauri::command]
+fn drum_context(state: State<'_, Editor>, known: Option<String>) -> Result<Value, String> {
+    ask_drum(&state, drum_window::DrumRequest::Context { known })
+}
+
+#[tauri::command]
+fn drum_detect_start(state: State<'_, Editor>, map: PathBuf, source: drum_window::SourceJson) -> Result<Value, String> {
+    ask_drum(&state, drum_window::DrumRequest::Start { map, source })
+}
+
+#[tauri::command]
+fn drum_review(state: State<'_, Editor>, map: PathBuf, options: drum_window::OptionsJson) -> Result<Value, String> {
+    ask_drum(&state, drum_window::DrumRequest::Review { map, options })
+}
+
+#[tauri::command]
+fn drum_listen(state: State<'_, Editor>, map: PathBuf, from: f64, ticked: Vec<String>) -> Result<Value, String> {
+    ask_drum(&state, drum_window::DrumRequest::Listen { map, from, ticked })
+}
+
+#[tauri::command]
+fn drum_listen_stop(state: State<'_, Editor>) -> Result<Value, String> {
+    ask_drum(&state, drum_window::DrumRequest::StopListen)
+}
+
+#[tauri::command]
+fn drum_apply(state: State<'_, Editor>, map: PathBuf, review: String, ticked: Vec<String>) -> Result<Value, String> {
+    ask_drum(&state, drum_window::DrumRequest::Apply { map, review, ticked })
+}
+
+/// A drum stem file, picked in a dialog over the drum detection window.
+#[tauri::command]
+fn drum_pick_stem(window: tauri::WebviewWindow) -> Option<PathBuf> {
+    rfd::FileDialog::new().set_parent(&window).set_title("Pick a drum stem")
+        .add_filter("Audio", &["wav", "ogg", "mp3", "flac"]).pick_file()
 }
 
 #[tauri::command]
@@ -2201,9 +2249,11 @@ fn closed_with_main<'a>(labels: impl IntoIterator<Item = &'a str>) -> Vec<&'a st
 }
 
 fn close_requested(label: &str, editor: &Editor) -> CloseDecision {
-    if label == "export" {
-        // Closing Export never waits on the editor.
-        let _ = editor.0.send(Request::ExportClose);
+    // Closing Export or the drum detection window never waits on the editor.
+    match label {
+        "export" => { let _ = editor.0.send(Request::ExportClose); }
+        "drum" => { let _ = editor.0.send(Request::DrumClose); }
+        _ => {}
     }
     if label != "main" {
         return CloseDecision::Allow;
@@ -2245,6 +2295,15 @@ fn main() {
             open_export_window,
             close_export_window,
             show_in_editor,
+            drum_window_open,
+            close_drum_window,
+            drum_context,
+            drum_detect_start,
+            drum_review,
+            drum_listen,
+            drum_listen_stop,
+            drum_apply,
+            drum_pick_stem,
             pick_merge_preset,
             save_merge_preset,
             editor_shortcuts,

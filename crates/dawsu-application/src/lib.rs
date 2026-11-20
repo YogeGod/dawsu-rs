@@ -38,8 +38,9 @@ use dawsu_editor::keys::{KeyChord, Mods};
 use dawsu_editor::transport::BookmarkList;
 pub use problems::OutputProblem;
 pub use editor_meter::{EditorBarSection, EditorTimeSignature};
-pub use drum_detect::{DrumDetectState, DrumDetectView, DrumLanes};
-pub use export::{ExportChoices, ExportOptions, ExportPreview, ExportStatus, PreviewOrigin};
+pub use dawsu_graph_audio::classic::Drum;
+pub use drum_detect::{DrumDetectState, DrumDetectView, DrumLanes, DrumOptions, DrumRow, DrumSource, ObjectKind, RowLands, GRIDS, MAX_OBJECT_MS};
+pub use export::{ExportChoices, ExportOptions, ExportPreview, ExportStatus, PreviewOrigin, Stale};
 pub use export_settings::{ExportCombination, ExportSettings};
 pub use project::LaneLayout;
 pub use recovery::RecoveryOffer;
@@ -1394,7 +1395,7 @@ impl Application {
         }
         self.stop();
         self.cancel_controller_stroke();
-        self.drum.clear();
+        self.clear_drum_detection();
         if let Some(d) = self.document.as_mut() {
             self.tools.cancel(&mut d.composer);
         }

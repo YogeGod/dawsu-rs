@@ -44,6 +44,9 @@ test("the bundle keeps to the editor's content security policy", () => {
       assert.ok(!text.includes(blocked), file + " contains " + blocked);
     }
   }
+  // The target includes Safari 15.0 and older WebKitGTK, which lack these CSS features.
+  const styles = read(new URL("ui.css", bundle));
+  for (const missing of [":has(", "color-mix(", "aspect-ratio", "oklch("]) assert.ok(!styles.includes(missing), "ui.css uses " + missing);
   const script = read(new URL("ui.js", bundle));
   // The target includes Safari 15.0 and older WebKitGTK, which lack these (Safari 15.4 added them).
   for (const missing of ["findLast", ".at("]) assert.ok(!script.includes(missing), "ui.js uses " + missing);
@@ -62,6 +65,6 @@ test("the committed bundle matches its sources", async () => {
 test("index.html loads the bundle after the old styles and scripts", () => {
   const head = read(new URL("dist/index.html", tauri)).match(/<head>(.*?)<\/head>/s)[1];
   const order = [...head.matchAll(/(?:href|src)="([^"]+\.(?:css|js))"/g)].map(match => match[1]);
-  assert.deepEqual(order, ["fonts.css", "style.css", "ui/ui.css", "docking.js", "app.js", "menus.js", "drum-detect.js", "ui/ui.js"]);
+  assert.deepEqual(order, ["fonts.css", "style.css", "ui/ui.css", "docking.js", "app.js", "menus.js", "ui/ui.js"]);
   assert.match(head, /<script defer src="ui\/ui\.js"><\/script>/);
 });

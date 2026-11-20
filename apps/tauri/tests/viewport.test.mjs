@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { createContext, runInContext } from "node:vm";
+import { followGroup, nextGroup, stepInGroup } from "../ui/src/lib/snap.js";
 
 const app = await readFile(new URL("../dist/app.js", import.meta.url), "utf8");
 const html = await readFile(new URL("../dist/index.html", import.meta.url), "utf8");
@@ -51,6 +52,16 @@ async function frontend() {
   const evaluate = (code) => runInContext(code, context);
   evaluate('view = { busy: false, hasDocument: true, duration: 10_000 }; scene = { path: "fixture.osu", viewStart: 1000, zoom: 1, rowHeight: 30 }');
   return { calls, documentEvents, evaluate, get, status, settle: () => evaluate("pending") };
+}
+
+// The snap part of the Svelte bundle (ui/src/main.js and bridge.svelte.js), on the real ui/src/lib/snap.js.
+function snapBundle() {
+  let group = null, shown = null;
+  return {
+    update(_view, scene) { group = followGroup(group, shown, scene); shown = scene; },
+    wheelSnap: finer => shown && stepInGroup(nextGroup(group, shown.beats, shown.divisor), shown.beats, shown.divisor, finer),
+    snapGroup: () => group?.name,
+  };
 }
 
 test("Fit shows the whole difficulty from zero without changing lane height", async () => {
@@ -236,6 +247,7 @@ test("Ctrl+Shift+wheel zooms lane heights around the pointer without panning", a
 
 test("wheel follows the active keyboard preset and stops at the snap limits", async () => {
   const { calls, get, evaluate, status, settle } = await frontend();
+  evaluate("window").dawsuUi = snapBundle();
   const wheel = get("scroll").events.get("wheel");
   get("grid").getBoundingClientRect = () => ({ x: 100 });
   const roll = async (options = {}) => {
@@ -262,18 +274,53 @@ test("wheel follows the active keyboard preset and stops at the snap limits", as
     prevented: true, action: { kind: "snap", on: false, mode: "relative", beats: 1, divisor: 8 },
   });
   get("triplet-snap").checked = true;
-  assert.equal((await roll({ ctrlKey: true, deltaY: -120 })).action.divisor, 6);
+  get("triplet-snap").events.get("change")();
+  await settle();
+  assert.equal(calls.pop().action.divisor, 6, "ticking Triplets picks 1/6, as lazer's Triplets button does");
   assert.equal((await roll({ altKey: true, deltaY: -120 })).action.kind, "view");
   assert.equal((await roll({ deltaX: 35, deltaY: 0 })).action.kind, "view");
 
   setPreset("DAW");
-  get("triplet-snap").checked = false;
   assert.deepEqual(await roll(), { prevented: false, action: undefined });
   assert.equal((await roll({ shiftKey: true })).action.kind, "view");
   assert.equal((await roll({ ctrlKey: true })).action.kind, "view");
   assert.equal((await roll({ altKey: true, deltaY: -120 })).action.divisor, 8);
   evaluate("scene.divisor = 16");
   assert.deepEqual(await roll({ altKey: true, deltaY: -120 }), { prevented: true, action: undefined });
+});
+
+test("after 1/3 is picked, Ctrl+wheel steps only through 1/1, 1/3, 1/6 and 1/12", async () => {
+  const { calls, get, evaluate, status, settle } = await frontend();
+  evaluate("window").dawsuUi = snapBundle();
+  const wheel = get("scroll").events.get("wheel");
+  get("grid").getBoundingClientRect = () => ({ x: 100 });
+  status.keyPreset = "osu!";
+  evaluate('view.keyPreset = "osu!"');
+  // The editor answers each snap action; show() hands the new scene to the bundle.
+  const pick = divisor => evaluate(`scene.beats = 1; scene.divisor = ${divisor}; show({ ...view })`);
+  const roll = async deltaY => {
+    calls.length = 0;
+    wheel({ ctrlKey: true, shiftKey: false, altKey: false, deltaX: 0, deltaY, clientX: 300, preventDefault() {} });
+    await settle();
+    return calls.find(call => call.action.kind === "snap")?.action.divisor;
+  };
+  evaluate('Object.assign(scene, { snap: true, snapMode: "grid", sections: [], lanes: [] })');
+  pick(4);
+  assert.equal(get("triplet-snap").checked, false);
+  assert.equal(await roll(-120), 8, "Common: 1/4 to 1/8");
+  pick(3);
+  assert.equal(get("triplet-snap").checked, true, "the Triplets box shows the group");
+  assert.equal(await roll(-120), 6);
+  pick(6);
+  assert.equal(await roll(-120), 12);
+  pick(12);
+  assert.equal(await roll(-120), undefined, "stops at 1/12");
+  assert.equal(await roll(120), 6);
+  pick(1);
+  assert.equal(await roll(-120), 3, "1/1 keeps Triplets");
+  assert.equal(await roll(120), undefined, "stops at 1/1");
+  pick(4);
+  assert.equal(await roll(120), 2, "picking 1/4 goes back to Common");
 });
 
 
@@ -332,21 +379,17 @@ test("hit and controller levels use the legacy blue-purple-red palette", async (
   ]);
 });
 
-// The Inspector swatch keeps the sound colour (part 7); the timeline row tint is the picked colour or none.
+// The timeline row tint, like the Inspector's Lane tint (part 7), is the picked colour or none.
 test("lane rows tint only in a colour the mapper picked", async () => {
   const { evaluate } = await frontend();
   const result = evaluate(`
     laneColours.set("picked", "#123456");
     const clap = { family: "soft-hitclap", colourKey: "unpicked" };
     JSON.stringify([
-      ["normal-hitnormal", "soft-hitwhistle", "drum-hitfinish", "soft-hitclap", null]
-        .map(family => laneColour({ family, colourKey: "unpicked" })),
-      laneColour({ family: "soft-hitclap", colourKey: "picked" }),
       laneTint(clap), laneTint({ family: "soft-hitclap", colourKey: "picked" }),
       laneTint({ family: "soft-hitclap", colourKey: "picked" }, true),
     ])`);
   assert.deepEqual(JSON.parse(result), [
-    ["#f1ad67", "#9c9cfc", "#a7d67d", "#e28dd1", "#62d6cf"], "#123456",
     // v3: 8 % on a row, 16 % on the active lane's row.
     null, "#12345614", "#12345629",
   ]);

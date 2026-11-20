@@ -7,11 +7,16 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread::JoinHandle;
 
-/// What the Export window asks to write. For now only "Into the mapset" (Copy).
-#[derive(Clone, Debug, PartialEq)]
+/// What the Export window asks to write: "Into the mapset" (Copy), with or without the base
+/// hitsound difficulty (Generate) in the same write.
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct ExportOptions {
     pub targets: Vec<PathBuf>,
     pub copy: CopyOptions,
+    /// Also write the base hitsound difficulty, as Generate does.
+    pub base: bool,
+    /// Generate's slider slide, whistle and tick audio, for the base difficulty.
+    pub slider_audio: bool,
 }
 
 /// What the Export window last chose for a map, kept with the session. Older builds ignore it.
@@ -22,6 +27,11 @@ pub struct ExportChoices {
     /// Match within, in ms.
     pub match_within: f64,
     pub copy_volumes: bool,
+    /// Also write the base hitsound difficulty. Choices saved before it existed read as off.
+    #[serde(default)]
+    pub base: bool,
+    #[serde(default)]
+    pub slider_audio: bool,
 }
 
 /// Which window a preview belongs to, so main never shows it as its own review.
@@ -39,6 +49,8 @@ pub struct ExportPreview {
     generation: u64,
     /// Hitsounding mode when it was made: switching it changes what the source writes.
     hs_mode: bool,
+    /// The merge settings it was made with: changing them changes what the base difficulty writes.
+    settings: Option<crate::ExportSettings>,
 }
 
 type PreviewResult = (Result<output::WritePlan, String>, Vec<OutputProblem>);
@@ -47,6 +59,7 @@ struct Running {
     id: u64,
     generation: u64,
     hs_mode: bool,
+    settings: Option<crate::ExportSettings>,
     handle: JoinHandle<()>,
     cancel: Arc<AtomicBool>,
     receive: mpsc::Receiver<PreviewResult>,
@@ -107,12 +120,22 @@ impl Slot {
     }
 }
 
+/// Why a finished preview no longer matches the editor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Stale {
+    /// Another difficulty, an older edit, a reload or another hitsounding mode.
+    Map,
+    /// The merge settings the base difficulty was previewed with changed.
+    MergeSettings,
+}
+
 pub struct ExportStatus<'a> {
     /// The id of the latest preview request, finished or not.
     pub requested: Option<u64>,
     pub preview: Option<&'a ExportPreview>,
     /// The preview was made from another difficulty or an older edit.
     pub stale: bool,
+    pub stale_reason: Option<Stale>,
     /// Options wait for main's job or a drag to end.
     pub waiting: bool,
     pub running: bool,
@@ -144,6 +167,8 @@ impl Application {
                 left_out,
                 match_within: options.copy.leniency,
                 copy_volumes: options.copy.copy_volumes,
+                base: options.base,
+                slider_audio: options.slider_audio,
             });
         }
         self.export.stop();
@@ -152,8 +177,8 @@ impl Application {
         self.export.error = None;
         self.export.last_id += 1;
         let id = self.export.last_id;
-        // Every difficulty left out: the choice is kept, and there is nothing to preview.
-        if !options.targets.is_empty() {
+        // Nothing chosen to write: the choice is kept, and there is nothing to preview.
+        if !options.targets.is_empty() || options.base {
             self.export.waiting = Some((id, source, options));
             self.start_export_preview();
         }
@@ -165,12 +190,24 @@ impl Application {
     }
 
     fn preview_is_current(&self, preview: &ExportPreview) -> bool {
-        preview.origin == PreviewOrigin::Export
-            && preview.generation == self.document_generation
-            && self.document.as_ref().is_some_and(|d| {
-                d.path == preview.plan.source && d.composer.history.version() == preview.plan.version
-                    && d.hs_mode == preview.hs_mode
-            })
+        self.staleness(preview).is_none()
+    }
+
+    fn staleness(&self, preview: &ExportPreview) -> Option<Stale> {
+        let document = self.document.as_ref().filter(|d| {
+            preview.origin == PreviewOrigin::Export
+                && preview.generation == self.document_generation
+                && d.path == preview.plan.source && d.composer.history.version() == preview.plan.version
+                && d.hs_mode == preview.hs_mode
+        });
+        match document {
+            None => Some(Stale::Map),
+            // Merge settings change only what the base difficulty writes; Copy does not use them yet.
+            Some(d) if preview.plan.generated.is_some() && d.export_settings != preview.settings => {
+                Some(Stale::MergeSettings)
+            }
+            Some(_) => None,
+        }
     }
 
     pub fn export_status(&self) -> ExportStatus<'_> {
@@ -179,6 +216,7 @@ impl Application {
             requested: (slot.last_id > 0).then_some(slot.last_id),
             preview: slot.preview.as_ref(),
             stale: slot.preview.as_ref().is_some_and(|preview| !self.preview_is_current(preview)),
+            stale_reason: slot.preview.as_ref().and_then(|preview| self.staleness(preview)),
             waiting: slot.waiting.is_some(),
             running: slot.running.is_some(),
             progress: slot.running.as_ref()
@@ -245,11 +283,12 @@ impl Application {
             match running.receive.try_recv() {
                 Ok((result, problems)) => {
                     let (id, generation, hs_mode) = (running.id, running.generation, running.hs_mode);
+                    let settings = running.settings.clone();
                     self.export.running = None;
                     self.export.problems = problems;
                     match result {
                         Ok(plan) => {
-                            self.export.preview = Some(ExportPreview { id, origin: PreviewOrigin::Export, plan, generation, hs_mode });
+                            self.export.preview = Some(ExportPreview { id, origin: PreviewOrigin::Export, plan, generation, hs_mode, settings });
                         }
                         Err(error) => self.export.error = Some(error),
                     }
@@ -281,6 +320,10 @@ impl Application {
         }
         let source = output::Source::from_document(document);
         let defaults = self.preferences.default_samples.clone();
+        // As Generate in main: the map's merge settings, and the receipts in the project folder.
+        let settings = document.export_settings.clone();
+        let projects = self.project_root.clone();
+        let thread_settings = settings.clone();
         let cancel = Arc::new(AtomicBool::new(false));
         let progress = Arc::new(Mutex::new(None));
         let (send, receive) = mpsc::channel();
@@ -290,11 +333,12 @@ impl Application {
         let handle = std::thread::spawn(move || {
             let (cancel, progress) = (thread_cancel, thread_progress);
             let mut problems = Vec::new();
-            let result = output::copy_report(
+            let result = output::export_report(
                 &source,
                 &defaults,
-                &options.targets,
-                &options.copy,
+                thread_settings.as_ref(),
+                projects.as_deref(),
+                &options,
                 &|| cancel.load(Ordering::Relaxed),
                 &mut problems,
                 &mut |done, total| {
@@ -305,7 +349,7 @@ impl Application {
             );
             let _ = send.send((result, problems));
         });
-        self.export.running = Some(Running { id, generation, hs_mode, handle, cancel, receive, progress });
+        self.export.running = Some(Running { id, generation, hs_mode, settings, handle, cancel, receive, progress });
     }
 }
 
@@ -416,6 +460,7 @@ mod tests {
         ExportOptions {
             targets: targets.to_vec(),
             copy: CopyOptions { leniency: 5.0, copy_storyboarded_samples: true, ..CopyOptions::default() },
+            ..ExportOptions::default()
         }
     }
 
@@ -481,7 +526,7 @@ mod tests {
             }
             std::fs::write(scratch.path(name), wav).unwrap();
         }
-        let options = ExportOptions { targets: vec![target.canonicalize().unwrap()], copy: CopyOptions::default() };
+        let options = ExportOptions { targets: vec![target.canonicalize().unwrap()], ..ExportOptions::default() };
         let mut app = assert_parity(&source.canonicalize().unwrap(), options);
         let preview = app.export_status().preview.unwrap();
         assert!(!preview.plan.mixes.is_empty());
@@ -723,6 +768,8 @@ mod tests {
             left_out: vec!["Target.osu".into()],
             match_within: 3.0,
             copy_volumes: false,
+            base: false,
+            slider_audio: false,
         };
         assert_eq!(app.document().unwrap().export_choices(), Some(&expected));
         wait_preview(&mut app);
@@ -812,5 +859,428 @@ mod tests {
         assert!(app.error.is_none(), "{:?}", app.error);
         assert!(app.document().unwrap().difficulties.iter().any(|path| *path == generated));
         assert_eq!(app.export_targets(), [set.target.clone()]);
+    }
+
+    // Slice 2: the base hitsound difficulty (Generate) in the same write as Copy.
+
+    const MIXED: &str = "osu file format v14\n[General]\nMode:0\n[Metadata]\nArtist:Artist\nTitle:Title\nCreator:Mapper\nVersion:VERSION\n[TimingPoints]\n0,500,4,1,0,100,1,0\n[HitObjects]\n";
+
+    /// A source with two samples at one moment, so Generate and Copy both need a sample mix,
+    /// and two other difficulties.
+    fn mixed_mapset(name: &str) -> (Scratch, PathBuf, PathBuf, PathBuf) {
+        let scratch = Scratch::new(name);
+        let source = scratch.path("source.osu");
+        std::fs::write(&source, format!("{}256,192,1000,1,0,0:0:0:40:one.wav\n300,192,1000,1,0,0:0:0:80:two.wav\n", MIXED.replace("VERSION", "Source"))).unwrap();
+        for target in ["target", "other"] {
+            std::fs::write(scratch.path(&format!("{target}.osu")), format!("{}100,100,1000,1,0,0:0:0:0:\n", MIXED.replace("VERSION", target))).unwrap();
+        }
+        for (name, value) in [("one.wav", 8192_i16), ("two.wav", 16384)] {
+            let mut wav = b"RIFF\x28\0\0\0WAVEfmt \x10\0\0\0\x01\0\x01\0\x80\xbb\0\0\0w\x01\0\x02\0\x10\0data\x04\0\0\0".to_vec();
+            for _ in 0..2 {
+                wav.extend(value.to_le_bytes());
+            }
+            std::fs::write(scratch.path(name), wav).unwrap();
+        }
+        let canonical = |name: &str| scratch.path(name).canonicalize().unwrap();
+        let (source, target, other) = (canonical("source.osu"), canonical("target.osu"), canonical("other.osu"));
+        (scratch, source, target, other)
+    }
+
+    /// Generate written, then Copy written, as the editor's two old buttons do, without the
+    /// editor's polling in between (it would add the new WAVs as samples to the source).
+    fn generate_then_copy(source: &std::path::Path, target: PathBuf, copy: &CopyOptions, slider_audio: bool) {
+        let app = opened(source);
+        let snapshot = output::Source::from_document(app.document().unwrap());
+        let defaults = app.preferences.default_samples.clone();
+        let backups = app.data_root.join("backups");
+        let generate = output::generate_report(
+            &snapshot, &defaults, None, app.project_root.as_deref(), slider_audio, &|| false,
+            &mut Vec::new(), &mut |_, _| {},
+        ).unwrap();
+        generate.apply(&backups, &|| false).unwrap();
+        crate::generate_receipt::record(&generate).unwrap();
+        let copy = output::copy_report(&snapshot, &defaults, &[target], copy, &|| false, &mut Vec::new(), &mut |_, _| {})
+            .unwrap();
+        copy.apply(&backups, &|| false).unwrap();
+    }
+
+    fn with_base(targets: &[PathBuf], slider_audio: bool) -> ExportOptions {
+        ExportOptions { base: true, slider_audio, ..options(targets) }
+    }
+
+    /// Every file in the mapset folder by name, without the editor's data folder.
+    fn folder_files(root: &std::path::Path) -> std::collections::BTreeMap<String, Vec<u8>> {
+        std::fs::read_dir(root).unwrap().map(|entry| entry.unwrap().path())
+            .filter(|path| path.is_file())
+            .map(|path| (path.file_name().unwrap().to_string_lossy().into_owned(), std::fs::read(&path).unwrap()))
+            .collect()
+    }
+
+    fn wavs(root: &std::path::Path) -> Vec<String> {
+        folder_files(root).into_keys().filter(|name| name.starts_with("dawsu-mix-")).collect()
+    }
+
+    fn run_preview(app: &mut Application, options: ExportOptions) {
+        // The editor adds new WAVs in the mapset folder as samples about once a second, which
+        // makes a preview stale as it would in the window. Preview again until one is current.
+        for _ in 0..20 {
+            app.request_export_preview(options.clone()).unwrap();
+            wait_preview(app);
+            if !app.export_status().stale {
+                break;
+            }
+        }
+        let status = app.export_status();
+        assert_eq!(status.error, None);
+        let id = status.preview.expect("a finished preview").id;
+        let backups = app.data_root.join("backups");
+        app.run_export_in(id, backups).unwrap();
+        wait_main(app);
+        assert!(app.error.is_none(), "{:?}", app.error);
+        assert_eq!(app.export_status().write_error, None);
+    }
+
+    #[test]
+    fn base_only_export_plans_the_same_writes_as_generate() {
+        let (_scratch, source, _, _) = mixed_mapset("export-base-parity");
+        let mut app = opened(&source);
+        let id = app.request_export_preview(with_base(&[], true)).unwrap();
+        wait_preview(&mut app);
+        app.generate_with_slider_audio(true);
+        wait_main(&mut app);
+        let status = app.export_status();
+        assert_eq!(status.error, None);
+        let preview = status.preview.expect("a base-only preview");
+        assert_eq!(preview.id, id);
+        let generate = app.output_review.as_ref().unwrap_or_else(|| panic!("{:?}", app.error));
+        assert_eq!(plan_parts(&preview.plan), plan_parts(generate));
+        assert_eq!(problem_parts(status.problems), problem_parts(&app.output_problems));
+        assert!(preview.plan.includes_slider_audio());
+        assert!(!preview.plan.mixes.is_empty(), "the fixture needs a sample mix");
+        assert_eq!(preview.plan.generated_file(), Some(preview.plan.files[0].path.as_path()));
+    }
+
+    #[test]
+    fn base_and_targets_write_as_generate_then_copy_and_leave_out_the_rest() {
+        let (_export_set, source, target, other) = mixed_mapset("export-base-copy");
+        let other_bytes = std::fs::read(&other).unwrap();
+        let mut app = opened(&source);
+        run_preview(&mut app, with_base(&[target.clone()], false));
+        let exported = folder_files(source.parent().unwrap());
+
+        let (_set, reference, reference_target, _) = mixed_mapset("export-base-copy-reference");
+        generate_then_copy(&reference, reference_target, &options(&[]).copy, false);
+
+        assert_eq!(exported, folder_files(reference.parent().unwrap()));
+        assert_eq!(exported["other.osu"], other_bytes, "a left-out difficulty is not touched");
+        assert_eq!(wavs(source.parent().unwrap()).len(), 2, "Generate and Copy each wrote their mix");
+    }
+
+    #[test]
+    fn the_receipt_lists_only_the_base_and_its_mixes_and_re_export_adds_no_wav() {
+        let (_scratch, source, target, _) = mixed_mapset("export-base-receipt");
+        let mut app = opened(&source);
+        app.request_export_preview(with_base(&[target.clone()], false)).unwrap();
+        wait_preview(&mut app);
+        let plan = &app.export_status().preview.unwrap().plan;
+        let generated = plan.generated_file().unwrap().to_path_buf();
+        let (base_mixes, copy_mixes) = plan.mixes.split_at(plan.generated.as_ref().unwrap().1);
+        let names = |mixes: &[crate::mixes::StagedMix]| mixes.iter()
+            .map(|mix| mix.path.file_name().unwrap().to_string_lossy().into_owned()).collect::<Vec<_>>();
+        let (base_names, copy_names) = (names(base_mixes), names(copy_mixes));
+        assert!(!base_names.is_empty() && !copy_names.is_empty());
+        run_preview(&mut app, with_base(&[target.clone()], false));
+
+        let projects = app.project_root.clone().unwrap();
+        let receipt: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(crate::generate_receipt::path(&projects, &source)).unwrap()).unwrap();
+        assert_eq!(receipt["file_name"], generated.file_name().unwrap().to_string_lossy().as_ref());
+        assert_eq!(receipt["mixes"], serde_json::json!(base_names), "Copy's mixes are not Generate's");
+        let targets = app.export_targets();
+        assert_eq!(targets.len(), 2, "the base difficulty is never a target");
+        assert!(targets.iter().all(|path| path.file_name() != generated.file_name()));
+
+        let before = wavs(source.parent().unwrap());
+        app.request_export_preview(with_base(&[target.clone()], false)).unwrap();
+        wait_preview(&mut app);
+        let plan = &app.export_status().preview.unwrap().plan;
+        assert!(plan.mixes.iter().all(|mix| mix.is_reused()), "every mix is already on disk");
+        run_preview(&mut app, with_base(&[target], false));
+        assert_eq!(wavs(source.parent().unwrap()), before);
+    }
+
+    #[test]
+    fn a_failed_export_write_rolls_back_the_base_difficulty_too() {
+        let (scratch, source, target, _) = mixed_mapset("export-base-rollback");
+        let target_bytes = std::fs::read(&target).unwrap();
+        let app = opened(&source);
+        let plan = output::export_report(
+            &output::Source::from_document(app.document().unwrap()), std::path::Path::new(""), None,
+            app.project_root.as_deref(), &with_base(&[target.clone()], false), &|| false,
+            &mut Vec::new(), &mut |_, _| {},
+        ).unwrap();
+        let generated = plan.generated_file().unwrap().to_path_buf();
+        let waves = plan.mix_paths().map(PathBuf::from).collect::<Vec<_>>();
+        assert_eq!(waves.len(), 2);
+        // The write stops once the base difficulty is on disk, before Copy's target.
+        let error = plan.apply(&scratch.path("backups"), &|| generated.exists()).unwrap_err();
+        assert!(error.contains("Previous targets were restored"), "{error}");
+        assert!(!generated.exists());
+        assert!(waves.iter().all(|wave| !wave.exists()));
+        assert_eq!(std::fs::read(&target).unwrap(), target_bytes);
+        assert!(!crate::generate_receipt::path(app.project_root.as_deref().unwrap(), &source).exists());
+    }
+
+    #[test]
+    fn export_refuses_the_base_difficulty_as_a_copy_target() {
+        let (_scratch, source, target, _) = mixed_mapset("export-base-twice");
+        let mut app = opened(&source);
+        run_preview(&mut app, with_base(&[target], false));
+        let generated = crate::generate_receipt::output_path(app.project_root.as_deref().unwrap(), &source).unwrap();
+        let generated = generated.canonicalize().unwrap();
+        let error = output::export_report(
+            &output::Source::from_document(app.document().unwrap()), std::path::Path::new(""), None,
+            app.project_root.as_deref(), &with_base(&[generated], false), &|| false,
+            &mut Vec::new(), &mut |_, _| {},
+        ).err().unwrap();
+        assert_eq!(error, "The base hitsound difficulty cannot also be a Copy target.");
+    }
+
+    #[test]
+    fn merge_settings_changed_in_the_editor_make_the_preview_stale() {
+        let (_scratch, source, _, _) = mixed_mapset("export-base-settings");
+        let mut app = opened(&source);
+        let id = app.request_export_preview(with_base(&[], false)).unwrap();
+        wait_preview(&mut app);
+        assert!(!app.export_status().stale);
+        let settings = crate::ExportSettings { pair_samples: true, ..crate::ExportSettings::default() };
+        app.set_export_settings(settings.clone()).unwrap();
+        assert!(app.export_status().stale);
+        assert_eq!(app.export_status().stale_reason, Some(Stale::MergeSettings));
+        let backups = app.data_root.join("backups");
+        assert!(app.run_export_in(id, backups).is_err());
+
+        // Copy does not use merge settings yet, so a Copy-only preview stays current.
+        let (_scratch, source, target, _) = mixed_mapset("export-copy-settings");
+        let mut app = opened(&source);
+        app.request_export_preview(options(&[target])).unwrap();
+        wait_preview(&mut app);
+        app.set_export_settings(settings).unwrap();
+        assert!(!app.export_status().stale);
+        assert_eq!(app.export_status().stale_reason, None);
+        edit(&mut app);
+        assert_eq!(app.export_status().stale_reason, Some(Stale::Map));
+    }
+
+    #[test]
+    fn the_base_choice_is_kept_and_older_choices_read_it_as_off() {
+        let (_scratch, source, target, _) = mixed_mapset("export-base-choice");
+        let mut app = opened(&source);
+        app.request_export_preview(with_base(&[target], true)).unwrap();
+        let choices = app.document().unwrap().export_choices().unwrap();
+        assert!(choices.base && choices.slider_audio);
+        let old: ExportChoices =
+            serde_json::from_str(r#"{"left_out":[],"match_within":5.0,"copy_volumes":true}"#).unwrap();
+        assert!(!old.base && !old.slider_audio);
+    }
+
+    /// The sample index files Generate stages under merge settings, after `already` and from `start`.
+    fn indexed_mixes(source: &std::path::Path, already: &[crate::mixes::StagedMix], start: u32) -> Vec<crate::mixes::StagedMix> {
+        let document = crate::Document::read(source).unwrap();
+        let hits = document.composer.hitsounds();
+        let dawsu_hitsounding::generate::GenerateOutcome::Planned { file, problems, .. } = dawsu_hitsounding::generate::generate(
+            hits, &document.file, "source.osu", &[], &|| false, &mut |_, _| {},
+        ) else {
+            panic!("Generate planned nothing");
+        };
+        let settings = crate::ExportSettings::default();
+        crate::mixes::stage_in_file(
+            hits, file, &problems, source.parent().unwrap(), std::path::Path::new(""), &[],
+            dawsu_hitsounding::Placement::OnObjects, already, Some(&settings), &[], start, &crate::pending::Pending::default(), &|| false,
+        ).unwrap().1.staged
+    }
+
+    fn index_names(mixes: &[crate::mixes::StagedMix]) -> Vec<String> {
+        mixes.iter().map(|mix| mix.path.file_name().unwrap().to_string_lossy().into_owned()).collect()
+    }
+
+    #[test]
+    fn merge_settings_mixes_skip_indexes_staged_earlier_and_honour_the_start_index() {
+        let (_scratch, source, _, _) = mixed_mapset("export-indexes");
+        let first = indexed_mixes(&source, &[], 2);
+        assert!(!first.is_empty() && index_names(&first).iter().all(|name| name.ends_with("2.wav")), "{:?}", index_names(&first));
+        let second = indexed_mixes(&source, &first, 2);
+        assert!(index_names(&second).iter().all(|name| name.ends_with("3.wav")), "{:?}", index_names(&second));
+        let custom = indexed_mixes(&source, &[], 7);
+        assert!(index_names(&custom).iter().all(|name| name.ends_with("7.wav")), "{:?}", index_names(&custom));
+        let both = first.into_iter().chain(second).collect::<Vec<_>>();
+        let published = crate::mixes::publish(&both, None, &|| false).unwrap();
+        drop(published);
+    }
+
+    /// A source slider whose tick plays soft-slidertick.wav, and a source circle on that tick
+    /// with the same file: Generate's slider audio and Copy's timed tick sound render the same WAV.
+    fn timed_mapset(name: &str) -> (Scratch, PathBuf, PathBuf) {
+        let scratch = Scratch::new(name);
+        let header = "osu file format v14\n[General]\nMode:0\n[Metadata]\nArtist:Artist\nTitle:Title\nCreator:Mapper\nVersion:VERSION\n[Difficulty]\nSliderMultiplier:1.4\nSliderTickRate:1\n[TimingPoints]\n0,500,4,2,1,100,1,0\n[HitObjects]\n";
+        let slider = "100,100,1000,2,0,L|380:100,1,280,0|0,0:0|0:0,0:0:0:0:\n";
+        std::fs::write(scratch.path("source.osu"), format!("{}{slider}256,192,1500,1,0,0:0:0:0:soft-slidertick.wav\n", header.replace("VERSION", "Source"))).unwrap();
+        std::fs::write(scratch.path("target.osu"), format!("{}{slider}", header.replace("VERSION", "Target"))).unwrap();
+        for (name, value) in [("soft-slidertick.wav", 8192_i16), ("soft-sliderslide.wav", 4096)] {
+            let mut wav = b"RIFF\x28\0\0\0WAVEfmt \x10\0\0\0\x01\0\x01\0\x80\xbb\0\0\0w\x01\0\x02\0\x10\0data\x04\0\0\0".to_vec();
+            for _ in 0..2 {
+                wav.extend(value.to_le_bytes());
+            }
+            std::fs::write(scratch.path(name), wav).unwrap();
+        }
+        let canonical = |name: &str| scratch.path(name).canonicalize().unwrap();
+        let (source, target) = (canonical("source.osu"), canonical("target.osu"));
+        (scratch, source, target)
+    }
+
+    fn timed_copy() -> CopyOptions {
+        CopyOptions {
+            mode: dawsu_hitsounding::copy::CopyMode::OverwriteOnlyDefined,
+            copy_to_slider_ticks: true, copy_to_slider_slides: true, ..CopyOptions::default()
+        }
+    }
+
+    #[test]
+    fn copy_never_points_a_target_at_a_wav_generate_owns() {
+        let (_scratch, source, target) = timed_mapset("export-timed-owned");
+        let mut app = opened(&source);
+        let options = ExportOptions { targets: vec![target.clone()], copy: timed_copy(), base: true, slider_audio: true };
+        app.request_export_preview(options.clone()).unwrap();
+        wait_preview(&mut app);
+        let status = app.export_status();
+        assert_eq!(status.error, None);
+        let plan = &status.preview.unwrap().plan;
+        let count = plan.generated.as_ref().unwrap().1;
+        let target_file = &plan.files.iter().find(|file| file.path == target).unwrap().file;
+        let used = target_file.storyboard_samples().into_iter().map(|event| event.path).collect::<Vec<_>>();
+        let generated = plan.mixes[..count].iter()
+            .map(|mix| mix.path.file_name().unwrap().to_string_lossy().into_owned()).collect::<Vec<_>>();
+        assert!(!used.is_empty());
+        assert!(used.iter().all(|name| !generated.contains(name)), "{used:?} uses {generated:?}");
+
+        run_preview(&mut app, options);
+        let exported = folder_files(source.parent().unwrap());
+        let (_set, reference, reference_target) = timed_mapset("export-timed-owned-reference");
+        generate_then_copy(&reference, reference_target, &timed_copy(), true);
+        assert_eq!(exported, folder_files(reference.parent().unwrap()));
+    }
+
+    /// Every .wav in the mapset folder with its bytes.
+    fn wav_files(root: &std::path::Path) -> std::collections::BTreeMap<String, Vec<u8>> {
+        folder_files(root).into_iter().filter(|(name, _)| name.ends_with(".wav")).collect()
+    }
+
+    fn index_of(name: &str) -> u32 {
+        let stem = name.strip_suffix(".wav").unwrap();
+        stem[stem.trim_end_matches(|c: char| c.is_ascii_digit()).len()..].parse().unwrap()
+    }
+
+    #[test]
+    fn with_merge_settings_base_and_copy_never_share_an_index_and_re_export_adds_none() {
+        // Generate mixes the circle under merge settings (indexed); Copy mixes a slider tail (indexed).
+        let scratch = Scratch::new("export-merge-indexes");
+        let header = MIXED.replace("[TimingPoints]", "[Difficulty]\nSliderMultiplier:1.4\nSliderTickRate:1\n[TimingPoints]");
+        let source = scratch.path("source.osu");
+        std::fs::write(&source, format!("{}256,192,1500,1,0,0:0:0:40:one.wav\n300,192,1500,1,0,0:0:0:80:two.wav\n", header.replace("VERSION", "Source"))).unwrap();
+        let target = scratch.path("target.osu");
+        std::fs::write(&target, format!("{}256,192,1000,2,0,L|396:192,1,140,0|0,1:0|1:0,1:0:0:0:\n", header.replace("VERSION", "Target"))).unwrap();
+        for (name, value) in [("one.wav", 8192_i16), ("two.wav", 16384)] {
+            let mut wav = b"RIFF\x28\0\0\0WAVEfmt \x10\0\0\0\x01\0\x01\0\x80\xbb\0\0\0w\x01\0\x02\0\x10\0data\x04\0\0\0".to_vec();
+            for _ in 0..2 {
+                wav.extend(value.to_le_bytes());
+            }
+            std::fs::write(scratch.path(name), wav).unwrap();
+        }
+        let (source, target) = (source.canonicalize().unwrap(), target.canonicalize().unwrap());
+        let root = source.parent().unwrap().to_path_buf();
+        let mut app = opened(&source);
+        app.set_export_settings(crate::ExportSettings::default()).unwrap();
+        let copy = |start_index| CopyOptions {
+            mode: dawsu_hitsounding::copy::CopyMode::OverwriteOnlyDefined, start_index, ..CopyOptions::default()
+        };
+        let export = |start_index| ExportOptions { targets: vec![target.clone()], copy: copy(start_index), base: true, slider_audio: false };
+        let names = |mixes: &[crate::mixes::StagedMix]| mixes.iter()
+            .map(|mix| mix.path.file_name().unwrap().to_string_lossy().into_owned()).collect::<Vec<_>>();
+
+        // A custom start index is honoured where it is free.
+        app.request_export_preview(export(10)).unwrap();
+        wait_preview(&mut app);
+        assert_eq!(app.export_status().error, None);
+        let plan = &app.export_status().preview.unwrap().plan;
+        let count = plan.generated.as_ref().unwrap().1;
+        let copy_names = names(&plan.mixes[count..]);
+        assert_eq!(copy_names.iter().map(|name| index_of(name)).collect::<Vec<_>>(), [10], "{copy_names:?}");
+
+        // Start 2 is Generate's: Copy takes the next free index, and no index holds two WAVs.
+        let before = wav_files(&root);
+        app.request_export_preview(export(2)).unwrap();
+        wait_preview(&mut app);
+        let plan = &app.export_status().preview.unwrap().plan;
+        let count = plan.generated.as_ref().unwrap().1;
+        let (base_names, copy_names) = (names(&plan.mixes[..count]), names(&plan.mixes[count..]));
+        let indexes = |names: &[String]| names.iter().map(|name| index_of(name)).collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(indexes(&base_names), [2].into(), "{base_names:?}");
+        assert_eq!(indexes(&copy_names), [3].into(), "{copy_names:?}");
+        run_preview(&mut app, export(2));
+        let written = wav_files(&root);
+        assert_eq!(written.len(), before.len() + base_names.len() + copy_names.len(), "one file per staged mix");
+
+        let projects = app.project_root.clone().unwrap();
+        let receipt: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(crate::generate_receipt::path(&projects, &source)).unwrap()).unwrap();
+        assert_eq!(receipt["mixes"], serde_json::json!(base_names), "only the base difficulty's mixes");
+
+        app.request_export_preview(export(2)).unwrap();
+        wait_preview(&mut app);
+        assert!(app.export_status().preview.unwrap().plan.mixes.iter().all(|mix| mix.is_reused()));
+        run_preview(&mut app, export(2));
+        assert_eq!(wav_files(&root), written, "re-export adds and changes no WAV");
+    }
+
+    /// Asks for a base-only preview and answers its refusal; nothing in the mapset changes.
+    fn base_refusal(app: &mut Application) -> String {
+        let root = app.document().unwrap().path.parent().unwrap().to_path_buf();
+        let before = folder_files(&root);
+        app.request_export_preview(with_base(&[], false)).unwrap();
+        wait_preview(app);
+        let status = app.export_status();
+        assert!(status.preview.is_none());
+        let error = status.error.expect("Generate refused").to_owned();
+        assert_eq!(folder_files(&root), before, "nothing is written");
+        error
+    }
+
+    #[test]
+    fn a_foreign_hitsounds_difficulty_refuses_the_base() {
+        let (scratch, source, _, _) = mixed_mapset("export-base-foreign");
+        std::fs::write(scratch.path("theirs.osu"), format!("{}100,100,1000,1,0,0:0:0:0:\n", MIXED.replace("VERSION", "Hitsounds"))).unwrap();
+        let mut app = opened(&source);
+        assert_eq!(base_refusal(&mut app), "A difficulty in this mapset is already called \"Hitsounds\". Rename it, then generate again.");
+    }
+
+    #[test]
+    fn a_source_called_hitsounds_refuses_the_base() {
+        let (scratch, _, _, _) = mixed_mapset("export-base-source-hitsounds");
+        let source = scratch.path("Artist - Title (Mapper) [Hitsounds].osu");
+        std::fs::write(&source, format!("{}256,192,1000,1,0,0:0:0:40:one.wav\n", MIXED.replace("VERSION", "Hitsounds"))).unwrap();
+        let mut app = opened(&source.canonicalize().unwrap());
+        assert_eq!(base_refusal(&mut app), "A difficulty already has the Generate output name. Only an earlier output tracked by this editor can be replaced.");
+    }
+
+    #[test]
+    fn a_base_difficulty_edited_outside_is_kept() {
+        let (_scratch, source, _, _) = mixed_mapset("export-base-edited");
+        let mut app = opened(&source);
+        run_preview(&mut app, with_base(&[], false));
+        let generated = crate::generate_receipt::output_path(app.project_root.as_deref().unwrap(), &source).unwrap();
+        let edited = std::fs::read_to_string(&generated).unwrap().replace("Version:Hitsounds", "Version:Hitsounds\nTags:edited");
+        std::fs::write(&generated, &edited).unwrap();
+        assert_eq!(base_refusal(&mut app), "The output changed since Generate. The existing difficulty was kept.");
+        assert_eq!(std::fs::read_to_string(&generated).unwrap(), edited);
     }
 }

@@ -44,9 +44,7 @@ test("sample chooser previews a mapset sound without moving the active lane", as
   runInContext(`view.activeLane = 0;
     scene = {path: "copy.osu", lanes: [{key: "normal", sourceKey: "normal", name: "normal-hitnormal", canReplace: true},
       {key: "clap", sourceKey: "clap", name: "soft-hitclap", sample: "soft-hitclap.wav"}]};`, context);
-  const open = get("replace-sample").events.get("click");
-  assert.equal(typeof open, "function");
-  open();
+  runInContext("inspectorAction('replaceSample')", context);
   const select = get("dialog-body").children[0].children[1];
   select.value = "1";
   const preview = get("dialog-actions").children.find(button => button.textContent === "Audition");
@@ -60,7 +58,7 @@ test("sample chooser previews a mapset sound without moving the active lane", as
   assert.deepEqual(calls.pop(), ["editor_view", {scene: true, action: {kind: "replace_sample",
     target: {map: "copy.osu", lane: "normal"}, path: "soft-hitclap.wav", mapset: true}}]);
 
-  open();
+  runInContext("inspectorAction('replaceSample')", context);
   get("dialog-actions").children.find(button => button.textContent === "Browse…").events.get("click")();
   await runInContext("pending", context);
   assert.deepEqual(calls.pop(), ["pick_sample", {target: {map: "copy.osu", lane: "normal"}}]);

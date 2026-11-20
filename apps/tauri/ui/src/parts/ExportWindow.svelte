@@ -2,7 +2,7 @@
   import { onDestroy, onMount } from "svelte";
   import { invoke } from "../lib/ipc.js";
   import {
-    adoptChoices, afterPoll, blockDrops, choicesFrom, difficultyName, exportLabel, exportState, fileName,
+    adoptChoices, afterPoll, baseName, baseStatus, blockDrops, choicesFrom, difficultyName, exportLabel, exportState, fileName,
     laneSwatches, matchWithinValid, optionsKey, ownWriteError, pollDelay, previewRequest, statusLine, targetCounts,
   } from "../lib/export.js";
 
@@ -31,6 +31,7 @@
   const swatches = $derived(laneSwatches(source));
   const problems = $derived(status.preview ? view?.problems ?? [] : []);
   const matchValid = $derived(matchWithinValid(choices.matchWithin));
+  const baseText = $derived(baseStatus(status.preview));
   const line = $derived(statusLine({
     view, pollError, actionError, writeError: ownWriteError(lastRun, view),
     stale: status.stale, running: !!run, problems,
@@ -172,11 +173,33 @@
         </label>
       </section>
 
-      {#if !view.targets?.length}
-        <p class="empty">This mapset has no other difficulties to copy into.</p>
-      {:else}
-        <ul class="targets">
-          {#each view.targets as path (path)}
+      <ul class="targets">
+        <li class="target" class:off={!choices.base}>
+          <span class="port" aria-hidden="true"></span>
+          <div class="card">
+            <div class="line">
+              <span class="pill">{baseName}</span>
+              <span class="role">Base difficulty</span>
+              <span class="spacer"></span>
+              <button type="button" class="switch" role="switch" aria-checked={choices.base}
+                aria-label="Include the base hitsound difficulty"
+                onclick={() => (choices.base = !choices.base)}></button>
+            </div>
+            <div class="counts">
+              {#if !choices.base}
+                Left out
+              {:else if baseText}
+                <span>{baseText}</span>
+              {/if}
+              <span class="spacer"></span>
+              <label class="check" class:off={!choices.base}>
+                <input type="checkbox" bind:checked={choices.sliderAudio} disabled={!choices.base}>
+                Slider slide, whistle and tick audio
+              </label>
+            </div>
+          </div>
+        </li>
+          {#each view.targets ?? [] as path (path)}
             {@const on = !choices.leftOut.includes(fileName(path))}
             {@const counts = on ? targetCounts(status.preview, path) : null}
             <li class="target" class:off={!on}>
@@ -202,7 +225,9 @@
               </div>
             </li>
           {/each}
-        </ul>
+      </ul>
+      {#if !view.targets?.length}
+        <p class="empty">This mapset has no other difficulties to copy into.</p>
       {/if}
     {/if}
   </div>
@@ -383,6 +408,9 @@
     font-variant-numeric: tabular-nums;
   }
   .count { color: var(--editor-secondary); }
+  .check { display: flex; align-items: center; gap: 8px; color: var(--editor-secondary); }
+  .check input { margin: 0; accent-color: var(--editor-accent); }
+  .check.off { color: var(--editor-disabled); }
   .count::before {
     content: "";
     display: inline-block;

@@ -388,6 +388,9 @@
     const ribbonPicker = byId("layout-ribbon-group");
     const ribbonGroups = () => [...ribbon.children].filter(item => item.matches(".ribbon-group"));
     const initialRibbon = ribbonGroups();
+    // Inspector sections move whole, like ribbon groups: Svelte owns what is inside a part's section.
+    const inspectorSections = () => [...(panels.inspector?.children ?? [])].filter(item => item.matches("section"));
+    const initialInspector = [...(panels.inspector?.children ?? [])];
     let draft = null;
 
     const header = byId("editor-header");
@@ -687,6 +690,10 @@
     for (const [bar, label] of barChoices) {
       if (barStack(bar)) barHandles.set(moveHandle(bar, "Move " + label + " up or down", timelineOrder.includes(bar)), bar);
     }
+    for (const section of inspectorSections()) {
+      barHandles.set(moveHandle(section, "Drag " + (section.getAttribute("aria-label") ||
+        section.querySelector("h2")?.textContent || "Inspector") + " section"), section);
+    }
 
     function layoutDropAt(source, x, y) {
       const under = document.elementFromPoint(x, y);
@@ -715,6 +722,15 @@
             barPicker.selectedIndex = [...barChoices.keys()].indexOf(source);
             refreshBarPicker();
           } };
+      }
+
+      if (inspectorSections().includes(source)) {
+        const section = under.closest("#editor-inspector > section");
+        if (!section || section === source) return null;
+        const bounds = section.getBoundingClientRect();
+        const after = y >= bounds.top + bounds.height / 2;
+        return { x: bounds.x, y: after ? bounds.bottom : bounds.top, width: bounds.width, height: 2,
+          apply: () => (after ? section.after(source) : section.before(source)) };
       }
 
       const isButton = buttons.has(source);
@@ -886,6 +902,7 @@
           waveform: waveformHeight,
           visibleWaveform: visibleWaveformHeight,
           ribbon: ribbonGroups(),
+          inspector: [...panels.inspector.children],
           frameOrder: [...frameOrder],
           timelineOrder: [...timelineOrder],
           hiddenBars: [...hiddenBars],
@@ -905,6 +922,7 @@
         layout = draft.layout;
         detached = draft.detached;
         ribbon.append(...draft.ribbon);
+        panels.inspector.append(...draft.inspector);
         frameOrder = draft.frameOrder;
         timelineOrder = draft.timelineOrder;
         hiddenBars.clear();
@@ -937,6 +955,7 @@
       layout = defaultLayout();
       detached = false;
       ribbon.append(...initialRibbon);
+      panels.inspector.append(...initialInspector);
       frameOrder = defaultFrame.slice();
       timelineOrder = defaultTimeline.slice();
       hiddenBars.clear();

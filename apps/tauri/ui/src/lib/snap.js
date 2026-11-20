@@ -46,3 +46,55 @@ export function stepStop(beats, divisor, key) {
 
 export const snapAction = (scene, index) =>
   ({ kind: "snap", on: scene.snap, mode: scene.snapMode, beats: 1, divisor: STOPS[index] });
+
+// osu!lazer's snap groups (BeatDivisorPresetCollection.cs:21-39 at 131fe72a15581049401a588a13684938d4d0e0c7).
+export const COMMON = { name: "common", presets: [1, 2, 4, 8, 16] };
+export const TRIPLETS = { name: "triplets", presets: [1, 3, 6, 12] };
+
+// A divisor in neither group gets a group of its own whole divisors: 1/5 gives {1, 5}.
+function customGroup(divisor) {
+  const presets = [];
+  for (let candidate = 1; candidate <= divisor; candidate++) if (divisor % candidate === 0) presets.push(candidate);
+  return { name: "custom", presets };
+}
+
+// The 1/x a snap stands for, or null for a snap like 4/1 or 3/4.
+const wholeDivisor = (beats, divisor) => divisor % beats === 0 ? divisor / beats : null;
+
+// Like lazer's SetArbitraryDivisor: keep the group that has the snap, else Common, else Triplets, else
+// the snap's own group. A snap that is no 1/x keeps the group (or starts in Common).
+export function nextGroup(group, beats, divisor) {
+  const whole = wholeDivisor(beats, divisor);
+  if (whole === null) return group ?? COMMON;
+  if (group?.presets.includes(whole)) return group;
+  if (COMMON.presets.includes(whole)) return COMMON;
+  if (TRIPLETS.presets.includes(whole)) return TRIPLETS;
+  return customGroup(whole);
+}
+
+// The group after the editor shows `scene`: none without a map, worked out afresh when a map opens.
+export function followGroup(group, shown, scene) {
+  if (!scene) return null;
+  return nextGroup(shown?.path === scene.path ? group : null, scene.beats, scene.divisor);
+}
+
+// Lazer's SelectNext/SelectPrevious: the next finer or coarser 1/x in the group, or null at either end.
+export function stepInGroup(group, beats, divisor, finer) {
+  const length = beats / divisor;
+  const presets = finer ? group.presets : [...group.presets].reverse();
+  return presets.find(preset => finer ? 1 / preset < length : 1 / preset > length) ?? null;
+}
+
+// BindableBeatDivisor.cs:104-140, hexes from OsuColour.cs; the timeline's snapColours in app.js match.
+const DIVISOR_COLOURS = {
+  1: "#ffffff", 2: "#ed1121", 3: "#8866ee", 4: "#66ccff", 5: "#b3d944", 6: "#eeaa00",
+  7: "#b3d944", 8: "#ffcc22", 9: "#b3d944", 12: "#cc6600", 16: "#6644cc",
+};
+export const divisorColour = divisor => DIVISOR_COLOURS[divisor] ?? "#ff0000";
+
+// A snap takes the colour of its divisor in lowest terms: 2/4 is red like 1/2, 4/1 white like 1/1.
+export function snapColour(beats, divisor) {
+  let [a, b] = [beats, divisor];
+  while (b) [a, b] = [b, a % b];
+  return divisorColour(divisor / a);
+}

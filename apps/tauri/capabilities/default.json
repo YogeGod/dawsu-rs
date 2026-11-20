@@ -9,6 +9,7 @@
     "allow-editor-help",
     "allow-editor-export-settings",
     "allow-open-export-window",
+    "allow-drum-window-open",
     "allow-pick-merge-preset",
     "allow-save-merge-preset",
     "allow-editor-shortcuts",
