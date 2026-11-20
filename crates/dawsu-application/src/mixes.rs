@@ -256,23 +256,28 @@ impl MixFiles {
                     destination: destination.into(),
                 });
             }
-            let key = (destination, layers.as_slice());
+            fn hitnormal<'a>(mut hits: impl Iterator<Item = &'a SampleIdentity>) -> Option<SampleSet> {
+                hits.find_map(|identity| match identity {
+                    SampleIdentity::Standard {
+                        set,
+                        sound: Sound::Hit(Hitsound::Normal),
+                        ..
+                    } => Some(*set),
+                    _ => None,
+                })
+            }
+            // Without a hitnormal sound the skin's hitnormal plays in the circle's own normal set,
+            // as Save keeps it, so circles of different sets do not share a result.
+            let object_normal = (settings.pair_samples && hitnormal(identities.iter()).is_none())
+                .then(|| hitnormal(target.moment(moment).hits()))
+                .flatten();
+            let key = (destination, layers.as_slice(), object_normal);
             let outputs = if let Some(outputs) = rendered.get(&key) {
                 outputs
             } else {
                 let (bank, fused_role) = export_settings::slot(destination)?;
                 let normal_bank = if settings.pair_samples {
-                    identities
-                        .iter()
-                        .find_map(|identity| match identity {
-                            SampleIdentity::Standard {
-                                set,
-                                sound: Sound::Hit(Hitsound::Normal),
-                                ..
-                            } => Some(*set),
-                            _ => None,
-                        })
-                        .unwrap_or(bank)
+                    hitnormal(identities.iter()).or(object_normal).unwrap_or(bank)
                 } else {
                     bank
                 };
@@ -1215,6 +1220,10 @@ mod tests {
         assert_eq!(file.hit_objects()[0].hit_sample().unwrap().index, 2);
         let hitnormal_at_2 = list_folder(&scratch.path("")).unwrap().iter().any(|name| name.ends_with("-hitnormal2.wav"));
         assert!(!hitnormal_at_2);
+        // The skin's hitnormal plays in the circle's own normal set, as Save keeps it.
+        let objects = file.hit_objects();
+        let sample = objects[0].hit_sample().unwrap();
+        assert!(matches!(sample.normal_set, 0 | 1), "{sample:?}");
     }
 
     /// A reusable index that has any set's hitnormal file is skipped, or osu! would play that file.
