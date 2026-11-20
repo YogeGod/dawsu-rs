@@ -369,3 +369,7 @@ test("every command a menu runs or shows a key for is in the editor's command ca
   assert.ok(used.length > 25, "menus.js commands are found");
   for (const id of used) assert.ok(known.has(id), id + " is not a catalogue command");
 });
+
+test("the tool picker can be opened by the Svelte tool pills", () => {
+  assert.match(code, /^window\.openEditorMenu = openEditorMenu;$/m);
+});

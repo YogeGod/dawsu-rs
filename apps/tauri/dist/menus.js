@@ -378,3 +378,4 @@ document.addEventListener("pointerdown", event => {
 }, true);
 window.addEventListener("resize", () => closeEditorMenu(false));
 window.refreshEditorMenu = refreshEditorMenu;
+window.openEditorMenu = openEditorMenu;

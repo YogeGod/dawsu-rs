@@ -28,7 +28,7 @@ const pressed = html => [...html.matchAll(/<button[^>]*aria-pressed="true"[^>]*>
   .map(match => match[0].replace(/<[^>]+>/g, "").trim());
 const labels = html => [...html.matchAll(/<button[^>]*>([^]*?)<\/button>/g)].map(match => match[1].replace(/<[^>]+>/g, "").trim());
 
-test("the current tool's pill is pressed; an off-toolbar tool gets a fourth pressed pill that opens the picker", () => {
+test("the current tool's pill is pressed; an off-toolbar tool gets a fourth, current-looking pill that opens the picker", () => {
   let html = shown(ToolPills, { tool: "Draw", busy: false });
   assert.deepEqual(labels(html), ["Select", "Draw", "Erase"]);
   assert.deepEqual(pressed(html), ["Draw"]);
@@ -38,7 +38,10 @@ test("the current tool's pill is pressed; an off-toolbar tool gets a fourth pres
   // The fourth pill is icon only, so the toolbar still fits; its name is in the tooltip and aria-label.
   assert.deepEqual(labels(html), ["Select", "Draw", "Erase", ""]);
   const fourth = html.match(/<button[^>]*aria-haspopup="menu"[^>]*>/)?.[0] ?? "";
-  assert.match(fourth, /aria-pressed="true"/);
+  // It opens a menu, so it says expanded (menus.js), not pressed; it looks current through its class.
+  assert.doesNotMatch(fourth, /aria-pressed/);
+  assert.match(fourth, /class="[^"]*\bui-pill-icon\b[^"]*\bcurrent\b/);
+  assert.deepEqual(pressed(html), [], "none of Select, Draw and Erase is pressed");
   assert.match(fourth, /aria-label="Ramp"/);
   assert.match(fourth, /title="Ramp"/);
   assert.equal([...html.matchAll(/aria-haspopup/g)].length, 1, "only the off-toolbar pill opens the picker");
@@ -65,7 +68,20 @@ test("the Audition pill follows the editor's audition setting", () => {
   let html = shown(AuditionPill, { audition: true, busy: false });
   assert.deepEqual(labels(html), ["Audition"]);
   assert.match(html, /aria-pressed="true"/);
+  // Below 1780 px style.css hides .toolbar-toggle-label, as for Follow and Return; the name stays.
+  assert.match(html, /<span class="toolbar-toggle-label">Audition<\/span>/);
+  assert.match(html, /aria-label="Audition"/);
   assert.doesNotMatch(html, /disabled|\sstyle=/);
   html = shown(AuditionPill, { audition: false, busy: false });
   assert.match(html, /aria-pressed="false"/);
+});
+
+test("a pressed or current pill keeps its look on hover, over style.css's button[aria-pressed=true]:hover", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const css = await readFile(new URL("../src/parts/pill.css", import.meta.url), "utf8");
+  const rule = css.match(/([^{}]*\.ui-pill\[aria-pressed="true"\]:hover:not\(:disabled\)[^{]*)\{([^}]*)\}/);
+  assert.ok(rule, "a pressed-hover rule");
+  assert.match(rule[1], /\.ui-pill\.current:hover:not\(:disabled\)/);
+  assert.match(rule[2], /background:\s*var\(--editor-selected\)/);
+  assert.match(rule[2], /color:\s*var\(--editor-accent\)/);
 });

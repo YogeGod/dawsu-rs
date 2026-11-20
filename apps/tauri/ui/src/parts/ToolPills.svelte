@@ -13,6 +13,9 @@
   const tool = $derived(bridge.view?.tool ?? null);
   const disabled = $derived(bridge.disabled);
   const pills = $derived(toolPills(tool));
+  const buttons = {};
+  let well;
+  let hadFocus = false;
 
   // The fourth pill shows an off-toolbar tool by its icon only; pressing it opens the right-click tool picker.
   function openPicker(event) {
@@ -21,16 +24,27 @@
       x: box.left, y: box.bottom, trigger: event.currentTarget, label: "Timeline tools",
     });
   }
+
+  // A pick from the picker gives focus back to the fourth pill, which the new tool then replaces:
+  // keep the focus in the toolbar on the new tool's pill.
+  $effect.pre(() => {
+    tool;
+    hadFocus = !!well?.contains(document.activeElement);
+  });
+  $effect(() => {
+    const current = tool;
+    if (hadFocus && current && !well.contains(document.activeElement)) buttons[current]?.focus();
+  });
 </script>
 
-<div class="ui-well" role="toolbar" aria-label="Editing tools">
+<div class="ui-well" role="toolbar" aria-label="Editing tools" bind:this={well}>
   {#each pills as name, index (name)}
     {#if index < 3}
       <button type="button" class="ui-pill" aria-pressed={name === tool} title={name} {disabled}
-        onclick={() => act(toolAction(name))}>{@html icons[name]}{name}</button>
+        bind:this={buttons[name]} onclick={() => act(toolAction(name))}>{@html icons[name]}{name}</button>
     {:else}
-      <button type="button" class="ui-pill" aria-pressed="true" aria-haspopup="menu" aria-label={name} title={name}
-        {disabled} onclick={openPicker}>{@html icons[name]}</button>
+      <button type="button" class="ui-pill ui-pill-icon current" aria-haspopup="menu" aria-label={name} title={name}
+        {disabled} bind:this={buttons[name]} onclick={openPicker}>{@html icons[name]}</button>
     {/if}
   {/each}
 </div>
