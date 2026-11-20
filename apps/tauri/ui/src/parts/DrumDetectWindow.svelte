@@ -2,129 +2,127 @@
   import { onDestroy, onMount } from "svelte";
   import { invoke } from "../lib/ipc.js";
   import {
-    blockDrops, canCheck, checkLine, isChecked, keepTicks, landsText, laneLabel, listenFrom, optionsRequest,
-    pollDelay, progressText, sameLane, stripMarks, ticked, timeText,
+    applyRequest, autoStart, blockDrops, canCheck, checkLine, forget, initialState, isChecked, isFresh, landsText,
+    laneLabel, listenFrom, nextPoll, progressText, reviewRequest, settle, startRequest, stripMarks, take, ticked, timeText,
   } from "../lib/drum.js";
 
-  // The editor's answer to drum_context, replaced on every poll and action. A test may pass one in.
+  // The editor's answer to drum_context and the window's own state beside it (drum.js `take`).
+  // A test may pass an answer in.
   let { initialView = null } = $props();
-  let view = $state.raw(initialView);
-  // Rows arrive only when the review changed; kept here for the review they belong to.
-  let rows = $state.raw(initialView?.rows ?? null);
-  // The mapper's own ticks by row id; every other row keeps its default.
-  let overrides = $state({});
-  // The row last clicked: Listen starts just before it.
-  let picked = $state(null);
-  // The source the mapper chose; the editor's view says what is analysed.
-  let sourceKind = $state(initialView?.source?.kind ?? (initialView?.hasSong === false ? "stem" : "song"));
-  let stemPath = $state(initialView?.source?.kind === "stem" ? initialView.source.path : null);
+  let state = $state.raw(initialState(initialView));
+  // Option changes sent but not yet held by the editor, so quick changes add up.
+  let pending = {};
   let error = $state(null);
   let busy = $state(false);
   // Bumped when the editor refuses an option, so the controls show its options again.
   let resetKey = $state(0);
-  let started = new Set();
+  // Each request is numbered; an answer older than the last one shown is dropped.
+  let sent = 0;
+  let shown = 0;
   let pollTimer;
   let closed = false;
   let canvas = $state(null);
 
+  const view = $derived(state.view);
+  const rows = $derived(state.rows);
+  const overrides = $derived(state.overrides);
+  const picked = $derived(state.picked);
+  const sourceKind = $derived(state.source);
+  const stemPath = $derived(state.stemPath);
+  const duration = $derived(state.view?.duration);
   const ready = $derived(view?.state === "ready" && rows !== null);
   const options = $derived(view?.options ?? null);
   const checkedCount = $derived(ready ? ticked(rows, overrides).length : 0);
   const stemName = $derived(view?.source?.kind === "stem" ? view.source.name
-    : stemPath ? String(stemPath).split(/[\\/]/).pop() : null);
+    : stemPath ? String(stemPath).split(/[\/]/).pop() : null);
   const gridValue = $derived(options ? String(options.grid ?? view.editorGrid) : "4");
   const loose = $derived(ready ? rows.some(row => row.lands === "grid" && isChecked(row, overrides)) : false);
+  const canDetect = $derived(!!view?.map && view.state === "idle" && !ready
+    && (sourceKind === "song" ? view.hasSong : !!stemPath));
 
-  function take(next) {
-    if (!next) return;
-    if (next.rows) {
-      rows = next.rows;
-      overrides = keepTicks(overrides, next.rows);
-    } else if (next.review !== view?.review || next.state !== "ready") {
-      if (next.state !== "ready") rows = null;
-    }
-    if (next.map !== view?.map) {
-      overrides = {};
-      picked = null;
-      started = new Set();
-    }
-    view = next;
-    autoStart();
-  }
+  const update = change => (state = { ...state, ...change });
 
-  // Runs one drum command (an invoke the caller started) and shows its answer.
-  async function send(request) {
+  // Runs one drum command (`call` invokes it) and shows its answer, unless a newer one was shown.
+  async function send(call) {
+    const sequence = ++sent;
     busy = true;
     try {
-      take(await request);
+      const next = await call();
+      if (isFresh(sequence, shown)) {
+        shown = sequence;
+        state = take(state, next);
+        pending = settle(pending, next);
+      }
       error = null;
       return true;
     } catch (failure) {
       error = String(failure);
       return false;
     } finally {
-      busy = false;
+      if (sequence === sent) busy = false;
+      startIfDue();
     }
   }
 
   function schedulePoll() {
     clearTimeout(pollTimer);
-    if (!closed) pollTimer = setTimeout(poll, pollDelay(view));
+    const delay = nextPoll(closed, view);
+    if (delay !== null) pollTimer = setTimeout(poll, delay);
   }
 
   async function poll() {
     if (closed) return;
-    try {
-      take(await invoke("drum_context", { known: rows ? view?.review ?? null : null }));
-    } catch (failure) {
-      error = String(failure);
-    }
+    await send(() => invoke("drum_context", { known: rows ? view?.review ?? null : null }));
     schedulePoll();
   }
 
-  // The song is analysed as soon as the window opens; a stem once a file is picked. Each source
-  // starts once per map, so a failure or a cancel doesn't start it again.
-  function autoStart() {
-    if (!view?.map || view.state !== "idle" || busy) return;
-    const key = sourceKind === "song" ? "song" : stemPath;
-    if (!key || started.has(key) || (sourceKind === "song" && !view.hasSong)) return;
-    started.add(key);
-    start();
+  function startIfDue() {
+    const key = autoStart(state, busy);
+    if (key) start(key);
   }
 
-  function start() {
-    const source = sourceKind === "song" ? { kind: "song" } : { kind: "stem", path: stemPath };
-    rows = null;
-    send(invoke("drum_detect_start", { map: view.map, source }));
+  async function start(key) {
+    update({ started: [...state.started, key], rows: null });
+    // A refused start (another job, an open edit) is forgotten, so Detect can try again.
+    if (!await send(() => invoke("drum_detect_start", startRequest(state)))) state = forget(state, key);
+  }
+
+  function detect() {
+    const key = sourceKind === "song" ? "song" : stemPath;
+    state = forget(state, key);
+    start(key);
   }
 
   function chooseSource(kind) {
     if (kind === sourceKind) return;
-    sourceKind = kind;
-    if (kind === "song" || stemPath) start();
+    update({ source: kind });
+    startIfDue();
   }
 
   async function pickStem() {
     try {
       const path = await invoke("drum_pick_stem");
       if (!path) return;
-      stemPath = path;
-      sourceKind = "stem";
-      started.add(path);
-      start();
+      update({ source: "stem", stemPath: path });
+      state = forget(state, path);
+      startIfDue();
     } catch (failure) {
       error = String(failure);
     }
   }
 
   async function review(change) {
-    const next = { ...view.options, ...change };
-    if (sameLane(next)) {
-      error = "Pick different lanes for kicks and snares.";
+    const asked = reviewRequest(view, pending, change);
+    if (asked.error) {
+      error = asked.error;
       resetKey++;
       return;
     }
-    if (!await send(invoke("drum_review", optionsRequest(view, change)))) resetKey++;
+    pending = asked.pending;
+    if (!await send(() => invoke("drum_review", asked.request))) {
+      pending = {};
+      resetKey++;
+    }
   }
 
   const lane = value => (value === "" ? null : value);
@@ -135,17 +133,28 @@
 
   function toggle(row) {
     if (!canCheck(row)) return;
-    overrides = { ...overrides, [row.id]: !isChecked(row, overrides) };
+    update({ overrides: { ...overrides, [row.id]: !isChecked(row, overrides) } });
+  }
+
+  function pick(row) {
+    update({ picked: row.id });
+  }
+
+  function rowKey(event, row) {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    event.preventDefault();
+    if (event.key === " ") toggle(row);
+    pick(row);
   }
 
   function listen() {
-    if (view.listening) send(invoke("drum_listen_stop"));
-    else send(invoke("drum_listen", { map: view.map, from: listenFrom(rows, picked), ticked: ticked(rows, overrides) }));
+    if (view.listening) send(() => invoke("drum_listen_stop"));
+    else send(() => invoke("drum_listen", { map: view.map, from: listenFrom(rows, picked), ticked: ticked(rows, overrides) }));
   }
 
   async function apply() {
-    if (!ready || !checkedCount) return;
-    if (await send(invoke("drum_apply", { map: view.map, review: view.review, ticked: ticked(rows, overrides) }))) close();
+    const request = applyRequest(state);
+    if (request && await send(() => invoke("drum_apply", request))) close();
   }
 
   async function close() {
@@ -161,9 +170,10 @@
   }
 
   // The strip: diamonds for each hit across the song, snares above kicks, unchecked ones faint.
+  // It reads only the rows, ticks, pick and duration, so a poll with the same review redraws nothing.
   $effect(() => {
     if (!canvas) return;
-    const marks = stripMarks(rows, overrides, view?.duration);
+    const marks = stripMarks(rows, overrides, duration);
     const pickedRow = (rows ?? []).find(row => row.id === picked);
     const scale = window.devicePixelRatio || 1;
     const { width, height } = canvas.getBoundingClientRect();
@@ -186,10 +196,10 @@
       draw.lineTo(x - 6, y);
       draw.fill();
     }
-    if (pickedRow && view.duration > 0) {
+    if (pickedRow && duration > 0) {
       draw.globalAlpha = 1;
       draw.fillStyle = look.getPropertyValue("--editor-accent");
-      draw.fillRect(56 + (pickedRow.time / view.duration) * (width - 68), 0, 1, height);
+      draw.fillRect(56 + (pickedRow.time / duration) * (width - 68), 0, 1, height);
     }
   });
 
@@ -220,7 +230,7 @@
       </div>
       {#if options}
         <label class="field-row">
-          Starts at
+          Stem starts at
           <span class="field">
             <input type="number" step="1" value={options.stemOffset}
               onchange={event => review({ stemOffset: number(event, options.stemOffset) })}>
@@ -278,7 +288,7 @@
       {/each}
       {#if loose}<p>Hits on grid lines have no object. Save writes them only in Hitsounding mode.</p>{/if}
       {#if options && !options.kick && !options.snare}<p>Pick a lane for kicks or snares to add hits.</p>{/if}
-      <p>Works best on a drum stem.</p>
+      <p>Runs on your PC with signal processing. No audio is uploaded. Works best on a drum stem.</p>
     </div>
   </aside>
 
@@ -290,7 +300,7 @@
     </div>
     <div class="head" aria-hidden="true">
       <span class="tick"></span><span class="time">Time</span><span class="sound">Sound</span>
-      <span class="strength">Strength</span><span class="lands">Lands on</span>
+      <span class="strength" title="Relative to the strongest hit">Confidence</span><span class="lands">Lands on</span>
     </div>
     <div class="rows">
       {#if !view}
@@ -302,8 +312,8 @@
       {:else if ready}
         {#each rows as row (row.id)}
           {@const on = isChecked(row, overrides)}
-          <div class="row {row.lands}" class:off={!on} class:picked={row.id === picked}
-            role="presentation" onclick={() => (picked = row.id)}>
+          <div class="row {row.lands}" class:off={!on} class:picked={row.id === picked} tabindex="0" role="row"
+            aria-selected={row.id === picked} onclick={() => pick(row)} onkeydown={event => rowKey(event, row)}>
             <input type="checkbox" class="tick" checked={on} disabled={!canCheck(row)}
               aria-label={"Add the " + row.drum + " at " + timeText(row.time)}
               onclick={event => event.stopPropagation()} onchange={() => toggle(row)}>
@@ -322,6 +332,9 @@
         <p class="empty error">{view.error}</p>
       {:else if sourceKind === "stem" && !stemPath}
         <p class="empty">Pick a drum stem file.</p>
+      {/if}
+      {#if canDetect}
+        <button type="button" class="detect" disabled={busy} onclick={detect}>Detect</button>
       {/if}
     </div>
     <footer class="actions">
@@ -507,6 +520,18 @@
   }
   .percent { width: 32px; color: var(--editor-secondary); font-variant-numeric: tabular-nums; }
   .empty { margin: 16px 10px; color: var(--editor-muted); }
+  .detect {
+    height: 30px;
+    margin: 0 10px;
+    padding: 0 14px;
+    border: 0;
+    border-radius: 6px;
+    background: var(--editor-control);
+    color: var(--editor-text);
+    font-weight: 500;
+    cursor: pointer;
+  }
+  .row:focus-visible { outline: 2px solid var(--editor-focus); outline-offset: -2px; }
   .error { color: var(--editor-error); }
 
   .actions {

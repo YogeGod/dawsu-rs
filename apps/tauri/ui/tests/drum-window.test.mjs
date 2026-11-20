@@ -2,8 +2,9 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { render } from "svelte/server";
 import {
-  canCheck, checkedByDefault, checkLine, isChecked, landsText, laneLabel, listenFrom, optionsRequest, pollDelay,
-  progressText, sameLane, stripMarks, ticked, keepTicks, timeText,
+  applyRequest, autoStart, canCheck, checkedByDefault, checkLine, forget, initialState, isChecked, isFresh, landsText,
+  laneLabel, listenFrom, nextPoll, pollDelay, progressText, reviewRequest, sameLane, settle, startRequest, stripMarks, take,
+  ticked, keepTicks, timeText,
 } from "../src/lib/drum.js";
 import DrumDetectWindow from "../src/parts/DrumDetectWindow.svelte";
 
@@ -60,8 +61,71 @@ test("the same lane for kicks and snares is refused before anything is sent", ()
   assert.equal(sameLane(options), false);
 });
 
-test("options go to the editor with the map the window shows", () => {
-  assert.deepEqual(optionsRequest(ready, { sensitivity: 62 }), { map: ready.map, options: { ...options, sensitivity: 62 } });
+test("options go to the editor with the map the window shows, and quick changes add up", () => {
+  const first = reviewRequest(ready, {}, { sensitivity: 62 });
+  assert.deepEqual(first.request, { map: ready.map, options: { ...options, sensitivity: 62 } });
+  // A second change before the editor answered the first keeps the first.
+  const second = reviewRequest(ready, first.pending, { objectMs: 12 });
+  assert.deepEqual(second.request.options, { ...options, sensitivity: 62, objectMs: 12 });
+  // Once the editor holds a change it is no longer pending.
+  assert.deepEqual(settle(second.pending, { ...ready, options: { ...options, sensitivity: 62 } }), { objectMs: 12 });
+  assert.deepEqual(settle({}, ready), {});
+});
+
+test("one lane for kicks and snares is refused before anything is sent, and nothing stays pending", () => {
+  const refused = reviewRequest(ready, { objectMs: 12 }, { snare: "kick" });
+  assert.equal(refused.error, "Pick different lanes for kicks and snares.");
+  assert.equal(refused.request, undefined);
+  assert.deepEqual(refused.pending, { objectMs: 12 });
+});
+
+test("a map without a song starts on Drum stem; the song is analysed as soon as the window opens", () => {
+  assert.equal(initialState(null).source, null);
+  const noSong = take(initialState(null), { ...ready, state: "idle", hasSong: false, source: null, rows: undefined });
+  assert.equal(noSong.source, "stem");
+  assert.equal(autoStart(noSong, false), null, "a stem waits for a file");
+  const song = take(initialState(null), { ...ready, state: "idle", source: null, rows: undefined });
+  assert.equal(song.source, "song");
+  assert.equal(autoStart(song, false), "song");
+  assert.deepEqual(startRequest(song), { map: ready.map, source: { kind: "song" } });
+  assert.equal(autoStart(song, true), null, "not while a command is out");
+  // Once per source and map: a cancel or a failure doesn't start it again by itself...
+  const once = { ...song, started: ["song"] };
+  assert.equal(autoStart(once, false), null);
+  // ...but a refused start is forgotten, so Detect (or the next poll) can try again.
+  assert.equal(autoStart(forget(once, "song"), false), "song");
+  const stem = { ...noSong, stemPath: "C:/stems/drums.wav" };
+  assert.equal(autoStart(stem, false), "C:/stems/drums.wav");
+  assert.deepEqual(startRequest(stem).source, { kind: "stem", path: "C:/stems/drums.wav" });
+});
+
+test("a new review keeps the ticks of the hits it still has; another map starts over", () => {
+  let state = take(initialState(null), ready);
+  assert.deepEqual(state.rows, rows);
+  state = { ...state, overrides: { k10: false, k30: true }, picked: "k30", started: ["song"] };
+  // A poll for the same review sends no rows: the window keeps its own.
+  state = take(state, { ...ready, rows: undefined });
+  assert.deepEqual(state.rows, rows);
+  state = take(state, { ...ready, review: "78", rows: rows.filter(row => row.id !== "k30") });
+  assert.deepEqual(state.overrides, { k10: false });
+  state = take(state, { ...ready, state: "running", rows: undefined });
+  assert.equal(state.rows, null, "a new run clears the list");
+  state = take(state, { ...ready, map: "C:/Songs/other.osu" });
+  assert.deepEqual([state.overrides, state.picked, state.started], [{}, null, []]);
+});
+
+test("Apply sends the review the mapper saw and the checked hits, and nothing without them", () => {
+  const state = { ...take(initialState(null), ready), overrides: { k30: true } };
+  assert.deepEqual(applyRequest(state), { map: ready.map, review: "77", ticked: ["k10", "s20", "k30", "k50"] });
+  assert.equal(applyRequest({ ...state, overrides: { k10: false, s20: false, k30: false, k50: false } }), null);
+  assert.equal(applyRequest(take(initialState(null), { ...ready, state: "running", rows: undefined })), null);
+});
+
+test("the window stops polling once closed, and drops answers older than the last it took", () => {
+  assert.equal(nextPoll(true, ready), null);
+  assert.equal(nextPoll(false, ready), 250);
+  assert.equal(isFresh(3, 2), true);
+  assert.equal(isFresh(2, 3), false);
 });
 
 test("the window polls faster while it detects or listens", () => {
@@ -114,8 +178,7 @@ test("the review lists each hit with its tick, time, sound, strength and where i
   assert.match(body, /Snap to objects within/);
   assert.match(body, /Beat grid/);
   assert.match(body, /<canvas/);
-  assert.match(body, />Strength</);
-  assert.doesNotMatch(body, /Confidence/, "the score is relative strength, not a probability");
+  assert.match(body, /title="Relative to the strongest hit"[^>]*>Confidence</);
   assert.match(body, /00:01\.520/);
   assert.match(body, /Too far from the grid/);
   assert.match(body, /class="row flagged/);
@@ -135,10 +198,26 @@ test("while detecting the list shows the progress and Apply waits", () => {
   assert.match(body, /<button[^>]*class="primary[^"]*"[^>]*disabled[^>]*>Apply<\/button>/);
 });
 
+test("v3's note on where detection runs is shown", () => {
+  assert.match(render(DrumDetectWindow, { props: { initialView: ready } }).body,
+    /Runs on your PC with signal processing\. No audio is uploaded\. Works best on a drum stem\./);
+});
+
+test("an idle window with nothing detected offers Detect", () => {
+  const idle = { ...ready, state: "idle", rows: undefined, review: undefined };
+  assert.match(render(DrumDetectWindow, { props: { initialView: idle } }).body, />Detect<\/button>/);
+  assert.doesNotMatch(render(DrumDetectWindow, { props: { initialView: ready } }).body, />Detect<\/button>/);
+});
+
+test("rows can be reached with the keyboard", () => {
+  assert.match(render(DrumDetectWindow, { props: { initialView: ready } }).body, /class="row[^"]*"[^>]*tabindex="0"|tabindex="0"[^>]*class="row/);
+});
+
 test("a stem source shows its file and offset", () => {
   const stem = { ...ready, source: { kind: "stem", path: "C:\\stems\\echoes-drums.wav", name: "echoes-drums.wav" }, options: { ...options, stemOffset: 120 } };
   const { body } = render(DrumDetectWindow, { props: { initialView: stem } });
   assert.match(body, /echoes-drums\.wav/);
   assert.match(body, />Change<\/button>/);
   assert.match(body, /value="120"/);
+  assert.match(body, /Stem starts at/);
 });

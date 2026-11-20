@@ -44,8 +44,78 @@ export const progressText = view =>
 
 export const sameLane = options => options.kick != null && options.kick === options.snare;
 
-// drum_review's arguments: the window's options with `change` applied, for the map it shows.
-export const optionsRequest = (view, change) => ({ map: view.map, options: { ...view.options, ...change } });
+// drum_review's arguments: the editor's options with every change not yet answered (`pending`)
+// and `change` applied. One lane for both drums is refused here and nothing is sent.
+export function reviewRequest(view, pending, change) {
+  const next = { ...pending, ...change };
+  const options = { ...view.options, ...next };
+  if (sameLane(options)) return { error: "Pick different lanes for kicks and snares.", pending };
+  return { pending: next, request: { map: view.map, options } };
+}
+
+// The pending changes the editor's options don't hold yet.
+export const settle = (pending, view) =>
+  Object.fromEntries(Object.entries(pending).filter(([key, value]) => view?.options?.[key] !== value));
+
+// The window's own state beside the editor's answer (`view`): the rows of the review it shows,
+// the mapper's ticks, the picked row, the sources started for this map, and the chosen source.
+export const initialState = view => take({ view: null, rows: null, overrides: {}, picked: null, started: [], source: null, stemPath: null }, view);
+
+// Drum stem when the map has no song; otherwise what the editor analyses, or the song.
+const sourceFor = view => view.source?.kind ?? (view.hasSong === false ? "stem" : "song");
+
+// The state after an answer. Rows come only when the review changed; ticks stay for the hits the
+// new review still has. Another map starts over.
+export function take(state, next) {
+  if (!next) return state;
+  let { rows, overrides, picked, started, source, stemPath } = state;
+  if (next.map !== state.view?.map) {
+    rows = null;
+    overrides = {};
+    picked = null;
+    started = [];
+    source = sourceFor(next);
+    stemPath = next.source?.kind === "stem" ? next.source.path : null;
+  } else if (source === null) {
+    source = sourceFor(next);
+  }
+  if (next.rows) {
+    rows = next.rows;
+    overrides = keepTicks(overrides, next.rows);
+  } else if (next.state !== "ready") {
+    rows = null;
+  }
+  return { ...state, view: next, rows, overrides, picked, started, source, stemPath };
+}
+
+// The source to start now, or null: the song as soon as the window opens, a stem once a file is
+// picked. Each source starts by itself once per map; a refused start is forgotten (`forget`).
+export function autoStart(state, busy) {
+  const { view, source, stemPath, started } = state;
+  if (busy || !view?.map || view.state !== "idle") return null;
+  const key = source === "song" ? (view.hasSong ? "song" : null) : stemPath;
+  return key && !started.includes(key) ? key : null;
+}
+
+export const forget = (state, key) => ({ ...state, started: state.started.filter(item => item !== key) });
+
+export const startRequest = state => ({
+  map: state.view.map,
+  source: state.source === "song" ? { kind: "song" } : { kind: "stem", path: state.stemPath },
+});
+
+// drum_apply's arguments: the review the mapper saw and the hits checked in it; null without any.
+export function applyRequest(state) {
+  if (state.view?.state !== "ready" || !state.rows) return null;
+  const checked = ticked(state.rows, state.overrides);
+  return checked.length ? { map: state.view.map, review: state.view.review, ticked: checked } : null;
+}
+
+// When to poll next, or null once the window is closing.
+export const nextPoll = (closed, view) => (closed ? null : pollDelay(view));
+
+// Answers come back out of order; only one newer than the last taken is shown.
+export const isFresh = (sequence, taken) => sequence > taken;
 
 export const pollDelay = view => (view?.state === "running" || view?.listening ? 100 : 250);
 
