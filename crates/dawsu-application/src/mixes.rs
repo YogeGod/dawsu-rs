@@ -40,6 +40,7 @@ pub(crate) struct MixFiles {
     pub(super) combinations: Vec<export_settings::ExportCombination>,
 }
 
+#[derive(Clone)]
 pub(super) struct StagedMix {
     pub(super) path: PathBuf,
     wav: Vec<u8>,

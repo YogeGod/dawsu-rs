@@ -835,7 +835,8 @@ enum JobResult {
         diagnostics: Vec<OutputProblem>,
     },
     Review(Result<output::WritePlan, String>, Vec<OutputProblem>),
-    Output(Result<(usize, Option<String>), String>),
+    /// The files written, a receipt warning, and the pending files the write put in the mapset.
+    Output(Result<(usize, Option<String>, Vec<String>), String>),
     Stretched {
         path: PathBuf,
         speed: f64,
@@ -1612,8 +1613,9 @@ impl Application {
                     Err(e) if self.export.take_write(&Err(e.clone())) => {
                         self.status = "Output did not complete".into();
                     }
-                    Ok((count, tracking_warning)) => {
+                    Ok((count, tracking_warning, published)) => {
                         self.export.take_write(&Ok(count));
+                        self.pending_published(&published);
                         self.status = format!("Wrote {count} reviewed files with backups");
                         if let Some(warning) = tracking_warning {
                             self.warnings.push(warning);
@@ -1656,14 +1658,10 @@ impl Application {
                             // the state Undo returns to.
                             let compiled = report.written;
                             let drawn = report.drawn;
+                            if self.document.as_ref().is_some_and(|d| d.path == path) {
+                                self.pending_published(&report.published_pending);
+                            }
                             if let Some(d) = self.document.as_mut().filter(|d| d.path == path) {
-                                // The written pending files are mapset files now.
-                                for name in &report.published_pending {
-                                    d.pending.release(name);
-                                }
-                                d.files.extend(report.published_pending.iter().cloned());
-                                d.files.sort();
-                                d.files.dedup();
                                 d.file = report.file;
                                 self.document_generation += 1;
                                 self.export.clear();
@@ -1678,10 +1676,6 @@ impl Application {
                                         Err(error) => archive_error = Some(error),
                                     }
                                 }
-                            }
-                            // The snapshot record lists a set's files once they are in the mapset.
-                            if let Err(error) = self.record_written_sets(&report.published_pending) {
-                                self.error = Some(format!("Difficulty saved. The sound set record could not be updated: {error}"));
                             }
                             let with_archive_error = |error: String| match &archive_error {
                                 Some(archive) => {
@@ -2449,7 +2443,7 @@ impl Application {
         self.status = "Writing reviewed output…".into();
         std::thread::spawn(move || {
             let result = plan.apply(&backups, &|| cancel.load(Ordering::Relaxed))
-                .map(|count| (count, generate_receipt::record(&plan).err()));
+                .map(|count| (count, generate_receipt::record(&plan).err(), plan.pending_names()));
             let _ = send.send(JobResult::Output(result));
         });
     }
@@ -2597,7 +2591,23 @@ impl Application {
         self.register_added_samples(additions);
     }
 
+    /// After a write kept its files: the pending files it wrote are mapset files now, and the
+    /// snapshot record lists the sound set files among them.
+    fn pending_published(&mut self, names: &[String]) {
+        let Some(d) = self.document.as_mut() else { return };
+        for name in names {
+            d.pending.release(name);
+        }
+        d.files.extend(names.iter().cloned());
+        d.files.sort();
+        d.files.dedup();
+        if let Err(error) = self.record_written_sets(names) {
+            self.error = Some(format!("The files were written. The sound set record could not be updated: {error}"));
+        }
+    }
+
     fn register_added_samples(&mut self, additions: Vec<(String, Arc<AudioClip>)>) {
+
         self.register_samples(additions, true);
     }
 
@@ -4667,7 +4677,10 @@ mod project_workflow {
             std::fs::create_dir_all(directory).unwrap();
         }
         let map = folder.join("test.osu");
-        std::fs::write(&map, include_bytes!("../tests/project-fixture.osu")).unwrap();
+        let text = include_str!("../tests/project-fixture.osu").replace("Title:", "Artist:Artist
+Creator:Mapper
+Title:");
+        std::fs::write(&map, text).unwrap();
         for name in ["normal-hitnormal.wav", "normal-hitclap.wav"] {
             std::fs::write(defaults.join(name), TONE).unwrap();
         }
@@ -4811,6 +4824,58 @@ mod project_workflow {
         assert!(error.contains("normal-hitnormal2.wav"), "{error}");
         assert_eq!((mapset(&folder), std::fs::read(&map).unwrap()), before);
         assert_eq!(std::fs::read(folder.join("normal-hitnormal2.wav")).unwrap(), b"another program's file");
+    }
+
+    #[test]
+    fn generate_and_copy_write_the_pending_files_their_output_plays() {
+        let scratch = Scratch::new("pending-output");
+        let (mut app, map, folder) = two_layers(&scratch, false);
+        use_layer_2(&mut app);
+        app.generate();
+        wait(&mut app);
+        assert!(app.error.is_none(), "{:?}", app.error);
+        assert!(!folder.join("normal-hitnormal2.wav").exists(), "nothing is written before the review is applied");
+        app.apply_output_in(scratch.path("backups"));
+        wait(&mut app);
+        assert!(app.error.is_none(), "{:?}", app.error);
+        assert_eq!(std::fs::read(folder.join("normal-hitnormal2.wav")).unwrap(), TONE);
+        assert!(!folder.join("normal-hitnormal3.wav").exists(), "the unused layer stays pending");
+        assert!(app.document().unwrap().pending.get("normal-hitnormal2.wav").is_none());
+        assert!(app.document().unwrap().files.iter().any(|name| name == "normal-hitnormal2.wav"));
+
+        // Copy onto a sibling difficulty with layer 3 on its circle.
+        let sibling = folder.join("other.osu");
+        std::fs::write(&sibling, include_bytes!("../tests/project-fixture.osu")).unwrap();
+        app.document.as_mut().unwrap().composer.apply("Use layer 3", |hits| {
+            hits.add_hit(dawsu_hitsounding::MomentId(0), hitnormal(3));
+            hits.remove_hit(dawsu_hitsounding::MomentId(0), &hitnormal(2));
+        });
+        app.copy_hitsounds(vec![sibling.canonicalize().unwrap()], Default::default());
+        wait(&mut app);
+        assert!(app.error.is_none(), "{:?}", app.error);
+        app.apply_output_in(scratch.path("backups"));
+        wait(&mut app);
+        assert!(app.error.is_none(), "{:?}", app.error);
+        assert_eq!(std::fs::read(folder.join("normal-hitnormal3.wav")).unwrap(), TONE);
+        let _ = map;
+    }
+
+    #[test]
+    fn a_failed_output_write_removes_the_pending_files_it_wrote() {
+        let scratch = Scratch::new("pending-output-fails");
+        let (mut app, _, folder) = two_layers(&scratch, false);
+        use_layer_2(&mut app);
+        app.generate();
+        wait(&mut app);
+        std::fs::write(scratch.path("backups"), b"not a folder").unwrap();
+        // The generated difficulty's name is taken just before the write, so it fails.
+        let target = app.output_review.as_ref().unwrap().files[0].path.clone();
+        std::fs::write(&target, b"taken").unwrap();
+        app.apply_output_in(scratch.path("backups"));
+        wait(&mut app);
+        assert!(app.error.is_some());
+        assert!(!folder.join("normal-hitnormal2.wav").exists());
+        assert!(app.document().unwrap().pending.get("normal-hitnormal2.wav").is_some());
     }
 
     #[test]
