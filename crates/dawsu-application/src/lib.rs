@@ -23,6 +23,7 @@ mod problems;
 mod recovery;
 mod refusals;
 mod roll_back;
+mod unwritten;
 mod sample_watch;
 pub mod waveform;
 use dawsu_editor::commands::{
@@ -397,7 +398,7 @@ fn prepare_save(
             problem_description(&refused[0].kind)
         ));
     }
-    let (out, owned, effective, left_out) = (rolled.out, rolled.owned, rolled.effective, rolled.left_out);
+    let (out, owned, effective, left_out, circles) = (rolled.out, rolled.owned, rolled.effective, rolled.left_out, rolled.circles);
     // Outside HS mode loose hits are kept in the project, never as circles, so they are not part of
     // what was written: a group that was never a circle must not come back as one.
     let mut written = effective.clone();
@@ -421,12 +422,23 @@ fn prepare_save(
     } else {
         None
     };
+    // The left-out parts go to the project: a record for the written file, and loose hits for an
+    // HS group that never became a circle. An old record with parts is replaced, even by an empty one.
+    let (unwritten, loose) = match project {
+        Some(project) => {
+            let files = if left_out.is_empty() { Vec::new() } else { list_folder(root).map_err(|error| error.to_string())? };
+            let built = unwritten::build(&left_out, hits, &out, &files, &circles)?;
+            let replaces = project.settings.unwritten.as_ref().is_some_and(|old| !old.is_empty());
+            ((!built.record.is_empty() || replaces).then_some(built.record), built.loose)
+        }
+        None => (None, Vec::new()),
+    };
     let bytes = out.to_bytes();
     let ownership = project::HsCircleOwnership::capture(&out, &bytes, &owned);
     let map_changed = bytes != expected;
     let plan = PreparedSave {
         path: path.to_path_buf(), backups, expected, out, mix_files, recovery_revision,
-        ownership, inputs, map_changed, left_out, written,
+        ownership, inputs, map_changed, left_out, written, unwritten, loose,
     };
     plan.check_current(project, cancel)?;
     // Left-out parts are listed for the Save hitsounds summary, which every Save shows first.
@@ -454,6 +466,10 @@ struct PreparedSave {
     left_out: Vec<roll_back::LeftOut>,
     /// The final compile input: what this Save writes.
     written: Hitsounds,
+    /// The project record of the left-out parts, when the project needs a new one.
+    unwritten: Option<unwritten::Record>,
+    /// HS groups left out before they ever became a circle; the project keeps them as loose hits.
+    loose: Vec<roll_back::MomentState>,
 }
 
 impl PreparedSave {
@@ -481,16 +497,31 @@ impl PreparedSave {
     fn apply(self, mut project: Option<&mut project::Project>, cancel: &dyn Fn() -> bool) -> Result<SaveReport, String> {
         self.check_current(project.as_deref(), cancel)?;
         let needs_recovery_write = self.recovery_revision.is_some();
-        if let Some(revision) = self.recovery_revision {
-            let project = project.as_mut().expect("gain recovery requires a project");
+        // Gain recovery and the left-out parts are staged in one project write before the `.osu`
+        // write and promoted in one write after it. With the map bytes unchanged there is nothing
+        // to wait for, so the left-out record is written as current straight away.
+        let promote_unwritten = self.unwritten.is_some() && self.map_changed;
+        let staged = needs_recovery_write || self.unwritten.is_some();
+        if staged {
+            let project = project.as_mut().expect("a project record needs a project");
             let mut settings = project.settings.clone();
-            settings.gain_recovery.get_or_insert_with(Default::default).stage(&self.expected, revision);
+            if let Some(revision) = self.recovery_revision {
+                settings.gain_recovery.get_or_insert_with(Default::default).stage(&self.expected, revision);
+            }
+            if let Some(record) = self.unwritten {
+                let unwritten = settings.unwritten.get_or_insert_with(Default::default);
+                if self.map_changed {
+                    unwritten.stage(&self.expected, record);
+                } else {
+                    unwritten.set_current(record);
+                }
+            }
             project.save(settings)?;
         }
 
         let publication = mixes::publish(&self.mix_files.staged, cancel)?;
-        if needs_recovery_write
-            && let Err(error) = project.as_ref().expect("staged gain recovery has a project").check_current()
+        if staged
+            && let Err(error) = project.as_ref().expect("a staged record has a project").check_current()
         {
             return Err(publication.failed(error));
         }
@@ -501,10 +532,15 @@ impl PreparedSave {
             Ok(SaveOutcome::Saved { .. } | SaveOutcome::NothingToSave) => {
                 publication.keep();
                 let bytes = self.out.to_bytes();
-                let gain_recovery_warning = if needs_recovery_write {
-                    let project = project.expect("staged gain recovery has a project");
+                let gain_recovery_warning = if needs_recovery_write || promote_unwritten {
+                    let project = project.expect("a staged record has a project");
                     let mut settings = project.settings.clone();
-                    settings.gain_recovery.as_mut().expect("recovery was staged").promote(&bytes);
+                    if needs_recovery_write {
+                        settings.gain_recovery.as_mut().expect("recovery was staged").promote(&bytes);
+                    }
+                    if promote_unwritten {
+                        settings.unwritten.as_mut().expect("the left-out parts were staged").promote(&bytes);
+                    }
                     project.save(settings).err()
                 } else {
                     None
@@ -1084,6 +1120,7 @@ impl Application {
                 self.project.as_ref().and_then(|p| p.settings.hs_circle_ownership.clone())
             }),
             gain_recovery: self.project.as_ref().and_then(|p| p.settings.gain_recovery.clone()),
+            unwritten: self.project.as_ref().and_then(|p| p.settings.unwritten.clone()),
             time_signatures: Some(document.time_signatures.clone()),
             export_settings: document.export_settings.clone(),
             lane_slots: saved_slots.or_else(|| self.project.as_ref().and_then(|p| p.settings.lane_slots.clone())),
@@ -1479,6 +1516,7 @@ impl Application {
                             if let (Some(mut settings), Some(project)) = (settings, self.project.as_mut()) {
                                 settings.hs_circle_ownership = report.hs_circle_ownership;
                                 settings.gain_recovery = project.settings.gain_recovery.clone();
+                                settings.unwritten = project.settings.unwritten.clone();
                                 if let Err(error) = project.save(settings) {
                                     self.error = Some(with_archive_error(format!("Saving session settings: {error}")));
                                     self.status = "Difficulty saved. Session settings could not be saved.".into();
@@ -1583,7 +1621,7 @@ impl Application {
             files.push((if mix.is_reused() { "Reuse WAV" } else { "Create WAV" }, mix.path.as_path()));
         }
         if let (Some(project), Some(settings)) = (&review.project, &review.settings)
-            && (plan.recovery_revision.is_some() || *settings != project.settings)
+            && (plan.recovery_revision.is_some() || plan.unwritten.is_some() || *settings != project.settings)
         {
             files.push(("Write editor project", project.path()));
         }
@@ -1676,6 +1714,11 @@ impl Application {
             ).map(|plan| {
                 let settings = settings.map(|mut settings| {
                     settings.hs_circle_ownership = plan.ownership.clone();
+                    // In HS mode every written loose hit is a circle; a group left out before it
+                    // ever was one stays a loose hit in the project.
+                    if hs {
+                        settings.unanchored = Some(loose_rows(&plan.loose));
+                    }
                     settings
                 });
                 PendingSave { version, hs, plan, project: project.clone(), settings, hits }
@@ -2531,6 +2574,9 @@ fn load(
     {
         warnings.push(format!("Editable hit gains could not be restored: {error}"));
     }
+    // What was last written: what the opened file holds, with its restored gains. Loose hits and
+    // left-out moments only live in the project.
+    document.written = document.composer.hitsounds().clone();
     if recovery.is_none()
         && let Some(saved) = project
             .as_ref()
@@ -2548,6 +2594,12 @@ fn load(
             }
         });
         composer.lanes = composer.hitsounds().lanes().iter().map(|lane| lane.identity.clone()).collect();
+    }
+    if recovery.is_none()
+        && let Some(record) = project.as_ref().and_then(|p| p.settings.unwritten.as_ref())
+        && let Err(warning) = unwritten::restore(&mut document, record)
+    {
+        warnings.push(warning);
     }
     if let Some(saved) = project.as_ref().and_then(|p| p.settings.bookmarks.as_deref()) {
         document.bookmarks = BookmarkList::default();
@@ -2656,6 +2708,18 @@ fn project_hits(document: &Document) -> Vec<project::ProjectHit> {
         }
     }
     saved
+}
+
+/// Project rows for loose moments, one group each. Each row names its moment's volume, so a row is
+/// never taken for a hit the file already holds.
+fn loose_rows(states: &[roll_back::MomentState]) -> Vec<project::ProjectHit> {
+    states.iter().enumerate().flat_map(|(group, state)| state.hits.iter().map(move |(lane, volume)| project::ProjectHit {
+        group: Some(group),
+        default_volume: Some(state.volume),
+        lane: project::lane_key(lane),
+        time: f64::from_bits(state.time_bits),
+        volume: Some(*volume),
+    })).collect()
 }
 
 fn restore_project_hits(
@@ -3023,6 +3087,249 @@ mod project_workflow {
 
     /// Under a timing line with custom index 2, a circle cannot ask for the skin's index 0.
     const INDEXED_MAP: &[u8] = b"osu file format v14\r\n\r\n[General]\r\nSampleSet: Soft\r\n\r\n[TimingPoints]\r\n0,500,4,2,2,70,1,0\r\n\r\n[HitObjects]\r\n256,192,1000,1,0,0:0:0:0:\r\n";
+
+    /// The project as it is on disk now.
+    fn stored(app: &Application) -> project::SessionSettings {
+        let path = &app.document().unwrap().path;
+        project::Project::load(app.project_root.as_ref().unwrap(), None, path).unwrap().settings
+    }
+
+    fn record_json(app: &Application) -> serde_json::Value {
+        serde_json::to_value(stored(app).unwritten).unwrap()
+    }
+
+    fn reopen(app: &Application, map: &Path) -> Application {
+        let mut reopened = Application::headless();
+        reopened.project_root = app.project_root.clone();
+        open(&mut reopened, map.to_path_buf());
+        reopened
+    }
+
+    fn tail_hits(app: &Application) -> Vec<(SampleIdentity, i32)> {
+        let hits = app.document().unwrap().composer.hitsounds();
+        let tail = hits.moment(tail_id(hits));
+        tail.hits().map(|lane| (lane.clone(), tail.hit_volume(lane))).collect()
+    }
+
+    #[test]
+    fn left_out_moments_are_kept_in_the_project_through_session_writes_and_come_back_on_reopen() {
+        let scratch = Scratch::new("record-kept");
+        let (mut app, map) = open_left_out_fixture(&scratch, true);
+        let other = map.with_file_name("b.osu");
+        std::fs::write(&other, SLIDER_MAP).unwrap();
+        let drawn = tail_hits(&app);
+        save_through_summary(&mut app, scratch.path("backups"));
+        let record = record_json(&app);
+        assert_eq!(record["current"]["moments"].as_array().map(Vec::len), Some(1), "{record}");
+        assert_eq!(record["current"]["moments"][0]["object"], 1);
+        assert_eq!(record["current"]["moments"][0]["node"], 1);
+        // C1: session writes and a difficulty switch keep the record.
+        app.zoom = 0.5;
+        app.save_session().unwrap();
+        open(&mut app, other.clone());
+        open(&mut app, map.clone());
+        assert_eq!(tail_hits(&app), drawn, "the drawn hits are back on the tail");
+        let hits = app.document().unwrap().composer.hitsounds();
+        assert!(hits.moment(tail_id(hits)).is_changed(), "the tail still differs from the file");
+        assert!(!app.is_dirty());
+        let reopened = reopen(&app, &map);
+        assert_eq!(tail_hits(&reopened), drawn);
+        assert_eq!(std::fs::read(&other).unwrap(), SLIDER_MAP);
+    }
+
+    #[test]
+    fn a_digest_mismatch_puts_nothing_back_keeps_the_record_and_names_the_times() {
+        let scratch = Scratch::new("record-mismatch");
+        let (mut app, map) = open_left_out_fixture(&scratch, true);
+        save_through_summary(&mut app, scratch.path("backups"));
+        let record = record_json(&app);
+        let mut edited = std::fs::read(&map).unwrap();
+        edited.extend(b"// edited in another program\r\n");
+        std::fs::write(&map, &edited).unwrap();
+        let reopened = reopen(&app, &map);
+        assert!(reopened.warnings.iter().any(|w| w.contains("changed outside dawsu!") && w.contains("00:02.500")), "{:?}", reopened.warnings);
+        assert!(!tail_hits(&reopened).iter().any(|(lane, _)| *lane == skin(SampleSet::Drum, Hitsound::Clap)));
+        assert_eq!(record_json(&reopened), record, "the record is kept until the next Save");
+    }
+
+    #[test]
+    fn a_failed_record_write_writes_no_osu() {
+        let scratch = Scratch::new("record-stage-fails");
+        let (mut app, map) = open_left_out_fixture(&scratch, true);
+        app.save_session().unwrap();
+        // The project's backup folder can't be made, so the staged record can't be written.
+        std::fs::write(scratch.path("projects").join("backups"), b"not a folder").unwrap();
+        app.save_with_backups(scratch.path("backups"));
+        wait(&mut app);
+        assert!(app.save_problem_review());
+        app.answer_save_review(true);
+        wait(&mut app);
+        assert!(app.error.is_some());
+        assert_eq!(std::fs::read(&map).unwrap(), SLIDER_MAP);
+        assert!(app.is_dirty());
+    }
+
+    #[test]
+    fn a_crash_after_the_osu_write_restores_the_staged_record_on_reopen() {
+        let scratch = Scratch::new("record-crash");
+        let (mut app, map) = open_left_out_fixture(&scratch, true);
+        let drawn = tail_hits(&app);
+        save_through_summary(&mut app, scratch.path("backups"));
+        // As if dawsu! stopped between the `.osu` write and the promote.
+        let path = app.project.as_ref().unwrap().path().to_path_buf();
+        let mut file: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let current = file["settings"]["unwritten"]["current"].take();
+        file["settings"]["unwritten"] = serde_json::json!({
+            "current": null, "pending": current, "before": dawsu_foundation::digest::sha256_hex(SLIDER_MAP),
+        });
+        std::fs::write(&path, serde_json::to_vec(&file).unwrap()).unwrap();
+        assert_eq!(tail_hits(&reopen(&app, &map)), drawn);
+    }
+
+    #[test]
+    fn fixing_the_moment_and_saving_clears_the_record() {
+        let scratch = Scratch::new("record-cleared");
+        let (mut app, map) = open_left_out_fixture(&scratch, true);
+        save_through_summary(&mut app, scratch.path("backups"));
+        app.document.as_mut().unwrap().composer.apply("Fix", |hits| {
+            hits.remove_hit(tail_id(hits), &skin(SampleSet::Drum, Hitsound::Clap));
+        });
+        app.save_with_backups(scratch.path("backups"));
+        wait(&mut app);
+        assert!(!app.save_problem_review(), "nothing is left out, so Save writes straight away");
+        assert!(app.error.is_none(), "{:?}", app.error);
+        assert_eq!(record_json(&app)["current"]["moments"], serde_json::json!([]));
+        assert_ne!(line(&std::fs::read(&map).unwrap(), "100,100,2000,"), line(SLIDER_MAP, "100,100,2000,"));
+        assert!(app.output_problems().is_empty());
+    }
+
+    #[test]
+    fn saving_twice_with_a_left_out_moment_changes_neither_file() {
+        let scratch = Scratch::new("record-twice");
+        let (mut app, map) = open_left_out_fixture(&scratch, true);
+        save_through_summary(&mut app, scratch.path("backups"));
+        let project = app.project.as_ref().unwrap().path().to_path_buf();
+        let (osu, json) = (std::fs::read(&map).unwrap(), std::fs::read(&project).unwrap());
+        save_through_summary(&mut app, scratch.path("backups"));
+        assert_eq!(std::fs::read(&map).unwrap(), osu);
+        assert_eq!(std::fs::read(&project).unwrap(), json);
+        let mut reopened = reopen(&app, &map);
+        save_through_summary(&mut reopened, scratch.path("backups"));
+        assert_eq!(std::fs::read(&map).unwrap(), osu);
+        assert_eq!(std::fs::read(&project).unwrap(), json);
+    }
+
+    #[test]
+    fn a_body_volume_left_out_in_hs_mode_comes_back_with_its_head() {
+        let scratch = Scratch::new("record-body");
+        let folder = scratch.path("mapset");
+        std::fs::create_dir(&folder).unwrap();
+        let map = folder.join("a.osu");
+        std::fs::write(&map, SLIDER_MAP).unwrap();
+        let mut app = Application::headless();
+        app.project_root = Some(scratch.path("projects"));
+        open(&mut app, map.clone());
+        app.set_hs_mode(true);
+        app.document.as_mut().unwrap().composer.apply("Body volume", |hits| hits.set_body_volume(0, 40));
+        save_through_summary(&mut app, scratch.path("backups"));
+        assert_eq!(std::fs::read(&map).unwrap(), SLIDER_MAP, "HS mode can't add the green line a body volume needs");
+        let record = record_json(&app);
+        assert_eq!(record["current"]["bodies"][0]["volume"], 40, "{record}");
+        let reopened = reopen(&app, &map);
+        let hits = reopened.document().unwrap().composer.hitsounds();
+        assert_eq!(hits.bodies()[0].volume(), 40);
+        let head = hits.moments().iter().find(|m| matches!(m.place(), dawsu_hitsounding::Place::SliderNode { node: 0, .. })).unwrap();
+        assert_eq!(head.volume(), 40);
+    }
+
+    #[test]
+    fn per_hit_volumes_of_a_left_out_node_survive_reopen_and_the_next_save() {
+        let scratch = Scratch::new("record-gains");
+        let folder = scratch.path("mapset");
+        std::fs::create_dir(&folder).unwrap();
+        let map = folder.join("a.osu");
+        std::fs::write(&map, SLIDER_MAP).unwrap();
+        let mut app = Application::headless();
+        app.project_root = Some(scratch.path("projects"));
+        open(&mut app, map.clone());
+        app.set_hs_mode(true);
+        app.document.as_mut().unwrap().composer.apply("Two volumes", |hits| {
+            let tail = tail_id(hits);
+            hits.add_hit(tail, skin(SampleSet::Soft, Hitsound::Clap));
+            hits.set_hit_volume(tail, &skin(SampleSet::Soft, Hitsound::Clap), 40);
+        });
+        let drawn = tail_hits(&app);
+        save_through_summary(&mut app, scratch.path("backups"));
+        let mut reopened = reopen(&app, &map);
+        assert_eq!(tail_hits(&reopened), drawn);
+        let hits = reopened.document().unwrap().composer.hitsounds();
+        assert!(hits.moment(tail_id(hits)).is_changed(), "gain recovery must not make the drawn gains the baseline");
+        save_through_summary(&mut reopened, scratch.path("backups"));
+        assert_eq!(record_json(&reopened)["current"]["moments"].as_array().map(Vec::len), Some(1));
+        assert_eq!(std::fs::read(&map).unwrap(), SLIDER_MAP);
+    }
+
+    #[test]
+    fn an_hs_group_never_written_makes_no_circle_and_comes_back_as_loose_hits() {
+        let scratch = Scratch::new("record-loose-group");
+        let folder = scratch.path("mapset");
+        std::fs::create_dir(&folder).unwrap();
+        let map = folder.join("a.osu");
+        let other = folder.join("b.osu");
+        std::fs::write(&map, INDEXED_MAP).unwrap();
+        std::fs::write(&other, INDEXED_MAP).unwrap();
+        let mut app = Application::headless();
+        app.project_root = Some(scratch.path("projects"));
+        open(&mut app, map.clone());
+        app.set_hs_mode(true);
+        let composer = &mut app.document.as_mut().unwrap().composer;
+        composer.add(3000.0, skin(SampleSet::Soft, Hitsound::Normal), 80, 0.0);
+        composer.add(3000.0, skin(SampleSet::Soft, Hitsound::Clap), 80, 0.0);
+        save_through_summary(&mut app, scratch.path("backups"));
+        assert_eq!(std::fs::read(&map).unwrap(), INDEXED_MAP, "no 256,192 placeholder circle");
+        assert_eq!(stored(&app).unanchored.map(|rows| rows.len()), Some(2));
+        app.zoom = 0.5;
+        app.save_session().unwrap();
+        open(&mut app, other);
+        open(&mut app, map.clone());
+        let reopened = reopen(&app, &map);
+        for app in [&app, &reopened] {
+            let loose: Vec<_> = app.document().unwrap().composer.hitsounds().moments().iter()
+                .filter(|m| m.place() == dawsu_hitsounding::Place::NoObject).collect();
+            assert_eq!(loose.len(), 1);
+            assert_eq!(loose[0].hits().count(), 2);
+        }
+    }
+
+    #[test]
+    fn an_hs_group_written_before_and_left_out_later_keeps_one_circle() {
+        let scratch = Scratch::new("record-written-group");
+        let folder = scratch.path("mapset");
+        std::fs::create_dir(&folder).unwrap();
+        let map = folder.join("a.osu");
+        std::fs::write(&map, INDEXED_MAP).unwrap();
+        wav(&folder.join("voice.wav"), 8192);
+        let mut app = Application::headless();
+        app.project_root = Some(scratch.path("projects"));
+        open(&mut app, map.clone());
+        app.set_hs_mode(true);
+        app.document.as_mut().unwrap().composer.add(3000.0, SampleIdentity::File("voice.wav".into()), 80, 0.0);
+        save_through_summary(&mut app, scratch.path("backups"));
+        let first = std::fs::read(&map).unwrap();
+        assert_eq!(app.document().unwrap().file.hit_objects().len(), 2);
+        app.document.as_mut().unwrap().composer.add(3000.0, skin(SampleSet::Soft, Hitsound::Clap), 80, 0.0);
+        save_through_summary(&mut app, scratch.path("backups"));
+        assert_eq!(std::fs::read(&map).unwrap(), first, "the circle keeps its last written hits");
+        assert_eq!(record_json(&app)["current"]["moments"][0]["object"], 1);
+        let mut reopened = reopen(&app, &map);
+        let doc = reopened.document().unwrap();
+        assert_eq!(doc.file.hit_objects().len(), 2);
+        let circle = doc.composer.hitsounds().moments().iter().find(|m| m.time().ms() == 3000.0).unwrap();
+        assert_eq!(circle.hits().count(), 2, "the drawn hits are back on the one circle");
+        assert_eq!(project_hits(doc).len(), 0, "and not as loose hits too");
+        save_through_summary(&mut reopened, scratch.path("backups"));
+        assert_eq!(std::fs::read(&map).unwrap(), first);
+    }
 
     #[test]
     fn loose_hits_saved_outside_hs_mode_never_count_as_a_written_circle() {

@@ -102,6 +102,8 @@ pub(crate) struct Rolled {
     pub circles: BTreeMap<i64, LineId>,
     /// With roll-back off: the problems that stop Save.
     pub refused: Vec<SaveProblem>,
+    /// How many compiles it took; the tests check it stays within [`MAX_ROUNDS`].
+    #[cfg_attr(not(test), allow(dead_code))]
     pub rounds: usize,
 }
 
