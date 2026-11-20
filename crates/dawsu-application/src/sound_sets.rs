@@ -1721,6 +1721,88 @@ pub(crate) mod tests {
         assert_eq!(left, ["soft-hitclap2.wav"], "the unused layer stays pending");
     }
 
+    /// No file dawsu! made sits unplayed in the mapset, and every hit on a file still plays.
+    fn no_unplayed_dawsu_file(f: &Fixture, app: &Application, step: &str) {
+        let root = f.map.with_file_name("").canonicalize().unwrap();
+        let ledger = crate::pending::Pending::for_mapset(&app.data_root, &root).ledger().unwrap();
+        let disk = mapset_files(f);
+        let map = OsuFileForTest::read(std::fs::read(&f.map).unwrap()).file;
+        let played: Vec<String> = crate::pending::played_names(&map, &disk).into_iter().map(|n| n.to_ascii_lowercase()).collect();
+        for entry in ledger.entries() {
+            if disk.iter().any(|name| name.eq_ignore_ascii_case(&entry.name)) {
+                assert!(played.contains(&entry.name.to_ascii_lowercase()), "{step}: {} is in the mapset but nothing plays it ({disk:?})", entry.name);
+            }
+        }
+        if let Some(document) = app.document() {
+            let hits = document.composer.hitsounds();
+            for lane in hits.moments().iter().flat_map(|moment| moment.hits()) {
+                if matches!(hits.lane(lane).map(|l| &l.source), Some(dawsu_hitsounding::LaneSource::File(_))) {
+                    assert!(app.clip_for_lane(lane).is_some(), "{step}: {} has no sound", crate::lane_name(lane));
+                }
+            }
+        }
+    }
+
+    use dawsu_osu_format::OsuFile as OsuFileForTest;
+
+    #[test]
+    fn after_every_save_and_close_no_file_dawsu_made_sits_unplayed_in_the_mapset() {
+        let f = fixture("end-state");
+        let defaults = f.scratch.path("skin");
+        std::fs::create_dir(&defaults).unwrap();
+        std::fs::write(defaults.join("soft-hitclap.wav"), wav(300)).unwrap();
+        let external = f.scratch.path("replacement.wav");
+        std::fs::write(&external, wav(1234)).unwrap();
+        let mut app = app(&f);
+        app.preferences.default_samples = defaults;
+        let map = open(&mut app, &f.map);
+        let soft_clap = SampleIdentity::Standard { set: dawsu_foundation::SampleSet::Soft, sound: dawsu_foundation::Sound::Hit(dawsu_foundation::Hitsound::Clap), index: dawsu_foundation::CustomIndex::new(0) };
+        // Add a layer and place a set.
+        app.active_lane = app.document().unwrap().composer.lanes.iter().position(|lane| lane == &soft_clap).unwrap();
+        app.command("addNumberedLayer");
+        let layer = lane_of("soft-hitclap2.wav");
+        app.seek(1000.0);
+        app.place_sound_set_file(&map, &f.set).unwrap();
+        save(&mut app, &f);
+        no_unplayed_dawsu_file(&f, &app, "place");
+        // Update the set to new audio.
+        std::fs::write(library_set(&f), set_text("Kick and clap", &[("drum-hitnormal.wav", 9000), ("drum-hitclap.wav", 4000)])).unwrap();
+        listed(&app);
+        app.update_sound_set(SET_ID).unwrap();
+        save(&mut app, &f);
+        no_unplayed_dawsu_file(&f, &app, "update");
+        // Replace the set's clap with another sample.
+        let clap = app.document().unwrap().composer.hitsounds().moment(dawsu_hitsounding::MomentId(0)).hits()
+            .find(|lane| crate::lane_name(lane).starts_with("drum-hitclap")).unwrap().clone();
+        app.active_lane = app.document().unwrap().composer.lanes.iter().position(|lane| lane == &clap).unwrap();
+        app.replace_lane_sample(&map, &clap, &external).unwrap();
+        save(&mut app, &f);
+        no_unplayed_dawsu_file(&f, &app, "replace");
+        // The layer joins at another volume: a mixed Save.
+        app.document.as_mut().unwrap().composer.apply("Layer", |h| {
+            h.add_hit(dawsu_hitsounding::MomentId(0), layer.clone());
+            h.set_hit_volume(dawsu_hitsounding::MomentId(0), &layer, 30);
+        });
+        save(&mut app, &f);
+        no_unplayed_dawsu_file(&f, &app, "mixed");
+        // Change the mix.
+        app.document.as_mut().unwrap().composer.apply("Louder", |h| h.set_hit_volume(dawsu_hitsounding::MomentId(0), &layer, 45));
+        save(&mut app, &f);
+        no_unplayed_dawsu_file(&f, &app, "change the mix");
+        // Delete the hits.
+        app.document.as_mut().unwrap().composer.apply("Delete", |h| {
+            for lane in h.moment(dawsu_hitsounding::MomentId(0)).hits().cloned().collect::<Vec<_>>() {
+                h.remove_hit(dawsu_hitsounding::MomentId(0), &lane);
+            }
+        });
+        save(&mut app, &f);
+        no_unplayed_dawsu_file(&f, &app, "delete");
+        app.save_session().unwrap();
+        app.close_document();
+        no_unplayed_dawsu_file(&f, &app, "close");
+        println!("end state: {:?}", mapset_files(&f));
+    }
+
     #[test]
     fn a_set_placed_and_undone_before_save_writes_nothing() {
         let f = fixture("place-set-undone");
