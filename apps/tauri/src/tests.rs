@@ -303,7 +303,8 @@ fn drum_view_rows_follow_a_replaced_lane_and_leave_hidden_lanes_hidden() {
     app.replace_lane_sample(&map, &clap, &external).unwrap();
     let replacement = app.document().unwrap().composer.lanes[app.active_lane].clone();
     let revision = app.document().unwrap().composer.history.version();
-    app.delete_lane(&map, &whistle, revision).unwrap();
+    let path = app.document().unwrap().path.clone();
+    app.delete_lane(&path, &whistle, revision).unwrap();
 
     let plain = snapshot(&app, true);
     let order = plain["scene"]["laneOrder"].as_array().unwrap().clone();
@@ -2097,6 +2098,50 @@ fn drum_window_requests_answer_with_its_view_and_never_touch_main_errors() {
     let view = answer(&mut app, DrumRequest::Apply { map: path, review, ticked }).unwrap();
     assert_eq!(view["state"], "idle");
     assert!(app.status.starts_with("Added 1 drum hits: 1 on objects"), "{}", app.status);
+}
+
+#[test]
+fn drum_window_lanes_carry_the_numbers_their_lane_headers_show() {
+    use super::drum_window::{DrumRequest, answer};
+    let fixture = Fixture::new("drum-window-numbers");
+    let map = fixture.0.join("map.osu");
+    // Soft hitnormal at custom index 0 and 1 share the name "soft-hitnormal"; a whistle lane is hidden.
+    fs::write(&map, "osu file format v14\n[General]\nMode:0\nSampleSet:Soft\n[TimingPoints]\n0,500,4,2,0,100,1,0\n[HitObjects]\n256,192,500,1,2,0:0:0:0:\n256,192,1000,1,0,2:0:1:0:\n256,192,1500,1,0,1:0:0:0:\n").unwrap();
+    let mut app = Application::headless();
+    open(&mut app, &map);
+    let whistle = app.document().unwrap().composer.hitsounds().lanes().iter()
+        .find(|lane| dawsu_application::lane_name(&lane.identity).contains("whistle")).unwrap().identity.clone();
+    let revision = app.document().unwrap().composer.history.version();
+    let path = app.document().unwrap().path.clone();
+    app.delete_lane(&path, &whistle, revision).unwrap();
+    assert!(app.document().unwrap().composer.hitsounds().is_lane_hidden(&whistle), "Delete lane hides it");
+    let view = answer(&mut app, DrumRequest::Context { known: None }).unwrap();
+    let lanes = view["lanes"].as_array().unwrap();
+    // The header numbers: each row's place in the scene's lane order.
+    let scene = &snapshot(&app, true)["scene"];
+    let headers: std::collections::HashMap<String, u64> = scene["laneOrder"].as_array().unwrap().iter().enumerate()
+        .map(|(n, row)| (scene["lanes"][row.as_u64().unwrap() as usize]["sourceKey"].as_str().unwrap().to_owned(), n as u64 + 1))
+        .collect();
+    for lane in lanes {
+        let key = lane["key"].as_str().unwrap();
+        assert_eq!(lane["number"].as_u64(), headers.get(key).copied(), "{key}");
+    }
+    let soft: Vec<&serde_json::Value> = lanes.iter().filter(|lane| lane["name"] == "soft-hitnormal").collect();
+    assert_eq!(soft.len(), 2);
+    assert_ne!(soft[0]["number"], soft[1]["number"]);
+    assert!(soft.iter().all(|lane| lane["number"].is_u64()));
+    let hidden = lanes.iter().find(|lane| lane["hidden"] == true).unwrap();
+    assert!(hidden["number"].is_null(), "a hidden lane has no header, so no number");
+    // A lane order saved by moving lanes reorders the numbers the same way.
+    let layout_keys: Vec<String> = scene["laneOrder"].as_array().unwrap().iter().rev()
+        .map(|row| scene["lanes"][row.as_u64().unwrap() as usize]["colourKey"].as_str().unwrap().to_owned()).collect();
+    app.set_lane_layout(dawsu_application::LaneLayout { lane_order: layout_keys, ..Default::default() }).unwrap();
+    let view = answer(&mut app, DrumRequest::Context { known: None }).unwrap();
+    let count = headers.len() as u64;
+    for lane in view["lanes"].as_array().unwrap() {
+        let key = lane["key"].as_str().unwrap();
+        assert_eq!(lane["number"].as_u64(), headers.get(key).map(|n| count + 1 - n), "{key} reversed");
+    }
 }
 
 #[test]

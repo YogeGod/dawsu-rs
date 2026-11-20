@@ -35,7 +35,9 @@ export function timeText(ms) {
   return `${pad(Math.floor(whole / 60000), 2)}:${pad(Math.floor(whole / 1000) % 60, 2)}.${pad(whole % 1000, 3)}`;
 }
 
-export const laneLabel = lane => (lane.hidden ? `${lane.name} (hidden)` : lane.name);
+// A lane reads as its lane header does: its name and number. Hidden lanes have no header number.
+export const laneLabel = lane =>
+  lane.number == null ? `${lane.name}${lane.hidden ? " (hidden)" : ""}` : `${lane.name} ${lane.number}`;
 
 export const progressText = view =>
   `Detecting drum hits… ${Math.floor((view.done * 100) / Math.max(1, view.total))}%`;

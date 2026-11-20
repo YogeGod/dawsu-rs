@@ -1,9 +1,11 @@
 //! The drum detection window (v3 f12): its requests, answered on the editor thread. Every answer
 //! is the window's fresh view, so the window never shows a state older than its own action.
 
-use dawsu_application::{Application, Drum, DrumDetectState, DrumOptions, DrumRow, DrumSource, ObjectKind, RowLands, GRIDS, MAX_OBJECT_MS};
+use dawsu_application::{Application, Drum, lane_layout_key, DrumDetectState, DrumOptions, DrumRow, DrumSource, ObjectKind, RowLands, GRIDS, MAX_OBJECT_MS};
 use serde::Deserialize;
 use serde_json::{Value, json};
+use dawsu_foundation::SampleIdentity;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use super::scene_lane_key;
@@ -93,12 +95,47 @@ fn same_map(app: &Application, map: &Path) -> Result<(), String> {
 }
 
 /// A lane drum hit detection may fill: any lane of the difficulty, hidden ones too.
-fn lane_by_key(app: &Application, key: &str) -> Result<dawsu_foundation::SampleIdentity, String> {
+fn lane_by_key(app: &Application, key: &str) -> Result<SampleIdentity, String> {
     app.document()
         .and_then(|document| document.composer.hitsounds().lanes().iter()
             .find(|lane| scene_lane_key(&lane.identity) == key))
         .map(|lane| lane.identity.clone())
         .ok_or_else(|| "A chosen lane no longer exists. Pick the lanes again.".into())
+}
+
+/// Each lane's number as its lane header shows it: its place in the editor's lane order (the
+/// scene's `laneOrder`, sorted by the saved layout as app.js's `orderedLaneRows` does). Hidden
+/// lanes and the slots other lanes stand in for have no header and no number.
+/// `drum_window_lanes_carry_the_numbers_their_lane_headers_show` checks this against the scene.
+fn header_numbers(app: &Application) -> HashMap<&SampleIdentity, usize> {
+    let Some(document) = app.document() else { return HashMap::new() };
+    let c = &document.composer;
+    let model = c.hitsounds();
+    let row_by_lane: HashMap<_, _> = c.lanes.iter().enumerate().map(|(row, lane)| (lane, row)).collect();
+    let used: HashSet<_> = model.moments().iter().flat_map(|moment| moment.hits()).collect();
+    let mut slot_rows = HashMap::new();
+    let mut backing_slots = HashMap::new();
+    for (source, slot) in model.lane_slots() {
+        if !used.contains(slot) && let (Some(&from), Some(&to)) = (row_by_lane.get(source), row_by_lane.get(slot))
+            && let std::collections::hash_map::Entry::Vacant(entry) = slot_rows.entry(to)
+        {
+            entry.insert(from);
+            backing_slots.insert(from, slot);
+        }
+    }
+    let mut rows: Vec<usize> = (0..c.lanes.len()).filter(|row| !backing_slots.contains_key(row))
+        .map(|row| slot_rows.get(&row).copied().unwrap_or(row))
+        .filter(|&row| !model.is_lane_hidden(&c.lanes[row]))
+        .collect();
+    let saved = document.lane_layout().map(|layout| layout.lane_order.as_slice()).unwrap_or_default();
+    if !saved.is_empty() {
+        let rank = |row: &usize| {
+            let key = lane_layout_key(backing_slots.get(row).copied().unwrap_or(&c.lanes[*row]));
+            saved.iter().position(|saved| *saved == key).unwrap_or(saved.len())
+        };
+        rows.sort_by_key(rank);
+    }
+    rows.into_iter().enumerate().map(|(n, row)| (&c.lanes[row], n + 1)).collect()
 }
 
 fn lands(lands: RowLands) -> &'static str {
@@ -128,6 +165,7 @@ fn row(row: &DrumRow) -> Value {
 /// The window's view. Rows come only when the review changed since `known`.
 pub fn context(app: &Application, known: Option<&str>) -> Value {
     let view = app.drum_detection();
+    let numbers = header_numbers(app);
     let document = app.document();
     let options = &view.options;
     let mut result = json!({
@@ -155,7 +193,9 @@ pub fn context(app: &Application, known: Option<&str>) -> Value {
         "editorGrid": view.editor_grid,
         "grids": GRIDS,
         "maxObjectMs": MAX_OBJECT_MS,
-        "lanes": view.lanes.iter().map(|(lane, name, hidden)| json!({ "key": scene_lane_key(lane), "name": name, "hidden": hidden }))
+        "lanes": view.lanes.iter().map(|(lane, name, hidden)| json!({
+            "key": scene_lane_key(lane), "name": name, "hidden": hidden, "number": numbers.get(lane),
+        }))
             .collect::<Vec<_>>(),
         "listening": view.listening,
     });

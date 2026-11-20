@@ -8,8 +8,9 @@ import {
 import DrumDetectWindow from "../src/parts/DrumDetectWindow.svelte";
 
 const lanes = [
-  { key: "kick", name: "Drum Normal", hidden: false },
-  { key: "clap", name: "Soft Clap", hidden: true },
+  { key: "kick", name: "drum-hitnormal", hidden: false, number: 1 },
+  { key: "kick2", name: "drum-hitnormal", hidden: false, number: 2 },
+  { key: "clap", name: "Soft Clap", hidden: true, number: null },
 ];
 const rows = [
   { id: "k10", drum: "kick", time: 500, strength: 1, lands: "circle" },
@@ -48,7 +49,8 @@ test("rows read as osu! mappers say them", () => {
   assert.deepEqual(["circle", "sliderHead", "sliderRepeat", "sliderEnd", "spinnerEnd", "grid", "flagged", "duplicate", "noLane"]
     .map(landsText), ["Circle", "Slider head", "Slider repeat", "Slider end", "Spinner end", "Grid line",
     "Too far from the grid", "Already there", "No lane picked"]);
-  assert.equal(laneLabel(lanes[1]), "Soft Clap (hidden)");
+  // Lanes read with their header number, so two lanes with one sample name stay apart.
+  assert.deepEqual(lanes.map(laneLabel), ["drum-hitnormal 1", "drum-hitnormal 2", "Soft Clap (hidden)"]);
   assert.equal(progressText({ done: 25, total: 100 }), "Detecting drum hits… 25%");
 });
 
