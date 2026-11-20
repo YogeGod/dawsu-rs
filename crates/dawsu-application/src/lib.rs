@@ -210,6 +210,7 @@ pub struct SaveReport {
     pub file: OsuFile,
     pub problems: Vec<SaveProblem>,
     written: Hitsounds,
+    drawn: Hitsounds,
     left_out: Vec<roll_back::LeftOut>,
     hs_circle_ownership: Option<project::HsCircleOwnership>,
     gain_recovery_warning: Option<String>,
@@ -428,7 +429,7 @@ fn prepare_save(
     let map_changed = bytes != expected;
     let plan = PreparedSave {
         path: path.to_path_buf(), backups, expected, out, mix_files, recovery_revision,
-        ownership, inputs, map_changed, left_out, written, unwritten, loose,
+        ownership, inputs, map_changed, left_out, written, unwritten, loose, drawn: hits.clone(),
     };
     plan.check_current(project, cancel)?;
     // Left-out parts are listed for the Save hitsounds summary, which every Save shows first.
@@ -472,6 +473,8 @@ struct PreparedSave {
     left_out: Vec<roll_back::LeftOut>,
     /// The final compile input: what this Save writes, with the loose hits kept in the project.
     written: Hitsounds,
+    /// The hits as drawn when this Save was prepared.
+    drawn: Hitsounds,
     /// The project record of the left-out parts, when the project needs a new one.
     unwritten: Option<unwritten::Record>,
     /// HS groups left out before they ever became a circle; the project keeps them as loose hits.
@@ -555,6 +558,7 @@ impl PreparedSave {
                     file: OsuFile::read(bytes).file,
                     problems: Vec::new(),
                     written: self.written,
+                    drawn: self.drawn,
                     left_out: self.left_out,
                     hs_circle_ownership: self.ownership,
                     gain_recovery_warning,
@@ -1493,13 +1497,14 @@ impl Application {
                             // A recovery copy keeps the whole compile input, loose hits included, as
                             // the state Undo returns to.
                             let compiled = report.written;
+                            let drawn = report.drawn;
                             if let Some(d) = self.document.as_mut().filter(|d| d.path == path) {
                                 d.file = report.file;
                                 d.written = last_written(&compiled, hs_mode);
                                 d.left_out = report.left_out;
                                 // The difficulty is written, even when a step below returns early.
                                 self.checkpoint =
-                                    Some(recovery::Checkpoint::after_save(d, &compiled, hs_mode));
+                                    Some(recovery::Checkpoint::after_save(d, &compiled, &drawn, hs_mode));
                                 if let Some(id) = &self.restored_recovery {
                                     match recovery::archive(&self.data_root, id) {
                                         Ok(()) => self.restored_recovery = None,
@@ -1544,7 +1549,7 @@ impl Application {
                             let document = self.document.as_mut().unwrap();
                             document.composer.mark_saved();
                             self.checkpoint =
-                                Some(recovery::Checkpoint::after_save(document, &compiled, hs_mode));
+                                Some(recovery::Checkpoint::after_save(document, &compiled, &drawn, hs_mode));
                             let left_out = document.left_out.len();
                             self.status = if archive_error.is_some() {
                                 "Difficulty saved. Recovery copy is still pending.".into()
@@ -3439,6 +3444,58 @@ mod project_workflow {
         assert!(restored.is_dirty());
         let doc = restored.document().unwrap();
         assert!(!doc.written.moment(tail_id(&doc.written)).is_changed(), "what was last written comes from the copy's last Save");
+    }
+
+    /// Saves with the tail left out, edits on, and restores a recovery copy taken then.
+    fn restore_after_partial_save(scratch: &Scratch) -> (Application, Vec<(SampleIdentity, i32)>) {
+        let (mut app, _map) = open_left_out_fixture(scratch, true);
+        app.data_root = scratch.path("data");
+        let drawn = tail_hits(&app);
+        save_through_summary(&mut app, scratch.path("backups"));
+        app.document.as_mut().unwrap().composer.apply("Later edit", |hits| hits.set_volume(dawsu_hitsounding::MomentId(0), 33));
+        app.poll();
+        let offer = app.write_recovery_copy().unwrap().unwrap();
+        let mut restored = Application::create(Preferences::default(), false, None, None, false, scratch.path("data"));
+        restored.project_root = app.project_root.clone();
+        restored.restore_recovery(&offer.id).unwrap();
+        wait(&mut restored);
+        assert!(restored.error.is_none(), "{:?}", restored.error);
+        (restored, drawn)
+    }
+
+    #[test]
+    fn undo_then_save_after_restoring_a_recovery_copy_keeps_the_left_out_hits() {
+        let scratch = Scratch::new("recovery-undo-left-out");
+        let (mut restored, drawn) = restore_after_partial_save(&scratch);
+        restored.command("undo");
+        assert_eq!(tail_hits(&restored), drawn, "Undo returns to the hits as drawn at the last Save");
+        assert!(!restored.is_dirty());
+        save_through_summary(&mut restored, scratch.path("backups"));
+        assert_eq!(record_json(&restored)["current"]["moments"].as_array().map(Vec::len), Some(1), "the left-out tail is still kept");
+        let map = restored.document().unwrap().path.clone();
+        assert_eq!(tail_hits(&reopen(&restored, &map)), drawn);
+    }
+
+    #[test]
+    fn an_old_recovery_copy_without_drawn_hits_still_restores() {
+        let scratch = Scratch::new("recovery-old-format");
+        let (mut app, _map) = open_left_out_fixture(&scratch, true);
+        app.data_root = scratch.path("data");
+        save_through_summary(&mut app, scratch.path("backups"));
+        app.document.as_mut().unwrap().composer.apply("Later edit", |hits| hits.set_volume(dawsu_hitsounding::MomentId(0), 33));
+        app.poll();
+        let offer = app.write_recovery_copy().unwrap().unwrap();
+        // A copy an earlier build wrote has no drawn hits for its last Save.
+        let path = scratch.path("data").join("recovery").join(&offer.id);
+        let mut copy: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        copy["checkpoint"]["last_save"].as_object_mut().unwrap().remove("drawn");
+        std::fs::write(&path, serde_json::to_vec(&copy).unwrap()).unwrap();
+        let mut restored = Application::create(Preferences::default(), false, None, None, false, scratch.path("data"));
+        restored.project_root = app.project_root.clone();
+        restored.restore_recovery(&offer.id).unwrap();
+        wait(&mut restored);
+        assert!(restored.error.is_none(), "{:?}", restored.error);
+        assert_eq!(restored.document().unwrap().composer.hitsounds().moment(dawsu_hitsounding::MomentId(0)).volume(), 33);
     }
 
     #[test]
