@@ -8,6 +8,7 @@ members = [
     "crates/dawsu-test-support",
     "crates/dawsu-editor-composer",
     "crates/dawsu-audio",
+    "crates/dawsu-graph-audio",
     "crates/dawsu-application",
     "apps/tauri",
 ]

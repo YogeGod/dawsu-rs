@@ -876,6 +876,14 @@ name = "dawsu-foundation"
 version = "0.1.0"
 
 [[package]]
+name = "dawsu-graph-audio"
+version = "0.1.0"
+dependencies = [
+ "dawsu-foundation",
+ "serde_json",
+]
+
+[[package]]
 name = "dawsu-hitsounding"
 version = "0.1.0"
 dependencies = [
