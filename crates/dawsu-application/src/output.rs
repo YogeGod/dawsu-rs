@@ -33,6 +33,24 @@ pub struct PlannedFile {
     pub file: OsuFile,
     pub expected: Option<Vec<u8>>,
 }
+/// What Copy did to one target, counted for the Export window.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TargetCounts {
+    pub path: PathBuf,
+    /// Source moments matched to a target moment.
+    pub matched: usize,
+    /// Source moments with no target moment within Match within.
+    pub unmatched: usize,
+    /// Target moments given a new sound or volume.
+    pub changed: usize,
+    /// Target moments where a later source moment replaced an earlier one.
+    pub collisions: usize,
+    /// Target moments that kept their own sound to avoid a silent hitnormal.
+    pub kept_from_silent: usize,
+    /// Slider and spinner ends muted.
+    pub muted: usize,
+}
+
 pub struct WritePlan {
     pub label: String,
     pub files: Vec<PlannedFile>,
@@ -41,6 +59,8 @@ pub struct WritePlan {
     pub(super) generation: Option<PathBuf>,
     include_slider_audio: bool,
     pub details: Vec<String>,
+    /// Copy's counts per target, in target order. Empty for Generate.
+    pub targets: Vec<TargetCounts>,
     pub source: PathBuf,
     pub version: u64,
 }
@@ -250,6 +270,7 @@ pub(super) fn generate_report(
                 generation,
                 include_slider_audio,
                 details: vec![details.into()],
+                targets: Vec::new(),
                 source: source.path.clone(),
                 version: source.version,
             })
@@ -259,7 +280,7 @@ pub(super) fn generate_report(
 }
 pub fn new_diff(source: &Source, name: &str) -> Result<WritePlan, String> {
     match dawsu_hitsounding::generate::new_hitsound_diff(&source.file,&source.path.file_name().unwrap().to_string_lossy(),name,&folder(source)?){
-        NewDiff::Planned{file,file_name}=>Ok(WritePlan{label:"New hitsound difficulty".into(),mixes:Vec::new(),combinations:Vec::new(),generation:None,include_slider_audio:false,files:vec![PlannedFile{path:source.path.parent().unwrap().join(file_name),file,expected:None}],details:vec!["All gameplay objects are removed in the new difficulty; the source stays unchanged.".into()],source:source.path.clone(),version:source.version}),other=>Err(crate::refusals::new_difficulty(&other))
+        NewDiff::Planned{file,file_name}=>Ok(WritePlan{label:"New hitsound difficulty".into(),mixes:Vec::new(),combinations:Vec::new(),targets:Vec::new(),generation:None,include_slider_audio:false,files:vec![PlannedFile{path:source.path.parent().unwrap().join(file_name),file,expected:None}],details:vec!["All gameplay objects are removed in the new difficulty; the source stays unchanged.".into()],source:source.path.clone(),version:source.version}),other=>Err(crate::refusals::new_difficulty(&other))
     }
 }
 pub fn copy(
@@ -334,6 +355,7 @@ pub(super) fn copy_report(
         include_slider_audio: false,
         files: Vec::new(),
         details: Vec::new(),
+        targets: Vec::new(),
         source: source.path.clone(),
         version: source.version,
     };
@@ -376,6 +398,15 @@ pub(super) fn copy_report(
                         continue;
                     }
                 };
+                plan.targets.push(TargetCounts {
+                    path: path.clone(),
+                    matched: target.matched,
+                    unmatched: target.dropped.len(),
+                    changed: target.changed,
+                    collisions: target.collisions.len(),
+                    kept_from_silent: target.kept_from_silent,
+                    muted: target.muted,
+                });
                 plan.details.push(format!(
                     "{}: {} matched, {} unmatched source moments",
                     path.file_name().unwrap().to_string_lossy(),

@@ -1,0 +1,13 @@
+{
+  "identifier": "export",
+  "windows": [
+    "export"
+  ],
+  "permissions": [
+    "allow-export-view",
+    "allow-export-preview",
+    "allow-export-run",
+    "allow-close-export-window",
+    "allow-show-in-editor"
+  ]
+}

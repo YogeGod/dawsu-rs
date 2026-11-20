@@ -55,6 +55,9 @@ pub(crate) struct SessionSettings {
     /// The kick and snare lanes drum hit detection last used. Older builds ignore the field.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub drum_lanes: Option<super::DrumLanes>,
+    /// What the Export window last chose for this map. Older builds ignore the field.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub export_choices: Option<super::ExportChoices>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

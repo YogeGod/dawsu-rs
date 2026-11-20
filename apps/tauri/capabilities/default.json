@@ -1,1 +1,32 @@
-{"identifier":"main","windows":["main"],"permissions":["core:event:default"]}
+{
+  "identifier": "main",
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "core:event:default",
+    "allow-editor-view",
+    "allow-editor-help",
+    "allow-editor-export-settings",
+    "allow-open-export-window",
+    "allow-pick-merge-preset",
+    "allow-save-merge-preset",
+    "allow-editor-shortcuts",
+    "allow-audio-outputs",
+    "allow-import-key-file",
+    "allow-export-key-file",
+    "allow-pick-map",
+    "allow-pick-sample",
+    "allow-pick-sound-set",
+    "allow-sound-set-library",
+    "allow-save-sound-set",
+    "allow-pick-songs-folder",
+    "allow-pick-hitsound-library",
+    "allow-list-library",
+    "allow-lane-add-candidates",
+    "allow-pick-drum-map",
+    "allow-set-drum-view",
+    "allow-open-editor-folder",
+    "allow-close-editor"
+  ]
+}

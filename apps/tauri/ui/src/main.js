@@ -6,6 +6,7 @@ import Boundary from "./lib/Boundary.svelte";
 import AuditionPill from "./parts/AuditionPill.svelte";
 import LaneHeaders from "./parts/LaneHeaders.svelte";
 import PlayheadGroup from "./parts/PlayheadGroup.svelte";
+import ExportWindow from "./parts/ExportWindow.svelte";
 import SnapSlider from "./parts/SnapSlider.svelte";
 import ToolPills from "./parts/ToolPills.svelte";
 import TransportBar from "./parts/TransportBar.svelte";
@@ -14,6 +15,8 @@ import TransportBar from "./parts/TransportBar.svelte";
 const parts = {
   tools: ToolPills, snap: SnapSlider, audition: AuditionPill, transport: TransportBar,
   playhead: PlayheadGroup, lanes: LaneHeaders,
+  // The whole page of the Export window (export.html).
+  "export-window": ExportWindow,
 };
 
 // app.js may have built the lane rows before this bundle loaded.
