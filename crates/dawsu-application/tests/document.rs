@@ -124,29 +124,18 @@ fn mixes_different_sets_and_indexes_when_saving_a_circle() {
     assert!(saved.problems.is_empty());
     let reopened = Document::read(&path).unwrap();
     let moment = &reopened.composer.hitsounds().moments()[0];
-    let [SampleIdentity::File(name)] = &moment.hits().collect::<Vec<_>>()[..] else {
-        panic!("expected a single generated sample");
-    };
-    assert_eq!(moment.volume(), 100);
-    let rendered = dawsu_audio::decode(&root.join(name)).unwrap();
-    assert_eq!(rendered.sample_rate, 48000);
-    for (frame, expected) in rendered
-        .samples
-        .chunks_exact(rendered.channels)
-        .zip([0.125, 0.125, 0.0625])
-    {
-        for &channel in frame {
-            assert!(
-                (channel - expected).abs() < 0.0001,
-                "{channel} vs {expected}"
-            );
-        }
-    }
-    assert_eq!(rendered.samples.len(), 3 * rendered.channels);
+    // Save merges per role: the hitnormal and the clap each get their own file at one new index.
+    let mut hits: Vec<_> = moment.hits().cloned().collect();
+    hits.sort();
+    assert_eq!(hits, [std_lane(SampleSet::Normal, Hitsound::Normal, 4), std_lane(SampleSet::Soft, Hitsound::Clap, 4)]);
+    assert_eq!(moment.volume(), 50);
+    assert_eq!(dawsu_audio::decode(&root.join("normal-hitnormal4.wav")).unwrap().sample_rate, 48000);
+    assert_frames(&root.join("normal-hitnormal4.wav"), &[0.25, 0.0, 0.125]);
+    assert_frames(&root.join("soft-hitclap4.wav"), &[0.0, 0.25]);
     let bytes = std::fs::read(&path).unwrap();
     let expected = original.replace(
         "256,192,1000,1,0,1:0:2:50:",
-        &format!("256,192,1000,1,0,1:0:2:100:{name}"),
+        "256,192,1000,1,8,1:2:4:50:",
     );
     assert_eq!(bytes, expected.as_bytes());
     let backup_dir = std::fs::read_dir(&backups)
@@ -167,7 +156,7 @@ fn mixes_different_sets_and_indexes_when_saving_a_circle() {
     save_document(&d, backups.clone()).unwrap();
     save_document(&reopened, backups).unwrap();
     assert_eq!(std::fs::read(&path).unwrap(), bytes);
-    assert_eq!(initial_files(), 4);
+    assert_eq!(initial_files(), 5);
     assert_eq!(std::fs::read(normal).unwrap(), original_normal);
     assert_eq!(std::fs::read(clap).unwrap(), original_clap);
 }
@@ -213,15 +202,15 @@ fn mixes_slider_tail_with_reserved_indexes_and_checked_green_lines() {
     let reopened = Document::read(&path).unwrap();
     assert_eq!(reopened.file.line_text(reopened.file.hit_objects()[1].line()).as_deref(), Some(neighbor));
     let tail = reopened.composer.hitsounds().moments().iter().find(|m| m.time().ms() == 1500.0).unwrap();
-    assert_eq!(tail.volume(), 100);
-    assert_eq!(tail.hits().cloned().collect::<Vec<_>>(), [SampleIdentity::Standard {
-        set: SampleSet::Normal,
-        sound: Sound::Hit(Hitsound::Normal),
-        index: CustomIndex::new(5),
-    }]);
-    let clip = dawsu_audio::decode(&generated).unwrap();
-    assert_eq!(clip.samples, [0.125, 0.125, 0.125, 0.125, 0.0625, 0.0625]);
+    // Save merges per role: the tail keeps a hitnormal and gets its clap back as a clap.
+    assert_eq!(tail.volume(), 50);
+    let mut hits: Vec<_> = tail.hits().cloned().collect();
+    hits.sort();
+    assert_eq!(hits, [std_lane(SampleSet::Normal, Hitsound::Normal, 5), std_lane(SampleSet::Soft, Hitsound::Clap, 5)]);
+    assert_frames(&generated, &[0.25, 0.0, 0.125]);
+    assert_frames(&root.join("soft-hitclap5.wav"), &[0.0, 0.25]);
     let text = String::from_utf8(new_bytes.clone()).unwrap();
+    let slider = "256,192,1000,2,0,L|396:192,1,140,0|8,1:0|1:2,1:0:0:0:";
     assert!(text.contains(&format!("{slider}\r\n{neighbor}\r\n")), "{text}");
     assert!(text.contains("1500,") && text.contains("1506,"), "{text}");
     d.file = saved.file;
@@ -232,5 +221,181 @@ fn mixes_slider_tail_with_reserved_indexes_and_checked_green_lines() {
     assert_eq!(std::fs::read_to_string(&sibling).unwrap(), sibling_bytes);
     assert_eq!(std::fs::read(original_normal).unwrap(), normal_bytes);
     assert_eq!(std::fs::read(original_clap).unwrap(), clap_bytes);
-    assert_eq!(std::fs::read_dir(root).unwrap().count(), 5);
+    assert_eq!(std::fs::read_dir(root).unwrap().count(), 6);
+}
+
+fn std_lane(set: SampleSet, sound: Hitsound, index: u32) -> SampleIdentity {
+    SampleIdentity::Standard { set, sound: Sound::Hit(sound), index: CustomIndex::new(index) }
+}
+
+fn file_names(root: &std::path::Path) -> Vec<String> {
+    let mut names: Vec<_> = std::fs::read_dir(root).unwrap().map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned()).collect();
+    names.sort();
+    names
+}
+
+fn assert_frames(path: &std::path::Path, expected: &[f32]) {
+    let clip = dawsu_audio::decode(path).unwrap();
+    let actual: Vec<f32> = clip.samples.chunks_exact(clip.channels).map(|frame| frame[0]).collect();
+    assert_eq!(actual.len(), expected.len(), "{}: {actual:?}", path.display());
+    for (a, e) in actual.iter().zip(expected) {
+        assert!((a - e).abs() < 0.0001, "{}: {actual:?} vs {expected:?}", path.display());
+    }
+}
+
+/// A mapset whose difficulty has `objects` and the timing line `timing`, beside 48 kHz mono samples.
+fn mapset(scratch: &Scratch, objects: &str, timing: &str, samples: &[(&str, &[i16])]) -> (std::path::PathBuf, std::path::PathBuf) {
+    let root = scratch.path("mapset");
+    std::fs::create_dir(&root).unwrap();
+    let path = root.join("test.osu");
+    let text = String::from_utf8(MAP.to_vec()).unwrap()
+        .replace("0,500,4,1,0,100,1,0", timing)
+        .replace("256,192,1000,1,0,0:0:0:0:\r\n", objects);
+    std::fs::write(&path, text).unwrap();
+    for (name, data) in samples {
+        sample(&root.join(name), data);
+    }
+    (root, path)
+}
+
+fn moment_at(d: &Document, time: f64) -> dawsu_hitsounding::MomentId {
+    dawsu_hitsounding::MomentId(d.composer.hitsounds().moments().iter().position(|m| m.time().ms() == time).unwrap())
+}
+
+fn set_hits(d: &mut Document, time: f64, volume: i32, hits: Vec<(SampleIdentity, i32)>) {
+    let id = moment_at(d, time);
+    d.composer.apply("Set hits", |h| h.set_moment_state(id, volume, hits));
+}
+
+fn sorted_hits(d: &Document, time: f64) -> Vec<SampleIdentity> {
+    let mut hits: Vec<_> = d.composer.hitsounds().moment(moment_at(d, time)).hits().cloned().collect();
+    hits.sort();
+    hits
+}
+
+/// Reopens the saved difficulty and saves it again: nothing changes.
+fn resave_unchanged(path: &std::path::Path, backups: std::path::PathBuf) {
+    let bytes = std::fs::read(path).unwrap();
+    save_document(&Document::read(path).unwrap(), backups).unwrap();
+    assert_eq!(std::fs::read(path).unwrap(), bytes);
+}
+
+#[test]
+fn save_keeps_the_hitnormal_and_merges_the_finishes_into_one_file() {
+    let scratch = Scratch::new("application-save-roles");
+    let (root, path) = mapset(&scratch, "256,192,1000,1,0,1:0:2:80:\r\n", "0,500,4,1,0,100,1,0", &[
+        ("normal-hitnormal2.wav", &[8192, 0, 4096]),
+        ("drum-hitfinish3.wav", &[0, 8192]),
+        ("soft-hitfinish4.wav", &[4096]),
+    ]);
+    let before = file_names(&root);
+    let mut d = Document::read(&path).unwrap();
+    set_hits(&mut d, 1000.0, 80, vec![
+        (std_lane(SampleSet::Normal, Hitsound::Normal, 2), 80),
+        (std_lane(SampleSet::Drum, Hitsound::Finish, 3), 80),
+        (std_lane(SampleSet::Soft, Hitsound::Finish, 4), 80),
+    ]);
+    let saved = save_document(&d, scratch.path("backups")).unwrap();
+    assert!(saved.problems.is_empty());
+    let after = file_names(&root);
+    eprintln!("before Save: {before:?}\nafter Save:  {after:?}\n{}", std::fs::read_to_string(&path).unwrap());
+    assert!(after.iter().all(|name| !name.starts_with("dawsu-mix-")), "{after:?}");
+    // The hitnormal is kept as it is. Both finishes go into one finish file; at one volume each
+    // set is used once, so soft names it.
+    assert_eq!(after, ["drum-hitfinish3.wav", "normal-hitnormal2.wav", "normal-hitnormal5.wav", "soft-hitfinish4.wav", "soft-hitfinish5.wav", "test.osu"]);
+    assert_frames(&root.join("normal-hitnormal5.wav"), &[0.25, 0.0, 0.125]);
+    assert_frames(&root.join("soft-hitfinish5.wav"), &[0.125, 0.25]);
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(text.contains("256,192,1000,1,4,1:2:5:80:\r\n"), "{text}");
+    let reopened = Document::read(&path).unwrap();
+    assert_eq!(sorted_hits(&reopened, 1000.0), [std_lane(SampleSet::Normal, Hitsound::Normal, 5), std_lane(SampleSet::Soft, Hitsound::Finish, 5)]);
+    assert_eq!(reopened.composer.hitsounds().moment(moment_at(&reopened, 1000.0)).volume(), 80);
+    resave_unchanged(&path, scratch.path("backups"));
+    assert_eq!(file_names(&root), after);
+}
+
+#[test]
+fn save_mixes_two_hitnormals_into_one_hitnormal_file() {
+    let scratch = Scratch::new("application-save-two-normals");
+    let (root, path) = mapset(&scratch, "256,192,1000,1,0,1:0:2:80:\r\n", "0,500,4,1,0,100,1,0", &[
+        ("normal-hitnormal2.wav", &[8192, 0]),
+        ("soft-hitnormal3.wav", &[0, 8192]),
+    ]);
+    let mut d = Document::read(&path).unwrap();
+    set_hits(&mut d, 1000.0, 80, vec![
+        (std_lane(SampleSet::Normal, Hitsound::Normal, 2), 80),
+        (std_lane(SampleSet::Soft, Hitsound::Normal, 3), 80),
+    ]);
+    save_document(&d, scratch.path("backups")).unwrap();
+    assert_eq!(file_names(&root), ["normal-hitnormal2.wav", "soft-hitnormal3.wav", "soft-hitnormal4.wav", "test.osu"]);
+    assert_frames(&root.join("soft-hitnormal4.wav"), &[0.25, 0.25]);
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(text.contains("256,192,1000,1,0,2:0:4:80:\r\n"), "{text}");
+    let reopened = Document::read(&path).unwrap();
+    assert_eq!(sorted_hits(&reopened, 1000.0), [std_lane(SampleSet::Soft, Hitsound::Normal, 4)]);
+    resave_unchanged(&path, scratch.path("backups"));
+}
+
+#[test]
+fn moments_with_the_same_files_share_one_index() {
+    let scratch = Scratch::new("application-save-role-reuse");
+    let objects = "256,192,1000,1,0,1:0:2:80:\r\n256,192,2000,1,0,1:0:2:100:\r\n256,192,3000,1,0,1:0:2:80:\r\n256,192,4000,1,0,1:0:2:80:\r\n";
+    let (root, path) = mapset(&scratch, objects, "0,500,4,1,0,100,1,0", &[
+        ("normal-hitnormal2.wav", &[8192]),
+        ("drum-hitfinish3.wav", &[16384]),
+        ("drum-hitwhistle3.wav", &[4096]),
+    ]);
+    let mut d = Document::read(&path).unwrap();
+    let normal = std_lane(SampleSet::Normal, Hitsound::Normal, 2);
+    let finish = std_lane(SampleSet::Drum, Hitsound::Finish, 3);
+    // 1000 and 2000 differ in volume but play the same files.
+    set_hits(&mut d, 1000.0, 80, vec![(normal.clone(), 80), (finish.clone(), 80)]);
+    set_hits(&mut d, 2000.0, 100, vec![(normal.clone(), 100), (finish.clone(), 100)]);
+    set_hits(&mut d, 3000.0, 80, vec![(normal.clone(), 80), (std_lane(SampleSet::Drum, Hitsound::Whistle, 3), 80)]);
+    // A moment osu! can hold is written on its object, with no file.
+    set_hits(&mut d, 4000.0, 80, vec![(normal.clone(), 80), (std_lane(SampleSet::Drum, Hitsound::Finish, 2), 80)]);
+    save_document(&d, scratch.path("backups")).unwrap();
+    assert_eq!(file_names(&root), [
+        "drum-hitfinish3.wav", "drum-hitfinish4.wav", "drum-hitwhistle3.wav", "drum-hitwhistle5.wav",
+        "normal-hitnormal2.wav", "normal-hitnormal4.wav", "normal-hitnormal5.wav", "test.osu",
+    ]);
+    let text = std::fs::read_to_string(&path).unwrap();
+    for line in ["256,192,1000,1,4,1:3:4:80:", "256,192,2000,1,4,1:3:4:100:", "256,192,3000,1,2,1:3:5:80:", "256,192,4000,1,4,1:3:2:80:"] {
+        assert!(text.contains(&format!("{line}\r\n")), "{line} in {text}");
+    }
+    assert_frames(&root.join("drum-hitfinish4.wav"), &[0.5]);
+
+    // A later Save of the same sounds reuses the files already in the mapset.
+    let mut reopened = Document::read(&path).unwrap();
+    set_hits(&mut reopened, 4000.0, 80, vec![(normal.clone(), 80), (finish.clone(), 80)]);
+    save_document(&reopened, scratch.path("backups")).unwrap();
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(text.contains("256,192,4000,1,4,1:3:4:80:\r\n"), "{text}");
+    assert_eq!(file_names(&root).len(), 8);
+}
+
+#[test]
+fn a_slider_head_merges_per_role_through_a_green_line() {
+    let scratch = Scratch::new("application-save-role-slider");
+    let slider = "256,192,1000,2,0,L|396:192,1,140,0|0,1:0|1:0,1:0:0:0:\r\n";
+    let (root, path) = mapset(&scratch, slider, "0,500,4,1,2,50,1,0", &[
+        ("normal-hitnormal2.wav", &[8192]),
+        ("soft-hitclap3.wav", &[4096]),
+    ]);
+    let mut d = Document::read(&path).unwrap();
+    set_hits(&mut d, 1000.0, 50, vec![
+        (std_lane(SampleSet::Normal, Hitsound::Normal, 2), 50),
+        (std_lane(SampleSet::Soft, Hitsound::Clap, 3), 50),
+    ]);
+    let saved = save_document(&d, scratch.path("backups")).unwrap();
+    assert!(saved.problems.is_empty());
+    assert_eq!(file_names(&root), ["normal-hitnormal2.wav", "normal-hitnormal4.wav", "soft-hitclap3.wav", "soft-hitclap4.wav", "test.osu"]);
+    assert_frames(&root.join("normal-hitnormal4.wav"), &[0.25]);
+    assert_frames(&root.join("soft-hitclap4.wav"), &[0.125]);
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(text.contains("256,192,1000,2,0,L|396:192,1,140,8|0,1:2|1:0,1:0:0:0:\r\n"), "{text}");
+    assert!(text.contains("1000,-100,4,1,4,50,0,0\r\n") && text.contains("1006,-100,4,1,2,50,0,0\r\n"), "{text}");
+    let reopened = Document::read(&path).unwrap();
+    assert_eq!(sorted_hits(&reopened, 1000.0), [std_lane(SampleSet::Normal, Hitsound::Normal, 4), std_lane(SampleSet::Soft, Hitsound::Clap, 4)]);
+    resave_unchanged(&path, scratch.path("backups"));
 }

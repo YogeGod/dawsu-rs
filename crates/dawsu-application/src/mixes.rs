@@ -7,7 +7,7 @@ use dawsu_foundation::{
 };
 use dawsu_hitsounding::{
     Compiled, Decompiled, Hitsounds, LaneSource, MomentId, ObjectId, Place, Placement, ProblemKind,
-    SaveProblem, compile, decompile,
+    SaveProblem, compile, compile::merge_roles, decompile,
 };
 use dawsu_osu_format::{OsuFile, list_folder};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -292,51 +292,123 @@ impl MixFiles {
                         gain: *volume as f32 / 100.0,
                     });
                 }
-                let mut waves = Vec::with_capacity(components.len());
-                for (role, mut cues) in components {
-                    let bank = if role == Hitsound::Normal {
-                        normal_bank
-                    } else {
-                        bank
-                    };
-                    if cues.is_empty() {
-                        cues.push(ScheduledSound {
-                            at_ms: 0.0,
-                            end_ms: None,
-                            gain: 1.0,
-                            clip: Arc::new(AudioClip {
-                                samples: vec![0.0; CHANNELS],
-                                channels: CHANNELS,
-                                sample_rate: SAMPLE_RATE,
-                            }),
-                        });
-                    }
-                    let wav = render(cues, cancel)?;
-                    waves.push((bank, role, wav));
-                }
+                let roles = components
+                    .into_iter()
+                    .map(|(role, cues)| {
+                        let bank = if role == Hitsound::Normal {
+                            normal_bank
+                        } else {
+                            bank
+                        };
+                        (bank, role, cues)
+                    })
+                    .collect();
+                let waves = render_roles(roles, cancel)?;
                 let reused = reusable_export_index(root, &waves, &previous_mixes);
                 let index = match reused {
                     Some(index) => index,
                     None => indexes.reserve()?,
                 };
-                let mut outputs = Vec::with_capacity(waves.len());
-                for (bank, role, wav) in waves {
-                    let name = format!("{}{index}.wav", export_settings::slot_name(bank, role));
-                    self.staged.push(StagedMix {
-                        path: root.join(name),
-                        wav,
-                        reuse: reused.is_some(),
-                        index: Some(index),
-                    });
-                    outputs.push(SampleIdentity::Standard {
-                        set: bank,
-                        sound: Sound::Hit(role),
-                        index: CustomIndex::new(index),
-                    });
-                }
+                let outputs = self.stage_roles(root, waves, index, reused.is_some());
                 &*rendered.entry(key).or_insert(outputs)
             };
             replace_moment(target, moment, outputs.iter().cloned());
+        }
+        Ok(())
+    }
+
+    /// Stages the role files at `index` and returns the hits that play them.
+    fn stage_roles(&mut self, root: &Path, waves: RoleWaves, index: u32, reuse: bool) -> Vec<SampleIdentity> {
+        let mut outputs = Vec::with_capacity(waves.len());
+        for (bank, role, wav) in waves {
+            let name = format!("{}{index}.wav", export_settings::slot_name(bank, role));
+            self.staged.push(StagedMix {
+                path: root.join(name),
+                wav,
+                reuse,
+                index: Some(index),
+            });
+            outputs.push(SampleIdentity::Standard {
+                set: bank,
+                sound: Sound::Hit(role),
+                index: CustomIndex::new(index),
+            });
+        }
+        outputs
+    }
+
+    /// Save's sample mixes (Yoge 2026-11-20): a moment osu! cannot hold is merged per role at one
+    /// shared index, so its hitnormal stays a hitnormal and only sounds of one role share a file.
+    /// The object plays at its loudest sound's volume; each file has the quieter sounds turned
+    /// down against it.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn prepare_by_role(
+        &mut self,
+        source: &Hitsounds,
+        target: &mut Hitsounds,
+        problems: &[SaveProblem],
+        root: &Path,
+        defaults: &Path,
+        expected: &[u8],
+        cancel: &dyn Fn() -> bool,
+    ) -> Result<(), String> {
+        let defaults_list = list_folder(defaults).unwrap_or_default();
+        let expected = OsuFile::read(expected.to_vec()).file;
+        let moments: HashMap<_, _> = target
+            .moments()
+            .iter()
+            .enumerate()
+            .filter_map(|(index, moment)| Some((mix_place(moment.place())?, MomentId(index))))
+            .collect();
+        let mut indexes = IndexedMixes::read(root, &expected, &[], 2)?;
+        // A circle holds its index on its own line, so an earlier Save's files are found there too.
+        indexes.reuse.extend(
+            expected
+                .hit_objects()
+                .iter()
+                .filter_map(|object| object.hit_sample())
+                .map(|sample| sample.index)
+                .filter(|index| *index > 1)
+                .map(|index| index as u32),
+        );
+        let mut clips = HashMap::new();
+        let mut rendered = HashMap::<RoleWaves, u32>::new();
+        for problem in problems {
+            let moment = *mix_place(problem.place)
+                .and_then(|id| moments.get(&id))
+                .ok_or("Sample mix has no matching hit")?;
+            if cancel() {
+                return Err("Sample mix preparation cancelled".into());
+            }
+            let ProblemKind::NeedsSampleMix(layers) = &problem.kind else {
+                return Err("Expected a sample mix plan".into());
+            };
+            let merge = merge_roles(layers);
+            let mut roles = Vec::with_capacity(merge.files.len());
+            for file in &merge.files {
+                let mut cues = Vec::with_capacity(file.layers.len());
+                for (identity, volume) in &file.layers {
+                    cues.push(ScheduledSound {
+                        at_ms: 0.0,
+                        end_ms: None,
+                        clip: load_clip(source, Some(target), identity, root, defaults, &defaults_list, &mut clips, cancel)?,
+                        gain: *volume as f32 / merge.volume as f32,
+                    });
+                }
+                roles.push((file.set, file.role, cues));
+            }
+            let waves = render_roles(roles, cancel)?;
+            let index = match rendered.get(&waves) {
+                Some(index) => *index,
+                None => {
+                    let (index, reuse) = indexes.allocate_roles(root, &waves)?;
+                    self.stage_roles(root, waves.clone(), index, reuse);
+                    rendered.insert(waves, index);
+                    index
+                }
+            };
+            replace_moment(target, moment, merge.hits(index));
+            target.set_volume(moment, merge.volume);
         }
         Ok(())
     }
@@ -436,28 +508,66 @@ fn render_layers(
 ) -> Result<Vec<u8>, String> {
     let mut cues = Vec::with_capacity(layers.len());
     for (identity, volume) in layers {
-        if !clips.contains_key(identity) {
-            let lane = source
-                .lane(identity)
-                .or_else(|| target.and_then(|target| target.lane(identity)))
-                .ok_or("Sample mix lane is missing")?;
-            let path =
-                sample_path(lane, root, defaults, defaults_list).map_err(|error| {
-                    format!("Could not mix {}: {error}", lane_name(identity))
-                })?;
-            let clip = decode_with_cancel(&path, cancel).map_err(|error| {
-                format!("Could not mix {}: {error}", lane_name(identity))
-            })?;
-            clips.insert(identity.clone(), clip);
-        }
         cues.push(ScheduledSound {
             at_ms: 0.0,
             end_ms: None,
-            clip: clips[identity].clone(),
+            clip: load_clip(source, target, identity, root, defaults, defaults_list, clips, cancel)?,
             gain: *volume as f32 / 100.0,
         });
     }
     render(cues, cancel)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn load_clip(
+    source: &Hitsounds, target: Option<&Hitsounds>, identity: &SampleIdentity,
+    root: &Path, defaults: &Path, defaults_list: &[String],
+    clips: &mut HashMap<SampleIdentity, Arc<AudioClip>>, cancel: &dyn Fn() -> bool,
+) -> Result<Arc<AudioClip>, String> {
+    if !clips.contains_key(identity) {
+        let lane = source
+            .lane(identity)
+            .or_else(|| target.and_then(|target| target.lane(identity)))
+            .ok_or("Sample mix lane is missing")?;
+        let path =
+            sample_path(lane, root, defaults, defaults_list).map_err(|error| {
+                format!("Could not mix {}: {error}", lane_name(identity))
+            })?;
+        let clip = decode_with_cancel(&path, cancel).map_err(|error| {
+            format!("Could not mix {}: {error}", lane_name(identity))
+        })?;
+        clips.insert(identity.clone(), clip);
+    }
+    Ok(clips[identity].clone())
+}
+
+type RoleWaves = Vec<(SampleSet, Hitsound, Vec<u8>)>;
+
+/// One WAV per role, each sound at its cue's gain. A role with no sound is written silent, so a
+/// numbered hitnormal never falls back to the skin's. Export's paired samples and Save's merge
+/// per role both write these.
+fn render_roles(
+    roles: Vec<(SampleSet, Hitsound, Vec<ScheduledSound>)>,
+    cancel: &dyn Fn() -> bool,
+) -> Result<RoleWaves, String> {
+    let mut waves = Vec::with_capacity(roles.len());
+    for (bank, role, mut cues) in roles {
+        if cues.is_empty() {
+            cues.push(ScheduledSound {
+                at_ms: 0.0,
+                end_ms: None,
+                gain: 1.0,
+                clip: Arc::new(AudioClip {
+                    samples: vec![0.0; CHANNELS],
+                    channels: CHANNELS,
+                    sample_rate: SAMPLE_RATE,
+                }),
+            });
+        }
+        let wav = render(cues, cancel)?;
+        waves.push((bank, role, wav));
+    }
+    Ok(waves)
 }
 
 pub(super) fn stage_timed_copy(
@@ -606,6 +716,18 @@ impl IndexedMixes {
             .iter()
             .find(|index| has_contents(root, &indexed_name(**index), wav))
         {
+            return Ok((existing, true));
+        }
+        Ok((self.reserve()?, false))
+    }
+
+    /// An index whose files already hold exactly these role files, or a free one.
+    fn allocate_roles(&mut self, root: &Path, waves: &RoleWaves) -> Result<(u32, bool), String> {
+        if let Some(&existing) = self.reuse.iter().find(|index| {
+            waves.iter().all(|(set, role, wav)| {
+                has_contents(root, &format!("{}{index}.wav", export_settings::slot_name(*set, *role)), wav)
+            })
+        }) {
             return Ok((existing, true));
         }
         Ok((self.reserve()?, false))

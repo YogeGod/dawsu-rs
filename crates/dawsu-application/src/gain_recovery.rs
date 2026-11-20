@@ -193,7 +193,12 @@ pub(super) fn mixed_locations(file: &OsuFile, root: &Path, staged: &[StagedMix],
     let Decompiled::Done(decoded) = decompile(file, &listing, cancel, &mut |_, _| {}) else {
         return Err("Could not read back the written difficulty".into());
     };
-    Ok(decoded.moments().iter().filter(|moment| moment.hits().any(|lane| matches!(lane, SampleIdentity::File(name) if names.contains(name))))
+    // Save's merged files are numbered samples, so a hit plays one when its lane reads that file.
+    let plays_staged = |lane: &SampleIdentity| match lane {
+        SampleIdentity::File(name) => names.contains(name),
+        _ => decoded.lane(lane).is_some_and(|lane| matches!(&lane.source, dawsu_hitsounding::LaneSource::File(name) if names.contains(name))),
+    };
+    Ok(decoded.moments().iter().filter(|moment| moment.hits().any(plays_staged))
         .filter_map(|moment| location(moment.place())).collect())
 }
 
