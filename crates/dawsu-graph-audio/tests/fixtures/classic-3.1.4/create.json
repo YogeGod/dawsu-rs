@@ -1,0 +1,1486 @@
+{
+  "maps": {
+    "two_circles": "osu file format v14\n[General]\nSampleSet:Soft\nMode:0\n[Metadata]\nVersion:Test\n[TimingPoints]\n0,500,4,2,0,45,1,0\n[HitObjects]\n100,100,1000,1,0,0:0:0:0:\n100,100,1500,1,0,0:0:0:0:",
+    "empty": "osu file format v14\n[General]\nMode:0\n[Metadata]\nVersion:Hitsounds\n[TimingPoints]\n0,500,4,2,0,45,1,0\n[HitObjects]"
+  },
+  "grid": "120 BPM from 0 ms: step = 500 / divisor, snapped = round_half_even(time / step) * step",
+  "object_tolerance_ms": 30,
+  "anchor_tolerance_ms": 2,
+  "cases": [
+    {
+      "name": "both_drums_one_step",
+      "map": "two_circles",
+      "hs_mode": false,
+      "steps": [
+        {
+          "candidates": [
+            {
+              "drum": "kick",
+              "time_ms": 1010,
+              "score": 0.9
+            },
+            {
+              "drum": "snare",
+              "time_ms": 1490,
+              "score": 0.8
+            }
+          ],
+          "include_unmatched": false,
+          "divisors": null,
+          "from": "-inf",
+          "to": "inf",
+          "snare_lane": "snare",
+          "apply": true,
+          "hits": [
+            {
+              "lane": "kick",
+              "time_ms": 1000,
+              "anchored": true
+            },
+            {
+              "lane": "snare",
+              "time_ms": 1500,
+              "anchored": true
+            }
+          ],
+          "unmatched": 0,
+          "duplicates": 0,
+          "off_grid": 0,
+          "grid_shift_ms": 0,
+          "undo_steps_added": 1
+        }
+      ]
+    },
+    {
+      "name": "reapply_duplicates",
+      "map": "two_circles",
+      "hs_mode": false,
+      "steps": [
+        {
+          "candidates": [
+            {
+              "drum": "kick",
+              "time_ms": 1001,
+              "score": 0.8
+            },
+            {
+              "drum": "kick",
+              "time_ms": 1002,
+              "score": 0.9
+            },
+            {
+              "drum": "snare",
+              "time_ms": 1002,
+              "score": 0.9
+            }
+          ],
+          "include_unmatched": false,
+          "divisors": null,
+          "from": "-inf",
+          "to": "inf",
+          "snare_lane": "snare",
+          "apply": true,
+          "hits": [
+            {
+              "lane": "kick",
+              "time_ms": 1000,
+              "anchored": true
+            },
+            {
+              "lane": "snare",
+              "time_ms": 1000,
+              "anchored": true
+            }
+          ],
+          "unmatched": 0,
+          "duplicates": 1,
+          "off_grid": 0,
+          "grid_shift_ms": 0,
+          "undo_steps_added": 1
+        },
+        {
+          "candidates": [
+            {
+              "drum": "kick",
+              "time_ms": 1001,
+              "score": 0.8
+            },
+            {
+              "drum": "kick",
+              "time_ms": 1002,
+              "score": 0.9
+            },
+            {
+              "drum": "snare",
+              "time_ms": 1002,
+              "score": 0.9
+            }
+          ],
+          "include_unmatched": false,
+          "divisors": null,
+          "from": "-inf",
+          "to": "inf",
+          "snare_lane": "snare",
+          "apply": true,
+          "hits": [],
+          "unmatched": 0,
+          "duplicates": 3,
+          "off_grid": 0,
+          "grid_shift_ms": 0,
+          "undo_steps_added": 0
+        }
+      ]
+    },
+    {
+      "name": "unmatched_optional",
+      "map": "two_circles",
+      "hs_mode": false,
+      "steps": [
+        {
+          "candidates": [
+            {
+              "drum": "kick",
+              "time_ms": 1200,
+              "score": 0.8
+            },
+            {
+              "drum": "tom",
+              "time_ms": 1000,
+              "score": 1
+            },
+            {
+              "drum": "snare",
+              "time_ms": "nan",
+              "score": 1
+            }
+          ],
+          "include_unmatched": false,
+          "divisors": null,
+          "from": "-inf",
+          "to": "inf",
+          "snare_lane": "snare",
+          "apply": false,
+          "hits": [],
+          "unmatched": 1,
+          "duplicates": 0,
+          "off_grid": 0,
+          "grid_shift_ms": 0,
+          "undo_steps_added": 0
+        },
+        {
+          "candidates": [
+            {
+              "drum": "kick",
+              "time_ms": 1200,
+              "score": 0.8
+            },
+            {
+              "drum": "tom",
+              "time_ms": 1000,
+              "score": 1
+            },
+            {
+              "drum": "snare",
+              "time_ms": "nan",
+              "score": 1
+            }
+          ],
+          "include_unmatched": true,
+          "divisors": null,
+          "from": "-inf",
+          "to": "inf",
+          "snare_lane": "snare",
+          "apply": false,
+          "hits": [
+            {
+              "lane": "kick",
+              "time_ms": 1200,
+              "anchored": false
+            }
+          ],
+          "unmatched": 1,
+          "duplicates": 0,
+          "off_grid": 0,
+          "grid_shift_ms": 0,
+          "undo_steps_added": 0
+        }
+      ]
+    },
+    {
+      "name": "selected_range",
+      "map": "two_circles",
+      "hs_mode": false,
+      "steps": [
+        {
+          "candidates": [
+            {
+              "drum": "kick",
+              "time_ms": 1001,
+              "score": 1
+            },
+            {
+              "drum": "snare",
+              "time_ms": 1490,
+              "score": 1
+            },
+            {
+              "drum": "kick",
+              "time_ms": 1510,
+              "score": 1
+            }
+          ],
+          "include_unmatched": false,
+          "divisors": null,
+          "from": 1010,
+          "to": 1510,
+          "snare_lane": "snare",
+          "apply": false,
+          "hits": [
+            {
+              "lane": "snare",
+              "time_ms": 1500,
+              "anchored": true
+            }
+          ],
+          "unmatched": 0,
+          "duplicates": 0,
+          "off_grid": 0,
+          "grid_shift_ms": 0,
+          "undo_steps_added": 0
+        }
+      ]
+    },
+    {
+      "name": "skipped_and_same_destination",
+      "map": "two_circles",
+      "hs_mode": false,
+      "steps": [
+        {
+          "candidates": [
+            {
+              "drum": "kick",
+              "time_ms": 1000,
+              "score": 0.8
+            },
+            {
+              "drum": "snare",
+              "time_ms": 1000,
+              "score": 0.9
+            }
+          ],
+          "include_unmatched": false,
+          "divisors": null,
+          "from": "-inf",
+          "to": "inf",
+          "snare_lane": "none",
+          "apply": false,
+          "hits": [
+            {
+              "lane": "kick",
+              "time_ms": 1000,
+              "anchored": true
+            }
+          ],
+          "unmatched": 0,
+          "duplicates": 0,
+          "off_grid": 0,
+          "grid_shift_ms": 0,
+          "undo_steps_added": 0
+        },
+        {
+          "candidates": [
+            {
+              "drum": "kick",
+              "time_ms": 1000,
+              "score": 0.8
+            },
+            {
+              "drum": "snare",
+              "time_ms": 1000,
+              "score": 0.9
+            }
+          ],
+          "include_unmatched": false,
+          "divisors": null,
+          "from": "-inf",
+          "to": "inf",
+          "snare_lane": "kick",
+          "apply": false,
+          "hits": [
+            {
+              "lane": "kick",
+              "time_ms": 1000,
+              "anchored": true
+            }
+          ],
+          "unmatched": 0,
+          "duplicates": 1,
+          "off_grid": 0,
+          "grid_shift_ms": 0,
+          "undo_steps_added": 0
+        }
+      ]
+    },
+    {
+      "name": "empty_hitsound_diff",
+      "map": "empty",
+      "hs_mode": true,
+      "steps": [
+        {
+          "candidates": [
+            {
+              "drum": "kick",
+              "time_ms": 1000,
+              "score": 0.9
+            }
+          ],
+          "include_unmatched": false,
+          "divisors": null,
+          "from": "-inf",
+          "to": "inf",
+          "snare_lane": "snare",
+          "apply": false,
+          "hits": [],
+          "unmatched": 1,
+          "duplicates": 0,
+          "off_grid": 0,
+          "grid_shift_ms": 0,
+          "undo_steps_added": 0
+        },
+        {
+          "candidates": [
+            {
+              "drum": "kick",
+              "time_ms": 1000,
+              "score": 0.9
+            }
+          ],
+          "include_unmatched": true,
+          "divisors": null,
+          "from": "-inf",
+          "to": "inf",
+          "snare_lane": "snare",
+          "apply": false,
+          "hits": [
+            {
+              "lane": "kick",
+              "time_ms": 1000,
+              "anchored": true
+            }
+          ],
+          "unmatched": 1,
+          "duplicates": 0,
+          "off_grid": 0,
+          "grid_shift_ms": 0,
+          "undo_steps_added": 0
+        }
+      ]
+    },
+    {
+      "name": "off_grid_dropped",
+      "map": "two_circles",
+      "hs_mode": false,
+      "steps": [
+        {
+          "candidates": [
+            {
+              "drum": "kick",
+              "time_ms": 1135,
+              "score": 0.9
+            },
+            {
+              "drum": "snare",
+              "time_ms": 1190,
+              "score": 0.8
+            },
+            {
+              "drum": "kick",
+              "time_ms": 1515,
+              "score": 0.7
+            }
+          ],
+          "include_unmatched": true,
+          "divisors": [
+            4
+          ],
+          "from": "-inf",
+          "to": "inf",
+          "snare_lane": "snare",
+          "apply": false,
+          "hits": [
+            {
+              "lane": "kick",
+              "time_ms": 1125,
+              "anchored": false
+            },
+            {
+              "lane": "kick",
+              "time_ms": 1500,
+              "anchored": true
+            }
+          ],
+          "unmatched": 1,
+          "duplicates": 0,
+          "off_grid": 1,
+          "grid_shift_ms": 0,
+          "undo_steps_added": 0
+        }
+      ]
+    },
+    {
+      "name": "triplets",
+      "map": "two_circles",
+      "hs_mode": false,
+      "steps": [
+        {
+          "candidates": [
+            {
+              "drum": "kick",
+              "time_ms": 1170,
+              "score": 0.9
+            }
+          ],
+          "include_unmatched": true,
+          "divisors": [
+            4
+          ],
+          "from": "-inf",
+          "to": "inf",
+          "snare_lane": "snare",
+          "apply": false,
+          "hits": [],
+          "unmatched": 0,
+          "duplicates": 0,
+          "off_grid": 1,
+          "grid_shift_ms": 0,
+          "undo_steps_added": 0
+        },
+        {
+          "candidates": [
+            {
+              "drum": "kick",
+              "time_ms": 1170,
+              "score": 0.9
+            }
+          ],
+          "include_unmatched": true,
+          "divisors": [
+            4,
+            3
+          ],
+          "from": "-inf",
+          "to": "inf",
+          "snare_lane": "snare",
+          "apply": false,
+          "hits": [
+            {
+              "lane": "kick",
+              "time_ms": 1166.6666666666665,
+              "anchored": false
+            }
+          ],
+          "unmatched": 1,
+          "duplicates": 0,
+          "off_grid": 0,
+          "grid_shift_ms": 0,
+          "undo_steps_added": 0
+        },
+        {
+          "candidates": [
+            {
+              "drum": "kick",
+              "time_ms": 1170,
+              "score": 0.9
+            }
+          ],
+          "include_unmatched": true,
+          "divisors": [],
+          "from": "-inf",
+          "to": "inf",
+          "snare_lane": "snare",
+          "apply": false,
+          "hits": [
+            {
+              "lane": "kick",
+              "time_ms": 1170,
+              "anchored": false
+            }
+          ],
+          "unmatched": 1,
+          "duplicates": 0,
+          "off_grid": 0,
+          "grid_shift_ms": 0,
+          "undo_steps_added": 0
+        }
+      ]
+    },
+    {
+      "name": "two_on_one_line",
+      "map": "two_circles",
+      "hs_mode": false,
+      "steps": [
+        {
+          "candidates": [
+            {
+              "drum": "kick",
+              "time_ms": 1118,
+              "score": 0.4
+            },
+            {
+              "drum": "kick",
+              "time_ms": 1132,
+              "score": 0.9
+            }
+          ],
+          "include_unmatched": true,
+          "divisors": [
+            4
+          ],
+          "from": "-inf",
+          "to": "inf",
+          "snare_lane": "snare",
+          "apply": false,
+          "hits": [
+            {
+              "lane": "kick",
+              "time_ms": 1125,
+              "anchored": false
+            }
+          ],
+          "unmatched": 2,
+          "duplicates": 1,
+          "off_grid": 0,
+          "grid_shift_ms": 0,
+          "undo_steps_added": 0
+        }
+      ]
+    },
+    {
+      "name": "constant_lag",
+      "map": "two_circles",
+      "hs_mode": false,
+      "steps": [
+        {
+          "candidates": [
+            {
+              "drum": "kick",
+              "time_ms": 2028,
+              "score": 0.9
+            },
+            {
+              "drum": "kick",
+              "time_ms": 2153,
+              "score": 0.9
+            },
+            {
+              "drum": "kick",
+              "time_ms": 2278,
+              "score": 0.9
+            },
+            {
+              "drum": "kick",
+              "time_ms": 2403,
+              "score": 0.9
+            },
+            {
+              "drum": "kick",
+              "time_ms": 2528,
+              "score": 0.9
+            },
+            {
+              "drum": "kick",
+              "time_ms": 2653,
+              "score": 0.9
+            },
+            {
+              "drum": "kick",
+              "time_ms": 2778,
+              "score": 0.9
+            },
+            {
+              "drum": "kick",
+              "time_ms": 2903,
+              "score": 0.9
+            },
+            {
+              "drum": "kick",
+              "time_ms": 3028,
+              "score": 0.9
+            },
+            {
+              "drum": "kick",
+              "time_ms": 3153,
+              "score": 0.9
+            },
+            {
+              "drum": "kick",
+              "time_ms": 3278,
+              "score": 0.9
+            },
+            {
+              "drum": "kick",
+              "time_ms": 3403,
+              "score": 0.9
+            },
+            {
+              "drum": "kick",
+              "time_ms": 4088,
+              "score": 0.5
+            }
+          ],
+          "include_unmatched": true,
+          "divisors": [
+            4
+          ],
+          "from": "-inf",
+          "to": "inf",
+          "snare_lane": "snare",
+          "apply": false,
+          "hits": [
+            {
+              "lane": "kick",
+              "time_ms": 2000,
+              "anchored": false
+            },
+            {
+              "lane": "kick",
+              "time_ms": 2125,
+              "anchored": false
+            },
+            {
+              "lane": "kick",
+              "time_ms": 2250,
+              "anchored": false
+            },
+            {
+              "lane": "kick",
+              "time_ms": 2375,
+              "anchored": false
+            },
+            {
+              "lane": "kick",
+              "time_ms": 2500,
+              "anchored": false
+            },
+            {
+              "lane": "kick",
+              "time_ms": 2625,
+              "anchored": false
+            },
+            {
+              "lane": "kick",
+              "time_ms": 2750,
+              "anchored": false
+            },
+            {
+              "lane": "kick",
+              "time_ms": 2875,
+              "anchored": false
+            },
+            {
+              "lane": "kick",
+              "time_ms": 3000,
+              "anchored": false
+            },
+            {
+              "lane": "kick",
+              "time_ms": 3125,
+              "anchored": false
+            },
+            {
+              "lane": "kick",
+              "time_ms": 3250,
+              "anchored": false
+            },
+            {
+              "lane": "kick",
+              "time_ms": 3375,
+              "anchored": false
+            }
+          ],
+          "unmatched": 12,
+          "duplicates": 0,
+          "off_grid": 1,
+          "grid_shift_ms": 28,
+          "undo_steps_added": 0
+        },
+        {
+          "candidates": [
+            {
+              "drum": "kick",
+              "time_ms": 2028,
+              "score": 0.9
+            },
+            {
+              "drum": "kick",
+              "time_ms": 2153,
+              "score": 0.9
+            },
+            {
+              "drum": "kick",
+              "time_ms": 2278,
+              "score": 0.9
+            }
+          ],
+          "include_unmatched": true,
+          "divisors": [
+            4
+          ],
+          "from": "-inf",
+          "to": "inf",
+          "snare_lane": "snare",
+          "apply": false,
+          "hits": [],
+          "unmatched": 0,
+          "duplicates": 0,
+          "off_grid": 3,
+          "grid_shift_ms": 0,
+          "undo_steps_added": 0
+        }
+      ]
+    },
+    {
+      "name": "pattern_detected",
+      "map": "two_circles",
+      "hs_mode": false,
+      "steps": [
+        {
+          "candidates": [
+            {
+              "drum": "kick",
+              "time_ms": 504,
+              "score": 0.9999
+            },
+            {
+              "drum": "snare",
+              "time_ms": 1004,
+              "score": 0.9517
+            },
+            {
+              "drum": "kick",
+              "time_ms": 1504,
+              "score": 0.9998
+            },
+            {
+              "drum": "snare",
+              "time_ms": 2004,
+              "score": 0.9376
+            },
+            {
+              "drum": "kick",
+              "time_ms": 2504,
+              "score": 0.9999
+            },
+            {
+              "drum": "snare",
+              "time_ms": 3004,
+              "score": 0.9434
+            },
+            {
+              "drum": "kick",
+              "time_ms": 3504,
+              "score": 1
+            },
+            {
+              "drum": "snare",
+              "time_ms": 4004,
+              "score": 1.027
+            },
+            {
+              "drum": "kick",
+              "time_ms": 4504,
+              "score": 0.9999
+            },
+            {
+              "drum": "kick",
+              "time_ms": 4994,
+              "score": 0.4393
+            },
+            {
+              "drum": "snare",
+              "time_ms": 5004,
+              "score": 1.0087
+            },
+            {
+              "drum": "kick",
+              "time_ms": 5504,
+              "score": 1.0001
+            },
+            {
+              "drum": "snare",
+              "time_ms": 6004,
+              "score": 0.9666
+            },
+            {
+              "drum": "kick",
+              "time_ms": 6504,
+              "score": 1.0001
+            },
+            {
+              "drum": "snare",
+              "time_ms": 7004,
+              "score": 0.8581
+            },
+            {
+              "drum": "kick",
+              "time_ms": 7504,
+              "score": 1
+            },
+            {
+              "drum": "snare",
+              "time_ms": 8004,
+              "score": 0.9549
+            },
+            {
+              "drum": "kick",
+              "time_ms": 8504,
+              "score": 0.9999
+            },
+            {
+              "drum": "snare",
+              "time_ms": 9004,
+              "score": 0.897
+            },
+            {
+              "drum": "kick",
+              "time_ms": 9504,
+              "score": 0.9999
+            },
+            {
+              "drum": "snare",
+              "time_ms": 10004,
+              "score": 0.947
+            },
+            {
+              "drum": "kick",
+              "time_ms": 10504,
+              "score": 0.9997
+            },
+            {
+              "drum": "snare",
+              "time_ms": 11004,
+              "score": 0.9388
+            },
+            {
+              "drum": "kick",
+              "time_ms": 11504,
+              "score": 1
+            },
+            {
+              "drum": "snare",
+              "time_ms": 12004,
+              "score": 0.8306
+            },
+            {
+              "drum": "kick",
+              "time_ms": 12504,
+              "score": 0.9997
+            },
+            {
+              "drum": "snare",
+              "time_ms": 13004,
+              "score": 0.9073
+            },
+            {
+              "drum": "kick",
+              "time_ms": 13504,
+              "score": 0.9998
+            },
+            {
+              "drum": "snare",
+              "time_ms": 14004,
+              "score": 1.0267
+            },
+            {
+              "drum": "kick",
+              "time_ms": 14504,
+              "score": 1
+            },
+            {
+              "drum": "snare",
+              "time_ms": 15004,
+              "score": 0.9975
+            },
+            {
+              "drum": "kick",
+              "time_ms": 15504,
+              "score": 1
+            },
+            {
+              "drum": "snare",
+              "time_ms": 16004,
+              "score": 1
+            }
+          ],
+          "include_unmatched": true,
+          "divisors": [
+            4
+          ],
+          "from": "-inf",
+          "to": "inf",
+          "snare_lane": "snare",
+          "apply": false,
+          "hits": [
+            {
+              "lane": "kick",
+              "time_ms": 500,
+              "anchored": false
+            },
+            {
+              "lane": "snare",
+              "time_ms": 1000,
+              "anchored": true
+            },
+            {
+              "lane": "kick",
+              "time_ms": 1500,
+              "anchored": true
+            },
+            {
+              "lane": "snare",
+              "time_ms": 2000,
+              "anchored": false
+            },
+            {
+              "lane": "kick",
+              "time_ms": 2500,
+              "anchored": false
+            },
+            {
+              "lane": "snare",
+              "time_ms": 3000,
+              "anchored": false
+            },
+            {
+              "lane": "kick",
+              "time_ms": 3500,
+              "anchored": false
+            },
+            {
+              "lane": "snare",
+              "time_ms": 4000,
+              "anchored": false
+            },
+            {
+              "lane": "kick",
+              "time_ms": 4500,
+              "anchored": false
+            },
+            {
+              "lane": "snare",
+              "time_ms": 5000,
+              "anchored": false
+            },
+            {
+              "lane": "kick",
+              "time_ms": 5000,
+              "anchored": false
+            },
+            {
+              "lane": "kick",
+              "time_ms": 5500,
+              "anchored": false
+            },
+            {
+              "lane": "snare",
+              "time_ms": 6000,
+              "anchored": false
+            },
+            {
+              "lane": "kick",
+              "time_ms": 6500,
+              "anchored": false
+            },
+            {
+              "lane": "snare",
+              "time_ms": 7000,
+              "anchored": false
+            },
+            {
+              "lane": "kick",
+              "time_ms": 7500,
+              "anchored": false
+            },
+            {
+              "lane": "snare",
+              "time_ms": 8000,
+              "anchored": false
+            },
+            {
+              "lane": "kick",
+              "time_ms": 8500,
+              "anchored": false
+            },
+            {
+              "lane": "snare",
+              "time_ms": 9000,
+              "anchored": false
+            },
+            {
+              "lane": "kick",
+              "time_ms": 9500,
+              "anchored": false
+            },
+            {
+              "lane": "snare",
+              "time_ms": 10000,
+              "anchored": false
+            },
+            {
+              "lane": "kick",
+              "time_ms": 10500,
+              "anchored": false
+            },
+            {
+              "lane": "snare",
+              "time_ms": 11000,
+              "anchored": false
+            },
+            {
+              "lane": "kick",
+              "time_ms": 11500,
+              "anchored": false
+            },
+            {
+              "lane": "snare",
+              "time_ms": 12000,
+              "anchored": false
+            },
+            {
+              "lane": "kick",
+              "time_ms": 12500,
+              "anchored": false
+            },
+            {
+              "lane": "snare",
+              "time_ms": 13000,
+              "anchored": false
+            },
+            {
+              "lane": "kick",
+              "time_ms": 13500,
+              "anchored": false
+            },
+            {
+              "lane": "snare",
+              "time_ms": 14000,
+              "anchored": false
+            },
+            {
+              "lane": "kick",
+              "time_ms": 14500,
+              "anchored": false
+            },
+            {
+              "lane": "snare",
+              "time_ms": 15000,
+              "anchored": false
+            },
+            {
+              "lane": "kick",
+              "time_ms": 15500,
+              "anchored": false
+            },
+            {
+              "lane": "snare",
+              "time_ms": 16000,
+              "anchored": false
+            }
+          ],
+          "unmatched": 31,
+          "duplicates": 0,
+          "off_grid": 0,
+          "grid_shift_ms": 4,
+          "undo_steps_added": 0
+        },
+        {
+          "candidates": [
+            {
+              "drum": "kick",
+              "time_ms": 504,
+              "score": 0.9999
+            },
+            {
+              "drum": "snare",
+              "time_ms": 1004,
+              "score": 0.9517
+            },
+            {
+              "drum": "kick",
+              "time_ms": 1504,
+              "score": 0.9998
+            },
+            {
+              "drum": "snare",
+              "time_ms": 2004,
+              "score": 0.9376
+            },
+            {
+              "drum": "kick",
+              "time_ms": 2504,
+              "score": 0.9999
+            },
+            {
+              "drum": "snare",
+              "time_ms": 3004,
+              "score": 0.9434
+            },
+            {
+              "drum": "kick",
+              "time_ms": 3504,
+              "score": 1
+            },
+            {
+              "drum": "snare",
+              "time_ms": 4004,
+              "score": 1.027
+            },
+            {
+              "drum": "kick",
+              "time_ms": 4504,
+              "score": 0.9999
+            },
+            {
+              "drum": "kick",
+              "time_ms": 4994,
+              "score": 0.4393
+            },
+            {
+              "drum": "snare",
+              "time_ms": 5004,
+              "score": 1.0087
+            },
+            {
+              "drum": "kick",
+              "time_ms": 5504,
+              "score": 1.0001
+            },
+            {
+              "drum": "snare",
+              "time_ms": 6004,
+              "score": 0.9666
+            },
+            {
+              "drum": "kick",
+              "time_ms": 6504,
+              "score": 1.0001
+            },
+            {
+              "drum": "snare",
+              "time_ms": 7004,
+              "score": 0.8581
+            },
+            {
+              "drum": "kick",
+              "time_ms": 7504,
+              "score": 1
+            },
+            {
+              "drum": "snare",
+              "time_ms": 8004,
+              "score": 0.9549
+            },
+            {
+              "drum": "kick",
+              "time_ms": 8504,
+              "score": 0.9999
+            },
+            {
+              "drum": "snare",
+              "time_ms": 9004,
+              "score": 0.897
+            },
+            {
+              "drum": "kick",
+              "time_ms": 9504,
+              "score": 0.9999
+            },
+            {
+              "drum": "snare",
+              "time_ms": 10004,
+              "score": 0.947
+            },
+            {
+              "drum": "kick",
+              "time_ms": 10504,
+              "score": 0.9997
+            },
+            {
+              "drum": "snare",
+              "time_ms": 11004,
+              "score": 0.9388
+            },
+            {
+              "drum": "kick",
+              "time_ms": 11504,
+              "score": 1
+            },
+            {
+              "drum": "snare",
+              "time_ms": 12004,
+              "score": 0.8306
+            },
+            {
+              "drum": "kick",
+              "time_ms": 12504,
+              "score": 0.9997
+            },
+            {
+              "drum": "snare",
+              "time_ms": 13004,
+              "score": 0.9073
+            },
+            {
+              "drum": "kick",
+              "time_ms": 13504,
+              "score": 0.9998
+            },
+            {
+              "drum": "snare",
+              "time_ms": 14004,
+              "score": 1.0267
+            },
+            {
+              "drum": "kick",
+              "time_ms": 14504,
+              "score": 1
+            },
+            {
+              "drum": "snare",
+              "time_ms": 15004,
+              "score": 0.9975
+            },
+            {
+              "drum": "kick",
+              "time_ms": 15504,
+              "score": 1
+            },
+            {
+              "drum": "snare",
+              "time_ms": 16004,
+              "score": 1
+            }
+          ],
+          "include_unmatched": false,
+          "divisors": [
+            4,
+            3
+          ],
+          "from": "-inf",
+          "to": "inf",
+          "snare_lane": "snare",
+          "apply": false,
+          "hits": [
+            {
+              "lane": "snare",
+              "time_ms": 1000,
+              "anchored": true
+            },
+            {
+              "lane": "kick",
+              "time_ms": 1500,
+              "anchored": true
+            }
+          ],
+          "unmatched": 31,
+          "duplicates": 0,
+          "off_grid": 0,
+          "grid_shift_ms": 4,
+          "undo_steps_added": 0
+        },
+        {
+          "candidates": [
+            {
+              "drum": "kick",
+              "time_ms": 504,
+              "score": 0.9999
+            },
+            {
+              "drum": "snare",
+              "time_ms": 1004,
+              "score": 0.9517
+            },
+            {
+              "drum": "kick",
+              "time_ms": 1504,
+              "score": 0.9998
+            },
+            {
+              "drum": "snare",
+              "time_ms": 2004,
+              "score": 0.9376
+            },
+            {
+              "drum": "kick",
+              "time_ms": 2504,
+              "score": 0.9999
+            },
+            {
+              "drum": "snare",
+              "time_ms": 3004,
+              "score": 0.9434
+            },
+            {
+              "drum": "kick",
+              "time_ms": 3504,
+              "score": 1
+            },
+            {
+              "drum": "snare",
+              "time_ms": 4004,
+              "score": 1.027
+            },
+            {
+              "drum": "kick",
+              "time_ms": 4504,
+              "score": 0.9999
+            },
+            {
+              "drum": "kick",
+              "time_ms": 4994,
+              "score": 0.4393
+            },
+            {
+              "drum": "snare",
+              "time_ms": 5004,
+              "score": 1.0087
+            },
+            {
+              "drum": "kick",
+              "time_ms": 5504,
+              "score": 1.0001
+            },
+            {
+              "drum": "snare",
+              "time_ms": 6004,
+              "score": 0.9666
+            },
+            {
+              "drum": "kick",
+              "time_ms": 6504,
+              "score": 1.0001
+            },
+            {
+              "drum": "snare",
+              "time_ms": 7004,
+              "score": 0.8581
+            },
+            {
+              "drum": "kick",
+              "time_ms": 7504,
+              "score": 1
+            },
+            {
+              "drum": "snare",
+              "time_ms": 8004,
+              "score": 0.9549
+            },
+            {
+              "drum": "kick",
+              "time_ms": 8504,
+              "score": 0.9999
+            },
+            {
+              "drum": "snare",
+              "time_ms": 9004,
+              "score": 0.897
+            },
+            {
+              "drum": "kick",
+              "time_ms": 9504,
+              "score": 0.9999
+            },
+            {
+              "drum": "snare",
+              "time_ms": 10004,
+              "score": 0.947
+            },
+            {
+              "drum": "kick",
+              "time_ms": 10504,
+              "score": 0.9997
+            },
+            {
+              "drum": "snare",
+              "time_ms": 11004,
+              "score": 0.9388
+            },
+            {
+              "drum": "kick",
+              "time_ms": 11504,
+              "score": 1
+            },
+            {
+              "drum": "snare",
+              "time_ms": 12004,
+              "score": 0.8306
+            },
+            {
+              "drum": "kick",
+              "time_ms": 12504,
+              "score": 0.9997
+            },
+            {
+              "drum": "snare",
+              "time_ms": 13004,
+              "score": 0.9073
+            },
+            {
+              "drum": "kick",
+              "time_ms": 13504,
+              "score": 0.9998
+            },
+            {
+              "drum": "snare",
+              "time_ms": 14004,
+              "score": 1.0267
+            },
+            {
+              "drum": "kick",
+              "time_ms": 14504,
+              "score": 1
+            },
+            {
+              "drum": "snare",
+              "time_ms": 15004,
+              "score": 0.9975
+            },
+            {
+              "drum": "kick",
+              "time_ms": 15504,
+              "score": 1
+            },
+            {
+              "drum": "snare",
+              "time_ms": 16004,
+              "score": 1
+            }
+          ],
+          "include_unmatched": false,
+          "divisors": null,
+          "from": "-inf",
+          "to": "inf",
+          "snare_lane": "snare",
+          "apply": false,
+          "hits": [
+            {
+              "lane": "snare",
+              "time_ms": 1000,
+              "anchored": true
+            },
+            {
+              "lane": "kick",
+              "time_ms": 1500,
+              "anchored": true
+            }
+          ],
+          "unmatched": 31,
+          "duplicates": 0,
+          "off_grid": 0,
+          "grid_shift_ms": 0,
+          "undo_steps_added": 0
+        }
+      ]
+    }
+  ]
+}
