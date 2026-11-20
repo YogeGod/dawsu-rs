@@ -490,8 +490,13 @@ fn a_moment_without_a_hitnormal_gets_no_hitnormal_file_and_sample_files_join_the
 #[test]
 fn merged_volumes_never_go_below_five_percent() {
     let normal = std(SampleSet::Normal, Hitsound::Normal, 0);
-    let clap = std(SampleSet::Normal, Hitsound::Clap, 0);
-    let merge = merge_roles(&[(normal.clone(), 3), (clap.clone(), 1)]);
+    let clap = std(SampleSet::Normal, Hitsound::Clap, 3);
+    let source = map("256,192,1000,1,0,1:0:2:80:");
+    let mut edited = dec(&source);
+    edited.set_moment_state(MomentId(0), 3, [(normal.clone(), 3), (clap.clone(), 1)]);
+    let (_, problems) = comp(&source, &edited, Placement::OnObjects);
+    let [SaveProblem { kind: ProblemKind::NeedsSampleMix(layers), .. }] = problems.as_slice() else { panic!("{problems:?}") };
+    let merge = merge_roles(layers);
     assert_eq!(merge.volume, 5);
     assert_eq!(merge.files[1], role(SampleSet::Normal, Hitsound::Clap, &[(clap, 5)]));
 }

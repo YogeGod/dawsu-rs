@@ -438,3 +438,137 @@ fn a_clap_only_merge_writes_no_hitnormal_and_avoids_an_index_with_one() {
     assert!(text.contains("256,192,2000,1,8,1:2:5:80:\r\n"), "{text}");
     assert_eq!(file_names(&root), ["drum-hitclap3.wav", "soft-hitclap2.wav", "soft-hitclap4.wav", "soft-hitclap5.wav", "soft-hitnormal2.wav", "test.osu"]);
 }
+
+fn sample_at(path: &std::path::Path, rate: u32, data: &[i16]) -> Vec<u8> {
+    let size = (data.len() * 2) as u32;
+    let mut wav = b"RIFF".to_vec();
+    wav.extend((36 + size).to_le_bytes());
+    wav.extend(b"WAVEfmt \x10\0\0\0\x01\0\x01\0");
+    wav.extend(rate.to_le_bytes());
+    wav.extend((rate * 2).to_le_bytes());
+    wav.extend(b"\x02\0\x10\0data");
+    wav.extend(size.to_le_bytes());
+    wav.extend(data.iter().flat_map(|value| value.to_le_bytes()));
+    std::fs::write(path, &wav).unwrap();
+    wav
+}
+
+#[test]
+fn a_merged_file_that_would_clip_raises_the_object_volume_instead() {
+    let scratch = Scratch::new("application-save-role-headroom");
+    let (root, path) = mapset(&scratch, "256,192,1000,1,0,1:0:2:50:\r\n", "0,500,4,1,0,100,1,0", &[
+        ("normal-hitnormal2.wav", &[8192]),
+        ("soft-hitclap3.wav", &[24576]),
+        ("drum-hitclap4.wav", &[24576]),
+    ]);
+    let mut d = Document::read(&path).unwrap();
+    // Two claps at 0.75 and 50% each: 0.75 in the editor, 1.5 in one file at 50%.
+    set_hits(&mut d, 1000.0, 50, vec![
+        (std_lane(SampleSet::Normal, Hitsound::Normal, 2), 50),
+        (std_lane(SampleSet::Soft, Hitsound::Clap, 3), 50),
+        (std_lane(SampleSet::Drum, Hitsound::Clap, 4), 50),
+    ]);
+    save_document(&d, scratch.path("backups")).unwrap();
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(text.contains("256,192,1000,1,8,1:2:5:75:\r\n"), "{text}");
+    // In game each file plays at 75%: 1.0 x 0.75 and 0.1667 x 0.75 match the editor's 0.75 and 0.125.
+    assert_frames(&root.join("soft-hitclap5.wav"), &[0.99997]);
+    assert_frames(&root.join("normal-hitnormal5.wav"), &[0.25 * 50.0 / 75.0]);
+}
+
+#[test]
+fn a_merge_that_clips_even_at_full_volume_clips_in_its_file() {
+    let scratch = Scratch::new("application-save-role-clip");
+    let (root, path) = mapset(&scratch, "256,192,1000,1,0,1:0:2:80:\r\n", "0,500,4,1,0,100,1,0", &[
+        ("normal-hitnormal2.wav", &[8192]),
+        ("soft-hitclap3.wav", &[24576]),
+        ("drum-hitclap4.wav", &[24576]),
+    ]);
+    let mut d = Document::read(&path).unwrap();
+    set_hits(&mut d, 1000.0, 80, vec![
+        (std_lane(SampleSet::Normal, Hitsound::Normal, 2), 80),
+        (std_lane(SampleSet::Soft, Hitsound::Clap, 3), 80),
+        (std_lane(SampleSet::Drum, Hitsound::Clap, 4), 80),
+    ]);
+    save_document(&d, scratch.path("backups")).unwrap();
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(text.contains("256,192,1000,1,8,1:2:5:100:\r\n"), "{text}");
+    // 1.2 would be needed at 100%; osu! would clip it too.
+    assert_frames(&root.join("soft-hitclap5.wav"), &[0.99997]);
+}
+
+#[test]
+fn a_role_file_with_one_sound_at_full_gain_is_its_source_unchanged() {
+    let scratch = Scratch::new("application-save-role-copy");
+    let (root, path) = mapset(&scratch, "256,192,1000,1,0,1:0:2:80:\r\n", "0,500,4,1,0,100,1,0", &[
+        ("soft-hitclap3.wav", &[4096]),
+        ("drum-hitclap4.wav", &[4096]),
+    ]);
+    let source = sample_at(&root.join("normal-hitnormal2.wav"), 44_100, &[8192, -8192, 4096]);
+    let mut d = Document::read(&path).unwrap();
+    set_hits(&mut d, 1000.0, 80, vec![
+        (std_lane(SampleSet::Normal, Hitsound::Normal, 2), 80),
+        (std_lane(SampleSet::Soft, Hitsound::Clap, 3), 80),
+        (std_lane(SampleSet::Drum, Hitsound::Clap, 4), 80),
+    ]);
+    save_document(&d, scratch.path("backups")).unwrap();
+    assert_eq!(std::fs::read(root.join("normal-hitnormal5.wav")).unwrap(), source);
+    assert_eq!(dawsu_audio::decode(&root.join("soft-hitclap5.wav")).unwrap().sample_rate, 48000);
+}
+
+#[test]
+fn a_moment_whose_hitnormal_was_a_sample_file_keeps_the_timing_line_s_set() {
+    let scratch = Scratch::new("application-save-role-file-normal");
+    let (root, path) = mapset(&scratch, "256,192,1000,1,0,0:0:0:80:kick.wav\r\n", "0,500,4,2,0,100,1,0", &[
+        ("kick.wav", &[100]),
+        ("drum-hitclap3.wav", &[4096]),
+        ("soft-hitclap4.wav", &[4096]),
+    ]);
+    let mut d = Document::read(&path).unwrap();
+    set_hits(&mut d, 1000.0, 80, vec![
+        (std_lane(SampleSet::Drum, Hitsound::Clap, 3), 80),
+        (std_lane(SampleSet::Soft, Hitsound::Clap, 4), 80),
+    ]);
+    save_document(&d, scratch.path("backups")).unwrap();
+    // The soft section's hitnormal plays from the skin; no set is invented.
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(text.contains("256,192,1000,1,8,0:0:2:80:\r\n"), "{text}");
+    let reopened = Document::read(&path).unwrap();
+    assert!(reopened.composer.hitsounds().moment(moment_at(&reopened, 1000.0)).has_hit(&std_lane(SampleSet::Soft, Hitsound::Normal, 2)));
+    assert!(!root.join("soft-hitnormal2.wav").exists());
+}
+
+#[test]
+fn an_old_fused_mix_is_kept_as_it_is_when_saving_again() {
+    let scratch = Scratch::new("application-save-old-mix");
+    let old = "256,192,1000,1,0,1:0:2:100:dawsu-mix-0123-1.wav";
+    let (root, path) = mapset(&scratch, &format!("{old}\r\n256,192,2000,1,0,1:0:0:80:\r\n"), "0,500,4,1,0,100,1,0", &[
+        ("dawsu-mix-0123-1.wav", &[8192]),
+    ]);
+    let mut d = Document::read(&path).unwrap();
+    d.composer.add(2000.0, clap(), 80, 5.0);
+    save_document(&d, scratch.path("backups")).unwrap();
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(text.contains(&format!("{old}\r\n256,192,2000,1,8,1:0:0:80:\r\n")), "{text}");
+    assert_eq!(file_names(&root), ["dawsu-mix-0123-1.wav", "test.osu"]);
+    let reopened = Document::read(&path).unwrap();
+    assert_eq!(sorted_hits(&reopened, 1000.0), [SampleIdentity::File("dawsu-mix-0123-1.wav".into())]);
+    resave_unchanged(&path, scratch.path("backups"));
+}
+
+#[test]
+fn a_slider_sound_on_a_hit_refuses_the_merge() {
+    let scratch = Scratch::new("application-save-role-slider-sound");
+    let (root, path) = mapset(&scratch, "256,192,1000,1,0,1:0:2:80:\r\n", "0,500,4,1,0,100,1,0", &[
+        ("normal-hitnormal2.wav", &[8192]),
+        ("soft-sliderslide3.wav", &[4096]),
+    ]);
+    let before = std::fs::read(&path).unwrap();
+    let mut d = Document::read(&path).unwrap();
+    let slide = SampleIdentity::Standard { set: SampleSet::Soft, sound: Sound::Slider(dawsu_foundation::SliderSound::Slide), index: CustomIndex::new(3) };
+    set_hits(&mut d, 1000.0, 80, vec![(std_lane(SampleSet::Normal, Hitsound::Normal, 2), 80), (slide, 80)]);
+    let error = save_document(&d, scratch.path("backups")).err().unwrap();
+    assert!(error.contains("slider sound"), "{error}");
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    assert_eq!(file_names(&root), ["normal-hitnormal2.wav", "soft-sliderslide3.wav", "test.osu"]);
+}

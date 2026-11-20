@@ -224,8 +224,8 @@ impl RoleMerge {
 
 /// Splits a moment's sounds by role: the hitnormals (and sample files) become one hitnormal file,
 /// none when there is none, and each addition role one file in the set most additions use.
+/// `layers` are a save problem's sounds, at their saved volumes already (`mix_problem`).
 pub fn merge_roles(layers: &[(SampleIdentity, i32)]) -> RoleMerge {
-    let layers: Vec<_> = layers.iter().map(|(lane, volume)| (lane.clone(), saved_volume(*volume))).collect();
     let role_of = |lane: &SampleIdentity| match lane {
         SampleIdentity::Standard { sound: Sound::Hit(role), .. } => *role,
         _ => Hitsound::Normal,
@@ -247,7 +247,7 @@ pub fn merge_roles(layers: &[(SampleIdentity, i32)]) -> RoleMerge {
             files.push(RoleFile { set: addition_set.unwrap_or(normal_set), role, layers: Vec::new() });
         }
     }
-    for (lane, volume) in &layers {
+    for (lane, volume) in layers {
         let role = role_of(lane);
         if let Some(file) = files.iter_mut().find(|f| f.role == role) {
             file.layers.push((lane.clone(), *volume));

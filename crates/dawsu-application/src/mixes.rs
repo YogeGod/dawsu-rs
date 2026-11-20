@@ -7,7 +7,7 @@ use dawsu_foundation::{
 };
 use dawsu_hitsounding::{
     Compiled, Decompiled, Hitsounds, LaneSource, MomentId, ObjectId, Place, Placement, ProblemKind,
-    SaveProblem, compile, compile::merge_roles, decompile,
+    SaveProblem, compile, compile::{RoleFile, RoleMerge, merge_roles}, decompile,
 };
 use dawsu_osu_format::{OsuFile, list_folder};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -309,7 +309,20 @@ impl MixFiles {
                     Some(index) => index,
                     None => indexes.reserve()?,
                 };
-                let outputs = self.stage_roles(root, waves, index, reused.is_some());
+                let outputs: Vec<_> = waves
+                    .iter()
+                    .map(|(bank, role, _)| SampleIdentity::Standard {
+                        set: *bank,
+                        sound: Sound::Hit(*role),
+                        index: CustomIndex::new(index),
+                    })
+                    .collect();
+                self.stage_roles(
+                    root,
+                    waves.into_iter().map(|(bank, role, wav)| (bank, role, "wav".to_string(), wav)),
+                    index,
+                    reused.is_some(),
+                );
                 &*rendered.entry(key).or_insert(outputs)
             };
             replace_moment(target, moment, outputs.iter().cloned());
@@ -317,30 +330,23 @@ impl MixFiles {
         Ok(())
     }
 
-    /// Stages the role files at `index` and returns the hits that play them.
-    fn stage_roles(&mut self, root: &Path, waves: RoleWaves, index: u32, reuse: bool) -> Vec<SampleIdentity> {
-        let mut outputs = Vec::with_capacity(waves.len());
-        for (bank, role, wav) in waves {
-            let name = format!("{}{index}.wav", export_settings::slot_name(bank, role));
+    /// Stages the role files at `index`.
+    fn stage_roles(&mut self, root: &Path, files: impl IntoIterator<Item = RoleOutput>, index: u32, reuse: bool) {
+        for (bank, role, extension, bytes) in files {
+            let name = format!("{}{index}.{extension}", export_settings::slot_name(bank, role));
             self.staged.push(StagedMix {
                 path: root.join(name),
-                wav,
+                wav: bytes,
                 reuse,
                 index: Some(index),
             });
-            outputs.push(SampleIdentity::Standard {
-                set: bank,
-                sound: Sound::Hit(role),
-                index: CustomIndex::new(index),
-            });
         }
-        outputs
     }
 
     /// Save's sample mixes (Yoge 2026-11-20): a moment osu! cannot hold is merged per role at one
     /// shared index, so its hitnormal stays a hitnormal and only sounds of one role share a file.
-    /// The object plays at its loudest sound's volume; each file has the quieter sounds turned
-    /// down against it.
+    /// The object plays at its loudest sound's volume, or louder when a file would clip, and each
+    /// file holds its sounds at their volume over the object's.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn prepare_by_role(
         &mut self,
@@ -352,7 +358,7 @@ impl MixFiles {
         expected: &[u8],
         cancel: &dyn Fn() -> bool,
     ) -> Result<(), String> {
-        let defaults_list = list_folder(defaults).unwrap_or_default();
+        let assets = Assets { source, root, defaults, defaults_list: list_folder(defaults).unwrap_or_default() };
         let expected = OsuFile::read(expected.to_vec()).file;
         let moments: HashMap<_, _> = target
             .moments()
@@ -371,8 +377,10 @@ impl MixFiles {
                 .filter(|index| *index > 1)
                 .map(|index| index as u32),
         );
+        let mut sections = None;
         let mut clips = HashMap::new();
-        let mut rendered = HashMap::<RoleWaves, u32>::new();
+        let mut by_layers = HashMap::<&[(SampleIdentity, i32)], (u32, i32)>::new();
+        let mut by_files = HashMap::<String, u32>::new();
         for problem in problems {
             let moment = *mix_place(problem.place)
                 .and_then(|id| moments.get(&id))
@@ -383,37 +391,46 @@ impl MixFiles {
             let ProblemKind::NeedsSampleMix(layers) = &problem.kind else {
                 return Err("Expected a sample mix plan".into());
             };
-            let merge = merge_roles(layers);
-            let mut roles = Vec::with_capacity(merge.files.len());
-            for file in &merge.files {
-                let mut cues = Vec::with_capacity(file.layers.len());
-                for (identity, volume) in &file.layers {
-                    cues.push(ScheduledSound {
-                        at_ms: 0.0,
-                        end_ms: None,
-                        clip: load_clip(source, Some(target), identity, root, defaults, &defaults_list, &mut clips, cancel)?,
-                        gain: *volume as f32 / merge.volume as f32,
-                    });
-                }
-                roles.push((file.set, file.role, cues));
+            if let Some((lane, _)) = layers.iter().find(|(lane, _)| matches!(lane, SampleIdentity::Standard { sound: Sound::Slider(_), .. })) {
+                return Err(format!(
+                    "At {:.0} ms a slider sound ({}) is on a hit. osu! plays slider sounds only on a slider body, so Save cannot merge it. Remove it from the hit.",
+                    problem.time.ms(),
+                    lane_name(lane),
+                ));
             }
-            let waves = render_roles(roles, cancel)?;
-            // The problem moment kept its old line, so its hitnormal shows the object's normal set.
-            let object_normal = target.moment(moment).hits().find_map(|lane| match lane {
-                SampleIdentity::Standard { set, sound: Sound::Hit(Hitsound::Normal), .. } => Some(*set),
-                _ => None,
-            }).unwrap_or(SampleSet::Normal);
-            let index = match rendered.get(&waves) {
-                Some(index) => *index,
+            let merge = merge_roles(layers);
+            let (index, volume) = match by_layers.get(layers.as_slice()) {
+                Some(found) => *found,
                 None => {
-                    let (index, reuse) = indexes.allocate_roles(root, &waves)?;
-                    self.stage_roles(root, waves.clone(), index, reuse);
-                    rendered.insert(waves, index);
-                    index
+                    let (volume, files) = assets.render_merge(&merge, target, &mut clips, cancel)?;
+                    let key: String = files
+                        .iter()
+                        .map(|(set, role, extension, bytes)| format!("{}.{extension}={};", export_settings::slot_name(*set, *role), sha256_hex(bytes)))
+                        .collect();
+                    let index = match by_files.get(&key) {
+                        Some(index) => *index,
+                        None => {
+                            let (index, reuse) = indexes.allocate_roles(root, &files)?;
+                            self.stage_roles(root, files, index, reuse);
+                            by_files.insert(key, index);
+                            index
+                        }
+                    };
+                    by_layers.insert(layers.as_slice(), (index, volume));
+                    (index, volume)
                 }
             };
+            // The problem moment kept its old line, so its hitnormal shows the object's normal set.
+            // A sample file has no set: its object's hitnormal then comes from the timing line.
+            let object_normal = match target.moment(moment).hits().find_map(|lane| match lane {
+                SampleIdentity::Standard { set, sound: Sound::Hit(Hitsound::Normal), .. } => Some(*set),
+                _ => None,
+            }) {
+                Some(set) => set,
+                None => timing_set(&expected, root, &mut sections, problem.place)?,
+            };
             replace_moment(target, moment, merge.hits(index, object_normal));
-            target.set_volume(moment, merge.volume);
+            target.set_volume(moment, volume);
         }
         Ok(())
     }
@@ -627,6 +644,82 @@ pub(super) fn stage_timed_copy(
     Ok(())
 }
 
+/// One file Save writes: its set, role, extension and bytes.
+type RoleOutput = (SampleSet, Hitsound, String, Vec<u8>);
+
+struct Assets<'a> {
+    source: &'a Hitsounds,
+    root: &'a Path,
+    defaults: &'a Path,
+    defaults_list: Vec<String>,
+}
+
+impl Assets<'_> {
+    /// The object's volume and the files for one merge. A file with one sound at the object's
+    /// volume is that sound's file as it is; the others are rendered. When a mix would clip,
+    /// the object's volume rises (up to 100) and the files are turned down to match, so it plays
+    /// as loud as the editor does. Only a mix past full scale at 100 still clips, as osu! would.
+    fn render_merge(
+        &self, merge: &RoleMerge, target: &Hitsounds,
+        clips: &mut HashMap<SampleIdentity, Arc<AudioClip>>, cancel: &dyn Fn() -> bool,
+    ) -> Result<(i32, Vec<RoleOutput>), String> {
+        let loudest = merge.volume;
+        let cues = |file: &RoleFile, volume: f32, clips: &mut HashMap<SampleIdentity, Arc<AudioClip>>| {
+            file.layers.iter().map(|(identity, v)| Ok(ScheduledSound {
+                at_ms: 0.0,
+                end_ms: None,
+                clip: load_clip(self.source, Some(target), identity, self.root, self.defaults, &self.defaults_list, clips, cancel)?,
+                gain: *v as f32 / volume,
+            })).collect::<Result<Vec<_>, String>>()
+        };
+        // Peaks are measured at a gain that cannot reach full scale, since the mixer clamps.
+        let mut peak = 0.0_f32;
+        for file in merge.files.iter().filter(|file| file.layers.len() > 1) {
+            let down = (loudest * file.layers.len() as i32) as f32;
+            let samples = mix(cues(file, down, clips)?, cancel)?;
+            let file_peak = samples.iter().fold(0.0_f32, |p, s| p.max(s.abs())) * file.layers.len() as f32;
+            peak = peak.max(file_peak);
+        }
+        let volume = if peak > 1.0 { ((loudest as f32 * peak - 1e-3).ceil() as i32).clamp(loudest, 100) } else { loudest };
+        let mut files = Vec::with_capacity(merge.files.len());
+        for file in &merge.files {
+            let output = match file.layers.as_slice() {
+                [(identity, v)] if *v == volume => {
+                    let lane = self.source.lane(identity).or_else(|| target.lane(identity)).ok_or("Sample mix lane is missing")?;
+                    let path = sample_path(lane, self.root, self.defaults, &self.defaults_list)
+                        .map_err(|error| format!("Could not mix {}: {error}", lane_name(identity)))?;
+                    let extension = path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).unwrap_or_else(|| "wav".into());
+                    let bytes = fs::read(&path).map_err(|error| format!("Reading {}: {error}", lane_name(identity)))?;
+                    (file.set, file.role, extension, bytes)
+                }
+                _ => (file.set, file.role, "wav".to_string(), render(cues(file, volume as f32, clips)?, cancel)?),
+            };
+            files.push(output);
+        }
+        Ok((volume, files))
+    }
+}
+
+/// The normal set of the timing line `place`'s object reads.
+fn timing_set(
+    file: &OsuFile, root: &Path, sections: &mut Option<HashMap<dawsu_osu_format::LineId, Option<String>>>, place: Place,
+) -> Result<SampleSet, String> {
+    if sections.is_none() {
+        let listing = list_folder(root).map_err(|error| error.to_string())?;
+        *sections = Some(match dawsu_hitsounding::rules::answer(file, &listing) {
+            dawsu_hitsounding::rules::Answer::Objects(list) => list.into_iter().map(|a| (a.line, a.sample_point.map(|p| p.bank))).collect(),
+            dawsu_hitsounding::rules::Answer::UnsupportedMode { .. } => HashMap::new(),
+        });
+    }
+    let line = mix_place(place).map(|(object, _)| object.line());
+    let bank = line.and_then(|line| sections.as_ref()?.get(&line).cloned().flatten());
+    Ok(match bank.as_deref() {
+        Some("soft") => SampleSet::Soft,
+        Some("drum") => SampleSet::Drum,
+        _ => SampleSet::Normal,
+    })
+}
+
 fn reusable_export_index(
     root: &Path,
     waves: &[(SampleSet, Hitsound, Vec<u8>)],
@@ -730,8 +823,8 @@ impl IndexedMixes {
     /// An index whose files already hold exactly these role files, or a free one. Without a
     /// hitnormal file the index must have no hitnormal file of any set, or osu! plays that
     /// instead of the skin's (lazer 131fe72 LegacySkin.cs:609-633). A free index has no file at all.
-    fn allocate_roles(&mut self, root: &Path, waves: &RoleWaves) -> Result<(u32, bool), String> {
-        let has_hitnormal = waves.iter().any(|(_, role, _)| *role == Hitsound::Normal);
+    fn allocate_roles(&mut self, root: &Path, files: &[RoleOutput]) -> Result<(u32, bool), String> {
+        let has_hitnormal = files.iter().any(|(_, role, _, _)| *role == Hitsound::Normal);
         let hitnormals: BTreeSet<u32> = if has_hitnormal {
             BTreeSet::new()
         } else {
@@ -745,8 +838,8 @@ impl IndexedMixes {
         let hitnormal_free = |index: u32| !hitnormals.contains(&index);
         if let Some(&existing) = self.reuse.iter().find(|index| {
             (has_hitnormal || hitnormal_free(**index))
-                && waves.iter().all(|(set, role, wav)| {
-                    has_contents(root, &format!("{}{index}.wav", export_settings::slot_name(*set, *role)), wav)
+                && files.iter().all(|(set, role, extension, bytes)| {
+                    has_contents(root, &format!("{}{index}.{extension}", export_settings::slot_name(*set, *role)), bytes)
                 })
         }) {
             return Ok((existing, true));
@@ -901,6 +994,11 @@ pub(super) fn render(
     cues: Vec<ScheduledSound>,
     cancel: &dyn Fn() -> bool,
 ) -> Result<Vec<u8>, String> {
+    encode(&mix(cues, cancel)?)
+}
+
+/// The cues mixed at the mix sample rate, interleaved, each value within full scale.
+fn mix(cues: Vec<ScheduledSound>, cancel: &dyn Fn() -> bool) -> Result<Vec<f32>, String> {
     let at_frame = |ms: f64| (ms * f64::from(SAMPLE_RATE) / 1000.0).ceil() as u64;
     let mut frames = 0;
     for cue in &cues {
@@ -919,11 +1017,33 @@ pub(super) fn render(
         frames = frames.max(end);
     }
     let frames = usize::try_from(frames).map_err(|_| "Sample mix is too long")?;
-    let data_size = frames
+    // The WAV size limit is checked before mixing, so nothing too long is rendered.
+    frames
         .checked_mul(CHANNELS * 2)
         .and_then(|size| u32::try_from(size).ok())
         .filter(|size| *size <= u32::MAX - 36)
         .ok_or("Sample mix is too long for a WAV file")?;
+    let mut out = Vec::new();
+    out.try_reserve_exact(frames * CHANNELS)
+        .map_err(|error| error.to_string())?;
+    let mut mixer = Mixer::new(SAMPLE_RATE);
+    mixer.cues = cues;
+    mixer.playing = true;
+    let mut block = [0.0; 1024 * CHANNELS];
+    for start in (0..frames).step_by(1024) {
+        if cancel() {
+            return Err("Save cancelled during sample mixing".into());
+        }
+        let samples = &mut block[..(frames - start).min(1024) * CHANNELS];
+        mixer.render(samples, CHANNELS);
+        out.extend_from_slice(samples);
+    }
+    Ok(out)
+}
+
+/// A 16-bit PCM WAV of interleaved samples at the mix sample rate.
+fn encode(samples: &[f32]) -> Result<Vec<u8>, String> {
+    let data_size = u32::try_from(samples.len() * 2).map_err(|_| "Sample mix is too long for a WAV file")?;
     let mut wav = Vec::new();
     wav.try_reserve_exact(44 + data_size as usize)
         .map_err(|error| error.to_string())?;
@@ -939,20 +1059,8 @@ pub(super) fn render(
     wav.extend(16u16.to_le_bytes());
     wav.extend(b"data");
     wav.extend(data_size.to_le_bytes());
-
-    let mut mixer = Mixer::new(SAMPLE_RATE);
-    mixer.cues = cues;
-    mixer.playing = true;
-    let mut block = [0.0; 1024 * CHANNELS];
-    for start in (0..frames).step_by(1024) {
-        if cancel() {
-            return Err("Save cancelled during sample mixing".into());
-        }
-        let samples = &mut block[..(frames - start).min(1024) * CHANNELS];
-        mixer.render(samples, CHANNELS);
-        for value in samples {
-            wav.extend(((*value * 32768.0).round() as i16).to_le_bytes());
-        }
+    for value in samples {
+        wav.extend(((*value * 32768.0).round() as i16).to_le_bytes());
     }
     Ok(wav)
 }
