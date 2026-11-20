@@ -390,7 +390,12 @@ pub(crate) fn build_links(
     circles: &std::collections::BTreeMap<i64, dawsu_osu_format::LineId>, hs: bool,
 ) -> LinkRecord {
     let ordinals: std::collections::HashMap<_, _> = out.hit_objects().iter().enumerate().map(|(i, o)| (o.line(), i)).collect();
-    let placements = drawn.placements().iter().map(|p| {
+    // A placement whose added hits were all deleted links nothing any more.
+    let live = |p: &&dawsu_hitsounding::sound_sets::SoundSetPlacement| {
+        let added: Vec<_> = p.applied.iter().filter(|a| a.added).collect();
+        added.is_empty() || added.iter().any(|a| drawn.moment(p.moment).has_hit(&a.lane))
+    };
+    let placements = drawn.placements().iter().filter(live).map(|p| {
         let moment = drawn.moment(p.moment);
         let bound = location(moment.place())
             .or_else(|| if hs { circles.get(&dawsu_hitsounding::hs::hs_group_time(base, moment.time())).map(|line| (*line, None)) } else { None })
@@ -411,8 +416,9 @@ pub(crate) fn build_links(
 }
 
 /// Puts the links of the record for the opened file back, last on open, without an undo step. A
-/// placement whose moment or hits can't be found is not linked and named in a warning; the project
-/// keeps the record until the next Save.
+/// placement on an object is found by the object's ordinal; one with no object by its time and its
+/// added hits. One that can't be found is not linked and named in a warning; the project keeps the
+/// record until the next Save.
 pub(crate) fn restore_links(document: &mut super::Document, links: &Links) -> Result<(), String> {
     let digest = sha256_hex(document.file.original_bytes());
     let Some(record) = links.for_digest(&digest) else {
@@ -436,7 +442,9 @@ pub(crate) fn restore_links(document: &mut super::Document, links: &Links) -> Re
             let moment = match saved.object {
                 Some(ordinal) => {
                     let line = objects.get(ordinal)?.line();
-                    hits.moments().iter().position(|m| location(m.place()) == Some((line, saved.node)) && holds(m, &applied))
+                    // The ordinal in the file this record names is the moment; a hit edited
+                    // by hand since keeps the link (D3).
+                    hits.moments().iter().position(|m| location(m.place()) == Some((line, saved.node)))
                 }
                 None => hits.moments().iter().enumerate()
                     .filter(|(_, m)| (m.time().ms() - time).abs() < 1.0 && holds(m, &applied))
@@ -690,6 +698,13 @@ pub(crate) mod tests {
             app.seek(1500.0);
             app.place_sound_set_file(&map, &f.set).unwrap();
             save(&mut app, &f);
+            if hs {
+                // The set saves natively: one circle at the set's index, no rendered mix.
+                let text = String::from_utf8(std::fs::read(&f.map).unwrap()).unwrap();
+                let circle = text.lines().find(|l| l.starts_with("256,192,1500,")).expect("the circle the set became");
+                assert_eq!(circle, "256,192,1500,1,8,3:0:2:60:", "drum hitnormal and clap at index 2, volume 60");
+                assert_eq!(mapset_files(&f), ["a.osu", "drum-hitclap2.wav", "drum-hitnormal2.wav"]);
+            }
             let reopened = reopen(&f);
             let hits = reopened.document().unwrap().composer.hitsounds();
             assert_eq!(hits.placements().len(), 1, "hs {hs}: {:?}", reopened.warnings);
@@ -799,5 +814,37 @@ pub(crate) mod tests {
         assert_eq!(times(&restored), [1500.0, 2000.0]);
         restored.command("undo");
         assert_eq!(times(&restored), [1500.0], "undo returns to the last Save, with its link");
+    }
+
+    #[test]
+    fn a_placement_whose_hits_were_all_deleted_is_not_recorded_and_reopens_without_a_warning() {
+        let f = fixture("links-deleted");
+        let mut app = app(&f);
+        let map = open(&mut app, &f.map);
+        app.seek(1000.0);
+        app.place_sound_set_file(&map, &f.set).unwrap();
+        app.document.as_mut().unwrap().composer.remove_selected();
+        assert_eq!(app.document().unwrap().composer.hitsounds().placements().len(), 1, "the link outlives its hits until Save");
+        save(&mut app, &f);
+        let reopened = reopen(&f);
+        assert!(links(&reopened).is_empty());
+        assert!(reopened.warnings.is_empty(), "{:?}", reopened.warnings);
+    }
+
+    #[test]
+    fn a_partly_deleted_set_on_an_object_keeps_its_link() {
+        let f = fixture("links-partly-deleted");
+        let mut app = app(&f);
+        let map = open(&mut app, &f.map);
+        app.seek(1000.0);
+        app.place_sound_set_file(&map, &f.set).unwrap();
+        let composer = &mut app.document.as_mut().unwrap().composer;
+        let clap = composer.hitsounds().placements()[0].applied[1].lane.clone();
+        composer.selected.replace([dawsu_editor_composer::HitKey { moment: 0, lane: clap }]);
+        composer.remove_selected();
+        save(&mut app, &f);
+        let reopened = reopen(&f);
+        assert_eq!(links(&reopened), [(0, SET_ID.to_string())]);
+        assert!(reopened.warnings.is_empty(), "{:?}", reopened.warnings);
     }
 }
