@@ -8,7 +8,8 @@ let drumDetectRendered = "";
 
 function drumLaneSelect(lanes, chosen) {
   const select = document.createElement("select");
-  select.append(new Option("None", ""), ...lanes.map(lane => new Option(lane.name, lane.key)));
+  select.append(new Option("None", ""),
+    ...lanes.map(lane => new Option(lane.hidden ? lane.name + " (hidden)" : lane.name, lane.key)));
   select.value = chosen ?? "";
   return select;
 }
@@ -49,6 +50,10 @@ function showDrumLanes(info, message) {
         showDrumLanes({ ...info, kick: kick.value, snare: snare.value }, "Pick kick and snare lanes first.");
         return;
       }
+      if (kick.value && kick.value === snare.value) {
+        showDrumLanes({ ...info, kick: kick.value, snare: snare.value }, "Pick different lanes for kicks and snares.");
+        return;
+      }
       drumDetectRendered = "starting";
       act({ kind: "drum_detect_start", map, kick: kick.value || null, snare: snare.value || null });
     }, true],
@@ -63,6 +68,7 @@ function drumCountLines(info) {
   ];
   if (c.flagged) lines.push(c.flagged + " too far from the grid are left out.");
   if (c.duplicates) lines.push(c.duplicates + " already there.");
+  for (const name of info.unhides ?? []) lines.push("Shows hidden lane: " + name + ".");
   return lines;
 }
 
@@ -98,8 +104,8 @@ function refreshDrumDetection() {
         }, true],
       ]);
     }
-  } else if (drumDetectRendered !== "lanes" && drumDetectRendered !== "starting" && !requests) {
-    // The run stopped without a result (cancelled, or the song changed).
+  } else if (drumDetectRendered !== "lanes" && !requests) {
+    // The run stopped without a result (cancelled, or the song changed), even before its progress showed.
     closeDrumDetection(false);
   }
 }

@@ -2003,6 +2003,7 @@ fn drum_hit_detection_offers_the_map_lanes_and_reports_a_missing_song() {
     let lanes = app.document().unwrap().composer.hitsounds().lanes().iter()
         .map(|lane| scene_lane_key(&lane.identity)).collect::<Vec<_>>();
     assert_eq!(keys, lanes);
+    assert!(drum["lanes"].as_array().unwrap().iter().all(|lane| lane["hidden"] == false));
     let kick = keys.iter().find(|key| key.contains("Whistle")).unwrap().clone();
     let map = app.document().unwrap().path.clone();
     let start: Action = serde_json::from_value(serde_json::json!({

@@ -977,7 +977,7 @@ fn drum_detect_view(app: &Application) -> Value {
     let view = app.drum_detection();
     let mut result = json!({
         "state": "idle",
-        "lanes": view.lanes.iter().map(|(lane, name)| json!({ "key": scene_lane_key(lane), "name": name }))
+        "lanes": view.lanes.iter().map(|(lane, name, hidden)| json!({ "key": scene_lane_key(lane), "name": name, "hidden": hidden }))
             .collect::<Vec<_>>(),
         "kick": view.kick.as_ref().map(scene_lane_key),
         "snare": view.snare.as_ref().map(scene_lane_key),
@@ -989,7 +989,8 @@ fn drum_detect_view(app: &Application) -> Value {
             result["done"] = json!(done);
             result["total"] = json!(total);
         }
-        DrumDetectState::Ready { review, counts, kicks, snares } => {
+        DrumDetectState::Ready { review, counts, kicks, snares, unhides } => {
+            result["unhides"] = json!(unhides);
             result["state"] = json!("ready");
             result["review"] = json!(review.to_string());
             result["kicks"] = json!(kicks);

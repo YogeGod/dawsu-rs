@@ -136,3 +136,37 @@ test("a refused start ends the flow so the menu can start it again", async () =>
   evaluate("refreshDrumDetection()");
   assert.equal(evaluate("drumDetectMap"), null);
 });
+
+test("hidden lanes are marked in the picker and named when Apply shows them", async () => {
+  const { body, text, evaluate, setStatus } = await frontend();
+  const hiddenLanes = [{ key: "kick", name: "kick.wav", hidden: true }, { key: "snare", name: "snare.wav", hidden: false }];
+  setStatus({ busy: false, hasDocument: true, drumDetect: { state: "idle", lanes: hiddenLanes, kick: null, snare: null } });
+  evaluate("openDrumDetection()");
+  assert.deepEqual(body()[0].children[1].children.map(option => option.text), ["None", "kick.wav (hidden)", "snare.wav"]);
+  evaluate("closeDrumDetection(false)");
+  const counts = { added: 2, onObjects: 2, loose: 0, flagged: 0, duplicates: 0 };
+  setStatus({ busy: false, hasDocument: true, drumDetect: { state: "ready", review: "5", counts, kicks: 2, snares: 0, unhides: ["kick.wav"], lanes: hiddenLanes } });
+  evaluate("openDrumDetection()");
+  assert.match(text(), /Shows hidden lane: kick\.wav\./);
+});
+
+test("one lane for both kicks and snares is refused in the prompt", async () => {
+  const { calls, body, button, evaluate, settle } = await frontend();
+  evaluate("openDrumDetection()");
+  body()[1].children[1].value = "kick";
+  button("Detect").events.get("click")();
+  await settle();
+  assert.equal(calls.length, 0);
+  assert.equal(body()[0].textContent, "Pick different lanes for kicks and snares.");
+});
+
+test("the prompt closes when a run ends before its progress was shown", async () => {
+  const { dialog, button, evaluate, setStatus, settle } = await frontend();
+  evaluate("openDrumDetection()");
+  button("Detect").events.get("click")();
+  await settle();
+  setStatus({ busy: false, hasDocument: true, drumDetect: { state: "idle", lanes } });
+  evaluate("refreshDrumDetection()");
+  assert.equal(dialog.open, false);
+  assert.equal(evaluate("drumDetectMap"), null);
+});
