@@ -711,16 +711,23 @@ impl Application {
         let file_name = set_file_name(name, &set.id);
         std::fs::create_dir_all(&folder).map_err(|_| refused(format!("Could not create the library's {LIBRARY_FOLDER} folder. Check that the library folder can be written to.")))?;
         if let Err(error) = safe_write::create(&folder.join(&file_name), text.as_bytes()) {
-            let dawsu_foundation::Error::Io { step, source, .. } = &error;
-            // The temporary file was written, so the hard link failed: FAT and exFAT have none.
-            return Err(refused(if *step == "creating the file" && source.kind() != std::io::ErrorKind::AlreadyExists {
-                "This drive can't hold the library. Choose a library on an NTFS drive.".into()
-            } else {
-                format!("Could not save {file_name}. Check that the library folder can be written to.")
-            }));
+            return Err(refused(save_failure(name, &error)));
         }
         self.status = format!("Saved sound set \"{name}\".");
         Ok(())
+    }
+}
+
+/// The message for a failed library write. Only a hard link the drive can't make (FAT and exFAT:
+/// Windows' ERROR_INVALID_FUNCTION, raw OS error 1, or `Unsupported`) asks for another drive;
+/// any other failure names the set.
+fn save_failure(name: &str, error: &dawsu_foundation::Error) -> String {
+    let dawsu_foundation::Error::Io { step, source, .. } = error;
+    let unsupported = source.kind() == std::io::ErrorKind::Unsupported || (cfg!(windows) && source.raw_os_error() == Some(1));
+    if *step == "creating the file" && unsupported {
+        "This drive can't hold the library. Choose a library on an NTFS drive.".into()
+    } else {
+        format!("Could not save {name} to the library. Check that another program is not using it.")
     }
 }
 
@@ -1721,6 +1728,25 @@ Mode:0
         std::fs::remove_file(&broken).unwrap();
         assert_eq!(listed(&app).sets.len(), 1);
         assert!(with_index(|index| !index.read.contains_key(&broken)));
+    }
+
+    #[test]
+    fn only_a_hard_link_the_drive_cant_make_asks_for_another_drive() {
+        let io = |step: &'static str, source: std::io::Error| dawsu_foundation::Error::Io { step, path: PathBuf::from("Kick.dawsuset"), source };
+        let drive = "This drive can't hold the library. Choose a library on an NTFS drive.";
+        let plain = "Could not save Kick to the library. Check that another program is not using it.";
+        assert_eq!(save_failure("Kick", &io("creating the file", std::io::Error::from(std::io::ErrorKind::Unsupported))), drive);
+        let invalid_function = save_failure("Kick", &io("creating the file", std::io::Error::from_raw_os_error(1)));
+        assert_eq!(invalid_function, if cfg!(windows) { drive } else { plain }, "ERROR_INVALID_FUNCTION is Windows' code");
+        for source in [
+            std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+            std::io::Error::from_raw_os_error(5),
+            std::io::Error::from_raw_os_error(112),
+            std::io::Error::from(std::io::ErrorKind::AlreadyExists),
+        ] {
+            assert_eq!(save_failure("Kick", &io("creating the file", source)), plain);
+        }
+        assert_eq!(save_failure("Kick", &io("writing the temporary file", std::io::Error::from(std::io::ErrorKind::Unsupported))), plain, "only the link step");
     }
 
     #[test]
