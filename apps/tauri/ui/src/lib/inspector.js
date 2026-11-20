@@ -4,7 +4,21 @@ import { laneGrey, tintName } from "./colour.js";
 export const emptyInspector = Object.freeze({
   busy: false, doc: false, selection: null, scope: "all", hint: "", range: false,
   insertVolume: 100, protect: false, audition: false, hs: false, lane: null,
+  bookmarks: [], bookmark: null, history: [], historyPosition: 0,
 });
+
+// v3's bookmark rows: dot, label and time. A bookmark with no label is named by its place in the list.
+export function bookmarkRows(marks, picked) {
+  return (marks ?? []).map((mark, index) => ({
+    time: mark.time, label: mark.label || "Bookmark " + (index + 1), clock: mark.clock, current: mark.time === picked,
+  }));
+}
+
+// History's steps, newest first. Steps after the current one are undone and can be redone.
+export function historyRows(steps, position) {
+  return steps.map((label, index) => ({ label, position: index, current: index === position, undone: index > position }))
+    .reverse();
+}
 
 // The Lane colour row: grey and "None" until the mapper picks a colour (Yoge, ADR 0068).
 export function laneTint(lane) {
@@ -77,5 +91,9 @@ export function inspectorHandlers(send) {
     },
     toggle: (kind, event) => send("toggle", kind, event.currentTarget.checked),
     open: kind => send(kind),
+    // A bookmark row picks its bookmark and goes to it; add, goTo, rename and remove act on the pick.
+    pickBookmark: time => send("pickBookmark", time),
+    bookmark: kind => send("bookmark", kind),
+    history: position => send("history", position),
   };
 }

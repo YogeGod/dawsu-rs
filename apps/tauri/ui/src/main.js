@@ -10,7 +10,9 @@ import LaneHeaders from "./parts/LaneHeaders.svelte";
 import PlayheadGroup from "./parts/PlayheadGroup.svelte";
 import ExportWindow from "./parts/ExportWindow.svelte";
 import DrumDetectWindow from "./parts/DrumDetectWindow.svelte";
+import InspectorBookmarks from "./parts/InspectorBookmarks.svelte";
 import InspectorDifficulty from "./parts/InspectorDifficulty.svelte";
+import InspectorHistory from "./parts/InspectorHistory.svelte";
 import InspectorLane from "./parts/InspectorLane.svelte";
 import InspectorSelection from "./parts/InspectorSelection.svelte";
 import SnapSlider from "./parts/SnapSlider.svelte";
@@ -22,6 +24,7 @@ const parts = {
   tools: ToolPills, snap: SnapSlider, audition: AuditionPill, transport: TransportBar,
   playhead: PlayheadGroup, lanes: LaneHeaders,
   "inspector-selection": InspectorSelection, "inspector-lane": InspectorLane, "inspector-difficulty": InspectorDifficulty,
+  "inspector-bookmarks": InspectorBookmarks, "inspector-history": InspectorHistory,
   // The whole page of the Export window (export.html).
   "export-window": ExportWindow,
   // The whole page of the drum detection window (drum.html).
@@ -54,7 +57,8 @@ export function lanes(headers) {
   bridge.handOverLanes(headers);
 }
 
-// app.js hands over the Inspector's model each time renderSelection() or renderActiveLane() runs.
+// app.js hands over the Inspector's model each time renderSelection() or renderActiveLane() runs,
+// and when a bookmark row is picked.
 export function inspector(model) {
   bridge.handOverInspector(model);
 }

@@ -274,7 +274,6 @@ function show(next) {
   }
   if (view.scene) renderScene();
   else renderSelection();
-  renderBookmarks();
   if (scene) {
     for (const button of speedButtons) button.ariaPressed = String(Number(button.dataset.playbackSpeed) === view.speed);
     $("ruler-follow").setAttribute?.("aria-pressed", String(!!view.follow));
@@ -791,30 +790,11 @@ $("delete-lane").addEventListener("click", () => {
   ]);
 });
 
-function selectedBookmark() {
-  return scene?.bookmarks?.[$("bookmarks").selectedIndex];
-}
+// The bookmark row picked in the Inspector, kept by its difficulty and time so it survives each update.
+let bookmarkPick = null;
 
-function renderBookmarks() {
-  const list = $("bookmarks");
-  const marks = scene?.bookmarks ?? [];
-  const state = marks.length ? JSON.stringify([scene.path, marks]) : "";
-  if ((list.dataset.state ?? "") !== state) {
-    const wasSelected = list.dataset.path === scene?.path ? list.value : "";
-    list.replaceChildren(...marks.map(({ time, label }) =>
-      new Option(label ? label + " · " + clock(time) : clock(time), String(time))));
-    if (marks.some(mark => String(mark.time) === wasSelected)) list.value = wasSelected;
-    list.dataset.state = state;
-    list.dataset.path = scene?.path ?? "";
-  }
-  list.disabled = !!view.busy || marks.length === 0;
-  // A list box needs two rows or more; size 1 turns it back into a drop-down.
-  list.size = limit(marks.length, 2, 6);
-  list.hidden = marks.length === 0;
-  $("bookmarks-empty").hidden = marks.length > 0;
-  for (const id of ["jump-bookmark", "rename-bookmark", "remove-bookmark"]) {
-    $(id).disabled = !!view.busy || !selectedBookmark();
-  }
+function selectedBookmark() {
+  return bookmarkPick?.path === scene?.path ? scene?.bookmarks?.find(mark => mark.time === bookmarkPick.time) : undefined;
 }
 
 function drawLocatorFlags(ctx, width, left, right, cycling) {
@@ -877,16 +857,6 @@ function renderScene() {
     }));
     difficulty.value = scene.path;
   }
-  const history = $("history");
-  const historyKey = JSON.stringify([scene.historyPosition, scene.history]);
-  if (history.dataset.state !== historyKey) {
-    history.dataset.state = historyKey;
-    history.replaceChildren(...["Opened difficulty", ...scene.history].map((label, position) => {
-      const button = makeButton(label, () => act({ kind: "history", position }));
-      button.classList.toggle("active", position === scene.historyPosition);
-      return button;
-    }).reverse());
-  }
 }
 
 // The Svelte Inspector (ui/src/parts/InspectorSections.svelte) shows the active lane and the selection.
@@ -946,7 +916,18 @@ function currentInspector() {
   return inspectorState;
 }
 
-// Everything the Inspector's Selection, Lane and Difficulty sections show; app.js keeps the state.
+// The Inspector's bookmark and history lists stay the same arrays while nothing in them changes,
+// so the 85 ms updates during playback rebuild no rows.
+const inspectorLists = new Map();
+function keptList(name, list) {
+  const key = JSON.stringify(list);
+  const kept = inspectorLists.get(name);
+  if (kept?.key === key) return kept.list;
+  inspectorLists.set(name, { key, list });
+  return list;
+}
+
+// Everything the Inspector's sections show; app.js keeps the state.
 function inspectorModel() {
   const selection = scene?.selection;
   const { lanes, volumes } = selection ? selectedHitDetails() : { lanes: [], volumes: [] };
@@ -977,6 +958,10 @@ function inspectorModel() {
       title: inspectorLaneNames(lane).title, sample: lane.sample && lane.sample !== lane.name ? lane.sample : "",
       colour: laneColours.get(lane.colourKey) ?? null, canColour: !!lane.colourKey, canReplace: !!lane.canReplace,
     } : null,
+    bookmarks: keptList("bookmarks", (scene?.bookmarks ?? []).map(({ time, label }) => ({ time, label, clock: clock(time) }))),
+    bookmark: selectedBookmark()?.time ?? null,
+    history: keptList("history", scene ? ["Opened difficulty", ...scene.history ?? []] : []),
+    historyPosition: scene?.historyPosition ?? 0,
   };
 }
 
@@ -996,6 +981,7 @@ function inspectorAction(kind, ...args) {
       return act({ kind: "insert_volume", value: limit(Math.round(value), 0, 100) });
     }
     case "toggle": return act({ kind: args[0], on: !!args[1] });
+    case "history": return act({ kind: "history", position: args[0] });
   }
   if (!scene || view.busy) return false;
   switch (kind) {
@@ -1027,6 +1013,28 @@ function inspectorAction(kind, ...args) {
       if (!body || !Number.isInteger(volume) || volume < 0 || volume > 100) return false;
       act({ kind: "slider_body", path: scene.path, index: body.index, set: set || null,
         whistle_set: whistleSet, whistle: !!whistle, volume });
+      return true;
+    }
+    case "pickBookmark": {
+      const mark = scene.bookmarks?.find(item => item.time === args[0]);
+      if (!mark) return false;
+      // No show() follows a pick, so the Inspector gets it now.
+      bookmarkPick = { path: scene.path, time: mark.time };
+      handOverInspector();
+      act({ kind: "bookmark_jump", time: mark.time });
+      return true;
+    }
+    case "bookmark": {
+      if (args[0] === "add") {
+        editBookmark(null);
+        return true;
+      }
+      const mark = selectedBookmark();
+      if (!mark) return false;
+      if (args[0] === "goTo") act({ kind: "bookmark_jump", time: mark.time });
+      else if (args[0] === "rename") editBookmark(mark);
+      else if (args[0] === "remove") act({ kind: "bookmark_edit", path: scene.path, time: mark.time, label: null });
+      else return false;
       return true;
     }
   }
@@ -2993,21 +3001,6 @@ function editBookmark(mark) {
     [["Cancel", closeModal], [mark ? "Rename" : "Add", submit, true]]);
   label.focus();
 }
-
-$("bookmarks").addEventListener("change", renderBookmarks);
-$("add-bookmark").addEventListener("click", () => editBookmark(null));
-$("rename-bookmark").addEventListener("click", () => {
-  const mark = selectedBookmark();
-  if (mark) editBookmark(mark);
-});
-$("jump-bookmark").addEventListener("click", () => {
-  const mark = selectedBookmark();
-  if (mark) act({ kind: "bookmark_jump", time: mark.time });
-});
-$("remove-bookmark").addEventListener("click", () => {
-  const mark = selectedBookmark();
-  if (mark) act({ kind: "bookmark_edit", path: scene.path, time: mark.time, label: null });
-});
 
 // The Export window opens beside the editor. Generate, Copy and Merge settings stay until it replaces them.
 $("export-entry").addEventListener("click", () => {
