@@ -90,7 +90,7 @@
       <button type="button" class="name" data-lane-row={row.row} aria-haspopup="menu" aria-expanded="false"
         aria-label={"Select and audition " + row.label} aria-pressed={row.selected} title={row.title}
         onclick={event => send("select", row.row, event)}>{names ? row.name : "▶"}</button>
-      {#if names && row.tag}<span class="tag">{row.tag}</span>{/if}
+      {#if names && row.tag}<span class="tag-slot"><span class="tag">{row.tag}</span></span>{/if}
       {#if row.addLayer}
         <button type="button" class="lane-add-layer" aria-label={row.addLayer} title={row.addLayer}
           disabled={headers.busy} onclick={() => send("addLayer", row.row)}>+</button>
@@ -117,7 +117,7 @@
     cursor: default;
   }
   .lane:not(.sample-folder):hover {
-    background: var(--lh-hover);
+    background: var(--lh-hover, var(--editor-panel));
   }
   .lane.active,
   .lane.active:hover {
@@ -224,6 +224,13 @@
     padding-left: 8px;
     color: var(--editor-muted);
     font-weight: 400;
+  }
+  /* The tag gives way before the name: its slot shrinks first and clips it. */
+  .tag-slot {
+    display: flex;
+    min-width: 0;
+    flex: 0 100 auto;
+    overflow: hidden;
   }
   .tag {
     display: none;
