@@ -7,6 +7,8 @@ export class Bridge {
   scene = $state.raw(null);
   // The lane and folder header rows app.js last built (renderLanes), replaced whole.
   lanes = $state.raw(null);
+  // The Inspector's Selection, Lane and Difficulty model app.js last built (inspectorModel), replaced whole.
+  inspector = $state.raw(null);
   // Playhead group's Centre: kept in this window only, never saved; app.js reads it to follow.
   centre = $state(false);
 
@@ -18,6 +20,12 @@ export class Bridge {
   // app.js may scroll to a row right after renderLanes(), so the rows are written before this returns.
   handOverLanes(headers, flush = flushSync) {
     this.lanes = headers;
+    flush();
+  }
+
+  // Handed over by app.js's renderSelection() and renderActiveLane(); written at once, like the lanes.
+  handOverInspector(model, flush = flushSync) {
+    this.inspector = model;
     flush();
   }
 

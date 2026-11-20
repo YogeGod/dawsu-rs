@@ -332,21 +332,17 @@ test("hit and controller levels use the legacy blue-purple-red palette", async (
   ]);
 });
 
-// The Inspector swatch keeps the sound colour (part 7); the timeline row tint is the picked colour or none.
+// The timeline row tint, like the Inspector's Lane tint (part 7), is the picked colour or none.
 test("lane rows tint only in a colour the mapper picked", async () => {
   const { evaluate } = await frontend();
   const result = evaluate(`
     laneColours.set("picked", "#123456");
     const clap = { family: "soft-hitclap", colourKey: "unpicked" };
     JSON.stringify([
-      ["normal-hitnormal", "soft-hitwhistle", "drum-hitfinish", "soft-hitclap", null]
-        .map(family => laneColour({ family, colourKey: "unpicked" })),
-      laneColour({ family: "soft-hitclap", colourKey: "picked" }),
       laneTint(clap), laneTint({ family: "soft-hitclap", colourKey: "picked" }),
       laneTint({ family: "soft-hitclap", colourKey: "picked" }, true),
     ])`);
   assert.deepEqual(JSON.parse(result), [
-    ["#f1ad67", "#9c9cfc", "#a7d67d", "#e28dd1", "#62d6cf"], "#123456",
     // v3: 8 % on a row, 16 % on the active lane's row.
     null, "#12345614", "#12345629",
   ]);

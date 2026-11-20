@@ -72,22 +72,9 @@ function volumeColour(volume) {
   return volumePalette[limit(Math.round(volume), 0, 100)];
 }
 
-// Design handoff lane colours by sound (tokens.css --editor-kick/hat/percussion/clap/teal).
-const soundColours = {
-  hitnormal: "#f1ad67", hitwhistle: "#9c9cfc", sliderwhistle: "#9c9cfc",
-  hitfinish: "#a7d67d", hitclap: "#e28dd1",
-};
-const fileLaneColour = "#62d6cf";
-
-function soundColour(lane) {
-  const sound = lane?.family?.slice(lane.family.indexOf("-") + 1);
-  return soundColours[sound] ?? fileLaneColour;
-}
-
-// Only the lane bar and row tint use it; hit diamonds keep the volume colours (Yoge, 2026-11-19).
-function laneColour(lane) {
-  return laneColours.get(lane?.colourKey) ?? soundColour(lane);
-}
+// The colour a lane has until the mapper picks one: v3's lane lightness with no chroma, the
+// bundle's laneGrey (ui/src/lib/colour.js). Hit diamonds keep the volume colours (Yoge, 2026-11-19).
+const laneGrey = "#9e9e9e";
 let pending = Promise.resolve();
 let requests = 0;
 let refreshing = false;
@@ -136,7 +123,7 @@ async function update(action, full = true) {
         break;
       }
       case "newDiff":
-        $("new").click();
+        $("new")?.click();
         break;
       case "openFolder":
         await invoke("open_editor_folder", { folder: "map" });
@@ -223,8 +210,6 @@ function show(next) {
       selectionLaneAnchor = null;
       if (selectionLanesOnly) act({ kind: "volume_scope", path: view.scene.path, lanes: null }, false);
       selectionLanesOnly = false;
-      $("selection-volume-scope").value = "all";
-      $("selection-volume-hint").textContent = "Changes all sounds at the selected times.";
       $("used-only").checked = false;
       $("lane-filter").value = "";
     }
@@ -289,13 +274,11 @@ function show(next) {
   }
   if (view.scene) renderScene();
   else renderSelection();
-  $("edit-range").disabled = !!view.busy || !scene?.range;
   renderBookmarks();
   if (scene) {
     for (const button of speedButtons) button.ariaPressed = String(Number(button.dataset.playbackSpeed) === view.speed);
     $("ruler-follow").setAttribute?.("aria-pressed", String(!!view.follow));
     followPlayhead();
-    $("audition").checked = view.audition;
   }
   refreshLaneDelete();
   renderDialogs();
@@ -682,10 +665,15 @@ function mixSelectedLanes(row, operation) {
   act({ kind: "lane_selection_mix", target: { map: scene.path, lane: lane.sourceKey }, operation, lanes });
 }
 
-function updateVolumeScope() {
-  $("selection-volume-hint").textContent = selectionLanesOnly
+// The Inspector's line under Change volume.
+function volumeScopeHint() {
+  return selectionLanesOnly
     ? (selectionLaneKeys.size ? "Changes selected lanes at the selected times." : "Select lanes to change their volume.")
     : "Changes all sounds at the selected times.";
+}
+
+function updateVolumeScope() {
+  renderSelection();
   if (scene) {
     const lanes = selectionLanesOnly ? [...selectionLaneKeys] : null;
     act({ kind: "volume_scope", path: scene.path, lanes }, false);
@@ -713,11 +701,6 @@ function selectVolumeLane(row, event) {
   renderLanes();
 }
 
-$("selection-volume-scope").addEventListener("change", () => {
-  if (!scene || view.busy || drag) return;
-  selectionLanesOnly = $("selection-volume-scope").value === "selected";
-  updateVolumeScope();
-});
 
 function requestDrumMap() {
   if (!scene || view.busy || drag) return;
@@ -877,11 +860,8 @@ function renderScene() {
   setValue("snap-mode", scene.snapMode);
   setValue("beats", scene.beats);
   setValue("divisor", scene.divisor);
-  setValue("insert", scene.insertVolume);
   setValue("zoom", Math.log10(scene.zoom));
   setValue("lane-height", scene.rowHeight);
-  $("protect").checked = scene.protect;
-  $("hs").checked = scene.hs;
   renderSelection();
   $("undo").disabled = view.busy || scene.historyPosition === 0;
   $("redo").disabled = view.busy || scene.historyPosition === scene.history.length;
@@ -908,21 +888,9 @@ function renderScene() {
   }
 }
 
+// The Svelte Inspector (ui/src/parts/InspectorSections.svelte) shows the active lane and the selection.
 function renderActiveLane() {
-  const lane = scene?.lanes?.[view.activeLane];
-  const name = $("active-lane-name");
-  name.textContent = name.title = laneTitle(lane);
-  const sample = $("active-lane-sample");
-  sample.textContent = sample.title = lane?.sample ?? "";
-  sample.hidden = !lane?.sample || lane.sample === lane.name;
-  const colour = laneColours.get(lane?.colourKey);
-  const swatch = $("active-lane-colour-swatch");
-  swatch.hidden = !lane;
-  if (lane) swatch.style.backgroundColor = laneColour(lane);
-  $("active-lane-colour-name").textContent = !lane ? "" : colour ?? "Sound colour";
-  $("lane-colour").ariaLabel = lane ? "Lane colour: " + (colour ?? "Sound colour") : "Lane colour…";
-  $("replace-sample").disabled = !!view.busy || !lane?.canReplace;
-  $("lane-colour").disabled = !!view.busy || !lane?.colourKey;
+  handOverInspector();
 }
 
 let selectedHitsScene = null;
@@ -946,37 +914,122 @@ function selectedHitDetails() {
 }
 
 function renderSelection() {
-  const selection = scene?.selection;
-  $("selected").textContent = selection
-    ? selection.count + (selection.count === 1 ? " hit" : " hits")
-    : "Nothing selected";
-  const { lanes, volumes } = selection ? selectedHitDetails() : { lanes: [], volumes: [] };
-  $("selected-lanes").textContent = lanes.length > 1 ? " · " + lanes.length + " lanes"
-    : lanes.length ? " · " + laneTitle(scene.lanes?.[lanes[0]]) : "";
-  $("selection-volume-value").textContent = !volumes.length ? ""
-    : volumes.length === 1 ? volumes[0] + "%" : volumes[0] + "–" + volumes[volumes.length - 1] + "%";
-  $("selection-fields").hidden = !selection;
-  $("selection-fields").disabled = !!view.busy;
-  const body = selection?.sliderBody;
-  const fields = $("slider-body-fields");
-  fields.hidden = !body;
-  fields.disabled = !!view.busy;
-  if (body) {
-    const state = JSON.stringify([scene.path, body]);
-    if (fields.dataset.state !== state) {
-      $("slider-body-set").value = body.set ?? "";
-      $("slider-body-set").disabled = !body.set;
-      $("slider-body-whistle").checked = body.whistle;
-      $("slider-body-whistle-set").value = body.whistleSet ?? "auto";
-      $("slider-body-volume").value = body.volume;
-      fields.dataset.state = state;
-    }
-  } else {
-    delete fields.dataset.state;
+  handOverInspector();
+}
+
+let inspectorState = null;
+
+function handOverInspector() {
+  inspectorState = inspectorModel();
+  try {
+    window.dawsuUi?.inspector?.(inspectorState);
+  } catch (error) {
+    console.error(error);
   }
-  if (!selection) return;
-  setValue("selection-start-input", clock(selection.start));
-  $("selection-object").textContent = selection.object;
+}
+
+// v3's Inspector names a lane "Clap · Soft set" and a selection's lane "Clap (Soft)". The lane
+// headers and the lane filter keep laneTitle(); a lane the mapper renamed keeps its own name.
+function inspectorLaneNames(lane) {
+  if (!lane?.group || renamedLanes.has(lane.colourKey)) {
+    const name = laneTitle(lane);
+    return { title: name, short: name };
+  }
+  const { name } = laneSound(lane);
+  const set = lane.group[0].toUpperCase() + lane.group.slice(1);
+  return { title: name + " · " + set + " set", short: name + " (" + set + ")" };
+}
+
+// The bundle loads after this script, so it reads the last model at load.
+function currentInspector() {
+  return inspectorState;
+}
+
+// Everything the Inspector's Selection, Lane and Difficulty sections show; app.js keeps the state.
+function inspectorModel() {
+  const selection = scene?.selection;
+  const { lanes, volumes } = selection ? selectedHitDetails() : { lanes: [], volumes: [] };
+  const body = selection?.sliderBody;
+  const lane = scene?.lanes?.[view?.activeLane];
+  // A fault stops the editor like a running job does.
+  const busy = !!view?.busy || !!view?.fault;
+  return {
+    busy, doc: !!scene && !busy,
+    selection: selection ? {
+      summary: selection.count + (selection.count === 1 ? " hit" : " hits") + " selected" +
+        (lanes.length > 1 ? " · " + lanes.length + " lanes"
+          : lanes.length ? " · " + inspectorLaneNames(scene.lanes?.[lanes[0]]).short : ""),
+      start: clock(selection.start),
+      volume: !volumes.length ? ""
+        : volumes.length === 1 ? volumes[0] + "%" : volumes[0] + "–" + volumes[volumes.length - 1] + "%",
+      object: selection.object,
+      // The fields re-seed only when the difficulty or the slider body changes.
+      sliderBody: body ? {
+        key: JSON.stringify([scene.path, body]), set: body.set ?? "", whistle: !!body.whistle,
+        whistleSet: body.whistleSet ?? "auto", volume: body.volume,
+      } : null,
+    } : null,
+    scope: selectionLanesOnly ? "selected" : "all", hint: volumeScopeHint(),
+    range: !!scene?.range, insertVolume: scene?.insertVolume ?? 100,
+    protect: !!scene?.protect, audition: !!view?.audition, hs: !!scene?.hs,
+    lane: lane ? {
+      title: inspectorLaneNames(lane).title, sample: lane.sample && lane.sample !== lane.name ? lane.sample : "",
+      colour: laneColours.get(lane.colourKey) ?? null, canColour: !!lane.colourKey, canReplace: !!lane.canReplace,
+    } : null,
+  };
+}
+
+// Every Inspector control comes back here from the Svelte part and runs the code its old listener ran.
+function inspectorAction(kind, ...args) {
+  switch (kind) {
+    case "laneColour": return openLaneColour();
+    case "replaceSample": return openReplaceSample();
+    case "generate": return openGenerate();
+    case "new": return openNewDifficulty();
+    case "copy": return openCopy();
+    case "mergeSettings": return run(() => openMergeSettings());
+    case "command": return command(args[0]);
+    case "insert": {
+      // A blank or unreadable field sets 100 %, as the old Insert volume field's fallback did.
+      const value = typeof args[0] === "number" && Number.isFinite(args[0]) ? args[0] : 100;
+      return act({ kind: "insert_volume", value: limit(Math.round(value), 0, 100) });
+    }
+    case "toggle": return act({ kind: args[0], on: !!args[1] });
+  }
+  if (!scene || view.busy) return false;
+  switch (kind) {
+    case "moveStart": {
+      // The time already shown is the hits' start rounded to the millisecond; moving there would only round them.
+      if (!scene.selection || args[0].trim() === clock(scene.selection.start)) return false;
+      const position = parseClock(args[0]);
+      if (!Number.isFinite(position)) return false;
+      act({ kind: "timeline_edit", path: scene.path, edit: { kind: "selection_start", position } });
+      return true;
+    }
+    case "volume": {
+      const [value, relative] = args;
+      if (!scene.selection || !Number.isFinite(value)) return false;
+      act({ kind: "volume", value: limit(Math.round(value), relative ? -100 : 0, 100), relative: !!relative });
+      return true;
+    }
+    case "nudge":
+      act({ kind: "volume", relative: true, value: args[0] });
+      return true;
+    case "scope":
+      if (drag) return false;
+      selectionLanesOnly = args[0] === "selected";
+      updateVolumeScope();
+      return true;
+    case "sliderBody": {
+      const body = scene.selection?.sliderBody;
+      const { set, whistleSet, whistle, volume } = args[0];
+      if (!body || !Number.isInteger(volume) || volume < 0 || volume > 100) return false;
+      act({ kind: "slider_body", path: scene.path, index: body.index, set: set || null,
+        whistle_set: whistleSet, whistle: !!whistle, volume });
+      return true;
+    }
+  }
+  return false;
 }
 
 function clock(ms) {
@@ -2077,19 +2130,23 @@ function modal(kind, title, content, buttons, cancel = null) {
   }));
   if (!dialog.open) dialog.showModal();
 }
-$("lane-colour").addEventListener("click", () => {
+// The Inspector's Lane colour (and the lane menu, by its id): opens on grey until the mapper picks a colour.
+function openLaneColour() {
   const path = scene?.path;
   const lane = scene?.lanes?.[view.activeLane];
   if (!lane?.colourKey || view.busy || drag) return;
+  const picked = laneColours.get(lane.colourKey);
+  // Apply writes only a colour the mapper chose, so an unpicked lane stays without one.
+  let chosen = !!picked;
   const input = document.createElement("input");
   input.type = "color";
-  input.value = laneColour(lane);
+  input.value = picked ?? laneGrey;
   const label = document.createElement("label");
   label.append("Custom colour", input);
   const palette = document.createElement("div");
   palette.className = "tint-palette";
   palette.setAttribute("role", "radiogroup");
-  palette.setAttribute("aria-label", "Lane tint");
+  palette.setAttribute("aria-label", "Lane colour");
   const preview = document.createElement("div");
   preview.className = "tint-preview";
   const caption = document.createElement("span");
@@ -2117,10 +2174,10 @@ $("lane-colour").addEventListener("click", () => {
     radio.title = radio.value;
     radio.setAttribute("aria-label", radio.value);
     radio.style.backgroundColor = radio.value;
-    radio.addEventListener("change", () => { input.value = radio.value; refresh(); });
+    radio.addEventListener("change", () => { input.value = radio.value; chosen = true; refresh(); });
     palette.append(radio);
   }
-  input.addEventListener("input", refresh);
+  input.addEventListener("input", () => { chosen = true; refresh(); });
   refresh();
   const change = (colour) => {
     closeModal();
@@ -2133,10 +2190,10 @@ $("lane-colour").addEventListener("click", () => {
     saveLaneLayout(true);
   };
   const buttons = [["Cancel", closeModal]];
-  if (laneColours.has(lane.colourKey)) buttons.push(["Clear tint", () => change(null)]);
-  buttons.push(["Apply", () => change(input.value), true]);
+  if (laneColours.has(lane.colourKey)) buttons.push(["Clear colour", () => change(null)]);
+  buttons.push(["Apply", () => (chosen ? change(input.value) : closeModal()), true]);
   modal("lane-colour", "Lane colour · " + lane.name, [palette, preview, label], buttons);
-});
+}
 
 function closeModal() {
   modalKind = "";
@@ -2405,7 +2462,6 @@ async function openMergeSettings(combinations = [], regenerate = false, includeS
     [["Cancel", closeModal], ["Load preset…", load], ["Save preset…", save], [regenerate ? "Review again" : "Apply", apply, true]]);
 }
 
-$("merge-settings").addEventListener("click", () => run(() => openMergeSettings()));
 
 function sampleTarget() {
   const lane = scene?.lanes?.[view.activeLane];
@@ -2576,7 +2632,7 @@ $("sample-browser-pick").addEventListener("click", () => {
   if (target) pickSample(target);
 });
 
-$("replace-sample").addEventListener("click", () => {
+function openReplaceSample() {
   const target = sampleTarget();
   if (!target) return;
   const select = document.createElement("select");
@@ -2611,7 +2667,7 @@ $("replace-sample").addEventListener("click", () => {
       }], ["Replace", assign, true]] : []),
       ["Browse…", browse, !available],
     ]);
-});
+}
 
 const open = () => run(async () => show(await invoke("pick_map")));
 $("open").addEventListener("click", open);
@@ -2669,9 +2725,6 @@ for (const button of document.querySelectorAll("[data-action]")) {
 for (const button of document.querySelectorAll("[data-command]")) {
   button.addEventListener("click", () => command(button.dataset.command));
 }
-for (const button of document.querySelectorAll("[data-volume]")) {
-  button.addEventListener("click", () => act({ kind: "volume", relative: true, value: +button.dataset.volume }));
-}
 for (const id of ["snap", "snap-mode", "beats", "divisor"]) {
   $(id).addEventListener("change", () => {
     act({ kind: "snap", on: $("snap").checked, mode: $("snap-mode").value,
@@ -2713,9 +2766,7 @@ $("time-signatures").addEventListener("click", () => {
     }, true],
   ]);
 });
-toggle("hs", "hs_mode");
 toggle("object-lines", "object_lines");
-toggle("protect", "protect");
 function setLaneHeight(height) {
   if (scene && !view.busy && !drag) changeView(scene.viewStart, scene.zoom, height);
 }
@@ -2759,7 +2810,6 @@ $("used-only").addEventListener("change", () => {
   renderLanes();
   paintSoon();
 });
-toggle("audition", "audition");
 function openSiblingDifficulty(path) {
   if (scene && !view.busy && !drag && path && path !== scene.path) act({ kind: "open", path });
 }
@@ -2826,30 +2876,6 @@ $("zoom").addEventListener("change", () => changeView(scene.viewStart, 10 ** +$(
 for (const button of speedButtons) {
   button.addEventListener("click", () => act({ kind: "speed", value: Number(button.dataset.playbackSpeed) }));
 }
-$("insert").addEventListener("change", () => act({ kind: "insert_volume", value: limit(number("insert", 100), 0, 100) }));
-$("volume-mode").addEventListener("change", () => {
-  const relative = $("volume-mode").value === "relative";
-  $("volume").min = relative ? -100 : 0;
-  $("volume").value = relative ? 0 : 100;
-});
-$("selection-start-edit").addEventListener("submit", (event) => {
-  event.preventDefault();
-  const field = $("selection-start-input");
-  if (!scene?.selection || view.busy) return;
-  // The time already shown is the hits' start rounded to the millisecond; moving there would only round them.
-  if (field.value.trim() === clock(scene.selection.start)) return;
-  const position = parseClock(field.value);
-  if (!Number.isFinite(position)) return;
-  field.blur();
-  act({ kind: "timeline_edit", path: scene.path, edit: { kind: "selection_start", position } });
-});
-$("selection-volume").addEventListener("submit", (event) => {
-  event.preventDefault();
-  const value = $("volume").valueAsNumber;
-  if (!scene?.selection || view.busy || !Number.isFinite(value)) return;
-  const relative = $("volume-mode").value === "relative";
-  act({ kind: "volume", value: limit(Math.round(value), relative ? -100 : 0, 100), relative });
-});
 
 function input(type, value, min, max, step = 1) {
   const field = document.createElement("input");
@@ -2930,7 +2956,7 @@ function labeled(label, control) {
   node.append(label, control);
   return node;
 }
-$("generate").addEventListener("click", () => {
+function openGenerate() {
   if (!scene || view.busy) return;
   const sliderAudio = input("checkbox", "", 0, 0);
   sliderAudio.checked = false;
@@ -2940,8 +2966,8 @@ $("generate").addEventListener("click", () => {
       closeModal();
       act({ kind: "generate", include_slider_audio: sliderAudio.checked });
     }, true]]);
-});
-$("new").addEventListener("click", () => {
+}
+function openNewDifficulty() {
   const name = input("text", "", 0, 0);
   name.placeholder = "Difficulty name";
   const submit = () => {
@@ -2953,7 +2979,7 @@ $("new").addEventListener("click", () => {
   name.addEventListener("keydown", (event) => { if (event.key === "Enter") submit(); });
   modal("new", "New difficulty", [labeled("Name", name)], [["Cancel", closeModal], ["Review output", submit, true]]);
   name.focus();
-});
+}
 function editBookmark(mark) {
   if (!scene || view.busy) return;
   const path = scene.path;
@@ -2971,13 +2997,6 @@ function editBookmark(mark) {
 }
 
 $("bookmarks").addEventListener("change", renderBookmarks);
-$("apply-slider-body").addEventListener("click", () => {
-  const body = scene?.selection?.sliderBody;
-  const volume = $("slider-body-volume").valueAsNumber;
-  if (!body || view.busy || !Number.isInteger(volume) || volume < 0 || volume > 100) return;
-  act({ kind: "slider_body", path: scene.path, index: body.index, set: $("slider-body-set").value || null,
-    whistle_set: $("slider-body-whistle-set").value, whistle: $("slider-body-whistle").checked, volume });
-});
 $("add-bookmark").addEventListener("click", () => editBookmark(null));
 $("rename-bookmark").addEventListener("click", () => {
   const mark = selectedBookmark();
@@ -2997,7 +3016,7 @@ $("export-entry").addEventListener("click", () => {
   invoke("open_export_window").catch((error) => { $("status").textContent = String(error); });
 });
 
-$("copy").addEventListener("click", () => {
+function openCopy() {
   const paths = scene.difficulties.filter((path) => path !== scene.path);
   if (!paths.length) {
     modal("copy", "Copy hitsounds", [paragraph("There are no other difficulties in this mapset.")], [["Close", closeModal, true]]);
@@ -3140,7 +3159,7 @@ $("copy").addEventListener("click", () => {
     labeled("Copy sample sets and indexes", sets), labeled("Copy volumes", volumes), labeled("Keep target hits at 5%", keep5),
     details, error,
   ], [["Cancel", closeModal], ["Review output", submit, true]]);
-});
+}
 $("next-output-problem").addEventListener("click", () => showOutputProblem(outputProblemIndex + 1));
 $("warnings").addEventListener("click", () => {
   modal("warnings", "Audio warnings", view.warnings.map(paragraph), [["Close", closeModal, true]]);

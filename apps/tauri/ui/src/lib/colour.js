@@ -59,3 +59,15 @@ export function laneShades(colour) {
 }
 
 export const folderShades = () => ({ strip: folderGrey, header: mixIntoCanvas(folderGrey, 34) });
+
+// v3 8b: the Inspector names a picked lane colour by its OKLCH hue. A colour with almost no
+// chroma (a grey from the custom picker) has no hue to name.
+const tintBands = [[40, "Red"], [70, "Orange"], [100, "Amber"], [125, "Yellow"], [145, "Lime"], [165, "Green"],
+  [190, "Teal"], [220, "Cyan"], [255, "Blue"], [285, "Indigo"], [315, "Violet"], [340, "Magenta"], [361, "Pink"]];
+
+export function tintName(colour) {
+  const [, chroma, hue] = toOklch(colour.toLowerCase());
+  if (chroma < 0.02) return "Grey";
+  const degrees = (hue + 360) % 360;
+  return tintBands.find(([limit]) => degrees < limit)[1];
+}

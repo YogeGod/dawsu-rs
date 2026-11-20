@@ -55,7 +55,7 @@ test("Export copies with exactly the options the old Copy dialog sends by defaul
     'modal = (_kind, _title, content, buttons) => { globalThis.copy = { content, buttons }; };' +
     'closeModal = () => {};', context,
   );
-  get("copy").events.get("click")();
+  runInContext("inspectorAction('copy')", context);
   function* descendants(nodes) {
     for (const node of nodes) {
       if (typeof node === "string") continue;

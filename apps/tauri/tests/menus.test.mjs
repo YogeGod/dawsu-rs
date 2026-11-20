@@ -5,6 +5,9 @@ import { createContext, runInContext } from "node:vm";
 
 const code = await readFile(new URL("../dist/menus.js", import.meta.url), "utf8");
 const html = await readFile(new URL("../dist/index.html", import.meta.url), "utf8");
+// The Inspector's Lane and Difficulty buttons live in a Svelte part and keep the ids the menus click.
+const inspectorPart = (await Promise.all(["Selection", "Lane", "Difficulty"].map(name =>
+  readFile(new URL(`../ui/src/parts/Inspector${name}.svelte`, import.meta.url), "utf8")))).join("\n");
 const css = await readFile(new URL("../dist/style.css", import.meta.url), "utf8");
 const catalogue = (await Promise.all([
   "../../../crates/dawsu-application/src/commands.rs",
@@ -284,7 +287,7 @@ test("each menu groups the editor's existing commands like the design, with no s
 test("menus only click ribbon controls that exist in the window", () => {
   const ids = new Set([...code.matchAll(/(?:click|\$)\("([\w-]+)"\)/g)].map(match => match[1]));
   for (const id of ["folders", "audio", "open", "go-home", "used-only", "ruler-waveform"]) assert.ok(ids.has(id), id);
-  for (const id of ids) assert.match(html, new RegExp('id="' + id + '"'), id);
+  for (const id of ids) assert.match(html + inspectorPart, new RegExp('id="' + id + '"'), id);
 });
 
 const plain = value => JSON.parse(JSON.stringify(value));

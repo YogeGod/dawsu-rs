@@ -192,7 +192,7 @@
                 <span>{baseText}</span>
               {/if}
               <span class="spacer"></span>
-              <label class="check">
+              <label class="check" class:off={!choices.base}>
                 <input type="checkbox" bind:checked={choices.sliderAudio} disabled={!choices.base}>
                 Slider slide, whistle and tick audio
               </label>
@@ -410,7 +410,7 @@
   .count { color: var(--editor-secondary); }
   .check { display: flex; align-items: center; gap: 8px; color: var(--editor-secondary); }
   .check input { margin: 0; accent-color: var(--editor-accent); }
-  .check:has(input:disabled) { color: var(--editor-disabled); }
+  .check.off { color: var(--editor-disabled); }
   .count::before {
     content: "";
     display: inline-block;
