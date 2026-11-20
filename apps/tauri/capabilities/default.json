@@ -19,6 +19,7 @@
     "allow-pick-sample",
     "allow-pick-sound-set",
     "allow-sound-set-library",
+    "allow-sound-set-placement",
     "allow-save-sound-set",
     "allow-pick-songs-folder",
     "allow-pick-hitsound-library",

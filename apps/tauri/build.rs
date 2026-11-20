@@ -20,6 +20,7 @@ const COMMANDS: &[&str] = &[
     "pick_sample",
     "pick_sound_set",
     "sound_set_library",
+    "sound_set_placement",
     "save_sound_set",
     "pick_songs_folder",
     "pick_hitsound_library",
