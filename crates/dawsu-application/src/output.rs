@@ -378,7 +378,7 @@ pub(super) fn copy_report(
     let mut silence = std::collections::HashMap::new();
     let mut is_silent = |file: &str| {
         *silence.entry(file.to_owned()).or_insert_with(|| {
-            crate::safe_child(&root, file)
+            source.pending.get(file).map(|kept| Ok(kept.path.clone())).unwrap_or_else(|| crate::safe_child(&root, file))
                 .and_then(|path| dawsu_audio::decode_with_cancel(&path, cancel))
                 .is_ok_and(|clip| clip.samples.iter().all(|sample| sample.abs() < 1.0e-4))
         })
