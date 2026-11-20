@@ -335,7 +335,9 @@ mod tests {
     }
 
     /// Pins Export's paired samples byte for byte, so Save's merge per role sharing the renderer
-    /// cannot change them (hash taken on e97f6b5, before the change).
+    /// cannot change them (hash taken on e97f6b5, before the change). Retaken 2026-11-20: the
+    /// 2000 ms moment has no hitnormal, so its silent soft-hitnormal6.wav is no longer written
+    /// (Yoge's rule, as Save); every other file and the .osu text are unchanged.
     #[test]
     fn export_pair_samples_output_is_unchanged() {
         use dawsu_foundation::{CustomIndex, digest::sha256_hex};
@@ -372,6 +374,6 @@ mod tests {
         let target = String::from_utf8(plan.files[0].file.to_bytes()).unwrap();
         let digest = sha256_hex(format!("{listing}{target}").as_bytes());
         eprintln!("{listing}{target}\n{digest}");
-        assert_eq!(digest, "fbb8b3c4ba6c7f9037386609ec9009e1406e6d423297ebdcd63f70d03f67448c");
+        assert_eq!(digest, "24553f8d3c867ff6d83d6b58721ba013344ed05a25fbef6e44420d0cdd340743");
     }
 }
