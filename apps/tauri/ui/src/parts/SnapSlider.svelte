@@ -1,6 +1,8 @@
 <script>
   import { act, bridge } from "../lib/bridge.svelte.js";
-  import { nearestStop, onStop, sliderKeys, snapAction, STOPS, stepStop, stopAt } from "../lib/snap.js";
+  import {
+    changesSnap, currentSnap, keepsFocus, nearestStop, onStop, ownsKey, snapAction, STOPS, stepStop, stopAt,
+  } from "../lib/snap.js";
 
   let track;
   // The stop the mapper is choosing, shown until the editor has answered.
@@ -14,24 +16,22 @@
   const exact = $derived(local !== null || !scene || onStop(scene.beats, scene.divisor));
   const value = $derived(local !== null ? "1/" + STOPS[local] : scene ? scene.beats + "/" + scene.divisor : "–");
 
-  function current() {
-    return local !== null ? [1, STOPS[local]] : [scene.beats, scene.divisor];
-  }
-
   function choose(target) {
-    const [beats, divisor] = current();
+    const snap = currentSnap(local, scene);
     local = target;
-    if (divisor !== beats * STOPS[target]) sending = act(snapAction(scene, target));
+    if (changesSnap(snap, target)) sending = act(snapAction(scene, target));
   }
 
-  function release() {
+  function release(input) {
     const sent = sending;
     sent.finally(() => {
       if (!dragging && sending === sent) local = null;
     });
+    if (!keepsFocus(input)) track.blur();
   }
 
   function pointAt(event) {
+    if (disabled) return;
     const box = track.getBoundingClientRect();
     choose(stopAt((event.clientX - box.left) / box.width));
   }
@@ -46,18 +46,16 @@
   function letGo() {
     if (!dragging) return;
     dragging = false;
-    release();
-    // After a mouse drag Left and Right seek again; only Tab gives the slider the keys.
-    track.blur();
+    release("pointer");
   }
 
   function key(event) {
-    if (!sliderKeys.includes(event.key) || event.ctrlKey || event.altKey || event.metaKey) return;
+    if (!ownsKey(event)) return;
     // The editor's own keydown would seek or move the selection.
     event.preventDefault();
     if (disabled) return;
-    choose(stepStop(...current(), event.key));
-    release();
+    choose(stepStop(...currentSnap(local, scene), event.key));
+    release("keyboard");
   }
 </script>
 
@@ -72,8 +70,8 @@
     aria-label="Snap"
     aria-valuemin={STOPS[0]}
     aria-valuemax={STOPS[STOPS.length - 1]}
-    aria-valuenow={STOPS[index]}
-    aria-valuetext={value + (scene && !scene.snap ? ", snap off" : "")}
+    aria-valuenow={scene ? STOPS[index] : undefined}
+    aria-valuetext={scene ? value + (scene.snap ? "" : ", snap off") : undefined}
     aria-disabled={disabled}
     onpointerdown={press}
     onpointermove={event => dragging && pointAt(event)}
@@ -92,6 +90,8 @@
 
 <style>
   .snap {
+    /* v3 §3.6: unlit ticks are #555; the tokens have no such grey. */
+    --snap-tick-idle: #555;
     display: flex;
     align-items: center;
     gap: 10px;
@@ -141,7 +141,7 @@
     width: 2px;
     height: 10px;
     border-radius: 1px;
-    background: #555;
+    background: var(--snap-tick-idle);
   }
   .lit {
     background: var(--editor-accent);
@@ -153,14 +153,14 @@
     width: 14px;
     height: 14px;
     border-radius: 50%;
-    background: #f1f1f1;
+    background: var(--editor-text);
     box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35);
     transform: translate(-50%, -50%);
   }
   /* The real snap has no stop of its own (4/1, 1/5, 1/64): the thumb shows the nearest one, hollow. */
   .between .thumb {
     background: var(--editor-ink);
-    box-shadow: inset 0 0 0 2px #f1f1f1, 0 0 0 1px rgba(0, 0, 0, 0.35);
+    box-shadow: inset 0 0 0 2px var(--editor-text), 0 0 0 1px rgba(0, 0, 0, 0.35);
   }
   .chip {
     display: grid;

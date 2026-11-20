@@ -3,7 +3,19 @@ export const STOPS = [1, 2, 3, 4, 6, 8, 12, 16];
 
 const finer = ["ArrowRight", "ArrowUp"];
 const coarser = ["ArrowLeft", "ArrowDown"];
-export const sliderKeys = [...finer, ...coarser, "Home", "End"];
+const sliderKeys = [...finer, ...coarser, "Home", "End"];
+
+// The slider takes Arrow, Home and End without modifiers; every other key goes to the editor.
+export const ownsKey = event => sliderKeys.includes(event.key) && !event.ctrlKey && !event.altKey && !event.metaKey;
+
+// After a mouse drag or click Left and Right seek again; only keyboard use (Tab) keeps focus.
+export const keepsFocus = input => input === "keyboard";
+
+// The snap the slider stands for: the stop being chosen, or else the editor's snap.
+export const currentSnap = (local, scene) => local !== null ? [1, STOPS[local]] : [scene.beats, scene.divisor];
+
+// A move sends a snap change only when the target stop differs from that snap.
+export const changesSnap = ([beats, divisor], target) => divisor !== beats * STOPS[target];
 
 // Stops compare by snap length on a log scale, so 1/5 sits nearer 1/6 than 1/4.
 export function nearestStop(beats, divisor) {

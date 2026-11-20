@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { render } from "svelte/server";
 import { bridge } from "../src/lib/bridge.svelte.js";
-import { nearestStop, onStop, snapAction, stepStop } from "../src/lib/snap.js";
+import { changesSnap, currentSnap, keepsFocus, nearestStop, onStop, ownsKey, snapAction, stepStop } from "../src/lib/snap.js";
 import SnapSlider from "../src/parts/SnapSlider.svelte";
 
 const STOPS = [1, 2, 3, 4, 6, 8, 12, 16];
@@ -72,15 +72,36 @@ test("the slider shows the real snap in its chip and the nearest stop on its tra
 
 test("with snap off the slider is dimmed but still works; with no map or while busy it is disabled", () => {
   let html = shown(scene({ snap: false }));
-  assert.match(html, /\boff\b/);
+  assert.match(html, /class="snap[^"]*\boff\b/);
   assert.match(html, /aria-valuetext="1\/4, snap off"/);
   assert.doesNotMatch(html, /aria-disabled="true"/);
 
   html = shown(null);
   assert.match(html, /aria-disabled="true"/);
+  assert.doesNotMatch(html, /aria-valuenow|aria-valuetext/, "no value to announce before a map is open");
   assert.match(html, /class="chip[^"]*">–</);
   html = shown(scene({}), { busy: true });
   assert.match(html, /aria-disabled="true"/);
   html = shown(scene({}), { busy: false, fault: "The editor stopped" });
   assert.match(html, /aria-disabled="true"/);
+});
+
+test("a move sends a snap change only when the target stop differs from the snap the slider stands for", () => {
+  const scene = { beats: 1, divisor: 5 };
+  assert.deepEqual(currentSnap(null, scene), [1, 5]);
+  assert.deepEqual(currentSnap(2, scene), [1, 3], "while choosing, the chosen stop");
+  assert.equal(changesSnap([1, 5], 4), true, "clicking 1/6 while at 1/5 sends 1/6");
+  assert.equal(changesSnap([1, 4], 3), false, "staying on 1/4 sends nothing");
+  assert.equal(changesSnap([2, 4], 1), false, "2/4 is already 1/2");
+  assert.equal(changesSnap([4, 1], 0), true);
+});
+
+test("the slider takes Arrow, Home and End without modifiers, and gives focus back after a mouse drag", () => {
+  for (const key of ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"]) assert.equal(ownsKey({ key }), true, key);
+  for (const key of ["PageUp", " ", "Enter", "1", "Delete"]) assert.equal(ownsKey({ key }), false, key);
+  for (const modifier of ["ctrlKey", "altKey", "metaKey"]) {
+    assert.equal(ownsKey({ key: "ArrowLeft", [modifier]: true }), false, modifier);
+  }
+  assert.equal(keepsFocus("keyboard"), true);
+  assert.equal(keepsFocus("pointer"), false, "Left and Right seek again after a drag or click");
 });
