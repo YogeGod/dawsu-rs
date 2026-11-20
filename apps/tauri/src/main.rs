@@ -1477,6 +1477,8 @@ fn export_snapshot(app: &Application, cache: &mut ExportCache) -> Value {
             "leftOut": choices.left_out,
             "matchWithin": choices.match_within,
             "copyVolumes": choices.copy_volumes,
+            "base": choices.base,
+            "sliderAudio": choices.slider_audio,
         })),
         "error": status.error,
         "writing": status.writing,
@@ -1491,11 +1493,18 @@ fn export_snapshot(app: &Application, cache: &mut ExportCache) -> Value {
             "id": preview.id,
             "origin": "export",
             "stale": status.stale,
+            "staleReason": status.stale_reason.map(|reason| match reason {
+                dawsu_application::Stale::Map => "map",
+                dawsu_application::Stale::MergeSettings => "mergeSettings",
+            }),
             "source": preview.plan.source,
             "version": preview.plan.version,
             "label": preview.plan.label,
             "details": preview.plan.details,
             "files": preview.plan.files.iter().map(|file| &file.path).collect::<Vec<_>>(),
+            // The base hitsound difficulty, and whether it replaces the one Generate made before.
+            "base": preview.plan.generated_file().and_then(|path| preview.plan.files.iter().find(|file| file.path == path))
+                .map(|file| json!({ "path": file.path, "replaces": file.expected.is_some() })),
             "mixes": preview.plan.mix_paths().collect::<Vec<_>>(),
             "targets": preview.plan.targets.iter().map(|counts| json!({
                 "path": counts.path,
@@ -1840,6 +1849,11 @@ struct ExportOptionsJson {
     targets: Vec<PathBuf>,
     #[serde(with = "CopyOptionsJson")]
     options: CopyOptions,
+    /// Also write the base hitsound difficulty (Generate), with or without its slider audio.
+    #[serde(default)]
+    base: bool,
+    #[serde(default, rename = "sliderAudio")]
+    slider_audio: bool,
 }
 
 /// "Export · <map title> [<difficulty>]", or "Export" with no map open.
@@ -1867,7 +1881,9 @@ fn export_view(window: tauri::WebviewWindow, state: State<'_, Editor>) -> Result
 #[tauri::command]
 fn export_preview(state: State<'_, Editor>, options: ExportOptionsJson) -> Result<u64, String> {
     let source = options.source;
-    let options = ExportOptions { targets: options.targets, copy: options.options };
+    let options = ExportOptions {
+        targets: options.targets, copy: options.options, base: options.base, slider_audio: options.slider_audio,
+    };
     ask(&state, |tx| Request::ExportPreview(source, options, tx))?
 }
 

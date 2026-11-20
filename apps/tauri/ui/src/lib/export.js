@@ -1,7 +1,13 @@
 // Plain logic for the Export window, tested under node without a webview.
 
-// What the Export window starts with for a map it has no stored choices for.
-export const defaultChoices = Object.freeze({ leftOut: [], matchWithin: 5, copyVolumes: true });
+// What the Export window starts with for a map it has no stored choices for. The base hitsound
+// difficulty is a new file in the mapset, so it is written only once the mapper turns it on.
+export const defaultChoices = Object.freeze({
+  leftOut: [], matchWithin: 5, copyVolumes: true, base: false, sliderAudio: false,
+});
+
+// Generate's name for the difficulty it makes (HITSOUNDS_VERSION in dawsu-hitsounding).
+export const baseName = "Hitsounds";
 
 // The old Copy dialog's defaults for every option this slice does not show yet, so Export copies
 // exactly as Copy did with Match within and Copy volumes set.
@@ -45,6 +51,8 @@ export function choicesFrom(view) {
     leftOut: Array.isArray(stored.leftOut) ? [...stored.leftOut] : [],
     matchWithin: Number.isFinite(stored.matchWithin) ? stored.matchWithin : defaultChoices.matchWithin,
     copyVolumes: typeof stored.copyVolumes === "boolean" ? stored.copyVolumes : defaultChoices.copyVolumes,
+    base: typeof stored.base === "boolean" ? stored.base : defaultChoices.base,
+    sliderAudio: typeof stored.sliderAudio === "boolean" ? stored.sliderAudio : defaultChoices.sliderAudio,
   };
 }
 
@@ -62,7 +70,8 @@ export function exportLabel(count) {
 // Everything a preview depends on that this window chooses. A preview sent with another key is old.
 export function optionsKey(view, choices) {
   const targets = included(view?.targets, choices);
-  return JSON.stringify([view?.source?.path ?? null, targets, choices.matchWithin, choices.copyVolumes]);
+  return JSON.stringify([view?.source?.path ?? null, targets, choices.matchWithin, choices.copyVolumes,
+    choices.base, choices.sliderAudio]);
 }
 
 export function previewRequest(view, choices) {
@@ -71,6 +80,8 @@ export function previewRequest(view, choices) {
       source: view.source.path,
       targets: included(view.targets, choices),
       options: copyOptions(choices),
+      base: choices.base === true,
+      sliderAudio: choices.sliderAudio === true,
     },
   };
 }
@@ -83,7 +94,8 @@ export function exportState(view, sent, choices) {
   const source = view?.source;
   const mine = !!(preview && sent && preview.id === sent.id && sent.key === optionsKey(view, choices));
   const stale = mine && (preview.stale || preview.version !== source?.version || preview.source !== source?.path);
-  const count = included(view?.targets, choices).length;
+  // The base hitsound difficulty is one more difficulty written.
+  const count = included(view?.targets, choices).length + (choices.base ? 1 : 0);
   const canExport = mine && !stale && count > 0 && !!source && !view.busy && !view.writing
     && matchWithinValid(choices.matchWithin);
   return { canExport, stale, count, preview: mine && !stale ? preview : null };
@@ -101,6 +113,13 @@ export function targetCounts(preview, path) {
   if (counts.keptFromSilent) items.push({ tone: "kept", text: `${counts.keptFromSilent} kept to avoid silence` });
   if (counts.muted) items.push({ tone: "muted", text: `${counts.muted} ends muted` });
   return { changed: counts.changed, items };
+}
+
+// What the base row says once previewed: Generate makes a new difficulty or replaces its earlier one.
+export function baseStatus(preview) {
+  const base = preview?.base;
+  if (!base) return null;
+  return base.replaces ? "Replaces earlier, backed up" : "New difficulty";
 }
 
 // Poll faster while something is running, so progress and the result show without delay.
@@ -158,7 +177,10 @@ export function statusLine({ view, pollError, actionError, writeError, stale, ru
   if (actionError) return { tone: "error", text: actionError, again: actionError.endsWith("Preview again.") };
   if (writeError) return { tone: "error", text: writeError, again: false };
   if (view?.error) return { tone: "error", text: view.error, again: true };
-  if (stale) return { tone: "stale", text: "Map changed since preview", again: true };
+  if (stale) {
+    const text = view?.preview?.staleReason === "mergeSettings" ? "Merge settings changed since preview" : "Map changed since preview";
+    return { tone: "stale", text, again: true };
+  }
   if (running || view?.writing) return { tone: "busy", text: "Writing…", again: false };
   if (view?.previewing) {
     const progress = view.progress ? ` ${view.progress.done}/${view.progress.total}` : "";

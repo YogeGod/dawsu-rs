@@ -100,7 +100,11 @@ pub(super) fn record(plan: &WritePlan) -> Result<(), String> {
     let Some(path) = &plan.generation else {
         return Ok(());
     };
-    let [target] = plan.files.as_slice() else {
+    // Only the difficulty Generate made and its own mixes: Copy's targets and mixes are not Generate's.
+    let Some((generated, count)) = &plan.generated else {
+        return Err("Generate must write one difficulty.".into());
+    };
+    let Some(target) = plan.files.iter().find(|file| file.path == *generated) else {
         return Err("Generate must write one difficulty.".into());
     };
     let file_name = target
@@ -112,8 +116,9 @@ pub(super) fn record(plan: &WritePlan) -> Result<(), String> {
         version: VERSION,
         file_name: file_name.to_string(),
         sha256: sha256_hex(&target.file.to_bytes()),
-        mixes: plan
-            .mix_paths()
+        mixes: plan.mixes[..*count]
+            .iter()
+            .map(|mix| mix.path.as_path())
             .filter_map(|path| path.file_name()?.to_str().map(str::to_owned))
             .collect(),
     };

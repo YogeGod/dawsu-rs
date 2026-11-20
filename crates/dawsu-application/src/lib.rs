@@ -37,7 +37,7 @@ use dawsu_editor::transport::BookmarkList;
 pub use problems::OutputProblem;
 pub use editor_meter::{EditorBarSection, EditorTimeSignature};
 pub use drum_detect::{DrumDetectState, DrumDetectView, DrumLanes};
-pub use export::{ExportChoices, ExportOptions, ExportPreview, ExportStatus, PreviewOrigin};
+pub use export::{ExportChoices, ExportOptions, ExportPreview, ExportStatus, PreviewOrigin, Stale};
 pub use export_settings::{ExportCombination, ExportSettings};
 pub use project::LaneLayout;
 pub use recovery::RecoveryOffer;

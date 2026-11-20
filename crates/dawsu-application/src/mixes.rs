@@ -119,6 +119,8 @@ pub(super) fn stage_in_file(
             root,
             defaults,
             settings,
+            already_staged,
+            start_index,
             previous_mixes,
             cancel,
         )?;
@@ -155,6 +157,9 @@ impl MixFiles {
         root: &Path,
         defaults: &Path,
         settings: &ExportSettings,
+        already_staged: &[StagedMix],
+        start_index: u32,
+        // The target's reuse set: mix files it already references, reused when their sound matches.
         previous_mixes: &[String],
         cancel: &dyn Fn() -> bool,
     ) -> Result<(), String> {
@@ -167,7 +172,7 @@ impl MixFiles {
             .enumerate()
             .filter_map(|(index, moment)| Some((mix_place(moment.place())?, MomentId(index))))
             .collect();
-        let mut indexes = IndexedMixes::read(root, &OsuFile::read(Vec::new()).file, &[], 2)?;
+        let mut indexes = IndexedMixes::read(root, &OsuFile::read(Vec::new()).file, already_staged, start_index)?;
         let previous_mixes = previous_mixes
             .iter()
             .map(String::as_str)
@@ -590,6 +595,9 @@ pub(super) fn stage_timed_copy(
     source: &Hitsounds, file: &mut OsuFile, path: &Path, defaults: &Path,
     placements: &[dawsu_hitsounding::copy::SliderCopyPlacement],
     staged: &mut Vec<StagedMix>, details: &mut Vec<String>, cancel: &dyn Fn() -> bool,
+    // Mixes before this index belong to an earlier part of the write (Generate): their names stay
+    // reserved, but a target never points at them.
+    own_from: usize,
 ) -> Result<(), String> {
     if placements.is_empty() {
         return Ok(());
@@ -610,7 +618,7 @@ pub(super) fn stage_timed_copy(
             name.clone()
         } else {
             let wav = render_layers(source, None, layers, root, defaults, &defaults_list, &mut clips, cancel)?;
-            let name = if let Some(previous) = staged.iter().find(|mix| mix.index.is_none() && mix.wav == wav) {
+            let name = if let Some(previous) = staged[own_from..].iter().find(|mix| mix.index.is_none() && mix.wav == wav) {
                 previous.path.file_name().ok_or("Missing staged filename")?.to_string_lossy().into_owned()
             } else {
                 let (name, mix) = StagedMix::new_generated(root, wav, existing.iter(), &mut names)?;
@@ -861,6 +869,20 @@ pub(super) fn publish<'a>(
     staged: &'a [StagedMix],
     cancel: &dyn Fn() -> bool,
 ) -> Result<PublishedMixes<'a>, String> {
+    // One index holds one sound per file: a file staged twice in a plan must be the same
+    // reused WAV, never two different sounds or two new writes.
+    let mut files = HashMap::<String, &StagedMix>::new();
+    for mix in staged.iter().filter(|mix| mix.index.is_some()) {
+        let name = mix.path.to_string_lossy().to_lowercase();
+        if let Some(earlier) = files.insert(name, mix)
+            && (earlier.wav != mix.wav || !(earlier.reuse && mix.reuse))
+        {
+            return Err(format!(
+                "Sample index {} would hold two different sounds. Review again before applying.",
+                mix.index.unwrap_or_default()
+            ));
+        }
+    }
     let mut indexed = staged
         .iter()
         .filter(|mix| !mix.reuse && mix.index.is_some())
@@ -1083,6 +1105,18 @@ mod tests {
         assert!(error.contains("first.wav"), "{error}");
         assert_eq!(fs::read(first).unwrap(), b"externally edited");
         assert!(!second.exists());
+    }
+
+    #[test]
+    fn publish_refuses_one_index_file_for_two_sounds() {
+        let scratch = dawsu_test_support::Scratch::new("mix-index-twice");
+        let path = scratch.path("normal-hitnormal2.wav");
+        let mix = |wav: u8, reuse: bool| StagedMix { path: path.clone(), wav: vec![wav], reuse, index: Some(2) };
+        for staged in [[mix(1, false), mix(2, false)], [mix(1, false), mix(1, false)]] {
+            let error = publish(&staged, &|| false).err().expect("refused");
+            assert!(error.contains("Sample index 2 would hold two different sounds"), "{error}");
+            assert!(!path.exists(), "nothing is written");
+        }
     }
 
     #[test]
