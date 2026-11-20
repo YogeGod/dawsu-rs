@@ -228,8 +228,8 @@ pub(crate) fn restore(document: &mut Document, unwritten: &Unwritten) -> Result<
         let mut named: Vec<_> = times.into_iter().map(clock).collect();
         match bodies {
             0 => {}
-            1 => named.push("a slider body".into()),
-            n => named.push(format!("{n} slider bodies")),
+            1 => named.push("slider body volume".into()),
+            n => named.push(format!("{n} slider body volumes")),
         }
         return Err(format!(
             "The difficulty changed outside dawsu!, so the moments the last Save left out were not put back ({}). The project keeps them until the next Save.",
@@ -271,9 +271,9 @@ fn check(document: &Document, record: &Record) -> Result<Checked, String> {
     for saved in &record.moments {
         let object = objects.get(saved.object).ok_or("an object is missing")?;
         let id = hits.moments().iter().position(|m| location(m.place()) == Some((object.line(), saved.node)))
-            .ok_or("a hit point is missing")?;
+            .ok_or("a moment is missing")?;
         if hits.moment(MomentId(id)).time().ms().to_bits() != saved.time_bits {
-            return Err("a hit point moved".into());
+            return Err("a moment moved".into());
         }
         let lanes = saved.hits.iter().map(|hit| {
             Ok((lane_identity(&hit.lane).ok_or_else(|| format!("unknown lane {}", hit.lane))?, volume(hit.volume)?))

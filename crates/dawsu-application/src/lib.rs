@@ -433,7 +433,7 @@ fn prepare_save(
     };
     plan.check_current(project, cancel)?;
     // Left-out parts are listed for the Save hitsounds summary, which every Save shows first.
-    diagnostics.extend(plan.left_out.iter().map(|entry| OutputProblem::new(&entry.problem, path, path)));
+    diagnostics.extend(plan.left_out.iter().map(|entry| left_out_problem(entry, path)));
     Ok(plan)
 }
 
@@ -1554,7 +1554,7 @@ impl Application {
                             self.status = if archive_error.is_some() {
                                 "Difficulty saved. Recovery copy is still pending.".into()
                             } else if left_out > 0 {
-                                format!("Saved with backup. {left_out} moment{} left out.", if left_out == 1 { "" } else { "s" })
+                                format!("Saved with backup. {left_out} part{} left out.", if left_out == 1 { "" } else { "s" })
                             } else {
                                 "Saved with backup".into()
                             };
@@ -1604,7 +1604,7 @@ impl Application {
             let hits = doc.composer.hitsounds();
             let checked = problems.len();
             for entry in roll_back::still_held(&doc.left_out, hits, &doc.compile_base, doc.hs_mode) {
-                let problem = OutputProblem::new(&entry.problem, &doc.path, &doc.path);
+                let problem = left_out_problem(entry, &doc.path);
                 // A newer check of the same time replaces the entry; two left-out parts can share one.
                 if !problems[..checked].iter().any(|p| p.target == problem.target && p.time == problem.time) {
                     problems.push(problem);
@@ -2828,6 +2828,26 @@ fn restore_project_hits(
     Ok(())
 }
 
+/// A left-out part on the problem list. A slider body's row names its volume, so it reads apart
+/// from its head's row at the same time.
+fn left_out_problem(entry: &roll_back::LeftOut, path: &Path) -> OutputProblem {
+    let problem = OutputProblem::new(&entry.problem, path, path);
+    match entry.part {
+        roll_back::Part::Body(_) => problem.with_message(body_description(&entry.problem.kind)),
+        _ => problem,
+    }
+}
+
+fn body_description(problem: &dawsu_hitsounding::ProblemKind) -> &'static str {
+    use dawsu_hitsounding::ProblemKind::*;
+    match problem {
+        NeedsGreenLine => "The slider body volume needs a green line that the output mode does not allow.",
+        LookupWindowTaken => "The slider body volume needs a green line, and another lookup overlaps it.",
+        BodyVolumeNeedsHead => "The slider body volume conflicts with its head.",
+        _ => "This slider can't hold the slider body volume or sounds as drawn.",
+    }
+}
+
 fn problem_description(problem: &dawsu_hitsounding::ProblemKind) -> &'static str {
     use dawsu_hitsounding::ProblemKind::*;
     match problem {
@@ -3224,7 +3244,7 @@ mod project_workflow {
         for (field, value, reason) in [
             ("/settings/unwritten/current/moments/0/hits/0/volume", serde_json::json!(150), "volume 150 is out of range"),
             ("/settings/unwritten/current/moments/0/object", serde_json::json!(99), "an object is missing"),
-            ("/settings/unwritten/current/moments/0/time_bits", serde_json::json!(1), "a hit point moved"),
+            ("/settings/unwritten/current/moments/0/time_bits", serde_json::json!(1), "a moment moved"),
             ("/settings/unwritten/current/moments/0/hits/0/lane", serde_json::json!("Nope|x"), "unknown lane"),
         ] {
             let mut file: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
@@ -3323,7 +3343,9 @@ mod project_workflow {
         save_through_summary(&mut app, scratch.path("backups"));
         assert_eq!(std::fs::read(&map).unwrap(), SLIDER_MAP, "HS mode can't add the green line a body volume needs");
         assert_eq!(app.output_problems().iter().map(|p| p.time).collect::<Vec<_>>(), [2000.0, 2000.0], "the body and its head are both listed");
-        assert!(app.status.contains("2 moments left out"), "{}", app.status);
+        assert!(app.status.contains("Saved with backup. 2 parts left out."), "{}", app.status);
+        let messages: Vec<_> = app.output_problems().into_iter().map(|p| p.message).collect();
+        assert_eq!(messages.iter().filter(|m| m.contains("slider body volume")).count(), 1, "the body's row differs from its head's: {messages:?}");
         let record = record_json(&app);
         assert_eq!(record["current"]["bodies"][0]["volume"], 40, "{record}");
         let reopened = reopen(&app, &map);
@@ -3331,6 +3353,11 @@ mod project_workflow {
         assert_eq!(hits.bodies()[0].volume(), 40);
         let head = hits.moments().iter().find(|m| matches!(m.place(), dawsu_hitsounding::Place::SliderNode { node: 0, .. })).unwrap();
         assert_eq!(head.volume(), 40);
+        let mut edited = std::fs::read(&map).unwrap();
+        edited.extend(b"// edited in another program\r\n");
+        std::fs::write(&map, &edited).unwrap();
+        let changed = reopen(&app, &map);
+        assert!(changed.warnings.iter().any(|w| w.contains("00:02.000") && w.contains("slider body volume")), "{:?}", changed.warnings);
     }
 
     #[test]
