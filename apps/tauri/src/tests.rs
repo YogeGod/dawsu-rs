@@ -611,6 +611,23 @@ fn view_keeps_the_fit_zoom_of_a_30_minute_song() {
 }
 
 #[test]
+fn go_to_end_seeks_to_the_duration_the_view_reports() {
+    let fixture = Fixture::new("go-to-end");
+    let path = fixture.0.join("Hard.osu");
+    fs::write(&path, b"osu file format v14\n\n[TimingPoints]\n0,500,4,1,0,100,1,0\n\n[HitObjects]\n256,192,1000,1,0,0:0:0:0:\n").unwrap();
+    let mut app = Application::headless();
+    open(&mut app, &path);
+    // The transport's Go to end sends a seek to view.duration; past it, seek stops at the end.
+    let duration = snapshot(&app, false)["duration"].as_f64().unwrap();
+    assert!(duration > 1000.0);
+    for ms in [duration, duration + 5000.0] {
+        app.seek(0.0);
+        serde_json::from_value::<Action>(serde_json::json!({"kind": "seek", "ms": ms})).unwrap().run(&mut app);
+        assert_eq!(snapshot(&app, false)["position"].as_f64(), Some(duration));
+    }
+}
+
+#[test]
 fn time_signature_action_changes_ruler_and_position_without_changing_map() {
     let fixture = Fixture::new("time-signature");
     let path = fixture.0.join("Meter.osu");

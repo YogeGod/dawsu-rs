@@ -234,3 +234,24 @@ test("slider-track clicks work where arrays have no findLast()", async () => {
   evaluate("scene.gameplay.spans.push(['slider', 650, 750, 5])");
   assert.equal(evaluate("waveformTarget(700, 56.5, 80).object"), 5);
 });
+
+test("the left and right locators are L and R flags at the top of the ruler", async () => {
+  const { get, paint } = await canvases();
+  const ruler = get("ruler");
+  const letters = () => ruler.calls.filter(call => call.name === "fillText" && /^[LR]$/.test(call.args[0]))
+    .map(({ args: [text, x], fill }) => [text, Math.round(x), fill]);
+  // Locators at 100 and 700 ms at 0.25 px/ms: lines at x 25 and 175, flags inside the range.
+  paint("scene.zoom = .25; Object.assign(view, { left: 100, right: 700, cycle: false })");
+  const [left, right] = letters();
+  assert.equal(left[0], "L");
+  assert.ok(left[1] > 25 && left[1] < 39, "L sits right of its line");
+  assert.equal(right[0], "R");
+  assert.ok(right[1] > 161 && right[1] < 175, "R sits left of its line");
+  assert.ok(ruler.calls.some(call => call.name === "fill" && call.fill === "#858585"), "grey flags");
+  paint("view.cycle = true");
+  assert.ok(ruler.calls.some(call => call.name === "fill" && call.fill === "#efc16a"), "cycle-yellow flags while cycling");
+  // Both on one time, and the left one at the right edge of the 300 px canvas: both stay visible.
+  paint("Object.assign(view, { left: 1180, right: 1180 })");
+  const [l, r] = letters();
+  assert.ok(l[1] < 295 && r[1] < 295 && l[1] !== r[1], JSON.stringify([l, r]));
+});

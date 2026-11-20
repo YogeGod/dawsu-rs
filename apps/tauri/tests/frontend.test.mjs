@@ -25,6 +25,7 @@ async function frontend() {
     setPointerCapture() {}, releasePointerCapture() {}, hasPointerCapture() {return true;},
     setAttribute(name, value) { properties.set(name, value); } };
   const ruler = { ...element, style: cursors.ruler, addEventListener: (name, callback) => rulerEvents.set(name, callback),
+    setPointerCapture() {}, releasePointerCapture() {}, hasPointerCapture() { return true; },
     getBoundingClientRect: () => ({x:0, y:0, left:0, top:0, width:100, height:77}) };
   const context = createContext({
     document: {
@@ -342,4 +343,37 @@ test("overview drag follows the captured pointer and keeps only the latest queue
   draw("pointercancel", 95);
   await evaluate("overviewNavigation");
   assert.deepEqual(starts(), [3000, 7000, 2000]);
+});
+
+test("the L and R flags on the ruler drag their locator, even when both sit on the same time", async () => {
+  const { rulerEvents, calls, evaluate, settle, cursors } = await frontend();
+  evaluate('scene = { path: "Expert.osu", viewStart: 0, zoom: 1, rowHeight: 20 }; view = { busy: false, hasDocument: true, left: 50, right: 50, cycle: false, duration: 1000 }');
+  // The left flag hangs right of its line, the right flag left of it.
+  assert.equal(evaluate("rulerGestureAt(60, 6)"), "left");
+  assert.equal(evaluate("rulerGestureAt(40, 6)"), "right");
+  assert.equal(evaluate("rulerGestureAt(60, 18)"), "draw", "below the flags the band still draws a range");
+  rulerEvents.get("pointermove")({ clientX: 60, clientY: 6 });
+  assert.equal(cursors.ruler.cursor, "ew-resize");
+  // A drag keeps where the flag was grabbed: the locator moves by the pointer's distance.
+  rulerEvents.get("pointerdown")({ button: 0, pointerId: 3, clientX: 60, clientY: 6 });
+  rulerEvents.get("pointermove")({ pointerId: 3, clientX: 80, clientY: 6 });
+  assert.deepEqual([...evaluate("rulerDrag.preview")], [70, 50, false]);
+  rulerEvents.get("pointerup")({ pointerId: 3, clientX: 80, clientY: 6 });
+  await settle();
+  const sent = calls.filter(call => call.args.action?.kind === "ruler_locators").map(call => call.args.action);
+  assert.deepEqual(sent.map(({ gesture, to }) => [gesture, to]), [["left", 70]]);
+  // Near the canvas edge a flag flips so it stays on screen.
+  evaluate('scene = { path: "Expert.osu", viewStart: 0, zoom: 1 }; view = { left: 95, right: 2 }');
+  assert.equal(evaluate("rulerGestureAt(88, 6)"), "left");
+  assert.equal(evaluate("rulerGestureAt(10, 6)"), "right");
+});
+
+test("Shift-click on an L or R flag jumps the playhead to that locator, as Shift-click on the old chips did", async () => {
+  const { rulerEvents, calls, evaluate, settle } = await frontend();
+  evaluate('scene = { path: "Expert.osu", viewStart: 0, zoom: 1, rowHeight: 20 }; view = { busy: false, hasDocument: true, left: 20, right: 70, cycle: false, duration: 1000 }');
+  rulerEvents.get("pointerdown")({ button: 0, pointerId: 4, clientX: 64, clientY: 6, shiftKey: true });
+  await settle();
+  assert.deepEqual(calls.map(call => call.args.action).filter(Boolean).map(({ kind, end, jump }) => [kind, end, jump]),
+    [["locator", "right", true]]);
+  assert.equal(evaluate("rulerDrag"), null, "no drag starts");
 });

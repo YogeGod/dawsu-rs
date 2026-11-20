@@ -12,22 +12,7 @@
 </nav>
   <div class="title" id="title"></div>
   <div id="top-transport" class="top-transport" role="group" aria-label="Playback controls">
-    <div class="transport-cluster" role="group" aria-label="Transport">
-      <button data-action="start" data-doc aria-label="Go to start" title="Go to start"><img class="button-icon" src="studio-assets/icons/SkipBack.svg" alt=""></button>
-      <button data-action="stop" id="stop" data-map title="Stop"><img class="button-icon" src="studio-assets/icons/Square.svg" alt=""><span>Stop</span></button>
-      <button data-action="play" id="play" data-map title="Play or pause"><img id="play-icon" class="button-icon" src="studio-assets/icons/Play.svg" alt=""><span id="play-label">Play</span></button>
-      <input type="checkbox" id="cycle" class="toggle-input" data-map><label for="cycle" class="transport-cycle" title="Cycle between L and R"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 6.5h10l-2.5-2.5M13.5 9.5h-10l2.5 2.5"/></svg><span>Cycle</span></label>
-    </div>
-    <div class="transport-display">
-      <span id="position" aria-label="Elapsed time">00:00.000</span>
-      <span class="transport-readout" title="Tempo at the playhead"><span id="transport-bpm">–</span><small>BPM</small></span>
-      <span class="transport-readout" title="Time signature at the playhead"><span id="transport-meter">–</span><small>TIME</small></span>
-      <span class="transport-readout transport-bar" title="Bar, beat and tick at the playhead"><span id="musical-position">–</span><small>BAR</small></span>
-    </div>
-    <div class="transport-locators" role="group" aria-label="Locators">
-      <button data-locator="left" data-map aria-label="Set left locator" title="Set left locator, Shift to jump"><b>L</b><span id="locator-left">00:00.000</span></button>
-      <button data-locator="right" data-map aria-label="Set right locator" title="Set right locator, Shift to jump"><b>R</b><span id="locator-right">00:00.000</span></button>
-    </div>
+    <div data-ui-mount="transport"></div>
   </div>
   <span class="spacer"></span>
   <button id="layout-edit-entry" type="button" data-doc>Layout…</button>
