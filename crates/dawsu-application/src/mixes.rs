@@ -140,7 +140,7 @@ pub(super) fn stage_in_file(
         Compiled::Done { problems, .. } => Err(format!(
             "Could not make the sample mix at {:.0} ms: {}",
             problems[0].time.ms(),
-            crate::problem_description(&problems[0].kind),
+            crate::problem_description(&problems[0].kind, problems[0].time.ms()),
         )),
         Compiled::Cancelled => Err("Sample mix preparation cancelled".into()),
     }
@@ -391,13 +391,6 @@ impl MixFiles {
             let ProblemKind::NeedsSampleMix(layers) = &problem.kind else {
                 return Err("Expected a sample mix plan".into());
             };
-            if let Some((lane, _)) = layers.iter().find(|(lane, _)| matches!(lane, SampleIdentity::Standard { sound: Sound::Slider(_), .. })) {
-                return Err(format!(
-                    "At {:.0} ms a slider sound ({}) is on a hit. osu! plays slider sounds only on a slider body, so Save cannot merge it. Remove it from the hit.",
-                    problem.time.ms(),
-                    lane_name(lane),
-                ));
-            }
             let merge = merge_roles(layers);
             let (index, volume) = match by_layers.get(layers.as_slice()) {
                 Some(found) => *found,

@@ -557,7 +557,8 @@ fn an_old_fused_mix_is_kept_as_it_is_when_saving_again() {
 }
 
 #[test]
-fn a_slider_sound_on_a_hit_refuses_the_merge() {
+/// Without an editor project nothing can keep the left-out moment, so Save stops and names it.
+fn without_a_project_a_slider_sound_on_a_hit_stops_save() {
     let scratch = Scratch::new("application-save-role-slider-sound");
     let (root, path) = mapset(&scratch, "256,192,1000,1,0,1:0:2:80:\r\n", "0,500,4,1,0,100,1,0", &[
         ("normal-hitnormal2.wav", &[8192]),

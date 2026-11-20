@@ -54,6 +54,9 @@ pub enum ProblemKind {
     /// A slider body's volume goes with its head's (one green line both read), and the head asks
     /// for another volume or index, or cannot be saved itself.
     BodyVolumeNeedsHead,
+    /// A slider sound (this lane) is drawn on a hit. osu! plays slider sounds only on a slider
+    /// body, so Save leaves the moment out rather than merging it (Yoge 2026-11-20).
+    SliderSoundOnHit(SampleIdentity),
 }
 
 /// The outcome of compile.

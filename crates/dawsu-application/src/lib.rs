@@ -303,6 +303,14 @@ fn compile_pass(
     if loose_hits_saved_in_project && !hs {
         problems.retain(|problem| !matches!(problem.kind, dawsu_hitsounding::ProblemKind::NoObject));
     }
+    // Save merges per role, and a slider sound has no role on a hit: that moment is left out.
+    for problem in &mut problems {
+        if let dawsu_hitsounding::ProblemKind::NeedsSampleMix(layers) = &problem.kind
+            && let Some((lane, _)) = layers.iter().find(|(lane, _)| matches!(lane, SampleIdentity::Standard { sound: Sound::Slider(_), .. }))
+        {
+            problem.kind = dawsu_hitsounding::ProblemKind::SliderSoundOnHit(lane.clone());
+        }
+    }
     Ok(Pass { out, problems, owned, circles })
 }
 /// Save's first compile pass, without sample mixes or writing. Recovery checks the last save with it.
@@ -414,7 +422,7 @@ fn prepare_save(
             "Save needs review: {} hits cannot be written. First problem at {:.0} ms: {}",
             refused.len(),
             refused[0].time.ms(),
-            problem_description(&refused[0].kind)
+            problem_description(&refused[0].kind, refused[0].time.ms())
         ));
     }
     let (out, owned, effective, left_out, circles) = (rolled.out, rolled.owned, rolled.effective, rolled.left_out, rolled.circles);
@@ -2963,8 +2971,14 @@ fn body_description(problem: &dawsu_hitsounding::ProblemKind) -> &'static str {
     }
 }
 
-fn problem_description(problem: &dawsu_hitsounding::ProblemKind) -> &'static str {
+fn problem_description(problem: &dawsu_hitsounding::ProblemKind, time: f64) -> String {
     use dawsu_hitsounding::ProblemKind::*;
+    if let SliderSoundOnHit(lane) = problem {
+        return format!(
+            "At {time:.0} ms a slider sound ({}) is on a hit. osu! plays slider sounds only on a slider body. Remove it from the hit.",
+            lane_name(lane),
+        );
+    }
     match problem {
         NoObject => "This hit has no object. Enable HS mode or Generate a hitsound difficulty.",
         NeedsSampleMix(layers) if layers.is_empty() => {
@@ -2977,7 +2991,9 @@ fn problem_description(problem: &dawsu_hitsounding::ProblemKind) -> &'static str
         LookupWindowTaken => "Another lookup overlaps the timing line needed by this hit.",
         LineRefused => "This object cannot hold the requested change.",
         BodyVolumeNeedsHead => "The slider body volume conflicts with its head.",
+        SliderSoundOnHit(_) => unreachable!("described above"),
     }
+    .into()
 }
 
 #[cfg(test)]
@@ -3191,6 +3207,33 @@ mod project_workflow {
         assert!(text.contains("256,192,1000,1,4,0:3:2:80:\r\n"), "{text}");
         assert_eq!(plan.left_out.len(), 1);
         assert_eq!(diagnostics.iter().map(|p| p.time).collect::<Vec<_>>(), [2000.0]);
+    }
+
+    #[test]
+    fn a_slider_sound_on_a_hit_is_left_out_and_save_writes_the_rest() {
+        let scratch = Scratch::new("slider-sound-left-out");
+        let folder = scratch.path("mapset");
+        std::fs::create_dir(&folder).unwrap();
+        let map = folder.join("a.osu");
+        std::fs::write(&map, SLIDER_MAP).unwrap();
+        let document = Document::read(&map).unwrap();
+        let mut hits = document.composer.hitsounds().clone();
+        let slide = SampleIdentity::Standard { set: SampleSet::Soft, sound: Sound::Slider(SliderSound::Slide), index: dawsu_foundation::CustomIndex::new(0) };
+        hits.add_hit(dawsu_hitsounding::MomentId(0), slide);
+        let tail = tail_id(&hits);
+        hits.add_hit(tail, skin(SampleSet::Normal, Hitsound::Whistle));
+        let project = project::Project::load(&scratch.path("projects"), None, &document.path).unwrap();
+        let mut diagnostics = Vec::new();
+        let plan = prepare(&scratch, &document, &hits, Some(&project), &mut diagnostics).unwrap();
+        // The tail's whistle is written; the circle keeps its old line and is listed.
+        let text = String::from_utf8(plan.out.to_bytes()).unwrap();
+        assert!(text.contains("256,192,1000,1,0,0:0:0:0:\r\n"), "{text}");
+        assert!(text.contains("100,100,2000,2,0,L|200:100,1,140,0|2"), "{text}");
+        assert_eq!(plan.left_out.len(), 1);
+        assert!(plan.mix_files.staged.is_empty());
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].time, 1000.0);
+        assert_eq!(diagnostics[0].message, "At 1000 ms a slider sound (soft-sliderslide) is on a hit. osu! plays slider sounds only on a slider body. Remove it from the hit.");
     }
 
     #[test]
