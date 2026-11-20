@@ -32,44 +32,76 @@ fn read_set_file(path: &Path) -> Result<(Vec<u8>, SoundSet), String> {
     Ok((bytes, set))
 }
 
-/// Puts the picked set file in the library's "Sound sets" folder and returns the library copy. A
-/// library file with the same set id and the same bytes is reused; one with the same id and other
-/// bytes is never overwritten, so placing is refused. A name already taken gets " (2)" and so on.
-fn add_to_library(library: &Path, source: &Path, bytes: &[u8], set: &SoundSet) -> Result<PathBuf, String> {
-    let folder = library.join(LIBRARY_FOLDER);
-    std::fs::create_dir_all(&folder).map_err(|e| format!("Creating the library's {LIBRARY_FOLDER} folder: {e}"))?;
-    let folder = folder.canonicalize().map_err(|e| e.to_string())?;
-    if source.canonicalize().is_ok_and(|s| s.parent() == Some(folder.as_path())) {
-        return Ok(source.to_path_buf());
-    }
-    for entry in std::fs::read_dir(&folder).map_err(|e| e.to_string())?.flatten() {
-        let path = entry.path();
-        if !path.extension().is_some_and(|e| e.eq_ignore_ascii_case("dawsuset")) || !entry.file_type().is_ok_and(|t| t.is_file()) {
-            continue;
+/// Where the picked set goes in the library, worked out without writing anything.
+enum LibraryCopy {
+    /// The set is already there, or was picked from there.
+    There,
+    /// A new file to create with these bytes.
+    New(PathBuf, Vec<u8>),
+}
+
+impl LibraryCopy {
+    fn write(&self) -> Result<(), String> {
+        match self {
+            LibraryCopy::There => Ok(()),
+            LibraryCopy::New(target, bytes) => {
+                let folder = target.parent().expect("a library file has a folder");
+                std::fs::create_dir_all(folder).map_err(|e| format!("Creating the library's {LIBRARY_FOLDER} folder: {e}"))?;
+                safe_write::create(target, bytes).map_err(|e| format!("Copying the set into the library: {e}"))
+            }
         }
-        let Ok((other, found)) = read_set_file(&path) else { continue };
-        if found.id == set.id {
-            return if other == bytes {
-                Ok(path)
-            } else {
-                Err(format!("The library already has another version of \"{}\" ({}). Place it from there, or remove one of them.", set.name, entry.file_name().to_string_lossy()))
-            };
+    }
+}
+
+/// Each library set file's id, by path, modified time and size, so placing reads a set file only
+/// when it is new or changed (M10).
+type IdCache = std::collections::HashMap<PathBuf, (std::time::SystemTime, u64, Option<String>)>;
+static LIBRARY_IDS: std::sync::Mutex<Option<IdCache>> = std::sync::Mutex::new(None);
+
+fn library_id(path: &Path, metadata: &std::fs::Metadata) -> Option<String> {
+    let modified = metadata.modified().ok()?;
+    let mut cache = LIBRARY_IDS.lock().unwrap_or_else(|e| e.into_inner());
+    let cache = cache.get_or_insert_with(Default::default);
+    if let Some((time, size, id)) = cache.get(path)
+        && *time == modified && *size == metadata.len()
+    {
+        return id.clone();
+    }
+    let id = read_set_file(path).ok().map(|(_, set)| set.id);
+    cache.insert(path.to_path_buf(), (modified, metadata.len(), id.clone()));
+    id
+}
+
+/// Where the picked set file goes in the library's "Sound sets" folder. A library file with the
+/// same set id and the same bytes is reused; one with the same id and other bytes is never
+/// overwritten, so placing is refused. A name already taken gets " (2)" and so on.
+fn library_target(library: &Path, source: &Path, bytes: &[u8], set: &SoundSet) -> Result<LibraryCopy, String> {
+    let folder = library.join(LIBRARY_FOLDER);
+    if let Ok(canonical) = folder.canonicalize() {
+        if source.canonicalize().is_ok_and(|s| s.parent() == Some(canonical.as_path())) {
+            return Ok(LibraryCopy::There);
+        }
+        for entry in std::fs::read_dir(&canonical).map_err(|e| e.to_string())?.flatten() {
+            let path = entry.path();
+            let Ok(metadata) = entry.metadata() else { continue };
+            if !path.extension().is_some_and(|e| e.eq_ignore_ascii_case("dawsuset")) || !metadata.is_file() {
+                continue;
+            }
+            if library_id(&path, &metadata).as_deref() == Some(set.id.as_str()) {
+                return if std::fs::read(&path).is_ok_and(|other| other == bytes) {
+                    Ok(LibraryCopy::There)
+                } else {
+                    Err(format!("The library already has another version of \"{}\" ({}). Place it from there, or remove one of them.", set.name, entry.file_name().to_string_lossy()))
+                };
+            }
         }
     }
     let stem = source.file_stem().unwrap_or_default().to_string_lossy().into_owned();
-    for n in 1..1000 {
-        let name = if n == 1 { format!("{stem}.dawsuset") } else { format!("{stem} ({n}).dawsuset") };
-        let target = folder.join(&name);
-        if target.exists() {
-            continue;
-        }
-        return match safe_write::create(&target, bytes) {
-            Ok(()) => Ok(target),
-            Err(dawsu_foundation::Error::Io { source, .. }) if source.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(e) => Err(format!("Copying the set into the library: {e}")),
-        };
-    }
-    Err("No free file name in the library's Sound sets folder.".into())
+    (1..1000)
+        .map(|n| folder.join(if n == 1 { format!("{stem}.dawsuset") } else { format!("{stem} ({n}).dawsuset") }))
+        .find(|target| !target.exists())
+        .map(|target| LibraryCopy::New(target, bytes.to_vec()))
+        .ok_or_else(|| "No free file name in the library's Sound sets folder.".into())
 }
 
 /// The snapshots made in one mapset, so placing a set again reuses its files.
@@ -113,7 +145,7 @@ struct RecordFile {
 
 impl RecordFile {
     fn open(data_root: &Path, mapset: &Path) -> Result<Self, String> {
-        let key = sha256_hex(mapset.to_string_lossy().to_lowercase().as_bytes());
+        let key = sha256_hex(mapset.to_string_lossy().as_bytes());
         let path = data_root.join("sound-set-snapshots").join(format!("{key}.json"));
         let read = match std::fs::metadata(&path) {
             Ok(meta) if meta.len() > MAX_RECORD_BYTES => return Err("The sound set snapshot record is too large.".into()),
@@ -205,33 +237,37 @@ fn write_snapshot(root: &Path, record: &mut RecordFile, entry: SnapshotEntry, fi
 }
 
 impl Application {
-    /// The one hitnormal on `moment`, as its bank, file extension and bytes, for D6b. None when the
-    /// moment is new or holds no hitnormal, or more than one (that moment saves as a mix anyway).
-    fn moment_hitnormal(&self, root: &Path, moment: Option<dawsu_hitsounding::MomentId>) -> Result<Option<(String, String, Vec<u8>)>, String> {
-        let Some(moment) = moment else { return Ok(None) };
+    /// The one hitnormal on `moment` that no placement added, as its bank, file extension and
+    /// bytes, for D6b. None when the moment is new or holds no such hitnormal, or more than one
+    /// (that moment saves as a mix anyway). A sound whose file can't be read is skipped with a
+    /// note for the status line: the moment then saves as a mix.
+    fn moment_hitnormal(&self, root: &Path, moment: Option<dawsu_hitsounding::MomentId>) -> (Option<(String, String, Vec<u8>)>, Option<String>) {
+        let Some(moment) = moment else { return (None, None) };
         let hits = self.document.as_ref().expect("open document").composer.hitsounds();
-        let normals: Vec<_> = hits.moment(moment).hits().filter(|lane| matches!(lane, SampleIdentity::Standard { sound: dawsu_foundation::Sound::Hit(dawsu_foundation::Hitsound::Normal), .. })).collect();
-        let [lane] = normals.as_slice() else { return Ok(None) };
-        let SampleIdentity::Standard { set, .. } = lane else { return Ok(None) };
-        let model = hits.lane(lane).ok_or("The moment's hitnormal has no lane.")?;
+        let placed = hits.placed_lanes(moment);
+        let normals: Vec<_> = hits.moment(moment).hits().filter(|lane| !placed.contains(*lane) && matches!(lane, SampleIdentity::Standard { sound: dawsu_foundation::Sound::Hit(dawsu_foundation::Hitsound::Normal), .. })).collect();
+        let [lane] = normals.as_slice() else { return (None, None) };
+        let SampleIdentity::Standard { set, .. } = lane else { return (None, None) };
+        let Some(model) = hits.lane(lane) else { return (None, None) };
         let defaults = &self.preferences.default_samples;
         let defaults_list = list_folder(defaults).unwrap_or_default();
-        let path = super::sample_path(model, root, defaults, &defaults_list)?;
-        let extension = path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase)
-            .filter(|e| matches!(e.as_str(), "wav" | "ogg" | "mp3"))
-            .ok_or_else(|| format!("{} is not a .wav, .ogg or .mp3 file", path.display()))?;
-        let bytes = std::fs::read(&path).map_err(|e| format!("Reading {}: {e}", path.display()))?;
+        let skipped = || Some(format!("The {} under it wasn't found, so that moment saves as a mix.", crate::lane_name(lane)));
+        let Ok(path) = super::sample_path(model, root, defaults, &defaults_list) else { return (None, skipped()) };
+        let Some(extension) = path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase)
+            .filter(|e| matches!(e.as_str(), "wav" | "ogg" | "mp3")) else { return (None, skipped()) };
+        let Ok(bytes) = std::fs::read(&path) else { return (None, skipped()) };
         let bank = match set {
             dawsu_foundation::SampleSet::Normal => "normal",
             dawsu_foundation::SampleSet::Soft => "soft",
             dawsu_foundation::SampleSet::Drum => "drum",
         };
-        Ok(Some((bank.to_string(), extension, bytes)))
+        (Some((bank.to_string(), extension, bytes)), None)
     }
 
     /// Edit > Place sound set: copies the picked `.dawsuset` into the library, copies its samples
     /// into the mapset (or reuses an earlier snapshot of the same version), and places it at the
-    /// snapped playhead as one undo step, linked to the set.
+    /// snapped playhead as one undo step, linked to the set. Every check runs before the first
+    /// write, so a refusal leaves no file behind.
     pub fn place_sound_set_file(&mut self, map: &Path, file: &Path) -> Result<(), String> {
         if self.busy || self.is_stroke_open() {
             return Err("Finish the current operation before placing a sound set.".into());
@@ -242,31 +278,35 @@ impl Application {
         }
         let library = self.preferences.hitsound_library.clone().ok_or("Choose a hitsound library folder first: sound sets are kept there.")?;
         let (bytes, set) = read_set_file(file)?;
-        add_to_library(&library, file, &bytes, &set)?;
+        let at = self.position_ms();
+        let composer = &self.document.as_ref().expect("open document").composer;
+        let time = composer.snap(SongTime::from_ms(at)).ms();
+        if composer.is_set_placed_at(time, &set.id, 5.0) {
+            self.status = format!("\"{}\" is already placed here.", set.name);
+            return Ok(());
+        }
+        let library_copy = library_target(&library, file, &bytes, &set)?;
         let set_digest = sha256_hex(&bytes);
         let root = document.path.parent().ok_or("Missing mapset folder")?.to_path_buf();
         let mut record = RecordFile::open(&self.data_root, &root)?;
         let audio = audio_checksum(&set);
         let mut previous = record.previous(&set, &audio);
-        let at = self.position_ms();
-        let composer = &self.document.as_ref().expect("open document").composer;
-        let time = composer.snap(SongTime::from_ms(at)).ms();
         // D6b: a set with only additions takes the moment's own hitnormal along to its index.
         let set_has_hitnormal = set.members.iter().any(|m| m.slot.ends_with("-hitnormal"));
-        let own_hitnormal = if set_has_hitnormal {
-            None
+        let (own_hitnormal, note) = if set_has_hitnormal {
+            (None, None)
         } else {
-            self.moment_hitnormal(&root, composer.moment_at(time, 5.0))?
+            self.moment_hitnormal(&root, composer.moment_at(time, 5.0))
         };
         // A name another program takes between planning and writing is planned again once.
         let mut attempt = 0;
-        let (snapshot, clips, extra) = loop {
+        let (snapshot, clips, extra, hits, hitnormal) = loop {
             attempt += 1;
             let files = list_folder(&root).map_err(|e| e.to_string())?;
             let (mut used, _) = layers::reservations(&root, &files)?;
             let document = self.document.as_ref().expect("open document");
-            let hits = document.composer.hitsounds();
-            used.extend(document.composer.lanes.iter().chain(hits.lanes().iter().map(|l| &l.identity)).filter_map(|lane| match lane {
+            let model = document.composer.hitsounds();
+            used.extend(document.composer.lanes.iter().chain(model.lanes().iter().map(|l| &l.identity)).filter_map(|lane| match lane {
                 SampleIdentity::Standard { index, .. } if index.get() > 1 => Some(index.get()),
                 _ => None,
             }));
@@ -294,8 +334,19 @@ impl Application {
                 }
                 extra = Some(name);
             }
+            // The hits and the hitnormal rule are worked out before anything is written.
+            let hits = placement_hits(&snapshot.set, 100).into_iter().zip(&snapshot.set.members).map(|((key, volume), m)| {
+                let lane = crate::project::lane_identity(&key).ok_or_else(|| format!("{} is not a sample file name", m.lane.name))?;
+                Ok((m.id.clone(), lane, volume))
+            }).collect::<Result<Vec<_>, String>>()?;
+            let hitnormal = match (&extra, set_has_hitnormal) {
+                (_, true) => SetHitnormal::ReplaceWithSet,
+                (Some(name), false) => SetHitnormal::Reindex(dawsu_hitsounding::rules::read_sample_file_name(name).ok_or("The copied hitnormal has no sample name.")?),
+                (None, false) => SetHitnormal::Keep,
+            };
             if writes.is_empty() {
-                break (snapshot, Vec::new(), extra);
+                library_copy.write()?;
+                break (snapshot, Vec::new(), extra, hits, hitnormal);
             }
             let entry = SnapshotEntry {
                 set_id: set.id.clone(),
@@ -309,14 +360,15 @@ impl Application {
             if clash && attempt == 1 {
                 continue;
             }
+            library_copy.write()?;
             match write_snapshot(&root, &mut record, entry, &writes) {
-                Ok(clips) => break (snapshot, clips, extra),
+                Ok(clips) => break (snapshot, clips, extra, hits, hitnormal),
                 Err(_) if attempt == 1 && writes.iter().any(|(name, _)| root.join(name).exists()) => continue,
                 Err(error) => return Err(error),
             }
         };
         // Reused files may have no decoded audio yet.
-        let clips_written = clips.len();
+        let written = clips.len();
         let mut additions = clips;
         for name in snapshot.set.members.iter().map(|m| &m.lane.name).chain(extra.as_ref()) {
             if !additions.iter().any(|(n, _)| n == name) && !self.samples.contains_key(&SampleIdentity::File(name.clone())) {
@@ -325,24 +377,15 @@ impl Application {
             }
         }
         self.register_added_samples(additions);
-        let hits = placement_hits(&snapshot.set, 100).into_iter().zip(&snapshot.set.members).map(|((key, volume), m)| {
-            let lane = crate::project::lane_identity(&key).ok_or_else(|| format!("{} is not a sample file name", m.lane.name))?;
-            Ok((m.id.clone(), lane, volume))
-        }).collect::<Result<Vec<_>, String>>()?;
-        let hitnormal = match (&extra, set_has_hitnormal) {
-            (_, true) => SetHitnormal::ReplaceWithSet,
-            (Some(name), false) => SetHitnormal::Reindex(dawsu_hitsounding::rules::read_sample_file_name(name).ok_or("The copied hitnormal has no sample name.")?),
-            (None, false) => SetHitnormal::Keep,
-        };
         let composer = &mut self.document.as_mut().expect("open document").composer;
-        if composer.place_sound_set(time, &set.id, &set_digest, 100, &hits, hitnormal, 5.0).is_none() {
-            self.status = format!("\"{}\" is already placed here.", set.name);
-            return Ok(());
-        }
+        composer.place_sound_set(time, &set.id, &set_digest, 100, &hits, hitnormal, 5.0)
+            .ok_or("The set was placed here while its files were copied.")?;
         composer.audition_requests.extend(hits.iter().map(|(_, lane, _)| lane.clone()));
-        let written = clips_written;
         let copied = if written == 0 { String::new() } else { format!(", {written} files copied") };
         self.status = format!("Placed \"{}\"{copied}.", set.name);
+        if let Some(note) = note {
+            self.status = format!("{} {note}", self.status);
+        }
         self.sync_audio();
         Ok(())
     }
@@ -595,6 +638,10 @@ pub(crate) mod tests {
         app.project_root = Some(f.scratch.path("projects"));
         app.preferences.hitsound_library = Some(f.scratch.path("library"));
         app
+    }
+
+    fn app_for(f: &Fixture) -> Application {
+        app(f)
     }
 
     pub(crate) fn wait(app: &mut Application) {
@@ -984,5 +1031,69 @@ pub(crate) mod tests {
         app.seek(2000.0);
         app.place_sound_set_file(&map, &f.set).unwrap();
         assert_eq!(mapset_files(&f), ["a.osu", "drum-hitclap2.wav", "soft-hitnormal.wav"]);
+    }
+
+    // ------------------------------------------------------------ checks before writes
+
+    #[test]
+    fn a_refused_placement_leaves_no_file_behind() {
+        let f = fixture("place-refused");
+        let mut app = app(&f);
+        let map = open(&mut app, &f.map);
+        app.seek(1000.0);
+        app.place_sound_set_file(&map, &f.set).unwrap();
+        // A changed copy would make a new snapshot; placing on the same moment is refused first.
+        std::fs::write(f.map.with_file_name("drum-hitnormal2.wav"), wav(1)).unwrap();
+        app.place_sound_set_file(&map, &f.set).unwrap();
+        assert!(app.status.contains("already placed"), "{}", app.status);
+        assert_eq!(mapset_files(&f), ["a.osu", "drum-hitclap2.wav", "drum-hitnormal2.wav"]);
+        // A refusal before any write also leaves the library alone.
+        let g = fixture("place-refused-library");
+        let mut other = app_for(&g);
+        let map = open(&mut other, &g.map);
+        std::fs::write(&g.set, b"{}").unwrap();
+        assert!(other.place_sound_set_file(&map, &g.set).is_err());
+        assert!(!g.scratch.path("library").join(LIBRARY_FOLDER).exists());
+        assert_eq!(mapset_files(&g), ["a.osu"]);
+    }
+
+    #[test]
+    fn a_skin_hitnormal_with_no_default_file_is_left_as_it_is_and_named_in_the_status() {
+        let f = fixture("d6b-skin-missing");
+        std::fs::write(&f.set, set_text("Clap", &[("drum-hitclap.wav", 4000)])).unwrap();
+        let mut app = app(&f);
+        app.preferences.default_samples = f.scratch.path("no-defaults");
+        let map = open(&mut app, &f.map);
+        app.seek(1000.0);
+        app.place_sound_set_file(&map, &f.set).unwrap();
+        assert_eq!(mapset_files(&f), ["a.osu", "drum-hitclap2.wav"]);
+        assert!(app.status.contains("saves as a mix"), "{}", app.status);
+        assert_eq!(app.document().unwrap().composer.hitsounds().placements().len(), 1);
+    }
+
+    #[test]
+    fn a_set_file_over_96_mb_is_refused_before_it_is_read() {
+        let f = fixture("set-too-large");
+        let mut app = app(&f);
+        let map = open(&mut app, &f.map);
+        let big = f.scratch.path("big.dawsuset");
+        std::fs::File::create(&big).unwrap().set_len(MAX_SET_BYTES + 1).unwrap();
+        assert!(app.place_sound_set_file(&map, &big).unwrap_err().contains("over 96 MB"));
+    }
+
+    #[test]
+    fn a_library_set_file_is_read_again_only_when_its_time_or_size_changes() {
+        let f = fixture("library-cache");
+        let path = f.scratch.path("cached.dawsuset");
+        let text = set_text("Kick", &[("drum-hitnormal.wav", 1)]);
+        std::fs::write(&path, &text).unwrap();
+        let metadata = std::fs::metadata(&path).unwrap();
+        assert_eq!(library_id(&path, &metadata).as_deref(), Some(SET_ID));
+        // Same size and time, other bytes: the cached id is used, the file is not read again.
+        std::fs::write(&path, "x".repeat(text.len())).unwrap();
+        std::fs::File::options().write(true).open(&path).unwrap().set_modified(metadata.modified().unwrap()).unwrap();
+        assert_eq!(library_id(&path, &std::fs::metadata(&path).unwrap()).as_deref(), Some(SET_ID));
+        std::fs::write(&path, "x").unwrap();
+        assert_eq!(library_id(&path, &std::fs::metadata(&path).unwrap()), None, "a changed size reads it again");
     }
 }
