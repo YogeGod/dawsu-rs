@@ -333,4 +333,45 @@ mod tests {
             labels
         );
     }
+
+    /// Pins Export's paired samples byte for byte, so Save's merge per role sharing the renderer
+    /// cannot change them (hash taken on e97f6b5, before the change).
+    #[test]
+    fn export_pair_samples_output_is_unchanged() {
+        use dawsu_foundation::{CustomIndex, digest::sha256_hex};
+        let scratch = dawsu_test_support::Scratch::new("export-pair-golden");
+        let map = scratch.path("Artist - Song (Mapper) [Hard].osu");
+        std::fs::write(&map, b"osu file format v14\n[General]\nMode:0\n[Metadata]\nVersion:Hard\n[TimingPoints]\n0,500,4,1,0,100,1,0\n[HitObjects]\n256,192,1000,1,0,1:0:2:50:\n256,192,2000,1,0,1:0:2:50:\n").unwrap();
+        for (name, frames) in [("normal-hitnormal2.wav", [8192_i16, -4096]), ("soft-hitclap3.wav", [4096, 2048]), ("drum-hitfinish4.wav", [16384, -16384])] {
+            let mut wav = b"RIFF\x28\0\0\0WAVEfmt \x10\0\0\0\x01\0\x01\0\x80\xbb\0\0\0w\x01\0\x02\0\x10\0data\x04\0\0\0".to_vec();
+            wav.extend(frames.iter().flat_map(|v| v.to_le_bytes()));
+            std::fs::write(scratch.path(name), wav).unwrap();
+        }
+        let lane = |set, sound, index| SampleIdentity::Standard { set, sound: Sound::Hit(sound), index: CustomIndex::new(index) };
+        let mut d = crate::Document::read(&map).unwrap();
+        d.composer.apply("Hits", |h| {
+            h.set_moment_state(dawsu_hitsounding::MomentId(0), 50, [
+                (lane(SampleSet::Normal, Hitsound::Normal, 2), 50),
+                (lane(SampleSet::Soft, Hitsound::Clap, 3), 30),
+                (lane(SampleSet::Drum, Hitsound::Finish, 4), 80),
+            ]);
+            h.set_moment_state(dawsu_hitsounding::MomentId(1), 50, [
+                (lane(SampleSet::Soft, Hitsound::Clap, 3), 50),
+                (lane(SampleSet::Drum, Hitsound::Finish, 4), 50),
+            ]);
+        });
+        let mut settings = ExportSettings::default();
+        settings.pair_samples = true;
+        let plan = crate::output::generate_report(
+            &crate::output::Source::from_document(&d), std::path::Path::new(""), Some(&settings), None, false,
+            &|| false, &mut Vec::new(), &mut |_, _| {},
+        ).unwrap();
+        let listing: String = plan.mixes.iter()
+            .map(|mix| format!("{}={}\n", mix.path.file_name().unwrap().to_string_lossy(), mix.digest()))
+            .collect();
+        let target = String::from_utf8(plan.files[0].file.to_bytes()).unwrap();
+        let digest = sha256_hex(format!("{listing}{target}").as_bytes());
+        eprintln!("{listing}{target}\n{digest}");
+        assert_eq!(digest, "fbb8b3c4ba6c7f9037386609ec9009e1406e6d423297ebdcd63f70d03f67448c");
+    }
 }
