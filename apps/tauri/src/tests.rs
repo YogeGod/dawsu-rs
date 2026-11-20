@@ -2144,14 +2144,14 @@ fn export_requests_answer_with_the_export_view_and_errors_after_a_fault() {
     let (tx, rx) = channel();
     answer_export(&mut app, &mut fault, &mut cache, Request::ExportPreview(target.clone(), ExportOptions {
         targets: vec![target.clone()],
-        copy: Default::default(),
+        ..Default::default()
     }, tx));
     assert_eq!(rx.recv().unwrap().unwrap_err(), "Another difficulty was opened. Preview again.");
     assert_eq!(app.document().unwrap().export_choices(), None, "a refused preview stores no choices");
     let (tx, rx) = channel();
     answer_export(&mut app, &mut fault, &mut cache, Request::ExportPreview(source.clone(), ExportOptions {
         targets: vec![target.clone()],
-        copy: Default::default(),
+        ..Default::default()
     }, tx));
     let id = rx.recv().unwrap().unwrap();
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -2187,7 +2187,10 @@ fn export_requests_answer_with_the_export_view_and_errors_after_a_fault() {
     for field in ["matched", "unmatched", "changed", "collisions", "keptFromSilent", "muted"] {
         assert!(counts[field].is_u64(), "{field}: {counts}");
     }
-    assert_eq!(view["choices"], serde_json::json!({ "leftOut": [], "matchWithin": 5.0, "copyVolumes": true }));
+    assert_eq!(view["choices"], serde_json::json!({
+        "leftOut": [], "matchWithin": 5.0, "copyVolumes": true, "base": false, "sliderAudio": false,
+    }));
+    assert!(view["preview"]["base"].is_null(), "no base difficulty without the base choice");
     assert_eq!((&view["writing"], &view["written"], &view["writeError"]), (&serde_json::json!(false), &serde_json::Value::Null, &serde_json::Value::Null));
     assert!(view.get("review").is_none() && view.get("shortcutAction").is_none());
     assert!(app.output_review.is_none());
@@ -2202,7 +2205,7 @@ fn export_requests_answer_with_the_export_view_and_errors_after_a_fault() {
     let (preview, preview_rx) = channel();
     answer_export(&mut app, &mut fault, &mut cache, Request::ExportPreview(source.clone(), ExportOptions {
         targets: vec![target.clone()],
-        copy: Default::default(),
+        ..Default::default()
     }, preview));
     let (run, run_rx) = channel();
     answer_export(&mut app, &mut fault, &mut cache, Request::ExportRun(id, run));
@@ -2232,7 +2235,7 @@ fn export_preview_waits_without_an_error_while_a_drag_is_open() {
     send(&mut app, "down");
     // The window sends the paths export_view listed, which are canonical.
     let target = target.canonicalize().unwrap();
-    app.request_export_preview(ExportOptions { targets: vec![target], copy: Default::default() }).unwrap();
+    app.request_export_preview(ExportOptions { targets: vec![target], ..Default::default() }).unwrap();
     app.poll();
     let status = app.export_status();
     assert!(status.waiting && !status.running, "the preview waits for the drag");

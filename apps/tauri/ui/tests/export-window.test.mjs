@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { render } from "svelte/server";
 import {
-  adoptChoices, afterPoll, ownWriteError, blockDrops, choicesFrom, runOutcome, statusLine, copyOptions, defaultChoices, difficultyName, exportLabel, exportState, included,
+  adoptChoices, afterPoll, baseStatus, ownWriteError, blockDrops, choicesFrom, runOutcome, statusLine, copyOptions, defaultChoices, difficultyName, exportLabel, exportState, included,
   laneSwatches, matchWithinValid, optionsKey, pollDelay, previewRequest, targetCounts,
 } from "../src/lib/export.js";
 import ExportWindow from "../src/parts/ExportWindow.svelte";
@@ -20,10 +20,13 @@ const view = {
 
 test("a map without stored choices starts with Copy's defaults and every difficulty included", () => {
   const choices = choicesFrom(view);
-  assert.deepEqual(choices, { leftOut: [], matchWithin: 5, copyVolumes: true });
+  assert.deepEqual(choices, { leftOut: [], matchWithin: 5, copyVolumes: true, base: false, sliderAudio: false });
   assert.notEqual(choices.leftOut, defaultChoices.leftOut, "choices never share the frozen defaults' list");
   assert.deepEqual(choicesFrom({ choices: { leftOut: ["a.osu"], matchWithin: 3, copyVolumes: false } }),
-    { leftOut: ["a.osu"], matchWithin: 3, copyVolumes: false });
+    { leftOut: ["a.osu"], matchWithin: 3, copyVolumes: false, base: false, sliderAudio: false },
+    "choices stored before the base difficulty read it as off");
+  assert.deepEqual(choicesFrom({ choices: { leftOut: [], matchWithin: 3, copyVolumes: true, base: true, sliderAudio: true } }),
+    { leftOut: [], matchWithin: 3, copyVolumes: true, base: true, sliderAudio: true });
   assert.deepEqual(included(view.targets, { leftOut: ["Artist - Song (Mapper) [Hard].osu"] }), [insane]);
 });
 
@@ -34,6 +37,12 @@ test("the preview asks for the shown map, the included difficulties and Copy's o
   assert.deepEqual(request.options.targets, [insane]);
   assert.equal(request.options.options.leniency, 3);
   assert.equal(request.options.options.copy_volumes, false);
+  assert.equal(request.options.base, false);
+  assert.equal(request.options.sliderAudio, false);
+  const withBase = previewRequest(view, { ...choices, base: true, sliderAudio: true });
+  assert.equal(withBase.options.base, true);
+  assert.equal(withBase.options.sliderAudio, true);
+  assert.deepEqual(withBase.options.options, request.options.options, "Copy's options do not change with the base");
   assert.deepEqual(copyOptions(defaultChoices), { ...copyOptions({ matchWithin: 5, copyVolumes: true }) });
 });
 
@@ -68,6 +77,28 @@ test("Export needs this window's own preview of the map as it is now", () => {
   const none = { ...choices, leftOut: [insane, hard].map(path => path.split("\\").pop()) };
   assert.equal(exportState(ready, { id: 7, key: optionsKey(view, none) }, none).canExport, false);
   assert.equal(exportState(ready, { id: 7, key }, { ...choices, matchWithin: -2 }).canExport, false);
+  for (const changed of [{ ...choices, base: true }, { ...choices, sliderAudio: true }]) {
+    assert.notEqual(optionsKey(view, changed), key, "the base choices are part of the preview");
+    assert.equal(exportState(ready, { id: 7, key }, changed).canExport, false);
+  }
+});
+
+test("the base difficulty counts as one more difficulty and can be exported alone", () => {
+  const preview = { id: 7, stale: false, source: view.source.path, version: 4, targets: [] };
+  const base = { ...choicesFrom(view), base: true };
+  assert.equal(exportState({ ...view, preview }, { id: 7, key: optionsKey(view, base) }, base).count, 3);
+  const alone = { ...view, targets: [], preview };
+  const state = exportState(alone, { id: 7, key: optionsKey(alone, base) }, base);
+  assert.deepEqual([state.count, state.canExport], [1, true]);
+  assert.equal(exportLabel(state.count), "Export 1 difficulty");
+});
+
+test("the base row says whether it writes a new difficulty or replaces the earlier one", () => {
+  const path = "C:\Songs\set\Artist - Song (Mapper) [Hitsounds].osu";
+  assert.equal(baseStatus({ base: { path, replaces: false } }), "New difficulty");
+  assert.equal(baseStatus({ base: { path, replaces: true } }), "Replaces the earlier one, backed up first");
+  assert.equal(baseStatus({ base: null }), null);
+  assert.equal(baseStatus(null), null);
 });
 
 test("each target shows Copy's counts; zero counts that need nothing stay hidden", () => {
@@ -134,10 +165,28 @@ test("each difficulty is a row with its include switch; a left-out one keeps its
   assert.match(body, /<button[^>]*class="primary[^"]*"[^>]*disabled[^>]*>Export 1 difficulty<\/button>/);
 });
 
-test("with no other difficulties the window says so", () => {
+test("with no other difficulties the window says so and still offers the base difficulty", () => {
   const { body } = render(ExportWindow, { props: { initialView: { ...view, targets: [] } } });
   assert.match(body, /This mapset has no other difficulties to copy into\./);
-  assert.doesNotMatch(body, /Include /);
+  assert.doesNotMatch(body, /Include (Insane|Hard)/);
+  assert.match(body, /aria-label="Include the base hitsound difficulty"/);
+});
+
+test("the first row is the base difficulty, off until chosen, with its slider audio choice", () => {
+  const { body } = render(ExportWindow, { props: { initialView: view } });
+  const base = body.indexOf("Include the base hitsound difficulty");
+  assert.ok(base > 0 && base < body.indexOf("Include Insane"), "the base row comes first");
+  assert.match(body, /role="switch" aria-checked="false" aria-label="Include the base hitsound difficulty"/);
+  assert.match(body, /<input type="checkbox"[^>]*disabled[^>]*>\s*Slider slide, whistle and tick audio/);
+  assert.match(body, />Hitsounds</);
+  assert.doesNotMatch(body.slice(0, body.indexOf("Include Insane")), /keeps its own hitsounds/);
+
+  const chosen = { ...view, choices: { leftOut: [], matchWithin: 5, copyVolumes: true, base: true, sliderAudio: true } };
+  const on = render(ExportWindow, { props: { initialView: chosen } }).body;
+  assert.match(on, /role="switch" aria-checked="true" aria-label="Include the base hitsound difficulty"/);
+  assert.match(on, /<input type="checkbox"[^>]*checked[^>]*>\s*Slider slide, whistle and tick audio/);
+  assert.doesNotMatch(on, /<input type="checkbox"[^>]*disabled/);
+  assert.match(on, /<button[^>]*class="primary[^"]*"[^>]*disabled[^>]*>Export 3 difficulties<\/button>/);
 });
 
 test("a write's result belongs to the run that started it, never to an earlier one", () => {
