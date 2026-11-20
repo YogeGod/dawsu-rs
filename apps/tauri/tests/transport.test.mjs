@@ -28,9 +28,9 @@ async function frontend() {
     if (!controls.has(id)) controls.set(id, element());
     return controls.get(id);
   };
-  // Every control index.html marks data-map, keyed by its id or its locator end.
+  // Every control index.html marks data-map, keyed by its id.
   const mapOnly = [...html.matchAll(/<(?:button|input)\b[^>]*\bdata-map\b[^>]*>/g)].map(([tag]) =>
-    get(tag.match(/\bid="([^"]+)"/)?.[1] ?? "locator-button-" + tag.match(/data-locator="([^"]+)"/)?.[1]));
+    get(tag.match(/\bid="([^"]+)"/)[1]));
   const context = createContext({
     document: {
       getElementById: get, createElement: element, addEventListener() {},

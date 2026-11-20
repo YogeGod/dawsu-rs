@@ -1,6 +1,9 @@
 <script>
+  import { onDestroy } from "svelte";
   import { act, bridge } from "../lib/bridge.svelte.js";
-  import { readout, segmentsDisabled, selectionValue, transportActions } from "../lib/transport.js";
+  import {
+    clickGate, copyText, readout, segmentsDisabled, selectionValue, transportActions,
+  } from "../lib/transport.js";
   import SkipBack from "../icons/SkipBack.svg?raw";
   import SkipForward from "../icons/SkipForward.svg?raw";
   import Repeat2 from "../icons/Repeat2.svg?raw";
@@ -13,8 +16,10 @@
 
   // Frontend only, never saved: the bar starts with every button showing.
   let collapsed = $state(false);
-  let copied = $state(false);
+  // "copied" or "failed" for 1.2 s after a click on SELECTION.
+  let copyResult = $state(null);
   let copyTimer;
+  const toggles = clickGate();
 
   const view = $derived(bridge.view);
   const scene = $derived(bridge.scene);
@@ -24,53 +29,51 @@
   const shown = $derived(readout(view, scene));
   const selection = $derived(selectionValue(scene));
   const send = name => act(transportActions(bridge.view)[name]);
-  const toggleLabel = $derived((collapsed ? "Show" : "Hide") + " Go to start and Go to end");
+  const toggle = name => toggles(bridge.view) && send(name);
 
-  // osu! reads a pasted timestamp up to the space after the dash.
   async function copy() {
     if (!selection) return;
-    try {
-      await navigator.clipboard.writeText(selection + " ");
-    } catch (error) {
-      console.error(error);
-      return;
-    }
-    copied = true;
+    const result = await copyText(selection, navigator.clipboard);
+    copyResult = result;
     clearTimeout(copyTimer);
-    copyTimer = setTimeout(() => (copied = false), 1200);
+    copyTimer = setTimeout(() => (copyResult = null), 1200);
   }
+  onDestroy(() => clearTimeout(copyTimer));
 </script>
 
 <div class="transport">
   <div class="bar" role="group" aria-label="Transport">
-    <button type="button" class="seg tab" aria-label={toggleLabel} title={toggleLabel} aria-expanded={!collapsed}
+    <button type="button" class="seg tab" aria-label="Go to start and Go to end" title="Go to start and Go to end"
+      aria-expanded={!collapsed}
       onclick={() => (collapsed = !collapsed)}>{@html collapsed ? ChevronRight : ChevronLeft}</button>
     {#if !collapsed}
       <button type="button" class="seg jump" aria-label="Go to start" title="Go to start" disabled={disabled.jump}
         onclick={() => send("start")}>{@html SkipBack}</button>
-      <button type="button" class="seg jump" aria-label="Go to end" title="Go to end" disabled={disabled.jump}
+      <button type="button" class="seg jump" aria-label="Go to end" title="Go to end" disabled={disabled.end}
         onclick={() => send("end")}>{@html SkipForward}</button>
     {/if}
-    <button type="button" class="seg cycle" aria-label="Cycle" title="Cycle between the L and R flags" aria-pressed={cycle}
-      disabled={disabled.playback} onclick={() => send("cycle")}>{@html Repeat2}</button>
+    <button type="button" class="seg cycle" aria-label="Cycle" title="Cycle between L and R" aria-pressed={cycle}
+      disabled={disabled.playback} onclick={() => toggle("cycle")}>{@html Repeat2}</button>
     <button type="button" class="seg" class:on={!playing} aria-label="Stop" title="Stop"
       disabled={disabled.playback} onclick={() => send("stop")}>{@html Square}</button>
     <button type="button" class="seg" class:playing aria-label="Play" title="Play or pause" aria-pressed={playing}
-      disabled={disabled.playback} onclick={() => send("play")}>{@html Play}</button>
+      disabled={disabled.playback} onclick={() => toggle("play")}>{@html Play}</button>
   </div>
   <div class="readout">
-    <span class="time" aria-label="Playhead time">{shown.time}</span>
+    <span class="time">{shown.time}</span>
     <span class="divider music"></span>
     <span class="cell music" title="Tempo at the playhead"><span class="value">{shown.bpm}</span> <small>BPM</small></span>
     <span class="divider music"></span>
     <span class="cell music" title="Time signature at the playhead"><span class="value">{shown.meter}</span> <small>TIME</small></span>
     <span class="divider"></span>
-    <button type="button" class="cell selection" title="Copy the osu! timestamp" disabled={!selection} onclick={copy}>
+    <button type="button" class="cell selection" aria-label="Copy selection time" title="Copy selection time"
+      disabled={!selection} onclick={copy}>
       <span class="stack">
         <span class="value" class:empty={!selection}>{selection ?? "No selection"}</span>
         <small>SELECTION</small>
       </span>
-      {#if selection}<span class="copy" class:copied>{@html copied ? Check : Copy}</span>{/if}
+      {#if copyResult === "failed"}<span class="copy failed" role="status">Could not copy</span>
+      {:else if selection}<span class="copy" class:copied={copyResult === "copied"}>{@html copyResult === "copied" ? Check : Copy}</span>{/if}
     </button>
   </div>
 </div>
@@ -231,6 +234,10 @@
   }
   .copy.copied {
     color: var(--editor-play);
+  }
+  .copy.failed {
+    color: var(--editor-error);
+    font-size: 12px;
   }
   .copy :global(svg) {
     width: 14px;

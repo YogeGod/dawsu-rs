@@ -356,12 +356,18 @@ test("the L and R flags on the ruler drag their locator, even when both sit on t
   assert.equal(cursors.ruler.cursor, "ew-resize");
   // A drag keeps where the flag was grabbed: the locator moves by the pointer's distance.
   rulerEvents.get("pointerdown")({ button: 0, pointerId: 3, clientX: 60, clientY: 6 });
+  rulerEvents.get("pointermove")({ pointerId: 3, clientX: 40, clientY: 6 });
+  assert.deepEqual([...evaluate("rulerDrag.preview")], [30, 50, false]);
+  // L never passes R: dragged past it, it stops on R.
   rulerEvents.get("pointermove")({ pointerId: 3, clientX: 80, clientY: 6 });
-  assert.deepEqual([...evaluate("rulerDrag.preview")], [70, 50, false]);
+  assert.deepEqual([...evaluate("rulerDrag.preview")], [50, 50, false]);
   rulerEvents.get("pointerup")({ pointerId: 3, clientX: 80, clientY: 6 });
   await settle();
   const sent = calls.filter(call => call.args.action?.kind === "ruler_locators").map(call => call.args.action);
-  assert.deepEqual(sent.map(({ gesture, to }) => [gesture, to]), [["left", 70]]);
+  assert.deepEqual(sent.map(({ gesture, to }) => [gesture, to]), [["left", 50]]);
+  // R never passes L either.
+  assert.equal(evaluate('locatorDragTo({ mode: "right", left: 50, right: 60, x: 60, zoom: 1, duration: 1000 }, 20)'), 50);
+  assert.equal(evaluate('locatorDragTo({ mode: "right", left: 50, right: 60, x: 60, zoom: 1, duration: 1000 }, 2000)'), 1000);
   // Near the canvas edge a flag flips so it stays on screen.
   evaluate('scene = { path: "Expert.osu", viewStart: 0, zoom: 1 }; view = { left: 95, right: 2 }');
   assert.equal(evaluate("rulerGestureAt(88, 6)"), "left");
@@ -373,8 +379,8 @@ test("Shift-click on an L or R flag jumps the playhead to that locator, as Shift
   evaluate('scene = { path: "Expert.osu", viewStart: 0, zoom: 1, rowHeight: 20 }; view = { busy: false, hasDocument: true, left: 20, right: 70, cycle: false, duration: 1000 }');
   rulerEvents.get("pointerdown")({ button: 0, pointerId: 4, clientX: 64, clientY: 6, shiftKey: true });
   await settle();
-  assert.deepEqual(calls.map(call => call.args.action).filter(Boolean).map(({ kind, end, jump }) => [kind, end, jump]),
-    [["locator", "right", true]]);
+  assert.deepEqual(JSON.parse(JSON.stringify(calls.map(call => call.args.action).filter(Boolean))),
+    [{ kind: "locator", end: "right" }]);
   assert.equal(evaluate("rulerDrag"), null, "no drag starts");
 });
 

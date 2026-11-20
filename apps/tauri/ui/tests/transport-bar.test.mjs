@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { render } from "svelte/server";
 import { bridge } from "../src/lib/bridge.svelte.js";
 import {
-  osuTimestamp, readout, segmentsDisabled, selectionValue, transportActions,
+  clickGate, copyText, osuTimestamp, readout, segmentsDisabled, selectionValue, transportActions,
 } from "../src/lib/transport.js";
 import TransportBar from "../src/parts/TransportBar.svelte";
 
@@ -39,11 +39,30 @@ test("the buttons send the editor's own playback actions", () => {
 });
 
 test("Play, Stop and Cycle need only a map; Go to start and end also wait for a running job", () => {
-  assert.deepEqual(segmentsDisabled(null, null), { playback: true, jump: true });
-  assert.deepEqual(segmentsDisabled({ busy: false }, null), { playback: true, jump: true });
-  assert.deepEqual(segmentsDisabled({ busy: false }, map), { playback: false, jump: false });
-  assert.deepEqual(segmentsDisabled({ busy: true }, map), { playback: false, jump: true });
-  assert.deepEqual(segmentsDisabled({ busy: false, fault: "The editor stopped" }, map), { playback: true, jump: true });
+  const ready = { busy: false, duration: 5000 };
+  assert.deepEqual(segmentsDisabled(null, null), { playback: true, jump: true, end: true });
+  assert.deepEqual(segmentsDisabled(ready, null), { playback: true, jump: true, end: true });
+  assert.deepEqual(segmentsDisabled(ready, map), { playback: false, jump: false, end: false });
+  assert.deepEqual(segmentsDisabled({ ...ready, busy: true }, map), { playback: false, jump: true, end: true });
+  assert.deepEqual(segmentsDisabled({ ...ready, fault: "The editor stopped" }, map), { playback: true, jump: true, end: true });
+  // Go to end needs the song's length.
+  assert.deepEqual(segmentsDisabled({ busy: false }, map), { playback: false, jump: false, end: true });
+});
+
+test("Play and Cycle take one click per view, so a second click before the editor answers does nothing", () => {
+  const gate = clickGate();
+  const first = { playing: false };
+  assert.equal(gate(first), true);
+  assert.equal(gate(first), false, "same view: the first click is still on its way");
+  assert.equal(gate({ playing: true }), true, "the next view opens the gate again");
+});
+
+test("a copy reports copied, or failed when the clipboard refuses", async () => {
+  const written = [];
+  assert.equal(await copyText("05:24:324 -", { writeText: async text => written.push(text) }), "copied");
+  assert.deepEqual(written, ["05:24:324 - "]);
+  assert.equal(await copyText("05:24:324 -", { writeText: async () => { throw new Error("NotAllowedError"); } }), "failed");
+  assert.equal(await copyText("05:24:324 -", undefined), "failed");
 });
 
 function shown(view, scene = map) {
@@ -56,9 +75,11 @@ const bar = html => buttons(html.slice(0, html.indexOf('class="readout')));
 const label = tag => tag.match(/aria-label="([^"]+)"/)?.[1];
 
 test("the bar is collapse tab, Go to start, Go to end, Cycle, Stop and Play, with no Record and no L or R", () => {
-  const html = shown({ playing: false, cycle: true, busy: false, position: 0 });
+  const html = shown({ playing: false, cycle: true, busy: false, position: 0, duration: 5000 });
   assert.deepEqual(bar(html).map(label),
-    ["Hide Go to start and Go to end", "Go to start", "Go to end", "Cycle", "Stop", "Play"]);
+    ["Go to start and Go to end", "Go to start", "Go to end", "Cycle", "Stop", "Play"]);
+  assert.match(bar(html)[0], /aria-expanded="true"/, "the tab's state is in aria-expanded, its name stays");
+  assert.match(html, /title="Cycle between L and R"/);
   assert.doesNotMatch(html, /Record|Locator|>L<|>R</);
   assert.equal([...html.matchAll(/<svg/g)].length, 6, "every button has its icon; no copy icon without a selection");
   assert.doesNotMatch(html, /\sstyle=|\sid=|\(Space\)|\(End\)|\(\/\)/);
@@ -80,8 +101,9 @@ test("Stop lights when stopped, Play is pressed while playing, Cycle while cycli
 test("before a map every button but the collapse tab is disabled; a job leaves playback working", () => {
   const disabled = html => bar(html).filter(tag => /\sdisabled/.test(tag)).map(label);
   assert.deepEqual(disabled(shown(null, null)), ["Go to start", "Go to end", "Cycle", "Stop", "Play"]);
-  assert.deepEqual(disabled(shown({ busy: true, playing: false, cycle: false })), ["Go to start", "Go to end"]);
-  assert.deepEqual(disabled(shown({ busy: false, playing: false, cycle: false })), []);
+  assert.deepEqual(disabled(shown({ busy: true, playing: false, cycle: false, duration: 5000 })), ["Go to start", "Go to end"]);
+  assert.deepEqual(disabled(shown({ busy: false, playing: false, cycle: false, duration: 5000 })), []);
+  assert.deepEqual(disabled(shown({ busy: false, playing: false, cycle: false })), ["Go to end"]);
 });
 
 test("the readout shows time, BPM, TIME and SELECTION, and SELECTION copies the timestamp", () => {
@@ -92,6 +114,8 @@ test("the readout shows time, BPM, TIME and SELECTION, and SELECTION copies the 
   assert.doesNotMatch(text, /BAR|38\.2\.240/);
   const copy = buttons(html).find(tag => /title="Copy/.test(tag));
   assert.ok(copy, "SELECTION is a button");
+  assert.match(copy, /aria-label="Copy selection time"/);
+  assert.doesNotMatch(html, /<span[^>]*aria-label/, "no label on a span without a role");
   assert.doesNotMatch(copy, /\sdisabled/);
 
   html = shown({ busy: false, position: 0 });

@@ -57,6 +57,22 @@ fn ruler_gestures_snap_and_move_locators_without_seeking_or_dirtying_the_map() {
     drag(&mut app, map_path, "left", 0.0, 1115.0);
     drag(&mut app, map_path, "right", 0.0, 2390.0);
     assert_eq!(range(&app), (1125.0, 2375.0, false));
+    // A drag never carries L past R or R past L: it stops on the other locator.
+    drag(&mut app, map_path, "left", 1125.0, 3000.0);
+    assert_eq!(range(&app), (2375.0, 2375.0, false));
+    drag(&mut app, map_path, "left", 2375.0, 1115.0);
+    drag(&mut app, map_path, "right", 2375.0, 600.0);
+    assert_eq!(range(&app), (1125.0, 1125.0, false));
+    drag(&mut app, map_path, "right", 1125.0, 2390.0);
+    // Ctrl- or Alt-click (from == to) sets a locator where it lands, as the set shortcuts do.
+    drag(&mut app, map_path, "left", 3000.0, 3000.0);
+    assert_eq!(range(&app), (3000.0, 2375.0, false));
+    drag(&mut app, map_path, "left", 1115.0, 1115.0);
+    // Shift-click on a flag jumps the playhead to its locator.
+    serde_json::from_value::<Action>(serde_json::json!({"kind": "locator", "end": "right"})).unwrap().run(&mut app);
+    assert_eq!(app.position_ms(), 2375.0);
+    app.seek(500.0);
+    assert_eq!(range(&app), (1125.0, 2375.0, false));
 
     drag(&mut app, map_path, "draw", 860.0, 385.0);
     assert_eq!(range(&app), (375.0, 875.0, true));

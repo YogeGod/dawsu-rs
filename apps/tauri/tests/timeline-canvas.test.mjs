@@ -255,3 +255,27 @@ test("the left and right locators are L and R flags at the top of the ruler", as
   const [l, r] = letters();
   assert.ok(l[1] < 295 && r[1] < 295 && l[1] !== r[1], JSON.stringify([l, r]));
 });
+
+test("a pushed L or R flag never paints over the other one, at either edge of the ruler", async () => {
+  const { get, paint } = await canvases();
+  const ruler = get("ruler");
+  // Each flag is one filled path: moveTo, lineTo… then fill in the flag colour.
+  const flagSpans = () => {
+    const spans = [];
+    let xs = [];
+    for (const call of ruler.calls) {
+      if (call.name === "beginPath") xs = [];
+      if (call.name === "moveTo" || call.name === "lineTo") xs.push(call.args[0]);
+      if (call.name === "fill" && ["#858585", "#efc16a"].includes(call.fill)) spans.push([Math.min(...xs), Math.max(...xs)]);
+    }
+    return spans;
+  };
+  // Locators 5 and 8 px from the left edge, 2 and 2 px, and both at the right edge (300 px canvas).
+  for (const [left, right] of [[20, 32], [8, 8], [1188, 1192]]) {
+    paint(`scene.zoom = .25; Object.assign(view, { left: ${left}, right: ${right}, cycle: false })`);
+    const [l, r] = flagSpans();
+    assert.ok(l && r, "two flags");
+    assert.ok(l[1] <= r[0] || r[1] <= l[0], `[${left}, ${right}] flags overlap: ${JSON.stringify([l, r])}`);
+    for (const [from, to] of [l, r]) assert.ok(from >= 0 && to <= 300, `[${left}, ${right}] flag off the ruler`);
+  }
+});

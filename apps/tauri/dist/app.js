@@ -921,14 +921,16 @@ function drawLocatorFlags(ctx, width, left, right, cycling) {
   ctx.font = "600 10px Inter, system-ui, sans-serif";
   for (const [side, letter] of [["left", "L"], ["right", "R"]]) {
     const { x, from } = flags[side];
+    // The flag's box runs from `from`; a flag pushed off its line keeps to its own box.
     const pointsRight = from >= x;
+    const [base, tip] = pointsRight ? [from, from + locatorFlagWidth] : [from + locatorFlagWidth, from];
     ctx.fillStyle = cycling ? slateTimeline.cycle : slateTimeline.locator;
     ctx.beginPath();
-    ctx.moveTo(x, 0);
-    ctx.lineTo(pointsRight ? from + locatorFlagWidth : from, 0);
-    ctx.lineTo(pointsRight ? from + locatorFlagWidth - 3 : from + 3, locatorFlagHeight / 2);
-    ctx.lineTo(pointsRight ? from + locatorFlagWidth : from, locatorFlagHeight);
-    ctx.lineTo(x, locatorFlagHeight);
+    ctx.moveTo(base, 0);
+    ctx.lineTo(tip, 0);
+    ctx.lineTo(tip + (pointsRight ? -3 : 3), locatorFlagHeight / 2);
+    ctx.lineTo(tip, locatorFlagHeight);
+    ctx.lineTo(base, locatorFlagHeight);
     ctx.closePath();
     ctx.fill();
     ctx.fillStyle = slateTimeline.ruler;
@@ -1919,9 +1921,14 @@ function locatorPreview(gesture, x) {
   return [Math.min(from, to), Math.max(from, to), true];
 }
 
-// A locator follows the pointer's distance from where its flag or line was grabbed.
+// A locator follows the pointer's distance from where its flag or line was grabbed, and stops at
+// the other locator: L never passes R, R never passes L.
 function locatorDragTo(gesture, x) {
-  return limit(gesture[gesture.mode] + (x - gesture.x) / gesture.zoom, 0, gesture.duration);
+  const to = gesture[gesture.mode] + (x - gesture.x) / gesture.zoom;
+  // Locators already reversed by the set shortcuts drag freely, as the backend lets them.
+  const ordered = gesture.left <= gesture.right;
+  if (gesture.mode === "left") return limit(to, 0, ordered ? gesture.right : gesture.duration);
+  return limit(to, ordered ? gesture.left : 0, gesture.duration);
 }
 
 function endRulerDrag(event) {
@@ -1943,7 +1950,7 @@ ruler.addEventListener("pointerdown", (event) => {
   const side = event.ctrlKey || event.metaKey ? "left" : event.altKey ? "right" : null;
   const flag = event.shiftKey && !side && y < rulerBandHeight ? rulerGestureAt(x, y) : null;
   if (flag === "left" || flag === "right") {
-    act({ kind: "locator", end: flag, jump: true }, false);
+    act({ kind: "locator", end: flag }, false);
   } else if (side) {
     act({ kind: "ruler_locators", path: scene.path, gesture: side, from: ms, to: ms }, false);
   } else if (y < rulerBandHeight) {

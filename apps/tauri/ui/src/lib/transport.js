@@ -29,15 +29,38 @@ export function readout(view, scene) {
 export const selectionValue = scene => Number.isFinite(scene?.selection?.start) ? osuTimestamp(scene.selection.start) : null;
 
 // Play, Stop and Cycle need a map; Go to start and Go to end also wait while a job runs, as before.
+// Go to end also needs the song's length.
 export function segmentsDisabled(view, scene) {
   const playback = !scene || !!view?.fault;
-  return { playback, jump: playback || !!view?.busy };
+  const jump = playback || !!view?.busy;
+  return { playback, jump, end: jump || !Number.isFinite(view?.duration) };
+}
+
+// Play and Cycle toggle, so a second click before the editor's next view would undo the first.
+// The gate lets one click through per view.
+export function clickGate() {
+  let last;
+  return view => {
+    if (view === last) return false;
+    last = view;
+    return true;
+  };
+}
+
+// osu! reads a pasted timestamp up to the space after the dash.
+export async function copyText(value, clipboard) {
+  try {
+    await clipboard.writeText(value + " ");
+    return "copied";
+  } catch {
+    return "failed";
+  }
 }
 
 export const transportActions = view => ({
   start: { kind: "start" },
   // Seek clamps to the song's length, so the duration lands on the last moment of the song.
-  end: { kind: "seek", ms: view?.duration ?? 0 },
+  end: { kind: "seek", ms: view?.duration },
   cycle: { kind: "cycle", on: !view?.cycle },
   stop: { kind: "stop" },
   play: { kind: "play" },
