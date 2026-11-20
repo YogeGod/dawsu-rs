@@ -2713,10 +2713,6 @@ $("ramp-shape").addEventListener("change", () => {
   act({ kind: "ramp_shape", value: $("ramp-shape").value }, false);
 });
 
-const toolIcons = {
-  Select: "MousePointer2", Draw: "Drumstick", Erase: "Eraser", Mute: "VolumeX",
-  Grab: "Hand", Range: "Scan", Ramp: "TrendingUp",
-};
 for (const button of document.querySelectorAll("[data-action]")) {
   button.addEventListener("click", () => act({ kind: button.dataset.action }));
 }

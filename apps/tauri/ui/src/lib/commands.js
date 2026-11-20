@@ -8,9 +8,10 @@
 // - command: the catalogue id the row stands for. Its keys show as the shortcut hint (read from
 //   editor_shortcuts each time a menu opens, so the key preset and the mapper's own keys apply),
 //   and the row runs it unless `run` says otherwise. Keys are never written here.
-// - run: ["click", id] presses an existing button; ["act", action, light]; ["call", name] runs a
-//   menus.js function; ["toggle", kind, path, light] flips a view or scene field; ["panel", key];
-//   ["tool", name]; ["lane", op] and ["onLane", op, id] act on the right-clicked lane.
+// - run: ["click", id] presses an existing button; ["act", action] sends an editor action;
+//   ["call", name] runs a menus.js function; ["toggle", kind, path, light] flips a view or scene
+//   field (light: a quick update, as app.js's act(action, false)); ["panel", key, field] shows or
+//   hides a panel; ["tool", name]; ["lane", op] and ["onLane", op, id] act on the right-clicked lane.
 // - enabled: a rule name in menus.js (default "edit": a map open, no job running, no drag).
 // - checked: a rule name for a switch row; a toggle or panel row is checked by its own field.
 // - radio: a tool picker row; close: a checked row that still closes the menu.
@@ -94,7 +95,7 @@ export const items = [
   { id: "viewSettings", label: "View settings…", icon: "Settings", run: ["click", "panel-view"] },
   { id: "shortcuts", label: "Shortcuts", icon: "Info", command: "help", run: ["click", "help"], enabled: "idle" },
 
-  // Right-click on the timeline (and the fourth tool pill): the seven tools, in toolIcons' order.
+  // Right-click on the timeline (and the fourth tool pill): the seven tools, in TOOLS' order (tools.js).
   { id: "toolSelect", label: "Select", icon: "MousePointer2", command: "toolSelect", run: ["tool", "Select"], radio: true, close: true, checked: "tool" },
   { id: "toolDraw", label: "Draw", icon: "Drumstick", command: "toolDraw", run: ["tool", "Draw"], radio: true, close: true, checked: "tool" },
   { id: "toolErase", label: "Erase", icon: "Eraser", command: "toolErase", run: ["tool", "Erase"], radio: true, close: true, checked: "tool" },
@@ -149,8 +150,9 @@ export const menus = {
   lane: ["laneRename", "laneMoveUp", "laneMoveDown", "laneReplaceSample", "laneColour", "laneAddLayer", "laneAdd", "laneDelete"],
 };
 
-// Catalogue commands no menu row stands for: they run from their keys only, and the shortcut
-// editor lists them under their Rust description.
+// Catalogue commands no menu row stands for, so no menu shows their keys. Most run from their keys
+// only (Cycle and Add numbered layer also have rows that act without the command); the shortcut
+// editor lists them all under their Rust description.
 export const keyOnly = [
   "quantize", "volumeUp", "volumeDown", "volumeUpFine", "volumeDownFine", "jumpToSelection",
   "nudgeLeft", "nudgeRight", "gridLeft", "gridRight", "navUp", "navDown", "selectPrevious", "selectNext",

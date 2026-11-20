@@ -1,4 +1,4 @@
-// The editor's seven tools, in the order of toolIcons in app.js (the right-click picker lists all).
+// The editor's seven tools, in the right-click picker's order (menus.tool in commands.js lists all).
 export const TOOLS = ["Select", "Draw", "Erase", "Mute", "Grab", "Range", "Ramp"];
 const pills = TOOLS.slice(0, 3);
 

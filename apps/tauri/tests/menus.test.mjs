@@ -109,8 +109,6 @@ function fixture() {
     adjacentLaneForMove: () => null,
     run(task) { return task(); },
     async update(action) { calls.push(JSON.parse(JSON.stringify(action))); view.activeLane = action.row; },
-    toolIcons: { Select: "MousePointer2", Draw: "Drumstick", Erase: "Eraser", Mute: "VolumeX",
-      Grab: "Hand", Range: "Scan", Ramp: "TrendingUp" },
     playbackStartChoices: [
       ["cursor", "Cursor"], ["left", "Left locator"], ["selection", "Selection"],
       ["selection_or_left", "Selection or left locator"],
