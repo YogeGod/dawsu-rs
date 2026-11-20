@@ -947,10 +947,6 @@ function drawBookmarks(ctx, marks, start, zoom, width) {
 function renderScene() {
   renderLanes();
   $("snap").checked = scene.snap;
-  const gridLabel = scene.snap ? "Snap " + scene.beats + "/" + scene.divisor : "Snap off";
-  const gridOptions = $("grid-options");
-  gridOptions.textContent = gridLabel + " ▾";
-  gridOptions.ariaLabel = gridLabel + ", grid and snapping settings";
   const hits = (scene.moments ?? []).reduce((sum, moment) => sum + (moment[3]?.length ?? 0), 0);
   const lanes = scene.lanes?.length ?? 0;
   $("hit-lane-counts").textContent = hits + (hits === 1 ? " hit · " : " hits · ") + lanes + (lanes === 1 ? " lane" : " lanes");

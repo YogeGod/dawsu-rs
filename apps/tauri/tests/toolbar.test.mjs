@@ -108,7 +108,7 @@ test("show() fills the Snap label, Audition, the problem summary and the hit and
   const { calls, evaluate, get, settle } = await frontend();
   evaluate(`show({ busy: false, hasDocument: true, audition: true, outputProblems: [{ time: 1 }, { time: 2 }],
     scene: ${sceneWith({})} })`);
-  assert.equal(get("grid-options").textContent, "Snap 1/4 ▾");
+  assert.equal(get("grid-options").textContent, undefined, "the Snap slider shows the snap; the menu button stays ▾");
   assert.equal(get("toolbar-audition")["aria-pressed"], "true");
   assert.equal(get("problem-summary").hidden, false);
   assert.equal(get("problem-summary-text").textContent, "2 moments can't be saved");
@@ -122,7 +122,7 @@ test("show() fills the Snap label, Audition, the problem summary and the hit and
 
   evaluate(`show({ busy: false, hasDocument: true, audition: false, outputProblems: [{ time: 1 }],
     scene: ${sceneWith({ snap: false, lanes: [{ key: "a" }], moments: [[100, 100, true, [[0, false]]]] })} })`);
-  assert.equal(get("grid-options").textContent, "Snap off ▾");
+  assert.equal(get("grid-options").textContent, undefined);
   assert.equal(get("toolbar-audition")["aria-pressed"], "false");
   assert.equal(get("problem-summary-text").textContent, "1 moment can't be saved");
   assert.equal(get("hit-lane-counts").textContent, "1 hit · 1 lane");
@@ -142,8 +142,8 @@ test("show() hands the view and the last scene to the Svelte parts, even when a 
   evaluate("show({ busy: false, hasDocument: true, audition: false })");
   assert.equal(evaluate("window.dawsuUi.got"), "[false,4]");
   evaluate("console = { error() {} }; window.dawsuUi.update = () => { throw new Error('broken part'); }");
-  evaluate(`show({ busy: false, hasDocument: true, audition: true, scene: ${sceneWith({ divisor: 8 })} })`);
-  assert.equal(get("grid-options").textContent, "Snap 1/8 ▾");
+  evaluate(`show({ busy: false, hasDocument: true, audition: true, scene: ${sceneWith({ moments: [] })} })`);
+  assert.equal(get("hit-lane-counts").textContent, "0 hits · 2 lanes");
 });
 
 test("the status bar says when a toolbar part did not load, once the page has loaded", async () => {
@@ -158,4 +158,12 @@ test("the status bar says when a toolbar part did not load, once the page has lo
   evaluate(`document.querySelectorAll = () => []`);
   evaluate(shown);
   assert.equal(get("status").textContent, "Difficulty loaded");
+});
+
+test("the Snap menu button beside the slider is only a ▾ named More snaps", () => {
+  const button = ribbon.match(/<button id="grid-options"[^>]*>(.*?)<\/button>/)?.[0] ?? "";
+  assert.match(button, /aria-label="More snaps"/);
+  assert.match(button, /title="More snaps"/);
+  assert.match(button, />▾<\/button>$/);
+  assert.doesNotMatch(app, /\$\("grid-options"\)/, "show() no longer rewrites the button");
 });

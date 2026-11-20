@@ -47,6 +47,8 @@
     if (!dragging) return;
     dragging = false;
     release();
+    // After a mouse drag Left and Right seek again; only Tab gives the slider the keys.
+    track.blur();
   }
 
   function key(event) {
