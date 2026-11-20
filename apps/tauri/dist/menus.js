@@ -386,7 +386,7 @@ function menuItems(name, target) {
       separator(),
       menuItem("Generate hitsound difficulty…", "TrendingUp", click("generate"), { shortcut: "generate" }),
       menuItem("Copy hitsounds…", "Redo2", click("copy")),
-      menuItem("Drum hit detection…", "Drumstick", () => openDrumDetection()),
+      menuItem("Drum hit detection…", "Drumstick", () => invoke("drum_window_open").catch(error => { $("status").textContent = String(error); })),
       menuChoices("Generate export style", [["objects", "Per-object"]],
         () => "objects", () => {}, () => false),
       separator(),

@@ -1,0 +1,16 @@
+{
+  "identifier": "drum",
+  "windows": [
+    "drum"
+  ],
+  "permissions": [
+    "allow-drum-context",
+    "allow-drum-detect-start",
+    "allow-drum-review",
+    "allow-drum-listen",
+    "allow-drum-listen-stop",
+    "allow-drum-apply",
+    "allow-drum-pick-stem",
+    "allow-close-drum-window"
+  ]
+}

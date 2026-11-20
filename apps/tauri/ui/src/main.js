@@ -7,6 +7,7 @@ import AuditionPill from "./parts/AuditionPill.svelte";
 import LaneHeaders from "./parts/LaneHeaders.svelte";
 import PlayheadGroup from "./parts/PlayheadGroup.svelte";
 import ExportWindow from "./parts/ExportWindow.svelte";
+import DrumDetectWindow from "./parts/DrumDetectWindow.svelte";
 import SnapSlider from "./parts/SnapSlider.svelte";
 import ToolPills from "./parts/ToolPills.svelte";
 import TransportBar from "./parts/TransportBar.svelte";
@@ -17,6 +18,8 @@ const parts = {
   playhead: PlayheadGroup, lanes: LaneHeaders,
   // The whole page of the Export window (export.html).
   "export-window": ExportWindow,
+  // The whole page of the drum detection window (drum.html).
+  "drum-window": DrumDetectWindow,
 };
 
 // app.js may have built the lane rows before this bundle loaded.

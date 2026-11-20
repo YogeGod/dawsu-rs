@@ -629,3 +629,13 @@ test("Place sound set lists a set this map uses that the library lacks under In 
   assert.equal(list.children[0].children[0].title, "9e7b1d18");
   assert.equal(message.textContent, "None of these sound sets can be placed.");
 });
+
+test("Map > Drum hit detection… opens the drum detection window", async () => {
+  const { get, calls } = fixture();
+  get("menu-map").click();
+  const item = menuButtons(get("editor-menu")).find(node => node.textContent === "Drum hit detection…");
+  calls.length = 0;
+  item.click();
+  await settle();
+  assert.deepEqual(calls.map(([name]) => name), ["drum_window_open"]);
+});
