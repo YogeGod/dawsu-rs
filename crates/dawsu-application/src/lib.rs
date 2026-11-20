@@ -1367,6 +1367,7 @@ impl Application {
                         d.composer.protect_normals = self.preferences.protect_hitnormals;
                     }
                     self.song = loaded.song;
+                    self.drum.song_loaded();
                     self.stretched_song = self.song.clone();
                     self.playback_speed = 1.0;
                     self.samples = loaded.samples;
