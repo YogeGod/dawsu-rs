@@ -6,6 +6,7 @@
 use super::{Application, layers, safe_child};
 use dawsu_audio::AudioClip;
 use dawsu_editor::tools::ToolTarget;
+use dawsu_editor_composer::SetHitnormal;
 use dawsu_foundation::{SampleIdentity, SongTime, digest::sha256_hex, safe_write};
 use dawsu_hitsounding::sound_sets::{SetSource, SoundSet, placement_hits, plan_snapshot, read_dawsuset};
 use dawsu_osu_format::list_folder;
@@ -204,6 +205,30 @@ fn write_snapshot(root: &Path, record: &mut RecordFile, entry: SnapshotEntry, fi
 }
 
 impl Application {
+    /// The one hitnormal on `moment`, as its bank, file extension and bytes, for D6b. None when the
+    /// moment is new or holds no hitnormal, or more than one (that moment saves as a mix anyway).
+    fn moment_hitnormal(&self, root: &Path, moment: Option<dawsu_hitsounding::MomentId>) -> Result<Option<(String, String, Vec<u8>)>, String> {
+        let Some(moment) = moment else { return Ok(None) };
+        let hits = self.document.as_ref().expect("open document").composer.hitsounds();
+        let normals: Vec<_> = hits.moment(moment).hits().filter(|lane| matches!(lane, SampleIdentity::Standard { sound: dawsu_foundation::Sound::Hit(dawsu_foundation::Hitsound::Normal), .. })).collect();
+        let [lane] = normals.as_slice() else { return Ok(None) };
+        let SampleIdentity::Standard { set, .. } = lane else { return Ok(None) };
+        let model = hits.lane(lane).ok_or("The moment's hitnormal has no lane.")?;
+        let defaults = &self.preferences.default_samples;
+        let defaults_list = list_folder(defaults).unwrap_or_default();
+        let path = super::sample_path(model, root, defaults, &defaults_list)?;
+        let extension = path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase)
+            .filter(|e| matches!(e.as_str(), "wav" | "ogg" | "mp3"))
+            .ok_or_else(|| format!("{} is not a .wav, .ogg or .mp3 file", path.display()))?;
+        let bytes = std::fs::read(&path).map_err(|e| format!("Reading {}: {e}", path.display()))?;
+        let bank = match set {
+            dawsu_foundation::SampleSet::Normal => "normal",
+            dawsu_foundation::SampleSet::Soft => "soft",
+            dawsu_foundation::SampleSet::Drum => "drum",
+        };
+        Ok(Some((bank.to_string(), extension, bytes)))
+    }
+
     /// Edit > Place sound set: copies the picked `.dawsuset` into the library, copies its samples
     /// into the mapset (or reuses an earlier snapshot of the same version), and places it at the
     /// snapped playhead as one undo step, linked to the set.
@@ -222,10 +247,20 @@ impl Application {
         let root = document.path.parent().ok_or("Missing mapset folder")?.to_path_buf();
         let mut record = RecordFile::open(&self.data_root, &root)?;
         let audio = audio_checksum(&set);
-        let previous = record.previous(&set, &audio);
+        let mut previous = record.previous(&set, &audio);
+        let at = self.position_ms();
+        let composer = &self.document.as_ref().expect("open document").composer;
+        let time = composer.snap(SongTime::from_ms(at)).ms();
+        // D6b: a set with only additions takes the moment's own hitnormal along to its index.
+        let set_has_hitnormal = set.members.iter().any(|m| m.slot.ends_with("-hitnormal"));
+        let own_hitnormal = if set_has_hitnormal {
+            None
+        } else {
+            self.moment_hitnormal(&root, composer.moment_at(time, 5.0))?
+        };
         // A name another program takes between planning and writing is planned again once.
         let mut attempt = 0;
-        let (snapshot, clips) = loop {
+        let (snapshot, clips, extra) = loop {
             attempt += 1;
             let files = list_folder(&root).map_err(|e| e.to_string())?;
             let (mut used, _) = layers::reservations(&root, &files)?;
@@ -238,29 +273,52 @@ impl Application {
             used.extend(record.indexes());
             let existing = |name: &str| safe_child(&root, name).ok().and_then(|p| std::fs::read(p).ok());
             let snapshot = plan_snapshot(&set, &files, &used, previous.as_ref(), &existing).map_err(|e| format!("{}: {e}", set.name))?;
-            if snapshot.files.is_empty() {
-                break (snapshot, Vec::new());
+            let mut writes = snapshot.files.clone();
+            let mut extra = None;
+            if let Some((bank, extension, bytes)) = &own_hitnormal {
+                let index = match dawsu_hitsounding::rules::read_sample_file_name(&snapshot.set.members[0].lane.name) {
+                    Some(SampleIdentity::Standard { index, .. }) => index.get(),
+                    _ => return Err("The set's files have no sample index.".into()),
+                };
+                let name = format!("{bank}-hitnormal{index}.{extension}");
+                match existing(&name) {
+                    // Reused by its checksum.
+                    Some(on_disk) if sha256_hex(&on_disk) == sha256_hex(bytes) => {}
+                    // A different file holds the name: never overwritten, the whole set is copied
+                    // again at a new index.
+                    Some(_) if snapshot.files.is_empty() && previous.is_some() => {
+                        previous = None;
+                        continue;
+                    }
+                    _ => writes.push((name.clone(), bytes.clone())),
+                }
+                extra = Some(name);
+            }
+            if writes.is_empty() {
+                break (snapshot, Vec::new(), extra);
             }
             let entry = SnapshotEntry {
                 set_id: set.id.clone(),
                 audio: audio.clone(),
-                files: snapshot.set.members.iter().map(|m| SnapshotFile { member_id: m.id.clone(), name: m.lane.name.clone(), sha256: sha256_hex(&m.audio) }).collect(),
+                files: snapshot.set.members.iter().map(|m| SnapshotFile { member_id: m.id.clone(), name: m.lane.name.clone(), sha256: sha256_hex(&m.audio) })
+                    .chain(extra.iter().map(|name| SnapshotFile { member_id: "moment-hitnormal".into(), name: name.clone(), sha256: sha256_hex(&own_hitnormal.as_ref().expect("an extra file has bytes").2) }))
+                    .collect(),
                 done: false,
             };
-            let clash = snapshot.files.iter().any(|(name, _)| root.join(name).exists());
+            let clash = writes.iter().any(|(name, _)| root.join(name).exists());
             if clash && attempt == 1 {
                 continue;
             }
-            match write_snapshot(&root, &mut record, entry, &snapshot.files) {
-                Ok(clips) => break (snapshot, clips),
-                Err(_) if attempt == 1 && snapshot.files.iter().any(|(name, _)| root.join(name).exists()) => continue,
+            match write_snapshot(&root, &mut record, entry, &writes) {
+                Ok(clips) => break (snapshot, clips, extra),
+                Err(_) if attempt == 1 && writes.iter().any(|(name, _)| root.join(name).exists()) => continue,
                 Err(error) => return Err(error),
             }
         };
         // Reused files may have no decoded audio yet.
+        let clips_written = clips.len();
         let mut additions = clips;
-        for m in &snapshot.set.members {
-            let name = &m.lane.name;
+        for name in snapshot.set.members.iter().map(|m| &m.lane.name).chain(extra.as_ref()) {
             if !additions.iter().any(|(n, _)| n == name) && !self.samples.contains_key(&SampleIdentity::File(name.clone())) {
                 let path = safe_child(&root, name)?;
                 additions.push((name.clone(), dawsu_audio::decode(&path).map_err(|e| format!("{name}: {e}"))?));
@@ -271,15 +329,19 @@ impl Application {
             let lane = crate::project::lane_identity(&key).ok_or_else(|| format!("{} is not a sample file name", m.lane.name))?;
             Ok((m.id.clone(), lane, volume))
         }).collect::<Result<Vec<_>, String>>()?;
-        let at = self.position_ms();
+        let hitnormal = match (&extra, set_has_hitnormal) {
+            (_, true) => SetHitnormal::ReplaceWithSet,
+            (Some(name), false) => SetHitnormal::Reindex(dawsu_hitsounding::rules::read_sample_file_name(name).ok_or("The copied hitnormal has no sample name.")?),
+            (None, false) => SetHitnormal::Keep,
+        };
         let composer = &mut self.document.as_mut().expect("open document").composer;
-        let time = composer.snap(SongTime::from_ms(at)).ms();
-        if composer.place_sound_set(time, &set.id, &set_digest, 100, &hits, 5.0).is_none() {
+        if composer.place_sound_set(time, &set.id, &set_digest, 100, &hits, hitnormal, 5.0).is_none() {
             self.status = format!("\"{}\" is already placed here.", set.name);
             return Ok(());
         }
         composer.audition_requests.extend(hits.iter().map(|(_, lane, _)| lane.clone()));
-        let copied = if snapshot.files.is_empty() { String::new() } else { format!(", {} files copied", snapshot.files.len()) };
+        let written = clips_written;
+        let copied = if written == 0 { String::new() } else { format!(", {written} files copied") };
         self.status = format!("Placed \"{}\"{copied}.", set.name);
         self.sync_audio();
         Ok(())
@@ -492,12 +554,16 @@ pub(crate) mod tests {
     }
 
     pub(crate) fn set_text(name: &str, frames: &[(&str, i16)]) -> String {
+        set_text_at(name, frames, 60)
+    }
+
+    pub(crate) fn set_text_at(name: &str, frames: &[(&str, i16)], volume: i32) -> String {
         let members = frames.iter().enumerate().map(|(i, (lane, frame))| SetMember {
             id: format!("aaaaaaaa-0000-4000-8000-{i:012}"),
             original_key: format!("BeatmapFile|{lane}"),
             lane: SetLane { source: SetSource::File, name: lane.to_string(), missing: false, kept: Kept::default() },
             slot: lane.trim_end_matches(".wav").to_string(),
-            volume: 60,
+            volume,
             audio: wav(*frame),
             kept: Kept::default(),
         }).collect();
@@ -570,11 +636,11 @@ pub(crate) mod tests {
         assert_eq!((p.moment.0, p.set_id.as_str()), (0, SET_ID), "on the circle at the playhead");
         assert_eq!(p.set_digest, sha256_hex(&std::fs::read(&f.set).unwrap()));
         assert!(p.applied.iter().all(|a| a.added && a.volume == 60));
-        assert_eq!(hits.moment(p.moment).hits().count(), 3, "the circle's own hitnormal stays beside the set's two sounds");
+        assert_eq!(hits.moment(p.moment).hits().map(crate::lane_name).collect::<Vec<_>>(), ["drum-hitnormal2", "drum-hitclap2"], "the set's hitnormal replaces the circle's (D6)");
         assert!(app.is_dirty());
         // Playback plays both copied sounds.
         let sounds = app.scheduled_sounds(app.document().unwrap());
-        assert_eq!(sounds.iter().filter(|s| s.at_ms == 1000.0).count(), 3);
+        assert_eq!(sounds.iter().filter(|s| s.at_ms == 1000.0).count(), 2);
         // Undo leaves the copied files (D5); placing again reuses them.
         app.command("undo");
         assert!(app.document().unwrap().composer.hitsounds().placements().is_empty());
@@ -744,8 +810,8 @@ pub(crate) mod tests {
         assert!(links(&reopened).is_empty());
         assert!(reopened.warnings.iter().any(|w| w.contains("sound set links were not restored")), "{:?}", reopened.warnings);
         let hits = reopened.document().unwrap().composer.hitsounds();
-        // Two hitnormals saved as one rendered mix; without its gain recovery the mix is what reopens.
-        assert_eq!(hits.moment(dawsu_hitsounding::MomentId(0)).hits().count(), 1, "the written hits stay");
+        // The set's hitnormal replaced the circle's (D6), so the set saved natively.
+        assert_eq!(hits.moment(dawsu_hitsounding::MomentId(0)).hits().map(crate::lane_name).collect::<Vec<_>>(), ["drum-hitnormal2", "drum-hitclap2"], "the written hits stay");
         assert!(!reopened.project.as_ref().unwrap().settings.sound_sets.as_ref().unwrap().is_empty(), "the record is kept");
     }
 
@@ -846,5 +912,77 @@ pub(crate) mod tests {
         let reopened = reopen(&f);
         assert_eq!(links(&reopened), [(0, SET_ID.to_string())]);
         assert!(reopened.warnings.is_empty(), "{:?}", reopened.warnings);
+    }
+
+    // ------------------------------------------------------------ D6b: additions only
+
+    /// A soft map with a soft hitnormal file in the mapset, circles at 1000 and 1500, and a set
+    /// holding only a drum clap at the map's volume.
+    fn additions_fixture(name: &str) -> Fixture {
+        let scratch = Scratch::new(name);
+        let mapset = scratch.path("mapset");
+        std::fs::create_dir(&mapset).unwrap();
+        let map = mapset.join("a.osu");
+        std::fs::write(&map, b"osu file format v14\n[General]\nMode:0\n[TimingPoints]\n0,500,4,2,1,70,1,0\n[HitObjects]\n256,192,1000,1,0,0:0:0:0:\n256,192,1500,1,0,0:0:0:0:\n").unwrap();
+        std::fs::write(mapset.join("soft-hitnormal.wav"), wav(500)).unwrap();
+        let set = scratch.path("Clap.dawsuset");
+        std::fs::write(&set, set_text_at("Clap", &[("drum-hitclap.wav", 4000)], 70)).unwrap();
+        Fixture { scratch, map, set }
+    }
+
+    #[test]
+    fn d6b_an_additions_only_set_copies_the_moments_hitnormal_to_its_index_and_saves_natively() {
+        for hs in [false, true] {
+            let f = additions_fixture(if hs { "d6b-hs" } else { "d6b" });
+            let mut app = app(&f);
+            let map = open(&mut app, &f.map);
+            app.set_hs_mode(hs);
+            app.seek(1000.0);
+            app.place_sound_set_file(&map, &f.set).unwrap();
+            assert_eq!(mapset_files(&f), ["a.osu", "drum-hitclap2.wav", "soft-hitnormal.wav", "soft-hitnormal2.wav"]);
+            assert_eq!(std::fs::read(f.map.with_file_name("soft-hitnormal2.wav")).unwrap(), wav(500), "the moment's own hitnormal sound");
+            let hits = app.document().unwrap().composer.hitsounds();
+            let moment = hits.moment(dawsu_hitsounding::MomentId(0));
+            assert_eq!(moment.hits().map(crate::lane_name).collect::<Vec<_>>(), ["soft-hitnormal2", "drum-hitclap2"]);
+            assert_eq!(moment.hit_volume(&dawsu_hitsounding::rules::read_sample_file_name("soft-hitnormal2.wav").unwrap()), 70);
+            app.command("undo");
+            assert!(app.document().unwrap().composer.hitsounds().moment(dawsu_hitsounding::MomentId(0)).hits().map(crate::lane_name).eq(["soft-hitnormal"]), "one undo step");
+            app.command("redo");
+            save(&mut app, &f);
+            assert_eq!(mapset_files(&f), ["a.osu", "drum-hitclap2.wav", "soft-hitnormal.wav", "soft-hitnormal2.wav"], "hs {hs}: no rendered mix");
+            let written = crate::Document::read(&f.map).unwrap();
+            let decoded = written.composer.hitsounds().moment(dawsu_hitsounding::MomentId(0));
+            assert_eq!(decoded.hits().map(crate::lane_name).collect::<Vec<_>>(), ["soft-hitnormal2", "drum-hitclap2"], "hs {hs}: plain osu! hitsounds");
+            assert_eq!(links(&reopen(&f)), [(0, SET_ID.to_string())]);
+        }
+    }
+
+    #[test]
+    fn d6b_the_copied_hitnormal_is_reused_by_its_checksum() {
+        let f = additions_fixture("d6b-reuse");
+        let mut app = app(&f);
+        let map = open(&mut app, &f.map);
+        app.seek(1000.0);
+        app.place_sound_set_file(&map, &f.set).unwrap();
+        app.seek(1500.0);
+        app.place_sound_set_file(&map, &f.set).unwrap();
+        assert_eq!(mapset_files(&f), ["a.osu", "drum-hitclap2.wav", "soft-hitnormal.wav", "soft-hitnormal2.wav"], "no new file");
+        assert!(app.document().unwrap().composer.hitsounds().moment(dawsu_hitsounding::MomentId(1)).hits().map(crate::lane_name).eq(["soft-hitnormal2", "drum-hitclap2"]));
+        // A changed copy is never overwritten: the whole set goes to a new index.
+        std::fs::write(f.map.with_file_name("soft-hitnormal2.wav"), wav(1)).unwrap();
+        app.command("undo");
+        app.place_sound_set_file(&map, &f.set).unwrap();
+        assert_eq!(std::fs::read(f.map.with_file_name("soft-hitnormal2.wav")).unwrap(), wav(1));
+        assert_eq!(mapset_files(&f), ["a.osu", "drum-hitclap2.wav", "drum-hitclap3.wav", "soft-hitnormal.wav", "soft-hitnormal2.wav", "soft-hitnormal3.wav"]);
+    }
+
+    #[test]
+    fn d6b_a_moment_with_no_hitnormal_copies_nothing_extra() {
+        let f = additions_fixture("d6b-none");
+        let mut app = app(&f);
+        let map = open(&mut app, &f.map);
+        app.seek(2000.0);
+        app.place_sound_set_file(&map, &f.set).unwrap();
+        assert_eq!(mapset_files(&f), ["a.osu", "drum-hitclap2.wav", "soft-hitnormal.wav"]);
     }
 }

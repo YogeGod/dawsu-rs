@@ -1,6 +1,6 @@
 //! Placing and unlinking a sound set: each is one undo step, and the link lives in the document.
 
-use dawsu_editor_composer::Composer;
+use dawsu_editor_composer::{Composer, SetHitnormal};
 use dawsu_foundation::SampleIdentity;
 use dawsu_hitsounding::rules::read_sample_file_name;
 use dawsu_hitsounding::{Decompiled, decompile};
@@ -20,7 +20,7 @@ fn set_hits() -> Vec<(String, SampleIdentity, i32)> {
 #[test]
 fn placing_a_set_at_a_time_without_an_object_adds_a_moment_and_is_one_undo_step() {
     let mut c = composer();
-    let id = c.place_sound_set(1250.0, "set", "d1", 100, &set_hits(), 5.0).expect("placed");
+    let id = c.place_sound_set(1250.0, "set", "d1", 100, &set_hits(), SetHitnormal::Keep, 5.0).expect("placed");
     let h = c.hitsounds();
     let moment = h.placements()[0].moment;
     assert_eq!((h.placements()[0].id, h.moment(moment).time().ms()), (id, 1250.0));
@@ -42,9 +42,45 @@ fn placing_a_set_at_a_time_without_an_object_adds_a_moment_and_is_one_undo_step(
 #[test]
 fn placing_on_an_object_snaps_to_it_and_a_second_placement_of_the_set_there_changes_nothing() {
     let mut c = composer();
-    c.place_sound_set(1002.0, "set", "d1", 100, &set_hits(), 5.0).unwrap();
+    c.place_sound_set(1002.0, "set", "d1", 100, &set_hits(), SetHitnormal::Keep, 5.0).unwrap();
     assert_eq!(c.hitsounds().placements()[0].moment.0, 0, "on the circle");
     let version = c.history.version();
-    assert!(c.place_sound_set(1000.0, "set", "d1", 100, &set_hits(), 5.0).is_none());
+    assert!(c.place_sound_set(1000.0, "set", "d1", 100, &set_hits(), SetHitnormal::Keep, 5.0).is_none());
     assert_eq!(c.history.version(), version, "no undo step");
+}
+
+fn hitnormals(c: &Composer, moment: usize) -> Vec<(String, i32)> {
+    let m = &c.hitsounds().moments()[moment];
+    m.hits().filter(|l| matches!(l, SampleIdentity::Standard { sound: dawsu_foundation::Sound::Hit(dawsu_foundation::Hitsound::Normal), .. }))
+        .map(|l| (format!("{l:?}"), m.hit_volume(l))).collect()
+}
+
+#[test]
+fn d6_a_set_with_a_hitnormal_replaces_the_moments_hitnormal_in_the_same_undo_step() {
+    let mut c = composer();
+    let before = hitnormals(&c, 0);
+    assert_eq!(before.len(), 1, "the circle's own hitnormal");
+    assert_eq!(c.moment_at(1001.0, 5.0).map(|m| m.0), Some(0));
+    c.place_sound_set(1000.0, "set", "d1", 100, &set_hits(), SetHitnormal::ReplaceWithSet, 5.0).unwrap();
+    let after = hitnormals(&c, 0);
+    assert_eq!(after.len(), 1, "only the set's hitnormal: {after:?}");
+    assert!(after[0].0.contains("Drum"));
+    c.undo();
+    assert_eq!(hitnormals(&c, 0), before);
+    assert!(c.hitsounds().placements().is_empty());
+}
+
+#[test]
+fn d6b_an_additions_only_set_moves_the_moments_hitnormal_to_the_sets_index_at_its_volume() {
+    let mut c = composer();
+    let volume = hitnormals(&c, 0)[0].1;
+    let clap = vec![("m0".to_string(), read_sample_file_name("drum-hitclap2.wav").unwrap(), 60)];
+    let moved = read_sample_file_name("normal-hitnormal2.wav").unwrap();
+    c.place_sound_set(1000.0, "set", "d1", 100, &clap, SetHitnormal::Reindex(moved.clone()), 5.0).unwrap();
+    let m = &c.hitsounds().moments()[0];
+    assert_eq!(hitnormals(&c, 0).len(), 1);
+    assert_eq!(m.hit_volume(&moved), volume);
+    assert!(c.lanes.contains(&moved));
+    c.undo();
+    assert!(!c.hitsounds().moments()[0].has_hit(&moved), "one undo step");
 }

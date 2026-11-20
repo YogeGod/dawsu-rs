@@ -10,6 +10,7 @@ use std::{collections::BTreeSet, convert::Infallible};
 mod lane_edit;
 mod sound_sets;
 mod workflows;
+pub use sound_sets::SetHitnormal;
 pub use workflows::{RangeOperation, VolumeScope};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
