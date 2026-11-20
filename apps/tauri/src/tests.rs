@@ -1990,13 +1990,15 @@ fn home_save_with_left_out_moments_goes_home_after_the_summarys_save() {
 
 #[test]
 fn only_closing_the_main_window_closes_the_editor() {
-    use super::{CloseDecision, Editor, Request, close_requested};
+    use super::{CloseDecision, Editor, Request, close_requested, closed_with_main};
     let (send, receive) = std::sync::mpsc::channel();
     let editor = Editor(send);
-    for label in ["export", "drum"] {
-        assert_eq!(close_requested(label, &editor), CloseDecision::Allow);
-    }
+    assert_eq!(close_requested("drum", &editor), CloseDecision::Allow);
     assert!(receive.try_recv().is_err(), "another window sent a request to the editor");
+    assert_eq!(close_requested("export", &editor), CloseDecision::Allow);
+    assert!(matches!(receive.try_recv(), Ok(Request::ExportClose)), "closing Export cancels its preview");
+    assert!(receive.try_recv().is_err());
+    assert_eq!(closed_with_main(["main", "export", "drum"]), ["export", "drum"]);
 
     let refusal = "Save or discard the current difficulty before quitting.";
     let responder = std::thread::spawn(move || {

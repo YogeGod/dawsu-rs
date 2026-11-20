@@ -1261,6 +1261,8 @@ enum Request {
     ExportView(mpsc::Sender<Result<Value, String>>),
     ExportPreview(ExportOptions, mpsc::Sender<Result<u64, String>>),
     ExportRun(u64, mpsc::Sender<Result<(), String>>),
+    /// The Export window closed: its preview stops and is forgotten. Needs no answer.
+    ExportClose,
 }
 struct Editor(mpsc::Sender<Request>);
 
@@ -1310,9 +1312,7 @@ fn export_snapshot(app: &Application) -> Value {
             "laneColours": d.lane_layout().map(|layout| json!(layout.lane_colours)).unwrap_or_else(|| json!({})),
         })
     });
-    let targets = document.map_or_else(Vec::new, |d| {
-        d.difficulties.iter().filter(|path| **path != d.path).collect::<Vec<_>>()
-    });
+    let targets = app.export_targets();
     json!({
         "source": source,
         "targets": targets,
@@ -1579,6 +1579,11 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                 Ok(request @ (Request::ExportView(_) | Request::ExportPreview(..) | Request::ExportRun(..))) => {
                     answer_export(&mut app, &mut fault, request);
                 }
+                Ok(Request::ExportClose) => {
+                    if fault.is_none() {
+                        let _ = guard(&mut app, &mut fault, Application::cancel_export_preview);
+                    }
+                }
                 Err(mpsc::RecvTimeoutError::Timeout) => {
                     if fault.is_none() {
                         let _ = guard(&mut app, &mut fault, |app| {
@@ -1844,9 +1849,13 @@ fn open_editor_folder(folder: folders::Folder, state: State<'_, Editor>) -> Resu
 #[tauri::command]
 fn close_editor(
     app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
     state: State<'_, Editor>,
     discard: bool,
 ) -> Result<(), String> {
+    if window.label() != "main" {
+        return Err("Only the editor window can quit dawsu!.".into());
+    }
     ask(&state, |tx| Request::Close(discard, tx))??;
     app.exit(0);
     Ok(())
@@ -1863,7 +1872,16 @@ enum CloseDecision {
     Keep(String),
 }
 
+/// The windows that close with main.
+fn closed_with_main<'a>(labels: impl IntoIterator<Item = &'a str>) -> Vec<&'a str> {
+    labels.into_iter().filter(|label| *label != "main").collect()
+}
+
 fn close_requested(label: &str, editor: &Editor) -> CloseDecision {
+    if label == "export" {
+        // Closing Export never waits on the editor.
+        let _ = editor.0.send(Request::ExportClose);
+    }
     if label != "main" {
         return CloseDecision::Allow;
     }
@@ -1882,10 +1900,9 @@ fn main() {
                 match close_requested(window.label(), &window.state::<Editor>()) {
                     CloseDecision::Allow => {}
                     CloseDecision::CloseAll => {
-                        for (label, other) in window.app_handle().webview_windows() {
-                            if label != "main" {
-                                let _ = other.destroy();
-                            }
+                        let others = window.app_handle().webview_windows();
+                        for label in closed_with_main(others.keys().map(String::as_str)) {
+                            let _ = others[label].destroy();
                         }
                     }
                     CloseDecision::Keep(error) => {
