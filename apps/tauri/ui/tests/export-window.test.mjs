@@ -96,7 +96,7 @@ test("the base difficulty counts as one more difficulty and can be exported alon
 test("the base row says whether it writes a new difficulty or replaces the earlier one", () => {
   const path = "C:\Songs\set\Artist - Song (Mapper) [Hitsounds].osu";
   assert.equal(baseStatus({ base: { path, replaces: false } }), "New difficulty");
-  assert.equal(baseStatus({ base: { path, replaces: true } }), "Replaces the earlier one, backed up first");
+  assert.equal(baseStatus({ base: { path, replaces: true } }), "Replaces earlier, backed up");
   assert.equal(baseStatus({ base: null }), null);
   assert.equal(baseStatus(null), null);
 });
@@ -233,6 +233,9 @@ test("the status line puts a lost editor first and offers Preview again where th
   assert.deepEqual(statusLine({ ...quiet, writeError: "Hard.osu changed since this review. Nothing was written." }),
     { tone: "error", text: "Hard.osu changed since this review. Nothing was written.", again: false });
   assert.deepEqual(statusLine({ ...quiet, stale: true }), { tone: "stale", text: "Map changed since preview", again: true });
+  const settings = { ...view, preview: { stale: true, staleReason: "mergeSettings" } };
+  assert.deepEqual(statusLine({ ...quiet, view: settings, stale: true }),
+    { tone: "stale", text: "Merge settings changed since preview", again: true });
   assert.deepEqual(statusLine({ ...quiet, running: true }), { tone: "busy", text: "Writing…", again: false });
   assert.deepEqual(statusLine({ ...quiet, view: { ...view, previewing: true, progress: { done: 1, total: 3 } } }),
     { tone: "busy", text: "Previewing 1/3", again: false });

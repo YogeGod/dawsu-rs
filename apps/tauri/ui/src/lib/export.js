@@ -119,7 +119,7 @@ export function targetCounts(preview, path) {
 export function baseStatus(preview) {
   const base = preview?.base;
   if (!base) return null;
-  return base.replaces ? "Replaces the earlier one, backed up first" : "New difficulty";
+  return base.replaces ? "Replaces earlier, backed up" : "New difficulty";
 }
 
 // Poll faster while something is running, so progress and the result show without delay.
@@ -177,7 +177,10 @@ export function statusLine({ view, pollError, actionError, writeError, stale, ru
   if (actionError) return { tone: "error", text: actionError, again: actionError.endsWith("Preview again.") };
   if (writeError) return { tone: "error", text: writeError, again: false };
   if (view?.error) return { tone: "error", text: view.error, again: true };
-  if (stale) return { tone: "stale", text: "Map changed since preview", again: true };
+  if (stale) {
+    const text = view?.preview?.staleReason === "mergeSettings" ? "Merge settings changed since preview" : "Map changed since preview";
+    return { tone: "stale", text, again: true };
+  }
   if (running || view?.writing) return { tone: "busy", text: "Writing…", again: false };
   if (view?.previewing) {
     const progress = view.progress ? ` ${view.progress.done}/${view.progress.total}` : "";

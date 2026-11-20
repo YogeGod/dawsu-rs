@@ -1493,6 +1493,10 @@ fn export_snapshot(app: &Application, cache: &mut ExportCache) -> Value {
             "id": preview.id,
             "origin": "export",
             "stale": status.stale,
+            "staleReason": status.stale_reason.map(|reason| match reason {
+                dawsu_application::Stale::Map => "map",
+                dawsu_application::Stale::MergeSettings => "mergeSettings",
+            }),
             "source": preview.plan.source,
             "version": preview.plan.version,
             "label": preview.plan.label,

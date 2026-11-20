@@ -484,8 +484,13 @@ pub(super) fn export_report(
     if !options.base {
         return copy_report(source, defaults, &options.targets, &options.copy, cancel, diagnostics, progress);
     }
+    let mut generate_total = 0;
     let mut base = generate_report(
-        source, defaults, settings, projects, options.slider_audio, cancel, diagnostics, progress,
+        source, defaults, settings, projects, options.slider_audio, cancel, diagnostics,
+        &mut |done, total| {
+            generate_total = total;
+            progress(done, total);
+        },
     )?;
     if options.targets.is_empty() {
         return Ok(base);
@@ -499,7 +504,7 @@ pub(super) fn export_report(
     }
     let mut plan = copy_after(
         source, defaults, &options.targets, &options.copy, std::mem::take(&mut base.mixes),
-        cancel, diagnostics, progress,
+        cancel, diagnostics, &mut |done, total| progress(generate_total + done, generate_total + total),
     )?;
     let mut files = base.files;
     files.append(&mut plan.files);
