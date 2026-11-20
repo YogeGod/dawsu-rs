@@ -92,6 +92,8 @@ pub struct Document {
     pending: pending::Pending,
     /// Sound set snapshots kept as pending files, recorded once a Save writes their files.
     pending_sets: Vec<sound_sets::SnapshotEntry>,
+    /// This session's hold on the mapset, so others know its pending names are in use.
+    presence: Option<pending::Presence>,
 }
 impl Document {
     pub fn read(path: &Path) -> Result<Self, String> {
@@ -182,6 +184,7 @@ impl Document {
             export_choices: None,
             pending: pending::Pending::default(),
             pending_sets: Vec::new(),
+            presence: None,
         })
     }
     pub fn lane_layout(&self) -> Option<&LaneLayout> {
@@ -239,6 +242,8 @@ pub struct SaveReport {
     unfinished_record: String,
     /// The pending files this Save wrote into the mapset.
     published_pending: Vec<String>,
+    /// The pending files the project keeps because the drawn hits play them.
+    pending_kept: Vec<String>,
 }
 pub fn save_document(document: &Document, backups: PathBuf) -> Result<SaveReport, String> {
     prepare_save(
@@ -602,10 +607,21 @@ impl PreparedSave {
         // to wait for, so the left-out record is written as current straight away.
         let promote_unwritten = self.unwritten.is_some() && self.map_changed;
         let promote_links = self.sound_sets.is_some() && self.map_changed;
-        let staged = needs_recovery_write || self.unwritten.is_some() || self.sound_sets.is_some();
+        // The pending files this Save leaves out are listed before the `.osu` is written, so a
+        // crash in between can't lose them. The list after the write is exact again.
+        let list_pending = !self.pending_kept.is_empty() && project.is_some();
+        let staged = needs_recovery_write || self.unwritten.is_some() || self.sound_sets.is_some() || list_pending;
         if staged {
             let project = project.as_mut().expect("a project record needs a project");
             let mut settings = project.settings.clone();
+            if list_pending {
+                let listed = settings.pending_samples.get_or_insert_with(Vec::new);
+                for file in &self.pending_kept {
+                    if !listed.contains(file) {
+                        listed.push(file.clone());
+                    }
+                }
+            }
             if let Some(revision) = self.recovery_revision {
                 settings.gain_recovery.get_or_insert_with(Default::default).stage(&self.expected, revision);
             }
@@ -673,6 +689,7 @@ impl PreparedSave {
                     gain_recovery_warning,
                     unfinished_record,
                     published_pending,
+                    pending_kept: self.pending_kept.iter().map(|file| file.name.clone()).collect(),
                 })
             }
             Ok(SaveOutcome::ChangedOnDisk) => Err(publication.failed(DIFFICULTY_CHANGED.into())),
@@ -1202,6 +1219,22 @@ impl Application {
         self.document_generation
     }
 
+    /// Closes the difficulty: its pending files no record still lists are forgotten and their
+    /// names released, so the numbers free up. Call after `save_session`.
+    pub fn close_document(&mut self) {
+        self.forget_unneeded_pending();
+        self.document = None;
+        self.checkpoint = None;
+    }
+
+    fn forget_unneeded_pending(&mut self) {
+        let project_root = self.project_root.clone();
+        let Some(document) = self.document.as_mut() else { return };
+        let Some(mapset) = document.path.parent().map(Path::to_path_buf) else { return };
+        let keep = recorded_pending(project_root.as_deref(), &self.data_root, &mapset);
+        document.pending.forget_all_but(&keep);
+    }
+
     pub fn save_session(&mut self) -> Result<(), String> {
         self.write_session(None, None, None)
     }
@@ -1485,6 +1518,8 @@ impl Application {
                         return;
                     }
                     let path = loaded.document.path.clone();
+                    // The outgoing difficulty closes here.
+                    self.forget_unneeded_pending();
                     let mut checkpoint = recovery::Checkpoint::new(&loaded.document);
                     let restored_id = loaded.recovery.map(|copy| copy.resume(&mut checkpoint));
                     self.document = Some(loaded.document);
@@ -1616,7 +1651,7 @@ impl Application {
                     }
                     Ok((count, tracking_warning, published)) => {
                         self.export.take_write(&Ok(count));
-                        self.pending_published(&published);
+                        self.pending_published(&published, &[]);
                         self.status = format!("Wrote {count} reviewed files with backups");
                         if let Some(warning) = tracking_warning {
                             self.warnings.push(warning);
@@ -1660,7 +1695,7 @@ impl Application {
                             let compiled = report.written;
                             let drawn = report.drawn;
                             if self.document.as_ref().is_some_and(|d| d.path == path) {
-                                self.pending_published(&report.published_pending);
+                                self.pending_published(&report.published_pending, &report.pending_kept);
                             }
                             if let Some(d) = self.document.as_mut().filter(|d| d.path == path) {
                                 d.file = report.file;
@@ -2593,8 +2628,8 @@ impl Application {
     }
 
     /// After a write kept its files: the pending files it wrote are mapset files now, and the
-    /// snapshot record lists the sound set files among them.
-    fn pending_published(&mut self, names: &[String]) {
+    /// snapshot record lists the sound set files among them and among those the project keeps.
+    fn pending_published(&mut self, names: &[String], kept: &[String]) {
         let Some(d) = self.document.as_mut() else { return };
         for name in names {
             d.pending.release(name);
@@ -2602,7 +2637,8 @@ impl Application {
         d.files.extend(names.iter().cloned());
         d.files.sort();
         d.files.dedup();
-        if let Err(error) = self.record_written_sets(names) {
+        if let Err(error) = self.record_written_sets(&[names, kept].concat()) {
+
             self.error = Some(format!("The files were written. The sound set record could not be updated: {error}"));
         }
     }
@@ -2777,7 +2813,14 @@ fn load(
     recovery: Option<recovery::RecoveryCopy>,
 ) -> Result<Loaded, String> {
     let mut document = Document::read_matching(path, recovery.as_ref())?;
-    document.pending = pending::Pending::for_mapset(data_root, document.path.parent().ok_or("Missing mapset folder")?);
+    let mapset = document.path.parent().ok_or("Missing mapset folder")?.to_path_buf();
+    document.pending = pending::Pending::for_mapset(data_root, &mapset);
+    document.presence = pending::Presence::enter(data_root, &mapset).ok();
+    // With no other session on the mapset, claims no record keeps were left by a session that
+    // closed without Save or crashed: their numbers are free again.
+    if document.presence.as_ref().is_some_and(|presence| !presence.others_live()) {
+        document.pending.release_stale(&recorded_pending(project_root, data_root, &mapset));
+    }
     let mut warnings = Vec::new();
     // A recovery copy's pending files come back first, so every hit it restores finds its sound.
     if let Some(copy) = &recovery {
@@ -2959,6 +3002,30 @@ fn load(
         warnings,
         recovery,
     })
+}
+
+/// The pending files a record still lists for this mapset: the project of any of its
+/// difficulties, or a recovery copy not yet restored. Lowercased names.
+fn recorded_pending(project_root: Option<&Path>, data_root: &Path, mapset: &Path) -> BTreeSet<String> {
+    let mut names = BTreeSet::new();
+    let entries = std::fs::read_dir(mapset).map(|entries| entries.filter_map(Result::ok).map(|e| e.path()).collect::<Vec<_>>()).unwrap_or_default();
+    if let Some(root) = project_root {
+        for map in entries.iter().filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("osu"))) {
+            if let Ok(project) = project::Project::load(root, None, map) {
+                names.extend(project.settings.pending_samples.iter().flatten().map(|file| file.name.to_ascii_lowercase()));
+            }
+        }
+    }
+    if let Ok(copies) = std::fs::read_dir(data_root.join("recovery")) {
+        for copy in copies.filter_map(Result::ok).filter(|e| e.path().is_file()) {
+            if let Ok(copy) = recovery::read_copy(&copy.path())
+                && copy.source().parent() == Some(mapset)
+            {
+                names.extend(copy.pending().iter().map(|file| file.name.to_ascii_lowercase()));
+            }
+        }
+    }
+    names
 }
 
 /// Takes back listed pending files whose kept copies still match; names each one that can't be.
@@ -4906,6 +4973,79 @@ Title:");
         let error = app.error.clone().expect("Save refuses");
         assert!(error.contains("normal-hitnormal2"), "{error}");
         assert_eq!((mapset(&folder), std::fs::read(&map).unwrap()), before);
+    }
+
+    fn claims(app: &Application, folder: &Path) -> Vec<String> {
+        let dir = app.data_root.join("pending-names").join(pending::mapset_key(&folder.canonicalize().unwrap()));
+        let mut names: Vec<String> = std::fs::read_dir(dir).map(|entries| entries.flatten()
+            .filter(|entry| entry.path().is_file())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned()).collect()).unwrap_or_default();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn closing_forgets_the_pending_files_nothing_needs_and_frees_their_numbers() {
+        let scratch = Scratch::new("pending-close");
+        let (mut app, map, folder) = two_layers(&scratch, true);
+        // Layer 2 plays a loose hit the project keeps; layer 3 is never used.
+        app.document.as_mut().unwrap().composer.add(5000.0, hitnormal(2), 100, 0.0);
+        save_through_summary(&mut app, scratch.path("backups"));
+        assert_eq!(claims(&app, &folder), ["normal-hitnormal2.wav", "normal-hitnormal3.wav"]);
+        app.close_document();
+        assert_eq!(claims(&app, &folder), ["normal-hitnormal2.wav"]);
+        // Reopening keeps layer 2 and gives the next new layer the freed number 3.
+        let mut reopened = reopen(&app, &map);
+        reopened.preferences.default_samples = app.preferences.default_samples.clone();
+        reopened.active_lane = reopened.document().unwrap().composer.lanes.iter().position(|lane| lane == &hitnormal(0)).unwrap();
+        reopened.command("addNumberedLayer");
+        assert!(reopened.error.is_none(), "{:?}", reopened.error);
+        assert!(reopened.document().unwrap().pending.get("normal-hitnormal3.wav").is_some());
+    }
+
+    #[test]
+    fn opening_releases_claims_a_closed_or_crashed_session_left_behind() {
+        let scratch = Scratch::new("pending-stale-claims");
+        let (app, map, folder) = two_layers(&scratch, true);
+        let claimed = claims(&app, &folder);
+        assert_eq!(claimed.len(), 2);
+        // The session ends without a close (a crash): its claims stay until the next open.
+        let data_root = app.data_root.clone();
+        let project_root = app.project_root.clone();
+        drop(app);
+        let mut other = Application::create(Preferences::default(), false, None, None, false, data_root.clone());
+        other.project_root = project_root.clone();
+        let live = pending::Presence::enter(&data_root, &folder.canonicalize().unwrap()).unwrap();
+        open(&mut other, map.clone());
+        assert_eq!(claims(&other, &folder), claimed, "another live session may still use them");
+        drop(live);
+        other.close_document();
+        let mut next = Application::create(Preferences::default(), false, None, None, false, data_root);
+        next.project_root = project_root;
+        open(&mut next, map);
+        assert!(claims(&next, &folder).is_empty(), "{:?}", claims(&next, &folder));
+    }
+
+    #[test]
+    fn the_project_lists_kept_pending_files_before_the_osu_is_written() {
+        let scratch = Scratch::new("pending-staged-record");
+        let (mut app, _, _) = two_layers(&scratch, true);
+        use_layer_2(&mut app);
+        app.document.as_mut().unwrap().composer.add(5000.0, hitnormal(3), 100, 0.0);
+        app.save_session().unwrap();
+        let document = app.document().unwrap();
+        let mut project = app.project.clone().unwrap();
+        let plan = prepare_save(
+            document.compile_base.clone(), document.composer.hitsounds(), &document.written, document.file.original_bytes().to_vec(),
+            &document.path, scratch.path("backups"), false, &BTreeSet::new(), Path::new(""), &document.pending, Some(&project), false,
+            &|| false, &mut Vec::new(), &mut |_, _| {},
+        ).unwrap();
+        // The `.osu` write fails, as a crash right after the project write would leave it.
+        std::fs::write(scratch.path("backups"), b"not a folder").unwrap();
+        assert!(plan.apply(Some(&mut project), &|| false).is_err());
+        let stored = project::Project::load(app.project_root.as_ref().unwrap(), None, &document.path).unwrap().settings;
+        let kept = stored.pending_samples.expect("listed before the .osu write");
+        assert!(kept.iter().any(|file| file.name == "normal-hitnormal3.wav"));
     }
 
     #[test]

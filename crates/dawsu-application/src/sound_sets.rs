@@ -2533,6 +2533,26 @@ Mode:0
     }
 
     #[test]
+    fn a_set_saved_only_as_mix_sources_is_reused_after_reopen() {
+        let f = fixture("links-mixed-reuse");
+        std::fs::write(&f.set, set_with_volumes("Kick and clap", &[("drum-hitnormal.wav", 8000, 60), ("drum-hitclap.wav", 4000, 30)])).unwrap();
+        let mut app = app(&f);
+        let map = open(&mut app, &f.map);
+        app.seek(1000.0);
+        app.place_sound_set_file(&map, &f.set).unwrap();
+        save(&mut app, &f);
+        assert_eq!(mapset_files(&f), ["a.osu", "drum-hitclap3.wav", "drum-hitnormal3.wav"]);
+        let mut reopened = reopen(&f);
+        settle(&mut reopened);
+        let id = reopened.document().unwrap().composer.hitsounds().placements()[0].id;
+        reopened.set_sound_set_placement_gain(id, 50).unwrap();
+        assert!(reopened.error.is_none(), "{:?}", reopened.error);
+        let names: Vec<_> = sounds_at(&reopened, 0).into_iter().map(|(name, _)| name).collect();
+        assert_eq!(names, ["drum-hitnormal2", "drum-hitclap2"], "the kept copies are reused, not copied again");
+        assert_eq!(reopened.document().unwrap().pending.files().count(), 2);
+    }
+
+    #[test]
     fn a_set_written_natively_saves_no_gain_recovery() {
         let f = fixture("links-native-no-recovery");
         // At the map's own volume, so no hit has a volume of its own either.

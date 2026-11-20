@@ -257,3 +257,77 @@ pub(crate) fn needed(hits: &Hitsounds, pending: &Pending, written: &[String]) ->
     }
     needed.into_values().collect()
 }
+
+impl Pending {
+    /// Releases the claims for this mapset that no record keeps (`keep`, lowercased names) and
+    /// this document does not hold: those a closed or crashed session left behind.
+    pub(crate) fn release_stale(&self, keep: &BTreeSet<String>) {
+        let Some(store) = &self.store else { return };
+        let Ok(entries) = std::fs::read_dir(&store.claims) else { return };
+        for entry in entries.filter_map(Result::ok) {
+            let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
+            if !keep.contains(&name) && !self.files.contains_key(&name) && entry.path().is_file() {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
+
+    /// Forgets every pending file `keep` (lowercased names) does not list, releasing its claim.
+    pub(crate) fn forget_all_but(&mut self, keep: &BTreeSet<String>) {
+        let names: Vec<String> = self.files.keys().filter(|name| !keep.contains(*name)).cloned().collect();
+        for name in names {
+            self.release(&name);
+        }
+    }
+}
+
+/// An open session on a mapset, held as a locked file under `data_root/sessions/<mapset key>/`.
+/// The lock goes when the session ends, a crash included.
+#[derive(Debug)]
+pub(crate) struct Presence {
+    file: Option<std::fs::File>,
+    path: PathBuf,
+}
+
+static NEXT_PRESENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+impl Presence {
+    pub(crate) fn enter(data_root: &Path, mapset: &Path) -> Result<Self, String> {
+        let folder = data_root.join("sessions").join(mapset_key(mapset));
+        std::fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
+        let n = NEXT_PRESENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let path = folder.join(format!("{}-{n}.lock", std::process::id()));
+        let file = std::fs::File::create(&path).map_err(|e| e.to_string())?;
+        file.try_lock().map_err(|e| e.to_string())?;
+        Ok(Self { file: Some(file), path })
+    }
+
+    /// Whether another session holds this mapset. Lock files of ended sessions are removed.
+    pub(crate) fn others_live(&self) -> bool {
+        let Some(folder) = self.path.parent() else { return false };
+        let Ok(entries) = std::fs::read_dir(folder) else { return false };
+        let mut live = false;
+        for entry in entries.filter_map(Result::ok) {
+            let path = entry.path();
+            if path == self.path {
+                continue;
+            }
+            let Ok(file) = std::fs::OpenOptions::new().read(true).write(true).open(&path) else { continue };
+            match file.try_lock() {
+                Ok(()) => {
+                    drop(file);
+                    let _ = std::fs::remove_file(&path);
+                }
+                Err(_) => live = true,
+            }
+        }
+        live
+    }
+}
+
+impl Drop for Presence {
+    fn drop(&mut self) {
+        drop(self.file.take());
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
