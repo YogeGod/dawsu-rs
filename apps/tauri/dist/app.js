@@ -3525,7 +3525,8 @@ setInterval(async () => {
   lastRefresh = now;
   await run(() => update(null, false));
   refreshing = false;
-  if (quitAfterSave && !view.busy) {
+  // Save and quit waits while the Save hitsounds summary is open; its Save then quits.
+  if (quitAfterSave && !view.busy && !view.saveProblemReview) {
     quitAfterSave = false;
     if (!view.dirty && !view.error) run(() => invoke("close_editor", { discard: false }));
   }

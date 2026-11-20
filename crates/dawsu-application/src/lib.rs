@@ -1618,6 +1618,11 @@ impl Application {
         self.save_problem_review && !self.output_problems().is_empty()
     }
 
+    /// True while a reviewed Save waits for the mapper's answer.
+    pub fn save_review_pending(&self) -> bool {
+        self.pending_save_review.is_some()
+    }
+
     /// Cancel or Show in the Save hitsounds summary: the reviewed plan is dropped with it.
     pub fn dismiss_save_problem_review(&mut self) {
         self.save_problem_review = false;

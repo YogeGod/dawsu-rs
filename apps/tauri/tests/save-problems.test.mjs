@@ -155,3 +155,85 @@ test("the Save hitsounds styles avoid :has() and color-mix(), which macOS and Li
   assert.match(block, /#dialog-actions \.save-problems-show\{margin-right:auto\}/);
   assert.doesNotMatch(block, /:has\(|color-mix\(/);
 });
+
+test("Save and quit waits through the Save hitsounds summary and quits after its Save", async () => {
+  const listeners = new Map();
+  let tick = null;
+  let clock = 0;
+  let state = { busy: false, hasDocument: false, dirty: true };
+  const invoked = [];
+  const elements = new Map();
+  const get = id => {
+    if (!elements.has(id)) elements.set(id, element());
+    return elements.get(id);
+  };
+  const context = createContext({
+    document: { getElementById: get, createElement: element, querySelectorAll: () => [], addEventListener() {} },
+    window: { __TAURI__: {
+      core: { invoke: async (name, args) => {
+        invoked.push(name === "editor_view" ? args.action?.kind ?? "refresh" : name);
+        return name === "editor_view" ? { ...state } : undefined;
+      } },
+      event: { listen(name, handler) { listeners.set(name, handler); } },
+    } },
+    performance: { now: () => (clock += 5000) },
+    ResizeObserver: class { observe() {} },
+    setInterval(callback) { tick = callback; },
+    requestAnimationFrame() {},
+  });
+  await runInContext(app, context);
+  runInContext("modal = (kind, title, content, buttons) => { globalThis.output = { kind, buttons }; }; closeModal = () => {};", context);
+  listeners.get("editor-close-requested")({ payload: "The difficulty has unsaved changes." });
+  state = { busy: true, hasDocument: false, dirty: true };
+  await context.output.buttons.find(([label]) => label === "Save and quit")[1]();
+  // Save stops at the summary: no quitting yet, and still waiting.
+  state = { busy: false, hasDocument: false, dirty: true, saveProblemReview: true };
+  await tick();
+  await tick();
+  assert.ok(!invoked.includes("close_editor"));
+  // The summary's Save writes; then dawsu! quits.
+  state = { busy: false, hasDocument: false, dirty: false };
+  await tick();
+  await runInContext("pending", context);
+  assert.ok(invoked.includes("close_editor"), "quits after the summary's Save");
+});
+
+test("Save and quit stops when the summary is cancelled", async () => {
+  const listeners = new Map();
+  let tick = null;
+  let clock = 0;
+  let state = { busy: false, hasDocument: false, dirty: true };
+  const invoked = [];
+  const elements = new Map();
+  const get = id => {
+    if (!elements.has(id)) elements.set(id, element());
+    return elements.get(id);
+  };
+  const context = createContext({
+    document: { getElementById: get, createElement: element, querySelectorAll: () => [], addEventListener() {} },
+    window: { __TAURI__: {
+      core: { invoke: async (name, args) => {
+        invoked.push(name === "editor_view" ? args.action?.kind ?? "refresh" : name);
+        return name === "editor_view" ? { ...state } : undefined;
+      } },
+      event: { listen(name, handler) { listeners.set(name, handler); } },
+    } },
+    performance: { now: () => (clock += 5000) },
+    ResizeObserver: class { observe() {} },
+    setInterval(callback) { tick = callback; },
+    requestAnimationFrame() {},
+  });
+  await runInContext(app, context);
+  runInContext("modal = (kind, title, content, buttons) => { globalThis.output = { kind, buttons }; }; closeModal = () => {};", context);
+  listeners.get("editor-close-requested")({ payload: "The difficulty has unsaved changes." });
+  state = { busy: true, hasDocument: false, dirty: true };
+  await context.output.buttons.find(([label]) => label === "Save and quit")[1]();
+  state = { busy: false, hasDocument: false, dirty: true, saveProblemReview: true };
+  await tick();
+  state = { busy: false, hasDocument: false, dirty: true };
+  await tick();
+  state = { busy: false, hasDocument: false, dirty: false };
+  await tick();
+  await runInContext("pending", context);
+  assert.ok(!invoked.includes("close_editor"), "a cancelled summary doesn't quit later");
+});
