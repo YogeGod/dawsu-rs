@@ -834,6 +834,7 @@ dependencies = [
  "dawsu-editor",
  "dawsu-editor-composer",
  "dawsu-foundation",
+ "dawsu-graph-audio",
  "dawsu-hitsounding",
  "dawsu-osu-format",
  "dawsu-test-support",
