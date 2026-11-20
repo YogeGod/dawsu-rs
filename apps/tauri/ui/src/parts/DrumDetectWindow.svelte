@@ -20,6 +20,8 @@
   let stemPath = $state(initialView?.source?.kind === "stem" ? initialView.source.path : null);
   let error = $state(null);
   let busy = $state(false);
+  // Bumped when the editor refuses an option, so the controls show its options again.
+  let resetKey = $state(0);
   let started = new Set();
   let pollTimer;
   let closed = false;
@@ -115,13 +117,14 @@
     }
   }
 
-  function review(change) {
+  async function review(change) {
     const next = { ...view.options, ...change };
     if (sameLane(next)) {
       error = "Pick different lanes for kicks and snares.";
+      resetKey++;
       return;
     }
-    send(invoke("drum_review", optionsRequest(view, change)));
+    if (!await send(invoke("drum_review", optionsRequest(view, change)))) resetKey++;
   }
 
   const lane = value => (value === "" ? null : value);
@@ -227,6 +230,7 @@
       {/if}
     {/if}
 
+    {#key resetKey}
     <h2>Lanes</h2>
     <div class="lanes">
       {#each [["kick", "Kicks"], ["snare", "Snares"]] as [drum, label] (drum)}
@@ -266,12 +270,13 @@
         </label>
       </div>
     {/if}
+    {/key}
 
     <div class="notes">
       {#each view?.state === "ready" ? view.unhides ?? [] : [] as name (name)}
         <p>Applying shows the hidden lane {name}.</p>
       {/each}
-      {#if loose}<p>Hits on grid lines have no object. Hitsounding mode leaves them out on Save.</p>{/if}
+      {#if loose}<p>Hits on grid lines have no object. Save writes them only in Hitsounding mode.</p>{/if}
       {#if options && !options.kick && !options.snare}<p>Pick a lane for kicks or snares to add hits.</p>{/if}
       <p>Works best on a drum stem.</p>
     </div>

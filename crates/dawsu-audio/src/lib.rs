@@ -497,6 +497,7 @@ impl ListenSlot {
     /// Makes `clip` the current one and returns the handle to send to the audio thread.
     fn start(&self, clip: Option<Arc<AudioClip>>) -> Option<Arc<AudioClip>> {
         let mut slot = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        slot.1.retain(|old| Arc::strong_count(old) > 1);
         if let Some(old) = std::mem::replace(&mut slot.0, clip.clone()) {
             slot.1.push(old);
         }
@@ -1176,6 +1177,14 @@ mod listen_tests {
         drop(audio);
         assert!(slot.collect(), "the second clip still plays");
         assert!(freed.upgrade().is_none(), "freed by collect, on the caller's thread");
+        // A clip the audio thread let go of is also freed by the next Listen.
+        let third = slot.start(Some(clip(0.3, 1000)));
+        let replaced = slot.start(Some(clip(0.4, 1000)));
+        drop(third);
+        let last = slot.start(None);
+        assert!(last.is_none());
+        assert_eq!(slot.0.lock().unwrap().1.len(), 2, "the third clip is freed; the two still held wait");
+        drop(replaced);
         // The audio thread finished the clip: Listen is over and the slot releases it here.
         drop(second);
         assert!(!slot.is_listening());

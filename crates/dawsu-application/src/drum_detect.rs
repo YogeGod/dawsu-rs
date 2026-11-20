@@ -333,6 +333,8 @@ impl Application {
 
     /// Called from `poll`: collects a finished analysis and re-plans after edits or new options.
     pub(crate) fn poll_drum_detection(&mut self) {
+        // Frees Listen clips (and schedules) the audio thread let go of, also after the window closed.
+        self.collect_retired_audio();
         if self.document.is_none() {
             if self.drum.job.is_some() || self.drum.ready.is_some() {
                 self.clear_drum_detection();
