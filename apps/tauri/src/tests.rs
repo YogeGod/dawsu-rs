@@ -1932,3 +1932,58 @@ fn displayed_tab_and_plain_home_shortcuts_reach_the_command_resolver() {
     route.handle(open, &mut app).unwrap().run(&mut app);
     assert!(matches!(app.requests.last(), Some(dawsu_application::PlatformRequest::OpenMap)));
 }
+
+#[test]
+fn home_save_with_left_out_moments_goes_home_after_the_summarys_save() {
+    use super::home::Route;
+
+    let fixture = Fixture::new("home-left-out");
+    let map = fixture.0.join("a.osu");
+    fs::write(&map, "osu file format v14\r\n\r\n[General]\r\nMode: 0\r\n\r\n[Difficulty]\r\nSliderMultiplier:1.4\r\nSliderTickRate:1\r\n\r\n[TimingPoints]\r\n0,500,4,1,0,70,1,0\r\n\r\n[HitObjects]\r\n256,192,1000,1,8,2:0:0:0:\r\n256,192,1500,1,8,3:0:0:0:\r\n100,100,2000,2,0,L|200:100,1,140\r\n").unwrap();
+    // A data folder of its own gives the difficulty an editor project to keep left-out moments.
+    let mut app = Application::with_data_root(fixture.0.join("data"));
+    app.error = None;
+    open(&mut app, &map);
+    Action::HsMode { on: true }.run(&mut app);
+    let draw_claps = |app: &mut Application| {
+        Action::Tool { name: "Draw".into() }.run(app);
+        for name in ["soft-hitclap", "drum-hitclap"] {
+            let row = snapshot(app, true)["scene"]["lanes"].as_array().unwrap().iter()
+                .position(|lane| lane["name"] == name).unwrap() as i32;
+            for phase in ["down", "up"] {
+                Action::Pointer {
+                    phase: phase.into(), ms: 2500.0, row, x: 12.0, y: 12.0,
+                    value: None, shift: false, ctrl: false, alt: false,
+                }.run(app);
+            }
+        }
+    };
+    draw_claps(&mut app);
+    assert!(app.is_dirty());
+    let mut route = Route::default();
+    let confirm = |choice: &str| Action::HomeChoice { choice: choice.into() };
+    let step = |route: &mut Route, app: &mut Application, action: Action| {
+        if let Some(action) = route.handle(action, app) {
+            action.run(app);
+        }
+        wait_for_job(app);
+        route.settle(app);
+    };
+
+    // Cancel in the summary keeps the editor open with the edits.
+    step(&mut route, &mut app, Action::Home);
+    step(&mut route, &mut app, confirm("save"));
+    assert!(app.save_problem_review(), "Home → Save shows the Save hitsounds summary first");
+    assert!(!route.visible());
+    step(&mut route, &mut app, Action::DismissSaveProblemReview);
+    assert!(!route.visible());
+    assert!(app.is_dirty());
+
+    // The summary's Save writes the rest, then goes Home.
+    step(&mut route, &mut app, Action::Home);
+    step(&mut route, &mut app, confirm("save"));
+    assert!(app.save_problem_review());
+    step(&mut route, &mut app, Action::AnswerSaveReview { apply: true });
+    assert!(!app.is_dirty());
+    assert!(route.visible(), "Home continues after the summary's Save");
+}

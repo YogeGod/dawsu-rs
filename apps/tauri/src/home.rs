@@ -69,6 +69,8 @@ impl Route {
         }
         match self {
             Self::Leaving if app.error.is_none() && !app.is_dirty() && app.pending_open.is_none() => self.park(app),
+            // The Save hitsounds summary is open: its Save goes on Home, its Cancel stays here.
+            Self::Leaving if app.error.is_none() && app.save_review_pending() => {}
             Self::Leaving => *self = Self::Editor,
             Self::Opening if app.error.is_none() => *self = Self::Editor,
             Self::Opening => *self = Self::Parked,

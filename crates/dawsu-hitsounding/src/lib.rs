@@ -19,4 +19,4 @@ pub use compile::{compile, Compiled, Placement, ProblemKind, SaveProblem};
 pub use cues::cue_list;
 pub use decompile::{decompile, Decompiled};
 pub use error::Error;
-pub use model::{Hitsounds, Lane, LaneSource, Moment, MomentId, ObjectId, Place, SliderBody};
+pub use model::{BodyState, Hitsounds, Lane, LaneSource, Moment, MomentId, ObjectId, Place, SliderBody};

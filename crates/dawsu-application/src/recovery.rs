@@ -58,6 +58,10 @@ struct LastSave {
     original: Option<Vec<u8>>,
     hits: WorkingHits,
     hs_mode: bool,
+    // The hits as drawn at that Save, when it left moments out: Undo returns to them, so a Save
+    // after restoring keeps them. Copies from earlier builds have none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    drawn: Option<WorkingHits>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -169,13 +173,14 @@ impl Checkpoint {
         }
     }
 
-    pub(super) fn after_save(document: &Document, hits: &Hitsounds, hs_mode: bool) -> Self {
+    pub(super) fn after_save(document: &Document, hits: &Hitsounds, drawn: &Hitsounds, hs_mode: bool) -> Self {
         let mut checkpoint = Self::new(document);
         let original = document.compile_base.original_bytes();
         checkpoint.data.last_save = Some(LastSave {
             original: (original != document.file.original_bytes()).then(|| original.to_vec()),
             hits: WorkingHits::capture(hits),
             hs_mode,
+            drawn: (drawn != hits).then(|| WorkingHits::capture(drawn)),
         });
         checkpoint
     }
@@ -354,8 +359,14 @@ impl RecoveryCopy {
                     "The recovery copy could not reproduce the last saved difficulty.".into(),
                 );
             }
-            hits
+            // The hits the copy's last Save wrote are what a part Save leaves out goes back to.
+            document.written = super::last_written(&hits, last_save.hs_mode);
+            match &last_save.drawn {
+                Some(drawn) => drawn.apply(base.clone(), cancel)?,
+                None => hits,
+            }
         } else {
+            document.written = base.clone();
             base.clone()
         };
 

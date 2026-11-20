@@ -2201,18 +2201,16 @@ function renderDialogs() {
   if (view.error) {
     const dismiss = () => { closeModal(); act({ kind: "dismiss_error" }); };
     modal("error", "Editor message", [paragraph(view.error)], [["OK", dismiss, true]], dismiss);
-  } else if (view.saveReview) {
-    const answer = (apply) => { closeModal(); act({ kind: "answer_save_review", apply }); };
-    const files = view.saveReview.map(([operation, path]) => paragraph(operation + " · " + path));
-    modal("save-review", "Review Save", [
-      paragraph("Editing " + nameOf(scene.path)),
-      ...files.length ? files : [paragraph("No files need to change.")],
-    ], [["Cancel", () => answer(false)], [files.length ? "Save" : "Done", () => answer(true), true]], () => answer(false));
   } else if (view.saveProblemReview) {
     const problems = view.outputProblems ?? [];
     const dismiss = () => { closeModal(); return act({ kind: "dismiss_save_problem_review" }); };
     const showProblem = (index) => async () => { await dismiss(); await showOutputProblem(index); };
-    const save = () => { closeModal(); act({ kind: "save" }); };
+    // With a reviewed plan, Save writes everything it can and leaves these moments out; without a
+    // project nothing could keep them, so Save still refuses.
+    const reviewed = Boolean(view.saveReview);
+    const save = reviewed
+      ? () => { closeModal(); act({ kind: "answer_save_review", apply: true }); }
+      : () => { closeModal(); act({ kind: "save" }); };
     const difficulty = document.createElement("div");
     difficulty.className = "save-problem-difficulty";
     const label = document.createElement("span");
@@ -2242,14 +2240,26 @@ function renderDialogs() {
       row.append(message, time, button);
       return row;
     }));
-    // When Save writes the rest (planned), update this copy and the button.
-    const note = paragraph("These moments can't be written to the difficulty as drawn. Save writes nothing until they are fixed.");
-    modal("save-problems", "Save hitsounds", [difficulty, note, list],
-      [["Cancel", dismiss], ["Show first problem", showProblem(0)], ["Continue to Save", save, true]], dismiss);
+    const note = paragraph(reviewed
+      ? "These parts won't sound in osu! the way they do here. You can still save; the rest is written as drawn. " +
+        "Left-out moments stay in dawsu! and on this list, and Revert to saved brings them back."
+      : "These moments can't be written to the difficulty as drawn. Save writes nothing until they are fixed.");
+    modal("save-problems", "Save hitsounds", [difficulty, note, list], reviewed
+      ? [["Show first problem", showProblem(0)], ["Cancel", dismiss], ["Save", save, true]]
+      : [["Cancel", dismiss], ["Show first problem", showProblem(0)], ["Continue to Save", save, true]], dismiss);
+    const first = $("dialog-actions").children[0];
+    if (reviewed && first) first.className = "save-problems-show";
     const count = document.createElement("span");
     count.className = "problem-count";
     count.textContent = problems.length + (problems.length === 1 ? " problem" : " problems");
     $("dialog-title").replaceChildren("Save hitsounds", count);
+  } else if (view.saveReview) {
+    const answer = (apply) => { closeModal(); act({ kind: "answer_save_review", apply }); };
+    const files = view.saveReview.map(([operation, path]) => paragraph(operation + " · " + path));
+    modal("save-review", "Review Save", [
+      paragraph("Editing " + nameOf(scene.path)),
+      ...files.length ? files : [paragraph("No files need to change.")],
+    ], [["Cancel", () => answer(false)], [files.length ? "Save" : "Done", () => answer(true), true]], () => answer(false));
   } else if (view.pendingHome) {
     const resolve = (choice) => { closeModal(); act({ kind: "home_choice", choice }); };
     modal("pending-home", "Save changes before going Home?", [paragraph("The open difficulty has unsaved changes.")],
@@ -3660,7 +3670,8 @@ setInterval(async () => {
   lastRefresh = now;
   await run(() => update(null, false));
   refreshing = false;
-  if (quitAfterSave && !view.busy) {
+  // Save and quit waits while the Save hitsounds summary is open; its Save then quits.
+  if (quitAfterSave && !view.busy && !view.saveProblemReview) {
     quitAfterSave = false;
     if (!view.dirty && !view.error) run(() => invoke("close_editor", { discard: false }));
   }

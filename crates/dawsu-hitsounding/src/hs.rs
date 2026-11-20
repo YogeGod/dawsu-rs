@@ -10,7 +10,7 @@ use crate::decompile::{decompile, Decompiled};
 use crate::lazer::control_points::offset_for;
 use crate::model::{Hitsounds, MomentId, ObjectId, Place};
 use crate::rules::saved_volume;
-use dawsu_foundation::SampleIdentity;
+use dawsu_foundation::{SampleIdentity, SongTime};
 use dawsu_osu_format::OsuFile;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -23,6 +23,22 @@ pub enum CompiledHs {
     Cancelled,
 }
 
+/// The file time HS mode gives a moment with no object: its time rounded half to even to the
+/// millisecond.
+pub fn hs_group_time(file: &OsuFile, time: SongTime) -> i64 {
+    (time.ms() - offset_for(file.format_version())).round_ties_even() as i64
+}
+
+/// The moments with hits and no object that HS mode gives one circle each, by that circle's file
+/// time. [`compile_hs`] creates the circles in this order.
+pub fn hs_groups(file: &OsuFile, hitsounds: &Hitsounds) -> BTreeMap<i64, Vec<MomentId>> {
+    let mut groups: BTreeMap<i64, Vec<MomentId>> = BTreeMap::new();
+    for (i, m) in hitsounds.moments().iter().enumerate().filter(|(_, m)| m.place() == Place::NoObject && m.hits().next().is_some()) {
+        groups.entry(hs_group_time(file, m.time())).or_default().push(MomentId(i));
+    }
+    groups
+}
+
 /// Compiles `hitsounds` into a copy of `file` in HS mode. Moments with hits and no object are
 /// grouped by their file time rounded half to even to the millisecond; each group gets the circle
 /// `256,192,<time>,1,0,0:0:0:0:`, inserted in time order, even beside an existing object at that
@@ -30,11 +46,13 @@ pub enum CompiledHs {
 /// sample-mix save problem, as in Generate. Every other edit is carried onto the copy by object and
 /// node, then compile writes it with `placement`.
 pub fn compile_hs(file: &OsuFile, hitsounds: &Hitsounds, placement: Placement, cancel: &dyn Fn() -> bool, progress: &mut dyn FnMut(usize, usize)) -> CompiledHs {
-    let offset = offset_for(file.format_version());
-    let mut groups: BTreeMap<i64, Vec<(SampleIdentity, i32)>> = BTreeMap::new();
-    for m in hitsounds.moments().iter().filter(|m| m.place() == Place::NoObject && m.hits().next().is_some()) {
-        groups.entry((m.time().ms() - offset).round_ties_even() as i64).or_default().extend(m.hits().map(|h| (h.clone(), m.hit_volume(h))));
-    }
+    let groups: BTreeMap<i64, Vec<(SampleIdentity, i32)>> = hs_groups(file, hitsounds)
+        .into_iter()
+        .map(|(time, members)| {
+            let layers = members.iter().map(|id| hitsounds.moment(*id)).flat_map(|m| m.hits().map(|h| (h.clone(), m.hit_volume(h)))).collect();
+            (time, layers)
+        })
+        .collect();
     if groups.is_empty() {
         return match compile(file, hitsounds, placement, cancel, progress) {
             Compiled::Done { file, problems } => CompiledHs::Done { file, problems, created: Vec::new() },

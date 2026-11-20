@@ -382,6 +382,7 @@ header #editor-menus button{min-height:26px;padding:3px 10px;border-radius:4px}
 #editor-menu[aria-labelledby] .menu-choices .menu-choice[aria-checked="true"],#editor-menu[aria-labelledby] .menu-choices .menu-choice[aria-checked="true"]:hover:not(:disabled){background:var(--control);color:var(--hi);font-weight:600}
 /* Save with problems (design f8): problem-count chip, the difficulty, then one row per problem with its time and Show. */
 #dialog.dialog-save-problems{width:min(700px,92vw)}
+#dialog-actions .save-problems-show{margin-right:auto}
 #dialog-title .problem-count{display:inline-block;margin-left:14px;padding:3px 10px;border-radius:6px;vertical-align:2px;background:rgba(250,131,140,.12);color:#fa838c;font:13px "Roboto Mono",ui-monospace,monospace}
 .save-problem-difficulty{display:flex;justify-content:space-between;gap:16px;margin-bottom:12px;padding:12px 16px;border-radius:6px;background:var(--button)}
 .save-problem-difficulty span{color:var(--muted)}

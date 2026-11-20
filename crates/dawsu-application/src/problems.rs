@@ -1,6 +1,7 @@
 use dawsu_hitsounding::SaveProblem;
 use std::path::{Path, PathBuf};
 
+#[derive(Clone)]
 pub struct OutputProblem {
     pub target: PathBuf,
     pub timeline: PathBuf,

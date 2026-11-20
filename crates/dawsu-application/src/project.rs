@@ -42,6 +42,9 @@ pub(crate) struct SessionSettings {
     pub hs_circle_ownership: Option<HsCircleOwnership>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub gain_recovery: Option<super::gain_recovery::Recovery>,
+    /// The moments the last Save left out of the `.osu` (F052). Older builds ignore the field.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unwritten: Option<super::unwritten::Unwritten>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub time_signatures: Option<Vec<super::EditorTimeSignature>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -561,6 +564,30 @@ mod tests {
             };
             assert!(invalid.verified_lines(&file).is_empty());
         }
+    }
+
+    #[test]
+    fn a_project_file_without_left_out_moments_loads_and_the_record_round_trips() {
+        let scratch = Scratch::new("project-unwritten");
+        let map = scratch.path("map.osu");
+        let path = scratch.dir().join(format!("{}.json", path_digest(&map)));
+        // A project an older build wrote has no `unwritten` field.
+        fs::write(&path, br#"{"version":1,"settings":{"song_offset":3.0,"unanchored":null}}"#).unwrap();
+        let mut project = Project::load(scratch.dir(), None, &map).unwrap();
+        assert_eq!(project.settings.song_offset, 3.0);
+        assert!(project.settings.unwritten.is_none());
+        project.save(SessionSettings { song_offset: 4.0, ..project.settings.clone() }).unwrap();
+        assert!(!String::from_utf8_lossy(&fs::read(&path).unwrap()).contains("unwritten"), "no record, no field");
+        let unwritten: super::super::unwritten::Unwritten = serde_json::from_value(serde_json::json!({
+            "current": {"map_digest": "abc", "moments": [{"object": 1, "node": 1, "time_bits": 0, "default_volume": 80,
+                "hits": [{"lane": "Skin|soft-hitclap", "volume": 80}, {"lane": "Skin|drum-hitclap", "volume": 80}]}]},
+            "pending": null, "before": null,
+        })).unwrap();
+        project.save(SessionSettings { unwritten: Some(unwritten.clone()), ..project.settings.clone() }).unwrap();
+        let reloaded = Project::load(scratch.dir(), None, &map).unwrap();
+        assert_eq!(reloaded.settings.unwritten, Some(unwritten));
+        let file: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(file["version"], 1);
     }
 
     #[test]
