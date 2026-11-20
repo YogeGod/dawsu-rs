@@ -118,7 +118,10 @@ impl Captured {
     pub(super) fn read(hits: &Hitsounds, root: &Path, defaults: &Path) -> Result<Self, String> {
         let mut assets = Assets::new(root, defaults, &[]);
         let mut voices = BTreeMap::new();
-        for moment in hits.moments().iter().filter(|moment| moment.has_hit_volume_overrides()) {
+        // A sound set placement's moment is kept even at one volume, so a set saved as a mix
+        // reopens with its sounds (M4).
+        let placed: std::collections::BTreeSet<_> = hits.placements().iter().map(|p| p.moment.0).collect();
+        for (_, moment) in hits.moments().iter().enumerate().filter(|(i, moment)| moment.has_hit_volume_overrides() || placed.contains(i)) {
             if let Some(location) = location(moment.place()) {
                 voices.insert(location, (moment.volume(), assets.voices(hits, moment)?));
             }

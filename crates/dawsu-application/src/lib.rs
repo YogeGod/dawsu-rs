@@ -427,12 +427,18 @@ fn prepare_save(
         }
         None => (None, Vec::new()),
     };
+    // The sound set links go to the project too; an old record with links is replaced.
+    let sound_sets = project.and_then(|project| {
+        let record = sound_sets::build_links(hits, &file, &out, &circles, hs);
+        let replaces = project.settings.sound_sets.as_ref().is_some_and(|old| !old.is_empty());
+        (!record.is_empty() || replaces).then_some(record)
+    });
     let bytes = out.to_bytes();
     let ownership = project::HsCircleOwnership::capture(&out, &bytes, &owned);
     let map_changed = bytes != expected;
     let plan = PreparedSave {
         path: path.to_path_buf(), backups, expected, out, mix_files, recovery_revision,
-        ownership, inputs, map_changed, left_out, written, unwritten, loose, drawn: hits.clone(),
+        ownership, inputs, map_changed, left_out, written, unwritten, sound_sets, loose, drawn: hits.clone(),
     };
     plan.check_current(project, cancel)?;
     // Left-out parts are listed for the Save hitsounds summary, which every Save shows first.
@@ -480,6 +486,8 @@ struct PreparedSave {
     drawn: Hitsounds,
     /// The project record of the left-out parts, when the project needs a new one.
     unwritten: Option<unwritten::Record>,
+    /// The project record of the sound set links, when the project needs a new one.
+    sound_sets: Option<sound_sets::LinkRecord>,
     /// HS groups left out before they ever became a circle; the project keeps them as loose hits.
     loose: Vec<roll_back::MomentState>,
 }
@@ -513,7 +521,8 @@ impl PreparedSave {
         // write and promoted in one write after it. With the map bytes unchanged there is nothing
         // to wait for, so the left-out record is written as current straight away.
         let promote_unwritten = self.unwritten.is_some() && self.map_changed;
-        let staged = needs_recovery_write || self.unwritten.is_some();
+        let promote_links = self.sound_sets.is_some() && self.map_changed;
+        let staged = needs_recovery_write || self.unwritten.is_some() || self.sound_sets.is_some();
         if staged {
             let project = project.as_mut().expect("a project record needs a project");
             let mut settings = project.settings.clone();
@@ -526,6 +535,14 @@ impl PreparedSave {
                     unwritten.stage(&self.expected, record);
                 } else {
                     unwritten.set_current(record);
+                }
+            }
+            if let Some(record) = self.sound_sets {
+                let links = settings.sound_sets.get_or_insert_with(Default::default);
+                if self.map_changed {
+                    links.stage(&self.expected, record);
+                } else {
+                    links.set_current(record);
                 }
             }
             project.save(settings)?;
@@ -544,7 +561,7 @@ impl PreparedSave {
             Ok(SaveOutcome::Saved { .. } | SaveOutcome::NothingToSave) => {
                 publication.keep();
                 let bytes = self.out.to_bytes();
-                let gain_recovery_warning = if needs_recovery_write || promote_unwritten {
+                let gain_recovery_warning = if needs_recovery_write || promote_unwritten || promote_links {
                     let project = project.expect("a staged record has a project");
                     let mut settings = project.settings.clone();
                     if needs_recovery_write {
@@ -553,13 +570,17 @@ impl PreparedSave {
                     if promote_unwritten {
                         settings.unwritten.as_mut().expect("the left-out parts were staged").promote(&bytes);
                     }
+                    if promote_links {
+                        settings.sound_sets.as_mut().expect("the sound set links were staged").promote(&bytes);
+                    }
                     project.save(settings).err()
                 } else {
                     None
                 };
-                let unfinished_record = match (needs_recovery_write, promote_unwritten) {
-                    (true, true) => "Gain recovery and left-out moments could not be recorded.",
-                    (false, true) => "Left-out moments could not be recorded.",
+                let unfinished_record = match (needs_recovery_write, promote_unwritten, promote_links) {
+                    (true, true, _) => "Gain recovery and left-out moments could not be recorded.",
+                    (false, true, _) => "Left-out moments could not be recorded.",
+                    (false, false, true) => "Sound set links could not be recorded.",
                     _ => "Gain recovery could not be finalized.",
                 };
                 Ok(SaveReport {
@@ -1139,6 +1160,7 @@ impl Application {
             }),
             gain_recovery: self.project.as_ref().and_then(|p| p.settings.gain_recovery.clone()),
             unwritten: self.project.as_ref().and_then(|p| p.settings.unwritten.clone()),
+            sound_sets: self.project.as_ref().and_then(|p| p.settings.sound_sets.clone()),
             time_signatures: Some(document.time_signatures.clone()),
             export_settings: document.export_settings.clone(),
             lane_slots: saved_slots.or_else(|| self.project.as_ref().and_then(|p| p.settings.lane_slots.clone())),
@@ -1539,6 +1561,7 @@ impl Application {
                                 settings.hs_circle_ownership = report.hs_circle_ownership;
                                 settings.gain_recovery = project.settings.gain_recovery.clone();
                                 settings.unwritten = project.settings.unwritten.clone();
+                                settings.sound_sets = project.settings.sound_sets.clone();
                                 if let Err(error) = project.save(settings) {
                                     self.error = Some(with_archive_error(format!("Saving session settings: {error}")));
                                     self.status = "Difficulty saved. Session settings could not be saved.".into();
@@ -1654,7 +1677,7 @@ impl Application {
             files.push((if mix.is_reused() { "Reuse WAV" } else { "Create WAV" }, mix.path.as_path()));
         }
         if let (Some(project), Some(settings)) = (&review.project, &review.settings)
-            && (plan.recovery_revision.is_some() || plan.unwritten.is_some() || *settings != project.settings)
+            && (plan.recovery_revision.is_some() || plan.unwritten.is_some() || plan.sound_sets.is_some() || *settings != project.settings)
         {
             files.push(("Write editor project", project.path()));
         }
@@ -2668,6 +2691,14 @@ fn load(
     if let Some((lanes, hs_mode)) = recovered_view {
         document.composer.lanes = lanes;
         document.hs_mode = hs_mode;
+    }
+    // Sound set links come back last, once every hit they name is in place; a recovery copy
+    // brings its own.
+    if recovery.is_none()
+        && let Some(links) = project.as_ref().and_then(|p| p.settings.sound_sets.as_ref())
+        && let Err(warning) = sound_sets::restore_links(&mut document, links)
+    {
+        warnings.push(warning);
     }
     // The moments the last Save left out are listed again before any Save: those put back from
     // the project or a recovery copy, and in HS mode loose hits kept in the project because they

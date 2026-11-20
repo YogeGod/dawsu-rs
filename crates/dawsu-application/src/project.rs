@@ -45,6 +45,9 @@ pub(crate) struct SessionSettings {
     /// The moments the last Save left out of the `.osu` (F052). Older builds ignore the field.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub unwritten: Option<super::unwritten::Unwritten>,
+    /// The sound set links of the last Save. Older builds ignore the field: the links are lost, the hits stay.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sound_sets: Option<super::sound_sets::Links>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub time_signatures: Option<Vec<super::EditorTimeSignature>>,
     #[serde(skip_serializing_if = "Option::is_none")]
