@@ -867,8 +867,10 @@ version = "0.1.0"
 dependencies = [
  "dawsu-editor",
  "dawsu-foundation",
+ "dawsu-graph-audio",
  "dawsu-hitsounding",
  "dawsu-osu-format",
+ "serde_json",
 ]
 
 [[package]]
