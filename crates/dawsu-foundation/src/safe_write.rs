@@ -8,6 +8,7 @@ use crate::Error;
 use std::fs::{self, File, OpenOptions};
 use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 /// Where backups go and how many are kept for each file (the count is the caller's choice).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -48,10 +49,17 @@ pub enum WriteOutcome {
 /// Writes a file that is new or that only dawsu! writes: temporary file first, then rename.
 pub fn write_new(target: &Path, bytes: &[u8]) -> Result<(), Error> {
     let temp = write_temporary(target, bytes)?;
-    fs::rename(&temp, target).map_err(|e| {
-        let _ = fs::remove_file(&temp);
-        Error::io("replacing the target", target, e)
-    })
+    let mut waits = REPLACE_WAITS.iter();
+    loop {
+        match fs::rename(&temp, target) {
+            Ok(()) => return Ok(()),
+            Err(e) if wait_if_held(&e, &mut waits) => continue,
+            Err(e) => {
+                let _ = fs::remove_file(&temp);
+                return Err(Error::io("replacing the target", target, e));
+            }
+        }
+    }
 }
 
 /// Publishes a new file atomically without replacing an existing destination.
@@ -78,28 +86,77 @@ pub fn replace(target: &Path, read_bytes: &[u8], new_bytes: &[u8], backups: &Bac
     // 3. Write the new file next to the target.
     let temp = write_temporary(target, new_bytes)?;
 
-    // 4. Check again just before replacing (invariant 4).
-    match unchanged(target, read_bytes) {
-        Ok(true) => {}
-        Ok(false) => {
-            let _ = fs::remove_file(&temp);
-            return Ok(WriteOutcome::ChangedOnDisk);
+    let mut waits = REPLACE_WAITS.iter();
+    loop {
+        // 4. Check again just before replacing (invariant 4), and again before every retry.
+        match unchanged(target, read_bytes) {
+            Ok(true) => {}
+            Ok(false) => {
+                let _ = fs::remove_file(&temp);
+                return Ok(WriteOutcome::ChangedOnDisk);
+            }
+            Err(e) => {
+                let _ = fs::remove_file(&temp);
+                return Err(e);
+            }
         }
-        Err(e) => {
-            let _ = fs::remove_file(&temp);
-            return Err(e);
-        }
-    }
 
-    // 5. Replace the target.
-    if let Err(e) = fs::rename(&temp, target) {
-        let _ = fs::remove_file(&temp);
-        return Err(Error::io("replacing the target", target, e));
+        // 5. Replace the target. Another program that briefly holds it open (a virus scanner,
+        // the search indexer, a cloud-sync client) can make this fail; wait a little and retry.
+        match fs::rename(&temp, target) {
+            Ok(()) => break,
+            Err(e) if wait_if_held(&e, &mut waits) => continue,
+            Err(e) => {
+                let _ = fs::remove_file(&temp);
+                return Err(Error::io("replacing the target", target, e));
+            }
+        }
     }
 
     // 6. Delete old backups; a failure here is only a warning.
     let warnings = prune(&backup_dir, &name, backups.keep());
     Ok(WriteOutcome::Saved { warnings })
+}
+
+/// How long `replace` and `write_new` wait before each retry of a replace that another program blocked:
+/// about 3 s in total. Only Windows keeps other programs from replacing an open file.
+#[cfg(windows)]
+const REPLACE_WAITS: [Duration; 12] = [
+    Duration::from_millis(10),
+    Duration::from_millis(20),
+    Duration::from_millis(40),
+    Duration::from_millis(80),
+    Duration::from_millis(150),
+    Duration::from_millis(200),
+    Duration::from_millis(250),
+    Duration::from_millis(250),
+    Duration::from_millis(500),
+    Duration::from_millis(500),
+    Duration::from_millis(500),
+    Duration::from_millis(500),
+];
+#[cfg(not(windows))]
+const REPLACE_WAITS: [Duration; 0] = [];
+
+/// Windows refuses to replace a file another program has open without delete sharing:
+/// "Access is denied" (error 5) or a sharing violation (error 32).
+fn held_by_another_program(e: &std::io::Error) -> bool {
+    cfg!(windows) && (e.kind() == ErrorKind::PermissionDenied || e.raw_os_error() == Some(32))
+}
+
+/// When another program holds the target and the wait budget is not used up, waits once and
+/// returns true so the caller retries.
+fn wait_if_held(e: &std::io::Error, waits: &mut std::slice::Iter<'_, Duration>) -> bool {
+    if !held_by_another_program(e) {
+        return false;
+    }
+    match waits.next() {
+        Some(wait) => {
+            std::thread::sleep(*wait);
+            true
+        }
+        None => false,
+    }
 }
 
 fn unchanged(target: &Path, read_bytes: &[u8]) -> Result<bool, Error> {
