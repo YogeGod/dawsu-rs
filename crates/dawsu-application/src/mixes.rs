@@ -877,10 +877,15 @@ impl IndexedMixes {
 pub(super) struct PublishedMixes<'a> {
     staged: &'a [StagedMix],
     created: Vec<usize>,
+    /// The ledger and the entries this publish added, dropped again on rollback.
+    ledger: Option<(crate::pending::Ledger, Vec<String>)>,
 }
 
+/// Writes the staged files, all or none. With a `ledger`, every file this publish creates is listed
+/// there before it is created, so dawsu! knows it made the file.
 pub(super) fn publish<'a>(
     staged: &'a [StagedMix],
+    ledger: Option<&crate::pending::Ledger>,
     cancel: &dyn Fn() -> bool,
 ) -> Result<PublishedMixes<'a>, String> {
     let mut indexed = staged
@@ -910,9 +915,20 @@ pub(super) fn publish<'a>(
             return Err(format!("{} is now used in this mapset. Review again before applying.", collision.path.display()));
         }
     }
+    let ledger = match ledger {
+        Some(ledger) => {
+            let entries: Vec<crate::pending::PendingSample> = staged.iter().filter(|mix| !mix.reuse)
+                .filter_map(|mix| Some(crate::pending::PendingSample { name: mix.path.file_name()?.to_str()?.to_owned(), sha256: mix.digest() }))
+                .collect();
+            ledger.add(&entries)?;
+            Some((ledger.clone(), entries.into_iter().map(|entry| entry.name).collect()))
+        }
+        None => None,
+    };
     let mut publication = PublishedMixes {
         staged,
         created: Vec::new(),
+        ledger,
     };
     for (index, mix) in staged.iter().enumerate() {
         if cancel() {
@@ -938,6 +954,7 @@ pub(super) fn publish<'a>(
 impl PublishedMixes<'_> {
     pub(super) fn keep(mut self) {
         self.created.clear();
+        self.ledger = None;
     }
 
     pub(super) fn failed(mut self, error: String) -> String {
@@ -966,6 +983,10 @@ impl PublishedMixes<'_> {
             {
                 kept.push(mix.path.display().to_string());
             }
+        }
+        // A file kept because someone changed it is not dawsu!'s any more.
+        if let Some((ledger, names)) = self.ledger.take() {
+            ledger.remove(&names);
         }
         kept
     }
@@ -1096,7 +1117,7 @@ mod tests {
             StagedMix { path: first.clone(), wav: vec![1], reuse: false, index: None },
             StagedMix { path: second.clone(), wav: vec![2], reuse: false, index: None },
         ];
-        let result = publish(&staged, &|| {
+        let result = publish(&staged, None, &|| {
             if !first.exists() {
                 return false;
             }

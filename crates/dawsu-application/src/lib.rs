@@ -16,6 +16,7 @@ mod lane_edit;
 mod layers;
 mod mixes;
 mod pending;
+mod sweep;
 pub mod output;
 mod project;
 pub use project::lane_key as lane_layout_key;
@@ -502,7 +503,7 @@ fn prepare_save(
     let plan = PreparedSave {
         path: path.to_path_buf(), backups, expected, out, mix_files, recovery_revision,
         ownership, inputs, map_changed, left_out, written, unwritten, sound_sets, loose, drawn: hits.clone(),
-        pending_writes, pending_kept,
+        pending_writes, pending_kept, ledger: pending.ledger(),
     };
     plan.check_current(project, cancel)?;
     // Left-out parts are listed for the Save hitsounds summary, which every Save shows first.
@@ -575,6 +576,8 @@ struct PreparedSave {
     pending_writes: Vec<mixes::StagedMix>,
     /// The pending files the drawn hits play that this Save leaves out of the mapset.
     pending_kept: Vec<pending::PendingSample>,
+    /// Where the files this Save creates are recorded.
+    ledger: Option<pending::Ledger>,
 }
 
 impl PreparedSave {
@@ -649,7 +652,7 @@ impl PreparedSave {
             .filter_map(|mix| mix.path.file_name()?.to_str().map(str::to_owned)).collect();
         let mut writes = std::mem::take(&mut self.mix_files.staged);
         writes.append(&mut self.pending_writes);
-        let publication = mixes::publish(&writes, cancel)?;
+        let publication = mixes::publish(&writes, self.ledger.as_ref(), cancel)?;
         if staged
             && let Err(error) = project.as_ref().expect("a staged record has a project").check_current()
         {
@@ -1222,6 +1225,7 @@ impl Application {
     /// Closes the difficulty: its pending files no record still lists are forgotten and their
     /// names released, so the numbers free up. Call after `save_session`.
     pub fn close_document(&mut self) {
+        self.sweep_unused_samples(true);
         self.forget_unneeded_pending();
         self.document = None;
         self.checkpoint = None;
@@ -1657,6 +1661,9 @@ impl Application {
                             self.warnings.push(warning);
                             self.status = format!("Wrote {count} reviewed files. Generate replacement could not be recorded.");
                         }
+                        if let Some(removed) = sweep::removed_status(self.sweep_unused_samples(false)) {
+                            self.status = format!("{}. {removed}", self.status.trim_end_matches('.'));
+                        }
                         if let Some(d) = self.document.as_mut() {
                             if let Ok(entries) = std::fs::read_dir(d.path.parent().unwrap()) {
                                 d.difficulties = entries
@@ -1743,9 +1750,14 @@ impl Application {
                                     "Difficulty saved. Could not archive the recovery copy: {error}"
                                 ));
                             }
+                            // The files dawsu! made that nothing plays now leave the mapset.
+                            let removed = sweep::removed_status(self.sweep_unused_samples(false));
+                            let with_removed = |status: String| match &removed {
+                                Some(removed) => format!("{}. {removed}", status.trim_end_matches('.')),
+                                None => status,
+                            };
                             if !current {
-                                self.status =
-                                    "Saved the earlier revision. Newer edits are still open.".into();
+                                self.status = with_removed("Saved the earlier revision. Newer edits are still open.".into());
                                 return;
                             }
                             let document = self.document.as_mut().unwrap();
@@ -1753,13 +1765,13 @@ impl Application {
                             self.checkpoint =
                                 Some(recovery::Checkpoint::after_save(document, &compiled, &drawn, hs_mode));
                             let left_out = document.left_out.len();
-                            self.status = if archive_error.is_some() {
+                            self.status = with_removed(if archive_error.is_some() {
                                 "Difficulty saved. Recovery copy is still pending.".into()
                             } else if left_out > 0 {
                                 format!("Saved with backup. {left_out} part{} left out.", if left_out == 1 { "" } else { "s" })
                             } else {
                                 "Saved with backup".into()
-                            };
+                            });
                             if let Some(path) = self.pending_open.take() {
                                 self.open_now(OpenSource::Map(path));
                             }
@@ -1845,6 +1857,9 @@ impl Application {
         }
         for mix in &plan.mix_files.staged {
             files.push((if mix.is_reused() { "Reuse WAV" } else { "Create WAV" }, mix.path.as_path()));
+        }
+        for file in plan.pending_writes.iter().filter(|file| !file.is_reused()) {
+            files.push(("Add sample file", file.path.as_path()));
         }
         if let (Some(project), Some(settings)) = (&review.project, &review.settings)
             && (plan.recovery_revision.is_some() || plan.unwritten.is_some() || plan.sound_sets.is_some() || *settings != project.settings)
@@ -5076,6 +5091,71 @@ Title:");
         assert!(!document.files.iter().any(|name| name == "normal-hitnormal3.wav"), "still a pending file");
         assert_eq!(app.clip_for_lane(&hitnormal(3)).unwrap().samples, [0.5], "the layer keeps its own sound");
         assert!(app.status.contains("normal-hitnormal3.wav"), "{}", app.status);
+    }
+
+    fn ledger(app: &Application) -> Vec<String> {
+        app.document().unwrap().pending.ledger().unwrap().entries().into_iter().map(|file| file.name).collect()
+    }
+
+    #[test]
+    fn the_ledger_lists_each_sample_file_a_save_creates_and_drops_a_taken_back_one() {
+        let scratch = Scratch::new("pending-ledger");
+        let (mut app, _, _) = two_layers(&scratch, true);
+        use_layer_2(&mut app);
+        std::fs::write(scratch.path("backups"), b"not a folder").unwrap();
+        app.save_with_backups(scratch.path("backups"));
+        wait(&mut app);
+        assert!(app.error.take().is_some());
+        assert!(ledger(&app).is_empty(), "a taken-back file is not listed");
+        std::fs::remove_file(scratch.path("backups")).unwrap();
+        save_through_summary(&mut app, scratch.path("backups"));
+        let entries = app.document().unwrap().pending.ledger().unwrap().entries();
+        assert_eq!(entries, [pending::PendingSample { name: "normal-hitnormal2.wav".into(), sha256: dawsu_foundation::digest::sha256_hex(TONE) }]);
+    }
+
+    #[test]
+    fn a_sample_file_dawsu_made_that_nothing_plays_leaves_the_mapset_and_others_stay() {
+        let scratch = Scratch::new("pending-sweep");
+        let (mut app, map, folder) = two_layers(&scratch, true);
+        // Files the sweep must leave alone: one dawsu! never made, one with a dawsu!-style name
+        // it didn't make, one a mania difficulty plays and one a storyboard plays (both listed
+        // as dawsu!'s).
+        let canaries = [("keep.wav", b"mapper".to_vec()), ("normal-hitnormal5.wav", b"older".to_vec()),
+            ("soft-hitclap6.wav", TONE.to_vec()), ("sb.wav", TONE.to_vec())];
+        for (name, bytes) in &canaries {
+            std::fs::write(folder.join(name), bytes).unwrap();
+        }
+        std::fs::write(folder.join("mania.osu"), "osu file format v14\n[General]\nMode:3\n[TimingPoints]\n0,500,4,2,6,100,1,0\n[HitObjects]\n64,192,1000,1,8,0:0:0:0:\n").unwrap();
+        std::fs::write(folder.join("story.osb"), "[Events]\nSample,0,0,\"sb.wav\",100\n").unwrap();
+        app.document().unwrap().pending.ledger().unwrap().add(&[
+            pending::PendingSample { name: "soft-hitclap6.wav".into(), sha256: dawsu_foundation::digest::sha256_hex(TONE) },
+            pending::PendingSample { name: "sb.wav".into(), sha256: dawsu_foundation::digest::sha256_hex(TONE) },
+        ]).unwrap();
+        use_layer_2(&mut app);
+        save_through_summary(&mut app, scratch.path("backups"));
+        assert!(folder.join("normal-hitnormal2.wav").exists());
+        // The layer's hit goes: the next Save takes its file out of the mapset.
+        app.document.as_mut().unwrap().composer.apply("Back to the skin", |hits| {
+            let circle = dawsu_hitsounding::MomentId(0);
+            hits.remove_hit(circle, &hitnormal(2));
+            hits.add_hit(circle, hitnormal(0));
+        });
+        save_through_summary(&mut app, scratch.path("backups"));
+        assert!(!folder.join("normal-hitnormal2.wav").exists());
+        assert!(app.status.contains("Removed 1 unused sample file."), "{}", app.status);
+        // Undo brings the hit back, still playable from the data folder, and Save writes it again.
+        app.command("undo");
+        assert_eq!(app.clip_for_lane(&hitnormal(2)).unwrap().samples, [0.5]);
+        save_through_summary(&mut app, scratch.path("backups"));
+        assert_eq!(std::fs::read(folder.join("normal-hitnormal2.wav")).unwrap(), TONE);
+        app.command("redo");
+        save_through_summary(&mut app, scratch.path("backups"));
+        app.close_document();
+        assert!(!folder.join("normal-hitnormal2.wav").exists());
+        for (name, bytes) in &canaries {
+            assert_eq!(&std::fs::read(folder.join(name)).unwrap(), bytes, "{name}");
+        }
+        let _ = map;
     }
 
     #[test]

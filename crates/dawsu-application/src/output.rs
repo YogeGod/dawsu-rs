@@ -67,6 +67,8 @@ pub struct WritePlan {
     pub(super) mixes: Vec<mixes::StagedMix>,
     /// The pending files the planned difficulties play, written with the mixes.
     pub(super) pending: Vec<mixes::StagedMix>,
+    /// Where the files this plan creates are recorded.
+    pub(super) ledger: Option<crate::pending::Ledger>,
     pub(super) combinations: Vec<crate::ExportCombination>,
     pub(super) generation: Option<PathBuf>,
     include_slider_audio: bool,
@@ -110,6 +112,7 @@ impl WritePlan {
                 used.entry(name.to_ascii_lowercase()).or_insert((name, bytes));
             }
         }
+        self.ledger = source.pending.ledger();
         self.pending = used.into_values().map(|(name, bytes)| mixes::StagedMix::pending(root, &name, bytes)).collect();
         let writes = [mix_names.clone(), self.pending_names()].concat();
         let mut editor = crate::pending::listing(root, &source.pending)?;
@@ -132,7 +135,7 @@ impl WritePlan {
         }
         // One all-or-nothing write: the mixes, then the pending files the difficulties play.
         let staged: Vec<mixes::StagedMix> = self.mixes.iter().chain(&self.pending).cloned().collect();
-        let publication = mixes::publish(&staged, cancel)?;
+        let publication = mixes::publish(&staged, self.ledger.as_ref(), cancel)?;
         let policy = BackupPolicy::new(backups, 20);
         let mut written: Vec<&PlannedFile> = Vec::new();
         for target in &self.files {
@@ -308,7 +311,7 @@ pub(super) fn generate_report(
                     file,
                     expected: previous.map(|output| output.bytes),
                 }],
-                pending: Vec::new(),
+                pending: Vec::new(), ledger: None,
                 mixes: mixes.staged,
                 combinations: mixes.combinations,
                 generation,
@@ -326,7 +329,7 @@ pub(super) fn generate_report(
 }
 pub fn new_diff(source: &Source, name: &str) -> Result<WritePlan, String> {
     match dawsu_hitsounding::generate::new_hitsound_diff(&source.file,&source.path.file_name().unwrap().to_string_lossy(),name,&folder(source)?){
-        NewDiff::Planned{file,file_name}=>Ok(WritePlan{label:"New hitsound difficulty".into(),mixes:Vec::new(),pending:Vec::new(),combinations:Vec::new(),targets:Vec::new(),generation:None,include_slider_audio:false,files:vec![PlannedFile{path:source.path.parent().unwrap().join(file_name),file,expected:None}],details:vec!["All gameplay objects are removed in the new difficulty; the source stays unchanged.".into()],source:source.path.clone(),version:source.version}),other=>Err(crate::refusals::new_difficulty(&other))
+        NewDiff::Planned{file,file_name}=>Ok(WritePlan{label:"New hitsound difficulty".into(),mixes:Vec::new(),pending:Vec::new(),ledger:None,combinations:Vec::new(),targets:Vec::new(),generation:None,include_slider_audio:false,files:vec![PlannedFile{path:source.path.parent().unwrap().join(file_name),file,expected:None}],details:vec!["All gameplay objects are removed in the new difficulty; the source stays unchanged.".into()],source:source.path.clone(),version:source.version}),other=>Err(crate::refusals::new_difficulty(&other))
     }
 }
 pub fn copy(
@@ -396,7 +399,7 @@ pub(super) fn copy_report(
     let mut plan = WritePlan {
         label: "Copy hitsounds".into(),
         mixes: Vec::new(),
-        pending: Vec::new(),
+        pending: Vec::new(), ledger: None,
         combinations: Vec::new(),
         generation: None,
         include_slider_audio: false,

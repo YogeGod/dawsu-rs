@@ -264,7 +264,7 @@ mod tests {
             unchanged_sections(plain.to_bytes())
         );
         assert_eq!(fs::read(&path).unwrap(), original.as_bytes());
-        mixes::publish(&assets, &|| false).unwrap().keep();
+        mixes::publish(&assets, None, &|| false).unwrap().keep();
         let mut repeat = plain.clone();
         let reused = stage(
             &source,
@@ -278,6 +278,6 @@ mod tests {
         .unwrap();
         assert_eq!(repeat.to_bytes(), file.to_bytes());
         assert_eq!(reused[0].path, assets[0].path);
-        mixes::publish(&reused, &|| false).unwrap().keep();
+        mixes::publish(&reused, None, &|| false).unwrap().keep();
     }
 }

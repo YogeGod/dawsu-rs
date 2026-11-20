@@ -27,6 +27,7 @@ pub(crate) struct PendingFile {
 struct Store {
     samples: PathBuf,
     claims: PathBuf,
+    ledger: PathBuf,
 }
 
 /// The open mapset's pending files. Cheap to clone: a Save job takes a snapshot.
@@ -48,6 +49,7 @@ impl Pending {
             store: Some(Store {
                 samples: data_root.join("pending-samples"),
                 claims: data_root.join("pending-names").join(mapset_key(mapset)),
+                ledger: data_root.join("created-samples").join(format!("{}.json", mapset_key(mapset))),
             }),
         }
     }
@@ -57,7 +59,13 @@ impl Pending {
         self.files.get(&name.to_ascii_lowercase())
     }
 
+    /// The ledger of the sample files dawsu! wrote into this mapset.
+    pub(crate) fn ledger(&self) -> Option<Ledger> {
+        self.store.as_ref().map(|store| Ledger { path: store.ledger.clone() })
+    }
+
     pub(crate) fn is_empty(&self) -> bool {
+
         self.files.is_empty()
     }
 
@@ -178,6 +186,14 @@ fn samples(file: &OsuFile, folder: &[String]) -> Vec<Sample> {
         }
     }
     out
+}
+
+/// The folder files the samples of `file` play.
+pub(crate) fn played_names(file: &OsuFile, folder: &[String]) -> BTreeSet<String> {
+    plays(file, folder).into_iter().filter_map(|plays| match plays {
+        Plays::BeatmapFile(name) => Some(name),
+        Plays::Skin { .. } => None,
+    }).collect()
 }
 
 /// What plays for every sample of every object of `file`, in lazer's order.
@@ -329,5 +345,60 @@ impl Drop for Presence {
     fn drop(&mut self) {
         drop(self.file.take());
         let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+/// The sample files dawsu! wrote into one mapset, by name and checksum, kept at
+/// `data_root/created-samples/<mapset key>.json`. Only files on this list are ever cleaned up.
+#[derive(Clone, Debug)]
+pub(crate) struct Ledger {
+    path: PathBuf,
+}
+
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+struct LedgerFile {
+    files: Vec<PendingSample>,
+}
+
+impl Ledger {
+    pub(crate) fn entries(&self) -> Vec<PendingSample> {
+        std::fs::read(&self.path).ok()
+            .and_then(|bytes| serde_json::from_slice::<LedgerFile>(&bytes).ok())
+            .map(|file| file.files).unwrap_or_default()
+    }
+
+    fn write(&self, files: Vec<PendingSample>) -> Result<(), String> {
+        let folder = self.path.parent().ok_or("The ledger has no folder.")?;
+        std::fs::create_dir_all(folder).map_err(|e| format!("Recording new sample files: {e}"))?;
+        let bytes = serde_json::to_vec_pretty(&LedgerFile { files }).map_err(|e| e.to_string())?;
+        let temp = self.path.with_extension(format!("{}.tmp", std::process::id()));
+        std::fs::write(&temp, bytes).map_err(|e| format!("Recording new sample files: {e}"))?;
+        std::fs::rename(&temp, &self.path).map_err(|e| {
+            let _ = std::fs::remove_file(&temp);
+            format!("Recording new sample files: {e}")
+        })
+    }
+
+    /// Lists files before they are created.
+    pub(crate) fn add(&self, files: &[PendingSample]) -> Result<(), String> {
+        if files.is_empty() {
+            return Ok(());
+        }
+        let mut entries = self.entries();
+        for file in files {
+            entries.retain(|entry| !entry.name.eq_ignore_ascii_case(&file.name));
+            entries.push(file.clone());
+        }
+        self.write(entries)
+    }
+
+    /// Drops entries: their files were taken back, moved out or changed by someone else.
+    pub(crate) fn remove(&self, names: &[String]) {
+        let mut entries = self.entries();
+        let before = entries.len();
+        entries.retain(|entry| !names.iter().any(|name| name.eq_ignore_ascii_case(&entry.name)));
+        if entries.len() != before {
+            let _ = self.write(entries);
+        }
     }
 }
