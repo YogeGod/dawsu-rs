@@ -84,7 +84,7 @@ function fixture() {
       if (name in responses) return typeof responses[name] === "function" ? responses[name](args) : responses[name];
       return name === "editor_shortcuts" ? commands : { placed: true };
     },
-    modal(kind, title, content, buttons) { modals.push({ kind, title, content, buttons }); },
+    modal(kind, title, content, buttons, cancel) { modals.push({ kind, title, content, buttons, cancel }); },
     closeModal() { calls.push("closeModal"); },
     paragraph(textContent) { return Object.assign(element("p"), { textContent }); },
     input(type, value) { return Object.assign(element("input"), { type, value }); },
@@ -550,11 +550,14 @@ test("Sound set placement needs a selected placement and shows its set, edits, v
   assert.deepEqual(plain(dialog.buttons.map(([text]) => text)), ["Close", "Unlink", "Reset edits", "Set volume"]);
   field.value = "150";
   button(dialog, "Set volume")[1]();
-  assert.equal(message.textContent, "Use a volume from 0 to 100%.");
+  assert.equal(message.textContent, "Volume can be at most 100%.");
+  field.value = "4";
+  button(dialog, "Set volume")[1]();
+  assert.equal(message.textContent, "Volume must be at least 5%.");
   message.textContent = "";
   field.value = "";
   button(dialog, "Set volume")[1]();
-  assert.equal(message.textContent, "Use a volume from 0 to 100%.", "a blank field is no volume");
+  assert.equal(message.textContent, "Volume must be at least 5%.", "a blank field is no volume");
   assert.ok(!calls.some(call => call.op === "gain"));
   field.value = "50";
   button(dialog, "Set volume")[1]();
@@ -568,11 +571,12 @@ test("Sound set placement needs a selected placement and shows its set, edits, v
 test("a placement not in the library can be unlinked but not set louder, and one on an older version offers Update", async () => {
   const { get, scene, calls, modals, responses } = fixture();
   scene.placement = 3;
-  responses.sound_set_placement = { id: 3, name: "9e7b1d18", edited: 0, sounds: 2, gain: 80, frozen: "Not in library", newer: false };
+  responses.sound_set_placement = { id: 3, setId: "9e7b1d18", name: null, edited: 0, sounds: 2, gain: 80, frozen: "Not in library", newer: false };
   editItem(get, "Sound set placement…").click();
   await settle();
   let dialog = modals.at(-1);
-  assert.deepEqual(plain(dialog.content.map(node => node.textContent)), ["9e7b1d18", "0 of 2 sounds edited", "Not in library"]);
+  assert.deepEqual(plain(dialog.content.map(node => node.textContent)), ["Not in library", "0 of 2 sounds edited"]);
+  assert.equal(dialog.content[0].title, "9e7b1d18", "the id is a tooltip, never the name");
   assert.deepEqual(plain(dialog.buttons.map(([text]) => text)), ["Close", "Unlink"]);
   responses.sound_set_placement = { id: 3, name: "Kick stack", edited: 1, sounds: 2, gain: 80, frozen: "The library has another version of this set.", newer: true };
   editItem(get, "Sound set placement…").click();
@@ -584,32 +588,44 @@ test("a placement not in the library can be unlinked but not set louder, and one
   assert.deepEqual(plain(calls.at(-1)), { kind: "sound_set_placement", map: "Test.osu", id: 3, op: "update" });
 });
 
-test("the open-time question about an older set version answers Update or Keep", () => {
-  const { context, calls, modals } = fixture();
-  context.showSoundSetPrompt({ setId: "a", name: "Kick stack", placements: 2 });
+test("the open-time question answers Update or Keep, and Escape closes it until the next open", () => {
+  const { context, calls, modals, view } = fixture();
+  view.soundSetPrompts = [{ setId: "a", name: "Kick stack", placements: 2, editedKeepFiles: 2, open: 1 },
+    { setId: "b", name: "Bell", placements: 1, editedKeepFiles: 0, open: 1 }];
+  context.showSoundSetPrompt(context.pendingSoundSetPrompt());
   const dialog = modals.at(-1);
   assert.equal(dialog.kind, "sound-set-update");
   assert.equal(dialog.title, "Sound set changed");
-  assert.deepEqual(plain(dialog.content.map(node => node.textContent)), ["2 placements use an older version of Kick stack."]);
+  assert.deepEqual(plain(dialog.content.map(node => node.textContent)),
+    ["2 placements use an older version of Kick stack.", "2 edited sounds keep their own files."]);
   assert.deepEqual(plain(dialog.buttons.map(([text]) => text)), ["Keep", "Update"]);
   button(dialog, "Update")[1]();
   assert.deepEqual(plain(calls.slice(-2)), ["closeModal", { kind: "sound_set_prompt", set_id: "a", update: true }]);
   button(dialog, "Keep")[1]();
   assert.deepEqual(plain(calls.at(-1)), { kind: "sound_set_prompt", set_id: "a", update: false });
-  context.showSoundSetPrompt({ setId: "b", name: "Bell", placements: 1 });
-  assert.equal(modals.at(-1).content[0].textContent, "1 placement uses an older version of Bell.");
+  const sent = calls.length;
+  dialog.cancel();
+  assert.deepEqual(plain(calls.slice(sent)), ["closeModal"], "Escape sends nothing");
+  assert.equal(context.pendingSoundSetPrompt().setId, "b", "a closed question stays closed this open");
+  context.showSoundSetPrompt(context.pendingSoundSetPrompt());
+  assert.deepEqual(plain(modals.at(-1).content.map(node => node.textContent)), ["1 placement uses an older version of Bell."]);
+  view.soundSetPrompts = [{ setId: "a", name: "Kick stack", placements: 2, editedKeepFiles: 1, open: 2 }];
+  assert.equal(context.pendingSoundSetPrompt().setId, "a", "it comes back on the next open");
+  context.showSoundSetPrompt(context.pendingSoundSetPrompt());
+  assert.equal(modals.at(-1).content[1].textContent, "1 edited sound keeps its own file.");
 });
 
 test("Place sound set lists a set this map uses that the library lacks under In this map, greyed out", async () => {
   const { get, modals, responses } = fixture();
   responses.sound_set_library = { configured: true, sets: [
-    { id: "9e7b1d18", name: "9e7b1d18", sounds: 0, inMap: true, duplicate: false, missing: true },
+    { id: "9e7b1d18", name: "", sounds: 0, inMap: true, duplicate: false, missing: true },
   ], unreadable: [], reading: false };
   editItem(get, "Place sound set…").click();
   await settle();
   const [list, message] = modals[0].content;
   assert.deepEqual(plain(list.children.map(group => [group.label, group.children.map(option => [option.textContent, !!option.disabled])])), [
-    ["In this map", [["9e7b1d18 · not in library", true]]],
+    ["In this map", [["Not in library", true]]],
   ]);
+  assert.equal(list.children[0].children[0].title, "9e7b1d18");
   assert.equal(message.textContent, "None of these sound sets can be placed.");
 });

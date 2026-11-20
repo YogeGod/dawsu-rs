@@ -457,7 +457,8 @@ impl Hitsounds {
         let edited: Vec<bool> = placement.applied.iter().map(|a| self.is_member_edited(&placement, a)).collect();
         for (a, &edited) in placement.applied.iter().zip(&edited) {
             let kept = hits.iter().any(|(member, lane, _)| member == &a.member_id && (a.added || lane == &a.lane));
-            if a.added && !edited && !kept {
+            // A hitnormal the set lost stays as an ordinary hit, so the object keeps one.
+            if a.added && !edited && !kept && !is_hitnormal(&a.lane) {
                 self.remove_hit(moment, &a.lane);
             }
         }
@@ -489,6 +490,17 @@ impl Hitsounds {
                 self.add_hit_with_volume(moment, lane.clone(), *volume);
             }
             applied.push(crate::sound_sets::Applied { member_id: member_id.clone(), lane: lane.clone(), volume: *volume, added });
+        }
+        // As when placing (D6): a set with a hitnormal replaces the moment's own hitnormals, but
+        // not one another live placement added.
+        if hits.iter().any(|(_, lane, _)| is_hitnormal(lane)) {
+            let others: BTreeSet<SampleIdentity> = self.placements.iter().filter(|p| p.id != id && p.moment == moment && self.is_placement_live(p))
+                .flat_map(|p| p.applied.iter().filter(|a| a.added).map(|a| a.lane.clone())).collect();
+            let own: Vec<SampleIdentity> = self.moments[moment.0].hits()
+                .filter(|lane| is_hitnormal(lane) && !applied.iter().any(|a| &a.lane == *lane) && !others.contains(*lane)).cloned().collect();
+            for lane in own {
+                self.remove_hit(moment, &lane);
+            }
         }
         let placement = &mut self.placements[index];
         placement.set_digest = set_digest.to_owned();
@@ -726,6 +738,10 @@ impl Hitsounds {
             head.move_volume_from(head.volume, volume);
         }
     }
+}
+
+fn is_hitnormal(lane: &SampleIdentity) -> bool {
+    matches!(lane, SampleIdentity::Standard { sound: Sound::Hit(Hitsound::Normal), .. })
 }
 
 pub(crate) fn sound_name(sound: Sound) -> &'static str {

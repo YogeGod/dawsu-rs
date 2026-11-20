@@ -244,7 +244,8 @@ test("an open difficulty whose sound set has a newer version asks Update or Keep
   runInContext([
     "globalThis.asked = [];",
     "showSoundSetPrompt = prompt => asked.push(prompt);",
-    'scene = { path: "Hard.osu" }; view = { soundSetPrompt: { setId: "a", name: "Kick stack", placements: 2 } }; renderDialogs();',
+    "pendingSoundSetPrompt = () => view.soundSetPrompts?.[0];",
+    'scene = { path: "Hard.osu" }; view = { soundSetPrompts: [{ setId: "a", name: "Kick stack", placements: 2 }] }; renderDialogs();',
     "scene = null; renderDialogs();",
   ].join("\n"), context);
   assert.deepEqual(JSON.parse(JSON.stringify(context.asked)), [{ setId: "a", name: "Kick stack", placements: 2 }], "only with a difficulty open");

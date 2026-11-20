@@ -266,6 +266,9 @@ pub(crate) struct Project {
     pub settings: SessionSettings,
     /// Sound set links the last open could not put back; each Save writes them again (M3).
     pub kept_links: Vec<super::sound_sets::PlacementRecord>,
+    /// Library versions the mapper chose Keep for this session, by set id; each Save writes
+    /// them on the set's placements without an edit to the document.
+    pub accepted_versions: std::collections::BTreeMap<String, String>,
 }
 
 impl Project {
@@ -318,6 +321,7 @@ impl Project {
             expected,
             settings,
             kept_links: Vec::new(),
+            accepted_versions: Default::default(),
         })
     }
 

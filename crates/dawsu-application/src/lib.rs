@@ -445,7 +445,7 @@ fn prepare_save(
     };
     // The sound set links go to the project too; an old record with links is replaced.
     let sound_sets = project.and_then(|project| {
-        let record = sound_sets::build_links(hits, &file, &out, &circles, hs, &project.kept_links);
+        let record = sound_sets::build_links(hits, &file, &out, &circles, hs, &project.kept_links, &project.accepted_versions);
         let replaces = project.settings.sound_sets.as_ref().is_some_and(|old| !old.is_empty());
         (!record.is_empty() || replaces).then_some(record)
     });
@@ -869,6 +869,8 @@ pub struct Application {
     restored_recovery: Option<String>,
     /// Open-time questions about placements on an older version of a library set (M9).
     sound_set_prompts: Vec<sound_sets::SetUpdatePrompt>,
+    /// The open-time check waits for the library index's background read.
+    sound_set_check_pending: bool,
     drum: drum_detect::DrumDetect,
 }
 impl Application {
@@ -985,6 +987,7 @@ impl Application {
             checkpoint: None,
             restored_recovery: None,
             sound_set_prompts: Vec::new(),
+            sound_set_check_pending: false,
             drum: Default::default(),
         }
     }
@@ -1373,6 +1376,7 @@ impl Application {
     pub fn poll(&mut self) {
         // Edits made outside the refreshing entry points still reach the recovery checkpoint.
         self.refresh_recovery_edit();
+        self.check_set_versions_when_read();
         self.poll_drum_detection();
         // Before main's job: its arms can return early.
         self.poll_export();

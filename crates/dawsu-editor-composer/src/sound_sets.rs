@@ -4,6 +4,9 @@ use super::{Composer, HitKey, destination_at, nearest_moment};
 use dawsu_foundation::{Hitsound, SampleIdentity, Sound};
 use dawsu_hitsounding::MomentId;
 
+/// The member id of the moment's own hitnormal that an additions-only set moved to its index (D6b).
+pub const MOMENT_HITNORMAL: &str = "moment-hitnormal";
+
 /// What placing a set does to the hitnormal the moment already has (D6, D6b). An object plays one
 /// custom index for its hitnormal and additions, so the moment's own hitnormal can't stay as it is.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -42,6 +45,7 @@ impl Composer {
         }
         let volume = self.insert_volume;
         let mut placed = None;
+        let mut hits = hits.to_vec();
         self.apply("Place sound set", |h| {
             let moment = destination_at(h, time, volume, tolerance);
             // Hitnormals another set placed here belong to that set and stay.
@@ -55,14 +59,16 @@ impl Composer {
                     }
                 }
                 SetHitnormal::Reindex(target) => {
+                    // The moved hitnormal is one of the placement's members, so Update, Reset
+                    // and Unlink handle it and another set leaves it alone.
                     if let [lane] = own.as_slice() {
                         let gain = h.moment(moment).hit_volume(lane);
                         h.remove_hit(moment, lane);
-                        h.add_hit_with_volume(moment, target.clone(), gain);
+                        hits.push((MOMENT_HITNORMAL.to_string(), target.clone(), gain));
                     }
                 }
             }
-            placed = h.place_sound_set(moment, set_id, set_digest, gain, hits).map(|id| (id, moment));
+            placed = h.place_sound_set(moment, set_id, set_digest, gain, &hits).map(|id| (id, moment));
         });
         let (id, moment) = placed?;
         let reindexed = match hitnormal {

@@ -2369,8 +2369,8 @@ function renderDialogs() {
       [["Cancel", () => answer(false)], ...choices, ["Write files", () => answer(true), true]], () => answer(false));
   } else if (view.editDialog && scene) {
     showTimelineEdit(view.editDialog);
-  } else if (view.soundSetPrompt && scene) {
-    showSoundSetPrompt(view.soundSetPrompt);
+  } else if (scene && view.soundSetPrompts?.length && pendingSoundSetPrompt()) {
+    showSoundSetPrompt(pendingSoundSetPrompt());
   } else if (view.firstLaunch) {
     const choose = (name) => act({ kind: "key_preset", name });
     modal("key-preset", "Choose your keyboard preset", [

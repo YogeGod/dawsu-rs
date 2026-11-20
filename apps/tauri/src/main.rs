@@ -1323,9 +1323,10 @@ fn snapshot(app: &Application, include_scene: bool) -> Value {
         "recent": app.preferences.recent, "firstLaunch": app.first_launch,
     });
     result["saveReview"] = json!(app.save_review_files());
-    result["soundSetPrompt"] = json!(app.sound_set_prompt().filter(|_| document.is_some()).map(|p| json!({
-        "setId": p.set_id, "name": p.name, "placements": p.placements,
-    })));
+    result["soundSetPrompts"] = json!(document.map(|_| app.sound_set_prompts()).unwrap_or_default().iter().map(|p| json!({
+        "setId": p.set_id, "name": p.name, "placements": p.placements, "editedKeepFiles": p.edited_keep_files,
+        "open": app.sound_set_prompt_open(),
+    })).collect::<Vec<_>>());
     result["songSolo"] = json!(app.song_solo());
     result["editDialog"] = json!(app.requested_edit());
     result["quantizeStrength"] = json!(app.quantize_strength());
@@ -1956,7 +1957,7 @@ fn sound_set_placement_view(app: &Application, map: &Path, id: u64) -> Result<Va
     }
     let view = app.sound_set_placement(id)?;
     Ok(json!({
-        "id": view.id, "name": view.name, "edited": view.edited, "sounds": view.sounds,
+        "id": view.id, "setId": view.set_id, "name": view.name, "edited": view.edited, "sounds": view.sounds,
         "gain": view.gain, "frozen": view.frozen, "newer": view.newer,
     }))
 }

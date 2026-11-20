@@ -143,7 +143,8 @@ function showSoundSetLibrary(map, library) {
     node.append(...options);
     return node;
   };
-  const setOption = set => set.missing ? option(set.id, set.name + " · not in library", true) : option(set.id,
+  const missingOption = set => Object.assign(option(set.id, "Not in library", true), { title: set.id });
+  const setOption = set => set.missing ? missingOption(set) : option(set.id,
     set.name + " · " + set.sounds + (set.sounds === 1 ? " sound" : " sounds") +
       (set.duplicate ? " · in the library twice, remove one copy" : ""), set.duplicate);
   const used = library.sets.filter(set => set.inMap).map(setOption);
@@ -189,7 +190,9 @@ function soundSetPlacementAction(map, id, op, extra = {}) {
 }
 
 function showSoundSetPlacement(map, placement) {
-  const content = [paragraph(placement.name)];
+  const name = paragraph(placement.name ?? placement.frozen ?? "Not in library");
+  if (placement.name == null) name.title = placement.setId;
+  const content = [name];
   if (placement.sounds) content.push(paragraph(placement.edited + " of " + placement.sounds + " sounds edited"));
   const message = paragraph(placement.frozen ?? "");
   const buttons = [["Close", closeModal], ["Unlink", () => soundSetPlacementAction(map, placement.id, "unlink")]];
@@ -197,18 +200,22 @@ function showSoundSetPlacement(map, placement) {
   if (placement.newer) {
     buttons.push(["Update", () => soundSetPlacementAction(map, placement.id, "update"), true]);
   } else if (!placement.frozen) {
-    const field = input("number", String(placement.gain), 0, 100);
+    const field = input("number", String(placement.gain), 5, 100);
     content.push(labeled("Volume %", field));
     buttons.push(["Set volume", () => {
       const gain = Number(field.value);
-      if (String(field.value).trim() === "" || !Number.isInteger(gain) || gain < 0 || gain > 100) {
-        message.textContent = "Use a volume from 0 to 100%.";
+      if (String(field.value).trim() === "" || !Number.isInteger(gain) || gain < 5) {
+        message.textContent = "Volume must be at least 5%.";
+        return;
+      }
+      if (gain > 100) {
+        message.textContent = "Volume can be at most 100%.";
         return;
       }
       soundSetPlacementAction(map, placement.id, "gain", { gain });
     }, true]);
   }
-  if (placement.frozen || !placement.newer) content.push(message);
+  if (placement.name != null && (placement.frozen || !placement.newer)) content.push(message);
   modal("sound-set-placement", "Sound set placement", content, buttons);
 }
 
@@ -222,11 +229,25 @@ function openSoundSetPlacement() {
   });
 }
 
+// Questions closed with Escape this open, by open and set id: they come back on the next open.
+const dismissedSoundSetPrompts = new Set();
+const soundSetPromptKey = prompt => prompt.open + ":" + prompt.setId;
+
+function pendingSoundSetPrompt() {
+  return (view.soundSetPrompts ?? []).find(prompt => !dismissedSoundSetPrompts.has(soundSetPromptKey(prompt)));
+}
+
 function showSoundSetPrompt(prompt) {
   const answer = update => { closeModal(); act({ kind: "sound_set_prompt", set_id: prompt.setId, update }); };
+  const dismiss = () => { dismissedSoundSetPrompts.add(soundSetPromptKey(prompt)); closeModal(); };
   const count = prompt.placements + (prompt.placements === 1 ? " placement uses" : " placements use");
-  modal("sound-set-update", "Sound set changed", [paragraph(count + " an older version of " + prompt.name + ".")],
-    [["Keep", () => answer(false)], ["Update", () => answer(true), true]], () => answer(false));
+  const content = [paragraph(count + " an older version of " + prompt.name + ".")];
+  if (prompt.editedKeepFiles) {
+    content.push(paragraph(prompt.editedKeepFiles === 1 ? "1 edited sound keeps its own file."
+      : prompt.editedKeepFiles + " edited sounds keep their own files."));
+  }
+  modal("sound-set-update", "Sound set changed", content,
+    [["Keep", () => answer(false)], ["Update", () => answer(true), true]], dismiss);
 }
 
 function saveSoundSet() {
