@@ -3,7 +3,7 @@
 //! ones dawsu! wrote. A file a hit of the open difficulty still plays leaves the mapset and
 //! becomes a pending file again; any other goes to `data_root/removed-samples`.
 
-use super::{Application, layers, pending, project, safe_child};
+use super::{Application, layers, pending, project, recovery, safe_child};
 use dawsu_foundation::{SampleIdentity, digest::sha256_hex, safe_write};
 use dawsu_hitsounding::LaneSource;
 use dawsu_hitsounding::rules::read_sample_file_name;
@@ -66,6 +66,7 @@ impl Application {
         let Ok((used, other_mode_indexes)) = folder_uses(&root) else { return 0 };
         let except = (!closing).then(|| document.path.clone());
         let projects = project_texts(project_root.as_deref(), &root, except.as_deref());
+        let copies = recovery::copies_play(&data_root, &root);
         let hits = document.composer.hitsounds().clone();
         let mut dropped = Vec::new();
         let mut moved = 0;
@@ -91,6 +92,7 @@ impl Application {
             if used.contains(&lower)
                 || index.is_some_and(|index| other_mode_indexes.contains(&index))
                 || projects.iter().any(|text| text.contains(&stem))
+                || in_a_copy(&copies, &name)
             {
                 continue;
             }
@@ -145,6 +147,15 @@ impl Application {
         }
         moved
     }
+}
+
+/// Whether a recovery copy plays or lists the file `name`.
+fn in_a_copy(copies: &[SampleIdentity], name: &str) -> bool {
+    let identity = read_sample_file_name(name);
+    copies.iter().any(|sample| match sample {
+        SampleIdentity::File(file) => file.eq_ignore_ascii_case(name),
+        standard => identity.as_ref() == Some(standard),
+    })
 }
 
 /// The words for the status line.

@@ -103,6 +103,7 @@ impl Pending {
     /// Keeps `bytes` as the pending file `name`. The name is claimed atomically: a name another
     /// window claimed first is refused.
     pub(crate) fn add(&mut self, name: &str, bytes: &[u8]) -> Result<PendingFile, String> {
+        bare_name(name)?;
         let store = self.store.as_ref().ok_or("The open map has no data folder for new samples.")?;
         let sha256 = sha256_hex(bytes);
         let extension = Path::new(name).extension().and_then(|e| e.to_str()).unwrap_or("wav").to_ascii_lowercase();
@@ -125,6 +126,10 @@ impl Pending {
     /// Takes back a pending file a project listed, when its kept bytes still match. Its claim is
     /// kept or made again.
     pub(crate) fn restore(&mut self, name: &str, sha256: &str) -> Result<PendingFile, String> {
+        bare_name(name)?;
+        if sha256.len() != 64 || !sha256.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(format!("The kept copy of {name} has no valid checksum."));
+        }
         let store = self.store.as_ref().ok_or("The open map has no data folder for new samples.")?;
         let extension = Path::new(name).extension().and_then(|e| e.to_str()).unwrap_or("wav").to_ascii_lowercase();
         let path = store.samples.join(format!("{sha256}.{extension}"));
@@ -152,6 +157,14 @@ impl Pending {
             let _ = std::fs::remove_file(store.claims.join(name.to_ascii_lowercase()));
         }
     }
+}
+
+/// A pending file's name is one file in the mapset folder itself: no folder, drive or `..`.
+fn bare_name(name: &str) -> Result<(), String> {
+    if name.is_empty() || name == "." || name == ".." || name.contains(['/', '\\', ':']) || name.chars().any(char::is_control) {
+        return Err(format!("{name:?} is not a sample file name in the mapset folder."));
+    }
+    Ok(())
 }
 
 /// A sample folder's files (the default samples or a library folder), empty when it can't be read.
@@ -265,6 +278,35 @@ pub(crate) fn check_written(file: &OsuFile, root: &Path, writes: &[String], edit
     }
 }
 
+/// The refusal for a new sample a Save would leave out of the mapset with no project to keep it.
+pub(crate) fn left_out_without_project(name: &str) -> String {
+    format!("Save would leave {name} out of the mapset, and without a writable editor project nothing would keep it. Nothing was saved.")
+}
+
+/// A new sample file a Save writes must not take a custom index another difficulty of the mapset
+/// now uses: that difficulty would start playing it.
+#[allow(clippy::disallowed_methods)]
+pub(crate) fn check_indexes_free(root: &Path, saved: &Path, writes: &[String]) -> Result<(), String> {
+    let indexes: BTreeMap<u32, &String> = writes.iter().filter_map(|name| match read_sample_file_name(name)? {
+        SampleIdentity::Standard { index, .. } => Some((index.get(), name)),
+        SampleIdentity::File(_) => None,
+    }).collect();
+    if indexes.is_empty() {
+        return Ok(());
+    }
+    let own = saved.file_name().map(|name| name.to_string_lossy().to_ascii_lowercase());
+    for other in list_folder(root).map_err(|e| e.to_string())? {
+        if !Path::new(&other).extension().is_some_and(|e| e.eq_ignore_ascii_case("osu")) || Some(other.to_ascii_lowercase()) == own {
+            continue;
+        }
+        let (used, _) = crate::layers::reservations(root, std::slice::from_ref(&other))?;
+        if let Some((index, name)) = indexes.iter().find(|(index, _)| used.contains(index)) {
+            return Err(format!("{name} uses sample index {index}, which {other} now uses too. Nothing was saved."));
+        }
+    }
+    Ok(())
+}
+
 /// The pending files the drawn hits play that this Save does not write.
 pub(crate) fn needed(hits: &Hitsounds, pending: &Pending, written: &[String]) -> Vec<PendingSample> {
     let written: BTreeSet<String> = written.iter().map(|n| n.to_ascii_lowercase()).collect();
@@ -369,10 +411,19 @@ struct LedgerFile {
 }
 
 impl Ledger {
+    /// The listed files. A ledger that can't be read is kept aside, next to it with `corrupt` in
+    /// its name, and a new one is started: no file it listed is cleaned up.
     pub(crate) fn entries(&self) -> Vec<PendingSample> {
-        std::fs::read(&self.path).ok()
-            .and_then(|bytes| serde_json::from_slice::<LedgerFile>(&bytes).ok())
-            .map(|file| file.files).unwrap_or_default()
+        let Ok(bytes) = std::fs::read(&self.path) else { return Vec::new() };
+        match serde_json::from_slice::<LedgerFile>(&bytes) {
+            Ok(file) => file.files,
+            Err(_) => {
+                let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis());
+                let aside = self.path.with_extension(format!("corrupt-{stamp}-{}.json", std::process::id()));
+                let _ = std::fs::rename(&self.path, aside);
+                Vec::new()
+            }
+        }
     }
 
     fn write(&self, files: Vec<PendingSample>) -> Result<(), String> {

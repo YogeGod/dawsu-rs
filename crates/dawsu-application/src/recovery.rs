@@ -563,3 +563,36 @@ pub(super) fn offers(root: &Path) -> Result<Vec<RecoveryOffer>, String> {
     });
     Ok(offers)
 }
+
+impl WorkingHits {
+    fn samples(&self) -> impl Iterator<Item = &SampleIdentity> {
+        self.lanes.iter()
+            .chain(self.moments.iter().flat_map(|moment| &moment.hits))
+            .chain(self.placements.iter().flat_map(|placement| placement.applied.iter().map(|applied| &applied.lane)))
+            .map(|sample| &sample.0)
+    }
+}
+
+/// Every sample a stopped session's recovery copy of a difficulty in `mapset` plays or lists:
+/// its lanes, hits and pending files. A sample file it names stays in the mapset, so restoring
+/// the copy still plays it. A copy that can't be read names nothing.
+pub(super) fn copies_play(data_root: &Path, mapset: &Path) -> Vec<SampleIdentity> {
+    let Ok(entries) = fs::read_dir(data_root.join("recovery")) else { return Vec::new() };
+    let same = |folder: &Path| folder == mapset
+        || folder.canonicalize().ok().zip(mapset.canonicalize().ok()).is_some_and(|(a, b)| a == b);
+    let mut out = Vec::new();
+    for entry in entries.filter_map(Result::ok) {
+        if !entry.file_name().to_str().is_some_and(valid_id) {
+            continue;
+        }
+        let Ok(copy) = read_copy(&entry.path()) else { continue };
+        if !copy.source().parent().is_some_and(same) {
+            continue;
+        }
+        let data = &copy.checkpoint;
+        let saved = data.last_save.iter().flat_map(|save| save.hits.samples().chain(save.drawn.iter().flat_map(WorkingHits::samples)));
+        out.extend(data.working.hits.samples().chain(data.working.row_order.iter().map(|sample| &sample.0)).chain(saved).cloned());
+        out.extend(data.pending.iter().map(|file| SampleIdentity::File(file.name.clone())));
+    }
+    out
+}
