@@ -1068,4 +1068,67 @@ mod tests {
         let published = crate::mixes::publish(&both, &|| false).unwrap();
         drop(published);
     }
+
+    /// A source slider whose tick plays soft-slidertick.wav, and a source circle on that tick
+    /// with the same file: Generate's slider audio and Copy's timed tick sound render the same WAV.
+    fn timed_mapset(name: &str) -> (Scratch, PathBuf, PathBuf) {
+        let scratch = Scratch::new(name);
+        let header = "osu file format v14\n[General]\nMode:0\n[Metadata]\nArtist:Artist\nTitle:Title\nCreator:Mapper\nVersion:VERSION\n[Difficulty]\nSliderMultiplier:1.4\nSliderTickRate:1\n[TimingPoints]\n0,500,4,2,1,100,1,0\n[HitObjects]\n";
+        let slider = "100,100,1000,2,0,L|380:100,1,280,0|0,0:0|0:0,0:0:0:0:\n";
+        std::fs::write(scratch.path("source.osu"), format!("{}{slider}256,192,1500,1,0,0:0:0:0:soft-slidertick.wav\n", header.replace("VERSION", "Source"))).unwrap();
+        std::fs::write(scratch.path("target.osu"), format!("{}{slider}", header.replace("VERSION", "Target"))).unwrap();
+        for (name, value) in [("soft-slidertick.wav", 8192_i16), ("soft-sliderslide.wav", 4096)] {
+            let mut wav = b"RIFF\x28\0\0\0WAVEfmt \x10\0\0\0\x01\0\x01\0\x80\xbb\0\0\0w\x01\0\x02\0\x10\0data\x04\0\0\0".to_vec();
+            for _ in 0..2 {
+                wav.extend(value.to_le_bytes());
+            }
+            std::fs::write(scratch.path(name), wav).unwrap();
+        }
+        let canonical = |name: &str| scratch.path(name).canonicalize().unwrap();
+        let (source, target) = (canonical("source.osu"), canonical("target.osu"));
+        (scratch, source, target)
+    }
+
+    fn timed_copy() -> CopyOptions {
+        CopyOptions {
+            mode: dawsu_hitsounding::copy::CopyMode::OverwriteOnlyDefined,
+            copy_to_slider_ticks: true, copy_to_slider_slides: true, ..CopyOptions::default()
+        }
+    }
+
+    #[test]
+    fn copy_never_points_a_target_at_a_wav_generate_owns() {
+        let (_scratch, source, target) = timed_mapset("export-timed-owned");
+        let mut app = opened(&source);
+        let options = ExportOptions { targets: vec![target.clone()], copy: timed_copy(), base: true, slider_audio: true };
+        app.request_export_preview(options.clone()).unwrap();
+        wait_preview(&mut app);
+        let status = app.export_status();
+        assert_eq!(status.error, None);
+        let plan = &status.preview.unwrap().plan;
+        let count = plan.generated.as_ref().unwrap().1;
+        let target_file = &plan.files.iter().find(|file| file.path == target).unwrap().file;
+        let used = target_file.storyboard_samples().into_iter().map(|event| event.path).collect::<Vec<_>>();
+        let generated = plan.mixes[..count].iter()
+            .map(|mix| mix.path.file_name().unwrap().to_string_lossy().into_owned()).collect::<Vec<_>>();
+        assert!(!used.is_empty());
+        assert!(used.iter().all(|name| !generated.contains(name)), "{used:?} uses {generated:?}");
+
+        run_preview(&mut app, options);
+        let exported = folder_files(source.parent().unwrap());
+        let (_set, reference, reference_target) = timed_mapset("export-timed-owned-reference");
+        let mut main = opened(&reference);
+        let backups = main.data_root.join("backups");
+        main.generate_with_slider_audio(true);
+        wait_main(&mut main);
+        main.apply_output_in(backups.clone());
+        wait_main(&mut main);
+        assert!(main.error.is_none(), "{:?}", main.error);
+        main.copy_hitsounds(vec![reference_target], timed_copy());
+        wait_main(&mut main);
+        main.apply_output_in(backups);
+        wait_main(&mut main);
+        assert!(main.error.is_none(), "{:?}", main.error);
+        assert_eq!(exported, folder_files(reference.parent().unwrap()));
+    }
 }

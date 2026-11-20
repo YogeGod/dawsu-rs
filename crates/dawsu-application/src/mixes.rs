@@ -469,6 +469,9 @@ pub(super) fn stage_timed_copy(
     source: &Hitsounds, file: &mut OsuFile, path: &Path, defaults: &Path,
     placements: &[dawsu_hitsounding::copy::SliderCopyPlacement],
     staged: &mut Vec<StagedMix>, details: &mut Vec<String>, cancel: &dyn Fn() -> bool,
+    // Mixes before this index belong to an earlier part of the write (Generate): their names stay
+    // reserved, but a target never points at them.
+    own_from: usize,
 ) -> Result<(), String> {
     if placements.is_empty() {
         return Ok(());
@@ -489,7 +492,7 @@ pub(super) fn stage_timed_copy(
             name.clone()
         } else {
             let wav = render_layers(source, None, layers, root, defaults, &defaults_list, &mut clips, cancel)?;
-            let name = if let Some(previous) = staged.iter().find(|mix| mix.index.is_none() && mix.wav == wav) {
+            let name = if let Some(previous) = staged[own_from..].iter().find(|mix| mix.index.is_none() && mix.wav == wav) {
                 previous.path.file_name().ok_or("Missing staged filename")?.to_string_lossy().into_owned()
             } else {
                 let (name, mix) = StagedMix::new_generated(root, wav, existing.iter(), &mut names)?;

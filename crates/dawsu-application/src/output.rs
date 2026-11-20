@@ -369,6 +369,7 @@ fn copy_after(
         CopyOutcome::Targets(outcomes) => outcomes,
         other => return Err(crate::refusals::copy(&other)),
     };
+    let earlier = already_staged.len();
     let mut plan = WritePlan {
         label: "Copy hitsounds".into(),
         mixes: already_staged,
@@ -455,7 +456,7 @@ fn copy_after(
                 }
                 plan.mixes.extend(mixes.staged);
                 mixes::stage_timed_copy(&source.hits, &mut file, &path, defaults, &target.slider_placements,
-                    &mut plan.mixes, &mut plan.details, cancel)?;
+                    &mut plan.mixes, &mut plan.details, cancel, earlier)?;
                 plan.files.push(PlannedFile {
                     path,
                     file,
