@@ -7,6 +7,7 @@ mod commands;
 mod edit_workflows;
 mod controller;
 mod editor_meter;
+mod export;
 mod export_settings;
 mod generate_receipt;
 mod gain_recovery;
@@ -33,6 +34,7 @@ use dawsu_editor::keys::{KeyChord, Mods};
 use dawsu_editor::transport::BookmarkList;
 pub use problems::OutputProblem;
 pub use editor_meter::{EditorBarSection, EditorTimeSignature};
+pub use export::{ExportOptions, ExportPreview, ExportStatus, PreviewOrigin};
 pub use export_settings::{ExportCombination, ExportSettings};
 pub use project::LaneLayout;
 pub use recovery::RecoveryOffer;
@@ -774,6 +776,7 @@ pub struct Application {
     pub revert_requested: bool,
     pub busy: bool,
     pub output_review: Option<output::WritePlan>,
+    export: export::Slot,
     pending_save_review: Option<PendingSave>,
     output_problems: Vec<OutputProblem>,
     output_problem_revision: Option<(u64, bool)>,
@@ -886,6 +889,7 @@ impl Application {
             revert_requested: false,
             busy: false,
             output_review: None,
+            export: export::Slot::default(),
             pending_save_review: None,
             output_problems: Vec::new(),
             output_problem_revision: None,
@@ -1306,6 +1310,8 @@ impl Application {
     pub fn poll(&mut self) {
         // Edits made outside the refreshing entry points still reach the recovery checkpoint.
         self.refresh_recovery_edit();
+        // Before main's job: its arms can return early.
+        self.poll_export();
         if !self.cancel.load(Ordering::Relaxed)
             && let Some(progress) = &self.job_progress
             && let Ok(mut current) = progress.current.try_lock()
@@ -2271,6 +2277,10 @@ impl Application {
                 Some("The source changed since this review. Prepare the output again.".into());
             return;
         }
+        self.write_reviewed(plan, backups);
+    }
+
+    fn write_reviewed(&mut self, plan: output::WritePlan, backups: PathBuf) {
         let cancel = Arc::new(AtomicBool::new(false));
         self.cancel = cancel.clone();
         let (send, receive) = mpsc::channel();

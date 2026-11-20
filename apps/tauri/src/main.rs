@@ -7,7 +7,7 @@ mod keyboard;
 mod library;
 mod selection;
 
-use dawsu_application::{Application, OutputBackend, ExportSettings, PlatformRequest, EditorTimeSignature, LaneLayout, PointerPhase, RangeOperation, TimelineEdit, VolumeScope, lane_name};
+use dawsu_application::{Application, OutputBackend, ExportOptions, ExportSettings, PlatformRequest, EditorTimeSignature, LaneLayout, PointerPhase, RangeOperation, TimelineEdit, VolumeScope, lane_name};
 use dawsu_editor::{
     keys::{Key, KeyCombination, Mods},
     tempo::SnapMode,
@@ -1257,6 +1257,10 @@ enum Request {
     DrumView(PathBuf, Option<PathBuf>, bool, mpsc::Sender<Result<Value, String>>),
     Folder(folders::Folder, mpsc::Sender<Result<PathBuf, String>>),
     Close(bool, mpsc::Sender<Result<(), String>>),
+    // The Export window's own requests. Each always answers, with an error after a fault.
+    ExportView(mpsc::Sender<Result<Value, String>>),
+    ExportPreview(ExportOptions, mpsc::Sender<Result<u64, String>>),
+    ExportRun(u64, mpsc::Sender<Result<(), String>>),
 }
 struct Editor(mpsc::Sender<Request>);
 
@@ -1282,6 +1286,76 @@ fn guard<T>(
         *fault = Some(message.clone());
         message
     })
+}
+
+fn export_snapshot(app: &Application) -> Value {
+    let status = app.export_status();
+    let document = app.document();
+    let source = document.map(|d| {
+        let mut hit_counts = std::collections::HashMap::new();
+        for lane in d.composer.hitsounds().moments().iter().flat_map(|moment| moment.hits()) {
+            *hit_counts.entry(lane).or_insert(0_usize) += 1;
+        }
+        let lanes = d.composer.lanes.iter().map(|lane| json!({
+            "name": lane_name(lane),
+            "colourKey": dawsu_application::lane_layout_key(lane),
+            "hitCount": hit_counts.get(lane).copied().unwrap_or(0),
+        })).collect::<Vec<_>>();
+        json!({
+            "path": d.path, "title": d.title,
+            "difficulty": d.file.value("Metadata", "Version"),
+            "version": d.composer.history.version(),
+            "hits": hit_counts.values().sum::<usize>(),
+            "lanes": lanes,
+            "laneColours": d.lane_layout().map(|layout| json!(layout.lane_colours)).unwrap_or_else(|| json!({})),
+        })
+    });
+    let targets = document.map_or_else(Vec::new, |d| {
+        d.difficulties.iter().filter(|path| **path != d.path).collect::<Vec<_>>()
+    });
+    json!({
+        "source": source,
+        "targets": targets,
+        "backups": app.backups_folder(),
+        "busy": app.busy,
+        "requested": status.requested,
+        "previewing": status.running || status.waiting,
+        "progress": status.progress.map(|(done, total)| json!({ "kind": "preview", "done": done, "total": total })),
+        "error": status.error,
+        "problems": status.problems.iter().map(|problem| json!({
+            "target": problem.target, "timeline": problem.timeline,
+            "time": problem.time, "message": problem.message,
+        })).collect::<Vec<_>>(),
+        "preview": status.preview.map(|preview| json!({
+            "id": preview.id,
+            "origin": "export",
+            "stale": status.stale,
+            "source": preview.plan.source,
+            "version": preview.plan.version,
+            "label": preview.plan.label,
+            "details": preview.plan.details,
+            "files": preview.plan.files.iter().map(|file| &file.path).collect::<Vec<_>>(),
+            "mixes": preview.plan.mix_paths().collect::<Vec<_>>(),
+        })),
+    })
+}
+
+/// Answers the Export window. Never touches main's one-shot view state.
+fn answer_export(app: &mut Application, fault: &mut Option<String>, request: Request) {
+    match request {
+        Request::ExportView(response) => {
+            let _ = response.send(guard(app, fault, |app| export_snapshot(app)));
+        }
+        Request::ExportPreview(options, response) => {
+            let result = guard(app, fault, |app| app.request_export_preview(options)).and_then(|result| result);
+            let _ = response.send(result);
+        }
+        Request::ExportRun(preview_id, response) => {
+            let result = guard(app, fault, |app| app.run_export(preview_id)).and_then(|result| result);
+            let _ = response.send(result);
+        }
+        _ => unreachable!("only Export requests reach answer_export"),
+    }
 }
 
 fn editor_thread(initial: Option<PathBuf>) -> Editor {
@@ -1491,6 +1565,7 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                                 Err("Save or discard the current difficulty before quitting.".into())
                             } else {
                                 app.save_session().map(|()| {
+                                    app.cancel_export_preview();
                                     if !app.first_launch {
                                         app.save_preferences();
                                     }
@@ -1500,6 +1575,9 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                         .and_then(|result| result)
                     };
                     let _ = response.send(result);
+                }
+                Ok(request @ (Request::ExportView(_) | Request::ExportPreview(..) | Request::ExportRun(..))) => {
+                    answer_export(&mut app, &mut fault, request);
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {
                     if fault.is_none() {
@@ -1544,6 +1622,29 @@ fn editor_help(state: State<'_, Editor>) -> Result<Value, String> {
 #[tauri::command]
 fn editor_export_settings(state: State<'_, Editor>) -> Result<Option<(PathBuf, ExportSettings)>, String> {
     ask(&state, Request::ExportSettings)
+}
+
+#[derive(Deserialize)]
+struct ExportOptionsJson {
+    targets: Vec<PathBuf>,
+    #[serde(with = "CopyOptionsJson")]
+    options: CopyOptions,
+}
+
+#[tauri::command]
+fn export_view(state: State<'_, Editor>) -> Result<Value, String> {
+    ask(&state, Request::ExportView)?
+}
+
+#[tauri::command]
+fn export_preview(state: State<'_, Editor>, options: ExportOptionsJson) -> Result<u64, String> {
+    let options = ExportOptions { targets: options.targets, copy: options.options };
+    ask(&state, |tx| Request::ExportPreview(options, tx))?
+}
+
+#[tauri::command]
+fn export_run(state: State<'_, Editor>, preview_id: u64) -> Result<(), String> {
+    ask(&state, |tx| Request::ExportRun(preview_id, tx))?
 }
 
 #[tauri::command]
@@ -1798,6 +1899,9 @@ fn main() {
             editor_view,
             editor_help,
             editor_export_settings,
+            export_view,
+            export_preview,
+            export_run,
             pick_merge_preset,
             save_merge_preset,
             editor_shortcuts,
