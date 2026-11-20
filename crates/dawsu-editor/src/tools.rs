@@ -205,7 +205,7 @@ impl ToolKind {
                 ),
                 m!(
                     "Ctrl+click / Shift+click",
-                    "Toggle / add an item to the selection"
+                    "Toggle an item / select from the last clicked item in this lane"
                 ),
                 m!(
                     "Double-click an item (Select tool)",
@@ -414,13 +414,13 @@ impl<I: Clone + Eq + Hash> ToolBox<I> {
                 if e.mods.ctrl() {
                     target.selection().toggle(item.clone());
                 } else if e.mods.shift() {
-                    // shortcut: the range spans every row, as items carry no row here; narrow it
-                    // when ToolTarget gets an item row.
+                    // The range runs from the anchor's time to this item, on the clicked row only,
+                    // even when the anchor sits on another row. Range and box select span rows.
                     let anchor = target.selection().primary().cloned();
                     if let Some(anchor) = anchor.filter(|a| *a != item) {
                         let (from, to) =
                             ordered(target.item_time(&anchor), target.item_time(&item));
-                        for i in target.in_range(from, to, i32::MIN, i32::MAX) {
+                        for i in target.in_range(from, to, e.row, e.row) {
                             if i != anchor {
                                 target.selection().add(i);
                             }

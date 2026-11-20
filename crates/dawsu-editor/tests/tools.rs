@@ -490,11 +490,12 @@ fn every_tool_has_its_3_1_x_command_and_mouse_actions() {
 }
 
 #[test]
-fn shift_click_selects_the_range_from_the_primary() {
+fn shift_click_selects_the_range_from_the_primary_on_the_clicked_row_only() {
     let mut f = Fake::new(&[
         (1000.0, 0),
         (1500.0, 1),
         (2000.0, 2),
+        (2500.0, 0),
         (3000.0, 0),
         (4000.0, 0),
     ]);
@@ -504,11 +505,55 @@ fn shift_click_selects_the_range_from_the_primary() {
     let shift = with(p(3000.0, 0), |e| e.mods = Mods::SHIFT);
     tb.down(&mut f, shift);
     tb.up(&mut f, shift);
-    assert_eq!(f.selection.items(), &HashSet::from([0, 1, 2, 3]));
+    assert_eq!(
+        f.selection.items(),
+        &HashSet::from([0, 3, 4]),
+        "hits on other rows in between stay unselected"
+    );
     assert_eq!(
         f.selection.primary(),
         Some(&0),
         "the anchor stays for the next Shift+click"
+    );
+}
+
+#[test]
+fn shift_click_on_another_row_selects_that_row_from_the_anchor_time() {
+    let mut f = Fake::new(&[(1000.0, 0), (1500.0, 0), (1200.0, 1), (1800.0, 1), (2500.0, 1)]);
+    let mut tb = tool(ToolKind::Select, &mut f);
+    tb.down(&mut f, p(1000.0, 0));
+    tb.up(&mut f, p(1000.0, 0));
+    let shift = with(p(1800.0, 1), |e| e.mods = Mods::SHIFT);
+    tb.down(&mut f, shift);
+    tb.up(&mut f, shift);
+    assert_eq!(f.selection.items(), &HashSet::from([0, 2, 3]));
+    assert_eq!(f.selection.primary(), Some(&0));
+}
+
+#[test]
+fn shift_click_keeps_hits_selected_on_other_rows_and_ctrl_shift_click_toggles_one() {
+    // 0 and 3 on row 0, 1 and 2 on row 1, 4 on row 2.
+    let mut f = Fake::new(&[(1000.0, 0), (1000.0, 1), (2000.0, 1), (2000.0, 0), (1500.0, 2)]);
+    let mut tb = tool(ToolKind::Select, &mut f);
+    f.selection.replace([4]);
+    let ctrl = with(p(1000.0, 0), |e| e.mods = Mods::CTRL);
+    tb.down(&mut f, ctrl);
+    tb.up(&mut f, ctrl);
+    let shift = with(p(2000.0, 0), |e| e.mods = Mods::SHIFT);
+    tb.down(&mut f, shift);
+    tb.up(&mut f, shift);
+    assert_eq!(
+        f.selection.items(),
+        &HashSet::from([4, 0, 3]),
+        "Shift adds the row's range and keeps what was selected"
+    );
+    let ctrl_shift = with(p(2000.0, 1), |e| e.mods = Mods::CTRL | Mods::SHIFT);
+    tb.down(&mut f, ctrl_shift);
+    tb.up(&mut f, ctrl_shift);
+    assert_eq!(
+        f.selection.items(),
+        &HashSet::from([4, 0, 3, 2]),
+        "Ctrl+Shift toggles the clicked hit only, as before"
     );
 }
 
