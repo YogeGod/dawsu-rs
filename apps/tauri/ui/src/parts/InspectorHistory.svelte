@@ -5,7 +5,10 @@
 
   const on = inspectorHandlers((...args) => globalThis.inspectorAction(...args));
   const model = $derived(bridge.inspector ?? emptyInspector);
-  const steps = $derived(historyRows(model.history, model.historyPosition));
+  // app.js keeps the list the same array while it does not change, so polls rebuild no rows.
+  const list = $derived(model.history);
+  const position = $derived(model.historyPosition);
+  const steps = $derived(historyRows(list, position));
   let open = $state(true);
 </script>
 

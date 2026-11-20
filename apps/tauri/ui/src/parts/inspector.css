@@ -221,6 +221,11 @@
   gap: 4px;
   padding-top: 8px;
 }
+/* Six bookmark rows show, as the old list did; more scroll. */
+.insp-marks {
+  max-height: 196px;
+  overflow-y: auto;
+}
 .insp-steps {
   max-height: 230px;
   overflow-y: auto;

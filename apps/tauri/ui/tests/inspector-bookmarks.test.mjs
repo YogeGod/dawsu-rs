@@ -60,6 +60,15 @@ test("Bookmarks show as rows; clicking one picks it and goes to it", () => {
   assert.doesNotMatch(html, /No bookmarks/);
 });
 
+test("the bookmark list shows six rows, as the old list box did, and scrolls the rest", () => {
+  const css = readFileSync(new URL("../src/parts/inspector.css", import.meta.url), "utf8");
+  const rule = css.match(/\n\.insp-marks \{([^}]*)\}/)?.[1] ?? "";
+  // Six 28 px rows, five 4 px gaps and the 8 px top padding.
+  assert.match(rule, /max-height: 196px;/);
+  assert.match(rule, /overflow-y: auto;/);
+  assert.match(css, /\.insp-mark,\n\.insp-step \{[^}]*height: 28px;[^}]*\}/);
+});
+
 test("no bookmarks says how to add one", () => {
   const html = shown(InspectorBookmarks, model({ bookmarks: [] }));
   assert.match(html, />No bookmarks\. Add one at the playhead with \+\.</);

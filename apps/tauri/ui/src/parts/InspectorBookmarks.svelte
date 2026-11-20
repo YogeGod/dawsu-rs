@@ -6,7 +6,10 @@
 
   const on = inspectorHandlers((...args) => globalThis.inspectorAction(...args));
   const model = $derived(bridge.inspector ?? emptyInspector);
-  const rows = $derived(bookmarkRows(model.bookmarks, model.bookmark));
+  // app.js keeps the list the same array while it does not change, so polls rebuild no rows.
+  const marks = $derived(model.bookmarks);
+  const pick = $derived(model.bookmark);
+  const rows = $derived(bookmarkRows(marks, pick));
   // Go to, Rename and Remove act on the picked row, as they did on the old list's choice.
   const picked = $derived(!model.busy && rows.some(row => row.current));
   let open = $state(true);

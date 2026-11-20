@@ -279,6 +279,22 @@ test("every open, command and toggle a part sends reaches its inspectorAction ca
   const known = new Set([...catalogue.matchAll(/(?:CommandDefinition::new|\bdef)\(\s*"(\w+)"/g)].map(match => match[1]));
   for (const id of commands) assert.ok(known.has(id), id + " is not a catalogue command");
 
+  // Bookmarks: + and the buttons that act on the picked row, a row pick and a History step.
+  const bookmarkKinds = keys("bookmark");
+  assert.deepEqual(bookmarkKinds, ["add", "goTo", "rename", "remove"]);
+  assert.match(part, /on\.pickBookmark\(row\.time\)/);
+  assert.match(part, /on\.history\(step\.position\)/);
+  evaluate(`view = { busy: false, position: 750 }; scene = { path: "a.osu", bookmarks: [{ time: 500, label: "Intro" }],
+    history: ["Draw hit"], historyPosition: 1 }; editBookmark = mark => reached.push("edit " + (mark?.time ?? "new"));
+    handOverInspector = () => {}; reached.length = 0;`);
+  await sent();
+  evaluate('inspectorAction("pickBookmark", 500)');
+  for (const kind of bookmarkKinds) evaluate(`inspectorAction("bookmark", "${kind}")`);
+  evaluate('inspectorAction("history", 0)');
+  assert.deepEqual(JSON.parse(evaluate("JSON.stringify(reached)")), ["edit new", "edit 500"]);
+  assert.deepEqual(await sent(), [{ kind: "bookmark_jump", time: 500 }, { kind: "bookmark_jump", time: 500 },
+    { kind: "bookmark_edit", path: "a.osu", time: 500, label: null }, { kind: "history", position: 0 }]);
+
   const toggles = keys("toggle");
   assert.deepEqual(toggles.sort(), ["audition", "hs_mode", "protect"]);
   evaluate("view = { busy: false }; scene = { path: 'a.osu' };");
