@@ -29,6 +29,12 @@ pub(super) fn path(root: &Path, source: &Path) -> PathBuf {
         .join(format!("{}.json", crate::project::path_digest(source)))
 }
 
+/// The difficulty Generate last wrote for this source, as its receipt names it.
+pub(super) fn output_path(root: &Path, source: &Path) -> Option<PathBuf> {
+    let receipt = read(&path(root, source)).ok().flatten()?;
+    Some(source.parent()?.join(receipt.file_name))
+}
+
 pub(super) fn previous(
     receipt_path: Option<&Path>,
     target: &Path,

@@ -777,6 +777,8 @@ pub struct Application {
     pub busy: bool,
     pub output_review: Option<output::WritePlan>,
     export: export::Slot,
+    /// Counts loads and Saves of the open difficulty, for the Export preview's identity.
+    document_generation: u64,
     pending_save_review: Option<PendingSave>,
     output_problems: Vec<OutputProblem>,
     output_problem_revision: Option<(u64, bool)>,
@@ -890,6 +892,7 @@ impl Application {
             busy: false,
             output_review: None,
             export: export::Slot::default(),
+            document_generation: 0,
             pending_save_review: None,
             output_problems: Vec::new(),
             output_problem_revision: None,
@@ -1353,6 +1356,10 @@ impl Application {
                     let mut checkpoint = recovery::Checkpoint::new(&loaded.document);
                     let restored_id = loaded.recovery.map(|copy| copy.resume(&mut checkpoint));
                     self.document = Some(loaded.document);
+                    // Reviews of the outgoing load must not match this one: history versions restart.
+                    self.document_generation += 1;
+                    self.output_review = None;
+                    self.export.clear();
                     self.pending_save_review = None;
                     self.last_endpoint_jump = None;
                     self.selection_lane_scope = None;
@@ -1514,6 +1521,8 @@ impl Application {
                             let drawn = report.drawn;
                             if let Some(d) = self.document.as_mut().filter(|d| d.path == path) {
                                 d.file = report.file;
+                                self.document_generation += 1;
+                                self.export.clear();
                                 d.written = last_written(&compiled, hs_mode);
                                 d.left_out = report.left_out;
                                 // The difficulty is written, even when a step below returns early.
