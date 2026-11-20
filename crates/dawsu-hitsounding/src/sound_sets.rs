@@ -282,6 +282,40 @@ pub fn write_dawsuset(set: &SoundSet) -> Result<String, SetRefusal> {
     Ok(text)
 }
 
+// ---------------------------------------------------------------- capturing a selection
+
+/// One selected hit to save in a new set: the lane it plays, the old app's key for it, its volume
+/// and the bytes of its sample.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CapturedHit {
+    pub lane: SetLane,
+    pub original_key: String,
+    pub volume: i32,
+    pub audio: Vec<u8>,
+}
+
+/// The old app's `SoundSetFiles.Capture`: a new set named `name` (trimmed) with one member per
+/// hit, each with a fresh id from `new_id`, its lane, volume and audio, and the role its sample
+/// name gives (`normal-hitnormal` for a file with no sample name). Slider sounds are refused, and
+/// the set must pass `validate`.
+pub fn capture(new_id: &mut dyn FnMut() -> String, name: &str, hits: Vec<CapturedHit>) -> Result<SoundSet, SetRefusal> {
+    let id = new_id();
+    let members = hits
+        .into_iter()
+        .map(|hit| {
+            let slot = match hit.lane.sample() {
+                Some(SampleIdentity::Standard { set, sound: sound @ Sound::Hit(_), .. }) => format!("{}-{}", crate::rules::set_word(set), crate::rules::sound_word(sound)),
+                Some(SampleIdentity::Standard { sound: Sound::Slider(_), .. }) => return Err(invalid("use hitnormal, whistle, finish or clap sounds in a set")),
+                _ => "normal-hitnormal".to_string(),
+            };
+            Ok(SetMember { id: new_id(), original_key: hit.original_key, lane: hit.lane, slot, volume: hit.volume, audio: hit.audio, kept: Kept::default() })
+        })
+        .collect::<Result<Vec<_>, SetRefusal>>()?;
+    let set = SoundSet { id, name: name.trim().to_string(), members, library_id: None, kept: Kept::default() };
+    set.validate()?;
+    Ok(set)
+}
+
 // ---------------------------------------------------------------- placing (Responsibility 15)
 
 /// The hits one placement of `set` plays at `gain` percent: each member's lane key and volume,

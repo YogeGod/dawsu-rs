@@ -1,4 +1,4 @@
-use super::{Action, PlaybackStart, lane_add_choices, lane_by_key, scene_lane_key, snapshot};
+use super::{Action, PlaybackStart, lane_add_choices, lane_by_key, scene_lane_key, snapshot, sound_set_library_view};
 use dawsu_application::{Application, WaveBin};
 use std::fmt::Write as _;
 use std::fs;
@@ -2060,4 +2060,39 @@ fn place_sound_set_action_places_the_picked_set_at_the_playhead_or_reports_why_n
     assert_eq!(hits.placements().len(), 1);
     assert!(fixture.0.join("soft-hitclap2.wav").is_file());
     assert!(fixture.0.join("library").join("Sound sets").join("Clap.dawsuset").is_file());
+}
+
+#[test]
+fn the_library_list_names_each_set_and_places_one_by_its_id() {
+    use dawsu_hitsounding::sound_sets::{Kept, SetLane, SetMember, SetSource, SoundSet, write_dawsuset};
+    let fixture = Fixture::new("library-sound-set");
+    let path = fixture.0.join("Hard.osu");
+    fs::write(&path, b"osu file format v14\n\n[TimingPoints]\n0,500,4,1,0,100,1,0\n\n[HitObjects]\n256,192,2000,1,0,0:0:0:60:\n").unwrap();
+    let mut wav = b"RIFF\x26\0\0\0WAVEfmt \x10\0\0\0\x01\0\x01\0\x80\xbb\0\0\0w\x01\0\x02\0\x10\0data\x02\0\0\0".to_vec();
+    wav.extend(1000i16.to_le_bytes());
+    let set = SoundSet {
+        id: "9e7b1d18-3186-4778-9a6a-b6baef95cbe7".into(), name: "Clap".into(), library_id: None, kept: Kept::default(),
+        members: vec![SetMember {
+            id: "aaaaaaaa-0000-4000-8000-000000000001".into(), original_key: "BeatmapFile|soft-hitclap.wav".into(),
+            lane: SetLane { source: SetSource::File, name: "soft-hitclap.wav".into(), missing: false, kept: Kept::default() },
+            slot: "soft-hitclap".into(), volume: 80, audio: wav, kept: Kept::default(),
+        }],
+    };
+    let folder = fixture.0.join("library").join("Sound sets");
+    fs::create_dir_all(&folder).unwrap();
+    fs::write(folder.join("Clap.dawsuset"), write_dawsuset(&set).unwrap()).unwrap();
+    let mut app = Application::with_data_root(fixture.0.join("data"));
+    app.error = None;
+    app.preferences.hitsound_library = Some(fixture.0.join("library"));
+    open(&mut app, &path);
+    assert_eq!(sound_set_library_view(&app), serde_json::json!({
+        "configured": true,
+        "sets": [{ "id": set.id, "name": "Clap", "sounds": 1, "inMap": false, "duplicate": false }],
+    }), "names, ids and counts only");
+    let map = snapshot(&app, true)["scene"]["path"].clone();
+    app.seek(2000.0);
+    serde_json::from_value::<Action>(serde_json::json!({ "kind": "place_library_sound_set", "map": map, "id": set.id })).unwrap().run(&mut app);
+    assert!(app.error.is_none(), "{:?}", app.error);
+    assert_eq!(app.document().unwrap().composer.hitsounds().placements().len(), 1);
+    assert_eq!(sound_set_library_view(&app)["sets"][0]["inMap"], true);
 }

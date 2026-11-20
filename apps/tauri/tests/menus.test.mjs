@@ -14,6 +14,8 @@ const catalogue = (await Promise.all([
 function fixture() {
   const elements = new Map();
   const calls = [];
+  const modals = [];
+  const responses = {};
   const listeners = new Map();
   const document = {
     addEventListener(name, handler) { listeners.set(name, handler); },
@@ -79,8 +81,14 @@ function fixture() {
     },
     async invoke(name, args) {
       if (name !== "editor_shortcuts") calls.push([name, args]);
+      if (name in responses) return typeof responses[name] === "function" ? responses[name](args) : responses[name];
       return name === "editor_shortcuts" ? commands : { placed: true };
     },
+    modal(kind, title, content, buttons) { modals.push({ kind, title, content, buttons }); },
+    closeModal() { calls.push("closeModal"); },
+    paragraph(textContent) { return Object.assign(element("p"), { textContent }); },
+    input(type, value) { return Object.assign(element("input"), { type, value }); },
+    labeled(label, control) { const node = element("label"); node.append(label, control); return node; },
     show(next) { calls.push({ show: next }); },
     openSiblingDifficulty(path) { calls.push({ sibling: path }); },
   });
@@ -90,7 +98,7 @@ function fixture() {
     handler(event);
     return !!event.defaultPrevented;
   }
-  return { document, get, view, scene, window, calls, listeners, key };
+  return { document, get, view, scene, window, calls, listeners, key, modals, responses };
 }
 
 test("menus read current shortcut chips and keep arrow, Escape, Tab and outside-click handling local", async () => {
@@ -241,7 +249,7 @@ test("each menu groups the editor's existing commands like the design, with no s
   assert.deepEqual(open("edit"), [
     "Undo", "Redo", "—",
     "Cut", "Copy", "Paste at playhead", "Duplicate", "Delete", "Select all", "—",
-    "Quantize…", "Repeat…", "Edit range…", "Scale by volume…", "Place sound set…", "—",
+    "Quantize…", "Repeat…", "Edit range…", "Scale by volume…", "Place sound set…", "Save selection as sound set…", "—",
     "Protect hitnormals from deletion", "Audition when placing hits",
   ]);
   assert.deepEqual(open("playback"), [
@@ -278,13 +286,107 @@ test("menus only click ribbon controls that exist in the window", () => {
   for (const id of ids) assert.match(html, new RegExp('id="' + id + '"'), id);
 });
 
-test("Place sound set asks for a .dawsuset for the open map and shows the result", async () => {
-  const { get, calls } = fixture();
+const plain = value => JSON.parse(JSON.stringify(value));
+const settle = () => new Promise(resolve => setTimeout(resolve, 0));
+const button = (modal, label) => modal.buttons.find(([text]) => text === label);
+
+function editItem(get, label) {
   get("menu-edit").click();
-  const item = menuButtons(get("editor-menu")).find(button => button.textContent === "Place sound set…");
-  item.click();
-  await new Promise(resolve => setTimeout(resolve, 0));
-  assert.deepEqual(JSON.parse(JSON.stringify(calls.slice(-2))), [["pick_sound_set", { map: "Test.osu" }], { show: { placed: true } }]);
+  return menuButtons(get("editor-menu")).find(item => item.textContent === label);
+}
+
+test("Place sound set lists this map's sets, then the library, and places one by its id", async () => {
+  const { get, calls, modals, responses } = fixture();
+  responses.sound_set_library = { configured: true, sets: [
+    { id: "a", name: "Kick", sounds: 2, inMap: true, duplicate: false },
+    { id: "b", name: "Bell", sounds: 1, inMap: false, duplicate: false },
+    { id: "c", name: "Crash", sounds: 3, inMap: false, duplicate: true },
+  ] };
+  editItem(get, "Place sound set…").click();
+  await settle();
+  const [dialog] = modals;
+  assert.equal(dialog.title, "Place sound set");
+  const list = dialog.content[0];
+  assert.equal(list.type, "select");
+  assert.deepEqual(plain(list.children.map(group => [group.label, group.children.map(option => [option.textContent, !!option.disabled])])), [
+    ["In this map", [["Kick · 2 sounds", false]]],
+    ["Library", [["Bell · 1 sound", false], ["Crash · 3 sounds · in the library twice", true]]],
+  ]);
+  assert.equal(list.value, "a");
+  assert.deepEqual(plain(dialog.buttons.map(([label]) => label)), ["Cancel", "Browse…", "Place"]);
+  button(dialog, "Place")[1]();
+  assert.deepEqual(JSON.parse(JSON.stringify(calls.slice(-2))), ["closeModal", { kind: "place_library_sound_set", map: "Test.osu", id: "a" }]);
+  // A set in the library twice can't be placed.
+  list.value = "c";
+  button(dialog, "Place")[1]();
+  assert.equal(calls.filter(call => call.kind === "place_library_sound_set").length, 1);
+  button(dialog, "Browse…")[1]();
+  await settle();
+  assert.deepEqual(JSON.parse(JSON.stringify(calls.slice(-3))), ["closeModal", ["pick_sound_set", { map: "Test.osu" }], { show: { placed: true } }]);
+});
+
+test("Place sound set with an empty library says so and still offers Browse", async () => {
+  const { get, modals, responses } = fixture();
+  responses.sound_set_library = { configured: true, sets: [] };
+  editItem(get, "Place sound set…").click();
+  await settle();
+  assert.deepEqual(plain(modals[0].content.map(node => node.textContent)), ["The library has no sound sets yet."]);
+  assert.deepEqual(plain(modals[0].buttons.map(([label]) => label)), ["Cancel", "Browse…"]);
+});
+
+test("without a hitsound library, both sound set items ask for one first", async () => {
+  const { get, calls, view, modals, responses } = fixture();
+  responses.sound_set_library = { configured: false, sets: [] };
+  responses.pick_hitsound_library = { hitsoundLibrary: "Library" };
+  editItem(get, "Place sound set…").click();
+  await settle();
+  assert.deepEqual(plain(modals[0].content.map(node => node.textContent)), ["Sound sets are kept in your hitsound library."]);
+  assert.deepEqual(plain(modals[0].buttons.map(([label]) => label)), ["Cancel", "Browse…", "Choose library folder…"]);
+  responses.sound_set_library = { configured: true, sets: [{ id: "a", name: "Kick", sounds: 2, inMap: false, duplicate: false }] };
+  button(modals[0], "Choose library folder…")[1]();
+  await settle();
+  await settle();
+  assert.ok(calls.some(call => Array.isArray(call) && call[0] === "pick_hitsound_library"));
+  assert.equal(modals.at(-1).content[0].type, "select", "the list opens once a folder is chosen");
+  view.hitsoundLibrary = null;
+  editItem(get, "Save selection as sound set…").click();
+  assert.equal(modals.at(-1).title, "Save selection as sound set");
+  assert.deepEqual(plain(modals.at(-1).buttons.map(([label]) => label)), ["Cancel", "Choose library folder…"]);
+});
+
+test("Save selection as sound set asks for a name and asks again when the library has it", async () => {
+  const { get, calls, view, scene, modals, responses } = fixture();
+  view.hitsoundLibrary = "Library";
+  scene.selection = null;
+  assert.equal(editItem(get, "Save selection as sound set…").disabled, true, "needs a selection");
+  get("menu-edit").click();
+  scene.selection = { count: 3 };
+  editItem(get, "Save selection as sound set…").click();
+  const dialog = modals.at(-1);
+  assert.equal(dialog.title, "Save selection as sound set");
+  const [label, message] = dialog.content;
+  const field = label.children[1];
+  assert.equal(label.children[0], "Name");
+  responses.save_sound_set = { nameTaken: "The library already has a sound set named \"Kick\". Choose another name." };
+  field.value = "  ";
+  button(dialog, "Save")[1]();
+  await settle();
+  assert.ok(!calls.some(call => Array.isArray(call) && call[0] === "save_sound_set"), "a blank name is not sent");
+  field.value = "Kick";
+  button(dialog, "Save")[1]();
+  await settle();
+  assert.deepEqual(JSON.parse(JSON.stringify(calls.at(-1))), ["save_sound_set", { map: "Test.osu", name: "Kick" }]);
+  assert.match(message.textContent, /already has a sound set named "Kick"/);
+  assert.ok(!calls.includes("closeModal"), "the name prompt stays open");
+  responses.save_sound_set = () => { throw "Select sounds at one time to save a set."; };
+  button(dialog, "Save")[1]();
+  await settle();
+  assert.equal(message.textContent, "Select sounds at one time to save a set.");
+  responses.save_sound_set = { status: "Saved sound set \"Kicks\"." };
+  field.value = "Kicks";
+  button(dialog, "Save")[1]();
+  await settle();
+  assert.deepEqual(JSON.parse(JSON.stringify(calls.slice(-2))), ["closeModal", { show: { status: "Saved sound set \"Kicks\"." } }]);
 });
 
 test("Undo and Redo name the edit they would change", () => {

@@ -82,13 +82,127 @@ function laneMenuAction(target, invokeAction) {
   });
 }
 
-function placeSoundSet() {
-  const map = scene.path;
+function soundSetsUsable(map) {
+  return scene?.path === map && !view.busy && !drag;
+}
+
+function chooseSoundSetLibrary(map, then) {
+  closeModal();
   run(async () => {
-    if (scene?.path !== map || view.busy || drag) return;
+    if (!soundSetsUsable(map)) return;
+    const next = await invoke("pick_hitsound_library");
+    if (!next) return;
+    show(next);
+    if (soundSetsUsable(map)) then();
+  });
+}
+
+function browseSoundSet(map) {
+  closeModal();
+  run(async () => {
+    if (!soundSetsUsable(map)) return;
     const next = await invoke("pick_sound_set", { map });
     if (next) show(next);
   });
+}
+
+function showSoundSetLibrary(map, library) {
+  const browse = ["Browse…", () => browseSoundSet(map)];
+  if (!library.configured) {
+    modal("sound-sets", "Place sound set", [paragraph("Sound sets are kept in your hitsound library.")],
+      [["Cancel", closeModal], browse, ["Choose library folder…", () => chooseSoundSetLibrary(map, placeSoundSet), true]]);
+    return;
+  }
+  if (!library.sets.length) {
+    modal("sound-sets", "Place sound set", [paragraph("The library has no sound sets yet.")], [["Cancel", closeModal], browse]);
+    return;
+  }
+  const list = document.createElement("select");
+  list.id = "sound-set-choice";
+  list.size = Math.min(10, library.sets.length + 2);
+  list.setAttribute("aria-label", "Sound sets");
+  const group = (label, sets) => {
+    const node = document.createElement("optgroup");
+    node.label = label;
+    node.append(...sets.map(set => {
+      const option = document.createElement("option");
+      option.value = set.id;
+      option.textContent = set.name + " · " + set.sounds + (set.sounds === 1 ? " sound" : " sounds") +
+        (set.duplicate ? " · in the library twice" : "");
+      option.disabled = set.duplicate;
+      return option;
+    }));
+    return node;
+  };
+  const used = library.sets.filter(set => set.inMap);
+  const rest = library.sets.filter(set => !set.inMap);
+  list.append(...[used.length && group("In this map", used), rest.length && group("Library", rest)].filter(Boolean));
+  list.value = library.sets.find(set => !set.duplicate)?.id ?? "";
+  const place = () => {
+    const set = library.sets.find(item => item.id === list.value);
+    if (!set || set.duplicate) return;
+    closeModal();
+    if (soundSetsUsable(map)) act({ kind: "place_library_sound_set", map, id: set.id });
+  };
+  list.addEventListener("keydown", event => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    place();
+  });
+  list.addEventListener("dblclick", place);
+  modal("sound-sets", "Place sound set", [list], [["Cancel", closeModal], browse, ["Place", place, true]]);
+  list.focus?.();
+}
+
+function placeSoundSet() {
+  const map = scene.path;
+  run(async () => {
+    if (!soundSetsUsable(map)) return;
+    const library = await invoke("sound_set_library");
+    if (soundSetsUsable(map)) showSoundSetLibrary(map, library);
+  });
+}
+
+function saveSoundSet() {
+  const map = scene.path;
+  const title = "Save selection as sound set";
+  if (!view.hitsoundLibrary) {
+    modal("save-sound-set", title, [paragraph("Sound sets are kept in your hitsound library.")],
+      [["Cancel", closeModal], ["Choose library folder…", () => chooseSoundSetLibrary(map, saveSoundSet), true]]);
+    return;
+  }
+  const field = input("text", "", "", "");
+  field.maxLength = 128;
+  const message = paragraph("");
+  const save = () => {
+    const name = field.value.trim();
+    if (!name) return;
+    run(async () => {
+      if (!soundSetsUsable(map)) return;
+      let next;
+      try {
+        next = await invoke("save_sound_set", { map, name });
+      } catch (error) {
+        message.textContent = String(error);
+        return;
+      }
+      if (next.nameTaken) {
+        message.textContent = next.nameTaken;
+        field.select?.();
+        return;
+      }
+      closeModal();
+      show(next);
+    });
+  };
+  field.addEventListener("keydown", event => {
+    if (event.key === "Enter" && !event.isComposing) {
+      event.preventDefault();
+      save();
+    }
+  });
+  modal("save-sound-set", title, [labeled("Name", field), message], [["Cancel", closeModal], ["Save", save, true]]);
+  field.focus?.();
 }
 
 function menuItems(name, target) {
@@ -198,6 +312,7 @@ function menuItems(name, target) {
       menuCommand("Edit range…", "Scan", "editRange", () => canEditFromMenu() && !!scene.range),
       menuCommand("Scale by volume…", "TrendingUp", "scaleByVolume"),
       menuItem("Place sound set…", null, placeSoundSet),
+      menuItem("Save selection as sound set…", null, saveSoundSet, { enabled: selection }),
       separator(),
       flag("Protect hitnormals from deletion", null, "protect", () => scene?.protect),
       flag("Audition when placing hits", null, "audition", () => view.audition),
