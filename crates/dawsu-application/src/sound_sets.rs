@@ -363,6 +363,12 @@ impl Application {
         }
         let library = self.preferences.hitsound_library.clone().ok_or("Choose a hitsound library folder first: sound sets are kept there.")?;
         let (bytes, set) = read_set_file(file)?;
+        // M10: a set whose id more than one library file holds can't be placed, picked from the
+        // list or browsed to.
+        let copies = library_sets(&library).iter().filter(|(_, listed)| listed.id == set.id).count();
+        if copies > 1 {
+            return Err(format!("{copies} library files hold \"{}\". Remove all but one to place it.", set.name));
+        }
         let at = self.position_ms();
         let composer = &self.document.as_ref().expect("open document").composer;
         let time = composer.snap(SongTime::from_ms(at)).ms();
@@ -1521,6 +1527,14 @@ Mode:0
         assert!(refused.contains("Crash"), "{refused}");
         assert_eq!(app.document().unwrap().composer.hitsounds().placements().len(), 1);
         assert!(app.place_library_sound_set(&map, "1c0ffee0-0000-4000-8000-000000000009").is_err(), "an id no file holds");
+        // Browsing to either file, or to an outside copy, is refused too.
+        let folder = f.scratch.path("library").join(LIBRARY_FOLDER);
+        let outside = f.scratch.path("outside.dawsuset");
+        std::fs::copy(folder.join("c.dawsuset"), &outside).unwrap();
+        for file in [folder.join("c.dawsuset"), outside] {
+            assert!(app.place_sound_set_file(&map, &file).unwrap_err().contains("2 library files"), "{file:?}");
+        }
+        assert_eq!(app.document().unwrap().composer.hitsounds().placements().len(), 1);
     }
 
     // ------------------------------------------------------------ links: mixes, kept links, left-out moments

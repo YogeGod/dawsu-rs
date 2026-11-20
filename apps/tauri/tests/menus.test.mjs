@@ -310,7 +310,7 @@ test("Place sound set lists this map's sets, then the library, and places one by
   assert.equal(list.type, "select");
   assert.deepEqual(plain(list.children.map(group => [group.label, group.children.map(option => [option.textContent, !!option.disabled])])), [
     ["In this map", [["Kick · 2 sounds", false]]],
-    ["Library", [["Bell · 1 sound", false], ["Crash · 3 sounds · in the library twice", true]]],
+    ["Library", [["Bell · 1 sound", false], ["Crash · 3 sounds · in the library more than once", true]]],
   ]);
   assert.equal(list.value, "a");
   assert.deepEqual(plain(dialog.buttons.map(([label]) => label)), ["Cancel", "Browse…", "Place"]);

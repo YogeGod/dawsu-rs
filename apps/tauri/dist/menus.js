@@ -128,7 +128,7 @@ function showSoundSetLibrary(map, library) {
       const option = document.createElement("option");
       option.value = set.id;
       option.textContent = set.name + " · " + set.sounds + (set.sounds === 1 ? " sound" : " sounds") +
-        (set.duplicate ? " · in the library twice" : "");
+        (set.duplicate ? " · in the library more than once" : "");
       option.disabled = set.duplicate;
       return option;
     }));
