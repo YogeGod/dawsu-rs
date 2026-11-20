@@ -57,12 +57,12 @@ const sceneWith = fields => JSON.stringify({
   ...fields,
 });
 
-test("the toolbar holds the tool pills, Snap, Audition, Follow, Return and the Hitsounds/Drums switch", () => {
-  for (const id of ["grid-options", "follow", "transport-return", "samples-view", "drums-view"]) {
+test("the toolbar holds the tool pills, Snap, Audition, the Playhead group and the Hitsounds/Drums switch", () => {
+  for (const id of ["grid-options", "samples-view", "drums-view"]) {
     assert.match(ribbon, new RegExp('id="' + id + '"'), id);
   }
-  // The tool pills and the Audition pill are Svelte parts, each in its own ribbon group.
-  for (const [group, part] of [["Tool", "tools"], ["Audition", "audition"], ["Grid", "snap"]]) {
+  // The tool pills, the Audition pill and the Playhead group are Svelte parts, each in its own ribbon group.
+  for (const [group, part] of [["Tool", "tools"], ["Audition", "audition"], ["Grid", "snap"], ["Playhead", "playhead"]]) {
     const start = ribbon.indexOf('aria-label="' + group + '"');
     const body = ribbon.slice(start, ribbon.indexOf('class="ribbon-group"', start));
     assert.match(body, new RegExp('data-ui-mount="' + part + '"'), group);
@@ -71,9 +71,7 @@ test("the toolbar holds the tool pills, Snap, Audition, Follow, Return and the H
   const lanesGroup = ribbon.slice(ribbon.indexOf('aria-label="Lanes"'));
   const lanesPopover = lanesGroup.slice(0, lanesGroup.indexOf('class="ribbon-group"'));
   assert.doesNotMatch(lanesPopover, /id="samples-view"/, "the view switch sits on the toolbar, not in the Lanes pop-up");
-  const transport = html.match(/<section id="editor-transport".*?<\/section>/s)?.[0] ?? "";
-  assert.doesNotMatch(transport, /id="follow"|id="transport-return"/);
-  assert.match(html, /<input[^>]*type="checkbox"[^>]*id="follow"/, "Follow stays a checkbox");
+  assert.doesNotMatch(html, /id="follow"|id="transport-return"/, "Follow and Return moved into the Playhead part");
   assert.match(ribbon, /id="samples-view"[^>]*>Hitsounds<\/button>/, "the design names the sample-lane view Hitsounds");
   assert.match(ribbon, /id="drums-view"[^>]*>Drums<\/button>/);
   const revert = ribbon.match(/<button[^>]*data-command="revert"[^>]*>(.*?)<\/button>/s);
@@ -82,13 +80,12 @@ test("the toolbar holds the tool pills, Snap, Audition, Follow, Return and the H
   assert.match(revert[1], /<svg[\s\S]*class="ribbon-secondary-label"/, "Revert can go icon-only");
 });
 
-test("the old tool buttons left style.css; Follow and Return keep their toggle look", () => {
+test("the old tool buttons and the old Follow and Return toggles left style.css", () => {
   assert.ok(toolbarCss.length > 0, "toolbar CSS block");
   assert.doesNotMatch(css, /#tools\b|editor-tool-button|ribbon-tool-label/);
-  assert.match(toolbarCss, /#editor-ribbon \.toolbar-toggle\s*\{[^}]*display:\s*inline-flex/);
+  assert.doesNotMatch(css, /\.toolbar-toggle[^-]|\.toolbar-track|toggle-input/);
   assert.match(toolbarCss, /#editor-ribbon \.ribbon-caption\s*\{[^}]*display:\s*none/);
   assert.doesNotMatch(toolbarCss, /:has\(|color-mix\(|aspect-ratio/);
-  assert.match(toolbarCss, /\.toolbar-track[^{]*\{[^}]*position:\s*relative/);
   assert.match(toolbarCss, /@media\s*\(forced-colors:\s*active\)\s*\{[^{}]*aria-pressed=true[^{}]*\{[^}]*outline/);
 });
 
@@ -159,7 +156,7 @@ test("the status bar says when a toolbar part did not load, once the page has lo
   assert.equal(get("status").textContent, "Difficulty loaded", "the bundle runs after app.js, so wait for load");
   evaluate(`document.readyState = "complete"`);
   evaluate(shown);
-  assert.equal(get("status").textContent, "Part of the toolbar did not load");
+  assert.equal(get("status").textContent, "Part of the editor did not load");
   evaluate(`document.querySelectorAll = () => []`);
   evaluate(shown);
   assert.equal(get("status").textContent, "Difficulty loaded");

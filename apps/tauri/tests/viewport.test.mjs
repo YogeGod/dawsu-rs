@@ -82,19 +82,13 @@ test("the zoom slider starts at the timeline's zoom-out limit", async () => {
   assert.ok(evaluate("minZoom") <= 1000 / (30 * 60_000), "Fit shows a 30-minute song in 1000 px");
 });
 
-test("the transport Return switch toggles the shared playback preference", async () => {
-  const { calls, get, settle } = await frontend();
-  const toggle = get("transport-return");
-  const click = toggle.events.get("click");
-  assert.equal(typeof click, "function");
-  click();
+test("the Playhead group's Return sends the shared playback preference as a light update", async () => {
+  const { calls, evaluate, settle } = await frontend();
+  // The Svelte part sends act(..., false) with the opposite of view.returnOnStop (ui/tests/playhead-group).
+  await evaluate('act({ kind: "return_on_stop", on: true }, false)');
   await settle();
   assert.deepEqual(calls.at(-1), { scene: false, action: { kind: "return_on_stop", on: true } });
-  assert.equal(toggle.ariaPressed, "true");
-  click();
-  await settle();
-  assert.deepEqual(calls.at(-1), { scene: false, action: { kind: "return_on_stop", on: false } });
-  assert.equal(toggle.ariaPressed, "false");
+  assert.equal(evaluate("view.returnOnStop"), true);
 });
 
 test("volume pointer values use the same scale as the rendered bars", async () => {
@@ -166,10 +160,7 @@ test("the volume controller offers the four legacy ramp shapes through its priva
 
 test("Follow pages toward an offscreen playhead, including a backward cycle wrap", async () => {
   const { calls, get, evaluate, status, settle } = await frontend();
-  const follow = get("follow").events.get("change");
-  assert.equal(typeof follow, "function");
-  get("follow").checked = true;
-  follow();
+  await evaluate('act({ kind: "follow", on: true }, false)');
   await settle();
   assert.deepEqual(calls.shift(), { scene: false, action: { kind: "follow", on: true } });
 
@@ -191,6 +182,41 @@ test("Follow pages toward an offscreen playhead, including a backward cycle wrap
   assert.equal(evaluate("scene.viewStart"), 480);
 });
 
+test("Centre keeps the playhead in the middle while following, and only while Follow is on", async () => {
+  const { calls, evaluate, status, settle } = await frontend();
+  let centre = true;
+  evaluate("window").dawsuUi = { update() {}, centre: () => centre };
+  Object.assign(status, { playing: true, position: 2300 });
+  await evaluate("act(null, false)");
+  await settle();
+  assert.equal(evaluate("scene.viewStart"), 1000, "Follow is off: the view stays");
+  status.follow = true;
+  await evaluate("act(null, false)");
+  await settle();
+  // 1000 px at 1 px/ms: the playhead sits at the middle, 500 ms after the view's start.
+  assert.equal(evaluate("scene.viewStart"), 1800);
+  assert.deepEqual(calls.pop(), { scene: false, action: { kind: "view", start: 1800, zoom: 1, row_height: 30 } });
+  status.position = 2400;
+  await evaluate("act(null, false)");
+  await settle();
+  assert.equal(evaluate("scene.viewStart"), 1900);
+  // Near the start the view cannot scroll further back.
+  status.position = 200;
+  await evaluate("act(null, false)");
+  await settle();
+  assert.equal(evaluate("scene.viewStart"), 0);
+  calls.length = 0;
+  await evaluate("act(null, false)");
+  await settle();
+  assert.ok(calls.every(call => call.action?.kind !== "view"), "no view change when the view already shows it");
+  // Centre off: the old paging, which leaves an on-screen playhead alone.
+  centre = false;
+  status.position = 900;
+  await evaluate("act(null, false)");
+  await settle();
+  assert.equal(evaluate("scene.viewStart"), 0);
+});
+
 test("Ctrl+Shift+wheel zooms lane heights around the pointer without panning", async () => {
   const { calls, get, evaluate, settle } = await frontend();
   const wheel = get("scroll").events.get("wheel");
@@ -204,7 +230,7 @@ test("Ctrl+Shift+wheel zooms lane heights around the pointer without panning", a
   assert.equal(prevented, true);
   assert.deepEqual(calls, [{ scene: false, action: { kind: "view", start: 1000, zoom: 1, row_height: 35 } }]);
   assert.equal(evaluate("scene.rowHeight"), 35);
-  assert.equal(get("lanes").children[0].style.height, "35px");
+  assert.equal(get("lanes").style["--lane-row-height"], "35px", "every header row takes the canvas row height");
   assert.ok(Math.abs(get("scroll").scrollTop - (160 * 35 / 30 - 60)) < 0.001);
 });
 
@@ -306,7 +332,8 @@ test("hit and controller levels use the legacy blue-purple-red palette", async (
   ]);
 });
 
-test("lanes take their sound's design colour unless the mapper picked one", async () => {
+// The Inspector swatch keeps the sound colour (part 7); the timeline row tint is the picked colour or none.
+test("lane rows tint only in a colour the mapper picked", async () => {
   const { evaluate } = await frontend();
   const result = evaluate(`
     laneColours.set("picked", "#123456");
@@ -319,7 +346,7 @@ test("lanes take their sound's design colour unless the mapper picked one", asyn
     ])`);
   assert.deepEqual(JSON.parse(result), [
     ["#f1ad67", "#9c9cfc", "#a7d67d", "#e28dd1", "#62d6cf"], "#123456",
-    "#e28dd114", "#1234561f",
+    null, "#1234561f",
   ]);
 });
 

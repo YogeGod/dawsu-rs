@@ -106,7 +106,7 @@ button[data-layout-height]{height:var(--layout-height)!important;min-height:0;ov
 #go-home .button-icon{margin:0}
 @media (max-width:1320px){.ribbon-caption{display:none}}
 @media (max-width:1230px){.ribbon-secondary-label{display:none}#open .button-icon{margin:0}}
-.dock{display:grid;min-height:0;grid-template-columns:minmax(0,1fr) 242px}.arrange{display:grid;min-height:0;--ruler-row:min(calc(21px + max(26px,var(--wave-height,56px))),max(47px,calc(100% - var(--timeline-reserve,144px))));grid-template-rows:minmax(20px,max-content) var(--ruler-row) minmax(0,1fr);--lane-default-width:clamp(170px,18vw,250px);--lanes:clamp(99px,var(--layout-lane-width,var(--lane-default-width)),max(99px,calc(100cqw - 140px)));background:var(--field)}.ruler,.overview,.scroll{display:grid;grid-template-columns:var(--lanes) minmax(0,1fr);min-width:0}.scroll{overflow:auto;align-items:start;scrollbar-gutter:stable}.ruler,.overview{padding-right:12px}.ruler{background:var(--ruler);border-bottom:1px solid var(--line)}.overview{background:var(--lane);border-top:1px solid var(--line)}.lane-title{background:var(--lane);color:var(--muted);display:flex;align-items:center;padding:0 12px;border-right:1px solid var(--line)}#lanes{border-right:1px solid var(--line)}.lane{display:flex;gap:4px;align-items:center;padding:0 5px;border-bottom:1px solid var(--line);background:var(--lane)}.lane:nth-child(even){background:var(--lane-alt)}.lane.active{box-shadow:inset 3px 0 var(--hi);background:var(--control)}.lane button{padding:0 4px;min-height:19px}.lane .name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;text-align:left;background:transparent;border:0}.lane .name:hover{background:var(--control)}
+.dock{display:grid;min-height:0;grid-template-columns:minmax(0,1fr) 242px}.arrange{display:grid;min-height:0;--ruler-row:min(calc(21px + max(26px,var(--wave-height,56px))),max(47px,calc(100% - var(--timeline-reserve,144px))));grid-template-rows:minmax(20px,max-content) var(--ruler-row) minmax(0,1fr);--lane-default-width:clamp(170px,18vw,250px);--lanes:clamp(99px,var(--layout-lane-width,var(--lane-default-width)),max(99px,calc(100cqw - 140px)));background:var(--field)}.ruler,.overview,.scroll{display:grid;grid-template-columns:var(--lanes) minmax(0,1fr);min-width:0}.scroll{overflow:auto;align-items:start;scrollbar-gutter:stable}.ruler,.overview{padding-right:12px}.ruler{background:var(--ruler);border-bottom:1px solid var(--line)}.overview{background:var(--lane);border-top:1px solid var(--line)}.lane-title{background:var(--lane);color:var(--muted);display:flex;align-items:center;padding:0 12px;border-right:1px solid var(--line)}#lanes{border-right:1px solid var(--line)}
 canvas{display:block;width:100%;height:100%;min-width:0;touch-action:none}#grid,#controller,#ruler,#overview{cursor:default}
 aside{overflow:auto;border-left:1px solid var(--line);background:var(--panel)}aside section{padding:12px;border-bottom:1px solid var(--line)}h2{font-size:13px;margin:0 0 10px}.dim{font-weight:400;margin-left:4px}aside label{display:flex;justify-content:space-between;align-items:center;gap:6px;margin:8px 0}#difficulty{width:100%}#history{display:grid;gap:4px;max-height:230px;overflow:auto}#history button{text-align:left;overflow:hidden;text-overflow:ellipsis}
 #statusbar{background:var(--control);border-top:1px solid var(--line);color:var(--title-text);min-height:26px;padding:3px 12px;display:flex;gap:8px;align-items:center}#status{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}#statusbar button{min-height:22px}
@@ -124,9 +124,6 @@ dialog{color:var(--text);background:var(--raised);border:1px solid var(--button-
 :is(.ruler-controls button, button[data-layout-ruler-icon]) svg{width:13px;height:13px;fill:none;stroke:currentColor;stroke-width:1.3;stroke-linecap:round;stroke-linejoin:round}
 .ruler-sidebar button{min-width:18px;min-height:18px;padding:0 3px;line-height:1}
 .arrange[data-lane-names="false"] .lane-title-controls > span{display:none}
-.unassigned-drum{color:var(--muted);padding:0 5px;white-space:nowrap}
-.lane.lane-selected{outline:1px solid var(--hi);outline-offset:-1px}
-.lane.lane-tinted{background-image:linear-gradient(var(--lane-tint),var(--lane-tint))}
 .arrange{grid-template-rows:var(--layout-timeline-rows,minmax(20px,max-content) var(--ruler-row) minmax(0,1fr) auto)}.controller{background:var(--field);display:grid;grid-template-columns:var(--lanes) minmax(0,1fr);min-width:0;padding-right:12px;border-top:1px solid var(--line)}
 @media(max-width:800px){.dock{grid-template-columns:minmax(0,1fr) 205px}.arrange{--lane-default-width:115px}.chrome{padding-inline:7px;gap:4px}aside section{padding:9px}}
 
@@ -162,11 +159,7 @@ button[aria-label="Undo"] .button-icon,button[aria-label="Redo"] .button-icon{ma
 .arrange[data-layout-lane-sidebar-hidden]{--lanes:0px}
 .arrange[data-layout-lane-sidebar-hidden] :is(#lanes,.ruler-sidebar,.ruler-controls,.volume-title){visibility:hidden}
 .arrange[data-layout-lane-sidebar-hidden] > .layout-size-column{display:none}
-.arrange[data-lane-names="false"] .lane{gap:2px;padding-inline:3px}
-.arrange[data-lane-names="false"] .lane button{font-size:11px;min-width:16px;padding-inline:3px;text-align:center}
 
-.lane.sample-folder{background:var(--group);border-bottom-color:var(--divider)}
-.sample-folder .name{font-weight:700;cursor:grab}
 
 .dock[data-browser="tree"]{grid-template-columns:min(224px,24vw) minmax(0,1fr) 242px}
 .dock[data-browser="tree"][data-inspector="false"]{grid-template-columns:min(224px,24vw) minmax(0,1fr)}
@@ -324,11 +317,8 @@ aside section > :last-child { margin-bottom:0; }
 
 .ribbon-options:not(:popover-open) { display:none; }
 .ribbon-options:popover-open { position:fixed; inset:auto; top:94px; left:clamp(12px,40vw,700px); max-width:min(450px,90vw); margin:0; padding:12px; border:1px solid var(--line); border-radius:8px; background:var(--panel); color:var(--text); flex-wrap:wrap; gap:10px; box-shadow:0 6px 20px #0007; }
-.arrange:not([data-lane-names="false"]) .lane-layer .name { padding-inline-start:14px; }
-.lane .name:focus-visible { outline-offset:-2px; }
-.lane button:not(.name) { font-size:11px; }
-.lane button[aria-label^="Mute "][aria-pressed=true], #song-mute[aria-pressed=true] { background:#efc16a; color:#111; }
-.lane button[aria-label^="Solo "][aria-pressed=true], #song-solo[aria-pressed=true] { background:#69d995; color:#111; }
+#song-mute[aria-pressed=true] { background:#efc16a; color:#111; }
+#song-solo[aria-pressed=true] { background:#69d995; color:#111; }
 .tint-palette { display:grid; grid-template-columns:repeat(18,minmax(0,1fr)); gap:8px; padding:8px 0 16px; }
 .tint-palette input { appearance:none; width:100%; min-width:0; height:16px; margin:0; border:1px solid transparent; border-radius:4px; cursor:pointer; }
 .tint-palette input:checked { outline:2px solid #f1f1f1; outline-offset:1px; }
@@ -339,10 +329,6 @@ aside section > :last-child { margin-bottom:0; }
 .tint-preview i { width:7px; height:7px; transform:rotate(45deg); background:var(--preview-colour); }
 .tint-preview i:nth-of-type(3) { border:2px solid white; }
 
-/* Design handoff lanes: a 3px bar in the lane's sound colour; the active lane is lit grey. */
-.lane.lane-tinted{box-shadow:inset 3px 0 var(--lane-colour)}
-.lane.active{background-color:#454545}
-.lane .name{font-weight:600}
 /* Menus (design f6), menu-bar menus only: flat rows, keys as plain text, a grey switch track, segmented choice rows and group dividers. */
 header #editor-menus{gap:0;padding:2px;border-radius:6px;background:var(--button)}
 header #editor-menus button{min-height:26px;padding:3px 10px;border-radius:4px}
@@ -421,33 +407,6 @@ header #editor-menus button{min-height:26px;padding:3px 10px;border-radius:4px}
 #bookmarks option:checked { background:var(--control) linear-gradient(var(--control),var(--control)); }
 #bookmarks-empty { margin:2px 0 6px; font-size:12px; }
 
-/* Lane headers (design LaneHeader.svelte), drawn in page order: icon tile, M, S, layer chevron, sound name, set tag,
-   +. The sound colour and its tint come from code as hex values, which every platform's web view draws. */
-#lanes > .lane { gap:3px; padding:0 5px 0 7px; background-color:var(--panel); border-bottom-color:var(--base); }
-#lanes > .lane:hover { background-color:var(--button); }
-#lanes > .lane.active { background-color:#454545; }
-#lanes .name:hover { background:transparent; }
-.lane .lane-icon { flex:none; display:flex; align-items:center; justify-content:center; width:var(--lane-tile,22px); height:var(--lane-tile,22px); border-radius:4px; background:var(--lane-sound-tint); color:var(--lane-sound); }
-.lane .lane-icon svg { width:14px; height:14px; max-width:100%; max-height:100%; fill:none; stroke:currentColor; stroke-width:1.6; stroke-linecap:round; stroke-linejoin:round; }
-.lane .lane-disclosure { flex:none; width:14px; min-height:18px; padding:0; border:0; background:transparent; color:var(--muted); }
-.lane .name { flex:0 1 auto; padding:0 2px; font-size:13px; font-weight:600; color:var(--text); }
-.lane :is(.lane-mute,.lane-solo,.lane-add-layer) { flex:none; width:20px; height:18px; min-height:18px; padding:0; border:0; border-radius:4px; font-weight:600; line-height:18px; text-align:center; }
-.lane :is(.lane-mute,.lane-solo) { background:var(--button); color:var(--title-text); }
-.lane .lane-add-layer { width:16px; margin-left:auto; background:transparent; color:var(--muted); }
-.lane .lane-tag { flex:none; margin-left:2px; padding:0 4px; border:1px solid var(--line); border-radius:4px; background:var(--lane-sound-tint); color:var(--lane-sound); font-size:11px; font-weight:400; line-height:15px; white-space:nowrap; }
-#lanes > .lane.sample-folder { gap:6px; padding:0 6px 0 8px; background-color:var(--group); }
-.lane.sample-folder .name { flex:1; font-size:12px; font-weight:500; color:var(--title-text); }
-.lane.sample-folder .name::before { content:""; display:inline-block; width:5px; height:5px; margin:0 9px 2px 2px; border:solid currentColor; border-width:0 1.5px 1.5px 0; transform:rotate(-45deg); }
-.lane.sample-folder .name[aria-expanded="true"]::before { margin-bottom:4px; transform:rotate(45deg); }
-.lane .lane-count { flex:none; font-size:11px; color:var(--muted); white-space:nowrap; }
-/* Group M and S have no place in the design's group row: they stay in the row and in Tab order, dimmed while off. */
-.lane.sample-folder > :is(.lane-mute,.lane-solo) { opacity:.45; }
-.lane.sample-folder:is(:hover,:focus-within) > :is(.lane-mute,.lane-solo), .lane.sample-folder > :is(.lane-mute,.lane-solo)[aria-pressed="true"] { opacity:1; }
-.arrange[data-lane-names="false"] #lanes > .lane { gap:2px; padding-inline:3px; }
-.arrange[data-lane-names="false"] .lane-count { display:none; }
-.arrange[data-lane-names="false"] .lane :is(.lane-mute,.lane-solo) { width:18px; }
-.arrange[data-lane-names="false"] .lane:not(.sample-folder) .name { flex:1 0 auto; }
-.arrange[data-lane-names="false"] .lane .lane-disclosure { width:12px; min-width:12px; padding:0; }
 /* Shortcut editor (design f13): preset switch and search, then each command under its area with key chips. A row waiting for a key shows a blue "Press keys…" pill; a key that belongs to another command tints the row and names that command. */
 #dialog.dialog-shortcut-editor{width:min(760px,94vw)}
 #dialog.dialog-shortcut-editor #dialog-body{max-height:62vh}
@@ -481,26 +440,17 @@ header #editor-menus button{min-height:26px;padding:3px 10px;border-radius:4px}
 #editor-ribbon .ribbon-caption{display:none}
 #editor-ribbon .ribbon-group{align-content:center}
 #editor-ribbon .ribbon-group+.ribbon-group{padding-left:6px}
-#editor-ribbon .toolbar-track{gap:2px;padding:2px;border-radius:6px;background:#2c2c2c}
-#editor-ribbon .toolbar-toggle{display:inline-flex;align-items:center;gap:6px;height:26px;min-height:26px;padding:0 9px;border:0;border-radius:4px;background:transparent;color:#c4c4c4;font-size:13px;cursor:pointer;white-space:nowrap}
-#editor-ribbon .toolbar-toggle:hover{background:#3c3c3c;color:var(--text)}
-#editor-ribbon .toolbar-toggle[aria-pressed=true],#editor-ribbon input.toggle-input:checked+.toolbar-toggle{background:#454545;color:var(--hi)}
-#editor-ribbon .toolbar-toggle svg{width:14px;height:14px;flex:none;fill:none;stroke:currentColor;stroke-width:1.4;stroke-linecap:round;stroke-linejoin:round}
-#editor-ribbon .toolbar-toggle:disabled,#editor-ribbon input.toggle-input:disabled+.toolbar-toggle{opacity:.45;cursor:default;background:transparent}
-input[type=checkbox].toggle-input{position:absolute;width:1px;height:1px;margin:0;padding:0;opacity:0;pointer-events:none}
-input[type=checkbox].toggle-input:focus-visible+label{outline:2px solid #a1d0f7;outline-offset:1px}
 #editor-ribbon #grid-options,#editor-ribbon [popovertarget="options-Lanes"]{height:30px;min-height:30px;padding:0 10px;border-radius:6px;background:#2c2c2c}
 #editor-ribbon .row[aria-label="Lane view"] button{height:26px;min-height:26px;padding:0 12px}
 #editor-ribbon #difficulty{max-width:180px}
 #editor-ribbon [data-command="revert"]{display:inline-flex;align-items:center;gap:5px}
 #editor-ribbon [data-command="revert"] svg{width:16px;height:16px;flex:none;fill:none;stroke:currentColor;stroke-width:1.4;stroke-linecap:round;stroke-linejoin:round}
-#editor-ribbon .toolbar-track{position:relative}
-@media (forced-colors:active){#editor-ribbon .toolbar-toggle[aria-pressed=true],#editor-ribbon input.toggle-input:checked+.toolbar-toggle,#editor-ribbon .row[aria-label="Lane view"] button[aria-pressed=true],#statusbar .playback-rates>button[aria-pressed=true]{outline:2px solid Highlight;outline-offset:-2px}}
+@media (forced-colors:active){#editor-ribbon .row[aria-label="Lane view"] button[aria-pressed=true],#statusbar .playback-rates>button[aria-pressed=true]{outline:2px solid Highlight;outline-offset:-2px}}
 /* Every tool keeps its name from 1280 px; the other groups give way first (names, then padding). */
 @media (max-width:2159px){#editor-ribbon .ribbon-secondary-label{display:none}#editor-ribbon .button-icon{margin:0}}
-@media (max-width:1779px){#editor-ribbon .toolbar-toggle-label{display:none}#editor-ribbon .toolbar-toggle{padding:0 6px}}
-@media (max-width:1599px){#editor-ribbon.tools.chrome{gap:2px;padding-inline:6px}#editor-ribbon .ribbon-group+.ribbon-group{padding-left:3px}#editor-ribbon .ribbon-controls{gap:2px}#editor-ribbon .ribbon-controls>button:not(.toolbar-toggle),#editor-ribbon .view-panel-toggles button{min-width:28px;padding:0 5px;justify-content:center}#editor-ribbon .view-panel-toggles{padding-right:2px}#editor-ribbon #difficulty{max-width:120px}#editor-ribbon #grid-options,#editor-ribbon [popovertarget="options-Lanes"],#editor-ribbon .row[aria-label="Lane view"] button{padding:0 7px}}
-@media (max-width:1399px){#editor-ribbon #difficulty{max-width:96px}#editor-ribbon .toolbar-toggle{padding:0 5px}}
+@media (max-width:1779px){#editor-ribbon .toolbar-toggle-label{display:none}}
+@media (max-width:1599px){#editor-ribbon.tools.chrome{gap:2px;padding-inline:6px}#editor-ribbon .ribbon-group+.ribbon-group{padding-left:3px}#editor-ribbon .ribbon-controls{gap:2px}#editor-ribbon .ribbon-controls>button,#editor-ribbon .view-panel-toggles button{min-width:28px;padding:0 5px;justify-content:center}#editor-ribbon .view-panel-toggles{padding-right:2px}#editor-ribbon #difficulty{max-width:120px}#editor-ribbon #grid-options,#editor-ribbon [popovertarget="options-Lanes"],#editor-ribbon .row[aria-label="Lane view"] button{padding:0 7px}}
+@media (max-width:1399px){#editor-ribbon #difficulty{max-width:96px}}
 @media (max-width:1099px){#editor-ribbon #difficulty{max-width:72px}#editor-ribbon #grid-options,#editor-ribbon [popovertarget="options-Lanes"],#editor-ribbon .row[aria-label="Lane view"] button{padding:0 4px}}
 #statusbar{--layout-min-height:32px;gap:10px;padding:0 12px}
 #statusbar #status{flex:0 1 auto;min-width:0}

@@ -49,10 +49,11 @@ async function frontend() {
   return { calls, evaluate, get };
 }
 
-// Lane rows are laid out in page order (icon, M, S, layer chevron, name, set tag, +), so tests find
-// their parts by class rather than by position.
-const lanePart = (row, name) => row.children.find(child => child.className?.split(" ").includes(name));
-const laneName = row => lanePart(row, "name");
+// renderLanes() hands the Svelte lane headers plain rows; their clicks come back through laneHeaderAction().
+const headerRows = evaluate => JSON.parse(evaluate("JSON.stringify(laneHeaders.rows)"));
+const laneNames = evaluate => headerRows(evaluate).map(row => row.name);
+const headerAction = (evaluate, ...args) => evaluate("laneHeaderAction(" + args.map(arg => JSON.stringify(arg)).join(", ") + ")");
+const rowAt = (evaluate, position) => headerRows(evaluate)[position].row;
 
 test("Add restores a chosen lane and Delete keeps its confirmed difficulty, identity and revision", async () => {
   const { calls, evaluate, get } = await frontend();
@@ -111,7 +112,8 @@ test("the active lane colour picker applies and resets a faint tint for its diff
   evaluate('opened[2][0].children[12].events.get("change")()');
   evaluate('opened[3].find(([label]) => label === "Apply")[1]()');
   await evaluate("pending");
-  assert.equal(get("lanes").children[0].style["--lane-tint"], "#388ada1f");
+  assert.equal(evaluate("laneHeaders.rows[0].colour"), "#388ada");
+  assert.equal(evaluate("laneTint(scene.lanes[0])"), "#388ada1f");
   const saved = calls.pop().action;
   assert.equal(saved.path, "first.osu");
   assert.equal(saved.persist, true);
@@ -120,8 +122,9 @@ test("the active lane colour picker applies and resets a faint tint for its diff
   open();
   evaluate('opened[3].find(([label]) => label === "Clear tint")[1]()');
   await evaluate("pending");
-  // Clearing the mapper's tint falls back to the sound's design colour.
-  assert.equal(get("lanes").children[0].style["--lane-tint"], "#e28dd114");
+  // Clearing the mapper's tint leaves the lane grey: no colour on the header, no row tint.
+  assert.equal(evaluate("laneHeaders.rows[0].colour"), null);
+  assert.equal(evaluate("laneTint(scene.lanes[0])"), null);
   assert.deepEqual(calls.pop().action.value.lane_colours, {});
 
   open();
@@ -144,17 +147,16 @@ test("Drums view keeps aliases at distinct positions and routes them to the same
     ]};
     renderLanes();
   `);
-  const rows = get("lanes").children;
-  assert.deepEqual(rows.map(row => laneName(row).textContent), ["Snare", "Ghost snare", "Rim", "Finish"]);
+  assert.deepEqual(laneNames(evaluate), ["Snare", "Ghost snare", "Rim", "Finish"]);
   assert.equal(evaluate("JSON.stringify(laneVisualPositions.get(0))"), "[0,2]");
-  laneName(rows[2]).events.get("click")();
+  headerAction(evaluate, "select", rowAt(evaluate, 2), {});
   await evaluate("pending");
   assert.deepEqual(calls.pop().action, { kind: "lane", row: 0, operation: "audition" });
   const action = evaluate(`drag = { surface: grid, start: 0, zoom: 1, rows: laneRows };
     pointer({clientX: 1000, clientY: 75}, "down")`);
   assert.equal(action.row, 0);
   evaluate("drag = null; view.drumView = { enabled: false, name: 'Kit' }; renderLanes();");
-  assert.deepEqual(get("lanes").children.map(row => laneName(row).textContent), ["Clap", "Finish"]);
+  assert.deepEqual(laneNames(evaluate), ["Clap", "Finish"]);
   get("drums-view").events.get("click")();
   await evaluate("pending");
   assert.deepEqual(calls.pop(), { map: "fixture.osu", on: true });
@@ -179,7 +181,7 @@ test("lane selection scopes volume independently of hit selection and skips invi
   scope.events.get("change")();
   await evaluate("pending");
   assert.deepEqual(calls.pop().action, {kind: "volume_scope", path: "Scope.osu", lanes: []});
-  const click = (row, event = {}) => laneName(get("lanes").children[row]).events.get("click")(event);
+  const click = (row, event = {}) => headerAction(evaluate, "select", rowAt(evaluate, row), event);
   click(0);
   await evaluate("pending");
   calls.length = 0;
@@ -189,7 +191,7 @@ test("lane selection scopes volume independently of hit selection and skips invi
     {kind: "volume_scope", path: "Scope.osu", lanes: ["A", "C", "D"]},
   ]);
   assert.equal(evaluate("scene.selection.count"), 2);
-  assert.ok(get("lanes").children[1].className.includes("lane-selected"));
+  assert.ok(headerRows(evaluate)[1].selected);
   click(1, {metaKey: true});
   await evaluate("pending");
   assert.deepEqual(calls.pop().action.lanes, ["A", "D"]);
@@ -210,7 +212,9 @@ test("lane mix buttons send the selected sample identities or select a new singl
     ]};
     renderLanes();
   `);
-  const click = (row, button, event) => lanePart(get("lanes").children[row], ["name", "lane-mute", "lane-solo"][button]).events.get("click")(event);
+  const click = (row, button, event) => button
+    ? headerAction(evaluate, "mix", rowAt(evaluate, row), ["mute", "solo"][button - 1])
+    : headerAction(evaluate, "select", rowAt(evaluate, row), event);
   click(0, 0, {});
   click(1, 0, { ctrlKey: true });
   await evaluate("pending");
@@ -272,13 +276,13 @@ test("filtering by lane name or source preserves the original lane row", async (
   const field = get("lane-filter");
   field.value = "  SNARE ";
   field.events.get("input")();
-  assert.deepEqual(get("lanes").children.map(row => laneName(row).textContent), ["Clap"]);
-  lanePart(get("lanes").children[0], "lane-mute").events.get("click")();
+  assert.deepEqual(laneNames(evaluate), ["Clap"]);
+  headerAction(evaluate, "mix", rowAt(evaluate, 0), "mute");
   await evaluate("pending");
   assert.equal(calls.at(-1).action.target.lane, "snare-file");
   field.value = "kick";
   field.events.get("input")();
-  assert.deepEqual(get("lanes").children.map(row => laneName(row).textContent), ["Kick"]);
+  assert.deepEqual(laneNames(evaluate), ["Kick"]);
 });
 
 test("Used only compacts rows without renumbering the lanes sent to Rust", async () => {
@@ -296,8 +300,8 @@ test("Used only compacts rows without renumbering the lanes sent to Rust", async
   assert.equal(typeof toggle, "function");
   get("used-only").checked = true;
   toggle();
-  assert.deepEqual(get("lanes").children.map(row => laneName(row).textContent), ["A", "C"]);
-  lanePart(get("lanes").children[1], "lane-mute").events.get("click")();
+  assert.deepEqual(laneNames(evaluate), ["A", "C"]);
+  headerAction(evaluate, "mix", rowAt(evaluate, 1), "mute");
   await evaluate("pending");
   assert.deepEqual(calls.pop(), { scene: true, action: { kind: "lane_selection_mix", target: { map: "fixture.osu", lane: "sample-c" }, operation: "mute", lanes: ["sample-c"] } });
 
@@ -309,13 +313,13 @@ test("Used only compacts rows without renumbering the lanes sent to Rust", async
   assert.equal(pointer.row, 2);
   assert.equal(evaluate("lanePositions.get(2)"), 1);
   evaluate("drag = null; scene.moments[0][3] = [[2, false]]; renderLanes();");
-  assert.deepEqual(get("lanes").children.map(row => laneName(row).textContent), ["A", "C"]);
+  assert.deepEqual(laneNames(evaluate), ["A", "C"]);
   get("used-only").checked = false;
   toggle();
-  assert.deepEqual(get("lanes").children.map(row => laneName(row).textContent), ["A", "B", "C"]);
+  assert.deepEqual(laneNames(evaluate), ["A", "B", "C"]);
   get("used-only").checked = true;
   toggle();
-  assert.deepEqual(get("lanes").children.map(row => laneName(row).textContent), ["C"]);
+  assert.deepEqual(laneNames(evaluate), ["C"]);
 });
 
 
@@ -342,11 +346,11 @@ test("collapsing sample layers keeps their model rows separate and lets them exp
     value: { folder_order: ["normal", "soft", "drum"], collapsed_folders: [], collapsed_families: ["clap"], lane_colours: {} }
   }]);
 
-  const disclosure = lanePart(get("lanes").children[0], "lane-disclosure");
-  disclosure.events.get("click")();
+  assert.deepEqual(headerRows(evaluate)[0].family, { collapsed: true, label: "Expand Map clap layers" });
+  headerAction(evaluate, "family", rowAt(evaluate, 0));
   assert.equal(evaluate("JSON.stringify(laneRows)"), "[0,1,2,3]");
   assert.equal(evaluate("previewParents.has(2)"), false);
-  lanePart(get("lanes").children[2], "lane-mute").events.get("click")();
+  headerAction(evaluate, "mix", rowAt(evaluate, 2), "mute");
   await evaluate("pending");
   assert.deepEqual(calls.pop(), { scene: true, action: { kind: "lane_selection_mix", target: { map: "fixture.osu", lane: "sample-c" }, operation: "mute", lanes: ["sample-c"] } });
   assert.equal(calls.pop().action.value.collapsed_families.length, 0);
@@ -371,25 +375,18 @@ test("sample-set folders reorder headers and send group controls without changin
   );
   assert.equal(evaluate("JSON.stringify(laneRows)"), '["normal",0,"soft",1,"drum",2,3]');
 
-  const normal = get("lanes").children[0];
-  lanePart(normal, "lane-mute").events.get("click")();
+  headerAction(evaluate, "folderMix", "normal", "mute");
   await evaluate("pending");
   assert.deepEqual(calls.pop(), { scene: true, action: { kind: "group_mix", set: "normal", operation: "mute" } });
 
-  const drum = get("lanes").children[4];
-  const transfer = {
-    data: new Map(), setData(type, value) { this.data.set(type, value); },
-    getData(type) { return this.data.get(type) ?? ""; },
-    get types() { return [...this.data.keys()]; },
-  };
-  drum.events.get("dragstart")({ dataTransfer: transfer });
-  normal.events.get("drop")({ dataTransfer: transfer, clientY: 0, preventDefault() {} });
+  // Dropping Drum set on the top half of Normal set's header (the part works out the half).
+  headerAction(evaluate, "folderMove", "drum", "normal", false);
   assert.equal(evaluate("JSON.stringify(laneRows)"), '["drum",2,"normal",0,"soft",1,3]');
   const hit = evaluate('drag = { surface: grid, start: 0, zoom: 1, rows: laneRows }; pointer({clientX: 1000, clientY: 45}, "down")');
   assert.equal(hit.row, 2);
 
   evaluate("drag = null;");
-  get("lanes").children[0].children[0].events.get("click")();
+  headerAction(evaluate, "folder", "drum");
   assert.equal(evaluate("JSON.stringify(laneRows)"), '["drum","normal",0,"soft",1,3]');
   assert.equal(evaluate("previewParents.get(2)"), "drum");
   assert.equal(evaluate('revealLayerPreview("drum", 1000, 15)'), true);

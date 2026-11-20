@@ -3,6 +3,10 @@
 export class Bridge {
   view = $state.raw(null);
   scene = $state.raw(null);
+  // The lane and folder header rows app.js last built (renderLanes), replaced whole.
+  lanes = $state.raw(null);
+  // Playhead group's Centre: kept in this window only, never saved; app.js reads it to follow.
+  centre = $state(false);
 
   // No map, a job running or a fault: the parts show but take no input.
   get disabled() {

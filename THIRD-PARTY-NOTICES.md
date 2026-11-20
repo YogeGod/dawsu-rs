@@ -110,7 +110,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 ## Lucide (lucide-icons/lucide)
 
-The transport icons in `apps/tauri/ui/src/icons/` (compiled into `apps/tauri/dist/ui/ui.js`) are Lucide icons, as the v3 design uses: skip-back, skip-forward, repeat-2, square, play, chevron-left, chevron-right, copy and check. The menus keep the matching icons in `apps/tauri/dist/studio-assets/icons/`, drawn as images. Lucide is used under the ISC Licence; the text below is Lucide's `LICENSE`.
+The transport icons in `apps/tauri/ui/src/icons/` (compiled into `apps/tauri/dist/ui/ui.js`) are Lucide icons, as the v3 design uses: skip-back, skip-forward, repeat-2, square, play, chevron-left, chevron-right, copy, check, locate-fixed, crosshair, undo-dot, folder and folder-open. The menus keep the matching icons in `apps/tauri/dist/studio-assets/icons/`, drawn as images. Lucide is used under the ISC Licence; the text below is Lucide's `LICENSE`.
 
 ```
 ISC License
