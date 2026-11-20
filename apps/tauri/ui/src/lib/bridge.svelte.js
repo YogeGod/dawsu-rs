@@ -7,6 +7,8 @@ export class Bridge {
   scene = $state.raw(null);
   // The lane and folder header rows app.js last built (renderLanes), replaced whole.
   lanes = $state.raw(null);
+  // The Inspector's Selection, Lane and Difficulty model app.js last built (inspectorModel), replaced whole.
+  inspector = $state.raw(null);
   // Playhead group's Centre: kept in this window only, never saved; app.js reads it to follow.
   centre = $state(false);
 

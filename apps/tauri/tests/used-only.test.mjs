@@ -105,7 +105,7 @@ test("the active lane colour picker applies and resets a faint tint for its diff
   `);
   const open = () => {
     evaluate("view.activeLane = 0");
-    get("lane-colour").events.get("click")();
+    evaluate("inspectorAction('laneColour')");
   };
   open();
   assert.equal(evaluate("opened[2][0].children.length"), 72);
@@ -176,9 +176,7 @@ test("lane selection scopes volume independently of hit selection and skips invi
     ], laneOrder: [0, 2, 3], selection: {count: 2, start: 1000, object: "Circle"}, moments: [] };
     renderLanes();
   `);
-  const scope = get("selection-volume-scope");
-  scope.value = "selected";
-  scope.events.get("change")();
+  evaluate("inspectorAction('scope', 'selected')");
   await evaluate("pending");
   assert.deepEqual(calls.pop().action, {kind: "volume_scope", path: "Scope.osu", lanes: []});
   const click = (row, event = {}) => headerAction(evaluate, "select", rowAt(evaluate, row), event);
@@ -195,8 +193,7 @@ test("lane selection scopes volume independently of hit selection and skips invi
   click(1, {metaKey: true});
   await evaluate("pending");
   assert.deepEqual(calls.pop().action.lanes, ["A", "D"]);
-  scope.value = "all";
-  scope.events.get("change")();
+  evaluate("inspectorAction('scope', 'all')");
   await evaluate("pending");
   assert.deepEqual(calls.pop().action.lanes, null);
 });

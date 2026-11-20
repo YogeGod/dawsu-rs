@@ -133,19 +133,8 @@ body{font-family:Inter,"Segoe UI",system-ui,sans-serif}
 .home-panel .brand img{width:40px;height:40px;margin-right:10px}
 .button-icon{width:16px;height:16px;vertical-align:-3px;margin-right:5px}
 button[aria-label="Undo"] .button-icon,button[aria-label="Redo"] .button-icon{margin-right:0}
-#selection-fields{border:0;margin:0;padding:0;min-width:0}#selection-volume{margin-bottom:6px}
 
-#selection-start-edit{display:flex;align-items:center;gap:6px}
-#selection-start-edit label{flex:1;min-width:0;margin:0}
-#selection-start-input{width:75px}
-#selected{margin:0 0 10px}
-#selection-volume > label{margin-block:5px}
-#selection-volume-hint{margin:5px 0 8px}
-#selection-fields > .row{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));margin-bottom:6px}
 #editor-inspector .row{flex-wrap:wrap}
-#active-lane-colour-swatch{width:10px;height:10px;flex:none;border-radius:2px}
-#active-lane-name,#active-lane-sample{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-#active-lane-sample{display:block;margin-top:4px;color:var(--muted)}
 
 #audio-buffer{width:112px}
 #save-problem-badge{margin-left:4px;padding:0 4px;border-radius:8px;background:#fccf77;color:#211700;font-weight:bold}
@@ -376,33 +365,9 @@ header #editor-menus button{min-height:26px;padding:3px 10px;border-radius:4px}
 #editor-inspector details[open] > summary::before { margin-top:-3px; transform:rotate(45deg); }
 #editor-inspector summary:focus-visible { outline:2px solid var(--hi-hover); outline-offset:-2px; }
 #editor-inspector summary h2 { margin:0; padding:0; border:0; font-size:13px; font-weight:600; }
-#editor-inspector .inspector-summary { margin:0 0 6px; font-size:12px; color:var(--title-text); }
-#selected-lanes { color:var(--muted); }
-#editor-inspector .inspector-row { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:2px 6px; min-height:32px; margin:4px 0; padding:2px 4px 2px 10px; border-radius:4px; background:var(--chrome); color:var(--title-text); }
-#editor-inspector .inspector-row label { flex:1; margin:0; }
-#editor-inspector .inspector-row output, #editor-inspector .inspector-value { margin-left:auto; color:var(--text); text-align:right; font-variant-numeric:tabular-nums; }
-#editor-inspector .inspector-row output { padding-right:6px; }
-#editor-inspector .inspector-value { display:inline-flex; align-items:center; gap:2px; font-size:11px; }
-#editor-inspector .inspector-row input[type=number] { width:52px; min-height:24px; padding:0 4px; text-align:right; background:var(--base); }
 #editor-inspector input[type=number]::-webkit-inner-spin-button { display:none; }
-#editor-inspector #selection-start-input { width:72px; min-height:24px; padding:0 4px; border:1px solid transparent; border-radius:4px; background:var(--base); text-align:right; font-variant-numeric:tabular-nums; }
-#editor-inspector #selection-start-edit label { flex:1 0 auto; }
-#editor-inspector #selection-start-edit button { padding:0 6px; }
-#editor-inspector .inspector-row select { max-width:96px; min-height:24px; padding:0 4px; background:var(--base); }
-#editor-inspector .inspector-row button { min-height:24px; padding:0 8px; }
-#editor-inspector .inspector-group { min-width:0; margin:10px 0 6px; padding:0; border:0; }
-#editor-inspector .inspector-caption { margin:0 0 4px; padding:0; font-size:11px; color:var(--muted); }
-#editor-inspector .inspector-controls { display:flex; gap:4px; margin:4px 0; }
-#editor-inspector .inspector-controls > * { min-height:26px; }
-#editor-inspector .inspector-controls select { flex:1; min-width:0; }
-#editor-inspector .inspector-controls input[type=number] { width:44px; padding-inline:4px; text-align:right; }
 #editor-inspector .inspector-actions { gap:4px; margin:6px 0; }
-#editor-inspector .inspector-actions button, #apply-slider-body { min-height:26px; padding:2px 8px; font-size:12px; }
-#active-lane-name { display:block; margin:2px 0 0; font-weight:600; color:var(--text); }
-#active-lane-sample { margin:2px 0 6px; font-size:12px; }
-#editor-inspector .inspector-row .inspector-value-button { display:inline-flex; align-items:center; gap:6px; min-width:0; margin-left:auto; padding:0 2px; background:transparent; color:var(--text); }
-#editor-inspector #active-lane-colour-swatch { width:14px; height:14px; border-radius:50%; }
-#active-lane-colour-name { overflow:hidden; text-overflow:ellipsis; }
+#editor-inspector .inspector-actions button { min-height:26px; padding:2px 8px; font-size:12px; }
 #editor-inspector > section > .inspector-header-action { position:absolute; top:7px; right:8px; width:24px; height:24px; min-height:24px; padding:0; background:transparent; color:var(--title-text); font-size:16px; line-height:1; }
 #editor-inspector > section > .inspector-header-action:hover:not(:disabled) { background:var(--control); color:var(--text); }
 #editor-inspector #bookmarks { display:block; width:100%; padding:2px; border-radius:4px; background:var(--base); overflow-y:auto; }

@@ -110,22 +110,21 @@ test("show() fills the Snap label, Audition, the problem summary and the hit and
   evaluate(`show({ busy: false, hasDocument: true, audition: true, outputProblems: [{ time: 1 }, { time: 2 }],
     scene: ${sceneWith({})} })`);
   assert.equal(get("grid-options").textContent, undefined, "the Snap slider shows the snap; the menu button stays ▾");
-  assert.equal(get("audition").checked, true, "the Inspector's Audition box follows the editor");
+  assert.equal(evaluate("inspectorModel().audition"), true, "the Inspector's Audition box follows the editor");
   assert.equal(get("problem-summary").hidden, false);
   assert.equal(get("problem-summary-text").textContent, "2 moments can't be saved");
   assert.equal(get("hit-lane-counts").hidden, false);
   assert.equal(get("hit-lane-counts").textContent, "3 hits · 2 lanes");
   assert.equal(get("playback-rates").hidden, false);
 
-  get("audition").checked = false;
-  get("audition").events.get("change")();
+  evaluate("inspectorAction('toggle', 'audition', false)");
   await settle();
   assert.deepEqual(calls.at(-1), { kind: "audition", on: false });
 
   evaluate(`show({ busy: false, hasDocument: true, audition: false, outputProblems: [{ time: 1 }],
     scene: ${sceneWith({ snap: false, lanes: [{ key: "a" }], moments: [[100, 100, true, [[0, false]]]] })} })`);
   assert.equal(get("grid-options").textContent, undefined);
-  assert.equal(get("audition").checked, false);
+  assert.equal(evaluate("inspectorModel().audition"), false);
   assert.equal(get("problem-summary-text").textContent, "1 moment can't be saved");
   assert.equal(get("hit-lane-counts").textContent, "1 hit · 1 lane");
 
