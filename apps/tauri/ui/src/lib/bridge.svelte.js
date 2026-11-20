@@ -1,4 +1,5 @@
 import { flushSync } from "svelte";
+import { followGroup } from "./snap.js";
 
 // The editor state app.js last showed. show() replaces both whole on every update (every 85 ms
 // during playback), so parts derive what they need and keep no copy of their own.
@@ -11,6 +12,9 @@ export class Bridge {
   inspector = $state.raw(null);
   // Playhead group's Centre: kept in this window only, never saved; app.js reads it to follow.
   centre = $state(false);
+  // The snap group the slider and the wheel step through (lazer's Common, Triplets or a custom one).
+  // Worked out from each snap the editor shows, never saved.
+  snapGroup = $state.raw(null);
 
   // No map, a job running or a fault: the parts show but take no input.
   get disabled() {
@@ -30,6 +34,7 @@ export class Bridge {
   }
 
   set(view, scene) {
+    this.snapGroup = followGroup(this.snapGroup, this.scene, scene);
     this.view = view;
     this.scene = scene;
   }
