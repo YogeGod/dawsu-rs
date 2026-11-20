@@ -1585,7 +1585,8 @@ impl Application {
             Vec::new()
         };
         if let Some(doc) = &self.document {
-            for entry in doc.left_out.iter().filter(|entry| entry.hs == doc.hs_mode) {
+            let hits = doc.composer.hitsounds();
+            for entry in doc.left_out.iter().filter(|entry| entry.still_held(hits, &doc.compile_base, doc.hs_mode)) {
                 let problem = OutputProblem::new(&entry.problem, &doc.path, &doc.path);
                 if !problems.iter().any(|p| p.target == problem.target && p.time == problem.time) {
                     problems.push(problem);
@@ -2595,11 +2596,14 @@ fn load(
         });
         composer.lanes = composer.hitsounds().lanes().iter().map(|lane| lane.identity.clone()).collect();
     }
+    let mut restored_left_out = false;
     if recovery.is_none()
         && let Some(record) = project.as_ref().and_then(|p| p.settings.unwritten.as_ref())
-        && let Err(warning) = unwritten::restore(&mut document, record)
     {
-        warnings.push(warning);
+        match unwritten::restore(&mut document, record) {
+            Ok(restored) => restored_left_out = restored,
+            Err(warning) => warnings.push(warning),
+        }
     }
     if let Some(saved) = project.as_ref().and_then(|p| p.settings.bookmarks.as_deref()) {
         document.bookmarks = BookmarkList::default();
@@ -2626,6 +2630,16 @@ fn load(
     document.export_settings = project.as_ref().and_then(|p| p.settings.export_settings.clone());
     if let Some(layout) = &mut document.lane_layout {
         layout.normalise();
+    }
+    // The moments the last Save left out are listed again before any Save: those put back from
+    // the project, and in HS mode loose hits kept there because they never became a circle.
+    let loose = || document.composer.hitsounds().moments().iter()
+        .any(|m| m.place() == dawsu_hitsounding::Place::NoObject && m.hits().next().is_some());
+    if recovery.is_none() && project.is_some() && (restored_left_out || document.hs_mode && loose()) {
+        match left_out_on_open(&document, &|| cancel.load(Ordering::Relaxed)) {
+            Ok(left_out) => document.left_out = left_out,
+            Err(error) => warnings.push(format!("The moments the last Save left out could not be listed: {error}")),
+        }
     }
     if let Some((lanes, hs_mode)) = recovered_view {
         document.composer.lanes = lanes;
@@ -2708,6 +2722,20 @@ fn project_hits(document: &Document) -> Vec<project::ProjectHit> {
         }
     }
     saved
+}
+
+/// What Save would leave out of the opened difficulty, without rendering any sample mix.
+fn left_out_on_open(document: &Document, cancel: &dyn Fn() -> bool) -> Result<Vec<roll_back::LeftOut>, String> {
+    let hits = document.composer.hitsounds();
+    let placement = if document.hs_mode { Placement::OnObjects } else { Placement::GreenLines };
+    let inputs = roll_back::Inputs {
+        base: &document.compile_base, drawn: hits, written: &document.written, hs: document.hs_mode,
+        owned: &document.owned_hs_circles, loose_in_project: true, roll_back: true,
+    };
+    roll_back::compile_with_roll_back(
+        &inputs, &|problem| mixes::can_render(problem, placement), &mut |pass, _, _| Ok(Ok(pass.out.clone())),
+        cancel, &mut |_, _| {},
+    ).map(|rolled| rolled.left_out)
 }
 
 /// Project rows for loose moments, one group each. Each row names its moment's volume, so a row is
@@ -3132,8 +3160,10 @@ mod project_workflow {
         let hits = app.document().unwrap().composer.hitsounds();
         assert!(hits.moment(tail_id(hits)).is_changed(), "the tail still differs from the file");
         assert!(!app.is_dirty());
+        assert_eq!(app.output_problems().iter().map(|p| p.time).collect::<Vec<_>>(), [2500.0], "listed before any Save");
         let reopened = reopen(&app, &map);
         assert_eq!(tail_hits(&reopened), drawn);
+        assert_eq!(reopened.output_problems().iter().map(|p| p.time).collect::<Vec<_>>(), [2500.0]);
         assert_eq!(std::fs::read(&other).unwrap(), SLIDER_MAP);
     }
 
@@ -3264,9 +3294,39 @@ mod project_workflow {
         assert_eq!(tail_hits(&reopened), drawn);
         let hits = reopened.document().unwrap().composer.hitsounds();
         assert!(hits.moment(tail_id(hits)).is_changed(), "gain recovery must not make the drawn gains the baseline");
+        assert_eq!(reopened.output_problems().len(), 1, "still listed after reopen");
         save_through_summary(&mut reopened, scratch.path("backups"));
         assert_eq!(record_json(&reopened)["current"]["moments"].as_array().map(Vec::len), Some(1));
         assert_eq!(std::fs::read(&map).unwrap(), SLIDER_MAP);
+    }
+
+    #[test]
+    fn an_unrelated_edit_keeps_a_left_out_moment_listed_and_editing_it_drops_it() {
+        let scratch = Scratch::new("left-out-listing");
+        let (mut app, _map) = open_left_out_fixture(&scratch, true);
+        save_through_summary(&mut app, scratch.path("backups"));
+        assert_eq!(app.output_problems().len(), 1);
+        app.document.as_mut().unwrap().composer.apply("Unrelated", |hits| hits.set_volume(dawsu_hitsounding::MomentId(0), 30));
+        assert_eq!(app.output_problems().len(), 1, "an unrelated edit keeps it listed");
+        app.document.as_mut().unwrap().composer.apply("Edit the tail", |hits| {
+            let tail = tail_id(hits);
+            hits.set_hit_volume(tail, &skin(SampleSet::Drum, Hitsound::Clap), 20);
+        });
+        assert!(app.output_problems().is_empty(), "editing the moment drops it until the next Save");
+        app.document.as_mut().unwrap().composer.undo();
+        assert_eq!(app.output_problems().len(), 1, "undo brings back what was left out");
+        app.set_hs_mode(false);
+        assert!(app.output_problems().is_empty(), "the list belongs to the HS mode it was saved in");
+    }
+
+    #[test]
+    fn a_generate_review_keeps_the_left_out_moments_listed() {
+        let scratch = Scratch::new("left-out-generate");
+        let (mut app, _map) = open_left_out_fixture(&scratch, true);
+        save_through_summary(&mut app, scratch.path("backups"));
+        app.generate();
+        wait(&mut app);
+        assert!(app.output_problems().iter().any(|p| p.time == 2500.0), "the badge stays");
     }
 
     #[test]
@@ -3298,6 +3358,7 @@ mod project_workflow {
                 .filter(|m| m.place() == dawsu_hitsounding::Place::NoObject).collect();
             assert_eq!(loose.len(), 1);
             assert_eq!(loose[0].hits().count(), 2);
+            assert_eq!(app.output_problems().iter().map(|p| p.time).collect::<Vec<_>>(), [3000.0]);
         }
     }
 

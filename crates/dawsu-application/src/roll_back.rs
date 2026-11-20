@@ -59,6 +59,13 @@ pub(crate) struct LeftOut {
     pub hs: bool,
 }
 
+impl LeftOut {
+    /// True while the part still holds what Save left out, in the HS mode it was saved in.
+    pub(crate) fn still_held(&self, hits: &Hitsounds, base: &OsuFile, hs: bool) -> bool {
+        self.hs == hs && held(hits, base, self.part).as_ref() == Some(&self.held)
+    }
+}
+
 /// What `part` holds in `hits`. `base` is the difficulty compile starts from, for HS group times.
 pub(crate) fn held(hits: &Hitsounds, base: &OsuFile, part: Part) -> Option<Held> {
     match part {
