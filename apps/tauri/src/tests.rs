@@ -1987,3 +1987,28 @@ fn home_save_with_left_out_moments_goes_home_after_the_summarys_save() {
     assert!(!app.is_dirty());
     assert!(route.visible(), "Home continues after the summary's Save");
 }
+
+#[test]
+fn only_closing_the_main_window_closes_the_editor() {
+    use super::{CloseDecision, Editor, Request, close_requested};
+    let (send, receive) = std::sync::mpsc::channel();
+    let editor = Editor(send);
+    for label in ["export", "drum"] {
+        assert_eq!(close_requested(label, &editor), CloseDecision::Allow);
+    }
+    assert!(receive.try_recv().is_err(), "another window sent a request to the editor");
+
+    let refusal = "Save or discard the current difficulty before quitting.";
+    let responder = std::thread::spawn(move || {
+        [Ok(()), Err(refusal.to_owned())].into_iter().map(|answer| match receive.recv().unwrap() {
+            Request::Close(discard, response) => {
+                response.send(answer).unwrap();
+                discard
+            }
+            _ => panic!("closing main sends only Close"),
+        }).collect::<Vec<_>>()
+    });
+    assert_eq!(close_requested("main", &editor), CloseDecision::CloseAll);
+    assert_eq!(close_requested("main", &editor), CloseDecision::Keep(refusal.into()));
+    assert_eq!(responder.join().unwrap(), [false, false]);
+}

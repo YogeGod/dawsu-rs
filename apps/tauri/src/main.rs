@@ -1751,16 +1751,46 @@ fn close_editor(
     Ok(())
 }
 
+/// What a window's close request does to the editor. Only the main window owns the session.
+#[derive(Debug, PartialEq)]
+enum CloseDecision {
+    /// Another window closes; the editor and its session stay as they are.
+    Allow,
+    /// Main closes after the session was saved; every other window closes with it.
+    CloseAll,
+    /// Main stays open; the message says why.
+    Keep(String),
+}
+
+fn close_requested(label: &str, editor: &Editor) -> CloseDecision {
+    if label != "main" {
+        return CloseDecision::Allow;
+    }
+    match ask(editor, |tx| Request::Close(false, tx)).and_then(|r| r) {
+        Ok(()) => CloseDecision::CloseAll,
+        Err(error) => CloseDecision::Keep(error),
+    }
+}
+
 fn main() {
     let initial = std::env::args_os().nth(1).map(PathBuf::from);
     tauri::Builder::default()
         .manage(editor_thread(initial))
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                let editor = window.state::<Editor>();
-                if let Err(error) = ask(&editor, |tx| Request::Close(false, tx)).and_then(|r| r) {
-                    api.prevent_close();
-                    let _ = window.emit("editor-close-requested", error);
+                match close_requested(window.label(), &window.state::<Editor>()) {
+                    CloseDecision::Allow => {}
+                    CloseDecision::CloseAll => {
+                        for (label, other) in window.app_handle().webview_windows() {
+                            if label != "main" {
+                                let _ = other.destroy();
+                            }
+                        }
+                    }
+                    CloseDecision::Keep(error) => {
+                        api.prevent_close();
+                        let _ = window.emit_to("main", "editor-close-requested", error);
+                    }
                 }
             }
         })
