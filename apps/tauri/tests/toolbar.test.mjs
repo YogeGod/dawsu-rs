@@ -172,3 +172,16 @@ test("the Snap menu button beside the slider is only a ▾ named More snaps", ()
   assert.match(button, />▾<\/button>$/);
   assert.doesNotMatch(app, /\$\("grid-options"\)/, "show() no longer rewrites the button");
 });
+
+test("a fault reaches the Svelte parts as a new view with fault set, so they disable", async () => {
+  const { evaluate } = await frontend();
+  evaluate("window.dawsuUi = { update(view, scene) { this.views = (this.views ?? []).concat([view]); this.scene = scene; } }");
+  evaluate(`show({ busy: false, hasDocument: true, tool: "Draw", scene: ${sceneWith({})} })`);
+  evaluate("modal = () => {}");
+  evaluate('show({ fault: "The audio device stopped" })');
+  assert.equal(evaluate("window.dawsuUi.views.length"), 2);
+  assert.equal(evaluate("window.dawsuUi.views[1].fault"), "The audio device stopped");
+  assert.equal(evaluate("window.dawsuUi.views[1].tool"), "Draw");
+  assert.equal(evaluate("window.dawsuUi.views[0] !== window.dawsuUi.views[1]"), true, "a new object, so Svelte sees the change");
+  assert.equal(evaluate("window.dawsuUi.scene.divisor"), 4);
+});

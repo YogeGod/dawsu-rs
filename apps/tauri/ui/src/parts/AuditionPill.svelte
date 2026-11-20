@@ -4,7 +4,7 @@
   import icon from "../icons/Audition.svg?raw";
 
   const on = $derived(!!bridge.view?.audition);
-  const disabled = $derived(!bridge.scene || !!bridge.view?.busy);
+  const disabled = $derived(bridge.disabled);
 </script>
 
 <div class="ui-well">

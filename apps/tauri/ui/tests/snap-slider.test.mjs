@@ -81,4 +81,6 @@ test("with snap off the slider is dimmed but still works; with no map or while b
   assert.match(html, /class="chip[^"]*">–</);
   html = shown(scene({}), { busy: true });
   assert.match(html, /aria-disabled="true"/);
+  html = shown(scene({}), { busy: false, fault: "The editor stopped" });
+  assert.match(html, /aria-disabled="true"/);
 });

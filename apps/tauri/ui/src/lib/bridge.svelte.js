@@ -4,6 +4,11 @@ export class Bridge {
   view = $state.raw(null);
   scene = $state.raw(null);
 
+  // No map, a job running or a fault: the parts show but take no input.
+  get disabled() {
+    return !this.scene || !!this.view?.busy || !!this.view?.fault;
+  }
+
   set(view, scene) {
     this.view = view;
     this.scene = scene;

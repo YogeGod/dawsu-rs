@@ -46,8 +46,11 @@ test("the current tool's pill is pressed; an off-toolbar tool gets a fourth pres
   assert.doesNotMatch(html, /\sstyle=|\sid=/);
 });
 
-test("before the first update, with no map, or while busy, the pills show but can't be pressed", () => {
-  for (const [view, scene] of [[null, null], [{ tool: "Select", busy: false }, null], [{ tool: "Select", busy: true }, { path: "Hard.osu" }]]) {
+test("before the first update, with no map, while busy or after a fault, the pills show but can't be pressed", () => {
+  const map = { path: "Hard.osu" };
+  const views = [[null, null], [{ tool: "Select", busy: false }, null], [{ tool: "Select", busy: true }, map],
+    [{ tool: "Select", busy: false, fault: "The editor stopped" }, map]];
+  for (const [view, scene] of views) {
     const html = shown(ToolPills, view, scene);
     assert.deepEqual(labels(html), ["Select", "Draw", "Erase"]);
     assert.equal([...html.matchAll(/disabled/g)].length, 3);

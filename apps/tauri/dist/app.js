@@ -200,7 +200,9 @@ function saveLaneLayout(persist = false) {
 
 function show(next) {
   if (next.fault) {
-    view.fault = next.fault;
+    // A new object, so the Svelte parts see the fault and disable.
+    view = { ...view, fault: next.fault };
+    try { window.dawsuUi?.update(view, scene); } catch (error) { console.error(error); }
     $("status").textContent = next.fault;
     const close = () => run(() => invoke("close_editor", { discard: false }));
     modal("fault", "Editor stopped", [paragraph(next.fault)], [["Close dawsu!", close, true]], close);

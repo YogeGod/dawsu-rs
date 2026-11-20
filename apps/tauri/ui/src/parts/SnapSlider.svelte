@@ -9,7 +9,7 @@
   let sending = Promise.resolve();
 
   const scene = $derived(bridge.scene);
-  const disabled = $derived(!scene || !!bridge.view?.busy);
+  const disabled = $derived(bridge.disabled);
   const index = $derived(local ?? (scene ? nearestStop(scene.beats, scene.divisor) : 3));
   const exact = $derived(local !== null || !scene || onStop(scene.beats, scene.divisor));
   const value = $derived(local !== null ? "1/" + STOPS[local] : scene ? scene.beats + "/" + scene.divisor : "–");

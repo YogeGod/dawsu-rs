@@ -11,7 +11,7 @@
 
   const icons = { Select, Draw, Erase, Mute, Grab, Range, Ramp };
   const tool = $derived(bridge.view?.tool ?? null);
-  const disabled = $derived(!bridge.scene || !!bridge.view?.busy);
+  const disabled = $derived(bridge.disabled);
   const pills = $derived(toolPills(tool));
 
   // The fourth pill shows an off-toolbar tool by its icon only; pressing it opens the right-click tool picker.
