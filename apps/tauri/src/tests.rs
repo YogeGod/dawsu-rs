@@ -1987,3 +1987,38 @@ fn home_save_with_left_out_moments_goes_home_after_the_summarys_save() {
     assert!(!app.is_dirty());
     assert!(route.visible(), "Home continues after the summary's Save");
 }
+
+#[test]
+fn drum_hit_detection_offers_the_map_lanes_and_reports_a_missing_song() {
+    let fixture = Fixture::new("drum-detect");
+    let map = fixture.0.join("map.osu");
+    fs::write(&map, "osu file format v14\n[General]\nMode:0\nSampleSet:Soft\n[TimingPoints]\n0,500,4,2,0,100,1,0\n[HitObjects]\n256,192,500,1,10,0:0:0:0:\n").unwrap();
+    let mut app = Application::headless();
+    open(&mut app, &map);
+    let view = snapshot(&app, false);
+    let drum = &view["drumDetect"];
+    assert_eq!(drum["state"], "idle");
+    let keys: Vec<String> = drum["lanes"].as_array().unwrap().iter()
+        .map(|lane| lane["key"].as_str().unwrap().to_owned()).collect();
+    let lanes = app.document().unwrap().composer.hitsounds().lanes().iter()
+        .map(|lane| scene_lane_key(&lane.identity)).collect::<Vec<_>>();
+    assert_eq!(keys, lanes);
+    let kick = keys.iter().find(|key| key.contains("Whistle")).unwrap().clone();
+    let map = app.document().unwrap().path.clone();
+    let start: Action = serde_json::from_value(serde_json::json!({
+        "kind": "drum_detect_start", "map": map, "kick": kick, "snare": null,
+    })).unwrap();
+    start.run(&mut app);
+    assert_eq!(app.error.take().as_deref(), Some("This difficulty's song could not be loaded."));
+    let other: Action = serde_json::from_value(serde_json::json!({
+        "kind": "drum_detect_start", "map": fixture.0.join("other.osu"), "kick": kick, "snare": null,
+    })).unwrap();
+    other.run(&mut app);
+    assert!(app.error.take().unwrap().contains("difficulty changed"));
+    let apply: Action = serde_json::from_value(serde_json::json!({ "kind": "drum_apply", "map": map, "review": "1" })).unwrap();
+    apply.run(&mut app);
+    assert_eq!(app.error.take().as_deref(), Some("Detect drum hits first."));
+    let cancel: Action = serde_json::from_value(serde_json::json!({ "kind": "drum_detect_cancel" })).unwrap();
+    cancel.run(&mut app);
+    assert!(app.error.is_none());
+}

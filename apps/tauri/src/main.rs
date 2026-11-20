@@ -7,7 +7,7 @@ mod keyboard;
 mod library;
 mod selection;
 
-use dawsu_application::{Application, OutputBackend, ExportSettings, PlatformRequest, EditorTimeSignature, LaneLayout, PointerPhase, RangeOperation, TimelineEdit, VolumeScope, lane_name};
+use dawsu_application::{Application, DrumDetectState, OutputBackend, ExportSettings, PlatformRequest, EditorTimeSignature, LaneLayout, PointerPhase, RangeOperation, TimelineEdit, VolumeScope, lane_name};
 use dawsu_editor::{
     keys::{Key, KeyCombination, Mods},
     tempo::SnapMode,
@@ -362,6 +362,9 @@ enum Action {
         operation: String,
     },
     ShowLane { target: SampleTarget },
+    DrumDetectStart { map: PathBuf, kick: Option<String>, snare: Option<String> },
+    DrumDetectCancel,
+    DrumApply { map: PathBuf, review: String },
     DeleteLane { target: SampleTarget, revision: u64 },
     LaneLayout {
         path: Option<PathBuf>,
@@ -760,6 +763,30 @@ impl Action {
                     app.error = Some(error);
                 }
             }
+            Self::DrumDetectStart { map, kick, snare } => {
+                let lane = |key: Option<String>| key.map(|key| drum_lane(app, &key)).transpose();
+                let result = if app.document().is_some_and(|document| document.path == map) {
+                    lane(kick).and_then(|kick| Ok((kick, lane(snare)?)))
+                        .and_then(|(kick, snare)| app.start_drum_detection(kick, snare))
+                } else {
+                    Err("The open difficulty changed. Open Drum hit detection again.".into())
+                };
+                if let Err(error) = result {
+                    app.error = Some(error);
+                }
+            }
+            Self::DrumDetectCancel => app.cancel_drum_detection(),
+            Self::DrumApply { map, review } => {
+                let result = if app.document().is_some_and(|document| document.path == map) {
+                    review.parse().map_err(|_| "Detect drum hits first.".to_owned())
+                        .and_then(|review| app.apply_drum_detection(review))
+                } else {
+                    Err("The open difficulty changed. Nothing was applied.".into())
+                };
+                if let Err(error) = result {
+                    app.error = Some(error);
+                }
+            }
             Self::TimeSignatures { map, value } => {
                 if !app.document().is_some_and(|document| document.path == map) {
                     app.error = Some("The open difficulty changed. Reopen Time signatures to try again.".into());
@@ -935,6 +962,45 @@ fn lane_selection_mix(app: &mut Application, target: &SampleTarget, operation: &
 /// A lane's key in the scene: the text the front end holds for a lane and sends back to name it.
 fn scene_lane_key(lane: &SampleIdentity) -> String {
     format!("{lane:?}")
+}
+
+/// A lane drum hit detection may fill: any lane of the difficulty, hidden ones too.
+fn drum_lane(app: &Application, key: &str) -> Result<SampleIdentity, String> {
+    app.document()
+        .and_then(|document| document.composer.hitsounds().lanes().iter()
+            .find(|lane| scene_lane_key(&lane.identity) == key))
+        .map(|lane| lane.identity.clone())
+        .ok_or_else(|| "A chosen lane no longer exists. Pick the lanes again.".into())
+}
+
+fn drum_detect_view(app: &Application) -> Value {
+    let view = app.drum_detection();
+    let mut result = json!({
+        "state": "idle",
+        "lanes": view.lanes.iter().map(|(lane, name)| json!({ "key": scene_lane_key(lane), "name": name }))
+            .collect::<Vec<_>>(),
+        "kick": view.kick.as_ref().map(scene_lane_key),
+        "snare": view.snare.as_ref().map(scene_lane_key),
+    });
+    match view.state {
+        DrumDetectState::Idle => {}
+        DrumDetectState::Running { done, total } => {
+            result["state"] = json!("running");
+            result["done"] = json!(done);
+            result["total"] = json!(total);
+        }
+        DrumDetectState::Ready { review, counts, kicks, snares } => {
+            result["state"] = json!("ready");
+            result["review"] = json!(review.to_string());
+            result["kicks"] = json!(kicks);
+            result["snares"] = json!(snares);
+            result["counts"] = json!({
+                "added": counts.added, "onObjects": counts.on_objects, "loose": counts.loose,
+                "flagged": counts.flagged, "duplicates": counts.duplicates,
+            });
+        }
+    }
+    result
 }
 
 fn lane_by_key(app: &Application, key: &str) -> Result<SampleIdentity, String> {
@@ -1217,6 +1283,7 @@ fn snapshot(app: &Application, include_scene: bool) -> Value {
     result["songSolo"] = json!(app.song_solo());
     result["editDialog"] = json!(app.requested_edit());
     result["quantizeStrength"] = json!(app.quantize_strength());
+    result["drumDetect"] = drum_detect_view(app);
     let tab_routes = [false, true].into_iter().flat_map(|ctrl| {
         [false, true].into_iter().flat_map(move |shift| {
             [false, true].into_iter().filter_map(move |alt| {
@@ -1490,6 +1557,7 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                             } else if app.is_dirty() && !discard {
                                 Err("Save or discard the current difficulty before quitting.".into())
                             } else {
+                                app.cancel_drum_detection();
                                 app.save_session().map(|()| {
                                     if !app.first_launch {
                                         app.save_preferences();
