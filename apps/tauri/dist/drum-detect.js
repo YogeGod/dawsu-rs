@@ -73,6 +73,12 @@ function refreshDrumDetection() {
     closeDrumDetection(false);
     return;
   }
+  if (view.error && drumDetectRendered === "starting") {
+    // The start was refused; the editor's message replaces this dialog.
+    drumDetectMap = null;
+    drumDetectRendered = "";
+    return;
+  }
   if (info.state === "running") {
     const text = "Detecting drum hits… " + Math.floor(info.done * 100 / Math.max(1, info.total)) + "%";
     if (drumDetectRendered !== text) {

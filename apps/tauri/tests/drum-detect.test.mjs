@@ -126,3 +126,13 @@ test("the result shows its counts and Apply sends the reviewed stamp", async () 
   assert.deepEqual(calls.at(-1).action, { kind: "drum_apply", map: "fixture.osu", review: "124" });
   assert.equal(dialog.open, false);
 });
+
+test("a refused start ends the flow so the menu can start it again", async () => {
+  const { button, evaluate, setStatus, settle } = await frontend();
+  evaluate("openDrumDetection()");
+  button("Detect").events.get("click")();
+  await settle();
+  setStatus({ busy: false, hasDocument: true, error: "This difficulty's song could not be loaded.", drumDetect: { state: "idle", lanes } });
+  evaluate("refreshDrumDetection()");
+  assert.equal(evaluate("drumDetectMap"), null);
+});

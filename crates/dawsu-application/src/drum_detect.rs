@@ -108,7 +108,8 @@ impl Application {
         if kick.is_none() && snare.is_none() {
             return Err("Pick kick and snare lanes first.".into());
         }
-        if [&kick, &snare].into_iter().flatten().any(|lane| document.composer.hitsounds().lane(lane).is_none()) {
+        if [&kick, &snare].into_iter().flatten()
+            .any(|lane| slider_body(lane) || document.composer.hitsounds().lane(lane).is_none()) {
             return Err("A chosen lane no longer exists. Pick the lanes again.".into());
         }
         let song = self.song.clone().ok_or("This difficulty's song could not be loaded.")?;
@@ -248,8 +249,10 @@ impl Application {
         };
         let document = self.document.as_ref();
         let lanes = document.map(|d| d.composer.hitsounds().lanes().iter()
+            .filter(|lane| !slider_body(&lane.identity))
             .map(|lane| (lane.identity.clone(), crate::lane_name(&lane.identity))).collect()).unwrap_or_default();
         let saved = |key: Option<&String>| key.and_then(|key| project::lane_identity(key))
+            .filter(|lane| !slider_body(lane))
             .filter(|lane| document.is_some_and(|d| d.composer.hitsounds().lane(lane).is_some()));
         let mapping = document.and_then(|d| d.drum_lanes.as_ref());
         DrumDetectView {
@@ -296,6 +299,11 @@ impl Application {
         // u64::MAX marks "not planned yet".
         hasher.finish().min(u64::MAX - 1)
     }
+}
+
+/// Slider body lanes play along a slider, not at a moment; drum hits never go there.
+fn slider_body(lane: &SampleIdentity) -> bool {
+    matches!(lane, SampleIdentity::Standard { sound: dawsu_foundation::Sound::Slider(_), .. })
 }
 
 /// The song as mono, the channels averaged (3.1.4 used (left + right) / 2).
@@ -453,6 +461,37 @@ mod tests {
         app.song = None;
         assert!(app.start_drum_detection(Some(lane(Hitsound::Whistle)), None).is_err());
         assert!(app.apply_drum_detection(0).is_err());
+    }
+
+    #[test]
+    fn slider_body_lanes_are_not_offered_or_accepted() {
+        let fixture = Scratch::new("drum-detect-slider-lanes");
+        let path = fixture.path("slider.osu");
+        std::fs::write(&path, "osu file format v14
+[General]
+Mode:0
+SampleSet:Soft
+[Difficulty]
+SliderMultiplier:1.4
+SliderTickRate:1
+[TimingPoints]
+0,500,4,2,0,100,1,0
+[HitObjects]
+256,192,0,1,10,0:0:0:0:
+256,192,1000,2,0,L|356:192,1,100
+").unwrap();
+        let mut app = Application::headless();
+        app.request_open(path);
+        wait(&mut app, |app| !app.busy);
+        app.song = Some(Arc::new(pattern()));
+        let slide = SampleIdentity::Standard {
+            set: SampleSet::Soft, sound: Sound::Slider(dawsu_foundation::SliderSound::Slide), index: dawsu_foundation::CustomIndex::new(0),
+        };
+        assert!(app.document().unwrap().composer.hitsounds().lane(&slide).is_some());
+        let view = app.drum_detection();
+        assert!(!view.lanes.is_empty());
+        assert!(view.lanes.iter().all(|(lane, _)| !matches!(lane, SampleIdentity::Standard { sound: Sound::Slider(_), .. })));
+        assert!(app.start_drum_detection(Some(slide), None).is_err());
     }
 
     #[test]
