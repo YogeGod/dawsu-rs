@@ -178,8 +178,9 @@
     padding: 0 6px;
     border-radius: 4px;
     background: var(--editor-selected);
-    box-shadow: var(--shadow-raised);
-    color: var(--snap, var(--editor-accent));
+    /* The number stays readable; the snap colour (dark at 1/12 and 1/16) underlines it. */
+    box-shadow: inset 0 -2px 0 var(--snap, transparent), var(--shadow-raised);
+    color: var(--editor-text);
     font-weight: 600;
     font-variant-numeric: tabular-nums;
   }
