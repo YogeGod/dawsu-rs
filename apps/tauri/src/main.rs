@@ -282,6 +282,10 @@ enum Action {
         target: SampleTarget,
         location: library::Location,
     },
+    PlaceSoundSet {
+        map: PathBuf,
+        path: PathBuf,
+    },
     Open {
         path: PathBuf,
     },
@@ -524,6 +528,11 @@ impl Action {
                     app.preferences.show_inspector = true;
                 }
                 app.save_preferences();
+            }
+            Self::PlaceSoundSet { map, path } => {
+                if let Err(error) = app.place_sound_set_file(&map, &path) {
+                    app.error = Some(error);
+                }
             }
             Self::ReplaceSample { target, path, mapset } => {
                 if let Err(error) = assign_sample(app, target, path, mapset) {
@@ -1676,6 +1685,15 @@ fn pick_sample(window: tauri::WebviewWindow, state: State<'_, Editor>, target: S
     ask(&state, |tx| Request::View(true, selected.map(|path| Action::ReplaceSample { target, path, mapset: false }), tx))
 }
 
+#[tauri::command]
+fn pick_sound_set(window: tauri::WebviewWindow, state: State<'_, Editor>, map: PathBuf) -> Result<Value, String> {
+    let selected = rfd::FileDialog::new().set_parent(&window)
+        .set_title("Place sound set")
+        .add_filter("dawsu! sound set", &["dawsuset"])
+        .pick_file();
+    ask(&state, |tx| Request::View(true, selected.map(|path| Action::PlaceSoundSet { map, path }), tx))
+}
+
 fn songs_dialog(window: &tauri::WebviewWindow, state: &Editor) -> Result<rfd::FileDialog, String> {
     let dialog = rfd::FileDialog::new().set_parent(window);
     Ok(match ask(state, Request::SongsDirectory)? {
@@ -1776,6 +1794,7 @@ fn main() {
             export_key_file,
             pick_map,
             pick_sample,
+            pick_sound_set,
             pick_songs_folder,
             pick_hitsound_library,
             list_library,
