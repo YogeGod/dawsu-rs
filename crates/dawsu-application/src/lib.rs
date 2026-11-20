@@ -2651,19 +2651,20 @@ fn load(
     if let Some(layout) = &mut document.lane_layout {
         layout.normalise();
     }
+    if let Some((lanes, hs_mode)) = recovered_view {
+        document.composer.lanes = lanes;
+        document.hs_mode = hs_mode;
+    }
     // The moments the last Save left out are listed again before any Save: those put back from
-    // the project, and in HS mode loose hits kept there because they never became a circle.
+    // the project or a recovery copy, and in HS mode loose hits kept in the project because they
+    // never became a circle.
     let loose = || document.composer.hitsounds().moments().iter()
         .any(|m| m.place() == dawsu_hitsounding::Place::NoObject && m.hits().next().is_some());
-    if recovery.is_none() && project.is_some() && (restored_left_out || document.hs_mode && loose()) {
+    if project.is_some() && (restored_left_out || recovery.is_some() || document.hs_mode && loose()) {
         match left_out_on_open(&document, &|| cancel.load(Ordering::Relaxed)) {
             Ok(left_out) => document.left_out = left_out,
             Err(error) => warnings.push(format!("The moments the last Save left out could not be listed: {error}")),
         }
-    }
-    if let Some((lanes, hs_mode)) = recovered_view {
-        document.composer.lanes = lanes;
-        document.hs_mode = hs_mode;
     }
     let folder = document.path.parent().ok_or("Missing folder")?;
     let song = if let Some(name) = document.file.general("AudioFilename") {
@@ -3474,6 +3475,13 @@ mod project_workflow {
         assert_eq!(record_json(&restored)["current"]["moments"].as_array().map(Vec::len), Some(1), "the left-out tail is still kept");
         let map = restored.document().unwrap().path.clone();
         assert_eq!(tail_hits(&reopen(&restored, &map)), drawn);
+    }
+
+    #[test]
+    fn a_restored_recovery_copy_lists_left_out_moments_straight_away() {
+        let scratch = Scratch::new("recovery-lists-left-out");
+        let (restored, _) = restore_after_partial_save(&scratch);
+        assert_eq!(restored.output_problems().iter().map(|p| p.time).collect::<Vec<_>>(), [2500.0]);
     }
 
     #[test]
