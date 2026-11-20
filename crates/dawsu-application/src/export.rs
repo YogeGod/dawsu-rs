@@ -36,7 +36,8 @@ struct Running {
 #[derive(Default)]
 pub(crate) struct Slot {
     last_id: u64,
-    waiting: Option<(u64, ExportOptions)>,
+    /// The id, the difficulty it was asked for, and the options.
+    waiting: Option<(u64, PathBuf, ExportOptions)>,
     running: Option<Running>,
     preview: Option<ExportPreview>,
     problems: Vec<OutputProblem>,
@@ -70,16 +71,14 @@ impl Application {
     /// Queues a preview and answers at once with its id. A newer request drops the
     /// finished preview and any running one, so Export is never run on old options.
     pub fn request_export_preview(&mut self, options: ExportOptions) -> Result<u64, String> {
-        if self.document.is_none() {
-            return Err("Open a difficulty first.".into());
-        }
+        let source = self.document.as_ref().ok_or("Open a difficulty first.")?.path.clone();
         self.export.stop();
         self.export.preview = None;
         self.export.problems.clear();
         self.export.error = None;
         self.export.last_id += 1;
         let id = self.export.last_id;
-        self.export.waiting = Some((id, options));
+        self.export.waiting = Some((id, source, options));
         self.start_export_preview();
         Ok(id)
     }
@@ -168,9 +167,13 @@ impl Application {
         let Some(document) = self.document.as_ref() else {
             return;
         };
-        let Some((id, options)) = self.export.waiting.take() else {
+        let Some((id, asked_for, options)) = self.export.waiting.take() else {
             return;
         };
+        if asked_for != document.path {
+            self.export.error = Some("Another difficulty was opened. Preview again.".into());
+            return;
+        }
         let source = output::Source::from_document(document);
         let defaults = self.preferences.default_samples.clone();
         let cancel = Arc::new(AtomicBool::new(false));
@@ -368,5 +371,37 @@ mod tests {
         let written = std::fs::read_to_string(&set.target).unwrap();
         assert!(written.contains("Sample,1200,0,\"far.wav\",60"), "{written}");
         assert!(app.run_export_in(third, backups).is_err());
+    }
+
+    #[test]
+    fn waiting_options_are_dropped_when_another_difficulty_opens() {
+        let set = mapset("export-switch");
+        let mut app = opened(&set.source);
+        app.busy = true;
+        app.request_export_preview(options(&[set.target.clone()])).unwrap();
+        app.busy = false;
+        app.request_open(set.target.clone());
+        wait_main(&mut app);
+        wait_preview(&mut app);
+        let status = app.export_status();
+        assert!(status.preview.is_none());
+        assert_eq!(status.error, Some("Another difficulty was opened. Preview again."));
+        assert!(app.error.is_none());
+    }
+
+    #[test]
+    fn export_refuses_a_preview_of_another_difficulty() {
+        let set = mapset("export-other-map");
+        let mut app = opened(&set.source);
+        let id = app.request_export_preview(options(&[set.target.clone()])).unwrap();
+        wait_preview(&mut app);
+        let version = app.export_status().preview.unwrap().plan.version;
+        app.request_open(set.target.clone());
+        wait_main(&mut app);
+        assert_eq!(app.document().unwrap().path, set.target);
+        assert_eq!(app.document().unwrap().composer.history.version(), version);
+        assert!(app.export_status().stale);
+        assert!(app.run_export_in(id, set.scratch.path("backups")).is_err());
+        assert_eq!(std::fs::read_to_string(&set.target).unwrap(), set.target_bytes);
     }
 }

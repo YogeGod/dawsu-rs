@@ -2086,3 +2086,37 @@ fn export_requests_answer_with_the_export_view_and_errors_after_a_fault() {
     assert_eq!(preview_rx.recv_timeout(wait).unwrap().unwrap_err(), "The editor stopped.");
     assert_eq!(run_rx.recv_timeout(wait).unwrap().unwrap_err(), "The editor stopped.");
 }
+
+#[test]
+fn export_preview_waits_without_an_error_while_a_drag_is_open() {
+    use dawsu_application::ExportOptions;
+    let root = Fixture::new("export-drag");
+    let path = root.0.join("Source.osu");
+    let target = root.0.join("Target.osu");
+    let map = "osu file format v14\n\n[General]\nMode:0\n\n[TimingPoints]\n0,500,4,1,0,100,1,0\n\n[HitObjects]\n256,192,1000,1,10,0:0:0:60:\n";
+    fs::write(&path, map).unwrap();
+    fs::write(&target, map).unwrap();
+    let mut app = Application::headless();
+    open(&mut app, &path);
+    let send = |app: &mut Application, phase: &str| {
+        Action::Pointer {
+            phase: phase.into(), ms: 1000.0, row: 0, x: 1000.0, y: 70.0,
+            value: Some(30.0), shift: false, ctrl: false, alt: false,
+        }.run(app);
+    };
+    send(&mut app, "down");
+    app.request_export_preview(ExportOptions { targets: vec![target], copy: Default::default() }).unwrap();
+    app.poll();
+    let status = app.export_status();
+    assert!(status.waiting && !status.running, "the preview waits for the drag");
+    assert_eq!(status.error, None);
+    assert!(app.error.is_none(), "{:?}", app.error);
+    send(&mut app, "up");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while app.export_status().preview.is_none() {
+        app.poll();
+        assert_eq!(app.export_status().error, None);
+        assert!(Instant::now() < deadline, "the preview did not run after the drag");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
