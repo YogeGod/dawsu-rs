@@ -1,7 +1,8 @@
 <script>
   import { act, bridge } from "../lib/bridge.svelte.js";
   import {
-    changesSnap, currentSnap, keepsFocus, nearestStop, onStop, ownsKey, snapAction, STOPS, stepStop, stopAt,
+    changesSnap, COMMON, currentSnap, divisorColour, keepsFocus, nearestStop, onStop, ownsKey, snapAction, snapColour, STOPS,
+    stepStop, stopAt,
   } from "../lib/snap.js";
 
   let track;
@@ -14,6 +15,8 @@
   const disabled = $derived(bridge.disabled);
   const index = $derived(local ?? (scene ? nearestStop(scene.beats, scene.divisor) : 3));
   const exact = $derived(local !== null || !scene || onStop(scene.beats, scene.divisor));
+  const group = $derived(bridge.snapGroup ?? COMMON);
+  const colour = $derived(local !== null ? divisorColour(STOPS[local]) : scene ? snapColour(scene.beats, scene.divisor) : undefined);
   const value = $derived(local !== null ? "1/" + STOPS[local] : scene ? scene.beats + "/" + scene.divisor : "–");
 
   function choose(target) {
@@ -59,7 +62,7 @@
   }
 </script>
 
-<div class="snap" class:off={scene && !scene.snap} class:disabled>
+<div class="snap" class:off={scene && !scene.snap} class:disabled style:--snap={colour}>
   <span class="label">Snap</span>
   <div
     class="track"
@@ -82,7 +85,7 @@
   >
     {#each STOPS as stop, k (stop)}
       {#if k > 0}<span class="segment" class:lit={k <= index}></span>{/if}
-      <span class="tick" class:lit={k <= index}>{#if k === index}<span class="thumb"></span>{/if}</span>
+      <span class="tick" class:lit={k <= index} class:dim={!group.presets.includes(stop)} style:--tick={divisorColour(stop)}>{#if k === index}<span class="thumb"></span>{/if}</span>
     {/each}
   </div>
   <span class="chip">{value}</span>
@@ -141,10 +144,14 @@
     width: 2px;
     height: 10px;
     border-radius: 1px;
-    background: var(--snap-tick-idle);
+    /* Each stop wears its lazer colour; the stops outside the snap group the wheel steps through stay grey. */
+    background: var(--tick);
   }
-  .lit {
+  .segment.lit {
     background: var(--editor-accent);
+  }
+  .tick.dim {
+    background: var(--snap-tick-idle);
   }
   .thumb {
     position: absolute;
@@ -153,14 +160,14 @@
     width: 14px;
     height: 14px;
     border-radius: 50%;
-    background: var(--editor-text);
+    background: var(--snap, var(--editor-text));
     box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35);
     transform: translate(-50%, -50%);
   }
   /* The real snap has no stop of its own (4/1, 1/5, 1/64): the thumb shows the nearest one, hollow. */
   .between .thumb {
     background: var(--editor-ink);
-    box-shadow: inset 0 0 0 2px var(--editor-text), 0 0 0 1px rgba(0, 0, 0, 0.35);
+    box-shadow: inset 0 0 0 2px var(--snap, var(--editor-text)), 0 0 0 1px rgba(0, 0, 0, 0.35);
   }
   .chip {
     display: grid;
@@ -172,7 +179,7 @@
     border-radius: 4px;
     background: var(--editor-selected);
     box-shadow: var(--shadow-raised);
-    color: var(--editor-accent);
+    color: var(--snap, var(--editor-accent));
     font-weight: 600;
     font-variant-numeric: tabular-nums;
   }

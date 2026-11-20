@@ -302,6 +302,7 @@ function show(next) {
   window.refreshEditorMenu?.();
   paintSoon();
   try { window.dawsuUi?.update(view, scene); } catch (error) { console.error(error); }
+  $("triplet-snap").checked = window.dawsuUi?.snapGroup?.() === "triplets";
 }
 
 // The Svelte bundle loads after this script, so a part counts as missing only after the page has loaded.
@@ -2016,20 +2017,17 @@ function changeView(start, zoom, rowHeight = scene.rowHeight, rowAnchorY = 0) {
   });
 }
 
-// The legacy straight and triplet sequences, ordered from coarse to fine.
-const straightWheelSnap = [[4, 1], [2, 1], [1, 1], [1, 2], [1, 4], [1, 8], [1, 16]];
-const tripletWheelSnap = [[3, 1], [1, 1], [1, 3], [1, 6], [1, 12]];
-
+// Like osu!lazer, the wheel steps through the snap group the slider shows (Common 1/1-1/16,
+// Triplets 1/1-1/12, or a custom one) and stops at either end (ui/src/lib/snap.js).
 function stepWheelSnap(finer) {
-  const options = $("triplet-snap").checked ? tripletWheelSnap : straightWheelSnap;
-  const current = scene.beats / scene.divisor;
-  const [beats, divisor] = finer
-    ? options.find(([n, d]) => n / d < current) ?? options.at(-1)
-    : options.findLast(([n, d]) => n / d > current) ?? options[0];
-  if (beats !== scene.beats || divisor !== scene.divisor) {
-    act({ kind: "snap", on: scene.snap, mode: scene.snapMode, beats, divisor });
-  }
+  const divisor = window.dawsuUi?.wheelSnap?.(finer);
+  if (divisor) act({ kind: "snap", on: scene.snap, mode: scene.snapMode, beats: 1, divisor });
 }
+
+// The Triplets box shows the group; ticking it picks 1/6 and unticking 1/4, as lazer's group button does.
+$("triplet-snap").addEventListener("change", () => {
+  if (scene) act({ kind: "snap", on: scene.snap, mode: scene.snapMode, beats: 1, divisor: $("triplet-snap").checked ? 6 : 4 });
+});
 
 $("scroll").addEventListener("wheel", (event) => {
   if (!scene) return;
