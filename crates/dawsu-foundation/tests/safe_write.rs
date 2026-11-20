@@ -247,11 +247,14 @@ fn replace_gives_up_cleanly_when_the_target_stays_held() {
     let policy = BackupPolicy::new(s.path("backups"), 20);
 
     let handle = hold_without_delete_sharing(&target);
+    let started = std::time::Instant::now();
     let outcome = safe_write::replace(&target, b"old", b"new", &policy);
+    let waited = started.elapsed();
     let names = files_in(&s.0);
     drop(handle);
 
     assert!(outcome.is_err(), "expected an error, got {outcome:?}");
+    assert!(waited >= std::time::Duration::from_millis(2900), "waits about 3 s before giving up, waited {waited:?}");
     assert_eq!(fs::read(&target).unwrap(), b"old");
     assert_eq!(names, vec!["backups", "map.osu"], "no temporary file is left");
 }
@@ -267,8 +270,10 @@ fn replace_never_overwrites_a_change_made_while_it_waited() {
     let handle = hold_without_delete_sharing(&target);
     let changed = target.clone();
     let release = std::thread::spawn(move || {
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        std::thread::sleep(std::time::Duration::from_millis(50));
         fs::write(&changed, b"changed by osu!").unwrap();
+        // Keep holding a while longer, so every replace attempt after the change re-checks first.
+        std::thread::sleep(std::time::Duration::from_millis(100));
         drop(handle);
     });
 

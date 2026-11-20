@@ -119,9 +119,9 @@ pub fn replace(target: &Path, read_bytes: &[u8], new_bytes: &[u8], backups: &Bac
 }
 
 /// How long `replace` and `write_new` wait before each retry of a replace that another program blocked:
-/// about 1 s in total. Only Windows keeps other programs from replacing an open file.
+/// about 3 s in total. Only Windows keeps other programs from replacing an open file.
 #[cfg(windows)]
-const REPLACE_WAITS: [Duration; 8] = [
+const REPLACE_WAITS: [Duration; 12] = [
     Duration::from_millis(10),
     Duration::from_millis(20),
     Duration::from_millis(40),
@@ -130,6 +130,10 @@ const REPLACE_WAITS: [Duration; 8] = [
     Duration::from_millis(200),
     Duration::from_millis(250),
     Duration::from_millis(250),
+    Duration::from_millis(500),
+    Duration::from_millis(500),
+    Duration::from_millis(500),
+    Duration::from_millis(500),
 ];
 #[cfg(not(windows))]
 const REPLACE_WAITS: [Duration; 0] = [];
