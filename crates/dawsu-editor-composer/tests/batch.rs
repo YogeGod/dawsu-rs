@@ -108,8 +108,9 @@ fn classic_options_reproduce_3_1_4_auto_fill() {
                 let lane = if hits[row.hit].lane == lane("kick") { "kick" } else { "snare" };
                 Some((lane.to_owned(), format!("{:.4}", row.time), anchored))
             }).collect();
-            // In HS mode 3.1.4 anchored an unmatched hit to a new HS circle it made at once; here it is
-            // a no-object moment until Save writes it, so only lane and time are compared there.
+            // In HS mode 3.1.4 gave an unmatched hit a key for the hitsounding circle Save would write
+            // (`HsHit`, a negative object index), so it reads as anchored. Here the hit sits on a
+            // no-object moment that Save turns into that circle, so only lane and time are compared.
             let hs = case["hs_mode"].as_bool().unwrap();
             let mut theirs: Vec<(String, String, bool)> = step["hits"].as_array().unwrap().iter().map(|h| (
                 h["lane"].as_str().unwrap().to_owned(),
@@ -280,15 +281,32 @@ fn stronger_hits_win_and_existing_hits_count_as_duplicates() {
 
 #[test]
 fn the_range_includes_its_start_and_excludes_its_end() {
-    let c = composer();
+    let mut c = composer();
     let options = BatchOptions { range: Some((1010.0, 1510.0)), ..BatchOptions::default() };
     let plan = c.plan_batch(&[hit("kick", 1001.0, 1.0), hit("snare", 1490.0, 1.0), hit("kick", 1510.0, 1.0),
         hit("kick", 1010.0, 0.5)], &options);
     assert!(matches!(plan.rows[0].lands, Lands::Skipped));
     assert!(matches!(plan.rows[1].lands, Lands::Object(_)));
     assert!(matches!(plan.rows[2].lands, Lands::Skipped));
-    // The object at 1000 is outside the range, so the hit at 1010 lands on the grid line instead.
-    assert!(matches!(plan.rows[3].lands, Lands::Loose | Lands::Flagged));
+    // The object at 1000 is outside the range and so is its grid line: the hit is flagged, never placed.
+    assert!(matches!(plan.rows[3].lands, Lands::Flagged));
+    assert_eq!(plan.rows[3].time, 1010.0);
+    let before = c.hitsounds().moments().len();
+    c.add_batch("Drum hit detection", &[hit("kick", 1010.0, 0.5), hit("snare", 1260.0, 1.0)], &options).unwrap();
+    let added: Vec<f64> = c.hitsounds().moments()[before..].iter().map(|m| m.time().ms()).collect();
+    assert_eq!(added, vec![1250.0]);
+    assert!(c.hitsounds().moments().iter().filter(|m| m.has_hit(&lane("kick")) || m.has_hit(&lane("snare")))
+        .all(|m| (1010.0..1510.0).contains(&m.time().ms())));
+}
+
+#[test]
+fn a_loose_hit_reuses_the_nearest_no_object_moment() {
+    let mut c = composer();
+    let at = |time: f64, line: f64| BatchHit { grid: Some(line), ..hit("tom", time, 1.0) };
+    c.add_batch("Drum hit detection", &[at(1248.9, 1248.9), at(1251.1, 1251.1)], &BatchOptions::default()).unwrap();
+    let plan = c.plan_batch(&[BatchHit { grid: Some(1250.5), ..hit("kick", 1250.5, 1.0) }], &BatchOptions::default());
+    assert!(matches!(plan.rows[0].lands, Lands::Loose));
+    assert_eq!(plan.rows[0].time, 1251.1);
 }
 
 #[test]

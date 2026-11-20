@@ -9,6 +9,7 @@ use crate::{Composer, HitKey};
 use dawsu_editor::tempo::SnapSpacing;
 use dawsu_foundation::{SampleIdentity, SongTime};
 use dawsu_hitsounding::{MomentId, Place};
+use std::collections::HashMap;
 use std::convert::Infallible;
 
 /// One generated hit.
@@ -155,9 +156,20 @@ impl Composer {
         let loose_existing: Vec<(MomentId, f64)> = model.moments().iter().enumerate()
             .filter(|(_, m)| m.place() == Place::NoObject)
             .map(|(i, m)| (MomentId(i), m.time().ms())).collect();
-        // Every hit already there and every hit this batch places, per lane, for duplicates.
-        let mut taken: Vec<(SampleIdentity, f64)> = model.moments().iter()
-            .flat_map(|m| m.hits().map(move |lane| (lane.clone(), m.time().ms()))).collect();
+        // Every hit already there and every hit this batch places: sorted times per lane, for duplicates.
+        let mut taken: HashMap<&SampleIdentity, Vec<f64>> = HashMap::new();
+        for m in model.moments() {
+            for lane in m.hits() {
+                taken.entry(lane).or_default().push(m.time().ms());
+            }
+        }
+        for times in taken.values_mut() {
+            times.sort_by(f64::total_cmp);
+        }
+        let near_any = |times: &[f64], time: f64| {
+            let at = times.partition_point(|t| *t < time - options.dedupe_ms);
+            times.get(at).is_some_and(|t| (t - time).abs() <= options.dedupe_ms)
+        };
         let mut new_moments: Vec<f64> = Vec::new();
         let mut rows: Vec<BatchRow> = hits.iter().enumerate()
             .map(|(hit, h)| BatchRow { hit, time: h.time, lands: Lands::Skipped }).collect();
@@ -179,7 +191,8 @@ impl Composer {
                     Some((id, t, _)) => (t, Some(id)),
                     None => {
                         counts.unmatched += 1;
-                        match hit.grid {
+                        // A grid line outside the range is as good as none: flagged, never placed there.
+                        match hit.grid.filter(|line| inside(*line)) {
                             Some(line) => (line, None),
                             None => {
                                 counts.flagged += 1;
@@ -214,12 +227,11 @@ impl Composer {
                 }
             };
             rows[index].time = time;
-            if taken.iter().any(|(lane, t)| *lane == hit.lane && (t - time).abs() <= options.dedupe_ms) {
+            if taken.get(&hit.lane).is_some_and(|times| near_any(times, time)) {
                 counts.duplicates += 1;
                 rows[index].lands = Lands::Duplicate;
                 continue;
             }
-            taken.push((hit.lane.clone(), time));
             let target = match object {
                 Some(id) => {
                     counts.on_objects += 1;
@@ -229,19 +241,25 @@ impl Composer {
                 None => {
                     counts.loose += 1;
                     rows[index].lands = Lands::Loose;
-                    let near = |t: f64| (t - time).abs() <= options.dedupe_ms;
-                    if let Some(&(id, t)) = loose_existing.iter().find(|(_, t)| near(*t)) {
-                        rows[index].time = t;
-                        Target::Existing(id)
-                    } else if let Some(n) = new_moments.iter().position(|t| near(*t)) {
-                        rows[index].time = new_moments[n];
-                        Target::New(n)
-                    } else {
-                        new_moments.push(time);
-                        Target::New(new_moments.len() - 1)
+                    // The nearest no-object moment within the dedupe distance, made earlier or in this batch.
+                    let existing = loose_existing.iter().map(|&(id, t)| (Target::Existing(id), t));
+                    let made = new_moments.iter().enumerate().map(|(n, &t)| (Target::New(n), t));
+                    match existing.chain(made).filter(|(_, t)| (t - time).abs() <= options.dedupe_ms)
+                        .min_by(|a, b| (a.1 - time).abs().total_cmp(&(b.1 - time).abs())) {
+                        Some((target, t)) => {
+                            rows[index].time = t;
+                            target
+                        }
+                        None => {
+                            new_moments.push(time);
+                            Target::New(new_moments.len() - 1)
+                        }
                     }
                 }
             };
+            let times = taken.entry(&hit.lane).or_default();
+            let placed = rows[index].time;
+            times.insert(times.partition_point(|t| *t < placed), placed);
             counts.added += 1;
             targets.push((index, target));
         }
