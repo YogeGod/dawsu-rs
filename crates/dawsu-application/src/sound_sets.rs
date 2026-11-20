@@ -772,4 +772,30 @@ pub(crate) mod tests {
         let captured = crate::gain_recovery::Captured::read(hits, map.parent().unwrap(), &defaults).unwrap();
         assert!(captured.needs_recovery());
     }
+
+    #[test]
+    fn a_recovery_copy_carries_the_links_of_the_working_hits_and_of_the_last_save() {
+        let f = fixture("links-recovery");
+        let mut app = app(&f);
+        let map = open(&mut app, &f.map);
+        app.seek(1500.0);
+        app.place_sound_set_file(&map, &f.set).unwrap();
+        save(&mut app, &f);
+        app.seek(2000.0);
+        app.place_sound_set_file(&map, &f.set).unwrap();
+        app.poll();
+        let offer = app.write_recovery_copy().unwrap().unwrap();
+        let mut restored = Application::create(crate::Preferences::default(), false, None, None, false, f.scratch.path("data"));
+        restored.project_root = app.project_root.clone();
+        restored.restore_recovery(&offer.id).unwrap();
+        wait(&mut restored);
+        assert!(restored.error.is_none(), "{:?}", restored.error);
+        let times = |app: &Application| {
+            let hits = app.document().unwrap().composer.hitsounds();
+            hits.placements().iter().map(|p| hits.moment(p.moment).time().ms()).collect::<Vec<_>>()
+        };
+        assert_eq!(times(&restored), [1500.0, 2000.0]);
+        restored.command("undo");
+        assert_eq!(times(&restored), [1500.0], "undo returns to the last Save, with its link");
+    }
 }
