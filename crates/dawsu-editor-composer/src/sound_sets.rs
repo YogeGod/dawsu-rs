@@ -27,19 +27,26 @@ impl Composer {
         nearest_moment(self.hitsounds(), time, tolerance)
     }
 
+    /// True when a live placement of `set_id` is on the moment a set placed at `time` lands on.
+    pub fn is_set_placed_at(&self, time: f64, set_id: &str, tolerance: f64) -> bool {
+        let h = self.hitsounds();
+        nearest_moment(h, time, tolerance).is_some_and(|m| h.placements().iter().any(|p| p.moment == m && p.set_id == set_id && h.is_placement_live(p)))
+    }
+
     /// Places a sound set's hits at `time` (on the nearest moment within `tolerance`, else a new
     /// moment) as one undo step, selects the hits it added, and returns the placement's id. None,
     /// with no undo step, when the set is already placed there.
     pub fn place_sound_set(&mut self, time: f64, set_id: &str, set_digest: &str, gain: i32, hits: &[(String, SampleIdentity, i32)], hitnormal: SetHitnormal, tolerance: f64) -> Option<u64> {
-        let h = self.hitsounds();
-        if nearest_moment(h, time, tolerance).is_some_and(|m| h.placements().iter().any(|p| p.moment == m && p.set_id == set_id)) {
+        if self.is_set_placed_at(time, set_id, tolerance) {
             return None;
         }
         let volume = self.insert_volume;
         let mut placed = None;
         self.apply("Place sound set", |h| {
             let moment = destination_at(h, time, volume, tolerance);
-            let own: Vec<_> = h.moment(moment).hits().filter(|lane| is_hitnormal(lane) && !hits.iter().any(|(_, set_lane, _)| set_lane == *lane)).cloned().collect();
+            // Hitnormals another set placed here belong to that set and stay.
+            let kept = h.placed_lanes(moment);
+            let own: Vec<_> = h.moment(moment).hits().filter(|lane| is_hitnormal(lane) && !kept.contains(*lane) && !hits.iter().any(|(_, set_lane, _)| set_lane == *lane)).cloned().collect();
             match &hitnormal {
                 SetHitnormal::Keep => {}
                 SetHitnormal::ReplaceWithSet => {

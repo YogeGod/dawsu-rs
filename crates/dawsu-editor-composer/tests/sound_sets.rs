@@ -84,3 +84,24 @@ fn d6b_an_additions_only_set_moves_the_moments_hitnormal_to_the_sets_index_at_it
     c.undo();
     assert!(!c.hitsounds().moments()[0].has_hit(&moved), "one undo step");
 }
+
+#[test]
+fn a_hitnormal_another_placement_added_stays_when_a_second_set_takes_the_moment() {
+    let mut c = composer();
+    c.place_sound_set(1000.0, "first", "d1", 100, &set_hits(), SetHitnormal::ReplaceWithSet, 5.0).unwrap();
+    let soft = vec![("s0".to_string(), read_sample_file_name("soft-hitnormal3.wav").unwrap(), 60)];
+    c.place_sound_set(1000.0, "second", "d1", 100, &soft, SetHitnormal::ReplaceWithSet, 5.0).unwrap();
+    assert!(c.hitsounds().moments()[0].has_hit(&set_hits()[0].1), "the first set keeps its hitnormal");
+    let clap_only = vec![("c0".to_string(), read_sample_file_name("normal-hitclap4.wav").unwrap(), 60)];
+    c.place_sound_set(1000.0, "third", "d1", 100, &clap_only, SetHitnormal::Reindex(read_sample_file_name("normal-hitnormal4.wav").unwrap()), 5.0).unwrap();
+    assert!(c.hitsounds().moments()[0].has_hit(&set_hits()[0].1) && c.hitsounds().moments()[0].has_hit(&soft[0].1), "placed hitnormals are never moved");
+}
+
+#[test]
+fn a_placement_whose_hits_were_all_deleted_no_longer_blocks_placing_the_set_again() {
+    let mut c = composer();
+    c.place_sound_set(1250.0, "set", "d1", 100, &set_hits(), SetHitnormal::Keep, 5.0).unwrap();
+    c.remove_selected();
+    let id = c.place_sound_set(1250.0, "set", "d1", 100, &set_hits(), SetHitnormal::Keep, 5.0).expect("placed again");
+    assert_eq!(c.hitsounds().placements().iter().map(|p| p.id).collect::<Vec<_>>(), [id], "the dead placement is replaced");
+}
