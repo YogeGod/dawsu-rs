@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { render } from "svelte/server";
 import { bridge } from "../src/lib/bridge.svelte.js";
@@ -155,4 +156,13 @@ test("each control sends the action app.js's inspectorAction runs", () => {
     ["command", "quantizeDialog"], ["sliderBody", { set: "drum", whistleSet: "normal", whistle: true, volume: 80 }],
     ["insert", 70], ["toggle", "protect", true], ["laneColour"],
   ]);
+});
+
+test("folded sections keep their buttons in the page, so the menus can still click them by id", () => {
+  const html = shown(model({ lane: lane() }));
+  assert.equal([...html.matchAll(/<div hidden=/g)].length, 0, "open sections are not hidden");
+  // The source never drops a body when it folds.
+  const source = readFileSync(new URL("../src/parts/InspectorSections.svelte", import.meta.url), "utf8");
+  assert.doesNotMatch(source, /\{#if open\./);
+  assert.equal([...source.matchAll(/<div hidden=\{!open\.(selection|lane|difficulty)\}>/g)].length, 3);
 });

@@ -24,6 +24,11 @@
   const startValue = $derived(startHeld ?? selection?.start ?? "");
   const insertValue = $derived(insertHeld ?? model.insertVolume);
 
+  // Each update sets a switch to what the editor has, as the old show() did, so a refused change flips back.
+  const showChecked = value => box => {
+    box.checked = value();
+  };
+
   // Change volume: Set all starts at 100, Relative at 0, as before.
   let mode = $state("absolute");
   let amount = $state(100);
@@ -52,7 +57,8 @@
 <div class="inspector">
   <section class="sec">
     {@render head("selection", "Selection")}
-    {#if open.selection}
+    <!-- Folded bodies stay in the page: the menus click Lane tint, Generate and the rest by id. -->
+    <div hidden={!open.selection}>
       <p class="summary">
         {#if selection}{selection.count}<span class="dim">{selection.lanes}</span>{:else}Nothing selected{/if}
       </p>
@@ -138,18 +144,18 @@
             onchange={on.insert}>%</span>
         </label>
         <label class="row">Protect normals
-          <input type="checkbox" aria-label="Protect normals" checked={model.protect} onchange={event => on.toggle("protect", event)}>
+          <input type="checkbox" aria-label="Protect normals" checked={model.protect} {@attach showChecked(() => model.protect)} onchange={event => on.toggle("protect", event)}>
         </label>
         <label class="row">Audition
-          <input type="checkbox" aria-label="Audition" checked={model.audition} onchange={event => on.toggle("audition", event)}>
+          <input type="checkbox" aria-label="Audition" checked={model.audition} {@attach showChecked(() => model.audition)} onchange={event => on.toggle("audition", event)}>
         </label>
       </div>
-    {/if}
+    </div>
   </section>
 
   <section class="sec">
     {@render head("lane", "Lane")}
-    {#if open.lane}
+    <div hidden={!open.lane}>
       {#if lane}
         <p class="lane-name"><strong title={lane.title}>{lane.title}</strong>
           {#if lane.sample}<span class="file" title={lane.sample}>{lane.sample}</span>{/if}</p>
@@ -168,15 +174,15 @@
         <button id="replace-sample" type="button" disabled={!model.doc || !lane?.canReplace}
           onclick={() => on.open("replaceSample")}>Replace sample…</button>
       </div>
-    {/if}
+    </div>
   </section>
 
   <section class="sec">
     {@render head("difficulty", "Difficulty")}
-    {#if open.difficulty}
+    <div hidden={!open.difficulty}>
       <div class="rows">
         <label class="row">Hitsounding mode
-          <input type="checkbox" aria-label="Hitsounding mode" checked={model.hs} onchange={event => on.toggle("hs_mode", event)}>
+          <input type="checkbox" aria-label="Hitsounding mode" checked={model.hs} {@attach showChecked(() => model.hs)} onchange={event => on.toggle("hs_mode", event)}>
         </label>
       </div>
       <div class="actions">
@@ -186,7 +192,7 @@
         <button id="merge-settings" type="button" aria-haspopup="dialog" disabled={!model.doc}
           onclick={() => on.open("mergeSettings")}>Merge settings…</button>
       </div>
-    {/if}
+    </div>
   </section>
 </div>
 
