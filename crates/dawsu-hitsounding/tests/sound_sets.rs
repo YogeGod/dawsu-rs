@@ -229,3 +229,88 @@ fn capturing_refuses_slider_sounds_and_what_a_set_can_not_hold() {
     assert!(capture(&mut ids, "Empty", vec![]).is_err(), "no sounds");
     assert!(capture(&mut ids, "Silent", vec![hit(SetSource::File, "drum-hitclap.wav", "BeatmapFile|drum-hitclap.wav", 50, b"")]).is_err(), "no audio");
 }
+
+// ---------------------------------------------------------------- updating a linked placement (step 3)
+
+fn placed() -> (dawsu_hitsounding::Hitsounds, u64, dawsu_hitsounding::MomentId) {
+    let mut h = map_hits();
+    let moment = dawsu_hitsounding::MomentId(0);
+    let normal = h.moment(moment).hits().next().unwrap().clone();
+    h.remove_hit(moment, &normal);
+    let hits = vec![("m1".to_string(), lane("drum-hitnormal2.wav"), 60), ("m2".to_string(), lane("drum-hitclap2.wav"), 60), ("m3".to_string(), lane("drum-hitfinish2.wav"), 60)];
+    let id = h.place_sound_set(moment, ID, "v1", 100, &hits).unwrap();
+    (h, id, moment)
+}
+
+fn sounds(h: &dawsu_hitsounding::Hitsounds, moment: dawsu_hitsounding::MomentId) -> Vec<(String, i32)> {
+    let mut sounds: Vec<_> = h.moment(moment).hits().map(|l| (format!("{l:?}"), h.moment(moment).hit_volume(l))).collect();
+    sounds.sort();
+    sounds
+}
+
+fn edits(h: &dawsu_hitsounding::Hitsounds) -> Vec<bool> {
+    let p = &h.placements()[0];
+    p.applied.iter().map(|a| h.is_member_edited(p, a)).collect()
+}
+
+#[test]
+fn an_update_keeps_a_hand_edited_member_and_re_renders_the_rest() {
+    let (mut h, id, moment) = placed();
+    assert_eq!(edits(&h), [false, false, false]);
+    // The mapper turns the clap down by hand and deletes the finish.
+    h.set_hit_volume(moment, &lane("drum-hitclap2.wav"), 30);
+    h.remove_hit(moment, &lane("drum-hitfinish2.wav"));
+    assert_eq!(edits(&h), [false, true, true]);
+    // The set changes volumes and moves to index 3 (new audio), and drops m3 and adds m4.
+    let new = vec![("m1".to_string(), lane("drum-hitnormal3.wav"), 80), ("m2".to_string(), lane("drum-hitclap3.wav"), 80), ("m4".to_string(), lane("drum-hitwhistle3.wav"), 50)];
+    h.update_placement(id, "v2", 100, &new);
+    let mut want = vec![
+        (format!("{:?}", lane("drum-hitnormal3.wav")), 80),
+        (format!("{:?}", lane("drum-hitclap2.wav")), 30),
+        (format!("{:?}", lane("drum-hitwhistle3.wav")), 50),
+    ];
+    want.sort();
+    assert_eq!(sounds(&h, moment), want, "the edited clap stays on its old file at its own volume; the deleted finish stays deleted");
+    let p = &h.placements()[0];
+    assert_eq!((p.set_digest.as_str(), p.accepted_digest.as_deref()), ("v2", None));
+    assert_eq!(p.applied.iter().map(|a| (a.member_id.as_str(), format!("{:?}", a.lane), a.volume)).collect::<Vec<_>>(), [
+        ("m1", format!("{:?}", lane("drum-hitnormal3.wav")), 80),
+        ("m2", format!("{:?}", lane("drum-hitclap2.wav")), 60),
+        ("m4", format!("{:?}", lane("drum-hitwhistle3.wav")), 50),
+    ], "the edited member's record still names its real hit");
+    assert_eq!(edits(&h), [false, true, false]);
+    // Reset puts the clap back to what was placed.
+    h.reset_placement(id);
+    assert_eq!(edits(&h), [false, false, false]);
+    assert_eq!(h.moment(moment).hit_volume(&lane("drum-hitclap2.wav")), 60);
+}
+
+#[test]
+fn a_volume_edit_that_flattens_member_gains_marks_them_edited_and_a_gain_change_keeps_edits() {
+    let (mut h, id, moment) = placed();
+    h.set_hit_volume(moment, &lane("drum-hitclap2.wav"), 30);
+    h.set_volume(moment, 45);
+    assert_eq!(edits(&h), [true, true, true], "the moment's volume replaced every member's");
+    h.reset_placement(id);
+    assert_eq!(edits(&h), [false, false, false]);
+    h.set_hit_volume(moment, &lane("drum-hitclap2.wav"), 30);
+    let half = vec![("m1".to_string(), lane("drum-hitnormal2.wav"), 30), ("m2".to_string(), lane("drum-hitclap2.wav"), 30), ("m3".to_string(), lane("drum-hitfinish2.wav"), 30)];
+    h.update_placement(id, "v1", 50, &half);
+    assert_eq!(h.placements()[0].gain, 50);
+    assert_eq!(h.moment(moment).hit_volume(&lane("drum-hitnormal2.wav")), 30);
+    // The clap's hand edit happens to equal the new value: it plays as placed now.
+    assert_eq!(edits(&h), [false, false, false]);
+}
+
+#[test]
+fn unlinking_keeps_every_hit_and_an_unknown_placement_changes_nothing() {
+    let (mut h, id, moment) = placed();
+    let before = sounds(&h, moment);
+    let untouched = h.clone();
+    h.update_placement(id + 1, "v2", 100, &[]);
+    h.reset_placement(id + 1);
+    assert_eq!(h, untouched, "a placement that isn't there changes nothing");
+    h.unlink_placement(id);
+    assert!(h.placements().is_empty());
+    assert_eq!(sounds(&h, moment), before);
+}

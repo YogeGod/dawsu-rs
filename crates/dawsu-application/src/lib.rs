@@ -41,7 +41,7 @@ pub use export::{ExportOptions, ExportPreview, ExportStatus, PreviewOrigin};
 pub use export_settings::{ExportCombination, ExportSettings};
 pub use project::LaneLayout;
 pub use recovery::RecoveryOffer;
-pub use sound_sets::{LibrarySet, SaveSetError, SoundSetLibrary};
+pub use sound_sets::{LibrarySet, PlacementView, SaveSetError, SetUpdatePrompt, SoundSetLibrary};
 pub use waveform::WaveBin;
 pub use edit_workflows::{RangeOperation, TimelineEdit, VolumeScope};
 
@@ -867,6 +867,8 @@ pub struct Application {
     data_root: PathBuf,
     checkpoint: Option<recovery::Checkpoint>,
     restored_recovery: Option<String>,
+    /// Open-time questions about placements on an older version of a library set (M9).
+    sound_set_prompts: Vec<sound_sets::SetUpdatePrompt>,
     drum: drum_detect::DrumDetect,
 }
 impl Application {
@@ -982,6 +984,7 @@ impl Application {
             project: None,
             checkpoint: None,
             restored_recovery: None,
+            sound_set_prompts: Vec::new(),
             drum: Default::default(),
         }
     }
@@ -1471,6 +1474,7 @@ impl Application {
                     self.save_preferences();
                     self.checkpoint = Some(checkpoint);
                     self.restored_recovery = restored_id;
+                    self.ask_about_set_versions();
                 }
                 JobResult::Open(_, _, Err(e)) => {
                     self.error = Some(e);

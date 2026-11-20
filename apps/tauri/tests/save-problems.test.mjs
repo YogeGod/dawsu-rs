@@ -237,3 +237,15 @@ test("Save and quit stops when the summary is cancelled", async () => {
   await runInContext("pending", context);
   assert.ok(!invoked.includes("close_editor"), "a cancelled summary doesn't quit later");
 });
+
+test("an open difficulty whose sound set has a newer version asks Update or Keep", async () => {
+  const calls = [];
+  const { context } = await load([], calls);
+  runInContext([
+    "globalThis.asked = [];",
+    "showSoundSetPrompt = prompt => asked.push(prompt);",
+    'scene = { path: "Hard.osu" }; view = { soundSetPrompt: { setId: "a", name: "Kick stack", placements: 2 } }; renderDialogs();',
+    "scene = null; renderDialogs();",
+  ].join("\n"), context);
+  assert.deepEqual(JSON.parse(JSON.stringify(context.asked)), [{ setId: "a", name: "Kick stack", placements: 2 }], "only with a difficulty open");
+});

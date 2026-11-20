@@ -194,6 +194,9 @@ pub struct LibrarySet {
     pub in_map: bool,
     /// More than one library file holds this id, so it can't be placed (M10).
     pub duplicate: bool,
+    /// The open difficulty has a placement of this set but no library file holds it: listed by
+    /// its id, and it can't be placed.
+    pub missing: bool,
 }
 
 /// The library list: this map's sets first, then the rest, each by name, and the files that could
@@ -404,6 +407,20 @@ fn write_snapshot(root: &Path, record: &mut RecordFile, entry: SnapshotEntry, fi
 }
 
 impl Application {
+    /// The custom indexes a new snapshot must not take: those any difficulty or storyboard of the
+    /// mapset uses, the open document's lanes and every snapshot the record holds.
+    fn used_indexes(&self, root: &Path, files: &[String], record: &RecordFile) -> Result<std::collections::BTreeSet<u32>, String> {
+        let (mut used, _) = layers::reservations(root, files)?;
+        let document = self.document.as_ref().expect("open document");
+        let model = document.composer.hitsounds();
+        used.extend(document.composer.lanes.iter().chain(model.lanes().iter().map(|l| &l.identity)).filter_map(|lane| match lane {
+            SampleIdentity::Standard { index, .. } if index.get() > 1 => Some(index.get()),
+            _ => None,
+        }));
+        used.extend(record.indexes());
+        Ok(used)
+    }
+
     /// The one hitnormal on `moment` that no placement added, as its bank, file extension and
     /// bytes, for D6b. None when the moment is new or holds no such hitnormal, or more than one
     /// (that moment saves as a mix anyway). A sound whose file can't be read is skipped with a
@@ -478,14 +495,7 @@ impl Application {
         let (snapshot, clips, extra, hits, hitnormal) = loop {
             attempt += 1;
             let files = list_folder(&root).map_err(|e| e.to_string())?;
-            let (mut used, _) = layers::reservations(&root, &files)?;
-            let document = self.document.as_ref().expect("open document");
-            let model = document.composer.hitsounds();
-            used.extend(document.composer.lanes.iter().chain(model.lanes().iter().map(|l| &l.identity)).filter_map(|lane| match lane {
-                SampleIdentity::Standard { index, .. } if index.get() > 1 => Some(index.get()),
-                _ => None,
-            }));
-            used.extend(record.indexes());
+            let used = self.used_indexes(&root, &files, &record)?;
             let existing = |name: &str| safe_child(&root, name).ok().and_then(|p| std::fs::read(p).ok());
             let snapshot = plan_snapshot(&set, &files, &used, previous.as_ref(), &existing).map_err(|e| format!("{}: {e}", set.name))?;
             let mut writes = snapshot.files.clone();
@@ -595,7 +605,15 @@ impl Application {
                 listed.duplicate = true;
                 continue;
             }
-            sets.push(LibrarySet { in_map: used.contains(entry.id.as_str()), duplicate: false, id: entry.id, name: entry.name, sounds: entry.sounds });
+            sets.push(LibrarySet { in_map: used.contains(entry.id.as_str()), duplicate: false, missing: false, id: entry.id, name: entry.name, sounds: entry.sounds });
+        }
+        // A set this map uses is called missing only when every library file was read.
+        if !reading && unreadable.is_empty() {
+            for id in used {
+                if !sets.iter().any(|s| s.id == id) {
+                    sets.push(LibrarySet { id: id.to_string(), name: id.to_string(), sounds: 0, in_map: true, duplicate: false, missing: true });
+                }
+            }
         }
         sets.sort_by(|a, b| b.in_map.cmp(&a.in_map).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase())).then_with(|| a.id.cmp(&b.id)));
         unreadable.sort_by_key(|name| name.to_lowercase());
@@ -738,6 +756,297 @@ fn duplicate_refusal(copies: usize, name: &str) -> String {
     } else {
         format!("{copies} library files contain \"{name}\". Remove all but one to place it.")
     }
+}
+
+// ---------------------------------------------------------------- linked placements (step 3)
+
+/// Where a placed set stands in the library, for its placements.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum InLibrary {
+    /// One library file holds the set: its path, name and version (the file's checksum).
+    Found { path: PathBuf, name: String, digest: String },
+    /// No library file holds it: its placements are frozen.
+    Missing,
+    /// No library is chosen, a set file could not be read, or two files hold the id: frozen
+    /// too, since the set may still be there.
+    Unsure(String),
+}
+
+/// An open-time question: placements that use an older version of a library set (M9).
+#[derive(Clone, Debug, PartialEq)]
+pub struct SetUpdatePrompt {
+    pub set_id: String,
+    pub name: String,
+    pub digest: String,
+    pub placements: usize,
+}
+
+/// What the Sound set placement dialog shows of one placement.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PlacementView {
+    pub id: u64,
+    pub name: String,
+    pub edited: usize,
+    pub sounds: usize,
+    pub gain: i32,
+    /// Why the set's volume can't be set, if it can't: the set is not in the library, or the
+    /// library has another version.
+    pub frozen: Option<String>,
+    /// The library has a newer version this placement was kept off.
+    pub newer: bool,
+}
+
+fn look_up(library: Option<&Path>, ids: &[String]) -> Vec<(String, InLibrary)> {
+    let Some(library) = library.filter(|l| l.is_dir()) else {
+        return ids.iter().map(|id| (id.clone(), InLibrary::Unsure("Not in library".into()))).collect();
+    };
+    let (sets, unreadable) = library_sets(library);
+    ids.iter().map(|id| {
+        let found: Vec<_> = sets.iter().filter(|(_, s)| &s.id == id).collect();
+        let state = match found.as_slice() {
+            [] if unreadable.is_empty() => InLibrary::Missing,
+            [] => InLibrary::Unsure("Not in library".into()),
+            [(path, set)] => match std::fs::read(path) {
+                Ok(bytes) => InLibrary::Found { path: path.clone(), name: set.name.clone(), digest: sha256_hex(&bytes) },
+                Err(_) => InLibrary::Unsure(format!("Could not read {}", file_label(path))),
+            },
+            [(_, set), ..] => InLibrary::Unsure(duplicate_refusal(found.len(), &set.name)),
+        };
+        (id.clone(), state)
+    }).collect()
+}
+
+impl Application {
+    fn placed_set_ids(&self) -> Vec<String> {
+        let Some(document) = self.document.as_ref() else { return Vec::new() };
+        let hits = document.composer.hitsounds();
+        let mut ids: Vec<String> = hits.placements().iter().filter(|p| hits.is_placement_live(p)).map(|p| p.set_id.clone()).collect();
+        ids.sort();
+        ids.dedup();
+        ids
+    }
+
+    /// On open: one question per set whose library version is newer than its placements' and
+    /// than the version the mapper kept them on (M9). Nothing is written.
+    pub(crate) fn ask_about_set_versions(&mut self) {
+        self.sound_set_prompts.clear();
+        let ids = self.placed_set_ids();
+        if ids.is_empty() {
+            return;
+        }
+        let hits = self.document.as_ref().expect("open document").composer.hitsounds();
+        for (id, state) in look_up(self.preferences.hitsound_library.as_deref(), &ids) {
+            let InLibrary::Found { name, digest, .. } = state else { continue };
+            let placements = hits.placements().iter()
+                .filter(|p| p.set_id == id && hits.is_placement_live(p) && p.set_digest != digest && p.accepted_digest.as_deref() != Some(digest.as_str()))
+                .count();
+            if placements > 0 {
+                self.sound_set_prompts.push(SetUpdatePrompt { set_id: id, name, digest, placements });
+            }
+        }
+    }
+
+    /// The first open-time question still waiting for an answer.
+    pub fn sound_set_prompt(&self) -> Option<&SetUpdatePrompt> {
+        self.sound_set_prompts.first()
+    }
+
+    /// Answers the open-time question about `set_id`: Update plays the library's version on
+    /// every placement as one undo step; Keep notes the version in the project so only a newer
+    /// one asks again, and writes no mapset file.
+    pub fn answer_sound_set_prompt(&mut self, set_id: &str, update: bool) -> Result<(), String> {
+        let Some(index) = self.sound_set_prompts.iter().position(|p| p.set_id == set_id) else { return Ok(()) };
+        if self.busy || self.is_stroke_open() {
+            return Err("Finish the current operation before updating a sound set.".into());
+        }
+        let prompt = self.sound_set_prompts.remove(index);
+        if update {
+            return self.update_sound_set(set_id);
+        }
+        self.document.as_mut().ok_or("Open a difficulty first.")?.composer.history
+            .update_external(|hits| hits.accept_set_version(&prompt.set_id, &prompt.digest));
+        let accept = |records: &mut Vec<PlacementRecord>| {
+            for r in records.iter_mut().filter(|r| r.set_id == prompt.set_id) {
+                r.accepted_digest = Some(prompt.digest.clone());
+            }
+        };
+        if let (Some(mut settings), Some(_)) = (self.session_settings(None, None, None), self.project.as_ref()) {
+            if let Some(links) = settings.sound_sets.as_mut() {
+                for record in links.current.iter_mut().chain(links.pending.iter_mut()) {
+                    accept(&mut record.placements);
+                }
+            }
+            let project = self.project.as_mut().expect("a project");
+            accept(&mut project.kept_links);
+            project.save(settings).map_err(|e| format!("Saving session settings: {e}"))?;
+        }
+        self.status = format!("Kept this version of \"{}\".", prompt.name);
+        Ok(())
+    }
+
+    /// The set as one library file holds it, with its version, or why its placements are frozen.
+    fn library_version(&self, set_id: &str) -> Result<(SoundSet, String), String> {
+        match look_up(self.preferences.hitsound_library.as_deref(), &[set_id.to_string()]).pop().map(|(_, s)| s) {
+            Some(InLibrary::Found { path, .. }) => {
+                let (bytes, set) = read_set_file(&path)?;
+                Ok((set, sha256_hex(&bytes)))
+            }
+            Some(InLibrary::Unsure(why)) => Err(why),
+            _ => Err("Not in library".into()),
+        }
+    }
+
+    /// The set on its files in this mapset: the last snapshot of this version when its files are
+    /// unchanged, else a new snapshot at a new index, all files or none (M6, M7). With `write`
+    /// false, None when files would have to be written.
+    fn snapshot_set(&mut self, set: &SoundSet, write: bool) -> Result<Option<SoundSet>, String> {
+        let root = self.document.as_ref().ok_or("Open a difficulty first.")?.path.parent().ok_or("Missing mapset folder")?.to_path_buf();
+        let mut record = RecordFile::open(&self.data_root, &root)?;
+        let audio = audio_checksum(set);
+        let previous = record.previous(set, &audio);
+        let mut attempt = 0;
+        let (snapshot, clips) = loop {
+            attempt += 1;
+            let files = list_folder(&root).map_err(|e| e.to_string())?;
+            let used = self.used_indexes(&root, &files, &record)?;
+            let existing = |name: &str| safe_child(&root, name).ok().and_then(|p| std::fs::read(p).ok());
+            let snapshot = plan_snapshot(set, &files, &used, previous.as_ref(), &existing).map_err(|e| format!("{}: {e}", set.name))?;
+            if snapshot.files.is_empty() {
+                break (snapshot, Vec::new());
+            }
+            if !write {
+                return Ok(None);
+            }
+            let entry = SnapshotEntry {
+                set_id: set.id.clone(),
+                audio: audio.clone(),
+                files: snapshot.set.members.iter().map(|m| SnapshotFile { member_id: m.id.clone(), name: m.lane.name.clone(), sha256: sha256_hex(&m.audio) }).collect(),
+                done: false,
+            };
+            // A name another program takes between planning and writing is planned again once.
+            if attempt == 1 && snapshot.files.iter().any(|(name, _)| root.join(name).exists()) {
+                continue;
+            }
+            match write_snapshot(&root, &mut record, entry, &snapshot.files) {
+                Ok(clips) => break (snapshot, clips),
+                Err(_) if attempt == 1 && snapshot.files.iter().any(|(name, _)| root.join(name).exists()) => continue,
+                Err(error) => return Err(error),
+            }
+        };
+        let mut additions = clips;
+        for name in snapshot.set.members.iter().map(|m| &m.lane.name) {
+            if !additions.iter().any(|(n, _)| n == name) && !self.samples.contains_key(&SampleIdentity::File(name.clone())) {
+                let path = safe_child(&root, name)?;
+                additions.push((name.clone(), dawsu_audio::decode(&path).map_err(|e| format!("{name}: {e}"))?));
+            }
+        }
+        self.register_added_samples(additions);
+        Ok(Some(snapshot.set))
+    }
+
+    /// Updates every placement of `set_id` in the open difficulty to the library's version as
+    /// one undo step, "Update sound set <name>" (M5: the hits play the mapset copies).
+    pub fn update_sound_set(&mut self, set_id: &str) -> Result<(), String> {
+        if self.busy || self.is_stroke_open() {
+            return Err("Finish the current operation before updating a sound set.".into());
+        }
+        let (set, digest) = self.library_version(set_id)?;
+        let ids: Vec<(u64, i32)> = {
+            let hits = self.document.as_ref().ok_or("Open a difficulty first.")?.composer.hitsounds();
+            hits.placements().iter().filter(|p| p.set_id == set_id && hits.is_placement_live(p)).map(|p| (p.id, p.gain)).collect()
+        };
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let snapshot = self.snapshot_set(&set, true)?.expect("a written snapshot");
+        let updates = ids.iter().map(|&(id, gain)| Ok((id, digest.clone(), gain, member_hits(&snapshot, gain)?))).collect::<Result<Vec<_>, String>>()?;
+        let composer = &mut self.document.as_mut().expect("open document").composer;
+        composer.update_placements(&format!("Update sound set {}", set.name), &updates);
+        self.status = format!("Updated {} {} of \"{}\".", ids.len(), if ids.len() == 1 { "placement" } else { "placements" }, set.name);
+        self.sync_audio();
+        Ok(())
+    }
+
+    fn placement(&self, id: u64) -> Result<dawsu_hitsounding::sound_sets::SoundSetPlacement, String> {
+        let hits = self.document.as_ref().ok_or("Open a difficulty first.")?.composer.hitsounds();
+        hits.placements().iter().find(|p| p.id == id && hits.is_placement_live(p)).cloned().ok_or_else(|| "That sound set placement is gone.".into())
+    }
+
+    /// The Sound set placement dialog's view of one placement. Reads the library.
+    pub fn sound_set_placement(&self, id: u64) -> Result<PlacementView, String> {
+        let p = self.placement(id)?;
+        let (edited, sounds) = self.document.as_ref().expect("open document").composer.placement_edits(id).unwrap_or_default();
+        let state = look_up(self.preferences.hitsound_library.as_deref(), &[p.set_id.clone()]).pop().map(|(_, s)| s);
+        let (name, frozen, newer) = match state {
+            Some(InLibrary::Found { name, digest, .. }) if digest == p.set_digest => (name, None, false),
+            Some(InLibrary::Found { name, .. }) => (name, Some("The library has another version of this set.".to_string()), true),
+            Some(InLibrary::Unsure(why)) => (p.set_id.clone(), Some(why), false),
+            _ => (p.set_id.clone(), Some("Not in library".to_string()), false),
+        };
+        Ok(PlacementView { id, name, edited, sounds, gain: p.gain, frozen, newer })
+    }
+
+    /// Set volume %: plays the placement's set at `gain` as one undo step. Members edited by hand
+    /// keep their hits. Needs the set's version in the library.
+    pub fn set_sound_set_placement_gain(&mut self, id: u64, gain: i32) -> Result<(), String> {
+        if self.busy || self.is_stroke_open() {
+            return Err("Finish the current operation before changing a sound set.".into());
+        }
+        if !(0..=100).contains(&gain) {
+            return Err("Use a volume from 0 to 100%.".into());
+        }
+        let p = self.placement(id)?;
+        let (set, digest) = self.library_version(&p.set_id)?;
+        if digest != p.set_digest {
+            return Err(format!("The library has another version of \"{}\". Update the placement first.", set.name));
+        }
+        let snapshot = self.snapshot_set(&set, true)?.expect("a written snapshot");
+        let hits = member_hits(&snapshot, gain)?;
+        self.document.as_mut().expect("open document").composer.set_placement_gain(id, &digest, gain, &hits);
+        self.status = format!("\"{}\" at {gain}%.", set.name);
+        self.sync_audio();
+        Ok(())
+    }
+
+    /// Reset edits: puts the members edited by hand back as placed, one undo step. With the
+    /// set's version in the library and its files in the mapset, they follow its values.
+    pub fn reset_sound_set_placement(&mut self, id: u64) -> Result<(), String> {
+        if self.busy || self.is_stroke_open() {
+            return Err("Finish the current operation before changing a sound set.".into());
+        }
+        let p = self.placement(id)?;
+        let current = match self.library_version(&p.set_id) {
+            Ok((set, digest)) if digest == p.set_digest => match self.snapshot_set(&set, false)? {
+                Some(snapshot) => Some((digest, member_hits(&snapshot, p.gain)?)),
+                None => None,
+            },
+            _ => None,
+        };
+        let composer = &mut self.document.as_mut().expect("open document").composer;
+        composer.reset_placement(id, current.as_ref().map(|(d, h)| (d.as_str(), h.as_slice())));
+        self.status = "Sound set edits reset.".into();
+        self.sync_audio();
+        Ok(())
+    }
+
+    /// Unlink: removes the placement's link as one undo step; its hits stay.
+    pub fn unlink_sound_set_placement(&mut self, id: u64) -> Result<(), String> {
+        if self.busy || self.is_stroke_open() {
+            return Err("Finish the current operation before changing a sound set.".into());
+        }
+        self.placement(id)?;
+        self.document.as_mut().expect("open document").composer.unlink_placement(id);
+        self.status = "Sound set unlinked. Its hits stay.".into();
+        Ok(())
+    }
+}
+
+/// A snapshot set's hits at `gain`: member id, lane and volume.
+fn member_hits(set: &SoundSet, gain: i32) -> Result<Vec<(String, SampleIdentity, i32)>, String> {
+    placement_hits(set, gain).into_iter().zip(&set.members).map(|((key, volume), m)| {
+        let lane = crate::project::lane_identity(&key).ok_or_else(|| format!("{} is not a sample file name", m.lane.name))?;
+        Ok((m.id.clone(), lane, volume))
+    }).collect()
 }
 
 // ---------------------------------------------------------------- the links in the project
@@ -1979,5 +2288,144 @@ Mode:0
         save(&mut changed, &f);
         let again = reopen(&f);
         assert!(links(&again).iter().all(|(moment, _)| again.document().unwrap().composer.hitsounds().moment(dawsu_hitsounding::MomentId(*moment)).time().ms() == 1000.0), "{:?}", links(&again));
+    }
+
+    // ------------------------------------------------------------ step 3: update, keep, gain, reset, unlink
+
+    fn library_set(f: &Fixture) -> PathBuf {
+        f.scratch.path("library").join(LIBRARY_FOLDER).join("Kick and clap.dawsuset")
+    }
+
+    /// Places the fixture's set on the circle, saves, and changes the library's copy to `text`.
+    fn placed_then_changed(name: &str, text: Option<String>) -> Fixture {
+        let f = fixture(name);
+        let mut app = app(&f);
+        let map = open(&mut app, &f.map);
+        app.seek(1000.0);
+        app.place_sound_set_file(&map, &f.set).unwrap();
+        save(&mut app, &f);
+        if let Some(text) = text {
+            std::fs::write(library_set(&f), text).unwrap();
+        }
+        f
+    }
+
+    fn louder() -> String {
+        set_text_at("Kick and clap", &[("drum-hitnormal.wav", 8000), ("drum-hitclap.wav", 4000)], 80)
+    }
+
+    fn prompt(app: &Application) -> Option<(String, usize)> {
+        app.sound_set_prompt().map(|p| (p.name.clone(), p.placements))
+    }
+
+    #[test]
+    fn an_older_version_asks_on_open_and_update_re_renders_every_placement_as_one_undo_step() {
+        let f = placed_then_changed("update-volumes", Some(louder()));
+        let files = mapset_files(&f);
+        let mut app = reopen(&f);
+        assert_eq!(prompt(&app), Some(("Kick and clap".to_string(), 1)));
+        assert_eq!(sounds_at(&app, 0).iter().map(|s| s.1).collect::<Vec<_>>(), [60, 60], "nothing changes before Update");
+        let at = app.document().unwrap().composer.history.position();
+        app.answer_sound_set_prompt(SET_ID, true).unwrap();
+        assert_eq!(app.sound_set_prompt(), None);
+        assert_eq!(sounds_at(&app, 0).iter().map(|s| s.1).collect::<Vec<_>>(), [80, 80]);
+        let composer = &app.document().unwrap().composer;
+        assert_eq!(composer.history.position(), at + 1);
+        assert_eq!(composer.history.steps().last().copied(), Some("Update sound set Kick and clap"));
+        assert_eq!(mapset_files(&f), files, "only volumes changed: the snapshot is reused");
+        app.command("undo");
+        assert_eq!(sounds_at(&app, 0).iter().map(|s| s.1).collect::<Vec<_>>(), [60, 60], "undo takes the update back");
+        app.command("redo");
+        save(&mut app, &f);
+        let reopened = reopen(&f);
+        assert_eq!(prompt(&reopened), None, "the saved placement uses the new version");
+        assert_eq!(sounds_at(&reopened, 0).iter().map(|s| s.1).collect::<Vec<_>>(), [80, 80]);
+        let digest = sha256_hex(&std::fs::read(library_set(&f)).unwrap());
+        assert_eq!(reopened.document().unwrap().composer.hitsounds().placements()[0].set_digest, digest);
+    }
+
+    #[test]
+    fn keep_then_reopen_asks_again_only_for_a_newer_version() {
+        let f = placed_then_changed("update-keep", Some(louder()));
+        let (files, osu) = (mapset_files(&f), std::fs::read(&f.map).unwrap());
+        let mut app = reopen(&f);
+        assert!(prompt(&app).is_some());
+        app.answer_sound_set_prompt(SET_ID, false).unwrap();
+        assert_eq!(app.sound_set_prompt(), None);
+        assert!(!app.is_dirty(), "Keep is no edit");
+        assert_eq!((mapset_files(&f), std::fs::read(&f.map).unwrap()), (files.clone(), osu), "Keep writes no mapset file");
+        assert_eq!(sounds_at(&app, 0).iter().map(|s| s.1).collect::<Vec<_>>(), [60, 60]);
+        drop(app);
+        let mut again = reopen(&f);
+        assert_eq!(prompt(&again), None, "the kept version doesn't ask again");
+        // A Save that rewrites the difficulty keeps the choice too.
+        let osu = std::fs::read(&f.map).unwrap();
+        again.document.as_mut().unwrap().composer.apply("Edit", |h| h.set_volume(dawsu_hitsounding::MomentId(0), 59));
+        save(&mut again, &f);
+        assert_ne!(std::fs::read(&f.map).unwrap(), osu);
+        assert_eq!(prompt(&reopen(&f)), None);
+        std::fs::write(library_set(&f), set_text_at("Kick and clap", &[("drum-hitnormal.wav", 8000), ("drum-hitclap.wav", 4000)], 90)).unwrap();
+        assert_eq!(prompt(&reopen(&f)), Some(("Kick and clap".to_string(), 1)), "a newer version asks again");
+    }
+
+    #[test]
+    fn changed_audio_gets_a_new_index_and_no_file_is_overwritten() {
+        let f = placed_then_changed("update-audio", Some(set_text("Kick and clap", &[("drum-hitnormal.wav", 9000), ("drum-hitclap.wav", 4000)])));
+        let mut app = reopen(&f);
+        assert_eq!(mapset_files(&f), ["a.osu", "drum-hitclap2.wav", "drum-hitnormal2.wav"], "nothing is written before Update");
+        app.answer_sound_set_prompt(SET_ID, true).unwrap();
+        assert_eq!(mapset_files(&f), ["a.osu", "drum-hitclap2.wav", "drum-hitclap3.wav", "drum-hitnormal2.wav", "drum-hitnormal3.wav"], "the whole set at a new index");
+        assert_eq!(std::fs::read(f.map.with_file_name("drum-hitnormal2.wav")).unwrap(), wav(8000), "the old file stays as it was");
+        assert_eq!(std::fs::read(f.map.with_file_name("drum-hitnormal3.wav")).unwrap(), wav(9000));
+        assert_eq!(sounds_at(&app, 0).iter().map(|s| s.0.as_str()).collect::<Vec<_>>(), ["drum-hitnormal3", "drum-hitclap3"], "the hits moved to the new files");
+        // Playback finds the new files.
+        let sounds = app.scheduled_sounds(app.document().unwrap());
+        assert_eq!(sounds.iter().filter(|s| s.at_ms == 1000.0).count(), 2);
+        save(&mut app, &f);
+        let reopened = reopen(&f);
+        assert_eq!(prompt(&reopened), None);
+        assert_eq!(links(&reopened), [(0, SET_ID.to_string())]);
+    }
+
+    #[test]
+    fn a_set_not_in_the_library_is_frozen_listed_by_id_and_can_still_be_unlinked() {
+        let f = placed_then_changed("update-missing", None);
+        std::fs::remove_file(library_set(&f)).unwrap();
+        let mut app = reopen(&f);
+        assert_eq!(app.sound_set_prompt(), None, "a missing set never asks");
+        let id = app.document().unwrap().composer.hitsounds().placements()[0].id;
+        let view = app.sound_set_placement(id).unwrap();
+        assert_eq!((view.name.as_str(), view.frozen.as_deref(), view.edited, view.sounds), (SET_ID, Some("Not in library"), 0, 2));
+        let version = app.document().unwrap().composer.history.version();
+        assert!(app.set_sound_set_placement_gain(id, 50).unwrap_err().contains("Not in library"));
+        assert!(app.update_sound_set(SET_ID).is_err());
+        assert_eq!(app.document().unwrap().composer.history.version(), version, "frozen: nothing changes");
+        let library = listed(&app);
+        assert_eq!(library.sets.iter().map(|s| (s.name.as_str(), s.in_map, s.missing)).collect::<Vec<_>>(), [(SET_ID, true, true)], "listed in this map by its id");
+        app.unlink_sound_set_placement(id).unwrap();
+        assert!(links(&app).is_empty());
+        assert_eq!(sounds_at(&app, 0).len(), 2, "the hits stay");
+    }
+
+    #[test]
+    fn set_volume_and_reset_edits_each_take_one_undo_step_and_keep_through_save() {
+        let f = placed_then_changed("placement-gain", None);
+        let mut app = reopen(&f);
+        let id = app.document().unwrap().composer.hitsounds().placements()[0].id;
+        assert_eq!(app.sound_set_placement(id).unwrap().frozen, None);
+        app.set_sound_set_placement_gain(id, 50).unwrap();
+        assert_eq!(sounds_at(&app, 0).iter().map(|s| s.1).collect::<Vec<_>>(), [30, 30]);
+        let clap = app.document().unwrap().composer.hitsounds().placements()[0].applied[1].lane.clone();
+        app.document.as_mut().unwrap().composer.apply("Volume", |h| h.set_hit_volume(dawsu_hitsounding::MomentId(0), &clap, 90));
+        let view = app.sound_set_placement(id).unwrap();
+        assert_eq!((view.edited, view.sounds, view.gain), (1, 2, 50));
+        let at = app.document().unwrap().composer.history.position();
+        app.reset_sound_set_placement(id).unwrap();
+        assert_eq!(app.document().unwrap().composer.history.position(), at + 1);
+        assert_eq!(sounds_at(&app, 0).iter().map(|s| s.1).collect::<Vec<_>>(), [30, 30]);
+        save(&mut app, &f);
+        let reopened = reopen(&f);
+        let p = &reopened.document().unwrap().composer.hitsounds().placements()[0];
+        assert_eq!((p.gain, p.applied.iter().map(|a| a.volume).collect::<Vec<_>>()), (50, vec![30, 30]));
     }
 }

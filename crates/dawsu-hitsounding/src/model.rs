@@ -438,6 +438,85 @@ impl Hitsounds {
         self.placements.retain(|p| p.id != id);
     }
 
+    /// True when a member the placement added no longer plays as placed: its hit is gone or its
+    /// volume changed (D3). A hit the moment already had is never edited.
+    pub fn is_member_edited(&self, placement: &crate::sound_sets::SoundSetPlacement, applied: &crate::sound_sets::Applied) -> bool {
+        let moment = &self.moments[placement.moment.0];
+        applied.added && (!moment.has_hit(&applied.lane) || moment.hit_volume(&applied.lane) != applied.volume)
+    }
+
+    /// Plays a placement as `hits` (member id, lane, volume) at `gain`, the set's version
+    /// `set_digest`. A member that still plays as placed moves to its new lane and volume; an
+    /// edited one keeps its hit, and its record follows only a new volume on the same lane, so
+    /// the record always names the hit that is there. Members the set lost go, unless edited;
+    /// new members are added. Hits the moment already had are never touched.
+    pub fn update_placement(&mut self, id: u64, set_digest: &str, gain: i32, hits: &[(String, SampleIdentity, i32)]) {
+        let Some(index) = self.placements.iter().position(|p| p.id == id) else { return };
+        let placement = self.placements[index].clone();
+        let moment = placement.moment;
+        let edited: Vec<bool> = placement.applied.iter().map(|a| self.is_member_edited(&placement, a)).collect();
+        for (a, &edited) in placement.applied.iter().zip(&edited) {
+            let kept = hits.iter().any(|(member, lane, _)| member == &a.member_id && (a.added || lane == &a.lane));
+            if a.added && !edited && !kept {
+                self.remove_hit(moment, &a.lane);
+            }
+        }
+        let mut applied = Vec::with_capacity(hits.len());
+        for (member_id, lane, volume) in hits {
+            let old = placement.applied.iter().zip(&edited).find(|(a, _)| &a.member_id == member_id);
+            match old {
+                Some((a, true)) => {
+                    let volume = if &a.lane == lane { *volume } else { a.volume };
+                    applied.push(crate::sound_sets::Applied { volume, ..a.clone() });
+                    continue;
+                }
+                Some((a, false)) if a.added => {
+                    if &a.lane == lane {
+                        self.set_hit_volume(moment, lane, *volume);
+                        applied.push(crate::sound_sets::Applied { volume: *volume, ..a.clone() });
+                        continue;
+                    }
+                    self.remove_hit(moment, &a.lane);
+                }
+                Some((a, false)) if &a.lane == lane => {
+                    applied.push(a.clone());
+                    continue;
+                }
+                _ => {}
+            }
+            let added = !self.moments[moment.0].has_hit(lane);
+            if added {
+                self.add_hit_with_volume(moment, lane.clone(), *volume);
+            }
+            applied.push(crate::sound_sets::Applied { member_id: member_id.clone(), lane: lane.clone(), volume: *volume, added });
+        }
+        let placement = &mut self.placements[index];
+        placement.set_digest = set_digest.to_owned();
+        placement.accepted_digest = None;
+        placement.gain = gain;
+        placement.applied = applied;
+    }
+
+    /// Puts every member the placement added back on its lane at its placed volume.
+    pub fn reset_placement(&mut self, id: u64) {
+        let Some(placement) = self.placements.iter().find(|p| p.id == id).cloned() else { return };
+        for a in placement.applied.iter().filter(|a| a.added) {
+            if self.moments[placement.moment.0].has_hit(&a.lane) {
+                self.set_hit_volume(placement.moment, &a.lane, a.volume);
+            } else {
+                self.add_hit_with_volume(placement.moment, a.lane.clone(), a.volume);
+            }
+        }
+    }
+
+    /// Notes that the mapper keeps these placements on their version although the library has
+    /// `digest`; no hit changes.
+    pub fn accept_set_version(&mut self, set_id: &str, digest: &str) {
+        for p in self.placements.iter_mut().filter(|p| p.set_id == set_id) {
+            p.accepted_digest = Some(digest.to_owned());
+        }
+    }
+
     /// Puts back placements read from a project or a recovery copy; ones whose moment is out of range are dropped.
     pub fn restore_placements(&mut self, placements: Vec<crate::sound_sets::SoundSetPlacement>) {
         let count = self.moments.len();
