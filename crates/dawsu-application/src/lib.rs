@@ -23,6 +23,7 @@ mod problems;
 mod recovery;
 mod refusals;
 mod roll_back;
+mod sound_sets;
 mod unwritten;
 mod sample_watch;
 pub mod waveform;
