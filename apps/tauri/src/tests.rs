@@ -303,8 +303,7 @@ fn drum_view_rows_follow_a_replaced_lane_and_leave_hidden_lanes_hidden() {
     app.replace_lane_sample(&map, &clap, &external).unwrap();
     let replacement = app.document().unwrap().composer.lanes[app.active_lane].clone();
     let revision = app.document().unwrap().composer.history.version();
-    let path = app.document().unwrap().path.clone();
-    app.delete_lane(&path, &whistle, revision).unwrap();
+    app.delete_lane(&map, &whistle, revision).unwrap();
 
     let plain = snapshot(&app, true);
     let order = plain["scene"]["laneOrder"].as_array().unwrap().clone();
