@@ -556,7 +556,7 @@
         if (extra) candidates.push(...byId("editor-arrange").querySelectorAll(extra));
         for (const button of candidates) {
           if (button === layoutEntry || buttons.has(button) ||
-              button.closest("#history, #sample-browser-entries, .dock-bar") ||
+              button.closest("#history, #sample-browser-entries, .dock-bar, [data-ui-mount]") ||
               (region !== "browser" && button.closest("#sample-browser"))) continue;
           const anchor = anchorFor(button);
           const condition = button.closest("fieldset");

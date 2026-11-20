@@ -7,8 +7,10 @@
 //   [--wait <ms>]         extra settle time before the shot (default 2500)
 //   [--preset <name>]     key preset chosen at the first-launch question (default DAW)
 //   [--timeout <ms>]      how long to wait for the map's lanes (default 60000)
+//   [--csp]               reload with a listener from the start and fail on any content security
+//                         policy violation ("Refused to ...")
 //
-// The map's whole folder is copied into the profile first and the copy is opened, so the
+// The value --eval returns is printed. The map's whole folder is copied into the profile first and the copy is opened, so the
 // original mapset is never touched. Each run picks a free debugging port, so several runs
 // can capture at once. Windows only (WebView2 remote debugging). Playwright Core is found in
 // DAWSU_PLAYWRIGHT_CORE or the npm cache; nothing is installed.
@@ -20,7 +22,12 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 
 const args = {};
-for (let i = 2; i < process.argv.length; i += 2) args[process.argv[i].replace(/^--/, "")] = process.argv[i + 1];
+for (let i = 2; i < process.argv.length; i++) {
+  const value = process.argv[i + 1];
+  const flag = value === undefined || value.startsWith("--");
+  args[process.argv[i].replace(/^--/, "")] = flag ? true : value;
+  if (!flag) i++;
+}
 for (const key of ["exe", "map", "out"]) if (!args[key]) throw new Error(`--${key} is required`);
 
 function playwrightCore() {
@@ -70,11 +77,28 @@ try {
     await page.evaluate(name => act({ kind: "key_preset", name }), args.preset ?? "DAW").catch(() => {});
     loaded = await lanesShown(Number(args.timeout ?? 60000));
   }
+  const violations = [];
+  if (args.csp && loaded) {
+    page.on("console", message => { if (message.text().includes("Refused to")) violations.push(message.text()); });
+    await page.context().addInitScript(() => document.addEventListener("securitypolicyviolation", event =>
+      console.error(`Refused to ${event.effectiveDirective}: ${event.blockedURI} at ${event.sourceFile}:${event.lineNumber}`)));
+    await page.reload();
+    loaded = await lanesShown(Number(args.timeout ?? 60000));
+  }
   if (!loaded) console.log("no lanes appeared; page text:", (await page.evaluate(() => document.body.innerText)).slice(0, 400));
   await sleep(Number(args.wait ?? 2500));
-  if (args.eval) { await page.evaluate(args.eval); await sleep(1000); }
+  if (args.eval) {
+    const result = await page.evaluate(args.eval);
+    if (result !== undefined) console.log("eval:", JSON.stringify(result));
+    await sleep(1000);
+  }
   await page.screenshot({ path: resolve(args.out) });
   console.log(`saved ${resolve(args.out)} (profile ${profile})`);
+  if (args.csp) {
+    console.log(`content security policy violations: ${violations.length}`);
+    for (const text of violations) console.log("  " + text);
+    if (violations.length || !loaded) process.exitCode = 1;
+  }
 } finally {
   await browser?.close().catch(() => {});
   child.kill();

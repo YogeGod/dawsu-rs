@@ -132,3 +132,30 @@ test("show() fills the Snap label, Audition, the problem summary and the hit and
   assert.equal(get("hit-lane-counts").hidden, true);
   assert.equal(get("playback-rates").hidden, true);
 });
+
+test("show() hands the view and the last scene to the Svelte parts, even when a part throws", async () => {
+  const { evaluate, get } = await frontend();
+  evaluate("window.dawsuUi = { update(view, scene) { this.got = JSON.stringify([view.audition, scene?.divisor]); } }");
+  evaluate(`show({ busy: false, hasDocument: true, audition: true, scene: ${sceneWith({})} })`);
+  assert.equal(evaluate("window.dawsuUi.got"), "[true,4]");
+  // Light polls carry no scene; the parts keep the last one.
+  evaluate("show({ busy: false, hasDocument: true, audition: false })");
+  assert.equal(evaluate("window.dawsuUi.got"), "[false,4]");
+  evaluate("console = { error() {} }; window.dawsuUi.update = () => { throw new Error('broken part'); }");
+  evaluate(`show({ busy: false, hasDocument: true, audition: true, scene: ${sceneWith({ divisor: 8 })} })`);
+  assert.equal(get("grid-options").textContent, "Snap 1/8 ▾");
+});
+
+test("the status bar says when a toolbar part did not load, once the page has loaded", async () => {
+  const { evaluate, get } = await frontend();
+  const shown = `show({ busy: false, hasDocument: true, status: "Difficulty loaded", scene: ${sceneWith({})} })`;
+  evaluate(`document.querySelectorAll = selector => selector === "[data-ui-mount]:not([data-ui-ready])" ? [{}] : []`);
+  evaluate(shown);
+  assert.equal(get("status").textContent, "Difficulty loaded", "the bundle runs after app.js, so wait for load");
+  evaluate(`document.readyState = "complete"`);
+  evaluate(shown);
+  assert.equal(get("status").textContent, "Part of the toolbar did not load");
+  evaluate(`document.querySelectorAll = () => []`);
+  evaluate(shown);
+  assert.equal(get("status").textContent, "Difficulty loaded");
+});

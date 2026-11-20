@@ -242,7 +242,7 @@ function show(next) {
   title.textContent = path ? (view.dirty ? "● " : "") + nameOf(path) : "";
   title.title = path;
   title.setAttribute("data-placeholder", view.hasDocument ? "" : "No map open");
-  $("status").textContent = view.status || (view.busy ? "Working…" : "");
+  $("status").textContent = missingUiParts() || view.status || (view.busy ? "Working…" : "");
   $("status").title = $("status").textContent;
   // The playhead readout is "bar.beat.tick · 190.0 BPM · 4/4 · snap"; the backend sends no separate fields.
   const [bar, tempo, meter] = (scene && view.musicalPosition?.split(" · ")) || [];
@@ -320,6 +320,13 @@ function show(next) {
   renderDialogs();
   window.refreshEditorMenu?.();
   paintSoon();
+  try { window.dawsuUi?.update(view, scene); } catch (error) { console.error(error); }
+}
+
+// The Svelte bundle loads after this script, so a part counts as missing only after the page has loaded.
+function missingUiParts() {
+  if (document.readyState !== "complete") return "";
+  return document.querySelectorAll("[data-ui-mount]:not([data-ui-ready])").length ? "Part of the toolbar did not load" : "";
 }
 
 function setValue(id, value) {
