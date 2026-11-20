@@ -185,10 +185,9 @@ pub(crate) fn used(file: &OsuFile, root: &Path, pending: &Pending, planned: &[St
         Plays::BeatmapFile(name) => Some(name),
         Plays::Skin { .. } => None,
     }).collect();
-    let on_disk: BTreeSet<String> = list_folder(root).map_err(|e| e.to_string())?.iter().map(|n| n.to_ascii_lowercase()).collect();
     let mut used = Vec::new();
     for name in names {
-        let Some(file) = pending.get(&name).filter(|_| !on_disk.contains(&name.to_ascii_lowercase())) else { continue };
+        let Some(file) = pending.get(&name) else { continue };
         let bytes = std::fs::read(&file.path).map_err(|_| format!("The kept copy of {} is missing. Nothing was saved.", file.name))?;
         if sha256_hex(&bytes) != file.sha256 {
             return Err(format!("The kept copy of {} changed. Nothing was saved.", file.name));

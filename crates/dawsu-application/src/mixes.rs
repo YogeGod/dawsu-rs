@@ -78,9 +78,13 @@ impl StagedMix {
         Ok((name, mix))
     }
 
-    /// A pending file a Save writes as it is, checked by its name when published.
+    /// A pending file a Save writes as it is, checked by its name when published. A file another
+    /// program put under the same name is used when it holds the same bytes; other bytes make
+    /// the publish refuse and name it.
     pub(super) fn pending(root: &Path, name: &str, bytes: Vec<u8>) -> Self {
-        Self { path: root.join(name), wav: bytes, reuse: false, index: None }
+        let path = root.join(name);
+        let reuse = fs::read(&path).is_ok_and(|on_disk| on_disk == bytes);
+        Self { path, wav: bytes, reuse, index: None }
     }
 
     pub(super) fn clip(&self) -> AudioClip {

@@ -4770,6 +4770,50 @@ mod project_workflow {
     }
 
     #[test]
+    fn a_left_out_moment_keeps_its_layer_pending_and_reopen_brings_it_back() {
+        let scratch = Scratch::new("pending-left-out");
+        let (mut app, map) = open_left_out_fixture(&scratch, true);
+        let defaults = scratch.path("skin");
+        std::fs::create_dir_all(&defaults).unwrap();
+        std::fs::write(defaults.join("normal-hitnormal.wav"), TONE).unwrap();
+        app.preferences.default_samples = defaults;
+        app.active_lane = app.document().unwrap().composer.lanes.iter().position(|lane| lane == &hitnormal(0)).unwrap();
+        app.command("addNumberedLayer");
+        assert!(app.error.is_none(), "{:?}", app.error);
+        // The layer goes on the slider tail, which Save leaves out (F052).
+        app.document.as_mut().unwrap().composer.apply("Layer on the tail", |hits| {
+            let tail = tail_id(hits);
+            hits.add_hit(tail, hitnormal(2));
+        });
+        let folder = map.parent().unwrap().to_path_buf();
+        let before = mapset(&folder);
+        save_through_summary(&mut app, scratch.path("backups"));
+        assert!(!app.document().unwrap().left_out.is_empty());
+        assert_eq!(mapset(&folder), before, "the left-out layer is not written");
+        let kept = stored(&app).pending_samples.expect("the project lists the left-out layer");
+        assert_eq!(kept.iter().map(|file| file.name.as_str()).collect::<Vec<_>>(), ["normal-hitnormal2.wav"]);
+        let reopened = reopen(&app, &map);
+        let hits = reopened.document().unwrap().composer.hitsounds();
+        assert!(hits.moment(tail_id(hits)).has_hit(&hitnormal(2)));
+        assert_eq!(reopened.clip_for_lane(&hitnormal(2)).unwrap().samples, [0.5]);
+    }
+
+    #[test]
+    fn a_file_another_program_put_under_a_pending_name_refuses_save_and_names_it() {
+        let scratch = Scratch::new("pending-clash");
+        let (mut app, map, folder) = two_layers(&scratch, true);
+        use_layer_2(&mut app);
+        std::fs::write(folder.join("normal-hitnormal2.wav"), b"another program's file").unwrap();
+        let before = (mapset(&folder), std::fs::read(&map).unwrap());
+        app.save_with_backups(scratch.path("backups"));
+        wait(&mut app);
+        let error = app.error.clone().expect("Save refuses");
+        assert!(error.contains("normal-hitnormal2.wav"), "{error}");
+        assert_eq!((mapset(&folder), std::fs::read(&map).unwrap()), before);
+        assert_eq!(std::fs::read(folder.join("normal-hitnormal2.wav")).unwrap(), b"another program's file");
+    }
+
+    #[test]
     fn a_failed_osu_write_removes_the_pending_files_it_wrote() {
         let scratch = Scratch::new("pending-write-fails");
         let (mut app, map, folder) = two_layers(&scratch, true);
