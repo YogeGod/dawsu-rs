@@ -88,7 +88,7 @@ impl Application {
             if self.samples.contains_key(&source) {
                 continue;
             }
-            match sample_path(lane, folder, defaults, &defaults_list)
+            match sample_path(lane, folder, &doc.pending, defaults, &defaults_list)
                 .and_then(|path| dawsu_audio::decode(&path).map_err(|err| err.to_string()))
             {
                 Ok(clip) => {

@@ -16,6 +16,8 @@ pub struct Source {
     pub path: PathBuf,
     pub folder_files: Vec<String>,
     pub version: u64,
+    /// The open document's pending files: mixes read them and allocations skip their names.
+    pub(crate) pending: crate::pending::Pending,
 }
 impl Source {
     pub fn from_document(d: &Document) -> Self {
@@ -25,6 +27,7 @@ impl Source {
             path: d.path.clone(),
             folder_files: d.files.clone(),
             version: d.composer.history.version(),
+            pending: d.pending.clone(),
         }
     }
 }
@@ -233,6 +236,7 @@ pub(super) fn generate_report(
                     settings,
                     old_mixes,
                     2,
+                    &source.pending,
                     cancel,
                 )
             } else {
@@ -382,6 +386,7 @@ pub(super) fn copy_report(
                         None,
                         &[],
                         options.start_index,
+                        &source.pending,
                         cancel,
                     )
                 } else {
@@ -432,7 +437,8 @@ pub(super) fn copy_report(
                 }
                 plan.mixes.extend(mixes.staged);
                 mixes::stage_timed_copy(&source.hits, &mut file, &path, defaults, &target.slider_placements,
-                    &mut plan.mixes, &mut plan.details, cancel)?;
+                    &mut plan.mixes, &mut plan.details, &source.pending, cancel)?;
+
                 plan.files.push(PlannedFile {
                     path,
                     file,

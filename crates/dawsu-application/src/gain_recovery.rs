@@ -1,6 +1,6 @@
 //! Restores editable gains after a Save that encoded them in native fields or a mix.
 use super::{Document, sample_path};
-use crate::{mixes::StagedMix, project::{lane_identity, lane_key}};
+use crate::{mixes::StagedMix, pending::{Pending, listing}, project::{lane_identity, lane_key}};
 use dawsu_foundation::{SampleIdentity, digest::sha256_hex};
 use dawsu_hitsounding::{Decompiled, Hitsounds, Moment, MomentId, Place, decompile};
 use dawsu_osu_format::{LineId, OsuFile, list_folder};
@@ -81,6 +81,7 @@ fn location(place: Place) -> Option<(LineId, Option<usize>)> {
 
 struct Assets<'a> {
     root: &'a Path,
+    pending: &'a Pending,
     defaults: &'a Path,
     default_files: Vec<String>,
     staged: &'a [StagedMix],
@@ -88,8 +89,8 @@ struct Assets<'a> {
 }
 
 impl<'a> Assets<'a> {
-    fn new(root: &'a Path, defaults: &'a Path, staged: &'a [StagedMix]) -> Self {
-        Self { root, defaults, default_files: list_folder(defaults).unwrap_or_default(), staged,
+    fn new(root: &'a Path, pending: &'a Pending, defaults: &'a Path, staged: &'a [StagedMix]) -> Self {
+        Self { root, pending, defaults, default_files: list_folder(defaults).unwrap_or_default(), staged,
             digests: BTreeMap::new() }
     }
 
@@ -104,7 +105,7 @@ impl<'a> Assets<'a> {
                 {
                     staged.digest()
                 } else {
-                    let path = sample_path(lane, self.root, self.defaults, &self.default_files)?;
+                    let path = sample_path(lane, self.root, self.pending, self.defaults, &self.default_files)?;
                     sha256_hex(&fs::read(&path).map_err(|error| format!("Reading {}: {error}", path.display()))?)
                 };
                 self.digests.insert(sample.clone(), digest.clone());
@@ -126,8 +127,8 @@ impl Captured {
     /// The moments whose gains a Save must record: those with their own hit volumes, and each
     /// sound set placement's moment that this Save writes as a mix (`mixed`), so the set reopens
     /// with its sounds (M4). A set written natively needs no record.
-    pub(super) fn read(hits: &Hitsounds, root: &Path, defaults: &Path, mixed: &Locations) -> Result<Self, String> {
-        let mut assets = Assets::new(root, defaults, &[]);
+    pub(super) fn read(hits: &Hitsounds, root: &Path, pending: &Pending, defaults: &Path, mixed: &Locations) -> Result<Self, String> {
+        let mut assets = Assets::new(root, pending, defaults, &[]);
         let mut voices = BTreeMap::new();
         let placed: std::collections::BTreeSet<_> = hits.placements().iter().map(|p| p.moment.0).collect();
         for (i, moment) in hits.moments().iter().enumerate() {
@@ -144,7 +145,7 @@ impl Captured {
     }
 
     pub(super) fn revision(
-        self, hits: &Hitsounds, file: &OsuFile, root: &Path, defaults: &Path, staged: &[StagedMix],
+        self, hits: &Hitsounds, file: &OsuFile, root: &Path, pending: &Pending, defaults: &Path, staged: &[StagedMix],
         cancel: &dyn Fn() -> bool,
     ) -> Result<Revision, String> {
         let map_digest = sha256_hex(&file.to_bytes());
@@ -152,16 +153,16 @@ impl Captured {
             return Ok(Revision { map_digest, moments: Vec::new() });
         }
         // Re-fingerprint source assets after mixing so a stale input cannot certify a saved mix.
-        if self.voices != Self::read(hits, root, defaults, &self.mixed)?.voices {
+        if self.voices != Self::read(hits, root, pending, defaults, &self.mixed)?.voices {
             return Err("A source sample changed while preparing gain recovery".into());
         }
-        let mut listing = list_folder(root).map_err(|error| error.to_string())?;
+        let mut listing = listing(root, pending)?;
         listing.extend(staged.iter().filter_map(|mix| mix.path.file_name()?.to_str().map(str::to_owned)));
         let Decompiled::Done(decoded) = decompile(file, &listing, cancel, &mut |_, _| {}) else {
             return Err("Could not verify the output for gain recovery".into());
         };
         let ordinal: BTreeMap<_, _> = file.hit_objects().iter().enumerate().map(|(i, object)| (object.line(), i)).collect();
-        let mut assets = Assets::new(root, defaults, staged);
+        let mut assets = Assets::new(root, pending, defaults, staged);
         let mut moments = Vec::with_capacity(self.voices.len());
         for moment in decoded.moments() {
             let Some((object, node)) = location(moment.place()) else { continue };
@@ -183,12 +184,13 @@ impl Captured {
 }
 
 /// The moments of `file` that play one of the mixes this Save renders (`staged`).
-pub(super) fn mixed_locations(file: &OsuFile, root: &Path, staged: &[StagedMix], cancel: &dyn Fn() -> bool) -> Result<Locations, String> {
+/// Pending files the Save writes are not mixes, so `staged` holds only the mixes.
+pub(super) fn mixed_locations(file: &OsuFile, root: &Path, pending: &Pending, staged: &[StagedMix], cancel: &dyn Fn() -> bool) -> Result<Locations, String> {
     let names: Vec<String> = staged.iter().filter_map(|mix| mix.path.file_name()?.to_str().map(str::to_owned)).collect();
     if names.is_empty() {
         return Ok(Locations::new());
     }
-    let mut listing = list_folder(root).map_err(|error| error.to_string())?;
+    let mut listing = listing(root, pending)?;
     listing.extend(names.iter().cloned());
     let Decompiled::Done(decoded) = decompile(file, &listing, cancel, &mut |_, _| {}) else {
         return Err("Could not read back the written difficulty".into());
@@ -219,8 +221,9 @@ pub(super) fn restore(document: &mut Document, recovery: &Recovery, defaults: &P
     let by_location: BTreeMap<_, _> = original.moments().iter().enumerate()
         .filter_map(|(index, moment)| Some((location(moment.place())?, MomentId(index)))).collect();
     let mut restored = original.clone();
-    let mut output_assets = Assets::new(root, defaults, &[]);
-    let mut source_assets = Assets::new(root, defaults, &[]);
+    let mut output_assets = Assets::new(root, &document.pending, defaults, &[]);
+    let mut source_assets = Assets::new(root, &document.pending, defaults, &[]);
+
     for saved in &revision.moments {
         let object = objects.get(saved.object).ok_or("Saved hit object is missing")?;
         let id = *by_location.get(&(object.line(), saved.node)).ok_or("Saved hit point is missing")?;

@@ -15,6 +15,7 @@ mod gain_recovery;
 mod lane_edit;
 mod layers;
 mod mixes;
+mod pending;
 pub mod output;
 mod project;
 pub use project::lane_key as lane_layout_key;
@@ -86,6 +87,9 @@ pub struct Document {
     export_settings: Option<ExportSettings>,
     drum_lanes: Option<DrumLanes>,
     export_choices: Option<ExportChoices>,
+    /// Sample files dawsu! made that the mapset does not hold yet. Their names are in the hits'
+    /// folder listing, not in `files`.
+    pending: pending::Pending,
 }
 impl Document {
     pub fn read(path: &Path) -> Result<Self, String> {
@@ -174,6 +178,7 @@ impl Document {
             export_settings: None,
             drum_lanes: None,
             export_choices: None,
+            pending: pending::Pending::default(),
         })
     }
     pub fn lane_layout(&self) -> Option<&LaneLayout> {
@@ -234,7 +239,7 @@ pub fn save_document(document: &Document, backups: PathBuf) -> Result<SaveReport
     prepare_save(
         document.compile_base.clone(), document.composer.hitsounds(), &document.written,
         document.file.original_bytes().to_vec(), &document.path, backups, document.hs_mode,
-        &document.owned_hs_circles, Path::new(""), None, false,
+        &document.owned_hs_circles, Path::new(""), &document.pending, None, false,
         &|| false, &mut Vec::new(), &mut |_, _| {},
     )?.apply(None, &|| false)
 }
@@ -337,6 +342,7 @@ fn prepare_save(
     hs: bool,
     owned: &BTreeSet<LineId>,
     defaults: &Path,
+    pending: &pending::Pending,
     project: Option<&project::Project>,
     review: bool,
     cancel: &dyn Fn() -> bool,
@@ -348,7 +354,7 @@ fn prepare_save(
         let defaults_list = list_folder(defaults).unwrap_or_default();
         let samples: BTreeSet<_> = hits.moments().iter().flat_map(|moment| moment.hits()).collect();
         let paths: BTreeSet<_> = samples.into_iter().filter_map(|sample| {
-            sample_path(hits.lane(sample)?, root, defaults, &defaults_list).ok()
+            sample_path(hits.lane(sample)?, root, pending, defaults, &defaults_list).ok()
         }).collect();
         let mut inputs = Vec::new();
         for path in paths {
@@ -365,7 +371,7 @@ fn prepare_save(
     if project.is_none() && !hits.placements().is_empty() {
         return Err("Sound set links need a writable editor project to save safely.".into());
     }
-    if project.is_none() && gain_recovery::Captured::read(hits, root, defaults, &BTreeSet::new())?.needs_recovery() {
+    if project.is_none() && gain_recovery::Captured::read(hits, root, pending, defaults, &BTreeSet::new())?.needs_recovery() {
         return Err("Editable hit gains need a writable editor project to save safely.".into());
     }
     let placement = if hs { Placement::OnObjects } else { Placement::GreenLines };
@@ -391,7 +397,7 @@ fn prepare_save(
                 }
                 checked = true;
             }
-            let files = list_folder(root).map_err(|error| error.to_string())?;
+            let files = pending::listing(root, pending)?;
             // This snapshot includes circles added by HS mode and all edits the pass encoded.
             let mut target = match decompile(&pass.out, &files, cancel, &mut |_, _| {}) {
                 Decompiled::Done(target) => target,
@@ -399,7 +405,7 @@ fn prepare_save(
                 Decompiled::UnsupportedMode { .. } => return Err("Cannot mix this difficulty".into()),
             };
             if let Err(error) = mix_files.prepare_by_role(
-                effective, &mut target, &mixable, root, defaults, &expected, cancel,
+                effective, &mut target, &mixable, root, defaults, &expected, pending, cancel,
             ) {
                 diagnostics.extend(mixable.iter().map(|problem| {
                     OutputProblem::new(problem, path, path).with_message(&error)
@@ -431,9 +437,9 @@ fn prepare_save(
     let mixed = if hits.placements().is_empty() {
         gain_recovery::Locations::new()
     } else {
-        gain_recovery::mixed_locations(&out, root, &mix_files.staged, cancel)?
+        gain_recovery::mixed_locations(&out, root, pending, &mix_files.staged, cancel)?
     };
-    let recovery = gain_recovery::Captured::read(&effective, root, defaults, &mixed)?;
+    let recovery = gain_recovery::Captured::read(&effective, root, pending, defaults, &mixed)?;
     if cancel() {
         return Err("Save cancelled before writing".into());
     }
@@ -441,7 +447,7 @@ fn prepare_save(
         .and_then(|project| project.settings.gain_recovery.as_ref())
         .is_some_and(|record| record.has_authored_for(&expected))
     {
-        Some(recovery.revision(&effective, &out, root, defaults, &mix_files.staged, cancel)?)
+        Some(recovery.revision(&effective, &out, root, pending, defaults, &mix_files.staged, cancel)?)
     } else {
         None
     };
@@ -449,7 +455,7 @@ fn prepare_save(
     // HS group that never became a circle. An old record with parts is replaced, even by an empty one.
     let (unwritten, loose) = match project {
         Some(project) => {
-            let files = if left_out.is_empty() { Vec::new() } else { list_folder(root).map_err(|error| error.to_string())? };
+            let files = if left_out.is_empty() { Vec::new() } else { pending::listing(root, pending)? };
             let built = unwritten::build(&left_out, &out, &files, &circles)?;
             let replaces = project.settings.unwritten.as_ref().is_some_and(|old| !old.is_empty());
             ((!built.record.is_empty() || replaces).then_some(built.record), built.loose)
@@ -931,8 +937,11 @@ impl Application {
         }
         Self::create(preferences, first_launch, audio, error, true, data_root)
     }
+    /// An application with no audio and no saved preferences. Its data folder is a temporary
+    /// one, so the files it keeps never reach the user's own.
     pub fn headless() -> Self {
-        Self::create(Preferences::default(), false, None, None, false, data_folder())
+        let data_root = std::env::temp_dir().join("dawsu-headless").join(std::process::id().to_string());
+        Self::create(Preferences::default(), false, None, None, false, data_root)
     }
     fn create(
         preferences: Preferences,
@@ -1315,6 +1324,7 @@ impl Application {
         let cancel = self.cancel.clone();
         let defaults = self.preferences.default_samples.clone();
         let project_root = self.project_root.clone();
+        let data_root = self.data_root.clone();
         let imports = self.data_root.join("imports");
         let legacy_root = self
             .persist_preferences
@@ -1371,6 +1381,7 @@ impl Application {
                 load(
                     &path,
                     &defaults,
+                    &data_root,
                     &cancel,
                     project_root.as_deref(),
                     legacy_root.as_deref(),
@@ -1837,6 +1848,7 @@ impl Application {
             self.session_settings(Some(saved_hits), Some(saved_slots), None)
         });
         let defaults = self.preferences.default_samples.clone();
+        let pending = d.pending.clone();
         let (send, receive) = mpsc::channel();
         self.jobs = Some(receive);
         self.busy = true;
@@ -1852,7 +1864,7 @@ impl Application {
             let cancelled = || cancel.load(Ordering::Relaxed);
             let mut diagnostics = Vec::new();
             let result = prepare_save(
-                file, &hits, &written, expected, &path, backups, hs, &owned, &defaults,
+                file, &hits, &written, expected, &path, backups, hs, &owned, &defaults, &pending,
                 project.as_ref(), review, &cancelled, &mut diagnostics,
                 &mut |done, total| progress.report(done, total),
             ).map(|plan| {
@@ -2491,7 +2503,8 @@ impl Application {
             let name = layers::create_backing(d, expected_lane, &extension, &bytes)?;
             let lane = dawsu_hitsounding::rules::read_sample_file_name(&name)
                 .unwrap_or_else(|| SampleIdentity::File(name.clone()));
-            self.register_added_samples(vec![(name, clip)]);
+            self.document.as_mut().expect("open document").pending.add(&name, &bytes)?;
+            self.register_samples(vec![(name, clip)], false);
             lane
         };
         let composer = &mut self.document.as_mut().expect("open document").composer;
@@ -2516,10 +2529,11 @@ impl Application {
         }
         let document = self.document.as_ref().ok_or("Open a difficulty first.")?;
         let family = document.composer.lanes.get(self.active_lane).ok_or("Choose a sample family.")?;
-        let (name, clip) = layers::create(document, &self.preferences.default_samples, family)?;
+        let (name, bytes, clip) = layers::create(document, &self.preferences.default_samples, family)?;
         let lane = dawsu_hitsounding::rules::read_sample_file_name(&name)
             .expect("numbered layer names are constructed from sample identities");
-        self.register_added_samples(vec![(name.clone(), clip)]);
+        self.document.as_mut().expect("open document").pending.add(&name, &bytes)?;
+        self.register_samples(vec![(name.clone(), clip)], false);
         if let Some(document) = &self.document
             && let Some(row) = document.composer.lanes.iter().position(|identity| *identity == lane)
         {
@@ -2542,6 +2556,12 @@ impl Application {
     }
 
     fn register_added_samples(&mut self, additions: Vec<(String, Arc<AudioClip>)>) {
+        self.register_samples(additions, true);
+    }
+
+    /// Registers decoded samples as lanes. Files on disk join `Document.files`; pending files
+    /// only join the hits' folder listing.
+    fn register_samples(&mut self, additions: Vec<(String, Arc<AudioClip>)>, on_disk: bool) {
         if additions.is_empty() {
             return;
         }
@@ -2553,9 +2573,11 @@ impl Application {
             self.samples.insert(SampleIdentity::File(name.clone()), clip);
             names.push(name);
         }
-        document.files.extend_from_slice(&names);
-        document.files.sort();
-        document.files.dedup();
+        if on_disk {
+            document.files.extend_from_slice(&names);
+            document.files.sort();
+            document.files.dedup();
+        }
         let composer = &mut document.composer;
         composer.history.update_external(|hits| hits.add_folder_samples(&names));
         for lane in composer.history.document().lanes() {
@@ -2666,14 +2688,19 @@ fn safe_child(root: &Path, name: &str) -> Result<PathBuf, String> {
     }
     Ok(child)
 }
+/// The file a lane plays: a pending file's kept copy, the mapset's file, or the skin's sound.
 fn sample_path(
     lane: &Lane,
     folder: &Path,
+    pending: &pending::Pending,
     defaults: &Path,
     defaults_list: &[String],
 ) -> Result<PathBuf, String> {
     match &lane.source {
-        LaneSource::File(name) => safe_child(folder, name),
+        LaneSource::File(name) => match pending.get(name) {
+            Some(file) => Ok(file.path.clone()),
+            None => safe_child(folder, name),
+        },
         LaneSource::Skin => {
             let name = lane_name(&lane.plays_as());
             ["wav", "ogg", "mp3"]
@@ -2690,12 +2717,14 @@ fn sample_path(
 fn load(
     path: &Path,
     defaults: &Path,
+    data_root: &Path,
     cancel: &AtomicBool,
     project_root: Option<&Path>,
     legacy_root: Option<&Path>,
     recovery: Option<recovery::RecoveryCopy>,
 ) -> Result<Loaded, String> {
     let mut document = Document::read_matching(path, recovery.as_ref())?;
+    document.pending = pending::Pending::for_mapset(data_root, document.path.parent().ok_or("Missing mapset folder")?);
     let mut warnings = Vec::new();
     let mut project = project_root.and_then(|root| {
         match project::Project::load(root, legacy_root, &document.path) {
@@ -2835,7 +2864,7 @@ fn load(
         if samples.contains_key(&source) {
             continue;
         }
-        match sample_path(lane, folder, defaults, &defaults_list)
+        match sample_path(lane, folder, &document.pending, defaults, &defaults_list)
             .and_then(|path| dawsu_audio::decode_with_cancel(&path, &|| cancel.load(Ordering::Relaxed)))
         {
             Ok(clip) => {
@@ -3171,7 +3200,8 @@ mod project_workflow {
     fn prepare(scratch: &Scratch, document: &Document, hits: &Hitsounds, project: Option<&project::Project>, diagnostics: &mut Vec<OutputProblem>) -> Result<PreparedSave, String> {
         prepare_save(
             document.compile_base.clone(), hits, &document.written, document.file.original_bytes().to_vec(), &document.path,
-            scratch.path("backups"), true, &BTreeSet::new(), Path::new(""), project, false, &|| false, diagnostics, &mut |_, _| {},
+            scratch.path("backups"), true, &BTreeSet::new(), Path::new(""), &document.pending, project, false, &|| false, diagnostics, &mut |_, _| {},
+
         )
     }
 
@@ -4456,7 +4486,9 @@ mod project_workflow {
         assert_eq!(composer.hitsounds().moments()[0].volume(), 67);
         assert!(app.is_dirty());
         assert_eq!(app.clip_for_lane(&new).unwrap().samples[0], 0.25);
-        assert_eq!(std::fs::read(&backing).unwrap(), quieter);
+        // The new backing sample is a pending file until a Save plays it.
+        assert!(!backing.exists());
+        assert_eq!(app.document().unwrap().pending.get("normal-hitnormal4.wav").map(|file| std::fs::read(&file.path).unwrap()), Some(quieter.clone()));
         assert_eq!(std::fs::read(&map).unwrap(), source.as_bytes());
 
         app.command("undo");
@@ -4482,14 +4514,6 @@ mod project_workflow {
         assert_eq!(std::fs::read(&sibling).unwrap(), sibling_bytes.as_bytes());
         assert_eq!(std::fs::read(&external).unwrap(), quieter);
         assert_eq!(std::fs::read(folder.join("normal-hitnormal.wav")).unwrap(), wav);
-
-        let mut reopened = Application::headless();
-        reopened.project_root = Some(scratch.path("projects"));
-        open(&mut reopened, map);
-        let hits = reopened.document().unwrap().composer.hitsounds();
-        assert_eq!(hits.lane_slot(&new), Some(&old));
-        assert!(hits.moments()[0].hits().any(|sample| sample == &new));
-        assert_eq!(reopened.clip_for_lane(&new).unwrap().samples[0], 0.25);
     }
 
     #[test]
@@ -4523,19 +4547,24 @@ mod project_workflow {
             index: dawsu_foundation::CustomIndex::new(0),
         };
         app.active_lane = app.document().unwrap().composer.lanes.iter().position(|lane| lane == &family).unwrap();
+        let before = dawsu_osu_format::list_folder(&folder).unwrap();
         app.command("addNumberedLayer");
         assert!(app.error.is_none(), "{:?}", app.error);
+        // A new layer is a pending file: the mapset holds nothing new until a Save plays it.
         let first = folder.join("soft-hitclap8.wav");
-        assert_eq!(std::fs::read(&first).expect("added numbered layer"), tone);
+        assert!(!first.exists());
+        assert_eq!(app.document().unwrap().pending.get("soft-hitclap8.wav").map(|file| std::fs::read(&file.path).unwrap()), Some(tone.to_vec()));
 
         let mut quieter = tone.to_vec();
         *quieter.last_mut().unwrap() = 0x20;
         std::fs::write(&default_file, &quieter).unwrap();
         app.command("addNumberedLayer");
         assert!(app.error.is_none(), "{:?}", app.error);
-        assert_eq!(std::fs::read(folder.join("soft-hitclap9.wav")).unwrap(), quieter);
+        // The next layer takes the next index, though the first is not on disk.
+        assert!(!folder.join("soft-hitclap9.wav").exists());
+        assert!(app.document().unwrap().pending.get("soft-hitclap9.wav").is_some());
+        assert_eq!(dawsu_osu_format::list_folder(&folder).unwrap(), before);
         assert_eq!(std::fs::read(&occupied).unwrap(), tone);
-        assert_eq!(std::fs::read(&first).unwrap(), tone);
         assert_eq!(std::fs::read(&map).unwrap(), original);
         assert_eq!(std::fs::read_to_string(&sibling).unwrap(), other);
         assert!(!app.is_dirty());
@@ -4720,7 +4749,7 @@ mod project_workflow {
             wav.extend(amplitude.to_le_bytes());
             std::fs::write(path, wav).unwrap();
         }
-        let loaded = load(&map, &defaults, &AtomicBool::new(false), None, None, None).unwrap();
+        let loaded = load(&map, &defaults, &std::env::temp_dir().join("dawsu-headless"), &AtomicBool::new(false), None, None, None).unwrap();
         let mut app = Application::headless();
         app.document = Some(loaded.document);
         app.samples = loaded.samples;
@@ -5042,6 +5071,7 @@ mod project_workflow {
             load(
                 &path,
                 dir.dir(),
+                &root,
                 &AtomicBool::new(false),
                 Some(&root),
                 Some(&legacy),

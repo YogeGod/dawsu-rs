@@ -465,7 +465,7 @@ impl Application {
         let defaults = &self.preferences.default_samples;
         let defaults_list = list_folder(defaults).unwrap_or_default();
         let skipped = || Some(format!("The {} under it wasn't found, so that moment saves as a mix.", crate::lane_name(lane)));
-        let Ok(path) = super::sample_path(model, root, defaults, &defaults_list) else { return (None, skipped()) };
+        let Ok(path) = super::sample_path(model, root, &self.document.as_ref().expect("open document").pending, defaults, &defaults_list) else { return (None, skipped()) };
         let Some(extension) = path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase)
             .filter(|e| matches!(e.as_str(), "wav" | "ogg" | "mp3")) else { return (None, skipped()) };
         let Ok(bytes) = std::fs::read(&path) else { return (None, skipped()) };
@@ -743,7 +743,7 @@ impl Application {
             let unreadable = || refused(format!("Could not read {lane_name}. Check that another program is not using it."));
             let model = hits.lane(identity).ok_or_else(|| unusable("has no lane"))?;
             // `sample_path` decides what plays: the folder's file, or the skin's sound.
-            let path = super::sample_path(model, root, defaults, &defaults_list).map_err(|_| unusable("wasn't found"))?;
+            let path = super::sample_path(model, root, &document.pending, defaults, &defaults_list).map_err(|_| unusable("wasn't found"))?;
             let (source, file) = match &model.source {
                 dawsu_hitsounding::LaneSource::File(file) => (SetSource::File, file.clone()),
                 dawsu_hitsounding::LaneSource::Skin => (SetSource::Skin, crate::lane_name(&model.plays_as())),
@@ -1804,7 +1804,7 @@ pub(crate) mod tests {
             dawsu_hitsounding::Place::Circle(id) => (id.line(), None),
             other => panic!("{other:?}"),
         };
-        let read = |mixed: &crate::gain_recovery::Locations| crate::gain_recovery::Captured::read(hits, map.parent().unwrap(), &defaults, mixed).unwrap().needs_recovery();
+        let read = |mixed: &crate::gain_recovery::Locations| crate::gain_recovery::Captured::read(hits, map.parent().unwrap(), &Default::default(), &defaults, mixed).unwrap().needs_recovery();
         assert!(read(&[circle].into()), "a placed moment the Save mixes");
         assert!(!read(&Default::default()), "a placed moment written natively needs no record");
     }

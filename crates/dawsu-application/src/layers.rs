@@ -1,6 +1,6 @@
 use crate::{Document, lane_name, safe_child};
 use dawsu_audio::{AudioClip, decode};
-use dawsu_foundation::{CustomIndex, SampleIdentity, safe_write};
+use dawsu_foundation::{CustomIndex, SampleIdentity};
 use dawsu_hitsounding::rules::read_sample_file_name;
 use dawsu_osu_format::{HitSample, ObjectKind, OsuFile, find_case_insensitive, list_folder};
 use std::collections::BTreeSet;
@@ -11,7 +11,7 @@ pub(super) fn create(
     document: &Document,
     defaults: &Path,
     lane: &SampleIdentity,
-) -> Result<(String, Arc<AudioClip>), String> {
+) -> Result<(String, Vec<u8>, Arc<AudioClip>), String> {
     let SampleIdentity::Standard { set, sound, .. } = *lane else {
         return Err("Choose a sample family to add a numbered layer.".into());
     };
@@ -31,9 +31,12 @@ pub(super) fn create(
         std::fs::read(&source).map_err(|error| format!("Reading {default_name}: {error}"))?;
 
     let name = create_backing(document, &family, "wav", &bytes)?;
-    Ok((name, clip))
+    Ok((name, bytes, clip))
 }
 
+/// The name a new sample file for `lane` takes. Nothing is written: the caller keeps the bytes as
+/// a pending file, which claims the name. Names on disk, names any difficulty or storyboard uses
+/// and pending names are all taken.
 pub(super) fn create_backing(
     document: &Document,
     lane: &SampleIdentity,
@@ -41,8 +44,10 @@ pub(super) fn create_backing(
     bytes: &[u8],
 ) -> Result<String, String> {
     let root = document.path.parent().ok_or("The map folder is unavailable.")?;
-    let files = list_folder(root).map_err(|error| error.to_string())?;
-    let (indexes, references) = reservations(root, &files)?;
+    let files = crate::pending::listing(root, &document.pending)?;
+    let (mut indexes, mut references) = reservations(root, &files)?;
+    indexes.extend(document.pending.taken_indexes());
+    references.extend(document.pending.taken_names());
     let name = match *lane {
         SampleIdentity::Standard { set, sound, .. } => next_numbered(document, &files, &indexes, set, sound, extension)?,
         SampleIdentity::File(_) => {
@@ -52,9 +57,6 @@ pub(super) fn create_backing(
                 .ok_or("No safe sample name is available in this mapset.")?
         }
     };
-    // A concurrent addition can claim the same name. Publish atomically and refuse the collision.
-    safe_write::create(&root.join(&name), bytes)
-        .map_err(|error| format!("Could not add {name}: {error}"))?;
     Ok(name)
 }
 
