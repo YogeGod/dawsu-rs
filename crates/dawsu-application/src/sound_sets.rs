@@ -41,13 +41,15 @@ enum LibraryCopy {
 }
 
 impl LibraryCopy {
-    fn write(&self) -> Result<(), String> {
+    /// Writes the new library file, if any, and returns it so a failed placement can take it back.
+    fn write(&self) -> Result<Option<PathBuf>, String> {
         match self {
-            LibraryCopy::There => Ok(()),
+            LibraryCopy::There => Ok(None),
             LibraryCopy::New(target, bytes) => {
                 let folder = target.parent().expect("a library file has a folder");
                 std::fs::create_dir_all(folder).map_err(|e| format!("Creating the library's {LIBRARY_FOLDER} folder: {e}"))?;
-                safe_write::create(target, bytes).map_err(|e| format!("Copying the set into the library: {e}"))
+                safe_write::create(target, bytes).map_err(|e| format!("Copying the set into the library: {e}"))?;
+                Ok(Some(target.clone()))
             }
         }
     }
@@ -285,7 +287,9 @@ impl Application {
             self.status = format!("\"{}\" is already placed here.", set.name);
             return Ok(());
         }
-        let library_copy = library_target(&library, file, &bytes, &set)?;
+        // Written once, just before the first mapset write; taken back if that write fails.
+        let mut library_copy = Some(library_target(&library, file, &bytes, &set)?);
+        let mut library_created = None;
         let set_digest = sha256_hex(&bytes);
         let root = document.path.parent().ok_or("Missing mapset folder")?.to_path_buf();
         let mut record = RecordFile::open(&self.data_root, &root)?;
@@ -345,7 +349,9 @@ impl Application {
                 (None, false) => SetHitnormal::Keep,
             };
             if writes.is_empty() {
-                library_copy.write()?;
+                if let Some(copy) = library_copy.take() {
+                    copy.write()?;
+                }
                 break (snapshot, Vec::new(), extra, hits, hitnormal);
             }
             let entry = SnapshotEntry {
@@ -360,11 +366,18 @@ impl Application {
             if clash && attempt == 1 {
                 continue;
             }
-            library_copy.write()?;
+            if let Some(copy) = library_copy.take() {
+                library_created = copy.write()?;
+            }
             match write_snapshot(&root, &mut record, entry, &writes) {
                 Ok(clips) => break (snapshot, clips, extra, hits, hitnormal),
                 Err(_) if attempt == 1 && writes.iter().any(|(name, _)| root.join(name).exists()) => continue,
-                Err(error) => return Err(error),
+                Err(error) => {
+                    if let Some(path) = &library_created {
+                        let _ = std::fs::remove_file(path);
+                    }
+                    return Err(error);
+                }
             }
         };
         // Reused files may have no decoded audio yet.
@@ -549,7 +562,8 @@ pub(crate) fn restore_links(document: &mut super::Document, links: &Links) -> (V
             let moment = match saved.object {
                 Some(ordinal) => {
                     let line = objects.get(ordinal)?.line();
-                    hits.moments().iter().position(|m| location(m.place()) == Some((line, saved.node)) && holds(m, &applied))
+                    // A kept record's ordinal may name another object now, so the time must match too.
+                    hits.moments().iter().position(|m| location(m.place()) == Some((line, saved.node)) && (m.time().ms() - time).abs() < 1.0 && holds(m, &applied))
                 }
                 None => hits.moments().iter().enumerate()
                     .filter(|(_, m)| (m.time().ms() - time).abs() < 1.0 && holds(m, &applied))
@@ -728,6 +742,8 @@ pub(crate) mod tests {
             let r: SnapshotRecord = serde_json::from_slice(&std::fs::read(entry.path()).unwrap()).unwrap();
             assert!(r.entries.is_empty(), "{r:?}");
         }
+        let library = f.scratch.path("library").join(LIBRARY_FOLDER);
+        assert!(std::fs::read_dir(&library).map_or(true, |mut entries| entries.next().is_none()), "no set left in the library");
     }
 
     #[test]
@@ -1251,5 +1267,48 @@ pub(crate) mod tests {
         assert_eq!(crate::unfinished_record(true, true, false), "Gain recovery and left-out moments could not be recorded.");
         assert_eq!(crate::unfinished_record(false, false, true), "Sound set links could not be recorded.");
         assert_eq!(crate::unfinished_record(true, true, true), "Gain recovery, left-out moments and sound set links could not be recorded.");
+    }
+
+    #[test]
+    fn a_set_mixed_at_one_volume_reopens_with_its_sounds_and_link() {
+        let f = fixture("links-mixed-one-volume");
+        // Claps from two banks at the map's volume: one object can't play both, so Save mixes them.
+        std::fs::write(&f.set, set_text_at("Claps", &[("drum-hitclap.wav", 4000), ("soft-hitclap.wav", 3000)], 70)).unwrap();
+        let mut app = app(&f);
+        let map = open(&mut app, &f.map);
+        app.seek(1000.0);
+        app.place_sound_set_file(&map, &f.set).unwrap();
+        let placed = sounds_at(&app, 0);
+        assert!(!app.document().unwrap().composer.hitsounds().moment(dawsu_hitsounding::MomentId(0)).has_hit_volume_overrides());
+        let before = mapset_files(&f);
+        save(&mut app, &f);
+        assert_eq!(mapset_files(&f).len(), before.len() + 1, "one rendered mix: {:?}", mapset_files(&f));
+        let reopened = reopen(&f);
+        assert_eq!(sounds_at(&reopened, 0), placed, "{:?}", reopened.warnings);
+        assert_eq!(links(&reopened), [(0, SET_ID.to_string())]);
+    }
+
+    #[test]
+    fn a_kept_link_never_lands_on_another_object_that_now_has_its_ordinal() {
+        let f = fixture("links-kept-ordinal");
+        let mut app = app(&f);
+        let map = open(&mut app, &f.map);
+        app.seek(1000.0);
+        app.place_sound_set_file(&map, &f.set).unwrap();
+        save(&mut app, &f);
+        // Another program puts a circle playing the set's sounds before it.
+        let text = String::from_utf8(std::fs::read(&f.map).unwrap()).unwrap();
+        let edited = text.replacen("[HitObjects]
+", "[HitObjects]
+256,192,500,1,8,3:0:2:60:
+", 1);
+        assert_ne!(edited, text);
+        std::fs::write(&f.map, edited).unwrap();
+        let mut changed = reopen(&f);
+        assert!(links(&changed).is_empty());
+        changed.document.as_mut().unwrap().composer.apply("Edit", |h| h.set_volume(dawsu_hitsounding::MomentId(0), 59));
+        save(&mut changed, &f);
+        let again = reopen(&f);
+        assert!(links(&again).iter().all(|(moment, _)| again.document().unwrap().composer.hitsounds().moment(dawsu_hitsounding::MomentId(*moment)).time().ms() == 1000.0), "{:?}", links(&again));
     }
 }
