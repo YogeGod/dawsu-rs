@@ -205,3 +205,77 @@ fn a_failed_prune_still_counts_as_saved_with_a_warning() {
     }
     assert_eq!(fs::read(&target).unwrap(), b"v2");
 }
+
+/// Opens `path` for reading the way a virus scanner, the search indexer or a cloud-sync client
+/// can: other programs may read and write it, but not rename or delete it.
+#[cfg(windows)]
+fn hold_without_delete_sharing(path: &Path) -> fs::File {
+    use std::os::windows::fs::OpenOptionsExt;
+    const FILE_SHARE_READ: u32 = 0x1;
+    const FILE_SHARE_WRITE: u32 = 0x2;
+    fs::OpenOptions::new().read(true).share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE).open(path).unwrap()
+}
+
+#[cfg(windows)]
+#[test]
+fn replace_waits_for_another_program_that_briefly_holds_the_target() {
+    let s = Scratch::new("held-briefly");
+    let target = s.path("map.osu");
+    fs::write(&target, b"old").unwrap();
+    let policy = BackupPolicy::new(s.path("backups"), 20);
+
+    let handle = hold_without_delete_sharing(&target);
+    let release = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        drop(handle);
+    });
+
+    let outcome = safe_write::replace(&target, b"old", b"new", &policy);
+    release.join().unwrap();
+
+    assert_eq!(outcome.unwrap(), WriteOutcome::Saved { warnings: vec![] });
+    assert_eq!(fs::read(&target).unwrap(), b"new");
+    assert_eq!(files_in(&s.0), vec!["backups", "map.osu"], "no temporary file is left");
+}
+
+#[cfg(windows)]
+#[test]
+fn replace_gives_up_cleanly_when_the_target_stays_held() {
+    let s = Scratch::new("held-long");
+    let target = s.path("map.osu");
+    fs::write(&target, b"old").unwrap();
+    let policy = BackupPolicy::new(s.path("backups"), 20);
+
+    let handle = hold_without_delete_sharing(&target);
+    let outcome = safe_write::replace(&target, b"old", b"new", &policy);
+    let names = files_in(&s.0);
+    drop(handle);
+
+    assert!(outcome.is_err(), "expected an error, got {outcome:?}");
+    assert_eq!(fs::read(&target).unwrap(), b"old");
+    assert_eq!(names, vec!["backups", "map.osu"], "no temporary file is left");
+}
+
+#[cfg(windows)]
+#[test]
+fn replace_never_overwrites_a_change_made_while_it_waited() {
+    let s = Scratch::new("held-and-changed");
+    let target = s.path("map.osu");
+    fs::write(&target, b"old").unwrap();
+    let policy = BackupPolicy::new(s.path("backups"), 20);
+
+    let handle = hold_without_delete_sharing(&target);
+    let changed = target.clone();
+    let release = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        fs::write(&changed, b"changed by osu!").unwrap();
+        drop(handle);
+    });
+
+    let outcome = safe_write::replace(&target, b"old", b"new", &policy);
+    release.join().unwrap();
+
+    assert_eq!(outcome.unwrap(), WriteOutcome::ChangedOnDisk);
+    assert_eq!(fs::read(&target).unwrap(), b"changed by osu!");
+    assert_eq!(files_in(&s.0), vec!["backups", "map.osu"], "no temporary file is left");
+}
