@@ -9,7 +9,8 @@ use std::convert::Infallible;
 pub(super) enum ControllerStroke {
     Drag {
         start: i32,
-        originals: Vec<VolumeBar>,
+        /// Each bar, with where it stood when the stroke began (`Moment::reference_volume`).
+        originals: Vec<(VolumeBar, i32)>,
     },
     Paint {
         last: (f64, i32),
@@ -21,8 +22,6 @@ pub(super) enum ControllerStroke {
 pub(super) struct VolumeBar {
     moment: MomentId,
     shared: i32,
-    /// Where the bar stood when the stroke began (`Moment::reference_volume`).
-    reference: i32,
     gains: Vec<(SampleIdentity, i32)>,
 }
 
@@ -31,7 +30,6 @@ impl VolumeBar {
         Self {
             moment: id,
             shared: moment.volume(),
-            reference: moment.reference_volume(),
             gains: moment.hits().map(|lane| (lane.clone(), moment.hit_volume(lane))).collect(),
         }
     }
@@ -60,7 +58,6 @@ impl VolumeSpread {
             Some(VolumeBar {
                 moment: MomentId(index),
                 shared: moment.volume(),
-                reference: moment.reference_volume(),
                 gains: moment.hits().map(|lane| (lane.clone(), moment.hit_volume(lane))).collect(),
             })
         }).collect();
@@ -129,7 +126,8 @@ impl ControllerStroke {
                 ("Spread volumes", Self::Spread(VolumeSpread::new(composer, targets, input.y)?))
             } else {
                 let originals = targets.into_iter()
-                    .filter_map(|id| moments.get(id).map(|moment| VolumeBar::new(MomentId(id), moment)))
+                    .filter_map(|id| moments.get(id)
+                        .map(|moment| (VolumeBar::new(MomentId(id), moment), moment.reference_volume())))
                     .collect();
                 ("Volume", Self::Drag { start: point.1, originals })
             }
@@ -154,9 +152,9 @@ impl ControllerStroke {
             Self::Spread(spread) => return spread.apply(composer, input.y),
             Self::Drag { start, originals } => originals
                 .iter()
-                .map(|bar| {
+                .map(|(bar, reference)| {
                     let value = if originals.len() > 1 {
-                        (bar.reference + current.1 - *start).clamp(0, 100)
+                        (reference + current.1 - *start).clamp(0, 100)
                     } else {
                         current.1
                     };
@@ -255,6 +253,22 @@ mod tests {
         c.undo();
         c.undo();
         assert_eq!(normal_and_clap(&c, &normal), (90, 60));
+    }
+
+    #[test]
+    fn ctrl_dragging_several_bars_spreads_every_sound_around_their_mean() {
+        let (mut c, normal) = normal_80_clap_50();
+        c.selected.replace([HitKey { moment: 0, lane: clap() }, HitKey { moment: 1, lane: normal.clone() }]);
+        let second = |c: &Composer| c.hitsounds().moments()[1].hit_volume(&normal);
+        let at = |y: f64| PointerInput { y, ..bar(1000.0, 80.0, Mods::CTRL) };
+        // The mean of 80, 50 and 100 is 76.7; moving up 60 px doubles each sound's distance from it.
+        let mut stroke = ControllerStroke::start(&mut c, at(0.0), 1.0).unwrap();
+        stroke.apply(&mut c, at(-60.0));
+        assert_eq!((normal_and_clap(&c, &normal), second(&c)), ((83, 23), 100));
+        stroke.finish(&mut c, at(30.0));
+        assert_eq!((normal_and_clap(&c, &normal), second(&c)), ((78, 63), 88));
+        c.undo();
+        assert_eq!((normal_and_clap(&c, &normal), second(&c)), ((80, 50), 100));
     }
 
     #[test]
