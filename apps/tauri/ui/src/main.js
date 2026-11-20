@@ -4,12 +4,17 @@ import { mount } from "svelte";
 import { bridge } from "./lib/bridge.svelte.js";
 import Boundary from "./lib/Boundary.svelte";
 import AuditionPill from "./parts/AuditionPill.svelte";
+import ExportWindow from "./parts/ExportWindow.svelte";
 import SnapSlider from "./parts/SnapSlider.svelte";
 import ToolPills from "./parts/ToolPills.svelte";
 import TransportBar from "./parts/TransportBar.svelte";
 
 // Each part replaces the children of its [data-ui-mount="name"] host in index.html.
-const parts = { tools: ToolPills, snap: SnapSlider, audition: AuditionPill, transport: TransportBar };
+const parts = {
+  tools: ToolPills, snap: SnapSlider, audition: AuditionPill, transport: TransportBar,
+  // The whole page of the Export window (export.html).
+  "export-window": ExportWindow,
+};
 
 for (const host of document.querySelectorAll("[data-ui-mount]")) {
   const part = parts[host.dataset.uiMount];

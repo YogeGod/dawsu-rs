@@ -62,6 +62,6 @@ test("the committed bundle matches its sources", async () => {
 test("index.html loads the bundle after the old styles and scripts", () => {
   const head = read(new URL("dist/index.html", tauri)).match(/<head>(.*?)<\/head>/s)[1];
   const order = [...head.matchAll(/(?:href|src)="([^"]+\.(?:css|js))"/g)].map(match => match[1]);
-  assert.deepEqual(order, ["style.css", "ui/ui.css", "docking.js", "app.js", "menus.js", "drum-detect.js", "ui/ui.js"]);
+  assert.deepEqual(order, ["fonts.css", "style.css", "ui/ui.css", "docking.js", "app.js", "menus.js", "drum-detect.js", "ui/ui.js"]);
   assert.match(head, /<script defer src="ui\/ui\.js"><\/script>/);
 });

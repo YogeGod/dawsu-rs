@@ -302,6 +302,7 @@ function menuItems(name, target) {
       separator(),
       menuCommand("Save", "Save", "save"),
       menuCommand("Revert to saved…", "Undo2", "revert"),
+      menuItem("Export…", "Redo2", click("export-entry"), { enabled: () => !!scene && !view.busy }),
       separator(),
       menuItem("Start screen", "House", click("go-home")),
       menuItem("Folders…", "Settings", click("folders"), { enabled: idle }),

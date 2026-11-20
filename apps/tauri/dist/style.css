@@ -283,7 +283,6 @@ button[aria-label="Undo"] .button-icon,button[aria-label="Redo"] .button-icon{ma
 #sample-browser-entries button:nth-child(even) { background: #1c1c1c; }
 #sample-browser-entries button:hover { background: #3c3c3c; }
 #sample-browser-entries button[aria-pressed="true"] { background: #084266; }
-@font-face { font-family: Inter; src: url("studio-assets/fonts/Inter-Variable.ttf") format("truetype"); font-weight: 100 900; font-display: swap; }
 :root {
   --text:#f1f1f1; --muted:#a3a3a3; --hi:#77bdfa;
   --base:#151515; --panel:#1c1c1c; --chrome:#292929; --control:#3c3c3c;
@@ -293,6 +292,10 @@ header.chrome { min-height:44px; padding-block:4px; background:var(--chrome); }
 header #editor-menus { border:0; background:transparent; }
 header .title { text-align:right; padding-right:12px; }
 header #layout-edit-entry:not(:hover) { background:transparent; color:var(--muted); }
+/* v3: Export… on a hover fill with no edge, set apart from Save by a divider. */
+header.chrome #export-entry { background:#3c3c3c; border-color:transparent; margin-right:9px; position:relative; }
+header.chrome #export-entry:hover:not(:disabled) { background:#454545; }
+header.chrome #export-entry::after { content:""; position:absolute; right:-9px; top:4px; bottom:4px; width:1px; background:#454545; }
 header [data-action="review_save"]:not(:disabled) { background:var(--hi); color:var(--on-accent); }
 header [data-action="review_save"]:not(:disabled) .button-icon { filter:brightness(.24); }
 header [data-action="review_save"]:hover:not(:disabled) { background:var(--hi-hover); }

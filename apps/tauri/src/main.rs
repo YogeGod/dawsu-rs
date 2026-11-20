@@ -1335,7 +1335,8 @@ enum Request {
     Close(bool, mpsc::Sender<Result<(), String>>),
     // The Export window's own requests. Each always answers, with an error after a fault.
     ExportView(mpsc::Sender<Result<Value, String>>),
-    ExportPreview(ExportOptions, mpsc::Sender<Result<u64, String>>),
+    /// The difficulty the window showed, and its options.
+    ExportPreview(PathBuf, ExportOptions, mpsc::Sender<Result<u64, String>>),
     ExportRun(u64, mpsc::Sender<Result<(), String>>),
     /// The Export window closed: its preview stops and is forgotten. Needs no answer.
     ExportClose,
@@ -1397,7 +1398,15 @@ fn export_snapshot(app: &Application) -> Value {
         "requested": status.requested,
         "previewing": status.running || status.waiting,
         "progress": status.progress.map(|(done, total)| json!({ "kind": "preview", "done": done, "total": total })),
+        "choices": document.and_then(|d| d.export_choices()).map(|choices| json!({
+            "leftOut": choices.left_out,
+            "matchWithin": choices.match_within,
+            "copyVolumes": choices.copy_volumes,
+        })),
         "error": status.error,
+        "writing": status.writing,
+        "written": status.written,
+        "writeError": status.write_error,
         "problems": status.problems.iter().map(|problem| json!({
             "target": problem.target, "timeline": problem.timeline,
             "time": problem.time, "message": problem.message,
@@ -1412,6 +1421,15 @@ fn export_snapshot(app: &Application) -> Value {
             "details": preview.plan.details,
             "files": preview.plan.files.iter().map(|file| &file.path).collect::<Vec<_>>(),
             "mixes": preview.plan.mix_paths().collect::<Vec<_>>(),
+            "targets": preview.plan.targets.iter().map(|counts| json!({
+                "path": counts.path,
+                "matched": counts.matched,
+                "unmatched": counts.unmatched,
+                "changed": counts.changed,
+                "collisions": counts.collisions,
+                "keptFromSilent": counts.kept_from_silent,
+                "muted": counts.muted,
+            })).collect::<Vec<_>>(),
         })),
     })
 }
@@ -1422,8 +1440,14 @@ fn answer_export(app: &mut Application, fault: &mut Option<String>, request: Req
         Request::ExportView(response) => {
             let _ = response.send(guard(app, fault, |app| export_snapshot(app)));
         }
-        Request::ExportPreview(options, response) => {
-            let result = guard(app, fault, |app| app.request_export_preview(options)).and_then(|result| result);
+        Request::ExportPreview(source, options, response) => {
+            let result = guard(app, fault, |app| {
+                // The window chose these options for the difficulty it showed, not one opened since.
+                if app.document().is_none_or(|d| d.path != source) {
+                    return Err("Another difficulty was opened. Preview again.".to_owned());
+                }
+                app.request_export_preview(options)
+            }).and_then(|result| result);
             let _ = response.send(result);
         }
         Request::ExportRun(preview_id, response) => {
@@ -1730,6 +1754,7 @@ fn editor_export_settings(state: State<'_, Editor>) -> Result<Option<(PathBuf, E
 
 #[derive(Deserialize)]
 struct ExportOptionsJson {
+    source: PathBuf,
     targets: Vec<PathBuf>,
     #[serde(with = "CopyOptionsJson")]
     options: CopyOptions,
@@ -1742,13 +1767,51 @@ fn export_view(state: State<'_, Editor>) -> Result<Value, String> {
 
 #[tauri::command]
 fn export_preview(state: State<'_, Editor>, options: ExportOptionsJson) -> Result<u64, String> {
+    let source = options.source;
     let options = ExportOptions { targets: options.targets, copy: options.options };
-    ask(&state, |tx| Request::ExportPreview(options, tx))?
+    ask(&state, |tx| Request::ExportPreview(source, options, tx))?
 }
 
 #[tauri::command]
 fn export_run(state: State<'_, Editor>, preview_id: u64) -> Result<(), String> {
     ask(&state, |tx| Request::ExportRun(preview_id, tx))?
+}
+
+/// Opens the Export window beside the editor, or brings it forward when it is open.
+/// Async, so building the window never runs on the main thread that drives it.
+#[tauri::command]
+async fn open_export_window(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("export") {
+        let _ = window.unminimize();
+        return window.set_focus().map_err(|error| error.to_string());
+    }
+    // A plain top-level window, not a child of main, so Show in editor can bring main forward.
+    // Its own drop handler is off: a file dropped on Export never reaches main's drop listener.
+    tauri::WebviewWindowBuilder::new(&app, "export", tauri::WebviewUrl::App("export.html".into()))
+        .title("Export hitsounds")
+        .inner_size(1440.0, 880.0)
+        .min_inner_size(1100.0, 720.0)
+        .disable_drag_drop_handler()
+        .build()
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
+/// Closes the Export window the way its title bar does, so its preview is cancelled too.
+#[tauri::command]
+fn close_export_window(app: tauri::AppHandle) -> Result<(), String> {
+    match app.get_webview_window("export") {
+        Some(window) => window.close().map_err(|error| error.to_string()),
+        None => Ok(()),
+    }
+}
+
+/// Brings the editor window forward.
+#[tauri::command]
+fn show_in_editor(app: tauri::AppHandle) -> Result<(), String> {
+    let main = app.get_webview_window("main").ok_or("The editor window is closed.")?;
+    let _ = main.unminimize();
+    main.set_focus().map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -2059,6 +2122,9 @@ fn main() {
             export_view,
             export_preview,
             export_run,
+            open_export_window,
+            close_export_window,
+            show_in_editor,
             pick_merge_preset,
             save_merge_preset,
             editor_shortcuts,

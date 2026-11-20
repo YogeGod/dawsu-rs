@@ -2139,8 +2139,16 @@ fn export_requests_answer_with_the_export_view_and_errors_after_a_fault() {
     open(&mut app, &source);
     let mut fault = None;
 
+    let source = app.document().unwrap().path.clone();
     let (tx, rx) = channel();
-    answer_export(&mut app, &mut fault, Request::ExportPreview(ExportOptions {
+    answer_export(&mut app, &mut fault, Request::ExportPreview(target.clone(), ExportOptions {
+        targets: vec![target.clone()],
+        copy: Default::default(),
+    }, tx));
+    assert_eq!(rx.recv().unwrap().unwrap_err(), "Another difficulty was opened. Preview again.");
+    assert_eq!(app.document().unwrap().export_choices(), None, "a refused preview stores no choices");
+    let (tx, rx) = channel();
+    answer_export(&mut app, &mut fault, Request::ExportPreview(source.clone(), ExportOptions {
         targets: vec![target.clone()],
         copy: Default::default(),
     }, tx));
@@ -2173,6 +2181,13 @@ fn export_requests_answer_with_the_export_view_and_errors_after_a_fault() {
     assert_eq!(view["preview"]["origin"], "export");
     assert_eq!(view["preview"]["stale"], false);
     assert_eq!(view["preview"]["files"], serde_json::json!([target]));
+    let counts = &view["preview"]["targets"][0];
+    assert_eq!(counts["path"], serde_json::json!(target));
+    for field in ["matched", "unmatched", "changed", "collisions", "keptFromSilent", "muted"] {
+        assert!(counts[field].is_u64(), "{field}: {counts}");
+    }
+    assert_eq!(view["choices"], serde_json::json!({ "leftOut": [], "matchWithin": 5.0, "copyVolumes": true }));
+    assert_eq!((&view["writing"], &view["written"], &view["writeError"]), (&serde_json::json!(false), &serde_json::Value::Null, &serde_json::Value::Null));
     assert!(view.get("review").is_none() && view.get("shortcutAction").is_none());
     assert!(app.output_review.is_none());
 
@@ -2184,7 +2199,7 @@ fn export_requests_answer_with_the_export_view_and_errors_after_a_fault() {
     let (view, view_rx) = channel();
     answer_export(&mut app, &mut fault, Request::ExportView(view));
     let (preview, preview_rx) = channel();
-    answer_export(&mut app, &mut fault, Request::ExportPreview(ExportOptions {
+    answer_export(&mut app, &mut fault, Request::ExportPreview(source.clone(), ExportOptions {
         targets: vec![target.clone()],
         copy: Default::default(),
     }, preview));

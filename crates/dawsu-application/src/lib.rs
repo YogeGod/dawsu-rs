@@ -37,7 +37,7 @@ use dawsu_editor::transport::BookmarkList;
 pub use problems::OutputProblem;
 pub use editor_meter::{EditorBarSection, EditorTimeSignature};
 pub use drum_detect::{DrumDetectState, DrumDetectView, DrumLanes};
-pub use export::{ExportOptions, ExportPreview, ExportStatus, PreviewOrigin};
+pub use export::{ExportChoices, ExportOptions, ExportPreview, ExportStatus, PreviewOrigin};
 pub use export_settings::{ExportCombination, ExportSettings};
 pub use project::LaneLayout;
 pub use recovery::RecoveryOffer;
@@ -85,6 +85,7 @@ pub struct Document {
     editor_bars: Vec<EditorBarSection>,
     export_settings: Option<ExportSettings>,
     drum_lanes: Option<DrumLanes>,
+    export_choices: Option<ExportChoices>,
 }
 impl Document {
     pub fn read(path: &Path) -> Result<Self, String> {
@@ -172,6 +173,7 @@ impl Document {
             editor_bars: Vec::new(),
             export_settings: None,
             drum_lanes: None,
+            export_choices: None,
         })
     }
     pub fn lane_layout(&self) -> Option<&LaneLayout> {
@@ -182,6 +184,9 @@ impl Document {
     }
     pub fn export_settings(&self) -> Option<&ExportSettings> {
         self.export_settings.as_ref()
+    }
+    pub fn export_choices(&self) -> Option<&ExportChoices> {
+        self.export_choices.as_ref()
     }
     pub fn editor_bars(&self) -> &[EditorBarSection] {
         &self.editor_bars
@@ -1203,6 +1208,7 @@ impl Application {
             time_signatures: Some(document.time_signatures.clone()),
             export_settings: document.export_settings.clone(),
             drum_lanes: document.drum_lanes.clone(),
+            export_choices: document.export_choices.clone(),
             lane_slots: saved_slots.or_else(|| self.project.as_ref().and_then(|p| p.settings.lane_slots.clone())),
         })
     }
@@ -1535,7 +1541,11 @@ impl Application {
                         }
                     }
                 }                JobResult::Output(result) => match result {
+                    Err(e) if self.export.take_write(&Err(e.clone())) => {
+                        self.status = "Output did not complete".into();
+                    }
                     Ok((count, tracking_warning)) => {
+                        self.export.take_write(&Ok(count));
                         self.status = format!("Wrote {count} reviewed files with backups");
                         if let Some(warning) = tracking_warning {
                             self.warnings.push(warning);
@@ -2741,6 +2751,7 @@ fn load(
     }
     document.export_settings = project.as_ref().and_then(|p| p.settings.export_settings.clone());
     document.drum_lanes = project.as_ref().and_then(|p| p.settings.drum_lanes.clone());
+    document.export_choices = project.as_ref().and_then(|p| p.settings.export_choices.clone());
     if let Some(layout) = &mut document.lane_layout {
         layout.normalise();
     }

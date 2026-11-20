@@ -8,7 +8,11 @@
 //   [--preset <name>]     key preset chosen at the first-launch question (default DAW)
 //   [--timeout <ms>]      how long to wait for the map's lanes (default 60000)
 //   [--csp]               reload with a listener from the start and fail on any content security
-//                         policy violation ("Refused to ...")
+//                         policy violation ("Refused to ...") in any of the editor's windows
+//   [--width <px>]        lay the editor's page out at this width (and --height <px>) for the shot
+//   [--window export]     shoot the Export window instead: --eval should open it, for example
+//                         `document.getElementById("export-entry").click()`
+//   [--eval-window "<js>"] run in that window before its shot
 //
 // The value --eval returns is printed. The map's whole folder is copied into the profile first
 // and the copy is opened, so the original mapset is never touched. Each run picks a free
@@ -79,20 +83,44 @@ try {
   }
   const violations = [];
   if (args.csp && loaded) {
-    page.on("console", message => { if (message.text().includes("Refused to")) violations.push(message.text()); });
+    const listen = target => target.on("console", message => {
+      if (message.text().includes("Refused to")) violations.push(message.text());
+    });
+    listen(page);
+    // Windows opened later (Export) get the same listener and init script.
+    page.context().on("page", listen);
     await page.context().addInitScript(() => document.addEventListener("securitypolicyviolation", event =>
       console.error(`Refused to ${event.effectiveDirective}: ${event.blockedURI} at ${event.sourceFile}:${event.lineNumber}`)));
     await page.reload();
     loaded = await lanesShown(Number(args.timeout ?? 60000));
   }
   if (!loaded) console.log("no lanes appeared; page text:", (await page.evaluate(() => document.body.innerText)).slice(0, 400));
+  if (args.width) await page.setViewportSize({ width: Number(args.width), height: Number(args.height ?? 700) });
   await sleep(Number(args.wait ?? 2500));
   if (args.eval) {
     const result = await page.evaluate(args.eval);
     if (result !== undefined) console.log("eval:", JSON.stringify(result));
     await sleep(1000);
   }
-  await page.screenshot({ path: resolve(args.out) });
+  let shot = page;
+  if (args.window) {
+    // Each Tauri window is its own WebView2 page; find it by the page it loads.
+    const name = args.window + ".html";
+    shot = null;
+    for (let i = 0; i < 60 && !shot; i++) {
+      shot = page.context().pages().find(candidate => candidate.url().endsWith("/" + name)) ?? null;
+      if (!shot) await sleep(250);
+    }
+    if (!shot) throw new Error(`no ${name} window opened; does --eval open it?`);
+    await shot.waitForSelector("[data-ui-ready]", { timeout: 15000 });
+    await sleep(Number(args.wait ?? 2500));
+    if (args["eval-window"]) {
+      const result = await shot.evaluate(args["eval-window"]);
+      if (result !== undefined) console.log("eval-window:", JSON.stringify(result));
+      await sleep(1000);
+    }
+  }
+  await shot.screenshot({ path: resolve(args.out) });
   console.log(`saved ${resolve(args.out)} (profile ${profile})`);
   if (args.csp) {
     console.log(`content security policy violations: ${violations.length}`);

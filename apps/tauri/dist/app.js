@@ -3070,6 +3070,11 @@ $("remove-bookmark").addEventListener("click", () => {
   if (mark) act({ kind: "bookmark_edit", path: scene.path, time: mark.time, label: null });
 });
 
+// The Export window opens beside the editor. Generate, Copy and Merge settings stay until it replaces them.
+$("export-entry").addEventListener("click", () => {
+  invoke("open_export_window").catch((error) => { $("status").textContent = String(error); });
+});
+
 $("copy").addEventListener("click", () => {
   const paths = scene.difficulties.filter((path) => path !== scene.path);
   if (!paths.length) {

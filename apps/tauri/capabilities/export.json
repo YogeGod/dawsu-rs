@@ -1,0 +1,14 @@
+{
+  "identifier": "export",
+  "windows": [
+    "export"
+  ],
+  "permissions": [
+    "core:event:default",
+    "allow-export-view",
+    "allow-export-preview",
+    "allow-export-run",
+    "allow-close-export-window",
+    "allow-show-in-editor"
+  ]
+}

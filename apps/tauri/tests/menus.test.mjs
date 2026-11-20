@@ -243,7 +243,7 @@ test("each menu groups the editor's existing commands like the design, with no s
   const open = name => { get("menu-" + name).click(); return menuLabels(popup); };
   assert.deepEqual(open("file"), [
     "Open map…", "Import .osz…", "Open map folder", "—",
-    "Save", "Revert to saved…", "—",
+    "Save", "Revert to saved…", "Export…", "—",
     "Start screen", "Folders…",
   ]);
   assert.deepEqual(open("edit"), [

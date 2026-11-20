@@ -1,6 +1,7 @@
 //! The Export window's preview, kept apart from main's job, error, problem list and review.
 use crate::{Application, OutputProblem, output};
 use dawsu_hitsounding::copy::CopyOptions;
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
@@ -11,6 +12,16 @@ use std::thread::JoinHandle;
 pub struct ExportOptions {
     pub targets: Vec<PathBuf>,
     pub copy: CopyOptions,
+}
+
+/// What the Export window last chose for a map, kept with the session. Older builds ignore it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ExportChoices {
+    /// File names of the difficulties left out; every other one is written into.
+    pub left_out: Vec<String>,
+    /// Match within, in ms.
+    pub match_within: f64,
+    pub copy_volumes: bool,
 }
 
 /// Which window a preview belongs to, so main never shows it as its own review.
@@ -50,6 +61,11 @@ pub(crate) struct Slot {
     preview: Option<ExportPreview>,
     problems: Vec<OutputProblem>,
     error: Option<String>,
+    /// An Export write is running on main's job.
+    pub(crate) writing: bool,
+    /// The last Export write's result: files written, or why nothing was.
+    written: Option<usize>,
+    write_error: Option<String>,
 }
 
 impl Slot {
@@ -67,6 +83,22 @@ impl Slot {
         self.preview = None;
         self.problems.clear();
         self.error = None;
+        self.writing = false;
+        self.written = None;
+        self.write_error = None;
+    }
+
+    /// Takes a finished write's result for the Export window. False when the window closed
+    /// during the write, so main reports it instead.
+    pub(crate) fn take_write(&mut self, result: &Result<usize, String>) -> bool {
+        if !std::mem::take(&mut self.writing) {
+            return false;
+        }
+        match result {
+            Ok(count) => self.written = Some(*count),
+            Err(error) => self.write_error = Some(error.clone()),
+        }
+        true
     }
 }
 
@@ -82,6 +114,9 @@ pub struct ExportStatus<'a> {
     pub progress: Option<(usize, usize)>,
     pub problems: &'a [OutputProblem],
     pub error: Option<&'a str>,
+    pub writing: bool,
+    pub written: Option<usize>,
+    pub write_error: Option<&'a str>,
 }
 
 impl Application {
@@ -89,6 +124,17 @@ impl Application {
     /// finished preview and any running one, so Export is never run on old options.
     pub fn request_export_preview(&mut self, options: ExportOptions) -> Result<u64, String> {
         let source = self.document.as_ref().ok_or("Open a difficulty first.")?.path.clone();
+        let left_out = self.export_targets().iter()
+            .filter(|path| !options.targets.contains(path))
+            .filter_map(|path| path.file_name().map(|name| name.to_string_lossy().into_owned()))
+            .collect();
+        if let Some(document) = self.document.as_mut() {
+            document.export_choices = Some(ExportChoices {
+                left_out,
+                match_within: options.copy.leniency,
+                copy_volumes: options.copy.copy_volumes,
+            });
+        }
         self.export.stop();
         self.export.preview = None;
         self.export.problems.clear();
@@ -124,6 +170,9 @@ impl Application {
                 .and_then(|running| running.progress.lock().ok().and_then(|current| *current)),
             problems: &slot.problems,
             error: slot.error.as_deref(),
+            writing: slot.writing,
+            written: slot.written,
+            write_error: slot.write_error.as_deref(),
         }
     }
 
@@ -165,6 +214,9 @@ impl Application {
         }
         let preview = self.export.preview.take().expect("checked above");
         self.write_reviewed(preview.plan, backups);
+        self.export.writing = true;
+        self.export.written = None;
+        self.export.write_error = None;
         Ok(())
     }
 
@@ -579,6 +631,96 @@ mod tests {
         save(&mut app);
         assert!(app.run_export_in(id, set.scratch.path("backups")).is_err());
         assert_eq!(std::fs::read_to_string(&set.target).unwrap(), set.target_bytes);
+    }
+
+    #[test]
+    fn export_preview_counts_each_target_as_copy_planned_it() {
+        let set = mapset("export-counts");
+        let app = assert_parity(&set.source, options(&[set.target.clone()]));
+        let preview = app.export_status().preview.unwrap();
+        assert_eq!(preview.plan.targets.len(), 1);
+        let counts = &preview.plan.targets[0];
+        assert_eq!(counts.path, set.target);
+        // The same numbers Copy's review line shows.
+        let line = format!("Target.osu: {} matched, {} unmatched source moments", counts.matched, counts.unmatched);
+        assert_eq!(preview.plan.details[0], line);
+        assert_eq!((counts.collisions, counts.kept_from_silent, counts.muted), (0, 0, 0));
+    }
+
+    #[test]
+    fn a_failed_export_write_reports_to_export_not_main() {
+        let set = mapset("export-write-error");
+        let mut app = opened(&set.source);
+        let id = app.request_export_preview(options(&[set.target.clone()])).unwrap();
+        wait_preview(&mut app);
+        // Another program changes the target after the preview: the write refuses.
+        std::fs::write(&set.target, set.target_bytes.replace("Target", "Changed")).unwrap();
+        app.run_export_in(id, set.scratch.path("backups")).unwrap();
+        assert!(app.export_status().writing);
+        wait_main(&mut app);
+        let status = app.export_status();
+        assert!(!status.writing);
+        assert!(status.write_error.is_some_and(|error| error.contains("changed since this review")), "{:?}", status.write_error);
+        assert_eq!(status.written, None);
+        assert!(app.error.is_none(), "{:?}", app.error);
+
+        // A new preview keeps the write result until the next write.
+        app.request_export_preview(options(&[set.target.clone()])).unwrap();
+        assert!(app.export_status().write_error.is_some());
+        wait_preview(&mut app);
+        let id = app.export_status().preview.unwrap().id;
+        app.run_export_in(id, set.scratch.path("backups")).unwrap();
+        assert_eq!(app.export_status().write_error, None);
+        wait_main(&mut app);
+        assert_eq!(app.export_status().written, Some(1));
+        assert!(app.error.is_none(), "{:?}", app.error);
+    }
+
+    #[test]
+    fn a_write_still_running_when_export_closes_reports_to_main() {
+        let set = mapset("export-write-closed");
+        let mut app = opened(&set.source);
+        let id = app.request_export_preview(options(&[set.target.clone()])).unwrap();
+        wait_preview(&mut app);
+        std::fs::write(&set.target, "changed").unwrap();
+        app.run_export_in(id, set.scratch.path("backups")).unwrap();
+        app.cancel_export_preview();
+        wait_main(&mut app);
+        assert!(app.export_status().write_error.is_none());
+        assert!(app.error.as_deref().is_some_and(|error| error.contains("changed since this review")), "{:?}", app.error);
+    }
+
+    #[test]
+    fn export_choices_are_kept_per_map_with_the_session() {
+        let set = mapset("export-choices");
+        let mut app = opened(&set.source);
+        assert_eq!(app.document().unwrap().export_choices(), None);
+        let mut chosen = options(&[]);
+        chosen.copy.leniency = 3.0;
+        chosen.copy.copy_volumes = false;
+        app.request_export_preview(chosen).unwrap();
+        let expected = ExportChoices {
+            left_out: vec!["Target.osu".into()],
+            match_within: 3.0,
+            copy_volumes: false,
+        };
+        assert_eq!(app.document().unwrap().export_choices(), Some(&expected));
+        wait_preview(&mut app);
+        app.save_session().unwrap();
+
+        let mut app = opened(&set.source);
+        assert_eq!(app.document().unwrap().export_choices(), Some(&expected));
+        app.request_export_preview(options(&[set.target.clone()])).unwrap();
+        assert_eq!(app.document().unwrap().export_choices().unwrap().left_out, Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_session_without_export_choices_still_loads() {
+        let old: crate::project::SessionSettings =
+            serde_json::from_str(r#"{"song_offset":0.0,"view_start":0.0}"#).unwrap();
+        assert_eq!(old.export_choices, None);
+        let json = serde_json::to_value(&old).unwrap();
+        assert!(json.get("export_choices").is_none(), "an unset field is not written");
     }
 
     #[test]
