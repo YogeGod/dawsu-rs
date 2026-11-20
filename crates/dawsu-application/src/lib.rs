@@ -1536,8 +1536,11 @@ impl Application {
                             document.composer.mark_saved();
                             self.checkpoint =
                                 Some(recovery::Checkpoint::after_save(document, &document.written, hs_mode));
+                            let left_out = document.left_out.len();
                             self.status = if archive_error.is_some() {
                                 "Difficulty saved. Recovery copy is still pending.".into()
+                            } else if left_out > 0 {
+                                format!("Saved with backup. {left_out} moment{} left out.", if left_out == 1 { "" } else { "s" })
                             } else {
                                 "Saved with backup".into()
                             };
@@ -1585,9 +1588,11 @@ impl Application {
         };
         if let Some(doc) = &self.document {
             let hits = doc.composer.hitsounds();
+            let checked = problems.len();
             for entry in doc.left_out.iter().filter(|entry| entry.still_held(hits, &doc.compile_base, doc.hs_mode)) {
                 let problem = OutputProblem::new(&entry.problem, &doc.path, &doc.path);
-                if !problems.iter().any(|p| p.target == problem.target && p.time == problem.time) {
+                // A newer check of the same time replaces the entry; two left-out parts can share one.
+                if !problems[..checked].iter().any(|p| p.target == problem.target && p.time == problem.time) {
                     problems.push(problem);
                 }
             }
@@ -3264,6 +3269,8 @@ mod project_workflow {
         app.document.as_mut().unwrap().composer.apply("Body volume", |hits| hits.set_body_volume(0, 40));
         save_through_summary(&mut app, scratch.path("backups"));
         assert_eq!(std::fs::read(&map).unwrap(), SLIDER_MAP, "HS mode can't add the green line a body volume needs");
+        assert_eq!(app.output_problems().iter().map(|p| p.time).collect::<Vec<_>>(), [2000.0, 2000.0], "the body and its head are both listed");
+        assert!(app.status.contains("2 moments left out"), "{}", app.status);
         let record = record_json(&app);
         assert_eq!(record["current"]["bodies"][0]["volume"], 40, "{record}");
         let reopened = reopen(&app, &map);
