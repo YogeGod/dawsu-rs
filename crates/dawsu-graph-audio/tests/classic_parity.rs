@@ -1,5 +1,5 @@
 //! Classic drum detection against 3.1.4 (invariant 9). The fixture's provenance is in
-//! `tests/fixtures/classic-3.1.4/PROVENANCE.md`. Window, twiddles, FFT and log are compared bit for
+//! `tests/fixtures/classic-3.1.4/PROVENANCE.md`. Window, twiddles, FFT, spectrograms and curves are compared bit for
 //! bit (a difference there is a maths-library difference, reported, never loosened); detected hits
 //! to 4 decimals.
 
@@ -91,16 +91,6 @@ fn one_windowed_frame_and_its_fft_match_bit_for_bit() {
         for (k, (a, b)) in ours.iter().zip(&theirs).enumerate() {
             assert_eq!(a.to_bits(), b.to_bits(), "FFT {name}[{k}] differs");
         }
-    }
-}
-
-#[test]
-fn log_compression_matches_bit_for_bit() {
-    for pair in json("meta.json")["log1p3"].as_array().unwrap() {
-        let v = f32::from_bits(u32::from_str_radix(pair[0].as_str().unwrap(), 16).unwrap());
-        // The dump wrote `Math.Log(1 + 3 * v)` with a float `v`, so `1 + 3v` is float arithmetic there.
-        let ours = f64::from(1.0 + 3.0 * v).ln();
-        assert_eq!(ours.to_bits(), bits(&pair[1]).to_bits(), "ln(1 + 3·{v}): maths-library difference");
     }
 }
 

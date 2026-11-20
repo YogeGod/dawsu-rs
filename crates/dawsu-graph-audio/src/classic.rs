@@ -99,31 +99,33 @@ pub fn hann() -> (Vec<f64>, f64) {
     (window, sum)
 }
 
-/// Runs `work` for every index on several threads, in index order in the result.
-fn parallel<S, T: Send>(
-    count: usize,
+/// Fills `out`, `row` values per index, on several threads: each thread writes its own run of
+/// rows in place, so nothing is copied afterwards.
+fn fill_rows<S>(
+    out: &mut [f32],
+    row: usize,
     cancel: &(dyn Fn() -> bool + Sync),
     progress: &mut dyn FnMut(usize),
     init: impl Fn() -> S + Sync,
-    work: impl Fn(usize, &mut S) -> T + Sync,
-) -> Result<Vec<T>, Cancelled> {
+    work: impl Fn(usize, &mut S, &mut [f32]) + Sync,
+) -> Result<(), Cancelled> {
+    let count = out.len() / row.max(1);
     let threads = std::thread::available_parallelism().map_or(1, |n| n.get()).clamp(1, count.max(1));
     let chunk = count.div_ceil(threads).max(1);
     let done = AtomicUsize::new(0);
-    let parts: Vec<Option<Vec<T>>> = std::thread::scope(|scope| {
-        let handles: Vec<_> = (0..count).step_by(chunk).map(|start| {
+    let finished: Vec<bool> = std::thread::scope(|scope| {
+        let handles: Vec<_> = out.chunks_mut(chunk * row).enumerate().map(|(part, rows)| {
             let (init, work, done) = (&init, &work, &done);
             scope.spawn(move || {
                 let mut state = init();
-                let mut out = Vec::with_capacity(chunk);
-                for index in start..(start + chunk).min(count) {
+                for (offset, values) in rows.chunks_mut(row).enumerate() {
                     if cancel() {
-                        return None;
+                        return false;
                     }
-                    out.push(work(index, &mut state));
+                    work(part * chunk + offset, &mut state, values);
                     done.fetch_add(1, Ordering::Relaxed);
                 }
-                Some(out)
+                true
             })
         }).collect();
         while !handles.iter().all(|h| h.is_finished()) {
@@ -133,23 +135,20 @@ fn parallel<S, T: Send>(
         progress(done.load(Ordering::Relaxed));
         handles.into_iter().map(|h| h.join().expect("analysis thread panicked")).collect()
     });
-    let mut out = Vec::with_capacity(count);
-    for part in parts {
-        out.extend(part.ok_or(Cancelled)?);
-    }
-    if cancel() {
+    if finished.contains(&false) || cancel() {
         return Err(Cancelled);
     }
-    Ok(out)
+    Ok(())
 }
 
 fn spectrogram(x: &[f32], layout: &Layout, cancel: &(dyn Fn() -> bool + Sync), progress: &mut dyn FnMut(usize))
     -> Result<Vec<f32>, Cancelled> {
     let (window, sum) = hann();
     let bins = layout.bins;
-    let frames = parallel(layout.frames, cancel, progress,
+    let mut mag = vec![0f32; layout.frames * bins];
+    fill_rows(&mut mag, bins, cancel, progress,
         || (vec![0.0; WINDOW], vec![0.0; WINDOW]),
-        |t, (re, im): &mut (Vec<f64>, Vec<f64>)| {
+        |t, (re, im): &mut (Vec<f64>, Vec<f64>), out| {
             let start = (t * layout.hop) as isize - WINDOW as isize / 2;
             for i in 0..WINDOW {
                 let j = start + i as isize;
@@ -157,9 +156,11 @@ fn spectrogram(x: &[f32], layout: &Layout, cancel: &(dyn Fn() -> bool + Sync), p
                 im[i] = 0.0;
             }
             fft(re, im);
-            (0..bins).map(|k| ((re[k] * re[k] + im[k] * im[k]).sqrt() * 2.0 / sum) as f32).collect::<Vec<_>>()
+            for (k, value) in out.iter_mut().enumerate() {
+                *value = ((re[k] * re[k] + im[k] * im[k]).sqrt() * 2.0 / sum) as f32;
+            }
         })?;
-    Ok(frames.concat())
+    Ok(mag)
 }
 
 fn median(values: &mut [f32]) -> f32 {
@@ -168,57 +169,57 @@ fn median(values: &mut [f32]) -> f32 {
 }
 
 /// Soft-masked percussive part: a median across time keeps sustained (harmonic) partials, a median
-/// across frequency keeps broadband (percussive) frames.
+/// across frequency keeps broadband (percussive) frames. Both medians are taken frame by frame, so
+/// no harmonic spectrogram is kept.
 fn percussive(mag: &[f32], layout: &Layout, cancel: &(dyn Fn() -> bool + Sync), progress: &mut dyn FnMut(usize))
     -> Result<Vec<f32>, Cancelled> {
     let (frames, bins) = (layout.frames, layout.bins);
     let window = |centre: usize, len: usize| centre.saturating_sub(MEDIAN_HALF)..(centre + MEDIAN_HALF + 1).min(len);
-    let columns = parallel(bins, cancel, &mut |done| progress(done), || Vec::with_capacity(2 * MEDIAN_HALF + 1), |k, buf: &mut Vec<f32>| {
-        (0..frames).map(|t| {
+    let mut perc = vec![0f32; mag.len()];
+    fill_rows(&mut perc, bins, cancel, progress, || Vec::with_capacity(2 * MEDIAN_HALF + 1), |t, buf: &mut Vec<f32>, out| {
+        for (k, value) in out.iter_mut().enumerate() {
             buf.clear();
             buf.extend(window(t, frames).map(|tt| mag[tt * bins + k]));
-            median(buf)
-        }).collect::<Vec<_>>()
-    })?;
-    let mut harm = vec![0f32; mag.len()];
-    for (k, column) in columns.into_iter().enumerate() {
-        for (t, value) in column.into_iter().enumerate() {
-            harm[t * bins + k] = value;
-        }
-    }
-    let rows = parallel(frames, cancel, &mut |done| progress(bins + done), || Vec::with_capacity(2 * MEDIAN_HALF + 1), |t, buf: &mut Vec<f32>| {
-        (0..bins).map(|k| {
-            let i = t * bins + k;
+            let h = f64::from(median(buf));
             buf.clear();
             buf.extend(window(k, bins).map(|kk| mag[t * bins + kk]));
-            let (p, h) = (f64::from(median(buf)), f64::from(harm[i]));
+            let p = f64::from(median(buf));
             let (p2, h2) = (p * p, h * h);
-            (f64::from(mag[i]) * if p2 + h2 > 1e-20 { p2 / (p2 + h2) } else { 0.0 }) as f32
-        }).collect::<Vec<_>>()
+            *value = (f64::from(mag[t * bins + k]) * if p2 + h2 > 1e-20 { p2 / (p2 + h2) } else { 0.0 }) as f32;
+        }
     })?;
-    Ok(rows.concat())
+    Ok(perc)
 }
 
-/// Positive log-magnitude increase in a band, against a 3-bin maximum of the previous frame so that
-/// small pitch wobbles do not count as onsets.
-fn flux(log: &[f64], layout: &Layout, lo: usize, hi: usize) -> Vec<f64> {
+/// Positive log-magnitude increase per band, against a 3-bin maximum of the previous frame so that
+/// small pitch wobbles do not count as onsets. One pass for all bands, keeping two frames of
+/// `ln(1 + 3·|X|)` at a time.
+fn fluxes(perc: &[f32], layout: &Layout, bands: &[(usize, usize)]) -> Vec<Vec<f64>> {
     let (frames, bins) = (layout.frames, layout.bins);
-    let mut flux = vec![0.0; frames];
-    let hi = hi.min(bins - 2);
-    let lo = lo.max(1);
-    if hi < lo {
-        return flux;
-    }
-    let l = |t: usize, k: usize| log[t * bins + k];
+    let bands: Vec<(usize, usize)> = bands.iter().map(|&(lo, hi)| (lo.max(1), hi.min(bins - 2))).collect();
+    let mut out = vec![vec![0.0; frames]; bands.len()];
+    let log_row = |t: usize, row: &mut Vec<f64>| {
+        row.clear();
+        row.extend(perc[t * bins..(t + 1) * bins].iter().map(|&v| (1.0 + COMPRESSION * f64::from(v)).ln()));
+    };
+    let (mut previous, mut current) = (Vec::with_capacity(bins), Vec::with_capacity(bins));
+    log_row(0, &mut previous);
     for t in 1..frames {
-        let mut s = 0.0;
-        for k in lo..=hi {
-            let prev = l(t - 1, k).max(l(t - 1, k - 1).max(l(t - 1, k + 1)));
-            s += (l(t, k) - prev).max(0.0);
+        log_row(t, &mut current);
+        for (flux, &(lo, hi)) in out.iter_mut().zip(&bands) {
+            if hi < lo {
+                continue;
+            }
+            let mut s = 0.0;
+            for k in lo..=hi {
+                let prev = previous[k].max(previous[k - 1].max(previous[k + 1]));
+                s += (current[k] - prev).max(0.0);
+            }
+            flux[t] = s / (hi - lo + 1) as f64;
         }
-        flux[t] = s / (hi - lo + 1) as f64;
+        std::mem::swap(&mut previous, &mut current);
     }
-    flux
+    out
 }
 
 /// Scales a curve so that a typical strong hit (the 90th percentile of its local maxima) is 1.
@@ -279,15 +280,17 @@ pub fn analyse(
     let Some((x, layout)) = prepare(mono, rate) else {
         return if cancel() { Err(Cancelled) } else { Ok(Curves::default()) };
     };
-    let total = 2 * layout.frames + layout.bins;
+    let total = 2 * layout.frames;
     let mag = spectrogram(&x, &layout, cancel, &mut |done| progress(done, total))?;
     drop(x);
     let perc = percussive(&mag, &layout, cancel, &mut |done| progress(layout.frames + done, total))?;
     drop(mag);
-    let log: Vec<f64> = perc.iter().map(|&v| (1.0 + COMPRESSION * f64::from(v)).ln()).collect();
+    let bands = [(30.0, 120.0), (150.0, 400.0), (1500.0, 5000.0), (7000.0, 11_000.0)]
+        .map(|(lo, hi)| (layout.bin(lo), layout.bin(hi)));
+    let mut curves = fluxes(&perc, &layout, &bands).into_iter().map(normalise);
     drop(perc);
-    let band = |lo: f64, hi: f64| normalise(flux(&log, &layout, layout.bin(lo), layout.bin(hi)));
-    let (kick, body, noise, hat) = (band(30.0, 120.0), band(150.0, 400.0), band(1500.0, 5000.0), band(7000.0, 11_000.0));
+    let mut next = || curves.next().expect("four bands");
+    let (kick, body, noise, hat) = (next(), next(), next(), next());
     let snare = normalise(body.iter().zip(&noise).map(|(b, n)| (b * n).sqrt()).collect());
     if cancel() {
         return Err(Cancelled);
