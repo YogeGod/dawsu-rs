@@ -2428,4 +2428,22 @@ Mode:0
         let p = &reopened.document().unwrap().composer.hitsounds().placements()[0];
         assert_eq!((p.gain, p.applied.iter().map(|a| a.volume).collect::<Vec<_>>()), (50, vec![30, 30]));
     }
+
+    #[test]
+    fn a_set_saved_as_a_mix_reopens_unedited_and_updates() {
+        let f = fixture("update-mixed");
+        std::fs::write(&f.set, set_with_volumes("Kick and clap", &[("drum-hitnormal.wav", 8000, 60), ("drum-hitclap.wav", 4000, 30)])).unwrap();
+        let mut app = app(&f);
+        let map = open(&mut app, &f.map);
+        app.seek(1000.0);
+        app.place_sound_set_file(&map, &f.set).unwrap();
+        save(&mut app, &f);
+        std::fs::write(library_set(&f), set_with_volumes("Kick and clap", &[("drum-hitnormal.wav", 8000, 70), ("drum-hitclap.wav", 4000, 40)])).unwrap();
+        let mut app = reopen(&f);
+        let id = app.document().unwrap().composer.hitsounds().placements()[0].id;
+        assert_eq!(app.sound_set_placement(id).unwrap().edited, 0, "the mix reopens as placed");
+        assert_eq!(prompt(&app), Some(("Kick and clap".to_string(), 1)));
+        app.answer_sound_set_prompt(SET_ID, true).unwrap();
+        assert_eq!(sounds_at(&app, 0).iter().map(|s| s.1).collect::<Vec<_>>(), [70, 40]);
+    }
 }

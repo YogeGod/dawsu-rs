@@ -201,7 +201,7 @@ function showSoundSetPlacement(map, placement) {
     content.push(labeled("Volume %", field));
     buttons.push(["Set volume", () => {
       const gain = Number(field.value);
-      if (!Number.isInteger(gain) || gain < 0 || gain > 100) {
+      if (String(field.value).trim() === "" || !Number.isInteger(gain) || gain < 0 || gain > 100) {
         message.textContent = "Use a volume from 0 to 100%.";
         return;
       }

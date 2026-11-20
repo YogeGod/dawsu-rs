@@ -551,6 +551,11 @@ test("Sound set placement needs a selected placement and shows its set, edits, v
   field.value = "150";
   button(dialog, "Set volume")[1]();
   assert.equal(message.textContent, "Use a volume from 0 to 100%.");
+  message.textContent = "";
+  field.value = "";
+  button(dialog, "Set volume")[1]();
+  assert.equal(message.textContent, "Use a volume from 0 to 100%.", "a blank field is no volume");
+  assert.ok(!calls.some(call => call.op === "gain"));
   field.value = "50";
   button(dialog, "Set volume")[1]();
   assert.deepEqual(plain(calls.slice(-2)), ["closeModal", { kind: "sound_set_placement", map: "Test.osu", id: 7, op: "gain", gain: 50 }]);
@@ -560,7 +565,7 @@ test("Sound set placement needs a selected placement and shows its set, edits, v
   assert.deepEqual(plain(calls.at(-1)), { kind: "sound_set_placement", map: "Test.osu", id: 7, op: "unlink" });
 });
 
-test("a placement not in the library can only be unlinked, and one on an older version offers Update", async () => {
+test("a placement not in the library can be unlinked but not set louder, and one on an older version offers Update", async () => {
   const { get, scene, calls, modals, responses } = fixture();
   scene.placement = 3;
   responses.sound_set_placement = { id: 3, name: "9e7b1d18", edited: 0, sounds: 2, gain: 80, frozen: "Not in library", newer: false };
