@@ -683,7 +683,6 @@ struct PendingSave {
     plan: PreparedSave,
     project: Option<project::Project>,
     settings: Option<project::SessionSettings>,
-    hits: Hitsounds,
 }
 
 impl PendingSave {
@@ -692,7 +691,7 @@ impl PendingSave {
         let result = self.plan.apply(self.project.as_mut(), cancel);
         JobResult::Save {
             version: self.version, path, hs_mode: self.hs, project: self.project, settings: self.settings,
-            result: result.map(|report| (report, self.hits)), diagnostics: Vec::new(),
+            result, diagnostics: Vec::new(),
         }
     }
 }
@@ -705,7 +704,7 @@ enum JobResult {
         hs_mode: bool,
         settings: Option<project::SessionSettings>,
         project: Option<project::Project>,
-        result: Result<(SaveReport, Hitsounds), String>,
+        result: Result<SaveReport, String>,
         diagnostics: Vec<OutputProblem>,
     },
     SaveCheck {
@@ -1483,7 +1482,7 @@ impl Application {
                         self.project = project;
                     }
                     match result {
-                        Ok((report, hits)) => {
+                        Ok(report) => {
                             let mut archive_error = None;
                             if let Some(d) = self.document.as_mut().filter(|d| d.path == path) {
                                 d.file = report.file;
@@ -1491,7 +1490,7 @@ impl Application {
                                 d.left_out = report.left_out;
                                 // The difficulty is written, even when a step below returns early.
                                 self.checkpoint =
-                                    Some(recovery::Checkpoint::after_save(d, &hits, hs_mode));
+                                    Some(recovery::Checkpoint::after_save(d, &d.written, hs_mode));
                                 if let Some(id) = &self.restored_recovery {
                                     match recovery::archive(&self.data_root, id) {
                                         Ok(()) => self.restored_recovery = None,
@@ -1536,7 +1535,7 @@ impl Application {
                             let document = self.document.as_mut().unwrap();
                             document.composer.mark_saved();
                             self.checkpoint =
-                                Some(recovery::Checkpoint::after_save(document, &hits, hs_mode));
+                                Some(recovery::Checkpoint::after_save(document, &document.written, hs_mode));
                             self.status = if archive_error.is_some() {
                                 "Difficulty saved. Recovery copy is still pending.".into()
                             } else {
@@ -1722,7 +1721,7 @@ impl Application {
                     }
                     settings
                 });
-                PendingSave { version, hs, plan, project: project.clone(), settings, hits }
+                PendingSave { version, hs, plan, project: project.clone(), settings }
             });
             let job = if review {
                 JobResult::SaveCheck { version, path, hs, result, diagnostics }
@@ -2576,8 +2575,10 @@ fn load(
         warnings.push(format!("Editable hit gains could not be restored: {error}"));
     }
     // What was last written: what the opened file holds, with its restored gains. Loose hits and
-    // left-out moments only live in the project.
-    document.written = document.composer.hitsounds().clone();
+    // left-out moments only live in the project. A recovery copy brings its own last Save.
+    if recovery.is_none() {
+        document.written = document.composer.hitsounds().clone();
+    }
     if recovery.is_none()
         && let Some(saved) = project
             .as_ref()
@@ -3298,6 +3299,29 @@ mod project_workflow {
         save_through_summary(&mut reopened, scratch.path("backups"));
         assert_eq!(record_json(&reopened)["current"]["moments"].as_array().map(Vec::len), Some(1));
         assert_eq!(std::fs::read(&map).unwrap(), SLIDER_MAP);
+    }
+
+    #[test]
+    fn a_recovery_copy_taken_after_a_partial_save_restores() {
+        let scratch = Scratch::new("recovery-after-partial-save");
+        let (mut app, _map) = open_left_out_fixture(&scratch, true);
+        app.data_root = scratch.path("data");
+        let drawn = tail_hits(&app);
+        save_through_summary(&mut app, scratch.path("backups"));
+        app.document.as_mut().unwrap().composer.apply("Later edit", |hits| hits.set_volume(dawsu_hitsounding::MomentId(0), 33));
+        app.poll();
+        let offer = app.write_recovery_copy().unwrap().unwrap();
+        let mut restored = Application::create(Preferences::default(), false, None, None, false, scratch.path("data"));
+        restored.project_root = app.project_root.clone();
+        restored.restore_recovery(&offer.id).unwrap();
+        wait(&mut restored);
+        assert!(restored.error.is_none(), "{:?}", restored.error);
+        let hits = restored.document().unwrap().composer.hitsounds();
+        assert_eq!(hits.moment(dawsu_hitsounding::MomentId(0)).volume(), 33);
+        assert_eq!(tail_hits(&restored), drawn);
+        assert!(restored.is_dirty());
+        let doc = restored.document().unwrap();
+        assert!(!doc.written.moment(tail_id(&doc.written)).is_changed(), "what was last written comes from the copy's last Save");
     }
 
     #[test]

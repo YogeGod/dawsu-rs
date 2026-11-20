@@ -359,6 +359,8 @@ impl RecoveryCopy {
             base.clone()
         };
 
+        // The hits the copy's last Save wrote are what a part Save leaves out goes back to.
+        document.written = saved.clone();
         if working.dirty {
             document.composer.history = EditHistory::new(saved);
             document
