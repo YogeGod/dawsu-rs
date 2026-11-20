@@ -871,6 +871,9 @@ pub struct Application {
     sound_set_prompts: Vec<sound_sets::SetUpdatePrompt>,
     /// The open-time check waits for the library index's background read.
     sound_set_check_pending: bool,
+    /// Difficulties opened so far: an update question closed without an answer comes back on the
+    /// next open.
+    opens: u64,
     drum: drum_detect::DrumDetect,
 }
 impl Application {
@@ -988,6 +991,7 @@ impl Application {
             restored_recovery: None,
             sound_set_prompts: Vec::new(),
             sound_set_check_pending: false,
+            opens: 0,
             drum: Default::default(),
         }
     }
@@ -1423,6 +1427,7 @@ impl Application {
                     self.document = Some(loaded.document);
                     // Reviews of the outgoing load must not match this one: history versions restart.
                     self.document_generation += 1;
+                    self.opens += 1;
                     self.output_review = None;
                     self.export.clear();
                     self.pending_save_review = None;

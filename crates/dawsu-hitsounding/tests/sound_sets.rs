@@ -316,22 +316,56 @@ fn unlinking_keeps_every_hit_and_an_unknown_placement_changes_nothing() {
 }
 
 #[test]
-fn a_member_never_plays_below_5_percent_and_never_at_0_which_osu_reads_as_the_timing_points_volume() {
+fn a_sounding_member_never_plays_below_5_percent_and_a_silent_one_stays_silent() {
     let s = set(vec![member(1, SetSource::File, "drum-hitnormal.wav", "drum-hitnormal", 6, b"k"), member(2, SetSource::File, "drum-hitclap.wav", "drum-hitclap", 0, b"c")]);
-    assert_eq!(placement_hits(&s, 5).iter().map(|h| h.1).collect::<Vec<_>>(), [5, 5]);
-    assert_eq!(placement_hits(&s, 100).iter().map(|h| h.1).collect::<Vec<_>>(), [6, 5]);
+    assert_eq!(placement_hits(&s, 5).iter().map(|h| h.1).collect::<Vec<_>>(), [5, 0]);
+    assert_eq!(placement_hits(&s, 100).iter().map(|h| h.1).collect::<Vec<_>>(), [6, 0]);
 }
 
 #[test]
-fn an_update_that_gives_the_set_a_hitnormal_replaces_the_moments_own() {
+fn an_update_never_removes_a_hitnormal_no_placement_added_and_leaves_the_sets_new_one_out() {
     let mut h = map_hits();
     let moment = dawsu_hitsounding::MomentId(0);
     let own = h.moment(moment).hits().next().unwrap().clone();
     let clap = vec![("m2".to_string(), lane("drum-hitclap2.wav"), 60)];
     let id = h.place_sound_set(moment, ID, "v1", 100, &clap).unwrap();
     let with_normal = vec![("m1".to_string(), lane("drum-hitnormal2.wav"), 60), clap[0].clone()];
-    h.update_placement(id, "v2", 100, &with_normal);
-    assert!(!h.moment(moment).has_hit(&own), "the set's new hitnormal replaces the moment's own");
+    assert!(h.update_placement(id, "v2", 100, &with_normal), "reports the kept hitnormal");
+    assert!(h.moment(moment).has_hit(&own), "your own hitnormal stays (D3)");
+    assert!(!h.moment(moment).has_hit(&lane("drum-hitnormal2.wav")), "so the set's new one is not added");
+    assert!(h.placements()[0].applied.iter().all(|a| a.member_id != "m1"));
+}
+
+#[test]
+fn an_update_keeps_a_hand_edited_hitnormal_the_placement_added_when_the_set_gains_a_hitnormal() {
+    let mut h = map_hits();
+    let moment = dawsu_hitsounding::MomentId(0);
+    let own = h.moment(moment).hits().next().unwrap().clone();
+    h.remove_hit(moment, &own);
+    // An additions-only set moved the moment's hitnormal to its index (D6b); the mapper then
+    // changed that hitnormal's volume.
+    let moved = lane("normal-hitnormal2.wav");
+    let placed = vec![("m2".to_string(), lane("drum-hitclap2.wav"), 60), ("moment-hitnormal".to_string(), moved.clone(), 70)];
+    let id = h.place_sound_set(moment, ID, "v1", 100, &placed).unwrap();
+    h.set_hit_volume(moment, &moved, 40);
+    let with_normal = vec![("m1".to_string(), lane("drum-hitnormal2.wav"), 60), placed[0].clone()];
+    assert!(h.update_placement(id, "v2", 100, &with_normal));
+    assert_eq!(h.moment(moment).hit_volume(&moved), 40, "the hand edit stays");
+    assert!(!h.moment(moment).has_hit(&lane("drum-hitnormal2.wav")));
+}
+
+#[test]
+fn an_update_replaces_a_hitnormal_the_placement_moved_when_the_set_gains_one() {
+    let mut h = map_hits();
+    let moment = dawsu_hitsounding::MomentId(0);
+    let own = h.moment(moment).hits().next().unwrap().clone();
+    h.remove_hit(moment, &own);
+    let moved = lane("normal-hitnormal2.wav");
+    let placed = vec![("m2".to_string(), lane("drum-hitclap2.wav"), 60), ("moment-hitnormal".to_string(), moved.clone(), 70)];
+    let id = h.place_sound_set(moment, ID, "v1", 100, &placed).unwrap();
+    let with_normal = vec![("m1".to_string(), lane("drum-hitnormal2.wav"), 60), placed[0].clone()];
+    assert!(!h.update_placement(id, "v2", 100, &with_normal));
+    assert!(!h.moment(moment).has_hit(&moved));
     assert!(h.moment(moment).has_hit(&lane("drum-hitnormal2.wav")));
 }
 

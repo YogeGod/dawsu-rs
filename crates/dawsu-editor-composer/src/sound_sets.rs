@@ -95,24 +95,33 @@ impl Composer {
     }
 
     /// Plays each placement `(id, set digest, gain, hits)` as its set's new version, all as one
-    /// undo step named `label`, and gives each new lane a row.
-    pub fn update_placements(&mut self, label: &str, updates: &[(u64, String, i32, Vec<(String, SampleIdentity, i32)>)]) {
+    /// undo step named `label`, and gives each new lane a row. Returns the times (ms) of the
+    /// moments where the mapper's own hitnormal kept the set's new one out (D3).
+    pub fn update_placements(&mut self, label: &str, updates: &[(u64, String, i32, Vec<(String, SampleIdentity, i32)>)]) -> Vec<f64> {
+        let mut kept = Vec::new();
         if updates.is_empty() {
-            return;
+            return kept;
         }
         self.apply(label, |h| {
             for (id, digest, gain, hits) in updates {
-                h.update_placement(*id, digest, *gain, hits);
+                if h.update_placement(*id, digest, *gain, hits)
+                    && let Some(p) = h.placements().iter().find(|p| p.id == *id)
+                {
+                    kept.push(h.moment(p.moment).time().ms());
+                }
             }
         });
         self.add_rows(updates.iter().flat_map(|(_, _, _, hits)| hits.iter().map(|(_, lane, _)| lane)));
+        kept
     }
 
     /// Sets a placement's volume as one undo step: `hits` are its set's members at `gain`.
     /// Members edited by hand keep their hits.
     pub fn set_placement_gain(&mut self, id: u64, set_digest: &str, gain: i32, hits: &[(String, SampleIdentity, i32)]) {
         if self.hitsounds().placements().iter().any(|p| p.id == id) {
-            self.apply("Set sound set volume", |h| h.update_placement(id, set_digest, gain, hits));
+            self.apply("Set sound set volume", |h| {
+                h.update_placement(id, set_digest, gain, hits);
+            });
             self.add_rows(hits.iter().map(|(_, lane, _)| lane));
         }
     }

@@ -450,20 +450,36 @@ impl Hitsounds {
     /// edited one keeps its hit, and its record follows only a new volume on the same lane, so
     /// the record always names the hit that is there. Members the set lost go, unless edited;
     /// new members are added. Hits the moment already had are never touched.
-    pub fn update_placement(&mut self, id: u64, set_digest: &str, gain: i32, hits: &[(String, SampleIdentity, i32)]) {
-        let Some(index) = self.placements.iter().position(|p| p.id == id) else { return };
+    ///
+    /// Hitnormals (D3, D6): a hitnormal the set lost stays as an ordinary hit, so the object
+    /// keeps one, unless the set's new version brings its own. Update never removes a hitnormal
+    /// the mapper drew or edited, or one no live placement added: the set's new hitnormal is
+    /// then left out, and the return value says so.
+    pub fn update_placement(&mut self, id: u64, set_digest: &str, gain: i32, hits: &[(String, SampleIdentity, i32)]) -> bool {
+        let Some(index) = self.placements.iter().position(|p| p.id == id) else { return false };
         let placement = self.placements[index].clone();
         let moment = placement.moment;
         let edited: Vec<bool> = placement.applied.iter().map(|a| self.is_member_edited(&placement, a)).collect();
+        // This placement's own hitnormals that still play as placed: an update may replace them.
+        let replaceable: BTreeSet<SampleIdentity> = placement.applied.iter().zip(&edited)
+            .filter(|(a, edited)| a.added && !**edited && is_hitnormal(&a.lane)).map(|(a, _)| a.lane.clone()).collect();
+        let others: BTreeSet<SampleIdentity> = self.placements.iter().filter(|p| p.id != id && p.moment == moment && self.is_placement_live(p))
+            .flat_map(|p| p.applied.iter().filter(|a| a.added).map(|a| a.lane.clone())).collect();
+        let kept_own = self.moments[moment.0].hits().any(|lane| is_hitnormal(lane) && !replaceable.contains(lane) && !others.contains(lane));
+        let is_member = |member: &str| placement.applied.iter().any(|a| a.member_id == member && is_hitnormal(&a.lane));
+        // A new hitnormal member is left out while the mapper's own hitnormal is there.
+        let all = hits.len();
+        let hits: Vec<_> = hits.iter().filter(|(member, lane, _)| !(kept_own && is_hitnormal(lane) && !is_member(member))).cloned().collect();
+        let left_out = hits.len() < all;
+        let set_has_hitnormal = hits.iter().any(|(_, lane, _)| is_hitnormal(lane));
         for (a, &edited) in placement.applied.iter().zip(&edited) {
             let kept = hits.iter().any(|(member, lane, _)| member == &a.member_id && (a.added || lane == &a.lane));
-            // A hitnormal the set lost stays as an ordinary hit, so the object keeps one.
-            if a.added && !edited && !kept && !is_hitnormal(&a.lane) {
+            if a.added && !edited && !kept && (!is_hitnormal(&a.lane) || set_has_hitnormal) {
                 self.remove_hit(moment, &a.lane);
             }
         }
         let mut applied = Vec::with_capacity(hits.len());
-        for (member_id, lane, volume) in hits {
+        for (member_id, lane, volume) in &hits {
             let old = placement.applied.iter().zip(&edited).find(|(a, _)| &a.member_id == member_id);
             match old {
                 Some((a, true)) => {
@@ -491,22 +507,12 @@ impl Hitsounds {
             }
             applied.push(crate::sound_sets::Applied { member_id: member_id.clone(), lane: lane.clone(), volume: *volume, added });
         }
-        // As when placing (D6): a set with a hitnormal replaces the moment's own hitnormals, but
-        // not one another live placement added.
-        if hits.iter().any(|(_, lane, _)| is_hitnormal(lane)) {
-            let others: BTreeSet<SampleIdentity> = self.placements.iter().filter(|p| p.id != id && p.moment == moment && self.is_placement_live(p))
-                .flat_map(|p| p.applied.iter().filter(|a| a.added).map(|a| a.lane.clone())).collect();
-            let own: Vec<SampleIdentity> = self.moments[moment.0].hits()
-                .filter(|lane| is_hitnormal(lane) && !applied.iter().any(|a| &a.lane == *lane) && !others.contains(*lane)).cloned().collect();
-            for lane in own {
-                self.remove_hit(moment, &lane);
-            }
-        }
         let placement = &mut self.placements[index];
         placement.set_digest = set_digest.to_owned();
         placement.accepted_digest = None;
         placement.gain = gain;
         placement.applied = applied;
+        left_out
     }
 
     /// Puts every member the placement added back on its lane at its placed volume.

@@ -320,11 +320,14 @@ pub fn capture(new_id: &mut dyn FnMut() -> String, name: &str, hits: Vec<Capture
 
 /// The hits one placement of `set` plays at `gain` percent: each member's lane key and volume,
 /// `volume × gain / 100` rounded half to even (the old app's `Math.Round`) and clamped from the
-/// lowest played volume (R5, 5%) to 100. Never 0, which osu! reads as "use the timing point's
-/// volume".
+/// lowest played volume (R5, 5%) to 100, so a sounding member never rounds to 0, which osu! reads
+/// as "use the timing point's volume". A member at 0 is a silent hit in dawsu! and stays 0.
 pub fn placement_hits(set: &SoundSet, gain: i32) -> Vec<(String, i32)> {
     let floor = f64::from(crate::rules::MINIMUM_PLAYED_VOLUME);
-    set.members.iter().map(|m| (m.lane.key(), (f64::from(m.volume) * f64::from(gain) / 100.0).round_ties_even().clamp(floor, 100.0) as i32)).collect()
+    set.members.iter().map(|m| {
+        let volume = if m.volume == 0 { 0.0 } else { (f64::from(m.volume) * f64::from(gain) / 100.0).round_ties_even().clamp(floor, 100.0) };
+        (m.lane.key(), volume as i32)
+    }).collect()
 }
 
 /// One placement of a sound set on a moment: the link the panel shows and an update follows. It
