@@ -8,7 +8,7 @@ use dawsu_foundation::SampleIdentity;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use super::scene_lane_key;
+use super::{lane_header_rows, scene_lane_key};
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
@@ -103,30 +103,15 @@ fn lane_by_key(app: &Application, key: &str) -> Result<SampleIdentity, String> {
         .ok_or_else(|| "A chosen lane no longer exists. Pick the lanes again.".into())
 }
 
-/// Each lane's number as its lane header shows it: its place in the editor's lane order (the
-/// scene's `laneOrder`, sorted by the saved layout as app.js's `orderedLaneRows` does). Hidden
+/// Each lane's number as its lane header shows it: its place in the scene's `laneOrder`
+/// (`lane_header_rows`), sorted by the saved layout as app.js's `orderedLaneRows` does. Hidden
 /// lanes and the slots other lanes stand in for have no header and no number.
 /// `drum_window_lanes_carry_the_numbers_their_lane_headers_show` checks this against the scene.
 fn header_numbers(app: &Application) -> HashMap<&SampleIdentity, usize> {
     let Some(document) = app.document() else { return HashMap::new() };
     let c = &document.composer;
-    let model = c.hitsounds();
-    let row_by_lane: HashMap<_, _> = c.lanes.iter().enumerate().map(|(row, lane)| (lane, row)).collect();
-    let used: HashSet<_> = model.moments().iter().flat_map(|moment| moment.hits()).collect();
-    let mut slot_rows = HashMap::new();
-    let mut backing_slots = HashMap::new();
-    for (source, slot) in model.lane_slots() {
-        if !used.contains(slot) && let (Some(&from), Some(&to)) = (row_by_lane.get(source), row_by_lane.get(slot))
-            && let std::collections::hash_map::Entry::Vacant(entry) = slot_rows.entry(to)
-        {
-            entry.insert(from);
-            backing_slots.insert(from, slot);
-        }
-    }
-    let mut rows: Vec<usize> = (0..c.lanes.len()).filter(|row| !backing_slots.contains_key(row))
-        .map(|row| slot_rows.get(&row).copied().unwrap_or(row))
-        .filter(|&row| !model.is_lane_hidden(&c.lanes[row]))
-        .collect();
+    let used: HashSet<_> = c.hitsounds().moments().iter().flat_map(|moment| moment.hits()).collect();
+    let (mut rows, backing_slots) = lane_header_rows(document, &|lane| used.contains(lane));
     let saved = document.lane_layout().map(|layout| layout.lane_order.as_slice()).unwrap_or_default();
     if !saved.is_empty() {
         let rank = |row: &usize| {

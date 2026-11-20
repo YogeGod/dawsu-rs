@@ -974,6 +974,33 @@ fn lane_selection_mix(app: &mut Application, target: &SampleTarget, operation: &
     }
 }
 
+/// The difficulty's lane rows (composer lanes) that get a lane header, in order, and the slots that rows stand in for:
+/// an unused slot lane is shown on its source's row. Hidden lanes get no header. `used` says
+/// whether a lane has hits. The scene's `laneOrder` and the drum window's lane numbers share it.
+fn lane_header_rows<'a>(
+    document: &'a dawsu_application::Document,
+    used: &dyn Fn(&SampleIdentity) -> bool,
+) -> (Vec<usize>, std::collections::HashMap<usize, &'a SampleIdentity>) {
+    let c = &document.composer;
+    let model = c.hitsounds();
+    let row_by_lane: std::collections::HashMap<_, _> = c.lanes.iter().enumerate().map(|(row, lane)| (lane, row)).collect();
+    let mut slot_rows = std::collections::HashMap::new();
+    let mut backing_slots = std::collections::HashMap::new();
+    for (source, slot) in model.lane_slots() {
+        if !used(slot) && let (Some(&from), Some(&to)) = (row_by_lane.get(source), row_by_lane.get(slot))
+            && let std::collections::hash_map::Entry::Vacant(entry) = slot_rows.entry(to)
+        {
+            entry.insert(from);
+            backing_slots.insert(from, slot);
+        }
+    }
+    let lane_order = (0..c.lanes.len()).filter(|row| !backing_slots.contains_key(row))
+        .map(|row| slot_rows.get(&row).copied().unwrap_or(row))
+        .filter(|&row| !model.is_lane_hidden(&c.lanes[row]))
+        .collect();
+    (lane_order, backing_slots)
+}
+
 /// A lane's key in the scene: the text the front end holds for a lane and sends back to name it.
 fn scene_lane_key(lane: &SampleIdentity) -> String {
     format!("{lane:?}")
@@ -1095,20 +1122,7 @@ fn snapshot(app: &Application, include_scene: bool) -> Value {
             for lane in model.moments().iter().flat_map(|moment| moment.hits()) {
                 *hit_counts.entry(lane).or_insert(0) += 1;
             }
-            let mut slot_rows = std::collections::HashMap::new();
-            let mut backing_slots = std::collections::HashMap::new();
-            for (source, slot) in model.lane_slots() {
-                if !hit_counts.contains_key(slot) && let (Some(&from), Some(&to)) = (row_by_lane.get(source), row_by_lane.get(slot))
-                    && let std::collections::hash_map::Entry::Vacant(entry) = slot_rows.entry(to)
-                {
-                    entry.insert(from);
-                    backing_slots.insert(from, slot);
-                }
-            }
-            let lane_order = (0..c.lanes.len()).filter(|row| !backing_slots.contains_key(row))
-                .map(|row| slot_rows.get(&row).copied().unwrap_or(row))
-                .filter(|&row| !model.is_lane_hidden(&c.lanes[row]))
-                .collect::<Vec<_>>();
+            let (lane_order, backing_slots) = lane_header_rows(d, &|lane| hit_counts.contains_key(lane));
             let lanes = c.lanes.iter().enumerate().map(|(row, lane)| {
                 let slot = backing_slots.get(&row).copied().unwrap_or(lane);
                 let (family, index, group) = match slot {
@@ -1702,8 +1716,8 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                             } else if app.is_dirty() && !discard {
                                 Err("Save or discard the current difficulty before quitting.".into())
                             } else {
-                                app.cancel_drum_detection();
                                 app.save_session().map(|()| {
+                                    app.cancel_drum_detection();
                                     app.cancel_export_preview();
                                     if !app.first_launch {
                                         app.save_preferences();
@@ -1867,14 +1881,18 @@ async fn drum_window_open(app: tauri::AppHandle) -> Result<(), String> {
         let _ = window.unminimize();
         return window.set_focus().map_err(|error| error.to_string());
     }
-    tauri::WebviewWindowBuilder::new(&app, "drum", tauri::WebviewUrl::App("drum.html".into()))
+    let built = tauri::WebviewWindowBuilder::new(&app, "drum", tauri::WebviewUrl::App("drum.html".into()))
         .title("Drum hit detection")
         .inner_size(1200.0, 760.0)
         .min_inner_size(960.0, 600.0)
         .disable_drag_drop_handler()
-        .build()
-        .map(|_| ())
-        .map_err(|error| error.to_string())
+        .build();
+    match (built, app.get_webview_window("drum")) {
+        (Ok(_), _) => Ok(()),
+        // A second open raced the first one: the window exists now, so bring it forward.
+        (Err(_), Some(window)) => window.set_focus().map_err(|error| error.to_string()),
+        (Err(error), None) => Err(error.to_string()),
+    }
 }
 
 /// Closes the drum detection window the way its title bar does, so its run and Listen stop too.

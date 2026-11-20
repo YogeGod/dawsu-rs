@@ -92,6 +92,7 @@ struct Job {
     cancel: Arc<AtomicBool>,
     progress: Arc<Mutex<(usize, usize)>>,
     stamp: AnalysisStamp,
+    run: u64,
     source: DrumSource,
 }
 
@@ -99,6 +100,8 @@ struct Ready {
     curves: Arc<Curves>,
     audio: Arc<AudioClip>,
     stamp: AnalysisStamp,
+    /// Which start this came from: a new run makes every earlier review stale.
+    run: u64,
     source: DrumSource,
     review: Option<Review>,
 }
@@ -121,6 +124,13 @@ pub(crate) struct DrumDetect {
     options: Option<DrumOptions>,
     /// Why the last analysis failed.
     error: Option<String>,
+    /// Starts so far, for the review stamp.
+    runs: u64,
+    /// A Listen clip being built off the editor thread.
+    listen_build: Option<mpsc::Receiver<Arc<AudioClip>>>,
+    /// Tests listen into this instead of an audio output: true plays, false stops.
+    #[cfg(test)]
+    pub(crate) sink: Option<Vec<bool>>,
 }
 
 impl DrumDetect {
@@ -235,11 +245,10 @@ impl Application {
             .filter(|lane| !slider_body(lane))
             .filter(|lane| document.is_some_and(|d| d.composer.hitsounds().lane(lane).is_some()));
         let mapping = document.and_then(|d| d.drum_lanes.as_ref());
-        DrumOptions {
-            kick: saved(mapping.and_then(|m| m.kick.as_ref())),
-            snare: saved(mapping.and_then(|m| m.snare.as_ref())),
-            ..DrumOptions::default()
-        }
+        let kick = saved(mapping.and_then(|m| m.kick.as_ref()));
+        // One lane for both drums is never offered, also from a project saved with it.
+        let snare = saved(mapping.and_then(|m| m.snare.as_ref())).filter(|snare| Some(snare) != kick.as_ref());
+        DrumOptions { kick, snare, ..DrumOptions::default() }
     }
 
     /// Sets the review's options; the review re-plans on the next poll.
@@ -282,6 +291,7 @@ impl Application {
             DrumSource::Stem(_) => None,
         };
         self.clear_drum_detection();
+        self.drum.runs += 1;
         let cancel = Arc::new(AtomicBool::new(false));
         let progress = Arc::new(Mutex::new((0, 1)));
         let (send, result) = mpsc::channel();
@@ -301,22 +311,22 @@ impl Application {
                     },
                     (None, DrumSource::Song) => unreachable!("the song was checked above"),
                 };
-                let mono = mono_mix(&audio);
-                let outcome = match classic::analyse(&mono, audio.sample_rate, &stop, &mut |done, total| {
-                    if let Ok(mut current) = progress.lock() {
-                        *current = (done, total);
-                    }
-                }) {
-                    Ok(curves) => {
-                        drop(mono);
-                        Outcome::Done(Analysed { curves, audio })
-                    }
-                    Err(classic::Cancelled) => Outcome::Cancelled,
-                };
-                let _ = send.send(outcome);
+                let analysed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let mono = mono_mix(&audio);
+                    classic::analyse(&mono, audio.sample_rate, &stop, &mut |done, total| {
+                        if let Ok(mut current) = progress.lock() {
+                            *current = (done, total);
+                        }
+                    })
+                }));
+                let _ = send.send(match analysed {
+                    Ok(Ok(curves)) => Outcome::Done(Analysed { curves, audio }),
+                    Ok(Err(classic::Cancelled)) => Outcome::Cancelled,
+                    Err(_) => Outcome::Failed("Drum detection stopped unexpectedly.".into()),
+                });
             });
         }
-        self.drum.job = Some(Job { result, cancel, progress, stamp: self.drum.song, source });
+        self.drum.job = Some(Job { result, cancel, progress, stamp: self.drum.song, run: self.drum.runs, source });
         Ok(())
     }
 
@@ -335,6 +345,16 @@ impl Application {
     pub(crate) fn poll_drum_detection(&mut self) {
         // Frees Listen clips (and schedules) the audio thread let go of, also after the window closed.
         self.collect_retired_audio();
+        if let Some(build) = &self.drum.listen_build {
+            match build.try_recv() {
+                Ok(clip) => {
+                    self.drum.listen_build = None;
+                    self.listen_sink(Some(clip));
+                }
+                Err(mpsc::TryRecvError::Disconnected) => self.drum.listen_build = None,
+                Err(mpsc::TryRecvError::Empty) => {}
+            }
+        }
         if self.document.is_none() {
             if self.drum.job.is_some() || self.drum.ready.is_some() {
                 self.clear_drum_detection();
@@ -348,7 +368,8 @@ impl Application {
             }
             let outcome = match job.result.try_recv() {
                 Ok(outcome) => outcome,
-                Err(mpsc::TryRecvError::Disconnected) => Outcome::Cancelled,
+                // The thread ended without an answer: it never does when it works.
+                Err(mpsc::TryRecvError::Disconnected) => Outcome::Failed("Drum detection stopped unexpectedly.".into()),
                 Err(mpsc::TryRecvError::Empty) => return,
             };
             let job = self.drum.job.take().expect("checked");
@@ -356,7 +377,7 @@ impl Application {
                 Outcome::Done(analysed) => {
                     self.drum.ready = Some(Ready {
                         curves: Arc::new(analysed.curves), audio: analysed.audio,
-                        stamp: job.stamp, source: job.source, review: None,
+                        stamp: job.stamp, run: job.run, source: job.source, review: None,
                     });
                 }
                 Outcome::Failed(error) => self.drum.error = Some(error),
@@ -373,8 +394,13 @@ impl Application {
         if ready.review.as_ref().is_some_and(|review| review.stamp == stamp) {
             return;
         }
+        let replanned = ready.review.is_some();
         let review = self.drum_review(ready, &options, stamp);
         self.drum.ready.as_mut().expect("checked").review = Some(review);
+        // Listen played the old list's cues.
+        if replanned {
+            self.stop_drum_listen();
+        }
     }
 
     /// Adds the checked hits (`ticked`, by row id) as one undo step. `review` is the stamp the
@@ -389,6 +415,9 @@ impl Application {
             return Err("The song changed. Detect drum hits again.".into());
         }
         let options = self.drum_options();
+        if options.kick.is_some() && options.kick == options.snare {
+            return Err("Pick different lanes for kicks and snares.".into());
+        }
         if self.drum_review_stamp(ready, &options) != review {
             return Err("The map changed since the review. Check the new list, then apply.".into());
         }
@@ -401,9 +430,9 @@ impl Application {
             return Err("Check at least one hit to add.".into());
         }
         // A checked flagged hit goes in where it was heard, its lag taken off.
+        let by_id: HashMap<String, usize> = planned.onsets.iter().enumerate().map(|(i, onset)| (onset_id(onset), i)).collect();
         let hits: Vec<BatchHit> = checked.iter().map(|row| {
-            let index = planned.onsets.iter().position(|onset| onset_id(onset) == row.id).expect("a row per onset");
-            let mut hit = planned.hits[planned.hit_of[index].expect("a checkable row has a lane")].clone();
+            let mut hit = planned.hits[planned.hit_of[by_id[&row.id]].expect("a checkable row has a lane")].clone();
             if row.lands == RowLands::Flagged {
                 hit.grid = Some(row.time);
             }
@@ -412,6 +441,9 @@ impl Application {
         let document = self.document.as_mut().expect("checked");
         let plan = document.composer.plan_batch(&hits, &planned.options);
         let unhides = shown_lanes(document.composer.hitsounds(), &hits, &plan);
+        // Checked hits that were too far from the grid land loose, at the time they were heard.
+        let off_grid = plan.rows.iter()
+            .filter(|row| row.lands == Lands::Loose && checked[row.hit].lands == RowLands::Flagged).count();
         let report = document.composer.add_batch(LABEL, &hits, &planned.options).map_err(|refusal| match refusal {
             BatchRefusal::StepOpen => "Finish the current edit before applying drum hits.".to_owned(),
             BatchRefusal::MissingLane(_) => "A chosen lane no longer exists. Pick the lanes again.".to_owned(),
@@ -423,7 +455,11 @@ impl Application {
         self.clear_drum_detection();
         self.refresh_recovery_edit();
         let c = report.counts;
-        let mut status = format!("Added {} drum hits: {} on objects, {} on grid lines.", c.added, c.on_objects, c.loose);
+        let mut status = format!("Added {} drum hits: {} on objects, {} on grid lines", c.added, c.on_objects, c.loose - off_grid);
+        if off_grid > 0 {
+            status.push_str(&format!(", {off_grid} off the grid"));
+        }
+        status.push('.');
         if c.duplicates > 0 {
             status.push_str(&format!(" {} already there.", c.duplicates));
         }
@@ -435,25 +471,62 @@ impl Application {
     }
 
     /// Plays the analysed audio from `from` (song time, ms) on the left and a cue at each checked
-    /// hit on the right, in place of anything Listen played before. The song pauses first.
+    /// hit on the right, in place of anything Listen played before, until 3 s after the last cue.
+    /// The clip is built off the editor thread; the song pauses when it starts.
     pub fn listen_drum_detection(&mut self, from: f64, ticked: &[String]) -> Result<(), String> {
         let ready = self.drum.ready.as_ref().ok_or("Detect drum hits first.")?;
         let review = ready.review.as_ref().ok_or("Detect drum hits first.")?;
-        let audio = self.audio.as_ref().ok_or("Audio output is unavailable.")?;
+        if self.audio.is_none() && !self.has_listen_sink() {
+            return Err("Audio output is unavailable.".into());
+        }
         let cues: Vec<(Drum, f64)> = review.rows.iter()
             .filter(|row| row.can_check() && ticked.contains(&row.id))
             .map(|row| (row.drum, row.time)).collect();
         let options = self.drum_options();
-        let clip = listen_clip(&ready.audio, self.song_offset + source_offset(&ready.source, &options), from.max(0.0), &cues);
-        audio.play(false);
-        audio.listen(Some(Arc::new(clip)));
+        let (audio, offset, from) = (ready.audio.clone(), self.song_offset + source_offset(&ready.source, &options), from.max(0.0));
+        self.stop_drum_listen();
+        let (send, build) = mpsc::channel();
+        std::thread::spawn(move || {
+            let until = listen_end(from, &cues);
+            let _ = send.send(Arc::new(listen_clip(&audio, offset, from, until, &cues)));
+        });
+        self.drum.listen_build = Some(build);
         Ok(())
     }
 
     pub fn stop_drum_listen(&mut self) {
-        if let Some(audio) = &self.audio {
-            audio.listen(None);
+        self.drum.listen_build = None;
+        self.listen_sink(None);
+    }
+
+    fn has_listen_sink(&self) -> bool {
+        #[cfg(test)]
+        if self.drum.sink.is_some() {
+            return true;
         }
+        false
+    }
+
+    fn listen_sink(&mut self, clip: Option<Arc<AudioClip>>) {
+        #[cfg(test)]
+        if let Some(sink) = &mut self.drum.sink {
+            sink.push(clip.is_some());
+            return;
+        }
+        if let Some(audio) = &self.audio {
+            if clip.is_some() {
+                audio.play(false);
+            }
+            audio.listen(clip);
+        }
+    }
+
+    fn drum_listening(&self) -> bool {
+        #[cfg(test)]
+        if let Some(sink) = &self.drum.sink {
+            return self.drum.listen_build.is_some() || sink.last() == Some(&true);
+        }
+        self.drum.listen_build.is_some() || self.audio.as_ref().is_some_and(dawsu_audio::AudioEngine::is_listening)
     }
 
     pub fn drum_detection(&self) -> DrumDetectView {
@@ -482,7 +555,7 @@ impl Application {
             editor_grid: document.map_or(4, |d| d.composer.spacing.divisions()),
             has_song: self.song.is_some(),
             lanes,
-            listening: self.audio.as_ref().is_some_and(dawsu_audio::AudioEngine::is_listening),
+            listening: self.drum_listening(),
         }
     }
 
@@ -531,7 +604,7 @@ impl Application {
 
     fn drum_review_stamp(&self, ready: &Ready, options: &DrumOptions) -> u64 {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        ready.stamp.hash(&mut hasher);
+        (ready.stamp, ready.run).hash(&mut hasher);
         ready.source.hash(&mut hasher);
         if let Some(document) = &self.document {
             let composer = &document.composer;
@@ -638,15 +711,21 @@ fn mono_mix(clip: &AudioClip) -> Cow<'_, [f32]> {
     }
 }
 
-/// Listen's clip, 3.1.4's `AuditionWav` in memory: from `from` (song time) to the end of `audio`,
-/// whose first sample sits at song time `offset`. Left: the audio as mono. Right: a low thump at
-/// each kick and a noise burst at each snare (not the mapper's samples).
-fn listen_clip(audio: &AudioClip, offset: f64, from: f64, cues: &[(Drum, f64)]) -> AudioClip {
+/// Where Listen's clip ends: 3 s after the last cue, or 10 s after `from` with none.
+fn listen_end(from: f64, cues: &[(Drum, f64)]) -> f64 {
+    cues.iter().map(|&(_, time)| time + 3000.0).reduce(f64::max).unwrap_or(from + 10_000.0)
+}
+
+/// Listen's clip, 3.1.4's `AuditionWav` in memory: song time `from` to `until` (or the end of
+/// `audio`, whose first sample sits at song time `offset`). Left: the audio as mono. Right: a low
+/// thump at each kick and a noise burst at each snare (not the mapper's samples).
+fn listen_clip(audio: &AudioClip, offset: f64, from: f64, until: f64, cues: &[(Drum, f64)]) -> AudioClip {
     let rate = f64::from(audio.sample_rate.max(1));
     let channels = audio.channels.max(1);
     let source_frames = audio.samples.len() / channels;
     let first = ((from - offset) * rate / 1000.0).round() as i64;
-    let frames = (source_frames as i64 - first).max(0) as usize;
+    let wanted = ((until - from) * rate / 1000.0).round().max(0.0) as i64;
+    let frames = (source_frames as i64 - first).clamp(0, wanted) as usize;
     let mut samples = vec![0.0_f32; frames * 2];
     for (i, frame) in samples.chunks_exact_mut(2).enumerate() {
         let at = first + i as i64;
@@ -872,13 +951,33 @@ mod tests {
         // Without a kick lane, kicks show but can't be checked.
         assert!(loose.iter().filter(|row| row.drum == Drum::Kick).all(|row| row.lands == RowLands::NoLane && !row.can_check()));
         // An edit in the editor re-plans too, and a hit already there shows as a duplicate.
-        let (stamp, _) = ready(&app).unwrap();
-        let first = loose.iter().find(|row| row.drum == Drum::Snare).unwrap().time;
+        let (stamp, now) = ready(&app).unwrap();
+        let first = now.iter().find(|row| row.drum == Drum::Snare && row.can_check()).unwrap().time;
         app.document.as_mut().unwrap().composer.add(first, lane(Hitsound::Whistle), 100, 5.0);
         app.poll();
         let (after, rows) = ready(&app).unwrap();
         assert_ne!(after, stamp);
         assert!(rows.iter().any(|row| row.lands == RowLands::Duplicate && !row.can_check()));
+        // The map's tempo and the editor's grid spacing re-plan too, and so does a new run.
+        let edits: [(&str, Box<dyn FnOnce(&mut Application)>); 3] = [
+            ("tempo", Box::new(|app| app.document.as_mut().unwrap().composer.tempo = dawsu_editor::tempo::TempoMap::new(vec![
+                dawsu_editor::tempo::TimingSection { start: dawsu_foundation::SongTime::from_ms(0.0), beat_length_ms: 400.0, beats_per_bar: 4 },
+            ]))),
+            ("grid spacing", Box::new(|app| app.document.as_mut().unwrap().composer.spacing = dawsu_editor::tempo::SnapSpacing::fraction(8).unwrap())),
+            ("run", Box::new(|app| {
+                app.start_drum_detection(DrumSource::Song).unwrap();
+                wait(app, |app| ready(app).is_some());
+            })),
+        ];
+        let mut review = after;
+        for (name, edit) in edits {
+            edit(&mut app);
+            app.poll();
+            let (fresh, _) = ready(&app).expect(name);
+            assert_ne!(fresh, review, "{name}");
+            assert!(app.apply_drum_detection(review, &checked(&rows)).unwrap_err().contains("changed since the review"), "{name}");
+            review = fresh;
+        }
     }
 
     #[test]
@@ -894,6 +993,7 @@ mod tests {
         assert_eq!(app.apply_drum_detection(review, &checked(&rows)).unwrap_err(), "Check at least one hit to add.");
         let kick = rows.iter().find(|row| row.drum == Drum::Kick).unwrap();
         app.apply_drum_detection(review, &[kick.id.clone()]).unwrap();
+        assert_eq!(app.status, "Added 1 drum hits: 0 on objects, 0 on grid lines, 1 off the grid.");
         assert_eq!(undo_steps(&mut app), 1);
         let added: Vec<_> = app.document().unwrap().composer.hitsounds().moments().iter()
             .filter(|m| m.has_hit(&lane(Hitsound::Whistle)) && m.time().ms() > 0.0).collect();
@@ -922,6 +1022,16 @@ mod tests {
         assert_eq!(kicks.len(), 16);
         assert_eq!(kicks[0].time, 1500.0);
         assert!(kicks[..15].iter().all(|row| row.lands == RowLands::Object(ObjectKind::Circle)));
+        // A new stem offset only re-plans: the hits move with it, and the old review is stale.
+        let (review, rows) = ready(&app).unwrap();
+        let curves = app.drum.ready.as_ref().unwrap().curves.clone();
+        change(&mut app, |o| o.stem_offset = 1250.0);
+        app.poll();
+        assert!(Arc::ptr_eq(&curves, &app.drum.ready.as_ref().unwrap().curves), "not analysed again");
+        let (fresh, moved) = ready(&app).unwrap();
+        assert_ne!(fresh, review);
+        assert_eq!(moved.iter().find(|row| row.drum == Drum::Kick).unwrap().time, 1750.0);
+        assert!(app.apply_drum_detection(review, &checked(&rows)).unwrap_err().contains("changed since the review"));
         // A file that is no audio reports why and leaves nothing running.
         let broken = fixture.path("broken.wav");
         std::fs::write(&broken, b"not audio").unwrap();
@@ -936,16 +1046,20 @@ mod tests {
     fn the_listen_clip_has_the_source_on_the_left_and_cues_on_the_right() {
         let audio = AudioClip { samples: vec![0.5; 2000], channels: 2, sample_rate: 1000 };
         // The audio starts at song time 100; Listen starts at 50; a kick at 300.
-        let clip = listen_clip(&audio, 100.0, 50.0, &[(Drum::Kick, 300.0)]);
+        let clip = listen_clip(&audio, 100.0, 50.0, 2000.0, &[(Drum::Kick, 300.0)]);
         assert_eq!((clip.channels, clip.sample_rate), (2, 1000));
-        assert_eq!(clip.samples.len(), 1050 * 2);
+        assert_eq!(clip.samples.len(), 1050 * 2, "the audio ends before the clip's end");
         let left = |i: usize| clip.samples[i * 2];
         let right = |i: usize| clip.samples[i * 2 + 1];
         assert_eq!((left(49), left(50), left(1049)), (0.0, 0.5, 0.5));
         assert!((0..250).all(|i| right(i) == 0.0));
         assert!((251..300).any(|i| right(i).abs() > 0.1));
+        // It ends where asked: 3 s after the last cue.
+        assert_eq!(listen_clip(&audio, 100.0, 50.0, 650.0, &[]).samples.len(), 600 * 2);
+        assert_eq!(listen_end(50.0, &[(Drum::Kick, 300.0), (Drum::Snare, 900.0)]), 3900.0);
+        assert_eq!(listen_end(50.0, &[]), 10_050.0, "with nothing checked, ten seconds");
         // From past the end there is nothing to play.
-        assert!(listen_clip(&audio, 100.0, 5000.0, &[]).samples.is_empty());
+        assert!(listen_clip(&audio, 100.0, 5000.0, 9000.0, &[]).samples.is_empty());
     }
 
     #[test]
@@ -957,6 +1071,47 @@ mod tests {
         let (_, rows) = detect(&mut app);
         assert_eq!(app.listen_drum_detection(0.0, &checked(&rows)).unwrap_err(), "Audio output is unavailable.");
         assert!(!app.drum_detection().listening);
+    }
+
+    /// Listen into a recording sink instead of an audio output; true plays, false stops.
+    fn listening(app: &mut Application, rows: &[DrumRow]) {
+        app.listen_drum_detection(0.0, &checked(rows)).unwrap();
+        wait(app, |app| app.drum.sink.as_ref().unwrap().last() == Some(&true));
+        assert!(app.drum_detection().listening);
+    }
+
+    fn stopped(app: &Application) -> bool {
+        app.drum.sink.as_ref().unwrap().last() == Some(&false) && !app.drum_detection().listening
+    }
+
+    #[test]
+    fn cancel_apply_revert_close_and_a_new_review_stop_listen() {
+        let fixture = Scratch::new("drum-detect-listen-stops");
+        let mut app = open(&fixture);
+        app.drum.sink = Some(Vec::new());
+        set_lanes(&mut app, Some(lane(Hitsound::Whistle)), Some(lane(Hitsound::Clap)));
+        let (_, rows) = detect(&mut app);
+        listening(&mut app, &rows);
+        app.stop_drum_listen();
+        assert!(stopped(&app), "Stop");
+        listening(&mut app, &rows);
+        app.cancel_drum_detection();
+        assert!(stopped(&app), "Cancel, and closing the window, which cancels");
+        let (_, rows) = detect(&mut app);
+        listening(&mut app, &rows);
+        change(&mut app, |o| o.sensitivity = 80);
+        app.poll();
+        assert!(stopped(&app), "a new review");
+        let (review, rows) = ready(&app).unwrap();
+        listening(&mut app, &rows);
+        app.apply_drum_detection(review, &checked(&rows)).unwrap();
+        assert!(stopped(&app), "Apply");
+        let (_, rows) = detect(&mut app);
+        listening(&mut app, &rows);
+        app.revert_requested = true;
+        app.confirm_revert();
+        assert!(stopped(&app), "revert");
+        wait(&mut app, |app| !app.busy);
     }
 
     #[test]
@@ -1115,6 +1270,18 @@ SliderTickRate:1
         let reopened = open(&fixture);
         let options = reopened.drum_options();
         assert_eq!((options.kick, options.snare), (Some(lane(Hitsound::Whistle)), Some(lane(Hitsound::Clap))));
+        // A saved snare lane equal to the kick lane (an older build allowed it) loads as no snare,
+        // and Apply refuses one lane for both.
+        let mut same = open(&fixture);
+        same.document.as_mut().unwrap().drum_lanes = Some(DrumLanes {
+            kick: Some(project::lane_key(&lane(Hitsound::Whistle))), snare: Some(project::lane_key(&lane(Hitsound::Whistle))),
+        });
+        assert_eq!((same.drum_options().kick, same.drum_options().snare), (Some(lane(Hitsound::Whistle)), None));
+        let (review, rows) = detect(&mut same);
+        same.drum.options = Some(DrumOptions { kick: Some(lane(Hitsound::Whistle)), snare: Some(lane(Hitsound::Whistle)), ..DrumOptions::default() });
+        same.poll();
+        let review = ready(&same).map_or(review, |(review, _)| review);
+        assert_eq!(same.apply_drum_detection(review, &checked(&rows)).unwrap_err(), "Pick different lanes for kicks and snares.");
         // A project written before the field existed loads without it, and none is written until used.
         let old: project::SessionSettings = serde_json::from_str(r#"{"song_offset":0.0,"view_start":0.0}"#).unwrap();
         assert_eq!(old.drum_lanes, None);
