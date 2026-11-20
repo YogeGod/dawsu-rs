@@ -3,7 +3,7 @@ use super::{Document, sample_path};
 use crate::{mixes::StagedMix, pending::{Pending, listing}, project::{lane_identity, lane_key}};
 use dawsu_foundation::{SampleIdentity, digest::sha256_hex};
 use dawsu_hitsounding::{Decompiled, Hitsounds, Moment, MomentId, Place, decompile};
-use dawsu_osu_format::{LineId, OsuFile, list_folder};
+use dawsu_osu_format::{LineId, OsuFile};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, fs, path::Path};
 
@@ -90,7 +90,7 @@ struct Assets<'a> {
 
 impl<'a> Assets<'a> {
     fn new(root: &'a Path, pending: &'a Pending, defaults: &'a Path, staged: &'a [StagedMix]) -> Self {
-        Self { root, pending, defaults, default_files: list_folder(defaults).unwrap_or_default(), staged,
+        Self { root, pending, defaults, default_files: crate::pending::sample_folder(defaults), staged,
             digests: BTreeMap::new() }
     }
 

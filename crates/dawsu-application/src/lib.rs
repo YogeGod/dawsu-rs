@@ -100,6 +100,8 @@ impl Document {
     pub fn read(path: &Path) -> Result<Self, String> {
         Self::read_matching(path, None)
     }
+    /// `files` is what is on disk; pending files join the hits' listing later.
+    #[allow(clippy::disallowed_methods)]
     fn read_matching(
         path: &Path,
         recovery: Option<&recovery::RecoveryCopy>,
@@ -362,7 +364,7 @@ fn prepare_save(
 ) -> Result<PreparedSave, String> {
     let root = path.parent().ok_or("Missing mapset folder")?;
     let inputs = if review {
-        let defaults_list = list_folder(defaults).unwrap_or_default();
+        let defaults_list = crate::pending::sample_folder(defaults);
         let samples: BTreeSet<_> = hits.moments().iter().flat_map(|moment| moment.hits()).collect();
         let paths: BTreeSet<_> = samples.into_iter().filter_map(|sample| {
             sample_path(hits.lane(sample)?, root, pending, defaults, &defaults_list).ok()
@@ -2992,7 +2994,7 @@ fn load(
     };
     let mut samples = HashMap::new();
     let defaults_list = if defaults.is_dir() {
-        list_folder(defaults).unwrap_or_default()
+        crate::pending::sample_folder(defaults)
     } else {
         Vec::new()
     };

@@ -154,7 +154,14 @@ impl Pending {
     }
 }
 
+/// A sample folder's files (the default samples or a library folder), empty when it can't be read.
+#[allow(clippy::disallowed_methods)]
+pub(crate) fn sample_folder(dir: &Path) -> Vec<String> {
+    list_folder(dir).unwrap_or_default()
+}
+
 /// The mapset's files as the editor sees them: the files on disk and the pending files.
+#[allow(clippy::disallowed_methods)]
 pub(crate) fn listing(root: &Path, pending: &Pending) -> Result<Vec<String>, String> {
     let mut files = list_folder(root).map_err(|error| error.to_string())?;
     let on_disk: BTreeSet<String> = files.iter().map(|name| name.to_ascii_lowercase()).collect();
@@ -230,6 +237,7 @@ pub(crate) fn used(file: &OsuFile, root: &Path, pending: &Pending, planned: &[St
 /// difference names the first file the mapset would miss.
 /// A sample that plays the skin's sound on both sides while dawsu! claimed one of its file names
 /// for a sample it made is refused too: that file was lost.
+#[allow(clippy::disallowed_methods)]
 pub(crate) fn check_written(file: &OsuFile, root: &Path, writes: &[String], editor: &[String], pending: &Pending) -> Result<(), String> {
     let mut after = list_folder(root).map_err(|e| e.to_string())?;
     after.extend(writes.iter().cloned());

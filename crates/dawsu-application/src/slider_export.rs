@@ -11,7 +11,7 @@ use dawsu_hitsounding::{
     Compiled, Decompiled, MomentId, Place, Placement, compile, decompile,
     lazer::control_points::offset_for, rules::played_volume,
 };
-use dawsu_osu_format::{OsuFile, list_folder};
+use dawsu_osu_format::OsuFile;
 use std::{
     collections::{BTreeMap, HashMap},
     path::Path,
@@ -66,7 +66,7 @@ pub(super) fn stage(
         .collect();
     let pending = &source.pending;
     let listing = crate::pending::listing(root, pending)?;
-    let defaults_list = list_folder(defaults).unwrap_or_default();
+    let defaults_list = crate::pending::sample_folder(defaults);
     let mut clips = HashMap::<SampleIdentity, Arc<AudioClip>>::new();
     let mut rendered = BTreeMap::<Vec<Layer>, String>::new();
     let mut staged = Vec::new();

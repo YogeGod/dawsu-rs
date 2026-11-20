@@ -60,6 +60,8 @@ impl Watch {
     }
 }
 
+/// Looks for files new on disk, so it reads the folder alone.
+#[allow(clippy::disallowed_methods)]
 fn start_scan(folder: PathBuf, known: Vec<String>, song: Option<String>) -> Scan {
     let (send, result) = mpsc::channel();
     let cancel = Arc::new(AtomicBool::new(false));

@@ -2,7 +2,7 @@ use crate::{Document, lane_name, safe_child};
 use dawsu_audio::{AudioClip, decode};
 use dawsu_foundation::{CustomIndex, SampleIdentity};
 use dawsu_hitsounding::rules::read_sample_file_name;
-use dawsu_osu_format::{HitSample, ObjectKind, OsuFile, find_case_insensitive, list_folder};
+use dawsu_osu_format::{HitSample, ObjectKind, OsuFile, find_case_insensitive};
 use std::collections::BTreeSet;
 use std::path::Path;
 use std::sync::Arc;
@@ -22,7 +22,7 @@ pub(super) fn create(
     };
     let stem = lane_name(&family);
     let default_name = format!("{stem}.wav");
-    let defaults_list = list_folder(defaults).unwrap_or_default();
+    let defaults_list = crate::pending::sample_folder(defaults);
     let default = find_case_insensitive(&defaults_list, &default_name)
         .ok_or_else(|| format!("No default WAV for {stem} in the configured sample folder."))?;
     let source = safe_child(defaults, default)?;

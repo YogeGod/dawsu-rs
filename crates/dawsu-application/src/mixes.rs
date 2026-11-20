@@ -10,7 +10,7 @@ use dawsu_hitsounding::{
     Compiled, Decompiled, Hitsounds, LaneSource, MomentId, ObjectId, Place, Placement, ProblemKind,
     SaveProblem, compile, compile::{RoleFile, RoleMerge, merge_roles}, decompile,
 };
-use dawsu_osu_format::{OsuFile, list_folder};
+use dawsu_osu_format::OsuFile;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -175,7 +175,7 @@ impl MixFiles {
     ) -> Result<(), String> {
         settings.validate()?;
         let rules = export_settings::Rules::new(settings);
-        let defaults_list = list_folder(defaults).unwrap_or_default();
+        let defaults_list = crate::pending::sample_folder(defaults);
         let moments: HashMap<_, _> = target
             .moments()
             .iter()
@@ -374,7 +374,7 @@ impl MixFiles {
         pending: &Pending,
         cancel: &dyn Fn() -> bool,
     ) -> Result<(), String> {
-        let assets = Assets { source, root, pending, defaults, defaults_list: list_folder(defaults).unwrap_or_default() };
+        let assets = Assets { source, root, pending, defaults, defaults_list: crate::pending::sample_folder(defaults) };
         let expected = OsuFile::read(expected.to_vec()).file;
         let moments: HashMap<_, _> = target
             .moments()
@@ -457,7 +457,7 @@ impl MixFiles {
         pending: &Pending,
         cancel: &dyn Fn() -> bool,
     ) -> Result<(), String> {
-        let defaults_list = list_folder(defaults).unwrap_or_default();
+        let defaults_list = crate::pending::sample_folder(defaults);
         let expected = OsuFile::read(expected.to_vec()).file;
         let existing: BTreeSet<_> = expected
             .hit_objects()
@@ -613,7 +613,7 @@ pub(super) fn stage_timed_copy(
         return Ok(());
     }
     let root = path.parent().ok_or("Missing mapset folder")?;
-    let defaults_list = list_folder(defaults).unwrap_or_default();
+    let defaults_list = crate::pending::sample_folder(defaults);
     let mut names = reserved_mix_names(root, staged, pending)?;
     let events = file.storyboard_samples();
     let existing: Vec<_> = events.iter().map(|event| event.path.clone()).collect();

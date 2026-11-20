@@ -9,7 +9,6 @@ use dawsu_editor::tools::ToolTarget;
 use dawsu_editor_composer::{MOMENT_HITNORMAL, SetHitnormal};
 use dawsu_foundation::{SampleIdentity, SongTime, digest::sha256_hex, safe_write};
 use dawsu_hitsounding::sound_sets::{SetSource, SoundSet, placement_hits, plan_snapshot, read_dawsuset};
-use dawsu_osu_format::list_folder;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -446,7 +445,7 @@ impl Application {
         let SampleIdentity::Standard { set, .. } = lane else { return (None, None) };
         let Some(model) = hits.lane(lane) else { return (None, None) };
         let defaults = &self.preferences.default_samples;
-        let defaults_list = list_folder(defaults).unwrap_or_default();
+        let defaults_list = crate::pending::sample_folder(defaults);
         let skipped = || Some(format!("The {} under it wasn't found, so that moment saves as a mix.", crate::lane_name(lane)));
         let Ok(path) = super::sample_path(model, root, &self.document.as_ref().expect("open document").pending, defaults, &defaults_list) else { return (None, skipped()) };
         let Some(extension) = path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase)
@@ -710,7 +709,7 @@ impl Application {
         }
         let root = document.path.parent().ok_or_else(|| refused("The difficulty's folder was not found.".into()))?;
         let defaults = &self.preferences.default_samples;
-        let defaults_list = list_folder(defaults).unwrap_or_default();
+        let defaults_list = crate::pending::sample_folder(defaults);
         let mut captured = Vec::new();
         let mut total = 0u64;
         for (identity, volume) in lanes {
@@ -1555,6 +1554,8 @@ fn clock(ms: f64) -> String {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    #[allow(clippy::disallowed_methods)]
+    use dawsu_osu_format::list_folder;
     use dawsu_hitsounding::sound_sets::{Kept, SetLane, SetMember, write_dawsuset};
     use dawsu_test_support::Scratch;
     use std::time::{Duration, Instant};

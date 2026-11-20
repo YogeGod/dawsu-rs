@@ -13,6 +13,7 @@ use std::path::Path;
 
 /// What the mapset itself plays: the names its standard difficulties and storyboards play or
 /// name, and the indexes a taiko, catch or mania difficulty may use, read conservatively.
+#[allow(clippy::disallowed_methods)]
 fn folder_uses(root: &Path) -> Result<(BTreeSet<String>, BTreeSet<u32>), String> {
     let files = list_folder(root).map_err(|e| e.to_string())?;
     let (_, mut used) = layers::reservations(root, &files)?;
