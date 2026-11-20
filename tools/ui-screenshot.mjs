@@ -1,7 +1,8 @@
 // Screenshot the dawsu! Tauri editor on a copy of a map, for before/after checks.
 //
 // node tools/ui-screenshot.mjs --exe <dawsu-tauri.exe> --map <difficulty.osu> --out <shot.png>
-//   [--profile <folder>]  isolated LOCALAPPDATA and WebView2 profile (default: a new temp folder)
+//   [--profile <folder>]  isolated LOCALAPPDATA and WebView2 profile (default: a new temp folder,
+//                         deleted after the run unless --keep-profile is given)
 //   [--eval "<js>"]       run in the page before the shot, e.g. act({ kind: "view", start: 23300,
 //                         zoom: scene.zoom, row_height: scene.rowHeight })
 //   [--wait <ms>]         extra settle time before the shot (default 2500)
@@ -19,7 +20,7 @@
 // debugging port, so several runs can capture at once. Windows only (WebView2 remote debugging).
 // Playwright Core is found in DAWSU_PLAYWRIGHT_CORE or the npm cache; nothing is installed.
 import { spawn, spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdtempSync, readdirSync } from "node:fs";
+import { cpSync, existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -131,4 +132,13 @@ try {
 } finally {
   await browser?.close().catch(() => {});
   child.kill();
+  // A temp profile holds a map copy and a browser profile (12-21 MB): remove it, or runs fill the disk.
+  if (!args.profile && !args["keep-profile"]) {
+    await new Promise(done => (child.exitCode !== null ? done() : child.once("exit", done)));
+    try {
+      rmSync(profile, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
+    } catch (error) {
+      console.warn(`could not remove ${profile}: ${error.message}`);
+    }
+  }
 }
