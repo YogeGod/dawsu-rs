@@ -23,6 +23,12 @@ export class Bridge {
     flush();
   }
 
+  // Handed over by app.js's renderSelection() and renderActiveLane(); written at once, like the lanes.
+  handOverInspector(model, flush = flushSync) {
+    this.inspector = model;
+    flush();
+  }
+
   set(view, scene) {
     this.view = view;
     this.scene = scene;

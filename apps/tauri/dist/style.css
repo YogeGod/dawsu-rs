@@ -359,6 +359,9 @@ header #editor-menus button{min-height:26px;padding:3px 10px;border-radius:4px}
 
 /* Inspector (design f1): sections fold under a chevron heading; values sit in label-left, value-right rows. */
 #editor-inspector > section { position:relative; padding:2px 8px 8px; font-size:12px; }
+#editor-inspector > .inspector-part { padding:0; border-bottom:0; }
+/* Layout…: each Inspector section's grip sits at its top left, over the fold header's margin. */
+[data-layout-editing] #editor-inspector > section > .layout-move-handle { position:absolute; top:8px; left:0; z-index:2; }
 #editor-inspector summary { display:flex; align-items:center; gap:8px; height:34px; padding:0 2px; list-style:none; cursor:pointer; border-radius:4px; color:var(--text); }
 #editor-inspector summary::-webkit-details-marker { display:none; }
 #editor-inspector summary::before { content:""; flex:none; width:5px; height:5px; margin:0 2px 0 3px; border:solid var(--title-text); border-width:0 1.5px 1.5px 0; transform:rotate(-45deg); }

@@ -120,7 +120,7 @@ test("the active lane colour picker applies and resets a faint tint for its diff
   assert.deepEqual(saved.value.lane_colours, { "Skin|normal-hitclap": "#388ada" });
 
   open();
-  evaluate('opened[3].find(([label]) => label === "Clear tint")[1]()');
+  evaluate('opened[3].find(([label]) => label === "Clear colour")[1]()');
   await evaluate("pending");
   // Clearing the mapper's tint leaves the lane grey: no colour on the header, no row tint.
   assert.equal(evaluate("laneHeaders.rows[0].colour"), null);

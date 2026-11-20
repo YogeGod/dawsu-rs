@@ -224,7 +224,9 @@
 
     </div>
     <aside id="editor-inspector" aria-label="Inspector">
-      <div data-ui-mount="inspector"></div>
+      <section class="inspector-part" aria-label="Selection"><div data-ui-mount="inspector-selection"></div></section>
+      <section class="inspector-part" aria-label="Lane"><div data-ui-mount="inspector-lane"></div></section>
+      <section class="inspector-part" aria-label="Difficulty"><div data-ui-mount="inspector-difficulty"></div></section>
       <section class="inspector-bookmarks"><details open><summary><h2>Bookmarks</h2></summary>
         <select id="bookmarks" aria-label="Bookmarks" size="2" disabled></select>
         <p id="bookmarks-empty" class="dim" hidden>No bookmarks. Add one at the playhead with +.</p>

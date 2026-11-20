@@ -1,13 +1,17 @@
 import assert from "node:assert/strict";
+import { readdirSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { createContext, runInContext } from "node:vm";
 
 const read = name => readFile(new URL("../dist/" + name, import.meta.url), "utf8");
-const [app, html, css, part] = await Promise.all([
+const parts = new URL("../ui/src/parts/", import.meta.url);
+const [app, html, css, ...sections] = await Promise.all([
   ...["app.js", "index.html", "style.css"].map(read),
-  readFile(new URL("../ui/src/parts/InspectorSections.svelte", import.meta.url), "utf8"),
+  ...readdirSync(parts).filter(name => /^Inspector(?!Head)\w+\.svelte$/.test(name)).sort()
+    .map(name => readFile(new URL(name, parts), "utf8")),
 ]);
+const part = sections.join("\n");
 const inspector = html.match(/<aside id="editor-inspector"[^>]*>([\s\S]*?)<\/aside>/)?.[1] ?? "";
 
 async function frontend() {
@@ -36,7 +40,7 @@ async function frontend() {
         core: { invoke: async (_name, args) => { calls.push(args?.action); return { busy: false, hasDocument: true, position: 0 }; } },
         event: { listen() {} },
       },
-      dawsuUi: { inspector: model => handed.push(JSON.parse(JSON.stringify(model))) },
+      dawsuUi: { inspector: model => handed.push(JSON.parse(JSON.stringify(model))), update() {}, lanes() {} },
     },
     ResizeObserver: class { observe() {} },
     Option: class { constructor(text, value) { this.text = text; this.value = value; } },
@@ -55,8 +59,11 @@ async function frontend() {
   return { evaluate, get, sent, model, handed };
 }
 
-test("Selection, Lane and Difficulty are one Svelte part; Bookmarks and History stay folded sections", () => {
-  assert.match(inspector, /^\s*<div data-ui-mount="inspector"><\/div>/);
+test("Selection, Lane and Difficulty are Svelte parts in sections Layout… can move; Bookmarks and History stay", () => {
+  assert.equal(sections.length, 3);
+  const mounts = [...inspector.matchAll(/<section class="inspector-part" aria-label="([^"]+)"><div data-ui-mount="([\w-]+)"><\/div><\/section>/g)]
+    .map(match => [match[1], match[2]]);
+  assert.deepEqual(mounts, [["Selection", "inspector-selection"], ["Lane", "inspector-lane"], ["Difficulty", "inspector-difficulty"]]);
   const headings = [...inspector.matchAll(/<section[^>]*>\s*<details open>\s*<summary><h2>([^<]*)<\/h2><\/summary>/g)]
     .map(match => match[1]);
   assert.deepEqual(headings, ["Bookmarks", "History"]);
@@ -79,29 +86,30 @@ test("Selection, Lane and Difficulty are one Svelte part; Bookmarks and History 
   }
 });
 
-test("the Selection model has the count, lanes, Start, Volume and On object", async () => {
+test("the Selection model has v3's summary, Start, Volume and On object", async () => {
   const { evaluate, model } = await frontend();
   evaluate(`
     view = { busy: false, hasDocument: true };
     scene = { path: "a.osu",
-      lanes: [{ key: "k", name: "Kick", sample: "kick.wav" }, { key: "c", name: "Clap" }],
+      lanes: [{ key: "k", name: "normal-hitclap", group: "normal", family: "normal-hitclap", index: 1, sample: "kick.wav" },
+        { key: "c", name: "Clap" }],
       moments: [[1000, 80, true, [[0, true], [1, false]]], [1500, 80, true, [[0, true, false, 60]]]],
       selection: { count: 2, start: 1000, object: "2 object moments" } };
   `);
   assert.deepEqual(model().selection, {
-    count: "2 hits", lanes: " · Kick", start: "00:01.000", volume: "60–80%", object: "2 object moments", sliderBody: null,
+    summary: "2 hits selected · Clap (Normal)", start: "00:01.000", volume: "60–80%", object: "2 object moments",
+    sliderBody: null,
   });
   assert.equal(model().scope, "all");
   assert.equal(model().hint, "Changes all sounds at the selected times.");
 
   evaluate(`scene = { ...scene, moments: [[1000, 80, true, [[0, true], [1, true]]]],
     selection: { count: 1, start: 1000, object: "Circle" } };`);
-  assert.equal(model().selection.count, "1 hit");
-  assert.equal(model().selection.lanes, " · 2 lanes");
+  assert.equal(model().selection.summary, "1 hit selected · 2 lanes");
   assert.equal(model().selection.volume, "80%");
 
   evaluate("scene = { lanes: [], selection: { count: 1, start: 5, object: \"No object\" } };");
-  assert.equal(model().selection.lanes, "");
+  assert.equal(model().selection.summary, "1 hit selected");
   assert.equal(model().selection.volume, "");
 
   evaluate("scene = { selection: null };");
@@ -114,15 +122,17 @@ test("enablement follows the old markup: busy waits, New and Copy never did", as
     scene = { path: "a.osu", range: [1, 2], insertVolume: 70, protect: true, hs: false,
       lanes: [{ key: "k", name: "Kick", colourKey: "File|kick.wav", canReplace: true }], moments: [], selection: null };`);
   const busy = model();
-  assert.equal(busy.map, true);
   assert.equal(busy.busy, true);
   assert.equal(busy.doc, false);
   assert.equal(busy.range, true);
   assert.deepEqual([busy.insertVolume, busy.protect, busy.audition, busy.hs], [70, true, true, false]);
   evaluate("view.busy = false;");
   assert.equal(model().doc, true);
-  evaluate("scene = null;");
-  assert.deepEqual([model().map, model().doc, model().range, model().lane], [false, false, false, null]);
+  evaluate('view.fault = "The editor stopped";');
+  assert.deepEqual([model().busy, model().doc], [true, false], "a fault stops the Inspector like a job");
+  evaluate("view.fault = null; scene = null;");
+  assert.deepEqual([model().doc, model().range, model().lane], [false, false, null]);
+  assert.equal("map" in model(), false);
 });
 
 test("Lane carries the picked colour or none, never the sound colour", async () => {
@@ -133,6 +143,12 @@ test("Lane carries the picked colour or none, never the sound colour", async () 
       colourKey: "File|kick.wav", canReplace: true }] };
   `);
   assert.deepEqual(model().lane, { title: "Kick", sample: "kick.wav", colour: null, canColour: true, canReplace: true });
+  evaluate('Object.assign(scene.lanes[0], { name: "soft-hitclap", group: "soft", index: 1 });');
+  assert.equal(model().lane.title, "Clap · Soft set", "v3's lane title");
+  assert.equal(evaluate("laneTitle(scene.lanes[0])"), "Soft Clap", "the lane filter's name is unchanged");
+  evaluate('renamedLanes.set("File|kick.wav", "Kick 2");');
+  assert.equal(model().lane.title, "Kick 2");
+  evaluate('renamedLanes.clear(); Object.assign(scene.lanes[0], { name: "Kick", group: null });');
   evaluate('laneColours.set("File|kick.wav", "#cc50a2");');
   assert.equal(model().lane.colour, "#cc50a2");
   evaluate('scene.lanes[0].sample = "Kick";');
@@ -149,7 +165,7 @@ test("renderSelection and renderActiveLane hand the model to the Svelte part", a
   handed.length = 0;
   evaluate("renderSelection(); renderActiveLane();");
   assert.equal(handed.length, 2);
-  assert.equal(handed[0].selection.count, "1 hit");
+  assert.equal(handed[0].selection.summary, "1 hit selected");
   assert.equal(handed[1].lane.title, "Kick");
   assert.deepEqual(JSON.parse(evaluate("JSON.stringify(currentInspector())")), handed[1]);
 });
@@ -195,9 +211,12 @@ test("Change volume, -5 and +5, the scope, the slider body and the switches send
   assert.deepEqual(await sent(), [
     { kind: "slider_body", path: "Slider.osu", index: 2, set: "drum", whistle_set: "normal", whistle: true, volume: 80 },
   ]);
-  evaluate(`inspectorAction("insert", 140); inspectorAction("toggle", "hs_mode", true);
+  evaluate(`inspectorAction("insert", NaN); inspectorAction("insert", null); inspectorAction("insert", 0);
+    inspectorAction("insert", 140); inspectorAction("toggle", "hs_mode", true);
     inspectorAction("toggle", "protect", false); inspectorAction("toggle", "audition", true);`);
   assert.deepEqual(await sent(), [
+    // A blank Insert volume field sets 100 %, as before; 0 stays 0.
+    { kind: "insert_volume", value: 100 }, { kind: "insert_volume", value: 100 }, { kind: "insert_volume", value: 0 },
     { kind: "insert_volume", value: 100 }, { kind: "hs_mode", on: true }, { kind: "protect", on: false },
     { kind: "audition", on: true },
   ]);
@@ -220,7 +239,8 @@ test("the lane colour dialog opens on grey for an unpicked lane and writes nothi
   `);
   evaluate('inspectorAction("laneColour")');
   assert.equal(evaluate("opened[2][2].children[1].value"), "#9e9e9e");
-  assert.equal(evaluate("opened[3].some(([label]) => label === 'Clear tint')"), false);
+  assert.equal(evaluate("opened[3].some(([label]) => label === 'Clear colour')"), false);
+  assert.equal(evaluate("opened[2][0].attributes['aria-label']"), "Lane colour");
   evaluate('opened[3].find(([label]) => label === "Apply")[1]()');
   assert.deepEqual(await sent(), []);
   assert.equal(evaluate("laneColours.size"), 0);
@@ -244,4 +264,50 @@ test("Bookmarks list as rows sized to the marks and say when there are none", as
   evaluate('scene = { path: "c.osu", bookmarks: [] }; renderBookmarks();');
   assert.equal(get("bookmarks").hidden, true);
   assert.equal(get("bookmarks-empty").hidden, false);
+});
+
+test("every open, command and toggle a part sends reaches its inspectorAction case", async () => {
+  const { evaluate, sent } = await frontend();
+  const keys = kind => [...new Set([...part.matchAll(new RegExp(`on\\.${kind}\\("([\\w]+)"`, "g"))].map(match => match[1]))];
+  const opens = keys("open");
+  assert.deepEqual(opens.sort(), ["copy", "generate", "laneColour", "mergeSettings", "new", "replaceSample"]);
+  const openers = { laneColour: "openLaneColour", replaceSample: "openReplaceSample", generate: "openGenerate",
+    new: "openNewDifficulty", copy: "openCopy", mergeSettings: "openMergeSettings" };
+  evaluate(`globalThis.reached = []; run = task => task();
+    ${Object.values(openers).map(name => `${name} = () => reached.push("${name}");`).join(" ")}`);
+  for (const kind of opens) evaluate(`inspectorAction("${kind}")`);
+  assert.deepEqual(JSON.parse(evaluate("JSON.stringify(reached)")), opens.map(kind => openers[kind]));
+
+  const commands = keys("command");
+  assert.deepEqual(commands, ["quantizeDialog", "repeat", "duplicate", "delete", "editRange", "scaleByVolume"]);
+  await sent();
+  for (const id of commands) evaluate(`inspectorAction("command", "${id}")`);
+  assert.deepEqual(await sent(), commands.map(id => ({ kind: "command", id })));
+  // Each id is in the editor's command catalogue, as the old data-command buttons' ids were.
+  const catalogue = (await Promise.all(["dawsu-application/src/commands.rs", "dawsu-editor/src/editing_commands.rs"]
+    .map(path => readFile(new URL("../../../crates/" + path, import.meta.url), "utf8")))).join(" ");
+  const known = new Set([...catalogue.matchAll(/(?:CommandDefinition::new|\bdef)\(\s*"(\w+)"/g)].map(match => match[1]));
+  for (const id of commands) assert.ok(known.has(id), id + " is not a catalogue command");
+
+  const toggles = keys("toggle");
+  assert.deepEqual(toggles.sort(), ["audition", "hs_mode", "protect"]);
+  evaluate("view = { busy: false }; scene = { path: 'a.osu' };");
+  for (const kind of toggles) evaluate(`inspectorAction("toggle", "${kind}", true)`);
+  assert.deepEqual(await sent(), toggles.map(kind => ({ kind, on: true })));
+});
+
+test("Layout… moves each Inspector section whole, never the buttons inside a Svelte section", async () => {
+  const docking = await read("docking.js");
+  // Sections get a grip like ribbon groups and drop only beside another section of the Inspector.
+  assert.match(docking, /const inspectorSections = \(\) => \[\.\.\.\(panels\.inspector\?\.children \?\? \[\]\)\]\.filter\(item => item\.matches\("section"\)\)/);
+  assert.match(docking, /for \(const section of inspectorSections\(\)\) \{\s*barHandles\.set\(moveHandle\(section,/);
+  assert.match(docking, /under\.closest\("#editor-inspector > section"\)/);
+  // Cancel and Reset put the sections back.
+  assert.match(docking, /inspector: \[\.\.\.panels\.inspector\.children\]/);
+  assert.match(docking, /panels\.inspector\.append\(\.\.\.draft\.inspector\)/);
+  assert.match(docking, /panels\.inspector\.append\(\.\.\.initialInspector\)/);
+  assert.match(docking, /button\.closest\("[^"]*\[data-ui-mount\][^"]*"\)/);
+  // Each section names itself for the grip's tooltip.
+  for (const [, label] of inspector.matchAll(/<section class="inspector-part" aria-label="([^"]+)">/g)) assert.ok(label);
+  assert.match(css, /#editor-inspector > section > \.layout-move-handle/);
 });

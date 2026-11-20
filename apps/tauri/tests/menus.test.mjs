@@ -6,7 +6,8 @@ import { createContext, runInContext } from "node:vm";
 const code = await readFile(new URL("../dist/menus.js", import.meta.url), "utf8");
 const html = await readFile(new URL("../dist/index.html", import.meta.url), "utf8");
 // The Inspector's Lane and Difficulty buttons live in a Svelte part and keep the ids the menus click.
-const inspectorPart = await readFile(new URL("../ui/src/parts/InspectorSections.svelte", import.meta.url), "utf8");
+const inspectorPart = (await Promise.all(["Selection", "Lane", "Difficulty"].map(name =>
+  readFile(new URL(`../ui/src/parts/Inspector${name}.svelte`, import.meta.url), "utf8")))).join("\n");
 const css = await readFile(new URL("../dist/style.css", import.meta.url), "utf8");
 const catalogue = (await Promise.all([
   "../../../crates/dawsu-application/src/commands.rs",

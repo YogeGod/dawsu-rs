@@ -40,7 +40,7 @@ test("selection card shows its first hit and distinguishes relative and absolute
   calls.length = 0;
   const model = () => JSON.parse(runInContext("JSON.stringify(inspectorModel())", context));
   runInContext('view = { busy: false }; scene = { selection: { count: 2, start: 1250.5, object: "Circle" } };', context);
-  assert.equal(model().selection.count, "2 hits");
+  assert.equal(model().selection.summary, "2 hits selected");
   assert.equal(model().selection.start, "00:01.251");
   assert.equal(model().selection.object, "Circle");
 

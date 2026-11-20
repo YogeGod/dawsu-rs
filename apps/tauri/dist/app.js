@@ -123,7 +123,7 @@ async function update(action, full = true) {
         break;
       }
       case "newDiff":
-        $("new").click();
+        $("new")?.click();
         break;
       case "openFolder":
         await invoke("open_editor_folder", { folder: "map" });
@@ -921,7 +921,23 @@ let inspectorState = null;
 
 function handOverInspector() {
   inspectorState = inspectorModel();
-  window.dawsuUi?.inspector?.(inspectorState);
+  try {
+    window.dawsuUi?.inspector?.(inspectorState);
+  } catch (error) {
+    console.error(error);
+  }
+}
+
+// v3's Inspector names a lane "Clap · Soft set" and a selection's lane "Clap (Soft)". The lane
+// headers and the lane filter keep laneTitle(); a lane the mapper renamed keeps its own name.
+function inspectorLaneNames(lane) {
+  if (!lane?.group || renamedLanes.has(lane.colourKey)) {
+    const name = laneTitle(lane);
+    return { title: name, short: name };
+  }
+  const { name } = laneSound(lane);
+  const set = lane.group[0].toUpperCase() + lane.group.slice(1);
+  return { title: name + " · " + set + " set", short: name + " (" + set + ")" };
 }
 
 // The bundle loads after this script, so it reads the last model at load.
@@ -935,12 +951,14 @@ function inspectorModel() {
   const { lanes, volumes } = selection ? selectedHitDetails() : { lanes: [], volumes: [] };
   const body = selection?.sliderBody;
   const lane = scene?.lanes?.[view?.activeLane];
+  // A fault stops the editor like a running job does.
+  const busy = !!view?.busy || !!view?.fault;
   return {
-    map: !!scene, busy: !!view?.busy, doc: !!scene && !view?.busy,
+    busy, doc: !!scene && !busy,
     selection: selection ? {
-      count: selection.count + (selection.count === 1 ? " hit" : " hits"),
-      lanes: lanes.length > 1 ? " · " + lanes.length + " lanes"
-        : lanes.length ? " · " + laneTitle(scene.lanes?.[lanes[0]]) : "",
+      summary: selection.count + (selection.count === 1 ? " hit" : " hits") + " selected" +
+        (lanes.length > 1 ? " · " + lanes.length + " lanes"
+          : lanes.length ? " · " + inspectorLaneNames(scene.lanes?.[lanes[0]]).short : ""),
       start: clock(selection.start),
       volume: !volumes.length ? ""
         : volumes.length === 1 ? volumes[0] + "%" : volumes[0] + "–" + volumes[volumes.length - 1] + "%",
@@ -955,7 +973,7 @@ function inspectorModel() {
     range: !!scene?.range, insertVolume: scene?.insertVolume ?? 100,
     protect: !!scene?.protect, audition: !!view?.audition, hs: !!scene?.hs,
     lane: lane ? {
-      title: laneTitle(lane), sample: lane.sample && lane.sample !== lane.name ? lane.sample : "",
+      title: inspectorLaneNames(lane).title, sample: lane.sample && lane.sample !== lane.name ? lane.sample : "",
       colour: laneColours.get(lane.colourKey) ?? null, canColour: !!lane.colourKey, canReplace: !!lane.canReplace,
     } : null,
   };
@@ -971,7 +989,11 @@ function inspectorAction(kind, ...args) {
     case "copy": return openCopy();
     case "mergeSettings": return run(() => openMergeSettings());
     case "command": return command(args[0]);
-    case "insert": return act({ kind: "insert_volume", value: limit(Math.round(Number(args[0]) || 0), 0, 100) });
+    case "insert": {
+      // A blank or unreadable field sets 100 %, as the old Insert volume field's fallback did.
+      const value = typeof args[0] === "number" && Number.isFinite(args[0]) ? args[0] : 100;
+      return act({ kind: "insert_volume", value: limit(Math.round(value), 0, 100) });
+    }
     case "toggle": return act({ kind: args[0], on: !!args[1] });
   }
   if (!scene || view.busy) return false;
@@ -2108,7 +2130,7 @@ function modal(kind, title, content, buttons, cancel = null) {
   }));
   if (!dialog.open) dialog.showModal();
 }
-// The Inspector's Lane tint (and the lane menu, by its id): opens on grey until the mapper picks a colour.
+// The Inspector's Lane colour (and the lane menu, by its id): opens on grey until the mapper picks a colour.
 function openLaneColour() {
   const path = scene?.path;
   const lane = scene?.lanes?.[view.activeLane];
@@ -2124,7 +2146,7 @@ function openLaneColour() {
   const palette = document.createElement("div");
   palette.className = "tint-palette";
   palette.setAttribute("role", "radiogroup");
-  palette.setAttribute("aria-label", "Lane tint");
+  palette.setAttribute("aria-label", "Lane colour");
   const preview = document.createElement("div");
   preview.className = "tint-preview";
   const caption = document.createElement("span");
@@ -2168,7 +2190,7 @@ function openLaneColour() {
     saveLaneLayout(true);
   };
   const buttons = [["Cancel", closeModal]];
-  if (laneColours.has(lane.colourKey)) buttons.push(["Clear tint", () => change(null)]);
+  if (laneColours.has(lane.colourKey)) buttons.push(["Clear colour", () => change(null)]);
   buttons.push(["Apply", () => (chosen ? change(input.value) : closeModal()), true]);
   modal("lane-colour", "Lane colour · " + lane.name, [palette, preview, label], buttons);
 }

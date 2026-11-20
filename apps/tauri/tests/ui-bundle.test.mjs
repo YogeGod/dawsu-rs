@@ -44,6 +44,9 @@ test("the bundle keeps to the editor's content security policy", () => {
       assert.ok(!text.includes(blocked), file + " contains " + blocked);
     }
   }
+  // The target includes Safari 15.0 and older WebKitGTK, which lack these CSS features.
+  const styles = read(new URL("ui.css", bundle));
+  for (const missing of [":has(", "color-mix(", "aspect-ratio", "oklch("]) assert.ok(!styles.includes(missing), "ui.css uses " + missing);
   const script = read(new URL("ui.js", bundle));
   // The target includes Safari 15.0 and older WebKitGTK, which lack these (Safari 15.4 added them).
   for (const missing of ["findLast", ".at("]) assert.ok(!script.includes(missing), "ui.js uses " + missing);

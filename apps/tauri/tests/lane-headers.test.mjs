@@ -145,10 +145,10 @@ test("clicking a lane selects and auditions it like its name", async () => {
 test("the Inspector and the lane filter use the same sound and set names", async () => {
   const { evaluate, get } = await frontend();
   evaluate(fixture);
-  assert.equal(evaluate("inspectorModel().lane.title"), "Soft Clap 2");
+  assert.equal(evaluate("inspectorModel().lane.title"), "Clap 2 · Soft set");
   evaluate(`scene.moments = [[1000, 70, true, [[0, true]]]];
     scene.selection = { count: 1, start: 1000, object: "Circle" };`);
-  assert.equal(evaluate("inspectorModel().selection.lanes"), " · Soft Normal");
+  assert.equal(evaluate("inspectorModel().selection.summary"), "1 hit selected · Normal (Soft)");
   const filter = get("lane-filter");
   filter.value = "soft clap";
   filter.events.get("input")();

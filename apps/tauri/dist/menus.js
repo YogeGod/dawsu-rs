@@ -309,7 +309,7 @@ function saveSoundSet() {
 }
 
 function menuItems(name, target) {
-  const click = (id) => () => $(id).click();
+  const click = (id) => () => $(id)?.click();
   const idle = () => !view.busy && !drag;
   const selection = () => canEditFromMenu() && !!scene.selection?.count;
   const panel = (label, glyph, key, field) => menuItem(label, glyph, () =>
