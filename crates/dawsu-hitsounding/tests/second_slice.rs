@@ -419,3 +419,106 @@ fn compile_keeps_equal_effective_gains_native_and_plans_a_mix_for_distinct_layer
     assert_eq!(decoded.moments()[1].volume(), 5);
     assert_eq!(decoded.moments()[1].hits().count(), 2);
 }
+
+// ---------------------------------------------------------------- Save's merge per role (Yoge 2026-11-20)
+
+use dawsu_hitsounding::compile::{merge_roles, RoleFile};
+
+fn role(set: SampleSet, role: Hitsound, layers: &[(SampleIdentity, i32)]) -> RoleFile {
+    RoleFile { set, role, layers: layers.to_vec() }
+}
+
+#[test]
+fn a_hitnormal_with_two_finishes_keeps_the_hitnormal_and_merges_the_finishes() {
+    let normal = std(SampleSet::Normal, Hitsound::Normal, 0);
+    let drum = std(SampleSet::Drum, Hitsound::Finish, 0);
+    let soft = std(SampleSet::Soft, Hitsound::Finish, 0);
+    let merge = merge_roles(&[(normal.clone(), 80), (drum.clone(), 80), (soft.clone(), 40)]);
+    assert_eq!(merge.volume, 80);
+    // Each set is used once; the drum finish is the loudest, so it names the finish file.
+    assert_eq!(merge.files, [
+        role(SampleSet::Normal, Hitsound::Normal, &[(normal, 80)]),
+        role(SampleSet::Drum, Hitsound::Finish, &[(drum, 80), (soft, 40)]),
+    ]);
+    assert_eq!(merge.hits(5, SampleSet::Soft), [std(SampleSet::Normal, Hitsound::Normal, 5), std(SampleSet::Drum, Hitsound::Finish, 5)]);
+}
+
+#[test]
+fn the_addition_set_is_the_one_most_additions_use_then_the_loudest_then_soft_drum_normal() {
+    let add = |set, sound, volume| (std(set, sound, 0), volume);
+    let normal = add(SampleSet::Normal, Hitsound::Normal, 100);
+    let pick = |layers: &[(SampleIdentity, i32)]| merge_roles(layers).files.iter().skip(1).map(|f| f.set).collect::<Vec<_>>();
+    // Two drum sounds win over one louder soft one.
+    assert_eq!(pick(&[normal.clone(), add(SampleSet::Drum, Hitsound::Clap, 30), add(SampleSet::Drum, Hitsound::Whistle, 30), add(SampleSet::Soft, Hitsound::Clap, 90)]),
+        [SampleSet::Drum, SampleSet::Drum]);
+    // One each and the same volume: soft, then drum, then normal.
+    assert_eq!(pick(&[normal.clone(), add(SampleSet::Normal, Hitsound::Clap, 50), add(SampleSet::Drum, Hitsound::Clap, 50)]), [SampleSet::Drum]);
+    assert_eq!(pick(&[normal.clone(), add(SampleSet::Drum, Hitsound::Clap, 50), add(SampleSet::Soft, Hitsound::Clap, 50)]), [SampleSet::Soft]);
+}
+
+#[test]
+fn two_hitnormals_are_mixed_into_one_hitnormal_file() {
+    let normal = std(SampleSet::Normal, Hitsound::Normal, 2);
+    let soft = std(SampleSet::Soft, Hitsound::Normal, 3);
+    let merge = merge_roles(&[(normal.clone(), 80), (soft.clone(), 40)]);
+    assert_eq!(merge.files, [role(SampleSet::Normal, Hitsound::Normal, &[(normal, 80), (soft, 40)])]);
+    assert_eq!(merge.hits(4, SampleSet::Drum), [std(SampleSet::Normal, Hitsound::Normal, 4)]);
+}
+
+#[test]
+fn a_moment_without_a_hitnormal_gets_no_hitnormal_file_and_sample_files_join_the_hitnormal() {
+    let clap = std(SampleSet::Drum, Hitsound::Clap, 2);
+    let whistle = std(SampleSet::Drum, Hitsound::Whistle, 3);
+    let merge = merge_roles(&[(clap.clone(), 60), (whistle.clone(), 60)]);
+    // Yoge 2026-11-20: the player's skin plays the hitnormal, in the set the object has today.
+    assert_eq!(merge.files, [
+        role(SampleSet::Drum, Hitsound::Whistle, &[(whistle, 60)]),
+        role(SampleSet::Drum, Hitsound::Clap, &[(clap.clone(), 60)]),
+    ]);
+    assert!(!merge.has_hitnormal());
+    assert_eq!(merge.hits(6, SampleSet::Soft), [
+        std(SampleSet::Soft, Hitsound::Normal, 6), std(SampleSet::Drum, Hitsound::Whistle, 6), std(SampleSet::Drum, Hitsound::Clap, 6),
+    ]);
+    let kick = SampleIdentity::File("kick.wav".into());
+    let merge = merge_roles(&[(kick.clone(), 70), (clap.clone(), 30)]);
+    assert_eq!(merge.files, [
+        role(SampleSet::Drum, Hitsound::Normal, &[(kick, 70)]),
+        role(SampleSet::Drum, Hitsound::Clap, &[(clap, 30)]),
+    ]);
+}
+
+#[test]
+fn merged_volumes_never_go_below_five_percent() {
+    let normal = std(SampleSet::Normal, Hitsound::Normal, 0);
+    let clap = std(SampleSet::Normal, Hitsound::Clap, 3);
+    let source = map("256,192,1000,1,0,1:0:2:80:");
+    let mut edited = dec(&source);
+    edited.set_moment_state(MomentId(0), 3, [(normal.clone(), 3), (clap.clone(), 1)]);
+    let (_, problems) = comp(&source, &edited, Placement::OnObjects);
+    let [SaveProblem { kind: ProblemKind::NeedsSampleMix(layers), .. }] = problems.as_slice() else { panic!("{problems:?}") };
+    let merge = merge_roles(layers);
+    assert_eq!(merge.volume, 5);
+    assert_eq!(merge.files[1], role(SampleSet::Normal, Hitsound::Clap, &[(clap, 5)]));
+}
+
+#[test]
+fn a_merged_moment_compiles_on_a_circle_with_one_index_and_reads_back() {
+    let source = map("256,192,1000,1,0,1:0:2:80:");
+    let mut edited = dec(&source);
+    let merge = merge_roles(&[
+        (std(SampleSet::Normal, Hitsound::Normal, 2), 80),
+        (std(SampleSet::Drum, Hitsound::Finish, 3), 80),
+        (std(SampleSet::Soft, Hitsound::Finish, 4), 40),
+    ]);
+    let hits: Vec<_> = merge.hits(5, SampleSet::Normal).into_iter().map(|lane| (lane, merge.volume)).collect();
+    edited.set_moment_state(MomentId(0), merge.volume, hits);
+    let (encoded, problems) = comp(&source, &edited, Placement::OnObjects);
+    assert!(problems.is_empty(), "{problems:?}");
+    let text = String::from_utf8(encoded.to_bytes()).unwrap();
+    assert!(text.contains("256,192,1000,1,4,1:3:5:80:\r\n"), "{text}");
+    let decoded = dec(&reopen(&encoded));
+    let mut back: Vec<_> = decoded.moments()[0].hits().cloned().collect();
+    back.sort();
+    assert_eq!(back, [std(SampleSet::Normal, Hitsound::Normal, 5), std(SampleSet::Drum, Hitsound::Finish, 5)]);
+    assert_eq!(decoded.moments()[0].volume(), 80);
+}

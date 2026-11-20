@@ -15,7 +15,7 @@ impl OutputProblem {
             target: target.into(),
             timeline: timeline.into(),
             time: problem.time.ms(),
-            message: super::problem_description(&problem.kind).into(),
+            message: super::problem_description(&problem.kind, problem.time.ms()),
         }
     }
 

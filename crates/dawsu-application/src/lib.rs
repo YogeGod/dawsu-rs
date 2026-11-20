@@ -303,6 +303,14 @@ fn compile_pass(
     if loose_hits_saved_in_project && !hs {
         problems.retain(|problem| !matches!(problem.kind, dawsu_hitsounding::ProblemKind::NoObject));
     }
+    // Save merges per role, and a slider sound has no role on a hit: that moment is left out.
+    for problem in &mut problems {
+        if let dawsu_hitsounding::ProblemKind::NeedsSampleMix(layers) = &problem.kind
+            && let Some((lane, _)) = layers.iter().find(|(lane, _)| matches!(lane, SampleIdentity::Standard { sound: Sound::Slider(_), .. }))
+        {
+            problem.kind = dawsu_hitsounding::ProblemKind::SliderSoundOnHit(lane.clone());
+        }
+    }
     Ok(Pass { out, problems, owned, circles })
 }
 /// Save's first compile pass, without sample mixes or writing. Recovery checks the last save with it.
@@ -390,8 +398,8 @@ fn prepare_save(
                 Decompiled::Cancelled => return Err("Save cancelled".into()),
                 Decompiled::UnsupportedMode { .. } => return Err("Cannot mix this difficulty".into()),
             };
-            if let Err(error) = mix_files.prepare(
-                effective, &mut target, &mixable, root, defaults, &expected, &[], 2, cancel,
+            if let Err(error) = mix_files.prepare_by_role(
+                effective, &mut target, &mixable, root, defaults, &expected, cancel,
             ) {
                 diagnostics.extend(mixable.iter().map(|problem| {
                     OutputProblem::new(problem, path, path).with_message(&error)
@@ -414,7 +422,7 @@ fn prepare_save(
             "Save needs review: {} hits cannot be written. First problem at {:.0} ms: {}",
             refused.len(),
             refused[0].time.ms(),
-            problem_description(&refused[0].kind)
+            problem_description(&refused[0].kind, refused[0].time.ms())
         ));
     }
     let (out, owned, effective, left_out, circles) = (rolled.out, rolled.owned, rolled.effective, rolled.left_out, rolled.circles);
@@ -2976,8 +2984,14 @@ fn body_description(problem: &dawsu_hitsounding::ProblemKind) -> &'static str {
     }
 }
 
-fn problem_description(problem: &dawsu_hitsounding::ProblemKind) -> &'static str {
+fn problem_description(problem: &dawsu_hitsounding::ProblemKind, time: f64) -> String {
     use dawsu_hitsounding::ProblemKind::*;
+    if let SliderSoundOnHit(lane) = problem {
+        return format!(
+            "At {time:.0} ms a slider sound ({}) is on a hit. osu! plays slider sounds only on a slider body. Remove it from the hit.",
+            lane_name(lane),
+        );
+    }
     match problem {
         NoObject => "This hit has no object. Enable HS mode or Generate a hitsound difficulty.",
         NeedsSampleMix(layers) if layers.is_empty() => {
@@ -2990,7 +3004,9 @@ fn problem_description(problem: &dawsu_hitsounding::ProblemKind) -> &'static str
         LookupWindowTaken => "Another lookup overlaps the timing line needed by this hit.",
         LineRefused => "This object cannot hold the requested change.",
         BodyVolumeNeedsHead => "The slider body volume conflicts with its head.",
+        SliderSoundOnHit(_) => unreachable!("described above"),
     }
+    .into()
 }
 
 #[cfg(test)]
@@ -3069,10 +3085,14 @@ mod project_workflow {
         assert_ne!(written, map);
         assert!(written.ends_with(b"128,192,1000,1,0,1:1:1:70:\n"));
         let decoded = Document::read(&path).unwrap();
-        let backing = decoded.composer.hitsounds().moments()[0].hits().next().unwrap();
-        let SampleIdentity::File(name) = backing else { panic!("expected a mix file") };
-        let pcm = dawsu_audio::decode(&fixture.path(name)).unwrap();
-        assert!((pcm.samples[0] - (0.25 * 0.35 + 0.5 * 0.7)).abs() < 0.0001);
+        // Save merges per role at the clap's volume: the hitnormal file holds it at half.
+        let saved = &decoded.composer.hitsounds().moments()[0];
+        assert_eq!(saved.volume(), 70);
+        assert!(saved.has_hit(&SampleIdentity::Standard { set: SampleSet::Normal, sound: Sound::Hit(Hitsound::Normal), index: dawsu_foundation::CustomIndex::new(2) }));
+        let pcm = dawsu_audio::decode(&fixture.path("normal-hitnormal2.wav")).unwrap();
+        assert!((pcm.samples[0] - 0.25 * 0.5).abs() < 0.0001);
+        let pcm = dawsu_audio::decode(&fixture.path("normal-hitclap2.wav")).unwrap();
+        assert!((pcm.samples[0] - 0.5).abs() < 0.0001);
         let mut reopened = Application::headless();
         reopened.project_root = app.project_root.clone();
         open(&mut reopened, path.clone());
@@ -3164,6 +3184,69 @@ mod project_workflow {
         assert_eq!(diagnostics.iter().map(|p| p.time).collect::<Vec<_>>(), [2500.0], "the rendered mix is not a problem");
         assert_eq!(plan.left_out.len(), 1);
         assert_eq!(plan.mix_files.staged.len(), 1, "the circle's mix is rendered");
+    }
+
+    #[test]
+    fn hs_save_merges_a_circle_per_role_and_leaves_a_slider_head_out() {
+        let scratch = Scratch::new("hs-merge-roles");
+        let folder = scratch.path("mapset");
+        std::fs::create_dir(&folder).unwrap();
+        let map = folder.join("a.osu");
+        std::fs::write(&map, SLIDER_MAP).unwrap();
+        wav(&folder.join("normal-hitnormal3.wav"), 8192);
+        wav(&folder.join("drum-hitfinish3.wav"), 4096);
+        wav(&folder.join("soft-hitfinish4.wav"), 16384);
+        let document = Document::read(&map).unwrap();
+        let mut hits = document.composer.hitsounds().clone();
+        let numbered = |set, sound, index| SampleIdentity::Standard { set, sound: Sound::Hit(sound), index: dawsu_foundation::CustomIndex::new(index) };
+        hits.set_moment_state(dawsu_hitsounding::MomentId(0), 80, [
+            (numbered(SampleSet::Normal, Hitsound::Normal, 3), 80),
+            (numbered(SampleSet::Drum, Hitsound::Finish, 3), 80),
+            (numbered(SampleSet::Soft, Hitsound::Finish, 4), 40),
+        ]);
+        // On objects only, a slider head cannot take a new index, so it stays left out.
+        let head = hits.moments().iter().position(|m| matches!(m.place(), dawsu_hitsounding::Place::SliderNode { node: 0, .. })).unwrap();
+        hits.set_moment_state(dawsu_hitsounding::MomentId(head), 70, [
+            (skin(SampleSet::Normal, Hitsound::Normal), 70), (skin(SampleSet::Drum, Hitsound::Finish), 70), (skin(SampleSet::Soft, Hitsound::Finish), 35),
+        ]);
+        let project = project::Project::load(&scratch.path("projects"), None, &document.path).unwrap();
+        let mut diagnostics = Vec::new();
+        let plan = prepare(&scratch, &document, &hits, Some(&project), &mut diagnostics).unwrap();
+        let names: Vec<_> = plan.mix_files.staged.iter().map(|mix| mix.path.file_name().unwrap().to_string_lossy().into_owned()).collect();
+        assert_eq!(names, ["normal-hitnormal2.wav", "drum-hitfinish2.wav"]);
+        assert!((plan.mix_files.staged[0].clip().samples[0] - 0.25).abs() < 0.0001);
+        assert!((plan.mix_files.staged[1].clip().samples[0] - (0.125 + 0.5 * 0.5)).abs() < 0.0001);
+        let text = String::from_utf8(plan.out.to_bytes()).unwrap();
+        assert!(text.contains("256,192,1000,1,4,0:3:2:80:\r\n"), "{text}");
+        assert_eq!(plan.left_out.len(), 1);
+        assert_eq!(diagnostics.iter().map(|p| p.time).collect::<Vec<_>>(), [2000.0]);
+    }
+
+    #[test]
+    fn a_slider_sound_on_a_hit_is_left_out_and_save_writes_the_rest() {
+        let scratch = Scratch::new("slider-sound-left-out");
+        let folder = scratch.path("mapset");
+        std::fs::create_dir(&folder).unwrap();
+        let map = folder.join("a.osu");
+        std::fs::write(&map, SLIDER_MAP).unwrap();
+        let document = Document::read(&map).unwrap();
+        let mut hits = document.composer.hitsounds().clone();
+        let slide = SampleIdentity::Standard { set: SampleSet::Soft, sound: Sound::Slider(SliderSound::Slide), index: dawsu_foundation::CustomIndex::new(0) };
+        hits.add_hit(dawsu_hitsounding::MomentId(0), slide);
+        let tail = tail_id(&hits);
+        hits.add_hit(tail, skin(SampleSet::Normal, Hitsound::Whistle));
+        let project = project::Project::load(&scratch.path("projects"), None, &document.path).unwrap();
+        let mut diagnostics = Vec::new();
+        let plan = prepare(&scratch, &document, &hits, Some(&project), &mut diagnostics).unwrap();
+        // The tail's whistle is written; the circle keeps its old line and is listed.
+        let text = String::from_utf8(plan.out.to_bytes()).unwrap();
+        assert!(text.contains("256,192,1000,1,0,0:0:0:0:\r\n"), "{text}");
+        assert!(text.contains("100,100,2000,2,0,L|200:100,1,140,0|2"), "{text}");
+        assert_eq!(plan.left_out.len(), 1);
+        assert!(plan.mix_files.staged.is_empty());
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].time, 1000.0);
+        assert_eq!(diagnostics[0].message, "At 1000 ms a slider sound (soft-sliderslide) is on a hit. osu! plays slider sounds only on a slider body. Remove it from the hit.");
     }
 
     #[test]
@@ -4888,12 +4971,15 @@ mod project_workflow {
             .collect::<Vec<_>>()[..] else {
             panic!("expected exactly one saved circle");
         };
-        let [SampleIdentity::File(name)] = moment.hits().collect::<Vec<_>>()[..] else {
-            panic!("expected one generated WAV");
+        // Both sample files play as the hitnormal, so Save mixes them into one hitnormal file at
+        // the louder one's volume.
+        let [SampleIdentity::Standard { set: SampleSet::Normal, sound: Sound::Hit(Hitsound::Normal), index }] = moment.hits().collect::<Vec<_>>()[..] else {
+            panic!("expected one hitnormal");
         };
-        let mix = dawsu_audio::decode(&folder.join(name)).unwrap();
+        assert_eq!(moment.volume(), 80);
+        let mix = dawsu_audio::decode(&folder.join(format!("normal-hitnormal{}.wav", index.get()))).unwrap();
         assert_eq!(mix.samples.len(), 4);
-        for (actual, expected) in mix.samples.iter().zip([0.2, 0.2, 0.1, 0.1]) {
+        for (actual, expected) in mix.samples.iter().zip([0.25, 0.25, 0.125, 0.125]) {
             assert!((actual - expected).abs() < 0.0001, "{actual} vs {expected}");
         }
         save(&mut app);

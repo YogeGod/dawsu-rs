@@ -54,6 +54,9 @@ pub enum ProblemKind {
     /// A slider body's volume goes with its head's (one green line both read), and the head asks
     /// for another volume or index, or cannot be saved itself.
     BodyVolumeNeedsHead,
+    /// A slider sound (this lane) is drawn on a hit. osu! plays slider sounds only on a slider
+    /// body, so Save leaves the moment out rather than merging it (Yoge 2026-11-20).
+    SliderSoundOnHit(SampleIdentity),
 }
 
 /// The outcome of compile.
@@ -184,6 +187,93 @@ fn mix_plan(m: &Moment) -> ProblemKind {
 /// Generate and Copy call this for their groups and pile-ups, so mix planning stays here.
 pub fn mix_problem(layers: &[(SampleIdentity, i32)]) -> ProblemKind {
     ProblemKind::NeedsSampleMix(layers.iter().map(|(lane, volume)| (lane.clone(), saved_volume(*volume))).collect())
+}
+
+/// One file Save writes for a moment osu! cannot hold natively: every sound of one role, each
+/// at its own volume (Yoge 2026-11-20: "it's supposed to only merge the additions").
+#[derive(Debug, Clone, PartialEq)]
+pub struct RoleFile {
+    pub set: SampleSet,
+    pub role: Hitsound,
+    /// The sounds mixed into the file, each at its saved volume.
+    pub layers: Vec<(SampleIdentity, i32)>,
+}
+
+/// How Save merges a moment per role at one shared index, since osu! gives an object one index
+/// for all its sounds (ConvertHitObjectParser.cs:549-566 at lazer 131fe72).
+#[derive(Debug, Clone, PartialEq)]
+pub struct RoleMerge {
+    /// The object's volume: the loudest sound. Each file plays its sounds at their volume over this.
+    pub volume: i32,
+    /// The hitnormal first when there is one, then each addition role present (whistle, finish, clap).
+    pub files: Vec<RoleFile>,
+}
+
+impl RoleMerge {
+    /// The hits that play the merged files once they are written at `index`.
+    /// Without a hitnormal file the object keeps `object_normal`, its normal set today, and the
+    /// player's skin plays the hitnormal (Yoge 2026-11-20).
+    pub fn hits(&self, index: u32, object_normal: SampleSet) -> Vec<SampleIdentity> {
+        let index = dawsu_foundation::CustomIndex::new(index);
+        let skin = (!self.has_hitnormal()).then_some(SampleIdentity::Standard { set: object_normal, sound: Sound::Hit(Hitsound::Normal), index });
+        skin.into_iter().chain(self.files.iter().map(|f| SampleIdentity::Standard { set: f.set, sound: Sound::Hit(f.role), index })).collect()
+    }
+
+    /// True when the moment has a hitnormal or a sample file, so Save writes a hitnormal file.
+    pub fn has_hitnormal(&self) -> bool {
+        self.files.first().is_some_and(|f| f.role == Hitsound::Normal)
+    }
+}
+
+/// Splits a moment's sounds by role: the hitnormals (and sample files) become one hitnormal file,
+/// none when there is none, and each addition role one file in the set most additions use.
+/// `layers` are a save problem's sounds, at their saved volumes already (`mix_problem`).
+pub fn merge_roles(layers: &[(SampleIdentity, i32)]) -> RoleMerge {
+    let role_of = |lane: &SampleIdentity| match lane {
+        SampleIdentity::Standard { sound: Sound::Hit(role), .. } => *role,
+        _ => Hitsound::Normal,
+    };
+    let sets = |hitnormal: bool| {
+        layers.iter().filter_map(move |(lane, volume)| match lane {
+            SampleIdentity::Standard { set, sound: Sound::Hit(role), .. } if (*role == Hitsound::Normal) == hitnormal => Some((*set, *volume)),
+            _ => None,
+        })
+    };
+    let addition_set = pick_set(sets(false));
+    let normal_set = pick_set(sets(true)).or(addition_set).unwrap_or(SampleSet::Normal);
+    let mut files = Vec::new();
+    if layers.iter().any(|(lane, _)| role_of(lane) == Hitsound::Normal) {
+        files.push(RoleFile { set: normal_set, role: Hitsound::Normal, layers: Vec::new() });
+    }
+    for role in [Hitsound::Whistle, Hitsound::Finish, Hitsound::Clap] {
+        if layers.iter().any(|(lane, _)| role_of(lane) == role) {
+            files.push(RoleFile { set: addition_set.unwrap_or(normal_set), role, layers: Vec::new() });
+        }
+    }
+    for (lane, volume) in layers {
+        let role = role_of(lane);
+        if let Some(file) = files.iter_mut().find(|f| f.role == role) {
+            file.layers.push((lane.clone(), *volume));
+        }
+    }
+    let volume = layers.iter().map(|(_, volume)| *volume).max().unwrap_or(100);
+    RoleMerge { volume, files }
+}
+
+/// The set most of these sounds use; a tie goes to the loudest sound, then soft, drum, normal.
+fn pick_set(sounds: impl Iterator<Item = (SampleSet, i32)>) -> Option<SampleSet> {
+    let mut tally: BTreeMap<SampleSet, (usize, i32)> = BTreeMap::new();
+    for (set, volume) in sounds {
+        let entry = tally.entry(set).or_default();
+        entry.0 += 1;
+        entry.1 = entry.1.max(volume);
+    }
+    let preference = |set: SampleSet| match set {
+        SampleSet::Soft => 2,
+        SampleSet::Drum => 1,
+        SampleSet::Normal => 0,
+    };
+    tally.into_iter().max_by_key(|(set, (count, loudest))| (*count, *loudest, preference(*set))).map(|(set, _)| set)
 }
 
 /// One hitnormal (or one sample file) plus additions that share one set, one index and one

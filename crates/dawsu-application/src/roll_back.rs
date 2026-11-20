@@ -254,7 +254,7 @@ pub(crate) fn compile_with_roll_back(
             return Err(format!(
                 "Save could not leave out the moment at {:.0} ms: {}",
                 problem.time.ms(),
-                super::problem_description(&problem.kind)
+                super::problem_description(&problem.kind, problem.time.ms())
             ));
         }
     }

@@ -2366,7 +2366,7 @@ Mode:0
         app.seek(1000.0);
         app.place_sound_set_file(&map, &f.set).unwrap();
         save(&mut app, &f);
-        assert_eq!(mapset_files(&f).len(), 4, "the two copies and one rendered mix: {:?}", mapset_files(&f));
+        assert_eq!(mapset_files(&f).len(), 5, "the two copies, and the hitnormal and clap merged at one index: {:?}", mapset_files(&f));
         // Saving again with nothing changed writes no project record and keeps no new backup.
         let (project, backups) = (project_bytes(&f), walk(&f.scratch.path("projects")).len());
         save(&mut app, &f);
@@ -2499,7 +2499,7 @@ Mode:0
         assert!(!app.document().unwrap().composer.hitsounds().moment(dawsu_hitsounding::MomentId(0)).has_hit_volume_overrides());
         let before = mapset_files(&f);
         save(&mut app, &f);
-        assert_eq!(mapset_files(&f).len(), before.len() + 1, "one rendered mix: {:?}", mapset_files(&f));
+        assert_eq!(mapset_files(&f).len(), before.len() + 2, "a hitnormal and one clap file: {:?}", mapset_files(&f));
         let reopened = reopen(&f);
         assert_eq!(sounds_at(&reopened, 0), placed, "{:?}", reopened.warnings);
         assert_eq!(links(&reopened), [(0, SET_ID.to_string())]);
