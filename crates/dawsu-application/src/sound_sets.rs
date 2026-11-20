@@ -516,6 +516,8 @@ pub(crate) mod tests {
     pub(crate) fn app(f: &Fixture) -> Application {
         let mut app = Application::with_data_root(f.scratch.path("data"));
         app.error = None;
+        // No audio device: the playhead is then exactly where a test puts it.
+        app.audio = None;
         app.project_root = Some(f.scratch.path("projects"));
         app.preferences.hitsound_library = Some(f.scratch.path("library"));
         app
