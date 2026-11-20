@@ -37,6 +37,8 @@ pub struct ExportPreview {
     /// The load or Save of the difficulty it was made from. The history version starts
     /// again at every load, so path and version alone cannot tell two loads apart.
     generation: u64,
+    /// Hitsounding mode when it was made: switching it changes what the source writes.
+    hs_mode: bool,
 }
 
 type PreviewResult = (Result<output::WritePlan, String>, Vec<OutputProblem>);
@@ -44,6 +46,7 @@ type PreviewResult = (Result<output::WritePlan, String>, Vec<OutputProblem>);
 struct Running {
     id: u64,
     generation: u64,
+    hs_mode: bool,
     handle: JoinHandle<()>,
     cancel: Arc<AtomicBool>,
     receive: mpsc::Receiver<PreviewResult>,
@@ -63,6 +66,8 @@ pub(crate) struct Slot {
     error: Option<String>,
     /// An Export write is running on main's job.
     pub(crate) writing: bool,
+    /// The id of the last Export write started; `written` and `write_error` belong to it.
+    write_id: Option<u64>,
     /// The last Export write's result: files written, or why nothing was.
     written: Option<usize>,
     write_error: Option<String>,
@@ -115,6 +120,7 @@ pub struct ExportStatus<'a> {
     pub problems: &'a [OutputProblem],
     pub error: Option<&'a str>,
     pub writing: bool,
+    pub write_id: Option<u64>,
     pub written: Option<usize>,
     pub write_error: Option<&'a str>,
 }
@@ -124,7 +130,12 @@ impl Application {
     /// finished preview and any running one, so Export is never run on old options.
     pub fn request_export_preview(&mut self, options: ExportOptions) -> Result<u64, String> {
         let source = self.document.as_ref().ok_or("Open a difficulty first.")?.path.clone();
-        let left_out = self.export_targets().iter()
+        let targets = self.export_targets();
+        // Never the source or the difficulty Generate made, whatever the window sends.
+        if options.targets.iter().any(|path| !targets.contains(path)) {
+            return Err("Export writes only into the other difficulties of this mapset.".into());
+        }
+        let left_out = targets.iter()
             .filter(|path| !options.targets.contains(path))
             .filter_map(|path| path.file_name().map(|name| name.to_string_lossy().into_owned()))
             .collect();
@@ -141,8 +152,11 @@ impl Application {
         self.export.error = None;
         self.export.last_id += 1;
         let id = self.export.last_id;
-        self.export.waiting = Some((id, source, options));
-        self.start_export_preview();
+        // Every difficulty left out: the choice is kept, and there is nothing to preview.
+        if !options.targets.is_empty() {
+            self.export.waiting = Some((id, source, options));
+            self.start_export_preview();
+        }
         Ok(id)
     }
 
@@ -155,6 +169,7 @@ impl Application {
             && preview.generation == self.document_generation
             && self.document.as_ref().is_some_and(|d| {
                 d.path == preview.plan.source && d.composer.history.version() == preview.plan.version
+                    && d.hs_mode == preview.hs_mode
             })
     }
 
@@ -171,6 +186,7 @@ impl Application {
             problems: &slot.problems,
             error: slot.error.as_deref(),
             writing: slot.writing,
+            write_id: slot.write_id,
             written: slot.written,
             write_error: slot.write_error.as_deref(),
         }
@@ -196,11 +212,12 @@ impl Application {
 
     /// Writes the preview with this id. Refused unless it is the latest preview and
     /// the difficulty is still the one, at the same edit, that it was made from.
-    pub fn run_export(&mut self, preview_id: u64) -> Result<(), String> {
+    pub fn run_export(&mut self, preview_id: u64) -> Result<u64, String> {
         self.run_export_in(preview_id, self.backups_folder())
     }
 
-    pub(crate) fn run_export_in(&mut self, preview_id: u64, backups: PathBuf) -> Result<(), String> {
+    /// Answers with the write's id, which the window matches against `write_id`.
+    pub(crate) fn run_export_in(&mut self, preview_id: u64, backups: PathBuf) -> Result<u64, String> {
         if self.busy {
             return Err("Wait for the current job to finish.".into());
         }
@@ -217,7 +234,9 @@ impl Application {
         self.export.writing = true;
         self.export.written = None;
         self.export.write_error = None;
-        Ok(())
+        let id = self.export.write_id.map_or(1, |last| last + 1);
+        self.export.write_id = Some(id);
+        Ok(id)
     }
 
     /// Collects a finished preview and starts waiting options once main is free.
@@ -225,12 +244,12 @@ impl Application {
         if let Some(running) = &self.export.running {
             match running.receive.try_recv() {
                 Ok((result, problems)) => {
-                    let (id, generation) = (running.id, running.generation);
+                    let (id, generation, hs_mode) = (running.id, running.generation, running.hs_mode);
                     self.export.running = None;
                     self.export.problems = problems;
                     match result {
                         Ok(plan) => {
-                            self.export.preview = Some(ExportPreview { id, origin: PreviewOrigin::Export, plan, generation });
+                            self.export.preview = Some(ExportPreview { id, origin: PreviewOrigin::Export, plan, generation, hs_mode });
                         }
                         Err(error) => self.export.error = Some(error),
                     }
@@ -266,6 +285,7 @@ impl Application {
         let progress = Arc::new(Mutex::new(None));
         let (send, receive) = mpsc::channel();
         let generation = self.document_generation;
+        let hs_mode = document.hs_mode;
         let (thread_cancel, thread_progress) = (cancel.clone(), progress.clone());
         let handle = std::thread::spawn(move || {
             let (cancel, progress) = (thread_cancel, thread_progress);
@@ -285,7 +305,7 @@ impl Application {
             );
             let _ = send.send((result, problems));
         });
-        self.export.running = Some(Running { id, generation, handle, cancel, receive, progress });
+        self.export.running = Some(Running { id, generation, hs_mode, handle, cancel, receive, progress });
     }
 }
 
@@ -490,7 +510,7 @@ mod tests {
         app.request_export_preview(options(&[])).unwrap();
         wait_preview(&mut app);
         let status = app.export_status();
-        assert_eq!(status.error, Some("Choose at least one target difficulty"));
+        assert_eq!(status.error, None, "every difficulty left out is a choice, not an error");
         assert!(status.preview.is_none());
         assert!(app.error.is_none());
         assert!(app.output_problems.is_empty());
@@ -721,6 +741,59 @@ mod tests {
         assert_eq!(old.export_choices, None);
         let json = serde_json::to_value(&old).unwrap();
         assert!(json.get("export_choices").is_none(), "an unset field is not written");
+    }
+
+    #[test]
+    fn export_refuses_a_target_outside_the_mapset_list() {
+        let set = mapset("export-foreign-target");
+        let mut app = opened(&set.source);
+        let elsewhere = set.scratch.path("elsewhere.osu");
+        std::fs::write(&elsewhere, &set.target_bytes).unwrap();
+        for target in [set.source.clone(), elsewhere.canonicalize().unwrap()] {
+            let error = app.request_export_preview(options(&[target])).unwrap_err();
+            assert_eq!(error, "Export writes only into the other difficulties of this mapset.");
+        }
+        assert_eq!(app.document().unwrap().export_choices(), None, "a refused request stores nothing");
+        assert!(!app.export_status().running && !app.export_status().waiting);
+    }
+
+    #[test]
+    fn every_difficulty_left_out_stores_the_choice_without_a_preview() {
+        let set = mapset("export-all-left-out");
+        let mut app = opened(&set.source);
+        app.request_export_preview(options(&[])).unwrap();
+        let status = app.export_status();
+        assert!(!status.running && !status.waiting && status.preview.is_none() && status.error.is_none());
+        assert_eq!(app.document().unwrap().export_choices().unwrap().left_out, ["Target.osu"]);
+    }
+
+    #[test]
+    fn switching_hitsounding_mode_makes_the_preview_stale() {
+        let set = mapset("export-hs-mode");
+        let mut app = opened(&set.source);
+        let id = app.request_export_preview(options(&[set.target.clone()])).unwrap();
+        wait_preview(&mut app);
+        assert!(!app.export_status().stale);
+        app.document.as_mut().unwrap().hs_mode ^= true;
+        assert!(app.export_status().stale);
+        assert!(app.run_export_in(id, set.scratch.path("backups")).is_err());
+    }
+
+    #[test]
+    fn each_export_write_has_its_own_id() {
+        let set = mapset("export-write-id");
+        let mut app = opened(&set.source);
+        assert_eq!(app.export_status().write_id, None);
+        let id = app.request_export_preview(options(&[set.target.clone()])).unwrap();
+        wait_preview(&mut app);
+        let first = app.run_export_in(id, set.scratch.path("backups")).unwrap();
+        assert_eq!(app.export_status().write_id, Some(first));
+        wait_main(&mut app);
+        let id = app.request_export_preview(options(&[set.target.clone()])).unwrap();
+        wait_preview(&mut app);
+        let second = app.run_export_in(id, set.scratch.path("backups")).unwrap();
+        assert!(second > first);
+        assert_eq!(app.export_status().write_id, Some(second));
     }
 
     #[test]

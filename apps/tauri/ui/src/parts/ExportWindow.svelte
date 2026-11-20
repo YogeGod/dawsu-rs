@@ -2,8 +2,8 @@
   import { onDestroy, onMount } from "svelte";
   import { invoke } from "../lib/ipc.js";
   import {
-    blockDrops, choicesFrom, difficultyName, exportLabel, exportState, fileName, laneSwatches,
-    matchWithinValid, optionsKey, pollDelay, previewRequest, targetCounts,
+    adoptChoices, afterPoll, blockDrops, choicesFrom, difficultyName, exportLabel, exportState, fileName,
+    laneSwatches, matchWithinValid, optionsKey, ownWriteError, pollDelay, previewRequest, statusLine, targetCounts,
   } from "../lib/export.js";
 
   // The editor's answer to export_view, replaced whole on every poll. A test may pass one in.
@@ -12,13 +12,17 @@
   let choices = $state(choicesFrom(initialView));
   // The last preview this window asked for: { id, key }. null from the moment an option changes.
   let sent = $state.raw(null);
-  // A command the editor refused or did not answer: shown until the next answer.
-  let failure = $state(null);
-  // Export was pressed and its write has not finished yet.
-  let running = $state(false);
+  // The last export_view failed: cleared by the next answer.
+  let pollError = $state(null);
+  // A preview, Export, close or Show in editor the editor refused: cleared by the next one that works.
+  let actionError = $state(null);
+  // This window's Export press while its write runs: { id }, id null until export_run answers.
+  let run = $state.raw(null);
+  // The id of this window's last write, so only its own result shows.
+  let lastRun = $state(null);
   let adoptedFor = initialView?.source?.path;
   let pollTimer;
-  let previewTimer;
+  let previewTimer = null;
   let closed = false;
 
   const status = $derived(exportState(view, sent, choices));
@@ -27,42 +31,48 @@
   const swatches = $derived(laneSwatches(source));
   const problems = $derived(status.preview ? view?.problems ?? [] : []);
   const matchValid = $derived(matchWithinValid(choices.matchWithin));
-  const progress = $derived(view?.progress ? `${view.progress.done}/${view.progress.total}` : "");
+  const line = $derived(statusLine({
+    view, pollError, actionError, writeError: ownWriteError(lastRun, view),
+    stale: status.stale, running: !!run, problems,
+  }));
+
+  function schedulePoll() {
+    clearTimeout(pollTimer);
+    if (!closed) pollTimer = setTimeout(poll, pollDelay(view));
+  }
 
   async function poll() {
     if (closed) return;
     try {
       const next = await invoke("export_view");
       view = next;
-      // Stored choices are taken once per map, never on every poll, so a click is never undone.
-      if (next.source?.path !== adoptedFor) {
-        adoptedFor = next.source?.path;
-        choices = choicesFrom(next);
-      }
-      if (running && !next.writing && (next.written !== null || next.writeError)) {
-        running = false;
-        if (next.written !== null && !next.writeError) {
-          close();
-          return;
-        }
-      }
+      pollError = null;
+      const adopted = adoptChoices(adoptedFor, next);
+      adoptedFor = adopted.adoptedFor;
+      if (adopted.choices) choices = adopted.choices;
+      const after = afterPoll(run, next);
+      run = after.run;
+      if (after.close) return close();
+      if (after.preview) preview();
     } catch (error) {
-      failure = String(error);
+      pollError = String(error);
     }
-    if (!closed) pollTimer = setTimeout(poll, pollDelay(view));
+    schedulePoll();
   }
 
+  // Sends the choices, which the editor keeps per map, and asks for their preview. With every
+  // difficulty left out the editor only keeps the choice.
   async function preview() {
     clearTimeout(previewTimer);
-    // Nothing to preview: Export stays disabled and shows no error.
-    if (!view?.source || !matchValid || !status.count) return;
+    previewTimer = null;
+    if (!view?.source || !matchValid) return;
     const asked = key;
     try {
       const id = await invoke("export_preview", previewRequest(view, choices));
       if (asked === key) sent = { id, key: asked };
-      failure = null;
+      actionError = null;
     } catch (error) {
-      failure = String(error);
+      actionError = String(error);
     }
   }
 
@@ -81,28 +91,36 @@
       : [...choices.leftOut, name];
   }
 
-  async function run() {
-    if (!status.canExport) return;
+  async function exportNow() {
+    if (!status.canExport || run) return;
+    run = { id: null };
     try {
-      running = true;
-      await invoke("export_run", { previewId: sent.id });
-      failure = null;
+      const id = await invoke("export_run", { previewId: sent.id });
+      run = { id };
+      lastRun = id;
+      actionError = null;
     } catch (error) {
-      running = false;
-      failure = String(error);
+      run = null;
+      actionError = String(error);
     }
   }
 
-  function close() {
+  async function close() {
     closed = true;
-    invoke("close_export_window").catch(error => {
+    clearTimeout(pollTimer);
+    // A choice still waiting for its preview is sent first, so the editor keeps it with the map.
+    if (previewTimer !== null) await preview();
+    try {
+      await invoke("close_export_window");
+    } catch (error) {
       closed = false;
-      failure = String(error);
-    });
+      actionError = String(error);
+      schedulePoll();
+    }
   }
 
   function showInEditor() {
-    invoke("show_in_editor").catch(error => (failure = String(error)));
+    invoke("show_in_editor").then(() => (actionError = null), error => (actionError = String(error)));
   }
 
   let release;
@@ -116,8 +134,6 @@
     clearTimeout(previewTimer);
     release?.();
   });
-
-  const message = $derived(failure ?? view?.writeError ?? view?.error ?? null);
 </script>
 
 <div class="export">
@@ -201,23 +217,17 @@
 
   <footer class="actions">
     <div class="status" role="status">
-      {#if message}
-        <span class="error" role="alert">{message}</span>
-      {:else if status.stale}
-        <span>Map changed since preview</span>
-        <button type="button" class="link" onclick={preview}>Refresh</button>
-      {:else if running || view?.writing}
-        <span>Writing…</span>
-      {:else if view?.previewing}
-        <span>Previewing {progress}</span>
-      {:else if problems.length}
-        <span class="warnings">{problems.length} {problems.length === 1 ? "warning" : "warnings"}</span>
-        <span class="first">{problems[0].message}</span>
+      {#if line}
+        {#if line.count}<span class="warnings">{line.count} {line.count === 1 ? "warning" : "warnings"}</span>{/if}
+        <span class="first" class:error={line.tone === "error"} role={line.tone === "error" ? "alert" : null}>{line.text}</span>
+        {#if line.again}
+          <button type="button" class="link" onclick={preview}>{line.tone === "stale" ? "Refresh" : "Preview again"}</button>
+        {/if}
       {/if}
       <button type="button" class="link" onclick={showInEditor}>Show in editor</button>
     </div>
     <button type="button" class="secondary" onclick={close}>Cancel</button>
-    <button type="button" class="primary" disabled={!status.canExport || running} onclick={run}>{exportLabel(status.count)}</button>
+    <button type="button" class="primary" disabled={!status.canExport || !!run} onclick={exportNow}>{exportLabel(status.count)}</button>
   </footer>
 </div>
 

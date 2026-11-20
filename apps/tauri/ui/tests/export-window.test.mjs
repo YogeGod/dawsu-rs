@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { render } from "svelte/server";
 import {
-  blockDrops, choicesFrom, copyOptions, defaultChoices, difficultyName, exportLabel, exportState, included,
+  adoptChoices, afterPoll, ownWriteError, blockDrops, choicesFrom, runOutcome, statusLine, copyOptions, defaultChoices, difficultyName, exportLabel, exportState, included,
   laneSwatches, matchWithinValid, optionsKey, pollDelay, previewRequest, targetCounts,
 } from "../src/lib/export.js";
 import ExportWindow from "../src/parts/ExportWindow.svelte";
@@ -138,4 +138,63 @@ test("with no other difficulties the window says so", () => {
   const { body } = render(ExportWindow, { props: { initialView: { ...view, targets: [] } } });
   assert.match(body, /This mapset has no other difficulties to copy into\./);
   assert.doesNotMatch(body, /Include /);
+});
+
+test("a write's result belongs to the run that started it, never to an earlier one", () => {
+  const old = { writing: false, writeId: 1, writeError: "Hard.osu changed since this review.", written: null };
+  assert.equal(runOutcome({ id: null }, old), "pending", "export_run has not answered yet");
+  assert.equal(runOutcome({ id: 2 }, old), "pending", "the earlier run's error is not this run's");
+  assert.equal(runOutcome({ id: 2 }, { writing: true, writeId: 2, written: null, writeError: null }), "pending");
+  assert.equal(runOutcome({ id: 2 }, { writing: false, writeId: 2, written: 3, writeError: null }), "written");
+  assert.equal(runOutcome({ id: 2 }, { ...old, writeId: 2 }), "failed");
+  assert.equal(runOutcome(null, old), null);
+});
+
+test("after each poll the window closes on its own write, and previews again after a failed one", () => {
+  const run = { id: 2 };
+  assert.deepEqual(afterPoll(run, { writing: true, writeId: 2 }), { run, close: false, preview: false });
+  assert.deepEqual(afterPoll(run, { writing: false, writeId: 2, written: 1, writeError: null }),
+    { run: null, close: true, preview: false });
+  assert.deepEqual(afterPoll(run, { writing: false, writeId: 2, written: null, writeError: "x" }),
+    { run: null, close: false, preview: true });
+  assert.deepEqual(afterPoll(null, { writing: false, writeId: 2, written: null, writeError: "x" }),
+    { run: null, close: false, preview: false }, "an old error alone starts nothing");
+});
+
+test("stored choices are taken once per map, so a poll never undoes a click", () => {
+  const first = adoptChoices(undefined, view);
+  assert.equal(first.adoptedFor, view.source.path);
+  assert.deepEqual(first.choices, choicesFrom(view));
+  assert.equal(adoptChoices(view.source.path, { ...view, choices: { leftOut: ["x.osu"], matchWithin: 1, copyVolumes: false } }).choices, null);
+  const other = adoptChoices(view.source.path, { ...view, source: { ...view.source, path: "other.osu" } });
+  assert.equal(other.adoptedFor, "other.osu");
+  assert.ok(other.choices);
+});
+
+test("the status line puts a lost editor first and offers Preview again where the message says so", () => {
+  const quiet = { view: { ...view }, pollError: null, actionError: null, stale: false, running: false, problems: [] };
+  assert.equal(statusLine(quiet), null);
+  assert.deepEqual(statusLine({ ...quiet, pollError: "The editor worker did not respond", actionError: "x" }),
+    { tone: "error", text: "The editor worker did not respond", again: false });
+  assert.deepEqual(statusLine({ ...quiet, actionError: "Another difficulty was opened. Preview again." }),
+    { tone: "error", text: "Another difficulty was opened. Preview again.", again: true });
+  assert.deepEqual(statusLine({ ...quiet, view: { ...view, error: "Hard.osu: 2 sample-mix or placement fixes needed before Copy" } }),
+    { tone: "error", text: "Hard.osu: 2 sample-mix or placement fixes needed before Copy", again: true });
+  assert.equal(statusLine({ ...quiet, view: { ...view, writeError: "old" } }), null, "only this window's own write error shows");
+  assert.deepEqual(statusLine({ ...quiet, writeError: "Hard.osu changed since this review. Nothing was written." }),
+    { tone: "error", text: "Hard.osu changed since this review. Nothing was written.", again: false });
+  assert.deepEqual(statusLine({ ...quiet, stale: true }), { tone: "stale", text: "Map changed since preview", again: true });
+  assert.deepEqual(statusLine({ ...quiet, running: true }), { tone: "busy", text: "Writing…", again: false });
+  assert.deepEqual(statusLine({ ...quiet, view: { ...view, previewing: true, progress: { done: 1, total: 3 } } }),
+    { tone: "busy", text: "Previewing 1/3", again: false });
+  assert.deepEqual(statusLine({ ...quiet, problems: [{ message: "4 empty objects" }, { message: "b" }] }),
+    { tone: "warning", text: "4 empty objects", count: 2, again: false });
+});
+
+test("a write error shows only for this window's own last run", () => {
+  const failed = { writing: false, writeId: 2, writeError: "x" };
+  assert.equal(ownWriteError(2, failed), "x");
+  assert.equal(ownWriteError(1, failed), null);
+  assert.equal(ownWriteError(null, failed), null, "an error from before the window opened");
+  assert.equal(ownWriteError(2, { ...failed, writing: true }), null);
 });

@@ -42,7 +42,20 @@ test("main may call every command its scripts and parts call, and opens Export",
 test("the Export window may call only the export commands", () => {
   const exported = capability("export");
   assert.deepEqual(exported.windows, ["export"]);
-  assert.deepEqual(exported.permissions, ["core:event:default", ...exportCommands.map(permission)]);
+  // The page neither listens for nor emits events, so it gets no event permission either.
+  assert.deepEqual(exported.permissions, exportCommands.map(permission));
   const page = invoked(exportPage.map(name => ({ name, text: read(name) })));
   assert.deepEqual([...page].filter(command => !exportCommands.includes(command)), []);
+});
+
+test("every invoke names its command literally, so the lists above see every call", () => {
+  // ipc.js is the Export page's one wrapper around the core API; its callers pass literals.
+  const wrapper = "ui/src/lib/ipc.js";
+  const files = [...sources("dist/").filter(file => !file.name.startsWith("dist/ui/")), ...sources("ui/src/")]
+    .filter(file => file.name !== wrapper);
+  for (const { name, text } of files) {
+    const loose = [...text.matchAll(/\binvoke\(\s*(?!["'])/g)].map(match => text.slice(match.index, match.index + 40));
+    assert.deepEqual(loose, [], name);
+  }
+  assert.match(read(wrapper), /core\.invoke\(command, args\)/);
 });

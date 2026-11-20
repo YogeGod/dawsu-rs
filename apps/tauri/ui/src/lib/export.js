@@ -124,3 +124,50 @@ export function blockDrops(target) {
     target.removeEventListener("drop", stop);
   };
 }
+
+// Stored choices are taken once per map, never on every poll, so a click is never undone.
+// Answers the map now adopted, and the choices to start from, or null to keep the window's own.
+export function adoptChoices(adoptedFor, view) {
+  const path = view?.source?.path;
+  if (path === adoptedFor) return { adoptedFor, choices: null };
+  return { adoptedFor: path, choices: choicesFrom(view) };
+}
+
+// run is { id } of this window's Export press; id is null until export_run answers with it.
+// Only the result with that id is this run's: an earlier run's error never ends it.
+export function runOutcome(run, view) {
+  if (!run) return null;
+  if (run.id === null || view?.writeId !== run.id || view.writing) return "pending";
+  if (view.writeError) return "failed";
+  return view.written !== null && view.written !== undefined ? "written" : "pending";
+}
+
+// What a poll's answer asks of the window: close after its own write, or preview again after a
+// failed one (the write used up the preview, and nothing else would ask for a new one).
+export function afterPoll(run, view) {
+  const outcome = runOutcome(run, view);
+  if (outcome === "written") return { run: null, close: true, preview: false };
+  if (outcome === "failed") return { run: null, close: false, preview: true };
+  return { run, close: false, preview: false };
+}
+
+// The action bar's message. again: show "Preview again" (or Refresh) beside it. writeError is the
+// failed write of this window's own last run: an older one, or one from before a reload, is not shown.
+export function statusLine({ view, pollError, actionError, writeError, stale, running, problems }) {
+  if (pollError) return { tone: "error", text: pollError, again: false };
+  if (actionError) return { tone: "error", text: actionError, again: actionError.endsWith("Preview again.") };
+  if (writeError) return { tone: "error", text: writeError, again: false };
+  if (view?.error) return { tone: "error", text: view.error, again: true };
+  if (stale) return { tone: "stale", text: "Map changed since preview", again: true };
+  if (running || view?.writing) return { tone: "busy", text: "Writing…", again: false };
+  if (view?.previewing) {
+    const progress = view.progress ? ` ${view.progress.done}/${view.progress.total}` : "";
+    return { tone: "busy", text: "Previewing" + progress, again: false };
+  }
+  if (problems?.length) return { tone: "warning", text: problems[0].message, count: problems.length, again: false };
+  return null;
+}
+
+// This window's own failed write, once its last run's result is in.
+export const ownWriteError = (lastRun, view) =>
+  lastRun !== null && lastRun !== undefined && view?.writeId === lastRun && !view.writing ? view.writeError ?? null : null;

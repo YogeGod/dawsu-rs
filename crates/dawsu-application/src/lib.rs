@@ -1138,6 +1138,12 @@ impl Application {
         Ok(())
     }
 
+    /// Counts loads, Saves and reverts of the open difficulty: with the history version it
+    /// tells whether anything read from the document is still current.
+    pub fn document_generation(&self) -> u64 {
+        self.document_generation
+    }
+
     pub fn save_session(&mut self) -> Result<(), String> {
         self.write_session(None, None, None)
     }

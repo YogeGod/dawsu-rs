@@ -1337,7 +1337,7 @@ enum Request {
     ExportView(mpsc::Sender<Result<Value, String>>),
     /// The difficulty the window showed, and its options.
     ExportPreview(PathBuf, ExportOptions, mpsc::Sender<Result<u64, String>>),
-    ExportRun(u64, mpsc::Sender<Result<(), String>>),
+    ExportRun(u64, mpsc::Sender<Result<u64, String>>),
     /// The Export window closed: its preview stops and is forgotten. Needs no answer.
     ExportClose,
 }
@@ -1367,29 +1367,63 @@ fn guard<T>(
     })
 }
 
-fn export_snapshot(app: &Application) -> Value {
+/// What the Export view reads from disk or from every hit, kept until the map changes:
+/// polls come every 100-250 ms and must not re-read the receipt or walk every hit.
+#[derive(Default)]
+struct ExportCache {
+    /// Path, load or Save, and the mapset's difficulties.
+    targets_for: Option<(PathBuf, u64, Vec<PathBuf>)>,
+    targets: Vec<PathBuf>,
+    /// Path, load or Save, history version and lane count.
+    counts_for: Option<(PathBuf, u64, u64, usize)>,
+    /// Hits per lane, in lane order.
+    counts: Vec<usize>,
+    /// How often either was read, for tests.
+    reads: usize,
+}
+
+fn export_snapshot(app: &Application, cache: &mut ExportCache) -> Value {
     let status = app.export_status();
     let document = app.document();
+    let generation = app.document_generation();
     let source = document.map(|d| {
-        let mut hit_counts = std::collections::HashMap::new();
-        for lane in d.composer.hitsounds().moments().iter().flat_map(|moment| moment.hits()) {
-            *hit_counts.entry(lane).or_insert(0_usize) += 1;
+        let key = (d.path.clone(), generation, d.composer.history.version(), d.composer.lanes.len());
+        if cache.counts_for.as_ref() != Some(&key) {
+            let mut hit_counts = std::collections::HashMap::new();
+            for lane in d.composer.hitsounds().moments().iter().flat_map(|moment| moment.hits()) {
+                *hit_counts.entry(lane).or_insert(0_usize) += 1;
+            }
+            cache.counts = d.composer.lanes.iter().map(|lane| hit_counts.get(lane).copied().unwrap_or(0)).collect();
+            cache.counts_for = Some(key);
+            cache.reads += 1;
         }
-        let lanes = d.composer.lanes.iter().map(|lane| json!({
+        let lanes = d.composer.lanes.iter().zip(&cache.counts).map(|(lane, count)| json!({
             "name": lane_name(lane),
             "colourKey": dawsu_application::lane_layout_key(lane),
-            "hitCount": hit_counts.get(lane).copied().unwrap_or(0),
+            "hitCount": count,
         })).collect::<Vec<_>>();
         json!({
             "path": d.path, "title": d.title,
             "difficulty": d.file.value("Metadata", "Version"),
             "version": d.composer.history.version(),
-            "hits": hit_counts.values().sum::<usize>(),
+            "hits": cache.counts.iter().sum::<usize>(),
             "lanes": lanes,
             "laneColours": d.lane_layout().map(|layout| json!(layout.lane_colours)).unwrap_or_else(|| json!({})),
         })
     });
-    let targets = app.export_targets();
+    let targets = match document {
+        Some(d) => {
+            let fresh = cache.targets_for.as_ref()
+                .is_some_and(|(path, read, list)| *path == d.path && *read == generation && *list == d.difficulties);
+            if !fresh {
+                cache.targets = app.export_targets();
+                cache.targets_for = Some((d.path.clone(), generation, d.difficulties.clone()));
+                cache.reads += 1;
+            }
+            cache.targets.clone()
+        }
+        None => Vec::new(),
+    };
     json!({
         "source": source,
         "targets": targets,
@@ -1405,6 +1439,7 @@ fn export_snapshot(app: &Application) -> Value {
         })),
         "error": status.error,
         "writing": status.writing,
+        "writeId": status.write_id,
         "written": status.written,
         "writeError": status.write_error,
         "problems": status.problems.iter().map(|problem| json!({
@@ -1435,10 +1470,10 @@ fn export_snapshot(app: &Application) -> Value {
 }
 
 /// Answers the Export window. Never touches main's one-shot view state.
-fn answer_export(app: &mut Application, fault: &mut Option<String>, request: Request) {
+fn answer_export(app: &mut Application, fault: &mut Option<String>, cache: &mut ExportCache, request: Request) {
     match request {
         Request::ExportView(response) => {
-            let _ = response.send(guard(app, fault, |app| export_snapshot(app)));
+            let _ = response.send(guard(app, fault, |app| export_snapshot(app, cache)));
         }
         Request::ExportPreview(source, options, response) => {
             let result = guard(app, fault, |app| {
@@ -1468,6 +1503,7 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
             .map_or(data_root, PathBuf::from);
         let mut app = Application::with_data_root(data_root);
         let mut fault = None;
+        let mut export_cache = ExportCache::default();
         let mut playback_start = PlaybackStart::default();
         let mut home = home::Route::default();
         let mut drums = drum_view::DrumView::default();
@@ -1697,7 +1733,7 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                     let _ = response.send(result);
                 }
                 Ok(request @ (Request::ExportView(_) | Request::ExportPreview(..) | Request::ExportRun(..))) => {
-                    answer_export(&mut app, &mut fault, request);
+                    answer_export(&mut app, &mut fault, &mut export_cache, request);
                 }
                 Ok(Request::ExportClose) => {
                     if fault.is_none() {
@@ -1760,9 +1796,26 @@ struct ExportOptionsJson {
     options: CopyOptions,
 }
 
+/// "Export · <map title> [<difficulty>]", or "Export" with no map open.
+fn export_title(view: &Value) -> String {
+    match (view["source"]["title"].as_str(), view["source"]["difficulty"].as_str()) {
+        (Some(title), Some(difficulty)) if !title.ends_with(&format!("[{difficulty}]")) => {
+            format!("Export · {title} [{difficulty}]")
+        }
+        (Some(title), _) => format!("Export · {title}"),
+        _ => "Export".into(),
+    }
+}
+
 #[tauri::command]
-fn export_view(state: State<'_, Editor>) -> Result<Value, String> {
-    ask(&state, Request::ExportView)?
+fn export_view(window: tauri::WebviewWindow, state: State<'_, Editor>) -> Result<Value, String> {
+    let view = ask(&state, Request::ExportView)??;
+    // The title follows the map the editor has open, also after a switch while Export is open.
+    let title = export_title(&view);
+    if window.title().ok().as_deref() != Some(title.as_str()) {
+        let _ = window.set_title(&title);
+    }
+    Ok(view)
 }
 
 #[tauri::command]
@@ -1773,7 +1826,7 @@ fn export_preview(state: State<'_, Editor>, options: ExportOptionsJson) -> Resul
 }
 
 #[tauri::command]
-fn export_run(state: State<'_, Editor>, preview_id: u64) -> Result<(), String> {
+fn export_run(state: State<'_, Editor>, preview_id: u64) -> Result<u64, String> {
     ask(&state, |tx| Request::ExportRun(preview_id, tx))?
 }
 
@@ -1788,7 +1841,7 @@ async fn open_export_window(app: tauri::AppHandle) -> Result<(), String> {
     // A plain top-level window, not a child of main, so Show in editor can bring main forward.
     // Its own drop handler is off: a file dropped on Export never reaches main's drop listener.
     tauri::WebviewWindowBuilder::new(&app, "export", tauri::WebviewUrl::App("export.html".into()))
-        .title("Export hitsounds")
+        .title("Export")
         .inner_size(1440.0, 880.0)
         .min_inner_size(1100.0, 720.0)
         .disable_drag_drop_handler()

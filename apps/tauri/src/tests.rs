@@ -2138,17 +2138,18 @@ fn export_requests_answer_with_the_export_view_and_errors_after_a_fault() {
     let mut app = Application::headless();
     open(&mut app, &source);
     let mut fault = None;
+    let mut cache = super::ExportCache::default();
 
     let source = app.document().unwrap().path.clone();
     let (tx, rx) = channel();
-    answer_export(&mut app, &mut fault, Request::ExportPreview(target.clone(), ExportOptions {
+    answer_export(&mut app, &mut fault, &mut cache, Request::ExportPreview(target.clone(), ExportOptions {
         targets: vec![target.clone()],
         copy: Default::default(),
     }, tx));
     assert_eq!(rx.recv().unwrap().unwrap_err(), "Another difficulty was opened. Preview again.");
     assert_eq!(app.document().unwrap().export_choices(), None, "a refused preview stores no choices");
     let (tx, rx) = channel();
-    answer_export(&mut app, &mut fault, Request::ExportPreview(source.clone(), ExportOptions {
+    answer_export(&mut app, &mut fault, &mut cache, Request::ExportPreview(source.clone(), ExportOptions {
         targets: vec![target.clone()],
         copy: Default::default(),
     }, tx));
@@ -2157,7 +2158,7 @@ fn export_requests_answer_with_the_export_view_and_errors_after_a_fault() {
     let view = loop {
         app.poll();
         let (tx, rx) = channel();
-        answer_export(&mut app, &mut fault, Request::ExportView(tx));
+        answer_export(&mut app, &mut fault, &mut cache, Request::ExportView(tx));
         let view = rx.recv().unwrap().unwrap();
         if view["preview"].is_object() {
             break view;
@@ -2192,19 +2193,19 @@ fn export_requests_answer_with_the_export_view_and_errors_after_a_fault() {
     assert!(app.output_review.is_none());
 
     let (tx, rx) = channel();
-    answer_export(&mut app, &mut fault, Request::ExportRun(id + 1, tx));
+    answer_export(&mut app, &mut fault, &mut cache, Request::ExportRun(id + 1, tx));
     assert!(rx.recv().unwrap().is_err());
 
     fault = Some("The editor stopped.".into());
     let (view, view_rx) = channel();
-    answer_export(&mut app, &mut fault, Request::ExportView(view));
+    answer_export(&mut app, &mut fault, &mut cache, Request::ExportView(view));
     let (preview, preview_rx) = channel();
-    answer_export(&mut app, &mut fault, Request::ExportPreview(source.clone(), ExportOptions {
+    answer_export(&mut app, &mut fault, &mut cache, Request::ExportPreview(source.clone(), ExportOptions {
         targets: vec![target.clone()],
         copy: Default::default(),
     }, preview));
     let (run, run_rx) = channel();
-    answer_export(&mut app, &mut fault, Request::ExportRun(id, run));
+    answer_export(&mut app, &mut fault, &mut cache, Request::ExportRun(id, run));
     let wait = Duration::from_millis(100);
     assert_eq!(view_rx.recv_timeout(wait).unwrap().unwrap_err(), "The editor stopped.");
     assert_eq!(preview_rx.recv_timeout(wait).unwrap().unwrap_err(), "The editor stopped.");
@@ -2229,6 +2230,8 @@ fn export_preview_waits_without_an_error_while_a_drag_is_open() {
         }.run(app);
     };
     send(&mut app, "down");
+    // The window sends the paths export_view listed, which are canonical.
+    let target = target.canonicalize().unwrap();
     app.request_export_preview(ExportOptions { targets: vec![target], copy: Default::default() }).unwrap();
     app.poll();
     let status = app.export_status();
@@ -2287,4 +2290,52 @@ fn the_library_list_names_each_set_and_places_one_by_its_id() {
     assert!(app.error.is_none(), "{:?}", app.error);
     assert_eq!(app.document().unwrap().composer.hitsounds().placements().len(), 1);
     assert_eq!(sound_set_library_view(&app)["sets"][0]["inMap"], true);
+}
+
+#[test]
+fn the_export_view_reads_targets_and_hit_counts_once_per_edit() {
+    use super::{ExportCache, export_snapshot};
+    let root = Fixture::new("export-cache");
+    let map = "osu file format v14
+
+[General]
+Mode:0
+
+[Metadata]
+Version:DIFF
+
+[TimingPoints]
+0,500,4,1,0,100,1,0
+
+[HitObjects]
+256,192,1000,1,0,0:0:0:0:
+";
+    let source = root.0.join("Source.osu");
+    fs::write(&source, map.replace("DIFF", "Source")).unwrap();
+    fs::write(root.0.join("Target.osu"), map.replace("DIFF", "Target")).unwrap();
+    let mut app = Application::headless();
+    open(&mut app, &source);
+    let mut cache = ExportCache::default();
+    let first = export_snapshot(&app, &mut cache);
+    assert_eq!(cache.reads, 2, "targets and hit counts read once");
+    for _ in 0..3 {
+        assert_eq!(export_snapshot(&app, &mut cache), first);
+    }
+    assert_eq!(cache.reads, 2, "polls of an unchanged map read nothing again");
+    Action::Command { id: "selectAll".into() }.run(&mut app);
+    Action::Volume { value: -10, relative: true }.run(&mut app);
+    let edited = export_snapshot(&app, &mut cache);
+    assert!(edited["source"]["version"] != first["source"]["version"]);
+    assert_eq!(cache.reads, 3, "an edit reads the hit counts again, not the targets");
+}
+
+#[test]
+fn the_export_window_is_titled_with_the_map_and_difficulty() {
+    use super::export_title;
+    let view = serde_json::json!({ "source": { "title": "yuikonnu - Kokuhaku", "difficulty": "Hard" } });
+    assert_eq!(export_title(&view), "Export · yuikonnu - Kokuhaku [Hard]");
+    // The editor's title already names the difficulty: it is not named twice.
+    let named = serde_json::json!({ "source": { "title": "yuikonnu - Kokuhaku [Hard]", "difficulty": "Hard" } });
+    assert_eq!(export_title(&named), "Export · yuikonnu - Kokuhaku [Hard]");
+    assert_eq!(export_title(&serde_json::json!({ "source": null })), "Export");
 }
