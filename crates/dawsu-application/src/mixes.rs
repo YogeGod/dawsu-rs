@@ -256,23 +256,28 @@ impl MixFiles {
                     destination: destination.into(),
                 });
             }
-            let key = (destination, layers.as_slice());
+            fn hitnormal<'a>(mut hits: impl Iterator<Item = &'a SampleIdentity>) -> Option<SampleSet> {
+                hits.find_map(|identity| match identity {
+                    SampleIdentity::Standard {
+                        set,
+                        sound: Sound::Hit(Hitsound::Normal),
+                        ..
+                    } => Some(*set),
+                    _ => None,
+                })
+            }
+            // Without a hitnormal sound the skin's hitnormal plays in the circle's own normal set,
+            // as Save keeps it, so circles of different sets do not share a result.
+            let object_normal = (settings.pair_samples && hitnormal(identities.iter()).is_none())
+                .then(|| hitnormal(target.moment(moment).hits()))
+                .flatten();
+            let key = (destination, layers.as_slice(), object_normal);
             let outputs = if let Some(outputs) = rendered.get(&key) {
                 outputs
             } else {
                 let (bank, fused_role) = export_settings::slot(destination)?;
                 let normal_bank = if settings.pair_samples {
-                    identities
-                        .iter()
-                        .find_map(|identity| match identity {
-                            SampleIdentity::Standard {
-                                set,
-                                sound: Sound::Hit(Hitsound::Normal),
-                                ..
-                            } => Some(*set),
-                            _ => None,
-                        })
-                        .unwrap_or(bank)
+                    hitnormal(identities.iter()).or(object_normal).unwrap_or(bank)
                 } else {
                     bank
                 };
@@ -297,7 +302,7 @@ impl MixFiles {
                         gain: *volume as f32 / 100.0,
                     });
                 }
-                let roles = components
+                let roles: Vec<_> = components
                     .into_iter()
                     .map(|(role, cues)| {
                         let bank = if role == Hitsound::Normal {
@@ -308,15 +313,22 @@ impl MixFiles {
                         (bank, role, cues)
                     })
                     .collect();
+                let slots: Vec<_> = roles.iter().map(|(bank, role, _)| (*bank, *role)).collect();
+                // Paired samples write no hitnormal file for a moment without one: the object keeps
+                // its normal set and the player's skin plays it, as Save does (Yoge 2026-11-20).
+                let roles = roles
+                    .into_iter()
+                    .filter(|(_, _, cues)| !(settings.pair_samples && cues.is_empty()))
+                    .collect();
                 let waves = render_roles(roles, cancel)?;
-                let reused = reusable_export_index(root, &waves, &previous_mixes);
+                let reused = reusable_export_index(root, &waves, &previous_mixes)?;
                 let index = match reused {
                     Some(index) => index,
                     None => indexes.reserve()?,
                 };
-                let outputs: Vec<_> = waves
+                let outputs: Vec<_> = slots
                     .iter()
-                    .map(|(bank, role, _)| SampleIdentity::Standard {
+                    .map(|(bank, role)| SampleIdentity::Standard {
                         set: *bank,
                         sound: Sound::Hit(*role),
                         index: CustomIndex::new(index),
@@ -565,8 +577,8 @@ type RoleWaves = Vec<(SampleSet, Hitsound, Vec<u8>)>;
 
 /// One WAV per role, each sound at its cue's gain. A role with no sound is written silent: a
 /// missing numbered hitnormal would fall back to the skin's plain one (lazer 131fe72:
-/// LegacyBeatmapSkin.cs:22, LegacySkin.cs:621-624, SkinManager.cs:314). Export's paired samples
-/// and Save's merge per role both write these.
+/// LegacyBeatmapSkin.cs:22, LegacySkin.cs:621-624, SkinManager.cs:314). Export writes these;
+/// with paired samples it passes no empty role, since the skin plays a missing hitnormal.
 fn render_roles(
     roles: Vec<(SampleSet, Hitsound, Vec<ScheduledSound>)>,
     cancel: &dyn Fn() -> bool,
@@ -725,10 +737,11 @@ fn reusable_export_index(
     root: &Path,
     waves: &[(SampleSet, Hitsound, Vec<u8>)],
     previous: &BTreeSet<&str>,
-) -> Option<u32> {
-    let (bank, role, _) = waves.first()?;
+) -> Result<Option<u32>, String> {
+    let Some((bank, role, _)) = waves.first() else { return Ok(None) };
     let prefix = export_settings::slot_name(*bank, *role);
-    previous
+    let hitnormals = hitnormal_indexes(root, waves.iter().any(|(_, role, _)| *role == Hitsound::Normal))?;
+    Ok(previous
         .iter()
         .filter_map(|name| {
             name.strip_prefix(prefix)?
@@ -739,11 +752,12 @@ fn reusable_export_index(
         .find(|index| {
             *index > 1
                 && *index <= i32::MAX as u32
+                && !hitnormals.contains(index)
                 && waves.iter().all(|(bank, role, wav)| {
                     let name = format!("{}{index}.wav", export_settings::slot_name(*bank, *role));
                     previous.contains(name.as_str()) && has_contents(root, &name, wav)
                 })
-        })
+        }))
 }
 
 fn replace_moment(
@@ -791,6 +805,21 @@ fn occupied_indexes(root: &Path) -> Result<BTreeSet<u32>, String> {
     Ok(reserved)
 }
 
+/// The indexes with a hitnormal file of any set, which files without a hitnormal must not reuse:
+/// osu! would play that file instead of the skin's (lazer 131fe72 LegacySkin.cs:609-633).
+/// Empty when `has_hitnormal`, since the written hitnormal replaces it.
+fn hitnormal_indexes(root: &Path, has_hitnormal: bool) -> Result<BTreeSet<u32>, String> {
+    if has_hitnormal {
+        return Ok(BTreeSet::new());
+    }
+    Ok(list_folder(root).map_err(|error| error.to_string())?.iter().filter_map(|name| {
+        match dawsu_hitsounding::rules::read_sample_file_name(name.rsplit(['/', '\\']).next()?)? {
+            SampleIdentity::Standard { sound: Sound::Hit(Hitsound::Normal), index, .. } => Some(index.get()),
+            _ => None,
+        }
+    }).collect())
+}
+
 impl IndexedMixes {
     fn read(root: &Path, expected: &OsuFile, already_staged: &[StagedMix], start_index: u32) -> Result<Self, String> {
         let mut reserved = occupied_indexes(root)?;
@@ -825,20 +854,9 @@ impl IndexedMixes {
     /// hitnormal file the index must have no hitnormal file of any set, or osu! plays that
     /// instead of the skin's (lazer 131fe72 LegacySkin.cs:609-633). A free index has no file at all.
     fn allocate_roles(&mut self, root: &Path, files: &[RoleOutput]) -> Result<(u32, bool), String> {
-        let has_hitnormal = files.iter().any(|(_, role, _, _)| *role == Hitsound::Normal);
-        let hitnormals: BTreeSet<u32> = if has_hitnormal {
-            BTreeSet::new()
-        } else {
-            list_folder(root).map_err(|error| error.to_string())?.iter().filter_map(|name| {
-                match dawsu_hitsounding::rules::read_sample_file_name(name.rsplit(['/', '\\']).next()?)? {
-                    SampleIdentity::Standard { sound: Sound::Hit(Hitsound::Normal), index, .. } => Some(index.get()),
-                    _ => None,
-                }
-            }).collect()
-        };
-        let hitnormal_free = |index: u32| !hitnormals.contains(&index);
+        let hitnormals = hitnormal_indexes(root, files.iter().any(|(_, role, _, _)| *role == Hitsound::Normal))?;
         if let Some(&existing) = self.reuse.iter().find(|index| {
-            (has_hitnormal || hitnormal_free(**index))
+            !hitnormals.contains(index)
                 && files.iter().all(|(set, role, extension, bytes)| {
                     has_contents(root, &format!("{}{index}.{extension}", export_settings::slot_name(*set, *role)), bytes)
                 })
@@ -1146,5 +1164,90 @@ mod tests {
         assert_eq!(preview.samples, [0.125, 0.125]);
         assert_eq!(preview.channels, CHANNELS);
         assert_eq!(preview.sample_rate, SAMPLE_RATE);
+    }
+
+    /// Export with pair samples for one circle at 1000 ms holding `layers`, in a folder with `files`.
+    fn pair_export(
+        scratch: &dawsu_test_support::Scratch, files: &[(&str, Vec<u8>)], layers: &[(SampleIdentity, i32)], previous: &[String],
+    ) -> (OsuFile, Vec<StagedMix>) {
+        let map = scratch.path("Artist - Song (Mapper) [Hard].osu");
+        fs::write(&map, b"osu file format v14\n[General]\nMode:0\n[Metadata]\nVersion:Hard\n[TimingPoints]\n0,500,4,1,0,100,1,0\n[HitObjects]\n256,192,1000,1,0,1:0:0:50:\n").unwrap();
+        for (name, wav) in files {
+            fs::write(scratch.path(name), wav).unwrap();
+        }
+        let mut document = crate::Document::read(&map).unwrap();
+        document.composer.apply("Hits", |h| h.set_moment_state(MomentId(0), 50, layers.iter().cloned()));
+        let hits = document.composer.hitsounds();
+        let dawsu_hitsounding::generate::GenerateOutcome::Planned { file, problems, .. } = dawsu_hitsounding::generate::generate(
+            hits, &document.file, "source.osu", &[], &|| false, &mut |_, _| {},
+        ) else {
+            panic!("Generate planned nothing");
+        };
+        let settings = ExportSettings { pair_samples: true, ..ExportSettings::default() };
+        let (file, mixes) = stage_in_file(
+            hits, file, &problems, map.parent().unwrap(), Path::new(""), &[], Placement::OnObjects, &[], Some(&settings),
+            previous, 2, &|| false,
+        ).unwrap();
+        (file, mixes.staged)
+    }
+
+    fn tiny_wav(frame: i16) -> Vec<u8> {
+        let mut wav = b"RIFF\x26\0\0\0WAVEfmt \x10\0\0\0\x01\0\x01\0\x80\xbb\0\0\0w\x01\0\x02\0\x10\0data\x02\0\0\0".to_vec();
+        wav.extend(frame.to_le_bytes());
+        wav
+    }
+
+    fn clap(set: SampleSet, index: u32) -> SampleIdentity {
+        SampleIdentity::Standard { set, sound: Sound::Hit(Hitsound::Clap), index: CustomIndex::new(index) }
+    }
+
+    fn staged_names(staged: &[StagedMix]) -> Vec<String> {
+        staged.iter().map(|mix| mix.path.file_name().unwrap().to_string_lossy().into_owned()).collect()
+    }
+
+    /// Yoge 2026-11-20: with no hitnormal in the moment, Export writes no hitnormal file and the
+    /// player's skin plays its own, as Save does.
+    #[test]
+    fn pair_samples_export_of_a_clap_only_moment_writes_only_its_clap() {
+        let scratch = dawsu_test_support::Scratch::new("pair-clap-only");
+        let claps = [(clap(SampleSet::Soft, 3), 50), (clap(SampleSet::Drum, 4), 40)];
+        let (file, staged) = pair_export(
+            &scratch, &[("soft-hitclap3.wav", tiny_wav(4096)), ("drum-hitclap4.wav", tiny_wav(8192))], &claps, &[],
+        );
+        let names = staged_names(&staged);
+        assert_eq!(names.len(), 1, "{names:?}");
+        assert!(names[0].ends_with("-hitclap2.wav"), "{names:?}");
+        assert_eq!(file.hit_objects()[0].hit_sample().unwrap().index, 2);
+        let hitnormal_at_2 = list_folder(&scratch.path("")).unwrap().iter().any(|name| name.ends_with("-hitnormal2.wav"));
+        assert!(!hitnormal_at_2);
+        // The skin's hitnormal plays in the circle's own normal set, as Save keeps it.
+        let objects = file.hit_objects();
+        let sample = objects[0].hit_sample().unwrap();
+        assert!(matches!(sample.normal_set, 0 | 1), "{sample:?}");
+    }
+
+    /// A reusable index that has any set's hitnormal file is skipped, or osu! would play that file.
+    #[test]
+    fn pair_samples_export_skips_an_index_with_a_hitnormal_file() {
+        let claps = [(clap(SampleSet::Soft, 3), 50), (clap(SampleSet::Drum, 4), 40)];
+        let inputs = [("soft-hitclap3.wav", tiny_wav(4096)), ("drum-hitclap4.wav", tiny_wav(8192))];
+        let first = dawsu_test_support::Scratch::new("pair-clap-render");
+        let (_, staged) = pair_export(&first, &inputs, &claps, &[]);
+        let earlier = staged_names(&staged)[0].clone();
+        let mut files = inputs.to_vec();
+        files.push((earlier.as_str(), staged[0].wav.clone()));
+        let previous = [earlier.clone()];
+
+        let reused = dawsu_test_support::Scratch::new("pair-clap-reuse");
+        let (file, staged) = pair_export(&reused, &files, &claps, &previous);
+        assert_eq!(file.hit_objects()[0].hit_sample().unwrap().index, 2, "the earlier clap is reused");
+        assert!(staged[0].reuse);
+
+        files.push(("soft-hitnormal2.wav", tiny_wav(1024)));
+        let blocked = dawsu_test_support::Scratch::new("pair-clap-hitnormal");
+        let (file, staged) = pair_export(&blocked, &files, &claps, &previous);
+        assert_eq!(file.hit_objects()[0].hit_sample().unwrap().index, 5);
+        assert_eq!(staged_names(&staged).len(), 1);
+        assert!(!staged[0].reuse);
     }
 }
