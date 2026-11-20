@@ -311,6 +311,16 @@ fn save_keeps_the_hitnormal_and_merges_the_finishes_into_one_file() {
     assert_eq!(sorted_hits(&reopened, 1000.0), [std_lane(SampleSet::Normal, Hitsound::Normal, 5), std_lane(SampleSet::Soft, Hitsound::Finish, 5)]);
     assert_eq!(reopened.composer.hitsounds().moment(moment_at(&reopened, 1000.0)).volume(), 80);
     resave_unchanged(&path, scratch.path("backups"));
+    // Drawing the same sounds again and saving reuses index 5: same line, no new files.
+    let bytes = std::fs::read(&path).unwrap();
+    let mut again = Document::read(&path).unwrap();
+    set_hits(&mut again, 1000.0, 80, vec![
+        (std_lane(SampleSet::Normal, Hitsound::Normal, 2), 80),
+        (std_lane(SampleSet::Drum, Hitsound::Finish, 3), 80),
+        (std_lane(SampleSet::Soft, Hitsound::Finish, 4), 80),
+    ]);
+    save_document(&again, scratch.path("backups")).unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), bytes);
     assert_eq!(file_names(&root), after);
 }
 

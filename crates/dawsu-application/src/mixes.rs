@@ -543,9 +543,10 @@ fn load_clip(
 
 type RoleWaves = Vec<(SampleSet, Hitsound, Vec<u8>)>;
 
-/// One WAV per role, each sound at its cue's gain. A role with no sound is written silent, so a
-/// numbered hitnormal never falls back to the skin's. Export's paired samples and Save's merge
-/// per role both write these.
+/// One WAV per role, each sound at its cue's gain. A role with no sound is written silent: a
+/// missing numbered hitnormal would fall back to the skin's plain one (lazer 131fe72:
+/// LegacyBeatmapSkin.cs:22, LegacySkin.cs:621-624, SkinManager.cs:314). Export's paired samples
+/// and Save's merge per role both write these.
 fn render_roles(
     roles: Vec<(SampleSet, Hitsound, Vec<ScheduledSound>)>,
     cancel: &dyn Fn() -> bool,
