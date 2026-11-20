@@ -287,7 +287,7 @@ function openEditorMenu(name, last = false, point = null) {
   menuPopup.style.top = top + "px";
   refreshEditorMenu();
   const items = menu.items.filter(item => !item.button.disabled);
-  (last ? items.at(-1) : items[0])?.button.focus();
+  (last ? items[items.length - 1] : items[0])?.button.focus();
 
   invoke("editor_shortcuts").then(({ entries }) => {
     if (editorMenu !== menu) return;
@@ -379,3 +379,4 @@ document.addEventListener("pointerdown", event => {
 }, true);
 window.addEventListener("resize", () => closeEditorMenu(false));
 window.refreshEditorMenu = refreshEditorMenu;
+window.openEditorMenu = openEditorMenu;

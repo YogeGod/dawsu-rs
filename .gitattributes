@@ -5,3 +5,6 @@ tests/fixtures/lazer-oracle/** -text
 tests/fixtures/oracle-cases/** -text
 # The classic drum detection fixture keeps 3.1.4's exact bytes.
 crates/dawsu-graph-audio/tests/fixtures/** -text
+# The Svelte bundle is built output: never merge it by hand, rebuild it (apps/tauri/ui).
+apps/tauri/dist/ui/** binary
+apps/tauri/ui/src/** text eol=lf

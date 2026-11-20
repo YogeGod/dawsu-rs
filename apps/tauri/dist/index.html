@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>dawsu!</title><link rel="icon" href="studio-assets/dawsu.png"><link rel="stylesheet" href="style.css"><script defer src="docking.js"></script><script defer src="app.js"></script><script defer src="menus.js"></script><script defer src="drum-detect.js"></script></head>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>dawsu!</title><link rel="icon" href="studio-assets/dawsu.png"><link rel="stylesheet" href="style.css"><link rel="stylesheet" href="ui/ui.css"><script defer src="docking.js"></script><script defer src="app.js"></script><script defer src="menus.js"></script><script defer src="drum-detect.js"></script><script defer src="ui/ui.js"></script></head>
 <body>
 <header id="editor-header" class="chrome">
   <strong class="brand"><img src="studio-assets/dawsu.png" alt="">dawsu<span>!</span></strong>
@@ -112,22 +112,21 @@
 
     <div class="ribbon-group" role="group" aria-label="Tool">
       <span class="ribbon-caption" aria-hidden="true">Tool</span>
-      <div id="tools" role="toolbar" aria-label="Editing tools"></div>
+      <div data-ui-mount="tools"></div>
     </div>
     <div class="ribbon-group" role="group" aria-label="Grid">
-      <button id="grid-options" type="button" popovertarget="options-Grid" aria-label="Grid and snapping" title="Grid and snapping">Snap ▾</button><div popover id="options-Grid" class="ribbon-controls ribbon-options">
+      <div class="ribbon-controls"><div data-ui-mount="snap"></div>
+      <button id="grid-options" type="button" popovertarget="options-Grid" aria-label="More snaps" title="More snaps">▾</button><div popover id="options-Grid" class="ribbon-controls ribbon-options">
         <label class="toggle"><input id="object-lines" type="checkbox"> Object lines</label>
         <label class="toggle"><input id="snap" type="checkbox"> Snap</label>
         <select aria-label="Snap mode" id="snap-mode"><option value="grid">Grid</option><option value="relative">Grid relative</option><option value="objects">Objects</option></select>
         <label class="toggle">Beat <input id="beats" type="number" min="1" max="64" aria-label="Snap beats"> / <input id="divisor" type="number" min="1" max="64" aria-label="Snap divisor"></label>
         <label class="toggle" title="Use triplet spacing when changing snap with the wheel"><input id="triplet-snap" type="checkbox" data-doc> Triplets</label>
         <button id="time-signatures" data-doc aria-haspopup="dialog">Time signatures…</button>
-      </div>
+      </div></div>
     </div>
     <div class="ribbon-group" role="group" aria-label="Audition">
-      <div class="ribbon-controls toolbar-track">
-      <button id="toolbar-audition" type="button" class="toolbar-toggle" aria-pressed="false" title="Audition when placing hits" data-doc><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 6h2l3-2.5v9l-3-2.5h-2zM10.5 5.5a3.5 3.5 0 0 1 0 5M12.5 3.5a6 6 0 0 1 0 9"/></svg><span class="toolbar-toggle-label">Audition</span></button>
-      </div>
+      <div data-ui-mount="audition"></div>
     </div>
     <div class="ribbon-group" role="group" aria-label="Playhead">
       <div class="ribbon-controls toolbar-track">

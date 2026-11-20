@@ -1,0 +1,88 @@
+/* v3 toolbar pills (tools and Audition) inside a dark well. */
+.ui-well {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: 32px;
+  padding: 0 4px;
+  border-radius: 6px;
+  background: var(--editor-ink);
+  box-shadow: var(--shadow-well);
+}
+.ui-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  min-height: 26px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--editor-text);
+  font: inherit;
+  font-size: 13px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.ui-pill:hover:not(:disabled) {
+  background: var(--editor-border);
+}
+/* Pressed, or the current off-toolbar tool. The hover rule outranks style.css's
+   button[aria-pressed=true]:hover, which would turn the pill accent blue under accent text.
+   Accent on --editor-selected is 4.77:1. */
+.ui-pill[aria-pressed="true"],
+.ui-pill.current,
+.ui-pill[aria-pressed="true"]:hover:not(:disabled),
+.ui-pill.current:hover:not(:disabled) {
+  border: 0;
+  background: var(--editor-selected);
+  box-shadow: inset 0 0 0 1px var(--editor-accent), var(--shadow-raised);
+  color: var(--editor-accent);
+}
+.ui-pill:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.ui-pill:focus-visible {
+  outline: 2px solid var(--editor-focus);
+  outline-offset: 0;
+}
+/* An icon-only pill is a 26 px square, like the v3 icon toggles. */
+.ui-pill.ui-pill-icon {
+  justify-content: center;
+  width: 26px;
+  padding: 0;
+}
+.ui-pill svg {
+  width: 14px;
+  height: 14px;
+  flex: none;
+}
+/* The same compact steps the old tool buttons had, so the toolbar fits from 1366 px. */
+@media (max-width: 1779px) {
+  /* style.css hides the Audition name here, as for Follow and Return. */
+  .ui-pill.ui-pill-toggle {
+    padding: 0 6px;
+  }
+}
+@media (max-width: 1599px) {
+  .ui-pill {
+    gap: 4px;
+    padding: 0 6px;
+    font-size: 12px;
+  }
+}
+@media (max-width: 1399px) {
+  .ui-pill,
+  .ui-pill.ui-pill-toggle {
+    padding: 0 5px;
+  }
+}
+@media (forced-colors: active) {
+  .ui-pill[aria-pressed="true"],
+  .ui-pill.current {
+    outline: 2px solid Highlight;
+    outline-offset: -2px;
+  }
+}

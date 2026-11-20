@@ -2,3 +2,4 @@
 /.handoff/
 /tools/lazer-oracle/bin/
 /tools/lazer-oracle/obj/
+/apps/tauri/ui/node_modules/

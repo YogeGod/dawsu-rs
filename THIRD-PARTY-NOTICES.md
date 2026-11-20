@@ -93,3 +93,17 @@ Used to read and write `.osz` archives (ADR 0048). Each is used under its MIT Li
 - windows-sys 0.61.2 and windows-link 0.2.1 (Windows only): Copyright (c) Microsoft Corporation
 - constant_time_eq 0.6.1: used under MIT-0, which asks for no notice; listed for completeness
 - zlib-rs 0.6.8: (C) 2024 Trifecta Tech Foundation, under the zlib licence, which asks only that its origin is not misrepresented and that its notice stays in its source
+
+## Svelte (sveltejs/svelte)
+
+The editor's Svelte parts in `apps/tauri/dist/ui/ui.js` include the Svelte 5.57.3 runtime, compiled in by Vite. It is used under the MIT Licence; the text below is Svelte's `LICENSE.md`. Vite and the Svelte compiler run only at build time and ship nothing.
+
+```
+Copyright (c) 2016-2025 [Svelte Contributors](https://github.com/sveltejs/svelte/graphs/contributors)
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+```

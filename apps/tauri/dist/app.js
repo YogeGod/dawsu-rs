@@ -200,7 +200,9 @@ function saveLaneLayout(persist = false) {
 
 function show(next) {
   if (next.fault) {
-    view.fault = next.fault;
+    // A new object, so the Svelte parts see the fault and disable.
+    view = { ...view, fault: next.fault };
+    try { window.dawsuUi?.update(view, scene); } catch (error) { console.error(error); }
     $("status").textContent = next.fault;
     const close = () => run(() => invoke("close_editor", { discard: false }));
     modal("fault", "Editor stopped", [paragraph(next.fault)], [["Close dawsu!", close, true]], close);
@@ -242,7 +244,7 @@ function show(next) {
   title.textContent = path ? (view.dirty ? "● " : "") + nameOf(path) : "";
   title.title = path;
   title.setAttribute("data-placeholder", view.hasDocument ? "" : "No map open");
-  $("status").textContent = view.status || (view.busy ? "Working…" : "");
+  $("status").textContent = missingUiParts() || view.status || (view.busy ? "Working…" : "");
   $("status").title = $("status").textContent;
   // The playhead readout is "bar.beat.tick · 190.0 BPM · 4/4 · snap"; the backend sends no separate fields.
   const [bar, tempo, meter] = (scene && view.musicalPosition?.split(" · ")) || [];
@@ -308,18 +310,23 @@ function show(next) {
     $("ruler-follow").setAttribute?.("aria-pressed", String(!!view.follow));
     followPlayhead();
     $("audition").checked = view.audition;
-    $("toolbar-audition").setAttribute?.("aria-pressed", String(!!view.audition));
     if (wasPlaying !== view.playing) {
       $("play-icon").src = view.playing ? "studio-assets/icons/Pause.svg" : "studio-assets/icons/Play.svg";
       $("play-label").textContent = view.playing ? "Pause" : "Play";
       $("play").dataset.playing = String(!!view.playing);
     }
-    for (const button of document.querySelectorAll(".editor-tool-button")) button.classList.toggle("active", button.textContent === view.tool);
   }
   refreshLaneDelete();
   renderDialogs();
   window.refreshEditorMenu?.();
   paintSoon();
+  try { window.dawsuUi?.update(view, scene); } catch (error) { console.error(error); }
+}
+
+// The Svelte bundle loads after this script, so a part counts as missing only after the page has loaded.
+function missingUiParts() {
+  if (document.readyState !== "complete") return "";
+  return document.querySelectorAll("[data-ui-mount]:not([data-ui-ready])").length ? "Part of the toolbar did not load" : "";
 }
 
 function setValue(id, value) {
@@ -940,10 +947,6 @@ function drawBookmarks(ctx, marks, start, zoom, width) {
 function renderScene() {
   renderLanes();
   $("snap").checked = scene.snap;
-  const gridLabel = scene.snap ? "Snap " + scene.beats + "/" + scene.divisor : "Snap off";
-  const gridOptions = $("grid-options");
-  gridOptions.textContent = gridLabel + " ▾";
-  gridOptions.ariaLabel = gridLabel + ", grid and snapping settings";
   const hits = (scene.moments ?? []).reduce((sum, moment) => sum + (moment[3]?.length ?? 0), 0);
   const lanes = scene.lanes?.length ?? 0;
   $("hit-lane-counts").textContent = hits + (hits === 1 ? " hit · " : " hits · ") + lanes + (lanes === 1 ? " lane" : " lanes");
@@ -2676,22 +2679,6 @@ const toolIcons = {
   Select: "MousePointer2", Draw: "Drumstick", Erase: "Eraser", Mute: "VolumeX",
   Grab: "Hand", Range: "Scan", Ramp: "TrendingUp",
 };
-for (const [name, glyph] of Object.entries(toolIcons)) {
-  const button = makeButton("", () => act({ kind: "tool", name }));
-  button.title = name;
-  button.ariaLabel = name;
-  const icon = document.createElement("img");
-  icon.src = "studio-assets/icons/" + glyph + ".svg";
-  icon.alt = "";
-  icon.className = "button-icon";
-  const label = document.createElement("span");
-  label.className = "ribbon-tool-label";
-  label.textContent = name;
-  button.prepend(label);
-  button.prepend(icon);
-  $("tools").append(button);
-  button.className = "editor-tool-button";
-}
 for (const button of document.querySelectorAll("[data-action]")) {
   button.addEventListener("click", () => act({ kind: button.dataset.action }));
 }
@@ -2793,9 +2780,6 @@ $("used-only").addEventListener("change", () => {
 });
 toggle("cycle", "cycle");
 toggle("audition", "audition");
-$("toolbar-audition").addEventListener("click", () => {
-  if (scene && !view.busy) act({ kind: "audition", on: !view.audition });
-});
 function openSiblingDifficulty(path) {
   if (scene && !view.busy && !drag && path && path !== scene.path) act({ kind: "open", path });
 }
