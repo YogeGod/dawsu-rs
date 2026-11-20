@@ -377,3 +377,24 @@ test("Shift-click on an L or R flag jumps the playhead to that locator, as Shift
     [["locator", "right", true]]);
   assert.equal(evaluate("rulerDrag"), null, "no drag starts");
 });
+
+test("on a short range the L and R flags hang outward, so neither covers the other", async () => {
+  const { evaluate } = await frontend();
+  evaluate('scene = { path: "Expert.osu", viewStart: 0, zoom: 1, rowHeight: 20 }; view = { left: 40, right: 50 }');
+  const flags = evaluate("locatorFlags(100)");
+  assert.deepEqual([flags.left.from, flags.right.from], [26, 50]);
+  assert.equal(evaluate("rulerGestureAt(30, 6)"), "left");
+  assert.equal(evaluate("rulerGestureAt(58, 6)"), "right");
+  // A wider range keeps both flags inside it.
+  evaluate("view = { left: 20, right: 70 }");
+  const wide = evaluate("locatorFlags(100)");
+  assert.deepEqual([wide.left.from, wide.right.from], [20, 56]);
+});
+
+test("Shift-click below the ruler band near a locator line does not jump to the locator", async () => {
+  const { rulerEvents, calls, evaluate, settle } = await frontend();
+  evaluate('scene = { path: "Expert.osu", viewStart: 0, zoom: 1, rowHeight: 20, bookmarks: [] }; view = { busy: false, hasDocument: true, left: 20, right: 70, cycle: false, duration: 1000 }');
+  rulerEvents.get("pointerdown")({ button: 0, pointerId: 5, clientX: 71, clientY: 60, shiftKey: true });
+  await settle();
+  assert.deepEqual(calls.map(call => call.args.action?.kind).filter(Boolean), ["seek"]);
+});

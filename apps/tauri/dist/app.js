@@ -1864,7 +1864,8 @@ const locatorFlagWidth = 14;
 const locatorFlagHeight = 13;
 
 // The L and R flags at the top of the ruler: L hangs right of its line, R left of its line. Near an
-// edge a flag flips to stay on screen, and a flipped flag never covers the other one.
+// edge a flag flips to stay on screen; on a range too short for both, they hang outward. A flag
+// never covers the other one.
 function locatorFlags(width, leftTime = view.left, rightTime = view.right) {
   const flag = (time, side) => {
     const x = (time - scene.viewStart) * scene.zoom;
@@ -1874,9 +1875,15 @@ function locatorFlags(width, leftTime = view.left, rightTime = view.right) {
   };
   const left = flag(leftTime, 1);
   const right = flag(rightTime, -1);
-  if (Math.abs(left.from - right.from) < locatorFlagWidth) {
+  const overlap = () => Math.abs(left.from - right.from) < locatorFlagWidth;
+  if (overlap()) {
     if (left.flipped) left.from = right.from - locatorFlagWidth;
     else if (right.flipped) right.from = left.from + locatorFlagWidth;
+    else {
+      if (left.x >= locatorFlagWidth) left.from = left.x - locatorFlagWidth;
+      if (right.x + locatorFlagWidth <= width) right.from = right.x;
+      if (overlap()) right.from = left.from + locatorFlagWidth;
+    }
   }
   return { left, right };
 }
@@ -1934,7 +1941,7 @@ ruler.addEventListener("pointerdown", (event) => {
   const y = event.clientY - bounds.top;
   const ms = scene.viewStart + x / scene.zoom;
   const side = event.ctrlKey || event.metaKey ? "left" : event.altKey ? "right" : null;
-  const flag = event.shiftKey && !side ? rulerGestureAt(x, y) : null;
+  const flag = event.shiftKey && !side && y < rulerBandHeight ? rulerGestureAt(x, y) : null;
   if (flag === "left" || flag === "right") {
     act({ kind: "locator", end: flag, jump: true }, false);
   } else if (side) {

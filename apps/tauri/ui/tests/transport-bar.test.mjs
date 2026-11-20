@@ -64,9 +64,15 @@ test("the bar is collapse tab, Go to start, Go to end, Cycle, Stop and Play, wit
   assert.doesNotMatch(html, /\sstyle=|\sid=|\(Space\)|\(End\)|\(\/\)/);
 });
 
-test("Stop is pressed when stopped, Play while playing, Cycle while cycling", () => {
+test("Stop lights when stopped, Play is pressed while playing, Cycle while cycling", () => {
   const pressed = html => bar(html).filter(tag => /aria-pressed="true"/.test(tag)).map(label);
-  assert.deepEqual(pressed(shown({ playing: false, cycle: false, busy: false })), ["Stop"]);
+  // Stop is a button, not a toggle: it lights while stopped but never announces "pressed".
+  let html = shown({ playing: false, cycle: false, busy: false });
+  assert.deepEqual(pressed(html), []);
+  const stop = bar(html).find(tag => label(tag) === "Stop");
+  assert.match(stop, /class="[^"]*\bon\b/);
+  assert.doesNotMatch(stop, /aria-pressed/);
+  assert.doesNotMatch(bar(shown({ playing: true, cycle: false, busy: false })).find(tag => label(tag) === "Stop"), /class="[^"]*\bon\b/);
   assert.deepEqual(pressed(shown({ playing: true, cycle: true, busy: false })), ["Cycle", "Play"]);
   assert.match(bar(shown({ playing: true, cycle: false, busy: false })).find(tag => label(tag) === "Play"), /class="[^"]*\bplaying\b/);
 });

@@ -46,24 +46,24 @@
     <button type="button" class="seg tab" aria-label={toggleLabel} title={toggleLabel} aria-expanded={!collapsed}
       onclick={() => (collapsed = !collapsed)}>{@html collapsed ? ChevronRight : ChevronLeft}</button>
     {#if !collapsed}
-      <button type="button" class="seg" aria-label="Go to start" title="Go to start" disabled={disabled.jump}
+      <button type="button" class="seg jump" aria-label="Go to start" title="Go to start" disabled={disabled.jump}
         onclick={() => send("start")}>{@html SkipBack}</button>
-      <button type="button" class="seg" aria-label="Go to end" title="Go to end" disabled={disabled.jump}
+      <button type="button" class="seg jump" aria-label="Go to end" title="Go to end" disabled={disabled.jump}
         onclick={() => send("end")}>{@html SkipForward}</button>
     {/if}
     <button type="button" class="seg cycle" aria-label="Cycle" title="Cycle between the L and R flags" aria-pressed={cycle}
       disabled={disabled.playback} onclick={() => send("cycle")}>{@html Repeat2}</button>
-    <button type="button" class="seg" aria-label="Stop" title="Stop" aria-pressed={!playing}
+    <button type="button" class="seg" class:on={!playing} aria-label="Stop" title="Stop"
       disabled={disabled.playback} onclick={() => send("stop")}>{@html Square}</button>
     <button type="button" class="seg" class:playing aria-label="Play" title="Play or pause" aria-pressed={playing}
       disabled={disabled.playback} onclick={() => send("play")}>{@html Play}</button>
   </div>
   <div class="readout">
     <span class="time" aria-label="Playhead time">{shown.time}</span>
-    <span class="divider"></span>
-    <span class="cell" title="Tempo at the playhead"><span class="value">{shown.bpm}</span> <small>BPM</small></span>
-    <span class="divider"></span>
-    <span class="cell" title="Time signature at the playhead"><span class="value">{shown.meter}</span> <small>TIME</small></span>
+    <span class="divider music"></span>
+    <span class="cell music" title="Tempo at the playhead"><span class="value">{shown.bpm}</span> <small>BPM</small></span>
+    <span class="divider music"></span>
+    <span class="cell music" title="Time signature at the playhead"><span class="value">{shown.meter}</span> <small>TIME</small></span>
     <span class="divider"></span>
     <button type="button" class="cell selection" title="Copy the osu! timestamp" disabled={!selection} onclick={copy}>
       <span class="stack">
@@ -123,7 +123,9 @@
     background: var(--editor-border);
   }
   .seg[aria-pressed="true"],
-  .seg[aria-pressed="true"]:hover:not(:disabled) {
+  .seg[aria-pressed="true"]:hover:not(:disabled),
+  .seg.on,
+  .seg.on:hover:not(:disabled) {
     border: 0;
     background: var(--transport-seg-on);
     color: var(--editor-text);
@@ -235,7 +237,8 @@
     height: 14px;
   }
   @media (forced-colors: active) {
-    .seg[aria-pressed="true"] {
+    .seg[aria-pressed="true"],
+    .seg.on {
       outline: 2px solid Highlight;
       outline-offset: -2px;
     }
@@ -250,6 +253,25 @@
     }
     .cell {
       padding: 0 9px;
+    }
+  }
+  /* The window can be 1024 px wide. Below 1240 px the readout drops BPM and TIME; below 1120 px
+     the bar drops the collapse tab, Go to start (Home and the Playback menu keep it) and Go to end. */
+  @media (max-width: 1239px) {
+    .music {
+      display: none;
+    }
+  }
+  @media (max-width: 1119px) {
+    .tab,
+    .jump {
+      display: none;
+    }
+    .cycle {
+      border-radius: 5px 0 0 5px;
+    }
+    .time {
+      font-size: 17px;
     }
   }
 </style>
