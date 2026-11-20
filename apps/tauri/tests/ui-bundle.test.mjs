@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 
@@ -8,8 +8,6 @@ import { test } from "node:test";
 const tauri = new URL("../", import.meta.url);
 const uiSource = new URL("ui/src/", tauri);
 const bundle = new URL("dist/ui/", tauri);
-const noSource = !existsSync(uiSource) && "apps/tauri/ui/src does not exist yet";
-const noBundle = !existsSync(new URL("ui.js", bundle)) && "apps/tauri/dist/ui/ui.js does not exist yet";
 const read = url => readFileSync(url, "utf8");
 
 function sources(dir = uiSource) {
@@ -20,7 +18,7 @@ function sources(dir = uiSource) {
 
 const definedProperties = css => new Set([...css.matchAll(/(--[\w-]+)\s*:/g)].map(match => match[1]));
 
-test("parts use none of the selectors app.js wires and no static style attribute", { skip: noSource }, () => {
+test("parts use none of the selectors app.js wires and no static style attribute", () => {
   // app.js adds listeners to these by selector at load, so a part using one would act twice.
   const shared = /data-(?:action|command|volume|locator|map|doc|playback-speed)\b|editor-tool-button/;
   for (const { name, text } of sources()) {
@@ -31,14 +29,14 @@ test("parts use none of the selectors app.js wires and no static style attribute
   }
 });
 
-test("v3 tokens never redefine a custom property style.css already sets", { skip: noSource }, () => {
+test("v3 tokens never redefine a custom property style.css already sets", () => {
   const old = definedProperties(read(new URL("dist/style.css", tauri)));
   for (const { name, text } of sources().filter(file => /\.(css|svelte)$/.test(file.name))) {
     assert.deepEqual([...definedProperties(text)].filter(property => old.has(property)), [], name);
   }
 });
 
-test("the bundle keeps to the editor's content security policy", { skip: noBundle }, () => {
+test("the bundle keeps to the editor's content security policy", () => {
   assert.deepEqual(readdirSync(bundle).sort(), ["build-stamp.json", "ui.css", "ui.js"]);
   for (const file of ["ui.js", "ui.css"]) {
     const text = read(new URL(file, bundle));
@@ -53,7 +51,7 @@ test("the bundle keeps to the editor's content security policy", { skip: noBundl
   assert.doesNotMatch(script, /^\s*(?:import|export)\b/m);
 });
 
-test("the committed bundle matches its sources", { skip: noSource || noBundle }, async () => {
+test("the committed bundle matches its sources", async () => {
   const { buildStamp } = await import(new URL("ui/stamp.mjs", tauri));
   const saved = JSON.parse(read(new URL("build-stamp.json", bundle)));
   const fresh = buildStamp(fileURLToPath(new URL("ui/", tauri)), fileURLToPath(bundle));
@@ -61,7 +59,7 @@ test("the committed bundle matches its sources", { skip: noSource || noBundle },
   assert.deepEqual(saved.outputs, fresh.outputs, "dist/ui was edited by hand or built from other sources");
 });
 
-test("index.html loads the bundle after the old styles and scripts", { skip: noBundle }, () => {
+test("index.html loads the bundle after the old styles and scripts", () => {
   const head = read(new URL("dist/index.html", tauri)).match(/<head>(.*?)<\/head>/s)[1];
   const order = [...head.matchAll(/(?:href|src)="([^"]+\.(?:css|js))"/g)].map(match => match[1]);
   assert.deepEqual(order, ["style.css", "ui/ui.css", "docking.js", "app.js", "menus.js", "ui/ui.js"]);

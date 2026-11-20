@@ -10,10 +10,10 @@
 //   [--csp]               reload with a listener from the start and fail on any content security
 //                         policy violation ("Refused to ...")
 //
-// The value --eval returns is printed. The map's whole folder is copied into the profile first and the copy is opened, so the
-// original mapset is never touched. Each run picks a free debugging port, so several runs
-// can capture at once. Windows only (WebView2 remote debugging). Playwright Core is found in
-// DAWSU_PLAYWRIGHT_CORE or the npm cache; nothing is installed.
+// The value --eval returns is printed. The map's whole folder is copied into the profile first
+// and the copy is opened, so the original mapset is never touched. Each run picks a free
+// debugging port, so several runs can capture at once. Windows only (WebView2 remote debugging).
+// Playwright Core is found in DAWSU_PLAYWRIGHT_CORE or the npm cache; nothing is installed.
 import { spawn, spawnSync } from "node:child_process";
 import { cpSync, existsSync, mkdtempSync, readdirSync } from "node:fs";
 import { createRequire } from "node:module";

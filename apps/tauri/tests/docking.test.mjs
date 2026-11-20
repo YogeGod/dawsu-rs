@@ -47,6 +47,7 @@ test("a panel can dock above the timeline in layout editing", () => {
   assert.deepEqual(plain(layout.second.first.tabs), ["browser"]);
   assert.deepEqual(plain(layout.second.second.tabs), ["timeline"]);
 });
+
 test("the layout editor moves a Svelte part only as part of its whole ribbon group", () => {
   // Svelte owns the nodes inside [data-ui-mount]; moving one button out would break its updates.
   assert.match(source, /button\.closest\("[^"]*\[data-ui-mount\][^"]*"\)/);
