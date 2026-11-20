@@ -1,5 +1,5 @@
 //! Small domain-free building blocks: safe file writes, the time-ordered list,
-//! time types, the shared sample vocabulary and the cue.
+//! time types, the shared sample vocabulary, the cue and the FFT.
 //!
 //! This crate uses the Rust standard library only and references no other dawsu crate
 //! (foundation invariants 1 and 2).
@@ -7,6 +7,7 @@
 pub mod cue;
 pub mod digest;
 pub mod error;
+pub mod fft;
 pub mod safe_write;
 pub mod samples;
 pub mod time;
