@@ -834,6 +834,7 @@ dependencies = [
  "dawsu-editor",
  "dawsu-editor-composer",
  "dawsu-foundation",
+ "dawsu-graph-audio",
  "dawsu-hitsounding",
  "dawsu-osu-format",
  "dawsu-test-support",
@@ -867,13 +868,23 @@ version = "0.1.0"
 dependencies = [
  "dawsu-editor",
  "dawsu-foundation",
+ "dawsu-graph-audio",
  "dawsu-hitsounding",
  "dawsu-osu-format",
+ "serde_json",
 ]
 
 [[package]]
 name = "dawsu-foundation"
 version = "0.1.0"
+
+[[package]]
+name = "dawsu-graph-audio"
+version = "0.1.0"
+dependencies = [
+ "dawsu-foundation",
+ "serde_json",
+]
 
 [[package]]
 name = "dawsu-hitsounding"

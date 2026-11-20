@@ -1,0 +1,293 @@
+// Parity fixture dump for the dawsu-rs port of drum hit detection (dawsu-rs crates/dawsu-graph-audio,
+// tests/fixtures/classic-3.1.4). Inert unless DAWSU_PARITY_OUT names an output folder. Not part of 3.1.4.
+using System.Reflection;
+using System.Security.Cryptography;
+using System.Text.Json;
+using System.Text.Json.Nodes;
+using OsuHitsound.App;
+using OsuHitsound.Audio;
+using OsuHitsound.Format;
+using OsuHitsound.Lanes;
+
+namespace OsuHitsound.App.Tests;
+
+public class DrumParityDump
+{
+    private const int Rate = 44100;
+    private const BindingFlags Private = BindingFlags.NonPublic | BindingFlags.Static;
+
+    private static T Call<T>(Type type, string name, params object[] args) =>
+        (T)type.GetMethod(name, Private)!.Invoke(null, args)!;
+
+    private static string Bits(double v) => BitConverter.DoubleToInt64Bits(v).ToString("x16");
+    private static string Bits(float v) => BitConverter.SingleToInt32Bits(v).ToString("x8");
+
+    private static void WriteF64(string path, double[] values)
+    {
+        var bytes = new byte[values.Length * 8];
+        for (int i = 0; i < values.Length; i++) BitConverter.TryWriteBytes(bytes.AsSpan(i * 8), values[i]);
+        File.WriteAllBytes(path, bytes);
+    }
+
+    private static byte[] F32Bytes(float[] values)
+    {
+        var bytes = new byte[values.Length * 4];
+        for (int i = 0; i < values.Length; i++) BitConverter.TryWriteBytes(bytes.AsSpan(i * 4), values[i]);
+        return bytes;
+    }
+
+    private static void Json(string path, JsonNode node) =>
+        File.WriteAllText(path, node.ToJsonString(new JsonSerializerOptions { WriteIndented = true }) + "\n");
+
+    [Fact]
+    public void Dump()
+    {
+        string? output = Environment.GetEnvironmentVariable("DAWSU_PARITY_OUT");
+        if (string.IsNullOrEmpty(output)) return;
+        Directory.CreateDirectory(output);
+
+        // The audio the 3.1.4 tests analyse, from their own generator.
+        var pattern = typeof(DrumOnsetsTests).GetMethod("Pattern", Private)!.Invoke(null, [true, 1.0])!;
+        float[] audio = (float[])pattern.GetType().GetField("Item1")!.GetValue(pattern)!;
+        File.WriteAllBytes(Path.Combine(output, "pattern.f32"), F32Bytes(audio));
+
+        const int window = DrumOnsets.Window;
+        int hop = Math.Max(1, Rate / 100);
+        double hopMs = hop * 1000.0 / Rate;
+        int Bin(double hz) => Math.Clamp((int)Math.Round(hz * window / Rate), 1, window / 2);
+        int bins = Bin(11000) + 2;
+        int frames = audio.Length / hop + 1;
+
+        // Window and twiddles, as the detector computes them.
+        var hann = new double[window];
+        double sum = 0;
+        for (int i = 0; i < window; i++) sum += hann[i] = .5 - .5 * Math.Cos(2 * Math.PI * i / window);
+        var stages = new JsonArray();
+        for (int len = 2; len <= window; len <<= 1)
+        {
+            double ang = -2 * Math.PI / len, wr = Math.Cos(ang), wi = Math.Sin(ang);
+            var sequence = new JsonArray();
+            double cr = 1, ci = 0;
+            for (int k = 0; k < len / 2; k++)
+            {
+                sequence.Add(new JsonArray(Bits(cr), Bits(ci)));
+                double nr = cr * wr - ci * wi; ci = cr * wi + ci * wr; cr = nr;
+            }
+            stages.Add(new JsonObject { ["len"] = len, ["wr"] = Bits(wr), ["wi"] = Bits(wi), ["sequence"] = sequence });
+        }
+        Json(Path.Combine(output, "window.json"), new JsonObject
+        {
+            ["hann"] = new JsonArray(hann.Select(v => (JsonNode)Bits(v)).ToArray()),
+            ["sum"] = Bits(sum),
+            ["twiddles"] = stages,
+        });
+
+        // One windowed frame through the private FFT (frame 50: the first kick at 500 ms).
+        float peak = 0;
+        foreach (float v in audio) peak = Math.Max(peak, Math.Abs(v));
+        var x = new float[audio.Length];
+        for (int i = 0; i < x.Length; i++) x[i] = audio[i] / peak;
+        var re = new double[window];
+        var im = new double[window];
+        int start = 50 * hop - window / 2;
+        for (int i = 0; i < window; i++) { int j = start + i; re[i] = j >= 0 && j < x.Length ? x[j] * hann[i] : 0; }
+        var input = re.Select(v => (JsonNode)Bits(v)).ToArray();
+        typeof(DrumOnsets).GetMethod("Fft", Private)!.Invoke(null, [re, im]);
+        Json(Path.Combine(output, "fft-frame50.json"), new JsonObject
+        {
+            ["frame"] = 50,
+            ["input_re"] = new JsonArray(input),
+            ["re"] = new JsonArray(re.Select(v => (JsonNode)Bits(v)).ToArray()),
+            ["im"] = new JsonArray(im.Select(v => (JsonNode)Bits(v)).ToArray()),
+        });
+
+        // The pipeline stage by stage, through the detector's private methods.
+        var mag = Call<float[]>(typeof(DrumOnsets), "Spectrogram", x, hop, frames, bins, CancellationToken.None);
+        var perc = Call<float[]>(typeof(DrumOnsets), "Percussive", mag, frames, bins, CancellationToken.None);
+        double[] Flux(int lo, int hi) => Call<double[]>(typeof(DrumOnsets), "Flux", perc, frames, bins, lo, hi);
+        double[] Normalise(double[] o) => Call<double[]>(typeof(DrumOnsets), "Normalise", o);
+        var curves = new Dictionary<string, double[]>
+        {
+            ["kick"] = Normalise(Flux(Bin(30), Bin(120))),
+            ["body"] = Normalise(Flux(Bin(150), Bin(400))),
+            ["noise"] = Normalise(Flux(Bin(1500), Bin(5000))),
+            ["hat"] = Normalise(Flux(Bin(7000), Bin(11000))),
+        };
+        var snare = new double[frames];
+        for (int t = 0; t < frames; t++) snare[t] = Math.Sqrt(curves["body"][t] * curves["noise"][t]);
+        curves["snare"] = Normalise(snare);
+        foreach (var (name, curve) in curves) WriteF64(Path.Combine(output, $"curve-{name}.f64"), curve);
+        var rawKick = Flux(Bin(30), Bin(120));
+        WriteF64(Path.Combine(output, "flux-kick.f64"), rawKick);
+
+        var logs = new JsonArray();
+        foreach (float v in new[] { 0f, 1e-7f, 1e-3f, .01f, .1234567f, .5f, 1f, 3.3f })
+            logs.Add(new JsonArray(Bits(v), Bits(Math.Log(1 + 3 * v))));
+
+        // Onsets at the four sensitivity scales from the public Detect.
+        var scales = new JsonObject();
+        foreach (double scale in new[] { 2.0, 1.5, 1.25, 1.0 })
+        {
+            var found = DrumOnsets.Detect(audio, Rate, scale);
+            scales[scale.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture)] = new JsonArray(found.Select(o =>
+                (JsonNode)new JsonObject { ["drum"] = o.Drum, ["time_ms"] = o.TimeMs, ["score"] = o.Score }).ToArray());
+        }
+        Json(Path.Combine(output, "onsets.json"), scales);
+
+        Json(Path.Combine(output, "meta.json"), new JsonObject
+        {
+            ["source"] = "dawsu-hitsounding-editor c81774eb212c530e928cd184f739a379cecccc0b (dawsu! 3.1.4), tests/OsuHitsound.App.Tests/DrumParityDump.cs",
+            ["runtime"] = System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription,
+            ["os"] = System.Runtime.InteropServices.RuntimeInformation.OSDescription,
+            ["arch"] = System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture.ToString(),
+            ["rate"] = Rate, ["hop"] = hop, ["window"] = window, ["bins"] = bins, ["frames"] = frames,
+            ["samples"] = audio.Length,
+            ["peak"] = Bits(peak),
+            ["band_bins"] = new JsonObject
+            {
+                ["30"] = Bin(30), ["120"] = Bin(120), ["150"] = Bin(150), ["400"] = Bin(400),
+                ["1500"] = Bin(1500), ["5000"] = Bin(5000), ["7000"] = Bin(7000), ["11000"] = Bin(11000),
+            },
+            ["magnitude_sha256"] = Convert.ToHexStringLower(SHA256.HashData(F32Bytes(mag))),
+            ["percussive_sha256"] = Convert.ToHexStringLower(SHA256.HashData(F32Bytes(perc))),
+            ["log1p3"] = logs,
+        });
+
+        // The reflected pipeline must reproduce Detect, or the curves are not the ones 3.1.4 picks from.
+        var peaks = typeof(DrumOnsets).GetMethod("Peaks", Private)!;
+        var kickPeaks = (System.Collections.IList)peaks.Invoke(null, [curves["kick"], 1.25, hopMs])!;
+        Assert.Equal(DrumOnsets.Detect(audio, Rate, 1.25).Count(o => o.Drum == "kick"), kickPeaks.Count);
+
+        Json(Path.Combine(output, "create.json"), CreateCases(audio));
+    }
+
+    // ---- DrumAutoFillPlan.Create on the 3.1.4 test cases, inputs and results ----
+
+    private const string TwoCircles = """
+        osu file format v14
+        [General]
+        SampleSet:Soft
+        Mode:0
+        [Metadata]
+        Version:Test
+        [TimingPoints]
+        0,500,4,2,0,45,1,0
+        [HitObjects]
+        100,100,1000,1,0,0:0:0:0:
+        100,100,1500,1,0,0:0:0:0:
+        """;
+    private const string Empty = """
+        osu file format v14
+        [General]
+        Mode:0
+        [Metadata]
+        Version:Hitsounds
+        [TimingPoints]
+        0,500,4,2,0,45,1,0
+        [HitObjects]
+        """;
+
+    private static readonly Lane Kick = new(LaneSource.BeatmapFile, "kick.wav");
+    private static readonly Lane Snare = new(LaneSource.BeatmapFile, "snare.wav");
+
+    private static (double, double) Grid(double time, int divisor)
+    {
+        double step = 500.0 / divisor;
+        return (Math.Round(time / step) * step, step);
+    }
+
+    private static EditSession Open(string osu, bool hs)
+    {
+        var file = OsuFile.Parse(System.Text.Encoding.UTF8.GetBytes(osu));
+        var folder = new MapFolder([]);
+        var session = new EditSession(file, folder, Decompiler.Decompile(file, folder));
+        if (hs) session.SetHsMode(true);
+        return session;
+    }
+
+    private sealed record Step(DrumHitCandidate[] Candidates, bool Unmatched = false, int[]? Divisors = null,
+        double From = double.NegativeInfinity, double To = double.PositiveInfinity, string Snare = "snare", bool Apply = false);
+
+    private static JsonNode Time(double v) => double.IsFinite(v) ? JsonValue.Create(v) : JsonValue.Create(v > 0 ? "inf" : v < 0 ? "-inf" : "nan");
+
+    private static JsonObject Case(string name, string map, string osu, bool hs, params Step[] steps)
+    {
+        var session = Open(osu, hs);
+        var results = new JsonArray();
+        foreach (var step in steps)
+        {
+            Lane? snare = step.Snare switch { "snare" => Snare, "kick" => Kick, _ => null };
+            var options = new DrumAutoFillOptions(Kick, snare, false, 1.25, 30, step.Unmatched, null, step.Divisors);
+            int before = session.StepCount;
+            var plan = DrumAutoFillPlan.Create(session, step.Candidates, options, step.From, step.To,
+                step.Divisors is null ? null : Grid);
+            if (step.Apply) session.Add(plan.Hits, "Drum hit detection");
+            results.Add(new JsonObject
+            {
+                ["candidates"] = new JsonArray(step.Candidates.Select(c => (JsonNode)new JsonObject
+                    { ["drum"] = c.Drum, ["time_ms"] = Time(c.TimeMs), ["score"] = c.Score }).ToArray()),
+                ["include_unmatched"] = step.Unmatched,
+                ["divisors"] = step.Divisors is null ? null : new JsonArray(step.Divisors.Select(d => (JsonNode)d).ToArray()),
+                ["from"] = Time(step.From), ["to"] = Time(step.To),
+                ["snare_lane"] = step.Snare,
+                ["apply"] = step.Apply,
+                ["hits"] = new JsonArray(plan.Hits.Select(h => (JsonNode)new JsonObject
+                {
+                    ["lane"] = h.Lane == Kick ? "kick" : "snare", ["time_ms"] = h.Time, ["anchored"] = h.Anchor is not null,
+                }).ToArray()),
+                ["unmatched"] = plan.Unmatched, ["duplicates"] = plan.Duplicates, ["off_grid"] = plan.OffGrid,
+                ["grid_shift_ms"] = plan.GridShiftMs,
+                ["undo_steps_added"] = session.StepCount - before,
+            });
+        }
+        return new JsonObject { ["name"] = name, ["map"] = map, ["hs_mode"] = hs, ["steps"] = results };
+    }
+
+    private static JsonObject CreateCases(float[] audio)
+    {
+        DrumHitCandidate C(string drum, double time, double score) => new(drum, time, score);
+        var lag = Enumerable.Range(0, 12).Select(i => C("kick", 2000 + i * 125 + 28, .9)).Append(C("kick", 4060 + 28, .5)).ToArray();
+        var detected = DrumOnsets.Detect(audio, Rate, 1.25).Select(o => C(o.Drum, o.TimeMs, o.Score)).ToArray();
+        var cases = new JsonArray
+        {
+            Case("both_drums_one_step", "two_circles", TwoCircles, false, new Step([C("kick", 1010, .9), C("snare", 1490, .8)], Apply: true)),
+            Case("reapply_duplicates", "two_circles", TwoCircles, false,
+                new Step([C("kick", 1001, .8), C("kick", 1002, .9), C("snare", 1002, .9)], Apply: true),
+                new Step([C("kick", 1001, .8), C("kick", 1002, .9), C("snare", 1002, .9)], Apply: true)),
+            Case("unmatched_optional", "two_circles", TwoCircles, false,
+                new Step([C("kick", 1200, .8), C("tom", 1000, 1), C("snare", double.NaN, 1)]),
+                new Step([C("kick", 1200, .8), C("tom", 1000, 1), C("snare", double.NaN, 1)], Unmatched: true)),
+            Case("selected_range", "two_circles", TwoCircles, false,
+                new Step([C("kick", 1001, 1), C("snare", 1490, 1), C("kick", 1510, 1)], From: 1010, To: 1510)),
+            Case("skipped_and_same_destination", "two_circles", TwoCircles, false,
+                new Step([C("kick", 1000, .8), C("snare", 1000, .9)], Snare: "none"),
+                new Step([C("kick", 1000, .8), C("snare", 1000, .9)], Snare: "kick")),
+            Case("empty_hitsound_diff", "empty", Empty, true,
+                new Step([C("kick", 1000, .9)]),
+                new Step([C("kick", 1000, .9)], Unmatched: true)),
+            Case("off_grid_dropped", "two_circles", TwoCircles, false,
+                new Step([C("kick", 1135, .9), C("snare", 1190, .8), C("kick", 1515, .7)], Unmatched: true, Divisors: [4])),
+            Case("triplets", "two_circles", TwoCircles, false,
+                new Step([C("kick", 1170, .9)], Unmatched: true, Divisors: [4]),
+                new Step([C("kick", 1170, .9)], Unmatched: true, Divisors: [4, 3]),
+                new Step([C("kick", 1170, .9)], Unmatched: true, Divisors: [])),
+            Case("two_on_one_line", "two_circles", TwoCircles, false,
+                new Step([C("kick", 1118, .4), C("kick", 1132, .9)], Unmatched: true, Divisors: [4])),
+            Case("constant_lag", "two_circles", TwoCircles, false,
+                new Step(lag, Unmatched: true, Divisors: [4]),
+                new Step(lag.Take(3).ToArray(), Unmatched: true, Divisors: [4])),
+            Case("pattern_detected", "two_circles", TwoCircles, false,
+                new Step(detected, Unmatched: true, Divisors: [4]),
+                new Step(detected, Unmatched: false, Divisors: [4, 3]),
+                new Step(detected)),
+        };
+        return new JsonObject
+        {
+            ["maps"] = new JsonObject { ["two_circles"] = TwoCircles, ["empty"] = Empty },
+            ["grid"] = "120 BPM from 0 ms: step = 500 / divisor, snapped = round_half_even(time / step) * step",
+            ["object_tolerance_ms"] = 30,
+            ["anchor_tolerance_ms"] = EditSession.AnchorTolerance,
+            ["cases"] = cases,
+        };
+    }
+}

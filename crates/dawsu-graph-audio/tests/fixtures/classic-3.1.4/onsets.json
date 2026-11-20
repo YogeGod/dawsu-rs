@@ -1,0 +1,700 @@
+{
+  "2.00": [
+    {
+      "drum": "kick",
+      "time_ms": 504,
+      "score": 0.9999
+    },
+    {
+      "drum": "snare",
+      "time_ms": 1004,
+      "score": 0.9517
+    },
+    {
+      "drum": "kick",
+      "time_ms": 1504,
+      "score": 0.9998
+    },
+    {
+      "drum": "snare",
+      "time_ms": 2004,
+      "score": 0.9376
+    },
+    {
+      "drum": "kick",
+      "time_ms": 2504,
+      "score": 0.9999
+    },
+    {
+      "drum": "snare",
+      "time_ms": 3004,
+      "score": 0.9434
+    },
+    {
+      "drum": "kick",
+      "time_ms": 3504,
+      "score": 1
+    },
+    {
+      "drum": "snare",
+      "time_ms": 4004,
+      "score": 1.027
+    },
+    {
+      "drum": "kick",
+      "time_ms": 4504,
+      "score": 0.9999
+    },
+    {
+      "drum": "snare",
+      "time_ms": 5004,
+      "score": 1.0087
+    },
+    {
+      "drum": "kick",
+      "time_ms": 5504,
+      "score": 1.0001
+    },
+    {
+      "drum": "snare",
+      "time_ms": 6004,
+      "score": 0.9666
+    },
+    {
+      "drum": "kick",
+      "time_ms": 6504,
+      "score": 1.0001
+    },
+    {
+      "drum": "snare",
+      "time_ms": 7004,
+      "score": 0.8581
+    },
+    {
+      "drum": "kick",
+      "time_ms": 7504,
+      "score": 1
+    },
+    {
+      "drum": "snare",
+      "time_ms": 8004,
+      "score": 0.9549
+    },
+    {
+      "drum": "kick",
+      "time_ms": 8504,
+      "score": 0.9999
+    },
+    {
+      "drum": "snare",
+      "time_ms": 9004,
+      "score": 0.897
+    },
+    {
+      "drum": "kick",
+      "time_ms": 9504,
+      "score": 0.9999
+    },
+    {
+      "drum": "snare",
+      "time_ms": 10004,
+      "score": 0.947
+    },
+    {
+      "drum": "kick",
+      "time_ms": 10504,
+      "score": 0.9997
+    },
+    {
+      "drum": "snare",
+      "time_ms": 11004,
+      "score": 0.9388
+    },
+    {
+      "drum": "kick",
+      "time_ms": 11504,
+      "score": 1
+    },
+    {
+      "drum": "snare",
+      "time_ms": 12004,
+      "score": 0.8306
+    },
+    {
+      "drum": "kick",
+      "time_ms": 12504,
+      "score": 0.9997
+    },
+    {
+      "drum": "snare",
+      "time_ms": 13004,
+      "score": 0.9073
+    },
+    {
+      "drum": "kick",
+      "time_ms": 13504,
+      "score": 0.9998
+    },
+    {
+      "drum": "snare",
+      "time_ms": 14004,
+      "score": 1.0267
+    },
+    {
+      "drum": "kick",
+      "time_ms": 14504,
+      "score": 1
+    },
+    {
+      "drum": "snare",
+      "time_ms": 15004,
+      "score": 0.9975
+    },
+    {
+      "drum": "kick",
+      "time_ms": 15504,
+      "score": 1
+    },
+    {
+      "drum": "snare",
+      "time_ms": 16004,
+      "score": 1
+    }
+  ],
+  "1.50": [
+    {
+      "drum": "kick",
+      "time_ms": 504,
+      "score": 0.9999
+    },
+    {
+      "drum": "snare",
+      "time_ms": 1004,
+      "score": 0.9517
+    },
+    {
+      "drum": "kick",
+      "time_ms": 1504,
+      "score": 0.9998
+    },
+    {
+      "drum": "snare",
+      "time_ms": 2004,
+      "score": 0.9376
+    },
+    {
+      "drum": "kick",
+      "time_ms": 2504,
+      "score": 0.9999
+    },
+    {
+      "drum": "snare",
+      "time_ms": 3004,
+      "score": 0.9434
+    },
+    {
+      "drum": "kick",
+      "time_ms": 3504,
+      "score": 1
+    },
+    {
+      "drum": "snare",
+      "time_ms": 4004,
+      "score": 1.027
+    },
+    {
+      "drum": "kick",
+      "time_ms": 4504,
+      "score": 0.9999
+    },
+    {
+      "drum": "snare",
+      "time_ms": 5004,
+      "score": 1.0087
+    },
+    {
+      "drum": "kick",
+      "time_ms": 5504,
+      "score": 1.0001
+    },
+    {
+      "drum": "snare",
+      "time_ms": 6004,
+      "score": 0.9666
+    },
+    {
+      "drum": "kick",
+      "time_ms": 6504,
+      "score": 1.0001
+    },
+    {
+      "drum": "snare",
+      "time_ms": 7004,
+      "score": 0.8581
+    },
+    {
+      "drum": "kick",
+      "time_ms": 7504,
+      "score": 1
+    },
+    {
+      "drum": "snare",
+      "time_ms": 8004,
+      "score": 0.9549
+    },
+    {
+      "drum": "kick",
+      "time_ms": 8504,
+      "score": 0.9999
+    },
+    {
+      "drum": "snare",
+      "time_ms": 9004,
+      "score": 0.897
+    },
+    {
+      "drum": "kick",
+      "time_ms": 9504,
+      "score": 0.9999
+    },
+    {
+      "drum": "snare",
+      "time_ms": 10004,
+      "score": 0.947
+    },
+    {
+      "drum": "kick",
+      "time_ms": 10504,
+      "score": 0.9997
+    },
+    {
+      "drum": "snare",
+      "time_ms": 11004,
+      "score": 0.9388
+    },
+    {
+      "drum": "kick",
+      "time_ms": 11504,
+      "score": 1
+    },
+    {
+      "drum": "snare",
+      "time_ms": 12004,
+      "score": 0.8306
+    },
+    {
+      "drum": "kick",
+      "time_ms": 12504,
+      "score": 0.9997
+    },
+    {
+      "drum": "snare",
+      "time_ms": 13004,
+      "score": 0.9073
+    },
+    {
+      "drum": "kick",
+      "time_ms": 13504,
+      "score": 0.9998
+    },
+    {
+      "drum": "snare",
+      "time_ms": 14004,
+      "score": 1.0267
+    },
+    {
+      "drum": "kick",
+      "time_ms": 14504,
+      "score": 1
+    },
+    {
+      "drum": "snare",
+      "time_ms": 15004,
+      "score": 0.9975
+    },
+    {
+      "drum": "kick",
+      "time_ms": 15504,
+      "score": 1
+    },
+    {
+      "drum": "snare",
+      "time_ms": 16004,
+      "score": 1
+    }
+  ],
+  "1.25": [
+    {
+      "drum": "kick",
+      "time_ms": 504,
+      "score": 0.9999
+    },
+    {
+      "drum": "snare",
+      "time_ms": 1004,
+      "score": 0.9517
+    },
+    {
+      "drum": "kick",
+      "time_ms": 1504,
+      "score": 0.9998
+    },
+    {
+      "drum": "snare",
+      "time_ms": 2004,
+      "score": 0.9376
+    },
+    {
+      "drum": "kick",
+      "time_ms": 2504,
+      "score": 0.9999
+    },
+    {
+      "drum": "snare",
+      "time_ms": 3004,
+      "score": 0.9434
+    },
+    {
+      "drum": "kick",
+      "time_ms": 3504,
+      "score": 1
+    },
+    {
+      "drum": "snare",
+      "time_ms": 4004,
+      "score": 1.027
+    },
+    {
+      "drum": "kick",
+      "time_ms": 4504,
+      "score": 0.9999
+    },
+    {
+      "drum": "kick",
+      "time_ms": 4994,
+      "score": 0.4393
+    },
+    {
+      "drum": "snare",
+      "time_ms": 5004,
+      "score": 1.0087
+    },
+    {
+      "drum": "kick",
+      "time_ms": 5504,
+      "score": 1.0001
+    },
+    {
+      "drum": "snare",
+      "time_ms": 6004,
+      "score": 0.9666
+    },
+    {
+      "drum": "kick",
+      "time_ms": 6504,
+      "score": 1.0001
+    },
+    {
+      "drum": "snare",
+      "time_ms": 7004,
+      "score": 0.8581
+    },
+    {
+      "drum": "kick",
+      "time_ms": 7504,
+      "score": 1
+    },
+    {
+      "drum": "snare",
+      "time_ms": 8004,
+      "score": 0.9549
+    },
+    {
+      "drum": "kick",
+      "time_ms": 8504,
+      "score": 0.9999
+    },
+    {
+      "drum": "snare",
+      "time_ms": 9004,
+      "score": 0.897
+    },
+    {
+      "drum": "kick",
+      "time_ms": 9504,
+      "score": 0.9999
+    },
+    {
+      "drum": "snare",
+      "time_ms": 10004,
+      "score": 0.947
+    },
+    {
+      "drum": "kick",
+      "time_ms": 10504,
+      "score": 0.9997
+    },
+    {
+      "drum": "snare",
+      "time_ms": 11004,
+      "score": 0.9388
+    },
+    {
+      "drum": "kick",
+      "time_ms": 11504,
+      "score": 1
+    },
+    {
+      "drum": "snare",
+      "time_ms": 12004,
+      "score": 0.8306
+    },
+    {
+      "drum": "kick",
+      "time_ms": 12504,
+      "score": 0.9997
+    },
+    {
+      "drum": "snare",
+      "time_ms": 13004,
+      "score": 0.9073
+    },
+    {
+      "drum": "kick",
+      "time_ms": 13504,
+      "score": 0.9998
+    },
+    {
+      "drum": "snare",
+      "time_ms": 14004,
+      "score": 1.0267
+    },
+    {
+      "drum": "kick",
+      "time_ms": 14504,
+      "score": 1
+    },
+    {
+      "drum": "snare",
+      "time_ms": 15004,
+      "score": 0.9975
+    },
+    {
+      "drum": "kick",
+      "time_ms": 15504,
+      "score": 1
+    },
+    {
+      "drum": "snare",
+      "time_ms": 16004,
+      "score": 1
+    }
+  ],
+  "1.00": [
+    {
+      "drum": "kick",
+      "time_ms": 504,
+      "score": 0.9999
+    },
+    {
+      "drum": "snare",
+      "time_ms": 1004,
+      "score": 0.9517
+    },
+    {
+      "drum": "kick",
+      "time_ms": 1504,
+      "score": 0.9998
+    },
+    {
+      "drum": "snare",
+      "time_ms": 2004,
+      "score": 0.9376
+    },
+    {
+      "drum": "kick",
+      "time_ms": 2504,
+      "score": 0.9999
+    },
+    {
+      "drum": "kick",
+      "time_ms": 2994,
+      "score": 0.3337
+    },
+    {
+      "drum": "snare",
+      "time_ms": 3004,
+      "score": 0.9434
+    },
+    {
+      "drum": "kick",
+      "time_ms": 3504,
+      "score": 1
+    },
+    {
+      "drum": "kick",
+      "time_ms": 3994,
+      "score": 0.3033
+    },
+    {
+      "drum": "snare",
+      "time_ms": 4004,
+      "score": 1.027
+    },
+    {
+      "drum": "kick",
+      "time_ms": 4504,
+      "score": 0.9999
+    },
+    {
+      "drum": "kick",
+      "time_ms": 4994,
+      "score": 0.4393
+    },
+    {
+      "drum": "snare",
+      "time_ms": 5004,
+      "score": 1.0087
+    },
+    {
+      "drum": "kick",
+      "time_ms": 5504,
+      "score": 1.0001
+    },
+    {
+      "drum": "kick",
+      "time_ms": 5994,
+      "score": 0.3274
+    },
+    {
+      "drum": "snare",
+      "time_ms": 6004,
+      "score": 0.9666
+    },
+    {
+      "drum": "kick",
+      "time_ms": 6504,
+      "score": 1.0001
+    },
+    {
+      "drum": "snare",
+      "time_ms": 7004,
+      "score": 0.8581
+    },
+    {
+      "drum": "kick",
+      "time_ms": 7504,
+      "score": 1
+    },
+    {
+      "drum": "kick",
+      "time_ms": 7994,
+      "score": 0.3597
+    },
+    {
+      "drum": "snare",
+      "time_ms": 8004,
+      "score": 0.9549
+    },
+    {
+      "drum": "kick",
+      "time_ms": 8504,
+      "score": 0.9999
+    },
+    {
+      "drum": "snare",
+      "time_ms": 9004,
+      "score": 0.897
+    },
+    {
+      "drum": "kick",
+      "time_ms": 9504,
+      "score": 0.9999
+    },
+    {
+      "drum": "kick",
+      "time_ms": 9994,
+      "score": 0.3578
+    },
+    {
+      "drum": "snare",
+      "time_ms": 10004,
+      "score": 0.947
+    },
+    {
+      "drum": "kick",
+      "time_ms": 10504,
+      "score": 0.9997
+    },
+    {
+      "drum": "kick",
+      "time_ms": 10994,
+      "score": 0.3335
+    },
+    {
+      "drum": "snare",
+      "time_ms": 11004,
+      "score": 0.9388
+    },
+    {
+      "drum": "kick",
+      "time_ms": 11504,
+      "score": 1
+    },
+    {
+      "drum": "kick",
+      "time_ms": 11994,
+      "score": 0.3271
+    },
+    {
+      "drum": "snare",
+      "time_ms": 12004,
+      "score": 0.8306
+    },
+    {
+      "drum": "kick",
+      "time_ms": 12504,
+      "score": 0.9997
+    },
+    {
+      "drum": "snare",
+      "time_ms": 13004,
+      "score": 0.9073
+    },
+    {
+      "drum": "kick",
+      "time_ms": 13504,
+      "score": 0.9998
+    },
+    {
+      "drum": "snare",
+      "time_ms": 14004,
+      "score": 1.0267
+    },
+    {
+      "drum": "kick",
+      "time_ms": 14504,
+      "score": 1
+    },
+    {
+      "drum": "kick",
+      "time_ms": 14994,
+      "score": 0.3663
+    },
+    {
+      "drum": "snare",
+      "time_ms": 15004,
+      "score": 0.9975
+    },
+    {
+      "drum": "kick",
+      "time_ms": 15504,
+      "score": 1
+    },
+    {
+      "drum": "snare",
+      "time_ms": 16004,
+      "score": 1
+    }
+  ]
+}

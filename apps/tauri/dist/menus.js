@@ -159,6 +159,7 @@ function menuItems(name, target) {
       separator(),
       menuItem("Generate hitsound difficulty…", "TrendingUp", click("generate"), { shortcut: "generate" }),
       menuItem("Copy hitsounds…", "Redo2", click("copy")),
+      menuItem("Drum hit detection…", "Drumstick", () => openDrumDetection()),
       menuChoices("Generate export style", [["objects", "Per-object"]],
         () => "objects", () => {}, () => false),
       separator(),

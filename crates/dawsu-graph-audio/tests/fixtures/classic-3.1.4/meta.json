@@ -1,0 +1,59 @@
+{
+  "source": "dawsu-hitsounding-editor c81774eb212c530e928cd184f739a379cecccc0b (dawsu! 3.1.4), tests/OsuHitsound.App.Tests/DrumParityDump.cs",
+  "runtime": ".NET 10.0.15",
+  "os": "Microsoft Windows 10.0.26200",
+  "arch": "X64",
+  "rate": 44100,
+  "hop": 441,
+  "window": 2048,
+  "bins": 513,
+  "frames": 1701,
+  "samples": 749700,
+  "peak": "3f87ad81",
+  "band_bins": {
+    "30": 1,
+    "120": 6,
+    "150": 7,
+    "400": 19,
+    "1500": 70,
+    "5000": 232,
+    "7000": 325,
+    "11000": 511
+  },
+  "magnitude_sha256": "b7a8ea7e1d4935e06579302b90959fe8a0f4a453bffc5e3e5136b99c89be82f2",
+  "percussive_sha256": "97ca996bb0e36e5d4ec5ec5c3a4e44d673a8b27171a7219a8183fe7ab3ebd81c",
+  "log1p3": [
+    [
+      "00000000",
+      "0000000000000000"
+    ],
+    [
+      "33d6bf95",
+      "3e97ffffb8000120"
+    ],
+    [
+      "3a83126f",
+      "3f688a14de4231e6"
+    ],
+    [
+      "3c23d70a",
+      "3f9e44a7c68aa43f"
+    ],
+    [
+      "3dfcd6de",
+      "3fd42a4904c103bf"
+    ],
+    [
+      "3f000000",
+      "3fed5240f0e0e078"
+    ],
+    [
+      "3f800000",
+      "3ff62e42fefa39ef"
+    ],
+    [
+      "40533333",
+      "40031c2fa59ad622"
+    ]
+  ]
+}

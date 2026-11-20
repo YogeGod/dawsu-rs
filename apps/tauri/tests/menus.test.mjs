@@ -250,7 +250,7 @@ test("each menu groups the editor's existing commands like the design, with no s
   assert.deepEqual(open("map"), [
     "Difficulty: Hard | Insane", "—",
     "New hitsound difficulty…", "—",
-    "Generate hitsound difficulty…", "Copy hitsounds…",
+    "Generate hitsound difficulty…", "Copy hitsounds…", "Drum hit detection…",
     "Generate export style: Per-object", "—",
     "Add bookmark", "Previous bookmark", "Next bookmark", "—",
     "Add lane…", "Delete active lane…",

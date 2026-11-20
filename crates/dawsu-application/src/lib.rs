@@ -7,6 +7,7 @@ mod commands;
 mod edit_workflows;
 mod controller;
 mod editor_meter;
+mod drum_detect;
 mod export_settings;
 mod generate_receipt;
 mod gain_recovery;
@@ -33,6 +34,7 @@ use dawsu_editor::keys::{KeyChord, Mods};
 use dawsu_editor::transport::BookmarkList;
 pub use problems::OutputProblem;
 pub use editor_meter::{EditorBarSection, EditorTimeSignature};
+pub use drum_detect::{DrumDetectState, DrumDetectView, DrumLanes};
 pub use export_settings::{ExportCombination, ExportSettings};
 pub use project::LaneLayout;
 pub use recovery::RecoveryOffer;
@@ -78,6 +80,7 @@ pub struct Document {
     time_signatures: Vec<EditorTimeSignature>,
     editor_bars: Vec<EditorBarSection>,
     export_settings: Option<ExportSettings>,
+    drum_lanes: Option<DrumLanes>,
 }
 impl Document {
     pub fn read(path: &Path) -> Result<Self, String> {
@@ -164,6 +167,7 @@ impl Document {
             time_signatures: Vec::new(),
             editor_bars: Vec::new(),
             export_settings: None,
+            drum_lanes: None,
         })
     }
     pub fn lane_layout(&self) -> Option<&LaneLayout> {
@@ -810,6 +814,7 @@ pub struct Application {
     data_root: PathBuf,
     checkpoint: Option<recovery::Checkpoint>,
     restored_recovery: Option<String>,
+    drum: drum_detect::DrumDetect,
 }
 impl Application {
     pub fn new() -> Self {
@@ -922,6 +927,7 @@ impl Application {
             project: None,
             checkpoint: None,
             restored_recovery: None,
+            drum: Default::default(),
         }
     }
 
@@ -1140,6 +1146,7 @@ impl Application {
             unwritten: self.project.as_ref().and_then(|p| p.settings.unwritten.clone()),
             time_signatures: Some(document.time_signatures.clone()),
             export_settings: document.export_settings.clone(),
+            drum_lanes: document.drum_lanes.clone(),
             lane_slots: saved_slots.or_else(|| self.project.as_ref().and_then(|p| p.settings.lane_slots.clone())),
         })
     }
@@ -1213,6 +1220,7 @@ impl Application {
         }
         self.stop();
         self.cancel_controller_stroke();
+        self.drum.clear();
         if let Some(d) = self.document.as_mut() {
             self.tools.cancel(&mut d.composer);
         }
@@ -1306,6 +1314,7 @@ impl Application {
     pub fn poll(&mut self) {
         // Edits made outside the refreshing entry points still reach the recovery checkpoint.
         self.refresh_recovery_edit();
+        self.poll_drum_detection();
         if !self.cancel.load(Ordering::Relaxed)
             && let Some(progress) = &self.job_progress
             && let Ok(mut current) = progress.current.try_lock()
@@ -1358,6 +1367,7 @@ impl Application {
                         d.composer.protect_normals = self.preferences.protect_hitnormals;
                     }
                     self.song = loaded.song;
+                    self.drum.song_loaded();
                     self.stretched_song = self.song.clone();
                     self.playback_speed = 1.0;
                     self.samples = loaded.samples;
@@ -2661,6 +2671,7 @@ fn load(
         document.update_time_signatures(signatures);
     }
     document.export_settings = project.as_ref().and_then(|p| p.settings.export_settings.clone());
+    document.drum_lanes = project.as_ref().and_then(|p| p.settings.drum_lanes.clone());
     if let Some(layout) = &mut document.lane_layout {
         layout.normalise();
     }

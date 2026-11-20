@@ -7,8 +7,10 @@ use dawsu_foundation::{Hitsound, SampleIdentity, SongTime, Sound};
 use dawsu_hitsounding::{Hitsounds, MomentId, Place};
 use std::{collections::BTreeSet, convert::Infallible};
 
+mod batch;
 mod lane_edit;
 mod workflows;
+pub use batch::{BatchCounts, BatchHit, BatchOptions, BatchPlan, BatchRefusal, BatchReport, BatchRow, Lands, Policy};
 pub use workflows::{RangeOperation, VolumeScope};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

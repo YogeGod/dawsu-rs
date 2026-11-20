@@ -1,0 +1,13 @@
+[package]
+name = "dawsu-graph-audio"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+# Audio analysis for the node graph (module map: references dawsu-foundation only).
+[dependencies]
+dawsu-foundation = { path = "../dawsu-foundation" }
+
+[dev-dependencies]
+serde_json = "1.0"

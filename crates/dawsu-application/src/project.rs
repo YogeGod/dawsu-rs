@@ -49,6 +49,9 @@ pub(crate) struct SessionSettings {
     pub time_signatures: Option<Vec<super::EditorTimeSignature>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub export_settings: Option<super::ExportSettings>,
+    /// The kick and snare lanes drum hit detection last used. Older builds ignore the field.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub drum_lanes: Option<super::DrumLanes>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
