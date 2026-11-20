@@ -7,7 +7,7 @@
   },
   "scripts": {
     "build": "vite build",
-    "test": "node --import ./tests/register.mjs --test tests/"
+    "test": "node --import ./tests/register.mjs --test"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "7.3.1",

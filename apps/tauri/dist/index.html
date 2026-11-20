@@ -115,6 +115,7 @@
       <div id="tools" role="toolbar" aria-label="Editing tools"></div>
     </div>
     <div class="ribbon-group" role="group" aria-label="Grid">
+      <div class="ribbon-controls"><div data-ui-mount="snap"></div>
       <button id="grid-options" type="button" popovertarget="options-Grid" aria-label="Grid and snapping" title="Grid and snapping">Snap ▾</button><div popover id="options-Grid" class="ribbon-controls ribbon-options">
         <label class="toggle"><input id="object-lines" type="checkbox"> Object lines</label>
         <label class="toggle"><input id="snap" type="checkbox"> Snap</label>
@@ -122,7 +123,7 @@
         <label class="toggle">Beat <input id="beats" type="number" min="1" max="64" aria-label="Snap beats"> / <input id="divisor" type="number" min="1" max="64" aria-label="Snap divisor"></label>
         <label class="toggle" title="Use triplet spacing when changing snap with the wheel"><input id="triplet-snap" type="checkbox" data-doc> Triplets</label>
         <button id="time-signatures" data-doc aria-haspopup="dialog">Time signatures…</button>
-      </div>
+      </div></div>
     </div>
     <div class="ribbon-group" role="group" aria-label="Audition">
       <div class="ribbon-controls toolbar-track">
