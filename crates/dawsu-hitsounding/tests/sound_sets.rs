@@ -156,3 +156,39 @@ fn the_local_corpus_sound_set_files_round_trip() {
         eprintln!("{}: \"{}\", {} members", path.file_name().unwrap().to_string_lossy(), s.name, s.members.len());
     }
 }
+
+// ---------------------------------------------------------------- placements (the link, in Hitsounds)
+
+fn map_hits() -> dawsu_hitsounding::Hitsounds {
+    let text = b"osu file format v14\n[General]\nMode:0\n[TimingPoints]\n0,500,4,1,0,70,1,0\n[HitObjects]\n256,192,1000,1,0,0:0:0:0:\n";
+    let file = dawsu_osu_format::OsuFile::read(text.to_vec()).file;
+    match dawsu_hitsounding::decompile(&file, &[], &|| false, &mut |_, _| {}) {
+        dawsu_hitsounding::Decompiled::Done(h) => h,
+        _ => panic!("decompile"),
+    }
+}
+
+fn lane(key: &str) -> dawsu_foundation::SampleIdentity {
+    dawsu_hitsounding::rules::read_sample_file_name(key).unwrap()
+}
+
+#[test]
+fn a_placement_records_which_hits_it_added_and_unlinking_keeps_the_hits() {
+    use dawsu_hitsounding::MomentId;
+    let mut h = map_hits();
+    let moment = MomentId(0);
+    let before: Vec<_> = h.moment(moment).hits().cloned().collect();
+    assert_eq!(before.len(), 1, "the circle's hitnormal");
+    let clap = lane("drum-hitclap2.wav");
+    let hits = vec![("m1".to_string(), before[0].clone(), 40), ("m2".to_string(), clap.clone(), 55)];
+    let id = h.place_sound_set(moment, ID, "digest", 100, &hits).expect("placed");
+    let p = &h.placements()[0];
+    assert_eq!((p.id, p.moment, p.set_id.as_str(), p.gain), (id, moment, ID, 100));
+    assert_eq!(p.applied.iter().map(|a| (a.member_id.as_str(), a.added)).collect::<Vec<_>>(), [("m1", false), ("m2", true)], "a hit already on the moment is not added");
+    assert_eq!(h.moment(moment).hit_volume(&clap), 55);
+    assert_eq!(h.moment(moment).hit_volume(&before[0]), 70, "the existing hit is untouched");
+    assert!(h.place_sound_set(moment, ID, "digest", 100, &hits).is_none(), "one placement per set per moment");
+    h.unlink_placement(id);
+    assert!(h.placements().is_empty());
+    assert!(h.moment(moment).has_hit(&clap), "unlinking keeps the hits");
+}

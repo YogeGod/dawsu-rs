@@ -8,6 +8,7 @@ use dawsu_hitsounding::{Hitsounds, MomentId, Place};
 use std::{collections::BTreeSet, convert::Infallible};
 
 mod lane_edit;
+mod sound_sets;
 mod workflows;
 pub use workflows::{RangeOperation, VolumeScope};
 

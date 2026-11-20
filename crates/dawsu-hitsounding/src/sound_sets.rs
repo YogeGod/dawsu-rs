@@ -290,6 +290,31 @@ pub fn placement_hits(set: &SoundSet, gain: i32) -> Vec<(String, i32)> {
     set.members.iter().map(|m| (m.lane.key(), (f64::from(m.volume) * f64::from(gain) / 100.0).round_ties_even().clamp(0.0, 100.0) as i32)).collect()
 }
 
+/// One placement of a sound set on a moment: the link the panel shows and an update follows. It
+/// holds no audio; the set comes from the library and its files from the mapset snapshot.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SoundSetPlacement {
+    pub id: u64,
+    pub set_id: String,
+    /// The set's version (its file's checksum) when placed or last updated.
+    pub set_digest: String,
+    /// A newer version the mapper chose to keep this placement off.
+    pub accepted_digest: Option<String>,
+    pub moment: crate::MomentId,
+    pub gain: i32,
+    pub applied: Vec<Applied>,
+}
+
+/// One member's hit as placed: `added` is false when the moment already had the lane, and such a
+/// hit is never touched by an update or unlink.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Applied {
+    pub member_id: String,
+    pub lane: SampleIdentity,
+    pub volume: i32,
+    pub added: bool,
+}
+
 // ---------------------------------------------------------------- the snapshot (Responsibility 16)
 
 /// A planned snapshot: the set with each member on its file in the mapset, and the files to write
