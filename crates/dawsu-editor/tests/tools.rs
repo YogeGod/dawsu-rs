@@ -531,6 +531,33 @@ fn shift_click_on_another_row_selects_that_row_from_the_anchor_time() {
 }
 
 #[test]
+fn shift_click_keeps_hits_selected_on_other_rows_and_ctrl_shift_click_toggles_one() {
+    // 0 and 3 on row 0, 1 and 2 on row 1, 4 on row 2.
+    let mut f = Fake::new(&[(1000.0, 0), (1000.0, 1), (2000.0, 1), (2000.0, 0), (1500.0, 2)]);
+    let mut tb = tool(ToolKind::Select, &mut f);
+    f.selection.replace([4]);
+    let ctrl = with(p(1000.0, 0), |e| e.mods = Mods::CTRL);
+    tb.down(&mut f, ctrl);
+    tb.up(&mut f, ctrl);
+    let shift = with(p(2000.0, 0), |e| e.mods = Mods::SHIFT);
+    tb.down(&mut f, shift);
+    tb.up(&mut f, shift);
+    assert_eq!(
+        f.selection.items(),
+        &HashSet::from([4, 0, 3]),
+        "Shift adds the row's range and keeps what was selected"
+    );
+    let ctrl_shift = with(p(2000.0, 1), |e| e.mods = Mods::CTRL | Mods::SHIFT);
+    tb.down(&mut f, ctrl_shift);
+    tb.up(&mut f, ctrl_shift);
+    assert_eq!(
+        f.selection.items(),
+        &HashSet::from([4, 0, 3, 2]),
+        "Ctrl+Shift toggles the clicked hit only, as before"
+    );
+}
+
+#[test]
 fn removing_the_primary_passes_it_to_the_last_selected_item() {
     let mut f = Fake::new(&[(500.0, 0), (1000.0, 0), (1500.0, 0)]);
     f.selection.replace([0, 1, 2]);
