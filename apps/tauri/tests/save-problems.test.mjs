@@ -60,13 +60,13 @@ const twoProblems = () => [
   { target: "Hard.osu", timeline: "Hard.osu", time: 2000, message: "This object cannot hold the change." },
 ];
 
-test("Save review shows two timed problems and requires an explicit continuation", async () => {
+test("Save review shows two timed problems before Review Save, and its Save writes the reviewed plan", async () => {
   const calls = [];
   const { context } = await load(twoProblems(), calls);
   runInContext([
     "modal = (kind, title, content, buttons) => { globalThis.output = { kind, title, text: content.map(node => node.textContent), buttons }; };",
     "closeModal = () => {};",
-    "view = { saveProblemReview: true, outputProblems: problems }; renderDialogs();",
+    'view = { saveProblemReview: true, saveReview: [["Replace difficulty", "Hard.osu"]], outputProblems: problems }; renderDialogs();',
   ].join("\n"), context);
   assert.equal(context.output?.kind, "save-problems");
   assert.match(context.output.text.join(" "), /00:01\.000.*00:02\.000/);
@@ -78,7 +78,31 @@ test("Save review shows two timed problems and requires an explicit continuation
   assert.match(context.output.text[0], /00:02\.000.*Hard\.osu/);
   context.output = saveReview;
   assert.equal(calls.length, 0);
-  context.output.buttons.find(([label]) => label === "Continue to Save")[1]();
+  context.output.buttons.find(([label]) => label === "Save")[1]();
+  await runInContext("pending", context);
+  assert.deepEqual({ ...calls[0] }, { kind: "answer_save_review", apply: true });
+});
+
+test("Save hitsounds says the rest is written and how left-out moments come back", async () => {
+  const calls = [];
+  const { context } = await load(twoProblems(), calls);
+  runInContext([
+    "modal = (kind, title, content, buttons) => { globalThis.output = { kind, title, text: content.map(node => node.textContent), buttons }; };",
+    'view = { saveProblemReview: true, saveReview: [], outputProblems: problems }; renderDialogs();',
+  ].join("\n"), context);
+  const note = context.output.text[1];
+  assert.equal(note, "These parts won't sound in osu! the way they do here. You can still save; the rest is written as drawn. " +
+    "Left-out moments stay in dawsu! and on this list, and Revert to saved brings them back.");
+});
+
+test("without a project Save hitsounds keeps its old copy and continues to Save", async () => {
+  const calls = [];
+  const { context, get } = await load(twoProblems(), calls);
+  runInContext('scene = { path: "Hard.osu" }; view = { saveProblemReview: true, outputProblems: problems }; renderDialogs();', context);
+  assert.match(get("dialog-body").children[1].textContent, /Save writes nothing until they are fixed/);
+  const actions = get("dialog-actions").children;
+  assert.deepEqual(actions.map(button => button.textContent), ["Cancel", "Show first problem", "Continue to Save"]);
+  await actions[2].click();
   await runInContext("pending", context);
   assert.equal(calls[0].kind, "save");
 });
@@ -91,7 +115,7 @@ test("Save hitsounds counts the problems and lists each with its time and a Show
   ];
   const { context, get } = await load(problems, calls);
   const render = () => runInContext("renderDialogs()", context);
-  runInContext('scene = { path: "Hard.osu" }; view = { saveProblemReview: true, outputProblems: problems };', context);
+  runInContext('scene = { path: "Hard.osu" }; view = { saveProblemReview: true, saveReview: [], outputProblems: problems };', context);
   render();
   const title = get("dialog-title");
   assert.equal(title.textContent, "Save hitsounds3 problems");
@@ -113,8 +137,10 @@ test("Save hitsounds counts the problems and lists each with its time and a Show
   assert.equal(other?.className, "save-problem-target", "a problem in another difficulty names it on its row");
   assert.equal(other.textContent, "Insane.osu");
   assert.equal(rows[0].children[0].children.length, 0, "rows in the open difficulty don't repeat its name");
-  const actions = get("dialog-actions").children.map(button => button.textContent);
-  assert.deepEqual(actions, ["Cancel", "Show first problem", "Continue to Save"]);
+  const buttons = get("dialog-actions").children;
+  assert.deepEqual(buttons.map(button => button.textContent), ["Show first problem", "Cancel", "Save"]);
+  assert.equal(buttons[0].className, "save-problems-show", "Show first problem sits on the left");
+  assert.equal(buttons[2].className, "primary");
 
   await rows[2].children[2].click();
   await runInContext("pending", context);
@@ -126,5 +152,6 @@ test("Save hitsounds counts the problems and lists each with its time and a Show
 test("the Save hitsounds styles avoid :has() and color-mix(), which macOS and Linux WebViews may lack", () => {
   const block = css.slice(css.indexOf("/* Save with problems (design f8)"));
   assert.match(block, /#dialog\.dialog-save-problems\{/);
+  assert.match(block, /#dialog-actions \.save-problems-show\{margin-right:auto\}/);
   assert.doesNotMatch(block, /:has\(|color-mix\(/);
 });
