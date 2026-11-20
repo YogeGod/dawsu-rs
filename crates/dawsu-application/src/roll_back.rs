@@ -59,11 +59,24 @@ pub(crate) struct LeftOut {
     pub hs: bool,
 }
 
-impl LeftOut {
-    /// True while the part still holds what Save left out, in the HS mode it was saved in.
-    pub(crate) fn still_held(&self, hits: &Hitsounds, base: &OsuFile, hs: bool) -> bool {
-        self.hs == hs && held(hits, base, self.part).as_ref() == Some(&self.held)
-    }
+/// The entries of `left_out` whose part still holds what Save left out, in the HS mode it was saved
+/// in. The HS groups are read in one pass over the moments, since the list is read on every view
+/// refresh.
+pub(crate) fn still_held<'a>(left_out: &'a [LeftOut], hits: &Hitsounds, base: &OsuFile, hs: bool) -> impl Iterator<Item = &'a LeftOut> {
+    let groups: BTreeMap<i64, Held> = if left_out.iter().any(|entry| matches!(entry.part, Part::Group(_))) {
+        dawsu_hitsounding::hs::hs_groups(base, hits).into_iter().map(|(time, members)| {
+            let mut states: Vec<_> = members.into_iter().map(|id| MomentState::of(hits.moment(id))).collect();
+            states.sort();
+            (time, Held::Group(states))
+        }).collect()
+    } else {
+        BTreeMap::new()
+    };
+    let empty = Held::Group(Vec::new());
+    left_out.iter().filter(move |entry| entry.hs == hs && match entry.part {
+        Part::Group(time) => groups.get(&time).unwrap_or(&empty) == &entry.held,
+        part => held(hits, base, part).as_ref() == Some(&entry.held),
+    })
 }
 
 /// What `part` holds in `hits`. `base` is the difficulty compile starts from, for HS group times.

@@ -1598,7 +1598,7 @@ impl Application {
         if let Some(doc) = &self.document {
             let hits = doc.composer.hitsounds();
             let checked = problems.len();
-            for entry in doc.left_out.iter().filter(|entry| entry.still_held(hits, &doc.compile_base, doc.hs_mode)) {
+            for entry in roll_back::still_held(&doc.left_out, hits, &doc.compile_base, doc.hs_mode) {
                 let problem = OutputProblem::new(&entry.problem, &doc.path, &doc.path);
                 // A newer check of the same time replaces the entry; two left-out parts can share one.
                 if !problems[..checked].iter().any(|p| p.target == problem.target && p.time == problem.time) {
@@ -3198,6 +3198,39 @@ mod project_workflow {
     }
 
     #[test]
+    fn a_record_that_fails_its_checks_puts_nothing_back_warns_and_is_kept() {
+        let scratch = Scratch::new("record-invalid");
+        let (mut app, map) = open_left_out_fixture(&scratch, true);
+        save_through_summary(&mut app, scratch.path("backups"));
+        let path = app.project.as_ref().unwrap().path().to_path_buf();
+        let reopened = reopen(&app, &map);
+        let written = {
+            let doc = reopened.document().unwrap();
+            let tail = doc.written.moment(tail_id(&doc.written));
+            tail.hits().map(|lane| (lane.clone(), tail.hit_volume(lane))).collect::<Vec<_>>()
+        };
+        assert_ne!(tail_hits(&reopened), written, "the untouched record puts the drawn hits back");
+        for (field, value, reason) in [
+            ("/settings/unwritten/current/moments/0/hits/0/volume", serde_json::json!(150), "volume 150 is out of range"),
+            ("/settings/unwritten/current/moments/0/object", serde_json::json!(99), "an object is missing"),
+            ("/settings/unwritten/current/moments/0/time_bits", serde_json::json!(1), "a hit point moved"),
+            ("/settings/unwritten/current/moments/0/hits/0/lane", serde_json::json!("Nope|x"), "unknown lane"),
+        ] {
+            let mut file: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            let original = file.clone();
+            *file.pointer_mut(field).unwrap() = value;
+            std::fs::write(&path, serde_json::to_vec(&file).unwrap()).unwrap();
+            let tampered = std::fs::read(&path).unwrap();
+            let reopened = reopen(&app, &map);
+            assert!(reopened.warnings.iter().any(|w| w.contains("could not be put back") && w.contains(reason)), "{reason}: {:?}", reopened.warnings);
+            assert_eq!(tail_hits(&reopened), written, "{reason}: nothing is put back");
+            assert!(reopened.output_problems().is_empty(), "{reason}: nothing is listed");
+            assert_eq!(std::fs::read(&path).unwrap(), tampered, "{reason}: the record is kept");
+            std::fs::write(&path, serde_json::to_vec(&original).unwrap()).unwrap();
+        }
+    }
+
+    #[test]
     fn a_failed_record_write_writes_no_osu() {
         let scratch = Scratch::new("record-stage-fails");
         let (mut app, map) = open_left_out_fixture(&scratch, true);
@@ -3547,6 +3580,120 @@ mod project_workflow {
         assert!(app.error.as_deref().is_some_and(|e| e.contains("cannot be written")), "{:?}", app.error);
         assert_eq!(std::fs::read(&map).unwrap(), SLIDER_MAP);
         assert!(app.is_dirty());
+    }
+
+    #[test]
+    fn a_pending_open_save_shows_the_summary_first_and_opens_after_its_save() {
+        let scratch = Scratch::new("pending-open-summary");
+        let (mut app, map) = open_left_out_fixture(&scratch, true);
+        let other = map.with_file_name("b.osu");
+        std::fs::write(&other, SLIDER_MAP).unwrap();
+        app.request_open(other.clone());
+        assert!(app.pending_open.is_some());
+        app.save();
+        wait(&mut app);
+        assert!(app.error.is_none() && app.is_dirty() && app.save_problem_review(), "{:?}", app.error);
+        assert_eq!(std::fs::read(&map).unwrap(), SLIDER_MAP, "nothing is written before the summary's Save");
+        assert!(app.pending_open.is_some());
+        app.answer_save_review(true);
+        wait(&mut app);
+        assert!(app.error.is_none(), "{:?}", app.error);
+        assert_eq!(app.document().unwrap().path, other.canonicalize().unwrap(), "the pending difficulty opens");
+    }
+
+    #[test]
+    fn editing_a_left_out_hs_group_drops_it_from_the_list_and_undo_brings_it_back() {
+        let scratch = Scratch::new("left-out-group-listing");
+        let folder = scratch.path("mapset");
+        std::fs::create_dir(&folder).unwrap();
+        let map = folder.join("a.osu");
+        std::fs::write(&map, INDEXED_MAP).unwrap();
+        let mut app = Application::headless();
+        app.project_root = Some(scratch.path("projects"));
+        open(&mut app, map.clone());
+        app.set_hs_mode(true);
+        let composer = &mut app.document.as_mut().unwrap().composer;
+        composer.add(3000.0, skin(SampleSet::Soft, Hitsound::Normal), 80, 0.0);
+        composer.add(3000.0, skin(SampleSet::Soft, Hitsound::Clap), 80, 0.0);
+        save_through_summary(&mut app, scratch.path("backups"));
+        assert_eq!(app.output_problems().iter().map(|p| p.time).collect::<Vec<_>>(), [3000.0]);
+        app.document.as_mut().unwrap().composer.add(3000.0, skin(SampleSet::Soft, Hitsound::Finish), 80, 0.0);
+        assert!(app.output_problems().is_empty(), "the group no longer holds what Save left out");
+        app.document.as_mut().unwrap().composer.undo();
+        assert_eq!(app.output_problems().iter().map(|p| p.time).collect::<Vec<_>>(), [3000.0]);
+    }
+
+    #[test]
+    fn a_left_out_tail_beside_a_written_head_green_line_comes_back_on_reopen() {
+        let scratch = Scratch::new("left-out-tail-green-line");
+        let folder = scratch.path("mapset");
+        std::fs::create_dir(&folder).unwrap();
+        let map = folder.join("a.osu");
+        std::fs::write(&map, SLIDER_MAP).unwrap();
+        let mut app = Application::headless();
+        app.project_root = Some(scratch.path("projects"));
+        open(&mut app, map.clone());
+        app.document.as_mut().unwrap().composer.apply("Head 60, empty tail", |hits| {
+            let head = hits.moments().iter().position(|m| matches!(m.place(), dawsu_hitsounding::Place::SliderNode { node: 0, .. })).unwrap();
+            hits.set_volume(dawsu_hitsounding::MomentId(head), 60);
+            let tail = tail_id(hits);
+            let lanes: Vec<_> = hits.moment(tail).hits().cloned().collect();
+            for lane in lanes {
+                hits.remove_hit(tail, &lane);
+            }
+        });
+        let drawn = tail_hits(&app);
+        save_through_summary(&mut app, scratch.path("backups"));
+        let saved = std::fs::read(&map).unwrap();
+        assert_ne!(saved, SLIDER_MAP, "the head's green line is written");
+        assert_eq!(app.output_problems().iter().map(|p| p.time).collect::<Vec<_>>(), [2500.0]);
+        let reopened = reopen(&app, &map);
+        assert!(!reopened.warnings.iter().any(|w| w.contains("left out")), "{:?}", reopened.warnings);
+        assert_eq!(tail_hits(&reopened), drawn);
+        assert_eq!(reopened.output_problems().iter().map(|p| p.time).collect::<Vec<_>>(), [2500.0]);
+    }
+
+    #[test]
+    fn an_hs_circle_made_before_a_left_out_tail_shifts_its_record_ordinal_and_reopen_matches() {
+        let scratch = Scratch::new("left-out-ordinal-shift");
+        let (mut app, map) = open_left_out_fixture(&scratch, true);
+        app.document.as_mut().unwrap().composer.add(500.0, skin(SampleSet::Normal, Hitsound::Normal), 80, 0.0);
+        let drawn = tail_hits(&app);
+        save_through_summary(&mut app, scratch.path("backups"));
+        assert_eq!(app.document().unwrap().file.hit_objects().len(), 3);
+        assert_eq!(record_json(&app)["current"]["moments"][0]["object"], 2);
+        let mut reopened = reopen(&app, &map);
+        assert!(!reopened.warnings.iter().any(|w| w.contains("left out")), "{:?}", reopened.warnings);
+        assert_eq!(tail_hits(&reopened), drawn);
+        assert_eq!(reopened.output_problems().iter().map(|p| p.time).collect::<Vec<_>>(), [2500.0]);
+        let before = std::fs::read(&map).unwrap();
+        save_through_summary(&mut reopened, scratch.path("backups"));
+        assert_eq!(std::fs::read(&map).unwrap(), before);
+    }
+
+    #[test]
+    fn an_emptied_circle_is_left_out_and_comes_back_empty_on_reopen() {
+        let scratch = Scratch::new("left-out-empty-circle");
+        let folder = scratch.path("mapset");
+        std::fs::create_dir(&folder).unwrap();
+        let map = folder.join("a.osu");
+        std::fs::write(&map, SLIDER_MAP).unwrap();
+        let mut app = Application::headless();
+        app.project_root = Some(scratch.path("projects"));
+        open(&mut app, map.clone());
+        app.document.as_mut().unwrap().composer.apply("Empty the circle", |hits| {
+            let lanes: Vec<_> = hits.moment(dawsu_hitsounding::MomentId(0)).hits().cloned().collect();
+            for lane in lanes {
+                hits.remove_hit(dawsu_hitsounding::MomentId(0), &lane);
+            }
+        });
+        save_through_summary(&mut app, scratch.path("backups"));
+        assert_eq!(std::fs::read(&map).unwrap(), SLIDER_MAP);
+        assert_eq!(app.output_problems().len(), 1);
+        let reopened = reopen(&app, &map);
+        assert!(!reopened.warnings.iter().any(|w| w.contains("left out")), "{:?}", reopened.warnings);
+        assert_eq!(reopened.document().unwrap().composer.hitsounds().moment(dawsu_hitsounding::MomentId(0)).hits().count(), 0);
+        assert_eq!(reopened.output_problems().len(), 1);
     }
 
     #[test]
