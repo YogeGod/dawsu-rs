@@ -214,6 +214,8 @@ pub struct SaveReport {
     left_out: Vec<roll_back::LeftOut>,
     hs_circle_ownership: Option<project::HsCircleOwnership>,
     gain_recovery_warning: Option<String>,
+    /// What the failed project write after the `.osu` write held, for the status line.
+    unfinished_record: &'static str,
 }
 pub fn save_document(document: &Document, backups: PathBuf) -> Result<SaveReport, String> {
     prepare_save(
@@ -554,6 +556,11 @@ impl PreparedSave {
                 } else {
                     None
                 };
+                let unfinished_record = match (needs_recovery_write, promote_unwritten) {
+                    (true, true) => "Gain recovery and left-out moments could not be recorded.",
+                    (false, true) => "Left-out moments could not be recorded.",
+                    _ => "Gain recovery could not be finalized.",
+                };
                 Ok(SaveReport {
                     file: OsuFile::read(bytes).file,
                     problems: Vec::new(),
@@ -562,6 +569,7 @@ impl PreparedSave {
                     left_out: self.left_out,
                     hs_circle_ownership: self.ownership,
                     gain_recovery_warning,
+                    unfinished_record,
                 })
             }
             Ok(SaveOutcome::ChangedOnDisk) => Err(publication.failed(DIFFICULTY_CHANGED.into())),
@@ -1523,7 +1531,7 @@ impl Application {
                             });
                             if let Some(error) = report.gain_recovery_warning {
                                 self.error = Some(with_archive_error(error));
-                                self.status = "Difficulty saved. Gain recovery could not be finalized.".into();
+                                self.status = format!("Difficulty saved. {}", report.unfinished_record);
                                 return;
                             }
                             if let (Some(mut settings), Some(project)) = (settings, self.project.as_mut()) {
@@ -3276,6 +3284,25 @@ mod project_workflow {
         assert!(app.error.is_some());
         assert_eq!(std::fs::read(&map).unwrap(), SLIDER_MAP);
         assert!(app.is_dirty());
+    }
+
+    #[test]
+    fn a_failed_record_update_after_the_write_names_the_left_out_moments() {
+        let scratch = Scratch::new("record-promote-fails");
+        let (mut app, map) = open_left_out_fixture(&scratch, true);
+        let drawn = tail_hits(&app);
+        // No project file yet: the record is staged by creating it, and only the update after the
+        // `.osu` write needs the (blocked) backup folder.
+        std::fs::create_dir_all(scratch.path("projects")).unwrap();
+        std::fs::write(scratch.path("projects").join("backups"), b"not a folder").unwrap();
+        app.save_with_backups(scratch.path("backups"));
+        wait(&mut app);
+        app.answer_save_review(true);
+        wait(&mut app);
+        assert_ne!(std::fs::read(&map).unwrap(), SLIDER_MAP, "the difficulty is written");
+        assert!(app.error.is_some());
+        assert_eq!(app.status, "Difficulty saved. Left-out moments could not be recorded.");
+        assert_eq!(tail_hits(&reopen(&app, &map)), drawn, "the staged record still puts them back");
     }
 
     #[test]
