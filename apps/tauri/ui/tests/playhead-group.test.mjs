@@ -28,7 +28,7 @@ test("the group is the Playhead label and the Follow, Centre and Return toggles"
   assert.equal([...html.matchAll(/<svg/g)].length, 3);
   const pressed = page => buttons(page).filter(tag => /aria-pressed="true"/.test(tag)).map(label);
   assert.deepEqual(pressed(html), ["Follow"]);
-  assert.deepEqual(pressed(shown({ follow: false, returnOnStop: true, busy: false }, undefined, true)), ["Centre", "Return"]);
+  assert.deepEqual(pressed(shown({ follow: true, returnOnStop: true, busy: false }, undefined, true)), ["Follow", "Centre", "Return"]);
   assert.doesNotMatch(html, /\sstyle=|\sid=|data-doc/);
 });
 
@@ -37,5 +37,7 @@ test("the toggles wait while there is no map, a job runs or the editor faulted",
   assert.deepEqual(disabled(shown(null, null)), ["Follow", "Centre", "Return"]);
   assert.deepEqual(disabled(shown({ busy: true })), ["Follow", "Centre", "Return"]);
   assert.deepEqual(disabled(shown({ busy: false, fault: "The editor stopped" })), ["Follow", "Centre", "Return"]);
-  assert.deepEqual(disabled(shown({ busy: false })), []);
+  assert.deepEqual(disabled(shown({ busy: false, follow: true })), []);
+  // Centre only acts while following, so it waits for Follow.
+  assert.deepEqual(disabled(shown({ busy: false, follow: false })), ["Centre"]);
 });

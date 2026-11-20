@@ -13,9 +13,8 @@ export const laneIcons = {
 
 const lanes = count => count + (count === 1 ? " lane" : " lanes");
 
-// v3 8b: "4", "2/4" while folded, or "Empty"; the title says it in full.
+// v3 8b: "4", or "2/4" while folded; the title says it in full. app.js shows no folder without lanes.
 export function folderChip({ count, used, collapsed }) {
-  if (!count) return { text: "Empty", title: "No lanes" };
   return collapsed
     ? { text: used + "/" + count, title: lanes(count) + ", " + used + " used" }
     : { text: String(count), title: lanes(count) };

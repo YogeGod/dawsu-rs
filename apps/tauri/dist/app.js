@@ -47,7 +47,6 @@ const sampleFolderNames = { normal: "Normal set", soft: "Soft set", drum: "Drum 
 let sampleFolderOrder = Object.keys(sampleFolderNames);
 let layoutWrites = 0;
 const collapsedFolders = new Set();
-const sampleFolderDragType = "application/x-dawsu-sample-set";
 let modalKind = "";
 let modalClose = null;
 let outputProblemIndex = -1;
@@ -610,7 +609,7 @@ function laneHeaderModel(drumNames) {
     return {
       type: "lane", key: drum ? "drum:" + position : "lane:" + row, row,
       number: drum ? position + 1 : numbers.get(row),
-      name: !showLaneInfo && !drum && !renamedLanes.has(lane.colourKey) ? sound.name : label, label,
+      name: !showLaneInfo && !drum && !renamedLanes.has(lane.colourKey) ? sound.name : label, label, display: displayName,
       title: (lane.sample ?? label) + " · Select and audition · Ctrl/Cmd toggles · Shift selects a range",
       tag: drum ? null : sound.set, icon: sound.icon,
       // Yoge, 2026-11-20 (ADR 0068): a lane is grey unless the mapper picked a colour.
@@ -1225,11 +1224,11 @@ function nodeRadii(points, diameterAt) {
   };
 }
 
-function laneTint(lane) {
+function laneTint(lane, active = false) {
   if (!lane) return null;
-  // Picked colour or none: an uncoloured lane's row stays grey (Yoge, ADR 0068).
+  // Picked colour or none: an uncoloured lane's row stays grey (Yoge, ADR 0068). v3: 8 %, 16 % when active.
   const colour = laneColours.get(lane.colourKey);
-  return colour ? colour + "1f" : null;
+  return colour ? colour + (active ? "29" : "14") : null;
 }
 
 const overviewGroups = ["soft", "normal", "drum", null, "skin"];
@@ -1292,7 +1291,7 @@ function paint() {
     if (lane === undefined) g.ctx.fillStyle = slateTimeline.arrange;
     else if (typeof lane === "string") g.ctx.fillStyle = slateTimeline.group;
     g.ctx.fillRect(0, y, g.width, rowHeight);
-    const tint = typeof lane === "number" ? laneTint(scene.lanes?.[lane]) : null;
+    const tint = typeof lane === "number" ? laneTint(scene.lanes?.[lane], lane === view.activeLane) : null;
     if (tint) {
       g.ctx.fillStyle = tint;
       g.ctx.fillRect(0, y, g.width, rowHeight);

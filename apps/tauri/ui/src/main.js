@@ -38,7 +38,7 @@ export function update(view, scene) {
 
 // app.js hands over the lane and folder header rows each time renderLanes() changes them.
 export function lanes(headers) {
-  bridge.lanes = headers;
+  bridge.handOverLanes(headers);
 }
 
 // The Playhead group's Centre, read by app.js's followPlayhead().

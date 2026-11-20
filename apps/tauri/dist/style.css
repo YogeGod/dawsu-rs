@@ -317,8 +317,8 @@ aside section > :last-child { margin-bottom:0; }
 
 .ribbon-options:not(:popover-open) { display:none; }
 .ribbon-options:popover-open { position:fixed; inset:auto; top:94px; left:clamp(12px,40vw,700px); max-width:min(450px,90vw); margin:0; padding:12px; border:1px solid var(--line); border-radius:8px; background:var(--panel); color:var(--text); flex-wrap:wrap; gap:10px; box-shadow:0 6px 20px #0007; }
-#song-mute[aria-pressed=true] { background:#efc16a; color:#111; }
-#song-solo[aria-pressed=true] { background:#69d995; color:#111; }
+#song-mute[aria-pressed=true] { background:var(--mute-on); color:var(--editor-ink); }
+#song-solo[aria-pressed=true] { background:var(--solo-on); color:var(--editor-ink); }
 .tint-palette { display:grid; grid-template-columns:repeat(18,minmax(0,1fr)); gap:8px; padding:8px 0 16px; }
 .tint-palette input { appearance:none; width:100%; min-width:0; height:16px; margin:0; border:1px solid transparent; border-radius:4px; cursor:pointer; }
 .tint-palette input:checked { outline:2px solid #f1f1f1; outline-offset:1px; }

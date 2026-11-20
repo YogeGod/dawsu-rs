@@ -2,7 +2,8 @@
   import { tick } from "svelte";
   import { bridge } from "../lib/bridge.svelte.js";
   import { folderShades, laneShades } from "../lib/colour.js";
-  import { folderChip, folderDragType, laneIcons } from "../lib/lanes.js";
+  import { laneHandlers } from "../lib/laneHandlers.js";
+  import { folderChip, laneIcons } from "../lib/lanes.js";
   import Folder from "../icons/Folder.svg?raw";
   import FolderOpen from "../icons/FolderOpen.svg?raw";
 
@@ -12,37 +13,7 @@
   const rows = $derived(headers?.rows ?? []);
   const names = $derived(headers?.names !== false);
   const folder = folderShades();
-  const send = (...args) => globalThis.laneHeaderAction?.(...args);
-
-  // The row outside its buttons selects the lane like its name does.
-  function rowClick(event, row) {
-    if (!event.target.closest?.("button")) send("select", row, event);
-  }
-
-  // Alt+Up and Alt+Down move a folder; focus stays on its strip after the move.
-  async function folderKey(event, set) {
-    if (!event.altKey || !["ArrowUp", "ArrowDown"].includes(event.key)) return;
-    event.preventDefault();
-    event.stopPropagation();
-    send("folderStep", set, event.key === "ArrowDown");
-    await tick();
-    document.querySelector(`#lanes [data-sample-set="${set}"] .fold`)?.focus();
-  }
-
-  function dragStart(event, set) {
-    event.dataTransfer.setData(folderDragType, set);
-    event.dataTransfer.effectAllowed = "move";
-  }
-  function dragOver(event) {
-    if (event.dataTransfer.types.includes(folderDragType)) event.preventDefault();
-  }
-  function drop(event, set) {
-    const from = event.dataTransfer.getData(folderDragType);
-    if (!from) return;
-    event.preventDefault();
-    const box = event.currentTarget.getBoundingClientRect();
-    send("folderMove", from, set, event.clientY > box.y + box.height / 2);
-  }
+  const on = laneHandlers((...args) => globalThis.laneHeaderAction?.(...args), tick);
 </script>
 
 {#each rows as row (row.key)}
@@ -51,21 +22,25 @@
     <div class="lane sample-folder" class:compact={!names} data-sample-set={row.set} draggable="true"
       role="group" aria-label={row.name}
       style:--lh-strip={folder.strip} style:--lh-header={folder.header}
-      ondragstart={event => dragStart(event, row.set)} ondragover={dragOver} ondrop={event => drop(event, row.set)}>
+      ondragstart={event => on.dragStart(event, row.set)} ondragover={on.dragOver} ondrop={event => on.drop(event, row.set)}>
       <button type="button" class="fold" aria-label={row.name} aria-expanded={!row.collapsed}
         title="Fold or unfold. Alt+Up or Alt+Down moves the folder"
-        onclick={() => send("folder", row.set)} onkeydown={event => folderKey(event, row.set)}
+        onclick={() => on.fold(row.set)} onkeydown={event => on.folderKey(event, row.set)}
       >{@html row.collapsed ? Folder : FolderOpen}</button>
       <button type="button" class="lane-mute ms" aria-label={"Mute " + row.name} aria-pressed={row.muted}
-        onclick={() => send("folderMix", row.set, "mute")}>M</button>
+        onclick={() => on.folderMix(row.set, "mute")}>M</button>
       <button type="button" class="lane-solo ms" aria-label={"Solo " + row.name} aria-pressed={row.solo}
-        onclick={() => send("folderMix", row.set, "solo")}>S</button>
-      {#if names}<span class="name">{row.name}</span>{/if}
-      <span class="chip" title={chip.title}>{chip.text}</span>
+        onclick={() => on.folderMix(row.set, "solo")}>S</button>
+      {#if names}
+        <!-- The strip is the keyboard path; a click on the name folds as before. -->
+        <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
+        <span class="name" onclick={() => on.foldName(row.set)}>{row.name}</span>
+        <span class="chip" title={chip.title}>{chip.text}</span>
+      {/if}
     </div>
   {:else if row.type === "drum"}
     <div class="lane" class:compact={!names}>
-      <span class="name unassigned-drum" title={row.title}>{row.name}</span>
+      <span class="name unassigned-drum" title={row.title}>{names ? row.name : "–"}</span>
     </div>
   {:else}
     {@const shade = laneShades(row.colour)}
@@ -75,25 +50,25 @@
       style:--lh-strip={shade.strip} style:--lh-tile={shade.tile} style:--lh-header={shade.header}
       style:--lh-hover={shade.hover} style:--lh-selected={shade.selected}
       style:--lh-spine={row.folder ? folder.strip : undefined}
-      onclick={event => rowClick(event, row.row)}>
+      onclick={event => on.rowClick(event, row.row)}>
       <span class="spine"></span>
       <span class="num">{row.number}</span>
       {#if names}<span class="tile" aria-hidden="true"><svg viewBox="0 0 16 16">{@html laneIcons[row.icon] ?? laneIcons.file}</svg></span>{/if}
-      <button type="button" class="lane-mute ms" aria-label={"Mute " + row.label} aria-pressed={row.muted}
-        onclick={() => send("mix", row.row, "mute")}>M</button>
-      <button type="button" class="lane-solo ms" aria-label={"Solo " + row.label} aria-pressed={row.solo}
-        onclick={() => send("mix", row.row, "solo")}>S</button>
+      <button type="button" class="lane-mute ms" aria-label={"Mute " + row.display} aria-pressed={row.muted}
+        onclick={() => on.mix(row.row, "mute")}>M</button>
+      <button type="button" class="lane-solo ms" aria-label={"Solo " + row.display} aria-pressed={row.solo}
+        onclick={() => on.mix(row.row, "solo")}>S</button>
       {#if row.family}
         <button type="button" class="lane-disclosure" aria-expanded={!row.family.collapsed} aria-label={row.family.label}
-          onclick={() => send("family", row.row)}>{row.family.collapsed ? "▸" : "▾"}</button>
+          onclick={() => on.family(row.row)}>{row.family.collapsed ? "▸" : "▾"}</button>
       {/if}
       <button type="button" class="name" data-lane-row={row.row} aria-haspopup="menu" aria-expanded="false"
         aria-label={"Select and audition " + row.label} aria-pressed={row.selected} title={row.title}
-        onclick={event => send("select", row.row, event)}>{names ? row.name : "▶"}</button>
+        onclick={event => on.select(event, row.row)}>{names ? row.name : "▶"}</button>
       {#if names && row.tag}<span class="tag-slot"><span class="tag">{row.tag}</span></span>{/if}
       {#if row.addLayer}
         <button type="button" class="lane-add-layer" aria-label={row.addLayer} title={row.addLayer}
-          disabled={headers.busy} onclick={() => send("addLayer", row.row)}>+</button>
+          disabled={headers.busy} onclick={() => on.addLayer(row.row)}>+</button>
       {/if}
     </div>
   {/if}
@@ -302,6 +277,7 @@
   }
   .sample-folder .name {
     flex: 1 1 auto;
+    cursor: pointer;
   }
   .chip {
     display: inline-grid;

@@ -8,7 +8,7 @@ import LaneHeaders from "../src/parts/LaneHeaders.svelte";
 
 const folder = (more = {}) => ({ type: "folder", key: "folder:soft", set: "soft", name: "Soft set",
   count: 4, used: 2, collapsed: false, muted: false, solo: false, ...more });
-const lane = (more = {}) => ({ type: "lane", key: "lane:0", row: 0, number: 5, name: "Clap", label: "Clap",
+const lane = (more = {}) => ({ type: "lane", key: "lane:0", row: 0, number: 5, name: "Clap", label: "Clap", display: "Clap",
   title: "soft-hitclap.wav · Select and audition", tag: "Soft", icon: "clap", colour: null, folder: "soft",
   active: false, selected: false, muted: false, solo: false, quiet: false, layer: false, family: null, addLayer: null, ...more });
 
@@ -21,11 +21,11 @@ const buttons = html => [...html.matchAll(/<button\b[^>]*>([^]*?)<\/button>/g)].
   tag: match[0].slice(0, match[0].indexOf(">") + 1), text: match[1].replace(/<[^>]+>/g, "").trim(),
 }));
 
-test("the folder chip shows the count, used/count when folded, or Empty, with the full text in its title", () => {
+// app.js shows no folder without lanes, so there is no "Empty" chip.
+test("the folder chip shows the count, or used/count when folded, with the full text in its title", () => {
   assert.deepEqual(folderChip({ count: 4, used: 2, collapsed: false }), { text: "4", title: "4 lanes" });
   assert.deepEqual(folderChip({ count: 4, used: 2, collapsed: true }), { text: "2/4", title: "4 lanes, 2 used" });
   assert.deepEqual(folderChip({ count: 1, used: 0, collapsed: true }), { text: "0/1", title: "1 lane, 0 used" });
-  assert.deepEqual(folderChip({ count: 0, used: 0, collapsed: false }), { text: "Empty", title: "No lanes" });
 });
 
 test("before app.js hands over its lanes the column is empty", () => {
@@ -43,6 +43,11 @@ test("a lane header is spine, number, icon tile, M, S, name and set tag, in Tab 
   const [mute, solo, name] = buttons(row).map(button => button.tag);
   assert.match(mute, /class="lane-mute[^"]*"/);
   assert.match(mute, /aria-label="Mute Clap"/);
+  // M and S name the lane plainly, without the " · idx 2" lane info.
+  const [info] = rowsOf(shown([lane({ label: "soft-hitclap2 · idx 2", display: "soft-hitclap2" })]));
+  assert.match(buttons(info)[0].tag, /aria-label="Mute soft-hitclap2"/);
+  assert.match(buttons(info)[1].tag, /aria-label="Solo soft-hitclap2"/);
+  assert.match(buttons(info)[2].tag, /aria-label="Select and audition soft-hitclap2 · idx 2"/);
   assert.match(mute, /aria-pressed="false"/);
   assert.match(solo, /aria-label="Solo Clap"/);
   assert.match(name, /class="name[^"]*"/);
@@ -109,10 +114,17 @@ test("a folder header is the fold strip, M, S, name and count chip", () => {
   assert.match(row, /<span class="name[^>]*>Soft set<\/span>/);
   assert.match(row, /<span class="chip[^"]*" title="4 lanes, 2 used">2\/4<\/span>/);
   assert.ok(row.includes("--lh-header: " + folderShades().header));
+  // With lane names hidden the 99 px column keeps strip, M and S, as before.
+  const [compact] = rowsOf(shown([folder()], false));
+  assert.doesNotMatch(compact, /class="chip|class="name/);
+  assert.equal(buttons(compact).length, 3);
 });
 
-test("an unassigned drum row shows its name only", () => {
-  const [row] = rowsOf(shown([{ type: "drum", key: "drum:1", name: "Ghost", title: "Ghost · Unassigned" }]));
+test("an unassigned drum row shows its name only, or a dash with names hidden", () => {
+  const drum = { type: "drum", key: "drum:1", name: "Ghost", title: "Ghost · Unassigned" };
+  const [row] = rowsOf(shown([drum]));
   assert.match(row, /<span class="name unassigned-drum[^"]*" title="Ghost · Unassigned">Ghost<\/span>/);
   assert.equal(buttons(row).length, 0);
+  const [compact] = rowsOf(shown([drum], false));
+  assert.match(compact, /title="Ghost · Unassigned">–<\/span>/);
 });

@@ -21,7 +21,7 @@
   <span class="label"><span class="glyph" aria-hidden="true"></span>Playhead</span>
   <button type="button" class="toggle" aria-label="Follow" aria-pressed={follow} {disabled}
     title="Scroll the timeline to keep the playhead visible" onclick={() => send("follow")}>{@html LocateFixed}</button>
-  <button type="button" class="toggle" aria-label="Centre" aria-pressed={bridge.centre} {disabled}
+  <button type="button" class="toggle" aria-label="Centre" aria-pressed={bridge.centre} disabled={disabled || !follow}
     title="Keep the playhead in the middle while following" onclick={centre}>{@html Crosshair}</button>
   <button type="button" class="toggle" aria-label="Return" aria-pressed={returns} {disabled}
     title="Return to the playback start when stopping" onclick={() => send("return")}>{@html UndoDot}</button>

@@ -343,10 +343,12 @@ test("lane rows tint only in a colour the mapper picked", async () => {
         .map(family => laneColour({ family, colourKey: "unpicked" })),
       laneColour({ family: "soft-hitclap", colourKey: "picked" }),
       laneTint(clap), laneTint({ family: "soft-hitclap", colourKey: "picked" }),
+      laneTint({ family: "soft-hitclap", colourKey: "picked" }, true),
     ])`);
   assert.deepEqual(JSON.parse(result), [
     ["#f1ad67", "#9c9cfc", "#a7d67d", "#e28dd1", "#62d6cf"], "#123456",
-    null, "#1234561f",
+    // v3: 8 % on a row, 16 % on the active lane's row.
+    null, "#12345614", "#12345629",
   ]);
 });
 

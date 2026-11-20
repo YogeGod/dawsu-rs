@@ -79,7 +79,7 @@ test("a lane header row carries its number, sound name, set tag, icon and contro
   ]);
   const [normal, clap, , , , , kick] = rows.slice(1);
   assert.deepEqual(normal, {
-    type: "lane", key: "lane:0", row: 0, number: 1, name: "Normal", label: "soft-hitnormal",
+    type: "lane", key: "lane:0", row: 0, number: 1, name: "Normal", label: "soft-hitnormal", display: "soft-hitnormal",
     title: "soft-hitnormal · Select and audition · Ctrl/Cmd toggles · Shift selects a range",
     tag: "Soft", icon: "normal", colour: null, folder: "soft", active: false, selected: false,
     muted: false, solo: false, quiet: false, layer: false,
@@ -98,6 +98,7 @@ test("a lane header row carries its number, sound name, set tag, icon and contro
 
   evaluate("showLaneInfo = true; renderLanes();");
   assert.equal(lanes(evaluate)[0].name, "soft-hitnormal · idx 1");
+  assert.equal(lanes(evaluate)[0].display, "soft-hitnormal", "M and S keep the plain name");
 
   evaluate("showLaneInfo = false; view.panels = { laneNames: false }; renderLanes();");
   assert.equal(headers(evaluate).names, false);
@@ -191,4 +192,15 @@ test("the header column keeps the design's 250px width and colours every web vie
   assert.doesNotMatch(css, /\.lane[.:\s{[]|sample-folder|--lane-sound/);
   const part = await readFile(new URL("../ui/src/parts/LaneHeaders.svelte", import.meta.url), "utf8");
   assert.doesNotMatch(part, /color-mix|oklch\(|aspect-ratio/, "colours come as hexes from ui/src/lib/colour.js");
+});
+
+test("Song M and S light like the lane M and S: M accent, S warning, ink text (v3)", () => {
+  assert.match(css, /#song-mute\[aria-pressed=true\] \{ background:var\(--mute-on\); color:var\(--editor-ink\); \}/);
+  assert.match(css, /#song-solo\[aria-pressed=true\] \{ background:var\(--solo-on\); color:var\(--editor-ink\); \}/);
+});
+
+test("app.js and the v3 tokens keep nothing the lane part replaced", async () => {
+  assert.doesNotMatch(app, /sampleFolderDragType/);
+  const tokens = await readFile(new URL("../ui/src/tokens.css", import.meta.url), "utf8");
+  assert.doesNotMatch(tokens, /--lane-|--folder-|hue = 25/);
 });

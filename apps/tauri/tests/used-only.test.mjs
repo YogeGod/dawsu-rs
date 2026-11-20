@@ -113,7 +113,7 @@ test("the active lane colour picker applies and resets a faint tint for its diff
   evaluate('opened[3].find(([label]) => label === "Apply")[1]()');
   await evaluate("pending");
   assert.equal(evaluate("laneHeaders.rows[0].colour"), "#388ada");
-  assert.equal(evaluate("laneTint(scene.lanes[0])"), "#388ada1f");
+  assert.equal(evaluate("laneTint(scene.lanes[0])"), "#388ada14");
   const saved = calls.pop().action;
   assert.equal(saved.path, "first.osu");
   assert.equal(saved.persist, true);

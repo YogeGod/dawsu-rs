@@ -49,7 +49,6 @@
   --text-xs: 11px; --text-sm: 12px; --text-md: 13px; --text-lg: 16px; --text-xl: 20px;
   --shadow-pop: 0 14px 36px rgba(0,0,0,.55);
   --shadow-tip: 0 8px 24px rgba(0,0,0,.5);
-  --lane-compact: 28px; --lane-normal: 34px; --lane-tall: 44px;
   --dock-width: 246px; --rail-width: 44px;
   --topbar-h: 52px; --toolbar-h: 43px; --statusbar-h: 32px;
 }
@@ -74,12 +73,6 @@
   /* Editor grid stays neutral */
   --grid-sub: rgba(255,255,255,.025); --grid-beat: rgba(255,255,255,.04); --grid-bar: rgba(255,255,255,.10);
 
-  /* Lane & folder colours: oklch(L C h) mixed into --editor-canvas */
-  --lane-l: 0.70; --lane-c: 0.10;          /* hue = 25 + (n-1) * 330/11 */
-  --lane-mix-header: 18%; --lane-mix-hover: 28%; --lane-mix-selected: 36%;
-  --lane-mix-row: 8%; --lane-mix-row-selected: 16%; --lane-mix-icon: 26%;
-  --folder-hue-normal: 150; --folder-hue-soft: 230; --folder-hue-drum: 30; --folder-hue-map: 300;
-  --folder-mix-header: 34%; --folder-mix-row: 14%;
 
   /* Mute / solo */
   --ms-idle: rgba(0,0,0,.35); --ms-edge: rgba(255,255,255,.18);
@@ -94,5 +87,3 @@
   --sr-4_2: #ff8068; --sr-4_9: #ff4e6f; --sr-5_8: #c645b8; --sr-6_7: #6563de; --sr-7_7: #18158e; --sr-9: #000000;
   --sr-text-dark: var(--editor-ink); --sr-text-light: #ffd966; /* light text from 6.5★ */
 }
-/* Helper (JS): laneColour(n) => `oklch(${L} ${C} ${25 + (n-1)*330/11})`;
-   mix(c, p) => `color-mix(in oklch, ${c} ${p}, var(--editor-canvas))` */
