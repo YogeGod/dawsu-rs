@@ -7,7 +7,7 @@ mod keyboard;
 mod library;
 mod selection;
 
-use dawsu_application::{Application, DrumDetectState, OutputBackend, ExportSettings, PlatformRequest, EditorTimeSignature, LaneLayout, PointerPhase, RangeOperation, TimelineEdit, VolumeScope, lane_name};
+use dawsu_application::{Application, DrumDetectState, OutputBackend, ExportOptions, ExportSettings, PlatformRequest, EditorTimeSignature, LaneLayout, PointerPhase, RangeOperation, TimelineEdit, VolumeScope, lane_name};
 use dawsu_editor::{
     keys::{Key, KeyCombination, Mods},
     tempo::SnapMode,
@@ -1334,6 +1334,12 @@ enum Request {
     DrumView(PathBuf, Option<PathBuf>, bool, mpsc::Sender<Result<Value, String>>),
     Folder(folders::Folder, mpsc::Sender<Result<PathBuf, String>>),
     Close(bool, mpsc::Sender<Result<(), String>>),
+    // The Export window's own requests. Each always answers, with an error after a fault.
+    ExportView(mpsc::Sender<Result<Value, String>>),
+    ExportPreview(ExportOptions, mpsc::Sender<Result<u64, String>>),
+    ExportRun(u64, mpsc::Sender<Result<(), String>>),
+    /// The Export window closed: its preview stops and is forgotten. Needs no answer.
+    ExportClose,
 }
 struct Editor(mpsc::Sender<Request>);
 
@@ -1359,6 +1365,74 @@ fn guard<T>(
         *fault = Some(message.clone());
         message
     })
+}
+
+fn export_snapshot(app: &Application) -> Value {
+    let status = app.export_status();
+    let document = app.document();
+    let source = document.map(|d| {
+        let mut hit_counts = std::collections::HashMap::new();
+        for lane in d.composer.hitsounds().moments().iter().flat_map(|moment| moment.hits()) {
+            *hit_counts.entry(lane).or_insert(0_usize) += 1;
+        }
+        let lanes = d.composer.lanes.iter().map(|lane| json!({
+            "name": lane_name(lane),
+            "colourKey": dawsu_application::lane_layout_key(lane),
+            "hitCount": hit_counts.get(lane).copied().unwrap_or(0),
+        })).collect::<Vec<_>>();
+        json!({
+            "path": d.path, "title": d.title,
+            "difficulty": d.file.value("Metadata", "Version"),
+            "version": d.composer.history.version(),
+            "hits": hit_counts.values().sum::<usize>(),
+            "lanes": lanes,
+            "laneColours": d.lane_layout().map(|layout| json!(layout.lane_colours)).unwrap_or_else(|| json!({})),
+        })
+    });
+    let targets = app.export_targets();
+    json!({
+        "source": source,
+        "targets": targets,
+        "backups": app.backups_folder(),
+        "busy": app.busy,
+        "requested": status.requested,
+        "previewing": status.running || status.waiting,
+        "progress": status.progress.map(|(done, total)| json!({ "kind": "preview", "done": done, "total": total })),
+        "error": status.error,
+        "problems": status.problems.iter().map(|problem| json!({
+            "target": problem.target, "timeline": problem.timeline,
+            "time": problem.time, "message": problem.message,
+        })).collect::<Vec<_>>(),
+        "preview": status.preview.map(|preview| json!({
+            "id": preview.id,
+            "origin": "export",
+            "stale": status.stale,
+            "source": preview.plan.source,
+            "version": preview.plan.version,
+            "label": preview.plan.label,
+            "details": preview.plan.details,
+            "files": preview.plan.files.iter().map(|file| &file.path).collect::<Vec<_>>(),
+            "mixes": preview.plan.mix_paths().collect::<Vec<_>>(),
+        })),
+    })
+}
+
+/// Answers the Export window. Never touches main's one-shot view state.
+fn answer_export(app: &mut Application, fault: &mut Option<String>, request: Request) {
+    match request {
+        Request::ExportView(response) => {
+            let _ = response.send(guard(app, fault, |app| export_snapshot(app)));
+        }
+        Request::ExportPreview(options, response) => {
+            let result = guard(app, fault, |app| app.request_export_preview(options)).and_then(|result| result);
+            let _ = response.send(result);
+        }
+        Request::ExportRun(preview_id, response) => {
+            let result = guard(app, fault, |app| app.run_export(preview_id)).and_then(|result| result);
+            let _ = response.send(result);
+        }
+        _ => unreachable!("only Export requests reach answer_export"),
+    }
 }
 
 fn editor_thread(initial: Option<PathBuf>) -> Editor {
@@ -1569,6 +1643,7 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                             } else {
                                 app.cancel_drum_detection();
                                 app.save_session().map(|()| {
+                                    app.cancel_export_preview();
                                     if !app.first_launch {
                                         app.save_preferences();
                                     }
@@ -1578,6 +1653,14 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                         .and_then(|result| result)
                     };
                     let _ = response.send(result);
+                }
+                Ok(request @ (Request::ExportView(_) | Request::ExportPreview(..) | Request::ExportRun(..))) => {
+                    answer_export(&mut app, &mut fault, request);
+                }
+                Ok(Request::ExportClose) => {
+                    if fault.is_none() {
+                        let _ = guard(&mut app, &mut fault, Application::cancel_export_preview);
+                    }
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {
                     if fault.is_none() {
@@ -1622,6 +1705,29 @@ fn editor_help(state: State<'_, Editor>) -> Result<Value, String> {
 #[tauri::command]
 fn editor_export_settings(state: State<'_, Editor>) -> Result<Option<(PathBuf, ExportSettings)>, String> {
     ask(&state, Request::ExportSettings)
+}
+
+#[derive(Deserialize)]
+struct ExportOptionsJson {
+    targets: Vec<PathBuf>,
+    #[serde(with = "CopyOptionsJson")]
+    options: CopyOptions,
+}
+
+#[tauri::command]
+fn export_view(state: State<'_, Editor>) -> Result<Value, String> {
+    ask(&state, Request::ExportView)?
+}
+
+#[tauri::command]
+fn export_preview(state: State<'_, Editor>, options: ExportOptionsJson) -> Result<u64, String> {
+    let options = ExportOptions { targets: options.targets, copy: options.options };
+    ask(&state, |tx| Request::ExportPreview(options, tx))?
+}
+
+#[tauri::command]
+fn export_run(state: State<'_, Editor>, preview_id: u64) -> Result<(), String> {
+    ask(&state, |tx| Request::ExportRun(preview_id, tx))?
 }
 
 #[tauri::command]
@@ -1830,12 +1936,46 @@ fn open_editor_folder(folder: folders::Folder, state: State<'_, Editor>) -> Resu
 #[tauri::command]
 fn close_editor(
     app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
     state: State<'_, Editor>,
     discard: bool,
 ) -> Result<(), String> {
+    if window.label() != "main" {
+        return Err("Only the editor window can quit dawsu!.".into());
+    }
     ask(&state, |tx| Request::Close(discard, tx))??;
     app.exit(0);
     Ok(())
+}
+
+/// What a window's close request does to the editor. Only the main window owns the session.
+#[derive(Debug, PartialEq)]
+enum CloseDecision {
+    /// Another window closes; the editor and its session stay as they are.
+    Allow,
+    /// Main closes after the session was saved; every other window closes with it.
+    CloseAll,
+    /// Main stays open; the message says why.
+    Keep(String),
+}
+
+/// The windows that close with main.
+fn closed_with_main<'a>(labels: impl IntoIterator<Item = &'a str>) -> Vec<&'a str> {
+    labels.into_iter().filter(|label| *label != "main").collect()
+}
+
+fn close_requested(label: &str, editor: &Editor) -> CloseDecision {
+    if label == "export" {
+        // Closing Export never waits on the editor.
+        let _ = editor.0.send(Request::ExportClose);
+    }
+    if label != "main" {
+        return CloseDecision::Allow;
+    }
+    match ask(editor, |tx| Request::Close(false, tx)).and_then(|r| r) {
+        Ok(()) => CloseDecision::CloseAll,
+        Err(error) => CloseDecision::Keep(error),
+    }
 }
 
 fn main() {
@@ -1844,10 +1984,18 @@ fn main() {
         .manage(editor_thread(initial))
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                let editor = window.state::<Editor>();
-                if let Err(error) = ask(&editor, |tx| Request::Close(false, tx)).and_then(|r| r) {
-                    api.prevent_close();
-                    let _ = window.emit("editor-close-requested", error);
+                match close_requested(window.label(), &window.state::<Editor>()) {
+                    CloseDecision::Allow => {}
+                    CloseDecision::CloseAll => {
+                        let others = window.app_handle().webview_windows();
+                        for label in closed_with_main(others.keys().map(String::as_str)) {
+                            let _ = others[label].destroy();
+                        }
+                    }
+                    CloseDecision::Keep(error) => {
+                        api.prevent_close();
+                        let _ = window.emit_to("main", "editor-close-requested", error);
+                    }
                 }
             }
         })
@@ -1855,6 +2003,9 @@ fn main() {
             editor_view,
             editor_help,
             editor_export_settings,
+            export_view,
+            export_preview,
+            export_run,
             pick_merge_preset,
             save_merge_preset,
             editor_shortcuts,

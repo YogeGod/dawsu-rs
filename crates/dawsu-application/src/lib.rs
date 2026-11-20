@@ -8,6 +8,7 @@ mod edit_workflows;
 mod controller;
 mod editor_meter;
 mod drum_detect;
+mod export;
 mod export_settings;
 mod generate_receipt;
 mod gain_recovery;
@@ -36,6 +37,7 @@ use dawsu_editor::transport::BookmarkList;
 pub use problems::OutputProblem;
 pub use editor_meter::{EditorBarSection, EditorTimeSignature};
 pub use drum_detect::{DrumDetectState, DrumDetectView, DrumLanes};
+pub use export::{ExportOptions, ExportPreview, ExportStatus, PreviewOrigin};
 pub use export_settings::{ExportCombination, ExportSettings};
 pub use project::LaneLayout;
 pub use recovery::RecoveryOffer;
@@ -825,6 +827,9 @@ pub struct Application {
     pub revert_requested: bool,
     pub busy: bool,
     pub output_review: Option<output::WritePlan>,
+    export: export::Slot,
+    /// Counts loads and Saves of the open difficulty, for the Export preview's identity.
+    document_generation: u64,
     pending_save_review: Option<PendingSave>,
     output_problems: Vec<OutputProblem>,
     output_problem_revision: Option<(u64, bool)>,
@@ -938,6 +943,8 @@ impl Application {
             revert_requested: false,
             busy: false,
             output_review: None,
+            export: export::Slot::default(),
+            document_generation: 0,
             pending_save_review: None,
             output_problems: Vec::new(),
             output_problem_revision: None,
@@ -1363,6 +1370,8 @@ impl Application {
         // Edits made outside the refreshing entry points still reach the recovery checkpoint.
         self.refresh_recovery_edit();
         self.poll_drum_detection();
+        // Before main's job: its arms can return early.
+        self.poll_export();
         if !self.cancel.load(Ordering::Relaxed)
             && let Some(progress) = &self.job_progress
             && let Ok(mut current) = progress.current.try_lock()
@@ -1404,6 +1413,10 @@ impl Application {
                     let mut checkpoint = recovery::Checkpoint::new(&loaded.document);
                     let restored_id = loaded.recovery.map(|copy| copy.resume(&mut checkpoint));
                     self.document = Some(loaded.document);
+                    // Reviews of the outgoing load must not match this one: history versions restart.
+                    self.document_generation += 1;
+                    self.output_review = None;
+                    self.export.clear();
                     self.pending_save_review = None;
                     self.last_endpoint_jump = None;
                     self.selection_lane_scope = None;
@@ -1566,6 +1579,8 @@ impl Application {
                             let drawn = report.drawn;
                             if let Some(d) = self.document.as_mut().filter(|d| d.path == path) {
                                 d.file = report.file;
+                                self.document_generation += 1;
+                                self.export.clear();
                                 d.written = last_written(&compiled, hs_mode);
                                 d.left_out = report.left_out;
                                 // The difficulty is written, even when a step below returns early.
@@ -2330,6 +2345,10 @@ impl Application {
                 Some("The source changed since this review. Prepare the output again.".into());
             return;
         }
+        self.write_reviewed(plan, backups);
+    }
+
+    fn write_reviewed(&mut self, plan: output::WritePlan, backups: PathBuf) {
         let cancel = Arc::new(AtomicBool::new(false));
         self.cancel = cancel.clone();
         let (send, receive) = mpsc::channel();

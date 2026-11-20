@@ -2061,3 +2061,138 @@ fn place_sound_set_action_places_the_picked_set_at_the_playhead_or_reports_why_n
     assert!(fixture.0.join("soft-hitclap2.wav").is_file());
     assert!(fixture.0.join("library").join("Sound sets").join("Clap.dawsuset").is_file());
 }
+
+#[test]
+fn only_closing_the_main_window_closes_the_editor() {
+    use super::{CloseDecision, Editor, Request, close_requested, closed_with_main};
+    let (send, receive) = std::sync::mpsc::channel();
+    let editor = Editor(send);
+    assert_eq!(close_requested("drum", &editor), CloseDecision::Allow);
+    assert!(receive.try_recv().is_err(), "another window sent a request to the editor");
+    assert_eq!(close_requested("export", &editor), CloseDecision::Allow);
+    assert!(matches!(receive.try_recv(), Ok(Request::ExportClose)), "closing Export cancels its preview");
+    assert!(receive.try_recv().is_err());
+    assert_eq!(closed_with_main(["main", "export", "drum"]), ["export", "drum"]);
+
+    let refusal = "Save or discard the current difficulty before quitting.";
+    let responder = std::thread::spawn(move || {
+        [Ok(()), Err(refusal.to_owned())].into_iter().map(|answer| match receive.recv().unwrap() {
+            Request::Close(discard, response) => {
+                response.send(answer).unwrap();
+                discard
+            }
+            _ => panic!("closing main sends only Close"),
+        }).collect::<Vec<_>>()
+    });
+    assert_eq!(close_requested("main", &editor), CloseDecision::CloseAll);
+    assert_eq!(close_requested("main", &editor), CloseDecision::Keep(refusal.into()));
+    assert_eq!(responder.join().unwrap(), [false, false]);
+}
+
+#[test]
+fn export_requests_answer_with_the_export_view_and_errors_after_a_fault() {
+    use super::{Request, answer_export};
+    use dawsu_application::ExportOptions;
+    use std::sync::mpsc::channel;
+
+    let root = Fixture::new("export-view");
+    let map = "osu file format v14\n\n[General]\nMode:0\n\n[Metadata]\nVersion:DIFF\n\n[Events]\nEVENTS\n\n[TimingPoints]\n0,500,4,1,0,100,1,0\n\n[HitObjects]\n256,192,1000,1,0,0:0:0:0:\n";
+    let source = root.0.join("Source.osu");
+    let target = root.0.join("Target.osu");
+    fs::write(&source, map.replace("DIFF", "Source").replace("EVENTS", "Sample,1200,0,\"far.wav\",60")).unwrap();
+    fs::write(&target, map.replace("DIFF", "Target").replace("EVENTS", "")).unwrap();
+    let target = target.canonicalize().unwrap();
+    let mut app = Application::headless();
+    open(&mut app, &source);
+    let mut fault = None;
+
+    let (tx, rx) = channel();
+    answer_export(&mut app, &mut fault, Request::ExportPreview(ExportOptions {
+        targets: vec![target.clone()],
+        copy: Default::default(),
+    }, tx));
+    let id = rx.recv().unwrap().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let view = loop {
+        app.poll();
+        let (tx, rx) = channel();
+        answer_export(&mut app, &mut fault, Request::ExportView(tx));
+        let view = rx.recv().unwrap().unwrap();
+        if view["preview"].is_object() {
+            break view;
+        }
+        assert!(Instant::now() < deadline, "{view}");
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    let document = app.document().unwrap();
+    assert_eq!(view["source"]["path"], serde_json::json!(document.path));
+    assert_eq!(view["source"]["version"], document.composer.history.version());
+    assert_eq!(view["source"]["hits"], 1);
+    assert_eq!(view["source"]["lanes"][0]["hitCount"], 1);
+    assert!(view["source"]["lanes"][0]["colourKey"].is_string());
+    assert!(view["source"]["laneColours"].is_object());
+    assert_eq!(view["targets"], serde_json::json!([target]));
+    assert_eq!(view["backups"], serde_json::json!(app.backups_folder()));
+    assert_eq!(view["busy"], false);
+    assert_eq!(view["previewing"], false);
+    assert!(view["error"].is_null());
+    assert_eq!(view["preview"]["id"], id);
+    assert_eq!(view["preview"]["origin"], "export");
+    assert_eq!(view["preview"]["stale"], false);
+    assert_eq!(view["preview"]["files"], serde_json::json!([target]));
+    assert!(view.get("review").is_none() && view.get("shortcutAction").is_none());
+    assert!(app.output_review.is_none());
+
+    let (tx, rx) = channel();
+    answer_export(&mut app, &mut fault, Request::ExportRun(id + 1, tx));
+    assert!(rx.recv().unwrap().is_err());
+
+    fault = Some("The editor stopped.".into());
+    let (view, view_rx) = channel();
+    answer_export(&mut app, &mut fault, Request::ExportView(view));
+    let (preview, preview_rx) = channel();
+    answer_export(&mut app, &mut fault, Request::ExportPreview(ExportOptions {
+        targets: vec![target.clone()],
+        copy: Default::default(),
+    }, preview));
+    let (run, run_rx) = channel();
+    answer_export(&mut app, &mut fault, Request::ExportRun(id, run));
+    let wait = Duration::from_millis(100);
+    assert_eq!(view_rx.recv_timeout(wait).unwrap().unwrap_err(), "The editor stopped.");
+    assert_eq!(preview_rx.recv_timeout(wait).unwrap().unwrap_err(), "The editor stopped.");
+    assert_eq!(run_rx.recv_timeout(wait).unwrap().unwrap_err(), "The editor stopped.");
+}
+
+#[test]
+fn export_preview_waits_without_an_error_while_a_drag_is_open() {
+    use dawsu_application::ExportOptions;
+    let root = Fixture::new("export-drag");
+    let path = root.0.join("Source.osu");
+    let target = root.0.join("Target.osu");
+    let map = "osu file format v14\n\n[General]\nMode:0\n\n[TimingPoints]\n0,500,4,1,0,100,1,0\n\n[HitObjects]\n256,192,1000,1,10,0:0:0:60:\n";
+    fs::write(&path, map).unwrap();
+    fs::write(&target, map).unwrap();
+    let mut app = Application::headless();
+    open(&mut app, &path);
+    let send = |app: &mut Application, phase: &str| {
+        Action::Pointer {
+            phase: phase.into(), ms: 1000.0, row: 0, x: 1000.0, y: 70.0,
+            value: Some(30.0), shift: false, ctrl: false, alt: false,
+        }.run(app);
+    };
+    send(&mut app, "down");
+    app.request_export_preview(ExportOptions { targets: vec![target], copy: Default::default() }).unwrap();
+    app.poll();
+    let status = app.export_status();
+    assert!(status.waiting && !status.running, "the preview waits for the drag");
+    assert_eq!(status.error, None);
+    assert!(app.error.is_none(), "{:?}", app.error);
+    send(&mut app, "up");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while app.export_status().preview.is_none() {
+        app.poll();
+        assert_eq!(app.export_status().error, None);
+        assert!(Instant::now() < deadline, "the preview did not run after the drag");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
