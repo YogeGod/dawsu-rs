@@ -40,11 +40,10 @@ test("the plus button adds a numbered layer to its sample family", async () => {
   await runInContext(app, context);
   calls.length = 0;
   runInContext('scene = {rowHeight: 28, lanes: [{key: "file", name: "custom.wav"}, {key: "clap", name: "soft-hitclap", canAddLayer: true}]}; renderLanes();', context);
-  const [custom, family] = get("lanes").children;
-  assert.equal(custom.children.some(button => button.textContent === "+"), false);
-  const plus = family.children.find(button => button.textContent === "+");
-  assert.equal(plus?.["aria-label"], "Add numbered soft-hitclap layer");
-  plus.events.get("click")();
+  const [custom, family] = runInContext("laneHeaders.rows", context);
+  assert.equal(custom.addLayer, null);
+  assert.equal(family.addLayer, "Add numbered soft-hitclap layer");
+  runInContext("laneHeaderAction('addLayer', 1)", context);
   await runInContext("pending", context);
   assert.deepEqual(calls.pop(), { scene: true, action: {kind: "lane", row: 1, operation: "add_layer"} });
 });

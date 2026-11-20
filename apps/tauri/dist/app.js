@@ -47,7 +47,6 @@ const sampleFolderNames = { normal: "Normal set", soft: "Soft set", drum: "Drum 
 let sampleFolderOrder = Object.keys(sampleFolderNames);
 let layoutWrites = 0;
 const collapsedFolders = new Set();
-const sampleFolderDragType = "application/x-dawsu-sample-set";
 let modalKind = "";
 let modalClose = null;
 let outputProblemIndex = -1;
@@ -294,8 +293,6 @@ function show(next) {
   renderBookmarks();
   if (scene) {
     for (const button of speedButtons) button.ariaPressed = String(Number(button.dataset.playbackSpeed) === view.speed);
-    $("follow").checked = !!view.follow;
-    $("transport-return").ariaPressed = String(!!view.returnOnStop);
     $("ruler-follow").setAttribute?.("aria-pressed", String(!!view.follow));
     followPlayhead();
     $("audition").checked = view.audition;
@@ -310,7 +307,7 @@ function show(next) {
 // The Svelte bundle loads after this script, so a part counts as missing only after the page has loaded.
 function missingUiParts() {
   if (document.readyState !== "complete") return "";
-  return document.querySelectorAll("[data-ui-mount]:not([data-ui-ready])").length ? "Part of the toolbar did not load" : "";
+  return document.querySelectorAll("[data-ui-mount]:not([data-ui-ready])").length ? "Part of the editor did not load" : "";
 }
 
 function setValue(id, value) {
@@ -407,69 +404,16 @@ function reorderSampleFolder(from, to, after) {
   saveLaneLayout();
 }
 
-function sampleFolderHeader(group) {
-  const title = sampleFolderNames[group];
-  const header = document.createElement("div");
-  header.className = "lane sample-folder";
-  header.dataset.sampleSet = group;
-  header.style.height = scene.rowHeight + "px";
-  header.draggable = true;
-
-  const collapsed = collapsedFolders.has(group);
-  const disclosure = makeButton(title, () => {
-    if (view.busy || drag) return;
-    if (!collapsedFolders.delete(group)) collapsedFolders.add(group);
-    renderLanes();
-    paintSoon();
-    saveLaneLayout();
-  });
-  disclosure.className = "name";
-  disclosure.title = "Alt+Up or Alt+Down to move this folder";
-  disclosure.setAttribute("aria-expanded", !collapsed);
-  disclosure.addEventListener("keydown", event => {
-    if (!event.altKey || !["ArrowUp", "ArrowDown"].includes(event.key)) return;
-    event.preventDefault();
-    event.stopPropagation();
-    const headers = laneRows.filter(row => typeof row === "string");
-    const after = event.key === "ArrowDown";
-    const next = headers[headers.indexOf(group) + (after ? 1 : -1)];
-    if (!next) return;
-    reorderSampleFolder(group, next, after);
-    $("lanes").children[laneRows.indexOf(group)]?.children[0]?.focus?.();
-  });
-
-  const members = scene.lanes.filter(lane => lane.group === group);
-  const mix = (label, operation, flag) => {
-    const button = makeButton(label, () => {
-      if (!view.busy && !drag) act({ kind: "group_mix", set: group, operation });
-    });
-    button.className = "lane-" + operation;
-    button.setAttribute("aria-label", (operation === "mute" ? "Mute " : "Solo ") + title);
-    button.setAttribute("aria-pressed", members.every(lane => lane[flag]));
-    return button;
-  };
-  // Design group row: "4 lanes", and how many have hits while the set is folded away.
+// A folder header row for the Svelte lane headers: count and used lanes, and the group's mix.
+function folderHeaderModel(group) {
   const rows = orderedLaneRows().filter(row => scene.lanes[row]?.group === group);
-  const used = rows.filter(row => scene.lanes[row].hitCount > 0).length;
-  const count = document.createElement("span");
-  count.className = "lane-count";
-  count.textContent = rows.length + (rows.length === 1 ? " lane" : " lanes") + (collapsed ? " · " + used + " used" : "");
-  header.append(disclosure, count, mix("M", "mute", "muted"), mix("S", "solo", "solo"));
-  header.addEventListener("dragstart", event => {
-    event.dataTransfer.setData(sampleFolderDragType, group);
-    event.dataTransfer.effectAllowed = "move";
-  });
-  header.addEventListener("dragover", event => {
-    if (event.dataTransfer.types.includes(sampleFolderDragType)) event.preventDefault();
-  });
-  header.addEventListener("drop", event => {
-    const from = event.dataTransfer.getData(sampleFolderDragType);
-    if (!from) return;
-    event.preventDefault();
-    const rect = header.getBoundingClientRect();
-    reorderSampleFolder(from, group, event.clientY > rect.y + rect.height / 2);
-  });
-  return header;
+  const members = scene.lanes.filter(lane => lane.group === group);
+  return {
+    type: "folder", key: "folder:" + group, set: group, name: sampleFolderNames[group],
+    count: rows.length, used: rows.filter(row => scene.lanes[row].hitCount > 0).length,
+    collapsed: collapsedFolders.has(group),
+    muted: members.every(lane => lane.muted), solo: members.every(lane => lane.solo),
+  };
 }
 
 function laneDisplayName(lane) {
@@ -481,17 +425,6 @@ const laneSounds = {
   hitclap: ["Clap", "clap"], sliderslide: ["Slide", "slide"], sliderwhistle: ["Slide whistle", "whistle"],
   slidertick: ["Tick", "tick"],
 };
-// 16px line icons for the lane header's tile, drawn in the lane's sound colour.
-const laneIcons = {
-  normal: '<circle cx="8" cy="8" r="5.5"/><circle cx="8" cy="8" r="1.4" fill="currentColor"/>',
-  whistle: '<path d="M2.5 6H10a2 2 0 1 0-2-2M2.5 10H12a2 2 0 1 1-2 2M2.5 8h4"/>',
-  finish: '<ellipse cx="8" cy="9.5" rx="6" ry="2.2"/><path d="M8 7.3V3"/>',
-  clap: '<path d="M5.5 9V4a1 1 0 0 1 2 0v4M7.5 7.5V3a1 1 0 0 1 2 0v4.5M9.5 7V4.5a1 1 0 0 1 2 0V10a4 4 0 0 1-4 4h-.5a3.5 3.5 0 0 1-2.8-1.4L2.5 10.3a1 1 0 0 1 1.6-1.2L5.5 11"/>',
-  slide: '<path d="M2 9.5c2-3.5 4-3.5 6 0s4 3.5 6 0"/>',
-  tick: '<circle cx="8" cy="8" r="2.2" fill="currentColor"/>',
-  file: '<path d="M4 2.5h5l3 3v8H4z"/><path d="M6.5 11V9M8.5 11.5V8M10.5 11V9.5"/>',
-};
-
 // A set lane reads as its sound ("Clap", or "Clap 2" for a numbered layer) with the set as a tag;
 // the skin's default sample adds "skin" to the tag. A map file lane keeps its file name and the tag "File".
 function laneSound(lane) {
@@ -638,122 +571,106 @@ function renderLanes() {
   }
   refreshLaneDelete();
   const lanePanel = $("lanes");
-  const showNames = view.panels?.laneNames !== false;
-  const laneKey = JSON.stringify([laneRows, drumNames, scene.lanes, view.activeLane, scene.rowHeight, [...selectionLaneKeys],
-    [...familyParents], showNames, showLaneInfo, [...laneColours], [...renamedLanes]]);
+  lanePanel.style.setProperty("--lane-row-height", scene.rowHeight + "px");
+  const laneKey = JSON.stringify([laneRows, drumNames, scene.lanes, view.activeLane, [...selectionLaneKeys],
+    [...familyParents], view.panels?.laneNames !== false, showLaneInfo, [...laneColours], [...renamedLanes], !!view.busy,
+    !!view.drumView?.enabled]);
   if (lanePanel.dataset.state !== laneKey) {
     lanePanel.dataset.state = laneKey;
-    lanePanel.replaceChildren(...laneRows.map((row, position) => {
-      if (typeof row === "string") return sampleFolderHeader(row);
-      const lane = scene.lanes[row];
-      const strip = document.createElement("div");
-      const laneSelected = selectionLaneKeys.has(lane?.key);
-      strip.className = "lane" + (view.activeLane === row ? " active" : "") + (laneSelected ? " lane-selected" : "");
-      strip.style.height = scene.rowHeight + "px";
-      if (!view.drumView?.enabled && lane?.group) {
-        strip.dataset.sampleSet = lane.group;
-        if (lane.index > 1) strip.classList.add("lane-layer");
-      }
-      const tint = laneTint(lane);
-      if (tint) {
-        strip.classList.add("lane-tinted");
-        strip.style.setProperty("--lane-tint", tint);
-        strip.style.setProperty("--lane-colour", laneColour(lane));
-      }
-      if (row === null) {
-        const name = document.createElement("span");
-        name.className = "name unassigned-drum";
-        name.textContent = showNames ? drumNames[position] : "–";
-        name.title = drumNames[position] + " · Unassigned";
-        strip.append(name);
-        return strip;
-      }
-      const laneAction = (operation) => act({ kind: "lane", row, operation });
-      const displayName = drumNames[position] ?? laneDisplayName(lane);
-      const laneLabel = showLaneInfo && lane.index != null
-        ? displayName + (lane.index === 0 ? " · skin" : " · idx " + lane.index)
-        : displayName;
-      const sound = laneSound(lane);
-      const visibleName = !showLaneInfo && !view.drumView?.enabled && !renamedLanes.has(lane.colourKey)
-        ? sound.name
-        : laneLabel;
-      const select = (event = {}) => {
-        if (view.busy || drag) return;
-        selectVolumeLane(row, event);
-        if (!event.ctrlKey && !event.metaKey && !event.shiftKey) laneAction("audition");
-      };
-      const name = makeButton(showNames ? visibleName : "▶", select);
-      name.className = "name";
-      name.dataset.laneRow = row;
-      name.setAttribute("aria-haspopup", "menu");
-      name.setAttribute("aria-expanded", "false");
-      name.setAttribute("aria-label", "Select and audition " + laneLabel);
-      name.setAttribute("aria-pressed", String(laneSelected));
-      name.title = (lane.sample ?? laneLabel) + " · Select and audition · Ctrl/Cmd toggles · Shift selects a range";
-      const mute = makeButton("M", () => mixSelectedLanes(row, "mute"));
-      mute.className = "lane-mute";
-      mute.setAttribute("aria-label", "Mute " + displayName);
-      mute.setAttribute("aria-pressed", lane.muted);
-      const solo = makeButton("S", () => mixSelectedLanes(row, "solo"));
-      solo.className = "lane-solo";
-      solo.setAttribute("aria-label", "Solo " + displayName);
-      solo.setAttribute("aria-pressed", lane.solo);
-      // Design lane header, in page and Tab order: icon tile, M, S, layer chevron, name, set tag, +.
-      // The file name stays in the name's tooltip.
-      if (showNames) {
-        const colour = soundColour(lane);
-        strip.style.setProperty("--lane-sound", colour);
-        strip.style.setProperty("--lane-sound-tint", colour + "24");
-        strip.style.setProperty("--lane-tile", Math.min(22, scene.rowHeight - 4) + "px");
-        const icon = document.createElement("span");
-        icon.className = "lane-icon";
-        icon.dataset.sound = sound.icon;
-        icon.setAttribute("aria-hidden", "true");
-        // Inline SVG: the editor's content policy blocks data: images. The markup is fixed, never lane text.
-        icon.innerHTML = '<svg viewBox="0 0 16 16">' + laneIcons[sound.icon] + "</svg>";
-        strip.append(icon);
-      }
-      // The name takes only its own width, so the rest of the row still selects the lane.
-      strip.dataset.laneRow = row;
-      strip.addEventListener("click", event => {
-        if (!event.target.closest?.("button")) select(event);
-      });
-      strip.append(mute, solo);
-      if (familyParents.has(row)) {
-        const family = familyParents.get(row);
-        const collapsed = collapsedFamilies.has(family);
-        const disclosure = makeButton(collapsed ? "▸" : "▾", () => {
-          if (drag || view.busy) return;
-          if (!collapsedFamilies.delete(family)) collapsedFamilies.add(family);
-          renderLanes();
-          paintSoon();
-          saveLaneLayout();
-        });
-        disclosure.className = "lane-disclosure";
-        disclosure.setAttribute("aria-expanded", !collapsed);
-        disclosure.setAttribute("aria-label", (collapsed ? "Expand " : "Collapse ") + lane.name + " layers");
-        strip.append(disclosure);
-      }
-      strip.append(name);
-      if (showNames && !view.drumView?.enabled) {
-        const tag = document.createElement("span");
-        tag.className = "lane-tag";
-        tag.textContent = sound.set;
-        strip.append(tag);
-      }
-      if (lane.canAddLayer) {
-        const layer = makeButton("+", () => {
-          if (!view.busy) laneAction("add_layer");
-        });
-        layer.className = "lane-add-layer";
-        layer.dataset.doc = "";
-        layer.disabled = !!view.busy;
-        layer.title = "Add numbered " + lane.name + " layer";
-        layer.setAttribute("aria-label", layer.title);
-        strip.append(layer);
-      }
-      return strip;
-    }));
+    laneHeaders = laneHeaderModel(drumNames);
+    try { window.dawsuUi?.lanes(laneHeaders); } catch (error) { console.error(error); }
+  }
+}
+
+// The rows the Svelte lane headers draw ("lanes" part), as plain data. Lane state stays here.
+let laneHeaders = { names: true, busy: false, rows: [] };
+
+function currentLaneHeaders() {
+  return laneHeaders;
+}
+
+function laneHeaderModel(drumNames) {
+  const drum = !!view.drumView?.enabled;
+  const numbers = new Map(orderedLaneRows().map((row, index) => [row, index + 1]));
+  const anySolo = scene.lanes.some(lane => lane?.solo);
+  const rows = laneRows.map((row, position) => {
+    if (typeof row === "string") return folderHeaderModel(row);
+    if (row === null) {
+      return { type: "drum", key: "drum:" + position, name: drumNames[position], title: drumNames[position] + " · Unassigned" };
+    }
+    const lane = scene.lanes[row];
+    const displayName = drumNames[position] ?? laneDisplayName(lane);
+    const label = showLaneInfo && lane.index != null
+      ? displayName + (lane.index === 0 ? " · skin" : " · idx " + lane.index)
+      : displayName;
+    const sound = laneSound(lane);
+    const family = familyParents.get(row);
+    const collapsed = collapsedFamilies.has(family);
+    return {
+      type: "lane", key: drum ? "drum:" + position : "lane:" + row, row,
+      number: drum ? position + 1 : numbers.get(row),
+      name: !showLaneInfo && !drum && !renamedLanes.has(lane.colourKey) ? sound.name : label, label, display: displayName,
+      title: (lane.sample ?? label) + " · Select and audition · Ctrl/Cmd toggles · Shift selects a range",
+      tag: drum ? null : sound.set, icon: sound.icon,
+      // Yoge, 2026-11-20 (ADR 0068): a lane is grey unless the mapper picked a colour.
+      colour: laneColours.get(lane.colourKey) ?? null,
+      folder: !drum && lane.group ? lane.group : null,
+      active: view.activeLane === row, selected: selectionLaneKeys.has(lane.key),
+      muted: !!lane.muted, solo: !!lane.solo, quiet: !!lane.muted || (anySolo && !lane.solo),
+      layer: !drum && !!lane.group && lane.index > 1,
+      family: family == null ? null : { collapsed, label: (collapsed ? "Expand " : "Collapse ") + lane.name + " layers" },
+      addLayer: lane.canAddLayer ? "Add numbered " + lane.name + " layer" : null,
+    };
+  });
+  return { names: view.panels?.laneNames !== false, busy: !!view.busy, rows };
+}
+
+// Every click on a lane or folder header comes back here from the Svelte part.
+function laneHeaderAction(kind, ...args) {
+  if (!scene || view.busy || drag) return;
+  switch (kind) {
+    case "select": {
+      const [row, event = {}] = args;
+      selectVolumeLane(row, event);
+      if (!event.ctrlKey && !event.metaKey && !event.shiftKey) act({ kind: "lane", row, operation: "audition" });
+      break;
+    }
+    case "mix":
+      mixSelectedLanes(args[0], args[1]);
+      break;
+    case "family": {
+      const family = familyParents.get(args[0]);
+      if (family == null) return;
+      if (!collapsedFamilies.delete(family)) collapsedFamilies.add(family);
+      renderLanes();
+      paintSoon();
+      saveLaneLayout();
+      break;
+    }
+    case "folder": {
+      const [group] = args;
+      if (!collapsedFolders.delete(group)) collapsedFolders.add(group);
+      renderLanes();
+      paintSoon();
+      saveLaneLayout();
+      break;
+    }
+    case "folderMix":
+      act({ kind: "group_mix", set: args[0], operation: args[1] });
+      break;
+    case "folderMove":
+      reorderSampleFolder(...args);
+      break;
+    case "folderStep": {
+      const [group, after] = args;
+      const headers = laneRows.filter(row => typeof row === "string");
+      const next = headers[headers.indexOf(group) + (after ? 1 : -1)];
+      if (next) reorderSampleFolder(group, next, after);
+      break;
+    }
+    case "addLayer":
+      act({ kind: "lane", row: args[0], operation: "add_layer" });
+      break;
   }
 }
 
@@ -1307,10 +1224,11 @@ function nodeRadii(points, diameterAt) {
   };
 }
 
-function laneTint(lane) {
+function laneTint(lane, active = false) {
   if (!lane) return null;
+  // Picked colour or none: an uncoloured lane's row stays grey (Yoge, ADR 0068). v3: 8 %, 16 % when active.
   const colour = laneColours.get(lane.colourKey);
-  return colour ? colour + "1f" : soundColour(lane) + "14";
+  return colour ? colour + (active ? "29" : "14") : null;
 }
 
 const overviewGroups = ["soft", "normal", "drum", null, "skin"];
@@ -1373,7 +1291,7 @@ function paint() {
     if (lane === undefined) g.ctx.fillStyle = slateTimeline.arrange;
     else if (typeof lane === "string") g.ctx.fillStyle = slateTimeline.group;
     g.ctx.fillRect(0, y, g.width, rowHeight);
-    const tint = typeof lane === "number" ? laneTint(scene.lanes?.[lane]) : null;
+    const tint = typeof lane === "number" ? laneTint(scene.lanes?.[lane], lane === view.activeLane) : null;
     if (tint) {
       g.ctx.fillStyle = tint;
       g.ctx.fillRect(0, y, g.width, rowHeight);
@@ -2039,13 +1957,19 @@ function timelineStart(start, zoom) {
 function followPlayhead() {
   if (!view.follow || !view.playing || view.busy || drag || rulerDrag || overviewDrag || !grid.clientWidth) return;
   const visible = grid.clientWidth / scene.zoom;
+  // The Playhead group's Centre (window only): the view moves so the playhead stays in the middle.
+  if (window.dawsuUi?.centre?.()) {
+    const start = timelineStart(view.position - visible / 2, scene.zoom);
+    if (Math.abs(start - scene.viewStart) * scene.zoom >= 1) changeView(start, scene.zoom);
+    return;
+  }
   if (view.position >= scene.viewStart && view.position <= scene.viewStart + visible * .98) return;
   const start = timelineStart(view.position - visible * .02, scene.zoom);
   if (start !== scene.viewStart) changeView(start, scene.zoom);
 }
 
 function resizeLaneHeaders(height) {
-  for (const lane of $("lanes").children) lane.style.height = height + "px";
+  $("lanes").style.setProperty("--lane-row-height", height + "px");
 }
 
 // The farthest zoom out, in px per ms, as the editor's MIN_ZOOM; the zoom slider's min is its log10.
@@ -2893,10 +2817,6 @@ for (const [id, action] of [["ruler-zoom-out", "zoomOut"], ["ruler-zoom-in", "zo
     if (scene && !view.busy) command(action);
   });
 }
-$("follow").addEventListener("change", () => act({ kind: "follow", on: $("follow").checked }, false));
-$("transport-return").addEventListener("click", () => {
-  if (scene && !view.busy) act({ kind: "return_on_stop", on: !view.returnOnStop }, false);
-});
 $("zoom").addEventListener("input", () => {
   if (requests < 2) changeView(scene.viewStart, 10 ** +$("zoom").value);
 });

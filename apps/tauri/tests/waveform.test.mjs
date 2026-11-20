@@ -74,7 +74,8 @@ test("the ruler paints a teal-tint and the overview a neutral background under t
     laneRows = [0, 1];
     hydrateLaneLayout({lane_colours: {"Skin|normal-hitclap": "#ff5500"}});
     paint();`, context);
-  assert.deepEqual(get("grid").fills.slice(0, 3), ["#151515", "#ff55001f", "#1c1c1c"]);
+  // v3: a picked colour tints its row 8 %.
+  assert.deepEqual(get("grid").fills.slice(0, 3), ["#151515", "#ff550014", "#1c1c1c"]);
   get("grid").fills.length = 0;
   runInContext("hydrateLaneLayout(null); paint()", context);
   assert.ok(!get("grid").fills.includes("#ff55001f"));

@@ -114,10 +114,7 @@
       <div data-ui-mount="audition"></div>
     </div>
     <div class="ribbon-group" role="group" aria-label="Playhead">
-      <div class="ribbon-controls toolbar-track">
-        <input type="checkbox" id="follow" class="toggle-input" aria-label="Follow playback" data-doc><label for="follow" class="toolbar-toggle" title="Scroll the timeline to keep the playhead visible"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2v12M2 8h3m6 0h3M5 3H3v2m8-2h2v2M3 11v2h2m8-2v2h-2"/></svg><span class="toolbar-toggle-label">Follow</span></label>
-        <button id="transport-return" type="button" class="toolbar-toggle" aria-label="Return on stop" aria-pressed="false" title="Return to the playback start when stopping" data-doc><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 10 3 7l3-3M3 7h7a3.5 3.5 0 0 1 0 7H8"/></svg><span class="toolbar-toggle-label">Return</span></button>
-      </div>
+      <div data-ui-mount="playhead"></div>
     </div>
     <div class="ribbon-group" role="group" aria-label="Lanes">
       <button type="button" popovertarget="options-Lanes">Lanes ▾</button><div popover id="options-Lanes" class="ribbon-controls ribbon-options">
@@ -210,7 +207,7 @@
              aria-label="Waveform height" aria-valuemin="0" aria-valuemax="200" aria-valuenow="56"
              title="Drag to resize waveform. Double-click to reset."></div>
       </div>
-      <div class="scroll" id="scroll"><div id="lanes"></div><canvas id="grid" tabindex="-1" aria-label="Hitsound timeline" aria-haspopup="menu" aria-expanded="false"></canvas></div>
+      <div class="scroll" id="scroll"><div id="lanes" data-ui-mount="lanes"></div><canvas id="grid" tabindex="-1" aria-label="Hitsound timeline" aria-haspopup="menu" aria-expanded="false"></canvas></div>
       <div id="volume-controller-panel" class="controller">
         <div class="lane-title volume-title">
           <span>Volume</span>
