@@ -385,9 +385,7 @@
     const workspace = byId("workspace");
     const editor = byId("layout-editor");
     const ribbon = byId("editor-ribbon");
-    const transport = byId("editor-transport");
     const ribbonPicker = byId("layout-ribbon-group");
-    const transportPicker = byId("layout-transport");
     const ribbonGroups = () => [...ribbon.children].filter(item => item.matches(".ribbon-group"));
     const initialRibbon = ribbonGroups();
     let draft = null;
@@ -400,13 +398,13 @@
     const grid = byId("scroll");
     const controller = byId("volume-controller-panel");
     const laneColumn = arrange.querySelector(".ruler-sidebar");
-    const defaultFrame = [header, ribbon, root, transport, status];
+    const defaultFrame = [header, ribbon, root, status];
     const defaultTimeline = [overview, ruler, grid, controller];
     let frameOrder = defaultFrame.slice();
     let timelineOrder = defaultTimeline.slice();
 
     const barChoices = new Map([
-      [header, "Header"], [ribbon, "Ribbon"], [transport, "Transport"], [status, "Status bar"],
+      [header, "Header"], [ribbon, "Ribbon"], [status, "Status bar"],
       [overview, "Overview"], [ruler, "Ruler and waveform"], [controller, "Volume controller"],
       [laneColumn, "Lane sidebar"], [panels.browser, "Browser"], [panels.inspector, "Inspector"],
     ]);
@@ -465,9 +463,6 @@
           bar.toggleAttribute("data-layout-size-from-top", frameOrder.indexOf(bar) > frameOrder.indexOf(root));
         }
       }
-      const above = frameOrder.indexOf(transport) < frameOrder.indexOf(root);
-      workspace.toggleAttribute("data-transport-top", above);
-      transportPicker.value = above ? "above" : "below";
       arrange.toggleAttribute("data-layout-lane-sidebar-hidden", hiddenBars.has(laneColumn));
       recovery.hidden = workspace.hidden || !hiddenBars.has(header);
       if (recovery.hidden) layoutEntryAnchor.after(layoutEntry);
@@ -481,10 +476,6 @@
       stack.splice(stack.indexOf(bar), 1);
       stack.splice(stack.indexOf(target) + Number(after), 0, bar);
       applyBarLayout();
-    }
-
-    function placeTransport(above) {
-      placeBar(transport, root, !above);
     }
 
     function moveSelectedBar(direction) {
@@ -556,7 +547,6 @@
         ["header", "Header", byId("editor-header")],
         ["ribbon", "Ribbon", ribbon],
         ["ruler", "Ruler", byId("editor-arrange").querySelector(".ruler-controls"), ".ruler-sidebar button"],
-        ["transport", "Transport", transport],
         ["inspector", "Inspector", byId("editor-inspector")],
         ["browser", "Browser", byId("sample-browser")],
         ["status", "Status bar", byId("statusbar")],
@@ -857,7 +847,7 @@
 
     const chromeMax = () => window.innerHeight * .18;
     const resizeDirection = bar => () => bar.hasAttribute("data-layout-size-from-top") ? -1 : 1;
-    for (const bar of [header, ribbon, transport, status, overview]) {
+    for (const bar of [header, ribbon, status, overview]) {
       resizeGrip(bar, barChoices.get(bar), "--layout-bar-height", {
         max: chromeMax, direction: resizeDirection(bar),
       });
@@ -939,7 +929,6 @@
     }
 
     ribbonPicker.addEventListener("change", refreshRibbonPicker);
-    transportPicker.addEventListener("change", () => placeTransport(transportPicker.value === "above"));
     byId("layout-left").addEventListener("click", () => moveRibbonGroup(-1));
     byId("layout-right").addEventListener("click", () => moveRibbonGroup(1));
     byId("layout-cancel").addEventListener("click", () => finishEditing(false));

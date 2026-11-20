@@ -54,10 +54,9 @@ function lastDeclared(selector, property) {
   return values.at(-1);
 }
 
-test("the top bar stays chrome while the ribbon and transport sit on the darker panel", () => {
+test("the top bar stays chrome while the ribbon sits on the darker panel", () => {
   assert.equal(root[lastDeclared("header.chrome", "background")], "#292929");
   assert.equal(root[lastDeclared(".tools.chrome", "background")], "#1c1c1c");
-  assert.equal(root[lastDeclared(".transport.chrome", "background")], "#1c1c1c");
 });
 
 test("muted and secondary text reads at 4.5:1 or better on every bar", () => {
@@ -65,7 +64,6 @@ test("muted and secondary text reads at 4.5:1 or better on every bar", () => {
   const bars = {
     "header.chrome": ["--muted", "--title-text"],
     ".tools.chrome": ["--muted", "--title-text"],
-    ".transport.chrome": ["--muted", "--title-text"],
     // The status bar's text takes its own colour; nothing muted sits on it.
     "#statusbar": [status, "--title-text"],
   };

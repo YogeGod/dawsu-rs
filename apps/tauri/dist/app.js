@@ -241,10 +241,21 @@ function show(next) {
   const title = $("title");
   title.textContent = path ? (view.dirty ? "● " : "") + nameOf(path) : "";
   title.title = path;
+  title.setAttribute("data-placeholder", view.hasDocument ? "" : "No map open");
   $("status").textContent = view.status || (view.busy ? "Working…" : "");
   $("status").title = $("status").textContent;
-  $("musical-position").textContent = view.musicalPosition ?? "";
-  $("musical-position").hidden = !view.musicalPosition;
+  // The playhead readout is "bar.beat.tick · 190.0 BPM · 4/4 · snap"; the backend sends no separate fields.
+  const [bar, tempo, meter] = (scene && view.musicalPosition?.split(" · ")) || [];
+  $("musical-position").textContent = bar ?? "–";
+  $("transport-bpm").textContent = tempo?.replace(/ BPM$/, "") ?? "–";
+  $("transport-meter").textContent = meter ?? "–";
+  const time = (ms) => scene && Number.isFinite(ms) ? clock(ms) : "00:00.000";
+  $("position").textContent = time(view.position);
+  $("locator-left").textContent = time(view.left);
+  $("locator-right").textContent = time(view.right);
+  $("editor-header").dataset.empty = String(!scene);
+  for (const control of document.querySelectorAll("[data-map]")) control.disabled = !scene;
+  $("status-view").hidden = !scene;
   $("warnings").hidden = !(view.warnings?.length);
   const problems = view.outputProblems ?? [];
   const listKey = JSON.stringify(problems);
@@ -258,8 +269,12 @@ function show(next) {
   $("save-problem-badge").hidden = problems.length === 0;
   $("save-problem-badge").textContent = problems.length ? String(problems.length) : "";
   $("save-problem-badge").title = problems.length + " output problems";
+  $("problem-summary").hidden = problems.length === 0;
+  $("problem-summary-text").textContent = problems.length + (problems.length === 1 ? " moment" : " moments") + " can't be saved";
   $("next-output-problem").hidden = problems.length === 0;
   $("next-output-problem").disabled = !!view.busy;
+  $("playback-rates").hidden = !scene;
+  $("hit-lane-counts").hidden = !scene;
   $("cancel-job").hidden = !view.busy;
   $("difficulty").hidden = !scene;
   for (const button of document.querySelectorAll("[data-doc]")) button.disabled = !scene || !!view.busy;
@@ -270,6 +285,7 @@ function show(next) {
   $("song-mute").ariaPressed = String(!!view.songMuted);
   $("song-solo").ariaPressed = String(!!view.songSolo);
   $("open").disabled = $("home-open").disabled = $("folders").disabled = !!view.busy;
+  $("home-import").disabled = $("home-folders").disabled = !!view.busy;
 
   renderActiveLane();
   renderPanelLayout();
@@ -292,12 +308,12 @@ function show(next) {
     $("ruler-follow").setAttribute?.("aria-pressed", String(!!view.follow));
     followPlayhead();
     $("audition").checked = view.audition;
+    $("toolbar-audition").setAttribute?.("aria-pressed", String(!!view.audition));
     if (wasPlaying !== view.playing) {
       $("play-icon").src = view.playing ? "studio-assets/icons/Pause.svg" : "studio-assets/icons/Play.svg";
       $("play-label").textContent = view.playing ? "Pause" : "Play";
       $("play").dataset.playing = String(!!view.playing);
     }
-    $("position").textContent = clock(view.position);
     for (const button of document.querySelectorAll(".editor-tool-button")) button.classList.toggle("active", button.textContent === view.tool);
   }
   refreshLaneDelete();
@@ -310,12 +326,27 @@ function setValue(id, value) {
   if (document.activeElement !== $(id)) $(id).value = value;
 }
 
+// "Artist - Title (Creator) [Difficulty].osu" gives the map name and "[Difficulty]"; other names show whole.
+function recentMapName(path) {
+  const file = nameOf(path).replace(/\.(osu|osz)$/i, "");
+  const parts = /^(.+?)\s*\([^()]*\)\s*(\[[^\]]*\])$/.exec(file);
+  return parts ? [parts[1], parts[2]] : [file, ""];
+}
+
 function renderRecent(paths) {
   const panel = $("recent");
+  $("home-recent").hidden = paths.length === 0;
   if (panel.dataset.paths === JSON.stringify(paths)) return;
   panel.dataset.paths = JSON.stringify(paths);
   panel.replaceChildren(...paths.map((path) => {
-    const button = makeButton(nameOf(path), () => act({ kind: "open", path }));
+    const button = makeButton("", () => act({ kind: "open", path }));
+    const [name, difficulty] = recentMapName(path);
+    const title = document.createElement("strong");
+    title.textContent = name;
+    const detail = document.createElement("span");
+    detail.textContent = difficulty;
+    button.append(title, detail);
+    button.className = "home-recent-map";
     button.title = path;
     return button;
   }));
@@ -909,10 +940,13 @@ function drawBookmarks(ctx, marks, start, zoom, width) {
 function renderScene() {
   renderLanes();
   $("snap").checked = scene.snap;
-  const gridLabel = scene.snap ? "Grid · " + scene.beats + "/" + scene.divisor : "Grid · Snap off";
+  const gridLabel = scene.snap ? "Snap " + scene.beats + "/" + scene.divisor : "Snap off";
   const gridOptions = $("grid-options");
   gridOptions.textContent = gridLabel + " ▾";
   gridOptions.ariaLabel = gridLabel + ", grid and snapping settings";
+  const hits = (scene.moments ?? []).reduce((sum, moment) => sum + (moment[3]?.length ?? 0), 0);
+  const lanes = scene.lanes?.length ?? 0;
+  $("hit-lane-counts").textContent = hits + (hits === 1 ? " hit · " : " hits · ") + lanes + (lanes === 1 ? " lane" : " lanes");
   $("object-lines").checked = view.objectLines;
   setValue("snap-mode", scene.snapMode);
   setValue("beats", scene.beats);
@@ -2587,6 +2621,8 @@ $("open").addEventListener("click", open);
 $("home-open").addEventListener("click", open);
 $("go-home").addEventListener("click", () => { if (!drag && !view.busy) act({ kind: "home" }); });
 $("home-resume").addEventListener("click", () => { if (!view.busy) act({ kind: "resume" }); });
+$("home-import").addEventListener("click", () => run(async () => show(await invoke("pick_map", { archiveOnly: true }))));
+$("home-folders").addEventListener("click", () => $("folders").click());
 $("folders").addEventListener("click", () => {
   if (view.busy) return;
   const openFolder = (folder) => {
@@ -2747,6 +2783,9 @@ $("used-only").addEventListener("change", () => {
 });
 toggle("cycle", "cycle");
 toggle("audition", "audition");
+$("toolbar-audition").addEventListener("click", () => {
+  if (scene && !view.busy) act({ kind: "audition", on: !view.audition });
+});
 function openSiblingDifficulty(path) {
   if (scene && !view.busy && !drag && path && path !== scene.path) act({ kind: "open", path });
 }

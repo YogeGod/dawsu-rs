@@ -10,7 +10,7 @@ async function frontend() {
   const calls = [];
   const responses = [];
   const element = { addEventListener() {}, append() {}, prepend() {}, dataset: {}, children: [] };
-  const title = {};
+  const title = { setAttribute(name, value) { this[name] = value; } };
   const rulerEvents = new Map(), overviewEvents = new Map();
   const overview = { ...element, clientWidth: 100, getBoundingClientRect: () => ({ left: 10 }),
     setPointerCapture() {}, addEventListener(name, callback) { overviewEvents.set(name, callback); } };

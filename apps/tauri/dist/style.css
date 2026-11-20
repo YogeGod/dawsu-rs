@@ -61,11 +61,10 @@ button[data-layout-selected]{outline:1px solid var(--hi);outline-offset:-1px}
 [data-layout-editing] .layout-size-column::after{background:color-mix(in srgb,var(--hi) 46%,transparent)}
 .layout-size-grip:is(:hover,:focus-visible)::after{background:var(--hi)}
 .layout-size-grip:focus-visible{outline:1px solid var(--hi);outline-offset:-1px}
-.layout-size-host:is(#editor-header,#editor-ribbon,#editor-transport,#statusbar,.overview){
+.layout-size-host:is(#editor-header,#editor-ribbon,#statusbar,.overview){
   min-height:var(--layout-bar-height,var(--layout-min-height,0px));flex-shrink:0
 }
 #editor-header{--layout-min-height:44px}
-#editor-transport{--layout-min-height:56px}
 #statusbar{--layout-min-height:26px}
 .overview{--layout-min-height:20px}
 #volume-controller-panel{height:clamp(36px,var(--layout-controller-height,min(160px,22vh)),50cqh)}
@@ -76,7 +75,7 @@ button[data-layout-width]{width:var(--layout-width)!important;min-width:0;flex-s
 button[data-layout-height]{height:var(--layout-height)!important;min-height:0;overflow:hidden}
 [data-layout-editing] .dock-tab{cursor:grab;touch-action:none}
 [data-layout-editing] .dock-grip::after{background:var(--hi)}
-.tools{flex-wrap:wrap}.tools #tools,.row,.toggle,.transport label{display:flex;align-items:center;gap:6px}.tools #tools{flex-wrap:wrap}
+.tools{flex-wrap:wrap}.tools #tools,.row,.toggle{display:flex;align-items:center;gap:6px}.tools #tools{flex-wrap:wrap}
 .ribbon-group{min-width:0;display:grid;gap:3px;align-self:stretch}
 .ribbon-group+.ribbon-group{border-left:1px solid var(--line);padding-left:8px}
 .ribbon-caption{font-size:11px;color:var(--muted);line-height:1}
@@ -111,7 +110,7 @@ button[data-layout-height]{height:var(--layout-height)!important;min-height:0;ov
 .dock{display:grid;min-height:0;grid-template-columns:minmax(0,1fr) 242px}.arrange{display:grid;min-height:0;--ruler-row:min(calc(21px + max(26px,var(--wave-height,56px))),max(47px,calc(100% - var(--timeline-reserve,144px))));grid-template-rows:minmax(20px,max-content) var(--ruler-row) minmax(0,1fr);--lane-default-width:clamp(170px,18vw,250px);--lanes:clamp(99px,var(--layout-lane-width,var(--lane-default-width)),max(99px,calc(100cqw - 140px)));background:var(--field)}.ruler,.overview,.scroll{display:grid;grid-template-columns:var(--lanes) minmax(0,1fr);min-width:0}.scroll{overflow:auto;align-items:start;scrollbar-gutter:stable}.ruler,.overview{padding-right:12px}.ruler{background:var(--ruler);border-bottom:1px solid var(--line)}.overview{background:var(--lane);border-top:1px solid var(--line)}.lane-title{background:var(--lane);color:var(--muted);display:flex;align-items:center;padding:0 12px;border-right:1px solid var(--line)}#lanes{border-right:1px solid var(--line)}.lane{display:flex;gap:4px;align-items:center;padding:0 5px;border-bottom:1px solid var(--line);background:var(--lane)}.lane:nth-child(even){background:var(--lane-alt)}.lane.active{box-shadow:inset 3px 0 var(--hi);background:var(--control)}.lane button{padding:0 4px;min-height:19px}.lane .name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;text-align:left;background:transparent;border:0}.lane .name:hover{background:var(--control)}
 canvas{display:block;width:100%;height:100%;min-width:0;touch-action:none}#grid,#controller,#ruler,#overview{cursor:default}
 aside{overflow:auto;border-left:1px solid var(--line);background:var(--panel)}aside section{padding:12px;border-bottom:1px solid var(--line)}h2{font-size:13px;margin:0 0 10px}.dim{font-weight:400;margin-left:4px}aside label{display:flex;justify-content:space-between;align-items:center;gap:6px;margin:8px 0}#difficulty{width:100%}#history{display:grid;gap:4px;max-height:230px;overflow:auto}#history button{text-align:left;overflow:hidden;text-overflow:ellipsis}
-.transport{background:var(--lane);border-bottom:1px solid var(--line);flex-wrap:wrap}.transport label{margin-left:4px}.transport input[type=range]{width:90px}#position{font:13px "Roboto Mono",Consolas,monospace;color:var(--text);margin:0 6px;min-width:76px}#statusbar{background:var(--control);border-top:1px solid var(--line);color:var(--title-text);min-height:26px;padding:3px 12px;display:flex;gap:8px;align-items:center}#status{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}#statusbar button{min-height:22px}
+#position{font:13px "Roboto Mono",Consolas,monospace;color:var(--text);margin:0 6px;min-width:76px}#statusbar{background:var(--control);border-top:1px solid var(--line);color:var(--title-text);min-height:26px;padding:3px 12px;display:flex;gap:8px;align-items:center}#status{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}#statusbar button{min-height:22px}
 dialog{color:var(--text);background:var(--raised);border:1px solid var(--button-border);border-radius:10px;padding:20px;width:min(620px,92vw);max-height:82vh}dialog::backdrop{background:#111111a8}dialog h2{font-size:18px}#dialog-body{margin-bottom:16px;max-height:55vh;overflow:auto;overflow-wrap:anywhere}#dialog-body p{margin:0 0 9px}#dialog-actions{justify-content:flex-end;flex-wrap:wrap}#dialog-body input[type=text]{display:block;width:100%;padding:8px;background:var(--base);border:1px solid var(--line);border-radius:4px}#dialog-body label{display:flex;gap:8px;align-items:center;margin:8px 0}
 #grid{position:sticky;top:0} .scroll::-webkit-scrollbar{width:12px} .scroll::-webkit-scrollbar-thumb{background:var(--divider);border:2px solid var(--lane-alt);border-radius:5px}
 .volume-title{flex-direction:column;align-items:stretch;justify-content:center;gap:4px;min-width:0}
@@ -130,7 +129,7 @@ dialog{color:var(--text);background:var(--raised);border:1px solid var(--button-
 .lane.lane-selected{outline:1px solid var(--hi);outline-offset:-1px}
 .lane.lane-tinted{background-image:linear-gradient(var(--lane-tint),var(--lane-tint))}
 .arrange{grid-template-rows:var(--layout-timeline-rows,minmax(20px,max-content) var(--ruler-row) minmax(0,1fr) auto)}.controller{background:var(--field);display:grid;grid-template-columns:var(--lanes) minmax(0,1fr);min-width:0;padding-right:12px;border-top:1px solid var(--line)}
-@media(max-width:800px){.dock{grid-template-columns:minmax(0,1fr) 205px}.arrange{--lane-default-width:115px}.transport input[type=range]{width:62px}.chrome{padding-inline:7px;gap:4px}aside section{padding:9px}}
+@media(max-width:800px){.dock{grid-template-columns:minmax(0,1fr) 205px}.arrange{--lane-default-width:115px}.chrome{padding-inline:7px;gap:4px}aside section{padding:9px}}
 
 body{font-family:Inter,"Segoe UI",system-ui,sans-serif}
 .brand{display:inline-flex;align-items:center}
@@ -274,7 +273,6 @@ button[aria-label="Undo"] .button-icon,button[aria-label="Redo"] .button-icon{ma
 .dock-preview[data-placement="tabs"] { background: #77bdfa1c; }
 
 /* Shared control surfaces from the desktop editor component sheet. */
-.transport.chrome { background:var(--panel); padding-block:5px; gap:8px; }
 .transport-cluster { display: inline-flex; align-items: center; gap: 2px; padding: 4px; background: #2c2c2c; border-radius: 8px; }
 .transport-cluster button { position: relative; width: 34px; height: 30px; padding: 0; border: 0; background: transparent; }
 .transport-cluster .button-icon { margin: 0; vertical-align: middle; }
@@ -288,18 +286,7 @@ button[aria-label="Undo"] .button-icon,button[aria-label="Redo"] .button-icon{ma
 .playback-rates { display:grid; grid-auto-flow:column; gap:2px; padding:2px; border-radius:5px; background:var(--base); }
 .playback-rates:empty { display:none; }
 .playback-rates > button { min-height:26px; padding:2px 6px; font-size:11px; font-variant-numeric:tabular-nums; }
-.transport-flags,.transport-navigation { display:flex; flex-wrap:wrap; align-items:center; gap:5px; }
-.transport-flags label { margin:0; padding-inline:2px; gap:4px; }
-.transport-navigation #zoom { width:72px; }
 .transport-cluster #play:not([data-playing="true"]) { background:#28473c; }
-@media (max-width:1230px) {
-  .playback-rates { grid-template-rows:repeat(2,auto); grid-auto-flow:row; grid-template-columns:repeat(3, minmax(0,1fr)); }
-  .playback-rates > button { min-height:20px; padding:0 4px; font-size:11px; }
-  .transport.chrome { gap:6px; }
-  .transport-display { display:grid; gap:1px; padding:3px 7px; }
-  .transport-display #position { font-size:14px; }
-  .transport-navigation #zoom { width:62px; }
-}
 #tools, .row[aria-label="Lane view"] { gap: 2px; background: #2c2c2c; padding: 2px; border-radius: 5px; }
 #tools button, .row[aria-label="Lane view"] button { border: 0; background: transparent; }
 #tools button.active, .row[aria-label="Lane view"] button[aria-pressed="true"] { color: var(--hi); background: #454545; }
@@ -336,8 +323,6 @@ header.chrome button, header #editor-menus button { border-color:#454545; }
 }
 .tools #tools img { margin:0; }
 .tools #tools button span { font-size:10px; }
-.transport { min-height:56px; }
-.transport .transport-display { margin-inline:auto; }
 button, select, input[type=number] { border-color:transparent; border-radius:4px; }
 button:focus-visible, select:focus-visible, input:focus-visible { outline-color:#a1d0f7; }
 input[type=checkbox] { appearance:none; width:28px; height:16px; border-radius:12px; background:#454545; display:inline-grid; align-items:center; padding:2px; flex:none; }
@@ -506,3 +491,101 @@ header #editor-menus button{min-height:26px;padding:3px 10px;border-radius:4px}
 .shortcut-clear:disabled{visibility:hidden}
 #dialog.dialog-shortcut-editor #dialog-body > p[role=status]{position:sticky;bottom:0;margin:0;padding:8px 0 2px;background:var(--raised)}
 #dialog.dialog-shortcut-editor #dialog-body > p[role=status]:empty{display:none}
+/* Toolbar and status bar (design f1): tool pills with the label beside the icon, Snap, Audition, Follow/Return and the lane view switch; the status bar holds speeds, status, problems and counts. */
+#editor-ribbon{--layout-min-height:43px}
+#editor-ribbon.tools.chrome{gap:4px;padding-block:4px}
+#editor-ribbon .ribbon-caption{display:none}
+#editor-ribbon .ribbon-group{align-content:center}
+#editor-ribbon .ribbon-group+.ribbon-group{padding-left:6px}
+#editor-ribbon #tools,#editor-ribbon .toolbar-track{gap:2px;padding:2px;border-radius:6px;background:#2c2c2c}
+#editor-ribbon #tools button,#editor-ribbon .toolbar-toggle{display:inline-flex;align-items:center;gap:6px;height:26px;min-height:26px;padding:0 9px;border:0;border-radius:4px;background:transparent;color:#c4c4c4;font-size:13px;cursor:pointer;white-space:nowrap}
+#editor-ribbon #tools button:hover:not(:disabled),#editor-ribbon .toolbar-toggle:hover{background:#3c3c3c;color:var(--text)}
+#editor-ribbon #tools button.active,#editor-ribbon .toolbar-toggle[aria-pressed=true],#editor-ribbon input.toggle-input:checked+.toolbar-toggle{background:#454545;color:var(--hi)}
+#editor-ribbon #tools .ribbon-tool-label{font-size:13px}
+#editor-ribbon .toolbar-toggle svg{width:14px;height:14px;flex:none;fill:none;stroke:currentColor;stroke-width:1.4;stroke-linecap:round;stroke-linejoin:round}
+#editor-ribbon .toolbar-toggle:disabled,#editor-ribbon input.toggle-input:disabled+.toolbar-toggle{opacity:.45;cursor:default;background:transparent}
+input[type=checkbox].toggle-input{position:absolute;width:1px;height:1px;margin:0;padding:0;opacity:0;pointer-events:none}
+input[type=checkbox].toggle-input:focus-visible+label{outline:2px solid #a1d0f7;outline-offset:1px}
+#editor-ribbon #grid-options,#editor-ribbon [popovertarget="options-Lanes"]{height:30px;min-height:30px;padding:0 10px;border-radius:6px;background:#2c2c2c}
+#editor-ribbon .row[aria-label="Lane view"] button{height:26px;min-height:26px;padding:0 12px}
+#editor-ribbon #difficulty{max-width:180px}
+#editor-ribbon [data-command="revert"]{display:inline-flex;align-items:center;gap:5px}
+#editor-ribbon [data-command="revert"] svg{width:16px;height:16px;flex:none;fill:none;stroke:currentColor;stroke-width:1.4;stroke-linecap:round;stroke-linejoin:round}
+#editor-ribbon #tools,#editor-ribbon .toolbar-track{position:relative}
+@media (forced-colors:active){#editor-ribbon #tools button.active,#editor-ribbon .toolbar-toggle[aria-pressed=true],#editor-ribbon input.toggle-input:checked+.toolbar-toggle,#editor-ribbon .row[aria-label="Lane view"] button[aria-pressed=true],input.toggle-input:checked+.transport-cycle,#statusbar .playback-rates>button[aria-pressed=true]{outline:2px solid Highlight;outline-offset:-2px}}
+/* Every tool keeps its name from 1280 px; the other groups give way first (names, then padding). */
+@media (max-width:2159px){#editor-ribbon .ribbon-secondary-label{display:none}#editor-ribbon .button-icon{margin:0}}
+@media (max-width:1779px){#editor-ribbon .toolbar-toggle-label{display:none}#editor-ribbon .toolbar-toggle{padding:0 6px}}
+@media (max-width:1599px){#editor-ribbon.tools.chrome{gap:2px;padding-inline:6px}#editor-ribbon .ribbon-group+.ribbon-group{padding-left:3px}#editor-ribbon .ribbon-controls{gap:2px}#editor-ribbon .ribbon-controls>button:not(.toolbar-toggle),#editor-ribbon .view-panel-toggles button{min-width:28px;padding:0 5px;justify-content:center}#editor-ribbon .view-panel-toggles{padding-right:2px}#editor-ribbon #tools button{gap:4px;padding:0 6px}#editor-ribbon #tools .ribbon-tool-label{font-size:12px}#editor-ribbon #difficulty{max-width:120px}#editor-ribbon #grid-options,#editor-ribbon [popovertarget="options-Lanes"],#editor-ribbon .row[aria-label="Lane view"] button{padding:0 7px}}
+@media (max-width:1399px){#editor-ribbon #difficulty{max-width:96px}#editor-ribbon #tools button{padding:0 5px}#editor-ribbon .toolbar-toggle{padding:0 5px}}
+@media (max-width:1279px){#editor-ribbon #tools button:not(.active) .ribbon-tool-label{display:none}#editor-ribbon #tools button.active .ribbon-tool-label{display:inline}}
+@media (max-width:1099px){#editor-ribbon #difficulty{max-width:72px}#editor-ribbon #grid-options,#editor-ribbon [popovertarget="options-Lanes"],#editor-ribbon .row[aria-label="Lane view"] button{padding:0 4px}}
+#statusbar{--layout-min-height:32px;gap:10px;padding:0 12px}
+#statusbar #status{flex:0 1 auto;min-width:0}
+#statusbar .playback-rates{grid-template-rows:none;grid-template-columns:none;grid-auto-flow:column;gap:2px;padding:0;background:transparent}
+#statusbar .playback-rates>button{min-height:22px;height:22px;padding:0 6px;border:0;border-radius:4px;background:transparent;font-size:11px}
+#statusbar .playback-rates>button:hover:not(:disabled){background:#454545}
+#statusbar .playback-rates>button[aria-pressed=true]{background:#454545;color:var(--hi)}
+.problem-summary{display:inline-flex;align-items:center;gap:6px;min-width:0;overflow:hidden;color:#fa838c;white-space:nowrap}
+#problem-summary-text{overflow:hidden;text-overflow:ellipsis}
+#statusbar .playback-rates,#statusbar>button{flex:none}
+.problem-summary svg{width:14px;height:14px;flex:none;fill:none;stroke:currentColor;stroke-width:1.4;stroke-linecap:round;stroke-linejoin:round}
+.status-right{display:flex;flex:none;align-items:center;gap:10px;margin-left:auto}
+.status-counts{white-space:nowrap;font-variant-numeric:tabular-nums}
+/* Top bar transport (design f1, D2): Go to start, Stop, Play and Cycle, the time readout in Roboto Mono with BPM, time signature and bar, then the L and R locators. */
+#editor-header{--layout-min-height:52px;gap:8px}
+#editor-header .title{flex:0 100 auto;min-width:0;max-width:22vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:0 4px;text-align:left;color:#c4c4c4;font-weight:600}
+#editor-header .title:empty::before{content:attr(data-placeholder)}
+.top-transport{display:flex;align-items:center;gap:6px;flex:none;padding:3px}
+#editor-header[data-empty="true"] .top-transport{opacity:.35}
+#editor-header .transport-cluster{position:relative;flex:none;gap:2px;padding:3px;border-radius:8px;background:#2c2c2c}
+#editor-header .transport-cluster button{width:32px;height:30px;min-height:30px;border-radius:4px}
+.transport-cycle{display:grid;place-items:center;width:32px;height:30px;border-radius:4px;color:#c4c4c4;cursor:pointer}
+.transport-cycle:hover{background:#3c3c3c}
+input.toggle-input:checked+.transport-cycle{background:#454545;color:var(--hi)}
+input.toggle-input:disabled+.transport-cycle{cursor:default;background:transparent}
+.transport-cycle svg{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round}
+.transport-cycle span{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}
+#editor-header .transport-display{display:flex;align-items:center;gap:0;flex:none;height:36px;margin:0;padding:0;border:0;border-radius:6px;background:#151515}
+#editor-header #position{flex:none;margin:0;padding:0 12px;min-width:0;font:21px "Roboto Mono",ui-monospace,monospace;font-variant-numeric:tabular-nums;color:#e6eef2}
+.transport-readout{display:grid;flex:none;padding:0 10px;border-left:1px solid #383838;line-height:1.2}
+#editor-header .transport-readout>span{padding:0;border:0;font:12px "Roboto Mono",ui-monospace,monospace;font-variant-numeric:tabular-nums;color:var(--text);white-space:nowrap}
+.transport-readout small{font-size:10px;letter-spacing:.04em;color:#a3a3a3}
+.transport-locators{display:flex;flex:none;gap:2px;padding:3px;border-radius:8px;background:#2c2c2c}
+.transport-locators button{display:inline-flex;align-items:center;gap:6px;height:30px;min-height:30px;padding:0 8px;border:0;border-radius:4px;background:transparent;font:12px "Roboto Mono",ui-monospace,monospace;color:#c4c4c4}
+.transport-locators button:hover:not(:disabled){background:#3c3c3c}
+.transport-locators b{color:#efc16a}
+#statusbar .status-view{display:flex;align-items:center;gap:6px}
+#statusbar #zoom{width:90px}
+@media (max-width:1399px){#editor-header .transport-bar{display:none}}
+@media (max-width:1279px){.transport-locators button span{display:none}}
+@media (max-width:1139px){#editor-header .transport-readout{display:none}#editor-header #position{padding:0 10px;font-size:18px}}
+/* Start and empty screen (design f4): three primary actions, a dashed drop zone and recent maps by name. */
+#home{min-height:0;place-items:start center;padding:12vh 24px 32px;overflow:auto}
+#home .home-panel{display:grid;justify-items:center;gap:16px;width:min(760px,100%);padding:0;border:0;border-radius:0;background:transparent;text-align:center}
+.home-logo{width:40px;height:40px;border-radius:8px}
+#home .home-panel h1{margin:0;font-size:20px;font-weight:650}
+#home .home-panel>p{max-width:520px;margin:-8px 0 8px;color:#c4c4c4}
+#home-resume{min-height:32px;padding:4px 16px}
+.home-actions{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px;width:min(680px,100%)}
+.home-action{display:flex;align-items:center;gap:12px;min-height:76px;padding:12px 16px;border:0;border-radius:8px;background:#292929;color:var(--text);text-align:left;white-space:normal}
+.home-action:hover:not(:disabled){background:#3c3c3c}
+.home-action strong{display:block;font-weight:600}
+.home-action small{display:block;margin-top:4px;font-size:12px;color:#c4c4c4}
+.home-action svg,.home-drop svg{width:24px;height:24px;flex:none;fill:none;stroke:currentColor;stroke-width:1.4;stroke-linecap:round;stroke-linejoin:round}
+.home-action svg{color:var(--hi)}
+.home-drop{display:grid;justify-items:center;gap:8px;width:100%;padding:28px 16px;border:1.5px dashed #454545;border-radius:8px;color:#c4c4c4}
+#home #recovery{width:100%;text-align:left}
+.home-recent{width:100%;text-align:left}
+.home-recent h2{margin:8px 0 0;padding:0 12px 8px;border-bottom:1px solid #383838;font-size:13px;font-weight:600}
+#home #recent{display:grid;gap:0;margin-top:4px}
+#home .home-recent-map{display:flex;align-items:center;gap:10px;min-width:0;min-height:40px;padding:0 12px;border:0;border-radius:6px;background:transparent;text-align:left}
+#home .home-recent-map:hover:not(:disabled){background:#2c2c2c}
+.home-recent-map::before{content:"";width:14px;height:14px;flex:none;background:#62d6cf;clip-path:polygon(0 43%,22% 43%,32% 13%,46% 76%,59% 22%,70% 50%,100% 50%,100% 62%,68% 62%,60% 46%,45% 95%,32% 41%,27% 58%,0 58%)}
+.home-recent-map:nth-child(5n+1)::before{background:#e28dd1}
+.home-recent-map:nth-child(5n+3)::before{background:#9c9cfc}
+.home-recent-map:nth-child(5n+4)::before{background:#f1ad67}
+.home-recent-map:nth-child(5n+5)::before{background:#a7d67d}
+.home-recent-map strong{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}
+.home-recent-map span{flex:none;color:#a3a3a3}
+@media (max-width:760px){.home-actions{grid-template-columns:minmax(0,1fr)}}
