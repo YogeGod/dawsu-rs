@@ -13,7 +13,7 @@ async function launch(preferences) {
   const documentEvents = new Map();
   const createElement = () => ({
     events: new Map(), dataset: {}, children: [], open: false,
-    append() {}, prepend() {},
+    append() {}, prepend() {}, setAttribute(name, value) { this[name] = value; },
     replaceChildren(...children) { this.children = children; },
     addEventListener(name, handler) { this.events.set(name, handler); },
     showModal() { this.open = true; },

@@ -60,12 +60,13 @@ test("the empty screen offers Open map, Import .osz and Folders, a drop zone and
 
 test("recent maps show the map name and difficulty from the file name and open on click", async () => {
   const { calls, evaluate, get, settle } = await frontend();
-  evaluate(`show({ busy: false, hasDocument: false, recent: [${JSON.stringify(mapPath)}, "C:/maps/recent.osu"] })`);
+  evaluate(`show({ busy: false, hasDocument: false, recent: [${JSON.stringify(mapPath)}, "C:/maps/recent.osu", "C:/maps/Some Pack.OSZ"] })`);
   assert.equal(get("home-recent").hidden, false);
   const [first, second] = get("recent").children;
   assert.equal(first.title, mapPath);
   assert.deepEqual(first.children.map(child => child.textContent), ["yuikonnu - Chikyuu Saigo no Kokuhaku wo", "[Kokuhaku in 2019]"]);
   assert.deepEqual(second.children.map(child => child.textContent), ["recent", ""]);
+  assert.deepEqual(get("recent").children[2].children.map(child => child.textContent), ["Some Pack", ""]);
   first.events.get("click")();
   await settle();
   assert.deepEqual(calls.at(-1), { name: "editor_view", args: { scene: true, action: { kind: "open", path: mapPath } } });

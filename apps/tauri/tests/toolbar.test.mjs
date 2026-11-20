@@ -57,7 +57,7 @@ const sceneWith = fields => JSON.stringify({
   ...fields,
 });
 
-test("the toolbar holds the tool pills, Snap, Audition, Follow, Return and the Samples/Drums switch", () => {
+test("the toolbar holds the tool pills, Snap, Audition, Follow, Return and the Hitsounds/Drums switch", () => {
   for (const id of ["tools", "grid-options", "toolbar-audition", "follow", "transport-return", "samples-view", "drums-view"]) {
     assert.match(ribbon, new RegExp('id="' + id + '"'), id);
   }
@@ -67,6 +67,12 @@ test("the toolbar holds the tool pills, Snap, Audition, Follow, Return and the S
   const transport = html.match(/<section id="editor-transport".*?<\/section>/s)?.[0] ?? "";
   assert.doesNotMatch(transport, /id="follow"|id="transport-return"/);
   assert.match(html, /<input[^>]*type="checkbox"[^>]*id="follow"/, "Follow stays a checkbox");
+  assert.match(ribbon, /id="samples-view"[^>]*>Hitsounds<\/button>/, "the design names the sample-lane view Hitsounds");
+  assert.match(ribbon, /id="drums-view"[^>]*>Drums<\/button>/);
+  const revert = ribbon.match(/<button[^>]*data-command="revert"[^>]*>(.*?)<\/button>/s);
+  assert.ok(revert, "Revert stays on the toolbar");
+  assert.match(revert[0], /aria-label="Revert to saved…"/);
+  assert.match(revert[1], /<svg[\s\S]*class="ribbon-secondary-label"/, "Revert can go icon-only");
 });
 
 test("tool pills put the label beside the icon, with no :has() or color-mix()", () => {
@@ -74,6 +80,19 @@ test("tool pills put the label beside the icon, with no :has() or color-mix()", 
   assert.match(toolbarCss, /#editor-ribbon #tools button[^{]*\{[^}]*display:\s*inline-flex/);
   assert.match(toolbarCss, /#editor-ribbon \.ribbon-caption\s*\{[^}]*display:\s*none/);
   assert.doesNotMatch(toolbarCss, /:has\(|color-mix\(|aspect-ratio/);
+  assert.match(toolbarCss, /\.toolbar-track[^{]*\{[^}]*position:\s*relative/);
+  assert.match(toolbarCss, /@media\s*\(forced-colors:\s*active\)\s*\{[^{}]*aria-pressed=true[^{}]*\{[^}]*outline/);
+});
+
+test("every tool shows its name from 1280 px; below that only the active tool keeps it", () => {
+  const queries = [...toolbarCss.matchAll(/@media\s*\(max-width:\s*(\d+)px\)\s*\{((?:[^{}]*\{[^}]*\})*)\s*\}/g)];
+  const hides = queries.filter(([, , body]) => /ribbon-tool-label\s*\{[^}]*display:\s*none/.test(body));
+  assert.ok(hides.length > 0, "names hide somewhere");
+  for (const [, width, body] of hides) {
+    assert.ok(Number(width) < 1280, "tool names hide only below 1280 px, not at " + width);
+    assert.match(body, /button:not\(\.active\) \.ribbon-tool-label\s*\{[^}]*display:\s*none/, "only inactive names hide");
+    assert.match(body, /button\.active \.ribbon-tool-label\s*\{[^}]*display:\s*inline/, "the active name beats the older 1140 px rule");
+  }
 });
 
 test("the status bar shows speeds first, then status and problems, with counts on the right", () => {
@@ -90,7 +109,7 @@ test("show() fills the Snap label, Audition, the problem summary and the hit and
   evaluate(`show({ busy: false, hasDocument: true, audition: true, outputProblems: [{ time: 1 }, { time: 2 }],
     scene: ${sceneWith({})} })`);
   assert.equal(get("grid-options").textContent, "Snap 1/4 ▾");
-  assert.equal(get("toolbar-audition").ariaPressed, "true");
+  assert.equal(get("toolbar-audition")["aria-pressed"], "true");
   assert.equal(get("problem-summary").hidden, false);
   assert.equal(get("problem-summary-text").textContent, "2 moments can't be saved");
   assert.equal(get("hit-lane-counts").hidden, false);
@@ -104,7 +123,7 @@ test("show() fills the Snap label, Audition, the problem summary and the hit and
   evaluate(`show({ busy: false, hasDocument: true, audition: false, outputProblems: [{ time: 1 }],
     scene: ${sceneWith({ snap: false, lanes: [{ key: "a" }], moments: [[100, 100, true, [[0, false]]]] })} })`);
   assert.equal(get("grid-options").textContent, "Snap off ▾");
-  assert.equal(get("toolbar-audition").ariaPressed, "false");
+  assert.equal(get("toolbar-audition")["aria-pressed"], "false");
   assert.equal(get("problem-summary-text").textContent, "1 moment can't be saved");
   assert.equal(get("hit-lane-counts").textContent, "1 hit · 1 lane");
 

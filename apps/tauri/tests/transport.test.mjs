@@ -28,7 +28,9 @@ async function frontend() {
     if (!controls.has(id)) controls.set(id, element());
     return controls.get(id);
   };
-  const mapOnly = ["play", "stop", "cycle", "zoom"].map(get);
+  // Every control index.html marks data-map, keyed by its id or its locator end.
+  const mapOnly = [...html.matchAll(/<(?:button|input)\b[^>]*\bdata-map\b[^>]*>/g)].map(([tag]) =>
+    get(tag.match(/\bid="([^"]+)"/)?.[1] ?? "locator-button-" + tag.match(/data-locator="([^"]+)"/)?.[1]));
   const context = createContext({
     document: {
       getElementById: get, createElement: element, addEventListener() {},
@@ -69,6 +71,20 @@ test("the transport sits in the top bar after the map name and the bottom bar is
   assert.ok(header.indexOf('data-action="review_save"') > header.indexOf('id="locator-right"'), "Save stays at the right end");
   assert.match(topbarCss, /#position[^{]*\{[^}]*Roboto Mono/);
   assert.doesNotMatch(topbarCss, /:has\(|color-mix\(|aspect-ratio/);
+  assert.doesNotMatch(topbarCss, /\.top-transport\s*\{[^}]*overflow:\s*hidden/, "the transport never clips silently");
+  assert.doesNotMatch(topbarCss, /button:disabled\s*\{\s*opacity:\s*1\s*\}/);
+  assert.match(topbarCss, /\.transport-cluster[^{]*\{[^}]*position:\s*relative/);
+});
+
+test("the old bottom transport bar leaves no CSS behind", () => {
+  for (const dead of [/#editor-transport/, /\.transport\s*\{/, /\.transport\.chrome/, /\.transport-flags/, /\.transport-navigation/,
+    /\.transport label/, /\.transport input/, /\.transport \.transport-display/]) {
+    assert.doesNotMatch(css, dead);
+  }
+});
+
+test("the status bar's right end keeps its size so zoom and Audio stay on screen", () => {
+  assert.match(css, /\.status-right\s*\{[^}]*flex:\s*none/);
 });
 
 test("speeds, Fit, zoom and Audio live in the status bar", () => {
@@ -88,6 +104,9 @@ test("the layout editor no longer places the transport above or below the timeli
 
 test("show() fills the time, BPM, time signature, bar and locators, and fades them with no map", async () => {
   const { evaluate, get, mapOnly } = await frontend();
+  for (const id of ["play", "stop", "cycle", "zoom", "locator-button-left", "locator-button-right"]) {
+    assert.ok(mapOnly.includes(get(id)), id + " waits for a map");
+  }
   evaluate(`show({ busy: false, hasDocument: true, position: 106052, left: 104947, right: 107473,
     musicalPosition: "38.2.240 · 190.0 BPM · 7/8 · 1/4",
     scene: { path: "Hard.osu", lanes: [], difficulties: [], history: [], historyPosition: 0, moments: [] } })`);
@@ -108,6 +127,7 @@ test("show() fills the time, BPM, time signature, bar and locators, and fades th
   assert.equal(get("musical-position").textContent, "–");
   assert.equal(get("editor-header").dataset.empty, "true");
   assert.equal(get("title")["data-placeholder"], "No map open");
+  assert.match(app, /title\.setAttribute\("data-placeholder"/, "the title is a real element, no optional call");
   assert.equal(get("status-view").hidden, true);
   assert.ok(mapOnly.every(control => control.disabled === true));
 });

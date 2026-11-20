@@ -241,7 +241,7 @@ function show(next) {
   const title = $("title");
   title.textContent = path ? (view.dirty ? "● " : "") + nameOf(path) : "";
   title.title = path;
-  title.setAttribute?.("data-placeholder", view.hasDocument ? "" : "No map open");
+  title.setAttribute("data-placeholder", view.hasDocument ? "" : "No map open");
   $("status").textContent = view.status || (view.busy ? "Working…" : "");
   $("status").title = $("status").textContent;
   // The playhead readout is "bar.beat.tick · 190.0 BPM · 4/4 · snap"; the backend sends no separate fields.
@@ -308,7 +308,7 @@ function show(next) {
     $("ruler-follow").setAttribute?.("aria-pressed", String(!!view.follow));
     followPlayhead();
     $("audition").checked = view.audition;
-    $("toolbar-audition").ariaPressed = String(!!view.audition);
+    $("toolbar-audition").setAttribute?.("aria-pressed", String(!!view.audition));
     if (wasPlaying !== view.playing) {
       $("play-icon").src = view.playing ? "studio-assets/icons/Pause.svg" : "studio-assets/icons/Play.svg";
       $("play-label").textContent = view.playing ? "Pause" : "Play";
@@ -328,7 +328,7 @@ function setValue(id, value) {
 
 // "Artist - Title (Creator) [Difficulty].osu" gives the map name and "[Difficulty]"; other names show whole.
 function recentMapName(path) {
-  const file = nameOf(path).replace(/\.osu$/i, "");
+  const file = nameOf(path).replace(/\.(osu|osz)$/i, "");
   const parts = /^(.+?)\s*\([^()]*\)\s*(\[[^\]]*\])$/.exec(file);
   return parts ? [parts[1], parts[2]] : [file, ""];
 }
