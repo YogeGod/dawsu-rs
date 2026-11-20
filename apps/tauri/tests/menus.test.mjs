@@ -301,7 +301,7 @@ test("Place sound set lists this map's sets, then the library, and places one by
     { id: "a", name: "Kick", sounds: 2, inMap: true, duplicate: false },
     { id: "b", name: "Bell", sounds: 1, inMap: false, duplicate: false },
     { id: "c", name: "Crash", sounds: 3, inMap: false, duplicate: true },
-  ] };
+  ], unreadable: ["broken.dawsuset"], reading: false };
   editItem(get, "Place sound set…").click();
   await settle();
   const [dialog] = modals;
@@ -310,8 +310,11 @@ test("Place sound set lists this map's sets, then the library, and places one by
   assert.equal(list.type, "select");
   assert.deepEqual(plain(list.children.map(group => [group.label, group.children.map(option => [option.textContent, !!option.disabled])])), [
     ["In this map", [["Kick · 2 sounds", false]]],
-    ["Library", [["Bell · 1 sound", false], ["Crash · 3 sounds · in the library more than once", true]]],
+    ["Library", [["Bell · 1 sound", false], ["Crash · 3 sounds · in the library twice, remove one copy", true],
+      ["Could not read broken.dawsuset", true]]],
   ]);
+  const message = dialog.content[1];
+  assert.equal(message.textContent, "");
   assert.equal(list.value, "a");
   assert.deepEqual(plain(dialog.buttons.map(([label]) => label)), ["Cancel", "Browse…", "Place"]);
   button(dialog, "Place")[1]();
@@ -319,7 +322,9 @@ test("Place sound set lists this map's sets, then the library, and places one by
   // A set in the library twice can't be placed.
   list.value = "c";
   button(dialog, "Place")[1]();
+  list.events.get("dblclick")({ target: { tagName: "OPTION", disabled: true } });
   assert.equal(calls.filter(call => call.kind === "place_library_sound_set").length, 1);
+  assert.equal(message.textContent, "Choose a sound set to place.");
   button(dialog, "Browse…")[1]();
   await settle();
   assert.deepEqual(JSON.parse(JSON.stringify(calls.slice(-3))), ["closeModal", ["pick_sound_set", { map: "Test.osu" }], { show: { placed: true } }]);
@@ -330,8 +335,32 @@ test("Place sound set with an empty library says so and still offers Browse", as
   responses.sound_set_library = { configured: true, sets: [] };
   editItem(get, "Place sound set…").click();
   await settle();
-  assert.deepEqual(plain(modals[0].content.map(node => node.textContent)), ["The library has no sound sets yet."]);
+  assert.deepEqual(plain(modals[0].content.map(node => node.textContent)),
+    ["The library has no sound sets yet. Use Edit > Save selection as sound set to add one."]);
   assert.deepEqual(plain(modals[0].buttons.map(([label]) => label)), ["Cancel", "Browse…"]);
+});
+
+test("Place sound set says when the library is still being read or its folder is gone", async () => {
+  const { get, calls, modals, responses } = fixture();
+  responses.sound_set_library = { configured: true, sets: [], unreadable: [], reading: true };
+  editItem(get, "Place sound set…").click();
+  await settle();
+  assert.deepEqual(plain(modals[0].content.map(node => node.textContent)), ["Still reading the sound set library. Try again."]);
+  responses.sound_set_library = { configured: true, error: "Hitsound library folder not found: D:/Library", sets: [], unreadable: [] };
+  button(modals[0], "Try again")[1]();
+  await settle();
+  assert.equal(calls.filter(call => Array.isArray(call) && call[0] === "sound_set_library").length, 2);
+  assert.deepEqual(plain(modals[1].content.map(node => node.textContent)), ["Hitsound library folder not found: D:/Library"]);
+  assert.deepEqual(plain(modals[1].buttons.map(([label]) => label)), ["Cancel", "Browse…", "Choose library folder…"]);
+});
+
+test("a list with only sets that can't be placed says so", async () => {
+  const { get, modals, responses } = fixture();
+  responses.sound_set_library = { configured: true, sets: [{ id: "c", name: "Crash", sounds: 3, inMap: false, duplicate: true }],
+    unreadable: [], reading: false };
+  editItem(get, "Place sound set…").click();
+  await settle();
+  assert.equal(modals[0].content[1].textContent, "None of these sound sets can be placed.");
 });
 
 test("without a hitsound library, both sound set items ask for one first", async () => {
@@ -372,6 +401,7 @@ test("Save selection as sound set asks for a name and asks again when the librar
   button(dialog, "Save")[1]();
   await settle();
   assert.ok(!calls.some(call => Array.isArray(call) && call[0] === "save_sound_set"), "a blank name is not sent");
+  assert.equal(message.textContent, "Name the sound set.");
   field.value = "Kick";
   button(dialog, "Save")[1]();
   await settle();
@@ -385,7 +415,10 @@ test("Save selection as sound set asks for a name and asks again when the librar
   responses.save_sound_set = { status: "Saved sound set \"Kicks\"." };
   field.value = "Kicks";
   button(dialog, "Save")[1]();
+  button(dialog, "Save")[1]();
   await settle();
+  assert.equal(calls.filter(call => Array.isArray(call) && call[0] === "save_sound_set" && call[1].name === "Kicks").length, 1,
+    "a second click while saving saves nothing more");
   assert.deepEqual(JSON.parse(JSON.stringify(calls.slice(-2))), ["closeModal", { show: { status: "Saved sound set \"Kicks\"." } }]);
 });
 

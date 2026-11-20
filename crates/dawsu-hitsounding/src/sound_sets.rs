@@ -305,7 +305,7 @@ pub fn capture(new_id: &mut dyn FnMut() -> String, name: &str, hits: Vec<Capture
         .map(|hit| {
             let slot = match hit.lane.sample() {
                 Some(SampleIdentity::Standard { set, sound: sound @ Sound::Hit(_), .. }) => format!("{}-{}", crate::rules::set_word(set), crate::rules::sound_word(sound)),
-                Some(SampleIdentity::Standard { sound: Sound::Slider(_), .. }) => return Err(invalid("use hitnormal, whistle, finish or clap sounds in a set")),
+                Some(SampleIdentity::Standard { sound: Sound::Slider(_), .. }) => return Err(invalid("use hitnormal, whistle, finish or clap sounds in a sound set")),
                 _ => "normal-hitnormal".to_string(),
             };
             Ok(SetMember { id: new_id(), original_key: hit.original_key, lane: hit.lane, slot, volume: hit.volume, audio: hit.audio, kept: Kept::default() })

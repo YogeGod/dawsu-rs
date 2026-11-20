@@ -1625,13 +1625,16 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
 }
 
 fn ask<T>(state: &Editor, request: impl FnOnce(mpsc::Sender<T>) -> Request) -> Result<T, String> {
+    ask_within(&state.0, Duration::from_secs(7), request)
+}
+
+fn ask_within<T>(editor: &mpsc::Sender<Request>, wait: Duration, request: impl FnOnce(mpsc::Sender<T>) -> Request) -> Result<T, String> {
     let (send, receive) = mpsc::channel();
-    state
-        .0
+    editor
         .send(request(send))
         .map_err(|_| "The editor worker stopped".to_owned())?;
     receive
-        .recv_timeout(Duration::from_secs(7))
+        .recv_timeout(wait)
         .map_err(|_| "The editor worker did not respond".into())
 }
 
@@ -1786,12 +1789,17 @@ fn pick_sample(window: tauri::WebviewWindow, state: State<'_, Editor>, target: S
 
 /// The library list for Edit > Place sound set: names, ids and counts only.
 fn sound_set_library_view(app: &Application) -> Value {
-    let library = app.sound_set_library();
+    let library = match app.sound_set_library() {
+        Ok(library) => library,
+        Err(error) => return json!({ "configured": true, "error": error, "sets": [], "unreadable": [], "reading": false }),
+    };
     json!({
         "configured": library.configured,
         "sets": library.sets.iter().map(|set| json!({
             "id": set.id, "name": set.name, "sounds": set.sounds, "inMap": set.in_map, "duplicate": set.duplicate,
         })).collect::<Vec<_>>(),
+        "unreadable": library.unreadable,
+        "reading": library.reading,
     })
 }
 
@@ -1800,9 +1808,15 @@ fn sound_set_library(state: State<'_, Editor>) -> Result<Value, String> {
     ask(&state, Request::SoundSetLibrary)?
 }
 
+/// Saving reads every selected sample and the library, so it gets its own longer wait, off the
+/// window's thread; a 7 s timeout while the editor still saves would make a retry look like a
+/// name clash.
 #[tauri::command]
-fn save_sound_set(state: State<'_, Editor>, map: PathBuf, name: String) -> Result<Value, String> {
-    ask(&state, |tx| Request::SaveSoundSet(map, name, tx))?
+async fn save_sound_set(state: State<'_, Editor>, map: PathBuf, name: String) -> Result<Value, String> {
+    let editor = state.0.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        ask_within(&editor, Duration::from_secs(120), |tx| Request::SaveSoundSet(map, name, tx))
+    }).await.map_err(|e| e.to_string())??
 }
 
 #[tauri::command]

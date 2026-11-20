@@ -2085,10 +2085,19 @@ fn the_library_list_names_each_set_and_places_one_by_its_id() {
     app.error = None;
     app.preferences.hitsound_library = Some(fixture.0.join("library"));
     open(&mut app, &path);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while sound_set_library_view(&app)["reading"] == true {
+        assert!(Instant::now() < deadline, "the library is read in the background");
+        std::thread::sleep(Duration::from_millis(5));
+    }
     assert_eq!(sound_set_library_view(&app), serde_json::json!({
         "configured": true,
         "sets": [{ "id": set.id, "name": "Clap", "sounds": 1, "inMap": false, "duplicate": false }],
+        "unreadable": [], "reading": false,
     }), "names, ids and counts only");
+    app.preferences.hitsound_library = Some(fixture.0.join("gone"));
+    assert!(sound_set_library_view(&app)["error"].as_str().is_some_and(|e| e.starts_with("Hitsound library folder not found")));
+    app.preferences.hitsound_library = Some(fixture.0.join("library"));
     let map = snapshot(&app, true)["scene"]["path"].clone();
     app.seek(2000.0);
     serde_json::from_value::<Action>(serde_json::json!({ "kind": "place_library_sound_set", "map": map, "id": set.id })).unwrap().run(&mut app);
