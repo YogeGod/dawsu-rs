@@ -148,3 +148,82 @@ test("the bookmark and history lists stay the same arrays while nothing in them 
   evaluate("scene = null;");
   assert.deepEqual([evaluate("inspectorModel().bookmarks.length"), evaluate("inspectorModel().history.length")], [0, 0]);
 });
+
+// show() with the scene parts the fakes cannot draw left out.
+const showView = (evaluate, more) => evaluate(`show({ busy: false, hasDocument: true, position: 0, duration: 9000,
+  scene: { path: "A.osu", bookmarks: [{ time: 500, label: "Intro" }, { time: 1000, label: "Drop" }], history: [],
+    historyPosition: 0 }, ...${JSON.stringify(more ?? {})} })`);
+async function shown() {
+  const harness = await frontend();
+  harness.evaluate("renderScene = () => {}; renderPanelLayout = () => {};");
+  return harness;
+}
+
+test("the pick waits for its jump, then goes once the playhead moves off its bookmark", async () => {
+  const { evaluate, model } = await shown();
+  showView(evaluate, { position: 200 });
+  evaluate('inspectorAction("pickBookmark", 1000)');
+  // The jump's own update can still carry the old position (the audio thread had not seeked yet).
+  showView(evaluate, { position: 200 });
+  assert.equal(model().bookmark, 1000, "an update before the jump lands keeps the pick");
+  showView(evaluate, { position: 1000 });
+  assert.equal(model().bookmark, 1000);
+  showView(evaluate, { position: 1000 });
+  assert.equal(model().bookmark, 1000, "a playhead resting on it keeps it");
+  // A seek, playback or click elsewhere that moves the playhead clears it, even back to where it was.
+  showView(evaluate, { position: 200 });
+  assert.equal(model().bookmark, null);
+  for (const kind of ["goTo", "rename", "remove"]) assert.equal(evaluate(`inspectorAction("bookmark", "${kind}")`), false, kind);
+
+  evaluate('inspectorAction("pickBookmark", 500)');
+  showView(evaluate, { position: 500 });
+  showView(evaluate, { position: 512.5, playing: true });
+  assert.equal(model().bookmark, null, "playback off the bookmark clears it");
+});
+
+test("the pick follows Previous and Next to the bookmark they jumped to, from the buttons, menus or keys", async () => {
+  const { evaluate, model } = await shown();
+  showView(evaluate, { position: 750 });
+  assert.equal(model().bookmark, null);
+  // The editor names the bookmark a step jumped to once, in the update that ran it.
+  showView(evaluate, { position: 1000, bookmarkStep: 1000 });
+  assert.equal(model().bookmark, 1000);
+  showView(evaluate, { position: 500, bookmarkStep: 500 });
+  assert.equal(model().bookmark, 500);
+  // Even when that update still has the old position.
+  showView(evaluate, { position: 500, bookmarkStep: 1000 });
+  assert.equal(model().bookmark, 1000);
+  showView(evaluate, { position: 1000 });
+  assert.equal(model().bookmark, 1000);
+  // A bookmark past the song's end is jumped to at the end.
+  showView(evaluate, { position: 9000, bookmarkStep: 12000,
+    scene: { path: "A.osu", bookmarks: [{ time: 500, label: "Intro" }, { time: 12000, label: "" }], history: [], historyPosition: 0 } });
+  assert.equal(model().bookmark, 12000);
+});
+
+test("the pick drops when the difficulty changes, also on the way back (A, B, A)", async () => {
+  const { evaluate, model } = await shown();
+  showView(evaluate, { position: 1000, bookmarkStep: 1000 });
+  assert.equal(model().bookmark, 1000);
+  showView(evaluate, { position: 1000, scene: { path: "B.osu", bookmarks: [{ time: 1000, label: "" }], history: [], historyPosition: 0 } });
+  assert.equal(model().bookmark, null);
+  showView(evaluate, { position: 1000 });
+  assert.equal(model().bookmark, null, "back on A at the same time, the old pick stays gone");
+  // Closing the map drops it too.
+  showView(evaluate, { position: 1000, bookmarkStep: 1000 });
+  evaluate("show({ busy: false, hasDocument: false, position: 0 })");
+  showView(evaluate, { position: 1000 });
+  assert.equal(model().bookmark, null);
+});
+
+test("an update that is asked again keeps the bookmark step of the first answer", async () => {
+  const { evaluate } = await shown();
+  assert.match(evaluate("update.toString()"), /next\.bookmarkStep \?\?= step/);
+});
+
+test("busy stops Add and Rename as well", async () => {
+  const { evaluate, sent } = await frontend();
+  evaluate(setup + 'view = { busy: true, position: 0 }; editBookmark = () => { throw new Error("opened"); };');
+  for (const call of ['"bookmark", "add"', '"bookmark", "rename"']) assert.equal(evaluate(`inspectorAction(${call})`), false, call);
+  assert.deepEqual(await sent(), []);
+});

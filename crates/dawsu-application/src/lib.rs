@@ -4227,6 +4227,11 @@ mod project_workflow {
         app.seek(0.0);
         app.command("nextBookmark");
         assert_eq!(app.position_ms(), 100.0, "next bookmark should navigate to the first map bookmark");
+        // The Inspector's pick follows the step: the editor names the bookmark it jumped to, once.
+        assert_eq!(app.bookmark_step.take(), Some(100.0));
+        app.seek(1500.0);
+        app.command("nextBookmark");
+        assert_eq!(app.bookmark_step, None, "a step with no bookmark to go to names none");
         app.seek(750.0);
         app.command("addBookmark");
         app.command("previousBookmark");
