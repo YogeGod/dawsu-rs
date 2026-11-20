@@ -105,3 +105,81 @@ fn a_placement_whose_hits_were_all_deleted_no_longer_blocks_placing_the_set_agai
     let id = c.place_sound_set(1250.0, "set", "d1", 100, &set_hits(), SetHitnormal::Keep, 5.0).expect("placed again");
     assert_eq!(c.hitsounds().placements().iter().map(|p| p.id).collect::<Vec<_>>(), [id], "the dead placement is replaced");
 }
+
+// ---------------------------------------------------------------- step 3: update, gain, reset
+
+fn steps(c: &Composer) -> usize {
+    c.history.position()
+}
+
+#[test]
+fn updating_every_placement_of_a_set_is_one_undo_step_and_its_new_lanes_are_rows() {
+    let mut c = composer();
+    let a = c.place_sound_set(1000.0, "set", "d1", 100, &set_hits(), SetHitnormal::ReplaceWithSet, 5.0).unwrap();
+    let b = c.place_sound_set(1500.0, "set", "d1", 50, &set_hits(), SetHitnormal::Keep, 5.0).unwrap();
+    let before = c.hitsounds().clone();
+    let at = steps(&c);
+    let new: Vec<_> = ["drum-hitnormal3.wav", "drum-hitclap3.wav"].iter().enumerate()
+        .map(|(i, name)| (format!("m{i}"), read_sample_file_name(name).unwrap(), 70)).collect();
+    c.update_placements("Update sound set Kick", &[(a, "d2".to_string(), 100, new.clone()), (b, "d2".to_string(), 50, new.clone())]);
+    assert_eq!(steps(&c), at + 1, "one undo step");
+    assert_eq!(c.history.steps().last().copied(), Some("Update sound set Kick"));
+    assert!(c.lanes.contains(&new[1].1), "the new lanes are rows");
+    assert!(c.hitsounds().placements().iter().all(|p| p.set_digest == "d2"));
+    c.undo();
+    assert_eq!(c.hitsounds(), &before);
+}
+
+#[test]
+fn setting_a_placements_volume_and_resetting_its_edits_are_each_one_undo_step() {
+    let mut c = composer();
+    let id = c.place_sound_set(1000.0, "set", "d1", 100, &set_hits(), SetHitnormal::ReplaceWithSet, 5.0).unwrap();
+    let clap = set_hits()[1].1.clone();
+    let moment = c.hitsounds().placements()[0].moment;
+    let half: Vec<_> = set_hits().into_iter().map(|(m, l, _)| (m, l, 30)).collect();
+    let at = steps(&c);
+    c.set_placement_gain(id, "d1", 50, &half);
+    assert_eq!(steps(&c), at + 1);
+    assert_eq!(c.hitsounds().moment(moment).hit_volume(&clap), 30);
+    assert_eq!(c.hitsounds().placements()[0].gain, 50);
+    c.apply("Volume", |h| h.set_hit_volume(moment, &clap, 90));
+    assert_eq!(c.placement_edits(id), Some((1, 2)), "1 of 2 sounds edited");
+    let at = steps(&c);
+    c.reset_placement(id, None);
+    assert_eq!(steps(&c), at + 1);
+    assert_eq!(c.hitsounds().moment(moment).hit_volume(&clap), 30);
+    assert_eq!(c.placement_edits(id), Some((0, 2)));
+    c.undo();
+    assert_eq!(c.hitsounds().moment(moment).hit_volume(&clap), 90);
+}
+
+#[test]
+fn the_selected_placement_is_the_one_whose_added_hits_are_selected() {
+    let mut c = composer();
+    let id = c.place_sound_set(1000.0, "set", "d1", 100, &set_hits(), SetHitnormal::ReplaceWithSet, 5.0).unwrap();
+    assert_eq!(c.selected_placement(), Some(id), "placing selects its hits");
+    c.selected.replace(Vec::new());
+    assert_eq!(c.selected_placement(), None);
+}
+
+#[test]
+fn d6b_the_moved_hitnormal_is_a_member_of_the_placement_so_a_second_set_leaves_it_and_unlink_and_reset_handle_it() {
+    let mut c = composer();
+    let volume = hitnormals(&c, 0)[0].1;
+    let clap = vec![("m0".to_string(), read_sample_file_name("drum-hitclap2.wav").unwrap(), 60)];
+    let moved = read_sample_file_name("normal-hitnormal2.wav").unwrap();
+    let id = c.place_sound_set(1000.0, "set", "d1", 100, &clap, SetHitnormal::Reindex(moved.clone()), 5.0).unwrap();
+    let p = c.hitsounds().placements()[0].clone();
+    assert!(p.applied.iter().any(|a| a.member_id == "moment-hitnormal" && a.lane == moved && a.volume == volume && a.added), "{:?}", p.applied);
+    assert!(c.hitsounds().placed_lanes(p.moment).contains(&moved));
+    // A second set with a hitnormal leaves the first set's moved hitnormal alone.
+    let other = vec![("n0".to_string(), read_sample_file_name("soft-hitnormal3.wav").unwrap(), 50)];
+    c.place_sound_set(1000.0, "other", "d1", 100, &other, SetHitnormal::ReplaceWithSet, 5.0).unwrap();
+    assert!(c.hitsounds().moments()[0].has_hit(&moved));
+    // Reset puts it back like any member.
+    c.apply("Delete", |h| h.remove_hit(p.moment, &moved));
+    c.reset_placement(id, None);
+    assert_eq!(c.hitsounds().moments()[0].hit_volume(&moved), volume);
+    c.unlink_placement(id);
+    assert!(c.hitsounds().moments()[0].has_hit(&moved), "unlinking keeps it");
+}

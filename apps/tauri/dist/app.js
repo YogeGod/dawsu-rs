@@ -2293,13 +2293,15 @@ function renderDialogs() {
       [["Cancel", () => answer(false)], ...choices, ["Write files", () => answer(true), true]], () => answer(false));
   } else if (view.editDialog && scene) {
     showTimelineEdit(view.editDialog);
+  } else if (scene && view.soundSetPrompts?.length && pendingSoundSetPrompt()) {
+    showSoundSetPrompt(pendingSoundSetPrompt());
   } else if (view.firstLaunch) {
     const choose = (name) => act({ kind: "key_preset", name });
     modal("key-preset", "Choose your keyboard preset", [
       paragraph("DAW-like uses the editor’s default timeline shortcuts."),
       paragraph("osu! lets you seek through the beat grid with the arrow keys."),
     ], [["DAW-like", () => choose("DAW"), true], ["osu!", () => choose("osu!")]], () => {});
-  } else if (["error", "pending", "pending-home", "revert", "review", "save-review", "save-problems", "key-preset", "timeline-edit"].includes(modalKind)) {
+  } else if (["error", "pending", "pending-home", "revert", "review", "save-review", "save-problems", "key-preset", "timeline-edit", "sound-set-update"].includes(modalKind)) {
     closeModal();
   }
 }

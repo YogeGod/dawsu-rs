@@ -41,7 +41,7 @@ pub use export::{ExportChoices, ExportOptions, ExportPreview, ExportStatus, Prev
 pub use export_settings::{ExportCombination, ExportSettings};
 pub use project::LaneLayout;
 pub use recovery::RecoveryOffer;
-pub use sound_sets::{LibrarySet, SaveSetError, SoundSetLibrary};
+pub use sound_sets::{LibrarySet, PlacementView, SaveSetError, SetUpdatePrompt, SoundSetLibrary};
 pub use waveform::WaveBin;
 pub use edit_workflows::{RangeOperation, TimelineEdit, VolumeScope};
 
@@ -450,7 +450,7 @@ fn prepare_save(
     };
     // The sound set links go to the project too; an old record with links is replaced.
     let sound_sets = project.and_then(|project| {
-        let record = sound_sets::build_links(hits, &file, &out, &circles, hs, &project.kept_links);
+        let record = sound_sets::build_links(hits, &file, &out, &circles, hs, &project.kept_links, &project.accepted_versions);
         let replaces = project.settings.sound_sets.as_ref().is_some_and(|old| !old.is_empty());
         (!record.is_empty() || replaces).then_some(record)
     });
@@ -872,6 +872,13 @@ pub struct Application {
     data_root: PathBuf,
     checkpoint: Option<recovery::Checkpoint>,
     restored_recovery: Option<String>,
+    /// Open-time questions about placements on an older version of a library set (M9).
+    sound_set_prompts: Vec<sound_sets::SetUpdatePrompt>,
+    /// The open-time check waits for the library index's background read.
+    sound_set_check_pending: bool,
+    /// Difficulties opened so far: an update question closed without an answer comes back on the
+    /// next open.
+    opens: u64,
     drum: drum_detect::DrumDetect,
 }
 impl Application {
@@ -987,6 +994,9 @@ impl Application {
             project: None,
             checkpoint: None,
             restored_recovery: None,
+            sound_set_prompts: Vec::new(),
+            sound_set_check_pending: false,
+            opens: 0,
             drum: Default::default(),
         }
     }
@@ -1382,6 +1392,7 @@ impl Application {
     pub fn poll(&mut self) {
         // Edits made outside the refreshing entry points still reach the recovery checkpoint.
         self.refresh_recovery_edit();
+        self.check_set_versions_when_read();
         self.poll_drum_detection();
         // Before main's job: its arms can return early.
         self.poll_export();
@@ -1428,6 +1439,7 @@ impl Application {
                     self.document = Some(loaded.document);
                     // Reviews of the outgoing load must not match this one: history versions restart.
                     self.document_generation += 1;
+                    self.opens += 1;
                     self.output_review = None;
                     self.export.clear();
                     self.pending_save_review = None;
@@ -1483,6 +1495,7 @@ impl Application {
                     self.save_preferences();
                     self.checkpoint = Some(checkpoint);
                     self.restored_recovery = restored_id;
+                    self.ask_about_set_versions();
                 }
                 JobResult::Open(_, _, Err(e)) => {
                     self.error = Some(e);

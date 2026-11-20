@@ -292,6 +292,18 @@ enum Action {
         map: PathBuf,
         id: String,
     },
+    /// The open-time question about placements on an older version of a set.
+    SoundSetPrompt {
+        set_id: String,
+        update: bool,
+    },
+    /// The Sound set placement dialog: `op` is "gain", "reset", "unlink" or "update".
+    SoundSetPlacement {
+        map: PathBuf,
+        id: u64,
+        op: String,
+        gain: Option<i32>,
+    },
     Open {
         path: PathBuf,
     },
@@ -545,6 +557,29 @@ impl Action {
             }
             Self::PlaceLibrarySoundSet { map, id } => {
                 if let Err(error) = app.place_library_sound_set(&map, &id) {
+                    app.error = Some(error);
+                }
+            }
+            Self::SoundSetPrompt { set_id, update } => {
+                if let Err(error) = app.answer_sound_set_prompt(&set_id, update) {
+                    app.error = Some(error);
+                }
+            }
+            Self::SoundSetPlacement { map, id, op, gain } => {
+                if app.document().is_none_or(|d| d.path != map) {
+                    return;
+                }
+                let result = match (op.as_str(), gain) {
+                    ("gain", Some(gain)) => app.set_sound_set_placement_gain(id, gain),
+                    ("reset", _) => app.reset_sound_set_placement(id),
+                    ("unlink", _) => app.unlink_sound_set_placement(id),
+                    ("update", _) => app.sound_set_placement(id).and_then(|_| {
+                        let set_id = app.document().and_then(|d| d.composer.hitsounds().placements().iter().find(|p| p.id == id).map(|p| p.set_id.clone()));
+                        set_id.map_or(Ok(()), |set_id| app.update_sound_set(&set_id))
+                    }),
+                    _ => Err("Unknown sound set action.".into()),
+                };
+                if let Err(error) = result {
                     app.error = Some(error);
                 }
             }
@@ -1233,6 +1268,7 @@ fn snapshot(app: &Application, include_scene: bool) -> Value {
                 "timeSignatures": d.time_signatures(), "editorBars": d.editor_bars(),
                 "bookmarks": d.bookmarks().iter().map(|b| json!({"time": b.time.ms(), "label": b.label})).collect::<Vec<_>>(),
                 "rampPreview": ramp_preview,
+                "placement": c.selected_placement(),
             })
         })
     } else {
@@ -1287,6 +1323,10 @@ fn snapshot(app: &Application, include_scene: bool) -> Value {
         "recent": app.preferences.recent, "firstLaunch": app.first_launch,
     });
     result["saveReview"] = json!(app.save_review_files());
+    result["soundSetPrompts"] = json!(document.map(|_| app.sound_set_prompts()).unwrap_or_default().iter().map(|p| json!({
+        "setId": p.set_id, "name": p.name, "placements": p.placements, "editedKeepFiles": p.edited_keep_files,
+        "open": app.sound_set_prompt_open(),
+    })).collect::<Vec<_>>());
     result["songSolo"] = json!(app.song_solo());
     result["editDialog"] = json!(app.requested_edit());
     result["quantizeStrength"] = json!(app.quantize_strength());
@@ -1328,6 +1368,7 @@ enum Request {
     SetLibraryDirectory(PathBuf, mpsc::Sender<Result<Value, String>>),
     LibraryEntries(library::Location, mpsc::Sender<Result<Vec<(String, bool)>, String>>),
     SoundSetLibrary(mpsc::Sender<Result<Value, String>>),
+    SoundSetPlacement(PathBuf, u64, mpsc::Sender<Result<Value, String>>),
     SaveSoundSet(PathBuf, String, mpsc::Sender<Result<Value, String>>),
     LaneAddCandidates(PathBuf, mpsc::Sender<Result<Value, String>>),
     DrumView(PathBuf, Option<PathBuf>, bool, mpsc::Sender<Result<Value, String>>),
@@ -1660,6 +1701,11 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                 }
                 Ok(Request::SoundSetLibrary(response)) => {
                     let result = guard(&mut app, &mut fault, |app| sound_set_library_view(app));
+                    let _ = response.send(result);
+                }
+                Ok(Request::SoundSetPlacement(map, id, response)) => {
+                    let result = guard(&mut app, &mut fault, |app| sound_set_placement_view(app, &map, id))
+                        .and_then(|result| result);
                     let _ = response.send(result);
                 }
                 Ok(Request::SaveSoundSet(map, name, response)) => {
@@ -2007,6 +2053,7 @@ fn sound_set_library_view(app: &Application) -> Value {
         "configured": library.configured,
         "sets": library.sets.iter().map(|set| json!({
             "id": set.id, "name": set.name, "sounds": set.sounds, "inMap": set.in_map, "duplicate": set.duplicate,
+            "missing": set.missing,
         })).collect::<Vec<_>>(),
         "unreadable": library.unreadable,
         "reading": library.reading,
@@ -2016,6 +2063,24 @@ fn sound_set_library_view(app: &Application) -> Value {
 #[tauri::command]
 fn sound_set_library(state: State<'_, Editor>) -> Result<Value, String> {
     ask(&state, Request::SoundSetLibrary)?
+}
+
+/// What Edit > Sound set placement shows of one placement. Reads the library, so it is asked
+/// for when the dialog opens, never on the poll.
+fn sound_set_placement_view(app: &Application, map: &Path, id: u64) -> Result<Value, String> {
+    if app.document().is_none_or(|d| d.path != map) {
+        return Err("The difficulty changed.".into());
+    }
+    let view = app.sound_set_placement(id)?;
+    Ok(json!({
+        "id": view.id, "setId": view.set_id, "name": view.name, "edited": view.edited, "sounds": view.sounds,
+        "gain": view.gain, "frozen": view.frozen, "newer": view.newer,
+    }))
+}
+
+#[tauri::command]
+fn sound_set_placement(state: State<'_, Editor>, map: PathBuf, id: u64) -> Result<Value, String> {
+    ask(&state, |tx| Request::SoundSetPlacement(map, id, tx))?
 }
 
 /// Saving reads every selected sample and the library, so it gets its own longer wait, off the
@@ -2188,6 +2253,7 @@ fn main() {
             pick_sample,
             pick_sound_set,
             sound_set_library,
+            sound_set_placement,
             save_sound_set,
             pick_songs_folder,
             pick_hitsound_library,

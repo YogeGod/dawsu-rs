@@ -143,14 +143,15 @@ function showSoundSetLibrary(map, library) {
     node.append(...options);
     return node;
   };
-  const setOption = set => option(set.id,
+  const missingOption = set => Object.assign(option(set.id, "Not in library", true), { title: set.id });
+  const setOption = set => set.missing ? missingOption(set) : option(set.id,
     set.name + " · " + set.sounds + (set.sounds === 1 ? " sound" : " sounds") +
       (set.duplicate ? " · in the library twice, remove one copy" : ""), set.duplicate);
   const used = library.sets.filter(set => set.inMap).map(setOption);
   const rest = [...library.sets.filter(set => !set.inMap).map(setOption),
     ...(library.unreadable ?? []).map(file => option("", "Could not read " + file, true))];
   list.append(...[used.length && group("In this map", used), rest.length && group("Library", rest)].filter(Boolean));
-  const placeable = library.sets.filter(set => !set.duplicate);
+  const placeable = library.sets.filter(set => !set.duplicate && !set.missing);
   list.value = placeable[0]?.id ?? "";
   const message = paragraph(placeable.length ? "" : "None of these sound sets can be placed.");
   const place = () => {
@@ -181,6 +182,72 @@ function placeSoundSet() {
     const library = await invoke("sound_set_library");
     if (soundSetsUsable(map)) showSoundSetLibrary(map, library);
   });
+}
+
+function soundSetPlacementAction(map, id, op, extra = {}) {
+  closeModal();
+  if (soundSetsUsable(map)) act({ kind: "sound_set_placement", map, id, op, ...extra });
+}
+
+function showSoundSetPlacement(map, placement) {
+  const name = paragraph(placement.name ?? placement.frozen ?? "Not in library");
+  if (placement.name == null) name.title = placement.setId;
+  const content = [name];
+  if (placement.sounds) content.push(paragraph(placement.edited + " of " + placement.sounds + " sounds edited"));
+  const message = paragraph(placement.frozen ?? "");
+  const buttons = [["Close", closeModal], ["Unlink", () => soundSetPlacementAction(map, placement.id, "unlink")]];
+  if (placement.edited) buttons.push(["Reset edits", () => soundSetPlacementAction(map, placement.id, "reset")]);
+  if (placement.newer) {
+    buttons.push(["Update", () => soundSetPlacementAction(map, placement.id, "update"), true]);
+  } else if (!placement.frozen) {
+    const field = input("number", String(placement.gain), 5, 100);
+    content.push(labeled("Volume %", field));
+    buttons.push(["Set volume", () => {
+      const gain = Number(field.value);
+      if (String(field.value).trim() === "" || !Number.isInteger(gain) || gain < 5) {
+        message.textContent = "Volume must be at least 5%.";
+        return;
+      }
+      if (gain > 100) {
+        message.textContent = "Volume can be at most 100%.";
+        return;
+      }
+      soundSetPlacementAction(map, placement.id, "gain", { gain });
+    }, true]);
+  }
+  if (placement.name != null && (placement.frozen || !placement.newer)) content.push(message);
+  modal("sound-set-placement", "Sound set placement", content, buttons);
+}
+
+function openSoundSetPlacement() {
+  const map = scene.path;
+  const id = scene.placement;
+  run(async () => {
+    if (!soundSetsUsable(map) || id == null) return;
+    const placement = await invoke("sound_set_placement", { map, id });
+    if (soundSetsUsable(map)) showSoundSetPlacement(map, placement);
+  });
+}
+
+// Questions closed with Escape this open, by open and set id: they come back on the next open.
+const dismissedSoundSetPrompts = new Set();
+const soundSetPromptKey = prompt => prompt.open + ":" + prompt.setId;
+
+function pendingSoundSetPrompt() {
+  return (view.soundSetPrompts ?? []).find(prompt => !dismissedSoundSetPrompts.has(soundSetPromptKey(prompt)));
+}
+
+function showSoundSetPrompt(prompt) {
+  const answer = update => { closeModal(); act({ kind: "sound_set_prompt", set_id: prompt.setId, update }); };
+  const dismiss = () => { dismissedSoundSetPrompts.add(soundSetPromptKey(prompt)); closeModal(); };
+  const count = prompt.placements + (prompt.placements === 1 ? " placement uses" : " placements use");
+  const content = [paragraph(count + " an older version of " + prompt.name + ".")];
+  if (prompt.editedKeepFiles) {
+    content.push(paragraph(prompt.editedKeepFiles === 1 ? "1 edited sound keeps its own file."
+      : prompt.editedKeepFiles + " edited sounds keep their own files."));
+  }
+  modal("sound-set-update", "Sound set changed", content,
+    [["Keep", () => answer(false)], ["Update", () => answer(true), true]], dismiss);
 }
 
 function saveSoundSet() {
@@ -350,6 +417,8 @@ function menuItems(name, target) {
       menuCommand("Scale by volume…", "TrendingUp", "scaleByVolume"),
       menuItem("Place sound set…", null, placeSoundSet),
       menuItem("Save selection as sound set…", null, saveSoundSet, { enabled: selection }),
+      menuItem("Sound set placement…", null, openSoundSetPlacement,
+        { enabled: () => canEditFromMenu() && scene.placement != null }),
       separator(),
       flag("Protect hitnormals from deletion", null, "protect", () => scene?.protect),
       flag("Audition when placing hits", null, "audition", () => view.audition),

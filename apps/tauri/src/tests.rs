@@ -2278,7 +2278,7 @@ fn the_library_list_names_each_set_and_places_one_by_its_id() {
     }
     assert_eq!(sound_set_library_view(&app), serde_json::json!({
         "configured": true,
-        "sets": [{ "id": set.id, "name": "Clap", "sounds": 1, "inMap": false, "duplicate": false }],
+        "sets": [{ "id": set.id, "name": "Clap", "sounds": 1, "inMap": false, "duplicate": false, "missing": false }],
         "unreadable": [], "reading": false,
     }), "names, ids and counts only");
     app.preferences.hitsound_library = Some(fixture.0.join("gone"));

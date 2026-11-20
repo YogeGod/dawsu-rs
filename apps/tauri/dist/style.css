@@ -507,7 +507,7 @@ header #editor-menus button{min-height:26px;padding:3px 10px;border-radius:4px}
 .home-recent-map strong{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}
 .home-recent-map span{flex:none;color:#a3a3a3}
 @media (max-width:760px){.home-actions{grid-template-columns:minmax(0,1fr)}}
-.dialog-save-sound-set #dialog-body label{display:grid;gap:6px}
+.dialog-save-sound-set #dialog-body label,.dialog-sound-set-placement #dialog-body label{display:grid;gap:6px}
 #sound-set-choice{display:block;width:100%;padding:4px;background:var(--field);color:var(--text);border:1px solid var(--line);border-radius:5px}
 #sound-set-choice optgroup{color:var(--muted);font-weight:600}
 #sound-set-choice option{color:var(--text);padding:3px 8px;border-radius:4px}
