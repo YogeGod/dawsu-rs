@@ -76,6 +76,29 @@ struct Working {
 struct WorkingHits {
     lanes: Vec<Sample>,
     moments: Vec<WorkingMoment>,
+    // Sound set links, by moment index. Copies from earlier builds have none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    placements: Vec<WorkingPlacement>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct WorkingPlacement {
+    id: u64,
+    set_id: String,
+    set_digest: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    accepted_digest: Option<String>,
+    moment: usize,
+    gain: i32,
+    applied: Vec<WorkingApplied>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct WorkingApplied {
+    member_id: String,
+    lane: Sample,
+    volume: i32,
+    added: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -261,6 +284,21 @@ impl WorkingHits {
                     hits: moment.hits().cloned().map(Sample).collect(),
                 })
                 .collect(),
+            placements: hits
+                .placements()
+                .iter()
+                .map(|p| WorkingPlacement {
+                    id: p.id,
+                    set_id: p.set_id.clone(),
+                    set_digest: p.set_digest.clone(),
+                    accepted_digest: p.accepted_digest.clone(),
+                    moment: p.moment.0,
+                    gain: p.gain,
+                    applied: p.applied.iter().map(|a| WorkingApplied {
+                        member_id: a.member_id.clone(), lane: Sample(a.lane.clone()), volume: a.volume, added: a.added,
+                    }).collect(),
+                })
+                .collect(),
         }
     }
 
@@ -307,6 +345,17 @@ impl WorkingHits {
                 base.remove_hit(MomentId(0), lane);
             }
         }
+        base.restore_placements(self.placements.iter().map(|p| dawsu_hitsounding::sound_sets::SoundSetPlacement {
+            id: p.id,
+            set_id: p.set_id.clone(),
+            set_digest: p.set_digest.clone(),
+            accepted_digest: p.accepted_digest.clone(),
+            moment: MomentId(p.moment),
+            gain: p.gain,
+            applied: p.applied.iter().map(|a| dawsu_hitsounding::sound_sets::Applied {
+                member_id: a.member_id.clone(), lane: a.lane.0.clone(), volume: a.volume, added: a.added,
+            }).collect(),
+        }).collect());
         Ok(base)
     }
 }

@@ -9,8 +9,10 @@ use std::{collections::BTreeSet, convert::Infallible};
 
 mod batch;
 mod lane_edit;
+mod sound_sets;
 mod workflows;
 pub use batch::{BatchCounts, BatchHit, BatchOptions, BatchPlan, BatchRefusal, BatchReport, BatchRow, Lands, Policy};
+pub use sound_sets::SetHitnormal;
 pub use workflows::{RangeOperation, VolumeScope};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

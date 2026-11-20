@@ -82,6 +82,15 @@ function laneMenuAction(target, invokeAction) {
   });
 }
 
+function placeSoundSet() {
+  const map = scene.path;
+  run(async () => {
+    if (scene?.path !== map || view.busy || drag) return;
+    const next = await invoke("pick_sound_set", { map });
+    if (next) show(next);
+  });
+}
+
 function menuItems(name, target) {
   const click = (id) => () => $(id).click();
   const idle = () => !view.busy && !drag;
@@ -188,6 +197,7 @@ function menuItems(name, target) {
       menuCommand("Repeat…", "Redo2", "repeat", selection),
       menuCommand("Edit range…", "Scan", "editRange", () => canEditFromMenu() && !!scene.range),
       menuCommand("Scale by volume…", "TrendingUp", "scaleByVolume"),
+      menuItem("Place sound set…", null, placeSoundSet),
       separator(),
       flag("Protect hitnormals from deletion", null, "protect", () => scene?.protect),
       flag("Audition when placing hits", null, "audition", () => view.audition),

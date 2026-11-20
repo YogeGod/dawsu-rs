@@ -2023,3 +2023,41 @@ fn drum_hit_detection_offers_the_map_lanes_and_reports_a_missing_song() {
     cancel.run(&mut app);
     assert!(app.error.is_none());
 }
+
+#[test]
+fn place_sound_set_action_places_the_picked_set_at_the_playhead_or_reports_why_not() {
+    use dawsu_hitsounding::sound_sets::{Kept, SetLane, SetMember, SetSource, SoundSet, write_dawsuset};
+    let fixture = Fixture::new("place-sound-set");
+    let path = fixture.0.join("Hard.osu");
+    fs::write(&path, b"osu file format v14\n\n[TimingPoints]\n0,500,4,1,0,100,1,0\n\n[HitObjects]\n256,192,2000,1,0,0:0:0:60:\n").unwrap();
+    let mut wav = b"RIFF\x26\0\0\0WAVEfmt \x10\0\0\0\x01\0\x01\0\x80\xbb\0\0\0w\x01\0\x02\0\x10\0data\x02\0\0\0".to_vec();
+    wav.extend(1000i16.to_le_bytes());
+    let set = SoundSet {
+        id: "9e7b1d18-3186-4778-9a6a-b6baef95cbe7".into(), name: "Clap".into(), library_id: None, kept: Kept::default(),
+        members: vec![SetMember {
+            id: "aaaaaaaa-0000-4000-8000-000000000001".into(), original_key: "BeatmapFile|soft-hitclap.wav".into(),
+            lane: SetLane { source: SetSource::File, name: "soft-hitclap.wav".into(), missing: false, kept: Kept::default() },
+            slot: "soft-hitclap".into(), volume: 80, audio: wav, kept: Kept::default(),
+        }],
+    };
+    let file = fixture.0.join("Clap.dawsuset");
+    fs::write(&file, write_dawsuset(&set).unwrap()).unwrap();
+    let mut app = Application::with_data_root(fixture.0.join("data"));
+    app.error = None;
+    open(&mut app, &path);
+    let map = snapshot(&app, true)["scene"]["path"].clone();
+    let place = |app: &mut Application| serde_json::from_value::<Action>(serde_json::json!({
+        "kind": "place_sound_set", "map": map, "path": file,
+    })).unwrap().run(app);
+    app.preferences.hitsound_library = None;
+    place(&mut app);
+    assert!(app.error.take().is_some_and(|e| e.contains("hitsound library")));
+    app.preferences.hitsound_library = Some(fixture.0.join("library"));
+    app.seek(2000.0);
+    place(&mut app);
+    assert!(app.error.is_none(), "{:?}", app.error);
+    let hits = app.document().unwrap().composer.hitsounds();
+    assert_eq!(hits.placements().len(), 1);
+    assert!(fixture.0.join("soft-hitclap2.wav").is_file());
+    assert!(fixture.0.join("library").join("Sound sets").join("Clap.dawsuset").is_file());
+}

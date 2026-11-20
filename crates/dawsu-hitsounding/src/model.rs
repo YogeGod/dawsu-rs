@@ -310,6 +310,8 @@ pub struct Hitsounds {
     pub(crate) folder_files: Vec<String>,
     pub(crate) lane_slots: BTreeMap<SampleIdentity, SampleIdentity>,
     pub(crate) hidden_lanes: BTreeSet<SampleIdentity>,
+    /// Sound set placements: the link from a set to the hits it placed, kept here so undo carries it.
+    pub(crate) placements: Vec<crate::sound_sets::SoundSetPlacement>,
 }
 
 impl Hitsounds {
@@ -386,6 +388,60 @@ impl Hitsounds {
                 }
             }
         }
+    }
+
+    /// The sound set placements, in the order they were made.
+    pub fn placements(&self) -> &[crate::sound_sets::SoundSetPlacement] {
+        &self.placements
+    }
+
+    /// Places a sound set on a moment: each `(member id, lane, volume)` becomes a hit unless the
+    /// moment already has that lane, which stays as it is and is recorded as not added. One
+    /// placement per set per moment; returns the placement's id, or None when the set is already there.
+    pub fn place_sound_set(&mut self, moment: MomentId, set_id: &str, set_digest: &str, gain: i32, hits: &[(String, SampleIdentity, i32)]) -> Option<u64> {
+        if self.placements.iter().any(|p| p.moment == moment && p.set_id == set_id && self.is_placement_live(p)) {
+            return None;
+        }
+        // A placement of this set whose hits were all deleted is replaced.
+        let dead: Vec<u64> = self.placements.iter().filter(|p| p.moment == moment && p.set_id == set_id).map(|p| p.id).collect();
+        self.placements.retain(|p| !dead.contains(&p.id));
+        let mut applied = Vec::with_capacity(hits.len());
+        for (member_id, lane, volume) in hits {
+            let added = !self.moments[moment.0].has_hit(lane);
+            if added {
+                self.add_hit_with_volume(moment, lane.clone(), *volume);
+            }
+            applied.push(crate::sound_sets::Applied { member_id: member_id.clone(), lane: lane.clone(), volume: *volume, added });
+        }
+        let id = self.placements.iter().map(|p| p.id).max().map_or(1, |id| id + 1);
+        self.placements.push(crate::sound_sets::SoundSetPlacement {
+            id, set_id: set_id.to_owned(), set_digest: set_digest.to_owned(), accepted_digest: None, moment, gain, applied,
+        });
+        Some(id)
+    }
+
+    /// True while one of the hits the placement added is still on its moment, or it added none.
+    pub fn is_placement_live(&self, placement: &crate::sound_sets::SoundSetPlacement) -> bool {
+        let moment = &self.moments[placement.moment.0];
+        let mut added = placement.applied.iter().filter(|a| a.added).peekable();
+        added.peek().is_none() || added.any(|a| moment.has_hit(&a.lane))
+    }
+
+    /// The lanes the live placements on a moment added; another set's placement leaves them alone.
+    pub fn placed_lanes(&self, moment: MomentId) -> BTreeSet<SampleIdentity> {
+        self.placements.iter().filter(|p| p.moment == moment && self.is_placement_live(p))
+            .flat_map(|p| p.applied.iter().filter(|a| a.added).map(|a| a.lane.clone())).collect()
+    }
+
+    /// Removes a placement's link; its hits stay.
+    pub fn unlink_placement(&mut self, id: u64) {
+        self.placements.retain(|p| p.id != id);
+    }
+
+    /// Puts back placements read from a project or a recovery copy; ones whose moment is out of range are dropped.
+    pub fn restore_placements(&mut self, placements: Vec<crate::sound_sets::SoundSetPlacement>) {
+        let count = self.moments.len();
+        self.placements = placements.into_iter().filter(|p| p.moment.0 < count).collect();
     }
 
     /// Every moment, in time order as decompile found them, then moments added since.

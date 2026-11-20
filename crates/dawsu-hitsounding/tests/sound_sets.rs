@@ -64,12 +64,13 @@ fn placing_a_set_plays_each_member_at_its_volume_times_the_gain() {
 #[test]
 fn a_snapshot_names_each_sample_by_its_role_at_the_lowest_free_index() {
     let s = set(vec![member(1, SetSource::File, "drum-hitnormal.OGG", "drum-hitnormal", 20, b"kick"), member(2, SetSource::Skin, "soft-hitclap", "soft-hitclap", 80, b"clap")]);
-    // Index 2 is taken by a file (any extension) and 3 by a difficulty, so the first free is 4.
+    // Index 2 is taken by a file (any extension) and 3 by a difficulty, so the first free is 4,
+    // and every member shares it: one object plays one custom index.
     let snap = snapshot(&s, &["soft-hitclap2.ogg", "map.osu"], &[3], None, &|_| None);
-    assert_eq!(snap.files.iter().map(|f| f.0.as_str()).collect::<Vec<_>>(), ["drum-hitnormal4.ogg", "soft-hitclap5.wav"]);
+    assert_eq!(snap.files.iter().map(|f| f.0.as_str()).collect::<Vec<_>>(), ["drum-hitnormal4.ogg", "soft-hitclap4.wav"]);
     assert_eq!(snap.files[0].1, b"kick");
     assert!(snap.set.members.iter().all(|m| m.lane.source == SetSource::File));
-    assert_eq!(snap.set.members[1].lane.name, "soft-hitclap5.wav");
+    assert_eq!(snap.set.members[1].lane.name, "soft-hitclap4.wav");
     assert_eq!(snap.set.members[1].original_key, "BeatmapFile|soft-hitclap", "the original key stays");
 }
 
@@ -84,6 +85,40 @@ fn invariant_11_a_set_placed_again_reuses_its_snapshot() {
     // Changed on disk: a new file, never the changed one.
     let changed = |name: &str| (name == "drum-hitnormal2.wav").then(|| b"other".to_vec());
     assert_eq!(snapshot(&first.set, &["drum-hitnormal2.wav"], &[], Some(&first.set), &changed).files.iter().map(|f| f.0.as_str()).collect::<Vec<_>>(), ["drum-hitnormal3.wav"]);
+}
+
+#[test]
+fn a_repeated_role_takes_the_next_free_index_after_the_shared_one() {
+    let s = set(vec![
+        member(1, SetSource::File, "drum-hitnormal.wav", "drum-hitnormal", 20, b"kick"),
+        member(2, SetSource::File, "drum-hitclap.wav", "drum-hitclap", 50, b"clap"),
+        member(3, SetSource::File, "drum-hitclap2.wav", "drum-hitclap", 50, b"clap2"),
+    ]);
+    let snap = snapshot(&s, &["normal-hitnormal3.wav"], &[], None, &|_| None);
+    assert_eq!(snap.files.iter().map(|f| f.0.as_str()).collect::<Vec<_>>(), ["drum-hitnormal2.wav", "drum-hitclap2.wav", "drum-hitclap4.wav"]);
+}
+
+#[test]
+fn a_snapshot_is_reused_whole_or_copied_again_whole() {
+    let s = set(vec![
+        member(1, SetSource::File, "drum-hitnormal.wav", "drum-hitnormal", 20, b"kick"),
+        member(2, SetSource::File, "drum-hitclap.wav", "drum-hitclap", 50, b"clap"),
+    ]);
+    let first = snapshot(&s, &[], &[], None, &|_| None);
+    let folder = ["drum-hitnormal2.wav", "drum-hitclap2.wav"];
+    // The library set, not the snapshot, is planned again: the record supplies the files.
+    let both = |name: &str| match name { "drum-hitnormal2.wav" => Some(b"kick".to_vec()), "drum-hitclap2.wav" => Some(b"clap".to_vec()), _ => None };
+    let again = snapshot(&s, &folder, &[], Some(&first.set), &both);
+    assert!(again.files.is_empty());
+    assert_eq!(again.set, first.set);
+    // One member's file changed: the whole set is copied again at one new index.
+    let one = |name: &str| (name == "drum-hitnormal2.wav").then(|| b"kick".to_vec());
+    let fresh = snapshot(&s, &folder, &[], Some(&first.set), &one);
+    assert_eq!(fresh.files.iter().map(|f| f.0.as_str()).collect::<Vec<_>>(), ["drum-hitnormal3.wav", "drum-hitclap3.wav"]);
+    // A member's audio changed in the library: copied again too.
+    let mut edited = s.clone();
+    edited.members[1].audio = b"clap!".to_vec();
+    assert_eq!(snapshot(&edited, &folder, &[], Some(&first.set), &both).files.len(), 2);
 }
 
 #[test]
@@ -120,4 +155,40 @@ fn the_local_corpus_sound_set_files_round_trip() {
         assert_eq!(read_dawsuset(&written).unwrap(), s);
         eprintln!("{}: \"{}\", {} members", path.file_name().unwrap().to_string_lossy(), s.name, s.members.len());
     }
+}
+
+// ---------------------------------------------------------------- placements (the link, in Hitsounds)
+
+fn map_hits() -> dawsu_hitsounding::Hitsounds {
+    let text = b"osu file format v14\n[General]\nMode:0\n[TimingPoints]\n0,500,4,1,0,70,1,0\n[HitObjects]\n256,192,1000,1,0,0:0:0:0:\n";
+    let file = dawsu_osu_format::OsuFile::read(text.to_vec()).file;
+    match dawsu_hitsounding::decompile(&file, &[], &|| false, &mut |_, _| {}) {
+        dawsu_hitsounding::Decompiled::Done(h) => h,
+        _ => panic!("decompile"),
+    }
+}
+
+fn lane(key: &str) -> dawsu_foundation::SampleIdentity {
+    dawsu_hitsounding::rules::read_sample_file_name(key).unwrap()
+}
+
+#[test]
+fn a_placement_records_which_hits_it_added_and_unlinking_keeps_the_hits() {
+    use dawsu_hitsounding::MomentId;
+    let mut h = map_hits();
+    let moment = MomentId(0);
+    let before: Vec<_> = h.moment(moment).hits().cloned().collect();
+    assert_eq!(before.len(), 1, "the circle's hitnormal");
+    let clap = lane("drum-hitclap2.wav");
+    let hits = vec![("m1".to_string(), before[0].clone(), 40), ("m2".to_string(), clap.clone(), 55)];
+    let id = h.place_sound_set(moment, ID, "digest", 100, &hits).expect("placed");
+    let p = &h.placements()[0];
+    assert_eq!((p.id, p.moment, p.set_id.as_str(), p.gain), (id, moment, ID, 100));
+    assert_eq!(p.applied.iter().map(|a| (a.member_id.as_str(), a.added)).collect::<Vec<_>>(), [("m1", false), ("m2", true)], "a hit already on the moment is not added");
+    assert_eq!(h.moment(moment).hit_volume(&clap), 55);
+    assert_eq!(h.moment(moment).hit_volume(&before[0]), 70, "the existing hit is untouched");
+    assert!(h.place_sound_set(moment, ID, "digest", 100, &hits).is_none(), "one placement per set per moment");
+    h.unlink_placement(id);
+    assert!(h.placements().is_empty());
+    assert!(h.moment(moment).has_hit(&clap), "unlinking keeps the hits");
 }

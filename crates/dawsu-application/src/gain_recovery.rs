@@ -44,6 +44,11 @@ impl Recovery {
             .or_else(|| self.current.as_ref().filter(|revision| revision.map_digest == digest))
     }
 
+    /// True when `revision` is already the record for `bytes`, so writing it again changes nothing.
+    pub(super) fn is_current(&self, bytes: &[u8], revision: &Revision) -> bool {
+        self.for_digest(&sha256_hex(bytes)) == Some(revision)
+    }
+
     pub(super) fn has_authored_for(&self, bytes: &[u8]) -> bool {
         self.for_digest(&sha256_hex(bytes)).is_some_and(|revision| !revision.moments.is_empty())
     }
@@ -110,20 +115,28 @@ impl<'a> Assets<'a> {
     }
 }
 
+pub(super) type Locations = std::collections::BTreeSet<(LineId, Option<usize>)>;
+
 pub(super) struct Captured {
     voices: BTreeMap<(LineId, Option<usize>), (i32, Vec<Voice>)>,
+    mixed: Locations,
 }
 
 impl Captured {
-    pub(super) fn read(hits: &Hitsounds, root: &Path, defaults: &Path) -> Result<Self, String> {
+    /// The moments whose gains a Save must record: those with their own hit volumes, and each
+    /// sound set placement's moment that this Save writes as a mix (`mixed`), so the set reopens
+    /// with its sounds (M4). A set written natively needs no record.
+    pub(super) fn read(hits: &Hitsounds, root: &Path, defaults: &Path, mixed: &Locations) -> Result<Self, String> {
         let mut assets = Assets::new(root, defaults, &[]);
         let mut voices = BTreeMap::new();
-        for moment in hits.moments().iter().filter(|moment| moment.has_hit_volume_overrides()) {
-            if let Some(location) = location(moment.place()) {
+        let placed: std::collections::BTreeSet<_> = hits.placements().iter().map(|p| p.moment.0).collect();
+        for (i, moment) in hits.moments().iter().enumerate() {
+            let Some(location) = location(moment.place()) else { continue };
+            if moment.has_hit_volume_overrides() || placed.contains(&i) && mixed.contains(&location) {
                 voices.insert(location, (moment.volume(), assets.voices(hits, moment)?));
             }
         }
-        Ok(Self { voices })
+        Ok(Self { voices, mixed: mixed.clone() })
     }
 
     pub(super) fn needs_recovery(&self) -> bool {
@@ -139,7 +152,7 @@ impl Captured {
             return Ok(Revision { map_digest, moments: Vec::new() });
         }
         // Re-fingerprint source assets after mixing so a stale input cannot certify a saved mix.
-        if self.voices != Self::read(hits, root, defaults)?.voices {
+        if self.voices != Self::read(hits, root, defaults, &self.mixed)?.voices {
             return Err("A source sample changed while preparing gain recovery".into());
         }
         let mut listing = list_folder(root).map_err(|error| error.to_string())?;
@@ -167,6 +180,21 @@ impl Captured {
         }
         Ok(Revision { map_digest, moments })
     }
+}
+
+/// The moments of `file` that play one of the mixes this Save renders (`staged`).
+pub(super) fn mixed_locations(file: &OsuFile, root: &Path, staged: &[StagedMix], cancel: &dyn Fn() -> bool) -> Result<Locations, String> {
+    let names: Vec<String> = staged.iter().filter_map(|mix| mix.path.file_name()?.to_str().map(str::to_owned)).collect();
+    if names.is_empty() {
+        return Ok(Locations::new());
+    }
+    let mut listing = list_folder(root).map_err(|error| error.to_string())?;
+    listing.extend(names.iter().cloned());
+    let Decompiled::Done(decoded) = decompile(file, &listing, cancel, &mut |_, _| {}) else {
+        return Err("Could not read back the written difficulty".into());
+    };
+    Ok(decoded.moments().iter().filter(|moment| moment.hits().any(|lane| matches!(lane, SampleIdentity::File(name) if names.contains(name))))
+        .filter_map(|moment| location(moment.place())).collect())
 }
 
 pub(super) fn restore(document: &mut Document, recovery: &Recovery, defaults: &Path) -> Result<(), String> {

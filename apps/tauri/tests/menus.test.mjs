@@ -77,7 +77,11 @@ function fixture() {
       if (action.kind === "playback_start") view.playbackStart = action.value;
       if (action.kind === "follow") view.follow = action.on;
     },
-    invoke: async () => commands,
+    async invoke(name, args) {
+      if (name !== "editor_shortcuts") calls.push([name, args]);
+      return name === "editor_shortcuts" ? commands : { placed: true };
+    },
+    show(next) { calls.push({ show: next }); },
     openSiblingDifficulty(path) { calls.push({ sibling: path }); },
   });
   runInContext(code, context);
@@ -237,7 +241,7 @@ test("each menu groups the editor's existing commands like the design, with no s
   assert.deepEqual(open("edit"), [
     "Undo", "Redo", "—",
     "Cut", "Copy", "Paste at playhead", "Duplicate", "Delete", "Select all", "—",
-    "Quantize…", "Repeat…", "Edit range…", "Scale by volume…", "—",
+    "Quantize…", "Repeat…", "Edit range…", "Scale by volume…", "Place sound set…", "—",
     "Protect hitnormals from deletion", "Audition when placing hits",
   ]);
   assert.deepEqual(open("playback"), [
@@ -272,6 +276,15 @@ test("menus only click ribbon controls that exist in the window", () => {
   const ids = new Set([...code.matchAll(/(?:click|\$)\("([\w-]+)"\)/g)].map(match => match[1]));
   for (const id of ["folders", "audio", "open", "go-home", "used-only", "ruler-waveform"]) assert.ok(ids.has(id), id);
   for (const id of ids) assert.match(html, new RegExp('id="' + id + '"'), id);
+});
+
+test("Place sound set asks for a .dawsuset for the open map and shows the result", async () => {
+  const { get, calls } = fixture();
+  get("menu-edit").click();
+  const item = menuButtons(get("editor-menu")).find(button => button.textContent === "Place sound set…");
+  item.click();
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.deepEqual(JSON.parse(JSON.stringify(calls.slice(-2))), [["pick_sound_set", { map: "Test.osu" }], { show: { placed: true } }]);
 });
 
 test("Undo and Redo name the edit they would change", () => {

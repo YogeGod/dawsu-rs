@@ -290,6 +290,31 @@ pub fn placement_hits(set: &SoundSet, gain: i32) -> Vec<(String, i32)> {
     set.members.iter().map(|m| (m.lane.key(), (f64::from(m.volume) * f64::from(gain) / 100.0).round_ties_even().clamp(0.0, 100.0) as i32)).collect()
 }
 
+/// One placement of a sound set on a moment: the link the panel shows and an update follows. It
+/// holds no audio; the set comes from the library and its files from the mapset snapshot.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SoundSetPlacement {
+    pub id: u64,
+    pub set_id: String,
+    /// The set's version (its file's checksum) when placed or last updated.
+    pub set_digest: String,
+    /// A newer version the mapper chose to keep this placement off.
+    pub accepted_digest: Option<String>,
+    pub moment: crate::MomentId,
+    pub gain: i32,
+    pub applied: Vec<Applied>,
+}
+
+/// One member's hit as placed: `added` is false when the moment already had the lane, and such a
+/// hit is never touched by an update or unlink.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Applied {
+    pub member_id: String,
+    pub lane: SampleIdentity,
+    pub volume: i32,
+    pub added: bool,
+}
+
 // ---------------------------------------------------------------- the snapshot (Responsibility 16)
 
 /// A planned snapshot: the set with each member on its file in the mapset, and the files to write
@@ -301,29 +326,43 @@ pub struct Snapshot {
 }
 
 /// Plans copying `set`'s samples into a mapset as a snapshot that keeps each sample's role
-/// (old `SoundSetFiles.Install`): each member gets `<slot><index><extension>`, the lowest index
-/// from 2 that no difficulty or storyboard uses (`used_indexes`) and no folder file's name holds,
-/// with `.wav` for a skin sound and else the source's extension in lower case. A member that
-/// `previous` already snapshotted keeps its file when the file still holds its audio (`existing`
-/// reads a folder file's bytes); a file whose bytes merely match is never taken. So placing a set
-/// again needs no new file (invariant 11), and later placements play the snapshot, never the
-/// outside source.
+/// (old `SoundSetFiles.Install`). Every member shares one custom index, since an object plays one
+/// index for its hitnormal and additions: the lowest from 2 that no difficulty or storyboard uses
+/// (`used_indexes`) and no folder file's name holds. A role the set holds twice can't share that
+/// file name, so each repeat takes the next free index. A member is `<slot><index><extension>`,
+/// with `.wav` for a skin sound and else the source's extension in lower case.
+///
+/// The snapshot is all-or-nothing: `previous` (the last snapshot of this set in the mapset) is
+/// reused only when it holds every member with the same role and audio and each of its files
+/// still holds that audio (`existing` reads a folder file's bytes); a file whose bytes merely match
+/// is never taken. Otherwise the whole set is copied again at a new index. So placing a set again
+/// needs no new file (invariant 11), and later placements play the snapshot, never the outside
+/// source.
 pub fn plan_snapshot(set: &SoundSet, folder: &[String], used_indexes: &BTreeSet<u32>, previous: Option<&SoundSet>, existing: &dyn Fn(&str) -> Option<Vec<u8>>) -> Result<Snapshot, SetRefusal> {
     set.validate()?;
+    if let Some(previous) = previous.filter(|p| p.members.len() == set.members.len()) {
+        let reused: Option<Vec<SetMember>> = set
+            .members
+            .iter()
+            .map(|m| {
+                let q = previous.members.iter().find(|q| q.id == m.id && q.slot == m.slot && q.audio == m.audio && q.lane.source == SetSource::File)?;
+                let on_disk = dawsu_osu_format::find_case_insensitive(folder, &q.lane.name).and_then(existing)?;
+                (on_disk == m.audio).then(|| SetMember { lane: q.lane.clone(), ..m.clone() })
+            })
+            .collect();
+        if let Some(members) = reused {
+            return Ok(Snapshot { set: SoundSet { members, ..set.clone() }, files: Vec::new() });
+        }
+    }
     let mut occupied: BTreeSet<u32> = used_indexes.clone();
     occupied.extend(folder.iter().filter_map(|f| file_index(f)));
-    let mut index = 2u32;
+    let lowest_free = |occupied: &BTreeSet<u32>| (2u32..).find(|i| !occupied.contains(i)).expect("an index is free");
+    let shared = lowest_free(&occupied);
+    occupied.insert(shared);
+    let mut slots = HashSet::new();
     let mut files = Vec::new();
     let mut members = Vec::new();
     for m in &set.members {
-        let snapshotted = m.lane.source == SetSource::File
-            && m.lane.key() != m.original_key
-            && previous.is_some_and(|p| p.members.iter().any(|q| q.id == m.id && q.slot == m.slot && q.lane.source == m.lane.source && q.lane.name == m.lane.name && q.audio == m.audio))
-            && dawsu_osu_format::find_case_insensitive(folder, &m.lane.name).and_then(existing).is_some_and(|bytes| bytes == m.audio);
-        if snapshotted {
-            members.push(m.clone());
-            continue;
-        }
         let extension = match m.lane.source {
             SetSource::Skin => ".wav".to_string(),
             _ => m.lane.name.rfind('.').map(|i| m.lane.name[i..].to_lowercase()).unwrap_or_default(),
@@ -331,11 +370,14 @@ pub fn plan_snapshot(set: &SoundSet, folder: &[String], used_indexes: &BTreeSet<
         if ![".wav", ".mp3", ".ogg"].contains(&extension.as_str()) {
             return Err(SetRefusal::UnsupportedExtension(m.lane.name.clone()));
         }
-        while occupied.contains(&index) {
-            index += 1;
-        }
+        let index = if slots.insert(m.slot.as_str()) {
+            shared
+        } else {
+            let index = lowest_free(&occupied);
+            occupied.insert(index);
+            index
+        };
         let name = format!("{}{index}{extension}", m.slot);
-        occupied.insert(index);
         files.push((name.clone(), m.audio.clone()));
         members.push(SetMember { lane: SetLane { source: SetSource::File, name, missing: false, kept: Kept::default() }, ..m.clone() });
     }
