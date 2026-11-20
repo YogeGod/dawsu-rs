@@ -129,8 +129,8 @@ impl Pending {
         Ok(file)
     }
 
-    /// Drops a pending file a Save wrote into the mapset, and its claim.
-    pub(crate) fn published(&mut self, name: &str) {
+    /// Drops a pending file and its claim: a Save wrote it into the mapset, or keeping it failed.
+    pub(crate) fn release(&mut self, name: &str) {
         if Arc::make_mut(&mut self.files).remove(&name.to_ascii_lowercase()).is_some()
             && let Some(store) = &self.store
         {

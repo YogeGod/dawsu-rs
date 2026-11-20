@@ -90,6 +90,8 @@ pub struct Document {
     /// Sample files dawsu! made that the mapset does not hold yet. Their names are in the hits'
     /// folder listing, not in `files`.
     pending: pending::Pending,
+    /// Sound set snapshots kept as pending files, recorded once a Save writes their files.
+    pending_sets: Vec<sound_sets::SnapshotEntry>,
 }
 impl Document {
     pub fn read(path: &Path) -> Result<Self, String> {
@@ -179,6 +181,7 @@ impl Document {
             drum_lanes: None,
             export_choices: None,
             pending: pending::Pending::default(),
+            pending_sets: Vec::new(),
         })
     }
     pub fn lane_layout(&self) -> Option<&LaneLayout> {
@@ -1656,7 +1659,7 @@ impl Application {
                             if let Some(d) = self.document.as_mut().filter(|d| d.path == path) {
                                 // The written pending files are mapset files now.
                                 for name in &report.published_pending {
-                                    d.pending.published(name);
+                                    d.pending.release(name);
                                 }
                                 d.files.extend(report.published_pending.iter().cloned());
                                 d.files.sort();
@@ -1675,6 +1678,10 @@ impl Application {
                                         Err(error) => archive_error = Some(error),
                                     }
                                 }
+                            }
+                            // The snapshot record lists a set's files once they are in the mapset.
+                            if let Err(error) = self.record_written_sets(&report.published_pending) {
+                                self.error = Some(format!("Difficulty saved. The sound set record could not be updated: {error}"));
                             }
                             let with_archive_error = |error: String| match &archive_error {
                                 Some(archive) => {
