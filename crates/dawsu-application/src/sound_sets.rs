@@ -22,11 +22,11 @@ const MAX_RECORD_BYTES: u64 = 16 * 1024 * 1024;
 /// Reads a `.dawsuset` file, checking its size before reading it.
 fn read_set_file(path: &Path) -> Result<(Vec<u8>, SoundSet), String> {
     let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
-    let size = std::fs::metadata(path).map_err(|e| format!("Opening {name}: {e}"))?.len();
+    let size = std::fs::metadata(path).map_err(|_| format!("Could not read {name}. Check that another program is not using it."))?.len();
     if size > MAX_SET_BYTES {
         return Err(format!("{name} is over 96 MB."));
     }
-    let bytes = std::fs::read(path).map_err(|e| format!("Reading {name}: {e}"))?;
+    let bytes = std::fs::read(path).map_err(|_| format!("Could not read {name}. Check that another program is not using it."))?;
     let text = std::str::from_utf8(&bytes).map_err(|_| format!("{name} is not a sound set file."))?;
     let set = read_dawsuset(text).map_err(|e| format!("{name}: {e}"))?;
     Ok((bytes, set))
@@ -55,23 +55,188 @@ impl LibraryCopy {
     }
 }
 
-/// Each library set file's id, by path, modified time and size, so placing reads a set file only
-/// when it is new or changed (M10).
-type IdCache = std::collections::HashMap<PathBuf, (std::time::SystemTime, u64, Option<String>)>;
-static LIBRARY_IDS: std::sync::Mutex<Option<IdCache>> = std::sync::Mutex::new(None);
+/// What the library list shows of a set file: its id, name and number of sounds.
+#[derive(Clone, Debug, PartialEq)]
+struct CachedSet {
+    id: String,
+    name: String,
+    sounds: usize,
+}
+
+/// A file's modified time and size: a cached read stays good while both are unchanged.
+type Stamp = (std::time::SystemTime, u64);
+
+/// What reading the library's set files found, by path (M10). Only sets that were read are kept;
+/// a file that could not be read is noted with why and read again on the next list, since it may
+/// only have been locked for a moment.
+#[derive(Default)]
+struct LibraryIndex {
+    read: std::collections::HashMap<PathBuf, (Stamp, CachedSet)>,
+    failed: std::collections::HashMap<PathBuf, (Stamp, String)>,
+    /// Libraries whose files a background thread is reading now.
+    reading: std::collections::HashSet<PathBuf>,
+}
+static LIBRARY_INDEX: std::sync::Mutex<Option<LibraryIndex>> = std::sync::Mutex::new(None);
+
+fn with_index<T>(f: impl FnOnce(&mut LibraryIndex) -> T) -> T {
+    let mut index = LIBRARY_INDEX.lock().unwrap_or_else(|e| e.into_inner());
+    f(index.get_or_insert_with(Default::default))
+}
+
+fn stamp(metadata: &std::fs::Metadata) -> Option<Stamp> {
+    Some((metadata.modified().ok()?, metadata.len()))
+}
+
+fn file_label(path: &Path) -> String {
+    path.file_name().unwrap_or_default().to_string_lossy().into_owned()
+}
+
+/// Reads one library set file, or takes it from the index when its time and size are unchanged.
+fn library_entry(path: &Path, metadata: &std::fs::Metadata) -> Result<CachedSet, String> {
+    let stamp = stamp(metadata).ok_or_else(|| format!("Could not read {}. Check that another program is not using it.", file_label(path)))?;
+    if let Some(entry) = with_index(|index| index.read.get(path).filter(|(s, _)| *s == stamp).map(|(_, e)| e.clone())) {
+        return Ok(entry);
+    }
+    let result = read_set_file(path).map(|(_, set)| CachedSet { id: set.id, name: set.name, sounds: set.members.len() });
+    with_index(|index| match &result {
+        Ok(entry) => {
+            index.read.insert(path.to_path_buf(), (stamp, entry.clone()));
+            index.failed.remove(path);
+        }
+        Err(why) => {
+            index.read.remove(path);
+            index.failed.insert(path.to_path_buf(), (stamp, why.clone()));
+        }
+    });
+    result
+}
 
 fn library_id(path: &Path, metadata: &std::fs::Metadata) -> Option<String> {
-    let modified = metadata.modified().ok()?;
-    let mut cache = LIBRARY_IDS.lock().unwrap_or_else(|e| e.into_inner());
-    let cache = cache.get_or_insert_with(Default::default);
-    if let Some((time, size, id)) = cache.get(path)
-        && *time == modified && *size == metadata.len()
-    {
-        return id.clone();
+    library_entry(path, metadata).ok().map(|entry| entry.id)
+}
+
+/// The `.dawsuset` files in the library's "Sound sets" folder (none when it doesn't exist yet).
+/// The index forgets the files of that folder that are gone.
+fn set_files(library: &Path) -> Vec<(PathBuf, std::fs::Metadata)> {
+    let folder = library.join(LIBRARY_FOLDER);
+    let files: Vec<_> = std::fs::read_dir(&folder).map(|entries| entries.flatten().filter_map(|entry| {
+        let path = entry.path();
+        let metadata = entry.metadata().ok()?;
+        (metadata.is_file() && path.extension().is_some_and(|e| e.eq_ignore_ascii_case("dawsuset"))).then_some((path, metadata))
+    }).collect()).unwrap_or_default();
+    with_index(|index| {
+        let gone = |path: &PathBuf| path.parent() == Some(folder.as_path()) && !files.iter().any(|(p, _)| p == path);
+        index.read.retain(|path, _| !gone(path));
+        index.failed.retain(|path, _| !gone(path));
+    });
+    files
+}
+
+/// Every set file in the library, read now on this thread: the sets, and the names of files that
+/// could not be read. Saving and placing use it.
+fn library_sets(library: &Path) -> (Vec<(PathBuf, CachedSet)>, Vec<String>) {
+    let mut sets = Vec::new();
+    let mut unreadable = Vec::new();
+    for (path, metadata) in set_files(library) {
+        match library_entry(&path, &metadata) {
+            Ok(entry) => sets.push((path, entry)),
+            Err(_) => unreadable.push(file_label(&path)),
+        }
     }
-    let id = read_set_file(path).ok().map(|(_, set)| set.id);
-    cache.insert(path.to_path_buf(), (modified, metadata.len(), id.clone()));
-    id
+    (sets, unreadable)
+}
+
+/// The library list without reading any set file on this thread: sets already read come from the
+/// index, and files that are new, changed or failed last time are read on a background thread.
+/// `reading` is true while a file has not been tried at its current time and size.
+fn library_listing(library: &Path) -> (Vec<(PathBuf, CachedSet)>, Vec<String>, bool) {
+    let files = set_files(library);
+    let mut sets = Vec::new();
+    let mut unreadable = Vec::new();
+    let mut to_read = Vec::new();
+    let mut reading = false;
+    with_index(|index| {
+        for (path, metadata) in &files {
+            let stamp = stamp(metadata);
+            match index.read.get(path) {
+                Some((s, entry)) if Some(*s) == stamp => sets.push((path.clone(), entry.clone())),
+                _ => {
+                    match index.failed.get(path) {
+                        Some((s, _)) if Some(*s) == stamp => unreadable.push(file_label(path)),
+                        _ => reading = true,
+                    }
+                    to_read.push(path.clone());
+                }
+            }
+        }
+        if !to_read.is_empty() && index.reading.insert(library.to_path_buf()) {
+            let library = library.to_path_buf();
+            std::thread::spawn(move || {
+                for path in to_read {
+                    if let Ok(metadata) = std::fs::metadata(&path) {
+                        let _ = library_entry(&path, &metadata);
+                    }
+                }
+                with_index(|index| index.reading.remove(&library));
+            });
+        }
+    });
+    (sets, unreadable, reading)
+}
+
+/// A set in the library list.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LibrarySet {
+    pub id: String,
+    pub name: String,
+    pub sounds: usize,
+    /// The open difficulty has a placement of this set.
+    pub in_map: bool,
+    /// More than one library file holds this id, so it can't be placed (M10).
+    pub duplicate: bool,
+}
+
+/// The library list: this map's sets first, then the rest, each by name, and the files that could
+/// not be read.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SoundSetLibrary {
+    /// False when no hitsound library folder is chosen.
+    pub configured: bool,
+    pub sets: Vec<LibrarySet>,
+    /// File names of set files that could not be read.
+    pub unreadable: Vec<String>,
+    /// Some files are still being read, so sets may be missing.
+    pub reading: bool,
+}
+
+/// Why saving a set was refused. `NameTaken` asks for another name.
+#[derive(Clone, Debug, PartialEq)]
+pub enum SaveSetError {
+    NameTaken(String),
+    Refused(String),
+}
+
+/// The old app's library file name (`MainWindow.SoundSets.cs` 144-147): the set's name with the
+/// characters no Windows file name can hold as `_` (`SafeFile.Name`, on every platform), at most
+/// 80 characters, then `-<id>`. The id keeps names apart and away from Windows' reserved names.
+fn set_file_name(name: &str, id: &str) -> String {
+    let label: String = name.chars().map(|c| if c.is_control() || r#"<>:"/\|?*"#.contains(c) { '_' } else { c }).take(80).collect();
+    format!("{label}-{id}.dawsuset")
+}
+
+/// A new GUID-shaped id (version 4 form). dawsu-application has no GUID crate and adding `uuid`
+/// would be a new dependency, so the id is a SHA-256 of the time, a counter, a hash from std's
+/// randomly seeded `RandomState` and `seed`.
+fn new_id(seed: &str) -> String {
+    use std::hash::{BuildHasher, Hasher};
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let count = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let random = std::collections::hash_map::RandomState::new().build_hasher().finish();
+    let time = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |t| t.as_nanos());
+    let hex: Vec<char> = sha256_hex(format!("{seed}|{time}|{count}|{random}").as_bytes()).chars().collect();
+    let variant = ['8', '9', 'a', 'b'][hex[16].to_digit(16).unwrap_or(0) as usize % 4];
+    let part = |range: std::ops::Range<usize>| hex[range].iter().collect::<String>();
+    format!("{}-{}-4{}-{variant}{}-{}", part(0..8), part(8..12), part(13..16), part(17..20), part(20..32))
 }
 
 /// Where the picked set file goes in the library's "Sound sets" folder. A library file with the
@@ -280,6 +445,12 @@ impl Application {
         }
         let library = self.preferences.hitsound_library.clone().ok_or("Choose a hitsound library folder first: sound sets are kept there.")?;
         let (bytes, set) = read_set_file(file)?;
+        // M10: a set whose id more than one library file holds can't be placed, picked from the
+        // list or browsed to.
+        let copies = library_sets(&library).0.iter().filter(|(_, listed)| listed.id == set.id).count();
+        if copies > 1 {
+            return Err(duplicate_refusal(copies, &set.name));
+        }
         let at = self.position_ms();
         let composer = &self.document.as_ref().expect("open document").composer;
         let time = composer.snap(SongTime::from_ms(at)).ms();
@@ -401,6 +572,171 @@ impl Application {
         }
         self.sync_audio();
         Ok(())
+    }
+
+    /// Edit > Place sound set: the library's sets, this map's first, and the files that could not
+    /// be read. Reads no set file on this thread (see `library_listing`). An error names a library
+    /// folder that is gone; a library with no "Sound sets" folder yet is an empty list.
+    pub fn sound_set_library(&self) -> Result<SoundSetLibrary, String> {
+        let Some(library) = &self.preferences.hitsound_library else {
+            return Ok(SoundSetLibrary { configured: false, sets: Vec::new(), unreadable: Vec::new(), reading: false });
+        };
+        if !library.is_dir() {
+            return Err(format!("Hitsound library folder not found: {}", library.display()));
+        }
+        let used: std::collections::HashSet<&str> = self.document.as_ref().map(|d| {
+            let hits = d.composer.hitsounds();
+            hits.placements().iter().filter(|p| hits.is_placement_live(p)).map(|p| p.set_id.as_str()).collect()
+        }).unwrap_or_default();
+        let (found, mut unreadable, reading) = library_listing(library);
+        let mut sets: Vec<LibrarySet> = Vec::new();
+        for (_, entry) in found {
+            if let Some(listed) = sets.iter_mut().find(|s| s.id == entry.id) {
+                listed.duplicate = true;
+                continue;
+            }
+            sets.push(LibrarySet { in_map: used.contains(entry.id.as_str()), duplicate: false, id: entry.id, name: entry.name, sounds: entry.sounds });
+        }
+        sets.sort_by(|a, b| b.in_map.cmp(&a.in_map).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase())).then_with(|| a.id.cmp(&b.id)));
+        unreadable.sort_by_key(|name| name.to_lowercase());
+        Ok(SoundSetLibrary { configured: true, sets, unreadable, reading })
+    }
+
+    /// Places the library set with this id, as `place_sound_set_file` does. A set whose id more
+    /// than one library file holds is refused (M10).
+    pub fn place_library_sound_set(&mut self, map: &Path, id: &str) -> Result<(), String> {
+        if self.busy || self.is_stroke_open() {
+            return Err("Finish the current operation before placing a sound set.".into());
+        }
+        let library = self.preferences.hitsound_library.clone().ok_or("Choose a hitsound library folder first: sound sets are kept there.")?;
+        let found: Vec<_> = library_sets(&library).0.into_iter().filter(|(_, set)| set.id == id).collect();
+        match found.as_slice() {
+            [] => Err("That sound set is no longer in the library.".into()),
+            [(path, _)] => self.place_sound_set_file(map, path),
+            [(_, set), ..] => Err(duplicate_refusal(found.len(), &set.name)),
+        }
+    }
+
+    /// Edit > Save selection as sound set: a new `.dawsuset` in the library's "Sound sets" folder
+    /// with each selected hit's sample audio, role and volume (the old app's capture rules). The
+    /// hits stay ordinary hits, so no undo step is made. A sound set name the library already has
+    /// asks for another; no file is ever overwritten.
+    pub fn save_sound_set_from_selection(&mut self, map: &Path, name: &str) -> Result<(), SaveSetError> {
+        let refused = |why: String| SaveSetError::Refused(why);
+        if self.busy || self.is_stroke_open() {
+            return Err(refused("Finish the current operation before saving a sound set.".into()));
+        }
+        let document = self.document.as_ref().ok_or_else(|| refused("Open a difficulty first.".into()))?;
+        if document.path != map {
+            return Err(refused("The difficulty changed while naming the sound set.".into()));
+        }
+        let library = self.preferences.hitsound_library.clone().ok_or_else(|| refused("Choose a hitsound library folder first: sound sets are kept there.".into()))?;
+        if !library.is_dir() {
+            return Err(refused(format!("Hitsound library folder not found: {}", library.display())));
+        }
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(refused("Name the sound set.".into()));
+        }
+        if name.encode_utf16().count() > 128 {
+            return Err(refused("A sound set name can have at most 128 characters.".into()));
+        }
+        let hits = document.composer.hitsounds();
+        let mut keys: Vec<_> = document.composer.selected.items().iter().collect();
+        if keys.is_empty() {
+            return Err(refused("Select the sounds to save as a sound set.".into()));
+        }
+        keys.sort_by(|a, b| (a.moment, &a.lane).cmp(&(b.moment, &b.lane)));
+        let times: std::collections::BTreeSet<u64> = keys.iter().map(|k| hits.moment(dawsu_hitsounding::MomentId(k.moment)).time().ms().to_bits()).collect();
+        if times.len() != 1 {
+            return Err(refused("Select sounds at one time to save a sound set.".into()));
+        }
+        // Two objects at one time can hold the same sound: it goes in the set once.
+        let mut lanes: Vec<(&SampleIdentity, i32)> = Vec::new();
+        for key in keys {
+            let volume = hits.moment(dawsu_hitsounding::MomentId(key.moment)).hit_volume(&key.lane);
+            match lanes.iter().find(|(lane, _)| *lane == &key.lane) {
+                Some((_, v)) if *v == volume => {}
+                Some(_) => return Err(refused(format!("{} is selected twice at this time.", crate::lane_name(&key.lane)))),
+                None => lanes.push((&key.lane, volume)),
+            }
+        }
+        if lanes.len() > 128 {
+            return Err(refused("A sound set holds at most 128 sounds.".into()));
+        }
+        let lower = name.to_lowercase();
+        if library_sets(&library).0.iter().any(|(_, s)| s.name.trim().to_lowercase() == lower) {
+            return Err(SaveSetError::NameTaken(format!("The library already has a sound set named \"{name}\". Choose another name.")));
+        }
+        let root = document.path.parent().ok_or_else(|| refused("The difficulty's folder was not found.".into()))?;
+        let defaults = &self.preferences.default_samples;
+        let defaults_list = list_folder(defaults).unwrap_or_default();
+        let mut captured = Vec::new();
+        let mut total = 0u64;
+        for (identity, volume) in lanes {
+            let lane_name = crate::lane_name(identity);
+            let unusable = |why: &str| refused(format!("{lane_name} {why}, so it can't go in a sound set."));
+            let unreadable = || refused(format!("Could not read {lane_name}. Check that another program is not using it."));
+            let model = hits.lane(identity).ok_or_else(|| unusable("has no lane"))?;
+            // `sample_path` decides what plays: the folder's file, or the skin's sound.
+            let path = super::sample_path(model, root, defaults, &defaults_list).map_err(|_| unusable("wasn't found"))?;
+            let (source, file) = match &model.source {
+                dawsu_hitsounding::LaneSource::File(file) => (SetSource::File, file.clone()),
+                dawsu_hitsounding::LaneSource::Skin => (SetSource::Skin, crate::lane_name(&model.plays_as())),
+            };
+            if source == SetSource::Skin && !path.extension().is_some_and(|e| e.eq_ignore_ascii_case("wav")) {
+                return Err(unusable("is not a .wav file in the default samples"));
+            }
+            let size = std::fs::metadata(&path).map_err(|_| unreadable())?.len();
+            if size > 32 * 1024 * 1024 {
+                return Err(unusable("is over 32 MB"));
+            }
+            total += size;
+            if total > 64 * 1024 * 1024 {
+                return Err(refused("The selected sounds are over 64 MB together, so they can't be one sound set.".into()));
+            }
+            let audio = std::fs::read(&path).map_err(|_| unreadable())?;
+            let lane = dawsu_hitsounding::sound_sets::SetLane { source, name: file, missing: false, kept: Default::default() };
+            captured.push(dawsu_hitsounding::sound_sets::CapturedHit {
+                // The old app's key of the captured lane (`ProjectStore.KeyOf`).
+                original_key: lane.key(),
+                lane,
+                volume,
+                audio,
+            });
+        }
+        let set = dawsu_hitsounding::sound_sets::capture(&mut || new_id(name), name, captured).map_err(|e| refused(format!("{name}: {e}")))?;
+        let text = dawsu_hitsounding::sound_sets::write_dawsuset(&set).map_err(|e| refused(format!("{name}: {e}")))?;
+        let folder = library.join(LIBRARY_FOLDER);
+        let file_name = set_file_name(name, &set.id);
+        std::fs::create_dir_all(&folder).map_err(|_| refused(format!("Could not create the library's {LIBRARY_FOLDER} folder. Check that the library folder can be written to.")))?;
+        if let Err(error) = safe_write::create(&folder.join(&file_name), text.as_bytes()) {
+            return Err(refused(save_failure(name, &error)));
+        }
+        self.status = format!("Saved sound set \"{name}\".");
+        Ok(())
+    }
+}
+
+/// The message for a failed library write. Only a hard link the drive can't make (FAT and exFAT:
+/// Windows' ERROR_INVALID_FUNCTION, raw OS error 1, or `Unsupported`) asks for another drive;
+/// any other failure names the set.
+fn save_failure(name: &str, error: &dawsu_foundation::Error) -> String {
+    let dawsu_foundation::Error::Io { step, source, .. } = error;
+    let unsupported = source.kind() == std::io::ErrorKind::Unsupported || (cfg!(windows) && source.raw_os_error() == Some(1));
+    if *step == "creating the file" && unsupported {
+        "This drive can't hold the library. Choose a library on an NTFS drive.".into()
+    } else {
+        format!("Could not save {name} to the library. Check that another program is not using it.")
+    }
+}
+
+/// The refusal for a set id that more than one library file holds (M10).
+fn duplicate_refusal(copies: usize, name: &str) -> String {
+    if copies == 2 {
+        format!("Two library files contain \"{name}\". Remove one to place it.")
+    } else {
+        format!("{copies} library files contain \"{name}\". Remove all but one to place it.")
     }
 }
 
@@ -1118,6 +1454,339 @@ pub(crate) mod tests {
         assert_eq!(library_id(&path, &std::fs::metadata(&path).unwrap()).as_deref(), Some(SET_ID));
         std::fs::write(&path, "x").unwrap();
         assert_eq!(library_id(&path, &std::fs::metadata(&path).unwrap()), None, "a changed size reads it again");
+    }
+
+    // ------------------------------------------------------------ slice 2: save selection, library list
+
+    /// A map whose circle at 1000 plays drum hitnormal and clap at index 2, volume 50, with both
+    /// files in the mapset; a soft whistle from the skin is added at volume 80, and the three hits
+    /// are selected. The skin's sounds are in `defaults`.
+    fn selection_fixture(name: &str) -> (Fixture, Application, PathBuf) {
+        let f = fixture(name);
+        std::fs::write(&f.map, b"osu file format v14\n[General]\nMode:0\n[TimingPoints]\n0,500,4,1,0,70,1,0\n[HitObjects]\n256,192,1000,1,8,3:0:2:50:\n256,192,1500,1,0,0:0:0:0:\n").unwrap();
+        std::fs::write(f.map.with_file_name("drum-hitnormal2.wav"), wav(8000)).unwrap();
+        std::fs::write(f.map.with_file_name("drum-hitclap2.wav"), wav(4000)).unwrap();
+        let defaults = f.scratch.path("defaults");
+        std::fs::create_dir(&defaults).unwrap();
+        std::fs::write(defaults.join("soft-hitwhistle.wav"), wav(300)).unwrap();
+        std::fs::create_dir(f.scratch.path("library")).unwrap();
+        let mut app = app(&f);
+        app.preferences.default_samples = defaults;
+        let map = open(&mut app, &f.map);
+        let whistle = skin_lane("soft-hitwhistle");
+        let composer = &mut app.document.as_mut().unwrap().composer;
+        composer.apply("Whistle", |h| h.add_hit_with_volume(dawsu_hitsounding::MomentId(0), whistle.clone(), 80));
+        let keys: Vec<_> = composer.hitsounds().moment(dawsu_hitsounding::MomentId(0)).hits().map(|lane| dawsu_editor_composer::HitKey { moment: 0, lane: lane.clone() }).collect();
+        assert_eq!(keys.len(), 3);
+        composer.selected.replace(keys);
+        (f, app, map)
+    }
+
+    fn skin_lane(name: &str) -> SampleIdentity {
+        match dawsu_hitsounding::rules::read_sample_file_name(&format!("{name}.wav")).unwrap() {
+            SampleIdentity::Standard { set, sound, .. } => SampleIdentity::Standard { set, sound, index: dawsu_foundation::CustomIndex::new(0) },
+            other => other,
+        }
+    }
+
+    /// The library set named `name`.
+    fn saved(f: &Fixture, name: &str) -> SoundSet {
+        library_files(f).into_iter()
+            .map(|file| read_dawsuset(&std::fs::read_to_string(f.scratch.path("library").join(LIBRARY_FOLDER).join(file)).unwrap()).unwrap())
+            .find(|set| set.name == name).unwrap_or_else(|| panic!("no set named {name}"))
+    }
+
+    fn library_files(f: &Fixture) -> Vec<String> {
+        let mut files = list_folder(&f.scratch.path("library").join(LIBRARY_FOLDER)).unwrap_or_default();
+        files.sort();
+        files
+    }
+
+    #[test]
+    fn saving_the_selection_writes_a_set_with_each_hits_sample_role_and_volume_and_changes_no_hit() {
+        let (f, mut app, map) = selection_fixture("save-set");
+        let version = app.document().unwrap().composer.history.version();
+        let dirty = app.is_dirty();
+        app.save_sound_set_from_selection(&map, "  Kick: clap/whistle ").unwrap();
+        let set = saved(&f, "Kick: clap/whistle");
+        assert_eq!(library_files(&f), [format!("Kick_ clap_whistle-{}.dawsuset", set.id)], "characters a file name can't hold become _");
+        assert_eq!(set.name, "Kick: clap/whistle");
+        let mut members: Vec<_> = set.members.iter().map(|m| (m.slot.as_str(), m.volume, m.audio.clone(), m.original_key.as_str(), m.lane.key())).collect();
+        members.sort();
+        assert_eq!(members, [
+            ("drum-hitclap", 50, wav(4000), "BeatmapFile|drum-hitclap2.wav", "BeatmapFile|drum-hitclap2.wav".to_string()),
+            ("drum-hitnormal", 50, wav(8000), "BeatmapFile|drum-hitnormal2.wav", "BeatmapFile|drum-hitnormal2.wav".to_string()),
+            ("soft-hitwhistle", 80, wav(300), "Skin|soft-hitwhistle", "Skin|soft-hitwhistle".to_string()),
+        ]);
+        // The hits stay ordinary hits: no undo step, no link, nothing to save.
+        let document = app.document().unwrap();
+        assert_eq!(document.composer.history.version(), version);
+        assert!(document.composer.hitsounds().placements().is_empty());
+        assert_eq!(app.is_dirty(), dirty);
+        assert!(app.status.contains("Kick: clap/whistle"), "{}", app.status);
+        // Two sets saved from the same hits get their own ids.
+        app.save_sound_set_from_selection(&map, "Again").unwrap();
+        let again = saved(&f, "Again");
+        assert_ne!(again.id, set.id);
+        assert!(again.members.iter().all(|m| set.members.iter().all(|n| n.id != m.id)));
+    }
+
+    #[test]
+    fn a_name_the_library_already_has_is_refused_and_the_file_is_never_overwritten() {
+        let (f, mut app, map) = selection_fixture("save-set-clash");
+        app.save_sound_set_from_selection(&map, "Kick").unwrap();
+        let path = f.scratch.path("library").join(LIBRARY_FOLDER).join(&library_files(&f)[0]);
+        let first = std::fs::read(&path).unwrap();
+        for name in ["Kick", "kick", " KICK "] {
+            assert!(matches!(app.save_sound_set_from_selection(&map, name), Err(SaveSetError::NameTaken(_))), "{name}");
+        }
+        assert_eq!(std::fs::read(&path).unwrap(), first);
+        // A set of that name in a file of another name counts too.
+        std::fs::rename(&path, path.with_file_name("old.dawsuset")).unwrap();
+        assert!(matches!(app.save_sound_set_from_selection(&map, "Kick"), Err(SaveSetError::NameTaken(_))));
+        assert_eq!(library_files(&f), ["old.dawsuset"]);
+    }
+
+    #[test]
+    fn saving_needs_a_library_and_sounds_at_one_time_that_can_be_read() {
+        let (f, mut app, map) = selection_fixture("save-set-refused");
+        let refused = |app: &mut Application| match app.save_sound_set_from_selection(&map, "Set") {
+            Err(SaveSetError::Refused(why)) => why,
+            other => panic!("{other:?}"),
+        };
+        app.preferences.hitsound_library = None;
+        assert!(refused(&mut app).contains("hitsound library"));
+        app.preferences.hitsound_library = Some(f.scratch.path("gone"));
+        assert_eq!(refused(&mut app), format!("Hitsound library folder not found: {}", f.scratch.path("gone").display()));
+        app.preferences.hitsound_library = Some(f.scratch.path("library"));
+        app.busy = true;
+        assert!(refused(&mut app).contains("Finish"));
+        app.busy = false;
+        let composer = &mut app.document.as_mut().unwrap().composer;
+        let mut keys: Vec<_> = composer.selected.items().iter().cloned().collect();
+        composer.apply("Clap at 1500", |h| h.add_hit(dawsu_hitsounding::MomentId(1), skin_lane("soft-hitclap")));
+        keys.push(dawsu_editor_composer::HitKey { moment: 1, lane: skin_lane("soft-hitclap") });
+        composer.selected.replace(keys);
+        assert!(refused(&mut app).contains("one time"));
+        app.document.as_mut().unwrap().composer.selected.replace([]);
+        assert!(refused(&mut app).contains("Select"));
+        // A skin sound the default samples don't have.
+        app.document.as_mut().unwrap().composer.selected.replace([dawsu_editor_composer::HitKey { moment: 1, lane: skin_lane("soft-hitclap") }]);
+        assert!(refused(&mut app).contains("soft-hitclap"));
+        // A numbered sound whose file is missing plays the skin's sound: saved as that when the
+        // default samples have it, else refused by name.
+        std::fs::remove_file(f.map.with_file_name("drum-hitclap2.wav")).unwrap();
+        let mut app = super::tests::app(&f);
+        app.preferences.default_samples = f.scratch.path("defaults");
+        let map = open(&mut app, &f.map);
+        let composer = &mut app.document.as_mut().unwrap().composer;
+        let clap = composer.hitsounds().moment(dawsu_hitsounding::MomentId(0)).hits().find(|l| crate::lane_name(l) == "drum-hitclap2").unwrap().clone();
+        composer.selected.replace([dawsu_editor_composer::HitKey { moment: 0, lane: clap }]);
+        match app.save_sound_set_from_selection(&map, "Set") {
+            Err(SaveSetError::Refused(why)) => assert_eq!(why, "drum-hitclap2 wasn't found, so it can't go in a sound set."),
+            other => panic!("{other:?}"),
+        }
+        assert!(library_files(&f).is_empty());
+        std::fs::write(f.scratch.path("defaults").join("drum-hitclap.wav"), wav(11)).unwrap();
+        app.save_sound_set_from_selection(&map, "Set").unwrap();
+        let set = saved(&f, "Set");
+        assert_eq!(set.members.iter().map(|m| (m.lane.key(), m.audio.clone())).collect::<Vec<_>>(), [("Skin|drum-hitclap".to_string(), wav(11))]);
+    }
+
+    #[test]
+    fn a_skin_sound_that_is_not_a_wav_file_is_refused() {
+        let (f, mut app, map) = selection_fixture("save-set-ogg-skin");
+        let defaults = f.scratch.path("defaults");
+        std::fs::remove_file(defaults.join("soft-hitwhistle.wav")).unwrap();
+        std::fs::write(defaults.join("soft-hitwhistle.ogg"), b"OggS").unwrap();
+        match app.save_sound_set_from_selection(&map, "Set") {
+            Err(SaveSetError::Refused(why)) => assert!(why.contains("soft-hitwhistle") && why.contains(".wav"), "{why}"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_sound_at_index_1_with_no_file_is_the_skins_sound_and_can_be_saved() {
+        let f = fixture("save-set-index-1");
+        std::fs::write(&f.map, b"osu file format v14
+[General]
+Mode:0
+[TimingPoints]
+0,500,4,1,1,70,1,0
+[HitObjects]
+256,192,1000,1,0,0:0:0:0:
+").unwrap();
+        let defaults = f.scratch.path("defaults");
+        std::fs::create_dir(&defaults).unwrap();
+        std::fs::write(defaults.join("normal-hitnormal.wav"), wav(700)).unwrap();
+        std::fs::create_dir(f.scratch.path("library")).unwrap();
+        let mut app = app(&f);
+        app.preferences.default_samples = defaults;
+        let map = open(&mut app, &f.map);
+        let composer = &mut app.document.as_mut().unwrap().composer;
+        let lane = composer.hitsounds().moment(dawsu_hitsounding::MomentId(0)).hits().next().unwrap().clone();
+        assert!(matches!(lane, SampleIdentity::Standard { index, .. } if index.get() == 1), "{lane:?}");
+        composer.selected.replace([dawsu_editor_composer::HitKey { moment: 0, lane }]);
+        app.save_sound_set_from_selection(&map, "Plain").unwrap();
+        let set = saved(&f, "Plain");
+        assert_eq!(set.members.iter().map(|m| (m.lane.key(), m.original_key.as_str(), m.audio.clone())).collect::<Vec<_>>(),
+            [("Skin|normal-hitnormal".to_string(), "Skin|normal-hitnormal", wav(700))]);
+    }
+
+    fn write_library_set(f: &Fixture, file: &str, id: &str, name: &str, sounds: usize) {
+        let folder = f.scratch.path("library").join(LIBRARY_FOLDER);
+        std::fs::create_dir_all(&folder).unwrap();
+        let frames: Vec<_> = [("drum-hitnormal.wav", 1), ("drum-hitclap.wav", 2), ("drum-hitfinish.wav", 3)].into_iter().take(sounds).collect();
+        std::fs::write(folder.join(file), set_text(name, &frames).replace(SET_ID, id)).unwrap();
+    }
+
+    const OTHER_ID: &str = "1c0ffee0-0000-4000-8000-000000000001";
+    const THIRD_ID: &str = "1c0ffee0-0000-4000-8000-000000000002";
+
+    #[test]
+    fn the_library_lists_this_maps_sets_first_then_the_rest_by_name_and_flags_duplicate_ids() {
+        let f = fixture("library-list");
+        let mut app = app(&f);
+        let map = open(&mut app, &f.map);
+        app.preferences.hitsound_library = None;
+        assert!(!app.sound_set_library().unwrap().configured);
+        app.preferences.hitsound_library = Some(f.scratch.path("library"));
+        assert!(app.sound_set_library().unwrap_err().starts_with("Hitsound library folder not found: "), "the library folder is gone");
+        std::fs::create_dir(f.scratch.path("library")).unwrap();
+        assert_eq!(listed(&app).sets, [], "no Sound sets folder yet is an empty list");
+        write_library_set(&f, "zz kick.dawsuset", SET_ID, "Kick and clap", 2);
+        write_library_set(&f, "b.dawsuset", OTHER_ID, "Bell", 1);
+        write_library_set(&f, "c.dawsuset", THIRD_ID, "Crash", 3);
+        write_library_set(&f, "c copy.dawsuset", THIRD_ID, "Crash", 3);
+        std::fs::write(f.scratch.path("library").join(LIBRARY_FOLDER).join("broken.dawsuset"), "{}").unwrap();
+        app.seek(1000.0);
+        app.place_library_sound_set(&map, SET_ID).unwrap();
+        let library = listed(&app);
+        assert_eq!(library.unreadable, ["broken.dawsuset"], "a file that can't be read is listed by name");
+        let sets: Vec<_> = library.sets.into_iter().map(|s| (s.name, s.sounds, s.in_map, s.duplicate)).collect();
+        assert_eq!(sets, [
+            ("Kick and clap".to_string(), 2, true, false),
+            ("Bell".to_string(), 1, false, false),
+            ("Crash".to_string(), 3, false, true),
+        ], "a duplicate id is listed once, with a warning");
+        assert_eq!(library_files(&f).len(), 5, "placing from the library copies nothing into it");
+        // A duplicate id can't be placed.
+        app.seek(2000.0);
+        let refused = app.place_library_sound_set(&map, THIRD_ID).unwrap_err();
+        assert!(refused.contains("Crash"), "{refused}");
+        assert_eq!(app.document().unwrap().composer.hitsounds().placements().len(), 1);
+        assert!(app.place_library_sound_set(&map, "1c0ffee0-0000-4000-8000-000000000009").is_err(), "an id no file holds");
+        // Browsing to either file, or to an outside copy, is refused too.
+        let folder = f.scratch.path("library").join(LIBRARY_FOLDER);
+        let outside = f.scratch.path("outside.dawsuset");
+        std::fs::copy(folder.join("c.dawsuset"), &outside).unwrap();
+        for file in [folder.join("c.dawsuset"), outside] {
+            assert!(app.place_sound_set_file(&map, &file).unwrap_err().contains("Two library files contain \"Crash\""), "{file:?}");
+        }
+        assert_eq!(app.document().unwrap().composer.hitsounds().placements().len(), 1);
+    }
+
+    /// The library list once the background reads are done.
+    fn listed(app: &Application) -> SoundSetLibrary {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let library = app.sound_set_library().unwrap();
+            if !library.reading {
+                return library;
+            }
+            assert!(Instant::now() < deadline, "the library is still being read");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn the_list_reads_no_file_itself_and_reads_a_failed_file_again() {
+        let f = fixture("library-background");
+        std::fs::create_dir_all(f.scratch.path("library").join(LIBRARY_FOLDER)).unwrap();
+        write_library_set(&f, "a.dawsuset", SET_ID, "Kick and clap", 2);
+        let broken = f.scratch.path("library").join(LIBRARY_FOLDER).join("later.dawsuset");
+        // Broken and fixed contents of the same size, written with the same modified time.
+        let fixed = set_text("Later", &[("drum-hitclap.wav", 9)]).replace(SET_ID, OTHER_ID);
+        std::fs::write(&broken, format!("{{{}", " ".repeat(fixed.len() - 1))).unwrap();
+        let modified = std::fs::metadata(&broken).unwrap().modified().unwrap();
+        let mut app = app(&f);
+        open(&mut app, &f.map);
+        let first = app.sound_set_library().unwrap();
+        assert!(first.reading && first.sets.is_empty(), "a cold list returns at once and reads in the background: {first:?}");
+        let library = listed(&app);
+        assert_eq!((library.sets.len(), library.unreadable.clone()), (1, vec!["later.dawsuset".to_string()]));
+        // The broken file is fixed with the same time and size: it is read again, not remembered.
+        std::fs::write(&broken, &fixed).unwrap();
+        assert_eq!(std::fs::metadata(&broken).unwrap().len() as usize, fixed.len());
+        std::fs::File::options().write(true).open(&broken).unwrap().set_modified(modified).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while listed(&app).sets.len() < 2 {
+            assert!(Instant::now() < deadline, "the fixed file is read again");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        // A deleted file leaves the index.
+        std::fs::remove_file(&broken).unwrap();
+        assert_eq!(listed(&app).sets.len(), 1);
+        assert!(with_index(|index| !index.read.contains_key(&broken)));
+    }
+
+    #[test]
+    fn only_a_hard_link_the_drive_cant_make_asks_for_another_drive() {
+        let io = |step: &'static str, source: std::io::Error| dawsu_foundation::Error::Io { step, path: PathBuf::from("Kick.dawsuset"), source };
+        let drive = "This drive can't hold the library. Choose a library on an NTFS drive.";
+        let plain = "Could not save Kick to the library. Check that another program is not using it.";
+        assert_eq!(save_failure("Kick", &io("creating the file", std::io::Error::from(std::io::ErrorKind::Unsupported))), drive);
+        let invalid_function = save_failure("Kick", &io("creating the file", std::io::Error::from_raw_os_error(1)));
+        assert_eq!(invalid_function, if cfg!(windows) { drive } else { plain }, "ERROR_INVALID_FUNCTION is Windows' code");
+        for source in [
+            std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+            std::io::Error::from_raw_os_error(5),
+            std::io::Error::from_raw_os_error(112),
+            std::io::Error::from(std::io::ErrorKind::AlreadyExists),
+        ] {
+            assert_eq!(save_failure("Kick", &io("creating the file", source)), plain);
+        }
+        assert_eq!(save_failure("Kick", &io("writing the temporary file", std::io::Error::from(std::io::ErrorKind::Unsupported))), plain, "only the link step");
+    }
+
+    #[test]
+    fn a_library_file_name_is_the_old_apps_label_and_id() {
+        let id = "1c0ffee0-0000-4000-8000-000000000001";
+        for (name, file) in [
+            ("CON", "CON-"), ("com1", "com1-"), ("COM\u{b9}", "COM\u{b9}-"), ("Kick.", "Kick.-"), ("Kick  ", "Kick  -"),
+            ("a/b:c*d?", "a_b_c_d_-"),
+        ] {
+            assert_eq!(set_file_name(name, id), format!("{file}{id}.dawsuset"), "{name}");
+        }
+        let long_a = format!("{}a", "x".repeat(80));
+        let long_b = format!("{}b", "x".repeat(80));
+        let other = "1c0ffee0-0000-4000-8000-000000000002";
+        assert_eq!(set_file_name(&long_a, id), format!("{}-{id}.dawsuset", "x".repeat(80)), "cut to 80 characters");
+        assert_ne!(set_file_name(&long_a, id), set_file_name(&long_b, other), "two sets sharing the first 80 characters get their own files");
+    }
+
+    #[test]
+    fn a_sound_selected_twice_at_one_time_goes_in_once_or_is_refused_at_two_volumes() {
+        let (f, _, _) = selection_fixture("save-set-twice");
+        std::fs::write(&f.map, b"osu file format v14\n[General]\nMode:0\n[TimingPoints]\n0,500,4,1,0,70,1,0\n[HitObjects]\n256,192,1000,1,8,3:0:2:50:\n100,100,1000,1,8,3:0:2:50:\n").unwrap();
+        let mut app = super::tests::app(&f);
+        let map = open(&mut app, &f.map);
+        assert_eq!(app.document().unwrap().composer.hitsounds().moment(dawsu_hitsounding::MomentId(1)).time().ms(), 1000.0);
+        let composer = &mut app.document.as_mut().unwrap().composer;
+        let keys: Vec<_> = [0, 1].into_iter().flat_map(|m| composer.hitsounds().moment(dawsu_hitsounding::MomentId(m)).hits().map(move |lane| dawsu_editor_composer::HitKey { moment: m, lane: lane.clone() }).collect::<Vec<_>>()).collect();
+        assert_eq!(keys.len(), 4);
+        composer.selected.replace(keys);
+        app.save_sound_set_from_selection(&map, "Twice").unwrap();
+        let file = library_files(&f).into_iter().find(|n| n.starts_with("Twice-")).unwrap();
+        let set = read_dawsuset(&std::fs::read_to_string(f.scratch.path("library").join(LIBRARY_FOLDER).join(file)).unwrap()).unwrap();
+        assert_eq!(set.members.len(), 2, "each sound once");
+        let composer = &mut app.document.as_mut().unwrap().composer;
+        let clap = composer.hitsounds().moment(dawsu_hitsounding::MomentId(1)).hits().find(|l| crate::lane_name(l) == "drum-hitclap2").unwrap().clone();
+        composer.apply("Quieter", |h| h.set_hit_volume(dawsu_hitsounding::MomentId(1), &clap, 20));
+        match app.save_sound_set_from_selection(&map, "Twice again") {
+            Err(SaveSetError::Refused(why)) => assert_eq!(why, "drum-hitclap2 is selected twice at this time."),
+            other => panic!("{other:?}"),
+        }
     }
 
     // ------------------------------------------------------------ links: mixes, kept links, left-out moments

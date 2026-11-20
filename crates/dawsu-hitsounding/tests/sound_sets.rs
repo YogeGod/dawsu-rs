@@ -192,3 +192,40 @@ fn a_placement_records_which_hits_it_added_and_unlinking_keeps_the_hits() {
     assert!(h.placements().is_empty());
     assert!(h.moment(moment).has_hit(&clap), "unlinking keeps the hits");
 }
+
+// ---------------------------------------------------------------- capturing a selection
+
+fn hit(source: SetSource, name: &str, original_key: &str, volume: i32, audio: &[u8]) -> CapturedHit {
+    CapturedHit { lane: SetLane { source, name: name.into(), missing: false, kept: Kept::default() }, original_key: original_key.into(), volume, audio: audio.to_vec() }
+}
+
+#[test]
+fn capturing_takes_each_hits_lane_role_volume_and_audio_like_the_old_app() {
+    let mut n = 0;
+    let mut ids = || { n += 1; format!("bbbbbbbb-0000-4000-8000-{n:012}") };
+    let s = capture(&mut ids, "  Kick and clap ", vec![
+        hit(SetSource::File, "drum-hitnormal2.wav", "BeatmapFile|drum-hitnormal2.wav", 50, b"kick"),
+        hit(SetSource::Skin, "soft-hitwhistle", "Skin|soft-hitwhistle", 80, b"whistle"),
+        hit(SetSource::File, "kick.ogg", "BeatmapFile|kick.ogg", 0, b"thud"),
+    ]).unwrap();
+    assert_eq!(s.name, "Kick and clap", "the name is trimmed");
+    assert_eq!(s.id, "bbbbbbbb-0000-4000-8000-000000000001");
+    assert_eq!(s.library_id, None);
+    assert_eq!(s.members.iter().map(|m| (m.slot.as_str(), m.volume, m.audio.as_slice(), m.original_key.as_str())).collect::<Vec<_>>(), [
+        ("drum-hitnormal", 50, &b"kick"[..], "BeatmapFile|drum-hitnormal2.wav"),
+        ("soft-hitwhistle", 80, &b"whistle"[..], "Skin|soft-hitwhistle"),
+        ("normal-hitnormal", 0, &b"thud"[..], "BeatmapFile|kick.ogg"),
+    ], "a file with no sample name plays as a normal hitnormal");
+    assert_eq!(s.members.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), ["bbbbbbbb-0000-4000-8000-000000000002", "bbbbbbbb-0000-4000-8000-000000000003", "bbbbbbbb-0000-4000-8000-000000000004"]);
+    assert_eq!(read_dawsuset(&write_dawsuset(&s).unwrap()).unwrap(), s);
+}
+
+#[test]
+fn capturing_refuses_slider_sounds_and_what_a_set_can_not_hold() {
+    let mut ids = { let mut n = 0; move || { n += 1; format!("bbbbbbbb-0000-4000-8000-{n:012}") } };
+    let slider = capture(&mut ids, "Slide", vec![hit(SetSource::File, "soft-sliderslide.wav", "BeatmapFile|soft-sliderslide.wav", 50, b"s")]).unwrap_err();
+    assert!(slider.to_string().contains("hitnormal, whistle, finish or clap"), "{slider}");
+    assert!(capture(&mut ids, "  ", vec![hit(SetSource::File, "drum-hitclap.wav", "BeatmapFile|drum-hitclap.wav", 50, b"c")]).is_err(), "a blank name");
+    assert!(capture(&mut ids, "Empty", vec![]).is_err(), "no sounds");
+    assert!(capture(&mut ids, "Silent", vec![hit(SetSource::File, "drum-hitclap.wav", "BeatmapFile|drum-hitclap.wav", 50, b"")]).is_err(), "no audio");
+}

@@ -286,6 +286,10 @@ enum Action {
         map: PathBuf,
         path: PathBuf,
     },
+    PlaceLibrarySoundSet {
+        map: PathBuf,
+        id: String,
+    },
     Open {
         path: PathBuf,
     },
@@ -534,6 +538,11 @@ impl Action {
             }
             Self::PlaceSoundSet { map, path } => {
                 if let Err(error) = app.place_sound_set_file(&map, &path) {
+                    app.error = Some(error);
+                }
+            }
+            Self::PlaceLibrarySoundSet { map, id } => {
+                if let Err(error) = app.place_library_sound_set(&map, &id) {
                     app.error = Some(error);
                 }
             }
@@ -1330,6 +1339,8 @@ enum Request {
     LibraryDirectory(mpsc::Sender<Option<PathBuf>>),
     SetLibraryDirectory(PathBuf, mpsc::Sender<Result<Value, String>>),
     LibraryEntries(library::Location, mpsc::Sender<Result<Vec<(String, bool)>, String>>),
+    SoundSetLibrary(mpsc::Sender<Result<Value, String>>),
+    SaveSoundSet(PathBuf, String, mpsc::Sender<Result<Value, String>>),
     LaneAddCandidates(PathBuf, mpsc::Sender<Result<Value, String>>),
     DrumView(PathBuf, Option<PathBuf>, bool, mpsc::Sender<Result<Value, String>>),
     Folder(folders::Folder, mpsc::Sender<Result<PathBuf, String>>),
@@ -1599,6 +1610,25 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                     .and_then(|result| result);
                     let _ = response.send(result);
                 }
+                Ok(Request::SoundSetLibrary(response)) => {
+                    let result = guard(&mut app, &mut fault, |app| sound_set_library_view(app));
+                    let _ = response.send(result);
+                }
+                Ok(Request::SaveSoundSet(map, name, response)) => {
+                    let result = guard(&mut app, &mut fault, |app| match app.save_sound_set_from_selection(&map, &name) {
+                        Ok(()) => {
+                            let mut view = snapshot(app, !home.visible());
+                            home.add_status(&mut view);
+                            drums.decorate(app, &mut view);
+                            view["playbackStart"] = json!(playback_start);
+                            Ok(view)
+                        }
+                        Err(dawsu_application::SaveSetError::NameTaken(message)) => Ok(json!({ "nameTaken": message })),
+                        Err(dawsu_application::SaveSetError::Refused(message)) => Err(message),
+                    })
+                    .and_then(|result| result);
+                    let _ = response.send(result);
+                }
                 Ok(Request::LaneAddCandidates(map, response)) => {
                     let result = guard(&mut app, &mut fault, |app| lane_add_choices(app, &map))
                         .and_then(|result| result);
@@ -1678,13 +1708,16 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
 }
 
 fn ask<T>(state: &Editor, request: impl FnOnce(mpsc::Sender<T>) -> Request) -> Result<T, String> {
+    ask_within(&state.0, Duration::from_secs(7), request)
+}
+
+fn ask_within<T>(editor: &mpsc::Sender<Request>, wait: Duration, request: impl FnOnce(mpsc::Sender<T>) -> Request) -> Result<T, String> {
     let (send, receive) = mpsc::channel();
-    state
-        .0
+    editor
         .send(request(send))
         .map_err(|_| "The editor worker stopped".to_owned())?;
     receive
-        .recv_timeout(Duration::from_secs(7))
+        .recv_timeout(wait)
         .map_err(|_| "The editor worker did not respond".into())
 }
 
@@ -1860,6 +1893,38 @@ fn pick_sample(window: tauri::WebviewWindow, state: State<'_, Editor>, target: S
     ask(&state, |tx| Request::View(true, selected.map(|path| Action::ReplaceSample { target, path, mapset: false }), tx))
 }
 
+/// The library list for Edit > Place sound set: names, ids and counts only.
+fn sound_set_library_view(app: &Application) -> Value {
+    let library = match app.sound_set_library() {
+        Ok(library) => library,
+        Err(error) => return json!({ "configured": true, "error": error, "sets": [], "unreadable": [], "reading": false }),
+    };
+    json!({
+        "configured": library.configured,
+        "sets": library.sets.iter().map(|set| json!({
+            "id": set.id, "name": set.name, "sounds": set.sounds, "inMap": set.in_map, "duplicate": set.duplicate,
+        })).collect::<Vec<_>>(),
+        "unreadable": library.unreadable,
+        "reading": library.reading,
+    })
+}
+
+#[tauri::command]
+fn sound_set_library(state: State<'_, Editor>) -> Result<Value, String> {
+    ask(&state, Request::SoundSetLibrary)?
+}
+
+/// Saving reads every selected sample and the library, so it gets its own longer wait, off the
+/// window's thread; a 7 s timeout while the editor still saves would make a retry look like a
+/// name clash.
+#[tauri::command]
+async fn save_sound_set(state: State<'_, Editor>, map: PathBuf, name: String) -> Result<Value, String> {
+    let editor = state.0.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        ask_within(&editor, Duration::from_secs(120), |tx| Request::SaveSoundSet(map, name, tx))
+    }).await.map_err(|e| e.to_string())??
+}
+
 #[tauri::command]
 fn pick_sound_set(window: tauri::WebviewWindow, state: State<'_, Editor>, map: PathBuf) -> Result<Value, String> {
     let selected = rfd::FileDialog::new().set_parent(&window)
@@ -2015,6 +2080,8 @@ fn main() {
             pick_map,
             pick_sample,
             pick_sound_set,
+            sound_set_library,
+            save_sound_set,
             pick_songs_folder,
             pick_hitsound_library,
             list_library,

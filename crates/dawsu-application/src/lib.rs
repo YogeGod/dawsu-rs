@@ -41,6 +41,7 @@ pub use export::{ExportOptions, ExportPreview, ExportStatus, PreviewOrigin};
 pub use export_settings::{ExportCombination, ExportSettings};
 pub use project::LaneLayout;
 pub use recovery::RecoveryOffer;
+pub use sound_sets::{LibrarySet, SaveSetError, SoundSetLibrary};
 pub use waveform::WaveBin;
 pub use edit_workflows::{RangeOperation, TimelineEdit, VolumeScope};
 

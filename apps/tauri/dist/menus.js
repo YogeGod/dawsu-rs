@@ -82,13 +82,163 @@ function laneMenuAction(target, invokeAction) {
   });
 }
 
-function placeSoundSet() {
-  const map = scene.path;
+function soundSetsUsable(map) {
+  return scene?.path === map && !view.busy && !drag;
+}
+
+function chooseSoundSetLibrary(map, then) {
+  closeModal();
   run(async () => {
-    if (scene?.path !== map || view.busy || drag) return;
+    if (!soundSetsUsable(map)) return;
+    const next = await invoke("pick_hitsound_library");
+    if (!next) return;
+    show(next);
+    if (soundSetsUsable(map)) then();
+  });
+}
+
+function browseSoundSet(map) {
+  closeModal();
+  run(async () => {
+    if (!soundSetsUsable(map)) return;
     const next = await invoke("pick_sound_set", { map });
     if (next) show(next);
   });
+}
+
+function showSoundSetLibrary(map, library) {
+  const browse = ["Browse…", () => browseSoundSet(map)];
+  const chooseFolder = ["Choose library folder…", () => chooseSoundSetLibrary(map, placeSoundSet), true];
+  if (!library.configured || library.error) {
+    modal("sound-sets", "Place sound set",
+      [paragraph(library.error ?? "Sound sets are kept in your hitsound library.")],
+      [["Cancel", closeModal], browse, chooseFolder]);
+    return;
+  }
+  if (library.reading) {
+    modal("sound-sets", "Place sound set", [paragraph("Still reading the sound set library. Try again.")],
+      [["Cancel", closeModal], browse, ["Try again", () => { closeModal(); placeSoundSet(); }, true]]);
+    return;
+  }
+  if (!library.sets.length && !library.unreadable?.length) {
+    modal("sound-sets", "Place sound set",
+      [paragraph("The library has no sound sets yet. Use Edit > Save selection as sound set to add one.")],
+      [["Cancel", closeModal], browse]);
+    return;
+  }
+  const list = document.createElement("select");
+  list.id = "sound-set-choice";
+  list.size = Math.min(10, library.sets.length + (library.unreadable?.length ?? 0) + 2);
+  list.setAttribute("aria-label", "Sound sets");
+  const option = (value, text, disabled) => {
+    const node = document.createElement("option");
+    node.value = value;
+    node.textContent = text;
+    node.disabled = disabled;
+    return node;
+  };
+  const group = (label, options) => {
+    const node = document.createElement("optgroup");
+    node.label = label;
+    node.append(...options);
+    return node;
+  };
+  const setOption = set => option(set.id,
+    set.name + " · " + set.sounds + (set.sounds === 1 ? " sound" : " sounds") +
+      (set.duplicate ? " · in the library twice, remove one copy" : ""), set.duplicate);
+  const used = library.sets.filter(set => set.inMap).map(setOption);
+  const rest = [...library.sets.filter(set => !set.inMap).map(setOption),
+    ...(library.unreadable ?? []).map(file => option("", "Could not read " + file, true))];
+  list.append(...[used.length && group("In this map", used), rest.length && group("Library", rest)].filter(Boolean));
+  const placeable = library.sets.filter(set => !set.duplicate);
+  list.value = placeable[0]?.id ?? "";
+  const message = paragraph(placeable.length ? "" : "None of these sound sets can be placed.");
+  const place = () => {
+    const set = placeable.find(item => item.id === list.value);
+    if (!set) {
+      message.textContent = placeable.length ? "Choose a sound set to place." : "None of these sound sets can be placed.";
+      return;
+    }
+    closeModal();
+    if (soundSetsUsable(map)) act({ kind: "place_library_sound_set", map, id: set.id });
+  };
+  list.addEventListener("keydown", event => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    place();
+  });
+  list.addEventListener("dblclick", event => {
+    if (!event.target?.disabled) place();
+  });
+  modal("sound-sets", "Place sound set", [list, message], [["Cancel", closeModal], browse, ["Place", place, true]]);
+  list.focus?.();
+}
+
+function placeSoundSet() {
+  const map = scene.path;
+  run(async () => {
+    if (!soundSetsUsable(map)) return;
+    const library = await invoke("sound_set_library");
+    if (soundSetsUsable(map)) showSoundSetLibrary(map, library);
+  });
+}
+
+function saveSoundSet() {
+  const map = scene.path;
+  const title = "Save selection as sound set";
+  if (!view.hitsoundLibrary) {
+    modal("save-sound-set", title, [paragraph("Sound sets are kept in your hitsound library.")],
+      [["Cancel", closeModal], ["Choose library folder…", () => chooseSoundSetLibrary(map, saveSoundSet), true]]);
+    return;
+  }
+  const field = input("text", "", "", "");
+  field.maxLength = 128;
+  const message = paragraph("");
+  let saving = false;
+  let saveButton = null;
+  const busy = on => {
+    saving = on;
+    if (saveButton) {
+      saveButton.disabled = on;
+      saveButton.textContent = on ? "Saving…" : "Save";
+    }
+  };
+  const save = () => {
+    if (saving) return;
+    const name = field.value.trim();
+    if (!name) {
+      message.textContent = "Name the sound set.";
+      return;
+    }
+    busy(true);
+    message.textContent = "";
+    run(async () => {
+      try {
+        if (!soundSetsUsable(map)) return;
+        const next = await invoke("save_sound_set", { map, name });
+        if (next.nameTaken) {
+          message.textContent = next.nameTaken;
+          field.select?.();
+          return;
+        }
+        closeModal();
+        show(next);
+      } catch (error) {
+        message.textContent = String(error);
+      } finally {
+        busy(false);
+      }
+    });
+  };
+  field.addEventListener("keydown", event => {
+    if (event.key === "Enter" && !event.isComposing) {
+      event.preventDefault();
+      save();
+    }
+  });
+  modal("save-sound-set", title, [labeled("Name", field), message], [["Cancel", closeModal], ["Save", save, true]]);
+  saveButton = Array.from($("dialog-actions").children ?? []).find(button => button.textContent === "Save") ?? null;
+  field.focus?.();
 }
 
 function menuItems(name, target) {
@@ -198,6 +348,7 @@ function menuItems(name, target) {
       menuCommand("Edit range…", "Scan", "editRange", () => canEditFromMenu() && !!scene.range),
       menuCommand("Scale by volume…", "TrendingUp", "scaleByVolume"),
       menuItem("Place sound set…", null, placeSoundSet),
+      menuItem("Save selection as sound set…", null, saveSoundSet, { enabled: selection }),
       separator(),
       flag("Protect hitnormals from deletion", null, "protect", () => scene?.protect),
       flag("Audition when placing hits", null, "audition", () => view.audition),
