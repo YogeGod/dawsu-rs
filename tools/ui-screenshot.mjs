@@ -60,7 +60,8 @@ cpSync(dirname(resolve(args.map)), mapCopy, { recursive: true });
 const port = await freePort();
 const chromium = playwrightCore();
 const child = spawn(resolve(args.exe), [join(mapCopy, basename(args.map))], {
-  env: { ...process.env, LOCALAPPDATA: profile,
+  // WebView2 finds its profile without LOCALAPPDATA; name it, or a running dawsu! shares its browser.
+  env: { ...process.env, LOCALAPPDATA: profile, WEBVIEW2_USER_DATA_FOLDER: join(profile, "webview2"),
     WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${port}` },
   stdio: "ignore",
 });
