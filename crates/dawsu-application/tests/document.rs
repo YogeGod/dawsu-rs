@@ -409,3 +409,32 @@ fn a_slider_head_merges_per_role_through_a_green_line() {
     assert_eq!(sorted_hits(&reopened, 1000.0), [std_lane(SampleSet::Normal, Hitsound::Normal, 4), std_lane(SampleSet::Soft, Hitsound::Clap, 4)]);
     resave_unchanged(&path, scratch.path("backups"));
 }
+
+#[test]
+fn a_clap_only_merge_writes_no_hitnormal_and_avoids_an_index_with_one() {
+    let scratch = Scratch::new("application-save-no-hitnormal");
+    let objects = "256,192,1000,1,0,1:0:0:80:\r\n256,192,2000,1,0,1:0:0:80:\r\n";
+    let (root, path) = mapset(&scratch, objects, "0,500,4,1,0,100,1,0", &[
+        ("drum-hitclap3.wav", &[8192]),
+        ("soft-hitclap4.wav", &[4096]),
+    ]);
+    let claps = || vec![(std_lane(SampleSet::Drum, Hitsound::Clap, 3), 80), (std_lane(SampleSet::Soft, Hitsound::Clap, 4), 80)];
+    let mut d = Document::read(&path).unwrap();
+    set_hits(&mut d, 1000.0, 80, claps());
+    save_document(&d, scratch.path("backups")).unwrap();
+    // No hitnormal file: the skin plays the hitnormal, in the normal set the circle had.
+    assert_eq!(file_names(&root), ["drum-hitclap3.wav", "soft-hitclap2.wav", "soft-hitclap4.wav", "test.osu"]);
+    assert_frames(&root.join("soft-hitclap2.wav"), &[0.375]);
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(text.contains("256,192,1000,1,8,1:2:2:80:\r\n"), "{text}");
+
+    // Another moment's soft-hitnormal2 now sits at index 2, so the same claps can't reuse it:
+    // osu! would play that file instead of the skin's hitnormal.
+    sample(&root.join("soft-hitnormal2.wav"), &[100]);
+    let mut d = Document::read(&path).unwrap();
+    set_hits(&mut d, 2000.0, 80, claps());
+    save_document(&d, scratch.path("backups")).unwrap();
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(text.contains("256,192,2000,1,8,1:2:5:80:\r\n"), "{text}");
+    assert_eq!(file_names(&root), ["drum-hitclap3.wav", "soft-hitclap2.wav", "soft-hitclap4.wav", "soft-hitclap5.wav", "soft-hitnormal2.wav", "test.osu"]);
+}

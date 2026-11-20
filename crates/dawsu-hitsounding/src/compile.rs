@@ -192,7 +192,7 @@ pub fn mix_problem(layers: &[(SampleIdentity, i32)]) -> ProblemKind {
 pub struct RoleFile {
     pub set: SampleSet,
     pub role: Hitsound,
-    /// The sounds mixed into the file, each at its saved volume; empty for a silent hitnormal.
+    /// The sounds mixed into the file, each at its saved volume.
     pub layers: Vec<(SampleIdentity, i32)>,
 }
 
@@ -202,20 +202,28 @@ pub struct RoleFile {
 pub struct RoleMerge {
     /// The object's volume: the loudest sound. Each file plays its sounds at their volume over this.
     pub volume: i32,
-    /// The hitnormal first, then each addition role present (whistle, finish, clap).
+    /// The hitnormal first when there is one, then each addition role present (whistle, finish, clap).
     pub files: Vec<RoleFile>,
 }
 
 impl RoleMerge {
     /// The hits that play the merged files once they are written at `index`.
-    pub fn hits(&self, index: u32) -> Vec<SampleIdentity> {
+    /// Without a hitnormal file the object keeps `object_normal`, its normal set today, and the
+    /// player's skin plays the hitnormal (Yoge 2026-11-20).
+    pub fn hits(&self, index: u32, object_normal: SampleSet) -> Vec<SampleIdentity> {
         let index = dawsu_foundation::CustomIndex::new(index);
-        self.files.iter().map(|f| SampleIdentity::Standard { set: f.set, sound: Sound::Hit(f.role), index }).collect()
+        let skin = (!self.has_hitnormal()).then_some(SampleIdentity::Standard { set: object_normal, sound: Sound::Hit(Hitsound::Normal), index });
+        skin.into_iter().chain(self.files.iter().map(|f| SampleIdentity::Standard { set: f.set, sound: Sound::Hit(f.role), index })).collect()
+    }
+
+    /// True when the moment has a hitnormal or a sample file, so Save writes a hitnormal file.
+    pub fn has_hitnormal(&self) -> bool {
+        self.files.first().is_some_and(|f| f.role == Hitsound::Normal)
     }
 }
 
 /// Splits a moment's sounds by role: the hitnormals (and sample files) become one hitnormal file,
-/// silent when there is none, and each addition role one file in the set most additions use.
+/// none when there is none, and each addition role one file in the set most additions use.
 pub fn merge_roles(layers: &[(SampleIdentity, i32)]) -> RoleMerge {
     let layers: Vec<_> = layers.iter().map(|(lane, volume)| (lane.clone(), saved_volume(*volume))).collect();
     let role_of = |lane: &SampleIdentity| match lane {
@@ -230,7 +238,10 @@ pub fn merge_roles(layers: &[(SampleIdentity, i32)]) -> RoleMerge {
     };
     let addition_set = pick_set(sets(false));
     let normal_set = pick_set(sets(true)).or(addition_set).unwrap_or(SampleSet::Normal);
-    let mut files = vec![RoleFile { set: normal_set, role: Hitsound::Normal, layers: Vec::new() }];
+    let mut files = Vec::new();
+    if layers.iter().any(|(lane, _)| role_of(lane) == Hitsound::Normal) {
+        files.push(RoleFile { set: normal_set, role: Hitsound::Normal, layers: Vec::new() });
+    }
     for role in [Hitsound::Whistle, Hitsound::Finish, Hitsound::Clap] {
         if layers.iter().any(|(lane, _)| role_of(lane) == role) {
             files.push(RoleFile { set: addition_set.unwrap_or(normal_set), role, layers: Vec::new() });

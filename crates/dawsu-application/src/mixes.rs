@@ -398,6 +398,11 @@ impl MixFiles {
                 roles.push((file.set, file.role, cues));
             }
             let waves = render_roles(roles, cancel)?;
+            // The problem moment kept its old line, so its hitnormal shows the object's normal set.
+            let object_normal = target.moment(moment).hits().find_map(|lane| match lane {
+                SampleIdentity::Standard { set, sound: Sound::Hit(Hitsound::Normal), .. } => Some(*set),
+                _ => None,
+            }).unwrap_or(SampleSet::Normal);
             let index = match rendered.get(&waves) {
                 Some(index) => *index,
                 None => {
@@ -407,7 +412,7 @@ impl MixFiles {
                     index
                 }
             };
-            replace_moment(target, moment, merge.hits(index));
+            replace_moment(target, moment, merge.hits(index, object_normal));
             target.set_volume(moment, merge.volume);
         }
         Ok(())
@@ -722,12 +727,27 @@ impl IndexedMixes {
         Ok((self.reserve()?, false))
     }
 
-    /// An index whose files already hold exactly these role files, or a free one.
+    /// An index whose files already hold exactly these role files, or a free one. Without a
+    /// hitnormal file the index must have no hitnormal file of any set, or osu! plays that
+    /// instead of the skin's (lazer 131fe72 LegacySkin.cs:609-633). A free index has no file at all.
     fn allocate_roles(&mut self, root: &Path, waves: &RoleWaves) -> Result<(u32, bool), String> {
+        let has_hitnormal = waves.iter().any(|(_, role, _)| *role == Hitsound::Normal);
+        let hitnormals: BTreeSet<u32> = if has_hitnormal {
+            BTreeSet::new()
+        } else {
+            list_folder(root).map_err(|error| error.to_string())?.iter().filter_map(|name| {
+                match dawsu_hitsounding::rules::read_sample_file_name(name.rsplit(['/', '\\']).next()?)? {
+                    SampleIdentity::Standard { sound: Sound::Hit(Hitsound::Normal), index, .. } => Some(index.get()),
+                    _ => None,
+                }
+            }).collect()
+        };
+        let hitnormal_free = |index: u32| !hitnormals.contains(&index);
         if let Some(&existing) = self.reuse.iter().find(|index| {
-            waves.iter().all(|(set, role, wav)| {
-                has_contents(root, &format!("{}{index}.wav", export_settings::slot_name(*set, *role)), wav)
-            })
+            (has_hitnormal || hitnormal_free(**index))
+                && waves.iter().all(|(set, role, wav)| {
+                    has_contents(root, &format!("{}{index}.wav", export_settings::slot_name(*set, *role)), wav)
+                })
         }) {
             return Ok((existing, true));
         }

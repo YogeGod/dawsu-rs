@@ -440,7 +440,7 @@ fn a_hitnormal_with_two_finishes_keeps_the_hitnormal_and_merges_the_finishes() {
         role(SampleSet::Normal, Hitsound::Normal, &[(normal, 80)]),
         role(SampleSet::Drum, Hitsound::Finish, &[(drum, 80), (soft, 40)]),
     ]);
-    assert_eq!(merge.hits(5), [std(SampleSet::Normal, Hitsound::Normal, 5), std(SampleSet::Drum, Hitsound::Finish, 5)]);
+    assert_eq!(merge.hits(5, SampleSet::Soft), [std(SampleSet::Normal, Hitsound::Normal, 5), std(SampleSet::Drum, Hitsound::Finish, 5)]);
 }
 
 #[test]
@@ -462,18 +462,22 @@ fn two_hitnormals_are_mixed_into_one_hitnormal_file() {
     let soft = std(SampleSet::Soft, Hitsound::Normal, 3);
     let merge = merge_roles(&[(normal.clone(), 80), (soft.clone(), 40)]);
     assert_eq!(merge.files, [role(SampleSet::Normal, Hitsound::Normal, &[(normal, 80), (soft, 40)])]);
-    assert_eq!(merge.hits(4), [std(SampleSet::Normal, Hitsound::Normal, 4)]);
+    assert_eq!(merge.hits(4, SampleSet::Drum), [std(SampleSet::Normal, Hitsound::Normal, 4)]);
 }
 
 #[test]
-fn a_moment_without_a_hitnormal_gets_a_silent_one_and_sample_files_join_the_hitnormal() {
+fn a_moment_without_a_hitnormal_gets_no_hitnormal_file_and_sample_files_join_the_hitnormal() {
     let clap = std(SampleSet::Drum, Hitsound::Clap, 2);
     let whistle = std(SampleSet::Drum, Hitsound::Whistle, 3);
     let merge = merge_roles(&[(clap.clone(), 60), (whistle.clone(), 60)]);
+    // Yoge 2026-11-20: the player's skin plays the hitnormal, in the set the object has today.
     assert_eq!(merge.files, [
-        role(SampleSet::Drum, Hitsound::Normal, &[]),
         role(SampleSet::Drum, Hitsound::Whistle, &[(whistle, 60)]),
         role(SampleSet::Drum, Hitsound::Clap, &[(clap.clone(), 60)]),
+    ]);
+    assert!(!merge.has_hitnormal());
+    assert_eq!(merge.hits(6, SampleSet::Soft), [
+        std(SampleSet::Soft, Hitsound::Normal, 6), std(SampleSet::Drum, Hitsound::Whistle, 6), std(SampleSet::Drum, Hitsound::Clap, 6),
     ]);
     let kick = SampleIdentity::File("kick.wav".into());
     let merge = merge_roles(&[(kick.clone(), 70), (clap.clone(), 30)]);
@@ -501,7 +505,7 @@ fn a_merged_moment_compiles_on_a_circle_with_one_index_and_reads_back() {
         (std(SampleSet::Drum, Hitsound::Finish, 3), 80),
         (std(SampleSet::Soft, Hitsound::Finish, 4), 40),
     ]);
-    let hits: Vec<_> = merge.hits(5).into_iter().map(|lane| (lane, merge.volume)).collect();
+    let hits: Vec<_> = merge.hits(5, SampleSet::Normal).into_iter().map(|lane| (lane, merge.volume)).collect();
     edited.set_moment_state(MomentId(0), merge.volume, hits);
     let (encoded, problems) = comp(&source, &edited, Placement::OnObjects);
     assert!(problems.is_empty(), "{problems:?}");
