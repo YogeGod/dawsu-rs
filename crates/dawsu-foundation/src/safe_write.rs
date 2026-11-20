@@ -49,10 +49,17 @@ pub enum WriteOutcome {
 /// Writes a file that is new or that only dawsu! writes: temporary file first, then rename.
 pub fn write_new(target: &Path, bytes: &[u8]) -> Result<(), Error> {
     let temp = write_temporary(target, bytes)?;
-    fs::rename(&temp, target).map_err(|e| {
-        let _ = fs::remove_file(&temp);
-        Error::io("replacing the target", target, e)
-    })
+    let mut waits = REPLACE_WAITS.iter();
+    loop {
+        match fs::rename(&temp, target) {
+            Ok(()) => return Ok(()),
+            Err(e) if wait_if_held(&e, &mut waits) => continue,
+            Err(e) => {
+                let _ = fs::remove_file(&temp);
+                return Err(Error::io("replacing the target", target, e));
+            }
+        }
+    }
 }
 
 /// Publishes a new file atomically without replacing an existing destination.
@@ -98,13 +105,8 @@ pub fn replace(target: &Path, read_bytes: &[u8], new_bytes: &[u8], backups: &Bac
         // the search indexer, a cloud-sync client) can make this fail; wait a little and retry.
         match fs::rename(&temp, target) {
             Ok(()) => break,
+            Err(e) if wait_if_held(&e, &mut waits) => continue,
             Err(e) => {
-                if held_by_another_program(&e) {
-                    if let Some(wait) = waits.next() {
-                        std::thread::sleep(*wait);
-                        continue;
-                    }
-                }
                 let _ = fs::remove_file(&temp);
                 return Err(Error::io("replacing the target", target, e));
             }
@@ -116,7 +118,7 @@ pub fn replace(target: &Path, read_bytes: &[u8], new_bytes: &[u8], backups: &Bac
     Ok(WriteOutcome::Saved { warnings })
 }
 
-/// How long `replace` waits before each retry of a replace that another program blocked:
+/// How long `replace` and `write_new` wait before each retry of a replace that another program blocked:
 /// about 1 s in total. Only Windows keeps other programs from replacing an open file.
 #[cfg(windows)]
 const REPLACE_WAITS: [Duration; 8] = [
@@ -136,6 +138,21 @@ const REPLACE_WAITS: [Duration; 0] = [];
 /// "Access is denied" (error 5) or a sharing violation (error 32).
 fn held_by_another_program(e: &std::io::Error) -> bool {
     cfg!(windows) && (e.kind() == ErrorKind::PermissionDenied || e.raw_os_error() == Some(32))
+}
+
+/// When another program holds the target and the wait budget is not used up, waits once and
+/// returns true so the caller retries.
+fn wait_if_held(e: &std::io::Error, waits: &mut std::slice::Iter<'_, Duration>) -> bool {
+    if !held_by_another_program(e) {
+        return false;
+    }
+    match waits.next() {
+        Some(wait) => {
+            std::thread::sleep(*wait);
+            true
+        }
+        None => false,
+    }
 }
 
 fn unchanged(target: &Path, read_bytes: &[u8]) -> Result<bool, Error> {

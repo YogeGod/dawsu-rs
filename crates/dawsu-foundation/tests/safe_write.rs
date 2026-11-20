@@ -279,3 +279,24 @@ fn replace_never_overwrites_a_change_made_while_it_waited() {
     assert_eq!(fs::read(&target).unwrap(), b"changed by osu!");
     assert_eq!(files_in(&s.0), vec!["backups", "map.osu"], "no temporary file is left");
 }
+
+#[cfg(windows)]
+#[test]
+fn write_new_waits_for_another_program_that_briefly_holds_the_target() {
+    let s = Scratch::new("write-new-held");
+    let target = s.path("preferences.json");
+    fs::write(&target, b"old").unwrap();
+
+    let handle = hold_without_delete_sharing(&target);
+    let release = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        drop(handle);
+    });
+
+    let outcome = safe_write::write_new(&target, b"new");
+    release.join().unwrap();
+
+    outcome.unwrap();
+    assert_eq!(fs::read(&target).unwrap(), b"new");
+    assert_eq!(files_in(&s.0), vec!["preferences.json"], "no temporary file is left");
+}
