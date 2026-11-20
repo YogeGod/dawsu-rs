@@ -234,6 +234,8 @@ pub struct SaveReport {
     gain_recovery_warning: Option<String>,
     /// What the failed project write after the `.osu` write held, for the status line.
     unfinished_record: String,
+    /// The pending files this Save wrote into the mapset.
+    published_pending: Vec<String>,
 }
 pub fn save_document(document: &Document, backups: PathBuf) -> Result<SaveReport, String> {
     prepare_save(
@@ -433,6 +435,19 @@ fn prepare_save(
     }
     let (out, owned, effective, left_out, circles) = (rolled.out, rolled.owned, rolled.effective, rolled.left_out, rolled.circles);
     let written = effective.clone();
+    // The pending files the written difficulty plays go into the mapset with its mixes; the
+    // project keeps the others the drawn hits still play.
+    let mix_names: Vec<String> = mix_files.staged.iter()
+        .filter_map(|mix| mix.path.file_name()?.to_str().map(str::to_owned)).collect();
+    let pending_writes: Vec<mixes::StagedMix> = pending::used(&out, root, pending, &mix_names)?
+        .into_iter().map(|(name, bytes)| mixes::StagedMix::pending(root, &name, bytes)).collect();
+    let pending_names: Vec<String> = pending_writes.iter()
+        .filter_map(|mix| mix.path.file_name()?.to_str().map(str::to_owned)).collect();
+    let mut editor = pending::listing(root, pending)?;
+    editor.extend(mix_names.iter().cloned());
+    editor.sort();
+    pending::check_written(&out, root, &[mix_names, pending_names.clone()].concat(), &editor)?;
+    let pending_kept = pending::needed(hits, pending, &pending_names);
     // A sound set placement's moment needs gain recovery only when this Save mixes it.
     let mixed = if hits.placements().is_empty() {
         gain_recovery::Locations::new()
@@ -478,6 +493,7 @@ fn prepare_save(
     let plan = PreparedSave {
         path: path.to_path_buf(), backups, expected, out, mix_files, recovery_revision,
         ownership, inputs, map_changed, left_out, written, unwritten, sound_sets, loose, drawn: hits.clone(),
+        pending_writes, pending_kept,
     };
     plan.check_current(project, cancel)?;
     // Left-out parts are listed for the Save hitsounds summary, which every Save shows first.
@@ -546,6 +562,10 @@ struct PreparedSave {
     sound_sets: Option<sound_sets::LinkRecord>,
     /// HS groups left out before they ever became a circle; the project keeps them as loose hits.
     loose: Vec<roll_back::MomentState>,
+    /// The pending files the written difficulty plays, published with the mixes.
+    pending_writes: Vec<mixes::StagedMix>,
+    /// The pending files the drawn hits play that this Save leaves out of the mapset.
+    pending_kept: Vec<pending::PendingSample>,
 }
 
 impl PreparedSave {
@@ -570,7 +590,7 @@ impl PreparedSave {
         Ok(())
     }
 
-    fn apply(self, mut project: Option<&mut project::Project>, cancel: &dyn Fn() -> bool) -> Result<SaveReport, String> {
+    fn apply(mut self, mut project: Option<&mut project::Project>, cancel: &dyn Fn() -> bool) -> Result<SaveReport, String> {
         self.check_current(project.as_deref(), cancel)?;
         let needs_recovery_write = self.recovery_revision.is_some();
         // Gain recovery and the left-out parts are staged in one project write before the `.osu`
@@ -604,7 +624,12 @@ impl PreparedSave {
             project.save(settings)?;
         }
 
-        let publication = mixes::publish(&self.mix_files.staged, cancel)?;
+        // One all-or-nothing write: the mixes, then the pending files the difficulty plays.
+        let published_pending: Vec<String> = self.pending_writes.iter()
+            .filter_map(|mix| mix.path.file_name()?.to_str().map(str::to_owned)).collect();
+        let mut writes = std::mem::take(&mut self.mix_files.staged);
+        writes.append(&mut self.pending_writes);
+        let publication = mixes::publish(&writes, cancel)?;
         if staged
             && let Err(error) = project.as_ref().expect("a staged record has a project").check_current()
         {
@@ -643,6 +668,7 @@ impl PreparedSave {
                     hs_circle_ownership: self.ownership,
                     gain_recovery_warning,
                     unfinished_record,
+                    published_pending,
                 })
             }
             Ok(SaveOutcome::ChangedOnDisk) => Err(publication.failed(DIFFICULTY_CHANGED.into())),
@@ -1238,6 +1264,7 @@ impl Application {
             gain_recovery: self.project.as_ref().and_then(|p| p.settings.gain_recovery.clone()),
             unwritten: self.project.as_ref().and_then(|p| p.settings.unwritten.clone()),
             sound_sets: self.project.as_ref().and_then(|p| p.settings.sound_sets.clone()),
+            pending_samples: self.project.as_ref().and_then(|p| p.settings.pending_samples.clone()),
             time_signatures: Some(document.time_signatures.clone()),
             export_settings: document.export_settings.clone(),
             drum_lanes: document.drum_lanes.clone(),
@@ -1627,6 +1654,13 @@ impl Application {
                             let compiled = report.written;
                             let drawn = report.drawn;
                             if let Some(d) = self.document.as_mut().filter(|d| d.path == path) {
+                                // The written pending files are mapset files now.
+                                for name in &report.published_pending {
+                                    d.pending.published(name);
+                                }
+                                d.files.extend(report.published_pending.iter().cloned());
+                                d.files.sort();
+                                d.files.dedup();
                                 d.file = report.file;
                                 self.document_generation += 1;
                                 self.export.clear();
@@ -1875,6 +1909,7 @@ impl Application {
                     if hs {
                         settings.unanchored = Some(loose_rows(&plan.loose));
                     }
+                    settings.pending_samples = (!plan.pending_kept.is_empty()).then(|| plan.pending_kept.clone());
                     settings
                 });
                 PendingSave { version, hs, plan, project: project.clone(), settings }
@@ -2746,8 +2781,26 @@ fn load(
         }
         None => None,
     };
+    // The pending files the last Save left out come back before any hit that plays them.
+    if let Some(kept) = project.as_ref().and_then(|p| p.settings.pending_samples.as_ref()) {
+        let mut names = Vec::new();
+        for file in kept {
+            match document.pending.restore(&file.name, &file.sha256) {
+                Ok(_) => names.push(file.name.clone()),
+                Err(error) => warnings.push(format!("{error} Its lane plays the skin's sound.")),
+            }
+        }
+        let composer = &mut document.composer;
+        composer.history.update_external(|hits| hits.add_folder_samples(&names));
+        for lane in composer.history.document().lanes() {
+            if !composer.lanes.contains(&lane.identity) {
+                composer.lanes.push(lane.identity.clone());
+            }
+        }
+    }
     if let Some(recovery) = project.as_ref().and_then(|p| p.settings.gain_recovery.as_ref())
         && let Err(error) = gain_recovery::restore(&mut document, recovery, defaults)
+
     {
         warnings.push(format!("Editable hit gains could not be restored: {error}"));
     }
@@ -4514,6 +4567,17 @@ mod project_workflow {
         assert_eq!(std::fs::read(&sibling).unwrap(), sibling_bytes.as_bytes());
         assert_eq!(std::fs::read(&external).unwrap(), quieter);
         assert_eq!(std::fs::read(folder.join("normal-hitnormal.wav")).unwrap(), wav);
+        // The Save wrote the new backing sample because the difficulty plays it.
+        assert_eq!(std::fs::read(&backing).unwrap(), quieter);
+
+
+        let mut reopened = Application::headless();
+        reopened.project_root = Some(scratch.path("projects"));
+        open(&mut reopened, map);
+        let hits = reopened.document().unwrap().composer.hitsounds();
+        assert_eq!(hits.lane_slot(&new), Some(&old));
+        assert!(hits.moments()[0].hits().any(|sample| sample == &new));
+        assert_eq!(reopened.clip_for_lane(&new).unwrap().samples[0], 0.25);
     }
 
     #[test]
@@ -4580,6 +4644,162 @@ mod project_workflow {
         let cues = app.scheduled_sounds(app.document().unwrap());
         assert!(cues.iter().any(|c| c.at_ms == 1000.0 && c.clip.samples == [0.5]));
         assert!(cues.iter().any(|c| c.at_ms == 1500.0 && c.clip.samples == [0.25]));
+    }
+
+    const TONE: &[u8] = b"RIFF\x26\0\0\0WAVEfmt \x10\0\0\0\x01\0\x01\0\x80\xbb\0\0\0w\x01\0\x02\0\x10\0data\x02\0\0\0\0\x40";
+
+    fn hitnormal(index: u32) -> SampleIdentity {
+        SampleIdentity::Standard { set: SampleSet::Normal, sound: Sound::Hit(Hitsound::Normal), index: dawsu_foundation::CustomIndex::new(index) }
+    }
+
+    /// The project fixture with two new hitnormal layers, 2 and 3, both pending.
+    fn two_layers(scratch: &Scratch, project: bool) -> (Application, PathBuf, PathBuf) {
+        let folder = scratch.path("mapset");
+        let defaults = scratch.path("skin");
+        for directory in [&folder, &defaults] {
+            std::fs::create_dir_all(directory).unwrap();
+        }
+        let map = folder.join("test.osu");
+        std::fs::write(&map, include_bytes!("../tests/project-fixture.osu")).unwrap();
+        for name in ["normal-hitnormal.wav", "normal-hitclap.wav"] {
+            std::fs::write(defaults.join(name), TONE).unwrap();
+        }
+        let mut app = Application::headless();
+        if project {
+            app.project_root = Some(scratch.path("projects"));
+        }
+        app.preferences.default_samples = defaults;
+        open(&mut app, map.clone());
+        app.active_lane = app.document().unwrap().composer.lanes.iter().position(|lane| lane == &hitnormal(0)).unwrap();
+        app.command("addNumberedLayer");
+        app.command("addNumberedLayer");
+        assert!(app.error.is_none(), "{:?}", app.error);
+        let pending = &app.document().unwrap().pending;
+        assert!(pending.get("normal-hitnormal2.wav").is_some() && pending.get("normal-hitnormal3.wav").is_some());
+        (app, map, folder)
+    }
+
+    fn mapset(folder: &Path) -> Vec<String> {
+        dawsu_osu_format::list_folder(folder).unwrap()
+    }
+
+    /// Layer 2 alone plays on the circle; layer 3 stays unused.
+    fn use_layer_2(app: &mut Application) {
+        app.document.as_mut().unwrap().composer.apply("Use layer 2", |hits| {
+            let circle = dawsu_hitsounding::MomentId(0);
+            for lane in hits.moment(circle).hits().cloned().collect::<Vec<_>>() {
+                hits.remove_hit(circle, &lane);
+            }
+            hits.add_hit(circle, hitnormal(2));
+        });
+    }
+
+    #[test]
+    fn save_writes_only_the_pending_files_the_written_difficulty_plays() {
+        for hs in [false, true] {
+            let scratch = Scratch::new(if hs { "pending-save-hs" } else { "pending-save" });
+            let (mut app, map, folder) = two_layers(&scratch, true);
+            app.set_hs_mode(hs);
+            use_layer_2(&mut app);
+            let before = mapset(&folder);
+            save_through_summary(&mut app, scratch.path("backups"));
+            let after = mapset(&folder);
+            assert_eq!(after.iter().filter(|name| !before.contains(name)).collect::<Vec<_>>(), ["normal-hitnormal2.wav"], "hs {hs}");
+            assert_eq!(std::fs::read(folder.join("normal-hitnormal2.wav")).unwrap(), TONE);
+            let document = app.document().unwrap();
+            assert!(document.pending.get("normal-hitnormal2.wav").is_none());
+            assert!(document.pending.get("normal-hitnormal3.wav").is_some(), "the unused layer stays pending");
+            assert!(document.files.iter().any(|name| name == "normal-hitnormal2.wav"));
+            assert!(stored(&app).pending_samples.is_none(), "nothing the project needs is left pending");
+            let reopened = reopen(&app, &map);
+            assert!(reopened.document().unwrap().composer.hitsounds().moments()[0].has_hit(&hitnormal(2)));
+            assert_eq!(reopened.clip_for_lane(&hitnormal(2)).unwrap().samples, [0.5]);
+        }
+    }
+
+    #[test]
+    fn a_mix_source_layer_stays_out_of_the_mapset_and_comes_back_on_reopen() {
+        let scratch = Scratch::new("pending-mix-source");
+        let (mut app, map, folder) = two_layers(&scratch, true);
+        // The skin hitnormal and layer 2 at another volume: Save merges them into one hitnormal file.
+        app.document.as_mut().unwrap().composer.apply("Mix", |hits| {
+            let normal = dawsu_hitsounding::MomentId(0);
+            hits.add_hit(normal, hitnormal(2));
+            hits.set_hit_volume(normal, &hitnormal(2), 40);
+        });
+        let before = mapset(&folder);
+        save_through_summary(&mut app, scratch.path("backups"));
+        let added: Vec<_> = mapset(&folder).into_iter().filter(|name| !before.contains(name)).collect();
+        assert!(!added.iter().any(|name| name.starts_with("normal-hitnormal2") || name.starts_with("normal-hitnormal3")), "{added:?}");
+        assert!(!added.is_empty(), "the merged files are written");
+        let kept = stored(&app).pending_samples.expect("the project lists the mix source");
+        assert_eq!(kept.iter().map(|file| file.name.as_str()).collect::<Vec<_>>(), ["normal-hitnormal2.wav"]);
+        let mut reopened = Application::headless();
+        reopened.project_root = app.project_root.clone();
+        reopened.preferences.default_samples = app.preferences.default_samples.clone();
+        open(&mut reopened, map);
+        // The skin folder holds only the two sounds the map plays.
+        let warnings: Vec<_> = reopened.warnings.iter().filter(|w| !w.starts_with("Sample unavailable")).collect();
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert!(reopened.document().unwrap().composer.hitsounds().moments()[0].has_hit(&hitnormal(2)));
+        assert_eq!(reopened.clip_for_lane(&hitnormal(2)).unwrap().samples, [0.5]);
+    }
+
+    #[test]
+    fn a_loose_hit_on_a_layer_keeps_the_layer_pending_in_the_project() {
+        let scratch = Scratch::new("pending-loose");
+        let (mut app, map, folder) = two_layers(&scratch, true);
+        // A hit with no object: the project keeps it, the `.osu` never plays it.
+        app.document.as_mut().unwrap().composer.add(5000.0, hitnormal(2), 100, 0.0);
+        let before = mapset(&folder);
+        save_through_summary(&mut app, scratch.path("backups"));
+        assert_eq!(mapset(&folder).len(), before.len());
+        let kept = stored(&app).pending_samples.expect("the project lists the loose hit's layer");
+        assert_eq!(kept.iter().map(|file| file.name.as_str()).collect::<Vec<_>>(), ["normal-hitnormal2.wav"]);
+        let reopened = reopen(&app, &map);
+        let hits = reopened.document().unwrap().composer.hitsounds();
+        assert!(hits.moments().iter().any(|moment| moment.has_hit(&hitnormal(2))));
+        assert_eq!(reopened.clip_for_lane(&hitnormal(2)).unwrap().samples, [0.5]);
+    }
+
+    #[test]
+    fn a_failed_osu_write_removes_the_pending_files_it_wrote() {
+        let scratch = Scratch::new("pending-write-fails");
+        let (mut app, map, folder) = two_layers(&scratch, true);
+        use_layer_2(&mut app);
+        let before = (mapset(&folder), std::fs::read(&map).unwrap());
+        // The backup folder is a file, so the `.osu` write fails after the samples are written.
+        std::fs::write(scratch.path("backups"), b"not a folder").unwrap();
+        app.save_with_backups(scratch.path("backups"));
+        wait(&mut app);
+        assert!(app.error.is_some());
+        assert_eq!((mapset(&folder), std::fs::read(&map).unwrap()), before);
+        assert!(app.document().unwrap().pending.get("normal-hitnormal2.wav").is_some());
+    }
+
+    #[test]
+    fn a_save_without_a_project_writes_the_pending_file_it_plays() {
+        let scratch = Scratch::new("pending-no-project");
+        let (mut app, _, folder) = two_layers(&scratch, false);
+        use_layer_2(&mut app);
+        save_through_summary(&mut app, scratch.path("backups"));
+        assert_eq!(std::fs::read(folder.join("normal-hitnormal2.wav")).unwrap(), TONE);
+        assert!(!folder.join("normal-hitnormal3.wav").exists());
+    }
+
+    #[test]
+    fn the_written_file_check_refuses_a_pending_file_the_save_missed() {
+        let scratch = Scratch::new("pending-guard");
+        let (mut app, _, folder) = two_layers(&scratch, false);
+        use_layer_2(&mut app);
+        let document = app.document().unwrap();
+        let out = compile_snapshot(document, document.composer.hitsounds(), false, false, &|| false).unwrap().0;
+        let editor = pending::listing(&folder, &document.pending).unwrap();
+        let used = pending::used(&out, &folder, &document.pending, &[]).unwrap();
+        assert_eq!(used.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>(), ["normal-hitnormal2.wav"]);
+        assert!(pending::check_written(&out, &folder, &["normal-hitnormal2.wav".into()], &editor).is_ok());
+        let error = pending::check_written(&out, &folder, &[], &editor).unwrap_err();
+        assert!(error.contains("normal-hitnormal2.wav"), "{error}");
     }
 
     #[test]

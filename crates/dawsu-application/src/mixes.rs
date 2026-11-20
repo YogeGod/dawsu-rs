@@ -78,6 +78,11 @@ impl StagedMix {
         Ok((name, mix))
     }
 
+    /// A pending file a Save writes as it is, checked by its name when published.
+    pub(super) fn pending(root: &Path, name: &str, bytes: Vec<u8>) -> Self {
+        Self { path: root.join(name), wav: bytes, reuse: false, index: None }
+    }
+
     pub(super) fn clip(&self) -> AudioClip {
         let samples = self.wav[44..]
             .chunks_exact(2)
