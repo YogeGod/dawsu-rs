@@ -50,6 +50,10 @@ pub(super) struct CheckpointData {
     files: Vec<String>,
     last_save: Option<LastSave>,
     working: Working,
+    /// The pending files the session kept, by name and checksum. Older builds ignore the list;
+    /// copies from earlier builds have none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pending: Vec<crate::pending::PendingSample>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -173,7 +177,12 @@ impl From<IndexValue> for CustomIndex {
     }
 }
 
+fn pending_list(document: &Document) -> Vec<crate::pending::PendingSample> {
+    document.pending.files().map(|file| crate::pending::PendingSample { name: file.name.clone(), sha256: file.sha256.clone() }).collect()
+}
+
 impl Checkpoint {
+
     pub(super) fn new(document: &Document) -> Self {
         let metadata = |key: &str, fallback: &str| {
             document
@@ -192,6 +201,7 @@ impl Checkpoint {
                 files: document.files.clone(),
                 last_save: None,
                 working: Working::capture(document),
+                pending: pending_list(document),
             },
         }
     }
@@ -209,6 +219,9 @@ impl Checkpoint {
     }
 
     pub(super) fn refresh(&mut self, document: &Document) {
+        if self.data.source == document.path {
+            self.data.pending = pending_list(document);
+        }
         let history = &document.composer.history;
         if self.data.source == document.path
             && !history.is_transaction_open()
@@ -367,6 +380,10 @@ impl RecoveryCopy {
 
     pub(super) fn files(&self) -> &[String] {
         &self.checkpoint.files
+    }
+
+    pub(super) fn pending(&self) -> &[crate::pending::PendingSample] {
+        &self.checkpoint.pending
     }
 
     pub(super) fn original(&self) -> Option<&[u8]> {

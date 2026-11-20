@@ -7,7 +7,7 @@
 use dawsu_foundation::{digest::sha256_hex, safe_write};
 use dawsu_hitsounding::rules::read_sample_file_name;
 use dawsu_foundation::SampleIdentity;
-use dawsu_hitsounding::rules::{Answer, Plays, answer};
+use dawsu_hitsounding::rules::{Answer, Plays, Sample, answer};
 use dawsu_hitsounding::{Hitsounds, LaneSource};
 use dawsu_osu_format::{OsuFile, list_folder};
 use std::collections::{BTreeMap, BTreeSet};
@@ -75,6 +75,13 @@ impl Pending {
             names.extend(entries.filter_map(Result::ok).map(|entry| entry.file_name().to_string_lossy().to_ascii_lowercase()));
         }
         names
+    }
+
+    /// The names claimed for this mapset on disk, by this or another window, lowercased.
+    pub(crate) fn claimed_names(&self) -> BTreeSet<String> {
+        let Some(store) = &self.store else { return BTreeSet::new() };
+        std::fs::read_dir(&store.claims).map(|entries| entries.filter_map(Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().to_ascii_lowercase()).collect()).unwrap_or_default()
     }
 
     /// The custom indexes of the taken names.
@@ -156,21 +163,26 @@ pub(crate) struct PendingSample {
     pub sha256: String,
 }
 
-/// What plays for every sample of every object of `file`, in lazer's order.
-fn plays(file: &OsuFile, folder: &[String]) -> Vec<Plays> {
+/// Every sample of every object of `file`, in lazer's order.
+fn samples(file: &OsuFile, folder: &[String]) -> Vec<Sample> {
     let Answer::Objects(objects) = answer(file, folder) else { return Vec::new() };
     let mut out = Vec::new();
     for object in objects {
-        out.extend(object.samples.into_iter().map(|sample| sample.plays));
+        out.extend(object.samples);
         if let Some(slider) = object.slider {
             for part in slider.parts {
-                out.extend(part.samples.into_iter().map(|sample| sample.plays));
+                out.extend(part.samples);
             }
-            out.extend(slider.tail_samples.into_iter().chain(slider.sliding_samples).map(|sample| sample.plays));
-            out.push(slider.whistle_sample.plays);
+            out.extend(slider.tail_samples.into_iter().chain(slider.sliding_samples));
+            out.push(slider.whistle_sample);
         }
     }
     out
+}
+
+/// What plays for every sample of every object of `file`, in lazer's order.
+fn plays(file: &OsuFile, folder: &[String]) -> Vec<Plays> {
+    samples(file, folder).into_iter().map(|sample| sample.plays).collect()
 }
 
 /// The pending files the written `file` plays, with their bytes. `planned` are the names the
@@ -200,10 +212,23 @@ pub(crate) fn used(file: &OsuFile, root: &Path, pending: &Pending, planned: &[St
 /// The written-file check (M1): `file` must play the same sounds from the mapset as it will be
 /// after the Save (the files on disk plus `writes`) as the editor plays them (`editor`). A
 /// difference names the first file the mapset would miss.
-pub(crate) fn check_written(file: &OsuFile, root: &Path, writes: &[String], editor: &[String]) -> Result<(), String> {
+/// A sample that plays the skin's sound on both sides while dawsu! claimed one of its file names
+/// for a sample it made is refused too: that file was lost.
+pub(crate) fn check_written(file: &OsuFile, root: &Path, writes: &[String], editor: &[String], pending: &Pending) -> Result<(), String> {
     let mut after = list_folder(root).map_err(|e| e.to_string())?;
     after.extend(writes.iter().cloned());
-    let (written, drawn) = (plays(file, &after), plays(file, editor));
+    let written_samples = samples(file, &after);
+    let claimed = pending.claimed_names();
+    for sample in written_samples.iter().filter(|sample| matches!(sample.plays, Plays::Skin { .. }) && sample.lazer.use_beatmap_samples) {
+        for name in sample.lazer.legacy_lookup_names(true) {
+            let lost = ["", ".wav", ".mp3", ".ogg"].iter().map(|ext| format!("{name}{ext}"))
+                .find(|candidate| claimed.contains(&candidate.to_ascii_lowercase()));
+            if let Some(lost) = lost {
+                return Err(format!("dawsu! made {lost} for this map, but its sound is missing. Nothing was saved."));
+            }
+        }
+    }
+    let (written, drawn) = (written_samples.into_iter().map(|sample| sample.plays).collect::<Vec<_>>(), plays(file, editor));
     match written.iter().zip(&drawn).find(|(written, drawn)| written != drawn) {
         None if written.len() == drawn.len() => Ok(()),
         found => {

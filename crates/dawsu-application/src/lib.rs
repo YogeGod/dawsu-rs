@@ -449,7 +449,8 @@ fn prepare_save(
     let mut editor = pending::listing(root, pending)?;
     editor.extend(mix_names.iter().cloned());
     editor.sort();
-    pending::check_written(&out, root, &[mix_names, pending_names.clone()].concat(), &editor)?;
+    pending::check_written(&out, root, &[mix_names, pending_names.clone()].concat(), &editor, pending)?;
+
     let pending_kept = pending::needed(hits, pending, &pending_names);
     // A sound set placement's moment needs gain recovery only when this Save mixes it.
     let mixed = if hits.placements().is_empty() {
@@ -2778,6 +2779,11 @@ fn load(
     let mut document = Document::read_matching(path, recovery.as_ref())?;
     document.pending = pending::Pending::for_mapset(data_root, document.path.parent().ok_or("Missing mapset folder")?);
     let mut warnings = Vec::new();
+    // A recovery copy's pending files come back first, so every hit it restores finds its sound.
+    if let Some(copy) = &recovery {
+        let names = restore_pending(&mut document, copy.pending(), &mut warnings);
+        document.composer.history.update_external(|hits| hits.add_folder_samples(&names));
+    }
     let mut project = project_root.and_then(|root| {
         match project::Project::load(root, legacy_root, &document.path) {
             Ok(project) => Some(project),
@@ -2800,13 +2806,7 @@ fn load(
     };
     // The pending files the last Save left out come back before any hit that plays them.
     if let Some(kept) = project.as_ref().and_then(|p| p.settings.pending_samples.as_ref()) {
-        let mut names = Vec::new();
-        for file in kept {
-            match document.pending.restore(&file.name, &file.sha256) {
-                Ok(_) => names.push(file.name.clone()),
-                Err(error) => warnings.push(format!("{error} Its lane plays the skin's sound.")),
-            }
-        }
+        let names = restore_pending(&mut document, kept, &mut warnings);
         let composer = &mut document.composer;
         composer.history.update_external(|hits| hits.add_folder_samples(&names));
         for lane in composer.history.document().lanes() {
@@ -2959,6 +2959,18 @@ fn load(
         warnings,
         recovery,
     })
+}
+
+/// Takes back listed pending files whose kept copies still match; names each one that can't be.
+fn restore_pending(document: &mut Document, list: &[pending::PendingSample], warnings: &mut Vec<String>) -> Vec<String> {
+    let mut names = Vec::new();
+    for file in list {
+        match document.pending.restore(&file.name, &file.sha256) {
+            Ok(_) => names.push(file.name.clone()),
+            Err(error) => warnings.push(format!("{error} Its lane plays the skin's sound.")),
+        }
+    }
+    names
 }
 
 fn project_hits(document: &Document) -> Vec<project::ProjectHit> {
@@ -4861,6 +4873,42 @@ Title:");
     }
 
     #[test]
+    fn a_restored_recovery_copy_plays_its_pending_layer_and_saves_it() {
+        let scratch = Scratch::new("pending-recovery");
+        let (mut app, _, folder) = two_layers(&scratch, true);
+        use_layer_2(&mut app);
+        app.poll();
+        let offer = app.write_recovery_copy().unwrap().unwrap();
+        let mut restored = Application::create(Preferences::default(), false, None, None, false, app.data_root.clone());
+        restored.project_root = app.project_root.clone();
+        restored.restore_recovery(&offer.id).unwrap();
+        wait(&mut restored);
+        assert!(restored.error.is_none(), "{:?}", restored.error);
+        assert!(restored.document().unwrap().composer.hitsounds().moments()[0].has_hit(&hitnormal(2)));
+        assert_eq!(restored.clip_for_lane(&hitnormal(2)).unwrap().samples, [0.5]);
+        save_through_summary(&mut restored, scratch.path("backups"));
+        assert_eq!(std::fs::read(folder.join("normal-hitnormal2.wav")).unwrap(), TONE);
+    }
+
+    #[test]
+    fn save_refuses_a_name_dawsu_claimed_whose_sound_is_missing() {
+        let scratch = Scratch::new("pending-lost");
+        let (mut app, map, folder) = two_layers(&scratch, true);
+        use_layer_2(&mut app);
+        // The editor lost the pending file but its claim is still there: both sides play the
+        // skin's sound, which is not what the mapper drew.
+        let document = app.document.as_mut().unwrap();
+        let root = document.path.parent().unwrap().to_path_buf();
+        document.pending = pending::Pending::for_mapset(&app.data_root, &root);
+        let before = (mapset(&folder), std::fs::read(&map).unwrap());
+        app.save_with_backups(scratch.path("backups"));
+        wait(&mut app);
+        let error = app.error.clone().expect("Save refuses");
+        assert!(error.contains("normal-hitnormal2"), "{error}");
+        assert_eq!((mapset(&folder), std::fs::read(&map).unwrap()), before);
+    }
+
+    #[test]
     fn a_failed_output_write_removes_the_pending_files_it_wrote() {
         let scratch = Scratch::new("pending-output-fails");
         let (mut app, _, folder) = two_layers(&scratch, false);
@@ -4913,8 +4961,8 @@ Title:");
         let editor = pending::listing(&folder, &document.pending).unwrap();
         let used = pending::used(&out, &folder, &document.pending, &[]).unwrap();
         assert_eq!(used.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>(), ["normal-hitnormal2.wav"]);
-        assert!(pending::check_written(&out, &folder, &["normal-hitnormal2.wav".into()], &editor).is_ok());
-        let error = pending::check_written(&out, &folder, &[], &editor).unwrap_err();
+        assert!(pending::check_written(&out, &folder, &["normal-hitnormal2.wav".into()], &editor, &document.pending).is_ok());
+        let error = pending::check_written(&out, &folder, &[], &editor, &document.pending).unwrap_err();
         assert!(error.contains("normal-hitnormal2.wav"), "{error}");
     }
 

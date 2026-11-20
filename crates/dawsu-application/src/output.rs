@@ -116,7 +116,7 @@ impl WritePlan {
         editor.extend(mix_names);
         editor.sort();
         for target in &self.files {
-            crate::pending::check_written(&target.file, root, &writes, &editor)?;
+            crate::pending::check_written(&target.file, root, &writes, &editor, &source.pending)?;
         }
         Ok(())
     }
