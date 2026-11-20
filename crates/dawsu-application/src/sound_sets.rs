@@ -1698,7 +1698,10 @@ Mode:0
         std::fs::create_dir_all(f.scratch.path("library").join(LIBRARY_FOLDER)).unwrap();
         write_library_set(&f, "a.dawsuset", SET_ID, "Kick and clap", 2);
         let broken = f.scratch.path("library").join(LIBRARY_FOLDER).join("later.dawsuset");
-        std::fs::write(&broken, "{").unwrap();
+        // Broken and fixed contents of the same size, written with the same modified time.
+        let fixed = set_text("Later", &[("drum-hitclap.wav", 9)]).replace(SET_ID, OTHER_ID);
+        std::fs::write(&broken, format!("{{{}", " ".repeat(fixed.len() - 1))).unwrap();
+        let modified = std::fs::metadata(&broken).unwrap().modified().unwrap();
         let mut app = app(&f);
         open(&mut app, &f.map);
         let first = app.sound_set_library().unwrap();
@@ -1706,11 +1709,8 @@ Mode:0
         let library = listed(&app);
         assert_eq!((library.sets.len(), library.unreadable.clone()), (1, vec!["later.dawsuset".to_string()]));
         // The broken file is fixed with the same time and size: it is read again, not remembered.
-        let modified = std::fs::metadata(&broken).unwrap().modified().unwrap();
-        std::fs::write(&broken, "x").unwrap();
-        std::fs::File::options().write(true).open(&broken).unwrap().set_modified(modified).unwrap();
-        let fixed = set_text("Later", &[("drum-hitclap.wav", 9)]).replace(SET_ID, OTHER_ID);
         std::fs::write(&broken, &fixed).unwrap();
+        assert_eq!(std::fs::metadata(&broken).unwrap().len() as usize, fixed.len());
         std::fs::File::options().write(true).open(&broken).unwrap().set_modified(modified).unwrap();
         let deadline = Instant::now() + Duration::from_secs(10);
         while listed(&app).sets.len() < 2 {

@@ -325,6 +325,9 @@ test("Place sound set lists this map's sets, then the library, and places one by
   list.events.get("dblclick")({ target: { tagName: "OPTION", disabled: true } });
   assert.equal(calls.filter(call => call.kind === "place_library_sound_set").length, 1);
   assert.equal(message.textContent, "Choose a sound set to place.");
+  list.value = "b";
+  list.events.get("dblclick")({ target: { tagName: "OPTION", disabled: false } });
+  assert.deepEqual(JSON.parse(JSON.stringify(calls.at(-1))), { kind: "place_library_sound_set", map: "Test.osu", id: "b" }, "double-clicking a set places it");
   button(dialog, "Browse…")[1]();
   await settle();
   assert.deepEqual(JSON.parse(JSON.stringify(calls.slice(-3))), ["closeModal", ["pick_sound_set", { map: "Test.osu" }], { show: { placed: true } }]);

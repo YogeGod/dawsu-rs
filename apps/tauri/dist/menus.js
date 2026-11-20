@@ -168,7 +168,7 @@ function showSoundSetLibrary(map, library) {
     place();
   });
   list.addEventListener("dblclick", event => {
-    if (event.target?.tagName === "OPTION" && !event.target.disabled) place();
+    if (!event.target?.disabled) place();
   });
   modal("sound-sets", "Place sound set", [list, message], [["Cancel", closeModal], browse, ["Place", place, true]]);
   list.focus?.();
