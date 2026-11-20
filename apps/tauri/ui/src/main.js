@@ -1,11 +1,14 @@
 import "./tokens.css";
+import "./parts/pill.css";
 import { mount } from "svelte";
 import { bridge } from "./lib/bridge.svelte.js";
 import Boundary from "./lib/Boundary.svelte";
+import AuditionPill from "./parts/AuditionPill.svelte";
 import SnapSlider from "./parts/SnapSlider.svelte";
+import ToolPills from "./parts/ToolPills.svelte";
 
 // Each part replaces the children of its [data-ui-mount="name"] host in index.html.
-const parts = { snap: SnapSlider };
+const parts = { tools: ToolPills, snap: SnapSlider, audition: AuditionPill };
 
 for (const host of document.querySelectorAll("[data-ui-mount]")) {
   const part = parts[host.dataset.uiMount];

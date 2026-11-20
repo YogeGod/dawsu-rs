@@ -10,8 +10,6 @@ test("the ribbon compacts its grouped controls while keeping Save labeled", () =
     assert.match(html, new RegExp('role="group" aria-label="' + group + '"'));
   }
   assert.match(css, /@media\s*\(max-width:\s*1320px\)\s*\{[^}]*\.ribbon-caption\s*\{\s*display:\s*none/);
-  assert.match(css, /@media\s*\(max-width:\s*1140px\)\s*\{[^}]*\.ribbon-tool-label\s*\{\s*display:\s*none/);
-  assert.match(app, /button\.ariaLabel = name/);
   const save = html.match(/<button[^>]*data-action="review_save"[^>]*>(.*?)<\/button>/s)?.[1];
   assert.match(save, />Save /);
   assert.doesNotMatch(save, /class="ribbon-(?:caption|tool-label)"/);

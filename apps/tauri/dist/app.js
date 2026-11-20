@@ -308,13 +308,11 @@ function show(next) {
     $("ruler-follow").setAttribute?.("aria-pressed", String(!!view.follow));
     followPlayhead();
     $("audition").checked = view.audition;
-    $("toolbar-audition").setAttribute?.("aria-pressed", String(!!view.audition));
     if (wasPlaying !== view.playing) {
       $("play-icon").src = view.playing ? "studio-assets/icons/Pause.svg" : "studio-assets/icons/Play.svg";
       $("play-label").textContent = view.playing ? "Pause" : "Play";
       $("play").dataset.playing = String(!!view.playing);
     }
-    for (const button of document.querySelectorAll(".editor-tool-button")) button.classList.toggle("active", button.textContent === view.tool);
   }
   refreshLaneDelete();
   renderDialogs();
@@ -2679,22 +2677,6 @@ const toolIcons = {
   Select: "MousePointer2", Draw: "Drumstick", Erase: "Eraser", Mute: "VolumeX",
   Grab: "Hand", Range: "Scan", Ramp: "TrendingUp",
 };
-for (const [name, glyph] of Object.entries(toolIcons)) {
-  const button = makeButton("", () => act({ kind: "tool", name }));
-  button.title = name;
-  button.ariaLabel = name;
-  const icon = document.createElement("img");
-  icon.src = "studio-assets/icons/" + glyph + ".svg";
-  icon.alt = "";
-  icon.className = "button-icon";
-  const label = document.createElement("span");
-  label.className = "ribbon-tool-label";
-  label.textContent = name;
-  button.prepend(label);
-  button.prepend(icon);
-  $("tools").append(button);
-  button.className = "editor-tool-button";
-}
 for (const button of document.querySelectorAll("[data-action]")) {
   button.addEventListener("click", () => act({ kind: button.dataset.action }));
 }
@@ -2796,9 +2778,6 @@ $("used-only").addEventListener("change", () => {
 });
 toggle("cycle", "cycle");
 toggle("audition", "audition");
-$("toolbar-audition").addEventListener("click", () => {
-  if (scene && !view.busy) act({ kind: "audition", on: !view.audition });
-});
 function openSiblingDifficulty(path) {
   if (scene && !view.busy && !drag && path && path !== scene.path) act({ kind: "open", path });
 }

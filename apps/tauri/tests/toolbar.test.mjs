@@ -58,9 +58,16 @@ const sceneWith = fields => JSON.stringify({
 });
 
 test("the toolbar holds the tool pills, Snap, Audition, Follow, Return and the Hitsounds/Drums switch", () => {
-  for (const id of ["tools", "grid-options", "toolbar-audition", "follow", "transport-return", "samples-view", "drums-view"]) {
+  for (const id of ["grid-options", "follow", "transport-return", "samples-view", "drums-view"]) {
     assert.match(ribbon, new RegExp('id="' + id + '"'), id);
   }
+  // The tool pills and the Audition pill are Svelte parts, each in its own ribbon group.
+  for (const [group, part] of [["Tool", "tools"], ["Audition", "audition"], ["Grid", "snap"]]) {
+    const start = ribbon.indexOf('aria-label="' + group + '"');
+    const body = ribbon.slice(start, ribbon.indexOf('class="ribbon-group"', start));
+    assert.match(body, new RegExp('data-ui-mount="' + part + '"'), group);
+  }
+  assert.doesNotMatch(ribbon, /id="tools"|id="toolbar-audition"/);
   const lanesGroup = ribbon.slice(ribbon.indexOf('aria-label="Lanes"'));
   const lanesPopover = lanesGroup.slice(0, lanesGroup.indexOf('class="ribbon-group"'));
   assert.doesNotMatch(lanesPopover, /id="samples-view"/, "the view switch sits on the toolbar, not in the Lanes pop-up");
@@ -75,24 +82,21 @@ test("the toolbar holds the tool pills, Snap, Audition, Follow, Return and the H
   assert.match(revert[1], /<svg[\s\S]*class="ribbon-secondary-label"/, "Revert can go icon-only");
 });
 
-test("tool pills put the label beside the icon, with no :has() or color-mix()", () => {
+test("the old tool buttons left style.css; Follow and Return keep their toggle look", () => {
   assert.ok(toolbarCss.length > 0, "toolbar CSS block");
-  assert.match(toolbarCss, /#editor-ribbon #tools button[^{]*\{[^}]*display:\s*inline-flex/);
+  assert.doesNotMatch(css, /#tools\b|editor-tool-button|ribbon-tool-label/);
+  assert.match(toolbarCss, /#editor-ribbon \.toolbar-toggle\s*\{[^}]*display:\s*inline-flex/);
   assert.match(toolbarCss, /#editor-ribbon \.ribbon-caption\s*\{[^}]*display:\s*none/);
   assert.doesNotMatch(toolbarCss, /:has\(|color-mix\(|aspect-ratio/);
   assert.match(toolbarCss, /\.toolbar-track[^{]*\{[^}]*position:\s*relative/);
   assert.match(toolbarCss, /@media\s*\(forced-colors:\s*active\)\s*\{[^{}]*aria-pressed=true[^{}]*\{[^}]*outline/);
 });
 
-test("every tool shows its name from 1280 px; below that only the active tool keeps it", () => {
-  const queries = [...toolbarCss.matchAll(/@media\s*\(max-width:\s*(\d+)px\)\s*\{((?:[^{}]*\{[^}]*\})*)\s*\}/g)];
-  const hides = queries.filter(([, , body]) => /ribbon-tool-label\s*\{[^}]*display:\s*none/.test(body));
-  assert.ok(hides.length > 0, "names hide somewhere");
-  for (const [, width, body] of hides) {
-    assert.ok(Number(width) < 1280, "tool names hide only below 1280 px, not at " + width);
-    assert.match(body, /button:not\(\.active\) \.ribbon-tool-label\s*\{[^}]*display:\s*none/, "only inactive names hide");
-    assert.match(body, /button\.active \.ribbon-tool-label\s*\{[^}]*display:\s*inline/, "the active name beats the older 1140 px rule");
-  }
+test("toolIcons keeps all seven tools for the right-click picker, in the parts' order", async () => {
+  const { TOOLS } = await import("../ui/src/lib/tools.js");
+  const names = [...app.match(/const toolIcons = \{([^}]*)\}/)[1].matchAll(/(\w+):/g)].map(match => match[1]);
+  assert.deepEqual(names, TOOLS);
+  assert.equal(names.length, 7);
 });
 
 test("the status bar shows speeds first, then status and problems, with counts on the right", () => {
@@ -109,21 +113,22 @@ test("show() fills the Snap label, Audition, the problem summary and the hit and
   evaluate(`show({ busy: false, hasDocument: true, audition: true, outputProblems: [{ time: 1 }, { time: 2 }],
     scene: ${sceneWith({})} })`);
   assert.equal(get("grid-options").textContent, undefined, "the Snap slider shows the snap; the menu button stays ▾");
-  assert.equal(get("toolbar-audition")["aria-pressed"], "true");
+  assert.equal(get("audition").checked, true, "the Inspector's Audition box follows the editor");
   assert.equal(get("problem-summary").hidden, false);
   assert.equal(get("problem-summary-text").textContent, "2 moments can't be saved");
   assert.equal(get("hit-lane-counts").hidden, false);
   assert.equal(get("hit-lane-counts").textContent, "3 hits · 2 lanes");
   assert.equal(get("playback-rates").hidden, false);
 
-  get("toolbar-audition").events.get("click")();
+  get("audition").checked = false;
+  get("audition").events.get("change")();
   await settle();
   assert.deepEqual(calls.at(-1), { kind: "audition", on: false });
 
   evaluate(`show({ busy: false, hasDocument: true, audition: false, outputProblems: [{ time: 1 }],
     scene: ${sceneWith({ snap: false, lanes: [{ key: "a" }], moments: [[100, 100, true, [[0, false]]]] })} })`);
   assert.equal(get("grid-options").textContent, undefined);
-  assert.equal(get("toolbar-audition")["aria-pressed"], "false");
+  assert.equal(get("audition").checked, false);
   assert.equal(get("problem-summary-text").textContent, "1 moment can't be saved");
   assert.equal(get("hit-lane-counts").textContent, "1 hit · 1 lane");
 
