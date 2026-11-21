@@ -4,6 +4,7 @@ import "./parts/pill.css";
 import "./parts/inspector.css";
 import "./parts/browser.css";
 import "./parts/bottom-panel.css";
+import "./parts/node-graph.css";
 import "./timeline.css";
 import { mount } from "svelte";
 import { createEditor } from "./editor/boot.js";
@@ -29,6 +30,7 @@ import InspectorHistory from "./parts/InspectorHistory.svelte";
 import InspectorLane from "./parts/InspectorLane.svelte";
 import InspectorSelection from "./parts/InspectorSelection.svelte";
 import MapPreview from "./parts/MapPreview.svelte";
+import NodeGraphPanel from "./parts/NodeGraphPanel.svelte";
 import SnapSlider from "./parts/SnapSlider.svelte";
 import ToolPills from "./parts/ToolPills.svelte";
 import TransportBar from "./parts/TransportBar.svelte";
@@ -45,6 +47,8 @@ const parts = {
   "inspector-bookmarks": InspectorBookmarks, "inspector-history": InspectorHistory,
   // The map preview, at the top of the Inspector while View › Map preview is on.
   "map-preview": MapPreview,
+  // The node graph editor panel (M4).
+  "node-graph": NodeGraphPanel,
   // The Browser (#sample-browser): tabs and search, the sample tree, the preview with Use and Browse.
   "browser-head": BrowserHead, "browser-list": BrowserList, "browser-preview": BrowserPreview,
   // The bottom panel: its side column (tabs or the folded strip) and the Mixer tab.
@@ -86,6 +90,13 @@ export function toggleMapPreview() {
 }
 export const mapPreviewOn = () => bridge.mapPreview;
 
+// View › Node graph: toggles the inline M4 node graph panel and timeline overlay.
+export function toggleNodeGraph() {
+  bridge.nodeGraphOpen = !bridge.nodeGraphOpen;
+}
+export const nodeGraphOn = () => bridge.nodeGraphOpen;
+export const nodeGraphViewer = () => bridge.nodeGraphViewer;
+
 // The bottom panel's tab, read by renderPanelLayout() and paint().
 export const bottomTab = () => bridge.bottomTab;
 
@@ -117,7 +128,7 @@ export const snapGroup = () => bridge.snapGroup?.name;
 
 // Boot the main editor runtime only on the editor window (never on export.html or drum.html).
 const uiBridge = {
-  update, lanes, inspector, browser, mixer, toggleMapPreview, mapPreviewOn, bottomTab, hitCard, commands, menu, centre, wheelSnap, snapGroup,
+  update, lanes, inspector, browser, mixer, toggleMapPreview, mapPreviewOn, toggleNodeGraph, nodeGraphOn, nodeGraphViewer, bottomTab, hitCard, commands, menu, centre, wheelSnap, snapGroup,
 };
 if (document.getElementById("grid")) {
   createEditor(globalThis, { ui: uiBridge });

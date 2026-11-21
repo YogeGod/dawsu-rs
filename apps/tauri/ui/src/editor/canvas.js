@@ -6,6 +6,7 @@ import {
   rulerBandHeight, slateTimeline, snapColour, snapColours, snapTickHeights,
   trackShade, visibleWarningMarkers, volumeColour,
 } from "./helpers.js";
+import { visibleViewerOverlay } from "../lib/node-graph.js";
 
 export function attachCanvas(ctx) {
   const { env, state, dom, elements } = ctx;
@@ -505,6 +506,30 @@ export function attachCanvas(ctx) {
     const waveformMiddle = (r.height + rulerBandHeight) / 2;
     const waveAmplitude = Math.min(state.waveformHeight, Math.max(0, r.height - rulerBandHeight)) / 2;
     if (state.waveformShown && waveAmplitude > 0) waveform(r.ctx, r.width, waveformMiddle, waveAmplitude, start, r.width / zoom);
+    const ngOverlay = visibleViewerOverlay(
+      ctx.ui()?.nodeGraphViewer?.(), start, end, xOf, rulerBandHeight + 2, Math.max(0, r.height - rulerBandHeight - 4),
+    );
+    if (ngOverlay?.kind === "curve" && ngOverlay.points.length) {
+      r.ctx.save();
+      r.ctx.strokeStyle = "#f0aa70";
+      r.ctx.lineWidth = 1.5;
+      r.ctx.beginPath();
+      for (const [i, [px, py]] of ngOverlay.points.entries()) {
+        if (i === 0) r.ctx.moveTo(px, py);
+        else r.ctx.lineTo(px, py);
+      }
+      r.ctx.stroke();
+      r.ctx.restore();
+    } else if (ngOverlay?.kind === "events" && ngOverlay.markers.length) {
+      r.ctx.save();
+      r.ctx.fillStyle = "#62d6cf";
+      r.ctx.strokeStyle = "#62d6cf";
+      for (const m of ngOverlay.markers) {
+        line(r.ctx, "#62d6cf", m.x, rulerBandHeight + 2, m.x, r.height - 2);
+        r.ctx.fillRect(m.x - 2, rulerBandHeight + 2, 4, 4);
+      }
+      r.ctx.restore();
+    }
     drawGameplay(r.ctx, state.scene.gameplay, xOf, waveformMiddle, r.width, Math.max(0, Math.min(objectSize, r.height - rulerBandHeight)));
     // v3 §5: the 40 px ruler, #0c0c0c with a 1 px --editor-selected bottom edge, bar numbers 13 px/600.
     r.ctx.fillStyle = slateTimeline.ruler;

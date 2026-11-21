@@ -37,6 +37,7 @@ const menuRules = {
   waveform: () => $("ruler-waveform").getAttribute("aria-pressed") === "true",
   usedOnly: () => !!$("used-only").checked,
   mapPreview: () => !!window.dawsuUi?.mapPreviewOn?.(),
+  nodeGraph: () => !!window.dawsuUi?.nodeGraphOn?.(),
   tool: (_, item) => view.tool === item.run[1],
 };
 
@@ -76,6 +77,7 @@ const menuCalls = {
   showHelp: () => run(showHelp),
   deleteActiveLane: () => deleteActiveLane(),
   toggleMapPreview: () => window.dawsuUi?.toggleMapPreview?.(),
+  toggleNodeGraph: () => window.dawsuUi?.toggleNodeGraph?.(),
 };
 
 const menuField = path => path.split(".").reduce((value, key) => value?.[key], { view, scene });

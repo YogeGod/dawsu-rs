@@ -28,6 +28,9 @@ export class Bridge {
   bottomTab = $state("volume");
   // View › Map preview: kept in this window only, never saved.
   mapPreview = $state(false);
+  // View › Node graph: kept in this window only, never saved.
+  nodeGraphOpen = $state(false);
+  nodeGraphViewer = $state.raw(null);
 
   // No map, a job running or a fault: the parts show but take no input.
   get disabled() {
