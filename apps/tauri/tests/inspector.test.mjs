@@ -333,3 +333,20 @@ test("a problem mark in Difficulty moves the playhead to its time and centres it
   evaluate("view.busy = true;");
   assert.equal(evaluate('inspectorAction("jump", 50000)'), false, "nothing moves while a job runs");
 });
+
+test("the problem strip's data is handed over from the editor's state and kept until it changes", async () => {
+  const { evaluate } = await frontend();
+  evaluate(`grid.clientWidth = 1000;
+    view = { busy: false, duration: 200000, outputProblems: [{ target: "a.osu", timeline: "a.osu", time: 500, message: "m" }] };
+    scene = { path: "a.osu", version: "Hard", lanes: [], viewStart: 4000, zoom: 0.5, orphanedHits: [700],
+      moments: [[500, 100, true, []], [700, 100, false, [[0, false]]], [900, 100, true, [[0, false]]]] };`);
+  assert.deepEqual(JSON.parse(evaluate("JSON.stringify(inspectorModel().problemStrip)")), {
+    path: "a.osu", name: "Hard", duration: 200000, problems: [{ target: "a.osu", timeline: "a.osu", time: 500, message: "m" }],
+    orphaned: [700], objects: [500, 900], viewStart: 4000, viewWidth: 2000,
+  });
+  assert.equal(evaluate("inspectorModel().problemStrip === inspectorModel().problemStrip"), true, "unchanged state, same data");
+  evaluate("view = { ...view, outputProblems: [] };");
+  assert.deepEqual(JSON.parse(evaluate("JSON.stringify(inspectorModel().problemStrip.problems)")), []);
+  evaluate("scene = null;");
+  assert.equal(evaluate("inspectorModel().problemStrip"), null);
+});

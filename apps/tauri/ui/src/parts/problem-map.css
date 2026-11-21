@@ -3,9 +3,9 @@
 .pm {
   display: flex;
   flex-direction: column;
-  gap: var(--space-8);
+  gap: var(--space-12);
   margin: 4px 0;
-  padding: var(--space-6) var(--space-6) 0;
+  padding: var(--space-12) var(--space-12) var(--space-4);
   color: var(--editor-secondary);
   font-size: var(--text-sm);
 }
@@ -36,6 +36,32 @@
   overflow: hidden;
   border-radius: var(--radius-4);
   background: var(--editor-canvas);
+}
+/* Inset 2 px each side, so a mark at the song's start or end stays visible. */
+.pm-track {
+  position: absolute;
+  inset: 0 2px;
+}
+/* One tick per pixel column that holds an object, as F1 draws them. */
+.pm-tick {
+  position: absolute;
+  top: 15px;
+  left: var(--at);
+  width: 1px;
+  height: 4px;
+  background: var(--editor-selected);
+}
+/* The part of the song the timeline shows. */
+.pm-frame {
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  left: var(--at);
+  width: var(--span);
+  min-width: 2px;
+  border: 1px solid var(--editor-disabled);
+  border-radius: 3px;
+  pointer-events: none;
 }
 /* A 7 px target around a 3 px mark, so a mark is easy to hit. */
 .pm-mark {

@@ -26,8 +26,9 @@ impl OutputProblem {
 }
 
 /// The times of hits with no object (v3's "orphaned"): moments that hold at least one hit and sit
-/// on no object, once per moment. Outside HS mode Save keeps them in the project and osu! never
-/// plays them. In HS mode Save makes them circles, so none is orphaned.
+/// on no object, once per moment. osu! never plays them. Outside HS mode Save keeps them in the
+/// project; a difficulty with no project can't keep them, so each also stays a Save problem
+/// (NoObject). In HS mode Save makes them circles, so none is orphaned.
 pub fn orphaned_hit_times(hits: &Hitsounds, hs_mode: bool) -> Vec<f64> {
     if hs_mode {
         return Vec::new();
