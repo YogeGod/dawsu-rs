@@ -23,9 +23,14 @@ pub(super) fn create(
     let stem = lane_name(&family);
     let default_name = format!("{stem}.wav");
     let defaults_list = crate::pending::sample_folder(defaults);
-    let default = find_case_insensitive(&defaults_list, &default_name)
-        .ok_or_else(|| format!("No default WAV for {stem} in the configured sample folder."))?;
-    let source = safe_child(defaults, default)?;
+    let no_wav = || format!("No default WAV for {stem} in the configured sample folder.");
+    let source = match find_case_insensitive(&defaults_list, &default_name) {
+        Some(default) => safe_child(defaults, default)?,
+        // The folder plays its own .ogg or .mp3 for this sound: a layer copied from osu!'s
+        // shipped sound would sound different from its main lane.
+        None if ["ogg", "mp3"].iter().any(|ext| find_case_insensitive(&defaults_list, &format!("{stem}.{ext}")).is_some()) => return Err(no_wav()),
+        None => crate::default_sounds::path(&default_name).ok_or_else(no_wav)?,
+    };
     let clip = decode(&source)?;
     let bytes =
         std::fs::read(&source).map_err(|error| format!("Reading {default_name}: {error}"))?;

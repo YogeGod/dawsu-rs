@@ -33,10 +33,19 @@ ASIO is available in the optional Tauri development build with `--features asio-
 
 The ASIO driver is loaded when selected. While it is active, switch to WASAPI before changing the ASIO driver or buffer. Publication of an ASIO build requires the agreement and attribution recorded in the vault's ASIO decision.
 
+## Tools
+
+- `node tools/everyday-check.mjs --exe target/debug/dawsu-tauri.exe`: runs against a built exe. It uses the real editor like a mapper on a copy of a fixture map and reports one line per step ([AGENTS.md](AGENTS.md#verification)). Options: `--map`, `--shots`, `--json`, `--keep-profile`.
+- `node tools/ui-screenshot.mjs`: screenshots the built editor on a copied map.
+- `node tools/perf-measure.mjs`: measures load and playhead timings.
+- `tools/lazer-oracle`: checks osu! behaviour against osu!lazer ([its README](tools/lazer-oracle/README.md)).
+
+These need Windows (WebView2), except the oracle.
+
 ## User data and assets
 
 The rewrite uses its own `dawsu-rs` app-data folder. This first slice saves its own preferences; legacy project import covers offset, locators, cycle and hits with no object. Other project fields and old preferences remain incomplete. Backups go in that separate folder, outside the mapset.
 
-Default samples can be selected in Preferences. On this development machine, an available read-only copy in the old app's source is used as a fallback. Those assets are CC BY-NC and are **not bundled**. The supplied test map is a local staging copy and is not a licence grant to redistribute it.
+dawsu! ships osu!'s 21 default hit and slider sounds, unchanged from ppy/osu-resources. They are CC BY-NC 4.0, so no build of dawsu! may be sold ([THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)). A default sounds folder chosen in Preferences comes first, and the shipped sounds fill in what it lacks. On this development machine, a read-only copy of the old app's sounds is still used as that folder when none is saved. The supplied test map is a local staging copy and is not a licence grant to redistribute it.
 
 See [the feature ledger](FEATURE-COVERAGE.md) for the full target.
