@@ -136,7 +136,7 @@ async function update(action, full = true) {
         break;
       case "openHitsoundFolder":
         if (next.hitsoundLibrary) await invoke("open_editor_folder", { folder: "library" });
-        else $("folders").click();
+        else openFolders();
         break;
       case "reviewOutput":
         await openMergeSettings();
@@ -352,12 +352,73 @@ function renderRecovery({ offers = [], error }) {
   }
 }
 
+// The docking state: narrow windows fold the Browser for the session (docking.js, from matchMedia).
+function dockState() {
+  return dock?.state?.() ?? { narrow: false, override: null };
+}
+
+function setDockOverride(value) {
+  dock?.setOverride?.(value);
+  renderPanelLayout();
+}
+
+function panelPrefs() {
+  const panels = view.panels ?? {};
+  return { browserOpen: !!panels.browser, inspectorOpen: !!panels.inspector,
+    controllerOpen: !!panels.controller, classic: !!view.classicBrowser };
+}
+
+// What the frame shows for the Browser ("open", "classic", "folded" or "off") and the Inspector.
+function effectivePanelState() {
+  const { narrow, override } = dockState();
+  const prefs = panelPrefs();
+  return window.editorDocking?.effectivePanels(prefs, narrow, override) ??
+    { browser: prefs.browserOpen ? "open" : "folded", inspector: prefs.inspectorOpen ? "open" : "folded" };
+}
+
+// Whether a panel shows open: switches, menu rows and View settings show this, not the preference.
+function panelOn(panel) {
+  if (panel === "controller") return !!view.panels?.controller;
+  const state = effectivePanelState()[panel];
+  return state === "open" || state === "classic";
+}
+
+// Every switch, rail, menu row, checkbox and close button folds or opens a panel through here.
+function togglePanel(panel) {
+  if (!scene || !view.panels || view.busy) return;
+  const { narrow, override } = dockState();
+  const plan = window.editorDocking?.togglePlan(panel, panelPrefs(), narrow, override) ??
+    { act: { kind: "panel", panel, on: !view.panels[panel] } };
+  if (plan.act) return act(plan.act);
+  setDockOverride(plan.override);
+}
+
+// A rail icon: open the panel, then bring its section into view.
+async function openPanelAt(panel, section) {
+  if (!scene || !view.panels || view.busy) return;
+  if (!panelOn(panel)) await togglePanel(panel);
+  if (!panelOn(panel)) return;
+  let target;
+  if (panel === "browser") {
+    const source = $("sample-browser-source");
+    const wanted = section === "library" ? "library" : section === "browse" ? "mapset" : source.value;
+    if (source.value !== wanted) {
+      source.value = wanted;
+      source.dispatchEvent(new Event("change"));
+    }
+    target = section === "search" ? $("sample-browser-filter") : source;
+  } else {
+    target = $("editor-inspector").querySelector(`section[aria-label="${section}"] button`);
+  }
+  target?.scrollIntoView?.({ block: "nearest" });
+  target?.focus();
+}
+
 function renderPanelLayout() {
   if (!view.panels) return;
-  const { inspector, controller, laneNames, browser: showBrowser } = view.panels;
-  $("view-inspector").ariaPressed = String(!!scene && !!inspector);
-  $("view-browser").ariaPressed = String(!!scene && !!showBrowser);
-  $("editor-dock").dataset.inspector = String(inspector);
+  const { controller, laneNames } = view.panels;
+  const panels = effectivePanelState();
+  for (const [panel, id] of Object.entries(panelSwitches)) $(id).ariaPressed = String(!!scene && panelOn(panel));
   $("editor-arrange").dataset.controller = String(controller);
   $("editor-arrange").dataset.laneNames = String(laneNames);
   const namesToggle = $("toggle-lane-names");
@@ -365,21 +426,11 @@ function renderPanelLayout() {
   namesToggle.title = namesToggle.ariaLabel = laneNames === false ? "Show lane names" : "Hide lane names";
   namesToggle.textContent = laneNames === false ? "›" : "‹";
   $("volume-controller-panel").hidden = !controller;
-  const browser = scene && showBrowser ? (view.classicBrowser ? "classic" : "tree") : "off";
-  $("editor-dock").dataset.browser = browser;
-  if (dock) {
-    if (scene) dock(browser, !!inspector);
-  } else {
-    $("editor-inspector").hidden = !inspector;
-    $("tree-browser-host").hidden = browser !== "tree";
-    $("classic-browser-host").hidden = browser !== "classic";
-    if (browser !== "off") {
-      const host = $(browser + "-browser-host");
-      const panel = $("sample-browser");
-      if (panel.parentNode !== host) host.append(panel);
-    }
+  if (dock && scene) {
+    dock({ browserStyle: view.classicBrowser ? "classic" : "tree",
+      browserOpen: !!view.panels.browser, inspectorOpen: !!view.panels.inspector });
   }
-  if (browser !== "off") renderSampleBrowser();
+  if (scene && (panels.browser === "open" || panels.browser === "classic")) renderSampleBrowser();
 }
 
 function reorderSampleFolder(from, to, after) {
@@ -2642,7 +2693,7 @@ $("sample-browser-up").addEventListener("click", () => {
   browserFolder = browserFolder.split("/").slice(0, -1).join("/");
   renderSampleBrowser();
 });
-$("sample-browser-close").addEventListener("click", () => act({ kind: "panel", panel: "browser", on: false }));
+$("sample-browser-close").addEventListener("click", () => togglePanel("browser"));
 $("sample-browser-assign").addEventListener("click", () => {
   const target = sampleTarget();
   if (!target || !browserSample || $("sample-browser-assign").disabled) return;
@@ -2695,14 +2746,23 @@ function openReplaceSample() {
     ]);
 }
 
-const open = () => run(async () => show(await invoke("pick_map")));
-$("open").addEventListener("click", open);
-$("home-open").addEventListener("click", open);
-$("go-home").addEventListener("click", () => { if (!drag && !view.busy) act({ kind: "home" }); });
+// File › Open map… and Ctrl+O's fallback; the start screen's Open map… button.
+function openMap() {
+  return run(async () => show(await invoke("pick_map")));
+}
+// File › Start screen.
+function goHome() {
+  if (!drag && !view.busy) act({ kind: "home" });
+}
+$("open").addEventListener("click", openMap);
+$("home-open").addEventListener("click", openMap);
+$("go-home").addEventListener("click", goHome);
 $("home-resume").addEventListener("click", () => { if (!view.busy) act({ kind: "resume" }); });
 $("home-import").addEventListener("click", () => run(async () => show(await invoke("pick_map", { archiveOnly: true }))));
-$("home-folders").addEventListener("click", () => $("folders").click());
-$("folders").addEventListener("click", () => {
+$("home-folders").addEventListener("click", () => openFolders());
+$("folders").addEventListener("click", () => openFolders());
+// File › Folders… and the start screen's Folders… button.
+function openFolders() {
   if (view.busy) return;
   const openFolder = (folder) => {
     closeModal();
@@ -2736,7 +2796,7 @@ $("folders").addEventListener("click", () => {
   if (view.hitsoundLibrary) actions.push(["Open hitsound library", () => openFolder("library")]);
   actions.push(["Choose hitsound library…", chooseLibrary]);
   modal("folders", "Folders", [], actions);
-});
+}
 $("ramp-shape").addEventListener("change", () => {
   act({ kind: "ramp_shape", value: $("ramp-shape").value }, false);
 });
@@ -3282,20 +3342,32 @@ $("audio").addEventListener("click", () => run(async () => {
 $("song-mute").addEventListener("click", () => act({ kind: "song_muted", on: !view.songMuted }, false));
 $("song-solo").addEventListener("click", () => act({ kind: "song_solo", on: !view.songSolo }, false));
 
-for (const panel of ["browser", "inspector"]) {
-  $("view-" + panel).addEventListener("click", () => {
-    if (!scene || !view.panels || view.busy) return;
-    act({ kind: "panel", panel, on: !view.panels[panel] });
-  });
+const panelSwitches = { browser: "view-browser", inspector: "view-inspector", controller: "view-controller" };
+for (const [panel, id] of Object.entries(panelSwitches)) $(id).addEventListener("click", () => togglePanel(panel));
+$("browser-fold").addEventListener("click", () => togglePanel("browser"));
+$("browser-unfold").addEventListener("click", () => togglePanel("browser"));
+$("inspector-fold").addEventListener("click", () => togglePanel("inspector"));
+$("inspector-unfold").addEventListener("click", () => togglePanel("inspector"));
+// A folded panel's rail icons open it at their section.
+const railSections = {
+  "rail-browser-browse": ["browser", "browse"], "rail-browser-search": ["browser", "search"],
+  "rail-browser-library": ["browser", "library"], "rail-inspector-selection": ["inspector", "Selection"],
+  "rail-inspector-lane": ["inspector", "Lane"], "rail-inspector-difficulty": ["inspector", "Difficulty"],
+  "rail-inspector-bookmarks": ["inspector", "Bookmarks"],
+};
+for (const [id, [panel, section]] of Object.entries(railSections)) {
+  $(id).addEventListener("click", () => openPanelAt(panel, section));
 }
 
-$("panel-view").addEventListener("click", () => {
+$("panel-view").addEventListener("click", () => openViewSettings());
+// View › View settings….
+function openViewSettings() {
   if (!scene || !view.panels || view.busy) return;
   const options = [
-    ["Inspector", "inspector", view.panels.inspector],
+    ["Inspector open", "inspector", panelOn("inspector")],
     ["Volume controller", "controller", view.panels.controller],
     ["Lane names", "lane_names", view.panels.laneNames],
-    ["File browser", "browser", view.panels.browser],
+    ["Browser open", "browser", panelOn("browser")],
   ];
   const info = document.createElement("input");
   info.type = "checkbox";
@@ -3312,7 +3384,8 @@ $("panel-view").addEventListener("click", () => {
     checkbox.checked = on;
     checkbox.addEventListener("change", () => {
       if (panel === "lane_names") info.disabled = !checkbox.checked;
-      act({ kind: "panel", panel, on: checkbox.checked });
+      if (panel === "lane_names") act({ kind: "panel", panel, on: checkbox.checked });
+      else if (checkbox.checked !== panelOn(panel)) togglePanel(panel);
     });
     return labeled(label, checkbox);
   });
@@ -3327,7 +3400,7 @@ $("panel-view").addEventListener("click", () => {
   style.addEventListener("change", () => act({ kind: "browser_style", classic: style.value === "classic" }));
   controls.push(labeled("File browser style", style), labeled("Lane info (sample indexes)", info));
   modal("editor-view", "View", controls, [["Done", closeModal, true]]);
-});
+}
 
 async function showHelp() {
   const groups = await invoke("editor_help");

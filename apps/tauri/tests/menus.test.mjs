@@ -137,6 +137,8 @@ function fixture() {
     labeled(label, control) { const node = element("label"); node.append(label, control); return node; },
     show(next) { calls.push({ show: next }); },
     openSiblingDifficulty(path) { calls.push({ sibling: path }); },
+    panelOn: panel => !!view.panels?.[panel],
+    togglePanel(panel) { calls.push({ togglePanel: panel }); },
   });
   runInContext(code, context);
   function key(key, handler = listeners.get("keydown")) {

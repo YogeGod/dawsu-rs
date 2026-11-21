@@ -62,8 +62,6 @@ test("folder tree and Classic share the same mapset samples and preserve explici
     {key: "clap", sourceKey: "clap", name: "Snare", sample: "percussion/snare.wav"},
   ]};
   renderPanelLayout();`, context);
-  assert.equal(get("editor-dock").dataset.browser, "tree");
-  assert.equal(get("sample-browser").parentNode, get("tree-browser-host"));
   const rows = get("sample-browser-entries");
   const click = (node) => node.listeners.get("click")();
   assert.deepEqual(rows.children.map(row => row.textContent), ["percussion"]);
@@ -76,14 +74,12 @@ test("folder tree and Classic share the same mapset samples and preserve explici
   runInContext(`let controls;
     modal = (_kind, _title, body) => { controls = body; };
     labeled = (label, control) => ({label, control});`, context);
-  click(get("panel-view"));
+  runInContext("openViewSettings()", context);
   const style = runInContext('controls.find(item => item.label === "File browser style").control', context);
   style.value = "classic";
   style.listeners.get("change")();
   await runInContext("pending", context);
   assert.deepEqual(calls.at(-1), {kind: "browser_style", classic: true});
-  assert.equal(get("editor-dock").dataset.browser, "classic");
-  assert.equal(get("sample-browser").parentNode, get("classic-browser-host"));
   assert.deepEqual(rows.children.map(row => row.textContent), ["percussion"]);
   click(rows.children[0]);
   assert.deepEqual(rows.children.map(row => row.textContent), ["snare.wav"]);
@@ -120,7 +116,6 @@ test("folder tree and Classic share the same mapset samples and preserve explici
     target: {map: "copy.osu", lane: "normal"}});
   runInContext('act({ kind: "browser_style", classic: false });', context);
   await runInContext("pending", context);
-  assert.equal(get("sample-browser").parentNode, get("tree-browser-host"));
   assert.deepEqual(rows.children.map(row => row.textContent), ["Drums"]);
   click(rows.children[0]);
   assert.deepEqual(rows.children.map(row => row.textContent), ["Drums", "snare.wav"]);
