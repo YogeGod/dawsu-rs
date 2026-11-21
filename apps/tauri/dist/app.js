@@ -255,15 +255,21 @@ function show(next) {
   }
   $("save-problem-badge").hidden = problems.length === 0;
   $("save-problem-badge").textContent = problems.length ? String(problems.length) : "";
-  $("save-problem-badge").title = problems.length + " output problems";
-  // Save's name says what it holds: unsaved changes and the problems Save would report.
+  // One wording for the count: the badge, Save's name and the status bar.
+  const cannotSave = problems.length + (problems.length === 1 ? " moment" : " moments") + " can't be saved";
+  $("save-problem-badge").title = cannotSave;
+  // Save's name says what it holds: unsaved changes and the moments Save can't write. Save is
+  // icon-only below 1440 px, so its tooltip says the same.
   const save = $("save");
+  const saveName = "Save" + (scene && view.dirty ? " (unsaved changes)" : "") + (problems.length ? ", " + cannotSave : "");
   save.dataset.dirty = String(!!scene && !!view.dirty);
-  save.setAttribute("aria-label", "Save" + (scene && view.dirty ? " (unsaved changes)" : "") +
-    (problems.length ? ", " + problems.length + (problems.length === 1 ? " problem" : " problems") : ""));
+  save.setAttribute("aria-label", saveName);
+  save.title = saveName;
   $("problem-summary").hidden = problems.length === 0;
-  $("problem-summary").title = problems.map(problem => problem.message).filter(Boolean).join("\n");
-  $("problem-summary-text").textContent = problems.length + (problems.length === 1 ? " moment" : " moments") + " can't be saved";
+  const messages = problems.map(problem => problem.message).filter(Boolean);
+  $("problem-summary").title = [...messages.slice(0, 10),
+    ...(messages.length > 10 ? ["and " + (messages.length - 10) + " more"] : [])].join("\n");
+  $("problem-summary-text").textContent = cannotSave;
   $("next-output-problem").hidden = problems.length === 0;
   $("next-output-problem").disabled = !!view.busy;
   $("playback-rates").hidden = !scene;
@@ -410,8 +416,7 @@ function panelPrefs() {
 function effectivePanelState() {
   const { narrow, override } = dockState();
   const prefs = panelPrefs();
-  return window.editorDocking?.effectivePanels(prefs, narrow, override) ??
-    { browser: prefs.browserOpen ? "open" : "folded", inspector: prefs.inspectorOpen ? "open" : "folded" };
+  return window.editorDocking.effectivePanels(prefs, narrow, override);
 }
 
 // Whether a panel shows open: switches, menu rows and View settings show this, not the preference.
@@ -425,8 +430,7 @@ function panelOn(panel) {
 function togglePanel(panel) {
   if (!scene || !view.panels || view.busy) return;
   const { narrow, override } = dockState();
-  const plan = window.editorDocking?.togglePlan(panel, panelPrefs(), narrow, override) ??
-    { act: { kind: "panel", panel, on: !view.panels[panel] } };
+  const plan = window.editorDocking.togglePlan(panel, panelPrefs(), narrow, override);
   if (plan.act) return act(plan.act);
   setDockOverride(plan.override);
 }
@@ -2915,9 +2919,6 @@ $("ramp-shape").addEventListener("change", () => {
 for (const button of document.querySelectorAll("[data-action]")) {
   button.addEventListener("click", () => act({ kind: button.dataset.action }));
 }
-for (const button of document.querySelectorAll("[data-command]")) {
-  button.addEventListener("click", () => command(button.dataset.command));
-}
 for (const id of ["snap", "snap-mode", "beats", "divisor"]) {
   $(id).addEventListener("change", () => {
     act({ kind: "snap", on: $("snap").checked, mode: $("snap-mode").value,
@@ -3474,10 +3475,10 @@ for (const [id, [panel, section]] of Object.entries(railSections)) {
 function openViewSettings() {
   if (!scene || !view.panels || view.busy) return;
   const options = [
-    ["Inspector open", "inspector", panelOn("inspector")],
-    ["Volume controller", "controller", view.panels.controller],
+    ["Inspector", "inspector", panelOn("inspector")],
+    ["Volume panel", "controller", view.panels.controller],
     ["Lane names", "lane_names", view.panels.laneNames],
-    ["Browser open", "browser", panelOn("browser")],
+    ["Browser", "browser", panelOn("browser")],
   ];
   const info = document.createElement("input");
   info.type = "checkbox";
@@ -3508,7 +3509,7 @@ function openViewSettings() {
   }
   style.value = view.classicBrowser ? "classic" : "tree";
   style.addEventListener("change", () => act({ kind: "browser_style", classic: style.value === "classic" }));
-  controls.push(labeled("File browser style", style), labeled("Lane info (sample indexes)", info));
+  controls.push(labeled("Browser style", style), labeled("Lane info (sample indexes)", info));
   modal("editor-view", "View", controls, [["Done", closeModal, true]]);
 }
 

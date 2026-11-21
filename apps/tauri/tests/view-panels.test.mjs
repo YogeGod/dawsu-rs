@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { createContext, runInContext } from "node:vm";
+import { dockingRules } from "./docking-rules.mjs";
 
 const app = await readFile(new URL("../dist/app.js", import.meta.url), "utf8");
 const style = await readFile(new URL("../dist/style.css", import.meta.url), "utf8");
@@ -36,7 +37,7 @@ test("View switches fold and open panels and reclaim their timeline tracks, then
       querySelectorAll: () => [],
       addEventListener() {},
     },
-    window: { __TAURI__: {
+    window: { editorDocking: dockingRules, __TAURI__: {
       core: { invoke: async (_name, args) => {
         if (args.action?.kind === "panel") {
           calls.push(args.action);
@@ -63,8 +64,8 @@ test("View switches fold and open panels and reclaim their timeline tracks, then
   runInContext("openViewSettings()", context);
   const controls = runInContext("viewControls", context);
   for (const [label, name, layout, track] of [
-    ["Inspector open", "inspector", "view-inspector", "ariaPressed"],
-    ["Volume controller", "controller", "editor-arrange", "controller"],
+    ["Inspector", "inspector", "view-inspector", "ariaPressed"],
+    ["Volume panel", "controller", "editor-arrange", "controller"],
     ["Lane names", "lane_names", "editor-arrange", "laneNames"],
   ]) {
     const { control } = controls.find(item => item.text === label);

@@ -82,13 +82,24 @@ test("each side panel has a head with a fold button and a rail whose section ico
     assert.match(aside, new RegExp(`class="panel-head"[\\s\\S]*id="${panel}-fold"`));
     assert.match(aside, new RegExp(`class="panel-rail"[\\s\\S]*id="${panel}-unfold"`));
     for (const section of sections) assert.match(aside, new RegExp(`id="rail-${panel}-${section}"`), section);
+    // Fold, open and rail buttons wait for a map like the switches.
+    for (const button of aside.match(/<button id="(?:\w+-fold|\w+-unfold|rail-[\w-]+)"[^>]*>/g)) {
+      assert.match(button, /\sdata-doc/, button);
+    }
     assert.doesNotMatch(aside, /role="tabpanel"|aria-labelledby="dock-tab/);
   }
-  assert.doesNotMatch(docking, /dock-tab|tabButtons|function strip\(/);
+  assert.doesNotMatch(docking, /dock-tab|tabButtons|function strip\(|dock-preview/);
+  // Rail buttons are named after what they open.
+  assert.match(html, /id="rail-browser-browse"[^>]*aria-label="Map folder"/);
+  assert.match(html, /id="rail-browser-library"[^>]*aria-label="Hitsound library"/);
+  assert.match(html, /id="rail-browser-search"[^>]*aria-label="Search samples"/);
+  assert.match(html, /<div popover id="options-Lanes"[^>]*role="group"/);
 });
 
 test("the three panel switches use literal ids", () => {
   assert.match(app, /\{ browser: "view-browser", inspector: "view-inspector", controller: "view-controller" \}/);
+  // docking.js always loads first; app.js keeps no second copy of its rules.
+  assert.doesNotMatch(app, /editorDocking\?\.(effectivePanels|togglePlan)|\[data-command\]/);
   assert.doesNotMatch(app, /\$\("view-" \+ panel\)/);
 });
 
@@ -135,9 +146,18 @@ async function page(dockingApi) {
   return { element, calls, evaluate: code => runInContext(code, context) };
 }
 
-const dockingContext = createContext({ window: {} });
-runInContext(docking, dockingContext);
-const { effectivePanels, togglePlan } = dockingContext.window.editorDocking;
+import { dockingRules } from "./docking-rules.mjs";
+const { effectivePanels, togglePlan } = dockingRules;
+
+test("the problem tooltip lists ten moments and how many more", async () => {
+  const { element, evaluate } = await page({ effectivePanels, togglePlan, attach: () => undefined });
+  evaluate(`scene = { path: "a.osu", lanes: [], selection: { count: 0 } };
+    show({ hasDocument: true, outputProblems: Array.from({ length: 13 }, (_, i) => ({ time: i, message: "Moment " + i })) })`);
+  const lines = element("problem-summary").title.split("\n");
+  assert.equal(lines.length, 11);
+  assert.equal(lines[9], "Moment 9");
+  assert.equal(lines[10], "and 3 more");
+});
 
 test("show() fills the chip, Save, play state, selection count, file name and output device", async () => {
   const { element, evaluate } = await page({ effectivePanels, togglePlan, attach: () => undefined });
@@ -150,8 +170,13 @@ test("show() fills the chip, Save, play state, selection count, file name and ou
   assert.equal(element("map-version").textContent, "Hard");
   assert.equal(element("difficulty").title, "/maps/Set/Artist - Song (Me) [Hard].osu");
   assert.equal(element("save").dataset.dirty, "true");
-  assert.equal(element("save").getAttribute("aria-label"), "Save (unsaved changes), 2 problems");
+  // Icon-only below 1440 px, so Save's tooltip says what its spoken name says. One wording for the
+  // count everywhere: the badge, Save and the status bar.
+  assert.equal(element("save").getAttribute("aria-label"), "Save (unsaved changes), 2 moments can't be saved");
+  assert.equal(element("save").title, element("save").getAttribute("aria-label"));
   assert.equal(element("save-problem-badge").textContent, "2");
+  assert.equal(element("save-problem-badge").title, "2 moments can't be saved");
+  assert.equal(element("problem-summary-text").textContent, "2 moments can't be saved");
   assert.equal(element("play-state").textContent, "Playing");
   assert.equal(element("selection-count").textContent, "4 hits selected");
   assert.equal(element("selection-count").hidden, false);
@@ -166,6 +191,7 @@ test("show() fills the chip, Save, play state, selection count, file name and ou
       panels: { browser: false, inspector: true, controller: false, laneNames: true } })`);
   assert.equal(element("save").dataset.dirty, "false");
   assert.equal(element("save").getAttribute("aria-label"), "Save");
+  assert.equal(element("save").title, "Save");
   assert.equal(element("play-state").textContent, "Stopped");
   assert.equal(element("selection-count").hidden, true);
   assert.equal(element("audio").textContent, "Audio output");
@@ -182,6 +208,15 @@ test("every entry point folds and opens a panel through togglePanel", async () =
     ["inspector-unfold", "inspector"], ["sample-browser-close", "browser"]]) {
     evaluate("toggled = []");
     element(id).listeners.get("click")();
+    assert.deepEqual(JSON.parse(evaluate("JSON.stringify(toggled)")), [panel], id);
+  }
+  // Rail icons open their panel first when it is folded.
+  evaluate("view.panels = { browser: false, inspector: false, controller: true, laneNames: true }");
+  for (const [id, panel] of [["rail-browser-browse", "browser"], ["rail-browser-search", "browser"],
+    ["rail-browser-library", "browser"], ["rail-inspector-selection", "inspector"], ["rail-inspector-lane", "inspector"],
+    ["rail-inspector-difficulty", "inspector"], ["rail-inspector-bookmarks", "inspector"]]) {
+    evaluate("toggled = []");
+    await element(id).listeners.get("click")();
     assert.deepEqual(JSON.parse(evaluate("JSON.stringify(toggled)")), [panel], id);
   }
   assert.match(menus, /kind === "panel"[^\n]*togglePanel\(first\)/);
