@@ -20,7 +20,7 @@
 <div class="insp">
   <div class="insp-titled">
     <InspectorHead title="Bookmarks" body="inspector-bookmarks-body" bind:open />
-    <button type="button" class="insp-add" aria-label="Add bookmark" title="Add bookmark at the playhead"
+    <button type="button" class="insp-add" aria-label="Add bookmark" title="Add bookmark at the playhead (Ctrl+B)"
       disabled={!ready} onclick={() => on.bookmark("add")}>{@html Plus}</button>
   </div>
   <div id="inspector-bookmarks-body" hidden={!open}>
@@ -29,6 +29,7 @@
         {#each rows as row (row.time)}
           <button type="button" class="insp-mark" aria-current={row.current ? "true" : undefined}
             disabled={model.busy} onclick={() => on.pickBookmark(row.time)}
+            ondblclick={() => on.bookmark("rename")}
             onpointerenter={event => cutOffTitle(event.currentTarget, row.label)}
             ><span class="insp-dot" aria-hidden="true"></span>{#if row.label}<span class="insp-mark-label">{row.label}</span
             >{/if}<time class="insp-mark-time">{row.clock}</time></button>
@@ -43,8 +44,8 @@
       <button type="button" disabled={!picked} onclick={() => on.bookmark("remove")}>Remove</button>
     </div>
     <div class="insp-actions">
-      <button type="button" disabled={!ready} onclick={() => on.command("previousBookmark")}>Previous</button>
-      <button type="button" disabled={!ready} onclick={() => on.command("nextBookmark")}>Next</button>
+      <button type="button" disabled={!ready} title="Previous bookmark (Ctrl+←)" onclick={() => on.command("previousBookmark")}>Previous</button>
+      <button type="button" disabled={!ready} title="Next bookmark (Ctrl+→)" onclick={() => on.command("nextBookmark")}>Next</button>
     </div>
   </div>
 </div>

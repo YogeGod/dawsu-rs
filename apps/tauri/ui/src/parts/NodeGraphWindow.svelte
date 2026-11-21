@@ -625,7 +625,7 @@
                   <line x1="0" y1={thrY} x2="300" y2={thrY} stroke="#efc16a" stroke-width="1.5" stroke-dasharray="5 4"></line>
                   <rect x="252" y={Math.max(2, thrY - 9)} width="44" height="17" rx="4" fill="#efc16a"></rect>
                   <text x="274" y={Math.max(13, thrY + 3)} text-anchor="middle" font-size="10" font-weight="700" fill="#111111">{sensPct}%</text>
-                  <text x="6" y="12" font-size="9" fill="#a3a3a3">Drag line up/down · Sensitivity {sensPct}%</text>
+                  <text x="6" y="12" font-size="9" fill="#a3a3a3">Drag line up/down, sensitivity {sensPct}%</text>
                 </svg>
               </div>
 
@@ -1106,7 +1106,7 @@
       <span class="ng-status-ok">Analysing audio… {view.done}%</span>
       <button type="button" class="ng-btn" onclick={() => dispatch({ kind: "cancel" })}>Cancel</button>
     {:else if view?.batch?.stale}
-      <span class="ng-banner-warn">Map or graph changed since last run — run again before applying.</span>
+      <span class="ng-banner-warn">Map or graph changed since last run. Run again before applying.</span>
     {:else if view?.batch}
       <span class="ng-status-ok">
         Ready · {view.batch.counts.checked} checked hits (1 undo step)

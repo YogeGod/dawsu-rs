@@ -29,7 +29,7 @@ const mutableStateFields = [
   "familyLayers", "laneRemoving", "previewParents", "orderedLaneKeys", "sampleFolderOrder",
   "layoutWrites", "mixerStrips", "mixerKey", "laneHeaders", "bookmarkPick", "selectedHitsScene",
   "selectedHits", "inspectorState", "problemStripKept", "sectionBarCache", "sliderEndCache",
-  "overviewBinCache", "cursorSurface", "cursorAltDraw", "hoveredHit", "lastHover", "rulerPointer",
+  "overviewBinCache", "skinTextures", "cursorSurface", "cursorAltDraw", "hoveredHit", "lastHover", "rulerPointer",
   "modalKind", "modalClose", "outputProblemIndex", "outputProblemList", "rulerWarningMarkers",
   "pending", "requests", "refreshing", "lastRefresh", "frame",
   "playbackFrame", "playheadAnchor", "centreSentStart", "followQueued", "quitAfterSave",
@@ -51,7 +51,7 @@ const exportedMethods = [
   "refreshLanePresentation", "groupedLaneRows", "renderLanes", "currentMixer",
   "mixerModel", "currentLaneHeaders", "laneHeaderModel", "laneHeaderAction",
   "mixSelectedLanes", "volumeScopeHint", "updateVolumeScope", "selectVolumeLane",
-  "requestDrumMap", "setDrumView", "deletableLane", "openAddLane", "deleteActiveLane",
+  "requestDrumMap", "setDrumView", "openDrumMapSetup", "deletableLane", "openAddLane", "deleteActiveLane",
   "laneTint", "setLaneHeight",
   "followBookmarkPick", "selectedBookmark", "renderActiveLane", "selectedHitDetails",
   "renderSelection", "handOverInspector", "inspectorLaneNames", "currentInspector",
@@ -77,7 +77,7 @@ const exportedMethods = [
   "openLaneColour", "openReplaceSample", "openMap", "goHome",
   "openSiblingDifficulty", "chooseSiblingDifficulty", "showTimelineEdit",
   "editBookmark", "openTimeSignatures",
-  "openFolders", "openAudioOutput", "openViewSettings", "showHelp", "showShortcutEditor",
+  "openFolders", "openAudioOutput", "openViewSettings", "openPreferences", "showHelp", "showShortcutEditor",
   "clampSnapInput", "popoverAction", "startScreenAction", "statusBarAction",
 ];
 
@@ -290,6 +290,20 @@ export function createEditor(env = globalThis, { ui = null, autoStart = true, ex
     const activatesButton = !ctrl && !shift && !alt &&
       ((key === " " && !state.scene) || (key === "Enter" && code !== "NumpadEnter"));
     if (state.view.busy || (activatesButton && event.target.closest("button"))) return;
+    // Spacebar while a map is open must ONLY trigger Play/Pause, never activate a focused toolbar button.
+    if (key === " " && !ctrl && !shift && !alt && state.scene && event.target.closest("button")) {
+      event.target.closest("button").blur?.();
+    }
+    // Plain "4" opens the hidden-tools drop menu right under the More tools button.
+    if (key === "4" && !ctrl && !shift && !alt && state.scene) {
+      const trigger = env.document.querySelector?.("[data-more-tools]");
+      if (trigger && env.window.openEditorMenu) {
+        event.preventDefault();
+        const box = trigger.getBoundingClientRect();
+        env.window.openEditorMenu("tool", false, { x: box.left, y: box.bottom, trigger, label: "Timeline tools" });
+        return;
+      }
+    }
     if (key === "Tab") {
       if (!ctrl && !alt && event.target.closest("[data-dock-control]")) return;
       const bound = state.view.tabRoutes?.some(([control, shifted, alternate, global]) =>
@@ -425,6 +439,64 @@ export function createEditor(env = globalThis, { ui = null, autoStart = true, ex
     Object.defineProperties(env, descriptors);
   }
 
-  if (autoStart) ctx.act(null);
+  if (autoStart) {
+    ctx.act(null);
+    const ImageCtor = env.Image ?? env.window?.Image;
+    if (typeof ImageCtor === "function") {
+      invoke("skin_textures").then((payload) => {
+        if (!payload?.hitcircle || !payload?.overlay) return;
+        const loadImg = (src) => new Promise((resolve) => {
+          if (!src) { resolve(null); return; }
+          const img = new ImageCtor();
+          img.onload = () => resolve(img);
+          img.onerror = () => resolve(null);
+          img.src = src;
+        });
+        Promise.all([
+          loadImg(payload.hitcircle),
+          loadImg(payload.overlay),
+          loadImg(payload.reverseArrow),
+          Promise.all((payload.digits ?? []).map(loadImg)),
+        ]).then(([hitcircle, overlay, reverseArrow, digits]) => {
+          if (!hitcircle || !overlay) return;
+          let circleFill = typeof payload.circleFill === "number" && payload.circleFill > 0 ? payload.circleFill : 0.92;
+          try {
+            const probe = env.document.createElement("canvas");
+            const w = hitcircle.naturalWidth || hitcircle.width;
+            const h = hitcircle.naturalHeight || hitcircle.height;
+            if (w > 0 && h > 0) {
+              probe.width = w;
+              probe.height = h;
+              const pctx = probe.getContext("2d");
+              if (pctx?.getImageData) {
+                pctx.drawImage(hitcircle, 0, 0);
+                const row = pctx.getImageData(0, Math.floor(h / 2), w, 1).data;
+                let first = -1, last = -1;
+                for (let x = 0; x < w; x++) {
+                  if (row[x * 4 + 3] > 128) {
+                    if (first < 0) first = x;
+                    last = x;
+                  }
+                }
+                if (first >= 0) circleFill = (last - first + 1) / w;
+              }
+            }
+          } catch {
+            // Keep default circleFill when canvas pixel readback is unavailable.
+          }
+          state.skinTextures = {
+            ready: true,
+            hitcircle,
+            overlay,
+            reverseArrow,
+            digits,
+            circleFill,
+            tinted: new Map(),
+          };
+          ctx.paintSoon();
+        });
+      }).catch(() => null);
+    }
+  }
   return ctx;
 }

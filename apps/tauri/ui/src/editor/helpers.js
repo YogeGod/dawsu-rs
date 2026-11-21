@@ -5,6 +5,8 @@ export const rulerBandHeight = 40;
 // v3 §4: the Song · objects row is 84 px.
 export const defaultWaveformHeight = 84;
 export const bookmarkFlagHeight = 22;
+export const bookmarkHalfWidth = 8;
+export const hitHalfWidth = 10;
 export const bookmarkJumpWait = 1000;
 export const browserRowLimit = 500;
 export const minZoom = 0.0005;
@@ -41,12 +43,12 @@ export const railSections = {
   "rail-inspector-bookmarks": ["inspector", "Bookmarks"],
 };
 
-// Canvas surfaces match the surrounding editor chrome.
+// Canvas surfaces match Apple Logic Pro for iPad's pure black & neutral obsidian.
 export const slateTimeline = {
-  arrange: "#151515", alternateRow: "#1c1c1c", activeRow: "#454545", group: "#292929",
-  ruler: "#0c0c0c", rulerBar: "#ffffff", rulerEdge: "#454545", overview: "#1c1c1c", waveform: "#1c2727",
-  volume: "#151515", divider: "#383838", beatLine: "#383838", barLine: "#545454",
-  cycle: "#efc16a", loop: "#77bdfa0f", locator: "#858585", playhead: "#a1d0f7",
+  arrange: "#0e0e10", alternateRow: "#151517", activeRow: "#26262a", group: "#1c1c1f",
+  ruler: "#08080a", rulerBar: "#f5f5f7", rulerEdge: "#2b2b30", overview: "#151517", waveform: "#121718",
+  volume: "#0e0e10", divider: "#2b2b30", beatLine: "#2b2b30", barLine: "#44444c",
+  cycle: "#ffd60a", loop: "#5ac8fa14", locator: "#8e8e96", playhead: "#f5f5f7",
 };
 
 export const levelColours = [[58, 108, 240], [154, 72, 216], [236, 58, 58]];
@@ -82,8 +84,8 @@ export const snapColours = {
 // Sub-beats follow the snap divisor. They draw above the lane tint and below the hits.
 export const gridLines = {
   sub: "rgba(255,255,255,.025)",
-  beat: "rgba(255,255,255,.04)",
-  bar: "rgba(255,255,255,.10)",
+  beat: "rgba(255,255,255,.045)",
+  bar: "rgba(255,255,255,.22)",
 };
 
 // v3 §5: a snap tick's height on the ruler by its reduced divisor (1/5, 1/7, 1/9 take the smallest).

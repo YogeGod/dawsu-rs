@@ -15,16 +15,16 @@
   stroke-linejoin: round;
 }
 
-/* Top bar: 52 px on --editor-chrome. */
+/* Top bar: 52 px pure Apple Logic Pro for iPad jet black. */
 #editor-header.chrome {
   position: relative;
   z-index: 3;
   min-height: var(--topbar-h);
   padding: 0 16px;
   gap: 12px;
-  border-bottom: 0;
-  background: var(--editor-chrome);
-  box-shadow: var(--shadow-bar);
+  border-bottom: 1px solid var(--editor-border);
+  background: linear-gradient(180deg, #0b0b0d 0%, #000000 100%);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.05), var(--shadow-bar);
 }
 #editor-header .header-divider {
   flex: none;
@@ -55,12 +55,13 @@
   display: flex;
   flex: none;
   align-items: center;
-  gap: 20px;
+  gap: 18px;
   height: 32px;
-  padding: 0 14px;
+  padding: 0 16px;
   border: 0;
-  border-radius: 6px;
+  border-radius: 999px;
   background: var(--editor-panel);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), inset 0 0 0 1px var(--editor-border);
 }
 #editor-header #editor-menus button {
   min-height: 0;

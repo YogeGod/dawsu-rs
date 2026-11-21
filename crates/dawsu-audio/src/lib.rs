@@ -322,6 +322,201 @@ impl CueIndex {
     }
 }
 
+/// Zero-latency, stereo-linked peak limiter for the master bus.
+/// Transparent (unity gain) whenever the frame peak stays at or below `CEILING`,
+/// with instant attack on overloads and a 50 ms exponential release back to 1.0.
+struct MasterLimiter {
+    gain: f32,
+    release_coeff: f32,
+}
+
+impl MasterLimiter {
+    const CEILING: f32 = 0.98;
+    const RELEASE_SECS: f64 = 0.05;
+
+    fn new(sample_rate: u32) -> Self {
+        let rate = f64::from(sample_rate.max(1));
+        let release_coeff = (1.0 - (-1.0 / (Self::RELEASE_SECS * rate)).exp()) as f32;
+        Self {
+            gain: 1.0,
+            release_coeff,
+        }
+    }
+
+    fn reset(&mut self) {
+        self.gain = 1.0;
+    }
+
+    fn process_frame(&mut self, frame: &mut [f32]) {
+        let mut peak = 0.0_f32;
+        for sample in frame.iter() {
+            let mag = sample.abs();
+            if mag > peak {
+                peak = mag;
+            }
+        }
+        let target = if peak > Self::CEILING {
+            Self::CEILING / peak
+        } else {
+            1.0
+        };
+        if target < self.gain {
+            self.gain = target;
+        } else if self.gain < 1.0 {
+            self.gain += (target - self.gain) * self.release_coeff;
+            if (1.0 - self.gain) < 1e-5 && target == 1.0 {
+                self.gain = 1.0;
+            }
+        }
+        if self.gain < 1.0 {
+            for sample in frame.iter_mut() {
+                *sample = (*sample * self.gain).clamp(-1.0, 1.0);
+            }
+        } else {
+            for sample in frame.iter_mut() {
+                if !sample.is_finite() {
+                    *sample = 0.0;
+                }
+            }
+        }
+    }
+}
+
+struct SongStretcher {
+    sample_rate: u32,
+    stretch: Option<signalsmith_stretch::Stretch>,
+    in_buf: Vec<f32>,
+    out_buf: Vec<f32>,
+    discard_buf: Vec<f32>,
+    out_pos: usize,
+    out_len: usize,
+    primed: bool,
+    primed_song_ptr: usize,
+    primed_speed: f64,
+    read_frame: f64,
+    in_frac: f64,
+    expected_song_ms: f64,
+}
+
+impl SongStretcher {
+    const CHUNK_OUT: usize = 256;
+
+    fn new(sample_rate: u32) -> Self {
+        Self {
+            sample_rate: sample_rate.max(1),
+            stretch: None,
+            in_buf: Vec::new(),
+            out_buf: vec![0.0; Self::CHUNK_OUT * 2],
+            discard_buf: Vec::new(),
+            out_pos: 0,
+            out_len: 0,
+            primed: false,
+            primed_song_ptr: 0,
+            primed_speed: 1.0,
+            read_frame: 0.0,
+            in_frac: 0.0,
+            expected_song_ms: 0.0,
+        }
+    }
+
+    fn reset(&mut self) {
+        self.primed = false;
+        self.out_pos = 0;
+        self.out_len = 0;
+        self.in_frac = 0.0;
+    }
+
+    fn fill_input(&mut self, song: &AudioClip, start_frame: f64, count: usize) {
+        let needed = count * 2;
+        if self.in_buf.len() < needed {
+            self.in_buf.resize(needed, 0.0);
+        }
+        let ratio = song.sample_rate as f64 / self.sample_rate as f64;
+        for i in 0..count {
+            let src_frame = (start_frame + i as f64) * ratio;
+            self.in_buf[i * 2] = song.sample(src_frame, 0);
+            self.in_buf[i * 2 + 1] = song.sample(src_frame, 1);
+        }
+    }
+
+    fn prime(&mut self, song: &AudioClip, song_time_ms: f64, speed: f64) {
+        let sample_rate = self.sample_rate;
+        let stretch = self
+            .stretch
+            .get_or_insert_with(|| signalsmith_stretch::Stretch::preset_default(2, sample_rate));
+        stretch.reset();
+        let in_lat = stretch.input_latency();
+        let out_lat = stretch.output_latency();
+
+        let base_frame = song_time_ms * sample_rate as f64 / 1000.0;
+        let start_in = base_frame - out_lat as f64 * speed;
+
+        if in_lat > 0 {
+            self.fill_input(song, start_in, in_lat);
+            if let Some(stretch) = self.stretch.as_mut() {
+                stretch.seek(&self.in_buf[..in_lat * 2], speed);
+            }
+        }
+        self.read_frame = start_in + in_lat as f64;
+
+        if out_lat > 0 {
+            let discard_in = (out_lat as f64 * speed).round() as usize;
+            self.fill_input(song, self.read_frame, discard_in);
+            let discard_samples = out_lat * 2;
+            if self.discard_buf.len() < discard_samples {
+                self.discard_buf.resize(discard_samples, 0.0);
+            }
+            if let Some(stretch) = self.stretch.as_mut() {
+                stretch.process(
+                    &self.in_buf[..discard_in * 2],
+                    &mut self.discard_buf[..discard_samples],
+                );
+            }
+            self.read_frame += discard_in as f64;
+        }
+
+        self.primed = true;
+        self.primed_song_ptr = song as *const AudioClip as usize;
+        self.primed_speed = speed;
+        self.in_frac = 0.0;
+        self.out_pos = 0;
+        self.out_len = 0;
+        self.expected_song_ms = song_time_ms;
+    }
+
+    fn next_frame(&mut self, song: &AudioClip, song_time_ms: f64, speed: f64) -> [f32; 2] {
+        let song_ptr = song as *const AudioClip as usize;
+        if !self.primed
+            || self.primed_song_ptr != song_ptr
+            || (self.primed_speed - speed).abs() > 1e-6
+            || (song_time_ms - self.expected_song_ms).abs() > 2.0
+        {
+            self.prime(song, song_time_ms, speed);
+        }
+
+        if self.out_pos >= self.out_len {
+            let in_exact = self.in_frac + Self::CHUNK_OUT as f64 * speed;
+            let in_frames = in_exact.floor() as usize;
+            self.in_frac = in_exact - in_frames as f64;
+            self.fill_input(song, self.read_frame, in_frames);
+            self.read_frame += in_frames as f64;
+            if let Some(stretch) = self.stretch.as_mut() {
+                stretch.process(
+                    &self.in_buf[..in_frames * 2],
+                    &mut self.out_buf[..Self::CHUNK_OUT * 2],
+                );
+            }
+            self.out_pos = 0;
+            self.out_len = Self::CHUNK_OUT;
+        }
+
+        let idx = self.out_pos * 2;
+        self.out_pos += 1;
+        self.expected_song_ms += speed * 1000.0 / self.sample_rate as f64;
+        [self.out_buf[idx], self.out_buf[idx + 1]]
+    }
+}
+
 pub struct Mixer {
     pub song: Option<Arc<AudioClip>>,
     pub cues: Vec<ScheduledSound>,
@@ -332,6 +527,7 @@ pub struct Mixer {
     pub song_offset: f64,
     pub cycle: Option<(f64, f64)>,
     pub speed: f64,
+    pub limiter_enabled: bool,
     sample_rate: u32,
     voices: Vec<Voice>,
     /// The one Listen clip (drum hit detection's review): a new one replaces it.
@@ -340,6 +536,8 @@ pub struct Mixer {
     cue_index: CueIndex,
     next_cue: usize,
     indexed: bool,
+    limiter: MasterLimiter,
+    stretcher: SongStretcher,
 }
 impl Mixer {
     pub fn new(sample_rate: u32) -> Self {
@@ -353,6 +551,7 @@ impl Mixer {
             song_offset: 0.0,
             cycle: None,
             speed: 1.0,
+            limiter_enabled: true,
             sample_rate,
             voices: Vec::with_capacity(32),
             listen: None,
@@ -360,11 +559,15 @@ impl Mixer {
             cue_index: CueIndex::default(),
             next_cue: 0,
             indexed: false,
+            limiter: MasterLimiter::new(sample_rate),
+            stretcher: SongStretcher::new(sample_rate),
         }
     }
     pub fn seek(&mut self, ms: f64) {
         self.position_ms = if ms.is_finite() { ms.max(0.0) } else { 0.0 };
         self.indexed = false;
+        self.limiter.reset();
+        self.stretcher.reset();
     }
     pub fn audition(&mut self, clip: Arc<AudioClip>, gain: f32) {
         if self.voices.len() < 32 {
@@ -381,96 +584,131 @@ impl Mixer {
         self.listen = clip.map(|clip| Voice { clip, frame: 0.0, gain: 1.0 });
     }
     pub fn render(&mut self, out: &mut [f32], channels: usize) {
-        for frame in out.chunks_mut(channels.max(1)) {
-            if let Some((left, right)) = self.cycle {
-                if self.playing && right > left && self.position_ms >= right {
-                    self.seek(left);
-                }
-            }
-            if self.playing {
-                if !self.indexed {
-                    self.active_cues.clear();
-                    self.next_cue = self
-                        .cues
-                        .partition_point(|cue| cue.at_ms <= self.position_ms);
-                    if self.cue_index.leaves == 0 {
-                        // Direct mixer users may supply their own cue vector.
-                        self.active_cues
-                            .extend((0..self.next_cue).filter(|i| {
-                                self.position_ms < cue_end(&self.cues[*i], self.speed)
-                            }));
-                    } else {
-                        self.cue_index.overlaps(
-                            &self.cues,
-                            self.next_cue,
-                            self.position_ms,
-                            self.speed,
-                            &mut self.active_cues,
-                        );
+        let out_channels = channels.max(1);
+        for frame in out.chunks_mut(out_channels) {
+                if let Some((left, right)) = self.cycle {
+                    if self.playing && right > left && self.position_ms >= right {
+                        self.seek(left);
                     }
-                    self.indexed = true;
                 }
-                while self.next_cue < self.cues.len()
-                    && self.cues[self.next_cue].at_ms <= self.position_ms
-                {
-                    self.active_cues.push(self.next_cue);
-                    self.next_cue += 1;
-                }
-                let position = self.position_ms;
-                let cues = &self.cues;
-                let speed = self.speed;
-                self.active_cues
-                    .retain(|i| position < cue_end(&cues[*i], speed));
-            }
-            for (channel, value) in frame.iter_mut().enumerate() {
-                let mut mix = 0.0;
                 if self.playing {
-                    if let Some(song) = &self.song {
-                        mix += song.sample(
-                            (self.position_ms - self.song_offset) / self.speed
-                                * song.sample_rate as f64
-                                / 1000.0,
-                            channel,
-                        ) * self.song_gain;
-                    }
-                    // Cues read by source position, so seek and cycle cannot double-trigger or skip a cue.
-                    for index in &self.active_cues {
-                        let cue = &self.cues[*index];
-                        let elapsed = self.position_ms - cue.at_ms;
-                        if elapsed < 0.0 {
-                            continue;
+                    if !self.indexed {
+                        self.active_cues.clear();
+                        self.next_cue = self
+                            .cues
+                            .partition_point(|cue| cue.at_ms <= self.position_ms);
+                        if self.cue_index.leaves == 0 {
+                            // Direct mixer users may supply their own cue vector.
+                            self.active_cues
+                                .extend((0..self.next_cue).filter(|i| {
+                                    self.position_ms < cue_end(&self.cues[*i], self.speed)
+                                }));
+                        } else {
+                            self.cue_index.overlaps(
+                                &self.cues,
+                                self.next_cue,
+                                self.position_ms,
+                                self.speed,
+                                &mut self.active_cues,
+                            );
                         }
-                        let mut source =
-                            elapsed / self.speed * cue.clip.sample_rate as f64 / 1000.0;
-                        if let Some(end) = cue.end_ms {
-                            if self.position_ms >= end {
+                        self.indexed = true;
+                    }
+                    while self.next_cue < self.cues.len()
+                        && self.cues[self.next_cue].at_ms <= self.position_ms
+                    {
+                        self.active_cues.push(self.next_cue);
+                        self.next_cue += 1;
+                    }
+                    let position = self.position_ms;
+                    let cues = &self.cues;
+                    let speed = self.speed;
+                    self.active_cues
+                        .retain(|i| position < cue_end(&cues[*i], speed));
+                }
+                let speed = if self.speed.is_finite() && self.speed > 0.0 {
+                    self.speed
+                } else {
+                    1.0
+                };
+                let stretched_song_frame = if self.playing && (speed - 1.0).abs() > 1e-6 {
+                    self.song.as_ref().map(|song| {
+                        self.stretcher.next_frame(
+                            song,
+                            self.position_ms - self.song_offset,
+                            speed,
+                        )
+                    })
+                } else {
+                    None
+                };
+                for (channel, value) in frame.iter_mut().enumerate() {
+                    let mut mix = 0.0;
+                    if self.playing {
+                        if let Some([l, r]) = stretched_song_frame {
+                            let sample = if out_channels == 1 {
+                                (l + r) * 0.5
+                            } else if channel == 0 {
+                                l
+                            } else {
+                                r
+                            };
+                            mix += sample * self.song_gain;
+                        } else if let Some(song) = &self.song {
+                            mix += song.sample(
+                                (self.position_ms - self.song_offset)
+                                    * song.sample_rate as f64
+                                    / 1000.0,
+                                channel,
+                            ) * self.song_gain;
+                        }
+                        // Cues read by source position, so seek and cycle cannot double-trigger or skip a cue.
+                        for index in &self.active_cues {
+                            let cue = &self.cues[*index];
+                            let elapsed = self.position_ms - cue.at_ms;
+                            if elapsed < 0.0 {
                                 continue;
                             }
-                            let len = cue.clip.samples.len() / cue.clip.channels;
-                            if len > 0 {
-                                source %= len as f64;
+                            let mut source =
+                                elapsed / self.speed * cue.clip.sample_rate as f64 / 1000.0;
+                            if let Some(end) = cue.end_ms {
+                                if self.position_ms >= end {
+                                    continue;
+                                }
+                                let len = cue.clip.samples.len() / cue.clip.channels;
+                                if len > 0 {
+                                    source %= len as f64;
+                                }
                             }
+                            mix += cue.clip.sample(source, channel) * cue.gain;
                         }
-                        mix += cue.clip.sample(source, channel) * cue.gain;
+                    }
+                    for voice in self.voices.iter().chain(&self.listen) {
+                        mix += voice.clip.sample(voice.frame, channel) * voice.gain;
+                    }
+                    *value = mix * self.master_gain;
+                }
+                if self.limiter_enabled {
+                    self.limiter.process_frame(frame);
+                } else {
+                    for value in frame.iter_mut() {
+                        *value = value.clamp(-1.0, 1.0);
                     }
                 }
-                for voice in self.voices.iter().chain(&self.listen) {
-                    mix += voice.clip.sample(voice.frame, channel) * voice.gain;
+                for voice in self.voices.iter_mut().chain(&mut self.listen) {
+                    voice.frame += voice.clip.sample_rate as f64 / self.sample_rate as f64;
                 }
-                *value = (mix * self.master_gain).clamp(-1.0, 1.0);
+                self.voices
+                    .retain(|v| v.frame < (v.clip.samples.len() / v.clip.channels) as f64);
+                if self.listen.as_ref().is_some_and(|v| {
+                    v.frame >= (v.clip.samples.len() / v.clip.channels.max(1)) as f64
+                }) {
+                    self.listen = None;
+                }
+                if self.playing {
+                    self.position_ms += self.speed * 1000.0 / self.sample_rate as f64;
+                }
             }
-            for voice in self.voices.iter_mut().chain(&mut self.listen) {
-                voice.frame += voice.clip.sample_rate as f64 / self.sample_rate as f64;
-            }
-            self.voices
-                .retain(|v| v.frame < (v.clip.samples.len() / v.clip.channels) as f64);
-            if self.listen.as_ref().is_some_and(|v| v.frame >= (v.clip.samples.len() / v.clip.channels.max(1)) as f64) {
-                self.listen = None;
-            }
-            if self.playing {
-                self.position_ms += self.speed * 1000.0 / self.sample_rate as f64;
-            }
-        }
     }
 }
 
@@ -497,12 +735,21 @@ impl Schedule {
     }
 
     fn swap_into(mut self, mixer: &mut Mixer) -> Self {
+        let song_changed = match (&self.song, &mixer.song) {
+            (Some(a), Some(b)) => !Arc::ptr_eq(a, b),
+            (None, None) => false,
+            _ => true,
+        };
+        let speed_changed = (self.speed - mixer.speed).abs() > 1e-6;
         std::mem::swap(&mut self.song, &mut mixer.song);
         std::mem::swap(&mut self.cues, &mut mixer.cues);
         std::mem::swap(&mut self.active, &mut mixer.active_cues);
         std::mem::swap(&mut self.index, &mut mixer.cue_index);
         std::mem::swap(&mut self.speed, &mut mixer.speed);
         mixer.indexed = false;
+        if song_changed || speed_changed {
+            mixer.stretcher.reset();
+        }
         self
     }
 }
@@ -893,7 +1140,10 @@ impl StreamRender {
                     self.mixer.master_gain = master;
                 }
                 Command::Cycle(range) => self.mixer.cycle = range,
-                Command::Offset(ms) => self.mixer.song_offset = ms,
+                Command::Offset(ms) => {
+                    self.mixer.song_offset = ms;
+                    self.mixer.stretcher.reset();
+                }
             }
         }
         let mut highest = 0.0_f32;
@@ -1231,5 +1481,125 @@ mod peak_tests {
         let silent = AudioClip { samples: vec![0.0; 6], channels: 2, sample_rate: 8 };
         assert_eq!(silent.peaks(3), [0.0, 0.0, 0.0]);
         assert!(mono.peaks(0).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod limiter_tests {
+    use super::*;
+
+    #[test]
+    fn master_limiter_is_transparent_below_ceiling_and_prevents_overload_clipping() {
+        let mut mixer = Mixer::new(1000);
+        mixer.playing = true;
+        // Below ceiling (0.5): output is bit-exact.
+        mixer.song = Some(Arc::new(AudioClip {
+            samples: vec![0.5; 20],
+            channels: 2,
+            sample_rate: 1000,
+        }));
+        let mut quiet = vec![0.0; 8];
+        mixer.render(&mut quiet, 2);
+        assert_eq!(quiet, vec![0.5; 8]);
+
+        // Overload: stereo song (L=0.86, R=0.43) + click (L=0.50, R=0.25) -> L=1.36, R=0.68.
+        let mut mixer = Mixer::new(1000);
+        mixer.playing = true;
+        mixer.song = Some(Arc::new(AudioClip {
+            samples: [0.86_f32, 0.43].repeat(300),
+            channels: 2,
+            sample_rate: 1000,
+        }));
+        mixer.cues = vec![ScheduledSound {
+            at_ms: 0.0,
+            end_ms: None,
+            clip: Arc::new(AudioClip {
+                samples: [0.50_f32, 0.25].repeat(2),
+                channels: 2,
+                sample_rate: 1000,
+            }),
+            gain: 1.0,
+        }];
+        let mut out = vec![0.0; 600];
+        mixer.render(&mut out, 2);
+        // Peak frame is limited to the 0.98 ceiling and keeps the exact 2:1 stereo ratio.
+        assert!((out[0] - MasterLimiter::CEILING).abs() < 1e-5, "got {}", out[0]);
+        assert!((out[1] - MasterLimiter::CEILING * 0.5).abs() < 1e-5, "got {}", out[1]);
+        assert!(out.iter().all(|s| s.abs() <= MasterLimiter::CEILING + 1e-5));
+        // After the 2 ms click ends and ~250 ms of release passes, gain returns to unity (0.86).
+        let tail_l = out[out.len() - 2];
+        assert!((tail_l - 0.86).abs() < 0.01, "expected release back to 0.86, got {tail_l}");
+
+        // Seek resets gain reduction immediately.
+        let mut seek_mixer = Mixer::new(1000);
+        seek_mixer.playing = true;
+        seek_mixer.song = Some(Arc::new(AudioClip {
+            samples: vec![1.5; 40],
+            channels: 2,
+            sample_rate: 1000,
+        }));
+        let mut hot = vec![0.0; 4];
+        seek_mixer.render(&mut hot, 2);
+        assert!(seek_mixer.limiter.gain < 0.7);
+        seek_mixer.seek(0.0);
+        assert_eq!(seek_mixer.limiter.gain, 1.0);
+    }
+}
+
+#[cfg(test)]
+mod streaming_stretch_tests {
+    use super::*;
+
+    fn stereo_sine(sample_rate: u32, seconds: usize, freq_hz: f32) -> Arc<AudioClip> {
+        let frames = sample_rate as usize * seconds;
+        let mut samples = Vec::with_capacity(frames * 2);
+        for i in 0..frames {
+            let v = (2.0 * std::f32::consts::PI * freq_hz * i as f32 / sample_rate as f32).sin() * 0.5;
+            samples.push(v);
+            samples.push(v);
+        }
+        Arc::new(AudioClip {
+            samples,
+            channels: 2,
+            sample_rate,
+        })
+    }
+
+    #[test]
+    fn mixer_streams_pitch_preserving_stretch_at_half_and_one_point_five_speed() {
+        let rate = 48_000;
+        let song = stereo_sine(rate, 4, 220.0);
+
+        for speed in [0.5_f64, 1.5_f64] {
+            let mut mixer = Mixer::new(rate);
+            mixer.song = Some(song.clone());
+            mixer.speed = speed;
+            mixer.playing = true;
+            mixer.seek(500.0);
+
+            // Render 0.5 seconds of stereo output across multiple callback-sized blocks.
+            let total_frames = (rate / 2) as usize;
+            let mut out = vec![0.0_f32; total_frames * 2];
+            for chunk in out.chunks_mut(512 * 2) {
+                mixer.render(chunk, 2);
+            }
+
+            assert!(
+                out.iter().all(|s| s.is_finite() && s.abs() <= 1.0),
+                "speed {speed}: output must be finite and bounded"
+            );
+            let peak = out.iter().fold(0.0_f32, |a, &b| a.max(b.abs()));
+            assert!(
+                peak > 0.1,
+                "speed {speed}: expected non-silent stretched output, peak={peak}"
+            );
+            // Position advances by rendered_ms * speed.
+            let expected_pos = 500.0 + 500.0 * speed;
+            assert!(
+                (mixer.position_ms - expected_pos).abs() < 1.0,
+                "speed {speed}: expected pos ~{expected_pos}, got {}",
+                mixer.position_ms
+            );
+        }
     }
 }

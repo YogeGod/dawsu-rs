@@ -33,7 +33,9 @@
     "allow-close-preview-window",
     "allow-pick-drum-map",
     "allow-set-drum-view",
+    "allow-drum-map-action",
     "allow-open-editor-folder",
-    "allow-close-editor"
+    "allow-close-editor",
+    "allow-skin-textures"
   ]
 }

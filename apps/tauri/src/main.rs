@@ -7,6 +7,7 @@ mod home;
 mod keyboard;
 mod library;
 mod selection;
+mod skin_textures;
 
 use dawsu_application::{Application, OutputBackend, ExportOptions, ExportSettings, PlatformRequest, EditorTimeSignature, LaneLayout, PointerPhase, RangeOperation, TimelineEdit, VolumeScope, lane_name};
 use dawsu_editor::{
@@ -1132,7 +1133,13 @@ fn gameplay_overlay(document: &dawsu_application::Document) -> Value {
                     spans.push(("spinner", time - (end - raw.time()).max(0.0), time, index));
                 }
             }
-            Place::NoObject => {}
+            Place::NoObject => {
+                // In HS mode (hitsound diff), every drawn hit moment immediately appears as a
+                // circle on the Song · objects row so the blueprint is visible before Save.
+                if document.hs_mode && moment.hits().next().is_some() {
+                    points.push(("circle", time, objects.len() + points.len()));
+                }
+            }
         }
     }
     json!({ "points": points, "spans": spans })
@@ -1259,6 +1266,10 @@ fn map_preview(app: &Application, map: &Path) -> Result<Value, String> {
 }
 
 fn snapshot(app: &Application, include_scene: bool) -> Value {
+    snapshot_with_static(app, include_scene, true)
+}
+
+fn snapshot_with_static(app: &Application, include_scene: bool, include_static: bool) -> Value {
     let document = app.document();
     let position = app.position_ms();
     let musical_position = document.map(|document| {
@@ -1335,11 +1346,15 @@ fn snapshot(app: &Application, include_scene: bool) -> Value {
                     })).collect::<Vec<_>>();
                 json!([moment.time().ms(), moment.reference_volume(), moment.place() != Place::NoObject, hits])
             }).collect::<Vec<_>>();
-            let sections = c.tempo.sections().iter()
-                .map(|s| json!([s.start.ms(), s.beat_length_ms, s.beats_per_bar]))
-                .collect::<Vec<_>>();
-            let waveform = app.waveform.iter()
-                .map(|b| json!([b.peak, b.low, b.mid, b.high])).collect::<Vec<_>>();
+            let sections = include_static.then(|| {
+                c.tempo.sections().iter()
+                    .map(|s| json!([s.start.ms(), s.beat_length_ms, s.beats_per_bar]))
+                    .collect::<Vec<_>>()
+            });
+            let waveform = include_static.then(|| {
+                app.waveform.iter()
+                    .map(|b| json!([b.peak, b.low, b.mid, b.high, b.amp_l, b.amp_r])).collect::<Vec<_>>()
+            });
             let ramp_preview = match c.preview {
                 ToolPreview::RampLine { from, to, shape } => {
                     let (from, to) = if from.0 > to.0 { (to, from) } else { (from, to) };
@@ -1365,11 +1380,10 @@ fn snapshot(app: &Application, include_scene: bool) -> Value {
                     "volume": body.volume(),
                 });
             }
-            json!({
+            let mut scene = json!({
                 "title": d.title, "mapTitle": d.map_title(), "version": d.version(),
                 "path": d.path, "difficulties": d.difficulties,
-                "lanes": lanes, "laneOrder": lane_order, "moments": moments, "sections": sections, "waveform": waveform,
-                "gameplay": gameplay_overlay(d), "combos": combo_overlay(d),
+                "lanes": lanes, "laneOrder": lane_order, "moments": moments,
                 // The map preview asks for its objects again when this changes (map_preview).
                 "previewKey": app.document_generation(),
                 // Inspector › Difficulty's orphaned marks: the times of hits with no object (none in HS mode).
@@ -1387,7 +1401,16 @@ fn snapshot(app: &Application, include_scene: bool) -> Value {
                 "bookmarks": d.bookmarks().iter().map(|b| json!({"time": b.time.ms(), "label": b.label})).collect::<Vec<_>>(),
                 "rampPreview": ramp_preview,
                 "placement": c.selected_placement(),
-            })
+            });
+            if include_static {
+                scene["sections"] = json!(sections.unwrap_or_default());
+                scene["waveform"] = json!(waveform.unwrap_or_default());
+                scene["gameplay"] = gameplay_overlay(d);
+                scene["combos"] = combo_overlay(d);
+            } else if d.hs_mode {
+                scene["gameplay"] = gameplay_overlay(d);
+            }
+            scene
         })
     } else {
         None
@@ -1499,6 +1522,7 @@ enum Request {
     /// Only whether the preview window is open changed; `true` also saves the preferences.
     PreviewOpen(bool, bool),
     DrumView(PathBuf, Option<PathBuf>, bool, mpsc::Sender<Result<Value, String>>),
+    DrumMapAction(PathBuf, drum_view::DrumMapAction, mpsc::Sender<Result<Value, String>>),
     Folder(folders::Folder, mpsc::Sender<Result<PathBuf, String>>),
     Close(bool, mpsc::Sender<Result<(), String>>),
     // The Export window's own requests. Each always answers, with an error after a fault.
@@ -1694,6 +1718,8 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
         let mut playback_start = PlaybackStart::default();
         let mut home = home::Route::default();
         let mut drums = drum_view::DrumView::default();
+        let mut static_scene_key: Option<(u64, usize)> = None;
+        let mut last_hs_mode = false;
         let mut pending_initial_open = initial.filter(|path| map_path(path));
         if !app.first_launch && let Some(path) = pending_initial_open.take() {
             let _ = guard(&mut app, &mut fault, |app| app.request_open(path));
@@ -1720,7 +1746,22 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                         }
                         app.poll();
                         home.settle(app);
-                        let mut view = snapshot(app, scene && !home.visible());
+                        let want_scene = scene && !home.visible();
+                        let current_hs_mode = app.document().is_some_and(|d| d.hs_mode);
+                        let include_static = if want_scene && app.document().is_some() {
+                            let key = (app.document_generation(), app.waveform.len());
+                            let changed = static_scene_key != Some(key) || last_hs_mode != current_hs_mode;
+                            static_scene_key = Some(key);
+                            last_hs_mode = current_hs_mode;
+                            changed
+                        } else {
+                            if home.visible() || app.document().is_none() {
+                                static_scene_key = None;
+                                last_hs_mode = false;
+                            }
+                            false
+                        };
+                        let mut view = snapshot_with_static(app, want_scene, include_static);
                         home.add_status(&mut view);
                         drums.decorate(app, &mut view);
                         view["playbackStart"] = json!(playback_start);
@@ -1907,6 +1948,26 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                         match preset {
                             Some(path) => drums.load(app, &map, &path),
                             None => drums.toggle(app, &map, on),
+                        }.map(|()| {
+                            let mut view = snapshot(app, !home.visible());
+                            home.add_status(&mut view);
+                            drums.decorate(app, &mut view);
+                            view["playbackStart"] = json!(playback_start);
+                            view
+                        })
+                    })
+                    .and_then(|result| result);
+                    let _ = response.send(result);
+                }
+                Ok(Request::DrumMapAction(map, action, response)) => {
+                    let result = guard(&mut app, &mut fault, |app| {
+                        match action {
+                            drum_view::DrumMapAction::LoadBuiltin { name } => {
+                                drums.load_builtin(app, &map, &name)
+                            }
+                            drum_view::DrumMapAction::AssignRow { row_index, lane_key } => {
+                                drums.assign_row(app, &map, row_index, lane_key.as_deref())
+                            }
                         }.map(|()| {
                             let mut view = snapshot(app, !home.visible());
                             home.add_status(&mut view);
@@ -2694,6 +2755,15 @@ fn set_drum_view(map: PathBuf, on: bool, state: State<'_, Editor>) -> Result<Val
 }
 
 #[tauri::command]
+fn drum_map_action(
+    map: PathBuf,
+    action: drum_view::DrumMapAction,
+    state: State<'_, Editor>,
+) -> Result<Value, String> {
+    ask(&state, |tx| Request::DrumMapAction(map, action, tx))?
+}
+
+#[tauri::command]
 fn open_editor_folder(folder: folders::Folder, state: State<'_, Editor>) -> Result<(), String> {
     let path = ask(&state, |tx| Request::Folder(folder, tx))??;
     folder.open(&path)
@@ -2728,6 +2798,11 @@ enum CloseDecision {
 /// The windows that close with main.
 fn closed_with_main<'a>(labels: impl IntoIterator<Item = &'a str>) -> Vec<&'a str> {
     labels.into_iter().filter(|label| *label != "main").collect()
+}
+
+#[tauri::command]
+fn skin_textures() -> Value {
+    skin_textures::load_skin_textures_json()
 }
 
 fn close_requested(label: &str, editor: &Editor) -> CloseDecision {
@@ -2838,8 +2913,10 @@ fn main() {
             map_preview_objects,
             pick_drum_map,
             set_drum_view,
+            drum_map_action,
             open_editor_folder,
-            close_editor
+            close_editor,
+            skin_textures
         ])
         .run(tauri::generate_context!())
         .expect("start the dawsu! Tauri editor");

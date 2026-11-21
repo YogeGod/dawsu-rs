@@ -412,5 +412,13 @@ export function attachSettingsDialogs(ctx) {
     search.focus();
   }
 
-  Object.assign(ctx, { openFolders, openAudioOutput, openViewSettings, showHelp, showShortcutEditor });
+  function openPreferences(tab = "general") {
+    if (typeof globalThis.openPreferences === "function") {
+      globalThis.openPreferences(tab);
+      return;
+    }
+    openViewSettings();
+  }
+
+  Object.assign(ctx, { openFolders, openAudioOutput, openViewSettings, openPreferences, showHelp, showShortcutEditor });
 }

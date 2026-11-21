@@ -1122,6 +1122,7 @@ fn mix(cues: Vec<ScheduledSound>, cancel: &dyn Fn() -> bool) -> Result<Vec<f32>,
     out.try_reserve_exact(frames * CHANNELS)
         .map_err(|error| error.to_string())?;
     let mut mixer = Mixer::new(SAMPLE_RATE);
+    mixer.limiter_enabled = false;
     mixer.cues = cues;
     mixer.playing = true;
     let mut block = [0.0; 1024 * CHANNELS];

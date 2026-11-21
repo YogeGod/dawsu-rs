@@ -133,6 +133,14 @@ export function attachIpc(ctx) {
       // Centre scrolls the view on every frame; the editor's scene carries an older start.
       const centring = !loaded && state.scene && state.view.playing && state.view.follow && ctx.ui()?.centre?.();
       if (centring) state.view.scene.viewStart = state.scene.viewStart;
+      // Static map data (waveform, gameplay objects, combos, timing sections) is omitted on
+      // incremental edits for the same loaded document so clicks and drags stay fast.
+      if (!loaded && state.scene && state.view.scene.previewKey === state.scene.previewKey) {
+        state.view.scene.waveform ??= state.scene.waveform;
+        state.view.scene.gameplay ??= state.scene.gameplay;
+        state.view.scene.combos ??= state.scene.combos;
+        state.view.scene.sections ??= state.scene.sections;
+      }
       state.scene = state.view.scene;
       if (unfolded.length) ctx.saveLaneLayout();
     }

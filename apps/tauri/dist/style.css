@@ -3,15 +3,16 @@
 @font-face{font-family:"Roboto Mono";src:url("studio-assets/fonts/RobotoMono-Regular.ttf") format("truetype");font-weight:400;font-display:swap}
 *{box-sizing:border-box}
 :root{color-scheme:dark;
-  /* Neutral editor surfaces from the design system. */
-  --base:#151515;--title-text:#c4c4c4;--panel:#1c1c1c;--raised:#292929;--control:#3c3c3c;
-  --line:#383838;--divider:#383838;--hi:#77bdfa;--hi-hover:#a1d0f7;--text:#f1f1f1;--muted:#a3a3a3;--on-accent:#101010;
-  --field:#151515;--button:#2c2c2c;--button-border:#383838;
-  --ruler:#252525;--lane:#1c1c1c;--lane-alt:#151515;--group:#292929;
+  /* Apple Logic Pro for iPad pure black & neutral obsidian surfaces. */
+  --base:#0e0e10;--title-text:#c7c7cc;--panel:#151517;--raised:#1c1c1f;--control:#303036;
+  --line:#2b2b30;--divider:#2b2b30;--hi:#5ac8fa;--hi-hover:#8ee0ff;--text:#f5f5f7;--muted:#98989f;--on-accent:#08080a;
+  --field:#0e0e10;--button:#242428;--button-border:#2b2b30;
+  --ruler:#1a1a1d;--lane:#151517;--lane-alt:#0e0e10;--group:#1c1c1f;
   --cursor-draw:url("studio-assets/icons/cursor-draw.svg") 4 4,crosshair;
   --cursor-erase:url("studio-assets/icons/cursor-erase.svg") 5 27,crosshair;
   font:13px "Segoe UI",system-ui,sans-serif}
-body{margin:0;background:var(--base);color:var(--text);height:100vh;display:flex;flex-direction:column;overflow:hidden}
+body{margin:0;background:var(--base);color:var(--text);height:100vh;display:flex;flex-direction:column;overflow:hidden;user-select:none;-webkit-user-select:none}
+input,textarea,[contenteditable]{user-select:text;-webkit-user-select:text}
 [hidden]{display:none!important}
 button,input,select{font:inherit;color:inherit}button,select,input[type=number]{border:1px solid var(--button-border);border-radius:5px;background:var(--button);min-height:28px;padding:3px 8px}
 button{cursor:pointer;white-space:nowrap}button:hover:not(:disabled){background:var(--button-border);border-color:#545454}button:disabled{opacity:.45;cursor:default}button.active,button[aria-pressed=true]{border-color:var(--hi);color:var(--on-accent);background:var(--hi)}
@@ -196,9 +197,9 @@ body{font-family:Inter,"Segoe UI",system-ui,sans-serif}
 .row[aria-label="Lane view"] button { border: 0; background: transparent; }
 .row[aria-label="Lane view"] button[aria-pressed="true"] { color: var(--hi); background: #454545; }
 :root {
-  --text:#f1f1f1; --muted:#a3a3a3; --hi:#77bdfa;
-  --base:#151515; --panel:#1c1c1c; --chrome:#292929; --control:#3c3c3c;
-  --field:#151515; --button:#2c2c2c; --button-border:#383838; --line:#383838;
+  --text:#f5f5f7; --muted:#98989f; --hi:#5ac8fa;
+  --base:#0e0e10; --panel:#151517; --chrome:#1c1c1f; --control:#303036;
+  --field:#0e0e10; --button:#242428; --button-border:#2b2b30; --line:#2b2b30;
 }
 header.chrome { min-height:44px; padding-block:4px; background:var(--chrome); }
 /* Top-bar buttons sit on --chrome, so they get an --editor-selected edge (1.5:1 against the bar). */
