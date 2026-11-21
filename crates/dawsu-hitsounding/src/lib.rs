@@ -12,6 +12,7 @@ pub mod generate;
 pub mod hs;
 pub mod lazer;
 pub mod model;
+pub mod playfield;
 pub mod rules;
 pub mod sound_sets;
 

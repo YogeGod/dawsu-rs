@@ -81,6 +81,7 @@ export const items = [
   { id: "browser", label: "Browser", icon: "PanelLeft", run: ["panel", "browser"] },
   { id: "inspector", label: "Inspector", icon: "PanelRight", run: ["panel", "inspector"] },
   { id: "volumePanel", label: "Volume and Mixer", icon: "ChartNoAxesColumn", run: ["panel", "controller"] },
+  { id: "mapPreview", label: "Map preview", icon: "ScanEye", run: ["call", "toggleMapPreview"], checked: "mapPreview", enabled: "document" },
   { id: "laneNames", label: "Lane names", icon: "Tag", run: ["panel", "lane_names", "laneNames"] },
   { id: "songWaveform", label: "Song waveform", icon: "AudioWaveform", run: ["click", "ruler-waveform"], checked: "waveform" },
   { id: "objectLines", label: "Object lines", icon: "AlignHorizontalSpaceAround", run: ["toggle", "object_lines", "view.objectLines"] },
@@ -143,7 +144,7 @@ export const menus = {
     "addLane", "deleteActiveLane",
   ],
   view: [
-    "browser", "inspector", "volumePanel", "laneNames", "-",
+    "browser", "inspector", "volumePanel", "mapPreview", "laneNames", "-",
     "songWaveform", "objectLines", "usedOnly", "collapseLayers", "filterLanes", "tallerLanes", "shorterLanes", "-",
     "zoomIn", "zoomOut", "fit", "-",
     "timeSignatures", "drumMap", "editLayout", "viewSettings", "-",

@@ -1182,6 +1182,50 @@ fn combo_overlay(document: &dawsu_application::Document) -> Value {
     json!({ "colours": colours, "objects": combos })
 }
 
+/// What the map preview draws for the open difficulty (`map`): circle size, approach time and each
+/// object's stacked place, times, path and combo, as osu!lazer works them out at 131fe72
+/// (`dawsu_hitsounding::playfield`). A taiko, catch or mania difficulty answers `unsupported`.
+/// A slider's path is flat `[x0, y0, x1, y1, …]` on the playfield, stack offset included.
+fn map_preview(app: &Application, map: &Path) -> Result<Value, String> {
+    let document = app.document().ok_or("Open a difficulty first.")?;
+    if document.path != map {
+        return Err("The open difficulty changed.".into());
+    }
+    let key = app.document_generation();
+    let Some(field) = dawsu_hitsounding::playfield::playfield(&document.file) else {
+        return Ok(json!({ "path": document.path, "key": key, "unsupported": true }));
+    };
+    let combos = combo_overlay(document);
+    let file_index: std::collections::HashMap<_, _> =
+        document.file.hit_objects().iter().enumerate().map(|(index, object)| (object.line(), index)).collect();
+    let round = |value: f32| (f64::from(value) * 100.0).round() / 100.0;
+    let objects: Vec<Value> = field.objects.iter().map(|object| {
+        let offset = object.stack_offset(field.scale);
+        let at = object.position + offset;
+        let combo = file_index.get(&object.line).and_then(|&index| combos["objects"].get(index)).cloned().unwrap_or(json!([0, 0]));
+        let kind = match object.kind {
+            dawsu_hitsounding::rules::Kind::Circle => "circle",
+            dawsu_hitsounding::rules::Kind::Slider => "slider",
+            dawsu_hitsounding::rules::Kind::Spinner => "spinner",
+        };
+        let mut value = json!({
+            "kind": kind, "time": object.start_time, "end": object.end_time,
+            "x": round(at.x), "y": round(at.y), "combo": combo[0], "colour": combo[1],
+        });
+        if let Some(path) = &object.path {
+            let points: Vec<f64> = path.points.iter().flat_map(|point| [round(at.x + point.x), round(at.y + point.y)]).collect();
+            value["path"] = json!(points);
+            value["lengths"] = json!(path.cumulative.iter().map(|length| (length * 100.0).round() / 100.0).collect::<Vec<_>>());
+            value["spans"] = json!(object.span_count);
+        }
+        value
+    }).collect();
+    Ok(json!({
+        "path": document.path, "key": key, "radius": field.radius, "preempt": field.preempt, "fadeIn": field.fade_in,
+        "colours": combos["colours"], "objects": objects,
+    }))
+}
+
 fn snapshot(app: &Application, include_scene: bool) -> Value {
     let document = app.document();
     let position = app.position_ms();
@@ -1294,6 +1338,8 @@ fn snapshot(app: &Application, include_scene: bool) -> Value {
                 "path": d.path, "difficulties": d.difficulties,
                 "lanes": lanes, "laneOrder": lane_order, "moments": moments, "sections": sections, "waveform": waveform,
                 "gameplay": gameplay_overlay(d), "combos": combo_overlay(d),
+                // The map preview asks for its objects again when this changes (map_preview).
+                "previewKey": app.document_generation(),
                 // Inspector › Difficulty's orphaned marks: the times of hits with no object (none in HS mode).
                 "orphanedHits": dawsu_application::orphaned_hit_times(model, d.hs_mode),
                 "laneRevision": c.history.version(),
@@ -1412,6 +1458,7 @@ enum Request {
     SoundSetPlacement(PathBuf, u64, mpsc::Sender<Result<Value, String>>),
     SaveSoundSet(PathBuf, String, mpsc::Sender<Result<Value, String>>),
     LaneAddCandidates(PathBuf, mpsc::Sender<Result<Value, String>>),
+    MapPreview(PathBuf, mpsc::Sender<Result<Value, String>>),
     DrumView(PathBuf, Option<PathBuf>, bool, mpsc::Sender<Result<Value, String>>),
     Folder(folders::Folder, mpsc::Sender<Result<PathBuf, String>>),
     Close(bool, mpsc::Sender<Result<(), String>>),
@@ -1787,6 +1834,10 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                 Ok(Request::LaneAddCandidates(map, response)) => {
                     let result = guard(&mut app, &mut fault, |app| lane_add_choices(app, &map))
                         .and_then(|result| result);
+                    let _ = response.send(result);
+                }
+                Ok(Request::MapPreview(map, response)) => {
+                    let result = guard(&mut app, &mut fault, |app| map_preview(app, &map)).and_then(|result| result);
                     let _ = response.send(result);
                 }
                 Ok(Request::DrumView(map, preset, on, response)) => {
@@ -2327,6 +2378,11 @@ fn lane_add_candidates(map: PathBuf, state: State<'_, Editor>) -> Result<Value, 
 }
 
 #[tauri::command]
+fn map_preview_objects(map: PathBuf, state: State<'_, Editor>) -> Result<Value, String> {
+    ask(&state, |tx| Request::MapPreview(map, tx))?
+}
+
+#[tauri::command]
 fn pick_drum_map(
     map: PathBuf,
     window: tauri::WebviewWindow,
@@ -2452,6 +2508,7 @@ fn main() {
             list_library,
             sample_preview,
             lane_add_candidates,
+            map_preview_objects,
             pick_drum_map,
             set_drum_view,
             open_editor_folder,

@@ -36,6 +36,7 @@ const menuRules = {
   laneDelete: laneAllowed(lane => lane.canDelete),
   waveform: () => $("ruler-waveform").getAttribute("aria-pressed") === "true",
   usedOnly: () => !!$("used-only").checked,
+  mapPreview: () => !!window.dawsuUi?.mapPreviewOn?.(),
   tool: (_, item) => view.tool === item.run[1],
 };
 
@@ -74,6 +75,7 @@ const menuCalls = {
   openViewSettings: () => openViewSettings(),
   showHelp: () => run(showHelp),
   deleteActiveLane: () => deleteActiveLane(),
+  toggleMapPreview: () => window.dawsuUi?.toggleMapPreview?.(),
 };
 
 const menuField = path => path.split(".").reduce((value, key) => value?.[key], { view, scene });

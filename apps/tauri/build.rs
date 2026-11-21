@@ -36,6 +36,7 @@ const COMMANDS: &[&str] = &[
     "list_library",
     "sample_preview",
     "lane_add_candidates",
+    "map_preview_objects",
     "pick_drum_map",
     "set_drum_view",
     "open_editor_folder",

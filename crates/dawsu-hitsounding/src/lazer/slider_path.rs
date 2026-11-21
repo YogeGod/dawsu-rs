@@ -1,12 +1,13 @@
 // Ported from osu!lazer (ppy/osu) at 131fe72a15581049401a588a13684938d4d0e0c7:
 //   osu.Game/Rulesets/Objects/Legacy/ConvertHitObjectParser.cs (convertPathType, convertPathString,
 //   convertPoints, mergeControlPointsLists, readPoint)
-//   osu.Game/Rulesets/Objects/SliderPath.cs (calculatePath, calculateSubPath, calculateLength, Distance)
+//   osu.Game/Rulesets/Objects/SliderPath.cs (calculatePath, calculateSubPath, calculateLength, Distance,
+//   PositionAt, GetPathToProgress, indexOfDistance, progressToDistance, interpolateVertices)
 // Copyright (c) ppy Pty Ltd <contact@ppy.sh>. Licensed under the MIT Licence (ADR 0027).
 //
-// Only what slider times need is ported: the path's distance. Positions along the path are not.
+// Slider times need only the path's distance; the map preview also draws the path and the ball.
 
-use super::path_approximator::{self as pa, almost_equals_f32, CircularArcProperties};
+use super::path_approximator::{self as pa, almost_equals_f32, almost_equals_f64, CircularArcProperties};
 use super::vector::Vector2;
 use dawsu_osu_format::number::{parse_float, MAX_COORDINATE_VALUE};
 
@@ -147,8 +148,78 @@ pub struct PathLength {
 /// `SliderPath` with `controlPoints` and `expectedDistance`, as far as its distance goes.
 /// `optimise_catmull` is set on the osu! ruleset's own slider path, not on the decoder's.
 pub fn path_length(control_points: &[ControlPoint], expected_distance: Option<f64>, optimise_catmull: bool) -> PathLength {
-    let (path, optimised_length) = calculate_path(control_points, optimise_catmull);
-    calculate_length(path, optimised_length, expected_distance)
+    SliderGeometry::new(control_points, expected_distance, optimise_catmull).length
+}
+
+/// A computed `SliderPath`: its vertices relative to the slider's position, after lengthening or
+/// shortening to the expected distance, with the distance along the path at each vertex.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SliderGeometry {
+    pub length: PathLength,
+    /// `calculatedPath`.
+    pub points: Vec<Vector2>,
+    /// `cumulativeLength`.
+    pub cumulative: Vec<f64>,
+}
+
+impl SliderGeometry {
+    pub fn new(control_points: &[ControlPoint], expected_distance: Option<f64>, optimise_catmull: bool) -> SliderGeometry {
+        let (path, optimised_length) = calculate_path(control_points, optimise_catmull);
+        calculate_length(path, optimised_length, expected_distance)
+    }
+
+    /// `SliderPath.PositionAt`: the point at `progress` (0 to 1) along the path.
+    pub fn position_at(&self, progress: f64) -> Vector2 {
+        let d = self.progress_to_distance(progress);
+        self.interpolate_vertices(self.index_of_distance(d), d)
+    }
+
+    /// `SliderPath.GetPathToProgress`: the path from progress `p0` to `p1`.
+    pub fn path_to_progress(&self, p0: f64, p1: f64) -> Vec<Vector2> {
+        let d0 = self.progress_to_distance(p0);
+        let d1 = self.progress_to_distance(p1);
+        let mut path = Vec::new();
+        let mut i = 0;
+        while i < self.points.len() && self.cumulative[i] < d0 {
+            i += 1;
+        }
+        path.push(self.interpolate_vertices(i, d0));
+        while i < self.points.len() && self.cumulative[i] <= d1 {
+            path.push(self.points[i]);
+            i += 1;
+        }
+        path.push(self.interpolate_vertices(i, d1));
+        path
+    }
+
+    fn progress_to_distance(&self, progress: f64) -> f64 {
+        progress.clamp(0.0, 1.0) * self.length.distance
+    }
+
+    /// `List.BinarySearch` on the cumulative lengths: the index of `d`, or of the first larger one.
+    fn index_of_distance(&self, d: f64) -> usize {
+        match self.cumulative.binary_search_by(|l| l.total_cmp(&d)) {
+            Ok(i) | Err(i) => i,
+        }
+    }
+
+    fn interpolate_vertices(&self, i: usize, d: f64) -> Vector2 {
+        let Some(&first) = self.points.first() else { return Vector2::ZERO };
+        if i == 0 {
+            return first;
+        }
+        if i >= self.points.len() {
+            return *self.points.last().unwrap();
+        }
+        let (p0, p1) = (self.points[i - 1], self.points[i]);
+        let (d0, d1) = (self.cumulative[i - 1], self.cumulative[i]);
+        // Avoid division by an almost-zero number when two points are extremely close.
+        if almost_equals_f64(d0, d1) {
+            return p0;
+        }
+        let w = (d - d0) / (d1 - d0);
+        p0 + (p1 - p0) * w as f32
+    }
 }
 
 fn calculate_path(control_points: &[ControlPoint], optimise_catmull: bool) -> (Vec<Vector2>, f64) {
@@ -234,7 +305,7 @@ fn calculate_sub_path(sub: &[Vector2], kind: SplineType, optimise_catmull: bool,
     pa::b_spline_to_piecewise_linear(sub, degree)
 }
 
-fn calculate_length(mut path: Vec<Vector2>, optimised_length: f64, expected_distance: Option<f64>) -> PathLength {
+fn calculate_length(mut path: Vec<Vector2>, optimised_length: f64, expected_distance: Option<f64>) -> SliderGeometry {
     let mut calculated_length = optimised_length;
     let mut cumulative = vec![0.0f64];
     for i in 0..path.len().saturating_sub(1) {
@@ -242,17 +313,22 @@ fn calculate_length(mut path: Vec<Vector2>, optimised_length: f64, expected_dist
         calculated_length += f64::from(diff.length());
         cumulative.push(calculated_length);
     }
-    let done = |cumulative: &Vec<f64>| PathLength { distance: cumulative.last().copied().unwrap_or(0.0), calculated: calculated_length };
+    let done = |points: Vec<Vector2>, cumulative: Vec<f64>| SliderGeometry {
+        length: PathLength { distance: cumulative.last().copied().unwrap_or(0.0), calculated: calculated_length },
+        points,
+        cumulative,
+    };
 
-    let Some(expected) = expected_distance else { return done(&cumulative) };
+    let Some(expected) = expected_distance else { return done(path, cumulative) };
     if calculated_length == expected {
-        return done(&cumulative);
+        return done(path, cumulative);
     }
     // In osu-stable, if the last two path points of a slider are equal, extension is not performed.
     if path.len() >= 2 && path[path.len() - 1] == path[path.len() - 2] && expected > calculated_length {
         cumulative.push(calculated_length);
-        return done(&cumulative);
+        return done(path, cumulative);
     }
+    // The last length is always incorrect.
     cumulative.pop();
     let mut path_end_index = path.len() as i64 - 1;
     if calculated_length > expected {
@@ -264,10 +340,15 @@ fn calculate_length(mut path: Vec<Vector2>, optimised_length: f64, expected_dist
     }
     if path_end_index <= 0 {
         cumulative.push(0.0);
-        return done(&cumulative);
+        return done(path, cumulative);
     }
+    // The direction of the segment to shorten or lengthen (osuTK's `Normalized`).
+    let end = path_end_index as usize;
+    let segment = path[end] - path[end - 1];
+    let dir = segment * (1.0 / segment.length());
+    path[end] = path[end - 1] + dir * (expected - cumulative.last().copied().unwrap_or(0.0)) as f32;
     cumulative.push(expected);
-    done(&cumulative)
+    done(path, cumulative)
 }
 
 #[cfg(test)]
@@ -311,5 +392,41 @@ mod tests {
         assert_eq!(convert_path_type("B3"), SplineType::BSpline(3));
         assert_eq!(convert_path_type("B0"), SplineType::Bezier);
         assert_eq!(convert_path_type("X"), SplineType::Catmull);
+    }
+
+    fn geometry_of(curve: &str, expected: Option<f64>) -> SliderGeometry {
+        let points = parse_curve(curve, Vector2::new(300.0, 200.0), 14).unwrap();
+        SliderGeometry::new(&points, expected, true)
+    }
+
+    #[test]
+    fn a_shortened_path_ends_at_its_stored_length() {
+        let g = geometry_of("L|400:200", Some(70.0));
+        assert_eq!(g.points, vec![Vector2::ZERO, Vector2::new(70.0, 0.0)]);
+        assert_eq!(g.position_at(1.0), Vector2::new(70.0, 0.0));
+        assert_eq!(g.position_at(0.5), Vector2::new(35.0, 0.0));
+    }
+
+    #[test]
+    fn a_lengthened_path_ends_past_its_last_point() {
+        let g = geometry_of("L|400:200", Some(140.0));
+        assert_eq!(g.position_at(1.0), Vector2::new(140.0, 0.0));
+        assert_eq!(g.cumulative, vec![0.0, 140.0]);
+    }
+
+    #[test]
+    fn positions_follow_the_path_round_a_corner() {
+        let g = geometry_of("L|400:200|400:300", Some(200.0));
+        assert_eq!(g.position_at(0.25), Vector2::new(50.0, 0.0));
+        assert_eq!(g.position_at(0.75), Vector2::new(100.0, 50.0));
+        // Progress is clamped to 0 to 1, as lazer's progressToDistance does.
+        assert_eq!(g.position_at(2.0), Vector2::new(100.0, 100.0));
+        assert_eq!(g.position_at(-1.0), Vector2::ZERO);
+    }
+
+    #[test]
+    fn the_path_to_a_progress_stops_part_way() {
+        let g = geometry_of("L|400:200|400:300", Some(200.0));
+        assert_eq!(g.path_to_progress(0.0, 0.75), vec![Vector2::ZERO, Vector2::ZERO, Vector2::new(100.0, 0.0), Vector2::new(100.0, 50.0)]);
     }
 }
