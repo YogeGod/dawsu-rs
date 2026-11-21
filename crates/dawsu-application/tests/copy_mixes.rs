@@ -1,6 +1,6 @@
 use dawsu_application::{Document, output};
 use dawsu_foundation::SampleIdentity;
-use dawsu_hitsounding::copy::{CopyMode, CopyOptions};
+use dawsu_hitsounding::copy::{CopyCollisionPolicy, CopyMode, CopyOptions};
 use dawsu_test_support::Scratch;
 use std::{fs, path::Path};
 
@@ -250,7 +250,8 @@ fn copy_review_names_the_winner_and_every_replaced_source_without_writing() {
     fs::write(&source_path, &source_bytes).unwrap();
     fs::write(&target, &original).unwrap();
     let source = output::Source::from_document(&Document::read(&source_path).unwrap());
-    let plan = output::copy(&source, std::slice::from_ref(&target), &CopyOptions::default(), &|| false).unwrap();
+    let options = CopyOptions { collision_policy: CopyCollisionPolicy::LaterWins, ..CopyOptions::default() };
+    let plan = output::copy(&source, std::slice::from_ref(&target), &options, &|| false).unwrap();
 
     assert!(plan.details.iter().any(|detail| detail ==
         "Hard.osu · 2000 ms: source at 2002 ms won; replaced 1998 ms, 1999 ms."), "{:?}", plan.details);
@@ -258,4 +259,24 @@ fn copy_review_names_the_winner_and_every_replaced_source_without_writing() {
     assert_eq!(fs::read_to_string(&source_path).unwrap(), source_bytes);
     assert!(plan.mix_paths().next().is_none());
     assert!(plan.files[0].file.hit_objects()[0].hitsound() & 2 != 0, "the winning whistle reaches the target");
+}
+
+#[test]
+fn copy_review_merges_nearby_source_hits_by_default() {
+    let scratch = Scratch::new("copy-collision-merge-default");
+    let source_path = scratch.path("Easy.osu");
+    let target = scratch.path("Hard.osu");
+    let source_bytes = format!("{HEADER}256,192,1999,1,0,0:0:0:80:one.wav\n256,192,2001,1,0,0:0:0:60:two.wav\n");
+    let original = format!("{HEADER}100,100,2000,1,0,0:0:0:60:\n");
+    fs::write(&source_path, &source_bytes).unwrap();
+    fs::write(&target, &original).unwrap();
+    write_tone(&scratch.path("one.wav"), 8192);
+    write_tone(&scratch.path("two.wav"), 4096);
+    let source = output::Source::from_document(&Document::read(&source_path).unwrap());
+    let plan = output::copy(&source, std::slice::from_ref(&target), &CopyOptions::default(), &|| false).unwrap();
+
+    assert_eq!(plan.targets[0].collisions, 0);
+    assert!(plan.details.iter().any(|detail| detail == "Hard.osu: 1 hit point merged nearby source hits."), "{:?}", plan.details);
+    assert!(plan.mix_paths().next().is_some(), "merged nearby hits stage a combined mix without dropping earlier hits");
+    assert_eq!(fs::read_to_string(&target).unwrap(), original);
 }

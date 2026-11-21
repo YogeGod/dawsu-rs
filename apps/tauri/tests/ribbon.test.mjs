@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 
 const read = file => readFile(new URL("../dist/" + file, import.meta.url), "utf8");
-const [html, css, app] = await Promise.all(["index.html", "style.css", "app.js"].map(read));
+const [html, css] = await Promise.all(["index.html", "style.css"].map(read));
 
 test("the ribbon compacts its grouped controls while keeping Save labeled", () => {
   for (const group of ["Map", "Lane mode", "Tool", "Grid"]) {

@@ -2,8 +2,9 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { createContext, runInContext } from "node:vm";
+import { bootEditor, readEditorSource } from "./editor-runtime.mjs";
 
-const app = await readFile(new URL("../dist/app.js", import.meta.url), "utf8");
+const app = readEditorSource();
 
 async function frontend() {
   const calls = [];
@@ -52,7 +53,7 @@ async function frontend() {
     requestAnimationFrame() {},
     console,
   });
-  await runInContext(app, context);
+  await bootEditor(context);
   calls.length = 0;
   const evaluate = code => runInContext(code, context);
   const sent = async () => {

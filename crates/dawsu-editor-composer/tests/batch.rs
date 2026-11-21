@@ -59,7 +59,10 @@ fn number(value: &Value) -> f64 {
 
 #[test]
 fn classic_options_reproduce_3_1_4_auto_fill() {
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../dawsu-graph-audio/tests/fixtures/classic-3.1.4/create.json");
+    let path = std::env::var_os("CARGO_MANIFEST_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")))
+        .join("../dawsu-graph-audio/tests/fixtures/classic-3.1.4/create.json");
     let fixture: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
     for case in fixture["cases"].as_array().unwrap() {
         let name = case["name"].as_str().unwrap();

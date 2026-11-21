@@ -448,6 +448,13 @@ fn copy_after(
                         collision.winning_source_time.ms(),
                     ));
                 }
+                if target.merged > 0 {
+                    let noun = if target.merged == 1 { "hit point" } else { "hit points" };
+                    plan.details.push(format!(
+                        "{}: {} {noun} merged nearby source hits.",
+                        path.file_name().unwrap().to_string_lossy(), target.merged,
+                    ));
+                }
                 if target.kept_from_silent > 0 {
                     plan.details.push(format!(
                         "{}: {} hit points kept their own sound to avoid a silent hitnormal.",

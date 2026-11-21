@@ -12,7 +12,11 @@ use std::path::PathBuf;
 const RATE: u32 = 44_100;
 
 fn fixture(name: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/classic-3.1.4").join(name)
+    std::env::var_os("CARGO_MANIFEST_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")))
+        .join("tests/fixtures/classic-3.1.4")
+        .join(name)
 }
 
 fn json(name: &str) -> Value {

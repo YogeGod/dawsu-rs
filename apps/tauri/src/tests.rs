@@ -1448,7 +1448,7 @@ fn sample_set_mix_toggles_only_the_requested_set() {
 #[test]
 fn copy_review_uses_the_exact_requested_options() {
     use dawsu_foundation::SampleSet;
-    use dawsu_hitsounding::copy::{CopyMode, CopyOptions};
+    use dawsu_hitsounding::copy::{CopyCollisionPolicy, CopyMode, CopyOptions};
     use serde_json::json;
 
     let root = Fixture::new("copy-options");
@@ -1497,6 +1497,7 @@ fn copy_review_uses_the_exact_requested_options() {
     assert_eq!(*options, CopyOptions {
         mode: CopyMode::OverwriteOnlyDefined,
         leniency: 5.0,
+        collision_policy: CopyCollisionPolicy::Merge,
         start_index: 123,
         never_silent_hitnormals: true,
         copy_hitsounds: true,
@@ -2204,7 +2205,10 @@ fn drum_window_requests_answer_with_its_view_and_never_touch_main_errors() {
 
     // A drum stem (the detector's test pattern at half level): the rows come once per review, and
     // Apply adds the checked ones.
-    let pattern = concat!(env!("CARGO_MANIFEST_DIR"), "/../../crates/dawsu-graph-audio/tests/fixtures/classic-3.1.4/pattern.f32");
+    let pattern = std::env::var_os("CARGO_MANIFEST_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")))
+        .join("../../crates/dawsu-graph-audio/tests/fixtures/classic-3.1.4/pattern.f32");
     let pcm: Vec<u8> = fs::read(pattern).unwrap().chunks_exact(4)
         .flat_map(|b| (((f32::from_le_bytes(b.try_into().unwrap()) * 0.5).clamp(-1.0, 1.0) * 32767.0) as i16).to_le_bytes()).collect();
     let mut wav = b"RIFF".to_vec();
@@ -2430,7 +2434,7 @@ fn export_requests_answer_with_the_export_view_and_errors_after_a_fault() {
         assert!(counts[field].is_u64(), "{field}: {counts}");
     }
     assert_eq!(view["choices"], serde_json::json!({
-        "leftOut": [], "matchWithin": 5.0, "copyVolumes": true, "base": false, "sliderAudio": false,
+        "leftOut": [], "matchWithin": 5.0, "copyVolumes": true, "base": false, "sliderAudio": false, "laterWins": false,
     }));
     assert!(view["preview"]["base"].is_null(), "no base difficulty without the base choice");
     assert_eq!((&view["writing"], &view["written"], &view["writeError"]), (&serde_json::json!(false), &serde_json::Value::Null, &serde_json::Value::Null));

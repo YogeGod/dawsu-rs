@@ -43,9 +43,9 @@ test("tint names follow v3's hue bands; greys have none", () => {
   assert.deepEqual(laneTint(lane({ colour: "#CC50A2" })), { swatch: "#cc50a2", name: "Pink" });
 });
 
-test("app.js opens the colour dialog on the same grey the Inspector shows", () => {
-  const app = readFileSync(new URL("../../dist/app.js", import.meta.url), "utf8");
-  assert.equal(app.match(/const laneGrey = "(#[\da-f]{6})";/)?.[1], laneGrey);
+test("the colour dialog opens on the same grey the Inspector shows", async () => {
+  const { laneGrey: editorGrey } = await import("../src/editor/helpers.js");
+  assert.equal(editorGrey, laneGrey);
 });
 
 test("a field being typed in keeps its text, and goes back to the editor's value on blur unless it sent", () => {

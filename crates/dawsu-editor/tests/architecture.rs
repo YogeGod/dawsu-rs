@@ -2,10 +2,16 @@
 //! (CS-12), and no dispatch on id strings (invariant 9).
 
 use std::fs;
-use std::path::Path;
+use std::path::PathBuf;
+
+fn manifest_dir() -> PathBuf {
+    std::env::var_os("CARGO_MANIFEST_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")))
+}
 
 fn sources() -> Vec<(String, String)> {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let dir = manifest_dir().join("src");
     let mut out = Vec::new();
     for entry in fs::read_dir(&dir).unwrap() {
         let path = entry.unwrap().path();
@@ -21,8 +27,7 @@ fn sources() -> Vec<(String, String)> {
 
 #[test]
 fn the_crate_references_dawsu_foundation_only() {
-    let manifest =
-        fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml")).unwrap();
+    let manifest = fs::read_to_string(manifest_dir().join("Cargo.toml")).unwrap();
     let deps = manifest
         .split("[dependencies]")
         .nth(1)

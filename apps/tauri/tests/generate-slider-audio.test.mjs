@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { createContext, runInContext } from "node:vm";
+import { bootEditor } from "./editor-runtime.mjs";
 
-const app = await readFile(new URL("../dist/app.js", import.meta.url), "utf8");
 
 test("Generate reviews hits only by default and includes slider audio only on request", async () => {
   const calls = [];
@@ -36,7 +36,7 @@ test("Generate reviews hits only by default and includes slider audio only on re
     setInterval() {},
     requestAnimationFrame() {},
   });
-  await runInContext(app, context);
+  await bootEditor(context);
   calls.length = 0;
   for (const include of [false, true]) {
     runInContext('scene = {path: "Sliders.osu"}; view = {}; ' +

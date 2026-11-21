@@ -32,6 +32,9 @@ pub struct ExportChoices {
     pub base: bool,
     #[serde(default)]
     pub slider_audio: bool,
+    /// Use "later moment wins" instead of the default Merge/Union for nearby source hits.
+    #[serde(default)]
+    pub later_wins: bool,
 }
 
 /// Which window a preview belongs to, so main never shows it as its own review.
@@ -169,6 +172,7 @@ impl Application {
                 copy_volumes: options.copy.copy_volumes,
                 base: options.base,
                 slider_audio: options.slider_audio,
+                later_wins: options.copy.collision_policy == dawsu_hitsounding::copy::CopyCollisionPolicy::LaterWins,
             });
         }
         self.export.stop();
@@ -770,6 +774,7 @@ mod tests {
             copy_volumes: false,
             base: false,
             slider_audio: false,
+            later_wins: false,
         };
         assert_eq!(app.document().unwrap().export_choices(), Some(&expected));
         wait_preview(&mut app);

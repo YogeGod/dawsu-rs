@@ -10,7 +10,16 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 /// The root of the dawsu-rs workspace.
 pub fn workspace_root() -> PathBuf {
-    // This crate sits in <root>/crates/dawsu-test-support.
+    // Prefer runtime CARGO_MANIFEST_DIR (set by Cargo for the active checkout) so a shared
+    // CARGO_TARGET_DIR across throwaway worktrees never reads fixtures from a deleted checkout.
+    let start = std::env::var_os("CARGO_MANIFEST_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")));
+    for dir in start.ancestors() {
+        if dir.join("Cargo.toml").is_file() && dir.join("crates").join("dawsu-test-support").is_dir() {
+            return dir.canonicalize().expect("workspace root");
+        }
+    }
     Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..").canonicalize().expect("workspace root")
 }
 

@@ -36,7 +36,7 @@ test("main may call every command its scripts and parts call, and opens Export",
   const files = [...sources("dist/").filter(file => !file.name.startsWith("dist/ui/")),
     ...sources("ui/src/").filter(file => !exportPage.includes(file.name) && !drumPage.includes(file.name))];
   const needed = [...invoked(files), "open_export_window"];
-  assert.ok(needed.length > 20, "the invoke pattern no longer matches app.js");
+  assert.ok(needed.length > 20, "the invoke pattern no longer matches editor sources");
   assert.deepEqual(needed.filter(command => !main.permissions.includes(permission(command))), []);
   assert.ok(main.permissions.includes("core:event:default"));
   for (const command of [...exportCommands, ...drumCommands]) assert.ok(!main.permissions.includes(permission(command)), command);

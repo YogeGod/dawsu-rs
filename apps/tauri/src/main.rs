@@ -18,7 +18,7 @@ use dawsu_editor::{
 use dawsu_foundation::{CustomIndex, SampleIdentity, SampleSet, SongTime, Sound};
 use dawsu_hitsounding::{
     LaneSource, Place,
-    copy::{CopyMode, CopyOptions},
+    copy::{CopyCollisionPolicy, CopyMode, CopyOptions},
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -80,6 +80,13 @@ enum CopyModeJson {
 }
 
 #[derive(Deserialize)]
+#[serde(remote = "CopyCollisionPolicy", rename_all = "snake_case")]
+enum CopyCollisionPolicyJson {
+    Merge,
+    LaterWins,
+}
+
+#[derive(Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum SampleSetJson {
     Normal,
@@ -122,6 +129,8 @@ struct CopyOptionsJson {
     #[serde(with = "CopyModeJson")]
     mode: CopyMode,
     leniency: f64,
+    #[serde(default, with = "CopyCollisionPolicyJson")]
+    collision_policy: CopyCollisionPolicy,
     #[serde(default = "default_copy_start_index")]
     start_index: u32,
     #[serde(default)]
@@ -1572,6 +1581,7 @@ fn export_snapshot(app: &Application, cache: &mut ExportCache) -> Value {
             "copyVolumes": choices.copy_volumes,
             "base": choices.base,
             "sliderAudio": choices.slider_audio,
+            "laterWins": choices.later_wins,
         })),
         "error": status.error,
         "writing": status.writing,

@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { createContext, runInContext } from "node:vm";
 import { copyOptions, defaultChoices } from "../ui/src/lib/export.js";
+import { bootEditor } from "./editor-runtime.mjs";
 
 const tauri = new URL("../", import.meta.url);
 const read = path => readFileSync(new URL(path, tauri), "utf8");
@@ -35,7 +36,7 @@ function editor() {
     setInterval() {},
     requestAnimationFrame() {},
   });
-  runInContext(read("dist/app.js"), context);
+  bootEditor(context);
   return { calls, get, context };
 }
 

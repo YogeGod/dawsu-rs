@@ -6,6 +6,7 @@ import "./parts/browser.css";
 import "./parts/bottom-panel.css";
 import "./timeline.css";
 import { mount } from "svelte";
+import { createEditor } from "./editor/boot.js";
 import { bridge } from "./lib/bridge.svelte.js";
 import * as commandList from "./lib/commands.js";
 import { nextGroup, stepInGroup } from "./lib/snap.js";
@@ -54,7 +55,74 @@ const parts = {
   "drum-window": DrumDetectWindow,
 };
 
-// app.js may have built the lane rows before this bundle loaded.
+export function update(view, scene) {
+  bridge.set(view, scene);
+}
+
+// The editor runtime hands over the lane and folder header rows each time renderLanes() changes them.
+export function lanes(headers) {
+  bridge.handOverLanes(headers);
+}
+
+// The editor runtime hands over the Inspector's model each time renderSelection() or renderActiveLane() runs,
+// and when a bookmark row is picked.
+export function inspector(model) {
+  bridge.handOverInspector(model);
+}
+
+// The editor runtime hands over the Browser's model each time renderSampleBrowser() changes it.
+export function browser(model) {
+  bridge.handOverBrowser(model);
+}
+
+// The editor runtime hands over the Mixer's lane strips each time renderLanes() changes them.
+export function mixer(strips) {
+  bridge.handOverMixer(strips);
+}
+
+// View › Map preview: menus.js flips it and reads it for the row's switch.
+export function toggleMapPreview() {
+  bridge.mapPreview = !bridge.mapPreview;
+}
+export const mapPreviewOn = () => bridge.mapPreview;
+
+// The bottom panel's tab, read by renderPanelLayout() and paint().
+export const bottomTab = () => bridge.bottomTab;
+
+// The editor runtime hands over the hovered timeline hit, or null, each time it changes.
+export function hitCard(card) {
+  bridge.hitCard = card;
+}
+
+// The one command list menus.js builds every menu from.
+export const commands = commandList;
+
+// menus.js hands over the open menu's rows (null when it closes).
+export function menu(model) {
+  bridge.handOverMenu(model);
+}
+
+// The Playhead group's Centre, read by followPlayhead().
+export const centre = () => bridge.centre;
+
+// Ctrl+wheel (Alt+wheel in the DAW preset): the next 1/x in the snap group, or null at its end.
+export function wheelSnap(finer) {
+  const scene = bridge.scene;
+  if (!scene) return null;
+  return stepInGroup(nextGroup(bridge.snapGroup, scene.beats, scene.divisor), scene.beats, scene.divisor, finer);
+}
+
+// The Triplets box in the Snap menu shows the group.
+export const snapGroup = () => bridge.snapGroup?.name;
+
+// Boot the main editor runtime only on the editor window (never on export.html or drum.html).
+const uiBridge = {
+  update, lanes, inspector, browser, mixer, toggleMapPreview, mapPreviewOn, bottomTab, hitCard, commands, menu, centre, wheelSnap, snapGroup,
+};
+if (document.getElementById("grid")) {
+  createEditor(globalThis, { ui: uiBridge });
+}
+
 bridge.lanes = globalThis.currentLaneHeaders?.() ?? null;
 bridge.inspector = globalThis.currentInspector?.() ?? null;
 bridge.browser = globalThis.currentBrowser?.() ?? null;
@@ -72,63 +140,3 @@ for (const host of document.querySelectorAll("[data-ui-mount]")) {
     console.error(error);
   }
 }
-
-export function update(view, scene) {
-  bridge.set(view, scene);
-}
-
-// app.js hands over the lane and folder header rows each time renderLanes() changes them.
-export function lanes(headers) {
-  bridge.handOverLanes(headers);
-}
-
-// app.js hands over the Inspector's model each time renderSelection() or renderActiveLane() runs,
-// and when a bookmark row is picked.
-export function inspector(model) {
-  bridge.handOverInspector(model);
-}
-
-// app.js hands over the Browser's model each time renderSampleBrowser() changes it.
-export function browser(model) {
-  bridge.handOverBrowser(model);
-}
-
-// app.js hands over the Mixer's lane strips each time renderLanes() changes them.
-export function mixer(strips) {
-  bridge.handOverMixer(strips);
-}
-
-// View › Map preview: menus.js flips it and reads it for the row's switch.
-export function toggleMapPreview() {
-  bridge.mapPreview = !bridge.mapPreview;
-}
-export const mapPreviewOn = () => bridge.mapPreview;
-
-// The bottom panel's tab, read by app.js's renderPanelLayout() and paint().
-export const bottomTab = () => bridge.bottomTab;
-
-// app.js hands over the hovered timeline hit, or null, each time it changes.
-export function hitCard(card) {
-  bridge.hitCard = card;
-}
-
-// The one command list menus.js builds every menu from.
-export const commands = commandList;
-
-// menus.js hands over the open menu's rows (null when it closes).
-export function menu(model) {
-  bridge.handOverMenu(model);
-}
-
-// The Playhead group's Centre, read by app.js's followPlayhead().
-export const centre = () => bridge.centre;
-
-// Ctrl+wheel (Alt+wheel in the DAW preset) in app.js: the next 1/x in the snap group, or null at its end.
-export function wheelSnap(finer) {
-  const scene = bridge.scene;
-  if (!scene) return null;
-  return stepInGroup(nextGroup(bridge.snapGroup, scene.beats, scene.divisor), scene.beats, scene.divisor, finer);
-}
-
-// The Triplets box in the Snap menu shows the group.
-export const snapGroup = () => bridge.snapGroup?.name;

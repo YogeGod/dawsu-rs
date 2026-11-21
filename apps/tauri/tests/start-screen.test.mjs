@@ -2,9 +2,10 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { createContext, runInContext } from "node:vm";
+import { bootEditor } from "./editor-runtime.mjs";
 
 const read = file => readFile(new URL("../dist/" + file, import.meta.url), "utf8");
-const [html, css, app] = await Promise.all(["index.html", "style.css", "app.js"].map(read));
+const [html, css] = await Promise.all(["index.html", "style.css"].map(read));
 const home = html.match(/<section id="home">.*?<section id="workspace"/s)?.[0] ?? "";
 const homeCss = css.slice(css.indexOf("/* Start and empty screen (design f4)"));
 
@@ -39,7 +40,7 @@ async function frontend() {
     setInterval() {},
     console,
   });
-  await runInContext(app, context);
+  await bootEditor(context);
   calls.length = 0;
   const evaluate = code => runInContext(code, context);
   return { calls, evaluate, get, settle: () => evaluate("pending") };

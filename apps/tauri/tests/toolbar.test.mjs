@@ -2,9 +2,11 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { createContext, runInContext } from "node:vm";
+import { bootEditor, readEditorSource } from "./editor-runtime.mjs";
 
 const read = file => readFile(new URL("../dist/" + file, import.meta.url), "utf8");
-const [html, css, app] = await Promise.all(["index.html", "style.css", "app.js"].map(read));
+const [html, css] = await Promise.all(["index.html", "style.css"].map(read));
+const app = readEditorSource();
 
 const ribbon = html.slice(html.indexOf('<div id="editor-ribbon"'), html.indexOf('<main id="editor-dock"'));
 const statusbar = html.slice(html.indexOf('<div id="statusbar"'), html.indexOf('<dialog id="dialog"'));
@@ -44,7 +46,7 @@ async function frontend() {
     setInterval() {},
     console,
   });
-  await runInContext(app, context);
+  await bootEditor(context);
   calls.length = 0;
   const evaluate = code => runInContext(code, context);
   evaluate("renderLanes = () => {};");

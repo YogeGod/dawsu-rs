@@ -3,11 +3,12 @@ import { readdirSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { createContext, runInContext } from "node:vm";
+import { bootEditor } from "./editor-runtime.mjs";
 
 const read = name => readFile(new URL("../dist/" + name, import.meta.url), "utf8");
 const parts = new URL("../ui/src/parts/", import.meta.url);
-const [app, html, css, ...sections] = await Promise.all([
-  ...["app.js", "index.html", "style.css"].map(read),
+const [html, css, ...sections] = await Promise.all([
+  ...["index.html", "style.css"].map(read),
   ...readdirSync(parts).filter(name => /^Inspector(?!Head)\w+\.svelte$/.test(name)).sort()
     .map(name => readFile(new URL(name, parts), "utf8")),
 ]);
@@ -48,7 +49,7 @@ async function frontend() {
     setInterval() {},
     console,
   });
-  await runInContext(app, context);
+  await bootEditor(context);
   calls.length = 0;
   const evaluate = code => runInContext(code, context);
   const sent = async () => {

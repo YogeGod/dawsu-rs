@@ -3,8 +3,9 @@ import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { createContext, runInContext } from "node:vm";
 import { followGroup, nextGroup, stepInGroup } from "../ui/src/lib/snap.js";
+import { bootEditor, readEditorSource } from "./editor-runtime.mjs";
 
-const app = await readFile(new URL("../dist/app.js", import.meta.url), "utf8");
+const app = readEditorSource();
 const html = await readFile(new URL("../dist/index.html", import.meta.url), "utf8");
 
 async function frontend() {
@@ -46,7 +47,7 @@ async function frontend() {
     setInterval() {},
     console,
   });
-  await runInContext(app, context);
+  await bootEditor(context);
   calls.length = 0;
   status.hasDocument = true;
   const evaluate = (code) => runInContext(code, context);

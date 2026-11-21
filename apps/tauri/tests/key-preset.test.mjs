@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { createContext, runInContext } from "node:vm";
+import { bootEditor } from "./editor-runtime.mjs";
 
-const app = await readFile(new URL("../dist/app.js", import.meta.url), "utf8");
 
 async function launch(preferences) {
   const elements = new Map();
@@ -49,7 +49,7 @@ async function launch(preferences) {
     setInterval() {},
     requestAnimationFrame() {},
   });
-  await runInContext(app, context);
+  await bootEditor(context);
   options.push(...document.getElementById("dialog-actions").children);
   return {
     dialog: document.getElementById("dialog"),
