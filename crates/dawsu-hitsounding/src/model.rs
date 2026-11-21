@@ -623,7 +623,7 @@ impl Hitsounds {
     }
 
     /// Sets a moment's volume and moves every hit with its own volume by the same amount, so the
-    /// hits keep their difference. A hit stops at 0 or 100 and keeps that value afterwards.
+    /// hits keep their difference. A hit stops at 5 or 100 and keeps that value afterwards.
     pub fn move_volume(&mut self, moment: MomentId, volume: i32) {
         // An edit never sets a volume under 5% (R15): the Volume drawer, the Ramp tool and the
         // Inspector all come through here, so the floor lives here once.

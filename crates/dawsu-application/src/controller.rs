@@ -35,7 +35,7 @@ impl VolumeBar {
     }
 
     /// Moves the moment to `volume` from where it stood when the stroke began, so a hit that
-    /// stopped at 0 or 100 earlier in the stroke gets its difference back.
+    /// stopped at 5 or 100 earlier in the stroke gets its difference back.
     fn move_to(&self, hits: &mut Hitsounds, volume: i32) {
         hits.set_volume(self.moment, self.shared);
         for (lane, gain) in &self.gains {
@@ -232,24 +232,24 @@ mod tests {
     }
 
     #[test]
-    fn dragging_a_bar_moves_every_lane_together_and_a_lane_stopped_at_0_stays_there_after_release() {
+    fn dragging_a_bar_moves_every_lane_together_and_a_lane_stopped_at_5_stays_there_after_release() {
         let (mut c, normal) = normal_80_clap_50();
         let mut stroke = ControllerStroke::start(&mut c, bar(1000.0, 90.0, Mods::NONE), 1.0).unwrap();
         assert_eq!(normal_and_clap(&c, &normal), (90, 60));
         stroke.apply(&mut c, bar(1000.0, 100.0, Mods::NONE));
         assert_eq!(normal_and_clap(&c, &normal), (100, 70));
         stroke.apply(&mut c, bar(1000.0, 20.0, Mods::NONE));
-        assert_eq!(normal_and_clap(&c, &normal), (20, 0), "the clap stops at 0");
+        assert_eq!(normal_and_clap(&c, &normal), (20, 5), "the clap stops at 5");
         stroke.finish(&mut c, bar(1000.0, 90.0, Mods::NONE));
         assert_eq!(normal_and_clap(&c, &normal), (90, 60), "within one drag the clap gets its difference back");
 
-        // After the drag ends, a lane that stopped at 0 keeps 0 as its new volume.
+        // After the drag ends, a lane that stopped at 5 keeps 5 as its new volume.
         let mut down = ControllerStroke::start(&mut c, bar(1000.0, 20.0, Mods::NONE), 1.0).unwrap();
         down.finish(&mut c, bar(1000.0, 20.0, Mods::NONE));
-        assert_eq!(normal_and_clap(&c, &normal), (20, 0));
+        assert_eq!(normal_and_clap(&c, &normal), (20, 5));
         let mut up = ControllerStroke::start(&mut c, bar(1000.0, 90.0, Mods::NONE), 1.0).unwrap();
         up.finish(&mut c, bar(1000.0, 90.0, Mods::NONE));
-        assert_eq!(normal_and_clap(&c, &normal), (90, 70));
+        assert_eq!(normal_and_clap(&c, &normal), (90, 75));
         c.undo();
         c.undo();
         assert_eq!(normal_and_clap(&c, &normal), (90, 60));
@@ -281,7 +281,7 @@ mod tests {
         stroke.apply(&mut c, bar(1000.0, 90.0, Mods::NONE));
         assert_eq!((normal_and_clap(&c, &normal), second(&c)), ((90, 60), 100));
         stroke.finish(&mut c, bar(1000.0, 20.0, Mods::NONE));
-        assert_eq!((normal_and_clap(&c, &normal), second(&c)), ((20, 0), 40));
+        assert_eq!((normal_and_clap(&c, &normal), second(&c)), ((20, 5), 40));
     }
 
     /// `normal_80_clap_50` after its hitnormal is deleted: the moment keeps 80, the clap plays at 50.
@@ -319,7 +319,7 @@ mod tests {
         let (mut c, normal) = normal_80_clap_50();
         let mut stroke = ControllerStroke::start(&mut c, bar(900.0, 20.0, Mods::ALT), 1.0).unwrap();
         stroke.apply(&mut c, bar(1100.0, 20.0, Mods::ALT));
-        assert_eq!(normal_and_clap(&c, &normal), (20, 0), "the clap stops at 0");
+        assert_eq!(normal_and_clap(&c, &normal), (20, 5), "the clap stops at 5");
         stroke.apply(&mut c, bar(1100.0, 90.0, Mods::ALT));
         stroke.finish(&mut c, bar(900.0, 90.0, Mods::ALT));
         assert_eq!(normal_and_clap(&c, &normal), (90, 60), "painting back over it in the same stroke");
@@ -338,7 +338,7 @@ mod tests {
         assert_eq!((normal_and_clap(&c, &normal), second(&c)), ((80, 50), (100, 90)));
         let mut stroke = ControllerStroke::start(&mut c, bar(900.0, 20.0, Mods::ALT), 1.0).unwrap();
         stroke.apply(&mut c, bar(1600.0, 20.0, Mods::ALT));
-        assert_eq!((normal_and_clap(&c, &normal), second(&c)), ((20, 0), (20, 10)));
+        assert_eq!((normal_and_clap(&c, &normal), second(&c)), ((20, 5), (20, 10)));
         stroke.apply(&mut c, bar(1600.0, 60.0, Mods::ALT));
         stroke.finish(&mut c, bar(900.0, 60.0, Mods::ALT));
         assert_eq!((normal_and_clap(&c, &normal), second(&c)), ((60, 30), (60, 50)));
