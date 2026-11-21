@@ -20,7 +20,7 @@ async function canvases({ roundRect = true } = {}) {
     });
     return {
       calls, getContext: () => ctx, clientWidth: 300, clientHeight: 80, scrollTop: 0,
-      dataset: {}, style: {}, children: [], addEventListener() {}, append() {}, prepend() {}, setAttribute() {},
+      dataset: {}, style: { setProperty() {} }, children: [], addEventListener() {}, append() {}, prepend() {}, setAttribute() {},
     };
   }
   const get = id => {
@@ -278,4 +278,49 @@ test("a pushed L or R flag never paints over the other one, at either edge of th
     assert.ok(l[1] <= r[0] || r[1] <= l[0], `[${left}, ${right}] flags overlap: ${JSON.stringify([l, r])}`);
     for (const [from, to] of [l, r]) assert.ok(from >= 0 && to <= 300, `[${left}, ${right}] flag off the ruler`);
   }
+});
+
+// Only while folded, a main lane also shows its layers' hits, as outline-only diamonds in each
+// hit's volume colour, so they show volume and can't pass for muted hits.
+test("a folded main lane outlines its layers' hits in their volume colours; unfolded, each hit draws once on its own row", async () => {
+  const { get, paint, evaluate } = await canvases();
+  const grid = get("grid");
+  get("scroll").clientHeight = 200;
+  evaluate(`
+    view = { ...view, activeLane: null };
+    scene.lanes = [
+      { key: "F0", colourKey: "Skin|normal-hitfinish", name: "normal-hitfinish", family: "normal-hitfinish", index: 0, group: "normal" },
+      { key: "F2", colourKey: "Skin|normal-hitfinish2", name: "normal-hitfinish2", family: "normal-hitfinish", index: 2, group: "normal" },
+      { key: "F3", colourKey: "Skin|normal-hitfinish3", name: "normal-hitfinish3", family: "normal-hitfinish", index: 3, group: "normal" },
+    ];
+    scene.moments = [[1000, 80, true, [[0, false]]], [1500, 30, true, [[1, false]]], [2000, 100, true, [[2, false]]]];
+    renderLanes();
+  `);
+  // Diamonds only: a fill or stroke right after the diamond's closePath (grid lines stroke too).
+  const named = name => grid.calls.filter((call, at) => call.name === name && grid.calls[at - 1]?.name === "closePath");
+  // A diamond starts at its top point, then goes down and right to its right point.
+  const tops = () => grid.calls.filter((call, at) => call.name === "moveTo" && grid.calls[at + 1]?.name === "lineTo" &&
+    grid.calls[at + 1].args[1] - call.args[1] > 0 && grid.calls[at + 1].args[1] - call.args[1] === grid.calls[at + 1].args[0] - call.args[0])
+    .map(call => call.args[1]);
+  const volume = value => evaluate(`volumeColour(${value})`);
+
+  paint("");
+  assert.deepEqual(named("fill").map(call => call.fill), [volume(80), volume(30), volume(100)]);
+  assert.deepEqual(named("stroke"), [], "unfolded: no outlines");
+  assert.deepEqual(tops(), [45 - 6, 75 - 6, 105 - 6], "each hit once, on its own row");
+
+  paint('laneHeaderAction("family", 0)');
+  // Row 0 is the folder header, row 1 the main lane: its own hit filled, its layers' outlined.
+  assert.deepEqual(named("fill").map(call => call.fill), [volume(80)]);
+  assert.deepEqual(named("stroke").map(call => call.stroke), [volume(30), volume(100)]);
+  assert.deepEqual(tops(), [45 - 6, 45 - 7.5, 45 - 7.5], "all three on the main lane's row, outlines just outside a hit");
+
+  // Two layers and the main lane hit one moment: the main hit fills first, then each layer's outline
+  // nests a little larger, so every volume colour shows.
+  evaluate(`scene.moments = [[1000, 80, true, [[0, false], [1, false, false, 30], [2, false, false, 100]]]]`);
+  paint("");
+  const order = grid.calls.filter((call, at) => ["fill", "stroke"].includes(call.name) && grid.calls[at - 1]?.name === "closePath")
+    .map(call => call.name === "fill" ? ["fill", call.fill] : ["stroke", call.stroke]);
+  assert.deepEqual(order, [["fill", volume(80)], ["stroke", volume(30)], ["stroke", volume(100)]]);
+  assert.deepEqual(tops(), [45 - 6, 45 - 7.5, 45 - 10]);
 });

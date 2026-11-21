@@ -120,6 +120,7 @@ fn header_numbers(app: &Application) -> HashMap<&SampleIdentity, usize> {
         };
         rows.sort_by_key(rank);
     }
+    let rows = super::family_order(rows, |row| backing_slots.get(&row).copied().unwrap_or(&c.lanes[row]));
     rows.into_iter().enumerate().map(|(n, row)| (&c.lanes[row], n + 1)).collect()
 }
 

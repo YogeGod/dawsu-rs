@@ -23,7 +23,7 @@ test("a click on the row outside its buttons selects the lane; a click on a butt
   assert.deepEqual(sent, [["select", 4, event]]);
 });
 
-test("name, M, S, layer chevron and + send their actions", () => {
+test("name, M, S, layer chevron, + and − send their actions", () => {
   const { on, sent } = setup();
   const event = { shiftKey: true };
   on.select(event, 2);
@@ -31,7 +31,8 @@ test("name, M, S, layer chevron and + send their actions", () => {
   on.mix(2, "solo");
   on.family(2);
   on.addLayer(2);
-  assert.deepEqual(sent, [["select", 2, event], ["mix", 2, "mute"], ["mix", 2, "solo"], ["family", 2], ["addLayer", 2]]);
+  on.remove(2);
+  assert.deepEqual(sent, [["select", 2, event], ["mix", 2, "mute"], ["mix", 2, "solo"], ["family", 2], ["addLayer", 2], ["remove", 2]]);
 });
 
 test("the fold strip and the folder name both fold; folder M and S mix the set", () => {
@@ -91,7 +92,7 @@ test("a folder dropped on the lower half of another goes after it; other drags a
 
 test("LaneHeaders wires every handler from laneHandlers", () => {
   const part = readFileSync(new URL("../src/parts/LaneHeaders.svelte", import.meta.url), "utf8");
-  for (const name of ["rowClick", "select", "mix", "family", "addLayer", "fold", "foldName", "folderMix", "folderKey",
+  for (const name of ["rowClick", "select", "mix", "family", "addLayer", "remove", "fold", "foldName", "folderMix", "folderKey",
     "dragStart", "dragOver", "drop"]) {
     assert.match(part, new RegExp("on\\." + name + "\\b"), name);
   }

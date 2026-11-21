@@ -41,6 +41,8 @@ let selectionLanesOnly = false;
 const collapsedFamilies = new Set();
 const laneColours = new Map();
 let familyParents = new Map();
+let familyLayers = new Map();
+let laneRemoving = false;
 let previewParents = new Map();
 const speedButtons = [...document.querySelectorAll("[data-playback-speed]")];
 const sampleFolderNames = { normal: "Normal set", soft: "Soft set", drum: "Drum set" };
@@ -217,7 +219,14 @@ function show(next) {
       $("lane-filter").value = "";
     }
     if (loaded || !layoutWrites) hydrateLaneLayout(view.scene.laneLayout);
+    // A lane that starts showing (a new layer from +, Ctrl+L or the lane menu, one Add lane shows
+    // again, an Undo of −) shows at once: its family unfolds.
+    const shownRows = next => next.laneOrder ?? next.lanes?.map((_, row) => row) ?? [];
+    const before = !loaded && scene ? new Set(shownRows(scene)) : null;
+    const unfolded = before ? shownRows(view.scene).filter(row => !before.has(row))
+      .filter(row => collapsedFamilies.delete(view.scene.lanes[row]?.family)) : [];
     scene = view.scene;
+    if (unfolded.length) saveLaneLayout();
   }
   followBookmarkPick();
   if (rulerPointer || rulerDrag) refreshRulerCursor();
@@ -429,7 +438,9 @@ function laneTitle(lane) {
   return lane.group ? lane.group[0].toUpperCase() + lane.group.slice(1) + " " + name : name;
 }
 
-function orderedLaneRows() {
+// The saved order: the editor's lane order, sorted by the mapper's lane moves. A move edits this
+// order only; the family order below is for display and is never saved.
+function savedLaneRows() {
   const rows = scene.laneOrder ?? scene.lanes.map((_, row) => row);
   if (!orderedLaneKeys.length) return rows;
   const rank = new Map(orderedLaneKeys.map((key, index) => [key, index]));
@@ -437,11 +448,43 @@ function orderedLaneRows() {
   return [...rows].sort((left, right) => position(left) - position(right));
 }
 
+function orderedLaneRows() {
+  return familyOrder(savedLaneRows());
+}
+
+// A family's main lane: the lane at custom index 1, else its skin sample (index 0), among rows.
+function familyMains(rows) {
+  const mains = new Map();
+  for (const row of rows) {
+    const { family, index } = scene.lanes[row] ?? {};
+    if (family != null && (index === 1 || (index === 0 && !mains.has(family)))) mains.set(family, row);
+  }
+  return mains;
+}
+
+// Numbered layers sit directly under their main lane, by number; without a main lane they stay
+// ordinary lanes where they are. main.rs's family_order does the same.
+function familyOrder(rows) {
+  const mains = familyMains(rows);
+  const layers = new Map();
+  for (const row of rows) {
+    const main = mains.get(scene.lanes[row]?.family);
+    if (main === undefined || main === row) continue;
+    if (!layers.has(main)) layers.set(main, []);
+    layers.get(main).push(row);
+  }
+  const children = new Set([...layers.values()].flat());
+  const byNumber = (left, right) => scene.lanes[left].index - scene.lanes[right].index || left - right;
+  return rows.flatMap(row => children.has(row) ? [] : [row, ...(layers.get(row)?.sort(byNumber) ?? [])]);
+}
+
 function adjacentLaneForMove(row, direction) {
-  if (view.drumView?.enabled || !scene?.lanes[row]?.colourKey) return null;
-  const position = laneRows.indexOf(row);
+  if (view.drumView?.enabled || !scene?.lanes[row]?.colourKey || familyLayers.has(row)) return null;
+  // A main lane moves with its layers, past the next lane or family; a layer keeps its place by number.
+  const units = laneRows.filter(candidate => typeof candidate !== "number" || !familyLayers.has(candidate));
+  const position = units.indexOf(row);
   if (position < 0) return null;
-  const adjacent = laneRows[position + direction];
+  const adjacent = units[position + direction];
   return typeof adjacent === "number" && scene.lanes[adjacent].colourKey &&
     scene.lanes[adjacent].group === scene.lanes[row].group ? adjacent : null;
 }
@@ -449,7 +492,7 @@ function adjacentLaneForMove(row, direction) {
 function moveLane(row, direction) {
   const adjacent = adjacentLaneForMove(row, direction);
   if (adjacent === null || view.busy || drag) return;
-  const rows = orderedLaneRows().filter(candidate => candidate !== row);
+  const rows = savedLaneRows().filter(candidate => candidate !== row);
   rows.splice(rows.indexOf(adjacent) + (direction > 0 ? 1 : 0), 0, row);
   const present = new Set(rows.map(candidate => scene.lanes[candidate].colourKey));
   orderedLaneKeys = [...rows.map(candidate => scene.lanes[candidate].colourKey),
@@ -499,15 +542,17 @@ function groupedLaneRows(eligible) {
     if (!families.has(family)) families.set(family, []);
     families.get(family).push(row);
   }
+  // A family folds only under a shown main lane, so a fold never hides a layer whose main lane is
+  // removed, filtered out or unused.
+  const mains = familyMains(eligible);
   for (const [family, rows] of families) {
-    if (rows.length < 2) continue;
-    const parent = rows.find(row => scene.lanes[row].index === 1) ??
-      rows.find(row => scene.lanes[row].index === 0) ?? rows[0];
+    const parent = mains.get(family);
+    if (rows.length < 2 || parent === undefined) continue;
     familyParents.set(parent, family);
-    if (collapsedFamilies.has(family)) {
-      for (const row of rows) {
-        if (row !== parent) previewParents.set(row, parent);
-      }
+    for (const row of rows) {
+      if (row === parent) continue;
+      familyLayers.set(row, parent);
+      if (collapsedFamilies.has(family)) previewParents.set(row, parent);
     }
   }
 
@@ -539,6 +584,7 @@ function renderLanes() {
       .some(name => name?.toLowerCase().includes(filter));
   };
   familyParents = new Map();
+  familyLayers = new Map();
   previewParents = new Map();
   let drumNames = [];
   if (view.drumView?.enabled && scene.drumRows) {
@@ -604,9 +650,11 @@ function laneHeaderModel(drumNames) {
       folder: !drum && lane.group ? lane.group : null,
       active: view.activeLane === row, selected: selectionLaneKeys.has(lane.key),
       muted: !!lane.muted, solo: !!lane.solo, quiet: !!lane.muted || (anySolo && !lane.solo),
-      layer: !drum && !!lane.group && lane.index > 1,
+      layer: !drum && familyLayers.has(row),
       family: family == null ? null : { collapsed, label: (collapsed ? "Expand " : "Collapse ") + lane.name + " layers" },
-      addLayer: lane.canAddLayer ? "Add numbered " + lane.name + " layer" : null,
+      // The drum view adds no lanes (vault rule) and removes none.
+      addLayer: !drum && lane.canAddLayer ? "Add numbered " + lane.name + " layer" : null,
+      remove: drum ? null : { label: "Remove " + (renamedLanes.has(lane.colourKey) ? displayName : sound.name), disabled: !lane.canDelete },
     };
   });
   return { names: view.panels?.laneNames !== false, busy: !!view.busy, rows };
@@ -656,8 +704,20 @@ function laneHeaderAction(kind, ...args) {
       break;
     }
     case "addLayer":
-      act({ kind: "lane", row: args[0], operation: "add_layer" });
+      // The editor takes the next free number. A removed layer keeps its file in the mapset, so +
+      // never reuses its number (safe: nothing is overwritten).
+      if (!view.drumView?.enabled) act({ kind: "lane", row: args[0], operation: "add_layer" });
       break;
+    case "remove": {
+      // One undo step takes the lane and its hits; Undo brings both back, so there is no question
+      // first. Presses while a removal is on its way are ignored.
+      const lane = scene.lanes[args[0]];
+      if (!lane?.canDelete || view.drumView?.enabled || laneRemoving) return;
+      laneRemoving = true;
+      act({ kind: "delete_lane", target: { map: scene.path, lane: lane.sourceKey }, revision: scene.laneRevision })
+        .finally(() => { laneRemoving = false; });
+      break;
+    }
   }
 }
 
@@ -855,7 +915,8 @@ function renderScene() {
   renderLanes();
   $("snap").checked = scene.snap;
   const hits = (scene.moments ?? []).reduce((sum, moment) => sum + (moment[3]?.length ?? 0), 0);
-  const lanes = scene.lanes?.length ?? 0;
+  // Shown lanes only: a removed (hidden) lane keeps its model row but no header.
+  const lanes = scene.laneOrder?.length ?? scene.lanes?.length ?? 0;
   $("hit-lane-counts").textContent = hits + (hits === 1 ? " hit · " : " hits · ") + lanes + (lanes === 1 ? " lane" : " lanes");
   $("object-lines").checked = view.objectLines;
   setValue("snap-mode", scene.snapMode);
@@ -1215,6 +1276,18 @@ function fillHitDiamond(ctx, x, y) {
   ctx.fill();
 }
 
+// The outline of a hit diamond, `size` px from its centre to each point (a filled one is 6).
+function strokeHitDiamond(ctx, x, y, size) {
+  ctx.beginPath();
+  ctx.moveTo(x, y - size);
+  ctx.lineTo(x + size, y);
+  ctx.lineTo(x, y + size);
+  ctx.lineTo(x - size, y);
+  ctx.closePath();
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+}
+
 // Object circles grow with zoom as in the design (f11): half a beat on screen × 0.8, kept
 // between 18 and 30 px, from the timing at the object's own time and never taller than the lane.
 const objectReach = 15;
@@ -1409,19 +1482,6 @@ function paint() {
       v.ctx.fillStyle = colour;
       v.ctx.fillRect(x - 1, v.height - volumeHeight, 2, volumeHeight);
     }
-    if (previewParents.size) {
-      for (const [row, , listenMuted, hitVolume] of hits) {
-        const parent = previewParents.get(row);
-        if (parent === undefined) continue;
-        const y = (lanePositions.get(parent) + .5) * rowHeight - scrollTop;
-        if (y < -8 || y > g.height + 8) continue;
-        g.ctx.save();
-        g.ctx.globalAlpha *= .3;
-        g.ctx.fillStyle = listenMuted ? "#858585" : volumeColour(hitVolume ?? volume);
-        fillHitDiamond(g.ctx, x, y);
-        g.ctx.restore();
-      }
-    }
     for (const [row, selected, listenMuted, hitVolume] of hits) {
       for (const visibleRow of laneVisualPositions.get(row) ?? []) {
         const y = (visibleRow + .5) * rowHeight - scrollTop;
@@ -1434,6 +1494,31 @@ function paint() {
           g.ctx.stroke();
           g.ctx.lineWidth = 1;
         }
+      }
+    }
+    if (previewParents.size) {
+      // Over the main lane's own hits: a folded main lane outlines its layers' hits in their volume
+      // colours, so they show volume and can't pass for muted hits; several at one moment nest, each
+      // a little larger, so every colour shows. A folded folder shows its lanes' hits faint.
+      const nested = new Map();
+      for (const [row, , listenMuted, hitVolume] of hits) {
+        const parent = previewParents.get(row);
+        if (parent === undefined) continue;
+        const y = (lanePositions.get(parent) + .5) * rowHeight - scrollTop;
+        if (y < -12 || y > g.height + 12) continue;
+        g.ctx.save();
+        const colour = listenMuted ? "#858585" : volumeColour(hitVolume ?? volume);
+        if (typeof parent === "number") {
+          const inside = nested.get(parent) ?? 0;
+          nested.set(parent, inside + 1);
+          g.ctx.strokeStyle = colour;
+          strokeHitDiamond(g.ctx, x, y, 7.5 + 2.5 * inside);
+        } else {
+          g.ctx.globalAlpha *= .3;
+          g.ctx.fillStyle = colour;
+          fillHitDiamond(g.ctx, x, y);
+        }
+        g.ctx.restore();
       }
     }
   }
@@ -1562,7 +1647,9 @@ function pointer(event, phase, gesture = drag) {
 function revealLayerPreview(row, time, pointerY) {
   const family = familyParents.get(row);
   const folder = typeof row === "string" && collapsedFolders.has(row);
-  if (!folder && !collapsedFamilies.has(family)) return false;
+  // On a folded main lane, Select and Erase open the layer whose outline was clicked; Draw (and the
+  // other tools) get the click, so Draw stacks a hit on the main lane. A folded folder always opens.
+  if (!folder && (!collapsedFamilies.has(family) || !["Select", "Erase"].includes(view.tool))) return false;
   const tolerance = 6.5 / scene.zoom;
   let nearest;
   let distance = tolerance;
