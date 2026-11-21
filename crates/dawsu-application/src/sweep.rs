@@ -11,10 +11,18 @@ use dawsu_hitsounding::rules::read_sample_file_name;
 use dawsu_osu_format::list_folder;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::SystemTime;
+
+/// The status words once close or open stopped waiting for a cleanup job.
+pub(crate) const STILL_RUNNING: &str = " Unused sample cleanup is still finishing in the background.";
 
 /// Test hook: runs with each file's path once its bytes were checked, before it moves.
 #[cfg(test)]
 pub(crate) static BEFORE_MOVE: std::sync::Mutex<Option<fn(&Path)>> = std::sync::Mutex::new(None);
+/// Held by a test while it sets `BEFORE_MOVE`, so tests running at once never swap hooks.
+#[cfg(test)]
+pub(crate) static HOOK_TURN: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[cfg(test)]
 fn before_move(path: &Path) {
@@ -62,6 +70,21 @@ fn old_mixes(root: &Path) -> Vec<pending::PendingSample> {
     }).collect()
 }
 
+/// The mapset's difficulties and storyboards with their sizes and change times. A change while a
+/// cleanup runs stops it (Yoge, 2026-11-21).
+fn map_stamps(root: &Path) -> Vec<(PathBuf, u64, Option<SystemTime>)> {
+    let Ok(entries) = std::fs::read_dir(root) else { return Vec::new() };
+    let mut stamps: Vec<_> = entries.filter_map(Result::ok)
+        .filter(|entry| entry.path().extension().is_some_and(|e| e.eq_ignore_ascii_case("osu") || e.eq_ignore_ascii_case("osb")))
+        .map(|entry| {
+            let metadata = entry.metadata().ok();
+            (entry.path(), metadata.as_ref().map_or(0, std::fs::Metadata::len), metadata.and_then(|m| m.modified().ok()))
+        })
+        .collect();
+    stamps.sort();
+    stamps
+}
+
 /// The raw text of the project of the difficulty at `path`, lowercased.
 fn project_text(project_root: &Path, path: &Path) -> Option<String> {
     let project = project::Project::load(project_root, None, path).ok()?;
@@ -97,6 +120,9 @@ pub(crate) struct Request {
     undo_files: BTreeSet<String>,
     /// Whether the open difficulty has a project to list a pending file in.
     can_list: bool,
+    /// The session's hold on the mapset: the job keeps it marked open until it ends, and stops
+    /// once another session opens it.
+    presence: Arc<pending::Presence>,
 }
 
 /// A file a hit still plays, kept as a pending file and moved aside. It leaves the mapset only
@@ -184,6 +210,7 @@ pub(crate) fn run(mut request: Request) -> Outcome {
     let listed: BTreeSet<String> = entries.iter().map(|entry| entry.name.to_ascii_lowercase()).collect();
     entries.extend(old_mixes(&root).into_iter().filter(|mix| !listed.contains(&mix.name.to_ascii_lowercase())));
     if !entries.is_empty() {
+        let stamps = map_stamps(&root);
         match folder_uses(&root).and_then(|uses| Ok((uses, recovery::copies_play(&request.data_root, &root)?))) {
             // A difficulty or recovery copy that can't be read leaves everything where it is.
             Err(error) => outcome.problem = Some(format!("No unused sample files were removed. {error}")),
@@ -195,11 +222,15 @@ pub(crate) fn run(mut request: Request) -> Outcome {
                     projects: project_texts(project_root, &root, Some(&request.open)),
                     own_project: project_root.filter(|_| request.closing).and_then(|project_root| project_text(project_root, &request.open)),
                     copies,
+                    stamps,
                 };
                 let mut dropped = Vec::new();
                 for entry in entries {
-                    if let Step::Drop = clean_up(&mut request, &mut outcome, &entry, &keep) {
-                        dropped.push(entry.name.clone());
+                    match clean_up(&mut request, &mut outcome, &entry, &keep) {
+                        Step::Drop => dropped.push(entry.name.clone()),
+                        Step::Kept => {}
+                        // The rest stay; the next Save tries again.
+                        Step::Stop => break,
                     }
                 }
                 if let Err(error) = request.ledger.remove(&dropped) {
@@ -209,7 +240,7 @@ pub(crate) fn run(mut request: Request) -> Outcome {
         }
     }
     if request.closing {
-        outcome.keep = Some(super::recorded_pending(request.project_root.as_deref(), &request.data_root, &root));
+        outcome.keep = super::recorded_pending(request.project_root.as_deref(), &request.data_root, &root);
     }
     outcome.pending = request.pending;
     outcome
@@ -224,10 +255,14 @@ struct Keep {
     /// At close, the open difficulty's project.
     own_project: Option<String>,
     copies: Vec<SampleIdentity>,
+    /// `map_stamps` when the difficulties were read.
+    stamps: Vec<(PathBuf, u64, Option<SystemTime>)>,
 }
 
 enum Step {
     Kept,
+    /// Another session opened the mapset or a difficulty changed: this file and the rest stay.
+    Stop,
     /// The ledger entry goes: the file left the mapset, is gone, or isn't dawsu!'s any more.
     Drop,
 }
@@ -268,6 +303,10 @@ fn clean_up(request: &mut Request, outcome: &mut Outcome, entry: &pending::Pendi
         return Step::Kept;
     }
     before_move(&path);
+    // What the job read may be out of date now.
+    if request.presence.others_live() || map_stamps(&request.root) != keep.stamps {
+        return Step::Stop;
+    }
     // Moved aside first, so no program writes it under its name while it leaves; then checked
     // again. A file a stopped cleanup left under the moving name is never moved over.
     let Some(temp) = moving_name(&path) else { return Step::Kept };
@@ -315,9 +354,7 @@ impl Application {
         let Some(document) = self.document.as_ref() else { return };
         let Some(ledger) = document.pending.ledger() else { return };
         let Some(root) = document.path.parent().map(Path::to_path_buf) else { return };
-        if document.presence.as_ref().is_none_or(|presence| presence.others_live()) {
-            return;
-        }
+        let Some(presence) = document.presence.clone().filter(|presence| !presence.others_live()) else { return };
         let hit_files = pending::hit_files(document.composer.hitsounds());
         // Each state names its own lanes: an older state may play a replaced lane sample.
         let undo_files = document.composer.history.states().flat_map(pending::hit_files)
@@ -325,7 +362,7 @@ impl Application {
         let request = Request {
             closing, root, data_root: self.data_root.clone(), project_root: self.project_root.clone(),
             open: document.path.clone(), ledger, pending: document.pending.clone(),
-            hit_files: if closing { BTreeSet::new() } else { hit_files }, undo_files, can_list: self.project.is_some(),
+            hit_files: if closing { BTreeSet::new() } else { hit_files }, undo_files, can_list: self.project.is_some(), presence,
         };
         let (send, receive) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
@@ -335,12 +372,25 @@ impl Application {
         self.busy = true;
     }
 
-    /// Applies the cleanup job once it finished; `wait` blocks until it does. Returns, when a
-    /// job finished, the pending names a record still lists (closing only).
+    /// Applies the cleanup job once it finished; `wait` waits up to `sweep_wait` for it. A job
+    /// still running then goes on in the background. Returns, when a job finished, the pending
+    /// names a record still lists (closing only).
     pub(crate) fn poll_sweep(&mut self, wait: bool) -> Option<Option<BTreeSet<String>>> {
         let receive = self.sweep.as_ref()?;
         let outcome = if wait {
-            receive.recv().ok()
+            match receive.recv_timeout(self.sweep_wait) {
+                Ok(outcome) => Some(outcome),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    // Its document is about to go: the job no longer keeps `busy` set.
+                    if !self.sweep_detached {
+                        self.sweep_detached = true;
+                        self.busy = false;
+                        self.status = format!("{}.{STILL_RUNNING}", self.status.trim_end_matches('.'));
+                    }
+                    return None;
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => None,
+            }
         } else {
             match receive.try_recv() {
                 Ok(outcome) => Some(outcome),
@@ -349,7 +399,11 @@ impl Application {
             }
         };
         self.sweep = None;
-        self.busy = false;
+        // A job close or open stopped waiting for no longer keeps `busy` set; another job may.
+        let detached = std::mem::take(&mut self.sweep_detached);
+        if !detached {
+            self.busy = false;
+        }
         let Some(outcome) = outcome else {
             // The job is gone: a file it was moving goes back now, unless another session's may be running.
             if let Some(document) = &self.document
@@ -361,16 +415,24 @@ impl Application {
             self.error = Some("The unused sample cleanup stopped unexpectedly. A file it removed is kept in removed-samples; one it was moving stays in the mapset.".into());
             return Some(None);
         };
-        Some(self.apply_sweep(outcome))
+        Some(self.apply_sweep(outcome, detached))
     }
 
-    fn apply_sweep(&mut self, outcome: Outcome) -> Option<BTreeSet<String>> {
+    /// `detached`: close or open stopped waiting, so the document the job served is gone.
+    fn apply_sweep(&mut self, outcome: Outcome, detached: bool) -> Option<BTreeSet<String>> {
         let Outcome { closing, root, to_pending, mut pending, removed, problem, keep } = outcome;
-        let Some(document) = self.document.as_mut().filter(|document| document.path.parent() == Some(root.as_path())) else {
-            // Another mapset is open now: the files waiting to leave stay.
+        let same_mapset = |document: &super::Document| document.path.parent() == Some(root.as_path());
+        let Some(document) = self.document.as_mut().filter(|document| !detached && same_mapset(document)) else {
+            // Its document is gone: the files waiting to leave stay, and the next Save tries again.
             for moving in &to_pending {
                 pending.release(&moving.file.name);
                 put_back(&moving.temp, &moving.path);
+            }
+            // The mapset, open again meanwhile, no longer has the files that went to removed-samples.
+            if let Some(document) = self.document.as_mut().filter(|document| same_mapset(document)) {
+                for file in &removed {
+                    document.files.retain(|name| !name.eq_ignore_ascii_case(&file.name));
+                }
             }
             return keep;
         };

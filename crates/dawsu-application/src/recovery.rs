@@ -565,7 +565,8 @@ pub(super) fn offers(root: &Path) -> Result<Vec<RecoveryOffer>, String> {
 }
 
 impl WorkingHits {
-    /// The samples its hits play. The lanes are only rows: every sample file of the mapset has one.
+    /// The samples its hits play. Its lanes are left out on purpose: a lane with no hit keeps no
+    /// file in the mapset, in a recovery copy as in the open difficulty (Yoge, 2026-11-21).
     fn samples(&self) -> impl Iterator<Item = &SampleIdentity> {
         self.moments.iter().flat_map(|moment| &moment.hits)
             .chain(self.placements.iter().flat_map(|placement| placement.applied.iter().map(|applied| &applied.lane)))
@@ -573,11 +574,9 @@ impl WorkingHits {
     }
 }
 
-/// Every sample a stopped session's recovery copy of a difficulty in `mapset` plays or lists:
-/// its hits, those of its last Save and its pending files. A sample file it names stays in the mapset, so restoring
-/// the copy still plays it. A copy that can't be read could belong to any mapset and play
-/// anything: it is an error that names the copy.
-pub(super) fn copies_play(data_root: &Path, mapset: &Path) -> Result<Vec<SampleIdentity>, String> {
+/// The stopped sessions' recovery copies of a difficulty in `mapset`. A copy that can't be read
+/// could belong to any mapset: it is an error that names the copy.
+pub(super) fn mapset_copies(data_root: &Path, mapset: &Path) -> Result<Vec<RecoveryCopy>, String> {
     let Ok(entries) = fs::read_dir(data_root.join("recovery")) else { return Ok(Vec::new()) };
     let same = |folder: &Path| folder == mapset
         || folder.canonicalize().ok().zip(mapset.canonicalize().ok()).is_some_and(|(a, b)| a == b);
@@ -588,9 +587,19 @@ pub(super) fn copies_play(data_root: &Path, mapset: &Path) -> Result<Vec<SampleI
         }
         let copy = read_copy(&entry.path())
             .map_err(|_| format!("The recovery copy {} could not be read.", entry.path().display()))?;
-        if !copy.source().parent().is_some_and(same) {
-            continue;
+        if copy.source().parent().is_some_and(same) {
+            out.push(copy);
         }
+    }
+    Ok(out)
+}
+
+/// Every sample a stopped session's recovery copy of a difficulty in `mapset` plays or lists:
+/// its hits, those of its last Save and its pending files. A sample file it names stays in the mapset, so restoring
+/// the copy still plays it. A copy that can't be read is an error that names the copy.
+pub(super) fn copies_play(data_root: &Path, mapset: &Path) -> Result<Vec<SampleIdentity>, String> {
+    let mut out = Vec::new();
+    for copy in mapset_copies(data_root, mapset)? {
         let data = &copy.checkpoint;
         let saved = data.last_save.iter().flat_map(|save| save.hits.samples().chain(save.drawn.iter().flat_map(WorkingHits::samples)));
         out.extend(data.working.hits.samples().chain(saved).cloned());
