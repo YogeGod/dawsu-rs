@@ -3,6 +3,7 @@
 //! Which file plays belongs to the hitsound rules (ADR 0036).
 
 use crate::Error;
+use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
@@ -34,6 +35,28 @@ fn walk(dir: &Path, prefix: &str, out: &mut Vec<String>) -> Result<(), Error> {
 pub fn find_case_insensitive<'a>(listing: &'a [String], name: &str) -> Option<&'a str> {
     let wanted = name.replace('\\', "/").to_lowercase();
     listing.iter().find(|n| n.to_lowercase() == wanted).map(String::as_str)
+}
+
+/// A listing ready for many lookups: each finds what `find_case_insensitive` finds (the first
+/// listed match), without lowering every listed name again. A mapset with a storyboard can list
+/// thousands of files, and opening it looks up every hit sample.
+pub struct FolderIndex<'a> {
+    by_lower: HashMap<String, &'a str>,
+}
+
+impl<'a> FolderIndex<'a> {
+    pub fn new(listing: &'a [String]) -> Self {
+        let mut by_lower = HashMap::with_capacity(listing.len());
+        for name in listing {
+            by_lower.entry(name.to_lowercase()).or_insert(name.as_str());
+        }
+        Self { by_lower }
+    }
+
+    /// The listed name that matches `name` ignoring case and slash direction.
+    pub fn find(&self, name: &str) -> Option<&'a str> {
+        self.by_lower.get(&name.replace('\\', "/").to_lowercase()).copied()
+    }
 }
 
 /// A path from a map that is refused: a normal answer, not an error.
