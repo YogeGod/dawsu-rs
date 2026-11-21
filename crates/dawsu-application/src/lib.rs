@@ -5519,7 +5519,7 @@ Title:");
     #[test]
     fn the_project_lists_a_kept_mix_source_even_when_nothing_moved() {
         let scratch = Scratch::new("sweep-lists-needed");
-        let (mut app, map, folder) = two_layers(&scratch, true);
+        let (mut app, _, folder) = two_layers(&scratch, true);
         use_layer_2(&mut app);
         save_through_summary(&mut app, scratch.path("backups"));
         app.document.as_mut().unwrap().composer.apply("Mix", |hits| {
@@ -5528,8 +5528,10 @@ Title:");
         });
         save_through_summary(&mut app, scratch.path("backups"));
         assert!(!folder.join("normal-hitnormal2.wav").exists(), "a mix plays it now");
-        let listed = |app: &Application| project::Project::load(app.project_root.as_deref().unwrap(), None, &map).unwrap()
-            .settings.pending_samples.unwrap_or_default().into_iter().map(|file| file.name).collect::<Vec<_>>();
+        // Read through the open document's path: open stores it in its full form, which on
+        // Windows can differ from `map` (a short 8.3 temp folder name such as RUNNER~1).
+        let listed = |app: &Application| stored(app).pending_samples.unwrap_or_default()
+            .into_iter().map(|file| file.name).collect::<Vec<_>>();
         assert_eq!(listed(&app), ["normal-hitnormal2.wav"]);
         // The list is lost; the next Save with nothing to move lists it again.
         let mut project = app.project.clone().unwrap();
