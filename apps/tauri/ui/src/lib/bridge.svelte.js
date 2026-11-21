@@ -28,6 +28,8 @@ export class Bridge {
   bottomTab = $state("volume");
   // View › Map preview: kept in this window only, never saved.
   mapPreview = $state(false);
+  // The map preview is open in its own window (Rust's preview-window event).
+  previewWindow = $state(false);
 
   // No map, a job running or a fault: the parts show but take no input.
   get disabled() {

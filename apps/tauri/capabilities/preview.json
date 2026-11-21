@@ -1,0 +1,10 @@
+{
+  "identifier": "preview",
+  "windows": [
+    "preview"
+  ],
+  "permissions": [
+    "core:event:default",
+    "allow-map-preview-objects"
+  ]
+}

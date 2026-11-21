@@ -2852,12 +2852,19 @@ fn the_map_preview_sends_stacked_objects_with_combos_and_slider_paths() {
     assert_eq!(objects[1]["x"], 200.0);
     assert_eq!(objects[0]["combo"], 1);
     assert_eq!(objects[1]["combo"], 2);
-    // The slider starts a new combo with the map's second default colour.
+    // The map has no colours, so the preview takes lazer's Argon six by the plain combo index:
+    // the circles are combo 1, the slider starts combo 2.
+    assert_eq!(preview["colours"].as_array().unwrap().len(), 6);
+    assert_eq!(preview["colours"][0], "#f17400");
+    assert_eq!(objects[0]["colour"], 1);
     assert_eq!(objects[2]["kind"], "slider");
     assert_eq!(objects[2]["combo"], 1);
+    assert_eq!(objects[2]["colour"], 2);
     assert_eq!(objects[2]["end"], 2500.0);
     assert_eq!(objects[2]["path"], serde_json::json!([100.0, 100.0, 200.0, 100.0]));
     assert_eq!(objects[2]["lengths"], serde_json::json!([0.0, 100.0]));
     assert_eq!(objects[2]["spans"], 1);
+    // One beat long at tick rate 1: the only tick would land on the tail, so there is none.
+    assert_eq!(objects[2]["ticks"], serde_json::json!([]));
     assert!(map_preview(&app, &fixture.0.join("Other.osu")).is_err());
 }
