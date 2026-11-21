@@ -34,6 +34,7 @@ const COMMANDS: &[&str] = &[
     "pick_songs_folder",
     "pick_hitsound_library",
     "list_library",
+    "sample_preview",
     "lane_add_candidates",
     "pick_drum_map",
     "set_drum_view",

@@ -133,29 +133,15 @@
       <div class="panel-head"><h2>Browser</h2><button id="browser-fold" type="button" data-doc class="panel-fold" aria-label="Fold Browser" title="Fold Browser" aria-controls="tree-browser-host"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18M16 15l-3-3 3-3"/></svg></button></div>
       <nav class="panel-rail" aria-label="Browser" hidden>
         <button id="browser-unfold" type="button" data-doc aria-label="Open Browser" title="Open Browser" aria-controls="tree-browser-host"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18M14 9l3 3-3 3"/></svg></button>
-        <button id="rail-browser-browse" type="button" data-doc aria-label="Map folder" title="Map folder"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.7-.9l-.8-1.2A2 2 0 0 0 7.9 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2z"/></svg></button>
+        <button id="rail-browser-browse" type="button" data-doc aria-label="Mapset samples" title="Mapset samples"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.7-.9l-.8-1.2A2 2 0 0 0 7.9 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2z"/></svg></button>
         <button id="rail-browser-search" type="button" data-doc aria-label="Search samples" title="Search samples"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg></button>
-        <button id="rail-browser-library" type="button" data-doc aria-label="Hitsound library" title="Hitsound library"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m16 6 4 14M12 6v14M8 8v12M4 4v16"/></svg></button>
+        <button id="rail-browser-library" type="button" data-doc aria-label="Library" title="Library"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m16 6 4 14M12 6v14M8 8v12M4 4v16"/></svg></button>
       </nav>
       <section id="sample-browser">
-        <h2>Samples</h2>
-        <div class="sample-browser-source-controls">
-          <select id="sample-browser-source" aria-label="Sample source">
-            <option value="mapset">Map folder</option>
-            <option value="library">Hitsound library</option>
-          </select>
-          <input type="search" id="sample-browser-filter" aria-label="Filter shown samples" placeholder="Search samples">
-        </div>
-        <div class="row sample-browser-controls">
-          <button type="button" id="sample-browser-up" hidden>Up</button>
-          <output id="sample-browser-folder" hidden aria-label="Current sample folder"></output>
-          <button type="button" id="sample-browser-close" aria-label="Close Browser">Close</button>
-        </div>
-        <div id="sample-browser-entries" aria-label="Samples and folders"></div>
-        <div class="sample-browser-actions">
-          <button type="button" id="sample-browser-assign">Use in active lane</button>
-          <button type="button" id="sample-browser-pick">Browse…</button>
-        </div>
+        <div class="sample-browser-classic-head"><h2>Samples</h2><button type="button" id="sample-browser-close" aria-label="Close Browser">Close</button></div>
+        <div data-ui-mount="browser-head"></div>
+        <div id="sample-browser-entries" data-ui-mount="browser-list" aria-label="Samples and folders"></div>
+        <div data-ui-mount="browser-preview"></div>
       </section>
     </aside>
     <div id="editor-arrange" class="arrange">

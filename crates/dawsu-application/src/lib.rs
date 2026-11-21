@@ -837,6 +837,9 @@ pub struct Application {
     samples: HashMap<SampleIdentity, Arc<AudioClip>>,
     song: Option<Arc<AudioClip>>,
     stretched_song: Option<Arc<AudioClip>>,
+    /// The sample file last auditioned or outlined from the Browser, kept while the file is unchanged
+    /// so a pick decodes it once for both.
+    sample_file: Option<(PathBuf, (u64, std::time::SystemTime), Arc<AudioClip>)>,
     pub playback_speed: f64,
     pub waveform: Vec<WaveBin>,
     pub preferences: Preferences,
@@ -989,6 +992,7 @@ impl Application {
             muted: Vec::new(),
             solo: Vec::new(),
             song_solo: false,
+            sample_file: None,
             cached_version: 0,
             cached_listen_version: 0,
             zoom: 0.12,
@@ -1967,15 +1971,36 @@ impl Application {
             a.audition(clip.clone(), gain);
         }
     }
-    pub fn audition_sample_file(&self, source: &Path) -> Result<(), String> {
+    pub fn audition_sample_file(&mut self, source: &Path) -> Result<(), String> {
         if self.busy || self.is_stroke_open() {
             return Err("Finish the current operation before previewing a sample.".into());
         }
-        let clip = dawsu_audio::decode(source)?;
+        let clip = self.sample_file_clip(source)?;
         if let Some(audio) = &self.audio {
             audio.audition(clip, 1.0);
         }
         Ok(())
+    }
+    /// The length in ms and the outline (`AudioClip::peaks`) of the sample a lane plays, once loaded.
+    pub fn lane_sample_outline(&self, lane: &SampleIdentity, bars: usize) -> Option<(f64, Vec<f32>)> {
+        self.clip_for_lane(lane).map(|clip| (clip.duration_ms(), clip.peaks(bars)))
+    }
+    /// The same for a sample file on disk.
+    pub fn sample_file_outline(&mut self, source: &Path, bars: usize) -> Result<(f64, Vec<f32>), String> {
+        let clip = self.sample_file_clip(source)?;
+        Ok((clip.duration_ms(), clip.peaks(bars)))
+    }
+    /// A sample file's audio, decoded again only when the file changed on disk since the last call.
+    fn sample_file_clip(&mut self, source: &Path) -> Result<Arc<AudioClip>, String> {
+        let stamp = sample_watch::file_stamp(source).ok_or_else(|| format!("Reading {}", source.display()))?;
+        if let Some((path, kept, clip)) = &self.sample_file
+            && path == source && *kept == stamp
+        {
+            return Ok(clip.clone());
+        }
+        let clip = dawsu_audio::decode(source)?;
+        self.sample_file = Some((source.to_path_buf(), stamp, clip.clone()));
+        Ok(clip)
     }
     pub fn is_muted(&self, lane: &SampleIdentity) -> bool {
         self.muted.contains(lane)
@@ -5267,5 +5292,37 @@ mod project_workflow {
         open(&mut app, other);
         open(&mut app, map);
         assert_eq!(app.zoom, fit);
+    }
+}
+
+#[cfg(test)]
+mod sample_file_clip {
+    use super::*;
+    use dawsu_test_support::Scratch;
+
+    fn wave(frames: u16) -> Vec<u8> {
+        let data = frames as u32 * 2;
+        let mut bytes = b"RIFF".to_vec();
+        bytes.extend((36 + data).to_le_bytes());
+        bytes.extend(b"WAVEfmt \x10\0\0\0\x01\0\x01\0\x80\xbb\0\0\0w\x01\0\x02\0\x10\0data");
+        bytes.extend(data.to_le_bytes());
+        bytes.extend((0..frames).flat_map(|i| (i as i16 * 100).to_le_bytes()));
+        bytes
+    }
+
+    #[test]
+    fn a_library_sample_is_decoded_once_for_its_audition_and_its_outline_until_the_file_changes() {
+        let scratch = Scratch::new("sample-file-clip");
+        let path = scratch.path("clap.wav");
+        std::fs::write(&path, wave(4)).unwrap();
+        let mut app = Application::headless();
+        app.audition_sample_file(&path).unwrap();
+        let first = app.sample_file_clip(&path).unwrap();
+        let (ms, _) = app.sample_file_outline(&path, 4).unwrap();
+        assert!(Arc::ptr_eq(&first, &app.sample_file_clip(&path).unwrap()), "the outline reused the audition's clip");
+        assert!((ms - 4000.0 / 48000.0).abs() < 1e-9);
+        std::fs::write(&path, wave(8)).unwrap();
+        let (ms, _) = app.sample_file_outline(&path, 4).unwrap();
+        assert!((ms - 8000.0 / 48000.0).abs() < 1e-9, "a changed file is decoded again");
     }
 }

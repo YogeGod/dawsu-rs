@@ -337,8 +337,8 @@ aside[data-folded] {
 #editor-inspector[data-folded] {
   border-left: 1px solid var(--editor-border);
 }
-/* The tree panel's head names it, so the sample list drops its own heading there. */
-#tree-browser-host #sample-browser > h2 {
+/* The tree panel's head names it and folds it, so the sample list drops its own heading and Close there. */
+#tree-browser-host .sample-browser-classic-head {
   display: none;
 }
 .panel-rail {
@@ -356,10 +356,6 @@ aside[data-folded] {
   flex-direction: row;
   padding: 0 8px;
   height: 100%;
-}
-/* The classic Browser sits in the Inspector and keeps its own Close button; the tree panel folds by its head. */
-#tree-browser-host #sample-browser-close {
-  display: none;
 }
 
 /* Status bar. */

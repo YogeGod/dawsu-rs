@@ -2,12 +2,16 @@ import "./tokens.css";
 import "./shell.css";
 import "./parts/pill.css";
 import "./parts/inspector.css";
+import "./parts/browser.css";
 import { mount } from "svelte";
 import { bridge } from "./lib/bridge.svelte.js";
 import * as commandList from "./lib/commands.js";
 import { nextGroup, stepInGroup } from "./lib/snap.js";
 import Boundary from "./lib/Boundary.svelte";
 import AuditionPill from "./parts/AuditionPill.svelte";
+import BrowserHead from "./parts/BrowserHead.svelte";
+import BrowserList from "./parts/BrowserList.svelte";
+import BrowserPreview from "./parts/BrowserPreview.svelte";
 import LaneHeaders from "./parts/LaneHeaders.svelte";
 import PlayheadGroup from "./parts/PlayheadGroup.svelte";
 import ExportWindow from "./parts/ExportWindow.svelte";
@@ -30,6 +34,8 @@ const parts = {
   menu: EditorMenu,
   "inspector-selection": InspectorSelection, "inspector-lane": InspectorLane, "inspector-difficulty": InspectorDifficulty,
   "inspector-bookmarks": InspectorBookmarks, "inspector-history": InspectorHistory,
+  // The Browser (#sample-browser): tabs and search, the sample tree, the preview with Use and Browse.
+  "browser-head": BrowserHead, "browser-list": BrowserList, "browser-preview": BrowserPreview,
   // The whole page of the Export window (export.html).
   "export-window": ExportWindow,
   // The whole page of the drum detection window (drum.html).
@@ -39,6 +45,7 @@ const parts = {
 // app.js may have built the lane rows before this bundle loaded.
 bridge.lanes = globalThis.currentLaneHeaders?.() ?? null;
 bridge.inspector = globalThis.currentInspector?.() ?? null;
+bridge.browser = globalThis.currentBrowser?.() ?? null;
 
 for (const host of document.querySelectorAll("[data-ui-mount]")) {
   const part = parts[host.dataset.uiMount];
@@ -66,6 +73,11 @@ export function lanes(headers) {
 // and when a bookmark row is picked.
 export function inspector(model) {
   bridge.handOverInspector(model);
+}
+
+// app.js hands over the Browser's model each time renderSampleBrowser() changes it.
+export function browser(model) {
+  bridge.handOverBrowser(model);
 }
 
 // The one command list menus.js builds every menu from.

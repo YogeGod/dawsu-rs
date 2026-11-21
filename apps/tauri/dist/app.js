@@ -32,6 +32,11 @@ let browserLibraryFolders = new Map();
 const browserExpanded = new Set();
 let browserScene = null;
 let browserState = "";
+let browserFilter = "";
+// The picked sample's length and outline once the backend answers: { path, source, ms, peaks }.
+let browserPreview = null;
+let browserModel = null;
+let browserTree = null;
 let usedLaneKeys = null;
 let showLaneInfo = false;
 let laneRows = [];
@@ -442,13 +447,10 @@ async function openPanelAt(panel, section) {
   if (!panelOn(panel)) return;
   let target;
   if (panel === "browser") {
-    const source = $("sample-browser-source");
-    const wanted = section === "library" ? "library" : section === "browse" ? "mapset" : source.value;
-    if (source.value !== wanted) {
-      source.value = wanted;
-      source.dispatchEvent(new Event("change"));
-    }
-    target = section === "search" ? $("sample-browser-filter") : source;
+    // The Browser parts write each model at once, so the tab and search field exist right after.
+    if (section !== "search") sampleBrowserAction("source", section === "library" ? "library" : "mapset");
+    target = section === "search" ? $("sample-browser-filter")
+      : browserSource === "library" ? $("sample-browser-library") : $("sample-browser-mapset");
   } else {
     target = $("editor-inspector").querySelector(`section[aria-label="${section}"] button`);
   }
@@ -2700,6 +2702,10 @@ function mapsetSamples() {
   return samples;
 }
 
+// Folders first, then by name: each listing is sorted once, when it arrives or the lanes change.
+const byFolderThenName = ([left, a], [right, b]) =>
+  Number(a !== null) - Number(b !== null) || left.localeCompare(right);
+
 function requestLibraryFolder(folder) {
   if (!browserLibrary || browserLibraryFolders.has(folder)) return;
   const cache = browserLibraryFolders;
@@ -2707,7 +2713,11 @@ function requestLibraryFolder(folder) {
   cache.set(folder, null);
   run(async () => {
     try {
-      cache.set(folder, await invoke("list_library", { location }));
+      const children = await invoke("list_library", { location });
+      cache.set(folder, children.map(([name, directory]) => {
+        const path = folder ? folder + "/" + name : name;
+        return [path, directory ? null : path];
+      }).sort(byFolderThenName));
     } catch (error) {
       cache.set(folder, String(error));
     }
@@ -2721,13 +2731,41 @@ function requestLibraryFolder(folder) {
 function resetBrowserFolder() {
   browserFolder = "";
   browserSample = null;
+  browserPreview = null;
   browserExpanded.clear();
 }
+
+// The map folder samples (path to lane row) and their folder tree, built and sorted once per scene.
+function mapsetTree() {
+  if (browserTree?.scene === scene) return browserTree;
+  const folders = new Map([["", []]]);
+  const samples = mapsetSamples();
+  for (const [path, row] of samples) {
+    const parts = path.split("/");
+    let folder = "";
+    for (const part of parts.slice(0, -1)) {
+      const child = folder ? folder + "/" + part : part;
+      if (!folders.has(child)) {
+        folders.set(child, []);
+        folders.get(folder).push([child, null]);
+      }
+      folder = child;
+    }
+    folders.get(folder).push([path, row]);
+  }
+  for (const entries of folders.values()) entries.sort(byFolderThenName);
+  browserTree = { scene, folders, samples };
+  return browserTree;
+}
+
+// Rows past this many are left out; the search narrows the list.
+const browserRowLimit = 500;
 
 function renderSampleBrowser() {
   if (browserMap !== scene.path) {
     browserMap = scene.path;
     resetBrowserFolder();
+    browserLibraryFolders = new Map();
   }
   if (browserLibrary !== (view.hitsoundLibrary ?? null)) {
     browserLibrary = view.hitsoundLibrary ?? null;
@@ -2735,122 +2773,176 @@ function renderSampleBrowser() {
     if (browserSource === "library") resetBrowserFolder();
   }
   const library = browserSource === "library";
-  const filter = ($("sample-browser-filter").value ?? "").trim().toLowerCase();
+  const filter = browserFilter.trim().toLowerCase();
   const classic = !!view.classicBrowser;
+  const { folders: tree, samples: mapset } = library ? {} : mapsetTree();
+  if (!library && !tree.has(browserFolder)) browserFolder = "";
+  // A picked sample whose row is gone (its lane was removed, or the library file left its folder).
+  const listing = library && browserSample ? browserLibraryFolders.get(browserSample.split("/").slice(0, -1).join("/")) : null;
+  if (browserSample && (library ? Array.isArray(listing) && !listing.some(([path]) => path === browserSample)
+    : !mapset.has(browserSample))) {
+    browserSample = null;
+    browserPreview = null;
+  }
   const state = JSON.stringify([classic, browserSource, browserLibrary, browserFolder,
-    browserSample, filter, [...browserExpanded], view.busy, view.activeLane]);
+    browserSample, browserFilter, [...browserExpanded], view.busy, view.activeLane, browserPreview]);
   if (browserScene === scene && browserState === state) return;
   browserScene = scene;
   browserState = state;
-  const samples = library ? [] : mapsetSamples();
-  const tree = new Map([["", new Map()]]);
-  for (const [path, row] of samples) {
-    const parts = path.split("/");
-    let folder = "";
-    for (const part of parts.slice(0, -1)) {
-      const child = folder ? folder + "/" + part : part;
-      if (!tree.has(child)) tree.set(child, new Map());
-      tree.get(folder).set(child, null);
-      folder = child;
+  // While searching the map folder, a folder shows (open) only when a sample under it matches.
+  const matching = new Map();
+  const hasMatch = folder => {
+    if (!matching.has(folder)) {
+      matching.set(folder, tree.get(folder).some(([path, row]) =>
+        row === null ? hasMatch(path) : nameOf(path).toLowerCase().includes(filter)));
     }
-    tree.get(folder).set(path, row);
-  }
-  if (!library && !tree.has(browserFolder)) browserFolder = "";
-  const buttons = [];
+    return matching.get(folder);
+  };
+  const rows = [];
   const visibleSamples = new Set();
+  let full = false;
+  const note = (label, depth) => rows.push({ kind: "note", key: "note:" + rows.length, label, depth });
   const addRows = (folder, depth) => {
     let entries;
     if (library) {
       if (!browserLibrary) {
-        buttons.push(paragraph("Choose a hitsound library folder in Folders."));
+        note("Choose a hitsound library folder in Folders.", depth);
         return;
       }
       requestLibraryFolder(folder);
-      const children = browserLibraryFolders.get(folder);
-      if (!Array.isArray(children)) {
-        buttons.push(paragraph(children || "Loading samples…"));
+      entries = browserLibraryFolders.get(folder);
+      if (!Array.isArray(entries)) {
+        note(entries || "Loading samples…", depth);
         return;
       }
-      entries = children.map(([name, directory]) => {
-        const path = folder ? folder + "/" + name : name;
-        return [path, directory ? null : path];
-      });
     } else {
-      entries = [...tree.get(folder)];
+      entries = tree.get(folder);
     }
-    entries.sort(([left, a], [right, b]) =>
-      Number(a !== null) - Number(b !== null) || left.localeCompare(right));
     for (const [path, row] of entries) {
+      if (rows.length >= browserRowLimit) {
+        full = true;
+        return;
+      }
       const directory = row === null;
       const label = nameOf(path);
       if (!directory && !label.toLowerCase().includes(filter)) continue;
+      if (directory && filter && !library && !hasMatch(path)) continue;
       if (!directory) visibleSamples.add(path);
-      const open = browserExpanded.has(path);
-      const entry = makeButton(label, () => {
-        if (directory) {
-          if (classic) browserFolder = path;
-          else if (!browserExpanded.delete(path)) browserExpanded.add(path);
-        } else {
-          if (view.busy) return;
-          browserSample = path;
-          if (library) act({ kind: "preview_library_sample", location: { root: browserLibrary, path } }, false);
-          else act({ kind: "lane", row, operation: "preview_sample" }, false);
-        }
-        renderSampleBrowser();
-        $("sample-browser-entries").children[buttons.indexOf(entry)]?.focus?.();
-      });
-      entry.className = "sample-browser-entry";
-      entry.title = path;
-      entry.style.paddingInlineStart = (8 + 8 * Math.min(depth, 6)) + "px";
-      if (directory) entry.setAttribute("aria-expanded", String(classic ? false : open));
-      else {
-        entry.setAttribute("aria-pressed", String(browserSample === path));
-        entry.disabled = !!view.busy;
-      }
-      buttons.push(entry);
-      if (!classic && directory && open) addRows(path, depth + 1);
+      const open = !classic && (browserExpanded.has(path) || !!filter && !library);
+      rows.push(directory
+        ? { kind: "folder", key: path, label, title: path, depth, open, selected: false }
+        : { kind: "sample", key: path, label, title: path, depth, selected: browserSample === path });
+      if (directory && open) addRows(path, depth + 1);
     }
   };
   addRows(classic ? browserFolder : "", 0);
-  $("sample-browser-entries").replaceChildren(...(buttons.length ? buttons
-    : [paragraph(filter ? "No matching samples." : "No samples in this folder.")]));
-  $("sample-browser-source").value = browserSource;
-  $("sample-browser-up").hidden = !classic;
-  $("sample-browser-up").disabled = !browserFolder;
-  $("sample-browser-folder").hidden = !classic;
-  $("sample-browser-folder").textContent = browserFolder || (library ? "Library" : "Map folder");
-  $("sample-browser-folder").title = library ? [browserLibrary, browserFolder].filter(Boolean).join("/") : browserFolder;
-  $("sample-browser-assign").disabled = !sampleTarget() || !visibleSamples.has(browserSample);
-  $("sample-browser-pick").disabled = !sampleTarget();
+  if (full) note("Search to see more samples.", 0);
+  const unopened = rows.some(row => row.kind === "folder" && !row.open);
+  if (!rows.length || filter && !visibleSamples.size && !unopened) {
+    note(filter ? "No matching samples." : "No samples in this folder.", 0);
+  }
+  const preview = browserSample && browserPreview?.path === browserSample && browserPreview.source === browserSource
+    ? { name: nameOf(browserSample), title: browserSample, ms: browserPreview.ms, peaks: browserPreview.peaks } : null;
+  browserModel = {
+    source: browserSource,
+    classic,
+    filter: browserFilter,
+    busy: !!view.busy,
+    // The tree's top row: the map folder, or the library folder by its name (full path in the tooltip).
+    root: classic ? null : !library ? "Mapset samples" : browserLibrary ? nameOf(browserLibrary.replace(/[\\/]+$/, "")) : null,
+    rootTitle: library ? browserLibrary : null,
+    // osu! skin and Sample folders: shown greyed out in the tree, nothing lists them yet.
+    defaults: !library && !classic,
+    folder: classic ? {
+      label: browserFolder ? nameOf(browserFolder) : library ? "Library" : "Mapset samples",
+      title: library ? [browserLibrary, browserFolder].filter(Boolean).join("/") : browserFolder,
+      canUp: !!browserFolder,
+    } : null,
+    rows,
+    preview,
+    canAssign: !!sampleTarget() && visibleSamples.has(browserSample),
+    canPick: !!sampleTarget(),
+  };
+  try { window.dawsuUi?.browser(browserModel); } catch (error) { console.error(error); }
 }
 
-$("sample-browser-source").addEventListener("change", () => {
-  if (!scene) return;
-  browserSource = $("sample-browser-source").value;
-  resetBrowserFolder();
-  if (browserSource === "library") browserLibraryFolders = new Map();
-  renderSampleBrowser();
-});
-$("sample-browser-filter").addEventListener("input", () => { if (scene) renderSampleBrowser(); });
-$("sample-browser-up").addEventListener("click", () => {
-  browserFolder = browserFolder.split("/").slice(0, -1).join("/");
-  renderSampleBrowser();
-});
-$("sample-browser-close").addEventListener("click", () => togglePanel("browser"));
-$("sample-browser-assign").addEventListener("click", () => {
-  const target = sampleTarget();
-  if (!target || !browserSample || $("sample-browser-assign").disabled) return;
-  if (browserSource === "library") {
-    const location = { root: browserLibrary, path: browserSample };
-    act({ kind: "replace_library_sample", target, location });
-  } else {
-    act({ kind: "replace_sample", target, path: browserSample, mapset: true });
+// The Browser parts read the model at load, before the first renderSampleBrowser() hand-over.
+function currentBrowser() {
+  return browserModel;
+}
+
+// What a sample row plays: a map folder sample through the lane that uses it, or a library file.
+function samplePreviewAction(path) {
+  return browserSource === "library"
+    ? { kind: "preview_library_sample", location: { root: browserLibrary, path } }
+    : { kind: "lane", row: mapsetSamples().get(path), operation: "preview_sample" };
+}
+
+// Asks the backend for a sample's length and outline (source and lane taken at pick time); an answer
+// for an older pick is dropped. Each pick and Play asks again, so a file changed on disk shows anew.
+async function requestSamplePreview(path, source, action) {
+  let answer = null;
+  try {
+    answer = await invoke("sample_preview", { source: source === "library"
+      ? { kind: "library", location: action.location } : { kind: "lane", row: action.row } });
+  } catch {
+    // Without an answer the preview shows the file name only.
   }
-});
-$("sample-browser-pick").addEventListener("click", () => {
-  const target = sampleTarget();
-  if (target) pickSample(target);
-});
+  if (!answer || browserPreview?.path !== path || browserPreview.source !== source) return;
+  browserPreview = { path, source, ms: answer.ms, peaks: answer.peaks };
+  if (scene) renderSampleBrowser();
+}
+
+// What the Browser parts do: switch tab, search, fold or open a folder, pick, play, Up, Use, Browse.
+function sampleBrowserAction(kind, value) {
+  if (!scene) return;
+  let focusFirst = false;
+  if (kind === "source") {
+    if (value === browserSource) return;
+    browserSource = value === "library" ? "library" : "mapset";
+    resetBrowserFolder();
+    if (browserSource === "library") browserLibraryFolders = new Map();
+  } else if (kind === "filter") {
+    browserFilter = String(value ?? "");
+  } else if (kind === "toggle") {
+    if (view.classicBrowser) {
+      browserFolder = value;
+      focusFirst = true;
+    } else if (!browserExpanded.delete(value)) browserExpanded.add(value);
+  } else if (kind === "up") {
+    browserFolder = browserFolder.split("/").slice(0, -1).join("/");
+    focusFirst = true;
+  } else if (kind === "pick" || kind === "play") {
+    const path = kind === "pick" ? value : browserSample;
+    if (view.busy || !path) return;
+    const source = browserSource;
+    const action = samplePreviewAction(path);
+    act(action, false);
+    if (path !== browserSample || browserPreview?.path !== path || browserPreview.source !== source) {
+      browserSample = path;
+      browserPreview = { path, source, ms: null, peaks: null };
+    }
+    run(() => requestSamplePreview(path, source, action));
+  } else if (kind === "assign") {
+    const target = sampleTarget();
+    if (!target || !browserSample || !browserModel?.canAssign) return;
+    if (browserSource === "library") {
+      act({ kind: "replace_library_sample", target, location: { root: browserLibrary, path: browserSample } });
+    } else {
+      act({ kind: "replace_sample", target, path: browserSample, mapset: true });
+    }
+    return;
+  } else if (kind === "browse") {
+    const target = sampleTarget();
+    if (target) pickSample(target);
+    return;
+  }
+  renderSampleBrowser();
+  // Classic replaces the rows on entering a folder, so focus moves to the first new row.
+  if (focusFirst) $("sample-browser-entries").querySelector?.("button")?.focus?.();
+}
+
+$("sample-browser-close").addEventListener("click", () => togglePanel("browser"));
 
 function openReplaceSample() {
   const target = sampleTarget();

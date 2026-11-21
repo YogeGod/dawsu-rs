@@ -97,8 +97,8 @@ test("each side panel has a head with a fold button and a rail whose section ico
   }
   assert.doesNotMatch(docking, /dock-tab|tabButtons|function strip\(|dock-preview/);
   // Rail buttons are named after what they open.
-  assert.match(html, /id="rail-browser-browse"[^>]*aria-label="Map folder"/);
-  assert.match(html, /id="rail-browser-library"[^>]*aria-label="Hitsound library"/);
+  assert.match(html, /id="rail-browser-browse"[^>]*aria-label="Mapset samples"/);
+  assert.match(html, /id="rail-browser-library"[^>]*aria-label="Library"/);
   assert.match(html, /id="rail-browser-search"[^>]*aria-label="Search samples"/);
   assert.match(html, /<div popover id="options-Lanes"[^>]*role="group"/);
 });

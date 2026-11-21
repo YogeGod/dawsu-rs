@@ -139,15 +139,6 @@ body{font-family:Inter,"Segoe UI",system-ui,sans-serif}
 .arrange[data-layout-lane-sidebar-hidden] > .layout-size-column{display:none}
 
 
-.sample-browser-controls{margin-bottom:6px;justify-content:space-between}
-.sample-browser-source-controls{display:grid;gap:4px;margin-bottom:6px}
-#sample-browser-filter{min-width:0;border:1px solid var(--line);border-radius:5px;background:var(--field);padding:4px 8px}
-#sample-browser-folder{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-#sample-browser-entries,.sample-browser-actions{display:grid;gap:4px}
-#sample-browser-entries button{overflow:hidden;text-overflow:ellipsis;text-align:left;min-width:0}
-.sample-browser-entry[aria-expanded]::before{content:"▸ ";color:var(--muted)}
-.sample-browser-entry[aria-expanded="true"]::before{content:"▾ "}
-.sample-browser-actions{margin-top:8px}
 #classic-browser-host #sample-browser-entries{overflow:auto}
 
 #editor-dock[data-docking] {
@@ -202,12 +193,6 @@ body{font-family:Inter,"Segoe UI",system-ui,sans-serif}
 .row[aria-label="Lane view"] { gap: 2px; background: #2c2c2c; padding: 2px; border-radius: 5px; }
 .row[aria-label="Lane view"] button { border: 0; background: transparent; }
 .row[aria-label="Lane view"] button[aria-pressed="true"] { color: var(--hi); background: #454545; }
-#sample-browser-filter { border: 0; background: #111; min-height: 30px; padding-inline: 10px; }
-#sample-browser-entries { gap: 2px; }
-#sample-browser-entries button { border: 0; border-radius: 4px; min-height: 28px; background: #151515; color: var(--text); }
-#sample-browser-entries button:nth-child(even) { background: #1c1c1c; }
-#sample-browser-entries button:hover { background: #3c3c3c; }
-#sample-browser-entries button[aria-pressed="true"] { background: #084266; }
 :root {
   --text:#f1f1f1; --muted:#a3a3a3; --hi:#77bdfa;
   --base:#151515; --panel:#1c1c1c; --chrome:#292929; --control:#3c3c3c;
@@ -228,8 +213,6 @@ input[type=checkbox]:checked::before { background:#111; transform:translateX(12p
 aside { background:var(--panel); }
 aside h2 { font-size:12px; font-weight:650; padding-bottom:6px; border-bottom:1px solid var(--line); }
 aside section > :last-child { margin-bottom:0; }
-#sample-browser-entries button:not([aria-expanded])::before { content:""; display:inline-block; width:14px; height:14px; vertical-align:-2px; margin-right:7px; background:var(--hi); clip-path:polygon(0 43%,22% 43%,32% 13%,46% 76%,59% 22%,70% 50%,100% 50%,100% 62%,68% 62%,60% 46%,45% 95%,32% 41%,27% 58%,0 58%); }
-#sample-browser-entries button[aria-pressed=true]::after { content:"✓"; float:right; color:var(--hi); }
 @media (forced-colors:active) { input[type=checkbox] { appearance:auto; } input[type=checkbox]::before { display:none; } }
 
 .ribbon-options:not(:popover-open) { display:none; }
