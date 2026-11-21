@@ -29,7 +29,7 @@ async function frontend() {
   for (let row = 0; row < 20; row++) get("lanes").children.push(element());
   const status = { busy: false, hasDocument: false, duration: 10_000, playing: false, position: 0 };
   const context = createContext({
-    document: { getElementById: get, createElement: element, querySelectorAll: () => [],
+    document: { documentElement: { dataset: {} }, getElementById: get, createElement: element, querySelectorAll: () => [],
       addEventListener(name, handler) { documentEvents.set(name, handler); } },
     window: { __TAURI__: {
       core: { invoke: async (_name, args) => {
@@ -49,12 +49,13 @@ async function frontend() {
     setInterval() {},
     console,
   });
-  await bootEditor(context);
+  const ctx = bootEditor(context, { autoStart: false });
+  await ctx.act(null);
   calls.length = 0;
   status.hasDocument = true;
   const evaluate = (code) => runInContext(code, context);
   evaluate('view = { busy: false, hasDocument: true, duration: 10_000 }; scene = { path: "fixture.osu", viewStart: 1000, zoom: 1, rowHeight: 30 }');
-  return { calls, documentEvents, evaluate, get, status, settle: () => evaluate("pending") };
+  return { calls, documentEvents, evaluate, get, state: ctx.state, status, settle: () => evaluate("pending") };
 }
 
 // The snap part of the Svelte bundle (ui/src/main.js and bridge.svelte.js), on the real ui/src/lib/snap.js.
@@ -684,4 +685,73 @@ test("timeline hitboxes stay 20 px wide across zoom levels for clicks, Erase swe
   fire(controller, "pointerup", { clientX: 158, clientY: 20, altKey: true });
   await settle();
   assert.equal(calls.find(c => c.action?.kind === "pointer" && c.action.phase === "down").action.ms, 3160);
+});
+
+test("at 150% UI scale, grid clicks/hitboxes and Volume-lane hover resolve to exact unzoomed timestamps", async () => {
+  const { calls, evaluate, get, state, settle, status } = await frontend();
+  const grid = get("grid");
+  const controller = get("controller");
+  grid.getBoundingClientRect = () => ({ x: 150, y: 90, left: 150, top: 90, width: 1500, height: 450 });
+  controller.getBoundingClientRect = () => ({ x: 150, y: 540, left: 150, top: 540, width: 1500, height: 120 });
+  grid.setPointerCapture = () => {};
+  controller.setPointerCapture = () => {};
+  get("scroll").scrollTop = 0;
+  status.tool = "Select";
+  evaluate(`
+    document.documentElement.dataset.uiScale = "150";
+    laneRows = [0, 1, 2];
+    scene.viewStart = 0;
+    scene.zoom = 0.5;
+    scene.rowHeight = 30;
+    scene.lanes = [
+      { family: "normal-hitnormal", group: "normal", colourKey: "k0" },
+      { family: "normal-hitclap", group: "normal", colourKey: "k1" },
+      { family: "normal-hitwhistle", group: "normal", colourKey: "k2" },
+    ];
+    // At zoom 0.5, 1000 ms is logical x=500 and 1500 ms is logical x=750 (the 1.5x drift decoy).
+    scene.moments = [
+      [1000, 80, true, [[1, 80, false, false]]],
+      [1500, 60, true, [[1, 60, false, false]]],
+    ];
+    view.tool = "Select";
+  `);
+  const fire = (el, type, init) => el.events.get(type)({
+    type, button: 0, pointerId: 1, clientX: 0, clientY: 157.5,
+    shiftKey: false, ctrlKey: false, metaKey: false, altKey: false,
+    preventDefault() {}, ...init,
+  });
+
+  // Logical x=200 (400 ms), logical y=45 (row 1) -> visual (450, 157.5) at 150% scale.
+  calls.length = 0;
+  fire(grid, "pointerdown", { clientX: 450, clientY: 157.5 });
+  fire(grid, "pointerup", { clientX: 450, clientY: 157.5 });
+  await settle();
+  const rawClick = calls.find(c => c.action?.kind === "pointer" && c.action.phase === "down").action;
+  assert.equal(rawClick.ms, 400);
+  assert.equal(rawClick.row, 1);
+
+  // Logical x=494 (6 logical px left of 1000 ms at x=500) -> visual x=891; must snap to 1000 ms, not 1500 ms.
+  calls.length = 0;
+  fire(grid, "pointerdown", { clientX: 891, clientY: 157.5 });
+  fire(grid, "pointerup", { clientX: 891, clientY: 157.5 });
+  await settle();
+  const hitClick = calls.find(c => c.action?.kind === "pointer" && c.action.phase === "down").action;
+  assert.equal(hitClick.ms, 1000);
+  assert.equal(hitClick.row, 1);
+
+  // Grid hover card at the same zoomed coordinates resolves to row 1, 1000 ms.
+  const cardKey = evaluate("hitCardAt({ clientX: 891, clientY: 157.5 })?.key ?? null");
+  assert.ok(cardKey?.startsWith("1:1000:"), `expected hit card for row 1 at 1000 ms, got ${cardKey}`);
+
+  // Volume-lane hover at visual x=900 (logical x=500 -> 1000 ms) must set volumeHoverTime to 1000, not 1500.
+  fire(controller, "pointermove", { clientX: 900, clientY: 570 });
+  assert.equal(state.volumeHoverTime, 1000);
+
+  // Moving to visual x=1275 (logical x=750 -> 1500 ms) hovers the 1500 ms bar.
+  fire(controller, "pointermove", { clientX: 1275, clientY: 570 });
+  assert.equal(state.volumeHoverTime, 1500);
+
+  // Moving to empty space at visual x=450 (logical x=200 -> 400 ms) clears volumeHoverTime.
+  fire(controller, "pointermove", { clientX: 450, clientY: 570 });
+  assert.equal(state.volumeHoverTime, null);
 });
