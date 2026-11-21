@@ -1018,7 +1018,7 @@ impl Application {
         app
     }
     /// Uses `local` as the default sounds folder when none is saved and the folder exists.
-    /// The folder is only read. Its non-commercial sounds are never bundled.
+    /// The folder is only read.
     fn use_local_default_samples(&mut self, local: &Path) {
         if self.preferences.default_samples.as_os_str().is_empty() && local.is_dir() {
             self.preferences.default_samples = local.to_path_buf();

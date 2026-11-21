@@ -2248,7 +2248,9 @@ pub(crate) mod tests {
         let map = open(&mut app, &f.map);
         app.seek(1000.0);
         app.place_sound_set_file(&map, &f.set).unwrap();
-        assert_eq!(editor_files(&app, &f), ["a.osu", "drum-hitclap2.wav"]);
+        // As with a chosen default sounds folder, the moment's hitnormal is kept as its own file.
+        assert_eq!(editor_files(&app, &f), ["a.osu", "drum-hitclap2.wav", "normal-hitnormal2.wav"]);
+        assert_eq!(bytes_of(&app, &f, "normal-hitnormal2.wav"), shipped("normal-hitnormal.wav"));
         assert!(!app.status.contains("saves as a mix"), "{}", app.status);
         assert_eq!(app.document().unwrap().composer.hitsounds().placements().len(), 1);
     }

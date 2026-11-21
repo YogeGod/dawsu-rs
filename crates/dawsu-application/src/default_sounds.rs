@@ -46,9 +46,9 @@ pub(crate) const DEFAULT_SOUNDS: [(&str, &[u8]); 21] = [
     sound!("drum-sliderwhistle.wav"),
 ];
 
-/// The temporary folder the shipped sounds are written to, so the audio code can read them like
-/// any other file. Its name carries a hash of the sounds, so another dawsu! version never reads
-/// this version's files.
+/// The folder in dawsu!'s own data folder (one per user, never a shared temporary folder) the
+/// shipped sounds are written to, so the audio code can read them like any other file. Its name
+/// carries a hash of the sounds, so another dawsu! version never reads this version's files.
 fn folder() -> &'static PathBuf {
     static FOLDER: OnceLock<PathBuf> = OnceLock::new();
     FOLDER.get_or_init(|| {
@@ -56,13 +56,13 @@ fn folder() -> &'static PathBuf {
             .iter()
             .flat_map(|(name, bytes)| name.as_bytes().iter().chain(bytes.iter()))
             .fold(0xcbf2_9ce4_8422_2325u64, |h, &b| (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3));
-        std::env::temp_dir().join(format!("dawsu-rs-default-sounds-{hash:016x}"))
+        crate::data_folder().join(format!("default-sounds-{hash:016x}"))
     })
 }
 
 /// The shipped sound named `file_name` (any letter case, such as `soft-hitclap.wav`), on
 /// disk. It is written again when the file is missing or changed. `None` when dawsu! ships no
-/// sound by that name, or the temporary folder can't be written.
+/// sound by that name, or the folder can't be written.
 pub(crate) fn path(file_name: &str) -> Option<PathBuf> {
     path_in(folder(), file_name)
 }
@@ -78,7 +78,10 @@ fn path_in(folder: &Path, file_name: &str) -> Option<PathBuf> {
     // Each writer has its own part file, so two tests or two dawsu! windows never mix bytes.
     static PART: AtomicU64 = AtomicU64::new(0);
     let part = folder.join(format!("{name}.{}-{}.part", std::process::id(), PART.fetch_add(1, Ordering::Relaxed)));
-    if std::fs::write(&part, bytes).is_err() {
+    // `create_new` never follows a link or reuses a file someone else left under that name.
+    let written = std::fs::OpenOptions::new().write(true).create_new(true).open(&part)
+        .and_then(|mut file| std::io::Write::write_all(&mut file, bytes));
+    if written.is_err() {
         let _ = std::fs::remove_file(&part);
         return None;
     }
@@ -136,7 +139,8 @@ mod tests {
             ("drum-sliderslide.wav", 103_760),
             ("drum-slidertick.wav", 68_364),
             ("drum-sliderwhistle.wav", 67_256),
-        ];        for ((name, bytes), (expected, size)) in DEFAULT_SOUNDS.iter().zip(upstream) {
+        ];
+        for ((name, bytes), (expected, size)) in DEFAULT_SOUNDS.iter().zip(upstream) {
             assert_eq!((*name, bytes.len()), (expected, size));
             assert_eq!(&bytes[..4], b"RIFF", "{name}");
             assert_eq!(&bytes[8..12], b"WAVE", "{name}");
