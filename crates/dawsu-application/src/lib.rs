@@ -1483,16 +1483,16 @@ impl Application {
                     recovery,
                 )?;
                 loaded.outgoing_keep = outgoing_mapset.map(|mapset| recorded_pending(project_root.as_deref(), &data_root, &mapset));
-                // Housekeeping of dawsu!'s data folder, off the editor thread.
-                pending::prune_kept_copies(&data_root, project_root.as_deref(), pending::PRUNE_MIN_AGE);
-                pending::cap_removed_samples(
-                    &data_root,
-                    std::time::Duration::from_secs(pending::REMOVED_SAMPLES_DAYS * 24 * 3600),
-                    pending::REMOVED_SAMPLES_BYTES,
-                );
                 Ok(loaded)
             })();
             let _ = send.send(JobResult::Open(outgoing, keep_settings, result));
+            // Housekeeping of dawsu!'s data folder, after the open so it never delays it.
+            pending::prune_kept_copies(&data_root, project_root.as_deref(), pending::PRUNE_MIN_AGE);
+            pending::cap_removed_samples(
+                &data_root,
+                std::time::Duration::from_secs(pending::REMOVED_SAMPLES_DAYS * 24 * 3600),
+                pending::REMOVED_SAMPLES_BYTES,
+            );
         });
     }
     pub fn cancel_job(&mut self) {
@@ -5220,6 +5220,19 @@ Title:");
         let names: Vec<_> = mapset(&folder);
         assert!(names.iter().all(|name| !name.contains("dawsu-moving")), "{names:?}");
         assert!(ledger(&app).is_empty(), "no longer dawsu!'s file");
+    }
+
+    #[test]
+    fn a_file_a_stopped_cleanup_left_aside_comes_back_under_its_name() {
+        let scratch = Scratch::new("sweep-stopped-move");
+        let (mut app, _, folder) = two_layers(&scratch, true);
+        use_layer_2(&mut app);
+        save_through_summary(&mut app, scratch.path("backups"));
+        std::fs::rename(folder.join("normal-hitnormal2.wav"), folder.join(".normal-hitnormal2.wav.dawsu-moving")).unwrap();
+        assert!(mapset(&folder).iter().any(|name| name.ends_with(".dawsu-moving")), "the listing shows dot-names");
+        app.close_document();
+        assert_eq!(std::fs::read(folder.join("normal-hitnormal2.wav")).unwrap(), TONE);
+        assert!(!mapset(&folder).iter().any(|name| name.ends_with(".dawsu-moving")));
     }
 
     #[test]

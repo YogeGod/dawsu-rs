@@ -1010,8 +1010,8 @@ impl PublishedMixes<'_> {
 
     fn rollback(&mut self) -> Vec<String> {
         let mut kept = Vec::new();
-        // Files that stay with dawsu!'s bytes because they couldn't be removed (a lock): their
-        // ledger entries stay, so a later cleanup tries again.
+        // Files that stay because they couldn't be removed (a lock), unless confirmed changed:
+        // their ledger entries stay, so a later cleanup tries again.
         let mut still_ours = Vec::new();
         for index in self.created.drain(..).rev() {
             let mix = &self.staged[index];
@@ -1027,9 +1027,9 @@ impl PublishedMixes<'_> {
                 && error.kind() != std::io::ErrorKind::NotFound
             {
                 kept.push(mix.path.display().to_string());
-                if fs::read(&mix.path).is_ok_and(|bytes| bytes == mix.wav)
-                    && let Some(name) = mix.path.file_name()
-                {
+                // Only a file confirmed changed leaves the ledger; one that can't be read stays listed.
+                let changed = fs::read(&mix.path).is_ok_and(|bytes| bytes != mix.wav);
+                if !changed && let Some(name) = mix.path.file_name() {
                     still_ours.push(name.to_string_lossy().into_owned());
                 }
             }

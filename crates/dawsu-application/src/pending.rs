@@ -453,9 +453,15 @@ impl Ledger {
         match serde_json::from_slice::<LedgerFile>(&bytes) {
             Ok(file) => file.files,
             Err(_) => {
+                // Linked under the first free name, never over an earlier aside, then removed.
                 let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis());
-                let aside = self.path.with_extension(format!("corrupt-{stamp}-{}.json", std::process::id()));
-                let _ = std::fs::rename(&self.path, aside);
+                let kept = (0..1000).any(|k| {
+                    let aside = self.path.with_extension(format!("corrupt-{stamp}-{}-{k}.json", std::process::id()));
+                    std::fs::hard_link(&self.path, aside).is_ok()
+                });
+                if kept {
+                    let _ = std::fs::remove_file(&self.path);
+                }
                 Vec::new()
             }
         }
@@ -549,7 +555,10 @@ pub(crate) fn prune_kept_copies(data_root: &Path, project_root: Option<&Path>, m
         return 0;
     }
     let mut named = String::new();
-    for folder in [project_root.to_path_buf(), data_root.join("recovery"), data_root.join("created-samples"), data_root.join("pending-names")] {
+    for folder in [
+        project_root.to_path_buf(), data_root.join("recovery"), data_root.join("created-samples"),
+        data_root.join("pending-names"), data_root.join("sound-set-snapshots"),
+    ] {
         for record in files_under(&folder) {
             // A record that can't be read could name anything: nothing is removed.
             let Ok(bytes) = std::fs::read(&record) else { return 0 };
