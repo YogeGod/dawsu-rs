@@ -195,6 +195,52 @@ pub fn lane_key(lane: &Lane) -> String {
     }
 }
 
+/// The lane a drum-map row's key names, as an index into `lanes`: the lane with that key, or else,
+/// for a key naming a file in the folder, the lane of the file osu! plays for that sample when the
+/// named file is not there. osu! looks a sample's name up in any case, with `/` or `\`
+/// (`find_case_insensitive`), as it is and then with `.wav`, `.mp3` and `.ogg` added, in that
+/// order (R12, `rules::beatmap_file`). So a row written for `soft-hitclap.wav` finds a pack saved
+/// as `Soft-HitClap.ogg`, and in a folder with `kick.mp3` and `kick.ogg` a row for `kick.wav`
+/// finds `kick.mp3`. A sample whose file is missing plays the skin's sound, so only its own key
+/// names its lane. `None` when no lane matches.
+pub fn lane_for_key(key: &str, lanes: &[Lane]) -> Option<usize> {
+    LaneKeys::new(lanes).find(key)
+}
+
+/// The lanes' keys and the names of their folder files, ready for many lookups.
+struct LaneKeys {
+    keys: Vec<String>,
+    files: Vec<Option<String>>,
+}
+
+impl LaneKeys {
+    fn new(lanes: &[Lane]) -> Self {
+        let file = |lane: &Lane| match &lane.source {
+            LaneSource::File(name) => Some(folder_name(name)),
+            LaneSource::Skin => None,
+        };
+        Self { keys: lanes.iter().map(lane_key).collect(), files: lanes.iter().map(file).collect() }
+    }
+
+    fn find(&self, key: &str) -> Option<usize> {
+        self.keys.iter().position(|k| k == key).or_else(|| {
+            let name = folder_name(key.strip_prefix("BeatmapFile|")?);
+            let sample = [".wav", ".mp3", ".ogg"].iter().find_map(|ending| name.strip_suffix(ending)).unwrap_or(&name);
+            // R12: the sample's name as it is, then with each ending, as `rules::beatmap_file` tries them.
+            ["", ".wav", ".mp3", ".ogg"].iter().find_map(|ending| {
+                let wanted = format!("{sample}{ending}");
+                self.files.iter().position(|f| f.as_deref() == Some(wanted.as_str()))
+            })
+        })
+    }
+}
+
+/// A file name as the folder lookup reads it (`find_case_insensitive`): in lower case, with `/`
+/// for `\`.
+fn folder_name(name: &str) -> String {
+    name.replace('\\', "/").to_lowercase()
+}
+
 /// The old app's `ValidKey`: a known source other than a storyboard file, a name inside the folder
 /// (`check_map_path`, which follows the old `MapFolder.IsInside`), and, when the name is a sample's
 /// name, one of the four hitsounds.
@@ -655,14 +701,15 @@ pub enum DrumViewRow<'a> {
 }
 
 /// The drum-map view's rows for `lanes`: every row of the map in its order, then every lane no
-/// row names, in the lanes' own order. Applying a drum map never adds, removes or renames a lane
-/// (invariant 9): the view's lanes are exactly `lanes`, and turning the map off (`None`) shows the
-/// lanes as they are. A lane several rows name (an alias) is listed here once per row; the editor's
-/// view (`apps/tauri/src/drum_view.rs`) shows it once, at the first such row, under the joined
-/// names ("Kick / Subkick") (Yoge, 2026-11-19).
+/// row names, in the lanes' own order. A row names its lane as [`lane_for_key`] finds it. Applying
+/// a drum map never adds, removes or renames a lane (invariant 9): the view's lanes are exactly
+/// `lanes`, and turning the map off (`None`) shows the lanes as they are. A lane several rows name
+/// (an alias) is listed here once per row; the editor's view (`apps/tauri/src/drum_view.rs`)
+/// shows it once, at the first such row, under the joined names ("Kick / Subkick") (Yoge,
+/// 2026-11-19).
 pub fn drum_rows<'a>(map: Option<&'a DrumMap>, lanes: &'a [Lane]) -> Vec<DrumViewRow<'a>> {
-    let keys: Vec<String> = lanes.iter().map(lane_key).collect();
-    let find = |key: &Option<String>| key.as_ref().and_then(|k| keys.iter().position(|l| l == k));
+    let keys = LaneKeys::new(lanes);
+    let find = |key: &Option<String>| key.as_deref().and_then(|k| keys.find(k));
     let rows = map.map_or(&[][..], |m| &m.rows);
     let mut named = vec![false; lanes.len()];
     let mut out: Vec<DrumViewRow<'a>> = rows
@@ -684,7 +731,8 @@ pub fn drum_rows<'a>(map: Option<&'a DrumMap>, lanes: &'a [Lane]) -> Vec<DrumVie
 /// The instrument note each lane renders with: a skin lane's sound starts on its General MIDI
 /// note (hitnormal 36, hitclap 38, hitwhistle 42, hitfinish 49), then the map's rows override
 /// it; the first row on a lane wins, so aliases play one sound, and a row with no note takes its
-/// lane out of the render (old `MainWindow.DrumVstNotes`).
+/// lane out of the render (old `MainWindow.DrumVstNotes`). A row names its lane as
+/// [`lane_for_key`] finds it.
 pub fn render_notes(map: Option<&DrumMap>, lanes: &[Lane]) -> BTreeMap<SampleIdentity, u8> {
     let mut notes = BTreeMap::new();
     for lane in lanes {
@@ -698,10 +746,10 @@ pub fn render_notes(map: Option<&DrumMap>, lanes: &[Lane]) -> BTreeMap<SampleIde
             notes.insert(lane.identity.clone(), note);
         }
     }
-    let keys: Vec<String> = lanes.iter().map(lane_key).collect();
+    let keys = LaneKeys::new(lanes);
     let mut assigned = HashSet::new();
     for row in map.map_or(&[][..], |m| &m.rows) {
-        let Some(i) = row.lane.as_ref().and_then(|k| keys.iter().position(|l| l == k)) else { continue };
+        let Some(i) = row.lane.as_deref().and_then(|k| keys.find(k)) else { continue };
         if !assigned.insert(i) {
             continue;
         }

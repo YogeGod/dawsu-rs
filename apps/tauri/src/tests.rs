@@ -498,6 +498,119 @@ fn drum_view_rows_follow_a_replaced_lane_and_leave_hidden_lanes_hidden() {
 }
 
 #[test]
+fn drum_view_rows_find_a_sample_under_another_spelling_and_keep_hidden_ones_hidden() {
+    use dawsu_hitsounding::drums::{DrumMap, DrumRow, write_dawsudrum};
+
+    let fixture = Fixture::new("drum-view-spelling");
+    let path = fixture.0.join("Hard.osu");
+    // Soft custom index 1: a clap and a whistle, from a pack saved with capital letters.
+    let bytes = b"osu file format v14\n\n[General]\nMode:0\n\n[TimingPoints]\n0,500,4,2,1,100,1,0\n\n[HitObjects]\n256,192,1000,1,8,0:0:0:0:\n256,192,2000,1,2,0:0:0:0:\n";
+    fs::write(&path, bytes).unwrap();
+    let wave = b"RIFF\x26\0\0\0WAVEfmt \x10\0\0\0\x01\0\x01\0\x80\xbb\0\0\0w\x01\0\x02\0\x10\0data\x02\0\0\0\x00\x40";
+    for name in ["Soft-HitClap.WAV", "Soft-HitWhistle.WAV"] {
+        fs::write(fixture.0.join(name), wave).unwrap();
+    }
+    // A drum map written for the pack saved as .ogg files.
+    let kit = DrumMap {
+        id: "bbbbbbbb-0000-4000-8000-000000000003".into(),
+        name: "Pack".into(),
+        rows: [("Snare", "BeatmapFile|soft-hitclap.ogg"), ("Melody", "BeatmapFile|soft-hitwhistle.ogg")]
+            .into_iter()
+            .enumerate()
+            .map(|(id, (name, lane))| DrumRow {
+                id: format!("aaaaaaaa-0000-4000-8000-{id:012}"), name: name.into(), lane: Some(lane.into()), slot: None, midi_note: None,
+            })
+            .collect(),
+        audio: Vec::new(),
+    };
+    let preset = fixture.0.join("Pack.dawsudrum");
+    fs::write(&preset, write_dawsudrum(&kit).unwrap()).unwrap();
+
+    let mut app = Application::headless();
+    open(&mut app, &path);
+    let map = app.document().unwrap().path.clone();
+    let mut drums = super::drum_view::DrumView::default();
+    drums.load(&app, &map, &preset).unwrap();
+    let read = |drums: &super::drum_view::DrumView, app: &Application| {
+        let mut shown = snapshot(app, true);
+        drums.decorate(app, &mut shown);
+        shown
+    };
+    let shown = read(&drums, &app);
+    let rows = shown["scene"]["drumRows"].as_array().unwrap();
+    for (name, file) in [("Snare", "Soft-HitClap.WAV"), ("Melody", "Soft-HitWhistle.WAV")] {
+        let row = rows.iter().find(|row| row["name"] == name).and_then(|row| row["row"].as_u64());
+        let row = row.unwrap_or_else(|| panic!("{name} shows no lane: {rows:?}"));
+        assert_eq!(shown["scene"]["lanes"][row as usize]["sample"], file);
+    }
+
+    // Hiding the whistle's lane hides its row too, whatever the spelling.
+    let lane = shown["scene"]["lanes"].as_array().unwrap().iter().position(|lane| lane["sample"] == "Soft-HitWhistle.WAV").unwrap();
+    let whistle = app.document().unwrap().composer.lanes[lane].clone();
+    let revision = app.document().unwrap().composer.history.version();
+    app.delete_lane(&map, &whistle, revision).unwrap();
+    let rows = read(&drums, &app)["scene"]["drumRows"].as_array().unwrap().clone();
+    assert!(rows.iter().all(|row| row["name"] != "Melody"), "{rows:?}");
+    assert!(rows.iter().any(|row| row["name"] == "Snare" && !row["row"].is_null()), "{rows:?}");
+    assert_eq!(fs::read(&path).unwrap(), bytes);
+}
+
+#[test]
+fn a_drum_view_row_on_a_hidden_lane_never_names_another_spelling_of_its_file() {
+    use dawsu_hitsounding::drums::{DrumMap, DrumRow, write_dawsudrum};
+
+    let fixture = Fixture::new("drum-view-hidden-spelling");
+    let path = fixture.0.join("Hard.osu");
+    // Two hits name one kick saved twice, as kick.wav and kick.ogg.
+    let bytes = b"osu file format v14\n\n[General]\nMode:0\n\n[TimingPoints]\n0,500,4,2,1,100,1,0\n\n[HitObjects]\n256,192,1000,1,0,0:0:0:0:kick.wav\n256,192,2000,1,0,0:0:0:0:kick.ogg\n";
+    fs::write(&path, bytes).unwrap();
+    let wave = b"RIFF\x26\0\0\0WAVEfmt \x10\0\0\0\x01\0\x01\0\x80\xbb\0\0\0w\x01\0\x02\0\x10\0data\x02\0\0\0\x00\x40";
+    for name in ["kick.wav", "kick.ogg"] {
+        fs::write(fixture.0.join(name), wave).unwrap();
+    }
+    let kit = DrumMap {
+        id: "bbbbbbbb-0000-4000-8000-000000000004".into(),
+        name: "Kick".into(),
+        rows: vec![DrumRow {
+            id: "aaaaaaaa-0000-4000-8000-000000000000".into(), name: "Kick".into(), lane: Some("BeatmapFile|kick.wav".into()), slot: None, midi_note: Some(36),
+        }],
+        audio: Vec::new(),
+    };
+    let preset = fixture.0.join("Kick.dawsudrum");
+    fs::write(&preset, write_dawsudrum(&kit).unwrap()).unwrap();
+
+    let mut app = Application::headless();
+    open(&mut app, &path);
+    let map = app.document().unwrap().path.clone();
+    let mut drums = super::drum_view::DrumView::default();
+    drums.load(&app, &map, &preset).unwrap();
+    let read = |drums: &super::drum_view::DrumView, app: &Application| {
+        let mut shown = snapshot(app, true);
+        drums.decorate(app, &mut shown);
+        shown
+    };
+    let lane = |shown: &serde_json::Value, file: &str| {
+        let lanes = shown["scene"]["lanes"].as_array().unwrap();
+        lanes.iter().position(|lane| lane["sample"] == file).unwrap_or_else(|| panic!("no lane plays {file}: {lanes:?}"))
+    };
+    let shown = read(&drums, &app);
+    let rows = shown["scene"]["drumRows"].as_array().unwrap();
+    let wav = lane(&shown, "kick.wav");
+    assert!(rows.iter().any(|row| row["name"] == "Kick" && row["row"] == wav), "the row names its own file: {rows:?}");
+
+    // Hiding kick.wav's lane hides the row; kick.ogg stays a lane with no name.
+    let kick = app.document().unwrap().composer.lanes[wav].clone();
+    let revision = app.document().unwrap().composer.history.version();
+    app.delete_lane(&map, &kick, revision).unwrap();
+    let shown = read(&drums, &app);
+    let rows = shown["scene"]["drumRows"].as_array().unwrap();
+    let ogg = lane(&shown, "kick.ogg");
+    assert!(rows.iter().all(|row| row["name"] != "Kick"), "{rows:?}");
+    assert!(rows.iter().any(|row| row["row"] == ogg && row["name"].is_null()), "{rows:?}");
+    assert_eq!(fs::read(&path).unwrap(), bytes);
+}
+
+#[test]
 fn lane_actions_hide_restore_and_undo_without_removing_the_sample() {
     let fixture = Fixture::new("lane-actions");
     let map_path = fixture.0.join("Lane.osu");

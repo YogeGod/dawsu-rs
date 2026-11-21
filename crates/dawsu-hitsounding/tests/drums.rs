@@ -407,17 +407,23 @@ fn check_view(map: &DrumMap, lanes: &[Lane]) {
         assert!(shown.iter().any(|l| *l == lane), "every lane stays reachable");
     }
     assert!(shown.iter().all(|l| lanes.contains(l)), "no lane is made up");
-    let keys: Vec<String> = lanes.iter().map(lane_key).collect();
+    let named = |r: &DrumRow| r.lane.as_deref().and_then(|k| lane_for_key(k, lanes));
     for (r, v) in map.rows.iter().zip(view.iter()) {
         match v {
-            DrumViewRow::Instrument { row, lane } => assert!(std::ptr::eq(*row, r) && r.lane.as_deref() == Some(lane_key(lane).as_str())),
-            DrumViewRow::Unassigned(row) => assert!(std::ptr::eq(*row, r) && !r.lane.as_ref().is_some_and(|k| keys.contains(k))),
+            DrumViewRow::Instrument { row, lane } => assert!(std::ptr::eq(*row, r) && named(r).is_some_and(|i| std::ptr::eq(&lanes[i], *lane))),
+            DrumViewRow::Unassigned(row) => assert!(std::ptr::eq(*row, r) && named(r).is_none()),
             DrumViewRow::Other(_) => panic!("rows come first, one each"),
         }
     }
     let others: Vec<&Lane> = view[map.rows.len()..].iter().map(|v| match v { DrumViewRow::Other(l) => *l, _ => panic!("only other lanes after the rows") }).collect();
-    let unnamed: Vec<&Lane> = lanes.iter().filter(|l| !map.rows.iter().any(|r| r.lane.as_deref() == Some(lane_key(l).as_str()))).collect();
+    let unnamed: Vec<&Lane> = lanes.iter().enumerate().filter(|(i, _)| !map.rows.iter().any(|r| named(r) == Some(*i))).map(|(_, l)| l).collect();
     assert_eq!(others, unnamed, "every other lane once, in its own order");
+}
+
+/// A lane for a file in the folder, read as the decompiler reads its name.
+fn file(name: &str) -> Lane {
+    let identity = dawsu_hitsounding::rules::read_sample_file_name(name).unwrap_or_else(|| SampleIdentity::File(name.into()));
+    Lane { identity, source: LaneSource::File(name.into()) }
 }
 
 #[test]
@@ -507,6 +513,83 @@ fn render_plan_reuses_note_velocity_and_preserves_unmapped_hits() {
         k
     });
 }
+
+// ---------------------------------------------------------------- a sample under another spelling (R12)
+
+#[test]
+fn a_row_finds_its_sample_saved_as_ogg_or_mp3_or_with_capital_letters() {
+    let lanes = vec![skin(SampleSet::Soft, Hitsound::Clap, 0), file("soft-hitclap.ogg"), file("Drum-HitNormal.WAV"), file("normal-hitfinish2.mp3"), file("Boom.OGG")];
+    let m = map(vec![
+        row(1, "Snare", Some("BeatmapFile|soft-hitclap.wav"), Some(38)),
+        row(2, "Kick", Some("BeatmapFile|drum-hitnormal.wav"), Some(36)),
+        row(3, "Crash", Some("BeatmapFile|normal-hitfinish2.wav"), Some(57)),
+        row(4, "Boom", Some("BeatmapFile|boom.wav"), Some(35)),
+    ]);
+    let view = drum_rows(Some(&m), &lanes);
+    for (i, lane) in [1, 2, 3, 4].into_iter().enumerate() {
+        assert!(matches!(view[i], DrumViewRow::Instrument { lane: l, .. } if std::ptr::eq(l, &lanes[lane])), "row {i}: {view:?}");
+    }
+    assert!(matches!(view[4], DrumViewRow::Other(l) if std::ptr::eq(l, &lanes[0])), "the skin's clap is not the file's");
+    check_view(&m, &lanes);
+    let notes = render_notes(Some(&m), &lanes);
+    assert_eq!([1, 2, 3, 4].map(|i| notes[&lanes[i].identity]), [38, 36, 57, 35]);
+    assert_eq!(lane_for_key("BeatmapFile|SOFT-HITCLAP.mp3", &lanes), Some(1));
+    assert_eq!(lane_for_key("BeatmapFile|soft-hitclap", &lanes), Some(1), "a name without its ending is looked for with each ending");
+}
+
+#[test]
+fn an_exact_name_wins_and_other_spellings_never_cross_a_sample_or_an_index() {
+    let gone = Lane { identity: SampleIdentity::Standard { set: SampleSet::Soft, sound: Sound::Hit(Hitsound::Clap), index: CustomIndex::new(1) }, source: LaneSource::Skin };
+    let lanes = vec![skin(SampleSet::Soft, Hitsound::Clap, 0), gone, file("soft-hitnormal.wav"), file("kick.ogg"), file("kick.wav"), file("soft-hitwhistle2.ogg"), file("sb/kick.ogg")];
+    assert_eq!(lane_key(&lanes[1]), "Skin|soft-hitclap1");
+    for (key, lane, why) in [
+        ("Skin|soft-hitclap", Some(0), "the skin's sound, as before"),
+        ("Skin|Soft-HitClap", None, "a skin key is matched exactly"),
+        ("Skin|soft-hitnormal", None, "a skin key never names a file"),
+        ("BeatmapFile|soft-hitclap.wav", None, "a sample whose file is missing plays the skin's sound: no pack row names it"),
+        ("Skin|soft-hitclap1", Some(1), "its own key still names it"),
+        ("BeatmapFile|soft-hitnormal.ogg", Some(2), "another ending"),
+        ("BeatmapFile|soft-hitnormal2.wav", None, "another index"),
+        ("BeatmapFile|normal-hitnormal.wav", None, "another set"),
+        ("BeatmapFile|soft-hitwhistle2.wav", Some(5), "a numbered sample"),
+        ("BeatmapFile|soft-hitwhistle.ogg", None, "index 1 is not index 2"),
+        ("BeatmapFile|kick.ogg", Some(3), "the exact name, before the .wav osu! tries first"),
+        ("BeatmapFile|KICK.mp3", Some(4), "otherwise the file osu! plays: .wav before .ogg, whatever the lanes' order"),
+        ("BeatmapFile|kick", Some(4), "a name without its ending"),
+        ("BeatmapFile|SB\\Kick.wav", Some(6), "a file in a subfolder, with either slash"),
+        ("BeatmapFile|other/kick.wav", None, "a file in another folder"),
+    ] {
+        assert_eq!(lane_for_key(key, &lanes), lane, "{key}: {why}");
+    }
+}
+
+#[test]
+fn another_spelling_names_the_file_osu_plays_for_the_sample() {
+    // The decompiler finds a hit's file as osu! does (R12): the row for the sample names the lane
+    // of the same file, whichever order the lanes come in.
+    let text = b"osu file format v14\n\n[TimingPoints]\n0,500,4,2,1,100,1,0\n\n[HitObjects]\n256,192,1000,1,8,0:0:0:0:\n";
+    let clap = SampleIdentity::Standard { set: SampleSet::Soft, sound: Sound::Hit(Hitsound::Clap), index: CustomIndex::new(1) };
+    for folder in [
+        &["soft-hitclap.ogg", "Soft-HitClap.mp3"][..],
+        &["soft-hitclap.ogg", "soft-hitclap.mp3", "SOFT-HITCLAP.WAV"],
+        &["soft-hitclap.ogg", "soft-hitclap"],
+        &["Soft-HitClap.OGG", "normal-hitclap.wav", "soft-hitclap2.wav"],
+        &["soft-hitclap.wav.ogg", "soft-hitclap2.wav"],
+    ] {
+        let listing: Vec<String> = folder.iter().map(|f| f.to_string()).collect();
+        let h = match decompile(&OsuFile::read(text.to_vec()).file, &listing, &|| false, &mut |_, _| {}) {
+            Decompiled::Done(h) => h,
+            other => panic!("{other:?}"),
+        };
+        let played = h.lanes().iter().find(|l| l.identity == clap).map(|l| l.source.clone());
+        let played = played.unwrap_or_else(|| panic!("{folder:?}: no lane for the clap: {:?}", h.lanes()));
+        for lanes in [folder.iter().map(|f| file(f)).collect::<Vec<_>>(), folder.iter().rev().map(|f| file(f)).collect()] {
+            let found = lane_for_key("BeatmapFile|soft-hitclap.wav", &lanes).map(|i| lanes[i].source.clone());
+            assert_eq!(found.unwrap_or(LaneSource::Skin), played, "{folder:?}: {lanes:?}");
+        }
+    }
+}
+
 /// Timing (set `DAWSU_DRUM_TIME`): a portable map at the audio limit, two 32 MiB samples, about
 /// 85 MB of text.
 #[test]
