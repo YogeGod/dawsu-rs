@@ -2,12 +2,14 @@
   import { untrack } from "svelte";
   import { bridge } from "../lib/bridge.svelte.js";
   import { invoke } from "../lib/ipc.js";
+  import * as argon from "../lib/argon.js";
   import {
-    AFTER_HIT, PLAYFIELD, approach, clamp01, ball, clock, comboColour, fit, opacity, pathLength, pathTo, reverseArrow, snake, visible,
+    AFTER_HIT, PLAYFIELD, approach, arrowsShown, ballAt, bodyOpacity, clamp01, clock, comboColour, fit, pathLength, pathTo,
+    pieceOpacity, snake, ticksShown, visible,
   } from "../lib/preview.js";
   import InspectorHead from "./InspectorHead.svelte";
 
-  // The map preview (step 1): osu!'s playfield at the playhead, in plain shapes. Shown from
+  // The map preview: osu!'s playfield at the playhead, in lazer's default (Argon) look. Shown from
   // View › Map preview; on or off is kept in this window only.
   let open = $state(true);
   let canvas = $state(null);
@@ -86,140 +88,116 @@
     const place = fit(width, height);
     g.translate(place.x, place.y);
     g.scale(place.scale, place.scale);
-    // The playfield's faint border.
-    g.strokeStyle = "rgba(255,255,255,0.12)";
+    // The playfield, a shade lighter than the box, with a faint border.
+    g.fillStyle = "#121218";
+    g.fillRect(0, 0, PLAYFIELD.width, PLAYFIELD.height);
+    g.strokeStyle = "rgba(255,255,255,0.14)";
     g.lineWidth = 1 / Math.max(place.scale, 0.01);
     g.strokeRect(0, 0, PLAYFIELD.width, PLAYFIELD.height);
     if (!map?.objects) return;
-    const r = map.radius;
-    g.font = `600 ${Math.round(r * 0.8)}px system-ui, sans-serif`;
-    g.textAlign = "center";
-    g.textBaseline = "middle";
-    for (const object of visible(map, time)) {
-      const alpha = opacity(map, object, time);
+    const unit = map.radius / (argon.DIAMETER / 2);
+    const shown = visible(map, time);
+    for (const object of shown) {
       const colour = comboColour(map, object);
-      g.globalAlpha = alpha;
-      if (object.kind === "spinner") drawSpinner(g, object, time);
-      else if (object.kind === "slider") drawSlider(g, map, object, time, r, colour, alpha);
-      else drawCircle(g, object.x, object.y, r, colour, object.combo, time >= object.time);
+      if (object.kind === "spinner") drawSpinner(g, map, object, time);
+      else if (object.kind === "slider") drawSlider(g, map, object, time, unit, colour);
+      else drawCircle(g, map, object, time, unit, colour);
+    }
+    // Approach circles over everything, as lazer proxies them above the objects.
+    for (const object of shown) {
       const ring = approach(map, object, time);
-      if (ring) {
-        g.globalAlpha = ring.alpha;
-        g.strokeStyle = colour;
-        g.lineWidth = r * 0.08;
-        g.beginPath();
-        g.arc(object.x, object.y, r * ring.scale, 0, Math.PI * 2);
-        g.stroke();
-      }
+      if (!ring) continue;
+      g.globalAlpha = ring.alpha;
+      at(g, object, unit, () => argon.approachCircle(g, comboColour(map, object), ring.scale));
     }
     g.globalAlpha = 1;
   }
 
-  // A plain circle: combo colour inside a white ring, with its combo number. After its time it
-  // turns white, as lazer's editor shows a hit circle that has been passed.
-  function drawCircle(g, x, y, r, colour, number, hit) {
-    g.beginPath();
-    g.arc(x, y, r * 0.94, 0, Math.PI * 2);
-    g.fillStyle = hit ? "#ffffff" : colour;
-    g.fill();
-    g.lineWidth = r * 0.12;
-    g.strokeStyle = "#ffffff";
-    g.stroke();
-    if (number && !hit) {
-      g.fillStyle = "#ffffff";
-      g.fillText(String(number), x, y + r * 0.04);
-    }
-  }
-
-  // A slider body drawn at full strength on its own layer, then laid on at the slider's opacity,
-  // so the white border does not show through the fill while it fades.
-  const layer = globalThis.document?.createElement("canvas");
-
-  function drawSlider(g, map, object, time, r, colour, alpha) {
-    const points = pathTo(object, snake(map, object, time) * pathLength(object));
-    const body = target => {
-      const trace = width => {
-        target.beginPath();
-        points.forEach((point, index) => (index ? target.lineTo(point.x, point.y) : target.moveTo(point.x, point.y)));
-        target.lineWidth = width;
-        target.lineCap = "round";
-        target.lineJoin = "round";
-        target.stroke();
-      };
-      // A white border round a darker fill of the combo colour.
-      target.strokeStyle = "#ffffff";
-      trace(r * 2);
-      target.strokeStyle = shade(colour, 0.35);
-      trace(r * 1.76);
-    };
-    const l = alpha < 1 && layer?.getContext("2d");
-    if (l) {
-      if (layer.width !== g.canvas.width || layer.height !== g.canvas.height) {
-        layer.width = g.canvas.width;
-        layer.height = g.canvas.height;
-      }
-      l.setTransform(1, 0, 0, 1, 0, 0);
-      l.clearRect(0, 0, layer.width, layer.height);
-      l.setTransform(g.getTransform());
-      body(l);
-      g.save();
-      g.setTransform(1, 0, 0, 1, 0, 0);
-      g.drawImage(layer, 0, 0);
-      g.restore();
-    } else {
-      body(g);
-    }
-    const arrow = reverseArrow(object, time);
-    if (arrow) drawArrow(g, arrow, r);
-    // The head stays until its time, then fades out like a circle over AFTER_HIT.
-    if (time < object.time + AFTER_HIT) {
-      if (time >= object.time) g.globalAlpha = alpha * clamp01(1 - (time - object.time) / AFTER_HIT);
-      drawCircle(g, object.x, object.y, r, colour, object.combo, time >= object.time);
-      g.globalAlpha = alpha;
-    }
-    const at = ball(object, time);
-    if (at) {
-      g.beginPath();
-      g.arc(at.x, at.y, r * 0.8, 0, Math.PI * 2);
-      g.fillStyle = "#ffffff";
-      g.fill();
-    }
-  }
-
-  function drawArrow(g, { x, y, angle }, r) {
+  // Draws in lazer's object units (a circle is 128 across) centred on a playfield point.
+  function at(g, point, unit, draw, size = 1) {
     g.save();
-    g.translate(x, y);
-    g.rotate(angle);
-    g.beginPath();
-    g.moveTo(r * 0.45, 0);
-    g.lineTo(-r * 0.25, -r * 0.4);
-    g.lineTo(-r * 0.25, r * 0.4);
-    g.closePath();
-    g.fillStyle = "#ffffff";
-    g.fill();
+    g.translate(point.x, point.y);
+    g.scale(unit * size, unit * size);
+    draw();
     g.restore();
   }
 
-  // A plain spinner in the playfield's centre: a ring, and an arc for the time left.
-  function drawSpinner(g, object, time) {
-    const [x, y, size] = [PLAYFIELD.width / 2, PLAYFIELD.height / 2, 150];
-    g.lineWidth = 6;
-    g.strokeStyle = "rgba(255,255,255,0.35)";
-    g.beginPath();
-    g.arc(x, y, size, 0, Math.PI * 2);
-    g.stroke();
-    const left = time < object.time ? 1 : Math.max(0, (object.end - time) / Math.max(1, object.end - object.time));
-    g.strokeStyle = "#ffffff";
-    g.beginPath();
-    g.arc(x, y, size, -Math.PI / 2, -Math.PI / 2 + left * Math.PI * 2);
-    g.stroke();
+  // A circle or a slider head: the combo colour until its time, then white, fading over 700 ms.
+  function drawPiece(g, map, object, time, unit, colour, outerFill) {
+    const alpha = pieceOpacity(map, object, time);
+    if (alpha <= 0) return;
+    g.globalAlpha = alpha;
+    const passed = time > object.time;
+    at(g, object, unit, () => argon.circle(g, passed ? "#ffffff" : colour, object.combo, outerFill));
   }
 
-  // A hex colour darkened to `amount` of its brightness.
-  function shade(hex, amount) {
-    const value = Number.parseInt(hex.slice(1), 16);
-    const channel = shift => Math.round(((value >> shift) & 255) * amount);
-    return `rgb(${channel(16)},${channel(8)},${channel(0)})`;
+  function drawCircle(g, map, object, time, unit, colour) {
+    drawPiece(g, map, object, time, unit, colour, true);
+    if (time < object.time) return;
+    g.globalAlpha = 1;
+    at(g, object, unit, () => argon.hitMarker(g, colour, (time - object.time) / AFTER_HIT));
+  }
+
+  // A slider body drawn at full strength on its own layer, then laid on at the body's opacity,
+  // so its border does not show through the fill while it fades.
+  const layer = globalThis.document?.createElement("canvas");
+
+  function drawSlider(g, map, object, time, unit, colour) {
+    const alpha = bodyOpacity(map, object, time);
+    const snaked = snake(map, object, time);
+    if (alpha > 0 && snaked > 0) {
+      const points = pathTo(object, snaked * pathLength(object));
+      const l = alpha < 1 && layer?.getContext("2d");
+      if (l) {
+        if (layer.width !== g.canvas.width || layer.height !== g.canvas.height) {
+          layer.width = g.canvas.width;
+          layer.height = g.canvas.height;
+        }
+        l.setTransform(1, 0, 0, 1, 0, 0);
+        l.clearRect(0, 0, layer.width, layer.height);
+        l.setTransform(g.getTransform());
+        argon.sliderBody(l, points, unit, colour);
+        g.save();
+        g.globalAlpha = alpha;
+        g.setTransform(1, 0, 0, 1, 0, 0);
+        g.drawImage(layer, 0, 0);
+        g.restore();
+      } else {
+        g.globalAlpha = alpha;
+        argon.sliderBody(g, points, unit, colour);
+      }
+    }
+    for (const tick of ticksShown(map, object, time)) {
+      g.globalAlpha = clamp01(tick.since / 150);
+      at(g, tick, unit, () => argon.tick(g, colour), 0.5 + 0.5 * argon.outQuint(tick.since / 600));
+    }
+    for (const arrow of arrowsShown(map, object, time)) {
+      g.globalAlpha = clamp01(arrow.since / 150);
+      at(g, arrow, unit, () => {
+        g.rotate(arrow.angle);
+        argon.reverseArrow(g, colour, arrow.since);
+      });
+    }
+    drawPiece(g, map, object, time, unit, colour, false);
+    if (time >= object.time && time <= object.end) {
+      const ballPlace = ballAt(object, time);
+      const ahead = ballAt(object, time + 1);
+      const behind = ballAt(object, time - 1);
+      g.globalAlpha = clamp01((time - object.time) / 50);
+      at(g, ballPlace, unit, () => argon.sliderBall(g, colour, Math.atan2(ahead.y - behind.y, ahead.x - behind.x)));
+    }
+  }
+
+  // Argon's spinner disc in the playfield's centre, growing in over the approach time.
+  function drawSpinner(g, map, object, time) {
+    const alpha = bodyOpacity(map, object, time);
+    const radius = PLAYFIELD.height * 0.5 * argon.spinnerGrowth(time - (object.time - map.preempt), map.preempt);
+    if (alpha <= 0 || radius < 1) return;
+    g.globalAlpha = alpha;
+    g.save();
+    g.translate(PLAYFIELD.width / 2, PLAYFIELD.height / 2);
+    argon.spinner(g, radius);
+    g.restore();
   }
 </script>
 

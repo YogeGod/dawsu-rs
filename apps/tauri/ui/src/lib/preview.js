@@ -145,3 +145,65 @@ export function reverseArrow(object, time) {
 
 // A combo colour from the model's list, with a grey for a missing one.
 export const comboColour = (model, object) => model.colours?.[object.colour] ?? "#a0a0a0";
+
+// The ball's place at any time in the slider (clamped to its start and end).
+export function ballAt(object, time) {
+  const { along } = sliderProgress(object, Math.min(object.end, Math.max(object.time, time)));
+  return pointAt(object, along * pathLength(object));
+}
+
+// How long a span lasts.
+const spanDuration = object => (object.end - object.time) / Math.max(1, object.spans ?? 1);
+
+// A circle piece's opacity: its fade-in before `hitTime`, then 1 → 0 over AFTER_HIT, as lazer's
+// editor shows a passed object (DrawableHitCircle.cs:334-351).
+export function pieceOpacity(model, object, time, hitTime = object.time) {
+  if (time <= hitTime) return clamp01((time - (object.time - model.preempt)) / Math.max(1, model.fadeIn));
+  return clamp01(1 - (time - hitTime) / AFTER_HIT);
+}
+
+// A slider body's or spinner's opacity: its fade-in, then 1 → 0 over SPINNER_FADE after its end.
+export function bodyOpacity(model, object, time) {
+  if (time > object.end) return clamp01(1 - (time - object.end) / SPINNER_FADE);
+  return clamp01((time - (object.time - model.preempt)) / Math.max(1, model.fadeIn));
+}
+
+// The ticks still to come at `time`: each shows from partway through its span (SliderTick.cs:22-31:
+// half the time since the span began, plus 200 ms on later spans or 0.66 × preempt on the first),
+// popping in over 150 ms and growing from half size over 600 ms. `since` is the time since it showed.
+export function ticksShown(model, object, time) {
+  const duration = spanDuration(object);
+  if (!(duration > 0)) return [];
+  const shown = [];
+  for (const at of object.ticks ?? []) {
+    if (at <= time) continue;
+    const span = Math.min((object.spans ?? 1) - 1, Math.max(0, Math.floor((at - object.time) / duration)));
+    const spanStart = object.time + span * duration;
+    const appears = at - ((at - spanStart) / 2 + (span > 0 ? 200 : model.preempt * 0.66));
+    if (time < appears) continue;
+    shown.push({ ...ballAt(object, at), since: time - appears });
+  }
+  return shown;
+}
+
+// The reverse arrows still to come at `time`, one per turn: the first shows once the body has snaked
+// in (preempt / 3), later ones two spans ahead (DrawableOsuHitObject.cs:155-171, SliderEndCircle.cs:38-43).
+// `angle` (radians) points back into the path; `since` is the time since it showed.
+export function arrowsShown(model, object, time) {
+  const spans = object.spans ?? 1;
+  const path = object.path ?? [];
+  if (spans < 2 || path.length < 4) return [];
+  const duration = spanDuration(object);
+  const length = pathLength(object);
+  const shown = [];
+  for (let node = spans - 1; node >= 1; node--) {
+    const nodeTime = object.time + node * duration;
+    const appears = node === 1 ? object.time - model.preempt + model.preempt / 3 : nodeTime - duration * 2;
+    if (time < appears || time >= nodeTime) continue;
+    const atEnd = node % 2 === 1;
+    const at = pointAt(object, atEnd ? length : 0);
+    const towards = pointAt(object, atEnd ? Math.max(0, length - 4) : Math.min(length, 4));
+    shown.push({ ...at, angle: Math.atan2(towards.y - at.y, towards.x - at.x), since: time - appears });
+  }
+  return shown;
+}

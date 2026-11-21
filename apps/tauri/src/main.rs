@@ -1136,7 +1136,9 @@ fn gameplay_overlay(document: &dawsu_application::Document) -> Value {
 /// `[Colours]` by the index with offsets (`LegacyBeatmapSkin.cs:90`), or else the default skin's four
 /// by the plain index (`SkinConfiguration.cs:46-52`). `objects` is `[number, colour]` per object in
 /// file order, the order of the gameplay overlay's object indices.
-fn combo_overlay(document: &dawsu_application::Document) -> Value {
+/// Each object's combo number, combo index and combo index with offsets (lazer's
+/// `IHasComboInformation.UpdateComboInformation`), in file order, and the map's own combo colours.
+fn combo_info(document: &dawsu_application::Document) -> (Vec<(u32, usize, usize)>, Vec<String>) {
     let objects = document.file.hit_objects();
     let map_colours: Vec<String> = document.file.section_values("Colours").into_iter()
         .filter(|(key, _)| key.strip_prefix("Combo").and_then(|n| n.parse::<u8>().ok()).is_some_and(|n| (1..=8).contains(&n)))
@@ -1160,7 +1162,7 @@ fn combo_overlay(document: &dawsu_application::Document) -> Value {
     }
     let mut order: Vec<usize> = (0..objects.len()).collect();
     order.sort_by(|&a, &b| objects[a].time().total_cmp(&objects[b].time()));
-    let mut combos = vec![(0u32, 0usize); objects.len()];
+    let mut combos = vec![(0u32, 0usize, 0usize); objects.len()];
     let (mut combo, mut with_offsets, mut number) = (0usize, 0usize, 0u32);
     let mut last: Option<usize> = None;
     for &index in &order {
@@ -1171,15 +1173,24 @@ fn combo_overlay(document: &dawsu_application::Document) -> Value {
             with_offsets += offset as usize + 1;
         }
         number += 1;
-        combos[index] = (number, if map_colours.is_empty() { combo % 4 } else { with_offsets % map_colours.len() });
+        combos[index] = (number, combo, with_offsets);
         last = Some(index);
     }
+    (combos, map_colours)
+}
+
+/// The timeline's combo overlay: `colours`, and `objects` as `[number, colour]` per object (see `combo_info`).
+fn combo_overlay(document: &dawsu_application::Document) -> Value {
+    let (combos, map_colours) = combo_info(document);
+    let objects: Vec<(u32, usize)> = combos.iter().map(|&(number, combo, with_offsets)| {
+        (number, if map_colours.is_empty() { combo % 4 } else { with_offsets % map_colours.len() })
+    }).collect();
     let colours = if map_colours.is_empty() {
         ["#ffc000", "#00ca00", "#127cff", "#f21839"].map(String::from).to_vec()
     } else {
         map_colours
     };
-    json!({ "colours": colours, "objects": combos })
+    json!({ "colours": colours, "objects": objects })
 }
 
 /// What the map preview draws for the open difficulty (`map`): circle size, approach time and each
@@ -1196,14 +1207,24 @@ fn map_preview(app: &Application, map: &Path) -> Result<Value, String> {
     let Some(field) = dawsu_hitsounding::playfield::playfield(&document.file) else {
         return Ok(json!({ "path": document.path, "key": key, "unsupported": true }));
     };
-    let combos = combo_overlay(document);
+    // With no colours of its own a map takes lazer's default skin's (Argon, ArgonSkin.cs:51-71) by the
+    // plain combo index; its own go by the index with offsets, as in the timeline.
+    let (combos, map_colours) = combo_info(document);
+    let colours: Vec<String> = if map_colours.is_empty() {
+        ["#f17400", "#00f135", "#0052f1", "#f10000", "#e8eb00", "#5c00f1"].map(String::from).to_vec()
+    } else {
+        map_colours.clone()
+    };
+    let colour_of = |(_, combo, with_offsets): (u32, usize, usize)| {
+        if map_colours.is_empty() { combo % colours.len() } else { with_offsets % colours.len() }
+    };
     let file_index: std::collections::HashMap<_, _> =
         document.file.hit_objects().iter().enumerate().map(|(index, object)| (object.line(), index)).collect();
     let round = |value: f32| (f64::from(value) * 100.0).round() / 100.0;
     let objects: Vec<Value> = field.objects.iter().map(|object| {
         let offset = object.stack_offset(field.scale);
         let at = object.position + offset;
-        let combo = file_index.get(&object.line).and_then(|&index| combos["objects"].get(index)).cloned().unwrap_or(json!([0, 0]));
+        let combo = file_index.get(&object.line).and_then(|&index| combos.get(index).copied()).unwrap_or((0, 0, 0));
         let kind = match object.kind {
             dawsu_hitsounding::rules::Kind::Circle => "circle",
             dawsu_hitsounding::rules::Kind::Slider => "slider",
@@ -1211,19 +1232,20 @@ fn map_preview(app: &Application, map: &Path) -> Result<Value, String> {
         };
         let mut value = json!({
             "kind": kind, "time": object.start_time, "end": object.end_time,
-            "x": round(at.x), "y": round(at.y), "combo": combo[0], "colour": combo[1],
+            "x": round(at.x), "y": round(at.y), "combo": combo.0, "colour": colour_of(combo),
         });
         if let Some(path) = &object.path {
             let points: Vec<f64> = path.points.iter().flat_map(|point| [round(at.x + point.x), round(at.y + point.y)]).collect();
             value["path"] = json!(points);
             value["lengths"] = json!(path.cumulative.iter().map(|length| (length * 100.0).round() / 100.0).collect::<Vec<_>>());
             value["spans"] = json!(object.span_count);
+            value["ticks"] = json!(object.ticks);
         }
         value
     }).collect();
     Ok(json!({
         "path": document.path, "key": key, "radius": field.radius, "preempt": field.preempt, "fadeIn": field.fade_in,
-        "colours": combos["colours"], "objects": objects,
+        "colours": colours, "objects": objects,
     }))
 }
 

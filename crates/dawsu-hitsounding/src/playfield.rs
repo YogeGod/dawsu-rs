@@ -53,6 +53,8 @@ pub struct PlayfieldObject {
     pub span_count: usize,
     /// A slider's path relative to its position; empty otherwise.
     pub path: Option<SliderGeometry>,
+    /// A slider's tick times (the osu! ruleset's ticks, `SliderEventGenerator`); empty otherwise.
+    pub ticks: Vec<f64>,
 }
 
 impl PlayfieldObject {
@@ -122,6 +124,9 @@ pub fn playfield(file: &OsuFile) -> Option<Playfield> {
                 position,
                 stack_height: 0,
                 span_count,
+                ticks: answer.slider.as_ref().map_or_else(Vec::new, |slider| {
+                    slider.parts.iter().filter(|part| part.kind == rules::PartKind::Tick).map(|part| part.time).collect()
+                }),
                 path,
             })
         })

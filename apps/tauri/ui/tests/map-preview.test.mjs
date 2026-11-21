@@ -122,3 +122,42 @@ test("the preview asks for the objects once per difficulty, not again when the a
     .match(/\bmodel\b/g);
   assert.equal(reads, null);
 });
+
+test("ticks show partway through their span and are gone once passed", async () => {
+  const { ticksShown } = await import("../src/lib/preview.js");
+  const model = { preempt: 1200, fadeIn: 400 };
+  // A 200 px slider from 2000 to 3000 with a tick at 2500 (half way).
+  const slider = { kind: "slider", time: 2000, end: 3000, x: 0, y: 0, path: [0, 0, 200, 0], lengths: [0, 200], spans: 1, ticks: [2500] };
+  // First span: shows at 2500 − (250 + 0.66 × 1200) = 1458.
+  assert.deepEqual(ticksShown(model, slider, 1457), []);
+  const [tick] = ticksShown(model, slider, 1460);
+  assert.equal(tick.x, 100);
+  assert.ok(Math.abs(tick.since - 2) < 1e-9);
+  assert.deepEqual(ticksShown(model, slider, 2500), []);
+});
+
+test("reverse arrows show once the body has snaked in, the later ones two spans ahead", async () => {
+  const { arrowsShown } = await import("../src/lib/preview.js");
+  const model = { preempt: 1200, fadeIn: 400 };
+  // Three spans of 500 ms: turns at 2500 (at the end) and 3000 (back at the start).
+  const slider = { kind: "slider", time: 2000, end: 3500, x: 0, y: 0, path: [0, 0, 200, 0], lengths: [0, 200], spans: 3 };
+  assert.deepEqual(arrowsShown(model, slider, 1199), []);
+  const first = arrowsShown(model, slider, 1200);
+  assert.equal(first.length, 1);
+  assert.equal(first[0].x, 200);
+  assert.ok(Math.abs(Math.abs(first[0].angle) - Math.PI) < 1e-9);
+  // The second turn shows two spans ahead, at 2000.
+  assert.equal(arrowsShown(model, slider, 2000).length, 2);
+  assert.equal(arrowsShown(model, slider, 2600)[0].x, 0);
+  assert.deepEqual(arrowsShown(model, slider, 3000), []);
+});
+
+test("passed pieces fade over the editor's 700 ms and bodies over 240 ms after their end", async () => {
+  const { bodyOpacity, pieceOpacity } = await import("../src/lib/preview.js");
+  const model = { preempt: 1200, fadeIn: 400 };
+  const slider = { kind: "slider", time: 2000, end: 3000 };
+  assert.equal(pieceOpacity(model, slider, 1000), 0.5);
+  assert.equal(pieceOpacity(model, slider, 2350), 0.5);
+  assert.equal(bodyOpacity(model, slider, 2900), 1);
+  assert.equal(bodyOpacity(model, slider, 3120), 0.5);
+});
