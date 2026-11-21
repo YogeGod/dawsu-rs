@@ -49,7 +49,7 @@ test("every id the editor scripts look up by name exists in index.html or a Svel
 // Svelte part declares is still missing then: addEventListener on it throws and the editor never starts.
 test("every element the editor scripts bind a listener to by id exists in index.html itself", () => {
   const ids = new Set(declaredIds(read("dist/index.html")));
-  const bound = [...readEditorSource().matchAll(/\$\(\s*"([^"]+)"\s*\)\.addEventListener\(/g)].map(match => match[1]);
+  const bound = [...readEditorSource().matchAll(/\$\(\s*"([^"]+)"\s*\)\??\.addEventListener\(/g)].map(match => match[1]);
   assert.ok(bound.length > 0, "ui/src/editor/ binds no listeners by id; the pattern no longer matches its code");
   assert.deepEqual(bound.filter(id => !ids.has(id)), [], "ui/src/editor/ binds listeners to ids index.html does not declare");
 });
