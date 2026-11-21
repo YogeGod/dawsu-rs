@@ -185,6 +185,26 @@ test("the pick waits for its jump, then goes once the playhead moves off its boo
   assert.equal(model().bookmark, null, "playback off the bookmark clears it");
 });
 
+test("with audio open the position arrives an update late; the pick still waits for its jump, but not for ever", async () => {
+  const { evaluate, model } = await shown();
+  evaluate("let now = 0; Date.now = () => now;");
+  // Seen in the app: a seek's position shows only in the next update, here the one that also steps.
+  showView(evaluate, { position: 1000, bookmarkStep: 1000 });
+  showView(evaluate, { position: 200 });
+  showView(evaluate, { position: 300, bookmarkStep: 500 });
+  assert.equal(model().bookmark, 500, "neither the old nor the stale position clears a pick that is on its way");
+  showView(evaluate, { position: 500 });
+  assert.equal(model().bookmark, 500);
+  // A jump that never shows up (another seek overtook it) stops waiting after a moment.
+  evaluate('inspectorAction("pickBookmark", 1000)');
+  evaluate("now = 400;");
+  showView(evaluate, { position: 700 });
+  assert.equal(model().bookmark, 1000);
+  evaluate("now = 1500;");
+  showView(evaluate, { position: 700 });
+  assert.equal(model().bookmark, null);
+});
+
 test("the pick follows Previous and Next to the bookmark they jumped to, from the buttons, menus or keys", async () => {
   const { evaluate, model } = await shown();
   showView(evaluate, { position: 750 });
