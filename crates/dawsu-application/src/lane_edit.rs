@@ -133,6 +133,8 @@ fn lane_label(document: &Document, lane: &SampleIdentity) -> String {
     }
 }
 
+/// Files on disk not yet lanes, so it reads the folder alone.
+#[allow(clippy::disallowed_methods)]
 fn fresh_lane_files(
     document: &Document,
 ) -> Result<BTreeMap<SampleIdentity, (usize, String)>, String> {

@@ -30,6 +30,8 @@ export class Bridge {
   mapPreview = $state(false);
   // Active viewer overlay pushed from the dedicated Node Graph window.
   nodeGraphViewer = $state.raw(null);
+  // The map preview is open in its own window (Rust's preview-window event).
+  previewWindow = $state(false);
 
   // No map, a job running or a fault: the parts show but take no input.
   get disabled() {

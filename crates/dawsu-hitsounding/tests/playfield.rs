@@ -121,3 +121,12 @@ fn spinners_sit_in_the_playfield_centre() {
     let p = map(14, "ApproachRate:5\n", "10,20,1000,12,0,2000\n");
     assert_eq!(p.objects[0].position, Vector2::new(256.0, 192.0));
 }
+
+#[test]
+fn sliders_carry_their_tick_times() {
+    // 200 px at velocity 100 px per 500 ms beat, tick rate 1: one tick a beat, at 1500; the tail at 2000.
+    let p = map(14, "ApproachRate:5\n", "100,100,1000,2,0,L|300:100,1,200\n");
+    assert_eq!(p.objects[0].ticks, vec![1500.0]);
+    let p = map(14, "ApproachRate:5\n", "100,100,1000,1,0\n");
+    assert!(p.objects[0].ticks.is_empty());
+}

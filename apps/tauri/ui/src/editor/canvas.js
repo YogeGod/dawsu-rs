@@ -11,6 +11,14 @@ import { visibleViewerOverlay } from "../lib/node-graph.js";
 export function attachCanvas(ctx) {
   const { env, state, dom, elements } = ctx;
   const { $ } = dom;
+  const perf = () => env.performance ?? performance;
+  const raf = (callback) => (env.requestAnimationFrame ?? requestAnimationFrame)(callback);
+
+  // The audio clock reports in steps of its buffer, so a report up to this far behind the drawn line
+  // leaves the line where it is instead of pulling it back a pixel or two.
+  const playheadHold = 20;
+  // With no new view for this long (the editor is busy), the line stops instead of running on.
+  const playheadReach = 250;
 
   function prepare(canvas, height = canvas.clientHeight) {
     const width = canvas.clientWidth;
@@ -133,7 +141,51 @@ export function attachCanvas(ctx) {
   }
 
   function paintSoon() {
-    if (!state.frame) state.frame = env.requestAnimationFrame(() => { state.frame = 0; ctx.paint(); });
+    // While playing, the next playback frame paints anyway.
+    if (!state.frame && !state.playbackFrame) state.frame = raf(() => { state.frame = 0; ctx.paint(); });
+  }
+
+  // Each view from the editor sets where the playhead is, and when. `drawn` is where the line was
+  // just before this view.
+  function anchorPlayhead(drawn) {
+    if (!state.view.playing) return;
+    const behind = drawn - state.view.position;
+    // Held once at most: a line still behind on the next view goes to the report.
+    const held = behind > 0 && behind <= playheadHold && !state.playheadAnchor.held;
+    state.playheadAnchor = { position: held ? drawn : state.view.position, at: perf().now(), held };
+  }
+
+  // Where the playhead is drawn now: the last report moved on at the playback speed while playing.
+  // While cycling it waits at the right locator for the editor to wrap.
+  function playheadPosition() {
+    let position = state.view.position;
+    if (state.view.playing && Number.isFinite(position)) {
+      const elapsed = Math.min(Math.max(0, perf().now() - state.playheadAnchor.at), playheadReach);
+      position = state.playheadAnchor.position + elapsed * (state.view.speed || 1);
+      if (state.view.cycle && state.view.left < state.view.right && state.playheadAnchor.position <= state.view.right) {
+        position = Math.min(position, state.view.right);
+      }
+      if (Number.isFinite(state.view.duration)) position = Math.min(position, state.view.duration);
+    }
+    return position;
+  }
+
+  // Paints every frame while playing; stops, with one last paint, when playback stops.
+  function animatePlayback() {
+    if (state.playbackFrame) return;
+    state.playbackFrame = raf(function step() {
+      state.playbackFrame = 0;
+      if (!state.scene || !state.view.playing || state.view.fault) {
+        // Centre scrolled the view between the editor's views: tell it where the view ended up.
+        if (state.scene && !state.view.fault && state.centreSentStart !== null) ctx.changeView(() => state.scene.viewStart);
+        state.centreSentStart = null;
+        paintSoon();
+        return;
+      }
+      ctx.followPlayhead(true);
+      ctx.paint();
+      state.playbackFrame = raf(step);
+    });
   }
 
   function fillHitDiamond(context2d, x, y) {
@@ -328,7 +380,7 @@ export function attachCanvas(ctx) {
       context2d.fill();
       context2d.stroke();
     }
-    const playX = state.view.position * width / duration;
+    const playX = playheadPosition() * width / duration;
     line(context2d, slateTimeline.playhead, playX, 0, playX, height);
   }
 
@@ -561,20 +613,22 @@ export function attachCanvas(ctx) {
     }
     drawLocatorFlags(r.ctx, r.width, left, right, cycling && left <= right);
     drawBookmarks(r.ctx, state.scene.bookmarks ?? [], start, zoom, r.width);
-    line(g.ctx, slateTimeline.playhead, xOf(state.view.position), 0, xOf(state.view.position), g.height);
-    line(r.ctx, slateTimeline.playhead, xOf(state.view.position), 0, xOf(state.view.position), r.height);
+    const playhead = xOf(playheadPosition());
+    line(g.ctx, slateTimeline.playhead, playhead, 0, playhead, g.height);
+    line(r.ctx, slateTimeline.playhead, playhead, 0, playhead, r.height);
     state.rulerWarningMarkers = visibleWarningMarkers(state.view.outputProblems ?? [], state.scene.path, start, zoom, r.width);
     ctx.refreshRulerWarningTooltip();
     r.ctx.fillStyle = "#f0aa70";
     for (const marker of state.rulerWarningMarkers) {
       r.ctx.fillRect(marker.x - 3, r.height - 9, 6, 6);
     }
-    if (v) line(v.ctx, slateTimeline.playhead, xOf(state.view.position), 0, xOf(state.view.position), v.height);
+    if (v) line(v.ctx, slateTimeline.playhead, playhead, 0, playhead, v.height);
     drawOverview(o, start, g.width / zoom);
   }
 
   Object.assign(ctx, {
     prepare, line, sectionBars, drawTimingGrid, waveform, paintSoon,
+    anchorPlayhead, playheadPosition, animatePlayback,
     fillHitDiamond, strokeHitDiamond, comboOf, roundedTrack, nodeRadii,
     drawGameplay, overviewBins, diamond, drawOverview, drawLocatorFlags,
     drawBookmarks, paint,

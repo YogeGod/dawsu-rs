@@ -153,7 +153,10 @@ export function attachIpc(ctx) {
     }
     const previousTool = state.view.tool;
     const wasBusy = state.view.busy;
+    // Where the line is now, from the view before this one.
+    const drawn = ctx.playheadPosition();
     state.view = next;
+    ctx.anchorPlayhead(drawn);
     if (state.view.tool !== previousTool) ctx.refreshToolCursor();
     if (!state.view.hasDocument || state.view.showHome) state.scene = null;
     if (state.view.scene) {
@@ -177,6 +180,9 @@ export function attachIpc(ctx) {
       const before = !loaded && state.scene ? new Set(shownRows(state.scene)) : null;
       const unfolded = before ? shownRows(state.view.scene).filter(row => !before.has(row))
         .filter(row => state.collapsedFamilies.delete(state.view.scene.lanes[row]?.family)) : [];
+      // Centre scrolls the view on every frame; the editor's scene carries an older start.
+      const centring = !loaded && state.scene && state.view.playing && state.view.follow && ctx.ui()?.centre?.();
+      if (centring) state.view.scene.viewStart = state.scene.viewStart;
       state.scene = state.view.scene;
       if (unfolded.length) ctx.saveLaneLayout();
     }
@@ -257,6 +263,7 @@ export function attachIpc(ctx) {
     ctx.renderDialogs();
     try { env.window.refreshEditorMenu?.(); } catch (error) { (env.console ?? console).error(error); }
     ctx.paintSoon();
+    if (state.scene && state.view.playing) ctx.animatePlayback();
     try { ctx.ui()?.update?.(state.view, state.scene); } catch (error) { (env.console ?? console).error(error); }
     $("triplet-snap").checked = ctx.ui()?.snapGroup?.() === "triplets";
   }

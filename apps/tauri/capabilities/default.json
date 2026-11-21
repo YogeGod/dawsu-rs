@@ -29,6 +29,8 @@
     "allow-sample-preview",
     "allow-lane-add-candidates",
     "allow-map-preview-objects",
+    "allow-preview-window-open",
+    "allow-close-preview-window",
     "allow-pick-drum-map",
     "allow-set-drum-view",
     "allow-open-editor-folder",

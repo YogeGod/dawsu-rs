@@ -81,6 +81,10 @@ export function createState() {
     refreshing: false,
     lastRefresh: 0,
     frame: 0,
+    playbackFrame: 0,
+    playheadAnchor: { position: 0, at: 0, held: false },
+    centreSentStart: null,
+    followQueued: false,
     quitAfterSave: false,
   };
 }

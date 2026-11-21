@@ -12,7 +12,7 @@ use crate::lazer::slider_path::{self, FIRST_LAZER_VERSION};
 use crate::lazer::vector::Vector2;
 use dawsu_foundation::{CustomIndex, Hitsound, SampleIdentity, SampleSet, SliderSound, Sound};
 use dawsu_osu_format::number::{parse_double, parse_int, try_parse_int, MAX_PARSE_VALUE};
-use dawsu_osu_format::{check_map_path, find_case_insensitive, LineId, ObjectKind, OsuFile};
+use dawsu_osu_format::{check_map_path, find_case_insensitive, FolderIndex, LineId, ObjectKind, OsuFile};
 
 /// `LegacyDecoder.LATEST_VERSION`: a file with no version header counts as this.
 const LATEST_VERSION: u32 = 14;
@@ -145,11 +145,13 @@ pub fn answer(file: &OsuFile, folder_files: &[String]) -> Answer {
     let cp = ControlPoints::from_file(file);
     let slider_multiplier = difficulty(file, "SliderMultiplier", 1.4).clamp(0.4, 3.6);
     let tick_rate = difficulty(file, "SliderTickRate", 1.0).clamp(0.5, 8.0);
+    // Every sample of every object is looked up in the folder: index the listing once.
+    let folder = FolderIndex::new(folder_files);
 
     let mut objects: Vec<ObjectAnswer> = file
         .hit_objects()
         .iter()
-        .filter_map(|o| object_answer(o, version, offset, &cp, slider_multiplier, tick_rate, folder_files))
+        .filter_map(|o| object_answer(o, version, offset, &cp, slider_multiplier, tick_rate, &folder))
         .collect();
     // LegacyBeatmapDecoder sorts with a stable OrderBy on start time.
     objects.sort_by(|a, b| a.start_time.total_cmp(&b.start_time));
@@ -160,20 +162,29 @@ fn difficulty(file: &OsuFile, key: &str, default: f64) -> f64 {
     file.value("Difficulty", key).and_then(|v| parse_double(&v, MAX_PARSE_VALUE, false).ok()).unwrap_or(default)
 }
 
-fn resolve(samples: &[LegacySample], folder_files: &[String]) -> Vec<Sample> {
-    samples.iter().map(|s| resolve_one(s, folder_files)).collect()
+fn resolve(samples: &[LegacySample], folder: &FolderIndex) -> Vec<Sample> {
+    samples.iter().map(|s| resolve_in(s, folder)).collect()
 }
 
 /// Which file plays (R11 to R13): from index 1, the map folder by the beatmap skin's lookup
 /// names, each with R12's extensions; otherwise, or when nothing matches, the skin.
+/// One sample alone searches the listing as it is; `resolve_in` takes an index for many.
 pub(crate) fn resolve_one(sample: &LegacySample, folder_files: &[String]) -> Sample {
-    let plays = beatmap_file(sample, folder_files)
+    resolve_with(sample, |name| find_case_insensitive(folder_files, name))
+}
+
+fn resolve_in(sample: &LegacySample, folder: &FolderIndex) -> Sample {
+    resolve_with(sample, |name| folder.find(name))
+}
+
+fn resolve_with<'a>(sample: &LegacySample, find: impl Fn(&str) -> Option<&'a str>) -> Sample {
+    let plays = beatmap_file(sample, find)
         .map(Plays::BeatmapFile)
         .unwrap_or_else(|| Plays::Skin { lookup_names: sample.legacy_lookup_names(false) });
     Sample { lazer: sample.clone(), lookup_names: sample.lookup_names(), plays, played_volume: played_volume(sample.volume) }
 }
 
-fn beatmap_file(sample: &LegacySample, folder_files: &[String]) -> Option<String> {
+fn beatmap_file<'a>(sample: &LegacySample, find: impl Fn(&str) -> Option<&'a str>) -> Option<String> {
     // LegacyBeatmapSkin.GetSample: beatmap samples only when the sample uses them (index 1 or more).
     if !sample.use_beatmap_samples {
         return None;
@@ -185,7 +196,7 @@ fn beatmap_file(sample: &LegacySample, folder_files: &[String]) -> Option<String
             if check_map_path(&candidate).is_err() {
                 continue;
             }
-            if let Some(found) = find_case_insensitive(folder_files, &candidate) {
+            if let Some(found) = find(&candidate) {
                 return Some(found.to_string());
             }
         }
@@ -197,7 +208,7 @@ fn applied(samples: &[LegacySample], point: Option<&SamplePointData>) -> Vec<Leg
     samples.iter().map(|s| s.apply(point)).collect()
 }
 
-fn object_answer(o: &dawsu_osu_format::HitObject, version: u32, offset: f64, cp: &ControlPoints, slider_multiplier: f64, tick_rate: f64, folder_files: &[String]) -> Option<ObjectAnswer> {
+fn object_answer(o: &dawsu_osu_format::HitObject, version: u32, offset: f64, cp: &ControlPoints, slider_multiplier: f64, tick_rate: f64, folder: &FolderIndex) -> Option<ObjectAnswer> {
     let start_time = o.time() + offset;
     match o.kind() {
         ObjectKind::Circle => {
@@ -205,7 +216,7 @@ fn object_answer(o: &dawsu_osu_format::HitObject, version: u32, offset: f64, cp:
             let lookup_time = start_time + CONTROL_POINT_LENIENCY;
             let point = cp.sample_point_at(lookup_time);
             let samples = applied(&convert_sound_type(o.hitsound(), &bank), point);
-            Some(ObjectAnswer { line: o.line(), kind: Kind::Circle, start_time, end_time: None, lookup_time, sample_point: point.cloned(), samples: resolve(&samples, folder_files), slider: None })
+            Some(ObjectAnswer { line: o.line(), kind: Kind::Circle, start_time, end_time: None, lookup_time, sample_point: point.cloned(), samples: resolve(&samples, folder), slider: None })
         }
         ObjectKind::Spinner { end } | ObjectKind::Hold { end } => {
             // A hold in an osu! map converts to a spinner, as anything with a duration does.
@@ -222,11 +233,11 @@ fn object_answer(o: &dawsu_osu_format::HitObject, version: u32, offset: f64, cp:
                 end_time: Some(end_time),
                 lookup_time,
                 sample_point: point.cloned(),
-                samples: resolve(&samples, folder_files),
+                samples: resolve(&samples, folder),
                 slider: None,
             })
         }
-        ObjectKind::Slider(fields) => slider_answer(o, fields, version, start_time, cp, slider_multiplier, tick_rate, folder_files),
+        ObjectKind::Slider(fields) => slider_answer(o, fields, version, start_time, cp, slider_multiplier, tick_rate, folder),
     }
 }
 
@@ -246,7 +257,7 @@ fn slider_answer(
     cp: &ControlPoints,
     slider_multiplier: f64,
     tick_rate: f64,
-    folder_files: &[String],
+    folder: &FolderIndex,
 ) -> Option<ObjectAnswer> {
     // ConvertHitObjectParser: the position is clamped to 0-512 and, before v128, truncated.
     let (x, y) = (o.x().clamp(0.0, 512.0), o.y().clamp(0.0, 512.0));
@@ -318,14 +329,14 @@ fn slider_answer(
     let mut parts = Vec::new();
     for e in slider_events::generate(start_time, span_duration, velocity, tick_distance, path_distance, span_count) {
         match e.kind {
-            SliderEventType::Head => parts.push(Part { kind: PartKind::Head, time: e.time, samples: resolve(&node(0), folder_files) }),
+            SliderEventType::Head => parts.push(Part { kind: PartKind::Head, time: e.time, samples: resolve(&node(0), folder) }),
             SliderEventType::Tick => {
-                parts.push(Part { kind: PartKind::Tick, time: e.time, samples: resolve(tick_sample.as_slice(), folder_files) });
+                parts.push(Part { kind: PartKind::Tick, time: e.time, samples: resolve(tick_sample.as_slice(), folder) });
             }
             SliderEventType::Repeat => parts.push(Part {
                 kind: PartKind::Repeat,
                 time: start_time + (e.span_index + 1) as f64 * span_duration,
-                samples: resolve(&node(e.span_index + 1), folder_files),
+                samples: resolve(&node(e.span_index + 1), folder),
             }),
             SliderEventType::Tail => parts.push(Part { kind: PartKind::Tail, time: e.time, samples: Vec::new() }),
         }
@@ -351,7 +362,7 @@ fn slider_answer(
         end_time: Some(end_time),
         lookup_time,
         sample_point: point.cloned(),
-        samples: resolve(&samples, folder_files),
+        samples: resolve(&samples, folder),
         slider: Some(SliderAnswer {
             beat_length: timing.beat_length,
             slider_velocity_multiplier: dp.slider_velocity,
@@ -363,10 +374,10 @@ fn slider_answer(
             generate_ticks: dp.generate_ticks,
             repeat_count,
             parts,
-            tail_samples: resolve(&node(repeat_count + 1), folder_files),
-            sliding_samples: resolve(&sliding, folder_files),
+            tail_samples: resolve(&node(repeat_count + 1), folder),
+            sliding_samples: resolve(&sliding, folder),
             // A slider's own hit sample is read for its banks only, so no file replaces the whistle.
-            whistle_sample: resolve_one(&whistle_sample.expect("convertSoundType adds the hitwhistle for the whistle flag"), folder_files),
+            whistle_sample: resolve_in(&whistle_sample.expect("convertSoundType adds the hitwhistle for the whistle flag"), folder),
             node_lookup_times,
         }),
     })

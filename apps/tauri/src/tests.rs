@@ -32,6 +32,19 @@ fn wait_for_job(app: &mut Application) {
     assert!(app.error.is_none(), "{:?}", app.error);
 }
 
+/// A default sounds folder, outside any mapset folder, with the skin's twelve hitsounds, all
+/// `wave`: a hit whose sound isn't in the mapset folder then plays the skin's sound, as on a
+/// computer with default sounds.
+fn skin_sounds(label: &str, wave: &[u8]) -> Fixture {
+    let folder = Fixture::new(label);
+    for bank in ["normal", "soft", "drum"] {
+        for sound in ["hitnormal", "hitwhistle", "hitfinish", "hitclap"] {
+            fs::write(folder.0.join(format!("{bank}-{sound}.wav")), wave).unwrap();
+        }
+    }
+    folder
+}
+
 fn open(app: &mut Application, path: &Path) {
     Action::Open { path: path.into() }.run(app);
     wait_for_job(app);
@@ -730,7 +743,8 @@ fn library_sample_actions_scope_paths_and_preserve_the_assignment_target() {
     action("replace_library_sample", "drums/snare.WAV", &target).run(&mut app);
     assert!(app.error.is_none(), "{:?}", app.error);
     assert!(app.is_dirty());
-    assert_eq!(fs::read_dir(&mapset).unwrap().count(), 2);
+    // The new backing sample waits in dawsu!'s data folder until a Save plays it.
+    assert_eq!(fs::read_dir(&mapset).unwrap().count(), 1);
     assert_eq!(fs::read(&path).unwrap(), original);
     assert_eq!(fs::read(library.join("drums/snare.WAV")).unwrap(), wave);
 }
@@ -2336,7 +2350,8 @@ fn place_sound_set_action_places_the_picked_set_at_the_playhead_or_reports_why_n
     assert!(app.error.is_none(), "{:?}", app.error);
     let hits = app.document().unwrap().composer.hitsounds();
     assert_eq!(hits.placements().len(), 1);
-    assert!(fixture.0.join("soft-hitclap2.wav").is_file());
+    // The set's copy waits in dawsu!'s data folder until a Save plays it.
+    assert!(!fixture.0.join("soft-hitclap2.wav").is_file());
     assert!(fixture.0.join("library").join("Sound sets").join("Clap.dawsuset").is_file());
 }
 
@@ -2727,6 +2742,8 @@ fn removing_a_lane_takes_its_hits_in_one_step_and_keeps_its_layers() {
     fs::write(&map, original).unwrap();
     let mut app = Application::with_data_root(fixture.0.join("data"));
     app.error = None;
+    let skin = skin_sounds("remove-lane-skin", tone);
+    app.preferences.default_samples = skin.0.clone();
     open(&mut app, &map);
     let scene = |app: &Application| snapshot(app, true)["scene"].clone();
     let model = |app: &Application| app.document().unwrap().composer.hitsounds().clone();
@@ -2856,13 +2873,20 @@ fn the_map_preview_sends_stacked_objects_with_combos_and_slider_paths() {
     assert_eq!(objects[1]["x"], 200.0);
     assert_eq!(objects[0]["combo"], 1);
     assert_eq!(objects[1]["combo"], 2);
-    // The slider starts a new combo with the map's second default colour.
+    // The map has no colours, so the preview takes lazer's Argon six by the plain combo index:
+    // the circles are combo 1, the slider starts combo 2.
+    assert_eq!(preview["colours"].as_array().unwrap().len(), 6);
+    assert_eq!(preview["colours"][0], "#f17400");
+    assert_eq!(objects[0]["colour"], 1);
     assert_eq!(objects[2]["kind"], "slider");
     assert_eq!(objects[2]["combo"], 1);
+    assert_eq!(objects[2]["colour"], 2);
     assert_eq!(objects[2]["end"], 2500.0);
     assert_eq!(objects[2]["path"], serde_json::json!([100.0, 100.0, 200.0, 100.0]));
     assert_eq!(objects[2]["lengths"], serde_json::json!([0.0, 100.0]));
     assert_eq!(objects[2]["spans"], 1);
+    // One beat long at tick rate 1: the only tick would land on the tail, so there is none.
+    assert_eq!(objects[2]["ticks"], serde_json::json!([]));
     assert!(map_preview(&app, &fixture.0.join("Other.osu")).is_err());
 }
 

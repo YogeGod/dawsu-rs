@@ -45,6 +45,8 @@ const COMMANDS: &[&str] = &[
     "sample_preview",
     "lane_add_candidates",
     "map_preview_objects",
+    "preview_window_open",
+    "close_preview_window",
     "pick_drum_map",
     "set_drum_view",
     "open_editor_folder",

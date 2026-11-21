@@ -1,6 +1,7 @@
 //! Render the compiler's one-shot mix plans and stage their files until Apply or Save.
 
 use crate::{ExportSettings, export_settings, lane_name, sample_path};
+use crate::pending::{Pending, listing};
 use dawsu_audio::{AudioClip, Mixer, ScheduledSound, decode_with_cancel};
 use dawsu_foundation::{
     CustomIndex, Hitsound, SampleIdentity, SampleSet, Sound, digest::sha256_hex, safe_write,
@@ -9,7 +10,7 @@ use dawsu_hitsounding::{
     Compiled, Decompiled, Hitsounds, LaneSource, MomentId, ObjectId, Place, Placement, ProblemKind,
     SaveProblem, compile, compile::{RoleFile, RoleMerge, merge_roles}, decompile,
 };
-use dawsu_osu_format::{OsuFile, list_folder};
+use dawsu_osu_format::OsuFile;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -17,7 +18,7 @@ use std::sync::Arc;
 
 const SAMPLE_RATE: u32 = 48_000;
 const CHANNELS: usize = 2;
-const PREFIX: &str = "dawsu-mix-";
+pub(super) const PREFIX: &str = "dawsu-mix-";
 
 pub(crate) fn can_render(problem: &SaveProblem, placement: Placement) -> bool {
     (matches!(problem.place, Place::Circle(_) | Place::SpinnerEnd(_))
@@ -39,6 +40,7 @@ pub(crate) struct MixFiles {
     pub(super) combinations: Vec<export_settings::ExportCombination>,
 }
 
+#[derive(Clone)]
 pub(super) struct StagedMix {
     pub(super) path: PathBuf,
     wav: Vec<u8>,
@@ -77,6 +79,15 @@ impl StagedMix {
         Ok((name, mix))
     }
 
+    /// A pending file a Save writes as it is, checked by its name when published. A file another
+    /// program put under the same name is used when it holds the same bytes; other bytes make
+    /// the publish refuse and name it.
+    pub(super) fn pending(root: &Path, name: &str, bytes: Vec<u8>) -> Self {
+        let path = root.join(name);
+        let reuse = fs::read(&path).is_ok_and(|on_disk| on_disk == bytes);
+        Self { path, wav: bytes, reuse, index: None }
+    }
+
     pub(super) fn clip(&self) -> AudioClip {
         let samples = self.wav[44..]
             .chunks_exact(2)
@@ -102,9 +113,10 @@ pub(super) fn stage_in_file(
     settings: Option<&ExportSettings>,
     previous_mixes: &[String],
     start_index: u32,
+    pending: &Pending,
     cancel: &dyn Fn() -> bool,
 ) -> Result<(OsuFile, MixFiles), String> {
-    let listing = list_folder(root).map_err(|error| error.to_string())?;
+    let listing = listing(root, pending)?;
     let mut hits = match decompile(&file, &listing, cancel, &mut |_, _| {}) {
         Decompiled::Done(hits) => hits,
         Decompiled::Cancelled => return Err("Sample mix preparation cancelled".into()),
@@ -122,6 +134,7 @@ pub(super) fn stage_in_file(
             already_staged,
             start_index,
             previous_mixes,
+            pending,
             cancel,
         )?;
     } else {
@@ -134,6 +147,7 @@ pub(super) fn stage_in_file(
             expected,
             already_staged,
             start_index,
+            pending,
             cancel,
         )?;
     }
@@ -161,18 +175,19 @@ impl MixFiles {
         start_index: u32,
         // The target's reuse set: mix files it already references, reused when their sound matches.
         previous_mixes: &[String],
+        pending: &Pending,
         cancel: &dyn Fn() -> bool,
     ) -> Result<(), String> {
         settings.validate()?;
         let rules = export_settings::Rules::new(settings);
-        let defaults_list = list_folder(defaults).unwrap_or_default();
+        let defaults_list = crate::pending::sample_folder(defaults);
         let moments: HashMap<_, _> = target
             .moments()
             .iter()
             .enumerate()
             .filter_map(|(index, moment)| Some((mix_place(moment.place())?, MomentId(index))))
             .collect();
-        let mut indexes = IndexedMixes::read(root, &OsuFile::read(Vec::new()).file, already_staged, start_index)?;
+        let mut indexes = IndexedMixes::read(root, &OsuFile::read(Vec::new()).file, already_staged, start_index, pending)?;
         let previous_mixes = previous_mixes
             .iter()
             .map(String::as_str)
@@ -203,7 +218,7 @@ impl MixFiles {
                 if !inputs.contains_key(identity) {
                     let lane = source.lane(identity).ok_or("Sample mix lane is missing.")?;
                     let name = lane_name(identity);
-                    let path = sample_path(lane, root, defaults, &defaults_list)
+                    let path = sample_path(lane, root, pending, defaults, &defaults_list)
                         .map_err(|error| format!("Could not mix {name}: {error}"))?;
                     let input =
                         fs::read(&path).map_err(|error| format!("Reading {name}: {error}"))?;
@@ -321,7 +336,7 @@ impl MixFiles {
                     .filter(|(_, _, cues)| !(settings.pair_samples && cues.is_empty()))
                     .collect();
                 let waves = render_roles(roles, cancel)?;
-                let reused = reusable_export_index(root, &waves, &previous_mixes)?;
+                let reused = reusable_export_index(root, pending, &waves, &previous_mixes)?;
                 let index = match reused {
                     Some(index) => index,
                     None => indexes.reserve()?,
@@ -373,9 +388,10 @@ impl MixFiles {
         root: &Path,
         defaults: &Path,
         expected: &[u8],
+        pending: &Pending,
         cancel: &dyn Fn() -> bool,
     ) -> Result<(), String> {
-        let assets = Assets { source, root, defaults, defaults_list: list_folder(defaults).unwrap_or_default() };
+        let assets = Assets { source, root, pending, defaults, defaults_list: crate::pending::sample_folder(defaults) };
         let expected = OsuFile::read(expected.to_vec()).file;
         let moments: HashMap<_, _> = target
             .moments()
@@ -383,7 +399,7 @@ impl MixFiles {
             .enumerate()
             .filter_map(|(index, moment)| Some((mix_place(moment.place())?, MomentId(index))))
             .collect();
-        let mut indexes = IndexedMixes::read(root, &expected, &[], 2)?;
+        let mut indexes = IndexedMixes::read(root, &expected, &[], 2, pending)?;
         // A circle holds its index on its own line, so an earlier Save's files are found there too.
         indexes.reuse.extend(
             expected
@@ -420,7 +436,7 @@ impl MixFiles {
                     let index = match by_files.get(&key) {
                         Some(index) => *index,
                         None => {
-                            let (index, reuse) = indexes.allocate_roles(root, &files)?;
+                            let (index, reuse) = indexes.allocate_roles(root, pending, &files)?;
                             self.stage_roles(root, files, index, reuse);
                             by_files.insert(key, index);
                             index
@@ -437,7 +453,7 @@ impl MixFiles {
                 _ => None,
             }) {
                 Some(set) => set,
-                None => timing_set(&expected, root, &mut sections, problem.place)?,
+                None => timing_set(&expected, root, pending, &mut sections, problem.place)?,
             };
             replace_moment(target, moment, merge.hits(index, object_normal));
             target.set_volume(moment, volume);
@@ -455,9 +471,10 @@ impl MixFiles {
         expected: &[u8],
         already_staged: &[StagedMix],
         start_index: u32,
+        pending: &Pending,
         cancel: &dyn Fn() -> bool,
     ) -> Result<(), String> {
-        let defaults_list = list_folder(defaults).unwrap_or_default();
+        let defaults_list = crate::pending::sample_folder(defaults);
         let expected = OsuFile::read(expected.to_vec()).file;
         let existing: BTreeSet<_> = expected
             .hit_objects()
@@ -475,12 +492,12 @@ impl MixFiles {
             .iter()
             .any(|problem| matches!(problem.place, Place::SliderNode { .. }))
         {
-            Some(IndexedMixes::read(root, &expected, already_staged, start_index)?)
+            Some(IndexedMixes::read(root, &expected, already_staged, start_index, pending)?)
         } else {
             None
         };
         let mut names = if problems.iter().any(|problem| !matches!(problem.place, Place::SliderNode { .. })) {
-            reserved_mix_names(root, already_staged)?
+            reserved_mix_names(root, already_staged, pending)?
         } else {
             BTreeSet::new()
         };
@@ -502,7 +519,7 @@ impl MixFiles {
             let sample = if let Some(sample) = rendered.get(&key) {
                 sample.clone()
             } else {
-                let wav = render_layers(source, Some(target), layers, root, defaults, &defaults_list, &mut clips, cancel)?;
+                let wav = render_layers(source, Some(target), layers, root, pending, defaults, &defaults_list, &mut clips, cancel)?;
                 let (sample, staged) = if let Some(indexes) = indexes.as_mut().filter(|_| slider) {
                     let (index, reuse) = indexes.allocate(root, &wav)?;
                     let identity = SampleIdentity::Standard {
@@ -533,9 +550,10 @@ impl MixFiles {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_layers(
     source: &Hitsounds, target: Option<&Hitsounds>, layers: &[(SampleIdentity, i32)],
-    root: &Path, defaults: &Path, defaults_list: &[String],
+    root: &Path, pending: &Pending, defaults: &Path, defaults_list: &[String],
     clips: &mut HashMap<SampleIdentity, Arc<AudioClip>>, cancel: &dyn Fn() -> bool,
 ) -> Result<Vec<u8>, String> {
     let mut cues = Vec::with_capacity(layers.len());
@@ -543,7 +561,7 @@ fn render_layers(
         cues.push(ScheduledSound {
             at_ms: 0.0,
             end_ms: None,
-            clip: load_clip(source, target, identity, root, defaults, defaults_list, clips, cancel)?,
+            clip: load_clip(source, target, identity, root, pending, defaults, defaults_list, clips, cancel)?,
             gain: *volume as f32 / 100.0,
         });
     }
@@ -553,7 +571,7 @@ fn render_layers(
 #[allow(clippy::too_many_arguments)]
 fn load_clip(
     source: &Hitsounds, target: Option<&Hitsounds>, identity: &SampleIdentity,
-    root: &Path, defaults: &Path, defaults_list: &[String],
+    root: &Path, pending: &Pending, defaults: &Path, defaults_list: &[String],
     clips: &mut HashMap<SampleIdentity, Arc<AudioClip>>, cancel: &dyn Fn() -> bool,
 ) -> Result<Arc<AudioClip>, String> {
     if !clips.contains_key(identity) {
@@ -562,7 +580,7 @@ fn load_clip(
             .or_else(|| target.and_then(|target| target.lane(identity)))
             .ok_or("Sample mix lane is missing")?;
         let path =
-            sample_path(lane, root, defaults, defaults_list).map_err(|error| {
+            sample_path(lane, root, pending, defaults, defaults_list).map_err(|error| {
                 format!("Could not mix {}: {error}", lane_name(identity))
             })?;
         let clip = decode_with_cancel(&path, cancel).map_err(|error| {
@@ -606,7 +624,7 @@ fn render_roles(
 pub(super) fn stage_timed_copy(
     source: &Hitsounds, file: &mut OsuFile, path: &Path, defaults: &Path,
     placements: &[dawsu_hitsounding::copy::SliderCopyPlacement],
-    staged: &mut Vec<StagedMix>, details: &mut Vec<String>, cancel: &dyn Fn() -> bool,
+    staged: &mut Vec<StagedMix>, details: &mut Vec<String>, pending: &Pending, cancel: &dyn Fn() -> bool,
     // Mixes before this index belong to an earlier part of the write (Generate): their names stay
     // reserved, but a target never points at them.
     own_from: usize,
@@ -615,8 +633,8 @@ pub(super) fn stage_timed_copy(
         return Ok(());
     }
     let root = path.parent().ok_or("Missing mapset folder")?;
-    let defaults_list = list_folder(defaults).unwrap_or_default();
-    let mut names = reserved_mix_names(root, staged)?;
+    let defaults_list = crate::pending::sample_folder(defaults);
+    let mut names = reserved_mix_names(root, staged, pending)?;
     let events = file.storyboard_samples();
     let existing: Vec<_> = events.iter().map(|event| event.path.clone()).collect();
     let mut clips = HashMap::new();
@@ -629,7 +647,7 @@ pub(super) fn stage_timed_copy(
         let name = if let Some(name) = rendered.get(layers) {
             name.clone()
         } else {
-            let wav = render_layers(source, None, layers, root, defaults, &defaults_list, &mut clips, cancel)?;
+            let wav = render_layers(source, None, layers, root, pending, defaults, &defaults_list, &mut clips, cancel)?;
             let name = if let Some(previous) = staged[own_from..].iter().find(|mix| mix.index.is_none() && mix.wav == wav) {
                 previous.path.file_name().ok_or("Missing staged filename")?.to_string_lossy().into_owned()
             } else {
@@ -663,6 +681,7 @@ type RoleOutput = (SampleSet, Hitsound, String, Vec<u8>);
 struct Assets<'a> {
     source: &'a Hitsounds,
     root: &'a Path,
+    pending: &'a Pending,
     defaults: &'a Path,
     defaults_list: Vec<String>,
 }
@@ -681,7 +700,7 @@ impl Assets<'_> {
             file.layers.iter().map(|(identity, v)| Ok(ScheduledSound {
                 at_ms: 0.0,
                 end_ms: None,
-                clip: load_clip(self.source, Some(target), identity, self.root, self.defaults, &self.defaults_list, clips, cancel)?,
+                clip: load_clip(self.source, Some(target), identity, self.root, self.pending, self.defaults, &self.defaults_list, clips, cancel)?,
                 gain: *v as f32 / volume,
             })).collect::<Result<Vec<_>, String>>()
         };
@@ -699,7 +718,7 @@ impl Assets<'_> {
             let output = match file.layers.as_slice() {
                 [(identity, v)] if *v == volume => {
                     let lane = self.source.lane(identity).or_else(|| target.lane(identity)).ok_or("Sample mix lane is missing")?;
-                    let path = sample_path(lane, self.root, self.defaults, &self.defaults_list)
+                    let path = sample_path(lane, self.root, self.pending, self.defaults, &self.defaults_list)
                         .map_err(|error| format!("Could not mix {}: {error}", lane_name(identity)))?;
                     let extension = path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).unwrap_or_else(|| "wav".into());
                     let bytes = fs::read(&path).map_err(|error| format!("Reading {}: {error}", lane_name(identity)))?;
@@ -715,10 +734,10 @@ impl Assets<'_> {
 
 /// The normal set of the timing line `place`'s object reads.
 fn timing_set(
-    file: &OsuFile, root: &Path, sections: &mut Option<HashMap<dawsu_osu_format::LineId, Option<String>>>, place: Place,
+    file: &OsuFile, root: &Path, pending: &Pending, sections: &mut Option<HashMap<dawsu_osu_format::LineId, Option<String>>>, place: Place,
 ) -> Result<SampleSet, String> {
     if sections.is_none() {
-        let listing = list_folder(root).map_err(|error| error.to_string())?;
+        let listing = listing(root, pending)?;
         *sections = Some(match dawsu_hitsounding::rules::answer(file, &listing) {
             dawsu_hitsounding::rules::Answer::Objects(list) => list.into_iter().map(|a| (a.line, a.sample_point.map(|p| p.bank))).collect(),
             dawsu_hitsounding::rules::Answer::UnsupportedMode { .. } => HashMap::new(),
@@ -735,12 +754,13 @@ fn timing_set(
 
 fn reusable_export_index(
     root: &Path,
+    pending: &Pending,
     waves: &[(SampleSet, Hitsound, Vec<u8>)],
     previous: &BTreeSet<&str>,
 ) -> Result<Option<u32>, String> {
     let Some((bank, role, _)) = waves.first() else { return Ok(None) };
     let prefix = export_settings::slot_name(*bank, *role);
-    let hitnormals = hitnormal_indexes(root, waves.iter().any(|(_, role, _)| *role == Hitsound::Normal))?;
+    let hitnormals = hitnormal_indexes(root, pending, waves.iter().any(|(_, role, _)| *role == Hitsound::Normal))?;
     Ok(previous
         .iter()
         .filter_map(|name| {
@@ -792,10 +812,13 @@ fn has_contents(root: &Path, name: &str, wav: &[u8]) -> bool {
         .is_some_and(|bytes| bytes == wav)
 }
 
-fn occupied_indexes(root: &Path) -> Result<BTreeSet<u32>, String> {
+/// The custom indexes a new mix must not take: those the mapset's files and maps use, and those
+/// of pending files and of names claimed for them.
+fn occupied_indexes(root: &Path, pending: &Pending) -> Result<BTreeSet<u32>, String> {
     use dawsu_hitsounding::rules::read_sample_file_name;
-    let files = list_folder(root).map_err(|error| error.to_string())?;
+    let files = listing(root, pending)?;
     let (mut reserved, _) = crate::layers::reservations(root, &files)?;
+    reserved.extend(pending.taken_indexes());
     reserved.extend(files.iter().filter_map(|name| {
         match read_sample_file_name(name.rsplit(['/', '\\']).next()?)? {
             SampleIdentity::Standard { index, .. } => Some(index.get()),
@@ -808,11 +831,11 @@ fn occupied_indexes(root: &Path) -> Result<BTreeSet<u32>, String> {
 /// The indexes with a hitnormal file of any set, which files without a hitnormal must not reuse:
 /// osu! would play that file instead of the skin's (lazer 131fe72 LegacySkin.cs:609-633).
 /// Empty when `has_hitnormal`, since the written hitnormal replaces it.
-fn hitnormal_indexes(root: &Path, has_hitnormal: bool) -> Result<BTreeSet<u32>, String> {
+fn hitnormal_indexes(root: &Path, pending: &Pending, has_hitnormal: bool) -> Result<BTreeSet<u32>, String> {
     if has_hitnormal {
         return Ok(BTreeSet::new());
     }
-    Ok(list_folder(root).map_err(|error| error.to_string())?.iter().filter_map(|name| {
+    Ok(listing(root, pending)?.iter().filter_map(|name| {
         match dawsu_hitsounding::rules::read_sample_file_name(name.rsplit(['/', '\\']).next()?)? {
             SampleIdentity::Standard { sound: Sound::Hit(Hitsound::Normal), index, .. } => Some(index.get()),
             _ => None,
@@ -821,8 +844,8 @@ fn hitnormal_indexes(root: &Path, has_hitnormal: bool) -> Result<BTreeSet<u32>, 
 }
 
 impl IndexedMixes {
-    fn read(root: &Path, expected: &OsuFile, already_staged: &[StagedMix], start_index: u32) -> Result<Self, String> {
-        let mut reserved = occupied_indexes(root)?;
+    fn read(root: &Path, expected: &OsuFile, already_staged: &[StagedMix], start_index: u32, pending: &Pending) -> Result<Self, String> {
+        let mut reserved = occupied_indexes(root, pending)?;
         reserved.extend(already_staged.iter().filter_map(|mix| mix.index));
         let reuse = expected
             .timing_points()
@@ -853,8 +876,8 @@ impl IndexedMixes {
     /// An index whose files already hold exactly these role files, or a free one. Without a
     /// hitnormal file the index must have no hitnormal file of any set, or osu! plays that
     /// instead of the skin's (lazer 131fe72 LegacySkin.cs:609-633). A free index has no file at all.
-    fn allocate_roles(&mut self, root: &Path, files: &[RoleOutput]) -> Result<(u32, bool), String> {
-        let hitnormals = hitnormal_indexes(root, files.iter().any(|(_, role, _, _)| *role == Hitsound::Normal))?;
+    fn allocate_roles(&mut self, root: &Path, pending: &Pending, files: &[RoleOutput]) -> Result<(u32, bool), String> {
+        let hitnormals = hitnormal_indexes(root, pending, files.iter().any(|(_, role, _, _)| *role == Hitsound::Normal))?;
         if let Some(&existing) = self.reuse.iter().find(|index| {
             !hitnormals.contains(index)
                 && files.iter().all(|(set, role, extension, bytes)| {
@@ -879,14 +902,21 @@ impl IndexedMixes {
 }
 
 pub(super) struct PublishedMixes<'a> {
-    staged: &'a [StagedMix],
+    staged: Vec<&'a StagedMix>,
     created: Vec<usize>,
+    /// The ledger, the entries this publish added, and the earlier entries those replaced:
+    /// a rollback drops its own and puts the earlier ones back.
+    ledger: Option<(crate::pending::Ledger, Vec<String>, Vec<crate::pending::PendingSample>)>,
 }
 
+/// Writes the staged files, all or none. With a `ledger`, every file this publish creates is listed
+/// there before it is created, so dawsu! knows it made the file.
 pub(super) fn publish<'a>(
-    staged: &'a [StagedMix],
+    staged: impl IntoIterator<Item = &'a StagedMix>,
+    ledger: Option<&crate::pending::Ledger>,
     cancel: &dyn Fn() -> bool,
 ) -> Result<PublishedMixes<'a>, String> {
+    let staged: Vec<&'a StagedMix> = staged.into_iter().collect();
     // One index holds one sound per file: a file staged twice in a plan must be the same
     // reused WAV, never two different sounds or two new writes.
     let mut files = HashMap::<String, &StagedMix>::new();
@@ -907,7 +937,8 @@ pub(super) fn publish<'a>(
         .peekable();
     if let Some(first) = indexed.peek() {
         let root = first.path.parent().ok_or("Missing mapset folder")?;
-        let reserved = occupied_indexes(root)?;
+        // The files being published are not taken by themselves.
+        let reserved = occupied_indexes(root, &Pending::default())?;
         if let Some(index) = indexed
             .filter_map(|mix| mix.index)
             .find(|index| reserved.contains(index))
@@ -920,16 +951,27 @@ pub(super) fn publish<'a>(
     let mut direct = staged.iter().filter(|mix| !mix.reuse && mix.index.is_none()).peekable();
     if let Some(first) = direct.peek() {
         let root = first.path.parent().ok_or("Missing mapset folder")?;
-        let reserved = reserved_mix_names(root, &[])?;
+        let reserved = reserved_mix_names(root, &[], &Pending::default())?;
         if let Some(collision) = direct.find(|mix| {
             mix.path.file_name().is_some_and(|name| name_is_reserved(&name.to_string_lossy(), &reserved))
         }) {
             return Err(format!("{} is now used in this mapset. Review again before applying.", collision.path.display()));
         }
     }
+    let ledger = match ledger {
+        Some(ledger) => {
+            let entries: Vec<crate::pending::PendingSample> = staged.iter().filter(|mix| !mix.reuse)
+                .filter_map(|mix| Some(crate::pending::PendingSample { name: mix.path.file_name()?.to_str()?.to_owned(), sha256: mix.digest() }))
+                .collect();
+            let replaced = ledger.add(&entries)?;
+            Some((ledger.clone(), entries.into_iter().map(|entry| entry.name).collect(), replaced))
+        }
+        None => None,
+    };
     let mut publication = PublishedMixes {
-        staged,
+        staged: staged.clone(),
         created: Vec::new(),
+        ledger,
     };
     for (index, mix) in staged.iter().enumerate() {
         if cancel() {
@@ -955,6 +997,7 @@ pub(super) fn publish<'a>(
 impl PublishedMixes<'_> {
     pub(super) fn keep(mut self) {
         self.created.clear();
+        self.ledger = None;
     }
 
     pub(super) fn failed(mut self, error: String) -> String {
@@ -968,6 +1011,9 @@ impl PublishedMixes<'_> {
 
     fn rollback(&mut self) -> Vec<String> {
         let mut kept = Vec::new();
+        // Files that stay because they couldn't be removed (a lock), unless confirmed changed:
+        // their ledger entries stay, so a later cleanup tries again.
+        let mut still_ours = Vec::new();
         for index in self.created.drain(..).rev() {
             let mix = &self.staged[index];
             let result = match fs::read(&mix.path) {
@@ -982,7 +1028,21 @@ impl PublishedMixes<'_> {
                 && error.kind() != std::io::ErrorKind::NotFound
             {
                 kept.push(mix.path.display().to_string());
+                // Only a file confirmed changed leaves the ledger; one that can't be read stays listed.
+                let changed = fs::read(&mix.path).is_ok_and(|bytes| bytes != mix.wav);
+                if !changed && let Some(name) = mix.path.file_name() {
+                    still_ours.push(name.to_string_lossy().into_owned());
+                }
             }
+        }
+        // A file removed, never made, or changed by someone else leaves the ledger.
+        if let Some((ledger, names, replaced)) = self.ledger.take() {
+            let gone: Vec<String> = names.into_iter()
+                .filter(|name| !still_ours.iter().any(|ours| ours.eq_ignore_ascii_case(name))).collect();
+            let _ = ledger.update(|entries| {
+                entries.retain(|entry| !gone.iter().any(|name| name.eq_ignore_ascii_case(&entry.name)));
+                entries.extend(replaced.into_iter().filter(|earlier| gone.iter().any(|name| name.eq_ignore_ascii_case(&earlier.name))));
+            });
         }
         kept
     }
@@ -994,9 +1054,11 @@ impl Drop for PublishedMixes<'_> {
     }
 }
 
-pub(super) fn reserved_mix_names(root: &Path, staged: &[StagedMix]) -> Result<BTreeSet<String>, String> {
-    let files = list_folder(root).map_err(|error| error.to_string())?;
+pub(super) fn reserved_mix_names(root: &Path, staged: &[StagedMix], pending: &Pending) -> Result<BTreeSet<String>, String> {
+    let files = listing(root, pending)?;
     let (_, mut names) = crate::layers::reservations(root, &files)?;
+    names.extend(pending.taken_names());
+
     // Directory entries also claim names, including case-only variants on case-sensitive systems.
     for entry in fs::read_dir(root).map_err(|error| error.to_string())? {
         let entry = entry.map_err(|error| error.to_string())?;
@@ -1111,7 +1173,7 @@ mod tests {
             StagedMix { path: first.clone(), wav: vec![1], reuse: false, index: None },
             StagedMix { path: second.clone(), wav: vec![2], reuse: false, index: None },
         ];
-        let result = publish(&staged, &|| {
+        let result = publish(&staged, None, &|| {
             if !first.exists() {
                 return false;
             }
@@ -1126,12 +1188,88 @@ mod tests {
     }
 
     #[test]
+    fn a_mix_never_takes_a_pending_only_index_or_name() {
+        let scratch = dawsu_test_support::Scratch::new("mix-skips-pending");
+        let root = scratch.path("mapset");
+        fs::create_dir(&root).unwrap();
+        fs::write(root.join("normal-hitnormal2.wav"), [0]).unwrap();
+        let mut pending = Pending::for_mapset(&scratch.path("data"), &root);
+        pending.add("soft-hitclap3.wav", &[1]).unwrap();
+        // Another window's claim for the same mapset counts too.
+        let mut other = Pending::for_mapset(&scratch.path("data"), &root);
+        other.add("drum-hitfinish4.wav", &[2]).unwrap();
+        let mut indexes = IndexedMixes::read(&root, &OsuFile::read(Vec::new()).file, &[], 2, &pending).unwrap();
+        assert_eq!(indexes.reserve().unwrap(), 5);
+        let names = reserved_mix_names(&root, &[], &pending).unwrap();
+        assert!(names.contains("soft-hitclap3.wav") && names.contains("drum-hitfinish4.wav"));
+        // Publishing checks the mapset alone, so a pending file never blocks its own write.
+        assert!(!occupied_indexes(&root, &Pending::default()).unwrap().contains(&3));
+    }
+
+    #[test]
+    fn a_rollback_keeps_the_ledger_entry_of_a_file_it_could_not_remove() {
+        let scratch = dawsu_test_support::Scratch::new("mix-rollback-locked");
+        let root = scratch.path("mapset");
+        fs::create_dir(&root).unwrap();
+        let ledger = Pending::for_mapset(&scratch.path("data"), &root).ledger().unwrap();
+        let staged = [
+            StagedMix { path: root.join("dawsu-mix-a-1.wav"), wav: vec![1], reuse: false, index: None },
+            StagedMix { path: root.join("dawsu-mix-b-1.wav"), wav: vec![2], reuse: false, index: None },
+        ];
+        let publication = publish(&staged, Some(&ledger), &|| false).unwrap();
+        // One file can't be removed: it stays, and so does its entry, so a cleanup can retry it.
+        // Windows: another program holds it open without sharing deletion. Unix: the folder is read-only.
+        let locked = &staged[0].path;
+        #[cfg(windows)]
+        let holder = {
+            use std::os::windows::fs::OpenOptionsExt;
+            fs::OpenOptions::new().read(true).share_mode(1).open(locked).unwrap()
+        };
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&root, fs::Permissions::from_mode(0o555)).unwrap();
+        }
+        drop(publication);
+        #[cfg(windows)]
+        drop(holder);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&root, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        assert!(locked.exists(), "locked stays");
+        assert!(!staged[1].path.exists(), "the other goes");
+        let names: Vec<_> = ledger.entries().unwrap().into_iter().map(|entry| entry.name).collect();
+        assert_eq!(names, ["dawsu-mix-a-1.wav"]);
+    }
+
+    #[test]
+    fn a_rollback_keeps_an_entry_the_ledger_had_before_the_publish() {
+        let scratch = dawsu_test_support::Scratch::new("mix-rollback-earlier-entry");
+        let root = scratch.path("mapset");
+        fs::create_dir(&root).unwrap();
+        let ledger = Pending::for_mapset(&scratch.path("data"), &root).ledger().unwrap();
+        // The ledger already lists c.wav from an earlier write; this publish lists it again and
+        // then fails on its second file.
+        ledger.add(&[crate::pending::PendingSample { name: "c.wav".into(), sha256: sha256_hex(&[7]) }]).unwrap();
+        let staged = [
+            StagedMix { path: root.join("c.wav"), wav: vec![3], reuse: false, index: None },
+            StagedMix { path: root.join("c.wav"), wav: vec![3], reuse: false, index: None },
+        ];
+        assert!(publish(&staged, Some(&ledger), &|| false).is_err());
+        let entries: Vec<_> = ledger.entries().unwrap().into_iter().map(|entry| (entry.name, entry.sha256)).collect();
+        assert_eq!(entries, [("c.wav".to_string(), sha256_hex(&[7]))], "the earlier entry is back as it was");
+        assert!(!root.join("c.wav").exists());
+    }
+
+    #[test]
     fn publish_refuses_one_index_file_for_two_sounds() {
         let scratch = dawsu_test_support::Scratch::new("mix-index-twice");
         let path = scratch.path("normal-hitnormal2.wav");
         let mix = |wav: u8, reuse: bool| StagedMix { path: path.clone(), wav: vec![wav], reuse, index: Some(2) };
         for staged in [[mix(1, false), mix(2, false)], [mix(1, false), mix(1, false)]] {
-            let error = publish(&staged, &|| false).err().expect("refused");
+            let error = publish(&staged, None, &|| false).err().expect("refused");
             assert!(error.contains("Sample index 2 would hold two different sounds"), "{error}");
             assert!(!path.exists(), "nothing is written");
         }
@@ -1186,7 +1324,7 @@ mod tests {
         let settings = ExportSettings { pair_samples: true, ..ExportSettings::default() };
         let (file, mixes) = stage_in_file(
             hits, file, &problems, map.parent().unwrap(), Path::new(""), &[], Placement::OnObjects, &[], Some(&settings),
-            previous, 2, &|| false,
+            previous, 2, &Pending::default(), &|| false,
         ).unwrap();
         (file, mixes.staged)
     }
@@ -1208,6 +1346,7 @@ mod tests {
     /// Yoge 2026-11-20: with no hitnormal in the moment, Export writes no hitnormal file and the
     /// player's skin plays its own, as Save does.
     #[test]
+    #[allow(clippy::disallowed_methods)]
     fn pair_samples_export_of_a_clap_only_moment_writes_only_its_clap() {
         let scratch = dawsu_test_support::Scratch::new("pair-clap-only");
         let claps = [(clap(SampleSet::Soft, 3), 50), (clap(SampleSet::Drum, 4), 40)];
@@ -1218,7 +1357,7 @@ mod tests {
         assert_eq!(names.len(), 1, "{names:?}");
         assert!(names[0].ends_with("-hitclap2.wav"), "{names:?}");
         assert_eq!(file.hit_objects()[0].hit_sample().unwrap().index, 2);
-        let hitnormal_at_2 = list_folder(&scratch.path("")).unwrap().iter().any(|name| name.ends_with("-hitnormal2.wav"));
+        let hitnormal_at_2 = dawsu_osu_format::list_folder(&scratch.path("")).unwrap().iter().any(|name| name.ends_with("-hitnormal2.wav"));
         assert!(!hitnormal_at_2);
         // The skin's hitnormal plays in the circle's own normal set, as Save keeps it.
         let objects = file.hit_objects();

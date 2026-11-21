@@ -48,6 +48,11 @@ pub(crate) struct SessionSettings {
     /// The sound set links of the last Save. Older builds ignore the field: the links are lost, the hits stay.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sound_sets: Option<super::sound_sets::Links>,
+    /// The pending files the last Save left out of the mapset that its hits still play (mix
+    /// sources, left-out moments, loose hits). Older builds ignore the field: those lanes play the
+    /// skin's sound.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pending_samples: Option<Vec<super::pending::PendingSample>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub time_signatures: Option<Vec<super::EditorTimeSignature>>,
     #[serde(skip_serializing_if = "Option::is_none")]

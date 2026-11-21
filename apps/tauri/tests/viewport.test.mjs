@@ -41,6 +41,8 @@ async function frontend() {
       } },
       event: { listen() {} },
     } },
+    // A still clock: the playhead is drawn where the editor last put it.
+    performance: { now: () => 0 },
     ResizeObserver: class { observe() {} },
     HTMLElement: class {},
     requestAnimationFrame() {},

@@ -415,19 +415,37 @@ export function attachTimeline(ctx) {
     return limit(start, 0, state.view.duration - grid.clientWidth / zoom);
   }
 
-  function followPlayhead() {
+  // Called with each view from the editor, and with `frame` on each playback frame.
+  function followPlayhead(frame = false) {
     if (!state.view.follow || !state.view.playing || state.view.busy ||
         state.drag || state.rulerDrag || state.overviewDrag || !grid.clientWidth) return;
     const visible = grid.clientWidth / state.scene.zoom;
+    const position = ctx.playheadPosition();
     // The Playhead group's Centre (window only): the view moves so the playhead stays in the middle.
+    // Each frame scrolls the view here; the editor is told of it with each of its views, not per frame.
+    // Follow's view changes take the zoom when their turn comes (changeView with a start function),
+    // so a wheel zoom queued before one is kept instead of being put back.
     if (ctx.ui()?.centre?.()) {
-      const start = timelineStart(state.view.position - visible / 2, state.scene.zoom);
-      if (Math.abs(start - state.scene.viewStart) * state.scene.zoom >= 1) changeView(start, state.scene.zoom);
+      const centred = zoom => timelineStart(ctx.playheadPosition() - grid.clientWidth / zoom / 2, zoom);
+      const start = centred(state.scene.zoom);
+      if (frame) state.scene.viewStart = start;
+      // Not from the answer to Centre's own change: at high zoom every answer would differ by a
+      // pixel and ask again at once. The next refresh tells the editor.
+      else if (!state.followQueued && Math.abs(start - (state.centreSentStart ?? state.scene.viewStart)) * state.scene.zoom >= 1) {
+        queueFollow(zoom => (state.centreSentStart = centred(zoom)));
+      }
       return;
     }
-    if (state.view.position >= state.scene.viewStart && state.view.position <= state.scene.viewStart + visible * 0.98) return;
-    const start = timelineStart(state.view.position - visible * 0.02, state.scene.zoom);
-    if (start !== state.scene.viewStart) changeView(start, state.scene.zoom);
+    state.centreSentStart = null;
+    if (state.followQueued || (position >= state.scene.viewStart && position <= state.scene.viewStart + visible * 0.98)) return;
+    const paged = zoom => timelineStart(ctx.playheadPosition() - grid.clientWidth / zoom * 0.02, zoom);
+    if (paged(state.scene.zoom) !== state.scene.viewStart) queueFollow(paged);
+  }
+
+  // One Follow view change at a time, until its answer is shown; frames in between ask for no more.
+  function queueFollow(start) {
+    state.followQueued = true;
+    changeView(start).finally(() => { state.followQueued = false; });
   }
 
   function resizeLaneHeaders(height) {
@@ -443,13 +461,23 @@ export function attachTimeline(ctx) {
     $("lane-taller").disabled = off || state.scene.rowHeight >= 65;
   }
 
+  // `start` may be a function of the zoom: then the zoom and lane height are the ones in place when
+  // this change's turn comes, and only the start changes (Follow).
   function changeView(start, zoom, rowHeight = state.scene.rowHeight, rowAnchorY = 0) {
-    zoom = limit(zoom, minZoom, 3);
-    rowHeight = limit(rowHeight, 20, 65);
+    const follow = typeof start === "function";
+    if (!follow) {
+      zoom = limit(zoom, minZoom, 3);
+      rowHeight = limit(rowHeight, 20, 65);
+    }
     const path = state.scene.path;
     return ctx.run(async () => {
       if (!state.scene || state.scene.path !== path) return;
       const current = state.scene;
+      if (follow) {
+        zoom = current.zoom;
+        rowHeight = current.rowHeight;
+        start = start(zoom);
+      }
       const previousStart = current.viewStart;
       const previousZoom = current.zoom;
       const previousHeight = current.rowHeight;
@@ -791,7 +819,7 @@ export function attachTimeline(ctx) {
     refreshRulerCursor, trackRulerPointer, refreshRulerWarningTooltip,
     waveformTarget, bookmarkNearFlag, locatorFlags, rulerGestureAt,
     locatorPreview, locatorDragTo, endRulerDrag, drainOverviewNavigation,
-    panOverview, timelineStart, followPlayhead, resizeLaneHeaders,
+    panOverview, timelineStart, followPlayhead, queueFollow, resizeLaneHeaders,
     refreshLaneToolbar, changeView, stepWheelSnap, fitTimeline, bindTimeline,
   });
 }

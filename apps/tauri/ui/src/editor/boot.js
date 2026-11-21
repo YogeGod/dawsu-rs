@@ -31,7 +31,8 @@ const mutableStateFields = [
   "selectedHits", "inspectorState", "problemStripKept", "sectionBarCache", "sliderEndCache",
   "overviewBinCache", "cursorSurface", "cursorAltDraw", "hoveredHit", "lastHover", "rulerPointer",
   "modalKind", "modalClose", "outputProblemIndex", "outputProblemList", "rulerWarningMarkers",
-  "pending", "requests", "refreshing", "lastRefresh", "frame", "quitAfterSave",
+  "pending", "requests", "refreshing", "lastRefresh", "frame",
+  "playbackFrame", "playheadAnchor", "centreSentStart", "followQueued", "quitAfterSave",
 ];
 
 const readonlyStateFields = [
@@ -59,6 +60,7 @@ const exportedMethods = [
   "mapsetTree", "renderSampleBrowser", "currentBrowser", "samplePreviewAction",
   "requestSamplePreview", "sampleBrowserAction",
   "prepare", "line", "sectionBars", "drawTimingGrid", "waveform", "paintSoon",
+  "anchorPlayhead", "playheadPosition", "animatePlayback",
   "fillHitDiamond", "strokeHitDiamond", "comboOf", "roundedTrack", "nodeRadii",
   "drawGameplay", "overviewBins", "diamond", "drawOverview", "drawLocatorFlags",
   "drawBookmarks", "paint",
@@ -68,7 +70,7 @@ const exportedMethods = [
   "refreshRulerCursor", "trackRulerPointer", "refreshRulerWarningTooltip",
   "waveformTarget", "bookmarkNearFlag", "locatorFlags", "rulerGestureAt",
   "locatorPreview", "locatorDragTo", "endRulerDrag", "drainOverviewNavigation",
-  "panOverview", "timelineStart", "followPlayhead", "resizeLaneHeaders",
+  "panOverview", "timelineStart", "followPlayhead", "queueFollow", "resizeLaneHeaders",
   "refreshLaneToolbar", "changeView", "stepWheelSnap", "fitTimeline",
   "modal", "closeModal", "showOutputProblem", "renderDialogs",
   "openMergeSettings", "openGenerate", "openNewDifficulty", "openCopy",
@@ -262,7 +264,8 @@ export function createEditor(env = globalThis, { ui = null, autoStart = true, ex
   const startInterval = env.setInterval ?? setInterval;
   startInterval(async () => {
     const now = perf().now();
-    if (state.view.fault || state.requests || state.refreshing || now - state.lastRefresh < (state.view.playing || state.view.busy ? 85 : 1000)) return;
+    // While playing or busy, every tick asks; a gate at the timer's own 85 ms skipped every other tick.
+    if (state.view.fault || state.requests || state.refreshing || (!state.view.playing && !state.view.busy && now - state.lastRefresh < 1000)) return;
     state.refreshing = true;
     state.lastRefresh = now;
     await ctx.run(() => ctx.update(null, false));

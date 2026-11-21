@@ -8,6 +8,7 @@ import "./parts/node-graph.css";
 import "./timeline.css";
 import { mount } from "svelte";
 import { createEditor } from "./editor/boot.js";
+import { invoke } from "./lib/ipc.js";
 import { bridge } from "./lib/bridge.svelte.js";
 import * as commandList from "./lib/commands.js";
 import { nextGroup, stepInGroup } from "./lib/snap.js";
@@ -31,6 +32,7 @@ import InspectorLane from "./parts/InspectorLane.svelte";
 import InspectorSelection from "./parts/InspectorSelection.svelte";
 import MapPreview from "./parts/MapPreview.svelte";
 import NodeGraphWindow from "./parts/NodeGraphWindow.svelte";
+import PreviewWindow from "./parts/PreviewWindow.svelte";
 import SnapSlider from "./parts/SnapSlider.svelte";
 import ToolPills from "./parts/ToolPills.svelte";
 import TransportBar from "./parts/TransportBar.svelte";
@@ -57,10 +59,53 @@ const parts = {
   "export-window": ExportWindow,
   // The whole page of the drum detection window (drum.html).
   "drum-window": DrumDetectWindow,
+  // The whole page of the map preview's own window (preview.html).
+  "preview-window": PreviewWindow,
 };
 
 export function update(view, scene) {
   bridge.set(view, scene);
+  if (!previewLink) linkPreviewWindow(view);
+  if (bridge.previewWindow) sendPreview();
+}
+
+// The map preview's own window: only the editor window calls update(), so it alone listens. It
+// sends the playhead and the open difficulty on each update, when the window opens and when its
+// page is ready, and opens it again at launch if it was open at the last close (view.previewWindow).
+let previewLink = false;
+function linkPreviewWindow(view) {
+  previewLink = true;
+  const events = globalThis.window?.__TAURI__?.event;
+  if (!events) return;
+  events.listen("preview-window", ({ payload }) => {
+    bridge.previewWindow = payload === true;
+    // With the window open the Inspector panel is on too, so its "Show it here" can be reached
+    // (View › Map preview is not remembered, but the window is).
+    if (bridge.previewWindow) bridge.mapPreview = true;
+    if (bridge.previewWindow) sendPreview(true);
+  });
+  // The page being ready also says the window is open, should its open event have come too soon.
+  events.listen("preview-ready", () => {
+    bridge.previewWindow = true;
+    bridge.mapPreview = true;
+    sendPreview(true);
+  });
+  if (view?.previewWindow) invoke("preview_window_open").catch(error => console.error(error));
+}
+let lastSent = "";
+function sendPreview(force = false) {
+  const view = bridge.view;
+  const scene = bridge.scene;
+  const payload = {
+    view: view && { position: view.position, playing: view.playing, speed: view.speed, duration: view.duration },
+    path: scene?.path ?? null,
+    previewKey: scene?.previewKey ?? null,
+  };
+  // Only what changed goes: paused and unmoved, the 1 s updates send nothing.
+  const sent = JSON.stringify(payload);
+  if (sent === lastSent && !force) return;
+  lastSent = sent;
+  globalThis.window?.__TAURI__?.event.emitTo("preview", "preview-view", payload).catch(() => {});
 }
 
 // The editor runtime hands over the lane and folder header rows each time renderLanes() changes them.
