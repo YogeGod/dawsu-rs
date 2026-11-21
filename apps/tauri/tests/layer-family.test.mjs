@@ -236,9 +236,10 @@ test("− presses while a removal is on its way are ignored", async () => {
 });
 
 test("the status bar counts shown lanes, so a removed lane drops out of it", async () => {
-  const { evaluate, get } = await frontend();
+  const { hitLaneCounts } = await import("../ui/src/lib/statusbar.js");
+  const { evaluate } = await frontend();
   load(evaluate, { laneOrder: [0, 1, 3] });
-  assert.equal(get("hit-lane-counts").textContent, "2 hits · 3 lanes");
+  assert.equal(hitLaneCounts(evaluate("scene")), "2 hits · 3 lanes");
 });
 
 test("− names a renamed lane by its own name, without the lane info", async () => {

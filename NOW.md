@@ -9,7 +9,7 @@ Repo-side snapshot of active M3 work on `origin/main` (`2b8b94c`). The master sp
   - Top bar & transport: `SnapSlider`, `ToolPills`, `AuditionPill`, `TransportBar` (with `bridge.playhead` isolating 85 ms playback ticks and seeks from unrelated Svelte components), `PlayheadGroup`, `EditorMenu`
   - Lanes & timeline chrome: `LaneHeaders`, `HitCard` (timeline surface itself stays on `<canvas>`)
   - Inspector & map preview: `InspectorHead`, `InspectorSelection`, `InspectorLane`, `InspectorDifficulty`, `InspectorBookmarks`, `InspectorHistory`, `ProblemMap`, `MapPreview`
-  - Browser & bottom drawer: `BrowserHead`, `BrowserList`, `BrowserPreview`, `BottomPanel`, `Mixer`, `MixerStrip`, `Fader`
+  - Browser & bottom drawer: `BrowserHead`, `BrowserList`, `BrowserPreview`, `BottomPanel`, `Mixer`, `MixerStrip`, `Fader`, `StatusBar`
   - Second windows: `ExportWindow`, `DrumDetectWindow`
 - **Still left in `apps/tauri/dist/app.js` (on `main`):** remaining editor wiring, dialogs, start screen, shortcut editor, menus/ribbon glue, and the `#options-Grid` ("More snaps") popover.
 

@@ -4,10 +4,13 @@ import { test } from "node:test";
 import { createContext, runInContext } from "node:vm";
 
 const read = file => readFile(new URL("../dist/" + file, import.meta.url), "utf8");
-const [html, css, app, docking] = await Promise.all(["index.html", "style.css", "app.js", "docking.js"].map(read));
+const [html, css, app, docking, statusBarSvelte] = await Promise.all([
+  read("index.html"), read("style.css"), read("app.js"), read("docking.js"),
+  readFile(new URL("../ui/src/parts/StatusBar.svelte", import.meta.url), "utf8"),
+]);
 
 const header = html.match(/<header id="editor-header".*?<\/header>/s)?.[0] ?? "";
-const statusbar = html.slice(html.indexOf('<div id="statusbar"'), html.indexOf('<dialog id="dialog"'));
+const statusbar = html.slice(html.indexOf('<div id="statusbar"'), html.indexOf('<div data-ui-mount="hit-card"'));
 const topbarCss = css.slice(css.indexOf("/* Top bar transport (design f1, D2)"));
 
 async function frontend() {
@@ -90,10 +93,11 @@ test("the status bar's right end keeps its size so zoom and Audio stay on screen
   assert.match(css, /\.status-right\s*\{[^}]*flex:\s*none/);
 });
 
-test("speeds, Fit, zoom and Audio live in the status bar", () => {
-  for (const id of ["fit", "zoom", "audio"]) assert.match(statusbar, new RegExp('id="' + id + '"'), id);
-  assert.match(statusbar, /<input[^>]*min="[^"]+"[^>]*id="zoom"[^>]*data-map/);
-  assert.ok(statusbar.indexOf('id="audio"') > statusbar.indexOf('id="hit-lane-counts"'));
+test("speeds, Fit, zoom and Audio live in the StatusBar Svelte part", () => {
+  assert.match(statusbar, /<div id="statusbar" data-ui-mount="status-bar">/);
+  for (const id of ["fit", "zoom", "audio"]) assert.match(statusBarSvelte, new RegExp('id="' + id + '"'), id);
+  assert.match(statusBarSvelte, /<input[^>]*min=\{ZOOM_MIN\}[^>]*id="zoom"/);
+  assert.ok(statusBarSvelte.indexOf('id="audio"') > statusBarSvelte.indexOf('id="hit-lane-counts"'));
 });
 
 test("the layout editor no longer places the transport above or below the timeline", () => {
@@ -105,9 +109,8 @@ test("the layout editor no longer places the transport above or below the timeli
   assert.match(docking, /const defaultFrame = \[header, ribbon, root, status\];/);
 });
 
-test("show() leaves the transport and locators to the Svelte part and still fades the header with no map", async () => {
-  const { evaluate, get, mapOnly } = await frontend();
-  assert.ok(mapOnly.includes(get("zoom")), "zoom waits for a map");
+test("show() leaves the transport, locators and status bar to the Svelte parts and still fades the header with no map", async () => {
+  const { evaluate, get } = await frontend();
   const transportIds = ["position", "transport-bpm", "transport-meter", "musical-position", "locator-left",
     "locator-right", "cycle", "play", "play-icon", "play-label", "stop"];
   for (const id of transportIds) assert.ok(!app.includes('$("' + id + '")'), id);
@@ -115,11 +118,7 @@ test("show() leaves the transport and locators to the Svelte part and still fade
     musicalPosition: "38.2.240 · 190.0 BPM · 7/8 · 1/4",
     scene: { path: "Hard.osu", lanes: [], difficulties: [], history: [], historyPosition: 0, moments: [] } })`);
   assert.equal(get("editor-header").dataset.empty, "false");
-  assert.equal(get("status-view").hidden, false);
-  assert.ok(mapOnly.every(control => control.disabled === false));
 
   evaluate("show({ busy: false, hasDocument: false, position: 5000, left: 0, right: 10000, musicalPosition: null })");
   assert.equal(get("editor-header").dataset.empty, "true");
-  assert.equal(get("status-view").hidden, true);
-  assert.ok(mapOnly.every(control => control.disabled === true));
 });

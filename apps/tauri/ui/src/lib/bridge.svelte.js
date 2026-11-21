@@ -32,6 +32,14 @@ export class Bridge {
   bottomTab = $state("volume");
   // View › Map preview: kept in this window only, never saved.
   mapPreview = $state(false);
+  // Transient status notice (errors, fault, or missing UI part) pushed by app.js.
+  statusNotice = $state("");
+  // Optimistic timeline zoom & lane height during changeView() drags before Rust replies.
+  zoom = $state(null);
+  rowHeight = $state(null);
+  // Lane popover filter state owned by app.js's renderLanes() / map-load reset.
+  usedOnly = $state(false);
+  laneFilter = $state("");
 
   // No map, a job running or a fault: the parts show but take no input.
   get disabled() {
@@ -66,11 +74,23 @@ export class Bridge {
     flush();
   }
 
+  setViewport(zoom, rowHeight) {
+    this.zoom = zoom;
+    this.rowHeight = rowHeight;
+  }
+
+  setLaneOptions(usedOnly, laneFilter) {
+    this.usedOnly = !!usedOnly;
+    this.laneFilter = laneFilter ?? "";
+  }
+
   set(view, scene) {
     this.latestView = view;
     if (scene !== this.scene) {
       this.snapGroup = followGroup(this.snapGroup, this.scene, scene);
       this.scene = scene;
+      this.zoom = scene ? scene.zoom : null;
+      this.rowHeight = scene ? scene.rowHeight : null;
     }
     if (!samePlayhead(this.playhead, view)) this.playhead = view;
     if (!sameUiView(this.view, view)) this.view = view;

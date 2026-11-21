@@ -148,6 +148,14 @@ const baseView = (overrides = {}) => ({
   outputDevice: "Speakers",
   songMuted: false,
   songSolo: false,
+  status: "Ready",
+  showHome: false,
+  hasDocument: true,
+  objectLines: false,
+  warnings: [],
+  outputProblems: [],
+  recent: [],
+  recovery: null,
   position: 1000,
   musicalPosition: "1.1.0 · 120.0 BPM · 4/4 · 1/4",
   ...overrides,
@@ -228,6 +236,14 @@ test("Bridge.set isolates playback ticks and paused seeks from bridge.view", () 
     { outputDevice: "Headphones" },
     { songMuted: true },
     { songSolo: true },
+    { status: "Saved" },
+    { showHome: true },
+    { hasDocument: false },
+    { objectLines: true },
+    { warnings: ["Clip"] },
+    { outputProblems: [{ time: 100, message: "Gap", target: "a.osu", timeline: "a.osu" }] },
+    { recent: ["b.osu"] },
+    { recovery: { error: null, offers: [{ id: "1", created_ms: 10, mapset: "S", difficulty: "Hard" }] } },
   ];
   for (const patch of uiChanges) {
     const baseline = baseView({ playing: false, position: 5000 });
@@ -236,6 +252,13 @@ test("Bridge.set isolates playback ticks and paused seeks from bridge.view", () 
     local.set(changed, map);
     assert.equal(local.view, changed, "UI field change updates bridge.view: " + JSON.stringify(patch));
   }
+
+  // Fresh equivalent arrays on 85 ms playback ticks must not replace bridge.view.
+  const tick1 = baseView({ playing: true, warnings: [], outputProblems: [], recent: ["a.osu"], recovery: { error: null, offers: [] } });
+  const tick2 = baseView({ playing: true, position: 1085, warnings: [], outputProblems: [], recent: ["a.osu"], recovery: { error: null, offers: [] } });
+  local.set(tick1, map);
+  local.set(tick2, map);
+  assert.equal(local.view, tick1, "fresh equal arrays keep bridge.view reference identical");
 
   local.set(null, null);
   assert.equal(local.view, null);

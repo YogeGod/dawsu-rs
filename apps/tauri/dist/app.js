@@ -54,7 +54,6 @@ let familyParents = new Map();
 let familyLayers = new Map();
 let laneRemoving = false;
 let previewParents = new Map();
-const speedButtons = [...document.querySelectorAll("[data-playback-speed]")];
 const sampleFolderNames = { normal: "Normal set", soft: "Soft set", drum: "Drum set" };
 let sampleFolderOrder = Object.keys(sampleFolderNames);
 let layoutWrites = 0;
@@ -106,10 +105,22 @@ function makeButton(label, click) {
   return button;
 }
 
+function setStatusNotice(text) {
+  if (window.dawsuUi?.statusNotice) {
+    window.dawsuUi.statusNotice(text);
+    return;
+  }
+  const node = $("status");
+  if (!node) return;
+  const shown = text || view?.fault || view?.status || (view?.busy ? "Working…" : "");
+  node.textContent = shown;
+  node.title = shown;
+}
+
 function run(task) {
   requests++;
   const result = pending.then(task).catch((error) => {
-    $("status").textContent = String(error);
+    setStatusNotice(String(error));
     console.error(error);
   }).finally(() => { requests--; });
   pending = result;
@@ -204,7 +215,7 @@ function show(next) {
     // A new object, so the Svelte parts see the fault and disable.
     view = { ...view, fault: next.fault };
     try { window.dawsuUi?.update(view, scene); } catch (error) { console.error(error); }
-    $("status").textContent = next.fault;
+    setStatusNotice(next.fault);
     const close = () => run(() => invoke("close_editor", { discard: false }));
     modal("fault", "Editor stopped", [paragraph(next.fault)], [["Close dawsu!", close, true]], close);
     return;
@@ -246,12 +257,7 @@ function show(next) {
   $("home-resume").disabled = !!view.busy;
   const path = scene?.path ?? "";
   renderFrame(path);
-  $("status").textContent = missingUiParts() || view.status || (view.busy ? "Working…" : "");
-  $("status").title = $("status").textContent;
   $("editor-header").dataset.empty = String(!scene);
-  for (const control of document.querySelectorAll("[data-map]")) control.disabled = !scene;
-  $("status-view").hidden = !scene;
-  $("warnings").hidden = !(view.warnings?.length);
   const problems = view.outputProblems ?? [];
   const listKey = JSON.stringify(problems);
   if (outputProblemList !== listKey) {
@@ -273,16 +279,6 @@ function show(next) {
   save.dataset.dirty = String(!!scene && !!view.dirty);
   save.setAttribute("aria-label", saveName);
   save.title = saveName;
-  $("problem-summary").hidden = problems.length === 0;
-  const messages = problems.map(problem => problem.message).filter(Boolean);
-  $("problem-summary").title = [...messages.slice(0, 10),
-    ...(messages.length > 10 ? ["and " + (messages.length - 10) + " more"] : [])].join("\n");
-  $("problem-summary-text").textContent = cannotSave;
-  $("next-output-problem").hidden = problems.length === 0;
-  $("next-output-problem").disabled = !!view.busy;
-  $("playback-rates").hidden = !scene;
-  $("hit-lane-counts").hidden = !scene;
-  $("cancel-job").hidden = !view.busy;
   for (const button of document.querySelectorAll("[data-doc]")) button.disabled = !scene || !!view.busy;
   $("samples-view").ariaPressed = String(!view.drumView?.enabled);
   $("drums-view").ariaPressed = String(!!view.drumView?.enabled);
@@ -304,43 +300,23 @@ function show(next) {
   }
   if (view.scene) renderScene();
   else renderSelection();
-  if (scene) {
-    for (const button of speedButtons) button.ariaPressed = String(Number(button.dataset.playbackSpeed) === view.speed);
-    followPlayhead();
-  }
+  if (scene) followPlayhead();
   refreshLaneToolbar();
   refreshHitCard();
   renderDialogs();
   try { window.refreshEditorMenu?.(); } catch (error) { console.error(error); }
   paintSoon();
   try { window.dawsuUi?.update(view, scene); } catch (error) { console.error(error); }
+  setStatusNotice(missingUiParts());
   $("triplet-snap").checked = window.dawsuUi?.snapGroup?.() === "triplets";
 }
 
-// The frame around the timeline: the map chip, the status bar's play state, selection, file name
-// and output device. Map metadata comes from the .osu file, so it is set as text only.
+// The map chip in the ribbon. Map metadata comes from the .osu file, so it is set as text only.
 function renderFrame(path) {
   $("map-title").textContent = scene?.mapTitle || (path ? nameOf(path).replace(/\.osu$/i, "") : "");
   $("map-version").textContent = scene?.version ?? "";
   $("map-version").hidden = !scene?.version;
   $("difficulty").title = path;
-  const name = path ? nameOf(path) : "";
-  // The name is cut in the middle: the head shrinks with an ellipsis, the tail ("[Hard].osu") stays.
-  const tail = /\[[^\]]*\]\.osu$/i.exec(name)?.[0] ?? name.slice(-Math.min(name.length, 12));
-  $("file-name-head").textContent = name.slice(0, name.length - tail.length);
-  $("file-name-tail").textContent = tail;
-  $("file-name").title = path;
-  $("file-name").hidden = !path;
-  $("play-state").textContent = view.playing ? "Playing" : "Stopped";
-  $("play-state").dataset.playing = String(!!view.playing);
-  $("play-state").hidden = !scene;
-  const selected = scene?.selection?.count ?? 0;
-  $("selection-count").textContent = selected + (selected === 1 ? " hit selected" : " hits selected");
-  $("selection-count").hidden = !selected;
-  const device = view.outputDevice || "";
-  $("audio").textContent = device || "Audio output";
-  $("audio").setAttribute("aria-label", device ? "Audio output: " + device : "Audio output");
-  $("audio").title = device ? "Audio output: " + device : "Audio output";
 }
 
 // The Svelte bundle loads after this script, so a part counts as missing only after the page has loaded.
@@ -1037,15 +1013,10 @@ function drawBookmarks(ctx, marks, start, zoom, width) {
 function renderScene() {
   renderLanes();
   $("snap").checked = scene.snap;
-  const hits = (scene.moments ?? []).reduce((sum, moment) => sum + (moment[3]?.length ?? 0), 0);
-  // Shown lanes only: a removed (hidden) lane keeps its model row but no header.
-  const lanes = scene.laneOrder?.length ?? scene.lanes?.length ?? 0;
-  $("hit-lane-counts").textContent = hits + (hits === 1 ? " hit · " : " hits · ") + lanes + (lanes === 1 ? " lane" : " lanes");
   $("object-lines").checked = view.objectLines;
   setValue("snap-mode", scene.snapMode);
   setValue("beats", scene.beats);
   setValue("divisor", scene.divisor);
-  setValue("zoom", Math.log10(scene.zoom));
   setValue("lane-height", scene.rowHeight);
   renderSelection();
   const difficulty = $("difficulty");
@@ -2507,7 +2478,7 @@ function changeView(start, zoom, rowHeight = scene.rowHeight, rowAnchorY = 0) {
       resizeLaneHeaders(rowHeight);
       scroll.scrollTop = (previousScroll + rowAnchorY) * rowHeight / previousHeight - rowAnchorY;
     }
-    setValue("zoom", Math.log10(zoom));
+    window.dawsuUi?.viewport?.(zoom, rowHeight);
     setValue("lane-height", rowHeight);
     refreshLaneToolbar();
     handOverHitCard(null);
@@ -2523,7 +2494,7 @@ function changeView(start, zoom, rowHeight = scene.rowHeight, rowAnchorY = 0) {
         resizeLaneHeaders(previousHeight);
         scroll.scrollTop = previousScroll;
       }
-      setValue("zoom", Math.log10(previousZoom));
+      window.dawsuUi?.viewport?.(previousZoom, previousHeight);
       setValue("lane-height", previousHeight);
       paintSoon();
       throw error;
@@ -3399,7 +3370,6 @@ function fitTimeline() {
     changeView(0, grid.clientWidth / view.duration);
   }
 }
-$("fit").addEventListener("click", fitTimeline);
 $("ruler-fit").addEventListener("click", fitTimeline);
 $("ruler-waveform").addEventListener("click", () => {
   if (scene && !view.busy && !waveformDrag) {
@@ -3414,13 +3384,6 @@ for (const [id, action] of [["ruler-zoom-out", "zoomOut"], ["ruler-zoom-in", "zo
   $(id).addEventListener("click", () => {
     if (scene && !view.busy) command(action);
   });
-}
-$("zoom").addEventListener("input", () => {
-  if (requests < 2) changeView(scene.viewStart, 10 ** +$("zoom").value);
-});
-$("zoom").addEventListener("change", () => changeView(scene.viewStart, 10 ** +$("zoom").value));
-for (const button of speedButtons) {
-  button.addEventListener("click", () => act({ kind: "speed", value: Number(button.dataset.playbackSpeed) }));
 }
 
 function input(type, value, min, max, step = 1) {
@@ -3544,7 +3507,7 @@ function editBookmark(mark) {
 
 // The Export window opens beside the editor. Generate, Copy and Merge settings stay until it replaces them.
 $("export-entry").addEventListener("click", () => {
-  invoke("open_export_window").catch((error) => { $("status").textContent = String(error); });
+  invoke("open_export_window").catch((error) => { setStatusNotice(String(error)); });
 });
 
 function openCopy() {
@@ -3691,17 +3654,14 @@ function openCopy() {
     details, error,
   ], [["Cancel", closeModal], ["Review output", submit, true]]);
 }
-$("next-output-problem").addEventListener("click", () => showOutputProblem(outputProblemIndex + 1));
-$("warnings").addEventListener("click", () => {
-  modal("warnings", "Audio warnings", view.warnings.map(paragraph), [["Close", closeModal, true]]);
-});
 const playbackStartChoices = [
   ["cursor", "Cursor"], ["left", "Left locator"],
   ["selection", "Selection"], ["selection_or_left", "Selection or left locator"],
 ];
 
-$("audio").addEventListener("click", () => run(async () => {
-  const settings = await invoke("audio_outputs", { backend: null });
+function openAudioDialog() {
+  return run(async () => {
+    const settings = await invoke("audio_outputs", { backend: null });
   const backend = document.createElement("select");
   const output = document.createElement("select");
   const buffer = input("number", settings.bufferMs ?? "", 10, 500);
@@ -3801,7 +3761,32 @@ $("audio").addEventListener("click", () => run(async () => {
     labeled("Mute song", mute), labeled("Song offset (ms)", offset),
     labeled("Start from", start), labeled("Return on stop", returnOnStop),
   ], [["Done", closeModal, true]]);
-}));
+  });
+}
+
+function statusBarAction(kind, ...args) {
+  switch (kind) {
+    case "speed":
+      return act({ kind: "speed", value: args[0] });
+    case "nextOutputProblem":
+      return showOutputProblem(outputProblemIndex + 1);
+    case "warnings":
+      modal("warnings", "Audio warnings", view.warnings.map(paragraph), [["Close", closeModal, true]]);
+      return;
+    case "cancelJob":
+      return act({ kind: "cancel_job" });
+    case "fit":
+      return fitTimeline();
+    case "zoom": {
+      const [logZoom, live] = args;
+      if (!scene) return;
+      if (!live || requests < 2) return changeView(scene.viewStart, 10 ** logZoom);
+      return;
+    }
+    case "audio":
+      return openAudioDialog();
+  }
+}
 
 $("song-mute").addEventListener("click", () => act({ kind: "song_muted", on: !view.songMuted }, false));
 $("song-solo").addEventListener("click", () => act({ kind: "song_solo", on: !view.songSolo }, false));

@@ -3,9 +3,8 @@ import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 
 test("transport speed buttons offer the C# editor's supported pitch-preserving speeds", async () => {
-  const html = await readFile(new URL("../dist/index.html", import.meta.url), "utf8");
-  const speeds = [...html.matchAll(/<button[^>]*data-playback-speed="([^"]+)"/g)].map(([, speed]) => Number(speed));
-  assert.deepEqual(speeds, [0.25, 0.5, 0.75, 1, 1.25, 1.5]);
+  const { PLAYBACK_SPEEDS } = await import("../ui/src/lib/statusbar.js");
+  assert.deepEqual(PLAYBACK_SPEEDS, [0.25, 0.5, 0.75, 1, 1.25, 1.5]);
 });
 
 test("Audio controls offer the four playback start positions and Return on stop", async () => {

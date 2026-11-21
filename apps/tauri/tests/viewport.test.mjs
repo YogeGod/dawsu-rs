@@ -65,10 +65,8 @@ function snapBundle() {
 }
 
 test("Fit shows the whole difficulty from zero without changing lane height", async () => {
-  const { calls, get, settle } = await frontend();
-  const fit = get("fit").events.get("click");
-  assert.equal(typeof fit, "function");
-  fit();
+  const { calls, evaluate, settle } = await frontend();
+  evaluate("statusBarAction('fit')");
   await settle();
   assert.deepEqual(calls, [{ scene: false, action: { kind: "view", start: 0, zoom: 0.1, row_height: 30 } }]);
 });
@@ -77,7 +75,7 @@ test("Fit shows a 30-minute song in a 1000 px timeline, and wheel zoom out never
   const { calls, evaluate, get, settle } = await frontend();
   const duration = 30 * 60_000;
   evaluate(`view.duration = ${duration}`);
-  get("fit").events.get("click")();
+  evaluate("statusBarAction('fit')");
   await settle();
   assert.deepEqual(calls.pop(), { scene: false, action: { kind: "view", start: 0, zoom: 1000 / duration, row_height: 30 } });
   evaluate(`scene.zoom = ${1000 / duration}; scene.viewStart = 0`);
@@ -88,8 +86,8 @@ test("Fit shows a 30-minute song in a 1000 px timeline, and wheel zoom out never
 
 test("the zoom slider starts at the timeline's zoom-out limit", async () => {
   const { evaluate } = await frontend();
-  const sliderMin = +html.match(/<input[^>]*min="([^"]+)"[^>]*id="zoom"/)[1];
-  assert.equal(sliderMin, +Math.log10(evaluate("minZoom")).toFixed(3));
+  const { ZOOM_MIN } = await import("../ui/src/lib/statusbar.js");
+  assert.equal(ZOOM_MIN, +Math.log10(evaluate("minZoom")).toFixed(3));
   assert.ok(evaluate("minZoom") <= 1000 / (30 * 60_000), "Fit shows a 30-minute song in 1000 px");
 });
 

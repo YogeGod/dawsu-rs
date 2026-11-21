@@ -212,30 +212,7 @@
     </aside>
   </main>
 </section>
-<div id="statusbar">
-  <div id="playback-rates" class="playback-rates" role="group" aria-label="Playback speed" title="Playback speed with pitch preserved" hidden>
-    <button type="button" data-playback-speed=".25" aria-label="Playback speed 25%" aria-pressed="false" data-doc>25%</button>
-    <button type="button" data-playback-speed=".5" aria-label="Playback speed 50%" aria-pressed="false" data-doc>50%</button>
-    <button type="button" data-playback-speed=".75" aria-label="Playback speed 75%" aria-pressed="false" data-doc>75%</button>
-    <button type="button" data-playback-speed="1" aria-label="Playback speed 100%" aria-pressed="true" data-doc>100%</button>
-    <button type="button" data-playback-speed="1.25" aria-label="Playback speed 125%" aria-pressed="false" data-doc>125%</button>
-    <button type="button" data-playback-speed="1.5" aria-label="Playback speed 150%" aria-pressed="false" data-doc>150%</button>
-  </div>
-  <span id="play-state" class="play-state" hidden></span>
-  <span id="selection-count" class="selection-count" hidden></span>
-  <span id="status" role="status"></span>
-  <span id="problem-summary" class="problem-summary" hidden><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.5 14.5 13.5h-13zM8 6.5v3M8 11.5v.01"/></svg><span id="problem-summary-text"></span></span>
-  <button id="next-output-problem" hidden>Next problem</button><button id="warnings" hidden>Audio warnings</button><button id="cancel-job" data-action="cancel_job" hidden>Cancel job</button>
-  <div class="status-right">
-    <span id="file-name" class="status-file" hidden><span id="file-name-head"></span><span id="file-name-tail"></span></span>
-    <span id="hit-lane-counts" class="status-counts" hidden></span>
-    <div id="status-view" class="status-view" role="group" aria-label="Timeline zoom" hidden>
-      <button id="fit" title="Fit the difficulty in the timeline" data-doc>Fit</button>
-      <input type="range" min="-3.301" max=".477" step=".01" id="zoom" aria-label="Timeline zoom" title="Timeline zoom" data-map>
-    </div>
-    <button id="audio" class="status-device" aria-label="Audio output" title="Audio output">Audio output</button>
-  </div>
-</div>
+<div id="statusbar" data-ui-mount="status-bar"><span id="status" role="status"></span></div>
 <div data-ui-mount="hit-card"></div>
 <dialog id="dialog"><h2 id="dialog-title"></h2><div id="dialog-body"></div><div class="row" id="dialog-actions"></div></dialog>
 </body></html>

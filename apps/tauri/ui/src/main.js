@@ -29,13 +29,14 @@ import InspectorLane from "./parts/InspectorLane.svelte";
 import InspectorSelection from "./parts/InspectorSelection.svelte";
 import MapPreview from "./parts/MapPreview.svelte";
 import SnapSlider from "./parts/SnapSlider.svelte";
+import StatusBar from "./parts/StatusBar.svelte";
 import ToolPills from "./parts/ToolPills.svelte";
 import TransportBar from "./parts/TransportBar.svelte";
 
 // Each part replaces the children of its [data-ui-mount="name"] host in index.html.
 const parts = {
   tools: ToolPills, snap: SnapSlider, audition: AuditionPill, transport: TransportBar,
-  playhead: PlayheadGroup, lanes: LaneHeaders,
+  playhead: PlayheadGroup, lanes: LaneHeaders, "status-bar": StatusBar,
   // The timeline's hit hover card, at body level.
   "hit-card": HitCard,
   // The popup the menu bar, the right-click tool picker and the lane menu share (#editor-menu).
@@ -132,3 +133,15 @@ export function wheelSnap(finer) {
 
 // The Triplets box in the Snap menu shows the group.
 export const snapGroup = () => bridge.snapGroup?.name;
+
+export function statusNotice(text) {
+  bridge.statusNotice = text || "";
+}
+
+export function viewport(zoom, rowHeight) {
+  bridge.setViewport(zoom, rowHeight);
+}
+
+export function laneOptions(usedOnly, filter) {
+  bridge.setLaneOptions(usedOnly, filter);
+}
