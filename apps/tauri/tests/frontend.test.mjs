@@ -91,13 +91,13 @@ test("waveform resizing previews, cancels and resets without touching the docume
   assert.ok(resizeEvents.has("pointerdown"));
   action("pointerdown",100);
   action("pointermove",140);
-  assert.equal(properties.get("--wave-height"),"96px");
+  assert.equal(properties.get("--wave-height"),"124px");
   action("pointercancel",140);
-  assert.equal(properties.get("--wave-height"),"56px");
+  assert.equal(properties.get("--wave-height"),"84px");
   action("keydown",0,"Home");
   assert.equal(properties.get("aria-valuenow"),"0");
   action("dblclick",100);
-  assert.equal(properties.get("--wave-height"),"56px");
+  assert.equal(properties.get("--wave-height"),"84px");
   assert.equal(calls.length,0);
 });
 

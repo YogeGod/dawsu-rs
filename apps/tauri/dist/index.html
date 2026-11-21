@@ -175,17 +175,20 @@
             </div>
           </div>
           <div class="lane-title song-row">
-            <span>Song audio</span>
-            <div class="row">
-              <button id="song-mute" type="button" aria-label="Mute song" aria-pressed="false" title="Mute song" data-doc>M</button>
-              <button id="song-solo" type="button" aria-label="Solo song" aria-pressed="false" title="Solo song" data-doc>S</button>
-              <button id="ruler-waveform" type="button" aria-label="Show waveform" aria-pressed="true" title="Show waveform" data-doc><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 6v4m3-7v10m3-8v6m3-8v10m3-7v4"/></svg></button>
+            <span class="song-strip" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M2 10v3M6 6v11M10 3v18M14 8v7M18 5v13M22 10v3"/></svg></span>
+            <div class="song-body">
+              <span class="song-title">Song · objects</span>
+              <div class="row">
+                <button id="song-mute" type="button" aria-label="Mute song" aria-pressed="false" title="Mute song" data-doc>M</button>
+                <button id="song-solo" type="button" aria-label="Solo song" aria-pressed="false" title="Solo song" data-doc>S</button>
+                <button id="ruler-waveform" type="button" aria-label="Show waveform" aria-pressed="true" title="Show waveform" data-doc><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 13a2 2 0 0 0 2-2V7a2 2 0 0 1 4 0v13a2 2 0 0 0 4 0V4a2 2 0 0 1 4 0v13a2 2 0 0 0 4 0v-4a2 2 0 0 1 2-2"/></svg></button>
+              </div>
             </div>
           </div>
         </div>
         <canvas id="ruler" aria-label="Time ruler, song waveform and gameplay objects"></canvas>
         <div id="waveform-resize" role="separator" tabindex="0" aria-orientation="horizontal"
-             aria-label="Waveform height" aria-valuemin="0" aria-valuemax="200" aria-valuenow="56"
+             aria-label="Waveform height" aria-valuemin="0" aria-valuemax="200" aria-valuenow="84"
              title="Drag to resize waveform. Double-click to reset."></div>
       </div>
       <div class="scroll" id="scroll"><div id="lanes" data-ui-mount="lanes"></div><canvas id="grid" tabindex="-1" aria-label="Hitsound timeline" aria-haspopup="menu" aria-expanded="false"></canvas></div>

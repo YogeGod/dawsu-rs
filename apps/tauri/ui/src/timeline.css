@@ -73,3 +73,90 @@
 .arrange[data-lane-names="false"] .lane-tool-label span {
   display: none;
 }
+
+/* Song · objects header (v3 §4): a 24 px teal strip, the name, then M, S and the waveform switch,
+   on the teal tint. Under 52 px (app.js sets data-song-row) only the buttons stay. */
+.ruler-sidebar .song-row {
+  justify-content: flex-start;
+  gap: 0;
+  padding: 0;
+  overflow: hidden;
+  background: var(--editor-tealtint);
+}
+.song-strip {
+  display: grid;
+  place-items: center;
+  align-self: stretch;
+  flex: none;
+  width: 24px;
+  background: var(--editor-teal);
+  color: var(--editor-ink);
+}
+.song-strip svg {
+  width: 13px;
+  height: 13px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+.song-body {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 0 10px;
+}
+.song-title {
+  overflow: hidden;
+  color: var(--editor-text);
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.arrange[data-song-row="short"] .song-title {
+  display: none;
+}
+.ruler-sidebar .song-row .row {
+  gap: 4px;
+}
+.ruler-sidebar .song-row button {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  min-width: 24px;
+  height: 25px;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.35);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.18), var(--shadow-raised);
+  color: var(--editor-secondary);
+  font: 600 12px var(--font-ui);
+}
+.ruler-sidebar .song-row button:hover:not(:disabled) {
+  color: var(--editor-text);
+}
+.ruler-sidebar #song-mute[aria-pressed="true"] {
+  background: var(--editor-accent);
+  color: var(--editor-ink);
+}
+.ruler-sidebar #song-solo[aria-pressed="true"] {
+  background: var(--editor-warning);
+  color: var(--editor-ink);
+}
+.ruler-sidebar #ruler-waveform[aria-pressed="true"] {
+  background: var(--editor-teal);
+  color: var(--editor-ink);
+}
+.ruler-sidebar .song-row button:focus-visible {
+  outline: 2px solid var(--editor-focus);
+  outline-offset: 0;
+}
+.song-row button svg {
+  width: 14px;
+  height: 14px;
+}

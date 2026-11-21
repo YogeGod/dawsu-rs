@@ -494,6 +494,8 @@ test("the lane toolbar holds zoom, Fit all and lane height; the Song row holds t
   // v3 §4 and §8: the waveform switch sits in the Song row, not the lane toolbar.
   const songRow = html.slice(html.indexOf('class="lane-title song-row'), html.indexOf('id="ruler"'));
   assert.match(songRow, /id="song-mute"[\s\S]*id="song-solo"[\s\S]*id="ruler-waveform"/);
+  // v3 §4: the Song · objects header, a teal strip, its name, then M, S and the waveform switch.
+  assert.match(songRow, /class="song-strip"[\s\S]*Song · objects[\s\S]*id="song-mute"/);
   // Follow lives in the Playhead group and the Playback menu (v3 §8 drops the toolbar's locate button).
   assert.doesNotMatch(html + app, /ruler-follow/);
 
@@ -518,6 +520,17 @@ test("the lane toolbar holds zoom, Fit all and lane height; the Song row holds t
   click("ruler-fit");
   await settle();
   assert.deepEqual(calls.pop().action, {kind:"view",start:0,zoom:.1,row_height:30});
+});
+
+test("the Song row opens 84 px tall (v3) and drops its name when the row is too short for two lines", async () => {
+  const { evaluate, get } = await frontend();
+  assert.equal(evaluate("defaultWaveformHeight"), 84);
+  evaluate("setWaveformHeight(84)");
+  assert.equal(get("editor-arrange").dataset.songRow, "tall");
+  evaluate("setWaveformHeight(51)");
+  assert.equal(get("editor-arrange").dataset.songRow, "short");
+  evaluate("setWaveformHeight(0)");
+  assert.equal(get("editor-arrange").dataset.songRow, "short");
 });
 
 test("a lane toolbar button at its limit shows disabled", async () => {

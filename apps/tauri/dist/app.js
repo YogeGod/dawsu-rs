@@ -18,7 +18,8 @@ let overviewDrag = null;
 let overviewTarget = null;
 let overviewNavigation = null;
 const rulerBandHeight = 40;
-const defaultWaveformHeight = 56;
+// v3 §4: the Song · objects row is 84 px.
+const defaultWaveformHeight = 84;
 let waveformHeight = defaultWaveformHeight;
 let visibleWaveformHeight = defaultWaveformHeight;
 const bookmarkFlagHeight = 22;
@@ -1386,83 +1387,99 @@ function strokeHitDiamond(ctx, x, y, size) {
   ctx.stroke();
 }
 
-// Object circles grow with zoom as in the design (f11): half a beat on screen × 0.8, kept
-// between 18 and 30 px, from the timing at the object's own time and never taller than the lane.
-const objectReach = 15;
-let beatLengthCache = null;
+// v3 timeline-spec §9: object circles are a fixed 34 px at every zoom (never taller than the Song
+// row), overlapping when zoomed out, later objects on top. Plain circles in the map's combo colour
+// with a white ring and the combo number: the osu! skin textures are CC BY-NC, so none ship.
+const objectSize = 34;
+const objectReach = objectSize / 2;
+const objectWhite = "#e6eef2";
 
-// [start, beat length] of each timing, sorted by start: built once per timing snapshot.
-function beatLengths(sections) {
-  if (beatLengthCache?.sections !== sections) {
-    const beats = (sections ?? []).filter(([, beat]) => beat > 0).map(([origin, beat]) => [origin, beat])
-      .sort((first, second) => first[0] - second[0]);
-    beatLengthCache = { sections, beats };
-  }
-  return beatLengthCache.beats;
+// The combo colour of an object, or readout white without combo data.
+function comboOf(object) {
+  const [number, colour] = scene.combos?.objects?.[object] ?? [];
+  return { number, colour: scene.combos?.colours?.[colour] ?? objectWhite };
 }
 
-function objectDiameter(beats, time, zoom, laneHeight) {
-  // Binary search for the last timing starting at or before the time; before it, the first timing.
-  let low = 0;
-  let high = beats.length;
-  while (low < high) {
-    const middle = (low + high) >> 1;
-    if (beats[middle][0] <= time) low = middle + 1;
-    else high = middle;
+// A slider track: the combo colour 38 % into #111111 (timeline-spec §9).
+const trackShades = new Map();
+function trackShade(colour) {
+  if (!trackShades.has(colour)) {
+    const channels = [1, 3, 5].map(at => Math.round(17 + (parseInt(colour.slice(at, at + 2), 16) - 17) * .38));
+    trackShades.set(colour, "#" + channels.map(value => value.toString(16).padStart(2, "0")).join(""));
   }
-  const beat = beats[Math.max(0, low - 1)]?.[1];
-  const size = beat ? limit(Math.round(beat * zoom / 2 * .8), 18, 30) : 18;
-  return Math.max(0, Math.min(size, laneHeight));
+  return trackShades.get(colour);
 }
 
-function drawGameplay(ctx, gameplay, xOf, y, width, diameterAt) {
+function roundedTrack(ctx, left, top, width, height, corner) {
+  ctx.beginPath();
+  if (ctx.roundRect) ctx.roundRect(left, top, width, height, corner);
+  else {
+    // Older macOS and Linux WebViews have no roundRect(); arcTo() draws the same shape.
+    const right = left + width;
+    const bottom = top + height;
+    ctx.moveTo(left + corner, top);
+    ctx.arcTo(right, top, right, bottom, corner);
+    ctx.arcTo(right, bottom, left, bottom, corner);
+    ctx.arcTo(left, bottom, left, top, corner);
+    ctx.arcTo(left, top, right, top, corner);
+    ctx.closePath();
+  }
+}
+
+function drawGameplay(ctx, gameplay, xOf, y, width, diameter) {
   if (!gameplay) return;
-  for (const [kind, start, end] of gameplay.spans) {
+  ctx.lineWidth = 2;
+  for (const [kind, start, end, object] of gameplay.spans) {
     const left = xOf(start);
     const right = xOf(end);
     if (right < -objectReach || left > width + objectReach) continue;
     if (kind === "slider") {
-      const track = diameterAt(start) * .66;
+      const track = diameter * .66;
       const top = y - track / 2;
-      const bottom = top + track;
-      const corner = Math.min(track, right - left) / 2;
-      ctx.fillStyle = "#62d6cfd9";
-      ctx.beginPath();
-      if (ctx.roundRect) ctx.roundRect(left, top, right - left, track, corner);
-      else {
-        // Older macOS and Linux WebViews have no roundRect(); arcTo() draws the same shape.
-        ctx.moveTo(left + corner, top);
-        ctx.arcTo(right, top, right, bottom, corner);
-        ctx.arcTo(right, bottom, left, bottom, corner);
-        ctx.arcTo(left, bottom, left, top, corner);
-        ctx.arcTo(left, top, right, top, corner);
-        ctx.closePath();
-      }
+      ctx.fillStyle = trackShade(comboOf(object).colour);
+      roundedTrack(ctx, left, top, right - left, track, Math.min(track, right - left) / 2);
       ctx.fill();
+      // A 2 px white edge at 85 % inside the track.
+      const inner = Math.max(0, right - left - 2);
+      ctx.strokeStyle = "#ffffffd9";
+      roundedTrack(ctx, left + 1, top + 1, inner, track - 2, Math.min(track - 2, inner) / 2);
+      ctx.stroke();
       continue;
     }
-    ctx.fillStyle = "#e6eef2";
+    ctx.fillStyle = objectWhite;
     const from = Math.max(0, left);
     const to = Math.min(width, right);
     ctx.fillRect(from, y - 2.5, Math.max(1, to - from), 5);
   }
-  const radiusOf = nodeRadii(gameplay.points, diameterAt);
-  ctx.lineWidth = 2;
-  ctx.strokeStyle = "#1c2727";
+  const radiusOf = nodeRadii(gameplay.points, diameter);
+  ctx.font = "600 16px Inter, system-ui, sans-serif";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
   for (const [kind, time, object] of gameplay.points) {
     const x = xOf(time);
     if (x < -objectReach || x > width + objectReach) continue;
-    ctx.fillStyle = "#e6eef2";
+    const { number, colour } = comboOf(object);
+    const { radius, head } = radiusOf(kind, time, object);
+    ctx.fillStyle = colour;
+    ctx.strokeStyle = "#ffffff";
     ctx.beginPath();
-    ctx.arc(x, y, radiusOf(kind, time, object), 0, Math.PI * 2);
+    ctx.arc(x, y, radius, 0, Math.PI * 2);
     ctx.fill();
     ctx.stroke();
+    // The combo number on a circle and a slider head, always shown.
+    if (head && number) {
+      ctx.fillStyle = "#ffffff";
+      ctx.fillText(String(number), x, y);
+    }
   }
+  ctx.textAlign = "start";
+  ctx.textBaseline = "alphabetic";
   ctx.lineWidth = 1;
 }
 
 // A slider's first and last nodes are full circles; repeats between them sit on the track.
-function nodeRadii(points, diameterAt) {
+// Only a circle and a slider's head carry the combo number.
+function nodeRadii(points, diameter) {
   const sliderEnds = new Map();
   for (const [kind, time, object] of points) {
     if (kind !== "slider") continue;
@@ -1473,7 +1490,7 @@ function nodeRadii(points, diameterAt) {
   return (kind, time, object) => {
     const ends = kind === "slider" ? sliderEnds.get(object) : null;
     const repeat = ends && time !== ends[0] && time !== ends[1];
-    return repeat ? diameterAt(ends[0]) * .66 / 2 : diameterAt(time) / 2;
+    return { radius: repeat ? diameter * .66 / 2 : diameter / 2, head: !ends || time === ends[0] };
   };
 }
 
@@ -1648,9 +1665,7 @@ function paint() {
   const waveformMiddle = (r.height + rulerBandHeight) / 2;
   const waveAmplitude = Math.min(waveformHeight, Math.max(0, r.height - rulerBandHeight)) / 2;
   if (waveAmplitude > 0) waveform(r.ctx, r.width, waveformMiddle, waveAmplitude, start, r.width / zoom);
-  const beats = beatLengths(scene.sections);
-  const objectSize = time => objectDiameter(beats, time, zoom, r.height - rulerBandHeight);
-  drawGameplay(r.ctx, scene.gameplay, xOf, waveformMiddle, r.width, objectSize);
+  drawGameplay(r.ctx, scene.gameplay, xOf, waveformMiddle, r.width, Math.max(0, Math.min(objectSize, r.height - rulerBandHeight)));
   // v3 §5: the 40 px ruler, #0c0c0c with a 1 px --editor-selected bottom edge, bar numbers 13 px/600.
   r.ctx.fillStyle = slateTimeline.ruler;
   r.ctx.fillRect(0, 0, r.width, rulerBandHeight);
@@ -1903,6 +1918,8 @@ function setWaveformHeight(requested) {
   if (waveformHeight) visibleWaveformHeight = waveformHeight;
   $("ruler-waveform").setAttribute?.("aria-pressed", String(waveformHeight > 0));
   $("editor-arrange").style.setProperty("--wave-height", waveformHeight + "px");
+  // Under 52 px the Song row has room for one line: its buttons stay, its name goes.
+  $("editor-arrange").dataset.songRow = waveformHeight >= 52 ? "tall" : "short";
   waveformGrip.setAttribute("aria-valuenow", String(waveformHeight));
   waveformGrip.setAttribute("aria-valuetext", waveformHeight ? waveformHeight + " pixels" : "Waveform hidden");
   paintSoon();
@@ -2012,14 +2029,13 @@ function waveformTarget(ms, y, height) {
   const dy = Math.abs(y - (height + rulerBandHeight) / 2);
   if (!scene.gameplay || dy > objectReach) return null;
   // Hit the circles and slider tracks at the sizes drawGameplay() draws them.
-  const beats = beatLengths(scene.sections);
-  const diameterAt = time => objectDiameter(beats, time, scene.zoom, height - rulerBandHeight);
-  const radiusOf = nodeRadii(scene.gameplay.points, diameterAt);
+  const diameter = Math.max(0, Math.min(objectSize, height - rulerBandHeight));
+  const radiusOf = nodeRadii(scene.gameplay.points, diameter);
   let target = null;
   let nearest = Infinity;
   for (const [kind, time, object] of scene.gameplay.points) {
     const distance = Math.hypot((time - ms) * scene.zoom, dy);
-    if (distance > objectReach || distance > radiusOf(kind, time, object)) continue;
+    if (distance > objectReach || distance > radiusOf(kind, time, object).radius) continue;
     if (distance < nearest) {
       target = { object, time, node: true };
       nearest = distance;
@@ -2030,7 +2046,7 @@ function waveformTarget(ms, y, height) {
   const spans = scene.gameplay.spans;
   for (let i = spans.length - 1; i >= 0; i--) {
     const [kind, start, end, object] = spans[i];
-    if (start <= ms && ms <= end && dy <= (kind === "slider" ? diameterAt(start) * .66 / 2 : 2.5)) {
+    if (start <= ms && ms <= end && dy <= (kind === "slider" ? diameter * .66 / 2 : 2.5)) {
       return { object, time: start, node: false };
     }
   }

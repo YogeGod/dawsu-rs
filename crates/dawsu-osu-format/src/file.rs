@@ -368,6 +368,16 @@ impl OsuFile {
         text.split_once(':').map(|(_, v)| v.trim().to_string())
     }
 
+    /// Every `key:value` of `section` in file order, keys and values trimmed (as lazer reads
+    /// `[Colours]`, `LegacyDecoder.cs:130-145` at 131fe72). Lines without a colon are left out.
+    pub fn section_values(&self, section_name: &str) -> Vec<(String, String)> {
+        self.lines.iter()
+            .filter(|line| line.section.as_deref() == Some(section_name))
+            .filter_map(|line| logical_text(&line.content, Some(section_name)))
+            .filter_map(|text| text.split_once(':').map(|(k, v)| (k.trim().to_string(), v.trim().to_string())))
+            .collect()
+    }
+
     /// The index of the last `key:value` line for `key` in `section`.
     fn value_line(&self, section_name: &str, key: &str) -> Option<usize> {
         self.lines.iter().enumerate().rev().find_map(|(i, line)| {

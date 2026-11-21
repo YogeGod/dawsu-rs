@@ -145,9 +145,11 @@ test("timeline canvases paint with the design's colours", async () => {
     assert.ok(ruler.fills.includes(shade), `ruler waveform ${shade}`);
     assert.ok(overview.fills.includes(shade), `overview waveform ${shade}`);
   }
-  // Gameplay objects: --editor-readout bodies ringed in --editor-tealtint, teal slider bodies.
-  assert.deepEqual(ruler.arcs, [{ fill: "#e6eef2", stroke: "#1c2727" }, { fill: "#e6eef2", stroke: "#1c2727" }]);
-  assert.ok(ruler.fills.includes("#62d6cfd9"), "slider body");
+  // Gameplay objects without combo data: --editor-readout circles with a white ring (timeline-spec §9);
+  // slider tracks are that colour 38 % into #111111 with an 85 % white edge.
+  assert.deepEqual(ruler.arcs, [{ fill: "#e6eef2", stroke: "#ffffff" }, { fill: "#e6eef2", stroke: "#ffffff" }]);
+  assert.ok(ruler.fills.includes("#626567"), "slider body");
+  assert.ok(ruler.strokes.includes("#ffffffd9"), "slider edge");
   assert.ok(ruler.fills.includes("#e6eef2"), "spinner body");
   assert.ok(ruler.fills.includes("#ffffff"), "ruler bar numbers white (v3 §5)");
   assert.ok(ruler.strokes.includes("#858585"), "locators in --editor-disabled");

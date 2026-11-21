@@ -62,10 +62,10 @@ test("the ruler paints a teal-tint and the overview a neutral background under t
     scene.gameplay = {points: [["circle", 200], ["slider", 600]], spans: [["slider", 600, 800], ["spinner", 900, 1000]]};
     paint();`, context);
   assert.deepEqual(get("ruler").objects, [
-    { x: 50, y: 60, radius: 9, afterWaveform: true },
-    { x: 150, y: 60, radius: 9, afterWaveform: true },
+    { x: 50, y: 60, radius: 17, afterWaveform: true },
+    { x: 150, y: 60, radius: 17, afterWaveform: true },
   ]);
-  assert.ok(get("ruler").fills.includes("#62d6cfd9"));
+  assert.ok(get("ruler").fills.includes("#626567"), "slider track");
   assert.ok(get("ruler").fills.includes("#e6eef2"));
   assert.deepEqual(get("overview").objects, []);
   get("grid").fills.length = 0;
