@@ -1,6 +1,6 @@
 <script>
   import { bridge } from "../lib/bridge.svelte.js";
-  import { dbText, gainsAction } from "../lib/mixer.js";
+  import { dbText, gainsAction, songColour } from "../lib/mixer.js";
   import { laneIcons } from "../lib/lanes.js";
   import Fader from "./Fader.svelte";
   import MixerStrip from "./MixerStrip.svelte";
@@ -20,21 +20,30 @@
   // Light updates, as the song row and the Audio dialog send them.
   const act = action => globalThis.act?.(action, false);
   const lane = (...args) => globalThis.laneHeaderAction?.(...args);
-  const level = which => value => act(gainsAction(bridge.view, which, value));
+  // Each fader's last value until the editor answers it, so moving one never sends the other back.
+  const pending = {};
+  const level = which => async value => {
+    pending[which] = value;
+    try {
+      await act(gainsAction(bridge.view, which, value, pending));
+    } finally {
+      if (pending[which] === value) delete pending[which];
+    }
+  };
 </script>
 
 <div class="mixer">
   <div class="strips" role="group" aria-label="Channels">
-    <MixerStrip label="Song" name="Song" icon={songIcon} muted={!!view?.songMuted} solo={!!view?.songSolo}
+    <MixerStrip label="Song" name="Song" icon={songIcon} colour={songColour} muted={!!view?.songMuted} solo={!!view?.songSolo}
       muteLabel="Mute song" soloLabel="Solo song" {disabled}
       onmute={() => act({ kind: "song_muted", on: !view?.songMuted })}
       onsolo={() => act({ kind: "song_solo", on: !view?.songSolo })}
-      gain={song} min={0} max={1} gainLabel="Song level" readout={song === null ? null : dbText(song)}
+      gain={song} min={0} max={1} gainLabel="Song volume" readout={song === null ? null : dbText(song)}
       onlevel={level("song")} />
     {#each strips as strip (strip.key)}
       <MixerStrip label={strip.name + ", lane " + strip.number} name={strip.name} set={strip.set} number={strip.number}
         icon={laneIcons[strip.icon] ?? laneIcons.file} colour={strip.colour} selected={strip.selected} quiet={strip.quiet}
-        muted={strip.muted} solo={strip.solo} muteLabel={"Mute " + strip.name} soloLabel={"Solo " + strip.name} {disabled}
+        muted={strip.muted} solo={strip.solo} muteLabel={"Mute " + strip.name + " (" + strip.set + ")"} soloLabel={"Solo " + strip.name + " (" + strip.set + ")"} {disabled}
         onmute={() => lane("mix", strip.row, "mute")} onsolo={() => lane("mix", strip.row, "solo")}
         onselect={event => lane("select", strip.row, event)} />
     {/each}
@@ -43,12 +52,13 @@
     <h3>Master output</h3>
     {#if device}<p class="device" title={device}>{device}</p>{/if}
     <div class="body">
-      <Fader gain={main} min={0.2} max={1} label="Master level" {disabled} onchange={level("main")} />
+      <Fader gain={main} min={0.2} max={1} label="Master volume" {disabled} onchange={level("main")} />
       <div class="readouts">
         <span class="caption">Level</span>
         <span class="box level {main === null ? 'off' : ''}">{main === null ? "" : dbText(main)}</span>
         <span class="caption">Peak</span>
         <span class="box peak off"></span>
+        <div class="peak-bars off" aria-hidden="true"><div></div><div></div></div>
       </div>
     </div>
   </section>
@@ -72,6 +82,7 @@
     gap: 2px;
     overflow-x: auto;
     overflow-y: hidden;
+    scrollbar-width: thin;
   }
   .master {
     flex: none;
@@ -126,6 +137,20 @@
     color: var(--editor-readout);
   }
   .box.off {
+    opacity: 0.45;
+  }
+  .peak-bars {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    margin-top: 2px;
+  }
+  .peak-bars div {
+    height: 4px;
+    border-radius: 2px;
+    background: rgba(0, 0, 0, 0.45);
+  }
+  .peak-bars.off {
     opacity: 0.45;
   }
 </style>

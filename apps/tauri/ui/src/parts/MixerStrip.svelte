@@ -1,5 +1,5 @@
 <script>
-  import { stripShades } from "../lib/mixer.js";
+  import { stripClickSelects, stripShades } from "../lib/mixer.js";
   import Fader from "./Fader.svelte";
 
   // One v3 mixer strip (§6, 8b footer). Pan, the meter and the peak readout have no backend yet,
@@ -10,10 +10,9 @@
 
   const shade = $derived(stripShades(colour));
 
-  // A click outside the strip's controls selects its lane, as on the lane header.
+  // A click outside the strip's controls and greyed-out parts selects its lane, as on the lane header.
   function click(event) {
-    if (disabled || event.target.closest?.("button, [role=slider]")) return;
-    onselect?.(event);
+    if (!disabled && stripClickSelects(event.target)) onselect?.(event);
   }
 </script>
 
@@ -25,7 +24,7 @@
     <button type="button" class="ms" aria-label={muteLabel} aria-pressed={muted} {disabled} onclick={onmute}>M</button>
     <button type="button" class="ms solo" aria-label={soloLabel} aria-pressed={solo} {disabled} onclick={onsolo}>S</button>
   </div>
-  <button type="button" class="box pan off" aria-label="Pan" disabled></button>
+  <div class="box pan off" aria-hidden="true"></div>
   <Fader {gain} {min} {max} label={gainLabel} {disabled} onchange={onlevel} />
   <div class="row">
     <span class="box level {readout === null ? 'off' : ''}">{readout ?? ""}</span>

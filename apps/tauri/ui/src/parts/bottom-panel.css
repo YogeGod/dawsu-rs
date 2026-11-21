@@ -21,7 +21,7 @@
   display: none;
 }
 #volume-controller-panel[data-bottom="mixer"] {
-  height: min(300px, 50cqh);
+  height: min(300px, 60cqh);
   padding-right: 0;
 }
 #volume-controller-panel[data-bottom="folded"] {

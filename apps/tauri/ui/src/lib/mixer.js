@@ -10,10 +10,12 @@ const toDb = gain => (gain > 0 ? 20 * Math.log10(gain) : -Infinity);
 const toGain = db => (db === -Infinity ? 0 : 10 ** (db / 20));
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 
-// "−3.1", "0.0", or "−∞" for silence.
+// "−3.10", "0.00" (never "−0.00"), or "−∞" for silence.
 export function dbText(gain) {
   const db = toDb(gain);
-  return db === -Infinity ? "−∞" : db.toFixed(1).replace("-", "−");
+  if (db === -Infinity) return "−∞";
+  const text = db.toFixed(2);
+  return text === "-0.00" ? "0.00" : text.replace("-", "−");
 }
 
 export function faderPosition(gain) {
@@ -39,16 +41,66 @@ export function positionGain(position, min, max) {
   return clamp(0, min, max);
 }
 
+// The places on the travel a gain's range reaches: above `top` and below `bottom` it can't go.
+export const faderReach = (min, max) => ({ top: faderPosition(max), bottom: faderPosition(min) });
+
 // Arrow keys move a fader by dB; below -60 dB it reaches silence.
 export function stepGain(gain, db, min, max) {
   const next = toDb(gain) === -Infinity ? (db > 0 ? -60 : -Infinity) : toDb(gain) + db;
   return clamp(next < -60 ? 0 : toGain(next), min, max);
 }
 
-// The editor takes both gains in one action.
-export function gainsAction(view, which, value) {
-  return { kind: "gains", song: which === "song" ? value : view?.song, main: which === "main" ? value : view?.main };
+const faderSteps = { ArrowUp: 1, ArrowRight: 1, ArrowDown: -1, ArrowLeft: -1, PageUp: 6, PageDown: -6 };
+
+// The gain a key moves a fader to, or null when the key belongs to the editor.
+export function faderKey(event, gain, min, max) {
+  if (event.ctrlKey || event.altKey || event.metaKey) return null;
+  if (event.key in faderSteps) return stepGain(gain, faderSteps[event.key], min, max);
+  if (event.key === "Home") return min;
+  if (event.key === "End") return max;
+  return null;
 }
+
+// One action in flight at a time, in order; a value that waits is replaced by a newer one.
+// `drained` runs once the last one is answered.
+export function faderSender(change, drained) {
+  let busy = false;
+  let queued = null;
+  return async function send(value) {
+    queued = value;
+    if (busy) return;
+    busy = true;
+    try {
+      while (queued !== null) {
+        const next = queued;
+        queued = null;
+        await change(next);
+      }
+    } finally {
+      busy = false;
+      drained?.();
+    }
+  };
+}
+
+// After a mouse drag Home, End and the arrow keys go back to the editor (as the snap slider).
+export const releaseFader = slot => slot?.blur?.();
+
+// The editor takes both gains in one action: the moved fader's value and the other fader's last
+// sent value while the editor has not answered it yet, else the editor's.
+export function gainsAction(view, which, value, pending = {}) {
+  return {
+    kind: "gains",
+    song: which === "song" ? value : pending.song ?? view?.song,
+    main: which === "main" ? value : pending.main ?? view?.main,
+  };
+}
+
+// A click on a strip selects its lane only outside its controls and its greyed-out parts.
+export const stripClickSelects = target => !target?.closest?.("button, .fader, .box");
+
+// The Song strip's colour: v3's teal (--editor-teal), as a hex for the strip shades.
+export const songColour = "#62d6cf";
 
 // v3: fill 20 % into #181818 (selected 42 %), edge 30 % into the canvas, name bar the colour.
 // A lane is grey unless the mapper picked a colour (ADR 0068).

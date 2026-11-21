@@ -115,7 +115,7 @@ test("the Mixer gets one strip per used lane in lane-list order, with the header
   const numbers = new Map(headers.map(row => [row.row, row.number]));
   // Slide has no hits, so it gets no strip; the numbers still match the lane headers.
   assert.deepEqual(strips.map(strip => [strip.name, strip.set, strip.icon, strip.number]),
-    [["Normal", "Soft", "normal", 1], ["Normal", "Soft", "normal", 2], ["Clap 2", "Soft", "clap", 3],
+    [["Normal", "Soft", "normal", 1], ["Normal", "Soft · skin", "normal", 2], ["Clap 2", "Soft", "clap", 3],
       ["Normal", "Drum", "normal", 6], ["Kick", "File", "file", 5]]);
   for (const strip of strips) assert.equal(strip.number, numbers.get(strip.row), strip.name);
   assert.deepEqual(strips[0], { key: "lane:0", row: 0, number: 1, name: "Normal", set: "Soft", icon: "normal",
@@ -134,6 +134,18 @@ test("the Mixer gets one strip per used lane in lane-list order, with the header
   assert.equal(clap.colour, "#d05050");
   assert.equal(clap.name, "Snare");
   assert.equal(handed[2].name, "Snare");
+});
+
+// The drum view numbers its rows by drum, so a strip takes its drum row's number and name, or no
+// number when no drum row shows that lane; never a sample lane's number that points at another row.
+test("in the drum view the strips follow the drum rows", async () => {
+  const { evaluate } = await frontend({ lanes() {}, mixer() {} });
+  evaluate(fixture);
+  evaluate(`view.drumView = { enabled: true }; scene.drumRows = [{ row: 5, name: "Kick" }, { row: null, name: "Snare" },
+    { row: 0, name: "Hat" }]; renderLanes();`);
+  const strips = JSON.parse(evaluate("JSON.stringify(currentMixer())"));
+  assert.deepEqual(strips.map(strip => [strip.row, strip.number, strip.name]),
+    [[0, 3, "Hat"], [4, "", "Normal"], [1, "", "Clap 2"], [5, 1, "Kick"], [3, "", "Kick"]]);
 });
 
 test("the switch, View settings and the View menu call the panel Volume and Mixer", async () => {

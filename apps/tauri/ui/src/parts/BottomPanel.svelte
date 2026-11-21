@@ -33,18 +33,22 @@
     open();
   }
   function click() {
-    if (dragged) dragged = false;
-    else open();
+    if (!dragged) open();
+  }
+  // The click that ends a drag comes right after pointerup; the flag clears after it.
+  function up() {
+    from = null;
+    setTimeout(() => (dragged = false));
   }
 </script>
 
 {#if folded}
-  <button type="button" class="folded" aria-label="Open Volume and Mixer" {disabled} onclick={click}
-    onpointerdown={down} onpointermove={move} onpointerup={() => (from = null)} onpointercancel={() => (from = null)}>
+  <button type="button" class="folded" aria-label="Volume and Mixer" aria-expanded="false" {disabled}
+    onclick={click} onpointerdown={down} onpointermove={move} onpointerup={up} onpointercancel={up}>
     <span class="chevron" aria-hidden="true">{@html ChevronRight}</span>
     <span class:on={tab === "volume"}>Volume</span>
     <span class:on={tab === "mixer"}>Mixer</span>
-    <span class="hint">Folded · drag up to open</span>
+    <span class="hint">Drag up to open</span>
   </button>
 {:else}
   <div class="seg" role="group" aria-label="Bottom panel">
@@ -56,6 +60,8 @@
       <button type="button" aria-pressed="true">Per object</button>
       <button type="button" aria-pressed="false" disabled>Volume curve</button>
     </div>
+  {:else}
+    <button type="button" class="reset" disabled>Reset levels</button>
   {/if}
 {/if}
 
@@ -81,6 +87,8 @@
     color: var(--editor-secondary);
     font: 500 13px var(--font-ui);
     white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
     cursor: pointer;
   }
   .seg button[aria-pressed="true"] {
@@ -90,6 +98,17 @@
   .seg button:disabled {
     color: var(--editor-disabled);
     cursor: default;
+  }
+  /* F3's Reset levels sits at the bottom of the side column; lanes have no levels to reset yet. */
+  .reset {
+    margin-top: auto;
+    align-self: flex-end;
+    min-height: 0;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--editor-disabled);
+    font: 500 13px var(--font-ui);
   }
   .folded {
     flex: 1;

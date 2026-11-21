@@ -1,38 +1,24 @@
 <script>
-  import { faderPosition, positionGain, scaleMarks, stepGain } from "../lib/mixer.js";
+  import { dbText, faderKey, faderPosition, faderReach, faderSender, positionGain, releaseFader, scaleMarks } from "../lib/mixer.js";
 
   // v3 §6 fader block: slot, dB scale and meter. A gain of null means the editor has no level for
   // this channel yet: the slot shows greyed out with no cap. The meter stays empty (no levels yet).
+  // The cap and the scale share one 138 px travel; the part the gain can't reach is dimmed.
   let { gain = null, min = 0, max = 1, label, disabled = false, onchange } = $props();
 
   let slot = $state();
-  // The value under the pointer while dragging; the editor's answer replaces it on release.
+  // The value under the pointer while dragging. After a release the cap keeps it until the last
+  // action is answered, so it never jumps back.
   let held = $state(null);
-  const shown = $derived(held ?? gain);
-
-  // One gains action in flight at a time; the newest value waits for it. After a release the cap
-  // keeps the dragged value until the last action is answered, so it never jumps back.
-  let busy = false;
   let dragging = false;
-  let queued = null;
-  async function send(value) {
-    queued = value;
-    if (busy) return;
-    busy = true;
-    try {
-      while (queued !== null) {
-        const next = queued;
-        queued = null;
-        await onchange?.(next);
-      }
-    } finally {
-      busy = false;
-      if (!dragging) held = null;
-    }
-  }
+  const shown = $derived(held ?? gain);
+  const reach = $derived(faderReach(min, max));
+  const send = faderSender(value => onchange?.(value), () => {
+    if (!dragging) held = null;
+  });
 
-  // The cap's centre sits 12 px below the slot's top at the top of its 126 px travel.
-  const gainAt = event => positionGain((event.clientY - slot.getBoundingClientRect().top - 12) / 126, min, max);
+  // The cap's centre is 6 px below the slot's top at the top of the travel.
+  const gainAt = event => positionGain((event.clientY - slot.getBoundingClientRect().top - 6) / 138, min, max);
 
   function down(event) {
     if (disabled || event.button !== 0) return;
@@ -48,19 +34,17 @@
     held = next;
     send(held);
   }
-  function up() {
+  function up(event) {
+    if (!dragging) return;
     dragging = false;
-    if (!busy) held = null;
+    releaseFader(event.currentTarget);
+    send(held);
   }
 
-  const steps = { ArrowUp: 1, ArrowRight: 1, ArrowDown: -1, ArrowLeft: -1, PageUp: 6, PageDown: -6 };
   function key(event) {
-    if (disabled || event.ctrlKey || event.altKey || event.metaKey) return;
-    let next;
-    if (event.key in steps) next = stepGain(shown, steps[event.key], min, max);
-    else if (event.key === "Home") next = min;
-    else if (event.key === "End") next = max;
-    else return;
+    if (disabled) return;
+    const next = faderKey(event, shown, min, max);
+    if (next === null) return;
     // The document's arrow keys would otherwise move the playhead.
     event.preventDefault();
     event.stopPropagation();
@@ -74,8 +58,10 @@
   {:else}
     <div class="slot" bind:this={slot} role="slider" tabindex={disabled ? -1 : 0} aria-label={label}
       aria-orientation="vertical" aria-valuemin={Math.round(min * 100)} aria-valuemax={Math.round(max * 100)}
-      aria-valuenow={Math.round(shown * 100)} aria-disabled={disabled}
+      aria-valuenow={Math.round(shown * 100)} aria-valuetext={dbText(shown) + " dB"} aria-disabled={disabled}
       onpointerdown={down} onpointermove={move} onpointerup={up} onpointercancel={up} onkeydown={key}>
+      {#if reach.top > 0}<div class="reach top" style:--fader-at={reach.top}></div>{/if}
+      {#if reach.bottom < 1}<div class="reach bottom" style:--fader-at={reach.bottom}></div>{/if}
       <div class="track"></div>
       <div class="cap" style:--fader-at={faderPosition(shown)}><span></span></div>
     </div>
@@ -122,10 +108,27 @@
     border-radius: 1px;
     background: #0a0a0a;
   }
+  /* The travel the gain can't reach, dimmed, with a line at the stop. */
+  .reach {
+    position: absolute;
+    left: 2px;
+    right: 2px;
+    background: rgba(0, 0, 0, 0.45);
+  }
+  .reach.top {
+    top: 6px;
+    height: calc(var(--fader-at) * 138px);
+    border-bottom: 1px solid var(--editor-muted);
+  }
+  .reach.bottom {
+    top: calc(6px + var(--fader-at) * 138px);
+    bottom: 6px;
+    border-top: 1px solid var(--editor-muted);
+  }
   .cap {
     position: absolute;
     left: 4px;
-    top: calc(6px + var(--fader-at) * 126px);
+    top: calc(var(--fader-at) * 138px);
     width: 22px;
     height: 12px;
     border-radius: 2px;

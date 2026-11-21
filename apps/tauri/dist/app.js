@@ -699,8 +699,9 @@ function renderLanes() {
     try { window.dawsuUi?.lanes(laneHeaders); } catch (error) { console.error(error); }
   }
   const strips = mixerModel();
-  const mixerKey = JSON.stringify(strips);
-  if (mixerKey !== JSON.stringify(mixerStrips)) {
+  const key = JSON.stringify(strips);
+  if (key !== mixerKey) {
+    mixerKey = key;
     mixerStrips = strips;
     try { window.dawsuUi?.mixer?.(mixerStrips); } catch (error) { console.error(error); }
   }
@@ -709,6 +710,7 @@ function renderLanes() {
 // The Mixer's lane strips ("mixer" part): one per lane with hits, in lane-list order (the folders
 // in their order, then the map file lanes), whatever the filter or a folded folder hides.
 let mixerStrips = [];
+let mixerKey = "";
 
 function currentMixer() {
   return mixerStrips;
@@ -721,13 +723,20 @@ function mixerModel() {
   const rows = [...sampleFolderOrder.flatMap(group => used.filter(row => scene.lanes[row].group === group)),
     ...used.filter(row => !inFolder.has(scene.lanes[row].group))];
   const anySolo = scene.lanes.some(lane => lane?.solo);
+  // The drum view numbers its rows by drum: a strip takes its drum row's number and name, or no
+  // number when no drum row shows the lane.
+  const drumRows = view.drumView?.enabled ? new Map() : null;
+  for (const header of drumRows ? laneHeaders.rows : []) {
+    if (header.type === "lane" && !drumRows.has(header.row)) drumRows.set(header.row, header);
+  }
   return rows.map(row => {
     const lane = scene.lanes[row];
     const sound = laneSound(lane);
+    const drum = drumRows?.get(row);
     return {
-      key: "lane:" + row, row, number: numbers.get(row),
-      name: renamedLanes.has(lane.colourKey) ? laneDisplayName(lane) : sound.name,
-      set: lane.group ? lane.group[0].toUpperCase() + lane.group.slice(1) : "File", icon: sound.icon,
+      key: "lane:" + row, row, number: drumRows ? drum?.number ?? "" : numbers.get(row),
+      name: drum?.name ?? (renamedLanes.has(lane.colourKey) ? laneDisplayName(lane) : sound.name),
+      set: sound.set, icon: sound.icon,
       // Yoge, 2026-11-20 (ADR 0068): a lane is grey unless the mapper picked a colour.
       colour: laneColours.get(lane.colourKey) ?? null,
       selected: selectionLaneKeys.has(lane.key), muted: !!lane.muted, solo: !!lane.solo,
