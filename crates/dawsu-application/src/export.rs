@@ -1283,4 +1283,32 @@ mod tests {
         assert_eq!(base_refusal(&mut app), "The output changed since Generate. The existing difficulty was kept.");
         assert_eq!(std::fs::read_to_string(&generated).unwrap(), edited);
     }
+
+    #[test]
+    fn export_leaves_out_a_removed_lane_and_its_hits() {
+        let scratch = Scratch::new("export-removed-lane");
+        let header = "osu file format v14\n[General]\nMode:0\n[Metadata]\nArtist:Artist\nTitle:Title\nCreator:Mapper\nVersion:Test\n[TimingPoints]\n0,500,4,1,0,100,1,0\n[HitObjects]\n";
+        let source = scratch.path("source.osu");
+        let target = scratch.path("target.osu");
+        // A finish on the map's own normal-hitfinish.wav, and a whistle.
+        std::fs::write(&source, format!("{header}256,192,1000,1,4,1:0:1:0:\n256,192,1500,1,2,0:0:0:0:\n")).unwrap();
+        std::fs::write(&target, format!("{header}100,100,1000,1,0,0:0:0:0:\n100,100,1500,1,0,0:0:0:0:\n")).unwrap();
+        std::fs::write(scratch.path("normal-hitfinish.wav"),
+            b"RIFF\x26\0\0\0WAVEfmt \x10\0\0\0\x01\0\x01\0\x80\xbb\0\0\0w\x01\0\x02\0\x10\0data\x02\0\0\0\0\x40").unwrap();
+        let mut app = opened(&source.canonicalize().unwrap());
+        let lane = dawsu_hitsounding::rules::read_sample_file_name("normal-hitfinish.wav").unwrap();
+        let path = app.document().unwrap().path.clone();
+        let revision = app.document().unwrap().composer.history.version();
+        app.delete_lane(&path, &lane, revision).unwrap();
+        let options = ExportOptions { targets: vec![target.canonicalize().unwrap()], ..ExportOptions::default() };
+        app.request_export_preview(options).unwrap();
+        wait_preview(&mut app);
+        let status = app.export_status();
+        assert_eq!(status.error, None);
+        let preview = status.preview.expect("a finished preview");
+        let written = String::from_utf8(preview.plan.files[0].file.to_bytes()).unwrap();
+        assert!(written.contains("100,100,1000,1,0,"), "no finish at 1000: {written}");
+        assert!(written.contains("100,100,1500,1,2,"), "the whistle stays: {written}");
+        assert!(preview.plan.mixes.is_empty());
+    }
 }

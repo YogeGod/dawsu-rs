@@ -647,7 +647,7 @@ function laneHeaderModel(drumNames) {
       family: family == null ? null : { collapsed, label: (collapsed ? "Expand " : "Collapse ") + lane.name + " layers" },
       // The drum view adds no lanes (vault rule) and removes none.
       addLayer: !drum && lane.canAddLayer ? "Add numbered " + lane.name + " layer" : null,
-      remove: drum ? null : { label: "Remove " + (renamedLanes.has(lane.colourKey) ? label : sound.name), disabled: !lane.canDelete },
+      remove: drum ? null : { label: "Remove " + (renamedLanes.has(lane.colourKey) ? displayName : sound.name), disabled: !lane.canDelete },
     };
   });
   return { names: view.panels?.laneNames !== false, busy: !!view.busy, rows };
@@ -903,7 +903,8 @@ function renderScene() {
   renderLanes();
   $("snap").checked = scene.snap;
   const hits = (scene.moments ?? []).reduce((sum, moment) => sum + (moment[3]?.length ?? 0), 0);
-  const lanes = scene.lanes?.length ?? 0;
+  // Shown lanes only: a removed (hidden) lane keeps its model row but no header.
+  const lanes = scene.laneOrder?.length ?? scene.lanes?.length ?? 0;
   $("hit-lane-counts").textContent = hits + (hits === 1 ? " hit · " : " hits · ") + lanes + (lanes === 1 ? " lane" : " lanes");
   $("object-lines").checked = view.objectLines;
   setValue("snap-mode", scene.snapMode);
@@ -1612,11 +1613,9 @@ function pointer(event, phase, gesture = drag) {
 }
 
 function revealLayerPreview(row, time, pointerY) {
-  const family = familyParents.get(row);
-  const folder = typeof row === "string" && collapsedFolders.has(row);
   // A layer's hit on a folded main lane is a preview only: the click goes to the tool on the main
-  // lane, so Draw can still stack a hit there (Yoge, 2026-11-21).
-  if (!folder) return false;
+  // lane, so Draw can still stack a hit there (Yoge, 2026-11-21). A folded folder still opens.
+  if (typeof row !== "string" || !collapsedFolders.has(row)) return false;
   const tolerance = 6.5 / scene.zoom;
   let nearest;
   let distance = tolerance;
@@ -1631,12 +1630,8 @@ function revealLayerPreview(row, time, pointerY) {
     }
   }
   if (nearest === undefined) return false;
-  if (folder) {
-    collapsedFolders.delete(row);
-    collapsedFamilies.delete(scene.lanes[nearest].family);
-  } else {
-    collapsedFamilies.delete(family);
-  }
+  collapsedFolders.delete(row);
+  collapsedFamilies.delete(scene.lanes[nearest].family);
   renderLanes();
   $("scroll").scrollTop = lanePositions.get(nearest) * scene.rowHeight - pointerY;
   paintSoon();

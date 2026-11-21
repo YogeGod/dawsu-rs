@@ -191,3 +191,16 @@ test("a click on a folded main lane's layer hit does nothing to the fold and let
   assert.deepEqual(order(evaluate), ["normal", 0, 1]);
   assert.equal(evaluate('collapsedFamilies.has("normal-hitfinish")'), true);
 });
+
+test("the status bar counts shown lanes, so a removed lane drops out of it", async () => {
+  const { evaluate, get } = await frontend();
+  load(evaluate, { laneOrder: [0, 1, 3] });
+  assert.equal(get("hit-lane-counts").textContent, "2 hits · 3 lanes");
+});
+
+test("− names a renamed lane by its own name, without the lane info", async () => {
+  const { evaluate } = await frontend();
+  load(evaluate);
+  evaluate('renamedLanes.set("Skin|normal-hitfinish3", "Crash"); showLaneInfo = true; renderLanes();');
+  assert.equal(rows(evaluate).find(row => row.row === 2).remove.label, "Remove Crash");
+});
