@@ -2488,3 +2488,19 @@ fn the_menu_command_list_matches_the_command_catalogue() {
     assert!(missing.is_empty(), "catalogue commands missing from commands.js: {missing:?}");
     assert!(unknown.is_empty(), "commands.js names commands the catalogue lacks: {unknown:?}");
 }
+
+#[test]
+fn the_view_carries_the_map_title_version_and_output_device_for_the_frame() {
+    let fixture = Fixture::new("shell-fields");
+    let path = fixture.0.join("Artist - Song (Me) [File name].osu");
+    let map = b"osu file format v14\n\n[Metadata]\nTitle:Song <b>\nVersion:Hard\n\n[TimingPoints]\n0,500,4,1,0,100,1,0\n\n[HitObjects]\n256,192,1000,1,0,0:0:0:0:\n";
+    fs::write(&path, map).unwrap();
+    let mut app = Application::headless();
+    let empty = snapshot(&app, true);
+    assert_eq!(empty["outputDevice"], app.device_name());
+    open(&mut app, &path);
+    let view = snapshot(&app, true);
+    assert_eq!(view["scene"]["mapTitle"], "Song <b>");
+    assert_eq!(view["scene"]["version"], "Hard");
+    assert_eq!(view["outputDevice"], app.device_name());
+}

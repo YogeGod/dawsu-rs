@@ -11,6 +11,7 @@ async function frontend() {
   const responses = [];
   const element = { addEventListener() {}, append() {}, prepend() {}, dataset: {}, children: [] };
   const title = { setAttribute(name, value) { this[name] = value; } };
+  const fileHead = {}, fileTail = {};
   const rulerEvents = new Map(), overviewEvents = new Map();
   const overview = { ...element, clientWidth: 100, getBoundingClientRect: () => ({ left: 10 }),
     setPointerCapture() {}, addEventListener(name, callback) { overviewEvents.set(name, callback); } };
@@ -29,7 +30,7 @@ async function frontend() {
     getBoundingClientRect: () => ({x:0, y:0, left:0, top:0, width:100, height:77}) };
   const context = createContext({
     document: {
-      getElementById: (id) => ({title, grid, controller, ruler, overview, "editor-arrange":arrange, "waveform-resize":grip})[id] ?? element,
+      getElementById: (id) => ({"file-name":title, "file-name-head":fileHead, "file-name-tail":fileTail, grid, controller, ruler, overview, "editor-arrange":arrange, "waveform-resize":grip})[id] ?? element,
       createElement: () => ({ ...element }),
       querySelectorAll: () => [],
       addEventListener: (name, callback) => listeners.set(name, callback),
@@ -48,7 +49,7 @@ async function frontend() {
   await runInContext(app, context);
   calls.length = 0;
   const evaluate = (code) => runInContext(code, context);
-  return { listeners, rulerEvents, overviewEvents, gridEvents, barEvents, windowEvents, cursors, resizeEvents, properties, calls, evaluate, title, responses, settle: () => evaluate("pending") };
+  return { listeners, rulerEvents, overviewEvents, gridEvents, barEvents, windowEvents, cursors, resizeEvents, properties, calls, evaluate, title, fileHead, fileTail, responses, settle: () => evaluate("pending") };
 }
 
 test("the resolved Open shortcut offers sibling difficulties from the current mapset", async () => {
@@ -205,19 +206,22 @@ test("focused text controls keep their editing keys", async () => {
   assert.equal(event.prevented, undefined);
 });
 
-test("the top bar shows the active difficulty filename and its full path", async () => {
-  const { evaluate, title } = await frontend();
-  evaluate('scene = { path: "C:\\\\Songs\\\\Mapset\\\\Hard.osu", title: "Map title" }; show({ hasDocument: true, dirty: false })');
-  assert.equal(title.textContent, "Hard.osu");
-  assert.equal(title.title, "C:\\Songs\\Mapset\\Hard.osu");
+test("the status bar shows the open difficulty's file name, cut in the middle, with its full path", async () => {
+  const { evaluate, title, fileHead, fileTail } = await frontend();
+  evaluate('scene = { path: "C:\\\\Songs\\\\Mapset\\\\Artist - Title (Mapper) [Hard].osu", title: "Map title" }; show({ hasDocument: true, dirty: false })');
+  assert.equal(fileHead.textContent + fileTail.textContent, "Artist - Title (Mapper) [Hard].osu");
+  assert.equal(fileTail.textContent, "[Hard].osu");
+  assert.equal(title.title, "C:\\Songs\\Mapset\\Artist - Title (Mapper) [Hard].osu");
+  assert.equal(title.hidden, false);
 
   evaluate('scene = { path: "/maps/another/Expert.osu" }; show({ hasDocument: true, dirty: true })');
-  assert.equal(title.textContent, "● Expert.osu");
+  assert.equal(fileHead.textContent + fileTail.textContent, "Expert.osu");
   assert.equal(title.title, "/maps/another/Expert.osu");
 
   evaluate("show({ hasDocument: false })");
-  assert.equal(title.textContent, "");
+  assert.equal(fileHead.textContent + fileTail.textContent, "");
   assert.equal(title.title, "");
+  assert.equal(title.hidden, true);
 });
 
 test("a changed lane count refreshes the scene in the background", async () => {
