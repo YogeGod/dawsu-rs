@@ -37,6 +37,15 @@ export function attachIpc(ctx) {
       next = await invoke("editor_view", { scene: true, action: null });
       if (!next.fault) next.bookmarkStep ??= step;
     }
+    // The editor sends a map's static data (timing sections, waveform, objects, combos) once. A page
+    // that never got it (reloaded, or another caller took that frame) asks for it again.
+    const kept = state.scene?.sections && state.scene.path === next.scene?.path &&
+      state.scene.previewKey === next.scene?.previewKey;
+    if (!next.fault && next.scene && !next.scene.sections && !kept) {
+      const step = next.bookmarkStep;
+      next = await invoke("editor_view", { scene: true, action: null, fresh: true });
+      if (!next.fault) next.bookmarkStep ??= step;
+    }
     ctx.show(next);
     if (next.shortcutHelp) await ctx.showHelp();
     if (next.shortcutOpen && !next.busy && !ctx.chooseSiblingDifficulty()) ctx.show(await invoke("pick_map"));

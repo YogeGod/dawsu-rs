@@ -162,6 +162,19 @@ test("the map's timing sections and waveform stay once loading ends with a frame
   assert.doesNotThrow(() => evaluate("sectionBars(scene.sections)"));
 });
 
+test("a reloaded screen asks the editor again for the map's static data it never got", async () => {
+  const { evaluate, calls, responses } = await frontend();
+  evaluate("renderScene = () => {}");
+  const base = { path: "Map.osu", previewKey: 7, viewStart: 0, zoom: .1, rowHeight: 30, lanes: [], moments: [] };
+  // The editor sent the static data to the page before the reload, so this frame leaves it out.
+  responses.push({ busy: false, hasDocument: true, duration: 4000, scene: base },
+    { busy: false, hasDocument: true, duration: 4000, scene: { ...base, sections: [[0, 500, 4]], waveform: [] } });
+  await evaluate("act(null)");
+  assert.deepEqual(JSON.parse(JSON.stringify(calls.map(call => call.args))),
+    [{ scene: true, action: null }, { scene: true, action: null, fresh: true }]);
+  assert.equal(evaluate("JSON.stringify(scene.sections)"), "[[0,500,4]]");
+});
+
 test("native drop sends an archive to Open without unpacking it in the frontend", async () => {
   const { listeners, calls, settle } = await frontend();
   listeners.get("tauri://drag-drop")({ payload: { paths: ["E:\\Map.OSZ"] } });
