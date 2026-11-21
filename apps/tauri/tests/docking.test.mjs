@@ -110,5 +110,5 @@ test("the layout editor moves a Svelte part only as part of its whole ribbon gro
 test("matchMedia is read only inside attach()", () => {
   const before = source.slice(0, source.indexOf("function attach("));
   assert.doesNotMatch(before, /matchMedia/);
-  assert.match(source, /matchMedia\("\(max-width: 1179px\)"\)/);
+  assert.match(source, /matchMedia\?\.\("\(max-width: 1179px\)"\)/);
 });

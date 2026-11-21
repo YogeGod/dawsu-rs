@@ -8,6 +8,8 @@ const ruler = $("ruler");
 const overview = $("overview");
 const dialog = $("dialog");
 const dock = window.editorDocking?.attach($("editor-dock"));
+// The window crossing 1180 px changes what the panel switches show.
+if (dock) dock.onChange = () => renderPanelLayout();
 let view = { busy: false };
 let scene = null;
 let drag = null;

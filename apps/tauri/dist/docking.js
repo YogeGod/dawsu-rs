@@ -2,12 +2,16 @@
 
 (() => {
   const labels = { browser: "Browser", timeline: "Timeline", inspector: "Inspector" };
+  // A group holds one panel; it keeps the `tabs` list shape so the helpers stay small.
   const group = (tabs, active = tabs[0]) => ({ tabs, active });
   const split = (axis, first, second, basis = "50%") => ({ axis, first, second, size: { basis } });
+  // A folded side panel is a 44 px rail (v3 --rail-width).
+  const railWidth = 44;
 
+  // v3: Browser | Timeline | Inspector.
   function defaultLayout() {
     return split("columns", group(["browser"]),
-      split("columns", group(["inspector"]), group(["timeline"]), "var(--dock-inspector-width)"),
+      split("columns", group(["timeline"]), group(["inspector"]), "calc(100% - 6px - var(--dock-inspector-width))"),
       "var(--dock-browser-width)");
   }
 
@@ -30,14 +34,9 @@
 
   function movePanel(layout, panel, target, placement) {
     if (panel === target) return layout;
-    const removed = mapGroups(layout, node => {
-      if (!node.tabs.includes(panel)) return node;
-      const tabs = node.tabs.filter(value => value !== panel);
-      return tabs.length ? group(tabs, node.active === panel ? tabs[0] : node.active) : null;
-    });
+    const removed = mapGroups(layout, node => node.tabs.includes(panel) ? null : node);
     return mapGroups(removed, node => {
       if (!node.tabs.includes(target)) return node;
-      if (placement === "tabs") return group([...node.tabs, panel], panel);
       const incoming = group([panel]);
       if (placement === "left") return split("columns", incoming, node);
       if (placement === "above") return split("rows", incoming, node);
@@ -45,15 +44,39 @@
     });
   }
 
-  function minimum(node, axis) {
+  function minimum(node, axis, folded = new Set()) {
     if (node.tabs) {
+      if (node.tabs.every(panel => folded.has(panel))) return railWidth;
       const sizes = axis === "columns" ? { browser: 170, timeline: 274, inspector: 208 }
         : { browser: 86, timeline: 222, inspector: 86 };
       return Math.max(...node.tabs.map(panel => sizes[panel]));
     }
-    const first = minimum(node.first, axis);
-    const second = minimum(node.second, axis);
+    const first = minimum(node.first, axis, folded);
+    const second = minimum(node.second, axis, folded);
     return node.axis === axis ? first + second + 6 : Math.max(first, second);
+  }
+
+  // What the frame shows: the Browser "open", "folded" (rail), "classic" (inside the Inspector) or
+  // "off", and the Inspector "open" or "folded". Below 1180 px the tree Browser folds for the session
+  // unless the mapper opened it there (override true). The classic Browser needs an open Inspector;
+  // with the Inspector folded it falls back to the tree panel, and it never draws a left rail.
+  function effectivePanels({ browserOpen, inspectorOpen, classic }, narrow = false, override = null) {
+    const inspector = inspectorOpen ? "open" : "folded";
+    const treeOpen = narrow ? override === true : browserOpen;
+    if (classic && inspectorOpen) return { browser: browserOpen ? "classic" : "off", inspector };
+    if (classic) return { browser: browserOpen && treeOpen ? "open" : "off", inspector };
+    return { browser: treeOpen ? "open" : "folded", inspector };
+  }
+
+  // What folding or opening a panel does: a saved `panel` action, or, for the tree Browser while
+  // the window is narrow, only the session override (never sent, so never saved).
+  function togglePlan(panel, prefs, narrow = false, override = null) {
+    const on = !(panel === "browser" ? prefs.browserOpen : panel === "inspector" ? prefs.inspectorOpen : prefs.controllerOpen);
+    const save = { act: { kind: "panel", panel, on } };
+    if (panel !== "browser" || !narrow) return save;
+    const shown = effectivePanels(prefs, narrow, override).browser;
+    if (shown === "classic" || (prefs.classic && !prefs.browserOpen)) return save;
+    return { override: shown === "open" ? null : true };
   }
 
   function make(tag, className, attrs = {}) {
@@ -75,15 +98,20 @@
     // History's list is a Svelte part mounted after this script starts, so the areas are looked up each time.
     const scrollAreas = () => [...Object.values(panels), byId("scroll"), byId("history"), byId("sample-browser-entries")].filter(Boolean);
     const scroll = new Map();
-    const visible = new Set(["timeline"]);
-    const tabButtons = new Map();
     const preview = make("div", "dock-preview", { "aria-hidden": "true" });
     preview.hidden = true;
     const hiddenBars = new Set();
     let layout = defaultLayout();
-    let browser = "off";
-    let detached = false;
-    let dragged = null;
+    let prefs = { browserStyle: "tree", browserOpen: false, inspectorOpen: true };
+    // Narrow windows fold the tree Browser for the session; opening it there is an override that
+    // clears when the width crosses back. Neither is sent to the editor, so neither is saved.
+    const narrowQuery = window.matchMedia?.("(max-width: 1179px)");
+    let narrow = !!narrowQuery?.matches;
+    let override = null;
+    let shownKey = null;
+    let renders = 0;
+    const effective = () => effectivePanels({ browserOpen: prefs.browserOpen, inspectorOpen: prefs.inspectorOpen,
+      classic: prefs.browserStyle === "classic" }, narrow, override);
 
     let activeResize = null;
     function trackResize(grip, prepare) {
@@ -106,120 +134,36 @@
     }
     window.addEventListener("blur", () => { activeResize = null; });
 
-    function activate(panel) {
-      layout = mapGroups(layout, node => node.tabs.includes(panel) ? group(node.tabs, panel) : node);
-    }
-
     function move(panel, target, placement) {
       layout = movePanel(layout, panel, target, placement);
-      detached = true;
-      render(panel);
+      render();
     }
 
-    function strip(node, classic = false) {
-      const bar = make("div", "dock-bar", { "data-dock-control": "" });
-      const tabs = make("div", "dock-tabs", { role: "tablist", "aria-label": "Docked panels" });
-      bar.append(tabs);
-      for (const [index, panel] of node.tabs.entries()) {
-        const tab = make("button", "dock-tab", {
-          type: "button", role: "tab", draggable: "true", id: "dock-tab-" + panel,
-          "aria-selected": String(panel === node.active),
-          "aria-controls": classic ? sampleBrowser.id : panels[panel].id,
-        });
-        tab.textContent = labels[panel];
-        tab.tabIndex = panel === node.active ? 0 : -1;
-        tabButtons.set(panel, tab);
-        tab.addEventListener("click", () => {
-          if (panel !== node.active) {
-            activate(panel);
-            render(panel);
-          }
-        });
-        tab.addEventListener("keydown", event => {
-          const { key } = event;
-          if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
-          if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(key)) return;
-          event.preventDefault();
-          const step = key === "ArrowLeft" ? -1 : 1;
-          const next = key === "Home" ? 0 : key === "End" ? node.tabs.length - 1
-            : (index + step + node.tabs.length) % node.tabs.length;
-          if (next !== index) {
-            activate(node.tabs[next]);
-            render(node.tabs[next]);
-          }
-        });
-        tab.addEventListener("dragstart", event => {
-          dragged = panel;
-          event.dataTransfer.effectAllowed = "move";
-          event.dataTransfer.setData("application/x-dawsu-dock-panel", panel);
-        });
-        tabs.append(tab);
-      }
+    const foldedGroup = (node, folded) => !!node.tabs && node.tabs.every(panel => folded.has(panel));
 
-      const trigger = make("button", "dock-move", {
-        type: "button", "aria-label": "Move " + labels[node.active] + " panel",
-        "aria-expanded": "false", "aria-controls": "dock-options-" + node.active,
-      });
-      trigger.textContent = "Dock…";
-      const options = make("div", "dock-options", { id: "dock-options-" + node.active });
-      options.hidden = true;
-      function toggleOptions(open) {
-        trigger.setAttribute("aria-expanded", String(open));
-        options.hidden = !open;
-        if (!open) return;
-        const bounds = trigger.getBoundingClientRect();
-        const available = window.innerHeight - bounds.bottom;
-        const below = available >= Math.min(options.scrollHeight + 8, 230) || available >= bounds.top;
-        options.style.left = Math.max(4, Math.min(bounds.right - options.offsetWidth, window.innerWidth - options.offsetWidth - 4)) + "px";
-        options.style.top = below ? bounds.bottom + "px" : "auto";
-        options.style.bottom = below ? "auto" : window.innerHeight - bounds.top + "px";
-        options.style.maxHeight = Math.max(0, (below ? available : bounds.top) - 4) + "px";
-        options.firstElementChild.focus();
-      }
-      function addOption(text, action) {
-        const button = make("button", "menu-item", { type: "button" });
-        button.textContent = text;
-        button.addEventListener("click", action);
-        options.append(button);
-      }
-      for (const target of visible) {
-        if (node.active === target || hiddenBars.has(panels[target])) continue;
-        for (const [title, placement] of [["Left of", "left"], ["Right of", "right"], ["Above", "above"], ["Below", "below"], ["Tab with", "tabs"]]) {
-          addOption(title + " " + labels[target], () => move(node.active, target, placement));
-        }
-      }
-      addOption("Reset panel layout", () => {
-        layout = defaultLayout();
-        detached = false;
-        render(node.active);
-      });
-      trigger.addEventListener("click", () => toggleOptions(options.hidden));
-      bar.addEventListener("focusout", event => {
-        if (!bar.contains(event.relatedTarget)) toggleOptions(false);
-      });
-      options.addEventListener("keydown", event => {
-        if (event.key !== "Escape") return;
-        event.preventDefault();
-        toggleOptions(false);
-        trigger.focus();
-      });
-      bar.append(trigger, options);
-      return bar;
-    }
-
-    function renderSplit(node) {
+    function renderSplit(node, folded) {
       const row = node.axis === "rows";
       const box = make("div", "dock-split");
-      const grip = make("div", "dock-grip", {
+      const firstFolded = foldedGroup(node.first, folded);
+      const secondFolded = foldedGroup(node.second, folded);
+      const locked = firstFolded || secondFolded;
+      const grip = make("div", "dock-grip", locked ? { "aria-hidden": "true" } : {
         role: "separator", tabindex: "0", "data-dock-control": "",
         "aria-orientation": row ? "horizontal" : "vertical",
         "aria-label": row ? "Resize panels above and below" : "Resize panels to the left and right",
       });
       box.dataset.axis = node.axis;
-      const first = renderNode(node.first);
-      box.append(first, grip, renderNode(node.second));
-      const firstMin = minimum(node.first, node.axis);
-      const secondMin = minimum(node.second, node.axis);
+      box.toggleAttribute("data-locked", locked);
+      const first = renderNode(node.first, folded);
+      box.append(first, grip, renderNode(node.second, folded));
+      // A folded side is its rail. The grip rests until the panel opens again, and the mapper's
+      // width (node.size.basis) is kept for then.
+      if (locked) {
+        box.style.setProperty("--dock-first", firstFolded ? "var(--rail-width)" : "calc(100% - var(--rail-width))");
+        return box;
+      }
+      const firstMin = minimum(node.first, node.axis, folded);
+      const secondMin = minimum(node.second, node.axis, folded);
       const dimension = row ? "height" : "width";
       const coordinate = row ? "clientY" : "clientX";
 
@@ -266,45 +210,49 @@
       return box;
     }
 
-    function renderNode(node) {
-      if (node.axis) return renderSplit(node);
+    function renderNode(node, folded) {
+      if (node.axis) return renderSplit(node, folded);
       const box = make("div", "dock-group");
-      box.dataset.dockTarget = node.active;
-      box.append(strip(node));
-      for (const panel of node.tabs) {
-        const content = panels[panel];
-        content.hidden = panel !== node.active;
-        content.setAttribute("role", "tabpanel");
-        content.setAttribute("aria-labelledby", "dock-tab-" + panel);
-        box.append(content);
-      }
+      const [panel] = node.tabs;
+      box.dataset.dockTarget = panel;
+      box.toggleAttribute("data-folded", folded.has(panel));
+      const content = panels[panel];
+      content.hidden = false;
+      box.append(content);
       return box;
     }
 
-    function render(focusPanel) {
+    // `changed` names the panels that just folded or opened: focus inside one moves to its rail's
+    // open button when it folds and to its head's fold button when it opens.
+    function render(changed = []) {
       const focused = document.activeElement;
-      const shown = new Set([...visible].filter(panel => !hiddenBars.has(panels[panel])));
-      const classic = browser === "classic" && !detached && shown.has("inspector") && shown.has("browser");
-      const focusedPanel = classicHost.contains(focused) ? "browser" :
-        Object.keys(panels).find(panel => panels[panel].contains(focused) || tabButtons.get(panel) === focused);
+      const state = effective();
+      const classic = state.browser === "classic";
+      const folded = new Set();
+      if (state.browser === "folded") folded.add("browser");
+      if (state.inspector === "folded") folded.add("inspector");
+      const shown = new Set(["timeline", "inspector"]);
+      if (state.browser === "open" || state.browser === "folded") shown.add("browser");
+      for (const panel of ["browser", "inspector"]) {
+        if (hiddenBars.has(panels[panel])) shown.delete(panel);
+      }
+      const focusedPanel = Object.keys(panels).find(panel => panels[panel].contains(focused)) ??
+        (sampleBrowser.contains(focused) ? "browser" : undefined);
       for (const area of scrollAreas()) {
         if (area.getClientRects().length) scroll.set(area, [area.scrollLeft, area.scrollTop]);
       }
       root.dataset.docking = "";
-      tabButtons.clear();
-      if (classic) shown.delete("browser");
-      classicHost.querySelector(".dock-bar")?.remove();
-      classicHost.hidden = !classic;
-      if (classic) {
-        classicHost.prepend(strip(group(["browser"]), true));
-        sampleBrowser.setAttribute("role", "tabpanel");
-        sampleBrowser.setAttribute("aria-labelledby", "dock-tab-browser");
-      } else {
-        sampleBrowser.removeAttribute("role");
-        sampleBrowser.removeAttribute("aria-labelledby");
-      }
       const host = classic ? classicHost : panels.browser;
       if (sampleBrowser.parentNode !== host) host.append(sampleBrowser);
+      // A folded panel shows only its rail; what it holds stays in the page, hidden.
+      for (const panel of ["browser", "inspector"]) {
+        panels[panel].toggleAttribute("data-folded", folded.has(panel));
+        for (const child of panels[panel].children) {
+          if (child === classicHost) continue;
+          child.hidden = child.matches(".panel-rail") ? !folded.has(panel) : folded.has(panel);
+        }
+      }
+      classicHost.hidden = !classic;
       const hidden = make("div", "");
       hidden.hidden = true;
       for (const [panel, content] of Object.entries(panels)) {
@@ -313,30 +261,27 @@
           hidden.append(content);
         }
       }
-      root.replaceChildren(renderNode(visibleLayout(layout, shown)), hidden, preview);
+      root.replaceChildren(renderNode(visibleLayout(layout, shown), folded), hidden, preview);
       for (const [area, [left, top]] of scroll) {
         if (area.getClientRects().length) area.scrollTo(left, top);
       }
-      if (focusPanel) tabButtons.get(focusPanel)?.focus({ preventScroll: true });
+      renders++;
+      const moved = changed.find(panel => panel === focusedPanel);
+      if (moved) byId(moved + (folded.has(moved) ? "-unfold" : "-fold"))?.focus({ preventScroll: true });
       else if (focusedPanel && focused.getClientRects().length) focused.focus({ preventScroll: true });
-      else if (focusedPanel) {
-        const fallback = focusedPanel === "timeline" ? root.querySelector("[role=tab][aria-selected=true]")
-          : byId("view-" + focusedPanel);
-        (tabButtons.get(focusedPanel) ?? fallback)?.focus({ preventScroll: true });
-      }
+      else if (focusedPanel) byId(focusedPanel === "timeline" ? "grid" : "view-" + focusedPanel)?.focus({ preventScroll: true });
     }
 
-    function dropAt(event, panel = dragged) {
+    // Where a dragged panel lands: the edge of the target panel nearest the pointer.
+    function dropAt(event, panel) {
       const box = event.target.closest("[data-dock-target]");
       if (!box) return null;
-      const tab = event.target.closest(".dock-tab");
-      const target = tab ? tab.id.slice("dock-tab-".length) : box.dataset.dockTarget;
-      if (target === panel) return null;
+      const target = box.dataset.dockTarget;
+      if (target === panel || box.hasAttribute("data-folded")) return null;
       const bounds = box.getBoundingClientRect();
       const x = (event.clientX - bounds.left) / bounds.width;
       const y = (event.clientY - bounds.top) / bounds.height;
-      const placement = event.target.closest(".dock-bar") ? "tabs"
-        : y <= .25 ? "above" : y >= .75 ? "below" : x <= .25 ? "left" : x >= .75 ? "right" : "tabs";
+      const placement = Math.min(y, 1 - y) < Math.min(x, 1 - x) ? (y < .5 ? "above" : "below") : (x < .5 ? "left" : "right");
       return { target, placement, bounds };
     }
 
@@ -350,38 +295,6 @@
         height: bounds.height / (halfHeight ? 2 : 1),
       };
     }
-
-    root.addEventListener("dragover", event => {
-      if (!dragged) return;
-      const destination = dropAt(event);
-      preview.hidden = !destination;
-      if (!destination) return;
-      event.preventDefault();
-      event.dataTransfer.dropEffect = "move";
-      const { x, y, width, height } = dockPlacement(destination);
-      const dock = root.getBoundingClientRect();
-      preview.dataset.placement = destination.placement;
-      preview.style.cssText = `left:${x - dock.left}px;top:${y - dock.top}px;width:${width}px;height:${height}px`;
-    });
-    root.addEventListener("dragleave", event => {
-      if (dragged && !root.contains(event.relatedTarget)) preview.hidden = true;
-    });
-
-    function endDrag() {
-      dragged = null;
-      preview.hidden = true;
-    }
-    root.addEventListener("dragend", endDrag);
-    root.addEventListener("drop", event => {
-      if (!dragged) return;
-      const panel = dragged;
-      const destination = dropAt(event);
-      endDrag();
-      if (destination) {
-        event.preventDefault();
-        move(panel, destination.target, destination.placement);
-      }
-    });
 
     const workspace = byId("workspace");
     const editor = byId("layout-editor");
@@ -421,9 +334,9 @@
     const recovery = make("div", "layout-recovery");
     recovery.hidden = true;
     workspace.append(recovery);
+    // Edit layout… lives in the View menu; this button only brings it back while the header is hidden.
     const layoutEntry = byId("layout-edit-entry");
-    const layoutEntryAnchor = document.createComment("Layout entry");
-    layoutEntry.before(layoutEntryAnchor);
+    recovery.append(layoutEntry);
     for (const [bar, label] of barChoices) {
       const option = make("option", "");
       option.textContent = label;
@@ -469,8 +382,7 @@
       }
       arrange.toggleAttribute("data-layout-lane-sidebar-hidden", hiddenBars.has(laneColumn));
       recovery.hidden = workspace.hidden || !hiddenBars.has(header);
-      if (recovery.hidden) layoutEntryAnchor.after(layoutEntry);
-      else recovery.append(layoutEntry);
+      layoutEntry.hidden = recovery.hidden;
       syncTimelineRows();
       refreshBarPicker();
     }
@@ -560,7 +472,7 @@
         if (extra) candidates.push(...byId("editor-arrange").querySelectorAll(extra));
         for (const button of candidates) {
           if (button === layoutEntry || buttons.has(button) ||
-              button.closest("#history, #sample-browser-entries, .dock-bar, [data-ui-mount]") ||
+              button.closest("#history, #sample-browser-entries, #editor-menus, .panel-head, .panel-rail, [data-ui-mount]") ||
               (region !== "browser" && button.closest("#sample-browser"))) continue;
           const anchor = anchorFor(button);
           const condition = button.closest("fieldset");
@@ -691,6 +603,11 @@
     for (const [bar, label] of barChoices) {
       if (barStack(bar)) barHandles.set(moveHandle(bar, "Move " + label + " up or down", timelineOrder.includes(bar)), bar);
     }
+    // In Layout… a panel moves by the grip on its head; a folded panel stays put.
+    for (const panel of ["browser", "inspector"]) {
+      const head = panels[panel].querySelector(".panel-head");
+      if (head) barHandles.set(moveHandle(head, "Drag " + labels[panel] + " panel"), panels[panel]);
+    }
     for (const section of inspectorSections()) {
       barHandles.set(moveHandle(section, "Drag " + (section.getAttribute("aria-label") ||
         section.querySelector("h2")?.textContent || "Inspector") + " section"), section);
@@ -699,8 +616,9 @@
     function layoutDropAt(source, x, y) {
       const under = document.elementFromPoint(x, y);
       if (!under) return null;
-      if (source.classList.contains("dock-tab")) {
-        const panel = source.id.slice("dock-tab-".length);
+      const panel = Object.keys(panels).find(name => panels[name] === source);
+      if (panel) {
+        if (source.hasAttribute("data-folded")) return null;
         const destination = dropAt({ target: under, clientX: x, clientY: y }, panel);
         return destination && { ...dockPlacement(destination), area: true,
           apply: () => move(panel, destination.target, destination.placement) };
@@ -779,7 +697,7 @@
       if (!draft || layoutDrag || event.button !== 0 || !event.isPrimary) return;
       const handle = event.target.closest(".layout-move-handle, button");
       const source = barHandles.get(handle) ??
-        (buttons.has(handle) || handle?.classList.contains("dock-tab") ? handle : null);
+        (buttons.has(handle) ? handle : null);
       if (!source) return;
       layoutDrag = { id: event.pointerId, source, x: event.clientX, y: event.clientY, moved: false };
       event.preventDefault();
@@ -898,7 +816,6 @@
             button.getAttribute("data-layout-region"), button.hasAttribute("data-layout-hidden"),
             button.getAttribute("data-layout-width"), button.getAttribute("data-layout-height")]),
           layout: structuredClone(layout),
-          detached,
           sizes: snapshotLayoutSizes(),
           waveform: waveformHeight,
           visibleWaveform: visibleWaveformHeight,
@@ -921,7 +838,6 @@
       if (!draft) return;
       if (!keep) {
         layout = draft.layout;
-        detached = draft.detached;
         ribbon.append(...draft.ribbon);
         panels.inspector.append(...draft.inspector);
         frameOrder = draft.frameOrder;
@@ -944,7 +860,7 @@
       clearLayoutDrag();
       activeResize = null;
       document.body.removeAttribute("data-layout-editing");
-      layoutEntry.focus();
+      (recovery.hidden ? byId("menu-view") : layoutEntry).focus();
     }
 
     ribbonPicker.addEventListener("change", refreshRibbonPicker);
@@ -954,7 +870,6 @@
     byId("layout-keep").addEventListener("click", () => finishEditing(true));
     byId("layout-reset").addEventListener("click", () => {
       layout = defaultLayout();
-      detached = false;
       ribbon.append(...initialRibbon);
       panels.inspector.append(...initialInspector);
       frameOrder = defaultFrame.slice();
@@ -975,21 +890,29 @@
       }
     });
 
-    const update = (nextBrowser, inspector) => {
-      if (root.hasAttribute("data-docking") && browser === nextBrowser && inspector === visible.has("inspector")) return;
-      const previousBrowser = browser;
-      browser = nextBrowser;
-      for (const [panel, shown] of [["inspector", inspector], ["browser", browser !== "off"]]) {
-        if (shown && !visible.has(panel)) activate(panel);
-        if (shown) visible.add(panel);
-        else visible.delete(panel);
-      }
-      if (previousBrowser !== browser && browser === "classic" && detached) activate("browser");
-      render();
+    const stateKey = () => JSON.stringify([effective(), narrow, override]);
+    // app.js hands over the saved preferences on every show(); the frame redraws only when what it
+    // shows changes (fold per panel, classic, narrow, override).
+    const update = next => {
+      const before = effective();
+      prefs = { browserStyle: next.browserStyle, browserOpen: !!next.browserOpen, inspectorOpen: !!next.inspectorOpen };
+      const key = stateKey();
+      if (root.hasAttribute("data-docking") && key === shownKey) return;
+      shownKey = key;
+      const after = effective();
+      render(["browser", "inspector"].filter(panel => before[panel] !== after[panel]));
     };
+    update.state = () => ({ narrow, override });
+    update.setOverride = value => { override = value; };
+    update.renders = () => renders;
+    narrowQuery?.addEventListener("change", () => {
+      narrow = narrowQuery.matches;
+      override = null;
+      update.onChange?.();
+    });
     update.editLayout = editLayout;
     return update;
   }
 
-  window.editorDocking = { defaultLayout, movePanel, visibleLayout, attach };
+  window.editorDocking = { defaultLayout, movePanel, visibleLayout, minimum, effectivePanels, togglePlan, attach };
 })();
