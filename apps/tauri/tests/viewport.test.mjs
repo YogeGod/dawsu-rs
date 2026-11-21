@@ -365,6 +365,10 @@ test("the 40 px ruler draws bars full height, beats 12 px and snap ticks at the 
   const ticks = () => JSON.parse(evaluate("JSON.stringify(rulerTicks(1))"));
   const quarters = ticks();
   assert.deepEqual(quarters[0], [0, 40, "#ffffff"], "bar line, full height");
+  // A long snap (2 beats) is a beat tick on the ruler, not a full-height bar line.
+  evaluate("scene.beats = 2; scene.divisor = 1");
+  assert.deepEqual(ticks()[960], [28, 40, "#ffffff"], "long snap, 12 px");
+  evaluate("scene.beats = 1; scene.divisor = 4");
   assert.deepEqual(quarters[480], [28, 40, "#ffffff"], "beat tick, 12 px");
   assert.deepEqual(quarters[240], [31, 40, "#ed1121"], "1/2, 9 px");
   assert.deepEqual(quarters[120], [33, 40, "#66ccff"], "1/4, 7 px");
@@ -433,8 +437,18 @@ test("without time signatures the ruler numbers bars as the editor does", async 
     JSON.stringify(barLabels);
   `));
   assert.deepEqual(labels(.1), [["1", 0, 10], ["2", 200, 10], ["3", 300, 10], ["4", 420, 10], ["5", 540, 10]]);
-  // Zoomed out, bars narrower than 60 px label only every few bars so the numbers never run together.
-  assert.deepEqual(labels(.02).map(([text]) => text), ["1", "4"]);
+  // Zoomed out, bars narrower than 60 px label only every few bars so the numbers never run together,
+  // counted from each section's first bar so a later section keeps its first number.
+  assert.deepEqual(labels(.02).map(([text]) => text), ["1", "3"]);
+  // A label that would sit on the next section's label is left out.
+  const close = JSON.parse(evaluate(`
+    scene = { sections: [[0, 500, 4], [2050, 400, 3]], snap: false };
+    var closeLabels = [];
+    drawTimingGrid({ beginPath() {}, moveTo() {}, lineTo() {}, stroke() {},
+      fillText(text, x) { closeLabels.push([text, Math.round(x - 5)]); } }, 0, 4000, .1, 0, 40, true);
+    JSON.stringify(closeLabels);
+  `));
+  assert.deepEqual(close, [["1", 0], ["3", 205], ["4", 325]]);
 });
 
 test("time signature bars draw at their new positions while snap colours stay on the map grid", async () => {

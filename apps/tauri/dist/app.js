@@ -304,7 +304,7 @@ function show(next) {
     followPlayhead();
   }
   refreshLaneToolbar();
-  if (view.scene) refreshHitCard();
+  refreshHitCard();
   renderDialogs();
   try { window.refreshEditorMenu?.(); } catch (error) { console.error(error); }
   paintSoon();
@@ -1314,14 +1314,19 @@ function drawTimingGrid(ctx, start, end, zoom, top, bottom, ruler = false) {
       const bar = !scene.editorBars?.length && tick % meter === 0;
       const longSnap = useSnap && scene.beats > 1 && tick % scene.beats === 0;
       const color = ruler ? snapColours[1] : bar || longSnap ? gridLines.bar : gridLines.beat;
-      // v3 §5: bar numbers on the ruler, every few bars when bars are under 60 px wide.
-      const barNumber = firstBars[i] + Math.floor(tick / meter);
-      if (ruler && bar && (barNumber - 1) % Math.max(1, Math.ceil(60 / widthOfBar)) === 0) {
+      // v3 §5: bar numbers on the ruler, every few bars when bars are under 60 px wide, counted from
+      // the section's first bar. A label that would run into the next section's first one is left out.
+      const barIndex = Math.floor(tick / meter);
+      const barNumber = firstBars[i] + barIndex;
+      const every = Math.max(1, Math.ceil(60 / widthOfBar));
+      const nextSection = scene.sections[i + 1]?.[0];
+      const room = nextSection === undefined ? Infinity : (nextSection - start) * zoom - x;
+      if (ruler && bar && ((barIndex % every) + every) % every === 0 && room >= String(barNumber).length * 8 + 8) {
         ctx.fillStyle = slateTimeline.rulerBar;
         ctx.fillText(String(barNumber), x + 5, 10);
       }
-      // v3 §5: bar lines run the ruler's full height, beat ticks are 12 px.
-      line(ctx, color, x, ruler && !bar && !longSnap ? bottom - 12 : top, x, bottom);
+      // v3 §5: bar lines run the ruler's full height; beat ticks (and long snaps) are 12 px.
+      line(ctx, color, x, ruler && !bar ? bottom - 12 : top, x, bottom);
     }
   }
   for (const [i, section] of (scene.editorBars ?? []).entries()) {
@@ -1467,22 +1472,35 @@ function drawGameplay(ctx, gameplay, xOf, y, width, diameter) {
   }
   const radiusOf = nodeRadii(gameplay.points, diameter);
   // Digits 16 px on a 34 px circle, smaller with it in a short Song row.
-  ctx.font = "600 " + Math.max(8, Math.round(diameter * .47)) + "px Inter, system-ui, sans-serif";
+  const digitSize = Math.max(8, Math.round(diameter * .47));
+  ctx.font = "600 " + digitSize + "px Inter, system-ui, sans-serif";
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
-  for (const [kind, time, object] of gameplay.points) {
+  ctx.lineJoin = "round";
+  const points = gameplay.points;
+  for (const [at, [kind, time, object]] of points.entries()) {
     const x = xOf(time);
     if (x < -objectReach || x > width + objectReach) continue;
+    // Later objects draw on top: one under 2 px from the next is hidden by it, so it is not drawn.
+    const next = points[at + 1];
+    const nextX = next ? xOf(next[1]) : Infinity;
+    if (nextX - x < 2) continue;
     const { number, colour } = comboOf(object);
     const { radius, head } = radiusOf(kind, time, object);
+    ctx.lineWidth = 2;
     ctx.fillStyle = colour;
     ctx.strokeStyle = "#ffffff";
     ctx.beginPath();
     ctx.arc(x, y, radius, 0, Math.PI * 2);
     ctx.fill();
     ctx.stroke();
-    // The combo number on a circle and a slider head, always shown.
-    if (head && number) {
+    // The combo number on a circle and a slider head, where the next circle leaves it in view, with a
+    // dark outline so it reads on yellow and green.
+    const covered = next && nextX - radiusOf(next[0], next[1], next[2]).radius < x + digitSize / 3;
+    if (head && number && !covered) {
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = "rgba(0,0,0,.55)";
+      ctx.strokeText(String(number), x, y);
       ctx.fillStyle = "#ffffff";
       ctx.fillText(String(number), x, y);
     }
@@ -1494,14 +1512,19 @@ function drawGameplay(ctx, gameplay, xOf, y, width, diameter) {
 
 // A slider's first and last nodes are full circles; repeats between them sit on the track.
 // Only a circle and a slider's head carry the combo number.
+let sliderEndCache = null;
 function nodeRadii(points, diameter) {
-  const sliderEnds = new Map();
-  for (const [kind, time, object] of points) {
-    if (kind !== "slider") continue;
-    const ends = sliderEnds.get(object);
-    if (ends) sliderEnds.set(object, [Math.min(ends[0], time), Math.max(ends[1], time)]);
-    else sliderEnds.set(object, [time, time]);
+  // Each slider's first and last node time, built once per object list.
+  if (sliderEndCache?.points !== points) {
+    const ends = new Map();
+    for (const [kind, time, object] of points) {
+      if (kind !== "slider") continue;
+      const known = ends.get(object);
+      ends.set(object, known ? [Math.min(known[0], time), Math.max(known[1], time)] : [time, time]);
+    }
+    sliderEndCache = { points, ends };
   }
+  const sliderEnds = sliderEndCache.ends;
   return (kind, time, object) => {
     const ends = kind === "slider" ? sliderEnds.get(object) : null;
     const repeat = ends && time !== ends[0] && time !== ends[1];
@@ -1521,16 +1544,20 @@ function laneTint(lane, active = false) {
 const overviewColumns = 300;
 let overviewBinCache = null;
 
-function overviewBins(points, width, duration) {
-  if (!overviewBinCache || overviewBinCache.points !== points || overviewBinCache.width !== width || overviewBinCache.duration !== duration) {
+function overviewBins(gameplay, width, duration) {
+  if (!overviewBinCache || overviewBinCache.gameplay !== gameplay || overviewBinCache.width !== width || overviewBinCache.duration !== duration) {
     const counts = new Array(overviewColumns).fill(0);
-    for (const [, time] of points ?? []) {
+    // Each object once, at its start: a circle, a slider's head, a spinner's start.
+    const starts = new Map();
+    for (const [, time, object] of gameplay?.points ?? []) if (!starts.has(object)) starts.set(object, time);
+    for (const [kind, time, , object] of gameplay?.spans ?? []) if (kind === "spinner" && !starts.has(object)) starts.set(object, time);
+    for (const time of starts.values()) {
       if (time < 0 || time > duration) continue;
       counts[Math.min(overviewColumns - 1, Math.floor(time / duration * overviewColumns))]++;
     }
     const most = Math.max(1, ...counts);
     const bins = counts.flatMap((count, column) => count ? [[(column + .5) * width / overviewColumns, .3 + .7 * count / most]] : []);
-    overviewBinCache = { points, width, duration, bins };
+    overviewBinCache = { gameplay, width, duration, bins };
   }
   return overviewBinCache.bins;
 }
@@ -1550,23 +1577,28 @@ function drawOverview({ ctx, width, height }, start, visible) {
   const duration = view.duration;
   if (!(duration > 0) || width <= 0) return;
   const middle = height / 2;
-  for (const [x, strength] of overviewBins(scene.gameplay?.points, width, duration)) {
+  for (const [x, strength] of overviewBins(scene.gameplay, width, duration)) {
     ctx.fillStyle = "rgba(196,196,196," + strength.toFixed(2) + ")";
     diamond(ctx, x, middle, 3.5);
     ctx.fill();
   }
   // The viewport box: 1 px --editor-text, radius 2, at least 8 px wide.
-  const boxWidth = Math.max(8, visible * width / duration);
+  // The box stays inside the strip: its 1 px edge is drawn within its width.
+  const boxWidth = Math.min(width, Math.max(8, visible * width / duration));
+  const boxLeft = Math.max(0, Math.min(start * width / duration, width - boxWidth));
   ctx.fillStyle = "rgba(241,241,241,.06)";
   ctx.strokeStyle = "#f1f1f1";
-  roundedTrack(ctx, start * width / duration + .5, 3.5, boxWidth, Math.max(0, height - 7), 2);
+  roundedTrack(ctx, boxLeft + .5, 3.5, boxWidth - 1, Math.max(0, height - 7), 2);
   ctx.fill();
   ctx.stroke();
   // Problems on this difficulty: 7 px --editor-warning diamonds with a 1 px --editor-panel edge.
   ctx.fillStyle = "#efc16a";
   ctx.strokeStyle = slateTimeline.overview;
+  const drawnProblems = new Set();
   for (const problem of view.outputProblems ?? []) {
-    if (problem.timeline !== scene.path) continue;
+    const x = Math.round(problem.time * width / duration);
+    if (problem.timeline !== scene.path || drawnProblems.has(x)) continue;
+    drawnProblems.add(x);
     diamond(ctx, problem.time * width / duration, middle, 5);
     ctx.fill();
     ctx.stroke();
@@ -1971,7 +2003,8 @@ function refreshHitCard() {
 
 function hitCardAt(event) {
   lastHover = { clientX: event.clientX, clientY: event.clientY };
-  if (!scene || drag || view.busy) return null;
+  // No card while a menu is open over the timeline.
+  if (!scene || drag || view.busy || $("editor-menu").hidden === false) return null;
   const rect = grid.getBoundingClientRect();
   const scrollTop = $("scroll").scrollTop;
   const pointerY = event.clientY - rect.top;
@@ -1996,12 +2029,14 @@ function hitCardAt(event) {
   const set = sampleFolderNames[lane?.group];
   const x = rect.left + (time - scene.viewStart) * scene.zoom;
   const y = rect.top + (visibleRow + .5) * scene.rowHeight - scrollTop;
+  const title = set ? name + " · " + set : name;
+  const detail = "Volume " + Math.round(hitVolume ?? volume) + "% · " + (onObject ? "on " : "") + hitObjectName(time, onObject);
   return {
-    // A hit that moves on screen (a zoom, an edit) is a new card, so the card follows it.
-    key: [visibleRow, time, Math.round(x), Math.round(y)].join(":"),
-    title: set ? name + " · " + set : name,
+    // A hit that moves on screen (a zoom) or changes (an edit, Undo) is a new card, so the card follows it.
+    key: [visibleRow, time, Math.round(x), Math.round(y), title, detail].join(":"),
+    title,
     time: clock(time),
-    detail: "Volume " + Math.round(hitVolume ?? volume) + "% · " + (onObject ? "on " : "") + hitObjectName(time, onObject),
+    detail,
     x,
     y,
   };
@@ -2138,7 +2173,7 @@ function waveformTarget(ms, y, height) {
   for (const [kind, time, object] of scene.gameplay.points) {
     const distance = Math.hypot((time - ms) * scene.zoom, dy);
     if (distance > objectReach || distance > radiusOf(kind, time, object).radius) continue;
-    if (distance < nearest) {
+    if (distance <= nearest) {
       target = { object, time, node: true };
       nearest = distance;
     }

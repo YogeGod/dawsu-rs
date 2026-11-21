@@ -350,7 +350,7 @@ test("hovering a hit hands over one card per hit and never repaints the timeline
   const cards = () => JSON.parse(evaluate("JSON.stringify(window.dawsuUi.cards)"));
   // Row 0 is the Normal set folder, row 1 the Clap lane (30 px rows); 0.1 px/ms.
   move(12, 45);
-  assert.deepEqual(cards(), [{ key: "1:100:10:45", title: "Clap · Normal set", time: "00:00.100",
+  assert.deepEqual(cards(), [{ key: "1:100:10:45:Clap · Normal set:Volume 60% · on circle 1", title: "Clap · Normal set", time: "00:00.100",
     detail: "Volume 60% · on circle 1", x: 10, y: 45 }]);
   for (const canvas of [grid, get("ruler"), get("overview")]) assert.deepEqual(canvas.calls, [], "no repaint");
   // Still on the same hit: nothing new. Its own hit volume wins over the moment's.
@@ -371,7 +371,10 @@ test("hovering a hit hands over one card per hit and never repaints the timeline
 
   // A new scene that removes the hovered hit (Delete, Undo) takes the card away without a pointer move.
   move(12, 45);
-  assert.equal(cards().at(-1).key, "1:100:10:45");
+  assert.equal(cards().at(-1).title, "Clap · Normal set");
+  // An edit that changes the hit's volume (or Undo) updates the card in place.
+  evaluate(`scene = { ...scene, moments: [[100, 90, true, [[0, false]]], ...scene.moments.slice(1)] }; refreshHitCard()`);
+  assert.equal(cards().at(-1).detail, "Volume 90% · on circle 1");
   // show() calls refreshHitCard() with each new scene.
   evaluate(`scene = { ...scene, moments: scene.moments.slice(1) }; refreshHitCard()`);
   assert.equal(cards().at(-1), null);
@@ -382,6 +385,16 @@ test("hovering a hit hands over one card per hit and never repaints the timeline
   assert.equal(cards().at(-1).x, 39);
   evaluate(`scene = { ...scene, viewStart: 0 }; refreshHitCard()`);
   assert.equal(cards().at(-1), null);
+  // Home, a closed map or a job starting takes the card away (show() refreshes it every time).
+  move(12, 45);
+  evaluate("view.busy = true; refreshHitCard(); view.busy = false");
+  assert.equal(cards().at(-1), null);
+  assert.match(evaluate("show.toString()"), /^ {2}refreshHitCard\(\);$/m);
+  // No card while a menu is open.
+  evaluate("$('editor-menu').hidden = false");
+  move(12, 45);
+  assert.equal(cards().at(-1), null);
+  evaluate("$('editor-menu').hidden = true");
 });
 
 // timeline-spec "Overview strip": the whole song in 300 columns of 5 px diamonds whose strength shows
@@ -405,14 +418,18 @@ test("the overview draws object diamonds by density, problem diamonds and the vi
   assert.ok(overview.calls.some(call => call.name === "stroke" && call.stroke === "#1c1c1c"), "problem edge");
   // The viewport box: 3000 ms of 4000 on screen, 1 px --editor-text with a 2 px radius.
   const box = overview.calls.find(call => call.name === "roundRect");
-  assert.deepEqual(box.args.map(round), [.5, 3.5, 225, 73, 2]);
+  assert.deepEqual(box.args.map(round), [.5, 3.5, 224, 73, 2]);
   assert.ok(overview.calls.some(call => call.name === "stroke" && call.stroke === "#f1f1f1"));
   assert.ok(overview.calls.some(call => call.name === "fill" && call.fill === "rgba(241,241,241,.06)"));
   // Diamonds, not the song's waveform.
   assert.ok(!overview.calls.some(call => ["#315c59", "#3c7673", "#46908c", "#51aaa5"].includes(call.fill)));
   // A tiny viewport keeps an 8 px box.
   paint("scene.zoom = 3");
-  assert.equal(overview.calls.find(call => call.name === "roundRect").args[2], 8);
+  assert.equal(overview.calls.find(call => call.name === "roundRect").args[2], 7);
+  // At the song's end the box stays inside the strip.
+  paint("scene.zoom = .1; scene.viewStart = 3900");
+  const end = overview.calls.find(call => call.name === "roundRect").args;
+  assert.ok(end[0] + end[2] <= 300, JSON.stringify(end));
 });
 
 test("with the waveform switched off the Song row keeps its circles and digits, without the waveform", async () => {
@@ -424,4 +441,43 @@ test("with the waveform switched off the Song row keeps its circles and digits, 
   assert.deepEqual(numbers(ruler).map(([text]) => text), ["1", "2"]);
   paint("waveformShown = true");
   assert.deepEqual(loudColumns(ruler), [0, 298]);
+});
+
+test("combo digits carry a dark outline so they read on yellow and green", async () => {
+  const { get, paint } = await canvases();
+  const ruler = get("ruler");
+  paint(`${combos}; scene.zoom = .1`);
+  const outlines = ruler.calls.filter(call => call.name === "strokeText").map(({ args: [text], stroke }) => [text, stroke]);
+  assert.deepEqual(outlines, [["1", "rgba(0,0,0,.55)"], ["2", "rgba(0,0,0,.55)"]]);
+});
+
+test("zoomed out, circles under their neighbour are skipped and covered digits are left out", async () => {
+  const { get, paint } = await canvases();
+  const ruler = get("ruler");
+  const three = `scene.combos = { colours: ["#ff0000", "#00ff00"], objects: [[1, 0], [2, 1], [3, 1]] };
+    scene.gameplay = { points: [["circle", 100, 0], ["circle", 300, 1], ["circle", 1000, 2]], spans: [] }`;
+  // 0.06 px/ms: circles at x 6, 18 and 60. The second circle covers the first one's digit.
+  paint(`${three}; scene.zoom = .06`);
+  assert.deepEqual(numbers(ruler).map(([text]) => text), ["2", "3"]);
+  assert.equal(circles(ruler).length, 3);
+  // At 0.001 px/ms the first two sit under 2 px from the next one: only the last is drawn.
+  paint(`${three}; scene.zoom = .001`);
+  assert.equal(circles(ruler).length, 1);
+});
+
+test("the overview counts each object once, spinners included, and merges problems on one pixel", async () => {
+  const { get, paint } = await canvases();
+  const overview = get("overview");
+  // A slider's three nodes are one object; a spinner counts too; two problems share a pixel.
+  paint(`view.duration = 3000; scene.gameplay = { points: [["slider", 100, 0], ["slider", 200, 0], ["slider", 300, 0]],
+    spans: [["slider", 100, 300, 0], ["spinner", 1500, 2000, 1]] };
+    view.outputProblems = [{ timeline: "fixture.osu", time: 1000 }, { timeline: "fixture.osu", time: 1002 }]`);
+  const fills = overview.calls.filter((call, at) => call.name === "fill" && overview.calls[at - 1]?.name === "closePath").map(call => call.fill);
+  assert.deepEqual(fills, ["rgba(196,196,196,1.00)", "rgba(196,196,196,1.00)", "#efc16a"]);
+});
+
+test("a click on two circles at one spot picks the later object, the one drawn on top", async () => {
+  const { evaluate } = await canvases();
+  evaluate("scene.zoom = .1; scene.gameplay = { points: [['circle', 100, 0], ['circle', 100, 1]], spans: [] }");
+  assert.equal(evaluate("waveformTarget(100, 60, 80).object"), 1);
 });
