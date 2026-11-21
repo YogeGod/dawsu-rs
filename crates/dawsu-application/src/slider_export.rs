@@ -11,7 +11,7 @@ use dawsu_hitsounding::{
     Compiled, Decompiled, MomentId, Place, Placement, compile, decompile,
     lazer::control_points::offset_for, rules::played_volume,
 };
-use dawsu_osu_format::{OsuFile, list_folder};
+use dawsu_osu_format::OsuFile;
 use std::{
     collections::{BTreeMap, HashMap},
     path::Path,
@@ -64,12 +64,13 @@ pub(super) fn stage(
         .iter()
         .filter_map(|obj| obj.hit_sample()?.filename.clone())
         .collect();
-    let listing = list_folder(root).map_err(|error| error.to_string())?;
-    let defaults_list = list_folder(defaults).unwrap_or_default();
+    let pending = &source.pending;
+    let listing = crate::pending::listing(root, pending)?;
+    let defaults_list = crate::pending::sample_folder(defaults);
     let mut clips = HashMap::<SampleIdentity, Arc<AudioClip>>::new();
     let mut rendered = BTreeMap::<Vec<Layer>, String>::new();
     let mut staged = Vec::new();
-    let mut names = mixes::reserved_mix_names(root, already_staged)?;
+    let mut names = mixes::reserved_mix_names(root, already_staged, pending)?;
 
     // Keep existing object lines verbatim. On a tie write the separate passive circle first.
     let mut objects: Vec<_> = file
@@ -100,7 +101,8 @@ pub(super) fn stage(
                 let clip = match clips.entry(source) {
                     std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
                     std::collections::hash_map::Entry::Vacant(entry) => {
-                        let path = sample_path(lane, root, defaults, &defaults_list)?;
+                        let path = sample_path(lane, root, pending, defaults, &defaults_list)?;
+
                         let clip = decode_with_cancel(&path, cancel).map_err(|error| {
                             format!("Opening slider audio {}: {error}", path.display())
                         })?;
@@ -262,7 +264,7 @@ mod tests {
             unchanged_sections(plain.to_bytes())
         );
         assert_eq!(fs::read(&path).unwrap(), original.as_bytes());
-        mixes::publish(&assets, &|| false).unwrap().keep();
+        mixes::publish(&assets, None, &|| false).unwrap().keep();
         let mut repeat = plain.clone();
         let reused = stage(
             &source,
@@ -276,6 +278,6 @@ mod tests {
         .unwrap();
         assert_eq!(repeat.to_bytes(), file.to_bytes());
         assert_eq!(reused[0].path, assets[0].path);
-        mixes::publish(&reused, &|| false).unwrap().keep();
+        mixes::publish(&reused, None, &|| false).unwrap().keep();
     }
 }

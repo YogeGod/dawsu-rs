@@ -1096,7 +1096,7 @@ mod tests {
         let settings = crate::ExportSettings::default();
         crate::mixes::stage_in_file(
             hits, file, &problems, source.parent().unwrap(), std::path::Path::new(""), &[],
-            dawsu_hitsounding::Placement::OnObjects, already, Some(&settings), &[], start, &|| false,
+            dawsu_hitsounding::Placement::OnObjects, already, Some(&settings), &[], start, &crate::pending::Pending::default(), &|| false,
         ).unwrap().1.staged
     }
 
@@ -1114,7 +1114,7 @@ mod tests {
         let custom = indexed_mixes(&source, &[], 7);
         assert!(index_names(&custom).iter().all(|name| name.ends_with("7.wav")), "{:?}", index_names(&custom));
         let both = first.into_iter().chain(second).collect::<Vec<_>>();
-        let published = crate::mixes::publish(&both, &|| false).unwrap();
+        let published = crate::mixes::publish(&both, None, &|| false).unwrap();
         drop(published);
     }
 

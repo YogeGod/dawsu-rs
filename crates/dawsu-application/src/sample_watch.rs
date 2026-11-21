@@ -13,6 +13,8 @@ type AddedSamples = Vec<(String, Arc<AudioClip>)>;
 pub(crate) struct Watch {
     next_scan: Instant,
     scan: Option<Scan>,
+    /// Files already reported (another program's file under a pending name): later scans skip them.
+    reported: Vec<String>,
 }
 
 impl Default for Watch {
@@ -20,6 +22,7 @@ impl Default for Watch {
         Self {
             next_scan: Instant::now() + SCAN_INTERVAL,
             scan: None,
+            reported: Vec::new(),
         }
     }
 }
@@ -36,6 +39,13 @@ impl Drop for Scan {
 }
 
 impl Watch {
+    /// Later scans skip `names`: they were reported once.
+    pub(crate) fn remember_reported(&mut self, names: impl IntoIterator<Item = String>) {
+        self.reported.extend(names);
+        self.reported.sort();
+        self.reported.dedup();
+    }
+
     pub(crate) fn poll(&mut self, document: &Document) -> AddedSamples {
         if let Some(scan) = &self.scan {
             return match scan.result.try_recv() {
@@ -52,7 +62,7 @@ impl Watch {
         {
             self.scan = Some(start_scan(
                 folder.to_owned(),
-                document.files.clone(),
+                document.files.iter().chain(&self.reported).cloned().collect(),
                 document.file.general("AudioFilename"),
             ));
         }
@@ -60,6 +70,8 @@ impl Watch {
     }
 }
 
+/// Looks for files new on disk, so it reads the folder alone.
+#[allow(clippy::disallowed_methods)]
 fn start_scan(folder: PathBuf, known: Vec<String>, song: Option<String>) -> Scan {
     let (send, result) = mpsc::channel();
     let cancel = Arc::new(AtomicBool::new(false));

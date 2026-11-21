@@ -9,7 +9,6 @@ use dawsu_editor::tools::ToolTarget;
 use dawsu_editor_composer::{MOMENT_HITNORMAL, SetHitnormal};
 use dawsu_foundation::{SampleIdentity, SongTime, digest::sha256_hex, safe_write};
 use dawsu_hitsounding::sound_sets::{SetSource, SoundSet, placement_hits, plan_snapshot, read_dawsuset};
-use dawsu_osu_format::list_folder;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -310,7 +309,7 @@ struct SnapshotRecord {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-struct SnapshotEntry {
+pub(crate) struct SnapshotEntry {
     set_id: String,
     /// The checksum of the set's sounds (ids, roles and audio), which names this version.
     audio: String,
@@ -320,7 +319,7 @@ struct SnapshotEntry {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-struct SnapshotFile {
+pub(crate) struct SnapshotFile {
     member_id: String,
     name: String,
     sha256: String,
@@ -376,14 +375,7 @@ impl RecordFile {
 
     /// The last finished snapshot of this version of the set, as the set on its mapset files.
     fn previous(&self, set: &SoundSet, audio: &str) -> Option<SoundSet> {
-        let entry = self.record.entries.iter().rev().find(|e| e.done && e.set_id == set.id && e.audio == audio)?;
-        let members = set.members.iter().map(|m| {
-            let file = entry.files.iter().find(|f| f.member_id == m.id)?;
-            let mut m = m.clone();
-            m.lane = dawsu_hitsounding::sound_sets::SetLane { source: SetSource::File, name: file.name.clone(), missing: false, kept: Default::default() };
-            Some(m)
-        }).collect::<Option<Vec<_>>>()?;
-        Some(SoundSet { members, ..set.clone() })
+        previous_in(self.record.entries.iter().filter(|e| e.done), set, audio)
     }
 
     fn indexes(&self) -> impl Iterator<Item = u32> + '_ {
@@ -394,44 +386,33 @@ impl RecordFile {
     }
 }
 
-/// Writes a snapshot's files, all or none: a pending record entry first, then each file as a new
-/// file, then each decoded; on any failure the files this attempt created are deleted and the
-/// entry dropped. Returns the written files with their decoded audio.
-fn write_snapshot(root: &Path, record: &mut RecordFile, entry: SnapshotEntry, files: &[(String, Vec<u8>)]) -> Result<Vec<(String, Arc<AudioClip>)>, String> {
-    let before = record.record.clone();
-    record.record.entries.retain(|e| !(e.set_id == entry.set_id && e.audio == entry.audio));
-    record.record.entries.push(entry);
-    record.write()?;
-    let mut created = Vec::new();
-    let result = (|| {
-        let mut clips = Vec::new();
-        for (name, bytes) in files {
-            let path = root.join(name);
-            safe_write::create(&path, bytes).map_err(|e| format!("Could not add {name}: {e}"))?;
-            created.push(path.clone());
-            clips.push((name.clone(), dawsu_audio::decode(&path).map_err(|e| format!("{name}: {e}"))?));
-        }
-        Ok(clips)
-    })();
-    match result {
-        Ok(clips) => {
-            record.record.entries.last_mut().expect("the entry was pushed").done = true;
-            if let Err(error) = record.write() {
-                for path in &created {
-                    let _ = std::fs::remove_file(path);
-                }
-                return Err(error);
-            }
-            Ok(clips)
-        }
-        Err(error) => {
-            for path in &created {
-                let _ = std::fs::remove_file(path);
-            }
-            record.record = before;
-            let _ = record.write();
-            Err(error)
-        }
+/// The last snapshot among `entries` of this version of the set, as the set on its files.
+fn previous_in<'a>(entries: impl DoubleEndedIterator<Item = &'a SnapshotEntry>, set: &SoundSet, audio: &str) -> Option<SoundSet> {
+    {
+        let entry = entries.rev().find(|e| e.set_id == set.id && e.audio == audio)?;
+        let members = set.members.iter().map(|m| {
+            let file = entry.files.iter().find(|f| f.member_id == m.id)?;
+            let mut m = m.clone();
+            m.lane = dawsu_hitsounding::sound_sets::SetLane { source: SetSource::File, name: file.name.clone(), missing: false, kept: Default::default() };
+            Some(m)
+        }).collect::<Option<Vec<_>>>()?;
+        Some(SoundSet { members, ..set.clone() })
+    }
+}
+
+/// The bytes the mapset would hold under `name`: a pending file's kept copy or the file on disk.
+fn existing_bytes(root: &Path, pending: &crate::pending::Pending, name: &str) -> Option<Vec<u8>> {
+    match pending.get(name) {
+        Some(file) => std::fs::read(&file.path).ok(),
+        None => safe_child(root, name).ok().and_then(|p| std::fs::read(p).ok()),
+    }
+}
+
+/// Where a lane's file can be read: a pending file's kept copy or the mapset's file.
+fn readable_path(root: &Path, pending: &crate::pending::Pending, name: &str) -> Result<PathBuf, String> {
+    match pending.get(name) {
+        Some(file) => Ok(file.path.clone()),
+        None => safe_child(root, name),
     }
 }
 
@@ -441,6 +422,7 @@ impl Application {
     fn used_indexes(&self, root: &Path, files: &[String], record: &RecordFile) -> Result<std::collections::BTreeSet<u32>, String> {
         let (mut used, _) = layers::reservations(root, files)?;
         let document = self.document.as_ref().expect("open document");
+        used.extend(document.pending.taken_indexes());
         let model = document.composer.hitsounds();
         used.extend(document.composer.lanes.iter().chain(model.lanes().iter().map(|l| &l.identity)).filter_map(|lane| match lane {
             SampleIdentity::Standard { index, .. } if index.get() > 1 => Some(index.get()),
@@ -463,9 +445,9 @@ impl Application {
         let SampleIdentity::Standard { set, .. } = lane else { return (None, None) };
         let Some(model) = hits.lane(lane) else { return (None, None) };
         let defaults = &self.preferences.default_samples;
-        let defaults_list = list_folder(defaults).unwrap_or_default();
+        let defaults_list = crate::pending::sample_folder(defaults);
         let skipped = || Some(format!("The {} under it wasn't found, so that moment saves as a mix.", crate::lane_name(lane)));
-        let Ok(path) = super::sample_path(model, root, defaults, &defaults_list) else { return (None, skipped()) };
+        let Ok(path) = super::sample_path(model, root, &self.document.as_ref().expect("open document").pending, defaults, &defaults_list) else { return (None, skipped()) };
         let Some(extension) = path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase)
             .filter(|e| matches!(e.as_str(), "wav" | "ogg" | "mp3")) else { return (None, skipped()) };
         let Ok(bytes) = std::fs::read(&path) else { return (None, skipped()) };
@@ -513,9 +495,9 @@ impl Application {
         let mut library_created = None;
         let set_digest = sha256_hex(&bytes);
         let root = document.path.parent().ok_or("Missing mapset folder")?.to_path_buf();
-        let mut record = RecordFile::open(&self.data_root, &root)?;
+        let record = RecordFile::open(&self.data_root, &root)?;
         let audio = audio_checksum(&set);
-        let mut previous = record.previous(&set, &audio);
+        let mut previous = self.previous_snapshot(&record, &set, &audio);
         // D6b: a set with only additions takes the moment's own hitnormal along to its index.
         let set_has_hitnormal = set.members.iter().any(|m| m.slot.ends_with("-hitnormal"));
         let (own_hitnormal, note) = if set_has_hitnormal {
@@ -527,9 +509,10 @@ impl Application {
         let mut attempt = 0;
         let (snapshot, clips, extra, hits, hitnormal) = loop {
             attempt += 1;
-            let files = list_folder(&root).map_err(|e| e.to_string())?;
+            let pending = self.document.as_ref().expect("open document").pending.clone();
+            let files = crate::pending::listing(&root, &pending)?;
             let used = self.used_indexes(&root, &files, &record)?;
-            let existing = |name: &str| safe_child(&root, name).ok().and_then(|p| std::fs::read(p).ok());
+            let existing = |name: &str| existing_bytes(&root, &pending, name);
             let snapshot = plan_snapshot(&set, &files, &used, previous.as_ref(), &existing).map_err(|e| format!("{}: {e}", set.name))?;
             let mut writes = snapshot.files.clone();
             let mut extra = None;
@@ -583,9 +566,10 @@ impl Application {
             if let Some(copy) = library_copy.take() {
                 library_created = copy.write()?;
             }
-            match write_snapshot(&root, &mut record, entry, &writes) {
+            match self.keep_snapshot(entry, &writes) {
                 Ok(clips) => break (snapshot, clips, extra, hits, hitnormal),
-                Err(_) if attempt == 1 && writes.iter().any(|(name, _)| root.join(name).exists()) => continue,
+                // A name another window claimed in between is planned again once.
+                Err(_) if attempt == 1 => continue,
                 Err(error) => {
                     if let Some(path) = &library_created {
                         let _ = std::fs::remove_file(path);
@@ -595,21 +579,12 @@ impl Application {
             }
         };
         // Reused files may have no decoded audio yet.
-        let written = clips.len();
-        let mut additions = clips;
-        for name in snapshot.set.members.iter().map(|m| &m.lane.name).chain(extra.as_ref()) {
-            if !additions.iter().any(|(n, _)| n == name) && !self.samples.contains_key(&SampleIdentity::File(name.clone())) {
-                let path = safe_child(&root, name)?;
-                additions.push((name.clone(), dawsu_audio::decode(&path).map_err(|e| format!("{name}: {e}"))?));
-            }
-        }
-        self.register_added_samples(additions);
+        self.register_snapshot_samples(&root, clips, snapshot.set.members.iter().map(|m| &m.lane.name).chain(extra.as_ref()))?;
         let composer = &mut self.document.as_mut().expect("open document").composer;
         composer.place_sound_set(time, &set.id, &set_digest, 100, &hits, hitnormal, 5.0)
             .ok_or("The set was placed here while its files were copied.")?;
         composer.audition_requests.extend(hits.iter().map(|(_, lane, _)| lane.clone()));
-        let copied = if written == 0 { String::new() } else { format!(", {written} files copied") };
-        self.status = format!("Placed \"{}\"{copied}.", set.name);
+        self.status = format!("Placed \"{}\".", set.name);
         if let Some(note) = note {
             self.status = format!("{} {note}", self.status);
         }
@@ -734,7 +709,7 @@ impl Application {
         }
         let root = document.path.parent().ok_or_else(|| refused("The difficulty's folder was not found.".into()))?;
         let defaults = &self.preferences.default_samples;
-        let defaults_list = list_folder(defaults).unwrap_or_default();
+        let defaults_list = crate::pending::sample_folder(defaults);
         let mut captured = Vec::new();
         let mut total = 0u64;
         for (identity, volume) in lanes {
@@ -743,7 +718,7 @@ impl Application {
             let unreadable = || refused(format!("Could not read {lane_name}. Check that another program is not using it."));
             let model = hits.lane(identity).ok_or_else(|| unusable("has no lane"))?;
             // `sample_path` decides what plays: the folder's file, or the skin's sound.
-            let path = super::sample_path(model, root, defaults, &defaults_list).map_err(|_| unusable("wasn't found"))?;
+            let path = super::sample_path(model, root, &document.pending, defaults, &defaults_list).map_err(|_| unusable("wasn't found"))?;
             let (source, file) = match &model.source {
                 dawsu_hitsounding::LaneSource::File(file) => (SetSource::File, file.clone()),
                 dawsu_hitsounding::LaneSource::Skin => (SetSource::Skin, crate::lane_name(&model.plays_as())),
@@ -1033,7 +1008,7 @@ impl Application {
             }
             let (SampleIdentity::Standard { set, .. }, Some(dawsu_hitsounding::LaneSource::File(name))) = (&a.lane, hits.lane(&a.lane).map(|l| &l.source)) else { continue };
             let extension = name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()).unwrap_or_default();
-            let bytes = std::fs::read(safe_child(root, name)?).map_err(|_| format!("Could not read {name}. Check that another program is not using it."))?;
+            let bytes = std::fs::read(readable_path(root, &document.pending, name)?).map_err(|_| format!("Could not read {name}. Check that another program is not using it."))?;
             let bank = match set {
                 dawsu_foundation::SampleSet::Normal => "normal",
                 dawsu_foundation::SampleSet::Soft => "soft",
@@ -1052,15 +1027,16 @@ impl Application {
     #[allow(clippy::type_complexity)]
     fn snapshot_set(&mut self, set: &SoundSet, write: bool, moved: &[MovedHitnormal]) -> Result<Option<(SoundSet, std::collections::BTreeMap<SampleIdentity, SampleIdentity>, bool)>, String> {
         let root = self.document.as_ref().ok_or("Open a difficulty first.")?.path.parent().ok_or("Missing mapset folder")?.to_path_buf();
-        let mut record = RecordFile::open(&self.data_root, &root)?;
+        let record = RecordFile::open(&self.data_root, &root)?;
         let audio = audio_checksum(set);
-        let mut previous = record.previous(set, &audio);
+        let mut previous = self.previous_snapshot(&record, set, &audio);
         let mut attempt = 0;
         let (snapshot, lanes, extra, clips) = loop {
             attempt += 1;
-            let files = list_folder(&root).map_err(|e| e.to_string())?;
+            let pending = self.document.as_ref().expect("open document").pending.clone();
+            let files = crate::pending::listing(&root, &pending)?;
             let used = self.used_indexes(&root, &files, &record)?;
-            let existing = |name: &str| safe_child(&root, name).ok().and_then(|p| std::fs::read(p).ok());
+            let existing = |name: &str| existing_bytes(&root, &pending, name);
             let snapshot = plan_snapshot(set, &files, &used, previous.as_ref(), &existing).map_err(|e| format!("{}: {e}", set.name))?;
             // The hits are worked out before anything is written.
             member_hits(&snapshot.set, 100)?;
@@ -1129,23 +1105,120 @@ impl Application {
             if attempt == 1 && writes.iter().any(|(name, _)| root.join(name).exists()) {
                 continue;
             }
-            match write_snapshot(&root, &mut record, entry, &writes) {
+            match self.keep_snapshot(entry, &writes) {
                 Ok(clips) => break (snapshot, lanes, extra, clips),
-                Err(_) if attempt == 1 && writes.iter().any(|(name, _)| root.join(name).exists()) => continue,
+                Err(_) if attempt == 1 => continue,
                 Err(error) => return Err(error),
             }
         };
         let wrote = !clips.is_empty();
-        let mut additions = clips;
-        for name in snapshot.set.members.iter().map(|m| &m.lane.name).chain(extra.iter().map(|(name, _)| name)) {
-            if !additions.iter().any(|(n, _)| n == name) && !self.samples.contains_key(&SampleIdentity::File(name.clone())) {
-                let path = safe_child(&root, name)?;
-                additions.push((name.clone(), dawsu_audio::decode(&path).map_err(|e| format!("{name}: {e}"))?));
-            }
-        }
-        self.register_added_samples(additions);
+        let names: Vec<String> = extra.iter().map(|(name, _)| name.clone()).collect();
+        self.register_snapshot_samples(&root, clips, snapshot.set.members.iter().map(|m| &m.lane.name).chain(names.iter()))?;
         Ok(Some((snapshot.set, lanes, wrote)))
     }
+
+    /// The last snapshot of this version of the set: one this document keeps pending, else the
+    /// record's last finished one.
+    fn previous_snapshot(&self, record: &RecordFile, set: &SoundSet, audio: &str) -> Option<SoundSet> {
+        let document = self.document.as_ref()?;
+        previous_in(document.pending_sets.iter(), set, audio).or_else(|| record.previous(set, audio))
+    }
+
+    /// Keeps a snapshot's new files as pending files, all or none, and remembers the snapshot
+    /// until a Save writes its files. Returns the files with their decoded audio.
+    fn keep_snapshot(&mut self, entry: SnapshotEntry, files: &[(String, Vec<u8>)]) -> Result<Vec<(String, Arc<AudioClip>)>, String> {
+        let document = self.document.as_mut().expect("open document");
+        let mut clips = Vec::new();
+        let mut failure = None;
+        for (name, bytes) in files {
+            match document.pending.add(name, bytes) {
+                Ok(file) => {
+                    clips.push((name.clone(), None));
+                    match dawsu_audio::decode(&file.path) {
+                        Ok(clip) => clips.last_mut().expect("just pushed").1 = Some(clip),
+                        Err(error) => {
+                            failure = Some(format!("{name}: {error}"));
+                            break;
+                        }
+                    }
+                }
+                Err(error) => {
+                    failure = Some(error);
+                    break;
+                }
+            }
+        }
+        if let Some(error) = failure {
+            for (name, _) in &clips {
+                document.pending.release(name);
+            }
+            return Err(error);
+        }
+        document.pending_sets.retain(|e| !(e.set_id == entry.set_id && e.audio == entry.audio));
+        document.pending_sets.push(entry);
+        Ok(clips.into_iter().map(|(name, clip)| (name, clip.expect("decoded"))).collect())
+    }
+
+    /// Registers a snapshot's samples: the files just kept, then any reused file whose audio is
+    /// not decoded yet. Pending files stay out of the document's mapset files.
+    fn register_snapshot_samples<'a>(&mut self, root: &Path, kept: Vec<(String, Arc<AudioClip>)>, names: impl Iterator<Item = &'a String>) -> Result<(), String> {
+        let pending = self.document.as_ref().expect("open document").pending.clone();
+        let (mut in_pending, mut on_disk): (Vec<_>, Vec<_>) = kept.into_iter().partition(|(name, _)| pending.get(name).is_some());
+        for name in names {
+            if !in_pending.iter().chain(&on_disk).any(|(n, _)| n == name) && !self.samples.contains_key(&SampleIdentity::File(name.clone())) {
+                let path = readable_path(root, &pending, name)?;
+                let clip = dawsu_audio::decode(&path).map_err(|e| format!("{name}: {e}"))?;
+                if pending.get(name).is_some() { in_pending.push((name.clone(), clip)) } else { on_disk.push((name.clone(), clip)) }
+            }
+        }
+        self.register_samples(in_pending, false);
+        self.register_added_samples(on_disk);
+        Ok(())
+    }
+
+    /// After a Save keeps its writes: records the snapshot files it wrote, adding to the
+    /// record's entry for the same files, and forgets the snapshots whose files are all written.
+    /// A set only partly written is copied again at a new index the next time it is placed in
+    /// another session (M7).
+    pub(crate) fn record_written_sets(&mut self, written: &[String]) -> Result<(), String> {
+        let Some(document) = self.document.as_mut() else { return Ok(()) };
+        if written.is_empty() || document.pending_sets.is_empty() {
+            return Ok(());
+        }
+        let written: std::collections::BTreeSet<String> = written.iter().map(|n| n.to_ascii_lowercase()).collect();
+        let root = document.path.parent().ok_or("Missing mapset folder")?.to_path_buf();
+        let mut record = RecordFile::open(&self.data_root, &root)?;
+        let mut changed = false;
+        for entry in &document.pending_sets {
+            let files: Vec<SnapshotFile> = entry.files.iter().filter(|f| written.contains(&f.name.to_ascii_lowercase())).cloned().collect();
+            if files.is_empty() {
+                continue;
+            }
+            changed = true;
+            let same = |e: &&mut SnapshotEntry| e.done && e.set_id == entry.set_id && e.audio == entry.audio
+                && files.iter().all(|f| e.files.iter().all(|g| g.member_id != f.member_id || g.name == f.name));
+            match record.record.entries.iter_mut().find(|e| same(e)) {
+                Some(existing) => {
+                    for file in files {
+                        if !existing.files.iter().any(|g| g.member_id == file.member_id && g.name == file.name) {
+                            existing.files.push(file);
+                        }
+                    }
+                }
+                None => {
+                    record.record.entries.retain(|e| !(e.set_id == entry.set_id && e.audio == entry.audio));
+                    record.record.entries.push(SnapshotEntry { files, done: true, ..entry.clone() });
+                }
+            }
+        }
+        let pending = &document.pending;
+        document.pending_sets.retain(|e| e.files.iter().any(|f| pending.get(&f.name).is_some()));
+        if changed {
+            record.write()?;
+        }
+        Ok(())
+    }
+
 
     /// Plays the library's version of `set_id` on its placements as one undo step named `label`.
     /// With `only` (a placement and its new gain), only that placement changes, unless the set's
@@ -1487,6 +1560,7 @@ fn clock(ms: f64) -> String {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use dawsu_osu_format::list_folder;
     use dawsu_hitsounding::sound_sets::{Kept, SetLane, SetMember, write_dawsuset};
     use dawsu_test_support::Scratch;
     use std::time::{Duration, Instant};
@@ -1576,21 +1650,41 @@ pub(crate) mod tests {
         app.document().unwrap().path.clone()
     }
 
+    /// The files the editor sees: the mapset's and the pending ones.
+    fn editor_files(app: &Application, f: &Fixture) -> Vec<String> {
+        crate::pending::listing(&f.map.with_file_name(""), &app.document().unwrap().pending).unwrap()
+    }
+
+    fn bytes_of(app: &Application, f: &Fixture, name: &str) -> Vec<u8> {
+        existing_bytes(&f.map.with_file_name(""), &app.document().unwrap().pending, name).unwrap()
+    }
+
+    #[allow(clippy::disallowed_methods)]
     fn mapset_files(f: &Fixture) -> Vec<String> {
         let mut files = list_folder(&f.map.with_file_name("")).unwrap();
         files.sort();
         files
     }
 
+    fn record_entries(f: &Fixture) -> Vec<SnapshotEntry> {
+        let folder = f.scratch.path("data").join("sound-set-snapshots");
+        std::fs::read_dir(folder).map(|entries| entries.flatten().filter(|e| e.path().extension().is_some_and(|x| x == "json"))
+            .flat_map(|e| serde_json::from_slice::<SnapshotRecord>(&std::fs::read(e.path()).unwrap()).unwrap().entries).collect()).unwrap_or_default()
+    }
+
     #[test]
-    fn placing_copies_the_set_into_the_library_and_its_samples_into_the_mapset_at_one_index() {
+    fn placing_keeps_the_sets_samples_pending_and_save_writes_them_at_one_index() {
         let f = fixture("place-set");
         let mut app = app(&f);
         let map = open(&mut app, &f.map);
         app.seek(1000.0);
         app.place_sound_set_file(&map, &f.set).unwrap();
-        assert_eq!(mapset_files(&f), ["a.osu", "drum-hitclap2.wav", "drum-hitnormal2.wav"]);
-        assert_eq!(std::fs::read(f.map.with_file_name("drum-hitnormal2.wav")).unwrap(), wav(8000));
+        // Nothing reaches the mapset or the snapshot record until a Save plays the set.
+        assert_eq!(mapset_files(&f), ["a.osu"]);
+        assert!(record_entries(&f).is_empty());
+        let pending = &app.document().unwrap().pending;
+        assert_eq!(pending.get("drum-hitnormal2.wav").map(|file| std::fs::read(&file.path).unwrap()), Some(wav(8000)));
+        assert!(pending.get("drum-hitclap2.wav").is_some());
         let library = f.scratch.path("library").join(LIBRARY_FOLDER).join("Kick and clap.dawsuset");
         assert_eq!(std::fs::read(&library).unwrap(), std::fs::read(&f.set).unwrap());
         let hits = app.document().unwrap().composer.hitsounds();
@@ -1600,15 +1694,151 @@ pub(crate) mod tests {
         assert!(p.applied.iter().all(|a| a.added && a.volume == 60));
         assert_eq!(hits.moment(p.moment).hits().map(crate::lane_name).collect::<Vec<_>>(), ["drum-hitnormal2", "drum-hitclap2"], "the set's hitnormal replaces the circle's (D6)");
         assert!(app.is_dirty());
-        // Playback plays both copied sounds.
+        // Playback plays both sounds from their kept copies.
         let sounds = app.scheduled_sounds(app.document().unwrap());
         assert_eq!(sounds.iter().filter(|s| s.at_ms == 1000.0).count(), 2);
-        // Undo leaves the copied files (D5); placing again reuses them.
+        // Placing again after Undo reuses the pending files.
         app.command("undo");
         assert!(app.document().unwrap().composer.hitsounds().placements().is_empty());
         app.place_sound_set_file(&map, &f.set).unwrap();
-        assert_eq!(mapset_files(&f), ["a.osu", "drum-hitclap2.wav", "drum-hitnormal2.wav"], "no new file");
+        assert_eq!(app.document().unwrap().pending.files().count(), 2, "no new file");
         assert_eq!(app.document().unwrap().composer.hitsounds().placements().len(), 1);
+        save(&mut app, &f);
+        assert_eq!(mapset_files(&f), ["a.osu", "drum-hitclap2.wav", "drum-hitnormal2.wav"]);
+        assert_eq!(std::fs::read(f.map.with_file_name("drum-hitnormal2.wav")).unwrap(), wav(8000));
+        let entries = record_entries(&f);
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].done);
+        assert_eq!(entries[0].files.iter().map(|file| file.name.as_str()).collect::<Vec<_>>(), ["drum-hitnormal2.wav", "drum-hitclap2.wav"]);
+        assert!(app.document().unwrap().pending.files().next().is_none());
+    }
+
+    #[test]
+    fn a_save_writes_the_placed_set_and_leaves_the_unused_layer_out() {
+        let f = fixture("place-set-and-layer");
+        let defaults = f.scratch.path("skin");
+        std::fs::create_dir(&defaults).unwrap();
+        std::fs::write(defaults.join("soft-hitclap.wav"), wav(300)).unwrap();
+        let mut app = app(&f);
+        app.preferences.default_samples = defaults;
+        let map = open(&mut app, &f.map);
+        let before = mapset_files(&f);
+        let family = SampleIdentity::Standard { set: dawsu_foundation::SampleSet::Soft, sound: dawsu_foundation::Sound::Hit(dawsu_foundation::Hitsound::Clap), index: dawsu_foundation::CustomIndex::new(0) };
+        app.active_lane = app.document().unwrap().composer.lanes.iter().position(|lane| lane == &family).unwrap();
+        app.command("addNumberedLayer");
+        assert!(app.error.is_none(), "{:?}", app.error);
+        app.seek(1000.0);
+        app.place_sound_set_file(&map, &f.set).unwrap();
+        let pending: Vec<_> = app.document().unwrap().pending.files().map(|file| file.name.clone()).collect();
+        assert_eq!(mapset_files(&f), before, "nothing written before Save");
+        save(&mut app, &f);
+        let after = mapset_files(&f);
+        println!("before: {before:?}\npending before Save: {pending:?}\nafter: {after:?}");
+        assert_eq!(after, ["a.osu", "drum-hitclap3.wav", "drum-hitnormal3.wav"]);
+        let left: Vec<_> = app.document().unwrap().pending.files().map(|file| file.name.clone()).collect();
+        assert_eq!(left, ["soft-hitclap2.wav"], "the unused layer stays pending");
+    }
+
+    /// No file dawsu! made sits unplayed in the mapset, and every hit on a file still plays. While
+    /// the map is open, a file an undo or redo state plays counts as played; at close none does.
+    fn no_unplayed_dawsu_file(f: &Fixture, app: &Application, step: &str) {
+        let root = f.map.with_file_name("").canonicalize().unwrap();
+        let ledger = crate::pending::Pending::for_mapset(&app.data_root, &root).ledger().unwrap();
+        let disk = mapset_files(f);
+        let map = OsuFileForTest::read(std::fs::read(&f.map).unwrap()).file;
+        let mut played: Vec<String> = crate::pending::played_names(&map, &disk).into_iter().map(|n| n.to_ascii_lowercase()).collect();
+        if let Some(document) = app.document() {
+            // Only the files no current hit plays: a file a current hit plays belongs in pending.
+            let current = crate::pending::hit_files(document.composer.hitsounds());
+            played.extend(document.composer.history.states().flat_map(crate::pending::hit_files).filter(|name| !current.contains(name)));
+        }
+        for entry in ledger.entries().unwrap() {
+            if disk.iter().any(|name| name.eq_ignore_ascii_case(&entry.name)) {
+                assert!(played.contains(&entry.name.to_ascii_lowercase()), "{step}: {} is in the mapset but nothing plays it ({disk:?})", entry.name);
+            }
+        }
+        if let Some(document) = app.document() {
+            let hits = document.composer.hitsounds();
+            for lane in hits.moments().iter().flat_map(|moment| moment.hits()) {
+                if matches!(hits.lane(lane).map(|l| &l.source), Some(dawsu_hitsounding::LaneSource::File(_))) {
+                    assert!(app.clip_for_lane(lane).is_some(), "{step}: {} has no sound", crate::lane_name(lane));
+                }
+            }
+        }
+    }
+
+    use dawsu_osu_format::OsuFile as OsuFileForTest;
+
+    #[test]
+    fn after_every_save_and_close_no_file_dawsu_made_sits_unplayed_in_the_mapset() {
+        let f = fixture("end-state");
+        let defaults = f.scratch.path("skin");
+        std::fs::create_dir(&defaults).unwrap();
+        std::fs::write(defaults.join("soft-hitclap.wav"), wav(300)).unwrap();
+        let external = f.scratch.path("replacement.wav");
+        std::fs::write(&external, wav(1234)).unwrap();
+        let mut app = app(&f);
+        app.preferences.default_samples = defaults;
+        let map = open(&mut app, &f.map);
+        let soft_clap = SampleIdentity::Standard { set: dawsu_foundation::SampleSet::Soft, sound: dawsu_foundation::Sound::Hit(dawsu_foundation::Hitsound::Clap), index: dawsu_foundation::CustomIndex::new(0) };
+        // Add a layer and place a set.
+        app.active_lane = app.document().unwrap().composer.lanes.iter().position(|lane| lane == &soft_clap).unwrap();
+        app.command("addNumberedLayer");
+        let layer = lane_of("soft-hitclap2.wav");
+        app.seek(1000.0);
+        app.place_sound_set_file(&map, &f.set).unwrap();
+        save(&mut app, &f);
+        no_unplayed_dawsu_file(&f, &app, "place");
+        // Update the set to new audio.
+        std::fs::write(library_set(&f), set_text("Kick and clap", &[("drum-hitnormal.wav", 9000), ("drum-hitclap.wav", 4000)])).unwrap();
+        listed(&app);
+        app.update_sound_set(SET_ID).unwrap();
+        save(&mut app, &f);
+        no_unplayed_dawsu_file(&f, &app, "update");
+        // Replace the set's clap with another sample.
+        let clap = app.document().unwrap().composer.hitsounds().moment(dawsu_hitsounding::MomentId(0)).hits()
+            .find(|lane| crate::lane_name(lane).starts_with("drum-hitclap")).unwrap().clone();
+        app.active_lane = app.document().unwrap().composer.lanes.iter().position(|lane| lane == &clap).unwrap();
+        app.replace_lane_sample(&map, &clap, &external).unwrap();
+        save(&mut app, &f);
+        no_unplayed_dawsu_file(&f, &app, "replace");
+        // The layer joins at another volume: a mixed Save.
+        app.document.as_mut().unwrap().composer.apply("Layer", |h| {
+            h.add_hit(dawsu_hitsounding::MomentId(0), layer.clone());
+            h.set_hit_volume(dawsu_hitsounding::MomentId(0), &layer, 30);
+        });
+        save(&mut app, &f);
+        no_unplayed_dawsu_file(&f, &app, "mixed");
+        // Change the mix.
+        app.document.as_mut().unwrap().composer.apply("Louder", |h| h.set_hit_volume(dawsu_hitsounding::MomentId(0), &layer, 45));
+        save(&mut app, &f);
+        no_unplayed_dawsu_file(&f, &app, "change the mix");
+        // Delete the hits.
+        app.document.as_mut().unwrap().composer.apply("Delete", |h| {
+            for lane in h.moment(dawsu_hitsounding::MomentId(0)).hits().cloned().collect::<Vec<_>>() {
+                h.remove_hit(dawsu_hitsounding::MomentId(0), &lane);
+            }
+        });
+        save(&mut app, &f);
+        no_unplayed_dawsu_file(&f, &app, "delete");
+        app.save_session().unwrap();
+        app.close_document();
+        no_unplayed_dawsu_file(&f, &app, "close");
+        println!("end state: {:?}", mapset_files(&f));
+    }
+
+    #[test]
+    fn a_set_placed_and_undone_before_save_writes_nothing() {
+        let f = fixture("place-set-undone");
+        let mut app = app(&f);
+        let map = open(&mut app, &f.map);
+        app.seek(1000.0);
+        app.place_sound_set_file(&map, &f.set).unwrap();
+        app.command("undo");
+        app.document.as_mut().unwrap().composer.add(1000.0, SampleIdentity::Standard { set: dawsu_foundation::SampleSet::Soft, sound: dawsu_foundation::Sound::Hit(dawsu_foundation::Hitsound::Clap), index: dawsu_foundation::CustomIndex::new(0) }, 100, 5.0);
+        save(&mut app, &f);
+        assert_eq!(mapset_files(&f), ["a.osu"]);
+        assert!(record_entries(&f).is_empty());
     }
 
     #[test]
@@ -1618,11 +1848,13 @@ pub(crate) mod tests {
         let map = open(&mut app, &f.map);
         app.seek(1000.0);
         app.place_sound_set_file(&map, &f.set).unwrap();
+        save(&mut app, &f);
         std::fs::write(f.map.with_file_name("drum-hitclap2.wav"), wav(1)).unwrap();
         app.seek(1500.0);
         app.place_sound_set_file(&map, &f.set).unwrap();
         assert_eq!(std::fs::read(f.map.with_file_name("drum-hitclap2.wav")).unwrap(), wav(1));
-        assert_eq!(mapset_files(&f), ["a.osu", "drum-hitclap2.wav", "drum-hitclap3.wav", "drum-hitnormal2.wav", "drum-hitnormal3.wav"]);
+        let pending: Vec<_> = app.document().unwrap().pending.files().map(|file| file.name.clone()).collect();
+        assert_eq!(pending, ["drum-hitclap3.wav", "drum-hitnormal3.wav"]);
     }
 
     #[test]
@@ -1636,11 +1868,8 @@ pub(crate) mod tests {
         assert!(app.place_sound_set_file(&map, &f.set).is_err());
         assert_eq!(mapset_files(&f), ["a.osu"]);
         assert_eq!(app.document().unwrap().composer.history.version(), version, "nothing placed");
-        let records: Vec<_> = std::fs::read_dir(f.scratch.path("data").join("sound-set-snapshots")).unwrap().flatten().filter(|e| e.path().extension().is_some_and(|x| x == "json")).collect();
-        for entry in records {
-            let r: SnapshotRecord = serde_json::from_slice(&std::fs::read(entry.path()).unwrap()).unwrap();
-            assert!(r.entries.is_empty(), "{r:?}");
-        }
+        assert!(app.document().unwrap().pending.files().next().is_none(), "the first file is taken back");
+        assert!(record_entries(&f).is_empty());
         let library = f.scratch.path("library").join(LIBRARY_FOLDER);
         assert!(std::fs::read_dir(&library).map_or(true, |mut entries| entries.next().is_none()), "no set left in the library");
     }
@@ -1809,6 +2038,7 @@ pub(crate) mod tests {
         let map = open(&mut app, &f.map);
         app.seek(1000.0);
         app.place_sound_set_file(&map, &f.set).unwrap();
+        let pending = app.document().unwrap().pending.clone();
         let composer = &mut app.document.as_mut().unwrap().composer;
         let moment = composer.hitsounds().placements()[0].moment;
         composer.apply("One volume", |h| h.set_volume(moment, 60));
@@ -1821,7 +2051,7 @@ pub(crate) mod tests {
             dawsu_hitsounding::Place::Circle(id) => (id.line(), None),
             other => panic!("{other:?}"),
         };
-        let read = |mixed: &crate::gain_recovery::Locations| crate::gain_recovery::Captured::read(hits, map.parent().unwrap(), &defaults, mixed).unwrap().needs_recovery();
+        let read = |mixed: &crate::gain_recovery::Locations| crate::gain_recovery::Captured::read(hits, map.parent().unwrap(), &pending, &defaults, mixed).unwrap().needs_recovery();
         assert!(read(&[circle].into()), "a placed moment the Save mixes");
         assert!(!read(&Default::default()), "a placed moment written natively needs no record");
     }
@@ -1936,8 +2166,8 @@ pub(crate) mod tests {
             app.set_hs_mode(hs);
             app.seek(1000.0);
             app.place_sound_set_file(&map, &f.set).unwrap();
-            assert_eq!(mapset_files(&f), ["a.osu", "drum-hitclap2.wav", "soft-hitnormal.wav", "soft-hitnormal2.wav"]);
-            assert_eq!(std::fs::read(f.map.with_file_name("soft-hitnormal2.wav")).unwrap(), wav(500), "the moment's own hitnormal sound");
+            assert_eq!(editor_files(&app, &f), ["a.osu", "drum-hitclap2.wav", "soft-hitnormal.wav", "soft-hitnormal2.wav"]);
+            assert_eq!(bytes_of(&app, &f, "soft-hitnormal2.wav"), wav(500), "the moment's own hitnormal sound");
             let hits = app.document().unwrap().composer.hitsounds();
             let moment = hits.moment(dawsu_hitsounding::MomentId(0));
             assert_eq!(moment.hits().map(crate::lane_name).collect::<Vec<_>>(), ["soft-hitnormal2", "drum-hitclap2"]);
@@ -1963,14 +2193,15 @@ pub(crate) mod tests {
         app.place_sound_set_file(&map, &f.set).unwrap();
         app.seek(1500.0);
         app.place_sound_set_file(&map, &f.set).unwrap();
-        assert_eq!(mapset_files(&f), ["a.osu", "drum-hitclap2.wav", "soft-hitnormal.wav", "soft-hitnormal2.wav"], "no new file");
+        assert_eq!(editor_files(&app, &f), ["a.osu", "drum-hitclap2.wav", "soft-hitnormal.wav", "soft-hitnormal2.wav"], "no new file");
         assert!(app.document().unwrap().composer.hitsounds().moment(dawsu_hitsounding::MomentId(1)).hits().map(crate::lane_name).eq(["soft-hitnormal2", "drum-hitclap2"]));
-        // A changed copy is never overwritten: the whole set goes to a new index.
+        // A changed copy in the mapset is never overwritten: the whole set goes to a new index.
+        save(&mut app, &f);
         std::fs::write(f.map.with_file_name("soft-hitnormal2.wav"), wav(1)).unwrap();
         app.command("undo");
         app.place_sound_set_file(&map, &f.set).unwrap();
         assert_eq!(std::fs::read(f.map.with_file_name("soft-hitnormal2.wav")).unwrap(), wav(1));
-        assert_eq!(mapset_files(&f), ["a.osu", "drum-hitclap2.wav", "drum-hitclap3.wav", "soft-hitnormal.wav", "soft-hitnormal2.wav", "soft-hitnormal3.wav"]);
+        assert_eq!(editor_files(&app, &f), ["a.osu", "drum-hitclap2.wav", "drum-hitclap3.wav", "soft-hitnormal.wav", "soft-hitnormal2.wav", "soft-hitnormal3.wav"]);
     }
 
     #[test]
@@ -1980,7 +2211,7 @@ pub(crate) mod tests {
         let map = open(&mut app, &f.map);
         app.seek(2000.0);
         app.place_sound_set_file(&map, &f.set).unwrap();
-        assert_eq!(mapset_files(&f), ["a.osu", "drum-hitclap2.wav", "soft-hitnormal.wav"]);
+        assert_eq!(editor_files(&app, &f), ["a.osu", "drum-hitclap2.wav", "soft-hitnormal.wav"]);
     }
 
     // ------------------------------------------------------------ checks before writes
@@ -1992,6 +2223,7 @@ pub(crate) mod tests {
         let map = open(&mut app, &f.map);
         app.seek(1000.0);
         app.place_sound_set_file(&map, &f.set).unwrap();
+        save(&mut app, &f);
         // A changed copy would make a new snapshot; placing on the same moment is refused first.
         std::fs::write(f.map.with_file_name("drum-hitnormal2.wav"), wav(1)).unwrap();
         app.place_sound_set_file(&map, &f.set).unwrap();
@@ -2016,7 +2248,7 @@ pub(crate) mod tests {
         let map = open(&mut app, &f.map);
         app.seek(1000.0);
         app.place_sound_set_file(&map, &f.set).unwrap();
-        assert_eq!(mapset_files(&f), ["a.osu", "drum-hitclap2.wav"]);
+        assert_eq!(editor_files(&app, &f), ["a.osu", "drum-hitclap2.wav"]);
         assert!(app.status.contains("saves as a mix"), "{}", app.status);
         assert_eq!(app.document().unwrap().composer.hitsounds().placements().len(), 1);
     }
@@ -2087,6 +2319,7 @@ pub(crate) mod tests {
             .find(|set| set.name == name).unwrap_or_else(|| panic!("no set named {name}"))
     }
 
+    #[allow(clippy::disallowed_methods)]
     fn library_files(f: &Fixture) -> Vec<String> {
         let mut files = list_folder(&f.scratch.path("library").join(LIBRARY_FOLDER)).unwrap_or_default();
         files.sort();
@@ -2410,7 +2643,8 @@ Mode:0
         app.seek(1000.0);
         app.place_sound_set_file(&map, &f.set).unwrap();
         save(&mut app, &f);
-        assert_eq!(mapset_files(&f).len(), 5, "the two copies, and the hitnormal and clap merged at one index: {:?}", mapset_files(&f));
+        // The set's copies are mix sources: they stay in dawsu!'s data folder.
+        assert_eq!(mapset_files(&f), ["a.osu", "drum-hitclap3.wav", "drum-hitnormal3.wav"], "the hitnormal and clap merged at one index");
         // Saving again with nothing changed writes no project record and keeps no new backup.
         let (project, backups) = (project_bytes(&f), walk(&f.scratch.path("projects")).len());
         save(&mut app, &f);
@@ -2418,8 +2652,9 @@ Mode:0
         let reopened = reopen(&f);
         assert_eq!(links(&reopened), [(0, SET_ID.to_string())]);
         assert_eq!(sounds_at(&reopened, 0), [("drum-hitnormal2".to_string(), 60), ("drum-hitclap2".to_string(), 30)]);
-        // A copied sample changed: gain recovery can't put the sounds back, so neither can the link.
-        let clap = f.map.with_file_name("drum-hitclap2.wav");
+        // A copied sample changed (its kept copy in dawsu!'s data folder): gain recovery can't put
+        // the sounds back, so neither can the link.
+        let clap = reopened.document().unwrap().pending.get("drum-hitclap2.wav").unwrap().path.clone();
         std::fs::write(&clap, wav(1)).unwrap();
         let mut changed = reopen(&f);
         assert!(links(&changed).is_empty());
@@ -2429,6 +2664,26 @@ Mode:0
         let record = serde_json::to_value(changed.project.as_ref().unwrap().settings.sound_sets.as_ref().unwrap()).unwrap();
         assert_eq!(record["current"]["placements"].as_array().map(Vec::len), Some(1), "{record}");
         assert!(reopen(&f).warnings.iter().any(|w| w.contains("Link not restored")), "still named on the next open");
+    }
+
+    #[test]
+    fn a_set_saved_only_as_mix_sources_is_reused_after_reopen() {
+        let f = fixture("links-mixed-reuse");
+        std::fs::write(&f.set, set_with_volumes("Kick and clap", &[("drum-hitnormal.wav", 8000, 60), ("drum-hitclap.wav", 4000, 30)])).unwrap();
+        let mut app = app(&f);
+        let map = open(&mut app, &f.map);
+        app.seek(1000.0);
+        app.place_sound_set_file(&map, &f.set).unwrap();
+        save(&mut app, &f);
+        assert_eq!(mapset_files(&f), ["a.osu", "drum-hitclap3.wav", "drum-hitnormal3.wav"]);
+        let mut reopened = reopen(&f);
+        settle(&mut reopened);
+        let id = reopened.document().unwrap().composer.hitsounds().placements()[0].id;
+        reopened.set_sound_set_placement_gain(id, 50).unwrap();
+        assert!(reopened.error.is_none(), "{:?}", reopened.error);
+        let names: Vec<_> = sounds_at(&reopened, 0).into_iter().map(|(name, _)| name).collect();
+        assert_eq!(names, ["drum-hitnormal2", "drum-hitclap2"], "the kept copies are reused, not copied again");
+        assert_eq!(reopened.document().unwrap().pending.files().count(), 2);
     }
 
     #[test]
@@ -2670,9 +2925,10 @@ Mode:0
         assert_eq!(prompt(&mut app), Some(("Kick and clap".to_string(), 1)));
         assert_eq!(mapset_files(&f), ["a.osu", "drum-hitclap2.wav", "drum-hitnormal2.wav"], "nothing is written before Update");
         app.answer_sound_set_prompt(SET_ID, true).unwrap();
-        assert_eq!(mapset_files(&f), ["a.osu", "drum-hitclap2.wav", "drum-hitclap3.wav", "drum-hitnormal2.wav", "drum-hitnormal3.wav"], "the whole set at a new index");
+        assert_eq!(editor_files(&app, &f), ["a.osu", "drum-hitclap2.wav", "drum-hitclap3.wav", "drum-hitnormal2.wav", "drum-hitnormal3.wav"], "the whole set at a new index");
+        assert_eq!(mapset_files(&f), ["a.osu", "drum-hitclap2.wav", "drum-hitnormal2.wav"], "nothing is written before Save");
         assert_eq!(std::fs::read(f.map.with_file_name("drum-hitnormal2.wav")).unwrap(), wav(8000), "the old file stays as it was");
-        assert_eq!(std::fs::read(f.map.with_file_name("drum-hitnormal3.wav")).unwrap(), wav(9000));
+        assert_eq!(bytes_of(&app, &f, "drum-hitnormal3.wav"), wav(9000));
         assert_eq!(sounds_at(&app, 0).iter().map(|s| s.0.as_str()).collect::<Vec<_>>(), ["drum-hitnormal3", "drum-hitclap3"], "the hits moved to the new files");
         // Playback finds the new files.
         let sounds = app.scheduled_sounds(app.document().unwrap());
@@ -2774,8 +3030,8 @@ Mode:0
         let at = app.document().unwrap().composer.history.position();
         app.answer_sound_set_prompt(SET_ID, true).unwrap();
         assert_eq!(app.document().unwrap().composer.history.position(), at + 1, "one undo step");
-        assert_eq!(mapset_files(&f), ["a.osu", "drum-hitclap2.wav", "drum-hitclap3.wav", "soft-hitnormal.wav", "soft-hitnormal2.wav", "soft-hitnormal3.wav"]);
-        assert_eq!(std::fs::read(f.map.with_file_name("soft-hitnormal3.wav")).unwrap(), wav(500));
+        assert_eq!(editor_files(&app, &f), ["a.osu", "drum-hitclap2.wav", "drum-hitclap3.wav", "soft-hitnormal.wav", "soft-hitnormal2.wav", "soft-hitnormal3.wav"]);
+        assert_eq!(bytes_of(&app, &f, "soft-hitnormal3.wav"), wav(500));
         assert_eq!(sounds_at(&app, 0), [("soft-hitnormal3".to_string(), 70), ("drum-hitclap3".to_string(), 70)], "the object still saves as plain hitsounds");
     }
 
@@ -2842,6 +3098,7 @@ Mode:0
         app.place_sound_set_file(&map, &f.set).unwrap();
         app.seek(1500.0);
         app.place_sound_set_file(&map, &f.set).unwrap();
+        save(&mut app, &f);
         // The snapshot's clap file is changed by another program, so it can't be used.
         std::fs::write(f.map.with_file_name("drum-hitclap2.wav"), wav(1)).unwrap();
         let id = app.document().unwrap().composer.hitsounds().placements()[0].id;
@@ -2919,7 +3176,8 @@ Mode:0
         }).collect();
         assert_ne!(normals[0], normals[1], "{normals:?}");
         for (name, frame) in normals.iter().zip([500, 600]) {
-            assert_eq!(std::fs::read(f.map.with_file_name(format!("{name}.wav"))).unwrap(), wav(frame), "{name}");
+            assert_eq!(bytes_of(&app, &f, &format!("{name}.wav")), wav(frame), "{name}");
+
         }
     }
 

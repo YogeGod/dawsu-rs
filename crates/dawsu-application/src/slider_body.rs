@@ -75,7 +75,7 @@ impl Application {
         ];
         let folder = doc.path.parent().ok_or("Missing mapset folder")?;
         let defaults = &self.preferences.default_samples;
-        let defaults_list = dawsu_osu_format::list_folder(defaults).unwrap_or_default();
+        let defaults_list = crate::pending::sample_folder(defaults);
         for lane in playable_lanes
             .into_iter()
             .flatten()
@@ -88,7 +88,7 @@ impl Application {
             if self.samples.contains_key(&source) {
                 continue;
             }
-            match sample_path(lane, folder, defaults, &defaults_list)
+            match sample_path(lane, folder, &doc.pending, defaults, &defaults_list)
                 .and_then(|path| dawsu_audio::decode(&path).map_err(|err| err.to_string()))
             {
                 Ok(clip) => {

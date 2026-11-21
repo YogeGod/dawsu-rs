@@ -743,7 +743,8 @@ fn library_sample_actions_scope_paths_and_preserve_the_assignment_target() {
     action("replace_library_sample", "drums/snare.WAV", &target).run(&mut app);
     assert!(app.error.is_none(), "{:?}", app.error);
     assert!(app.is_dirty());
-    assert_eq!(fs::read_dir(&mapset).unwrap().count(), 2);
+    // The new backing sample waits in dawsu!'s data folder until a Save plays it.
+    assert_eq!(fs::read_dir(&mapset).unwrap().count(), 1);
     assert_eq!(fs::read(&path).unwrap(), original);
     assert_eq!(fs::read(library.join("drums/snare.WAV")).unwrap(), wave);
 }
@@ -2345,7 +2346,8 @@ fn place_sound_set_action_places_the_picked_set_at_the_playhead_or_reports_why_n
     assert!(app.error.is_none(), "{:?}", app.error);
     let hits = app.document().unwrap().composer.hitsounds();
     assert_eq!(hits.placements().len(), 1);
-    assert!(fixture.0.join("soft-hitclap2.wav").is_file());
+    // The set's copy waits in dawsu!'s data folder until a Save plays it.
+    assert!(!fixture.0.join("soft-hitclap2.wav").is_file());
     assert!(fixture.0.join("library").join("Sound sets").join("Clap.dawsuset").is_file());
 }
 

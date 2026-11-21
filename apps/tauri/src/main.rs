@@ -1931,6 +1931,8 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                                 app.save_session().map(|()| {
                                     app.cancel_drum_detection();
                                     app.cancel_export_preview();
+                                    // Frees the numbers of new samples nothing keeps.
+                                    app.close_document();
                                     if !app.first_launch {
                                         app.save_preferences();
                                     }

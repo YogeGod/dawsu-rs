@@ -291,9 +291,12 @@ impl CueIndex {
         speed: f64,
         out: &mut Vec<usize>,
     ) {
+        if self.leaves == 0 {
+            return;
+        }
         let mut node = 1;
         // Walk left-to-right without recursion or callback allocations.
-        while self.leaves != 0 {
+        loop {
             if self.max_end[node] > time {
                 if node < self.leaves {
                     node *= 2;

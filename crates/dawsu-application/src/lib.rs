@@ -15,6 +15,8 @@ mod gain_recovery;
 mod lane_edit;
 mod layers;
 mod mixes;
+mod pending;
+mod sweep;
 pub mod output;
 pub mod node_graph;
 mod project;
@@ -89,6 +91,14 @@ pub struct Document {
     export_settings: Option<ExportSettings>,
     drum_lanes: Option<DrumLanes>,
     export_choices: Option<ExportChoices>,
+    /// Sample files dawsu! made that the mapset does not hold yet. Their names are in the hits'
+    /// folder listing, not in `files`.
+    pending: pending::Pending,
+    /// Sound set snapshots kept as pending files, recorded once a Save writes their files.
+    pending_sets: Vec<sound_sets::SnapshotEntry>,
+    /// This session's hold on the mapset, so others know its pending names are in use. A cleanup
+    /// job holds it too, so the mapset stays marked open until the job ends.
+    presence: Option<Arc<pending::Presence>>,
     node_graph_bindings: Option<std::collections::BTreeMap<String, String>>,
 }
 impl Document {
@@ -103,6 +113,8 @@ impl Document {
     pub fn read(path: &Path) -> Result<Self, String> {
         Self::read_matching(path, None)
     }
+    /// `files` is what is on disk; pending files join the hits' listing later.
+    #[allow(clippy::disallowed_methods)]
     fn read_matching(
         path: &Path,
         recovery: Option<&recovery::RecoveryCopy>,
@@ -186,6 +198,9 @@ impl Document {
             export_settings: None,
             drum_lanes: None,
             export_choices: None,
+            pending: pending::Pending::default(),
+            pending_sets: Vec::new(),
+            presence: None,
             node_graph_bindings: None,
         })
     }
@@ -242,12 +257,16 @@ pub struct SaveReport {
     gain_recovery_warning: Option<String>,
     /// What the failed project write after the `.osu` write held, for the status line.
     unfinished_record: String,
+    /// The pending files this Save wrote into the mapset.
+    published_pending: Vec<String>,
+    /// The pending files the project keeps because the drawn hits play them.
+    pending_kept: Vec<String>,
 }
 pub fn save_document(document: &Document, backups: PathBuf) -> Result<SaveReport, String> {
     prepare_save(
         document.compile_base.clone(), document.composer.hitsounds(), &document.written,
         document.file.original_bytes().to_vec(), &document.path, backups, document.hs_mode,
-        &document.owned_hs_circles, Path::new(""), None, false,
+        &document.owned_hs_circles, Path::new(""), &document.pending, None, false,
         &|| false, &mut Vec::new(), &mut |_, _| {},
     )?.apply(None, &|| false)
 }
@@ -350,6 +369,7 @@ fn prepare_save(
     hs: bool,
     owned: &BTreeSet<LineId>,
     defaults: &Path,
+    pending: &pending::Pending,
     project: Option<&project::Project>,
     review: bool,
     cancel: &dyn Fn() -> bool,
@@ -358,10 +378,10 @@ fn prepare_save(
 ) -> Result<PreparedSave, String> {
     let root = path.parent().ok_or("Missing mapset folder")?;
     let inputs = if review {
-        let defaults_list = list_folder(defaults).unwrap_or_default();
+        let defaults_list = crate::pending::sample_folder(defaults);
         let samples: BTreeSet<_> = hits.moments().iter().flat_map(|moment| moment.hits()).collect();
         let paths: BTreeSet<_> = samples.into_iter().filter_map(|sample| {
-            sample_path(hits.lane(sample)?, root, defaults, &defaults_list).ok()
+            sample_path(hits.lane(sample)?, root, pending, defaults, &defaults_list).ok()
         }).collect();
         let mut inputs = Vec::new();
         for path in paths {
@@ -378,7 +398,11 @@ fn prepare_save(
     if project.is_none() && !hits.placements().is_empty() {
         return Err("Sound set links need a writable editor project to save safely.".into());
     }
-    if project.is_none() && gain_recovery::Captured::read(hits, root, defaults, &BTreeSet::new())?.needs_recovery() {
+    if project.is_none() && gain_recovery::Captured::read(hits, root, pending, defaults, &BTreeSet::new())?.needs_recovery() {
+        // A new sample the gains mix from would be left out with nothing to keep it.
+        if let Some(file) = pending::needed(hits, pending, &[]).first() {
+            return Err(pending::left_out_without_project(&file.name));
+        }
         return Err("Editable hit gains need a writable editor project to save safely.".into());
     }
     let placement = if hs { Placement::OnObjects } else { Placement::GreenLines };
@@ -404,7 +428,7 @@ fn prepare_save(
                 }
                 checked = true;
             }
-            let files = list_folder(root).map_err(|error| error.to_string())?;
+            let files = pending::listing(root, pending)?;
             // This snapshot includes circles added by HS mode and all edits the pass encoded.
             let mut target = match decompile(&pass.out, &files, cancel, &mut |_, _| {}) {
                 Decompiled::Done(target) => target,
@@ -412,7 +436,7 @@ fn prepare_save(
                 Decompiled::UnsupportedMode { .. } => return Err("Cannot mix this difficulty".into()),
             };
             if let Err(error) = mix_files.prepare_by_role(
-                effective, &mut target, &mixable, root, defaults, &expected, cancel,
+                effective, &mut target, &mixable, root, defaults, &expected, pending, cancel,
             ) {
                 diagnostics.extend(mixable.iter().map(|problem| {
                     OutputProblem::new(problem, path, path).with_message(&error)
@@ -440,13 +464,31 @@ fn prepare_save(
     }
     let (out, owned, effective, left_out, circles) = (rolled.out, rolled.owned, rolled.effective, rolled.left_out, rolled.circles);
     let written = effective.clone();
+    // The pending files the written difficulty plays go into the mapset with its mixes; the
+    // project keeps the others the drawn hits still play.
+    let mix_names: Vec<String> = mix_files.staged.iter()
+        .filter_map(|mix| mix.path.file_name()?.to_str().map(str::to_owned)).collect();
+    let pending_writes: Vec<mixes::StagedMix> = pending::used(&out, root, pending, &mix_names)?
+        .into_iter().map(|(name, bytes)| mixes::StagedMix::pending(root, &name, bytes)).collect();
+    let pending_names: Vec<String> = pending_writes.iter()
+        .filter_map(|mix| mix.path.file_name()?.to_str().map(str::to_owned)).collect();
+    let mut editor = pending::listing(root, pending)?;
+    editor.extend(mix_names.iter().cloned());
+    editor.sort();
+    pending::check_written(&out, root, &[mix_names, pending_names.clone()].concat(), &editor, pending)?;
+
+    pending::check_indexes_free(root, path, &pending_names)?;
+    let pending_kept = pending::needed(hits, pending, &pending_names);
+    if project.is_none() && let Some(file) = pending_kept.first() {
+        return Err(pending::left_out_without_project(&file.name));
+    }
     // A sound set placement's moment needs gain recovery only when this Save mixes it.
     let mixed = if hits.placements().is_empty() {
         gain_recovery::Locations::new()
     } else {
-        gain_recovery::mixed_locations(&out, root, &mix_files.staged, cancel)?
+        gain_recovery::mixed_locations(&out, root, pending, &mix_files.staged, cancel)?
     };
-    let recovery = gain_recovery::Captured::read(&effective, root, defaults, &mixed)?;
+    let recovery = gain_recovery::Captured::read(&effective, root, pending, defaults, &mixed)?;
     if cancel() {
         return Err("Save cancelled before writing".into());
     }
@@ -454,7 +496,7 @@ fn prepare_save(
         .and_then(|project| project.settings.gain_recovery.as_ref())
         .is_some_and(|record| record.has_authored_for(&expected))
     {
-        Some(recovery.revision(&effective, &out, root, defaults, &mix_files.staged, cancel)?)
+        Some(recovery.revision(&effective, &out, root, pending, defaults, &mix_files.staged, cancel)?)
     } else {
         None
     };
@@ -462,7 +504,7 @@ fn prepare_save(
     // HS group that never became a circle. An old record with parts is replaced, even by an empty one.
     let (unwritten, loose) = match project {
         Some(project) => {
-            let files = if left_out.is_empty() { Vec::new() } else { list_folder(root).map_err(|error| error.to_string())? };
+            let files = if left_out.is_empty() { Vec::new() } else { pending::listing(root, pending)? };
             let built = unwritten::build(&left_out, &out, &files, &circles)?;
             let replaces = project.settings.unwritten.as_ref().is_some_and(|old| !old.is_empty());
             ((!built.record.is_empty() || replaces).then_some(built.record), built.loose)
@@ -485,6 +527,7 @@ fn prepare_save(
     let plan = PreparedSave {
         path: path.to_path_buf(), backups, expected, out, mix_files, recovery_revision,
         ownership, inputs, map_changed, left_out, written, unwritten, sound_sets, loose, drawn: hits.clone(),
+        pending_writes, pending_kept, ledger: pending.ledger(),
     };
     plan.check_current(project, cancel)?;
     // Left-out parts are listed for the Save hitsounds summary, which every Save shows first.
@@ -553,6 +596,12 @@ struct PreparedSave {
     sound_sets: Option<sound_sets::LinkRecord>,
     /// HS groups left out before they ever became a circle; the project keeps them as loose hits.
     loose: Vec<roll_back::MomentState>,
+    /// The pending files the written difficulty plays, published with the mixes.
+    pending_writes: Vec<mixes::StagedMix>,
+    /// The pending files the drawn hits play that this Save leaves out of the mapset.
+    pending_kept: Vec<pending::PendingSample>,
+    /// Where the files this Save creates are recorded.
+    ledger: Option<pending::Ledger>,
 }
 
 impl PreparedSave {
@@ -577,7 +626,7 @@ impl PreparedSave {
         Ok(())
     }
 
-    fn apply(self, mut project: Option<&mut project::Project>, cancel: &dyn Fn() -> bool) -> Result<SaveReport, String> {
+    fn apply(mut self, mut project: Option<&mut project::Project>, cancel: &dyn Fn() -> bool) -> Result<SaveReport, String> {
         self.check_current(project.as_deref(), cancel)?;
         let needs_recovery_write = self.recovery_revision.is_some();
         // Gain recovery and the left-out parts are staged in one project write before the `.osu`
@@ -585,10 +634,21 @@ impl PreparedSave {
         // to wait for, so the left-out record is written as current straight away.
         let promote_unwritten = self.unwritten.is_some() && self.map_changed;
         let promote_links = self.sound_sets.is_some() && self.map_changed;
-        let staged = needs_recovery_write || self.unwritten.is_some() || self.sound_sets.is_some();
+        // The pending files this Save leaves out are listed before the `.osu` is written, so a
+        // crash in between can't lose them. The list after the write is exact again.
+        let list_pending = !self.pending_kept.is_empty() && project.is_some();
+        let staged = needs_recovery_write || self.unwritten.is_some() || self.sound_sets.is_some() || list_pending;
         if staged {
             let project = project.as_mut().expect("a project record needs a project");
             let mut settings = project.settings.clone();
+            if list_pending {
+                let listed = settings.pending_samples.get_or_insert_with(Vec::new);
+                for file in &self.pending_kept {
+                    if !listed.contains(file) {
+                        listed.push(file.clone());
+                    }
+                }
+            }
             if let Some(revision) = self.recovery_revision {
                 settings.gain_recovery.get_or_insert_with(Default::default).stage(&self.expected, revision);
             }
@@ -611,7 +671,12 @@ impl PreparedSave {
             project.save(settings)?;
         }
 
-        let publication = mixes::publish(&self.mix_files.staged, cancel)?;
+        // One all-or-nothing write: the mixes, then the pending files the difficulty plays.
+        let published_pending: Vec<String> = self.pending_writes.iter()
+            .filter_map(|mix| mix.path.file_name()?.to_str().map(str::to_owned)).collect();
+        let mut writes = std::mem::take(&mut self.mix_files.staged);
+        writes.append(&mut self.pending_writes);
+        let publication = mixes::publish(&writes, self.ledger.as_ref(), cancel)?;
         if staged
             && let Err(error) = project.as_ref().expect("a staged record has a project").check_current()
         {
@@ -650,6 +715,8 @@ impl PreparedSave {
                     hs_circle_ownership: self.ownership,
                     gain_recovery_warning,
                     unfinished_record,
+                    published_pending,
+                    pending_kept: self.pending_kept.iter().map(|file| file.name.clone()).collect(),
                 })
             }
             Ok(SaveOutcome::ChangedOnDisk) => Err(publication.failed(DIFFICULTY_CHANGED.into())),
@@ -788,6 +855,8 @@ struct Loaded {
     waveform: Vec<WaveBin>,
     warnings: Vec<String>,
     recovery: Option<recovery::RecoveryCopy>,
+    /// The pending names a record of the outgoing mapset still lists, read by the open job.
+    outgoing_keep: Option<BTreeSet<String>>,
 }
 enum OpenSource {
     Map(PathBuf),
@@ -831,7 +900,8 @@ enum JobResult {
         diagnostics: Vec<OutputProblem>,
     },
     Review(Result<output::WritePlan, String>, Vec<OutputProblem>),
-    Output(Result<(usize, Option<String>), String>),
+    /// The files written, a receipt warning, and the pending files the write put in the mapset.
+    Output(Result<(usize, Option<String>, Vec<String>), String>),
     Stretched {
         path: PathBuf,
         speed: f64,
@@ -885,6 +955,13 @@ pub struct Application {
     tools: ToolBox<HitKey>,
     controller_stroke: Option<controller::ControllerStroke>,
     jobs: Option<mpsc::Receiver<JobResult>>,
+    /// The running cleanup of unused sample files, which keeps `busy` set until close or open
+    /// stops waiting for it.
+    sweep: Option<mpsc::Receiver<sweep::Outcome>>,
+    /// Set once close or open stopped waiting: the job's document is gone, so what it moved goes back.
+    sweep_detached: bool,
+    /// How long close and open wait for a cleanup job (Yoge, 2026-11-21: 5 seconds).
+    sweep_wait: std::time::Duration,
     job_progress: Option<JobProgress>,
     cancel: Arc<AtomicBool>,
     muted: Vec<SampleIdentity>,
@@ -977,8 +1054,11 @@ impl Application {
         }
         Self::create(preferences, first_launch, audio, error, true, data_root)
     }
+    /// An application with no audio and no saved preferences. Its data folder is a temporary
+    /// one, so the files it keeps never reach the user's own.
     pub fn headless() -> Self {
-        Self::create(Preferences::default(), false, None, None, false, data_folder())
+        let data_root = std::env::temp_dir().join("dawsu-headless").join(std::process::id().to_string());
+        Self::create(Preferences::default(), false, None, None, false, data_root)
     }
     pub fn headless_with_projects(data_root: PathBuf) -> Self {
         let mut app = Self::create(Preferences::default(), false, None, None, false, data_root.clone());
@@ -1024,6 +1104,9 @@ impl Application {
             tools: ToolBox::new(),
             controller_stroke: None,
             jobs: None,
+            sweep: None,
+            sweep_detached: false,
+            sweep_wait: std::time::Duration::from_secs(5),
             job_progress: None,
             cancel: Arc::new(AtomicBool::new(false)),
             muted: Vec::new(),
@@ -1216,6 +1299,33 @@ impl Application {
         self.document_generation
     }
 
+    /// Closes the difficulty: its pending files no record still lists are forgotten and their
+    /// names released, so the numbers free up. Call after `save_session`.
+    pub fn close_document(&mut self) {
+        // A cleanup still running after a Save finishes first. One still running past the wait
+        // finishes in the background, and this close cleans up nothing: the next one does.
+        self.poll_sweep(true);
+        let keep = if self.sweep.is_none() {
+            self.start_sweep(true);
+            self.poll_sweep(true).flatten()
+        } else {
+            None
+        };
+        self.forget_unneeded_pending(keep);
+        self.document = None;
+        self.checkpoint = None;
+    }
+
+    /// Forgets the pending files no record lists. `keep` are the listed names when a job read them.
+    fn forget_unneeded_pending(&mut self, keep: Option<BTreeSet<String>>) {
+        let project_root = self.project_root.clone();
+        let Some(document) = self.document.as_mut() else { return };
+        let Some(mapset) = document.path.parent().map(Path::to_path_buf) else { return };
+        // A recovery copy that can't be read may list any of them: none is forgotten.
+        let Some(keep) = keep.or_else(|| recorded_pending(project_root.as_deref(), &self.data_root, &mapset)) else { return };
+        document.pending.forget_all_but(&keep);
+    }
+
     pub fn save_session(&mut self) -> Result<(), String> {
         self.write_session(None, None, None)
     }
@@ -1283,6 +1393,7 @@ impl Application {
             gain_recovery: self.project.as_ref().and_then(|p| p.settings.gain_recovery.clone()),
             unwritten: self.project.as_ref().and_then(|p| p.settings.unwritten.clone()),
             sound_sets: self.project.as_ref().and_then(|p| p.settings.sound_sets.clone()),
+            pending_samples: self.project.as_ref().and_then(|p| p.settings.pending_samples.clone()),
             time_signatures: Some(document.time_signatures.clone()),
             export_settings: document.export_settings.clone(),
             drum_lanes: document.drum_lanes.clone(),
@@ -1354,6 +1465,8 @@ impl Application {
     }
 
     fn start_open(&mut self, source: OpenSource, keep_settings: bool) {
+        // A cleanup the last Save started finishes before the difficulty changes.
+        self.poll_sweep(true);
         self.cancel_timeline_edit();
         if keep_settings && let Err(error) = self.save_session() {
             self.error = Some(error);
@@ -1371,6 +1484,7 @@ impl Application {
         let cancel = self.cancel.clone();
         let defaults = self.preferences.default_samples.clone();
         let project_root = self.project_root.clone();
+        let data_root = self.data_root.clone();
         let imports = self.data_root.join("imports");
         let legacy_root = self
             .persist_preferences
@@ -1385,7 +1499,11 @@ impl Application {
         self.jobs = Some(receive);
         self.busy = true;
         let outgoing = self.document.as_ref().map(|d| d.composer.history.version());
+        let outgoing_mapset = self.document.as_ref().and_then(|d| d.path.parent().map(Path::to_path_buf));
         self.status = "Opening map and decoding audio…".into();
+        if self.sweep_detached {
+            self.status = sweep::with_note(&self.status, sweep::STILL_RUNNING);
+        }
         std::thread::spawn(move || {
             let result = (|| {
                 let (path, recovery) = match source {
@@ -1424,16 +1542,26 @@ impl Application {
                 } else {
                     path
                 };
-                load(
+                let mut loaded = load(
                     &path,
                     &defaults,
+                    &data_root,
                     &cancel,
                     project_root.as_deref(),
                     legacy_root.as_deref(),
                     recovery,
-                )
+                )?;
+                loaded.outgoing_keep = outgoing_mapset.and_then(|mapset| recorded_pending(project_root.as_deref(), &data_root, &mapset));
+                Ok(loaded)
             })();
             let _ = send.send(JobResult::Open(outgoing, keep_settings, result));
+            // Housekeeping of dawsu!'s data folder, after the open so it never delays it.
+            pending::prune_kept_copies(&data_root, project_root.as_deref(), pending::PRUNE_MIN_AGE);
+            pending::cap_removed_samples(
+                &data_root,
+                std::time::Duration::from_secs(pending::REMOVED_SAMPLES_DAYS * 24 * 3600),
+                pending::REMOVED_SAMPLES_BYTES,
+            );
         });
     }
     pub fn cancel_job(&mut self) {
@@ -1456,6 +1584,7 @@ impl Application {
     pub fn poll(&mut self) {
         // Edits made outside the refreshing entry points still reach the recovery checkpoint.
         self.refresh_recovery_edit();
+        self.poll_sweep(false);
         self.check_set_versions_when_read();
         self.poll_drum_detection();
         self.poll_node_graph();
@@ -1499,6 +1628,9 @@ impl Application {
                         return;
                     }
                     let path = loaded.document.path.clone();
+                    // The outgoing difficulty closes here.
+                    let keep = loaded.outgoing_keep;
+                    self.forget_unneeded_pending(keep);
                     let mut checkpoint = recovery::Checkpoint::new(&loaded.document);
                     let restored_id = loaded.recovery.map(|copy| copy.resume(&mut checkpoint));
                     self.document = Some(loaded.document);
@@ -1558,6 +1690,9 @@ impl Application {
                     } else {
                         "Difficulty loaded".into()
                     };
+                    if self.sweep_detached {
+                        self.status = sweep::with_note(&self.status, sweep::STILL_RUNNING);
+                    }
                     self.save_preferences();
                     self.checkpoint = Some(checkpoint);
                     self.restored_recovery = restored_id;
@@ -1566,6 +1701,9 @@ impl Application {
                 JobResult::Open(_, _, Err(e)) => {
                     self.error = Some(e);
                     self.status = "Open failed; previous document kept".into();
+                    if self.sweep_detached {
+                        self.status = sweep::with_note(&self.status, sweep::STILL_RUNNING);
+                    }
                 }
                 JobResult::Stretched {
                     path,
@@ -1629,13 +1767,15 @@ impl Application {
                     Err(e) if self.export.take_write(&Err(e.clone())) => {
                         self.status = "Output did not complete".into();
                     }
-                    Ok((count, tracking_warning)) => {
+                    Ok((count, tracking_warning, published)) => {
                         self.export.take_write(&Ok(count));
+                        self.pending_published(&published, &[]);
                         self.status = format!("Wrote {count} reviewed files with backups");
                         if let Some(warning) = tracking_warning {
                             self.warnings.push(warning);
                             self.status = format!("Wrote {count} reviewed files. Generate replacement could not be recorded.");
                         }
+                        self.start_sweep(false);
                         if let Some(d) = self.document.as_mut() {
                             if let Ok(entries) = std::fs::read_dir(d.path.parent().unwrap()) {
                                 d.difficulties = entries
@@ -1673,6 +1813,9 @@ impl Application {
                             // the state Undo returns to.
                             let compiled = report.written;
                             let drawn = report.drawn;
+                            if self.document.as_ref().is_some_and(|d| d.path == path) {
+                                self.pending_published(&report.published_pending, &report.pending_kept);
+                            }
                             if let Some(d) = self.document.as_mut().filter(|d| d.path == path) {
                                 d.file = report.file;
                                 self.document_generation += 1;
@@ -1719,9 +1862,10 @@ impl Application {
                                     "Difficulty saved. Could not archive the recovery copy: {error}"
                                 ));
                             }
+                            // The files dawsu! made that nothing plays now leave the mapset, in a job.
+                            self.start_sweep(false);
                             if !current {
-                                self.status =
-                                    "Saved the earlier revision. Newer edits are still open.".into();
+                                self.status = "Saved the earlier revision. Newer edits are still open.".into();
                                 return;
                             }
                             let document = self.document.as_mut().unwrap();
@@ -1822,6 +1966,9 @@ impl Application {
         for mix in &plan.mix_files.staged {
             files.push((if mix.is_reused() { "Reuse WAV" } else { "Create WAV" }, mix.path.as_path()));
         }
+        for file in plan.pending_writes.iter().filter(|file| !file.is_reused()) {
+            files.push(("Add sample file", file.path.as_path()));
+        }
         if let (Some(project), Some(settings)) = (&review.project, &review.settings)
             && (plan.recovery_revision.is_some() || plan.unwritten.is_some() || plan.sound_sets.is_some() || *settings != project.settings)
         {
@@ -1895,6 +2042,7 @@ impl Application {
             self.session_settings(Some(saved_hits), Some(saved_slots), None)
         });
         let defaults = self.preferences.default_samples.clone();
+        let pending = d.pending.clone();
         let (send, receive) = mpsc::channel();
         self.jobs = Some(receive);
         self.busy = true;
@@ -1910,7 +2058,7 @@ impl Application {
             let cancelled = || cancel.load(Ordering::Relaxed);
             let mut diagnostics = Vec::new();
             let result = prepare_save(
-                file, &hits, &written, expected, &path, backups, hs, &owned, &defaults,
+                file, &hits, &written, expected, &path, backups, hs, &owned, &defaults, &pending,
                 project.as_ref(), review, &cancelled, &mut diagnostics,
                 &mut |done, total| progress.report(done, total),
             ).map(|plan| {
@@ -1921,6 +2069,7 @@ impl Application {
                     if hs {
                         settings.unanchored = Some(loose_rows(&plan.loose));
                     }
+                    settings.pending_samples = (!plan.pending_kept.is_empty()).then(|| plan.pending_kept.clone());
                     settings
                 });
                 PendingSave { version, hs, plan, project: project.clone(), settings }
@@ -2485,7 +2634,7 @@ impl Application {
         self.status = "Writing reviewed output…".into();
         std::thread::spawn(move || {
             let result = plan.apply(&backups, &|| cancel.load(Ordering::Relaxed))
-                .map(|count| (count, generate_receipt::record(&plan).err()));
+                .map(|count| (count, generate_receipt::record(&plan).err(), plan.pending_names()));
             let _ = send.send(JobResult::Output(result));
         });
     }
@@ -2581,7 +2730,8 @@ impl Application {
             let name = layers::create_backing(d, expected_lane, &extension, &bytes)?;
             let lane = dawsu_hitsounding::rules::read_sample_file_name(&name)
                 .unwrap_or_else(|| SampleIdentity::File(name.clone()));
-            self.register_added_samples(vec![(name, clip)]);
+            self.document.as_mut().expect("open document").pending.add(&name, &bytes)?;
+            self.register_samples(vec![(name, clip)], false);
             lane
         };
         let composer = &mut self.document.as_mut().expect("open document").composer;
@@ -2606,10 +2756,11 @@ impl Application {
         }
         let document = self.document.as_ref().ok_or("Open a difficulty first.")?;
         let family = document.composer.lanes.get(self.active_lane).ok_or("Choose a sample family.")?;
-        let (name, clip) = layers::create(document, &self.preferences.default_samples, family)?;
+        let (name, bytes, clip) = layers::create(document, &self.preferences.default_samples, family)?;
         let lane = dawsu_hitsounding::rules::read_sample_file_name(&name)
             .expect("numbered layer names are constructed from sample identities");
-        self.register_added_samples(vec![(name.clone(), clip)]);
+        self.document.as_mut().expect("open document").pending.add(&name, &bytes)?;
+        self.register_samples(vec![(name.clone(), clip)], false);
         if let Some(document) = &self.document
             && let Some(row) = document.composer.lanes.iter().position(|identity| *identity == lane)
         {
@@ -2628,10 +2779,48 @@ impl Application {
         };
         let mut additions = self.sample_watch.poll(document);
         additions.retain(|(name, _)| document.files.binary_search(name).is_err());
+        // A file another program wrote under a pending name leaves the lane on its kept copy.
+        // Save uses the file when it holds the same bytes and otherwise refuses and names it.
+        let (clashes, additions): (Vec<_>, Vec<_>) = additions.into_iter().partition(|(name, _)| document.pending.get(name).is_some());
+        let root = document.path.parent().map(Path::to_path_buf);
+        let clashes: Vec<String> = clashes.into_iter().map(|(name, _)| name).collect();
+        self.sample_watch.remember_reported(clashes.iter().cloned());
+        let document = self.document.as_ref().expect("open document");
+        let differing: Vec<String> = clashes.into_iter().filter(|name| {
+            let kept = document.pending.get(name).and_then(|file| std::fs::read(&file.path).ok());
+            let on_disk = root.as_ref().and_then(|root| safe_child(root, name).ok()).and_then(|path| std::fs::read(path).ok());
+            kept != on_disk
+        }).collect();
+        if !differing.is_empty() {
+            self.status = format!("Another program wrote {} in the mapset. dawsu!'s new sample of that name keeps playing; rename or remove the other file before saving.", differing.join(", "));
+        }
         self.register_added_samples(additions);
     }
 
+    /// After a write kept its files: the pending files it wrote are mapset files now, and the
+    /// snapshot record lists the sound set files among them and among those the project keeps.
+    fn pending_published(&mut self, names: &[String], kept: &[String]) {
+        let Some(d) = self.document.as_mut() else { return };
+        for name in names {
+            d.pending.release(name);
+        }
+        d.files.extend(names.iter().cloned());
+        d.files.sort();
+        d.files.dedup();
+        if let Err(error) = self.record_written_sets(&[names, kept].concat()) {
+
+            self.error = Some(format!("The files were written. The sound set record could not be updated: {error}"));
+        }
+    }
+
     fn register_added_samples(&mut self, additions: Vec<(String, Arc<AudioClip>)>) {
+
+        self.register_samples(additions, true);
+    }
+
+    /// Registers decoded samples as lanes. Files on disk join `Document.files`; pending files
+    /// only join the hits' folder listing.
+    fn register_samples(&mut self, additions: Vec<(String, Arc<AudioClip>)>, on_disk: bool) {
         if additions.is_empty() {
             return;
         }
@@ -2643,9 +2832,11 @@ impl Application {
             self.samples.insert(SampleIdentity::File(name.clone()), clip);
             names.push(name);
         }
-        document.files.extend_from_slice(&names);
-        document.files.sort();
-        document.files.dedup();
+        if on_disk {
+            document.files.extend_from_slice(&names);
+            document.files.sort();
+            document.files.dedup();
+        }
         let composer = &mut document.composer;
         composer.history.update_external(|hits| hits.add_folder_samples(&names));
         for lane in composer.history.document().lanes() {
@@ -2756,14 +2947,19 @@ fn safe_child(root: &Path, name: &str) -> Result<PathBuf, String> {
     }
     Ok(child)
 }
+/// The file a lane plays: a pending file's kept copy, the mapset's file, or the skin's sound.
 fn sample_path(
     lane: &Lane,
     folder: &Path,
+    pending: &pending::Pending,
     defaults: &Path,
     defaults_list: &[String],
 ) -> Result<PathBuf, String> {
     match &lane.source {
-        LaneSource::File(name) => safe_child(folder, name),
+        LaneSource::File(name) => match pending.get(name) {
+            Some(file) => Ok(file.path.clone()),
+            None => safe_child(folder, name),
+        },
         LaneSource::Skin => {
             let name = lane_name(&lane.plays_as());
             ["wav", "ogg", "mp3"]
@@ -2780,13 +2976,40 @@ fn sample_path(
 fn load(
     path: &Path,
     defaults: &Path,
+    data_root: &Path,
     cancel: &AtomicBool,
     project_root: Option<&Path>,
     legacy_root: Option<&Path>,
     recovery: Option<recovery::RecoveryCopy>,
 ) -> Result<Loaded, String> {
     let mut document = Document::read_matching(path, recovery.as_ref())?;
+    let mapset = document.path.parent().ok_or("Missing mapset folder")?.to_path_buf();
+    document.pending = pending::Pending::for_mapset(data_root, &mapset);
+    document.presence = Some(pending::Presence::enter(data_root, &mapset).map(Arc::new)
+        .map_err(|error| format!("Could not record this editing session for the mapset, so nothing was opened: {error}"))?);
+    // With no other session on the mapset, claims no record keeps were left by a session that
+    // closed without Save or crashed: their numbers are free again.
+    if document.presence.as_ref().is_some_and(|presence| !presence.others_live()) {
+        // A recovery copy that can't be read may need any claim: none is released.
+        if let Some(keep) = recorded_pending(project_root, data_root, &mapset) {
+            document.pending.release_stale(&keep);
+        }
+        // No cleanup is running: a file one left moving aside goes back under its name, and its
+        // lane plays it again.
+        let back = sweep::put_back_stopped_moves(&mapset);
+        if !back.is_empty() {
+            if recovery.is_none() {
+                document.files = pending::listing(&mapset, &document.pending)?;
+            }
+            document.composer.history.update_external(|hits| hits.add_folder_samples(&back));
+        }
+    }
     let mut warnings = Vec::new();
+    // A recovery copy's pending files come back first, so every hit it restores finds its sound.
+    if let Some(copy) = &recovery {
+        let names = restore_pending(&mut document, copy.pending(), &mut warnings);
+        document.composer.history.update_external(|hits| hits.add_folder_samples(&names));
+    }
     let mut project = project_root.and_then(|root| {
         match project::Project::load(root, legacy_root, &document.path) {
             Ok(project) => Some(project),
@@ -2807,8 +3030,20 @@ fn load(
         }
         None => None,
     };
+    // The pending files the last Save left out come back before any hit that plays them.
+    if let Some(kept) = project.as_ref().and_then(|p| p.settings.pending_samples.as_ref()) {
+        let names = restore_pending(&mut document, kept, &mut warnings);
+        let composer = &mut document.composer;
+        composer.history.update_external(|hits| hits.add_folder_samples(&names));
+        for lane in composer.history.document().lanes() {
+            if !composer.lanes.contains(&lane.identity) {
+                composer.lanes.push(lane.identity.clone());
+            }
+        }
+    }
     if let Some(recovery) = project.as_ref().and_then(|p| p.settings.gain_recovery.as_ref())
         && let Err(error) = gain_recovery::restore(&mut document, recovery, defaults)
+
     {
         warnings.push(format!("Editable hit gains could not be restored: {error}"));
     }
@@ -2914,7 +3149,7 @@ fn load(
     };
     let mut samples = HashMap::new();
     let defaults_list = if defaults.is_dir() {
-        list_folder(defaults).unwrap_or_default()
+        crate::pending::sample_folder(defaults)
     } else {
         Vec::new()
     };
@@ -2926,7 +3161,7 @@ fn load(
         if samples.contains_key(&source) {
             continue;
         }
-        match sample_path(lane, folder, defaults, &defaults_list)
+        match sample_path(lane, folder, &document.pending, defaults, &defaults_list)
             .and_then(|path| dawsu_audio::decode_with_cancel(&path, &|| cancel.load(Ordering::Relaxed)))
         {
             Ok(clip) => {
@@ -2950,7 +3185,39 @@ fn load(
         waveform,
         warnings,
         recovery,
+        outgoing_keep: None,
     })
+}
+
+/// The pending files a record still lists for this mapset: the project of any of its
+/// difficulties, or a recovery copy not yet restored. Lowercased names. `None` when a recovery
+/// copy can't be read: it could list any name.
+fn recorded_pending(project_root: Option<&Path>, data_root: &Path, mapset: &Path) -> Option<BTreeSet<String>> {
+    let mut names = BTreeSet::new();
+    let entries = std::fs::read_dir(mapset).map(|entries| entries.filter_map(Result::ok).map(|e| e.path()).collect::<Vec<_>>()).unwrap_or_default();
+    if let Some(root) = project_root {
+        for map in entries.iter().filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("osu"))) {
+            if let Ok(project) = project::Project::load(root, None, map) {
+                names.extend(project.settings.pending_samples.iter().flatten().map(|file| file.name.to_ascii_lowercase()));
+            }
+        }
+    }
+    for copy in recovery::mapset_copies(data_root, mapset).ok()? {
+        names.extend(copy.pending().iter().map(|file| file.name.to_ascii_lowercase()));
+    }
+    Some(names)
+}
+
+/// Takes back listed pending files whose kept copies still match; names each one that can't be.
+fn restore_pending(document: &mut Document, list: &[pending::PendingSample], warnings: &mut Vec<String>) -> Vec<String> {
+    let mut names = Vec::new();
+    for file in list {
+        match document.pending.restore(&file.name, &file.sha256) {
+            Ok(_) => names.push(file.name.clone()),
+            Err(error) => warnings.push(format!("{error} Its lane plays the skin's sound.")),
+        }
+    }
+    names
 }
 
 fn project_hits(document: &Document) -> Vec<project::ProjectHit> {
@@ -3262,7 +3529,8 @@ mod project_workflow {
     fn prepare(scratch: &Scratch, document: &Document, hits: &Hitsounds, project: Option<&project::Project>, diagnostics: &mut Vec<OutputProblem>) -> Result<PreparedSave, String> {
         prepare_save(
             document.compile_base.clone(), hits, &document.written, document.file.original_bytes().to_vec(), &document.path,
-            scratch.path("backups"), true, &BTreeSet::new(), Path::new(""), project, false, &|| false, diagnostics, &mut |_, _| {},
+            scratch.path("backups"), true, &BTreeSet::new(), Path::new(""), &document.pending, project, false, &|| false, diagnostics, &mut |_, _| {},
+
         )
     }
 
@@ -4552,7 +4820,9 @@ mod project_workflow {
         assert_eq!(composer.hitsounds().moments()[0].volume(), 67);
         assert!(app.is_dirty());
         assert_eq!(app.clip_for_lane(&new).unwrap().samples[0], 0.25);
-        assert_eq!(std::fs::read(&backing).unwrap(), quieter);
+        // The new backing sample is a pending file until a Save plays it.
+        assert!(!backing.exists());
+        assert_eq!(app.document().unwrap().pending.get("normal-hitnormal4.wav").map(|file| std::fs::read(&file.path).unwrap()), Some(quieter.clone()));
         assert_eq!(std::fs::read(&map).unwrap(), source.as_bytes());
 
         app.command("undo");
@@ -4578,6 +4848,9 @@ mod project_workflow {
         assert_eq!(std::fs::read(&sibling).unwrap(), sibling_bytes.as_bytes());
         assert_eq!(std::fs::read(&external).unwrap(), quieter);
         assert_eq!(std::fs::read(folder.join("normal-hitnormal.wav")).unwrap(), wav);
+        // The Save wrote the new backing sample because the difficulty plays it.
+        assert_eq!(std::fs::read(&backing).unwrap(), quieter);
+
 
         let mut reopened = Application::headless();
         reopened.project_root = Some(scratch.path("projects"));
@@ -4589,6 +4862,7 @@ mod project_workflow {
     }
 
     #[test]
+    #[allow(clippy::disallowed_methods)]
     fn add_numbered_layers_skips_reserved_indexes_and_preserves_mapset_files() {
         let scratch = Scratch::new("numbered-layers");
         let folder = scratch.path("mapset");
@@ -4619,19 +4893,24 @@ mod project_workflow {
             index: dawsu_foundation::CustomIndex::new(0),
         };
         app.active_lane = app.document().unwrap().composer.lanes.iter().position(|lane| lane == &family).unwrap();
+        let before = dawsu_osu_format::list_folder(&folder).unwrap();
         app.command("addNumberedLayer");
         assert!(app.error.is_none(), "{:?}", app.error);
+        // A new layer is a pending file: the mapset holds nothing new until a Save plays it.
         let first = folder.join("soft-hitclap8.wav");
-        assert_eq!(std::fs::read(&first).expect("added numbered layer"), tone);
+        assert!(!first.exists());
+        assert_eq!(app.document().unwrap().pending.get("soft-hitclap8.wav").map(|file| std::fs::read(&file.path).unwrap()), Some(tone.to_vec()));
 
         let mut quieter = tone.to_vec();
         *quieter.last_mut().unwrap() = 0x20;
         std::fs::write(&default_file, &quieter).unwrap();
         app.command("addNumberedLayer");
         assert!(app.error.is_none(), "{:?}", app.error);
-        assert_eq!(std::fs::read(folder.join("soft-hitclap9.wav")).unwrap(), quieter);
+        // The next layer takes the next index, though the first is not on disk.
+        assert!(!folder.join("soft-hitclap9.wav").exists());
+        assert!(app.document().unwrap().pending.get("soft-hitclap9.wav").is_some());
+        assert_eq!(dawsu_osu_format::list_folder(&folder).unwrap(), before);
         assert_eq!(std::fs::read(&occupied).unwrap(), tone);
-        assert_eq!(std::fs::read(&first).unwrap(), tone);
         assert_eq!(std::fs::read(&map).unwrap(), original);
         assert_eq!(std::fs::read_to_string(&sibling).unwrap(), other);
         assert!(!app.is_dirty());
@@ -4647,6 +4926,1359 @@ mod project_workflow {
         let cues = app.scheduled_sounds(app.document().unwrap());
         assert!(cues.iter().any(|c| c.at_ms == 1000.0 && c.clip.samples == [0.5]));
         assert!(cues.iter().any(|c| c.at_ms == 1500.0 && c.clip.samples == [0.25]));
+    }
+
+    const TONE: &[u8] = b"RIFF\x26\0\0\0WAVEfmt \x10\0\0\0\x01\0\x01\0\x80\xbb\0\0\0w\x01\0\x02\0\x10\0data\x02\0\0\0\0\x40";
+
+    fn hitnormal(index: u32) -> SampleIdentity {
+        SampleIdentity::Standard { set: SampleSet::Normal, sound: Sound::Hit(Hitsound::Normal), index: dawsu_foundation::CustomIndex::new(index) }
+    }
+
+    /// The project fixture with two new hitnormal layers, 2 and 3, both pending.
+    fn two_layers(scratch: &Scratch, project: bool) -> (Application, PathBuf, PathBuf) {
+        two_layers_in(scratch, project, None)
+    }
+
+    /// With `data_root`, the session keeps its data apart from the shared headless folder.
+    fn two_layers_in(scratch: &Scratch, project: bool, data_root: Option<PathBuf>) -> (Application, PathBuf, PathBuf) {
+        let folder = scratch.path("mapset");
+        let defaults = scratch.path("skin");
+        for directory in [&folder, &defaults] {
+            std::fs::create_dir_all(directory).unwrap();
+        }
+        let map = folder.join("test.osu");
+        let text = include_str!("../tests/project-fixture.osu").replace("Title:", "Artist:Artist
+Creator:Mapper
+Title:");
+        std::fs::write(&map, text).unwrap();
+        for name in ["normal-hitnormal.wav", "normal-hitclap.wav"] {
+            std::fs::write(defaults.join(name), TONE).unwrap();
+        }
+        let mut app = Application::headless();
+        if let Some(data_root) = data_root {
+            app.data_root = data_root;
+        }
+        if project {
+            app.project_root = Some(scratch.path("projects"));
+        }
+        app.preferences.default_samples = defaults;
+        open(&mut app, map.clone());
+        app.active_lane = app.document().unwrap().composer.lanes.iter().position(|lane| lane == &hitnormal(0)).unwrap();
+        app.command("addNumberedLayer");
+        app.command("addNumberedLayer");
+        assert!(app.error.is_none(), "{:?}", app.error);
+        let pending = &app.document().unwrap().pending;
+        assert!(pending.get("normal-hitnormal2.wav").is_some() && pending.get("normal-hitnormal3.wav").is_some());
+        (app, map, folder)
+    }
+
+    #[allow(clippy::disallowed_methods)]
+    fn mapset(folder: &Path) -> Vec<String> {
+        dawsu_osu_format::list_folder(folder).unwrap()
+    }
+
+    /// Layer 2 alone plays on the circle; layer 3 stays unused.
+    fn use_layer_2(app: &mut Application) {
+        app.document.as_mut().unwrap().composer.apply("Use layer 2", |hits| {
+            let circle = dawsu_hitsounding::MomentId(0);
+            for lane in hits.moment(circle).hits().cloned().collect::<Vec<_>>() {
+                hits.remove_hit(circle, &lane);
+            }
+            hits.add_hit(circle, hitnormal(2));
+        });
+    }
+
+    #[test]
+    fn save_writes_only_the_pending_files_the_written_difficulty_plays() {
+        for hs in [false, true] {
+            let scratch = Scratch::new(if hs { "pending-save-hs" } else { "pending-save" });
+            let (mut app, map, folder) = two_layers(&scratch, true);
+            app.set_hs_mode(hs);
+            use_layer_2(&mut app);
+            let before = mapset(&folder);
+            save_through_summary(&mut app, scratch.path("backups"));
+            let after = mapset(&folder);
+            assert_eq!(after.iter().filter(|name| !before.contains(name)).collect::<Vec<_>>(), ["normal-hitnormal2.wav"], "hs {hs}");
+            assert_eq!(std::fs::read(folder.join("normal-hitnormal2.wav")).unwrap(), TONE);
+            let document = app.document().unwrap();
+            assert!(document.pending.get("normal-hitnormal2.wav").is_none());
+            assert!(document.pending.get("normal-hitnormal3.wav").is_some(), "the unused layer stays pending");
+            assert!(document.files.iter().any(|name| name == "normal-hitnormal2.wav"));
+            assert!(stored(&app).pending_samples.is_none(), "nothing the project needs is left pending");
+            let reopened = reopen(&app, &map);
+            assert!(reopened.document().unwrap().composer.hitsounds().moments()[0].has_hit(&hitnormal(2)));
+            assert_eq!(reopened.clip_for_lane(&hitnormal(2)).unwrap().samples, [0.5]);
+        }
+    }
+
+    #[test]
+    fn a_mix_source_layer_stays_out_of_the_mapset_and_comes_back_on_reopen() {
+        let scratch = Scratch::new("pending-mix-source");
+        let (mut app, map, folder) = two_layers(&scratch, true);
+        // The skin hitnormal and layer 2 at another volume: Save merges them into one hitnormal file.
+        app.document.as_mut().unwrap().composer.apply("Mix", |hits| {
+            let normal = dawsu_hitsounding::MomentId(0);
+            hits.add_hit(normal, hitnormal(2));
+            hits.set_hit_volume(normal, &hitnormal(2), 40);
+        });
+        let before = mapset(&folder);
+        save_through_summary(&mut app, scratch.path("backups"));
+        let added: Vec<_> = mapset(&folder).into_iter().filter(|name| !before.contains(name)).collect();
+        assert!(!added.iter().any(|name| name.starts_with("normal-hitnormal2") || name.starts_with("normal-hitnormal3")), "{added:?}");
+        assert!(!added.is_empty(), "the merged files are written");
+        let kept = stored(&app).pending_samples.expect("the project lists the mix source");
+        assert_eq!(kept.iter().map(|file| file.name.as_str()).collect::<Vec<_>>(), ["normal-hitnormal2.wav"]);
+        let mut reopened = Application::headless();
+        reopened.project_root = app.project_root.clone();
+        reopened.preferences.default_samples = app.preferences.default_samples.clone();
+        open(&mut reopened, map);
+        // The skin folder holds only the two sounds the map plays.
+        let warnings: Vec<_> = reopened.warnings.iter().filter(|w| !w.starts_with("Sample unavailable")).collect();
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert!(reopened.document().unwrap().composer.hitsounds().moments()[0].has_hit(&hitnormal(2)));
+        assert_eq!(reopened.clip_for_lane(&hitnormal(2)).unwrap().samples, [0.5]);
+    }
+
+    #[test]
+    fn a_loose_hit_on_a_layer_keeps_the_layer_pending_in_the_project() {
+        let scratch = Scratch::new("pending-loose");
+        let (mut app, map, folder) = two_layers(&scratch, true);
+        // A hit with no object: the project keeps it, the `.osu` never plays it.
+        app.document.as_mut().unwrap().composer.add(5000.0, hitnormal(2), 100, 0.0);
+        let before = mapset(&folder);
+        save_through_summary(&mut app, scratch.path("backups"));
+        assert_eq!(mapset(&folder).len(), before.len());
+        let kept = stored(&app).pending_samples.expect("the project lists the loose hit's layer");
+        assert_eq!(kept.iter().map(|file| file.name.as_str()).collect::<Vec<_>>(), ["normal-hitnormal2.wav"]);
+        let reopened = reopen(&app, &map);
+        let hits = reopened.document().unwrap().composer.hitsounds();
+        assert!(hits.moments().iter().any(|moment| moment.has_hit(&hitnormal(2))));
+        assert_eq!(reopened.clip_for_lane(&hitnormal(2)).unwrap().samples, [0.5]);
+    }
+
+    #[test]
+    fn a_left_out_moment_keeps_its_layer_pending_and_reopen_brings_it_back() {
+        let scratch = Scratch::new("pending-left-out");
+        let (mut app, map) = open_left_out_fixture(&scratch, true);
+        let defaults = scratch.path("skin");
+        std::fs::create_dir_all(&defaults).unwrap();
+        std::fs::write(defaults.join("normal-hitnormal.wav"), TONE).unwrap();
+        app.preferences.default_samples = defaults;
+        app.active_lane = app.document().unwrap().composer.lanes.iter().position(|lane| lane == &hitnormal(0)).unwrap();
+        app.command("addNumberedLayer");
+        assert!(app.error.is_none(), "{:?}", app.error);
+        // The layer goes on the slider tail, which Save leaves out (F052).
+        app.document.as_mut().unwrap().composer.apply("Layer on the tail", |hits| {
+            let tail = tail_id(hits);
+            hits.add_hit(tail, hitnormal(2));
+        });
+        let folder = map.parent().unwrap().to_path_buf();
+        let before = mapset(&folder);
+        save_through_summary(&mut app, scratch.path("backups"));
+        assert!(!app.document().unwrap().left_out.is_empty());
+        assert_eq!(mapset(&folder), before, "the left-out layer is not written");
+        let kept = stored(&app).pending_samples.expect("the project lists the left-out layer");
+        assert_eq!(kept.iter().map(|file| file.name.as_str()).collect::<Vec<_>>(), ["normal-hitnormal2.wav"]);
+        let reopened = reopen(&app, &map);
+        let hits = reopened.document().unwrap().composer.hitsounds();
+        assert!(hits.moment(tail_id(hits)).has_hit(&hitnormal(2)));
+        assert_eq!(reopened.clip_for_lane(&hitnormal(2)).unwrap().samples, [0.5]);
+    }
+
+    #[test]
+    fn a_file_another_program_put_under_a_pending_name_refuses_save_and_names_it() {
+        let scratch = Scratch::new("pending-clash");
+        let (mut app, map, folder) = two_layers(&scratch, true);
+        use_layer_2(&mut app);
+        std::fs::write(folder.join("normal-hitnormal2.wav"), b"another program's file").unwrap();
+        let before = (mapset(&folder), std::fs::read(&map).unwrap());
+        app.save_with_backups(scratch.path("backups"));
+        wait(&mut app);
+        let error = app.error.clone().expect("Save refuses");
+        assert!(error.contains("normal-hitnormal2.wav"), "{error}");
+        assert_eq!((mapset(&folder), std::fs::read(&map).unwrap()), before);
+        assert_eq!(std::fs::read(folder.join("normal-hitnormal2.wav")).unwrap(), b"another program's file");
+    }
+
+    #[test]
+    fn generate_and_copy_write_the_pending_files_their_output_plays() {
+        let scratch = Scratch::new("pending-output");
+        let (mut app, map, folder) = two_layers(&scratch, false);
+        use_layer_2(&mut app);
+        app.generate();
+        wait(&mut app);
+        assert!(app.error.is_none(), "{:?}", app.error);
+        assert!(!folder.join("normal-hitnormal2.wav").exists(), "nothing is written before the review is applied");
+        app.apply_output_in(scratch.path("backups"));
+        wait(&mut app);
+        assert!(app.error.is_none(), "{:?}", app.error);
+        assert_eq!(std::fs::read(folder.join("normal-hitnormal2.wav")).unwrap(), TONE);
+        assert!(!folder.join("normal-hitnormal3.wav").exists(), "the unused layer stays pending");
+        assert!(app.document().unwrap().pending.get("normal-hitnormal2.wav").is_none());
+        assert!(app.document().unwrap().files.iter().any(|name| name == "normal-hitnormal2.wav"));
+
+        // Copy onto a sibling difficulty with layer 3 on its circle.
+        let sibling = folder.join("other.osu");
+        std::fs::write(&sibling, include_bytes!("../tests/project-fixture.osu")).unwrap();
+        app.document.as_mut().unwrap().composer.apply("Use layer 3", |hits| {
+            hits.add_hit(dawsu_hitsounding::MomentId(0), hitnormal(3));
+            hits.remove_hit(dawsu_hitsounding::MomentId(0), &hitnormal(2));
+        });
+        app.copy_hitsounds(vec![sibling.canonicalize().unwrap()], Default::default());
+        wait(&mut app);
+        assert!(app.error.is_none(), "{:?}", app.error);
+        app.apply_output_in(scratch.path("backups"));
+        wait(&mut app);
+        assert!(app.error.is_none(), "{:?}", app.error);
+        assert_eq!(std::fs::read(folder.join("normal-hitnormal3.wav")).unwrap(), TONE);
+        let _ = map;
+    }
+
+    #[test]
+    fn a_restored_recovery_copy_plays_its_pending_layer_and_saves_it() {
+        let scratch = Scratch::new("pending-recovery");
+        let (mut app, _, folder) = two_layers(&scratch, true);
+        use_layer_2(&mut app);
+        app.poll();
+        let offer = app.write_recovery_copy().unwrap().unwrap();
+        let mut restored = Application::create(Preferences::default(), false, None, None, false, app.data_root.clone());
+        restored.project_root = app.project_root.clone();
+        restored.restore_recovery(&offer.id).unwrap();
+        wait(&mut restored);
+        assert!(restored.error.is_none(), "{:?}", restored.error);
+        assert!(restored.document().unwrap().composer.hitsounds().moments()[0].has_hit(&hitnormal(2)));
+        assert_eq!(restored.clip_for_lane(&hitnormal(2)).unwrap().samples, [0.5]);
+        save_through_summary(&mut restored, scratch.path("backups"));
+        assert_eq!(std::fs::read(folder.join("normal-hitnormal2.wav")).unwrap(), TONE);
+    }
+
+    #[test]
+    fn save_refuses_a_name_dawsu_claimed_whose_sound_is_missing() {
+        let scratch = Scratch::new("pending-lost");
+        let (mut app, map, folder) = two_layers(&scratch, true);
+        use_layer_2(&mut app);
+        // The editor lost the pending file but its claim is still there: both sides play the
+        // skin's sound, which is not what the mapper drew.
+        let document = app.document.as_mut().unwrap();
+        let root = document.path.parent().unwrap().to_path_buf();
+        document.pending = pending::Pending::for_mapset(&app.data_root, &root);
+        let before = (mapset(&folder), std::fs::read(&map).unwrap());
+        app.save_with_backups(scratch.path("backups"));
+        wait(&mut app);
+        let error = app.error.clone().expect("Save refuses");
+        assert!(error.contains("normal-hitnormal2"), "{error}");
+        assert_eq!((mapset(&folder), std::fs::read(&map).unwrap()), before);
+    }
+
+    #[test]
+    fn another_windows_claim_on_a_name_this_difficulty_looks_up_refuses_save() {
+        let scratch = Scratch::new("pending-other-claim");
+        let folder = scratch.path("mapset");
+        std::fs::create_dir_all(&folder).unwrap();
+        let map = folder.join("test.osu");
+        // Custom index 1: the circle looks up normal-hitnormal.wav in the mapset first.
+        std::fs::write(&map, include_str!("../tests/project-fixture.osu").replace("0,500,4,1,0,100,1,0", "0,500,4,1,1,100,1,0")).unwrap();
+        let mut app = Application::headless();
+        app.project_root = Some(scratch.path("projects"));
+        open(&mut app, map.clone());
+        // Another window made a new sample under that name; it isn't in the mapset yet.
+        let mut other = pending::Pending::for_mapset(&app.data_root, &folder.canonicalize().unwrap());
+        other.add("normal-hitnormal.wav", TONE).unwrap();
+        // Once that window saves it, this difficulty would play it: Save refuses and names it.
+        app.document.as_mut().unwrap().composer.apply("Edit", |hits| hits.set_volume(dawsu_hitsounding::MomentId(0), 80));
+        let before = std::fs::read(&map).unwrap();
+        app.save_with_backups(scratch.path("backups"));
+        wait(&mut app);
+        let error = app.error.clone().expect("refused");
+        assert!(error.contains("normal-hitnormal.wav"), "{error}");
+        assert_eq!(std::fs::read(&map).unwrap(), before);
+        other.release("normal-hitnormal.wav");
+    }
+
+    fn claims(app: &Application, folder: &Path) -> Vec<String> {
+        let dir = app.data_root.join("pending-names").join(pending::mapset_key(&folder.canonicalize().unwrap()));
+        let mut names: Vec<String> = std::fs::read_dir(dir).map(|entries| entries.flatten()
+            .filter(|entry| entry.path().is_file())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned()).collect()).unwrap_or_default();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn closing_forgets_the_pending_files_nothing_needs_and_frees_their_numbers() {
+        let scratch = Scratch::new("pending-close");
+        let (mut app, map, folder) = two_layers(&scratch, true);
+        // Layer 2 plays a loose hit the project keeps; layer 3 is never used.
+        app.document.as_mut().unwrap().composer.add(5000.0, hitnormal(2), 100, 0.0);
+        save_through_summary(&mut app, scratch.path("backups"));
+        assert_eq!(claims(&app, &folder), ["normal-hitnormal2.wav", "normal-hitnormal3.wav"]);
+        app.close_document();
+        assert_eq!(claims(&app, &folder), ["normal-hitnormal2.wav"]);
+        // Reopening keeps layer 2 and gives the next new layer the freed number 3.
+        let mut reopened = reopen(&app, &map);
+        reopened.preferences.default_samples = app.preferences.default_samples.clone();
+        reopened.active_lane = reopened.document().unwrap().composer.lanes.iter().position(|lane| lane == &hitnormal(0)).unwrap();
+        reopened.command("addNumberedLayer");
+        assert!(reopened.error.is_none(), "{:?}", reopened.error);
+        assert!(reopened.document().unwrap().pending.get("normal-hitnormal3.wav").is_some());
+    }
+
+    #[test]
+    fn opening_releases_claims_a_closed_or_crashed_session_left_behind() {
+        let scratch = Scratch::new("pending-stale-claims");
+        let (app, map, folder) = two_layers(&scratch, true);
+        let claimed = claims(&app, &folder);
+        assert_eq!(claimed.len(), 2);
+        // The session ends without a close (a crash): its claims stay until the next open.
+        let data_root = app.data_root.clone();
+        let project_root = app.project_root.clone();
+        drop(app);
+        let mut other = Application::create(Preferences::default(), false, None, None, false, data_root.clone());
+        other.project_root = project_root.clone();
+        let live = pending::Presence::enter(&data_root, &folder.canonicalize().unwrap()).unwrap();
+        open(&mut other, map.clone());
+        assert_eq!(claims(&other, &folder), claimed, "another live session may still use them");
+        drop(live);
+        other.close_document();
+        let mut next = Application::create(Preferences::default(), false, None, None, false, data_root);
+        next.project_root = project_root;
+        open(&mut next, map);
+        assert!(claims(&next, &folder).is_empty(), "{:?}", claims(&next, &folder));
+    }
+
+    #[test]
+    fn the_project_lists_kept_pending_files_before_the_osu_is_written() {
+        let scratch = Scratch::new("pending-staged-record");
+        let (mut app, _, _) = two_layers(&scratch, true);
+        use_layer_2(&mut app);
+        app.document.as_mut().unwrap().composer.add(5000.0, hitnormal(3), 100, 0.0);
+        app.save_session().unwrap();
+        let document = app.document().unwrap();
+        let mut project = app.project.clone().unwrap();
+        let plan = prepare_save(
+            document.compile_base.clone(), document.composer.hitsounds(), &document.written, document.file.original_bytes().to_vec(),
+            &document.path, scratch.path("backups"), false, &BTreeSet::new(), Path::new(""), &document.pending, Some(&project), false,
+            &|| false, &mut Vec::new(), &mut |_, _| {},
+        ).unwrap();
+        // The `.osu` write fails, as a crash right after the project write would leave it.
+        std::fs::write(scratch.path("backups"), b"not a folder").unwrap();
+        assert!(plan.apply(Some(&mut project), &|| false).is_err());
+        let stored = project::Project::load(app.project_root.as_ref().unwrap(), None, &document.path).unwrap().settings;
+        let kept = stored.pending_samples.expect("listed before the .osu write");
+        assert!(kept.iter().any(|file| file.name == "normal-hitnormal3.wav"));
+    }
+
+    #[test]
+    fn a_file_another_program_writes_under_a_pending_name_keeps_the_layers_sound() {
+        let scratch = Scratch::new("pending-watch-clash");
+        let (mut app, _, folder) = two_layers(&scratch, false);
+        let mut louder = TONE.to_vec();
+        *louder.last_mut().unwrap() = 0x60;
+        std::fs::write(folder.join("normal-hitnormal3.wav"), &louder).unwrap();
+        let deadline = Instant::now() + Duration::from_millis(2500);
+        while Instant::now() < deadline {
+            app.poll();
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let document = app.document().unwrap();
+        assert!(!document.files.iter().any(|name| name == "normal-hitnormal3.wav"), "still a pending file");
+        assert_eq!(app.clip_for_lane(&hitnormal(3)).unwrap().samples, [0.5], "the layer keeps its own sound");
+        assert!(app.status.contains("normal-hitnormal3.wav"), "{}", app.status);
+        // Reported once: the watcher stops reading and decoding the file every second.
+        app.status.clear();
+        let deadline = Instant::now() + Duration::from_millis(2500);
+        while Instant::now() < deadline {
+            app.poll();
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(!app.status.contains("normal-hitnormal3.wav"), "{}", app.status);
+    }
+
+    fn ledger(app: &Application) -> Vec<String> {
+        app.document().unwrap().pending.ledger().unwrap().entries().unwrap().into_iter().map(|file| file.name).collect()
+    }
+
+    #[test]
+    fn the_ledger_lists_each_sample_file_a_save_creates_and_drops_a_taken_back_one() {
+        let scratch = Scratch::new("pending-ledger");
+        let (mut app, _, _) = two_layers(&scratch, true);
+        use_layer_2(&mut app);
+        std::fs::write(scratch.path("backups"), b"not a folder").unwrap();
+        app.save_with_backups(scratch.path("backups"));
+        wait(&mut app);
+        assert!(app.error.take().is_some());
+        assert!(ledger(&app).is_empty(), "a taken-back file is not listed");
+        std::fs::remove_file(scratch.path("backups")).unwrap();
+        save_through_summary(&mut app, scratch.path("backups"));
+        let entries = app.document().unwrap().pending.ledger().unwrap().entries().unwrap();
+        assert_eq!(entries, [pending::PendingSample { name: "normal-hitnormal2.wav".into(), sha256: dawsu_foundation::digest::sha256_hex(TONE) }]);
+    }
+
+    fn back_to_skin(app: &mut Application) {
+        app.document.as_mut().unwrap().composer.apply("Back to the skin", |hits| {
+            let circle = dawsu_hitsounding::MomentId(0);
+            hits.remove_hit(circle, &hitnormal(2));
+            hits.add_hit(circle, hitnormal(0));
+        });
+    }
+
+    /// Layer 2 joins the skin's hitnormal at another volume: the `.osu` plays a mix, and the
+    /// layer's file, which a hit still plays, leaves the mapset at the next Save.
+    fn mix_with_skin(app: &mut Application) {
+        app.document.as_mut().unwrap().composer.apply("Mix", |hits| {
+            hits.add_hit(dawsu_hitsounding::MomentId(0), hitnormal(0));
+            hits.set_hit_volume(dawsu_hitsounding::MomentId(0), &hitnormal(2), 40);
+        });
+    }
+
+    #[test]
+    fn a_file_changed_after_its_check_stays_in_the_mapset_as_changed() {
+        let scratch = Scratch::new("sweep-changed-before-move");
+        let (mut app, _, folder) = two_layers(&scratch, true);
+        use_layer_2(&mut app);
+        save_through_summary(&mut app, scratch.path("backups"));
+        fn edit(path: &Path) {
+            if path.to_string_lossy().contains("sweep-changed-before-move") {
+                std::fs::write(path, b"edited while dawsu! checked it").unwrap();
+            }
+        }
+        mix_with_skin(&mut app);
+        let _turn = sweep::HOOK_TURN.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        *sweep::BEFORE_MOVE.lock().unwrap() = Some(edit);
+        save_through_summary(&mut app, scratch.path("backups"));
+        *sweep::BEFORE_MOVE.lock().unwrap() = None;
+        assert_eq!(std::fs::read(folder.join("normal-hitnormal2.wav")).unwrap(), b"edited while dawsu! checked it");
+        let names: Vec<_> = mapset(&folder);
+        assert!(names.iter().all(|name| !name.contains("dawsu-moving")), "{names:?}");
+        assert!(!ledger(&app).iter().any(|name| name == "normal-hitnormal2.wav"), "no longer dawsu!'s file");
+    }
+
+    #[test]
+    fn a_file_a_stopped_cleanup_left_aside_comes_back_under_its_name() {
+        let scratch = Scratch::new("sweep-stopped-move");
+        let (mut app, _, folder) = two_layers(&scratch, true);
+        use_layer_2(&mut app);
+        save_through_summary(&mut app, scratch.path("backups"));
+        std::fs::rename(folder.join("normal-hitnormal2.wav"), folder.join(".normal-hitnormal2.wav.dawsu-moving")).unwrap();
+        assert!(mapset(&folder).iter().any(|name| name.ends_with(".dawsu-moving")), "the listing shows dot-names");
+        app.close_document();
+        assert_eq!(std::fs::read(folder.join("normal-hitnormal2.wav")).unwrap(), TONE);
+        assert!(!mapset(&folder).iter().any(|name| name.ends_with(".dawsu-moving")));
+    }
+
+    #[test]
+    fn a_file_only_a_lane_names_goes_to_removed_samples_not_pending() {
+        let scratch = Scratch::new("sweep-lane-only");
+        let (mut app, map, folder) = two_layers_in(&scratch, true, Some(scratch.path("data")));
+        let mut bytes = TONE.to_vec();
+        *bytes.last_mut().unwrap() = 0x61;
+        std::fs::write(folder.join("normal-hitclap7.wav"), &bytes).unwrap();
+        let sha256 = dawsu_foundation::digest::sha256_hex(&bytes);
+        app.document().unwrap().pending.ledger().unwrap()
+            .add(&[pending::PendingSample { name: "normal-hitclap7.wav".into(), sha256: sha256.clone() }]).unwrap();
+        // Closed while another session holds the mapset, so nothing is cleaned up yet.
+        let other = pending::Presence::enter(&app.data_root, &folder.canonicalize().unwrap()).unwrap();
+        app.close_document();
+        drop(other);
+        open(&mut app, map);
+        assert!(app.document().unwrap().composer.hitsounds().lanes().iter()
+            .any(|lane| matches!(&lane.source, dawsu_hitsounding::LaneSource::File(name) if name == "normal-hitclap7.wav")), "it has a lane");
+        save_through_summary(&mut app, scratch.path("backups"));
+        assert!(!folder.join("normal-hitclap7.wav").exists());
+        assert_eq!(std::fs::read(app.data_root.join("removed-samples").join(format!("{sha256}.wav"))).unwrap(), bytes);
+        assert!(app.document().unwrap().pending.get("normal-hitclap7.wav").is_none(), "not a pending file");
+        assert!(!app.document().unwrap().pending.claimed_names().contains("normal-hitclap7.wav"), "no claim");
+        assert!(!app.data_root.join("pending-samples").join(format!("{sha256}.wav")).exists());
+    }
+
+    #[test]
+    fn a_file_a_hit_plays_comes_back_when_the_cleanup_stops_before_the_project_lists_it() {
+        let scratch = Scratch::new("sweep-stopped-before-listing");
+        let (mut app, map, folder) = two_layers_in(&scratch, true, Some(scratch.path("data")));
+        use_layer_2(&mut app);
+        save_through_summary(&mut app, scratch.path("backups"));
+        let other = pending::Presence::enter(&app.data_root, &folder.canonicalize().unwrap()).unwrap();
+        app.document.as_mut().unwrap().composer.apply("Mix", |hits| {
+            hits.add_hit(dawsu_hitsounding::MomentId(0), hitnormal(0));
+            hits.set_hit_volume(dawsu_hitsounding::MomentId(0), &hitnormal(2), 40);
+        });
+        save_through_summary(&mut app, scratch.path("backups"));
+        drop(other);
+        assert!(folder.join("normal-hitnormal2.wav").exists(), "kept while the other session was open");
+        // The job runs, and dawsu! stops before the editor thread applies what it did.
+        app.start_sweep(false);
+        let _ = app.sweep.take().unwrap().recv().unwrap();
+        assert!(!folder.join("normal-hitnormal2.wav").exists(), "moved aside, waiting for the project");
+        let (data_root, project_root) = (app.data_root.clone(), app.project_root.clone());
+        drop(app);
+        let mut second = Application::headless();
+        second.data_root = data_root;
+        second.project_root = project_root;
+        second.preferences.default_samples = scratch.path("skin");
+        open(&mut second, map);
+        assert_eq!(std::fs::read(folder.join("normal-hitnormal2.wav")).unwrap(), TONE, "back under its name");
+        assert!(ledger(&second).iter().any(|name| name == "normal-hitnormal2.wav"), "still dawsu!'s");
+        assert_eq!(second.document().unwrap().composer.hitsounds().lane(&hitnormal(2)).map(|lane| &lane.source),
+            Some(&dawsu_hitsounding::LaneSource::File("normal-hitnormal2.wav".into())), "its lane plays the file, not the skin");
+        second.document.as_mut().unwrap().composer.apply("Mix", |hits| {
+            hits.add_hit(dawsu_hitsounding::MomentId(0), hitnormal(2));
+            hits.set_hit_volume(dawsu_hitsounding::MomentId(0), &hitnormal(2), 40);
+        });
+        save_through_summary(&mut second, scratch.path("backups"));
+        let document = second.document().unwrap();
+        assert!(folder.join("normal-hitnormal2.wav").exists() || document.pending.get("normal-hitnormal2.wav").is_some(),
+            "a hit plays it, so it never goes to removed-samples");
+    }
+
+    #[test]
+    fn a_file_only_undo_plays_stays_in_the_mapset_and_goes_to_removed_samples_at_close() {
+        let scratch = Scratch::new("sweep-undo-only");
+        let (mut app, _, folder) = two_layers_in(&scratch, true, Some(scratch.path("data")));
+        use_layer_2(&mut app);
+        save_through_summary(&mut app, scratch.path("backups"));
+        back_to_skin(&mut app);
+        save_through_summary(&mut app, scratch.path("backups"));
+        assert_eq!(std::fs::read(folder.join("normal-hitnormal2.wav")).unwrap(), TONE, "Undo can still play it");
+        let copy = format!("{}.wav", dawsu_foundation::digest::sha256_hex(TONE));
+        assert!(app.document().unwrap().pending.get("normal-hitnormal2.wav").is_none(), "it never left for the data folder");
+        let (data_root, project_root) = (app.data_root.clone(), app.project_root.clone());
+        app.save_session().unwrap();
+        app.close_document();
+        assert!(!folder.join("normal-hitnormal2.wav").exists());
+        pending::prune_kept_copies(&data_root, project_root.as_deref(), Duration::ZERO);
+        assert_eq!(std::fs::read(data_root.join("removed-samples").join(&copy)).unwrap(), TONE, "kept, never deleted");
+    }
+
+    #[test]
+    fn a_file_left_aside_by_a_crash_is_never_replaced_by_the_next_move() {
+        let scratch = Scratch::new("sweep-aside-taken");
+        let (mut app, _, folder) = two_layers(&scratch, true);
+        use_layer_2(&mut app);
+        save_through_summary(&mut app, scratch.path("backups"));
+        let aside = folder.join(".normal-hitnormal2.wav.dawsu-moving");
+        std::fs::write(&aside, b"bytes a crash left aside").unwrap();
+        back_to_skin(&mut app);
+        save_through_summary(&mut app, scratch.path("backups"));
+        assert_eq!(std::fs::read(&aside).unwrap(), b"bytes a crash left aside");
+        assert_eq!(std::fs::read(folder.join("normal-hitnormal2.wav")).unwrap(), TONE, "it can't move aside, so it stays");
+    }
+
+    #[test]
+    fn a_damaged_copy_in_removed_samples_is_replaced_before_the_file_leaves() {
+        let scratch = Scratch::new("sweep-damaged-trash");
+        let (mut app, _, folder) = two_layers_in(&scratch, true, Some(scratch.path("data")));
+        use_layer_2(&mut app);
+        save_through_summary(&mut app, scratch.path("backups"));
+        let other = pending::Presence::enter(&app.data_root, &folder.canonicalize().unwrap()).unwrap();
+        back_to_skin(&mut app);
+        save_through_summary(&mut app, scratch.path("backups"));
+        drop(other);
+        let kept = app.data_root.join("removed-samples").join(format!("{}.wav", dawsu_foundation::digest::sha256_hex(TONE)));
+        std::fs::create_dir_all(kept.parent().unwrap()).unwrap();
+        std::fs::write(&kept, b"damaged").unwrap();
+        app.close_document();
+        assert!(!folder.join("normal-hitnormal2.wav").exists());
+        assert_eq!(std::fs::read(&kept).unwrap(), TONE, "removed-samples holds the file's bytes");
+        let damaged: Vec<_> = std::fs::read_dir(kept.parent().unwrap()).unwrap().flatten()
+            .filter(|e| e.file_name().to_string_lossy().contains(".damaged-")).map(|e| std::fs::read(e.path()).unwrap()).collect();
+        assert_eq!(damaged, [b"damaged".to_vec()], "the damaged copy is kept aside, not overwritten");
+    }
+
+    #[test]
+    fn a_file_with_no_hits_left_goes_to_removed_samples_at_close() {
+        let scratch = Scratch::new("sweep-trash-at-close");
+        let (mut app, _, folder) = two_layers_in(&scratch, true, Some(scratch.path("data")));
+        use_layer_2(&mut app);
+        save_through_summary(&mut app, scratch.path("backups"));
+        // Another session keeps the file in the mapset through this Save.
+        let other = pending::Presence::enter(&app.data_root, &folder.canonicalize().unwrap()).unwrap();
+        back_to_skin(&mut app);
+        save_through_summary(&mut app, scratch.path("backups"));
+        assert!(folder.join("normal-hitnormal2.wav").exists());
+        drop(other);
+        let data_root = app.data_root.clone();
+        app.close_document();
+        let kept = data_root.join("removed-samples").join(format!("{}.wav", dawsu_foundation::digest::sha256_hex(TONE)));
+        assert_eq!(std::fs::read(kept).unwrap(), TONE);
+        assert!(!folder.join("normal-hitnormal2.wav").exists());
+    }
+
+    #[test]
+    fn a_difficulty_that_cant_be_read_stops_the_cleanup_and_says_so() {
+        let scratch = Scratch::new("sweep-unreadable");
+        let (mut app, _, folder) = two_layers(&scratch, true);
+        use_layer_2(&mut app);
+        save_through_summary(&mut app, scratch.path("backups"));
+        std::fs::write(folder.join("broken.osu"), "osu file format v14\n[TimingPoints]\nnot a timing point\n").unwrap();
+        back_to_skin(&mut app);
+        save_through_summary(&mut app, scratch.path("backups"));
+        assert!(folder.join("normal-hitnormal2.wav").exists());
+        assert!(app.status.contains("No unused sample files were removed") && app.status.contains("broken.osu"), "{}", app.status);
+    }
+
+    #[test]
+    fn the_project_lists_a_kept_mix_source_even_when_nothing_moved() {
+        let scratch = Scratch::new("sweep-lists-needed");
+        let (mut app, map, folder) = two_layers(&scratch, true);
+        use_layer_2(&mut app);
+        save_through_summary(&mut app, scratch.path("backups"));
+        app.document.as_mut().unwrap().composer.apply("Mix", |hits| {
+            hits.add_hit(dawsu_hitsounding::MomentId(0), hitnormal(0));
+            hits.set_hit_volume(dawsu_hitsounding::MomentId(0), &hitnormal(2), 40);
+        });
+        save_through_summary(&mut app, scratch.path("backups"));
+        assert!(!folder.join("normal-hitnormal2.wav").exists(), "a mix plays it now");
+        let listed = |app: &Application| project::Project::load(app.project_root.as_deref().unwrap(), None, &map).unwrap()
+            .settings.pending_samples.unwrap_or_default().into_iter().map(|file| file.name).collect::<Vec<_>>();
+        assert_eq!(listed(&app), ["normal-hitnormal2.wav"]);
+        // The list is lost; the next Save with nothing to move lists it again.
+        let mut project = app.project.clone().unwrap();
+        let mut settings = project.settings.clone();
+        settings.pending_samples = None;
+        project.save(settings).unwrap();
+        app.project = Some(project);
+        app.document.as_mut().unwrap().composer.apply("Edit", |hits| hits.set_volume(dawsu_hitsounding::MomentId(0), 90));
+        save_through_summary(&mut app, scratch.path("backups"));
+        assert_eq!(listed(&app), ["normal-hitnormal2.wav"]);
+    }
+
+    #[test]
+    fn two_windows_writing_the_ledger_at_once_keep_each_others_entries() {
+        let scratch = Scratch::new("ledger-two-windows");
+        let (data, mapset) = (scratch.path("data"), scratch.path("mapset"));
+        let threads: Vec<_> = ["a", "b"].into_iter().map(|window| {
+            let ledger = pending::Pending::for_mapset(&data, &mapset).ledger().unwrap();
+            std::thread::spawn(move || {
+                for n in 0..40 {
+                    let name = format!("{window}-{n}.wav");
+                    ledger.add(&[pending::PendingSample { name: name.clone(), sha256: "0".repeat(64) }]).unwrap();
+                    if n % 4 == 3 {
+                        ledger.remove(&[name]).unwrap();
+                    }
+                }
+            })
+        }).collect();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        let ledger = pending::Pending::for_mapset(&data, &mapset).ledger().unwrap();
+        assert_eq!(ledger.entries().unwrap().len(), 60);
+    }
+
+    #[test]
+    fn a_session_lock_still_being_made_is_left_alone() {
+        let scratch = Scratch::new("presence-being-made");
+        let (data, mapset) = (scratch.path("data"), scratch.path("mapset"));
+        let me = pending::Presence::enter(&data, &mapset).unwrap();
+        // Another window's lock file before it locked it: that window is live, and its file stays.
+        let folder = data.join("sessions").join(pending::mapset_key(&mapset));
+        let making = folder.join("99999-0.lock.tmp");
+        std::fs::write(&making, b"").unwrap();
+        assert!(me.others_live());
+        assert!(making.exists());
+        // One left by a crash a while ago is removed and doesn't count.
+        std::fs::File::options().write(true).open(&making).unwrap()
+            .set_modified(std::time::SystemTime::now() - Duration::from_secs(120)).unwrap();
+        assert!(!me.others_live());
+        assert!(!making.exists());
+        let other = pending::Presence::enter(&data, &mapset).unwrap();
+        assert!(me.others_live());
+        let names: Vec<_> = std::fs::read_dir(&folder).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        assert!(names.iter().filter(|name| name.ends_with(".lock")).count() == 2, "{names:?}");
+        drop(other);
+    }
+
+    #[test]
+    fn a_session_that_cannot_be_recorded_does_not_open() {
+        let scratch = Scratch::new("presence-fails");
+        let folder = scratch.path("mapset");
+        std::fs::create_dir_all(&folder).unwrap();
+        let map = folder.join("test.osu");
+        std::fs::write(&map, include_str!("../tests/project-fixture.osu")).unwrap();
+        let mut app = Application::headless();
+        app.data_root = scratch.path("data");
+        std::fs::create_dir_all(&app.data_root).unwrap();
+        // A file where the sessions folder belongs.
+        std::fs::write(app.data_root.join("sessions"), b"").unwrap();
+        app.open_now(OpenSource::Map(map));
+        wait(&mut app);
+        assert!(app.document().is_none());
+        assert!(app.error.as_deref().is_some_and(|error| error.contains("session")), "{:?}", app.error);
+    }
+
+    #[test]
+    fn kept_copies_no_record_names_are_pruned() {
+        let scratch = Scratch::new("prune-kept-copies");
+        let (data, projects) = (scratch.path("data"), scratch.path("projects"));
+        let samples = data.join("pending-samples");
+        std::fs::create_dir_all(&samples).unwrap();
+        let sha = |n: u8| format!("{n:064x}");
+        for n in 1..=6 {
+            std::fs::write(samples.join(format!("{}.wav", sha(n))), [n]).unwrap();
+        }
+        let write = |path: PathBuf, text: String| {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
+        };
+        write(projects.join("p.json"), format!("{{\"settings\":{{\"pending_samples\":[{{\"name\":\"a.wav\",\"sha256\":\"{}\"}}]}}}}", sha(1)));
+        write(data.join("recovery").join("c.json"), format!("{{\"pending\":[{{\"sha256\":\"{}\"}}]}}", sha(2)));
+        write(data.join("recovery").join("archive").join("old.json"), format!("{{\"pending\":[{{\"sha256\":\"{}\"}}]}}", sha(3)));
+        write(data.join("created-samples").join("k.json"), format!("{{\"files\":[{{\"sha256\":\"{}\"}}]}}", sha(4)));
+        write(data.join("pending-names").join("k").join("normal-hitnormal2.wav"), sha(5));
+        let removed = pending::prune_kept_copies(&data, Some(&projects), Duration::ZERO);
+        assert_eq!(removed, 1);
+        for n in 1..=5 {
+            assert!(samples.join(format!("{}.wav", sha(n))).exists(), "{n} is named by a record");
+        }
+        assert!(!samples.join(format!("{}.wav", sha(6))).exists());
+        assert_eq!(std::fs::read(data.join("removed-samples").join(format!("{}.wav", sha(6)))).unwrap(), [6], "kept in removed-samples");
+        // Without a project folder nothing is known to be unnamed.
+        std::fs::write(samples.join(format!("{}.wav", sha(7))), [7]).unwrap();
+        assert_eq!(pending::prune_kept_copies(&data, None, Duration::ZERO), 0);
+        // A copy younger than the age limit may belong to a window still making its claim.
+        assert_eq!(pending::prune_kept_copies(&data, Some(&projects), Duration::from_secs(3600)), 0);
+    }
+
+    #[test]
+    fn removed_samples_keep_thirty_days_and_a_size_limit_oldest_first() {
+        let scratch = Scratch::new("cap-removed-samples");
+        let data = scratch.path("data");
+        let folder = data.join("removed-samples");
+        std::fs::create_dir_all(&folder).unwrap();
+        let day = Duration::from_secs(24 * 3600);
+        let now = std::time::SystemTime::now();
+        for (name, age, size) in [("old.wav", 31, 10), ("a.wav", 3, 40), ("b.wav", 2, 40), ("c.wav", 1, 40)] {
+            let path = folder.join(name);
+            std::fs::write(&path, vec![0; size]).unwrap();
+            std::fs::File::options().write(true).open(&path).unwrap().set_modified(now - day * age).unwrap();
+        }
+        assert_eq!(pending::cap_removed_samples(&data, day * 30, 100), 2);
+        let mut left: Vec<_> = std::fs::read_dir(&folder).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        left.sort();
+        assert_eq!(left, ["b.wav", "c.wav"]);
+    }
+
+    #[test]
+    fn a_reused_copy_in_removed_samples_counts_from_its_latest_removal() {
+        let scratch = Scratch::new("removed-reuse-date");
+        let (mut app, _, folder) = two_layers_in(&scratch, true, Some(scratch.path("data")));
+        let kept = app.data_root.join("removed-samples").join(format!("{}.wav", dawsu_foundation::digest::sha256_hex(TONE)));
+        std::fs::create_dir_all(kept.parent().unwrap()).unwrap();
+        std::fs::write(&kept, TONE).unwrap();
+        std::fs::File::options().write(true).open(&kept).unwrap()
+            .set_modified(std::time::SystemTime::now() - Duration::from_secs(31 * 24 * 3600)).unwrap();
+        use_layer_2(&mut app);
+        save_through_summary(&mut app, scratch.path("backups"));
+        let other = pending::Presence::enter(&app.data_root, &folder.canonicalize().unwrap()).unwrap();
+        back_to_skin(&mut app);
+        save_through_summary(&mut app, scratch.path("backups"));
+        drop(other);
+        let data_root = app.data_root.clone();
+        app.close_document();
+        wait(&mut app);
+        assert!(!folder.join("normal-hitnormal2.wav").exists());
+        pending::cap_removed_samples(&data_root, Duration::from_secs(30 * 24 * 3600), u64::MAX);
+        assert_eq!(std::fs::read(&kept).unwrap(), TONE, "removed today, kept for 30 days from today");
+    }
+
+    #[test]
+    fn adding_a_kept_copy_that_is_already_there_refreshes_its_date() {
+        let scratch = Scratch::new("pending-copy-date");
+        let mut pending = pending::Pending::for_mapset(&scratch.path("data"), &scratch.path("mapset"));
+        let copy = scratch.path("data").join("pending-samples").join(format!("{}.wav", dawsu_foundation::digest::sha256_hex(TONE)));
+        std::fs::create_dir_all(copy.parent().unwrap()).unwrap();
+        std::fs::write(&copy, TONE).unwrap();
+        std::fs::File::options().write(true).open(&copy).unwrap()
+            .set_modified(std::time::SystemTime::now() - Duration::from_secs(7200)).unwrap();
+        pending.add("normal-hitnormal2.wav", TONE).unwrap();
+        let age = std::fs::metadata(&copy).unwrap().modified().unwrap().elapsed().unwrap();
+        assert!(age < Duration::from_secs(60), "{age:?}");
+    }
+
+    #[test]
+    fn a_ledger_that_cant_be_read_stops_the_cleanup_and_says_so() {
+        let scratch = Scratch::new("ledger-unreadable");
+        let (mut app, _, folder) = two_layers_in(&scratch, true, Some(scratch.path("data")));
+        use_layer_2(&mut app);
+        save_through_summary(&mut app, scratch.path("backups"));
+        let path = app.data_root.join("created-samples").join(format!("{}.json", pending::mapset_key(&folder.canonicalize().unwrap())));
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        app.close_document();
+        wait(&mut app);
+        assert!(folder.join("normal-hitnormal2.wav").exists() || app.status.contains("ledger"), "{}", app.status);
+        let ledger = pending::Pending::for_mapset(&scratch.path("data"), &folder.canonicalize().unwrap()).ledger().unwrap();
+        assert!(ledger.entries().is_err());
+        assert!(ledger.add(&[pending::PendingSample { name: "x.wav".into(), sha256: "0".repeat(64) }]).is_err());
+    }
+
+    #[test]
+    fn a_second_corrupt_ledger_is_kept_aside_beside_the_first() {
+        let scratch = Scratch::new("ledger-corrupt-twice");
+        let (app, _, _) = two_layers(&scratch, true);
+        let ledger = app.document().unwrap().pending.ledger().unwrap();
+        let path = app.data_root.join("created-samples").join(format!("{}.json", pending::mapset_key(app.document().unwrap().path.parent().unwrap())));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        for text in [&b"{ first"[..], b"{ second"] {
+            std::fs::write(&path, text).unwrap();
+            assert!(ledger.entries().unwrap().is_empty());
+        }
+        let key = pending::mapset_key(app.document().unwrap().path.parent().unwrap());
+        let mut aside: Vec<_> = std::fs::read_dir(path.parent().unwrap()).unwrap().flatten()
+            .filter(|e| { let name = e.file_name().to_string_lossy().into_owned(); name.starts_with(&key) && name.contains("corrupt") }).map(|e| std::fs::read(e.path()).unwrap()).collect();
+        aside.sort();
+        assert_eq!(aside, [b"{ first".to_vec(), b"{ second".to_vec()]);
+    }
+
+    #[test]
+    fn an_old_mix_no_ledger_lists_is_cleaned_up_when_nothing_plays_it() {
+        let mix = |tag: &str| {
+            let bytes = format!("old mix {tag}").into_bytes();
+            (format!("dawsu-mix-{}-1.wav", dawsu_foundation::digest::sha256_hex(&bytes)), bytes)
+        };
+        let scratch = Scratch::new("sweep-old-mixes");
+        let (mut app, _, folder) = two_layers(&scratch, true);
+        let (unused, unused_bytes) = mix("unused");
+        let (other, other_bytes) = mix("other difficulty");
+        let (mania, mania_bytes) = mix("mania");
+        let (story, story_bytes) = mix("storyboard");
+        let (copied, copied_bytes) = mix("recovery copy");
+        let (changed, _) = mix("changed");
+        for (name, bytes) in [(&unused, &unused_bytes), (&other, &other_bytes), (&mania, &mania_bytes), (&story, &story_bytes), (&copied, &copied_bytes)] {
+            std::fs::write(folder.join(name), bytes).unwrap();
+        }
+        std::fs::write(folder.join(&changed), b"edited by the mapper").unwrap();
+        // An old numbered file no ledger lists stays, played or not.
+        std::fs::write(folder.join("normal-hitnormal7.wav"), TONE).unwrap();
+        let fixture = include_str!("../tests/project-fixture.osu");
+        std::fs::write(folder.join("other.osu"), fixture.replace("Version:Hard", "Version:Other").replace("0:0:0:0:", &format!("0:0:0:0:{other}"))).unwrap();
+        std::fs::write(folder.join("mania.osu"), fixture.replace("Mode:0", "Mode:3").replace("Version:Hard", "Version:Mania").replace("0:0:0:0:", &format!("0:0:0:0:{mania}"))).unwrap();
+        std::fs::write(folder.join("Artist - Title (Mapper).osb"), format!("[Events]
+Sample,0,0,\"{story}\",100
+")).unwrap();
+        // A stopped session's recovery copy lists it as one of its pending files.
+        let mut crashed = Application::headless();
+        crashed.project_root = Some(scratch.path("projects"));
+        open(&mut crashed, folder.join("other.osu"));
+        crashed.document.as_mut().unwrap().pending.add(&copied, &copied_bytes).unwrap();
+        crashed.document.as_mut().unwrap().composer.apply("Edit", |hits| hits.set_volume(dawsu_hitsounding::MomentId(0), 80));
+        crashed.poll();
+        crashed.write_recovery_copy().unwrap().unwrap();
+        drop(crashed);
+
+        // While another session has the mapset open, nothing leaves.
+        let live = pending::Presence::enter(&app.data_root, &folder.canonicalize().unwrap()).unwrap();
+        use_layer_2(&mut app);
+        save_through_summary(&mut app, scratch.path("backups"));
+        assert!(folder.join(&unused).exists(), "another session is open");
+        drop(live);
+
+        app.document.as_mut().unwrap().composer.apply("Louder", |hits| hits.set_volume(dawsu_hitsounding::MomentId(0), 90));
+        save_through_summary(&mut app, scratch.path("backups"));
+        assert!(!folder.join(&unused).exists(), "the unused old mix left the mapset");
+        let kept = app.data_root.join("removed-samples").join(format!("{}.wav", dawsu_foundation::digest::sha256_hex(&unused_bytes)));
+        assert_eq!(std::fs::read(kept).unwrap(), unused_bytes, "kept in removed-samples");
+        for (name, why) in [(&other, "another difficulty plays it"), (&mania, "a mania difficulty plays it"), (&story, "the storyboard plays it"),
+            (&copied, "a recovery copy lists it"), (&changed, "its bytes are not the ones its name gives")]
+        {
+            assert!(folder.join(name).exists(), "{why}");
+        }
+        assert_eq!(std::fs::read(folder.join("normal-hitnormal7.wav")).unwrap(), TONE, "old numbered files stay");
+        assert!(ledger(&app).iter().all(|name| !name.starts_with("dawsu-mix-")), "{:?}", ledger(&app));
+    }
+
+    #[test]
+    fn a_file_a_crashed_sessions_recovery_copy_plays_stays_in_the_mapset() {
+        let scratch = Scratch::new("sweep-recovery-copy");
+        let (mut crashed, map, folder) = two_layers(&scratch, true);
+        use_layer_2(&mut crashed);
+        save_through_summary(&mut crashed, scratch.path("backups"));
+        crashed.document.as_mut().unwrap().composer.apply("Edit", |hits| hits.set_volume(dawsu_hitsounding::MomentId(0), 80));
+        crashed.poll();
+        crashed.write_recovery_copy().unwrap().unwrap();
+        drop(crashed);
+        let mut second = Application::headless();
+        second.project_root = Some(scratch.path("projects"));
+        open(&mut second, map);
+        back_to_skin(&mut second);
+        save_through_summary(&mut second, scratch.path("backups"));
+        assert_eq!(std::fs::read(folder.join("normal-hitnormal2.wav")).unwrap(), TONE, "the recovery copy still plays it");
+    }
+
+    #[test]
+    fn a_recovery_copy_that_cant_be_read_stops_the_cleanup_and_is_named() {
+        let scratch = Scratch::new("sweep-unreadable-copy");
+        let (mut app, _, folder) = two_layers_in(&scratch, true, Some(scratch.path("data")));
+        use_layer_2(&mut app);
+        save_through_summary(&mut app, scratch.path("backups"));
+        std::fs::create_dir_all(app.data_root.join("recovery")).unwrap();
+        std::fs::write(app.data_root.join("recovery").join("broken-copy.json"), b"not json").unwrap();
+        back_to_skin(&mut app);
+        save_through_summary(&mut app, scratch.path("backups"));
+        assert_eq!(std::fs::read(folder.join("normal-hitnormal2.wav")).unwrap(), TONE, "the copy could play it");
+        assert!(app.status.contains("No unused sample files were removed") && app.status.contains("broken-copy.json"), "{}", app.status);
+    }
+
+    /// A file dawsu! wrote that nothing plays, on the ledger: the next cleanup takes it out.
+    fn unused_file(app: &Application, folder: &Path) -> (Vec<u8>, String) {
+        let mut bytes = TONE.to_vec();
+        *bytes.last_mut().unwrap() = 0x61;
+        std::fs::write(folder.join("normal-hitclap7.wav"), &bytes).unwrap();
+        let sha256 = dawsu_foundation::digest::sha256_hex(&bytes);
+        app.document().unwrap().pending.ledger().unwrap()
+            .add(&[pending::PendingSample { name: "normal-hitclap7.wav".into(), sha256: sha256.clone() }]).unwrap();
+        (bytes, sha256)
+    }
+
+    #[test]
+    fn a_cleanup_stops_when_a_difficulty_changes_while_it_runs() {
+        let scratch = Scratch::new("sweep-map-changed");
+        let (mut app, _, folder) = two_layers_in(&scratch, true, Some(scratch.path("data")));
+        std::fs::write(folder.join("other.osu"), include_str!("../tests/project-fixture.osu").replace("Version:Hard", "Version:Other")).unwrap();
+        unused_file(&app, &folder);
+        fn edit_other(path: &Path) {
+            if path.to_string_lossy().contains("sweep-map-changed") {
+                let other = path.with_file_name("other.osu");
+                let text = std::fs::read_to_string(&other).unwrap();
+                std::fs::write(&other, text + "\n").unwrap();
+            }
+        }
+        app.document.as_mut().unwrap().composer.apply("Edit", |hits| hits.set_volume(dawsu_hitsounding::MomentId(0), 80));
+        let _turn = sweep::HOOK_TURN.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        *sweep::BEFORE_MOVE.lock().unwrap() = Some(edit_other);
+        save_through_summary(&mut app, scratch.path("backups"));
+        *sweep::BEFORE_MOVE.lock().unwrap() = None;
+        assert!(folder.join("normal-hitclap7.wav").exists(), "other.osu changed, so nothing moves");
+        assert!(ledger(&app).iter().any(|name| name == "normal-hitclap7.wav"), "still dawsu!'s, tried again later");
+        app.close_document();
+        assert!(!folder.join("normal-hitclap7.wav").exists(), "the next cleanup takes it out");
+    }
+
+    #[test]
+    fn a_file_only_a_recovery_copys_lane_names_leaves_the_mapset() {
+        let scratch = Scratch::new("sweep-recovery-lane-only");
+        let (mut crashed, map, folder) = two_layers_in(&scratch, true, Some(scratch.path("data")));
+        let (bytes, sha256) = unused_file(&crashed, &folder);
+        // Reopened while another session holds the mapset, so the file gets a lane and stays.
+        let other = pending::Presence::enter(&crashed.data_root, &folder.canonicalize().unwrap()).unwrap();
+        crashed.close_document();
+        open(&mut crashed, map.clone());
+        drop(other);
+        assert!(crashed.document().unwrap().composer.hitsounds().lanes().iter()
+            .any(|lane| matches!(&lane.source, dawsu_hitsounding::LaneSource::File(name) if name == "normal-hitclap7.wav")), "it has a lane");
+        crashed.document.as_mut().unwrap().composer.apply("Edit", |hits| hits.set_volume(dawsu_hitsounding::MomentId(0), 80));
+        crashed.poll();
+        crashed.write_recovery_copy().unwrap().unwrap();
+        let (data_root, project_root) = (crashed.data_root.clone(), crashed.project_root.clone());
+        drop(crashed);
+        let mut second = Application::headless();
+        second.data_root = data_root;
+        second.project_root = project_root;
+        second.preferences.default_samples = scratch.path("skin");
+        open(&mut second, map);
+        second.document.as_mut().unwrap().composer.apply("Edit", |hits| hits.set_volume(dawsu_hitsounding::MomentId(0), 70));
+        // The copy is still there when the cleanup runs, and its lane names the file.
+        let copies: Vec<String> = std::fs::read_dir(second.data_root.join("recovery")).unwrap().flatten()
+            .filter(|entry| entry.path().is_file()).map(|entry| std::fs::read_to_string(entry.path()).unwrap()).collect();
+        assert!(copies.iter().any(|copy| copy.contains("normal-hitclap7.wav")), "the copy names the file");
+        save_through_summary(&mut second, scratch.path("backups"));
+        assert!(!folder.join("normal-hitclap7.wav").exists(), "a lane with no hit keeps nothing, in a copy too");
+        assert_eq!(std::fs::read(second.data_root.join("removed-samples").join(format!("{sha256}.wav"))).unwrap(), bytes);
+    }
+
+    #[test]
+    fn a_recovery_copy_that_cant_be_read_frees_no_claim() {
+        let scratch = Scratch::new("claims-unreadable-copy");
+        let (app, map, folder) = two_layers_in(&scratch, true, Some(scratch.path("data")));
+        let claimed = claims(&app, &folder);
+        assert_eq!(claimed.len(), 2);
+        let (data_root, project_root) = (app.data_root.clone(), app.project_root.clone());
+        std::fs::create_dir_all(data_root.join("recovery")).unwrap();
+        std::fs::write(data_root.join("recovery").join("broken-copy.json"), b"not json").unwrap();
+        // A crash: the claims stay, and the next open can't tell whether the copy needs them.
+        drop(app);
+        let mut next = Application::create(Preferences::default(), false, None, None, false, data_root.clone());
+        next.project_root = project_root.clone();
+        open(&mut next, map.clone());
+        assert_eq!(claims(&next, &folder), claimed, "at open");
+        // Its own unused layer 3 keeps its claim at close too.
+        next.close_document();
+        let closing = Scratch::new("claims-unreadable-copy-close");
+        let (mut third, _, folder) = two_layers_in(&closing, true, Some(closing.path("data")));
+        std::fs::create_dir_all(third.data_root.join("recovery")).unwrap();
+        std::fs::write(third.data_root.join("recovery").join("broken-copy.json"), b"not json").unwrap();
+        third.close_document();
+        assert_eq!(claims(&third, &folder), ["normal-hitnormal2.wav", "normal-hitnormal3.wav"], "at close");
+    }
+
+    #[test]
+    fn close_waits_at_most_the_limit_and_the_cleanup_keeps_the_mapset_marked_open() {
+        let scratch = Scratch::new("sweep-slow-close");
+        let (mut app, _, folder) = two_layers_in(&scratch, true, Some(scratch.path("data")));
+        unused_file(&app, &folder);
+        fn slow(path: &Path) {
+            if path.to_string_lossy().contains("sweep-slow-close") {
+                std::thread::sleep(Duration::from_millis(1500));
+            }
+        }
+        app.sweep_wait = Duration::from_millis(100);
+        let _turn = sweep::HOOK_TURN.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        *sweep::BEFORE_MOVE.lock().unwrap() = Some(slow);
+        let started = Instant::now();
+        app.close_document();
+        assert!(started.elapsed() < Duration::from_millis(1000), "{:?}", started.elapsed());
+        assert!(app.status.contains("Unused sample cleanup is still finishing in the background"), "{}", app.status);
+        let other = pending::Presence::enter(&app.data_root, &folder.canonicalize().unwrap()).unwrap();
+        assert!(other.others_live(), "the cleanup keeps the mapset marked open");
+        drop(other);
+        let again = Instant::now();
+        app.poll_sweep(true);
+        assert!(again.elapsed() < Duration::from_millis(50), "a job already given up on is not waited for again: {:?}", again.elapsed());
+        finish_sweep(&mut app);
+        *sweep::BEFORE_MOVE.lock().unwrap() = None;
+        assert!(!folder.join("normal-hitclap7.wav").exists(), "it still finishes");
+        assert!(!app.status.contains("still finishing"), "{}", app.status);
+        let probe = pending::Presence::enter(&app.data_root, &folder.canonicalize().unwrap()).unwrap();
+        assert!(!probe.others_live(), "and the mapset is free again");
+    }
+
+    #[test]
+    fn a_file_waiting_to_leave_stays_when_open_stops_waiting_for_the_cleanup() {
+        let scratch = Scratch::new("sweep-slow-open");
+        let (mut app, map, folder) = two_layers_in(&scratch, true, Some(scratch.path("data")));
+        use_layer_2(&mut app);
+        save_through_summary(&mut app, scratch.path("backups"));
+        fn slow(path: &Path) {
+            if path.to_string_lossy().contains("sweep-slow-open") {
+                std::thread::sleep(Duration::from_millis(1000));
+            }
+        }
+        // A mix plays layer 2 now, so this Save's cleanup moves it out; the map opens right after.
+        mix_with_skin(&mut app);
+        app.request_open(map);
+        app.sweep_wait = Duration::from_millis(100);
+        let _turn = sweep::HOOK_TURN.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        *sweep::BEFORE_MOVE.lock().unwrap() = Some(slow);
+        let opens = app.opens;
+        save_through_summary(&mut app, scratch.path("backups"));
+        assert_eq!(app.opens, opens + 1, "opened while the cleanup still ran");
+        assert!(app.sweep.is_some(), "the job is still running");
+        assert!(app.status.contains("Unused sample cleanup is still finishing in the background"), "{}", app.status);
+        finish_sweep(&mut app);
+        *sweep::BEFORE_MOVE.lock().unwrap() = None;
+        assert_eq!(std::fs::read(folder.join("normal-hitnormal2.wav")).unwrap(), TONE, "back under its name");
+        assert!(!mapset(&folder).iter().any(|name| name.ends_with(".dawsu-moving")));
+        assert!(ledger(&app).iter().any(|name| name == "normal-hitnormal2.wav"), "still dawsu!'s; the next Save tries again");
+        assert!(!app.status.contains("still finishing"), "{}", app.status);
+    }
+
+    /// Polls until the cleanup job is done.
+    fn finish_sweep(app: &mut Application) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while app.sweep.is_some() {
+            app.poll();
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn when_the_next_map_fails_to_open_the_cleanup_finishes_for_the_map_still_open() {
+        let scratch = Scratch::new("sweep-open-fails");
+        let (mut app, _, folder) = two_layers_in(&scratch, true, Some(scratch.path("data")));
+        use_layer_2(&mut app);
+        save_through_summary(&mut app, scratch.path("backups"));
+        fn slow(path: &Path) {
+            if path.to_string_lossy().contains("sweep-open-fails") {
+                std::thread::sleep(Duration::from_millis(500));
+            }
+        }
+        mix_with_skin(&mut app);
+        app.request_open(scratch.path("missing").join("gone.osu"));
+        app.sweep_wait = Duration::from_millis(100);
+        let _turn = sweep::HOOK_TURN.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        *sweep::BEFORE_MOVE.lock().unwrap() = Some(slow);
+        app.save_with_backups(scratch.path("backups"));
+        wait(&mut app);
+        assert!(app.error.take().is_some(), "the open failed");
+        finish_sweep(&mut app);
+        *sweep::BEFORE_MOVE.lock().unwrap() = None;
+        assert!(!folder.join("normal-hitnormal2.wav").exists(), "the same map is still open, so the file leaves as planned");
+        assert!(app.document().unwrap().pending.get("normal-hitnormal2.wav").is_some(), "as a pending file");
+    }
+
+    #[test]
+    fn a_cleanup_stops_when_another_session_opens_the_mapset_while_it_runs() {
+        static OTHER: std::sync::Mutex<Option<pending::Presence>> = std::sync::Mutex::new(None);
+        fn open_elsewhere(path: &Path) {
+            if path.to_string_lossy().contains("sweep-other-opens") {
+                let mapset = path.parent().unwrap().canonicalize().unwrap();
+                let data_root = mapset.parent().unwrap().join("data");
+                *OTHER.lock().unwrap() = Some(pending::Presence::enter(&data_root, &mapset).unwrap());
+            }
+        }
+        let scratch = Scratch::new("sweep-other-opens");
+        let (mut app, _, folder) = two_layers_in(&scratch, true, Some(scratch.path("data")));
+        unused_file(&app, &folder);
+        app.document.as_mut().unwrap().composer.apply("Edit", |hits| hits.set_volume(dawsu_hitsounding::MomentId(0), 80));
+        let _turn = sweep::HOOK_TURN.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        *sweep::BEFORE_MOVE.lock().unwrap() = Some(open_elsewhere);
+        save_through_summary(&mut app, scratch.path("backups"));
+        *sweep::BEFORE_MOVE.lock().unwrap() = None;
+        assert!(OTHER.lock().unwrap().is_some(), "the hook ran");
+        assert!(folder.join("normal-hitclap7.wav").exists(), "another session opened the mapset, so nothing moves");
+        *OTHER.lock().unwrap() = None;
+        app.close_document();
+        assert!(!folder.join("normal-hitclap7.wav").exists(), "the next cleanup takes it out");
+    }
+
+    #[test]
+    fn an_old_mix_nothing_plays_goes_to_dawsus_removed_samples_folder() {
+        let scratch = Scratch::new("sweep-trash");
+        let (mut app, _, folder) = two_layers(&scratch, true);
+        app.document.as_mut().unwrap().composer.apply("Mix", |hits| {
+            hits.add_hit(dawsu_hitsounding::MomentId(0), hitnormal(2));
+            hits.set_hit_volume(dawsu_hitsounding::MomentId(0), &hitnormal(2), 40);
+        });
+        let before = mapset(&folder);
+        save_through_summary(&mut app, scratch.path("backups"));
+        let first: Vec<_> = mapset(&folder).into_iter().filter(|name| !before.contains(name)).collect();
+        assert!(!first.is_empty());
+        let bytes: Vec<_> = first.iter().map(|name| std::fs::read(folder.join(name)).unwrap()).collect();
+        app.document.as_mut().unwrap().composer.apply("Louder", |hits| hits.set_hit_volume(dawsu_hitsounding::MomentId(0), &hitnormal(2), 70));
+        save_through_summary(&mut app, scratch.path("backups"));
+        for (name, bytes) in first.iter().zip(&bytes) {
+            assert!(!folder.join(name).exists(), "{name} left the mapset");
+            let kept = app.data_root.join("removed-samples").join(format!("{}.wav", dawsu_foundation::digest::sha256_hex(bytes)));
+            assert_eq!(&std::fs::read(kept).unwrap(), bytes, "{name} is kept in removed-samples");
+        }
+    }
+
+    #[test]
+    fn nothing_is_cleaned_up_while_another_session_has_the_mapset_open() {
+        let scratch = Scratch::new("sweep-live");
+        let (mut app, _, folder) = two_layers(&scratch, true);
+        use_layer_2(&mut app);
+        save_through_summary(&mut app, scratch.path("backups"));
+        let other = pending::Presence::enter(&app.data_root, &folder.canonicalize().unwrap()).unwrap();
+        back_to_skin(&mut app);
+        save_through_summary(&mut app, scratch.path("backups"));
+        assert!(folder.join("normal-hitnormal2.wav").exists());
+        drop(other);
+    }
+
+    #[test]
+    fn a_file_changed_before_the_cleanup_is_left_alone_and_no_longer_dawsus() {
+        let scratch = Scratch::new("sweep-changed");
+        let (mut app, _, folder) = two_layers(&scratch, true);
+        use_layer_2(&mut app);
+        save_through_summary(&mut app, scratch.path("backups"));
+        std::fs::write(folder.join("normal-hitnormal2.wav"), b"edited by the mapper").unwrap();
+        back_to_skin(&mut app);
+        save_through_summary(&mut app, scratch.path("backups"));
+        assert_eq!(std::fs::read(folder.join("normal-hitnormal2.wav")).unwrap(), b"edited by the mapper");
+        assert!(ledger(&app).is_empty());
+    }
+
+    #[test]
+    fn a_save_with_nothing_to_save_and_a_save_of_an_earlier_revision_both_clean_up() {
+        let scratch = Scratch::new("sweep-nothing-and-earlier");
+        let (mut app, _, folder) = two_layers(&scratch, true);
+        use_layer_2(&mut app);
+        save_through_summary(&mut app, scratch.path("backups"));
+        save_through_summary(&mut app, scratch.path("backups"));
+        assert!(folder.join("normal-hitnormal2.wav").exists(), "still played");
+        mix_with_skin(&mut app);
+        app.save_with_backups(scratch.path("backups"));
+        // A newer edit arrives while the Save runs.
+        app.document.as_mut().unwrap().composer.apply("Newer", |hits| hits.set_volume(dawsu_hitsounding::MomentId(0), 90));
+        wait(&mut app);
+        assert!(app.error.is_none(), "{:?}", app.error);
+        assert!(app.status.starts_with("Saved the earlier revision"), "{}", app.status);
+        assert!(!folder.join("normal-hitnormal2.wav").exists());
+        assert_eq!(app.clip_for_lane(&hitnormal(2)).unwrap().samples, [0.5], "still playable from the data folder");
+    }
+
+    #[test]
+    fn a_corrupt_ledger_is_kept_aside_and_a_new_one_started() {
+        let scratch = Scratch::new("ledger-corrupt");
+        let (mut app, _, _) = two_layers(&scratch, true);
+        let path = app.data_root.join("created-samples").join(format!("{}.json", pending::mapset_key(app.document().unwrap().path.parent().unwrap())));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"{ not json").unwrap();
+        use_layer_2(&mut app);
+        save_through_summary(&mut app, scratch.path("backups"));
+        assert_eq!(ledger(&app), ["normal-hitnormal2.wav"]);
+        let key = pending::mapset_key(app.document().unwrap().path.parent().unwrap());
+        let aside: Vec<_> = std::fs::read_dir(path.parent().unwrap()).unwrap().flatten()
+            .filter(|e| { let name = e.file_name().to_string_lossy().into_owned(); name.starts_with(&key) && name.contains("corrupt") }).collect();
+        assert_eq!(aside.len(), 1);
+        assert_eq!(std::fs::read(aside[0].path()).unwrap(), b"{ not json");
+    }
+
+    #[test]
+    fn without_a_project_save_refuses_to_leave_a_new_sample_out() {
+        let scratch = Scratch::new("pending-kept-no-project");
+        let (mut app, map, folder) = two_layers(&scratch, false);
+        app.document.as_mut().unwrap().composer.apply("Mix", |hits| {
+            hits.add_hit(dawsu_hitsounding::MomentId(0), hitnormal(2));
+            hits.set_hit_volume(dawsu_hitsounding::MomentId(0), &hitnormal(2), 40);
+        });
+        let before = (mapset(&folder), std::fs::read(&map).unwrap());
+        app.save_with_backups(scratch.path("backups"));
+        wait(&mut app);
+        let error = app.error.clone().expect("refused");
+        assert!(error.contains("normal-hitnormal2.wav"), "{error}");
+        assert_eq!((mapset(&folder), std::fs::read(&map).unwrap()), before);
+    }
+
+    #[test]
+    fn a_pending_index_another_difficulty_now_uses_refuses_save() {
+        let scratch = Scratch::new("pending-index-taken");
+        let (mut app, map, folder) = two_layers(&scratch, true);
+        use_layer_2(&mut app);
+        std::fs::write(folder.join("other.osu"), include_str!("../tests/project-fixture.osu").replace("0,500,4,1,0,100,1,0", "0,500,4,1,2,100,1,0")).unwrap();
+        let before = std::fs::read(&map).unwrap();
+        app.save_with_backups(scratch.path("backups"));
+        wait(&mut app);
+        let error = app.error.clone().expect("refused");
+        assert!(error.contains("2") && error.contains("other.osu"), "{error}");
+        assert_eq!(std::fs::read(&map).unwrap(), before);
+        assert!(!folder.join("normal-hitnormal2.wav").exists());
+    }
+
+    #[test]
+    fn a_pending_name_must_be_a_bare_file_name() {
+        let scratch = Scratch::new("pending-bare-names");
+        let mut pending = pending::Pending::for_mapset(&scratch.path("data"), &scratch.path("mapset"));
+        for name in ["../x.wav", "a/b.wav", "a\\b.wav", "C:x.wav", "..", ""] {
+            assert!(pending.add(name, TONE).is_err(), "{name}");
+            assert!(pending.restore(name, &dawsu_foundation::digest::sha256_hex(TONE)).is_err(), "{name}");
+        }
+        assert!(pending.add("normal-hitnormal2.wav", TONE).is_ok());
+    }
+
+    #[test]
+    fn slider_tick_and_whistle_lanes_on_pending_files_are_kept() {
+        let scratch = Scratch::new("pending-slider-lanes");
+        let map = b"osu file format v14\n[General]\nMode:0\n[Difficulty]\nSliderMultiplier:1.4\nSliderTickRate:2\n[TimingPoints]\n0,500,4,1,2,70,1,0\n[HitObjects]\n100,100,1000,2,2,L|300:100,1,280\n";
+        let file = OsuFile::read(map.to_vec()).file;
+        let mut pending = pending::Pending::for_mapset(&scratch.path("data"), &scratch.path("mapset"));
+        pending.add("normal-slidertick2.wav", TONE).unwrap();
+        pending.add("normal-sliderwhistle2.wav", TONE).unwrap();
+        let folder = vec!["normal-slidertick2.wav".to_string(), "normal-sliderwhistle2.wav".to_string()];
+        let Decompiled::Done(hits) = decompile(&file, &folder, &|| false, &mut |_, _| {}) else { panic!() };
+        let needed: Vec<_> = pending::needed(&hits, &pending, &[]).into_iter().map(|file| file.name).collect();
+        assert_eq!(needed, ["normal-slidertick2.wav", "normal-sliderwhistle2.wav"]);
+    }
+
+    #[test]
+    fn a_sample_file_dawsu_made_that_nothing_plays_leaves_the_mapset_and_others_stay() {
+        let scratch = Scratch::new("pending-sweep");
+        let (mut app, map, folder) = two_layers(&scratch, true);
+        // Files the sweep must leave alone: one dawsu! never made, one with a dawsu!-style name
+        // it didn't make, one a mania difficulty plays and one a storyboard plays (both listed
+        // as dawsu!'s).
+        let canaries = [("keep.wav", b"mapper".to_vec()), ("normal-hitnormal5.wav", b"older".to_vec()),
+            ("soft-hitclap6.wav", TONE.to_vec()), ("sb.wav", TONE.to_vec())];
+        for (name, bytes) in &canaries {
+            std::fs::write(folder.join(name), bytes).unwrap();
+        }
+        std::fs::write(folder.join("mania.osu"), "osu file format v14\n[General]\nMode:3\n[TimingPoints]\n0,500,4,2,6,100,1,0\n[HitObjects]\n64,192,1000,1,8,0:0:0:0:\n").unwrap();
+        std::fs::write(folder.join("story.osb"), "[Events]\nSample,0,0,\"sb.wav\",100\n").unwrap();
+        app.document().unwrap().pending.ledger().unwrap().add(&[
+            pending::PendingSample { name: "soft-hitclap6.wav".into(), sha256: dawsu_foundation::digest::sha256_hex(TONE) },
+            pending::PendingSample { name: "sb.wav".into(), sha256: dawsu_foundation::digest::sha256_hex(TONE) },
+        ]).unwrap();
+        use_layer_2(&mut app);
+        save_through_summary(&mut app, scratch.path("backups"));
+        assert!(folder.join("normal-hitnormal2.wav").exists());
+        // The layer's hit goes, but an undo state still plays its file: it stays in the mapset
+        // until close (Yoge, 2026-11-21).
+        app.document.as_mut().unwrap().composer.apply("Back to the skin", |hits| {
+            let circle = dawsu_hitsounding::MomentId(0);
+            hits.remove_hit(circle, &hitnormal(2));
+            hits.add_hit(circle, hitnormal(0));
+        });
+        save_through_summary(&mut app, scratch.path("backups"));
+        assert_eq!(std::fs::read(folder.join("normal-hitnormal2.wav")).unwrap(), TONE, "an undo state plays it");
+        assert!(!app.status.contains("Removed"), "{}", app.status);
+        assert!(app.document().unwrap().pending.get("normal-hitnormal2.wav").is_none(), "it never went to pending-samples");
+        // Undo brings the hit back, playing from the mapset, and Save keeps it.
+        app.command("undo");
+        assert_eq!(app.clip_for_lane(&hitnormal(2)).unwrap().samples, [0.5]);
+        save_through_summary(&mut app, scratch.path("backups"));
+        assert_eq!(std::fs::read(folder.join("normal-hitnormal2.wav")).unwrap(), TONE);
+        app.command("redo");
+        save_through_summary(&mut app, scratch.path("backups"));
+        assert_eq!(std::fs::read(folder.join("normal-hitnormal2.wav")).unwrap(), TONE, "Undo can still bring it back");
+        // Close is strict: the undo history goes, so the file goes to removed-samples.
+        app.close_document();
+        assert!(!folder.join("normal-hitnormal2.wav").exists());
+        let kept = app.data_root.join("removed-samples").join(format!("{}.wav", dawsu_foundation::digest::sha256_hex(TONE)));
+        assert_eq!(std::fs::read(kept).unwrap(), TONE, "kept in removed-samples");
+        for (name, bytes) in &canaries {
+            assert_eq!(&std::fs::read(folder.join(name)).unwrap(), bytes, "{name}");
+        }
+        let _ = map;
+    }
+
+    #[test]
+    fn a_failed_output_write_removes_the_pending_files_it_wrote() {
+        let scratch = Scratch::new("pending-output-fails");
+        let (mut app, _, folder) = two_layers(&scratch, false);
+        use_layer_2(&mut app);
+        app.generate();
+        wait(&mut app);
+        std::fs::write(scratch.path("backups"), b"not a folder").unwrap();
+        // The generated difficulty's name is taken just before the write, so it fails.
+        let target = app.output_review.as_ref().unwrap().files[0].path.clone();
+        std::fs::write(&target, b"taken").unwrap();
+        app.apply_output_in(scratch.path("backups"));
+        wait(&mut app);
+        assert!(app.error.is_some());
+        assert!(!folder.join("normal-hitnormal2.wav").exists());
+        assert!(app.document().unwrap().pending.get("normal-hitnormal2.wav").is_some());
+    }
+
+    #[test]
+    fn a_failed_osu_write_removes_the_pending_files_it_wrote() {
+        let scratch = Scratch::new("pending-write-fails");
+        let (mut app, map, folder) = two_layers(&scratch, true);
+        use_layer_2(&mut app);
+        let before = (mapset(&folder), std::fs::read(&map).unwrap());
+        // The backup folder is a file, so the `.osu` write fails after the samples are written.
+        std::fs::write(scratch.path("backups"), b"not a folder").unwrap();
+        app.save_with_backups(scratch.path("backups"));
+        wait(&mut app);
+        assert!(app.error.is_some());
+        assert_eq!((mapset(&folder), std::fs::read(&map).unwrap()), before);
+        assert!(app.document().unwrap().pending.get("normal-hitnormal2.wav").is_some());
+    }
+
+    #[test]
+    fn a_save_without_a_project_writes_the_pending_file_it_plays() {
+        let scratch = Scratch::new("pending-no-project");
+        let (mut app, _, folder) = two_layers(&scratch, false);
+        use_layer_2(&mut app);
+        save_through_summary(&mut app, scratch.path("backups"));
+        assert_eq!(std::fs::read(folder.join("normal-hitnormal2.wav")).unwrap(), TONE);
+        assert!(!folder.join("normal-hitnormal3.wav").exists());
+    }
+
+    #[test]
+    fn the_written_file_check_refuses_a_pending_file_the_save_missed() {
+        let scratch = Scratch::new("pending-guard");
+        let (mut app, _, folder) = two_layers(&scratch, false);
+        use_layer_2(&mut app);
+        let document = app.document().unwrap();
+        let out = compile_snapshot(document, document.composer.hitsounds(), false, false, &|| false).unwrap().0;
+        let editor = pending::listing(&folder, &document.pending).unwrap();
+        let used = pending::used(&out, &folder, &document.pending, &[]).unwrap();
+        assert_eq!(used.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>(), ["normal-hitnormal2.wav"]);
+        assert!(pending::check_written(&out, &folder, &["normal-hitnormal2.wav".into()], &editor, &document.pending).is_ok());
+        let error = pending::check_written(&out, &folder, &[], &editor, &document.pending).unwrap_err();
+        assert!(error.contains("normal-hitnormal2.wav"), "{error}");
     }
 
     #[test]
@@ -4816,7 +6448,7 @@ mod project_workflow {
             wav.extend(amplitude.to_le_bytes());
             std::fs::write(path, wav).unwrap();
         }
-        let loaded = load(&map, &defaults, &AtomicBool::new(false), None, None, None).unwrap();
+        let loaded = load(&map, &defaults, &std::env::temp_dir().join("dawsu-headless"), &AtomicBool::new(false), None, None, None).unwrap();
         let mut app = Application::headless();
         app.document = Some(loaded.document);
         app.samples = loaded.samples;
@@ -5138,6 +6770,7 @@ mod project_workflow {
             load(
                 &path,
                 dir.dir(),
+                &root,
                 &AtomicBool::new(false),
                 Some(&root),
                 Some(&legacy),
