@@ -1,0 +1,63 @@
+{
+  "Id": "7d9652db-ecff-560f-bceb-4a7f7b5c7cdd",
+  "Name": "Two kicks",
+  "Rows": [
+    {
+      "Id": "2052e421-2ed5-5a95-bbd3-5db9949ffb41",
+      "Name": "Kick",
+      "LaneKey": "BeatmapFile|drum-hitnormal.wav",
+      "SlotKey": "BeatmapFile|drum-hitnormal.wav",
+      "MidiNote": 36
+    },
+    {
+      "Id": "6d514f7b-ec90-56e5-aeae-a70fb7172e84",
+      "Name": "Kick 2",
+      "LaneKey": "BeatmapFile|normal-hitnormal.wav",
+      "SlotKey": "BeatmapFile|normal-hitnormal.wav",
+      "MidiNote": 35
+    },
+    {
+      "Id": "395dde3e-21bd-599f-9850-c1f810f5779b",
+      "Name": "Snare",
+      "LaneKey": "BeatmapFile|soft-hitclap.wav",
+      "SlotKey": "BeatmapFile|soft-hitclap.wav",
+      "MidiNote": 38
+    },
+    {
+      "Id": "9478bb91-a9c2-5aba-bf81-37984bc0f796",
+      "Name": "Snare 2",
+      "LaneKey": "BeatmapFile|normal-hitclap.wav",
+      "SlotKey": "BeatmapFile|normal-hitclap.wav",
+      "MidiNote": 40
+    },
+    {
+      "Id": "9ff277ae-9ea0-54f7-8e8a-02b47b260535",
+      "Name": "Crash",
+      "LaneKey": "BeatmapFile|soft-hitfinish.wav",
+      "SlotKey": "BeatmapFile|soft-hitfinish.wav",
+      "MidiNote": 49
+    },
+    {
+      "Id": "94b7212b-56ab-5bba-9da8-5a3482625de5",
+      "Name": "Crash 2",
+      "LaneKey": "BeatmapFile|normal-hitfinish.wav",
+      "SlotKey": "BeatmapFile|normal-hitfinish.wav",
+      "MidiNote": 57
+    },
+    {
+      "Id": "33cf6881-296e-5ca5-af51-e8474cb204c8",
+      "Name": "Whistle",
+      "LaneKey": "BeatmapFile|soft-hitwhistle.wav",
+      "SlotKey": "BeatmapFile|soft-hitwhistle.wav",
+      "MidiNote": null
+    },
+    {
+      "Id": "b1a4a70c-fb5d-5966-ae80-03dd2d299fc0",
+      "Name": "Whistle (normal)",
+      "LaneKey": "BeatmapFile|normal-hitwhistle.wav",
+      "SlotKey": "BeatmapFile|normal-hitwhistle.wav",
+      "MidiNote": null
+    }
+  ],
+  "Audio": []
+}

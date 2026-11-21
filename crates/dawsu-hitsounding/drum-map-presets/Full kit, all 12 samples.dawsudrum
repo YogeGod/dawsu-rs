@@ -1,0 +1,91 @@
+{
+  "Id": "5045ff66-7d48-5e50-bdcf-5851a1d5c1a0",
+  "Name": "Full kit, all 12 samples",
+  "Rows": [
+    {
+      "Id": "9a7a080d-170e-5dfc-8796-ceaa94a23dd9",
+      "Name": "Kick",
+      "LaneKey": "BeatmapFile|drum-hitnormal.wav",
+      "SlotKey": "BeatmapFile|drum-hitnormal.wav",
+      "MidiNote": 36
+    },
+    {
+      "Id": "1714cc2b-adc1-56c1-b371-7b80f2f7a14b",
+      "Name": "Kick 2",
+      "LaneKey": "BeatmapFile|normal-hitnormal.wav",
+      "SlotKey": "BeatmapFile|normal-hitnormal.wav",
+      "MidiNote": 35
+    },
+    {
+      "Id": "0dbb401f-1af8-5fe9-b47d-1b68b989369f",
+      "Name": "Snare",
+      "LaneKey": "BeatmapFile|soft-hitclap.wav",
+      "SlotKey": "BeatmapFile|soft-hitclap.wav",
+      "MidiNote": 38
+    },
+    {
+      "Id": "6c6925f9-1eb7-5c5a-b6a2-bd3752fe8feb",
+      "Name": "Snare 2",
+      "LaneKey": "BeatmapFile|normal-hitclap.wav",
+      "SlotKey": "BeatmapFile|normal-hitclap.wav",
+      "MidiNote": 40
+    },
+    {
+      "Id": "9ba5b9a4-23a7-5666-b822-23c580a65378",
+      "Name": "Tom",
+      "LaneKey": "BeatmapFile|drum-hitclap.wav",
+      "SlotKey": "BeatmapFile|drum-hitclap.wav",
+      "MidiNote": 48
+    },
+    {
+      "Id": "b8ff52dd-496b-5774-94cf-ea0f5f3b7436",
+      "Name": "Floor Tom",
+      "LaneKey": "BeatmapFile|drum-hitfinish.wav",
+      "SlotKey": "BeatmapFile|drum-hitfinish.wav",
+      "MidiNote": 41
+    },
+    {
+      "Id": "a5f692be-b32b-5bd8-9545-d5a1c3c1fbbd",
+      "Name": "Hi-Hat",
+      "LaneKey": "BeatmapFile|soft-hitnormal.wav",
+      "SlotKey": "BeatmapFile|soft-hitnormal.wav",
+      "MidiNote": 42
+    },
+    {
+      "Id": "b22be1ef-4f4b-52c8-bb2c-572a82e89ece",
+      "Name": "Crash",
+      "LaneKey": "BeatmapFile|soft-hitfinish.wav",
+      "SlotKey": "BeatmapFile|soft-hitfinish.wav",
+      "MidiNote": 49
+    },
+    {
+      "Id": "58ec4667-56a9-56d8-8727-6443be188fd6",
+      "Name": "Crash 2",
+      "LaneKey": "BeatmapFile|normal-hitfinish.wav",
+      "SlotKey": "BeatmapFile|normal-hitfinish.wav",
+      "MidiNote": 57
+    },
+    {
+      "Id": "e584df9d-4c09-5de4-bbd9-60a55fdc0fb6",
+      "Name": "Whistle",
+      "LaneKey": "BeatmapFile|soft-hitwhistle.wav",
+      "SlotKey": "BeatmapFile|soft-hitwhistle.wav",
+      "MidiNote": null
+    },
+    {
+      "Id": "855b4b08-96be-5a36-ada2-695388d75501",
+      "Name": "Whistle (normal)",
+      "LaneKey": "BeatmapFile|normal-hitwhistle.wav",
+      "SlotKey": "BeatmapFile|normal-hitwhistle.wav",
+      "MidiNote": null
+    },
+    {
+      "Id": "8fcdac59-73fe-5b98-bdc7-060d1136e32a",
+      "Name": "Whistle (drum)",
+      "LaneKey": "BeatmapFile|drum-hitwhistle.wav",
+      "SlotKey": "BeatmapFile|drum-hitwhistle.wav",
+      "MidiNote": null
+    }
+  ],
+  "Audio": []
+}

@@ -1,0 +1,56 @@
+{
+  "Id": "5c646517-3e88-5bcf-a7c8-e177007156d3",
+  "Name": "Kick and snare on hitnormals",
+  "Rows": [
+    {
+      "Id": "5d4f78e7-50ab-52c4-a252-3f95f993f310",
+      "Name": "Kick",
+      "LaneKey": "BeatmapFile|drum-hitnormal.wav",
+      "SlotKey": "BeatmapFile|drum-hitnormal.wav",
+      "MidiNote": 36
+    },
+    {
+      "Id": "63373b3a-4afc-5ff2-9653-f1b3678f09f3",
+      "Name": "Snare",
+      "LaneKey": "BeatmapFile|normal-hitnormal.wav",
+      "SlotKey": "BeatmapFile|normal-hitnormal.wav",
+      "MidiNote": 38
+    },
+    {
+      "Id": "f90742a3-d8cf-592a-8595-49cca6b04e9f",
+      "Name": "Clap",
+      "LaneKey": "BeatmapFile|soft-hitclap.wav",
+      "SlotKey": "BeatmapFile|soft-hitclap.wav",
+      "MidiNote": 39
+    },
+    {
+      "Id": "e11606e2-fd68-5f35-b035-e6b4732032a8",
+      "Name": "Crash",
+      "LaneKey": "BeatmapFile|soft-hitfinish.wav",
+      "SlotKey": "BeatmapFile|soft-hitfinish.wav",
+      "MidiNote": 49
+    },
+    {
+      "Id": "64b7066c-458b-50a8-be23-500a99132b81",
+      "Name": "Crash 2",
+      "LaneKey": "BeatmapFile|normal-hitfinish.wav",
+      "SlotKey": "BeatmapFile|normal-hitfinish.wav",
+      "MidiNote": 57
+    },
+    {
+      "Id": "f0e0f26e-98e4-5573-b941-e423818d0490",
+      "Name": "Whistle",
+      "LaneKey": "BeatmapFile|soft-hitwhistle.wav",
+      "SlotKey": "BeatmapFile|soft-hitwhistle.wav",
+      "MidiNote": null
+    },
+    {
+      "Id": "64f3d928-cf84-560e-bca7-de66946d2523",
+      "Name": "Whistle (normal)",
+      "LaneKey": "BeatmapFile|normal-hitwhistle.wav",
+      "SlotKey": "BeatmapFile|normal-hitwhistle.wav",
+      "MidiNote": null
+    }
+  ],
+  "Audio": []
+}
