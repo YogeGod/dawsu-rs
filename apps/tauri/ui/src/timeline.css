@@ -160,3 +160,10 @@
   width: 14px;
   height: 14px;
 }
+
+/* The overview strip's head (timeline-spec "Overview strip": 30 px). */
+.overview .ruler-controls {
+  height: 30px;
+  font-size: 12px;
+  color: var(--editor-secondary);
+}

@@ -160,23 +160,18 @@ function loudColumns(canvas) {
   return [Math.min(...xs), Math.max(...xs)];
 }
 
-test("the drawn waveform moves with the song offset on the ruler and the overview", async () => {
+test("the drawn waveform moves with the song offset on the ruler", async () => {
   const { get, paint } = await canvases();
-  // One loud bin from 300 to 600 ms of the song; 0.25 px/ms on both canvases.
+  // One loud bin from 300 to 600 ms of the song at 0.25 px/ms.
   paint(`view.duration = 1200; scene.zoom = .25; scene.gameplay = null;
     scene.waveform = [[0, 0, 0, 0], [1, 1, 1, 1], [0, 0, 0, 0], [0, 0, 0, 0]]`);
-  const before = { ruler: loudColumns(get("ruler")), overview: loudColumns(get("overview")) };
-  assert.deepEqual(before.ruler, [74, 148]);
-  assert.deepEqual(before.overview, [74, 148]);
+  const before = loudColumns(get("ruler"));
+  assert.deepEqual(before, [74, 148]);
   // Playback reads the song at position - offset, so +400 ms draws it 100 px later.
   paint("view.offset = 400");
-  for (const id of ["ruler", "overview"]) {
-    assert.deepEqual(loudColumns(get(id)), before[id].map(x => x + 100), id);
-  }
+  assert.deepEqual(loudColumns(get("ruler")), before.map(x => x + 100));
   paint("view.offset = -200");
-  for (const id of ["ruler", "overview"]) {
-    assert.deepEqual(loudColumns(get(id)), before[id].map(x => x - 50), id);
-  }
+  assert.deepEqual(loudColumns(get("ruler")), before.map(x => x - 50));
 });
 
 test("the cycle region is a faint accent band under a warning-yellow bar on the ruler", async () => {
@@ -374,4 +369,35 @@ test("hovering a hit hands over one card per hit and never repaints the timeline
   move(12, 45);
   for (const listener of grid.listeners.pointerleave) listener({});
   assert.equal(cards().at(-1), null);
+});
+
+// timeline-spec "Overview strip": the whole song in 300 columns of 5 px diamonds whose strength shows
+// how many objects fall in them, problems as 7 px warning diamonds, and the viewport box.
+test("the overview draws object diamonds by density, problem diamonds and the viewport box", async () => {
+  const { get, paint } = await canvases();
+  const overview = get("overview");
+  paint(`view.duration = 4000; scene.zoom = .1; scene.waveform = [[1, 1, 1, 1]];
+    scene.gameplay = { points: [["circle", 100, 0], ["circle", 105, 1], ["circle", 2000, 2]], spans: [] };
+    view.outputProblems = [{ timeline: "fixture.osu", time: 3000 }, { timeline: "other.osu", time: 1000 }]`);
+  // A diamond is moveTo its top point, three lineTo, closePath, then fill.
+  const diamonds = overview.calls.flatMap((call, at) => call.name === "fill" && overview.calls[at - 1]?.name === "closePath" &&
+    overview.calls[at - 5]?.name === "moveTo" ? [[round(overview.calls[at - 5].args[0]), overview.calls[at - 5].args[1], call.fill]] : []);
+  assert.deepEqual(diamonds, [
+    // Two objects in column 7 (the densest, full strength), one in column 150; 80 px tall, middle at 40.
+    [7.5, 36.5, "rgba(196,196,196,1.00)"],
+    [150.5, 36.5, "rgba(196,196,196,0.65)"],
+    // Only this difficulty's problems, above the viewport box.
+    [225, 35, "#efc16a"],
+  ]);
+  assert.ok(overview.calls.some(call => call.name === "stroke" && call.stroke === "#1c1c1c"), "problem edge");
+  // The viewport box: 3000 ms of 4000 on screen, 1 px --editor-text with a 2 px radius.
+  const box = overview.calls.find(call => call.name === "roundRect");
+  assert.deepEqual(box.args.map(round), [.5, 3.5, 225, 73, 2]);
+  assert.ok(overview.calls.some(call => call.name === "stroke" && call.stroke === "#f1f1f1"));
+  assert.ok(overview.calls.some(call => call.name === "fill" && call.fill === "rgba(241,241,241,.06)"));
+  // Diamonds, not the song's waveform.
+  assert.ok(!overview.calls.some(call => ["#315c59", "#3c7673", "#46908c", "#51aaa5"].includes(call.fill)));
+  // A tiny viewport keeps an 8 px box.
+  paint("scene.zoom = 3");
+  assert.equal(overview.calls.find(call => call.name === "roundRect").args[2], 8);
 });

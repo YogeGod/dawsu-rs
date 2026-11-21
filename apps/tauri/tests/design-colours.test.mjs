@@ -143,7 +143,7 @@ test("timeline canvases paint with the design's colours", async () => {
   assert.equal(ruler.fills[0], "#1c2727");
   for (const shade of ["#315c59", "#3c7673", "#46908c", "#51aaa5"]) {
     assert.ok(ruler.fills.includes(shade), `ruler waveform ${shade}`);
-    assert.ok(overview.fills.includes(shade), `overview waveform ${shade}`);
+    assert.ok(!overview.fills.includes(shade), `no overview waveform ${shade}`);
   }
   // Gameplay objects without combo data: --editor-readout circles with a white ring (timeline-spec §9);
   // slider tracks are that colour 38 % into #111111 with an 85 % white edge.
@@ -170,9 +170,10 @@ test("timeline canvases paint with the design's colours", async () => {
   assert.ok(grid.fills.includes("#858585"), "listen-muted hit");
   assert.ok(volume.fills.includes("#a3a3a3"), "volume labels");
   assert.ok(volume.strokes.includes("#62d6cf"), "ramp preview");
-  assert.ok(overview.fills.includes("#a3a3a3"), "overview hit marks");
-  assert.ok(overview.fills.includes("#ffffff14"), "overview view box");
-  assert.ok(overview.strokes.includes("#858585"), "overview view box edge");
+  // timeline-spec "Overview strip": object diamonds in #c4c4c4, the viewport box in --editor-text.
+  assert.ok(overview.fills.some(fill => fill.startsWith("rgba(196,196,196,")), "overview object diamonds");
+  assert.ok(overview.fills.includes("rgba(241,241,241,.06)"), "overview view box");
+  assert.ok(overview.strokes.includes("#f1f1f1"), "overview view box edge");
 
   const oldColours = [
     "#334a63", "#47618b", "#657ab5", "#7aaac6", "#536a89d9", "#9e86c8", "#26364b", "#405a7a",

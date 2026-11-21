@@ -1502,30 +1502,63 @@ function laneTint(lane, active = false) {
   return colour ? colour + (active ? "29" : "14") : null;
 }
 
-const overviewGroups = ["soft", "normal", "drum", null, "skin"];
-let overviewHitCache = null;
+// timeline-spec "Overview strip": the song's objects in 300 columns, each drawn as a 5 px diamond
+// whose strength (30 to 100 %) shows how many objects fall in it. Built once per object list and width.
+const overviewColumns = 300;
+let overviewBinCache = null;
 
-function drawOverviewHits({ ctx, width, height }, { moments, lanes }, duration) {
-  if (width <= 0 || height <= 6 || duration <= 0) return;
-  if (overviewHitCache?.moments !== moments || overviewHitCache.lanes !== lanes ||
-      overviewHitCache.width !== width || overviewHitCache.duration !== duration) {
-    const columns = overviewGroups.map(() => new Set());
-    const laneBands = lanes?.map(lane => overviewGroups.indexOf(lane.group));
-    const scale = width / duration;
-    for (const [time, , , hits] of moments) {
+function overviewBins(points, width, duration) {
+  if (!overviewBinCache || overviewBinCache.points !== points || overviewBinCache.width !== width || overviewBinCache.duration !== duration) {
+    const counts = new Array(overviewColumns).fill(0);
+    for (const [, time] of points ?? []) {
       if (time < 0 || time > duration) continue;
-      const x = Math.min(width - 1, Math.floor(time * scale));
-      for (const [row] of hits) columns[laneBands?.[row]]?.add(x);
+      counts[Math.min(overviewColumns - 1, Math.floor(time / duration * overviewColumns))]++;
     }
-    overviewHitCache = { moments, lanes, width, duration, columns };
+    const most = Math.max(1, ...counts);
+    const bins = counts.flatMap((count, column) => count ? [[(column + .5) * width / overviewColumns, .3 + .7 * count / most]] : []);
+    overviewBinCache = { points, width, duration, bins };
   }
+  return overviewBinCache.bins;
+}
 
-  const bandHeight = (height - 6) / overviewGroups.length;
-  ctx.fillStyle = "#a3a3a3";
-  for (const [band, columns] of overviewHitCache.columns.entries()) {
-    const y = 3 + band * bandHeight;
-    for (const x of columns) ctx.fillRect(x, y, 1.2, Math.max(1, bandHeight - 1));
+function diamond(ctx, x, y, half) {
+  ctx.beginPath();
+  ctx.moveTo(x, y - half);
+  ctx.lineTo(x + half, y);
+  ctx.lineTo(x, y + half);
+  ctx.lineTo(x - half, y);
+  ctx.closePath();
+}
+
+function drawOverview({ ctx, width, height }, start, visible) {
+  ctx.fillStyle = slateTimeline.overview;
+  ctx.fillRect(0, 0, width, height);
+  const duration = view.duration;
+  if (!(duration > 0) || width <= 0) return;
+  const middle = height / 2;
+  for (const [x, strength] of overviewBins(scene.gameplay?.points, width, duration)) {
+    ctx.fillStyle = "rgba(196,196,196," + strength.toFixed(2) + ")";
+    diamond(ctx, x, middle, 3.5);
+    ctx.fill();
   }
+  // The viewport box: 1 px --editor-text, radius 2, at least 8 px wide.
+  const boxWidth = Math.max(8, visible * width / duration);
+  ctx.fillStyle = "rgba(241,241,241,.06)";
+  ctx.strokeStyle = "#f1f1f1";
+  roundedTrack(ctx, start * width / duration + .5, 3.5, boxWidth, Math.max(0, height - 7), 2);
+  ctx.fill();
+  ctx.stroke();
+  // Problems on this difficulty: 7 px --editor-warning diamonds with a 1 px --editor-panel edge.
+  ctx.fillStyle = "#efc16a";
+  ctx.strokeStyle = slateTimeline.overview;
+  for (const problem of view.outputProblems ?? []) {
+    if (problem.timeline !== scene.path) continue;
+    diamond(ctx, problem.time * width / duration, middle, 5);
+    ctx.fill();
+    ctx.stroke();
+  }
+  const playX = view.position * width / duration;
+  line(ctx, slateTimeline.playhead, playX, 0, playX, height);
 }
 
 function paint() {
@@ -1723,20 +1756,7 @@ function paint() {
     r.ctx.fillRect(marker.x - 3, r.height - 9, 6, 6);
   }
   if (v) line(v.ctx, slateTimeline.playhead, xOf(view.position), 0, xOf(view.position), v.height);
-  o.ctx.fillStyle = slateTimeline.overview;
-  o.ctx.fillRect(0, 0, o.width, o.height);
-  waveform(o.ctx, o.width, o.height / 2, o.height / 2 - 2, 0, view.duration);
-  drawOverviewHits(o, scene, view.duration);
-  if (view.duration > 0) {
-    const overviewX = start * o.width / view.duration;
-    const overviewWidth = (g.width / zoom) * o.width / view.duration;
-    o.ctx.fillStyle = "#ffffff14";
-    o.ctx.fillRect(overviewX, 0, overviewWidth, o.height);
-    o.ctx.strokeStyle = "#858585";
-    o.ctx.strokeRect(overviewX, .5, overviewWidth, o.height - 1);
-    const playX = view.position * o.width / view.duration;
-    line(o.ctx, slateTimeline.playhead, playX, 0, playX, o.height);
-  }
+  drawOverview(o, start, g.width / zoom);
 }
 
 function pointer(event, phase, gesture = drag) {
