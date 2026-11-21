@@ -1673,7 +1673,7 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
         let data_root = std::env::var_os(RECOVERY_SMOKE_DATA)
             .filter(|path| !path.is_empty())
             .map_or(data_root, PathBuf::from);
-        let mut app = Application::with_data_root(data_root);
+        let mut app = Application::for_desktop(data_root);
         let mut fault = None;
         let mut export_cache = ExportCache::default();
         let mut playback_start = PlaybackStart::default();

@@ -32,6 +32,18 @@ fn wait_for_job(app: &mut Application) {
     assert!(app.error.is_none(), "{:?}", app.error);
 }
 
+/// A default sounds folder with the skin's twelve hit sounds, all `wave`: a hit whose sound
+/// isn't in the mapset folder then plays the skin's sound, as on a computer with default sounds.
+fn skin_sounds(folder: &Path, wave: &[u8]) -> PathBuf {
+    fs::create_dir(folder).unwrap();
+    for bank in ["normal", "soft", "drum"] {
+        for sound in ["hitnormal", "hitwhistle", "hitfinish", "hitclap"] {
+            fs::write(folder.join(format!("{bank}-{sound}.wav")), wave).unwrap();
+        }
+    }
+    folder.to_path_buf()
+}
+
 fn open(app: &mut Application, path: &Path) {
     Action::Open { path: path.into() }.run(app);
     wait_for_job(app);
@@ -2723,6 +2735,7 @@ fn removing_a_lane_takes_its_hits_in_one_step_and_keeps_its_layers() {
     fs::write(&map, original).unwrap();
     let mut app = Application::with_data_root(fixture.0.join("data"));
     app.error = None;
+    app.preferences.default_samples = skin_sounds(&fixture.0.join("skin-sounds"), tone);
     open(&mut app, &map);
     let scene = |app: &Application| snapshot(app, true)["scene"].clone();
     let model = |app: &Application| app.document().unwrap().composer.hitsounds().clone();
