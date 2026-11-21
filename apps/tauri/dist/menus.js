@@ -36,6 +36,7 @@ const menuRules = {
   laneDelete: laneAllowed(lane => lane.canDelete),
   waveform: () => $("ruler-waveform").getAttribute("aria-pressed") === "true",
   usedOnly: () => !!$("used-only").checked,
+  mapPreview: () => !!window.dawsuUi?.mapPreviewOn?.(),
   tool: (_, item) => view.tool === item.run[1],
 };
 
@@ -74,6 +75,7 @@ const menuCalls = {
   openViewSettings: () => openViewSettings(),
   showHelp: () => run(showHelp),
   deleteActiveLane: () => deleteActiveLane(),
+  toggleMapPreview: () => window.dawsuUi?.toggleMapPreview?.(),
 };
 
 const menuField = path => path.split(".").reduce((value, key) => value?.[key], { view, scene });
@@ -118,7 +120,7 @@ const menuEnabled = entry => !!menuRules[entry.item.enabled ?? "edit"](entry.tar
 function menuEntries(name, target) {
   const list = window.dawsuUi?.commands;
   if (!list?.menus[name]) {
-    $("status").textContent = "The menus did not load";
+    $("status").textContent = "The menus could not load. Restart dawsu! to try again.";
     return null;
   }
   const byId = new Map(list.items.map(item => [item.id, item]));
@@ -490,7 +492,8 @@ function openEditorMenu(name, last = false, point = null) {
     if (editorMenu !== menu) return;
     const bindings = new Map(entries.map(([id, , keys]) => [id, keys]));
     for (const entry of menu.entries) {
-      if (entry.item.command) entry.keys = bindings.get(entry.item.command)?.join(" / ") ?? "";
+      // A menu shows a command's first key; the Shortcuts list shows them all (Cycle has three).
+      if (entry.item.command) entry.keys = bindings.get(entry.item.command)?.[0] ?? "";
     }
     refreshEditorMenu();
   }).catch(() => {});

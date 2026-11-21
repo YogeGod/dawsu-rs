@@ -63,6 +63,9 @@ pub(crate) struct SessionSettings {
     /// What the Export window last chose for this map. Older builds ignore the field.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub export_choices: Option<super::ExportChoices>,
+    /// Output slot -> hitsound lane bindings for the M4 node graph. Older builds ignore the field.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub node_graph_bindings: Option<BTreeMap<String, String>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

@@ -18,8 +18,10 @@ mod mixes;
 mod pending;
 mod sweep;
 pub mod output;
+pub mod node_graph;
 mod project;
 pub use project::lane_key as lane_layout_key;
+pub use node_graph::{NodeGraphAction, NodeGraphView, ViewerOverlay};
 pub use dawsu_audio::{OutputBackend, OutputDevice};
 mod preferences;
 mod shortcuts;
@@ -97,6 +99,7 @@ pub struct Document {
     /// This session's hold on the mapset, so others know its pending names are in use. A cleanup
     /// job holds it too, so the mapset stays marked open until the job ends.
     presence: Option<Arc<pending::Presence>>,
+    node_graph_bindings: Option<std::collections::BTreeMap<String, String>>,
 }
 impl Document {
     /// The map's `Title` from the `.osu` metadata, or empty when it has none.
@@ -198,6 +201,7 @@ impl Document {
             pending: pending::Pending::default(),
             pending_sets: Vec::new(),
             presence: None,
+            node_graph_bindings: None,
         })
     }
     pub fn lane_layout(&self) -> Option<&LaneLayout> {
@@ -754,6 +758,19 @@ pub struct Preferences {
     #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub key_overrides: std::collections::BTreeMap<String, std::collections::BTreeMap<String, Vec<String>>>,
     pub protect_hitnormals: bool,
+    /// The map preview's own window: where it was, and whether it was open when the editor closed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preview_window: Option<WindowPlace>,
+}
+
+/// A window's place and size in logical pixels, and whether it was open.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct WindowPlace {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+    pub open: bool,
 }
 fn system_audio_backend(backend: &OutputBackend) -> bool {
     *backend == OutputBackend::System
@@ -800,9 +817,14 @@ impl Default for Preferences {
             key_preset: "DAW".into(),
             key_overrides: Default::default(),
             protect_hitnormals: false,
+            preview_window: None,
         }
     }
 }
+/// The developer's local default sounds, used by the desktop app when no default sounds
+/// folder is saved ([`Application::for_desktop`]). On other computers the folder is missing
+/// and nothing changes.
+const LOCAL_DEFAULT_SAMPLES: &str = "E:/GitHub/dawsu-hitsounding-editor/src/OsuHitsound.Audio/DefaultSamples";
 pub fn data_folder() -> PathBuf {
     if let Some(path) = std::env::var_os("LOCALAPPDATA") {
         PathBuf::from(path).join("dawsu-rs")
@@ -979,10 +1001,27 @@ pub struct Application {
     /// next open.
     opens: u64,
     drum: drum_detect::DrumDetect,
+    node_graph: node_graph::NodeGraphState,
 }
 impl Application {
     pub fn new() -> Self {
         Self::with_data_root(data_folder())
+    }
+    /// The desktop app's start: [`Self::with_data_root`], then the local default sounds when
+    /// the preferences name no default sounds folder. Tests that build the app in the same
+    /// process start with `with_data_root` alone, so they never see a folder that exists on
+    /// one computer only.
+    pub fn for_desktop(data_root: PathBuf) -> Self {
+        let mut app = Self::with_data_root(data_root);
+        app.use_local_default_samples(Path::new(LOCAL_DEFAULT_SAMPLES));
+        app
+    }
+    /// Uses `local` as the default sounds folder when none is saved and the folder exists.
+    /// The folder is only read. Its non-commercial sounds are never bundled.
+    fn use_local_default_samples(&mut self, local: &Path) {
+        if self.preferences.default_samples.as_os_str().is_empty() && local.is_dir() {
+            self.preferences.default_samples = local.to_path_buf();
+        }
     }
     pub fn with_data_root(data_root: PathBuf) -> Self {
         let file = data_root.join("preferences.json");
@@ -990,13 +1029,6 @@ impl Application {
             .map(|base| PathBuf::from(base).join("OsuHitsoundEditor").join("preferences.json"));
         let (mut preferences, first_launch) = preferences::load(&file, legacy.as_deref());
         preferences.master_gain = preferences.master_gain.clamp(0.2, 1.0);
-        // Local development fallback is read-only. These non-commercial assets are never bundled.
-        let local = PathBuf::from(
-            "E:/GitHub/dawsu-hitsounding-editor/src/OsuHitsound.Audio/DefaultSamples",
-        );
-        if preferences.default_samples.as_os_str().is_empty() && local.is_dir() {
-            preferences.default_samples = local;
-        }
         let output = open_preferred_audio(&preferences, preferences.audio_buffer_ms);
         let (audio, error) = match output {
             Ok(engine) => (Some(engine), None),
@@ -1027,6 +1059,11 @@ impl Application {
     pub fn headless() -> Self {
         let data_root = std::env::temp_dir().join("dawsu-headless").join(std::process::id().to_string());
         Self::create(Preferences::default(), false, None, None, false, data_root)
+    }
+    pub fn headless_with_projects(data_root: PathBuf) -> Self {
+        let mut app = Self::create(Preferences::default(), false, None, None, false, data_root.clone());
+        app.project_root = Some(data_root.join("projects"));
+        app
     }
     fn create(
         preferences: Preferences,
@@ -1105,6 +1142,7 @@ impl Application {
             sound_set_check_pending: false,
             opens: 0,
             drum: Default::default(),
+            node_graph: Default::default(),
         }
     }
 
@@ -1360,6 +1398,7 @@ impl Application {
             export_settings: document.export_settings.clone(),
             drum_lanes: document.drum_lanes.clone(),
             export_choices: document.export_choices.clone(),
+            node_graph_bindings: document.node_graph_bindings.clone(),
             lane_slots: saved_slots.or_else(|| self.project.as_ref().and_then(|p| p.settings.lane_slots.clone())),
         })
     }
@@ -1436,6 +1475,7 @@ impl Application {
         self.stop();
         self.cancel_controller_stroke();
         self.clear_drum_detection();
+        self.clear_node_graph_run();
         if let Some(d) = self.document.as_mut() {
             self.tools.cancel(&mut d.composer);
         }
@@ -1547,6 +1587,7 @@ impl Application {
         self.poll_sweep(false);
         self.check_set_versions_when_read();
         self.poll_drum_detection();
+        self.poll_node_graph();
         // Before main's job: its arms can return early.
         self.poll_export();
         if !self.cancel.load(Ordering::Relaxed)
@@ -1610,6 +1651,7 @@ impl Application {
                     }
                     self.song = loaded.song;
                     self.drum.song_loaded();
+                    self.node_graph_song_loaded();
                     self.stretched_song = self.song.clone();
                     self.playback_speed = 1.0;
                     self.samples = loaded.samples;
@@ -2065,6 +2107,17 @@ impl Application {
         } else {
             self.playback_start = self.position_ms();
         }
+        self.return_position = self.playback_start;
+        if let Some(a) = &self.audio {
+            a.play(true);
+        }
+    }
+    /// Plays from `start` whether or not it is already playing (play_pause_from toggles).
+    pub fn play_from(&mut self, start: f64) {
+        if self.document.is_none() {
+            return;
+        }
+        self.seek(start);
         self.return_position = self.playback_start;
         if let Some(a) = &self.audio {
             a.play(true);
@@ -3051,6 +3104,7 @@ fn load(
     document.export_settings = project.as_ref().and_then(|p| p.settings.export_settings.clone());
     document.drum_lanes = project.as_ref().and_then(|p| p.settings.drum_lanes.clone());
     document.export_choices = project.as_ref().and_then(|p| p.settings.export_choices.clone());
+    document.node_graph_bindings = project.as_ref().and_then(|p| p.settings.node_graph_bindings.clone());
     if let Some(layout) = &mut document.lane_layout {
         layout.normalise();
     }
@@ -6905,6 +6959,67 @@ Sample,0,0,\"{story}\",100
         assert_eq!(spacing(&app), (true, 1, 3));
     }
 
+    /// P and Alt+P (Cubase's Locators to Selection and Loop Selection) were in the key list but
+    /// did nothing: no command ran for them.
+    #[test]
+    fn locators_follow_the_selected_hits_or_the_range() {
+        let fixture = Scratch::new("locators-to-selection");
+        let path = fixture.path("map.osu");
+        let map = b"osu file format v14\n[General]\nMode:0\n[TimingPoints]\n0,500,4,1,0,100,1,0\n[HitObjects]\n256,192,1000,1,8,0:0:0:0:\n256,192,2500,1,8,0:0:0:0:\n";
+        std::fs::write(&path, map).unwrap();
+        let mut app = Application::headless();
+        app.project_root = Some(fixture.path("sessions"));
+        open(&mut app, path.clone());
+        app.locator_left = 100.0;
+        app.locator_right = 200.0;
+        let locators = |app: &Application| (app.locator_left, app.locator_right, app.cycle);
+
+        // Nothing selected and no range: the locators stay where they are.
+        app.command("locatorsToSelection");
+        assert!(app.error.is_none(), "{:?}", app.error);
+        assert_eq!(locators(&app), (100.0, 200.0, false));
+
+        let clap = |moment: usize| {
+            let moments = app.document().unwrap().composer.hitsounds().moments();
+            let lane = moments[moment].hits().find(|lane| matches!(lane,
+                SampleIdentity::Standard { sound: Sound::Hit(Hitsound::Clap), .. })).unwrap().clone();
+            HitKey { moment, lane }
+        };
+        let (first, second) = (clap(0), clap(1));
+        app.select_hit(first.clone(), false);
+        app.select_hit(second, true);
+        app.command("locatorsToSelection");
+        assert_eq!(locators(&app), (1000.0, 2500.0, false), "the span of the selected hits");
+
+        // One hit has no length: R goes to the next grid line after it.
+        app.select_hit(first, false);
+        app.command("locatorsToSelection");
+        let composer = &app.document().unwrap().composer;
+        let next = composer.tempo.grid_step(SongTime::from_ms(1000.0), 1, composer.spacing).ms();
+        assert!(next > 1000.0);
+        assert_eq!(locators(&app), (1000.0, next, false));
+
+        // A range left from the Range tool does not beat the hits selected since.
+        app.document.as_mut().unwrap().composer.range = Some(dawsu_editor::tools::TimeRange {
+            from: SongTime::from_ms(1750.0), to: SongTime::from_ms(1250.0), from_row: 0, to_row: 1,
+        });
+        app.command("locatorsToSelection");
+        assert_eq!(locators(&app), (1000.0, next, false));
+        // With the Range tool in hand, its range wins.
+        app.command("toolRange");
+        app.command("locatorsToSelection");
+        assert_eq!(locators(&app), (1250.0, 1750.0, false));
+        app.command("toolSelect");
+
+        // Alt+P: the same, with Cycle on and playback from L.
+        app.document.as_mut().unwrap().composer.range = None;
+        app.command("playLocatorRange");
+        assert!(app.error.is_none(), "{:?}", app.error);
+        assert_eq!(locators(&app), (1000.0, next, true));
+        assert_eq!(app.playback_start, 1000.0);
+        assert_eq!(std::fs::read(&path).unwrap(), map, "the map file is untouched");
+    }
+
     #[test]
     fn fit_zoom_of_a_30_minute_song_survives_zoom_out_and_reopening() {
         let fixture = Scratch::new("fit-zoom");
@@ -6957,5 +7072,41 @@ mod sample_file_clip {
         std::fs::write(&path, wave(8)).unwrap();
         let (ms, _) = app.sample_file_outline(&path, 4).unwrap();
         assert!((ms - 8000.0 / 48000.0).abs() < 1e-9, "a changed file is decoded again");
+    }
+}
+
+#[cfg(test)]
+mod local_default_samples {
+    use super::*;
+    use dawsu_test_support::Scratch;
+
+    #[test]
+    fn starting_from_a_data_folder_takes_default_sounds_from_its_preferences_only() {
+        let scratch = Scratch::new("data-root-defaults");
+        let app = Application::with_data_root(scratch.path("data"));
+        assert!(
+            app.preferences.default_samples.as_os_str().is_empty(),
+            "no folder outside the data folder: {}",
+            app.preferences.default_samples.display()
+        );
+    }
+
+    #[test]
+    fn the_desktop_start_uses_the_local_default_sounds_only_when_none_are_saved() {
+        let scratch = Scratch::new("local-defaults");
+        let local = scratch.path("local");
+        std::fs::create_dir(&local).unwrap();
+
+        let mut app = Application::headless();
+        app.use_local_default_samples(&scratch.path("missing"));
+        assert!(app.preferences.default_samples.as_os_str().is_empty(), "a missing folder is not used");
+
+        app.use_local_default_samples(&local);
+        assert_eq!(app.preferences.default_samples, local);
+
+        let saved = scratch.path("saved");
+        app.preferences.default_samples = saved.clone();
+        app.use_local_default_samples(&local);
+        assert_eq!(app.preferences.default_samples, saved, "a saved folder is kept");
     }
 }

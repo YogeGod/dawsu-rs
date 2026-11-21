@@ -63,7 +63,7 @@ test("every Inspector section is a Svelte part in a section Layout… can move",
   assert.equal(sections.length, 5);
   const mounts = [...inspector.matchAll(/<section class="inspector-part" aria-label="([^"]+)"><div data-ui-mount="([\w-]+)"><\/div><\/section>/g)]
     .map(match => [match[1], match[2]]);
-  assert.deepEqual(mounts, [["Selection", "inspector-selection"], ["Lane", "inspector-lane"], ["Difficulty", "inspector-difficulty"],
+  assert.deepEqual(mounts, [["Map preview", "map-preview"], ["Selection", "inspector-selection"], ["Lane", "inspector-lane"], ["Difficulty", "inspector-difficulty"],
     ["Bookmarks", "inspector-bookmarks"], ["History", "inspector-history"]]);
   // The classic browser still docks between Bookmarks and History.
   assert.match(inspector, /data-ui-mount="inspector-bookmarks"><\/div><\/section>\s*<div id="classic-browser-host" hidden><\/div>\s*<section class="inspector-part" aria-label="History">/);

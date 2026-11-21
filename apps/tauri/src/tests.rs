@@ -1,4 +1,4 @@
-use super::{Action, PlaybackStart, lane_add_choices, lane_by_key, scene_lane_key, snapshot, sound_set_library_view};
+use super::{Action, PlaybackStart, lane_add_choices, lane_by_key, map_preview, scene_lane_key, snapshot, sound_set_library_view};
 use dawsu_application::{Application, WaveBin};
 use std::fmt::Write as _;
 use std::fs;
@@ -30,6 +30,19 @@ fn wait_for_job(app: &mut Application) {
         std::thread::sleep(Duration::from_millis(5));
     }
     assert!(app.error.is_none(), "{:?}", app.error);
+}
+
+/// A default sounds folder, outside any mapset folder, with the skin's twelve hitsounds, all
+/// `wave`: a hit whose sound isn't in the mapset folder then plays the skin's sound, as on a
+/// computer with default sounds.
+fn skin_sounds(label: &str, wave: &[u8]) -> Fixture {
+    let folder = Fixture::new(label);
+    for bank in ["normal", "soft", "drum"] {
+        for sound in ["hitnormal", "hitwhistle", "hitfinish", "hitclap"] {
+            fs::write(folder.0.join(format!("{bank}-{sound}.wav")), wave).unwrap();
+        }
+    }
+    folder
 }
 
 fn open(app: &mut Application, path: &Path) {
@@ -2725,6 +2738,8 @@ fn removing_a_lane_takes_its_hits_in_one_step_and_keeps_its_layers() {
     fs::write(&map, original).unwrap();
     let mut app = Application::with_data_root(fixture.0.join("data"));
     app.error = None;
+    let skin = skin_sounds("remove-lane-skin", tone);
+    app.preferences.default_samples = skin.0.clone();
     open(&mut app, &map);
     let scene = |app: &Application| snapshot(app, true)["scene"].clone();
     let model = |app: &Application| app.document().unwrap().composer.hitsounds().clone();
@@ -2830,4 +2845,73 @@ fn the_sample_preview_gives_the_length_and_outline_of_a_library_sample_or_a_lane
     let preview = super::sample_outline(&mut app, source(serde_json::json!({ "kind": "lane", "row": row }))).unwrap();
     assert!((preview["ms"].as_f64().unwrap() - 4000.0 / 48000.0).abs() < 1e-9, "{preview}");
     assert!(super::sample_outline(&mut app, source(serde_json::json!({ "kind": "lane", "row": 999 }))).is_err());
+}
+
+#[test]
+fn the_map_preview_sends_stacked_objects_with_combos_and_slider_paths() {
+    let fixture = Fixture::new("map-preview");
+    let path = fixture.0.join("Preview.osu");
+    // Two circles on one spot stack; a slider from 100,100 runs 100 px right over one beat.
+    let map = b"osu file format v14\n\n[General]\nMode: 0\nStackLeniency: 0.7\n\n[Difficulty]\nCircleSize:4\nApproachRate:9\nSliderMultiplier:1\n\n[TimingPoints]\n0,500,4,1,0,100,1,0\n\n[HitObjects]\n200,200,1000,5,0\n200,200,1100,1,0\n100,100,2000,6,0,L|200:100,1,100\n";
+    fs::write(&path, map).unwrap();
+    let mut app = Application::headless();
+    open(&mut app, &path);
+    let opened = app.document().unwrap().path.clone();
+    let preview = map_preview(&app, &opened).unwrap();
+    assert_eq!(preview["preempt"], 600.0);
+    assert_eq!(preview["key"], snapshot(&app, true)["scene"]["previewKey"]);
+    let objects = preview["objects"].as_array().unwrap();
+    assert_eq!(objects.len(), 3);
+    let scale = preview["radius"].as_f64().unwrap() / 64.0;
+    // The first circle sits one stack step up and left of the second.
+    let step = (scale * 6.4 * 100.0).round() / 100.0;
+    assert!((objects[0]["x"].as_f64().unwrap() - (200.0 - step)).abs() < 0.02, "{preview}");
+    assert_eq!(objects[1]["x"], 200.0);
+    assert_eq!(objects[0]["combo"], 1);
+    assert_eq!(objects[1]["combo"], 2);
+    // The map has no colours, so the preview takes lazer's Argon six by the plain combo index:
+    // the circles are combo 1, the slider starts combo 2.
+    assert_eq!(preview["colours"].as_array().unwrap().len(), 6);
+    assert_eq!(preview["colours"][0], "#f17400");
+    assert_eq!(objects[0]["colour"], 1);
+    assert_eq!(objects[2]["kind"], "slider");
+    assert_eq!(objects[2]["combo"], 1);
+    assert_eq!(objects[2]["colour"], 2);
+    assert_eq!(objects[2]["end"], 2500.0);
+    assert_eq!(objects[2]["path"], serde_json::json!([100.0, 100.0, 200.0, 100.0]));
+    assert_eq!(objects[2]["lengths"], serde_json::json!([0.0, 100.0]));
+    assert_eq!(objects[2]["spans"], 1);
+    // One beat long at tick rate 1: the only tick would land on the tail, so there is none.
+    assert_eq!(objects[2]["ticks"], serde_json::json!([]));
+    assert!(map_preview(&app, &fixture.0.join("Other.osu")).is_err());
+}
+
+#[test]
+fn node_graph_tauri_actions_round_trip_and_export_json() {
+    let mut app = Application::headless();
+    let initial = serde_json::to_value(app.node_graph_view()).unwrap();
+    assert_eq!(initial["nodes"].as_array().unwrap().len(), 21);
+    assert_eq!(initial["catalog"].as_array().unwrap().len(), 18);
+
+    let add: dawsu_application::NodeGraphAction = serde_json::from_value(serde_json::json!({
+        "kind": "add_node",
+        "typeId": "output.viewer",
+        "x": 120.0,
+        "y": 240.0
+    }))
+    .unwrap();
+    app.node_graph_action(add).unwrap();
+    let after_add = serde_json::to_value(app.node_graph_view()).unwrap();
+    assert_eq!(after_add["nodes"].as_array().unwrap().len(), 22);
+    assert_eq!(after_add["canUndo"], true);
+
+    let exported = app.node_graph_export_json().unwrap();
+    assert!(exported.contains("\"dawsu-graph\""));
+    let import: dawsu_application::NodeGraphAction = serde_json::from_value(serde_json::json!({
+        "kind": "import_json",
+        "json": exported
+    }))
+    .unwrap();
+    app.node_graph_action(import).unwrap();
+    assert_eq!(app.node_graph_view().nodes.len(), 22);
 }

@@ -44,6 +44,8 @@ async function frontend() {
       event: { listen() {} },
     } },
     Option: function (text, value) { this.text = text; this.value = value; },
+    // A still clock: the playhead is drawn where the editor last put it.
+    performance: { now: () => 0 },
     ResizeObserver: class { observe() {} },
     requestAnimationFrame() {},
     setInterval() {},

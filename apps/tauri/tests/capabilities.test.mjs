@@ -20,6 +20,8 @@ const invoked = files => new Set(files.flatMap(({ text }) =>
 const exportPage = ["ui/src/lib/ipc.js", "ui/src/lib/export.js", "ui/src/parts/ExportWindow.svelte"];
 const exportCommands = ["export_view", "export_preview", "export_run", "close_export_window", "show_in_editor"];
 const drumPage = ["ui/src/lib/ipc.js", "ui/src/lib/drum.js", "ui/src/parts/DrumDetectWindow.svelte"];
+const previewPage = ["ui/src/lib/ipc.js", "ui/src/parts/PreviewWindow.svelte", "ui/src/parts/PreviewCanvas.svelte"];
+const previewCommands = ["map_preview_objects"];
 const drumCommands = ["drum_context", "drum_detect_start", "drum_review", "drum_listen",
   "drum_listen_stop", "drum_apply", "drum_pick_stem", "close_drum_window"];
 
@@ -59,6 +61,16 @@ test("the Export window may call only the export commands", () => {
   assert.deepEqual(exported.permissions, exportCommands.map(permission));
   const page = invoked(exportPage.map(name => ({ name, text: read(name) })));
   assert.deepEqual([...page].filter(command => !exportCommands.includes(command)), []);
+});
+
+test("the map preview window may ask only for the objects, and listen and send its events", () => {
+  const preview = capability("preview");
+  assert.deepEqual(preview.windows, ["preview"]);
+  // It listens for "preview-view" and tells main "preview-ready"; nothing else.
+  assert.deepEqual(preview.permissions, ["core:event:default", ...previewCommands.map(permission)]);
+  const page = invoked(previewPage.map(name => ({ name, text: read(name) })));
+  assert.deepEqual([...page].sort(), [...previewCommands].sort());
+  assert.ok(capability("default").permissions.includes(permission("preview_window_open")));
 });
 
 test("every invoke names its command literally, so the lists above see every call", () => {
