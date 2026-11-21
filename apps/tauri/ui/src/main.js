@@ -31,6 +31,7 @@ import InspectorSelection from "./parts/InspectorSelection.svelte";
 import LaneOptions from "./parts/LaneOptions.svelte";
 import MapPreview from "./parts/MapPreview.svelte";
 import SnapSlider from "./parts/SnapSlider.svelte";
+import StartScreen from "./parts/StartScreen.svelte";
 import StatusBar from "./parts/StatusBar.svelte";
 import ToolPills from "./parts/ToolPills.svelte";
 import TransportBar from "./parts/TransportBar.svelte";
@@ -39,7 +40,7 @@ import TransportBar from "./parts/TransportBar.svelte";
 const parts = {
   tools: ToolPills, snap: SnapSlider, audition: AuditionPill, transport: TransportBar,
   playhead: PlayheadGroup, lanes: LaneHeaders, "status-bar": StatusBar,
-  "grid-options": GridOptions, "lane-options": LaneOptions,
+  "grid-options": GridOptions, "lane-options": LaneOptions, "start-screen": StartScreen,
   // The timeline's hit hover card, at body level.
   "hit-card": HitCard,
   // The popup the menu bar, the right-click tool picker and the lane menu share (#editor-menu).

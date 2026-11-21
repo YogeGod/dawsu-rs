@@ -252,8 +252,6 @@ function show(next) {
   if (rulerPointer || rulerDrag) refreshRulerCursor();
   $("home").hidden = !!scene;
   $("workspace").hidden = !scene;
-  $("home-resume").hidden = !view.showHome || !view.hasDocument;
-  $("home-resume").disabled = !!view.busy;
   const path = scene?.path ?? "";
   renderFrame(path);
   $("editor-header").dataset.empty = String(!scene);
@@ -285,18 +283,9 @@ function show(next) {
   $("ramp-shape").value = view.rampShape ?? "Linear";
   $("song-mute").ariaPressed = String(!!view.songMuted);
   $("song-solo").ariaPressed = String(!!view.songSolo);
-  $("home-open").disabled = !!view.busy;
-  $("home-import").disabled = $("home-folders").disabled = !!view.busy;
 
   renderActiveLane();
   renderPanelLayout();
-  if (!scene && view.recent) renderRecent(view.recent);
-  if (!scene && view.recovery) renderRecovery(view.recovery);
-  else if (view.hasDocument && !$("recovery").hidden) {
-    // Home with an open difficulty cannot restore, so hide the start-screen offers.
-    $("recovery").hidden = true;
-    $("recovery-entries").dataset.state = "";
-  }
   if (view.scene) renderScene();
   else renderSelection();
   if (scene) followPlayhead();
@@ -321,57 +310,6 @@ function renderFrame(path) {
 function missingUiParts() {
   if (document.readyState !== "complete") return "";
   return document.querySelectorAll("[data-ui-mount]:not([data-ui-ready])").length ? "Part of the editor did not load" : "";
-}
-
-// "Artist - Title (Creator) [Difficulty].osu" gives the map name and "[Difficulty]"; other names show whole.
-function recentMapName(path) {
-  const file = nameOf(path).replace(/\.(osu|osz)$/i, "");
-  const parts = /^(.+?)\s*\([^()]*\)\s*(\[[^\]]*\])$/.exec(file);
-  return parts ? [parts[1], parts[2]] : [file, ""];
-}
-
-function renderRecent(paths) {
-  const panel = $("recent");
-  $("home-recent").hidden = paths.length === 0;
-  if (panel.dataset.paths === JSON.stringify(paths)) return;
-  panel.dataset.paths = JSON.stringify(paths);
-  panel.replaceChildren(...paths.map((path) => {
-    const button = makeButton("", () => act({ kind: "open", path }));
-    const [name, difficulty] = recentMapName(path);
-    const title = document.createElement("strong");
-    title.textContent = name;
-    const detail = document.createElement("span");
-    detail.textContent = difficulty;
-    button.append(title, detail);
-    button.className = "home-recent-map";
-    button.title = path;
-    return button;
-  }));
-}
-
-function renderRecovery({ offers = [], error }) {
-  const section = $("recovery");
-  const entries = $("recovery-entries");
-  const state = JSON.stringify([offers, error, view.busy]);
-  if (entries.dataset.state === state) return;
-  entries.dataset.state = state;
-  section.hidden = !error && offers.length === 0;
-  entries.replaceChildren();
-  entries.style.maxHeight = "200px";
-  entries.style.overflowY = "auto";
-  if (error) entries.append(paragraph(error));
-  for (const offer of offers) {
-    const name = offer.mapset + " [" + offer.difficulty + "]";
-    const date = new Date(offer.created_ms);
-    const label = paragraph(name);
-    const time = document.createElement("time");
-    time.textContent = date.toLocaleString();
-    label.append(document.createElement("br"), time);
-    const restore = makeButton("Restore", () => act({ kind: "restore_recovery", id: offer.id }));
-    restore.setAttribute("aria-label", "Restore " + name);
-    restore.disabled = view.busy;
-    entries.append(label, restore);
-  }
 }
 
 // The docking state: narrow windows fold the Browser for the session (docking.js, from matchMedia).
@@ -3178,10 +3116,23 @@ function openMap() {
 function goHome() {
   if (!drag && !view.busy) act({ kind: "home" });
 }
-$("home-open").addEventListener("click", openMap);
-$("home-resume").addEventListener("click", () => { if (!view.busy) act({ kind: "resume" }); });
-$("home-import").addEventListener("click", () => run(async () => show(await invoke("pick_map", { archiveOnly: true }))));
-$("home-folders").addEventListener("click", () => openFolders());
+function startScreenAction(kind, arg) {
+  switch (kind) {
+    case "resume":
+      if (!view.busy) return act({ kind: "resume" });
+      return;
+    case "open":
+      return openMap();
+    case "importOsz":
+      return run(async () => show(await invoke("pick_map", { archiveOnly: true })));
+    case "folders":
+      return openFolders();
+    case "openRecent":
+      return act({ kind: "open", path: arg });
+    case "restoreRecovery":
+      return act({ kind: "restore_recovery", id: arg });
+  }
+}
 // File › Folders… and the start screen's Folders… button.
 function openFolders() {
   if (view.busy) return;

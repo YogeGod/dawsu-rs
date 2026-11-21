@@ -76,8 +76,7 @@ test("Home asks before leaving an edited difficulty and preserves recent and res
   await runInContext("pending", context);
   assert.equal(get("home").hidden, false);
   assert.equal(get("workspace").hidden, true);
-  assert.equal(get("home-resume").hidden, false);
-  click(get("home-resume"));
+  runInContext("startScreenAction('resume')", context);
   await runInContext("pending", context);
   assert.deepEqual(calls.at(-1), {kind: "resume"});
   assert.equal(get("workspace").hidden, false);
@@ -86,7 +85,7 @@ test("Home asks before leaving an edited difficulty and preserves recent and res
   await runInContext("pending", context);
   reply("Discard");
   await runInContext("pending", context);
-  click(get("recent").children[0]);
+  runInContext("startScreenAction('openRecent', 'recent.osu')", context);
   await runInContext("pending", context);
   assert.deepEqual(calls.at(-1), {kind: "open", path: "recent.osu"});
 });
