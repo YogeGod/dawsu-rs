@@ -128,15 +128,31 @@ export const describe = sound => `${sound.label} at ${sound.volume}%${sound.loop
 // The editor's own playback list (the app's playback_list: what it would play, worked out without an
 // audio device) as the same kind of list as heard(), so the two can be matched moment by moment. A
 // sound the editor has not loaded plays nothing, so it is left out and counted.
+// A mapset file with no audio in it (an empty file, or a WAV whose data holds no samples: mappers use
+// these to mute slider slides and ticks) plays silence in osu! and in the editor alike, so the check
+// sets it aside on both sides instead of matching it.
+const emptyFiles = new Map();
+export function noAudio(path) {
+  if (!emptyFiles.has(path)) {
+    let empty = false;
+    try {
+      const wav = wavSamples(path);
+      empty = wav ? wav.values.length === 0 : statSync(path).size === 0;
+    } catch {}
+    emptyFiles.set(path, empty);
+  }
+  return emptyFiles.get(path);
+}
 export function planned(list, folder) {
   const files = folderFiles(folder);
   const out = [];
   let silent = 0;
   for (const sound of list) {
-    if (!sound.loaded) { silent++; continue; }
     const where = sound.plays.file !== undefined
       ? { file: join(folder, files.get(sound.plays.file.toLowerCase()) ?? sound.plays.file), label: files.get(sound.plays.file.toLowerCase()) ?? sound.plays.file }
       : { skin: sound.plays.skin, label: `skin ${sound.plays.skin}` };
+    if (where.file && noAudio(where.file)) continue;
+    if (!sound.loaded) { silent++; continue; }
     out.push({ time: Math.round(sound.at_ms), loop: sound.end_ms !== null && sound.end_ms !== undefined, volume: sound.volume, ...where });
   }
   return { sounds: out, silent };
@@ -151,7 +167,10 @@ export function planned(list, folder) {
 export const byPlayer = sound => /^spinner(spin|bonus)/.test(sound.name ?? "");
 export function soundCheck(editorList, lazerList) {
   const player = lazerList.filter(byPlayer).length;
-  const ours = byTime(editorList), theirs = byTime(lazerList.filter(sound => !byPlayer(sound)));
+  const heardFiles = lazerList.filter(sound => !byPlayer(sound));
+  const audible = heardFiles.filter(sound => !(sound.file && noAudio(sound.file)));
+  const empty = heardFiles.length - audible.length;
+  const ours = byTime(editorList), theirs = byTime(audible);
   const times = [...new Set([...ours.keys(), ...theirs.keys()])].sort((a, b) => a - b);
   const differences = [];
   let floor = 0;
@@ -166,5 +185,5 @@ export function soundCheck(editorList, lazerList) {
     ];
     if (notes.length) differences.push({ time, notes });
   }
-  return { moments: times.length, same: times.length - differences.length, differences, floor, player };
+  return { moments: times.length, same: times.length - differences.length, differences, floor, player, empty };
 }

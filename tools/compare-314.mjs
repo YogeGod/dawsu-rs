@@ -273,7 +273,7 @@ function silentChecks(lazerOriginal, lazerDawsu) {
   return { opened: one("opened"), reopened: one("reopened") };
 }
 function silentSummary(silent) {
-  return Object.fromEntries(Object.entries(silent).map(([which, check]) => [which, check && { same: check.same, total: check.moments, silent: check.silent, floor: check.floor, player: check.player }]));
+  return Object.fromEntries(Object.entries(silent).map(([which, check]) => [which, check && { same: check.same, total: check.moments, silent: check.silent, floor: check.floor, player: check.player, empty: check.empty }]));
 }
 function printSilent(silent) {
   for (const [which, check] of Object.entries(silent)) {
@@ -282,6 +282,7 @@ function printSilent(silent) {
     for (const moment of check.differences) console.log(`PLAYS ${which} ${moment.time} ms — ${moment.notes.join("; ")}`);
     console.log(`silent sound check, ${what}: dawsu! plays ${check.same} of ${check.moments} moments as osu! does`
       + `${check.silent ? `; ${check.silent} sounds not loaded, so silent` : ""}${check.floor ? `; ${check.floor} raised to the 5% floor on purpose` : ""}`
-      + `${check.player ? `; ${check.player} spinner spin and bonus sounds set aside (they follow the player's spinning)` : ""}`);
+      + `${check.player ? `; ${check.player} spinner spin and bonus sounds set aside (they follow the player's spinning)` : ""}`
+      + `${check.empty ? `; ${check.empty} sounds of files with no audio set aside (silent in both)` : ""}`);
   }
 }
