@@ -5247,6 +5247,15 @@ Title:");
         });
     }
 
+    /// Layer 2 joins the skin's hitnormal at another volume: the `.osu` plays a mix, and the
+    /// layer's file, which a hit still plays, leaves the mapset at the next Save.
+    fn mix_with_skin(app: &mut Application) {
+        app.document.as_mut().unwrap().composer.apply("Mix", |hits| {
+            hits.add_hit(dawsu_hitsounding::MomentId(0), hitnormal(0));
+            hits.set_hit_volume(dawsu_hitsounding::MomentId(0), &hitnormal(2), 40);
+        });
+    }
+
     #[test]
     fn a_file_changed_after_its_check_stays_in_the_mapset_as_changed() {
         let scratch = Scratch::new("sweep-changed-before-move");
@@ -5258,14 +5267,14 @@ Title:");
                 std::fs::write(path, b"edited while dawsu! checked it").unwrap();
             }
         }
-        back_to_skin(&mut app);
+        mix_with_skin(&mut app);
         *sweep::BEFORE_MOVE.lock().unwrap() = Some(edit);
         save_through_summary(&mut app, scratch.path("backups"));
         *sweep::BEFORE_MOVE.lock().unwrap() = None;
         assert_eq!(std::fs::read(folder.join("normal-hitnormal2.wav")).unwrap(), b"edited while dawsu! checked it");
         let names: Vec<_> = mapset(&folder);
         assert!(names.iter().all(|name| !name.contains("dawsu-moving")), "{names:?}");
-        assert!(ledger(&app).is_empty(), "no longer dawsu!'s file");
+        assert!(!ledger(&app).iter().any(|name| name == "normal-hitnormal2.wav"), "no longer dawsu!'s file");
     }
 
     #[test]
@@ -5346,18 +5355,20 @@ Title:");
     }
 
     #[test]
-    fn a_file_only_undo_plays_waits_in_the_data_folder_and_goes_to_removed_samples_after_close() {
+    fn a_file_only_undo_plays_stays_in_the_mapset_and_goes_to_removed_samples_at_close() {
         let scratch = Scratch::new("sweep-undo-only");
         let (mut app, _, folder) = two_layers_in(&scratch, true, Some(scratch.path("data")));
         use_layer_2(&mut app);
         save_through_summary(&mut app, scratch.path("backups"));
         back_to_skin(&mut app);
         save_through_summary(&mut app, scratch.path("backups"));
-        assert!(!folder.join("normal-hitnormal2.wav").exists());
+        assert_eq!(std::fs::read(folder.join("normal-hitnormal2.wav")).unwrap(), TONE, "Undo can still play it");
         let copy = format!("{}.wav", dawsu_foundation::digest::sha256_hex(TONE));
-        assert_eq!(std::fs::read(app.data_root.join("pending-samples").join(&copy)).unwrap(), TONE, "Undo can still play it");
+        assert!(app.document().unwrap().pending.get("normal-hitnormal2.wav").is_none(), "it never left for the data folder");
         let (data_root, project_root) = (app.data_root.clone(), app.project_root.clone());
+        app.save_session().unwrap();
         app.close_document();
+        assert!(!folder.join("normal-hitnormal2.wav").exists());
         pending::prune_kept_copies(&data_root, project_root.as_deref(), Duration::ZERO);
         assert_eq!(std::fs::read(data_root.join("removed-samples").join(&copy)).unwrap(), TONE, "kept, never deleted");
     }
@@ -5788,7 +5799,7 @@ Sample,0,0,\"{story}\",100
         save_through_summary(&mut app, scratch.path("backups"));
         save_through_summary(&mut app, scratch.path("backups"));
         assert!(folder.join("normal-hitnormal2.wav").exists(), "still played");
-        back_to_skin(&mut app);
+        mix_with_skin(&mut app);
         app.save_with_backups(scratch.path("backups"));
         // A newer edit arrives while the Save runs.
         app.document.as_mut().unwrap().composer.apply("Newer", |hits| hits.set_volume(dawsu_hitsounding::MomentId(0), 90));
@@ -5796,7 +5807,7 @@ Sample,0,0,\"{story}\",100
         assert!(app.error.is_none(), "{:?}", app.error);
         assert!(app.status.starts_with("Saved the earlier revision"), "{}", app.status);
         assert!(!folder.join("normal-hitnormal2.wav").exists());
-        assert_eq!(app.clip_for_lane(&hitnormal(2)).unwrap().samples, [0.5], "still playable for Undo");
+        assert_eq!(app.clip_for_lane(&hitnormal(2)).unwrap().samples, [0.5], "still playable from the data folder");
     }
 
     #[test]
@@ -5893,24 +5904,30 @@ Sample,0,0,\"{story}\",100
         use_layer_2(&mut app);
         save_through_summary(&mut app, scratch.path("backups"));
         assert!(folder.join("normal-hitnormal2.wav").exists());
-        // The layer's hit goes: the next Save takes its file out of the mapset.
+        // The layer's hit goes, but an undo state still plays its file: it stays in the mapset
+        // until close (Yoge, 2026-11-21).
         app.document.as_mut().unwrap().composer.apply("Back to the skin", |hits| {
             let circle = dawsu_hitsounding::MomentId(0);
             hits.remove_hit(circle, &hitnormal(2));
             hits.add_hit(circle, hitnormal(0));
         });
         save_through_summary(&mut app, scratch.path("backups"));
-        assert!(!folder.join("normal-hitnormal2.wav").exists());
-        assert!(app.status.contains("Removed 1 unused sample file."), "{}", app.status);
-        // Undo brings the hit back, still playable from the data folder, and Save writes it again.
+        assert_eq!(std::fs::read(folder.join("normal-hitnormal2.wav")).unwrap(), TONE, "an undo state plays it");
+        assert!(!app.status.contains("Removed"), "{}", app.status);
+        assert!(app.document().unwrap().pending.get("normal-hitnormal2.wav").is_none(), "it never went to pending-samples");
+        // Undo brings the hit back, playing from the mapset, and Save keeps it.
         app.command("undo");
         assert_eq!(app.clip_for_lane(&hitnormal(2)).unwrap().samples, [0.5]);
         save_through_summary(&mut app, scratch.path("backups"));
         assert_eq!(std::fs::read(folder.join("normal-hitnormal2.wav")).unwrap(), TONE);
         app.command("redo");
         save_through_summary(&mut app, scratch.path("backups"));
+        assert_eq!(std::fs::read(folder.join("normal-hitnormal2.wav")).unwrap(), TONE, "Undo can still bring it back");
+        // Close is strict: the undo history goes, so the file goes to removed-samples.
         app.close_document();
         assert!(!folder.join("normal-hitnormal2.wav").exists());
+        let kept = app.data_root.join("removed-samples").join(format!("{}.wav", dawsu_foundation::digest::sha256_hex(TONE)));
+        assert_eq!(std::fs::read(kept).unwrap(), TONE, "kept in removed-samples");
         for (name, bytes) in &canaries {
             assert_eq!(&std::fs::read(folder.join(name)).unwrap(), bytes, "{name}");
         }

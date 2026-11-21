@@ -1728,13 +1728,19 @@ pub(crate) mod tests {
         assert_eq!(left, ["soft-hitclap2.wav"], "the unused layer stays pending");
     }
 
-    /// No file dawsu! made sits unplayed in the mapset, and every hit on a file still plays.
+    /// No file dawsu! made sits unplayed in the mapset, and every hit on a file still plays. While
+    /// the map is open, a file an undo or redo state plays counts as played; at close none does.
     fn no_unplayed_dawsu_file(f: &Fixture, app: &Application, step: &str) {
         let root = f.map.with_file_name("").canonicalize().unwrap();
         let ledger = crate::pending::Pending::for_mapset(&app.data_root, &root).ledger().unwrap();
         let disk = mapset_files(f);
         let map = OsuFileForTest::read(std::fs::read(&f.map).unwrap()).file;
-        let played: Vec<String> = crate::pending::played_names(&map, &disk).into_iter().map(|n| n.to_ascii_lowercase()).collect();
+        let mut played: Vec<String> = crate::pending::played_names(&map, &disk).into_iter().map(|n| n.to_ascii_lowercase()).collect();
+        if let Some(document) = app.document() {
+            // Only the files no current hit plays: a file a current hit plays belongs in pending.
+            let current = crate::pending::hit_files(document.composer.hitsounds());
+            played.extend(document.composer.history.states().flat_map(crate::pending::hit_files).filter(|name| !current.contains(name)));
+        }
         for entry in ledger.entries().unwrap() {
             if disk.iter().any(|name| name.eq_ignore_ascii_case(&entry.name)) {
                 assert!(played.contains(&entry.name.to_ascii_lowercase()), "{step}: {} is in the mapset but nothing plays it ({disk:?})", entry.name);

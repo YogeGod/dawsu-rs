@@ -1,7 +1,8 @@
 //! Cleans up the sample files dawsu! wrote into a mapset that nothing plays any more (Yoge,
 //! 2026-11-20). Only files on the ledger are touched, and only while their bytes are still the
 //! ones dawsu! wrote. A file a hit of the open difficulty still plays leaves the mapset and
-//! becomes a pending file again; any other goes to `data_root/removed-samples`. Mix files from
+//! becomes a pending file again; one only an undo state plays stays until close; any other goes
+//! to `data_root/removed-samples`. Mix files from
 //! builds before the ledger (`dawsu-mix-…`) are cleaned up the same way.
 
 use super::{Application, layers, mixes, pending, project, recovery, safe_child};
@@ -61,6 +62,12 @@ fn old_mixes(root: &Path) -> Vec<pending::PendingSample> {
     }).collect()
 }
 
+/// The raw text of the project of the difficulty at `path`, lowercased.
+fn project_text(project_root: &Path, path: &Path) -> Option<String> {
+    let project = project::Project::load(project_root, None, path).ok()?;
+    serde_json::to_string(&project.settings).ok().map(|text| text.to_ascii_lowercase())
+}
+
 /// The raw text of every project of the mapset's difficulties but `except`, lowercased: a file
 /// any of them names stays where it is.
 fn project_texts(project_root: Option<&Path>, root: &Path, except: Option<&Path>) -> Vec<String> {
@@ -68,9 +75,7 @@ fn project_texts(project_root: Option<&Path>, root: &Path, except: Option<&Path>
     let Ok(entries) = std::fs::read_dir(root) else { return Vec::new() };
     entries.filter_map(Result::ok).map(|entry| entry.path())
         .filter(|path| path.extension().is_some_and(|e| e.eq_ignore_ascii_case("osu")) && Some(path.as_path()) != except)
-        .filter_map(|path| project::Project::load(project_root, None, &path).ok())
-        .filter_map(|project| serde_json::to_string(&project.settings).ok())
-        .map(|text| text.to_ascii_lowercase())
+        .filter_map(|path| project_text(project_root, &path))
         .collect()
 }
 
@@ -80,14 +85,15 @@ pub(crate) struct Request {
     root: PathBuf,
     data_root: PathBuf,
     project_root: Option<PathBuf>,
-    /// The open difficulty, whose project does not count while it stays open.
-    except: Option<PathBuf>,
+    /// The open difficulty. Its project does not count while it stays open; at close it counts,
+    /// but not for the files only an undo state plays.
+    open: PathBuf,
     ledger: pending::Ledger,
     pending: pending::Pending,
     /// The files the open difficulty's hits play, lowercased. Empty when closing.
     hit_files: BTreeSet<String>,
-    /// The files only an undo or redo state's hits play, lowercased: they wait in the data folder
-    /// so Undo still plays them, and no project lists them. Empty when closing.
+    /// The files only an undo or redo state's hits play, lowercased: they stay in the mapset so
+    /// Undo still plays them, and leave at close, when the undo history goes (Yoge, 2026-11-21).
     undo_files: BTreeSet<String>,
     /// Whether the open difficulty has a project to list a pending file in.
     can_list: bool,
@@ -182,10 +188,12 @@ pub(crate) fn run(mut request: Request) -> Outcome {
             // A difficulty or recovery copy that can't be read leaves everything where it is.
             Err(error) => outcome.problem = Some(format!("No unused sample files were removed. {error}")),
             Ok(((used, other_mode_indexes), copies)) => {
+                let project_root = request.project_root.as_deref();
                 let keep = Keep {
                     used,
                     other_mode_indexes,
-                    projects: project_texts(request.project_root.as_deref(), &root, request.except.as_deref()),
+                    projects: project_texts(project_root, &root, Some(&request.open)),
+                    own_project: project_root.filter(|_| request.closing).and_then(|project_root| project_text(project_root, &request.open)),
                     copies,
                 };
                 let mut dropped = Vec::new();
@@ -211,7 +219,10 @@ pub(crate) fn run(mut request: Request) -> Outcome {
 struct Keep {
     used: BTreeSet<String>,
     other_mode_indexes: BTreeSet<u32>,
+    /// The other difficulties' projects.
     projects: Vec<String>,
+    /// At close, the open difficulty's project.
+    own_project: Option<String>,
     copies: Vec<SampleIdentity>,
 }
 
@@ -238,20 +249,24 @@ fn clean_up(request: &mut Request, outcome: &mut Outcome, entry: &pending::Pendi
         _ => None,
     };
     let stem = lower.rsplit_once('.').map_or(lower.as_str(), |(stem, _)| stem);
+    // While open, Undo may still play it. At close the open project may still name it (a replaced
+    // lane's slot), but only the undo history played it.
+    let undo_only = request.undo_files.contains(&lower);
     if keep.used.contains(&lower)
         || index.is_some_and(|index| keep.other_mode_indexes.contains(&index))
         || keep.projects.iter().any(|text| text.contains(stem))
+        || (!undo_only && keep.own_project.as_ref().is_some_and(|text| text.contains(stem)))
         || in_a_copy(&keep.copies, name)
+        || (undo_only && !request.closing)
     {
         return Step::Kept;
     }
     // A hit of the open difficulty still plays it: it can wait outside the mapset only where a
     // project lists it.
-    let hit_plays = request.hit_files.contains(&lower);
-    if hit_plays && !request.can_list {
+    let to_pending = request.hit_files.contains(&lower);
+    if to_pending && !request.can_list {
         return Step::Kept;
     }
-    let to_pending = hit_plays || request.undo_files.contains(&lower);
     before_move(&path);
     // Moved aside first, so no program writes it under its name while it leaves; then checked
     // again. A file a stopped cleanup left under the moving name is never moved over.
@@ -303,19 +318,14 @@ impl Application {
         if document.presence.as_ref().is_none_or(|presence| presence.others_live()) {
             return;
         }
-        let (hit_files, undo_files) = if closing {
-            Default::default()
-        } else {
-            let hit_files = pending::hit_files(document.composer.hitsounds());
-            // Each state names its own lanes: an older state may play a replaced lane sample.
-            let undo_files = document.composer.history.states().flat_map(pending::hit_files)
-                .filter(|name| !hit_files.contains(name)).collect();
-            (hit_files, undo_files)
-        };
+        let hit_files = pending::hit_files(document.composer.hitsounds());
+        // Each state names its own lanes: an older state may play a replaced lane sample.
+        let undo_files = document.composer.history.states().flat_map(pending::hit_files)
+            .filter(|name| !hit_files.contains(name)).collect();
         let request = Request {
             closing, root, data_root: self.data_root.clone(), project_root: self.project_root.clone(),
-            except: (!closing).then(|| document.path.clone()), ledger, pending: document.pending.clone(), hit_files,
-            undo_files, can_list: self.project.is_some(),
+            open: document.path.clone(), ledger, pending: document.pending.clone(),
+            hit_files: if closing { BTreeSet::new() } else { hit_files }, undo_files, can_list: self.project.is_some(),
         };
         let (send, receive) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
@@ -390,7 +400,7 @@ impl Application {
                 }
             }
         }
-        // Without a project the job moved only files an undo state plays, which no project lists.
+        // Without a project the job moved nothing to pending.
         let document = self.document.as_mut().expect("open document");
         let mut left = Vec::new();
         for moving in to_pending {
