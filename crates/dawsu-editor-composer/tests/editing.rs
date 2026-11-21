@@ -408,7 +408,7 @@ fn set_all_moves_every_lane_together_and_keeps_their_difference() {
     c.volume(100, false);
     assert_eq!(normal_and_clap(&c, &normal), (100, 70));
     c.volume(20, false);
-    assert_eq!(normal_and_clap(&c, &normal), (20, 0), "the clap stops at 0");
+    assert_eq!(normal_and_clap(&c, &normal), (20, 5), "the clap stops at 5%");
     c.undo();
     assert_eq!(normal_and_clap(&c, &normal), (100, 70));
 }
