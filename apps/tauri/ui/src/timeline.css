@@ -69,9 +69,15 @@
   flex: none;
   margin-left: auto;
 }
-/* Lane names hidden (99 px column): Fit all keeps its icon only. */
+/* Lane names hidden (99 px column), or a lane column under 250 px (windows below 1400 px):
+   Fit all keeps its icon only, so Delete lane and the names switch stay in view. */
 .arrange[data-lane-names="false"] .lane-tool-label span {
   display: none;
+}
+@media (max-width: 1399px) {
+  .lane-tool-label span {
+    display: none;
+  }
 }
 
 /* Song · objects header (v3 §4): a 24 px teal strip, the name, then M, S and the waveform switch,
