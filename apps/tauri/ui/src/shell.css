@@ -351,11 +351,13 @@ aside[data-folded] {
 }
 #file-name-head {
   min-width: 0;
+  white-space: pre;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 #file-name-tail {
   flex: none;
+  white-space: pre;
 }
 #statusbar .status-counts,
 #statusbar .status-view {
@@ -374,15 +376,23 @@ aside[data-folded] {
   text-overflow: ellipsis;
 }
 
-/* Narrow windows. */
-@media (max-width: 1279px) {
-  #editor-header .header-label,
-  #editor-ribbon .lane-mode-label {
+/* Narrow windows. Below 1440 px the top bar can't hold the transport, its readout and the labels of
+   Export and Save, so those two go icon-only (their names stay for screen readers). */
+@media (max-width: 1439px) {
+  #editor-header.chrome {
+    gap: 8px;
+  }
+  #editor-header .header-label {
     display: none;
   }
   #editor-header #export-entry,
   #editor-header #save {
     padding: 0 9px;
+  }
+}
+@media (max-width: 1279px) {
+  #editor-ribbon .lane-mode-label {
+    display: none;
   }
   #editor-ribbon .lane-mode {
     width: auto;
