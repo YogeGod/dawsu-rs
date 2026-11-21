@@ -2,8 +2,19 @@ use dawsu_test_support::workspace_root;
 
 #[test]
 fn new_modules_keep_the_vaults_reference_boundaries() {
-    let cases: [(&str, &[&str]); 4] = [
+    let cases: [(&str, &[&str]); 11] = [
+        // Layer 1 · Foundation
+        ("crates/dawsu-foundation", &[]),
+        // Layer 2 · osu! adapters
+        ("crates/dawsu-osu-format", &["dawsu-foundation"]),
+        // Layer 3 · Domain
+        ("crates/dawsu-hitsounding", &["dawsu-foundation", "dawsu-osu-format"]),
+        // Layer 4 · Engines
         ("crates/dawsu-audio", &["dawsu-foundation"]),
+        ("crates/dawsu-graph", &["dawsu-foundation"]),
+        ("crates/dawsu-graph-audio", &["dawsu-foundation", "dawsu-graph"]),
+        // Layer 5 · Editing
+        ("crates/dawsu-editor", &["dawsu-foundation"]),
         (
             "crates/dawsu-editor-composer",
             &[
@@ -13,6 +24,17 @@ fn new_modules_keep_the_vaults_reference_boundaries() {
                 "dawsu-keysounding",
             ],
         ),
+        (
+            "crates/dawsu-editor-nodal",
+            &[
+                "dawsu-foundation",
+                "dawsu-editor",
+                "dawsu-graph",
+                "dawsu-hitsounding",
+                "dawsu-editor-composer",
+            ],
+        ),
+        // Layer 6 · Use cases
         (
             "crates/dawsu-application",
             &[
@@ -25,6 +47,7 @@ fn new_modules_keep_the_vaults_reference_boundaries() {
                 "dawsu-graph-audio",
             ],
         ),
+        // Layer 7 · UI
         (
             "apps/tauri",
             &[
@@ -35,24 +58,27 @@ fn new_modules_keep_the_vaults_reference_boundaries() {
             ],
         ),
     ];
-    for (name, allowed) in cases {
+    for (crate_path, allowed) in cases {
         let text = std::fs::read_to_string(
             workspace_root()
-                .join(name)
+                .join(crate_path)
                 .join("Cargo.toml"),
         )
         .unwrap();
         let dependencies = text
             .split("[dependencies]")
             .nth(1)
-            .unwrap()
-            .split("[dev-dependencies]")
+            .unwrap_or("")
+            .split("\n[")
             .next()
-            .unwrap();
+            .unwrap_or("");
         for line in dependencies.lines() {
-            let name = line.split('=').next().unwrap_or("").trim();
-            if name.starts_with("dawsu-") {
-                assert!(allowed.contains(&name), "forbidden reference in {name}");
+            let dep = line.split('=').next().unwrap_or("").trim();
+            if dep.starts_with("dawsu-") {
+                assert!(
+                    allowed.contains(&dep),
+                    "forbidden reference '{dep}' in {crate_path}"
+                );
             }
         }
     }

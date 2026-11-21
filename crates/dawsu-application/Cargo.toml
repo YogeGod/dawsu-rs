@@ -19,3 +19,5 @@ serde_json = "1.0"
 
 [dev-dependencies]
 dawsu-test-support = { path = "../dawsu-test-support" }
+dawsu-graph = { path = "../dawsu-graph" }
+dawsu-editor-nodal = { path = "../dawsu-editor-nodal" }
