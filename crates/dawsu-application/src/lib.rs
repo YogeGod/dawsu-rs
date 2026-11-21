@@ -2671,7 +2671,10 @@ impl Application {
         // Save uses the file when it holds the same bytes and otherwise refuses and names it.
         let (clashes, additions): (Vec<_>, Vec<_>) = additions.into_iter().partition(|(name, _)| document.pending.get(name).is_some());
         let root = document.path.parent().map(Path::to_path_buf);
-        let differing: Vec<String> = clashes.into_iter().map(|(name, _)| name).filter(|name| {
+        let clashes: Vec<String> = clashes.into_iter().map(|(name, _)| name).collect();
+        self.sample_watch.remember_reported(clashes.iter().cloned());
+        let document = self.document.as_ref().expect("open document");
+        let differing: Vec<String> = clashes.into_iter().filter(|name| {
             let kept = document.pending.get(name).and_then(|file| std::fs::read(&file.path).ok());
             let on_disk = root.as_ref().and_then(|root| safe_child(root, name).ok()).and_then(|path| std::fs::read(path).ok());
             kept != on_disk
@@ -5129,6 +5132,14 @@ Title:");
         assert!(!document.files.iter().any(|name| name == "normal-hitnormal3.wav"), "still a pending file");
         assert_eq!(app.clip_for_lane(&hitnormal(3)).unwrap().samples, [0.5], "the layer keeps its own sound");
         assert!(app.status.contains("normal-hitnormal3.wav"), "{}", app.status);
+        // Reported once: the watcher stops reading and decoding the file every second.
+        app.status.clear();
+        let deadline = Instant::now() + Duration::from_millis(2500);
+        while Instant::now() < deadline {
+            app.poll();
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(!app.status.contains("normal-hitnormal3.wav"), "{}", app.status);
     }
 
     fn ledger(app: &Application) -> Vec<String> {
