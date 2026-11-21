@@ -552,7 +552,7 @@ test("the bar-menu look stays off the right-click tool picker and the lane menu"
   const popup = get("editor-menu");
   get("menu-edit").click();
   assert.equal(popup.attributes["aria-labelledby"], "menu-edit");
-  const plain = menuButtons(popup).find(button => button.textContent === "Protect hitnormals from deletion");
+  const plain = menuButtons(popup).find(button => button.textContent === "Audition when placing hits");
   const icon = menuButtons(popup).find(button => button.textContent === "Select all");
   assert.match(plain.className, /\bmenu-item-plain\b/);
   assert.doesNotMatch(icon.className, /\bmenu-item-plain\b/);
@@ -701,6 +701,40 @@ test("Map > Drum hit detection… opens the drum detection window", async () => 
   assert.deepEqual(calls.map(([name]) => name), ["drum_window_open"]);
 });
 
+test("a command with several keys shows only its first key in the menu", async () => {
+  // Cycle runs from L, Numpad / and /: joined, the hint read "L / Numpad / / /".
+  const { get, responses } = fixture();
+  responses.editor_shortcuts = { entries: [["cycle", "Cycle", ["L", "Numpad /", "/"]], ["undo", "Undo", []]] };
+  const popup = get("editor-menu");
+  get("menu-playback").click();
+  await settle();
+  const cycle = menuButtons(popup).find(button => button.textContent === "Cycle between L and R");
+  assert.equal(cycle.children.find(child => child.type === "kbd")?.textContent, "L");
+});
+
+test("menu rows use the v3 design's icons, and every icon file is there", async () => {
+  // The design canvas names these rows' Lucide icons; several used to borrow Redo's arrow.
+  const icon = id => commandList.items.find(item => item.id === id).icon;
+  const design = {
+    importOsz: "PackageOpen", openFolder: "Folder", revert: "RotateCcw", export: "Package", folders: "Folder",
+    undo: "Undo2", redo: "Redo2", cut: "Scissors", copy: "Copy", paste: "Clipboard", duplicate: "CopyPlus",
+    delete: "Trash2", selectAll: "SquareDashedMousePointer", quantize: "AlignHorizontalJustifyCenter",
+    repeat: "Repeat2", editRange: "SquareDashed", scaleByVolume: "ChartNoAxesColumn", protect: "Shield",
+    returnOnStop: "UndoDot", follow: "LocateFixed", cycle: "Repeat", audioOutput: "Volume2",
+    newDifficulty: "FilePlus", copyHitsounds: "Copy", drumDetection: "Drum", addBookmark: "BookmarkPlus",
+    previousBookmark: "ArrowLeftToLine", nextBookmark: "ArrowRightToLine", addLane: "Plus", laneAdd: "Plus",
+    songWaveform: "AudioWaveform", objectLines: "AlignHorizontalSpaceAround", usedOnly: "ListFilter",
+    shortcuts: "Keyboard",
+  };
+  for (const [id, name] of Object.entries(design)) assert.equal(icon(id), name, id);
+  assert.deepEqual(commandList.items.filter(item => item.icon === "Redo2").map(item => item.id), ["redo"]);
+  const { readdir } = await import("node:fs/promises");
+  const files = new Set(await readdir(new URL("../dist/studio-assets/icons/", import.meta.url)));
+  for (const item of commandList.items.filter(item => item.icon)) {
+    assert.ok(files.has(item.icon + ".svg"), item.id + " draws " + item.icon + ".svg");
+  }
+});
+
 test("Cycle between L and R and Add numbered layer show their keys and still act as before", async () => {
   const { get, calls } = fixture();
   const popup = get("editor-menu");
@@ -743,7 +777,7 @@ test("a menu that cannot load its command list says so in the status line", () =
   window.dawsuUi.commands = undefined;
   get("menu-edit").click();
   assert.equal(get("editor-menu").hidden, undefined, "no menu opens");
-  assert.equal(get("status").textContent, "The menus did not load");
+  assert.equal(get("status").textContent, "The menus could not load. Restart dawsu! to try again.");
 });
 
 test("a refresh with nothing changed hands the rows over only once", async () => {

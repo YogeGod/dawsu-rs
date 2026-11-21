@@ -137,7 +137,7 @@ pub fn cycle() -> CommandDefinition {
 pub fn locators_to_selection() -> CommandDefinition {
     def(
         "locatorsToSelection",
-        "Locators to the selection (or the visible range)",
+        "Locators to the selected hits or the Range tool's range",
     )
     .keys(&[K::plain(Key::P)])
     .cubase("Transport|Locators to Selection")
