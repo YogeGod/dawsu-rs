@@ -322,6 +322,26 @@ fn a_volume_edit_never_goes_under_5_percent() {
 }
 
 #[test]
+fn the_ramp_tool_and_volume_drawer_never_go_under_5_percent() {
+    use dawsu_editor::tools::ToolTarget;
+    use dawsu_editor_composer::HitKey;
+    use dawsu_hitsounding::MomentId;
+
+    let mut c = composer();
+    let normal = c.hitsounds().moments()[0].hits().next().unwrap().clone();
+    // The Ramp tool sets values through `set_values`.
+    c.begin("Ramp");
+    c.set_values(&[(HitKey { moment: 0, lane: normal.clone() }, 1)]);
+    c.commit();
+    assert_eq!(c.hitsounds().moments()[0].hit_volume(&normal), 5, "a ramp to 1 gives 5");
+    // The Volume drawer moves a moment directly.
+    let mut hits = c.hitsounds().clone();
+    hits.move_volume(MomentId(0), 0);
+    assert_eq!(hits.moments()[0].hit_volume(&normal), 5, "a drag to 0 gives 5");
+    assert_eq!(hits.moments()[0].volume(), 5);
+}
+
+#[test]
 fn copied_moved_and_replaced_hits_keep_their_gain() {
     use dawsu_hitsounding::MomentId;
     use std::collections::BTreeSet;
@@ -432,7 +452,7 @@ fn ramp_moves_every_lane_together_and_keeps_their_difference() {
     ramp(&mut c, 90);
     assert_eq!(normal_and_clap(&c, &normal), (90, 60));
     ramp(&mut c, 20);
-    assert_eq!(normal_and_clap(&c, &normal), (20, 0));
+    assert_eq!(normal_and_clap(&c, &normal), (20, 5));
 }
 
 #[test]
@@ -447,7 +467,7 @@ fn scale_by_volume_multiplies_every_lane_and_keeps_their_balance() {
     assert_eq!(normal_and_clap(&c, &normal), (100, 75), "the hitnormal stops at 100");
     c.undo();
     assert!(c.scale_by_volume(VolumeScope::All, 0, 100, 1.0));
-    assert_eq!(normal_and_clap(&c, &normal), (1, 1), "no sound goes below Scale's 1% floor");
+    assert_eq!(normal_and_clap(&c, &normal), (5, 5), "no sound goes below 5%");
 }
 
 #[test]
