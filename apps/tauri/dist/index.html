@@ -138,24 +138,10 @@
         <button id="rail-browser-library" type="button" data-doc aria-label="Hitsound library" title="Hitsound library"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m16 6 4 14M12 6v14M8 8v12M4 4v16"/></svg></button>
       </nav>
       <section id="sample-browser">
-        <h2>Samples</h2>
-        <div class="sample-browser-source-controls">
-          <select id="sample-browser-source" aria-label="Sample source">
-            <option value="mapset">Map folder</option>
-            <option value="library">Hitsound library</option>
-          </select>
-          <input type="search" id="sample-browser-filter" aria-label="Filter shown samples" placeholder="Search samples">
-        </div>
-        <div class="row sample-browser-controls">
-          <button type="button" id="sample-browser-up" hidden>Up</button>
-          <output id="sample-browser-folder" hidden aria-label="Current sample folder"></output>
-          <button type="button" id="sample-browser-close" aria-label="Close Browser">Close</button>
-        </div>
-        <div id="sample-browser-entries" aria-label="Samples and folders"></div>
-        <div class="sample-browser-actions">
-          <button type="button" id="sample-browser-assign">Use in active lane</button>
-          <button type="button" id="sample-browser-pick">Browse…</button>
-        </div>
+        <div class="sample-browser-classic-head"><h2>Samples</h2><button type="button" id="sample-browser-close" aria-label="Close Browser">Close</button></div>
+        <div data-ui-mount="browser-head"></div>
+        <div id="sample-browser-entries" data-ui-mount="browser-list" aria-label="Samples and folders"></div>
+        <div data-ui-mount="browser-preview"></div>
       </section>
     </aside>
     <div id="editor-arrange" class="arrange">

@@ -10,6 +10,8 @@ export class Bridge {
   lanes = $state.raw(null);
   // The Inspector's Selection, Lane and Difficulty model app.js last built (inspectorModel), replaced whole.
   inspector = $state.raw(null);
+  // The Browser's tabs, tree and sample preview app.js last built (renderSampleBrowser), replaced whole.
+  browser = $state.raw(null);
   // The open menu's rows menus.js last built from the command list (null while no menu is open).
   menu = $state.raw(null);
   // Playhead group's Centre: kept in this window only, never saved; app.js reads it to follow.
@@ -32,6 +34,12 @@ export class Bridge {
   // Handed over by app.js's renderSelection() and renderActiveLane(); written at once, like the lanes.
   handOverInspector(model, flush = flushSync) {
     this.inspector = model;
+    flush();
+  }
+
+  // The rail icons focus a tab or the search field right after switching, so the model is written at once.
+  handOverBrowser(model, flush = flushSync) {
+    this.browser = model;
     flush();
   }
 

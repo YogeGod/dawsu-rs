@@ -1,0 +1,246 @@
+/* v3 Browser (#sample-browser): search well, Mapset/Library tabs, 28 px tree rows, the sample preview
+   at the bottom. In the tree panel it fills the column; in the Inspector (classic) it keeps its own head. */
+#tree-browser-host #sample-browser {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  padding: 0 8px;
+  border: 0;
+}
+#tree-browser-host #sample-browser-entries {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+#sample-browser {
+  font-size: 12px;
+}
+.sample-browser-classic-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.sample-browser-classic-head h2 {
+  margin: 0;
+}
+
+.browser-head {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 8px;
+}
+.browser-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 30px;
+  margin: 0;
+  padding: 0 12px;
+  border-radius: var(--radius-6);
+  background: var(--editor-ink);
+  color: var(--editor-muted);
+}
+.browser-search:focus-within {
+  box-shadow: 0 0 0 1px var(--editor-focus);
+}
+.browser-search-icon,
+.browser-icon {
+  display: grid;
+  flex: none;
+}
+.browser-search-icon svg {
+  width: 13px;
+  height: 13px;
+}
+.browser-search input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--editor-text);
+  font: inherit;
+}
+.browser-search input::placeholder {
+  color: var(--editor-muted);
+}
+.browser-tabs {
+  display: flex;
+  gap: 2px;
+  height: 28px;
+  padding: 2px;
+  border-radius: var(--radius-6);
+  background: var(--editor-chrome);
+}
+.browser-tabs button {
+  flex: 1;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-4);
+  background: transparent;
+  color: var(--editor-secondary);
+  font-weight: 500;
+}
+.browser-tabs button:hover:not(:disabled) {
+  background: var(--editor-hover);
+  color: var(--editor-text);
+}
+.browser-tabs button[aria-selected="true"] {
+  background: var(--editor-selected);
+  box-shadow: var(--shadow-raised);
+  color: var(--editor-accent);
+}
+.browser-folder {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.browser-folder output {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--editor-secondary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#sample-browser-entries {
+  display: flex;
+  flex-direction: column;
+  margin-top: 8px;
+}
+.browser-row {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  height: 28px;
+  min-height: 28px;
+  padding: 0 12px 0 calc(12px + var(--depth, 0) * 12px);
+  border: 0;
+  border-radius: var(--radius-6);
+  background: transparent;
+  color: var(--editor-text);
+  font: inherit;
+  text-align: left;
+}
+.browser-row:hover:not(:disabled) {
+  background: var(--editor-hover);
+}
+.browser-row:disabled {
+  background: transparent;
+  color: var(--editor-disabled);
+}
+.browser-root {
+  color: var(--editor-text);
+}
+.browser-icon {
+  color: var(--editor-secondary);
+}
+.browser-sample .browser-icon {
+  color: var(--editor-muted);
+}
+.browser-row:disabled .browser-icon {
+  color: var(--editor-disabled);
+}
+.browser-icon svg {
+  width: 14px;
+  height: 14px;
+}
+.browser-sample .browser-icon svg {
+  width: 13px;
+  height: 13px;
+}
+.browser-row.browser-selected,
+.browser-row.browser-selected:hover:not(:disabled) {
+  background: var(--editor-selected);
+}
+.browser-selected .browser-icon {
+  color: var(--editor-accent);
+}
+.browser-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.browser-note {
+  margin: 0;
+  padding: 6px 12px 6px calc(12px + var(--depth, 0) * 12px);
+  color: var(--editor-muted);
+}
+.browser-section {
+  margin: 12px 12px 4px;
+  padding: 0;
+  border: 0;
+  color: var(--editor-muted);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.browser-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+  padding: 12px 8px 8px;
+  border-top: 1px solid var(--editor-border);
+}
+.browser-preview-name {
+  overflow: hidden;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.browser-preview-length {
+  color: var(--editor-muted);
+  font-variant-numeric: tabular-nums;
+}
+.browser-wave {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+}
+.browser-play {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-4);
+  background: transparent;
+  color: var(--editor-clap);
+}
+.browser-play:hover:not(:disabled) {
+  background: var(--editor-hover);
+}
+.browser-play svg {
+  width: 12px;
+  height: 12px;
+}
+.browser-wave svg {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+}
+.browser-wave rect {
+  fill: var(--editor-clap);
+}
+.browser-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  padding: 8px 0;
+}
