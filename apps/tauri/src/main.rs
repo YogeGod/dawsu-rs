@@ -1241,6 +1241,8 @@ fn snapshot(app: &Application, include_scene: bool) -> Value {
                 "path": d.path, "difficulties": d.difficulties,
                 "lanes": lanes, "laneOrder": lane_order, "moments": moments, "sections": sections, "waveform": waveform,
                 "gameplay": gameplay_overlay(d),
+                // Inspector › Difficulty's orphaned marks: the times of hits with no object.
+                "orphanedHits": dawsu_application::orphaned_hit_times(model),
                 "laneRevision": c.history.version(),
                 "selection": selection, "history": c.history.steps(), "historyPosition": c.history.position(),
                 "snap": c.snap_enabled, "snapMode": match c.snap_mode { SnapMode::Grid => "grid", SnapMode::GridRelative => "relative", SnapMode::Objects => "objects" },

@@ -1,4 +1,4 @@
-use dawsu_hitsounding::SaveProblem;
+use dawsu_hitsounding::{Hitsounds, Place, SaveProblem};
 use std::path::{Path, PathBuf};
 
 #[derive(Clone)]
@@ -23,6 +23,16 @@ impl OutputProblem {
         self.message = message.into();
         self
     }
+}
+
+/// The times of hits with no object (v3's "orphaned"): moments that hold at least one hit and sit
+/// on no object, once per moment. Outside HS mode Save keeps them in the project; in HS mode Save
+/// makes them circles.
+pub fn orphaned_hit_times(hits: &Hitsounds) -> Vec<f64> {
+    hits.moments().iter()
+        .filter(|moment| moment.place() == Place::NoObject && moment.hits().next().is_some())
+        .map(|moment| moment.time().ms())
+        .collect()
 }
 
 #[cfg(test)]
@@ -93,6 +103,20 @@ mod tests {
         app.document.as_mut().unwrap().composer.undo();
         assert!(app.output_problems().is_empty());
         assert!(!app.save_problem_review());
+    }
+
+    #[test]
+    fn orphaned_hits_are_the_times_of_moments_with_hits_and_no_object() {
+        let scratch = Scratch::new("orphaned-hits");
+        let map = scratch.path("test.osu");
+        std::fs::write(&map, include_bytes!("../tests/project-fixture.osu")).unwrap();
+        let mut document = Document::read(&map).unwrap();
+        assert!(crate::orphaned_hit_times(document.composer.hitsounds()).is_empty(), "the circle at 1000 ms has an object");
+        for (time, lane) in [(250.0, "loose.wav"), (250.0, "other.wav"), (1000.0, "loose.wav"), (1500.0, "loose.wav")] {
+            document.composer.add(time, SampleIdentity::File(lane.into()), 75, 0.0);
+        }
+        // Two hits at one time are one moment; a hit on the circle is not orphaned.
+        assert_eq!(crate::orphaned_hit_times(document.composer.hitsounds()), [250.0, 1500.0]);
     }
 
     #[test]
