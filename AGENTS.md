@@ -23,6 +23,8 @@ Run the checks relevant to your change while iterating, and all four before hand
 - **osu!lazer oracle** (when changing format/timing/hitsound rules or fixtures):
   `dotnet run -c Release --project tools/lazer-oracle -- tests/fixtures/lazer-oracle tests/fixtures/save-pack tests/fixtures/oracle-cases`
 
+GitHub runs the first three on Windows for every pull request (`.github/workflows/windows-checks.yml`); run the oracle yourself when it applies.
+
 **Windows build note:** `signalsmith-stretch` requires `LIBCLANG_PATH` (on this machine: `E:/Claude/drum-onnx/venv311/Lib/site-packages/clang/native`). Keep build and temporary artifacts on `E:`.
 
 ## Context pointers
