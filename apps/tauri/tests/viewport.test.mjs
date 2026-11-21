@@ -413,9 +413,20 @@ test("lane height buttons and slider send the same viewport action as wheel zoom
   assert.equal(calls.pop().action.row_height, 42);
 });
 
-test("ruler controls hide and restore the waveform and reuse timeline actions", async () => {
+test("the lane toolbar holds zoom, Fit all and lane height; the Song row holds the waveform switch", async () => {
   const { calls, evaluate, get, settle } = await frontend();
-  assert.match(html, /class="lane-title ruler-controls"[\s\S]*?id="ruler-waveform"[\s\S]*?id="ruler-fit"[\s\S]*?id="overview"/);
+  // v3 §4: the lane toolbar above the lanes, beside the ruler. The overview cell keeps no buttons.
+  const toolbar = html.slice(html.indexOf('class="lane-title lane-title-controls'), html.indexOf('class="lane-title song-row'));
+  const order = ["ruler-zoom-out", "ruler-zoom-in", "ruler-fit", "lane-shorter", "lane-taller"].map(id => toolbar.indexOf(`id="${id}"`));
+  assert.ok(order.every((at, i) => at >= 0 && (i === 0 || at > order[i - 1])), "toolbar order " + order);
+  const overviewCell = html.slice(html.indexOf('class="overview"'), html.indexOf('id="overview"'));
+  assert.doesNotMatch(overviewCell, /<button/);
+  // v3 §4 and §8: the waveform switch sits in the Song row, not the lane toolbar.
+  const songRow = html.slice(html.indexOf('class="lane-title song-row'), html.indexOf('id="ruler"'));
+  assert.match(songRow, /id="song-mute"[\s\S]*id="song-solo"[\s\S]*id="ruler-waveform"/);
+  // Follow lives in the Playhead group and the Playback menu (v3 §8 drops the toolbar's locate button).
+  assert.doesNotMatch(html + app, /ruler-follow/);
+
   const click = id => get(id).events.get("click")();
   evaluate("setWaveformHeight(88)");
   click("ruler-waveform");
@@ -424,19 +435,33 @@ test("ruler controls hide and restore the waveform and reuse timeline actions", 
   click("ruler-waveform");
   assert.equal(get("editor-arrange").style["--wave-height"], "88px");
   assert.equal(get("ruler-waveform")["aria-pressed"], "true");
-  click("ruler-follow");
-  await settle();
-  assert.deepEqual(calls.pop().action, {kind:"follow", on:true});
-  assert.equal(get("ruler-follow")["aria-pressed"], "true");
   click("ruler-zoom-out");
   click("ruler-zoom-in");
+  click("lane-shorter");
+  click("lane-taller");
   await settle();
+  // Shorter and Taller run the same commands as View › Shorter lanes and Taller lanes.
   assert.deepEqual(calls.splice(0).map(call=>call.action), [
     {kind:"command",id:"zoomOut"}, {kind:"command",id:"zoomIn"},
+    {kind:"command",id:"rowsOut"}, {kind:"command",id:"rowsIn"},
   ]);
   click("ruler-fit");
   await settle();
   assert.deepEqual(calls.pop().action, {kind:"view",start:0,zoom:.1,row_height:30});
+});
+
+test("a lane toolbar button at its limit shows disabled", async () => {
+  const { evaluate, get } = await frontend();
+  const limits = () => ["ruler-zoom-out", "ruler-zoom-in", "lane-shorter", "lane-taller"].map(id => !!get(id).disabled);
+  evaluate("refreshLaneToolbar()");
+  assert.deepEqual(limits(), [false, false, false, false]);
+  // The editor's limits: zoom .0005 to 3 px per ms, lanes 20 to 65 px.
+  evaluate("scene.zoom = 3; scene.rowHeight = 65; refreshLaneToolbar()");
+  assert.deepEqual(limits(), [false, true, false, true]);
+  evaluate("scene.zoom = .0005; scene.rowHeight = 20; refreshLaneToolbar()");
+  assert.deepEqual(limits(), [true, false, true, false]);
+  evaluate("view.busy = true; scene.zoom = 1; scene.rowHeight = 30; refreshLaneToolbar()");
+  assert.deepEqual(limits(), [true, true, true, true]);
 });
 test("the song overview sits at the bottom of the timeline, below the volume lane, with the ruler on top", async () => {
   const docking = await readFile(new URL("../dist/docking.js", import.meta.url), "utf8");

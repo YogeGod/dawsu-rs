@@ -2,6 +2,7 @@ import "./tokens.css";
 import "./shell.css";
 import "./parts/pill.css";
 import "./parts/inspector.css";
+import "./timeline.css";
 import { mount } from "svelte";
 import { bridge } from "./lib/bridge.svelte.js";
 import * as commandList from "./lib/commands.js";

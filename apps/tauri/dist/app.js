@@ -298,10 +298,10 @@ function show(next) {
   else renderSelection();
   if (scene) {
     for (const button of speedButtons) button.ariaPressed = String(Number(button.dataset.playbackSpeed) === view.speed);
-    $("ruler-follow").setAttribute?.("aria-pressed", String(!!view.follow));
     followPlayhead();
   }
   refreshLaneDelete();
+  refreshLaneToolbar();
   renderDialogs();
   try { window.refreshEditorMenu?.(); } catch (error) { console.error(error); }
   paintSoon();
@@ -2226,6 +2226,15 @@ function resizeLaneHeaders(height) {
 // The farthest zoom out, in px per ms, as the editor's MIN_ZOOM; the zoom slider's min is its log10.
 const minZoom = .0005;
 
+// A lane toolbar button at the editor's limit (zoom .0005 to 3 px per ms, lanes 20 to 65 px) shows disabled.
+function refreshLaneToolbar() {
+  const off = !scene || !!view.busy;
+  $("ruler-zoom-out").disabled = off || scene.zoom <= minZoom;
+  $("ruler-zoom-in").disabled = off || scene.zoom >= 3;
+  $("lane-shorter").disabled = off || scene.rowHeight <= 20;
+  $("lane-taller").disabled = off || scene.rowHeight >= 65;
+}
+
 function changeView(start, zoom, rowHeight = scene.rowHeight, rowAnchorY = 0) {
   zoom = limit(zoom, minZoom, 3);
   rowHeight = limit(rowHeight, 20, 65);
@@ -2247,6 +2256,7 @@ function changeView(start, zoom, rowHeight = scene.rowHeight, rowAnchorY = 0) {
     }
     setValue("zoom", Math.log10(zoom));
     setValue("lane-height", rowHeight);
+    refreshLaneToolbar();
     paintSoon();
 
     try {
@@ -3055,10 +3065,8 @@ $("ruler-waveform").addEventListener("click", () => {
     setWaveformHeight(waveformHeight ? 0 : visibleWaveformHeight);
   }
 });
-$("ruler-follow").addEventListener("click", () => {
-  if (scene && !view.busy) act({ kind: "follow", on: !view.follow }, false);
-});
-for (const [id, action] of [["ruler-zoom-out", "zoomOut"], ["ruler-zoom-in", "zoomIn"]]) {
+// The lane toolbar (v3 §4): zoom, and Shorter and Taller lanes as View › Shorter lanes and Taller lanes.
+for (const [id, action] of [["ruler-zoom-out", "zoomOut"], ["ruler-zoom-in", "zoomIn"], ["lane-shorter", "rowsOut"], ["lane-taller", "rowsIn"]]) {
   $(id).addEventListener("click", () => {
     if (scene && !view.busy) command(action);
   });

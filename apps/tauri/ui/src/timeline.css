@@ -1,0 +1,75 @@
+/* The timeline's frame in the v3 look (v3-spec §4-5): the lane toolbar beside the ruler and the
+   Song row beside the waveform. The canvases are drawn by app.js. */
+
+/* Lane toolbar: 40 px on the ruler's grey, level with the ruler. */
+.ruler-sidebar {
+  grid-template-rows: 40px minmax(0, 1fr);
+}
+.lane-title-controls {
+  justify-content: flex-start;
+  gap: 2px;
+  height: 40px;
+  padding: 0 6px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  background: var(--editor-ruler);
+  border-bottom: 1px solid var(--editor-canvas);
+}
+.ruler-sidebar .lane-tool {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  flex: none;
+  width: 28px;
+  min-width: 28px;
+  height: 26px;
+  min-height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--editor-text);
+  font-size: 13px;
+  font-weight: 500;
+}
+.ruler-sidebar .lane-tool-label {
+  width: auto;
+  padding: 0 6px;
+}
+.ruler-sidebar .lane-tool:hover:not(:disabled) {
+  background: var(--editor-border);
+}
+/* v3: a button at its limit. */
+.ruler-sidebar .lane-tool:disabled {
+  color: #696969;
+}
+.ruler-sidebar .lane-tool:focus-visible {
+  outline: 2px solid var(--editor-focus);
+  outline-offset: -2px;
+}
+.lane-tool svg,
+.song-row button svg {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.lane-tool-divider {
+  flex: none;
+  width: 1px;
+  height: 16px;
+  margin: 0 4px;
+  background: var(--editor-border);
+}
+.lane-tool-end {
+  flex: none;
+  margin-left: auto;
+}
+/* Lane names hidden (99 px column): Fit all keeps its icon only. */
+.arrange[data-lane-names="false"] .lane-tool-label span {
+  display: none;
+}
