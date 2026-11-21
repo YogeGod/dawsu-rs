@@ -49,7 +49,7 @@ test("Audio configures backend, qualified device and buffer together when transp
   });
   await bootEditor(context);
   calls.length = 0;
-  const open = get("audio").listeners.get("click");
+  const open = () => runInContext("statusBarAction('audio')", context);
   const control = label => get("dialog-body").children
     .find(node => node.children?.[0] === label)?.children[1];
   const choice = () => control("Output device");

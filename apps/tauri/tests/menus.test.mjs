@@ -13,6 +13,9 @@ const inspectorPart = (await Promise.all(["Selection", "Lane", "Difficulty"].map
   readFile(new URL(`../ui/src/parts/Inspector${name}.svelte`, import.meta.url), "utf8")))).join("\n");
 // The Add lane row ends the lane column, a Svelte part, and keeps the id the menus click.
 const lanesPart = await readFile(new URL("../ui/src/parts/LaneHeaders.svelte", import.meta.url), "utf8");
+const statusBarPart = await readFile(new URL("../ui/src/parts/StatusBar.svelte", import.meta.url), "utf8");
+const gridOptionsPart = await readFile(new URL("../ui/src/parts/GridOptions.svelte", import.meta.url), "utf8");
+const laneOptionsPart = await readFile(new URL("../ui/src/parts/LaneOptions.svelte", import.meta.url), "utf8");
 const css = await readFile(new URL("../dist/style.css", import.meta.url), "utf8");
 const catalogue = (await Promise.all([
   "../../../crates/dawsu-application/src/commands.rs",
@@ -341,7 +344,7 @@ test("menus only click ribbon controls that exist in the window", () => {
     ...[...commandsSource.matchAll(/\["(?:onLane", ")?click", "([\w-]+)"\]/g)].map(match => match[1]),
   ]);
   for (const id of ["audio", "used-only", "ruler-waveform", "export-entry"]) assert.ok(ids.has(id), id);
-  for (const id of ids) assert.match(html + inspectorPart + lanesPart, new RegExp('id="' + id + '"'), id);
+  for (const id of ids) assert.match(html + inspectorPart + lanesPart + statusBarPart + gridOptionsPart + laneOptionsPart, new RegExp('id="' + id + '"'), id);
 });
 
 const plain = value => JSON.parse(JSON.stringify(value));

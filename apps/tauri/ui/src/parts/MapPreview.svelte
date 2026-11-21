@@ -22,7 +22,7 @@
         <p class="insp-summary">The map preview is in its own window.</p>
         <div class="insp-actions"><button type="button" onclick={bringBack}>Show it here</button></div>
       {:else}
-        <PreviewCanvas view={bridge.view} path={bridge.scene?.path ?? null} previewKey={bridge.scene?.previewKey ?? null}
+        <PreviewCanvas view={bridge.playhead} path={bridge.scene?.path ?? null} previewKey={bridge.scene?.previewKey ?? null}
           active={open} />
         <div class="insp-actions"><button type="button" onclick={popOut}>Open in its own window</button></div>
       {/if}

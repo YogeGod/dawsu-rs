@@ -24,23 +24,28 @@ import PlayheadGroup from "./parts/PlayheadGroup.svelte";
 import ExportWindow from "./parts/ExportWindow.svelte";
 import DrumDetectWindow from "./parts/DrumDetectWindow.svelte";
 import EditorMenu from "./parts/EditorMenu.svelte";
+import GridOptions from "./parts/GridOptions.svelte";
 import HitCard from "./parts/HitCard.svelte";
 import InspectorBookmarks from "./parts/InspectorBookmarks.svelte";
 import InspectorDifficulty from "./parts/InspectorDifficulty.svelte";
 import InspectorHistory from "./parts/InspectorHistory.svelte";
 import InspectorLane from "./parts/InspectorLane.svelte";
 import InspectorSelection from "./parts/InspectorSelection.svelte";
+import LaneOptions from "./parts/LaneOptions.svelte";
 import MapPreview from "./parts/MapPreview.svelte";
 import NodeGraphWindow from "./parts/NodeGraphWindow.svelte";
 import PreviewWindow from "./parts/PreviewWindow.svelte";
 import SnapSlider from "./parts/SnapSlider.svelte";
+import StartScreen from "./parts/StartScreen.svelte";
+import StatusBar from "./parts/StatusBar.svelte";
 import ToolPills from "./parts/ToolPills.svelte";
 import TransportBar from "./parts/TransportBar.svelte";
 
 // Each part replaces the children of its [data-ui-mount="name"] host in index.html.
 const parts = {
   tools: ToolPills, snap: SnapSlider, audition: AuditionPill, transport: TransportBar,
-  playhead: PlayheadGroup, lanes: LaneHeaders,
+  playhead: PlayheadGroup, lanes: LaneHeaders, "status-bar": StatusBar,
+  "grid-options": GridOptions, "lane-options": LaneOptions, "start-screen": StartScreen,
   // The timeline's hit hover card, at body level.
   "hit-card": HitCard,
   // The popup the menu bar, the right-click tool picker and the lane menu share (#editor-menu).
@@ -94,7 +99,7 @@ function linkPreviewWindow(view) {
 }
 let lastSent = "";
 function sendPreview(force = false) {
-  const view = bridge.view;
+  const view = bridge.latestView ?? bridge.view;
   const scene = bridge.scene;
   const payload = {
     view: view && { position: view.position, playing: view.playing, speed: view.speed, duration: view.duration },
@@ -170,9 +175,21 @@ export function wheelSnap(finer) {
 // The Triplets box in the Snap menu shows the group.
 export const snapGroup = () => bridge.snapGroup?.name;
 
+export function statusNotice(text) {
+  bridge.statusNotice = text || "";
+}
+
+export function viewport(zoom, rowHeight) {
+  bridge.setViewport(zoom, rowHeight);
+}
+
+export function laneOptions(usedOnly, filter) {
+  bridge.setLaneOptions(usedOnly, filter);
+}
+
 // Boot the main editor runtime only on the editor window (never on export.html or drum.html).
 const uiBridge = {
-  update, lanes, inspector, browser, mixer, toggleMapPreview, mapPreviewOn, setNodeGraphViewer, nodeGraphViewer, bottomTab, hitCard, commands, menu, centre, wheelSnap, snapGroup,
+  update, lanes, inspector, browser, mixer, toggleMapPreview, mapPreviewOn, setNodeGraphViewer, nodeGraphViewer, bottomTab, hitCard, commands, menu, centre, wheelSnap, snapGroup, statusNotice, viewport, laneOptions,
 };
 if (document.getElementById("grid")) {
   createEditor(globalThis, { ui: uiBridge });

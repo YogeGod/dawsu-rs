@@ -28,38 +28,8 @@
 <button id="layout-edit-entry" type="button" data-doc hidden>Layout…</button>
 
 <div id="editor-menu" role="menu" data-ui-mount="menu" hidden></div>
-<div popover id="options-Lanes" class="ribbon-controls ribbon-options" role="group" aria-label="Lanes">
-        <div class="row" role="group" aria-label="Lane zoom">
-          <button type="button" id="lane-height-out" aria-label="Shorter lanes" data-doc>−</button>
-          <label class="toggle">Lane height <input type="range" min="20" max="65" step="1" id="lane-height" data-doc></label>
-          <button type="button" id="lane-height-in" aria-label="Taller lanes" data-doc>+</button>
-        </div>
-        <button type="button" id="collapse-layers" data-doc>Collapse sample layers</button>
-        <label class="toggle" title="Show only the lanes that have hits when switched on"><input id="used-only" type="checkbox" data-doc> Used only</label>
-        <input id="lane-filter" type="search" aria-label="Filter lanes" placeholder="Filter lanes" size="13" data-doc>
-      </div>
-<section id="home">
-  <div class="home-panel">
-    <img class="home-logo" src="studio-assets/dawsu.png" alt="dawsu!">
-    <h1>Open a map to start hitsounding</h1>
-    <p>Every sample in the mapset becomes a lane you draw hits on, over the song.</p>
-    <button id="home-resume" class="primary" hidden>Resume editing</button>
-    <div class="home-actions" role="group" aria-label="Open a map">
-      <button id="home-open" class="home-action"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6.5h6l2 2h10V19H3z"/></svg><span><strong>Open map…</strong><small>An .osu difficulty or .osz mapset</small></span></button>
-      <button id="home-import" class="home-action"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 4.5h17v4h-17zM5 8.5V19h14V8.5M12 11v5m-2.5-2.5L12 16l2.5-2.5"/></svg><span><strong>Import .osz…</strong><small>Unpack a mapset and open it</small></span></button>
-      <button id="home-folders" class="home-action"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4.5h5l1.5 1.5H21v9H6zM3 8v11h14"/></svg><span><strong>Folders…</strong><small>Songs folder and hitsound library</small></span></button>
-    </div>
-    <section id="recovery" aria-labelledby="recovery-title" hidden>
-      <h2 id="recovery-title">Recovery copies</h2>
-      <div id="recovery-entries"></div>
-    </section>
-    <div class="home-drop"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h8l4 4v14H6zM14 3v4h4M12 10v7m-3-3 3 3 3-3"/></svg>Or drop an .osu or .osz file anywhere in this window</div>
-    <section id="home-recent" class="home-recent" aria-labelledby="home-recent-title" hidden>
-      <h2 id="home-recent-title">Recent</h2>
-      <div id="recent"></div>
-    </section>
-  </div>
-</section>
+<div popover id="options-Lanes" class="ribbon-controls ribbon-options" role="group" aria-label="Lanes" data-ui-mount="lane-options"></div>
+<section id="home" data-ui-mount="start-screen"></section>
 <section id="workspace" hidden>
   <section id="layout-editor" class="chrome" aria-label="Edit layout" data-dock-control hidden>
     <strong>Edit layout</strong>
@@ -118,14 +88,7 @@
     </div>
     <div class="ribbon-group" role="group" aria-label="Grid">
       <div class="ribbon-controls"><div data-ui-mount="snap"></div>
-      <button id="grid-options" type="button" popovertarget="options-Grid" aria-label="More snaps" title="More snaps">▾</button><div popover id="options-Grid" class="ribbon-controls ribbon-options">
-        <label class="toggle"><input id="object-lines" type="checkbox"> Object lines</label>
-        <label class="toggle"><input id="snap" type="checkbox"> Snap</label>
-        <select aria-label="Snap mode" id="snap-mode"><option value="grid">Grid</option><option value="relative">Grid relative</option><option value="objects">Objects</option></select>
-        <label class="toggle">Beat <input id="beats" type="number" min="1" max="64" aria-label="Snap beats"> / <input id="divisor" type="number" min="1" max="64" aria-label="Snap divisor"></label>
-        <label class="toggle" title="Step through 1/3, 1/6 and 1/12 with the wheel"><input id="triplet-snap" type="checkbox" data-doc> Triplets</label>
-        <button id="time-signatures" data-doc aria-haspopup="dialog">Time signatures…</button>
-      </div></div>
+      <button id="grid-options" type="button" popovertarget="options-Grid" aria-label="More snaps" title="More snaps">▾</button><div popover id="options-Grid" class="ribbon-controls ribbon-options" data-ui-mount="grid-options"></div></div>
     </div>
   </div>
   <main id="editor-dock" class="dock">
@@ -212,30 +175,7 @@
     </aside>
   </main>
 </section>
-<div id="statusbar">
-  <div id="playback-rates" class="playback-rates" role="group" aria-label="Playback speed" title="Playback speed with pitch preserved" hidden>
-    <button type="button" data-playback-speed=".25" aria-label="Playback speed 25%" aria-pressed="false" data-doc>25%</button>
-    <button type="button" data-playback-speed=".5" aria-label="Playback speed 50%" aria-pressed="false" data-doc>50%</button>
-    <button type="button" data-playback-speed=".75" aria-label="Playback speed 75%" aria-pressed="false" data-doc>75%</button>
-    <button type="button" data-playback-speed="1" aria-label="Playback speed 100%" aria-pressed="true" data-doc>100%</button>
-    <button type="button" data-playback-speed="1.25" aria-label="Playback speed 125%" aria-pressed="false" data-doc>125%</button>
-    <button type="button" data-playback-speed="1.5" aria-label="Playback speed 150%" aria-pressed="false" data-doc>150%</button>
-  </div>
-  <span id="play-state" class="play-state" hidden></span>
-  <span id="selection-count" class="selection-count" hidden></span>
-  <span id="status" role="status"></span>
-  <span id="problem-summary" class="problem-summary" hidden><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.5 14.5 13.5h-13zM8 6.5v3M8 11.5v.01"/></svg><span id="problem-summary-text"></span></span>
-  <button id="next-output-problem" hidden>Next problem</button><button id="warnings" hidden>Audio warnings</button><button id="cancel-job" data-action="cancel_job" hidden>Cancel job</button>
-  <div class="status-right">
-    <span id="file-name" class="status-file" hidden><span id="file-name-head"></span><span id="file-name-tail"></span></span>
-    <span id="hit-lane-counts" class="status-counts" hidden></span>
-    <div id="status-view" class="status-view" role="group" aria-label="Timeline zoom" hidden>
-      <button id="fit" title="Fit the difficulty in the timeline" data-doc>Fit</button>
-      <input type="range" min="-3.301" max=".477" step=".01" id="zoom" aria-label="Timeline zoom" title="Timeline zoom" data-map>
-    </div>
-    <button id="audio" class="status-device" aria-label="Audio output" title="Audio output">Audio output</button>
-  </div>
-</div>
+<div id="statusbar" data-ui-mount="status-bar"><span id="status" role="status"></span></div>
 <div data-ui-mount="hit-card"></div>
 <dialog id="dialog"><h2 id="dialog-title"></h2><div id="dialog-body"></div><div class="row" id="dialog-actions"></div></dialog>
 </body></html>

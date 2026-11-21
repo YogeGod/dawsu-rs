@@ -5,11 +5,13 @@ import { createContext, runInContext } from "node:vm";
 import { bootEditor, readEditorSource } from "./editor-runtime.mjs";
 
 const read = file => readFile(new URL("../dist/" + file, import.meta.url), "utf8");
-const [html, css] = await Promise.all(["index.html", "style.css"].map(read));
+const [html, css, statusBarSvelte] = await Promise.all([
+  read("index.html"), read("style.css"),
+  readFile(new URL("../ui/src/parts/StatusBar.svelte", import.meta.url), "utf8"),
+]);
 const app = readEditorSource();
 
 const ribbon = html.slice(html.indexOf('<div id="editor-ribbon"'), html.indexOf('<main id="editor-dock"'));
-const statusbar = html.slice(html.indexOf('<div id="statusbar"'), html.indexOf('<dialog id="dialog"'));
 const toolbarCss = css.slice(css.indexOf("/* Toolbar and status bar (design f1)"));
 
 async function frontend() {
@@ -96,26 +98,22 @@ test("the right-click picker keeps all seven tools, in the parts' order", async 
   assert.equal(names.length, 7);
 });
 
-test("the status bar shows speeds first, then status and problems, with counts on the right", () => {
-  const speeds = [...statusbar.matchAll(/data-playback-speed="([^"]+)"/g)].map(match => Number(match[1]));
-  assert.deepEqual(speeds, [0.25, 0.5, 0.75, 1, 1.25, 1.5]);
-  const order = ["data-playback-speed", 'id="status"', 'id="problem-summary"', 'id="hit-lane-counts"'].map(text => statusbar.indexOf(text));
+test("the status bar shows speeds first, then status and problems, with counts on the right", async () => {
+  const { PLAYBACK_SPEEDS } = await import("../ui/src/lib/statusbar.js");
+  assert.deepEqual(PLAYBACK_SPEEDS, [0.25, 0.5, 0.75, 1, 1.25, 1.5]);
+  const order = ["PLAYBACK_SPEEDS", 'id="status"', 'id="problem-summary"', 'id="hit-lane-counts"'].map(text => statusBarSvelte.indexOf(text));
   assert.ok(order.every(index => index >= 0), String(order));
   assert.deepEqual(order, [...order].sort((a, b) => a - b));
-  assert.equal([...html.matchAll(/data-playback-speed=/g)].length, 6, "speeds live only in the status bar");
 });
 
-test("show() fills the Snap label, Audition, the problem summary and the hit and lane counts", async () => {
-  const { calls, evaluate, get, settle } = await frontend();
+test("show() fills the Inspector's Audition and passes status bar state to the Svelte bundle", async () => {
+  const { calls, evaluate, settle } = await frontend();
+  evaluate("window.dawsuUi = { update(view, scene) { this.view = view; this.scene = scene; }, statusNotice(text) { this.notice = text; } }");
   evaluate(`show({ busy: false, hasDocument: true, audition: true, outputProblems: [{ time: 1 }, { time: 2 }],
     scene: ${sceneWith({})} })`);
-  assert.equal(get("grid-options").textContent, undefined, "the Snap slider shows the snap; the menu button stays ▾");
   assert.equal(evaluate("inspectorModel().audition"), true, "the Inspector's Audition box follows the editor");
-  assert.equal(get("problem-summary").hidden, false);
-  assert.equal(get("problem-summary-text").textContent, "2 moments can't be saved");
-  assert.equal(get("hit-lane-counts").hidden, false);
-  assert.equal(get("hit-lane-counts").textContent, "3 hits · 2 lanes");
-  assert.equal(get("playback-rates").hidden, false);
+  assert.equal(evaluate("window.dawsuUi.view.outputProblems.length"), 2);
+  assert.equal(evaluate("window.dawsuUi.scene.lanes.length"), 2);
 
   evaluate("inspectorAction('toggle', 'audition', false)");
   await settle();
@@ -123,15 +121,11 @@ test("show() fills the Snap label, Audition, the problem summary and the hit and
 
   evaluate(`show({ busy: false, hasDocument: true, audition: false, outputProblems: [{ time: 1 }],
     scene: ${sceneWith({ snap: false, lanes: [{ key: "a" }], moments: [[100, 100, true, [[0, false]]]] })} })`);
-  assert.equal(get("grid-options").textContent, undefined);
   assert.equal(evaluate("inspectorModel().audition"), false);
-  assert.equal(get("problem-summary-text").textContent, "1 moment can't be saved");
-  assert.equal(get("hit-lane-counts").textContent, "1 hit · 1 lane");
+  assert.equal(evaluate("window.dawsuUi.view.outputProblems.length"), 1);
 
   evaluate("show({ busy: false, hasDocument: false, outputProblems: [] })");
-  assert.equal(get("problem-summary").hidden, true);
-  assert.equal(get("hit-lane-counts").hidden, true);
-  assert.equal(get("playback-rates").hidden, true);
+  assert.equal(evaluate("window.dawsuUi.view.outputProblems.length"), 0);
 });
 
 test("show() hands the view and the last scene to the Svelte parts, even when a part throws", async () => {
@@ -144,7 +138,7 @@ test("show() hands the view and the last scene to the Svelte parts, even when a 
   assert.equal(evaluate("window.dawsuUi.got"), "[false,4]");
   evaluate("console = { error() {} }; window.dawsuUi.update = () => { throw new Error('broken part'); }");
   evaluate(`show({ busy: false, hasDocument: true, audition: true, scene: ${sceneWith({ moments: [] })} })`);
-  assert.equal(get("hit-lane-counts").textContent, "0 hits · 2 lanes");
+  assert.equal(get("save").dataset.dirty, "false");
 });
 
 test("the status bar says when a toolbar part did not load, once the page has loaded", async () => {

@@ -6,6 +6,7 @@ import { createContext, runInContext } from "node:vm";
 // The v3 frame: top bar, toolbar row 2, panel heads and rails, and the status bar.
 const read = path => readFile(new URL(path, import.meta.url), "utf8");
 const html = await read("../dist/index.html");
+const statusBarSvelte = await read("../ui/src/parts/StatusBar.svelte");
 const app = readEditorSource();
 const docking = await read("../dist/docking.js");
 const menus = await read("../dist/menus.js");
@@ -73,11 +74,11 @@ test("the removed controls are gone and each keeps a path in a menu or a key", a
 });
 
 test("the status bar reads speed, play state and selection, then messages, then file, counts and device", () => {
-  const bar = between(html, '<div id="statusbar"', "<dialog");
-  inOrder(bar, ['id="playback-rates"', 'id="play-state"', 'id="selection-count"', 'id="status"', 'id="problem-summary"',
+  assert.match(html, /<div id="statusbar" data-ui-mount="status-bar">/);
+  inOrder(statusBarSvelte, ['id="playback-rates"', 'id="play-state"', 'id="selection-count"', 'id="status"', 'id="problem-summary"',
     'id="next-output-problem"', 'id="warnings"', 'id="cancel-job"', 'id="file-name"', 'id="hit-lane-counts"',
     'id="status-view"', 'id="audio"'], "status bar");
-  inOrder(between(bar, 'id="file-name"', "</span></span>") + "</span></span>", ['id="file-name-head"', 'id="file-name-tail"'], "file name");
+  inOrder(between(statusBarSvelte, 'id="file-name"', 'id="hit-lane-counts"'), ['id="file-name-head"', 'id="file-name-tail"'], "file name");
 });
 
 test("each side panel has a head with a fold button and a rail whose section icons open it at that section", () => {
@@ -160,16 +161,14 @@ import { bootEditor, readEditorSource } from "./editor-runtime.mjs";
 const { effectivePanels, togglePlan } = dockingRules;
 
 test("the problem tooltip lists ten moments and how many more", async () => {
-  const { element, evaluate } = await page({ effectivePanels, togglePlan, attach: () => undefined });
-  evaluate(`scene = { path: "a.osu", lanes: [], selection: { count: 0 } };
-    show({ hasDocument: true, outputProblems: Array.from({ length: 13 }, (_, i) => ({ time: i, message: "Moment " + i })) })`);
-  const lines = element("problem-summary").title.split("\n");
+  const { problemTooltip } = await import("../ui/src/lib/statusbar.js");
+  const lines = problemTooltip(Array.from({ length: 13 }, (_, i) => ({ time: i, message: "Moment " + i }))).split("\n");
   assert.equal(lines.length, 11);
   assert.equal(lines[9], "Moment 9");
   assert.equal(lines[10], "and 3 more");
 });
 
-test("show() fills the chip, Save, play state, selection count, file name and output device", async () => {
+test("show() fills the chip, Save and panel switches", async () => {
   const { element, evaluate } = await page({ effectivePanels, togglePlan, attach: () => undefined });
   evaluate(`scene = { path: "/maps/Set/Artist - Song (Me) [Hard].osu", mapTitle: "<b>Song</b>", version: "Hard",
     selection: { count: 4 }, history: [], historyPosition: 0, lanes: [] };
@@ -186,12 +185,6 @@ test("show() fills the chip, Save, play state, selection count, file name and ou
   assert.equal(element("save").title, element("save").getAttribute("aria-label"));
   assert.equal(element("save-problem-badge").textContent, "2");
   assert.equal(element("save-problem-badge").title, "2 moments can't be saved");
-  assert.equal(element("problem-summary-text").textContent, "2 moments can't be saved");
-  assert.equal(element("play-state").textContent, "Playing");
-  assert.equal(element("selection-count").textContent, "4 hits selected");
-  assert.equal(element("selection-count").hidden, false);
-  assert.equal(element("audio").textContent, "Speakers (Realtek)");
-  assert.equal(element("audio").getAttribute("aria-label"), "Audio output: Speakers (Realtek)");
   assert.equal(element("view-browser").ariaPressed, "true");
   assert.equal(element("view-inspector").ariaPressed, "false");
   assert.equal(element("view-controller").ariaPressed, "true");
@@ -202,9 +195,6 @@ test("show() fills the chip, Save, play state, selection count, file name and ou
   assert.equal(element("save").dataset.dirty, "false");
   assert.equal(element("save").getAttribute("aria-label"), "Save");
   assert.equal(element("save").title, "Save");
-  assert.equal(element("play-state").textContent, "Stopped");
-  assert.equal(element("selection-count").hidden, true);
-  assert.equal(element("audio").textContent, "Audio output");
   assert.equal(element("view-controller").ariaPressed, "false");
 });
 

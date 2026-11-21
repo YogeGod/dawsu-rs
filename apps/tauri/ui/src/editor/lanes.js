@@ -223,7 +223,7 @@ export function attachLanes(ctx) {
   }
 
   function renderLanes() {
-    const filter = ($("lane-filter").value ?? "").trim().toLowerCase();
+    const filter = state.laneFilterText.trim().toLowerCase();
     const eligible = (row, alias) => {
       const lane = state.scene.lanes[row];
       if (state.usedLaneKeys !== null && (!lane || !state.usedLaneKeys.has(lane.key))) return false;
@@ -540,45 +540,6 @@ export function attachLanes(ctx) {
       if (!state.scene || state.view.busy || state.drag || state.view.drumView?.enabled) return;
       if (state.view.drumView?.name) setDrumView(true);
       else requestDrumMap();
-    });
-    $("lane-height-in").addEventListener("click", () => {
-      if (state.scene) setLaneHeight(Math.round(state.scene.rowHeight * 1.15));
-    });
-    $("lane-height-out").addEventListener("click", () => {
-      if (state.scene) setLaneHeight(Math.round(state.scene.rowHeight / 1.15));
-    });
-    $("lane-height").addEventListener("input", () => {
-      if (state.requests < 2) setLaneHeight(+$("lane-height").value);
-    });
-    $("lane-height").addEventListener("change", () => setLaneHeight(+$("lane-height").value));
-    $("collapse-layers").addEventListener("click", () => {
-      if (!state.scene || state.view.busy || state.drag) return;
-      for (const family of state.familyParents.values()) state.collapsedFamilies.add(family);
-      ctx.renderLanes();
-      ctx.paintSoon();
-      saveLaneLayout();
-    });
-    $("lane-filter").addEventListener("input", () => {
-      if (!state.scene || state.drag) return;
-      ctx.renderLanes();
-      ctx.paintSoon();
-    });
-    $("used-only").addEventListener("change", () => {
-      if (!state.scene || state.view.busy || state.drag) {
-        $("used-only").checked = state.usedLaneKeys !== null;
-        return;
-      }
-      if ($("used-only").checked) {
-        // Snapshot used lanes so a row does not disappear when its last hit is moved or erased.
-        state.usedLaneKeys = new Set();
-        for (const [, , , hits] of state.scene.moments) {
-          for (const [row] of hits) state.usedLaneKeys.add(state.scene.lanes[row].key);
-        }
-      } else {
-        state.usedLaneKeys = null;
-      }
-      ctx.renderLanes();
-      ctx.paintSoon();
     });
   }
 

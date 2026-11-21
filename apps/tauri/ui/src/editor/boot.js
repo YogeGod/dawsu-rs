@@ -24,7 +24,7 @@ const mutableStateFields = [
   "waveformHeight", "visibleWaveformHeight", "waveformShown", "waveformDrag", "markedRange",
   "browserMap", "browserFolder", "browserSample", "browserSource", "browserLibrary",
   "browserLibraryFolders", "browserScene", "browserState", "browserFilter", "browserPreview",
-  "browserModel", "browserTree", "usedLaneKeys", "showLaneInfo", "laneRows", "lanePositions",
+  "browserModel", "browserTree", "usedLaneKeys", "laneFilterText", "showLaneInfo", "laneRows", "lanePositions",
   "laneVisualPositions", "selectionLaneAnchor", "selectionLanesOnly", "familyParents",
   "familyLayers", "laneRemoving", "previewParents", "orderedLaneKeys", "sampleFolderOrder",
   "layoutWrites", "mixerStrips", "mixerKey", "laneHeaders", "bookmarkPick", "selectedHitsScene",
@@ -41,8 +41,8 @@ const readonlyStateFields = [
 ];
 
 const exportedMethods = [
-  "invoke", "run", "update", "act", "command", "toggle",
-  "missingUiParts", "renderFrame", "renderRecent", "renderRecovery", "show",
+  "invoke", "setStatusNotice", "run", "update", "act", "command", "toggle",
+  "missingUiParts", "renderFrame", "show",
   "dockState", "setDockOverride", "panelPrefs", "effectivePanelState",
   "panelOn", "togglePanel", "openPanelAt", "renderPanelLayout",
   "hydrateLaneLayout", "saveLaneLayout", "reorderSampleFolder", "folderHeaderModel",
@@ -78,6 +78,7 @@ const exportedMethods = [
   "openSiblingDifficulty", "chooseSiblingDifficulty", "showTimelineEdit",
   "editBookmark", "openTimeSignatures",
   "openFolders", "openAudioOutput", "openViewSettings", "showHelp", "showShortcutEditor",
+  "clampSnapInput", "popoverAction", "startScreenAction", "statusBarAction",
 ];
 
 export function createEditor(env = globalThis, { ui = null, autoStart = true, exposeGlobals = true } = {}) {
@@ -127,47 +128,137 @@ export function createEditor(env = globalThis, { ui = null, autoStart = true, ex
   ctx.bindTimeline();
   ctx.bindModal();
 
+  function clampSnapInput(value, fallback) {
+    const numeric = typeof value === "string" ? (value.trim() === "" ? NaN : Number(value)) : Number(value);
+    return Number.isFinite(numeric) ? limit(Math.trunc(numeric), 1, 64) : fallback;
+  }
+
+  function popoverAction(kind, ...args) {
+    switch (kind) {
+      case "objectLines":
+        return ctx.act({ kind: "object_lines", on: !!args[0] });
+      case "snap": {
+        if (!state.scene) return;
+        const patch = args[0] ?? {};
+        return ctx.act({
+          kind: "snap",
+          on: patch.on ?? state.scene.snap,
+          mode: patch.mode ?? state.scene.snapMode,
+          beats: clampSnapInput(patch.beats, state.scene.beats),
+          divisor: clampSnapInput(patch.divisor, state.scene.divisor),
+        });
+      }
+      case "tripletSnap":
+        if (state.scene) return ctx.act({ kind: "snap", on: state.scene.snap, mode: state.scene.snapMode, beats: 1, divisor: args[0] ? 6 : 4 });
+        return;
+      case "timeSignatures":
+        return ctx.openTimeSignatures();
+      case "laneHeightStep":
+        if (state.scene) return ctx.setLaneHeight(Math.round(state.scene.rowHeight * args[0]));
+        return;
+      case "laneHeight": {
+        const [height, live] = args;
+        if (!live || state.requests < 2) return ctx.setLaneHeight(height);
+        return;
+      }
+      case "collapseLayers":
+        if (!state.scene || state.view.busy || state.drag) return;
+        for (const family of state.familyParents.values()) state.collapsedFamilies.add(family);
+        ctx.renderLanes();
+        ctx.paintSoon();
+        ctx.saveLaneLayout();
+        return;
+      case "laneFilter":
+        state.laneFilterText = String(args[0] ?? "");
+        ctx.ui()?.laneOptions?.(state.usedLaneKeys !== null, state.laneFilterText);
+        if (!state.scene || state.drag) return;
+        ctx.renderLanes();
+        ctx.paintSoon();
+        return;
+      case "usedOnly": {
+        const on = !!args[0];
+        if (!state.scene || state.view.busy || state.drag) {
+          ctx.ui()?.laneOptions?.(state.usedLaneKeys !== null, state.laneFilterText);
+          return;
+        }
+        if (on) {
+          // Snapshot used lanes so a row does not disappear when its last hit is moved or erased.
+          state.usedLaneKeys = new Set();
+          for (const [, , , hits] of state.scene.moments) {
+            for (const [row] of hits) state.usedLaneKeys.add(state.scene.lanes[row].key);
+          }
+        } else {
+          state.usedLaneKeys = null;
+        }
+        ctx.ui()?.laneOptions?.(state.usedLaneKeys !== null, state.laneFilterText);
+        ctx.renderLanes();
+        ctx.paintSoon();
+        return;
+      }
+    }
+  }
+
+  function startScreenAction(kind, arg) {
+    switch (kind) {
+      case "resume":
+        if (!state.view.busy) return ctx.act({ kind: "resume" });
+        return;
+      case "open":
+        return ctx.openMap();
+      case "importOsz":
+        return ctx.run(async () => ctx.show(await invoke("pick_map", { archiveOnly: true })));
+      case "folders":
+        return ctx.openFolders();
+      case "openRecent":
+        return ctx.act({ kind: "open", path: arg });
+      case "restoreRecovery":
+        return ctx.act({ kind: "restore_recovery", id: arg });
+    }
+  }
+
+  function statusBarAction(kind, ...args) {
+    switch (kind) {
+      case "speed":
+        return ctx.act({ kind: "speed", value: args[0] });
+      case "nextOutputProblem":
+        return ctx.showOutputProblem(state.outputProblemIndex + 1);
+      case "warnings":
+        ctx.modal("warnings", "Audio warnings", state.view.warnings.map(paragraph), [["Close", () => ctx.closeModal(), true]]);
+        return;
+      case "cancelJob":
+        return ctx.act({ kind: "cancel_job" });
+      case "fit":
+        return ctx.fitTimeline();
+      case "zoom": {
+        const [logZoom, live] = args;
+        if (!state.scene) return;
+        if (!live || state.requests < 2) return ctx.changeView(state.scene.viewStart, 10 ** logZoom);
+        return;
+      }
+      case "audio":
+        return ctx.openAudioOutput();
+    }
+  }
+
+  Object.assign(ctx, { clampSnapInput, popoverAction, startScreenAction, statusBarAction });
+
   // Bind remaining top-level controls.
-  $("home-open").addEventListener("click", () => ctx.openMap());
-  $("home-resume").addEventListener("click", () => { if (!state.view.busy) ctx.act({ kind: "resume" }); });
-  $("home-import").addEventListener("click", () => ctx.run(async () => ctx.show(await invoke("pick_map", { archiveOnly: true }))));
-  $("home-folders").addEventListener("click", () => ctx.openFolders());
   $("ramp-shape").addEventListener("change", () => {
     ctx.act({ kind: "ramp_shape", value: $("ramp-shape").value }, false);
   });
   for (const button of env.document.querySelectorAll("[data-action]")) {
     button.addEventListener("click", () => ctx.act({ kind: button.dataset.action }));
   }
-  for (const id of ["snap", "snap-mode", "beats", "divisor"]) {
-    $(id).addEventListener("change", () => {
-      ctx.act({
-        kind: "snap",
-        on: $("snap").checked,
-        mode: $("snap-mode").value,
-        beats: limit(number("beats", state.scene.beats), 1, 64),
-        divisor: limit(number("divisor", state.scene.divisor), 1, 64),
-      });
-    });
-  }
-  $("time-signatures").addEventListener("click", () => ctx.openTimeSignatures());
-  ctx.toggle("object-lines", "object_lines");
   $("difficulty").addEventListener("change", () => {
     if (!state.scene) return;
     const path = $("difficulty").value;
     $("difficulty").value = state.scene.path;
     ctx.openSiblingDifficulty(path);
   });
-  for (const button of elements.speedButtons) {
-    button.addEventListener("click", () => ctx.act({ kind: "speed", value: Number(button.dataset.playbackSpeed) }));
-  }
   // The Export window opens beside the editor. Generate, Copy and Merge settings stay until it replaces them.
   $("export-entry").addEventListener("click", () => {
-    invoke("open_export_window").catch((error) => { $("status").textContent = String(error); });
+    invoke("open_export_window").catch((error) => { ctx.setStatusNotice(String(error)); });
   });
-  $("warnings").addEventListener("click", () => {
-    ctx.modal("warnings", "Audio warnings", state.view.warnings.map(paragraph), [["Close", () => ctx.closeModal(), true]]);
-  });
-  $("audio").addEventListener("click", () => ctx.openAudioOutput());
   $("song-mute").addEventListener("click", () => ctx.act({ kind: "song_muted", on: !state.view.songMuted }, false));
   $("song-solo").addEventListener("click", () => ctx.act({ kind: "song_solo", on: !state.view.songSolo }, false));
 

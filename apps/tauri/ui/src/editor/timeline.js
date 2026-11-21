@@ -14,17 +14,6 @@ export function attachTimeline(ctx) {
 
   function renderScene() {
     ctx.renderLanes();
-    $("snap").checked = state.scene.snap;
-    const hits = (state.scene.moments ?? []).reduce((sum, moment) => sum + (moment[3]?.length ?? 0), 0);
-    // Shown lanes only: a removed (hidden) lane keeps its model row but no header.
-    const lanes = state.scene.laneOrder?.length ?? state.scene.lanes?.length ?? 0;
-    $("hit-lane-counts").textContent = hits + (hits === 1 ? " hit · " : " hits · ") + lanes + (lanes === 1 ? " lane" : " lanes");
-    $("object-lines").checked = state.view.objectLines;
-    setValue("snap-mode", state.scene.snapMode);
-    setValue("beats", state.scene.beats);
-    setValue("divisor", state.scene.divisor);
-    setValue("zoom", Math.log10(state.scene.zoom));
-    setValue("lane-height", state.scene.rowHeight);
     ctx.renderSelection();
     const difficulty = $("difficulty");
     const pathKey = JSON.stringify([state.scene.path, state.scene.difficulties]);
@@ -490,8 +479,7 @@ export function attachTimeline(ctx) {
         resizeLaneHeaders(rowHeight);
         scroll.scrollTop = (previousScroll + rowAnchorY) * rowHeight / previousHeight - rowAnchorY;
       }
-      setValue("zoom", Math.log10(zoom));
-      setValue("lane-height", rowHeight);
+      ctx.ui()?.viewport?.(zoom, rowHeight);
       refreshLaneToolbar();
       handOverHitCard(null);
       ctx.paintSoon();
@@ -506,8 +494,7 @@ export function attachTimeline(ctx) {
           resizeLaneHeaders(previousHeight);
           scroll.scrollTop = previousScroll;
         }
-        setValue("zoom", Math.log10(previousZoom));
-        setValue("lane-height", previousHeight);
+        ctx.ui()?.viewport?.(previousZoom, previousHeight);
         ctx.paintSoon();
         throw error;
       }
@@ -790,7 +777,6 @@ export function attachTimeline(ctx) {
       }
     }, { passive: false });
 
-    $("fit").addEventListener("click", fitTimeline);
     $("ruler-fit").addEventListener("click", fitTimeline);
     $("ruler-waveform").addEventListener("click", () => {
       if (state.scene && !state.view.busy && !state.waveformDrag) {
@@ -806,10 +792,6 @@ export function attachTimeline(ctx) {
         if (state.scene && !state.view.busy) ctx.command(action);
       });
     }
-    $("zoom").addEventListener("input", () => {
-      if (state.requests < 2) changeView(state.scene.viewStart, 10 ** +$("zoom").value);
-    });
-    $("zoom").addEventListener("change", () => changeView(state.scene.viewStart, 10 ** +$("zoom").value));
   }
 
   Object.assign(ctx, {

@@ -42,7 +42,9 @@ test("folder dialog uses named native actions without sending paths", async () =
   vm.runInContext("scene = { path: 'C:/fixture/Hard.osu' }", context);
   // File › Folders… and the start screen's Folders… button both open it.
   const open = () => vm.runInContext("openFolders()", context);
-  assert.equal(typeof get("home-folders").events.get("click"), "function", "bind the start screen's Folders button");
+  vm.runInContext("startScreenAction('folders')", context);
+  assert.equal(get("dialog").open, true, "start screen Folders action opens the Folders dialog");
+  vm.runInContext("closeModal()", context);
   open();
   const buttons = get("dialog-actions").children;
   assert.deepEqual(buttons.map((button) => button.textContent),

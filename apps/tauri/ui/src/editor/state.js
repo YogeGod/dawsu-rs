@@ -31,6 +31,7 @@ export function createState() {
     browserTree: null,
 
     usedLaneKeys: null,
+    laneFilterText: "",
     showLaneInfo: false,
     laneRows: [],
     lanePositions: new Map(),

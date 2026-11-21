@@ -68,10 +68,8 @@ function snapBundle() {
 }
 
 test("Fit shows the whole difficulty from zero without changing lane height", async () => {
-  const { calls, get, settle } = await frontend();
-  const fit = get("fit").events.get("click");
-  assert.equal(typeof fit, "function");
-  fit();
+  const { calls, evaluate, settle } = await frontend();
+  evaluate("statusBarAction('fit')");
   await settle();
   assert.deepEqual(calls, [{ scene: false, action: { kind: "view", start: 0, zoom: 0.1, row_height: 30 } }]);
 });
@@ -80,7 +78,7 @@ test("Fit shows a 30-minute song in a 1000 px timeline, and wheel zoom out never
   const { calls, evaluate, get, settle } = await frontend();
   const duration = 30 * 60_000;
   evaluate(`view.duration = ${duration}`);
-  get("fit").events.get("click")();
+  evaluate("statusBarAction('fit')");
   await settle();
   assert.deepEqual(calls.pop(), { scene: false, action: { kind: "view", start: 0, zoom: 1000 / duration, row_height: 30 } });
   evaluate(`scene.zoom = ${1000 / duration}; scene.viewStart = 0`);
@@ -91,8 +89,8 @@ test("Fit shows a 30-minute song in a 1000 px timeline, and wheel zoom out never
 
 test("the zoom slider starts at the timeline's zoom-out limit", async () => {
   const { evaluate } = await frontend();
-  const sliderMin = +html.match(/<input[^>]*min="([^"]+)"[^>]*id="zoom"/)[1];
-  assert.equal(sliderMin, +Math.log10(evaluate("minZoom")).toFixed(3));
+  const { ZOOM_MIN } = await import("../ui/src/lib/statusbar.js");
+  assert.equal(ZOOM_MIN, +Math.log10(evaluate("minZoom")).toFixed(3));
   assert.ok(evaluate("minZoom") <= 1000 / (30 * 60_000), "Fit shows a 30-minute song in 1000 px");
 });
 
@@ -276,8 +274,7 @@ test("wheel follows the active keyboard preset and stops at the snap limits", as
   assert.deepEqual(await roll({ ctrlKey: true, deltaY: -120 }), {
     prevented: true, action: { kind: "snap", on: false, mode: "relative", beats: 1, divisor: 8 },
   });
-  get("triplet-snap").checked = true;
-  get("triplet-snap").events.get("change")();
+  evaluate('popoverAction("tripletSnap", true)');
   await settle();
   assert.equal(calls.pop().action.divisor, 6, "ticking Triplets picks 1/6, as lazer's Triplets button does");
   assert.equal((await roll({ altKey: true, deltaY: -120 })).action.kind, "view");
@@ -309,10 +306,10 @@ test("after 1/3 is picked, Ctrl+wheel steps only through 1/1, 1/3, 1/6 and 1/12"
   };
   evaluate('Object.assign(scene, { snap: true, snapMode: "grid", sections: [], lanes: [] })');
   pick(4);
-  assert.equal(get("triplet-snap").checked, false);
+  assert.equal(evaluate("window.dawsuUi.snapGroup()"), "common");
   assert.equal(await roll(-120), 8, "Common: 1/4 to 1/8");
   pick(3);
-  assert.equal(get("triplet-snap").checked, true, "the Triplets box shows the group");
+  assert.equal(evaluate("window.dawsuUi.snapGroup()"), "triplets", "the Triplets box shows the group");
   assert.equal(await roll(-120), 6);
   pick(6);
   assert.equal(await roll(-120), 12);
@@ -499,19 +496,16 @@ test("lane rows tint only in a colour the mapper picked", async () => {
 });
 
 test("lane height buttons and slider send the same viewport action as wheel zoom", async () => {
-  const { calls, get, settle } = await frontend();
-  const larger = get("lane-height-in").events.get("click");
-  assert.equal(typeof larger, "function");
-  larger();
+  const { calls, evaluate, settle } = await frontend();
+  evaluate('popoverAction("laneHeightStep", 1.15)');
   await settle();
   assert.deepEqual(calls.pop(), { scene: false, action: { kind: "view", start: 1000, zoom: 1, row_height: 35 } });
 
-  get("lane-height-out").events.get("click")();
+  evaluate('popoverAction("laneHeightStep", 1 / 1.15)');
   await settle();
   assert.equal(calls.pop().action.row_height, 30);
 
-  get("lane-height").value = "42";
-  get("lane-height").events.get("change")();
+  evaluate('popoverAction("laneHeight", 42, false)');
   await settle();
   assert.equal(calls.pop().action.row_height, 42);
 });

@@ -207,21 +207,15 @@ test("focused text controls keep their editing keys", async () => {
 });
 
 test("the status bar shows the open difficulty's file name, cut in the middle, with its full path", async () => {
-  const { evaluate, title, fileHead, fileTail } = await frontend();
-  evaluate('scene = { path: "C:\\\\Songs\\\\Mapset\\\\Artist - Title (Mapper) [Hard].osu", title: "Map title" }; show({ hasDocument: true, dirty: false })');
-  assert.equal(fileHead.textContent + fileTail.textContent, "Artist - Title (Mapper) [Hard].osu");
-  assert.equal(fileTail.textContent, "[Hard].osu");
-  assert.equal(title.title, "C:\\Songs\\Mapset\\Artist - Title (Mapper) [Hard].osu");
-  assert.equal(title.hidden, false);
+  const { splitFileName } = await import("../ui/src/lib/statusbar.js");
+  const first = splitFileName("C:\\Songs\\Mapset\\Artist - Title (Mapper) [Hard].osu");
+  assert.equal(first.head + first.tail, "Artist - Title (Mapper) [Hard].osu");
+  assert.equal(first.tail, "[Hard].osu");
 
-  evaluate('scene = { path: "/maps/another/Expert.osu" }; show({ hasDocument: true, dirty: true })');
-  assert.equal(fileHead.textContent + fileTail.textContent, "Expert.osu");
-  assert.equal(title.title, "/maps/another/Expert.osu");
+  const second = splitFileName("/maps/another/Expert.osu");
+  assert.equal(second.head + second.tail, "Expert.osu");
 
-  evaluate("show({ hasDocument: false })");
-  assert.equal(fileHead.textContent + fileTail.textContent, "");
-  assert.equal(title.title, "");
-  assert.equal(title.hidden, true);
+  assert.deepEqual(splitFileName(""), { head: "", tail: "" });
 });
 
 test("a changed lane count refreshes the scene in the background", async () => {

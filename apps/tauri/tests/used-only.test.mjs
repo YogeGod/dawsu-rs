@@ -261,7 +261,7 @@ test("loading another difficulty restores its own saved folder order and collaps
 });
 
 test("filtering by lane name or source preserves the original lane row", async () => {
-  const { calls, evaluate, get } = await frontend();
+  const { calls, evaluate } = await frontend();
   evaluate(`
     view = { busy: false, hasDocument: true, activeLane: 0, tool: "Draw" };
     scene = {
@@ -270,20 +270,17 @@ test("filtering by lane name or source preserves the original lane row", async (
       moments: [[1000, 80, true, [[1, false]]]]
     };
   `);
-  const field = get("lane-filter");
-  field.value = "  SNARE ";
-  field.events.get("input")();
+  evaluate('popoverAction("laneFilter", "  SNARE ")');
   assert.deepEqual(laneNames(evaluate), ["Clap"]);
   headerAction(evaluate, "mix", rowAt(evaluate, 0), "mute");
   await evaluate("pending");
   assert.equal(calls.at(-1).action.target.lane, "snare-file");
-  field.value = "kick";
-  field.events.get("input")();
+  evaluate('popoverAction("laneFilter", "kick")');
   assert.deepEqual(laneNames(evaluate), ["Kick"]);
 });
 
 test("Used only compacts rows without renumbering the lanes sent to Rust", async () => {
-  const { calls, evaluate, get } = await frontend();
+  const { calls, evaluate } = await frontend();
   evaluate(`
     view = { busy: false, hasDocument: true, activeLane: 0, tool: "Draw" };
     scene = {
@@ -293,10 +290,7 @@ test("Used only compacts rows without renumbering the lanes sent to Rust", async
     };
   `);
 
-  const toggle = get("used-only").events.get("change");
-  assert.equal(typeof toggle, "function");
-  get("used-only").checked = true;
-  toggle();
+  evaluate('popoverAction("usedOnly", true)');
   assert.deepEqual(laneNames(evaluate), ["A", "C"]);
   headerAction(evaluate, "mix", rowAt(evaluate, 1), "mute");
   await evaluate("pending");
@@ -311,18 +305,16 @@ test("Used only compacts rows without renumbering the lanes sent to Rust", async
   assert.equal(evaluate("lanePositions.get(2)"), 1);
   evaluate("drag = null; scene.moments[0][3] = [[2, false]]; renderLanes();");
   assert.deepEqual(laneNames(evaluate), ["A", "C"]);
-  get("used-only").checked = false;
-  toggle();
+  evaluate('popoverAction("usedOnly", false)');
   assert.deepEqual(laneNames(evaluate), ["A", "B", "C"]);
-  get("used-only").checked = true;
-  toggle();
+  evaluate('popoverAction("usedOnly", true)');
   assert.deepEqual(laneNames(evaluate), ["C"]);
 });
 
 
 
 test("collapsing sample layers keeps their model rows separate and lets them expand", async () => {
-  const { calls, evaluate, get } = await frontend();
+  const { calls, evaluate } = await frontend();
   evaluate(
     'view = { busy: false, hasDocument: true, activeLane: 0, tool: "Select" };' +
     'scene = { path: "fixture.osu", rowHeight: 30,' +
@@ -331,8 +323,7 @@ test("collapsing sample layers keeps their model rows separate and lets them exp
     ' { key:"C", sourceKey:"sample-c", name:"Clap 2", family:"clap", index:2 }, { key:"D", name:"Free sample" }],' +
     ' moments: [[1000, 80, true, [[2, false]]]] }; renderLanes();'
   );
-  const collapse = get("collapse-layers").events.get("click");
-  assert.equal(typeof collapse, "function");
+  const collapse = () => evaluate('popoverAction("collapseLayers")');
   collapse();
   assert.equal(evaluate("JSON.stringify(laneRows)"), "[1,3]");
   assert.equal(evaluate("previewParents.get(2)"), 1);
@@ -398,7 +389,7 @@ test("sample-set folders reorder headers and send group controls without changin
 });
 
 test("lane names and moves keep sample identities and persist within one difficulty", async () => {
-  const { calls, evaluate, get } = await frontend();
+  const { calls, evaluate } = await frontend();
   evaluate(`
     view = { busy: false, hasDocument: true, activeLane: 0 };
     scene = { path: "Layout.osu", rowHeight: 30, moments: [],
@@ -416,12 +407,9 @@ test("lane names and moves keep sample identities and persist within one difficu
   rename.buttons[1][1]();
   await evaluate("pending");
   assert.equal(calls.at(-1).action.value.lane_names["Skin|normal-hitclap"], "Snare");
-  const filter = get("lane-filter");
-  filter.value = "snare";
-  filter.events.get("input")();
+  evaluate('popoverAction("laneFilter", "snare")');
   assert.equal(evaluate("JSON.stringify(laneRows)"), '["normal",1]');
-  filter.value = "";
-  filter.events.get("input")();
+  evaluate('popoverAction("laneFilter", "")');
   evaluate("moveLane(1,-1); moveLane(1,-1); moveLane(2,-1)");
   await evaluate("pending");
   const saved = calls.at(-1).action;
