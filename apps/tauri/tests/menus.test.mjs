@@ -92,7 +92,6 @@ function fixture() {
   get("editor-menus").append(...["file", "edit", "playback", "map", "view"].map(name => get("menu-" + name)));
   get("editor-menu").offsetWidth = 330;
   get("editor-menu").offsetHeight = 220;
-  get("redo").disabled = true;
   const speedButtons = [.25, .5, .75, 1, 1.25, 1.5].map(value => ({
     dataset: { playbackSpeed: String(value) }, textContent: (value * 100) + "%",
   }));
@@ -138,6 +137,8 @@ function fixture() {
     labeled(label, control) { const node = element("label"); node.append(label, control); return node; },
     show(next) { calls.push({ show: next }); },
     openSiblingDifficulty(path) { calls.push({ sibling: path }); },
+    panelOn: panel => !!view.panels?.[panel],
+    togglePanel(panel) { calls.push({ togglePanel: panel }); },
   });
   runInContext(code, context);
   function key(key, handler = listeners.get("keydown")) {
@@ -319,7 +320,8 @@ test("each menu groups the editor's existing commands like the design, with no s
   ]);
   assert.deepEqual(open("view"), [
     "Browser", "Inspector", "Volume panel", "Lane names", "—",
-    "Song waveform", "Object lines", "Used lanes only", "Collapse sample layers", "—",
+    "Song waveform", "Object lines", "Used lanes only", "Collapse sample layers", "Filter lanes…", "Taller lanes",
+    "Shorter lanes", "—",
     "Zoom in", "Zoom out", "Fit difficulty", "—",
     "Time signatures…", "Open drum map…", "Edit layout…", "View settings…", "—",
     "Shortcuts",
@@ -335,7 +337,7 @@ test("menus only click ribbon controls that exist in the window", () => {
     ...[...code.matchAll(/(?:click|\$)\("([\w-]+)"\)/g)].map(match => match[1]),
     ...[...commandsSource.matchAll(/\["(?:onLane", ")?click", "([\w-]+)"\]/g)].map(match => match[1]),
   ]);
-  for (const id of ["folders", "audio", "open", "go-home", "used-only", "ruler-waveform"]) assert.ok(ids.has(id), id);
+  for (const id of ["audio", "used-only", "ruler-waveform", "export-entry"]) assert.ok(ids.has(id), id);
   for (const id of ids) assert.match(html + inspectorPart, new RegExp('id="' + id + '"'), id);
 });
 

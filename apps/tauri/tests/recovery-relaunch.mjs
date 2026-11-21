@@ -129,17 +129,18 @@ try {
   console.log("Using a disposable Windows app data and WebView2 profile at " + profile);
 
   const first = await launch([map]);
-  await first.page.locator("#title").filter({ hasText: title }).waitFor();
+  // The open file shows in the status bar; unsaved edits show on Save (data-dirty).
+  await first.page.locator("#file-name").filter({ hasText: title }).waitFor();
   const before = await state(first.page);
   await dismissAudioError(first.page, before);
   assert.equal(before.scene.moments[0][1], 100);
   assert.equal(before.dirty, false);
-  await first.page.locator("#title").click();
+  await first.page.locator("#file-name").click();
   await first.page.keyboard.press("Control+a");
   await first.page.locator("#selected").filter({ hasText: /\(\d+\)/ }).waitFor();
   await first.page.getByLabel("Set volume", { exact: true }).fill(String(editedVolume));
   await first.page.locator("#set-volume").click();
-  await first.page.locator("#title").filter({ hasText: title + " *" }).waitFor();
+  await first.page.locator('#save[data-dirty="true"]').waitFor();
   const edited = await state(first.page);
   assert.equal(edited.scene.moments[0][1], editedVolume);
   assert.equal(edited.dirty, true);
@@ -169,7 +170,7 @@ try {
   assert.equal(await second.page.locator("#home-open").isEnabled(), true);
   assert.match(await home.locator("time").textContent(), /\d/);
   await home.getByRole("button", { name: "Restore " + title, exact: true }).click();
-  await second.page.locator("#title").filter({ hasText: title + " *" }).waitFor();
+  await second.page.locator('#save[data-dirty="true"]').waitFor();
   const restored = await state(second.page);
   assert.equal(restored.dirty, true);
   assert.deepEqual(hitsOf(restored.scene), hitsOf(edited.scene));

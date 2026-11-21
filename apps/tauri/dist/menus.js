@@ -22,8 +22,8 @@ const menuRules = {
   selection: () => canEditFromMenu() && !!scene.selection?.count,
   range: () => canEditFromMenu() && !!scene.range,
   placement: () => canEditFromMenu() && scene.placement != null,
-  undo: () => canEditFromMenu() && !$("undo").disabled,
-  redo: () => canEditFromMenu() && !$("redo").disabled,
+  undo: () => canEditFromMenu() && scene.historyPosition !== 0,
+  redo: () => canEditFromMenu() && scene.historyPosition !== scene.history?.length,
   deleteLane: () => canEditFromMenu() && !$("delete-lane").disabled,
   never: () => false,
   lane: laneAllowed(() => true),
@@ -68,6 +68,11 @@ const menuCalls = {
   openDrumWindow: () => invoke("drum_window_open").catch(error => { $("status").textContent = String(error); }),
   requestDrumMap: () => requestDrumMap(),
   editLayout: () => dock?.editLayout(),
+  openMap: () => openMap(),
+  goHome: () => goHome(),
+  openFolders: () => openFolders(),
+  openViewSettings: () => openViewSettings(),
+  showHelp: () => run(showHelp),
 };
 
 const menuField = path => path.split(".").reduce((value, key) => value?.[key], { view, scene });
@@ -83,6 +88,7 @@ function runMenuEntry({ item, target, value, source }) {
   else if (kind === "act") act(first);
   else if (kind === "toggle" && third) act({ kind: first, on: !menuField(second) }, false);
   else if (kind === "toggle") act({ kind: first, on: !menuField(second) });
+  else if (kind === "panel" && first !== "lane_names") togglePanel(first);
   else if (kind === "panel") act({ kind: "panel", panel: first, on: !view.panels?.[second ?? first] });
   else if (kind === "tool") act({ kind: "tool", name: first });
   else if (kind === "call") menuCalls[first]();
@@ -99,6 +105,7 @@ function menuChecked({ item, target, value, source }) {
   if (item.checked) return !!menuRules[item.checked](target, item);
   const [kind, first, second] = item.run ?? [];
   if (kind === "toggle") return !!menuField(second);
+  if (kind === "panel" && first !== "lane_names") return panelOn(first);
   if (kind === "panel") return !!view.panels?.[second ?? first];
   return undefined;
 }

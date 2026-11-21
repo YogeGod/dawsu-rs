@@ -68,7 +68,7 @@ test("the Audition pill follows the editor's audition setting", () => {
   let html = shown(AuditionPill, { audition: true, busy: false });
   assert.deepEqual(labels(html), ["Audition"]);
   assert.match(html, /aria-pressed="true"/);
-  // Below 1780 px style.css hides .toolbar-toggle-label, as for Follow and Return; the name stays.
+  // Below 1120 px style.css hides .toolbar-toggle-label; the name stays.
   assert.match(html, /<span class="toolbar-toggle-label">Audition<\/span>/);
   assert.match(html, /aria-label="Audition"/);
   assert.doesNotMatch(html, /disabled|\sstyle=/);

@@ -77,13 +77,12 @@ test("recent maps show the map name and difficulty from the file name and open o
 
 test("Import .osz picks an archive and Folders opens the Folders dialog", async () => {
   const { calls, evaluate, get, settle } = await frontend();
-  let folders = 0;
-  get("folders").click = () => { folders++; };
+  evaluate("var folders = 0; openFolders = () => { folders++; };");
   get("home-import").events.get("click")();
   await settle();
   assert.deepEqual(calls.at(-1), { name: "pick_map", args: { archiveOnly: true } });
   get("home-folders").events.get("click")();
-  assert.equal(folders, 1);
+  assert.equal(evaluate("folders"), 1);
 
   evaluate("show({ busy: true, hasDocument: false, recent: [] })");
   assert.equal(get("home-import").disabled, true);

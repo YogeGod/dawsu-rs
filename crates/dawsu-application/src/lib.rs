@@ -89,6 +89,14 @@ pub struct Document {
     export_choices: Option<ExportChoices>,
 }
 impl Document {
+    /// The map's `Title` from the `.osu` metadata, or empty when it has none.
+    pub fn map_title(&self) -> String {
+        self.file.value("Metadata", "Title").unwrap_or_default()
+    }
+    /// The difficulty name (`Version`) from the `.osu` metadata, or empty when it has none.
+    pub fn version(&self) -> String {
+        self.file.value("Metadata", "Version").unwrap_or_default()
+    }
     pub fn read(path: &Path) -> Result<Self, String> {
         Self::read_matching(path, None)
     }

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { createContext, runInContext } from "node:vm";
+import { dockingRules } from "./docking-rules.mjs";
 
 const app = await readFile(new URL("../dist/app.js", import.meta.url), "utf8");
 const enabled = { browser: true, inspector: true, controller: true, laneNames: true };
@@ -34,7 +35,7 @@ test("folder tree and Classic share the same mapset samples and preserve explici
     document: {
       getElementById: get, createElement: element, querySelectorAll: () => [], addEventListener() {},
     },
-    window: { __TAURI__: {
+    window: { editorDocking: dockingRules, __TAURI__: {
       core: { invoke: async (command, args) => {
         calls.push(JSON.parse(JSON.stringify(args?.action ?? null)));
         if (command === "editor_view" && args?.action?.kind === "browser_style") {
@@ -62,8 +63,6 @@ test("folder tree and Classic share the same mapset samples and preserve explici
     {key: "clap", sourceKey: "clap", name: "Snare", sample: "percussion/snare.wav"},
   ]};
   renderPanelLayout();`, context);
-  assert.equal(get("editor-dock").dataset.browser, "tree");
-  assert.equal(get("sample-browser").parentNode, get("tree-browser-host"));
   const rows = get("sample-browser-entries");
   const click = (node) => node.listeners.get("click")();
   assert.deepEqual(rows.children.map(row => row.textContent), ["percussion"]);
@@ -76,14 +75,12 @@ test("folder tree and Classic share the same mapset samples and preserve explici
   runInContext(`let controls;
     modal = (_kind, _title, body) => { controls = body; };
     labeled = (label, control) => ({label, control});`, context);
-  click(get("panel-view"));
-  const style = runInContext('controls.find(item => item.label === "File browser style").control', context);
+  runInContext("openViewSettings()", context);
+  const style = runInContext('controls.find(item => item.label === "Browser style").control', context);
   style.value = "classic";
   style.listeners.get("change")();
   await runInContext("pending", context);
   assert.deepEqual(calls.at(-1), {kind: "browser_style", classic: true});
-  assert.equal(get("editor-dock").dataset.browser, "classic");
-  assert.equal(get("sample-browser").parentNode, get("classic-browser-host"));
   assert.deepEqual(rows.children.map(row => row.textContent), ["percussion"]);
   click(rows.children[0]);
   assert.deepEqual(rows.children.map(row => row.textContent), ["snare.wav"]);
@@ -120,7 +117,6 @@ test("folder tree and Classic share the same mapset samples and preserve explici
     target: {map: "copy.osu", lane: "normal"}});
   runInContext('act({ kind: "browser_style", classic: false });', context);
   await runInContext("pending", context);
-  assert.equal(get("sample-browser").parentNode, get("tree-browser-host"));
   assert.deepEqual(rows.children.map(row => row.textContent), ["Drums"]);
   click(rows.children[0]);
   assert.deepEqual(rows.children.map(row => row.textContent), ["Drums", "snare.wav"]);

@@ -1237,7 +1237,8 @@ fn snapshot(app: &Application, include_scene: bool) -> Value {
                 });
             }
             json!({
-                "title": d.title, "path": d.path, "difficulties": d.difficulties,
+                "title": d.title, "mapTitle": d.map_title(), "version": d.version(),
+                "path": d.path, "difficulties": d.difficulties,
                 "lanes": lanes, "laneOrder": lane_order, "moments": moments, "sections": sections, "waveform": waveform,
                 "gameplay": gameplay_overlay(d),
                 "laneRevision": c.history.version(),
@@ -1306,6 +1307,7 @@ fn snapshot(app: &Application, include_scene: bool) -> Value {
         })).collect::<Vec<_>>(),
         "recent": app.preferences.recent, "firstLaunch": app.first_launch,
     });
+    result["outputDevice"] = json!(app.device_name());
     result["saveReview"] = json!(app.save_review_files());
     result["soundSetPrompts"] = json!(document.map(|_| app.sound_set_prompts()).unwrap_or_default().iter().map(|p| json!({
         "setId": p.set_id, "name": p.name, "placements": p.placements, "editedKeepFiles": p.edited_keep_files,

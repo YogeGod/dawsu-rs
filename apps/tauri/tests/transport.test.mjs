@@ -56,10 +56,11 @@ async function frontend() {
   return { calls, evaluate, get, mapOnly };
 }
 
-test("the transport sits in the top bar after the map name as the Svelte part, with no L or R chips", () => {
+test("the transport sits in the top bar after the menus as the Svelte part, with no L or R chips", () => {
   assert.doesNotMatch(html, /id="editor-transport"/);
-  assert.ok(header.indexOf('id="title"') >= 0);
-  const transport = header.slice(header.indexOf('id="title"'));
+  // The map name left the top bar (v3); the file name is in the status bar.
+  assert.ok(!header.includes('id="title"'));
+  const transport = header.slice(header.indexOf('id="editor-menus"'));
   // The bar and readout are the TransportBar part, mounted inside the kept #top-transport group.
   assert.match(transport, /<div id="top-transport"[^>]*>\s*<div data-ui-mount="transport"><\/div>\s*<\/div>/);
   for (const gone of ['data-action="start"', 'data-action="stop"', 'data-action="play"', 'id="cycle"', 'id="position"',
@@ -119,8 +120,6 @@ test("show() leaves the transport and locators to the Svelte part and still fade
 
   evaluate("show({ busy: false, hasDocument: false, position: 5000, left: 0, right: 10000, musicalPosition: null })");
   assert.equal(get("editor-header").dataset.empty, "true");
-  assert.equal(get("title")["data-placeholder"], "No map open");
-  assert.match(app, /title\.setAttribute\("data-placeholder"/, "the title is a real element, no optional call");
   assert.equal(get("status-view").hidden, true);
   assert.ok(mapOnly.every(control => control.disabled === true));
 });
