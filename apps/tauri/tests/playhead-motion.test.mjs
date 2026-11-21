@@ -19,7 +19,7 @@ async function editor() {
       },
     });
     return {
-      calls, getContext: () => ctx, clientWidth: 300, clientHeight: 80, scrollTop: 0, listeners: {},
+      calls, getContext: () => ctx, clientWidth: 300, showModal() { this.open = true; }, close() { this.open = false; }, clientHeight: 80, scrollTop: 0, listeners: {},
       dataset: {}, style: { setProperty() {} }, children: [], append() {}, prepend() {}, setAttribute() {},
       replaceChildren() {}, classList: { toggle() {}, add() {}, remove() {}, contains: () => false },
       addEventListener(name, listener) { (this.listeners[name] ??= []).push(listener); },
@@ -34,18 +34,21 @@ async function editor() {
   let frames = [];
   let tick = null;
   const invoked = [];
-  const harness = { state: null };
+  // `roundTrip`: how far the clock moves while the editor answers.
+  const harness = { state: null, roundTrip: 0 };
   const context = createContext({
     document: { getElementById: get, createElement: element, querySelectorAll: () => [], addEventListener() {} },
     window: { devicePixelRatio: 1, __TAURI__: {
       core: { invoke: async (name, args) => {
         invoked.push(name === "editor_view" ? args.action?.kind ?? "refresh" : name);
+        now += harness.roundTrip;
         return name === "editor_view" ? { ...harness.state } : undefined;
       } },
       event: { listen() {} },
     } },
     performance: { now: () => now },
     ResizeObserver: class { observe() {} },
+    Option: class { constructor(text, value) { this.text = text; this.value = value; } },
     requestAnimationFrame(callback) { frames.push(callback); return frames.length; },
     cancelAnimationFrame() {},
     setInterval(callback) { tick = callback; },
@@ -56,7 +59,7 @@ async function editor() {
   get("grid").clientWidth = 300;
   const evaluate = code => runInContext(code, context);
   evaluate(`scene = { path: "fixture.osu", viewStart: 0, zoom: .1, rowHeight: 30, moments: [], waveform: [],
-    lanes: [], sections: [[0, 500, 4]], gameplay: { points: [], spans: [] } };`);
+    lanes: [], difficulties: [], sections: [[0, 500, 4]], gameplay: { points: [], spans: [] } };`);
   const base = { hasDocument: true, duration: 60000, left: 0, right: 0, follow: false, speed: 1 };
   return {
     invoked,
@@ -77,6 +80,13 @@ async function editor() {
       for (const callback of run) callback(at);
       const drawn = ruler.calls.filter(call => call.name === "moveTo" && call.stroke === playheadColour);
       return drawn.length ? Math.round((drawn.at(-1).args[0] - .5) * 100) / 100 : null;
+    },
+    roundTrip(ms) {
+      harness.roundTrip = ms;
+    },
+    // What the editor answers next, without a view arriving now.
+    answer(fields) {
+      harness.state = { ...base, ...fields };
     },
     async tick(at, state) {
       now = at;
@@ -178,4 +188,72 @@ test("zooming while Centre follows keeps the new zoom: a view arriving in betwee
   assert.equal(page.evaluate("scene.zoom"), .2);
   // 300 px at .2 px per ms shows 1500 ms: still centred on the playhead, at the new zoom.
   assert.equal(page.frame(100), 150);
+});
+
+test("a fault while playing stops the frames", async () => {
+  const page = await editor();
+  page.show(0, { playing: true, position: 1000 });
+  page.frame(16);
+  page.evaluate('show({ fault: "boom" })');
+  page.frame(33);
+  page.frame(50);
+  assert.equal(page.frame(66), null, "no frame paints behind the Editor stopped dialog");
+});
+
+test("the hold lets go: a line held once is pulled back to the editor's report next time", async () => {
+  const page = await editor();
+  page.show(0, { playing: true, position: 1000 });
+  page.frame(85);
+  // 15 ms behind: held once.
+  page.show(85, { playing: true, position: 1070 });
+  assert.equal(page.frame(85), x(1085));
+  // Still 15 ms behind on the next view: the line goes to the report.
+  page.show(170, { playing: true, position: 1155 });
+  assert.equal(page.frame(170), x(1155));
+});
+
+test("Follow's page turn is asked once, not again on every frame while it waits its turn", async () => {
+  const page = await editor();
+  page.show(0, { playing: true, position: 2990, follow: true });
+  // Hold the queue: frames run while no view request has had its turn.
+  page.evaluate("pending = new Promise(done => { globalThis.release = done; })");
+  for (const at of [16, 33, 50, 66, 83]) page.frame(at);
+  page.answer({ playing: true, position: 3073, follow: true });
+  page.evaluate("release()");
+  await page.evaluate("pending");
+  await page.evaluate("pending");
+  assert.deepEqual(page.invoked.filter(kind => kind === "view"), ["view"], JSON.stringify(page.invoked));
+});
+
+test("in Centre a full scene from the editor keeps the view the frames scrolled to, and stopping tells the editor", async () => {
+  const page = await editor();
+  page.evaluate("window.dawsuUi = { centre: () => true, update() {}, snapGroup() {}, lanes() {}, mixer() {}, inspector() {} }");
+  page.show(0, { playing: true, position: 10000, follow: true });
+  await page.evaluate("pending");
+  page.frame(60);
+  assert.equal(page.evaluate("scene.viewStart"), 8560);
+  // A full scene carries the editor's older start.
+  page.show(70, { playing: true, position: 10070, follow: true, scene: { path: "fixture.osu", viewStart: 8500, zoom: .1,
+    rowHeight: 30, moments: [], waveform: [], lanes: [], difficulties: [], sections: [[0, 500, 4]], gameplay: { points: [], spans: [] } } });
+  assert.equal(page.evaluate("scene.viewStart"), 8560);
+  page.frame(80);
+  await page.evaluate("pending");
+  await page.evaluate("pending");
+  const sent = page.invoked.filter(kind => kind === "view").length;
+  // Stop: the editor hears where the view ended up.
+  page.show(90, { playing: false, position: 10090, follow: true });
+  page.frame(100);
+  await page.evaluate("pending");
+  await page.evaluate("pending");
+  assert.equal(page.invoked.filter(kind => kind === "view").length, sent + 1);
+});
+
+test("at high zoom, Centre's own answer doesn't ask the editor again at once", async () => {
+  const page = await editor();
+  page.evaluate("window.dawsuUi = { centre: () => true, update() {}, snapGroup() {} }");
+  page.evaluate("scene.zoom = 3");
+  page.roundTrip(5);
+  page.show(0, { playing: true, position: 10000, follow: true });
+  for (let i = 0; i < 10; i++) await page.evaluate("pending");
+  assert.equal(page.invoked.filter(kind => kind === "view").length, 1);
 });

@@ -95,9 +95,11 @@ let frame = 0;
 // While playing, the playhead is drawn on every frame (playbackFrame), not only when the editor's
 // view arrives (every 85 ms). It moves on from the last reported position at the playback speed.
 let playbackFrame = 0;
-let playheadAnchor = { position: 0, at: 0 };
+let playheadAnchor = { position: 0, at: 0, held: false };
 // Centre's view start the editor was last told of; frames scroll the view between those updates.
 let centreSentStart = null;
+// A Follow view change waiting for its turn or its answer.
+let followQueued = false;
 
 const nameOf = (path) => path.split(/[\\/]/).at(-1);
 const limit = (x, min, max) => Math.min(Math.max(x, min), Math.max(min, max));
@@ -244,6 +246,9 @@ function show(next) {
     const before = !loaded && scene ? new Set(shownRows(scene)) : null;
     const unfolded = before ? shownRows(view.scene).filter(row => !before.has(row))
       .filter(row => collapsedFamilies.delete(view.scene.lanes[row]?.family)) : [];
+    // Centre scrolls the view on every frame; the editor's scene carries an older start.
+    const centring = !loaded && scene && view.playing && view.follow && window.dawsuUi?.centre?.();
+    if (centring) view.scene.viewStart = scene.viewStart;
     scene = view.scene;
     if (unfolded.length) saveLaneLayout();
   }
@@ -1479,8 +1484,9 @@ const playheadReach = 250;
 function anchorPlayhead(drawn) {
   if (!view.playing) return;
   const behind = drawn - view.position;
-  const held = behind > 0 && behind <= playheadHold;
-  playheadAnchor = { position: held ? drawn : view.position, at: performance.now() };
+  // Held once at most: a line still behind on the next view goes to the report.
+  const held = behind > 0 && behind <= playheadHold && !playheadAnchor.held;
+  playheadAnchor = { position: held ? drawn : view.position, at: performance.now(), held };
 }
 
 // Where the playhead is drawn now: the last report moved on at the playback speed while playing.
@@ -1501,7 +1507,10 @@ function animatePlayback() {
   if (playbackFrame) return;
   playbackFrame = requestAnimationFrame(function step() {
     playbackFrame = 0;
-    if (!scene || !view.playing) {
+    if (!scene || !view.playing || view.fault) {
+      // Centre scrolled the view between the editor's views: tell it where the view ended up.
+      if (scene && !view.fault && centreSentStart !== null) changeView(() => scene.viewStart);
+      centreSentStart = null;
       paintSoon();
       return;
     }
@@ -2526,15 +2535,23 @@ function followPlayhead(frame = false) {
     const centred = zoom => timelineStart(playheadPosition() - grid.clientWidth / zoom / 2, zoom);
     const start = centred(scene.zoom);
     if (frame) scene.viewStart = start;
-    else if (Math.abs(start - (centreSentStart ?? scene.viewStart)) * scene.zoom >= 1) {
-      changeView(zoom => (centreSentStart = centred(zoom)));
+    // Not from the answer to Centre's own change: at high zoom every answer would differ by a
+    // pixel and ask again at once. The next refresh tells the editor.
+    else if (!followQueued && Math.abs(start - (centreSentStart ?? scene.viewStart)) * scene.zoom >= 1) {
+      queueFollow(zoom => (centreSentStart = centred(zoom)));
     }
     return;
   }
   centreSentStart = null;
-  if (position >= scene.viewStart && position <= scene.viewStart + visible * .98) return;
+  if (followQueued || (position >= scene.viewStart && position <= scene.viewStart + visible * .98)) return;
   const paged = zoom => timelineStart(playheadPosition() - grid.clientWidth / zoom * .02, zoom);
-  if (paged(scene.zoom) !== scene.viewStart) changeView(paged);
+  if (paged(scene.zoom) !== scene.viewStart) queueFollow(paged);
+}
+
+// One Follow view change at a time, until its answer is shown; frames in between ask for no more.
+function queueFollow(start) {
+  followQueued = true;
+  changeView(start).finally(() => { followQueued = false; });
 }
 
 function resizeLaneHeaders(height) {
