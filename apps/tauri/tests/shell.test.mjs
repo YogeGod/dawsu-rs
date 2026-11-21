@@ -15,17 +15,24 @@ const between = (text, start, end) => {
   assert.ok(from >= 0, "missing " + start);
   return text.slice(from, text.indexOf(end, from));
 };
+// Each marker must appear after the one before it.
 const inOrder = (text, markers, label) => {
-  const places = markers.map(marker => [marker, text.indexOf(marker)]);
-  for (const [marker, place] of places) assert.ok(place >= 0, label + ": missing " + marker);
-  assert.deepEqual(places.map(([marker]) => marker), places.slice().sort((a, b) => a[1] - b[1]).map(([marker]) => marker), label);
+  let from = 0;
+  for (const marker of markers) {
+    const place = text.indexOf(marker, from);
+    assert.ok(place >= 0, label + ": " + marker + " missing or out of order");
+    from = place + marker.length;
+  }
 };
 
 test("the top bar reads brand, menus, transport, Export, Save, then the three panel switches", () => {
   const header = between(html, '<header id="editor-header"', "</header>");
+  assert.match(header, /<\/strong>\s*<span class="header-divider" aria-hidden="true"><\/span>\s*<nav id="editor-menus"/);
   inOrder(header, ['class="brand"', 'id="editor-menus"', 'id="top-transport"', 'id="export-entry"',
     'class="header-divider"', 'id="save"', 'id="view-browser"', 'id="view-inspector"', 'id="view-controller"'], "top bar");
-  assert.equal(header.split('class="header-divider"').length - 1, 2);
+  assert.equal(header.split('class="header-divider"').length - 1, 3);
+  // v3 2.1: an accent diamond, not the old image logo.
+  assert.match(header, /class="brand"><span class="brand-diamond" aria-hidden="true"><\/span>dawsu!<\/strong>/);
   assert.doesNotMatch(header, /id="title"|id="layout-edit-entry"/);
   assert.match(header, /id="save"[^>]*data-action="review_save"/);
 });

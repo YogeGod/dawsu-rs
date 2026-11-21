@@ -59,13 +59,7 @@
   height: 14px;
   flex: none;
 }
-/* The same compact steps the old tool buttons had, so the toolbar fits from 1366 px. */
-@media (max-width: 1779px) {
-  /* style.css hides the Audition name here, as for Follow and Return. */
-  .ui-pill.ui-pill-toggle {
-    padding: 0 6px;
-  }
-}
+/* Compact steps so row 2 fits down to 1024 px. */
 @media (max-width: 1599px) {
   .ui-pill {
     gap: 4px;

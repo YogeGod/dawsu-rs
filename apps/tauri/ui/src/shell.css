@@ -2,7 +2,7 @@
    and the status bar. Dock widths, icons and the playback speed buttons stay in style.css. */
 
 /* Icons drawn inline in index.html. */
-#editor-header svg,
+#editor-header button svg,
 #editor-ribbon .map-chip svg,
 #editor-ribbon .lane-mode svg,
 .panel-head svg,
@@ -31,6 +31,50 @@
   width: 1px;
   height: 24px;
   background: var(--editor-selected);
+}
+/* v3 2.1-2.3: a 15 px accent diamond and the wordmark, a divider, then the menus as one group. */
+#editor-header .brand {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: 0;
+  line-height: 1;
+}
+#editor-header .brand-diamond {
+  width: 11px;
+  height: 11px;
+  margin: 0 2px;
+  background: var(--editor-accent);
+  transform: rotate(45deg);
+}
+#editor-header #editor-menus {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 20px;
+  height: 32px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 6px;
+  background: var(--editor-panel);
+}
+#editor-header #editor-menus button {
+  min-height: 0;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--editor-text);
+}
+#editor-header #editor-menus button:hover:not(:disabled),
+#editor-header #editor-menus button[aria-expanded="true"] {
+  background: transparent;
+  color: var(--editor-focus);
 }
 #editor-header #export-entry,
 #editor-header #save {
@@ -141,7 +185,7 @@
   align-items: center;
   gap: 10px;
   min-width: 0;
-  max-width: 360px;
+  max-width: 480px;
   height: 32px;
   padding: 0 10px 0 12px;
   border-radius: 6px;
@@ -287,6 +331,16 @@ aside[data-folded] {
   overflow: hidden;
   padding: 0;
 }
+#tree-browser-host[data-folded] {
+  border-right: 1px solid var(--editor-border);
+}
+#editor-inspector[data-folded] {
+  border-left: 1px solid var(--editor-border);
+}
+/* The tree panel's head names it, so the sample list drops its own heading there. */
+#tree-browser-host #sample-browser > h2 {
+  display: none;
+}
 .panel-rail {
   display: flex;
   flex-direction: column;
@@ -331,33 +385,35 @@ aside[data-folded] {
   color: var(--editor-secondary);
   white-space: nowrap;
 }
-#statusbar #warnings {
-  min-width: 0;
-  max-width: 220px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
 #statusbar .status-right {
   flex: 0 1 auto;
   min-width: 0;
 }
+/* The file name gives way first: its head shrinks to an ellipsis, then its tail ("[Hard].osu"), so it
+   never pushes over the hit and lane counts. */
 #statusbar .status-file {
   display: flex;
-  min-width: 48px;
+  flex: 0 1 auto;
+  min-width: 0;
   max-width: min(32vw, 420px);
+  overflow: hidden;
   color: var(--editor-muted);
   font-size: 11px;
   white-space: nowrap;
 }
 #file-name-head {
+  flex: 0 1000 auto;
   min-width: 0;
   white-space: pre;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 #file-name-tail {
-  flex: none;
+  flex: 0 1 auto;
+  min-width: 0;
   white-space: pre;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 #statusbar .status-counts,
 #statusbar .status-view {
@@ -366,7 +422,6 @@ aside[data-folded] {
 #statusbar .status-device {
   flex: 0 1 auto;
   min-width: 0;
-  max-width: 160px;
   overflow: hidden;
   padding: 0 6px;
   border: 0;
@@ -381,6 +436,12 @@ aside[data-folded] {
 @media (max-width: 1439px) {
   #editor-header.chrome {
     gap: 8px;
+  }
+  #editor-ribbon .map-chip {
+    max-width: 360px;
+  }
+  #statusbar .status-device {
+    max-width: 160px;
   }
   #editor-header .header-label {
     display: none;

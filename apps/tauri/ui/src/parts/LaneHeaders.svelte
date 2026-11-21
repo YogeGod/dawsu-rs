@@ -264,6 +264,12 @@
     opacity: 0.45;
     cursor: default;
   }
+  /* Narrow windows: + and − show on hover or focus only, so the lane names stay readable. */
+  @media (max-width: 1279px) {
+    .lane:not(.compact):not(:hover):not(:focus-within) :is(.lane-add-layer, .lane-remove) {
+      display: none;
+    }
+  }
   /* v3: muted lanes, and the others while any lane is soloed, go grey. */
   .quiet .num {
     background: var(--editor-disabled);

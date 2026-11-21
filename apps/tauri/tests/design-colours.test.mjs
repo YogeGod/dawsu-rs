@@ -76,12 +76,14 @@ test("muted and secondary text reads at 4.5:1 or better on every bar", () => {
   }
 });
 
-test("top-bar buttons have an edge that shows against the bar", () => {
-  const edges = [...css.matchAll(/([^{}]*)\{[^}]*border-color:\s*(#[0-9a-f]{6})\b[^}]*\}/gi)]
-    .filter(([, selector]) => /header[^,{]*#editor-menus button/.test(selector) && /header(\.chrome)? button\b/.test(selector));
-  assert.equal(edges.length, 1, "one rule edges every top-bar button, menu triggers included");
-  const ratio = contrast(edges[0][2], root[lastDeclared("header.chrome", "background")]);
-  assert.ok(ratio >= 1.5, `edge is ${ratio.toFixed(2)}:1`);
+test("top-bar buttons sit flat on the bar, with the menus as one panel group (v3 2.3)", async () => {
+  // v3 drops the edged buttons: the menus are one --editor-panel group, Export a hover fill.
+  const edges = [...css.matchAll(/([^{}]*)\{[^}]*border-color:\s*(#[0-9a-f]{6})[^}]*\}/gi)]
+    .filter(([, selector]) => /header[^,{]*#editor-menus button/.test(selector));
+  assert.equal(edges.length, 0);
+  const shell = await readFile(new URL("../ui/src/shell.css", import.meta.url), "utf8");
+  assert.match(shell, /#editor-header #editor-menus \{[^}]*background: var\(--editor-panel\)/);
+  assert.match(shell, /#editor-header #editor-menus button \{[^}]*border: 0/);
 });
 
 async function paintedCanvases() {

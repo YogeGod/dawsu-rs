@@ -135,7 +135,7 @@ try {
   await dismissAudioError(first.page, before);
   assert.equal(before.scene.moments[0][1], 100);
   assert.equal(before.dirty, false);
-  await first.page.locator("#status").click();
+  await first.page.locator("#file-name").click();
   await first.page.keyboard.press("Control+a");
   await first.page.locator("#selected").filter({ hasText: /\(\d+\)/ }).waitFor();
   await first.page.getByLabel("Set volume", { exact: true }).fill(String(editedVolume));

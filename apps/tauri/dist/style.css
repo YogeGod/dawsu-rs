@@ -79,7 +79,6 @@ button[data-layout-height]{height:var(--layout-height)!important;min-height:0;ov
 .ribbon-group+.ribbon-group{border-left:1px solid var(--line);padding-left:8px}
 .ribbon-caption{font-size:11px;color:var(--muted);line-height:1}
 .ribbon-controls{display:flex;align-items:center;gap:6px}
-.ribbon-controls #difficulty{width:auto;max-width:clamp(6rem,15vw,13rem)}
 #editor-menus{display:flex;gap:2px;padding:2px 12px;background:var(--panel);border-bottom:1px solid var(--line)}
 #editor-menus button{min-height:24px;padding:3px 7px;border-color:transparent;background:transparent}
 #editor-menus button:hover,#editor-menus button[aria-expanded="true"]{border-color:var(--line);background:var(--control)}
@@ -98,8 +97,7 @@ button[data-layout-height]{height:var(--layout-height)!important;min-height:0;ov
 .menu-choice[aria-checked="true"]:disabled{opacity:.75}
 .tools .ribbon-controls{flex-wrap:wrap}
 @media (max-width:1320px){.ribbon-caption{display:none}}
-@media (max-width:1230px){.ribbon-secondary-label{display:none}}
-.dock{display:grid;min-height:0;grid-template-columns:minmax(0,1fr) 242px}.arrange{display:grid;min-height:0;--ruler-row:min(calc(21px + max(26px,var(--wave-height,56px))),max(47px,calc(100% - var(--timeline-reserve,144px))));grid-template-rows:var(--ruler-row) minmax(0,1fr) minmax(20px,max-content);--lane-default-width:clamp(170px,18vw,250px);--lanes:clamp(99px,var(--layout-lane-width,var(--lane-default-width)),max(99px,calc(100cqw - 140px)));background:var(--field)}.ruler,.overview,.scroll{display:grid;grid-template-columns:var(--lanes) minmax(0,1fr);min-width:0}.scroll{overflow:auto;align-items:start;scrollbar-gutter:stable}.ruler,.overview{padding-right:12px}.ruler{background:var(--ruler);border-bottom:1px solid var(--line)}.overview{background:var(--lane);border-top:1px solid var(--line)}.lane-title{background:var(--lane);color:var(--muted);display:flex;align-items:center;padding:0 12px;border-right:1px solid var(--line)}#lanes{border-right:1px solid var(--line)}
+.arrange{display:grid;min-height:0;--ruler-row:min(calc(21px + max(26px,var(--wave-height,56px))),max(47px,calc(100% - var(--timeline-reserve,144px))));grid-template-rows:var(--ruler-row) minmax(0,1fr) minmax(20px,max-content);--lane-default-width:clamp(170px,18vw,250px);--lanes:clamp(99px,var(--layout-lane-width,var(--lane-default-width)),max(99px,calc(100cqw - 140px)));background:var(--field)}.ruler,.overview,.scroll{display:grid;grid-template-columns:var(--lanes) minmax(0,1fr);min-width:0}.scroll{overflow:auto;align-items:start;scrollbar-gutter:stable}.ruler,.overview{padding-right:12px}.ruler{background:var(--ruler);border-bottom:1px solid var(--line)}.overview{background:var(--lane);border-top:1px solid var(--line)}.lane-title{background:var(--lane);color:var(--muted);display:flex;align-items:center;padding:0 12px;border-right:1px solid var(--line)}#lanes{border-right:1px solid var(--line)}
 canvas{display:block;width:100%;height:100%;min-width:0;touch-action:none}#grid,#controller,#ruler,#overview{cursor:default}
 aside{overflow:auto;border-left:1px solid var(--line);background:var(--panel)}aside section{padding:12px;border-bottom:1px solid var(--line)}h2{font-size:13px;margin:0 0 10px}.dim{font-weight:400;margin-left:4px}aside label{display:flex;justify-content:space-between;align-items:center;gap:6px;margin:8px 0}#difficulty{width:100%}
 #statusbar{background:var(--control);border-top:1px solid var(--line);color:var(--title-text);min-height:26px;padding:3px 12px;display:flex;gap:8px;align-items:center}#status{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}#statusbar button{min-height:22px}
@@ -118,7 +116,7 @@ dialog{color:var(--text);background:var(--raised);border:1px solid var(--button-
 .ruler-sidebar button{min-width:18px;min-height:18px;padding:0 3px;line-height:1}
 .arrange[data-lane-names="false"] .lane-title-controls > span{display:none}
 .arrange{grid-template-rows:var(--layout-timeline-rows,var(--ruler-row) minmax(0,1fr) auto minmax(20px,max-content))}.controller{background:var(--field);display:grid;grid-template-columns:var(--lanes) minmax(0,1fr);min-width:0;padding-right:12px;border-top:1px solid var(--line)}
-@media(max-width:800px){.dock{grid-template-columns:minmax(0,1fr) 205px}.arrange{--lane-default-width:115px}.chrome{padding-inline:7px;gap:4px}aside section{padding:9px}}
+@media(max-width:800px){.arrange{--lane-default-width:115px}.chrome{padding-inline:7px;gap:4px}aside section{padding:9px}}
 
 body{font-family:Inter,"Segoe UI",system-ui,sans-serif}
 .brand{display:inline-flex;align-items:center}
@@ -141,7 +139,6 @@ body{font-family:Inter,"Segoe UI",system-ui,sans-serif}
 .arrange[data-layout-lane-sidebar-hidden] > .layout-size-column{display:none}
 
 
-#tree-browser-host{border-left:0;border-right:1px solid var(--line)}
 .sample-browser-controls{margin-bottom:6px;justify-content:space-between}
 .sample-browser-source-controls{display:grid;gap:4px;margin-bottom:6px}
 #sample-browser-filter{min-width:0;border:1px solid var(--line);border-radius:5px;background:var(--field);padding:4px 8px}
@@ -197,13 +194,6 @@ body{font-family:Inter,"Segoe UI",system-ui,sans-serif}
 .dock-split[data-axis="rows"] > .dock-grip::after { inset: 2px 0; }
 .dock-grip:hover::after, .dock-grip:focus-visible::after { background: var(--hi); }
 .dock-grip:focus-visible { outline: 1px solid var(--hi); outline-offset: -1px; }
-.dock-preview {
-  position: absolute;
-  z-index: 2;
-  pointer-events: none;
-  border: 2px solid var(--hi);
-  background: #77bdfa30;
-}
 
 /* Shared control surfaces from the desktop editor component sheet. */
 .playback-rates { display:grid; grid-auto-flow:column; gap:2px; padding:2px; border-radius:5px; background:var(--base); }
@@ -224,9 +214,7 @@ body{font-family:Inter,"Segoe UI",system-ui,sans-serif}
   --field:#151515; --button:#2c2c2c; --button-border:#383838; --line:#383838;
 }
 header.chrome { min-height:44px; padding-block:4px; background:var(--chrome); }
-header #editor-menus { border:0; background:transparent; }
 /* Top-bar buttons sit on --chrome, so they get an --editor-selected edge (1.5:1 against the bar). */
-header.chrome button, header #editor-menus button { border-color:#454545; }
 .tools.chrome { background:var(--panel); gap:5px; padding:4px 8px; flex-wrap:nowrap; overflow-x:auto; scrollbar-width:thin; }
 .tools .ribbon-group { flex:none; align-content:center; }
 .tools .ribbon-controls { flex-wrap:nowrap; }
@@ -259,8 +247,6 @@ aside section > :last-child { margin-bottom:0; }
 .tint-preview i:nth-of-type(3) { border:2px solid white; }
 
 /* Menus (design f6), menu-bar menus only: flat rows, keys as plain text, a grey switch track, segmented choice rows and group dividers. */
-header #editor-menus{gap:0;padding:2px;border-radius:6px;background:var(--button)}
-header #editor-menus button{min-height:26px;padding:3px 10px;border-radius:4px}
 #editor-menu[aria-labelledby]{grid-template-columns:minmax(0,1fr);gap:0;padding:6px;border-color:var(--line);border-radius:8px;box-shadow:0 14px 36px rgba(0,0,0,.55)}
 #editor-menu[aria-labelledby] .menu-item{gap:10px;min-height:30px;padding:4px 10px;border-radius:4px}
 #editor-menu[aria-labelledby] .menu-item:hover:not(:disabled),#editor-menu[aria-labelledby] .menu-item:focus-visible{background:var(--control);border-color:transparent;outline:0}
@@ -336,7 +322,7 @@ header #editor-menus button{min-height:26px;padding:3px 10px;border-radius:4px}
 #editor-ribbon .ribbon-group+.ribbon-group{padding-left:6px}
 @media (forced-colors:active){#editor-ribbon .row[aria-label="Lane view"] button[aria-pressed=true],#statusbar .playback-rates>button[aria-pressed=true]{outline:2px solid Highlight;outline-offset:-2px}}
 #editor-ribbon #grid-options{height:30px;min-height:30px;padding:0 10px;border-radius:6px;background:#2c2c2c}
-/* Row 2 (v3 §3) keeps every name down to 1280 px; below 1120 px Audition goes icon-only. */
+/* Row 2 (v3 §3): the tools keep their names at every width; Audition goes icon-only below 1120 px. */
 @media (max-width:1119px){#editor-ribbon .toolbar-toggle-label{display:none}#editor-ribbon #grid-options{padding:0 6px}}
 #statusbar{--layout-min-height:32px;gap:10px;padding:0 12px}
 #statusbar #status{flex:0 1 auto;min-width:0}
