@@ -11,6 +11,8 @@ const html = await readFile(new URL("../dist/index.html", import.meta.url), "utf
 // The Inspector's Lane and Difficulty buttons live in a Svelte part and keep the ids the menus click.
 const inspectorPart = (await Promise.all(["Selection", "Lane", "Difficulty"].map(name =>
   readFile(new URL(`../ui/src/parts/Inspector${name}.svelte`, import.meta.url), "utf8")))).join("\n");
+// The Add lane row ends the lane column, a Svelte part, and keeps the id the menus click.
+const lanesPart = await readFile(new URL("../ui/src/parts/LaneHeaders.svelte", import.meta.url), "utf8");
 const css = await readFile(new URL("../dist/style.css", import.meta.url), "utf8");
 const catalogue = (await Promise.all([
   "../../../crates/dawsu-application/src/commands.rs",
@@ -106,6 +108,9 @@ function fixture() {
   const context = createContext({
     $: get, document, window, view, scene, speedButtons, drag: null, dialog: {},
     lanePositions: new Map([[0,0],[1,1]]),
+    // app.js: the active lane when it can be deleted, and the Delete lane dialog.
+    deletableLane: () => scene.lanes[view.activeLane]?.canDelete ? scene.lanes[view.activeLane] : null,
+    deleteActiveLane() { calls.push({ deleteActiveLane: view.activeLane }); },
     adjacentLaneForMove: () => null,
     run(task) { return task(); },
     async update(action) { calls.push(JSON.parse(JSON.stringify(action))); view.activeLane = action.row; },
@@ -193,12 +198,10 @@ test("lane menu activates the right-clicked lane without audition before opening
   assert.equal(document.activeElement,name);
 
   lanes.events.get("contextmenu")(event);
-  let deleted=false;
-  get("delete-lane").addEventListener("click",()=>{deleted=true;});
+  // The lane toolbar has no Delete lane button (v3): the row runs app.js's deleteActiveLane().
   menu.children.find(button=>button.textContent==="Delete lane…").click();
   await new Promise(setImmediate);
-  assert.deepEqual(calls,[{kind:"lane",row:1,operation:"activate"}]);
-  assert.equal(deleted,true);
+  assert.deepEqual(calls,[{kind:"lane",row:1,operation:"activate"},{deleteActiveLane:1}]);
 });
 
 test("right-click opens the seven timeline tools without invoking an edit", () => {
@@ -338,7 +341,7 @@ test("menus only click ribbon controls that exist in the window", () => {
     ...[...commandsSource.matchAll(/\["(?:onLane", ")?click", "([\w-]+)"\]/g)].map(match => match[1]),
   ]);
   for (const id of ["audio", "used-only", "ruler-waveform", "export-entry"]) assert.ok(ids.has(id), id);
-  for (const id of ids) assert.match(html + inspectorPart, new RegExp('id="' + id + '"'), id);
+  for (const id of ids) assert.match(html + inspectorPart + lanesPart, new RegExp('id="' + id + '"'), id);
 });
 
 const plain = value => JSON.parse(JSON.stringify(value));
@@ -764,4 +767,16 @@ test("app.js keeps a failing menu refresh from stopping the rest of show()", asy
 test("the menu popup grows to fit a row with a long key hint instead of wrapping its label", () => {
   assert.match(css, /#editor-menu\{[^}]*width:max-content;min-width:min\(330px,calc\(100vw - 8px\)\);max-width:calc\(100vw - 8px\)/);
   assert.match(css, /\.menu-choice-group\{contain:inline-size;/, "choice buttons still wrap instead of widening the menu");
+});
+
+// v3: the lane toolbar has no lane names button; View › Lane names switches them.
+test("View › Lane names switches the lane names", () => {
+  const { get, calls, view } = fixture();
+  view.panels = { laneNames: true };
+  get("menu-view").click();
+  const row = menuButtons(get("editor-menu")).find(item => item.textContent === "Lane names");
+  assert.ok(row, "Lane names row");
+  assert.equal(row.attributes["aria-checked"], "true");
+  row.click();
+  assert.deepEqual(calls.at(-1), { kind: "panel", panel: "lane_names", on: false });
 });

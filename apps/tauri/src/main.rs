@@ -1129,6 +1129,59 @@ fn gameplay_overlay(document: &dawsu_application::Document) -> Value {
     json!({ "points": points, "spans": spans })
 }
 
+/// Each object's combo number and colour, as osu!lazer works them out at 131fe72:
+/// `ConvertHitObjectParser.cs:458-525` (an offset counts only with the new-combo bit and never on a
+/// spinner), then `OsuHitObject.cs:193-196` on the objects sorted by time (a spinner never starts a
+/// combo, even flagged or first; the first object and one after a spinner do), and the colour from the map's
+/// `[Colours]` by the index with offsets (`LegacyBeatmapSkin.cs:90`), or else the default skin's four
+/// by the plain index (`SkinConfiguration.cs:46-52`). `objects` is `[number, colour]` per object in
+/// file order, the order of the gameplay overlay's object indices.
+fn combo_overlay(document: &dawsu_application::Document) -> Value {
+    let objects = document.file.hit_objects();
+    let map_colours: Vec<String> = document.file.section_values("Colours").into_iter()
+        .filter(|(key, _)| key.strip_prefix("Combo").and_then(|n| n.parse::<u8>().ok()).is_some_and(|n| (1..=8).contains(&n)))
+        .filter_map(|(_, value)| {
+            let parts: Vec<_> = value.split(',').map(str::trim).collect();
+            if !(3..=4).contains(&parts.len()) {
+                return None;
+            }
+            // Combo colours take no alpha; only the first three parts count.
+            let rgb: Vec<u8> = parts[..3].iter().map(|part| part.parse::<u8>()).collect::<Result<_, _>>().ok()?;
+            Some(format!("#{:02x}{:02x}{:02x}", rgb[0], rgb[1], rgb[2]))
+        })
+        .collect();
+    let spinner = |index: usize| objects[index].spinner_end().is_some();
+    // The parser's pass, in file order: the new-combo bit, and the offset that counts only with it.
+    let mut starts = Vec::with_capacity(objects.len());
+    for (index, object) in objects.iter().enumerate() {
+        let bit = object.type_bits() & 4 != 0;
+        let offset = if bit && !spinner(index) { (object.type_bits() >> 4) & 7 } else { 0 };
+        starts.push((bit, offset));
+    }
+    let mut order: Vec<usize> = (0..objects.len()).collect();
+    order.sort_by(|&a, &b| objects[a].time().total_cmp(&objects[b].time()));
+    let mut combos = vec![(0u32, 0usize); objects.len()];
+    let (mut combo, mut with_offsets, mut number) = (0usize, 0usize, 0u32);
+    let mut last: Option<usize> = None;
+    for &index in &order {
+        let (new_combo, offset) = starts[index];
+        if !spinner(index) && (new_combo || last.is_none_or(spinner)) {
+            number = 0;
+            combo += 1;
+            with_offsets += offset as usize + 1;
+        }
+        number += 1;
+        combos[index] = (number, if map_colours.is_empty() { combo % 4 } else { with_offsets % map_colours.len() });
+        last = Some(index);
+    }
+    let colours = if map_colours.is_empty() {
+        ["#ffc000", "#00ca00", "#127cff", "#f21839"].map(String::from).to_vec()
+    } else {
+        map_colours
+    };
+    json!({ "colours": colours, "objects": combos })
+}
+
 fn snapshot(app: &Application, include_scene: bool) -> Value {
     let document = app.document();
     let position = app.position_ms();
@@ -1240,7 +1293,7 @@ fn snapshot(app: &Application, include_scene: bool) -> Value {
                 "title": d.title, "mapTitle": d.map_title(), "version": d.version(),
                 "path": d.path, "difficulties": d.difficulties,
                 "lanes": lanes, "laneOrder": lane_order, "moments": moments, "sections": sections, "waveform": waveform,
-                "gameplay": gameplay_overlay(d),
+                "gameplay": gameplay_overlay(d), "combos": combo_overlay(d),
                 // Inspector › Difficulty's orphaned marks: the times of hits with no object (none in HS mode).
                 "orphanedHits": dawsu_application::orphaned_hit_times(model, d.hs_mode),
                 "laneRevision": c.history.version(),

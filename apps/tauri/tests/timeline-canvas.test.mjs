@@ -19,8 +19,10 @@ async function canvases({ roundRect = true } = {}) {
       },
     });
     return {
-      calls, getContext: () => ctx, clientWidth: 300, clientHeight: 80, scrollTop: 0,
-      dataset: {}, style: { setProperty() {} }, children: [], addEventListener() {}, append() {}, prepend() {}, setAttribute() {},
+      calls, getContext: () => ctx, clientWidth: 300, clientHeight: 80, scrollTop: 0, listeners: {},
+      dataset: {}, style: { setProperty() {} }, children: [], append() {}, prepend() {}, setAttribute() {},
+      addEventListener(name, listener) { (this.listeners[name] ??= []).push(listener); },
+      getBoundingClientRect: () => ({ x: 0, y: 0, left: 0, top: 0, width: 300, height: 80 }),
     };
   }
   const get = id => {
@@ -57,84 +59,97 @@ const round = value => Math.round(value * 100) / 100;
 const circles = canvas => canvas.calls.filter(call => call.name === "arc")
   .map(({ args: [x, y, radius], fill, stroke }) => ({ x: round(x), y, diameter: round(radius * 2), fill, stroke }));
 
-test("object circles scale with zoom: half a beat on screen × 0.8, between 18 and 30 px", async () => {
+// v3 timeline-spec §9: object circles are a fixed 34 px at every zoom, filled in the map's combo
+// colour, with the combo number always shown. Plain circles: the osu! skin textures are CC BY-NC.
+const combos = 'scene.combos = { colours: ["#ff0000", "#00ff00"], objects: [[1, 0], [2, 1], [1, 1]] }';
+// Combo numbers sit on the Song row, under the 40 px ruler band that holds the bar numbers.
+const numbers = canvas => canvas.calls.filter(call => call.name === "fillText" && /^\d+$/.test(call.args[0]) && call.args[2] > 40)
+  .map(({ args: [text, x, y], fill }) => [text, round(x), y, fill]);
+
+test("object circles are 34 px at every zoom, in the combo colour with a white ring and the combo number", async () => {
   const { get, paint } = await canvases();
   const ruler = get("ruler");
-  // 500 ms beats at 0.1 px/ms: half a beat is 25 px, so circles are 20 px.
-  paint("scene.zoom = .1");
-  assert.deepEqual(circles(ruler), [
-    { x: 10, y: 50.5, diameter: 20, fill: "#e6eef2", stroke: "#1c2727" },
-    { x: 40, y: 50.5, diameter: 20, fill: "#e6eef2", stroke: "#1c2727" },
-    // A repeat sits on the track at the track's height; the slider end is full size.
-    { x: 60, y: 50.5, diameter: 13.2, fill: "#e6eef2", stroke: "#1c2727" },
-    { x: 80, y: 50.5, diameter: 20, fill: "#e6eef2", stroke: "#1c2727" },
-  ]);
-  // The slider track is 66% of the circle height with fully rounded ends, teal as before.
-  const track = ruler.calls.find(call => call.name === "roundRect");
-  assert.deepEqual(track.args.map(round), [40, 43.9, 40, 13.2, 6.6]);
-  assert.ok(ruler.calls.some(call => call.name === "fill" && call.fill === "#62d6cfd9"), "slider track fill");
+  // Ruler 80 px tall: the 40 px band, then the 40 px Song row with its middle at y 60.
+  for (const zoom of [.05, .1, .25]) {
+    paint(`${combos}; scene.zoom = ${zoom}`);
+    assert.deepEqual(circles(ruler).map(circle => [circle.diameter, circle.fill, circle.stroke]), [
+      [34, "#ff0000", "#ffffff"],
+      [34, "#00ff00", "#ffffff"],
+      // A repeat sits on the track at the track's height; the slider end is a full circle.
+      [22.44, "#00ff00", "#ffffff"],
+      [34, "#00ff00", "#ffffff"],
+    ], `zoom ${zoom}`);
+  }
+  paint(`${combos}; scene.zoom = .1`);
+  assert.deepEqual(circles(ruler).map(circle => [circle.x, circle.y]), [[10, 60], [40, 60], [60, 60], [80, 60]]);
+  // Numbers on a circle and a slider head only, centred, always shown.
+  assert.deepEqual(numbers(ruler), [["1", 10, 60, "#ffffff"], ["2", 40, 60, "#ffffff"]]);
+  // A 2 px white ring; the ruler's ticks and locator lines stay 1 px.
+  const strokes = ruler.calls.filter(call => call.name === "stroke");
+  assert.ok(strokes.some(call => call.stroke === "#ffffff" && call.lineWidth === 2), "ring");
+  assert.ok(strokes.filter(call => call.lineWidth === 2).every(call => ["#ffffff", "#ffffffd9"].includes(call.stroke)));
+  assert.ok(strokes.some(call => call.stroke === "#858585" && call.lineWidth === 1), "locator lines");
   // Spinners keep their thin bar.
   assert.ok(ruler.calls.some(call => call.name === "fillRect" && call.fill === "#e6eef2" && call.args[3] === 5));
-
-  paint("scene.zoom = .25");
-  assert.ok(circles(ruler).filter(circle => circle.diameter !== 19.8).every(circle => circle.diameter === 30), "30 px cap");
-  paint("scene.zoom = .05");
-  assert.ok(circles(ruler).filter(circle => circle.diameter !== 11.88).every(circle => circle.diameter === 18), "18 px floor");
-  // Without timing every circle is 18 px.
-  paint("scene.zoom = .1; scene.sections = []");
-  assert.deepEqual(circles(ruler).map(circle => circle.diameter), [18, 18, 11.88, 18]);
 });
 
-test("each circle takes its size from the timing at its own time", async () => {
+test("without combo data the circles stay readout white and unnumbered", async () => {
   const { get, paint } = await canvases();
   const ruler = get("ruler");
-  // At 0.2 px/ms, 500 ms beats give 30 px circles and the 250 ms beats from 2000 ms give 20 px.
-  paint(`scene.zoom = .2; scene.viewStart = 1800;
-    scene.gameplay.points.push(["circle", 1900, 3], ["circle", 2200, 4])`);
-  assert.deepEqual(circles(ruler).map(circle => [circle.x, circle.diameter]), [[20, 30], [80, 20]]);
+  paint("scene.zoom = .1");
+  assert.deepEqual([...new Set(circles(ruler).map(circle => circle.fill))], ["#e6eef2"]);
+  assert.deepEqual(numbers(ruler), []);
+});
+
+test("a slider track is the combo colour 38 % into #111111 with a 2 px inset white edge", async () => {
+  const { get, paint } = await canvases();
+  const ruler = get("ruler");
+  paint(`${combos}; scene.zoom = .1`);
+  const tracks = ruler.calls.filter(call => call.name === "roundRect");
+  // 34 × .66 = 22.44 px tall with fully rounded ends, from x 40 to 80; the edge 1 px inside it.
+  assert.deepEqual(tracks.map(call => call.args.map(round)), [[40, 48.78, 40, 22.44, 11.22], [41, 49.78, 38, 20.44, 10.22]]);
+  assert.ok(ruler.calls.some(call => call.name === "fill" && call.fill === "#0b6b0b"), "#00ff00 38 % into #111111");
+  assert.ok(ruler.calls.some(call => call.name === "stroke" && call.stroke === "#ffffffd9" && call.lineWidth === 2), "edge");
 });
 
 test("slider tracks keep their rounded ends where the canvas has no roundRect()", async () => {
   const { get, paint } = await canvases({ roundRect: false });
   const ruler = get("ruler");
-  paint("scene.zoom = .1");
+  paint(`${combos}; scene.zoom = .1`);
   assert.ok(!ruler.calls.some(call => call.name === "roundRect"));
-  const start = ruler.calls.findIndex(call => call.name === "moveTo" && call.fill === "#62d6cfd9");
+  const start = ruler.calls.findIndex(call => call.name === "moveTo" && call.fill === "#0b6b0b");
   const path = ruler.calls.slice(start, start + 7).map(call => [call.name, ...call.args.map(round)]);
-  // A 40 × 13.2 px track from x 40 with 6.6 px corners: two half circles joined by straight edges.
+  // A 40 × 22.44 px track from x 40 with 11.22 px corners: two half circles joined by straight edges.
   assert.deepEqual(path, [
-    ["moveTo", 46.6, 43.9],
-    ["arcTo", 80, 43.9, 80, 57.1, 6.6],
-    ["arcTo", 80, 57.1, 40, 57.1, 6.6],
-    ["arcTo", 40, 57.1, 40, 43.9, 6.6],
-    ["arcTo", 40, 43.9, 80, 43.9, 6.6],
+    ["moveTo", 51.22, 48.78],
+    ["arcTo", 80, 48.78, 80, 71.22, 11.22],
+    ["arcTo", 80, 71.22, 40, 71.22, 11.22],
+    ["arcTo", 40, 71.22, 40, 48.78, 11.22],
+    ["arcTo", 40, 48.78, 80, 48.78, 11.22],
     ["closePath"],
     ["fill"],
   ]);
-  assert.equal(ruler.calls[start + 6].fill, "#62d6cfd9");
 });
 
 test("clicking anywhere on a drawn circle or slider track picks that object", async () => {
   const { evaluate } = await canvases();
-  // Ruler 80 px tall: the waveform lane's middle is y 50.5. At 0.1 px/ms circles are 20 px
-  // and the slider track 13.2 px; after 2000 ms the faster timing makes circles 18 px.
-  evaluate("scene.zoom = .1; scene.gameplay.points.push(['circle', 2200, 3])");
+  // At 0.2 px/ms: the circle at x 20, the slider's head, repeat and end at x 80, 120 and 160.
+  evaluate("scene.zoom = .2; scene.gameplay.points.push(['circle', 2200, 3])");
   const target = (ms, y) => evaluate(`JSON.stringify(waveformTarget(${ms}, ${y}, 80))`);
   const pick = (object, time, node) => JSON.stringify({ object, time, node });
-  assert.equal(target(190, 50.5), pick(0, 100, true), "9 px right of the circle's centre");
-  assert.equal(target(100, 59.5), pick(0, 100, true), "9 px below the circle's centre");
-  assert.equal(target(210, 50.5), "null", "11 px away misses");
-  assert.equal(target(700, 56.5), pick(1, 400, false), "the track 6 px below its middle");
-  assert.equal(target(700, 57.5), "null", "7 px below misses the 13.2 px track");
-  assert.equal(target(2285, 50.5), pick(3, 2200, true), "8.5 px into an 18 px circle");
-  assert.equal(target(2295, 50.5), "null", "9.5 px misses an 18 px circle");
+  assert.equal(target(180, 60), pick(0, 100, true), "16 px right of the circle's centre");
+  assert.equal(target(100, 76), pick(0, 100, true), "16 px below the circle's centre");
+  assert.equal(target(190, 60), "null", "18 px away misses");
+  assert.equal(target(680, 71), pick(1, 400, false), "the track 11 px below its middle");
+  assert.equal(target(680, 72), "null", "12 px below misses the 22.44 px track");
+  assert.equal(target(2280, 60), pick(3, 2200, true), "16 px into a later circle");
 });
 
-test("object circles never grow past the waveform lane", async () => {
+test("object circles never grow past the Song row", async () => {
   const { get, paint } = await canvases();
   const ruler = get("ruler");
-  ruler.clientHeight = 41;
-  paint("scene.zoom = .25");
+  ruler.clientHeight = 60;
+  paint(`${combos}; scene.zoom = .25`);
   assert.deepEqual(circles(ruler).map(circle => circle.diameter), [20, 20, 13.2, 20]);
 });
 
@@ -146,23 +161,18 @@ function loudColumns(canvas) {
   return [Math.min(...xs), Math.max(...xs)];
 }
 
-test("the drawn waveform moves with the song offset on the ruler and the overview", async () => {
+test("the drawn waveform moves with the song offset on the ruler", async () => {
   const { get, paint } = await canvases();
-  // One loud bin from 300 to 600 ms of the song; 0.25 px/ms on both canvases.
+  // One loud bin from 300 to 600 ms of the song at 0.25 px/ms.
   paint(`view.duration = 1200; scene.zoom = .25; scene.gameplay = null;
     scene.waveform = [[0, 0, 0, 0], [1, 1, 1, 1], [0, 0, 0, 0], [0, 0, 0, 0]]`);
-  const before = { ruler: loudColumns(get("ruler")), overview: loudColumns(get("overview")) };
-  assert.deepEqual(before.ruler, [74, 148]);
-  assert.deepEqual(before.overview, [74, 148]);
+  const before = loudColumns(get("ruler"));
+  assert.deepEqual(before, [74, 148]);
   // Playback reads the song at position - offset, so +400 ms draws it 100 px later.
   paint("view.offset = 400");
-  for (const id of ["ruler", "overview"]) {
-    assert.deepEqual(loudColumns(get(id)), before[id].map(x => x + 100), id);
-  }
+  assert.deepEqual(loudColumns(get("ruler")), before.map(x => x + 100));
   paint("view.offset = -200");
-  for (const id of ["ruler", "overview"]) {
-    assert.deepEqual(loudColumns(get(id)), before[id].map(x => x - 50), id);
-  }
+  assert.deepEqual(loudColumns(get("ruler")), before.map(x => x - 50));
 });
 
 test("the cycle region is a faint accent band under a warning-yellow bar on the ruler", async () => {
@@ -171,68 +181,39 @@ test("the cycle region is a faint accent band under a warning-yellow bar on the 
   const rects = () => ruler.calls.filter(call => call.name === "fillRect").map(call => [call.fill, ...call.args]);
   // Locators at 100 and 700 ms at 0.25 px/ms: the region runs from x 25 to 175.
   paint("scene.zoom = .25; Object.assign(view, { left: 100, right: 700, cycle: true })");
-  assert.ok(rects().some(rect => rect.join() === ["#77bdfa0f", 25, 0, 150, 20].join()), "faint accent band");
+  assert.ok(rects().some(rect => rect.join() === ["#77bdfa0f", 25, 0, 150, 39].join()), "faint accent band");
   assert.ok(rects().some(rect => rect.join() === ["#efc16a", 25, 1, 150, 4].join()), "warning-yellow bar");
   assert.ok(!ruler.calls.some(call => [call.fill, call.stroke].some(colour => colour?.startsWith("#2fbf4a"))), "no green");
   assert.ok(ruler.calls.some(call => call.name === "stroke" && call.stroke === "#858585"), "locator lines stay");
   // With the cycle off the locator span stays grey; reversed locators stay orange.
   paint("view.cycle = false");
-  assert.ok(rects().some(rect => rect.join() === ["#85858522", 25, 0, 150, 20].join()));
+  assert.ok(rects().some(rect => rect.join() === ["#85858522", 25, 0, 150, 39].join()));
   assert.ok(!rects().some(rect => rect[0] === "#efc16a"));
   paint("Object.assign(view, { left: 700, right: 100, cycle: true })");
-  assert.ok(rects().some(rect => rect.join() === ["#f0aa7046", 25, 0, 150, 20].join()));
+  assert.ok(rects().some(rect => rect.join() === ["#f0aa7046", 25, 0, 150, 39].join()));
   assert.ok(!rects().some(rect => rect[0] === "#efc16a"));
-});
-
-test("the 2 px object ring leaves the ruler's ticks and locator lines at 1 px", async () => {
-  const { get, paint } = await canvases();
-  const ruler = get("ruler");
-  paint("scene.zoom = .25; Object.assign(view, { left: 100, right: 700, cycle: true })");
-  const strokes = ruler.calls.filter(call => call.name === "stroke");
-  assert.ok(strokes.some(call => call.stroke === "#1c2727" && call.lineWidth === 2), "object ring");
-  const lines = strokes.filter(call => call.stroke !== "#1c2727");
-  assert.ok(lines.some(call => call.stroke === "#858585"), "locator lines");
-  assert.deepEqual([...new Set(lines.map(call => call.lineWidth))], [1]);
 });
 
 test("a click on a slider repeat counts only inside its drawn size", async () => {
   const { evaluate } = await canvases();
-  evaluate("scene.zoom = .1");
+  evaluate("scene.zoom = .2");
   const target = (ms, y) => evaluate(`JSON.stringify(waveformTarget(${ms}, ${y}, 80))`);
   const pick = (object, time, node) => JSON.stringify({ object, time, node });
-  // The repeat at 600 ms is drawn at the track's 13.2 px, not the 20 px of the head and end.
-  assert.equal(target(600, 56.5), pick(1, 600, true), "6 px below the repeat's centre");
-  assert.equal(target(680, 50.5), pick(1, 400, false), "8 px beside it is the track");
-  assert.equal(target(600, 58.5), "null", "8 px below misses");
-});
-
-test("circle sizes and clicks stay right with thousands of timing sections", async () => {
-  const { get, paint, evaluate } = await canvases();
-  const ruler = get("ruler");
-  // 2000 sections a second apart from 100 ms, alternating 500 ms and 250 ms beats:
-  // at 0.2 px/ms those give 30 px and 20 px circles. Before the first section its timing applies.
-  paint("scene.zoom = .2; scene.sections = Array.from({ length: 2000 }, (_, i) => [100 + i * 1000, i % 2 ? 250 : 500, 4])");
-  const cases = [[50, 30], [600, 30], [1600, 20], [999_600, 20], [1_000_600, 30], [1_999_600, 20], [2_100_000, 20]];
-  for (const [time, diameter] of cases) {
-    paint(`scene.viewStart = ${time - 100}; scene.gameplay = { points: [["circle", ${time}, 0]], spans: [] }`);
-    assert.deepEqual(circles(ruler).map(circle => circle.diameter), [diameter], `drawn at ${time} ms`);
-    // A click just inside the circle's edge picks it; just outside misses.
-    const inside = time + (diameter / 2 - .5) / .2;
-    const outside = time + (diameter / 2 + .5) / .2;
-    assert.equal(evaluate(`waveformTarget(${inside}, 50.5, 80)?.time`), time, `click inside at ${time} ms`);
-    assert.equal(evaluate(`waveformTarget(${outside}, 50.5, 80)`), null, `click outside at ${time} ms`);
-  }
+  // The repeat at 600 ms is drawn at the track's 22.44 px, not the 34 px of the head and end.
+  assert.equal(target(600, 71), pick(1, 600, true), "11 px below the repeat's centre");
+  assert.equal(target(680, 60), pick(1, 400, false), "16 px beside it is the track");
+  assert.equal(target(600, 73), "null", "13 px below misses");
 });
 
 test("slider-track clicks work where arrays have no findLast()", async () => {
   const { evaluate } = await canvases();
   // Older WebKit WebViews on macOS and Linux lack Array.prototype.findLast.
-  evaluate("scene.zoom = .1; delete Array.prototype.findLast");
-  assert.equal(evaluate("JSON.stringify(waveformTarget(700, 56.5, 80))"),
+  evaluate("scene.zoom = .2; delete Array.prototype.findLast");
+  assert.equal(evaluate("JSON.stringify(waveformTarget(700, 66, 80))"),
     JSON.stringify({ object: 1, time: 400, node: false }));
   // Overlapping spans: the later one wins, as before.
   evaluate("scene.gameplay.spans.push(['slider', 650, 750, 5])");
-  assert.equal(evaluate("waveformTarget(700, 56.5, 80).object"), 5);
+  assert.equal(evaluate("waveformTarget(700, 66, 80).object"), 5);
 });
 
 test("the left and right locators are L and R flags at the top of the ruler", async () => {
@@ -323,4 +304,180 @@ test("a folded main lane outlines its layers' hits in their volume colours; unfo
     .map(call => call.name === "fill" ? ["fill", call.fill] : ["stroke", call.stroke]);
   assert.deepEqual(order, [["fill", volume(80)], ["stroke", volume(30)], ["stroke", volume(100)]]);
   assert.deepEqual(tops(), [45 - 6, 45 - 7.5, 45 - 10]);
+});
+
+test("the ruler band is 40 px of #0c0c0c with a 1 px --editor-selected bottom edge", async () => {
+  const { get, paint } = await canvases();
+  const ruler = get("ruler");
+  paint("scene.zoom = .1");
+  assert.ok(ruler.calls.some(call => call.name === "fillRect" && call.fill === "#0c0c0c" &&
+    call.args.join() === "0,0,300,40"), "band");
+  const edge = ruler.calls.findIndex(call => call.name === "lineTo" && call.args[1] === 39.5 && call.args[0] === 300.5);
+  assert.ok(edge > 0 && ruler.calls[edge - 1].args.join() === "0.5,39.5", "bottom edge");
+  assert.ok(ruler.calls.slice(edge).some(call => call.name === "stroke" && call.stroke === "#454545"));
+});
+
+test("the Add lane row's drop hint stays hidden until a Browser drop adds a lane", async () => {
+  const { get, paint, evaluate } = await canvases();
+  const grid = get("grid");
+  get("scroll").clientHeight = 200;
+  evaluate(`scene.lanes = [{ key: "A", colourKey: "Skin|normal-hitclap", name: "normal-hitclap", group: "normal" }];
+    scene.moments = []; renderLanes();`);
+  paint("");
+  const rows = evaluate("laneRows.length");
+  // Yoge: the hint waits for the drag from the Browser, which comes with the unused-files work.
+  assert.ok(!grid.calls.some(call => call.name === "fillText"), "no hint");
+  // In the hint's row the grid draws no lane row of its own.
+  assert.equal(evaluate("laneRows[" + rows + "]"), undefined);
+});
+
+// v3 f1 and states.md: hovering a hit shows a card with its lane and set, time, volume and object.
+test("hovering a hit hands over one card per hit and never repaints the timeline", async () => {
+  const { get, evaluate } = await canvases();
+  const grid = get("grid");
+  get("scroll").clientHeight = 200;
+  evaluate(`
+    window.dawsuUi = { cards: [], hitCard(card) { this.cards.push(card); } };
+    view = { ...view, tool: "Select", activeLane: null };
+    scene.combos = { colours: ["#ff0000"], objects: [[1, 0], [2, 0], [3, 0]] };
+    scene.lanes = [{ key: "A", colourKey: "Skin|normal-hitclap", name: "normal-hitclap", family: "normal-hitclap", index: 0, group: "normal" }];
+    scene.moments = [[100, 60, true, [[0, false]]], [400, 80, true, [[0, false, false, 45]]], [1500, 70, false, [[0, false]]]];
+    renderLanes();`);
+  const move = (x, y) => {
+    for (const canvas of [grid, get("ruler"), get("overview")]) canvas.calls.length = 0;
+    for (const listener of grid.listeners.pointermove) listener({ clientX: x, clientY: y, pointerId: 1 });
+  };
+  const cards = () => JSON.parse(evaluate("JSON.stringify(window.dawsuUi.cards)"));
+  // Row 0 is the Normal set folder, row 1 the Clap lane (30 px rows); 0.1 px/ms.
+  move(12, 45);
+  assert.deepEqual(cards(), [{ key: "1:100:10:45:Clap · Normal set:Volume 60% · on circle 1", title: "Clap · Normal set", time: "00:00.100",
+    detail: "Volume 60% · on circle 1", x: 10, y: 45 }]);
+  for (const canvas of [grid, get("ruler"), get("overview")]) assert.deepEqual(canvas.calls, [], "no repaint");
+  // Still on the same hit: nothing new. Its own hit volume wins over the moment's.
+  move(9, 47);
+  assert.equal(cards().length, 1);
+  move(41, 45);
+  assert.equal(cards().at(-1).detail, "Volume 45% · on slider 2");
+  move(150, 45);
+  assert.equal(cards().at(-1).detail, "Volume 70% · no object");
+  // Away from every hit the card goes, once.
+  move(100, 45);
+  move(110, 45);
+  assert.deepEqual(cards().slice(-2), [cards().at(-2), null]);
+  assert.equal(cards().filter(card => card === null).length, 1);
+  move(12, 45);
+  for (const listener of grid.listeners.pointerleave) listener({});
+  assert.equal(cards().at(-1), null);
+
+  // A new scene that removes the hovered hit (Delete, Undo) takes the card away without a pointer move.
+  move(12, 45);
+  assert.equal(cards().at(-1).title, "Clap · Normal set");
+  // An edit that changes the hit's volume (or Undo) updates the card in place.
+  evaluate(`scene = { ...scene, moments: [[100, 90, true, [[0, false]]], ...scene.moments.slice(1)] }; refreshHitCard()`);
+  assert.equal(cards().at(-1).detail, "Volume 90% · on circle 1");
+  // show() calls refreshHitCard() with each new scene.
+  evaluate(`scene = { ...scene, moments: scene.moments.slice(1) }; refreshHitCard()`);
+  assert.equal(cards().at(-1), null);
+  // A zoom by key moves the hit under the still pointer: the card follows it, or goes when the hit
+  // leaves the pointer.
+  move(41, 45);
+  evaluate(`scene = { ...scene, viewStart: 205, zoom: .2 }; refreshHitCard()`);
+  assert.equal(cards().at(-1).x, 39);
+  evaluate(`scene = { ...scene, viewStart: 0 }; refreshHitCard()`);
+  assert.equal(cards().at(-1), null);
+  // Home, a closed map or a job starting takes the card away (show() refreshes it every time).
+  move(12, 45);
+  evaluate("view.busy = true; refreshHitCard(); view.busy = false");
+  assert.equal(cards().at(-1), null);
+  assert.match(evaluate("show.toString()"), /^ {2}refreshHitCard\(\);$/m);
+  // No card while a menu is open.
+  evaluate("$('editor-menu').hidden = false");
+  move(12, 45);
+  assert.equal(cards().at(-1), null);
+  evaluate("$('editor-menu').hidden = true");
+});
+
+// timeline-spec "Overview strip": the whole song in 300 columns of 5 px diamonds whose strength shows
+// how many objects fall in them, problems as 7 px warning diamonds, and the viewport box.
+test("the overview draws object diamonds by density, problem diamonds and the viewport box", async () => {
+  const { get, paint } = await canvases();
+  const overview = get("overview");
+  paint(`view.duration = 4000; scene.zoom = .1; scene.waveform = [[1, 1, 1, 1]];
+    scene.gameplay = { points: [["circle", 100, 0], ["circle", 105, 1], ["circle", 2000, 2]], spans: [] };
+    view.outputProblems = [{ timeline: "fixture.osu", time: 3000 }, { timeline: "other.osu", time: 1000 }]`);
+  // A diamond is moveTo its top point, three lineTo, closePath, then fill.
+  const diamonds = overview.calls.flatMap((call, at) => call.name === "fill" && overview.calls[at - 1]?.name === "closePath" &&
+    overview.calls[at - 5]?.name === "moveTo" ? [[round(overview.calls[at - 5].args[0]), overview.calls[at - 5].args[1], call.fill]] : []);
+  assert.deepEqual(diamonds, [
+    // Two objects in column 7 (the densest, full strength), one in column 150; 80 px tall, middle at 40.
+    [7.5, 36.5, "rgba(196,196,196,1.00)"],
+    [150.5, 36.5, "rgba(196,196,196,0.65)"],
+    // Only this difficulty's problems, above the viewport box.
+    [225, 35, "#efc16a"],
+  ]);
+  assert.ok(overview.calls.some(call => call.name === "stroke" && call.stroke === "#1c1c1c"), "problem edge");
+  // The viewport box: 3000 ms of 4000 on screen, 1 px --editor-text with a 2 px radius.
+  const box = overview.calls.find(call => call.name === "roundRect");
+  assert.deepEqual(box.args.map(round), [.5, 3.5, 224, 73, 2]);
+  assert.ok(overview.calls.some(call => call.name === "stroke" && call.stroke === "#f1f1f1"));
+  assert.ok(overview.calls.some(call => call.name === "fill" && call.fill === "rgba(241,241,241,.06)"));
+  // Diamonds, not the song's waveform.
+  assert.ok(!overview.calls.some(call => ["#315c59", "#3c7673", "#46908c", "#51aaa5"].includes(call.fill)));
+  // A tiny viewport keeps an 8 px box.
+  paint("scene.zoom = 3");
+  assert.equal(overview.calls.find(call => call.name === "roundRect").args[2], 7);
+  // At the song's end the box stays inside the strip.
+  paint("scene.zoom = .1; scene.viewStart = 3900");
+  const end = overview.calls.find(call => call.name === "roundRect").args;
+  assert.ok(end[0] + end[2] <= 300, JSON.stringify(end));
+});
+
+test("with the waveform switched off the Song row keeps its circles and digits, without the waveform", async () => {
+  const { get, paint } = await canvases();
+  const ruler = get("ruler");
+  paint(`${combos}; scene.zoom = .1; scene.waveform = [[1, 1, 1, 1]]; view.duration = 4000; waveformShown = false`);
+  assert.equal(loudColumns(ruler).filter(Number.isFinite).length, 0, "no waveform");
+  assert.deepEqual(circles(ruler).map(circle => circle.diameter), [34, 34, 22.44, 34]);
+  assert.deepEqual(numbers(ruler).map(([text]) => text), ["1", "2"]);
+  paint("waveformShown = true");
+  assert.deepEqual(loudColumns(ruler), [0, 298]);
+});
+
+test("combo digits carry a dark outline so they read on yellow and green", async () => {
+  const { get, paint } = await canvases();
+  const ruler = get("ruler");
+  paint(`${combos}; scene.zoom = .1`);
+  const outlines = ruler.calls.filter(call => call.name === "strokeText").map(({ args: [text], stroke }) => [text, stroke]);
+  assert.deepEqual(outlines, [["1", "rgba(0,0,0,.55)"], ["2", "rgba(0,0,0,.55)"]]);
+});
+
+test("zoomed out, circles under their neighbour are skipped and covered digits are left out", async () => {
+  const { get, paint } = await canvases();
+  const ruler = get("ruler");
+  const three = `scene.combos = { colours: ["#ff0000", "#00ff00"], objects: [[1, 0], [2, 1], [3, 1]] };
+    scene.gameplay = { points: [["circle", 100, 0], ["circle", 300, 1], ["circle", 1000, 2]], spans: [] }`;
+  // 0.06 px/ms: circles at x 6, 18 and 60. The second circle covers the first one's digit.
+  paint(`${three}; scene.zoom = .06`);
+  assert.deepEqual(numbers(ruler).map(([text]) => text), ["2", "3"]);
+  assert.equal(circles(ruler).length, 3);
+  // At 0.001 px/ms the first two sit under 2 px from the next one: only the last is drawn.
+  paint(`${three}; scene.zoom = .001`);
+  assert.equal(circles(ruler).length, 1);
+});
+
+test("the overview counts each object once, spinners included, and merges problems on one pixel", async () => {
+  const { get, paint } = await canvases();
+  const overview = get("overview");
+  // A slider's three nodes are one object; a spinner counts too; two problems share a pixel.
+  paint(`view.duration = 3000; scene.gameplay = { points: [["slider", 100, 0], ["slider", 200, 0], ["slider", 300, 0]],
+    spans: [["slider", 100, 300, 0], ["spinner", 1500, 2000, 1]] };
+    view.outputProblems = [{ timeline: "fixture.osu", time: 1000 }, { timeline: "fixture.osu", time: 1002 }]`);
+  const fills = overview.calls.filter((call, at) => call.name === "fill" && overview.calls[at - 1]?.name === "closePath").map(call => call.fill);
+  assert.deepEqual(fills, ["rgba(196,196,196,1.00)", "rgba(196,196,196,1.00)", "#efc16a"]);
+});
+
+test("a click on two circles at one spot picks the later object, the one drawn on top", async () => {
+  const { evaluate } = await canvases();
+  evaluate("scene.zoom = .1; scene.gameplay = { points: [['circle', 100, 0], ['circle', 100, 1]], spans: [] }");
+  assert.equal(evaluate("waveformTarget(100, 60, 80).object"), 1);
 });

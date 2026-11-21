@@ -147,25 +147,30 @@
     <div id="editor-arrange" class="arrange">
       <div class="ruler">
         <div class="ruler-sidebar">
-          <div class="lane-title lane-title-controls">
-            <span>Sample lanes</span>
-            <div class="row">
-              <button id="add-lane" type="button" aria-label="Add lane" title="Add lane" data-doc>+</button>
-              <button id="delete-lane" type="button" aria-label="Delete active lane" title="Delete active lane" data-doc>−</button>
-              <button id="toggle-lane-names" type="button" aria-controls="lanes" aria-expanded="true" aria-label="Hide lane names" title="Hide lane names" data-doc>‹</button>
-            </div>
+          <div class="lane-title lane-title-controls" role="toolbar" aria-label="Timeline view">
+            <button id="ruler-zoom-out" type="button" class="lane-tool" aria-label="Zoom out" title="Zoom out" data-doc><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35M8 11h6"/></svg></button>
+            <button id="ruler-zoom-in" type="button" class="lane-tool" aria-label="Zoom in" title="Zoom in" data-doc><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35M11 8v6m-3-3h6"/></svg></button>
+            <button id="ruler-fit" type="button" class="lane-tool lane-tool-label" aria-label="Fit all" title="Fit the whole song" data-doc><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m18 8 4 4-4 4M2 12h20M6 8l-4 4 4 4"/></svg><span>Fit all</span></button>
+            <span class="lane-tool-divider" aria-hidden="true"></span>
+            <span class="lane-tool-glyph" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 2v20M8 18l4 4 4-4M8 6l4-4 4 4"/></svg></span>
+            <button id="lane-shorter" type="button" class="lane-tool" aria-label="Shorter lanes" title="Shorter lanes" data-doc><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 20 5-5 5 5M7 4l5 5 5-5"/></svg></button>
+            <button id="lane-taller" type="button" class="lane-tool" aria-label="Taller lanes" title="Taller lanes" data-doc><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 15 5 5 5-5M7 9l5-5 5 5"/></svg></button>
           </div>
           <div class="lane-title song-row">
-            <span>Song audio</span>
-            <div class="row">
-              <button id="song-mute" type="button" aria-label="Mute song" aria-pressed="false" title="Mute song" data-doc>M</button>
-              <button id="song-solo" type="button" aria-label="Solo song" aria-pressed="false" title="Solo song" data-doc>S</button>
+            <span class="song-strip" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M2 10v3M6 6v11M10 3v18M14 8v7M18 5v13M22 10v3"/></svg></span>
+            <div class="song-body">
+              <span class="song-title">Song · objects</span>
+              <div class="row">
+                <button id="song-mute" type="button" aria-label="Mute song" aria-pressed="false" title="Mute song" data-doc>M</button>
+                <button id="song-solo" type="button" aria-label="Solo song" aria-pressed="false" title="Solo song" data-doc>S</button>
+                <button id="ruler-waveform" type="button" aria-label="Show waveform" aria-pressed="true" title="Show waveform" data-doc><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 13a2 2 0 0 0 2-2V7a2 2 0 0 1 4 0v13a2 2 0 0 0 4 0V4a2 2 0 0 1 4 0v13a2 2 0 0 0 4 0v-4a2 2 0 0 1 2-2"/></svg></button>
+              </div>
             </div>
           </div>
         </div>
         <canvas id="ruler" aria-label="Time ruler, song waveform and gameplay objects"></canvas>
         <div id="waveform-resize" role="separator" tabindex="0" aria-orientation="horizontal"
-             aria-label="Waveform height" aria-valuemin="0" aria-valuemax="200" aria-valuenow="56"
+             aria-label="Waveform height" aria-valuemin="0" aria-valuemax="200" aria-valuenow="84"
              title="Drag to resize waveform. Double-click to reset."></div>
       </div>
       <div class="scroll" id="scroll"><div id="lanes" data-ui-mount="lanes"></div><canvas id="grid" tabindex="-1" aria-label="Hitsound timeline" aria-haspopup="menu" aria-expanded="false"></canvas></div>
@@ -183,13 +188,7 @@
         <div class="mixer-host" data-ui-mount="mixer"></div>
       </div>
       <div class="overview">
-        <div class="lane-title ruler-controls" role="group" aria-label="Timeline view">
-          <button id="ruler-waveform" type="button" aria-label="Show waveform" aria-pressed="true" title="Show waveform" data-doc><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 6v4m3-7v10m3-8v6m3-8v10m3-7v4"/></svg></button>
-          <button id="ruler-follow" type="button" aria-label="Follow playhead" aria-pressed="false" title="Follow playhead" data-doc><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2v12M2 8h3m6 0h3M5 3H3v2m8-2h2v2M3 11v2h2m8-2v2h-2"/></svg></button>
-          <button id="ruler-zoom-out" type="button" aria-label="Zoom timeline out" title="Zoom timeline out" data-doc>−</button>
-          <button id="ruler-zoom-in" type="button" aria-label="Zoom timeline in" title="Zoom timeline in" data-doc>+</button>
-          <button id="ruler-fit" type="button" aria-label="Fit whole song" title="Fit whole song" data-doc><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4v8m12-8v8M4 8h8m-6-2L4 8l2 2m4-4 2 2-2 2"/></svg></button>
-        </div>
+        <div class="lane-title ruler-controls"><span>Objects overview</span></div>
         <canvas id="overview" aria-label="Song overview"></canvas>
       </div>
 
@@ -236,5 +235,6 @@
     <button id="audio" class="status-device" aria-label="Audio output" title="Audio output">Audio output</button>
   </div>
 </div>
+<div data-ui-mount="hit-card"></div>
 <dialog id="dialog"><h2 id="dialog-title"></h2><div id="dialog-body"></div><div class="row" id="dialog-actions"></div></dialog>
 </body></html>

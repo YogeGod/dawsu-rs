@@ -17,10 +17,13 @@ let rulerDrag = null;
 let overviewDrag = null;
 let overviewTarget = null;
 let overviewNavigation = null;
-const rulerBandHeight = 21;
-const defaultWaveformHeight = 56;
+const rulerBandHeight = 40;
+// v3 §4: the Song · objects row is 84 px.
+const defaultWaveformHeight = 84;
 let waveformHeight = defaultWaveformHeight;
 let visibleWaveformHeight = defaultWaveformHeight;
+// The Song row's waveform switch.
+let waveformShown = true;
 const bookmarkFlagHeight = 22;
 let markedRange = null;
 let browserMap = "";
@@ -64,7 +67,7 @@ let rulerWarningMarkers = [];
 // Canvas surfaces match the surrounding editor chrome.
 const slateTimeline = {
   arrange: "#151515", alternateRow: "#1c1c1c", activeRow: "#454545", group: "#292929",
-  ruler: "#252525", rulerBar: "#c4c4c4", overview: "#1c1c1c", waveform: "#1c2727",
+  ruler: "#0c0c0c", rulerBar: "#ffffff", rulerEdge: "#454545", overview: "#1c1c1c", waveform: "#1c2727",
   volume: "#151515", divider: "#383838", beatLine: "#383838", barLine: "#545454",
   cycle: "#efc16a", loop: "#77bdfa0f", locator: "#858585", playhead: "#a1d0f7",
 };
@@ -303,10 +306,10 @@ function show(next) {
   else renderSelection();
   if (scene) {
     for (const button of speedButtons) button.ariaPressed = String(Number(button.dataset.playbackSpeed) === view.speed);
-    $("ruler-follow").setAttribute?.("aria-pressed", String(!!view.follow));
     followPlayhead();
   }
-  refreshLaneDelete();
+  refreshLaneToolbar();
+  refreshHitCard();
   renderDialogs();
   try { window.refreshEditorMenu?.(); } catch (error) { console.error(error); }
   paintSoon();
@@ -465,10 +468,6 @@ function renderPanelLayout() {
   for (const [panel, id] of Object.entries(panelSwitches)) $(id).ariaPressed = String(!!scene && panelOn(panel));
   $("editor-arrange").dataset.controller = String(controller);
   $("editor-arrange").dataset.laneNames = String(laneNames);
-  const namesToggle = $("toggle-lane-names");
-  namesToggle.ariaExpanded = String(laneNames !== false);
-  namesToggle.title = namesToggle.ariaLabel = laneNames === false ? "Show lane names" : "Hide lane names";
-  namesToggle.textContent = laneNames === false ? "›" : "‹";
   // Folded shows the bottom panel's 34 px strip; the tab is kept in the bundle, never saved.
   $("volume-controller-panel").dataset.bottom = controller ? window.dawsuUi?.bottomTab?.() ?? "volume" : "folded";
   if (dock && scene) {
@@ -689,7 +688,6 @@ function renderLanes() {
     if (!laneVisualPositions.has(row)) laneVisualPositions.set(row, []);
     laneVisualPositions.get(row).push(position);
   }
-  refreshLaneDelete();
   const lanePanel = $("lanes");
   lanePanel.style.setProperty("--lane-row-height", scene.rowHeight + "px");
   const laneKey = JSON.stringify([laneRows, drumNames, scene.lanes, view.activeLane, [...selectionLaneKeys],
@@ -932,16 +930,8 @@ function deletableLane() {
   return lane?.canDelete ? lane : null;
 }
 
-function refreshLaneDelete() {
-  const button = $("delete-lane");
-  button.disabled = !deletableLane();
-  const lane = scene?.lanes?.[view.activeLane];
-  button.title = lane?.canDelete === false
-    ? "Protected hitnormals and slider body lanes cannot be deleted here"
-    : "Delete active lane";
-}
-
-$("add-lane").addEventListener("click", () => {
+// The Add lane row at the end of the lane column (LaneHeaders part) and the menus' Add lane….
+function openAddLane() {
   if (!scene || view.busy || drag) return;
   const map = scene.path;
   run(async () => {
@@ -965,9 +955,10 @@ $("add-lane").addEventListener("click", () => {
       }, true],
     ]);
   });
-});
+}
 
-$("delete-lane").addEventListener("click", () => {
+// Edit › Delete active lane… and the lane menu's Delete lane… (menus.js); v3 has no toolbar button.
+function deleteActiveLane() {
   const lane = deletableLane();
   if (!lane) return;
   const target = { map: scene.path, lane: lane.sourceKey };
@@ -984,7 +975,7 @@ $("delete-lane").addEventListener("click", () => {
     ["Cancel", closeModal, true],
     ["Delete", () => { closeModal(); remove(); }],
   ]);
-});
+}
 
 // The bookmark row picked in the Inspector, kept by its difficulty and time so it survives each update.
 // since is when it was picked, until the playhead reaches it.
@@ -1039,7 +1030,7 @@ function drawBookmarks(ctx, marks, start, zoom, width) {
     ctx.fillRect(x, rulerBandHeight, 2, bookmarkFlagHeight);
     ctx.fillRect(x, rulerBandHeight, 9, 5);
     const labelWidth = Math.min(180, (visible[i + 1]?.[1] ?? width) - x - 10);
-    if (mark.label && labelWidth > 24) ctx.fillText(mark.label, x + 5, 36, labelWidth);
+    if (mark.label && labelWidth > 24) ctx.fillText(mark.label, x + 5, rulerBandHeight + 15, labelWidth);
   }
 }
 
@@ -1326,6 +1317,20 @@ const snapColours = {
   9: "#b3d944", 12: "#cc6600", 16: "#6644cc",
 };
 
+// v3 §5 (Yoge): editor grid lines stay neutral; only the ruler shows the snap colours.
+// Sub-beats follow the snap divisor. They draw above the lane tint and below the hits.
+const gridLines = { sub: "rgba(255,255,255,.025)", beat: "rgba(255,255,255,.04)", bar: "rgba(255,255,255,.10)" };
+
+// v3 §5: a snap tick's height on the ruler by its reduced divisor (1/5, 1/7, 1/9 take the smallest).
+const snapTickHeights = { 2: 9, 3: 7, 4: 7, 6: 5, 8: 5, 12: 4, 16: 4 };
+
+function reducedDivisor(tick, divisor) {
+  let remainder = Math.abs(tick % divisor);
+  let factor = divisor;
+  while (remainder) [factor, remainder] = [remainder, factor % remainder];
+  return divisor / factor;
+}
+
 function snapColour(tick, divisor) {
   let remainder = Math.abs(tick % divisor);
   let factor = divisor;
@@ -1333,8 +1338,26 @@ function snapColour(tick, divisor) {
   return snapColours[divisor / factor] ?? "#ff0000";
 }
 
+// The bar number each timing section starts on, as the editor counts them (tempo.rs bar_beat_at): a
+// part bar before the next red line counts as a whole one. Built once per timing snapshot.
+let sectionBarCache = null;
+function sectionBars(sections) {
+  if (sectionBarCache?.sections !== sections) {
+    const bars = [];
+    let bar = 1;
+    for (const [i, [origin, beat, meter]] of sections.entries()) {
+      bars.push(bar);
+      const next = sections[i + 1]?.[0];
+      if (next !== undefined && beat > 0 && meter) bar += Math.max(0, Math.ceil((next - origin) / (beat * meter) - 1e-9));
+    }
+    sectionBarCache = { sections, bars };
+  }
+  return sectionBarCache.bars;
+}
+
 function drawTimingGrid(ctx, start, end, zoom, top, bottom, ruler = false) {
   const useSnap = scene.snap && scene.snapMode !== "objects";
+  const firstBars = sectionBars(scene.sections);
   for (const [i, [origin, beat, meter]] of scene.sections.entries()) {
     if (beat <= 0 || !meter) continue;
     const begin = Math.max(start, i ? origin : start);
@@ -1351,7 +1374,8 @@ function drawTimingGrid(ctx, start, end, zoom, top, bottom, ruler = false) {
           if (tick % scene.divisor === 0) continue;
           const x = (origin + tick * step - start) * zoom;
           const color = snapColour(tick, scene.divisor);
-          line(ctx, ruler ? color : color + "42", x, ruler ? bottom - 5 : top, x, bottom);
+          const height = snapTickHeights[reducedDivisor(tick, scene.divisor)] ?? 4;
+          line(ctx, ruler ? color : gridLines.sub, x, ruler ? bottom - height : top, x, bottom);
         }
       }
     }
@@ -1362,8 +1386,20 @@ function drawTimingGrid(ctx, start, end, zoom, top, bottom, ruler = false) {
       const x = (origin + n * step - start) * zoom;
       const bar = !scene.editorBars?.length && tick % meter === 0;
       const longSnap = useSnap && scene.beats > 1 && tick % scene.beats === 0;
-      const color = ruler ? snapColours[1] : bar || longSnap ? slateTimeline.barLine : slateTimeline.beatLine;
-      line(ctx, color, x, ruler ? bottom - (bar || longSnap ? 9 : 7) : top, x, bottom);
+      const color = ruler ? snapColours[1] : bar || longSnap ? gridLines.bar : gridLines.beat;
+      // v3 §5: bar numbers on the ruler, every few bars when bars are under 60 px wide, counted from
+      // the section's first bar. A label that would run into the next section's first one is left out.
+      const barIndex = Math.floor(tick / meter);
+      const barNumber = firstBars[i] + barIndex;
+      const every = Math.max(1, Math.ceil(60 / widthOfBar));
+      const nextSection = scene.sections[i + 1]?.[0];
+      const room = nextSection === undefined ? Infinity : (nextSection - start) * zoom - x;
+      if (ruler && bar && ((barIndex % every) + every) % every === 0 && room >= String(barNumber).length * 8 + 8) {
+        ctx.fillStyle = slateTimeline.rulerBar;
+        ctx.fillText(String(barNumber), x + 5, 10);
+      }
+      // v3 §5: bar lines run the ruler's full height; beat ticks (and long snaps) are 12 px.
+      line(ctx, color, x, ruler && !bar ? bottom - 12 : top, x, bottom);
     }
   }
   for (const [i, section] of (scene.editorBars ?? []).entries()) {
@@ -1375,10 +1411,10 @@ function drawTimingGrid(ctx, start, end, zoom, top, bottom, ruler = false) {
     if (begin >= until || !Number.isFinite(step) || step <= 0) continue;
     for (let n = Math.ceil((begin - section.start) / step); section.start + n * step < until; n++) {
       const x = (section.start + n * step - start) * zoom;
-      line(ctx, slateTimeline.barLine, x, ruler ? 3 : top, x, bottom);
+      line(ctx, ruler ? slateTimeline.rulerBar : gridLines.bar, x, top, x, bottom);
       if (ruler) {
         ctx.fillStyle = slateTimeline.rulerBar;
-        ctx.fillText(String(section.bar + n * stride), x + 5, 14);
+        ctx.fillText(String(section.bar + n * stride), x + 5, 10);
       }
     }
   }
@@ -1443,94 +1479,129 @@ function strokeHitDiamond(ctx, x, y, size) {
   ctx.stroke();
 }
 
-// Object circles grow with zoom as in the design (f11): half a beat on screen × 0.8, kept
-// between 18 and 30 px, from the timing at the object's own time and never taller than the lane.
-const objectReach = 15;
-let beatLengthCache = null;
+// v3 timeline-spec §9: object circles are a fixed 34 px at every zoom (never taller than the Song
+// row), overlapping when zoomed out, later objects on top. Plain circles in the map's combo colour
+// with a white ring and the combo number: the osu! skin textures are CC BY-NC, so none ship.
+const objectSize = 34;
+const objectReach = objectSize / 2;
+const objectWhite = "#e6eef2";
 
-// [start, beat length] of each timing, sorted by start: built once per timing snapshot.
-function beatLengths(sections) {
-  if (beatLengthCache?.sections !== sections) {
-    const beats = (sections ?? []).filter(([, beat]) => beat > 0).map(([origin, beat]) => [origin, beat])
-      .sort((first, second) => first[0] - second[0]);
-    beatLengthCache = { sections, beats };
-  }
-  return beatLengthCache.beats;
+// The combo colour of an object, or readout white without combo data.
+function comboOf(object) {
+  const [number, colour] = scene.combos?.objects?.[object] ?? [];
+  return { number, colour: scene.combos?.colours?.[colour] ?? objectWhite };
 }
 
-function objectDiameter(beats, time, zoom, laneHeight) {
-  // Binary search for the last timing starting at or before the time; before it, the first timing.
-  let low = 0;
-  let high = beats.length;
-  while (low < high) {
-    const middle = (low + high) >> 1;
-    if (beats[middle][0] <= time) low = middle + 1;
-    else high = middle;
+// A slider track: the combo colour 38 % into #111111 (timeline-spec §9).
+const trackShades = new Map();
+function trackShade(colour) {
+  if (!trackShades.has(colour)) {
+    const channels = [1, 3, 5].map(at => Math.round(17 + (parseInt(colour.slice(at, at + 2), 16) - 17) * .38));
+    trackShades.set(colour, "#" + channels.map(value => value.toString(16).padStart(2, "0")).join(""));
   }
-  const beat = beats[Math.max(0, low - 1)]?.[1];
-  const size = beat ? limit(Math.round(beat * zoom / 2 * .8), 18, 30) : 18;
-  return Math.max(0, Math.min(size, laneHeight));
+  return trackShades.get(colour);
 }
 
-function drawGameplay(ctx, gameplay, xOf, y, width, diameterAt) {
+function roundedTrack(ctx, left, top, width, height, corner) {
+  ctx.beginPath();
+  if (ctx.roundRect) ctx.roundRect(left, top, width, height, corner);
+  else {
+    // Older macOS and Linux WebViews have no roundRect(); arcTo() draws the same shape.
+    const right = left + width;
+    const bottom = top + height;
+    ctx.moveTo(left + corner, top);
+    ctx.arcTo(right, top, right, bottom, corner);
+    ctx.arcTo(right, bottom, left, bottom, corner);
+    ctx.arcTo(left, bottom, left, top, corner);
+    ctx.arcTo(left, top, right, top, corner);
+    ctx.closePath();
+  }
+}
+
+function drawGameplay(ctx, gameplay, xOf, y, width, diameter) {
   if (!gameplay) return;
-  for (const [kind, start, end] of gameplay.spans) {
+  ctx.lineWidth = 2;
+  for (const [kind, start, end, object] of gameplay.spans) {
     const left = xOf(start);
     const right = xOf(end);
     if (right < -objectReach || left > width + objectReach) continue;
     if (kind === "slider") {
-      const track = diameterAt(start) * .66;
+      const track = diameter * .66;
       const top = y - track / 2;
-      const bottom = top + track;
-      const corner = Math.min(track, right - left) / 2;
-      ctx.fillStyle = "#62d6cfd9";
-      ctx.beginPath();
-      if (ctx.roundRect) ctx.roundRect(left, top, right - left, track, corner);
-      else {
-        // Older macOS and Linux WebViews have no roundRect(); arcTo() draws the same shape.
-        ctx.moveTo(left + corner, top);
-        ctx.arcTo(right, top, right, bottom, corner);
-        ctx.arcTo(right, bottom, left, bottom, corner);
-        ctx.arcTo(left, bottom, left, top, corner);
-        ctx.arcTo(left, top, right, top, corner);
-        ctx.closePath();
-      }
+      ctx.fillStyle = trackShade(comboOf(object).colour);
+      roundedTrack(ctx, left, top, right - left, track, Math.min(track, right - left) / 2);
       ctx.fill();
+      // A 2 px white edge at 85 % inside the track.
+      const inner = Math.max(0, right - left - 2);
+      ctx.strokeStyle = "#ffffffd9";
+      roundedTrack(ctx, left + 1, top + 1, inner, track - 2, Math.min(track - 2, inner) / 2);
+      ctx.stroke();
       continue;
     }
-    ctx.fillStyle = "#e6eef2";
+    ctx.fillStyle = objectWhite;
     const from = Math.max(0, left);
     const to = Math.min(width, right);
     ctx.fillRect(from, y - 2.5, Math.max(1, to - from), 5);
   }
-  const radiusOf = nodeRadii(gameplay.points, diameterAt);
-  ctx.lineWidth = 2;
-  ctx.strokeStyle = "#1c2727";
-  for (const [kind, time, object] of gameplay.points) {
+  const radiusOf = nodeRadii(gameplay.points, diameter);
+  // Digits 16 px on a 34 px circle, smaller with it in a short Song row.
+  const digitSize = Math.max(8, Math.round(diameter * .47));
+  ctx.font = "600 " + digitSize + "px Inter, system-ui, sans-serif";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.lineJoin = "round";
+  const points = gameplay.points;
+  for (const [at, [kind, time, object]] of points.entries()) {
     const x = xOf(time);
     if (x < -objectReach || x > width + objectReach) continue;
-    ctx.fillStyle = "#e6eef2";
+    // Later objects draw on top: one under 2 px from the next is hidden by it, so it is not drawn.
+    const next = points[at + 1];
+    const nextX = next ? xOf(next[1]) : Infinity;
+    if (nextX - x < 2) continue;
+    const { number, colour } = comboOf(object);
+    const { radius, head } = radiusOf(kind, time, object);
+    ctx.lineWidth = 2;
+    ctx.fillStyle = colour;
+    ctx.strokeStyle = "#ffffff";
     ctx.beginPath();
-    ctx.arc(x, y, radiusOf(kind, time, object), 0, Math.PI * 2);
+    ctx.arc(x, y, radius, 0, Math.PI * 2);
     ctx.fill();
     ctx.stroke();
+    // The combo number on a circle and a slider head, where the next circle leaves it in view, with a
+    // dark outline so it reads on yellow and green.
+    const covered = next && nextX - radiusOf(next[0], next[1], next[2]).radius < x + digitSize / 3;
+    if (head && number && !covered) {
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = "rgba(0,0,0,.55)";
+      ctx.strokeText(String(number), x, y);
+      ctx.fillStyle = "#ffffff";
+      ctx.fillText(String(number), x, y);
+    }
   }
+  ctx.textAlign = "start";
+  ctx.textBaseline = "alphabetic";
   ctx.lineWidth = 1;
 }
 
 // A slider's first and last nodes are full circles; repeats between them sit on the track.
-function nodeRadii(points, diameterAt) {
-  const sliderEnds = new Map();
-  for (const [kind, time, object] of points) {
-    if (kind !== "slider") continue;
-    const ends = sliderEnds.get(object);
-    if (ends) sliderEnds.set(object, [Math.min(ends[0], time), Math.max(ends[1], time)]);
-    else sliderEnds.set(object, [time, time]);
+// Only a circle and a slider's head carry the combo number.
+let sliderEndCache = null;
+function nodeRadii(points, diameter) {
+  // Each slider's first and last node time, built once per object list.
+  if (sliderEndCache?.points !== points) {
+    const ends = new Map();
+    for (const [kind, time, object] of points) {
+      if (kind !== "slider") continue;
+      const known = ends.get(object);
+      ends.set(object, known ? [Math.min(known[0], time), Math.max(known[1], time)] : [time, time]);
+    }
+    sliderEndCache = { points, ends };
   }
+  const sliderEnds = sliderEndCache.ends;
   return (kind, time, object) => {
     const ends = kind === "slider" ? sliderEnds.get(object) : null;
     const repeat = ends && time !== ends[0] && time !== ends[1];
-    return repeat ? diameterAt(ends[0]) * .66 / 2 : diameterAt(time) / 2;
+    return { radius: repeat ? diameter * .66 / 2 : diameter / 2, head: !ends || time === ends[0] };
   };
 }
 
@@ -1541,30 +1612,72 @@ function laneTint(lane, active = false) {
   return colour ? colour + (active ? "29" : "14") : null;
 }
 
-const overviewGroups = ["soft", "normal", "drum", null, "skin"];
-let overviewHitCache = null;
+// timeline-spec "Overview strip": the song's objects in 300 columns, each drawn as a 5 px diamond
+// whose strength (30 to 100 %) shows how many objects fall in it. Built once per object list and width.
+const overviewColumns = 300;
+let overviewBinCache = null;
 
-function drawOverviewHits({ ctx, width, height }, { moments, lanes }, duration) {
-  if (width <= 0 || height <= 6 || duration <= 0) return;
-  if (overviewHitCache?.moments !== moments || overviewHitCache.lanes !== lanes ||
-      overviewHitCache.width !== width || overviewHitCache.duration !== duration) {
-    const columns = overviewGroups.map(() => new Set());
-    const laneBands = lanes?.map(lane => overviewGroups.indexOf(lane.group));
-    const scale = width / duration;
-    for (const [time, , , hits] of moments) {
+function overviewBins(gameplay, width, duration) {
+  if (!overviewBinCache || overviewBinCache.gameplay !== gameplay || overviewBinCache.width !== width || overviewBinCache.duration !== duration) {
+    const counts = new Array(overviewColumns).fill(0);
+    // Each object once, at its start: a circle, a slider's head, a spinner's start.
+    const starts = new Map();
+    for (const [, time, object] of gameplay?.points ?? []) if (!starts.has(object)) starts.set(object, time);
+    for (const [kind, time, , object] of gameplay?.spans ?? []) if (kind === "spinner" && !starts.has(object)) starts.set(object, time);
+    for (const time of starts.values()) {
       if (time < 0 || time > duration) continue;
-      const x = Math.min(width - 1, Math.floor(time * scale));
-      for (const [row] of hits) columns[laneBands?.[row]]?.add(x);
+      counts[Math.min(overviewColumns - 1, Math.floor(time / duration * overviewColumns))]++;
     }
-    overviewHitCache = { moments, lanes, width, duration, columns };
+    const most = Math.max(1, ...counts);
+    const bins = counts.flatMap((count, column) => count ? [[(column + .5) * width / overviewColumns, .3 + .7 * count / most]] : []);
+    overviewBinCache = { gameplay, width, duration, bins };
   }
+  return overviewBinCache.bins;
+}
 
-  const bandHeight = (height - 6) / overviewGroups.length;
-  ctx.fillStyle = "#a3a3a3";
-  for (const [band, columns] of overviewHitCache.columns.entries()) {
-    const y = 3 + band * bandHeight;
-    for (const x of columns) ctx.fillRect(x, y, 1.2, Math.max(1, bandHeight - 1));
+function diamond(ctx, x, y, half) {
+  ctx.beginPath();
+  ctx.moveTo(x, y - half);
+  ctx.lineTo(x + half, y);
+  ctx.lineTo(x, y + half);
+  ctx.lineTo(x - half, y);
+  ctx.closePath();
+}
+
+function drawOverview({ ctx, width, height }, start, visible) {
+  ctx.fillStyle = slateTimeline.overview;
+  ctx.fillRect(0, 0, width, height);
+  const duration = view.duration;
+  if (!(duration > 0) || width <= 0) return;
+  const middle = height / 2;
+  for (const [x, strength] of overviewBins(scene.gameplay, width, duration)) {
+    ctx.fillStyle = "rgba(196,196,196," + strength.toFixed(2) + ")";
+    diamond(ctx, x, middle, 3.5);
+    ctx.fill();
   }
+  // The viewport box: 1 px --editor-text, radius 2, at least 8 px wide.
+  // The box stays inside the strip: its 1 px edge is drawn within its width.
+  const boxWidth = Math.min(width, Math.max(8, visible * width / duration));
+  const boxLeft = Math.max(0, Math.min(start * width / duration, width - boxWidth));
+  ctx.fillStyle = "rgba(241,241,241,.06)";
+  ctx.strokeStyle = "#f1f1f1";
+  roundedTrack(ctx, boxLeft + .5, 3.5, boxWidth - 1, Math.max(0, height - 7), 2);
+  ctx.fill();
+  ctx.stroke();
+  // Problems on this difficulty: 7 px --editor-warning diamonds with a 1 px --editor-panel edge.
+  ctx.fillStyle = "#efc16a";
+  ctx.strokeStyle = slateTimeline.overview;
+  const drawnProblems = new Set();
+  for (const problem of view.outputProblems ?? []) {
+    const x = Math.round(problem.time * width / duration);
+    if (problem.timeline !== scene.path || drawnProblems.has(x)) continue;
+    drawnProblems.add(x);
+    diamond(ctx, problem.time * width / duration, middle, 5);
+    ctx.fill();
+    ctx.stroke();
+  }
+  const playX = view.position * width / duration;
+  line(ctx, slateTimeline.playhead, playX, 0, playX, height);
 }
 
 function paint() {
@@ -1705,22 +1818,16 @@ function paint() {
   r.ctx.fillRect(0, 0, r.width, r.height);
   const waveformMiddle = (r.height + rulerBandHeight) / 2;
   const waveAmplitude = Math.min(waveformHeight, Math.max(0, r.height - rulerBandHeight)) / 2;
-  if (waveAmplitude > 0) waveform(r.ctx, r.width, waveformMiddle, waveAmplitude, start, r.width / zoom);
-  const beats = beatLengths(scene.sections);
-  const objectSize = time => objectDiameter(beats, time, zoom, r.height - rulerBandHeight);
-  drawGameplay(r.ctx, scene.gameplay, xOf, waveformMiddle, r.width, objectSize);
+  if (waveformShown && waveAmplitude > 0) waveform(r.ctx, r.width, waveformMiddle, waveAmplitude, start, r.width / zoom);
+  drawGameplay(r.ctx, scene.gameplay, xOf, waveformMiddle, r.width, Math.max(0, Math.min(objectSize, r.height - rulerBandHeight)));
+  // v3 §5: the 40 px ruler, #0c0c0c with a 1 px --editor-selected bottom edge, bar numbers 13 px/600.
   r.ctx.fillStyle = slateTimeline.ruler;
   r.ctx.fillRect(0, 0, r.width, rulerBandHeight);
-  r.ctx.font = "11px Consolas, monospace";
+  line(r.ctx, slateTimeline.rulerEdge, 0, rulerBandHeight - .5, r.width, rulerBandHeight - .5);
+  r.ctx.font = "600 13px Inter, system-ui, sans-serif";
+  r.ctx.textBaseline = "top";
   drawTimingGrid(r.ctx, start, end, zoom, 0, rulerBandHeight, true);
-  const rulerSteps = [25, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 30000, 60000];
-  const labelStep = rulerSteps.find((step) => step * zoom >= 76) ?? 120000;
-  for (let time = Math.ceil(start / labelStep) * labelStep; !scene.editorBars?.length && time < end; time += labelStep) {
-    const x = xOf(time);
-    line(r.ctx, slateTimeline.barLine, x, 3, x, 21);
-    r.ctx.fillStyle = slateTimeline.rulerBar;
-    r.ctx.fillText(clock(time), x + 5, 14);
-  }
+  r.ctx.textBaseline = "alphabetic";
   const preview = rulerDrag?.path === scene.path ? rulerDrag.preview : null;
   const [left, right, cycling] = preview ?? [view.left, view.right, view.cycle];
   const spanStart = xOf(Math.min(left, right));
@@ -1752,20 +1859,7 @@ function paint() {
     r.ctx.fillRect(marker.x - 3, r.height - 9, 6, 6);
   }
   if (v) line(v.ctx, slateTimeline.playhead, xOf(view.position), 0, xOf(view.position), v.height);
-  o.ctx.fillStyle = slateTimeline.overview;
-  o.ctx.fillRect(0, 0, o.width, o.height);
-  waveform(o.ctx, o.width, o.height / 2, o.height / 2 - 2, 0, view.duration);
-  drawOverviewHits(o, scene, view.duration);
-  if (view.duration > 0) {
-    const overviewX = start * o.width / view.duration;
-    const overviewWidth = (g.width / zoom) * o.width / view.duration;
-    o.ctx.fillStyle = "#ffffff14";
-    o.ctx.fillRect(overviewX, 0, overviewWidth, o.height);
-    o.ctx.strokeStyle = "#858585";
-    o.ctx.strokeRect(overviewX, .5, overviewWidth, o.height - 1);
-    const playX = view.position * o.width / view.duration;
-    line(o.ctx, slateTimeline.playhead, playX, 0, playX, o.height);
-  }
+  drawOverview(o, start, g.width / zoom);
 }
 
 function pointer(event, phase, gesture = drag) {
@@ -1876,11 +1970,13 @@ for (const surface of [grid, controller]) {
   surface.addEventListener("pointermove", trackToolCursor);
   surface.addEventListener("pointerleave", () => {
     if (cursorSurface === surface) cursorSurface = null;
+    if (surface === grid) handOverHitCard(null);
   });
 }
 
 for (const surface of [grid, controller]) {
   surface.addEventListener("pointerdown", (event) => {
+    if (surface === grid) handOverHitCard(null);
     if (!scene || view.busy || drag || rulerDrag || event.button !== 0) return;
     const panning = surface === grid && view.tool === "Grab" && !event.altKey;
     if (surface === grid && !panning) {
@@ -1906,6 +2002,7 @@ for (const surface of [grid, controller]) {
     act(drag.firstPoint);
   });
   surface.addEventListener("pointermove", (event) => {
+    if (surface === grid) handOverHitCard(hitCardAt(event));
     if (event.pointerId !== drag?.id || performance.now() - drag.last < 32 || requests > 2) return;
     drag.last = performance.now();
     drag.lastPoint = pointer(event, "move");
@@ -1946,17 +2043,100 @@ grid.addEventListener("dblclick", (event) => {
     act(point);
   }
 });
-$("scroll").addEventListener("scroll", paintSoon);
+// The hit hover card (v3 f1, states.md): the lane and its set, the time, the volume and the object
+// under a hit. Handed to the bundle only when the hovered hit changes; it never repaints the timeline.
+let hoveredHit = null;
+let lastHover = null;
+
+function handOverHitCard(card) {
+  if ((card?.key ?? null) === hoveredHit) return;
+  hoveredHit = card?.key ?? null;
+  try { window.dawsuUi?.hitCard?.(card); } catch (error) { console.error(error); }
+}
+
+// What a moment's object is on the Song row: "circle 3", "slider 2" (its head), "slider 2 end" or
+// "slider 2 repeat", "spinner end"; "no object" for a hit without one.
+function hitObjectName(time, onObject) {
+  if (!onObject) return "no object";
+  const points = scene.gameplay?.points ?? [];
+  const point = points.find(([, at]) => at === time);
+  if (!point) return "spinner end";
+  const [kind, , object] = point;
+  const number = scene.combos?.objects?.[object]?.[0];
+  const name = kind + (number ? " " + number : "");
+  if (kind !== "slider") return name;
+  const nodes = points.filter(([nodeKind, , nodeObject]) => nodeKind === "slider" && nodeObject === object).map(([, at]) => at);
+  if (time === Math.min(...nodes)) return name;
+  return name + (time === Math.max(...nodes) ? " end" : " repeat");
+}
+
+// A new scene (a keyboard zoom, Delete, Undo) can move or remove the hovered hit.
+function refreshHitCard() {
+  if (hoveredHit && lastHover) handOverHitCard(hitCardAt(lastHover));
+}
+
+function hitCardAt(event) {
+  lastHover = { clientX: event.clientX, clientY: event.clientY };
+  // No card while a menu is open over the timeline.
+  if (!scene || drag || view.busy || $("editor-menu").hidden === false) return null;
+  const rect = grid.getBoundingClientRect();
+  const scrollTop = $("scroll").scrollTop;
+  const pointerY = event.clientY - rect.top;
+  const visibleRow = Math.floor((pointerY + scrollTop) / scene.rowHeight);
+  const row = laneRows[visibleRow];
+  if (typeof row !== "number") return null;
+  const ms = scene.viewStart + (event.clientX - rect.left) / scene.zoom;
+  let best = 6.5 / scene.zoom;
+  let found = null;
+  for (const moment of scene.moments) {
+    const distance = Math.abs(moment[0] - ms);
+    if (distance > best) continue;
+    const hit = moment[3].find(([lane]) => lane === row);
+    if (!hit) continue;
+    best = distance;
+    found = [moment, hit];
+  }
+  if (!found) return null;
+  const [[time, volume, onObject], [, , , hitVolume]] = found;
+  const lane = scene.lanes?.[row];
+  const name = renamedLanes.has(lane?.colourKey) ? laneDisplayName(lane) : laneSound(lane).name;
+  const set = sampleFolderNames[lane?.group];
+  const x = rect.left + (time - scene.viewStart) * scene.zoom;
+  const y = rect.top + (visibleRow + .5) * scene.rowHeight - scrollTop;
+  const title = set ? name + " · " + set : name;
+  const detail = "Volume " + Math.round(hitVolume ?? volume) + "% · " + (onObject ? "on " : "") + hitObjectName(time, onObject);
+  return {
+    // A hit that moves on screen (a zoom) or changes (an edit, Undo) is a new card, so the card follows it.
+    key: [visibleRow, time, Math.round(x), Math.round(y), title, detail].join(":"),
+    title,
+    time: clock(time),
+    detail,
+    x,
+    y,
+  };
+}
+
+$("scroll").addEventListener("scroll", () => {
+  handOverHitCard(null);
+  paintSoon();
+});
 new ResizeObserver(paintSoon).observe($("scroll"));
 
 const waveformGrip = $("waveform-resize");
 let waveformDrag = null;
 
+// The waveform switch shows on only while a waveform shows: switched on and the Song row not dragged to nothing.
+function refreshWaveformSwitch() {
+  $("ruler-waveform").setAttribute?.("aria-pressed", String(waveformShown && waveformHeight > 0));
+}
+
 function setWaveformHeight(requested) {
   waveformHeight = limit(Math.round(requested), 0, 200);
   if (waveformHeight) visibleWaveformHeight = waveformHeight;
-  $("ruler-waveform").setAttribute?.("aria-pressed", String(waveformHeight > 0));
   $("editor-arrange").style.setProperty("--wave-height", waveformHeight + "px");
+  refreshWaveformSwitch();
+  // Under 52 px the Song row has room for one line: its buttons stay, its name goes.
+  $("editor-arrange").dataset.songRow = waveformHeight >= 52 ? "tall" : "short";
   waveformGrip.setAttribute("aria-valuenow", String(waveformHeight));
   waveformGrip.setAttribute("aria-valuetext", waveformHeight ? waveformHeight + " pixels" : "Waveform hidden");
   paintSoon();
@@ -2066,15 +2246,14 @@ function waveformTarget(ms, y, height) {
   const dy = Math.abs(y - (height + rulerBandHeight) / 2);
   if (!scene.gameplay || dy > objectReach) return null;
   // Hit the circles and slider tracks at the sizes drawGameplay() draws them.
-  const beats = beatLengths(scene.sections);
-  const diameterAt = time => objectDiameter(beats, time, scene.zoom, height - rulerBandHeight);
-  const radiusOf = nodeRadii(scene.gameplay.points, diameterAt);
+  const diameter = Math.max(0, Math.min(objectSize, height - rulerBandHeight));
+  const radiusOf = nodeRadii(scene.gameplay.points, diameter);
   let target = null;
   let nearest = Infinity;
   for (const [kind, time, object] of scene.gameplay.points) {
     const distance = Math.hypot((time - ms) * scene.zoom, dy);
-    if (distance > objectReach || distance > radiusOf(kind, time, object)) continue;
-    if (distance < nearest) {
+    if (distance > objectReach || distance > radiusOf(kind, time, object).radius) continue;
+    if (distance <= nearest) {
       target = { object, time, node: true };
       nearest = distance;
     }
@@ -2084,7 +2263,7 @@ function waveformTarget(ms, y, height) {
   const spans = scene.gameplay.spans;
   for (let i = spans.length - 1; i >= 0; i--) {
     const [kind, start, end, object] = spans[i];
-    if (start <= ms && ms <= end && dy <= (kind === "slider" ? diameterAt(start) * .66 / 2 : 2.5)) {
+    if (start <= ms && ms <= end && dy <= (kind === "slider" ? diameter * .66 / 2 : 2.5)) {
       return { object, time: start, node: false };
     }
   }
@@ -2300,6 +2479,15 @@ function resizeLaneHeaders(height) {
 // The farthest zoom out, in px per ms, as the editor's MIN_ZOOM; the zoom slider's min is its log10.
 const minZoom = .0005;
 
+// A lane toolbar button at the editor's limit (zoom .0005 to 3 px per ms, lanes 20 to 65 px) shows disabled.
+function refreshLaneToolbar() {
+  const off = !scene || !!view.busy;
+  $("ruler-zoom-out").disabled = off || scene.zoom <= minZoom;
+  $("ruler-zoom-in").disabled = off || scene.zoom >= 3;
+  $("lane-shorter").disabled = off || scene.rowHeight <= 20;
+  $("lane-taller").disabled = off || scene.rowHeight >= 65;
+}
+
 function changeView(start, zoom, rowHeight = scene.rowHeight, rowAnchorY = 0) {
   zoom = limit(zoom, minZoom, 3);
   rowHeight = limit(rowHeight, 20, 65);
@@ -2321,6 +2509,8 @@ function changeView(start, zoom, rowHeight = scene.rowHeight, rowAnchorY = 0) {
     }
     setValue("zoom", Math.log10(zoom));
     setValue("lane-height", rowHeight);
+    refreshLaneToolbar();
+    handOverHitCard(null);
     paintSoon();
 
     try {
@@ -3211,18 +3401,16 @@ function fitTimeline() {
 }
 $("fit").addEventListener("click", fitTimeline);
 $("ruler-fit").addEventListener("click", fitTimeline);
-$("toggle-lane-names").addEventListener("click", () => {
-  if (scene && !view.busy) act({ kind: "panel", panel: "lane_names", on: view.panels?.laneNames === false });
-});
 $("ruler-waveform").addEventListener("click", () => {
   if (scene && !view.busy && !waveformDrag) {
-    setWaveformHeight(waveformHeight ? 0 : visibleWaveformHeight);
+    // v3 §4 (Yoge): the switch hides only the waveform; the Song row, circles and digits stay.
+    waveformShown = !waveformShown;
+    refreshWaveformSwitch();
+    paintSoon();
   }
 });
-$("ruler-follow").addEventListener("click", () => {
-  if (scene && !view.busy) act({ kind: "follow", on: !view.follow }, false);
-});
-for (const [id, action] of [["ruler-zoom-out", "zoomOut"], ["ruler-zoom-in", "zoomIn"]]) {
+// The lane toolbar (v3 §4): zoom, and Shorter and Taller lanes as View › Shorter lanes and Taller lanes.
+for (const [id, action] of [["ruler-zoom-out", "zoomOut"], ["ruler-zoom-in", "zoomIn"], ["lane-shorter", "rowsOut"], ["lane-taller", "rowsIn"]]) {
   $(id).addEventListener("click", () => {
     if (scene && !view.busy) command(action);
   });

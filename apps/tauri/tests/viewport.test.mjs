@@ -328,7 +328,7 @@ test("ruler colours distinguish reduced beat divisions and reset at a tempo chan
   const { evaluate } = await frontend();
   evaluate('scene = { sections: [[0, 480, 4], [1700, 600, 3]], snap: true, snapMode: "grid", beats: 1, divisor: 4 }');
   const ticks = (zoom) => JSON.parse(evaluate('JSON.stringify(testTicks(' + zoom + '))'));
-  evaluate('function testTicks(zoom) { const ticks = {}; let x; const ctx = { beginPath() {}, moveTo(at) { x = at - .5; }, lineTo() {}, stroke() { ticks[x / zoom] = this.strokeStyle; } }; drawTimingGrid(ctx, 0, 2500, zoom, 0, 21, true); return ticks; }');
+  evaluate('function testTicks(zoom) { const ticks = {}; let x; const ctx = { beginPath() {}, moveTo(at) { x = at - .5; }, lineTo() {}, stroke() { ticks[x / zoom] = this.strokeStyle; }, fillText() {} }; drawTimingGrid(ctx, 0, 2500, zoom, 0, 21, true); return ticks; }');
 
   const quarters = ticks(1);
   assert.equal(quarters[0], "#ffffff");
@@ -349,6 +349,106 @@ test("ruler colours distinguish reduced beat divisions and reset at a tempo chan
   assert.equal(Object.values(ticks(1)).includes("#8866ee"), false);
   evaluate('scene.snapMode = "grid"; scene.snap = false');
   assert.equal(Object.values(ticks(1)).includes("#8866ee"), false);
+});
+
+test("the 40 px ruler draws bars full height, beats 12 px and snap ticks at the divisor's height", async () => {
+  const { evaluate } = await frontend();
+  evaluate('scene = { sections: [[0, 480, 4]], snap: true, snapMode: "grid", beats: 1, divisor: 4 }');
+  // Each tick as [top, colour] at its time; every tick ends at the ruler's bottom (40 px).
+  evaluate(`function rulerTicks(zoom) {
+    const ticks = {}; let x, top;
+    const ctx = { beginPath() {}, moveTo(at, y) { x = at - .5; top = y; }, lineTo(_, y) { this.bottom = y; },
+      stroke() { ticks[x / zoom] = [top, this.bottom, this.strokeStyle]; }, fillText() {} };
+    drawTimingGrid(ctx, 0, 1000, zoom, 0, 40, true);
+    return ticks;
+  }`);
+  const ticks = () => JSON.parse(evaluate("JSON.stringify(rulerTicks(1))"));
+  const quarters = ticks();
+  assert.deepEqual(quarters[0], [0, 40, "#ffffff"], "bar line, full height");
+  // A long snap (2 beats) is a beat tick on the ruler, not a full-height bar line.
+  evaluate("scene.beats = 2; scene.divisor = 1");
+  assert.deepEqual(ticks()[960], [28, 40, "#ffffff"], "long snap, 12 px");
+  evaluate("scene.beats = 1; scene.divisor = 4");
+  assert.deepEqual(quarters[480], [28, 40, "#ffffff"], "beat tick, 12 px");
+  assert.deepEqual(quarters[240], [31, 40, "#ed1121"], "1/2, 9 px");
+  assert.deepEqual(quarters[120], [33, 40, "#66ccff"], "1/4, 7 px");
+  evaluate("scene.divisor = 3");
+  assert.deepEqual(ticks()[160], [33, 40, "#8866ee"], "1/3, 7 px");
+  evaluate("scene.divisor = 8");
+  assert.deepEqual(ticks()[60], [35, 40, "#ffcc22"], "1/8, 5 px");
+  evaluate("scene.divisor = 6");
+  assert.deepEqual(ticks()[80], [35, 40, "#eeaa00"], "1/6, 5 px");
+  evaluate("scene.divisor = 16");
+  assert.deepEqual(ticks()[30], [36, 40, "#6644cc"], "1/16, 4 px");
+  evaluate("scene.divisor = 12");
+  assert.deepEqual(ticks()[40], [36, 40, "#cc6600"], "1/12, 4 px");
+});
+
+test("editor grid lines stay neutral: sub-beats follow the snap, then beats and bars", async () => {
+  const { evaluate } = await frontend();
+  evaluate('scene = { sections: [[0, 480, 4]], snap: true, snapMode: "grid", beats: 1, divisor: 4 }');
+  evaluate(`function testGridLines() {
+    const lines = {}; let x, top;
+    const ctx = { beginPath() {}, moveTo(at, y) { x = at - .5; top = y; }, lineTo(_, y) { this.bottom = y; },
+      stroke() { lines[x] = [top, this.bottom, this.strokeStyle]; }, fillText() {} };
+    drawTimingGrid(ctx, 0, 2000, 1, 0, 300, false);
+    return lines;
+  }`);
+  const lines = () => JSON.parse(evaluate("JSON.stringify(testGridLines())"));
+  const quarters = lines();
+  // v3 §5 (Yoge): only the ruler is coloured; grid lines run the full height in white at low alpha.
+  assert.deepEqual(quarters[0], [0, 300, "rgba(255,255,255,.10)"], "bar");
+  assert.deepEqual(quarters[480], [0, 300, "rgba(255,255,255,.04)"], "beat");
+  assert.deepEqual(quarters[120], [0, 300, "rgba(255,255,255,.025)"], "1/4");
+  assert.deepEqual(quarters[240], [0, 300, "rgba(255,255,255,.025)"], "1/2");
+  evaluate("scene.divisor = 3");
+  assert.deepEqual(lines()[160], [0, 300, "rgba(255,255,255,.025)"], "sub-beats follow the divisor");
+  assert.equal(lines()[120], undefined);
+  evaluate("scene.snap = false");
+  assert.equal(lines()[160], undefined, "no sub-beats with snap off");
+  evaluate("scene.editorBars = [{ start: 0, beat: 480, numerator: 3, bar: 1 }]");
+  assert.deepEqual(lines()[1440], [0, 300, "rgba(255,255,255,.10)"], "a time signature's bar");
+});
+
+test("bar numbers sit 10 px from the ruler's top; bar lines run its full height", async () => {
+  const { evaluate } = await frontend();
+  const result = evaluate(`
+    scene = { sections: [[0, 500, 4]], snap: false, editorBars: [{ start: 0, beat: 500, numerator: 4, bar: 1 }] };
+    const labels = [], lines = [];
+    let from;
+    const ctx = { beginPath() {}, moveTo(x, y) { from = [x - .5, y]; }, lineTo(_, y) { lines.push([...from, y, this.strokeStyle]); },
+      stroke() {}, fillText(text, x, y) { labels.push([text, x - 5, y, this.fillStyle]); } };
+    drawTimingGrid(ctx, 0, 4500, .1, 0, 40, true);
+    // The beat tick at 200 px draws first; the editor bar line draws over it.
+    JSON.stringify([labels[1], lines.filter(line => line[0] === 200).at(-1)]);
+  `);
+  assert.deepEqual(JSON.parse(result), [["2", 200, 10, "#ffffff"], [200, 0, 40, "#ffffff"]]);
+});
+
+test("without time signatures the ruler numbers bars as the editor does", async () => {
+  const { evaluate } = await frontend();
+  // 4/4 at 500 ms from 0, then a red line at 3000 ms in 3/4 at 400 ms. The second section starts
+  // at bar 3: a bar and a half before it count as two (tempo.rs bar_beat_at rounds up).
+  const labels = at => JSON.parse(evaluate(`
+    scene = { sections: [[0, 500, 4], [3000, 400, 3]], snap: false };
+    var barLabels = [];
+    drawTimingGrid({ beginPath() {}, moveTo() {}, lineTo() {}, stroke() {},
+      fillText(text, x, y) { barLabels.push([text, Math.round(x - 5), y]); } }, 0, 6000, ${at}, 0, 40, true);
+    JSON.stringify(barLabels);
+  `));
+  assert.deepEqual(labels(.1), [["1", 0, 10], ["2", 200, 10], ["3", 300, 10], ["4", 420, 10], ["5", 540, 10]]);
+  // Zoomed out, bars narrower than 60 px label only every few bars so the numbers never run together,
+  // counted from each section's first bar so a later section keeps its first number.
+  assert.deepEqual(labels(.02).map(([text]) => text), ["1", "3"]);
+  // A label that would sit on the next section's label is left out.
+  const close = JSON.parse(evaluate(`
+    scene = { sections: [[0, 500, 4], [2050, 400, 3]], snap: false };
+    var closeLabels = [];
+    drawTimingGrid({ beginPath() {}, moveTo() {}, lineTo() {}, stroke() {},
+      fillText(text, x) { closeLabels.push([text, Math.round(x - 5)]); } }, 0, 4000, .1, 0, 40, true);
+    JSON.stringify(closeLabels);
+  `));
+  assert.deepEqual(close, [["1", 0], ["3", 205], ["4", 325]]);
 });
 
 test("time signature bars draw at their new positions while snap colours stay on the map grid", async () => {
@@ -413,30 +513,88 @@ test("lane height buttons and slider send the same viewport action as wheel zoom
   assert.equal(calls.pop().action.row_height, 42);
 });
 
-test("ruler controls hide and restore the waveform and reuse timeline actions", async () => {
+test("the lane toolbar holds zoom, Fit all and lane height; the Song row holds the waveform switch", async () => {
   const { calls, evaluate, get, settle } = await frontend();
-  assert.match(html, /class="lane-title ruler-controls"[\s\S]*?id="ruler-waveform"[\s\S]*?id="ruler-fit"[\s\S]*?id="overview"/);
+  // v3 §4: the lane toolbar above the lanes, beside the ruler. The overview cell keeps no buttons.
+  const toolbar = html.slice(html.indexOf('class="lane-title lane-title-controls'), html.indexOf('class="lane-title song-row'));
+  const order = ["ruler-zoom-out", "ruler-zoom-in", "ruler-fit", "lane-shorter", "lane-taller"].map(id => toolbar.indexOf(`id="${id}"`));
+  assert.ok(order.every((at, i) => at >= 0 && (i === 0 || at > order[i - 1])), "toolbar order " + order);
+  const overviewCell = html.slice(html.indexOf('class="overview"'), html.indexOf('id="overview"'));
+  assert.doesNotMatch(overviewCell, /<button/);
+  // v3 §4 and §8: the waveform switch sits in the Song row, not the lane toolbar.
+  const songRow = html.slice(html.indexOf('class="lane-title song-row'), html.indexOf('id="ruler"'));
+  assert.match(songRow, /id="song-mute"[\s\S]*id="song-solo"[\s\S]*id="ruler-waveform"/);
+  // v3 §4: the Song · objects header, a teal strip, its name, then M, S and the waveform switch.
+  assert.match(songRow, /class="song-strip"[\s\S]*Song · objects[\s\S]*id="song-mute"/);
+  // Follow lives in the Playhead group and the Playback menu (v3 §8 drops the toolbar's locate button).
+  assert.doesNotMatch(html + app, /ruler-follow/);
+  // v3 §4 (Yoge): no Delete lane or lane names button; the lane menu, Edit and View rows stay,
+  // and none of them presses a removed button.
+  const commands = await readFile(new URL("../ui/src/lib/commands.js", import.meta.url), "utf8");
+  const menus = await readFile(new URL("../dist/menus.js", import.meta.url), "utf8");
+  assert.doesNotMatch(html + app + commands + menus, /id="delete-lane"|\$\("delete-lane"\)|"click", "delete-lane"|toggle-lane-names/);
+  assert.match(commands, /id: "deleteActiveLane"[^}]*run: \["call", "deleteActiveLane"\]/);
+  assert.match(commands, /id: "laneDelete"[^}]*run: \["onLane", "call", "deleteActiveLane"\]/);
+  assert.match(commands, /id: "laneNames"[^}]*run: \["panel", "lane_names", "laneNames"\]/);
+
   const click = id => get(id).events.get("click")();
   evaluate("setWaveformHeight(88)");
+  // v3 §4 (Yoge): the switch hides only the waveform; the Song row keeps its height.
   click("ruler-waveform");
-  assert.equal(get("editor-arrange").style["--wave-height"], "0px");
+  assert.equal(get("editor-arrange").style["--wave-height"], "88px");
   assert.equal(get("ruler-waveform")["aria-pressed"], "false");
+  assert.equal(evaluate("waveformShown"), false);
   click("ruler-waveform");
   assert.equal(get("editor-arrange").style["--wave-height"], "88px");
   assert.equal(get("ruler-waveform")["aria-pressed"], "true");
-  click("ruler-follow");
-  await settle();
-  assert.deepEqual(calls.pop().action, {kind:"follow", on:true});
-  assert.equal(get("ruler-follow")["aria-pressed"], "true");
+  // Dragged to nothing, the Song row shows no waveform, so the switch shows off.
+  evaluate("setWaveformHeight(0)");
+  assert.equal(get("ruler-waveform")["aria-pressed"], "false");
+  evaluate("setWaveformHeight(88)");
+  assert.equal(get("ruler-waveform")["aria-pressed"], "true");
+  // v3 §4: a greyed move-vertical glyph heads the lane height buttons; Fit all and the waveform
+  // switch wait while a job runs (data-doc).
+  assert.match(toolbar, /class="lane-tool-glyph" aria-hidden="true"[\s\S]*id="lane-shorter"/);
+  assert.match(html, /id="ruler-fit"[^>]*data-doc/);
+  assert.match(html, /id="ruler-waveform"[^>]*data-doc/);
   click("ruler-zoom-out");
   click("ruler-zoom-in");
+  click("lane-shorter");
+  click("lane-taller");
   await settle();
+  // Shorter and Taller run the same commands as View › Shorter lanes and Taller lanes.
   assert.deepEqual(calls.splice(0).map(call=>call.action), [
     {kind:"command",id:"zoomOut"}, {kind:"command",id:"zoomIn"},
+    {kind:"command",id:"rowsOut"}, {kind:"command",id:"rowsIn"},
   ]);
   click("ruler-fit");
   await settle();
   assert.deepEqual(calls.pop().action, {kind:"view",start:0,zoom:.1,row_height:30});
+});
+
+test("the Song row opens 84 px tall (v3) and drops its name when the row is too short for two lines", async () => {
+  const { evaluate, get } = await frontend();
+  assert.equal(evaluate("defaultWaveformHeight"), 84);
+  evaluate("setWaveformHeight(84)");
+  assert.equal(get("editor-arrange").dataset.songRow, "tall");
+  evaluate("setWaveformHeight(51)");
+  assert.equal(get("editor-arrange").dataset.songRow, "short");
+  evaluate("setWaveformHeight(0)");
+  assert.equal(get("editor-arrange").dataset.songRow, "short");
+});
+
+test("a lane toolbar button at its limit shows disabled", async () => {
+  const { evaluate, get } = await frontend();
+  const limits = () => ["ruler-zoom-out", "ruler-zoom-in", "lane-shorter", "lane-taller"].map(id => !!get(id).disabled);
+  evaluate("refreshLaneToolbar()");
+  assert.deepEqual(limits(), [false, false, false, false]);
+  // The editor's limits: zoom .0005 to 3 px per ms, lanes 20 to 65 px.
+  evaluate("scene.zoom = 3; scene.rowHeight = 65; refreshLaneToolbar()");
+  assert.deepEqual(limits(), [false, true, false, true]);
+  evaluate("scene.zoom = .0005; scene.rowHeight = 20; refreshLaneToolbar()");
+  assert.deepEqual(limits(), [true, false, true, false]);
+  evaluate("view.busy = true; scene.zoom = 1; scene.rowHeight = 30; refreshLaneToolbar()");
+  assert.deepEqual(limits(), [true, true, true, true]);
 });
 test("the song overview sits at the bottom of the timeline, below the volume lane, with the ruler on top", async () => {
   const docking = await readFile(new URL("../dist/docking.js", import.meta.url), "utf8");
@@ -448,4 +606,10 @@ test("the song overview sits at the bottom of the timeline, below the volume lan
   // The rows before the layout code runs follow the same order: ruler, lanes, volume lane, overview.
   assert.match(style, /\.arrange\{grid-template-rows:var\(--layout-timeline-rows,var\(--ruler-row\) minmax\(0,1fr\) auto minmax\(20px,max-content\)\)\}/);
   assert.match(style, /\.arrange\[data-controller="false"\]\{[^}]*grid-template-rows:var\(--layout-timeline-rows,var\(--ruler-row\) minmax\(0,1fr\) minmax\(20px,max-content\)\)\}/);
+});
+
+test("the overview canvas never sizes its own row, so its drawn height can't hold the strip open", async () => {
+  // The row is max-content: a canvas taller than the head once kept the strip at that height.
+  const timelineCss = await readFile(new URL("../ui/src/timeline.css", import.meta.url), "utf8");
+  assert.match(timelineCss, /\.arrange > \.overview > #overview \{\s*height: 0;\s*min-height: 100%;/);
 });

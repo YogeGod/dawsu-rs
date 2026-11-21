@@ -244,6 +244,91 @@ fn gameplay_overlay_projects_objects_and_skips_unanchored_hits() {
 }
 
 #[test]
+fn combos_follow_lazer_new_combo_offsets_and_colours() {
+    // osu!lazer at 131fe72: ConvertHitObjectParser.cs:458-525 (an offset counts only with the
+    // new-combo bit, never on a spinner), OsuHitObject.cs:193-196 (a spinner never starts a combo,
+    // even flagged or first; the first object and the one after a spinner do), LegacyBeatmapSkin.cs:90
+    // (map colours by the index with offsets), LegacyDecoder.cs:130-145 ([Colours] in file order).
+    let fixture = Fixture::new("combos");
+    let path = fixture.0.join("Hard.osu");
+    let bytes = b"osu file format v14
+
+[General]
+Mode:0
+
+[Difficulty]
+SliderMultiplier:1.4
+SliderTickRate:1
+
+[TimingPoints]
+0,500,4,1,0,100,1,0
+
+[Colours]
+Combo2 : 0,255,0
+Combo1 : 255,0,0
+SliderBorder : 1,2,3
+Combo3 : 0,0,255
+
+[HitObjects]
+256,192,1000,5,0,0:0:0:0:
+256,192,1500,1,0,0:0:0:0:
+256,192,2000,2,0,L|396:192,1,140
+256,192,3000,12,0,3800,0:0:0:0:
+256,192,4000,1,0,0:0:0:0:
+256,192,4500,21,0,0:0:0:0:
+256,192,5000,17,0,0:0:0:0:
+";
+    fs::write(&path, bytes).unwrap();
+    let mut app = Application::headless();
+    open(&mut app, &path);
+    assert_eq!(snapshot(&app, true)["scene"]["combos"], serde_json::json!({
+        // Map colours in file order: Combo2 first. SliderBorder is not a combo colour.
+        "colours": ["#00ff00", "#ff0000", "#0000ff"],
+        // [number in combo, colour] per object in file order. The first combo takes colour 1 % 3; the
+        // flagged spinner stays in it; the circle after it starts the next.
+        "objects": [[1, 1], [2, 1], [3, 1], [4, 1], [1, 2], [1, 1], [2, 1]],
+    }));
+    assert_eq!(fs::read(&path).unwrap(), bytes);
+
+    // Without [Colours] lazer's default skin colours apply, by the index without offsets.
+    let plain = fixture.0.join("Plain.osu");
+    fs::write(&plain, b"osu file format v14
+
+[General]
+Mode:0
+
+[TimingPoints]
+0,500,4,1,0,100,1,0
+
+[HitObjects]
+256,192,1000,1,0,0:0:0:0:
+256,192,1500,85,0,0:0:0:0:
+").unwrap();
+    open(&mut app, &plain);
+    assert_eq!(snapshot(&app, true)["scene"]["combos"], serde_json::json!({
+        "colours": ["#ffc000", "#00ca00", "#127cff", "#f21839"],
+        "objects": [[1, 1], [1, 2]],
+    }));
+
+    // A spinner first, even flagged, starts no combo: it takes combo 0, the circle after it combo 1.
+    let spun = fixture.0.join("Spun.osu");
+    fs::write(&spun, b"osu file format v14
+
+[General]
+Mode:0
+
+[TimingPoints]
+0,500,4,1,0,100,1,0
+
+[HitObjects]
+256,192,1000,12,0,1800,0:0:0:0:
+256,192,2000,1,0,0:0:0:0:
+").unwrap();
+    open(&mut app, &spun);
+    assert_eq!(snapshot(&app, true)["scene"]["combos"]["objects"], serde_json::json!([[1, 0], [1, 1]]));
+}
+
+#[test]
 fn drum_view_uses_a_preset_without_changing_the_mapset_and_follows_sibling_difficulties() {
     use dawsu_hitsounding::drums::{DrumMap, DrumRow, write_dawsudrum};
 

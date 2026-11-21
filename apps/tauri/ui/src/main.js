@@ -4,6 +4,7 @@ import "./parts/pill.css";
 import "./parts/inspector.css";
 import "./parts/browser.css";
 import "./parts/bottom-panel.css";
+import "./timeline.css";
 import { mount } from "svelte";
 import { bridge } from "./lib/bridge.svelte.js";
 import * as commandList from "./lib/commands.js";
@@ -20,6 +21,7 @@ import PlayheadGroup from "./parts/PlayheadGroup.svelte";
 import ExportWindow from "./parts/ExportWindow.svelte";
 import DrumDetectWindow from "./parts/DrumDetectWindow.svelte";
 import EditorMenu from "./parts/EditorMenu.svelte";
+import HitCard from "./parts/HitCard.svelte";
 import InspectorBookmarks from "./parts/InspectorBookmarks.svelte";
 import InspectorDifficulty from "./parts/InspectorDifficulty.svelte";
 import InspectorHistory from "./parts/InspectorHistory.svelte";
@@ -33,6 +35,8 @@ import TransportBar from "./parts/TransportBar.svelte";
 const parts = {
   tools: ToolPills, snap: SnapSlider, audition: AuditionPill, transport: TransportBar,
   playhead: PlayheadGroup, lanes: LaneHeaders,
+  // The timeline's hit hover card, at body level.
+  "hit-card": HitCard,
   // The popup the menu bar, the right-click tool picker and the lane menu share (#editor-menu).
   menu: EditorMenu,
   "inspector-selection": InspectorSelection, "inspector-lane": InspectorLane, "inspector-difficulty": InspectorDifficulty,
@@ -93,6 +97,11 @@ export function mixer(strips) {
 
 // The bottom panel's tab, read by app.js's renderPanelLayout() and paint().
 export const bottomTab = () => bridge.bottomTab;
+
+// app.js hands over the hovered timeline hit, or null, each time it changes.
+export function hitCard(card) {
+  bridge.hitCard = card;
+}
 
 // The one command list menus.js builds every menu from.
 export const commands = commandList;

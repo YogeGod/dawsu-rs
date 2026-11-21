@@ -143,18 +143,21 @@ test("timeline canvases paint with the design's colours", async () => {
   assert.equal(ruler.fills[0], "#1c2727");
   for (const shade of ["#315c59", "#3c7673", "#46908c", "#51aaa5"]) {
     assert.ok(ruler.fills.includes(shade), `ruler waveform ${shade}`);
-    assert.ok(overview.fills.includes(shade), `overview waveform ${shade}`);
+    assert.ok(!overview.fills.includes(shade), `no overview waveform ${shade}`);
   }
-  // Gameplay objects: --editor-readout bodies ringed in --editor-tealtint, teal slider bodies.
-  assert.deepEqual(ruler.arcs, [{ fill: "#e6eef2", stroke: "#1c2727" }, { fill: "#e6eef2", stroke: "#1c2727" }]);
-  assert.ok(ruler.fills.includes("#62d6cfd9"), "slider body");
+  // Gameplay objects without combo data: --editor-readout circles with a white ring (timeline-spec §9);
+  // slider tracks are that colour 38 % into #111111 with an 85 % white edge.
+  assert.deepEqual(ruler.arcs, [{ fill: "#e6eef2", stroke: "#ffffff" }, { fill: "#e6eef2", stroke: "#ffffff" }]);
+  assert.ok(ruler.fills.includes("#626567"), "slider body");
+  assert.ok(ruler.strokes.includes("#ffffffd9"), "slider edge");
   assert.ok(ruler.fills.includes("#e6eef2"), "spinner body");
-  assert.ok(ruler.fills.includes("#c4c4c4"), "ruler labels in --editor-secondary");
+  assert.ok(ruler.fills.includes("#ffffff"), "ruler bar numbers white (v3 §5)");
   assert.ok(ruler.strokes.includes("#858585"), "locators in --editor-disabled");
-  // Grid lines stay brighter than the design's --editor-grid and --editor-major so beats
-  // still outrank the osu!lazer snap ticks between them; the playhead is --editor-focus.
-  assert.ok(grid.strokes.includes("#383838"), "beat lines");
-  assert.ok(grid.strokes.includes("#545454"), "bar lines");
+  // v3 §5 (Yoge): grid lines stay neutral white at low alpha; snap colours show only on the ruler.
+  // The playhead is --editor-focus.
+  assert.ok(grid.strokes.includes("rgba(255,255,255,.04)"), "beat lines");
+  assert.ok(grid.strokes.includes("rgba(255,255,255,.10)"), "bar lines");
+  assert.ok(!grid.strokes.some(colour => /^#(ed1121|66ccff|8866ee)/.test(colour)), "no snap colours on the grid");
   for (const canvas of [grid, ruler, overview, volume]) assert.ok(canvas.strokes.includes("#a1d0f7"), "playhead");
   // Object lines take the spec's teal at the old 40% strength (10% vanishes on the rows);
   // the marked range and marquee use the accent.
@@ -167,9 +170,10 @@ test("timeline canvases paint with the design's colours", async () => {
   assert.ok(grid.fills.includes("#858585"), "listen-muted hit");
   assert.ok(volume.fills.includes("#a3a3a3"), "volume labels");
   assert.ok(volume.strokes.includes("#62d6cf"), "ramp preview");
-  assert.ok(overview.fills.includes("#a3a3a3"), "overview hit marks");
-  assert.ok(overview.fills.includes("#ffffff14"), "overview view box");
-  assert.ok(overview.strokes.includes("#858585"), "overview view box edge");
+  // timeline-spec "Overview strip": object diamonds in #c4c4c4, the viewport box in --editor-text.
+  assert.ok(overview.fills.some(fill => fill.startsWith("rgba(196,196,196,")), "overview object diamonds");
+  assert.ok(overview.fills.includes("rgba(241,241,241,.06)"), "overview view box");
+  assert.ok(overview.strokes.includes("#f1f1f1"), "overview view box edge");
 
   const oldColours = [
     "#334a63", "#47618b", "#657ab5", "#7aaac6", "#536a89d9", "#9e86c8", "#26364b", "#405a7a",
