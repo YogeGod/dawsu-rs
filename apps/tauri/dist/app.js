@@ -449,7 +449,7 @@ async function openPanelAt(panel, section) {
     // The Browser parts write each model at once, so the tab and search field exist right after.
     if (section !== "search") sampleBrowserAction("source", section === "library" ? "library" : "mapset");
     target = section === "search" ? $("sample-browser-filter")
-      : $(browserSource === "library" ? "sample-browser-library" : "sample-browser-mapset");
+      : browserSource === "library" ? $("sample-browser-library") : $("sample-browser-mapset");
   } else {
     target = $("editor-inspector").querySelector(`section[aria-label="${section}"] button`);
   }

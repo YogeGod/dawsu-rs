@@ -1,6 +1,6 @@
 /* v3 Browser (#sample-browser): search well, Mapset/Library tabs, 28 px tree rows, the sample preview
    at the bottom. In the tree panel it fills the column; in the Inspector (classic) it keeps its own head. */
-#tree-browser-host #sample-browser {
+#tree-browser-host #sample-browser:not([hidden]) {
   display: flex;
   flex: 1;
   flex-direction: column;

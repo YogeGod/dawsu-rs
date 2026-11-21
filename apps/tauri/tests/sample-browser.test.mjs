@@ -148,6 +148,8 @@ test("the Library tab lists the hitsound library and previews its files", async 
   assert.deepEqual(model().rows.map(row => [row.kind, row.label]), [["folder", "Drums"], ["note", "Loading samples…"]]);
   await settle();
   assert.deepEqual(labels(), ["Drums", "clap.wav", "snare.wav"]);
+  action("filter", "SNARE");
+  assert.deepEqual(labels(), ["Drums", "snare.wav"]);
   action("pick", "Drums/snare.wav");
   await settle();
   const location = {root: "C:/fixtures/library", path: "Drums/snare.wav"};
@@ -198,6 +200,9 @@ test("Classic opens one folder at a time with Up, inside the Inspector", async (
   runInContext('act({ kind: "browser_style", classic: false });', context);
   await settle();
   assert.equal(model().classic, false);
+  assert.deepEqual(labels(), ["percussion", "kick.wav"]);
+  action("toggle", "percussion");
+  assert.deepEqual(labels(), ["percussion", "snare.wav", "kick.wav"]);
 });
 
 test("a busy editor greys out the sample rows and both buttons", async () => {
