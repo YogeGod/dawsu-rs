@@ -80,6 +80,7 @@ impl Application {
         let next = if forward { doc.bookmarks.next(at) } else { doc.bookmarks.previous(at) };
         if let Some(time) = next {
             self.jump_to_bookmark(time.ms());
+            self.bookmark_step = Some(time.ms());
         }
     }
 }
