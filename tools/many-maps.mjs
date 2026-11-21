@@ -1,10 +1,11 @@
 // The robot mapper and the 3.1.4 comparison over many different maps, one after another.
 //
 // node tools/many-maps.mjs --exe <dawsu-tauri.exe> [--old-app <dawsu-hitsounding-editor checkout>]
-//   [--maps <file.osu,folder,...>] [--json <file>] [--full]
+//   [--maps <file.osu,folder,...> | --list <text file>] [--json <file>] [--full]
 //
 //   --maps    .osu files and folders (every .osu directly inside); default: every fixture map in
 //             tests/fixtures/save-pack (owner and synthetic) and tests/fixtures/oracle-cases
+//   --list    a text file with one .osu file or folder per line (for names with commas)
 //   --json    also write the table as data to this file
 //   --full    run every everyday-check step on each map (default: --quick, the editing and saving steps)
 //
@@ -25,7 +26,10 @@ for (let i = 2; i < process.argv.length; i++) {
   if (!flag) i++;
 }
 if (!args.exe) throw new Error("--exe is required: the built dawsu-tauri.exe");
-const sources = typeof args.maps === "string" ? args.maps.split(",").map(path => resolve(path.trim()))
+// --list names a text file with one .osu file or folder per line, for names that hold commas.
+const listed = typeof args.list === "string" ? readFileSync(resolve(args.list), "utf8").split(/\r?\n/).map(line => line.trim()).filter(Boolean) : [];
+const sources = listed.length ? listed.map(path => resolve(path))
+  : typeof args.maps === "string" ? args.maps.split(",").map(path => resolve(path.trim()))
   : ["tests/fixtures/save-pack/owner", "tests/fixtures/save-pack/synthetic", "tests/fixtures/oracle-cases"].map(path => join(repo, path));
 const maps = sources.flatMap(path => {
   if (!existsSync(path)) throw new Error(`no map or folder at ${path}`);
