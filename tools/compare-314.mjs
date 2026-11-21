@@ -1,7 +1,7 @@
 // Does dawsu! save what 3.1.4 would save for the same edits? One number, and the differences in words.
 //
 // node tools/compare-314.mjs --exe <dawsu-tauri.exe> [--old-app <dawsu-hitsounding-editor checkout>]
-//   [--map <fixture .osu>] [--json <file>] [--keep]
+//   [--map <fixture .osu>] [--json <file>] [--keep] [--quick]
 //
 //   --exe      the built editor, as for tools/everyday-check.mjs
 //   --old-app  a checkout of YogeGod/dawsu-hitsounding-editor (default: ../dawsu-hitsounding-editor next
@@ -11,6 +11,7 @@
 //   --map      as for the everyday check (its default fixture)
 //   --json     also write the comparison as data to this file
 //   --keep     keep the work folder (map copies, results) under target/compare-314/
+//   --quick    pass --quick to the everyday check (only its editing and saving steps)
 //
 // What it does:
 //   0. Copies the map's folder and adds a short silent WAV for each sound file its hits name but the
@@ -98,7 +99,7 @@ function must(command, list, options) {
 console.log("1/4 the everyday check on a copy of the map…");
 const robotJson = join(work, "robot.json");
 const robotRun = run(process.execPath, [join(repo, "tools/everyday-check.mjs"), "--exe", args.exe, "--map", original,
-  "--json", robotJson, "--keep-profile"], { stdio: ["ignore", "pipe", "inherit"] });
+  "--json", robotJson, "--keep-profile", ...(args.quick ? ["--quick"] : [])], { stdio: ["ignore", "pipe", "inherit"] });
 const robotLast = robotRun.stdout.trim().split("\n").at(-1);
 console.log(`   ${robotLast}`);
 if (!existsSync(robotJson)) throw new Error("the everyday check wrote no results");
@@ -297,6 +298,7 @@ const steps = robot.actions.map((action, index) => {
 const summary = {
   standIns,
   robot: robotLast,
+  robotFailed: (robot.steps ?? []).filter(step => step.status === "FAIL").map(step => `${step.number} ${step.name}: ${step.detail}`),
   twin: twin.error ? `3.1.4 stopped: ${twin.error}` : `3.1.4 saved: ${twin.saved}`,
   sounds: { same: sameCount, total: moments.length, edited: { same: editedSame, total: editedMoments.length } },
   steps: { same: steps.filter(step => step.same).length, total: steps.length },

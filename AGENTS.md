@@ -29,6 +29,8 @@ GitHub runs the first three on Windows for every pull request that changes more 
 
 **Compare with 3.1.4 (Windows):** `node tools/compare-314.mjs --exe target/debug/dawsu-tauri.exe --old-app <dawsu-hitsounding-editor checkout>` runs the everyday check, replays its edits in dawsu! 3.1.4's own window (headless and silent, at the 3.1.4 release commit, through a detached worktree when the checkout is elsewhere), saves through 3.1.4's Save, has the lazer oracle read both saved copies and prints how many sound moments play the same (`compare with 3.1.4: N% the same`) and every difference in words. Run it when a change touches editing or Save. A difference is a finding to report, not something to hide: either dawsu! is wrong, or dawsu! departs from 3.1.4 on purpose (ADR 0067/0068) and the pull request says so.
 
+**Many maps (Windows):** `node tools/many-maps.mjs --exe target/debug/dawsu-tauri.exe --old-app <checkout>` runs that comparison, with the everyday check's editing and saving steps only (`--quick`), on a copy of every fixture map (save pack and oracle cases), one after another, and prints one line per map and the totals. It takes about a minute per map; run it before a change to editing or Save is merged, not on every small change.
+
 **Merge gate (Yoge, 2026-11-21):** nothing is merged into `main`, by a person or an agent, unless the everyday check passes on a build of that exact commit. Paste its last line (`everyday check: N of M steps passed`) and the commit id in the pull request. Never merge in the same step that opens a pull request.
 
 **Windows build note:** `signalsmith-stretch` requires `LIBCLANG_PATH` (on this machine: `E:/Claude/drum-onnx/venv311/Lib/site-packages/clang/native`). Keep build and temporary artifacts on `E:`.
