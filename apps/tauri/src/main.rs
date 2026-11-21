@@ -1474,6 +1474,10 @@ enum Request {
     Drum(drum_window::DrumRequest, mpsc::Sender<Result<Value, String>>),
     /// The drum detection window closed: its run, result and Listen go. Needs no answer.
     DrumClose,
+    /// M4 Node Graph queries and actions on the active editor session.
+    NodeGraphView(mpsc::Sender<Result<Value, String>>),
+    NodeGraphAction(dawsu_application::NodeGraphAction, mpsc::Sender<Result<Value, String>>),
+    NodeGraphExportJson(mpsc::Sender<Result<String, String>>),
 }
 struct Editor(mpsc::Sender<Request>);
 
@@ -1908,6 +1912,27 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                         let _ = guard(&mut app, &mut fault, Application::cancel_drum_detection);
                     }
                 }
+                Ok(Request::NodeGraphView(response)) => {
+                    let result = guard(&mut app, &mut fault, |app| {
+                        app.poll_node_graph();
+                        serde_json::to_value(app.node_graph_view()).map_err(|e| e.to_string())
+                    })
+                    .and_then(|result| result);
+                    let _ = response.send(result);
+                }
+                Ok(Request::NodeGraphAction(action, response)) => {
+                    let result = guard(&mut app, &mut fault, |app| {
+                        app.node_graph_action(action)?;
+                        serde_json::to_value(app.node_graph_view()).map_err(|e| e.to_string())
+                    })
+                    .and_then(|result| result);
+                    let _ = response.send(result);
+                }
+                Ok(Request::NodeGraphExportJson(response)) => {
+                    let result = guard(&mut app, &mut fault, |app| app.node_graph_export_json())
+                        .and_then(|result| result);
+                    let _ = response.send(result);
+                }
                 Err(mpsc::RecvTimeoutError::Timeout) => {
                     if fault.is_none() {
                         let _ = guard(&mut app, &mut fault, |app| {
@@ -2112,6 +2137,24 @@ fn drum_apply(state: State<'_, Editor>, map: PathBuf, review: String, ticked: Ve
 fn drum_pick_stem(window: tauri::WebviewWindow) -> Option<PathBuf> {
     rfd::FileDialog::new().set_parent(&window).set_title("Pick a drum stem")
         .add_filter("Audio", &["wav", "ogg", "mp3", "flac"]).pick_file()
+}
+
+#[tauri::command]
+fn node_graph_view(state: State<'_, Editor>) -> Result<Value, String> {
+    ask(&state, Request::NodeGraphView)?
+}
+
+#[tauri::command]
+fn node_graph_action(
+    state: State<'_, Editor>,
+    action: dawsu_application::NodeGraphAction,
+) -> Result<Value, String> {
+    ask(&state, |tx| Request::NodeGraphAction(action, tx))?
+}
+
+#[tauri::command]
+fn node_graph_export_json(state: State<'_, Editor>) -> Result<String, String> {
+    ask(&state, Request::NodeGraphExportJson)?
 }
 
 #[tauri::command]
@@ -2492,6 +2535,9 @@ fn main() {
             drum_listen_stop,
             drum_apply,
             drum_pick_stem,
+            node_graph_view,
+            node_graph_action,
+            node_graph_export_json,
             pick_merge_preset,
             save_merge_preset,
             editor_shortcuts,

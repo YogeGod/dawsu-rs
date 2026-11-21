@@ -44,7 +44,9 @@ fn new_modules_keep_the_vaults_reference_boundaries() {
                 "dawsu-editor",
                 "dawsu-editor-composer",
                 "dawsu-audio",
+                "dawsu-graph",
                 "dawsu-graph-audio",
+                "dawsu-editor-nodal",
             ],
         ),
         // Layer 7 · UI

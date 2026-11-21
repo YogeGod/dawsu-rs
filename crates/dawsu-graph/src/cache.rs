@@ -92,12 +92,14 @@ pub struct CacheStats {
     pub bytes: usize,
 }
 
+#[derive(Clone)]
 struct CacheEntry {
     output: CachedNodeOutput,
     last_used: u64,
 }
 
 /// Bounded LRU memory cache keyed by `CacheKey`.
+#[derive(Clone)]
 pub struct EvalCache {
     max_bytes: usize,
     total_bytes: usize,
