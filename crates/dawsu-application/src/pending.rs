@@ -507,3 +507,81 @@ impl Ledger {
         });
     }
 }
+
+/// Every file under `folder`, any depth.
+fn files_under(folder: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut todo = vec![folder.to_path_buf()];
+    while let Some(folder) = todo.pop() {
+        let Ok(entries) = std::fs::read_dir(&folder) else { continue };
+        for entry in entries.filter_map(Result::ok) {
+            match entry.file_type() {
+                Ok(kind) if kind.is_dir() => todo.push(entry.path()),
+                Ok(kind) if kind.is_file() => out.push(entry.path()),
+                _ => {}
+            }
+        }
+    }
+    out
+}
+
+fn age(path: &Path) -> Option<std::time::Duration> {
+    std::fs::metadata(path).and_then(|m| m.modified()).ok()?.elapsed().ok()
+}
+
+/// Removes the kept copies in `pending-samples` that no project, recovery copy (archived ones
+/// included), ledger or claim names and that are older than `min_age`: a younger one may belong
+/// to a window still making its claim. A record names a copy by its checksum anywhere in its
+/// text. Without a project folder nothing is removed. Returns how many were removed.
+pub(crate) fn prune_kept_copies(data_root: &Path, project_root: Option<&Path>, min_age: std::time::Duration) -> usize {
+    let Some(project_root) = project_root else { return 0 };
+    let copies: Vec<PathBuf> = files_under(&data_root.join("pending-samples")).into_iter()
+        .filter(|path| age(path).is_some_and(|age| age >= min_age)).collect();
+    if copies.is_empty() {
+        return 0;
+    }
+    let mut named = String::new();
+    for folder in [project_root.to_path_buf(), data_root.join("recovery"), data_root.join("created-samples"), data_root.join("pending-names")] {
+        for record in files_under(&folder) {
+            // A record that can't be read could name anything: nothing is removed.
+            let Ok(bytes) = std::fs::read(&record) else { return 0 };
+            named.push_str(&String::from_utf8_lossy(&bytes).to_ascii_lowercase());
+            named.push('\n');
+        }
+    }
+    let mut removed = 0;
+    for copy in copies {
+        let Some(sha256) = copy.file_stem().map(|stem| stem.to_string_lossy().to_ascii_lowercase()) else { continue };
+        if sha256.len() == 64 && !named.contains(&sha256) && std::fs::remove_file(&copy).is_ok() {
+            removed += 1;
+        }
+    }
+    removed
+}
+
+/// Keeps `removed-samples` within `max_age` and `max_bytes`, removing the oldest files first.
+/// Returns how many were removed.
+pub(crate) fn cap_removed_samples(data_root: &Path, max_age: std::time::Duration, max_bytes: u64) -> usize {
+    let mut files: Vec<(std::time::Duration, u64, PathBuf)> = files_under(&data_root.join("removed-samples")).into_iter()
+        .filter_map(|path| {
+            let size = std::fs::metadata(&path).ok()?.len();
+            Some((age(&path).unwrap_or_default(), size, path))
+        }).collect();
+    // Oldest first.
+    files.sort_by(|a, b| b.0.cmp(&a.0));
+    let mut total: u64 = files.iter().map(|(_, size, _)| size).sum();
+    let mut removed = 0;
+    for (age, size, path) in files {
+        if (age > max_age || total > max_bytes) && std::fs::remove_file(&path).is_ok() {
+            total -= size;
+            removed += 1;
+        }
+    }
+    removed
+}
+
+/// How long and how much `removed-samples` keeps.
+pub(crate) const REMOVED_SAMPLES_DAYS: u64 = 30;
+pub(crate) const REMOVED_SAMPLES_BYTES: u64 = 1024 * 1024 * 1024;
+/// A kept copy younger than this is never pruned.
+pub(crate) const PRUNE_MIN_AGE: std::time::Duration = std::time::Duration::from_secs(3600);

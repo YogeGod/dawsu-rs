@@ -1480,6 +1480,13 @@ impl Application {
                     recovery,
                 )?;
                 loaded.outgoing_keep = outgoing_mapset.map(|mapset| recorded_pending(project_root.as_deref(), &data_root, &mapset));
+                // Housekeeping of dawsu!'s data folder, off the editor thread.
+                pending::prune_kept_copies(&data_root, project_root.as_deref(), pending::PRUNE_MIN_AGE);
+                pending::cap_removed_samples(
+                    &data_root,
+                    std::time::Duration::from_secs(pending::REMOVED_SAMPLES_DAYS * 24 * 3600),
+                    pending::REMOVED_SAMPLES_BYTES,
+                );
                 Ok(loaded)
             })();
             let _ = send.send(JobResult::Open(outgoing, keep_settings, result));
@@ -5306,6 +5313,57 @@ Title:");
         wait(&mut app);
         assert!(app.document().is_none());
         assert!(app.error.as_deref().is_some_and(|error| error.contains("session")), "{:?}", app.error);
+    }
+
+    #[test]
+    fn kept_copies_no_record_names_are_pruned() {
+        let scratch = Scratch::new("prune-kept-copies");
+        let (data, projects) = (scratch.path("data"), scratch.path("projects"));
+        let samples = data.join("pending-samples");
+        std::fs::create_dir_all(&samples).unwrap();
+        let sha = |n: u8| format!("{n:064x}");
+        for n in 1..=6 {
+            std::fs::write(samples.join(format!("{}.wav", sha(n))), [n]).unwrap();
+        }
+        let write = |path: PathBuf, text: String| {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
+        };
+        write(projects.join("p.json"), format!("{{\"settings\":{{\"pending_samples\":[{{\"name\":\"a.wav\",\"sha256\":\"{}\"}}]}}}}", sha(1)));
+        write(data.join("recovery").join("c.json"), format!("{{\"pending\":[{{\"sha256\":\"{}\"}}]}}", sha(2)));
+        write(data.join("recovery").join("archive").join("old.json"), format!("{{\"pending\":[{{\"sha256\":\"{}\"}}]}}", sha(3)));
+        write(data.join("created-samples").join("k.json"), format!("{{\"files\":[{{\"sha256\":\"{}\"}}]}}", sha(4)));
+        write(data.join("pending-names").join("k").join("normal-hitnormal2.wav"), sha(5));
+        let removed = pending::prune_kept_copies(&data, Some(&projects), Duration::ZERO);
+        assert_eq!(removed, 1);
+        for n in 1..=5 {
+            assert!(samples.join(format!("{}.wav", sha(n))).exists(), "{n} is named by a record");
+        }
+        assert!(!samples.join(format!("{}.wav", sha(6))).exists());
+        // Without a project folder nothing is known to be unnamed.
+        std::fs::write(samples.join(format!("{}.wav", sha(7))), [7]).unwrap();
+        assert_eq!(pending::prune_kept_copies(&data, None, Duration::ZERO), 0);
+        // A copy younger than the age limit may belong to a window still making its claim.
+        assert_eq!(pending::prune_kept_copies(&data, Some(&projects), Duration::from_secs(3600)), 0);
+    }
+
+    #[test]
+    fn removed_samples_keep_thirty_days_and_a_size_limit_oldest_first() {
+        let scratch = Scratch::new("cap-removed-samples");
+        let data = scratch.path("data");
+        let folder = data.join("removed-samples");
+        std::fs::create_dir_all(&folder).unwrap();
+        let day = Duration::from_secs(24 * 3600);
+        let now = std::time::SystemTime::now();
+        for (name, age, size) in [("old.wav", 31, 10), ("a.wav", 3, 40), ("b.wav", 2, 40), ("c.wav", 1, 40)] {
+            let path = folder.join(name);
+            std::fs::write(&path, vec![0; size]).unwrap();
+            std::fs::File::options().write(true).open(&path).unwrap().set_modified(now - day * age).unwrap();
+        }
+        assert_eq!(pending::cap_removed_samples(&data, day * 30, 100), 2);
+        let mut left: Vec<_> = std::fs::read_dir(&folder).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        left.sort();
+        assert_eq!(left, ["b.wav", "c.wav"]);
     }
 
     #[test]
