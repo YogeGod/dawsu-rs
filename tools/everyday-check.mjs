@@ -378,11 +378,22 @@ async function reveal(time, row) {
     const box = await read(() => document.getElementById("overview").getBoundingClientRect().toJSON());
     const duration = await read(() => window.view.duration);
     expect(duration > 0, "the editor reports no song length");
-    await page().mouse.click(box.x + box.width * Math.min(1, time / duration), box.y + box.height / 2);
-    await until(time => {
+    // The overview ignores a click while the editor is busy, so wait for it and try up to three times.
+    const shown = time => {
       const width = document.getElementById("grid").clientWidth / window.scene.zoom;
-      return time > window.scene.viewStart && time < window.scene.viewStart + width;
-    }, time, `clicking the overview did not bring ${time} ms into view`);
+      return time >= window.scene.viewStart && time <= window.scene.viewStart + width;
+    };
+    let last = null;
+    for (let attempt = 0; attempt < 3 && !(await read(shown, time)); attempt++) {
+      await until(() => !window.view.busy, null, "the editor stayed busy", 15000);
+      await page().mouse.click(box.x + box.width * Math.min(1, time / duration), box.y + box.height / 2);
+      last = await until(shown, time, "", 3000).catch(() => null);
+      if (last) break;
+    }
+    if (!(await read(shown, time))) {
+      const now = await read(() => ({ viewStart: window.scene.viewStart, zoom: window.scene.zoom, busy: window.view.busy, width: document.getElementById("grid").clientWidth }));
+      throw new Error(`clicking the overview did not bring ${time} ms into view (overview ${Math.round(box.width)}×${Math.round(box.height)} px at ${Math.round(box.x)},${Math.round(box.y)}; song ${Math.round(duration)} ms; view ${JSON.stringify(now)})`);
+    }
   }
   const grid = await read(() => document.getElementById("grid").getBoundingClientRect().toJSON());
   await page().mouse.move(grid.x + grid.width / 2, grid.y + grid.height / 2);
@@ -847,8 +858,20 @@ try {
     await step(`Add a whistle to ${kind}${time === null ? "" : ` at ${time} ms`}`, async () => {
       if (!silent) return needsSilence();
       if (time === null) return { skip: "the map has no such circle" };
-      const whistle = await read(() => window.scene.lanes.findIndex(lane => lane.name === "normal-hitwhistle"));
-      expect(whistle >= 0, "no normal-hitwhistle lane");
+      // The whistle a mapper adds: the circle's own sample set and custom index, read from its hitnormal.
+      // Lanes are told apart by index too: the skin's sound (index 0) and the map's file without a
+      // number (index 1) share a name such as "soft-hitwhistle", and a whistle on the skin lane where the
+      // map uses the file makes Save copy the skin sound to a new index.
+      const whistle = await read(time => {
+        const lanes = window.scene.lanes;
+        const own = window.scene.moments.find(([t]) => t === time)?.[3].map(([row]) => lanes[row]) ?? [];
+        const normal = own.find(lane => /-hitnormal$/.test(lane?.family ?? ""));
+        const set = normal?.family.replace(/-hitnormal$/, "") ?? "normal", index = normal?.index ?? 0;
+        const exact = lanes.findIndex(lane => lane.family === `${set}-hitwhistle` && lane.index === index);
+        return exact >= 0 ? exact : lanes.findIndex(lane => lane.family === "normal-hitwhistle" && lane.index === 0);
+      }, time);
+      expect(whistle >= 0, "no whistle lane for the circle's sample set");
+      const whistleName = await read(row => window.scene.lanes[row].name, whistle);
       await pickTool("Draw");
       await reveal(time, whistle);
       const before = (await hits()).length;
@@ -858,7 +881,7 @@ try {
       await until(([count, row, time]) => window.scene.moments.reduce((sum, moment) => sum + moment[3].length, 0) === count + 1 &&
         window.scene.moments.some(([t, , , list]) => t === time && list.some(([r]) => r === row)), [before, whistle, time],
         `no whistle appeared on the circle at ${time} ms`);
-      did({ do: "place", lane: "normal-hitwhistle", at: time + plan.nudge, seen: time });
+      did({ do: "place", lane: whistleName, at: time + plan.nudge, seen: time });
       await pickTool("Select");
     });
   }

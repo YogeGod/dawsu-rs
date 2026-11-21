@@ -166,11 +166,13 @@ const sectionHits = () => read(([from, to]) => {
   const out = {};
   for (const [time, volume, , list] of window.scene.moments) {
     if (time < from || time > to) continue;
-    for (const [row, , , hitVolume] of list) out[`${Math.round(time)}|${window.scene.lanes[row]?.name ?? "row " + row}`] = hitVolume ?? volume;
+    // The skin's sample (index 0) and the file without a number (index 1) share a name; " (skin)" tells them apart.
+    const label = lane => !lane ? null : lane.index === 0 ? `${lane.name} (skin)` : lane.name;
+    for (const [row, , , hitVolume] of list) out[`${Math.round(time)}|${label(window.scene.lanes[row]) ?? "row " + row}`] = hitVolume ?? volume;
   }
   return out;
 }, [firstTime, Number.isFinite(end) ? end : 1e12]);
-const laneRow = laneName => read(laneName => window.scene.lanes.findIndex(lane => lane.name === laneName), laneName);
+const laneRow = laneName => read(laneName => window.scene.lanes.findIndex(lane => (lane.index === 0 ? `${lane.name} (skin)` : lane.name) === laneName), laneName);
 const hitCount = () => read(() => window.scene.moments.reduce((sum, moment) => sum + moment[3].length, 0));
 
 async function pickTool(tool) {
@@ -270,7 +272,7 @@ try {
   const toErase = strippedKeys.filter(key => !(key in goal)).map(key => key.split("|")).map(([t, lane]) => [Number(t), lane]);
 
   // Lanes the goal uses that the stripped copy lacks: added through Add lane, as a mapper would.
-  const lanes = new Set(await read(() => window.scene.lanes.map(lane => lane.name)));
+  const lanes = new Set(await read(() => window.scene.lanes.map(lane => lane.index === 0 ? `${lane.name} (skin)` : lane.name)));
   for (const lane of [...new Set(toAdd.map(([, lane]) => lane))].filter(lane => !lanes.has(lane))) {
     try {
       await page().getByRole("button", { name: "Add lane" }).last().click();
