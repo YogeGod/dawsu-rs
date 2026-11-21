@@ -98,8 +98,6 @@
     // History's list is a Svelte part mounted after this script starts, so the areas are looked up each time.
     const scrollAreas = () => [...Object.values(panels), byId("scroll"), byId("history"), byId("sample-browser-entries")].filter(Boolean);
     const scroll = new Map();
-    const preview = make("div", "dock-preview", { "aria-hidden": "true" });
-    preview.hidden = true;
     const hiddenBars = new Set();
     let layout = defaultLayout();
     let prefs = { browserStyle: "tree", browserOpen: false, inspectorOpen: true };
@@ -109,6 +107,13 @@
     let narrow = !!narrowQuery?.matches;
     let override = null;
     let shownKey = null;
+    // What the frame last drew; render() diffs against it to move focus off a panel that folds or opens.
+    let drawn = null;
+    const foldButtons = {
+      browser: { fold: byId("browser-fold"), open: byId("browser-unfold") },
+      inspector: { fold: byId("inspector-fold"), open: byId("inspector-unfold") },
+    };
+    const switches = { browser: byId("view-browser"), inspector: byId("view-inspector") };
     let renders = 0;
     const effective = () => effectivePanels({ browserOpen: prefs.browserOpen, inspectorOpen: prefs.inspectorOpen,
       classic: prefs.browserStyle === "classic" }, narrow, override);
@@ -222,11 +227,13 @@
       return box;
     }
 
-    // `changed` names the panels that just folded or opened: focus inside one moves to its rail's
-    // open button when it folds and to its head's fold button when it opens.
-    function render(changed = []) {
+    // Focus inside a panel that just folded moves to its rail's open button, and to its head's fold
+    // button when it opens, whichever path changed it (a switch, a rail, a narrow window).
+    function render() {
       const focused = document.activeElement;
       const state = effective();
+      const changed = drawn ? ["browser", "inspector"].filter(panel => drawn[panel] !== state[panel]) : [];
+      drawn = state;
       const classic = state.browser === "classic";
       const folded = new Set();
       if (state.browser === "folded") folded.add("browser");
@@ -236,8 +243,9 @@
       for (const panel of ["browser", "inspector"]) {
         if (hiddenBars.has(panels[panel])) shown.delete(panel);
       }
-      const focusedPanel = Object.keys(panels).find(panel => panels[panel].contains(focused)) ??
-        (sampleBrowser.contains(focused) ? "browser" : undefined);
+      // The sample list can sit in the Inspector (classic), so it counts as the Browser first.
+      const focusedPanel = sampleBrowser.contains(focused) ? "browser"
+        : Object.keys(panels).find(panel => panels[panel].contains(focused));
       for (const area of scrollAreas()) {
         if (area.getClientRects().length) scroll.set(area, [area.scrollLeft, area.scrollTop]);
       }
@@ -261,15 +269,15 @@
           hidden.append(content);
         }
       }
-      root.replaceChildren(renderNode(visibleLayout(layout, shown), folded), hidden, preview);
+      root.replaceChildren(renderNode(visibleLayout(layout, shown), folded), hidden);
       for (const [area, [left, top]] of scroll) {
         if (area.getClientRects().length) area.scrollTo(left, top);
       }
       renders++;
       const moved = changed.find(panel => panel === focusedPanel);
-      if (moved) byId(moved + (folded.has(moved) ? "-unfold" : "-fold"))?.focus({ preventScroll: true });
+      if (moved) foldButtons[moved][folded.has(moved) ? "open" : "fold"]?.focus({ preventScroll: true });
       else if (focusedPanel && focused.getClientRects().length) focused.focus({ preventScroll: true });
-      else if (focusedPanel) byId(focusedPanel === "timeline" ? "grid" : "view-" + focusedPanel)?.focus({ preventScroll: true });
+      else if (focusedPanel) (switches[focusedPanel] ?? byId("grid"))?.focus({ preventScroll: true });
     }
 
     // Where a dragged panel lands: the edge of the target panel nearest the pointer.
@@ -894,13 +902,11 @@
     // app.js hands over the saved preferences on every show(); the frame redraws only when what it
     // shows changes (fold per panel, classic, narrow, override).
     const update = next => {
-      const before = effective();
       prefs = { browserStyle: next.browserStyle, browserOpen: !!next.browserOpen, inspectorOpen: !!next.inspectorOpen };
       const key = stateKey();
       if (root.hasAttribute("data-docking") && key === shownKey) return;
       shownKey = key;
-      const after = effective();
-      render(["browser", "inspector"].filter(panel => before[panel] !== after[panel]));
+      render();
     };
     update.state = () => ({ narrow, override });
     update.setOverride = value => { override = value; };

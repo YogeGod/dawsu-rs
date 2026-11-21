@@ -112,3 +112,84 @@ test("matchMedia is read only inside attach()", () => {
   assert.doesNotMatch(before, /matchMedia/);
   assert.match(source, /matchMedia\?\.\("\(max-width: 1179px\)"\)/);
 });
+
+test("hiding a panel leaves the others where they were and brings it back in its place", () => {
+  const all = new Set(["browser", "timeline", "inspector"]);
+  const layout = movePanel(defaultLayout(), "browser", "inspector", "below");
+  const hidden = visibleLayout(layout, new Set(["timeline", "inspector"]));
+  assert.deepEqual(plain(hidden.first.tabs), ["timeline"]);
+  assert.deepEqual(plain(hidden.second.tabs), ["inspector"]);
+  const restored = visibleLayout(layout, all);
+  assert.equal(restored.second.axis, "rows");
+  assert.deepEqual(plain(restored.second.second.tabs), ["browser"]);
+});
+
+// attach() on a fake page: what it draws, when it redraws and where focus goes.
+async function attached({ narrow = false } = {}) {
+  const { fakeDocument, editorPage } = await import("./fake-dom.mjs");
+  const dom = fakeDocument({ narrow });
+  const page = editorPage(dom.build);
+  dom.document.body.append(...page.childNodes);
+  const sandbox = createContext({ window: dom.window, document: dom.document, MutationObserver: dom.MutationObserver,
+    waveformHeight: 56, visibleWaveformHeight: 56 });
+  runInContext(source, sandbox);
+  const update = sandbox.window.editorDocking.attach(dom.document.getElementById("editor-dock"));
+  return { dom, update, byId: id => dom.document.getElementById(id) };
+}
+const tree = (prefs = {}) => ({ browserStyle: "tree", browserOpen: true, inspectorOpen: true, ...prefs });
+
+test("attach draws once per change of what the frame shows (M5)", async () => {
+  const { update } = await attached();
+  update(tree());
+  update(tree());
+  assert.equal(update.renders(), 1);
+  update(tree({ browserOpen: false }));
+  assert.equal(update.renders(), 2);
+});
+
+test("a folded panel locks its split to the rail and keeps the mapper's width for later (M2)", async () => {
+  const { update, byId } = await attached();
+  update(tree({ browserOpen: false }));
+  const outer = byId("editor-dock").children[0];
+  assert.equal(outer.getAttribute("data-locked"), "");
+  assert.equal(outer.style.getPropertyValue("--dock-first"), "var(--rail-width)");
+  assert.equal(outer.children[1].getAttribute("role"), null, "the grip rests while folded");
+  assert.equal(byId("tree-browser-host").getAttribute("data-folded"), "");
+  assert.equal(byId("sample-browser").hidden, true);
+  assert.equal(byId("browser-unfold").parentNode.hidden, false);
+  update(tree());
+  const open = byId("editor-dock").children[0];
+  assert.equal(open.hasAttribute("data-locked"), false);
+  assert.match(open.style.getPropertyValue("--dock-first"), /var\(--dock-browser-width\)/);
+});
+
+test("the classic Browser moves into an open Inspector and back to the tree panel when it folds (M4)", async () => {
+  const { update, byId } = await attached();
+  update(tree({ browserStyle: "classic" }));
+  assert.equal(byId("sample-browser").parentNode, byId("classic-browser-host"));
+  assert.equal(byId("classic-browser-host").hidden, false);
+  assert.equal(byId("tree-browser-host").getClientRects().length, 0, "no left panel or rail in classic");
+  update(tree({ browserStyle: "classic", inspectorOpen: false }));
+  assert.equal(byId("sample-browser").parentNode, byId("tree-browser-host"));
+  assert.equal(byId("classic-browser-host").hidden, true);
+  update(tree({ browserStyle: "tree" }));
+  assert.equal(byId("sample-browser").parentNode, byId("tree-browser-host"));
+});
+
+test("focus follows a panel that folds or opens, also when a narrow window folds it", async () => {
+  const { dom, update, byId } = await attached();
+  update(tree());
+  byId("browser-fold").focus();
+  update(tree({ browserOpen: false }));
+  assert.equal(dom.document.activeElement, byId("browser-unfold"));
+  update(tree());
+  assert.equal(dom.document.activeElement, byId("browser-fold"));
+  // The window narrows: app.js hands the same preferences over again and the Browser folds.
+  dom.window.setNarrow(true);
+  update(tree());
+  assert.equal(update.state().narrow, true);
+  assert.equal(dom.document.activeElement, byId("browser-unfold"));
+  byId("inspector-fold").focus();
+  update(tree({ inspectorOpen: false }));
+  assert.equal(dom.document.activeElement, byId("inspector-unfold"));
+});
