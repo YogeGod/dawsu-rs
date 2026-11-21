@@ -19,8 +19,10 @@ async function canvases({ roundRect = true } = {}) {
       },
     });
     return {
-      calls, getContext: () => ctx, clientWidth: 300, clientHeight: 80, scrollTop: 0,
-      dataset: {}, style: { setProperty() {} }, children: [], addEventListener() {}, append() {}, prepend() {}, setAttribute() {},
+      calls, getContext: () => ctx, clientWidth: 300, clientHeight: 80, scrollTop: 0, listeners: {},
+      dataset: {}, style: { setProperty() {} }, children: [], append() {}, prepend() {}, setAttribute() {},
+      addEventListener(name, listener) { (this.listeners[name] ??= []).push(listener); },
+      getBoundingClientRect: () => ({ x: 0, y: 0, left: 0, top: 0, width: 300, height: 80 }),
     };
   }
   const get = id => {
@@ -333,4 +335,43 @@ test("under the last lane the timeline shows the Add lane row's hint", async () 
   assert.equal(hint.args[2], rows * 30 + 15);
   // In the hint's row the grid draws no lane row of its own.
   assert.equal(evaluate("laneRows[" + rows + "]"), undefined);
+});
+
+// v3 f1 and states.md: hovering a hit shows a card with its lane and set, time, volume and object.
+test("hovering a hit hands over one card per hit and never repaints the timeline", async () => {
+  const { get, evaluate } = await canvases();
+  const grid = get("grid");
+  get("scroll").clientHeight = 200;
+  evaluate(`
+    window.dawsuUi = { cards: [], hitCard(card) { this.cards.push(card); } };
+    view = { ...view, tool: "Select", activeLane: null };
+    scene.combos = { colours: ["#ff0000"], objects: [[1, 0], [2, 0], [3, 0]] };
+    scene.lanes = [{ key: "A", colourKey: "Skin|normal-hitclap", name: "normal-hitclap", family: "normal-hitclap", index: 0, group: "normal" }];
+    scene.moments = [[100, 60, true, [[0, false]]], [400, 80, true, [[0, false, false, 45]]], [1500, 70, false, [[0, false]]]];
+    renderLanes();`);
+  const move = (x, y) => {
+    for (const canvas of [grid, get("ruler"), get("overview")]) canvas.calls.length = 0;
+    for (const listener of grid.listeners.pointermove) listener({ clientX: x, clientY: y, pointerId: 1 });
+  };
+  const cards = () => JSON.parse(evaluate("JSON.stringify(window.dawsuUi.cards)"));
+  // Row 0 is the Normal set folder, row 1 the Clap lane (30 px rows); 0.1 px/ms.
+  move(12, 45);
+  assert.deepEqual(cards(), [{ key: "1:100", title: "Clap · Normal set", time: "00:00.100",
+    detail: "Volume 60% · on circle 1", x: 10, y: 45 }]);
+  for (const canvas of [grid, get("ruler"), get("overview")]) assert.deepEqual(canvas.calls, [], "no repaint");
+  // Still on the same hit: nothing new. Its own hit volume wins over the moment's.
+  move(9, 47);
+  assert.equal(cards().length, 1);
+  move(41, 45);
+  assert.equal(cards().at(-1).detail, "Volume 45% · on slider 2");
+  move(150, 45);
+  assert.equal(cards().at(-1).detail, "Volume 70% · no object");
+  // Away from every hit the card goes, once.
+  move(100, 45);
+  move(110, 45);
+  assert.deepEqual(cards().slice(-2), [cards().at(-2), null]);
+  assert.equal(cards().filter(card => card === null).length, 1);
+  move(12, 45);
+  for (const listener of grid.listeners.pointerleave) listener({});
+  assert.equal(cards().at(-1), null);
 });

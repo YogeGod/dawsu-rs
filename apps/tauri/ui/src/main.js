@@ -14,6 +14,7 @@ import PlayheadGroup from "./parts/PlayheadGroup.svelte";
 import ExportWindow from "./parts/ExportWindow.svelte";
 import DrumDetectWindow from "./parts/DrumDetectWindow.svelte";
 import EditorMenu from "./parts/EditorMenu.svelte";
+import HitCard from "./parts/HitCard.svelte";
 import InspectorBookmarks from "./parts/InspectorBookmarks.svelte";
 import InspectorDifficulty from "./parts/InspectorDifficulty.svelte";
 import InspectorHistory from "./parts/InspectorHistory.svelte";
@@ -27,6 +28,8 @@ import TransportBar from "./parts/TransportBar.svelte";
 const parts = {
   tools: ToolPills, snap: SnapSlider, audition: AuditionPill, transport: TransportBar,
   playhead: PlayheadGroup, lanes: LaneHeaders,
+  // The timeline's hit hover card, at body level.
+  "hit-card": HitCard,
   // The popup the menu bar, the right-click tool picker and the lane menu share (#editor-menu).
   menu: EditorMenu,
   "inspector-selection": InspectorSelection, "inspector-lane": InspectorLane, "inspector-difficulty": InspectorDifficulty,
@@ -67,6 +70,11 @@ export function lanes(headers) {
 // and when a bookmark row is picked.
 export function inspector(model) {
   bridge.handOverInspector(model);
+}
+
+// app.js hands over the hovered timeline hit, or null, each time it changes.
+export function hitCard(card) {
+  bridge.hitCard = card;
 }
 
 // The one command list menus.js builds every menu from.

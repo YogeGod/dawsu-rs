@@ -1847,11 +1847,13 @@ for (const surface of [grid, controller]) {
   surface.addEventListener("pointermove", trackToolCursor);
   surface.addEventListener("pointerleave", () => {
     if (cursorSurface === surface) cursorSurface = null;
+    if (surface === grid) handOverHitCard(null);
   });
 }
 
 for (const surface of [grid, controller]) {
   surface.addEventListener("pointerdown", (event) => {
+    if (surface === grid) handOverHitCard(null);
     if (!scene || view.busy || drag || rulerDrag || event.button !== 0) return;
     const panning = surface === grid && view.tool === "Grab" && !event.altKey;
     if (surface === grid && !panning) {
@@ -1877,6 +1879,7 @@ for (const surface of [grid, controller]) {
     act(drag.firstPoint);
   });
   surface.addEventListener("pointermove", (event) => {
+    if (surface === grid) handOverHitCard(hitCardAt(event));
     if (event.pointerId !== drag?.id || performance.now() - drag.last < 32 || requests > 2) return;
     drag.last = performance.now();
     drag.lastPoint = pointer(event, "move");
@@ -1917,7 +1920,70 @@ grid.addEventListener("dblclick", (event) => {
     act(point);
   }
 });
-$("scroll").addEventListener("scroll", paintSoon);
+// The hit hover card (v3 f1, states.md): the lane and its set, the time, the volume and the object
+// under a hit. Handed to the bundle only when the hovered hit changes; it never repaints the timeline.
+let hoveredHit = null;
+
+function handOverHitCard(card) {
+  if ((card?.key ?? null) === hoveredHit) return;
+  hoveredHit = card?.key ?? null;
+  try { window.dawsuUi?.hitCard?.(card); } catch (error) { console.error(error); }
+}
+
+// What a moment's object is on the Song row: "circle 3", "slider 2" (its head), "slider 2 end" or
+// "slider 2 repeat", "spinner end"; "no object" for a hit without one.
+function hitObjectName(time, onObject) {
+  if (!onObject) return "no object";
+  const points = scene.gameplay?.points ?? [];
+  const point = points.find(([, at]) => at === time);
+  if (!point) return "spinner end";
+  const [kind, , object] = point;
+  const number = scene.combos?.objects?.[object]?.[0];
+  const name = kind + (number ? " " + number : "");
+  if (kind !== "slider") return name;
+  const nodes = points.filter(([nodeKind, , nodeObject]) => nodeKind === "slider" && nodeObject === object).map(([, at]) => at);
+  if (time === Math.min(...nodes)) return name;
+  return name + (time === Math.max(...nodes) ? " end" : " repeat");
+}
+
+function hitCardAt(event) {
+  if (!scene || drag || view.busy) return null;
+  const rect = grid.getBoundingClientRect();
+  const scrollTop = $("scroll").scrollTop;
+  const y = event.clientY - rect.top;
+  const visibleRow = Math.floor((y + scrollTop) / scene.rowHeight);
+  const row = laneRows[visibleRow];
+  if (typeof row !== "number") return null;
+  const ms = scene.viewStart + (event.clientX - rect.left) / scene.zoom;
+  let best = 6.5 / scene.zoom;
+  let found = null;
+  for (const moment of scene.moments) {
+    const distance = Math.abs(moment[0] - ms);
+    if (distance > best) continue;
+    const hit = moment[3].find(([lane]) => lane === row);
+    if (!hit) continue;
+    best = distance;
+    found = [moment, hit];
+  }
+  if (!found) return null;
+  const [[time, volume, onObject], [, , , hitVolume]] = found;
+  const lane = scene.lanes?.[row];
+  const name = renamedLanes.has(lane?.colourKey) ? laneDisplayName(lane) : laneSound(lane).name;
+  const set = sampleFolderNames[lane?.group];
+  return {
+    key: visibleRow + ":" + time,
+    title: set ? name + " · " + set : name,
+    time: clock(time),
+    detail: "Volume " + Math.round(hitVolume ?? volume) + "% · " + (onObject ? "on " : "") + hitObjectName(time, onObject),
+    x: rect.left + (time - scene.viewStart) * scene.zoom,
+    y: rect.top + (visibleRow + .5) * scene.rowHeight - scrollTop,
+  };
+}
+
+$("scroll").addEventListener("scroll", () => {
+  handOverHitCard(null);
+  paintSoon();
+});
 new ResizeObserver(paintSoon).observe($("scroll"));
 
 const waveformGrip = $("waveform-resize");
@@ -2303,6 +2369,7 @@ function changeView(start, zoom, rowHeight = scene.rowHeight, rowAnchorY = 0) {
     setValue("zoom", Math.log10(zoom));
     setValue("lane-height", rowHeight);
     refreshLaneToolbar();
+    handOverHitCard(null);
     paintSoon();
 
     try {
