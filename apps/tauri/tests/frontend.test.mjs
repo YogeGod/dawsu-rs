@@ -404,3 +404,36 @@ test("Shift-click below the ruler band near a locator line does not jump to the 
   await settle();
   assert.deepEqual(calls.map(call => call.args.action?.kind).filter(Boolean), ["seek"]);
 });
+
+test("a plain click on the ruler band moves the playhead there, inside or outside the locator range", async () => {
+  const { rulerEvents, calls, evaluate, settle } = await frontend();
+  evaluate('scene = { path: "Expert.osu", viewStart: 0, zoom: 1, rowHeight: 20, bookmarks: [] }; view = { busy: false, hasDocument: true, left: 20, right: 70, cycle: false, duration: 1000 }');
+  const click = (clientX, clientY, pointerId) => {
+    rulerEvents.get("pointerdown")({ button: 0, pointerId, clientX, clientY });
+    rulerEvents.get("pointerup")({ pointerId, clientX: clientX + 1, clientY });
+  };
+  click(45, 16, 1);
+  click(90, 16, 2);
+  click(30, 6, 3);
+  await settle();
+  const sent = JSON.parse(JSON.stringify(calls.map(call => call.args.action).filter(Boolean)));
+  assert.deepEqual(sent, [{ kind: "seek", ms: 45 }, { kind: "seek", ms: 90 }, { kind: "seek", ms: 30 }],
+    "no Cycle toggle and no locator change");
+  assert.equal(evaluate("rulerDrag"), null);
+});
+
+test("dragging on the ruler band still draws, moves and drags the locators", async () => {
+  const { rulerEvents, calls, evaluate, settle } = await frontend();
+  evaluate('scene = { path: "Expert.osu", viewStart: 0, zoom: 1, rowHeight: 20, bookmarks: [] }; view = { busy: false, hasDocument: true, left: 20, right: 70, cycle: false, duration: 1000 }');
+  const drag = (from, to, clientY, pointerId) => {
+    rulerEvents.get("pointerdown")({ button: 0, pointerId, clientX: from, clientY });
+    rulerEvents.get("pointermove")({ pointerId, clientX: to, clientY });
+    rulerEvents.get("pointerup")({ pointerId, clientX: to, clientY });
+  };
+  drag(80, 95, 16, 1);
+  drag(45, 55, 16, 2);
+  drag(25, 35, 6, 3);
+  await settle();
+  const sent = calls.map(call => call.args.action).filter(Boolean).map(({ kind, gesture, from, to }) => [kind, gesture, from, to]);
+  assert.deepEqual(sent, [["ruler_locators", "draw", 80, 95], ["ruler_locators", "move", 45, 55], ["ruler_locators", "left", 25, 30]]);
+});

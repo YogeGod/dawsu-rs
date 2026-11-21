@@ -1980,10 +1980,13 @@ ruler.addEventListener("pointerup", event => {
   if (!rulerDrag || rulerDrag.id !== event.pointerId) return;
   const gesture = endRulerDrag(event);
   const x = event.clientX - ruler.getBoundingClientRect().left;
-  const moved = Math.abs(x - gesture.x) >= 3;
-  if (!moved && gesture.mode !== "move") return;
+  // A click without a drag moves the playhead where it was pressed, on a flag or inside the range too.
+  if (Math.abs(x - gesture.x) < 3) {
+    act({ kind: "seek", ms: limit(gesture.start + gesture.x / gesture.zoom, 0, gesture.duration) }, false);
+    return;
+  }
   const locator = gesture.mode === "left" || gesture.mode === "right";
-  act({ kind: "ruler_locators", path: gesture.path, gesture: moved ? gesture.mode : "toggle",
+  act({ kind: "ruler_locators", path: gesture.path, gesture: gesture.mode,
     from: gesture.start + gesture.x / gesture.zoom,
     to: locator ? locatorDragTo(gesture, x) : gesture.start + x / gesture.zoom }, false);
 });

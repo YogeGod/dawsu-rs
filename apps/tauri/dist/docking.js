@@ -403,7 +403,7 @@
     const controller = byId("volume-controller-panel");
     const laneColumn = arrange.querySelector(".ruler-sidebar");
     const defaultFrame = [header, ribbon, root, status];
-    const defaultTimeline = [overview, ruler, grid, controller];
+    const defaultTimeline = [ruler, grid, controller, overview];
     let frameOrder = defaultFrame.slice();
     let timelineOrder = defaultTimeline.slice();
 
