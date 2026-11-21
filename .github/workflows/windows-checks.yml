@@ -1,10 +1,16 @@
-# Runs the repo's checks (AGENTS.md "Verification") on Windows for every pull request,
-# whoever opens it. Windows only for now: Linux and macOS wait until Yoge approves the
-# Windows version. The lazer oracle is not run here: it needs a local copy of lazer's source.
+# Runs the repo's checks (AGENTS.md "Verification") on Windows for every pull request that
+# changes more than .md files, whoever opens it, and on main after each merge. Windows only
+# for now: Linux and macOS wait until Yoge approves the Windows version. The lazer oracle is
+# not run here: it needs a local copy of lazer's source.
 name: Windows checks
 
 on:
   pull_request:
+    paths-ignore:
+      - "**.md"
+  # Runs on main after a merge save the Rust cache that every new pull request starts from.
+  push:
+    branches: [main]
     paths-ignore:
       - "**.md"
   workflow_dispatch:
@@ -31,9 +37,9 @@ jobs:
       - name: Keep LF line endings
         run: git config --global core.autocrlf false
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
@@ -57,11 +63,18 @@ jobs:
         working-directory: apps/tauri/ui
         run: npm test
 
+      # The Rust steps run even when a step above failed, so one run reports everything.
       # Installs the version in rust-toolchain.toml.
       - name: Rust toolchain
-        run: rustup toolchain install
+        if: ${{ !cancelled() }}
+        run: rustup toolchain install --profile minimal
 
+      # Only main saves the cache: pull requests reuse it without filling the cache space.
       - uses: Swatinem/rust-cache@v2
+        if: ${{ !cancelled() }}
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Rust workspace tests
-        run: cargo test --workspace --locked
+        if: ${{ !cancelled() }}
+        run: cargo test --workspace --locked --no-fail-fast
