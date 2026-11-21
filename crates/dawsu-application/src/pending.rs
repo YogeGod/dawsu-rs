@@ -167,6 +167,13 @@ impl Pending {
         Arc::make_mut(&mut self.files).insert(file.name.to_ascii_lowercase(), file);
     }
 
+    /// Drops a pending file and its claim only while it holds the bytes `sha256` names.
+    pub(crate) fn release_matching(&mut self, name: &str, sha256: &str) {
+        if self.get(name).is_some_and(|file| file.sha256.eq_ignore_ascii_case(sha256)) {
+            self.release(name);
+        }
+    }
+
     /// Drops a pending file and its claim: a Save wrote it into the mapset, or keeping it failed.
     pub(crate) fn release(&mut self, name: &str) {
         if Arc::make_mut(&mut self.files).remove(&name.to_ascii_lowercase()).is_some()
@@ -325,15 +332,23 @@ pub(crate) fn check_indexes_free(root: &Path, saved: &Path, writes: &[String]) -
     Ok(())
 }
 
+/// The files the drawn hits play, lowercased: those of moments (sound set placements included)
+/// and slider bodies. A lane no hit uses plays nothing.
+pub(crate) fn hit_files(hits: &Hitsounds) -> BTreeSet<String> {
+    let lanes = hits.moments().iter().flat_map(|moment| moment.hits().cloned())
+        .chain(hits.bodies().iter().flat_map(|body| [body.slide().clone(), body.whistle_lane(), body.tick().clone()]));
+    lanes.filter_map(|lane| match hits.lane(&lane).map(|lane| &lane.source) {
+        Some(LaneSource::File(name)) => Some(name.to_ascii_lowercase()),
+        _ => None,
+    }).collect()
+}
+
 /// The pending files the drawn hits play that this Save does not write.
 pub(crate) fn needed(hits: &Hitsounds, pending: &Pending, written: &[String]) -> Vec<PendingSample> {
     let written: BTreeSet<String> = written.iter().map(|n| n.to_ascii_lowercase()).collect();
-    let lanes = hits.moments().iter().flat_map(|moment| moment.hits().cloned())
-        .chain(hits.bodies().iter().flat_map(|body| [body.slide().clone(), body.whistle_lane(), body.tick().clone()]));
     let mut needed = BTreeMap::new();
-    for lane in lanes {
-        if let Some(LaneSource::File(name)) = hits.lane(&lane).map(|lane| &lane.source)
-            && let Some(file) = pending.get(name)
+    for name in hit_files(hits) {
+        if let Some(file) = pending.get(&name)
             && !written.contains(&file.name.to_ascii_lowercase())
         {
             needed.insert(file.name.to_ascii_lowercase(), PendingSample { name: file.name.clone(), sha256: file.sha256.clone() });

@@ -2882,6 +2882,15 @@ fn load(
     // closed without Save or crashed: their numbers are free again.
     if document.presence.as_ref().is_some_and(|presence| !presence.others_live()) {
         document.pending.release_stale(&recorded_pending(project_root, data_root, &mapset));
+        // No cleanup is running: a file one left moving aside goes back under its name, and its
+        // lane plays it again.
+        let back = sweep::put_back_stopped_moves(&mapset);
+        if !back.is_empty() {
+            if recovery.is_none() {
+                document.files = pending::listing(&mapset, &document.pending)?;
+            }
+            document.composer.history.update_external(|hits| hits.add_folder_samples(&back));
+        }
     }
     let mut warnings = Vec::new();
     // A recovery copy's pending files come back first, so every hit it restores finds its sound.
@@ -5240,6 +5249,101 @@ Title:");
     }
 
     #[test]
+    fn a_file_only_a_lane_names_goes_to_removed_samples_not_pending() {
+        let scratch = Scratch::new("sweep-lane-only");
+        let (mut app, map, folder) = two_layers_in(&scratch, true, Some(scratch.path("data")));
+        let mut bytes = TONE.to_vec();
+        *bytes.last_mut().unwrap() = 0x61;
+        std::fs::write(folder.join("normal-hitclap7.wav"), &bytes).unwrap();
+        let sha256 = dawsu_foundation::digest::sha256_hex(&bytes);
+        app.document().unwrap().pending.ledger().unwrap()
+            .add(&[pending::PendingSample { name: "normal-hitclap7.wav".into(), sha256: sha256.clone() }]).unwrap();
+        // Closed while another session holds the mapset, so nothing is cleaned up yet.
+        let other = pending::Presence::enter(&app.data_root, &folder.canonicalize().unwrap()).unwrap();
+        app.close_document();
+        drop(other);
+        open(&mut app, map);
+        assert!(app.document().unwrap().composer.hitsounds().lanes().iter()
+            .any(|lane| matches!(&lane.source, dawsu_hitsounding::LaneSource::File(name) if name == "normal-hitclap7.wav")), "it has a lane");
+        save_through_summary(&mut app, scratch.path("backups"));
+        assert!(!folder.join("normal-hitclap7.wav").exists());
+        assert_eq!(std::fs::read(app.data_root.join("removed-samples").join(format!("{sha256}.wav"))).unwrap(), bytes);
+        assert!(app.document().unwrap().pending.get("normal-hitclap7.wav").is_none(), "not a pending file");
+        assert!(!app.document().unwrap().pending.claimed_names().contains("normal-hitclap7.wav"), "no claim");
+        assert!(!app.data_root.join("pending-samples").join(format!("{sha256}.wav")).exists());
+    }
+
+    #[test]
+    fn a_file_a_hit_plays_comes_back_when_the_cleanup_stops_before_the_project_lists_it() {
+        let scratch = Scratch::new("sweep-stopped-before-listing");
+        let (mut app, map, folder) = two_layers_in(&scratch, true, Some(scratch.path("data")));
+        use_layer_2(&mut app);
+        save_through_summary(&mut app, scratch.path("backups"));
+        let other = pending::Presence::enter(&app.data_root, &folder.canonicalize().unwrap()).unwrap();
+        app.document.as_mut().unwrap().composer.apply("Mix", |hits| {
+            hits.add_hit(dawsu_hitsounding::MomentId(0), hitnormal(0));
+            hits.set_hit_volume(dawsu_hitsounding::MomentId(0), &hitnormal(2), 40);
+        });
+        save_through_summary(&mut app, scratch.path("backups"));
+        drop(other);
+        assert!(folder.join("normal-hitnormal2.wav").exists(), "kept while the other session was open");
+        // The job runs, and dawsu! stops before the editor thread applies what it did.
+        app.start_sweep(false);
+        let _ = app.sweep.take().unwrap().recv().unwrap();
+        assert!(!folder.join("normal-hitnormal2.wav").exists(), "moved aside, waiting for the project");
+        let (data_root, project_root) = (app.data_root.clone(), app.project_root.clone());
+        drop(app);
+        let mut second = Application::headless();
+        second.data_root = data_root;
+        second.project_root = project_root;
+        second.preferences.default_samples = scratch.path("skin");
+        open(&mut second, map);
+        assert_eq!(std::fs::read(folder.join("normal-hitnormal2.wav")).unwrap(), TONE, "back under its name");
+        assert!(ledger(&second).iter().any(|name| name == "normal-hitnormal2.wav"), "still dawsu!'s");
+        assert_eq!(second.document().unwrap().composer.hitsounds().lane(&hitnormal(2)).map(|lane| &lane.source),
+            Some(&dawsu_hitsounding::LaneSource::File("normal-hitnormal2.wav".into())), "its lane plays the file, not the skin");
+        second.document.as_mut().unwrap().composer.apply("Mix", |hits| {
+            hits.add_hit(dawsu_hitsounding::MomentId(0), hitnormal(2));
+            hits.set_hit_volume(dawsu_hitsounding::MomentId(0), &hitnormal(2), 40);
+        });
+        save_through_summary(&mut second, scratch.path("backups"));
+        let document = second.document().unwrap();
+        assert!(folder.join("normal-hitnormal2.wav").exists() || document.pending.get("normal-hitnormal2.wav").is_some(),
+            "a hit plays it, so it never goes to removed-samples");
+    }
+
+    #[test]
+    fn a_file_only_undo_plays_waits_in_the_data_folder_and_goes_to_removed_samples_after_close() {
+        let scratch = Scratch::new("sweep-undo-only");
+        let (mut app, _, folder) = two_layers_in(&scratch, true, Some(scratch.path("data")));
+        use_layer_2(&mut app);
+        save_through_summary(&mut app, scratch.path("backups"));
+        back_to_skin(&mut app);
+        save_through_summary(&mut app, scratch.path("backups"));
+        assert!(!folder.join("normal-hitnormal2.wav").exists());
+        let copy = format!("{}.wav", dawsu_foundation::digest::sha256_hex(TONE));
+        assert_eq!(std::fs::read(app.data_root.join("pending-samples").join(&copy)).unwrap(), TONE, "Undo can still play it");
+        let (data_root, project_root) = (app.data_root.clone(), app.project_root.clone());
+        app.close_document();
+        pending::prune_kept_copies(&data_root, project_root.as_deref(), Duration::ZERO);
+        assert_eq!(std::fs::read(data_root.join("removed-samples").join(&copy)).unwrap(), TONE, "kept, never deleted");
+    }
+
+    #[test]
+    fn a_file_left_aside_by_a_crash_is_never_replaced_by_the_next_move() {
+        let scratch = Scratch::new("sweep-aside-taken");
+        let (mut app, _, folder) = two_layers(&scratch, true);
+        use_layer_2(&mut app);
+        save_through_summary(&mut app, scratch.path("backups"));
+        let aside = folder.join(".normal-hitnormal2.wav.dawsu-moving");
+        std::fs::write(&aside, b"bytes a crash left aside").unwrap();
+        back_to_skin(&mut app);
+        save_through_summary(&mut app, scratch.path("backups"));
+        assert_eq!(std::fs::read(&aside).unwrap(), b"bytes a crash left aside");
+        assert_eq!(std::fs::read(folder.join("normal-hitnormal2.wav")).unwrap(), TONE, "it can't move aside, so it stays");
+    }
+
+    #[test]
     fn a_damaged_copy_in_removed_samples_is_replaced_before_the_file_leaves() {
         let scratch = Scratch::new("sweep-damaged-trash");
         let (mut app, _, folder) = two_layers_in(&scratch, true, Some(scratch.path("data")));
@@ -5579,6 +5683,20 @@ Sample,0,0,\"{story}\",100
         back_to_skin(&mut second);
         save_through_summary(&mut second, scratch.path("backups"));
         assert_eq!(std::fs::read(folder.join("normal-hitnormal2.wav")).unwrap(), TONE, "the recovery copy still plays it");
+    }
+
+    #[test]
+    fn a_recovery_copy_that_cant_be_read_stops_the_cleanup_and_is_named() {
+        let scratch = Scratch::new("sweep-unreadable-copy");
+        let (mut app, _, folder) = two_layers_in(&scratch, true, Some(scratch.path("data")));
+        use_layer_2(&mut app);
+        save_through_summary(&mut app, scratch.path("backups"));
+        std::fs::create_dir_all(app.data_root.join("recovery")).unwrap();
+        std::fs::write(app.data_root.join("recovery").join("broken-copy.json"), b"not json").unwrap();
+        back_to_skin(&mut app);
+        save_through_summary(&mut app, scratch.path("backups"));
+        assert_eq!(std::fs::read(folder.join("normal-hitnormal2.wav")).unwrap(), TONE, "the copy could play it");
+        assert!(app.status.contains("No unused sample files were removed") && app.status.contains("broken-copy.json"), "{}", app.status);
     }
 
     #[test]

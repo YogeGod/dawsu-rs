@@ -6,7 +6,6 @@
 
 use super::{Application, layers, mixes, pending, project, recovery, safe_child};
 use dawsu_foundation::{SampleIdentity, digest::sha256_hex};
-use dawsu_hitsounding::LaneSource;
 use dawsu_hitsounding::rules::read_sample_file_name;
 use dawsu_osu_format::list_folder;
 use std::collections::BTreeSet;
@@ -85,18 +84,34 @@ pub(crate) struct Request {
     except: Option<PathBuf>,
     ledger: pending::Ledger,
     pending: pending::Pending,
-    /// The files the open difficulty's lanes play, lowercased. Empty when closing.
-    lane_files: BTreeSet<String>,
+    /// The files the open difficulty's hits play, lowercased. Empty when closing.
+    hit_files: BTreeSet<String>,
+    /// The files only an undo or redo state's hits play, lowercased: they wait in the data folder
+    /// so Undo still plays them, and no project lists them. Empty when closing.
+    undo_files: BTreeSet<String>,
+    /// Whether the open difficulty has a project to list a pending file in.
+    can_list: bool,
+}
+
+/// A file a hit still plays, kept as a pending file and moved aside. It leaves the mapset only
+/// once the project lists it, on the editor thread; until then a crash leaves it aside, and the
+/// next cleanup or open puts it back.
+pub(crate) struct Moving {
+    file: pending::PendingFile,
+    temp: PathBuf,
+    path: PathBuf,
 }
 
 /// What a cleanup job did.
 pub(crate) struct Outcome {
     closing: bool,
     root: PathBuf,
-    /// Files that left the mapset and wait in the data folder as pending files.
-    to_pending: Vec<pending::PendingFile>,
+    /// Files waiting to leave the mapset as pending files.
+    to_pending: Vec<Moving>,
+    /// The job's pending files, whose claims a file that goes back gives up.
+    pending: pending::Pending,
     /// Files that left the mapset for `removed-samples`.
-    removed: Vec<String>,
+    removed: Vec<pending::PendingSample>,
     /// Why nothing was cleaned up.
     problem: Option<String>,
     /// When closing: the pending names a record still lists.
@@ -113,20 +128,30 @@ fn moving_name(path: &Path) -> Option<PathBuf> {
 
 /// Puts a moving file back under its name, never over a file that took the name meanwhile.
 fn put_back(temp: &Path, path: &Path) -> bool {
-    std::fs::hard_link(temp, path).is_ok() && std::fs::remove_file(temp).is_ok()
+    match std::fs::hard_link(temp, path) {
+        Ok(()) => std::fs::remove_file(temp).is_ok(),
+        // A drive with no hard links (FAT32, exFAT): renamed back while the name is free.
+        Err(error) if error.kind() != std::io::ErrorKind::AlreadyExists && std::fs::symlink_metadata(path).is_err() => {
+            std::fs::rename(temp, path).is_ok()
+        }
+        Err(_) => false,
+    }
 }
 
-/// Files a stopped cleanup left under a moving name go back under their own.
+/// Files a stopped cleanup left under a moving name go back under their own. Returns their names.
 #[allow(clippy::disallowed_methods)]
-fn put_back_stopped_moves(root: &Path) {
+pub(crate) fn put_back_stopped_moves(root: &Path) -> Vec<String> {
+    let mut back = Vec::new();
     for name in list_folder(root).unwrap_or_default() {
         let Some(original) = name.strip_prefix('.').and_then(|rest| rest.strip_suffix(MOVING)) else { continue };
         if let Ok(temp) = safe_child(root, &name)
             && !temp.with_file_name(original).exists()
+            && put_back(&temp, &temp.with_file_name(original))
         {
-            put_back(&temp, &temp.with_file_name(original));
+            back.push(original.to_string());
         }
     }
+    back
 }
 
 /// Keeps `bytes` in `removed-samples`, under its lock.
@@ -138,7 +163,8 @@ fn keep_removed(data_root: &Path, name: &str, sha256: &str, bytes: &[u8]) -> boo
 /// Runs a cleanup. Called off the editor thread.
 pub(crate) fn run(mut request: Request) -> Outcome {
     let mut outcome = Outcome {
-        closing: request.closing, root: request.root.clone(), to_pending: Vec::new(), removed: Vec::new(), problem: None, keep: None,
+        closing: request.closing, root: request.root.clone(), to_pending: Vec::new(), pending: pending::Pending::default(),
+        removed: Vec::new(), problem: None, keep: None,
     };
     let root = request.root.clone();
     put_back_stopped_moves(&root);
@@ -152,15 +178,15 @@ pub(crate) fn run(mut request: Request) -> Outcome {
     let listed: BTreeSet<String> = entries.iter().map(|entry| entry.name.to_ascii_lowercase()).collect();
     entries.extend(old_mixes(&root).into_iter().filter(|mix| !listed.contains(&mix.name.to_ascii_lowercase())));
     if !entries.is_empty() {
-        match folder_uses(&root) {
-            // A difficulty that can't be read leaves everything where it is.
+        match folder_uses(&root).and_then(|uses| Ok((uses, recovery::copies_play(&request.data_root, &root)?))) {
+            // A difficulty or recovery copy that can't be read leaves everything where it is.
             Err(error) => outcome.problem = Some(format!("No unused sample files were removed. {error}")),
-            Ok((used, other_mode_indexes)) => {
+            Ok(((used, other_mode_indexes), copies)) => {
                 let keep = Keep {
                     used,
                     other_mode_indexes,
                     projects: project_texts(request.project_root.as_deref(), &root, request.except.as_deref()),
-                    copies: recovery::copies_play(&request.data_root, &root),
+                    copies,
                 };
                 let mut dropped = Vec::new();
                 for entry in entries {
@@ -177,6 +203,7 @@ pub(crate) fn run(mut request: Request) -> Outcome {
     if request.closing {
         outcome.keep = Some(super::recorded_pending(request.project_root.as_deref(), &request.data_root, &root));
     }
+    outcome.pending = request.pending;
     outcome
 }
 
@@ -218,34 +245,47 @@ fn clean_up(request: &mut Request, outcome: &mut Outcome, entry: &pending::Pendi
     {
         return Step::Kept;
     }
+    // A hit of the open difficulty still plays it: it can wait outside the mapset only where a
+    // project lists it.
+    let hit_plays = request.hit_files.contains(&lower);
+    if hit_plays && !request.can_list {
+        return Step::Kept;
+    }
+    let to_pending = hit_plays || request.undo_files.contains(&lower);
     before_move(&path);
-    // Moved aside first, so no program writes it under its name while it leaves; then checked again.
+    // Moved aside first, so no program writes it under its name while it leaves; then checked
+    // again. A file a stopped cleanup left under the moving name is never moved over.
     let Some(temp) = moving_name(&path) else { return Step::Kept };
-    if std::fs::rename(&path, &temp).is_err() {
+    if std::fs::symlink_metadata(&temp).is_ok() || std::fs::rename(&path, &temp).is_err() {
         // Locked: tried again after the next Save or at close.
         return Step::Kept;
     }
-    let changed = || std::fs::read(&temp).map_or(true, |now| now != bytes);
-    if changed() {
+    // Unchanged, changed (not dawsu!'s any more), or unreadable for now (still dawsu!'s).
+    let unchanged = || std::fs::read(&temp).ok().map(|now| now == bytes);
+    let back = |now: Option<bool>| {
         put_back(&temp, &path);
-        return Step::Drop;
+        if now == Some(false) { Step::Drop } else { Step::Kept }
+    };
+    let now = unchanged();
+    if now != Some(true) {
+        return back(now);
     }
-    let to_pending = request.lane_files.contains(&lower);
-    let kept = if to_pending { request.pending.add(name, &bytes).ok() } else { None };
-    let stored = if to_pending { kept.is_some() } else { keep_removed(&request.data_root, name, &entry.sha256, &bytes) };
-    let changed_meanwhile = stored && changed();
-    if !stored || changed_meanwhile || std::fs::remove_file(&temp).is_err() {
-        if kept.is_some() {
+    if to_pending {
+        let Ok(file) = request.pending.add(name, &bytes) else { return back(None) };
+        let now = unchanged();
+        if now != Some(true) {
             request.pending.release(name);
+            return back(now);
         }
-        put_back(&temp, &path);
-        return if changed_meanwhile { Step::Drop } else { Step::Kept };
+        // Its ledger entry goes once it left the mapset.
+        outcome.to_pending.push(Moving { file, temp, path });
+        return Step::Kept;
     }
-    match kept {
-        // A lane of the open difficulty still plays it: it waits in the data folder.
-        Some(file) => outcome.to_pending.push(file),
-        None => outcome.removed.push(name.to_string()),
+    let now = keep_removed(&request.data_root, name, &entry.sha256, &bytes).then(unchanged).flatten();
+    if now != Some(true) || std::fs::remove_file(&temp).is_err() {
+        return back(now);
     }
+    outcome.removed.push(entry.clone());
     Step::Drop
 }
 
@@ -254,23 +294,28 @@ impl Application {
     /// `closing`, the open difficulty's hits no longer count: only the saved files and the
     /// projects do. Does nothing while another dawsu! session has the mapset open.
     pub(crate) fn start_sweep(&mut self, closing: bool) {
+        if self.sweep.is_some() {
+            return;
+        }
         let Some(document) = self.document.as_ref() else { return };
         let Some(ledger) = document.pending.ledger() else { return };
         let Some(root) = document.path.parent().map(Path::to_path_buf) else { return };
         if document.presence.as_ref().is_none_or(|presence| presence.others_live()) {
             return;
         }
-        let lane_files = if closing {
-            BTreeSet::new()
+        let (hit_files, undo_files) = if closing {
+            Default::default()
         } else {
-            document.composer.hitsounds().lanes().iter().filter_map(|lane| match &lane.source {
-                LaneSource::File(file) => Some(file.to_ascii_lowercase()),
-                _ => None,
-            }).collect()
+            let hit_files = pending::hit_files(document.composer.hitsounds());
+            // Each state names its own lanes: an older state may play a replaced lane sample.
+            let undo_files = document.composer.history.states().flat_map(pending::hit_files)
+                .filter(|name| !hit_files.contains(name)).collect();
+            (hit_files, undo_files)
         };
         let request = Request {
             closing, root, data_root: self.data_root.clone(), project_root: self.project_root.clone(),
-            except: (!closing).then(|| document.path.clone()), ledger, pending: document.pending.clone(), lane_files,
+            except: (!closing).then(|| document.path.clone()), ledger, pending: document.pending.clone(), hit_files,
+            undo_files, can_list: self.project.is_some(),
         };
         let (send, receive) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
@@ -296,48 +341,79 @@ impl Application {
         self.sweep = None;
         self.busy = false;
         let Some(outcome) = outcome else {
-            self.error = Some("The unused sample cleanup stopped unexpectedly. No file was removed by it.".into());
+            // The job is gone: a file it was moving goes back now, unless another session's may be running.
+            if let Some(document) = &self.document
+                && document.presence.as_ref().is_some_and(|presence| !presence.others_live())
+                && let Some(root) = document.path.parent()
+            {
+                put_back_stopped_moves(root);
+            }
+            self.error = Some("The unused sample cleanup stopped unexpectedly. A file it removed is kept in removed-samples; one it was moving stays in the mapset.".into());
             return Some(None);
         };
         Some(self.apply_sweep(outcome))
     }
 
     fn apply_sweep(&mut self, outcome: Outcome) -> Option<BTreeSet<String>> {
-        let document = self.document.as_mut()?;
-        if document.path.parent() != Some(outcome.root.as_path()) {
-            return outcome.keep;
-        }
-        let moved = outcome.to_pending.len() + outcome.removed.len();
-        for file in outcome.to_pending {
+        let Outcome { closing, root, to_pending, mut pending, removed, problem, keep } = outcome;
+        let Some(document) = self.document.as_mut().filter(|document| document.path.parent() == Some(root.as_path())) else {
+            // Another mapset is open now: the files waiting to leave stay.
+            for moving in &to_pending {
+                pending.release(&moving.file.name);
+                put_back(&moving.temp, &moving.path);
+            }
+            return keep;
+        };
+        for file in &removed {
             document.files.retain(|name| !name.eq_ignore_ascii_case(&file.name));
-            document.pending.adopt(file);
+            document.pending.release_matching(&file.name, &file.sha256);
         }
-        for name in &outcome.removed {
-            document.files.retain(|file| !file.eq_ignore_ascii_case(name));
-            document.pending.release(name);
+        for moving in &to_pending {
+            document.pending.adopt(moving.file.clone());
         }
-        if let Some(problem) = &outcome.problem {
-            self.status = format!("{}. {problem}", self.status.trim_end_matches('.'));
-        } else if let Some(removed) = removed_status(moved) {
-            self.status = format!("{}. {removed}", self.status.trim_end_matches('.'));
-        }
-        // A pending file a kept hit plays is listed in the project, so reopening plays it.
-        if !outcome.closing
+        // A pending file a kept hit plays is listed in the project, so reopening plays it. A file
+        // waiting to leave the mapset leaves only once it is listed.
+        let mut listed = true;
+        if !closing
             && let Some(project) = self.project.as_mut()
         {
             let document = self.document.as_ref().expect("open document");
             let needed = pending::needed(document.composer.hitsounds(), &document.pending, &[]);
-            let listed = project.settings.pending_samples.clone().unwrap_or_default();
-            let missing: Vec<_> = needed.into_iter().filter(|file| !listed.contains(file)).collect();
+            let already = project.settings.pending_samples.clone().unwrap_or_default();
+            let missing: Vec<_> = needed.into_iter().filter(|file| !already.contains(file)).collect();
             if !missing.is_empty() {
                 let mut settings = project.settings.clone();
                 settings.pending_samples.get_or_insert_with(Vec::new).extend(missing);
                 if let Err(error) = project.save(settings) {
-                    self.error = Some(format!("Unused sample files left the mapset, but the project could not list them: {error}"));
+                    listed = false;
+                    self.error = Some(format!("The project could not list the new samples its hits play, so they stay in the mapset: {error}"));
                 }
             }
         }
-        outcome.keep
+        // Without a project the job moved only files an undo state plays, which no project lists.
+        let document = self.document.as_mut().expect("open document");
+        let mut left = Vec::new();
+        for moving in to_pending {
+            if listed && std::fs::remove_file(&moving.temp).is_ok() {
+                document.files.retain(|name| !name.eq_ignore_ascii_case(&moving.file.name));
+                left.push(moving.file.name);
+            } else {
+                document.pending.release_matching(&moving.file.name, &moving.file.sha256);
+                put_back(&moving.temp, &moving.path);
+            }
+        }
+        let mut problem = problem;
+        if !left.is_empty()
+            && let Some(Err(error)) = document.pending.ledger().map(|ledger| ledger.remove(&left))
+        {
+            problem.get_or_insert(format!("Unused sample files were cleaned up, but their list could not be updated. {error}"));
+        }
+        if let Some(problem) = &problem {
+            self.status = format!("{}. {problem}", self.status.trim_end_matches('.'));
+        } else if let Some(removed) = removed_status(left.len() + removed.len()) {
+            self.status = format!("{}. {removed}", self.status.trim_end_matches('.'));
+        }
+        keep
     }
 }
 
