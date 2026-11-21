@@ -28,8 +28,11 @@
   height: 34px;
   padding-right: 0;
 }
+/* One bar across the timeline, above the lane column's resize line. */
 #volume-controller-panel[data-bottom="folded"] .volume-title {
   grid-column: 1 / -1;
+  position: relative;
+  z-index: 3;
   padding: 0;
   border-right: 0;
 }

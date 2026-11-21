@@ -2,11 +2,11 @@
   import { stripShades } from "../lib/mixer.js";
   import Fader from "./Fader.svelte";
 
-  // One v3 mixer strip (§6, 8b footer). Pan, the meter and the peak readout have no backend yet,
-  // so they show greyed out and empty; a strip without a gain shows its fader without a cap.
+  // One v3 mixer strip (§6, 8b footer). Pan, the meter and the level and peak readouts have no
+  // backend yet, so they show greyed out and empty; a strip without a gain has a fader without a cap.
   let { label, name, set = "", number = "", icon, colour = null, selected = false, quiet = false,
     muted = false, solo = false, muteLabel, soloLabel, disabled = false, onmute, onsolo, onselect,
-    gain = null, min = 0, max = 1, gainLabel, readout = null, onlevel } = $props();
+    gain = null, min = 0, max = 1, gainLabel, onlevel } = $props();
 
   const shade = $derived(stripShades(colour));
 
@@ -28,7 +28,7 @@
   <button type="button" class="box pan off" aria-label="Pan" disabled></button>
   <Fader {gain} {min} {max} label={gainLabel} {disabled} onchange={onlevel} />
   <div class="row">
-    <span class="box level {readout === null ? 'off' : ''}">{readout ?? ""}</span>
+    <span class="box level off"></span>
     <span class="box peak off"></span>
   </div>
   <div class="foot">

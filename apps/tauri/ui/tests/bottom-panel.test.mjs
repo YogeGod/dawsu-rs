@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { render } from "svelte/server";
 import { bridge } from "../src/lib/bridge.svelte.js";
-import { dbText, faderPosition, gainsAction, positionGain, stepGain, stripShades } from "../src/lib/mixer.js";
+import { faderPosition, gainsAction, positionGain, stepGain, stripShades } from "../src/lib/mixer.js";
 import { laneGrey, mixIntoCanvas } from "../src/lib/colour.js";
 import BottomPanel from "../src/parts/BottomPanel.svelte";
 import Mixer from "../src/parts/Mixer.svelte";
@@ -22,13 +22,7 @@ function panel(v, tab = "volume", scene = { path: "a.osu" }) {
   return render(BottomPanel).body;
 }
 
-test("gains are linear, so the readout is the real level in dB", () => {
-  assert.equal(dbText(1), "0.0");
-  assert.equal(dbText(0.7), "−3.1");
-  assert.equal(dbText(0.2), "−14.0");
-  assert.equal(dbText(0), "−∞");
-});
-
+// Gains multiply the samples, so a gain sits on the dB scale at 20·log10(gain).
 test("the fader follows v3's dB scale and stops at the editor's limits", () => {
   assert.equal(faderPosition(1), 0.14);
   assert.equal(faderPosition(0), 1);
@@ -116,24 +110,25 @@ test("only the Song and Master faders work; nothing shows a level the editor doe
   const html = mixer();
   const sliders = tags(html, "div").filter(tag => /role="slider"/.test(tag));
   assert.deepEqual(sliders.map(label), ["Song level", "Master level"]);
-  assert.match(sliders[0], /aria-valuetext="−3.1 dB"/);
-  assert.match(sliders[1], /aria-valuetext="−0.9 dB"/);
+  assert.match(sliders[0], /aria-valuemin="0" aria-valuemax="100" aria-valuenow="70"/);
+  assert.match(sliders[1], /aria-valuemin="20" aria-valuemax="100" aria-valuenow="90"/);
   const [song, normal] = strips(html);
   // Lane faders have no cap: there is no per-lane level yet.
   assert.equal((song.match(/class="cap/g) ?? []).length, 1);
   assert.equal((normal.match(/class="cap/g) ?? []).length, 0);
-  // Pan, meters, peaks and lane levels are greyed out and empty.
+  // Pan and meters are greyed out and empty on every strip.
   for (const part of strips(html)) {
     assert.deepEqual(tags(part, "button").filter(tag => label(tag) === "Pan").map(disabled), [true]);
     assert.doesNotMatch(part, /class="meter[^"]*"[^>]*>\s*<div\b[^>]*class="fill/);
-    for (const box of part.matchAll(/<span class="box peak[^"]*"[^>]*>([^<]*)<\/span>/g)) assert.equal(box[1], "");
   }
-  assert.match(song, /<span class="box level[^"]*"[^>]*>−3.1<\/span>/);
-  assert.match(normal, /<span class="box level off[^"]*"[^>]*><\/span>/);
-  const master = html.slice(masterAt(html));
-  assert.match(master, /<span class="box level[^"]*"[^>]*>−0.9<\/span>/);
-  assert.match(master, /<span class="box peak off[^"]*"[^>]*><\/span>/);
-  assert.doesNotMatch(text(html), /dBFS|kHz|\bms\b|Default device|Reset levels/);
+  // No level or peak readout has a backend yet, Song and Master included: all greyed out and empty.
+  const boxes = [...html.matchAll(/<span class="box (level|peak)([^"]*)"[^>]*>([^<]*)<\/span>/g)];
+  assert.equal(boxes.length, 2 * 3 + 2);
+  for (const [box, , classes, inside] of boxes) {
+    assert.match(classes, /\boff\b/, box);
+    assert.equal(inside, "", box);
+  }
+  assert.doesNotMatch(text(html), /dB|kHz|\bms\b|Default device|Reset levels/);
   // style: directives render as attributes only on the server; ui-bundle.test.mjs checks the sources.
   assert.doesNotMatch(html, /\sid=/);
 });

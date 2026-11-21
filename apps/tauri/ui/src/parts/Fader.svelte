@@ -1,5 +1,5 @@
 <script>
-  import { dbText, faderPosition, positionGain, scaleMarks, stepGain } from "../lib/mixer.js";
+  import { faderPosition, positionGain, scaleMarks, stepGain } from "../lib/mixer.js";
 
   // v3 §6 fader block: slot, dB scale and meter. A gain of null means the editor has no level for
   // this channel yet: the slot shows greyed out with no cap. The meter stays empty (no levels yet).
@@ -10,8 +10,10 @@
   let held = $state(null);
   const shown = $derived(held ?? gain);
 
-  // One gains action in flight at a time; the newest value waits for it.
+  // One gains action in flight at a time; the newest value waits for it. After a release the cap
+  // keeps the dragged value until the last action is answered, so it never jumps back.
   let busy = false;
+  let dragging = false;
   let queued = null;
   async function send(value) {
     queued = value;
@@ -25,6 +27,7 @@
       }
     } finally {
       busy = false;
+      if (!dragging) held = null;
     }
   }
 
@@ -34,18 +37,20 @@
   function down(event) {
     if (disabled || event.button !== 0) return;
     event.currentTarget.setPointerCapture?.(event.pointerId);
+    dragging = true;
     held = gainAt(event);
     send(held);
   }
   function move(event) {
-    if (held === null) return;
+    if (!dragging) return;
     const next = gainAt(event);
     if (Math.abs(next - held) < 0.0005) return;
     held = next;
     send(held);
   }
   function up() {
-    held = null;
+    dragging = false;
+    if (!busy) held = null;
   }
 
   const steps = { ArrowUp: 1, ArrowRight: 1, ArrowDown: -1, ArrowLeft: -1, PageUp: 6, PageDown: -6 };
@@ -69,7 +74,7 @@
   {:else}
     <div class="slot" bind:this={slot} role="slider" tabindex={disabled ? -1 : 0} aria-label={label}
       aria-orientation="vertical" aria-valuemin={Math.round(min * 100)} aria-valuemax={Math.round(max * 100)}
-      aria-valuenow={Math.round(shown * 100)} aria-valuetext={dbText(shown) + " dB"} aria-disabled={disabled}
+      aria-valuenow={Math.round(shown * 100)} aria-disabled={disabled}
       onpointerdown={down} onpointermove={move} onpointerup={up} onpointercancel={up} onkeydown={key}>
       <div class="track"></div>
       <div class="cap" style:--fader-at={faderPosition(shown)}><span></span></div>

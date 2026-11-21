@@ -1,21 +1,14 @@
 // The Mixer's faders and strips (v3 §6). Song and master gains multiply the samples
-// (dawsu-audio), so a gain's level in dB is 20·log10(gain).
+// (dawsu-audio), so a gain sits on v3's dB scale at 20·log10(gain).
 import { laneGrey, mixIntoCanvas } from "./colour.js";
 
 // v3's fader scale: dB at a place from the top (0) to the bottom (1) of the fader's travel.
 export const faderStops = [[6, 0], [0, 0.14], [-5, 0.27], [-10, 0.4], [-20, 0.6], [-30, 0.75], [-40, 0.85], [-60, 1]];
 export const scaleMarks = [["6", 0], ["0", 0.14], ["5", 0.27], ["10", 0.4], ["20", 0.6], ["30", 0.75], ["40", 0.85], ["∞", 1]];
 
-const minus = text => text.replace("-", "−");
 const toDb = gain => (gain > 0 ? 20 * Math.log10(gain) : -Infinity);
 const toGain = db => (db === -Infinity ? 0 : 10 ** (db / 20));
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
-
-// "−3.1", "0.0", or "−∞" for silence.
-export function dbText(gain) {
-  const db = toDb(gain);
-  return db === -Infinity ? "−∞" : minus(db.toFixed(1));
-}
 
 export function faderPosition(gain) {
   const db = toDb(gain);

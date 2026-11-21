@@ -1,13 +1,14 @@
 <script>
   import { bridge } from "../lib/bridge.svelte.js";
-  import { dbText, gainsAction } from "../lib/mixer.js";
+  import { gainsAction } from "../lib/mixer.js";
   import { laneIcons } from "../lib/lanes.js";
   import Fader from "./Fader.svelte";
   import MixerStrip from "./MixerStrip.svelte";
 
   // The bottom panel's Mixer tab (v3 F3): the Song strip, one strip per lane with hits (app.js
-  // builds them in mixerModel()), and the master output. The song and master gains are the
-  // editor's own; lanes have no level of their own yet, so their faders show no cap.
+  // builds them in mixerModel()), and the master output. The song and master faders set the
+  // editor's own gains; lanes have no level of their own yet, so their faders show no cap. No
+  // level or peak readout has a backend yet, so every readout is empty.
   const view = $derived(bridge.view);
   const strips = $derived(bridge.mixer ?? []);
   const disabled = $derived(bridge.disabled);
@@ -28,7 +29,7 @@
       muteLabel="Mute song" soloLabel="Solo song" {disabled}
       onmute={() => act({ kind: "song_muted", on: !view?.songMuted })}
       onsolo={() => act({ kind: "song_solo", on: !view?.songSolo })}
-      gain={song} min={0} max={1} gainLabel="Song level" readout={song === null ? null : dbText(song)}
+      gain={song} min={0} max={1} gainLabel="Song level"
       onlevel={level("song")} />
     {#each strips as strip (strip.key)}
       <MixerStrip label={strip.name + ", lane " + strip.number} name={strip.name} set={strip.set} number={strip.number}
@@ -45,7 +46,7 @@
       <Fader gain={main} min={0.2} max={1} label="Master level" {disabled} onchange={level("main")} />
       <div class="readouts">
         <span class="caption">Level</span>
-        <span class="box level {main === null ? 'off' : ''}">{main === null ? "" : dbText(main)}</span>
+        <span class="box level off"></span>
         <span class="caption">Peak</span>
         <span class="box peak off"></span>
       </div>
