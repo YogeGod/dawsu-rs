@@ -316,6 +316,15 @@ impl Composer {
             }
             for (id, volume) in moved {
                 hits.move_volume(id, volume);
+                // Moving keeps each hit's difference, which can push a quieter hit under 5%;
+                // the edit stops it at 5% like every other volume it sets.
+                let floor = dawsu_hitsounding::rules::SAVED_VOLUME_FLOOR;
+                let quiet: Vec<_> = hits.moment(id).hits()
+                    .filter(|lane| hits.moment(id).hit_volume(lane) < floor)
+                    .cloned().collect();
+                for lane in quiet {
+                    hits.set_hit_volume(id, &lane, floor);
+                }
             }
             for (id, lane, volume) in individual {
                 hits.set_hit_volume(id, &lane, volume);
