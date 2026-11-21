@@ -1009,6 +1009,9 @@ impl PublishedMixes<'_> {
 
     fn rollback(&mut self) -> Vec<String> {
         let mut kept = Vec::new();
+        // Files that stay with dawsu!'s bytes because they couldn't be removed (a lock): their
+        // ledger entries stay, so a later cleanup tries again.
+        let mut still_ours = Vec::new();
         for index in self.created.drain(..).rev() {
             let mix = &self.staged[index];
             let result = match fs::read(&mix.path) {
@@ -1023,11 +1026,18 @@ impl PublishedMixes<'_> {
                 && error.kind() != std::io::ErrorKind::NotFound
             {
                 kept.push(mix.path.display().to_string());
+                if fs::read(&mix.path).is_ok_and(|bytes| bytes == mix.wav)
+                    && let Some(name) = mix.path.file_name()
+                {
+                    still_ours.push(name.to_string_lossy().into_owned());
+                }
             }
         }
-        // A file kept because someone changed it is not dawsu!'s any more.
+        // A file removed, never made, or changed by someone else leaves the ledger.
         if let Some((ledger, names)) = self.ledger.take() {
-            ledger.remove(&names);
+            let gone: Vec<String> = names.into_iter()
+                .filter(|name| !still_ours.iter().any(|ours| ours.eq_ignore_ascii_case(name))).collect();
+            ledger.remove(&gone);
         }
         kept
     }
@@ -1189,6 +1199,44 @@ mod tests {
         assert!(names.contains("soft-hitclap3.wav") && names.contains("drum-hitfinish4.wav"));
         // Publishing checks the mapset alone, so a pending file never blocks its own write.
         assert!(!occupied_indexes(&root, &Pending::default()).unwrap().contains(&3));
+    }
+
+    #[test]
+    fn a_rollback_keeps_the_ledger_entry_of_a_file_it_could_not_remove() {
+        let scratch = dawsu_test_support::Scratch::new("mix-rollback-locked");
+        let root = scratch.path("mapset");
+        fs::create_dir(&root).unwrap();
+        let ledger = Pending::for_mapset(&scratch.path("data"), &root).ledger().unwrap();
+        let staged = [
+            StagedMix { path: root.join("dawsu-mix-a-1.wav"), wav: vec![1], reuse: false, index: None },
+            StagedMix { path: root.join("dawsu-mix-b-1.wav"), wav: vec![2], reuse: false, index: None },
+        ];
+        let publication = publish(&staged, Some(&ledger), &|| false).unwrap();
+        // One file can't be removed: it stays, and so does its entry, so a cleanup can retry it.
+        // Windows: another program holds it open without sharing deletion. Unix: the folder is read-only.
+        let locked = &staged[0].path;
+        #[cfg(windows)]
+        let holder = {
+            use std::os::windows::fs::OpenOptionsExt;
+            fs::OpenOptions::new().read(true).share_mode(1).open(locked).unwrap()
+        };
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&root, fs::Permissions::from_mode(0o555)).unwrap();
+        }
+        drop(publication);
+        #[cfg(windows)]
+        drop(holder);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&root, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        assert!(locked.exists(), "locked stays");
+        assert!(!staged[1].path.exists(), "the other goes");
+        let names: Vec<_> = ledger.entries().into_iter().map(|entry| entry.name).collect();
+        assert_eq!(names, ["dawsu-mix-a-1.wav"]);
     }
 
     #[test]
