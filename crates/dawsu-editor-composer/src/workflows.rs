@@ -324,14 +324,16 @@ impl Composer {
             self.selected.items().iter().map(|hit| hit.moment).collect();
         let selected_lanes: HashSet<_> =
             self.selected.items().iter().map(|hit| &hit.lane).collect();
-        // A silent sound stays silent; the 1% floor is for sounds above 0.
+        // A silent sound stays silent. Scale never takes a sound under 5% (R15); one that was
+        // already quieter is not pushed lower.
         let scale = |volume: i32| {
             if volume == 0 {
                 return 0;
             }
+            let floor = f64::from(volume.min(dawsu_hitsounding::rules::SAVED_VOLUME_FLOOR));
             (f64::from(volume) * percent / 100.0)
                 .round()
-                .clamp(1.0, 100.0) as i32
+                .clamp(floor, 100.0) as i32
         };
         // "Lanes of selected hits" changes only those lanes, each picked by its own volume.
         let lanes_only = matches!(scope, VolumeScope::SelectedLanes);

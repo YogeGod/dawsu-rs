@@ -467,7 +467,7 @@ fn scale_by_volume_multiplies_every_lane_and_keeps_their_balance() {
     assert_eq!(normal_and_clap(&c, &normal), (100, 75), "the hitnormal stops at 100");
     c.undo();
     assert!(c.scale_by_volume(VolumeScope::All, 0, 100, 1.0));
-    assert_eq!(normal_and_clap(&c, &normal), (1, 1), "no sound goes below Scale's 1% floor");
+    assert_eq!(normal_and_clap(&c, &normal), (5, 5), "no sound goes below 5%");
 }
 
 #[test]

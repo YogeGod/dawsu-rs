@@ -80,9 +80,11 @@ impl VolumeSpread {
 
     fn apply(&self, composer: &mut Composer, y: f64) {
         let factor = (1.0 + (self.start_y - y) / 60.0).clamp(0.0, 4.0);
+        // A spread never takes a sound under 5% (R15); one that was already quieter is not pushed lower.
         let scale = |gain: i32| {
+            let floor = f64::from(gain.min(dawsu_hitsounding::rules::SAVED_VOLUME_FLOOR));
             (self.mean + (f64::from(gain) - self.mean) * factor)
-                .round_ties_even().clamp(0.0, 100.0) as i32
+                .round_ties_even().clamp(floor, 100.0) as i32
         };
         if self.matches(composer, scale) {
             return;
@@ -190,7 +192,8 @@ impl ControllerStroke {
 }
 
 fn point(input: PointerInput) -> (f64, i32) {
-    (input.time.ms(), input.row_value.unwrap_or(100.0).round().clamp(1.0, 100.0) as i32)
+    let floor = f64::from(dawsu_hitsounding::rules::SAVED_VOLUME_FLOOR);
+    (input.time.ms(), input.row_value.unwrap_or(100.0).round().clamp(floor, 100.0) as i32)
 }
 
 #[cfg(test)]

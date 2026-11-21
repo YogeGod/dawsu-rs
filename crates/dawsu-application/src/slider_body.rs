@@ -36,8 +36,10 @@ impl Application {
         if doc.selected_slider_body_index() != Some(index) {
             return Err("Select a hit point on the slider to change its body sounds".into());
         }
-        let volume = volume.clamp(0, 100);
         let body = &doc.composer.hitsounds().bodies()[index];
+        // A changed volume is never under 5% (R15); a quieter one the map already has may stay.
+        let floor = dawsu_hitsounding::rules::SAVED_VOLUME_FLOOR;
+        let volume = if volume == body.volume() { volume } else { volume.clamp(floor, 100) };
         let changed_set = set.filter(|&set| body.set().is_some_and(|before| before != set));
         let changed_volume = body.volume() != volume;
         let changed_whistle = body.whistle() != whistle;
@@ -63,6 +65,19 @@ impl Application {
             }
             if changed_volume {
                 hits.set_body_volume(index, volume);
+                // The head's hits move with the body and stop at 5% too.
+                let object = hits.bodies()[index].object();
+                let head = hits.moments().iter()
+                    .position(|m| m.place() == Place::SliderNode { object, node: 0 });
+                if let Some(head) = head {
+                    let id = dawsu_hitsounding::MomentId(head);
+                    let quiet: Vec<_> = hits.moment(id).hits()
+                        .filter(|lane| hits.moment(id).hit_volume(lane) < floor)
+                        .cloned().collect();
+                    for lane in quiet {
+                        hits.set_hit_volume(id, &lane, floor);
+                    }
+                }
             }
         });
 
