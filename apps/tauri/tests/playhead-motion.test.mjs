@@ -162,3 +162,20 @@ test("Centre scrolls the view on every frame and tells the editor once per view,
   }
   assert.equal(page.invoked.filter(kind => kind === "view").length, before, "no request per frame");
 });
+
+test("zooming while Centre follows keeps the new zoom: a view arriving in between doesn't put the old one back", async () => {
+  const page = await editor();
+  page.evaluate("window.dawsuUi = { centre: () => true, update() {}, snapGroup() {} }");
+  page.show(0, { playing: true, position: 10000, follow: true });
+  await page.evaluate("pending");
+  // A refresh is on its way when the wheel zooms in; the refresh's view arrives first and
+  // re-centres, then the zoom is applied.
+  const refresh = page.tick(85, { playing: true, position: 10085, follow: true });
+  page.evaluate("changeView(scene.viewStart, .2)");
+  await refresh;
+  await page.evaluate("pending");
+  await page.evaluate("pending");
+  assert.equal(page.evaluate("scene.zoom"), .2);
+  // 300 px at .2 px per ms shows 1500 ms: still centred on the playhead, at the new zoom.
+  assert.equal(page.frame(100), 150);
+});

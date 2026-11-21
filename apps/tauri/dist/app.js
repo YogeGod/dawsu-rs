@@ -2520,19 +2520,21 @@ function followPlayhead(frame = false) {
   const position = playheadPosition();
   // The Playhead group's Centre (window only): the view moves so the playhead stays in the middle.
   // Each frame scrolls the view here; the editor is told of it with each of its views, not per frame.
+  // Follow's view changes take the zoom when their turn comes (changeView with a start function),
+  // so a wheel zoom queued before one is kept instead of being put back.
   if (window.dawsuUi?.centre?.()) {
-    const start = timelineStart(position - visible / 2, scene.zoom);
+    const centred = zoom => timelineStart(playheadPosition() - grid.clientWidth / zoom / 2, zoom);
+    const start = centred(scene.zoom);
     if (frame) scene.viewStart = start;
     else if (Math.abs(start - (centreSentStart ?? scene.viewStart)) * scene.zoom >= 1) {
-      centreSentStart = start;
-      changeView(start, scene.zoom);
+      changeView(zoom => (centreSentStart = centred(zoom)));
     }
     return;
   }
   centreSentStart = null;
   if (position >= scene.viewStart && position <= scene.viewStart + visible * .98) return;
-  const start = timelineStart(position - visible * .02, scene.zoom);
-  if (start !== scene.viewStart) changeView(start, scene.zoom);
+  const paged = zoom => timelineStart(playheadPosition() - grid.clientWidth / zoom * .02, zoom);
+  if (paged(scene.zoom) !== scene.viewStart) changeView(paged);
 }
 
 function resizeLaneHeaders(height) {
@@ -2551,13 +2553,23 @@ function refreshLaneToolbar() {
   $("lane-taller").disabled = off || scene.rowHeight >= 65;
 }
 
+// `start` may be a function of the zoom: then the zoom and lane height are the ones in place when
+// this change's turn comes, and only the start changes (Follow).
 function changeView(start, zoom, rowHeight = scene.rowHeight, rowAnchorY = 0) {
-  zoom = limit(zoom, minZoom, 3);
-  rowHeight = limit(rowHeight, 20, 65);
+  const follow = typeof start === "function";
+  if (!follow) {
+    zoom = limit(zoom, minZoom, 3);
+    rowHeight = limit(rowHeight, 20, 65);
+  }
   const path = scene.path;
   return run(async () => {
     if (!scene || scene.path !== path) return;
     const current = scene;
+    if (follow) {
+      zoom = current.zoom;
+      rowHeight = current.rowHeight;
+      start = start(zoom);
+    }
     const previousStart = current.viewStart;
     const previousZoom = current.zoom;
     const previousHeight = current.rowHeight;
