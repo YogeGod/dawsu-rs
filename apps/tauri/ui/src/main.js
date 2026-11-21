@@ -27,6 +27,7 @@ import InspectorDifficulty from "./parts/InspectorDifficulty.svelte";
 import InspectorHistory from "./parts/InspectorHistory.svelte";
 import InspectorLane from "./parts/InspectorLane.svelte";
 import InspectorSelection from "./parts/InspectorSelection.svelte";
+import MapPreview from "./parts/MapPreview.svelte";
 import SnapSlider from "./parts/SnapSlider.svelte";
 import ToolPills from "./parts/ToolPills.svelte";
 import TransportBar from "./parts/TransportBar.svelte";
@@ -41,6 +42,8 @@ const parts = {
   menu: EditorMenu,
   "inspector-selection": InspectorSelection, "inspector-lane": InspectorLane, "inspector-difficulty": InspectorDifficulty,
   "inspector-bookmarks": InspectorBookmarks, "inspector-history": InspectorHistory,
+  // The map preview, at the top of the Inspector while View › Map preview is on.
+  "map-preview": MapPreview,
   // The Browser (#sample-browser): tabs and search, the sample tree, the preview with Use and Browse.
   "browser-head": BrowserHead, "browser-list": BrowserList, "browser-preview": BrowserPreview,
   // The bottom panel: its side column (tabs or the folded strip) and the Mixer tab.
@@ -94,6 +97,12 @@ export function browser(model) {
 export function mixer(strips) {
   bridge.handOverMixer(strips);
 }
+
+// View › Map preview: menus.js flips it and reads it for the row's switch.
+export function toggleMapPreview() {
+  bridge.mapPreview = !bridge.mapPreview;
+}
+export const mapPreviewOn = () => bridge.mapPreview;
 
 // The bottom panel's tab, read by app.js's renderPanelLayout() and paint().
 export const bottomTab = () => bridge.bottomTab;

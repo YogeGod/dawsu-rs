@@ -1,4 +1,4 @@
-use super::{Action, PlaybackStart, lane_add_choices, lane_by_key, scene_lane_key, snapshot, sound_set_library_view};
+use super::{Action, PlaybackStart, lane_add_choices, lane_by_key, map_preview, scene_lane_key, snapshot, sound_set_library_view};
 use dawsu_application::{Application, WaveBin};
 use std::fmt::Write as _;
 use std::fs;
@@ -2828,4 +2828,36 @@ fn the_sample_preview_gives_the_length_and_outline_of_a_library_sample_or_a_lane
     let preview = super::sample_outline(&mut app, source(serde_json::json!({ "kind": "lane", "row": row }))).unwrap();
     assert!((preview["ms"].as_f64().unwrap() - 4000.0 / 48000.0).abs() < 1e-9, "{preview}");
     assert!(super::sample_outline(&mut app, source(serde_json::json!({ "kind": "lane", "row": 999 }))).is_err());
+}
+
+#[test]
+fn the_map_preview_sends_stacked_objects_with_combos_and_slider_paths() {
+    let fixture = Fixture::new("map-preview");
+    let path = fixture.0.join("Preview.osu");
+    // Two circles on one spot stack; a slider from 100,100 runs 100 px right over one beat.
+    let map = b"osu file format v14\n\n[General]\nMode: 0\nStackLeniency: 0.7\n\n[Difficulty]\nCircleSize:4\nApproachRate:9\nSliderMultiplier:1\n\n[TimingPoints]\n0,500,4,1,0,100,1,0\n\n[HitObjects]\n200,200,1000,5,0\n200,200,1100,1,0\n100,100,2000,6,0,L|200:100,1,100\n";
+    fs::write(&path, map).unwrap();
+    let mut app = Application::headless();
+    open(&mut app, &path);
+    let opened = app.document().unwrap().path.clone();
+    let preview = map_preview(&app, &opened).unwrap();
+    assert_eq!(preview["preempt"], 600.0);
+    assert_eq!(preview["key"], snapshot(&app, true)["scene"]["previewKey"]);
+    let objects = preview["objects"].as_array().unwrap();
+    assert_eq!(objects.len(), 3);
+    let scale = preview["radius"].as_f64().unwrap() / 64.0;
+    // The first circle sits one stack step up and left of the second.
+    let step = (scale * 6.4 * 100.0).round() / 100.0;
+    assert!((objects[0]["x"].as_f64().unwrap() - (200.0 - step)).abs() < 0.02, "{preview}");
+    assert_eq!(objects[1]["x"], 200.0);
+    assert_eq!(objects[0]["combo"], 1);
+    assert_eq!(objects[1]["combo"], 2);
+    // The slider starts a new combo with the map's second default colour.
+    assert_eq!(objects[2]["kind"], "slider");
+    assert_eq!(objects[2]["combo"], 1);
+    assert_eq!(objects[2]["end"], 2500.0);
+    assert_eq!(objects[2]["path"], serde_json::json!([100.0, 100.0, 200.0, 100.0]));
+    assert_eq!(objects[2]["lengths"], serde_json::json!([0.0, 100.0]));
+    assert_eq!(objects[2]["spans"], 1);
+    assert!(map_preview(&app, &fixture.0.join("Other.osu")).is_err());
 }
