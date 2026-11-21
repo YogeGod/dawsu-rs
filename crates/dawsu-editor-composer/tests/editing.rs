@@ -322,6 +322,22 @@ fn a_volume_edit_never_goes_under_5_percent() {
 }
 
 #[test]
+fn the_ramp_tool_and_volume_drawer_never_go_under_5_percent() {
+    use dawsu_hitsounding::MomentId;
+
+    let mut c = composer();
+    let normal = c.hitsounds().moments()[0].hits().next().unwrap().clone();
+    // The Ramp tool sets values through `set_values`.
+    c.set_values(&[(HitKey { moment: 0, lane: normal.clone() }, 1)]);
+    assert_eq!(c.hitsounds().moments()[0].hit_volume(&normal), 5, "a ramp to 1 gives 5");
+    // The Volume drawer moves a moment directly.
+    let mut hits = c.hitsounds().clone();
+    hits.move_volume(MomentId(0), 0);
+    assert_eq!(hits.moments()[0].hit_volume(&normal), 5, "a drag to 0 gives 5");
+    assert_eq!(hits.moments()[0].volume(), 5);
+}
+
+#[test]
 fn copied_moved_and_replaced_hits_keep_their_gain() {
     use dawsu_hitsounding::MomentId;
     use std::collections::BTreeSet;

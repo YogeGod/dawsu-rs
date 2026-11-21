@@ -625,7 +625,19 @@ impl Hitsounds {
     /// Sets a moment's volume and moves every hit with its own volume by the same amount, so the
     /// hits keep their difference. A hit stops at 0 or 100 and keeps that value afterwards.
     pub fn move_volume(&mut self, moment: MomentId, volume: i32) {
-        self.moments[moment.0].move_volume(volume);
+        // An edit never sets a volume under 5% (R15): the Volume drawer, the Ramp tool and the
+        // Inspector all come through here, so the floor lives here once.
+        let floor = crate::rules::SAVED_VOLUME_FLOOR;
+        let m = &mut self.moments[moment.0];
+        let volume = volume.clamp(floor, 100);
+        if volume == m.reference_volume() {
+            return;
+        }
+        m.move_volume(volume);
+        let quiet: Vec<_> = m.hits.iter().filter(|lane| m.hit_volume(lane) < floor).cloned().collect();
+        for lane in quiet {
+            m.set_hit_volume(&lane, floor);
+        }
     }
 
     /// Restores the editable hit state certified against the decoded object's saved representation.
