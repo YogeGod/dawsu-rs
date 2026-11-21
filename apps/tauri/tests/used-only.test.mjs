@@ -345,7 +345,7 @@ test("collapsing sample layers keeps their model rows separate and lets them exp
 
   assert.deepEqual(headerRows(evaluate)[0].family, { collapsed: true, label: "Expand Map clap layers" });
   headerAction(evaluate, "family", rowAt(evaluate, 0));
-  // The main lane (index 1) comes first, then its layers by number (Yoge, 2026-11-21).
+  // The main lane (index 1) comes first, then its layers by number.
   assert.equal(evaluate("JSON.stringify(laneRows)"), "[1,0,2,3]");
   assert.equal(evaluate("previewParents.has(2)"), false);
   headerAction(evaluate, "mix", rowAt(evaluate, 2), "mute");
@@ -353,13 +353,14 @@ test("collapsing sample layers keeps their model rows separate and lets them exp
   assert.deepEqual(calls.pop(), { scene: true, action: { kind: "lane_selection_mix", target: { map: "fixture.osu", lane: "sample-c" }, operation: "mute", lanes: ["sample-c"] } });
   assert.equal(calls.pop().action.value.collapsed_families.length, 0);
 
-  // A click on a layer's hit shown on the folded main lane leaves the fold alone (Yoge, 2026-11-21).
+  // With Select, a click on a layer's outline on the folded main lane unfolds it.
   collapse();
-  assert.equal(evaluate("revealLayerPreview(1, 1000, 15)"), false);
-  assert.equal(evaluate("JSON.stringify(laneRows)"), "[1,3]");
+  evaluate('view.tool = "Select"');
+  assert.equal(evaluate("revealLayerPreview(1, 1000, 15)"), true);
+  assert.equal(evaluate("JSON.stringify(laneRows)"), "[1,0,2,3]");
   await evaluate("pending");
-  assert.deepEqual(calls.map(call => call.action.kind), ["lane_layout"]);
-  assert.deepEqual(calls.map(call => call.action.value.collapsed_families), [["clap"]]);
+  assert.deepEqual(calls.map(call => call.action.kind), ["lane_layout", "lane_layout"]);
+  assert.deepEqual(calls.map(call => call.action.value.collapsed_families), [["clap"], []]);
 });
 test("sample-set folders reorder headers and send group controls without changing lane identities", async () => {
   const { calls, evaluate, get } = await frontend();

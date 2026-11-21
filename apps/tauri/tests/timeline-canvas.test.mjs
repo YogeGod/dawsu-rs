@@ -280,8 +280,8 @@ test("a pushed L or R flag never paints over the other one, at either edge of th
   }
 });
 
-// Yoge, 2026-11-21: only while folded, a main lane also shows its layers' hits, as outline-only
-// diamonds in each hit's volume colour, so they show volume and can't pass for muted hits.
+// Only while folded, a main lane also shows its layers' hits, as outline-only diamonds in each
+// hit's volume colour, so they show volume and can't pass for muted hits.
 test("a folded main lane outlines its layers' hits in their volume colours; unfolded, each hit draws once on its own row", async () => {
   const { get, paint, evaluate } = await canvases();
   const grid = get("grid");
@@ -298,9 +298,10 @@ test("a folded main lane outlines its layers' hits in their volume colours; unfo
   `);
   // Diamonds only: a fill or stroke right after the diamond's closePath (grid lines stroke too).
   const named = name => grid.calls.filter((call, at) => call.name === name && grid.calls[at - 1]?.name === "closePath");
-  // A diamond starts at its top point, then goes to its right point 6 px lower.
+  // A diamond starts at its top point, then goes down and right to its right point.
   const tops = () => grid.calls.filter((call, at) => call.name === "moveTo" && grid.calls[at + 1]?.name === "lineTo" &&
-    grid.calls[at + 1].args[1] === call.args[1] + 6).map(call => call.args[1]);
+    grid.calls[at + 1].args[1] - call.args[1] > 0 && grid.calls[at + 1].args[1] - call.args[1] === grid.calls[at + 1].args[0] - call.args[0])
+    .map(call => call.args[1]);
   const volume = value => evaluate(`volumeColour(${value})`);
 
   paint("");
@@ -312,5 +313,14 @@ test("a folded main lane outlines its layers' hits in their volume colours; unfo
   // Row 0 is the folder header, row 1 the main lane: its own hit filled, its layers' outlined.
   assert.deepEqual(named("fill").map(call => call.fill), [volume(80)]);
   assert.deepEqual(named("stroke").map(call => call.stroke), [volume(30), volume(100)]);
-  assert.deepEqual(tops(), [45 - 6, 45 - 6, 45 - 6], "all three on the main lane's row");
+  assert.deepEqual(tops(), [45 - 6, 45 - 7.5, 45 - 7.5], "all three on the main lane's row, outlines just outside a hit");
+
+  // Two layers and the main lane hit one moment: the main hit fills first, then each layer's outline
+  // nests a little larger, so every volume colour shows.
+  evaluate(`scene.moments = [[1000, 80, true, [[0, false], [1, false, false, 30], [2, false, false, 100]]]]`);
+  paint("");
+  const order = grid.calls.filter((call, at) => ["fill", "stroke"].includes(call.name) && grid.calls[at - 1]?.name === "closePath")
+    .map(call => call.name === "fill" ? ["fill", call.fill] : ["stroke", call.stroke]);
+  assert.deepEqual(order, [["fill", volume(80)], ["stroke", volume(30)], ["stroke", volume(100)]]);
+  assert.deepEqual(tops(), [45 - 6, 45 - 7.5, 45 - 10]);
 });

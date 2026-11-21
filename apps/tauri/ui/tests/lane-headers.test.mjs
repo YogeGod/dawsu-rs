@@ -129,7 +129,7 @@ test("an unassigned drum row shows its name only, or a dash with names hidden", 
   assert.match(compact, /title="Ghost · Unassigned">–<\/span>/);
 });
 
-// Yoge, 2026-11-21: a main lane folds its numbered layers like a folder, more quietly.
+// A main lane folds its numbered layers like a folder, more quietly.
 test("a main lane with layers is a family head with a fold arrow", () => {
   const head = more => rowsOf(shown([lane({ name: "Finish", family: { label: "Collapse normal-hitfinish layers", ...more } })]))[0];
   const open = head({ collapsed: false });

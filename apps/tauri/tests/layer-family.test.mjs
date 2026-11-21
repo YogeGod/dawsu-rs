@@ -5,7 +5,7 @@ import { createContext, runInContext } from "node:vm";
 
 const app = await readFile(new URL("../dist/app.js", import.meta.url), "utf8");
 
-// A numbered layer sits under its family's main lane, which folds like a folder (Yoge, 2026-11-21).
+// A numbered layer sits under its family's main lane, which folds like a folder.
 async function frontend() {
   const controls = new Map();
   const calls = [];
@@ -184,12 +184,55 @@ test("moving a main lane moves its family; a layer keeps its place by number", a
   assert.deepEqual(order(evaluate), ["normal", 0, 3, 2, 1]);
 });
 
-test("a click on a folded main lane's layer hit does nothing to the fold and lets the tool act", async () => {
+test("a lane move saves the saved order with one lane moved, never the family order", async () => {
+  const { calls, evaluate } = await frontend();
+  load(evaluate);
+  const saved = async () => {
+    await evaluate("pending");
+    return calls.filter(call => call.action?.kind === "lane_layout").at(-1).action.value.lane_order;
+  };
+  evaluate("moveLane(0, 1)");
+  assert.deepEqual(await saved(), ["Skin|normal-hitclap", "Skin|normal-hitfinish", "Skin|normal-hitfinish3", "Skin|normal-hitfinish2"]);
+  evaluate("moveLane(0, -1)");
+  assert.deepEqual(await saved(), ["Skin|normal-hitfinish", "Skin|normal-hitclap", "Skin|normal-hitfinish3", "Skin|normal-hitfinish2"]);
+});
+
+test("on a folded main lane, Draw gets a click on a layer's outline; Select and Erase unfold the family", async () => {
   const { evaluate } = await frontend();
-  load(evaluate, { layout: { collapsed_families: ["normal-hitfinish"] } });
-  assert.equal(evaluate("revealLayerPreview(0, 1000, 15)"), false);
+  const folded = { layout: { collapsed_families: ["normal-hitfinish"] } };
+  load(evaluate, folded);
+  evaluate('view = { ...view, tool: "Draw" }');
+  assert.equal(evaluate("revealLayerPreview(0, 1000, 15)"), false, "Draw stacks a hit on the main lane");
   assert.deepEqual(order(evaluate), ["normal", 0, 1]);
-  assert.equal(evaluate('collapsedFamilies.has("normal-hitfinish")'), true);
+  for (const tool of ["Select", "Erase"]) {
+    const { evaluate } = await frontend();
+    load(evaluate, folded);
+    evaluate(`view = { ...view, tool: "${tool}" }`);
+    assert.equal(evaluate("revealLayerPreview(0, 1000, 15)"), true, tool);
+    assert.deepEqual(order(evaluate), ["normal", 0, 3, 2, 1], tool);
+  }
+});
+
+test("a family unfolds when one of its layers comes back: Add lane or Undo of −", async () => {
+  const { calls, evaluate } = await frontend();
+  load(evaluate, { laneOrder: [0, 1, 3], layout: { collapsed_families: ["normal-hitfinish"] } });
+  assert.deepEqual(order(evaluate), ["normal", 0, 1]);
+  evaluate("show({ ...view, scene: { ...scene, laneOrder: [0, 1, 2, 3] } })");
+  assert.deepEqual(order(evaluate), ["normal", 0, 3, 2, 1]);
+  await evaluate("pending");
+  assert.deepEqual(calls.pop().action.value.collapsed_families, []);
+});
+
+test("− presses while a removal is on its way are ignored", async () => {
+  const { calls, evaluate } = await frontend();
+  load(evaluate);
+  action(evaluate, "remove", 2);
+  action(evaluate, "remove", 3);
+  await evaluate("pending");
+  assert.deepEqual(calls.filter(call => call.action?.kind === "delete_lane").map(call => call.action.target.lane), ["F3"]);
+  action(evaluate, "remove", 3);
+  await evaluate("pending");
+  assert.equal(calls.filter(call => call.action?.kind === "delete_lane").length, 2);
 });
 
 test("the status bar counts shown lanes, so a removed lane drops out of it", async () => {

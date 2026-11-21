@@ -998,14 +998,14 @@ fn lane_header_rows<'a>(
         .map(|row| slot_rows.get(&row).copied().unwrap_or(row))
         .filter(|&row| !model.is_lane_hidden(&c.lanes[row]))
         .collect();
-    let lane_order = family_order(lane_order, |row| backing_slots.get(&row).copied().unwrap_or(&c.lanes[row]));
     (lane_order, backing_slots)
 }
 
-/// Puts each numbered layer directly under its family's main lane, by number (Yoge, 2026-11-21).
-/// A family is one set and sound; its main lane is the shown lane at custom index 1, else the skin
-/// sample (index 0). Without either, its layers stay ordinary lanes where they are. app.js's
-/// `familyOrder` does the same after the saved lane order, as `header_numbers` does here.
+/// Puts each numbered layer directly under its family's main lane, by number. A family is one set
+/// and sound; its main lane is the shown lane at custom index 1, else the skin sample (index 0).
+/// Without either, its layers stay ordinary lanes where they are. This order is for display only:
+/// the scene's `laneOrder` and the saved lane order never take it. app.js's `familyOrder` applies it
+/// after the saved order, as `header_numbers` does here.
 fn family_order<'a>(rows: Vec<usize>, lane: impl Fn(usize) -> &'a SampleIdentity) -> Vec<usize> {
     let family = |row: usize| match lane(row) {
         SampleIdentity::Standard { set, sound, index } => Some(((*set, *sound), index.get())),

@@ -2116,10 +2116,14 @@ fn drum_window_lanes_carry_the_numbers_their_lane_headers_show() {
     assert!(app.document().unwrap().composer.hitsounds().is_lane_hidden(&whistle), "Delete lane hides it");
     let view = answer(&mut app, DrumRequest::Context { known: None }).unwrap();
     let lanes = view["lanes"].as_array().unwrap();
-    // The header numbers: each row's place in the scene's lane order.
+    // The header numbers: each row's place in the scene's lane order with layers under their main
+    // lane, as app.js's orderedLaneRows shows them.
     let scene = &snapshot(&app, true)["scene"];
-    let headers: std::collections::HashMap<String, u64> = scene["laneOrder"].as_array().unwrap().iter().enumerate()
-        .map(|(n, row)| (scene["lanes"][row.as_u64().unwrap() as usize]["sourceKey"].as_str().unwrap().to_owned(), n as u64 + 1))
+    let rows: Vec<usize> = scene["laneOrder"].as_array().unwrap().iter().map(|row| row.as_u64().unwrap() as usize).collect();
+    let composer_lanes = app.document().unwrap().composer.lanes.clone();
+    let shown = super::family_order(rows, |row| &composer_lanes[row]);
+    let headers: std::collections::HashMap<String, u64> = shown.iter().enumerate()
+        .map(|(n, &row)| (scene["lanes"][row]["sourceKey"].as_str().unwrap().to_owned(), n as u64 + 1))
         .collect();
     for lane in lanes {
         let key = lane["key"].as_str().unwrap();
@@ -2510,19 +2514,21 @@ fn scene_and_drum_window_put_a_numbered_layer_under_its_main_lane_even_after_a_s
     let mut app = Application::headless();
     open(&mut app, &map);
     let scene = snapshot(&app, true)["scene"].clone();
-    let names: Vec<String> = scene["laneOrder"].as_array().unwrap().iter()
-        .map(|row| scene["lanes"][row.as_u64().unwrap() as usize]["name"].as_str().unwrap().to_owned()).collect();
-    let at = |name: &str| names.iter().position(|shown| shown == name).unwrap_or_else(|| panic!("{name} in {names:?}"));
-    assert_eq!(at("normal-hitfinish3"), at("normal-hitfinish") + 1, "{names:?}");
+    let numbers = |app: &mut Application| {
+        let view = answer(app, DrumRequest::Context { known: None }).unwrap();
+        let number = |name: &str| view["lanes"].as_array().unwrap().iter()
+            .find(|lane| lane["name"] == name).and_then(|lane| lane["number"].as_u64()).unwrap();
+        (number("normal-hitfinish"), number("normal-hitfinish3"))
+    };
+    // The drum window, as the headers, puts the layer directly under Finish.
+    assert_eq!(numbers(&mut app), (4, 5));
 
     // The drum window numbers its lanes as the headers do, also after a saved order puts the layer first.
     let keys: Vec<String> = scene["laneOrder"].as_array().unwrap().iter().rev()
         .map(|row| scene["lanes"][row.as_u64().unwrap() as usize]["colourKey"].as_str().unwrap().to_owned()).collect();
     app.set_lane_layout(dawsu_application::LaneLayout { lane_order: keys, ..Default::default() }).unwrap();
-    let view = answer(&mut app, DrumRequest::Context { known: None }).unwrap();
-    let number = |name: &str| view["lanes"].as_array().unwrap().iter()
-        .find(|lane| lane["name"] == name).and_then(|lane| lane["number"].as_u64()).unwrap();
-    assert_eq!(number("normal-hitfinish3"), number("normal-hitfinish") + 1);
+    // Reversed, Finish keeps the place the saved order gives it (10th) and Finish 3 follows it.
+    assert_eq!(numbers(&mut app), (10, 11));
 }
 
 #[test]
@@ -2552,46 +2558,72 @@ fn removing_a_lane_takes_its_hits_in_one_step_and_keeps_its_layers() {
     let tone = b"RIFF\x26\0\0\0WAVEfmt \x10\0\0\0\x01\0\x01\0\x80\xbb\0\0\0w\x01\0\x02\0\x10\0data\x02\0\0\0\0\x40";
     fs::write(fixture.0.join("normal-hitfinish.wav"), tone).unwrap();
     fs::write(fixture.0.join("normal-hitfinish2.wav"), tone).unwrap();
-    let original = "osu file format v14\n[General]\nMode:0\n[TimingPoints]\n0,500,4,1,0,100,1,0\n[HitObjects]\n256,192,500,1,4,1:0:1:0:\n256,192,1000,1,4,1:0:1:0:\n256,192,1500,1,4,1:0:2:0:\n";
+    // Finish (index 1) at two volumes, Finish 2 at 1500 and a soft whistle.
+    let original = "osu file format v14\n[General]\nMode:0\n[TimingPoints]\n0,500,4,1,0,100,1,0\n[HitObjects]\n256,192,500,1,4,1:0:1:60:\n256,192,1000,1,4,1:0:1:40:\n256,192,1500,1,4,1:0:2:0:\n256,192,2000,1,2,2:0:0:0:\n";
     fs::write(&map, original).unwrap();
-    let mut app = Application::headless();
+    let mut app = Application::with_data_root(fixture.0.join("data"));
+    app.error = None;
     open(&mut app, &map);
     let scene = |app: &Application| snapshot(app, true)["scene"].clone();
+    let model = |app: &Application| app.document().unwrap().composer.hitsounds().clone();
     let before = scene(&app);
-    let row_of = |scene: &serde_json::Value, index: u64| scene["lanes"].as_array().unwrap().iter()
-        .position(|lane| lane["family"] == "normal-hitfinish" && lane["index"] == index).unwrap();
+    let hits_before = model(&app);
+    let row_of = |scene: &serde_json::Value, family: &str, index: u64| scene["lanes"].as_array().unwrap().iter()
+        .position(|lane| lane["family"] == family && lane["index"] == index).unwrap();
     let shown = |scene: &serde_json::Value, row: usize| scene["laneOrder"].as_array().unwrap().iter()
         .any(|value| value.as_u64() == Some(row as u64));
-    let main = row_of(&before, 1);
-    let layer = row_of(&before, 2);
-    assert_eq!(before["lanes"][main]["index"], 1);
+    let main = row_of(&before, "normal-hitfinish", 1);
+    let layer = row_of(&before, "normal-hitfinish", 2);
     assert_eq!(before["lanes"][main]["hitCount"], 2);
-    serde_json::from_value::<Action>(serde_json::json!({
-        "kind": "delete_lane", "target": {"map": before["path"], "lane": before["lanes"][main]["sourceKey"]},
-        "revision": before["laneRevision"],
-    })).unwrap().run(&mut app);
-    assert!(app.error.is_none(), "{:?}", app.error);
-    assert_eq!(app.status, "Removed normal-hitfinish and 2 hits.");
+    let remove = |app: &mut Application, scene: &serde_json::Value, row: usize| {
+        serde_json::from_value::<Action>(serde_json::json!({
+            "kind": "delete_lane", "target": {"map": scene["path"], "lane": scene["lanes"][row]["sourceKey"]},
+            "revision": scene["laneRevision"],
+        })).unwrap().run(app);
+        assert!(app.error.is_none(), "{:?}", app.error);
+    };
+    remove(&mut app, &before, main);
+    let hits_after = model(&app);
+    assert_eq!(app.status, "Removed Finish and 2 hits. Undo restores them.");
     let after = scene(&app);
     assert!(!shown(&after, main));
     assert_eq!(after["lanes"][main]["hitCount"], 0);
     // Only the main lane goes: its layer keeps its lane and its hit.
     assert!(shown(&after, layer));
     assert_eq!(after["lanes"][layer]["hitCount"], 1);
-    // One undo step brings back the lane and both hits.
+    // One undo step brings back the lane and every hit as it was: volumes, sample sets, placements, links.
     Action::Command { id: "undo".into() }.run(&mut app);
-    let undone = scene(&app);
-    assert!(shown(&undone, main));
-    assert_eq!(undone["lanes"][main]["hitCount"], 2);
+    assert_eq!(model(&app), hits_before);
+    assert!(shown(&scene(&app), main));
     Action::Command { id: "redo".into() }.run(&mut app);
+    assert_eq!(model(&app), hits_after);
 
     // Nothing is written to the mapset on removal, and the sample file stays.
     assert_eq!(fs::read_to_string(&map).unwrap(), original);
     assert!(fixture.0.join("normal-hitfinish.wav").exists());
-    // The saved map leaves the removed lane's hits out and keeps the layer's.
+    // A clap drawn beside Finish 2 makes a mixed moment; Save writes it and leaves the removed lane out.
+    let clap = row_of(&scene(&app), "normal-hitclap", 0) as i32;
+    Action::Tool { name: "Draw".into() }.run(&mut app);
+    for phase in ["down", "up"] {
+        Action::Pointer {
+            phase: phase.into(), ms: 1500.0, row: clap, x: 12.0, y: 12.0,
+            value: None, shift: false, ctrl: false, alt: false,
+        }.run(&mut app);
+    }
+    assert!(app.error.is_none(), "{:?}", app.error);
     Action::Command { id: "save".into() }.run(&mut app);
     wait_for_job(&mut app);
     let saved = fs::read_to_string(&map).unwrap();
     assert!(saved.contains("256,192,500,1,0,") && saved.contains("256,192,1000,1,0,"), "{saved}");
-    assert!(saved.contains("256,192,1500,1,4,1:0:2:0:"), "{saved}");
+    let mixed = saved.lines().find(|line| line.starts_with("256,192,1500,")).unwrap();
+    let sound: u32 = mixed.split(',').nth(4).unwrap().parse().unwrap();
+    assert_eq!(sound & 4, 4, "Finish 2 stays: {mixed}");
+    assert_eq!(sound & 8, 8, "the clap is written: {mixed}");
+
+    // A renamed lane reads by its own name, as on its − button.
+    let now = scene(&app);
+    let key = now["lanes"][layer]["colourKey"].as_str().unwrap().to_owned();
+    app.set_lane_layout(dawsu_application::LaneLayout { lane_names: [(key, "Crash".into())].into(), ..Default::default() }).unwrap();
+    remove(&mut app, &now, layer);
+    assert_eq!(app.status, "Removed Crash and 1 hit. Undo restores them.");
 }

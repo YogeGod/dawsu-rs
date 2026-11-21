@@ -69,7 +69,7 @@ const lanes = evaluate => headers(evaluate).rows.filter(row => row.type === "lan
 test("a lane header row carries its number, sound name, set tag, icon and controls", async () => {
   const { evaluate, get } = await frontend();
   evaluate(fixture);
-  // Normal's skin lane is a layer of Normal (index 1), so it sits under it (Yoge, 2026-11-21).
+  // Normal's skin lane is a layer of Normal (index 1), so it sits under it.
   assert.equal(evaluate("JSON.stringify(laneRows)"), '["soft",0,4,1,2,5,6,3]');
   const rows = headers(evaluate).rows;
   assert.equal(rows[0].type, "folder");
