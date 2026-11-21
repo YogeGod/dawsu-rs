@@ -48,8 +48,9 @@
   outline: 2px solid var(--editor-focus);
   outline-offset: -2px;
 }
-.lane-tool svg,
-.song-row button svg {
+/* Layout… marks these buttons data-layout-ruler-icon; these rules outrank its 13 px icon rule. */
+.ruler-sidebar .lane-tool svg,
+.ruler-sidebar .song-row button svg {
   width: 15px;
   height: 15px;
   fill: none;
@@ -162,7 +163,7 @@
   outline: 2px solid var(--editor-focus);
   outline-offset: 0;
 }
-.song-row button svg {
+.ruler-sidebar .song-row button svg {
   width: 14px;
   height: 14px;
 }
@@ -172,4 +173,23 @@
   height: 30px;
   font-size: 12px;
   color: var(--editor-secondary);
+}
+/* The canvas fills the row the head sets; its own drawn height must not size the row (it once held
+   the strip at the height of an early paint). */
+.arrange > .overview > #overview {
+  height: 0;
+  min-height: 100%;
+}
+
+/* Lane names hidden (99 px column): the lane names switch and Delete lane come first so they stay
+   in view (the rest scrolls), and the Song row drops its strip so M, S and the waveform switch fit. */
+.arrange[data-lane-names="false"] .lane-tool-end {
+  order: -1;
+  margin: 0 4px 0 0;
+}
+.arrange[data-lane-names="false"] .song-strip {
+  display: none;
+}
+.arrange[data-lane-names="false"] .song-body {
+  padding: 0 6px;
 }

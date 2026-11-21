@@ -62,7 +62,8 @@ const circles = canvas => canvas.calls.filter(call => call.name === "arc")
 // v3 timeline-spec §9: object circles are a fixed 34 px at every zoom, filled in the map's combo
 // colour, with the combo number always shown. Plain circles: the osu! skin textures are CC BY-NC.
 const combos = 'scene.combos = { colours: ["#ff0000", "#00ff00"], objects: [[1, 0], [2, 1], [1, 1]] }';
-const numbers = canvas => canvas.calls.filter(call => call.name === "fillText" && /^\d+$/.test(call.args[0]))
+// Combo numbers sit on the Song row, under the 40 px ruler band that holds the bar numbers.
+const numbers = canvas => canvas.calls.filter(call => call.name === "fillText" && /^\d+$/.test(call.args[0]) && call.args[2] > 40)
   .map(({ args: [text, x, y], fill }) => [text, round(x), y, fill]);
 
 test("object circles are 34 px at every zoom, in the combo colour with a white ring and the combo number", async () => {
@@ -351,7 +352,7 @@ test("hovering a hit hands over one card per hit and never repaints the timeline
   const cards = () => JSON.parse(evaluate("JSON.stringify(window.dawsuUi.cards)"));
   // Row 0 is the Normal set folder, row 1 the Clap lane (30 px rows); 0.1 px/ms.
   move(12, 45);
-  assert.deepEqual(cards(), [{ key: "1:100", title: "Clap · Normal set", time: "00:00.100",
+  assert.deepEqual(cards(), [{ key: "1:100:10:45", title: "Clap · Normal set", time: "00:00.100",
     detail: "Volume 60% · on circle 1", x: 10, y: 45 }]);
   for (const canvas of [grid, get("ruler"), get("overview")]) assert.deepEqual(canvas.calls, [], "no repaint");
   // Still on the same hit: nothing new. Its own hit volume wins over the moment's.
@@ -368,6 +369,20 @@ test("hovering a hit hands over one card per hit and never repaints the timeline
   assert.equal(cards().filter(card => card === null).length, 1);
   move(12, 45);
   for (const listener of grid.listeners.pointerleave) listener({});
+  assert.equal(cards().at(-1), null);
+
+  // A new scene that removes the hovered hit (Delete, Undo) takes the card away without a pointer move.
+  move(12, 45);
+  assert.equal(cards().at(-1).key, "1:100:10:45");
+  // show() calls refreshHitCard() with each new scene.
+  evaluate(`scene = { ...scene, moments: scene.moments.slice(1) }; refreshHitCard()`);
+  assert.equal(cards().at(-1), null);
+  // A zoom by key moves the hit under the still pointer: the card follows it, or goes when the hit
+  // leaves the pointer.
+  move(41, 45);
+  evaluate(`scene = { ...scene, viewStart: 205, zoom: .2 }; refreshHitCard()`);
+  assert.equal(cards().at(-1).x, 39);
+  evaluate(`scene = { ...scene, viewStart: 0 }; refreshHitCard()`);
   assert.equal(cards().at(-1), null);
 });
 

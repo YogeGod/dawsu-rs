@@ -328,7 +328,7 @@ test("ruler colours distinguish reduced beat divisions and reset at a tempo chan
   const { evaluate } = await frontend();
   evaluate('scene = { sections: [[0, 480, 4], [1700, 600, 3]], snap: true, snapMode: "grid", beats: 1, divisor: 4 }');
   const ticks = (zoom) => JSON.parse(evaluate('JSON.stringify(testTicks(' + zoom + '))'));
-  evaluate('function testTicks(zoom) { const ticks = {}; let x; const ctx = { beginPath() {}, moveTo(at) { x = at - .5; }, lineTo() {}, stroke() { ticks[x / zoom] = this.strokeStyle; } }; drawTimingGrid(ctx, 0, 2500, zoom, 0, 21, true); return ticks; }');
+  evaluate('function testTicks(zoom) { const ticks = {}; let x; const ctx = { beginPath() {}, moveTo(at) { x = at - .5; }, lineTo() {}, stroke() { ticks[x / zoom] = this.strokeStyle; }, fillText() {} }; drawTimingGrid(ctx, 0, 2500, zoom, 0, 21, true); return ticks; }');
 
   const quarters = ticks(1);
   assert.equal(quarters[0], "#ffffff");
@@ -419,6 +419,22 @@ test("bar numbers sit 10 px from the ruler's top; bar lines run its full height"
     JSON.stringify([labels[1], lines.filter(line => line[0] === 200).at(-1)]);
   `);
   assert.deepEqual(JSON.parse(result), [["2", 200, 10, "#ffffff"], [200, 0, 40, "#ffffff"]]);
+});
+
+test("without time signatures the ruler numbers bars as the editor does", async () => {
+  const { evaluate } = await frontend();
+  // 4/4 at 500 ms from 0, then a red line at 3000 ms in 3/4 at 400 ms. The second section starts
+  // at bar 3: a bar and a half before it count as two (tempo.rs bar_beat_at rounds up).
+  const labels = at => JSON.parse(evaluate(`
+    scene = { sections: [[0, 500, 4], [3000, 400, 3]], snap: false };
+    var barLabels = [];
+    drawTimingGrid({ beginPath() {}, moveTo() {}, lineTo() {}, stroke() {},
+      fillText(text, x, y) { barLabels.push([text, Math.round(x - 5), y]); } }, 0, 6000, ${at}, 0, 40, true);
+    JSON.stringify(barLabels);
+  `));
+  assert.deepEqual(labels(.1), [["1", 0, 10], ["2", 200, 10], ["3", 300, 10], ["4", 420, 10], ["5", 540, 10]]);
+  // Zoomed out, bars narrower than 60 px label only every few bars so the numbers never run together.
+  assert.deepEqual(labels(.02).map(([text]) => text), ["1", "4"]);
 });
 
 test("time signature bars draw at their new positions while snap colours stay on the map grid", async () => {
@@ -556,4 +572,10 @@ test("the song overview sits at the bottom of the timeline, below the volume lan
   // The rows before the layout code runs follow the same order: ruler, lanes, volume lane, overview.
   assert.match(style, /\.arrange\{grid-template-rows:var\(--layout-timeline-rows,var\(--ruler-row\) minmax\(0,1fr\) auto minmax\(20px,max-content\)\)\}/);
   assert.match(style, /\.arrange\[data-controller="false"\]\{[^}]*grid-template-rows:var\(--layout-timeline-rows,var\(--ruler-row\) minmax\(0,1fr\) minmax\(20px,max-content\)\)\}/);
+});
+
+test("the overview canvas never sizes its own row, so its drawn height can't hold the strip open", async () => {
+  // The row is max-content: a canvas taller than the head once kept the strip at that height.
+  const timelineCss = await readFile(new URL("../ui/src/timeline.css", import.meta.url), "utf8");
+  assert.match(timelineCss, /\.arrange > \.overview > #overview \{\s*height: 0;\s*min-height: 100%;/);
 });

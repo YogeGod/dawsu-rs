@@ -303,6 +303,7 @@ function show(next) {
   }
   refreshLaneDelete();
   refreshLaneToolbar();
+  if (view.scene) refreshHitCard();
   renderDialogs();
   try { window.refreshEditorMenu?.(); } catch (error) { console.error(error); }
   paintSoon();
@@ -1276,8 +1277,26 @@ function snapColour(tick, divisor) {
   return snapColours[divisor / factor] ?? "#ff0000";
 }
 
+// The bar number each timing section starts on, as the editor counts them (tempo.rs bar_beat_at): a
+// part bar before the next red line counts as a whole one. Built once per timing snapshot.
+let sectionBarCache = null;
+function sectionBars(sections) {
+  if (sectionBarCache?.sections !== sections) {
+    const bars = [];
+    let bar = 1;
+    for (const [i, [origin, beat, meter]] of sections.entries()) {
+      bars.push(bar);
+      const next = sections[i + 1]?.[0];
+      if (next !== undefined && beat > 0 && meter) bar += Math.max(0, Math.ceil((next - origin) / (beat * meter) - 1e-9));
+    }
+    sectionBarCache = { sections, bars };
+  }
+  return sectionBarCache.bars;
+}
+
 function drawTimingGrid(ctx, start, end, zoom, top, bottom, ruler = false) {
   const useSnap = scene.snap && scene.snapMode !== "objects";
+  const firstBars = sectionBars(scene.sections);
   for (const [i, [origin, beat, meter]] of scene.sections.entries()) {
     if (beat <= 0 || !meter) continue;
     const begin = Math.max(start, i ? origin : start);
@@ -1307,6 +1326,12 @@ function drawTimingGrid(ctx, start, end, zoom, top, bottom, ruler = false) {
       const bar = !scene.editorBars?.length && tick % meter === 0;
       const longSnap = useSnap && scene.beats > 1 && tick % scene.beats === 0;
       const color = ruler ? snapColours[1] : bar || longSnap ? gridLines.bar : gridLines.beat;
+      // v3 §5: bar numbers on the ruler, every few bars when bars are under 60 px wide.
+      const barNumber = firstBars[i] + Math.floor(tick / meter);
+      if (ruler && bar && (barNumber - 1) % Math.max(1, Math.ceil(60 / widthOfBar)) === 0) {
+        ctx.fillStyle = slateTimeline.rulerBar;
+        ctx.fillText(String(barNumber), x + 5, 10);
+      }
       // v3 §5: bar lines run the ruler's full height, beat ticks are 12 px.
       line(ctx, color, x, ruler && !bar && !longSnap ? bottom - 12 : top, x, bottom);
     }
@@ -1453,7 +1478,8 @@ function drawGameplay(ctx, gameplay, xOf, y, width, diameter) {
     ctx.fillRect(from, y - 2.5, Math.max(1, to - from), 5);
   }
   const radiusOf = nodeRadii(gameplay.points, diameter);
-  ctx.font = "600 16px Inter, system-ui, sans-serif";
+  // Digits 16 px on a 34 px circle, smaller with it in a short Song row.
+  ctx.font = "600 " + Math.max(8, Math.round(diameter * .47)) + "px Inter, system-ui, sans-serif";
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
   for (const [kind, time, object] of gameplay.points) {
@@ -1716,14 +1742,6 @@ function paint() {
   r.ctx.font = "600 13px Inter, system-ui, sans-serif";
   r.ctx.textBaseline = "top";
   drawTimingGrid(r.ctx, start, end, zoom, 0, rulerBandHeight, true);
-  const rulerSteps = [25, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 30000, 60000];
-  const labelStep = rulerSteps.find((step) => step * zoom >= 76) ?? 120000;
-  for (let time = Math.ceil(start / labelStep) * labelStep; !scene.editorBars?.length && time < end; time += labelStep) {
-    const x = xOf(time);
-    line(r.ctx, slateTimeline.rulerBar, x, 0, x, rulerBandHeight);
-    r.ctx.fillStyle = slateTimeline.rulerBar;
-    r.ctx.fillText(clock(time), x + 5, 10);
-  }
   r.ctx.textBaseline = "alphabetic";
   const preview = rulerDrag?.path === scene.path ? rulerDrag.preview : null;
   const [left, right, cycling] = preview ?? [view.left, view.right, view.cycle];
@@ -1943,6 +1961,7 @@ grid.addEventListener("dblclick", (event) => {
 // The hit hover card (v3 f1, states.md): the lane and its set, the time, the volume and the object
 // under a hit. Handed to the bundle only when the hovered hit changes; it never repaints the timeline.
 let hoveredHit = null;
+let lastHover = null;
 
 function handOverHitCard(card) {
   if ((card?.key ?? null) === hoveredHit) return;
@@ -1966,12 +1985,18 @@ function hitObjectName(time, onObject) {
   return name + (time === Math.max(...nodes) ? " end" : " repeat");
 }
 
+// A new scene (a keyboard zoom, Delete, Undo) can move or remove the hovered hit.
+function refreshHitCard() {
+  if (hoveredHit && lastHover) handOverHitCard(hitCardAt(lastHover));
+}
+
 function hitCardAt(event) {
+  lastHover = { clientX: event.clientX, clientY: event.clientY };
   if (!scene || drag || view.busy) return null;
   const rect = grid.getBoundingClientRect();
   const scrollTop = $("scroll").scrollTop;
-  const y = event.clientY - rect.top;
-  const visibleRow = Math.floor((y + scrollTop) / scene.rowHeight);
+  const pointerY = event.clientY - rect.top;
+  const visibleRow = Math.floor((pointerY + scrollTop) / scene.rowHeight);
   const row = laneRows[visibleRow];
   if (typeof row !== "number") return null;
   const ms = scene.viewStart + (event.clientX - rect.left) / scene.zoom;
@@ -1990,13 +2015,16 @@ function hitCardAt(event) {
   const lane = scene.lanes?.[row];
   const name = renamedLanes.has(lane?.colourKey) ? laneDisplayName(lane) : laneSound(lane).name;
   const set = sampleFolderNames[lane?.group];
+  const x = rect.left + (time - scene.viewStart) * scene.zoom;
+  const y = rect.top + (visibleRow + .5) * scene.rowHeight - scrollTop;
   return {
-    key: visibleRow + ":" + time,
+    // A hit that moves on screen (a zoom, an edit) is a new card, so the card follows it.
+    key: [visibleRow, time, Math.round(x), Math.round(y)].join(":"),
     title: set ? name + " · " + set : name,
     time: clock(time),
     detail: "Volume " + Math.round(hitVolume ?? volume) + "% · " + (onObject ? "on " : "") + hitObjectName(time, onObject),
-    x: rect.left + (time - scene.viewStart) * scene.zoom,
-    y: rect.top + (visibleRow + .5) * scene.rowHeight - scrollTop,
+    x,
+    y,
   };
 }
 
