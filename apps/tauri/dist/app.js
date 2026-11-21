@@ -76,9 +76,6 @@ function volumeColour(volume) {
 // The colour a lane has until the mapper picks one: v3's lane lightness with no chroma, the
 // bundle's laneGrey (ui/src/lib/colour.js). Hit diamonds keep the volume colours (Yoge, 2026-11-19).
 const laneGrey = "#9e9e9e";
-// A folded main lane's preview of its layers' hits: one fixed colour, tokens.css --editor-secondary
-// (Yoge, 2026-11-21), apart from the volume colours, the selection blue and the muted grey.
-const layerPreviewColour = "#c4c4c4";
 let pending = Promise.resolve();
 let requests = 0;
 let refreshing = false;
@@ -1264,6 +1261,18 @@ function fillHitDiamond(ctx, x, y) {
   ctx.fill();
 }
 
+// The outline of a hit diamond, the same shape as fillHitDiamond's.
+function strokeHitDiamond(ctx, x, y) {
+  ctx.beginPath();
+  ctx.moveTo(x, y - 6);
+  ctx.lineTo(x + 6, y);
+  ctx.lineTo(x, y + 6);
+  ctx.lineTo(x - 6, y);
+  ctx.closePath();
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+}
+
 // Object circles grow with zoom as in the design (f11): half a beat on screen × 0.8, kept
 // between 18 and 30 px, from the timing at the object's own time and never taller than the lane.
 const objectReach = 15;
@@ -1465,13 +1474,17 @@ function paint() {
         const y = (lanePositions.get(parent) + .5) * rowHeight - scrollTop;
         if (y < -8 || y > g.height + 8) continue;
         g.ctx.save();
-        // A folded main lane shows its layers' hits whole, in the second colour; a folded folder, faint.
-        if (typeof parent === "number") g.ctx.fillStyle = layerPreviewColour;
-        else {
+        const colour = listenMuted ? "#858585" : volumeColour(hitVolume ?? volume);
+        // A folded main lane outlines its layers' hits in their volume colours (Yoge, 2026-11-21),
+        // so they show volume and can't pass for muted hits; a folded folder shows them faint.
+        if (typeof parent === "number") {
+          g.ctx.strokeStyle = colour;
+          strokeHitDiamond(g.ctx, x, y);
+        } else {
           g.ctx.globalAlpha *= .3;
-          g.ctx.fillStyle = listenMuted ? "#858585" : volumeColour(hitVolume ?? volume);
+          g.ctx.fillStyle = colour;
+          fillHitDiamond(g.ctx, x, y);
         }
-        fillHitDiamond(g.ctx, x, y);
         g.ctx.restore();
       }
     }
