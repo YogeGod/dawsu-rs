@@ -2439,7 +2439,8 @@ impl Application {
     }
     pub fn set_insert_volume(&mut self, v: i32) {
         if let Some(d) = self.document.as_mut() {
-            d.composer.insert_volume = v.clamp(0, 100);
+            // New hits are never drawn under 5% (see `Composer::volume_for_lanes`).
+            d.composer.insert_volume = v.clamp(dawsu_hitsounding::rules::SAVED_VOLUME_FLOOR, 100);
         }
     }
     pub fn set_selection_lane_scope(&mut self, lanes: Option<BTreeSet<SampleIdentity>>) -> Result<(), String> {

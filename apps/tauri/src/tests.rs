@@ -1156,7 +1156,7 @@ fn controller_drags_paint_shared_moments_and_undo_as_one_gesture() {
     let history = snapshot(&app, true)["scene"]["historyPosition"].clone();
     send(&mut app, "down", 1000.0, 30.0, false);
     send(&mut app, "up", 1000.0, 30.0, false);
-    assert_eq!(levels(&app), [0, 0, 0, 0]);
+    assert_eq!(levels(&app), [5, 5, 5, 5], "a volume set to 0 stops at 5%");
     assert_eq!(snapshot(&app, true)["scene"]["historyPosition"], history);
     assert_eq!(fs::read_to_string(&path).unwrap(), map);
 }
