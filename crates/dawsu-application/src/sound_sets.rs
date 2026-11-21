@@ -2511,6 +2511,7 @@ Mode:0
         restored.error = None;
         restored.audio = None;
         restored.project_root = app.project_root.clone();
+        restored.preferences.default_samples = app.preferences.default_samples.clone();
         restored.restore_recovery(&offer.id).unwrap();
         wait(&mut restored);
         assert!(restored.error.is_none(), "{:?}", restored.error);

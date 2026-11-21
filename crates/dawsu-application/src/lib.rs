@@ -926,8 +926,9 @@ impl Application {
         Self::with_data_root(data_folder())
     }
     /// The desktop app's start: [`Self::with_data_root`], then the local default sounds when
-    /// the preferences name no default sounds folder. Tests start with `with_data_root` alone,
-    /// so none of them depends on a folder that exists on one computer only.
+    /// the preferences name no default sounds folder. Tests that build the app in the same
+    /// process start with `with_data_root` alone, so they never see a folder that exists on
+    /// one computer only.
     pub fn for_desktop(data_root: PathBuf) -> Self {
         let mut app = Self::with_data_root(data_root);
         app.use_local_default_samples(Path::new(LOCAL_DEFAULT_SAMPLES));
