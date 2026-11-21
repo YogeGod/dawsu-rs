@@ -94,11 +94,15 @@ function linkPreviewWindow(view) {
   if (!events) return;
   events.listen("preview-window", ({ payload }) => {
     bridge.previewWindow = payload === true;
+    // With the window open the Inspector panel is on too, so its "Show it here" can be reached
+    // (View › Map preview is not remembered, but the window is).
+    if (bridge.previewWindow) bridge.mapPreview = true;
     if (bridge.previewWindow) sendPreview(true);
   });
   // The page being ready also says the window is open, should its open event have come too soon.
   events.listen("preview-ready", () => {
     bridge.previewWindow = true;
+    bridge.mapPreview = true;
     sendPreview(true);
   });
   if (view?.previewWindow) invoke("preview_window_open").catch(error => console.error(error));

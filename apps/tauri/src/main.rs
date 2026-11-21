@@ -2133,8 +2133,10 @@ async fn preview_window_open(app: tauri::AppHandle, state: State<'_, Editor>) ->
     if let Some(main) = app.get_webview_window("main") {
         builder = builder.parent(&main).map_err(|error| error.to_string())?;
     }
-    if let Some(place) = place.filter(|place| on_a_monitor(&app, place)) {
-        builder = builder.position(place.x, place.y);
+    match place.filter(|place| on_a_monitor(&app, place)) {
+        Some(place) => builder = builder.position(place.x, place.y),
+        // The first time, in the middle of the screen rather than its top-left corner.
+        None => builder = builder.center(),
     }
     let built = builder.build();
     let result = match (built, app.get_webview_window("preview")) {
