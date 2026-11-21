@@ -1921,6 +1921,17 @@ impl Application {
             a.play(true);
         }
     }
+    /// Plays from `start` whether or not it is already playing (play_pause_from toggles).
+    pub fn play_from(&mut self, start: f64) {
+        if self.document.is_none() {
+            return;
+        }
+        self.seek(start);
+        self.return_position = self.playback_start;
+        if let Some(a) = &self.audio {
+            a.play(true);
+        }
+    }
     pub fn stop(&mut self) {
         if let Some(a) = &self.audio {
             a.play(false);
@@ -5270,6 +5281,67 @@ mod project_workflow {
         app.set_snap_options(true, 1, 3, dawsu_editor::tempo::SnapMode::Grid);
         assert!(app.error.is_none(), "{:?}", app.error);
         assert_eq!(spacing(&app), (true, 1, 3));
+    }
+
+    /// P and Alt+P (Cubase's Locators to Selection and Loop Selection) were in the key list but
+    /// did nothing: no command ran for them.
+    #[test]
+    fn locators_follow_the_selected_hits_or_the_range() {
+        let fixture = Scratch::new("locators-to-selection");
+        let path = fixture.path("map.osu");
+        let map = b"osu file format v14\n[General]\nMode:0\n[TimingPoints]\n0,500,4,1,0,100,1,0\n[HitObjects]\n256,192,1000,1,8,0:0:0:0:\n256,192,2500,1,8,0:0:0:0:\n";
+        std::fs::write(&path, map).unwrap();
+        let mut app = Application::headless();
+        app.project_root = Some(fixture.path("sessions"));
+        open(&mut app, path.clone());
+        app.locator_left = 100.0;
+        app.locator_right = 200.0;
+        let locators = |app: &Application| (app.locator_left, app.locator_right, app.cycle);
+
+        // Nothing selected and no range: the locators stay where they are.
+        app.command("locatorsToSelection");
+        assert!(app.error.is_none(), "{:?}", app.error);
+        assert_eq!(locators(&app), (100.0, 200.0, false));
+
+        let clap = |moment: usize| {
+            let moments = app.document().unwrap().composer.hitsounds().moments();
+            let lane = moments[moment].hits().find(|lane| matches!(lane,
+                SampleIdentity::Standard { sound: Sound::Hit(Hitsound::Clap), .. })).unwrap().clone();
+            HitKey { moment, lane }
+        };
+        let (first, second) = (clap(0), clap(1));
+        app.select_hit(first.clone(), false);
+        app.select_hit(second, true);
+        app.command("locatorsToSelection");
+        assert_eq!(locators(&app), (1000.0, 2500.0, false), "the span of the selected hits");
+
+        // One hit has no length: R goes to the next grid line after it.
+        app.select_hit(first, false);
+        app.command("locatorsToSelection");
+        let composer = &app.document().unwrap().composer;
+        let next = composer.tempo.grid_step(SongTime::from_ms(1000.0), 1, composer.spacing).ms();
+        assert!(next > 1000.0);
+        assert_eq!(locators(&app), (1000.0, next, false));
+
+        // A range left from the Range tool does not beat the hits selected since.
+        app.document.as_mut().unwrap().composer.range = Some(dawsu_editor::tools::TimeRange {
+            from: SongTime::from_ms(1750.0), to: SongTime::from_ms(1250.0), from_row: 0, to_row: 1,
+        });
+        app.command("locatorsToSelection");
+        assert_eq!(locators(&app), (1000.0, next, false));
+        // With the Range tool in hand, its range wins.
+        app.command("toolRange");
+        app.command("locatorsToSelection");
+        assert_eq!(locators(&app), (1250.0, 1750.0, false));
+        app.command("toolSelect");
+
+        // Alt+P: the same, with Cycle on and playback from L.
+        app.document.as_mut().unwrap().composer.range = None;
+        app.command("playLocatorRange");
+        assert!(app.error.is_none(), "{:?}", app.error);
+        assert_eq!(locators(&app), (1000.0, next, true));
+        assert_eq!(app.playback_start, 1000.0);
+        assert_eq!(std::fs::read(&path).unwrap(), map, "the map file is untouched");
     }
 
     #[test]

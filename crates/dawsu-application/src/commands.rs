@@ -36,6 +36,50 @@ fn selection_start(document: &Document) -> Option<f64> {
     }).min_by(f64::total_cmp)
 }
 
+/// Sets L and R to the Range tool's range, or else to the span of the selected hits (one hit, or
+/// hits at one moment, reach to the next grid line). Returns false, leaving them, with neither or
+/// with nothing left to loop before the song's end.
+fn locators_to_selection(app: &mut Application) -> bool {
+    let Some(document) = app.document() else {
+        return false;
+    };
+    let composer = &document.composer;
+    let range = composer.range.map(|range| {
+        let (a, b) = (range.from.ms(), range.to.ms());
+        (a.min(b), a.max(b))
+    });
+    // The Range tool's range while that tool is in hand; otherwise the selected hits, and the
+    // last range only when no hit is selected (a range is kept after switching tools).
+    let span = if app.tool() == ToolKind::Range && range.is_some() {
+        range
+    } else {
+        let moments = composer.hitsounds().moments();
+        let times: Vec<f64> = composer.selected.items().iter().filter_map(|hit| {
+            let moment = moments.get(hit.moment)?;
+            moment.has_hit(&hit.lane).then(|| moment.time().ms())
+        }).collect();
+        let first = times.iter().copied().min_by(f64::total_cmp);
+        let last = times.iter().copied().max_by(f64::total_cmp);
+        first.zip(last).or(range)
+    };
+    let Some((left, mut right)) = span else {
+        return false;
+    };
+    if right <= left {
+        right = composer.tempo.grid_step(SongTime::from_ms(left), 1, composer.spacing).ms();
+    }
+    let duration = app.duration_ms();
+    let (left, right) = (left.clamp(0.0, duration), right.clamp(0.0, duration));
+    if right <= left {
+        // At or past the song's end there is nothing to loop; leave L and R alone.
+        return false;
+    }
+    app.locator_left = left;
+    app.locator_right = right;
+    app.cycle_changed();
+    true
+}
+
 fn align_selection(app: &mut Application, direction: i32) -> Result<(), String> {
     let document = app.document.as_mut().ok_or("Open a difficulty first")?;
     let Some(start) = selection_start(document) else {
@@ -609,6 +653,28 @@ pub fn catalogue() -> CommandCatalog<Application> {
             Ok(())
         },
         None,
+    );
+    registry.bind(
+        &kernel::locators_to_selection(),
+        areas::HS_TIMELINE,
+        |app| {
+            locators_to_selection(app);
+            Ok(())
+        },
+        Some(|app| app.document.is_some()),
+    );
+    registry.bind(
+        &kernel::play_locator_range(),
+        areas::HS_PLAYBACK,
+        |app| {
+            if locators_to_selection(app) {
+                app.cycle = true;
+                app.cycle_changed();
+                app.play_from(app.locator_left);
+            }
+            Ok(())
+        },
+        Some(|app| app.document.is_some()),
     );
     registry.bind(
         &CommandDefinition::new("help", "Show shortcuts and mouse actions")

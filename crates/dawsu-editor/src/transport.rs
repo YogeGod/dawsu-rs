@@ -24,7 +24,7 @@ impl Locators {
         self.cycle_on = !self.cycle_on;
     }
 
-    /// Locators to a range (the selection, or the visible range): left at its start, right at its end.
+    /// Locators to a range (the selected hits, or the Range tool's range): left at its start, right at its end.
     pub fn to_range(&mut self, from: SongTime, to: SongTime) {
         let (a, b) = if to.ms() < from.ms() {
             (to, from)
