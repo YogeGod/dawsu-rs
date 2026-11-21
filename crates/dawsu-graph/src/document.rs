@@ -221,27 +221,28 @@ impl GraphDocument {
         }
         let mut nodes = Vec::with_capacity(raw.nodes.len());
         for raw_node in raw.nodes {
-            let parsed: SerialNode = serde_json::from_value(raw_node.clone())
-                .map_err(|e| DocumentError::InvalidJson(e.to_string()))?;
-            if let Some(node_type) = registry.get(&parsed.type_id) {
+            let header = parse_node_header(&raw_node)?;
+            if let Some(node_type) = registry.get(&header.type_id) {
                 let spec = node_type.spec();
-                if parsed.type_version > spec.type_version {
+                if header.type_version > spec.type_version {
                     nodes.push(NodeData {
-                        id: parsed.id,
-                        type_id: parsed.type_id,
-                        type_version: parsed.type_version,
-                        params: parsed.params,
-                        muted: parsed.muted,
-                        ui: parsed.ui,
+                        id: header.id,
+                        type_id: header.type_id,
+                        type_version: header.type_version,
+                        params: header.params,
+                        muted: header.muted,
+                        ui: header.ui,
                         placeholder: Some(PlaceholderInfo {
                             reason: PlaceholderReason::NewerVersion {
-                                found: parsed.type_version,
+                                found: header.type_version,
                                 known: spec.type_version,
                             },
                             raw: raw_node,
                         }),
                     });
                 } else {
+                    let parsed: SerialNode = serde_json::from_value(raw_node.clone())
+                        .map_err(|e| DocumentError::InvalidJson(e.to_string()))?;
                     let mut params = parsed.params;
                     let mut version = parsed.type_version;
                     while version < spec.type_version {
@@ -265,12 +266,12 @@ impl GraphDocument {
                 }
             } else {
                 nodes.push(NodeData {
-                    id: parsed.id,
-                    type_id: parsed.type_id,
-                    type_version: parsed.type_version,
-                    params: parsed.params,
-                    muted: parsed.muted,
-                    ui: parsed.ui,
+                    id: header.id,
+                    type_id: header.type_id,
+                    type_version: header.type_version,
+                    params: header.params,
+                    muted: header.muted,
+                    ui: header.ui,
                     placeholder: Some(PlaceholderInfo {
                         reason: PlaceholderReason::UnknownType,
                         raw: raw_node,
@@ -360,4 +361,41 @@ impl GraphDocument {
         let text = serde_json::to_string(&canonical).unwrap_or_default();
         sha256_hex(text.as_bytes())
     }
+}
+
+fn parse_node_header(raw_node: &serde_json::Value) -> Result<SerialNode, DocumentError> {
+    let obj = raw_node
+        .as_object()
+        .ok_or_else(|| DocumentError::InvalidJson("node entry must be an object".to_owned()))?;
+    let id = obj
+        .get("id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| DocumentError::InvalidJson("node missing string 'id'".to_owned()))?;
+    let type_id = obj
+        .get("type")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| DocumentError::InvalidJson("node missing string 'type'".to_owned()))?;
+    let type_version = obj
+        .get("typeVersion")
+        .and_then(|v| v.as_u64())
+        .and_then(|v| u32::try_from(v).ok())
+        .unwrap_or(1);
+    let params = obj
+        .get("params")
+        .and_then(|v| v.as_object())
+        .map(|map| map.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+        .unwrap_or_default();
+    let muted = obj.get("muted").and_then(|v| v.as_bool()).unwrap_or(false);
+    let ui = obj
+        .get("ui")
+        .and_then(|v| serde_json::from_value::<NodeUi>(v.clone()).ok())
+        .unwrap_or_default();
+    Ok(SerialNode {
+        id: NodeId::from(id),
+        type_id: NodeTypeId::from(type_id),
+        type_version,
+        params,
+        muted,
+        ui,
+    })
 }

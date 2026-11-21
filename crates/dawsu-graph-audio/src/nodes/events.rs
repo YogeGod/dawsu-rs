@@ -48,7 +48,12 @@ impl NodeType for PeakPickNode {
             });
         };
         let scale = params.f64_or("threshold", 1.5);
-        if !scale.is_finite() || scale <= 0.0 || curve.values.is_empty() || curve.hop_ms <= 0.0 {
+        if !scale.is_finite()
+            || scale <= 0.0
+            || curve.values.is_empty()
+            || !curve.hop_ms.is_finite()
+            || curve.hop_ms <= 0.0
+        {
             let empty = Arc::new(EventList::default());
             return Ok(NodeOutputs {
                 values: [(SocketId::from("events"), SocketValue::Events(empty))].into(),
@@ -64,7 +69,8 @@ impl NodeType for PeakPickNode {
         let mean_before = params.usize_or("meanBefore", 10);
         let mean_after = params.usize_or("meanAfter", 3);
         let min_gap_ms = params.f64_or("minGapMs", 60.0);
-        let bias_ms = params.f64_or("biasMs", 4.0);
+        let bias_raw = params.f64_or("biasMs", 4.0);
+        let bias_ms = if bias_raw.is_finite() { bias_raw } else { 0.0 };
         let tag = params.str_or("tag", "").to_owned();
 
         let mut picked = Vec::new();
@@ -73,14 +79,15 @@ impl NodeType for PeakPickNode {
             if v < floor {
                 continue;
             }
-            let range = t.saturating_sub(peak_half)..=(t + peak_half).min(o.len() - 1);
+            let range = t.saturating_sub(peak_half)..=t.saturating_add(peak_half).min(o.len() - 1);
             if range
                 .clone()
                 .any(|u| u != t && (o[u] > v || (o[u] == v && u < t)))
             {
                 continue;
             }
-            let around = t.saturating_sub(mean_before)..=(t + mean_after).min(o.len() - 1);
+            let around =
+                t.saturating_sub(mean_before)..=t.saturating_add(mean_after).min(o.len() - 1);
             let (mut mean, mut n) = (0.0, 0);
             for u in around {
                 mean += o[u];
@@ -171,18 +178,32 @@ impl NodeType for TimeSamplerNode {
                 });
             };
             let divisor = params.usize_or("divisor", 4).max(1) as u32;
-            let times = timing.grid_times_in_range(context.range, divisor);
+            let Ok(times) = timing.grid_times_in_range_with_cancel(
+                context.range,
+                divisor,
+                context.cancel_fn(),
+            ) else {
+                return Err(EvalError::Cancelled);
+            };
             if times.is_empty() {
                 diagnostics.push(NodeDiagnostic::info("no timing lines in range"));
             }
             times
         } else {
-            let step = params.f64_or("intervalMs", 100.0).max(1.0);
+            let step_raw = params.f64_or("intervalMs", 100.0);
+            let step = if step_raw.is_finite() { step_raw } else { 100.0 }.max(1.0);
             let mut out = Vec::new();
-            let mut t = context.range.from_ms;
-            while t < context.range.to_ms - 1e-9 {
+            let mut k = 0u64;
+            loop {
+                if k & 1023 == 0 && context.is_cancelled() {
+                    return Err(EvalError::Cancelled);
+                }
+                let t = context.range.from_ms + k as f64 * step;
+                if t >= context.range.to_ms - 1e-9 {
+                    break;
+                }
                 out.push(t);
-                t += step;
+                k += 1;
             }
             out
         };
@@ -212,7 +233,7 @@ impl NodeType for TimeSamplerNode {
 }
 
 fn sample_curve_at(curve: &Curve, time_ms: f64) -> (usize, f64) {
-    if curve.values.is_empty() || curve.hop_ms <= 0.0 {
+    if curve.values.is_empty() || !curve.hop_ms.is_finite() || curve.hop_ms <= 0.0 {
         return (0, 0.0);
     }
     let idx = ((time_ms - curve.start_ms) / curve.hop_ms)
@@ -267,14 +288,18 @@ impl NodeType for MeasureAtEventsNode {
         let mut updated = Vec::with_capacity(events.events.len());
         for ev in &events.events {
             let mut next = ev.clone();
-            let val = if curve.values.is_empty() || curve.hop_ms <= 0.0 {
+            let val = if curve.values.is_empty()
+                || !curve.hop_ms.is_finite()
+                || curve.hop_ms <= 0.0
+                || !ev.detected_at_ms.is_finite()
+            {
                 0.0
             } else {
                 let frame = ((ev.detected_at_ms - curve.start_ms) / curve.hop_ms)
                     .round()
                     .clamp(0.0, (curve.values.len() - 1) as f64) as usize;
                 let lo = frame.saturating_sub(half);
-                let hi = (frame + half).min(curve.values.len() - 1);
+                let hi = frame.saturating_add(half).min(curve.values.len() - 1);
                 if use_mean {
                     let slice = &curve.values[lo..=hi];
                     slice.iter().sum::<f64>() / slice.len() as f64
@@ -298,7 +323,7 @@ impl NodeType for MeasureAtEventsNode {
 
 #[derive(Debug, Clone, Deserialize)]
 struct ComparisonSpec {
-    lhs: String,
+    lhs: serde_json::Value,
     op: String,
     #[serde(default = "one")]
     factor: f64,
@@ -339,10 +364,34 @@ impl NodeType for ConditionFilterNode {
             });
         };
         let keep_when_match = params.str_or("action", "drop") == "keep";
-        let clauses: Vec<Vec<ComparisonSpec>> = params
-            .raw("clauses")
-            .and_then(|v| serde_json::from_value(v.clone()).ok())
-            .unwrap_or_default();
+        let clauses: Vec<Vec<ComparisonSpec>> = match params.raw("clauses") {
+            None | Some(serde_json::Value::Null) => Vec::new(),
+            Some(v) => match serde_json::from_value(v.clone()) {
+                Ok(parsed) => parsed,
+                Err(err) => {
+                    return Ok(NodeOutputs {
+                        diagnostics: vec![NodeDiagnostic::error(format!(
+                            "invalid condition clauses: {err}"
+                        ))],
+                        ..Default::default()
+                    });
+                }
+            },
+        };
+
+        for clause in &clauses {
+            for cmp in clause.iter().take(4) {
+                if !matches!(cmp.op.as_str(), "<" | "<=" | ">" | ">=") {
+                    return Ok(NodeOutputs {
+                        diagnostics: vec![NodeDiagnostic::error(format!(
+                            "invalid comparison operator '{}'",
+                            cmp.op
+                        ))],
+                        ..Default::default()
+                    });
+                }
+            }
+        }
 
         if clauses.is_empty() {
             return Ok(NodeOutputs::with_value(
@@ -372,7 +421,7 @@ impl NodeType for ConditionFilterNode {
 }
 
 fn eval_comparison(ev: &GraphEvent, cmp: &ComparisonSpec) -> bool {
-    let lhs = resolve_operand(ev, &serde_json::Value::String(cmp.lhs.clone()));
+    let lhs = resolve_operand(ev, &cmp.lhs);
     let rhs = cmp.factor * resolve_operand(ev, &cmp.rhs);
     match cmp.op.as_str() {
         "<" => lhs < rhs,
@@ -473,16 +522,33 @@ impl NodeType for BeatSnapNode {
             });
         };
 
-        let divisors: Vec<u32> = params
-            .raw("divisors")
-            .and_then(|v| serde_json::from_value::<Vec<u32>>(v.clone()).ok())
-            .filter(|d| !d.is_empty())
-            .unwrap_or_else(|| vec![4]);
-        let tolerance_ms = params.f64_or("toleranceMs", GRID_TOLERANCE_MS);
+        let divisors: Vec<u32> = match params.raw("divisors") {
+            Some(v) => match serde_json::from_value::<Vec<u32>>(v.clone()) {
+                Ok(parsed) => parsed,
+                Err(err) => {
+                    return Ok(NodeOutputs {
+                        diagnostics: vec![NodeDiagnostic::error(format!(
+                            "invalid divisors list: {err}"
+                        ))],
+                        ..Default::default()
+                    });
+                }
+            },
+            None => vec![4],
+        };
+        if divisors.is_empty() {
+            return Ok(NodeOutputs {
+                values: [(SocketId::from("events"), SocketValue::Events(events.clone()))].into(),
+                diagnostics: vec![NodeDiagnostic::info("beat snap off")],
+                ..Default::default()
+            });
+        }
+
+        let tolerance_ms = params.f64_or("toleranceMs", GRID_TOLERANCE_MS).max(0.0);
         let measure_lag = params.bool_or("measureLag", true);
-        let max_lag_ms = params.f64_or("maxLagMs", MAX_GRID_SHIFT_MS);
-        let min_events_for_lag = params.usize_or("minEventsForLag", 8);
-        let refine_window = params.f64_or("lagRefineWindowMs", 25.0);
+        let max_lag_ms = params.f64_or("maxLagMs", MAX_GRID_SHIFT_MS).max(0.0);
+        let min_events_for_lag = params.usize_or("minEventsForLag", 8).max(1);
+        let refine_window = params.f64_or("lagRefineWindowMs", 25.0).max(0.0);
         let refine_passes = params.usize_or("lagRefinePasses", 2);
         let drop_off_grid = params.bool_or("dropOffGrid", true);
 
@@ -535,11 +601,18 @@ impl NodeType for BeatSnapNode {
             }
         };
 
+        let first_line_start = timing.lines().first().map(|l| l.start_ms);
         let mut snapped_events = Vec::with_capacity(events.events.len());
         let mut dropped = 0usize;
         for ev in &events.events {
+            if !ev.time_ms.is_finite() {
+                continue;
+            }
+            let was_mapped = first_line_start.is_some_and(|start| ev.time_ms >= start);
             let shifted = ev.time_ms - shift;
-            if let Some(snapped_time) = snap_to_divisors(timing, shifted, &divisors, tolerance_ms) {
+            if let Some(snapped_time) =
+                snap_to_divisors(timing, shifted, was_mapped, &divisors, tolerance_ms)
+            {
                 let mut next = ev.clone();
                 next.time_ms = snapped_time.max(0.0);
                 snapped_events.push(next);
@@ -569,6 +642,9 @@ impl NodeType for BeatSnapNode {
 }
 
 fn median_f64(mut values: Vec<f64>) -> f64 {
+    if values.is_empty() {
+        return 0.0;
+    }
     values.sort_by(f64::total_cmp);
     let n = values.len();
     if n % 2 == 1 {
@@ -581,12 +657,17 @@ fn median_f64(mut values: Vec<f64>) -> f64 {
 fn snap_to_divisors(
     timing: &TimingGrid,
     time: f64,
+    was_mapped: bool,
     divisors: &[u32],
     tolerance_ms: f64,
 ) -> Option<f64> {
     let mut best: Option<f64> = None;
     for &divisor in divisors {
-        let (snapped, step) = timing.snap(time, divisor);
+        let (snapped, step) = if was_mapped {
+            timing.snap_with_first(time, divisor)
+        } else {
+            timing.snap(time, divisor)
+        };
         let tol = if step.is_finite() && step > 0.0 {
             tolerance_ms.min(step / 3.0)
         } else {

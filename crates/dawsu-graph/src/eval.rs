@@ -6,7 +6,7 @@ use crate::ids::{AnalysisRange, NodeId, SocketId};
 use crate::registry::{
     EvalContext, EvalError, NodeDiagnostic, NodeInputs, NodeOutputs, NodeParams, NodeRegistry,
 };
-use crate::value::{EventList, SocketValue};
+use crate::value::{EventList, GraphEvent, SocketValue};
 use crate::validation::{downstream_nodes, upstream_order};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -14,7 +14,7 @@ use std::sync::Arc;
 /// Which sink(s) to pull through the graph.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EvalTarget {
-    /// Evaluate every `output.lane` node in the document.
+    /// Evaluate every active (non-muted) `output.lane` node in the document.
     AllLaneOutputs,
     /// Evaluate a specific set of target nodes.
     Nodes(Vec<NodeId>),
@@ -90,27 +90,71 @@ pub fn evaluate_graph(
     cancel: &(dyn Fn() -> bool + Sync),
     progress: &mut dyn FnMut(f64),
 ) -> Result<GraphEvalResult, EvalError> {
+    let song_range = song_duration_ms.and_then(|d| AnalysisRange::new(0.0, d).ok());
+    evaluate_graph_with_song_range(
+        doc,
+        registry,
+        cache,
+        target,
+        range,
+        song_duration_ms,
+        song_range,
+        cancel,
+        progress,
+    )
+}
+
+/// Same as [`evaluate_graph`], supplying an explicit full-song `song_range` (accounting for song offset).
+#[allow(clippy::too_many_arguments)]
+pub fn evaluate_graph_with_song_range(
+    doc: &GraphDocument,
+    registry: &NodeRegistry,
+    cache: &mut EvalCache,
+    target: EvalTarget,
+    range: AnalysisRange,
+    song_duration_ms: Option<f64>,
+    song_range: Option<AnalysisRange>,
+    cancel: &(dyn Fn() -> bool + Sync),
+    progress: &mut dyn FnMut(f64),
+) -> Result<GraphEvalResult, EvalError> {
     if cancel() {
         return Err(EvalError::Cancelled);
     }
     AnalysisRange::new(range.from_ms, range.to_ms).map_err(EvalError::InvalidRange)?;
 
-    let target_nodes: Vec<NodeId> = match &target {
-        EvalTarget::AllLaneOutputs => doc
-            .nodes
-            .iter()
-            .filter(|n| n.type_id.as_str() == "output.lane")
-            .map(|n| n.id.clone())
-            .collect(),
-        EvalTarget::Nodes(ids) => ids.clone(),
-        EvalTarget::Socket(endpoint) => vec![endpoint.node.clone()],
-    };
+    let mut diagnostics: BTreeMap<NodeId, Vec<NodeDiagnostic>> = BTreeMap::new();
+    let mut seen_targets = BTreeSet::new();
+    let mut target_nodes: Vec<NodeId> = Vec::new();
+    match &target {
+        EvalTarget::AllLaneOutputs => {
+            for n in &doc.nodes {
+                if n.type_id.as_str() == "output.lane" {
+                    if n.muted {
+                        diagnostics.insert(n.id.clone(), vec![NodeDiagnostic::info("muted")]);
+                    } else if seen_targets.insert(n.id.clone()) {
+                        target_nodes.push(n.id.clone());
+                    }
+                }
+            }
+        }
+        EvalTarget::Nodes(ids) => {
+            for id in ids {
+                if seen_targets.insert(id.clone()) {
+                    target_nodes.push(id.clone());
+                }
+            }
+        }
+        EvalTarget::Socket(endpoint) => {
+            target_nodes.push(endpoint.node.clone());
+        }
+    }
 
     if target_nodes.is_empty() {
         progress(1.0);
         return Ok(GraphEvalResult {
             range,
             graph_hash: doc.structural_hash(),
+            diagnostics,
             ..Default::default()
         });
     }
@@ -124,7 +168,6 @@ pub fn evaluate_graph(
     let mut pending_cache: Vec<(CacheKey, CachedNodeOutput)> = Vec::new();
     let mut evaluated_nodes = Vec::new();
     let mut cached_nodes = Vec::new();
-    let mut diagnostics: BTreeMap<NodeId, Vec<NodeDiagnostic>> = BTreeMap::new();
 
     for (index, node_id) in order.iter().enumerate() {
         if cancel() {
@@ -137,15 +180,7 @@ pub fn evaluate_graph(
 
         // Check placeholders first (Invariant 7 / R8).
         if let Some(placeholder) = &node.placeholder {
-            let msg = match &placeholder.reason {
-                PlaceholderReason::UnknownType => {
-                    format!("needs node {} (unknown type '{}')", node.id, node.type_id)
-                }
-                PlaceholderReason::NewerVersion { found, known } => format!(
-                    "needs node {} (type '{}' v{found} > known v{known})",
-                    node.id, node.type_id
-                ),
-            };
+            let msg = placeholder_message(&node.id, &node.type_id, &placeholder.reason);
             diagnostics.insert(node_id.clone(), vec![NodeDiagnostic::error(msg)]);
             node_blocked.insert(node_id.clone());
             progress((index + 1) as f64 / total as f64);
@@ -166,30 +201,76 @@ pub fn evaluate_graph(
         };
 
         let spec = node_type.spec();
-        let mut incoming: BTreeMap<SocketId, Vec<SocketValue>> = BTreeMap::new();
-        let mut input_keys_map: BTreeMap<SocketId, Vec<CacheKey>> = BTreeMap::new();
-        let mut upstream_error: Option<String> = None;
 
-        // Collect links in deterministic document order.
+        // Muted node with no bypass passthrough stops propagation immediately without evaluating inputs.
+        if node.muted && spec.bypass_passthrough.is_none() {
+            diagnostics.insert(node_id.clone(), vec![NodeDiagnostic::info("muted")]);
+            node_blocked.insert(node_id.clone());
+            evaluated_nodes.push(node_id.clone());
+            progress((index + 1) as f64 / total as f64);
+            continue;
+        }
+
+        let bypass_input = if node.muted {
+            spec.bypass_passthrough.as_ref().map(|(in_sock, _)| in_sock)
+        } else {
+            None
+        };
+
+        let mut incoming: BTreeMap<SocketId, Vec<SocketValue>> = BTreeMap::new();
+        let mut input_keys_map: BTreeMap<SocketId, Vec<(SocketId, CacheKey)>> = BTreeMap::new();
+        let mut upstream_error: Option<String> = None;
+        let mut link_error: Option<String> = None;
+
+        // Collect links in deterministic document order. When bypassed, inspect only the passthrough socket.
         for link in doc.links_into(node_id) {
+            if let Some(only_sock) = bypass_input
+                && &link.to.socket != only_sock
+            {
+                continue;
+            }
+            let Some(in_spec) = spec.input(&link.to.socket) else {
+                link_error.get_or_insert_with(|| {
+                    format!("node '{}' has no input socket '{}'", node.id, link.to.socket)
+                });
+                continue;
+            };
             if node_blocked.contains(&link.from.node) {
                 if let Some(upstream) = doc.node(&link.from.node)
-                    && upstream.placeholder.is_some()
+                    && let Some(ph) = &upstream.placeholder
                 {
                     upstream_error.get_or_insert_with(|| {
-                        format!(
-                            "needs node {} (unknown type '{}')",
-                            upstream.id, upstream.type_id
-                        )
+                        placeholder_message(&upstream.id, &upstream.type_id, &ph.reason)
                     });
                 } else {
                     upstream_error.get_or_insert_with(|| "waiting for input".to_owned());
                 }
                 continue;
             }
+            if !in_spec.multi
+                && incoming
+                    .get(&link.to.socket)
+                    .is_some_and(|vals| !vals.is_empty())
+            {
+                link_error.get_or_insert_with(|| {
+                    format!("input '{}.{}' already has a link", node.id, link.to.socket)
+                });
+                continue;
+            }
             if let Some(out) = node_outputs.get(&link.from.node)
                 && let Some(val) = out.values.get(&link.from.socket)
             {
+                if !in_spec.kind.accepts(val.socket_type()) {
+                    link_error.get_or_insert_with(|| {
+                        format!(
+                            "socket type mismatch on '{}.{}': got {}",
+                            node.id,
+                            link.to.socket,
+                            val.socket_type()
+                        )
+                    });
+                    continue;
+                }
                 incoming
                     .entry(link.to.socket.clone())
                     .or_default()
@@ -198,28 +279,34 @@ pub fn evaluate_graph(
                     input_keys_map
                         .entry(link.to.socket.clone())
                         .or_default()
-                        .push(up_key.clone());
+                        .push((link.from.socket.clone(), up_key.clone()));
                 }
             }
         }
 
-        if let Some(err_msg) = upstream_error {
+        if let Some(err_msg) = link_error.or(upstream_error) {
             diagnostics.insert(node_id.clone(), vec![NodeDiagnostic::error(err_msg)]);
             node_blocked.insert(node_id.clone());
             progress((index + 1) as f64 / total as f64);
             continue;
         }
 
-        // Check required inputs (unless muted with bypass passthrough missing only non-bypass inputs).
+        // Check required inputs (for bypassed nodes, only the passthrough input is required).
         let mut missing_required: Option<SocketId> = None;
-        for input_spec in &spec.inputs {
-            if input_spec.required
-                && incoming
-                    .get(&input_spec.id)
-                    .is_none_or(Vec::is_empty)
-            {
-                missing_required = Some(input_spec.id.clone());
-                break;
+        if let Some(only_sock) = bypass_input {
+            if incoming.get(only_sock).is_none_or(Vec::is_empty) {
+                missing_required = Some(only_sock.clone());
+            }
+        } else {
+            for input_spec in &spec.inputs {
+                if input_spec.required
+                    && incoming
+                        .get(&input_spec.id)
+                        .is_none_or(Vec::is_empty)
+                {
+                    missing_required = Some(input_spec.id.clone());
+                    break;
+                }
             }
         }
         if let Some(missing) = missing_required {
@@ -234,14 +321,16 @@ pub fn evaluate_graph(
 
         let params_view = NodeParams::new(&node.params, &spec.params);
         let canonical_params = params_view.effective_canonical_json();
-        let input_keys: Vec<(SocketId, Vec<CacheKey>)> = input_keys_map.into_iter().collect();
+        let input_keys: Vec<(SocketId, Vec<(SocketId, CacheKey)>)> =
+            input_keys_map.into_iter().collect();
 
         let base_progress = index as f64 / total as f64;
         let span_progress = 1.0 / total as f64;
         let mut node_progress = |frac: f64| {
             progress(base_progress + frac.clamp(0.0, 1.0) * span_progress);
         };
-        let mut ctx = EvalContext::new(range, song_duration_ms, cancel, &mut node_progress);
+        let mut ctx = EvalContext::new(range, song_duration_ms, cancel, &mut node_progress)
+            .with_song_range(song_range);
         let source_key = node_type.source_cache_key(&params_view, &ctx);
 
         let cache_key = CacheKey::compute(
@@ -253,6 +342,7 @@ pub fn evaluate_graph(
             &input_keys,
             range,
             song_duration_ms,
+            song_range,
         );
         node_keys.insert(node_id.clone(), cache_key.clone());
 
@@ -267,23 +357,18 @@ pub fn evaluate_graph(
         }
 
         let evaluated: NodeOutputs = if node.muted {
-            if let Some((in_sock, out_sock)) = &spec.bypass_passthrough {
-                if let Some(val) = incoming.get(in_sock).and_then(|v| v.first()).cloned() {
-                    let mut out = NodeOutputs::with_value(out_sock.clone(), val);
-                    out.diagnostics.push(NodeDiagnostic::info("muted (bypassed)"));
-                    out
-                } else {
-                    NodeOutputs {
-                        diagnostics: vec![NodeDiagnostic::info("muted")],
-                        ..Default::default()
-                    }
-                }
-            } else {
-                NodeOutputs {
-                    diagnostics: vec![NodeDiagnostic::info("muted")],
-                    ..Default::default()
-                }
-            }
+            let (in_sock, out_sock) = spec
+                .bypass_passthrough
+                .as_ref()
+                .expect("non-passthrough muted handled above");
+            let val = incoming
+                .get(in_sock)
+                .and_then(|v| v.first())
+                .cloned()
+                .expect("checked required above");
+            let mut out = NodeOutputs::with_value(out_sock.clone(), val);
+            out.diagnostics.push(NodeDiagnostic::info("muted (bypassed)"));
+            out
         } else {
             let inputs_view = NodeInputs::new(incoming);
             node_type.evaluate(&inputs_view, &params_view, &mut ctx)?
@@ -328,18 +413,26 @@ pub fn evaluate_graph(
         cache.insert(key, out);
     }
 
-    let mut slot_events: BTreeMap<String, Arc<EventList>> = BTreeMap::new();
+    let mut merged_slots: BTreeMap<String, Vec<GraphEvent>> = BTreeMap::new();
     let mut viewer_values: BTreeMap<NodeId, SocketValue> = BTreeMap::new();
     for id in &target_nodes {
         if let Some(out) = node_outputs.get(id) {
             if let Some((slot, events)) = &out.slot_output {
-                slot_events.insert(slot.clone(), events.clone());
+                merged_slots
+                    .entry(slot.clone())
+                    .or_default()
+                    .extend(events.events.iter().cloned());
             }
             if let Some(viewer) = &out.viewer_output {
                 viewer_values.insert(id.clone(), viewer.clone());
             }
         }
     }
+    let slot_events: BTreeMap<String, Arc<EventList>> = merged_slots
+        .into_iter()
+        .map(|(slot, events)| (slot, Arc::new(EventList::sorted(events))))
+        .collect();
+
     let socket_preview = match &target {
         EvalTarget::Socket(endpoint) => node_outputs
             .get(&endpoint.node)
@@ -358,4 +451,19 @@ pub fn evaluate_graph(
         evaluated_nodes,
         cached_nodes,
     })
+}
+
+fn placeholder_message(
+    id: &NodeId,
+    type_id: &crate::ids::NodeTypeId,
+    reason: &PlaceholderReason,
+) -> String {
+    match reason {
+        PlaceholderReason::UnknownType => {
+            format!("needs node {id} (unknown type '{type_id}')")
+        }
+        PlaceholderReason::NewerVersion { found, known } => {
+            format!("needs node {id} (type '{type_id}' v{found} > known v{known})")
+        }
+    }
 }

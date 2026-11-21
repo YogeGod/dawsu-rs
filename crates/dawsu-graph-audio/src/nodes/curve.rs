@@ -37,7 +37,7 @@ impl NodeType for CurveMathNode {
         &self,
         inputs: &NodeInputs,
         params: &NodeParams<'_>,
-        _context: &mut EvalContext<'_>,
+        context: &mut EvalContext<'_>,
     ) -> Result<NodeOutputs, EvalError> {
         let Some(SocketValue::Curve(a)) = inputs.get("a") else {
             return Ok(NodeOutputs {
@@ -94,8 +94,21 @@ impl NodeType for CurveMathNode {
                 .collect(),
         };
 
+        let mut diagnostics = Vec::new();
         if params.str_or("normalise", "p90") == "p90" {
             values = normalise_p90(values);
+            if params.str_or("normaliseOver", "range") == "song"
+                && let Some(song_range) = context.song_range
+            {
+                let covered_end = a.start_ms + a.values.len() as f64 * a.hop_ms;
+                if a.start_ms > song_range.from_ms + a.hop_ms * 2.0
+                    || covered_end + a.hop_ms * 2.0 < song_range.to_ms
+                {
+                    diagnostics.push(NodeDiagnostic::info(
+                        "normaliseOver='song' scales over available curve span; connect input.range(mode='song') for full-song scale",
+                    ));
+                }
+            }
         }
 
         let out = Arc::new(Curve {
@@ -103,6 +116,10 @@ impl NodeType for CurveMathNode {
             hop_ms: a.hop_ms,
             start_ms: a.start_ms,
         });
-        Ok(NodeOutputs::with_value("curve", SocketValue::Curve(out)))
+        Ok(NodeOutputs {
+            values: [(SocketId::from("curve"), SocketValue::Curve(out))].into(),
+            diagnostics,
+            ..Default::default()
+        })
     }
 }

@@ -245,3 +245,57 @@ fn dedupe_unmatched_and_range_edges_work_and_zero_hits_adds_no_undo_step() {
             .any(|m| m.place() == Place::NoObject && m.time().ms() == 1250.0 && m.has_hit(&lane("kick")))
     );
 }
+
+#[test]
+fn unrefreshed_caller_stamp_and_tiny_negative_times_are_rejected() {
+    let mut c = composer();
+    let range = AnalysisRange::new(0.0, 2000.0).unwrap();
+    let events = Arc::new(EventList::sorted(vec![
+        GraphEvent {
+            time_ms: -0.00004,
+            detected_at_ms: 0.0,
+            frame: 0,
+            strength: 0.9,
+            tag: "kick".into(),
+            measures: BTreeMap::new(),
+        },
+        GraphEvent {
+            time_ms: 1000.0,
+            detected_at_ms: 1000.0,
+            frame: 100,
+            strength: 0.9,
+            tag: "kick".into(),
+            measures: BTreeMap::new(),
+        },
+    ]));
+    let eval = GraphEvalResult {
+        range,
+        graph_hash: "g".into(),
+        slot_events: BTreeMap::from([("kick".into(), events)]),
+        ..Default::default()
+    };
+    let stamp = AnalysisStamp::new(c.history.version(), 0.0, "a", "g", range);
+    let bindings = SlotBindings::from([("kick".to_owned(), lane("kick"))]);
+    let batch = ProposalBatch::from_eval_result(
+        "b3",
+        "Classic",
+        &eval,
+        &bindings,
+        &BTreeMap::new(),
+        stamp.clone(),
+    );
+    // Tiny negative event (-0.00004) was excluded before round4.
+    assert_eq!(batch.proposals.len(), 1);
+    assert_eq!(batch.proposals[0].time_ms, 1000.0);
+
+    // Mutate composer without refreshing `stamp`; passing stale `stamp` as `current_stamp` still fails!
+    c.add(1500.0, lane("snare"), 80, 5.0);
+    let err = apply_proposals(&mut c, &batch, &stamp, &ApplyOptions::default()).unwrap_err();
+    assert_eq!(
+        err,
+        ApplyError::StaleAnalysis {
+            reason: StaleReason::MapRevision,
+            message: STALE_ANALYSIS_MESSAGE.to_owned(),
+        }
+    );
+}

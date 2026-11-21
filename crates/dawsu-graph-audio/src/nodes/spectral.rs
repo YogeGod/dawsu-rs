@@ -44,15 +44,15 @@ impl NodeType for SpectrogramNode {
                 ..Default::default()
             });
         };
-        let window = params.usize_or("window", 2048).next_power_of_two();
+        let window = params.usize_or("window", 2048).clamp(64, 16_384).next_power_of_two();
         let hop_ms = params.f64_or("hopMs", 10.0).max(0.1);
         let max_hz = params.f64_or("maxHz", 11_000.0);
-        let min_hops = params.usize_or("minHops", 4);
+        let min_hops = params.usize_or("minHops", 4).max(1);
         let rate = audio.sample_rate;
         let hop = ((f64::from(rate) * hop_ms / 1000.0).floor() as usize).max(1);
 
         let mono = audio.channels.first().map_or(&[][..], Vec::as_slice);
-        if audio.silent || rate == 0 || mono.len() < hop * min_hops {
+        if audio.silent || rate == 0 || mono.len() < hop.saturating_mul(min_hops) {
             let reason = if audio.silent {
                 "input is silent"
             } else {

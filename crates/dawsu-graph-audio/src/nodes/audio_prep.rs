@@ -54,15 +54,24 @@ impl NodeType for MonoMixNode {
                 .collect(),
         };
 
-        let silence_below = params.f64_or("silenceBelow", 1e-6) as f32;
+        let silence_below = params.f64_or("silenceBelow", 1e-6).max(0.0) as f32;
         let peak = mono.iter().fold(0f32, |p, &v| p.max(v.abs()));
         let mut diagnostics = Vec::new();
-        let silent = audio.silent || peak < silence_below || mono.is_empty();
+        let silent =
+            audio.silent || mono.is_empty() || !peak.is_finite() || peak <= 0.0 || peak < silence_below;
+        let norm_peak = if params.str_or("normaliseOver", "range") == "song" {
+            audio
+                .full_source_peak
+                .filter(|&p| p.is_finite() && p > 0.0)
+                .unwrap_or(peak)
+        } else {
+            peak
+        };
         if silent {
             diagnostics.push(NodeDiagnostic::info("input is silent"));
         } else if params.bool_or("peakNormalise", true) {
             for sample in &mut mono {
-                *sample /= peak;
+                *sample /= norm_peak;
             }
         }
         let out = Arc::new(AudioBuffer {
@@ -70,6 +79,7 @@ impl NodeType for MonoMixNode {
             sample_rate: audio.sample_rate,
             start_ms: audio.start_ms,
             silent,
+            full_source_peak: audio.full_source_peak,
         });
         Ok(NodeOutputs {
             values: [(SocketId::from("audio"), SocketValue::Audio(out))].into(),
@@ -110,15 +120,18 @@ impl NodeType for AudioFilterNode {
                 ..Default::default()
             });
         };
-        if audio.silent || audio.sample_rate == 0 || audio.frame_count() == 0 {
+        if audio.silent || audio.sample_rate <= 2 || audio.frame_count() == 0 {
             return Ok(NodeOutputs::with_value("audio", SocketValue::Audio(audio.clone())));
         }
         let rate = f64::from(audio.sample_rate);
-        let nyquist = (rate * 0.49).max(20.0);
+        let nyquist = (rate * 0.49).max(1.0);
         let mode = params.str_or("mode", "bandpass");
-        let lo_hz = params.f64_or("loHz", 80.0).clamp(1.0, nyquist);
-        let hi_hz = params.f64_or("hiHz", 5000.0).clamp(1.0, nyquist);
-        let q = params.f64_or("q", std::f64::consts::FRAC_1_SQRT_2).clamp(0.1, 20.0);
+        let lo_raw = params.f64_or("loHz", 80.0);
+        let hi_raw = params.f64_or("hiHz", 5000.0);
+        let q_raw = params.f64_or("q", std::f64::consts::FRAC_1_SQRT_2);
+        let lo_hz = if lo_raw.is_finite() { lo_raw } else { 80.0 }.clamp(1.0, nyquist);
+        let hi_hz = if hi_raw.is_finite() { hi_raw } else { 5000.0 }.clamp(1.0, nyquist);
+        let q = if q_raw.is_finite() { q_raw } else { std::f64::consts::FRAC_1_SQRT_2 }.clamp(0.1, 20.0);
 
         let stages = match mode {
             "lowpass" => vec![biquad_lowpass(hi_hz, q, rate)],
@@ -135,13 +148,13 @@ impl NodeType for AudioFilterNode {
 
         let mut filtered_channels: Vec<Vec<f32>> = Vec::with_capacity(audio.channels.len());
         for channel in &audio.channels {
-            if context.is_cancelled() {
-                return Err(EvalError::Cancelled);
-            }
             let mut work: Vec<f64> = channel.iter().map(|&s| f64::from(s)).collect();
             for &(b0, b1, b2, a1, a2) in &stages {
                 let (mut x1, mut x2, mut y1, mut y2) = (0.0, 0.0, 0.0, 0.0);
-                for sample in &mut work {
+                for (idx, sample) in work.iter_mut().enumerate() {
+                    if idx & 16_383 == 0 && context.is_cancelled() {
+                        return Err(EvalError::Cancelled);
+                    }
                     let x0 = *sample;
                     let y0 = b0 * x0 + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2;
                     x2 = x1;
@@ -163,6 +176,7 @@ impl NodeType for AudioFilterNode {
             sample_rate: audio.sample_rate,
             start_ms: audio.start_ms,
             silent: peak < 1e-9,
+            full_source_peak: None,
         });
         Ok(NodeOutputs::with_value("audio", SocketValue::Audio(out)))
     }

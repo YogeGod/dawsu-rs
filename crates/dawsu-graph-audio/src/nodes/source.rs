@@ -9,6 +9,14 @@ use dawsu_graph::{
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+fn norm_bits(value: f64) -> u64 {
+    if value == 0.0 {
+        0.0_f64.to_bits()
+    } else {
+        value.to_bits()
+    }
+}
+
 pub struct SongAudioNode {
     pub provider: Arc<dyn AudioProvider>,
 }
@@ -30,7 +38,7 @@ impl NodeType for SongAudioNode {
             let payload = format!(
                 "song:{}:{}:{}",
                 audio.content_hash,
-                audio.offset_ms.to_bits(),
+                norm_bits(audio.offset_ms),
                 audio.decoder_id
             );
             sha256_hex(payload.as_bytes())
@@ -75,7 +83,7 @@ impl NodeType for AudioFileNode {
             outputs: vec![SocketSpec::exact("audio", SocketType::Audio, false)],
             params: vec![
                 ParamSpec::json("path", SocketType::Enum, serde_json::json!("")),
-                ParamSpec::number("offsetMs", 0.0, None, None),
+                ParamSpec::json("offsetMs", SocketType::Number, serde_json::Value::Null),
                 ParamSpec::boolean("expectLengthOfSong", false),
             ],
             bypass_passthrough: None,
@@ -84,12 +92,16 @@ impl NodeType for AudioFileNode {
 
     fn source_cache_key(&self, params: &NodeParams<'_>, _context: &EvalContext<'_>) -> Option<String> {
         let path = params.str_or("path", "");
-        let offset_ms = params.f64_or("offsetMs", 0.0);
         self.provider.file_audio(path).ok().map(|audio| {
+            let offset_ms = params
+                .raw("offsetMs")
+                .and_then(|v| v.as_f64())
+                .filter(|v| v.is_finite())
+                .unwrap_or(audio.offset_ms);
             let payload = format!(
                 "file:{path}:{}:{}:{}",
                 audio.content_hash,
-                offset_ms.to_bits(),
+                norm_bits(offset_ms),
                 audio.decoder_id
             );
             sha256_hex(payload.as_bytes())
@@ -124,7 +136,11 @@ impl NodeType for AudioFileNode {
                 });
             }
         };
-        let offset_ms = params.f64_or("offsetMs", audio.offset_ms);
+        let offset_ms = params
+            .raw("offsetMs")
+            .and_then(|v| v.as_f64())
+            .filter(|v| v.is_finite())
+            .unwrap_or(audio.offset_ms);
         let mut out = slice_audio(&audio, offset_ms, range, "file");
         if params.bool_or("expectLengthOfSong", false)
             && let Some(song_ms) = context.song_duration_ms
@@ -192,10 +208,15 @@ impl NodeType for SelectedRangeNode {
         context: &mut EvalContext<'_>,
     ) -> Result<NodeOutputs, EvalError> {
         let range = match params.str_or("mode", "selection") {
-            "song" => match context.song_duration_ms {
-                Some(dur) if dur > 0.0 => AnalysisRange::new(0.0, dur).unwrap_or(context.range),
-                _ => context.range,
-            },
+            "song" => context
+                .song_range
+                .or_else(|| {
+                    context
+                        .song_duration_ms
+                        .filter(|&d| d > 0.0)
+                        .and_then(|d| AnalysisRange::new(0.0, d).ok())
+                })
+                .unwrap_or(context.range),
             _ => context.range,
         };
         Ok(NodeOutputs::with_value("range", SocketValue::Range(range)))
@@ -243,6 +264,7 @@ fn slice_audio(
         sample_rate: rate,
         start_ms,
         silent: false,
+        full_source_peak: Some(audio.full_average_peak()),
     });
     let mut values = BTreeMap::new();
     values.insert("audio".into(), SocketValue::Audio(buf));

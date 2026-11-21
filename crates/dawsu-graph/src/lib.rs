@@ -15,7 +15,9 @@ pub use document::{
     CURRENT_DOCUMENT_VERSION, DocumentError, Endpoint, FORMAT_ID, GraphDocument, Link, NodeData,
     NodeUi, OutputDecl, PlaceholderInfo, PlaceholderReason,
 };
-pub use eval::{DirtyTracker, EvalTarget, GraphEvalResult, evaluate_graph};
+pub use eval::{
+    DirtyTracker, EvalTarget, GraphEvalResult, evaluate_graph, evaluate_graph_with_song_range,
+};
 pub use ids::{
     AnalysisRange, NodeId, NodeTypeId, NormaliseScope, ParamId, ParamSpec, SocketConstraint,
     SocketId, SocketSpec, SocketType,

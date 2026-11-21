@@ -17,6 +17,8 @@ pub enum NodalError {
     LinkRefused(LinkError),
     PlaceholderImmutable(NodeId),
     TransactionOpen,
+    NoOpenTransaction,
+    InvalidPosition,
 }
 
 impl fmt::Display for NodalError {
@@ -30,6 +32,12 @@ impl fmt::Display for NodalError {
             }
             NodalError::TransactionOpen => {
                 write!(f, "finish the open graph transaction first")
+            }
+            NodalError::NoOpenTransaction => {
+                write!(f, "no graph move transaction is open")
+            }
+            NodalError::InvalidPosition => {
+                write!(f, "node coordinates must be finite")
             }
         }
     }
@@ -215,6 +223,12 @@ impl NodalSession {
         if originals.is_empty() {
             return Ok(Vec::new());
         }
+        if !offset_x.is_finite() || !offset_y.is_finite() {
+            return Err(NodalError::InvalidPosition);
+        }
+        if let Some(placeholder) = originals.iter().find(|n| n.placeholder.is_some()) {
+            return Err(NodalError::PlaceholderImmutable(placeholder.id.clone()));
+        }
         let mut id_map = BTreeMap::new();
         let mut clones = Vec::with_capacity(originals.len());
         let mut new_ids = Vec::with_capacity(originals.len());
@@ -257,6 +271,27 @@ impl NodalSession {
 
     /// Updates node positions without marking any node's DSP cache dirty.
     pub fn move_nodes(&mut self, positions: &[(NodeId, f64, f64)]) -> Result<(), NodalError> {
+        if !self.history.is_transaction_open() {
+            return Err(NodalError::NoOpenTransaction);
+        }
+        let mut changed = false;
+        for (id, x, y) in positions {
+            if !x.is_finite() || !y.is_finite() {
+                return Err(NodalError::InvalidPosition);
+            }
+            let Some(node) = self.document().node(id) else {
+                continue;
+            };
+            if node.placeholder.is_some() {
+                return Err(NodalError::PlaceholderImmutable(id.clone()));
+            }
+            if node.ui.x != *x || node.ui.y != *y {
+                changed = true;
+            }
+        }
+        if !changed {
+            return Ok(());
+        }
         let _ = self
             .history
             .edit(true, |doc| {
@@ -268,7 +303,7 @@ impl NodalSession {
                 }
                 Ok::<_, Infallible>(())
             })
-            .map_err(|_| NodalError::TransactionOpen)?;
+            .map_err(|_| NodalError::NoOpenTransaction)?;
         Ok(())
     }
 
@@ -409,6 +444,7 @@ impl NodalSession {
         }
         self.selection
             .retain(|id| self.history.document().node(id).is_some());
+        self.dirty.clear();
         self.dirty.mark_all_dirty(self.history.document());
         true
     }
@@ -419,6 +455,7 @@ impl NodalSession {
         }
         self.selection
             .retain(|id| self.history.document().node(id).is_some());
+        self.dirty.clear();
         self.dirty.mark_all_dirty(self.history.document());
         true
     }

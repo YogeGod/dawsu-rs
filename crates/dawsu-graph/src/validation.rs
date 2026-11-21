@@ -15,6 +15,7 @@ pub enum LinkError {
     UnknownTargetSocket { node: NodeId, socket: SocketId },
     PlaceholderEndpoint(NodeId),
     TypeMismatch { from: SocketType, to: SocketType },
+    ReservedSocketType(SocketType),
     SelfLoop(NodeId),
     CreatesCycle { from: NodeId, to: NodeId },
     DuplicateLink,
@@ -37,6 +38,9 @@ impl fmt::Display for LinkError {
             }
             LinkError::TypeMismatch { from, to } => {
                 write!(f, "socket type mismatch: cannot connect {from} to {to}")
+            }
+            LinkError::ReservedSocketType(ty) => {
+                write!(f, "socket type '{ty}' is reserved and cannot be linked in v1")
             }
             LinkError::SelfLoop(id) => write!(f, "cannot connect node '{id}' to itself"),
             LinkError::CreatesCycle { from, to } => {
@@ -158,10 +162,7 @@ pub fn can_connect(
         (SocketConstraint::Exact(from_ty), SocketConstraint::Any)
             if !SocketConstraint::Any.accepts(from_ty) =>
         {
-            return Err(LinkError::TypeMismatch {
-                from: from_ty,
-                to: SocketType::AudioClip,
-            });
+            return Err(LinkError::ReservedSocketType(from_ty));
         }
         _ => {}
     }
@@ -292,17 +293,25 @@ pub fn validate_graph(doc: &GraphDocument, registry: &NodeRegistry) -> Validatio
                 });
             }
         }
-        if let (SocketConstraint::Exact(from_ty), SocketConstraint::Exact(to_ty)) =
-            (out_sock.kind, in_sock.kind)
-            && from_ty != to_ty
-        {
-            issues.push(ValidationIssue::InvalidLink {
-                link: link.clone(),
-                error: LinkError::TypeMismatch {
-                    from: from_ty,
-                    to: to_ty,
-                },
-            });
+        match (out_sock.kind, in_sock.kind) {
+            (SocketConstraint::Exact(from_ty), SocketConstraint::Exact(to_ty)) if from_ty != to_ty => {
+                issues.push(ValidationIssue::InvalidLink {
+                    link: link.clone(),
+                    error: LinkError::TypeMismatch {
+                        from: from_ty,
+                        to: to_ty,
+                    },
+                });
+            }
+            (SocketConstraint::Exact(from_ty), SocketConstraint::Any)
+                if !SocketConstraint::Any.accepts(from_ty) =>
+            {
+                issues.push(ValidationIssue::InvalidLink {
+                    link: link.clone(),
+                    error: LinkError::ReservedSocketType(from_ty),
+                });
+            }
+            _ => {}
         }
     }
 
@@ -322,6 +331,48 @@ fn validate_node_params(
         let Some(value) = node.params.get(spec.id.as_str()) else {
             continue;
         };
+        if value.is_null() && spec.default.is_null() {
+            continue;
+        }
+        match spec.socket_type {
+            SocketType::Number => {
+                if !value.is_number() {
+                    issues.push(ValidationIssue::InvalidParam {
+                        node: node.id.clone(),
+                        message: format!("parameter '{}' must be a number", spec.id),
+                    });
+                    continue;
+                }
+            }
+            SocketType::Integer => {
+                if !(value.is_i64() || value.is_u64()) {
+                    issues.push(ValidationIssue::InvalidParam {
+                        node: node.id.clone(),
+                        message: format!("parameter '{}' must be an integer", spec.id),
+                    });
+                    continue;
+                }
+            }
+            SocketType::Bool => {
+                if !value.is_boolean() {
+                    issues.push(ValidationIssue::InvalidParam {
+                        node: node.id.clone(),
+                        message: format!("parameter '{}' must be a boolean", spec.id),
+                    });
+                    continue;
+                }
+            }
+            SocketType::Enum if !spec.enum_values.is_empty() => {
+                if !value.is_string() {
+                    issues.push(ValidationIssue::InvalidParam {
+                        node: node.id.clone(),
+                        message: format!("parameter '{}' must be a string variant", spec.id),
+                    });
+                    continue;
+                }
+            }
+            _ => {}
+        }
         if let Some(num) = value.as_f64() {
             if !num.is_finite() {
                 issues.push(ValidationIssue::InvalidParam {
@@ -418,11 +469,26 @@ fn is_reachable(doc: &GraphDocument, start: &NodeId, goal: &NodeId) -> bool {
 
 fn find_cycle_nodes(doc: &GraphDocument) -> Vec<NodeId> {
     let all: BTreeSet<NodeId> = doc.nodes.iter().map(|n| n.id.clone()).collect();
-    match topological_subset(doc, &all) {
-        Ok(_) => Vec::new(),
-        Err(EvalError::Cycle(nodes)) => nodes,
-        Err(_) => Vec::new(),
+    let Err(EvalError::Cycle(stuck)) = topological_subset(doc, &all) else {
+        return Vec::new();
+    };
+    // Reverse-prune nodes with outdegree 0 inside the remaining subgraph so acyclic downstream
+    // nodes fed by a cycle are excluded from the reported cycle set.
+    let mut active: BTreeSet<NodeId> = stuck.into_iter().collect();
+    loop {
+        let mut has_outgoing = BTreeSet::new();
+        for link in &doc.links {
+            if active.contains(&link.from.node) && active.contains(&link.to.node) {
+                has_outgoing.insert(link.from.node.clone());
+            }
+        }
+        let before = active.len();
+        active.retain(|id| has_outgoing.contains(id));
+        if active.len() == before {
+            break;
+        }
     }
+    active.into_iter().collect()
 }
 
 fn topological_subset(

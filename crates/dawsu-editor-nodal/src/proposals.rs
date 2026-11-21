@@ -118,6 +118,13 @@ impl ProposalBatch {
                 .cloned()
                 .unwrap_or_else(|| NodeId::from(slot.as_str()));
             for (index, ev) in events.events.iter().enumerate() {
+                if !ev.time_ms.is_finite()
+                    || !ev.strength.is_finite()
+                    || ev.time_ms < 0.0
+                    || !result.range.contains(ev.time_ms)
+                {
+                    continue;
+                }
                 proposals.push(HitProposal {
                     id: format!("{slot}:{}:{index}", ev.frame),
                     slot: slot.clone(),
@@ -251,6 +258,12 @@ pub fn apply_proposals(
     current_stamp: &AnalysisStamp,
     options: &ApplyOptions,
 ) -> Result<ApplyReport, ApplyError> {
+    if batch.stamp.map_revision != composer.history.version() {
+        return Err(ApplyError::StaleAnalysis {
+            reason: StaleReason::MapRevision,
+            message: STALE_ANALYSIS_MESSAGE.to_owned(),
+        });
+    }
     if let Some(reason) = batch.stamp.differs_from(current_stamp) {
         return Err(ApplyError::StaleAnalysis {
             reason,
@@ -316,7 +329,8 @@ pub fn select_batch_hits(composer: &mut Composer, record: &GenerationBatchRecord
 
 fn round4(value: f64) -> f64 {
     if value.is_finite() {
-        (value * 10_000.0).round_ties_even() / 10_000.0
+        let rounded = (value * 10_000.0).round_ties_even() / 10_000.0;
+        if rounded == 0.0 { 0.0 } else { rounded }
     } else {
         value
     }

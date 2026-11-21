@@ -12,11 +12,13 @@ pub struct AudioBuffer {
     pub sample_rate: u32,
     pub start_ms: f64,
     pub silent: bool,
+    /// Optional full-source mono peak supplied by source nodes for `normaliseOver = "song"`.
+    pub full_source_peak: Option<f32>,
 }
 
 impl AudioBuffer {
     pub fn frame_count(&self) -> usize {
-        self.channels.first().map_or(0, Vec::len)
+        self.channels.iter().map(Vec::len).min().unwrap_or(0)
     }
 
     pub fn byte_size(&self) -> usize {
@@ -146,10 +148,25 @@ impl TimingGrid {
         if !time_ms.is_finite() || time_ms < first.start_ms {
             return (time_ms, f64::INFINITY);
         }
-        let idx = self
-            .lines
-            .partition_point(|l| l.start_ms <= time_ms)
-            .saturating_sub(1);
+        self.snap_with_first(time_ms, divisor)
+    }
+
+    /// Snaps `time_ms` using the active section (or `lines[0]` if `time_ms` precedes the first red line,
+    /// e.g. after lag compensation shifts an already-mapped event left of `lines[0].start_ms`).
+    pub fn snap_with_first(&self, time_ms: f64, divisor: u32) -> (f64, f64) {
+        let Some(first) = self.lines.first() else {
+            return (time_ms, f64::INFINITY);
+        };
+        if !time_ms.is_finite() {
+            return (time_ms, f64::INFINITY);
+        }
+        let idx = if time_ms < first.start_ms {
+            0
+        } else {
+            self.lines
+                .partition_point(|l| l.start_ms <= time_ms)
+                .saturating_sub(1)
+        };
         let section = self.lines[idx];
         let step = section.beat_length_ms / f64::from(divisor.max(1));
         let beats = (time_ms.max(0.0) - section.start_ms) / step;
@@ -167,6 +184,17 @@ impl TimingGrid {
 
     /// Generates all `1/divisor` grid timestamps falling inside `[range.from_ms, range.to_ms)`.
     pub fn grid_times_in_range(&self, range: AnalysisRange, divisor: u32) -> Vec<f64> {
+        self.grid_times_in_range_with_cancel(range, divisor, &|| false)
+            .unwrap_or_default()
+    }
+
+    /// Generates all `1/divisor` grid timestamps in `[range.from_ms, range.to_ms)` while checking `cancel`.
+    pub fn grid_times_in_range_with_cancel(
+        &self,
+        range: AnalysisRange,
+        divisor: u32,
+        cancel: &dyn Fn() -> bool,
+    ) -> Result<Vec<f64>, ()> {
         let mut out = Vec::new();
         let divisor = f64::from(divisor.max(1));
         for (idx, section) in self.lines.iter().enumerate() {
@@ -179,23 +207,30 @@ impl TimingGrid {
                 continue;
             }
             let step = section.beat_length_ms / divisor;
-            if step <= 0.0 || !step.is_finite() {
+            if !step.is_finite() || step <= 1e-6 {
                 continue;
             }
-            let first_n = ((win_start - section.start_ms) / step).ceil().max(0.0) as u64;
+            let first_n = ((win_start - section.start_ms) / step - 1e-9)
+                .ceil()
+                .max(0.0) as u64;
             let mut n = first_n;
+            let mut steps = 0usize;
             loop {
+                if steps & 1023 == 0 && cancel() {
+                    return Err(());
+                }
                 let t = section.start_ms + n as f64 * step;
                 if t >= section_end - 1e-9 || t >= range.to_ms {
                     break;
                 }
-                if t >= range.from_ms {
-                    out.push(t);
+                if t >= range.from_ms - 1e-9 {
+                    out.push(t.max(range.from_ms));
                 }
                 n += 1;
+                steps += 1;
             }
         }
-        out
+        Ok(out)
     }
 
     /// Deterministic SHA-256 hash of all timing lines for source cache keys.

@@ -45,7 +45,7 @@ impl NodeType for OnsetCurveNode {
                 ..Default::default()
             });
         };
-        if spec.frames == 0 || spec.bins < 3 || spec.sample_rate == 0 {
+        if spec.frames == 0 || spec.bins < 3 || spec.sample_rate == 0 || spec.window < 2 {
             let empty = Arc::new(Curve {
                 values: Vec::new(),
                 hop_ms: spec.hop_ms(),
@@ -62,7 +62,7 @@ impl NodeType for OnsetCurveNode {
         };
         let lo = bin_for(params.f64_or("loHz", 30.0)).max(1);
         let hi = bin_for(params.f64_or("hiHz", 120.0)).min(bins - 2);
-        let compression = params.f64_or("compression", 3.0);
+        let compression = params.f64_or("compression", 3.0).max(0.0);
         let half_bins = params.usize_or("maxBins", 3).saturating_sub(1) / 2;
 
         let mut out = vec![0.0; frames];
@@ -91,7 +91,7 @@ impl NodeType for OnsetCurveNode {
                         previous[k]
                     } else {
                         let start = k.saturating_sub(half_bins);
-                        let end = (k + half_bins).min(bins - 1);
+                        let end = k.saturating_add(half_bins).min(bins - 1);
                         previous[start..=end]
                             .iter()
                             .copied()
@@ -104,8 +104,22 @@ impl NodeType for OnsetCurveNode {
             }
         }
 
+        let mut diagnostics = Vec::new();
         if params.str_or("normalise", "p90") == "p90" {
             out = normalise_p90(out);
+            if params.str_or("normaliseOver", "range") == "song"
+                && let Some(song_range) = context.song_range
+            {
+                let hop_ms = spec.hop_ms();
+                let covered_end = spec.start_ms + frames as f64 * hop_ms;
+                if spec.start_ms > song_range.from_ms + hop_ms * 2.0
+                    || covered_end + hop_ms * 2.0 < song_range.to_ms
+                {
+                    diagnostics.push(NodeDiagnostic::info(
+                        "normaliseOver='song' scales over available spectrogram span; connect input.range(mode='song') for full-song scale",
+                    ));
+                }
+            }
         }
 
         let curve = Arc::new(Curve {
@@ -113,7 +127,11 @@ impl NodeType for OnsetCurveNode {
             hop_ms: spec.hop_ms(),
             start_ms: spec.start_ms,
         });
-        Ok(NodeOutputs::with_value("curve", SocketValue::Curve(curve)))
+        Ok(NodeOutputs {
+            values: [(dawsu_graph::SocketId::from("curve"), SocketValue::Curve(curve))].into(),
+            diagnostics,
+            ..Default::default()
+        })
     }
 }
 

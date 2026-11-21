@@ -129,7 +129,7 @@ impl<'a> NodeParams<'a> {
     pub fn effective_canonical_json(&self) -> String {
         let mut merged = BTreeMap::<String, serde_json::Value>::new();
         for spec in self.specs {
-            merged.insert(spec.id.0.clone(), spec.default.clone());
+            merged.insert(spec.id.0.clone(), canonical_json_value(&spec.default));
         }
         for (k, v) in self.raw {
             merged.insert(k.clone(), canonical_json_value(v));
@@ -187,6 +187,7 @@ impl NodeOutputs {
 pub struct EvalContext<'a> {
     pub range: AnalysisRange,
     pub song_duration_ms: Option<f64>,
+    pub song_range: Option<AnalysisRange>,
     cancel: &'a (dyn Fn() -> bool + Sync),
     progress: &'a mut dyn FnMut(f64),
 }
@@ -198,12 +199,19 @@ impl<'a> EvalContext<'a> {
         cancel: &'a (dyn Fn() -> bool + Sync),
         progress: &'a mut dyn FnMut(f64),
     ) -> Self {
+        let song_range = song_duration_ms.and_then(|d| AnalysisRange::new(0.0, d).ok());
         Self {
             range,
             song_duration_ms,
+            song_range,
             cancel,
             progress,
         }
+    }
+
+    pub fn with_song_range(mut self, song_range: Option<AnalysisRange>) -> Self {
+        self.song_range = song_range;
+        self
     }
 
     pub fn is_cancelled(&self) -> bool {

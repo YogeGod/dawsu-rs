@@ -634,3 +634,189 @@ fn migrations_and_unknown_placeholders_survive_round_trip() {
     assert!(res.diagnostics[&"s".into()][0].message.contains("needs node u"));
     assert_eq!(res.diagnostics[&"e".into()][0].message, "waiting for input");
 }
+
+struct DualOutputNode {
+    runs: Arc<AtomicUsize>,
+}
+
+impl NodeType for DualOutputNode {
+    fn spec(&self) -> NodeSpec {
+        NodeSpec {
+            id: NodeTypeId::from("test.dual"),
+            type_version: 1,
+            inputs: vec![],
+            outputs: vec![
+                SocketSpec::exact("a", SocketType::Curve, false),
+                SocketSpec::exact("b", SocketType::Curve, false),
+            ],
+            params: vec![],
+            bypass_passthrough: None,
+        }
+    }
+
+    fn evaluate(
+        &self,
+        _inputs: &NodeInputs,
+        _params: &NodeParams<'_>,
+        context: &mut EvalContext<'_>,
+    ) -> Result<NodeOutputs, EvalError> {
+        self.runs.fetch_add(1, Ordering::SeqCst);
+        let mut values = BTreeMap::new();
+        values.insert(
+            SocketId::from("a"),
+            SocketValue::Curve(Arc::new(Curve {
+                values: vec![1.0],
+                hop_ms: 10.0,
+                start_ms: context.range.from_ms,
+            })),
+        );
+        values.insert(
+            SocketId::from("b"),
+            SocketValue::Curve(Arc::new(Curve {
+                values: vec![99.0],
+                hop_ms: 10.0,
+                start_ms: context.range.from_ms,
+            })),
+        );
+        Ok(NodeOutputs {
+            values,
+            ..Default::default()
+        })
+    }
+}
+
+#[test]
+fn rewiring_between_two_outputs_of_same_node_misses_cache_and_muted_lane_skips_pull() {
+    let (mut reg, _, _, _) = test_registry();
+    let dual_runs = Arc::new(AtomicUsize::new(0));
+    reg.register(Arc::new(DualOutputNode { runs: dual_runs }))
+        .unwrap();
+
+    let mut doc = GraphDocument::new("rewire");
+    doc.nodes.push(node("d", "test.dual", 1, BTreeMap::new()));
+    doc.nodes.push(node("s", "test.scale", 3, BTreeMap::new()));
+    doc.links
+        .push(Link::new(Endpoint::new("d", "a"), Endpoint::new("s", "curve")));
+
+    let mut cache = EvalCache::default();
+    let r = AnalysisRange::new(0.0, 100.0).unwrap();
+    let first = evaluate_graph(
+        &doc,
+        &reg,
+        &mut cache,
+        EvalTarget::Socket(Endpoint::new("s", "curve")),
+        r,
+        None,
+        &|| false,
+        &mut |_| {},
+    )
+    .unwrap();
+    let Some(SocketValue::Curve(c1)) = first.socket_preview else {
+        panic!("expected curve");
+    };
+    assert_eq!(c1.values, vec![2.0]);
+
+    // Rewire from d.a -> d.b: must miss cache and compute 99 * 2 = 198.
+    doc.links[0].from.socket = SocketId::from("b");
+    let second = evaluate_graph(
+        &doc,
+        &reg,
+        &mut cache,
+        EvalTarget::Socket(Endpoint::new("s", "curve")),
+        r,
+        None,
+        &|| false,
+        &mut |_| {},
+    )
+    .unwrap();
+    let Some(SocketValue::Curve(c2)) = second.socket_preview else {
+        panic!("expected curve");
+    };
+    assert_eq!(c2.values, vec![198.0]);
+
+    // Muted output.lane under AllLaneOutputs must not pull its upstream branch.
+    let mut muted_doc = GraphDocument::new("muted-sink");
+    let c_runs = Arc::new(AtomicUsize::new(0));
+    let mut reg2 = NodeRegistry::new();
+    reg2.register(Arc::new(ConstCurveNode {
+        runs: c_runs.clone(),
+    }))
+    .unwrap();
+    reg2.register(Arc::new(CurveToEventsNode {
+        runs: Arc::new(AtomicUsize::new(0)),
+    }))
+    .unwrap();
+    reg2.register(Arc::new(LaneSinkNode {
+        runs: Arc::new(AtomicUsize::new(0)),
+    }))
+    .unwrap();
+    muted_doc.nodes.push(node("c", "test.curve", 1, BTreeMap::new()));
+    muted_doc.nodes.push(node("e", "test.to_events", 1, BTreeMap::new()));
+    let mut sink = node("o", "output.lane", 1, BTreeMap::new());
+    sink.muted = true;
+    muted_doc.nodes.push(sink);
+    muted_doc.links.push(Link::new(Endpoint::new("c", "curve"), Endpoint::new("e", "curve")));
+    muted_doc.links.push(Link::new(Endpoint::new("e", "events"), Endpoint::new("o", "events")));
+
+    let muted_res = evaluate_graph(
+        &muted_doc,
+        &reg2,
+        &mut EvalCache::default(),
+        EvalTarget::AllLaneOutputs,
+        r,
+        None,
+        &|| false,
+        &mut |_| {},
+    )
+    .unwrap();
+    assert_eq!(c_runs.load(Ordering::SeqCst), 0);
+    assert!(muted_res.evaluated_nodes.is_empty());
+    assert_eq!(muted_res.diagnostics[&"o".into()][0].message, "muted");
+}
+
+#[test]
+fn newer_version_placeholder_with_altered_schema_and_duplicate_slots_preserve_data() {
+    let (reg, _, _, _) = test_registry();
+    let raw = r#"{
+  "format": "dawsu-graph",
+  "version": 1,
+  "name": "Future",
+  "description": "",
+  "nodes": [
+    { "id": "f", "type": "test.scale", "typeVersion": 99, "params": ["v2_list_schema"], "muted": false, "ui": { "x": 1.0, "y": 2.0 } },
+    { "id": "c1", "type": "test.curve", "typeVersion": 1, "params": { "value": 1.0 }, "muted": false, "ui": { "x": 0.0, "y": 0.0 } },
+    { "id": "e1", "type": "test.to_events", "typeVersion": 1, "params": {}, "muted": false, "ui": { "x": 0.0, "y": 0.0 } },
+    { "id": "o1", "type": "output.lane", "typeVersion": 1, "params": { "slot": "kick" }, "muted": false, "ui": { "x": 0.0, "y": 0.0 } },
+    { "id": "c2", "type": "test.curve", "typeVersion": 1, "params": { "value": 2.0 }, "muted": false, "ui": { "x": 0.0, "y": 0.0 } },
+    { "id": "e2", "type": "test.to_events", "typeVersion": 1, "params": {}, "muted": false, "ui": { "x": 0.0, "y": 0.0 } },
+    { "id": "o2", "type": "output.lane", "typeVersion": 1, "params": { "slot": "kick" }, "muted": false, "ui": { "x": 0.0, "y": 0.0 } }
+  ],
+  "links": [
+    { "from": { "node": "c1", "socket": "curve" }, "to": { "node": "e1", "socket": "curve" } },
+    { "from": { "node": "e1", "socket": "events" }, "to": { "node": "o1", "socket": "events" } },
+    { "from": { "node": "c2", "socket": "curve" }, "to": { "node": "e2", "socket": "curve" } },
+    { "from": { "node": "e2", "socket": "events" }, "to": { "node": "o2", "socket": "events" } }
+  ],
+  "outputs": []
+}"#;
+    let doc = GraphDocument::from_json(raw, &reg).unwrap();
+    assert!(doc.node(&"f".into()).unwrap().placeholder.is_some());
+    let round_trip = doc.to_json().unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&round_trip).unwrap();
+    assert_eq!(parsed["nodes"][0]["params"], serde_json::json!(["v2_list_schema"]));
+
+    // Duplicate `output.lane` slots merge rather than overwriting.
+    let res = evaluate_graph(
+        &doc,
+        &reg,
+        &mut EvalCache::default(),
+        EvalTarget::AllLaneOutputs,
+        AnalysisRange::new(0.0, 100.0).unwrap(),
+        None,
+        &|| false,
+        &mut |_| {},
+    )
+    .unwrap();
+    assert_eq!(res.slot_events["kick"].events.len(), 2);
+}
+

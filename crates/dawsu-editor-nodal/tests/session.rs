@@ -186,9 +186,37 @@ fn placeholder_nodes_cannot_be_mutated_and_cancel_move_restores_position() {
         session.set_muted(&"u1".into(), true),
         Err(NodalError::PlaceholderImmutable("u1".into()))
     );
+    session.selection_mut().replace(["u1".into()]);
+    assert_eq!(
+        session.duplicate_selected(10.0, 10.0),
+        Err(NodalError::PlaceholderImmutable("u1".into()))
+    );
+
+    // move_nodes without begin_move reports NoOpenTransaction.
+    assert_eq!(
+        session.move_nodes(&[("u1".into(), 10.0, 20.0)]),
+        Err(NodalError::NoOpenTransaction)
+    );
 
     session.begin_move();
-    session.move_nodes(&[("u1".into(), 999.0, 888.0)]).unwrap();
+    assert_eq!(
+        session.move_nodes(&[("u1".into(), 999.0, 888.0)]),
+        Err(NodalError::PlaceholderImmutable("u1".into()))
+    );
+    assert_eq!(
+        session.move_nodes(&[("u1".into(), f64::NAN, 0.0)]),
+        Err(NodalError::InvalidPosition)
+    );
     session.cancel_move();
     assert_eq!(session.document().node(&"u1".into()).unwrap().ui.x, 10.0);
+}
+
+#[test]
+fn undo_prunes_deleted_nodes_from_dirty_tracker() {
+    let reg = registry();
+    let mut session = NodalSession::new(GraphDocument::new("dirty-prune"));
+    let n1 = session.add_node(&reg, &"nodal.src".into(), 0.0, 0.0).unwrap();
+    assert!(session.dirty_nodes().contains(&n1));
+    assert!(session.undo());
+    assert!(!session.dirty_nodes().contains(&n1));
 }

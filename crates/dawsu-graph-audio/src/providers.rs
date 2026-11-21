@@ -55,7 +55,28 @@ impl DecodedAudio {
     }
 
     pub fn frame_count(&self) -> usize {
-        self.channels.first().map_or(0, Vec::len)
+        self.channels.iter().map(Vec::len).min().unwrap_or(0)
+    }
+
+    /// Peak absolute amplitude across the full source (averaged across channels) for `normaliseOver = "song"`.
+    pub fn full_average_peak(&self) -> f32 {
+        let frames = self.frame_count();
+        if frames == 0 || self.channels.is_empty() {
+            return 0.0;
+        }
+        match self.channels.len() {
+            1 => self.channels[0][..frames]
+                .iter()
+                .fold(0f32, |p, &v| p.max(v.abs())),
+            2 => self.channels[0][..frames]
+                .iter()
+                .zip(&self.channels[1][..frames])
+                .fold(0f32, |p, (&l, &r)| p.max(((l + r) * 0.5).abs())),
+            n => (0..frames).fold(0f32, |p, i| {
+                let avg = self.channels.iter().map(|ch| ch[i]).sum::<f32>() / n as f32;
+                p.max(avg.abs())
+            }),
+        }
     }
 
     pub fn duration_ms(&self) -> f64 {

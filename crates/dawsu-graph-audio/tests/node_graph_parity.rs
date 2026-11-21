@@ -417,3 +417,169 @@ fn filter_time_sampler_stem_file_and_viewer_nodes_work_deterministically() {
     assert_eq!(events.events[2].time_ms, 250.0);
     assert_eq!(events.events[3].time_ms, 375.0);
 }
+
+#[test]
+fn boundary_params_bypass_without_secondary_input_and_song_normalisation_work() {
+    // 1. Muted events.snap without timing input connected still bypasses events cleanly;
+    //    silenceBelow = 0.0 on all-zero audio produces silent buffer (no NaN);
+    //    window = 1 clamps cleanly without panic; divisors = [] snaps off.
+    let samples = pattern_samples();
+    let song = Arc::new(DecodedAudio::from_mono(samples.clone(), RATE, 0.0));
+    let dur = song.duration_ms();
+    let mut providers = StaticProviders::with_song(song, Arc::new(TimingGrid::default()));
+    providers.files.insert(
+        "silence.wav".into(),
+        Ok(Arc::new(DecodedAudio::from_mono(vec![0.0; 4410], RATE, 0.0))),
+    );
+    providers.files.insert(
+        "offset.wav".into(),
+        Ok(Arc::new(DecodedAudio::from_mono(samples, RATE, 250.0))),
+    );
+    let providers = Arc::new(providers);
+    let mut reg = NodeRegistry::new();
+    register_audio_nodes(&mut reg, providers.clone(), providers).unwrap();
+
+    // silenceBelow=0 + window=1
+    let n = |id: &str, ty: &str, params: BTreeMap<String, Value>| NodeData {
+        id: id.into(),
+        type_id: ty.into(),
+        type_version: 1,
+        params,
+        muted: false,
+        ui: NodeUi::default(),
+        placeholder: None,
+    };
+    let mut doc = GraphDocument::new("edge");
+    doc.nodes.push(n(
+        "f",
+        "input.file",
+        BTreeMap::from([("path".into(), serde_json::json!("silence.wav"))]),
+    ));
+    doc.nodes.push(n(
+        "m",
+        "audio.mono",
+        BTreeMap::from([("silenceBelow".into(), serde_json::json!(0.0))]),
+    ));
+    doc.nodes.push(n(
+        "s",
+        "spectral.stft",
+        BTreeMap::from([("window".into(), serde_json::json!(1))]),
+    ));
+    doc.links.push(Link::new(Endpoint::new("f", "audio"), Endpoint::new("m", "audio")));
+    doc.links.push(Link::new(Endpoint::new("m", "audio"), Endpoint::new("s", "audio")));
+
+    let mut cache = EvalCache::default();
+    let res = evaluate_graph(
+        &doc,
+        &reg,
+        &mut cache,
+        EvalTarget::Socket(Endpoint::new("m", "audio")),
+        AnalysisRange::new(0.0, 100.0).unwrap(),
+        Some(100.0),
+        &|| false,
+        &mut |_| {},
+    )
+    .unwrap();
+    let Some(SocketValue::Audio(buf)) = res.socket_preview else {
+        panic!("expected audio");
+    };
+    assert!(buf.silent);
+    assert!(buf.channels[0].iter().all(|v| v.is_finite() && *v == 0.0));
+
+    // Verify stft with window=1 succeeds without panicking.
+    evaluate_graph(
+        &doc,
+        &reg,
+        &mut cache,
+        EvalTarget::Nodes(vec!["s".into()]),
+        AnalysisRange::new(0.0, 100.0).unwrap(),
+        Some(100.0),
+        &|| false,
+        &mut |_| {},
+    )
+    .unwrap();
+
+    // 2. normaliseOver = "song" on audio.mono keeps peak scaling invariant across sub-ranges.
+    let mut norm_doc = GraphDocument::new("song-norm");
+    norm_doc.nodes.push(n("song", "input.song", BTreeMap::new()));
+    norm_doc.nodes.push(n(
+        "mono",
+        "audio.mono",
+        BTreeMap::from([("normaliseOver".into(), serde_json::json!("song"))]),
+    ));
+    norm_doc.links.push(Link::new(Endpoint::new("song", "audio"), Endpoint::new("mono", "audio")));
+
+    let full_res = evaluate_graph(
+        &norm_doc,
+        &reg,
+        &mut cache,
+        EvalTarget::Socket(Endpoint::new("mono", "audio")),
+        AnalysisRange::new(0.0, dur).unwrap(),
+        Some(dur),
+        &|| false,
+        &mut |_| {},
+    )
+    .unwrap();
+    let sub_res = evaluate_graph(
+        &norm_doc,
+        &reg,
+        &mut cache,
+        EvalTarget::Socket(Endpoint::new("mono", "audio")),
+        AnalysisRange::new(500.0, 1000.0).unwrap(),
+        Some(dur),
+        &|| false,
+        &mut |_| {},
+    )
+    .unwrap();
+    let (Some(SocketValue::Audio(full_buf)), Some(SocketValue::Audio(sub_buf))) =
+        (full_res.socket_preview, sub_res.socket_preview)
+    else {
+        panic!("expected audio buffers");
+    };
+    let start_idx = (500.0 * f64::from(RATE) / 1000.0).round() as usize;
+    assert_eq!(
+        sub_buf.channels[0][0].to_bits(),
+        full_buf.channels[0][start_idx].to_bits()
+    );
+
+    // 3. input.file inherits decoded offset_ms when offsetMs is omitted, and events.condition
+    //    accepts numeric lhs while reporting invalid clauses.
+    let mut cond_doc = GraphDocument::new("cond");
+    cond_doc.nodes.push(n(
+        "f",
+        "input.file",
+        BTreeMap::from([("path".into(), serde_json::json!("offset.wav"))]),
+    ));
+    cond_doc.nodes.push(n(
+        "bad_cond",
+        "events.condition",
+        BTreeMap::from([("clauses".into(), serde_json::json!("not-an-array"))]),
+    ));
+    let mut bypassed_snap = n("snap", "events.snap", BTreeMap::new());
+    bypassed_snap.muted = true;
+    cond_doc.nodes.push(bypassed_snap);
+    cond_doc.nodes.push(n(
+        "c",
+        "events.condition",
+        BTreeMap::from([(
+            "clauses".into(),
+            serde_json::json!([[{ "lhs": 0.5, "op": "<", "factor": 1.0, "rhs": "strength" }]]),
+        )]),
+    ));
+    let file_out = evaluate_graph(
+        &cond_doc,
+        &reg,
+        &mut cache,
+        EvalTarget::Socket(Endpoint::new("f", "audio")),
+        AnalysisRange::new(250.0, 500.0).unwrap(),
+        Some(dur + 250.0),
+        &|| false,
+        &mut |_| {},
+    )
+    .unwrap();
+    let Some(SocketValue::Audio(offset_buf)) = file_out.socket_preview else {
+        panic!("expected audio");
+    };
+    assert_eq!(offset_buf.start_ms, 250.0);
+}
+

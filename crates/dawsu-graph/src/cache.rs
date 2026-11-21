@@ -23,18 +23,22 @@ impl CacheKey {
         muted: bool,
         canonical_params: &str,
         source_key: Option<&str>,
-        input_keys: &[(SocketId, Vec<CacheKey>)],
+        input_keys: &[(SocketId, Vec<(SocketId, CacheKey)>)],
         range: AnalysisRange,
         song_duration_ms: Option<f64>,
+        song_range: Option<AnalysisRange>,
     ) -> Self {
         let (from_bits, to_bits) = range.canonical_bits();
+        let song_range_bits = song_range.map(|r| r.canonical_bits());
         let duration_bits = song_duration_ms.map(|d| if d == 0.0 { 0.0_f64.to_bits() } else { d.to_bits() });
-        let inputs_json: Vec<(&str, Vec<&str>)> = input_keys
+        let inputs_json: Vec<(&str, Vec<(&str, &str)>)> = input_keys
             .iter()
             .map(|(sock, keys)| {
                 (
                     sock.as_str(),
-                    keys.iter().map(|k| k.0.as_str()).collect(),
+                    keys.iter()
+                        .map(|(from_sock, k)| (from_sock.as_str(), k.0.as_str()))
+                        .collect(),
                 )
             })
             .collect();
@@ -47,6 +51,7 @@ impl CacheKey {
             "source": source_key,
             "inputs": inputs_json,
             "range": [from_bits, to_bits],
+            "songRangeBits": song_range_bits,
             "songDurationBits": duration_bits,
         });
         let text = serde_json::to_string(&payload).unwrap_or_default();
