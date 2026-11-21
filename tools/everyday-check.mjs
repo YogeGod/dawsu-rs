@@ -157,7 +157,9 @@ async function launch(map) {
     page.on("console", message => {
       if (message.type() === "error") errors.push({ step: current, text: `${where()}: console error: ${message.text()}` });
     });
-    page.on("pageerror", error => errors.push({ step: current, text: `${where()}: page error: ${error.message}` }));
+    // Where a page error was thrown: its first stack line, with the page's own address left out.
+    const origin = error => (error.stack ?? "").split("\n").find(line => /^\s+at /.test(line))?.trim().replace(/https?:\/\/[^/]+\//g, "") ?? "";
+    page.on("pageerror", error => errors.push({ step: current, text: `${where()}: page error: ${error.message}${origin(error) ? ` (${origin(error)})` : ""}` }));
   };
   context.on("page", listen);
   await context.addInitScript(() => window.addEventListener("unhandledrejection", event =>
@@ -200,6 +202,7 @@ async function step(name, body, always = false) {
   }
   current = number;
   const result = { number, name, status: "PASS", detail: "" };
+  let threw = false;
   try {
     const note = await body();
     if (typeof note === "string") result.detail = note;
@@ -208,6 +211,7 @@ async function step(name, body, always = false) {
       result.detail = note.skip;
     }
   } catch (error) {
+    threw = true;
     result.status = "FAIL";
     result.detail = error.message;
   }
@@ -217,7 +221,10 @@ async function step(name, body, always = false) {
   errorsChecked = errors.length;
   if (raised.length) {
     result.status = "FAIL";
-    result.errors = raised.map(error => error.text);
+    // The same error many times reads as one line with a count.
+    const counts = new Map();
+    for (const { text } of raised) counts.set(text, (counts.get(text) ?? 0) + 1);
+    result.errors = [...counts].map(([text, count]) => count > 1 ? `${text} (×${count})` : text);
     result.detail = [result.detail, ...result.errors].filter(Boolean).join(" | ");
   }
   result.detail = result.detail.replace(/\s*\n\s*/g, " ");
@@ -227,7 +234,8 @@ async function step(name, body, always = false) {
     if (await target.screenshot({ path }).then(() => true, () => false)) result.screenshot = path;
   }
   results.push(result);
-  if (result.status === "FAIL" && opensMap.has(name)) noMap = `the map did not open in step ${number}`;
+  // Only a map that never showed stops the rest; errors while it opened fail this step alone.
+  if (threw && opensMap.has(name)) noMap = `the map did not open in step ${number}`;
   console.log(`${result.status} ${number} ${name}${result.detail ? " — " + result.detail : ""}${result.screenshot ? " (" + result.screenshot + ")" : ""}`);
   current = null;
   // A dialog or menu a failed step left open would block the next one.
@@ -344,7 +352,8 @@ async function menuKeys(menu, row) {
   await openMenu(menu);
   const button = menuRow(row);
   let keys = "";
-  for (let i = 0; i < 20 && !keys; i++) {
+  // The keys arrive a moment after the menu opens (editor_shortcuts).
+  for (let i = 0; i < 50 && !keys; i++) {
     keys = (await button.locator(".menu-keys, kbd, [class*=key]").allTextContents().catch(() => [])).join("").trim();
     if (!keys) await sleep(100);
   }
@@ -480,6 +489,8 @@ try {
     // At a hand's pace: rest on the hit, press, slide a quarter second later in eight moves, let go.
     await mouse.move(point.x, point.y);
     await sleep(300);
+    // What the editor was doing as the button went down, for the report if the hit stays put.
+    const pressed = await read(() => ({ busy: !!window.view.busy, selected: window.scene.selection?.count ?? 0, tool: window.view.tool }));
     await mouse.down();
     await sleep(100);
     for (let i = 1; i <= 8; i++) {
@@ -491,7 +502,7 @@ try {
     const moved = await until(([time, row]) => {
       const here = window.scene.moments.flatMap(([t, , , list]) => list.filter(([r, s]) => r === row && s).map(() => t));
       return here.length === 1 && here[0] !== time ? here[0] : null;
-    }, placed, "the selected hit did not move");
+    }, placed, `the selected hit did not move (at the press: ${JSON.stringify(pressed)})`);
     const count = (await hits()).length;
     expect(count === hitsBeforeEdits + 1, `the drag changed the hit count to ${count}`);
     placed = [moved, placed[1]];
@@ -664,16 +675,21 @@ try {
     await until(zoom => window.scene.zoom > zoom, before.zoom, "Zoom in did not zoom in");
     const box = await read(() => document.getElementById("grid").getBoundingClientRect().toJSON());
     await page().mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    // The editor drops wheel turns while it is still answering the last view change, so turn the
+    // wheel again, as a mapper would, up to four times.
+    async function wheel(key, deltaY, done, arg, what) {
+      for (let turn = 0; turn < 4; turn++) {
+        if (key) await page().keyboard.down(key);
+        await page().mouse.wheel(0, deltaY);
+        if (key) await page().keyboard.up(key);
+        if (await until(done, arg, what, 1500).then(() => true, () => false)) return;
+      }
+      throw new Error(`${what} after four turns`);
+    }
     const zoomed = await view();
-    await page().keyboard.down("Control");
-    await page().mouse.wheel(0, -240);
-    await page().keyboard.up("Control");
-    await until(zoom => window.scene.zoom > zoom, zoomed.zoom, "Ctrl+wheel did not zoom in");
+    await wheel("Control", -240, zoom => window.scene.zoom > zoom, zoomed.zoom, "Ctrl+wheel did not zoom in");
     const wheeled = await view();
-    await page().keyboard.down("Shift");
-    await page().mouse.wheel(0, 240);
-    await page().keyboard.up("Shift");
-    await until(start => window.scene.viewStart > start, wheeled.start, "Shift+wheel did not scroll the timeline later");
+    await wheel("Shift", 240, start => window.scene.viewStart > start, wheeled.start, "Shift+wheel did not scroll the timeline later");
     await page().mouse.wheel(0, -2000);
     await until(() => document.getElementById("scroll").scrollTop === 0, null, "the wheel did not scroll the lanes to the top");
     await page().mouse.wheel(0, 200);
@@ -693,6 +709,11 @@ try {
       expect(whistle >= 0, "no normal-hitwhistle lane");
       await page().click("#ruler-fit");
       await until(() => window.scene.viewStart === 0, null, "Fit all did not go back to the start");
+      // The lanes scrolled to the top, so the Normal set's lanes are in view.
+      const box = await read(() => document.getElementById("grid").getBoundingClientRect().toJSON());
+      await page().mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+      await page().mouse.wheel(0, -2000);
+      await until(() => document.getElementById("scroll").scrollTop === 0, null, "the lanes did not scroll to the top");
       await pickTool("Draw");
       const before = (await hits()).length;
       // A little after the circle, inside its first quarter beat: the snap puts the hit on the circle.
