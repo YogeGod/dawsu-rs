@@ -149,6 +149,11 @@ impl Pending {
         Ok(file)
     }
 
+    /// Takes in a pending file a cleanup job kept, with its claim already made.
+    pub(crate) fn adopt(&mut self, file: PendingFile) {
+        Arc::make_mut(&mut self.files).insert(file.name.to_ascii_lowercase(), file);
+    }
+
     /// Drops a pending file and its claim: a Save wrote it into the mapset, or keeping it failed.
     pub(crate) fn release(&mut self, name: &str) {
         if Arc::make_mut(&mut self.files).remove(&name.to_ascii_lowercase()).is_some()

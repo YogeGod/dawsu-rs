@@ -131,22 +131,36 @@ impl Reservations {
     }
 }
 
-pub(super) fn reservations(root: &Path, files: &[String]) -> Result<(BTreeSet<u32>, BTreeSet<String>), String> {
-    let mut reserved = Reservations::default();
-    let mut difficulties = Vec::new();
-    let mut storyboards = Vec::new();
+/// The difficulty and storyboard files among `files`, read once. A file that can't be read fails.
+pub(super) fn read_beatmap_files(root: &Path, files: &[String]) -> Result<Vec<(String, dawsu_osu_format::Read)>, String> {
+    let mut out = Vec::new();
     for name in files {
         let Some(ext) = Path::new(name).extension() else {
             continue;
         };
-        let difficulty = ext.eq_ignore_ascii_case("osu");
-        if !difficulty && !ext.eq_ignore_ascii_case("osb") {
+        if !ext.eq_ignore_ascii_case("osu") && !ext.eq_ignore_ascii_case("osb") {
             continue;
         }
         let path = safe_child(root, name)?;
         let bytes = std::fs::read(path)
             .map_err(|error| format!("Checking sample indexes in {name}: {error}"))?;
-        let read = OsuFile::read(bytes);
+        out.push((name.clone(), OsuFile::read(bytes)));
+    }
+    Ok(out)
+}
+
+pub(super) fn reservations(root: &Path, files: &[String]) -> Result<(BTreeSet<u32>, BTreeSet<String>), String> {
+    let read = read_beatmap_files(root, files)?;
+    reservations_in(read.iter().map(|(name, read)| (name.as_str(), read)))
+}
+
+/// The indexes and names the read difficulties and storyboards use.
+pub(super) fn reservations_in<'a>(files: impl IntoIterator<Item = (&'a str, &'a dawsu_osu_format::Read)>) -> Result<(BTreeSet<u32>, BTreeSet<String>), String> {
+    let mut reserved = Reservations::default();
+    let mut difficulties = Vec::new();
+    let mut storyboards = Vec::new();
+    for (name, read) in files {
+        let difficulty = Path::new(name).extension().is_some_and(|ext| ext.eq_ignore_ascii_case("osu"));
         if let Some(warning) = read.warnings.iter().find(|warning| {
             matches!(
                 warning.section.as_str(),
@@ -158,7 +172,7 @@ pub(super) fn reservations(root: &Path, files: &[String]) -> Result<(BTreeSet<u3
                 warning.line_number
             ));
         }
-        let file = read.file;
+        let file = &read.file;
         if difficulty {
             reserved.indexes.extend(
                 file.timing_points()

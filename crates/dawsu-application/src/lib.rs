@@ -824,6 +824,8 @@ struct Loaded {
     waveform: Vec<WaveBin>,
     warnings: Vec<String>,
     recovery: Option<recovery::RecoveryCopy>,
+    /// The pending names a record of the outgoing mapset still lists, read by the open job.
+    outgoing_keep: Option<BTreeSet<String>>,
 }
 enum OpenSource {
     Map(PathBuf),
@@ -919,6 +921,8 @@ pub struct Application {
     tools: ToolBox<HitKey>,
     controller_stroke: Option<controller::ControllerStroke>,
     jobs: Option<mpsc::Receiver<JobResult>>,
+    /// The running cleanup of unused sample files, which keeps `busy` set.
+    sweep: Option<mpsc::Receiver<sweep::Outcome>>,
     job_progress: Option<JobProgress>,
     cancel: Arc<AtomicBool>,
     muted: Vec<SampleIdentity>,
@@ -1044,6 +1048,7 @@ impl Application {
             tools: ToolBox::new(),
             controller_stroke: None,
             jobs: None,
+            sweep: None,
             job_progress: None,
             cancel: Arc::new(AtomicBool::new(false)),
             muted: Vec::new(),
@@ -1236,17 +1241,21 @@ impl Application {
     /// Closes the difficulty: its pending files no record still lists are forgotten and their
     /// names released, so the numbers free up. Call after `save_session`.
     pub fn close_document(&mut self) {
-        self.sweep_unused_samples(true);
-        self.forget_unneeded_pending();
+        // A cleanup still running after a Save finishes first.
+        self.poll_sweep(true);
+        self.start_sweep(true);
+        let keep = self.poll_sweep(true).flatten();
+        self.forget_unneeded_pending(keep);
         self.document = None;
         self.checkpoint = None;
     }
 
-    fn forget_unneeded_pending(&mut self) {
+    /// Forgets the pending files no record lists. `keep` are the listed names when a job read them.
+    fn forget_unneeded_pending(&mut self, keep: Option<BTreeSet<String>>) {
         let project_root = self.project_root.clone();
         let Some(document) = self.document.as_mut() else { return };
         let Some(mapset) = document.path.parent().map(Path::to_path_buf) else { return };
-        let keep = recorded_pending(project_root.as_deref(), &self.data_root, &mapset);
+        let keep = keep.unwrap_or_else(|| recorded_pending(project_root.as_deref(), &self.data_root, &mapset));
         document.pending.forget_all_but(&keep);
     }
 
@@ -1388,6 +1397,8 @@ impl Application {
     }
 
     fn start_open(&mut self, source: OpenSource, keep_settings: bool) {
+        // A cleanup the last Save started finishes before the difficulty changes.
+        self.poll_sweep(true);
         self.cancel_timeline_edit();
         if keep_settings && let Err(error) = self.save_session() {
             self.error = Some(error);
@@ -1419,6 +1430,7 @@ impl Application {
         self.jobs = Some(receive);
         self.busy = true;
         let outgoing = self.document.as_ref().map(|d| d.composer.history.version());
+        let outgoing_mapset = self.document.as_ref().and_then(|d| d.path.parent().map(Path::to_path_buf));
         self.status = "Opening map and decoding audio…".into();
         std::thread::spawn(move || {
             let result = (|| {
@@ -1458,7 +1470,7 @@ impl Application {
                 } else {
                     path
                 };
-                load(
+                let mut loaded = load(
                     &path,
                     &defaults,
                     &data_root,
@@ -1466,7 +1478,9 @@ impl Application {
                     project_root.as_deref(),
                     legacy_root.as_deref(),
                     recovery,
-                )
+                )?;
+                loaded.outgoing_keep = outgoing_mapset.map(|mapset| recorded_pending(project_root.as_deref(), &data_root, &mapset));
+                Ok(loaded)
             })();
             let _ = send.send(JobResult::Open(outgoing, keep_settings, result));
         });
@@ -1491,6 +1505,7 @@ impl Application {
     pub fn poll(&mut self) {
         // Edits made outside the refreshing entry points still reach the recovery checkpoint.
         self.refresh_recovery_edit();
+        self.poll_sweep(false);
         self.check_set_versions_when_read();
         self.poll_drum_detection();
         // Before main's job: its arms can return early.
@@ -1534,7 +1549,8 @@ impl Application {
                     }
                     let path = loaded.document.path.clone();
                     // The outgoing difficulty closes here.
-                    self.forget_unneeded_pending();
+                    let keep = loaded.outgoing_keep;
+                    self.forget_unneeded_pending(keep);
                     let mut checkpoint = recovery::Checkpoint::new(&loaded.document);
                     let restored_id = loaded.recovery.map(|copy| copy.resume(&mut checkpoint));
                     self.document = Some(loaded.document);
@@ -1672,9 +1688,7 @@ impl Application {
                             self.warnings.push(warning);
                             self.status = format!("Wrote {count} reviewed files. Generate replacement could not be recorded.");
                         }
-                        if let Some(removed) = sweep::removed_status(self.sweep_unused_samples(false)) {
-                            self.status = format!("{}. {removed}", self.status.trim_end_matches('.'));
-                        }
+                        self.start_sweep(false);
                         if let Some(d) = self.document.as_mut() {
                             if let Ok(entries) = std::fs::read_dir(d.path.parent().unwrap()) {
                                 d.difficulties = entries
@@ -1761,14 +1775,10 @@ impl Application {
                                     "Difficulty saved. Could not archive the recovery copy: {error}"
                                 ));
                             }
-                            // The files dawsu! made that nothing plays now leave the mapset.
-                            let removed = sweep::removed_status(self.sweep_unused_samples(false));
-                            let with_removed = |status: String| match &removed {
-                                Some(removed) => format!("{}. {removed}", status.trim_end_matches('.')),
-                                None => status,
-                            };
+                            // The files dawsu! made that nothing plays now leave the mapset, in a job.
+                            self.start_sweep(false);
                             if !current {
-                                self.status = with_removed("Saved the earlier revision. Newer edits are still open.".into());
+                                self.status = "Saved the earlier revision. Newer edits are still open.".into();
                                 return;
                             }
                             let document = self.document.as_mut().unwrap();
@@ -1776,13 +1786,13 @@ impl Application {
                             self.checkpoint =
                                 Some(recovery::Checkpoint::after_save(document, &compiled, &drawn, hs_mode));
                             let left_out = document.left_out.len();
-                            self.status = with_removed(if archive_error.is_some() {
+                            self.status = if archive_error.is_some() {
                                 "Difficulty saved. Recovery copy is still pending.".into()
                             } else if left_out > 0 {
                                 format!("Saved with backup. {left_out} part{} left out.", if left_out == 1 { "" } else { "s" })
                             } else {
                                 "Saved with backup".into()
-                            });
+                            };
                             if let Some(path) = self.pending_open.take() {
                                 self.open_now(OpenSource::Map(path));
                             }
@@ -3039,6 +3049,7 @@ fn load(
         waveform,
         warnings,
         recovery,
+        outgoing_keep: None,
     })
 }
 
@@ -4788,6 +4799,11 @@ mod project_workflow {
 
     /// The project fixture with two new hitnormal layers, 2 and 3, both pending.
     fn two_layers(scratch: &Scratch, project: bool) -> (Application, PathBuf, PathBuf) {
+        two_layers_in(scratch, project, None)
+    }
+
+    /// With `data_root`, the session keeps its data apart from the shared headless folder.
+    fn two_layers_in(scratch: &Scratch, project: bool, data_root: Option<PathBuf>) -> (Application, PathBuf, PathBuf) {
         let folder = scratch.path("mapset");
         let defaults = scratch.path("skin");
         for directory in [&folder, &defaults] {
@@ -4802,6 +4818,9 @@ Title:");
             std::fs::write(defaults.join(name), TONE).unwrap();
         }
         let mut app = Application::headless();
+        if let Some(data_root) = data_root {
+            app.data_root = data_root;
+        }
         if project {
             app.project_root = Some(scratch.path("projects"));
         }
@@ -5133,6 +5152,121 @@ Title:");
     }
 
     #[test]
+    fn a_file_changed_after_its_check_stays_in_the_mapset_as_changed() {
+        let scratch = Scratch::new("sweep-changed-before-move");
+        let (mut app, _, folder) = two_layers(&scratch, true);
+        use_layer_2(&mut app);
+        save_through_summary(&mut app, scratch.path("backups"));
+        fn edit(path: &Path) {
+            if path.to_string_lossy().contains("sweep-changed-before-move") {
+                std::fs::write(path, b"edited while dawsu! checked it").unwrap();
+            }
+        }
+        back_to_skin(&mut app);
+        *sweep::BEFORE_MOVE.lock().unwrap() = Some(edit);
+        save_through_summary(&mut app, scratch.path("backups"));
+        *sweep::BEFORE_MOVE.lock().unwrap() = None;
+        assert_eq!(std::fs::read(folder.join("normal-hitnormal2.wav")).unwrap(), b"edited while dawsu! checked it");
+        let names: Vec<_> = mapset(&folder);
+        assert!(names.iter().all(|name| !name.contains("dawsu-moving")), "{names:?}");
+        assert!(ledger(&app).is_empty(), "no longer dawsu!'s file");
+    }
+
+    #[test]
+    fn a_damaged_copy_in_removed_samples_is_replaced_before_the_file_leaves() {
+        let scratch = Scratch::new("sweep-damaged-trash");
+        let (mut app, _, folder) = two_layers_in(&scratch, true, Some(scratch.path("data")));
+        use_layer_2(&mut app);
+        save_through_summary(&mut app, scratch.path("backups"));
+        let other = pending::Presence::enter(&app.data_root, &folder.canonicalize().unwrap()).unwrap();
+        back_to_skin(&mut app);
+        save_through_summary(&mut app, scratch.path("backups"));
+        drop(other);
+        let kept = app.data_root.join("removed-samples").join(format!("{}.wav", dawsu_foundation::digest::sha256_hex(TONE)));
+        std::fs::create_dir_all(kept.parent().unwrap()).unwrap();
+        std::fs::write(&kept, b"damaged").unwrap();
+        app.close_document();
+        assert!(!folder.join("normal-hitnormal2.wav").exists());
+        assert_eq!(std::fs::read(&kept).unwrap(), TONE, "removed-samples holds the file's bytes");
+    }
+
+    #[test]
+    fn a_file_with_no_hits_left_goes_to_removed_samples_at_close() {
+        let scratch = Scratch::new("sweep-trash-at-close");
+        let (mut app, _, folder) = two_layers_in(&scratch, true, Some(scratch.path("data")));
+        use_layer_2(&mut app);
+        save_through_summary(&mut app, scratch.path("backups"));
+        // Another session keeps the file in the mapset through this Save.
+        let other = pending::Presence::enter(&app.data_root, &folder.canonicalize().unwrap()).unwrap();
+        back_to_skin(&mut app);
+        save_through_summary(&mut app, scratch.path("backups"));
+        assert!(folder.join("normal-hitnormal2.wav").exists());
+        drop(other);
+        let data_root = app.data_root.clone();
+        app.close_document();
+        let kept = data_root.join("removed-samples").join(format!("{}.wav", dawsu_foundation::digest::sha256_hex(TONE)));
+        assert_eq!(std::fs::read(kept).unwrap(), TONE);
+        assert!(!folder.join("normal-hitnormal2.wav").exists());
+    }
+
+    #[test]
+    fn a_difficulty_that_cant_be_read_stops_the_cleanup_and_says_so() {
+        let scratch = Scratch::new("sweep-unreadable");
+        let (mut app, _, folder) = two_layers(&scratch, true);
+        use_layer_2(&mut app);
+        save_through_summary(&mut app, scratch.path("backups"));
+        std::fs::write(folder.join("broken.osu"), "osu file format v14\n[TimingPoints]\nnot a timing point\n").unwrap();
+        back_to_skin(&mut app);
+        save_through_summary(&mut app, scratch.path("backups"));
+        assert!(folder.join("normal-hitnormal2.wav").exists());
+        assert!(app.status.contains("No unused sample files were removed") && app.status.contains("broken.osu"), "{}", app.status);
+    }
+
+    #[test]
+    fn the_project_lists_a_kept_mix_source_even_when_nothing_moved() {
+        let scratch = Scratch::new("sweep-lists-needed");
+        let (mut app, map, folder) = two_layers(&scratch, true);
+        use_layer_2(&mut app);
+        save_through_summary(&mut app, scratch.path("backups"));
+        app.document.as_mut().unwrap().composer.apply("Mix", |hits| {
+            hits.add_hit(dawsu_hitsounding::MomentId(0), hitnormal(0));
+            hits.set_hit_volume(dawsu_hitsounding::MomentId(0), &hitnormal(2), 40);
+        });
+        save_through_summary(&mut app, scratch.path("backups"));
+        assert!(!folder.join("normal-hitnormal2.wav").exists(), "a mix plays it now");
+        let listed = |app: &Application| project::Project::load(app.project_root.as_deref().unwrap(), None, &map).unwrap()
+            .settings.pending_samples.unwrap_or_default().into_iter().map(|file| file.name).collect::<Vec<_>>();
+        assert_eq!(listed(&app), ["normal-hitnormal2.wav"]);
+        // The list is lost; the next Save with nothing to move lists it again.
+        let mut project = app.project.clone().unwrap();
+        let mut settings = project.settings.clone();
+        settings.pending_samples = None;
+        project.save(settings).unwrap();
+        app.project = Some(project);
+        app.document.as_mut().unwrap().composer.apply("Edit", |hits| hits.set_volume(dawsu_hitsounding::MomentId(0), 90));
+        save_through_summary(&mut app, scratch.path("backups"));
+        assert_eq!(listed(&app), ["normal-hitnormal2.wav"]);
+    }
+
+    #[test]
+    fn a_second_corrupt_ledger_is_kept_aside_beside_the_first() {
+        let scratch = Scratch::new("ledger-corrupt-twice");
+        let (app, _, _) = two_layers(&scratch, true);
+        let ledger = app.document().unwrap().pending.ledger().unwrap();
+        let path = app.data_root.join("created-samples").join(format!("{}.json", pending::mapset_key(app.document().unwrap().path.parent().unwrap())));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        for text in [&b"{ first"[..], b"{ second"] {
+            std::fs::write(&path, text).unwrap();
+            assert!(ledger.entries().is_empty());
+        }
+        let key = pending::mapset_key(app.document().unwrap().path.parent().unwrap());
+        let mut aside: Vec<_> = std::fs::read_dir(path.parent().unwrap()).unwrap().flatten()
+            .filter(|e| { let name = e.file_name().to_string_lossy().into_owned(); name.starts_with(&key) && name.contains("corrupt") }).map(|e| std::fs::read(e.path()).unwrap()).collect();
+        aside.sort();
+        assert_eq!(aside, [b"{ first".to_vec(), b"{ second".to_vec()]);
+    }
+
+    #[test]
     fn an_old_mix_no_ledger_lists_is_cleaned_up_when_nothing_plays_it() {
         let mix = |tag: &str| {
             let bytes = format!("old mix {tag}").into_bytes();
@@ -5284,8 +5418,9 @@ Sample,0,0,\"{story}\",100
         use_layer_2(&mut app);
         save_through_summary(&mut app, scratch.path("backups"));
         assert_eq!(ledger(&app), ["normal-hitnormal2.wav"]);
+        let key = pending::mapset_key(app.document().unwrap().path.parent().unwrap());
         let aside: Vec<_> = std::fs::read_dir(path.parent().unwrap()).unwrap().flatten()
-            .filter(|e| e.file_name().to_string_lossy().contains("corrupt")).collect();
+            .filter(|e| { let name = e.file_name().to_string_lossy().into_owned(); name.starts_with(&key) && name.contains("corrupt") }).collect();
         assert_eq!(aside.len(), 1);
         assert_eq!(std::fs::read(aside[0].path()).unwrap(), b"{ not json");
     }
