@@ -128,3 +128,36 @@ test("an unassigned drum row shows its name only, or a dash with names hidden", 
   const [compact] = rowsOf(shown([drum], false));
   assert.match(compact, /title="Ghost · Unassigned">–<\/span>/);
 });
+
+// Yoge, 2026-11-21: a main lane folds its numbered layers like a folder, more quietly.
+test("a main lane with layers is a family head with a fold arrow", () => {
+  const head = more => rowsOf(shown([lane({ name: "Finish", family: { label: "Collapse normal-hitfinish layers", ...more } })]))[0];
+  const open = head({ collapsed: false });
+  assert.match(open, /^<div class="lane\b[^"]*\bfamily-head\b/);
+  assert.match(buttons(open)[2].tag, /class="lane-disclosure[^"]*"[^>]*aria-expanded="true"/);
+  assert.equal(buttons(open)[2].text, "▾");
+  const folded = head({ collapsed: true, label: "Expand normal-hitfinish layers" });
+  assert.match(buttons(folded)[2].tag, /aria-expanded="false"[^>]*aria-label="Expand normal-hitfinish layers"/);
+  assert.equal(buttons(folded)[2].text, "▸");
+});
+
+test("a layer row is indented under its main lane by a guide", () => {
+  const [layer, plain] = rowsOf(shown([lane({ layer: true, name: "Finish 2" }), lane({ key: "lane:1", row: 1 })]));
+  assert.match(layer, /<span class="num[^>]*>5<\/span>\s*(<!--[^>]*-->)*<span class="layer-guide[^"]*" aria-hidden="true"><\/span>/);
+  assert.doesNotMatch(plain, /layer-guide/);
+});
+
+test("− removes the lane: named for screen readers, after +, disabled while busy or for a protected lane", () => {
+  const remove = { label: "Remove Finish 3", disabled: false };
+  const [row] = rowsOf(shown([lane({ name: "Finish 3", addLayer: "Add numbered normal-hitfinish layer", remove })]));
+  assert.deepEqual(buttons(row).map(button => button.text), ["M", "S", "Finish 3", "+", "−"]);
+  const minus = buttons(row)[4].tag;
+  assert.match(minus, /class="lane-remove[^"]*"/);
+  assert.match(minus, /aria-label="Remove Finish 3"/);
+  assert.doesNotMatch(minus, /\sdisabled/);
+  assert.match(buttons(rowsOf(shown([lane({ remove })], true, true))[0]).at(-1).tag, /\sdisabled/);
+  assert.match(buttons(rowsOf(shown([lane({ remove: { ...remove, disabled: true } })]))[0]).at(-1).tag, /\sdisabled/);
+  assert.doesNotMatch(rowsOf(shown([lane({ remove: null })]))[0], /lane-remove/);
+  // With lane names hidden it stays, beside +.
+  assert.deepEqual(buttons(rowsOf(shown([lane({ addLayer: "Add", remove })], false))[0]).map(button => button.text), ["M", "S", "▶", "+", "−"]);
+});

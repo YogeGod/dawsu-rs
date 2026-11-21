@@ -998,7 +998,44 @@ fn lane_header_rows<'a>(
         .map(|row| slot_rows.get(&row).copied().unwrap_or(row))
         .filter(|&row| !model.is_lane_hidden(&c.lanes[row]))
         .collect();
+    let lane_order = family_order(lane_order, |row| backing_slots.get(&row).copied().unwrap_or(&c.lanes[row]));
     (lane_order, backing_slots)
+}
+
+/// Puts each numbered layer directly under its family's main lane, by number (Yoge, 2026-11-21).
+/// A family is one set and sound; its main lane is the shown lane at custom index 1, else the skin
+/// sample (index 0). Without either, its layers stay ordinary lanes where they are. app.js's
+/// `familyOrder` does the same after the saved lane order, as `header_numbers` does here.
+fn family_order<'a>(rows: Vec<usize>, lane: impl Fn(usize) -> &'a SampleIdentity) -> Vec<usize> {
+    let family = |row: usize| match lane(row) {
+        SampleIdentity::Standard { set, sound, index } => Some(((*set, *sound), index.get())),
+        SampleIdentity::File(_) => None,
+    };
+    let mut mains = std::collections::HashMap::new();
+    for &row in &rows {
+        if let Some((key, index @ (0 | 1))) = family(row) && (index == 1 || !mains.contains_key(&key)) {
+            mains.insert(key, row);
+        }
+    }
+    let mut layers: std::collections::HashMap<usize, Vec<(u32, usize)>> = std::collections::HashMap::new();
+    for &row in &rows {
+        if let Some((key, index)) = family(row) && let Some(&main) = mains.get(&key) && main != row {
+            layers.entry(main).or_default().push((index, row));
+        }
+    }
+    let children: std::collections::HashSet<usize> = layers.values().flatten().map(|&(_, row)| row).collect();
+    let mut ordered = Vec::with_capacity(rows.len());
+    for row in rows {
+        if children.contains(&row) {
+            continue;
+        }
+        ordered.push(row);
+        if let Some(mut family) = layers.remove(&row) {
+            family.sort_unstable();
+            ordered.extend(family.into_iter().map(|(_, row)| row));
+        }
+    }
+    ordered
 }
 
 /// A lane's key in the scene: the text the front end holds for a lane and sends back to name it.

@@ -20,7 +20,7 @@ async function canvases({ roundRect = true } = {}) {
     });
     return {
       calls, getContext: () => ctx, clientWidth: 300, clientHeight: 80, scrollTop: 0,
-      dataset: {}, style: {}, children: [], addEventListener() {}, append() {}, prepend() {}, setAttribute() {},
+      dataset: {}, style: { setProperty() {} }, children: [], addEventListener() {}, append() {}, prepend() {}, setAttribute() {},
     };
   }
   const get = id => {
@@ -278,4 +278,42 @@ test("a pushed L or R flag never paints over the other one, at either edge of th
     assert.ok(l[1] <= r[0] || r[1] <= l[0], `[${left}, ${right}] flags overlap: ${JSON.stringify([l, r])}`);
     for (const [from, to] of [l, r]) assert.ok(from >= 0 && to <= 300, `[${left}, ${right}] flag off the ruler`);
   }
+});
+
+// Yoge, 2026-11-21: only while folded, a main lane also shows its layers' hits, in one fixed second
+// colour (tokens.css --editor-secondary), never a volume colour or the selection blue.
+test("a folded main lane draws its layers' hits in the second colour; unfolded, each hit draws once on its own row", async () => {
+  const { get, paint, evaluate } = await canvases();
+  const grid = get("grid");
+  get("scroll").clientHeight = 200;
+  evaluate(`
+    view = { ...view, activeLane: null };
+    scene.lanes = [
+      { key: "F0", colourKey: "Skin|normal-hitfinish", name: "normal-hitfinish", family: "normal-hitfinish", index: 0, group: "normal" },
+      { key: "F2", colourKey: "Skin|normal-hitfinish2", name: "normal-hitfinish2", family: "normal-hitfinish", index: 2, group: "normal" },
+      { key: "F3", colourKey: "Skin|normal-hitfinish3", name: "normal-hitfinish3", family: "normal-hitfinish", index: 3, group: "normal" },
+    ];
+    scene.moments = [[1000, 80, true, [[0, false]]], [1500, 30, true, [[1, false]]], [2000, 100, true, [[2, true]]]];
+    renderLanes();
+  `);
+  const diamonds = () => grid.calls.filter(call => call.name === "fill").map(call => call.fill);
+  const second = evaluate("layerPreviewColour");
+  assert.equal(second, "#c4c4c4");
+  const tokens = await readFile(new URL("../ui/src/tokens.css", import.meta.url), "utf8");
+  assert.match(tokens, /--dark-secondary: #c4c4c4;/);
+  assert.match(tokens, /--editor-secondary: var\(--dark-secondary\);/);
+
+  paint("");
+  assert.equal(diamonds().length, 3);
+  assert.ok(!diamonds().includes(second), "unfolded: no preview hits");
+
+  paint('laneHeaderAction("family", 0)');
+  // Row 0 is the folder header, row 1 the main lane: its own hit in its volume colour, then both layers' in the second colour.
+  const fills = diamonds();
+  assert.deepEqual(fills.filter(fill => fill === second).length, 2);
+  assert.deepEqual(fills.filter(fill => fill !== second), [evaluate("volumeColour(80)")]);
+  // A diamond starts at its top point, then goes to its right point 6 px lower.
+  const moves = grid.calls.filter((call, at) => call.name === "moveTo" && grid.calls[at + 1]?.name === "lineTo" &&
+    grid.calls[at + 1].args[1] === call.args[1] + 6).map(call => call.args[1]);
+  assert.deepEqual(moves, [45 - 6, 45 - 6, 45 - 6], "all three on the main lane's row");
 });

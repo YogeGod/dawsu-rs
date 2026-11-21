@@ -41,6 +41,7 @@ let selectionLanesOnly = false;
 const collapsedFamilies = new Set();
 const laneColours = new Map();
 let familyParents = new Map();
+let familyLayers = new Map();
 let previewParents = new Map();
 const speedButtons = [...document.querySelectorAll("[data-playback-speed]")];
 const sampleFolderNames = { normal: "Normal set", soft: "Soft set", drum: "Drum set" };
@@ -75,6 +76,9 @@ function volumeColour(volume) {
 // The colour a lane has until the mapper picks one: v3's lane lightness with no chroma, the
 // bundle's laneGrey (ui/src/lib/colour.js). Hit diamonds keep the volume colours (Yoge, 2026-11-19).
 const laneGrey = "#9e9e9e";
+// A folded main lane's preview of its layers' hits: one fixed colour, tokens.css --editor-secondary
+// (Yoge, 2026-11-21), apart from the volume colours, the selection blue and the muted grey.
+const layerPreviewColour = "#c4c4c4";
 let pending = Promise.resolve();
 let requests = 0;
 let refreshing = false;
@@ -217,7 +221,11 @@ function show(next) {
       $("lane-filter").value = "";
     }
     if (loaded || !layoutWrites) hydrateLaneLayout(view.scene.laneLayout);
+    // A new lane (a numbered layer from +, Ctrl+L or the lane menu) shows at once: its family unfolds.
+    const unfolded = !loaded && scene ? (view.scene.lanes ?? []).slice(scene.lanes?.length ?? Infinity)
+      .filter(lane => collapsedFamilies.delete(lane.family)) : [];
     scene = view.scene;
+    if (unfolded.length) saveLaneLayout();
   }
   followBookmarkPick();
   if (rulerPointer || rulerDrag) refreshRulerCursor();
@@ -431,17 +439,45 @@ function laneTitle(lane) {
 
 function orderedLaneRows() {
   const rows = scene.laneOrder ?? scene.lanes.map((_, row) => row);
-  if (!orderedLaneKeys.length) return rows;
+  if (!orderedLaneKeys.length) return familyOrder(rows);
   const rank = new Map(orderedLaneKeys.map((key, index) => [key, index]));
   const position = row => rank.get(scene.lanes[row].colourKey) ?? rank.size;
-  return [...rows].sort((left, right) => position(left) - position(right));
+  return familyOrder([...rows].sort((left, right) => position(left) - position(right)));
+}
+
+// A family's main lane: the lane at custom index 1, else its skin sample (index 0), among rows.
+function familyMains(rows) {
+  const mains = new Map();
+  for (const row of rows) {
+    const { family, index } = scene.lanes[row] ?? {};
+    if (family != null && (index === 1 || (index === 0 && !mains.has(family)))) mains.set(family, row);
+  }
+  return mains;
+}
+
+// Numbered layers sit directly under their main lane, by number (Yoge, 2026-11-21); without a main
+// lane they stay ordinary lanes where they are. main.rs's family_order does the same.
+function familyOrder(rows) {
+  const mains = familyMains(rows);
+  const layers = new Map();
+  for (const row of rows) {
+    const main = mains.get(scene.lanes[row]?.family);
+    if (main === undefined || main === row) continue;
+    if (!layers.has(main)) layers.set(main, []);
+    layers.get(main).push(row);
+  }
+  const children = new Set([...layers.values()].flat());
+  const byNumber = (left, right) => scene.lanes[left].index - scene.lanes[right].index || left - right;
+  return rows.flatMap(row => children.has(row) ? [] : [row, ...(layers.get(row)?.sort(byNumber) ?? [])]);
 }
 
 function adjacentLaneForMove(row, direction) {
-  if (view.drumView?.enabled || !scene?.lanes[row]?.colourKey) return null;
-  const position = laneRows.indexOf(row);
+  if (view.drumView?.enabled || !scene?.lanes[row]?.colourKey || familyLayers.has(row)) return null;
+  // A main lane moves with its layers, past the next lane or family; a layer keeps its place by number.
+  const units = laneRows.filter(candidate => typeof candidate !== "number" || !familyLayers.has(candidate));
+  const position = units.indexOf(row);
   if (position < 0) return null;
-  const adjacent = laneRows[position + direction];
+  const adjacent = units[position + direction];
   return typeof adjacent === "number" && scene.lanes[adjacent].colourKey &&
     scene.lanes[adjacent].group === scene.lanes[row].group ? adjacent : null;
 }
@@ -499,15 +535,17 @@ function groupedLaneRows(eligible) {
     if (!families.has(family)) families.set(family, []);
     families.get(family).push(row);
   }
+  // A family folds only under a shown main lane, so a fold never hides a layer whose main lane is
+  // removed, filtered out or unused.
+  const mains = familyMains(eligible);
   for (const [family, rows] of families) {
-    if (rows.length < 2) continue;
-    const parent = rows.find(row => scene.lanes[row].index === 1) ??
-      rows.find(row => scene.lanes[row].index === 0) ?? rows[0];
+    const parent = mains.get(family);
+    if (rows.length < 2 || parent === undefined) continue;
     familyParents.set(parent, family);
-    if (collapsedFamilies.has(family)) {
-      for (const row of rows) {
-        if (row !== parent) previewParents.set(row, parent);
-      }
+    for (const row of rows) {
+      if (row === parent) continue;
+      familyLayers.set(row, parent);
+      if (collapsedFamilies.has(family)) previewParents.set(row, parent);
     }
   }
 
@@ -539,6 +577,7 @@ function renderLanes() {
       .some(name => name?.toLowerCase().includes(filter));
   };
   familyParents = new Map();
+  familyLayers = new Map();
   previewParents = new Map();
   let drumNames = [];
   if (view.drumView?.enabled && scene.drumRows) {
@@ -604,9 +643,11 @@ function laneHeaderModel(drumNames) {
       folder: !drum && lane.group ? lane.group : null,
       active: view.activeLane === row, selected: selectionLaneKeys.has(lane.key),
       muted: !!lane.muted, solo: !!lane.solo, quiet: !!lane.muted || (anySolo && !lane.solo),
-      layer: !drum && !!lane.group && lane.index > 1,
+      layer: !drum && familyLayers.has(row),
       family: family == null ? null : { collapsed, label: (collapsed ? "Expand " : "Collapse ") + lane.name + " layers" },
-      addLayer: lane.canAddLayer ? "Add numbered " + lane.name + " layer" : null,
+      // The drum view adds no lanes (vault rule) and removes none.
+      addLayer: !drum && lane.canAddLayer ? "Add numbered " + lane.name + " layer" : null,
+      remove: drum ? null : { label: "Remove " + (renamedLanes.has(lane.colourKey) ? label : sound.name), disabled: !lane.canDelete },
     };
   });
   return { names: view.panels?.laneNames !== false, busy: !!view.busy, rows };
@@ -656,8 +697,15 @@ function laneHeaderAction(kind, ...args) {
       break;
     }
     case "addLayer":
-      act({ kind: "lane", row: args[0], operation: "add_layer" });
+      if (!view.drumView?.enabled) act({ kind: "lane", row: args[0], operation: "add_layer" });
       break;
+    case "remove": {
+      // One undo step takes the lane and its hits; Undo brings both back, so there is no question first.
+      const lane = scene.lanes[args[0]];
+      if (!lane?.canDelete || view.drumView?.enabled) return;
+      act({ kind: "delete_lane", target: { map: scene.path, lane: lane.sourceKey }, revision: scene.laneRevision });
+      break;
+    }
   }
 }
 
@@ -1416,8 +1464,12 @@ function paint() {
         const y = (lanePositions.get(parent) + .5) * rowHeight - scrollTop;
         if (y < -8 || y > g.height + 8) continue;
         g.ctx.save();
-        g.ctx.globalAlpha *= .3;
-        g.ctx.fillStyle = listenMuted ? "#858585" : volumeColour(hitVolume ?? volume);
+        // A folded main lane shows its layers' hits whole, in the second colour; a folded folder, faint.
+        if (typeof parent === "number") g.ctx.fillStyle = layerPreviewColour;
+        else {
+          g.ctx.globalAlpha *= .3;
+          g.ctx.fillStyle = listenMuted ? "#858585" : volumeColour(hitVolume ?? volume);
+        }
         fillHitDiamond(g.ctx, x, y);
         g.ctx.restore();
       }
@@ -1562,7 +1614,9 @@ function pointer(event, phase, gesture = drag) {
 function revealLayerPreview(row, time, pointerY) {
   const family = familyParents.get(row);
   const folder = typeof row === "string" && collapsedFolders.has(row);
-  if (!folder && !collapsedFamilies.has(family)) return false;
+  // A layer's hit on a folded main lane is a preview only: the click goes to the tool on the main
+  // lane, so Draw can still stack a hit there (Yoge, 2026-11-21).
+  if (!folder) return false;
   const tolerance = 6.5 / scene.zoom;
   let nearest;
   let distance = tolerance;

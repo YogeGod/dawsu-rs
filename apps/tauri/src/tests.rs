@@ -2137,9 +2137,16 @@ fn drum_window_lanes_carry_the_numbers_their_lane_headers_show() {
     app.set_lane_layout(dawsu_application::LaneLayout { lane_order: layout_keys, ..Default::default() }).unwrap();
     let view = answer(&mut app, DrumRequest::Context { known: None }).unwrap();
     let count = headers.len() as u64;
+    let family: Vec<&str> = soft.iter().map(|lane| lane["key"].as_str().unwrap()).collect();
     for lane in view["lanes"].as_array().unwrap() {
         let key = lane["key"].as_str().unwrap();
-        assert_eq!(lane["number"].as_u64(), headers.get(key).map(|n| count + 1 - n), "{key} reversed");
+        // The soft hitnormal family keeps its main lane (index 1) above its skin lane, so within the
+        // reversed order the pair keeps its own order.
+        let from = match family.iter().position(|member| *member == key) {
+            Some(at) => family[1 - at],
+            None => key,
+        };
+        assert_eq!(lane["number"].as_u64(), headers.get(from).map(|n| count + 1 - n), "{key} reversed");
     }
 }
 
@@ -2453,4 +2460,138 @@ fn the_menu_command_list_matches_the_command_catalogue() {
     let unknown: Vec<_> = named.difference(&catalogue).collect();
     assert!(missing.is_empty(), "catalogue commands missing from commands.js: {missing:?}");
     assert!(unknown.is_empty(), "commands.js names commands the catalogue lacks: {unknown:?}");
+}
+
+fn finish(index: u32) -> dawsu_foundation::SampleIdentity {
+    dawsu_foundation::SampleIdentity::Standard {
+        set: dawsu_foundation::SampleSet::Normal,
+        sound: dawsu_foundation::Sound::Hit(dawsu_foundation::Hitsound::Finish),
+        index: dawsu_foundation::CustomIndex::new(index),
+    }
+}
+
+#[test]
+fn numbered_layers_sort_by_number_directly_under_their_main_lane() {
+    use super::family_order;
+    let clap = dawsu_foundation::SampleIdentity::Standard {
+        set: dawsu_foundation::SampleSet::Normal,
+        sound: dawsu_foundation::Sound::Hit(dawsu_foundation::Hitsound::Clap),
+        index: dawsu_foundation::CustomIndex::new(0),
+    };
+    let file = dawsu_foundation::SampleIdentity::File("kick.wav".into());
+    let order = |lanes: &[&dawsu_foundation::SampleIdentity], rows: &[usize]| family_order(rows.to_vec(), |row| lanes[row]);
+    // Finish 3 and Finish 2 were added after Clap and a map file; they move under Finish (skin), by number.
+    let (skin, one, two, three) = (finish(0), finish(1), finish(2), finish(3));
+    let lanes = [&skin, &clap, &file, &three, &two];
+    assert_eq!(order(&lanes, &[0, 1, 2, 3, 4]), [0, 4, 3, 1, 2]);
+    // The family's file at custom index 1 is its main lane; the skin sample is its first layer, and the
+    // family sits where the main lane sits.
+    let lanes = [&skin, &clap, &three, &two, &one];
+    assert_eq!(order(&lanes, &[0, 1, 2, 3, 4]), [1, 4, 0, 3, 2]);
+    // A saved order that splits the family does not split it.
+    assert_eq!(order(&lanes, &[3, 1, 4, 2, 0]), [1, 4, 0, 3, 2]);
+    // Without a main lane (removed, hidden or missing), layers stay ordinary lanes where they are.
+    let lanes = [&clap, &three, &file, &two];
+    assert_eq!(order(&lanes, &[0, 1, 2, 3]), [0, 1, 2, 3]);
+    // Rows not in the list (hidden lanes) take no part.
+    let lanes = [&skin, &clap, &two];
+    assert_eq!(order(&lanes, &[1, 2]), [1, 2]);
+}
+
+#[test]
+fn scene_and_drum_window_put_a_numbered_layer_under_its_main_lane_even_after_a_saved_order() {
+    use super::drum_window::{DrumRequest, answer};
+    let fixture = Fixture::new("layer-family-order");
+    let map = fixture.0.join("map.osu");
+    let tone = b"RIFF\x26\0\0\0WAVEfmt \x10\0\0\0\x01\0\x01\0\x80\xbb\0\0\0w\x01\0\x02\0\x10\0data\x02\0\0\0\0\x40";
+    fs::write(fixture.0.join("normal-hitfinish3.wav"), tone).unwrap();
+    // A skin finish, a clap and a whistle, then a finish on custom index 3.
+    fs::write(&map, "osu file format v14\n[General]\nMode:0\n[TimingPoints]\n0,500,4,1,0,100,1,0\n[HitObjects]\n256,192,500,1,4,0:0:0:0:\n256,192,1000,1,8,0:0:0:0:\n256,192,1500,1,2,0:0:0:0:\n256,192,2000,1,4,1:0:3:0:\n").unwrap();
+    let mut app = Application::headless();
+    open(&mut app, &map);
+    let scene = snapshot(&app, true)["scene"].clone();
+    let names: Vec<String> = scene["laneOrder"].as_array().unwrap().iter()
+        .map(|row| scene["lanes"][row.as_u64().unwrap() as usize]["name"].as_str().unwrap().to_owned()).collect();
+    let at = |name: &str| names.iter().position(|shown| shown == name).unwrap_or_else(|| panic!("{name} in {names:?}"));
+    assert_eq!(at("normal-hitfinish3"), at("normal-hitfinish") + 1, "{names:?}");
+
+    // The drum window numbers its lanes as the headers do, also after a saved order puts the layer first.
+    let keys: Vec<String> = scene["laneOrder"].as_array().unwrap().iter().rev()
+        .map(|row| scene["lanes"][row.as_u64().unwrap() as usize]["colourKey"].as_str().unwrap().to_owned()).collect();
+    app.set_lane_layout(dawsu_application::LaneLayout { lane_order: keys, ..Default::default() }).unwrap();
+    let view = answer(&mut app, DrumRequest::Context { known: None }).unwrap();
+    let number = |name: &str| view["lanes"].as_array().unwrap().iter()
+        .find(|lane| lane["name"] == name).and_then(|lane| lane["number"].as_u64()).unwrap();
+    assert_eq!(number("normal-hitfinish3"), number("normal-hitfinish") + 1);
+}
+
+#[test]
+fn a_folded_family_survives_saving_and_reopening_the_difficulty() {
+    let fixture = Fixture::new("layer-family-fold");
+    let map = fixture.0.join("map.osu");
+    fs::write(&map, "osu file format v14\n[General]\nMode:0\n[TimingPoints]\n0,500,4,1,0,100,1,0\n[HitObjects]\n256,192,500,1,4,0:0:0:0:\n").unwrap();
+    let mut app = Application::with_data_root(fixture.0.join("data"));
+    app.error = None;
+    open(&mut app, &map);
+    let path = app.document().unwrap().path.clone();
+    serde_json::from_value::<Action>(serde_json::json!({
+        "kind": "lane_layout", "path": path, "persist": true,
+        "value": { "folder_order": ["normal", "soft", "drum"], "collapsed_folders": [],
+            "collapsed_families": ["normal-hitfinish"], "lane_colours": {} },
+    })).unwrap().run(&mut app);
+    assert!(app.error.is_none(), "{:?}", app.error);
+    open(&mut app, &map);
+    let scene = snapshot(&app, true)["scene"].clone();
+    assert_eq!(scene["laneLayout"]["collapsed_families"], serde_json::json!(["normal-hitfinish"]));
+}
+
+#[test]
+fn removing_a_lane_takes_its_hits_in_one_step_and_keeps_its_layers() {
+    let fixture = Fixture::new("remove-lane");
+    let map = fixture.0.join("map.osu");
+    let tone = b"RIFF\x26\0\0\0WAVEfmt \x10\0\0\0\x01\0\x01\0\x80\xbb\0\0\0w\x01\0\x02\0\x10\0data\x02\0\0\0\0\x40";
+    fs::write(fixture.0.join("normal-hitfinish.wav"), tone).unwrap();
+    fs::write(fixture.0.join("normal-hitfinish2.wav"), tone).unwrap();
+    let original = "osu file format v14\n[General]\nMode:0\n[TimingPoints]\n0,500,4,1,0,100,1,0\n[HitObjects]\n256,192,500,1,4,1:0:1:0:\n256,192,1000,1,4,1:0:1:0:\n256,192,1500,1,4,1:0:2:0:\n";
+    fs::write(&map, original).unwrap();
+    let mut app = Application::headless();
+    open(&mut app, &map);
+    let scene = |app: &Application| snapshot(app, true)["scene"].clone();
+    let before = scene(&app);
+    let row_of = |scene: &serde_json::Value, index: u64| scene["lanes"].as_array().unwrap().iter()
+        .position(|lane| lane["family"] == "normal-hitfinish" && lane["index"] == index).unwrap();
+    let shown = |scene: &serde_json::Value, row: usize| scene["laneOrder"].as_array().unwrap().iter()
+        .any(|value| value.as_u64() == Some(row as u64));
+    let main = row_of(&before, 1);
+    let layer = row_of(&before, 2);
+    assert_eq!(before["lanes"][main]["index"], 1);
+    assert_eq!(before["lanes"][main]["hitCount"], 2);
+    serde_json::from_value::<Action>(serde_json::json!({
+        "kind": "delete_lane", "target": {"map": before["path"], "lane": before["lanes"][main]["sourceKey"]},
+        "revision": before["laneRevision"],
+    })).unwrap().run(&mut app);
+    assert!(app.error.is_none(), "{:?}", app.error);
+    assert_eq!(app.status, "Removed normal-hitfinish and 2 hits.");
+    let after = scene(&app);
+    assert!(!shown(&after, main));
+    assert_eq!(after["lanes"][main]["hitCount"], 0);
+    // Only the main lane goes: its layer keeps its lane and its hit.
+    assert!(shown(&after, layer));
+    assert_eq!(after["lanes"][layer]["hitCount"], 1);
+    // One undo step brings back the lane and both hits.
+    Action::Command { id: "undo".into() }.run(&mut app);
+    let undone = scene(&app);
+    assert!(shown(&undone, main));
+    assert_eq!(undone["lanes"][main]["hitCount"], 2);
+    Action::Command { id: "redo".into() }.run(&mut app);
+
+    // Nothing is written to the mapset on removal, and the sample file stays.
+    assert_eq!(fs::read_to_string(&map).unwrap(), original);
+    assert!(fixture.0.join("normal-hitfinish.wav").exists());
+    // The saved map leaves the removed lane's hits out and keeps the layer's.
+    Action::Command { id: "save".into() }.run(&mut app);
+    wait_for_job(&mut app);
+    let saved = fs::read_to_string(&map).unwrap();
+    assert!(saved.contains("256,192,500,1,0,") && saved.contains("256,192,1000,1,0,"), "{saved}");
+    assert!(saved.contains("256,192,1500,1,4,1:0:2:0:"), "{saved}");
 }

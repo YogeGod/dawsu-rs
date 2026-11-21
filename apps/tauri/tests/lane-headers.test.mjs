@@ -69,15 +69,16 @@ const lanes = evaluate => headers(evaluate).rows.filter(row => row.type === "lan
 test("a lane header row carries its number, sound name, set tag, icon and controls", async () => {
   const { evaluate, get } = await frontend();
   evaluate(fixture);
-  assert.equal(evaluate("JSON.stringify(laneRows)"), '["soft",0,1,2,4,5,6,3]');
+  // Normal's skin lane is a layer of Normal (index 1), so it sits under it (Yoge, 2026-11-21).
+  assert.equal(evaluate("JSON.stringify(laneRows)"), '["soft",0,4,1,2,5,6,3]');
   const rows = headers(evaluate).rows;
   assert.equal(rows[0].type, "folder");
   assert.deepEqual(rows.slice(1).map(row => [row.name, row.tag, row.icon, row.number]), [
-    ["Normal", "Soft", "normal", 1], ["Clap 2", "Soft", "clap", 2], ["Slide", "Soft", "slide", 3],
-    ["Normal", "Soft · skin", "normal", 5], ["Slide whistle", "Soft", "whistle", 6], ["Tick", "Soft", "tick", 7],
-    ["Kick", "File", "file", 4],
+    ["Normal", "Soft", "normal", 1], ["Normal", "Soft · skin", "normal", 2], ["Clap 2", "Soft", "clap", 3],
+    ["Slide", "Soft", "slide", 4], ["Slide whistle", "Soft", "whistle", 6], ["Tick", "Soft", "tick", 7],
+    ["Kick", "File", "file", 5],
   ]);
-  const [normal, clap, , , , , kick] = rows.slice(1);
+  const [normal, skin, clap, , , , kick] = rows.slice(1);
   assert.deepEqual(normal, {
     type: "lane", key: "lane:0", row: 0, number: 1, name: "Normal", label: "soft-hitnormal", display: "soft-hitnormal",
     title: "soft-hitnormal · Select and audition · Ctrl/Cmd toggles · Shift selects a range",
@@ -85,16 +86,18 @@ test("a lane header row carries its number, sound name, set tag, icon and contro
     muted: false, solo: false, quiet: false, layer: false,
     family: { collapsed: false, label: "Collapse soft-hitnormal layers" },
     addLayer: "Add numbered soft-hitnormal layer",
+    remove: { label: "Remove Normal", disabled: true },
   });
   assert.equal(clap.active, true, "view.activeLane");
-  assert.equal(clap.layer, true, "a numbered layer above 1 is indented");
+  assert.equal(skin.layer, true, "a layer under its main lane is indented");
+  assert.equal(clap.layer, false, "a numbered layer without its main lane is an ordinary lane");
   assert.equal(kick.folder, null, "a map file lane sits outside the folders");
   assert.equal(get("lanes").style["--lane-row-height"], "30px");
   assert.equal(get("lanes").children.length, 0, "app.js builds no header nodes any more");
 
   evaluate('renamedLanes.set("Skin|soft-hitclap2", "Snare"); renderLanes();');
-  assert.equal(lanes(evaluate)[1].name, "Snare");
-  assert.equal(lanes(evaluate)[1].tag, "Soft");
+  assert.equal(lanes(evaluate)[2].name, "Snare");
+  assert.equal(lanes(evaluate)[2].tag, "Soft");
 
   evaluate("showLaneInfo = true; renderLanes();");
   assert.equal(lanes(evaluate)[0].name, "soft-hitnormal · idx 1");
@@ -109,10 +112,10 @@ test("a lane is grey until the mapper picks a colour; mute and solo grey the oth
   evaluate(fixture);
   assert.ok(lanes(evaluate).every(row => row.colour === null), "no sound-colour fallback");
   evaluate('laneColours.set("Skin|soft-hitclap2", "#d04932"); scene.lanes[0].muted = true; renderLanes();');
-  assert.equal(lanes(evaluate)[1].colour, "#d04932");
+  assert.equal(lanes(evaluate)[2].colour, "#d04932");
   assert.deepEqual(lanes(evaluate).map(row => row.quiet), [true, false, false, false, false, false, false]);
   evaluate("scene.lanes[2].solo = true; renderLanes();");
-  assert.deepEqual(lanes(evaluate).map(row => row.quiet), [true, true, false, true, true, true, true]);
+  assert.deepEqual(lanes(evaluate).map(row => row.quiet), [true, true, true, false, true, true, true]);
 });
 
 test("the part gets the rows only when they change", async () => {
@@ -131,7 +134,7 @@ test("clicking a lane selects and auditions it like its name", async () => {
   await evaluate("pending");
   assert.deepEqual(JSON.parse(JSON.stringify(calls.filter(Boolean))), [{ kind: "lane", row: 1, operation: "audition" }]);
   assert.equal(evaluate("JSON.stringify([...selectionLaneKeys])"), '["c2"]');
-  assert.equal(lanes(evaluate)[1].selected, true);
+  assert.equal(lanes(evaluate)[2].selected, true);
   // Ctrl, Cmd and Shift change the selection without auditioning.
   evaluate("laneHeaderAction('select', 0, { ctrlKey: true })");
   await evaluate("pending");
@@ -182,7 +185,7 @@ test("the drum view keeps its rows and names and adds no tags", async () => {
   assert.equal(rows[0].folder, null);
   assert.equal(rows[0].icon, "clap");
   evaluate("view.drumView.enabled = false; renderLanes();");
-  assert.equal(evaluate("JSON.stringify(laneRows)"), '["soft",0,1,2,4,5,6,3]');
+  assert.equal(evaluate("JSON.stringify(laneRows)"), '["soft",0,4,1,2,5,6,3]');
 });
 
 test("the header column keeps the design's 250px width and colours every web view draws", async () => {

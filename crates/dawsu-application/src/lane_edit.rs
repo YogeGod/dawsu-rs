@@ -82,9 +82,17 @@ impl Application {
         if doc.composer.history.version() != expected_revision {
             return Err("The hits changed before deletion. Review the lane again".into());
         }
+        let hits = doc.composer.hitsounds();
+        let name = super::lane_name(hits.lane_slot(lane).unwrap_or(lane));
+        let count = hits.moments().iter().filter(|moment| moment.has_hit(lane)).count();
         let doc = self.document.as_mut().expect("open map was just validated");
         doc.composer.delete_lane(lane)?;
         self.restore_active_lane(slot);
+        self.status = match count {
+            0 => format!("Removed {name}."),
+            1 => format!("Removed {name} and 1 hit."),
+            _ => format!("Removed {name} and {count} hits."),
+        };
         Ok(())
     }
 }
