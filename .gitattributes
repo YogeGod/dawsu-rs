@@ -10,3 +10,5 @@ apps/tauri/dist/ui/** binary
 apps/tauri/ui/src/** text eol=lf
 # The built-in drum maps are the text dawsu! writes, LF line endings included.
 crates/dawsu-hitsounding/drum-map-presets/** text eol=lf
+# osu!'s default sounds are byte-for-byte copies of osu-resources' files (CC BY-NC 4.0).
+crates/dawsu-application/assets/default-sounds/*.wav binary

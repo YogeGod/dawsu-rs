@@ -36,8 +36,10 @@ impl Application {
         if doc.selected_slider_body_index() != Some(index) {
             return Err("Select a hit point on the slider to change its body sounds".into());
         }
-        let volume = volume.clamp(0, 100);
         let body = &doc.composer.hitsounds().bodies()[index];
+        // A changed volume is never under 5% (R15); a quieter one the map already has may stay.
+        let floor = dawsu_hitsounding::rules::SAVED_VOLUME_FLOOR;
+        let volume = if volume == body.volume() { volume } else { volume.clamp(floor, 100) };
         let changed_set = set.filter(|&set| body.set().is_some_and(|before| before != set));
         let changed_volume = body.volume() != volume;
         let changed_whistle = body.whistle() != whistle;
@@ -63,6 +65,19 @@ impl Application {
             }
             if changed_volume {
                 hits.set_body_volume(index, volume);
+                // The head's hits move with the body and stop at 5% too.
+                let object = hits.bodies()[index].object();
+                let head = hits.moments().iter()
+                    .position(|m| m.place() == Place::SliderNode { object, node: 0 });
+                if let Some(head) = head {
+                    let id = dawsu_hitsounding::MomentId(head);
+                    let quiet: Vec<_> = hits.moment(id).hits()
+                        .filter(|lane| hits.moment(id).hit_volume(lane) < floor)
+                        .cloned().collect();
+                    for lane in quiet {
+                        hits.set_hit_volume(id, &lane, floor);
+                    }
+                }
             }
         });
 
@@ -111,6 +126,40 @@ mod tests {
         fs,
         time::{Duration, Instant},
     };
+
+    #[test]
+    fn a_slider_body_volume_under_5_percent_becomes_5() {
+        let fixture = Scratch::new("slider-body-volume-floor");
+        let path = fixture.path("Slider.osu");
+        let map = concat!(
+            "osu file format v14\n\n[Difficulty]\nSliderMultiplier:1.4\nSliderTickRate:1\n\n",
+            "[TimingPoints]\n0,500,4,2,1,60,1,0\n\n[HitObjects]\n",
+            "100,100,1000,2,0,L|300:100,2,200,0|0|0,0:0|0:0|0:0,0:0:0:0:\n",
+        );
+        fs::write(&path, map).unwrap();
+        let mut app = Application::headless();
+        app.preferences.default_samples = fixture.path("defaults");
+        app.request_open(path);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while app.busy {
+            app.poll();
+            assert!(Instant::now() < deadline, "slider fixture did not open");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(app.error.is_none(), "{:?}", app.error);
+        app.command("selectAll");
+        let whistle = app.document().unwrap().composer.hitsounds().bodies()[0].whistle();
+        app.edit_slider_body(0, None, None, whistle, 2).unwrap();
+
+        let hits = app.document().unwrap().composer.hitsounds();
+        assert_eq!(hits.bodies()[0].volume(), 5, "typing 2 gives 5");
+        let object = hits.bodies()[0].object();
+        let head = hits.moments().iter()
+            .find(|m| m.place() == Place::SliderNode { object, node: 0 })
+            .expect("the slider has a head");
+        assert_eq!(head.volume(), 5, "the head moves with the body and stops at 5");
+        assert!(head.hits().all(|lane| head.hit_volume(lane) >= 5));
+    }
 
     #[test]
     fn edited_slider_cues_load_and_play_new_slide_whistle_and_tick_samples() {

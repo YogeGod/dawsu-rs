@@ -1,6 +1,6 @@
 # Third-party notices
 
-dawsu! ships with no licence of its own (ADR 0023). Some of its code is ported from projects under the MIT Licence, and keeps their notice (ADR 0027).
+dawsu! ships with no licence of its own (ADR 0023). Some of its code is ported from projects under the MIT Licence, and keeps their notice (ADR 0027). It also ships osu!'s default sounds, which are under CC BY-NC 4.0 (last section).
 
 ## osu!lazer (ppy/osu)
 
@@ -121,3 +121,9 @@ Permission to use, copy, modify, and/or distribute this software for any purpose
 
 THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 ```
+
+## osu! default sounds (ppy/osu-resources)
+
+dawsu! ships 21 of osu!'s default sounds, unchanged: hitnormal, hitwhistle, hitfinish, hitclap, sliderslide, slidertick and sliderwhistle for the normal, soft and drum sets. They are in `crates/dawsu-application/assets/default-sounds/`, copied from [`osu.Game.Resources/Skins/Legacy/`](https://github.com/ppy/osu-resources/tree/46d344264e5938e168cfbbd2c8fab5f572ebeda4/osu.Game.Resources/Skins/Legacy) at tag `2026.1021.0` (commit `46d344264e5938e168cfbbd2c8fab5f572ebeda4`).
+
+Copyright (c) ppy Pty Ltd and osu-resources contributors. Licensed under the [Creative Commons Attribution-NonCommercial 4.0 International](https://creativecommons.org/licenses/by-nc/4.0/) licence; the full text is in `crates/dawsu-application/assets/default-sounds/LICENCE.md`. They are provided as-is, with no warranty. They may be shared for non-commercial purposes only, so no build that contains them may be sold. This is not an endorsement by ppy.

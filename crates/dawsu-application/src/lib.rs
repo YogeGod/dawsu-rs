@@ -1,6 +1,7 @@
 //! Documents, playback, storage and background jobs.
 
 mod bookmarks;
+mod default_sounds;
 mod slider_body;
 mod slider_export;
 mod commands;
@@ -1011,7 +1012,7 @@ impl Application {
         app
     }
     /// Uses `local` as the default sounds folder when none is saved and the folder exists.
-    /// The folder is only read. Its non-commercial sounds are never bundled.
+    /// The folder is only read.
     fn use_local_default_samples(&mut self, local: &Path) {
         if self.preferences.default_samples.as_os_str().is_empty() && local.is_dir() {
             self.preferences.default_samples = local.to_path_buf();
@@ -2906,7 +2907,8 @@ fn safe_child(root: &Path, name: &str) -> Result<PathBuf, String> {
     }
     Ok(child)
 }
-/// The file a lane plays: a pending file's kept copy, the mapset's file, or the skin's sound.
+/// The file a lane plays: a pending file's kept copy, the mapset's file, or the skin's sound
+/// (the default sounds folder's file, else the one dawsu! ships).
 fn sample_path(
     lane: &Lane,
     folder: &Path,
@@ -2927,6 +2929,8 @@ fn sample_path(
                     find_case_insensitive(defaults_list, &format!("{name}.{ext}"))
                         .and_then(|n| safe_child(defaults, n).ok())
                 })
+                // The chosen default sounds folder lacks it: osu!'s own sound, shipped with dawsu!.
+                .or_else(|| default_sounds::path(&format!("{name}.wav")))
                 .ok_or_else(|| format!("Sample unavailable: {}", lane_name(&lane.identity)))
         }
     }
@@ -3473,6 +3477,10 @@ mod project_workflow {
         std::fs::write(&map, SLIDER_MAP).unwrap();
         wav(&folder.join("a.wav"), 8192);
         wav(&folder.join("b.wav"), 4096);
+        // A file in the folder that is not audio, for the test whose mix must fail.
+        if second == "broken.wav" {
+            std::fs::write(folder.join(second), b"not audio").unwrap();
+        }
         let document = Document::read(&map).unwrap();
         let mut hits = document.composer.hitsounds().clone();
         hits.set_moment_state(dawsu_hitsounding::MomentId(0), 80, [
@@ -3567,10 +3575,13 @@ mod project_workflow {
         assert_eq!(diagnostics[0].message, "At 1000 ms a slider sound (soft-sliderslide) is on a hit. osu! plays slider sounds only on a slider body. Remove it from the hit.");
     }
 
+    /// The mix fails on a file that is in the folder but is not audio. A file that is not in the
+    /// folder no longer fails it: osu! plays the normal hitnormal in its place (`Lane::plays_as`),
+    /// and dawsu! ships that sound.
     #[test]
     fn a_failed_mix_render_stops_the_whole_save() {
         let scratch = Scratch::new("mix-render-fails");
-        let (document, hits, project) = mix_and_unwritable(&scratch, "missing.wav");
+        let (document, hits, project) = mix_and_unwritable(&scratch, "broken.wav");
         let mut diagnostics = Vec::new();
         let error = prepare(&scratch, &document, &hits, Some(&project), &mut diagnostics).err().unwrap();
         assert!(error.contains("Could not mix"), "{error}");
@@ -7093,5 +7104,55 @@ mod local_default_samples {
         app.preferences.default_samples = saved.clone();
         app.use_local_default_samples(&local);
         assert_eq!(app.preferences.default_samples, saved, "a saved folder is kept");
+    }
+}
+
+#[cfg(test)]
+mod shipped_default_sounds {
+    use super::*;
+    use dawsu_foundation::CustomIndex;
+    use dawsu_test_support::Scratch;
+
+    fn skin(set: SampleSet, sound: Sound, index: u32) -> Lane {
+        Lane { identity: SampleIdentity::Standard { set, sound, index: CustomIndex::new(index) }, source: LaneSource::Skin }
+    }
+
+    fn path_for(lane: &Lane, defaults: &Path) -> Result<PathBuf, String> {
+        let folder = defaults.parent().unwrap();
+        sample_path(lane, folder, &pending::Pending::default(), defaults, &pending::sample_folder(defaults))
+    }
+
+    #[test]
+    fn a_default_sound_the_folder_lacks_plays_osus_own_shipped_sound() {
+        let scratch = Scratch::new("shipped-defaults");
+        let defaults = scratch.path("defaults");
+        std::fs::create_dir(&defaults).unwrap();
+        for (lane, name) in [
+            (skin(SampleSet::Soft, Sound::Slider(SliderSound::Slide), 0), "soft-sliderslide.wav"),
+            (skin(SampleSet::Drum, Sound::Slider(SliderSound::Tick), 3), "drum-slidertick.wav"),
+            (skin(SampleSet::Normal, Sound::Slider(SliderSound::Whistle), 0), "normal-sliderwhistle.wav"),
+            (skin(SampleSet::Normal, Sound::Hit(Hitsound::Clap), 0), "normal-hitclap.wav"),
+        ] {
+            let path = path_for(&lane, &defaults).unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert_eq!(path, default_sounds::path(name).unwrap(), "{name}");
+            dawsu_audio::decode(&path).unwrap_or_else(|e| panic!("{name}: {e}"));
+        }
+        // No folder chosen at all: still osu!'s sound.
+        let none = scratch.path("not-chosen");
+        let slide = skin(SampleSet::Soft, Sound::Slider(SliderSound::Slide), 0);
+        assert_eq!(path_for(&slide, &none).unwrap(), default_sounds::path("soft-sliderslide.wav").unwrap());
+    }
+
+    #[test]
+    fn the_chosen_default_sounds_folder_comes_before_the_shipped_sound() {
+        let scratch = Scratch::new("shipped-defaults-order");
+        let defaults = scratch.path("defaults");
+        std::fs::create_dir(&defaults).unwrap();
+        std::fs::write(defaults.join("Soft-SliderSlide.ogg"), b"OggS").unwrap();
+        std::fs::write(defaults.join("drum-hitnormal.wav"), b"RIFF").unwrap();
+        let slide = skin(SampleSet::Soft, Sound::Slider(SliderSound::Slide), 0);
+        assert_eq!(path_for(&slide, &defaults).unwrap(), defaults.join("Soft-SliderSlide.ogg").canonicalize().unwrap());
+        let kick = skin(SampleSet::Drum, Sound::Hit(Hitsound::Normal), 0);
+        assert_eq!(path_for(&kick, &defaults).unwrap(), defaults.join("drum-hitnormal.wav").canonicalize().unwrap());
     }
 }
