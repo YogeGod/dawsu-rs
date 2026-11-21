@@ -5,9 +5,9 @@ edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
-# Audio analysis for the node graph (module map: references dawsu-foundation only).
+# Audio analysis for the node graph (module map: references dawsu-foundation and dawsu-graph only).
 [dependencies]
 dawsu-foundation = { path = "../dawsu-foundation" }
-
-[dev-dependencies]
+dawsu-graph = { path = "../dawsu-graph" }
+serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

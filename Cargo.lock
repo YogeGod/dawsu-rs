@@ -833,7 +833,9 @@ dependencies = [
  "dawsu-audio",
  "dawsu-editor",
  "dawsu-editor-composer",
+ "dawsu-editor-nodal",
  "dawsu-foundation",
+ "dawsu-graph",
  "dawsu-graph-audio",
  "dawsu-hitsounding",
  "dawsu-osu-format",
@@ -875,14 +877,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "dawsu-editor-nodal"
+version = "0.1.0"
+dependencies = [
+ "dawsu-editor",
+ "dawsu-editor-composer",
+ "dawsu-foundation",
+ "dawsu-graph",
+ "dawsu-hitsounding",
+ "dawsu-osu-format",
+ "serde_json",
+]
+
+[[package]]
 name = "dawsu-foundation"
 version = "0.1.0"
+
+[[package]]
+name = "dawsu-graph"
+version = "0.1.0"
+dependencies = [
+ "dawsu-foundation",
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "dawsu-graph-audio"
 version = "0.1.0"
 dependencies = [
  "dawsu-foundation",
+ "dawsu-graph",
+ "serde",
  "serde_json",
 ]
 
