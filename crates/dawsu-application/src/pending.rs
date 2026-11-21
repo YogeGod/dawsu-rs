@@ -85,19 +85,13 @@ impl Pending {
         names
     }
 
-    /// The names claimed for this mapset on disk that are this window's: its pending files, or
-    /// files a lane of `hits` plays. Another window's claim for a name this window never uses
-    /// doesn't count. Lowercased.
-    pub(crate) fn claimed_names(&self, hits: &Hitsounds) -> BTreeSet<String> {
+    /// The names claimed for this mapset on disk, by this or another window, lowercased. Another
+    /// window's claim counts too: once that window saves its file, a difficulty that looks the
+    /// name up starts playing it.
+    pub(crate) fn claimed_names(&self) -> BTreeSet<String> {
         let Some(store) = &self.store else { return BTreeSet::new() };
-        let lane_files: BTreeSet<String> = hits.lanes().iter().filter_map(|lane| match &lane.source {
-            LaneSource::File(name) => Some(name.replace('\\', "/").to_ascii_lowercase()),
-            _ => None,
-        }).collect();
         std::fs::read_dir(&store.claims).map(|entries| entries.filter_map(Result::ok)
-            .map(|entry| entry.file_name().to_string_lossy().to_ascii_lowercase())
-            .filter(|name| self.files.contains_key(name) || lane_files.contains(name))
-            .collect()).unwrap_or_default()
+            .map(|entry| entry.file_name().to_string_lossy().to_ascii_lowercase()).collect()).unwrap_or_default()
     }
 
     /// The custom indexes of the taken names.
@@ -116,16 +110,27 @@ impl Pending {
         let sha256 = sha256_hex(bytes);
         let extension = Path::new(name).extension().and_then(|e| e.to_str()).unwrap_or("wav").to_ascii_lowercase();
         let path = store.samples.join(format!("{sha256}.{extension}"));
-        std::fs::create_dir_all(&store.samples).map_err(|e| format!("Could not keep {name}: {e}"))?;
-        // The bytes are kept by their checksum, so another window may have kept them first.
-        let kept = || std::fs::read(&path).is_ok_and(|stored| stored == bytes);
-        if !kept() && let Err(error) = safe_write::create(&path, bytes) && !kept() {
-            return Err(format!("Could not keep {name}: {error}"));
-        }
+        // The claim comes first: a kept copy is never there without a claim that names it.
         std::fs::create_dir_all(&store.claims).map_err(|e| format!("Could not keep {name}: {e}"))?;
         let claim = store.claims.join(name.to_ascii_lowercase());
         safe_write::create(&claim, sha256.as_bytes())
             .map_err(|_| format!("{name} was just taken by another dawsu! window. Try again."))?;
+        let kept = || std::fs::read(&path).is_ok_and(|stored| stored == bytes);
+        let stored = std::fs::create_dir_all(&store.samples).map_err(|e| e.to_string()).and_then(|()| {
+            if kept() {
+                // Kept by an earlier sample with the same bytes: it counts from today.
+                touch(&path);
+                return Ok(());
+            }
+            match safe_write::create(&path, bytes) {
+                Err(_) if kept() => Ok(()),
+                result => result.map_err(|e| e.to_string()),
+            }
+        });
+        if let Err(error) = stored {
+            let _ = std::fs::remove_file(&claim);
+            return Err(format!("Could not keep {name}: {error}"));
+        }
         let file = PendingFile { name: name.to_string(), sha256, path };
         Arc::make_mut(&mut self.files).insert(name.to_ascii_lowercase(), file.clone());
         Ok(file)
@@ -264,11 +269,11 @@ pub(crate) fn used(file: &OsuFile, root: &Path, pending: &Pending, planned: &[St
 /// A sample that plays the skin's sound on both sides while dawsu! claimed one of its file names
 /// for a sample it made is refused too: that file was lost.
 #[allow(clippy::disallowed_methods)]
-pub(crate) fn check_written(file: &OsuFile, root: &Path, writes: &[String], editor: &[String], pending: &Pending, hits: &Hitsounds) -> Result<(), String> {
+pub(crate) fn check_written(file: &OsuFile, root: &Path, writes: &[String], editor: &[String], pending: &Pending) -> Result<(), String> {
     let mut after = list_folder(root).map_err(|e| e.to_string())?;
     after.extend(writes.iter().cloned());
     let written_samples = samples(file, &after);
-    let claimed = pending.claimed_names(hits);
+    let claimed = pending.claimed_names();
     for sample in written_samples.iter().filter(|sample| matches!(sample.plays, Plays::Skin { .. }) && sample.lazer.use_beatmap_samples) {
         for name in sample.lazer.legacy_lookup_names(true) {
             let lost = ["", ".wav", ".mp3", ".ogg"].iter().map(|ext| format!("{name}{ext}"))
@@ -375,14 +380,15 @@ static NEXT_PRESENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU6
 impl Presence {
     pub(crate) fn enter(data_root: &Path, mapset: &Path) -> Result<Self, String> {
         let folder = data_root.join("sessions").join(mapset_key(mapset));
-        std::fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
+        std::fs::create_dir_all(&folder).map_err(|e| format!("{}: {e}", folder.display()))?;
         let n = NEXT_PRESENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let path = folder.join(format!("{}-{n}.lock", std::process::id()));
         // Made and locked under a temporary name, then renamed: another window never finds an
         // unlocked lock file of a live session and removes it as ended.
         let making = path.with_extension(format!("lock{MAKING}"));
-        let file = std::fs::File::create(&making).map_err(|e| e.to_string())?;
-        let locked = file.try_lock().map_err(|e| e.to_string()).and_then(|()| std::fs::rename(&making, &path).map_err(|e| e.to_string()));
+        let file = std::fs::File::create(&making).map_err(|e| format!("{}: {e}", making.display()))?;
+        let locked = file.try_lock().map_err(|e| format!("Locking {}: {e}", making.display()))
+            .and_then(|()| safe_write::rename_waiting(&making, &path).map_err(|e| e.to_string()));
         if let Err(error) = locked {
             drop(file);
             let _ = std::fs::remove_file(&making);
@@ -391,8 +397,8 @@ impl Presence {
         Ok(Self { file: Some(file), path })
     }
 
-    /// Whether another session holds this mapset. Lock files of ended sessions are removed;
-    /// one still being made is left alone unless it is a minute old.
+    /// Whether another session holds this mapset. Lock files of ended sessions are removed. One
+    /// still being made counts as live unless it is a minute old, when it is removed.
     pub(crate) fn others_live(&self) -> bool {
         let Some(folder) = self.path.parent() else { return false };
         let Ok(entries) = std::fs::read_dir(folder) else { return false };
@@ -408,6 +414,8 @@ impl Presence {
                     .is_some_and(|age| age > std::time::Duration::from_secs(60));
                 if old {
                     let _ = std::fs::remove_file(&path);
+                } else {
+                    live = true;
                 }
                 continue;
             }
@@ -438,87 +446,111 @@ pub(crate) struct Ledger {
     path: PathBuf,
 }
 
-static NEXT_TEMP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
 #[derive(Default, serde::Serialize, serde::Deserialize)]
 struct LedgerFile {
     files: Vec<PendingSample>,
 }
 
 impl Ledger {
-    /// The listed files. A ledger that can't be read is kept aside, next to it with `corrupt` in
-    /// its name, and a new one is started: no file it listed is cleaned up.
-    pub(crate) fn entries(&self) -> Vec<PendingSample> {
-        let Ok(bytes) = std::fs::read(&self.path) else { return Vec::new() };
-        match serde_json::from_slice::<LedgerFile>(&bytes) {
-            Ok(file) => file.files,
-            Err(_) => {
-                // Linked under the first free name, never over an earlier aside, then removed.
-                let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis());
-                let kept = (0..1000).any(|k| {
-                    let aside = self.path.with_extension(format!("corrupt-{stamp}-{}-{k}.json", std::process::id()));
-                    std::fs::hard_link(&self.path, aside).is_ok()
-                });
-                if kept {
-                    let _ = std::fs::remove_file(&self.path);
-                }
-                Vec::new()
-            }
+    /// The listed files, read under the ledger's lock. A ledger that isn't there lists nothing;
+    /// one that can't be read is an error. A corrupt one is kept aside (see `read`).
+    pub(crate) fn entries(&self) -> Result<Vec<PendingSample>, String> {
+        self.locked(|| self.read())
+    }
+
+    /// Reads the ledger; the caller holds the lock. A corrupt ledger is kept aside, next to it
+    /// with `corrupt` in its name and never over an earlier aside, and a new one starts. When no
+    /// aside copy could be kept, reading fails and the ledger stays as it is.
+    fn read(&self) -> Result<Vec<PendingSample>, String> {
+        let bytes = match std::fs::read(&self.path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(format!("Reading the list of sample files dawsu! made ({}): {error}", self.path.display())),
+        };
+        if let Ok(file) = serde_json::from_slice::<LedgerFile>(&bytes) {
+            return Ok(file.files);
         }
+        let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis());
+        let kept = (0..1000).find_map(|k| {
+            let aside = self.path.with_extension(format!("corrupt-{stamp}-{}-{k}.json", std::process::id()));
+            if aside.exists() {
+                return None;
+            }
+            // A link where the file system has them, a copy where it doesn't.
+            let linked = std::fs::hard_link(&self.path, &aside).is_ok()
+                || safe_write::create(&aside, &bytes).is_ok();
+            linked.then_some(aside)
+        });
+        let Some(aside) = kept else {
+            return Err(format!("The list of sample files dawsu! made ({}) is damaged and could not be kept aside.", self.path.display()));
+        };
+        if std::fs::read(&aside).ok().as_deref() != Some(bytes.as_slice()) {
+            return Err(format!("The damaged list of sample files dawsu! made could not be kept aside as {}.", aside.display()));
+        }
+        std::fs::remove_file(&self.path).map_err(|e| format!("Starting a new list of sample files dawsu! made: {e}"))?;
+        Ok(Vec::new())
     }
 
+    /// Writes the ledger like any file only dawsu! writes: temporary file, then rename, with the
+    /// same waits as other replaces when another program holds the file for a moment.
     fn write(&self, files: Vec<PendingSample>) -> Result<(), String> {
-        let folder = self.path.parent().ok_or("The ledger has no folder.")?;
-        std::fs::create_dir_all(folder).map_err(|e| format!("Recording new sample files: {e}"))?;
         let bytes = serde_json::to_vec_pretty(&LedgerFile { files }).map_err(|e| e.to_string())?;
-        let n = NEXT_TEMP.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let temp = self.path.with_extension(format!("{}-{n}.tmp", std::process::id()));
-        std::fs::write(&temp, bytes).map_err(|e| format!("Recording new sample files: {e}"))?;
-        std::fs::rename(&temp, &self.path).map_err(|e| {
-            let _ = std::fs::remove_file(&temp);
-            format!("Recording new sample files: {e}")
-        })
+        safe_write::write_new(&self.path, &bytes).map_err(|e| format!("Recording new sample files: {e}"))
     }
 
-    /// Runs a read-modify-write of the ledger while holding its lock file, so two windows never
-    /// drop each other's entries.
+    /// Runs `change` while holding the ledger's lock file, so two windows never drop each
+    /// other's entries.
     fn locked<T>(&self, change: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
         let folder = self.path.parent().ok_or("The ledger has no folder.")?;
         std::fs::create_dir_all(folder).map_err(|e| format!("Recording new sample files: {e}"))?;
+        let lock_path = self.path.with_extension("lock");
         let lock = std::fs::OpenOptions::new().create(true).truncate(false).read(true).write(true)
-            .open(self.path.with_extension("lock")).map_err(|e| format!("Recording new sample files: {e}"))?;
-        lock.lock().map_err(|e| format!("Recording new sample files: {e}"))?;
+            .open(&lock_path).map_err(|e| format!("Opening {}: {e}", lock_path.display()))?;
+        lock.lock().map_err(|e| format!("Locking {}: {e}", lock_path.display()))?;
         let result = change();
         let _ = lock.unlock();
         result
     }
 
-    /// Lists files before they are created.
-    pub(crate) fn add(&self, files: &[PendingSample]) -> Result<(), String> {
-        if files.is_empty() {
-            return Ok(());
-        }
+    /// Changes the entries in one locked read-modify-write.
+    pub(crate) fn update(&self, change: impl FnOnce(&mut Vec<PendingSample>)) -> Result<(), String> {
         self.locked(|| {
-            let mut entries = self.entries();
-            for file in files {
-                entries.retain(|entry| !entry.name.eq_ignore_ascii_case(&file.name));
-                entries.push(file.clone());
-            }
-            self.write(entries)
+            let mut entries = self.read()?;
+            let before = entries.clone();
+            change(&mut entries);
+            if entries != before { self.write(entries) } else { Ok(()) }
         })
     }
 
-    /// Drops entries: their files were taken back, moved out or changed by someone else.
-    pub(crate) fn remove(&self, names: &[String]) {
-        if names.is_empty() {
-            return;
+    /// Lists files before they are created. Returns the entries it replaced, by name.
+    pub(crate) fn add(&self, files: &[PendingSample]) -> Result<Vec<PendingSample>, String> {
+        let mut replaced = Vec::new();
+        if files.is_empty() {
+            return Ok(replaced);
         }
-        let _ = self.locked(|| {
-            let mut entries = self.entries();
-            let before = entries.len();
-            entries.retain(|entry| !names.iter().any(|name| name.eq_ignore_ascii_case(&entry.name)));
-            if entries.len() != before { self.write(entries) } else { Ok(()) }
-        });
+        self.update(|entries| {
+            let mut added: Vec<&str> = Vec::new();
+            for file in files {
+                if let Some(at) = entries.iter().position(|entry| entry.name.eq_ignore_ascii_case(&file.name)) {
+                    let earlier = entries.remove(at);
+                    // A name listed twice in one call replaces only its own first entry.
+                    if !added.iter().any(|name| name.eq_ignore_ascii_case(&file.name)) {
+                        replaced.push(earlier);
+                    }
+                }
+                entries.push(file.clone());
+                added.push(&file.name);
+            }
+        })?;
+        Ok(replaced)
+    }
+
+    /// Drops entries: their files were taken back, moved out or changed by someone else.
+    pub(crate) fn remove(&self, names: &[String]) -> Result<(), String> {
+        if names.is_empty() {
+            return Ok(());
+        }
+        self.update(|entries| entries.retain(|entry| !names.iter().any(|name| name.eq_ignore_ascii_case(&entry.name))))
     }
 }
 
@@ -543,10 +575,60 @@ fn age(path: &Path) -> Option<std::time::Duration> {
     std::fs::metadata(path).and_then(|m| m.modified()).ok()?.elapsed().ok()
 }
 
-/// Removes the kept copies in `pending-samples` that no project, recovery copy (archived ones
-/// included), ledger or claim names and that are older than `min_age`: a younger one may belong
-/// to a window still making its claim. A record names a copy by its checksum anywhere in its
-/// text. Without a project folder nothing is removed. Returns how many were removed.
+/// Gives a file today's date.
+pub(crate) fn touch(path: &Path) {
+    if let Ok(file) = std::fs::File::options().write(true).open(path) {
+        let _ = file.set_modified(std::time::SystemTime::now());
+    }
+}
+
+/// Holds `removed-samples`' lock: keeping a file there and the size cap never overlap.
+pub(crate) fn removed_samples_lock(data_root: &Path) -> Result<std::fs::File, String> {
+    let folder = data_root.join("removed-samples");
+    std::fs::create_dir_all(&folder).map_err(|e| format!("{}: {e}", folder.display()))?;
+    let path = data_root.join("removed-samples.lock");
+    let lock = std::fs::OpenOptions::new().create(true).truncate(false).read(true).write(true)
+        .open(&path).map_err(|e| format!("Opening {}: {e}", path.display()))?;
+    lock.lock().map_err(|e| format!("Locking {}: {e}", path.display()))?;
+    Ok(lock)
+}
+
+/// Keeps `bytes` in `removed-samples` under their checksum, dated today, and returns where. A
+/// copy already there with the same bytes is reused and dated today, so the 30 days count from
+/// this removal. One with other bytes is damaged: it is renamed `.damaged-<stamp>`, never
+/// overwritten. The caller holds `removed_samples_lock`.
+pub(crate) fn keep_removed(data_root: &Path, name: &str, sha256: &str, bytes: &[u8]) -> Result<PathBuf, String> {
+    let extension = Path::new(name).extension().and_then(|e| e.to_str()).unwrap_or("wav").to_ascii_lowercase();
+    let target = data_root.join("removed-samples").join(format!("{sha256}.{extension}"));
+    match std::fs::read(&target) {
+        Ok(kept) if kept == bytes => {
+            touch(&target);
+            return Ok(target);
+        }
+        Ok(_) => {
+            let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis());
+            let damaged = target.with_extension(format!("{extension}.damaged-{stamp}"));
+            if damaged.exists() {
+                return Err(format!("{} is damaged and could not be kept aside.", target.display()));
+            }
+            safe_write::rename_waiting(&target, &damaged).map_err(|e| e.to_string())?;
+        }
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(format!("{}: {error}", target.display())),
+        Err(_) => {}
+    }
+    match safe_write::create(&target, bytes) {
+        Ok(()) => Ok(target),
+        Err(_) if std::fs::read(&target).is_ok_and(|kept| kept == bytes) => Ok(target),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+/// Moves the kept copies in `pending-samples` that no project, recovery copy (archived ones
+/// included), ledger, claim or sound set record names, and that are older than `min_age`, to
+/// `removed-samples`: a younger one may belong to a window still making its claim. A copy is
+/// removed from `pending-samples` only once `removed-samples` holds the same bytes. A record
+/// names a copy by its checksum anywhere in its text. Without a project folder nothing moves.
+/// Returns how many moved.
 pub(crate) fn prune_kept_copies(data_root: &Path, project_root: Option<&Path>, min_age: std::time::Duration) -> usize {
     let Some(project_root) = project_root else { return 0 };
     let copies: Vec<PathBuf> = files_under(&data_root.join("pending-samples")).into_iter()
@@ -557,28 +639,36 @@ pub(crate) fn prune_kept_copies(data_root: &Path, project_root: Option<&Path>, m
     let mut named = String::new();
     for folder in [
         project_root.to_path_buf(), data_root.join("recovery"), data_root.join("created-samples"),
-        data_root.join("pending-names"), data_root.join("sound-set-snapshots"),
+        data_root.join("pending-names"), data_root.join("sound-set-snapshots"), data_root.join("kept-samples"),
     ] {
         for record in files_under(&folder) {
-            // A record that can't be read could name anything: nothing is removed.
+            // A record that can't be read could name anything: nothing moves.
             let Ok(bytes) = std::fs::read(&record) else { return 0 };
             named.push_str(&String::from_utf8_lossy(&bytes).to_ascii_lowercase());
             named.push('\n');
         }
     }
-    let mut removed = 0;
+    let Ok(_lock) = removed_samples_lock(data_root) else { return 0 };
+    let mut moved = 0;
     for copy in copies {
         let Some(sha256) = copy.file_stem().map(|stem| stem.to_string_lossy().to_ascii_lowercase()) else { continue };
-        if sha256.len() == 64 && !named.contains(&sha256) && std::fs::remove_file(&copy).is_ok() {
-            removed += 1;
+        if sha256.len() != 64 || named.contains(&sha256) {
+            continue;
+        }
+        let Ok(bytes) = std::fs::read(&copy) else { continue };
+        let name = copy.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+        let Ok(target) = keep_removed(data_root, &name, &sha256, &bytes) else { continue };
+        if std::fs::read(&target).is_ok_and(|kept| kept == bytes) && std::fs::remove_file(&copy).is_ok() {
+            moved += 1;
         }
     }
-    removed
+    moved
 }
 
-/// Keeps `removed-samples` within `max_age` and `max_bytes`, removing the oldest files first.
-/// Returns how many were removed.
+/// Keeps `removed-samples` within `max_age` and `max_bytes`, removing the oldest files first,
+/// under its lock. The only place dawsu! deletes a sample outright. Returns how many went.
 pub(crate) fn cap_removed_samples(data_root: &Path, max_age: std::time::Duration, max_bytes: u64) -> usize {
+    let Ok(_lock) = removed_samples_lock(data_root) else { return 0 };
     let mut files: Vec<(std::time::Duration, u64, PathBuf)> = files_under(&data_root.join("removed-samples")).into_iter()
         .filter_map(|path| {
             let size = std::fs::metadata(&path).ok()?.len();

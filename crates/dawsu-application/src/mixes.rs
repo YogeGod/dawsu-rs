@@ -904,8 +904,9 @@ impl IndexedMixes {
 pub(super) struct PublishedMixes<'a> {
     staged: Vec<&'a StagedMix>,
     created: Vec<usize>,
-    /// The ledger and the entries this publish added, dropped again on rollback.
-    ledger: Option<(crate::pending::Ledger, Vec<String>)>,
+    /// The ledger, the entries this publish added, and the earlier entries those replaced:
+    /// a rollback drops its own and puts the earlier ones back.
+    ledger: Option<(crate::pending::Ledger, Vec<String>, Vec<crate::pending::PendingSample>)>,
 }
 
 /// Writes the staged files, all or none. With a `ledger`, every file this publish creates is listed
@@ -962,8 +963,8 @@ pub(super) fn publish<'a>(
             let entries: Vec<crate::pending::PendingSample> = staged.iter().filter(|mix| !mix.reuse)
                 .filter_map(|mix| Some(crate::pending::PendingSample { name: mix.path.file_name()?.to_str()?.to_owned(), sha256: mix.digest() }))
                 .collect();
-            ledger.add(&entries)?;
-            Some((ledger.clone(), entries.into_iter().map(|entry| entry.name).collect()))
+            let replaced = ledger.add(&entries)?;
+            Some((ledger.clone(), entries.into_iter().map(|entry| entry.name).collect(), replaced))
         }
         None => None,
     };
@@ -1035,10 +1036,13 @@ impl PublishedMixes<'_> {
             }
         }
         // A file removed, never made, or changed by someone else leaves the ledger.
-        if let Some((ledger, names)) = self.ledger.take() {
+        if let Some((ledger, names, replaced)) = self.ledger.take() {
             let gone: Vec<String> = names.into_iter()
                 .filter(|name| !still_ours.iter().any(|ours| ours.eq_ignore_ascii_case(name))).collect();
-            ledger.remove(&gone);
+            let _ = ledger.update(|entries| {
+                entries.retain(|entry| !gone.iter().any(|name| name.eq_ignore_ascii_case(&entry.name)));
+                entries.extend(replaced.into_iter().filter(|earlier| gone.iter().any(|name| name.eq_ignore_ascii_case(&earlier.name))));
+            });
         }
         kept
     }
@@ -1236,8 +1240,27 @@ mod tests {
         }
         assert!(locked.exists(), "locked stays");
         assert!(!staged[1].path.exists(), "the other goes");
-        let names: Vec<_> = ledger.entries().into_iter().map(|entry| entry.name).collect();
+        let names: Vec<_> = ledger.entries().unwrap().into_iter().map(|entry| entry.name).collect();
         assert_eq!(names, ["dawsu-mix-a-1.wav"]);
+    }
+
+    #[test]
+    fn a_rollback_keeps_an_entry_the_ledger_had_before_the_publish() {
+        let scratch = dawsu_test_support::Scratch::new("mix-rollback-earlier-entry");
+        let root = scratch.path("mapset");
+        fs::create_dir(&root).unwrap();
+        let ledger = Pending::for_mapset(&scratch.path("data"), &root).ledger().unwrap();
+        // The ledger already lists c.wav from an earlier write; this publish lists it again and
+        // then fails on its second file.
+        ledger.add(&[crate::pending::PendingSample { name: "c.wav".into(), sha256: sha256_hex(&[7]) }]).unwrap();
+        let staged = [
+            StagedMix { path: root.join("c.wav"), wav: vec![3], reuse: false, index: None },
+            StagedMix { path: root.join("c.wav"), wav: vec![3], reuse: false, index: None },
+        ];
+        assert!(publish(&staged, Some(&ledger), &|| false).is_err());
+        let entries: Vec<_> = ledger.entries().unwrap().into_iter().map(|entry| (entry.name, entry.sha256)).collect();
+        assert_eq!(entries, [("c.wav".to_string(), sha256_hex(&[7]))], "the earlier entry is back as it was");
+        assert!(!root.join("c.wav").exists());
     }
 
     #[test]

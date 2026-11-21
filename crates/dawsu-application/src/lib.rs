@@ -462,7 +462,7 @@ fn prepare_save(
     let mut editor = pending::listing(root, pending)?;
     editor.extend(mix_names.iter().cloned());
     editor.sort();
-    pending::check_written(&out, root, &[mix_names, pending_names.clone()].concat(), &editor, pending, hits)?;
+    pending::check_written(&out, root, &[mix_names, pending_names.clone()].concat(), &editor, pending)?;
 
     pending::check_indexes_free(root, path, &pending_names)?;
     let pending_kept = pending::needed(hits, pending, &pending_names);
@@ -5054,7 +5054,7 @@ Title:");
     }
 
     #[test]
-    fn another_windows_claim_does_not_stop_this_windows_save() {
+    fn another_windows_claim_on_a_name_this_difficulty_looks_up_refuses_save() {
         let scratch = Scratch::new("pending-other-claim");
         let folder = scratch.path("mapset");
         std::fs::create_dir_all(&folder).unwrap();
@@ -5067,10 +5067,14 @@ Title:");
         // Another window made a new sample under that name; it isn't in the mapset yet.
         let mut other = pending::Pending::for_mapset(&app.data_root, &folder.canonicalize().unwrap());
         other.add("normal-hitnormal.wav", TONE).unwrap();
+        // Once that window saves it, this difficulty would play it: Save refuses and names it.
         app.document.as_mut().unwrap().composer.apply("Edit", |hits| hits.set_volume(dawsu_hitsounding::MomentId(0), 80));
-        save_through_summary(&mut app, scratch.path("backups"));
-        let text = std::fs::read_to_string(&map).unwrap();
-        assert!(text.contains(":80:") || text.contains(",80,"), "{text}");
+        let before = std::fs::read(&map).unwrap();
+        app.save_with_backups(scratch.path("backups"));
+        wait(&mut app);
+        let error = app.error.clone().expect("refused");
+        assert!(error.contains("normal-hitnormal.wav"), "{error}");
+        assert_eq!(std::fs::read(&map).unwrap(), before);
         other.release("normal-hitnormal.wav");
     }
 
@@ -5174,7 +5178,7 @@ Title:");
     }
 
     fn ledger(app: &Application) -> Vec<String> {
-        app.document().unwrap().pending.ledger().unwrap().entries().into_iter().map(|file| file.name).collect()
+        app.document().unwrap().pending.ledger().unwrap().entries().unwrap().into_iter().map(|file| file.name).collect()
     }
 
     #[test]
@@ -5189,7 +5193,7 @@ Title:");
         assert!(ledger(&app).is_empty(), "a taken-back file is not listed");
         std::fs::remove_file(scratch.path("backups")).unwrap();
         save_through_summary(&mut app, scratch.path("backups"));
-        let entries = app.document().unwrap().pending.ledger().unwrap().entries();
+        let entries = app.document().unwrap().pending.ledger().unwrap().entries().unwrap();
         assert_eq!(entries, [pending::PendingSample { name: "normal-hitnormal2.wav".into(), sha256: dawsu_foundation::digest::sha256_hex(TONE) }]);
     }
 
@@ -5251,6 +5255,9 @@ Title:");
         app.close_document();
         assert!(!folder.join("normal-hitnormal2.wav").exists());
         assert_eq!(std::fs::read(&kept).unwrap(), TONE, "removed-samples holds the file's bytes");
+        let damaged: Vec<_> = std::fs::read_dir(kept.parent().unwrap()).unwrap().flatten()
+            .filter(|e| e.file_name().to_string_lossy().contains(".damaged-")).map(|e| std::fs::read(e.path()).unwrap()).collect();
+        assert_eq!(damaged, [b"damaged".to_vec()], "the damaged copy is kept aside, not overwritten");
     }
 
     #[test]
@@ -5322,7 +5329,7 @@ Title:");
                     let name = format!("{window}-{n}.wav");
                     ledger.add(&[pending::PendingSample { name: name.clone(), sha256: "0".repeat(64) }]).unwrap();
                     if n % 4 == 3 {
-                        ledger.remove(&[name]);
+                        ledger.remove(&[name]).unwrap();
                     }
                 }
             })
@@ -5331,7 +5338,7 @@ Title:");
             thread.join().unwrap();
         }
         let ledger = pending::Pending::for_mapset(&data, &mapset).ledger().unwrap();
-        assert_eq!(ledger.entries().len(), 60);
+        assert_eq!(ledger.entries().unwrap().len(), 60);
     }
 
     #[test]
@@ -5339,12 +5346,17 @@ Title:");
         let scratch = Scratch::new("presence-being-made");
         let (data, mapset) = (scratch.path("data"), scratch.path("mapset"));
         let me = pending::Presence::enter(&data, &mapset).unwrap();
-        // Another window's lock file before it locked it: not live, and not removed as ended.
+        // Another window's lock file before it locked it: that window is live, and its file stays.
         let folder = data.join("sessions").join(pending::mapset_key(&mapset));
         let making = folder.join("99999-0.lock.tmp");
         std::fs::write(&making, b"").unwrap();
-        assert!(!me.others_live());
+        assert!(me.others_live());
         assert!(making.exists());
+        // One left by a crash a while ago is removed and doesn't count.
+        std::fs::File::options().write(true).open(&making).unwrap()
+            .set_modified(std::time::SystemTime::now() - Duration::from_secs(120)).unwrap();
+        assert!(!me.others_live());
+        assert!(!making.exists());
         let other = pending::Presence::enter(&data, &mapset).unwrap();
         assert!(me.others_live());
         let names: Vec<_> = std::fs::read_dir(&folder).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
@@ -5395,6 +5407,7 @@ Title:");
             assert!(samples.join(format!("{}.wav", sha(n))).exists(), "{n} is named by a record");
         }
         assert!(!samples.join(format!("{}.wav", sha(6))).exists());
+        assert_eq!(std::fs::read(data.join("removed-samples").join(format!("{}.wav", sha(6)))).unwrap(), [6], "kept in removed-samples");
         // Without a project folder nothing is known to be unnamed.
         std::fs::write(samples.join(format!("{}.wav", sha(7))), [7]).unwrap();
         assert_eq!(pending::prune_kept_copies(&data, None, Duration::ZERO), 0);
@@ -5422,6 +5435,60 @@ Title:");
     }
 
     #[test]
+    fn a_reused_copy_in_removed_samples_counts_from_its_latest_removal() {
+        let scratch = Scratch::new("removed-reuse-date");
+        let (mut app, _, folder) = two_layers_in(&scratch, true, Some(scratch.path("data")));
+        let kept = app.data_root.join("removed-samples").join(format!("{}.wav", dawsu_foundation::digest::sha256_hex(TONE)));
+        std::fs::create_dir_all(kept.parent().unwrap()).unwrap();
+        std::fs::write(&kept, TONE).unwrap();
+        std::fs::File::options().write(true).open(&kept).unwrap()
+            .set_modified(std::time::SystemTime::now() - Duration::from_secs(31 * 24 * 3600)).unwrap();
+        use_layer_2(&mut app);
+        save_through_summary(&mut app, scratch.path("backups"));
+        let other = pending::Presence::enter(&app.data_root, &folder.canonicalize().unwrap()).unwrap();
+        back_to_skin(&mut app);
+        save_through_summary(&mut app, scratch.path("backups"));
+        drop(other);
+        let data_root = app.data_root.clone();
+        app.close_document();
+        wait(&mut app);
+        assert!(!folder.join("normal-hitnormal2.wav").exists());
+        pending::cap_removed_samples(&data_root, Duration::from_secs(30 * 24 * 3600), u64::MAX);
+        assert_eq!(std::fs::read(&kept).unwrap(), TONE, "removed today, kept for 30 days from today");
+    }
+
+    #[test]
+    fn adding_a_kept_copy_that_is_already_there_refreshes_its_date() {
+        let scratch = Scratch::new("pending-copy-date");
+        let mut pending = pending::Pending::for_mapset(&scratch.path("data"), &scratch.path("mapset"));
+        let copy = scratch.path("data").join("pending-samples").join(format!("{}.wav", dawsu_foundation::digest::sha256_hex(TONE)));
+        std::fs::create_dir_all(copy.parent().unwrap()).unwrap();
+        std::fs::write(&copy, TONE).unwrap();
+        std::fs::File::options().write(true).open(&copy).unwrap()
+            .set_modified(std::time::SystemTime::now() - Duration::from_secs(7200)).unwrap();
+        pending.add("normal-hitnormal2.wav", TONE).unwrap();
+        let age = std::fs::metadata(&copy).unwrap().modified().unwrap().elapsed().unwrap();
+        assert!(age < Duration::from_secs(60), "{age:?}");
+    }
+
+    #[test]
+    fn a_ledger_that_cant_be_read_stops_the_cleanup_and_says_so() {
+        let scratch = Scratch::new("ledger-unreadable");
+        let (mut app, _, folder) = two_layers_in(&scratch, true, Some(scratch.path("data")));
+        use_layer_2(&mut app);
+        save_through_summary(&mut app, scratch.path("backups"));
+        let path = app.data_root.join("created-samples").join(format!("{}.json", pending::mapset_key(&folder.canonicalize().unwrap())));
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        app.close_document();
+        wait(&mut app);
+        assert!(folder.join("normal-hitnormal2.wav").exists() || app.status.contains("ledger"), "{}", app.status);
+        let ledger = pending::Pending::for_mapset(&scratch.path("data"), &folder.canonicalize().unwrap()).ledger().unwrap();
+        assert!(ledger.entries().is_err());
+        assert!(ledger.add(&[pending::PendingSample { name: "x.wav".into(), sha256: "0".repeat(64) }]).is_err());
+    }
+
+    #[test]
     fn a_second_corrupt_ledger_is_kept_aside_beside_the_first() {
         let scratch = Scratch::new("ledger-corrupt-twice");
         let (app, _, _) = two_layers(&scratch, true);
@@ -5430,7 +5497,7 @@ Title:");
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         for text in [&b"{ first"[..], b"{ second"] {
             std::fs::write(&path, text).unwrap();
-            assert!(ledger.entries().is_empty());
+            assert!(ledger.entries().unwrap().is_empty());
         }
         let key = pending::mapset_key(app.document().unwrap().path.parent().unwrap());
         let mut aside: Vec<_> = std::fs::read_dir(path.parent().unwrap()).unwrap().flatten()
@@ -5752,8 +5819,8 @@ Sample,0,0,\"{story}\",100
         let editor = pending::listing(&folder, &document.pending).unwrap();
         let used = pending::used(&out, &folder, &document.pending, &[]).unwrap();
         assert_eq!(used.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>(), ["normal-hitnormal2.wav"]);
-        assert!(pending::check_written(&out, &folder, &["normal-hitnormal2.wav".into()], &editor, &document.pending, document.composer.hitsounds()).is_ok());
-        let error = pending::check_written(&out, &folder, &[], &editor, &document.pending, document.composer.hitsounds()).unwrap_err();
+        assert!(pending::check_written(&out, &folder, &["normal-hitnormal2.wav".into()], &editor, &document.pending).is_ok());
+        let error = pending::check_written(&out, &folder, &[], &editor, &document.pending).unwrap_err();
         assert!(error.contains("normal-hitnormal2.wav"), "{error}");
     }
 

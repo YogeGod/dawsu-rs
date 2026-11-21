@@ -5,7 +5,7 @@
 //! builds before the ledger (`dawsu-mix-…`) are cleaned up the same way.
 
 use super::{Application, layers, mixes, pending, project, recovery, safe_child};
-use dawsu_foundation::{SampleIdentity, digest::sha256_hex, safe_write};
+use dawsu_foundation::{SampleIdentity, digest::sha256_hex};
 use dawsu_hitsounding::LaneSource;
 use dawsu_hitsounding::rules::read_sample_file_name;
 use dawsu_osu_format::list_folder;
@@ -129,19 +129,10 @@ fn put_back_stopped_moves(root: &Path) {
     }
 }
 
-/// Keeps `bytes` in `removed-samples` under their checksum. A copy there with other bytes is replaced.
+/// Keeps `bytes` in `removed-samples`, under its lock.
 fn keep_removed(data_root: &Path, name: &str, sha256: &str, bytes: &[u8]) -> bool {
-    let extension = Path::new(name).extension().and_then(|e| e.to_str()).unwrap_or("wav").to_ascii_lowercase();
-    let folder = data_root.join("removed-samples");
-    let target = folder.join(format!("{sha256}.{extension}"));
-    if std::fs::create_dir_all(&folder).is_err() {
-        return false;
-    }
-    match std::fs::read(&target) {
-        Ok(kept) if kept == bytes => true,
-        Ok(_) => safe_write::write_new(&target, bytes).is_ok(),
-        Err(_) => safe_write::create(&target, bytes).is_ok() || std::fs::read(&target).is_ok_and(|kept| kept == bytes),
-    }
+    let Ok(_lock) = pending::removed_samples_lock(data_root) else { return false };
+    pending::keep_removed(data_root, name, sha256, bytes).is_ok()
 }
 
 /// Runs a cleanup. Called off the editor thread.
@@ -151,7 +142,13 @@ pub(crate) fn run(mut request: Request) -> Outcome {
     };
     let root = request.root.clone();
     put_back_stopped_moves(&root);
-    let mut entries = request.ledger.entries();
+    let mut entries = match request.ledger.entries() {
+        Ok(entries) => entries,
+        Err(error) => {
+            outcome.problem = Some(format!("No unused sample files were removed. {error}"));
+            Vec::new()
+        }
+    };
     let listed: BTreeSet<String> = entries.iter().map(|entry| entry.name.to_ascii_lowercase()).collect();
     entries.extend(old_mixes(&root).into_iter().filter(|mix| !listed.contains(&mix.name.to_ascii_lowercase())));
     if !entries.is_empty() {
@@ -171,7 +168,9 @@ pub(crate) fn run(mut request: Request) -> Outcome {
                         dropped.push(entry.name.clone());
                     }
                 }
-                request.ledger.remove(&dropped);
+                if let Err(error) = request.ledger.remove(&dropped) {
+                    outcome.problem = Some(format!("Unused sample files were cleaned up, but their list could not be updated. {error}"));
+                }
             }
         }
     }

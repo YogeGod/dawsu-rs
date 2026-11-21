@@ -1729,7 +1729,7 @@ pub(crate) mod tests {
         let disk = mapset_files(f);
         let map = OsuFileForTest::read(std::fs::read(&f.map).unwrap()).file;
         let played: Vec<String> = crate::pending::played_names(&map, &disk).into_iter().map(|n| n.to_ascii_lowercase()).collect();
-        for entry in ledger.entries() {
+        for entry in ledger.entries().unwrap() {
             if disk.iter().any(|name| name.eq_ignore_ascii_case(&entry.name)) {
                 assert!(played.contains(&entry.name.to_ascii_lowercase()), "{step}: {} is in the mapset but nothing plays it ({disk:?})", entry.name);
             }
