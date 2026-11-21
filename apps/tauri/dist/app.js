@@ -467,7 +467,8 @@ function renderPanelLayout() {
   namesToggle.ariaExpanded = String(laneNames !== false);
   namesToggle.title = namesToggle.ariaLabel = laneNames === false ? "Show lane names" : "Hide lane names";
   namesToggle.textContent = laneNames === false ? "›" : "‹";
-  $("volume-controller-panel").hidden = !controller;
+  // Folded shows the bottom panel's 34 px strip; the tab is kept in the bundle, never saved.
+  $("volume-controller-panel").dataset.bottom = controller ? window.dawsuUi?.bottomTab?.() ?? "volume" : "folded";
   if (dock && scene) {
     dock({ browserStyle: view.classicBrowser ? "classic" : "tree",
       browserOpen: !!view.panels.browser, inspectorOpen: !!view.panels.inspector });
@@ -697,6 +698,42 @@ function renderLanes() {
     laneHeaders = laneHeaderModel(drumNames);
     try { window.dawsuUi?.lanes(laneHeaders); } catch (error) { console.error(error); }
   }
+  const strips = mixerModel();
+  const mixerKey = JSON.stringify(strips);
+  if (mixerKey !== JSON.stringify(mixerStrips)) {
+    mixerStrips = strips;
+    try { window.dawsuUi?.mixer?.(mixerStrips); } catch (error) { console.error(error); }
+  }
+}
+
+// The Mixer's lane strips ("mixer" part): one per lane with hits, in lane-list order (the folders
+// in their order, then the map file lanes), whatever the filter or a folded folder hides.
+let mixerStrips = [];
+
+function currentMixer() {
+  return mixerStrips;
+}
+
+function mixerModel() {
+  const numbers = new Map(orderedLaneRows().map((row, index) => [row, index + 1]));
+  const used = [...numbers.keys()].filter(row => scene.lanes[row]?.hitCount > 0);
+  const inFolder = new Set(sampleFolderOrder);
+  const rows = [...sampleFolderOrder.flatMap(group => used.filter(row => scene.lanes[row].group === group)),
+    ...used.filter(row => !inFolder.has(scene.lanes[row].group))];
+  const anySolo = scene.lanes.some(lane => lane?.solo);
+  return rows.map(row => {
+    const lane = scene.lanes[row];
+    const sound = laneSound(lane);
+    return {
+      key: "lane:" + row, row, number: numbers.get(row),
+      name: renamedLanes.has(lane.colourKey) ? laneDisplayName(lane) : sound.name,
+      set: lane.group ? lane.group[0].toUpperCase() + lane.group.slice(1) : "File", icon: sound.icon,
+      // Yoge, 2026-11-20 (ADR 0068): a lane is grey unless the mapper picked a colour.
+      colour: laneColours.get(lane.colourKey) ?? null,
+      selected: selectionLaneKeys.has(lane.key), muted: !!lane.muted, solo: !!lane.solo,
+      quiet: !!lane.muted || (anySolo && !lane.solo),
+    };
+  });
 }
 
 // The rows the Svelte lane headers draw ("lanes" part), as plain data. Lane state stays here.
@@ -1504,7 +1541,8 @@ function paint() {
   const g = prepare(grid, canvasHeight);
   const r = prepare(ruler);
   const volumePanel = $("volume-controller-panel");
-  const v = volumePanel.hidden || volumePanel.dataset?.layoutBarHidden !== undefined ? null : prepare(controller);
+  const v = volumePanel.hidden || volumePanel.dataset?.layoutBarHidden !== undefined ||
+    (volumePanel.dataset?.bottom ?? "volume") !== "volume" ? null : prepare(controller);
   const o = prepare(overview);
   const { start, zoom } = { start: scene.viewStart, zoom: scene.zoom };
   const xOf = (time) => (time - start) * zoom;

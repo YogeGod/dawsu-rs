@@ -185,7 +185,7 @@
       <div class="scroll" id="scroll"><div id="lanes" data-ui-mount="lanes"></div><canvas id="grid" tabindex="-1" aria-label="Hitsound timeline" aria-haspopup="menu" aria-expanded="false"></canvas></div>
       <div id="volume-controller-panel" class="controller">
         <div class="lane-title volume-title">
-          <span>Volume</span>
+          <div data-ui-mount="bottom-panel"></div>
           <select id="ramp-shape" aria-label="Ramp shape" title="Shape for the Ramp tool and Shift+drag" data-doc>
             <option value="Linear">Linear</option>
             <option value="EaseIn">Ease in</option>
@@ -194,6 +194,7 @@
           </select>
         </div>
         <canvas id="controller" aria-label="Hit volume lane"></canvas>
+        <div class="mixer-host" data-ui-mount="mixer"></div>
       </div>
       <div class="overview">
         <div class="lane-title ruler-controls" role="group" aria-label="Timeline view">
