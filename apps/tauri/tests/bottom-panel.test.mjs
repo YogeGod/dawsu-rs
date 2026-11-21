@@ -135,3 +135,13 @@ test("the Mixer gets one strip per used lane in lane-list order, with the header
   assert.equal(clap.name, "Snare");
   assert.equal(handed[2].name, "Snare");
 });
+
+test("the switch, View settings and the View menu call the panel Volume and Mixer", async () => {
+  const button = html.match(/<button id="view-controller"[^>]*>/)[0];
+  assert.match(button, /aria-label="Volume and Mixer"/);
+  assert.match(button, /title="Volume and Mixer"/);
+  assert.match(app, /\["Volume and Mixer", "controller", view\.panels\.controller\]/);
+  const { items } = await import("../ui/src/lib/commands.js");
+  assert.equal(items.find(item => item.id === "volumePanel").label, "Volume and Mixer");
+  assert.doesNotMatch(html + app, /Volume panel/);
+});

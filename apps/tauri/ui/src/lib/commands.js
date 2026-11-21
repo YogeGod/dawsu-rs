@@ -80,7 +80,7 @@ export const items = [
   // View
   { id: "browser", label: "Browser", icon: "PanelLeft", run: ["panel", "browser"] },
   { id: "inspector", label: "Inspector", icon: "PanelRight", run: ["panel", "inspector"] },
-  { id: "volumePanel", label: "Volume panel", icon: "TrendingUp", run: ["panel", "controller"] },
+  { id: "volumePanel", label: "Volume and Mixer", icon: "TrendingUp", run: ["panel", "controller"] },
   { id: "laneNames", label: "Lane names", icon: "Scan", run: ["panel", "lane_names", "laneNames"] },
   { id: "songWaveform", label: "Song waveform", run: ["click", "ruler-waveform"], checked: "waveform" },
   { id: "objectLines", label: "Object lines", icon: "Scan", run: ["toggle", "object_lines", "view.objectLines"] },

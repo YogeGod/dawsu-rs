@@ -3,7 +3,7 @@
   import ChevronRight from "../icons/ChevronRight.svg?raw";
 
   // The bottom panel's side column (v3 F1-F3): the Volume and Mixer tabs, or the folded strip.
-  // Open or folded is the saved Volume panel preference; the tab is kept in this window only.
+  // Open or folded is the saved Volume and Mixer preference; the tab is kept in this window only.
   const folded = $derived(bridge.view?.panels?.controller === false);
   const tab = $derived(bridge.bottomTab);
   const disabled = $derived(bridge.disabled);

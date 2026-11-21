@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { render } from "svelte/server";
 import { bridge } from "../src/lib/bridge.svelte.js";
-import { faderPosition, gainsAction, positionGain, stepGain, stripShades } from "../src/lib/mixer.js";
+import { dbText, faderPosition, gainsAction, positionGain, stepGain, stripShades } from "../src/lib/mixer.js";
 import { laneGrey, mixIntoCanvas } from "../src/lib/colour.js";
 import BottomPanel from "../src/parts/BottomPanel.svelte";
 import Mixer from "../src/parts/Mixer.svelte";
@@ -22,7 +22,14 @@ function panel(v, tab = "volume", scene = { path: "a.osu" }) {
   return render(BottomPanel).body;
 }
 
-// Gains multiply the samples, so a gain sits on the dB scale at 20·log10(gain).
+// Gains multiply the samples, so a gain's level in dB is 20·log10(gain).
+test("the Song and Master readouts are the real gain in dB", () => {
+  assert.equal(dbText(1), "0.0");
+  assert.equal(dbText(0.7), "−3.1");
+  assert.equal(dbText(0.2), "−14.0");
+  assert.equal(dbText(0), "−∞");
+});
+
 test("the fader follows v3's dB scale and stops at the editor's limits", () => {
   assert.equal(faderPosition(1), 0.14);
   assert.equal(faderPosition(0), 1);
@@ -121,14 +128,17 @@ test("only the Song and Master faders work; nothing shows a level the editor doe
     assert.deepEqual(tags(part, "button").filter(tag => label(tag) === "Pan").map(disabled), [true]);
     assert.doesNotMatch(part, /class="meter[^"]*"[^>]*>\s*<div\b[^>]*class="fill/);
   }
-  // No level or peak readout has a backend yet, Song and Master included: all greyed out and empty.
-  const boxes = [...html.matchAll(/<span class="box (level|peak)([^"]*)"[^>]*>([^<]*)<\/span>/g)];
-  assert.equal(boxes.length, 2 * 3 + 2);
-  for (const [box, , classes, inside] of boxes) {
-    assert.match(classes, /\boff\b/, box);
-    assert.equal(inside, "", box);
-  }
-  assert.doesNotMatch(text(html), /dB|kHz|\bms\b|Default device|Reset levels/);
+  // Song and Master show their gain in dB (Yoge, 2026-11-21); lane levels and every peak have no
+  // backend yet, so they are greyed out and empty.
+  const boxes = [...html.matchAll(/<span class="box (level|peak)([^"]*)"[^>]*>([^<]*)<\/span>/g)]
+    .map(([, kind, classes, inside]) => [kind, /\boff\b/.test(classes), inside]);
+  assert.deepEqual(boxes, [
+    ["level", false, "−3.1"], ["peak", true, ""],
+    ["level", true, ""], ["peak", true, ""],
+    ["level", true, ""], ["peak", true, ""],
+    ["level", false, "−0.9"], ["peak", true, ""],
+  ]);
+  assert.doesNotMatch(text(html), /dBFS|kHz|\bms\b|Default device|Reset levels/);
   // style: directives render as attributes only on the server; ui-bundle.test.mjs checks the sources.
   assert.doesNotMatch(html, /\sid=/);
 });

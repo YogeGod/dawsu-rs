@@ -3514,7 +3514,7 @@ function openViewSettings() {
   if (!scene || !view.panels || view.busy) return;
   const options = [
     ["Inspector", "inspector", panelOn("inspector")],
-    ["Volume panel", "controller", view.panels.controller],
+    ["Volume and Mixer", "controller", view.panels.controller],
     ["Lane names", "lane_names", view.panels.laneNames],
     ["Browser", "browser", panelOn("browser")],
   ];
