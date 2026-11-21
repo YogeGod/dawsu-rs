@@ -13,7 +13,7 @@
 // One line per map: the robot's steps, edits and sounds the same as 3.1.4, and the first differences.
 // Then the totals. The exit code is 1 when any map failed a robot step or differs from 3.1.4.
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -45,6 +45,7 @@ for (const [index, map] of maps.entries()) {
   const name = relative(repo, map).replaceAll("\\", "/");
   console.log(`[${index + 1}/${maps.length}] ${name}`);
   const json = join(out, `${index + 1}.json`);
+  rmSync(json, { force: true }); // a file left by an earlier run must not stand in for this map's result
   const run = spawnSync(process.execPath, [join(repo, "tools/compare-314.mjs"), "--exe", args.exe, "--map", map, "--json", json,
     ...(args["old-app"] ? ["--old-app", args["old-app"]] : []), ...(args.full ? [] : ["--quick"])],
     { encoding: "utf8", maxBuffer: 64 << 20 });
