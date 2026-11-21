@@ -34,7 +34,8 @@ async function frontend() {
       __TAURI__: {
         core: { invoke: async (name, params) => {
           calls.push(params.action);
-          return { busy: false, hasDocument: false };
+          // A test can answer with a view of its own; otherwise no difficulty is open.
+          return context.answer?.() ?? { busy: false, hasDocument: false };
         } },
         event: { listen() {} },
       },
@@ -86,6 +87,9 @@ test("the current difficulty's bookmarks reach the Inspector and the ruler and c
 
   // Each update with no difficulty clears the scene; the fakes put it back before each step.
   evaluate(setup);
+  // From here the editor answers with the playhead on the picked bookmark, as after its jump.
+  evaluate("renderScene = () => {}; renderPanelLayout = () => {};");
+  context.answer = () => ({ busy: false, hasDocument: true, position: 1000, scene: runInContext("scene", context) });
   // Clicking a row picks it and goes to it, as picking then Go to did.
   evaluate('inspectorAction("pickBookmark", 1000)');
   assert.equal(model().bookmark, 1000);

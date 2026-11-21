@@ -108,7 +108,10 @@ async function update(action, full = true) {
   let next = await invoke("editor_view", { scene: full, action: action ?? null });
   if (!next.fault && !full && (view.busy !== next.busy || view.hasDocument !== next.hasDocument ||
       view.laneCount !== next.laneCount || view.showHome !== next.showHome)) {
+    // The editor names a Previous or Next bookmark step once, in the first answer.
+    const step = next.bookmarkStep;
     next = await invoke("editor_view", { scene: true, action: null });
+    if (!next.fault) next.bookmarkStep ??= step;
   }
   show(next);
   if (next.shortcutHelp) await showHelp();
@@ -196,6 +199,7 @@ function show(next) {
   }
   const previousTool = view.tool;
   const wasBusy = view.busy;
+  const previousPosition = view.position;
   view = next;
   if (view.tool !== previousTool) refreshToolCursor();
   if (!view.hasDocument || view.showHome) scene = null;
@@ -216,6 +220,7 @@ function show(next) {
     if (loaded || !layoutWrites) hydrateLaneLayout(view.scene.laneLayout);
     scene = view.scene;
   }
+  followBookmarkPick(previousPosition);
   if (rulerPointer || rulerDrag) refreshRulerCursor();
   $("home").hidden = !!scene;
   $("workspace").hidden = !scene;
@@ -791,7 +796,22 @@ $("delete-lane").addEventListener("click", () => {
 });
 
 // The bookmark row picked in the Inspector, kept by its difficulty and time so it survives each update.
+// from is where the playhead was when it was picked, until it reaches the bookmark.
 let bookmarkPick = null;
+
+// The pick follows Previous and Next, and goes when the playhead moves off its bookmark or the
+// difficulty changes, so Go to, Rename and Remove never act on a row away from the playhead.
+function followBookmarkPick(previousPosition) {
+  if (bookmarkPick?.path !== scene?.path) bookmarkPick = null;
+  if (scene && view.bookmarkStep != null) bookmarkPick = { path: scene.path, time: view.bookmarkStep, from: previousPosition };
+  if (!bookmarkPick) return;
+  // A jump stops at the song's end.
+  const at = Math.min(bookmarkPick.time, view.duration ?? Infinity);
+  if (!scene.bookmarks?.some(mark => mark.time === bookmarkPick.time)) bookmarkPick = null;
+  else if (view.position === at) bookmarkPick.from = at;
+  // Until the jump lands, an update can still carry the position the pick was made at.
+  else if (view.position !== bookmarkPick.from) bookmarkPick = null;
+}
 
 function selectedBookmark() {
   return bookmarkPick?.path === scene?.path ? scene?.bookmarks?.find(mark => mark.time === bookmarkPick.time) : undefined;
@@ -1019,7 +1039,7 @@ function inspectorAction(kind, ...args) {
       const mark = scene.bookmarks?.find(item => item.time === args[0]);
       if (!mark) return false;
       // No show() follows a pick, so the Inspector gets it now.
-      bookmarkPick = { path: scene.path, time: mark.time };
+      bookmarkPick = { path: scene.path, time: mark.time, from: view.position };
       handOverInspector();
       act({ kind: "bookmark_jump", time: mark.time });
       return true;

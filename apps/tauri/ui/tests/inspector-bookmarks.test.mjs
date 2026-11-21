@@ -15,9 +15,10 @@ const marks = [
 const model = (more = {}) => ({ ...emptyInspector, doc: true, bookmarks: marks, bookmark: null,
   history: ["Opened difficulty", "Draw hit", "Move 4 hits"], historyPosition: 1, ...more });
 
+// Without Svelte's hydration markers (<!--[-->), so the markup reads as the page has it.
 function shown(part, inspector) {
   bridge.inspector = inspector;
-  return render(part).body;
+  return render(part).body.replace(/<!--[^>]*-->/g, "");
 }
 const buttons = html => [...html.matchAll(/<button\b[^>]*>([^]*?)<\/button>/g)].map(match => ({
   tag: match[0].slice(0, match[0].indexOf(">") + 1), html: match[1], text: match[1].replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim(),

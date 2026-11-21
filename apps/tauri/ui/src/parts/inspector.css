@@ -258,6 +258,11 @@
 .insp-step[aria-current] {
   background: var(--editor-rowfocus);
 }
+/* The picked row and the current step keep their fill on hover; this weighs the same as the hover rule above. */
+.insp-mark[aria-current]:hover,
+.insp-step[aria-current]:hover {
+  background: var(--editor-rowfocus);
+}
 .insp-dot {
   flex: none;
   width: 6px;
@@ -274,6 +279,8 @@
 }
 .insp-mark-time {
   flex: none;
+  /* With no label, the time keeps its place at the right. */
+  margin-left: auto;
   color: var(--editor-muted);
   font-variant-numeric: tabular-nums;
 }

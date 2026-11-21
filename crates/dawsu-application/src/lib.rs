@@ -877,6 +877,8 @@ pub struct Application {
     catalogue: Arc<CommandCatalog<Application>>,
     pub keymap: KeyMap,
     pub help_requested: bool,
+    /// The bookmark Previous or Next bookmark last jumped to, until the Tauri view takes it.
+    pub bookmark_step: Option<f64>,
     persist_preferences: bool,
     data_root: PathBuf,
     checkpoint: Option<recovery::Checkpoint>,
@@ -997,6 +999,7 @@ impl Application {
             catalogue,
             keymap,
             help_requested: false,
+            bookmark_step: None,
             persist_preferences,
             project_root: persist_preferences.then(|| data_root.join("projects")),
             data_root,
