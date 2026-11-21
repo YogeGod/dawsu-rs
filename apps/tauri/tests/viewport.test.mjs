@@ -438,3 +438,14 @@ test("ruler controls hide and restore the waveform and reuse timeline actions", 
   await settle();
   assert.deepEqual(calls.pop().action, {kind:"view",start:0,zoom:.1,row_height:30});
 });
+test("the song overview sits at the bottom of the timeline, below the volume lane, with the ruler on top", async () => {
+  const docking = await readFile(new URL("../dist/docking.js", import.meta.url), "utf8");
+  const style = await readFile(new URL("../dist/style.css", import.meta.url), "utf8");
+  const arrange = html.slice(html.indexOf('id="editor-arrange"'), html.indexOf('id="editor-inspector"'));
+  const order = ['class="ruler"', 'id="scroll"', 'id="volume-controller-panel"', 'class="overview"'].map(mark => arrange.indexOf(mark));
+  assert.ok(order.every((at, i) => at > 0 && (i === 0 || at > order[i - 1])), `timeline rows in order: ${order}`);
+  assert.match(docking, /const defaultTimeline = \[ruler, grid, controller, overview\];/);
+  // The rows before the layout code runs follow the same order: ruler, lanes, volume lane, overview.
+  assert.match(style, /\.arrange\{grid-template-rows:var\(--layout-timeline-rows,var\(--ruler-row\) minmax\(0,1fr\) auto minmax\(20px,max-content\)\)\}/);
+  assert.match(style, /\.arrange\[data-controller="false"\]\{[^}]*grid-template-rows:var\(--layout-timeline-rows,var\(--ruler-row\) minmax\(0,1fr\) minmax\(20px,max-content\)\)\}/);
+});

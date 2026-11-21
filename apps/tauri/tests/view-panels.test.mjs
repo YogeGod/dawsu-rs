@@ -90,7 +90,7 @@ test("View switches hide panels and reclaim their timeline tracks, then restore 
   assert.deepEqual(JSON.parse(runInContext("JSON.stringify(laneHeaders.rows.map(row => row.name))", context)),
     ["soft-hitclap", "soft-hitclap2"]);
   assert.match(style, /\.dock\[data-inspector="false"\]\{grid-template-columns:minmax\(0,1fr\)\}/);
-  assert.match(style, /\.arrange\[data-controller="false"\]\{[^}]*grid-template-rows:var\(--layout-timeline-rows,minmax\(20px,max-content\) var\(--ruler-row\) minmax\(0,1fr\)\)\}/);
+  assert.match(style, /\.arrange\[data-controller="false"\]\{[^}]*grid-template-rows:var\(--layout-timeline-rows,var\(--ruler-row\) minmax\(0,1fr\) minmax\(20px,max-content\)\)\}/);
   assert.match(style, /\.arrange\[data-lane-names="false"\]\{--lane-default-width:99px\}/);
   assert.match(style, /--lanes:clamp\(99px,var\(--layout-lane-width,var\(--lane-default-width\)\),/);
   assert.deepEqual(panels, enabled);

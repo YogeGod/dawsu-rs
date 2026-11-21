@@ -1980,12 +1980,12 @@ ruler.addEventListener("pointerup", event => {
   if (!rulerDrag || rulerDrag.id !== event.pointerId) return;
   const gesture = endRulerDrag(event);
   const x = event.clientX - ruler.getBoundingClientRect().left;
+  // A click without a drag moves the playhead to the snapped time, on a flag or inside the range too.
   const moved = Math.abs(x - gesture.x) >= 3;
-  if (!moved && gesture.mode !== "move") return;
   const locator = gesture.mode === "left" || gesture.mode === "right";
-  act({ kind: "ruler_locators", path: gesture.path, gesture: moved ? gesture.mode : "toggle",
-    from: gesture.start + gesture.x / gesture.zoom,
-    to: locator ? locatorDragTo(gesture, x) : gesture.start + x / gesture.zoom }, false);
+  const from = gesture.start + gesture.x / gesture.zoom;
+  act({ kind: "ruler_locators", path: gesture.path, gesture: moved ? gesture.mode : "seek", from,
+    to: !moved ? from : locator ? locatorDragTo(gesture, x) : gesture.start + x / gesture.zoom }, false);
 });
 for (const type of ["pointercancel", "lostpointercapture"]) {
   ruler.addEventListener(type, event => {

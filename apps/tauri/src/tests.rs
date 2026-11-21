@@ -89,6 +89,40 @@ fn ruler_gestures_snap_and_move_locators_without_seeking_or_dirtying_the_map() {
 }
 
 #[test]
+fn a_ruler_click_moves_the_playhead_to_the_snapped_time_and_leaves_the_locators() {
+    let fixture = Fixture::new("ruler-click");
+    let path = fixture.0.join("Hard.osu");
+    let map = b"osu file format v14
+
+[TimingPoints]
+0,500,4,1,0,100,1,0
+
+[HitObjects]
+256,192,2000,1,0,0:0:0:60:
+";
+    fs::write(&path, map).unwrap();
+    let mut app = Application::headless();
+    open(&mut app, &path);
+    app.seek(500.0);
+    let scene = snapshot(&app, true);
+    let map_path = scene["scene"]["path"].clone();
+    let click = |app: &mut Application, path: &serde_json::Value, at: f64| {
+        serde_json::from_value::<Action>(serde_json::json!({
+            "kind": "ruler_locators", "path": path, "gesture": "seek", "from": at, "to": at,
+        })).expect("Tauri must accept a ruler click").run(app);
+    };
+    let range = |app: &Application| (app.locator_left, app.locator_right, app.cycle);
+    let before = range(&app);
+    click(&mut app, &map_path, 1115.0);
+    assert_eq!(app.position_ms(), 1125.0);
+    assert_eq!(range(&app), before);
+    click(&mut app, &serde_json::json!("Stale.osu"), 3000.0);
+    assert_eq!(app.position_ms(), 1125.0);
+    assert!(!app.is_dirty());
+    assert_eq!(fs::read(&path).unwrap(), map);
+}
+
+#[test]
 fn select_double_click_seeks_to_an_existing_hit_and_inserts_once_on_empty_space() {
     let fixture = Fixture::new("select-double-click");
     let path = fixture.0.join("Hard.osu");

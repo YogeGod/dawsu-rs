@@ -211,7 +211,7 @@ enum RulerGesture {
     Right,
     Draw,
     Move,
-    Toggle,
+    Seek,
 }
 
 impl RulerGesture {
@@ -246,11 +246,10 @@ impl RulerGesture {
                 left += shift;
                 right += shift;
             }
-            Self::Toggle => {
-                if left == right || to < left.min(right) || to > left.max(right) {
-                    return;
-                }
-                enabled = !enabled;
+            // A click without a drag moves the playhead to the snapped time and leaves L, R and Cycle.
+            Self::Seek => {
+                app.seek(snap(to));
+                return;
             }
         }
         (app.locator_left, app.locator_right, app.cycle) = (left, right, enabled);
