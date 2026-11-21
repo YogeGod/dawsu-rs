@@ -47,12 +47,18 @@ export function attachTimeline(ctx) {
 
   const uiScale = () => (Number(env.document?.documentElement?.dataset?.uiScale) || 100) / 100;
 
-  function pointer(event, phase, gesture = state.drag) {
-    const rect = gesture.surface.getBoundingClientRect();
+  function pointerIn(surface, event) {
+    const rect = surface.getBoundingClientRect();
     const s = uiScale();
-    const x = (event.clientX - rect.x) / s;
+    const left = rect.left ?? rect.x ?? 0;
+    const top = rect.top ?? rect.y ?? 0;
+    return { x: (event.clientX - left) / s, y: (event.clientY - top) / s, rect };
+  }
+
+  function pointer(event, phase, gesture = state.drag) {
+    const { x, y: localY, rect } = pointerIn(gesture.surface, event);
     const valueLane = gesture.surface === controller;
-    const y = (event.clientY - rect.y) / s + (valueLane || gesture.panning ? 0 : $("scroll").scrollTop);
+    const y = localY + (valueLane || gesture.panning ? 0 : $("scroll").scrollTop);
     const rowUnderPointer = Math.floor(y / state.scene.rowHeight);
     const visibleRow = phase === "double_click" ? rowUnderPointer : limit(rowUnderPointer, 0, gesture.rows.length - 1);
     const lane = gesture.rows[visibleRow];
@@ -175,14 +181,12 @@ export function attachTimeline(ctx) {
     state.lastHover = { clientX: event.clientX, clientY: event.clientY };
     // No card while a menu is open over the timeline.
     if (!state.scene || state.drag || state.view.busy || $("editor-menu").hidden === false) return null;
-    const rect = grid.getBoundingClientRect();
-    const s = uiScale();
+    const { x: pointerX, y: pointerY, rect } = pointerIn(grid, event);
     const scrollTop = $("scroll").scrollTop;
-    const pointerY = (event.clientY - rect.top) / s;
     const visibleRow = Math.floor((pointerY + scrollTop) / state.scene.rowHeight);
     const row = state.laneRows[visibleRow];
     if (typeof row !== "number") return null;
-    const ms = state.scene.viewStart + ((event.clientX - rect.left) / s) / state.scene.zoom;
+    const ms = state.scene.viewStart + pointerX / state.scene.zoom;
     let best = hitHalfWidth / state.scene.zoom;
     let found = null;
     for (const moment of state.scene.moments) {
@@ -589,12 +593,10 @@ export function attachTimeline(ctx) {
         if (!state.scene || state.view.busy || state.drag || state.rulerDrag || event.button !== 0) return;
         const panning = surface === grid && state.view.tool === "Grab" && !event.altKey;
         if (surface === grid && !panning) {
-          const rect = grid.getBoundingClientRect();
-          const s = uiScale();
-          const y = (event.clientY - rect.y) / s;
+          const { x, y } = pointerIn(grid, event);
           const row = state.laneRows[Math.floor((y + $("scroll").scrollTop) / state.scene.rowHeight)];
           if (row === undefined) return;
-          const time = state.scene.viewStart + ((event.clientX - rect.x) / s) / state.scene.zoom;
+          const time = state.scene.viewStart + x / state.scene.zoom;
           if (revealLayerPreview(row, time, y)) {
             event.preventDefault();
             return;
@@ -617,8 +619,8 @@ export function attachTimeline(ctx) {
       surface.addEventListener("pointermove", (event) => {
         if (surface === grid) handOverHitCard(hitCardAt(event));
         if (surface === controller && state.scene && !state.view.busy) {
-          const rect = controller.getBoundingClientRect();
-          const ms = state.scene.viewStart + ((event.clientX - rect.x) / uiScale()) / state.scene.zoom;
+          const { x } = pointerIn(controller, event);
+          const ms = state.scene.viewStart + x / state.scene.zoom;
           const hovered = nearestHitTime(ms, null, state.scene.zoom);
           if (hovered !== state.volumeHoverTime) {
             state.volumeHoverTime = hovered;

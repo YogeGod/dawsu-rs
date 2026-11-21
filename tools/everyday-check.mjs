@@ -1,7 +1,7 @@
 // Use the real, built dawsu! editor like a mapper for about a minute, so a broken screen is caught.
 //
 // node tools/everyday-check.mjs --exe <dawsu-tauri.exe> [--map <fixture .osu>] [--shots <folder>]
-//   [--json <file>] [--keep-profile]
+//   [--json <file>] [--keep-profile] [--allow-stale]
 //
 //   --exe           the built editor (cargo build -p dawsu-tauri --locked: target/debug/dawsu-tauri.exe)
 //   --map           a difficulty whose whole folder is copied first; the copy is opened and edited,
@@ -14,6 +14,7 @@
 //   --shots         where a failing step's screenshot goes (default: <profile>/shots)
 //   --json          also write the results as data to this file
 //   --keep-profile  keep the profile folder (map copy, settings, WebView2 profile) after the run
+//   --allow-stale   run even if the editor binary is older than HEAD or apps/tauri/dist/ui/build-stamp.json
 //
 // The JS tests run against a hand-written page (apps/tauri/tests/fake-dom.mjs); this runs the real
 // one. Every step acts through real input: mouse clicks and drags, key presses, buttons and menu
@@ -51,6 +52,52 @@ for (let i = 2; i < process.argv.length; i++) {
 if (!args.exe) throw new Error("--exe is required: the built dawsu-tauri.exe");
 const exe = resolve(args.exe);
 if (!existsSync(exe)) throw new Error(`no editor at ${exe}`);
+
+// Provenance and freshness check: verify the binary is newer than HEAD and the UI build stamp.
+const headShortRes = spawnSync("git", ["rev-parse", "--short", "HEAD"], { cwd: repo, encoding: "utf8" });
+const headShort = headShortRes.status === 0 && headShortRes.stdout.trim() ? headShortRes.stdout.trim() : "unknown";
+const headTimeRes = spawnSync("git", ["log", "-1", "--format=%ct"], { cwd: repo, encoding: "utf8" });
+const headEpochSec = headTimeRes.status === 0 ? Number.parseInt(headTimeRes.stdout.trim(), 10) : Number.NaN;
+const headMtimeMs = Number.isFinite(headEpochSec) ? headEpochSec * 1000 : null;
+const headIso = headMtimeMs !== null ? new Date(headMtimeMs).toISOString() : "unknown";
+
+const exeMtimeMs = statSync(exe).mtimeMs;
+const exeMtimeIso = new Date(exeMtimeMs).toISOString();
+
+const buildStampPath = join(repo, "apps", "tauri", "dist", "ui", "build-stamp.json");
+const hasBuildStamp = existsSync(buildStampPath);
+const stampMtimeMs = hasBuildStamp ? statSync(buildStampPath).mtimeMs : null;
+const stampIso = stampMtimeMs !== null ? new Date(stampMtimeMs).toISOString() : "missing";
+
+const staleReasons = [];
+if (headMtimeMs !== null && exeMtimeMs < headMtimeMs) {
+  staleReasons.push(`binary is older than latest commit ${headShort} (${headIso})`);
+}
+if (!hasBuildStamp) {
+  staleReasons.push("apps/tauri/dist/ui/build-stamp.json is missing");
+} else if (exeMtimeMs < stampMtimeMs) {
+  staleReasons.push(`binary is older than apps/tauri/dist/ui/build-stamp.json (${stampIso})`);
+}
+const isStale = staleReasons.length > 0;
+const allowStale = Boolean(args["allow-stale"]);
+
+console.log(`provenance repo: ${repo} (HEAD ${headShort})`);
+console.log(`provenance exe:  ${exe} (mtime ${exeMtimeIso})`);
+if (!isStale) {
+  console.log(`provenance freshness: FRESH (newer than HEAD ${headShort} [${headIso}] and build-stamp.json [${stampIso}])`);
+} else {
+  const verdict = allowStale ? "STALE (continuing because --allow-stale was passed)" : "STALE";
+  console.log(`provenance freshness: ${verdict} — ${staleReasons.join("; ")}`);
+  if (!allowStale) {
+    console.error(
+      `Refusing to run everyday-check on a stale build: ${staleReasons.join("; ")}.\n` +
+      `Rebuild the UI (npm run build in apps/tauri/ui) and the app binary (cargo build -p dawsu-tauri --locked) first, ` +
+      `or pass --allow-stale to bypass this check.`
+    );
+    process.exit(1);
+  }
+}
+
 for (const key of ["map", "shots", "json"]) if (args[key] === true) throw new Error(`--${key} needs a value`);
 const original = resolve(args.map ?? join(repo, "tests/fixtures/save-pack/synthetic/lf-no-final-newline.osu"));
 if (!existsSync(original)) throw new Error(`no map at ${original}`);
