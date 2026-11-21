@@ -3,7 +3,7 @@
 //! from the old app's `HitsoundCopierTests.cs` and `SimultaneousCopyTests.cs` at c81774e.
 
 use dawsu_foundation::{CustomIndex, Hitsound, SampleIdentity, SampleSet, Sound};
-use dawsu_hitsounding::copy::{copy_hitsounds, CopyMode, CopyOptions, CopyOutcome, TargetOutcome, TargetPlan};
+use dawsu_hitsounding::copy::{copy_hitsounds, CopyCollisionPolicy, CopyMode, CopyOptions, CopyOutcome, TargetOutcome, TargetPlan};
 use dawsu_hitsounding::rules::{answer, Answer};
 use dawsu_hitsounding::{decompile, Decompiled, Hitsounds, MomentId, ProblemKind};
 use dawsu_osu_format::OsuFile;
@@ -82,6 +82,7 @@ const ONLY_DEFINED: CopyOptions = CopyOptions {
     never_silent_hitnormals: false,
     mode: CopyMode::OverwriteOnlyDefined,
     leniency: 5.0,
+    collision_policy: CopyCollisionPolicy::Merge,
     copy_hitsounds: true,
     copy_body_hitsounds: true,
     copy_to_slider_ticks: false,
@@ -234,6 +235,74 @@ fn simultaneous_source_moments_at_one_volume_are_written_together_and_at_two_nee
     // Keeping_target_indexes_reports... (old test): without copying sample sets the target is refused.
     let options = CopyOptions { copy_sample_sets: false, ..ONLY_DEFINED };
     assert!(matches!(run(&source, std::slice::from_ref(&target), &options)[0], TargetOutcome::Refused(_)));
+}
+
+#[test]
+fn nearby_hits_in_leniency_window_merge_by_default_and_later_wins_is_optional() {
+    // Kick (circle with finish) at 999 ms + loose clap at 1001 ms -> 1000 ms target circle.
+    let source_file = map("256,192,999,1,4,0:0:0:0:");
+    let mut source = dec(&source_file);
+    let clap = source.add_moment(dawsu_foundation::SongTime::from_ms(1001.0), 60);
+    source.add_hit(clap, std(SampleSet::Soft, Hitsound::Clap, 1));
+    let target = map("100,100,1000,1,0,0:0:0:0:");
+
+    // Default Merge/Union keeps both 999 ms and 1001 ms sounds together with zero collisions.
+    let merged = match copy_hitsounds(&source, &source_file, std::slice::from_ref(&target), &[], &ONLY_DEFINED, &|| false, &mut |_, _| {}) {
+        CopyOutcome::Targets(mut t) => match t.remove(0) {
+            TargetOutcome::Planned(p) => *p,
+            other => panic!("{other:?}"),
+        },
+        other => panic!("{other:?}"),
+    };
+    assert!(merged.problems.is_empty(), "{:?}", merged.problems);
+    assert!(merged.collisions.is_empty(), "{:?}", merged.collisions);
+    let hits = &moments(&merged.file)[0].1;
+    assert!(hits.contains(&std(SampleSet::Soft, Hitsound::Finish, 1)) && hits.contains(&std(SampleSet::Soft, Hitsound::Clap, 1)), "{hits:?}");
+
+    // Optional LaterWins replaces 999 ms with 1001 ms and records the collision.
+    source.add_hit(clap, std(SampleSet::Soft, Hitsound::Normal, 1));
+    let later_opts = CopyOptions { collision_policy: CopyCollisionPolicy::LaterWins, ..ONLY_DEFINED };
+    let later = match copy_hitsounds(&source, &source_file, std::slice::from_ref(&target), &[], &later_opts, &|| false, &mut |_, _| {}) {
+        CopyOutcome::Targets(mut t) => match t.remove(0) {
+            TargetOutcome::Planned(p) => *p,
+            other => panic!("{other:?}"),
+        },
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(later.collisions.len(), 1);
+    assert_eq!(later.merged, 0);
+    let later_hits = &moments(&later.file)[0].1;
+    assert!(later_hits.contains(&std(SampleSet::Soft, Hitsound::Clap, 1)) && !later_hits.contains(&std(SampleSet::Soft, Hitsound::Finish, 1)), "{later_hits:?}");
+}
+
+#[test]
+fn nearby_ordinary_circles_merge_into_a_plain_union_even_without_copying_sample_sets() {
+    // Two ordinary circles at 999 ms (hitnormal + finish) and 1001 ms (hitnormal + clap), both at 60%.
+    let source = map("256,192,999,1,4,0:0:0:0:\r\n300,192,1001,1,8,0:0:0:0:");
+    let target = map("100,100,1000,1,0,0:0:0:0:");
+
+    // Identical hitnormals collapse to one instead of forcing a doubled sample mix.
+    let merged = plan(&source, &target, &ONLY_DEFINED);
+    assert!(merged.problems.is_empty(), "{:?}", merged.problems);
+    assert!(merged.collisions.is_empty(), "{:?}", merged.collisions);
+    assert_eq!(merged.merged, 1);
+    let hits = &moments(&merged.file)[0].1;
+    assert_eq!(
+        hits,
+        &vec![
+            std(SampleSet::Soft, Hitsound::Normal, 1),
+            std(SampleSet::Soft, Hitsound::Finish, 1),
+            std(SampleSet::Soft, Hitsound::Clap, 1),
+        ],
+    );
+
+    // With copy_sample_sets off, the plain union retargets to the target's sample set instead of refusing the difficulty.
+    let no_sets = CopyOptions { copy_sample_sets: false, ..ONLY_DEFINED };
+    let retargeted = plan(&source, &target, &no_sets);
+    assert!(retargeted.problems.is_empty(), "{:?}", retargeted.problems);
+    assert_eq!(retargeted.merged, 1);
+    let retargeted_hits = &moments(&retargeted.file)[0].1;
+    assert_eq!(retargeted_hits, hits);
 }
 
 #[test]

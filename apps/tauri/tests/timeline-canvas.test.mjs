@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { createContext, runInContext } from "node:vm";
+import { bootEditor } from "./editor-runtime.mjs";
 
-const app = await readFile(new URL("../dist/app.js", import.meta.url), "utf8");
 
 // Loads the editor with fake canvases that record every 2D call and the paint state it used.
 // `roundRect: false` fakes an older WebView whose canvas has no roundRect().
@@ -38,7 +38,7 @@ async function canvases({ roundRect = true } = {}) {
     ResizeObserver: class { observe() {} }, requestAnimationFrame() {}, setInterval() {},
     console,
   });
-  await runInContext(app.replace(/\nact\(null\);\s*$/, ""), context);
+  bootEditor(context, { autoStart: false });
   get("volume-controller-panel").hidden = true;
   runInContext(`
     view = { hasDocument: true, duration: 4000, position: 0, left: 0, right: 0 };
@@ -389,7 +389,7 @@ test("hovering a hit hands over one card per hit and never repaints the timeline
   move(12, 45);
   evaluate("view.busy = true; refreshHitCard(); view.busy = false");
   assert.equal(cards().at(-1), null);
-  assert.match(evaluate("show.toString()"), /^ {2}refreshHitCard\(\);$/m);
+  assert.match(evaluate("show.toString()"), /^\s+(?:ctx\.)?refreshHitCard\(\);$/m);
   // No card while a menu is open.
   evaluate("$('editor-menu').hidden = false");
   move(12, 45);

@@ -171,6 +171,13 @@
             aria-label="Copy volumes"
             onclick={() => (choices.copyVolumes = !choices.copyVolumes)}></button>
         </label>
+        <span class="divider" aria-hidden="true"></span>
+        <label class="switch-label" title="Off: combine all source hits in the match window. On: the later moment replaces earlier ones.">
+          Later moment wins
+          <button type="button" class="switch" role="switch" aria-checked={choices.laterWins}
+            aria-label="Later moment wins"
+            onclick={() => (choices.laterWins = !choices.laterWins)}></button>
+        </label>
       </section>
 
       <ul class="targets">
@@ -283,10 +290,11 @@
 
   .source {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
-    gap: 16px;
+    gap: 10px 16px;
     min-height: 84px;
-    padding: 0 20px;
+    padding: 12px 20px;
     border-radius: 10px;
     background: var(--editor-tealtint);
     box-shadow: inset 0 0 0 1px rgba(98, 214, 207, .35), var(--shadow-card);
@@ -295,7 +303,7 @@
   .who { margin-right: 8px; }
   .palette { display: flex; gap: 2px; margin-right: auto; }
   .palette span { width: 8px; height: 24px; border-radius: 2px; background: var(--swatch); }
-  .match { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+  .match { margin-left: auto; display: flex; align-items: center; gap: 8px; white-space: nowrap; }
   .palette + .match { margin-left: 0; }
   .field {
     display: inline-flex;
@@ -320,7 +328,7 @@
   .field input:focus { outline: none; }
   .field:focus-within { box-shadow: inset 0 0 0 1px var(--editor-focus); }
   .divider { width: 1px; height: 24px; background: var(--editor-border); }
-  .switch-label { display: flex; align-items: center; gap: 8px; }
+  .switch-label { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
 
   .switch {
     position: relative;

@@ -2,12 +2,14 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { createContext, runInContext } from "node:vm";
+import { bootEditor, readEditorSource } from "./editor-runtime.mjs";
 
 const read = file => readFile(new URL("../dist/" + file, import.meta.url), "utf8");
-const [html, css, app, statusBarSvelte] = await Promise.all([
-  read("index.html"), read("style.css"), read("app.js"),
+const [html, css, statusBarSvelte] = await Promise.all([
+  read("index.html"), read("style.css"),
   readFile(new URL("../ui/src/parts/StatusBar.svelte", import.meta.url), "utf8"),
 ]);
+const app = readEditorSource();
 
 const ribbon = html.slice(html.indexOf('<div id="editor-ribbon"'), html.indexOf('<main id="editor-dock"'));
 const toolbarCss = css.slice(css.indexOf("/* Toolbar and status bar (design f1)"));
@@ -46,7 +48,7 @@ async function frontend() {
     setInterval() {},
     console,
   });
-  await runInContext(app, context);
+  await bootEditor(context);
   calls.length = 0;
   const evaluate = code => runInContext(code, context);
   evaluate("renderLanes = () => {};");

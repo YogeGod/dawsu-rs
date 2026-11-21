@@ -40,6 +40,10 @@ export class Bridge {
   // Lane popover filter state owned by app.js's renderLanes() / map-load reset.
   usedOnly = $state(false);
   laneFilter = $state("");
+  // Active viewer overlay pushed from the dedicated Node Graph window.
+  nodeGraphViewer = $state.raw(null);
+  // The map preview is open in its own window (Rust's preview-window event).
+  previewWindow = $state(false);
 
   // No map, a job running or a fault: the parts show but take no input.
   get disabled() {

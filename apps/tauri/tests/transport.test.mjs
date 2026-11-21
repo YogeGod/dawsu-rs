@@ -2,12 +2,14 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { createContext, runInContext } from "node:vm";
+import { bootEditor, readEditorSource } from "./editor-runtime.mjs";
 
 const read = file => readFile(new URL("../dist/" + file, import.meta.url), "utf8");
-const [html, css, app, docking, statusBarSvelte] = await Promise.all([
-  read("index.html"), read("style.css"), read("app.js"), read("docking.js"),
+const [html, css, docking, statusBarSvelte] = await Promise.all([
+  read("index.html"), read("style.css"), read("docking.js"),
   readFile(new URL("../ui/src/parts/StatusBar.svelte", import.meta.url), "utf8"),
 ]);
+const app = readEditorSource();
 
 const header = html.match(/<header id="editor-header".*?<\/header>/s)?.[0] ?? "";
 const statusbar = html.slice(html.indexOf('<div id="statusbar"'), html.indexOf('<div data-ui-mount="hit-card"'));
@@ -47,12 +49,14 @@ async function frontend() {
       event: { listen() {} },
     } },
     Option: function (text, value) { this.text = text; this.value = value; },
+    // A still clock: the playhead is drawn where the editor last put it.
+    performance: { now: () => 0 },
     ResizeObserver: class { observe() {} },
     requestAnimationFrame() {},
     setInterval() {},
     console,
   });
-  await runInContext(app, context);
+  await bootEditor(context);
   calls.length = 0;
   const evaluate = code => runInContext(code, context);
   evaluate("renderLanes = () => {};");

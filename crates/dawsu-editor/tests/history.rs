@@ -251,3 +251,14 @@ fn the_version_bumps_on_every_change() {
     h.undo();
     assert!(h.version() > v1);
 }
+
+#[test]
+fn every_state_undo_or_redo_reaches_can_be_read() {
+    let mut h = EditHistory::new(vec![]);
+    push(&mut h, "One", 1);
+    push(&mut h, "Two", 2);
+    h.undo();
+    let mut states: Vec<Doc> = h.states().cloned().collect();
+    states.sort();
+    assert_eq!(states, [vec![], vec![1], vec![1, 2]]);
+}

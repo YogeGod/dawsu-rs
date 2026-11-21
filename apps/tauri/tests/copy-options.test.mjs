@@ -1,14 +1,12 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { createContext, runInContext } from "node:vm";
-
-const app = readFileSync(new URL("../dist/app.js", import.meta.url), "utf8");
+import { bootEditor } from "./editor-runtime.mjs";
 
 test("Copy picks target difficulties and sends the chosen output policy for review", async () => {
   const calls = [];
   const makeElement = () => ({
-    events: new Map(), children: [],
+    dataset: {}, events: new Map(), children: [],
     addEventListener(name, callback) { this.events.set(name, callback); },
     append(...children) { this.children.push(...children); },
     setAttribute() {},
@@ -38,7 +36,7 @@ test("Copy picks target difficulties and sends the chosen output policy for revi
     setInterval() {},
     requestAnimationFrame() {},
   });
-  await runInContext(app, context);
+  await bootEditor(context);
   calls.length = 0;
   runInContext(
     'scene = { path: "Source.osu", difficulties: ["Source.osu", "Target.osu"] };' +
@@ -116,6 +114,7 @@ test("Copy picks target difficulties and sends the chosen output policy for revi
     options: {
       mode: "overwrite_only_defined",
       leniency: 3,
+      collision_policy: "merge",
       start_index: 123,
       never_silent_hitnormals: true,
       copy_hitsounds: true,
@@ -136,4 +135,12 @@ test("Copy picks target difficulties and sends the chosen output policy for revi
       muted_sample_set: "drum",
     },
   });
+
+  // Toggling "Later moment wins on nearby hits" sends later_wins.
+  calls.length = 0;
+  controls["Later moment wins on nearby hits"].checked = true;
+  submit();
+  await runInContext("pending", context);
+  assert.equal(calls[0].name, "editor_view");
+  assert.equal(calls[0].args.action.options.collision_policy, "later_wins");
 });

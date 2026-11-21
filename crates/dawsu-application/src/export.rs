@@ -32,6 +32,9 @@ pub struct ExportChoices {
     pub base: bool,
     #[serde(default)]
     pub slider_audio: bool,
+    /// Use "later moment wins" instead of the default Merge/Union for nearby source hits.
+    #[serde(default)]
+    pub later_wins: bool,
 }
 
 /// Which window a preview belongs to, so main never shows it as its own review.
@@ -169,6 +172,7 @@ impl Application {
                 copy_volumes: options.copy.copy_volumes,
                 base: options.base,
                 slider_audio: options.slider_audio,
+                later_wins: options.copy.collision_policy == dawsu_hitsounding::copy::CopyCollisionPolicy::LaterWins,
             });
         }
         self.export.stop();
@@ -770,6 +774,7 @@ mod tests {
             copy_volumes: false,
             base: false,
             slider_audio: false,
+            later_wins: false,
         };
         assert_eq!(app.document().unwrap().export_choices(), Some(&expected));
         wait_preview(&mut app);
@@ -1096,7 +1101,7 @@ mod tests {
         let settings = crate::ExportSettings::default();
         crate::mixes::stage_in_file(
             hits, file, &problems, source.parent().unwrap(), std::path::Path::new(""), &[],
-            dawsu_hitsounding::Placement::OnObjects, already, Some(&settings), &[], start, &|| false,
+            dawsu_hitsounding::Placement::OnObjects, already, Some(&settings), &[], start, &crate::pending::Pending::default(), &|| false,
         ).unwrap().1.staged
     }
 
@@ -1114,7 +1119,7 @@ mod tests {
         let custom = indexed_mixes(&source, &[], 7);
         assert!(index_names(&custom).iter().all(|name| name.ends_with("7.wav")), "{:?}", index_names(&custom));
         let both = first.into_iter().chain(second).collect::<Vec<_>>();
-        let published = crate::mixes::publish(&both, &|| false).unwrap();
+        let published = crate::mixes::publish(&both, None, &|| false).unwrap();
         drop(published);
     }
 

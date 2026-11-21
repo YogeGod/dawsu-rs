@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
-import { readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
+import { createContext, runInContext } from "node:vm";
 
 // Checks on the Svelte parts that need no node_modules: the committed bundle in dist/ui/ is
 // what the exe ships, so these run with the rest of the frontend suite.
@@ -18,11 +19,12 @@ function sources(dir = uiSource) {
 
 const definedProperties = css => new Set([...css.matchAll(/(--[\w-]+)\s*:/g)].map(match => match[1]));
 
-test("parts use none of the selectors app.js wires and no static style attribute", () => {
-  // app.js adds listeners to these by selector at load, so a part using one would act twice.
+test("parts use none of the selectors the editor runtime wires and no static style attribute", () => {
+  // editor/boot.js adds listeners to these by selector at load, so a Svelte part using one would act twice.
   const shared = /data-(?:action|command|volume|locator|map|doc|playback-speed)\b|editor-tool-button/;
+  const partsDir = fileURLToPath(new URL("parts/", uiSource));
   for (const { name, text } of sources()) {
-    assert.doesNotMatch(text, shared, name);
+    if (name.startsWith(partsDir)) assert.doesNotMatch(text, shared, name);
     // The window's policy blocks style="" attributes; parts set custom properties or classes.
     assert.doesNotMatch(text, /\sstyle\s*=/, name);
     assert.doesNotMatch(text, /url\(/, name + " (fonts and images stay in style.css)");
@@ -62,9 +64,68 @@ test("the committed bundle matches its sources", async () => {
   assert.deepEqual(saved.outputs, fresh.outputs, "dist/ui was edited by hand or built from other sources");
 });
 
-test("index.html loads the bundle after the old styles and scripts", () => {
+test("index.html loads the bundle without legacy app.js", () => {
+  assert.ok(!existsSync(new URL("dist/app.js", tauri)), "dist/app.js has been deleted");
   const head = read(new URL("dist/index.html", tauri)).match(/<head>(.*?)<\/head>/s)[1];
   const order = [...head.matchAll(/(?:href|src)="([^"]+\.(?:css|js))"/g)].map(match => match[1]);
-  assert.deepEqual(order, ["fonts.css", "style.css", "ui/ui.css", "docking.js", "app.js", "menus.js", "ui/ui.js"]);
+  assert.deepEqual(order, ["fonts.css", "style.css", "ui/ui.css", "docking.js", "ui/ui.js", "menus.js"]);
   assert.match(head, /<script defer src="ui\/ui\.js"><\/script>/);
+});
+
+test("dist/ui/ui.js boots the editor with menus.js on index.html and stays idle on secondary windows", async () => {
+  const uiBundle = read(new URL("ui.js", bundle));
+  const menusScript = read(new URL("dist/menus.js", tauri));
+  const makeNode = () => ({
+    dataset: {}, style: { setProperty() {} }, children: [], attributes: {},
+    classList: { add() {}, remove() {}, toggle() {}, contains: () => false },
+    addEventListener() {}, removeEventListener() {}, append() {}, prepend() {},
+    replaceChildren() {}, setAttribute(k, v) { this.attributes[k] = String(v); },
+    getAttribute(k) { return this.attributes[k] ?? null; }, removeAttribute(k) { delete this.attributes[k]; },
+    contains: () => false, closest: () => null, querySelector: () => null, querySelectorAll: () => [],
+    getBoundingClientRect: () => ({ x: 0, y: 0, left: 0, top: 0, right: 0, bottom: 0, width: 100, height: 40 }),
+  });
+
+  // Secondary window (export.html / drum.html): no #grid -> editor never boots, never invokes editor_view.
+  const secondaryCalls = [];
+  const secondaryContext = createContext({
+    document: { getElementById: () => null, createElement: makeNode, querySelectorAll: () => [], addEventListener() {} },
+    window: {
+      __TAURI__: { core: { invoke: async (cmd) => { secondaryCalls.push(cmd); return {}; } }, event: { listen() {} } },
+      addEventListener() {},
+    },
+    ResizeObserver: class { observe() {} }, requestAnimationFrame() {}, setInterval() {}, queueMicrotask, console,
+  });
+  secondaryContext.window.window = secondaryContext.window;
+  secondaryContext.globalThis = secondaryContext;
+  runInContext(uiBundle, secondaryContext);
+  assert.deepEqual(secondaryCalls, [], "secondary windows must never boot the main editor");
+  assert.equal(typeof secondaryContext.dawsuUi?.commands, "object");
+
+  // Main editor window (index.html): #grid present -> ui.js boots editor, exposes globals, menus.js attaches cleanly.
+  const mainCalls = [];
+  const mainNodes = new Map();
+  const getMain = id => {
+    if (!mainNodes.has(id)) mainNodes.set(id, makeNode());
+    return mainNodes.get(id);
+  };
+  const mainContext = createContext({
+    document: { getElementById: getMain, createElement: makeNode, querySelectorAll: () => [], addEventListener() {} },
+    window: {
+      __TAURI__: {
+        core: { invoke: async (cmd) => { mainCalls.push(cmd); return { busy: false, hasDocument: false }; } },
+        event: { listen() {} },
+      },
+      addEventListener() {},
+    },
+    ResizeObserver: class { observe() {} }, requestAnimationFrame() {}, setInterval() {}, queueMicrotask, console,
+  });
+  mainContext.window.window = mainContext.window;
+  mainContext.globalThis = mainContext;
+  runInContext(uiBundle, mainContext);
+  mainContext.window.dawsuUi = mainContext.dawsuUi;
+  runInContext(menusScript, mainContext);
+  await mainContext.pending;
+  assert.deepEqual(mainCalls, ["editor_view"]);
+  assert.equal(typeof mainContext.window.openEditorMenu, "function");
+  assert.equal(typeof mainContext.window.refreshEditorMenu, "function");
 });

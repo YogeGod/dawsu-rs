@@ -7,7 +7,7 @@ import { createContext, runInContext } from "node:vm";
 const read = path => readFile(new URL(path, import.meta.url), "utf8");
 const html = await read("../dist/index.html");
 const statusBarSvelte = await read("../ui/src/parts/StatusBar.svelte");
-const app = await read("../dist/app.js");
+const app = readEditorSource();
 const docking = await read("../dist/docking.js");
 const menus = await read("../dist/menus.js");
 
@@ -105,8 +105,8 @@ test("each side panel has a head with a fold button and a rail whose section ico
 });
 
 test("the three panel switches use literal ids", () => {
-  assert.match(app, /\{ browser: "view-browser", inspector: "view-inspector", controller: "view-controller" \}/);
-  // docking.js always loads first; app.js keeps no second copy of its rules.
+  assert.match(app, /browser:\s*"view-browser",\s*inspector:\s*"view-inspector",\s*controller:\s*"view-controller"/);
+  // docking.js always loads first; the editor keeps no second copy of its rules.
   assert.doesNotMatch(app, /editorDocking\?\.(effectivePanels|togglePlan)|\[data-command\]/);
   assert.doesNotMatch(app, /\$\("view-" \+ panel\)/);
 });
@@ -144,17 +144,20 @@ async function page(dockingApi) {
       } },
       event: { listen() {} },
     } },
+    // A still clock: the playhead is drawn where the editor last put it.
+    performance: { now: () => 0 },
     ResizeObserver: class { observe() {} },
     setInterval() {},
     requestAnimationFrame() {},
     console,
   });
-  await runInContext(app, context);
+  await bootEditor(context);
   calls.length = 0;
   return { element, calls, evaluate: code => runInContext(code, context) };
 }
 
 import { dockingRules } from "./docking-rules.mjs";
+import { bootEditor, readEditorSource } from "./editor-runtime.mjs";
 const { effectivePanels, togglePlan } = dockingRules;
 
 test("the problem tooltip lists ten moments and how many more", async () => {

@@ -61,6 +61,7 @@ export function sameUiView(a, b) {
     (a.status || "") === (b.status || "") &&
     !!a.showHome === !!b.showHome &&
     !!a.hasDocument === !!b.hasDocument &&
+    !!a.previewWindow === !!b.previewWindow &&
     !!a.objectLines === !!b.objectLines &&
     sameStrings(a.warnings, b.warnings) &&
     sameProblems(a.outputProblems, b.outputProblems) &&

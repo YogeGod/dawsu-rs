@@ -62,6 +62,20 @@ pub fn write_new(target: &Path, bytes: &[u8]) -> Result<(), Error> {
     }
 }
 
+/// Renames `from` to `to`, waiting a moment and trying again while another program holds
+/// either file, as replaces do. On Windows a rename replaces an existing `to`; callers that must
+/// not replace check first.
+pub fn rename_waiting(from: &Path, to: &Path) -> Result<(), Error> {
+    let mut waits = REPLACE_WAITS.iter();
+    loop {
+        match fs::rename(from, to) {
+            Ok(()) => return Ok(()),
+            Err(e) if wait_if_held(&e, &mut waits) => continue,
+            Err(e) => return Err(Error::io("renaming", to, e)),
+        }
+    }
+}
+
 /// Publishes a new file atomically without replacing an existing destination.
 pub fn create(target: &Path, bytes: &[u8]) -> Result<(), Error> {
     let temp = write_temporary(target, bytes)?;

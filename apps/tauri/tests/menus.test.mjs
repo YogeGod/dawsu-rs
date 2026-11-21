@@ -319,7 +319,7 @@ test("each menu groups the editor's existing commands like the design, with no s
   assert.deepEqual(open("map"), [
     "Difficulty: Hard | Insane", "—",
     "New hitsound difficulty…", "—",
-    "Generate hitsound difficulty…", "Copy hitsounds…", "Drum hit detection…",
+    "Generate hitsound difficulty…", "Copy hitsounds…", "Drum hit detection…", "Node graph…",
     "Generate export style: Per-object", "—",
     "Add bookmark", "Previous bookmark", "Next bookmark", "—",
     "Add lane…", "Delete active lane…",
@@ -796,9 +796,9 @@ test("a refresh with nothing changed hands the rows over only once", async () =>
   assert.equal(handed, after);
 });
 
-test("app.js keeps a failing menu refresh from stopping the rest of show()", async () => {
-  const app = await readFile(new URL("../dist/app.js", import.meta.url), "utf8");
-  assert.match(app, /try \{ window\.refreshEditorMenu\?\.\(\); \} catch \(error\) \{ console\.error\(error\); \}/);
+test("the editor keeps a failing menu refresh from stopping the rest of show()", async () => {
+  const { readEditorSource } = await import("./editor-runtime.mjs");
+  assert.match(readEditorSource(), /try \{ env\.window\.refreshEditorMenu\?\.\(\); \} catch \(error\) \{/);
 });
 
 test("the menu popup grows to fit a row with a long key hint instead of wrapping its label", () => {

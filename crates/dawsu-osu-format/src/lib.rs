@@ -11,7 +11,7 @@ mod records;
 
 pub use error::Error;
 pub use file::{round_trip_check, ChangeSummary, LineEnding, LineView, OsuFile, Read, ReadWarning, Refusal, LineSnapshot, RoundTripReport, SaveOutcome, SetOutcome, StoryboardSample};
-pub use folder::{check_map_path, find_case_insensitive, list_folder, PathRefusal};
+pub use folder::{check_map_path, find_case_insensitive, list_folder, FolderIndex, PathRefusal};
 pub use osz::{export_osz, import_osz, OszExport, OszImport, OszLimits};
 pub use records::{HitObject, HitSample, ObjectKind, SliderFields, TimingPoint};
 

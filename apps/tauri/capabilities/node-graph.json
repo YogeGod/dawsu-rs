@@ -1,0 +1,16 @@
+{
+  "identifier": "node-graph",
+  "windows": [
+    "node-graph"
+  ],
+  "permissions": [
+    "allow-node-graph-view",
+    "allow-node-graph-action",
+    "allow-node-graph-export-json",
+    "allow-node-graph-pick-open",
+    "allow-node-graph-pick-save",
+    "allow-node-graph-pick-audio",
+    "allow-close-node-graph-window",
+    "allow-show-in-editor"
+  ]
+}

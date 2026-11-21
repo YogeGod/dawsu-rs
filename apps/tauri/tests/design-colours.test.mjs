@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { createContext, runInContext } from "node:vm";
+import { bootEditor } from "./editor-runtime.mjs";
 
-const app = await readFile(new URL("../dist/app.js", import.meta.url), "utf8");
 const css = await readFile(new URL("../dist/style.css", import.meta.url), "utf8");
 
 // Values from the design handoff's tokens.css (--dark-* palette, --editor-* roles).
@@ -120,7 +120,7 @@ async function paintedCanvases() {
     ResizeObserver: class { observe() {} }, requestAnimationFrame() {}, setInterval() {},
     console,
   });
-  await runInContext(app.replace(/\nact\(null\);\s*$/, ""), context);
+  bootEditor(context, { autoStart: false });
   runInContext(`
     view = { hasDocument: true, duration: 1200, position: 300, left: 100, right: 700,
       objectLines: true, tool: "Select" };

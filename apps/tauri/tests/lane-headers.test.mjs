@@ -2,9 +2,11 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { createContext, runInContext } from "node:vm";
+import { bootEditor, readEditorSource } from "./editor-runtime.mjs";
 
 const read = name => readFile(new URL("../dist/" + name, import.meta.url), "utf8");
-const [app, css] = await Promise.all(["app.js", "style.css"].map(read));
+const app = readEditorSource();
+const css = await read("style.css");
 
 async function frontend() {
   const controls = new Map();
@@ -45,7 +47,7 @@ async function frontend() {
     setInterval() {},
     console,
   });
-  await runInContext(app, context);
+  await bootEditor(context);
   return { calls, evaluate: code => runInContext(code, context), get };
 }
 

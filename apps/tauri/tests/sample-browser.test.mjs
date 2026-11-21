@@ -3,8 +3,9 @@ import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { createContext, runInContext } from "node:vm";
 import { dockingRules } from "./docking-rules.mjs";
+import { bootEditor, readEditorSource } from "./editor-runtime.mjs";
 
-const app = await readFile(new URL("../dist/app.js", import.meta.url), "utf8");
+const app = readEditorSource();
 const enabled = { browser: true, inspector: true, controller: true, laneNames: true };
 
 // app.js builds the Browser as a plain model and hands it to the Svelte parts; they answer through
@@ -71,7 +72,7 @@ async function browserPage() {
     requestAnimationFrame() {},
     console,
   });
-  await runInContext(app, context);
+  await bootEditor(context);
   runInContext(`scene = {path: "copy.osu", lanes: [
     {key: "normal", sourceKey: "normal", name: "normal-hitnormal", canReplace: true},
     {key: "clap", sourceKey: "clap", name: "Snare", sample: "percussion/snare.wav"},

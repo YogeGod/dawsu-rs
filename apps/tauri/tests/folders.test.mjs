@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import vm from "node:vm";
+import { bootEditor } from "./editor-runtime.mjs";
 
-const app = readFileSync(new URL("../dist/app.js", import.meta.url), "utf8");
 
 test("folder dialog uses named native actions without sending paths", async () => {
   const elements = new Map();
@@ -37,7 +37,7 @@ test("folder dialog uses named native actions without sending paths", async () =
     requestAnimationFrame() {},
     setInterval() {},
   });
-  await vm.runInContext(app, context);
+  await bootEditor(context);
   calls.length = 0;
   vm.runInContext("scene = { path: 'C:/fixture/Hard.osu' }", context);
   // File › Folders… and the start screen's Folders… button both open it.

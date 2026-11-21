@@ -781,7 +781,10 @@ mod tests {
     }
 
     fn pattern() -> AudioClip {
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../dawsu-graph-audio/tests/fixtures/classic-3.1.4/pattern.f32");
+        let manifest_dir = std::env::var_os("CARGO_MANIFEST_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")));
+        let path = manifest_dir.join("../dawsu-graph-audio/tests/fixtures/classic-3.1.4/pattern.f32");
         let samples = std::fs::read(path).unwrap().chunks_exact(4)
             .map(|b| f32::from_le_bytes(b.try_into().unwrap())).collect();
         AudioClip { samples, channels: 1, sample_rate: 44_100 }

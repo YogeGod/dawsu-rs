@@ -1,6 +1,7 @@
 //! Copy hitsounds (design doc "Generate and Copy hitsounds", Responsibilities 7-12; the Generate
 //! and Copy plan, Task 3). Follows the old app's `HitsoundCopier`, which follows Mapping Tools 2.0's
-//! Hitsound Copier (OliBomby, MIT): the same options with the same defaults. Each target is
+//! Hitsound Copier (OliBomby, MIT), except nearby source hits in the leniency window merge by default
+//! (`CopyCollisionPolicy::Merge`, DECISIONS.md) instead of letting the later moment win. Each target is
 //! decompiled, its moments are set from the source's as the options say, and compile writes them
 //! with green lines (ADR 0037, ADR 0042). Planning opens and writes no file.
 //!
@@ -28,12 +29,24 @@ pub enum CopyMode {
     OverwriteOnlyDefined,
 }
 
-/// The options of the old app's Copy hitsounds, with its defaults.
+/// What happens when multiple source moments at different times fall inside one target moment's leniency window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CopyCollisionPolicy {
+    /// Collect all source hits in the window and hand the combined layer to compile (default).
+    #[default]
+    Merge,
+    /// A later source moment replaces earlier matches for the same target moment.
+    LaterWins,
+}
+
+/// Options for Copy hitsounds (matching Mapping Tools' defaults, except Merge is the default collision policy).
 #[derive(Debug, Clone, PartialEq)]
 pub struct CopyOptions {
     pub mode: CopyMode,
     /// How far apart (ms, after rounding both times half-to-even) a source and a target moment may be.
     pub leniency: f64,
+    /// What happens when multiple source moments at different times match one target moment.
+    pub collision_policy: CopyCollisionPolicy,
     /// The first custom index for new mixed samples.
     pub start_index: u32,
     /// Keep the target's existing sound if Copy would supply a silent hitnormal.
@@ -77,6 +90,7 @@ impl Default for CopyOptions {
         CopyOptions {
             mode: CopyMode::OverwriteEverything,
             leniency: 5.0,
+            collision_policy: CopyCollisionPolicy::Merge,
             start_index: 100,
             never_silent_hitnormals: false,
             copy_hitsounds: true,
@@ -137,6 +151,8 @@ pub struct TargetPlan {
     pub changed: usize,
     /// Target moments that kept their original sound to avoid a silent hitnormal.
     pub kept_from_silent: usize,
+    /// Target moments where nearby source moments at different times were merged together.
+    pub merged: usize,
     /// Slider and spinner ends muted.
     pub muted: usize,
 }
@@ -276,10 +292,11 @@ struct Matches {
 /// Matches source moments to target moments: each source moment goes to the target moment
 /// nearest in time, kept when both times rounded half-to-even differ by at most `leniency`. When
 /// several target moments share that time, the k-th source moment at one source time goes to the
-/// k-th of them in object order, and extra ones pile up on the last (plan decision A). A later
-/// source moment replaces an earlier one at the same target; source moments at the same time pile
-/// up. Records retained, displaced and unmatched source indices separately.
-fn match_moments(source_times: &[f64], target_times: &[f64], leniency: f64) -> Matches {
+/// k-th of them in object order, and extra ones pile up on the last (plan decision A). Under
+/// `CopyCollisionPolicy::Merge` (default), all source moments in the window are retained together;
+/// under `CopyCollisionPolicy::LaterWins`, a later source moment replaces earlier ones at the same
+/// target while equal-time source moments still pile up.
+fn match_moments(source_times: &[f64], target_times: &[f64], leniency: f64, policy: CopyCollisionPolicy) -> Matches {
     let mut distinct: Vec<f64> = target_times.to_vec();
     distinct.dedup();
     let mut matches = Matches::default();
@@ -301,8 +318,10 @@ fn match_moments(source_times: &[f64], target_times: &[f64], leniency: f64) -> M
         let target = first + (*k).min(count - 1);
         *k += 1;
         let list = matches.retained.entry(target).or_default();
-        // A later source moment at another time replaces what was there.
-        if list.last().is_some_and(|&p| source_times[p] != time) {
+        // Under LaterWins, a later source moment at another time replaces what was there.
+        if policy == CopyCollisionPolicy::LaterWins
+            && list.last().is_some_and(|&p| source_times[p] != time)
+        {
             matches.displaced.entry(target).or_default().append(list);
         }
         list.push(s);
@@ -375,7 +394,7 @@ fn plan_target(source: &Hitsounds, source_file: &OsuFile, target: &OsuFile, fold
 
     // Without copying hitsounds nothing is matched, and no source moment counts as dropped.
     let Matches { retained: matched, displaced, dropped } = if options.copy_hitsounds {
-        match_moments(&source_times, &target_times, options.leniency)
+        match_moments(&source_times, &target_times, options.leniency, options.collision_policy)
     } else {
         Matches::default()
     };
@@ -389,6 +408,7 @@ fn plan_target(source: &Hitsounds, source_file: &OsuFile, target: &OsuFile, fold
     let mut problems = Vec::new();
     let mut changed = 0;
     let mut kept_from_silent = 0;
+    let mut merged = 0;
     let mut silent_normal = |lane: &SampleIdentity| {
         if !options.never_silent_hitnormals
             || matches!(lane, SampleIdentity::Standard { sound, .. } if *sound != Sound::Hit(Hitsound::Normal))
@@ -414,14 +434,21 @@ fn plan_target(source: &Hitsounds, source_file: &OsuFile, target: &OsuFile, fold
         let mut overrides = None;
         let (lanes, volume) = match matched.get(&i) {
             Some(sources) if sources.len() > 1 => {
-                // Source moments at one time pile up on this target moment.
-                let layers: Vec<(SampleIdentity, i32)> = sources
+                // Multiple source moments (simultaneous or merged within the leniency window) land on this target moment.
+                let same_time = sources.iter().all(|&s| source_times[s] == source_times[sources[0]]);
+                let mut layers: Vec<(SampleIdentity, i32)> = sources
                     .iter()
                     .flat_map(|&s| {
                         let moment = from[s];
-                        moment.hits().map(move |h| {
-                            let gain = if options.copy_volumes && !preserve_volume { moment.hit_volume(h) } else { m.volume() };
-                            (h.clone(), played_volume(gain))
+                        let own: Vec<SampleIdentity> = moment.hits().cloned().collect();
+                        let mapped = if options.copy_sample_sets {
+                            own
+                        } else {
+                            retarget(&own, target_state.set, target_state.index)
+                        };
+                        moment.hits().cloned().zip(mapped).map(move |(orig, lane)| {
+                            let gain = if options.copy_volumes && !preserve_volume { moment.hit_volume(&orig) } else { m.volume() };
+                            (lane, played_volume(gain))
                         })
                     })
                     .collect();
@@ -429,12 +456,20 @@ fn plan_target(source: &Hitsounds, source_file: &OsuFile, target: &OsuFile, fold
                     kept_from_silent += 1;
                     continue;
                 }
-                if !options.copy_sample_sets {
-                    return Some(TargetOutcome::Refused("turn on copying sample sets and indexes to keep simultaneous source sounds on one target moment".into()));
+                if !same_time {
+                    merged += 1;
+                    // Merging nearby moments (Merge/Union) collapses identical (lane, volume) entries
+                    // so two ordinary circles (each carrying a hitnormal) form a plain union instead
+                    // of doubling the hitnormal into a sample mix.
+                    let mut seen: HashSet<(SampleIdentity, i32)> = HashSet::new();
+                    layers.retain(|entry| seen.insert(entry.clone()));
                 }
                 let volumes: BTreeSet<i32> = layers.iter().map(|l| l.1).collect();
                 let lanes: BTreeSet<SampleIdentity> = layers.iter().map(|l| l.0.clone()).collect();
                 if volumes.len() > 1 || lanes.len() < layers.len() {
+                    if !options.copy_sample_sets {
+                        return Some(TargetOutcome::Refused("turn on copying sample sets and indexes to combine multiple source sounds on one target moment".into()));
+                    }
                     // Repeated lanes and incompatible gains need a sample mix.
                     problems.push(SaveProblem { time: m.time(), place: m.place(), kind: mix_problem(&layers) });
                     continue;
@@ -523,7 +558,7 @@ fn plan_target(source: &Hitsounds, source_file: &OsuFile, target: &OsuFile, fold
     problems.sort_by(|a, b| a.time.ms().total_cmp(&b.time.ms()));
     let (dropped, slider_placements) = slider::plan(dropped, &from, to.bodies(), target_offset - source_offset, options, cancel)?;
     let dropped = dropped.into_iter().map(|s| from[s].time()).collect();
-    Some(TargetOutcome::Planned(Box::new(TargetPlan { file, problems, dropped, collisions, slider_placements, matched: matched_count, changed, muted, kept_from_silent })))
+    Some(TargetOutcome::Planned(Box::new(TargetPlan { file, problems, dropped, collisions, slider_placements, matched: matched_count, changed, muted, kept_from_silent, merged })))
 }
 
 /// Sets a moment's hits and volume; false when they are already what it holds.
@@ -619,7 +654,7 @@ fn copy_bodies(source: &Hitsounds, to: &mut Hitsounds, before: &[Moment], matche
     for b in 0..to.bodies().len() {
         let object = to.bodies()[b].object();
         let Some(&head) = head_of.get(&object) else { continue };
-        match matched.get(&head).and_then(|s| s.last()) {
+        match matched.get(&head).and_then(|s| s.iter().rev().find(|&&idx| matches!(from[idx].place(), Place::SliderNode { node: 0, .. })).or_else(|| s.last())) {
             Some(&s) => {
                 if !o.copy_body_hitsounds {
                     continue;
@@ -714,7 +749,11 @@ mod tests {
     }
 
     fn pairs(source: &[f64], target: &[f64]) -> (Vec<(usize, Vec<usize>)>, Vec<usize>) {
-        let Matches { retained, dropped, .. } = match_moments(source, target, 5.0);
+        pairs_with(source, target, CopyCollisionPolicy::Merge)
+    }
+
+    fn pairs_with(source: &[f64], target: &[f64], policy: CopyCollisionPolicy) -> (Vec<(usize, Vec<usize>)>, Vec<usize>) {
+        let Matches { retained, dropped, .. } = match_moments(source, target, 5.0, policy);
         let mut m: Vec<_> = retained.into_iter().collect();
         m.sort();
         (m, dropped)
@@ -737,20 +776,25 @@ mod tests {
     }
 
     #[test]
-    fn a_later_source_moment_replaces_an_earlier_one_and_equal_times_pile_up() {
-        // Nearby_but_distinct_source_times_retain_the_existing_last_match_policy (old test).
-        assert_eq!(pairs(&[1000.0, 1001.0], &[1000.0]), (vec![(0, vec![1])], vec![]));
-        assert_eq!(pairs(&[1000.0, 1000.0], &[1000.0]), (vec![(0, vec![0, 1])], vec![]));
+    fn merge_default_collects_all_nearby_source_moments_and_later_wins_replaces_earlier() {
+        // Default Merge/Union collects both 999 ms and 1001 ms onto 1000 ms with no collisions.
+        let merged = match_moments(&[999.0, 1001.0], &[1000.0], 5.0, CopyCollisionPolicy::Merge);
+        assert_eq!(merged.retained[&0], [0, 1]);
+        assert!(merged.displaced.is_empty());
+
+        // Optional LaterWins replaces earlier times while equal times still pile up.
+        assert_eq!(pairs_with(&[1000.0, 1001.0], &[1000.0], CopyCollisionPolicy::LaterWins), (vec![(0, vec![1])], vec![]));
+        assert_eq!(pairs_with(&[1000.0, 1000.0], &[1000.0], CopyCollisionPolicy::LaterWins), (vec![(0, vec![0, 1])], vec![]));
     }
 
     #[test]
     fn collisions_keep_earlier_groups_separate_from_equal_time_layers() {
-        let matches = match_moments(&[1998.0, 1999.0, 1999.0, 2002.0, 2002.0], &[2000.0], 5.0);
+        let matches = match_moments(&[1998.0, 1999.0, 1999.0, 2002.0, 2002.0], &[2000.0], 5.0, CopyCollisionPolicy::LaterWins);
         assert_eq!(matches.retained[&0], [3, 4]);
         assert_eq!(matches.displaced[&0], [0, 1, 2]);
         assert!(matches.dropped.is_empty());
 
-        let simultaneous = match_moments(&[1999.0, 1999.0], &[2000.0], 5.0);
+        let simultaneous = match_moments(&[1999.0, 1999.0], &[2000.0], 5.0, CopyCollisionPolicy::LaterWins);
         assert_eq!(simultaneous.retained[&0], [0, 1]);
         assert!(simultaneous.displaced.is_empty());
     }

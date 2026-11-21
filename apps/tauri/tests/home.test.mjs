@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { createContext, runInContext } from "node:vm";
+import { bootEditor } from "./editor-runtime.mjs";
 
-const app = await readFile(new URL("../dist/app.js", import.meta.url), "utf8");
 
 test("Home asks before leaving an edited difficulty and preserves recent and resume actions", async () => {
   const elements = new Map();
@@ -48,7 +48,7 @@ test("Home asks before leaving an edited difficulty and preserves recent and res
     requestAnimationFrame() {},
     console,
   });
-  await runInContext(app.replace(/\n(?=act\(null\);\s*$)/, "\n// "), context);
+  bootEditor(context, { autoStart: false });
   runInContext('renderScene = () => {}; renderSelection = () => {};', context);
   const click = (node) => node.listeners.get("click")();
   const reply = (label) => {

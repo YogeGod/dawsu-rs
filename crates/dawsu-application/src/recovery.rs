@@ -50,6 +50,10 @@ pub(super) struct CheckpointData {
     files: Vec<String>,
     last_save: Option<LastSave>,
     working: Working,
+    /// The pending files the session kept, by name and checksum. Older builds ignore the list;
+    /// copies from earlier builds have none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pending: Vec<crate::pending::PendingSample>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -173,7 +177,12 @@ impl From<IndexValue> for CustomIndex {
     }
 }
 
+fn pending_list(document: &Document) -> Vec<crate::pending::PendingSample> {
+    document.pending.files().map(|file| crate::pending::PendingSample { name: file.name.clone(), sha256: file.sha256.clone() }).collect()
+}
+
 impl Checkpoint {
+
     pub(super) fn new(document: &Document) -> Self {
         let metadata = |key: &str, fallback: &str| {
             document
@@ -192,6 +201,7 @@ impl Checkpoint {
                 files: document.files.clone(),
                 last_save: None,
                 working: Working::capture(document),
+                pending: pending_list(document),
             },
         }
     }
@@ -209,6 +219,9 @@ impl Checkpoint {
     }
 
     pub(super) fn refresh(&mut self, document: &Document) {
+        if self.data.source == document.path {
+            self.data.pending = pending_list(document);
+        }
         let history = &document.composer.history;
         if self.data.source == document.path
             && !history.is_transaction_open()
@@ -367,6 +380,10 @@ impl RecoveryCopy {
 
     pub(super) fn files(&self) -> &[String] {
         &self.checkpoint.files
+    }
+
+    pub(super) fn pending(&self) -> &[crate::pending::PendingSample] {
+        &self.checkpoint.pending
     }
 
     pub(super) fn original(&self) -> Option<&[u8]> {
@@ -545,4 +562,48 @@ pub(super) fn offers(root: &Path) -> Result<Vec<RecoveryOffer>, String> {
             .then_with(|| left.id.cmp(&right.id))
     });
     Ok(offers)
+}
+
+impl WorkingHits {
+    /// The samples its hits play. Its lanes are left out on purpose: a lane with no hit keeps no
+    /// file in the mapset, in a recovery copy as in the open difficulty (Yoge, 2026-11-21).
+    fn samples(&self) -> impl Iterator<Item = &SampleIdentity> {
+        self.moments.iter().flat_map(|moment| &moment.hits)
+            .chain(self.placements.iter().flat_map(|placement| placement.applied.iter().map(|applied| &applied.lane)))
+            .map(|sample| &sample.0)
+    }
+}
+
+/// The stopped sessions' recovery copies of a difficulty in `mapset`. A copy that can't be read
+/// could belong to any mapset: it is an error that names the copy.
+pub(super) fn mapset_copies(data_root: &Path, mapset: &Path) -> Result<Vec<RecoveryCopy>, String> {
+    let Ok(entries) = fs::read_dir(data_root.join("recovery")) else { return Ok(Vec::new()) };
+    let same = |folder: &Path| folder == mapset
+        || folder.canonicalize().ok().zip(mapset.canonicalize().ok()).is_some_and(|(a, b)| a == b);
+    let mut out = Vec::new();
+    for entry in entries.filter_map(Result::ok) {
+        if !entry.file_name().to_str().is_some_and(valid_id) {
+            continue;
+        }
+        let copy = read_copy(&entry.path())
+            .map_err(|_| format!("The recovery copy {} could not be read.", entry.path().display()))?;
+        if copy.source().parent().is_some_and(same) {
+            out.push(copy);
+        }
+    }
+    Ok(out)
+}
+
+/// Every sample a stopped session's recovery copy of a difficulty in `mapset` plays or lists:
+/// its hits, those of its last Save and its pending files. A sample file it names stays in the mapset, so restoring
+/// the copy still plays it. A copy that can't be read is an error that names the copy.
+pub(super) fn copies_play(data_root: &Path, mapset: &Path) -> Result<Vec<SampleIdentity>, String> {
+    let mut out = Vec::new();
+    for copy in mapset_copies(data_root, mapset)? {
+        let data = &copy.checkpoint;
+        let saved = data.last_save.iter().flat_map(|save| save.hits.samples().chain(save.drawn.iter().flat_map(WorkingHits::samples)));
+        out.extend(data.working.hits.samples().chain(saved).cloned());
+        out.extend(data.pending.iter().map(|file| SampleIdentity::File(file.name.clone())));
+    }
+    Ok(out)
 }

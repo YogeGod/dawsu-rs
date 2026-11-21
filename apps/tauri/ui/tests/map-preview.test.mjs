@@ -108,13 +108,76 @@ test("while playing the clock holds still on a small step back and stops at the 
 });
 
 test("the preview asks for the objects once per difficulty, not again when the answer arrives", async () => {
-  // Effects do not run under svelte/server, so this reads the source: the fetch effect may look at
-  // `model` (which its own answer sets) only through untrack, or it asks again forever.
+  // Effects do not run under svelte/server, so this reads the source of the fetch effect: it may
+  // set `model` (its own answer does) but read it only inside untrack, or it asks again forever.
   const { readFileSync } = await import("node:fs");
-  const source = readFileSync(new URL("../src/parts/MapPreview.svelte", import.meta.url), "utf8");
-  const effect = source.slice(source.indexOf("invoke(") - 600, source.indexOf("invoke("));
-  const reads = effect.match(/model\?\.\w+/g) ?? [];
-  assert.ok(reads.length > 0);
+  const source = readFileSync(new URL("../src/parts/PreviewCanvas.svelte", import.meta.url), "utf8");
+  const call = source.indexOf('invoke("map_preview_objects"');
+  const effect = source.slice(source.lastIndexOf("$effect(() => {", call), source.indexOf("});", call));
   assert.ok(effect.includes("untrack(() => model?.path)"));
-  assert.equal(effect.replace("untrack(() => model?.path)", "").match(/model\?\./g), null);
+  const reads = effect
+    .replace(/untrack\(\(\) => [^)]*\)/g, "")
+    .replace(/\/\/.*$/gm, "")
+    .replace(/\bmodel = /g, "")
+    .match(/\bmodel\b/g);
+  assert.equal(reads, null);
+});
+
+test("ticks show partway through their span and are gone once passed", async () => {
+  const { ticksShown } = await import("../src/lib/preview.js");
+  const model = { preempt: 1200, fadeIn: 400 };
+  // A 200 px slider from 2000 to 3000 with a tick at 2500 (half way).
+  const slider = { kind: "slider", time: 2000, end: 3000, x: 0, y: 0, path: [0, 0, 200, 0], lengths: [0, 200], spans: 1, ticks: [2500] };
+  // First span: shows at 2500 − (250 + 0.66 × 1200) = 1458.
+  assert.deepEqual(ticksShown(model, slider, 1457), []);
+  const [tick] = ticksShown(model, slider, 1460);
+  assert.equal(tick.x, 100);
+  assert.ok(Math.abs(tick.since - 2) < 1e-9);
+  assert.deepEqual(ticksShown(model, slider, 2500), []);
+});
+
+test("reverse arrows show once the body has snaked in, the later ones two spans ahead", async () => {
+  const { arrowsShown } = await import("../src/lib/preview.js");
+  const model = { preempt: 1200, fadeIn: 400 };
+  // Three spans of 500 ms: turns at 2500 (at the end) and 3000 (back at the start).
+  const slider = { kind: "slider", time: 2000, end: 3500, x: 0, y: 0, path: [0, 0, 200, 0], lengths: [0, 200], spans: 3 };
+  assert.deepEqual(arrowsShown(model, slider, 1199), []);
+  const first = arrowsShown(model, slider, 1200);
+  assert.equal(first.length, 1);
+  assert.equal(first[0].x, 200);
+  assert.ok(Math.abs(Math.abs(first[0].angle) - Math.PI) < 1e-9);
+  // The second turn shows two spans ahead, at 2000.
+  assert.equal(arrowsShown(model, slider, 2000).length, 2);
+  assert.equal(arrowsShown(model, slider, 2600)[0].x, 0);
+  assert.deepEqual(arrowsShown(model, slider, 3000), []);
+});
+
+test("passed pieces fade over the editor's 700 ms and bodies over 240 ms after their end", async () => {
+  const { bodyOpacity, pieceOpacity } = await import("../src/lib/preview.js");
+  const model = { preempt: 1200, fadeIn: 400 };
+  const slider = { kind: "slider", time: 2000, end: 3000 };
+  assert.equal(pieceOpacity(model, slider, 1000), 0.5);
+  assert.equal(pieceOpacity(model, slider, 2350), 0.5);
+  assert.equal(bodyOpacity(model, slider, 2900), 1);
+  assert.equal(bodyOpacity(model, slider, 3120), 0.5);
+});
+
+test("the panel offers its own window, and says where the preview is while that is open", () => {
+  bridge.mapPreview = true;
+  assert.match(render(MapPreview).body, /Open in its own window/);
+  bridge.previewWindow = true;
+  const body = render(MapPreview).body;
+  assert.match(body, /The map preview is in its own window/);
+  assert.match(body, /Show it here/);
+  assert.doesNotMatch(body, /<canvas/);
+  bridge.previewWindow = false;
+  bridge.mapPreview = false;
+});
+
+test("the spinner disc is nothing until half the approach, a dot at its time, then grows", async () => {
+  const { spinnerGrowth } = await import("../src/lib/argon.js");
+  assert.equal(spinnerGrowth(599, 1200), 0);
+  assert.ok(Math.abs(spinnerGrowth(1200 - 1e-9, 1200) - 0.2) < 1e-6);
+  assert.ok(spinnerGrowth(1200, 1200) - 0.2 < 1e-9);
+  assert.equal(spinnerGrowth(1800, 1200), 1);
 });

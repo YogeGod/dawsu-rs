@@ -20,25 +20,28 @@ const view = {
 
 test("a map without stored choices starts with Copy's defaults and every difficulty included", () => {
   const choices = choicesFrom(view);
-  assert.deepEqual(choices, { leftOut: [], matchWithin: 5, copyVolumes: true, base: false, sliderAudio: false });
+  assert.deepEqual(choices, { leftOut: [], matchWithin: 5, copyVolumes: true, base: false, sliderAudio: false, laterWins: false });
   assert.notEqual(choices.leftOut, defaultChoices.leftOut, "choices never share the frozen defaults' list");
   assert.deepEqual(choicesFrom({ choices: { leftOut: ["a.osu"], matchWithin: 3, copyVolumes: false } }),
-    { leftOut: ["a.osu"], matchWithin: 3, copyVolumes: false, base: false, sliderAudio: false },
+    { leftOut: ["a.osu"], matchWithin: 3, copyVolumes: false, base: false, sliderAudio: false, laterWins: false },
     "choices stored before the base difficulty read it as off");
-  assert.deepEqual(choicesFrom({ choices: { leftOut: [], matchWithin: 3, copyVolumes: true, base: true, sliderAudio: true } }),
-    { leftOut: [], matchWithin: 3, copyVolumes: true, base: true, sliderAudio: true });
+  assert.deepEqual(choicesFrom({ choices: { leftOut: [], matchWithin: 3, copyVolumes: true, base: true, sliderAudio: true, laterWins: true } }),
+    { leftOut: [], matchWithin: 3, copyVolumes: true, base: true, sliderAudio: true, laterWins: true });
   assert.deepEqual(included(view.targets, { leftOut: ["Artist - Song (Mapper) [Hard].osu"] }), [insane]);
 });
 
 test("the preview asks for the shown map, the included difficulties and Copy's options", () => {
-  const choices = { leftOut: ["Artist - Song (Mapper) [Hard].osu"], matchWithin: 3, copyVolumes: false };
+  const choices = { leftOut: ["Artist - Song (Mapper) [Hard].osu"], matchWithin: 3, copyVolumes: false, laterWins: false };
   const request = previewRequest(view, choices);
   assert.equal(request.options.source, view.source.path);
   assert.deepEqual(request.options.targets, [insane]);
   assert.equal(request.options.options.leniency, 3);
+  assert.equal(request.options.options.collision_policy, "merge");
   assert.equal(request.options.options.copy_volumes, false);
   assert.equal(request.options.base, false);
   assert.equal(request.options.sliderAudio, false);
+  const later = previewRequest(view, { ...choices, laterWins: true });
+  assert.equal(later.options.options.collision_policy, "later_wins");
   const withBase = previewRequest(view, { ...choices, base: true, sliderAudio: true });
   assert.equal(withBase.options.base, true);
   assert.equal(withBase.options.sliderAudio, true);

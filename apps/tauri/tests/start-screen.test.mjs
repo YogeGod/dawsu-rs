@@ -2,12 +2,14 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { createContext, runInContext } from "node:vm";
+import { bootEditor, readEditorSource } from "./editor-runtime.mjs";
 
 const read = file => readFile(new URL("../dist/" + file, import.meta.url), "utf8");
-const [html, css, app, startScreenSvelte] = await Promise.all([
-  read("index.html"), read("style.css"), read("app.js"),
+const [html, css, startScreenSvelte] = await Promise.all([
+  read("index.html"), read("style.css"),
   readFile(new URL("../ui/src/parts/StartScreen.svelte", import.meta.url), "utf8"),
 ]);
+const app = readEditorSource();
 const homeCss = css.slice(css.indexOf("/* Start and empty screen (design f4)"));
 
 async function frontend() {
@@ -41,7 +43,7 @@ async function frontend() {
     setInterval() {},
     console,
   });
-  await runInContext(app, context);
+  await bootEditor(context);
   calls.length = 0;
   const evaluate = code => runInContext(code, context);
   return { calls, evaluate, get, settle: () => evaluate("pending") };

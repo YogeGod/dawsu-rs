@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { createContext, runInContext } from "node:vm";
+import { bootEditor } from "./editor-runtime.mjs";
 
-const app = await readFile(new URL("../dist/app.js", import.meta.url), "utf8");
 
 test("the plus button adds a numbered layer to its sample family", async () => {
   const controls = new Map();
@@ -37,7 +37,7 @@ test("the plus button adds a numbered layer to its sample family", async () => {
     setInterval() {},
     console,
   });
-  await runInContext(app, context);
+  await bootEditor(context);
   calls.length = 0;
   runInContext('scene = {rowHeight: 28, lanes: [{key: "file", name: "custom.wav"}, {key: "clap", name: "soft-hitclap", canAddLayer: true}]}; renderLanes();', context);
   const [custom, family] = runInContext("laneHeaders.rows", context);

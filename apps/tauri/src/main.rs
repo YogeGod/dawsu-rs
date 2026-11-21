@@ -18,7 +18,7 @@ use dawsu_editor::{
 use dawsu_foundation::{CustomIndex, SampleIdentity, SampleSet, SongTime, Sound};
 use dawsu_hitsounding::{
     LaneSource, Place,
-    copy::{CopyMode, CopyOptions},
+    copy::{CopyCollisionPolicy, CopyMode, CopyOptions},
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -80,6 +80,13 @@ enum CopyModeJson {
 }
 
 #[derive(Deserialize)]
+#[serde(remote = "CopyCollisionPolicy", rename_all = "snake_case")]
+enum CopyCollisionPolicyJson {
+    Merge,
+    LaterWins,
+}
+
+#[derive(Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum SampleSetJson {
     Normal,
@@ -122,6 +129,8 @@ struct CopyOptionsJson {
     #[serde(with = "CopyModeJson")]
     mode: CopyMode,
     leniency: f64,
+    #[serde(default, with = "CopyCollisionPolicyJson")]
+    collision_policy: CopyCollisionPolicy,
     #[serde(default = "default_copy_start_index")]
     start_index: u32,
     #[serde(default)]
@@ -1136,7 +1145,9 @@ fn gameplay_overlay(document: &dawsu_application::Document) -> Value {
 /// `[Colours]` by the index with offsets (`LegacyBeatmapSkin.cs:90`), or else the default skin's four
 /// by the plain index (`SkinConfiguration.cs:46-52`). `objects` is `[number, colour]` per object in
 /// file order, the order of the gameplay overlay's object indices.
-fn combo_overlay(document: &dawsu_application::Document) -> Value {
+/// Each object's combo number, combo index and combo index with offsets (lazer's
+/// `IHasComboInformation.UpdateComboInformation`), in file order, and the map's own combo colours.
+fn combo_info(document: &dawsu_application::Document) -> (Vec<(u32, usize, usize)>, Vec<String>) {
     let objects = document.file.hit_objects();
     let map_colours: Vec<String> = document.file.section_values("Colours").into_iter()
         .filter(|(key, _)| key.strip_prefix("Combo").and_then(|n| n.parse::<u8>().ok()).is_some_and(|n| (1..=8).contains(&n)))
@@ -1160,7 +1171,7 @@ fn combo_overlay(document: &dawsu_application::Document) -> Value {
     }
     let mut order: Vec<usize> = (0..objects.len()).collect();
     order.sort_by(|&a, &b| objects[a].time().total_cmp(&objects[b].time()));
-    let mut combos = vec![(0u32, 0usize); objects.len()];
+    let mut combos = vec![(0u32, 0usize, 0usize); objects.len()];
     let (mut combo, mut with_offsets, mut number) = (0usize, 0usize, 0u32);
     let mut last: Option<usize> = None;
     for &index in &order {
@@ -1171,15 +1182,24 @@ fn combo_overlay(document: &dawsu_application::Document) -> Value {
             with_offsets += offset as usize + 1;
         }
         number += 1;
-        combos[index] = (number, if map_colours.is_empty() { combo % 4 } else { with_offsets % map_colours.len() });
+        combos[index] = (number, combo, with_offsets);
         last = Some(index);
     }
+    (combos, map_colours)
+}
+
+/// The timeline's combo overlay: `colours`, and `objects` as `[number, colour]` per object (see `combo_info`).
+fn combo_overlay(document: &dawsu_application::Document) -> Value {
+    let (combos, map_colours) = combo_info(document);
+    let objects: Vec<(u32, usize)> = combos.iter().map(|&(number, combo, with_offsets)| {
+        (number, if map_colours.is_empty() { combo % 4 } else { with_offsets % map_colours.len() })
+    }).collect();
     let colours = if map_colours.is_empty() {
         ["#ffc000", "#00ca00", "#127cff", "#f21839"].map(String::from).to_vec()
     } else {
         map_colours
     };
-    json!({ "colours": colours, "objects": combos })
+    json!({ "colours": colours, "objects": objects })
 }
 
 /// What the map preview draws for the open difficulty (`map`): circle size, approach time and each
@@ -1196,14 +1216,24 @@ fn map_preview(app: &Application, map: &Path) -> Result<Value, String> {
     let Some(field) = dawsu_hitsounding::playfield::playfield(&document.file) else {
         return Ok(json!({ "path": document.path, "key": key, "unsupported": true }));
     };
-    let combos = combo_overlay(document);
+    // With no colours of its own a map takes lazer's default skin's (Argon, ArgonSkin.cs:51-71) by the
+    // plain combo index; its own go by the index with offsets, as in the timeline.
+    let (combos, map_colours) = combo_info(document);
+    let colours: Vec<String> = if map_colours.is_empty() {
+        ["#f17400", "#00f135", "#0052f1", "#f10000", "#e8eb00", "#5c00f1"].map(String::from).to_vec()
+    } else {
+        map_colours.clone()
+    };
+    let colour_of = |(_, combo, with_offsets): (u32, usize, usize)| {
+        if map_colours.is_empty() { combo % colours.len() } else { with_offsets % colours.len() }
+    };
     let file_index: std::collections::HashMap<_, _> =
         document.file.hit_objects().iter().enumerate().map(|(index, object)| (object.line(), index)).collect();
     let round = |value: f32| (f64::from(value) * 100.0).round() / 100.0;
     let objects: Vec<Value> = field.objects.iter().map(|object| {
         let offset = object.stack_offset(field.scale);
         let at = object.position + offset;
-        let combo = file_index.get(&object.line).and_then(|&index| combos["objects"].get(index)).cloned().unwrap_or(json!([0, 0]));
+        let combo = file_index.get(&object.line).and_then(|&index| combos.get(index).copied()).unwrap_or((0, 0, 0));
         let kind = match object.kind {
             dawsu_hitsounding::rules::Kind::Circle => "circle",
             dawsu_hitsounding::rules::Kind::Slider => "slider",
@@ -1211,19 +1241,20 @@ fn map_preview(app: &Application, map: &Path) -> Result<Value, String> {
         };
         let mut value = json!({
             "kind": kind, "time": object.start_time, "end": object.end_time,
-            "x": round(at.x), "y": round(at.y), "combo": combo[0], "colour": combo[1],
+            "x": round(at.x), "y": round(at.y), "combo": combo.0, "colour": colour_of(combo),
         });
         if let Some(path) = &object.path {
             let points: Vec<f64> = path.points.iter().flat_map(|point| [round(at.x + point.x), round(at.y + point.y)]).collect();
             value["path"] = json!(points);
             value["lengths"] = json!(path.cumulative.iter().map(|length| (length * 100.0).round() / 100.0).collect::<Vec<_>>());
             value["spans"] = json!(object.span_count);
+            value["ticks"] = json!(object.ticks);
         }
         value
     }).collect();
     Ok(json!({
         "path": document.path, "key": key, "radius": field.radius, "preempt": field.preempt, "fadeIn": field.fade_in,
-        "colours": combos["colours"], "objects": objects,
+        "colours": colours, "objects": objects,
     }))
 }
 
@@ -1409,6 +1440,8 @@ fn snapshot(app: &Application, include_scene: bool) -> Value {
         })).collect::<Vec<_>>(),
         "recent": app.preferences.recent, "firstLaunch": app.first_launch,
     });
+    // The map preview was in its own window when the editor last closed: main opens it again.
+    result["previewWindow"] = json!(app.preferences.preview_window.is_some_and(|place| place.open));
     result["outputDevice"] = json!(app.device_name());
     result["saveReview"] = json!(app.save_review_files());
     result["soundSetPrompts"] = json!(document.map(|_| app.sound_set_prompts()).unwrap_or_default().iter().map(|p| json!({
@@ -1460,6 +1493,11 @@ enum Request {
     SaveSoundSet(PathBuf, String, mpsc::Sender<Result<Value, String>>),
     LaneAddCandidates(PathBuf, mpsc::Sender<Result<Value, String>>),
     MapPreview(PathBuf, mpsc::Sender<Result<Value, String>>),
+    /// The map preview window's place, kept for the next open; `true` also saves the preferences.
+    PreviewPlace(dawsu_application::WindowPlace, bool),
+    PreviewPlaceGet(mpsc::Sender<Option<dawsu_application::WindowPlace>>),
+    /// Only whether the preview window is open changed; `true` also saves the preferences.
+    PreviewOpen(bool, bool),
     DrumView(PathBuf, Option<PathBuf>, bool, mpsc::Sender<Result<Value, String>>),
     Folder(folders::Folder, mpsc::Sender<Result<PathBuf, String>>),
     Close(bool, mpsc::Sender<Result<(), String>>),
@@ -1474,6 +1512,11 @@ enum Request {
     Drum(drum_window::DrumRequest, mpsc::Sender<Result<Value, String>>),
     /// The drum detection window closed: its run, result and Listen go. Needs no answer.
     DrumClose,
+    /// M4 Node Graph queries and actions on the active editor session.
+    NodeGraphView(mpsc::Sender<Result<Value, String>>),
+    NodeGraphAction(dawsu_application::NodeGraphAction, mpsc::Sender<Result<Value, String>>),
+    NodeGraphExportJson(mpsc::Sender<Result<String, String>>),
+    NodeGraphClose,
 }
 struct Editor(mpsc::Sender<Request>);
 
@@ -1572,6 +1615,7 @@ fn export_snapshot(app: &Application, cache: &mut ExportCache) -> Value {
             "copyVolumes": choices.copy_volumes,
             "base": choices.base,
             "sliderAudio": choices.slider_audio,
+            "laterWins": choices.later_wins,
         })),
         "error": status.error,
         "writing": status.writing,
@@ -1644,7 +1688,7 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
         let data_root = std::env::var_os(RECOVERY_SMOKE_DATA)
             .filter(|path| !path.is_empty())
             .map_or(data_root, PathBuf::from);
-        let mut app = Application::with_data_root(data_root);
+        let mut app = Application::for_desktop(data_root);
         let mut fault = None;
         let mut export_cache = ExportCache::default();
         let mut playback_start = PlaybackStart::default();
@@ -1841,6 +1885,23 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                     let result = guard(&mut app, &mut fault, |app| map_preview(app, &map)).and_then(|result| result);
                     let _ = response.send(result);
                 }
+                Ok(Request::PreviewPlace(place, save)) => {
+                    app.preferences.preview_window = Some(place);
+                    if save && !app.first_launch {
+                        app.save_preferences();
+                    }
+                }
+                Ok(Request::PreviewOpen(open, save)) => {
+                    if let Some(place) = app.preferences.preview_window.as_mut() {
+                        place.open = open;
+                    }
+                    if save && !app.first_launch {
+                        app.save_preferences();
+                    }
+                }
+                Ok(Request::PreviewPlaceGet(response)) => {
+                    let _ = response.send(app.preferences.preview_window);
+                }
                 Ok(Request::DrumView(map, preset, on, response)) => {
                     let result = guard(&mut app, &mut fault, |app| {
                         match preset {
@@ -1881,6 +1942,8 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                                 app.save_session().map(|()| {
                                     app.cancel_drum_detection();
                                     app.cancel_export_preview();
+                                    // Frees the numbers of new samples nothing keeps.
+                                    app.close_document();
                                     if !app.first_launch {
                                         app.save_preferences();
                                     }
@@ -1906,6 +1969,32 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                 Ok(Request::DrumClose) => {
                     if fault.is_none() {
                         let _ = guard(&mut app, &mut fault, Application::cancel_drum_detection);
+                    }
+                }
+                Ok(Request::NodeGraphView(response)) => {
+                    let result = guard(&mut app, &mut fault, |app| {
+                        app.poll_node_graph();
+                        serde_json::to_value(app.node_graph_view()).map_err(|e| e.to_string())
+                    })
+                    .and_then(|result| result);
+                    let _ = response.send(result);
+                }
+                Ok(Request::NodeGraphAction(action, response)) => {
+                    let result = guard(&mut app, &mut fault, |app| {
+                        app.node_graph_action(action)?;
+                        serde_json::to_value(app.node_graph_view()).map_err(|e| e.to_string())
+                    })
+                    .and_then(|result| result);
+                    let _ = response.send(result);
+                }
+                Ok(Request::NodeGraphExportJson(response)) => {
+                    let result = guard(&mut app, &mut fault, |app| app.node_graph_export_json())
+                        .and_then(|result| result);
+                    let _ = response.send(result);
+                }
+                Ok(Request::NodeGraphClose) => {
+                    if fault.is_none() {
+                        let _ = guard(&mut app, &mut fault, Application::cancel_node_graph_and_clear_viewer);
                     }
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {
@@ -2064,6 +2153,83 @@ async fn drum_window_open(app: tauri::AppHandle) -> Result<(), String> {
     }
 }
 
+/// Opens the map preview in its own window, where it last was, or brings it forward when open.
+/// Async, so building the window never runs on the main thread that drives it.
+#[tauri::command]
+async fn preview_window_open(app: tauri::AppHandle, state: State<'_, Editor>) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("preview") {
+        let _ = window.unminimize();
+        // A reloaded editor page learns again that the window is open.
+        let _ = app.emit_to("main", "preview-window", true);
+        return window.set_focus().map_err(|error| error.to_string());
+    }
+    let place = ask(&state, Request::PreviewPlaceGet)?;
+    // dawsu! 3.1.4's map preview window: 480 × 420 at first, 300 × 240 at least (PlayfieldWindow.cs).
+    let mut builder = tauri::WebviewWindowBuilder::new(&app, "preview", tauri::WebviewUrl::App("preview.html".into()))
+        .title("Map preview")
+        .inner_size(place.map_or(480.0, |p| p.width.max(300.0)), place.map_or(420.0, |p| p.height.max(240.0)))
+        .min_inner_size(300.0, 240.0)
+        .skip_taskbar(true)
+        .disable_drag_drop_handler();
+    // Owned by the editor, as 3.1.4's was, so a click on the editor never hides it behind
+    // (owned on Windows, a child window on macOS, transient on Linux).
+    if let Some(main) = app.get_webview_window("main") {
+        builder = builder.parent(&main).map_err(|error| error.to_string())?;
+    }
+    match place.filter(|place| on_a_monitor(&app, place)) {
+        Some(place) => builder = builder.position(place.x, place.y),
+        // The first time, in the middle of the screen rather than its top-left corner.
+        None => builder = builder.center(),
+    }
+    let built = builder.build();
+    let result = match (built, app.get_webview_window("preview")) {
+        (Ok(_), _) => Ok(()),
+        (Err(_), Some(window)) => window.set_focus().map_err(|error| error.to_string()),
+        (Err(error), None) => Err(error.to_string()),
+    };
+    if result.is_ok() {
+        remember_preview_place(&app, &state, true, false);
+        let _ = app.emit_to("main", "preview-window", true);
+    }
+    result
+}
+
+/// Whether a saved place still shows at least 40 × 40 px of the window on a monitor that is there.
+/// (Windows puts a window snapped to the left edge a few pixels left of the screen.)
+fn on_a_monitor(app: &tauri::AppHandle, place: &dawsu_application::WindowPlace) -> bool {
+    app.available_monitors().unwrap_or_default().iter().any(|monitor| {
+        let scale = monitor.scale_factor();
+        let (at, size) = (monitor.position().to_logical::<f64>(scale), monitor.size().to_logical::<f64>(scale));
+        let across = (place.x + place.width).min(at.x + size.width) - place.x.max(at.x);
+        let down = (place.y + place.height).min(at.y + size.height) - place.y.max(at.y);
+        across >= 40.0 && down >= 40.0
+    })
+}
+
+/// Hands the preview window's place to the editor, if the window is there.
+fn remember_preview_place(app: &tauri::AppHandle, editor: &Editor, open: bool, save: bool) {
+    let Some(window) = app.get_webview_window("preview") else { return };
+    // Minimised (Windows reports −32000 and 0 × 0) or maximised, the normal place is the last one kept;
+    // only whether it is open changes.
+    if window.is_minimized().unwrap_or(false) || window.is_maximized().unwrap_or(false) {
+        let _ = editor.0.send(Request::PreviewOpen(open, save));
+        return;
+    }
+    let (Ok(scale), Ok(at), Ok(size)) = (window.scale_factor(), window.outer_position(), window.inner_size()) else { return };
+    let (at, size) = (at.to_logical::<f64>(scale), size.to_logical::<f64>(scale));
+    let place = dawsu_application::WindowPlace { x: at.x, y: at.y, width: size.width, height: size.height, open };
+    let _ = editor.0.send(Request::PreviewPlace(place, save));
+}
+
+/// Closes the map preview window the way its title bar does.
+#[tauri::command]
+fn close_preview_window(app: tauri::AppHandle) -> Result<(), String> {
+    match app.get_webview_window("preview") {
+        Some(window) => window.close().map_err(|error| error.to_string()),
+        None => Ok(()),
+    }
+}
+
 /// Closes the drum detection window the way its title bar does, so its run and Listen stop too.
 #[tauri::command]
 fn close_drum_window(app: tauri::AppHandle) -> Result<(), String> {
@@ -2112,6 +2278,134 @@ fn drum_apply(state: State<'_, Editor>, map: PathBuf, review: String, ticked: Ve
 fn drum_pick_stem(window: tauri::WebviewWindow) -> Option<PathBuf> {
     rfd::FileDialog::new().set_parent(&window).set_title("Pick a drum stem")
         .add_filter("Audio", &["wav", "ogg", "mp3", "flac"]).pick_file()
+}
+
+/// Opens the node graph window beside the editor, or brings it forward when it is open.
+#[tauri::command]
+async fn open_node_graph_window(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("node-graph") {
+        let _ = window.unminimize();
+        return window.set_focus().map_err(|error| error.to_string());
+    }
+    let built = tauri::WebviewWindowBuilder::new(&app, "node-graph", tauri::WebviewUrl::App("node-graph.html".into()))
+        .title("Node graph")
+        .inner_size(1280.0, 800.0)
+        .min_inner_size(960.0, 620.0)
+        .disable_drag_drop_handler()
+        .build();
+    match (built, app.get_webview_window("node-graph")) {
+        (Ok(_), _) => Ok(()),
+        (Err(_), Some(window)) => window.set_focus().map_err(|error| error.to_string()),
+        (Err(error), None) => Err(error.to_string()),
+    }
+}
+
+#[tauri::command]
+fn close_node_graph_window(app: tauri::AppHandle) -> Result<(), String> {
+    match app.get_webview_window("node-graph") {
+        Some(window) => window.close().map_err(|error| error.to_string()),
+        None => Ok(()),
+    }
+}
+
+fn emit_node_graph_sync(app: &tauri::AppHandle, view: &Value, refresh_timeline: bool) {
+    let viewer = view.get("viewer").cloned().unwrap_or(Value::Null);
+    let _ = app.emit_to("main", "node-graph-viewer", viewer);
+    if refresh_timeline {
+        let _ = app.emit_to("main", "node-graph-applied", true);
+    }
+}
+
+#[tauri::command]
+fn node_graph_view(app: tauri::AppHandle, state: State<'_, Editor>) -> Result<Value, String> {
+    let view = ask(&state, Request::NodeGraphView)??;
+    emit_node_graph_sync(&app, &view, false);
+    Ok(view)
+}
+
+#[tauri::command]
+fn node_graph_action(
+    app: tauri::AppHandle,
+    state: State<'_, Editor>,
+    action: dawsu_application::NodeGraphAction,
+) -> Result<Value, String> {
+    let refresh_timeline = matches!(
+        action,
+        dawsu_application::NodeGraphAction::Apply | dawsu_application::NodeGraphAction::SelectLastHits
+    );
+    let view = ask(&state, |tx| Request::NodeGraphAction(action, tx))??;
+    emit_node_graph_sync(&app, &view, refresh_timeline);
+    Ok(view)
+}
+
+#[tauri::command]
+fn node_graph_export_json(state: State<'_, Editor>) -> Result<String, String> {
+    ask(&state, Request::NodeGraphExportJson)?
+}
+
+#[tauri::command]
+fn node_graph_pick_open(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+    state: State<'_, Editor>,
+) -> Result<Option<Value>, String> {
+    let Some(path) = rfd::FileDialog::new()
+        .set_parent(&window)
+        .set_title("Load node graph recipe")
+        .add_filter("Node graph", &["dawsugraph", "json"])
+        .pick_file()
+    else {
+        return Ok(None);
+    };
+    let json = std::fs::read_to_string(&path).map_err(|e| format!("Could not read recipe: {e}"))?;
+    let view = ask(&state, |tx| {
+        Request::NodeGraphAction(dawsu_application::NodeGraphAction::ImportJson { json }, tx)
+    })??;
+    emit_node_graph_sync(&app, &view, false);
+    Ok(Some(view))
+}
+
+#[tauri::command]
+fn node_graph_pick_save(window: tauri::WebviewWindow, state: State<'_, Editor>) -> Result<bool, String> {
+    use dawsu_foundation::safe_write::{self, BackupPolicy, WriteOutcome};
+    let json = ask(&state, Request::NodeGraphExportJson)??;
+    let Some(mut path) = rfd::FileDialog::new()
+        .set_parent(&window)
+        .set_title("Save node graph recipe")
+        .add_filter("Node graph", &["dawsugraph"])
+        .save_file()
+    else {
+        return Ok(false);
+    };
+    if path.extension().is_none() {
+        path.set_extension("dawsugraph");
+    }
+    let bytes = json.as_bytes();
+    match std::fs::read(&path) {
+        Ok(expected) => {
+            let backups = BackupPolicy::new(dawsu_application::data_folder().join("backups"), 5);
+            match safe_write::replace(&path, &expected, bytes, &backups).map_err(|e| e.to_string())? {
+                WriteOutcome::Saved { .. } => {}
+                WriteOutcome::ChangedOnDisk => {
+                    return Err("The recipe file changed while saving. Choose a new file or try again.".into());
+                }
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            safe_write::create(&path, bytes).map_err(|e| e.to_string())?;
+        }
+        Err(error) => return Err(error.to_string()),
+    }
+    Ok(true)
+}
+
+#[tauri::command]
+fn node_graph_pick_audio(window: tauri::WebviewWindow) -> Option<PathBuf> {
+    rfd::FileDialog::new()
+        .set_parent(&window)
+        .set_title("Pick an audio or stem file")
+        .add_filter("Audio", &["wav", "ogg", "mp3", "flac"])
+        .pick_file()
 }
 
 #[tauri::command]
@@ -2441,6 +2735,7 @@ fn close_requested(label: &str, editor: &Editor) -> CloseDecision {
     match label {
         "export" => { let _ = editor.0.send(Request::ExportClose); }
         "drum" => { let _ = editor.0.send(Request::DrumClose); }
+        "node-graph" => { let _ = editor.0.send(Request::NodeGraphClose); }
         _ => {}
     }
     if label != "main" {
@@ -2457,7 +2752,28 @@ fn main() {
     tauri::Builder::default()
         .manage(editor_thread(initial))
         .on_window_event(|window, event| {
+            let app = window.app_handle();
+            match (window.label(), event) {
+                // The preview window's place, kept as it moves; saved when it closes by itself.
+                ("preview", tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_)) => {
+                    remember_preview_place(app, &window.state::<Editor>(), true, false);
+                }
+                ("preview", tauri::WindowEvent::CloseRequested { .. }) => {
+                    remember_preview_place(app, &window.state::<Editor>(), false, true);
+                }
+                ("preview", tauri::WindowEvent::Destroyed) => {
+                    let _ = app.emit_to("main", "preview-window", false);
+                }
+                // Main closing with the preview open: it opens again next time (saved with the session).
+                ("main", tauri::WindowEvent::CloseRequested { .. }) => {
+                    remember_preview_place(app, &window.state::<Editor>(), true, false);
+                }
+                _ => {}
+            }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if window.label() == "node-graph" {
+                    let _ = window.app_handle().emit_to("main", "node-graph-viewer", Value::Null);
+                }
                 match close_requested(window.label(), &window.state::<Editor>()) {
                     CloseDecision::Allow => {}
                     CloseDecision::CloseAll => {
@@ -2484,6 +2800,8 @@ fn main() {
             close_export_window,
             show_in_editor,
             drum_window_open,
+            preview_window_open,
+            close_preview_window,
             close_drum_window,
             drum_context,
             drum_detect_start,
@@ -2492,6 +2810,14 @@ fn main() {
             drum_listen_stop,
             drum_apply,
             drum_pick_stem,
+            open_node_graph_window,
+            close_node_graph_window,
+            node_graph_view,
+            node_graph_action,
+            node_graph_export_json,
+            node_graph_pick_open,
+            node_graph_pick_save,
+            node_graph_pick_audio,
             pick_merge_preset,
             save_merge_preset,
             editor_shortcuts,

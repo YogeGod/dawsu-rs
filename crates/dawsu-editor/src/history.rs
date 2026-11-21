@@ -229,6 +229,14 @@ impl<D: Clone> EditHistory<D> {
         self.version += 1;
     }
 
+    /// Every state undo or redo can reach, the current one first, then the done and undone
+    /// steps' and an open transaction's. Read-only.
+    pub fn states(&self) -> impl Iterator<Item = &D> {
+        std::iter::once(&self.doc)
+            .chain(self.done.iter().chain(&self.undone).map(|step| &step.other))
+            .chain(self.open.iter().map(|open| &open.before))
+    }
+
     /// The number of done steps.
     pub fn position(&self) -> usize {
         self.done.len()

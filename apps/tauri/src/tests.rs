@@ -32,6 +32,19 @@ fn wait_for_job(app: &mut Application) {
     assert!(app.error.is_none(), "{:?}", app.error);
 }
 
+/// A default sounds folder, outside any mapset folder, with the skin's twelve hitsounds, all
+/// `wave`: a hit whose sound isn't in the mapset folder then plays the skin's sound, as on a
+/// computer with default sounds.
+fn skin_sounds(label: &str, wave: &[u8]) -> Fixture {
+    let folder = Fixture::new(label);
+    for bank in ["normal", "soft", "drum"] {
+        for sound in ["hitnormal", "hitwhistle", "hitfinish", "hitclap"] {
+            fs::write(folder.0.join(format!("{bank}-{sound}.wav")), wave).unwrap();
+        }
+    }
+    folder
+}
+
 fn open(app: &mut Application, path: &Path) {
     Action::Open { path: path.into() }.run(app);
     wait_for_job(app);
@@ -730,7 +743,8 @@ fn library_sample_actions_scope_paths_and_preserve_the_assignment_target() {
     action("replace_library_sample", "drums/snare.WAV", &target).run(&mut app);
     assert!(app.error.is_none(), "{:?}", app.error);
     assert!(app.is_dirty());
-    assert_eq!(fs::read_dir(&mapset).unwrap().count(), 2);
+    // The new backing sample waits in dawsu!'s data folder until a Save plays it.
+    assert_eq!(fs::read_dir(&mapset).unwrap().count(), 1);
     assert_eq!(fs::read(&path).unwrap(), original);
     assert_eq!(fs::read(library.join("drums/snare.WAV")).unwrap(), wave);
 }
@@ -1448,7 +1462,7 @@ fn sample_set_mix_toggles_only_the_requested_set() {
 #[test]
 fn copy_review_uses_the_exact_requested_options() {
     use dawsu_foundation::SampleSet;
-    use dawsu_hitsounding::copy::{CopyMode, CopyOptions};
+    use dawsu_hitsounding::copy::{CopyCollisionPolicy, CopyMode, CopyOptions};
     use serde_json::json;
 
     let root = Fixture::new("copy-options");
@@ -1497,6 +1511,7 @@ fn copy_review_uses_the_exact_requested_options() {
     assert_eq!(*options, CopyOptions {
         mode: CopyMode::OverwriteOnlyDefined,
         leniency: 5.0,
+        collision_policy: CopyCollisionPolicy::Merge,
         start_index: 123,
         never_silent_hitnormals: true,
         copy_hitsounds: true,
@@ -2204,7 +2219,10 @@ fn drum_window_requests_answer_with_its_view_and_never_touch_main_errors() {
 
     // A drum stem (the detector's test pattern at half level): the rows come once per review, and
     // Apply adds the checked ones.
-    let pattern = concat!(env!("CARGO_MANIFEST_DIR"), "/../../crates/dawsu-graph-audio/tests/fixtures/classic-3.1.4/pattern.f32");
+    let pattern = std::env::var_os("CARGO_MANIFEST_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")))
+        .join("../../crates/dawsu-graph-audio/tests/fixtures/classic-3.1.4/pattern.f32");
     let pcm: Vec<u8> = fs::read(pattern).unwrap().chunks_exact(4)
         .flat_map(|b| (((f32::from_le_bytes(b.try_into().unwrap()) * 0.5).clamp(-1.0, 1.0) * 32767.0) as i16).to_le_bytes()).collect();
     let mut wav = b"RIFF".to_vec();
@@ -2332,7 +2350,8 @@ fn place_sound_set_action_places_the_picked_set_at_the_playhead_or_reports_why_n
     assert!(app.error.is_none(), "{:?}", app.error);
     let hits = app.document().unwrap().composer.hitsounds();
     assert_eq!(hits.placements().len(), 1);
-    assert!(fixture.0.join("soft-hitclap2.wav").is_file());
+    // The set's copy waits in dawsu!'s data folder until a Save plays it.
+    assert!(!fixture.0.join("soft-hitclap2.wav").is_file());
     assert!(fixture.0.join("library").join("Sound sets").join("Clap.dawsuset").is_file());
 }
 
@@ -2430,7 +2449,7 @@ fn export_requests_answer_with_the_export_view_and_errors_after_a_fault() {
         assert!(counts[field].is_u64(), "{field}: {counts}");
     }
     assert_eq!(view["choices"], serde_json::json!({
-        "leftOut": [], "matchWithin": 5.0, "copyVolumes": true, "base": false, "sliderAudio": false,
+        "leftOut": [], "matchWithin": 5.0, "copyVolumes": true, "base": false, "sliderAudio": false, "laterWins": false,
     }));
     assert!(view["preview"]["base"].is_null(), "no base difficulty without the base choice");
     assert_eq!((&view["writing"], &view["written"], &view["writeError"]), (&serde_json::json!(false), &serde_json::Value::Null, &serde_json::Value::Null));
@@ -2723,6 +2742,8 @@ fn removing_a_lane_takes_its_hits_in_one_step_and_keeps_its_layers() {
     fs::write(&map, original).unwrap();
     let mut app = Application::with_data_root(fixture.0.join("data"));
     app.error = None;
+    let skin = skin_sounds("remove-lane-skin", tone);
+    app.preferences.default_samples = skin.0.clone();
     open(&mut app, &map);
     let scene = |app: &Application| snapshot(app, true)["scene"].clone();
     let model = |app: &Application| app.document().unwrap().composer.hitsounds().clone();
@@ -2852,12 +2873,49 @@ fn the_map_preview_sends_stacked_objects_with_combos_and_slider_paths() {
     assert_eq!(objects[1]["x"], 200.0);
     assert_eq!(objects[0]["combo"], 1);
     assert_eq!(objects[1]["combo"], 2);
-    // The slider starts a new combo with the map's second default colour.
+    // The map has no colours, so the preview takes lazer's Argon six by the plain combo index:
+    // the circles are combo 1, the slider starts combo 2.
+    assert_eq!(preview["colours"].as_array().unwrap().len(), 6);
+    assert_eq!(preview["colours"][0], "#f17400");
+    assert_eq!(objects[0]["colour"], 1);
     assert_eq!(objects[2]["kind"], "slider");
     assert_eq!(objects[2]["combo"], 1);
+    assert_eq!(objects[2]["colour"], 2);
     assert_eq!(objects[2]["end"], 2500.0);
     assert_eq!(objects[2]["path"], serde_json::json!([100.0, 100.0, 200.0, 100.0]));
     assert_eq!(objects[2]["lengths"], serde_json::json!([0.0, 100.0]));
     assert_eq!(objects[2]["spans"], 1);
+    // One beat long at tick rate 1: the only tick would land on the tail, so there is none.
+    assert_eq!(objects[2]["ticks"], serde_json::json!([]));
     assert!(map_preview(&app, &fixture.0.join("Other.osu")).is_err());
+}
+
+#[test]
+fn node_graph_tauri_actions_round_trip_and_export_json() {
+    let mut app = Application::headless();
+    let initial = serde_json::to_value(app.node_graph_view()).unwrap();
+    assert_eq!(initial["nodes"].as_array().unwrap().len(), 21);
+    assert_eq!(initial["catalog"].as_array().unwrap().len(), 18);
+
+    let add: dawsu_application::NodeGraphAction = serde_json::from_value(serde_json::json!({
+        "kind": "add_node",
+        "typeId": "output.viewer",
+        "x": 120.0,
+        "y": 240.0
+    }))
+    .unwrap();
+    app.node_graph_action(add).unwrap();
+    let after_add = serde_json::to_value(app.node_graph_view()).unwrap();
+    assert_eq!(after_add["nodes"].as_array().unwrap().len(), 22);
+    assert_eq!(after_add["canUndo"], true);
+
+    let exported = app.node_graph_export_json().unwrap();
+    assert!(exported.contains("\"dawsu-graph\""));
+    let import: dawsu_application::NodeGraphAction = serde_json::from_value(serde_json::json!({
+        "kind": "import_json",
+        "json": exported
+    }))
+    .unwrap();
+    app.node_graph_action(import).unwrap();
+    assert_eq!(app.node_graph_view().nodes.len(), 22);
 }
