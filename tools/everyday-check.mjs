@@ -50,7 +50,10 @@ for (let i = 2; i < process.argv.length; i++) {
 }
 if (!args.exe) throw new Error("--exe is required: the built dawsu-tauri.exe");
 const exe = resolve(args.exe);
+if (!existsSync(exe)) throw new Error(`no editor at ${exe}`);
+for (const key of ["map", "shots", "json"]) if (args[key] === true) throw new Error(`--${key} needs a value`);
 const original = resolve(args.map ?? join(repo, "tests/fixtures/save-pack/synthetic/lf-no-final-newline.osu"));
+if (!existsSync(original)) throw new Error(`no map at ${original}`);
 const started = Date.now();
 
 function playwrightCore() {
@@ -88,6 +91,9 @@ function snapshot(folder) {
   return files;
 }
 
+// Found before any folder is made, so a missing Playwright leaves nothing behind.
+const chromium = playwrightCore();
+
 // The profile, map copy and shots stay next to the build (target/ is ignored and on the build drive).
 const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..*/, "");
 const profile = resolve(join(repo, "target", "everyday-check", `${stamp}-${process.pid}`));
@@ -97,7 +103,9 @@ const mapCopy = join(mapFolder, basename(original));
 mkdirSync(profile, { recursive: true });
 mkdirSync(shots, { recursive: true });
 const originalBefore = snapshot(dirname(original));
-cpSync(dirname(original), mapFolder, { recursive: true });
+// dereference: a link in the map's folder is copied as the file it points at, so the editor can
+// never write through the copy into the original.
+cpSync(dirname(original), mapFolder, { recursive: true, dereference: true });
 // No fixture folder holds a spare sample, so Add lane would have nothing to offer. The Add lane step
 // puts this short silent WAV (16-bit mono, 44.1 kHz, 0.1 s) in the copy first, as a mapper drops a
 // new sample into the open mapset. The original folder is never written.
@@ -121,7 +129,6 @@ function writeLaneSample() {
 }
 const copyBefore = snapshot(mapFolder);
 const osuBefore = readFileSync(mapCopy);
-const chromium = playwrightCore();
 
 // One running editor: its process, its pages and the errors they report.
 let app = null;
@@ -366,6 +373,9 @@ let silent = false;
 const needsSilence = () => silent ? null : { skip: "Audition could not be switched off, so no hit is placed" };
 let laneRow = null;
 let hitsBeforeEdits = 0;
+// The hits by name just before and just after the Delete step, for Undo and Redo to match.
+let withPlaced = [];
+let withoutPlaced = [];
 let placed = null;
 const keys = {};
 let savedHits = null;
@@ -521,7 +531,15 @@ try {
     // A mapper types 2: the hit must not end up under 5%.
     await amount.fill("2");
     await page().locator('form[aria-label="Change volume"] button[type="submit"]').click();
-    await sleep(800);
+    // Wait for the editor to answer: the volume leaves 60, or (if it refuses 2) the editor is idle again.
+    const answered = Date.now() + 5000;
+    while (Date.now() < answered) {
+      await sleep(150);
+      const now = await read(([time, row]) => window.scene.moments.flatMap(([t, volume, , list]) =>
+        t === time ? list.filter(([r]) => r === row).map(([, , , hitVolume]) => hitVolume ?? volume) : [])[0], placed);
+      if (now !== 60) break;
+    }
+    await until(() => !window.view.busy, null, "the editor stayed busy after the volume change");
     const typed = await read(([time, row]) => window.scene.moments.flatMap(([t, volume, , list]) =>
       t === time ? list.filter(([r]) => r === row).map(([, , , hitVolume]) => hitVolume ?? volume) : [])[0], placed);
     expect(typed >= 5, `typing 2% and Apply set the hit's volume to ${typed}%`);
@@ -540,10 +558,15 @@ try {
 
   await step("Delete the hit with the Delete key", async () => {
     if (!silent) return needsSilence();
+    withPlaced = await namedHits();
     await page().mouse.move(300, 5);
     await page().keyboard.press("Delete");
     await until(count => window.scene.moments.reduce((sum, moment) => sum + moment[3].length, 0) === count,
       hitsBeforeEdits, "the hit count did not go back down");
+    withoutPlaced = await namedHits();
+    const gone = withPlaced.filter(name => !withoutPlaced.includes(name));
+    expect(withoutPlaced.every(name => withPlaced.includes(name)) && gone.length <= 1,
+      `Delete changed other hits: before ${JSON.stringify(withPlaced)}, after ${JSON.stringify(withoutPlaced)}`);
   });
 
   await step("Undo brings the hit back", async () => {
@@ -553,6 +576,8 @@ try {
     await page().keyboard.press(playwrightKey(keys.undo));
     await until(count => window.scene.moments.reduce((sum, moment) => sum + moment[3].length, 0) === count + 1,
       hitsBeforeEdits, `${keys.undo} did not bring the hit back`);
+    const back = await namedHits();
+    expect(JSON.stringify(back) === JSON.stringify(withPlaced), `Undo brought back different hits: ${JSON.stringify(back)}`);
     return keys.undo;
   });
 
@@ -563,6 +588,8 @@ try {
     await page().keyboard.press(playwrightKey(keys.redo));
     await until(count => window.scene.moments.reduce((sum, moment) => sum + moment[3].length, 0) === count,
       hitsBeforeEdits, `${keys.redo} did not remove the hit again`);
+    const again = await namedHits();
+    expect(JSON.stringify(again) === JSON.stringify(withoutPlaced), `Redo left different hits: ${JSON.stringify(again)}`);
     return keys.redo;
   });
 
@@ -658,7 +685,8 @@ try {
     await page().getByRole("button", { name: "Show it here" }).click();
     await windowClosed(window, "map preview");
     await fromMenu("View", "Map preview");
-    await until(() => !window.dawsuUi?.mapPreviewOn?.(), null, "View › Map preview did not switch the preview off", 4000);
+    expect(await read(() => typeof window.dawsuUi?.mapPreviewOn === "function"), "the page no longer has dawsuUi.mapPreviewOn to ask");
+    await until(() => !window.dawsuUi.mapPreviewOn(), null, "View › Map preview did not switch the preview off", 4000);
   });
 
   await step("Open and close the node graph window", async () => {
@@ -861,7 +889,7 @@ try {
     }
     // The shots stay when a step failed; an empty profile folder goes.
     try {
-      if (!readdirSync(shots).length) rmSync(shots, { recursive: true, force: true });
+      if (!args.shots && !readdirSync(shots).length) rmSync(shots, { recursive: true, force: true });
       if (!readdirSync(profile).length) rmSync(profile, { recursive: true, force: true });
     } catch {}
   }
