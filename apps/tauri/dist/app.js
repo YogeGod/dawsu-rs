@@ -1178,6 +1178,12 @@ function inspectorAction(kind, ...args) {
         whistle_set: whistleSet, whistle: !!whistle, volume });
       return true;
     }
+    case "jump":
+      // A Difficulty problem mark: the playhead goes to its time, centred, as Next problem does.
+      if (!Number.isFinite(args[0])) return false;
+      act({ kind: "seek", ms: args[0] }, false);
+      changeView(args[0] - grid.clientWidth / scene.zoom / 2, scene.zoom);
+      return true;
     case "pickBookmark": {
       const mark = scene.bookmarks?.find(item => item.time === args[0]);
       if (!mark) return false;

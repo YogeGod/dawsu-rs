@@ -320,3 +320,16 @@ test("Layout… moves each Inspector section whole, never the buttons inside a S
   for (const [, label] of inspector.matchAll(/<section class="inspector-part" aria-label="([^"]+)">/g)) assert.ok(label);
   assert.match(css, /#editor-inspector > section > \.layout-move-handle/);
 });
+
+test("a problem mark in Difficulty moves the playhead to its time and centres it", async () => {
+  const { evaluate, sent } = await frontend();
+  evaluate(`view = { busy: false, hasDocument: true };
+    scene = { path: "a.osu", lanes: [], moments: [], zoom: 0.5, rowHeight: 30, viewStart: 0 };
+    globalThis.views = []; changeView = (start, zoom) => views.push([start, zoom]); grid.clientWidth = 1000;`);
+  assert.equal(evaluate('inspectorAction("jump", 50000)'), true);
+  assert.deepEqual(await sent(), [{ kind: "seek", ms: 50000 }]);
+  assert.deepEqual(JSON.parse(evaluate("JSON.stringify(views)")), [[49000, 0.5]]);
+  assert.equal(evaluate('inspectorAction("jump", NaN)'), false);
+  evaluate("view.busy = true;");
+  assert.equal(evaluate('inspectorAction("jump", 50000)'), false, "nothing moves while a job runs");
+});

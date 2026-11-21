@@ -1,4 +1,5 @@
 import { laneGrey, tintName } from "./colour.js";
+import { clock } from "./transport.js";
 
 // What the Inspector shows before app.js hands over its first model (inspectorModel()): everything waits.
 export const emptyInspector = Object.freeze({
@@ -113,5 +114,26 @@ export function inspectorHandlers(send) {
     pickBookmark: time => send("pickBookmark", time),
     bookmark: kind => send("bookmark", kind),
     history: position => send("history", position),
+    // A problem strip mark moves the playhead to its time.
+    jump: time => send("jump", time),
+  };
+}
+
+// Inspector › Difficulty's problem strip (v3 6a), from the editor's own data only: a mark for each
+// Save problem of this difficulty (a reason Save can't write a moment) and each hit with no object
+// (orphaned), at its time across the song. Another difficulty's problems stay out, as on the ruler.
+export function problemStrip(view, scene) {
+  if (!scene) return { name: "", marks: [], unsaved: 0, orphaned: 0 };
+  const length = view?.duration > 0 ? view.duration : 1;
+  const at = time => Math.min(Math.max(time / length, 0), 1) * 100 + "%";
+  const unsaved = (view?.outputProblems ?? []).filter(problem => problem.timeline === scene.path);
+  const orphaned = scene.orphanedHits ?? [];
+  return {
+    name: scene.version ?? "",
+    marks: [
+      ...orphaned.map(time => ({ kind: "orphaned", time, left: at(time), label: clock(time) + " · Hit with no object" })),
+      ...unsaved.map(({ time, message }) => ({ kind: "unsaved", time, left: at(time), label: clock(time) + " · " + message })),
+    ],
+    unsaved: unsaved.length, orphaned: orphaned.length,
   };
 }
