@@ -49,7 +49,7 @@ export const items = [
   { id: "saveSoundSet", label: "Save selection as sound set…", run: ["call", "saveSoundSet"], enabled: "selection" },
   { id: "soundSetPlacement", label: "Sound set placement…", run: ["call", "openSoundSetPlacement"], enabled: "placement" },
   { id: "protect", label: "Protect hitnormals from deletion", icon: "Shield", run: ["toggle", "protect", "scene.protect"] },
-  { id: "audition", label: "Audition when placing hits", run: ["toggle", "audition", "view.audition"] },
+  { id: "audition", label: "Audition when placing hits", icon: "Ear", run: ["toggle", "audition", "view.audition"] },
 
   // Playback
   { id: "play", label: "Play / pause", icon: "Play", command: "play", run: ["act", { kind: "play" }] },
@@ -80,7 +80,7 @@ export const items = [
   // View
   { id: "browser", label: "Browser", icon: "PanelLeft", run: ["panel", "browser"] },
   { id: "inspector", label: "Inspector", icon: "PanelRight", run: ["panel", "inspector"] },
-  { id: "volumePanel", label: "Volume and Mixer", icon: "SlidersVertical", run: ["panel", "controller"] },
+  { id: "volumePanel", label: "Volume and Mixer", icon: "ChartNoAxesColumn", run: ["panel", "controller"] },
   { id: "laneNames", label: "Lane names", icon: "Tag", run: ["panel", "lane_names", "laneNames"] },
   { id: "songWaveform", label: "Song waveform", icon: "AudioWaveform", run: ["click", "ruler-waveform"], checked: "waveform" },
   { id: "objectLines", label: "Object lines", icon: "AlignHorizontalSpaceAround", run: ["toggle", "object_lines", "view.objectLines"] },
@@ -91,7 +91,7 @@ export const items = [
   { id: "shorterLanes", label: "Shorter lanes", icon: "ChevronsDownUp", command: "rowsOut" },
   { id: "zoomIn", label: "Zoom in", icon: "ZoomIn", command: "zoomIn" },
   { id: "zoomOut", label: "Zoom out", icon: "ZoomOut", command: "zoomOut" },
-  { id: "fit", label: "Fit difficulty", icon: "Scan", run: ["click", "fit"] },
+  { id: "fit", label: "Fit difficulty", icon: "MoveHorizontal", run: ["click", "fit"] },
   { id: "timeSignatures", label: "Time signatures…", icon: "Music", run: ["click", "time-signatures"] },
   { id: "drumMap", label: "Open drum map…", icon: "Drum", run: ["call", "requestDrumMap"] },
   { id: "editLayout", label: "Edit layout…", icon: "LayoutPanelLeft", run: ["call", "editLayout"] },

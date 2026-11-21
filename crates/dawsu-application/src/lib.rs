@@ -1921,6 +1921,17 @@ impl Application {
             a.play(true);
         }
     }
+    /// Plays from `start` whether or not it is already playing (play_pause_from toggles).
+    pub fn play_from(&mut self, start: f64) {
+        if self.document.is_none() {
+            return;
+        }
+        self.seek(start);
+        self.return_position = self.playback_start;
+        if let Some(a) = &self.audio {
+            a.play(true);
+        }
+    }
     pub fn stop(&mut self) {
         if let Some(a) = &self.audio {
             a.play(false);
@@ -5312,12 +5323,17 @@ mod project_workflow {
         assert!(next > 1000.0);
         assert_eq!(locators(&app), (1000.0, next, false));
 
-        // A Range tool range wins over selected hits.
+        // A range left from the Range tool does not beat the hits selected since.
         app.document.as_mut().unwrap().composer.range = Some(dawsu_editor::tools::TimeRange {
             from: SongTime::from_ms(1750.0), to: SongTime::from_ms(1250.0), from_row: 0, to_row: 1,
         });
         app.command("locatorsToSelection");
+        assert_eq!(locators(&app), (1000.0, next, false));
+        // With the Range tool in hand, its range wins.
+        app.command("toolRange");
+        app.command("locatorsToSelection");
         assert_eq!(locators(&app), (1250.0, 1750.0, false));
+        app.command("toolSelect");
 
         // Alt+P: the same, with Cycle on and playback from L.
         app.document.as_mut().unwrap().composer.range = None;

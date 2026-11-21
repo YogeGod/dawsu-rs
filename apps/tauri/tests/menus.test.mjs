@@ -552,7 +552,7 @@ test("the bar-menu look stays off the right-click tool picker and the lane menu"
   const popup = get("editor-menu");
   get("menu-edit").click();
   assert.equal(popup.attributes["aria-labelledby"], "menu-edit");
-  const plain = menuButtons(popup).find(button => button.textContent === "Audition when placing hits");
+  const plain = menuButtons(popup).find(button => button.textContent === "Place sound set…");
   const icon = menuButtons(popup).find(button => button.textContent === "Select all");
   assert.match(plain.className, /\bmenu-item-plain\b/);
   assert.doesNotMatch(icon.className, /\bmenu-item-plain\b/);
@@ -724,7 +724,7 @@ test("menu rows use the v3 design's icons, and every icon file is there", async 
     newDifficulty: "FilePlus", copyHitsounds: "Copy", drumDetection: "Drum", addBookmark: "BookmarkPlus",
     previousBookmark: "ArrowLeftToLine", nextBookmark: "ArrowRightToLine", addLane: "Plus", laneAdd: "Plus",
     songWaveform: "AudioWaveform", objectLines: "AlignHorizontalSpaceAround", usedOnly: "ListFilter",
-    shortcuts: "Keyboard",
+    shortcuts: "Keyboard", volumePanel: "ChartNoAxesColumn", fit: "MoveHorizontal", audition: "Ear",
   };
   for (const [id, name] of Object.entries(design)) assert.equal(icon(id), name, id);
   assert.deepEqual(commandList.items.filter(item => item.icon === "Redo2").map(item => item.id), ["redo"]);
