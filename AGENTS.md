@@ -25,6 +25,8 @@ Run the checks relevant to your change while iterating, and all four before hand
 
 GitHub runs the first three on Windows for every pull request that changes more than `.md` files, and on `main` after each merge (`.github/workflows/windows-checks.yml`); run the oracle yourself when it applies.
 
+**Everyday check (Windows, against the built editor):** after a change to the screen, build the editor (`cargo build -p dawsu-tauri --locked`) and run `node tools/everyday-check.mjs --exe target/debug/dawsu-tauri.exe`. It opens the real `dawsu-tauri.exe` on a copy of a fixture map and uses it like a mapper for about a minute: menus, tools, snap, placing, moving and deleting a hit, undo and redo, panels, dialogs and windows, Save, then checks the files on disk. It prints one `PASS`, `FAIL` or `SKIP` line per step and exits 1 when a step failed. The JS tests above run against a fake page; this one catches a screen that no longer starts or responds. A failing step that shows the app is wrong stays failing: fix the app, not the step.
+
 **Windows build note:** `signalsmith-stretch` requires `LIBCLANG_PATH` (on this machine: `E:/Claude/drum-onnx/venv311/Lib/site-packages/clang/native`). Keep build and temporary artifacts on `E:`.
 
 ## Context pointers
