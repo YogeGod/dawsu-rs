@@ -31,6 +31,8 @@ GitHub runs the first three on Windows for every pull request that changes more 
 
 **Many maps (Windows):** `node tools/many-maps.mjs --exe target/debug/dawsu-tauri.exe --old-app <checkout>` runs that comparison, with the everyday check's editing and saving steps only (`--quick`), on a copy of every fixture map (save pack and oracle cases), one after another, and prints one line per map and the totals. It takes about a minute per map; run it before a change to editing or Save is merged, not on every small change.
 
+**Remap from scratch (Windows):** `node tools/remap-check.mjs --exe <dawsu-tauri.exe> --map <ranked .osu>` copies the mapset, strips the hitsounds of the first 45 s (`--seconds`), has the robot put them all back through the real editor (Add lane, Draw, Erase, Inspector volume, Save) and has the lazer oracle compare the result with the original. Every place the editor did not do what a click asked is printed as `GOT IN THE WAY`, which is the list to read for workflow problems.
+
 **Merge gate (Yoge, 2026-11-21):** nothing is merged into `main`, by a person or an agent, unless the everyday check passes on a build of that exact commit. Paste its last line (`everyday check: N of M steps passed`) and the commit id in the pull request. Never merge in the same step that opens a pull request.
 
 **Windows build note:** `signalsmith-stretch` requires `LIBCLANG_PATH` (on this machine: `E:/Claude/drum-onnx/venv311/Lib/site-packages/clang/native`). Keep build and temporary artifacts on `E:`.

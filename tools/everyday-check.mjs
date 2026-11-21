@@ -313,7 +313,7 @@ async function until(fn, arg, what, timeout = 8000) {
   while (Date.now() < end) {
     last = await read(fn, arg).catch(error => ({ error: error.message }));
     if (last && !last.error) return last;
-    await sleep(100);
+    await sleep(50);
   }
   throw new Error(`${what} (last: ${JSON.stringify(last)?.slice(0, 160)})`);
 }
