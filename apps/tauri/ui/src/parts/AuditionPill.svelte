@@ -7,7 +7,7 @@
   const disabled = $derived(bridge.disabled);
 </script>
 
-<!-- Below 1780 px style.css hides .toolbar-toggle-label, and the Playhead label hides with it. -->
+<!-- Below 1120 px style.css hides .toolbar-toggle-label; the Playhead label hides below 1400 px. -->
 <div class="ui-well">
   <button type="button" class="ui-pill ui-pill-toggle" aria-pressed={on} aria-label="Audition"
     title="Audition when placing hits" {disabled} onclick={() => act(auditionAction(bridge.view))}

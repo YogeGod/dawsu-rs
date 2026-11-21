@@ -8,6 +8,8 @@ const ruler = $("ruler");
 const overview = $("overview");
 const dialog = $("dialog");
 const dock = window.editorDocking?.attach($("editor-dock"));
+// The window crossing 1180 px changes what the panel switches show.
+if (dock) dock.onChange = () => renderPanelLayout();
 let view = { busy: false };
 let scene = null;
 let drag = null;
@@ -15,10 +17,13 @@ let rulerDrag = null;
 let overviewDrag = null;
 let overviewTarget = null;
 let overviewNavigation = null;
-const rulerBandHeight = 21;
-const defaultWaveformHeight = 56;
+const rulerBandHeight = 40;
+// v3 §4: the Song · objects row is 84 px.
+const defaultWaveformHeight = 84;
 let waveformHeight = defaultWaveformHeight;
 let visibleWaveformHeight = defaultWaveformHeight;
+// The Song row's waveform switch.
+let waveformShown = true;
 const bookmarkFlagHeight = 22;
 let markedRange = null;
 let browserMap = "";
@@ -30,6 +35,11 @@ let browserLibraryFolders = new Map();
 const browserExpanded = new Set();
 let browserScene = null;
 let browserState = "";
+let browserFilter = "";
+// The picked sample's length and outline once the backend answers: { path, source, ms, peaks }.
+let browserPreview = null;
+let browserModel = null;
+let browserTree = null;
 let usedLaneKeys = null;
 let showLaneInfo = false;
 let laneRows = [];
@@ -41,6 +51,8 @@ let selectionLanesOnly = false;
 const collapsedFamilies = new Set();
 const laneColours = new Map();
 let familyParents = new Map();
+let familyLayers = new Map();
+let laneRemoving = false;
 let previewParents = new Map();
 const speedButtons = [...document.querySelectorAll("[data-playback-speed]")];
 const sampleFolderNames = { normal: "Normal set", soft: "Soft set", drum: "Drum set" };
@@ -55,7 +67,7 @@ let rulerWarningMarkers = [];
 // Canvas surfaces match the surrounding editor chrome.
 const slateTimeline = {
   arrange: "#151515", alternateRow: "#1c1c1c", activeRow: "#454545", group: "#292929",
-  ruler: "#252525", rulerBar: "#c4c4c4", overview: "#1c1c1c", waveform: "#1c2727",
+  ruler: "#0c0c0c", rulerBar: "#ffffff", rulerEdge: "#454545", overview: "#1c1c1c", waveform: "#1c2727",
   volume: "#151515", divider: "#383838", beatLine: "#383838", barLine: "#545454",
   cycle: "#efc16a", loop: "#77bdfa0f", locator: "#858585", playhead: "#a1d0f7",
 };
@@ -136,7 +148,7 @@ async function update(action, full = true) {
         break;
       case "openHitsoundFolder":
         if (next.hitsoundLibrary) await invoke("open_editor_folder", { folder: "library" });
-        else $("folders").click();
+        else openFolders();
         break;
       case "reviewOutput":
         await openMergeSettings();
@@ -217,20 +229,23 @@ function show(next) {
       $("lane-filter").value = "";
     }
     if (loaded || !layoutWrites) hydrateLaneLayout(view.scene.laneLayout);
+    // A lane that starts showing (a new layer from +, Ctrl+L or the lane menu, one Add lane shows
+    // again, an Undo of −) shows at once: its family unfolds.
+    const shownRows = next => next.laneOrder ?? next.lanes?.map((_, row) => row) ?? [];
+    const before = !loaded && scene ? new Set(shownRows(scene)) : null;
+    const unfolded = before ? shownRows(view.scene).filter(row => !before.has(row))
+      .filter(row => collapsedFamilies.delete(view.scene.lanes[row]?.family)) : [];
     scene = view.scene;
+    if (unfolded.length) saveLaneLayout();
   }
   followBookmarkPick();
   if (rulerPointer || rulerDrag) refreshRulerCursor();
   $("home").hidden = !!scene;
   $("workspace").hidden = !scene;
-  $("go-home").hidden = !scene;
   $("home-resume").hidden = !view.showHome || !view.hasDocument;
   $("home-resume").disabled = !!view.busy;
   const path = scene?.path ?? "";
-  const title = $("title");
-  title.textContent = path ? (view.dirty ? "● " : "") + nameOf(path) : "";
-  title.title = path;
-  title.setAttribute("data-placeholder", view.hasDocument ? "" : "No map open");
+  renderFrame(path);
   $("status").textContent = missingUiParts() || view.status || (view.busy ? "Working…" : "");
   $("status").title = $("status").textContent;
   $("editor-header").dataset.empty = String(!scene);
@@ -248,15 +263,26 @@ function show(next) {
   }
   $("save-problem-badge").hidden = problems.length === 0;
   $("save-problem-badge").textContent = problems.length ? String(problems.length) : "";
-  $("save-problem-badge").title = problems.length + " output problems";
+  // One wording for the count: the badge, Save's name and the status bar.
+  const cannotSave = problems.length + (problems.length === 1 ? " moment" : " moments") + " can't be saved";
+  $("save-problem-badge").title = cannotSave;
+  // Save's name says what it holds: unsaved changes and the moments Save can't write. Save is
+  // icon-only below 1440 px, so its tooltip says the same.
+  const save = $("save");
+  const saveName = "Save" + (scene && view.dirty ? " (unsaved changes)" : "") + (problems.length ? ", " + cannotSave : "");
+  save.dataset.dirty = String(!!scene && !!view.dirty);
+  save.setAttribute("aria-label", saveName);
+  save.title = saveName;
   $("problem-summary").hidden = problems.length === 0;
-  $("problem-summary-text").textContent = problems.length + (problems.length === 1 ? " moment" : " moments") + " can't be saved";
+  const messages = problems.map(problem => problem.message).filter(Boolean);
+  $("problem-summary").title = [...messages.slice(0, 10),
+    ...(messages.length > 10 ? ["and " + (messages.length - 10) + " more"] : [])].join("\n");
+  $("problem-summary-text").textContent = cannotSave;
   $("next-output-problem").hidden = problems.length === 0;
   $("next-output-problem").disabled = !!view.busy;
   $("playback-rates").hidden = !scene;
   $("hit-lane-counts").hidden = !scene;
   $("cancel-job").hidden = !view.busy;
-  $("difficulty").hidden = !scene;
   for (const button of document.querySelectorAll("[data-doc]")) button.disabled = !scene || !!view.busy;
   $("samples-view").ariaPressed = String(!view.drumView?.enabled);
   $("drums-view").ariaPressed = String(!!view.drumView?.enabled);
@@ -264,7 +290,7 @@ function show(next) {
   $("ramp-shape").value = view.rampShape ?? "Linear";
   $("song-mute").ariaPressed = String(!!view.songMuted);
   $("song-solo").ariaPressed = String(!!view.songSolo);
-  $("open").disabled = $("home-open").disabled = $("folders").disabled = !!view.busy;
+  $("home-open").disabled = !!view.busy;
   $("home-import").disabled = $("home-folders").disabled = !!view.busy;
 
   renderActiveLane();
@@ -280,15 +306,41 @@ function show(next) {
   else renderSelection();
   if (scene) {
     for (const button of speedButtons) button.ariaPressed = String(Number(button.dataset.playbackSpeed) === view.speed);
-    $("ruler-follow").setAttribute?.("aria-pressed", String(!!view.follow));
     followPlayhead();
   }
-  refreshLaneDelete();
+  refreshLaneToolbar();
+  refreshHitCard();
   renderDialogs();
   try { window.refreshEditorMenu?.(); } catch (error) { console.error(error); }
   paintSoon();
   try { window.dawsuUi?.update(view, scene); } catch (error) { console.error(error); }
   $("triplet-snap").checked = window.dawsuUi?.snapGroup?.() === "triplets";
+}
+
+// The frame around the timeline: the map chip, the status bar's play state, selection, file name
+// and output device. Map metadata comes from the .osu file, so it is set as text only.
+function renderFrame(path) {
+  $("map-title").textContent = scene?.mapTitle || (path ? nameOf(path).replace(/\.osu$/i, "") : "");
+  $("map-version").textContent = scene?.version ?? "";
+  $("map-version").hidden = !scene?.version;
+  $("difficulty").title = path;
+  const name = path ? nameOf(path) : "";
+  // The name is cut in the middle: the head shrinks with an ellipsis, the tail ("[Hard].osu") stays.
+  const tail = /\[[^\]]*\]\.osu$/i.exec(name)?.[0] ?? name.slice(-Math.min(name.length, 12));
+  $("file-name-head").textContent = name.slice(0, name.length - tail.length);
+  $("file-name-tail").textContent = tail;
+  $("file-name").title = path;
+  $("file-name").hidden = !path;
+  $("play-state").textContent = view.playing ? "Playing" : "Stopped";
+  $("play-state").dataset.playing = String(!!view.playing);
+  $("play-state").hidden = !scene;
+  const selected = scene?.selection?.count ?? 0;
+  $("selection-count").textContent = selected + (selected === 1 ? " hit selected" : " hits selected");
+  $("selection-count").hidden = !selected;
+  const device = view.outputDevice || "";
+  $("audio").textContent = device || "Audio output";
+  $("audio").setAttribute("aria-label", device ? "Audio output: " + device : "Audio output");
+  $("audio").title = device ? "Audio output: " + device : "Audio output";
 }
 
 // The Svelte bundle loads after this script, so a part counts as missing only after the page has loaded.
@@ -352,34 +404,77 @@ function renderRecovery({ offers = [], error }) {
   }
 }
 
+// The docking state: narrow windows fold the Browser for the session (docking.js, from matchMedia).
+function dockState() {
+  return dock?.state?.() ?? { narrow: false, override: null };
+}
+
+function setDockOverride(value) {
+  dock?.setOverride?.(value);
+  renderPanelLayout();
+}
+
+function panelPrefs() {
+  const panels = view.panels ?? {};
+  return { browserOpen: !!panels.browser, inspectorOpen: !!panels.inspector,
+    controllerOpen: !!panels.controller, classic: !!view.classicBrowser };
+}
+
+// What the frame shows for the Browser ("open", "classic", "folded" or "off") and the Inspector.
+function effectivePanelState() {
+  const { narrow, override } = dockState();
+  const prefs = panelPrefs();
+  return window.editorDocking.effectivePanels(prefs, narrow, override);
+}
+
+// Whether a panel shows open: switches, menu rows and View settings show this, not the preference.
+function panelOn(panel) {
+  if (panel === "controller") return !!view.panels?.controller;
+  const state = effectivePanelState()[panel];
+  return state === "open" || state === "classic";
+}
+
+// Every switch, rail, menu row, checkbox and close button folds or opens a panel through here.
+function togglePanel(panel) {
+  if (!scene || !view.panels || view.busy) return;
+  const { narrow, override } = dockState();
+  const plan = window.editorDocking.togglePlan(panel, panelPrefs(), narrow, override);
+  if (plan.act) return act(plan.act);
+  setDockOverride(plan.override);
+}
+
+// A rail icon: open the panel, then bring its section into view.
+async function openPanelAt(panel, section) {
+  if (!scene || !view.panels || view.busy) return;
+  if (!panelOn(panel)) await togglePanel(panel);
+  if (!panelOn(panel)) return;
+  let target;
+  if (panel === "browser") {
+    // The Browser parts write each model at once, so the tab and search field exist right after.
+    if (section !== "search") sampleBrowserAction("source", section === "library" ? "library" : "mapset");
+    target = section === "search" ? $("sample-browser-filter")
+      : browserSource === "library" ? $("sample-browser-library") : $("sample-browser-mapset");
+  } else {
+    target = $("editor-inspector").querySelector(`section[aria-label="${section}"] button`);
+  }
+  target?.scrollIntoView?.({ block: "nearest" });
+  target?.focus();
+}
+
 function renderPanelLayout() {
   if (!view.panels) return;
-  const { inspector, controller, laneNames, browser: showBrowser } = view.panels;
-  $("view-inspector").ariaPressed = String(!!scene && !!inspector);
-  $("view-browser").ariaPressed = String(!!scene && !!showBrowser);
-  $("editor-dock").dataset.inspector = String(inspector);
+  const { controller, laneNames } = view.panels;
+  const panels = effectivePanelState();
+  for (const [panel, id] of Object.entries(panelSwitches)) $(id).ariaPressed = String(!!scene && panelOn(panel));
   $("editor-arrange").dataset.controller = String(controller);
   $("editor-arrange").dataset.laneNames = String(laneNames);
-  const namesToggle = $("toggle-lane-names");
-  namesToggle.ariaExpanded = String(laneNames !== false);
-  namesToggle.title = namesToggle.ariaLabel = laneNames === false ? "Show lane names" : "Hide lane names";
-  namesToggle.textContent = laneNames === false ? "›" : "‹";
-  $("volume-controller-panel").hidden = !controller;
-  const browser = scene && showBrowser ? (view.classicBrowser ? "classic" : "tree") : "off";
-  $("editor-dock").dataset.browser = browser;
-  if (dock) {
-    if (scene) dock(browser, !!inspector);
-  } else {
-    $("editor-inspector").hidden = !inspector;
-    $("tree-browser-host").hidden = browser !== "tree";
-    $("classic-browser-host").hidden = browser !== "classic";
-    if (browser !== "off") {
-      const host = $(browser + "-browser-host");
-      const panel = $("sample-browser");
-      if (panel.parentNode !== host) host.append(panel);
-    }
+  // Folded shows the bottom panel's 34 px strip; the tab is kept in the bundle, never saved.
+  $("volume-controller-panel").dataset.bottom = controller ? window.dawsuUi?.bottomTab?.() ?? "volume" : "folded";
+  if (dock && scene) {
+    dock({ browserStyle: view.classicBrowser ? "classic" : "tree",
+      browserOpen: !!view.panels.browser, inspectorOpen: !!view.panels.inspector });
   }
-  if (browser !== "off") renderSampleBrowser();
+  if (scene && (panels.browser === "open" || panels.browser === "classic")) renderSampleBrowser();
 }
 
 function reorderSampleFolder(from, to, after) {
@@ -429,7 +524,9 @@ function laneTitle(lane) {
   return lane.group ? lane.group[0].toUpperCase() + lane.group.slice(1) + " " + name : name;
 }
 
-function orderedLaneRows() {
+// The saved order: the editor's lane order, sorted by the mapper's lane moves. A move edits this
+// order only; the family order below is for display and is never saved.
+function savedLaneRows() {
   const rows = scene.laneOrder ?? scene.lanes.map((_, row) => row);
   if (!orderedLaneKeys.length) return rows;
   const rank = new Map(orderedLaneKeys.map((key, index) => [key, index]));
@@ -437,11 +534,43 @@ function orderedLaneRows() {
   return [...rows].sort((left, right) => position(left) - position(right));
 }
 
+function orderedLaneRows() {
+  return familyOrder(savedLaneRows());
+}
+
+// A family's main lane: the lane at custom index 1, else its skin sample (index 0), among rows.
+function familyMains(rows) {
+  const mains = new Map();
+  for (const row of rows) {
+    const { family, index } = scene.lanes[row] ?? {};
+    if (family != null && (index === 1 || (index === 0 && !mains.has(family)))) mains.set(family, row);
+  }
+  return mains;
+}
+
+// Numbered layers sit directly under their main lane, by number; without a main lane they stay
+// ordinary lanes where they are. main.rs's family_order does the same.
+function familyOrder(rows) {
+  const mains = familyMains(rows);
+  const layers = new Map();
+  for (const row of rows) {
+    const main = mains.get(scene.lanes[row]?.family);
+    if (main === undefined || main === row) continue;
+    if (!layers.has(main)) layers.set(main, []);
+    layers.get(main).push(row);
+  }
+  const children = new Set([...layers.values()].flat());
+  const byNumber = (left, right) => scene.lanes[left].index - scene.lanes[right].index || left - right;
+  return rows.flatMap(row => children.has(row) ? [] : [row, ...(layers.get(row)?.sort(byNumber) ?? [])]);
+}
+
 function adjacentLaneForMove(row, direction) {
-  if (view.drumView?.enabled || !scene?.lanes[row]?.colourKey) return null;
-  const position = laneRows.indexOf(row);
+  if (view.drumView?.enabled || !scene?.lanes[row]?.colourKey || familyLayers.has(row)) return null;
+  // A main lane moves with its layers, past the next lane or family; a layer keeps its place by number.
+  const units = laneRows.filter(candidate => typeof candidate !== "number" || !familyLayers.has(candidate));
+  const position = units.indexOf(row);
   if (position < 0) return null;
-  const adjacent = laneRows[position + direction];
+  const adjacent = units[position + direction];
   return typeof adjacent === "number" && scene.lanes[adjacent].colourKey &&
     scene.lanes[adjacent].group === scene.lanes[row].group ? adjacent : null;
 }
@@ -449,7 +578,7 @@ function adjacentLaneForMove(row, direction) {
 function moveLane(row, direction) {
   const adjacent = adjacentLaneForMove(row, direction);
   if (adjacent === null || view.busy || drag) return;
-  const rows = orderedLaneRows().filter(candidate => candidate !== row);
+  const rows = savedLaneRows().filter(candidate => candidate !== row);
   rows.splice(rows.indexOf(adjacent) + (direction > 0 ? 1 : 0), 0, row);
   const present = new Set(rows.map(candidate => scene.lanes[candidate].colourKey));
   orderedLaneKeys = [...rows.map(candidate => scene.lanes[candidate].colourKey),
@@ -499,15 +628,17 @@ function groupedLaneRows(eligible) {
     if (!families.has(family)) families.set(family, []);
     families.get(family).push(row);
   }
+  // A family folds only under a shown main lane, so a fold never hides a layer whose main lane is
+  // removed, filtered out or unused.
+  const mains = familyMains(eligible);
   for (const [family, rows] of families) {
-    if (rows.length < 2) continue;
-    const parent = rows.find(row => scene.lanes[row].index === 1) ??
-      rows.find(row => scene.lanes[row].index === 0) ?? rows[0];
+    const parent = mains.get(family);
+    if (rows.length < 2 || parent === undefined) continue;
     familyParents.set(parent, family);
-    if (collapsedFamilies.has(family)) {
-      for (const row of rows) {
-        if (row !== parent) previewParents.set(row, parent);
-      }
+    for (const row of rows) {
+      if (row === parent) continue;
+      familyLayers.set(row, parent);
+      if (collapsedFamilies.has(family)) previewParents.set(row, parent);
     }
   }
 
@@ -539,6 +670,7 @@ function renderLanes() {
       .some(name => name?.toLowerCase().includes(filter));
   };
   familyParents = new Map();
+  familyLayers = new Map();
   previewParents = new Map();
   let drumNames = [];
   if (view.drumView?.enabled && scene.drumRows) {
@@ -556,7 +688,6 @@ function renderLanes() {
     if (!laneVisualPositions.has(row)) laneVisualPositions.set(row, []);
     laneVisualPositions.get(row).push(position);
   }
-  refreshLaneDelete();
   const lanePanel = $("lanes");
   lanePanel.style.setProperty("--lane-row-height", scene.rowHeight + "px");
   const laneKey = JSON.stringify([laneRows, drumNames, scene.lanes, view.activeLane, [...selectionLaneKeys],
@@ -567,6 +698,51 @@ function renderLanes() {
     laneHeaders = laneHeaderModel(drumNames);
     try { window.dawsuUi?.lanes(laneHeaders); } catch (error) { console.error(error); }
   }
+  const strips = mixerModel();
+  const key = JSON.stringify(strips);
+  if (key !== mixerKey) {
+    mixerKey = key;
+    mixerStrips = strips;
+    try { window.dawsuUi?.mixer?.(mixerStrips); } catch (error) { console.error(error); }
+  }
+}
+
+// The Mixer's lane strips ("mixer" part): one per lane with hits, in lane-list order (the folders
+// in their order, then the map file lanes), whatever the filter or a folded folder hides.
+let mixerStrips = [];
+let mixerKey = "";
+
+function currentMixer() {
+  return mixerStrips;
+}
+
+function mixerModel() {
+  const numbers = new Map(orderedLaneRows().map((row, index) => [row, index + 1]));
+  const used = [...numbers.keys()].filter(row => scene.lanes[row]?.hitCount > 0);
+  const inFolder = new Set(sampleFolderOrder);
+  const rows = [...sampleFolderOrder.flatMap(group => used.filter(row => scene.lanes[row].group === group)),
+    ...used.filter(row => !inFolder.has(scene.lanes[row].group))];
+  const anySolo = scene.lanes.some(lane => lane?.solo);
+  // The drum view numbers its rows by drum: a strip takes its drum row's number and name, or no
+  // number when no drum row shows the lane.
+  const drumRows = view.drumView?.enabled ? new Map() : null;
+  for (const header of drumRows ? laneHeaders.rows : []) {
+    if (header.type === "lane" && !drumRows.has(header.row)) drumRows.set(header.row, header);
+  }
+  return rows.map(row => {
+    const lane = scene.lanes[row];
+    const sound = laneSound(lane);
+    const drum = drumRows?.get(row);
+    return {
+      key: "lane:" + row, row, number: drumRows ? drum?.number ?? "" : numbers.get(row),
+      name: drum?.name ?? (renamedLanes.has(lane.colourKey) ? laneDisplayName(lane) : sound.name),
+      set: sound.set, icon: sound.icon,
+      // Yoge, 2026-11-20 (ADR 0068): a lane is grey unless the mapper picked a colour.
+      colour: laneColours.get(lane.colourKey) ?? null,
+      selected: selectionLaneKeys.has(lane.key), muted: !!lane.muted, solo: !!lane.solo,
+      quiet: !!lane.muted || (anySolo && !lane.solo),
+    };
+  });
 }
 
 // The rows the Svelte lane headers draw ("lanes" part), as plain data. Lane state stays here.
@@ -604,9 +780,11 @@ function laneHeaderModel(drumNames) {
       folder: !drum && lane.group ? lane.group : null,
       active: view.activeLane === row, selected: selectionLaneKeys.has(lane.key),
       muted: !!lane.muted, solo: !!lane.solo, quiet: !!lane.muted || (anySolo && !lane.solo),
-      layer: !drum && !!lane.group && lane.index > 1,
+      layer: !drum && familyLayers.has(row),
       family: family == null ? null : { collapsed, label: (collapsed ? "Expand " : "Collapse ") + lane.name + " layers" },
-      addLayer: lane.canAddLayer ? "Add numbered " + lane.name + " layer" : null,
+      // The drum view adds no lanes (vault rule) and removes none.
+      addLayer: !drum && lane.canAddLayer ? "Add numbered " + lane.name + " layer" : null,
+      remove: drum ? null : { label: "Remove " + (renamedLanes.has(lane.colourKey) ? displayName : sound.name), disabled: !lane.canDelete },
     };
   });
   return { names: view.panels?.laneNames !== false, busy: !!view.busy, rows };
@@ -656,8 +834,20 @@ function laneHeaderAction(kind, ...args) {
       break;
     }
     case "addLayer":
-      act({ kind: "lane", row: args[0], operation: "add_layer" });
+      // The editor takes the next free number. A removed layer keeps its file in the mapset, so +
+      // never reuses its number (safe: nothing is overwritten).
+      if (!view.drumView?.enabled) act({ kind: "lane", row: args[0], operation: "add_layer" });
       break;
+    case "remove": {
+      // One undo step takes the lane and its hits; Undo brings both back, so there is no question
+      // first. Presses while a removal is on its way are ignored.
+      const lane = scene.lanes[args[0]];
+      if (!lane?.canDelete || view.drumView?.enabled || laneRemoving) return;
+      laneRemoving = true;
+      act({ kind: "delete_lane", target: { map: scene.path, lane: lane.sourceKey }, revision: scene.laneRevision })
+        .finally(() => { laneRemoving = false; });
+      break;
+    }
   }
 }
 
@@ -740,16 +930,8 @@ function deletableLane() {
   return lane?.canDelete ? lane : null;
 }
 
-function refreshLaneDelete() {
-  const button = $("delete-lane");
-  button.disabled = !deletableLane();
-  const lane = scene?.lanes?.[view.activeLane];
-  button.title = lane?.canDelete === false
-    ? "Protected hitnormals and slider body lanes cannot be deleted here"
-    : "Delete active lane";
-}
-
-$("add-lane").addEventListener("click", () => {
+// The Add lane row at the end of the lane column (LaneHeaders part) and the menus' Add lane….
+function openAddLane() {
   if (!scene || view.busy || drag) return;
   const map = scene.path;
   run(async () => {
@@ -773,9 +955,10 @@ $("add-lane").addEventListener("click", () => {
       }, true],
     ]);
   });
-});
+}
 
-$("delete-lane").addEventListener("click", () => {
+// Edit › Delete active lane… and the lane menu's Delete lane… (menus.js); v3 has no toolbar button.
+function deleteActiveLane() {
   const lane = deletableLane();
   if (!lane) return;
   const target = { map: scene.path, lane: lane.sourceKey };
@@ -792,7 +975,7 @@ $("delete-lane").addEventListener("click", () => {
     ["Cancel", closeModal, true],
     ["Delete", () => { closeModal(); remove(); }],
   ]);
-});
+}
 
 // The bookmark row picked in the Inspector, kept by its difficulty and time so it survives each update.
 // since is when it was picked, until the playhead reaches it.
@@ -847,7 +1030,7 @@ function drawBookmarks(ctx, marks, start, zoom, width) {
     ctx.fillRect(x, rulerBandHeight, 2, bookmarkFlagHeight);
     ctx.fillRect(x, rulerBandHeight, 9, 5);
     const labelWidth = Math.min(180, (visible[i + 1]?.[1] ?? width) - x - 10);
-    if (mark.label && labelWidth > 24) ctx.fillText(mark.label, x + 5, 36, labelWidth);
+    if (mark.label && labelWidth > 24) ctx.fillText(mark.label, x + 5, rulerBandHeight + 15, labelWidth);
   }
 }
 
@@ -855,7 +1038,8 @@ function renderScene() {
   renderLanes();
   $("snap").checked = scene.snap;
   const hits = (scene.moments ?? []).reduce((sum, moment) => sum + (moment[3]?.length ?? 0), 0);
-  const lanes = scene.lanes?.length ?? 0;
+  // Shown lanes only: a removed (hidden) lane keeps its model row but no header.
+  const lanes = scene.laneOrder?.length ?? scene.lanes?.length ?? 0;
   $("hit-lane-counts").textContent = hits + (hits === 1 ? " hit · " : " hits · ") + lanes + (lanes === 1 ? " lane" : " lanes");
   $("object-lines").checked = view.objectLines;
   setValue("snap-mode", scene.snapMode);
@@ -864,8 +1048,6 @@ function renderScene() {
   setValue("zoom", Math.log10(scene.zoom));
   setValue("lane-height", scene.rowHeight);
   renderSelection();
-  $("undo").disabled = view.busy || scene.historyPosition === 0;
-  $("redo").disabled = view.busy || scene.historyPosition === scene.history.length;
   const difficulty = $("difficulty");
   const pathKey = JSON.stringify([scene.path, scene.difficulties]);
   if (difficulty.dataset.state !== pathKey) {
@@ -947,6 +1129,24 @@ function keptList(name, list) {
   return list;
 }
 
+let problemStripKept = null;
+
+// Difficulty's problem strip data, kept until the scene, the problems, the song length or the view
+// change, so the strip doesn't rebuild on every update while playing.
+function problemStripData() {
+  if (!scene) return null;
+  const viewWidth = (grid.clientWidth || 0) / scene.zoom;
+  const key = [scene, JSON.stringify(view?.outputProblems ?? []), view?.duration, scene.viewStart, viewWidth];
+  if (problemStripKept?.key.every((value, index) => Object.is(value, key[index]))) return problemStripKept.data;
+  const data = {
+    path: scene.path, name: scene.version ?? "", duration: view?.duration ?? 0, problems: view?.outputProblems ?? [],
+    orphaned: scene.orphanedHits ?? [], objects: (scene.moments ?? []).filter(moment => moment[2]).map(moment => moment[0]),
+    viewStart: scene.viewStart, viewWidth,
+  };
+  problemStripKept = { key, data };
+  return data;
+}
+
 // Everything the Inspector's sections show; app.js keeps the state.
 function inspectorModel() {
   const selection = scene?.selection;
@@ -982,6 +1182,7 @@ function inspectorModel() {
     bookmark: selectedBookmark()?.time ?? null,
     history: keptList("history", scene ? ["Opened difficulty", ...scene.history ?? []] : []),
     historyPosition: scene?.historyPosition ?? 0,
+    problemStrip: problemStripData(),
   };
 }
 
@@ -1035,6 +1236,12 @@ function inspectorAction(kind, ...args) {
         whistle_set: whistleSet, whistle: !!whistle, volume });
       return true;
     }
+    case "jump":
+      // A Difficulty problem mark: the playhead goes to its time, centred, as Next problem does.
+      if (!Number.isFinite(args[0])) return false;
+      act({ kind: "seek", ms: args[0] }, false);
+      changeView(args[0] - grid.clientWidth / scene.zoom / 2, scene.zoom);
+      return true;
     case "pickBookmark": {
       const mark = scene.bookmarks?.find(item => item.time === args[0]);
       if (!mark) return false;
@@ -1110,6 +1317,20 @@ const snapColours = {
   9: "#b3d944", 12: "#cc6600", 16: "#6644cc",
 };
 
+// v3 §5 (Yoge): editor grid lines stay neutral; only the ruler shows the snap colours.
+// Sub-beats follow the snap divisor. They draw above the lane tint and below the hits.
+const gridLines = { sub: "rgba(255,255,255,.025)", beat: "rgba(255,255,255,.04)", bar: "rgba(255,255,255,.10)" };
+
+// v3 §5: a snap tick's height on the ruler by its reduced divisor (1/5, 1/7, 1/9 take the smallest).
+const snapTickHeights = { 2: 9, 3: 7, 4: 7, 6: 5, 8: 5, 12: 4, 16: 4 };
+
+function reducedDivisor(tick, divisor) {
+  let remainder = Math.abs(tick % divisor);
+  let factor = divisor;
+  while (remainder) [factor, remainder] = [remainder, factor % remainder];
+  return divisor / factor;
+}
+
 function snapColour(tick, divisor) {
   let remainder = Math.abs(tick % divisor);
   let factor = divisor;
@@ -1117,8 +1338,26 @@ function snapColour(tick, divisor) {
   return snapColours[divisor / factor] ?? "#ff0000";
 }
 
+// The bar number each timing section starts on, as the editor counts them (tempo.rs bar_beat_at): a
+// part bar before the next red line counts as a whole one. Built once per timing snapshot.
+let sectionBarCache = null;
+function sectionBars(sections) {
+  if (sectionBarCache?.sections !== sections) {
+    const bars = [];
+    let bar = 1;
+    for (const [i, [origin, beat, meter]] of sections.entries()) {
+      bars.push(bar);
+      const next = sections[i + 1]?.[0];
+      if (next !== undefined && beat > 0 && meter) bar += Math.max(0, Math.ceil((next - origin) / (beat * meter) - 1e-9));
+    }
+    sectionBarCache = { sections, bars };
+  }
+  return sectionBarCache.bars;
+}
+
 function drawTimingGrid(ctx, start, end, zoom, top, bottom, ruler = false) {
   const useSnap = scene.snap && scene.snapMode !== "objects";
+  const firstBars = sectionBars(scene.sections);
   for (const [i, [origin, beat, meter]] of scene.sections.entries()) {
     if (beat <= 0 || !meter) continue;
     const begin = Math.max(start, i ? origin : start);
@@ -1135,7 +1374,8 @@ function drawTimingGrid(ctx, start, end, zoom, top, bottom, ruler = false) {
           if (tick % scene.divisor === 0) continue;
           const x = (origin + tick * step - start) * zoom;
           const color = snapColour(tick, scene.divisor);
-          line(ctx, ruler ? color : color + "42", x, ruler ? bottom - 5 : top, x, bottom);
+          const height = snapTickHeights[reducedDivisor(tick, scene.divisor)] ?? 4;
+          line(ctx, ruler ? color : gridLines.sub, x, ruler ? bottom - height : top, x, bottom);
         }
       }
     }
@@ -1146,8 +1386,20 @@ function drawTimingGrid(ctx, start, end, zoom, top, bottom, ruler = false) {
       const x = (origin + n * step - start) * zoom;
       const bar = !scene.editorBars?.length && tick % meter === 0;
       const longSnap = useSnap && scene.beats > 1 && tick % scene.beats === 0;
-      const color = ruler ? snapColours[1] : bar || longSnap ? slateTimeline.barLine : slateTimeline.beatLine;
-      line(ctx, color, x, ruler ? bottom - (bar || longSnap ? 9 : 7) : top, x, bottom);
+      const color = ruler ? snapColours[1] : bar || longSnap ? gridLines.bar : gridLines.beat;
+      // v3 §5: bar numbers on the ruler, every few bars when bars are under 60 px wide, counted from
+      // the section's first bar. A label that would run into the next section's first one is left out.
+      const barIndex = Math.floor(tick / meter);
+      const barNumber = firstBars[i] + barIndex;
+      const every = Math.max(1, Math.ceil(60 / widthOfBar));
+      const nextSection = scene.sections[i + 1]?.[0];
+      const room = nextSection === undefined ? Infinity : (nextSection - start) * zoom - x;
+      if (ruler && bar && ((barIndex % every) + every) % every === 0 && room >= String(barNumber).length * 8 + 8) {
+        ctx.fillStyle = slateTimeline.rulerBar;
+        ctx.fillText(String(barNumber), x + 5, 10);
+      }
+      // v3 §5: bar lines run the ruler's full height; beat ticks (and long snaps) are 12 px.
+      line(ctx, color, x, ruler && !bar ? bottom - 12 : top, x, bottom);
     }
   }
   for (const [i, section] of (scene.editorBars ?? []).entries()) {
@@ -1159,10 +1411,10 @@ function drawTimingGrid(ctx, start, end, zoom, top, bottom, ruler = false) {
     if (begin >= until || !Number.isFinite(step) || step <= 0) continue;
     for (let n = Math.ceil((begin - section.start) / step); section.start + n * step < until; n++) {
       const x = (section.start + n * step - start) * zoom;
-      line(ctx, slateTimeline.barLine, x, ruler ? 3 : top, x, bottom);
+      line(ctx, ruler ? slateTimeline.rulerBar : gridLines.bar, x, top, x, bottom);
       if (ruler) {
         ctx.fillStyle = slateTimeline.rulerBar;
-        ctx.fillText(String(section.bar + n * stride), x + 5, 14);
+        ctx.fillText(String(section.bar + n * stride), x + 5, 10);
       }
     }
   }
@@ -1215,94 +1467,141 @@ function fillHitDiamond(ctx, x, y) {
   ctx.fill();
 }
 
-// Object circles grow with zoom as in the design (f11): half a beat on screen × 0.8, kept
-// between 18 and 30 px, from the timing at the object's own time and never taller than the lane.
-const objectReach = 15;
-let beatLengthCache = null;
-
-// [start, beat length] of each timing, sorted by start: built once per timing snapshot.
-function beatLengths(sections) {
-  if (beatLengthCache?.sections !== sections) {
-    const beats = (sections ?? []).filter(([, beat]) => beat > 0).map(([origin, beat]) => [origin, beat])
-      .sort((first, second) => first[0] - second[0]);
-    beatLengthCache = { sections, beats };
-  }
-  return beatLengthCache.beats;
+// The outline of a hit diamond, `size` px from its centre to each point (a filled one is 6).
+function strokeHitDiamond(ctx, x, y, size) {
+  ctx.beginPath();
+  ctx.moveTo(x, y - size);
+  ctx.lineTo(x + size, y);
+  ctx.lineTo(x, y + size);
+  ctx.lineTo(x - size, y);
+  ctx.closePath();
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
 }
 
-function objectDiameter(beats, time, zoom, laneHeight) {
-  // Binary search for the last timing starting at or before the time; before it, the first timing.
-  let low = 0;
-  let high = beats.length;
-  while (low < high) {
-    const middle = (low + high) >> 1;
-    if (beats[middle][0] <= time) low = middle + 1;
-    else high = middle;
-  }
-  const beat = beats[Math.max(0, low - 1)]?.[1];
-  const size = beat ? limit(Math.round(beat * zoom / 2 * .8), 18, 30) : 18;
-  return Math.max(0, Math.min(size, laneHeight));
+// v3 timeline-spec §9: object circles are a fixed 34 px at every zoom (never taller than the Song
+// row), overlapping when zoomed out, later objects on top. Plain circles in the map's combo colour
+// with a white ring and the combo number: the osu! skin textures are CC BY-NC, so none ship.
+const objectSize = 34;
+const objectReach = objectSize / 2;
+const objectWhite = "#e6eef2";
+
+// The combo colour of an object, or readout white without combo data.
+function comboOf(object) {
+  const [number, colour] = scene.combos?.objects?.[object] ?? [];
+  return { number, colour: scene.combos?.colours?.[colour] ?? objectWhite };
 }
 
-function drawGameplay(ctx, gameplay, xOf, y, width, diameterAt) {
+// A slider track: the combo colour 38 % into #111111 (timeline-spec §9).
+const trackShades = new Map();
+function trackShade(colour) {
+  if (!trackShades.has(colour)) {
+    const channels = [1, 3, 5].map(at => Math.round(17 + (parseInt(colour.slice(at, at + 2), 16) - 17) * .38));
+    trackShades.set(colour, "#" + channels.map(value => value.toString(16).padStart(2, "0")).join(""));
+  }
+  return trackShades.get(colour);
+}
+
+function roundedTrack(ctx, left, top, width, height, corner) {
+  ctx.beginPath();
+  if (ctx.roundRect) ctx.roundRect(left, top, width, height, corner);
+  else {
+    // Older macOS and Linux WebViews have no roundRect(); arcTo() draws the same shape.
+    const right = left + width;
+    const bottom = top + height;
+    ctx.moveTo(left + corner, top);
+    ctx.arcTo(right, top, right, bottom, corner);
+    ctx.arcTo(right, bottom, left, bottom, corner);
+    ctx.arcTo(left, bottom, left, top, corner);
+    ctx.arcTo(left, top, right, top, corner);
+    ctx.closePath();
+  }
+}
+
+function drawGameplay(ctx, gameplay, xOf, y, width, diameter) {
   if (!gameplay) return;
-  for (const [kind, start, end] of gameplay.spans) {
+  ctx.lineWidth = 2;
+  for (const [kind, start, end, object] of gameplay.spans) {
     const left = xOf(start);
     const right = xOf(end);
     if (right < -objectReach || left > width + objectReach) continue;
     if (kind === "slider") {
-      const track = diameterAt(start) * .66;
+      const track = diameter * .66;
       const top = y - track / 2;
-      const bottom = top + track;
-      const corner = Math.min(track, right - left) / 2;
-      ctx.fillStyle = "#62d6cfd9";
-      ctx.beginPath();
-      if (ctx.roundRect) ctx.roundRect(left, top, right - left, track, corner);
-      else {
-        // Older macOS and Linux WebViews have no roundRect(); arcTo() draws the same shape.
-        ctx.moveTo(left + corner, top);
-        ctx.arcTo(right, top, right, bottom, corner);
-        ctx.arcTo(right, bottom, left, bottom, corner);
-        ctx.arcTo(left, bottom, left, top, corner);
-        ctx.arcTo(left, top, right, top, corner);
-        ctx.closePath();
-      }
+      ctx.fillStyle = trackShade(comboOf(object).colour);
+      roundedTrack(ctx, left, top, right - left, track, Math.min(track, right - left) / 2);
       ctx.fill();
+      // A 2 px white edge at 85 % inside the track.
+      const inner = Math.max(0, right - left - 2);
+      ctx.strokeStyle = "#ffffffd9";
+      roundedTrack(ctx, left + 1, top + 1, inner, track - 2, Math.min(track - 2, inner) / 2);
+      ctx.stroke();
       continue;
     }
-    ctx.fillStyle = "#e6eef2";
+    ctx.fillStyle = objectWhite;
     const from = Math.max(0, left);
     const to = Math.min(width, right);
     ctx.fillRect(from, y - 2.5, Math.max(1, to - from), 5);
   }
-  const radiusOf = nodeRadii(gameplay.points, diameterAt);
-  ctx.lineWidth = 2;
-  ctx.strokeStyle = "#1c2727";
-  for (const [kind, time, object] of gameplay.points) {
+  const radiusOf = nodeRadii(gameplay.points, diameter);
+  // Digits 16 px on a 34 px circle, smaller with it in a short Song row.
+  const digitSize = Math.max(8, Math.round(diameter * .47));
+  ctx.font = "600 " + digitSize + "px Inter, system-ui, sans-serif";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.lineJoin = "round";
+  const points = gameplay.points;
+  for (const [at, [kind, time, object]] of points.entries()) {
     const x = xOf(time);
     if (x < -objectReach || x > width + objectReach) continue;
-    ctx.fillStyle = "#e6eef2";
+    // Later objects draw on top: one under 2 px from the next is hidden by it, so it is not drawn.
+    const next = points[at + 1];
+    const nextX = next ? xOf(next[1]) : Infinity;
+    if (nextX - x < 2) continue;
+    const { number, colour } = comboOf(object);
+    const { radius, head } = radiusOf(kind, time, object);
+    ctx.lineWidth = 2;
+    ctx.fillStyle = colour;
+    ctx.strokeStyle = "#ffffff";
     ctx.beginPath();
-    ctx.arc(x, y, radiusOf(kind, time, object), 0, Math.PI * 2);
+    ctx.arc(x, y, radius, 0, Math.PI * 2);
     ctx.fill();
     ctx.stroke();
+    // The combo number on a circle and a slider head, where the next circle leaves it in view, with a
+    // dark outline so it reads on yellow and green.
+    const covered = next && nextX - radiusOf(next[0], next[1], next[2]).radius < x + digitSize / 3;
+    if (head && number && !covered) {
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = "rgba(0,0,0,.55)";
+      ctx.strokeText(String(number), x, y);
+      ctx.fillStyle = "#ffffff";
+      ctx.fillText(String(number), x, y);
+    }
   }
+  ctx.textAlign = "start";
+  ctx.textBaseline = "alphabetic";
   ctx.lineWidth = 1;
 }
 
 // A slider's first and last nodes are full circles; repeats between them sit on the track.
-function nodeRadii(points, diameterAt) {
-  const sliderEnds = new Map();
-  for (const [kind, time, object] of points) {
-    if (kind !== "slider") continue;
-    const ends = sliderEnds.get(object);
-    if (ends) sliderEnds.set(object, [Math.min(ends[0], time), Math.max(ends[1], time)]);
-    else sliderEnds.set(object, [time, time]);
+// Only a circle and a slider's head carry the combo number.
+let sliderEndCache = null;
+function nodeRadii(points, diameter) {
+  // Each slider's first and last node time, built once per object list.
+  if (sliderEndCache?.points !== points) {
+    const ends = new Map();
+    for (const [kind, time, object] of points) {
+      if (kind !== "slider") continue;
+      const known = ends.get(object);
+      ends.set(object, known ? [Math.min(known[0], time), Math.max(known[1], time)] : [time, time]);
+    }
+    sliderEndCache = { points, ends };
   }
+  const sliderEnds = sliderEndCache.ends;
   return (kind, time, object) => {
     const ends = kind === "slider" ? sliderEnds.get(object) : null;
     const repeat = ends && time !== ends[0] && time !== ends[1];
-    return repeat ? diameterAt(ends[0]) * .66 / 2 : diameterAt(time) / 2;
+    return { radius: repeat ? diameter * .66 / 2 : diameter / 2, head: !ends || time === ends[0] };
   };
 }
 
@@ -1313,30 +1612,72 @@ function laneTint(lane, active = false) {
   return colour ? colour + (active ? "29" : "14") : null;
 }
 
-const overviewGroups = ["soft", "normal", "drum", null, "skin"];
-let overviewHitCache = null;
+// timeline-spec "Overview strip": the song's objects in 300 columns, each drawn as a 5 px diamond
+// whose strength (30 to 100 %) shows how many objects fall in it. Built once per object list and width.
+const overviewColumns = 300;
+let overviewBinCache = null;
 
-function drawOverviewHits({ ctx, width, height }, { moments, lanes }, duration) {
-  if (width <= 0 || height <= 6 || duration <= 0) return;
-  if (overviewHitCache?.moments !== moments || overviewHitCache.lanes !== lanes ||
-      overviewHitCache.width !== width || overviewHitCache.duration !== duration) {
-    const columns = overviewGroups.map(() => new Set());
-    const laneBands = lanes?.map(lane => overviewGroups.indexOf(lane.group));
-    const scale = width / duration;
-    for (const [time, , , hits] of moments) {
+function overviewBins(gameplay, width, duration) {
+  if (!overviewBinCache || overviewBinCache.gameplay !== gameplay || overviewBinCache.width !== width || overviewBinCache.duration !== duration) {
+    const counts = new Array(overviewColumns).fill(0);
+    // Each object once, at its start: a circle, a slider's head, a spinner's start.
+    const starts = new Map();
+    for (const [, time, object] of gameplay?.points ?? []) if (!starts.has(object)) starts.set(object, time);
+    for (const [kind, time, , object] of gameplay?.spans ?? []) if (kind === "spinner" && !starts.has(object)) starts.set(object, time);
+    for (const time of starts.values()) {
       if (time < 0 || time > duration) continue;
-      const x = Math.min(width - 1, Math.floor(time * scale));
-      for (const [row] of hits) columns[laneBands?.[row]]?.add(x);
+      counts[Math.min(overviewColumns - 1, Math.floor(time / duration * overviewColumns))]++;
     }
-    overviewHitCache = { moments, lanes, width, duration, columns };
+    const most = Math.max(1, ...counts);
+    const bins = counts.flatMap((count, column) => count ? [[(column + .5) * width / overviewColumns, .3 + .7 * count / most]] : []);
+    overviewBinCache = { gameplay, width, duration, bins };
   }
+  return overviewBinCache.bins;
+}
 
-  const bandHeight = (height - 6) / overviewGroups.length;
-  ctx.fillStyle = "#a3a3a3";
-  for (const [band, columns] of overviewHitCache.columns.entries()) {
-    const y = 3 + band * bandHeight;
-    for (const x of columns) ctx.fillRect(x, y, 1.2, Math.max(1, bandHeight - 1));
+function diamond(ctx, x, y, half) {
+  ctx.beginPath();
+  ctx.moveTo(x, y - half);
+  ctx.lineTo(x + half, y);
+  ctx.lineTo(x, y + half);
+  ctx.lineTo(x - half, y);
+  ctx.closePath();
+}
+
+function drawOverview({ ctx, width, height }, start, visible) {
+  ctx.fillStyle = slateTimeline.overview;
+  ctx.fillRect(0, 0, width, height);
+  const duration = view.duration;
+  if (!(duration > 0) || width <= 0) return;
+  const middle = height / 2;
+  for (const [x, strength] of overviewBins(scene.gameplay, width, duration)) {
+    ctx.fillStyle = "rgba(196,196,196," + strength.toFixed(2) + ")";
+    diamond(ctx, x, middle, 3.5);
+    ctx.fill();
   }
+  // The viewport box: 1 px --editor-text, radius 2, at least 8 px wide.
+  // The box stays inside the strip: its 1 px edge is drawn within its width.
+  const boxWidth = Math.min(width, Math.max(8, visible * width / duration));
+  const boxLeft = Math.max(0, Math.min(start * width / duration, width - boxWidth));
+  ctx.fillStyle = "rgba(241,241,241,.06)";
+  ctx.strokeStyle = "#f1f1f1";
+  roundedTrack(ctx, boxLeft + .5, 3.5, boxWidth - 1, Math.max(0, height - 7), 2);
+  ctx.fill();
+  ctx.stroke();
+  // Problems on this difficulty: 7 px --editor-warning diamonds with a 1 px --editor-panel edge.
+  ctx.fillStyle = "#efc16a";
+  ctx.strokeStyle = slateTimeline.overview;
+  const drawnProblems = new Set();
+  for (const problem of view.outputProblems ?? []) {
+    const x = Math.round(problem.time * width / duration);
+    if (problem.timeline !== scene.path || drawnProblems.has(x)) continue;
+    drawnProblems.add(x);
+    diamond(ctx, problem.time * width / duration, middle, 5);
+    ctx.fill();
+    ctx.stroke();
+  }
+  const playX = view.position * width / duration;
+  line(ctx, slateTimeline.playhead, playX, 0, playX, height);
 }
 
 function paint() {
@@ -1349,7 +1690,8 @@ function paint() {
   const g = prepare(grid, canvasHeight);
   const r = prepare(ruler);
   const volumePanel = $("volume-controller-panel");
-  const v = volumePanel.hidden || volumePanel.dataset?.layoutBarHidden !== undefined ? null : prepare(controller);
+  const v = volumePanel.hidden || volumePanel.dataset?.layoutBarHidden !== undefined ||
+    (volumePanel.dataset?.bottom ?? "volume") !== "volume" ? null : prepare(controller);
   const o = prepare(overview);
   const { start, zoom } = { start: scene.viewStart, zoom: scene.zoom };
   const xOf = (time) => (time - start) * zoom;
@@ -1409,19 +1751,6 @@ function paint() {
       v.ctx.fillStyle = colour;
       v.ctx.fillRect(x - 1, v.height - volumeHeight, 2, volumeHeight);
     }
-    if (previewParents.size) {
-      for (const [row, , listenMuted, hitVolume] of hits) {
-        const parent = previewParents.get(row);
-        if (parent === undefined) continue;
-        const y = (lanePositions.get(parent) + .5) * rowHeight - scrollTop;
-        if (y < -8 || y > g.height + 8) continue;
-        g.ctx.save();
-        g.ctx.globalAlpha *= .3;
-        g.ctx.fillStyle = listenMuted ? "#858585" : volumeColour(hitVolume ?? volume);
-        fillHitDiamond(g.ctx, x, y);
-        g.ctx.restore();
-      }
-    }
     for (const [row, selected, listenMuted, hitVolume] of hits) {
       for (const visibleRow of laneVisualPositions.get(row) ?? []) {
         const y = (visibleRow + .5) * rowHeight - scrollTop;
@@ -1434,6 +1763,31 @@ function paint() {
           g.ctx.stroke();
           g.ctx.lineWidth = 1;
         }
+      }
+    }
+    if (previewParents.size) {
+      // Over the main lane's own hits: a folded main lane outlines its layers' hits in their volume
+      // colours, so they show volume and can't pass for muted hits; several at one moment nest, each
+      // a little larger, so every colour shows. A folded folder shows its lanes' hits faint.
+      const nested = new Map();
+      for (const [row, , listenMuted, hitVolume] of hits) {
+        const parent = previewParents.get(row);
+        if (parent === undefined) continue;
+        const y = (lanePositions.get(parent) + .5) * rowHeight - scrollTop;
+        if (y < -12 || y > g.height + 12) continue;
+        g.ctx.save();
+        const colour = listenMuted ? "#858585" : volumeColour(hitVolume ?? volume);
+        if (typeof parent === "number") {
+          const inside = nested.get(parent) ?? 0;
+          nested.set(parent, inside + 1);
+          g.ctx.strokeStyle = colour;
+          strokeHitDiamond(g.ctx, x, y, 7.5 + 2.5 * inside);
+        } else {
+          g.ctx.globalAlpha *= .3;
+          g.ctx.fillStyle = colour;
+          fillHitDiamond(g.ctx, x, y);
+        }
+        g.ctx.restore();
       }
     }
   }
@@ -1464,22 +1818,16 @@ function paint() {
   r.ctx.fillRect(0, 0, r.width, r.height);
   const waveformMiddle = (r.height + rulerBandHeight) / 2;
   const waveAmplitude = Math.min(waveformHeight, Math.max(0, r.height - rulerBandHeight)) / 2;
-  if (waveAmplitude > 0) waveform(r.ctx, r.width, waveformMiddle, waveAmplitude, start, r.width / zoom);
-  const beats = beatLengths(scene.sections);
-  const objectSize = time => objectDiameter(beats, time, zoom, r.height - rulerBandHeight);
-  drawGameplay(r.ctx, scene.gameplay, xOf, waveformMiddle, r.width, objectSize);
+  if (waveformShown && waveAmplitude > 0) waveform(r.ctx, r.width, waveformMiddle, waveAmplitude, start, r.width / zoom);
+  drawGameplay(r.ctx, scene.gameplay, xOf, waveformMiddle, r.width, Math.max(0, Math.min(objectSize, r.height - rulerBandHeight)));
+  // v3 §5: the 40 px ruler, #0c0c0c with a 1 px --editor-selected bottom edge, bar numbers 13 px/600.
   r.ctx.fillStyle = slateTimeline.ruler;
   r.ctx.fillRect(0, 0, r.width, rulerBandHeight);
-  r.ctx.font = "11px Consolas, monospace";
+  line(r.ctx, slateTimeline.rulerEdge, 0, rulerBandHeight - .5, r.width, rulerBandHeight - .5);
+  r.ctx.font = "600 13px Inter, system-ui, sans-serif";
+  r.ctx.textBaseline = "top";
   drawTimingGrid(r.ctx, start, end, zoom, 0, rulerBandHeight, true);
-  const rulerSteps = [25, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 30000, 60000];
-  const labelStep = rulerSteps.find((step) => step * zoom >= 76) ?? 120000;
-  for (let time = Math.ceil(start / labelStep) * labelStep; !scene.editorBars?.length && time < end; time += labelStep) {
-    const x = xOf(time);
-    line(r.ctx, slateTimeline.barLine, x, 3, x, 21);
-    r.ctx.fillStyle = slateTimeline.rulerBar;
-    r.ctx.fillText(clock(time), x + 5, 14);
-  }
+  r.ctx.textBaseline = "alphabetic";
   const preview = rulerDrag?.path === scene.path ? rulerDrag.preview : null;
   const [left, right, cycling] = preview ?? [view.left, view.right, view.cycle];
   const spanStart = xOf(Math.min(left, right));
@@ -1511,20 +1859,7 @@ function paint() {
     r.ctx.fillRect(marker.x - 3, r.height - 9, 6, 6);
   }
   if (v) line(v.ctx, slateTimeline.playhead, xOf(view.position), 0, xOf(view.position), v.height);
-  o.ctx.fillStyle = slateTimeline.overview;
-  o.ctx.fillRect(0, 0, o.width, o.height);
-  waveform(o.ctx, o.width, o.height / 2, o.height / 2 - 2, 0, view.duration);
-  drawOverviewHits(o, scene, view.duration);
-  if (view.duration > 0) {
-    const overviewX = start * o.width / view.duration;
-    const overviewWidth = (g.width / zoom) * o.width / view.duration;
-    o.ctx.fillStyle = "#ffffff14";
-    o.ctx.fillRect(overviewX, 0, overviewWidth, o.height);
-    o.ctx.strokeStyle = "#858585";
-    o.ctx.strokeRect(overviewX, .5, overviewWidth, o.height - 1);
-    const playX = view.position * o.width / view.duration;
-    line(o.ctx, slateTimeline.playhead, playX, 0, playX, o.height);
-  }
+  drawOverview(o, start, g.width / zoom);
 }
 
 function pointer(event, phase, gesture = drag) {
@@ -1562,7 +1897,9 @@ function pointer(event, phase, gesture = drag) {
 function revealLayerPreview(row, time, pointerY) {
   const family = familyParents.get(row);
   const folder = typeof row === "string" && collapsedFolders.has(row);
-  if (!folder && !collapsedFamilies.has(family)) return false;
+  // On a folded main lane, Select and Erase open the layer whose outline was clicked; Draw (and the
+  // other tools) get the click, so Draw stacks a hit on the main lane. A folded folder always opens.
+  if (!folder && (!collapsedFamilies.has(family) || !["Select", "Erase"].includes(view.tool))) return false;
   const tolerance = 6.5 / scene.zoom;
   let nearest;
   let distance = tolerance;
@@ -1633,11 +1970,13 @@ for (const surface of [grid, controller]) {
   surface.addEventListener("pointermove", trackToolCursor);
   surface.addEventListener("pointerleave", () => {
     if (cursorSurface === surface) cursorSurface = null;
+    if (surface === grid) handOverHitCard(null);
   });
 }
 
 for (const surface of [grid, controller]) {
   surface.addEventListener("pointerdown", (event) => {
+    if (surface === grid) handOverHitCard(null);
     if (!scene || view.busy || drag || rulerDrag || event.button !== 0) return;
     const panning = surface === grid && view.tool === "Grab" && !event.altKey;
     if (surface === grid && !panning) {
@@ -1663,6 +2002,7 @@ for (const surface of [grid, controller]) {
     act(drag.firstPoint);
   });
   surface.addEventListener("pointermove", (event) => {
+    if (surface === grid) handOverHitCard(hitCardAt(event));
     if (event.pointerId !== drag?.id || performance.now() - drag.last < 32 || requests > 2) return;
     drag.last = performance.now();
     drag.lastPoint = pointer(event, "move");
@@ -1703,17 +2043,100 @@ grid.addEventListener("dblclick", (event) => {
     act(point);
   }
 });
-$("scroll").addEventListener("scroll", paintSoon);
+// The hit hover card (v3 f1, states.md): the lane and its set, the time, the volume and the object
+// under a hit. Handed to the bundle only when the hovered hit changes; it never repaints the timeline.
+let hoveredHit = null;
+let lastHover = null;
+
+function handOverHitCard(card) {
+  if ((card?.key ?? null) === hoveredHit) return;
+  hoveredHit = card?.key ?? null;
+  try { window.dawsuUi?.hitCard?.(card); } catch (error) { console.error(error); }
+}
+
+// What a moment's object is on the Song row: "circle 3", "slider 2" (its head), "slider 2 end" or
+// "slider 2 repeat", "spinner end"; "no object" for a hit without one.
+function hitObjectName(time, onObject) {
+  if (!onObject) return "no object";
+  const points = scene.gameplay?.points ?? [];
+  const point = points.find(([, at]) => at === time);
+  if (!point) return "spinner end";
+  const [kind, , object] = point;
+  const number = scene.combos?.objects?.[object]?.[0];
+  const name = kind + (number ? " " + number : "");
+  if (kind !== "slider") return name;
+  const nodes = points.filter(([nodeKind, , nodeObject]) => nodeKind === "slider" && nodeObject === object).map(([, at]) => at);
+  if (time === Math.min(...nodes)) return name;
+  return name + (time === Math.max(...nodes) ? " end" : " repeat");
+}
+
+// A new scene (a keyboard zoom, Delete, Undo) can move or remove the hovered hit.
+function refreshHitCard() {
+  if (hoveredHit && lastHover) handOverHitCard(hitCardAt(lastHover));
+}
+
+function hitCardAt(event) {
+  lastHover = { clientX: event.clientX, clientY: event.clientY };
+  // No card while a menu is open over the timeline.
+  if (!scene || drag || view.busy || $("editor-menu").hidden === false) return null;
+  const rect = grid.getBoundingClientRect();
+  const scrollTop = $("scroll").scrollTop;
+  const pointerY = event.clientY - rect.top;
+  const visibleRow = Math.floor((pointerY + scrollTop) / scene.rowHeight);
+  const row = laneRows[visibleRow];
+  if (typeof row !== "number") return null;
+  const ms = scene.viewStart + (event.clientX - rect.left) / scene.zoom;
+  let best = 6.5 / scene.zoom;
+  let found = null;
+  for (const moment of scene.moments) {
+    const distance = Math.abs(moment[0] - ms);
+    if (distance > best) continue;
+    const hit = moment[3].find(([lane]) => lane === row);
+    if (!hit) continue;
+    best = distance;
+    found = [moment, hit];
+  }
+  if (!found) return null;
+  const [[time, volume, onObject], [, , , hitVolume]] = found;
+  const lane = scene.lanes?.[row];
+  const name = renamedLanes.has(lane?.colourKey) ? laneDisplayName(lane) : laneSound(lane).name;
+  const set = sampleFolderNames[lane?.group];
+  const x = rect.left + (time - scene.viewStart) * scene.zoom;
+  const y = rect.top + (visibleRow + .5) * scene.rowHeight - scrollTop;
+  const title = set ? name + " · " + set : name;
+  const detail = "Volume " + Math.round(hitVolume ?? volume) + "% · " + (onObject ? "on " : "") + hitObjectName(time, onObject);
+  return {
+    // A hit that moves on screen (a zoom) or changes (an edit, Undo) is a new card, so the card follows it.
+    key: [visibleRow, time, Math.round(x), Math.round(y), title, detail].join(":"),
+    title,
+    time: clock(time),
+    detail,
+    x,
+    y,
+  };
+}
+
+$("scroll").addEventListener("scroll", () => {
+  handOverHitCard(null);
+  paintSoon();
+});
 new ResizeObserver(paintSoon).observe($("scroll"));
 
 const waveformGrip = $("waveform-resize");
 let waveformDrag = null;
 
+// The waveform switch shows on only while a waveform shows: switched on and the Song row not dragged to nothing.
+function refreshWaveformSwitch() {
+  $("ruler-waveform").setAttribute?.("aria-pressed", String(waveformShown && waveformHeight > 0));
+}
+
 function setWaveformHeight(requested) {
   waveformHeight = limit(Math.round(requested), 0, 200);
   if (waveformHeight) visibleWaveformHeight = waveformHeight;
-  $("ruler-waveform").setAttribute?.("aria-pressed", String(waveformHeight > 0));
   $("editor-arrange").style.setProperty("--wave-height", waveformHeight + "px");
+  refreshWaveformSwitch();
+  // Under 52 px the Song row has room for one line: its buttons stay, its name goes.
+  $("editor-arrange").dataset.songRow = waveformHeight >= 52 ? "tall" : "short";
   waveformGrip.setAttribute("aria-valuenow", String(waveformHeight));
   waveformGrip.setAttribute("aria-valuetext", waveformHeight ? waveformHeight + " pixels" : "Waveform hidden");
   paintSoon();
@@ -1823,15 +2246,14 @@ function waveformTarget(ms, y, height) {
   const dy = Math.abs(y - (height + rulerBandHeight) / 2);
   if (!scene.gameplay || dy > objectReach) return null;
   // Hit the circles and slider tracks at the sizes drawGameplay() draws them.
-  const beats = beatLengths(scene.sections);
-  const diameterAt = time => objectDiameter(beats, time, scene.zoom, height - rulerBandHeight);
-  const radiusOf = nodeRadii(scene.gameplay.points, diameterAt);
+  const diameter = Math.max(0, Math.min(objectSize, height - rulerBandHeight));
+  const radiusOf = nodeRadii(scene.gameplay.points, diameter);
   let target = null;
   let nearest = Infinity;
   for (const [kind, time, object] of scene.gameplay.points) {
     const distance = Math.hypot((time - ms) * scene.zoom, dy);
-    if (distance > objectReach || distance > radiusOf(kind, time, object)) continue;
-    if (distance < nearest) {
+    if (distance > objectReach || distance > radiusOf(kind, time, object).radius) continue;
+    if (distance <= nearest) {
       target = { object, time, node: true };
       nearest = distance;
     }
@@ -1841,7 +2263,7 @@ function waveformTarget(ms, y, height) {
   const spans = scene.gameplay.spans;
   for (let i = spans.length - 1; i >= 0; i--) {
     const [kind, start, end, object] = spans[i];
-    if (start <= ms && ms <= end && dy <= (kind === "slider" ? diameterAt(start) * .66 / 2 : 2.5)) {
+    if (start <= ms && ms <= end && dy <= (kind === "slider" ? diameter * .66 / 2 : 2.5)) {
       return { object, time: start, node: false };
     }
   }
@@ -1980,12 +2402,12 @@ ruler.addEventListener("pointerup", event => {
   if (!rulerDrag || rulerDrag.id !== event.pointerId) return;
   const gesture = endRulerDrag(event);
   const x = event.clientX - ruler.getBoundingClientRect().left;
+  // A click without a drag moves the playhead to the snapped time, on a flag or inside the range too.
   const moved = Math.abs(x - gesture.x) >= 3;
-  if (!moved && gesture.mode !== "move") return;
   const locator = gesture.mode === "left" || gesture.mode === "right";
-  act({ kind: "ruler_locators", path: gesture.path, gesture: moved ? gesture.mode : "toggle",
-    from: gesture.start + gesture.x / gesture.zoom,
-    to: locator ? locatorDragTo(gesture, x) : gesture.start + x / gesture.zoom }, false);
+  const from = gesture.start + gesture.x / gesture.zoom;
+  act({ kind: "ruler_locators", path: gesture.path, gesture: moved ? gesture.mode : "seek", from,
+    to: !moved ? from : locator ? locatorDragTo(gesture, x) : gesture.start + x / gesture.zoom }, false);
 });
 for (const type of ["pointercancel", "lostpointercapture"]) {
   ruler.addEventListener(type, event => {
@@ -2057,6 +2479,15 @@ function resizeLaneHeaders(height) {
 // The farthest zoom out, in px per ms, as the editor's MIN_ZOOM; the zoom slider's min is its log10.
 const minZoom = .0005;
 
+// A lane toolbar button at the editor's limit (zoom .0005 to 3 px per ms, lanes 20 to 65 px) shows disabled.
+function refreshLaneToolbar() {
+  const off = !scene || !!view.busy;
+  $("ruler-zoom-out").disabled = off || scene.zoom <= minZoom;
+  $("ruler-zoom-in").disabled = off || scene.zoom >= 3;
+  $("lane-shorter").disabled = off || scene.rowHeight <= 20;
+  $("lane-taller").disabled = off || scene.rowHeight >= 65;
+}
+
 function changeView(start, zoom, rowHeight = scene.rowHeight, rowAnchorY = 0) {
   zoom = limit(zoom, minZoom, 3);
   rowHeight = limit(rowHeight, 20, 65);
@@ -2078,6 +2509,8 @@ function changeView(start, zoom, rowHeight = scene.rowHeight, rowAnchorY = 0) {
     }
     setValue("zoom", Math.log10(zoom));
     setValue("lane-height", rowHeight);
+    refreshLaneToolbar();
+    handOverHitCard(null);
     paintSoon();
 
     try {
@@ -2506,6 +2939,10 @@ function mapsetSamples() {
   return samples;
 }
 
+// Folders first, then by name: each listing is sorted once, when it arrives or the lanes change.
+const byFolderThenName = ([left, a], [right, b]) =>
+  Number(a !== null) - Number(b !== null) || left.localeCompare(right);
+
 function requestLibraryFolder(folder) {
   if (!browserLibrary || browserLibraryFolders.has(folder)) return;
   const cache = browserLibraryFolders;
@@ -2513,7 +2950,11 @@ function requestLibraryFolder(folder) {
   cache.set(folder, null);
   run(async () => {
     try {
-      cache.set(folder, await invoke("list_library", { location }));
+      const children = await invoke("list_library", { location });
+      cache.set(folder, children.map(([name, directory]) => {
+        const path = folder ? folder + "/" + name : name;
+        return [path, directory ? null : path];
+      }).sort(byFolderThenName));
     } catch (error) {
       cache.set(folder, String(error));
     }
@@ -2527,13 +2968,41 @@ function requestLibraryFolder(folder) {
 function resetBrowserFolder() {
   browserFolder = "";
   browserSample = null;
+  browserPreview = null;
   browserExpanded.clear();
 }
+
+// The map folder samples (path to lane row) and their folder tree, built and sorted once per scene.
+function mapsetTree() {
+  if (browserTree?.scene === scene) return browserTree;
+  const folders = new Map([["", []]]);
+  const samples = mapsetSamples();
+  for (const [path, row] of samples) {
+    const parts = path.split("/");
+    let folder = "";
+    for (const part of parts.slice(0, -1)) {
+      const child = folder ? folder + "/" + part : part;
+      if (!folders.has(child)) {
+        folders.set(child, []);
+        folders.get(folder).push([child, null]);
+      }
+      folder = child;
+    }
+    folders.get(folder).push([path, row]);
+  }
+  for (const entries of folders.values()) entries.sort(byFolderThenName);
+  browserTree = { scene, folders, samples };
+  return browserTree;
+}
+
+// Rows past this many are left out; the search narrows the list.
+const browserRowLimit = 500;
 
 function renderSampleBrowser() {
   if (browserMap !== scene.path) {
     browserMap = scene.path;
     resetBrowserFolder();
+    browserLibraryFolders = new Map();
   }
   if (browserLibrary !== (view.hitsoundLibrary ?? null)) {
     browserLibrary = view.hitsoundLibrary ?? null;
@@ -2541,122 +3010,176 @@ function renderSampleBrowser() {
     if (browserSource === "library") resetBrowserFolder();
   }
   const library = browserSource === "library";
-  const filter = ($("sample-browser-filter").value ?? "").trim().toLowerCase();
+  const filter = browserFilter.trim().toLowerCase();
   const classic = !!view.classicBrowser;
+  const { folders: tree, samples: mapset } = library ? {} : mapsetTree();
+  if (!library && !tree.has(browserFolder)) browserFolder = "";
+  // A picked sample whose row is gone (its lane was removed, or the library file left its folder).
+  const listing = library && browserSample ? browserLibraryFolders.get(browserSample.split("/").slice(0, -1).join("/")) : null;
+  if (browserSample && (library ? Array.isArray(listing) && !listing.some(([path]) => path === browserSample)
+    : !mapset.has(browserSample))) {
+    browserSample = null;
+    browserPreview = null;
+  }
   const state = JSON.stringify([classic, browserSource, browserLibrary, browserFolder,
-    browserSample, filter, [...browserExpanded], view.busy, view.activeLane]);
+    browserSample, browserFilter, [...browserExpanded], view.busy, view.activeLane, browserPreview]);
   if (browserScene === scene && browserState === state) return;
   browserScene = scene;
   browserState = state;
-  const samples = library ? [] : mapsetSamples();
-  const tree = new Map([["", new Map()]]);
-  for (const [path, row] of samples) {
-    const parts = path.split("/");
-    let folder = "";
-    for (const part of parts.slice(0, -1)) {
-      const child = folder ? folder + "/" + part : part;
-      if (!tree.has(child)) tree.set(child, new Map());
-      tree.get(folder).set(child, null);
-      folder = child;
+  // While searching the map folder, a folder shows (open) only when a sample under it matches.
+  const matching = new Map();
+  const hasMatch = folder => {
+    if (!matching.has(folder)) {
+      matching.set(folder, tree.get(folder).some(([path, row]) =>
+        row === null ? hasMatch(path) : nameOf(path).toLowerCase().includes(filter)));
     }
-    tree.get(folder).set(path, row);
-  }
-  if (!library && !tree.has(browserFolder)) browserFolder = "";
-  const buttons = [];
+    return matching.get(folder);
+  };
+  const rows = [];
   const visibleSamples = new Set();
+  let full = false;
+  const note = (label, depth) => rows.push({ kind: "note", key: "note:" + rows.length, label, depth });
   const addRows = (folder, depth) => {
     let entries;
     if (library) {
       if (!browserLibrary) {
-        buttons.push(paragraph("Choose a hitsound library folder in Folders."));
+        note("Choose a hitsound library folder in Folders.", depth);
         return;
       }
       requestLibraryFolder(folder);
-      const children = browserLibraryFolders.get(folder);
-      if (!Array.isArray(children)) {
-        buttons.push(paragraph(children || "Loading samples…"));
+      entries = browserLibraryFolders.get(folder);
+      if (!Array.isArray(entries)) {
+        note(entries || "Loading samples…", depth);
         return;
       }
-      entries = children.map(([name, directory]) => {
-        const path = folder ? folder + "/" + name : name;
-        return [path, directory ? null : path];
-      });
     } else {
-      entries = [...tree.get(folder)];
+      entries = tree.get(folder);
     }
-    entries.sort(([left, a], [right, b]) =>
-      Number(a !== null) - Number(b !== null) || left.localeCompare(right));
     for (const [path, row] of entries) {
+      if (rows.length >= browserRowLimit) {
+        full = true;
+        return;
+      }
       const directory = row === null;
       const label = nameOf(path);
       if (!directory && !label.toLowerCase().includes(filter)) continue;
+      if (directory && filter && !library && !hasMatch(path)) continue;
       if (!directory) visibleSamples.add(path);
-      const open = browserExpanded.has(path);
-      const entry = makeButton(label, () => {
-        if (directory) {
-          if (classic) browserFolder = path;
-          else if (!browserExpanded.delete(path)) browserExpanded.add(path);
-        } else {
-          if (view.busy) return;
-          browserSample = path;
-          if (library) act({ kind: "preview_library_sample", location: { root: browserLibrary, path } }, false);
-          else act({ kind: "lane", row, operation: "preview_sample" }, false);
-        }
-        renderSampleBrowser();
-        $("sample-browser-entries").children[buttons.indexOf(entry)]?.focus?.();
-      });
-      entry.className = "sample-browser-entry";
-      entry.title = path;
-      entry.style.paddingInlineStart = (8 + 8 * Math.min(depth, 6)) + "px";
-      if (directory) entry.setAttribute("aria-expanded", String(classic ? false : open));
-      else {
-        entry.setAttribute("aria-pressed", String(browserSample === path));
-        entry.disabled = !!view.busy;
-      }
-      buttons.push(entry);
-      if (!classic && directory && open) addRows(path, depth + 1);
+      const open = !classic && (browserExpanded.has(path) || !!filter && !library);
+      rows.push(directory
+        ? { kind: "folder", key: path, label, title: path, depth, open, selected: false }
+        : { kind: "sample", key: path, label, title: path, depth, selected: browserSample === path });
+      if (directory && open) addRows(path, depth + 1);
     }
   };
   addRows(classic ? browserFolder : "", 0);
-  $("sample-browser-entries").replaceChildren(...(buttons.length ? buttons
-    : [paragraph(filter ? "No matching samples." : "No samples in this folder.")]));
-  $("sample-browser-source").value = browserSource;
-  $("sample-browser-up").hidden = !classic;
-  $("sample-browser-up").disabled = !browserFolder;
-  $("sample-browser-folder").hidden = !classic;
-  $("sample-browser-folder").textContent = browserFolder || (library ? "Library" : "Map folder");
-  $("sample-browser-folder").title = library ? [browserLibrary, browserFolder].filter(Boolean).join("/") : browserFolder;
-  $("sample-browser-assign").disabled = !sampleTarget() || !visibleSamples.has(browserSample);
-  $("sample-browser-pick").disabled = !sampleTarget();
+  if (full) note("Search to see more samples.", 0);
+  const unopened = rows.some(row => row.kind === "folder" && !row.open);
+  if (!rows.length || filter && !visibleSamples.size && !unopened) {
+    note(filter ? "No matching samples." : "No samples in this folder.", 0);
+  }
+  const preview = browserSample && browserPreview?.path === browserSample && browserPreview.source === browserSource
+    ? { name: nameOf(browserSample), title: browserSample, ms: browserPreview.ms, peaks: browserPreview.peaks } : null;
+  browserModel = {
+    source: browserSource,
+    classic,
+    filter: browserFilter,
+    busy: !!view.busy,
+    // The tree's top row: the map folder, or the library folder by its name (full path in the tooltip).
+    root: classic ? null : !library ? "Mapset samples" : browserLibrary ? nameOf(browserLibrary.replace(/[\\/]+$/, "")) : null,
+    rootTitle: library ? browserLibrary : null,
+    // osu! skin and Sample folders: shown greyed out in the tree, nothing lists them yet.
+    defaults: !library && !classic,
+    folder: classic ? {
+      label: browserFolder ? nameOf(browserFolder) : library ? "Library" : "Mapset samples",
+      title: library ? [browserLibrary, browserFolder].filter(Boolean).join("/") : browserFolder,
+      canUp: !!browserFolder,
+    } : null,
+    rows,
+    preview,
+    canAssign: !!sampleTarget() && visibleSamples.has(browserSample),
+    canPick: !!sampleTarget(),
+  };
+  try { window.dawsuUi?.browser(browserModel); } catch (error) { console.error(error); }
 }
 
-$("sample-browser-source").addEventListener("change", () => {
-  if (!scene) return;
-  browserSource = $("sample-browser-source").value;
-  resetBrowserFolder();
-  if (browserSource === "library") browserLibraryFolders = new Map();
-  renderSampleBrowser();
-});
-$("sample-browser-filter").addEventListener("input", () => { if (scene) renderSampleBrowser(); });
-$("sample-browser-up").addEventListener("click", () => {
-  browserFolder = browserFolder.split("/").slice(0, -1).join("/");
-  renderSampleBrowser();
-});
-$("sample-browser-close").addEventListener("click", () => act({ kind: "panel", panel: "browser", on: false }));
-$("sample-browser-assign").addEventListener("click", () => {
-  const target = sampleTarget();
-  if (!target || !browserSample || $("sample-browser-assign").disabled) return;
-  if (browserSource === "library") {
-    const location = { root: browserLibrary, path: browserSample };
-    act({ kind: "replace_library_sample", target, location });
-  } else {
-    act({ kind: "replace_sample", target, path: browserSample, mapset: true });
+// The Browser parts read the model at load, before the first renderSampleBrowser() hand-over.
+function currentBrowser() {
+  return browserModel;
+}
+
+// What a sample row plays: a map folder sample through the lane that uses it, or a library file.
+function samplePreviewAction(path) {
+  return browserSource === "library"
+    ? { kind: "preview_library_sample", location: { root: browserLibrary, path } }
+    : { kind: "lane", row: mapsetSamples().get(path), operation: "preview_sample" };
+}
+
+// Asks the backend for a sample's length and outline (source and lane taken at pick time); an answer
+// for an older pick is dropped. Each pick and Play asks again, so a file changed on disk shows anew.
+async function requestSamplePreview(path, source, action) {
+  let answer = null;
+  try {
+    answer = await invoke("sample_preview", { source: source === "library"
+      ? { kind: "library", location: action.location } : { kind: "lane", row: action.row } });
+  } catch {
+    // Without an answer the preview shows the file name only.
   }
-});
-$("sample-browser-pick").addEventListener("click", () => {
-  const target = sampleTarget();
-  if (target) pickSample(target);
-});
+  if (!answer || browserPreview?.path !== path || browserPreview.source !== source) return;
+  browserPreview = { path, source, ms: answer.ms, peaks: answer.peaks };
+  if (scene) renderSampleBrowser();
+}
+
+// What the Browser parts do: switch tab, search, fold or open a folder, pick, play, Up, Use, Browse.
+function sampleBrowserAction(kind, value) {
+  if (!scene) return;
+  let focusFirst = false;
+  if (kind === "source") {
+    if (value === browserSource) return;
+    browserSource = value === "library" ? "library" : "mapset";
+    resetBrowserFolder();
+    if (browserSource === "library") browserLibraryFolders = new Map();
+  } else if (kind === "filter") {
+    browserFilter = String(value ?? "");
+  } else if (kind === "toggle") {
+    if (view.classicBrowser) {
+      browserFolder = value;
+      focusFirst = true;
+    } else if (!browserExpanded.delete(value)) browserExpanded.add(value);
+  } else if (kind === "up") {
+    browserFolder = browserFolder.split("/").slice(0, -1).join("/");
+    focusFirst = true;
+  } else if (kind === "pick" || kind === "play") {
+    const path = kind === "pick" ? value : browserSample;
+    if (view.busy || !path) return;
+    const source = browserSource;
+    const action = samplePreviewAction(path);
+    act(action, false);
+    if (path !== browserSample || browserPreview?.path !== path || browserPreview.source !== source) {
+      browserSample = path;
+      browserPreview = { path, source, ms: null, peaks: null };
+    }
+    run(() => requestSamplePreview(path, source, action));
+  } else if (kind === "assign") {
+    const target = sampleTarget();
+    if (!target || !browserSample || !browserModel?.canAssign) return;
+    if (browserSource === "library") {
+      act({ kind: "replace_library_sample", target, location: { root: browserLibrary, path: browserSample } });
+    } else {
+      act({ kind: "replace_sample", target, path: browserSample, mapset: true });
+    }
+    return;
+  } else if (kind === "browse") {
+    const target = sampleTarget();
+    if (target) pickSample(target);
+    return;
+  }
+  renderSampleBrowser();
+  // Classic replaces the rows on entering a folder, so focus moves to the first new row.
+  if (focusFirst) $("sample-browser-entries").querySelector?.("button")?.focus?.();
+}
+
+$("sample-browser-close").addEventListener("click", () => togglePanel("browser"));
 
 function openReplaceSample() {
   const target = sampleTarget();
@@ -2695,14 +3218,20 @@ function openReplaceSample() {
     ]);
 }
 
-const open = () => run(async () => show(await invoke("pick_map")));
-$("open").addEventListener("click", open);
-$("home-open").addEventListener("click", open);
-$("go-home").addEventListener("click", () => { if (!drag && !view.busy) act({ kind: "home" }); });
+// File › Open map… and Ctrl+O's fallback; the start screen's Open map… button.
+function openMap() {
+  return run(async () => show(await invoke("pick_map")));
+}
+// File › Start screen.
+function goHome() {
+  if (!drag && !view.busy) act({ kind: "home" });
+}
+$("home-open").addEventListener("click", openMap);
 $("home-resume").addEventListener("click", () => { if (!view.busy) act({ kind: "resume" }); });
 $("home-import").addEventListener("click", () => run(async () => show(await invoke("pick_map", { archiveOnly: true }))));
-$("home-folders").addEventListener("click", () => $("folders").click());
-$("folders").addEventListener("click", () => {
+$("home-folders").addEventListener("click", () => openFolders());
+// File › Folders… and the start screen's Folders… button.
+function openFolders() {
   if (view.busy) return;
   const openFolder = (folder) => {
     closeModal();
@@ -2736,16 +3265,13 @@ $("folders").addEventListener("click", () => {
   if (view.hitsoundLibrary) actions.push(["Open hitsound library", () => openFolder("library")]);
   actions.push(["Choose hitsound library…", chooseLibrary]);
   modal("folders", "Folders", [], actions);
-});
+}
 $("ramp-shape").addEventListener("change", () => {
   act({ kind: "ramp_shape", value: $("ramp-shape").value }, false);
 });
 
 for (const button of document.querySelectorAll("[data-action]")) {
   button.addEventListener("click", () => act({ kind: button.dataset.action }));
-}
-for (const button of document.querySelectorAll("[data-command]")) {
-  button.addEventListener("click", () => command(button.dataset.command));
 }
 for (const id of ["snap", "snap-mode", "beats", "divisor"]) {
   $(id).addEventListener("change", () => {
@@ -2875,18 +3401,16 @@ function fitTimeline() {
 }
 $("fit").addEventListener("click", fitTimeline);
 $("ruler-fit").addEventListener("click", fitTimeline);
-$("toggle-lane-names").addEventListener("click", () => {
-  if (scene && !view.busy) act({ kind: "panel", panel: "lane_names", on: view.panels?.laneNames === false });
-});
 $("ruler-waveform").addEventListener("click", () => {
   if (scene && !view.busy && !waveformDrag) {
-    setWaveformHeight(waveformHeight ? 0 : visibleWaveformHeight);
+    // v3 §4 (Yoge): the switch hides only the waveform; the Song row, circles and digits stay.
+    waveformShown = !waveformShown;
+    refreshWaveformSwitch();
+    paintSoon();
   }
 });
-$("ruler-follow").addEventListener("click", () => {
-  if (scene && !view.busy) act({ kind: "follow", on: !view.follow }, false);
-});
-for (const [id, action] of [["ruler-zoom-out", "zoomOut"], ["ruler-zoom-in", "zoomIn"]]) {
+// The lane toolbar (v3 §4): zoom, and Shorter and Taller lanes as View › Shorter lanes and Taller lanes.
+for (const [id, action] of [["ruler-zoom-out", "zoomOut"], ["ruler-zoom-in", "zoomIn"], ["lane-shorter", "rowsOut"], ["lane-taller", "rowsIn"]]) {
   $(id).addEventListener("click", () => {
     if (scene && !view.busy) command(action);
   });
@@ -3282,20 +3806,31 @@ $("audio").addEventListener("click", () => run(async () => {
 $("song-mute").addEventListener("click", () => act({ kind: "song_muted", on: !view.songMuted }, false));
 $("song-solo").addEventListener("click", () => act({ kind: "song_solo", on: !view.songSolo }, false));
 
-for (const panel of ["browser", "inspector"]) {
-  $("view-" + panel).addEventListener("click", () => {
-    if (!scene || !view.panels || view.busy) return;
-    act({ kind: "panel", panel, on: !view.panels[panel] });
-  });
+const panelSwitches = { browser: "view-browser", inspector: "view-inspector", controller: "view-controller" };
+for (const [panel, id] of Object.entries(panelSwitches)) $(id).addEventListener("click", () => togglePanel(panel));
+$("browser-fold").addEventListener("click", () => togglePanel("browser"));
+$("browser-unfold").addEventListener("click", () => togglePanel("browser"));
+$("inspector-fold").addEventListener("click", () => togglePanel("inspector"));
+$("inspector-unfold").addEventListener("click", () => togglePanel("inspector"));
+// A folded panel's rail icons open it at their section.
+const railSections = {
+  "rail-browser-browse": ["browser", "browse"], "rail-browser-search": ["browser", "search"],
+  "rail-browser-library": ["browser", "library"], "rail-inspector-selection": ["inspector", "Selection"],
+  "rail-inspector-lane": ["inspector", "Lane"], "rail-inspector-difficulty": ["inspector", "Difficulty"],
+  "rail-inspector-bookmarks": ["inspector", "Bookmarks"],
+};
+for (const [id, [panel, section]] of Object.entries(railSections)) {
+  $(id).addEventListener("click", () => openPanelAt(panel, section));
 }
 
-$("panel-view").addEventListener("click", () => {
+// View › View settings….
+function openViewSettings() {
   if (!scene || !view.panels || view.busy) return;
   const options = [
-    ["Inspector", "inspector", view.panels.inspector],
-    ["Volume controller", "controller", view.panels.controller],
+    ["Inspector", "inspector", panelOn("inspector")],
+    ["Volume and Mixer", "controller", view.panels.controller],
     ["Lane names", "lane_names", view.panels.laneNames],
-    ["File browser", "browser", view.panels.browser],
+    ["Browser", "browser", panelOn("browser")],
   ];
   const info = document.createElement("input");
   info.type = "checkbox";
@@ -3312,7 +3847,8 @@ $("panel-view").addEventListener("click", () => {
     checkbox.checked = on;
     checkbox.addEventListener("change", () => {
       if (panel === "lane_names") info.disabled = !checkbox.checked;
-      act({ kind: "panel", panel, on: checkbox.checked });
+      if (panel === "lane_names") act({ kind: "panel", panel, on: checkbox.checked });
+      else if (checkbox.checked !== panelOn(panel)) togglePanel(panel);
     });
     return labeled(label, checkbox);
   });
@@ -3325,9 +3861,9 @@ $("panel-view").addEventListener("click", () => {
   }
   style.value = view.classicBrowser ? "classic" : "tree";
   style.addEventListener("change", () => act({ kind: "browser_style", classic: style.value === "classic" }));
-  controls.push(labeled("File browser style", style), labeled("Lane info (sample indexes)", info));
+  controls.push(labeled("Browser style", style), labeled("Lane info (sample indexes)", info));
   modal("editor-view", "View", controls, [["Done", closeModal, true]]);
-});
+}
 
 async function showHelp() {
   const groups = await invoke("editor_help");
@@ -3362,7 +3898,6 @@ async function showHelp() {
   search.focus();
 }
 
-$("help").addEventListener("click", () => run(showHelp));
 
 // A key's name as the editor's key list writes it ("Ctrl+Shift+1", "Numpad *"), following
 // keyboard::chord and Key::name in Rust, or null for a key that can't be a shortcut.

@@ -100,13 +100,6 @@
     width: 15px;
     height: 15px;
   }
-  /* style.css hides the toolbar's text labels from here, as it did Follow's and Return's. */
-  @media (max-width: 1779px) {
-    .label {
-      font-size: 0;
-      gap: 0;
-    }
-  }
   /* From 1399 px down the toolbar is tight: the group keeps only its three toggles. */
   @media (max-width: 1399px) {
     .playhead {

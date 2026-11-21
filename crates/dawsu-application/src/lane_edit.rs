@@ -82,10 +82,54 @@ impl Application {
         if doc.composer.history.version() != expected_revision {
             return Err("The hits changed before deletion. Review the lane again".into());
         }
+        let hits = doc.composer.hitsounds();
+        let name = lane_label(doc, hits.lane_slot(lane).unwrap_or(lane));
+        let count = hits.moments().iter().filter(|moment| moment.has_hit(lane)).count();
+        let links = super::sound_sets::live_placements(hits);
         let doc = self.document.as_mut().expect("open map was just validated");
         doc.composer.delete_lane(lane)?;
+        let broken = links - super::sound_sets::live_placements(doc.composer.hitsounds());
         self.restore_active_lane(slot);
+        let mut status = match count {
+            0 => format!("Removed {name}."),
+            1 => format!("Removed {name} and 1 hit."),
+            _ => format!("Removed {name} and {count} hits."),
+        };
+        // A sound set placement whose added hits were all on removed lanes links nothing any more.
+        match broken {
+            0 => {}
+            1 => status.push_str(" 1 sound set link no longer applies."),
+            _ => status.push_str(&format!(" {broken} sound set links no longer apply.")),
+        }
+        if count > 0 || broken > 0 {
+            status.push_str(" Undo restores them.");
+        }
+        self.status = status;
         Ok(())
+    }
+}
+
+/// A lane's name as its header shows it: the mapper's own name, else the sound and its number
+/// ("Finish 3"), else a map file's name. app.js's `laneSound` names lanes the same way.
+fn lane_label(document: &Document, lane: &SampleIdentity) -> String {
+    use dawsu_foundation::{Hitsound, SliderSound, Sound};
+    if let Some(name) = document.lane_layout().and_then(|layout| layout.lane_names.get(&super::project::lane_key(lane))) {
+        return name.clone();
+    }
+    match lane {
+        SampleIdentity::File(name) => name.clone(),
+        SampleIdentity::Standard { sound, index, .. } => {
+            let sound = match sound {
+                Sound::Hit(Hitsound::Normal) => "Normal",
+                Sound::Hit(Hitsound::Whistle) => "Whistle",
+                Sound::Hit(Hitsound::Finish) => "Finish",
+                Sound::Hit(Hitsound::Clap) => "Clap",
+                Sound::Slider(SliderSound::Slide) => "Slide",
+                Sound::Slider(SliderSound::Whistle) => "Slide whistle",
+                Sound::Slider(SliderSound::Tick) => "Tick",
+            };
+            if index.get() > 1 { format!("{sound} {}", index.get()) } else { sound.to_owned() }
+        }
     }
 }
 

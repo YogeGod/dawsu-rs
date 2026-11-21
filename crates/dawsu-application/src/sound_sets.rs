@@ -1454,6 +1454,17 @@ fn location(place: dawsu_hitsounding::Place) -> Option<(dawsu_osu_format::LineId
     }
 }
 
+/// A placement whose added hits were all deleted (or whose lanes were removed) links nothing any more.
+fn placement_is_live(drawn: &dawsu_hitsounding::Hitsounds, p: &dawsu_hitsounding::sound_sets::SoundSetPlacement) -> bool {
+    let added: Vec<_> = p.applied.iter().filter(|a| a.added).collect();
+    added.is_empty() || added.iter().any(|a| drawn.moment(p.moment).has_hit(&a.lane))
+}
+
+/// How many of `drawn`'s placements still link something.
+pub(crate) fn live_placements(drawn: &dawsu_hitsounding::Hitsounds) -> usize {
+    drawn.placements().iter().filter(|p| placement_is_live(drawn, p)).count()
+}
+
 /// The record of `drawn`'s placements for `out`, the file this Save writes from `base`. In HS mode
 /// a moment with no object is bound to the circle its group became (`circles`, by group time).
 pub(crate) fn build_links(
@@ -1462,12 +1473,7 @@ pub(crate) fn build_links(
     accepted: &std::collections::BTreeMap<String, String>,
 ) -> LinkRecord {
     let ordinals: std::collections::HashMap<_, _> = out.hit_objects().iter().enumerate().map(|(i, o)| (o.line(), i)).collect();
-    // A placement whose added hits were all deleted links nothing any more.
-    let live = |p: &&dawsu_hitsounding::sound_sets::SoundSetPlacement| {
-        let added: Vec<_> = p.applied.iter().filter(|a| a.added).collect();
-        added.is_empty() || added.iter().any(|a| drawn.moment(p.moment).has_hit(&a.lane))
-    };
-    let placements = drawn.placements().iter().filter(live).map(|p| {
+    let placements = drawn.placements().iter().filter(|p| placement_is_live(drawn, p)).map(|p| {
         let moment = drawn.moment(p.moment);
         let bound = location(moment.place())
             .or_else(|| if hs { circles.get(&dawsu_hitsounding::hs::hs_group_time(base, moment.time())).map(|line| (*line, None)) } else { None })
@@ -2089,6 +2095,33 @@ pub(crate) mod tests {
         let reopened = reopen(&f);
         assert_eq!(links(&reopened), [(0, SET_ID.to_string())]);
         assert!(reopened.warnings.is_empty(), "{:?}", reopened.warnings);
+    }
+
+    #[test]
+    fn removing_every_lane_a_placement_added_says_its_link_no_longer_applies_and_undo_restores_it() {
+        let f = fixture("links-removed-lanes");
+        let mut app = app(&f);
+        let map = open(&mut app, &f.map);
+        app.seek(1000.0);
+        app.place_sound_set_file(&map, &f.set).unwrap();
+        let added: Vec<_> = app.document().unwrap().composer.hitsounds().placements()[0].applied.iter()
+            .filter(|a| a.added).map(|a| a.lane.clone()).collect();
+        assert_eq!(added.len(), 2);
+        let remove = |app: &mut Application, lane: &SampleIdentity| {
+            let revision = app.document().unwrap().composer.history.version();
+            app.delete_lane(&map, lane, revision).unwrap();
+        };
+        let live = |app: &Application| live_placements(app.document().unwrap().composer.hitsounds());
+        // One of its lanes left: the link still applies.
+        remove(&mut app, &added[0]);
+        assert_eq!(app.status, "Removed Normal 2 and 1 hit. Undo restores them.");
+        assert_eq!(live(&app), 1);
+        remove(&mut app, &added[1]);
+        assert_eq!(app.status, "Removed Clap 2 and 1 hit. 1 sound set link no longer applies. Undo restores them.");
+        assert_eq!(live(&app), 0);
+        app.command("undo");
+        assert_eq!(live(&app), 1);
+        assert_eq!(links(&app), [(0, SET_ID.to_string())]);
     }
 
     // ------------------------------------------------------------ D6b: additions only

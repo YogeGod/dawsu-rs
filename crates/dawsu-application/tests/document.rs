@@ -573,3 +573,19 @@ fn without_a_project_a_slider_sound_on_a_hit_stops_save() {
     assert_eq!(std::fs::read(&path).unwrap(), before);
     assert_eq!(file_names(&root), ["normal-hitnormal2.wav", "soft-sliderslide3.wav", "test.osu"]);
 }
+
+#[test]
+fn the_map_chip_reads_the_title_and_version_from_the_osu_metadata() {
+    let scratch = Scratch::new("application-metadata");
+    let path = scratch.path("Artist - Song (Me) [Other name].osu");
+    std::fs::write(&path, MAP).unwrap();
+    let d = Document::read(&path).unwrap();
+    assert_eq!(d.map_title(), "Test");
+    assert_eq!(d.version(), "Hard");
+
+    let bare = scratch.path("bare.osu");
+    std::fs::write(&bare, b"osu file format v14\r\n[General]\r\nMode:0\r\n[TimingPoints]\r\n0,500,4,1,0,100,1,0\r\n[HitObjects]\r\n").unwrap();
+    let d = Document::read(&bare).unwrap();
+    assert_eq!(d.map_title(), "");
+    assert_eq!(d.version(), "");
+}

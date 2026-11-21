@@ -25,6 +25,7 @@
     "allow-pick-songs-folder",
     "allow-pick-hitsound-library",
     "allow-list-library",
+    "allow-sample-preview",
     "allow-lane-add-candidates",
     "allow-pick-drum-map",
     "allow-set-drum-view",

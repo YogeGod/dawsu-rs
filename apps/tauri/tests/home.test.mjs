@@ -57,8 +57,9 @@ test("Home asks before leaving an edited difficulty and preserves recent and res
     click(button);
   };
 
-  assert.equal(typeof get("go-home").listeners.get("click"), "function");
-  click(get("go-home"));
+  // File › Start screen runs goHome().
+  const goHome = () => runInContext("goHome()", context);
+  goHome();
   await runInContext("pending", context);
   assert.deepEqual(calls.at(-1), {kind: "home"});
   assert.equal(get("home").hidden, true);
@@ -69,7 +70,7 @@ test("Home asks before leaving an edited difficulty and preserves recent and res
   assert.deepEqual(calls.at(-1), {kind: "home_choice", choice: "cancel"});
   assert.equal(get("workspace").hidden, false);
 
-  click(get("go-home"));
+  goHome();
   await runInContext("pending", context);
   reply("Discard");
   await runInContext("pending", context);
@@ -81,7 +82,7 @@ test("Home asks before leaving an edited difficulty and preserves recent and res
   assert.deepEqual(calls.at(-1), {kind: "resume"});
   assert.equal(get("workspace").hidden, false);
 
-  click(get("go-home"));
+  goHome();
   await runInContext("pending", context);
   reply("Discard");
   await runInContext("pending", context);

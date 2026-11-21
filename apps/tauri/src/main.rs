@@ -211,7 +211,7 @@ enum RulerGesture {
     Right,
     Draw,
     Move,
-    Toggle,
+    Seek,
 }
 
 impl RulerGesture {
@@ -246,11 +246,10 @@ impl RulerGesture {
                 left += shift;
                 right += shift;
             }
-            Self::Toggle => {
-                if left == right || to < left.min(right) || to > left.max(right) {
-                    return;
-                }
-                enabled = !enabled;
+            // A click without a drag moves the playhead to the snapped time and leaves L, R and Cycle.
+            Self::Seek => {
+                app.seek(snap(to));
+                return;
             }
         }
         (app.locator_left, app.locator_right, app.cycle) = (left, right, enabled);
@@ -1001,6 +1000,43 @@ fn lane_header_rows<'a>(
     (lane_order, backing_slots)
 }
 
+/// Puts each numbered layer directly under its family's main lane, by number. A family is one set
+/// and sound; its main lane is the shown lane at custom index 1, else the skin sample (index 0).
+/// Without either, its layers stay ordinary lanes where they are. This order is for display only:
+/// the scene's `laneOrder` and the saved lane order never take it. app.js's `familyOrder` applies it
+/// after the saved order, as `header_numbers` does here.
+fn family_order<'a>(rows: Vec<usize>, lane: impl Fn(usize) -> &'a SampleIdentity) -> Vec<usize> {
+    let family = |row: usize| match lane(row) {
+        SampleIdentity::Standard { set, sound, index } => Some(((*set, *sound), index.get())),
+        SampleIdentity::File(_) => None,
+    };
+    let mut mains = std::collections::HashMap::new();
+    for &row in &rows {
+        if let Some((key, index @ (0 | 1))) = family(row) && (index == 1 || !mains.contains_key(&key)) {
+            mains.insert(key, row);
+        }
+    }
+    let mut layers: std::collections::HashMap<usize, Vec<(u32, usize)>> = std::collections::HashMap::new();
+    for &row in &rows {
+        if let Some((key, index)) = family(row) && let Some(&main) = mains.get(&key) && main != row {
+            layers.entry(main).or_default().push((index, row));
+        }
+    }
+    let children: std::collections::HashSet<usize> = layers.values().flatten().map(|&(_, row)| row).collect();
+    let mut ordered = Vec::with_capacity(rows.len());
+    for row in rows {
+        if children.contains(&row) {
+            continue;
+        }
+        ordered.push(row);
+        if let Some(mut family) = layers.remove(&row) {
+            family.sort_unstable();
+            ordered.extend(family.into_iter().map(|(_, row)| row));
+        }
+    }
+    ordered
+}
+
 /// A lane's key in the scene: the text the front end holds for a lane and sends back to name it.
 fn scene_lane_key(lane: &SampleIdentity) -> String {
     format!("{lane:?}")
@@ -1091,6 +1127,59 @@ fn gameplay_overlay(document: &dawsu_application::Document) -> Value {
         }
     }
     json!({ "points": points, "spans": spans })
+}
+
+/// Each object's combo number and colour, as osu!lazer works them out at 131fe72:
+/// `ConvertHitObjectParser.cs:458-525` (an offset counts only with the new-combo bit and never on a
+/// spinner), then `OsuHitObject.cs:193-196` on the objects sorted by time (a spinner never starts a
+/// combo, even flagged or first; the first object and one after a spinner do), and the colour from the map's
+/// `[Colours]` by the index with offsets (`LegacyBeatmapSkin.cs:90`), or else the default skin's four
+/// by the plain index (`SkinConfiguration.cs:46-52`). `objects` is `[number, colour]` per object in
+/// file order, the order of the gameplay overlay's object indices.
+fn combo_overlay(document: &dawsu_application::Document) -> Value {
+    let objects = document.file.hit_objects();
+    let map_colours: Vec<String> = document.file.section_values("Colours").into_iter()
+        .filter(|(key, _)| key.strip_prefix("Combo").and_then(|n| n.parse::<u8>().ok()).is_some_and(|n| (1..=8).contains(&n)))
+        .filter_map(|(_, value)| {
+            let parts: Vec<_> = value.split(',').map(str::trim).collect();
+            if !(3..=4).contains(&parts.len()) {
+                return None;
+            }
+            // Combo colours take no alpha; only the first three parts count.
+            let rgb: Vec<u8> = parts[..3].iter().map(|part| part.parse::<u8>()).collect::<Result<_, _>>().ok()?;
+            Some(format!("#{:02x}{:02x}{:02x}", rgb[0], rgb[1], rgb[2]))
+        })
+        .collect();
+    let spinner = |index: usize| objects[index].spinner_end().is_some();
+    // The parser's pass, in file order: the new-combo bit, and the offset that counts only with it.
+    let mut starts = Vec::with_capacity(objects.len());
+    for (index, object) in objects.iter().enumerate() {
+        let bit = object.type_bits() & 4 != 0;
+        let offset = if bit && !spinner(index) { (object.type_bits() >> 4) & 7 } else { 0 };
+        starts.push((bit, offset));
+    }
+    let mut order: Vec<usize> = (0..objects.len()).collect();
+    order.sort_by(|&a, &b| objects[a].time().total_cmp(&objects[b].time()));
+    let mut combos = vec![(0u32, 0usize); objects.len()];
+    let (mut combo, mut with_offsets, mut number) = (0usize, 0usize, 0u32);
+    let mut last: Option<usize> = None;
+    for &index in &order {
+        let (new_combo, offset) = starts[index];
+        if !spinner(index) && (new_combo || last.is_none_or(spinner)) {
+            number = 0;
+            combo += 1;
+            with_offsets += offset as usize + 1;
+        }
+        number += 1;
+        combos[index] = (number, if map_colours.is_empty() { combo % 4 } else { with_offsets % map_colours.len() });
+        last = Some(index);
+    }
+    let colours = if map_colours.is_empty() {
+        ["#ffc000", "#00ca00", "#127cff", "#f21839"].map(String::from).to_vec()
+    } else {
+        map_colours
+    };
+    json!({ "colours": colours, "objects": combos })
 }
 
 fn snapshot(app: &Application, include_scene: bool) -> Value {
@@ -1201,9 +1290,12 @@ fn snapshot(app: &Application, include_scene: bool) -> Value {
                 });
             }
             json!({
-                "title": d.title, "path": d.path, "difficulties": d.difficulties,
+                "title": d.title, "mapTitle": d.map_title(), "version": d.version(),
+                "path": d.path, "difficulties": d.difficulties,
                 "lanes": lanes, "laneOrder": lane_order, "moments": moments, "sections": sections, "waveform": waveform,
-                "gameplay": gameplay_overlay(d),
+                "gameplay": gameplay_overlay(d), "combos": combo_overlay(d),
+                // Inspector › Difficulty's orphaned marks: the times of hits with no object (none in HS mode).
+                "orphanedHits": dawsu_application::orphaned_hit_times(model, d.hs_mode),
                 "laneRevision": c.history.version(),
                 "selection": selection, "history": c.history.steps(), "historyPosition": c.history.position(),
                 "snap": c.snap_enabled, "snapMode": match c.snap_mode { SnapMode::Grid => "grid", SnapMode::GridRelative => "relative", SnapMode::Objects => "objects" },
@@ -1270,6 +1362,7 @@ fn snapshot(app: &Application, include_scene: bool) -> Value {
         })).collect::<Vec<_>>(),
         "recent": app.preferences.recent, "firstLaunch": app.first_launch,
     });
+    result["outputDevice"] = json!(app.device_name());
     result["saveReview"] = json!(app.save_review_files());
     result["soundSetPrompts"] = json!(document.map(|_| app.sound_set_prompts()).unwrap_or_default().iter().map(|p| json!({
         "setId": p.set_id, "name": p.name, "placements": p.placements, "editedKeepFiles": p.edited_keep_files,
@@ -1314,6 +1407,7 @@ enum Request {
     LibraryDirectory(mpsc::Sender<Option<PathBuf>>),
     SetLibraryDirectory(PathBuf, mpsc::Sender<Result<Value, String>>),
     LibraryEntries(library::Location, mpsc::Sender<Result<Vec<(String, bool)>, String>>),
+    SamplePreview(PreviewSource, mpsc::Sender<Result<Value, String>>),
     SoundSetLibrary(mpsc::Sender<Result<Value, String>>),
     SoundSetPlacement(PathBuf, u64, mpsc::Sender<Result<Value, String>>),
     SaveSoundSet(PathBuf, String, mpsc::Sender<Result<Value, String>>),
@@ -1659,6 +1753,11 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                         location.entries(app.preferences.hitsound_library.as_deref())
                     })
                     .and_then(|result| result);
+                    let _ = response.send(result);
+                }
+                Ok(Request::SamplePreview(source, response)) => {
+                    let result = guard(&mut app, &mut fault, |app| sample_outline(app, source))
+                        .and_then(|result| result);
                     let _ = response.send(result);
                 }
                 Ok(Request::SoundSetLibrary(response)) => {
@@ -2192,6 +2291,38 @@ fn list_library(location: library::Location, state: State<'_, Editor>) -> Result
     ask(&state, |tx| Request::LibraryEntries(location, tx))?
 }
 
+/// Bars in the Browser's sample preview outline.
+const PREVIEW_BARS: usize = 40;
+
+/// The sample a Browser row stands for: a map folder sample by the lane that plays it, or a
+/// library file.
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum PreviewSource {
+    Lane { row: usize },
+    Library { location: library::Location },
+}
+
+/// The Browser's sample preview: the sample's length in ms and its outline.
+fn sample_outline(app: &mut Application, source: PreviewSource) -> Result<Value, String> {
+    let (ms, peaks) = match source {
+        PreviewSource::Lane { row } => {
+            let lane = app.document().and_then(|d| d.composer.lanes.get(row)).ok_or("No such lane.")?;
+            app.lane_sample_outline(lane, PREVIEW_BARS).ok_or("The sample isn't loaded.")?
+        }
+        PreviewSource::Library { location } => {
+            let sample = location.sample(app.preferences.hitsound_library.as_deref())?;
+            app.sample_file_outline(&sample, PREVIEW_BARS)?
+        }
+    };
+    Ok(json!({ "ms": ms, "peaks": peaks }))
+}
+
+#[tauri::command]
+fn sample_preview(source: PreviewSource, state: State<'_, Editor>) -> Result<Value, String> {
+    ask(&state, |tx| Request::SamplePreview(source, tx))?
+}
+
 #[tauri::command]
 fn lane_add_candidates(map: PathBuf, state: State<'_, Editor>) -> Result<Value, String> {
     ask(&state, |tx| Request::LaneAddCandidates(map, tx))?
@@ -2321,6 +2452,7 @@ fn main() {
             pick_songs_folder,
             pick_hitsound_library,
             list_library,
+            sample_preview,
             lane_add_candidates,
             pick_drum_map,
             set_drum_view,

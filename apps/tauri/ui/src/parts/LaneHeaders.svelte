@@ -6,6 +6,7 @@
   import { folderChip, laneIcons } from "../lib/lanes.js";
   import Folder from "../icons/Folder.svg?raw";
   import FolderOpen from "../icons/FolderOpen.svg?raw";
+  import Plus from "../icons/Plus.svg?raw";
 
   // app.js keeps the lane state and builds these rows in renderLanes(); this part only draws them
   // and hands each click back through laneHeaderAction().
@@ -46,13 +47,15 @@
     {@const shade = laneShades(row.colour)}
     <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
     <div class="lane" class:active={row.active} class:lane-selected={row.selected} class:quiet={row.quiet}
-      class:lane-layer={row.layer} class:compact={!names} data-lane-row={row.row}
+      class:lane-layer={row.layer} class:family-head={!!row.family} class:compact={!names} data-lane-row={row.row}
       style:--lh-strip={shade.strip} style:--lh-tile={shade.tile} style:--lh-header={shade.header}
       style:--lh-hover={shade.hover} style:--lh-selected={shade.selected}
       style:--lh-spine={row.folder ? folder.strip : undefined}
       onclick={event => on.rowClick(event, row.row)}>
       <span class="spine"></span>
       <span class="num">{row.number}</span>
+      <!-- A numbered layer hangs under its main lane, which folds it like a folder. -->
+      {#if row.layer}<span class="layer-guide" aria-hidden="true"></span>{/if}
       {#if names}<span class="tile" aria-hidden="true"><svg viewBox="0 0 16 16">{@html laneIcons[row.icon] ?? laneIcons.file}</svg></span>{/if}
       <button type="button" class="lane-mute ms" aria-label={"Mute " + row.display} aria-pressed={row.muted}
         onclick={() => on.mix(row.row, "mute")}>M</button>
@@ -70,9 +73,20 @@
         <button type="button" class="lane-add-layer" aria-label={row.addLayer} title={row.addLayer}
           disabled={headers.busy} onclick={() => on.addLayer(row.row)}>+</button>
       {/if}
+      {#if row.remove}
+        <button type="button" class="lane-remove" class:alone={!row.addLayer} aria-label={row.remove.label}
+          title={row.remove.label} disabled={headers.busy || row.remove.disabled}
+          onclick={() => on.remove(row.row)}>−</button>
+      {/if}
     </div>
   {/if}
 {/each}
+
+<!-- v3 f1: the last row adds a lane. It keeps the id menus.js presses; no command binds a key to it. -->
+{#if headers}
+  <button type="button" id="add-lane" class="add-lane-row" class:compact={!names} aria-label="Add lane" title={names ? undefined : "Add lane"}
+    disabled={headers.busy} onclick={() => globalThis.openAddLane?.()}>{@html Plus}{#if names}<span>Add lane</span>{/if}</button>
+{/if}
 
 <style>
   /* Every row is one canvas row tall; app.js sets --lane-row-height on #lanes. */
@@ -101,6 +115,41 @@
   .lane.lane-selected {
     outline: 1px solid var(--editor-accent);
     outline-offset: -1px;
+  }
+  .add-lane-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    height: var(--lane-row-height, 34px);
+    min-height: 0;
+    padding: 0 16px;
+    border: 0;
+    border-bottom: 1px solid var(--editor-canvas);
+    border-radius: 0;
+    background: var(--editor-panel);
+    color: var(--editor-secondary);
+    font: 500 13px var(--font-ui);
+    cursor: pointer;
+  }
+  .add-lane-row.compact {
+    padding: 0 10px;
+  }
+  .add-lane-row:hover:not(:disabled) {
+    color: var(--editor-text);
+  }
+  .add-lane-row:disabled {
+    color: var(--editor-disabled);
+    cursor: default;
+  }
+  .add-lane-row:focus-visible {
+    outline: 2px solid var(--editor-focus);
+    outline-offset: -2px;
+  }
+  .add-lane-row :global(svg) {
+    width: 14px;
+    height: 14px;
+    flex: none;
   }
   .spine {
     align-self: stretch;
@@ -192,8 +241,16 @@
   button.name:hover {
     background: transparent;
   }
-  .lane-layer:not(.compact) button.name {
-    padding-inline-start: 10px;
+  /* A layer's guide: a quiet line under its main lane's chevron, so a family reads as one block. */
+  .layer-guide {
+    align-self: stretch;
+    width: 8px;
+    flex: none;
+    margin-left: 8px;
+    border-left: 1px solid var(--editor-disabled);
+  }
+  .family-head .lane-disclosure {
+    color: var(--editor-secondary);
   }
   .unassigned-drum {
     padding-left: 8px;
@@ -223,7 +280,8 @@
     display: inline-block;
   }
   .lane-disclosure,
-  .lane-add-layer {
+  .lane-add-layer,
+  .lane-remove {
     flex: none;
     width: 14px;
     min-height: 18px;
@@ -237,9 +295,22 @@
     margin-left: auto;
     font-weight: 600;
   }
-  .lane-add-layer:disabled {
+  .lane-remove {
+    font-weight: 600;
+  }
+  .lane-remove.alone {
+    margin-left: auto;
+  }
+  .lane-add-layer:disabled,
+  .lane-remove:disabled {
     opacity: 0.45;
     cursor: default;
+  }
+  /* Narrow windows: + and − show on hover or focus only, so the lane names stay readable. */
+  @media (max-width: 1279px) {
+    .lane:not(.compact):not(:hover):not(:focus-within) :is(.lane-add-layer, .lane-remove) {
+      display: none;
+    }
   }
   /* v3: muted lanes, and the others while any lane is soloed, go grey. */
   .quiet .num {
@@ -299,11 +370,12 @@
   .ms:focus-visible,
   .name:focus-visible,
   .lane-disclosure:focus-visible,
-  .lane-add-layer:focus-visible {
+  .lane-add-layer:focus-visible,
+  .lane-remove:focus-visible {
     outline: 2px solid var(--editor-focus);
     outline-offset: -2px;
   }
-  /* Lane names hidden: a 99 px column keeps number, M, S, the layer chevron, the select button and +. */
+  /* Lane names hidden: a 99 px column keeps number, M, S, the layer chevron, the select button, + and −. */
   .compact {
     gap: 1px;
     padding-right: 1px;
@@ -324,15 +396,20 @@
   .compact .fold {
     width: 22px;
   }
+  /* Main lane, + and − together still fit the 99 px column. */
   .compact .lane-disclosure {
+    width: 8px;
+  }
+  .compact .lane-add-layer,
+  .compact .lane-remove {
     width: 10px;
   }
-  .compact .lane-add-layer {
-    width: 12px;
+  .compact .layer-guide {
+    display: none;
   }
   .compact button.name {
     flex: 1 1 auto;
-    min-width: 12px;
+    min-width: 8px;
     padding: 0;
     font-size: 11px;
     text-align: center;

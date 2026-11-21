@@ -11,7 +11,7 @@
 // - run: ["click", id] presses an existing button; ["act", action] sends an editor action;
 //   ["call", name] runs a menus.js function; ["toggle", kind, path, light] flips a view or scene
 //   field (light: a quick update, as app.js's act(action, false)); ["panel", key, field] shows or
-//   hides a panel; ["tool", name]; ["lane", op] and ["onLane", op, id] act on the right-clicked lane.
+//   folds or opens a panel (browser, inspector, controller through app.js's togglePanel); ["tool", name]; ["lane", op] and ["onLane", op, id] act on the right-clicked lane (["onLane", "call", name] runs a ["call"] function).
 // - enabled: a rule name in menus.js (default "edit": a map open, no job running, no drag).
 // - checked: a rule name for a switch row; a toggle or panel row is checked by its own field.
 // - radio: a tool picker row; close: a checked row that still closes the menu.
@@ -23,14 +23,14 @@ export const menuBar = ["file", "edit", "playback", "map", "view"];
 
 export const items = [
   // File
-  { id: "openMap", label: "Open map…", icon: "FolderOpen", command: "open", run: ["click", "open"], enabled: "idle" },
+  { id: "openMap", label: "Open map…", icon: "FolderOpen", command: "open", run: ["call", "openMap"], enabled: "idle" },
   { id: "importOsz", label: "Import .osz…", icon: "FolderOpen", command: "importOsz", enabled: "idle" },
   { id: "openFolder", label: "Open map folder", icon: "FolderOpen", command: "openFolder" },
   { id: "save", label: "Save", icon: "Save", command: "save" },
   { id: "revert", label: "Revert to saved…", icon: "Undo2", command: "revert" },
   { id: "export", label: "Export…", icon: "Redo2", run: ["click", "export-entry"], enabled: "document" },
-  { id: "startScreen", label: "Start screen", icon: "House", run: ["click", "go-home"] },
-  { id: "folders", label: "Folders…", icon: "Settings", run: ["click", "folders"], enabled: "idle" },
+  { id: "startScreen", label: "Start screen", icon: "House", run: ["call", "goHome"] },
+  { id: "folders", label: "Folders…", icon: "Settings", run: ["call", "openFolders"], enabled: "idle" },
 
   // Edit
   { id: "undo", label: "Undo", icon: "Undo2", command: "undo", enabled: "undo", history: -1 },
@@ -75,25 +75,28 @@ export const items = [
   { id: "previousBookmark", label: "Previous bookmark", command: "previousBookmark" },
   { id: "nextBookmark", label: "Next bookmark", command: "nextBookmark" },
   { id: "addLane", label: "Add lane…", icon: "Drumstick", run: ["click", "add-lane"] },
-  { id: "deleteActiveLane", label: "Delete active lane…", icon: "Eraser", run: ["click", "delete-lane"], enabled: "deleteLane" },
+  { id: "deleteActiveLane", label: "Delete active lane…", icon: "Eraser", run: ["call", "deleteActiveLane"], enabled: "deleteLane" },
 
   // View
   { id: "browser", label: "Browser", icon: "PanelLeft", run: ["panel", "browser"] },
   { id: "inspector", label: "Inspector", icon: "PanelRight", run: ["panel", "inspector"] },
-  { id: "volumePanel", label: "Volume panel", icon: "TrendingUp", run: ["panel", "controller"] },
+  { id: "volumePanel", label: "Volume and Mixer", icon: "TrendingUp", run: ["panel", "controller"] },
   { id: "laneNames", label: "Lane names", icon: "Scan", run: ["panel", "lane_names", "laneNames"] },
   { id: "songWaveform", label: "Song waveform", run: ["click", "ruler-waveform"], checked: "waveform" },
   { id: "objectLines", label: "Object lines", icon: "Scan", run: ["toggle", "object_lines", "view.objectLines"] },
   { id: "usedOnly", label: "Used lanes only", run: ["click", "used-only"], checked: "usedOnly" },
   { id: "collapseLayers", label: "Collapse sample layers", icon: "Scan", run: ["click", "collapse-layers"] },
+  { id: "filterLanes", label: "Filter lanes…", icon: "Scan", command: "filter" },
+  { id: "tallerLanes", label: "Taller lanes", icon: "Scan", command: "rowsIn" },
+  { id: "shorterLanes", label: "Shorter lanes", icon: "Scan", command: "rowsOut" },
   { id: "zoomIn", label: "Zoom in", icon: "Scan", command: "zoomIn" },
   { id: "zoomOut", label: "Zoom out", icon: "Scan", command: "zoomOut" },
   { id: "fit", label: "Fit difficulty", icon: "Scan", run: ["click", "fit"] },
   { id: "timeSignatures", label: "Time signatures…", icon: "Drumstick", run: ["click", "time-signatures"] },
   { id: "drumMap", label: "Open drum map…", icon: "Drumstick", run: ["call", "requestDrumMap"] },
   { id: "editLayout", label: "Edit layout…", icon: "Scan", run: ["call", "editLayout"] },
-  { id: "viewSettings", label: "View settings…", icon: "Settings", run: ["click", "panel-view"] },
-  { id: "shortcuts", label: "Shortcuts", icon: "Info", command: "help", run: ["click", "help"], enabled: "idle" },
+  { id: "viewSettings", label: "View settings…", icon: "Settings", run: ["call", "openViewSettings"] },
+  { id: "shortcuts", label: "Shortcuts", icon: "Info", command: "help", run: ["call", "showHelp"], enabled: "idle" },
 
   // Right-click on the timeline (and the fourth tool pill): the seven tools, in TOOLS' order (tools.js).
   { id: "toolSelect", label: "Select", icon: "MousePointer2", command: "toolSelect", run: ["tool", "Select"], radio: true, close: true, checked: "tool" },
@@ -112,7 +115,7 @@ export const items = [
   { id: "laneColour", label: "Lane colour…", run: ["onLane", "click", "lane-colour"], enabled: "laneColour" },
   { id: "laneAddLayer", label: "Add numbered layer", icon: "Drumstick", command: "addNumberedLayer", run: ["onLane", "layer"], enabled: "laneLayer" },
   { id: "laneAdd", label: "Add lane…", run: ["click", "add-lane"], enabled: "lane" },
-  { id: "laneDelete", label: "Delete lane…", icon: "Eraser", run: ["onLane", "click", "delete-lane"], enabled: "laneDelete" },
+  { id: "laneDelete", label: "Delete lane…", icon: "Eraser", run: ["onLane", "call", "deleteActiveLane"], enabled: "laneDelete" },
 ];
 
 // Where each row sits. "-" is a divider; one at the start or end of a menu, or next to another, is
@@ -141,7 +144,7 @@ export const menus = {
   ],
   view: [
     "browser", "inspector", "volumePanel", "laneNames", "-",
-    "songWaveform", "objectLines", "usedOnly", "collapseLayers", "-",
+    "songWaveform", "objectLines", "usedOnly", "collapseLayers", "filterLanes", "tallerLanes", "shorterLanes", "-",
     "zoomIn", "zoomOut", "fit", "-",
     "timeSignatures", "drumMap", "editLayout", "viewSettings", "-",
     "shortcuts",
@@ -155,8 +158,8 @@ export const menus = {
 export const keyOnly = [
   "quantize", "volumeUp", "volumeDown", "volumeUpFine", "volumeDownFine", "jumpToSelection",
   "nudgeLeft", "nudgeRight", "gridLeft", "gridRight", "navUp", "navDown", "selectPrevious", "selectNext",
-  "addPrevious", "addNext", "navAddUp", "navAddDown", "rowsOut", "rowsIn",
-  "openHitsoundFolder", "reviewOutput", "filter", "first", "last", "deselect", "snap",
+  "addPrevious", "addNext", "navAddUp", "navAddDown",
+  "openHitsoundFolder", "reviewOutput", "first", "last", "deselect", "snap",
   "jumpLeft", "jumpRight", "setLeft", "setRight", "removeBookmark",
   "seekBack", "seekBackFar", "seekForward", "seekForwardFar",
   "snap1", "snap2", "snap3", "snap4", "snap5", "snap6", "snap7", "snap8", "snap9",

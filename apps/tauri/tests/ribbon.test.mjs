@@ -6,12 +6,12 @@ const read = file => readFile(new URL("../dist/" + file, import.meta.url), "utf8
 const [html, css, app] = await Promise.all(["index.html", "style.css", "app.js"].map(read));
 
 test("the ribbon compacts its grouped controls while keeping Save labeled", () => {
-  for (const group of ["Map", "History", "Tool", "Grid", "View"]) {
+  for (const group of ["Map", "Lane mode", "Tool", "Grid"]) {
     assert.match(html, new RegExp('role="group" aria-label="' + group + '"'));
   }
   assert.match(css, /@media\s*\(max-width:\s*1320px\)\s*\{[^}]*\.ribbon-caption\s*\{\s*display:\s*none/);
   const save = html.match(/<button[^>]*data-action="review_save"[^>]*>(.*?)<\/button>/s)?.[1];
-  assert.match(save, />Save /);
+  assert.match(save, />Save</);
   assert.doesNotMatch(save, /class="ribbon-(?:caption|tool-label)"/);
 });
 

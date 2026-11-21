@@ -2,7 +2,8 @@
 <html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>dawsu!</title><link rel="icon" href="studio-assets/dawsu.png"><link rel="stylesheet" href="fonts.css"><link rel="stylesheet" href="style.css"><link rel="stylesheet" href="ui/ui.css"><script defer src="docking.js"></script><script defer src="app.js"></script><script defer src="menus.js"></script><script defer src="ui/ui.js"></script></head>
 <body>
 <header id="editor-header" class="chrome">
-  <strong class="brand"><img src="studio-assets/dawsu.png" alt="">dawsu<span>!</span></strong>
+  <strong class="brand"><span class="brand-diamond" aria-hidden="true"></span>dawsu!</strong>
+  <span class="header-divider" aria-hidden="true"></span>
 <nav id="editor-menus" aria-label="Editor menus">
   <button id="menu-file" aria-haspopup="menu" aria-expanded="false" aria-controls="editor-menu">File</button>
   <button id="menu-edit" aria-haspopup="menu" aria-expanded="false" aria-controls="editor-menu">Edit</button>
@@ -10,17 +11,33 @@
   <button id="menu-map" aria-haspopup="menu" aria-expanded="false" aria-controls="editor-menu">Map</button>
   <button id="menu-view" aria-haspopup="menu" aria-expanded="false" aria-controls="editor-menu">View</button>
 </nav>
-  <div class="title" id="title"></div>
   <div id="top-transport" class="top-transport" role="group" aria-label="Playback controls">
     <div data-ui-mount="transport"></div>
   </div>
   <span class="spacer"></span>
-  <button id="layout-edit-entry" type="button" data-doc>Layout…</button>
-  <button id="export-entry" type="button" data-doc>Export…</button>
-      <button data-action="review_save" data-doc><img class="button-icon" src="studio-assets/icons/Save.svg" alt="">Save <span id="save-problem-badge" hidden></span></button>
+  <button id="export-entry" type="button" aria-label="Export…" title="Export…" data-doc><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 21.7a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16V8a2 2 0 0 0-1-1.7l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.7zM12 22V12M3.3 7 12 12l8.7-5M7.5 4.3l9 5.1"/></svg><span class="header-label">Export…</span></button>
+  <span class="header-divider" aria-hidden="true"></span>
+  <button id="save" data-action="review_save" data-doc data-dirty="false"><img class="button-icon" src="studio-assets/icons/Save.svg" alt=""><span class="header-label">Save</span><span id="save-problem-badge" hidden></span></button>
+  <span class="header-divider" aria-hidden="true"></span>
+  <div class="panel-switches" role="group" aria-label="Panels">
+    <button id="view-browser" type="button" data-doc aria-label="Browser" aria-controls="tree-browser-host" aria-pressed="false" title="Browser"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/></svg></button>
+    <button id="view-inspector" type="button" data-doc aria-label="Inspector" aria-controls="editor-inspector" aria-pressed="false" title="Inspector"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M15 3v18"/></svg></button>
+    <button id="view-controller" type="button" data-doc aria-label="Volume and Mixer" aria-controls="volume-controller-panel" aria-pressed="false" title="Volume and Mixer"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M2 14h4M10 8h4M18 16h4"/></svg></button>
+  </div>
 </header>
+<button id="layout-edit-entry" type="button" data-doc hidden>Layout…</button>
 
 <div id="editor-menu" role="menu" data-ui-mount="menu" hidden></div>
+<div popover id="options-Lanes" class="ribbon-controls ribbon-options" role="group" aria-label="Lanes">
+        <div class="row" role="group" aria-label="Lane zoom">
+          <button type="button" id="lane-height-out" aria-label="Shorter lanes" data-doc>−</button>
+          <label class="toggle">Lane height <input type="range" min="20" max="65" step="1" id="lane-height" data-doc></label>
+          <button type="button" id="lane-height-in" aria-label="Taller lanes" data-doc>+</button>
+        </div>
+        <button type="button" id="collapse-layers" data-doc>Collapse sample layers</button>
+        <label class="toggle" title="Show only the lanes that have hits when switched on"><input id="used-only" type="checkbox" data-doc> Used only</label>
+        <input id="lane-filter" type="search" aria-label="Filter lanes" placeholder="Filter lanes" size="13" data-doc>
+      </div>
 <section id="home">
   <div class="home-panel">
     <img class="home-logo" src="studio-assets/dawsu.png" alt="dawsu!">
@@ -77,28 +94,27 @@
   </section>
 
   <div id="editor-ribbon" class="tools chrome">
-  <div class="ribbon-group" role="group" aria-label="Map">
-    <span class="ribbon-caption" aria-hidden="true">Map</span>
-    <div class="ribbon-controls">
-      <button id="go-home" data-doc hidden title="Back to the start screen" aria-label="Home"><img class="button-icon" src="studio-assets/icons/House.svg" alt=""></button>
-      <button id="open" aria-label="Open difficulty or mapset" title="Open difficulty or mapset"><img class="button-icon" src="studio-assets/icons/FolderOpen.svg" alt=""><span class="ribbon-secondary-label">Open…</span></button>
-      <button id="folders" aria-label="Folders" title="Folders"><img class="button-icon" src="studio-assets/icons/FolderOpen.svg" alt=""><span class="ribbon-secondary-label">Folders…</span></button>
-
-      <select id="difficulty" aria-label="Open sibling difficulty" data-doc hidden></select>
+  <div class="ribbon-group map-chip" role="group" aria-label="Map">
+    <span id="map-title" class="map-chip-title"></span>
+    <span id="map-version" class="map-chip-version"></span>
+    <svg class="map-chip-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+    <select id="difficulty" aria-label="Difficulty" data-doc></select>
+  </div>
+  <div class="ribbon-group" role="group" aria-label="Lane mode">
+    <div class="row lane-mode" role="group" aria-label="Lane view">
+      <button id="samples-view" type="button" aria-pressed="true" aria-label="Hitsounds" data-doc><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 13a2 2 0 0 0 2-2V7a2 2 0 0 1 4 0v13a2 2 0 0 0 4 0V4a2 2 0 0 1 4 0v13a2 2 0 0 0 4 0v-4a2 2 0 0 1 2-2"/></svg><span class="lane-mode-label">Hitsounds</span></button>
+      <button id="drums-view" type="button" aria-pressed="false" aria-label="Drums" data-doc><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m2 2 8 8M22 2l-8 8"/><ellipse cx="12" cy="9" rx="10" ry="5"/><path d="M7 13.4v7.9M12 14v8M17 13.4v7.9M2 9v8a10 5 0 0 0 20 0V9"/></svg><span class="lane-mode-label">Drums</span></button>
     </div>
   </div>
-  <div class="ribbon-group" role="group" aria-label="History">
-    <span class="ribbon-caption" aria-hidden="true">History</span>
-    <div class="ribbon-controls">
-      <button data-command="undo" id="undo" data-doc title="Undo (Ctrl+Z)" aria-label="Undo"><img class="button-icon" src="studio-assets/icons/Undo2.svg" alt=""></button>
-      <button data-command="redo" id="redo" data-doc title="Redo (Ctrl+Shift+Z)" aria-label="Redo"><img class="button-icon" src="studio-assets/icons/Redo2.svg" alt=""></button>
-      <button data-command="revert" data-doc aria-label="Revert to saved…" title="Revert to saved…"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 8a5.5 5.5 0 1 0 1.7-4M2.5 2v3.5H6"/></svg><span class="ribbon-secondary-label">Revert…</span></button>
-    </div>
-  </div>
-
     <div class="ribbon-group" role="group" aria-label="Tool">
       <span class="ribbon-caption" aria-hidden="true">Tool</span>
       <div data-ui-mount="tools"></div>
+    </div>
+    <div class="ribbon-group" role="group" aria-label="Audition">
+      <div data-ui-mount="audition"></div>
+    </div>
+    <div class="ribbon-group" role="group" aria-label="Playhead">
+      <div data-ui-mount="playhead"></div>
     </div>
     <div class="ribbon-group" role="group" aria-label="Grid">
       <div class="ribbon-controls"><div data-ui-mount="snap"></div>
@@ -111,107 +127,56 @@
         <button id="time-signatures" data-doc aria-haspopup="dialog">Time signatures…</button>
       </div></div>
     </div>
-    <div class="ribbon-group" role="group" aria-label="Audition">
-      <div data-ui-mount="audition"></div>
-    </div>
-    <div class="ribbon-group" role="group" aria-label="Playhead">
-      <div data-ui-mount="playhead"></div>
-    </div>
-    <div class="ribbon-group" role="group" aria-label="Lanes">
-      <button type="button" popovertarget="options-Lanes">Lanes ▾</button><div popover id="options-Lanes" class="ribbon-controls ribbon-options">
-        <div class="row" role="group" aria-label="Lane zoom">
-          <button type="button" id="lane-height-out" aria-label="Shorter lanes" data-doc>−</button>
-          <label class="toggle">Lane height <input type="range" min="20" max="65" step="1" id="lane-height" data-doc></label>
-          <button type="button" id="lane-height-in" aria-label="Taller lanes" data-doc>+</button>
-        </div>
-        <button type="button" id="collapse-layers" data-doc>Collapse sample layers</button>
-        <label class="toggle" title="Show only the lanes that have hits when switched on"><input id="used-only" type="checkbox" data-doc> Used only</label>
-        <input id="lane-filter" type="search" aria-label="Filter lanes" placeholder="Filter lanes" size="13" data-doc>
-      </div>
-    </div>
-  <div class="ribbon-group" role="group" aria-label="View">
-    <span class="ribbon-caption" aria-hidden="true">View</span>
-    <div class="ribbon-controls">
-      <div class="row view-panel-toggles" role="group" aria-label="Panels">
-        <button id="view-browser" type="button" data-doc aria-label="File browser" aria-controls="sample-browser" aria-pressed="false" title="File browser">
-          <span class="view-panel-icon" aria-hidden="true"></span><span class="ribbon-secondary-label">Files</span>
-        </button>
-        <button id="view-inspector" type="button" data-doc aria-label="Inspector" aria-controls="editor-inspector" aria-pressed="false" title="Inspector">
-          <span class="view-panel-icon" aria-hidden="true"></span><span class="ribbon-secondary-label">Inspector</span>
-        </button>
-      </div>
-      <button id="panel-view" aria-haspopup="dialog" aria-label="View settings" title="View settings" data-doc><img class="button-icon" src="studio-assets/icons/Settings.svg" alt=""><span class="ribbon-secondary-label">View…</span></button>
-      <button id="help" aria-label="Keyboard shortcuts" title="Keyboard shortcuts"><img class="button-icon" src="studio-assets/icons/Info.svg" alt=""><span class="ribbon-secondary-label">Shortcuts</span></button>
-    </div>
-  </div>
-  <div class="ribbon-group" role="group" aria-label="Lane mode">
-    <div class="row" role="group" aria-label="Lane view">
-      <button id="samples-view" type="button" aria-pressed="true" data-doc>Hitsounds</button>
-      <button id="drums-view" type="button" aria-pressed="false" data-doc>Drums</button>
-    </div>
-  </div>
   </div>
   <main id="editor-dock" class="dock">
-    <aside id="tree-browser-host" aria-label="Sample browser" hidden>
+    <aside id="tree-browser-host" aria-label="Browser" hidden>
+      <div class="panel-head"><h2>Browser</h2><button id="browser-fold" type="button" data-doc class="panel-fold" aria-label="Fold Browser" title="Fold Browser" aria-controls="tree-browser-host"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18M16 15l-3-3 3-3"/></svg></button></div>
+      <nav class="panel-rail" aria-label="Browser" hidden>
+        <button id="browser-unfold" type="button" data-doc aria-label="Open Browser" title="Open Browser" aria-controls="tree-browser-host"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18M14 9l3 3-3 3"/></svg></button>
+        <button id="rail-browser-browse" type="button" data-doc aria-label="Mapset samples" title="Mapset samples"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.7-.9l-.8-1.2A2 2 0 0 0 7.9 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2z"/></svg></button>
+        <button id="rail-browser-search" type="button" data-doc aria-label="Search samples" title="Search samples"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg></button>
+        <button id="rail-browser-library" type="button" data-doc aria-label="Library" title="Library"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m16 6 4 14M12 6v14M8 8v12M4 4v16"/></svg></button>
+      </nav>
       <section id="sample-browser">
-        <h2>Samples</h2>
-        <div class="sample-browser-source-controls">
-          <select id="sample-browser-source" aria-label="Sample source">
-            <option value="mapset">Map folder</option>
-            <option value="library">Hitsound library</option>
-          </select>
-          <input type="search" id="sample-browser-filter" aria-label="Filter shown samples" placeholder="Search samples">
-        </div>
-        <div class="row sample-browser-controls">
-          <button type="button" id="sample-browser-up" hidden>Up</button>
-          <output id="sample-browser-folder" hidden aria-label="Current sample folder"></output>
-          <button type="button" id="sample-browser-close" aria-label="Hide file browser">Hide</button>
-        </div>
-        <div id="sample-browser-entries" aria-label="Samples and folders"></div>
-        <div class="sample-browser-actions">
-          <button type="button" id="sample-browser-assign">Use in active lane</button>
-          <button type="button" id="sample-browser-pick">Browse…</button>
-        </div>
+        <div class="sample-browser-classic-head"><h2>Samples</h2><button type="button" id="sample-browser-close" aria-label="Close Browser">Close</button></div>
+        <div data-ui-mount="browser-head"></div>
+        <div id="sample-browser-entries" data-ui-mount="browser-list" aria-label="Samples and folders"></div>
+        <div data-ui-mount="browser-preview"></div>
       </section>
     </aside>
     <div id="editor-arrange" class="arrange">
-      <div class="overview">
-        <div class="lane-title ruler-controls" role="group" aria-label="Timeline view">
-          <button id="ruler-waveform" type="button" aria-label="Show waveform" aria-pressed="true" title="Show waveform" data-doc><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 6v4m3-7v10m3-8v6m3-8v10m3-7v4"/></svg></button>
-          <button id="ruler-follow" type="button" aria-label="Follow playhead" aria-pressed="false" title="Follow playhead" data-doc><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2v12M2 8h3m6 0h3M5 3H3v2m8-2h2v2M3 11v2h2m8-2v2h-2"/></svg></button>
-          <button id="ruler-zoom-out" type="button" aria-label="Zoom timeline out" title="Zoom timeline out" data-doc>−</button>
-          <button id="ruler-zoom-in" type="button" aria-label="Zoom timeline in" title="Zoom timeline in" data-doc>+</button>
-          <button id="ruler-fit" type="button" aria-label="Fit whole song" title="Fit whole song" data-doc><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4v8m12-8v8M4 8h8m-6-2L4 8l2 2m4-4 2 2-2 2"/></svg></button>
-        </div>
-        <canvas id="overview" aria-label="Song overview"></canvas>
-      </div>
       <div class="ruler">
         <div class="ruler-sidebar">
-          <div class="lane-title lane-title-controls">
-            <span>Sample lanes</span>
-            <div class="row">
-              <button id="add-lane" type="button" aria-label="Add lane" title="Add lane" data-doc>+</button>
-              <button id="delete-lane" type="button" aria-label="Delete active lane" title="Delete active lane" data-doc>−</button>
-              <button id="toggle-lane-names" type="button" aria-controls="lanes" aria-expanded="true" aria-label="Hide lane names" title="Hide lane names" data-doc>‹</button>
-            </div>
+          <div class="lane-title lane-title-controls" role="toolbar" aria-label="Timeline view">
+            <button id="ruler-zoom-out" type="button" class="lane-tool" aria-label="Zoom out" title="Zoom out" data-doc><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35M8 11h6"/></svg></button>
+            <button id="ruler-zoom-in" type="button" class="lane-tool" aria-label="Zoom in" title="Zoom in" data-doc><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35M11 8v6m-3-3h6"/></svg></button>
+            <button id="ruler-fit" type="button" class="lane-tool lane-tool-label" aria-label="Fit all" title="Fit the whole song" data-doc><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m18 8 4 4-4 4M2 12h20M6 8l-4 4 4 4"/></svg><span>Fit all</span></button>
+            <span class="lane-tool-divider" aria-hidden="true"></span>
+            <span class="lane-tool-glyph" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 2v20M8 18l4 4 4-4M8 6l4-4 4 4"/></svg></span>
+            <button id="lane-shorter" type="button" class="lane-tool" aria-label="Shorter lanes" title="Shorter lanes" data-doc><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 20 5-5 5 5M7 4l5 5 5-5"/></svg></button>
+            <button id="lane-taller" type="button" class="lane-tool" aria-label="Taller lanes" title="Taller lanes" data-doc><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 15 5 5 5-5M7 9l5-5 5 5"/></svg></button>
           </div>
           <div class="lane-title song-row">
-            <span>Song audio</span>
-            <div class="row">
-              <button id="song-mute" type="button" aria-label="Mute song" aria-pressed="false" title="Mute song" data-doc>M</button>
-              <button id="song-solo" type="button" aria-label="Solo song" aria-pressed="false" title="Solo song" data-doc>S</button>
+            <span class="song-strip" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M2 10v3M6 6v11M10 3v18M14 8v7M18 5v13M22 10v3"/></svg></span>
+            <div class="song-body">
+              <span class="song-title">Song · objects</span>
+              <div class="row">
+                <button id="song-mute" type="button" aria-label="Mute song" aria-pressed="false" title="Mute song" data-doc>M</button>
+                <button id="song-solo" type="button" aria-label="Solo song" aria-pressed="false" title="Solo song" data-doc>S</button>
+                <button id="ruler-waveform" type="button" aria-label="Show waveform" aria-pressed="true" title="Show waveform" data-doc><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 13a2 2 0 0 0 2-2V7a2 2 0 0 1 4 0v13a2 2 0 0 0 4 0V4a2 2 0 0 1 4 0v13a2 2 0 0 0 4 0v-4a2 2 0 0 1 2-2"/></svg></button>
+              </div>
             </div>
           </div>
         </div>
         <canvas id="ruler" aria-label="Time ruler, song waveform and gameplay objects"></canvas>
         <div id="waveform-resize" role="separator" tabindex="0" aria-orientation="horizontal"
-             aria-label="Waveform height" aria-valuemin="0" aria-valuemax="200" aria-valuenow="56"
+             aria-label="Waveform height" aria-valuemin="0" aria-valuemax="200" aria-valuenow="84"
              title="Drag to resize waveform. Double-click to reset."></div>
       </div>
       <div class="scroll" id="scroll"><div id="lanes" data-ui-mount="lanes"></div><canvas id="grid" tabindex="-1" aria-label="Hitsound timeline" aria-haspopup="menu" aria-expanded="false"></canvas></div>
       <div id="volume-controller-panel" class="controller">
         <div class="lane-title volume-title">
-          <span>Volume</span>
+          <div data-ui-mount="bottom-panel"></div>
           <select id="ramp-shape" aria-label="Ramp shape" title="Shape for the Ramp tool and Shift+drag" data-doc>
             <option value="Linear">Linear</option>
             <option value="EaseIn">Ease in</option>
@@ -220,10 +185,23 @@
           </select>
         </div>
         <canvas id="controller" aria-label="Hit volume lane"></canvas>
+        <div class="mixer-host" data-ui-mount="mixer"></div>
+      </div>
+      <div class="overview">
+        <div class="lane-title ruler-controls"><span>Objects overview</span></div>
+        <canvas id="overview" aria-label="Song overview"></canvas>
       </div>
 
     </div>
     <aside id="editor-inspector" aria-label="Inspector">
+      <div class="panel-head"><h2>Inspector</h2><button id="inspector-fold" type="button" data-doc class="panel-fold" aria-label="Fold Inspector" title="Fold Inspector" aria-controls="editor-inspector"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M15 3v18M8 9l3 3-3 3"/></svg></button></div>
+      <nav class="panel-rail" aria-label="Inspector" hidden>
+        <button id="inspector-unfold" type="button" data-doc aria-label="Open Inspector" title="Open Inspector" aria-controls="editor-inspector"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M15 3v18M10 15l-3-3 3-3"/></svg></button>
+        <button id="rail-inspector-selection" type="button" data-doc aria-label="Selection" title="Selection"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.04 4.66a.5.5 0 0 1 .62-.62l15.5 5.3a.5.5 0 0 1-.07.97l-6.13 1.5a2 2 0 0 0-1.46 1.46l-1.5 6.13a.5.5 0 0 1-.97.07z"/></svg></button>
+        <button id="rail-inspector-lane" type="button" data-doc aria-label="Lane" title="Lane"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M3 15h18"/></svg></button>
+        <button id="rail-inspector-difficulty" type="button" data-doc aria-label="Difficulty" title="Difficulty"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12.8 2.2 8.6 3.9a1 1 0 0 1 0 1.8l-8.6 3.9a2 2 0 0 1-1.6 0L2.6 7.9a1 1 0 0 1 0-1.8l8.6-3.9a2 2 0 0 1 1.6 0zM2 12a1 1 0 0 0 .6.9l8.6 3.9a2 2 0 0 0 1.6 0l8.6-3.9A1 1 0 0 0 22 12M2 17a1 1 0 0 0 .6.9l8.6 3.9a2 2 0 0 0 1.6 0l8.6-3.9A1 1 0 0 0 22 17"/></svg></button>
+        <button id="rail-inspector-bookmarks" type="button" data-doc aria-label="Bookmarks" title="Bookmarks"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg></button>
+      </nav>
       <section class="inspector-part" aria-label="Selection"><div data-ui-mount="inspector-selection"></div></section>
       <section class="inspector-part" aria-label="Lane"><div data-ui-mount="inspector-lane"></div></section>
       <section class="inspector-part" aria-label="Difficulty"><div data-ui-mount="inspector-difficulty"></div></section>
@@ -242,17 +220,21 @@
     <button type="button" data-playback-speed="1.25" aria-label="Playback speed 125%" aria-pressed="false" data-doc>125%</button>
     <button type="button" data-playback-speed="1.5" aria-label="Playback speed 150%" aria-pressed="false" data-doc>150%</button>
   </div>
+  <span id="play-state" class="play-state" hidden></span>
+  <span id="selection-count" class="selection-count" hidden></span>
   <span id="status" role="status"></span>
   <span id="problem-summary" class="problem-summary" hidden><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.5 14.5 13.5h-13zM8 6.5v3M8 11.5v.01"/></svg><span id="problem-summary-text"></span></span>
   <button id="next-output-problem" hidden>Next problem</button><button id="warnings" hidden>Audio warnings</button><button id="cancel-job" data-action="cancel_job" hidden>Cancel job</button>
   <div class="status-right">
+    <span id="file-name" class="status-file" hidden><span id="file-name-head"></span><span id="file-name-tail"></span></span>
     <span id="hit-lane-counts" class="status-counts" hidden></span>
     <div id="status-view" class="status-view" role="group" aria-label="Timeline zoom" hidden>
       <button id="fit" title="Fit the difficulty in the timeline" data-doc>Fit</button>
       <input type="range" min="-3.301" max=".477" step=".01" id="zoom" aria-label="Timeline zoom" title="Timeline zoom" data-map>
     </div>
-    <button id="audio" title="Audio output">Audio…</button>
+    <button id="audio" class="status-device" aria-label="Audio output" title="Audio output">Audio output</button>
   </div>
 </div>
+<div data-ui-mount="hit-card"></div>
 <dialog id="dialog"><h2 id="dialog-title"></h2><div id="dialog-body"></div><div class="row" id="dialog-actions"></div></dialog>
 </body></html>

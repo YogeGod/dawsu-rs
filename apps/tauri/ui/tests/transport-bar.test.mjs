@@ -74,14 +74,18 @@ const buttons = html => [...html.matchAll(/<button\b[^>]*>/g)].map(match => matc
 const bar = html => buttons(html.slice(0, html.indexOf('class="readout')));
 const label = tag => tag.match(/aria-label="([^"]+)"/)?.[1];
 
-test("the bar is collapse tab, Go to start, Go to end, Cycle, Stop and Play, with no Record and no L or R", () => {
+test("the bar is collapse tab, Go to start, Go to end, Cycle, Stop, Play and a greyed Record, with no L or R", () => {
   const html = shown({ playing: false, cycle: true, busy: false, position: 0, duration: 5000 });
   assert.deepEqual(bar(html).map(label),
-    ["Go to start and Go to end", "Go to start", "Go to end", "Cycle", "Stop", "Play"]);
+    ["Go to start and Go to end", "Go to start", "Go to end", "Cycle", "Stop", "Play", "Record"]);
+  // Recording has no code yet (Yoge, 2026-11-21): Record shows greyed out and does nothing.
+  const record = bar(html).at(-1);
+  assert.match(record, /\sdisabled/);
+  assert.doesNotMatch(record, /aria-pressed/);
   assert.match(bar(html)[0], /aria-expanded="true"/, "the tab's state is in aria-expanded, its name stays");
   assert.match(html, /title="Cycle between L and R"/);
-  assert.doesNotMatch(html, /Record|Locator|>L<|>R</);
-  assert.equal([...html.matchAll(/<svg/g)].length, 6, "every button has its icon; no copy icon without a selection");
+  assert.doesNotMatch(html, /Locator|>L<|>R</);
+  assert.equal([...html.matchAll(/<svg/g)].length, 7, "every button has its icon; no copy icon without a selection");
   assert.doesNotMatch(html, /\sstyle=|\sid=|\(Space\)|\(End\)|\(\/\)/);
 });
 
@@ -100,10 +104,10 @@ test("Stop lights when stopped, Play is pressed while playing, Cycle while cycli
 
 test("before a map every button but the collapse tab is disabled; a job leaves playback working", () => {
   const disabled = html => bar(html).filter(tag => /\sdisabled/.test(tag)).map(label);
-  assert.deepEqual(disabled(shown(null, null)), ["Go to start", "Go to end", "Cycle", "Stop", "Play"]);
-  assert.deepEqual(disabled(shown({ busy: true, playing: false, cycle: false, duration: 5000 })), ["Go to start", "Go to end"]);
-  assert.deepEqual(disabled(shown({ busy: false, playing: false, cycle: false, duration: 5000 })), []);
-  assert.deepEqual(disabled(shown({ busy: false, playing: false, cycle: false })), ["Go to end"]);
+  assert.deepEqual(disabled(shown(null, null)), ["Go to start", "Go to end", "Cycle", "Stop", "Play", "Record"]);
+  assert.deepEqual(disabled(shown({ busy: true, playing: false, cycle: false, duration: 5000 })), ["Go to start", "Go to end", "Record"]);
+  assert.deepEqual(disabled(shown({ busy: false, playing: false, cycle: false, duration: 5000 })), ["Record"]);
+  assert.deepEqual(disabled(shown({ busy: false, playing: false, cycle: false })), ["Go to end", "Record"]);
 });
 
 test("the readout shows time, BPM, TIME and SELECTION, and SELECTION copies the timestamp", () => {

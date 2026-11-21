@@ -9,8 +9,9 @@ async function frontend() {
   const listeners = new Map();
   const calls = [];
   const responses = [];
-  const element = { addEventListener() {}, append() {}, prepend() {}, dataset: {}, children: [] };
+  const element = { addEventListener() {}, append() {}, prepend() {}, setAttribute() {}, dataset: {}, children: [] };
   const title = { setAttribute(name, value) { this[name] = value; } };
+  const fileHead = {}, fileTail = {};
   const rulerEvents = new Map(), overviewEvents = new Map();
   const overview = { ...element, clientWidth: 100, getBoundingClientRect: () => ({ left: 10 }),
     setPointerCapture() {}, addEventListener(name, callback) { overviewEvents.set(name, callback); } };
@@ -29,7 +30,7 @@ async function frontend() {
     getBoundingClientRect: () => ({x:0, y:0, left:0, top:0, width:100, height:77}) };
   const context = createContext({
     document: {
-      getElementById: (id) => ({title, grid, controller, ruler, overview, "editor-arrange":arrange, "waveform-resize":grip})[id] ?? element,
+      getElementById: (id) => ({"file-name":title, "file-name-head":fileHead, "file-name-tail":fileTail, grid, controller, ruler, overview, "editor-arrange":arrange, "waveform-resize":grip})[id] ?? element,
       createElement: () => ({ ...element }),
       querySelectorAll: () => [],
       addEventListener: (name, callback) => listeners.set(name, callback),
@@ -48,7 +49,7 @@ async function frontend() {
   await runInContext(app, context);
   calls.length = 0;
   const evaluate = (code) => runInContext(code, context);
-  return { listeners, rulerEvents, overviewEvents, gridEvents, barEvents, windowEvents, cursors, resizeEvents, properties, calls, evaluate, title, responses, settle: () => evaluate("pending") };
+  return { listeners, rulerEvents, overviewEvents, gridEvents, barEvents, windowEvents, cursors, resizeEvents, properties, calls, evaluate, title, fileHead, fileTail, responses, settle: () => evaluate("pending") };
 }
 
 test("the resolved Open shortcut offers sibling difficulties from the current mapset", async () => {
@@ -90,13 +91,13 @@ test("waveform resizing previews, cancels and resets without touching the docume
   assert.ok(resizeEvents.has("pointerdown"));
   action("pointerdown",100);
   action("pointermove",140);
-  assert.equal(properties.get("--wave-height"),"96px");
+  assert.equal(properties.get("--wave-height"),"124px");
   action("pointercancel",140);
-  assert.equal(properties.get("--wave-height"),"56px");
+  assert.equal(properties.get("--wave-height"),"84px");
   action("keydown",0,"Home");
   assert.equal(properties.get("aria-valuenow"),"0");
   action("dblclick",100);
-  assert.equal(properties.get("--wave-height"),"56px");
+  assert.equal(properties.get("--wave-height"),"84px");
   assert.equal(calls.length,0);
 });
 
@@ -107,8 +108,8 @@ test("clicks near bookmark flags seek to the exact bookmark, leaving the lower w
     rulerEvents.get("pointerdown")({button:0, clientX:120, clientY:y});
     await settle();
   };
-  await click(30);
-  await click(65);
+  await click(50);
+  await click(70);
   assert.deepEqual(calls.filter(call=>call.args.action?.kind === "seek").map(call=>call.args.action.ms), [1025, 1000]);
 });
 
@@ -205,19 +206,22 @@ test("focused text controls keep their editing keys", async () => {
   assert.equal(event.prevented, undefined);
 });
 
-test("the top bar shows the active difficulty filename and its full path", async () => {
-  const { evaluate, title } = await frontend();
-  evaluate('scene = { path: "C:\\\\Songs\\\\Mapset\\\\Hard.osu", title: "Map title" }; show({ hasDocument: true, dirty: false })');
-  assert.equal(title.textContent, "Hard.osu");
-  assert.equal(title.title, "C:\\Songs\\Mapset\\Hard.osu");
+test("the status bar shows the open difficulty's file name, cut in the middle, with its full path", async () => {
+  const { evaluate, title, fileHead, fileTail } = await frontend();
+  evaluate('scene = { path: "C:\\\\Songs\\\\Mapset\\\\Artist - Title (Mapper) [Hard].osu", title: "Map title" }; show({ hasDocument: true, dirty: false })');
+  assert.equal(fileHead.textContent + fileTail.textContent, "Artist - Title (Mapper) [Hard].osu");
+  assert.equal(fileTail.textContent, "[Hard].osu");
+  assert.equal(title.title, "C:\\Songs\\Mapset\\Artist - Title (Mapper) [Hard].osu");
+  assert.equal(title.hidden, false);
 
   evaluate('scene = { path: "/maps/another/Expert.osu" }; show({ hasDocument: true, dirty: true })');
-  assert.equal(title.textContent, "● Expert.osu");
+  assert.equal(fileHead.textContent + fileTail.textContent, "Expert.osu");
   assert.equal(title.title, "/maps/another/Expert.osu");
 
   evaluate("show({ hasDocument: false })");
-  assert.equal(title.textContent, "");
+  assert.equal(fileHead.textContent + fileTail.textContent, "");
   assert.equal(title.title, "");
+  assert.equal(title.hidden, true);
 });
 
 test("a changed lane count refreshes the scene in the background", async () => {
@@ -403,4 +407,37 @@ test("Shift-click below the ruler band near a locator line does not jump to the 
   rulerEvents.get("pointerdown")({ button: 0, pointerId: 5, clientX: 71, clientY: 60, shiftKey: true });
   await settle();
   assert.deepEqual(calls.map(call => call.args.action?.kind).filter(Boolean), ["seek"]);
+});
+
+test("a plain click on the ruler band moves the playhead there, inside or outside the locator range", async () => {
+  const { rulerEvents, calls, evaluate, settle } = await frontend();
+  evaluate('scene = { path: "Expert.osu", viewStart: 0, zoom: 1, rowHeight: 20, bookmarks: [] }; view = { busy: false, hasDocument: true, left: 20, right: 70, cycle: false, duration: 1000 }');
+  const click = (clientX, clientY, pointerId) => {
+    rulerEvents.get("pointerdown")({ button: 0, pointerId, clientX, clientY });
+    rulerEvents.get("pointerup")({ pointerId, clientX: clientX + 1, clientY });
+  };
+  click(45, 16, 1);
+  click(90, 16, 2);
+  click(30, 6, 3);
+  await settle();
+  const sent = JSON.parse(JSON.stringify(calls.map(call => call.args.action).filter(Boolean)));
+  const seek = ms => ({ kind: "ruler_locators", path: "Expert.osu", gesture: "seek", from: ms, to: ms });
+  assert.deepEqual(sent, [seek(45), seek(90), seek(30)], "no Cycle toggle and no locator change");
+  assert.equal(evaluate("rulerDrag"), null);
+});
+
+test("dragging on the ruler band still draws, moves and drags the locators", async () => {
+  const { rulerEvents, calls, evaluate, settle } = await frontend();
+  evaluate('scene = { path: "Expert.osu", viewStart: 0, zoom: 1, rowHeight: 20, bookmarks: [] }; view = { busy: false, hasDocument: true, left: 20, right: 70, cycle: false, duration: 1000 }');
+  const drag = (from, to, clientY, pointerId) => {
+    rulerEvents.get("pointerdown")({ button: 0, pointerId, clientX: from, clientY });
+    rulerEvents.get("pointermove")({ pointerId, clientX: to, clientY });
+    rulerEvents.get("pointerup")({ pointerId, clientX: to, clientY });
+  };
+  drag(80, 95, 16, 1);
+  drag(45, 55, 16, 2);
+  drag(25, 35, 6, 3);
+  await settle();
+  const sent = calls.map(call => call.args.action).filter(Boolean).map(({ kind, gesture, from, to }) => [kind, gesture, from, to]);
+  assert.deepEqual(sent, [["ruler_locators", "draw", 80, 95], ["ruler_locators", "move", 45, 55], ["ruler_locators", "left", 25, 30]]);
 });

@@ -22,9 +22,9 @@ const menuRules = {
   selection: () => canEditFromMenu() && !!scene.selection?.count,
   range: () => canEditFromMenu() && !!scene.range,
   placement: () => canEditFromMenu() && scene.placement != null,
-  undo: () => canEditFromMenu() && !$("undo").disabled,
-  redo: () => canEditFromMenu() && !$("redo").disabled,
-  deleteLane: () => canEditFromMenu() && !$("delete-lane").disabled,
+  undo: () => canEditFromMenu() && scene.historyPosition !== 0,
+  redo: () => canEditFromMenu() && scene.historyPosition !== scene.history?.length,
+  deleteLane: () => canEditFromMenu() && !!deletableLane(),
   never: () => false,
   lane: laneAllowed(() => true),
   laneRename: laneAllowed(lane => !!lane.colourKey && !view.drumView?.enabled),
@@ -68,6 +68,12 @@ const menuCalls = {
   openDrumWindow: () => invoke("drum_window_open").catch(error => { $("status").textContent = String(error); }),
   requestDrumMap: () => requestDrumMap(),
   editLayout: () => dock?.editLayout(),
+  openMap: () => openMap(),
+  goHome: () => goHome(),
+  openFolders: () => openFolders(),
+  openViewSettings: () => openViewSettings(),
+  showHelp: () => run(showHelp),
+  deleteActiveLane: () => deleteActiveLane(),
 };
 
 const menuField = path => path.split(".").reduce((value, key) => value?.[key], { view, scene });
@@ -83,13 +89,15 @@ function runMenuEntry({ item, target, value, source }) {
   else if (kind === "act") act(first);
   else if (kind === "toggle" && third) act({ kind: first, on: !menuField(second) }, false);
   else if (kind === "toggle") act({ kind: first, on: !menuField(second) });
+  else if (kind === "panel" && first !== "lane_names") togglePanel(first);
   else if (kind === "panel") act({ kind: "panel", panel: first, on: !view.panels?.[second ?? first] });
   else if (kind === "tool") act({ kind: "tool", name: first });
   else if (kind === "call") menuCalls[first]();
   else if (kind === "lane" && first === "rename") renameLane(laneMenuRow(target));
   else if (kind === "lane") moveLane(laneMenuRow(target), first === "up" ? -1 : 1);
   else if (kind === "onLane") {
-    laneMenuAction(target, row => first === "layer" ? act({ kind: "lane", row, operation: "add_layer" }) : $(second)?.click());
+    laneMenuAction(target, row => first === "layer" ? act({ kind: "lane", row, operation: "add_layer" })
+      : first === "call" ? menuCalls[second]() : $(second)?.click());
   }
 }
 
@@ -99,6 +107,7 @@ function menuChecked({ item, target, value, source }) {
   if (item.checked) return !!menuRules[item.checked](target, item);
   const [kind, first, second] = item.run ?? [];
   if (kind === "toggle") return !!menuField(second);
+  if (kind === "panel" && first !== "lane_names") return panelOn(first);
   if (kind === "panel") return !!view.panels?.[second ?? first];
   return undefined;
 }

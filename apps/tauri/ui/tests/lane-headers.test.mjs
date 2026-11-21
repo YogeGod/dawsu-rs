@@ -16,7 +16,9 @@ function shown(rows, names = true, busy = false) {
   bridge.lanes = { names, busy, rows };
   return render(LaneHeaders).body;
 }
-const rowsOf = html => html.split(/(?=<div class="lane\b)/).slice(1);
+// The Add lane row closes the column; it is not a lane row.
+const rowsOf = html => html.split(/(?=<div class="lane\b)|(?=<button[^>]*id="add-lane")/)
+  .filter(row => row.startsWith('<div class="lane'));
 const buttons = html => [...html.matchAll(/<button\b[^>]*>([^]*?)<\/button>/g)].map(match => ({
   tag: match[0].slice(0, match[0].indexOf(">") + 1), text: match[1].replace(/<[^>]+>/g, "").trim(),
 }));
@@ -127,4 +129,57 @@ test("an unassigned drum row shows its name only, or a dash with names hidden", 
   assert.equal(buttons(row).length, 0);
   const [compact] = rowsOf(shown([drum], false));
   assert.match(compact, /title="Ghost · Unassigned">–<\/span>/);
+});
+
+// A main lane folds its numbered layers like a folder, more quietly.
+test("a main lane with layers is a family head with a fold arrow", () => {
+  const head = more => rowsOf(shown([lane({ name: "Finish", family: { label: "Collapse normal-hitfinish layers", ...more } })]))[0];
+  const open = head({ collapsed: false });
+  assert.match(open, /^<div class="lane\b[^"]*\bfamily-head\b/);
+  assert.match(buttons(open)[2].tag, /class="lane-disclosure[^"]*"[^>]*aria-expanded="true"/);
+  assert.equal(buttons(open)[2].text, "▾");
+  const folded = head({ collapsed: true, label: "Expand normal-hitfinish layers" });
+  assert.match(buttons(folded)[2].tag, /aria-expanded="false"[^>]*aria-label="Expand normal-hitfinish layers"/);
+  assert.equal(buttons(folded)[2].text, "▸");
+});
+
+test("a layer row is indented under its main lane by a guide", () => {
+  const [layer, plain] = rowsOf(shown([lane({ layer: true, name: "Finish 2" }), lane({ key: "lane:1", row: 1 })]));
+  assert.match(layer, /<span class="num[^>]*>5<\/span>\s*(<!--[^>]*-->)*<span class="layer-guide[^"]*" aria-hidden="true"><\/span>/);
+  assert.doesNotMatch(plain, /layer-guide/);
+});
+
+test("− removes the lane: named for screen readers, after +, disabled while busy or for a protected lane", () => {
+  const remove = { label: "Remove Finish 3", disabled: false };
+  const [row] = rowsOf(shown([lane({ name: "Finish 3", addLayer: "Add numbered normal-hitfinish layer", remove })]));
+  assert.deepEqual(buttons(row).map(button => button.text), ["M", "S", "Finish 3", "+", "−"]);
+  const minus = buttons(row)[4].tag;
+  assert.match(minus, /class="lane-remove[^"]*"/);
+  assert.match(minus, /aria-label="Remove Finish 3"/);
+  assert.doesNotMatch(minus, /\sdisabled/);
+  assert.match(buttons(rowsOf(shown([lane({ remove })], true, true))[0]).at(-1).tag, /\sdisabled/);
+  assert.match(buttons(rowsOf(shown([lane({ remove: { ...remove, disabled: true } })]))[0]).at(-1).tag, /\sdisabled/);
+  assert.doesNotMatch(rowsOf(shown([lane({ remove: null })]))[0], /lane-remove/);
+  // With lane names hidden it stays, beside +.
+  assert.deepEqual(buttons(rowsOf(shown([lane({ addLayer: "Add", remove })], false))[0]).map(button => button.text), ["M", "S", "▶", "+", "−"]);
+});
+
+// v3 §4 and f1: the last row of the lane column adds a lane. No command is bound to it, so it
+// shows no shortcut; menus.js presses it by its id.
+test("the last row is Add lane, after the lanes, and waits while a job runs", () => {
+  bridge.lanes = null;
+  assert.doesNotMatch(render(LaneHeaders).body, /id="add-lane"/);
+  const html = shown([folder(), lane()]);
+  const add = buttons(html).at(-1);
+  assert.match(add.tag, /id="add-lane"/);
+  assert.match(add.tag, /class="add-lane-row[^"]*"/);
+  assert.equal(add.text, "Add lane");
+  assert.doesNotMatch(add.tag, /disabled/);
+  assert.ok(html.indexOf('id="add-lane"') > html.lastIndexOf('data-lane-row="0"'));
+  assert.match(buttons(shown([lane()], true, true)).at(-1).tag, /disabled/);
+  // Its name shows, so it needs no tooltip; with lane names hidden it keeps its + and a tooltip.
+  assert.doesNotMatch(add.tag, /title=/);
+  const iconOnly = buttons(shown([lane()], false)).at(-1);
+  assert.equal(iconOnly.text, "");
+  assert.match(iconOnly.tag, /title="Add lane"/);
 });

@@ -2,13 +2,18 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { createContext, runInContext } from "node:vm";
+import { dockingRules } from "./docking-rules.mjs";
 
 const app = await readFile(new URL("../dist/app.js", import.meta.url), "utf8");
 const enabled = { browser: true, inspector: true, controller: true, laneNames: true };
 
-test("folder tree and Classic share the same mapset samples and preserve explicit assignment", async () => {
+// app.js builds the Browser as a plain model and hands it to the Svelte parts; they answer through
+// sampleBrowserAction(). The fake bundle keeps the last model.
+async function browserPage() {
   const elements = new Map();
   const calls = [];
+  const invoked = [];
+  const handed = [];
   function element() {
     return {
       listeners: new Map(), children: [], dataset: {}, style: {}, classList: { toggle() {} },
@@ -30,27 +35,37 @@ test("folder tree and Classic share the same mapset samples and preserve explici
     return elements.get(id);
   };
   let classicBrowser = false;
+  const previews = { "lane:1": { ms: 210, peaks: [0.5, 1, 0.25] }, "library:Drums/snare.wav": { ms: 1500, peaks: [1, 0.5] } };
   const context = createContext({
     document: {
       getElementById: get, createElement: element, querySelectorAll: () => [], addEventListener() {},
     },
-    window: { __TAURI__: {
-      core: { invoke: async (command, args) => {
-        calls.push(JSON.parse(JSON.stringify(args?.action ?? null)));
-        if (command === "editor_view" && args?.action?.kind === "browser_style") {
-          classicBrowser = args.action.classic;
-        }
-        if (command === "list_library") {
-          assert.equal(args.location.root, "C:/fixtures/library");
-          return args.location.path === ""
-            ? [["Drums", true]]
-            : [["clap.wav", false], ["snare.wav", false]];
-        }
-        return {busy: false, activeLane: 0, hasDocument: true, panels: {...enabled},
-          classicBrowser, hitsoundLibrary: "C:/fixtures/library"};
+    window: { editorDocking: dockingRules,
+      dawsuUi: { browser: model => handed.push(JSON.parse(JSON.stringify(model))), update() {}, lanes() {}, inspector() {} },
+      __TAURI__: {
+        core: { invoke: async (command, args) => {
+          if (command === "editor_view") calls.push(JSON.parse(JSON.stringify(args?.action ?? null)));
+          else invoked.push([command, JSON.parse(JSON.stringify(args))]);
+          if (command === "editor_view" && args?.action?.kind === "browser_style") {
+            classicBrowser = args.action.classic;
+          }
+          if (command === "list_library") {
+            assert.equal(args.location.root, "C:/fixtures/library");
+            return args.location.path === ""
+              ? [["Drums", true]]
+              : [["clap.wav", false], ["snare.wav", false]];
+          }
+          if (command === "sample_preview") {
+            const { kind, row, location } = args.source;
+            const answer = previews[kind === "lane" ? "lane:" + row : "library:" + location.path];
+            if (!answer) throw "Decoding failed";
+            return answer;
+          }
+          return {busy: false, activeLane: 0, hasDocument: true, panels: {...enabled},
+            classicBrowser, hitsoundLibrary: "C:/fixtures/library"};
+        } },
+        event: { listen() {} },
       } },
-      event: { listen() {} },
-    } },
     ResizeObserver: class { observe() {} },
     setInterval() {},
     requestAnimationFrame() {},
@@ -60,68 +75,206 @@ test("folder tree and Classic share the same mapset samples and preserve explici
   runInContext(`scene = {path: "copy.osu", lanes: [
     {key: "normal", sourceKey: "normal", name: "normal-hitnormal", canReplace: true},
     {key: "clap", sourceKey: "clap", name: "Snare", sample: "percussion/snare.wav"},
+    {key: "kick", sourceKey: "kick", name: "Kick", sample: "kick.wav"},
   ]};
   renderPanelLayout();`, context);
-  assert.equal(get("editor-dock").dataset.browser, "tree");
-  assert.equal(get("sample-browser").parentNode, get("tree-browser-host"));
-  const rows = get("sample-browser-entries");
-  const click = (node) => node.listeners.get("click")();
-  assert.deepEqual(rows.children.map(row => row.textContent), ["percussion"]);
-  click(rows.children[0]);
-  assert.deepEqual(rows.children.map(row => row.textContent), ["percussion", "snare.wav"]);
-  click(rows.children[1]);
-  await runInContext("pending", context);
-  assert.deepEqual(calls.at(-1), {kind: "lane", row: 1, operation: "preview_sample"});
+  const action = (...args) => context.sampleBrowserAction(...args);
+  const settle = () => runInContext("pending", context);
+  const model = () => handed.at(-1);
+  const labels = () => model().rows.map(row => row.label);
+  return { context, calls, invoked, handed, model, labels, action, settle, get };
+}
 
-  runInContext(`let controls;
-    modal = (_kind, _title, body) => { controls = body; };
-    labeled = (label, control) => ({label, control});`, context);
-  click(get("panel-view"));
-  const style = runInContext('controls.find(item => item.label === "File browser style").control', context);
-  style.value = "classic";
-  style.listeners.get("change")();
-  await runInContext("pending", context);
-  assert.deepEqual(calls.at(-1), {kind: "browser_style", classic: true});
-  assert.equal(get("editor-dock").dataset.browser, "classic");
-  assert.equal(get("sample-browser").parentNode, get("classic-browser-host"));
-  assert.deepEqual(rows.children.map(row => row.textContent), ["percussion"]);
-  click(rows.children[0]);
-  assert.deepEqual(rows.children.map(row => row.textContent), ["snare.wav"]);
-  assert.equal(get("sample-browser-up").disabled, false);
-  click(get("sample-browser-up"));
-  assert.deepEqual(rows.children.map(row => row.textContent), ["percussion"]);
-  click(rows.children[0]);
-  click(rows.children[0]);
-  await runInContext("pending", context);
-  click(get("sample-browser-assign"));
-  await runInContext("pending", context);
+test("the tree lists map folder samples under Mapset samples, folds folders and previews a sample", async () => {
+  const { context, calls, invoked, model, labels, action, settle } = await browserPage();
+  assert.equal(model().source, "mapset");
+  assert.equal(model().classic, false);
+  assert.equal(model().root, "Mapset samples");
+  assert.equal(model().defaults, true, "the Default samples section shows on the Mapset tab");
+  assert.deepEqual(labels(), ["percussion", "kick.wav"]);
+  assert.deepEqual(model().rows.map(row => [row.kind, row.depth, row.open ?? null, row.selected]),
+    [["folder", 0, false, false], ["sample", 0, null, false]]);
+  assert.equal(model().preview, null);
+  assert.equal(model().canAssign, false);
+  assert.equal(model().canPick, true);
+
+  action("toggle", "percussion");
+  assert.deepEqual(labels(), ["percussion", "snare.wav", "kick.wav"]);
+  assert.deepEqual(model().rows.map(row => row.depth), [0, 1, 0]);
+  assert.equal(model().rows[0].open, true);
+
+  action("pick", "percussion/snare.wav");
+  // The name shows at once; the length and outline follow the backend's answer.
+  assert.deepEqual(model().preview, { name: "snare.wav", title: "percussion/snare.wav", ms: null, peaks: null });
+  await settle();
+  assert.deepEqual(calls.at(-1), {kind: "lane", row: 1, operation: "preview_sample"});
+  assert.deepEqual(invoked.at(-1), ["sample_preview", { source: { kind: "lane", row: 1 } }]);
+  assert.equal(model().rows[1].selected, true);
+  assert.deepEqual(model().preview, { name: "snare.wav", title: "percussion/snare.wav", ms: 210, peaks: [0.5, 1, 0.25] });
+  assert.equal(model().canAssign, true);
+
+  // Play and picking the same row again ask for the outline again (the file may have changed),
+  // keeping the shown length meanwhile.
+  const asked = invoked.length;
+  action("play");
+  assert.equal(model().preview.ms, 210);
+  await settle();
+  assert.deepEqual(calls.at(-1), {kind: "lane", row: 1, operation: "preview_sample"});
+  assert.equal(invoked.length, asked + 1);
+  action("pick", "percussion/snare.wav");
+  await settle();
+  assert.equal(invoked.length, asked + 2);
+
+  action("assign");
+  await settle();
   assert.deepEqual(calls.at(-1), {kind: "replace_sample", target: {map: "copy.osu", lane: "normal"},
     path: "percussion/snare.wav", mapset: true});
 
-  const source = get("sample-browser-source");
-  source.value = "library";
-  source.listeners.get("change")();
-  await runInContext("pending", context);
-  assert.deepEqual(rows.children.map(row => row.textContent), ["Drums"]);
-  click(rows.children[0]);
-  await runInContext("pending", context);
-  assert.deepEqual(rows.children.map(row => row.textContent), ["clap.wav", "snare.wav"]);
-  const filter = get("sample-browser-filter");
-  filter.value = "SNARE";
-  filter.listeners.get("input")();
-  assert.deepEqual(rows.children.map(row => row.textContent), ["snare.wav"]);
-  click(rows.children[0]);
-  await runInContext("pending", context);
+  // A sample the backend can't decode shows its name only: no length and no outline.
+  action("pick", "kick.wav");
+  await settle();
+  assert.deepEqual(model().preview, { name: "kick.wav", title: "kick.wav", ms: null, peaks: null });
+
+  // The search reaches into closed folders: a folder with a match shows open, one without hides.
+  action("toggle", "percussion");
+  assert.equal(model().rows[0].open, false);
+  action("filter", "SNARE");
+  assert.deepEqual(labels(), ["percussion", "snare.wav"]);
+  assert.equal(model().rows[0].open, true);
+  assert.equal(model().filter, "SNARE");
+  assert.equal(model().canAssign, false, "a sample the filter hides can't be used");
+  action("filter", "nothing");
+  assert.deepEqual(model().rows.map(row => [row.kind, row.label]), [["note", "No matching samples."]]);
+  action("filter", "");
+
+  // A picked sample whose lane is gone is dropped, so Play has nothing to play.
+  runInContext("scene = {...scene, lanes: scene.lanes.slice(0, 2)}; renderSampleBrowser();", context);
+  assert.equal(model().preview, null);
+  const sent = calls.length;
+  action("play");
+  await settle();
+  assert.equal(calls.length, sent);
+});
+
+test("the Library tab lists the hitsound library and previews its files", async () => {
+  const { calls, invoked, model, labels, action, settle } = await browserPage();
+  action("source", "library");
+  await settle();
+  assert.equal(model().source, "library");
+  assert.equal(model().root, "library");
+  assert.equal(model().defaults, false);
+  assert.deepEqual(labels(), ["Drums"]);
+  // Folders not yet opened may still hold a match, so the search doesn't say there is none.
+  action("filter", "zzz");
+  assert.deepEqual(model().rows.map(row => [row.kind, row.label]), [["folder", "Drums"]]);
+  action("filter", "");
+  action("toggle", "Drums");
+  assert.deepEqual(model().rows.map(row => [row.kind, row.label]), [["folder", "Drums"], ["note", "Loading samples…"]]);
+  await settle();
+  assert.deepEqual(labels(), ["Drums", "clap.wav", "snare.wav"]);
+  action("filter", "SNARE");
+  assert.deepEqual(labels(), ["Drums", "snare.wav"]);
+  action("pick", "Drums/snare.wav");
+  await settle();
   const location = {root: "C:/fixtures/library", path: "Drums/snare.wav"};
   assert.deepEqual(calls.at(-1), {kind: "preview_library_sample", location});
-  click(get("sample-browser-assign"));
-  await runInContext("pending", context);
+  assert.deepEqual(invoked.at(-1), ["sample_preview", { source: { kind: "library", location } }]);
+  assert.deepEqual(model().preview, { name: "snare.wav", title: "Drums/snare.wav", ms: 1500, peaks: [1, 0.5] });
+  action("assign");
+  await settle();
   assert.deepEqual(calls.at(-1), {kind: "replace_library_sample", location,
     target: {map: "copy.osu", lane: "normal"}});
+  // Switching tabs clears the selection and its preview.
+  action("source", "mapset");
+  assert.equal(model().preview, null);
+});
+
+test("Classic opens one folder at a time with Up, inside the Inspector", async () => {
+  const { context, calls, model, labels, action, settle, get } = await browserPage();
+  runInContext(`let controls;
+    modal = (_kind, _title, body) => { controls = body; };
+    labeled = (label, control) => ({label, control});`, context);
+  runInContext("openViewSettings()", context);
+  const style = runInContext('controls.find(item => item.label === "Browser style").control', context);
+  style.value = "classic";
+  style.listeners.get("change")();
+  await settle();
+  assert.deepEqual(calls.at(-1), {kind: "browser_style", classic: true});
+  assert.equal(model().classic, true);
+  assert.equal(model().root, null);
+  assert.equal(model().defaults, false, "Classic keeps to the folders it can open");
+  assert.deepEqual(model().folder, { label: "Mapset samples", title: "", canUp: false });
+  assert.deepEqual(labels(), ["percussion", "kick.wav"]);
+  // Entering a folder replaces the rows, so focus moves to the first new row.
+  let focused = 0;
+  get("sample-browser-entries").querySelector = () => ({ focus() { focused++; } });
+  action("toggle", "percussion");
+  assert.equal(focused, 1);
+  assert.deepEqual(labels(), ["snare.wav"]);
+  assert.deepEqual(model().folder, { label: "percussion", title: "percussion", canUp: true });
+  action("up");
+  assert.deepEqual(labels(), ["percussion", "kick.wav"]);
+  action("toggle", "percussion");
+  action("pick", "percussion/snare.wav");
+  await settle();
+  action("assign");
+  await settle();
+  assert.deepEqual(calls.at(-1), {kind: "replace_sample", target: {map: "copy.osu", lane: "normal"},
+    path: "percussion/snare.wav", mapset: true});
+  // The Library in Classic: one folder at a time too.
+  action("source", "library");
+  await settle();
+  assert.deepEqual(model().folder, { label: "Library", title: "C:/fixtures/library", canUp: false });
+  assert.deepEqual(labels(), ["Drums"]);
+  action("toggle", "Drums");
+  await settle();
+  assert.deepEqual(labels(), ["clap.wav", "snare.wav"]);
+  assert.deepEqual(model().folder, { label: "Drums", title: "C:/fixtures/library/Drums", canUp: true });
+  action("up");
+  assert.deepEqual(labels(), ["Drums"]);
+  action("source", "mapset");
+  // Close folds the Browser through the same path as every other switch.
+  runInContext("var toggled = []; togglePanel = panel => toggled.push(panel);", context);
+  get("sample-browser-close").listeners.get("click")();
+  assert.deepEqual(JSON.parse(runInContext("JSON.stringify(toggled)", context)), ["browser"]);
   runInContext('act({ kind: "browser_style", classic: false });', context);
-  await runInContext("pending", context);
-  assert.equal(get("sample-browser").parentNode, get("tree-browser-host"));
-  assert.deepEqual(rows.children.map(row => row.textContent), ["Drums"]);
-  click(rows.children[0]);
-  assert.deepEqual(rows.children.map(row => row.textContent), ["Drums", "snare.wav"]);
+  await settle();
+  assert.equal(model().classic, false);
+  assert.deepEqual(labels(), ["percussion", "kick.wav"]);
+  action("toggle", "percussion");
+  assert.deepEqual(labels(), ["percussion", "snare.wav", "kick.wav"]);
+});
+
+test("a busy editor greys out the sample rows and both buttons", async () => {
+  const { context, model, action } = await browserPage();
+  action("pick", "kick.wav");
+  runInContext("view.busy = true; renderSampleBrowser();", context);
+  assert.equal(model().busy, true);
+  assert.equal(model().canAssign, false);
+  assert.equal(model().canPick, false);
+});
+
+test("opening another map clears the Library's picked sample and open folders too", async () => {
+  const { context, model, labels, action, settle } = await browserPage();
+  action("source", "library");
+  await settle();
+  action("toggle", "Drums");
+  await settle();
+  action("pick", "Drums/snare.wav");
+  await settle();
+  runInContext('scene = {...scene, path: "other.osu"}; renderSampleBrowser();', context);
+  await settle();
+  assert.equal(model().preview, null);
+  assert.deepEqual(labels(), ["Drums"]);
+});
+
+test("a very long sample list stops at 500 rows and asks for a search", async () => {
+  const { context, model, action } = await browserPage();
+  runInContext(`scene = {...scene, lanes: Array.from({length: 600}, (_, i) =>
+    ({key: "s" + i, sourceKey: "s" + i, name: "s" + i, sample: "s" + String(i).padStart(3, "0") + ".wav"}))};
+    renderSampleBrowser();`, context);
+  assert.equal(model().rows.length, 501);
+  assert.deepEqual(model().rows.at(-1), { kind: "note", key: "note:500", label: "Search to see more samples.", depth: 0 });
+  action("filter", "s599");
+  assert.deepEqual(model().rows.map(row => row.label), ["s599.wav"]);
 });

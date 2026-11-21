@@ -18,7 +18,7 @@ button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid 
 input[type=checkbox],input[type=range]{accent-color:var(--hi);margin:0}input[type=number]{width:58px}
 .chrome{display:flex;align-items:center;gap:6px;padding:7px 12px;background:var(--panel);border-bottom:1px solid var(--line);min-width:0}
 header.chrome{min-height:48px;background:var(--base)}.brand{letter-spacing:-.06em;font-size:23px;font-weight:800;margin-right:8px}.brand span{color:var(--hi)}
-.title,.spacer{flex:1;min-width:0}.title{text-align:center;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--title-text)}
+.spacer{flex:1;min-width:0}
 #home{flex:1;display:grid;place-items:center;padding:24px}.home-panel{width:min(460px,100%);border:1px solid var(--line);background:var(--panel);padding:30px;border-radius:12px}.home-panel .brand{font-size:36px}.home-panel p,.dim{color:var(--muted)}.home-panel h1{margin:8px 0;font-size:28px}.primary{background:var(--hi);color:var(--on-accent);font-weight:700}.primary:hover:not(:disabled){background:var(--hi-hover);color:var(--on-accent)}#recent{display:grid;gap:6px;margin-top:18px}#recent button{text-align:left;overflow:hidden;text-overflow:ellipsis}
 #workspace{display:flex;flex-direction:column;flex:1;min-height:0}
 #workspace > :not(#editor-dock){flex-shrink:0}
@@ -73,19 +73,12 @@ button[data-layout-selected]{outline:1px solid var(--hi);outline-offset:-1px}
 button[data-layout-hidden],button[data-layout-unavailable]{display:none!important}
 button[data-layout-width]{width:var(--layout-width)!important;min-width:0;flex-shrink:0;overflow:hidden;text-overflow:ellipsis}
 button[data-layout-height]{height:var(--layout-height)!important;min-height:0;overflow:hidden}
-[data-layout-editing] .dock-tab{cursor:grab;touch-action:none}
 [data-layout-editing] .dock-grip::after{background:var(--hi)}
 .tools{flex-wrap:wrap}.row,.toggle{display:flex;align-items:center;gap:6px}
 .ribbon-group{min-width:0;display:grid;gap:3px;align-self:stretch}
 .ribbon-group+.ribbon-group{border-left:1px solid var(--line);padding-left:8px}
 .ribbon-caption{font-size:11px;color:var(--muted);line-height:1}
 .ribbon-controls{display:flex;align-items:center;gap:6px}
-.ribbon-controls #difficulty{width:auto;max-width:clamp(6rem,15vw,13rem)}
-.view-panel-toggles{padding-right:6px;border-right:1px solid var(--line)}
-.view-panel-toggles button{display:flex;align-items:center;gap:5px}
-.view-panel-icon{width:16px;height:16px;background:currentColor;mask-size:contain;mask-repeat:no-repeat}
-#view-browser .view-panel-icon{mask-image:url("studio-assets/icons/PanelLeft.svg")}
-#view-inspector .view-panel-icon{mask-image:url("studio-assets/icons/PanelRight.svg")}
 #editor-menus{display:flex;gap:2px;padding:2px 12px;background:var(--panel);border-bottom:1px solid var(--line)}
 #editor-menus button{min-height:24px;padding:3px 7px;border-color:transparent;background:transparent}
 #editor-menus button:hover,#editor-menus button[aria-expanded="true"]{border-color:var(--line);background:var(--control)}
@@ -103,10 +96,8 @@ button[data-layout-height]{height:var(--layout-height)!important;min-height:0;ov
 .menu-choice[aria-checked="true"]{border-color:var(--hi);background:var(--hi);color:var(--on-accent)}
 .menu-choice[aria-checked="true"]:disabled{opacity:.75}
 .tools .ribbon-controls{flex-wrap:wrap}
-#go-home .button-icon{margin:0}
 @media (max-width:1320px){.ribbon-caption{display:none}}
-@media (max-width:1230px){.ribbon-secondary-label{display:none}#open .button-icon{margin:0}}
-.dock{display:grid;min-height:0;grid-template-columns:minmax(0,1fr) 242px}.arrange{display:grid;min-height:0;--ruler-row:min(calc(21px + max(26px,var(--wave-height,56px))),max(47px,calc(100% - var(--timeline-reserve,144px))));grid-template-rows:minmax(20px,max-content) var(--ruler-row) minmax(0,1fr);--lane-default-width:clamp(170px,18vw,250px);--lanes:clamp(99px,var(--layout-lane-width,var(--lane-default-width)),max(99px,calc(100cqw - 140px)));background:var(--field)}.ruler,.overview,.scroll{display:grid;grid-template-columns:var(--lanes) minmax(0,1fr);min-width:0}.scroll{overflow:auto;align-items:start;scrollbar-gutter:stable}.ruler,.overview{padding-right:12px}.ruler{background:var(--ruler);border-bottom:1px solid var(--line)}.overview{background:var(--lane);border-top:1px solid var(--line)}.lane-title{background:var(--lane);color:var(--muted);display:flex;align-items:center;padding:0 12px;border-right:1px solid var(--line)}#lanes{border-right:1px solid var(--line)}
+.arrange{display:grid;min-height:0;--ruler-row:min(calc(40px + max(26px,var(--wave-height,84px))),max(66px,calc(100% - var(--timeline-reserve,144px))));grid-template-rows:var(--ruler-row) minmax(0,1fr) minmax(20px,max-content);--lane-default-width:clamp(170px,18vw,250px);--lanes:clamp(99px,var(--layout-lane-width,var(--lane-default-width)),max(99px,calc(100cqw - 140px)));background:var(--field)}.ruler,.overview,.scroll{display:grid;grid-template-columns:var(--lanes) minmax(0,1fr);min-width:0}.scroll{overflow:auto;align-items:start;scrollbar-gutter:stable}.ruler,.overview{padding-right:12px}.ruler{background:var(--ruler);border-bottom:1px solid var(--line)}.overview{background:var(--lane);border-top:1px solid var(--line)}.lane-title{background:var(--lane);color:var(--muted);display:flex;align-items:center;padding:0 12px;border-right:1px solid var(--line)}#lanes{border-right:1px solid var(--line)}
 canvas{display:block;width:100%;height:100%;min-width:0;touch-action:none}#grid,#controller,#ruler,#overview{cursor:default}
 aside{overflow:auto;border-left:1px solid var(--line);background:var(--panel)}aside section{padding:12px;border-bottom:1px solid var(--line)}h2{font-size:13px;margin:0 0 10px}.dim{font-weight:400;margin-left:4px}aside label{display:flex;justify-content:space-between;align-items:center;gap:6px;margin:8px 0}#difficulty{width:100%}
 #statusbar{background:var(--control);border-top:1px solid var(--line);color:var(--title-text);min-height:26px;padding:3px 12px;display:flex;gap:8px;align-items:center}#status{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}#statusbar button{min-height:22px}
@@ -124,22 +115,20 @@ dialog{color:var(--text);background:var(--raised);border:1px solid var(--button-
 :is(.ruler-controls button, button[data-layout-ruler-icon]) svg{width:13px;height:13px;fill:none;stroke:currentColor;stroke-width:1.3;stroke-linecap:round;stroke-linejoin:round}
 .ruler-sidebar button{min-width:18px;min-height:18px;padding:0 3px;line-height:1}
 .arrange[data-lane-names="false"] .lane-title-controls > span{display:none}
-.arrange{grid-template-rows:var(--layout-timeline-rows,minmax(20px,max-content) var(--ruler-row) minmax(0,1fr) auto)}.controller{background:var(--field);display:grid;grid-template-columns:var(--lanes) minmax(0,1fr);min-width:0;padding-right:12px;border-top:1px solid var(--line)}
-@media(max-width:800px){.dock{grid-template-columns:minmax(0,1fr) 205px}.arrange{--lane-default-width:115px}.chrome{padding-inline:7px;gap:4px}aside section{padding:9px}}
+.arrange{grid-template-rows:var(--layout-timeline-rows,var(--ruler-row) minmax(0,1fr) auto minmax(20px,max-content))}.controller{background:var(--field);display:grid;grid-template-columns:var(--lanes) minmax(0,1fr);min-width:0;padding-right:12px;border-top:1px solid var(--line)}
+@media(max-width:800px){.arrange{--lane-default-width:115px}.chrome{padding-inline:7px;gap:4px}aside section{padding:9px}}
 
 body{font-family:Inter,"Segoe UI",system-ui,sans-serif}
 .brand{display:inline-flex;align-items:center}
 .brand img{width:24px;height:24px;margin-right:7px}
 .home-panel .brand img{width:40px;height:40px;margin-right:10px}
 .button-icon{width:16px;height:16px;vertical-align:-3px;margin-right:5px}
-button[aria-label="Undo"] .button-icon,button[aria-label="Redo"] .button-icon{margin-right:0}
 
 #editor-inspector .row{flex-wrap:wrap}
 
 #audio-buffer{width:112px}
 #save-problem-badge{margin-left:4px;padding:0 4px;border-radius:8px;background:#fccf77;color:#211700;font-weight:bold}
-.dock[data-inspector="false"]{grid-template-columns:minmax(0,1fr)}
-.arrange[data-controller="false"]{--timeline-reserve:78px;grid-template-rows:var(--layout-timeline-rows,minmax(20px,max-content) var(--ruler-row) minmax(0,1fr))}
+.arrange[data-controller="false"]{--timeline-reserve:78px;grid-template-rows:var(--layout-timeline-rows,var(--ruler-row) minmax(0,1fr) minmax(20px,max-content))}
 .arrange > .ruler{position:relative}
 #waveform-resize{position:absolute;z-index:1;inset:auto 0 -2px;height:6px;cursor:row-resize;touch-action:none}
 #waveform-resize::after{content:"";position:absolute;inset:2px 0 2px var(--lanes);background:var(--line)}
@@ -150,27 +139,15 @@ button[aria-label="Undo"] .button-icon,button[aria-label="Redo"] .button-icon{ma
 .arrange[data-layout-lane-sidebar-hidden] > .layout-size-column{display:none}
 
 
-.dock[data-browser="tree"]{grid-template-columns:min(224px,24vw) minmax(0,1fr) 242px}
-.dock[data-browser="tree"][data-inspector="false"]{grid-template-columns:min(224px,24vw) minmax(0,1fr)}
-#tree-browser-host{border-left:0;border-right:1px solid var(--line)}
-.sample-browser-controls{margin-bottom:6px;justify-content:space-between}
-.sample-browser-source-controls{display:grid;gap:4px;margin-bottom:6px}
-#sample-browser-filter{min-width:0;border:1px solid var(--line);border-radius:5px;background:var(--field);padding:4px 8px}
-#sample-browser-folder{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-#sample-browser-entries,.sample-browser-actions{display:grid;gap:4px}
-#sample-browser-entries button{overflow:hidden;text-overflow:ellipsis;text-align:left;min-width:0}
-.sample-browser-entry[aria-expanded]::before{content:"▸ ";color:var(--muted)}
-.sample-browser-entry[aria-expanded="true"]::before{content:"▾ "}
-.sample-browser-actions{margin-top:8px}
 #classic-browser-host #sample-browser-entries{overflow:auto}
-@media(max-width:800px){.dock[data-browser="tree"]{grid-template-columns:min(170px,24vw) minmax(0,1fr) 205px}.dock[data-browser="tree"][data-inspector="false"]{grid-template-columns:min(170px,24vw) minmax(0,1fr)}}
 
 #editor-dock[data-docking] {
   position: relative;
   display: block;
   min-width: 0;
-  --dock-browser-width: 224px;
-  --dock-inspector-width: 208px;
+  /* v3 --dock-width; a folded panel is a 44 px rail (ui/src/tokens.css --rail-width). */
+  --dock-browser-width: 246px;
+  --dock-inspector-width: 246px;
 }
 .dock-group, .dock-split {
   display: grid;
@@ -179,8 +156,9 @@ button[aria-label="Undo"] .button-icon,button[aria-label="Redo"] .button-icon{ma
   min-width: 0;
   min-height: 0;
 }
-.dock-group { grid-template: 24px minmax(0, 1fr) / minmax(0, 1fr); }
-.dock-group > [role="tabpanel"] { min-width: 0; }
+.dock-group { grid-template: minmax(0, 1fr) / minmax(0, 1fr); }
+.dock-group > * { min-width: 0; }
+.dock-group > aside { display: flex; flex-direction: column; }
 .dock-group > .arrange { overflow: hidden; }
 .arrange > :is(.ruler, .controller, .overview) {
   grid-template-rows: minmax(0, 1fr);
@@ -190,6 +168,10 @@ button[aria-label="Undo"] .button-icon,button[aria-label="Redo"] .button-icon{ma
 .dock-group > aside { border-inline: 0; }
 .dock-split[data-axis="columns"] { grid-template-columns: var(--dock-first) 6px minmax(0, 1fr); }
 .dock-split[data-axis="rows"] { grid-template-rows: var(--dock-first) 6px minmax(0, 1fr); }
+/* A folded side: its rail takes --dock-first and the grip rests at no width. */
+.dock-split[data-locked][data-axis="columns"] { grid-template-columns: var(--dock-first) 0 minmax(0, 1fr); }
+.dock-split[data-locked][data-axis="rows"] { grid-template-rows: var(--dock-first) 0 minmax(0, 1fr); }
+.dock-split[data-locked] > .dock-grip { visibility: hidden; }
 .dock-grip {
   position: relative;
   min-width: 0;
@@ -203,54 +185,6 @@ button[aria-label="Undo"] .button-icon,button[aria-label="Redo"] .button-icon{ma
 .dock-split[data-axis="rows"] > .dock-grip::after { inset: 2px 0; }
 .dock-grip:hover::after, .dock-grip:focus-visible::after { background: var(--hi); }
 .dock-grip:focus-visible { outline: 1px solid var(--hi); outline-offset: -1px; }
-.dock-bar {
-  display: flex;
-  align-items: stretch;
-  justify-content: space-between;
-  gap: 4px;
-  min-width: 0;
-  height: 24px;
-  padding: 0 4px;
-  background: var(--base);
-  border-bottom: 1px solid var(--line);
-}
-.dock-tabs { display: flex; min-width: 0; overflow-x:auto; overflow-y:hidden; scrollbar-width:thin; }
-.dock-tab {
-  flex: none;
-  min-height:0;
-  padding:0 9px;
-  border: 0;
-  border-bottom: 2px solid transparent;
-  border-radius: 0;
-  background: transparent;
-  color: var(--muted);
-  cursor: grab;
-  font-size: 12px;
-}
-.dock-tab[aria-selected="true"] { background: var(--panel); border-bottom-color: var(--hi); color: var(--text); }
-.dock-tab:focus-visible { outline-offset: -2px; }
-.dock-move { flex: none; min-height: 20px; margin: 1px 0; padding: 0 7px; font-size: 11px; }
-.dock-options {
-  position: fixed;
-  z-index: 5;
-  display: grid;
-  gap: 2px;
-  width: 170px;
-  overflow: auto;
-  padding: 5px;
-  border: 1px solid var(--button-border);
-  border-radius: 6px;
-  background: var(--raised);
-  box-shadow: 0 8px 22px #0008;
-}
-.dock-preview {
-  position: absolute;
-  z-index: 2;
-  pointer-events: none;
-  border: 2px solid var(--hi);
-  background: #77bdfa30;
-}
-.dock-preview[data-placement="tabs"] { background: #77bdfa1c; }
 
 /* Shared control surfaces from the desktop editor component sheet. */
 .playback-rates { display:grid; grid-auto-flow:column; gap:2px; padding:2px; border-radius:5px; background:var(--base); }
@@ -259,39 +193,17 @@ button[aria-label="Undo"] .button-icon,button[aria-label="Redo"] .button-icon{ma
 .row[aria-label="Lane view"] { gap: 2px; background: #2c2c2c; padding: 2px; border-radius: 5px; }
 .row[aria-label="Lane view"] button { border: 0; background: transparent; }
 .row[aria-label="Lane view"] button[aria-pressed="true"] { color: var(--hi); background: #454545; }
-#sample-browser-filter { border: 0; background: #111; min-height: 30px; padding-inline: 10px; }
-#sample-browser-entries { gap: 2px; }
-#sample-browser-entries button { border: 0; border-radius: 4px; min-height: 28px; background: #151515; color: var(--text); }
-#sample-browser-entries button:nth-child(even) { background: #1c1c1c; }
-#sample-browser-entries button:hover { background: #3c3c3c; }
-#sample-browser-entries button[aria-pressed="true"] { background: #084266; }
 :root {
   --text:#f1f1f1; --muted:#a3a3a3; --hi:#77bdfa;
   --base:#151515; --panel:#1c1c1c; --chrome:#292929; --control:#3c3c3c;
   --field:#151515; --button:#2c2c2c; --button-border:#383838; --line:#383838;
 }
 header.chrome { min-height:44px; padding-block:4px; background:var(--chrome); }
-header #editor-menus { border:0; background:transparent; }
-header .title { text-align:right; padding-right:12px; }
-header #layout-edit-entry:not(:hover) { background:transparent; color:var(--muted); }
-/* v3: Export… on a hover fill with no edge, set apart from Save by a divider. */
-header.chrome #export-entry { background:#3c3c3c; border-color:transparent; margin-right:9px; position:relative; }
-header.chrome #export-entry:hover:not(:disabled) { background:#454545; }
-header.chrome #export-entry::after { content:""; position:absolute; right:-9px; top:4px; bottom:4px; width:1px; background:#454545; }
-header [data-action="review_save"]:not(:disabled) { background:var(--hi); color:var(--on-accent); }
-header [data-action="review_save"]:not(:disabled) .button-icon { filter:brightness(.24); }
-header [data-action="review_save"]:hover:not(:disabled) { background:var(--hi-hover); }
 /* Top-bar buttons sit on --chrome, so they get an --editor-selected edge (1.5:1 against the bar). */
-header.chrome button, header #editor-menus button { border-color:#454545; }
 .tools.chrome { background:var(--panel); gap:5px; padding:4px 8px; flex-wrap:nowrap; overflow-x:auto; scrollbar-width:thin; }
 .tools .ribbon-group { flex:none; align-content:center; }
 .tools .ribbon-controls { flex-wrap:nowrap; }
-.tools .ribbon-group[aria-label="View"] { margin-left:auto; }
 .tools .ribbon-controls { gap:3px; }
-@media (max-width:1230px) {
-  #editor-ribbon :is(#folders,#panel-view,#help) .button-icon { margin:0; }
-  #editor-ribbon .ribbon-group + .ribbon-group { padding-left:5px; }
-}
 button, select, input[type=number] { border-color:transparent; border-radius:4px; }
 button:focus-visible, select:focus-visible, input:focus-visible { outline-color:#a1d0f7; }
 input[type=checkbox] { appearance:none; width:28px; height:16px; border-radius:12px; background:#454545; display:inline-grid; align-items:center; padding:2px; flex:none; }
@@ -301,10 +213,6 @@ input[type=checkbox]:checked::before { background:#111; transform:translateX(12p
 aside { background:var(--panel); }
 aside h2 { font-size:12px; font-weight:650; padding-bottom:6px; border-bottom:1px solid var(--line); }
 aside section > :last-child { margin-bottom:0; }
-#sample-browser-entries button:not([aria-expanded])::before { content:""; display:inline-block; width:14px; height:14px; vertical-align:-2px; margin-right:7px; background:var(--hi); clip-path:polygon(0 43%,22% 43%,32% 13%,46% 76%,59% 22%,70% 50%,100% 50%,100% 62%,68% 62%,60% 46%,45% 95%,32% 41%,27% 58%,0 58%); }
-#sample-browser-entries button[aria-pressed=true]::after { content:"✓"; float:right; color:var(--hi); }
-.dock-tab[aria-selected=true] { border-bottom-color:var(--line); background:var(--chrome); }
-.dock-tabs { background:var(--chrome); }
 @media (forced-colors:active) { input[type=checkbox] { appearance:auto; } input[type=checkbox]::before { display:none; } }
 
 .ribbon-options:not(:popover-open) { display:none; }
@@ -322,8 +230,6 @@ aside section > :last-child { margin-bottom:0; }
 .tint-preview i:nth-of-type(3) { border:2px solid white; }
 
 /* Menus (design f6), menu-bar menus only: flat rows, keys as plain text, a grey switch track, segmented choice rows and group dividers. */
-header #editor-menus{gap:0;padding:2px;border-radius:6px;background:var(--button)}
-header #editor-menus button{min-height:26px;padding:3px 10px;border-radius:4px}
 #editor-menu[aria-labelledby]{grid-template-columns:minmax(0,1fr);gap:0;padding:6px;border-color:var(--line);border-radius:8px;box-shadow:0 14px 36px rgba(0,0,0,.55)}
 #editor-menu[aria-labelledby] .menu-item{gap:10px;min-height:30px;padding:4px 10px;border-radius:4px}
 #editor-menu[aria-labelledby] .menu-item:hover:not(:disabled),#editor-menu[aria-labelledby] .menu-item:focus-visible{background:var(--control);border-color:transparent;outline:0}
@@ -397,18 +303,10 @@ header #editor-menus button{min-height:26px;padding:3px 10px;border-radius:4px}
 #editor-ribbon .ribbon-caption{display:none}
 #editor-ribbon .ribbon-group{align-content:center}
 #editor-ribbon .ribbon-group+.ribbon-group{padding-left:6px}
-#editor-ribbon #grid-options,#editor-ribbon [popovertarget="options-Lanes"]{height:30px;min-height:30px;padding:0 10px;border-radius:6px;background:#2c2c2c}
-#editor-ribbon .row[aria-label="Lane view"] button{height:26px;min-height:26px;padding:0 12px}
-#editor-ribbon #difficulty{max-width:180px}
-#editor-ribbon [data-command="revert"]{display:inline-flex;align-items:center;gap:5px}
-#editor-ribbon [data-command="revert"] svg{width:16px;height:16px;flex:none;fill:none;stroke:currentColor;stroke-width:1.4;stroke-linecap:round;stroke-linejoin:round}
 @media (forced-colors:active){#editor-ribbon .row[aria-label="Lane view"] button[aria-pressed=true],#statusbar .playback-rates>button[aria-pressed=true]{outline:2px solid Highlight;outline-offset:-2px}}
-/* Every tool keeps its name from 1280 px; the other groups give way first (names, then padding). */
-@media (max-width:2159px){#editor-ribbon .ribbon-secondary-label{display:none}#editor-ribbon .button-icon{margin:0}}
-@media (max-width:1779px){#editor-ribbon .toolbar-toggle-label{display:none}}
-@media (max-width:1599px){#editor-ribbon.tools.chrome{gap:2px;padding-inline:6px}#editor-ribbon .ribbon-group+.ribbon-group{padding-left:3px}#editor-ribbon .ribbon-controls{gap:2px}#editor-ribbon .ribbon-controls>button,#editor-ribbon .view-panel-toggles button{min-width:28px;padding:0 5px;justify-content:center}#editor-ribbon .view-panel-toggles{padding-right:2px}#editor-ribbon #difficulty{max-width:120px}#editor-ribbon #grid-options,#editor-ribbon [popovertarget="options-Lanes"],#editor-ribbon .row[aria-label="Lane view"] button{padding:0 7px}}
-@media (max-width:1399px){#editor-ribbon #difficulty{max-width:96px}}
-@media (max-width:1099px){#editor-ribbon #difficulty{max-width:72px}#editor-ribbon #grid-options,#editor-ribbon [popovertarget="options-Lanes"],#editor-ribbon .row[aria-label="Lane view"] button{padding:0 4px}}
+#editor-ribbon #grid-options{height:30px;min-height:30px;padding:0 10px;border-radius:6px;background:#2c2c2c}
+/* Row 2 (v3 §3): the tools keep their names at every width; Audition goes icon-only below 1120 px. */
+@media (max-width:1119px){#editor-ribbon .toolbar-toggle-label{display:none}#editor-ribbon #grid-options{padding:0 6px}}
 #statusbar{--layout-min-height:32px;gap:10px;padding:0 12px}
 #statusbar #status{flex:0 1 auto;min-width:0}
 #statusbar .playback-rates{grid-template-rows:none;grid-template-columns:none;grid-auto-flow:column;gap:2px;padding:0;background:transparent}
@@ -423,11 +321,9 @@ header #editor-menus button{min-height:26px;padding:3px 10px;border-radius:4px}
 .status-counts{white-space:nowrap;font-variant-numeric:tabular-nums}
 /* Top bar transport: the Svelte TransportBar part (v3 §2.4) sits in #top-transport. */
 #editor-header{--layout-min-height:52px;gap:8px}
-#editor-header .title{flex:0 100 auto;min-width:0;max-width:22vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:0 4px;text-align:left;color:#c4c4c4;font-weight:600}
-#editor-header .title:empty::before{content:attr(data-placeholder)}
 .top-transport{display:flex;align-items:center;gap:6px;flex:none;padding:3px}
 #editor-header[data-empty="true"] .top-transport{opacity:.35}
-/* Centred in the room between the title and Layout…/Save, in the flow so it never covers the menus. */
+/* Centred in the room between the menus and Export…, in the flow so it never covers the menus. */
 #editor-header .top-transport{flex:1 0 auto;justify-content:center;padding:0}
 #editor-header>.spacer{flex:0}
 #statusbar .status-view{display:flex;align-items:center;gap:6px}

@@ -11,7 +11,7 @@ test("workstation chrome uses the design's neutral grey surfaces and shared blue
   assert.match(css, /:root\s*\{[^}]*--panel:\s*#1c1c1c\b/);
   assert.match(css, /:root\s*\{[^}]*--hi:\s*#77bdfa\b/);
 });
-test("the ruler paints a teal-tint and the overview a neutral background under the teal waveform frequency shades", async () => {
+test("the ruler paints the teal waveform frequency shades on a teal tint; the overview keeps a neutral background", async () => {
   const elements = new Map();
   function element() {
     const bands = [];
@@ -62,10 +62,10 @@ test("the ruler paints a teal-tint and the overview a neutral background under t
     scene.gameplay = {points: [["circle", 200], ["slider", 600]], spans: [["slider", 600, 800], ["spinner", 900, 1000]]};
     paint();`, context);
   assert.deepEqual(get("ruler").objects, [
-    { x: 50, y: 50.5, radius: 9, afterWaveform: true },
-    { x: 150, y: 50.5, radius: 9, afterWaveform: true },
+    { x: 50, y: 60, radius: 17, afterWaveform: true },
+    { x: 150, y: 60, radius: 17, afterWaveform: true },
   ]);
-  assert.ok(get("ruler").fills.includes("#62d6cfd9"));
+  assert.ok(get("ruler").fills.includes("#626567"), "slider track");
   assert.ok(get("ruler").fills.includes("#e6eef2"));
   assert.deepEqual(get("overview").objects, []);
   get("grid").fills.length = 0;
@@ -79,29 +79,11 @@ test("the ruler paints a teal-tint and the overview a neutral background under t
   get("grid").fills.length = 0;
   runInContext("hydrateLaneLayout(null); paint()", context);
   assert.ok(!get("grid").fills.includes("#ff55001f"));
-  runInContext(`
-    scene.lanes = [{group: "soft"}, {group: "normal"}, {group: "drum"}, {group: null}];
-    scene.moments = [[200, 50, true, [[0], [1]]], [201, 50, false, [[1]]],
-      [900, 50, true, [[2], [3]]], [1000, 50, true, []]];
-    scene.zoom = 1;
-    paint();`, context);
-  const overview = get("overview");
-  const marks = [[50, 3], [50, 17.8], [225, 32.6], [225, 47.4]];
-  assert.deepEqual(overview.hitMarks.map(([x, y]) => [x, Math.round(y * 10) / 10]),
-    marks);
-  overview.hitMarks.length = 0;
-  runInContext("scene.viewStart = 800; view.position = 900; paint()", context);
-  assert.deepEqual(overview.hitMarks.map(([x]) => x), [50, 50, 225, 225]);
-  overview.hitMarks.length = 0;
-  runInContext("scene = {...scene, moments: [[900, 50, true, [[2]]]]}; paint()", context);
-  assert.deepEqual(overview.hitMarks.map(([x]) => x), [225]);
-  overview.hitMarks.length = 0;
-  overview.clientWidth = 200;
-  runInContext("paint()", context);
-  assert.deepEqual(overview.hitMarks.map(([x]) => x), [150]);
+  // The overview draws object diamonds, not the song's waveform (timeline-spec "Overview strip").
+  assert.deepEqual(waveformBands.overview, []);
 
   const expected = ["#3c7673", "#46908c", "#51aaa5"];
-  for (const id of ["ruler", "overview"]) {
+  for (const id of ["ruler"]) {
     for (const [segment, x] of [48, 148, 248].entries()) {
       const levels = waveformBands[id].filter(rect => rect.x === x);
       assert.equal(levels.length, 4);

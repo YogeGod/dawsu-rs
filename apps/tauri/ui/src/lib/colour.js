@@ -33,13 +33,13 @@ export function oklchToHex(L, C, h) {
   ].map(byte).join("");
 }
 
-// color-mix(in oklch, colour p%, canvas). The canvas is grey, so its hue counts as missing and
-// the mix keeps the colour's hue.
-export function mixIntoCanvas(colour, percent) {
+// color-mix(in oklch, colour p%, canvas). The canvas (or another grey base) has no hue, so the
+// mix keeps the colour's hue.
+export function mixIntoCanvas(colour, percent, base = canvas) {
   if (percent >= 100) return colour.toLowerCase();
-  if (percent <= 0) return canvas;
+  if (percent <= 0) return base;
   const [L1, C1, h] = toOklch(colour);
-  const [L2, C2] = toOklch(canvas);
+  const [L2, C2] = toOklch(base);
   const p = percent / 100;
   return oklchToHex(L1 * p + L2 * (1 - p), C1 * p + C2 * (1 - p), h);
 }
