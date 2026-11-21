@@ -42,7 +42,7 @@ export function heard(result, folder) {
   const out = [];
   const add = (time, sample, loop) => {
     const where = resolveSample(sample, folder, files);
-    out.push({ time: Math.round(time), loop, volume: sample.volume, ...where });
+    out.push({ time: Math.round(time), loop, volume: sample.volume, name: sample.name, ...where });
   };
   const looping = name => /^(sliderslide|sliderwhistle|spinnerspin|spinnerbonus)$/.test(name);
   const walk = object => {
@@ -145,8 +145,13 @@ export function planned(list, folder) {
 // The silent sound check: does the editor play, for one map, what osu!lazer plays for it? Returns the
 // moments that differ, in words. A sound lazer plays under 5% that the editor plays at 5% is the
 // editor's floor (sound volumes never go below 5%), so it is named apart and not counted as a fault.
+// The spinner's spin loop and bonus sounds play only while the player spins and for each extra spin
+// (osu.Game.Rulesets.Osu/Objects/Drawables/DrawableSpinner.cs:132-167, the bonus ticks' judgements), so
+// the map alone does not say when they play: they are set aside and counted, not matched.
+export const byPlayer = sound => /^spinner(spin|bonus)/.test(sound.name ?? "");
 export function soundCheck(editorList, lazerList) {
-  const ours = byTime(editorList), theirs = byTime(lazerList);
+  const player = lazerList.filter(byPlayer).length;
+  const ours = byTime(editorList), theirs = byTime(lazerList.filter(sound => !byPlayer(sound)));
   const times = [...new Set([...ours.keys(), ...theirs.keys()])].sort((a, b) => a - b);
   const differences = [];
   let floor = 0;
@@ -161,5 +166,5 @@ export function soundCheck(editorList, lazerList) {
     ];
     if (notes.length) differences.push({ time, notes });
   }
-  return { moments: times.length, same: times.length - differences.length, differences, floor };
+  return { moments: times.length, same: times.length - differences.length, differences, floor, player };
 }

@@ -123,7 +123,11 @@ if (!existsSync(join(oldApp, "src/OsuHitsound.App/OsuHitsound.App.csproj"))) thr
     rmSync(tree, { recursive: true, force: true });
     must("git", ["clone", "--quiet", "--no-checkout", oldApp, tree]);
   }
-  if (run("git", ["-C", tree, "rev-parse", "HEAD"]).stdout.trim() !== RELEASE) must("git", ["-C", tree, "checkout", "--quiet", "--detach", RELEASE]);
+  // A --no-checkout clone whose HEAD is already the release has no files yet, so check the project
+  // file too, and force the checkout so files the clone left out come back.
+  if (run("git", ["-C", tree, "rev-parse", "HEAD"]).stdout.trim() !== RELEASE || !existsSync(join(tree, "src/OsuHitsound.App/OsuHitsound.App.csproj"))) {
+    must("git", ["-C", tree, "checkout", "--quiet", "--force", "--detach", RELEASE]);
+  }
   const there = run("git", ["-C", tree, "rev-parse", "HEAD"]).stdout.trim();
   if (there !== RELEASE) throw new Error(`${tree} is at ${there}, not the 3.1.4 release ${RELEASE}`);
   oldApp = tree;
@@ -235,7 +239,7 @@ const summary = {
   twin: twin.error ? `3.1.4 stopped: ${twin.error}` : `3.1.4 saved: ${twin.saved}`,
   sounds: { same: sameCount, total: moments.length, edited: { same: editedSame, total: editedMoments.length } },
   steps: { same: steps.filter(step => step.same).length, total: steps.length },
-  silent: Object.fromEntries(Object.entries(silent).map(([which, check]) => [which, check && { same: check.same, total: check.moments, silent: check.silent, floor: check.floor }])),
+  silent: Object.fromEntries(Object.entries(silent).map(([which, check]) => [which, check && { same: check.same, total: check.moments, silent: check.silent, floor: check.floor, player: check.player }])),
 };
 for (const step of steps) console.log(`${step.same ? "SAME" : "DIFF"} ${step.edit}${step.text ? " — " + step.text : ""}`);
 for (const moment of moments.filter(moment => !moment.same)) console.log(`DIFF ${moment.time} ms — ${moment.notes.join("; ")}`);
@@ -248,7 +252,8 @@ for (const [which, check] of Object.entries(silent)) {
   if (!check) { console.log(`silent sound check, ${what}: not run (this build has no playback list)`); continue; }
   for (const moment of check.differences) console.log(`PLAYS ${which} ${moment.time} ms — ${moment.notes.join("; ")}`);
   console.log(`silent sound check, ${what}: dawsu! plays ${check.same} of ${check.moments} moments as osu! does`
-    + `${check.silent ? `; ${check.silent} sounds not loaded, so silent` : ""}${check.floor ? `; ${check.floor} raised to the 5% floor on purpose` : ""}`);
+    + `${check.silent ? `; ${check.silent} sounds not loaded, so silent` : ""}${check.floor ? `; ${check.floor} raised to the 5% floor on purpose` : ""}`
+    + `${check.player ? `; ${check.player} spinner spin and bonus sounds set aside (they follow the player's spinning)` : ""}`);
 }
 // The headline is the edited moments (the unedited ones are the same in nearly every map), never
 // rounded up to 100%.
