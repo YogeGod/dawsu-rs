@@ -58,6 +58,7 @@ for (const [index, map] of maps.entries()) {
     ...result.steps.filter(step => !step.same).map(step => `${step.edit}: ${step.text}`),
     ...result.moments.filter(moment => !moment.same).map(moment => `${moment.time} ms: ${moment.notes.join("; ")}`),
   ];
+  if (!/saved: true/.test(summary.twin ?? "")) differences.unshift(summary.twin ?? "3.1.4 did not save");
   const row = {
     map: name,
     robot: robot ? { passed: Number(robot[1]), total: Number(robot[2]) } : null,

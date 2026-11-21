@@ -5,9 +5,8 @@
 //
 //   --exe      the built editor, as for tools/everyday-check.mjs
 //   --old-app  a checkout of YogeGod/dawsu-hitsounding-editor (default: ../dawsu-hitsounding-editor next
-//              to this repo). When it is not clean at the 3.1.4 release commit, a separate, detached
-//              worktree at that commit is made under target/compare-314/ and used instead; the checkout
-//              itself is never changed.
+//              to this repo). It is only read: a clone of it at the 3.1.4 release commit is made under
+//              target/compare-314/old-app-3.1.4 and built there.
 //   --map      as for the everyday check (its default fixture)
 //   --json     also write the comparison as data to this file
 //   --keep     keep the work folder (map copies, results) under target/compare-314/
@@ -52,9 +51,9 @@ const root = join(repo, "target", "compare-314");
 const work = join(root, `${stamp}-${process.pid}`);
 mkdirSync(work, { recursive: true });
 
-// 0. The map, with a stand-in for each sound file it names but its folder lacks. 3.1.4 refuses to save
+// 0. The map, with a stand-in tone for each sound file it names but its folder lacks. 3.1.4 refuses to save
 // a map whose hit names a missing file ("Save stopped: Missing clap-custom.wav."), and the fixtures
-// carry no audio, so both apps get the same complete copy: each missing file becomes a short silent
+// carry no audio, so both apps get the same complete copy: each missing file becomes a short tone
 // WAV under the name the map uses. The given map's folder is only read.
 const source = join(work, "source");
 cpSync(dirname(given), source, { recursive: true, dereference: true });
@@ -68,21 +67,25 @@ const standIns = [];
     if (section !== "[HitObjects]") continue;
     const name = line.split(",").at(-1).split(":")[4]?.trim();
     if (!name || present.has(name.toLowerCase()) || /[\\/]/.test(name)) continue;
-    writeFileSync(join(source, name), silentWav());
+    writeFileSync(join(source, name), toneWav(name));
     present.add(name.toLowerCase());
     standIns.push(name);
   }
 }
-function silentWav() {
+// A quiet 0.1 s tone whose pitch comes from the file name, so two stand-ins never sound the same and a
+// mix made from them can be told apart from a mix of other layers. Nothing plays it; it is only read.
+function toneWav(name) {
   const samples = 4410; // 0.1 s, 16-bit mono, 44.1 kHz
   const wav = Buffer.alloc(44 + samples * 2);
+  const pitch = 200 + (createHash("sha256").update(name.toLowerCase()).digest().readUInt16LE(0) % 1800);
+  for (let i = 0; i < samples; i++) wav.writeInt16LE(Math.round(3000 * Math.sin(2 * Math.PI * pitch * i / 44100)), 44 + i * 2);
   wav.write("RIFF", 0); wav.writeUInt32LE(36 + samples * 2, 4); wav.write("WAVEfmt ", 8);
   wav.writeUInt32LE(16, 16); wav.writeUInt16LE(1, 20); wav.writeUInt16LE(1, 22); wav.writeUInt32LE(44100, 24);
   wav.writeUInt32LE(88200, 28); wav.writeUInt16LE(2, 32); wav.writeUInt16LE(16, 34); wav.write("data", 36);
   wav.writeUInt32LE(samples * 2, 40);
   return wav;
 }
-if (standIns.length) console.log(`0/4 silent stand-ins for sound files the map names but lacks: ${standIns.join(", ")}`);
+if (standIns.length) console.log(`0/4 stand-in tones for sound files the map names but lacks: ${standIns.join(", ")}`);
 
 function run(command, list, options = {}) {
   const result = spawnSync(command, list, { encoding: "utf8", maxBuffer: 64 << 20, ...options });
@@ -110,11 +113,15 @@ if (!robot.actions?.some(action => action.do === "save")) throw new Error("the e
 console.log("2/4 the same edits in 3.1.4…");
 let oldApp = resolve(args["old-app"] ?? join(repo, "..", "dawsu-hitsounding-editor"));
 if (!existsSync(join(oldApp, "src/OsuHitsound.App/OsuHitsound.App.csproj"))) throw new Error(`no 3.1.4 checkout at ${oldApp}`);
-const head = run("git", ["-C", oldApp, "rev-parse", "HEAD"]).stdout.trim();
-const dirty = run("git", ["-C", oldApp, "status", "--porcelain", "--untracked-files=no"]).stdout.trim();
-if (head !== RELEASE || dirty) {
+// Always a separate clone under target/, so the build's bin/ and obj/ folders never land in the given
+// checkout; cloning only reads it.
+{
   const tree = join(root, "old-app-3.1.4");
-  if (!existsSync(tree)) must("git", ["-C", oldApp, "worktree", "add", "--detach", tree, RELEASE]);
+  if (!existsSync(join(tree, ".git"))) {
+    rmSync(tree, { recursive: true, force: true });
+    must("git", ["clone", "--quiet", "--no-checkout", oldApp, tree]);
+  }
+  if (run("git", ["-C", tree, "rev-parse", "HEAD"]).stdout.trim() !== RELEASE) must("git", ["-C", tree, "checkout", "--quiet", "--detach", RELEASE]);
   const there = run("git", ["-C", tree, "rev-parse", "HEAD"]).stdout.trim();
   if (there !== RELEASE) throw new Error(`${tree} is at ${there}, not the 3.1.4 release ${RELEASE}`);
   oldApp = tree;
@@ -130,7 +137,21 @@ const twinJson = join(work, "twin.json");
 const twinRun = run(join(twinBin, process.platform === "win32" ? "Snapshot.exe" : "Snapshot"),
   [join(copies.old, basename(original)), robotJson, twinJson]);
 console.log(`   ${(twinRun.stdout || twinRun.stderr).trim().split("\n").at(-1)}`);
-const twin = existsSync(twinJson) ? JSON.parse(readFileSync(twinJson, "utf8")) : { steps: [], error: twinRun.stderr };
+const twin = existsSync(twinJson) ? JSON.parse(readFileSync(twinJson, "utf8"))
+  : { steps: [], saved: false, error: (twinRun.stderr || twinRun.stdout || `exit code ${twinRun.status}`).trim().slice(0, 600) };
+if (twin.error || !twin.saved) {
+  // No 3.1.4 save, so no score: comparing with its unedited copy would measure nothing.
+  const why = twin.error ? `3.1.4 stopped: ${twin.error}` : `3.1.4 did not save${twin.steps?.at(-1)?.status ? `: "${twin.steps.at(-1).status}"` : ""}`;
+  console.log(why);
+  console.log("compare with 3.1.4: no score (3.1.4 did not save)");
+  if (args.json) writeFileSync(resolve(args.json), JSON.stringify({
+    summary: { standIns, robot: robotLast, robotFailed: (robot.steps ?? []).filter(step => step.status === "FAIL").map(step => `${step.number} ${step.name}: ${step.detail}`),
+      twin: why, sounds: { same: 0, total: 0, edited: { same: 0, total: 0 } }, steps: { same: 0, total: 0 } },
+    steps: [], moments: [], dialogs: twin.dialogs ?? [], work }, null, 2) + "\n");
+  try { rmSync(robot.profile, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 }); } catch {}
+  if (!args.keep) try { rmSync(work, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 }); } catch {}
+  process.exit(1);
+}
 
 // 3. osu!lazer reads all three.
 console.log("3/4 osu!lazer reads the three maps…");
@@ -163,7 +184,11 @@ function resolveSample(sample, folder, files) {
       }
     }
   }
-  const skin = sample.lookup_names.find(name => !name.includes(".")) ?? sample.name;
+  // The player's skin cannot use custom sample banks, so lazer drops the names that end in the custom
+  // index there (LegacySkin.cs:621-624 with UseCustomSampleBanks false): "soft-hitnormal2" plays as
+  // "soft-hitnormal".
+  const skinNames = sample.lookup_names.filter(name => !name.includes(".") && !(sample.suffix && name.endsWith(sample.suffix)));
+  const skin = skinNames[0] ?? sample.name;
   return { skin: skin.split("/").at(-1), label: `skin ${skin.split("/").at(-1)}` };
 }
 // Every sound lazer plays, as [time, label, volume, resolved]. Circles play at their start; a slider
@@ -236,13 +261,21 @@ const byTime = list => {
   return map;
 };
 // Pairs up the sounds at one moment; what is left over on either side is a difference.
+// Same sound at the same volume pairs first, so two layers in a different order are not counted as two
+// volume differences.
 function matchMoment(left, right) {
   const rest = [...right];
-  const onlyLeft = [], volume = [];
+  const unpaired = [];
   for (const sound of left) {
+    const exact = rest.findIndex(other => other.loop === sound.loop && other.volume === sound.volume && sameSound(sound, other));
+    if (exact < 0) unpaired.push(sound);
+    else rest.splice(exact, 1);
+  }
+  const onlyLeft = [], volume = [];
+  for (const sound of unpaired) {
     const same = rest.findIndex(other => other.loop === sound.loop && sameSound(sound, other));
     if (same < 0) { onlyLeft.push(sound); continue; }
-    if (rest[same].volume !== sound.volume) volume.push([sound, rest[same]]);
+    volume.push([sound, rest[same]]);
     rest.splice(same, 1);
   }
   return { onlyLeft, onlyRight: rest, volume };
@@ -309,8 +342,10 @@ if (twin.dialogs?.length) console.log(`3.1.4's Save showed: ${twin.dialogs.map(d
 console.log(summary.twin);
 console.log(`edits: ${summary.steps.same} of ${summary.steps.total} ended the same in both apps`);
 console.log(`sounds: ${editedSame} of ${editedMoments.length} edited moments play the same in both saved maps (${sameCount} of ${moments.length} moments in all)`);
-const percent = moments.length ? Math.round(100 * sameCount / moments.length) : 0;
-console.log(`compare with 3.1.4: ${percent}% the same`);
+// The headline is the edited moments (the unedited ones are the same in nearly every map), never
+// rounded up to 100%.
+const percent = editedMoments.length ? Math.floor(100 * editedSame / editedMoments.length) : 100;
+console.log(`compare with 3.1.4: ${percent}% of edited sound moments the same (${editedSame} of ${editedMoments.length}; ${moments.length - sameCount} differences in all)`);
 if (args.json) writeFileSync(resolve(args.json), JSON.stringify({ summary, steps, moments, dialogs: twin.dialogs ?? [], work }, null, 2) + "\n");
 
 // The robot's own profile folder (its map copy) is no longer needed; the work folder goes unless --keep.

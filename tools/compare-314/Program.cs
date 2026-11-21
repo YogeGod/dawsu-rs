@@ -17,8 +17,8 @@
 //   save      runs 3.1.4's Save and answers each dialog it shows with its Save/Continue button
 //
 // It writes what 3.1.4 showed after each edit, the dialogs Save showed, and the hits after Save.
-// 3.1.4 keeps backups and its project notes under %LOCALAPPDATA%\OsuHitsoundEditor; the files this run
-// adds there are listed in the results and removed again, and nothing else there is touched.
+// 3.1.4 keeps backups and its project notes under %LOCALAPPDATA%\OsuHitsoundEditor; the new files this
+// run adds there that are named after the copy are listed in the results and removed again.
 using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -89,7 +89,7 @@ try
                 selected = s.State.Hits.FirstOrDefault(h => h.Lane == lane && Math.Abs(h.Time - time) < 1);
                 if (selected is not null) w.ArrangeArea.Edits.Select([selected]);
                 Pump();
-                result["seen"] = selected is null ? null : Math.Round(selected.Time);
+                result["seen"] = selected is null ? null : Math.Round(selected.Time, MidpointRounding.AwayFromZero);
                 result["anchored"] = selected?.Anchor is not null;
                 break;
             }
@@ -100,7 +100,7 @@ try
                 selected = moved.FirstOrDefault();
                 if (selected is not null) w.ArrangeArea.Edits.Select([selected]);
                 Pump();
-                result["seen"] = selected is null ? null : Math.Round(selected.Time);
+                result["seen"] = selected is null ? null : Math.Round(selected.Time, MidpointRounding.AwayFromZero);
                 break;
             }
             case "volume":
@@ -175,7 +175,9 @@ finally
 }
 
 // Remove what this run added to 3.1.4's data folder (backups and notes for this copy), nothing else.
-var added = Files(dataRoot).Where(f => !dataBefore.Contains(f)).ToList();
+// Only files named after this copy's difficulty, so a 3.1.4 session running at the same time keeps its own.
+string stem = Path.GetFileNameWithoutExtension(map);
+var added = Files(dataRoot).Where(f => !dataBefore.Contains(f) && Path.GetFileName(f).StartsWith(stem, StringComparison.OrdinalIgnoreCase)).ToList();
 foreach (var file in added)
     try { File.Delete(file); } catch (IOException) { } catch (UnauthorizedAccessException) { }
 
@@ -206,7 +208,7 @@ void Wait(Func<bool> done, string what)
 static JsonArray Named(MainWindow window)
 {
     var session = window.ArrangeArea.Model!.Session;
-    return new JsonArray([.. session.State.Hits.Select(h => $"{Math.Round(h.Time)} ms {Strip(h.Lane.Name)}").Order(StringComparer.Ordinal).Select(n => (JsonNode)n)]);
+    return new JsonArray([.. session.State.Hits.Select(h => $"{Math.Round(h.Time, MidpointRounding.AwayFromZero)} ms {Strip(h.Lane.Name)}").Order(StringComparer.Ordinal).Select(n => (JsonNode)n)]);
 }
 static string Strip(string name) => Path.GetExtension(name).ToLowerInvariant() is ".wav" or ".ogg" or ".mp3" ? Path.GetFileNameWithoutExtension(name) : name;
 static HashSet<string> Files(string root) => Directory.Exists(root) ? Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories).ToHashSet(StringComparer.OrdinalIgnoreCase) : [];

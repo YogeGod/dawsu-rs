@@ -337,7 +337,7 @@ const hits = () => read(() => window.scene.moments.flatMap(([time, volume, , lis
 const scene = fn => read(fn);
 // The same by lane name, as "3500 ms normal-hitwhistle": rows renumber when lanes come and go.
 const namedHits = () => read(() => window.scene.moments.flatMap(([time, , , list]) =>
-  list.map(([row]) => `${time} ms ${window.scene.lanes[row]?.name ?? "row " + row}`)).sort());
+  list.map(([row]) => `${Math.round(time)} ms ${window.scene.lanes[row]?.name ?? "row " + row}`)).sort());
 
 // Where a time and a lane are on the timeline canvas, in page pixels.
 async function at(time, row) {
