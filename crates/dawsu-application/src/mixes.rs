@@ -902,7 +902,7 @@ impl IndexedMixes {
 }
 
 pub(super) struct PublishedMixes<'a> {
-    staged: &'a [StagedMix],
+    staged: Vec<&'a StagedMix>,
     created: Vec<usize>,
     /// The ledger and the entries this publish added, dropped again on rollback.
     ledger: Option<(crate::pending::Ledger, Vec<String>)>,
@@ -911,10 +911,11 @@ pub(super) struct PublishedMixes<'a> {
 /// Writes the staged files, all or none. With a `ledger`, every file this publish creates is listed
 /// there before it is created, so dawsu! knows it made the file.
 pub(super) fn publish<'a>(
-    staged: &'a [StagedMix],
+    staged: impl IntoIterator<Item = &'a StagedMix>,
     ledger: Option<&crate::pending::Ledger>,
     cancel: &dyn Fn() -> bool,
 ) -> Result<PublishedMixes<'a>, String> {
+    let staged: Vec<&'a StagedMix> = staged.into_iter().collect();
     // One index holds one sound per file: a file staged twice in a plan must be the same
     // reused WAV, never two different sounds or two new writes.
     let mut files = HashMap::<String, &StagedMix>::new();
@@ -967,7 +968,7 @@ pub(super) fn publish<'a>(
         None => None,
     };
     let mut publication = PublishedMixes {
-        staged,
+        staged: staged.clone(),
         created: Vec::new(),
         ledger,
     };
@@ -1322,6 +1323,7 @@ mod tests {
     /// Yoge 2026-11-20: with no hitnormal in the moment, Export writes no hitnormal file and the
     /// player's skin plays its own, as Save does.
     #[test]
+    #[allow(clippy::disallowed_methods)]
     fn pair_samples_export_of_a_clap_only_moment_writes_only_its_clap() {
         let scratch = dawsu_test_support::Scratch::new("pair-clap-only");
         let claps = [(clap(SampleSet::Soft, 3), 50), (clap(SampleSet::Drum, 4), 40)];

@@ -1554,7 +1554,6 @@ fn clock(ms: f64) -> String {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    #[allow(clippy::disallowed_methods)]
     use dawsu_osu_format::list_folder;
     use dawsu_hitsounding::sound_sets::{Kept, SetLane, SetMember, write_dawsuset};
     use dawsu_test_support::Scratch;
@@ -1643,6 +1642,7 @@ pub(crate) mod tests {
         existing_bytes(&f.map.with_file_name(""), &app.document().unwrap().pending, name).unwrap()
     }
 
+    #[allow(clippy::disallowed_methods)]
     fn mapset_files(f: &Fixture) -> Vec<String> {
         let mut files = list_folder(&f.map.with_file_name("")).unwrap();
         files.sort();
@@ -2269,6 +2269,7 @@ pub(crate) mod tests {
             .find(|set| set.name == name).unwrap_or_else(|| panic!("no set named {name}"))
     }
 
+    #[allow(clippy::disallowed_methods)]
     fn library_files(f: &Fixture) -> Vec<String> {
         let mut files = list_folder(&f.scratch.path("library").join(LIBRARY_FOLDER)).unwrap_or_default();
         files.sort();

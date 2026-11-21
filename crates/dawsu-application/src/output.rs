@@ -127,7 +127,7 @@ impl WritePlan {
         editor.extend(mix_names);
         editor.sort();
         for target in &self.files {
-            crate::pending::check_written(&target.file, root, &writes, &editor, &source.pending)?;
+            crate::pending::check_written(&target.file, root, &writes, &editor, &source.pending, &source.hits)?;
         }
         Ok(())
     }
@@ -142,8 +142,7 @@ impl WritePlan {
             }
         }
         // One all-or-nothing write: the mixes, then the pending files the difficulties play.
-        let staged: Vec<mixes::StagedMix> = self.mixes.iter().chain(&self.pending).cloned().collect();
-        let publication = mixes::publish(&staged, self.ledger.as_ref(), cancel)?;
+        let publication = mixes::publish(self.mixes.iter().chain(&self.pending), self.ledger.as_ref(), cancel)?;
         let policy = BackupPolicy::new(backups, 20);
         let mut written: Vec<&PlannedFile> = Vec::new();
         for target in &self.files {

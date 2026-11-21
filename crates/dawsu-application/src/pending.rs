@@ -85,11 +85,19 @@ impl Pending {
         names
     }
 
-    /// The names claimed for this mapset on disk, by this or another window, lowercased.
-    pub(crate) fn claimed_names(&self) -> BTreeSet<String> {
+    /// The names claimed for this mapset on disk that are this window's: its pending files, or
+    /// files a lane of `hits` plays. Another window's claim for a name this window never uses
+    /// doesn't count. Lowercased.
+    pub(crate) fn claimed_names(&self, hits: &Hitsounds) -> BTreeSet<String> {
         let Some(store) = &self.store else { return BTreeSet::new() };
+        let lane_files: BTreeSet<String> = hits.lanes().iter().filter_map(|lane| match &lane.source {
+            LaneSource::File(name) => Some(name.replace('\\', "/").to_ascii_lowercase()),
+            _ => None,
+        }).collect();
         std::fs::read_dir(&store.claims).map(|entries| entries.filter_map(Result::ok)
-            .map(|entry| entry.file_name().to_string_lossy().to_ascii_lowercase()).collect()).unwrap_or_default()
+            .map(|entry| entry.file_name().to_string_lossy().to_ascii_lowercase())
+            .filter(|name| self.files.contains_key(name) || lane_files.contains(name))
+            .collect()).unwrap_or_default()
     }
 
     /// The custom indexes of the taken names.
@@ -256,11 +264,11 @@ pub(crate) fn used(file: &OsuFile, root: &Path, pending: &Pending, planned: &[St
 /// A sample that plays the skin's sound on both sides while dawsu! claimed one of its file names
 /// for a sample it made is refused too: that file was lost.
 #[allow(clippy::disallowed_methods)]
-pub(crate) fn check_written(file: &OsuFile, root: &Path, writes: &[String], editor: &[String], pending: &Pending) -> Result<(), String> {
+pub(crate) fn check_written(file: &OsuFile, root: &Path, writes: &[String], editor: &[String], pending: &Pending, hits: &Hitsounds) -> Result<(), String> {
     let mut after = list_folder(root).map_err(|e| e.to_string())?;
     after.extend(writes.iter().cloned());
     let written_samples = samples(file, &after);
-    let claimed = pending.claimed_names();
+    let claimed = pending.claimed_names(hits);
     for sample in written_samples.iter().filter(|sample| matches!(sample.plays, Plays::Skin { .. }) && sample.lazer.use_beatmap_samples) {
         for name in sample.lazer.legacy_lookup_names(true) {
             let lost = ["", ".wav", ".mp3", ".ogg"].iter().map(|ext| format!("{name}{ext}"))
@@ -568,7 +576,7 @@ pub(crate) fn cap_removed_samples(data_root: &Path, max_age: std::time::Duration
             Some((age(&path).unwrap_or_default(), size, path))
         }).collect();
     // Oldest first.
-    files.sort_by(|a, b| b.0.cmp(&a.0));
+    files.sort_by_key(|file| std::cmp::Reverse(file.0));
     let mut total: u64 = files.iter().map(|(_, size, _)| size).sum();
     let mut removed = 0;
     for (age, size, path) in files {

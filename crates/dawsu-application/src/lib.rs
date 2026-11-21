@@ -462,7 +462,7 @@ fn prepare_save(
     let mut editor = pending::listing(root, pending)?;
     editor.extend(mix_names.iter().cloned());
     editor.sort();
-    pending::check_written(&out, root, &[mix_names, pending_names.clone()].concat(), &editor, pending)?;
+    pending::check_written(&out, root, &[mix_names, pending_names.clone()].concat(), &editor, pending, hits)?;
 
     pending::check_indexes_free(root, path, &pending_names)?;
     let pending_kept = pending::needed(hits, pending, &pending_names);
@@ -4737,6 +4737,7 @@ mod project_workflow {
     }
 
     #[test]
+    #[allow(clippy::disallowed_methods)]
     fn add_numbered_layers_skips_reserved_indexes_and_preserves_mapset_files() {
         let scratch = Scratch::new("numbered-layers");
         let folder = scratch.path("mapset");
@@ -4846,6 +4847,7 @@ Title:");
         (app, map, folder)
     }
 
+    #[allow(clippy::disallowed_methods)]
     fn mapset(folder: &Path) -> Vec<String> {
         dawsu_osu_format::list_folder(folder).unwrap()
     }
@@ -5041,6 +5043,27 @@ Title:");
         let error = app.error.clone().expect("Save refuses");
         assert!(error.contains("normal-hitnormal2"), "{error}");
         assert_eq!((mapset(&folder), std::fs::read(&map).unwrap()), before);
+    }
+
+    #[test]
+    fn another_windows_claim_does_not_stop_this_windows_save() {
+        let scratch = Scratch::new("pending-other-claim");
+        let folder = scratch.path("mapset");
+        std::fs::create_dir_all(&folder).unwrap();
+        let map = folder.join("test.osu");
+        // Custom index 1: the circle looks up normal-hitnormal.wav in the mapset first.
+        std::fs::write(&map, include_str!("../tests/project-fixture.osu").replace("0,500,4,1,0,100,1,0", "0,500,4,1,1,100,1,0")).unwrap();
+        let mut app = Application::headless();
+        app.project_root = Some(scratch.path("projects"));
+        open(&mut app, map.clone());
+        // Another window made a new sample under that name; it isn't in the mapset yet.
+        let mut other = pending::Pending::for_mapset(&app.data_root, &folder.canonicalize().unwrap());
+        other.add("normal-hitnormal.wav", TONE).unwrap();
+        app.document.as_mut().unwrap().composer.apply("Edit", |hits| hits.set_volume(dawsu_hitsounding::MomentId(0), 80));
+        save_through_summary(&mut app, scratch.path("backups"));
+        let text = std::fs::read_to_string(&map).unwrap();
+        assert!(text.contains(":80:") || text.contains(",80,"), "{text}");
+        other.release("normal-hitnormal.wav");
     }
 
     fn claims(app: &Application, folder: &Path) -> Vec<String> {
@@ -5708,8 +5731,8 @@ Sample,0,0,\"{story}\",100
         let editor = pending::listing(&folder, &document.pending).unwrap();
         let used = pending::used(&out, &folder, &document.pending, &[]).unwrap();
         assert_eq!(used.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>(), ["normal-hitnormal2.wav"]);
-        assert!(pending::check_written(&out, &folder, &["normal-hitnormal2.wav".into()], &editor, &document.pending).is_ok());
-        let error = pending::check_written(&out, &folder, &[], &editor, &document.pending).unwrap_err();
+        assert!(pending::check_written(&out, &folder, &["normal-hitnormal2.wav".into()], &editor, &document.pending, document.composer.hitsounds()).is_ok());
+        let error = pending::check_written(&out, &folder, &[], &editor, &document.pending, document.composer.hitsounds()).unwrap_err();
         assert!(error.contains("normal-hitnormal2.wav"), "{error}");
     }
 

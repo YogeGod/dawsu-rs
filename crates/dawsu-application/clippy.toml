@@ -1,5 +1,8 @@
 # The mapset's files as the editor sees them include pending samples: read them through
-# `pending::listing`. Only the scans that must see the disk alone are allowed.
+# `pending::listing`. Scope: every call of `list_folder` in this crate, tests included. A call
+# that must see the disk alone (the cleanup's scans, the sample watcher, a sample folder, a test
+# checking what is on disk) carries `#[allow(clippy::disallowed_methods)]` on its own function,
+# never on a module or a `use`, so each exception stays visible where it is made.
 disallowed-methods = [
     { path = "dawsu_osu_format::list_folder", reason = "use pending::listing() for a mapset, or sample_folder() for a sample folder" },
 ]
