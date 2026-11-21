@@ -253,6 +253,7 @@ impl Composer {
     }
 
     /// Applies volume at the selected hit moments. A lane scope uses logical slot identities.
+    /// The result is kept between 5 and 100.
     pub fn volume_for_lanes(
         &mut self,
         value: i32,
@@ -265,7 +266,9 @@ impl Composer {
         }).collect();
         let edit = |before: i32| {
             let desired = if relative { before.saturating_add(value) } else { value };
-            desired.clamp(i32::from(lanes.is_some()), 100)
+            // An edit never leaves a volume under 5%: osu! plays nothing quieter (R5) and Save
+            // writes nothing lower (R15), so the screen would show a number nothing uses.
+            desired.clamp(dawsu_hitsounding::rules::SAVED_VOLUME_FLOOR, 100)
         };
         let mut shared = Vec::new();
         let mut moved = Vec::new();
@@ -313,6 +316,15 @@ impl Composer {
             }
             for (id, volume) in moved {
                 hits.move_volume(id, volume);
+                // Moving keeps each hit's difference, which can push a quieter hit under 5%;
+                // the edit stops it at 5% like every other volume it sets.
+                let floor = dawsu_hitsounding::rules::SAVED_VOLUME_FLOOR;
+                let quiet: Vec<_> = hits.moment(id).hits()
+                    .filter(|lane| hits.moment(id).hit_volume(lane) < floor)
+                    .cloned().collect();
+                for lane in quiet {
+                    hits.set_hit_volume(id, &lane, floor);
+                }
             }
             for (id, lane, volume) in individual {
                 hits.set_hit_volume(id, &lane, volume);

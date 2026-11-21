@@ -299,11 +299,26 @@ fn selected_lane_gain_edits_other_hits_at_selected_moments_and_undoes_as_one_ste
     assert_eq!((relative.hit_volume(&normal), relative.hit_volume(&clap())), (35, 75));
     assert!(c.volume_for_lanes(0, false, Some(&selected_lanes)));
     let scoped = &c.hitsounds().moments()[0];
-    assert_eq!((scoped.hit_volume(&normal), scoped.hit_volume(&clap())), (1, 75));
+    assert_eq!((scoped.hit_volume(&normal), scoped.hit_volume(&clap())), (5, 75), "a lane's volume stops at 5%");
     c.volume(0, false);
     let shared = &c.hitsounds().moments()[0];
-    assert_eq!((shared.hit_volume(&normal), shared.hit_volume(&clap())), (0, 0));
+    assert_eq!((shared.hit_volume(&normal), shared.hit_volume(&clap())), (5, 5), "a moment's volume stops at 5%");
     assert!(!shared.has_hit_volume_overrides());
+}
+
+#[test]
+fn a_volume_edit_never_goes_under_5_percent() {
+    let mut c = composer();
+    let normal = c.hitsounds().moments()[0].hits().next().unwrap().clone();
+    c.select_all();
+    c.volume(2, false);
+    assert_eq!(c.hitsounds().moments()[0].hit_volume(&normal), 5, "typing 2 gives 5");
+    c.volume(-100, true);
+    assert_eq!(c.hitsounds().moments()[0].hit_volume(&normal), 5, "a step down stops at 5");
+    c.volume(60, false);
+    assert_eq!(c.hitsounds().moments()[0].hit_volume(&normal), 60);
+    c.volume(-58, true);
+    assert_eq!(c.hitsounds().moments()[0].hit_volume(&normal), 5, "60 minus 58 stops at 5");
 }
 
 #[test]
@@ -393,7 +408,7 @@ fn set_all_moves_every_lane_together_and_keeps_their_difference() {
     c.volume(100, false);
     assert_eq!(normal_and_clap(&c, &normal), (100, 70));
     c.volume(20, false);
-    assert_eq!(normal_and_clap(&c, &normal), (20, 0), "the clap stops at 0");
+    assert_eq!(normal_and_clap(&c, &normal), (20, 5), "the clap stops at 5%");
     c.undo();
     assert_eq!(normal_and_clap(&c, &normal), (100, 70));
 }
