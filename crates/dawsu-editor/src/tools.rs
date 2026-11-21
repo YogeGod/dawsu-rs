@@ -106,6 +106,11 @@ pub trait ToolTarget {
     fn selection(&mut self) -> &mut Selection<Self::Item>;
     /// The editor's snap applied to a time (off, Grid, Grid relative or Objects).
     fn snap(&self, time: SongTime) -> SongTime;
+    /// Every snapped time between `from` and `to` (inclusive of `snap(to)`), in drag order,
+    /// so fast Draw drags never skip intermediate grid lines.
+    fn snap_steps(&self, _from: SongTime, to: SongTime) -> Vec<SongTime> {
+        vec![self.snap(to)]
+    }
     /// The snapped offset for dragging an item at `from` by `raw_ms`.
     fn snap_offset(&self, from: SongTime, raw_ms: f64) -> f64;
 
@@ -268,6 +273,7 @@ enum Stroke<I> {
     },
     Paint {
         row: i32,
+        last_time: SongTime,
     },
     Wipe,
     Erase {
@@ -362,7 +368,10 @@ impl<I: Clone + Eq + Hash> ToolBox<I> {
                     target.begin("Draw");
                     let at = target.snap(e.time);
                     target.insert(at, e.row);
-                    self.stroke = Some(Stroke::Paint { row: e.row });
+                    self.stroke = Some(Stroke::Paint {
+                        row: e.row,
+                        last_time: at,
+                    });
                 }
             }
             ToolKind::Erase => {
@@ -516,13 +525,15 @@ impl<I: Clone + Eq + Hash> ToolBox<I> {
                     to_row: start.row.max(e.row),
                 });
             }
-            Stroke::Paint { row } => {
-                let at = target.snap(e.time);
-                let mut probe = e;
-                probe.time = at;
-                probe.row = *row;
-                if target.hit_test(&probe).is_none() {
-                    target.insert(at, *row);
+            Stroke::Paint { row, last_time } => {
+                for at in target.snap_steps(*last_time, e.time) {
+                    let mut probe = e;
+                    probe.time = at;
+                    probe.row = *row;
+                    if target.hit_test(&probe).is_none() {
+                        target.insert(at, *row);
+                    }
+                    *last_time = at;
                 }
             }
             Stroke::Wipe => {

@@ -88,7 +88,7 @@ test("View switches fold and open panels and reclaim their timeline tracks, then
   info.checked = true;
   info.listeners.get("change")();
   assert.deepEqual(JSON.parse(runInContext("JSON.stringify(laneHeaders.rows.map(row => row.name))", context)),
-    ["soft-hitclap · skin", "soft-hitclap2 · idx 2"]);
+    ["soft-hitclap (skin)", "soft-hitclap2 (idx 2)"]);
   info.checked = false;
   info.listeners.get("change")();
   assert.deepEqual(JSON.parse(runInContext("JSON.stringify(laneHeaders.rows.map(row => row.name))", context)),

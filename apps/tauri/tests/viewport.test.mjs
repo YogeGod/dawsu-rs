@@ -397,8 +397,8 @@ test("editor grid lines stay neutral: sub-beats follow the snap, then beats and 
   const lines = () => JSON.parse(evaluate("JSON.stringify(testGridLines())"));
   const quarters = lines();
   // v3 §5 (Yoge): only the ruler is coloured; grid lines run the full height in white at low alpha.
-  assert.deepEqual(quarters[0], [0, 300, "rgba(255,255,255,.10)"], "bar");
-  assert.deepEqual(quarters[480], [0, 300, "rgba(255,255,255,.04)"], "beat");
+  assert.deepEqual(quarters[0], [0, 300, "rgba(255,255,255,.22)"], "bar");
+  assert.deepEqual(quarters[480], [0, 300, "rgba(255,255,255,.045)"], "beat");
   assert.deepEqual(quarters[120], [0, 300, "rgba(255,255,255,.025)"], "1/4");
   assert.deepEqual(quarters[240], [0, 300, "rgba(255,255,255,.025)"], "1/2");
   evaluate("scene.divisor = 3");
@@ -407,7 +407,7 @@ test("editor grid lines stay neutral: sub-beats follow the snap, then beats and 
   evaluate("scene.snap = false");
   assert.equal(lines()[160], undefined, "no sub-beats with snap off");
   evaluate("scene.editorBars = [{ start: 0, beat: 480, numerator: 3, bar: 1 }]");
-  assert.deepEqual(lines()[1440], [0, 300, "rgba(255,255,255,.10)"], "a time signature's bar");
+  assert.deepEqual(lines()[1440], [0, 300, "rgba(255,255,255,.22)"], "a time signature's bar");
 });
 
 test("bar numbers sit 10 px from the ruler's top; bar lines run its full height", async () => {
@@ -422,7 +422,7 @@ test("bar numbers sit 10 px from the ruler's top; bar lines run its full height"
     // The beat tick at 200 px draws first; the editor bar line draws over it.
     JSON.stringify([labels[1], lines.filter(line => line[0] === 200).at(-1)]);
   `);
-  assert.deepEqual(JSON.parse(result), [["2", 200, 10, "#ffffff"], [200, 0, 40, "#ffffff"]]);
+  assert.deepEqual(JSON.parse(result), [["2", 200, 10, "#f5f5f7"], [200, 0, 40, "#f5f5f7"]]);
 });
 
 test("without time signatures the ruler numbers bars as the editor does", async () => {
@@ -609,4 +609,79 @@ test("the overview canvas never sizes its own row, so its drawn height can't hol
   // The row is max-content: a canvas taller than the head once kept the strip at that height.
   const timelineCss = await readFile(new URL("../ui/src/timeline.css", import.meta.url), "utf8");
   assert.match(timelineCss, /\.arrange > \.overview > #overview \{\s*height: 0;\s*min-height: 100%;/);
+});
+
+test("timeline hitboxes stay 20 px wide across zoom levels for clicks, Erase sweeps and volume bars", async () => {
+  const { calls, evaluate, get, settle, status } = await frontend();
+  const grid = get("grid");
+  const controller = get("controller");
+  grid.getBoundingClientRect = () => ({ x: 0, y: 0, left: 0, top: 0, width: 1000, height: 300 });
+  controller.getBoundingClientRect = () => ({ x: 0, y: 0, left: 0, top: 0, width: 1000, height: 80 });
+  grid.setPointerCapture = () => {};
+  controller.setPointerCapture = () => {};
+  get("scroll").scrollTop = 0;
+  status.tool = "Select";
+  evaluate(`
+    laneRows = [0, 1, 2];
+    scene.viewStart = 0;
+    scene.zoom = 0.05;
+    scene.rowHeight = 30;
+    scene.moments = [
+      [1000, 80, true, [[0, 80, false, false]]],
+      [1300, 60, true, [[0, 60, false, false]]],
+      [3000, 90, true, [[0, 90, false, false]]],
+    ];
+    view.tool = "Select";
+  `);
+  // At zoom 0.05, hit 1000 ms is at x=50 px and hit 1300 ms is at x=65 px.
+  // Clicking 8 px off-center (x=58 px -> 1160 ms, 160 ms away from 1000) is closer to 1300 (7 px) than 1000 (8 px).
+  const fire = (el, type, init) => el.events.get(type)({
+    type, button: 0, pointerId: 1, clientX: 0, clientY: 15,
+    shiftKey: false, ctrlKey: false, metaKey: false, altKey: false,
+    preventDefault() {}, ...init,
+  });
+  calls.length = 0;
+  fire(grid, "pointerdown", { clientX: 42 }); // 8 px left of 1000 ms (x=50)
+  fire(grid, "pointerup", { clientX: 42 });
+  await settle();
+  assert.equal(calls.find(c => c.action?.kind === "pointer" && c.action.phase === "down").action.ms, 1000);
+
+  // Between two close hits (x=50 and x=65), the closer one (x=65 -> 1300 ms) wins.
+  calls.length = 0;
+  fire(grid, "pointerdown", { clientX: 58 });
+  fire(grid, "pointerup", { clientX: 58 });
+  await settle();
+  assert.equal(calls.find(c => c.action?.kind === "pointer" && c.action.phase === "down").action.ms, 1300);
+
+  // Outside ±10 px (x=38 -> 12 px left of x=50) stays at raw time (760 ms).
+  calls.length = 0;
+  fire(grid, "pointerdown", { clientX: 38 });
+  fire(grid, "pointerup", { clientX: 38 });
+  await settle();
+  assert.equal(calls.find(c => c.action?.kind === "pointer" && c.action.phase === "down").action.ms, 760);
+
+  // Erase drag sweep snaps to hits within ±10 px on pointermove even when zoomed out.
+  status.tool = "Erase";
+  evaluate('view.tool = "Erase";');
+  calls.length = 0;
+  fire(grid, "pointerdown", { clientX: 10 });
+  evaluate("drag.last = -100;");
+  fire(grid, "pointermove", { clientX: 142 }); // 8 px left of 3000 ms (x=150)
+  fire(grid, "pointerup", { clientX: 142 });
+  await settle();
+  const eraseMove = calls.find(c => c.action?.kind === "pointer" && c.action.phase === "move");
+  assert.equal(eraseMove.action.ms, 3000);
+
+  // Volume controller lane bar drag snaps within ±10 px; Alt-paint keeps raw pointer time.
+  calls.length = 0;
+  fire(controller, "pointerdown", { clientX: 158, clientY: 20 }); // 8 px right of 3000 ms (x=150)
+  fire(controller, "pointerup", { clientX: 158, clientY: 20 });
+  await settle();
+  assert.equal(calls.find(c => c.action?.kind === "pointer" && c.action.phase === "down").action.ms, 3000);
+
+  calls.length = 0;
+  fire(controller, "pointerdown", { clientX: 158, clientY: 20, altKey: true });
+  fire(controller, "pointerup", { clientX: 158, clientY: 20, altKey: true });
+  await settle();
+  assert.equal(calls.find(c => c.action?.kind === "pointer" && c.action.phase === "down").action.ms, 3160);
 });

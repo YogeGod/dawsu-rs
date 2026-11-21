@@ -9,7 +9,7 @@
   const list = $derived(model.history);
   const position = $derived(model.historyPosition);
   const steps = $derived(historyRows(list, position));
-  let open = $state(true);
+  let open = $state(false);
   let box = $state();
   // When the position changes (an undo, a redo, a new step), the current step comes into view.
   $effect(() => {

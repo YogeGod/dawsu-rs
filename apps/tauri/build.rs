@@ -49,8 +49,10 @@ const COMMANDS: &[&str] = &[
     "close_preview_window",
     "pick_drum_map",
     "set_drum_view",
+    "drum_map_action",
     "open_editor_folder",
     "close_editor",
+    "skin_textures",
 ];
 
 fn main() {

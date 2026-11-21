@@ -88,7 +88,7 @@ test("object circles are 34 px at every zoom, in the combo colour with a white r
   const strokes = ruler.calls.filter(call => call.name === "stroke");
   assert.ok(strokes.some(call => call.stroke === "#ffffff" && call.lineWidth === 2), "ring");
   assert.ok(strokes.filter(call => call.lineWidth === 2).every(call => ["#ffffff", "#ffffffd9"].includes(call.stroke)));
-  assert.ok(strokes.some(call => call.stroke === "#858585" && call.lineWidth === 1), "locator lines");
+  assert.ok(strokes.some(call => call.stroke === "#8e8e96" && call.lineWidth === 1), "locator lines");
   // Spinners keep their thin bar.
   assert.ok(ruler.calls.some(call => call.name === "fillRect" && call.fill === "#e6eef2" && call.args[3] === 5));
 });
@@ -155,9 +155,14 @@ test("object circles never grow past the Song row", async () => {
 
 // The x range of waveform columns that draw a bar taller than nothing.
 function loudColumns(canvas) {
-  const shades = ["#315c59", "#3c7673", "#46908c", "#51aaa5"];
-  const xs = canvas.calls.filter(call => call.name === "fillRect" && shades.includes(call.fill) && call.args[3] > 0)
-    .map(call => call.args[0]);
+  const xs = [];
+  for (let i = 0; i < canvas.calls.length; i++) {
+    const call = canvas.calls[i];
+    if (call.name === "fill" && call.fill?.startsWith("rgba(")) {
+      const move = canvas.calls.slice(0, i).reverse().find(c => c.name === "moveTo");
+      if (move && Math.abs(move.args[1] - 60) > 2) xs.push(move.args[0]);
+    }
+  }
   return [Math.min(...xs), Math.max(...xs)];
 }
 
@@ -181,17 +186,17 @@ test("the cycle region is a faint accent band under a warning-yellow bar on the 
   const rects = () => ruler.calls.filter(call => call.name === "fillRect").map(call => [call.fill, ...call.args]);
   // Locators at 100 and 700 ms at 0.25 px/ms: the region runs from x 25 to 175.
   paint("scene.zoom = .25; Object.assign(view, { left: 100, right: 700, cycle: true })");
-  assert.ok(rects().some(rect => rect.join() === ["#77bdfa0f", 25, 0, 150, 39].join()), "faint accent band");
-  assert.ok(rects().some(rect => rect.join() === ["#efc16a", 25, 1, 150, 4].join()), "warning-yellow bar");
+  assert.ok(rects().some(rect => rect.join() === ["#5ac8fa14", 25, 0, 150, 39].join()), "faint accent band");
+  assert.ok(rects().some(rect => rect.join() === ["#ffd60a", 25, 1, 150, 4].join()), "warning-yellow bar");
   assert.ok(!ruler.calls.some(call => [call.fill, call.stroke].some(colour => colour?.startsWith("#2fbf4a"))), "no green");
-  assert.ok(ruler.calls.some(call => call.name === "stroke" && call.stroke === "#858585"), "locator lines stay");
+  assert.ok(ruler.calls.some(call => call.name === "stroke" && call.stroke === "#8e8e96"), "locator lines stay");
   // With the cycle off the locator span stays grey; reversed locators stay orange.
   paint("view.cycle = false");
-  assert.ok(rects().some(rect => rect.join() === ["#85858522", 25, 0, 150, 39].join()));
-  assert.ok(!rects().some(rect => rect[0] === "#efc16a"));
+  assert.ok(rects().some(rect => rect.join() === ["#8e8e9622", 25, 0, 150, 39].join()));
+  assert.ok(!rects().some(rect => rect[0] === "#ffd60a"));
   paint("Object.assign(view, { left: 700, right: 100, cycle: true })");
   assert.ok(rects().some(rect => rect.join() === ["#f0aa7046", 25, 0, 150, 39].join()));
-  assert.ok(!rects().some(rect => rect[0] === "#efc16a"));
+  assert.ok(!rects().some(rect => rect[0] === "#ffd60a"));
 });
 
 test("a click on a slider repeat counts only inside its drawn size", async () => {
@@ -228,9 +233,9 @@ test("the left and right locators are L and R flags at the top of the ruler", as
   assert.ok(left[1] > 25 && left[1] < 39, "L sits right of its line");
   assert.equal(right[0], "R");
   assert.ok(right[1] > 161 && right[1] < 175, "R sits left of its line");
-  assert.ok(ruler.calls.some(call => call.name === "fill" && call.fill === "#858585"), "grey flags");
+  assert.ok(ruler.calls.some(call => call.name === "fill" && call.fill === "#8e8e96"), "grey flags");
   paint("view.cycle = true");
-  assert.ok(ruler.calls.some(call => call.name === "fill" && call.fill === "#efc16a"), "cycle-yellow flags while cycling");
+  assert.ok(ruler.calls.some(call => call.name === "fill" && call.fill === "#ffd60a"), "cycle-yellow flags while cycling");
   // Both on one time, and the left one at the right edge of the 300 px canvas: both stay visible.
   paint("Object.assign(view, { left: 1180, right: 1180 })");
   const [l, r] = letters();
@@ -247,7 +252,7 @@ test("a pushed L or R flag never paints over the other one, at either edge of th
     for (const call of ruler.calls) {
       if (call.name === "beginPath") xs = [];
       if (call.name === "moveTo" || call.name === "lineTo") xs.push(call.args[0]);
-      if (call.name === "fill" && ["#858585", "#efc16a"].includes(call.fill)) spans.push([Math.min(...xs), Math.max(...xs)]);
+      if (call.name === "fill" && ["#8e8e96", "#ffd60a"].includes(call.fill)) spans.push([Math.min(...xs), Math.max(...xs)]);
     }
     return spans;
   };
@@ -288,13 +293,13 @@ test("a folded main lane outlines its layers' hits in their volume colours; unfo
   paint("");
   assert.deepEqual(named("fill").map(call => call.fill), [volume(80), volume(30), volume(100)]);
   assert.deepEqual(named("stroke"), [], "unfolded: no outlines");
-  assert.deepEqual(tops(), [45 - 6, 75 - 6, 105 - 6], "each hit once, on its own row");
+  assert.deepEqual(tops(), [45 - 8, 75 - 8, 105 - 8], "each hit once, on its own row");
 
   paint('laneHeaderAction("family", 0)');
   // Row 0 is the folder header, row 1 the main lane: its own hit filled, its layers' outlined.
   assert.deepEqual(named("fill").map(call => call.fill), [volume(80)]);
   assert.deepEqual(named("stroke").map(call => call.stroke), [volume(30), volume(100)]);
-  assert.deepEqual(tops(), [45 - 6, 45 - 7.5, 45 - 7.5], "all three on the main lane's row, outlines just outside a hit");
+  assert.deepEqual(tops(), [45 - 8, 45 - 9.5, 45 - 9.5], "all three on the main lane's row, outlines just outside a hit");
 
   // Two layers and the main lane hit one moment: the main hit fills first, then each layer's outline
   // nests a little larger, so every volume colour shows.
@@ -303,18 +308,18 @@ test("a folded main lane outlines its layers' hits in their volume colours; unfo
   const order = grid.calls.filter((call, at) => ["fill", "stroke"].includes(call.name) && grid.calls[at - 1]?.name === "closePath")
     .map(call => call.name === "fill" ? ["fill", call.fill] : ["stroke", call.stroke]);
   assert.deepEqual(order, [["fill", volume(80)], ["stroke", volume(30)], ["stroke", volume(100)]]);
-  assert.deepEqual(tops(), [45 - 6, 45 - 7.5, 45 - 10]);
+  assert.deepEqual(tops(), [45 - 8, 45 - 9.5, 45 - 12]);
 });
 
 test("the ruler band is 40 px of #0c0c0c with a 1 px --editor-selected bottom edge", async () => {
   const { get, paint } = await canvases();
   const ruler = get("ruler");
   paint("scene.zoom = .1");
-  assert.ok(ruler.calls.some(call => call.name === "fillRect" && call.fill === "#0c0c0c" &&
+  assert.ok(ruler.calls.some(call => call.name === "fillRect" && call.fill === "#08080a" &&
     call.args.join() === "0,0,300,40"), "band");
   const edge = ruler.calls.findIndex(call => call.name === "lineTo" && call.args[1] === 39.5 && call.args[0] === 300.5);
   assert.ok(edge > 0 && ruler.calls[edge - 1].args.join() === "0.5,39.5", "bottom edge");
-  assert.ok(ruler.calls.slice(edge).some(call => call.name === "stroke" && call.stroke === "#454545"));
+  assert.ok(ruler.calls.slice(edge).some(call => call.name === "stroke" && call.stroke === "#2b2b30"));
 });
 
 test("the Add lane row's drop hint stays hidden until a Browser drop adds a lane", async () => {
@@ -415,7 +420,7 @@ test("the overview draws object diamonds by density, problem diamonds and the vi
     // Only this difficulty's problems, above the viewport box.
     [225, 35, "#efc16a"],
   ]);
-  assert.ok(overview.calls.some(call => call.name === "stroke" && call.stroke === "#1c1c1c"), "problem edge");
+  assert.ok(overview.calls.some(call => call.name === "stroke" && call.stroke === "#151517"), "problem edge");
   // The viewport box: 3000 ms of 4000 on screen, 1 px --editor-text with a 2 px radius.
   const box = overview.calls.find(call => call.name === "roundRect");
   assert.deepEqual(box.args.map(round), [.5, 3.5, 224, 73, 2]);
@@ -480,4 +485,37 @@ test("a click on two circles at one spot picks the later object, the one drawn o
   const { evaluate } = await canvases();
   evaluate("scene.zoom = .1; scene.gameplay = { points: [['circle', 100, 0], ['circle', 100, 1]], spans: [] }");
   assert.equal(evaluate("waveformTarget(100, 60, 80).object"), 1);
+});
+
+test("classic skin textures draw full-height slider tracks, tinted circles, overlays, reverse arrows and digits", async () => {
+  const { get, paint, evaluate } = await canvases();
+  const ruler = get("ruler");
+  evaluate(`
+    const img = (name, w = 128, h = 128) => ({ name, naturalWidth: w, naturalHeight: h, width: w, height: h });
+    skinTextures = {
+      ready: true,
+      hitcircle: img("hitcircle"),
+      overlay: img("overlay"),
+      reverseArrow: img("reverseArrow"),
+      digits: Array.from({ length: 10 }, (_, i) => img("d" + i, 64, 96)),
+      circleFill: 0.92,
+      tinted: new Map(),
+    };
+  `);
+  paint(`${combos}; scene.zoom = .1`);
+  // Slider body is 0.66 × 34 px = 22.44 px tall (v3 timeline-spec §9) with rounded pill ends.
+  const tracks = ruler.calls.filter(call => call.name === "roundRect");
+  assert.deepEqual(tracks.map(call => call.args.map(round)), [
+    [40, 48.78, 40, 22.44, 11.22],
+    [41, 49.78, 38, 20.44, 10.22],
+  ]);
+  // No fallback vector arcs are drawn when skin textures are active.
+  assert.equal(circles(ruler).length, 0);
+  // Tinted hitcircle canvases are cached per combo colour (2 colours: #ff0000 and #00ff00).
+  assert.equal(evaluate("skinTextures.tinted.size"), 2);
+  // Drawn images include overlay, reverseArrow (for the repeat), and combo digits d1 and d2.
+  const drawn = ruler.calls.filter(call => call.name === "drawImage").map(call => call.args[0]?.name ?? "tinted");
+  assert.ok(drawn.includes("overlay"), "hitcircleoverlay drawn");
+  assert.ok(drawn.includes("reverseArrow"), "reversearrow drawn on slider repeat");
+  assert.ok(drawn.includes("d1") && drawn.includes("d2"), "skin combo digits drawn on circle and slider head");
 });

@@ -111,6 +111,9 @@ struct WorkingMoment {
     time_bits: u64,
     volume: i32,
     hits: Vec<Sample>,
+    /// Per-hit volumes aligned with `hits`, omitted when every hit matches `volume`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    hit_volumes: Vec<i32>,
 }
 
 // Serde adapters keep the recovery file's representation private to Application.
@@ -291,10 +294,23 @@ impl WorkingHits {
             moments: hits
                 .moments()
                 .iter()
-                .map(|moment| WorkingMoment {
-                    time_bits: moment.time().ms().to_bits(),
-                    volume: moment.volume(),
-                    hits: moment.hits().cloned().map(Sample).collect(),
+                .map(|moment| {
+                    let volume = moment.volume();
+                    let volumes: Vec<i32> = moment
+                        .hits()
+                        .map(|lane| moment.hit_volume(lane))
+                        .collect();
+                    let hit_volumes = if volumes.iter().any(|&v| v != volume) {
+                        volumes
+                    } else {
+                        Vec::new()
+                    };
+                    WorkingMoment {
+                        time_bits: moment.time().ms().to_bits(),
+                        volume,
+                        hits: moment.hits().cloned().map(Sample).collect(),
+                        hit_volumes,
+                    }
                 })
                 .collect(),
             placements: hits
@@ -343,8 +359,13 @@ impl WorkingHits {
             } else {
                 base.add_moment(SongTime::from_ms(time_ms), saved.volume)
             };
-            for Sample(lane) in &saved.hits {
+            for (hit_index, Sample(lane)) in saved.hits.iter().enumerate() {
                 base.add_hit(id, lane.clone());
+                if let Some(&vol) = saved.hit_volumes.get(hit_index)
+                    && vol != saved.volume
+                {
+                    base.set_hit_volume(id, lane, vol);
+                }
             }
         }
         // A lane can be empty after its last hit was deleted. Resolve it the same way

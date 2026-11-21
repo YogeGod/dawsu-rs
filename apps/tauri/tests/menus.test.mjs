@@ -300,7 +300,7 @@ test("each menu groups the editor's existing commands like the design, with no s
   assert.deepEqual(open("file"), [
     "Open map…", "Import .osz…", "Open map folder", "—",
     "Save", "Revert to saved…", "Export…", "—",
-    "Start screen", "Folders…",
+    "Start screen", "Folders…", "—", "Preferences…",
   ]);
   assert.deepEqual(open("edit"), [
     "Undo", "Redo", "—",

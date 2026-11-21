@@ -132,7 +132,7 @@ test("every Bookmarks button waits exactly where the old markup made it wait", (
 test("+ sits beside the fold header, not inside it, and stays when the section folds", () => {
   const html = shown(InspectorBookmarks, model());
   const add = label(html, "Add bookmark");
-  assert.match(add.tag, /title="Add bookmark at the playhead"/);
+  assert.match(add.tag, /title="Add bookmark at the playhead \(Ctrl\+B\)"/);
   assert.equal(add.text, "");
   const head = buttons(html).find(item => /class="insp-head/.test(item.tag));
   assert.equal(head.text, "Bookmarks");
@@ -156,10 +156,10 @@ test("History lists every step, newest first, marks the current one and keeps th
 });
 
 test("both sections fold like the others, with no inline styles or wired selectors", () => {
-  for (const [part, title, body] of [[InspectorBookmarks, "Bookmarks", "inspector-bookmarks-body"],
-    [InspectorHistory, "History", "inspector-history-body"]]) {
+  for (const [part, title, body, initial] of [[InspectorBookmarks, "Bookmarks", "inspector-bookmarks-body", "true"],
+    [InspectorHistory, "History", "inspector-history-body", "false"]]) {
     const html = shown(part, model({ bookmark: 23300 }));
-    assert.match(html, new RegExp(`aria-expanded="true" aria-controls="${body}"[^>]*>[^]*?${title}</button>`));
+    assert.match(html, new RegExp(`aria-expanded="${initial}" aria-controls="${body}"[^>]*>[^]*?${title}</button>`));
     assert.match(html, new RegExp(`<div id="${body}"`));
     assert.doesNotMatch(html, /\sstyle="/);
     assert.doesNotMatch(html, /data-(action|command|volume|doc|map)\b/);

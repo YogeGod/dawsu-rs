@@ -40,11 +40,15 @@
 <div class="ui-well" role="toolbar" aria-label="Editing tools" bind:this={well}>
   {#each pills as name, index (name)}
     {#if index < 3}
-      <button type="button" class="ui-pill" aria-pressed={name === tool} title={name} {disabled}
+      <button type="button" class="ui-pill" aria-pressed={name === tool} title={`${name} (${index + 1})`} {disabled}
         bind:this={buttons[name]} onclick={() => act(toolAction(name))}>{@html icons[name]}{name}</button>
     {:else}
-      <button type="button" class="ui-pill ui-pill-icon current" aria-haspopup="menu" aria-label={name} title={name}
-        {disabled} bind:this={buttons[name]} onclick={openPicker}>{@html icons[name]}</button>
+      <button data-more-tools type="button" class="ui-pill ui-pill-icon current" aria-haspopup="menu" aria-label={name} title={`${name}, More tools (4)`}
+        {disabled} bind:this={buttons[name]} onclick={openPicker}>{@html icons[name]}<span aria-hidden="true">▾</span></button>
     {/if}
   {/each}
+  {#if pills.length === 3}
+    <button data-more-tools type="button" class="ui-pill ui-pill-icon" aria-haspopup="menu" aria-label="More tools" title="More tools (4)"
+      {disabled} onclick={openPicker}><span aria-hidden="true">▾</span></button>
+  {/if}
 </div>

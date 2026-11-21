@@ -74,6 +74,7 @@ const menuCalls = {
   goHome: () => goHome(),
   openFolders: () => openFolders(),
   openViewSettings: () => openViewSettings(),
+  openPreferences: () => openPreferences(),
   showHelp: () => run(showHelp),
   deleteActiveLane: () => deleteActiveLane(),
   toggleMapPreview: () => window.dawsuUi?.toggleMapPreview?.(),

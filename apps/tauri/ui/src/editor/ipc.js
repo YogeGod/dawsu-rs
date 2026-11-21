@@ -37,6 +37,15 @@ export function attachIpc(ctx) {
       next = await invoke("editor_view", { scene: true, action: null });
       if (!next.fault) next.bookmarkStep ??= step;
     }
+    // The editor sends a map's static data (timing sections, waveform, objects, combos) once. A page
+    // that never got it (reloaded, or another caller took that frame) asks for it again.
+    const kept = state.scene?.sections && state.scene.path === next.scene?.path &&
+      state.scene.previewKey === next.scene?.previewKey;
+    if (!next.fault && next.scene && !next.scene.sections && !kept) {
+      const step = next.bookmarkStep;
+      next = await invoke("editor_view", { scene: true, action: null, fresh: true });
+      if (!next.fault) next.bookmarkStep ??= step;
+    }
     ctx.show(next);
     if (next.shortcutHelp) await ctx.showHelp();
     if (next.shortcutOpen && !next.busy && !ctx.chooseSiblingDifficulty()) ctx.show(await invoke("pick_map"));
@@ -133,6 +142,16 @@ export function attachIpc(ctx) {
       // Centre scrolls the view on every frame; the editor's scene carries an older start.
       const centring = !loaded && state.scene && state.view.playing && state.view.follow && ctx.ui()?.centre?.();
       if (centring) state.view.scene.viewStart = state.scene.viewStart;
+      // Static map data (waveform, gameplay objects, combos, timing sections) is omitted on
+      // incremental edits for the same loaded document so clicks and drags stay fast. It is kept on
+      // the "Difficulty loaded" frame too: the editor sent it once, in the frame before.
+      if (state.scene && state.view.scene.path === state.scene.path &&
+          state.view.scene.previewKey === state.scene.previewKey) {
+        state.view.scene.waveform ??= state.scene.waveform;
+        state.view.scene.gameplay ??= state.scene.gameplay;
+        state.view.scene.combos ??= state.scene.combos;
+        state.view.scene.sections ??= state.scene.sections;
+      }
       state.scene = state.view.scene;
       if (unfolded.length) ctx.saveLaneLayout();
     }

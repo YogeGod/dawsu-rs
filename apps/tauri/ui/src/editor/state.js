@@ -64,11 +64,13 @@ export function createState() {
     sectionBarCache: null,
     sliderEndCache: null,
     overviewBinCache: null,
+    skinTextures: null,
 
     cursorSurface: null,
     cursorAltDraw: false,
     hoveredHit: null,
     lastHover: null,
+    volumeHoverTime: null,
     rulerPointer: null,
 
     modalKind: "",

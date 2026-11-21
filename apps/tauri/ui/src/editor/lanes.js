@@ -3,7 +3,7 @@ import { laneSounds, sampleFolderNames } from "./helpers.js";
 
 export function attachLanes(ctx) {
   const { env, state, dom } = ctx;
-  const { $, input, labeled, paragraph } = dom;
+  const { $, makeButton, input, labeled, paragraph } = dom;
   const { invoke } = env.window.__TAURI__.core;
 
   function hydrateLaneLayout(layout) {
@@ -234,10 +234,12 @@ export function attachLanes(ctx) {
     state.familyLayers = new Map();
     state.previewParents = new Map();
     let drumNames = [];
+    let drumRowIndices = [];
     if (state.view.drumView?.enabled && state.scene.drumRows) {
       const rows = state.scene.drumRows.filter(({ row, name }) => eligible(row, name));
       state.laneRows = rows.map(({ row }) => row);
       drumNames = rows.map(({ name }) => name);
+      drumRowIndices = rows.map(({ drumRowIndex }) => drumRowIndex ?? null);
     } else {
       groupedLaneRows(orderedLaneRows().filter(row => eligible(row)));
     }
@@ -253,10 +255,10 @@ export function attachLanes(ctx) {
     lanePanel.style.setProperty("--lane-row-height", state.scene.rowHeight + "px");
     const laneKey = JSON.stringify([state.laneRows, drumNames, state.scene.lanes, state.view.activeLane, [...state.selectionLaneKeys],
       [...state.familyParents], state.view.panels?.laneNames !== false, state.showLaneInfo, [...state.laneColours], [...state.renamedLanes], !!state.view.busy,
-      !!state.view.drumView?.enabled]);
+      !!state.view.drumView?.enabled, state.view.drumView?.name ?? null]);
     if (lanePanel.dataset.state !== laneKey) {
       lanePanel.dataset.state = laneKey;
-      state.laneHeaders = laneHeaderModel(drumNames);
+      state.laneHeaders = laneHeaderModel(drumNames, drumRowIndices);
       try { ctx.ui()?.lanes?.(state.laneHeaders); } catch (error) { (env.console ?? console).error(error); }
     }
     const strips = mixerModel();
@@ -305,19 +307,25 @@ export function attachLanes(ctx) {
     return state.laneHeaders;
   }
 
-  function laneHeaderModel(drumNames) {
+  function laneHeaderModel(drumNames, drumRowIndices = []) {
     const drum = !!state.view.drumView?.enabled;
     const numbers = new Map(orderedLaneRows().map((row, index) => [row, index + 1]));
     const anySolo = state.scene.lanes.some(lane => lane?.solo);
     const rows = state.laneRows.map((row, position) => {
       if (typeof row === "string") return folderHeaderModel(row);
       if (row === null) {
-        return { type: "drum", key: "drum:" + position, name: drumNames[position], title: drumNames[position] + " · Unassigned" };
+        return {
+          type: "drum",
+          key: "drum:" + position,
+          name: drumNames[position],
+          title: drumNames[position] + " · Unassigned",
+          drumRowIndex: drumRowIndices[position] ?? null,
+        };
       }
       const lane = state.scene.lanes[row];
       const displayName = drumNames[position] ?? laneDisplayName(lane);
       const label = state.showLaneInfo && lane.index != null
-        ? displayName + (lane.index === 0 ? " · skin" : " · idx " + lane.index)
+        ? displayName + (lane.index === 0 ? " (skin)" : " (idx " + lane.index + ")")
         : displayName;
       const sound = laneSound(lane);
       const family = state.familyParents.get(row);
@@ -326,7 +334,7 @@ export function attachLanes(ctx) {
         type: "lane", key: drum ? "drum:" + position : "lane:" + row, row,
         number: drum ? position + 1 : numbers.get(row),
         name: !state.showLaneInfo && !drum && !state.renamedLanes.has(lane.colourKey) ? sound.name : label, label, display: displayName,
-        title: (lane.sample ?? label) + " · Select and audition · Ctrl/Cmd toggles · Shift selects a range",
+        title: (lane.sample ?? label) + ". Click to select and audition; Ctrl/Cmd toggles; Shift selects a range",
         tag: drum ? null : sound.set, icon: sound.icon,
         // Yoge, 2026-11-20 (ADR 0068): a lane is grey unless the mapper picked a colour.
         colour: state.laneColours.get(lane.colourKey) ?? null,
@@ -338,9 +346,16 @@ export function attachLanes(ctx) {
         // The drum view adds no lanes (vault rule) and removes none.
         addLayer: !drum && lane.canAddLayer ? "Add numbered " + lane.name + " layer" : null,
         remove: drum ? null : { label: "Remove " + (state.renamedLanes.has(lane.colourKey) ? displayName : sound.name), disabled: !lane.canDelete },
+        ...(drum ? { drumRowIndex: drumRowIndices[position] ?? null } : {}),
       };
     });
-    return { names: state.view.panels?.laneNames !== false, busy: !!state.view.busy, rows };
+    return {
+      names: state.view.panels?.laneNames !== false,
+      busy: !!state.view.busy,
+      drum,
+      drumName: drum ? state.view.drumView?.name ?? null : null,
+      rows,
+    };
   }
 
   // Every click on a lane or folder header comes back here from the Svelte part.
@@ -465,6 +480,130 @@ export function attachLanes(ctx) {
     });
   }
 
+  function openDrumMapSetup(focusRowIndex = null) {
+    if (!state.scene || state.view.busy || state.drag || !state.view.drumView) return;
+    const map = state.scene.path;
+    const drumView = state.view.drumView;
+    const OptionCtor = env.Option ?? Option;
+
+    // 1. Built-in preset switcher + Open .dawsudrum file… button.
+    const presetSelect = env.document.createElement("select");
+    presetSelect.setAttribute("aria-label", "Drum map preset");
+    const presets = drumView.presets ?? [];
+    const activePreset = drumView.name ?? "";
+    if (activePreset && !presets.includes(activePreset)) {
+      const custom = new OptionCtor(activePreset + " (custom file)", "");
+      custom.disabled = true;
+      presetSelect.append(custom);
+    }
+    presetSelect.append(...presets.map(name => new OptionCtor(name, name)));
+    presetSelect.value = presets.includes(activePreset) ? activePreset : "";
+    presetSelect.addEventListener("change", () => {
+      const name = presetSelect.value;
+      if (!name || state.scene?.path !== map || state.view.busy || state.drag) return;
+      ctx.run(async () => {
+        if (state.scene?.path !== map || state.view.busy || state.drag) return;
+        const next = await invoke("drum_map_action", { map, action: { kind: "load_builtin", name } });
+        if (next) {
+          ctx.show(next);
+          if (state.modalKind === "drum-map-setup") {
+            ctx.closeModal();
+            openDrumMapSetup();
+          }
+        }
+      });
+    });
+
+    const openFile = makeButton("Open .dawsudrum file…", () => {
+      if (state.scene?.path !== map || state.view.busy || state.drag) return;
+      ctx.run(async () => {
+        if (state.scene?.path !== map || state.view.busy || state.drag) return;
+        const next = await invoke("pick_drum_map", { map });
+        if (next) {
+          ctx.show(next);
+          if (state.modalKind === "drum-map-setup") {
+            ctx.closeModal();
+            openDrumMapSetup();
+          }
+        }
+      });
+    });
+
+    const presetBar = env.document.createElement("div");
+    presetBar.className = "row";
+    presetBar.style.display = "flex";
+    presetBar.style.alignItems = "center";
+    presetBar.style.gap = "8px";
+    presetSelect.style.flex = "1 1 auto";
+    presetBar.append(presetSelect, openFile);
+
+    // 2. Mapset sample lane choices for the row dropdowns.
+    const laneChoices = (drumView.lanes ?? []).map(item => {
+      const sceneLane = state.scene.lanes?.find(l => l.sourceKey === item.sceneKey || l.key === item.sceneKey);
+      const label = sceneLane
+        ? laneTitle(sceneLane) + (sceneLane.sample && !laneTitle(sceneLane).includes(sceneLane.sample) ? " (" + sceneLane.sample + ")" : "")
+        : item.name;
+      return { key: item.key, label };
+    });
+
+    // 3. Scrollable list of drum kit rows.
+    const list = env.document.createElement("div");
+    list.style.display = "flex";
+    list.style.flexDirection = "column";
+    list.style.gap = "6px";
+    list.style.maxHeight = "340px";
+    list.style.overflowY = "auto";
+    list.style.marginTop = "8px";
+
+    let focusedSelect = null;
+    for (const row of drumView.rows ?? []) {
+      const line = env.document.createElement("div");
+      line.className = "row";
+      line.style.display = "flex";
+      line.style.alignItems = "center";
+      line.style.justifyContent = "space-between";
+      line.style.gap = "12px";
+
+      const label = env.document.createElement("span");
+      label.textContent = row.name;
+      if (!row.assigned) label.style.opacity = "0.7";
+
+      const select = env.document.createElement("select");
+      select.setAttribute("aria-label", "Sample lane for " + row.name);
+      select.style.minWidth = "210px";
+      select.append(
+        new OptionCtor("Unassigned", ""),
+        ...laneChoices.map(choice => new OptionCtor(choice.label, choice.key)),
+      );
+      const matched = row.assigned && row.laneKey && laneChoices.some(choice => choice.key === row.laneKey);
+      select.value = matched ? row.laneKey : "";
+      select.addEventListener("change", () => {
+        if (state.scene?.path !== map || state.view.busy || state.drag) return;
+        const laneKey = select.value || null;
+        ctx.run(async () => {
+          if (state.scene?.path !== map || state.view.busy || state.drag) return;
+          const next = await invoke("drum_map_action", {
+            map,
+            action: { kind: "assign_row", row_index: row.index, lane_key: laneKey },
+          });
+          if (next) ctx.show(next);
+        });
+      });
+
+      if (focusRowIndex !== null && row.index === focusRowIndex) focusedSelect = select;
+      line.append(label, select);
+      list.append(line);
+    }
+
+    ctx.modal(
+      "drum-map-setup",
+      "Drum Map Setup",
+      [labeled("Preset", presetBar), list],
+      [["Done", () => ctx.closeModal(), true]],
+    );
+    focusedSelect?.focus?.();
+  }
+
   function deletableLane() {
     if (!state.scene || state.view.busy || state.drag || !state.lanePositions.has(state.view.activeLane)) return null;
     const lane = state.scene.lanes?.[state.view.activeLane];
@@ -537,9 +676,9 @@ export function attachLanes(ctx) {
       }
     });
     $("drums-view").addEventListener("click", () => {
-      if (!state.scene || state.view.busy || state.drag || state.view.drumView?.enabled) return;
-      if (state.view.drumView?.name) setDrumView(true);
-      else requestDrumMap();
+      if (!state.scene || state.view.busy || state.drag) return;
+      if (state.view.drumView?.enabled) openDrumMapSetup();
+      else setDrumView(true);
     });
   }
 
@@ -550,7 +689,7 @@ export function attachLanes(ctx) {
     refreshLanePresentation, groupedLaneRows, renderLanes, currentMixer,
     mixerModel, currentLaneHeaders, laneHeaderModel, laneHeaderAction,
     mixSelectedLanes, volumeScopeHint, updateVolumeScope, selectVolumeLane,
-    requestDrumMap, setDrumView, deletableLane, openAddLane, deleteActiveLane,
+    requestDrumMap, setDrumView, openDrumMapSetup, deletableLane, openAddLane, deleteActiveLane,
     laneTint, setLaneHeight, bindLanes,
   });
 }

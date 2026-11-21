@@ -30,20 +30,20 @@ const labels = html => [...html.matchAll(/<button[^>]*>([^]*?)<\/button>/g)].map
 
 test("the current tool's pill is pressed; an off-toolbar tool gets a fourth, current-looking pill that opens the picker", () => {
   let html = shown(ToolPills, { tool: "Draw", busy: false });
-  assert.deepEqual(labels(html), ["Select", "Draw", "Erase"]);
+  assert.deepEqual(labels(html), ["Select", "Draw", "Erase", "▾"]);
   assert.deepEqual(pressed(html), ["Draw"]);
   assert.doesNotMatch(html, /disabled/);
 
   html = shown(ToolPills, { tool: "Ramp", busy: false });
-  // The fourth pill is icon only, so the toolbar still fits; its name is in the tooltip and aria-label.
-  assert.deepEqual(labels(html), ["Select", "Draw", "Erase", ""]);
+  // The fourth pill is icon + dropdown arrow, so the toolbar still fits; its name is in the tooltip and aria-label.
+  assert.deepEqual(labels(html), ["Select", "Draw", "Erase", "▾"]);
   const fourth = html.match(/<button[^>]*aria-haspopup="menu"[^>]*>/)?.[0] ?? "";
   // It opens a menu, so it says expanded (menus.js), not pressed; it looks current through its class.
   assert.doesNotMatch(fourth, /aria-pressed/);
   assert.match(fourth, /class="[^"]*\bui-pill-icon\b[^"]*\bcurrent\b/);
   assert.deepEqual(pressed(html), [], "none of Select, Draw and Erase is pressed");
   assert.match(fourth, /aria-label="Ramp"/);
-  assert.match(fourth, /title="Ramp"/);
+  assert.match(fourth, /title="Ramp, More tools \(4\)"/);
   assert.equal([...html.matchAll(/aria-haspopup/g)].length, 1, "only the off-toolbar pill opens the picker");
   assert.equal([...html.matchAll(/<svg/g)].length, 4, "every pill has its icon");
   assert.doesNotMatch(html, /\sstyle=|\sid=/);
@@ -55,8 +55,8 @@ test("before the first update, with no map, while busy or after a fault, the pil
     [{ tool: "Select", busy: false, fault: "The editor stopped" }, map]];
   for (const [view, scene] of views) {
     const html = shown(ToolPills, view, scene);
-    assert.deepEqual(labels(html), ["Select", "Draw", "Erase"]);
-    assert.equal([...html.matchAll(/disabled/g)].length, 3);
+    assert.deepEqual(labels(html), ["Select", "Draw", "Erase", "▾"]);
+    assert.equal([...html.matchAll(/disabled/g)].length, 4);
     const audition = shown(AuditionPill, view, scene);
     assert.match(audition, /disabled/);
   }
@@ -66,7 +66,7 @@ test("before the first update, with no map, while busy or after a fault, the pil
 
 test("the Audition pill follows the editor's audition setting", () => {
   let html = shown(AuditionPill, { audition: true, busy: false });
-  assert.deepEqual(labels(html), ["Audition"]);
+  assert.deepEqual(labels(html), ["Audition", "Object lines"]);
   assert.match(html, /aria-pressed="true"/);
   // Below 1120 px style.css hides .toolbar-toggle-label; the name stays.
   assert.match(html, /<span class="toolbar-toggle-label">Audition<\/span>/);

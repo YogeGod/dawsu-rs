@@ -903,11 +903,6 @@ enum JobResult {
     Review(Result<output::WritePlan, String>, Vec<OutputProblem>),
     /// The files written, a receipt warning, and the pending files the write put in the mapset.
     Output(Result<(usize, Option<String>, Vec<String>), String>),
-    Stretched {
-        path: PathBuf,
-        speed: f64,
-        result: Result<Arc<AudioClip>, String>,
-    },
 }
 #[derive(Clone)]
 struct JobProgress {
@@ -929,7 +924,6 @@ pub struct Application {
     audio: Option<AudioEngine>,
     samples: HashMap<SampleIdentity, Arc<AudioClip>>,
     song: Option<Arc<AudioClip>>,
-    stretched_song: Option<Arc<AudioClip>>,
     /// The sample file last auditioned or outlined from the Browser, kept while the file is unchanged
     /// so a pick decodes it once for both.
     sample_file: Option<(PathBuf, (u64, std::time::SystemTime), Arc<AudioClip>)>,
@@ -1082,7 +1076,6 @@ impl Application {
             audio,
             samples: HashMap::new(),
             song: None,
-            stretched_song: None,
             playback_speed: 1.0,
             waveform: Vec::new(),
             preferences,
@@ -1583,8 +1576,11 @@ impl Application {
     }
 
     pub fn poll(&mut self) {
-        // Edits made outside the refreshing entry points still reach the recovery checkpoint.
-        self.refresh_recovery_edit();
+        let stroke_open = self.is_stroke_open();
+        if !stroke_open {
+            // Edits made outside the refreshing entry points still reach the recovery checkpoint.
+            self.refresh_recovery_edit();
+        }
         self.poll_sweep(false);
         self.check_set_versions_when_read();
         self.poll_drum_detection();
@@ -1653,7 +1649,6 @@ impl Application {
                     self.song = loaded.song;
                     self.drum.song_loaded();
                     self.node_graph_song_loaded();
-                    self.stretched_song = self.song.clone();
                     self.playback_speed = 1.0;
                     self.samples = loaded.samples;
                     self.waveform = loaded.waveform;
@@ -1704,23 +1699,6 @@ impl Application {
                     self.status = "Open failed; previous document kept".into();
                     if self.sweep_detached {
                         self.status = sweep::with_note(&self.status, sweep::STILL_RUNNING);
-                    }
-                }
-                JobResult::Stretched {
-                    path,
-                    speed,
-                    result,
-                } => {
-                    if self.document.as_ref().is_some_and(|d| d.path == path) {
-                        match result {
-                            Ok(clip) => {
-                                self.stretched_song = Some(clip);
-                                self.playback_speed = speed;
-                                self.sync_audio();
-                                self.status = format!("Playback speed: {:.0}%", speed * 100.0);
-                            }
-                            Err(e) => self.error = Some(e),
-                        }
                     }
                 }
                 JobResult::Review(result, diagnostics) => {
@@ -1894,10 +1872,12 @@ impl Application {
             }
         }
         self.poll_sample_folder();
-        if self.document.as_ref().is_some_and(|d| {
-            d.composer.history.version() != self.cached_version
-                || d.composer.listen_version != self.cached_listen_version
-        }) {
+        if !self.is_stroke_open()
+            && self.document.as_ref().is_some_and(|d| {
+                d.composer.history.version() != self.cached_version
+                    || d.composer.listen_version != self.cached_listen_version
+            })
+        {
             self.sync_audio();
         }
         let requests = self
@@ -2231,39 +2211,17 @@ impl Application {
     }
 
     pub fn set_speed(&mut self, speed: f64) {
-        if self.busy {
+        if self.busy || self.document.is_none() {
             return;
         }
-        let (Some(song), Some(d)) = (self.song.clone(), self.document.as_ref()) else {
-            return;
-        };
-        if (speed - 1.0).abs() < 0.001 {
-            self.stretched_song = Some(song);
-            self.playback_speed = 1.0;
-            self.sync_audio();
+        if !speed.is_finite() || !(0.25..=1.5).contains(&speed) {
+            self.error = Some("Playback speed must be between 25% and 150%".into());
             return;
         }
-        let path = d.path.clone();
-        let (send, receive) = mpsc::channel();
-        self.jobs = Some(receive);
-        self.busy = true;
-        self.status = "Preparing pitch-preserving playback…".into();
-        let cancel = Arc::new(AtomicBool::new(false));
-        self.cancel = cancel.clone();
-        std::thread::spawn(move || {
-            let result = dawsu_audio::stretch(&song, speed).and_then(|clip| {
-                if cancel.load(Ordering::Relaxed) {
-                    Err("Speed change cancelled".into())
-                } else {
-                    Ok(clip)
-                }
-            });
-            let _ = send.send(JobResult::Stretched {
-                path,
-                speed,
-                result,
-            });
-        });
+        let speed = if (speed - 1.0).abs() < 0.001 { 1.0 } else { speed };
+        self.playback_speed = speed;
+        self.sync_audio();
+        self.status = format!("Playback speed: {:.0}%", speed * 100.0);
     }
     pub fn grid_seek(&mut self, direction: i32) {
         self.grid_seek_steps(direction, 1);
@@ -2887,7 +2845,7 @@ impl Application {
             let cues = self.scheduled_sounds(d);
             if let Some(a) = &self.audio {
                 a.load_at_speed(
-                    self.stretched_song.clone().or_else(|| self.song.clone()),
+                    self.song.clone(),
                     cues,
                     self.playback_speed,
                 );
@@ -4137,6 +4095,30 @@ mod project_workflow {
         wait(&mut restored);
         assert!(restored.error.is_none(), "{:?}", restored.error);
         assert_eq!(restored.document().unwrap().composer.hitsounds().moment(dawsu_hitsounding::MomentId(0)).volume(), 33);
+    }
+
+    #[test]
+    fn a_recovery_copy_preserves_per_hit_volumes() {
+        let scratch = Scratch::new("recovery-per-hit-volumes");
+        let (mut app, _map) = open_left_out_fixture(&scratch, true);
+        app.data_root = scratch.path("data");
+        let clap = skin(SampleSet::Normal, Hitsound::Clap);
+        app.document.as_mut().unwrap().composer.apply("Quiet clap", |hits| {
+            let m = dawsu_hitsounding::MomentId(0);
+            hits.set_volume(m, 100);
+            hits.add_hit(m, clap.clone());
+            hits.set_hit_volume(m, &clap, 30);
+        });
+        app.poll();
+        let offer = app.write_recovery_copy().unwrap().unwrap();
+        let mut restored = Application::create(Preferences::default(), false, None, None, false, scratch.path("data"));
+        restored.project_root = app.project_root.clone();
+        restored.restore_recovery(&offer.id).unwrap();
+        wait(&mut restored);
+        assert!(restored.error.is_none(), "{:?}", restored.error);
+        let moment = restored.document().unwrap().composer.hitsounds().moment(dawsu_hitsounding::MomentId(0));
+        assert_eq!(moment.volume(), 100);
+        assert_eq!(moment.hit_volume(&clap), 30);
     }
 
     #[test]

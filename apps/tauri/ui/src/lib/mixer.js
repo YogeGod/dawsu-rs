@@ -100,7 +100,7 @@ export function gainsAction(view, which, value, pending = {}) {
 export const stripClickSelects = target => !target?.closest?.("button, .fader, .box");
 
 // The Song strip's colour: v3's teal (--editor-teal), as a hex for the strip shades.
-export const songColour = "#62d6cf";
+export const songColour = "#4fd8d0";
 
 // v3: fill 20 % into #181818 (selected 42 %), edge 30 % into the canvas, name bar the colour.
 // A lane is grey unless the mapper picked a colour (ADR 0068).
