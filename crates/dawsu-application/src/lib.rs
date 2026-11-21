@@ -2451,7 +2451,8 @@ impl Application {
     }
     pub fn set_insert_volume(&mut self, v: i32) {
         if let Some(d) = self.document.as_mut() {
-            d.composer.insert_volume = v.clamp(0, 100);
+            // New hits are never drawn under 5% (see `Composer::volume_for_lanes`).
+            d.composer.insert_volume = v.clamp(dawsu_hitsounding::rules::SAVED_VOLUME_FLOOR, 100);
         }
     }
     pub fn set_selection_lane_scope(&mut self, lanes: Option<BTreeSet<SampleIdentity>>) -> Result<(), String> {
@@ -3518,6 +3519,10 @@ mod project_workflow {
         std::fs::write(&map, SLIDER_MAP).unwrap();
         wav(&folder.join("a.wav"), 8192);
         wav(&folder.join("b.wav"), 4096);
+        // A file in the folder that is not audio, for the test whose mix must fail.
+        if second == "broken.wav" {
+            std::fs::write(folder.join(second), b"not audio").unwrap();
+        }
         let document = Document::read(&map).unwrap();
         let mut hits = document.composer.hitsounds().clone();
         hits.set_moment_state(dawsu_hitsounding::MomentId(0), 80, [
@@ -3612,10 +3617,13 @@ mod project_workflow {
         assert_eq!(diagnostics[0].message, "At 1000 ms a slider sound (soft-sliderslide) is on a hit. osu! plays slider sounds only on a slider body. Remove it from the hit.");
     }
 
+    /// The mix fails on a file that is in the folder but is not audio. A file that is not in the
+    /// folder no longer fails it: osu! plays the normal hitnormal in its place (`Lane::plays_as`),
+    /// and dawsu! ships that sound.
     #[test]
     fn a_failed_mix_render_stops_the_whole_save() {
         let scratch = Scratch::new("mix-render-fails");
-        let (document, hits, project) = mix_and_unwritable(&scratch, "missing.wav");
+        let (document, hits, project) = mix_and_unwritable(&scratch, "broken.wav");
         let mut diagnostics = Vec::new();
         let error = prepare(&scratch, &document, &hits, Some(&project), &mut diagnostics).err().unwrap();
         assert!(error.contains("Could not mix"), "{error}");
