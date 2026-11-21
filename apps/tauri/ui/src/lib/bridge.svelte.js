@@ -28,6 +28,8 @@ export class Bridge {
   bottomTab = $state("volume");
   // View › Map preview: kept in this window only, never saved.
   mapPreview = $state(false);
+  // Active viewer overlay pushed from the dedicated Node Graph window.
+  nodeGraphViewer = $state.raw(null);
   // The map preview is open in its own window (Rust's preview-window event).
   previewWindow = $state(false);
 

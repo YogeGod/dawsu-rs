@@ -70,6 +70,7 @@ export const items = [
   { id: "generate", label: "Generate hitsound difficulty…", icon: "Package", command: "generate", run: ["click", "generate"] },
   { id: "copyHitsounds", label: "Copy hitsounds…", icon: "Copy", run: ["click", "copy"] },
   { id: "drumDetection", label: "Drum hit detection…", icon: "Drum", run: ["call", "openDrumWindow"] },
+  { id: "nodeGraph", label: "Node graph…", icon: "Layers", run: ["call", "openNodeGraphWindow"] },
   { id: "exportStyle", label: "Generate export style", choices: "exportStyle", enabled: "never" },
   { id: "addBookmark", label: "Add bookmark", icon: "BookmarkPlus", command: "addBookmark" },
   { id: "previousBookmark", label: "Previous bookmark", icon: "ArrowLeftToLine", command: "previousBookmark" },
@@ -139,7 +140,7 @@ export const menus = {
   map: [
     "difficulty", "-",
     "newDifficulty", "-",
-    "generate", "copyHitsounds", "drumDetection", "exportStyle", "-",
+    "generate", "copyHitsounds", "drumDetection", "nodeGraph", "exportStyle", "-",
     "addBookmark", "previousBookmark", "nextBookmark", "-",
     "addLane", "deleteActiveLane",
   ],

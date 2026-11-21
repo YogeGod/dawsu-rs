@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { createContext, runInContext } from "node:vm";
+import { bootEditor } from "./editor-runtime.mjs";
 
-const app = await readFile(new URL("../dist/app.js", import.meta.url), "utf8");
 
 async function frontend() {
   const listeners = new Map();
@@ -46,7 +46,7 @@ async function frontend() {
     setInterval() {},
     requestAnimationFrame() {},
   });
-  await runInContext(app, context);
+  await bootEditor(context);
   calls.length = 0;
   const evaluate = (code) => runInContext(code, context);
   return { listeners, rulerEvents, overviewEvents, gridEvents, barEvents, windowEvents, cursors, resizeEvents, properties, calls, evaluate, title, fileHead, fileTail, responses, settle: () => evaluate("pending") };
@@ -273,7 +273,7 @@ test("cursors follow the current editing tool, Alt and cycle ruler geometry", as
   gridEvents.get("pointerenter")(mouse);
   assert.equal(cursors.grid.cursor, "default");
   windowEvents.get("keydown")({ ...mouse, key: "Alt", altKey: true });
-  assert.match(cursors.grid.cursor, /cursor-draw\.svg.*4 4, crosshair/);
+  assert.equal(cursors.grid.cursor, "var(--cursor-draw)");
   windowEvents.get("keydown")({ ...mouse, key: "Control", altKey: true, ctrlKey: true });
   assert.equal(cursors.grid.cursor, "default");
   windowEvents.get("keydown")({ ...mouse, key: "Meta", altKey: true, metaKey: true });
@@ -281,16 +281,19 @@ test("cursors follow the current editing tool, Alt and cycle ruler geometry", as
   windowEvents.get("keyup")(mouse);
 
   evaluate('view.tool = "Erase"; refreshToolCursor()');
-  assert.match(cursors.grid.cursor, /cursor-erase\.svg.*5 27, crosshair/);
+  assert.equal(cursors.grid.cursor, "var(--cursor-erase)");
   gridEvents.get("pointerleave")();
   barEvents.get("pointerenter")(mouse);
-  assert.match(cursors.controller.cursor, /cursor-erase\.svg/);
+  assert.equal(cursors.controller.cursor, "var(--cursor-erase)");
   evaluate('view.tool = "Grab"; refreshToolCursor()');
   assert.equal(cursors.controller.cursor, "pointer");
   windowEvents.get("keydown")({ ...mouse, key: "Alt", altKey: true });
   assert.equal(cursors.controller.cursor, "pointer", "Grab keeps the legacy hand");
   evaluate('view.tool = "Mute"; refreshToolCursor()');
-  assert.match(cursors.controller.cursor, /cursor-draw\.svg/);
+  assert.equal(cursors.controller.cursor, "var(--cursor-draw)");
+  const css = await readFile(new URL("../dist/style.css", import.meta.url), "utf8");
+  assert.match(css, /--cursor-draw:url\("studio-assets\/icons\/cursor-draw\.svg"\) 4 4,crosshair/);
+  assert.match(css, /--cursor-erase:url\("studio-assets\/icons\/cursor-erase\.svg"\) 5 27,crosshair/);
   windowEvents.get("blur")();
   assert.equal(cursors.controller.cursor, "crosshair", "blur clears a held modifier");
 

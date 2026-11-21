@@ -67,6 +67,7 @@ const menuCalls = {
   openSoundSetPlacement: () => openSoundSetPlacement(),
   goToEnd: () => act({ kind: "seek", ms: view.duration }),
   openDrumWindow: () => invoke("drum_window_open").catch(error => { $("status").textContent = String(error); }),
+  openNodeGraphWindow: () => invoke("open_node_graph_window").catch(error => { $("status").textContent = String(error); }),
   requestDrumMap: () => requestDrumMap(),
   editLayout: () => dock?.editLayout(),
   openMap: () => openMap(),

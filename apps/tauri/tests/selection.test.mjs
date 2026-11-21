@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { createContext, runInContext } from "node:vm";
+import { bootEditor } from "./editor-runtime.mjs";
 
-const app = await readFile(new URL("../dist/app.js", import.meta.url), "utf8");
 
 test("selection card shows its first hit and distinguishes relative and absolute volume", async () => {
   const elements = new Map();
@@ -36,7 +36,7 @@ test("selection card shows its first hit and distinguishes relative and absolute
     setInterval() {},
     requestAnimationFrame() {},
   });
-  await runInContext(app, context);
+  await bootEditor(context);
   calls.length = 0;
   const model = () => JSON.parse(runInContext("JSON.stringify(inspectorModel())", context));
   runInContext('view = { busy: false }; scene = { selection: { count: 2, start: 1250.5, object: "Circle" } };', context);

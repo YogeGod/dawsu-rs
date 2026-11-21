@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { createContext, runInContext } from "node:vm";
+import { bootEditor } from "./editor-runtime.mjs";
 
-const app = await readFile(new URL("../dist/app.js", import.meta.url), "utf8");
 
 test("ruler markers merge nearby visible problems from the active difficulty", async () => {
   const canvas = new Proxy({}, { get: (target, name) => target[name] ?? (() => {}) });
@@ -35,7 +35,7 @@ test("ruler markers merge nearby visible problems from the active difficulty", a
     setInterval() {},
     requestAnimationFrame() {},
   });
-  await runInContext(app.replace(/\nact\(null\);\s*$/, ""), context);
+  bootEditor(context, { autoStart: false });
   const markers = runInContext('visibleWarningMarkers(problems, "Hard.osu", 500, .1, 300)', context);
   assert.deepEqual(JSON.parse(JSON.stringify(markers.map(marker => ({
     x: marker.x, messages: marker.problems.map(problem => problem.message),

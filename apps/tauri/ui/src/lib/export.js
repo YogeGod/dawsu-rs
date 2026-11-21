@@ -3,7 +3,7 @@
 // What the Export window starts with for a map it has no stored choices for. The base hitsound
 // difficulty is a new file in the mapset, so it is written only once the mapper turns it on.
 export const defaultChoices = Object.freeze({
-  leftOut: [], matchWithin: 5, copyVolumes: true, base: false, sliderAudio: false,
+  leftOut: [], matchWithin: 5, copyVolumes: true, base: false, sliderAudio: false, laterWins: false,
 });
 
 // Generate's name for the difficulty it makes (HITSOUNDS_VERSION in dawsu-hitsounding).
@@ -11,10 +11,11 @@ export const baseName = "Hitsounds";
 
 // The old Copy dialog's defaults for every option this slice does not show yet, so Export copies
 // exactly as Copy did with Match within and Copy volumes set.
-export function copyOptions({ matchWithin, copyVolumes }) {
+export function copyOptions({ matchWithin, copyVolumes, laterWins = false }) {
   return {
     mode: "overwrite_everything",
     leniency: matchWithin,
+    collision_policy: laterWins ? "later_wins" : "merge",
     start_index: 100,
     never_silent_hitnormals: false,
     copy_hitsounds: true,
@@ -53,6 +54,7 @@ export function choicesFrom(view) {
     copyVolumes: typeof stored.copyVolumes === "boolean" ? stored.copyVolumes : defaultChoices.copyVolumes,
     base: typeof stored.base === "boolean" ? stored.base : defaultChoices.base,
     sliderAudio: typeof stored.sliderAudio === "boolean" ? stored.sliderAudio : defaultChoices.sliderAudio,
+    laterWins: typeof stored.laterWins === "boolean" ? stored.laterWins : defaultChoices.laterWins,
   };
 }
 
@@ -71,7 +73,7 @@ export function exportLabel(count) {
 export function optionsKey(view, choices) {
   const targets = included(view?.targets, choices);
   return JSON.stringify([view?.source?.path ?? null, targets, choices.matchWithin, choices.copyVolumes,
-    choices.base, choices.sliderAudio]);
+    choices.base, choices.sliderAudio, choices.laterWins === true]);
 }
 
 export function previewRequest(view, choices) {

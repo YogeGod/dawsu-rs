@@ -1,9 +1,8 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { createContext, runInContext } from "node:vm";
+import { bootEditor } from "./editor-runtime.mjs";
 
-const app = await readFile(new URL("../dist/app.js", import.meta.url), "utf8");
 const playheadColour = "#a1d0f7";
 
 // The editor with fake canvases, a clock and animation frames the test runs by hand. The editor
@@ -54,7 +53,7 @@ async function editor() {
     setInterval(callback) { tick = callback; },
     console,
   });
-  await runInContext(app.replace(/\nact\(null\);\s*$/, ""), context);
+  bootEditor(context, { autoStart: false });
   get("volume-controller-panel").hidden = true;
   get("grid").clientWidth = 300;
   const evaluate = code => runInContext(code, context);

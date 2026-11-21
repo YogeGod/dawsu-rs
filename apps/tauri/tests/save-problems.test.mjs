@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { createContext, runInContext } from "node:vm";
+import { bootEditor } from "./editor-runtime.mjs";
 
-const app = await readFile(new URL("../dist/app.js", import.meta.url), "utf8");
 const css = await readFile(new URL("../dist/style.css", import.meta.url), "utf8");
 
 function element(type = "div") {
@@ -50,7 +50,7 @@ async function load(problems, calls) {
     setInterval() {},
     requestAnimationFrame() {},
   });
-  await runInContext(app, context);
+  await bootEditor(context);
   calls.length = 0;
   return { context, get };
 }
@@ -181,7 +181,7 @@ test("Save and quit waits through the Save hitsounds summary and quits after its
     setInterval(callback) { tick = callback; },
     requestAnimationFrame() {},
   });
-  await runInContext(app, context);
+  await bootEditor(context);
   runInContext("modal = (kind, title, content, buttons) => { globalThis.output = { kind, buttons }; }; closeModal = () => {};", context);
   listeners.get("editor-close-requested")({ payload: "The difficulty has unsaved changes." });
   state = { busy: true, hasDocument: false, dirty: true };
@@ -223,7 +223,7 @@ test("Save and quit stops when the summary is cancelled", async () => {
     setInterval(callback) { tick = callback; },
     requestAnimationFrame() {},
   });
-  await runInContext(app, context);
+  await bootEditor(context);
   runInContext("modal = (kind, title, content, buttons) => { globalThis.output = { kind, buttons }; }; closeModal = () => {};", context);
   listeners.get("editor-close-requested")({ payload: "The difficulty has unsaved changes." });
   state = { busy: true, hasDocument: false, dirty: true };

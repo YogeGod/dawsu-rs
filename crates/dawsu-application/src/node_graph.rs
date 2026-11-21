@@ -9,13 +9,13 @@ use dawsu_editor_nodal::{
 use dawsu_foundation::SampleIdentity;
 use dawsu_graph::{
     AnalysisRange, Curve, DiagnosticSeverity, DocumentError, Endpoint, EvalCache, EvalError,
-    EvalTarget, GraphDocument, GraphEvalResult, Link, NodeId, NodeRegistry, NodeSpec, NodeTypeId,
-    ParamSpec, SocketValue, TimingGrid, TimingLine, ValidationIssue,
+    EvalTarget, GraphDocument, GraphEvalResult, Link, NodeId, NodeOutputSummary, NodeRegistry,
+    NodeSpec, NodeTypeId, ParamSpec, SocketValue, TimingGrid, TimingLine, ValidationIssue,
     evaluate_graph_with_song_range,
 };
 use dawsu_graph_audio::{
     AudioProvider, DecodedAudio, StaticProviders, TimingProvider, classic_kick_snare_graph,
-    register_audio_nodes,
+    drum_stem_graph, register_audio_nodes, simple_hihat_graph, simple_kick_graph,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -135,6 +135,7 @@ struct GraphEvalDone {
     stamp: AnalysisStamp,
     song_stamp: u64,
     run: u64,
+    song_duration_ms: f64,
 }
 
 enum GraphOutcome {
@@ -148,6 +149,8 @@ struct GraphJob {
     cancel: Arc<AtomicBool>,
     progress: Arc<Mutex<(usize, usize)>>,
     song_stamp: u64,
+    map_revision: u64,
+    song_offset_bits: u64,
 }
 
 struct ReadyBatch {
@@ -155,6 +158,7 @@ struct ReadyBatch {
     batch: ProposalBatch,
     slot_nodes: BTreeMap<String, NodeId>,
     song_stamp: u64,
+    song_duration_ms: f64,
     viewer: Option<ViewerOverlay>,
     song_hash: String,
 }
@@ -349,6 +353,45 @@ pub struct DiagnosticView {
 }
 
 #[derive(Clone, Debug, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum NodeSummaryView {
+    Events { count: usize },
+    Curve { sparkline: Vec<f32>, min: f64, max: f64 },
+    Audio { #[serde(rename = "durationMs")] duration_ms: f64, channels: usize },
+    Spectrogram { frames: usize, bins: usize },
+    Timing { lines: usize },
+    Range { #[serde(rename = "fromMs")] from_ms: f64, #[serde(rename = "toMs")] to_ms: f64 },
+    Scalar { label: String },
+}
+
+impl NodeSummaryView {
+    fn from_summary(summary: &NodeOutputSummary) -> Self {
+        match summary {
+            NodeOutputSummary::Events { count } => Self::Events { count: *count },
+            NodeOutputSummary::Curve { sparkline, min, max } => Self::Curve {
+                sparkline: sparkline.clone(),
+                min: *min,
+                max: *max,
+            },
+            NodeOutputSummary::Audio { duration_ms, channels } => Self::Audio {
+                duration_ms: *duration_ms,
+                channels: *channels,
+            },
+            NodeOutputSummary::Spectrogram { frames, bins } => Self::Spectrogram {
+                frames: *frames,
+                bins: *bins,
+            },
+            NodeOutputSummary::Timing { lines } => Self::Timing { lines: *lines },
+            NodeOutputSummary::Range { from_ms, to_ms } => Self::Range {
+                from_ms: *from_ms,
+                to_ms: *to_ms,
+            },
+            NodeOutputSummary::Scalar { label } => Self::Scalar { label: label.clone() },
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NodeView {
     pub id: String,
@@ -364,6 +407,7 @@ pub struct NodeView {
     pub outputs: Vec<SocketSpecView>,
     pub param_specs: Vec<ParamSpecView>,
     pub diagnostics: Vec<DiagnosticView>,
+    pub summary: Option<NodeSummaryView>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -458,7 +502,10 @@ pub struct NodeGraphView {
     pub error: Option<String>,
     pub has_document: bool,
     pub has_song: bool,
+    pub map_title: String,
+    pub map_version: String,
     pub song_duration_ms: f64,
+    pub has_locator_range: bool,
     pub use_locator_range: bool,
     pub range_from_ms: f64,
     pub range_to_ms: f64,
@@ -671,6 +718,14 @@ impl Application {
         self.node_graph.cancel_job();
     }
 
+    pub fn cancel_node_graph_and_clear_viewer(&mut self) {
+        self.node_graph.cancel_job();
+        self.node_graph.viewer_socket = None;
+        if let Some(ready) = &mut self.node_graph.ready {
+            ready.viewer = None;
+        }
+    }
+
     pub(crate) fn node_graph_song_loaded(&mut self) {
         self.node_graph.song_loaded();
         if let Some(doc) = &self.document
@@ -751,12 +806,15 @@ impl Application {
     fn current_stamp_for_ready(&self, ready: &ReadyBatch) -> Option<AnalysisStamp> {
         let document = self.document.as_ref()?;
         let map_rev = document.composer.history.version();
+        let current_range = self
+            .graph_analysis_range(ready.song_duration_ms)
+            .unwrap_or(ready.batch.range);
         Some(AnalysisStamp::new(
             map_rev,
             self.song_offset,
             &ready.song_hash,
             self.node_graph.session.document().structural_hash(),
-            ready.batch.range,
+            current_range,
         ))
     }
 
@@ -788,11 +846,16 @@ impl Application {
             }
             return;
         }
+        let current_rev = self.document.as_ref().map(|d| d.composer.history.version());
+        let current_offset_bits = norm_bits(self.song_offset);
         let outcome = {
             let Some(job) = &self.node_graph.job else {
                 return;
             };
-            if job.song_stamp != self.node_graph.song_stamp {
+            if job.song_stamp != self.node_graph.song_stamp
+                || current_rev != Some(job.map_revision)
+                || current_offset_bits != job.song_offset_bits
+            {
                 self.node_graph.cancel_job();
                 return;
             }
@@ -811,7 +874,11 @@ impl Application {
                 self.node_graph.error = Some(msg);
             }
             GraphOutcome::Done(done) => {
-                if done.song_stamp != self.node_graph.song_stamp || done.run != self.node_graph.runs {
+                if done.song_stamp != self.node_graph.song_stamp
+                    || done.run != self.node_graph.runs
+                    || current_rev != Some(done.stamp.map_revision)
+                    || current_offset_bits != done.stamp.song_offset_bits
+                {
                     return;
                 }
                 // Invariant 5c / R6: commit updated cache ONLY when job finishes cleanly and is current.
@@ -838,6 +905,7 @@ impl Application {
                     batch,
                     slot_nodes,
                     song_stamp: done.song_stamp,
+                    song_duration_ms: done.song_duration_ms,
                     viewer,
                     song_hash,
                 });
@@ -860,6 +928,7 @@ impl Application {
         let selected: BTreeSet<&NodeId> = self.node_graph.session.selection().items().iter().collect();
         let dirty = self.node_graph.session.dirty_nodes();
         let batch_diags = self.node_graph.ready.as_ref().map(|r| &r.batch.diagnostics);
+        let node_summaries = self.node_graph.ready.as_ref().map(|r| &r.eval.node_summaries);
 
         let nodes: Vec<NodeView> = doc
             .nodes
@@ -872,7 +941,21 @@ impl Application {
                         spec.outputs.iter().map(socket_view).collect(),
                         spec.params.iter().map(param_view).collect(),
                     ),
-                    None => (Vec::new(), Vec::new(), Vec::new()),
+                    None => {
+                        let (in_socks, out_socks) = doc.inferred_placeholder_sockets(&n.id);
+                        let map_unknown = |s: dawsu_graph::SocketId| SocketSpecView {
+                            id: s.0,
+                            socket_type: "unknown".to_owned(),
+                            any: false,
+                            required: false,
+                            multi: false,
+                        };
+                        (
+                            in_socks.into_iter().map(map_unknown).collect(),
+                            out_socks.into_iter().map(map_unknown).collect(),
+                            Vec::new(),
+                        )
+                    }
                 };
                 let diagnostics = batch_diags
                     .and_then(|m| m.get(&n.id))
@@ -907,6 +990,9 @@ impl Application {
                     outputs,
                     param_specs,
                     diagnostics,
+                    summary: node_summaries
+                        .and_then(|m| m.get(&n.id))
+                        .map(NodeSummaryView::from_summary),
                 }
             })
             .collect();
@@ -1035,7 +1121,10 @@ impl Application {
             error: self.node_graph.error.clone(),
             has_document: self.document.is_some(),
             has_song: self.song.is_some(),
+            map_title: self.document.as_ref().map(crate::Document::map_title).unwrap_or_default(),
+            map_version: self.document.as_ref().map(crate::Document::version).unwrap_or_default(),
             song_duration_ms,
+            has_locator_range: self.locator_right > self.locator_left,
             use_locator_range: self.node_graph.use_locator_range,
             range_from_ms,
             range_to_ms,
@@ -1180,6 +1269,12 @@ impl Application {
                 let doc = match name.as_str() {
                     "classic" => classic_kick_snare_graph(&self.node_graph.registry)
                         .map_err(|e| format!("Failed loading classic preset: {e}"))?,
+                    "simple_kick" => simple_kick_graph(&self.node_graph.registry)
+                        .map_err(|e| format!("Failed loading Simple Kick preset: {e}"))?,
+                    "simple_hihat" => simple_hihat_graph(&self.node_graph.registry)
+                        .map_err(|e| format!("Failed loading Simple Hi-Hat preset: {e}"))?,
+                    "drum_stem" => drum_stem_graph(&self.node_graph.registry)
+                        .map_err(|e| format!("Failed loading Drum Stem preset: {e}"))?,
                     "empty" => GraphDocument::new("Untitled"),
                     other => return Err(format!("Unknown preset '{other}'")),
                 };
@@ -1241,6 +1336,20 @@ impl Application {
                     }
                     _ => None,
                 };
+                if let Some(ready) = &mut self.node_graph.ready {
+                    ready.viewer = if self.node_graph.viewer_socket.is_none() {
+                        self.node_graph
+                            .session
+                            .document()
+                            .nodes
+                            .iter()
+                            .find(|n| n.type_id.as_str() == "output.viewer" && !n.muted)
+                            .and_then(|n| ready.eval.viewer_values.get(&n.id))
+                            .map(ViewerOverlay::from_socket_value)
+                    } else {
+                        None
+                    };
+                }
             }
             NodeGraphAction::Run => {
                 self.start_node_graph_run()?;
@@ -1409,6 +1518,7 @@ impl Application {
                         stamp,
                         song_stamp,
                         run,
+                        song_duration_ms,
                     })
                 }));
                 let _ = send.send(match outcome {
@@ -1423,6 +1533,8 @@ impl Application {
             cancel,
             progress,
             song_stamp,
+            map_revision,
+            song_offset_bits: norm_bits(song_offset_ms),
         });
         Ok(())
     }

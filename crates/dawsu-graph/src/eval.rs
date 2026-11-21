@@ -2,7 +2,7 @@
 
 use crate::cache::{CacheKey, CachedNodeOutput, EvalCache};
 use crate::document::{Endpoint, GraphDocument, PlaceholderReason};
-use crate::ids::{AnalysisRange, NodeId, SocketId};
+use crate::ids::{AnalysisRange, NodeId, NormaliseScope, SocketId};
 use crate::registry::{
     EvalContext, EvalError, NodeDiagnostic, NodeInputs, NodeOutputs, NodeParams, NodeRegistry,
 };
@@ -22,6 +22,18 @@ pub enum EvalTarget {
     Socket(Endpoint),
 }
 
+/// Compact per-node execution summary returned alongside `GraphEvalResult`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum NodeOutputSummary {
+    Events { count: usize },
+    Curve { sparkline: Vec<f32>, min: f64, max: f64 },
+    Audio { duration_ms: f64, channels: usize },
+    Spectrogram { frames: usize, bins: usize },
+    Timing { lines: usize },
+    Range { from_ms: f64, to_ms: f64 },
+    Scalar { label: String },
+}
+
 /// Complete output of one pull evaluation run.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct GraphEvalResult {
@@ -29,6 +41,7 @@ pub struct GraphEvalResult {
     pub graph_hash: String,
     pub slot_events: BTreeMap<String, Arc<EventList>>,
     pub viewer_values: BTreeMap<NodeId, SocketValue>,
+    pub node_summaries: BTreeMap<NodeId, NodeOutputSummary>,
     pub socket_preview: Option<SocketValue>,
     pub diagnostics: BTreeMap<NodeId, Vec<NodeDiagnostic>>,
     pub evaluated_nodes: Vec<NodeId>,
@@ -117,6 +130,42 @@ pub fn evaluate_graph_with_song_range(
     cancel: &(dyn Fn() -> bool + Sync),
     progress: &mut dyn FnMut(f64),
 ) -> Result<GraphEvalResult, EvalError> {
+    let mut pending_cache = BTreeMap::new();
+    let (result, _) = evaluate_graph_inner(
+        doc,
+        registry,
+        cache,
+        &mut pending_cache,
+        target,
+        range,
+        song_duration_ms,
+        song_range,
+        cancel,
+        progress,
+    )?;
+    if cancel() {
+        return Err(EvalError::Cancelled);
+    }
+    // Commit cache entries only once the entire run succeeds without cancellation (R6).
+    for (key, out) in pending_cache {
+        cache.insert(key, out);
+    }
+    Ok(result)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn evaluate_graph_inner(
+    doc: &GraphDocument,
+    registry: &NodeRegistry,
+    cache: &mut EvalCache,
+    pending_cache: &mut BTreeMap<CacheKey, CachedNodeOutput>,
+    target: EvalTarget,
+    range: AnalysisRange,
+    song_duration_ms: Option<f64>,
+    song_range: Option<AnalysisRange>,
+    cancel: &(dyn Fn() -> bool + Sync),
+    progress: &mut dyn FnMut(f64),
+) -> Result<(GraphEvalResult, BTreeMap<NodeId, CachedNodeOutput>), EvalError> {
     if cancel() {
         return Err(EvalError::Cancelled);
     }
@@ -151,12 +200,15 @@ pub fn evaluate_graph_with_song_range(
 
     if target_nodes.is_empty() {
         progress(1.0);
-        return Ok(GraphEvalResult {
-            range,
-            graph_hash: doc.structural_hash(),
-            diagnostics,
-            ..Default::default()
-        });
+        return Ok((
+            GraphEvalResult {
+                range,
+                graph_hash: doc.structural_hash(),
+                diagnostics,
+                ..Default::default()
+            },
+            BTreeMap::new(),
+        ));
     }
 
     let order = upstream_order(doc, &target_nodes)?;
@@ -165,7 +217,6 @@ pub fn evaluate_graph_with_song_range(
     let mut node_outputs: BTreeMap<NodeId, CachedNodeOutput> = BTreeMap::new();
     let mut node_keys: BTreeMap<NodeId, CacheKey> = BTreeMap::new();
     let mut node_blocked: BTreeSet<NodeId> = BTreeSet::new();
-    let mut pending_cache: Vec<(CacheKey, CachedNodeOutput)> = Vec::new();
     let mut evaluated_nodes = Vec::new();
     let mut cached_nodes = Vec::new();
 
@@ -346,7 +397,10 @@ pub fn evaluate_graph_with_song_range(
         );
         node_keys.insert(node_id.clone(), cache_key.clone());
 
-        if let Some(hit) = cache.get(&cache_key) {
+        if let Some(hit) = cache
+            .get(&cache_key)
+            .or_else(|| pending_cache.get(&cache_key).cloned())
+        {
             if !hit.diagnostics.is_empty() {
                 diagnostics.insert(node_id.clone(), hit.diagnostics.clone());
             }
@@ -369,6 +423,48 @@ pub fn evaluate_graph_with_song_range(
             let mut out = NodeOutputs::with_value(out_sock.clone(), val);
             out.diagnostics.push(NodeDiagnostic::info("muted (bypassed)"));
             out
+        } else if node_type.normalisation_scope(&params_view) == Some(NormaliseScope::Song) {
+            let full_range = song_range.or_else(|| {
+                song_duration_ms
+                    .filter(|&d| d > 0.0)
+                    .and_then(|d| AnalysisRange::new(0.0, d).ok())
+            });
+            if let Some(full) = full_range
+                && full.canonical_bits() != range.canonical_bits()
+            {
+                let mut sub_progress = |_frac: f64| {};
+                let (full_res, mut full_outputs) = evaluate_graph_inner(
+                    doc,
+                    registry,
+                    cache,
+                    pending_cache,
+                    EvalTarget::Nodes(vec![node_id.clone()]),
+                    full,
+                    song_duration_ms,
+                    Some(full),
+                    cancel,
+                    &mut sub_progress,
+                )?;
+                if let Some(full_cached) = full_outputs.remove(node_id) {
+                    let full_out = NodeOutputs {
+                        values: full_cached.values,
+                        diagnostics: full_cached.diagnostics,
+                        slot_output: full_cached.slot_output,
+                        viewer_output: full_cached.viewer_output,
+                    };
+                    node_type.crop_output_to_range(full_out, range)
+                } else {
+                    if let Some(diags) = full_res.diagnostics.get(node_id) {
+                        diagnostics.insert(node_id.clone(), diags.clone());
+                    }
+                    node_blocked.insert(node_id.clone());
+                    progress((index + 1) as f64 / total as f64);
+                    continue;
+                }
+            } else {
+                let inputs_view = NodeInputs::new(incoming);
+                node_type.evaluate(&inputs_view, &params_view, &mut ctx)?
+            }
         } else {
             let inputs_view = NodeInputs::new(incoming);
             node_type.evaluate(&inputs_view, &params_view, &mut ctx)?
@@ -397,7 +493,7 @@ pub fn evaluate_graph_with_song_range(
         if has_error {
             node_blocked.insert(node_id.clone());
         } else {
-            pending_cache.push((cache_key, output.clone()));
+            pending_cache.insert(cache_key, output.clone());
         }
         node_outputs.insert(node_id.clone(), output);
         evaluated_nodes.push(node_id.clone());
@@ -406,11 +502,6 @@ pub fn evaluate_graph_with_song_range(
 
     if cancel() {
         return Err(EvalError::Cancelled);
-    }
-
-    // Commit cache entries only once the entire run succeeds without cancellation (R6).
-    for (key, out) in pending_cache {
-        cache.insert(key, out);
     }
 
     let mut merged_slots: BTreeMap<String, Vec<GraphEvent>> = BTreeMap::new();
@@ -441,15 +532,78 @@ pub fn evaluate_graph_with_song_range(
         _ => None,
     };
 
-    Ok(GraphEvalResult {
-        range,
-        graph_hash: doc.structural_hash(),
-        slot_events,
-        viewer_values,
-        socket_preview,
-        diagnostics,
-        evaluated_nodes,
-        cached_nodes,
+    let mut node_summaries: BTreeMap<NodeId, NodeOutputSummary> = BTreeMap::new();
+    for (id, out) in &node_outputs {
+        if let Some(summary) = summarize_cached_output(out) {
+            node_summaries.insert(id.clone(), summary);
+        }
+    }
+
+    Ok((
+        GraphEvalResult {
+            range,
+            graph_hash: doc.structural_hash(),
+            slot_events,
+            viewer_values,
+            node_summaries,
+            socket_preview,
+            diagnostics,
+            evaluated_nodes,
+            cached_nodes,
+        },
+        node_outputs,
+    ))
+}
+
+fn summarize_cached_output(out: &CachedNodeOutput) -> Option<NodeOutputSummary> {
+    if let Some((_, events)) = &out.slot_output {
+        return Some(NodeOutputSummary::Events { count: events.events.len() });
+    }
+    let val = out.values.values().next().or(out.viewer_output.as_ref())?;
+    Some(match val {
+        SocketValue::Events(list) => NodeOutputSummary::Events { count: list.events.len() },
+        SocketValue::Curve(curve) => {
+            let mut min = f64::INFINITY;
+            let mut max = f64::NEG_INFINITY;
+            for &v in &curve.values {
+                if v.is_finite() {
+                    min = min.min(v);
+                    max = max.max(v);
+                }
+            }
+            if !min.is_finite() || !max.is_finite() {
+                return Some(NodeOutputSummary::Curve { sparkline: Vec::new(), min: 0.0, max: 0.0 });
+            }
+            let buckets = 36usize;
+            let step = curve.values.len().div_ceil(buckets).max(1);
+            let sparkline = curve
+                .values
+                .chunks(step)
+                .map(|chunk| {
+                    chunk
+                        .iter()
+                        .copied()
+                        .filter(|v| v.is_finite())
+                        .fold(0.0_f64, |acc, v| if v.abs() > acc.abs() { v } else { acc }) as f32
+                })
+                .collect();
+            NodeOutputSummary::Curve { sparkline, min, max }
+        }
+        SocketValue::Audio(audio) => {
+            let duration_ms = if audio.sample_rate > 0 {
+                audio.frame_count() as f64 * 1000.0 / f64::from(audio.sample_rate)
+            } else {
+                0.0
+            };
+            NodeOutputSummary::Audio { duration_ms, channels: audio.channels.len() }
+        }
+        SocketValue::Spectrogram(spec) => NodeOutputSummary::Spectrogram { frames: spec.frames, bins: spec.bins },
+        SocketValue::Timing(grid) => NodeOutputSummary::Timing { lines: grid.lines().len() },
+        SocketValue::Range(r) => NodeOutputSummary::Range { from_ms: r.from_ms, to_ms: r.to_ms },
+        SocketValue::Number(v) => NodeOutputSummary::Scalar { label: format!("{v:.3}") },
+        SocketValue::Integer(v) => NodeOutputSummary::Scalar { label: v.to_string() },
+        SocketValue::Bool(v) => NodeOutputSummary::Scalar { label: v.to_string() },
+        SocketValue::Enum(v) => NodeOutputSummary::Scalar { label: v.clone() },
     })
 }
 

@@ -3,8 +3,8 @@ import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { createContext, runInContext } from "node:vm";
 import { dockingRules } from "./docking-rules.mjs";
+import { bootEditor } from "./editor-runtime.mjs";
 
-const app = await readFile(new URL("../dist/app.js", import.meta.url), "utf8");
 const style = await readFile(new URL("../dist/style.css", import.meta.url), "utf8");
 
 test("View switches fold and open panels and reclaim their timeline tracks, then restore them", async () => {
@@ -52,7 +52,7 @@ test("View switches fold and open panels and reclaim their timeline tracks, then
     setInterval() {},
     requestAnimationFrame() {},
   });
-  await runInContext(app, context);
+  await bootEditor(context);
   runInContext([
     "let viewControls;",
     "modal = (_kind, _heading, elements) => { viewControls = elements; };",

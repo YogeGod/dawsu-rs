@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { createContext, runInContext } from "node:vm";
+import { bootEditor } from "./editor-runtime.mjs";
 
-const app = await readFile(new URL("../dist/app.js", import.meta.url), "utf8");
 const css = await readFile(new URL("../dist/style.css", import.meta.url), "utf8");
 
 test("workstation chrome uses the design's neutral grey surfaces and shared blue accent", () => {
@@ -47,7 +47,7 @@ test("the ruler paints the teal waveform frequency shades on a teal tint; the ov
     ResizeObserver: class {observe() {}}, requestAnimationFrame() {}, setInterval() {},
     console,
   });
-  await runInContext(app.replace(/\nact\(null\);\s*$/, ""), context);
+  bootEditor(context, { autoStart: false });
   get("volume-controller-panel").hidden = true;
   runInContext(`
     view = {hasDocument: true, duration: 1200, position: 0, left: 0, right: 1200};

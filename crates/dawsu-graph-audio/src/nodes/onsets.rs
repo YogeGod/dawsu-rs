@@ -1,8 +1,9 @@
 //! Onset curve extraction node (`onset.flux`) with 3.1.4 bit-exact parity.
 
 use dawsu_graph::{
-    Curve, EvalContext, EvalError, NodeDiagnostic, NodeInputs, NodeOutputs, NodeParams, NodeSpec,
-    NodeType, NodeTypeId, ParamSpec, SocketSpec, SocketType, SocketValue,
+    AnalysisRange, Curve, EvalContext, EvalError, NodeDiagnostic, NodeInputs, NodeOutputs,
+    NodeParams, NodeSpec, NodeType, NodeTypeId, NormaliseScope, ParamSpec, SocketId, SocketSpec,
+    SocketType, SocketValue,
 };
 use std::sync::Arc;
 
@@ -31,6 +32,25 @@ impl NodeType for OnsetCurveNode {
             ],
             bypass_passthrough: None,
         }
+    }
+
+    fn normalisation_scope(&self, params: &NodeParams<'_>) -> Option<NormaliseScope> {
+        if params.str_or("normalise", "p90") == "p90"
+            && params.str_or("normaliseOver", "range") == "song"
+        {
+            Some(NormaliseScope::Song)
+        } else {
+            None
+        }
+    }
+
+    fn crop_output_to_range(&self, mut outputs: NodeOutputs, range: AnalysisRange) -> NodeOutputs {
+        let key = SocketId::from("curve");
+        if let Some(SocketValue::Curve(curve)) = outputs.values.get(&key) {
+            let sliced = Arc::new(curve.slice_to_range(range));
+            outputs.values.insert(key, SocketValue::Curve(sliced));
+        }
+        outputs
     }
 
     fn evaluate(
@@ -108,17 +128,12 @@ impl NodeType for OnsetCurveNode {
         if params.str_or("normalise", "p90") == "p90" {
             out = normalise_p90(out);
             if params.str_or("normaliseOver", "range") == "song"
-                && let Some(song_range) = context.song_range
+                && context.song_range.is_none()
+                && context.song_duration_ms.is_none()
             {
-                let hop_ms = spec.hop_ms();
-                let covered_end = spec.start_ms + frames as f64 * hop_ms;
-                if spec.start_ms > song_range.from_ms + hop_ms * 2.0
-                    || covered_end + hop_ms * 2.0 < song_range.to_ms
-                {
-                    diagnostics.push(NodeDiagnostic::info(
-                        "normaliseOver='song' scales over available spectrogram span; connect input.range(mode='song') for full-song scale",
-                    ));
-                }
+                diagnostics.push(NodeDiagnostic::info(
+                    "song duration unknown; normalised over range",
+                ));
             }
         }
 

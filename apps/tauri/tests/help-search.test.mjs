@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { createContext, runInContext } from "node:vm";
+import { bootEditor } from "./editor-runtime.mjs";
 
-const app = await readFile(new URL("../dist/app.js", import.meta.url), "utf8");
 
 test("F1 help searches active command bindings and mouse actions", async () => {
   const elements = new Map();
@@ -55,7 +55,7 @@ test("F1 help searches active command bindings and mouse actions", async () => {
     setInterval() {},
     requestAnimationFrame() {},
   });
-  await runInContext(app, context);
+  await bootEditor(context);
 
   listeners.get("keydown")({ key: "F1", target: { closest: () => null }, preventDefault() {} });
   await runInContext("pending", context);

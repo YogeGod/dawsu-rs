@@ -2,13 +2,15 @@ import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import { test } from "node:test";
 
+import { readEditorSource } from "./editor-runtime.mjs";
+
 const tauri = new URL("../", import.meta.url);
 const read = path => readFileSync(new URL(path, tauri), "utf8");
 
 test("the slice-1 dialogs are gone: the editor page no longer loads drum-detect.js", () => {
   assert.ok(!existsSync(new URL("dist/drum-detect.js", tauri)));
   assert.doesNotMatch(read("dist/index.html"), /drum-detect/);
-  assert.doesNotMatch(read("dist/app.js") + read("dist/menus.js"), /openDrumDetection|drum_detect_start|drumDetect/);
+  assert.doesNotMatch(readEditorSource() + read("dist/menus.js"), /openDrumDetection|drum_detect_start|drumDetect/);
 });
 
 test("drum.html loads only the fonts and the Svelte bundle, with no inline code", () => {

@@ -274,6 +274,16 @@ pub trait NodeType: Send + Sync {
         None
     }
 
+    /// Optional explicit normalisation scope requested by this node's parameters.
+    fn normalisation_scope(&self, _params: &NodeParams<'_>) -> Option<crate::ids::NormaliseScope> {
+        None
+    }
+
+    /// Crops full-song node outputs down to the active sub-range after whole-song normalisation.
+    fn crop_output_to_range(&self, outputs: NodeOutputs, _range: AnalysisRange) -> NodeOutputs {
+        outputs
+    }
+
     fn evaluate(
         &self,
         inputs: &NodeInputs,

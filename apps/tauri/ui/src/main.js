@@ -4,8 +4,10 @@ import "./parts/pill.css";
 import "./parts/inspector.css";
 import "./parts/browser.css";
 import "./parts/bottom-panel.css";
+import "./parts/node-graph.css";
 import "./timeline.css";
 import { mount } from "svelte";
+import { createEditor } from "./editor/boot.js";
 import { invoke } from "./lib/ipc.js";
 import { bridge } from "./lib/bridge.svelte.js";
 import * as commandList from "./lib/commands.js";
@@ -29,6 +31,7 @@ import InspectorHistory from "./parts/InspectorHistory.svelte";
 import InspectorLane from "./parts/InspectorLane.svelte";
 import InspectorSelection from "./parts/InspectorSelection.svelte";
 import MapPreview from "./parts/MapPreview.svelte";
+import NodeGraphWindow from "./parts/NodeGraphWindow.svelte";
 import PreviewWindow from "./parts/PreviewWindow.svelte";
 import SnapSlider from "./parts/SnapSlider.svelte";
 import ToolPills from "./parts/ToolPills.svelte";
@@ -46,6 +49,8 @@ const parts = {
   "inspector-bookmarks": InspectorBookmarks, "inspector-history": InspectorHistory,
   // The map preview, at the top of the Inspector while View › Map preview is on.
   "map-preview": MapPreview,
+  // The whole page of the node graph window (node-graph.html).
+  "node-graph-window": NodeGraphWindow,
   // The Browser (#sample-browser): tabs and search, the sample tree, the preview with Use and Browse.
   "browser-head": BrowserHead, "browser-list": BrowserList, "browser-preview": BrowserPreview,
   // The bottom panel: its side column (tabs or the folded strip) and the Mixer tab.
@@ -58,35 +63,15 @@ const parts = {
   "preview-window": PreviewWindow,
 };
 
-// app.js may have built the lane rows before this bundle loaded.
-bridge.lanes = globalThis.currentLaneHeaders?.() ?? null;
-bridge.inspector = globalThis.currentInspector?.() ?? null;
-bridge.browser = globalThis.currentBrowser?.() ?? null;
-bridge.mixer = globalThis.currentMixer?.() ?? null;
-
-for (const host of document.querySelectorAll("[data-ui-mount]")) {
-  const part = parts[host.dataset.uiMount];
-  if (!part) continue;
-  host.replaceChildren();
-  host.dataset.uiReady = "";
-  try {
-    mount(Boundary, { target: host, props: { part, host } });
-  } catch (error) {
-    delete host.dataset.uiReady;
-    console.error(error);
-  }
-}
-
 export function update(view, scene) {
   bridge.set(view, scene);
   if (!previewLink) linkPreviewWindow(view);
   if (bridge.previewWindow) sendPreview();
 }
 
-// The map preview's own window: only app.js, in the editor window, calls update(), so the editor
-// window alone listens. It sends the playhead and the open difficulty on each update, when the
-// window opens and when its page is ready, and opens it again at launch if it was open at the
-// last close (view.previewWindow).
+// The map preview's own window: only the editor window calls update(), so it alone listens. It
+// sends the playhead and the open difficulty on each update, when the window opens and when its
+// page is ready, and opens it again at launch if it was open at the last close (view.previewWindow).
 let previewLink = false;
 function linkPreviewWindow(view) {
   previewLink = true;
@@ -123,23 +108,23 @@ function sendPreview(force = false) {
   globalThis.window?.__TAURI__?.event.emitTo("preview", "preview-view", payload).catch(() => {});
 }
 
-// app.js hands over the lane and folder header rows each time renderLanes() changes them.
+// The editor runtime hands over the lane and folder header rows each time renderLanes() changes them.
 export function lanes(headers) {
   bridge.handOverLanes(headers);
 }
 
-// app.js hands over the Inspector's model each time renderSelection() or renderActiveLane() runs,
+// The editor runtime hands over the Inspector's model each time renderSelection() or renderActiveLane() runs,
 // and when a bookmark row is picked.
 export function inspector(model) {
   bridge.handOverInspector(model);
 }
 
-// app.js hands over the Browser's model each time renderSampleBrowser() changes it.
+// The editor runtime hands over the Browser's model each time renderSampleBrowser() changes it.
 export function browser(model) {
   bridge.handOverBrowser(model);
 }
 
-// app.js hands over the Mixer's lane strips each time renderLanes() changes them.
+// The editor runtime hands over the Mixer's lane strips each time renderLanes() changes them.
 export function mixer(strips) {
   bridge.handOverMixer(strips);
 }
@@ -150,10 +135,16 @@ export function toggleMapPreview() {
 }
 export const mapPreviewOn = () => bridge.mapPreview;
 
-// The bottom panel's tab, read by app.js's renderPanelLayout() and paint().
+// Synced timeline preview pushed from the dedicated Node Graph window.
+export function setNodeGraphViewer(viewer) {
+  bridge.nodeGraphViewer = viewer ?? null;
+}
+export const nodeGraphViewer = () => bridge.nodeGraphViewer;
+
+// The bottom panel's tab, read by renderPanelLayout() and paint().
 export const bottomTab = () => bridge.bottomTab;
 
-// app.js hands over the hovered timeline hit, or null, each time it changes.
+// The editor runtime hands over the hovered timeline hit, or null, each time it changes.
 export function hitCard(card) {
   bridge.hitCard = card;
 }
@@ -166,10 +157,10 @@ export function menu(model) {
   bridge.handOverMenu(model);
 }
 
-// The Playhead group's Centre, read by app.js's followPlayhead().
+// The Playhead group's Centre, read by followPlayhead().
 export const centre = () => bridge.centre;
 
-// Ctrl+wheel (Alt+wheel in the DAW preset) in app.js: the next 1/x in the snap group, or null at its end.
+// Ctrl+wheel (Alt+wheel in the DAW preset): the next 1/x in the snap group, or null at its end.
 export function wheelSnap(finer) {
   const scene = bridge.scene;
   if (!scene) return null;
@@ -178,3 +169,29 @@ export function wheelSnap(finer) {
 
 // The Triplets box in the Snap menu shows the group.
 export const snapGroup = () => bridge.snapGroup?.name;
+
+// Boot the main editor runtime only on the editor window (never on export.html or drum.html).
+const uiBridge = {
+  update, lanes, inspector, browser, mixer, toggleMapPreview, mapPreviewOn, setNodeGraphViewer, nodeGraphViewer, bottomTab, hitCard, commands, menu, centre, wheelSnap, snapGroup,
+};
+if (document.getElementById("grid")) {
+  createEditor(globalThis, { ui: uiBridge });
+}
+
+bridge.lanes = globalThis.currentLaneHeaders?.() ?? null;
+bridge.inspector = globalThis.currentInspector?.() ?? null;
+bridge.browser = globalThis.currentBrowser?.() ?? null;
+bridge.mixer = globalThis.currentMixer?.() ?? null;
+
+for (const host of document.querySelectorAll("[data-ui-mount]")) {
+  const part = parts[host.dataset.uiMount];
+  if (!part) continue;
+  host.replaceChildren();
+  host.dataset.uiReady = "";
+  try {
+    mount(Boundary, { target: host, props: { part, host } });
+  } catch (error) {
+    delete host.dataset.uiReady;
+    console.error(error);
+  }
+}

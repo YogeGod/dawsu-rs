@@ -583,3 +583,187 @@ fn boundary_params_bypass_without_secondary_input_and_song_normalisation_work() 
     assert_eq!(offset_buf.start_ms, 250.0);
 }
 
+#[test]
+fn onset_flux_and_curve_math_normalise_over_song_scales_against_full_song_and_crops() {
+    // Quiet pattern in [0, 2000) ms, 10x louder pattern in [2000, 4000) ms (using 44.1kHz).
+    let base = pattern_samples();
+    let half_len = RATE as usize * 2;
+    let mut samples = vec![0.0_f32; half_len * 2];
+    for i in 0..half_len {
+        samples[i] = base[i % base.len()] * 0.08;
+        samples[half_len + i] = base[i % base.len()] * 0.85;
+    }
+
+    let (reg, dur) = setup_for_samples(samples, Arc::new(TimingGrid::default()));
+    let n = |id: &str, ty: &str, params: BTreeMap<String, Value>| NodeData {
+        id: id.into(),
+        type_id: ty.into(),
+        type_version: 1,
+        params,
+        muted: false,
+        ui: NodeUi::default(),
+        placeholder: None,
+    };
+
+    let build_doc = |scope: &str| {
+        let mut doc = GraphDocument::new("scope-test");
+        doc.nodes.push(n("song", "input.song", BTreeMap::new()));
+        doc.nodes.push(n(
+            "mono",
+            "audio.mono",
+            BTreeMap::from([("normaliseOver".into(), serde_json::json!(scope))]),
+        ));
+        doc.nodes.push(n("stft", "spectral.stft", BTreeMap::new()));
+        doc.nodes.push(n(
+            "flux_a",
+            "onset.flux",
+            BTreeMap::from([
+                ("loHz".into(), serde_json::json!(30.0)),
+                ("hiHz".into(), serde_json::json!(150.0)),
+                ("normaliseOver".into(), serde_json::json!(scope)),
+            ]),
+        ));
+        doc.nodes.push(n(
+            "flux_b",
+            "onset.flux",
+            BTreeMap::from([
+                ("loHz".into(), serde_json::json!(150.0)),
+                ("hiHz".into(), serde_json::json!(5000.0)),
+                ("normaliseOver".into(), serde_json::json!(scope)),
+            ]),
+        ));
+        doc.nodes.push(n(
+            "math",
+            "curve.math",
+            BTreeMap::from([
+                ("op".into(), serde_json::json!("geomean")),
+                ("normaliseOver".into(), serde_json::json!(scope)),
+            ]),
+        ));
+        doc.links.push(Link::new(Endpoint::new("song", "audio"), Endpoint::new("mono", "audio")));
+        doc.links.push(Link::new(Endpoint::new("mono", "audio"), Endpoint::new("stft", "audio")));
+        doc.links.push(Link::new(Endpoint::new("stft", "spectrogram"), Endpoint::new("flux_a", "spectrogram")));
+        doc.links.push(Link::new(Endpoint::new("stft", "spectrogram"), Endpoint::new("flux_b", "spectrogram")));
+        doc.links.push(Link::new(Endpoint::new("flux_a", "curve"), Endpoint::new("math", "a")));
+        doc.links.push(Link::new(Endpoint::new("flux_b", "curve"), Endpoint::new("math", "b")));
+        doc
+    };
+
+    let quiet_range = AnalysisRange::new(0.0, 2000.0).unwrap();
+    let full_range = AnalysisRange::new(0.0, dur).unwrap();
+    let mut cache = EvalCache::default();
+
+    let range_doc = build_doc("range");
+    let song_doc = build_doc("song");
+
+    let range_flux = evaluate_graph(
+        &range_doc,
+        &reg,
+        &mut cache,
+        EvalTarget::Socket(Endpoint::new("flux_a", "curve")),
+        quiet_range,
+        Some(dur),
+        &|| false,
+        &mut |_| {},
+    )
+    .unwrap();
+    let song_flux = evaluate_graph(
+        &song_doc,
+        &reg,
+        &mut cache,
+        EvalTarget::Socket(Endpoint::new("flux_a", "curve")),
+        quiet_range,
+        Some(dur),
+        &|| false,
+        &mut |_| {},
+    )
+    .unwrap();
+    let full_flux = evaluate_graph(
+        &song_doc,
+        &reg,
+        &mut cache,
+        EvalTarget::Socket(Endpoint::new("flux_a", "curve")),
+        full_range,
+        Some(dur),
+        &|| false,
+        &mut |_| {},
+    )
+    .unwrap();
+
+    let (
+        Some(SocketValue::Curve(c_range_flux)),
+        Some(SocketValue::Curve(c_song_flux)),
+        Some(SocketValue::Curve(c_full_flux)),
+    ) = (
+        range_flux.socket_preview,
+        song_flux.socket_preview,
+        full_flux.socket_preview,
+    )
+    else {
+        panic!("expected curves");
+    };
+    let max_of = |c: &dawsu_graph::Curve| c.values.iter().copied().fold(0.0_f64, f64::max);
+    assert!(
+        max_of(&c_song_flux) < max_of(&c_range_flux) * 0.5,
+        "expected song-normalised quiet half ({}) << range-normalised ({})",
+        max_of(&c_song_flux),
+        max_of(&c_range_flux)
+    );
+    let cropped_flux = c_full_flux.slice_to_range(quiet_range);
+    assert_eq!(c_song_flux.values.len(), cropped_flux.values.len());
+    for (a, b) in c_song_flux.values.iter().zip(&cropped_flux.values) {
+        assert_eq!(a.to_bits(), b.to_bits());
+    }
+
+    // Same check on `curve.math`
+    let range_math = evaluate_graph(
+        &range_doc,
+        &reg,
+        &mut cache,
+        EvalTarget::Socket(Endpoint::new("math", "curve")),
+        quiet_range,
+        Some(dur),
+        &|| false,
+        &mut |_| {},
+    )
+    .unwrap();
+    let song_math = evaluate_graph(
+        &song_doc,
+        &reg,
+        &mut cache,
+        EvalTarget::Socket(Endpoint::new("math", "curve")),
+        quiet_range,
+        Some(dur),
+        &|| false,
+        &mut |_| {},
+    )
+    .unwrap();
+    let (Some(SocketValue::Curve(c_range_math)), Some(SocketValue::Curve(c_song_math))) =
+        (range_math.socket_preview, song_math.socket_preview)
+    else {
+        panic!("expected math curves");
+    };
+    assert!(
+        max_of(&c_song_math) < max_of(&c_range_math) * 0.5,
+        "expected song-normalised curve.math ({}) << range-normalised ({})",
+        max_of(&c_song_math),
+        max_of(&c_range_math)
+    );
+
+    // Cancelled recursive run must write nothing to cache.
+    let mut fresh_cache = EvalCache::default();
+    let err = evaluate_graph(
+        &song_doc,
+        &reg,
+        &mut fresh_cache,
+        EvalTarget::Socket(Endpoint::new("math", "curve")),
+        quiet_range,
+        Some(dur),
+        &|| true,
+        &mut |_| {},
+    )
+    .unwrap_err();
+    assert_eq!(err, EvalError::Cancelled);
+    assert_eq!(fresh_cache.stats().entries, 0);
+}
+

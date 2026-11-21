@@ -3,11 +3,13 @@ import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { createContext, runInContext } from "node:vm";
 import { dockingRules } from "./docking-rules.mjs";
+import { bootEditor, readEditorSource } from "./editor-runtime.mjs";
 
 // The bottom panel (v3 F1-F3): Volume and Mixer tabs, the folded strip and the Mixer's strips.
 // ui/tests/bottom-panel.test.mjs checks the Svelte markup.
 const read = name => readFile(new URL("../dist/" + name, import.meta.url), "utf8");
-const [html, app] = await Promise.all(["index.html", "app.js"].map(read));
+const html = await read("index.html");
+const app = readEditorSource();
 
 async function frontend(ui) {
   const elements = new Map();
@@ -48,7 +50,7 @@ async function frontend(ui) {
     requestAnimationFrame() {},
     console,
   });
-  await runInContext(app, context);
+  await bootEditor(context);
   calls.length = 0;
   return { element, calls, evaluate: code => runInContext(code, context) };
 }
@@ -152,7 +154,7 @@ test("the switch, View settings and the View menu call the panel Volume and Mixe
   const button = html.match(/<button id="view-controller"[^>]*>/)[0];
   assert.match(button, /aria-label="Volume and Mixer"/);
   assert.match(button, /title="Volume and Mixer"/);
-  assert.match(app, /\["Volume and Mixer", "controller", view\.panels\.controller\]/);
+  assert.match(app, /\["Volume and Mixer", "controller", state\.view\.panels\.controller\]/);
   const { items } = await import("../ui/src/lib/commands.js");
   assert.equal(items.find(item => item.id === "volumePanel").label, "Volume and Mixer");
   assert.doesNotMatch(html + app, /Volume panel/);

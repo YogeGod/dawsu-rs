@@ -16,7 +16,8 @@ pub use document::{
     NodeUi, OutputDecl, PlaceholderInfo, PlaceholderReason,
 };
 pub use eval::{
-    DirtyTracker, EvalTarget, GraphEvalResult, evaluate_graph, evaluate_graph_with_song_range,
+    DirtyTracker, EvalTarget, GraphEvalResult, NodeOutputSummary, evaluate_graph,
+    evaluate_graph_with_song_range,
 };
 pub use ids::{
     AnalysisRange, NodeId, NodeTypeId, NormaliseScope, ParamId, ParamSpec, SocketConstraint,

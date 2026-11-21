@@ -29,13 +29,19 @@ test("the id guard also reads app.js's helpers and id loops", () => {
   assert.deepEqual(appIds(sample), ["a", "b", "c", "d", "e"]);
 });
 
-test("every id the old scripts look up by name exists in index.html or a Svelte part", () => {
+import { readEditorSource } from "./editor-runtime.mjs";
+
+test("every id the editor scripts look up by name exists in index.html or a Svelte part", () => {
   const ids = new Set([read("dist/index.html"), ...svelteSources()].flatMap(declaredIds));
-  for (const script of ["app.js", "menus.js", "docking.js"]) {
-    const source = read("dist/" + script);
-    const used = [...literalIds(source), ...(script === "app.js" ? appIds(source) : [])];
-    assert.ok(used.length > 0, script + " looks up no ids; the pattern no longer matches its code");
-    assert.deepEqual(used.filter(id => !ids.has(id)), [], script + " looks up ids that no markup declares");
+  const scripts = [
+    ["ui/src/editor/", readEditorSource(), true],
+    ["menus.js", read("dist/menus.js"), false],
+    ["docking.js", read("dist/docking.js"), false],
+  ];
+  for (const [label, source, checkAppIds] of scripts) {
+    const used = [...literalIds(source), ...(checkAppIds ? appIds(source) : [])];
+    assert.ok(used.length > 0, label + " looks up no ids; the pattern no longer matches its code");
+    assert.deepEqual(used.filter(id => !ids.has(id)), [], label + " looks up ids that no markup declares");
   }
 });
 
