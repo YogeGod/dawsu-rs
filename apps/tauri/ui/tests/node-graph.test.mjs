@@ -32,6 +32,9 @@ test("parseParamInput validates integers, numbers, and booleans cleanly", () => 
   assert.equal(parseParamInput({ socketType: "integer" }, "1.5", false).ok, false);
   assert.deepEqual(parseParamInput({ socketType: "number", default: null }, "null", false), { ok: true, value: null });
   assert.equal(parseParamInput({ socketType: "number", default: 1 }, "abc", false).ok, false);
+  assert.deepEqual(parseParamInput({ socketType: "enum", default: [4], enumValues: [] }, "[4, 3]", false), { ok: true, value: [4, 3] });
+  assert.equal(parseParamInput({ socketType: "enum", default: [4], enumValues: [] }, "[4,", false).ok, false);
+  assert.deepEqual(parseParamInput({ socketType: "enum", default: "", enumValues: [] }, "kick", false), { ok: true, value: "kick" });
 });
 
 test("visibleViewerOverlay projects curve points and visible events onto ruler band", () => {

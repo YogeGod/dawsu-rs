@@ -231,3 +231,91 @@ fn node_graph_lifecycle_run_viewer_cancel_stale_apply_undo_and_json_round_trip()
         Some(lane_key(Hitsound::Finish).as_str())
     );
 }
+
+#[test]
+fn range_change_stales_batch_map_edit_cancels_run_viewer_clears_and_placeholder_infers_sockets() {
+    let scratch = Scratch::new("node-graph-app-fixes");
+    let (mut app, _osu_path) = open_fixture(&scratch);
+
+    app.node_graph_action(NodeGraphAction::SetBinding {
+        slot: "kick".into(),
+        lane_key: Some(lane_key(Hitsound::Finish)),
+    })
+    .unwrap();
+    app.node_graph_action(NodeGraphAction::SetParam {
+        node_id: "peaks_kick".into(),
+        param: "threshold".into(),
+        value: serde_json::json!(1.0),
+    })
+    .unwrap();
+    app.node_graph_action(NodeGraphAction::SetViewerTarget {
+        node: Some("flux_kick".into()),
+        socket: Some("curve".into()),
+    })
+    .unwrap();
+    app.node_graph_action(NodeGraphAction::Run).unwrap();
+    wait_until(&mut app, |a| a.node_graph_view().status == "ready");
+    assert!(app.node_graph_view().viewer.is_some());
+
+    // 1. Clearing viewer target immediately clears timeline overlay.
+    app.node_graph_action(NodeGraphAction::SetViewerTarget {
+        node: None,
+        socket: None,
+    })
+    .unwrap();
+    assert!(app.node_graph_view().viewer.is_none());
+
+    // 2. Switching to locator range marks the batch stale (`Range`) and refuses Apply.
+    app.locator_left = 100.0;
+    app.locator_right = 1500.0;
+    app.node_graph_action(NodeGraphAction::SetRangeMode {
+        use_locator_range: true,
+    })
+    .unwrap();
+    let range_stale = app.node_graph_view();
+    let batch = range_stale.batch.as_ref().expect("batch remains visible");
+    assert!(batch.stale);
+    assert_eq!(batch.stale_reason.as_deref(), Some("Range"));
+    assert!(app.node_graph_action(NodeGraphAction::Apply).is_err());
+
+    // 3. Map edit while a run is in flight cancels the job on `poll()`.
+    app.node_graph_action(NodeGraphAction::Run).unwrap();
+    assert_eq!(app.node_graph_view().status, "running");
+    app.command("selectAll");
+    app.command("delete");
+    app.poll();
+    assert_ne!(app.node_graph_view().status, "running");
+
+    // 4. Placeholder node exposes inferred input/output sockets in `node_graph_view()`.
+    let placeholder_doc = r#"{
+  "format": "dawsu-graph",
+  "version": 1,
+  "name": "Placeholder",
+  "description": "",
+  "nodes": [
+    { "id": "src", "type": "input.song", "typeVersion": 1, "params": {}, "muted": false, "ui": { "x": 0.0, "y": 0.0 } },
+    { "id": "future", "type": "future.ml_stem", "typeVersion": 9, "params": {}, "muted": false, "ui": { "x": 200.0, "y": 0.0 } },
+    { "id": "view", "type": "output.viewer", "typeVersion": 1, "params": {}, "muted": false, "ui": { "x": 400.0, "y": 0.0 } }
+  ],
+  "links": [
+    { "from": { "node": "src", "socket": "audio" }, "to": { "node": "future", "socket": "stem_in" } },
+    { "from": { "node": "future", "socket": "drums_out" }, "to": { "node": "view", "socket": "value" } }
+  ],
+  "outputs": []
+}"#;
+    app.node_graph_action(NodeGraphAction::ImportJson {
+        json: placeholder_doc.to_owned(),
+    })
+    .unwrap();
+    let ph_view = app.node_graph_view();
+    let ph = ph_view
+        .nodes
+        .iter()
+        .find(|n| n.id == "future")
+        .expect("placeholder node");
+    assert!(ph.placeholder.is_some());
+    assert_eq!(ph.inputs.len(), 1);
+    assert_eq!(ph.inputs[0].id, "stem_in");
+    assert_eq!(ph.outputs.len(), 1);
+    assert_eq!(ph.outputs[0].id, "drums_out");
+}

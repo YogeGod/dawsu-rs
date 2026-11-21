@@ -64,6 +64,32 @@ impl Curve {
     pub fn byte_size(&self) -> usize {
         self.values.len() * std::mem::size_of::<f64>()
     }
+
+    /// Slices the curve to frames whose timestamp lies within `[range.from_ms, range.to_ms)`.
+    pub fn slice_to_range(&self, range: AnalysisRange) -> Self {
+        if self.values.is_empty() || !self.hop_ms.is_finite() || self.hop_ms <= 0.0 {
+            return self.clone();
+        }
+        let mut sliced = Vec::new();
+        let mut first_idx: Option<usize> = None;
+        for (i, &val) in self.values.iter().enumerate() {
+            let t = self.start_ms + i as f64 * self.hop_ms;
+            if t >= range.from_ms - 1e-6 && t < range.to_ms {
+                if first_idx.is_none() {
+                    first_idx = Some(i);
+                }
+                sliced.push(val);
+            }
+        }
+        let start_ms = first_idx.map_or(range.from_ms, |first| {
+            self.start_ms + first as f64 * self.hop_ms
+        });
+        Self {
+            values: sliced,
+            hop_ms: self.hop_ms,
+            start_ms,
+        }
+    }
 }
 
 /// A discrete timestamped event with optional per-event curve measurements.

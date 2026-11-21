@@ -135,6 +135,7 @@ struct GraphEvalDone {
     stamp: AnalysisStamp,
     song_stamp: u64,
     run: u64,
+    song_duration_ms: f64,
 }
 
 enum GraphOutcome {
@@ -148,6 +149,8 @@ struct GraphJob {
     cancel: Arc<AtomicBool>,
     progress: Arc<Mutex<(usize, usize)>>,
     song_stamp: u64,
+    map_revision: u64,
+    song_offset_bits: u64,
 }
 
 struct ReadyBatch {
@@ -155,6 +158,7 @@ struct ReadyBatch {
     batch: ProposalBatch,
     slot_nodes: BTreeMap<String, NodeId>,
     song_stamp: u64,
+    song_duration_ms: f64,
     viewer: Option<ViewerOverlay>,
     song_hash: String,
 }
@@ -751,12 +755,15 @@ impl Application {
     fn current_stamp_for_ready(&self, ready: &ReadyBatch) -> Option<AnalysisStamp> {
         let document = self.document.as_ref()?;
         let map_rev = document.composer.history.version();
+        let current_range = self
+            .graph_analysis_range(ready.song_duration_ms)
+            .unwrap_or(ready.batch.range);
         Some(AnalysisStamp::new(
             map_rev,
             self.song_offset,
             &ready.song_hash,
             self.node_graph.session.document().structural_hash(),
-            ready.batch.range,
+            current_range,
         ))
     }
 
@@ -788,11 +795,16 @@ impl Application {
             }
             return;
         }
+        let current_rev = self.document.as_ref().map(|d| d.composer.history.version());
+        let current_offset_bits = norm_bits(self.song_offset);
         let outcome = {
             let Some(job) = &self.node_graph.job else {
                 return;
             };
-            if job.song_stamp != self.node_graph.song_stamp {
+            if job.song_stamp != self.node_graph.song_stamp
+                || current_rev != Some(job.map_revision)
+                || current_offset_bits != job.song_offset_bits
+            {
                 self.node_graph.cancel_job();
                 return;
             }
@@ -811,7 +823,11 @@ impl Application {
                 self.node_graph.error = Some(msg);
             }
             GraphOutcome::Done(done) => {
-                if done.song_stamp != self.node_graph.song_stamp || done.run != self.node_graph.runs {
+                if done.song_stamp != self.node_graph.song_stamp
+                    || done.run != self.node_graph.runs
+                    || current_rev != Some(done.stamp.map_revision)
+                    || current_offset_bits != done.stamp.song_offset_bits
+                {
                     return;
                 }
                 // Invariant 5c / R6: commit updated cache ONLY when job finishes cleanly and is current.
@@ -838,6 +854,7 @@ impl Application {
                     batch,
                     slot_nodes,
                     song_stamp: done.song_stamp,
+                    song_duration_ms: done.song_duration_ms,
                     viewer,
                     song_hash,
                 });
@@ -872,7 +889,21 @@ impl Application {
                         spec.outputs.iter().map(socket_view).collect(),
                         spec.params.iter().map(param_view).collect(),
                     ),
-                    None => (Vec::new(), Vec::new(), Vec::new()),
+                    None => {
+                        let (in_socks, out_socks) = doc.inferred_placeholder_sockets(&n.id);
+                        let map_unknown = |s: dawsu_graph::SocketId| SocketSpecView {
+                            id: s.0,
+                            socket_type: "unknown".to_owned(),
+                            any: false,
+                            required: false,
+                            multi: false,
+                        };
+                        (
+                            in_socks.into_iter().map(map_unknown).collect(),
+                            out_socks.into_iter().map(map_unknown).collect(),
+                            Vec::new(),
+                        )
+                    }
                 };
                 let diagnostics = batch_diags
                     .and_then(|m| m.get(&n.id))
@@ -1241,6 +1272,20 @@ impl Application {
                     }
                     _ => None,
                 };
+                if let Some(ready) = &mut self.node_graph.ready {
+                    ready.viewer = if self.node_graph.viewer_socket.is_none() {
+                        self.node_graph
+                            .session
+                            .document()
+                            .nodes
+                            .iter()
+                            .find(|n| n.type_id.as_str() == "output.viewer" && !n.muted)
+                            .and_then(|n| ready.eval.viewer_values.get(&n.id))
+                            .map(ViewerOverlay::from_socket_value)
+                    } else {
+                        None
+                    };
+                }
             }
             NodeGraphAction::Run => {
                 self.start_node_graph_run()?;
@@ -1409,6 +1454,7 @@ impl Application {
                         stamp,
                         song_stamp,
                         run,
+                        song_duration_ms,
                     })
                 }));
                 let _ = send.send(match outcome {
@@ -1423,6 +1469,8 @@ impl Application {
             cancel,
             progress,
             song_stamp,
+            map_revision,
+            song_offset_bits: norm_bits(song_offset_ms),
         });
         Ok(())
     }

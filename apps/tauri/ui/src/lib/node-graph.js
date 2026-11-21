@@ -88,6 +88,13 @@ export function parseParamInput(spec, rawValue, checked) {
     if (spec.enumValues && spec.enumValues.length) {
       return { ok: true, value: String(rawValue) };
     }
+    if (spec.default !== null && typeof spec.default === "object") {
+      try {
+        return { ok: true, value: JSON.parse(String(rawValue)) };
+      } catch {
+        return { ok: false, error: "Expected valid JSON" };
+      }
+    }
     return { ok: true, value: String(rawValue) };
   }
   if (spec.socketType === "integer") {

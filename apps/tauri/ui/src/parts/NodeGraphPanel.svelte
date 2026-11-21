@@ -341,7 +341,9 @@
               {@const pos = nodeXY(node)}
               {@const h = nodeHeight(node)}
               <g
-                class={isSelected(node.id) ? "ng-node ng-node-selected" : node.muted ? "ng-node ng-node-muted" : "ng-node"}
+                class="ng-node"
+                class:ng-node-selected={isSelected(node.id)}
+                class:ng-node-muted={node.muted}
                 transform={`translate(${pos.x} ${pos.y})`}
                 onpointerdown={(e) => onNodePointerDown(e, node)}
               >
@@ -470,11 +472,19 @@
                     <button
                       type="button"
                       class={isViewerEndpoint(selectedNode.id, out.id) ? "ng-btn-primary" : ""}
-                      onclick={() => dispatch({
-                        kind: "set_viewer_target",
-                        node: isViewerEndpoint(selectedNode.id, out.id) ? null : selectedNode.id,
-                        socket: isViewerEndpoint(selectedNode.id, out.id) ? null : out.id,
-                      })}
+                      onclick={() => {
+                        const wasPreviewing = isViewerEndpoint(selectedNode.id, out.id);
+                        const wasReady = view?.status === "ready";
+                        dispatch({
+                          kind: "set_viewer_target",
+                          node: wasPreviewing ? null : selectedNode.id,
+                          socket: wasPreviewing ? null : out.id,
+                        }).then((next) => {
+                          if (!wasPreviewing && next && wasReady) {
+                            dispatch({ kind: "run" });
+                          }
+                        });
+                      }}
                     >
                       {isViewerEndpoint(selectedNode.id, out.id) ? "Previewing" : "Preview"}
                     </button>
@@ -551,7 +561,7 @@
                   includeUnmatched: !view.applyOptions.includeUnmatched,
                 })}
               >
-                {view.applyOptions.includeUnmatched ? "Off-grid: Keep" : "Off-grid: Drop"}
+                {view.applyOptions.includeUnmatched ? "Unmatched: Keep" : "Unmatched: Drop"}
               </button>
             </div>
 
