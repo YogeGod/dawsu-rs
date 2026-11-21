@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- The 3.1.4 twin: replays the everyday check's edits in dawsu! 3.1.4's own window, without a screen
+       and without sound, then saves through 3.1.4's own Save. tools/compare-314.mjs builds and runs it.
+       It is a tool, never shipped. Windows only, like 3.1.4.
+
+       OldApp is a checkout of YogeGod/dawsu-hitsounding-editor at the 3.1.4 release commit; compare-314.mjs
+       passes it. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <!-- 3.1.4 opens its internal types (the window's timeline and selection) only to an assembly named
+         Snapshot (src/OsuHitsound.App/OsuHitsound.App.csproj:50), as its own WorkflowSafety tool does. -->
+    <AssemblyName>Snapshot</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Avalonia.Headless" Version="11.3.22" />
+    <PackageReference Include="Avalonia.Skia" Version="11.3.22" />
+    <ProjectReference Include="$(OldApp)/src/OsuHitsound.App/OsuHitsound.App.csproj" />
+  </ItemGroup>
+</Project>

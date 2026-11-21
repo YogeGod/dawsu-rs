@@ -15,6 +15,10 @@
 //   --json          also write the results as data to this file
 //   --keep-profile  keep the profile folder (map copy, settings, WebView2 profile) after the run
 //
+// The --json file also lists the edits the run made, in order, with what the editor showed after
+// each ("actions"), and where the edited copy is ("mapCopy"). tools/compare-314.mjs replays those
+// edits in dawsu! 3.1.4 and compares the two saved maps.
+//
 // The JS tests run against a hand-written page (apps/tauri/tests/fake-dom.mjs); this runs the real
 // one. Every step acts through real input: mouse clicks and drags, key presses, buttons and menu
 // rows. It only reads the page's `scene` and `view`, its text and the files on disk to check the
@@ -196,6 +200,9 @@ async function quit() {
 
 // The steps and their results.
 const results = [];
+// The edits, in order, for tools/compare-314.mjs: what was done and what the editor showed after.
+const actions = [];
+const did = action => actions.push({ step: current, ...action });
 let errorsChecked = 0;
 // When the map never opened, the steps that need it are skipped rather than failed one by one.
 let noMap = null;
@@ -478,6 +485,7 @@ try {
     expect(added.length === 1, `expected one new hit, found ${JSON.stringify(added)}`);
     placed = added[0];
     expect(placed[1] === laneRow, `the hit landed on lane row ${placed[1]}, not ${laneRow}`);
+    did({ do: "place", lane: "normal-hitnormal", at: 4500, seen: placed[0] });
     return `hit at ${placed[0]} ms on ${await read(row => window.scene.lanes[row].name, laneRow)}`;
   });
 
@@ -515,6 +523,7 @@ try {
     }, placed, `the selected hit did not move (at the press: ${JSON.stringify(pressed)})`);
     const count = (await hits()).length;
     expect(count === hitsBeforeEdits + 1, `the drag changed the hit count to ${count}`);
+    did({ do: "move", from: placed[0], by: moved - placed[0], seen: moved });
     placed = [moved, placed[1]];
     return `now at ${moved} ms`;
   });
@@ -528,6 +537,7 @@ try {
     await page().locator('form[aria-label="Change volume"] button[type="submit"]').click();
     await until(([time, row]) => window.scene.moments.some(([t, volume, , list]) =>
       t === time && list.some(([r, , , hitVolume]) => r === row && (hitVolume ?? volume) === 60)), placed, "the hit's volume did not become 60");
+    did({ do: "volume", value: 60, seen: 60 });
     // A mapper types 2: the hit must not end up under 5%.
     await amount.fill("2");
     await page().locator('form[aria-label="Change volume"] button[type="submit"]').click();
@@ -542,6 +552,7 @@ try {
     await until(() => !window.view.busy, null, "the editor stayed busy after the volume change");
     const typed = await read(([time, row]) => window.scene.moments.flatMap(([t, volume, , list]) =>
       t === time ? list.filter(([r]) => r === row).map(([, , , hitVolume]) => hitVolume ?? volume) : [])[0], placed);
+    did({ do: "volume", value: 2, seen: typed });
     expect(typed >= 5, `typing 2% and Apply set the hit's volume to ${typed}%`);
     const low = await read(() => {
       const found = [];
@@ -564,6 +575,7 @@ try {
     await until(count => window.scene.moments.reduce((sum, moment) => sum + moment[3].length, 0) === count,
       hitsBeforeEdits, "the hit count did not go back down");
     withoutPlaced = await namedHits();
+    did({ do: "delete", seen: withoutPlaced });
     const gone = withPlaced.filter(name => !withoutPlaced.includes(name));
     expect(withoutPlaced.every(name => withPlaced.includes(name)) && gone.length <= 1,
       `Delete changed other hits: before ${JSON.stringify(withPlaced)}, after ${JSON.stringify(withoutPlaced)}`);
@@ -577,6 +589,7 @@ try {
     await until(count => window.scene.moments.reduce((sum, moment) => sum + moment[3].length, 0) === count + 1,
       hitsBeforeEdits, `${keys.undo} did not bring the hit back`);
     const back = await namedHits();
+    did({ do: "undo", seen: back });
     expect(JSON.stringify(back) === JSON.stringify(withPlaced), `Undo brought back different hits: ${JSON.stringify(back)}`);
     return keys.undo;
   });
@@ -589,6 +602,7 @@ try {
     await until(count => window.scene.moments.reduce((sum, moment) => sum + moment[3].length, 0) === count,
       hitsBeforeEdits, `${keys.redo} did not remove the hit again`);
     const again = await namedHits();
+    did({ do: "redo", seen: again });
     expect(JSON.stringify(again) === JSON.stringify(withoutPlaced), `Redo left different hits: ${JSON.stringify(again)}`);
     return keys.redo;
   });
@@ -596,6 +610,7 @@ try {
   await step("Add a lane", async () => {
     const before = await read(() => window.scene.lanes.length);
     writeLaneSample();
+    did({ do: "add-file", file: laneSample });
     await page().getByRole("button", { name: "Add lane" }).last().click();
     await dialogShown("Add lane");
     const choices = await read(() => Array.from(document.querySelectorAll("#dialog-body option"), option => option.textContent));
@@ -750,6 +765,7 @@ try {
       await until(([count, row, time]) => window.scene.moments.reduce((sum, moment) => sum + moment[3].length, 0) === count + 1 &&
         window.scene.moments.some(([t, , , list]) => t === time && list.some(([r]) => r === row)), [before, whistle, time],
         `no whistle appeared on the circle at ${time} ms`);
+      did({ do: "place", lane: "normal-hitwhistle", at: time + 40, seen: time });
       await pickTool("Select");
     });
   }
@@ -774,6 +790,7 @@ try {
     }
     expect(!(await read(() => window.view.dirty)), "the editor still shows unsaved changes");
     savedHits = await namedHits();
+    did({ do: "save", seen: savedHits });
     return reviewed.join("; ");
   });
 
@@ -874,7 +891,7 @@ try {
   console.log(`run time: ${seconds} s`);
   console.log(`everyday check: ${passed} of ${results.length} steps passed`);
   if (args.json) {
-    writeFileSync(resolve(args.json), JSON.stringify({ exe, map: original, profile, passed, total: results.length, seconds, steps: results }, null, 2) + "\n");
+    writeFileSync(resolve(args.json), JSON.stringify({ exe, map: original, profile, mapCopy, passed, total: results.length, seconds, steps: results, actions }, null, 2) + "\n");
   }
   if (failed || !results.length) process.exitCode = 1;
   if (!args["keep-profile"]) {
