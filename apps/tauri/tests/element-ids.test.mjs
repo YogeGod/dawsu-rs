@@ -38,3 +38,10 @@ test("every id the old scripts look up by name exists in index.html or a Svelte 
     assert.deepEqual(used.filter(id => !ids.has(id)), [], script + " looks up ids that no markup declares");
   }
 });
+
+test("every button the command list presses exists in index.html or a Svelte part", () => {
+  const ids = new Set([read("dist/index.html"), ...svelteSources()].flatMap(declaredIds));
+  const pressed = [...read("ui/src/lib/commands.js").matchAll(/\["(?:onLane", ")?click", "([\w-]+)"\]/g)].map(match => match[1]);
+  assert.ok(pressed.length > 10, "commands.js presses no buttons; the pattern no longer matches its rows");
+  assert.deepEqual(pressed.filter(id => !ids.has(id)), [], "commands.js presses ids that no markup declares");
+});

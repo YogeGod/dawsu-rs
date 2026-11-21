@@ -285,7 +285,7 @@ function show(next) {
   }
   refreshLaneDelete();
   renderDialogs();
-  window.refreshEditorMenu?.();
+  try { window.refreshEditorMenu?.(); } catch (error) { console.error(error); }
   paintSoon();
   try { window.dawsuUi?.update(view, scene); } catch (error) { console.error(error); }
   $("triplet-snap").checked = window.dawsuUi?.snapGroup?.() === "triplets";
@@ -2741,10 +2741,6 @@ $("ramp-shape").addEventListener("change", () => {
   act({ kind: "ramp_shape", value: $("ramp-shape").value }, false);
 });
 
-const toolIcons = {
-  Select: "MousePointer2", Draw: "Drumstick", Erase: "Eraser", Mute: "VolumeX",
-  Grab: "Hand", Range: "Scan", Ramp: "TrendingUp",
-};
 for (const button of document.querySelectorAll("[data-action]")) {
   button.addEventListener("click", () => act({ kind: button.dataset.action }));
 }

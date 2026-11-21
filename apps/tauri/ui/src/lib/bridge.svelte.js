@@ -10,6 +10,8 @@ export class Bridge {
   lanes = $state.raw(null);
   // The Inspector's Selection, Lane and Difficulty model app.js last built (inspectorModel), replaced whole.
   inspector = $state.raw(null);
+  // The open menu's rows menus.js last built from the command list (null while no menu is open).
+  menu = $state.raw(null);
   // Playhead group's Centre: kept in this window only, never saved; app.js reads it to follow.
   centre = $state(false);
   // The snap group the slider and the wheel step through (lazer's Common, Triplets or a custom one).
@@ -30,6 +32,12 @@ export class Bridge {
   // Handed over by app.js's renderSelection() and renderActiveLane(); written at once, like the lanes.
   handOverInspector(model, flush = flushSync) {
     this.inspector = model;
+    flush();
+  }
+
+  // menus.js measures the popup and focuses its first row right after handing the rows over.
+  handOverMenu(model, flush = flushSync) {
+    this.menu = model;
     flush();
   }
 
