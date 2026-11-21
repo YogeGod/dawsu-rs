@@ -1253,6 +1253,10 @@ const snapColours = {
   9: "#b3d944", 12: "#cc6600", 16: "#6644cc",
 };
 
+// v3 §5 (Yoge): editor grid lines stay neutral; only the ruler shows the snap colours.
+// Sub-beats follow the snap divisor. They draw above the lane tint and below the hits.
+const gridLines = { sub: "rgba(255,255,255,.025)", beat: "rgba(255,255,255,.04)", bar: "rgba(255,255,255,.10)" };
+
 // v3 §5: a snap tick's height on the ruler by its reduced divisor (1/5, 1/7, 1/9 take the smallest).
 const snapTickHeights = { 2: 9, 3: 7, 4: 7, 6: 5, 8: 5, 12: 4, 16: 4 };
 
@@ -1289,7 +1293,7 @@ function drawTimingGrid(ctx, start, end, zoom, top, bottom, ruler = false) {
           const x = (origin + tick * step - start) * zoom;
           const color = snapColour(tick, scene.divisor);
           const height = snapTickHeights[reducedDivisor(tick, scene.divisor)] ?? 4;
-          line(ctx, ruler ? color : color + "42", x, ruler ? bottom - height : top, x, bottom);
+          line(ctx, ruler ? color : gridLines.sub, x, ruler ? bottom - height : top, x, bottom);
         }
       }
     }
@@ -1300,7 +1304,7 @@ function drawTimingGrid(ctx, start, end, zoom, top, bottom, ruler = false) {
       const x = (origin + n * step - start) * zoom;
       const bar = !scene.editorBars?.length && tick % meter === 0;
       const longSnap = useSnap && scene.beats > 1 && tick % scene.beats === 0;
-      const color = ruler ? snapColours[1] : bar || longSnap ? slateTimeline.barLine : slateTimeline.beatLine;
+      const color = ruler ? snapColours[1] : bar || longSnap ? gridLines.bar : gridLines.beat;
       // v3 §5: bar lines run the ruler's full height, beat ticks are 12 px.
       line(ctx, color, x, ruler && !bar && !longSnap ? bottom - 12 : top, x, bottom);
     }
@@ -1314,7 +1318,7 @@ function drawTimingGrid(ctx, start, end, zoom, top, bottom, ruler = false) {
     if (begin >= until || !Number.isFinite(step) || step <= 0) continue;
     for (let n = Math.ceil((begin - section.start) / step); section.start + n * step < until; n++) {
       const x = (section.start + n * step - start) * zoom;
-      line(ctx, ruler ? slateTimeline.rulerBar : slateTimeline.barLine, x, top, x, bottom);
+      line(ctx, ruler ? slateTimeline.rulerBar : gridLines.bar, x, top, x, bottom);
       if (ruler) {
         ctx.fillStyle = slateTimeline.rulerBar;
         ctx.fillText(String(section.bar + n * stride), x + 5, 10);

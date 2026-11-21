@@ -380,6 +380,32 @@ test("the 40 px ruler draws bars full height, beats 12 px and snap ticks at the 
   assert.deepEqual(ticks()[40], [36, 40, "#cc6600"], "1/12, 4 px");
 });
 
+test("editor grid lines stay neutral: sub-beats follow the snap, then beats and bars", async () => {
+  const { evaluate } = await frontend();
+  evaluate('scene = { sections: [[0, 480, 4]], snap: true, snapMode: "grid", beats: 1, divisor: 4 }');
+  evaluate(`function testGridLines() {
+    const lines = {}; let x, top;
+    const ctx = { beginPath() {}, moveTo(at, y) { x = at - .5; top = y; }, lineTo(_, y) { this.bottom = y; },
+      stroke() { lines[x] = [top, this.bottom, this.strokeStyle]; }, fillText() {} };
+    drawTimingGrid(ctx, 0, 2000, 1, 0, 300, false);
+    return lines;
+  }`);
+  const lines = () => JSON.parse(evaluate("JSON.stringify(testGridLines())"));
+  const quarters = lines();
+  // v3 §5 (Yoge): only the ruler is coloured; grid lines run the full height in white at low alpha.
+  assert.deepEqual(quarters[0], [0, 300, "rgba(255,255,255,.10)"], "bar");
+  assert.deepEqual(quarters[480], [0, 300, "rgba(255,255,255,.04)"], "beat");
+  assert.deepEqual(quarters[120], [0, 300, "rgba(255,255,255,.025)"], "1/4");
+  assert.deepEqual(quarters[240], [0, 300, "rgba(255,255,255,.025)"], "1/2");
+  evaluate("scene.divisor = 3");
+  assert.deepEqual(lines()[160], [0, 300, "rgba(255,255,255,.025)"], "sub-beats follow the divisor");
+  assert.equal(lines()[120], undefined);
+  evaluate("scene.snap = false");
+  assert.equal(lines()[160], undefined, "no sub-beats with snap off");
+  evaluate("scene.editorBars = [{ start: 0, beat: 480, numerator: 3, bar: 1 }]");
+  assert.deepEqual(lines()[1440], [0, 300, "rgba(255,255,255,.10)"], "a time signature's bar");
+});
+
 test("bar numbers sit 10 px from the ruler's top; bar lines run its full height", async () => {
   const { evaluate } = await frontend();
   const result = evaluate(`

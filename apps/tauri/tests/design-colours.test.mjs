@@ -151,10 +151,11 @@ test("timeline canvases paint with the design's colours", async () => {
   assert.ok(ruler.fills.includes("#e6eef2"), "spinner body");
   assert.ok(ruler.fills.includes("#ffffff"), "ruler bar numbers white (v3 §5)");
   assert.ok(ruler.strokes.includes("#858585"), "locators in --editor-disabled");
-  // Grid lines stay brighter than the design's --editor-grid and --editor-major so beats
-  // still outrank the osu!lazer snap ticks between them; the playhead is --editor-focus.
-  assert.ok(grid.strokes.includes("#383838"), "beat lines");
-  assert.ok(grid.strokes.includes("#545454"), "bar lines");
+  // v3 §5 (Yoge): grid lines stay neutral white at low alpha; snap colours show only on the ruler.
+  // The playhead is --editor-focus.
+  assert.ok(grid.strokes.includes("rgba(255,255,255,.04)"), "beat lines");
+  assert.ok(grid.strokes.includes("rgba(255,255,255,.10)"), "bar lines");
+  assert.ok(!grid.strokes.some(colour => /^#(ed1121|66ccff|8866ee)/.test(colour)), "no snap colours on the grid");
   for (const canvas of [grid, ruler, overview, volume]) assert.ok(canvas.strokes.includes("#a1d0f7"), "playhead");
   // Object lines take the spec's teal at the old 40% strength (10% vanishes on the rows);
   // the marked range and marquee use the accent.
