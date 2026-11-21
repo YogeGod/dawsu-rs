@@ -1352,6 +1352,7 @@ enum Request {
     LibraryDirectory(mpsc::Sender<Option<PathBuf>>),
     SetLibraryDirectory(PathBuf, mpsc::Sender<Result<Value, String>>),
     LibraryEntries(library::Location, mpsc::Sender<Result<Vec<(String, bool)>, String>>),
+    SamplePreview(PreviewSource, mpsc::Sender<Result<Value, String>>),
     SoundSetLibrary(mpsc::Sender<Result<Value, String>>),
     SoundSetPlacement(PathBuf, u64, mpsc::Sender<Result<Value, String>>),
     SaveSoundSet(PathBuf, String, mpsc::Sender<Result<Value, String>>),
@@ -1697,6 +1698,11 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                         location.entries(app.preferences.hitsound_library.as_deref())
                     })
                     .and_then(|result| result);
+                    let _ = response.send(result);
+                }
+                Ok(Request::SamplePreview(source, response)) => {
+                    let result = guard(&mut app, &mut fault, |app| sample_outline(app, source))
+                        .and_then(|result| result);
                     let _ = response.send(result);
                 }
                 Ok(Request::SoundSetLibrary(response)) => {
@@ -2228,6 +2234,38 @@ fn list_library(location: library::Location, state: State<'_, Editor>) -> Result
     ask(&state, |tx| Request::LibraryEntries(location, tx))?
 }
 
+/// Bars in the Browser's sample preview outline.
+const PREVIEW_BARS: usize = 40;
+
+/// The sample a Browser row stands for: a map folder sample by the lane that plays it, or a
+/// library file.
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum PreviewSource {
+    Lane { row: usize },
+    Library { location: library::Location },
+}
+
+/// The Browser's sample preview: the sample's length in ms and its outline.
+fn sample_outline(app: &Application, source: PreviewSource) -> Result<Value, String> {
+    let (ms, peaks) = match source {
+        PreviewSource::Lane { row } => {
+            let lane = app.document().and_then(|d| d.composer.lanes.get(row)).ok_or("No such lane.")?;
+            app.lane_sample_outline(lane, PREVIEW_BARS).ok_or("The sample isn't loaded.")?
+        }
+        PreviewSource::Library { location } => {
+            let sample = location.sample(app.preferences.hitsound_library.as_deref())?;
+            Application::sample_file_outline(&sample, PREVIEW_BARS)?
+        }
+    };
+    Ok(json!({ "ms": ms, "peaks": peaks }))
+}
+
+#[tauri::command]
+fn sample_preview(source: PreviewSource, state: State<'_, Editor>) -> Result<Value, String> {
+    ask(&state, |tx| Request::SamplePreview(source, tx))?
+}
+
 #[tauri::command]
 fn lane_add_candidates(map: PathBuf, state: State<'_, Editor>) -> Result<Value, String> {
     ask(&state, |tx| Request::LaneAddCandidates(map, tx))?
@@ -2357,6 +2395,7 @@ fn main() {
             pick_songs_folder,
             pick_hitsound_library,
             list_library,
+            sample_preview,
             lane_add_candidates,
             pick_drum_map,
             set_drum_view,

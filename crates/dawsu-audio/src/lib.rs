@@ -104,6 +104,25 @@ pub struct AudioClip {
     pub sample_rate: u32,
 }
 impl AudioClip {
+    /// The loudest frame of each of `bars` equal slices, over every channel, scaled so the
+    /// loudest bar is 1: the outline the Browser draws under a sample's name.
+    pub fn peaks(&self, bars: usize) -> Vec<f32> {
+        let channels = self.channels.max(1);
+        let frames = self.samples.len() / channels;
+        let mut peaks: Vec<f32> = (0..bars)
+            .map(|bar| {
+                let (from, to) = (bar * frames / bars, (bar + 1) * frames / bars);
+                self.samples[from * channels..to * channels]
+                    .iter()
+                    .fold(0.0f32, |loudest, sample| loudest.max(sample.abs()))
+            })
+            .collect();
+        let loudest = peaks.iter().copied().fold(0.0, f32::max);
+        if loudest > 0.0 {
+            peaks.iter_mut().for_each(|peak| *peak /= loudest);
+        }
+        peaks
+    }
     pub fn duration_ms(&self) -> f64 {
         self.samples.len() as f64 * 1000.0
             / self.channels.max(1) as f64
@@ -1190,5 +1209,24 @@ mod listen_tests {
         assert!(!slot.is_listening());
         assert!(!slot.collect());
         assert!(slot.start(None).is_none() && !slot.is_listening());
+    }
+}
+
+#[cfg(test)]
+mod peak_tests {
+    use super::*;
+
+    #[test]
+    fn peaks_take_the_loudest_frame_of_each_bar_over_every_channel_scaled_to_the_loudest_bar() {
+        let mono = AudioClip { samples: vec![0.0, 0.25, -0.5, 0.125, 0.0, 0.0, 0.0, 0.05], channels: 1, sample_rate: 8 };
+        assert_eq!(mono.peaks(4), [0.5, 1.0, 0.0, 0.1]);
+        // Stereo: frames interleave left and right; the louder channel counts.
+        let stereo = AudioClip { samples: vec![0.1, -0.4, 0.2, 0.0], channels: 2, sample_rate: 8 };
+        assert_eq!(stereo.peaks(2), [1.0, 0.5]);
+        // More bars than frames: a bar without a frame is silent.
+        assert_eq!(stereo.peaks(4), [0.0, 1.0, 0.0, 0.5]);
+        let silent = AudioClip { samples: vec![0.0; 6], channels: 2, sample_rate: 8 };
+        assert_eq!(silent.peaks(3), [0.0, 0.0, 0.0]);
+        assert!(mono.peaks(0).is_empty());
     }
 }

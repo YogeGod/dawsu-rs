@@ -2677,3 +2677,45 @@ fn removing_a_lane_takes_its_hits_in_one_step_and_keeps_its_layers() {
     remove(&mut app, &now, layer);
     assert_eq!(app.status, "Removed Crash and 1 hit. Undo restores them.");
 }
+
+#[test]
+fn the_sample_preview_gives_the_length_and_outline_of_a_library_sample_or_a_lane_sample() {
+    let fixture = Fixture::new("sample-preview");
+    let library = fixture.0.join("library");
+    let mapset = fixture.0.join("mapset");
+    fs::create_dir_all(library.join("drums")).unwrap();
+    fs::create_dir(&mapset).unwrap();
+    // 16-bit mono at 48 kHz: four frames, the second the loudest.
+    let wave = b"RIFF\x2c\0\0\0WAVEfmt \x10\0\0\0\x01\0\x01\0\x80\xbb\0\0\0w\x01\0\x02\0\x10\0data\x08\0\0\0\x00\x10\x00\x40\x00\x20\x00\x00";
+    fs::write(library.join("drums/snare.wav"), wave).unwrap();
+    fs::write(fixture.0.join("outside.wav"), wave).unwrap();
+    let path = mapset.join("Hard.osu");
+    fs::write(&path, b"osu file format v14\n\n[General]\nMode:0\n\n[TimingPoints]\n0,500,4,1,0,100,1,0\n\n[HitObjects]\n256,192,1000,1,8,0:0:0:0:\n").unwrap();
+    let mut app = Application::headless();
+    app.preferences.hitsound_library = Some(library.clone());
+    open(&mut app, &path);
+    let source = |value: serde_json::Value| -> super::PreviewSource { serde_json::from_value(value).unwrap() };
+    let library_sample = |path: &str| source(serde_json::json!({ "kind": "library", "location": { "root": library, "path": path } }));
+    let preview = super::sample_outline(&app, library_sample("drums/snare.wav")).unwrap();
+    assert!((preview["ms"].as_f64().unwrap() - 4000.0 / 48000.0).abs() < 1e-9, "{preview}");
+    let peaks: Vec<f64> = serde_json::from_value(preview["peaks"].clone()).unwrap();
+    assert_eq!(peaks.len(), super::PREVIEW_BARS);
+    assert_eq!(peaks.iter().copied().fold(0.0, f64::max), 1.0);
+    assert!(super::sample_outline(&app, library_sample("../outside.wav")).is_err());
+
+    let active = app.active_lane;
+    let target = serde_json::json!({
+        "map": app.document().unwrap().path,
+        "lane": format!("{:?}", app.document().unwrap().composer.lanes[active]),
+    });
+    let assign: Action = serde_json::from_value(serde_json::json!({
+        "kind": "replace_library_sample", "location": { "root": library, "path": "drums/snare.wav" }, "target": target,
+    })).unwrap();
+    assign.run(&mut app);
+    wait_for_job(&mut app);
+    assert!(app.error.is_none(), "{:?}", app.error);
+    let row = app.active_lane;
+    let preview = super::sample_outline(&app, source(serde_json::json!({ "kind": "lane", "row": row }))).unwrap();
+    assert!((preview["ms"].as_f64().unwrap() - 4000.0 / 48000.0).abs() < 1e-9, "{preview}");
+    assert!(super::sample_outline(&app, source(serde_json::json!({ "kind": "lane", "row": 999 }))).is_err());
+}

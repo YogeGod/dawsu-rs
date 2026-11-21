@@ -1977,6 +1977,15 @@ impl Application {
         }
         Ok(())
     }
+    /// The length in ms and the outline (`AudioClip::peaks`) of the sample a lane plays, once loaded.
+    pub fn lane_sample_outline(&self, lane: &SampleIdentity, bars: usize) -> Option<(f64, Vec<f32>)> {
+        self.clip_for_lane(lane).map(|clip| (clip.duration_ms(), clip.peaks(bars)))
+    }
+    /// The same for a sample file on disk.
+    pub fn sample_file_outline(source: &Path, bars: usize) -> Result<(f64, Vec<f32>), String> {
+        let clip = dawsu_audio::decode(source)?;
+        Ok((clip.duration_ms(), clip.peaks(bars)))
+    }
     pub fn is_muted(&self, lane: &SampleIdentity) -> bool {
         self.muted.contains(lane)
     }
