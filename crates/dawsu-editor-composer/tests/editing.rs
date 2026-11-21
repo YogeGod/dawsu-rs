@@ -323,12 +323,16 @@ fn a_volume_edit_never_goes_under_5_percent() {
 
 #[test]
 fn the_ramp_tool_and_volume_drawer_never_go_under_5_percent() {
+    use dawsu_editor::tools::ToolTarget;
+    use dawsu_editor_composer::HitKey;
     use dawsu_hitsounding::MomentId;
 
     let mut c = composer();
     let normal = c.hitsounds().moments()[0].hits().next().unwrap().clone();
     // The Ramp tool sets values through `set_values`.
+    c.begin("Ramp");
     c.set_values(&[(HitKey { moment: 0, lane: normal.clone() }, 1)]);
+    c.commit();
     assert_eq!(c.hitsounds().moments()[0].hit_volume(&normal), 5, "a ramp to 1 gives 5");
     // The Volume drawer moves a moment directly.
     let mut hits = c.hitsounds().clone();
@@ -448,7 +452,7 @@ fn ramp_moves_every_lane_together_and_keeps_their_difference() {
     ramp(&mut c, 90);
     assert_eq!(normal_and_clap(&c, &normal), (90, 60));
     ramp(&mut c, 20);
-    assert_eq!(normal_and_clap(&c, &normal), (20, 0));
+    assert_eq!(normal_and_clap(&c, &normal), (20, 5));
 }
 
 #[test]
