@@ -190,8 +190,22 @@
     );
   });
 
+  function applyReturnedView(next) {
+    if (!next) return;
+    if (typeof globalThis.show === "function") globalThis.show(next);
+    else bridge.set(next, next.scene ?? bridge.scene);
+  }
+
   function sendAction(action) {
-    invoke("editor_view", { scene: false, action }).catch(() => {});
+    invoke("editor_view", { scene: false, action }).then(applyReturnedView).catch(() => {});
+  }
+
+  function pickSongsFolder() {
+    invoke("pick_songs_folder").then(applyReturnedView).catch(() => {});
+  }
+
+  function pickLibraryFolder() {
+    invoke("pick_hitsound_library").then(applyReturnedView).catch(() => {});
   }
 
   function onGlobalKey(event) {
@@ -241,6 +255,34 @@
       </header>
 
       <div class="pref-body">
+        {#if scope === "map" && scene}
+          <section class="pref-pane">
+            <div class="pref-group">
+              <span class="pref-label">This map</span>
+              <p class="pref-caption">{scene.path || "Active difficulty"}</p>
+              <div class="pref-grid">
+                <label class="pref-field">
+                  <span>Song offset (ms)</span>
+                  <input type="number" min="-60000" max="60000" value={view.offset ?? 0}
+                    onchange={(e) => sendAction({ kind: "offset", ms: Number(e.currentTarget.value) || 0 })} />
+                </label>
+              </div>
+              <label class="pref-check">
+                <input type="checkbox" checked={Boolean(view.hsMode)}
+                  onchange={(e) => sendAction({ kind: "hs_mode", on: e.currentTarget.checked })} />
+                <span>Hitsounding mode (show drawn hits as live circles)</span>
+              </label>
+            </div>
+            <hr class="pref-divider" />
+            <div class="pref-group">
+              <span class="pref-label">Mapset folders</span>
+              <div class="pref-actions-inline">
+                <button type="button" onclick={() => invoke("open_editor_folder", { folder: "map" }).catch(() => {})}>Open map folder</button>
+                <button type="button" onclick={() => invoke("open_editor_folder", { folder: "project" }).catch(() => {})}>Open project folder</button>
+              </div>
+            </div>
+          </section>
+        {:else}
         <nav class="pref-nav" aria-label="Preferences sections">
           {#each TABS as item (item.id)}
             <button type="button" class="pref-nav-item" class:active={tab === item.id} onclick={() => (tab = item.id)}>
@@ -285,7 +327,7 @@
               <p class="pref-caption">Used to browse mapsets and resolve default hitsounds.</p>
               <div class="pref-path-row">
                 <input type="text" readonly value={view.songsFolder || "Not configured"} />
-                <button type="button" disabled={busy} onclick={() => invoke("pick_songs_folder").catch(() => {})}>Change…</button>
+                <button type="button" disabled={busy} onclick={pickSongsFolder}>Change…</button>
               </div>
             </div>
 
@@ -293,7 +335,7 @@
               <span class="pref-label">Sample library folder</span>
               <div class="pref-path-row">
                 <input type="text" readonly value={view.hitsoundLibrary || "No library folder selected"} />
-                <button type="button" disabled={busy} onclick={() => invoke("pick_hitsound_library").catch(() => {})}>Add folder…</button>
+                <button type="button" disabled={busy} onclick={pickLibraryFolder}>Add folder…</button>
               </div>
             </div>
 
@@ -302,14 +344,14 @@
               <span class="pref-label">Songs folder</span>
               <div class="pref-path-row">
                 <input type="text" readonly value={view.songsFolder || "Not configured"} />
-                <button type="button" disabled={busy} onclick={() => invoke("pick_songs_folder").catch(() => {})}>Choose…</button>
+                <button type="button" disabled={busy} onclick={pickSongsFolder}>Choose…</button>
               </div>
             </div>
             <div class="pref-group">
               <span class="pref-label">Hitsound library</span>
               <div class="pref-path-row">
                 <input type="text" readonly value={view.hitsoundLibrary || "Not configured"} />
-                <button type="button" disabled={busy} onclick={() => invoke("pick_hitsound_library").catch(() => {})}>Choose…</button>
+                <button type="button" disabled={busy} onclick={pickLibraryFolder}>Choose…</button>
                 {#if view.hitsoundLibrary}
                   <button type="button" onclick={() => invoke("open_editor_folder", { folder: "library" }).catch(() => {})}>Open</button>
                 {/if}
@@ -439,6 +481,7 @@
             </div>
           {/if}
         </section>
+        {/if}
       </div>
 
       <footer class="pref-foot">

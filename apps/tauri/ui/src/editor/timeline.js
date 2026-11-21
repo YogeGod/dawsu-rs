@@ -590,10 +590,11 @@ export function attachTimeline(ctx) {
         const panning = surface === grid && state.view.tool === "Grab" && !event.altKey;
         if (surface === grid && !panning) {
           const rect = grid.getBoundingClientRect();
-          const y = event.clientY - rect.y;
+          const s = uiScale();
+          const y = (event.clientY - rect.y) / s;
           const row = state.laneRows[Math.floor((y + $("scroll").scrollTop) / state.scene.rowHeight)];
           if (row === undefined) return;
-          const time = state.scene.viewStart + (event.clientX - rect.x) / state.scene.zoom;
+          const time = state.scene.viewStart + ((event.clientX - rect.x) / s) / state.scene.zoom;
           if (revealLayerPreview(row, time, y)) {
             event.preventDefault();
             return;
@@ -617,7 +618,7 @@ export function attachTimeline(ctx) {
         if (surface === grid) handOverHitCard(hitCardAt(event));
         if (surface === controller && state.scene && !state.view.busy) {
           const rect = controller.getBoundingClientRect();
-          const ms = state.scene.viewStart + (event.clientX - rect.x) / state.scene.zoom;
+          const ms = state.scene.viewStart + ((event.clientX - rect.x) / uiScale()) / state.scene.zoom;
           const hovered = nearestHitTime(ms, null, state.scene.zoom);
           if (hovered !== state.volumeHoverTime) {
             state.volumeHoverTime = hovered;
