@@ -127,6 +127,7 @@ try
             }
             case "save":
             {
+                Flash.SetValue(w, null);
                 var task = (Task<bool>)typeof(MainWindow).GetMethod("Save", BindingFlags.NonPublic | BindingFlags.Instance)!.Invoke(w, null)!;
                 var until = DateTime.UtcNow.AddSeconds(60);
                 while (!task.IsCompleted && DateTime.UtcNow < until)
@@ -148,6 +149,8 @@ try
                 Wait(() => w.Loading.IsCompleted, "the saved map to reopen");
                 result["seen"] = Named(w);
                 result["saved"] = saved;
+                // 3.1.4 says in its status line why a save stopped (MapWrites.cs:63-64, 93-95).
+                if (Flash.GetValue(w) is string { Length: > 0 } said) result["status"] = said;
                 break;
             }
             default: result["note"] = "not replayed"; break;
