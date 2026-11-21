@@ -153,10 +153,17 @@ if (twin.error || !twin.saved) {
   const why = twin.error ? `3.1.4 stopped: ${twin.error}` : `3.1.4 did not save${twin.steps?.at(-1)?.status ? `: "${twin.steps.at(-1).status}"` : ""}`;
   console.log(why);
   console.log("compare with 3.1.4: no score (3.1.4 did not save)");
+  // The silent sound check does not need 3.1.4: lazer reads the original and dawsu!'s copy only.
+  const oracleOut = join(work, "oracle");
+  must("dotnet", ["run", "-c", "Release", ...(args.prebuilt ? ["--no-build"] : []), "--project", join(repo, "tools/lazer-oracle"), "--", oracleOut,
+    copies.original, copies.dawsu]);
+  const oracle = name => JSON.parse(readFileSync(join(oracleOut, name, `${basename(original)}.json`), "utf8"));
+  const silent = silentChecks(heard(oracle("original"), copies.original), heard(oracle("dawsu-rs"), copies.dawsu));
+  printSilent(silent);
   if (args.json) writeFileSync(resolve(args.json), JSON.stringify({
     summary: { standIns, robot: robotLast, robotFailed: (robot.steps ?? []).filter(step => step.status === "FAIL").map(step => `${step.number} ${step.name}: ${step.detail}`),
-      twin: why, sounds: { same: 0, total: 0, edited: { same: 0, total: 0 } }, steps: { same: 0, total: 0 } },
-    steps: [], moments: [], dialogs: twin.dialogs ?? [], work }, null, 2) + "\n");
+      twin: why, sounds: { same: 0, total: 0, edited: { same: 0, total: 0 } }, steps: { same: 0, total: 0 }, silent: silentSummary(silent) },
+    steps: [], moments: [], silent, dialogs: twin.dialogs ?? [], work }, null, 2) + "\n");
   try { rmSync(robot.profile, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 }); } catch {}
   if (!args.keep) try { rmSync(work, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 }); } catch {}
   process.exit(1);
@@ -222,15 +229,8 @@ const steps = robot.actions.map((action, index) => {
       : `dawsu! ${showChange(ours) ?? show(ours)}, 3.1.4 ${showChange(theirs) ?? show(theirs)}${other?.status ? ` (3.1.4 said: "${other.status}")` : ""}` };
 });
 
-// 6. The silent sound check: what dawsu! itself would play (its playback list, read without an audio
-// device) against what osu!lazer plays, for the map as opened and for the saved copy reopened.
-const silentCheck = which => {
-  const list = robot.sounds?.[which];
-  if (!Array.isArray(list)) return null; // a build without playback_list, or the step did not run
-  const ours = planned(list, which === "opened" ? copies.original : copies.dawsu);
-  return { ...soundCheck(ours.sounds, which === "opened" ? lazerOriginal : lazerDawsu), silent: ours.silent };
-};
-const silent = { opened: silentCheck("opened"), reopened: silentCheck("reopened") };
+// 6. The silent sound check (silentChecks, at the end of this file).
+const silent = silentChecks(lazerOriginal, lazerDawsu);
 
 const summary = {
   standIns,
@@ -239,7 +239,7 @@ const summary = {
   twin: twin.error ? `3.1.4 stopped: ${twin.error}` : `3.1.4 saved: ${twin.saved}`,
   sounds: { same: sameCount, total: moments.length, edited: { same: editedSame, total: editedMoments.length } },
   steps: { same: steps.filter(step => step.same).length, total: steps.length },
-  silent: Object.fromEntries(Object.entries(silent).map(([which, check]) => [which, check && { same: check.same, total: check.moments, silent: check.silent, floor: check.floor, player: check.player }])),
+  silent: silentSummary(silent),
 };
 for (const step of steps) console.log(`${step.same ? "SAME" : "DIFF"} ${step.edit}${step.text ? " — " + step.text : ""}`);
 for (const moment of moments.filter(moment => !moment.same)) console.log(`DIFF ${moment.time} ms — ${moment.notes.join("; ")}`);
@@ -247,14 +247,7 @@ if (twin.dialogs?.length) console.log(`3.1.4's Save showed: ${twin.dialogs.map(d
 console.log(summary.twin);
 console.log(`edits: ${summary.steps.same} of ${summary.steps.total} ended the same in both apps`);
 console.log(`sounds: ${editedSame} of ${editedMoments.length} edited moments play the same in both saved maps (${sameCount} of ${moments.length} moments in all)`);
-for (const [which, check] of Object.entries(silent)) {
-  const what = which === "opened" ? "the map as opened" : "the saved copy reopened";
-  if (!check) { console.log(`silent sound check, ${what}: not run (this build has no playback list)`); continue; }
-  for (const moment of check.differences) console.log(`PLAYS ${which} ${moment.time} ms — ${moment.notes.join("; ")}`);
-  console.log(`silent sound check, ${what}: dawsu! plays ${check.same} of ${check.moments} moments as osu! does`
-    + `${check.silent ? `; ${check.silent} sounds not loaded, so silent` : ""}${check.floor ? `; ${check.floor} raised to the 5% floor on purpose` : ""}`
-    + `${check.player ? `; ${check.player} spinner spin and bonus sounds set aside (they follow the player's spinning)` : ""}`);
-}
+printSilent(silent);
 // The headline is the edited moments (the unedited ones are the same in nearly every map), never
 // rounded up to 100%.
 const percent = editedMoments.length ? Math.floor(100 * editedSame / editedMoments.length) : 100;
@@ -266,3 +259,29 @@ try { rmSync(robot.profile, { recursive: true, force: true, maxRetries: 20, retr
 if (!args.keep) try { rmSync(work, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 }); } catch {}
 else console.log(`kept: ${relative(repo, work)}`);
 if (twin.error || !twin.saved || sameCount !== moments.length || Object.values(silent).some(check => check?.differences.length)) process.exitCode = 1;
+
+// 6. The silent sound check: what dawsu! itself would play (its playback list, read without an audio
+// device) against what osu!lazer plays, for the map as opened and for the saved copy reopened. It needs
+// only lazer's reading of the original and of dawsu!'s saved copy, so it runs when 3.1.4 stops too.
+function silentChecks(lazerOriginal, lazerDawsu) {
+  const one = which => {
+    const list = robot.sounds?.[which];
+    if (!Array.isArray(list)) return null; // a build without playback_list, or the step did not run
+    const ours = planned(list, which === "opened" ? copies.original : copies.dawsu);
+    return { ...soundCheck(ours.sounds, which === "opened" ? lazerOriginal : lazerDawsu), silent: ours.silent };
+  };
+  return { opened: one("opened"), reopened: one("reopened") };
+}
+function silentSummary(silent) {
+  return Object.fromEntries(Object.entries(silent).map(([which, check]) => [which, check && { same: check.same, total: check.moments, silent: check.silent, floor: check.floor, player: check.player }]));
+}
+function printSilent(silent) {
+  for (const [which, check] of Object.entries(silent)) {
+    const what = which === "opened" ? "the map as opened" : "the saved copy reopened";
+    if (!check) { console.log(`silent sound check, ${what}: not run (this build has no playback list)`); continue; }
+    for (const moment of check.differences) console.log(`PLAYS ${which} ${moment.time} ms — ${moment.notes.join("; ")}`);
+    console.log(`silent sound check, ${what}: dawsu! plays ${check.same} of ${check.moments} moments as osu! does`
+      + `${check.silent ? `; ${check.silent} sounds not loaded, so silent` : ""}${check.floor ? `; ${check.floor} raised to the 5% floor on purpose` : ""}`
+      + `${check.player ? `; ${check.player} spinner spin and bonus sounds set aside (they follow the player's spinning)` : ""}`);
+  }
+}
