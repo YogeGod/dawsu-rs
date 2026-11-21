@@ -417,8 +417,8 @@ test("a plain click on the ruler band moves the playhead there, inside or outsid
   click(30, 6, 3);
   await settle();
   const sent = JSON.parse(JSON.stringify(calls.map(call => call.args.action).filter(Boolean)));
-  assert.deepEqual(sent, [{ kind: "seek", ms: 45 }, { kind: "seek", ms: 90 }, { kind: "seek", ms: 30 }],
-    "no Cycle toggle and no locator change");
+  const seek = ms => ({ kind: "ruler_locators", path: "Expert.osu", gesture: "seek", from: ms, to: ms });
+  assert.deepEqual(sent, [seek(45), seek(90), seek(30)], "no Cycle toggle and no locator change");
   assert.equal(evaluate("rulerDrag"), null);
 });
 
