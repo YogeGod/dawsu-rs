@@ -88,7 +88,7 @@ test("object circles are 34 px at every zoom, in the combo colour with a white r
   const strokes = ruler.calls.filter(call => call.name === "stroke");
   assert.ok(strokes.some(call => call.stroke === "#ffffff" && call.lineWidth === 2), "ring");
   assert.ok(strokes.filter(call => call.lineWidth === 2).every(call => ["#ffffff", "#ffffffd9"].includes(call.stroke)));
-  assert.ok(strokes.some(call => call.stroke === "#7b8ba3" && call.lineWidth === 1), "locator lines");
+  assert.ok(strokes.some(call => call.stroke === "#8e8e96" && call.lineWidth === 1), "locator lines");
   // Spinners keep their thin bar.
   assert.ok(ruler.calls.some(call => call.name === "fillRect" && call.fill === "#e6eef2" && call.args[3] === 5));
 });
@@ -186,17 +186,17 @@ test("the cycle region is a faint accent band under a warning-yellow bar on the 
   const rects = () => ruler.calls.filter(call => call.name === "fillRect").map(call => [call.fill, ...call.args]);
   // Locators at 100 and 700 ms at 0.25 px/ms: the region runs from x 25 to 175.
   paint("scene.zoom = .25; Object.assign(view, { left: 100, right: 700, cycle: true })");
-  assert.ok(rects().some(rect => rect.join() === ["#4fa8ff14", 25, 0, 150, 39].join()), "faint accent band");
-  assert.ok(rects().some(rect => rect.join() === ["#f5b841", 25, 1, 150, 4].join()), "warning-yellow bar");
+  assert.ok(rects().some(rect => rect.join() === ["#5ac8fa14", 25, 0, 150, 39].join()), "faint accent band");
+  assert.ok(rects().some(rect => rect.join() === ["#ffd60a", 25, 1, 150, 4].join()), "warning-yellow bar");
   assert.ok(!ruler.calls.some(call => [call.fill, call.stroke].some(colour => colour?.startsWith("#2fbf4a"))), "no green");
-  assert.ok(ruler.calls.some(call => call.name === "stroke" && call.stroke === "#7b8ba3"), "locator lines stay");
+  assert.ok(ruler.calls.some(call => call.name === "stroke" && call.stroke === "#8e8e96"), "locator lines stay");
   // With the cycle off the locator span stays grey; reversed locators stay orange.
   paint("view.cycle = false");
-  assert.ok(rects().some(rect => rect.join() === ["#7b8ba322", 25, 0, 150, 39].join()));
-  assert.ok(!rects().some(rect => rect[0] === "#f5b841"));
+  assert.ok(rects().some(rect => rect.join() === ["#8e8e9622", 25, 0, 150, 39].join()));
+  assert.ok(!rects().some(rect => rect[0] === "#ffd60a"));
   paint("Object.assign(view, { left: 700, right: 100, cycle: true })");
   assert.ok(rects().some(rect => rect.join() === ["#f0aa7046", 25, 0, 150, 39].join()));
-  assert.ok(!rects().some(rect => rect[0] === "#f5b841"));
+  assert.ok(!rects().some(rect => rect[0] === "#ffd60a"));
 });
 
 test("a click on a slider repeat counts only inside its drawn size", async () => {
@@ -233,9 +233,9 @@ test("the left and right locators are L and R flags at the top of the ruler", as
   assert.ok(left[1] > 25 && left[1] < 39, "L sits right of its line");
   assert.equal(right[0], "R");
   assert.ok(right[1] > 161 && right[1] < 175, "R sits left of its line");
-  assert.ok(ruler.calls.some(call => call.name === "fill" && call.fill === "#7b8ba3"), "grey flags");
+  assert.ok(ruler.calls.some(call => call.name === "fill" && call.fill === "#8e8e96"), "grey flags");
   paint("view.cycle = true");
-  assert.ok(ruler.calls.some(call => call.name === "fill" && call.fill === "#f5b841"), "cycle-yellow flags while cycling");
+  assert.ok(ruler.calls.some(call => call.name === "fill" && call.fill === "#ffd60a"), "cycle-yellow flags while cycling");
   // Both on one time, and the left one at the right edge of the 300 px canvas: both stay visible.
   paint("Object.assign(view, { left: 1180, right: 1180 })");
   const [l, r] = letters();
@@ -252,7 +252,7 @@ test("a pushed L or R flag never paints over the other one, at either edge of th
     for (const call of ruler.calls) {
       if (call.name === "beginPath") xs = [];
       if (call.name === "moveTo" || call.name === "lineTo") xs.push(call.args[0]);
-      if (call.name === "fill" && ["#7b8ba3", "#f5b841"].includes(call.fill)) spans.push([Math.min(...xs), Math.max(...xs)]);
+      if (call.name === "fill" && ["#8e8e96", "#ffd60a"].includes(call.fill)) spans.push([Math.min(...xs), Math.max(...xs)]);
     }
     return spans;
   };
@@ -315,11 +315,11 @@ test("the ruler band is 40 px of #0c0c0c with a 1 px --editor-selected bottom ed
   const { get, paint } = await canvases();
   const ruler = get("ruler");
   paint("scene.zoom = .1");
-  assert.ok(ruler.calls.some(call => call.name === "fillRect" && call.fill === "#0b0e14" &&
+  assert.ok(ruler.calls.some(call => call.name === "fillRect" && call.fill === "#08080a" &&
     call.args.join() === "0,0,300,40"), "band");
   const edge = ruler.calls.findIndex(call => call.name === "lineTo" && call.args[1] === 39.5 && call.args[0] === 300.5);
   assert.ok(edge > 0 && ruler.calls[edge - 1].args.join() === "0.5,39.5", "bottom edge");
-  assert.ok(ruler.calls.slice(edge).some(call => call.name === "stroke" && call.stroke === "#343e52"));
+  assert.ok(ruler.calls.slice(edge).some(call => call.name === "stroke" && call.stroke === "#2b2b30"));
 });
 
 test("the Add lane row's drop hint stays hidden until a Browser drop adds a lane", async () => {
@@ -420,7 +420,7 @@ test("the overview draws object diamonds by density, problem diamonds and the vi
     // Only this difficulty's problems, above the viewport box.
     [225, 35, "#efc16a"],
   ]);
-  assert.ok(overview.calls.some(call => call.name === "stroke" && call.stroke === "#161a23"), "problem edge");
+  assert.ok(overview.calls.some(call => call.name === "stroke" && call.stroke === "#151517"), "problem edge");
   // The viewport box: 3000 ms of 4000 on screen, 1 px --editor-text with a 2 px radius.
   const box = overview.calls.find(call => call.name === "roundRect");
   assert.deepEqual(box.args.map(round), [.5, 3.5, 224, 73, 2]);

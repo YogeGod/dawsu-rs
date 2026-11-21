@@ -7,9 +7,9 @@ import { bootEditor } from "./editor-runtime.mjs";
 const css = await readFile(new URL("../dist/style.css", import.meta.url), "utf8");
 
 test("workstation chrome uses the design's neutral grey surfaces and shared blue accent", () => {
-  assert.match(css, /:root\s*\{[^}]*--base:\s*#0f1218\b/);
-  assert.match(css, /:root\s*\{[^}]*--panel:\s*#161a23\b/);
-  assert.match(css, /:root\s*\{[^}]*--hi:\s*#4fa8ff\b/);
+  assert.match(css, /:root\s*\{[^}]*--base:\s*#0e0e10\b/);
+  assert.match(css, /:root\s*\{[^}]*--panel:\s*#151517\b/);
+  assert.match(css, /:root\s*\{[^}]*--hi:\s*#5ac8fa\b/);
 });
 test("the ruler paints the teal waveform frequency shades on a teal tint; the overview keeps a neutral background", async () => {
   const elements = new Map();
@@ -56,9 +56,9 @@ test("the ruler paints the teal waveform frequency shades on a teal tint; the ov
     scene = {path: "fixture.osu", viewStart: 0, zoom: .25, rowHeight: 30, moments: [], sections: [],
       waveform: [[.4,.38,.12,.02], [.6,.18,.54,.17], [.8,.025,.19,.68]]};
     paint();`, context);
-  assert.equal(get("ruler").fills[0], "#132229");
-  assert.equal(get("overview").fills[0], "#161a23");
-  assert.equal(get("grid").fills[0], "#0f1218");
+  assert.equal(get("ruler").fills[0], "#121718");
+  assert.equal(get("overview").fills[0], "#151517");
+  assert.equal(get("grid").fills[0], "#0e0e10");
   const waveformBands = { ruler: [...get("ruler").bands], overview: [...get("overview").bands] };
   runInContext(`
     scene.gameplay = {points: [["circle", 200], ["slider", 600]], spans: [["slider", 600, 800], ["spinner", 900, 1000]]};
@@ -77,7 +77,7 @@ test("the ruler paints the teal waveform frequency shades on a teal tint; the ov
     hydrateLaneLayout({lane_colours: {"Skin|normal-hitclap": "#ff5500"}});
     paint();`, context);
   // v3: a picked colour tints its row 8 %.
-  assert.deepEqual(get("grid").fills.slice(0, 3), ["#0f1218", "#ff550014", "#161a23"]);
+  assert.deepEqual(get("grid").fills.slice(0, 3), ["#0e0e10", "#ff550014", "#151517"]);
   get("grid").fills.length = 0;
   runInContext("hydrateLaneLayout(null); paint()", context);
   assert.ok(!get("grid").fills.includes("#ff55001f"));

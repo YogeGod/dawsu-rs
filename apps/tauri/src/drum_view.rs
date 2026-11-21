@@ -73,6 +73,13 @@ struct Kit {
 }
 
 impl DrumView {
+    pub(super) fn active_map(&self, app: &Application) -> Option<&DrumMap> {
+        let document = app.document()?;
+        let folder = document.path.parent()?;
+        let kit = self.mapsets.get(folder)?;
+        kit.enabled.then_some(&kit.preset)
+    }
+
     pub(super) fn load(
         &mut self, app: &Application, expected_map: &Path, path: &Path,
     ) -> Result<(), String> {

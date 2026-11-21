@@ -1541,6 +1541,12 @@ enum Request {
     NodeGraphAction(dawsu_application::NodeGraphAction, mpsc::Sender<Result<Value, String>>),
     NodeGraphExportJson(mpsc::Sender<Result<String, String>>),
     NodeGraphClose,
+    /// MIDI file inspection and import into the active document.
+    InspectMidiFile(String, mpsc::Sender<Result<dawsu_application::MidiInspectResult, String>>),
+    ApplyMidiImport(
+        dawsu_application::MidiImportOptions,
+        mpsc::Sender<Result<dawsu_application::MidiImportOutcome, String>>,
+    ),
 }
 struct Editor(mpsc::Sender<Request>);
 
@@ -2057,6 +2063,27 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                     if fault.is_none() {
                         let _ = guard(&mut app, &mut fault, Application::cancel_node_graph_and_clear_viewer);
                     }
+                }
+                Ok(Request::InspectMidiFile(path, response)) => {
+                    let result = guard(&mut app, &mut fault, |app| {
+                        let document = app.document().ok_or("Open a difficulty first.")?;
+                        let lanes = document.composer.hitsounds().lanes();
+                        dawsu_application::midi_import::inspect_midi_file(
+                            Path::new(&path),
+                            lanes,
+                            drums.active_map(app),
+                        )
+                    })
+                    .and_then(|result| result);
+                    let _ = response.send(result);
+                }
+                Ok(Request::ApplyMidiImport(options, response)) => {
+                    let result = guard(&mut app, &mut fault, |app| {
+                        let drum_map = drums.active_map(app).cloned();
+                        app.apply_midi_import(&options, drum_map.as_ref())
+                    })
+                    .and_then(|result| result);
+                    let _ = response.send(result);
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {
                     if fault.is_none() {
@@ -2805,6 +2832,50 @@ fn skin_textures() -> Value {
     skin_textures::load_skin_textures_json()
 }
 
+#[tauri::command]
+fn pick_midi_file(window: tauri::WebviewWindow) -> Option<String> {
+    rfd::FileDialog::new()
+        .set_parent(&window)
+        .set_title("Import MIDI file")
+        .add_filter("MIDI file", &["mid", "midi"])
+        .pick_file()
+        .map(|path| path.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
+fn inspect_midi_file(
+    path: String,
+    state: State<'_, Editor>,
+) -> Result<dawsu_application::MidiInspectResult, String> {
+    ask(&state, |tx| Request::InspectMidiFile(path, tx))?
+}
+
+#[tauri::command]
+fn apply_midi_import(
+    path: String,
+    tracks: Vec<usize>,
+    use_beatmap_tempo: bool,
+    offset_ms: f64,
+    snap: bool,
+    follow_volume: bool,
+    state: State<'_, Editor>,
+) -> Result<dawsu_application::MidiImportOutcome, String> {
+    let options = dawsu_application::MidiImportOptions {
+        path,
+        tracks,
+        use_beatmap_tempo,
+        offset_ms,
+        snap,
+        follow_volume,
+    };
+    ask(&state, |tx| Request::ApplyMidiImport(options, tx))?
+}
+
+#[tauri::command]
+fn midi_input_ports() -> Vec<String> {
+    dawsu_application::list_midi_input_ports()
+}
+
 fn close_requested(label: &str, editor: &Editor) -> CloseDecision {
     // Closing Export or the drum detection window never waits on the editor.
     match label {
@@ -2916,7 +2987,11 @@ fn main() {
             drum_map_action,
             open_editor_folder,
             close_editor,
-            skin_textures
+            skin_textures,
+            pick_midi_file,
+            inspect_midi_file,
+            apply_midi_import,
+            midi_input_ports
         ])
         .run(tauri::generate_context!())
         .expect("start the dawsu! Tauri editor");

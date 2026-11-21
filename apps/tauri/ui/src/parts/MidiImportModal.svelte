@@ -185,7 +185,7 @@
     height: 50px;
     padding: 0 18px;
     border-bottom: 1px solid var(--editor-border);
-    background: linear-gradient(180deg, #252c3b 0%, #1d2230 100%);
+    background: linear-gradient(180deg, #1e1e21 0%, #151517 100%);
   }
   .midi-title {
     font-size: 14px;

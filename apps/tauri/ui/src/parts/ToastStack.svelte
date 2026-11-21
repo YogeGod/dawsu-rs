@@ -80,7 +80,7 @@
     padding: 12px 14px;
     border: 1px solid var(--editor-border);
     border-radius: 8px;
-    background: linear-gradient(180deg, #252c3b 0%, #1c212e 100%);
+    background: linear-gradient(180deg, #1e1e21 0%, #151517 100%);
     color: var(--editor-text);
     box-shadow: 0 14px 36px rgba(0, 0, 0, 0.52);
     pointer-events: auto;

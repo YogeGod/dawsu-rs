@@ -422,7 +422,7 @@ test("bar numbers sit 10 px from the ruler's top; bar lines run its full height"
     // The beat tick at 200 px draws first; the editor bar line draws over it.
     JSON.stringify([labels[1], lines.filter(line => line[0] === 200).at(-1)]);
   `);
-  assert.deepEqual(JSON.parse(result), [["2", 200, 10, "#f2f5fa"], [200, 0, 40, "#f2f5fa"]]);
+  assert.deepEqual(JSON.parse(result), [["2", 200, 10, "#f5f5f7"], [200, 0, 40, "#f5f5f7"]]);
 });
 
 test("without time signatures the ruler numbers bars as the editor does", async () => {

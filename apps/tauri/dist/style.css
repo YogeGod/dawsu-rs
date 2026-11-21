@@ -3,11 +3,11 @@
 @font-face{font-family:"Roboto Mono";src:url("studio-assets/fonts/RobotoMono-Regular.ttf") format("truetype");font-weight:400;font-display:swap}
 *{box-sizing:border-box}
 :root{color-scheme:dark;
-  /* Logic Pro for iPad cool slate surfaces. */
-  --base:#0f1218;--title-text:#c4cddb;--panel:#161a23;--raised:#1f2430;--control:#2f384b;
-  --line:#2c3445;--divider:#2c3445;--hi:#4fa8ff;--hi-hover:#84c5ff;--text:#f2f5fa;--muted:#96a3b8;--on-accent:#08111c;
-  --field:#0f1218;--button:#252c3b;--button-border:#2c3445;
-  --ruler:#1b202b;--lane:#161a23;--lane-alt:#0f1218;--group:#1f2430;
+  /* Apple Logic Pro for iPad pure black & neutral obsidian surfaces. */
+  --base:#0e0e10;--title-text:#c7c7cc;--panel:#151517;--raised:#1c1c1f;--control:#303036;
+  --line:#2b2b30;--divider:#2b2b30;--hi:#5ac8fa;--hi-hover:#8ee0ff;--text:#f5f5f7;--muted:#98989f;--on-accent:#08080a;
+  --field:#0e0e10;--button:#242428;--button-border:#2b2b30;
+  --ruler:#1a1a1d;--lane:#151517;--lane-alt:#0e0e10;--group:#1c1c1f;
   --cursor-draw:url("studio-assets/icons/cursor-draw.svg") 4 4,crosshair;
   --cursor-erase:url("studio-assets/icons/cursor-erase.svg") 5 27,crosshair;
   font:13px "Segoe UI",system-ui,sans-serif}
@@ -197,9 +197,9 @@ body{font-family:Inter,"Segoe UI",system-ui,sans-serif}
 .row[aria-label="Lane view"] button { border: 0; background: transparent; }
 .row[aria-label="Lane view"] button[aria-pressed="true"] { color: var(--hi); background: #454545; }
 :root {
-  --text:#f2f5fa; --muted:#96a3b8; --hi:#4fa8ff;
-  --base:#0f1218; --panel:#161a23; --chrome:#1f2430; --control:#2f384b;
-  --field:#0f1218; --button:#252c3b; --button-border:#2c3445; --line:#2c3445;
+  --text:#f5f5f7; --muted:#98989f; --hi:#5ac8fa;
+  --base:#0e0e10; --panel:#151517; --chrome:#1c1c1f; --control:#303036;
+  --field:#0e0e10; --button:#242428; --button-border:#2b2b30; --line:#2b2b30;
 }
 header.chrome { min-height:44px; padding-block:4px; background:var(--chrome); }
 /* Top-bar buttons sit on --chrome, so they get an --editor-selected edge (1.5:1 against the bar). */

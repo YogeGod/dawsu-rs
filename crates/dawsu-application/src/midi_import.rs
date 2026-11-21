@@ -392,8 +392,9 @@ fn beats_to_beatmap_ms(tempo: &TempoMap, beats: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dawsu_foundation::{CustomIndex, SampleSet, SongTime};
-    use dawsu_hitsounding::{Hitsounds, LaneSource};
+    use dawsu_foundation::SongTime;
+    use dawsu_hitsounding::{Decompiled, Hitsounds, decompile};
+    use dawsu_osu_format::OsuFile;
 
     fn push_vlq(out: &mut Vec<u8>, mut v: u32) {
         let mut buf = [0u8; 4];
@@ -483,23 +484,12 @@ mod tests {
     }
 
     fn test_hitsounds() -> Hitsounds {
-        let mut hs = Hitsounds::new();
-        for sound in [
-            Hitsound::Normal,
-            Hitsound::Clap,
-            Hitsound::Whistle,
-            Hitsound::Finish,
-        ] {
-            hs.add_lane(
-                SampleIdentity::Standard {
-                    set: SampleSet::Normal,
-                    sound: Sound::Hit(sound),
-                    index: CustomIndex::DEFAULT,
-                },
-                LaneSource::Skin,
-            );
+        let osu = b"osu file format v14\n\n[General]\nMode: 0\n\n[TimingPoints]\n1000,400,4,1,0,100,1,0\n\n[HitObjects]\n";
+        let file = OsuFile::read(osu.to_vec()).file;
+        match decompile(&file, &[], &|| false, &mut |_, _| {}) {
+            Decompiled::Done(hs) => hs,
+            _ => panic!("minimal osu file must decompile"),
         }
-        hs
     }
 
     #[test]
@@ -556,7 +546,7 @@ mod tests {
 
         assert_eq!(outcome.added, 3);
         assert_eq!(outcome.skipped, 0);
-        assert_eq!(composer.history.undo_label(), Some("Import MIDI"));
+        assert_eq!(composer.history.steps(), vec!["Import MIDI"]);
 
         let placed_times: Vec<f64> = composer
             .hitsounds()

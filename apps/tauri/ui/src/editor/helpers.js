@@ -43,12 +43,12 @@ export const railSections = {
   "rail-inspector-bookmarks": ["inspector", "Bookmarks"],
 };
 
-// Canvas surfaces match the Logic Pro for iPad cool slate chrome.
+// Canvas surfaces match Apple Logic Pro for iPad's pure black & neutral obsidian.
 export const slateTimeline = {
-  arrange: "#0f1218", alternateRow: "#161a23", activeRow: "#2a3548", group: "#1f2430",
-  ruler: "#0b0e14", rulerBar: "#f2f5fa", rulerEdge: "#343e52", overview: "#161a23", waveform: "#132229",
-  volume: "#0f1218", divider: "#2c3445", beatLine: "#2c3445", barLine: "#46536b",
-  cycle: "#f5b841", loop: "#4fa8ff14", locator: "#7b8ba3", playhead: "#84c5ff",
+  arrange: "#0e0e10", alternateRow: "#151517", activeRow: "#26262a", group: "#1c1c1f",
+  ruler: "#08080a", rulerBar: "#f5f5f7", rulerEdge: "#2b2b30", overview: "#151517", waveform: "#121718",
+  volume: "#0e0e10", divider: "#2b2b30", beatLine: "#2b2b30", barLine: "#44444c",
+  cycle: "#ffd60a", loop: "#5ac8fa14", locator: "#8e8e96", playhead: "#f5f5f7",
 };
 
 export const levelColours = [[58, 108, 240], [154, 72, 216], [236, 58, 58]];

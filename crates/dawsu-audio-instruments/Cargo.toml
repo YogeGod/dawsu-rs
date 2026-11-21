@@ -7,7 +7,7 @@ publish.workspace = true
 
 [dependencies]
 dawsu-foundation = { path = "../dawsu-foundation" }
-midir = "0.10"
+midir = "0.11"
 serde = { version = "1", features = ["derive"] }
 
 [dev-dependencies]
