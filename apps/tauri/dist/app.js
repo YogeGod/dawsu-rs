@@ -282,7 +282,7 @@ function show(next) {
   }
   refreshLaneDelete();
   renderDialogs();
-  window.refreshEditorMenu?.();
+  try { window.refreshEditorMenu?.(); } catch (error) { console.error(error); }
   paintSoon();
   try { window.dawsuUi?.update(view, scene); } catch (error) { console.error(error); }
   $("triplet-snap").checked = window.dawsuUi?.snapGroup?.() === "triplets";

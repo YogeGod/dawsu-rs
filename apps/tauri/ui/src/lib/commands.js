@@ -59,7 +59,7 @@ export const items = [
   { id: "playbackStart", label: "Start playing from", choices: "playbackStart" },
   { id: "returnOnStop", label: "Return on stop", icon: "Undo2", run: ["toggle", "return_on_stop", "view.returnOnStop", true] },
   { id: "follow", label: "Follow playhead", icon: "Scan", run: ["toggle", "follow", "view.follow", true] },
-  { id: "cycle", label: "Cycle between L and R", run: ["toggle", "cycle", "view.cycle"] },
+  { id: "cycle", label: "Cycle between L and R", command: "cycle", run: ["toggle", "cycle", "view.cycle"] },
   { id: "speed", label: "Speed · pitch stays the same", choices: "speed" },
   { id: "muteSong", label: "Mute song", icon: "VolumeX", run: ["toggle", "song_muted", "view.songMuted", true] },
   { id: "audioOutput", label: "Audio output…", icon: "Settings", run: ["click", "audio"], enabled: "idle" },
@@ -110,7 +110,7 @@ export const items = [
   { id: "laneMoveDown", label: "Move down", run: ["lane", "down"], enabled: "laneDown" },
   { id: "laneReplaceSample", label: "Replace sample…", icon: "FolderOpen", run: ["onLane", "click", "replace-sample"], enabled: "laneReplace" },
   { id: "laneColour", label: "Lane colour…", run: ["onLane", "click", "lane-colour"], enabled: "laneColour" },
-  { id: "laneAddLayer", label: "Add numbered layer", icon: "Drumstick", run: ["onLane", "layer"], enabled: "laneLayer" },
+  { id: "laneAddLayer", label: "Add numbered layer", icon: "Drumstick", command: "addNumberedLayer", run: ["onLane", "layer"], enabled: "laneLayer" },
   { id: "laneAdd", label: "Add lane…", run: ["click", "add-lane"], enabled: "lane" },
   { id: "laneDelete", label: "Delete lane…", icon: "Eraser", run: ["onLane", "click", "delete-lane"], enabled: "laneDelete" },
 ];
@@ -150,14 +150,13 @@ export const menus = {
   lane: ["laneRename", "laneMoveUp", "laneMoveDown", "laneReplaceSample", "laneColour", "laneAddLayer", "laneAdd", "laneDelete"],
 };
 
-// Catalogue commands no menu row stands for, so no menu shows their keys. Most run from their keys
-// only (Cycle and Add numbered layer also have rows that act without the command); the shortcut
-// editor lists them all under their Rust description.
+// Catalogue commands no menu row stands for, so no menu shows their keys. They run from their keys
+// only; the shortcut editor lists them all under their Rust description.
 export const keyOnly = [
   "quantize", "volumeUp", "volumeDown", "volumeUpFine", "volumeDownFine", "jumpToSelection",
   "nudgeLeft", "nudgeRight", "gridLeft", "gridRight", "navUp", "navDown", "selectPrevious", "selectNext",
-  "addPrevious", "addNext", "navAddUp", "navAddDown", "addNumberedLayer", "rowsOut", "rowsIn",
-  "openHitsoundFolder", "reviewOutput", "filter", "first", "last", "deselect", "snap", "cycle",
+  "addPrevious", "addNext", "navAddUp", "navAddDown", "rowsOut", "rowsIn",
+  "openHitsoundFolder", "reviewOutput", "filter", "first", "last", "deselect", "snap",
   "jumpLeft", "jumpRight", "setLeft", "setRight", "removeBookmark",
   "seekBack", "seekBackFar", "seekForward", "seekForwardFar",
   "snap1", "snap2", "snap3", "snap4", "snap5", "snap6", "snap7", "snap8", "snap9",

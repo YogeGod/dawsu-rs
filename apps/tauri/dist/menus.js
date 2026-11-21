@@ -108,7 +108,10 @@ const menuEnabled = entry => !!menuRules[entry.item.enabled ?? "edit"](entry.tar
 // One menu's rows from the command list, with one entry per button in page order.
 function menuEntries(name, target) {
   const list = window.dawsuUi?.commands;
-  if (!list?.menus[name]) return null;
+  if (!list?.menus[name]) {
+    $("status").textContent = "The menus did not load";
+    return null;
+  }
   const byId = new Map(list.items.map(item => [item.id, item]));
   const rows = [];
   const entries = [];
@@ -435,7 +438,12 @@ function refreshEditorMenu() {
     closeEditorMenu(false);
     return;
   }
-  window.dawsuUi?.menu?.(menuModel(editorMenu));
+  // Hand the rows over only when something changed: show() refreshes on every editor update.
+  const model = menuModel(editorMenu);
+  const drawn = JSON.stringify(model);
+  if (drawn === editorMenu.drawn) return;
+  editorMenu.drawn = drawn;
+  window.dawsuUi?.menu?.(model);
 }
 
 function openEditorMenu(name, last = false, point = null) {

@@ -100,7 +100,8 @@ function fixture() {
   const scene = { path: "Test.osu", selection: {count:1}, lanes: [
     {sourceKey:"first", canDelete:false}, {sourceKey:"second", canDelete:true, canReplace:true, canAddLayer:true, colourKey:"second"},
   ] };
-  const commands = { entries: [["undo", "Undo", ["Alt+U"]], ["save", "Save", ["Ctrl+S"]]] };
+  const commands = { entries: [["undo", "Undo", ["Alt+U"]], ["save", "Save", ["Ctrl+S"]],
+    ["cycle", "Cycle", ["Alt+C"]], ["addNumberedLayer", "Add numbered layer", ["Ctrl+L"]]] };
   const window = { innerWidth: 900, innerHeight: 640, addEventListener() {},
     dawsuUi: { commands: commandList, menu: drawMenu } };
   const context = createContext({
@@ -693,4 +694,67 @@ test("Map > Drum hit detection… opens the drum detection window", async () => 
   item.click();
   await settle();
   assert.deepEqual(calls.map(([name]) => name), ["drum_window_open"]);
+});
+
+test("Cycle between L and R and Add numbered layer show their keys and still act as before", async () => {
+  const { get, calls } = fixture();
+  const popup = get("editor-menu");
+  const hint = button => button.children.find(child => child.type === "kbd")?.textContent;
+  get("menu-playback").click();
+  await settle();
+  const cycle = menuButtons(popup).find(button => button.textContent === "Cycle between L and R");
+  assert.equal(hint(cycle), "Alt+C");
+  cycle.click();
+  assert.equal(popup.hidden, false, "a switch row keeps the menu open");
+  assert.deepEqual(calls.at(-1), { kind: "cycle", on: true });
+
+  const lanes = get("lanes"), name = get("second-name");
+  name.dataset = { laneRow: "1" };
+  name.closest = () => name;
+  lanes.events.get("contextmenu")({ target: name, clientX: 10, clientY: 10, preventDefault() {} });
+  await settle();
+  const layer = menuButtons(popup).find(button => button.textContent === "Add numbered layer");
+  assert.equal(hint(layer), "Ctrl+L");
+  layer.click();
+  await settle();
+  assert.deepEqual(calls.slice(-2), [{ kind: "lane", row: 1, operation: "activate" }, { kind: "lane", row: 1, operation: "add_layer" }]);
+});
+
+test("every rule, call, choice source and run kind the command list names exists in menus.js", () => {
+  const { context } = fixture();
+  const [rules, calls, sources] = ["menuRules", "menuCalls", "menuChoiceSources"].map(name => runInContext(name, context));
+  const kinds = new Set([...code.matchAll(/kind === "(\w+)"/g)].map(match => match[1]));
+  for (const item of commandList.items) {
+    for (const rule of [item.enabled, item.checked].filter(Boolean)) assert.ok(rule in rules, item.id + ": rule " + rule);
+    if (item.choices) assert.ok(item.choices in sources, item.id + ": choices " + item.choices);
+    if (!item.run) continue;
+    assert.ok(kinds.has(item.run[0]), item.id + ": run kind " + item.run[0]);
+    if (item.run[0] === "call") assert.equal(typeof calls[item.run[1]], "function", item.id + ": call " + item.run[1]);
+  }
+});
+
+test("a menu that cannot load its command list says so in the status line", () => {
+  const { get, window } = fixture();
+  window.dawsuUi.commands = undefined;
+  get("menu-edit").click();
+  assert.equal(get("editor-menu").hidden, undefined, "no menu opens");
+  assert.equal(get("status").textContent, "The menus did not load");
+});
+
+test("a refresh with nothing changed hands the rows over only once", async () => {
+  const { get, window, context } = fixture();
+  let handed = 0;
+  const draw = window.dawsuUi.menu;
+  window.dawsuUi.menu = model => { handed += 1; draw(model); };
+  get("menu-edit").click();
+  await settle();
+  const after = handed;
+  context.refreshEditorMenu();
+  context.refreshEditorMenu();
+  assert.equal(handed, after);
+});
+
+test("app.js keeps a failing menu refresh from stopping the rest of show()", async () => {
+  const app = await readFile(new URL("../dist/app.js", import.meta.url), "utf8");
+  assert.match(app, /try \{ window\.refreshEditorMenu\?\.\(\); \} catch \(error\) \{ console\.error\(error\); \}/);
 });

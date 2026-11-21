@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { render } from "svelte/server";
 import { bridge } from "../src/lib/bridge.svelte.js";
@@ -70,4 +71,12 @@ test("the command list places every row once per menu and names each catalogue c
   for (const id of keyOnly) assert.ok(!named.includes(id), id + " is on a menu row and in keyOnly");
   assert.deepEqual(menus.tool.map(id => items.find(item => item.id === id).label), TOOLS,
     "the tool picker lists the tools in the toolbar's order");
+});
+
+test("a pressed row calls menus.js's menuAction with its index", async () => {
+  const part = await readFile(new URL("../src/parts/EditorMenu.svelte", import.meta.url), "utf8");
+  const menus = await readFile(new URL("../../dist/menus.js", import.meta.url), "utf8");
+  assert.match(part, /const press = index => globalThis\.menuAction\?\.\(index\);/);
+  assert.match(part, /onclick=\{\(\) => press\(row\.index\)\}/);
+  assert.match(menus, /^function menuAction\(index\) \{$/m, "a classic script's top-level function is the global the part calls");
 });
