@@ -179,7 +179,9 @@ async function measureOnce(chromium, run) {
       window.__perf.paints.length = 0;
       const frames = [];
       const start = performance.now();
+      // A hidden or covered window gets no animation frames; stop after the play time either way.
       await new Promise(done => {
+        setTimeout(done, duration + 2000);
         const step = now => {
           // Where the playhead line was last drawn on the ruler (see the line() wrapper above).
           frames.push({ now, x: window.__perf.playheadX });
@@ -193,6 +195,7 @@ async function measureOnce(chromium, run) {
     }, { seek: Number(args.seek ?? 30000), duration: Number(args.play ?? 6000), centre: !!args.centre });
 
     const frames = playhead.frames;
+    if (frames.length < 10) throw new Error(`only ${frames.length} animation frames: keep the editor's window visible while it measures`);
     const span = (frames.at(-1).now - frames[0].now) / 1000;
     // Device pixels of the drawn line; a frame without the line (off screen) counts as no move.
     const xs = frames.map(frame => frame.x);
