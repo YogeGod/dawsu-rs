@@ -404,6 +404,30 @@ pub fn default_drum_maps(new_id: &mut dyn FnMut() -> String) -> DrumMaps {
     DrumMaps { active: Some(maps[0].id.clone()), maps, enabled: false }
 }
 
+/// The drum maps that come with dawsu!, as file names and `.dawsudrum` texts: one for each common
+/// way mappers lay out a hitsound pack's samples, found in ranked maps' files and in the guides
+/// the packs come with (`drum-map-presets/README.md`). Each row names one of the twelve
+/// unnumbered hit samples, such as `BeatmapFile|soft-hitclap.wav`, which also finds the pack saved
+/// as `.ogg` or `.mp3` ([`lane_for_key`]). None carries audio: the pack's samples stay the
+/// mapper's.
+pub const BUILT_IN_DRUM_MAPS: &[(&str, &str)] = &[
+    ("Kick on drum-hitnormal.dawsudrum", include_str!("../drum-map-presets/Kick on drum-hitnormal.dawsudrum")),
+    ("Kick on normal-hitnormal.dawsudrum", include_str!("../drum-map-presets/Kick on normal-hitnormal.dawsudrum")),
+    ("Drum kit, kick on drum-hitnormal.dawsudrum", include_str!("../drum-map-presets/Drum kit, kick on drum-hitnormal.dawsudrum")),
+    ("Drum kit, kick on normal-hitnormal.dawsudrum", include_str!("../drum-map-presets/Drum kit, kick on normal-hitnormal.dawsudrum")),
+    ("Full kit, all 12 samples.dawsudrum", include_str!("../drum-map-presets/Full kit, all 12 samples.dawsudrum")),
+    ("Two kicks.dawsudrum", include_str!("../drum-map-presets/Two kicks.dawsudrum")),
+    ("Kick and snare on hitnormals.dawsudrum", include_str!("../drum-map-presets/Kick and snare on hitnormals.dawsudrum")),
+    ("Kick and snare on claps.dawsudrum", include_str!("../drum-map-presets/Kick and snare on claps.dawsudrum")),
+    ("Kick on whistle (older maps).dawsudrum", include_str!("../drum-map-presets/Kick on whistle (older maps).dawsudrum")),
+    ("Net0 hitsound kit.dawsudrum", include_str!("../drum-map-presets/Net0 hitsound kit.dawsudrum")),
+];
+
+/// The built-in drum maps ([`BUILT_IN_DRUM_MAPS`]), read, in that order.
+pub fn built_in_drum_maps() -> Vec<DrumMap> {
+    BUILT_IN_DRUM_MAPS.iter().map(|(file, text)| read_dawsudrum(text).unwrap_or_else(|e| panic!("the built-in drum map {file}: {e}"))).collect()
+}
+
 // ---------------------------------------------------------------- rows from a kit (Responsibility 19)
 
 /// One articulation as a drum instrument lists it: its group ("SNARE"), its item ("Flam",

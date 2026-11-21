@@ -381,6 +381,7 @@ fn the_local_corpus_drm_files_read() {
 use dawsu_foundation::{CustomIndex, Hitsound, SampleIdentity, SampleSet, Sound};
 use dawsu_hitsounding::{decompile, Decompiled, Hitsounds, Lane, LaneSource, MomentId};
 use dawsu_osu_format::OsuFile;
+use std::collections::HashSet;
 
 fn dec(text: &[u8]) -> Hitsounds {
     match decompile(&OsuFile::read(text.to_vec()).file, &[], &|| false, &mut |_, _| {}) {
@@ -588,6 +589,71 @@ fn another_spelling_names_the_file_osu_plays_for_the_sample() {
             assert_eq!(found.unwrap_or(LaneSource::Skin), played, "{folder:?}: {lanes:?}");
         }
     }
+}
+
+// ---------------------------------------------------------------- the built-in drum maps
+
+#[test]
+fn every_built_in_drum_map_reads_and_is_saved_as_dawsu_writes_it() {
+    assert_eq!(BUILT_IN_DRUM_MAPS.len(), 10, "the built-in drum maps");
+    for (file, text) in BUILT_IN_DRUM_MAPS {
+        let m = read_dawsudrum(text).unwrap_or_else(|e| panic!("{file}: {e}"));
+        assert_eq!(*file, format!("{}.dawsudrum", m.name), "a file is named after its map");
+        assert!(!text.contains('\r'), "{file}: LF line endings (.gitattributes)");
+        assert_eq!(write_dawsudrum(&m).unwrap() + "\n", *text, "{file}: the text dawsu! writes, and one line break");
+    }
+    let read: Vec<_> = BUILT_IN_DRUM_MAPS.iter().map(|(_, text)| read_dawsudrum(text).unwrap()).collect();
+    assert_eq!(built_in_drum_maps(), read);
+}
+
+#[test]
+fn built_in_drum_maps_name_unnumbered_hit_samples_with_drum_notes_and_carry_no_audio() {
+    let slots: Vec<String> = ["soft", "normal", "drum"]
+        .iter()
+        .flat_map(|set| ["hitnormal", "hitclap", "hitwhistle", "hitfinish"].map(|sound| format!("BeatmapFile|{set}-{sound}.wav")))
+        .collect();
+    let (mut map_ids, mut names, mut row_ids) = (HashSet::new(), HashSet::new(), HashSet::new());
+    for m in built_in_drum_maps() {
+        assert!(map_ids.insert(m.id.clone()) && names.insert(m.name.clone()), "{}: a map id or name is used twice", m.name);
+        assert!(m.audio.is_empty(), "{}: a built-in map carries no pack's audio", m.name);
+        let (mut lanes, mut row_names) = (HashSet::new(), HashSet::new());
+        for r in &m.rows {
+            let what = format!("{}: {}", m.name, r.name);
+            assert!(row_ids.insert(r.id.clone()), "{what}: row id {} is used twice", r.id);
+            assert!(row_names.insert(r.name.clone()), "{what}: two rows have this name");
+            assert!(!r.name.contains(" / "), "{what}: the editor shows rows that share a lane as \"Kick / Subkick\"");
+            let lane = r.lane.clone().unwrap_or_else(|| panic!("{what}: no lane"));
+            assert!(slots.contains(&lane), "{what}: {lane} is not one of the twelve unnumbered hit samples");
+            assert_eq!(r.slot, r.lane, "{what}: the slot is the lane, as the old app's files have it");
+            assert!(lanes.insert(lane.clone()), "{what}: two rows play {lane}");
+            assert!(r.midi_note.is_none_or(|n| (35..=81).contains(&n)), "{what}: a General MIDI drum note");
+            let melody = r.name.starts_with("Whistle") || r.name.starts_with("Melody");
+            assert_eq!(r.midi_note.is_none(), melody, "{what}: only a whistle stays out of a drum render");
+        }
+    }
+}
+
+#[test]
+fn a_built_in_drum_map_finds_a_pack_saved_as_ogg_in_a_map_folder() {
+    let text = b"osu file format v14\r\n\r\n[General]\r\nSampleSet: Soft\r\n\r\n[Difficulty]\r\nSliderMultiplier:1.4\r\nSliderTickRate:1\r\n\r\n[TimingPoints]\r\n0,500,4,2,1,60,1,0\r\n\r\n[HitObjects]\r\n256,192,1000,1,0,3:0:0:0:\r\n256,192,1500,1,8,0:0:0:0:\r\n256,192,2000,1,4,0:0:0:0:\r\n256,192,2500,1,2,0:0:0:0:\r\n";
+    let folder: Vec<String> = ["audio.mp3", "drum-hitnormal.ogg", "soft-hitclap.ogg", "soft-hitfinish.ogg"].map(String::from).into();
+    let h = match decompile(&OsuFile::read(text.to_vec()).file, &folder, &|| false, &mut |_, _| {}) {
+        Decompiled::Done(h) => h,
+        other => panic!("{other:?}"),
+    };
+    let lanes = h.lanes();
+    let lane = |name: &str| lanes.iter().position(|l| l.source == LaneSource::File(name.into())).unwrap_or_else(|| panic!("no lane plays {name}: {lanes:?}"));
+    let m = built_in_drum_maps().into_iter().find(|m| m.name == "Kick on drum-hitnormal").unwrap();
+    let view = drum_rows(Some(&m), lanes);
+    let shows = |row: &str, file: &str| view.iter().any(|v| matches!(v, DrumViewRow::Instrument { row: r, lane: l } if r.name == row && std::ptr::eq(*l, &lanes[lane(file)])));
+    assert!(shows("Kick", "drum-hitnormal.ogg") && shows("Snare", "soft-hitclap.ogg") && shows("Crash", "soft-hitfinish.ogg"), "{view:?}");
+    assert!(view.iter().any(|v| matches!(v, DrumViewRow::Unassigned(r) if r.name == "Snare 2")), "a row whose sample the map lacks stays unassigned: {view:?}");
+    check_view(&m, lanes);
+    let notes = render_notes(Some(&m), lanes);
+    assert_eq!(["drum-hitnormal.ogg", "soft-hitclap.ogg", "soft-hitfinish.ogg"].map(|f| notes.get(&lanes[lane(f)].identity).copied()), [Some(36), Some(38), Some(49)]);
+    let whistle = lanes.iter().find(|l| matches!(l.identity, SampleIdentity::Standard { set: SampleSet::Soft, sound: Sound::Hit(Hitsound::Whistle), .. })).expect("the skin's whistle");
+    assert_eq!(whistle.source, LaneSource::Skin, "no whistle file: the skin's whistle plays");
+    assert_eq!(notes.get(&whistle.identity), Some(&42), "a skin lane keeps its own note: the preset's whistle row names only a file");
 }
 
 /// Timing (set `DAWSU_DRUM_TIME`): a portable map at the audio limit, two 32 MiB samples, about
