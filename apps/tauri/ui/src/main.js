@@ -6,6 +6,7 @@ import "./parts/browser.css";
 import "./parts/bottom-panel.css";
 import "./timeline.css";
 import { mount } from "svelte";
+import { invoke } from "./lib/ipc.js";
 import { bridge } from "./lib/bridge.svelte.js";
 import * as commandList from "./lib/commands.js";
 import { nextGroup, stepInGroup } from "./lib/snap.js";
@@ -28,6 +29,7 @@ import InspectorHistory from "./parts/InspectorHistory.svelte";
 import InspectorLane from "./parts/InspectorLane.svelte";
 import InspectorSelection from "./parts/InspectorSelection.svelte";
 import MapPreview from "./parts/MapPreview.svelte";
+import PreviewWindow from "./parts/PreviewWindow.svelte";
 import SnapSlider from "./parts/SnapSlider.svelte";
 import ToolPills from "./parts/ToolPills.svelte";
 import TransportBar from "./parts/TransportBar.svelte";
@@ -52,6 +54,8 @@ const parts = {
   "export-window": ExportWindow,
   // The whole page of the drum detection window (drum.html).
   "drum-window": DrumDetectWindow,
+  // The whole page of the map preview's own window (preview.html).
+  "preview-window": PreviewWindow,
 };
 
 // app.js may have built the lane rows before this bundle loaded.
@@ -75,6 +79,35 @@ for (const host of document.querySelectorAll("[data-ui-mount]")) {
 
 export function update(view, scene) {
   bridge.set(view, scene);
+  if (!previewLink) linkPreviewWindow(view);
+  if (bridge.previewWindow) sendPreview();
+}
+
+// The map preview's own window: only app.js, in the editor window, calls update(), so the editor
+// window alone listens. It sends the playhead and the open difficulty on each update, when the
+// window opens and when its page is ready, and opens it again at launch if it was open at the
+// last close (view.previewWindow).
+let previewLink = false;
+function linkPreviewWindow(view) {
+  previewLink = true;
+  const events = globalThis.window?.__TAURI__?.event;
+  if (!events) return;
+  events.listen("preview-window", ({ payload }) => {
+    bridge.previewWindow = payload === true;
+    if (bridge.previewWindow) sendPreview();
+  });
+  events.listen("preview-ready", () => sendPreview());
+  if (view?.previewWindow) invoke("preview_window_open").catch(error => console.error(error));
+}
+function sendPreview() {
+  const view = bridge.view;
+  const scene = bridge.scene;
+  const payload = {
+    view: view && { position: view.position, playing: view.playing, speed: view.speed, duration: view.duration },
+    path: scene?.path ?? null,
+    previewKey: scene?.previewKey ?? null,
+  };
+  globalThis.window?.__TAURI__?.event.emitTo("preview", "preview-view", payload).catch(() => {});
 }
 
 // app.js hands over the lane and folder header rows each time renderLanes() changes them.

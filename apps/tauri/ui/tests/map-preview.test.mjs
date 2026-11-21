@@ -111,7 +111,7 @@ test("the preview asks for the objects once per difficulty, not again when the a
   // Effects do not run under svelte/server, so this reads the source of the fetch effect: it may
   // set `model` (its own answer does) but read it only inside untrack, or it asks again forever.
   const { readFileSync } = await import("node:fs");
-  const source = readFileSync(new URL("../src/parts/MapPreview.svelte", import.meta.url), "utf8");
+  const source = readFileSync(new URL("../src/parts/PreviewCanvas.svelte", import.meta.url), "utf8");
   const call = source.indexOf('invoke("map_preview_objects"');
   const effect = source.slice(source.lastIndexOf("$effect(() => {", call), source.indexOf("});", call));
   assert.ok(effect.includes("untrack(() => model?.path)"));
@@ -160,4 +160,16 @@ test("passed pieces fade over the editor's 700 ms and bodies over 240 ms after t
   assert.equal(pieceOpacity(model, slider, 2350), 0.5);
   assert.equal(bodyOpacity(model, slider, 2900), 1);
   assert.equal(bodyOpacity(model, slider, 3120), 0.5);
+});
+
+test("the panel offers its own window, and says where the preview is while that is open", () => {
+  bridge.mapPreview = true;
+  assert.match(render(MapPreview).body, /Open in its own window/);
+  bridge.previewWindow = true;
+  const body = render(MapPreview).body;
+  assert.match(body, /The map preview is in its own window/);
+  assert.match(body, /Show it here/);
+  assert.doesNotMatch(body, /<canvas/);
+  bridge.previewWindow = false;
+  bridge.mapPreview = false;
 });

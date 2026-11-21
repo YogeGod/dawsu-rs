@@ -687,6 +687,19 @@ pub struct Preferences {
     #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub key_overrides: std::collections::BTreeMap<String, std::collections::BTreeMap<String, Vec<String>>>,
     pub protect_hitnormals: bool,
+    /// The map preview's own window: where it was, and whether it was open when the editor closed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preview_window: Option<WindowPlace>,
+}
+
+/// A window's place and size in logical pixels, and whether it was open.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct WindowPlace {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+    pub open: bool,
 }
 fn system_audio_backend(backend: &OutputBackend) -> bool {
     *backend == OutputBackend::System
@@ -733,6 +746,7 @@ impl Default for Preferences {
             key_preset: "DAW".into(),
             key_overrides: Default::default(),
             protect_hitnormals: false,
+            preview_window: None,
         }
     }
 }

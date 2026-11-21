@@ -1431,6 +1431,8 @@ fn snapshot(app: &Application, include_scene: bool) -> Value {
         })).collect::<Vec<_>>(),
         "recent": app.preferences.recent, "firstLaunch": app.first_launch,
     });
+    // The map preview was in its own window when the editor last closed: main opens it again.
+    result["previewWindow"] = json!(app.preferences.preview_window.is_some_and(|place| place.open));
     result["outputDevice"] = json!(app.device_name());
     result["saveReview"] = json!(app.save_review_files());
     result["soundSetPrompts"] = json!(document.map(|_| app.sound_set_prompts()).unwrap_or_default().iter().map(|p| json!({
@@ -1482,6 +1484,9 @@ enum Request {
     SaveSoundSet(PathBuf, String, mpsc::Sender<Result<Value, String>>),
     LaneAddCandidates(PathBuf, mpsc::Sender<Result<Value, String>>),
     MapPreview(PathBuf, mpsc::Sender<Result<Value, String>>),
+    /// The map preview window's place, kept for the next open; `true` also saves the preferences.
+    PreviewPlace(dawsu_application::WindowPlace, bool),
+    PreviewPlaceGet(mpsc::Sender<Option<dawsu_application::WindowPlace>>),
     DrumView(PathBuf, Option<PathBuf>, bool, mpsc::Sender<Result<Value, String>>),
     Folder(folders::Folder, mpsc::Sender<Result<PathBuf, String>>),
     Close(bool, mpsc::Sender<Result<(), String>>),
@@ -1863,6 +1868,15 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                     let result = guard(&mut app, &mut fault, |app| map_preview(app, &map)).and_then(|result| result);
                     let _ = response.send(result);
                 }
+                Ok(Request::PreviewPlace(place, save)) => {
+                    app.preferences.preview_window = Some(place);
+                    if save && !app.first_launch {
+                        app.save_preferences();
+                    }
+                }
+                Ok(Request::PreviewPlaceGet(response)) => {
+                    let _ = response.send(app.preferences.preview_window);
+                }
                 Ok(Request::DrumView(map, preset, on, response)) => {
                     let result = guard(&mut app, &mut fault, |app| {
                         match preset {
@@ -2083,6 +2097,65 @@ async fn drum_window_open(app: tauri::AppHandle) -> Result<(), String> {
         // A second open raced the first one: the window exists now, so bring it forward.
         (Err(_), Some(window)) => window.set_focus().map_err(|error| error.to_string()),
         (Err(error), None) => Err(error.to_string()),
+    }
+}
+
+/// Opens the map preview in its own window, where it last was, or brings it forward when open.
+/// Async, so building the window never runs on the main thread that drives it.
+#[tauri::command]
+async fn preview_window_open(app: tauri::AppHandle, state: State<'_, Editor>) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("preview") {
+        let _ = window.unminimize();
+        return window.set_focus().map_err(|error| error.to_string());
+    }
+    let place = ask(&state, Request::PreviewPlaceGet)?;
+    // dawsu! 3.1.4's map preview window: 480 × 420 at first, 300 × 240 at least (PlayfieldWindow.cs).
+    let mut builder = tauri::WebviewWindowBuilder::new(&app, "preview", tauri::WebviewUrl::App("preview.html".into()))
+        .title("Map preview")
+        .inner_size(place.map_or(480.0, |p| p.width.max(300.0)), place.map_or(420.0, |p| p.height.max(240.0)))
+        .min_inner_size(300.0, 240.0)
+        .skip_taskbar(true)
+        .disable_drag_drop_handler();
+    if let Some(place) = place.filter(|place| on_a_monitor(&app, place)) {
+        builder = builder.position(place.x, place.y);
+    }
+    let built = builder.build();
+    let result = match (built, app.get_webview_window("preview")) {
+        (Ok(_), _) => Ok(()),
+        (Err(_), Some(window)) => window.set_focus().map_err(|error| error.to_string()),
+        (Err(error), None) => Err(error.to_string()),
+    };
+    if result.is_ok() {
+        remember_preview_place(&app, &state, true, false);
+        let _ = app.emit_to("main", "preview-window", true);
+    }
+    result
+}
+
+/// Whether a saved place's top-left corner is on a monitor that is still there.
+fn on_a_monitor(app: &tauri::AppHandle, place: &dawsu_application::WindowPlace) -> bool {
+    app.available_monitors().unwrap_or_default().iter().any(|monitor| {
+        let scale = monitor.scale_factor();
+        let (at, size) = (monitor.position().to_logical::<f64>(scale), monitor.size().to_logical::<f64>(scale));
+        place.x >= at.x && place.y >= at.y && place.x < at.x + size.width - 40.0 && place.y < at.y + size.height - 40.0
+    })
+}
+
+/// Hands the preview window's place to the editor, if the window is there.
+fn remember_preview_place(app: &tauri::AppHandle, editor: &Editor, open: bool, save: bool) {
+    let Some(window) = app.get_webview_window("preview") else { return };
+    let (Ok(scale), Ok(at), Ok(size)) = (window.scale_factor(), window.outer_position(), window.inner_size()) else { return };
+    let (at, size) = (at.to_logical::<f64>(scale), size.to_logical::<f64>(scale));
+    let place = dawsu_application::WindowPlace { x: at.x, y: at.y, width: size.width, height: size.height, open };
+    let _ = editor.0.send(Request::PreviewPlace(place, save));
+}
+
+/// Closes the map preview window the way its title bar does.
+#[tauri::command]
+fn close_preview_window(app: tauri::AppHandle) -> Result<(), String> {
+    match app.get_webview_window("preview") {
+        Some(window) => window.close().map_err(|error| error.to_string()),
+        None => Ok(()),
     }
 }
 
@@ -2479,6 +2552,24 @@ fn main() {
     tauri::Builder::default()
         .manage(editor_thread(initial))
         .on_window_event(|window, event| {
+            let app = window.app_handle();
+            match (window.label(), event) {
+                // The preview window's place, kept as it moves; saved when it closes by itself.
+                ("preview", tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_)) => {
+                    remember_preview_place(app, &window.state::<Editor>(), true, false);
+                }
+                ("preview", tauri::WindowEvent::CloseRequested { .. }) => {
+                    remember_preview_place(app, &window.state::<Editor>(), false, true);
+                }
+                ("preview", tauri::WindowEvent::Destroyed) => {
+                    let _ = app.emit_to("main", "preview-window", false);
+                }
+                // Main closing with the preview open: it opens again next time (saved with the session).
+                ("main", tauri::WindowEvent::CloseRequested { .. }) => {
+                    remember_preview_place(app, &window.state::<Editor>(), true, false);
+                }
+                _ => {}
+            }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 match close_requested(window.label(), &window.state::<Editor>()) {
                     CloseDecision::Allow => {}
@@ -2506,6 +2597,8 @@ fn main() {
             close_export_window,
             show_in_editor,
             drum_window_open,
+            preview_window_open,
+            close_preview_window,
             close_drum_window,
             drum_context,
             drum_detect_start,
