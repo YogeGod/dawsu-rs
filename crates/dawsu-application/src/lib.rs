@@ -5249,6 +5249,29 @@ Title:");
     }
 
     #[test]
+    fn two_windows_writing_the_ledger_at_once_keep_each_others_entries() {
+        let scratch = Scratch::new("ledger-two-windows");
+        let (data, mapset) = (scratch.path("data"), scratch.path("mapset"));
+        let threads: Vec<_> = ["a", "b"].into_iter().map(|window| {
+            let ledger = pending::Pending::for_mapset(&data, &mapset).ledger().unwrap();
+            std::thread::spawn(move || {
+                for n in 0..40 {
+                    let name = format!("{window}-{n}.wav");
+                    ledger.add(&[pending::PendingSample { name: name.clone(), sha256: "0".repeat(64) }]).unwrap();
+                    if n % 4 == 3 {
+                        ledger.remove(&[name]);
+                    }
+                }
+            })
+        }).collect();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        let ledger = pending::Pending::for_mapset(&data, &mapset).ledger().unwrap();
+        assert_eq!(ledger.entries().len(), 60);
+    }
+
+    #[test]
     fn a_second_corrupt_ledger_is_kept_aside_beside_the_first() {
         let scratch = Scratch::new("ledger-corrupt-twice");
         let (app, _, _) = two_layers(&scratch, true);

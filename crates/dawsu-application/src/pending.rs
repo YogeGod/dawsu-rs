@@ -410,6 +410,8 @@ pub(crate) struct Ledger {
     path: PathBuf,
 }
 
+static NEXT_TEMP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 #[derive(Default, serde::Serialize, serde::Deserialize)]
 struct LedgerFile {
     files: Vec<PendingSample>,
@@ -435,7 +437,8 @@ impl Ledger {
         let folder = self.path.parent().ok_or("The ledger has no folder.")?;
         std::fs::create_dir_all(folder).map_err(|e| format!("Recording new sample files: {e}"))?;
         let bytes = serde_json::to_vec_pretty(&LedgerFile { files }).map_err(|e| e.to_string())?;
-        let temp = self.path.with_extension(format!("{}.tmp", std::process::id()));
+        let n = NEXT_TEMP.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let temp = self.path.with_extension(format!("{}-{n}.tmp", std::process::id()));
         std::fs::write(&temp, bytes).map_err(|e| format!("Recording new sample files: {e}"))?;
         std::fs::rename(&temp, &self.path).map_err(|e| {
             let _ = std::fs::remove_file(&temp);
@@ -443,26 +446,44 @@ impl Ledger {
         })
     }
 
+    /// Runs a read-modify-write of the ledger while holding its lock file, so two windows never
+    /// drop each other's entries.
+    fn locked<T>(&self, change: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+        let folder = self.path.parent().ok_or("The ledger has no folder.")?;
+        std::fs::create_dir_all(folder).map_err(|e| format!("Recording new sample files: {e}"))?;
+        let lock = std::fs::OpenOptions::new().create(true).truncate(false).read(true).write(true)
+            .open(self.path.with_extension("lock")).map_err(|e| format!("Recording new sample files: {e}"))?;
+        lock.lock().map_err(|e| format!("Recording new sample files: {e}"))?;
+        let result = change();
+        let _ = lock.unlock();
+        result
+    }
+
     /// Lists files before they are created.
     pub(crate) fn add(&self, files: &[PendingSample]) -> Result<(), String> {
         if files.is_empty() {
             return Ok(());
         }
-        let mut entries = self.entries();
-        for file in files {
-            entries.retain(|entry| !entry.name.eq_ignore_ascii_case(&file.name));
-            entries.push(file.clone());
-        }
-        self.write(entries)
+        self.locked(|| {
+            let mut entries = self.entries();
+            for file in files {
+                entries.retain(|entry| !entry.name.eq_ignore_ascii_case(&file.name));
+                entries.push(file.clone());
+            }
+            self.write(entries)
+        })
     }
 
     /// Drops entries: their files were taken back, moved out or changed by someone else.
     pub(crate) fn remove(&self, names: &[String]) {
-        let mut entries = self.entries();
-        let before = entries.len();
-        entries.retain(|entry| !names.iter().any(|name| name.eq_ignore_ascii_case(&entry.name)));
-        if entries.len() != before {
-            let _ = self.write(entries);
+        if names.is_empty() {
+            return;
         }
+        let _ = self.locked(|| {
+            let mut entries = self.entries();
+            let before = entries.len();
+            entries.retain(|entry| !names.iter().any(|name| name.eq_ignore_ascii_case(&entry.name)));
+            if entries.len() != before { self.write(entries) } else { Ok(()) }
+        });
     }
 }
