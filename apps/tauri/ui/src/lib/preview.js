@@ -203,7 +203,9 @@ export function arrowsShown(model, object, time) {
     const atEnd = node % 2 === 1;
     const at = pointAt(object, atEnd ? length : 0);
     const towards = pointAt(object, atEnd ? Math.max(0, length - 4) : Math.min(length, 4));
-    shown.push({ ...at, angle: Math.atan2(towards.y - at.y, towards.x - at.x), since: time - appears });
+    // The first fades in over 150 ms, later ones over min(span, 150) (DrawableOsuHitObject.cs ApplyRepeatFadeIn).
+    const fade = node === 1 ? 150 : Math.min(duration, 150);
+    shown.push({ ...at, angle: Math.atan2(towards.y - at.y, towards.x - at.x), since: time - appears, fade });
   }
   return shown;
 }

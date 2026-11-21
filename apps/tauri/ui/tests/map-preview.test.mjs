@@ -173,3 +173,11 @@ test("the panel offers its own window, and says where the preview is while that 
   bridge.previewWindow = false;
   bridge.mapPreview = false;
 });
+
+test("the spinner disc is nothing until half the approach, a dot at its time, then grows", async () => {
+  const { spinnerGrowth } = await import("../src/lib/argon.js");
+  assert.equal(spinnerGrowth(599, 1200), 0);
+  assert.ok(Math.abs(spinnerGrowth(1200 - 1e-9, 1200) - 0.2) < 1e-6);
+  assert.ok(spinnerGrowth(1200, 1200) - 0.2 < 1e-9);
+  assert.equal(spinnerGrowth(1800, 1200), 1);
+});

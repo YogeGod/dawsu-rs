@@ -1487,6 +1487,8 @@ enum Request {
     /// The map preview window's place, kept for the next open; `true` also saves the preferences.
     PreviewPlace(dawsu_application::WindowPlace, bool),
     PreviewPlaceGet(mpsc::Sender<Option<dawsu_application::WindowPlace>>),
+    /// Only whether the preview window is open changed; `true` also saves the preferences.
+    PreviewOpen(bool, bool),
     DrumView(PathBuf, Option<PathBuf>, bool, mpsc::Sender<Result<Value, String>>),
     Folder(folders::Folder, mpsc::Sender<Result<PathBuf, String>>),
     Close(bool, mpsc::Sender<Result<(), String>>),
@@ -1874,6 +1876,14 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                         app.save_preferences();
                     }
                 }
+                Ok(Request::PreviewOpen(open, save)) => {
+                    if let Some(place) = app.preferences.preview_window.as_mut() {
+                        place.open = open;
+                    }
+                    if save && !app.first_launch {
+                        app.save_preferences();
+                    }
+                }
                 Ok(Request::PreviewPlaceGet(response)) => {
                     let _ = response.send(app.preferences.preview_window);
                 }
@@ -2106,6 +2116,8 @@ async fn drum_window_open(app: tauri::AppHandle) -> Result<(), String> {
 async fn preview_window_open(app: tauri::AppHandle, state: State<'_, Editor>) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("preview") {
         let _ = window.unminimize();
+        // A reloaded editor page learns again that the window is open.
+        let _ = app.emit_to("main", "preview-window", true);
         return window.set_focus().map_err(|error| error.to_string());
     }
     let place = ask(&state, Request::PreviewPlaceGet)?;
@@ -2116,6 +2128,11 @@ async fn preview_window_open(app: tauri::AppHandle, state: State<'_, Editor>) ->
         .min_inner_size(300.0, 240.0)
         .skip_taskbar(true)
         .disable_drag_drop_handler();
+    // Owned by the editor, as 3.1.4's was, so a click on the editor never hides it behind
+    // (owned on Windows, a child window on macOS, transient on Linux).
+    if let Some(main) = app.get_webview_window("main") {
+        builder = builder.parent(&main).map_err(|error| error.to_string())?;
+    }
     if let Some(place) = place.filter(|place| on_a_monitor(&app, place)) {
         builder = builder.position(place.x, place.y);
     }
@@ -2132,18 +2149,27 @@ async fn preview_window_open(app: tauri::AppHandle, state: State<'_, Editor>) ->
     result
 }
 
-/// Whether a saved place's top-left corner is on a monitor that is still there.
+/// Whether a saved place still shows at least 40 × 40 px of the window on a monitor that is there.
+/// (Windows puts a window snapped to the left edge a few pixels left of the screen.)
 fn on_a_monitor(app: &tauri::AppHandle, place: &dawsu_application::WindowPlace) -> bool {
     app.available_monitors().unwrap_or_default().iter().any(|monitor| {
         let scale = monitor.scale_factor();
         let (at, size) = (monitor.position().to_logical::<f64>(scale), monitor.size().to_logical::<f64>(scale));
-        place.x >= at.x && place.y >= at.y && place.x < at.x + size.width - 40.0 && place.y < at.y + size.height - 40.0
+        let across = (place.x + place.width).min(at.x + size.width) - place.x.max(at.x);
+        let down = (place.y + place.height).min(at.y + size.height) - place.y.max(at.y);
+        across >= 40.0 && down >= 40.0
     })
 }
 
 /// Hands the preview window's place to the editor, if the window is there.
 fn remember_preview_place(app: &tauri::AppHandle, editor: &Editor, open: bool, save: bool) {
     let Some(window) = app.get_webview_window("preview") else { return };
+    // Minimised (Windows reports −32000 and 0 × 0) or maximised, the normal place is the last one kept;
+    // only whether it is open changes.
+    if window.is_minimized().unwrap_or(false) || window.is_maximized().unwrap_or(false) {
+        let _ = editor.0.send(Request::PreviewOpen(open, save));
+        return;
+    }
     let (Ok(scale), Ok(at), Ok(size)) = (window.scale_factor(), window.outer_position(), window.inner_size()) else { return };
     let (at, size) = (at.to_logical::<f64>(scale), size.to_logical::<f64>(scale));
     let place = dawsu_application::WindowPlace { x: at.x, y: at.y, width: size.width, height: size.height, open };

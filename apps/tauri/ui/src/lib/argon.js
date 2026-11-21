@@ -206,10 +206,16 @@ function arc(g, colour, width, radius, centre, sweep) {
   g.stroke();
 }
 
-// How big the spinner disc is `since` ms into its approach time: it opens to 0.2 over the first
-// quarter, then to full size over the next half.
+// How big the spinner disc is `since` ms after its approach began (ArgonSpinnerDisc.cs:228-250): nothing
+// until half the approach time, 0.2 by the spinner's time, then full size over the next half.
 export function spinnerGrowth(since, preempt) {
-  return since < preempt / 4
-    ? 0.2 * outQuint(since / (preempt / 4))
-    : 0.2 + 0.8 * outQuint((since - preempt / 4) / (preempt / 2));
+  if (since < preempt / 2) return 0;
+  if (since < preempt) return 0.2 * outQuint((since - preempt / 2) / (preempt / 4));
+  return 0.2 + 0.8 * outQuint((since - preempt) / (preempt / 2));
+}
+
+// osu-framework's Easing.OutElasticHalf: overshoots a little, then settles at 1.
+export function outElasticHalf(t) {
+  const time = clamp01(t);
+  return 2 ** (-10 * time) * Math.sin((0.5 * time - 0.075) * ((2 * Math.PI) / 0.3)) + 1;
 }

@@ -167,10 +167,10 @@
     }
     for (const tick of ticksShown(map, object, time)) {
       g.globalAlpha = clamp01(tick.since / 150);
-      at(g, tick, unit, () => argon.tick(g, colour), 0.5 + 0.5 * argon.outQuint(tick.since / 600));
+      at(g, tick, unit, () => argon.tick(g, colour), 0.5 + 0.5 * argon.outElasticHalf(tick.since / 600));
     }
     for (const arrow of arrowsShown(map, object, time)) {
-      g.globalAlpha = clamp01(arrow.since / 150);
+      g.globalAlpha = clamp01(arrow.since / arrow.fade);
       at(g, arrow, unit, () => {
         g.rotate(arrow.angle);
         argon.reverseArrow(g, colour, arrow.since);
@@ -181,7 +181,8 @@
       const ballPlace = ballAt(object, time);
       const ahead = ballAt(object, time + 1);
       const behind = ballAt(object, time - 1);
-      g.globalAlpha = clamp01((time - object.time) / 50);
+      // lazer's ball shows at once (DrawableSlider: Ball.FadeIn()).
+      g.globalAlpha = 1;
       at(g, ballPlace, unit, () => argon.sliderBall(g, colour, Math.atan2(ahead.y - behind.y, ahead.x - behind.x)));
     }
   }

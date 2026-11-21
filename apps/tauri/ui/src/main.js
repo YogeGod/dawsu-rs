@@ -94,12 +94,17 @@ function linkPreviewWindow(view) {
   if (!events) return;
   events.listen("preview-window", ({ payload }) => {
     bridge.previewWindow = payload === true;
-    if (bridge.previewWindow) sendPreview();
+    if (bridge.previewWindow) sendPreview(true);
   });
-  events.listen("preview-ready", () => sendPreview());
+  // The page being ready also says the window is open, should its open event have come too soon.
+  events.listen("preview-ready", () => {
+    bridge.previewWindow = true;
+    sendPreview(true);
+  });
   if (view?.previewWindow) invoke("preview_window_open").catch(error => console.error(error));
 }
-function sendPreview() {
+let lastSent = "";
+function sendPreview(force = false) {
   const view = bridge.view;
   const scene = bridge.scene;
   const payload = {
@@ -107,6 +112,10 @@ function sendPreview() {
     path: scene?.path ?? null,
     previewKey: scene?.previewKey ?? null,
   };
+  // Only what changed goes: paused and unmoved, the 1 s updates send nothing.
+  const sent = JSON.stringify(payload);
+  if (sent === lastSent && !force) return;
+  lastSent = sent;
   globalThis.window?.__TAURI__?.event.emitTo("preview", "preview-view", payload).catch(() => {});
 }
 
