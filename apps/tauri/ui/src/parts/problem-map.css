@@ -1,0 +1,126 @@
+/* Inspector › Difficulty's problem strip (v3 6a): name and summary, a strip of marks across the song,
+   and the counts. Counts the editor can't make yet are greyed out. */
+.pm {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-12);
+  margin: 4px 0;
+  padding: var(--space-12) var(--space-12) var(--space-4);
+  color: var(--editor-secondary);
+  font-size: var(--text-sm);
+}
+.pm-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  min-width: 0;
+}
+.pm-name {
+  overflow: hidden;
+  color: var(--editor-clap);
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pm-sum {
+  flex: none;
+  color: var(--editor-muted);
+  white-space: nowrap;
+}
+.pm .pm-off {
+  color: var(--editor-disabled);
+}
+.pm-strip {
+  position: relative;
+  height: 34px;
+  overflow: hidden;
+  border-radius: var(--radius-4);
+  background: var(--editor-canvas);
+}
+/* Inset 2 px each side, so a mark at the song's start or end stays visible. */
+.pm-track {
+  position: absolute;
+  inset: 0 2px;
+}
+/* One tick per pixel column that holds an object, as F1 draws them. */
+.pm-tick {
+  position: absolute;
+  top: 15px;
+  left: var(--at);
+  width: 1px;
+  height: 4px;
+  background: var(--editor-selected);
+}
+/* The part of the song the timeline shows. */
+.pm-frame {
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  left: var(--at);
+  width: var(--span);
+  min-width: 2px;
+  border: 1px solid var(--editor-disabled);
+  border-radius: 3px;
+  pointer-events: none;
+}
+/* A 7 px target around a 3 px mark, so a mark is easy to hit. */
+.pm-mark {
+  position: absolute;
+  bottom: 4px;
+  left: var(--at);
+  width: 7px;
+  min-width: 0;
+  height: 14px;
+  min-height: 0;
+  margin-left: -3px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  cursor: pointer;
+}
+.pm-mark::before {
+  position: absolute;
+  bottom: 0;
+  left: 2px;
+  width: 3px;
+  height: 10px;
+  border-radius: 2px;
+  background: var(--mark);
+  content: "";
+}
+.pm-unsaved {
+  --mark: var(--editor-error);
+}
+.pm-mark.pm-unsaved::before {
+  height: 14px;
+}
+.pm-orphaned {
+  --mark: var(--editor-kick);
+}
+.pm-mark:hover:not(:disabled),
+.pm-mark:focus-visible {
+  outline: 2px solid var(--editor-focus);
+  outline-offset: -1px;
+  background: transparent;
+}
+.pm-mark:disabled {
+  cursor: default;
+}
+.pm-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4) var(--space-12);
+}
+.pm-count {
+  display: flex;
+  align-items: center;
+  gap: var(--space-6);
+  white-space: nowrap;
+}
+.pm-count i {
+  width: 3px;
+  height: 10px;
+  border-radius: 2px;
+  background: var(--mark, var(--editor-disabled));
+}

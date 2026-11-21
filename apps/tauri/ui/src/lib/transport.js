@@ -7,7 +7,7 @@ const parts = ms => {
 };
 
 // The playhead time as app.js's clock() writes it: 01:46.052.
-const clock = ms => {
+export const clock = ms => {
   const [minutes, seconds, millis] = parts(ms);
   return minutes + ":" + seconds + "." + millis;
 };

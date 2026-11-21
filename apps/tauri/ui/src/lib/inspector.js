@@ -1,10 +1,11 @@
 import { laneGrey, tintName } from "./colour.js";
+import { clock } from "./transport.js";
 
 // What the Inspector shows before app.js hands over its first model (inspectorModel()): everything waits.
 export const emptyInspector = Object.freeze({
   busy: false, doc: false, selection: null, scope: "all", hint: "", range: false,
   insertVolume: 100, protect: false, audition: false, hs: false, lane: null,
-  bookmarks: [], bookmark: null, history: [], historyPosition: 0,
+  bookmarks: [], bookmark: null, history: [], historyPosition: 0, problemStrip: null,
 });
 
 // v3's bookmark rows: dot, label and time. A bookmark with no label shows its time alone, as the old list did.
@@ -113,5 +114,70 @@ export function inspectorHandlers(send) {
     pickBookmark: time => send("pickBookmark", time),
     bookmark: kind => send("bookmark", kind),
     history: position => send("history", position),
+  };
+}
+
+// A time as Next problem writes it: 01:46.052, with a minus sign before the song starts.
+export const signedClock = ms => (ms < 0 ? "−" : "") + clock(Math.abs(ms));
+
+const plural = (count, one, many) => count === 1 ? one : count + " " + many;
+
+// Inspector › Difficulty's problem strip (v3 6a), from the editor's own data only (inspectorModel()'s
+// problemStrip): a mark for each time this difficulty has a Save problem (a reason Save can't write
+// a moment; Generate's problems belong to the generated file and stay out) and for each hit with no
+// object, ticks for the objects, and a frame for the part the timeline shows. Marks of one kind in
+// one pixel column of the strip merge, so hundreds of hits stay usable.
+export function problemStrip(data, width = 200) {
+  if (!data) return { name: "", marks: [], ticks: [], frame: null, unsaved: 0, orphaned: 0 };
+  const columns = Math.max(1, Math.round(width));
+  const length = data.duration > 0 ? data.duration : 1;
+  const fraction = time => Math.min(Math.max(time / length, 0), 1);
+  const percent = value => Math.round(value * 1e6) / 1e4 + "%";
+  const column = time => Math.floor(fraction(time) * columns);
+  const messages = new Map();
+  for (const { target, time, message } of data.problems ?? []) {
+    if (target !== data.path) continue;
+    if (!messages.has(time)) messages.set(time, []);
+    if (!messages.get(time).includes(message)) messages.get(time).push(message);
+  }
+  const single = [
+    ...[...messages].map(([time, list]) => {
+      const text = list.join(" ");
+      return { kind: "unsaved", time, label: /^At \S+ ms\b/.test(text) ? text : signedClock(time) + " · " + text };
+    }),
+    ...(data.orphaned ?? []).map(time => ({ kind: "orphaned", time, label: signedClock(time) + " · Hit with no object" })),
+  ].sort((first, second) => first.time - second.time);
+  const marks = [];
+  const last = {};
+  for (const mark of single) {
+    const into = last[mark.kind];
+    if (into && column(into.time) === column(mark.time)) {
+      into.count++;
+      into.label = signedClock(into.time) + " · " + (into.kind === "orphaned"
+        ? into.count + " hits with no object" : into.count + " moments Save can't write");
+      continue;
+    }
+    last[mark.kind] = { ...mark, count: 1, key: mark.kind + " " + mark.time, left: percent(fraction(mark.time)) };
+    marks.push(last[mark.kind]);
+  }
+  const ticks = [...new Set((data.objects ?? []).map(column))].map(index => percent(index / columns));
+  const frame = Number.isFinite(data.viewStart) && data.viewWidth > 0
+    ? { left: percent(fraction(data.viewStart)), width: percent(fraction(data.viewStart + data.viewWidth) - fraction(data.viewStart)) }
+    : null;
+  return { name: data.name ?? "", marks, ticks, frame, unsaved: messages.size, orphaned: (data.orphaned ?? []).length };
+}
+
+// The strip's marks: a click goes to the mark's time; the strip is one Tab stop, and Left, Right,
+// Home and End move between its marks. key() returns the mark to focus, or null for other keys.
+export function problemMarkHandlers(send) {
+  const moves = { ArrowLeft: (index) => index - 1, ArrowRight: (index) => index + 1, Home: () => 0, End: (_, count) => count - 1 };
+  return {
+    click: mark => send("jump", mark.time),
+    key(event, index, count) {
+      const move = moves[event.key];
+      if (!move || !count) return null;
+      event.preventDefault();
+      return Math.min(Math.max(move(index, count), 0), count - 1);
+    },
   };
 }

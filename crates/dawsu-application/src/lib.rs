@@ -34,7 +34,7 @@ use dawsu_editor::commands::{
 };
 use dawsu_editor::keys::{KeyChord, Mods};
 use dawsu_editor::transport::BookmarkList;
-pub use problems::OutputProblem;
+pub use problems::{OutputProblem, orphaned_hit_times};
 pub use editor_meter::{EditorBarSection, EditorTimeSignature};
 pub use dawsu_graph_audio::classic::Drum;
 pub use drum_detect::{DrumDetectState, DrumDetectView, DrumLanes, DrumOptions, DrumRow, DrumSource, ObjectKind, RowLands, GRIDS, MAX_OBJECT_MS};

@@ -1090,6 +1090,24 @@ function keptList(name, list) {
   return list;
 }
 
+let problemStripKept = null;
+
+// Difficulty's problem strip data, kept until the scene, the problems, the song length or the view
+// change, so the strip doesn't rebuild on every update while playing.
+function problemStripData() {
+  if (!scene) return null;
+  const viewWidth = (grid.clientWidth || 0) / scene.zoom;
+  const key = [scene, JSON.stringify(view?.outputProblems ?? []), view?.duration, scene.viewStart, viewWidth];
+  if (problemStripKept?.key.every((value, index) => Object.is(value, key[index]))) return problemStripKept.data;
+  const data = {
+    path: scene.path, name: scene.version ?? "", duration: view?.duration ?? 0, problems: view?.outputProblems ?? [],
+    orphaned: scene.orphanedHits ?? [], objects: (scene.moments ?? []).filter(moment => moment[2]).map(moment => moment[0]),
+    viewStart: scene.viewStart, viewWidth,
+  };
+  problemStripKept = { key, data };
+  return data;
+}
+
 // Everything the Inspector's sections show; app.js keeps the state.
 function inspectorModel() {
   const selection = scene?.selection;
@@ -1125,6 +1143,7 @@ function inspectorModel() {
     bookmark: selectedBookmark()?.time ?? null,
     history: keptList("history", scene ? ["Opened difficulty", ...scene.history ?? []] : []),
     historyPosition: scene?.historyPosition ?? 0,
+    problemStrip: problemStripData(),
   };
 }
 
@@ -1178,6 +1197,12 @@ function inspectorAction(kind, ...args) {
         whistle_set: whistleSet, whistle: !!whistle, volume });
       return true;
     }
+    case "jump":
+      // A Difficulty problem mark: the playhead goes to its time, centred, as Next problem does.
+      if (!Number.isFinite(args[0])) return false;
+      act({ kind: "seek", ms: args[0] }, false);
+      changeView(args[0] - grid.clientWidth / scene.zoom / 2, scene.zoom);
+      return true;
     case "pickBookmark": {
       const mark = scene.bookmarks?.find(item => item.time === args[0]);
       if (!mark) return false;

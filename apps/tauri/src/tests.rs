@@ -123,6 +123,31 @@ fn a_ruler_click_moves_the_playhead_to_the_snapped_time_and_leaves_the_locators(
 }
 
 #[test]
+fn the_scene_lists_the_times_of_hits_with_no_object() {
+    let fixture = Fixture::new("orphaned-hits-scene");
+    let path = fixture.0.join("Hard.osu");
+    fs::write(&path, b"osu file format v14
+
+[TimingPoints]
+0,500,4,1,0,100,1,0
+
+[HitObjects]
+256,192,1000,1,8,0:0:0:60:
+").unwrap();
+    let mut app = Application::headless();
+    open(&mut app, &path);
+    assert_eq!(snapshot(&app, true)["scene"]["orphanedHits"], serde_json::json!([]));
+    let row = snapshot(&app, true)["scene"]["lanes"].as_array().unwrap().iter()
+        .position(|lane| lane["name"] == "normal-hitclap").unwrap() as i32;
+    Action::Pointer {
+        phase: "double_click".into(), ms: 1500.0, row, x: 12.0, y: 12.0, value: None, shift: false, ctrl: false, alt: false,
+    }.run(&mut app);
+    assert_eq!(snapshot(&app, true)["scene"]["orphanedHits"], serde_json::json!([1500.0]));
+    Action::HsMode { on: true }.run(&mut app);
+    assert_eq!(snapshot(&app, true)["scene"]["orphanedHits"], serde_json::json!([]), "HS mode makes them circles at Save");
+}
+
+#[test]
 fn select_double_click_seeks_to_an_existing_hit_and_inserts_once_on_empty_space() {
     let fixture = Fixture::new("select-double-click");
     let path = fixture.0.join("Hard.osu");

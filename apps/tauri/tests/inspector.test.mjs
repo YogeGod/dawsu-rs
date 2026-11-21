@@ -320,3 +320,33 @@ test("Layout… moves each Inspector section whole, never the buttons inside a S
   for (const [, label] of inspector.matchAll(/<section class="inspector-part" aria-label="([^"]+)">/g)) assert.ok(label);
   assert.match(css, /#editor-inspector > section > \.layout-move-handle/);
 });
+
+test("a problem mark in Difficulty moves the playhead to its time and centres it", async () => {
+  const { evaluate, sent } = await frontend();
+  evaluate(`view = { busy: false, hasDocument: true };
+    scene = { path: "a.osu", lanes: [], moments: [], zoom: 0.5, rowHeight: 30, viewStart: 0 };
+    globalThis.views = []; changeView = (start, zoom) => views.push([start, zoom]); grid.clientWidth = 1000;`);
+  assert.equal(evaluate('inspectorAction("jump", 50000)'), true);
+  assert.deepEqual(await sent(), [{ kind: "seek", ms: 50000 }]);
+  assert.deepEqual(JSON.parse(evaluate("JSON.stringify(views)")), [[49000, 0.5]]);
+  assert.equal(evaluate('inspectorAction("jump", NaN)'), false);
+  evaluate("view.busy = true;");
+  assert.equal(evaluate('inspectorAction("jump", 50000)'), false, "nothing moves while a job runs");
+});
+
+test("the problem strip's data is handed over from the editor's state and kept until it changes", async () => {
+  const { evaluate } = await frontend();
+  evaluate(`grid.clientWidth = 1000;
+    view = { busy: false, duration: 200000, outputProblems: [{ target: "a.osu", timeline: "a.osu", time: 500, message: "m" }] };
+    scene = { path: "a.osu", version: "Hard", lanes: [], viewStart: 4000, zoom: 0.5, orphanedHits: [700],
+      moments: [[500, 100, true, []], [700, 100, false, [[0, false]]], [900, 100, true, [[0, false]]]] };`);
+  assert.deepEqual(JSON.parse(evaluate("JSON.stringify(inspectorModel().problemStrip)")), {
+    path: "a.osu", name: "Hard", duration: 200000, problems: [{ target: "a.osu", timeline: "a.osu", time: 500, message: "m" }],
+    orphaned: [700], objects: [500, 900], viewStart: 4000, viewWidth: 2000,
+  });
+  assert.equal(evaluate("inspectorModel().problemStrip === inspectorModel().problemStrip"), true, "unchanged state, same data");
+  evaluate("view = { ...view, outputProblems: [] };");
+  assert.deepEqual(JSON.parse(evaluate("JSON.stringify(inspectorModel().problemStrip.problems)")), []);
+  evaluate("scene = null;");
+  assert.equal(evaluate("inspectorModel().problemStrip"), null);
+});
