@@ -134,8 +134,10 @@ export function attachIpc(ctx) {
       const centring = !loaded && state.scene && state.view.playing && state.view.follow && ctx.ui()?.centre?.();
       if (centring) state.view.scene.viewStart = state.scene.viewStart;
       // Static map data (waveform, gameplay objects, combos, timing sections) is omitted on
-      // incremental edits for the same loaded document so clicks and drags stay fast.
-      if (!loaded && state.scene && state.view.scene.previewKey === state.scene.previewKey) {
+      // incremental edits for the same loaded document so clicks and drags stay fast. It is kept on
+      // the "Difficulty loaded" frame too: the editor sent it once, in the frame before.
+      if (state.scene && state.view.scene.path === state.scene.path &&
+          state.view.scene.previewKey === state.scene.previewKey) {
         state.view.scene.waveform ??= state.scene.waveform;
         state.view.scene.gameplay ??= state.scene.gameplay;
         state.view.scene.combos ??= state.scene.combos;

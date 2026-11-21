@@ -148,6 +148,20 @@ test("panning and zooming retain the scene and request only a status update", as
   assert.equal(evaluate("scene.waveform[0][0]"), 0.5);
 });
 
+test("the map's timing sections and waveform stay once loading ends with a frame that leaves them out", async () => {
+  const { evaluate } = await frontend();
+  const base = '{ path: "Map.osu", previewKey: 7, viewStart: 0, zoom: .1, rowHeight: 30, lanes: [], moments: [] }';
+  // This harness has no lane DOM; only the data show() keeps is checked here.
+  evaluate("renderScene = () => {}");
+  // The editor sends the static map data once, in the first frame of the open map.
+  evaluate(`show({ busy: true, hasDocument: true, duration: 4000, status: "Loading",
+    scene: { ...${base}, sections: [[0, 500, 4]], waveform: [[0.5]], gameplay: null, combos: null } })`);
+  evaluate(`show({ busy: false, hasDocument: true, duration: 4000, status: "Difficulty loaded", scene: ${base} })`);
+  assert.equal(evaluate("JSON.stringify(scene.sections)"), "[[0,500,4]]");
+  assert.equal(evaluate("scene.waveform[0][0]"), 0.5);
+  assert.doesNotThrow(() => evaluate("sectionBars(scene.sections)"));
+});
+
 test("native drop sends an archive to Open without unpacking it in the frontend", async () => {
   const { listeners, calls, settle } = await frontend();
   listeners.get("tauri://drag-drop")({ payload: { paths: ["E:\\Map.OSZ"] } });
