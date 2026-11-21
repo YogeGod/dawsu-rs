@@ -317,7 +317,7 @@ test("the ruler band is 40 px of #0c0c0c with a 1 px --editor-selected bottom ed
   assert.ok(ruler.calls.slice(edge).some(call => call.name === "stroke" && call.stroke === "#454545"));
 });
 
-test("under the last lane the timeline shows the Add lane row's hint", async () => {
+test("the Add lane row's drop hint stays hidden until a Browser drop adds a lane", async () => {
   const { get, paint, evaluate } = await canvases();
   const grid = get("grid");
   get("scroll").clientHeight = 200;
@@ -325,10 +325,8 @@ test("under the last lane the timeline shows the Add lane row's hint", async () 
     scene.moments = []; renderLanes();`);
   paint("");
   const rows = evaluate("laneRows.length");
-  const hint = grid.calls.find(call => call.name === "fillText" && call.args[0] === "Drop a sample from the Browser to add a lane");
-  assert.ok(hint, "hint");
-  // Centred in the row after the last lane row, 30 px rows.
-  assert.equal(hint.args[2], rows * 30 + 15);
+  // Yoge: the hint waits for the drag from the Browser, which comes with the unused-files work.
+  assert.ok(!grid.calls.some(call => call.name === "fillText"), "no hint");
   // In the hint's row the grid draws no lane row of its own.
   assert.equal(evaluate("laneRows[" + rows + "]"), undefined);
 });
@@ -415,4 +413,15 @@ test("the overview draws object diamonds by density, problem diamonds and the vi
   // A tiny viewport keeps an 8 px box.
   paint("scene.zoom = 3");
   assert.equal(overview.calls.find(call => call.name === "roundRect").args[2], 8);
+});
+
+test("with the waveform switched off the Song row keeps its circles and digits, without the waveform", async () => {
+  const { get, paint } = await canvases();
+  const ruler = get("ruler");
+  paint(`${combos}; scene.zoom = .1; scene.waveform = [[1, 1, 1, 1]]; view.duration = 4000; waveformShown = false`);
+  assert.equal(loudColumns(ruler).filter(Number.isFinite).length, 0, "no waveform");
+  assert.deepEqual(circles(ruler).map(circle => circle.diameter), [34, 34, 22.44, 34]);
+  assert.deepEqual(numbers(ruler).map(([text]) => text), ["1", "2"]);
+  paint("waveformShown = true");
+  assert.deepEqual(loudColumns(ruler), [0, 298]);
 });

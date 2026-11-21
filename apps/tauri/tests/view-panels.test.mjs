@@ -101,20 +101,14 @@ test("View switches fold and open panels and reclaim their timeline tracks, then
   assert.deepEqual(panels, enabled);
   openDocument = true;
   runInContext('scene = { path: "Fixture.osu", lanes: [] }; renderSampleBrowser = () => {}; renderPanelLayout();', context);
-  const laneNamesToggle = element("toggle-lane-names");
-  assert.equal(laneNamesToggle.ariaExpanded, "true");
-  assert.equal(laneNamesToggle.ariaLabel, "Hide lane names");
-  laneNamesToggle.listeners.get("click")();
+  // Lane names switch from View › Lane names and View settings only (v3: no toolbar button).
+  runInContext('act({ kind: "panel", panel: "lane_names", on: false })', context);
   await runInContext("pending", context);
   assert.equal(calls.at(-1).panel, "lane_names");
-  assert.equal(calls.at(-1).on, false);
   assert.equal(element("editor-arrange").dataset.laneNames, "false");
-  assert.equal(laneNamesToggle.ariaExpanded, "false");
-  assert.equal(laneNamesToggle.ariaLabel, "Show lane names");
-  laneNamesToggle.listeners.get("click")();
+  runInContext('act({ kind: "panel", panel: "lane_names", on: true })', context);
   await runInContext("pending", context);
-  assert.equal(calls.at(-1).on, true);
-  assert.equal(laneNamesToggle.ariaExpanded, "true");
+  assert.equal(element("editor-arrange").dataset.laneNames, "true");
   for (const [id, panel, shown] of [
     ["view-inspector", "inspector", true],
     ["view-browser", "browser", false],

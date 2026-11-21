@@ -66,12 +66,8 @@
   margin: 0 4px;
   background: var(--editor-border);
 }
-.lane-tool-end {
-  flex: none;
-  margin-left: auto;
-}
 /* Lane names hidden (99 px column), or a lane column under 250 px (windows below 1400 px):
-   Fit all keeps its icon only, so Delete lane and the names switch stay in view. */
+   Fit all keeps its icon only. */
 .arrange[data-lane-names="false"] .lane-tool-label span {
   display: none;
 }
@@ -181,11 +177,18 @@
   min-height: 100%;
 }
 
-/* Lane names hidden (99 px column): the lane names switch and Delete lane come first so they stay
-   in view (the rest scrolls), and the Song row drops its strip so M, S and the waveform switch fit. */
-.arrange[data-lane-names="false"] .lane-tool-end {
-  order: -1;
-  margin: 0 4px 0 0;
+/* Lane names hidden (99 px column): the five lane toolbar buttons narrow to fit, and the Song row
+   drops its strip so M, S and the waveform switch fit. */
+.arrange[data-lane-names="false"] .lane-title-controls {
+  gap: 0;
+  padding: 0 2px;
+}
+.arrange[data-lane-names="false"] .ruler-sidebar .lane-tool {
+  width: 18px;
+  min-width: 18px;
+}
+.arrange[data-lane-names="false"] .lane-tool-divider {
+  display: none;
 }
 .arrange[data-lane-names="false"] .song-strip {
   display: none;

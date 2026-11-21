@@ -514,12 +514,22 @@ test("the lane toolbar holds zoom, Fit all and lane height; the Song row holds t
   assert.match(songRow, /class="song-strip"[\s\S]*Song · objects[\s\S]*id="song-mute"/);
   // Follow lives in the Playhead group and the Playback menu (v3 §8 drops the toolbar's locate button).
   assert.doesNotMatch(html + app, /ruler-follow/);
+  // v3 §4 (Yoge): no Delete lane or lane names button; the lane menu, Edit and View rows stay,
+  // and none of them presses a removed button.
+  const commands = await readFile(new URL("../ui/src/lib/commands.js", import.meta.url), "utf8");
+  const menus = await readFile(new URL("../dist/menus.js", import.meta.url), "utf8");
+  assert.doesNotMatch(html + app + commands + menus, /id="delete-lane"|\$\("delete-lane"\)|"click", "delete-lane"|toggle-lane-names/);
+  assert.match(commands, /id: "deleteActiveLane"[^}]*run: \["call", "deleteActiveLane"\]/);
+  assert.match(commands, /id: "laneDelete"[^}]*run: \["onLane", "call", "deleteActiveLane"\]/);
+  assert.match(commands, /id: "laneNames"[^}]*run: \["panel", "lane_names", "laneNames"\]/);
 
   const click = id => get(id).events.get("click")();
   evaluate("setWaveformHeight(88)");
+  // v3 §4 (Yoge): the switch hides only the waveform; the Song row keeps its height.
   click("ruler-waveform");
-  assert.equal(get("editor-arrange").style["--wave-height"], "0px");
+  assert.equal(get("editor-arrange").style["--wave-height"], "88px");
   assert.equal(get("ruler-waveform")["aria-pressed"], "false");
+  assert.equal(evaluate("waveformShown"), false);
   click("ruler-waveform");
   assert.equal(get("editor-arrange").style["--wave-height"], "88px");
   assert.equal(get("ruler-waveform")["aria-pressed"], "true");

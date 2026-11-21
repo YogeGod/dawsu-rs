@@ -22,6 +22,8 @@ const rulerBandHeight = 40;
 const defaultWaveformHeight = 84;
 let waveformHeight = defaultWaveformHeight;
 let visibleWaveformHeight = defaultWaveformHeight;
+// The Song row's waveform switch.
+let waveformShown = true;
 const bookmarkFlagHeight = 22;
 let markedRange = null;
 let browserMap = "";
@@ -62,7 +64,7 @@ const slateTimeline = {
   arrange: "#151515", alternateRow: "#1c1c1c", activeRow: "#454545", group: "#292929",
   ruler: "#0c0c0c", rulerBar: "#ffffff", rulerEdge: "#454545", overview: "#1c1c1c", waveform: "#1c2727",
   volume: "#151515", divider: "#383838", beatLine: "#383838", barLine: "#545454",
-  cycle: "#efc16a", loop: "#77bdfa0f", locator: "#858585", playhead: "#a1d0f7", hint: "#858585",
+  cycle: "#efc16a", loop: "#77bdfa0f", locator: "#858585", playhead: "#a1d0f7",
 };
 const levelColours = [[58, 108, 240], [154, 72, 216], [236, 58, 58]];
 const volumePalette = Array.from({ length: 101 }, (_, volume) => {
@@ -301,7 +303,6 @@ function show(next) {
     for (const button of speedButtons) button.ariaPressed = String(Number(button.dataset.playbackSpeed) === view.speed);
     followPlayhead();
   }
-  refreshLaneDelete();
   refreshLaneToolbar();
   if (view.scene) refreshHitCard();
   renderDialogs();
@@ -465,10 +466,6 @@ function renderPanelLayout() {
   for (const [panel, id] of Object.entries(panelSwitches)) $(id).ariaPressed = String(!!scene && panelOn(panel));
   $("editor-arrange").dataset.controller = String(controller);
   $("editor-arrange").dataset.laneNames = String(laneNames);
-  const namesToggle = $("toggle-lane-names");
-  namesToggle.ariaExpanded = String(laneNames !== false);
-  namesToggle.title = namesToggle.ariaLabel = laneNames === false ? "Show lane names" : "Hide lane names";
-  namesToggle.textContent = laneNames === false ? "›" : "‹";
   $("volume-controller-panel").hidden = !controller;
   if (dock && scene) {
     dock({ browserStyle: view.classicBrowser ? "classic" : "tree",
@@ -688,7 +685,6 @@ function renderLanes() {
     if (!laneVisualPositions.has(row)) laneVisualPositions.set(row, []);
     laneVisualPositions.get(row).push(position);
   }
-  refreshLaneDelete();
   const lanePanel = $("lanes");
   lanePanel.style.setProperty("--lane-row-height", scene.rowHeight + "px");
   const laneKey = JSON.stringify([laneRows, drumNames, scene.lanes, view.activeLane, [...selectionLaneKeys],
@@ -886,15 +882,6 @@ function deletableLane() {
   return lane?.canDelete ? lane : null;
 }
 
-function refreshLaneDelete() {
-  const button = $("delete-lane");
-  button.disabled = !deletableLane();
-  const lane = scene?.lanes?.[view.activeLane];
-  button.title = lane?.canDelete === false
-    ? "Protected hitnormals and slider body lanes cannot be deleted here"
-    : "Delete active lane";
-}
-
 // The Add lane row at the end of the lane column (LaneHeaders part) and the menus' Add lane….
 function openAddLane() {
   if (!scene || view.busy || drag) return;
@@ -922,7 +909,8 @@ function openAddLane() {
   });
 }
 
-$("delete-lane").addEventListener("click", () => {
+// Edit › Delete active lane… and the lane menu's Delete lane… (menus.js); v3 has no toolbar button.
+function deleteActiveLane() {
   const lane = deletableLane();
   if (!lane) return;
   const target = { map: scene.path, lane: lane.sourceKey };
@@ -939,7 +927,7 @@ $("delete-lane").addEventListener("click", () => {
     ["Cancel", closeModal, true],
     ["Delete", () => { closeModal(); remove(); }],
   ]);
-});
+}
 
 // The bookmark row picked in the Inspector, kept by its difficulty and time so it survives each update.
 // since is when it was picked, until the playhead reaches it.
@@ -1628,15 +1616,6 @@ function paint() {
     }
     if (lane !== undefined) line(g.ctx, slateTimeline.divider, 0, y + rowHeight - .5, g.width, y + rowHeight - .5);
   }
-  // The Add lane row's hint, in the row under the last lane (f1).
-  const hintY = (laneRows.length + .5) * rowHeight - scrollTop;
-  if (hintY > -rowHeight && hintY < g.height + rowHeight) {
-    g.ctx.font = "12px Inter, system-ui, sans-serif";
-    g.ctx.textBaseline = "middle";
-    g.ctx.fillStyle = slateTimeline.hint;
-    g.ctx.fillText("Drop a sample from the Browser to add a lane", 16, hintY);
-    g.ctx.textBaseline = "alphabetic";
-  }
   if (range) {
     g.ctx.fillStyle = "#77bdfa35";
     const width = xOf(range[1]) - xOf(range[0]);
@@ -1733,7 +1712,7 @@ function paint() {
   r.ctx.fillRect(0, 0, r.width, r.height);
   const waveformMiddle = (r.height + rulerBandHeight) / 2;
   const waveAmplitude = Math.min(waveformHeight, Math.max(0, r.height - rulerBandHeight)) / 2;
-  if (waveAmplitude > 0) waveform(r.ctx, r.width, waveformMiddle, waveAmplitude, start, r.width / zoom);
+  if (waveformShown && waveAmplitude > 0) waveform(r.ctx, r.width, waveformMiddle, waveAmplitude, start, r.width / zoom);
   drawGameplay(r.ctx, scene.gameplay, xOf, waveformMiddle, r.width, Math.max(0, Math.min(objectSize, r.height - rulerBandHeight)));
   // v3 §5: the 40 px ruler, #0c0c0c with a 1 px --editor-selected bottom edge, bar numbers 13 px/600.
   r.ctx.fillStyle = slateTimeline.ruler;
@@ -2040,7 +2019,6 @@ let waveformDrag = null;
 function setWaveformHeight(requested) {
   waveformHeight = limit(Math.round(requested), 0, 200);
   if (waveformHeight) visibleWaveformHeight = waveformHeight;
-  $("ruler-waveform").setAttribute?.("aria-pressed", String(waveformHeight > 0));
   $("editor-arrange").style.setProperty("--wave-height", waveformHeight + "px");
   // Under 52 px the Song row has room for one line: its buttons stay, its name goes.
   $("editor-arrange").dataset.songRow = waveformHeight >= 52 ? "tall" : "short";
@@ -3218,12 +3196,12 @@ function fitTimeline() {
 }
 $("fit").addEventListener("click", fitTimeline);
 $("ruler-fit").addEventListener("click", fitTimeline);
-$("toggle-lane-names").addEventListener("click", () => {
-  if (scene && !view.busy) act({ kind: "panel", panel: "lane_names", on: view.panels?.laneNames === false });
-});
 $("ruler-waveform").addEventListener("click", () => {
   if (scene && !view.busy && !waveformDrag) {
-    setWaveformHeight(waveformHeight ? 0 : visibleWaveformHeight);
+    // v3 §4 (Yoge): the switch hides only the waveform; the Song row, circles and digits stay.
+    waveformShown = !waveformShown;
+    $("ruler-waveform").setAttribute?.("aria-pressed", String(waveformShown));
+    paintSoon();
   }
 });
 // The lane toolbar (v3 §4): zoom, and Shorter and Taller lanes as View › Shorter lanes and Taller lanes.

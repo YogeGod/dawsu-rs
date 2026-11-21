@@ -11,7 +11,7 @@
 // - run: ["click", id] presses an existing button; ["act", action] sends an editor action;
 //   ["call", name] runs a menus.js function; ["toggle", kind, path, light] flips a view or scene
 //   field (light: a quick update, as app.js's act(action, false)); ["panel", key, field] shows or
-//   folds or opens a panel (browser, inspector, controller through app.js's togglePanel); ["tool", name]; ["lane", op] and ["onLane", op, id] act on the right-clicked lane.
+//   folds or opens a panel (browser, inspector, controller through app.js's togglePanel); ["tool", name]; ["lane", op] and ["onLane", op, id] act on the right-clicked lane (["onLane", "call", name] runs a ["call"] function).
 // - enabled: a rule name in menus.js (default "edit": a map open, no job running, no drag).
 // - checked: a rule name for a switch row; a toggle or panel row is checked by its own field.
 // - radio: a tool picker row; close: a checked row that still closes the menu.
@@ -75,7 +75,7 @@ export const items = [
   { id: "previousBookmark", label: "Previous bookmark", command: "previousBookmark" },
   { id: "nextBookmark", label: "Next bookmark", command: "nextBookmark" },
   { id: "addLane", label: "Add lane…", icon: "Drumstick", run: ["click", "add-lane"] },
-  { id: "deleteActiveLane", label: "Delete active lane…", icon: "Eraser", run: ["click", "delete-lane"], enabled: "deleteLane" },
+  { id: "deleteActiveLane", label: "Delete active lane…", icon: "Eraser", run: ["call", "deleteActiveLane"], enabled: "deleteLane" },
 
   // View
   { id: "browser", label: "Browser", icon: "PanelLeft", run: ["panel", "browser"] },
@@ -115,7 +115,7 @@ export const items = [
   { id: "laneColour", label: "Lane colour…", run: ["onLane", "click", "lane-colour"], enabled: "laneColour" },
   { id: "laneAddLayer", label: "Add numbered layer", icon: "Drumstick", command: "addNumberedLayer", run: ["onLane", "layer"], enabled: "laneLayer" },
   { id: "laneAdd", label: "Add lane…", run: ["click", "add-lane"], enabled: "lane" },
-  { id: "laneDelete", label: "Delete lane…", icon: "Eraser", run: ["onLane", "click", "delete-lane"], enabled: "laneDelete" },
+  { id: "laneDelete", label: "Delete lane…", icon: "Eraser", run: ["onLane", "call", "deleteActiveLane"], enabled: "laneDelete" },
 ];
 
 // Where each row sits. "-" is a divider; one at the start or end of a menu, or next to another, is

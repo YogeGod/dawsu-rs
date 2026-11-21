@@ -108,6 +108,9 @@ function fixture() {
   const context = createContext({
     $: get, document, window, view, scene, speedButtons, drag: null, dialog: {},
     lanePositions: new Map([[0,0],[1,1]]),
+    // app.js: the active lane when it can be deleted, and the Delete lane dialog.
+    deletableLane: () => scene.lanes[view.activeLane]?.canDelete ? scene.lanes[view.activeLane] : null,
+    deleteActiveLane() { calls.push({ deleteActiveLane: view.activeLane }); },
     adjacentLaneForMove: () => null,
     run(task) { return task(); },
     async update(action) { calls.push(JSON.parse(JSON.stringify(action))); view.activeLane = action.row; },
@@ -195,12 +198,10 @@ test("lane menu activates the right-clicked lane without audition before opening
   assert.equal(document.activeElement,name);
 
   lanes.events.get("contextmenu")(event);
-  let deleted=false;
-  get("delete-lane").addEventListener("click",()=>{deleted=true;});
+  // The lane toolbar has no Delete lane button (v3): the row runs app.js's deleteActiveLane().
   menu.children.find(button=>button.textContent==="Delete lane…").click();
   await new Promise(setImmediate);
-  assert.deepEqual(calls,[{kind:"lane",row:1,operation:"activate"}]);
-  assert.equal(deleted,true);
+  assert.deepEqual(calls,[{kind:"lane",row:1,operation:"activate"},{deleteActiveLane:1}]);
 });
 
 test("right-click opens the seven timeline tools without invoking an edit", () => {
