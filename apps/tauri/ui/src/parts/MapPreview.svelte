@@ -1,4 +1,5 @@
 <script>
+  import { untrack } from "svelte";
   import { bridge } from "../lib/bridge.svelte.js";
   import { invoke } from "../lib/ipc.js";
   import {
@@ -26,7 +27,8 @@
     let current = true;
     void key;
     // A new difficulty: drop the last one's objects rather than draw them at the new playhead.
-    if (model?.path !== path) {
+    // Read without tracking: the answer below sets `model`, which must not ask again.
+    if (untrack(() => model?.path) !== path) {
       model = null;
       error = "";
     }
