@@ -225,14 +225,10 @@ function show(next) {
   if (rulerPointer || rulerDrag) refreshRulerCursor();
   $("home").hidden = !!scene;
   $("workspace").hidden = !scene;
-  $("go-home").hidden = !scene;
   $("home-resume").hidden = !view.showHome || !view.hasDocument;
   $("home-resume").disabled = !!view.busy;
   const path = scene?.path ?? "";
-  const title = $("title");
-  title.textContent = path ? (view.dirty ? "● " : "") + nameOf(path) : "";
-  title.title = path;
-  title.setAttribute("data-placeholder", view.hasDocument ? "" : "No map open");
+  renderFrame(path);
   $("status").textContent = missingUiParts() || view.status || (view.busy ? "Working…" : "");
   $("status").title = $("status").textContent;
   $("editor-header").dataset.empty = String(!scene);
@@ -251,14 +247,19 @@ function show(next) {
   $("save-problem-badge").hidden = problems.length === 0;
   $("save-problem-badge").textContent = problems.length ? String(problems.length) : "";
   $("save-problem-badge").title = problems.length + " output problems";
+  // Save's name says what it holds: unsaved changes and the problems Save would report.
+  const save = $("save");
+  save.dataset.dirty = String(!!scene && !!view.dirty);
+  save.setAttribute("aria-label", "Save" + (scene && view.dirty ? " (unsaved changes)" : "") +
+    (problems.length ? ", " + problems.length + (problems.length === 1 ? " problem" : " problems") : ""));
   $("problem-summary").hidden = problems.length === 0;
+  $("problem-summary").title = problems.map(problem => problem.message).filter(Boolean).join("\n");
   $("problem-summary-text").textContent = problems.length + (problems.length === 1 ? " moment" : " moments") + " can't be saved";
   $("next-output-problem").hidden = problems.length === 0;
   $("next-output-problem").disabled = !!view.busy;
   $("playback-rates").hidden = !scene;
   $("hit-lane-counts").hidden = !scene;
   $("cancel-job").hidden = !view.busy;
-  $("difficulty").hidden = !scene;
   for (const button of document.querySelectorAll("[data-doc]")) button.disabled = !scene || !!view.busy;
   $("samples-view").ariaPressed = String(!view.drumView?.enabled);
   $("drums-view").ariaPressed = String(!!view.drumView?.enabled);
@@ -266,7 +267,7 @@ function show(next) {
   $("ramp-shape").value = view.rampShape ?? "Linear";
   $("song-mute").ariaPressed = String(!!view.songMuted);
   $("song-solo").ariaPressed = String(!!view.songSolo);
-  $("open").disabled = $("home-open").disabled = $("folders").disabled = !!view.busy;
+  $("home-open").disabled = !!view.busy;
   $("home-import").disabled = $("home-folders").disabled = !!view.busy;
 
   renderActiveLane();
@@ -291,6 +292,32 @@ function show(next) {
   paintSoon();
   try { window.dawsuUi?.update(view, scene); } catch (error) { console.error(error); }
   $("triplet-snap").checked = window.dawsuUi?.snapGroup?.() === "triplets";
+}
+
+// The frame around the timeline: the map chip, the status bar's play state, selection, file name
+// and output device. Map metadata comes from the .osu file, so it is set as text only.
+function renderFrame(path) {
+  $("map-title").textContent = scene?.mapTitle || (path ? nameOf(path).replace(/\.osu$/i, "") : "");
+  $("map-version").textContent = scene?.version ?? "";
+  $("map-version").hidden = !scene?.version;
+  $("difficulty").title = path;
+  const name = path ? nameOf(path) : "";
+  // The name is cut in the middle: the head shrinks with an ellipsis, the tail ("[Hard].osu") stays.
+  const tail = /\[[^\]]*\]\.osu$/i.exec(name)?.[0] ?? name.slice(-Math.min(name.length, 12));
+  $("file-name-head").textContent = name.slice(0, name.length - tail.length);
+  $("file-name-tail").textContent = tail;
+  $("file-name").title = path;
+  $("file-name").hidden = !path;
+  $("play-state").textContent = view.playing ? "Playing" : "Stopped";
+  $("play-state").dataset.playing = String(!!view.playing);
+  $("play-state").hidden = !scene;
+  const selected = scene?.selection?.count ?? 0;
+  $("selection-count").textContent = selected + (selected === 1 ? " hit selected" : " hits selected");
+  $("selection-count").hidden = !selected;
+  const device = view.outputDevice || "";
+  $("audio").textContent = device || "Audio output";
+  $("audio").setAttribute("aria-label", device ? "Audio output: " + device : "Audio output");
+  $("audio").title = device ? "Audio output: " + device : "Audio output";
 }
 
 // The Svelte bundle loads after this script, so a part counts as missing only after the page has loaded.
@@ -917,8 +944,6 @@ function renderScene() {
   setValue("zoom", Math.log10(scene.zoom));
   setValue("lane-height", scene.rowHeight);
   renderSelection();
-  $("undo").disabled = view.busy || scene.historyPosition === 0;
-  $("redo").disabled = view.busy || scene.historyPosition === scene.history.length;
   const difficulty = $("difficulty");
   const pathKey = JSON.stringify([scene.path, scene.difficulties]);
   if (difficulty.dataset.state !== pathKey) {
@@ -2756,13 +2781,10 @@ function openMap() {
 function goHome() {
   if (!drag && !view.busy) act({ kind: "home" });
 }
-$("open").addEventListener("click", openMap);
 $("home-open").addEventListener("click", openMap);
-$("go-home").addEventListener("click", goHome);
 $("home-resume").addEventListener("click", () => { if (!view.busy) act({ kind: "resume" }); });
 $("home-import").addEventListener("click", () => run(async () => show(await invoke("pick_map", { archiveOnly: true }))));
 $("home-folders").addEventListener("click", () => openFolders());
-$("folders").addEventListener("click", () => openFolders());
 // File › Folders… and the start screen's Folders… button.
 function openFolders() {
   if (view.busy) return;
@@ -3361,7 +3383,6 @@ for (const [id, [panel, section]] of Object.entries(railSections)) {
   $(id).addEventListener("click", () => openPanelAt(panel, section));
 }
 
-$("panel-view").addEventListener("click", () => openViewSettings());
 // View › View settings….
 function openViewSettings() {
   if (!scene || !view.panels || view.busy) return;
@@ -3437,7 +3458,6 @@ async function showHelp() {
   search.focus();
 }
 
-$("help").addEventListener("click", () => run(showHelp));
 
 // A key's name as the editor's key list writes it ("Ctrl+Shift+1", "Numpad *"), following
 // keyboard::chord and Key::name in Rust, or null for a key that can't be a shortcut.

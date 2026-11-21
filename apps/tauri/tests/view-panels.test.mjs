@@ -6,7 +6,7 @@ import { createContext, runInContext } from "node:vm";
 const app = await readFile(new URL("../dist/app.js", import.meta.url), "utf8");
 const style = await readFile(new URL("../dist/style.css", import.meta.url), "utf8");
 
-test("View switches hide panels and reclaim their timeline tracks, then restore them", async () => {
+test("View switches fold and open panels and reclaim their timeline tracks, then restore them", async () => {
   const elements = new Map();
   const calls = [];
   let openDocument = false;
@@ -58,10 +58,12 @@ test("View switches hide panels and reclaim their timeline tracks, then restore 
     "labeled = (text, control) => ({ text, control });",
     "scene = {};",
   ].join("\n"), context);
-  element("panel-view").listeners.get("click")();
+  // The View settings dialog opens only with a map, and each change keeps it open.
+  openDocument = true;
+  runInContext("openViewSettings()", context);
   const controls = runInContext("viewControls", context);
   for (const [label, name, layout, track] of [
-    ["Inspector", "inspector", "editor-dock", "inspector"],
+    ["Inspector open", "inspector", "view-inspector", "ariaPressed"],
     ["Volume controller", "controller", "editor-arrange", "controller"],
     ["Lane names", "lane_names", "editor-arrange", "laneNames"],
   ]) {
@@ -73,11 +75,12 @@ test("View switches hide panels and reclaim their timeline tracks, then restore 
     assert.equal(calls.at(-1).kind, "panel");
     assert.equal(calls.at(-1).panel, name);
     assert.equal(calls.at(-1).on, false);
-    assert.equal(element(layout).dataset[track], "false");
+    const shown = target => track === "ariaPressed" ? element(layout).ariaPressed : element(layout).dataset[track];
+    assert.equal(shown(), "false");
     control.checked = true;
     control.listeners.get("change")();
     await runInContext("pending", context);
-    assert.equal(element(layout).dataset[track], "true");
+    assert.equal(shown(), "true");
   }
   runInContext('scene = { rowHeight: 28, lanes: [{ name: "soft-hitclap", index: 0 }, { name: "soft-hitclap2", index: 2 }] };', context);
   const info = controls.find(item => item.text === "Lane info (sample indexes)").control;
@@ -89,7 +92,8 @@ test("View switches hide panels and reclaim their timeline tracks, then restore 
   info.listeners.get("change")();
   assert.deepEqual(JSON.parse(runInContext("JSON.stringify(laneHeaders.rows.map(row => row.name))", context)),
     ["soft-hitclap", "soft-hitclap2"]);
-  assert.match(style, /\.dock\[data-inspector="false"\]\{grid-template-columns:minmax\(0,1fr\)\}/);
+  // The frame folds panels in docking.js; the old .dock[data-…] columns are gone.
+  assert.doesNotMatch(style, /\.dock\[data-(inspector|browser)/);
   assert.match(style, /\.arrange\[data-controller="false"\]\{[^}]*grid-template-rows:var\(--layout-timeline-rows,var\(--ruler-row\) minmax\(0,1fr\) minmax\(20px,max-content\)\)\}/);
   assert.match(style, /\.arrange\[data-lane-names="false"\]\{--lane-default-width:99px\}/);
   assert.match(style, /--lanes:clamp\(99px,var\(--layout-lane-width,var\(--lane-default-width\)\),/);
@@ -110,9 +114,10 @@ test("View switches hide panels and reclaim their timeline tracks, then restore 
   await runInContext("pending", context);
   assert.equal(calls.at(-1).on, true);
   assert.equal(laneNamesToggle.ariaExpanded, "true");
-  for (const [id, panel, shown, track] of [
-    ["view-inspector", "inspector", true, "true"],
-    ["view-browser", "browser", false, "off"],
+  for (const [id, panel, shown] of [
+    ["view-inspector", "inspector", true],
+    ["view-browser", "browser", false],
+    ["view-controller", "controller", true],
   ]) {
     const toggle = element(id);
     assert.equal(toggle.ariaPressed, String(shown));
@@ -123,7 +128,6 @@ test("View switches hide panels and reclaim their timeline tracks, then restore 
     assert.equal(toggle.ariaPressed, String(!shown));
     toggle.listeners.get("click")();
     await runInContext("pending", context);
-    assert.equal(element("editor-dock").dataset[panel], track);
     assert.equal(toggle.ariaPressed, String(shown));
   }
 });

@@ -68,16 +68,13 @@ test("the toolbar holds the tool pills, Snap, Audition, the Playhead group and t
     assert.match(body, new RegExp('data-ui-mount="' + part + '"'), group);
   }
   assert.doesNotMatch(ribbon, /id="tools"|id="toolbar-audition"/);
-  const lanesGroup = ribbon.slice(ribbon.indexOf('aria-label="Lanes"'));
-  const lanesPopover = lanesGroup.slice(0, lanesGroup.indexOf('class="ribbon-group"'));
-  assert.doesNotMatch(lanesPopover, /id="samples-view"/, "the view switch sits on the toolbar, not in the Lanes pop-up");
+  // The Lanes pop-up has no toolbar button now (Ctrl+F and View › Filter lanes… open it).
+  assert.doesNotMatch(ribbon, /options-Lanes/);
   assert.doesNotMatch(html, /id="follow"|id="transport-return"/, "Follow and Return moved into the Playhead part");
-  assert.match(ribbon, /id="samples-view"[^>]*>Hitsounds<\/button>/, "the design names the sample-lane view Hitsounds");
-  assert.match(ribbon, /id="drums-view"[^>]*>Drums<\/button>/);
-  const revert = ribbon.match(/<button[^>]*data-command="revert"[^>]*>(.*?)<\/button>/s);
-  assert.ok(revert, "Revert stays on the toolbar");
-  assert.match(revert[0], /aria-label="Revert to saved…"/);
-  assert.match(revert[1], /<svg[\s\S]*class="ribbon-secondary-label"/, "Revert can go icon-only");
+  assert.match(ribbon, /id="samples-view"[^>]*>.*>Hitsounds<\/span><\/button>/, "the design names the sample-lane view Hitsounds");
+  assert.match(ribbon, /id="drums-view"[^>]*>.*>Drums<\/span><\/button>/);
+  // Revert moved to File › Revert to saved….
+  assert.doesNotMatch(ribbon, /data-command="revert"/);
 });
 
 test("the old tool buttons and the old Follow and Return toggles left style.css", () => {

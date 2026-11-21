@@ -9,7 +9,7 @@ async function frontend() {
   const listeners = new Map();
   const calls = [];
   const responses = [];
-  const element = { addEventListener() {}, append() {}, prepend() {}, dataset: {}, children: [] };
+  const element = { addEventListener() {}, append() {}, prepend() {}, setAttribute() {}, dataset: {}, children: [] };
   const title = { setAttribute(name, value) { this[name] = value; } };
   const fileHead = {}, fileTail = {};
   const rulerEvents = new Map(), overviewEvents = new Map();

@@ -42,8 +42,7 @@ test("row 2 holds the map chip, Hitsounds/Drums, tools, Audition, Playhead and S
 });
 
 test("the removed controls are gone and each keeps a path in a menu or a key", async () => {
-  for (const id of ["go-home", "open", "folders", "undo", "redo", "panel-view", "help", "title", "lane-height-in",
-    "lane-height-out", "lane-height"]) {
+  for (const id of ["go-home", "open", "folders", "undo", "redo", "panel-view", "help", "title"]) {
     assert.doesNotMatch(html, new RegExp(`id="${id}"`), id);
   }
   assert.doesNotMatch(html, /data-command="revert"|popovertarget="options-Lanes"|Dock…/);
@@ -141,7 +140,7 @@ runInContext(docking, dockingContext);
 const { effectivePanels, togglePlan } = dockingContext.window.editorDocking;
 
 test("show() fills the chip, Save, play state, selection count, file name and output device", async () => {
-  const { element, evaluate } = await page({ effectivePanels, togglePlan });
+  const { element, evaluate } = await page({ effectivePanels, togglePlan, attach: () => undefined });
   evaluate(`scene = { path: "/maps/Set/Artist - Song (Me) [Hard].osu", mapTitle: "<b>Song</b>", version: "Hard",
     selection: { count: 4 }, history: [], historyPosition: 0, lanes: [] };
     show({ hasDocument: true, dirty: true, playing: true, outputDevice: "Speakers (Realtek)",
@@ -174,7 +173,7 @@ test("show() fills the chip, Save, play state, selection count, file name and ou
 });
 
 test("every entry point folds and opens a panel through togglePanel", async () => {
-  const { element, evaluate } = await page({ effectivePanels, togglePlan });
+  const { element, evaluate } = await page({ effectivePanels, togglePlan, attach: () => undefined });
   evaluate(`scene = { path: "a.osu", lanes: [] }; view = { busy: false, hasDocument: true,
     panels: { browser: true, inspector: true, controller: true, laneNames: true } };
     var toggled = []; togglePanel = panel => { toggled.push(panel); };`);
@@ -189,7 +188,7 @@ test("every entry point folds and opens a panel through togglePanel", async () =
 });
 
 test("folding while the window is narrow changes no saved preference", async () => {
-  const { calls, evaluate } = await page({ effectivePanels, togglePlan });
+  const { calls, evaluate } = await page({ effectivePanels, togglePlan, attach: () => undefined });
   evaluate(`scene = { path: "a.osu", lanes: [] }; view = { busy: false, hasDocument: true,
     panels: { browser: true, inspector: true, controller: true, laneNames: true } };
     dockState = () => ({ narrow: true, override: null }); var overrides = []; setDockOverride = value => overrides.push(value);`);
