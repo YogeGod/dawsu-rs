@@ -360,6 +360,8 @@ pub(crate) struct Presence {
     path: PathBuf,
 }
 
+const MAKING: &str = ".tmp";
+
 static NEXT_PRESENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 impl Presence {
@@ -368,12 +370,21 @@ impl Presence {
         std::fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
         let n = NEXT_PRESENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let path = folder.join(format!("{}-{n}.lock", std::process::id()));
-        let file = std::fs::File::create(&path).map_err(|e| e.to_string())?;
-        file.try_lock().map_err(|e| e.to_string())?;
+        // Made and locked under a temporary name, then renamed: another window never finds an
+        // unlocked lock file of a live session and removes it as ended.
+        let making = path.with_extension(format!("lock{MAKING}"));
+        let file = std::fs::File::create(&making).map_err(|e| e.to_string())?;
+        let locked = file.try_lock().map_err(|e| e.to_string()).and_then(|()| std::fs::rename(&making, &path).map_err(|e| e.to_string()));
+        if let Err(error) = locked {
+            drop(file);
+            let _ = std::fs::remove_file(&making);
+            return Err(error);
+        }
         Ok(Self { file: Some(file), path })
     }
 
-    /// Whether another session holds this mapset. Lock files of ended sessions are removed.
+    /// Whether another session holds this mapset. Lock files of ended sessions are removed;
+    /// one still being made is left alone unless it is a minute old.
     pub(crate) fn others_live(&self) -> bool {
         let Some(folder) = self.path.parent() else { return false };
         let Ok(entries) = std::fs::read_dir(folder) else { return false };
@@ -381,6 +392,15 @@ impl Presence {
         for entry in entries.filter_map(Result::ok) {
             let path = entry.path();
             if path == self.path {
+                continue;
+            }
+            if path.to_string_lossy().ends_with(MAKING) {
+                let old = entry.metadata().and_then(|m| m.modified()).ok()
+                    .and_then(|modified| modified.elapsed().ok())
+                    .is_some_and(|age| age > std::time::Duration::from_secs(60));
+                if old {
+                    let _ = std::fs::remove_file(&path);
+                }
                 continue;
             }
             let Ok(file) = std::fs::OpenOptions::new().read(true).write(true).open(&path) else { continue };

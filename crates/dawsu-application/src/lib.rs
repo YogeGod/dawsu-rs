@@ -2863,7 +2863,8 @@ fn load(
     let mut document = Document::read_matching(path, recovery.as_ref())?;
     let mapset = document.path.parent().ok_or("Missing mapset folder")?.to_path_buf();
     document.pending = pending::Pending::for_mapset(data_root, &mapset);
-    document.presence = pending::Presence::enter(data_root, &mapset).ok();
+    document.presence = Some(pending::Presence::enter(data_root, &mapset)
+        .map_err(|error| format!("Could not record this editing session for the mapset, so nothing was opened: {error}"))?);
     // With no other session on the mapset, claims no record keeps were left by a session that
     // closed without Save or crashed: their numbers are free again.
     if document.presence.as_ref().is_some_and(|presence| !presence.others_live()) {
@@ -5269,6 +5270,42 @@ Title:");
         }
         let ledger = pending::Pending::for_mapset(&data, &mapset).ledger().unwrap();
         assert_eq!(ledger.entries().len(), 60);
+    }
+
+    #[test]
+    fn a_session_lock_still_being_made_is_left_alone() {
+        let scratch = Scratch::new("presence-being-made");
+        let (data, mapset) = (scratch.path("data"), scratch.path("mapset"));
+        let me = pending::Presence::enter(&data, &mapset).unwrap();
+        // Another window's lock file before it locked it: not live, and not removed as ended.
+        let folder = data.join("sessions").join(pending::mapset_key(&mapset));
+        let making = folder.join("99999-0.lock.tmp");
+        std::fs::write(&making, b"").unwrap();
+        assert!(!me.others_live());
+        assert!(making.exists());
+        let other = pending::Presence::enter(&data, &mapset).unwrap();
+        assert!(me.others_live());
+        let names: Vec<_> = std::fs::read_dir(&folder).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        assert!(names.iter().filter(|name| name.ends_with(".lock")).count() == 2, "{names:?}");
+        drop(other);
+    }
+
+    #[test]
+    fn a_session_that_cannot_be_recorded_does_not_open() {
+        let scratch = Scratch::new("presence-fails");
+        let folder = scratch.path("mapset");
+        std::fs::create_dir_all(&folder).unwrap();
+        let map = folder.join("test.osu");
+        std::fs::write(&map, include_str!("../tests/project-fixture.osu")).unwrap();
+        let mut app = Application::headless();
+        app.data_root = scratch.path("data");
+        std::fs::create_dir_all(&app.data_root).unwrap();
+        // A file where the sessions folder belongs.
+        std::fs::write(app.data_root.join("sessions"), b"").unwrap();
+        app.open_now(OpenSource::Map(map));
+        wait(&mut app);
+        assert!(app.document().is_none());
+        assert!(app.error.as_deref().is_some_and(|error| error.contains("session")), "{:?}", app.error);
     }
 
     #[test]
