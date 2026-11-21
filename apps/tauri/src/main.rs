@@ -1257,7 +1257,6 @@ fn snapshot(app: &Application, include_scene: bool) -> Value {
         "revert": app.revert_requested, "review": review, "activeLane": app.active_lane,
         "saveProblemReview": app.save_problem_review(), "objectLines": app.preferences.object_lines,
         "classicBrowser": app.preferences.classic_browser,
-        "outputDevice": app.device_name(),
         "hitsoundLibrary": app.preferences.hitsound_library,
         "panels": {
             "browser": app.preferences.show_browser,
@@ -1271,6 +1270,7 @@ fn snapshot(app: &Application, include_scene: bool) -> Value {
         })).collect::<Vec<_>>(),
         "recent": app.preferences.recent, "firstLaunch": app.first_launch,
     });
+    result["outputDevice"] = json!(app.device_name());
     result["saveReview"] = json!(app.save_review_files());
     result["soundSetPrompts"] = json!(document.map(|_| app.sound_set_prompts()).unwrap_or_default().iter().map(|p| json!({
         "setId": p.set_id, "name": p.name, "placements": p.placements, "editedKeepFiles": p.edited_keep_files,
