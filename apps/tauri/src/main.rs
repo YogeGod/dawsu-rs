@@ -1130,9 +1130,9 @@ fn gameplay_overlay(document: &dawsu_application::Document) -> Value {
 }
 
 /// Each object's combo number and colour, as osu!lazer works them out at 131fe72:
-/// `ConvertHitObjectParser.cs:458-525` (the first object, and one after a spinner, start a combo; an
-/// offset counts only with the new-combo bit and never on a spinner), `OsuBeatmapProcessor.cs:29-43`
-/// and `IHasComboInformation.cs:88-106` on the objects sorted by time, and the colour from the map's
+/// `ConvertHitObjectParser.cs:458-525` (an offset counts only with the new-combo bit and never on a
+/// spinner), then `OsuHitObject.cs:193-196` on the objects sorted by time (a spinner never starts a
+/// combo, even flagged or first; the first object and one after a spinner do), and the colour from the map's
 /// `[Colours]` by the index with offsets (`LegacyBeatmapSkin.cs:90`), or else the default skin's four
 /// by the plain index (`SkinConfiguration.cs:46-52`). `objects` is `[number, colour]` per object in
 /// file order, the order of the gameplay overlay's object indices.
@@ -1145,18 +1145,18 @@ fn combo_overlay(document: &dawsu_application::Document) -> Value {
             if !(3..=4).contains(&parts.len()) {
                 return None;
             }
-            let rgb: Vec<u8> = parts.iter().map(|part| part.parse::<u8>()).collect::<Result<_, _>>().ok()?;
+            // Combo colours take no alpha; only the first three parts count.
+            let rgb: Vec<u8> = parts[..3].iter().map(|part| part.parse::<u8>()).collect::<Result<_, _>>().ok()?;
             Some(format!("#{:02x}{:02x}{:02x}", rgb[0], rgb[1], rgb[2]))
         })
         .collect();
     let spinner = |index: usize| objects[index].spinner_end().is_some();
-    // The parser's pass, in file order.
+    // The parser's pass, in file order: the new-combo bit, and the offset that counts only with it.
     let mut starts = Vec::with_capacity(objects.len());
     for (index, object) in objects.iter().enumerate() {
         let bit = object.type_bits() & 4 != 0;
         let offset = if bit && !spinner(index) { (object.type_bits() >> 4) & 7 } else { 0 };
-        let forced = !spinner(index) && (index == 0 || spinner(index - 1));
-        starts.push((bit || forced, offset));
+        starts.push((bit, offset));
     }
     let mut order: Vec<usize> = (0..objects.len()).collect();
     order.sort_by(|&a, &b| objects[a].time().total_cmp(&objects[b].time()));
@@ -1164,11 +1164,8 @@ fn combo_overlay(document: &dawsu_application::Document) -> Value {
     let (mut combo, mut with_offsets, mut number) = (0usize, 0usize, 0u32);
     let mut last: Option<usize> = None;
     for &index in &order {
-        let (mut new_combo, offset) = starts[index];
-        if !spinner(index) && last.is_none_or(spinner) {
-            new_combo = true;
-        }
-        if new_combo || last.is_none() {
+        let (new_combo, offset) = starts[index];
+        if !spinner(index) && (new_combo || last.is_none_or(spinner)) {
             number = 0;
             combo += 1;
             with_offsets += offset as usize + 1;

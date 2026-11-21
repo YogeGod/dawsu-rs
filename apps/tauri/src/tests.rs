@@ -220,9 +220,9 @@ fn gameplay_overlay_projects_objects_and_skips_unanchored_hits() {
 
 #[test]
 fn combos_follow_lazer_new_combo_offsets_and_colours() {
-    // osu!lazer at 131fe72: ConvertHitObjectParser.cs:458-525 (first object and the object after a
-    // spinner start a combo; an offset counts only with the new-combo bit, never on a spinner),
-    // IHasComboInformation.cs:88-106 (the index moves before the lookup), LegacyBeatmapSkin.cs:90
+    // osu!lazer at 131fe72: ConvertHitObjectParser.cs:458-525 (an offset counts only with the
+    // new-combo bit, never on a spinner), OsuHitObject.cs:193-196 (a spinner never starts a combo,
+    // even flagged or first; the first object and the one after a spinner do), LegacyBeatmapSkin.cs:90
     // (map colours by the index with offsets), LegacyDecoder.cs:130-145 ([Colours] in file order).
     let fixture = Fixture::new("combos");
     let path = fixture.0.join("Hard.osu");
@@ -259,8 +259,9 @@ Combo3 : 0,0,255
     assert_eq!(snapshot(&app, true)["scene"]["combos"], serde_json::json!({
         // Map colours in file order: Combo2 first. SliderBorder is not a combo colour.
         "colours": ["#00ff00", "#ff0000", "#0000ff"],
-        // [number in combo, colour] per object in file order. The first combo takes colour 1 % 3.
-        "objects": [[1, 1], [2, 1], [3, 1], [1, 2], [1, 0], [1, 2], [2, 2]],
+        // [number in combo, colour] per object in file order. The first combo takes colour 1 % 3; the
+        // flagged spinner stays in it; the circle after it starts the next.
+        "objects": [[1, 1], [2, 1], [3, 1], [4, 1], [1, 2], [1, 1], [2, 1]],
     }));
     assert_eq!(fs::read(&path).unwrap(), bytes);
 
@@ -283,6 +284,23 @@ Mode:0
         "colours": ["#ffc000", "#00ca00", "#127cff", "#f21839"],
         "objects": [[1, 1], [1, 2]],
     }));
+
+    // A spinner first, even flagged, starts no combo: it takes combo 0, the circle after it combo 1.
+    let spun = fixture.0.join("Spun.osu");
+    fs::write(&spun, b"osu file format v14
+
+[General]
+Mode:0
+
+[TimingPoints]
+0,500,4,1,0,100,1,0
+
+[HitObjects]
+256,192,1000,12,0,1800,0:0:0:0:
+256,192,2000,1,0,0:0:0:0:
+").unwrap();
+    open(&mut app, &spun);
+    assert_eq!(snapshot(&app, true)["scene"]["combos"]["objects"], serde_json::json!([[1, 0], [1, 1]]));
 }
 
 #[test]
