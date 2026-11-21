@@ -45,6 +45,15 @@ test("every id the editor scripts look up by name exists in index.html or a Svel
   }
 });
 
+// createEditor() binds its listeners before main.js mounts the Svelte parts, so an id that only a
+// Svelte part declares is still missing then: addEventListener on it throws and the editor never starts.
+test("every element the editor scripts bind a listener to by id exists in index.html itself", () => {
+  const ids = new Set(declaredIds(read("dist/index.html")));
+  const bound = [...readEditorSource().matchAll(/\$\(\s*"([^"]+)"\s*\)\.addEventListener\(/g)].map(match => match[1]);
+  assert.ok(bound.length > 0, "ui/src/editor/ binds no listeners by id; the pattern no longer matches its code");
+  assert.deepEqual(bound.filter(id => !ids.has(id)), [], "ui/src/editor/ binds listeners to ids index.html does not declare");
+});
+
 test("every button the command list presses exists in index.html or a Svelte part", () => {
   const ids = new Set([read("dist/index.html"), ...svelteSources()].flatMap(declaredIds));
   const pressed = [...read("ui/src/lib/commands.js").matchAll(/\["(?:onLane", ")?click", "([\w-]+)"\]/g)].map(match => match[1]);

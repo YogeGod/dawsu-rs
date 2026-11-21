@@ -738,13 +738,6 @@ export function attachTimeline(ctx) {
       });
     }
 
-    // The Triplets box shows the group; ticking it picks 1/6 and unticking 1/4, as lazer's group button does.
-    $("triplet-snap").addEventListener("change", () => {
-      if (state.scene) {
-        ctx.act({ kind: "snap", on: state.scene.snap, mode: state.scene.snapMode, beats: 1, divisor: $("triplet-snap").checked ? 6 : 4 });
-      }
-    });
-
     $("scroll").addEventListener("wheel", (event) => {
       if (!state.scene) return;
       const { ctrlKey, shiftKey, altKey, deltaX, deltaY } = event;
