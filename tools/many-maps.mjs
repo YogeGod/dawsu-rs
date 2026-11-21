@@ -41,13 +41,15 @@ mkdirSync(out, { recursive: true });
 
 const rows = [];
 const started = Date.now();
+// After the first map that got through, the twin and the oracle are built: later maps skip the build.
+let built = false;
 for (const [index, map] of maps.entries()) {
   const name = relative(repo, map).replaceAll("\\", "/");
   console.log(`[${index + 1}/${maps.length}] ${name}`);
   const json = join(out, `${index + 1}.json`);
   rmSync(json, { force: true }); // a file left by an earlier run must not stand in for this map's result
   const run = spawnSync(process.execPath, [join(repo, "tools/compare-314.mjs"), "--exe", args.exe, "--map", map, "--json", json,
-    ...(args["old-app"] ? ["--old-app", args["old-app"]] : []), ...(args.full ? [] : ["--quick"])],
+    ...(args["old-app"] ? ["--old-app", args["old-app"]] : []), ...(args.full ? [] : ["--quick"]), ...(built ? ["--prebuilt"] : [])],
     { encoding: "utf8", maxBuffer: 64 << 20 });
   const lines = (run.stdout ?? "").trim().split("\n");
   if (!existsSync(json)) {
@@ -57,6 +59,7 @@ for (const [index, map] of maps.entries()) {
     continue;
   }
   const result = JSON.parse(readFileSync(json, "utf8"));
+  if (result.summary?.sounds?.total) built = true; // the oracle ran, so both tools are built
   const { summary } = result;
   const robot = /(\d+) of (\d+) steps passed/.exec(summary.robot ?? "");
   const differences = [
