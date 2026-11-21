@@ -27,10 +27,13 @@
   const playing = $derived(!!view?.playing);
   const cycle = $derived(!!view?.cycle);
   const disabled = $derived(segmentsDisabled(view, scene));
-  const shown = $derived(readout(view, scene));
+  const shown = $derived(readout(bridge.playhead, scene));
+  const time = $derived(shown.time);
+  const bpm = $derived(shown.bpm);
+  const meter = $derived(shown.meter);
   const selection = $derived(selectionValue(scene));
   const send = name => act(transportActions(bridge.view)[name]);
-  const toggle = name => toggles(bridge.view) && send(name);
+  const toggle = name => toggles(bridge.latestView) && send(name);
 
   async function copy() {
     if (!selection) return;
@@ -63,11 +66,11 @@
     <button type="button" class="seg record" aria-label="Record" title="Record" disabled>{@html Circle}</button>
   </div>
   <div class="readout">
-    <span class="time">{shown.time}</span>
+    <span class="time">{time}</span>
     <span class="divider music"></span>
-    <span class="cell music" title="Tempo at the playhead"><span class="value">{shown.bpm}</span> <small>BPM</small></span>
+    <span class="cell music" title="Tempo at the playhead"><span class="value">{bpm}</span> <small>BPM</small></span>
     <span class="divider music"></span>
-    <span class="cell music" title="Time signature at the playhead"><span class="value">{shown.meter}</span> <small>TIME</small></span>
+    <span class="cell music" title="Time signature at the playhead"><span class="value">{meter}</span> <small>TIME</small></span>
     <span class="divider"></span>
     <button type="button" class="cell selection" aria-label="Copy selection time" title="Copy selection time"
       disabled={!selection} onclick={copy}>

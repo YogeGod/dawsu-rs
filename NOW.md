@@ -6,7 +6,7 @@ Repo-side snapshot of active M3 work on `origin/main` (`2b8b94c`). The master sp
 
 - **Milestone:** M3 Hitsound Editor — near finish. Hard cutoff before M4 (Node Graph): finish deleting legacy `apps/tauri/dist/app.js` (~186 KB / 4,205 lines on `main`).
 - **Already migrated to Svelte 5 runes (`apps/tauri/ui/src/parts/`):**
-  - Top bar & transport: `SnapSlider`, `ToolPills`, `AuditionPill`, `TransportBar`, `PlayheadGroup`, `EditorMenu`
+  - Top bar & transport: `SnapSlider`, `ToolPills`, `AuditionPill`, `TransportBar` (with `bridge.playhead` isolating 85 ms playback ticks and seeks from unrelated Svelte components), `PlayheadGroup`, `EditorMenu`
   - Lanes & timeline chrome: `LaneHeaders`, `HitCard` (timeline surface itself stays on `<canvas>`)
   - Inspector & map preview: `InspectorHead`, `InspectorSelection`, `InspectorLane`, `InspectorDifficulty`, `InspectorBookmarks`, `InspectorHistory`, `ProblemMap`, `MapPreview`
   - Browser & bottom drawer: `BrowserHead`, `BrowserList`, `BrowserPreview`, `BottomPanel`, `Mixer`, `MixerStrip`, `Fader`

@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
+import { readdirSync, readFileSync } from "node:fs";
 import { test } from "node:test";
 import { render } from "svelte/server";
-import { bridge } from "../src/lib/bridge.svelte.js";
+import { Bridge, bridge } from "../src/lib/bridge.svelte.js";
 import {
   clickGate, copyText, osuTimestamp, readout, segmentsDisabled, selectionValue, transportActions,
 } from "../src/lib/transport.js";
+import { samePlayhead, sameUiView } from "../src/lib/view.js";
 import TransportBar from "../src/parts/TransportBar.svelte";
 
 const map = { path: "Hard.osu", selection: null };
@@ -127,4 +129,148 @@ test("the readout shows time, BPM, TIME and SELECTION, and SELECTION copies the 
   assert.match(buttons(html).find(tag => /title="Copy/.test(tag)), /\sdisabled/, "nothing to copy");
   html = shown(null, null);
   assert.match(html.replace(/<[^>]+>/g, " "), /00:00\.000[^]*–[^]*–[^]*No selection/);
+});
+
+const baseView = (overrides = {}) => ({
+  busy: false,
+  fault: null,
+  playing: false,
+  cycle: false,
+  duration: 200000,
+  speed: 1,
+  audition: false,
+  tool: "Select",
+  follow: false,
+  returnOnStop: false,
+  panels: { browser: true, inspector: true, controller: true, laneNames: true },
+  song: 1,
+  main: 1,
+  outputDevice: "Speakers",
+  songMuted: false,
+  songSolo: false,
+  position: 1000,
+  musicalPosition: "1.1.0 · 120.0 BPM · 4/4 · 1/4",
+  ...overrides,
+});
+
+test("sameUiView and samePlayhead compare only the fields each subscriber needs", () => {
+  const a = baseView();
+  assert.equal(sameUiView(a, a), true);
+  assert.equal(sameUiView(a, null), false);
+  assert.equal(sameUiView(null, a), false);
+  assert.equal(sameUiView(null, null), true);
+  assert.equal(sameUiView(a, baseView({ position: 2500, musicalPosition: "2.3.0 · 180.0 BPM · 3/4 · 1/4" })), true);
+  assert.equal(sameUiView(baseView({ duration: NaN, song: undefined, main: undefined }),
+    baseView({ duration: NaN, song: undefined, main: undefined })), true);
+  assert.equal(sameUiView(baseView({ panels: { controller: true } }), baseView({ panels: {} })), true);
+  assert.equal(sameUiView(baseView({ panels: { controller: false } }), baseView({ panels: { controller: true } })), false);
+
+  assert.equal(samePlayhead(a, a), true);
+  assert.equal(samePlayhead(a, null), false);
+  assert.equal(samePlayhead(null, a), false);
+  assert.equal(samePlayhead(a, baseView({ tool: "Draw", cycle: true, busy: true })), true);
+  assert.equal(samePlayhead(a, baseView({ position: 1085 })), false);
+  assert.equal(samePlayhead(a, baseView({ musicalPosition: "1.2.0 · 120.0 BPM · 4/4 · 1/4" })), false);
+  assert.equal(samePlayhead(baseView({ position: NaN }), baseView({ position: NaN })), true);
+  assert.equal(samePlayhead(baseView({ playing: true }), baseView({ playing: true })), false);
+  assert.equal(samePlayhead(baseView({ playing: true }), baseView({ playing: false })), false);
+});
+
+test("Bridge.set isolates playback ticks and paused seeks from bridge.view", () => {
+  const local = new Bridge();
+  const playing1 = baseView({ playing: true, position: 1000 });
+  const playing2 = baseView({ playing: true, position: 1085, musicalPosition: "1.2.0 · 180.0 BPM · 3/4 · 1/4" });
+  local.set(playing1, map);
+  assert.equal(local.view, playing1);
+  assert.equal(local.playhead, playing1);
+  assert.equal(local.latestView, playing1);
+  assert.equal(local.scene, map);
+
+  local.set(playing2, map);
+  assert.equal(local.view, playing1, "playback tick keeps bridge.view reference identical");
+  assert.equal(local.scene, map);
+  assert.equal(local.playhead, playing2);
+  assert.equal(local.latestView, playing2);
+
+  const paused1 = baseView({ playing: false, position: 2000 });
+  local.set(paused1, map);
+  assert.equal(local.view, paused1);
+  assert.equal(local.playhead, paused1);
+
+  const pausedIdle = baseView({ playing: false, position: 2000 });
+  local.set(pausedIdle, map);
+  assert.equal(local.view, paused1, "idle paused poll keeps bridge.view");
+  assert.equal(local.playhead, paused1, "idle paused poll keeps bridge.playhead");
+  assert.equal(local.latestView, pausedIdle);
+
+  const pausedSeek = baseView({ playing: false, position: 5000, musicalPosition: "4.1.0 · 140.0 BPM · 4/4 · 1/4" });
+  local.set(pausedSeek, map);
+  assert.equal(local.view, paused1, "paused seek leaves bridge.view unchanged");
+  assert.equal(local.playhead, pausedSeek, "paused seek updates bridge.playhead");
+
+  const uiChanges = [
+    { busy: true },
+    { fault: "Stopped" },
+    { playing: true },
+    { cycle: true },
+    { duration: 150000 },
+    { speed: 1.5 },
+    { audition: true },
+    { tool: "Draw" },
+    { follow: true },
+    { returnOnStop: true },
+    { panels: { browser: true, inspector: true, controller: false, laneNames: true } },
+    { panels: { browser: false, inspector: true, controller: true, laneNames: true } },
+    { panels: { browser: true, inspector: false, controller: true, laneNames: true } },
+    { panels: { browser: true, inspector: true, controller: true, laneNames: false } },
+    { song: 0.5 },
+    { main: 0.7 },
+    { outputDevice: "Headphones" },
+    { songMuted: true },
+    { songSolo: true },
+  ];
+  for (const patch of uiChanges) {
+    const baseline = baseView({ playing: false, position: 5000 });
+    local.set(baseline, map);
+    const changed = baseView({ playing: false, position: 5000, ...patch });
+    local.set(changed, map);
+    assert.equal(local.view, changed, "UI field change updates bridge.view: " + JSON.stringify(patch));
+  }
+
+  local.set(null, null);
+  assert.equal(local.view, null);
+  assert.equal(local.playhead, null);
+  assert.equal(local.latestView, null);
+  assert.equal(local.scene, null);
+  assert.equal(local.snapGroup, null);
+});
+
+test("TransportBar SSR readout updates across a playhead-only tick while bridge.view stays identical", () => {
+  const first = baseView({ playing: true, position: 1000, musicalPosition: "1.1.0 · 120.0 BPM · 4/4 · 1/4" });
+  const second = baseView({ playing: true, position: 106052, musicalPosition: "38.2.240 · 190.0 BPM · 7/8 · 1/4" });
+  bridge.set(first, map);
+  assert.equal(bridge.view, first);
+  const html1 = render(TransportBar).body.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ");
+  assert.ok(html1.includes("00:01.000"));
+  assert.ok(html1.includes("120.0 BPM"));
+  assert.ok(html1.includes("4/4 TIME"));
+
+  bridge.set(second, map);
+  assert.equal(bridge.view, first);
+  assert.equal(bridge.playhead, second);
+  const html2 = render(TransportBar).body.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ");
+  assert.ok(html2.includes("01:46.052"));
+  assert.ok(html2.includes("190.0 BPM"));
+  assert.ok(html2.includes("7/8 TIME"));
+});
+
+test("only TransportBar and MapPreview read bridge.playhead across all Svelte parts", () => {
+  const partsDir = new URL("../src/parts/", import.meta.url);
+  const readers = readdirSync(partsDir)
+    .filter(name => name.endsWith(".svelte"))
+    .filter(name => readFileSync(new URL(name, partsDir), "utf8").includes("bridge.playhead"))
+    .sort();
+  assert.deepEqual(readers, ["MapPreview.svelte", "TransportBar.svelte"]);
+  const transportSource = readFileSync(new URL("TransportBar.svelte", partsDir), "utf8");
+  assert.match(transportSource, /readout\(\s*bridge\.playhead\s*,\s*scene\s*\)/);
 });

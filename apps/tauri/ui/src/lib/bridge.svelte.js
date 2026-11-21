@@ -1,10 +1,14 @@
 import { flushSync } from "svelte";
 import { followGroup } from "./snap.js";
+import { samePlayhead, sameUiView } from "./view.js";
 
-// The editor state app.js last showed. show() replaces both whole on every update (every 85 ms
-// during playback), so parts derive what they need and keep no copy of their own.
+// The editor state app.js last showed. show() sends view and scene on every update (every 85 ms
+// during playback); playhead isolates ~85 ms playback/time updates from view so unrelated parts
+// keep their reference and do not re-render.
 export class Bridge {
   view = $state.raw(null);
+  playhead = $state.raw(null);
+  latestView = null;
   scene = $state.raw(null);
   // The lane and folder header rows app.js last built (renderLanes), replaced whole.
   lanes = $state.raw(null);
@@ -63,9 +67,13 @@ export class Bridge {
   }
 
   set(view, scene) {
-    this.snapGroup = followGroup(this.snapGroup, this.scene, scene);
-    this.view = view;
-    this.scene = scene;
+    this.latestView = view;
+    if (scene !== this.scene) {
+      this.snapGroup = followGroup(this.snapGroup, this.scene, scene);
+      this.scene = scene;
+    }
+    if (!samePlayhead(this.playhead, view)) this.playhead = view;
+    if (!sameUiView(this.view, view)) this.view = view;
   }
 }
 

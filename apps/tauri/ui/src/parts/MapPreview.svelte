@@ -41,7 +41,8 @@
   // The editor's position, and when it arrived, for the clock between updates.
   let receivedAt = 0;
   $effect(() => {
-    void bridge.view;
+    if (!on || !open) return;
+    void bridge.playhead;
     receivedAt = performance.now();
   });
 
@@ -56,7 +57,7 @@
     const draw = () => {
       frame = requestAnimationFrame(draw);
       if (!canvas.clientWidth) return;
-      time = clock(bridge.view, receivedAt, performance.now(), time);
+      time = clock(bridge.playhead, receivedAt, performance.now(), time);
       const state = [time, canvas.clientWidth, canvas.clientHeight, globalThis.devicePixelRatio].join();
       if (state === last && lastModel === model) return;
       last = state;
