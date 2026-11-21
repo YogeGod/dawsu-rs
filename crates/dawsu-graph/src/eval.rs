@@ -22,6 +22,18 @@ pub enum EvalTarget {
     Socket(Endpoint),
 }
 
+/// Compact per-node execution summary returned alongside `GraphEvalResult`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum NodeOutputSummary {
+    Events { count: usize },
+    Curve { sparkline: Vec<f32>, min: f64, max: f64 },
+    Audio { duration_ms: f64, channels: usize },
+    Spectrogram { frames: usize, bins: usize },
+    Timing { lines: usize },
+    Range { from_ms: f64, to_ms: f64 },
+    Scalar { label: String },
+}
+
 /// Complete output of one pull evaluation run.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct GraphEvalResult {
@@ -29,6 +41,7 @@ pub struct GraphEvalResult {
     pub graph_hash: String,
     pub slot_events: BTreeMap<String, Arc<EventList>>,
     pub viewer_values: BTreeMap<NodeId, SocketValue>,
+    pub node_summaries: BTreeMap<NodeId, NodeOutputSummary>,
     pub socket_preview: Option<SocketValue>,
     pub diagnostics: BTreeMap<NodeId, Vec<NodeDiagnostic>>,
     pub evaluated_nodes: Vec<NodeId>,
@@ -519,12 +532,20 @@ fn evaluate_graph_inner(
         _ => None,
     };
 
+    let mut node_summaries: BTreeMap<NodeId, NodeOutputSummary> = BTreeMap::new();
+    for (id, out) in &node_outputs {
+        if let Some(summary) = summarize_cached_output(out) {
+            node_summaries.insert(id.clone(), summary);
+        }
+    }
+
     Ok((
         GraphEvalResult {
             range,
             graph_hash: doc.structural_hash(),
             slot_events,
             viewer_values,
+            node_summaries,
             socket_preview,
             diagnostics,
             evaluated_nodes,
@@ -532,6 +553,58 @@ fn evaluate_graph_inner(
         },
         node_outputs,
     ))
+}
+
+fn summarize_cached_output(out: &CachedNodeOutput) -> Option<NodeOutputSummary> {
+    if let Some((_, events)) = &out.slot_output {
+        return Some(NodeOutputSummary::Events { count: events.events.len() });
+    }
+    let val = out.values.values().next().or(out.viewer_output.as_ref())?;
+    Some(match val {
+        SocketValue::Events(list) => NodeOutputSummary::Events { count: list.events.len() },
+        SocketValue::Curve(curve) => {
+            let mut min = f64::INFINITY;
+            let mut max = f64::NEG_INFINITY;
+            for &v in &curve.values {
+                if v.is_finite() {
+                    min = min.min(v);
+                    max = max.max(v);
+                }
+            }
+            if !min.is_finite() || !max.is_finite() {
+                return Some(NodeOutputSummary::Curve { sparkline: Vec::new(), min: 0.0, max: 0.0 });
+            }
+            let buckets = 36usize;
+            let step = curve.values.len().div_ceil(buckets).max(1);
+            let sparkline = curve
+                .values
+                .chunks(step)
+                .map(|chunk| {
+                    chunk
+                        .iter()
+                        .copied()
+                        .filter(|v| v.is_finite())
+                        .fold(0.0_f64, |acc, v| if v.abs() > acc.abs() { v } else { acc }) as f32
+                })
+                .collect();
+            NodeOutputSummary::Curve { sparkline, min, max }
+        }
+        SocketValue::Audio(audio) => {
+            let duration_ms = if audio.sample_rate > 0 {
+                audio.frame_count() as f64 * 1000.0 / f64::from(audio.sample_rate)
+            } else {
+                0.0
+            };
+            NodeOutputSummary::Audio { duration_ms, channels: audio.channels.len() }
+        }
+        SocketValue::Spectrogram(spec) => NodeOutputSummary::Spectrogram { frames: spec.frames, bins: spec.bins },
+        SocketValue::Timing(grid) => NodeOutputSummary::Timing { lines: grid.lines().len() },
+        SocketValue::Range(r) => NodeOutputSummary::Range { from_ms: r.from_ms, to_ms: r.to_ms },
+        SocketValue::Number(v) => NodeOutputSummary::Scalar { label: format!("{v:.3}") },
+        SocketValue::Integer(v) => NodeOutputSummary::Scalar { label: v.to_string() },
+        SocketValue::Bool(v) => NodeOutputSummary::Scalar { label: v.to_string() },
+        SocketValue::Enum(v) => NodeOutputSummary::Scalar { label: v.clone() },
+    })
 }
 
 fn placeholder_message(

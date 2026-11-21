@@ -37,7 +37,6 @@ const menuRules = {
   waveform: () => $("ruler-waveform").getAttribute("aria-pressed") === "true",
   usedOnly: () => !!$("used-only").checked,
   mapPreview: () => !!window.dawsuUi?.mapPreviewOn?.(),
-  nodeGraph: () => !!window.dawsuUi?.nodeGraphOn?.(),
   tool: (_, item) => view.tool === item.run[1],
 };
 
@@ -68,6 +67,7 @@ const menuCalls = {
   openSoundSetPlacement: () => openSoundSetPlacement(),
   goToEnd: () => act({ kind: "seek", ms: view.duration }),
   openDrumWindow: () => invoke("drum_window_open").catch(error => { $("status").textContent = String(error); }),
+  openNodeGraphWindow: () => invoke("open_node_graph_window").catch(error => { $("status").textContent = String(error); }),
   requestDrumMap: () => requestDrumMap(),
   editLayout: () => dock?.editLayout(),
   openMap: () => openMap(),
@@ -77,7 +77,6 @@ const menuCalls = {
   showHelp: () => run(showHelp),
   deleteActiveLane: () => deleteActiveLane(),
   toggleMapPreview: () => window.dawsuUi?.toggleMapPreview?.(),
-  toggleNodeGraph: () => window.dawsuUi?.toggleNodeGraph?.(),
 };
 
 const menuField = path => path.split(".").reduce((value, key) => value?.[key], { view, scene });

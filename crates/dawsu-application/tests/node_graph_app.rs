@@ -319,3 +319,35 @@ fn range_change_stales_batch_map_edit_cancels_run_viewer_clears_and_placeholder_
     assert_eq!(ph.outputs.len(), 1);
     assert_eq!(ph.outputs[0].id, "drums_out");
 }
+
+#[test]
+fn starter_presets_validate_cleanly_and_populate_per_node_summaries() {
+    let scratch = Scratch::new("node-graph-starter-presets");
+    let (mut app, _) = open_fixture(&scratch);
+
+    for preset in ["simple_kick", "simple_hihat", "drum_stem"] {
+        app.node_graph_action(NodeGraphAction::LoadPreset { name: preset.into() }).unwrap();
+        let v = app.node_graph_view();
+        assert!(v.validation_issues.is_empty(), "{preset}: {:?}", v.validation_issues);
+        assert!(v.nodes.len() <= 10, "{preset} should stay compact");
+    }
+
+    app.node_graph_action(NodeGraphAction::LoadPreset { name: "simple_kick".into() }).unwrap();
+    app.node_graph_action(NodeGraphAction::SetParam {
+        node_id: "peaks_kick".into(),
+        param: "threshold".into(),
+        value: serde_json::json!(1.0),
+    })
+    .unwrap();
+    app.node_graph_action(NodeGraphAction::Run).unwrap();
+    wait_until(&mut app, |a| a.node_graph_view().status == "ready");
+
+    let json = serde_json::to_value(app.node_graph_view()).unwrap();
+    let nodes = json["nodes"].as_array().unwrap();
+    let flux = nodes.iter().find(|n| n["id"] == "flux_kick").unwrap();
+    assert_eq!(flux["summary"]["kind"], "curve");
+    assert!(!flux["summary"]["sparkline"].as_array().unwrap().is_empty());
+    let peaks = nodes.iter().find(|n| n["id"] == "peaks_kick").unwrap();
+    assert_eq!(peaks["summary"]["kind"], "events");
+    assert!(peaks["summary"]["count"].as_u64().unwrap() > 0);
+}

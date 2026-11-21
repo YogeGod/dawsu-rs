@@ -1487,6 +1487,7 @@ enum Request {
     NodeGraphView(mpsc::Sender<Result<Value, String>>),
     NodeGraphAction(dawsu_application::NodeGraphAction, mpsc::Sender<Result<Value, String>>),
     NodeGraphExportJson(mpsc::Sender<Result<String, String>>),
+    NodeGraphClose,
 }
 struct Editor(mpsc::Sender<Request>);
 
@@ -1943,6 +1944,11 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                         .and_then(|result| result);
                     let _ = response.send(result);
                 }
+                Ok(Request::NodeGraphClose) => {
+                    if fault.is_none() {
+                        let _ = guard(&mut app, &mut fault, Application::cancel_node_graph_and_clear_viewer);
+                    }
+                }
                 Err(mpsc::RecvTimeoutError::Timeout) => {
                     if fault.is_none() {
                         let _ = guard(&mut app, &mut fault, |app| {
@@ -2149,22 +2155,132 @@ fn drum_pick_stem(window: tauri::WebviewWindow) -> Option<PathBuf> {
         .add_filter("Audio", &["wav", "ogg", "mp3", "flac"]).pick_file()
 }
 
+/// Opens the node graph window beside the editor, or brings it forward when it is open.
 #[tauri::command]
-fn node_graph_view(state: State<'_, Editor>) -> Result<Value, String> {
-    ask(&state, Request::NodeGraphView)?
+async fn open_node_graph_window(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("node-graph") {
+        let _ = window.unminimize();
+        return window.set_focus().map_err(|error| error.to_string());
+    }
+    let built = tauri::WebviewWindowBuilder::new(&app, "node-graph", tauri::WebviewUrl::App("node-graph.html".into()))
+        .title("Node graph")
+        .inner_size(1280.0, 800.0)
+        .min_inner_size(960.0, 620.0)
+        .disable_drag_drop_handler()
+        .build();
+    match (built, app.get_webview_window("node-graph")) {
+        (Ok(_), _) => Ok(()),
+        (Err(_), Some(window)) => window.set_focus().map_err(|error| error.to_string()),
+        (Err(error), None) => Err(error.to_string()),
+    }
+}
+
+#[tauri::command]
+fn close_node_graph_window(app: tauri::AppHandle) -> Result<(), String> {
+    match app.get_webview_window("node-graph") {
+        Some(window) => window.close().map_err(|error| error.to_string()),
+        None => Ok(()),
+    }
+}
+
+fn emit_node_graph_sync(app: &tauri::AppHandle, view: &Value, refresh_timeline: bool) {
+    let viewer = view.get("viewer").cloned().unwrap_or(Value::Null);
+    let _ = app.emit_to("main", "node-graph-viewer", viewer);
+    if refresh_timeline {
+        let _ = app.emit_to("main", "node-graph-applied", true);
+    }
+}
+
+#[tauri::command]
+fn node_graph_view(app: tauri::AppHandle, state: State<'_, Editor>) -> Result<Value, String> {
+    let view = ask(&state, Request::NodeGraphView)??;
+    emit_node_graph_sync(&app, &view, false);
+    Ok(view)
 }
 
 #[tauri::command]
 fn node_graph_action(
+    app: tauri::AppHandle,
     state: State<'_, Editor>,
     action: dawsu_application::NodeGraphAction,
 ) -> Result<Value, String> {
-    ask(&state, |tx| Request::NodeGraphAction(action, tx))?
+    let refresh_timeline = matches!(
+        action,
+        dawsu_application::NodeGraphAction::Apply | dawsu_application::NodeGraphAction::SelectLastHits
+    );
+    let view = ask(&state, |tx| Request::NodeGraphAction(action, tx))??;
+    emit_node_graph_sync(&app, &view, refresh_timeline);
+    Ok(view)
 }
 
 #[tauri::command]
 fn node_graph_export_json(state: State<'_, Editor>) -> Result<String, String> {
     ask(&state, Request::NodeGraphExportJson)?
+}
+
+#[tauri::command]
+fn node_graph_pick_open(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+    state: State<'_, Editor>,
+) -> Result<Option<Value>, String> {
+    let Some(path) = rfd::FileDialog::new()
+        .set_parent(&window)
+        .set_title("Load node graph recipe")
+        .add_filter("Node graph", &["dawsugraph", "json"])
+        .pick_file()
+    else {
+        return Ok(None);
+    };
+    let json = std::fs::read_to_string(&path).map_err(|e| format!("Could not read recipe: {e}"))?;
+    let view = ask(&state, |tx| {
+        Request::NodeGraphAction(dawsu_application::NodeGraphAction::ImportJson { json }, tx)
+    })??;
+    emit_node_graph_sync(&app, &view, false);
+    Ok(Some(view))
+}
+
+#[tauri::command]
+fn node_graph_pick_save(window: tauri::WebviewWindow, state: State<'_, Editor>) -> Result<bool, String> {
+    use dawsu_foundation::safe_write::{self, BackupPolicy, WriteOutcome};
+    let json = ask(&state, Request::NodeGraphExportJson)??;
+    let Some(mut path) = rfd::FileDialog::new()
+        .set_parent(&window)
+        .set_title("Save node graph recipe")
+        .add_filter("Node graph", &["dawsugraph"])
+        .save_file()
+    else {
+        return Ok(false);
+    };
+    if path.extension().is_none() {
+        path.set_extension("dawsugraph");
+    }
+    let bytes = json.as_bytes();
+    match std::fs::read(&path) {
+        Ok(expected) => {
+            let backups = BackupPolicy::new(dawsu_application::data_folder().join("backups"), 5);
+            match safe_write::replace(&path, &expected, bytes, &backups).map_err(|e| e.to_string())? {
+                WriteOutcome::Saved { .. } => {}
+                WriteOutcome::ChangedOnDisk => {
+                    return Err("The recipe file changed while saving. Choose a new file or try again.".into());
+                }
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            safe_write::create(&path, bytes).map_err(|e| e.to_string())?;
+        }
+        Err(error) => return Err(error.to_string()),
+    }
+    Ok(true)
+}
+
+#[tauri::command]
+fn node_graph_pick_audio(window: tauri::WebviewWindow) -> Option<PathBuf> {
+    rfd::FileDialog::new()
+        .set_parent(&window)
+        .set_title("Pick an audio or stem file")
+        .add_filter("Audio", &["wav", "ogg", "mp3", "flac"])
+        .pick_file()
 }
 
 #[tauri::command]
@@ -2494,6 +2610,7 @@ fn close_requested(label: &str, editor: &Editor) -> CloseDecision {
     match label {
         "export" => { let _ = editor.0.send(Request::ExportClose); }
         "drum" => { let _ = editor.0.send(Request::DrumClose); }
+        "node-graph" => { let _ = editor.0.send(Request::NodeGraphClose); }
         _ => {}
     }
     if label != "main" {
@@ -2511,6 +2628,9 @@ fn main() {
         .manage(editor_thread(initial))
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if window.label() == "node-graph" {
+                    let _ = window.app_handle().emit_to("main", "node-graph-viewer", Value::Null);
+                }
                 match close_requested(window.label(), &window.state::<Editor>()) {
                     CloseDecision::Allow => {}
                     CloseDecision::CloseAll => {
@@ -2545,9 +2665,14 @@ fn main() {
             drum_listen_stop,
             drum_apply,
             drum_pick_stem,
+            open_node_graph_window,
+            close_node_graph_window,
             node_graph_view,
             node_graph_action,
             node_graph_export_json,
+            node_graph_pick_open,
+            node_graph_pick_save,
+            node_graph_pick_audio,
             pick_merge_preset,
             save_merge_preset,
             editor_shortcuts,

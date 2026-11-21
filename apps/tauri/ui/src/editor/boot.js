@@ -230,6 +230,15 @@ export function createEditor(env = globalThis, { ui = null, autoStart = true, ex
     if (target && path) ctx.act({ kind: "replace_sample", target, path, mapset: false });
   });
 
+  env.window.__TAURI__.event.listen("node-graph-viewer", ({ payload }) => {
+    ctx.ui()?.setNodeGraphViewer?.(payload ?? null);
+    ctx.paintSoon();
+  });
+
+  env.window.__TAURI__.event.listen("node-graph-applied", () => {
+    ctx.update(null, true);
+  });
+
   env.window.__TAURI__.event.listen("editor-close-requested", ({ payload }) => {
     if (state.view.fault) return;
     if (state.view.busy) {

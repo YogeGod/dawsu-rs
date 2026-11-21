@@ -316,13 +316,13 @@ test("each menu groups the editor's existing commands like the design, with no s
   assert.deepEqual(open("map"), [
     "Difficulty: Hard | Insane", "—",
     "New hitsound difficulty…", "—",
-    "Generate hitsound difficulty…", "Copy hitsounds…", "Drum hit detection…",
+    "Generate hitsound difficulty…", "Copy hitsounds…", "Drum hit detection…", "Node graph…",
     "Generate export style: Per-object", "—",
     "Add bookmark", "Previous bookmark", "Next bookmark", "—",
     "Add lane…", "Delete active lane…",
   ]);
   assert.deepEqual(open("view"), [
-    "Browser", "Inspector", "Volume and Mixer", "Map preview", "Node graph", "Lane names", "—",
+    "Browser", "Inspector", "Volume and Mixer", "Map preview", "Lane names", "—",
     "Song waveform", "Object lines", "Used lanes only", "Collapse sample layers", "Filter lanes…", "Taller lanes",
     "Shorter lanes", "—",
     "Zoom in", "Zoom out", "Fit difficulty", "—",
