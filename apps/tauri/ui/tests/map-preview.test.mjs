@@ -106,3 +106,15 @@ test("while playing the clock holds still on a small step back and stops at the 
   assert.equal(clock({ ...view, position: 4990 }, 0, 100), 5000);
   assert.equal(clock({ ...view, playing: false }, 0, 0, 1020), 1000);
 });
+
+test("the preview asks for the objects once per difficulty, not again when the answer arrives", async () => {
+  // Effects do not run under svelte/server, so this reads the source: the fetch effect may look at
+  // `model` (which its own answer sets) only through untrack, or it asks again forever.
+  const { readFileSync } = await import("node:fs");
+  const source = readFileSync(new URL("../src/parts/MapPreview.svelte", import.meta.url), "utf8");
+  const effect = source.slice(source.indexOf("invoke(") - 600, source.indexOf("invoke("));
+  const reads = effect.match(/model\?\.\w+/g) ?? [];
+  assert.ok(reads.length > 0);
+  assert.ok(effect.includes("untrack(() => model?.path)"));
+  assert.equal(effect.replace("untrack(() => model?.path)", "").match(/model\?\./g), null);
+});
