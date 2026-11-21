@@ -177,7 +177,6 @@ export function attachModal(ctx) {
       if (state.modalClose) state.modalClose();
       else ctx.closeModal();
     });
-    $("next-output-problem").addEventListener("click", () => showOutputProblem(state.outputProblemIndex + 1));
   }
 
   Object.assign(ctx, { modal, closeModal, showOutputProblem, renderDialogs, bindModal });
