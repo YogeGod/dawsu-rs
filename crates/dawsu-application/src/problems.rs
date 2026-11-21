@@ -26,9 +26,12 @@ impl OutputProblem {
 }
 
 /// The times of hits with no object (v3's "orphaned"): moments that hold at least one hit and sit
-/// on no object, once per moment. Outside HS mode Save keeps them in the project; in HS mode Save
-/// makes them circles.
-pub fn orphaned_hit_times(hits: &Hitsounds) -> Vec<f64> {
+/// on no object, once per moment. Outside HS mode Save keeps them in the project and osu! never
+/// plays them. In HS mode Save makes them circles, so none is orphaned.
+pub fn orphaned_hit_times(hits: &Hitsounds, hs_mode: bool) -> Vec<f64> {
+    if hs_mode {
+        return Vec::new();
+    }
     hits.moments().iter()
         .filter(|moment| moment.place() == Place::NoObject && moment.hits().next().is_some())
         .map(|moment| moment.time().ms())
@@ -111,12 +114,13 @@ mod tests {
         let map = scratch.path("test.osu");
         std::fs::write(&map, include_bytes!("../tests/project-fixture.osu")).unwrap();
         let mut document = Document::read(&map).unwrap();
-        assert!(crate::orphaned_hit_times(document.composer.hitsounds()).is_empty(), "the circle at 1000 ms has an object");
+        assert!(crate::orphaned_hit_times(document.composer.hitsounds(), false).is_empty(), "the circle at 1000 ms has an object");
         for (time, lane) in [(250.0, "loose.wav"), (250.0, "other.wav"), (1000.0, "loose.wav"), (1500.0, "loose.wav")] {
             document.composer.add(time, SampleIdentity::File(lane.into()), 75, 0.0);
         }
         // Two hits at one time are one moment; a hit on the circle is not orphaned.
-        assert_eq!(crate::orphaned_hit_times(document.composer.hitsounds()), [250.0, 1500.0]);
+        assert_eq!(crate::orphaned_hit_times(document.composer.hitsounds(), false), [250.0, 1500.0]);
+        assert!(crate::orphaned_hit_times(document.composer.hitsounds(), true).is_empty(), "HS mode makes them circles");
     }
 
     #[test]

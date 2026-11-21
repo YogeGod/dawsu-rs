@@ -143,6 +143,8 @@ fn the_scene_lists_the_times_of_hits_with_no_object() {
         phase: "double_click".into(), ms: 1500.0, row, x: 12.0, y: 12.0, value: None, shift: false, ctrl: false, alt: false,
     }.run(&mut app);
     assert_eq!(snapshot(&app, true)["scene"]["orphanedHits"], serde_json::json!([1500.0]));
+    Action::HsMode { on: true }.run(&mut app);
+    assert_eq!(snapshot(&app, true)["scene"]["orphanedHits"], serde_json::json!([]), "HS mode makes them circles at Save");
 }
 
 #[test]

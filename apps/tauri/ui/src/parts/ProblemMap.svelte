@@ -19,7 +19,7 @@
     <span class="pm-sum pm-off" title={notCounted.right}>– of – sound right</span>
   </div>
   <div class="pm-strip">
-    {#each strip.marks as mark (mark.kind + mark.time + mark.label)}
+    {#each strip.marks as mark}
       <button type="button" class="pm-mark pm-{mark.kind}" style:--at={mark.left} title={mark.label} aria-label={mark.label}
         disabled={bridge.disabled} onclick={() => on.jump(mark.time)}></button>
     {/each}
@@ -28,6 +28,9 @@
     <span class="pm-count pm-off" title={notCounted.silent}><i></i>– silent</span>
     <span class="pm-count pm-off" title={notCounted.fallback}><i></i>– fallback</span>
     <span class="pm-count pm-orphaned" title="Hits with no object"><i></i>{strip.orphaned} orphaned</span>
-    <span class="pm-count pm-unsaved" title="Moments Save can't write"><i></i>{strip.unsaved} can't be saved</span>
+    <!-- Save problems are known only after a Save check of this version, so no zero is shown. -->
+    {#if strip.unsaved}
+      <span class="pm-count pm-unsaved" title="Moments Save can't write"><i></i>{strip.unsaved} can't be saved</span>
+    {/if}
   </div>
 </div>

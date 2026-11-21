@@ -53,10 +53,17 @@ test("Difficulty shows the strip: real counts, and the counts the editor can't m
   }
 });
 
-test("with no map the strip shows no marks and no counts", () => {
+test("with no map the strip shows no marks, and no Save problem count until a Save check finds some", () => {
   const html = shown(null, null);
   assert.doesNotMatch(html, /pm-mark/);
   assert.match(html, />0 orphaned</);
+  assert.doesNotMatch(shown({ duration: 1000, outputProblems: [] }, scene()), /can't be saved/);
+});
+
+test("a moment an Export review lists once per target gets one mark per listing", () => {
+  const view = { duration: 1000, outputProblems: [problem(500, { target: "b.osu" }), problem(500, { target: "c.osu" })] };
+  assert.equal(problemStrip(view, scene()).marks.length, 2);
+  assert.equal([...shown(view, scene()).matchAll(/class="pm-mark/g)].length, 2);
 });
 
 test("a mark goes to its time", () => {
