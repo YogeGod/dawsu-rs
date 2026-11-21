@@ -81,6 +81,10 @@ for (const [index, map] of maps.entries()) {
     twin: summary.twin,
     edits: summary.steps,
     sounds: summary.sounds,
+    // The silent sound check: what dawsu! itself plays against what osu! plays (null on an older build).
+    silent: summary.silent ?? null,
+    plays: Object.entries(result.silent ?? {}).flatMap(([which, check]) =>
+      (check?.differences ?? []).map(moment => `${which} ${moment.time} ms: ${moment.notes.join("; ")}`)),
     differences,
   };
   rows.push(row);
@@ -88,6 +92,10 @@ for (const [index, map] of maps.entries()) {
   for (const line of row.robotFailed) console.log(`   robot FAIL ${line}`);
   for (const line of differences.slice(0, 3)) console.log(`   ${line}`);
   if (differences.length > 3) console.log(`   … and ${differences.length - 3} more`);
+  const silentLine = ["opened", "reopened"].map(which => row.silent?.[which] ? `${which} ${row.silent[which].same}/${row.silent[which].total}` : null).filter(Boolean);
+  if (silentLine.length) console.log(`   dawsu! plays as osu! does: ${silentLine.join(" · ")}`);
+  for (const line of row.plays.slice(0, 3)) console.log(`   PLAYS ${line}`);
+  if (row.plays.length > 3) console.log(`   … and ${row.plays.length - 3} more`);
 }
 
 const compared = rows.filter(row => !row.error && !row.skipped);
@@ -96,6 +104,8 @@ const sounds = { same: sum(row => row.sounds.same), total: sum(row => row.sounds
 const edits = { same: sum(row => row.edits.same), total: sum(row => row.edits.total) };
 const robotClean = compared.filter(row => row.robot && !row.robotFailed.length).length;
 const identical = compared.filter(row => !row.differences.length).length;
+const heardAlike = which => ({ same: sum(row => row.silent?.[which]?.same ?? 0), total: sum(row => row.silent?.[which]?.total ?? 0) });
+const silent = { opened: heardAlike("opened"), reopened: heardAlike("reopened") };
 console.log("");
 console.log(`run time: ${Math.round((Date.now() - started) / 60000)} min`);
 console.log(`maps: ${maps.length}; compared ${compared.length}; skipped ${rows.filter(row => row.skipped).length} (not osu!standard); could not compare ${rows.filter(row => row.error).length}`);
@@ -103,5 +113,6 @@ console.log(`robot mapper: no failed step on ${robotClean} of ${compared.length}
 console.log(`same as 3.1.4 on every edit and sound: ${identical} of ${compared.length} maps`);
 console.log(`edits the same: ${edits.same} of ${edits.total}; sound moments the same: ${sounds.same} of ${sounds.total}` +
   (sounds.total ? ` (${Math.round(100 * sounds.same / sounds.total)}%)` : ""));
-if (args.json) writeFileSync(resolve(args.json), JSON.stringify({ maps: rows, totals: { sounds, edits, robotClean, identical, compared: compared.length, total: maps.length } }, null, 2) + "\n");
-if (rows.some(row => row.error || row.robotFailed?.length || row.differences?.length)) process.exitCode = 1;
+if (silent.opened.total || silent.reopened.total) console.log(`silent sound check (dawsu! plays as osu! does): opened ${silent.opened.same} of ${silent.opened.total} moments; saved and reopened ${silent.reopened.same} of ${silent.reopened.total}`);
+if (args.json) writeFileSync(resolve(args.json), JSON.stringify({ maps: rows, totals: { sounds, edits, silent, robotClean, identical, compared: compared.length, total: maps.length } }, null, 2) + "\n");
+if (rows.some(row => row.error || row.robotFailed?.length || row.differences?.length || row.plays?.length)) process.exitCode = 1;

@@ -1478,6 +1478,8 @@ fn snapshot(app: &Application, include_scene: bool) -> Value {
 enum Request {
     View(bool, Option<Action>, mpsc::Sender<Value>),
     Help(mpsc::Sender<Result<Value, String>>),
+    /// Every sound the open map would play (the robot mapper's silent sound check).
+    PlaybackList(mpsc::Sender<Result<Value, String>>),
     AudioOutputs(Option<OutputBackend>, mpsc::Sender<Value>),
     Shortcuts(mpsc::Sender<Value>),
     ExportSettings(mpsc::Sender<Option<(PathBuf, ExportSettings)>>),
@@ -1759,6 +1761,10 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                         let _ = response.send(value);
                     }
                 }
+                Ok(Request::PlaybackList(response)) => {
+                    let result = guard(&mut app, &mut fault, |app| json!(app.playback_list()));
+                    let _ = response.send(result);
+                }
                 Ok(Request::Help(response)) => {
                     let result = guard(&mut app, &mut fault, |app| {
                         json!(
@@ -2033,6 +2039,13 @@ fn editor_view(
     action: Option<Action>,
 ) -> Result<Value, String> {
     ask(&state, |tx| Request::View(scene, action, tx))
+}
+
+/// Every sound the open map would play, worked out without an audio device: the robot mapper's
+/// silent sound check compares it with what osu!lazer plays (tools/compare-314.mjs).
+#[tauri::command]
+fn playback_list(state: State<'_, Editor>) -> Result<Value, String> {
+    ask(&state, Request::PlaybackList)?
 }
 
 #[tauri::command]
@@ -2792,6 +2805,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             editor_view,
             editor_help,
+            playback_list,
             editor_export_settings,
             export_view,
             export_preview,

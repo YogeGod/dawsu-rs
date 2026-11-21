@@ -7,6 +7,7 @@
     "core:event:default",
     "allow-editor-view",
     "allow-editor-help",
+    "allow-playback-list",
     "allow-editor-export-settings",
     "allow-open-export-window",
     "allow-drum-window-open",

@@ -3,6 +3,7 @@
 const COMMANDS: &[&str] = &[
     "editor_view",
     "editor_help",
+    "playback_list",
     "editor_export_settings",
     "export_view",
     "export_preview",

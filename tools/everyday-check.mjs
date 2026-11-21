@@ -19,12 +19,14 @@
 //
 // The --json file also lists the edits the run made, in order, with what the editor showed after
 // each ("actions"), and where the edited copy is ("mapCopy"). tools/compare-314.mjs replays those
-// edits in dawsu! 3.1.4 and compares the two saved maps.
+// edits in dawsu! 3.1.4 and compares the two saved maps. It also lists every sound the editor would
+// play for the map as opened and for the saved copy reopened ("sounds": the app's playback_list, worked
+// out without an audio device), which tools/compare-314.mjs checks against what osu!lazer plays.
 //
 // The JS tests run against a hand-written page (apps/tauri/tests/fake-dom.mjs); this runs the real
 // one. Every step acts through real input: mouse clicks and drags, key presses, buttons and menu
-// rows. It only reads the page's `scene` and `view`, its text and the files on disk to check the
-// result; it never calls the page's act(). Each console error, page error and unhandled promise
+// rows. It only reads the page's `scene` and `view`, its text, the playback list and the files on
+// disk to check the result; it never calls the page's act(). Each console error, page error and unhandled promise
 // rejection in any of the editor's windows fails the step it happened in. A failing step saves a
 // screenshot and the run goes on. An error between steps counts against the next step, and one
 // after the last step fails a final step. The exit code is 1 when a step failed.
@@ -246,6 +248,9 @@ const results = [];
 // The edits, in order, for tools/compare-314.mjs: what was done and what the editor showed after.
 const actions = [];
 const did = action => actions.push({ step: current, ...action });
+// What the editor would play, read from the app without sound (null on a build without playback_list).
+const sounds = { opened: null, reopened: null };
+const playbackList = () => read(() => window.__TAURI__.core.invoke("playback_list")).catch(() => null);
 let errorsChecked = 0;
 // When the map never opened, the steps that need it are skipped rather than failed one by one.
 let noMap = null;
@@ -511,6 +516,7 @@ try {
     hitsBeforeEdits = (await hits()).length;
     expect(hitsBeforeEdits > 0, "the map's hits are not shown");
     did({ do: "open", seen: await namedHits() });
+    sounds.opened = await playbackList();
     return `${await read(() => window.scene.lanes.length)} lanes, ${hitsBeforeEdits} hits`;
   });
 
@@ -954,6 +960,7 @@ try {
     await until(() => document.querySelectorAll("#lanes [data-lane-row]").length > 0 && window.scene?.lanes?.length > 0,
       null, "no lanes appeared after reopening", 60000);
     reopened = await namedHits();
+    sounds.reopened = await playbackList();
     return compare(hit => !mixed(hit), "away from the mixed circle");
   });
   // Save writes a sound the circle's line cannot hold as a mix of new sample files, and the editor
@@ -980,7 +987,7 @@ try {
   console.log(`run time: ${seconds} s`);
   console.log(`everyday check: ${passed} of ${results.length} steps passed`);
   if (args.json) {
-    writeFileSync(resolve(args.json), JSON.stringify({ exe, map: original, profile, mapCopy, plan, passed, total: results.length, seconds, steps: results, actions }, null, 2) + "\n");
+    writeFileSync(resolve(args.json), JSON.stringify({ exe, map: original, profile, mapCopy, plan, passed, total: results.length, seconds, steps: results, actions, sounds }, null, 2) + "\n");
   }
   if (failed || !results.length) process.exitCode = 1;
   if (!args["keep-profile"]) {

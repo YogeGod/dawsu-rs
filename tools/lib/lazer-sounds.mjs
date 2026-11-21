@@ -124,3 +124,42 @@ export function matchMoment(left, right) {
 }
 
 export const describe = sound => `${sound.label} at ${sound.volume}%${sound.loop ? " (loop)" : ""}`;
+
+// The editor's own playback list (the app's playback_list: what it would play, worked out without an
+// audio device) as the same kind of list as heard(), so the two can be matched moment by moment. A
+// sound the editor has not loaded plays nothing, so it is left out and counted.
+export function planned(list, folder) {
+  const files = folderFiles(folder);
+  const out = [];
+  let silent = 0;
+  for (const sound of list) {
+    if (!sound.loaded) { silent++; continue; }
+    const where = sound.plays.file !== undefined
+      ? { file: join(folder, files.get(sound.plays.file.toLowerCase()) ?? sound.plays.file), label: files.get(sound.plays.file.toLowerCase()) ?? sound.plays.file }
+      : { skin: sound.plays.skin, label: `skin ${sound.plays.skin}` };
+    out.push({ time: Math.round(sound.at_ms), loop: sound.end_ms !== null && sound.end_ms !== undefined, volume: sound.volume, ...where });
+  }
+  return { sounds: out, silent };
+}
+
+// The silent sound check: does the editor play, for one map, what osu!lazer plays for it? Returns the
+// moments that differ, in words. A sound lazer plays under 5% that the editor plays at 5% is the
+// editor's floor (sound volumes never go below 5%), so it is named apart and not counted as a fault.
+export function soundCheck(editorList, lazerList) {
+  const ours = byTime(editorList), theirs = byTime(lazerList);
+  const times = [...new Set([...ours.keys(), ...theirs.keys()])].sort((a, b) => a - b);
+  const differences = [];
+  let floor = 0;
+  for (const time of times) {
+    const m = matchMoment(ours.get(time) ?? [], theirs.get(time) ?? []);
+    const volume = m.volume.filter(([a, b]) => !(a.volume === 5 && b.volume < 5));
+    floor += m.volume.length - volume.length;
+    const notes = [
+      ...m.onlyLeft.map(sound => `only the editor plays ${describe(sound)}`),
+      ...m.onlyRight.map(sound => `only osu! plays ${describe(sound)}`),
+      ...volume.map(([a, b]) => `${a.label}: editor ${a.volume}%, osu! ${b.volume}%`),
+    ];
+    if (notes.length) differences.push({ time, notes });
+  }
+  return { moments: times.length, same: times.length - differences.length, differences, floor };
+}

@@ -34,7 +34,7 @@ import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statS
 import { createHash } from "node:crypto";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { byTime, describe, heard, matchMoment } from "./lib/lazer-sounds.mjs";
+import { byTime, describe, heard, matchMoment, planned, soundCheck } from "./lib/lazer-sounds.mjs";
 
 const RELEASE = "c81774eb212c530e928cd184f739a379cecccc0b"; // "Release dawsu! V3.1.4"
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -167,8 +167,10 @@ const oracle = name => JSON.parse(readFileSync(join(oracleOut, name, `${basename
 
 // 4. What lazer would play, per copy.
 console.log("4/4 comparing…");
-const before = byTime(heard(oracle("original"), copies.original));
-const ours = byTime(heard(oracle("dawsu-rs"), copies.dawsu));
+const lazerOriginal = heard(oracle("original"), copies.original);
+const lazerDawsu = heard(oracle("dawsu-rs"), copies.dawsu);
+const before = byTime(lazerOriginal);
+const ours = byTime(lazerDawsu);
 const theirs = byTime(heard(oracle("v3-1-4"), copies.old));
 const times = [...new Set([...ours.keys(), ...theirs.keys()])].sort((a, b) => a - b);
 const moments = times.map(time => {
@@ -216,6 +218,16 @@ const steps = robot.actions.map((action, index) => {
       : `dawsu! ${showChange(ours) ?? show(ours)}, 3.1.4 ${showChange(theirs) ?? show(theirs)}${other?.status ? ` (3.1.4 said: "${other.status}")` : ""}` };
 });
 
+// 6. The silent sound check: what dawsu! itself would play (its playback list, read without an audio
+// device) against what osu!lazer plays, for the map as opened and for the saved copy reopened.
+const silentCheck = which => {
+  const list = robot.sounds?.[which];
+  if (!Array.isArray(list)) return null; // a build without playback_list, or the step did not run
+  const ours = planned(list, which === "opened" ? copies.original : copies.dawsu);
+  return { ...soundCheck(ours.sounds, which === "opened" ? lazerOriginal : lazerDawsu), silent: ours.silent };
+};
+const silent = { opened: silentCheck("opened"), reopened: silentCheck("reopened") };
+
 const summary = {
   standIns,
   robot: robotLast,
@@ -223,6 +235,7 @@ const summary = {
   twin: twin.error ? `3.1.4 stopped: ${twin.error}` : `3.1.4 saved: ${twin.saved}`,
   sounds: { same: sameCount, total: moments.length, edited: { same: editedSame, total: editedMoments.length } },
   steps: { same: steps.filter(step => step.same).length, total: steps.length },
+  silent: Object.fromEntries(Object.entries(silent).map(([which, check]) => [which, check && { same: check.same, total: check.moments, silent: check.silent, floor: check.floor }])),
 };
 for (const step of steps) console.log(`${step.same ? "SAME" : "DIFF"} ${step.edit}${step.text ? " — " + step.text : ""}`);
 for (const moment of moments.filter(moment => !moment.same)) console.log(`DIFF ${moment.time} ms — ${moment.notes.join("; ")}`);
@@ -230,14 +243,21 @@ if (twin.dialogs?.length) console.log(`3.1.4's Save showed: ${twin.dialogs.map(d
 console.log(summary.twin);
 console.log(`edits: ${summary.steps.same} of ${summary.steps.total} ended the same in both apps`);
 console.log(`sounds: ${editedSame} of ${editedMoments.length} edited moments play the same in both saved maps (${sameCount} of ${moments.length} moments in all)`);
+for (const [which, check] of Object.entries(silent)) {
+  const what = which === "opened" ? "the map as opened" : "the saved copy reopened";
+  if (!check) { console.log(`silent sound check, ${what}: not run (this build has no playback list)`); continue; }
+  for (const moment of check.differences) console.log(`PLAYS ${which} ${moment.time} ms — ${moment.notes.join("; ")}`);
+  console.log(`silent sound check, ${what}: dawsu! plays ${check.same} of ${check.moments} moments as osu! does`
+    + `${check.silent ? `; ${check.silent} sounds not loaded, so silent` : ""}${check.floor ? `; ${check.floor} raised to the 5% floor on purpose` : ""}`);
+}
 // The headline is the edited moments (the unedited ones are the same in nearly every map), never
 // rounded up to 100%.
 const percent = editedMoments.length ? Math.floor(100 * editedSame / editedMoments.length) : 100;
 console.log(`compare with 3.1.4: ${percent}% of edited sound moments the same (${editedSame} of ${editedMoments.length}; ${moments.length - sameCount} differences in all)`);
-if (args.json) writeFileSync(resolve(args.json), JSON.stringify({ summary, steps, moments, dialogs: twin.dialogs ?? [], work }, null, 2) + "\n");
+if (args.json) writeFileSync(resolve(args.json), JSON.stringify({ summary, steps, moments, silent, dialogs: twin.dialogs ?? [], work }, null, 2) + "\n");
 
 // The robot's own profile folder (its map copy) is no longer needed; the work folder goes unless --keep.
 try { rmSync(robot.profile, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 }); } catch {}
 if (!args.keep) try { rmSync(work, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 }); } catch {}
 else console.log(`kept: ${relative(repo, work)}`);
-if (twin.error || !twin.saved || sameCount !== moments.length) process.exitCode = 1;
+if (twin.error || !twin.saved || sameCount !== moments.length || Object.values(silent).some(check => check?.differences.length)) process.exitCode = 1;

@@ -2880,6 +2880,28 @@ impl Application {
             })
             .collect()
     }
+    /// Every sound playback would play for the whole map, with nothing muted, without an audio device:
+    /// when (ms), how long a looping sound lasts, which file or skin sound plays, at what volume, and
+    /// whether the sound is loaded (a sound that is not loaded stays silent). The robot mapper's silent
+    /// sound check compares this list with what osu!lazer plays for the same map.
+    pub fn playback_list(&self) -> Vec<PlannedSound> {
+        let Some(d) = &self.document else {
+            return Vec::new();
+        };
+        cue_list(d.composer.hitsounds(), &[], &[])
+            .into_iter()
+            .map(|cue| PlannedSound {
+                at_ms: cue.time().ms(),
+                end_ms: cue.loop_end().map(|t| t.ms()),
+                plays: match cue.sample() {
+                    SampleIdentity::File(name) => PlannedSource::File(name.clone()),
+                    standard => PlannedSource::Skin(lane_name(standard)),
+                },
+                volume: (f64::from(cue.gain()) * 100.0).round() as i32,
+                loaded: self.samples.contains_key(cue.sample()),
+            })
+            .collect()
+    }
     fn sync_audio(&mut self) {
         if let Some(d) = &self.document {
             self.cached_version = d.composer.history.version();
@@ -2907,6 +2929,22 @@ fn toggle<T: PartialEq>(items: &mut Vec<T>, item: T) {
     } else {
         items.push(item);
     }
+}
+/// One sound of [`Application::playback_list`].
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+pub struct PlannedSound {
+    pub at_ms: f64,
+    pub end_ms: Option<f64>,
+    pub plays: PlannedSource,
+    pub volume: i32,
+    pub loaded: bool,
+}
+/// The file in the mapset folder a sound plays, or the skin sound it falls back to.
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PlannedSource {
+    File(String),
+    Skin(String),
 }
 pub fn lane_name(identity: &SampleIdentity) -> String {
     match identity {
