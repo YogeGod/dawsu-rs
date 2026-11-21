@@ -1,0 +1,168 @@
+<script>
+  import { dbText, faderPosition, positionGain, scaleMarks, stepGain } from "../lib/mixer.js";
+
+  // v3 §6 fader block: slot, dB scale and meter. A gain of null means the editor has no level for
+  // this channel yet: the slot shows greyed out with no cap. The meter stays empty (no levels yet).
+  let { gain = null, min = 0, max = 1, label, disabled = false, onchange } = $props();
+
+  let slot = $state();
+  // The value under the pointer while dragging; the editor's answer replaces it on release.
+  let held = $state(null);
+  const shown = $derived(held ?? gain);
+
+  // One gains action in flight at a time; the newest value waits for it.
+  let busy = false;
+  let queued = null;
+  async function send(value) {
+    queued = value;
+    if (busy) return;
+    busy = true;
+    try {
+      while (queued !== null) {
+        const next = queued;
+        queued = null;
+        await onchange?.(next);
+      }
+    } finally {
+      busy = false;
+    }
+  }
+
+  // The cap's centre sits 12 px below the slot's top at the top of its 126 px travel.
+  const gainAt = event => positionGain((event.clientY - slot.getBoundingClientRect().top - 12) / 126, min, max);
+
+  function down(event) {
+    if (disabled || event.button !== 0) return;
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+    held = gainAt(event);
+    send(held);
+  }
+  function move(event) {
+    if (held === null) return;
+    const next = gainAt(event);
+    if (Math.abs(next - held) < 0.0005) return;
+    held = next;
+    send(held);
+  }
+  function up() {
+    held = null;
+  }
+
+  const steps = { ArrowUp: 1, ArrowRight: 1, ArrowDown: -1, ArrowLeft: -1, PageUp: 6, PageDown: -6 };
+  function key(event) {
+    if (disabled || event.ctrlKey || event.altKey || event.metaKey) return;
+    let next;
+    if (event.key in steps) next = stepGain(shown, steps[event.key], min, max);
+    else if (event.key === "Home") next = min;
+    else if (event.key === "End") next = max;
+    else return;
+    // The document's arrow keys would otherwise move the playhead.
+    event.preventDefault();
+    event.stopPropagation();
+    if (next !== shown) send(next);
+  }
+</script>
+
+<div class="fader">
+  {#if shown === null || shown === undefined}
+    <div class="slot off" aria-hidden="true"><div class="track"></div></div>
+  {:else}
+    <div class="slot" bind:this={slot} role="slider" tabindex={disabled ? -1 : 0} aria-label={label}
+      aria-orientation="vertical" aria-valuemin={Math.round(min * 100)} aria-valuemax={Math.round(max * 100)}
+      aria-valuenow={Math.round(shown * 100)} aria-valuetext={dbText(shown) + " dB"} aria-disabled={disabled}
+      onpointerdown={down} onpointermove={move} onpointerup={up} onpointercancel={up} onkeydown={key}>
+      <div class="track"></div>
+      <div class="cap" style:--fader-at={faderPosition(shown)}><span></span></div>
+    </div>
+  {/if}
+  <div class="scale" aria-hidden="true">
+    {#each scaleMarks as [mark, at] (mark)}<span style:--fader-at={at}>{mark}</span>{/each}
+  </div>
+  <div class="meter off" aria-hidden="true"><div></div><div></div></div>
+</div>
+
+<style>
+  .fader {
+    height: 150px;
+    display: flex;
+    gap: 3px;
+    flex: none;
+  }
+  .slot {
+    position: relative;
+    width: 30px;
+    flex: none;
+    border-radius: 3px;
+    background: rgba(0, 0, 0, 0.4);
+    touch-action: none;
+    cursor: ns-resize;
+  }
+  .slot.off {
+    cursor: default;
+    opacity: 0.45;
+  }
+  .slot[aria-disabled="true"] {
+    cursor: default;
+  }
+  .slot:focus-visible {
+    outline: 2px solid var(--editor-focus);
+    outline-offset: 1px;
+  }
+  .track {
+    position: absolute;
+    left: 14px;
+    top: 6px;
+    bottom: 6px;
+    width: 2px;
+    border-radius: 1px;
+    background: #0a0a0a;
+  }
+  .cap {
+    position: absolute;
+    left: 4px;
+    top: calc(6px + var(--fader-at) * 126px);
+    width: 22px;
+    height: 12px;
+    border-radius: 2px;
+    background: #cdcdcd;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+    display: flex;
+    align-items: center;
+  }
+  .cap span {
+    width: 100%;
+    height: 1px;
+    background: #3c3c3c;
+  }
+  .scale {
+    position: relative;
+    flex: 1;
+    min-width: 14px;
+  }
+  .scale span {
+    position: absolute;
+    right: 1px;
+    top: calc(6px + var(--fader-at) * 138px);
+    margin-top: -4px;
+    font-size: 9px;
+    line-height: 9px;
+    color: var(--editor-muted);
+    font-variant-numeric: tabular-nums;
+  }
+  .meter {
+    width: 11px;
+    flex: none;
+    border-radius: 2px;
+    background: #0a0a0a;
+    display: flex;
+    gap: 1px;
+    padding: 1px;
+    box-sizing: border-box;
+  }
+  .meter div {
+    flex: 1;
+  }
+  .meter.off {
+    opacity: 0.45;
+  }
+</style>
