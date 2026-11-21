@@ -207,7 +207,9 @@ const steps = robot.actions.map((action, index) => {
   const relative = action.do !== "open";
   const ours = relative ? changes(action.seen, opened.dawsu) : action.seen;
   const theirs = relative ? changes(other?.seen, opened.v314) : other?.seen;
-  const same = action.do === "add-file" || JSON.stringify(ours) === JSON.stringify(theirs);
+  // A hit's time is compared to the whole millisecond, as the .osu stores it (dawsu! shows 222421.79, 3.1.4 222422).
+  const whole = value => typeof value === "number" ? Math.round(value) : value;
+  const same = action.do === "add-file" || JSON.stringify(whole(ours)) === JSON.stringify(whole(theirs));
   return { edit: label, same, dawsu: ours ?? null, v314: theirs ?? null, note: other?.status ?? other?.note ?? null,
     text: same ? null : action.do === "open"
       ? `dawsu! shows ${ours?.filter(hit => !theirs?.includes(hit)).join(", ") || "nothing more"}; 3.1.4 shows ${theirs?.filter(hit => !ours?.includes(hit)).join(", ") || "nothing more"}`

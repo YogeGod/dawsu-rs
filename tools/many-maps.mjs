@@ -46,6 +46,13 @@ let built = false;
 for (const [index, map] of maps.entries()) {
   const name = relative(repo, map).replaceAll("\\", "/");
   console.log(`[${index + 1}/${maps.length}] ${name}`);
+  // dawsu! edits osu!standard difficulties only, so other modes are listed as skipped, not as failures.
+  const mode = Number(/^\s*Mode\s*:\s*(\d+)/m.exec(readFileSync(map, "latin1"))?.[1] ?? 0);
+  if (mode !== 0) {
+    rows.push({ map: name, skipped: `mode ${mode}: dawsu! edits osu!standard difficulties only` });
+    console.log(`   skipped: mode ${mode} (dawsu! edits osu!standard only)`);
+    continue;
+  }
   const json = join(out, `${index + 1}.json`);
   rmSync(json, { force: true }); // a file left by an earlier run must not stand in for this map's result
   const run = spawnSync(process.execPath, [join(repo, "tools/compare-314.mjs"), "--exe", args.exe, "--map", map, "--json", json,
@@ -83,7 +90,7 @@ for (const [index, map] of maps.entries()) {
   if (differences.length > 3) console.log(`   … and ${differences.length - 3} more`);
 }
 
-const compared = rows.filter(row => !row.error);
+const compared = rows.filter(row => !row.error && !row.skipped);
 const sum = (pick) => compared.reduce((total, row) => total + pick(row), 0);
 const sounds = { same: sum(row => row.sounds.same), total: sum(row => row.sounds.total) };
 const edits = { same: sum(row => row.edits.same), total: sum(row => row.edits.total) };
@@ -91,7 +98,7 @@ const robotClean = compared.filter(row => row.robot && !row.robotFailed.length).
 const identical = compared.filter(row => !row.differences.length).length;
 console.log("");
 console.log(`run time: ${Math.round((Date.now() - started) / 60000)} min`);
-console.log(`maps: ${maps.length}; compared ${compared.length}; could not compare ${rows.length - compared.length}`);
+console.log(`maps: ${maps.length}; compared ${compared.length}; skipped ${rows.filter(row => row.skipped).length} (not osu!standard); could not compare ${rows.filter(row => row.error).length}`);
 console.log(`robot mapper: no failed step on ${robotClean} of ${compared.length} maps`);
 console.log(`same as 3.1.4 on every edit and sound: ${identical} of ${compared.length} maps`);
 console.log(`edits the same: ${edits.same} of ${edits.total}; sound moments the same: ${sounds.same} of ${sounds.total}` +
