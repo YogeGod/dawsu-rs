@@ -123,6 +123,8 @@ pub(crate) struct Request {
     /// The session's hold on the mapset: the job keeps it marked open until it ends, and stops
     /// once another session opens it.
     presence: Arc<pending::Presence>,
+    /// `Application::opens` when the job started.
+    opens: u64,
 }
 
 /// A file a hit still plays, kept as a pending file and moved aside. It leaves the mapset only
@@ -148,6 +150,8 @@ pub(crate) struct Outcome {
     problem: Option<String>,
     /// When closing: the pending names a record still lists.
     keep: Option<BTreeSet<String>>,
+    /// `Application::opens` when the job started: the document it serves.
+    opens: u64,
 }
 
 const MOVING: &str = ".dawsu-moving";
@@ -196,7 +200,7 @@ fn keep_removed(data_root: &Path, name: &str, sha256: &str, bytes: &[u8]) -> boo
 pub(crate) fn run(mut request: Request) -> Outcome {
     let mut outcome = Outcome {
         closing: request.closing, root: request.root.clone(), to_pending: Vec::new(), pending: pending::Pending::default(),
-        removed: Vec::new(), problem: None, keep: None,
+        removed: Vec::new(), problem: None, keep: None, opens: request.opens,
     };
     let root = request.root.clone();
     put_back_stopped_moves(&root);
@@ -363,6 +367,7 @@ impl Application {
             closing, root, data_root: self.data_root.clone(), project_root: self.project_root.clone(),
             open: document.path.clone(), ledger, pending: document.pending.clone(),
             hit_files: if closing { BTreeSet::new() } else { hit_files }, undo_files, can_list: self.project.is_some(), presence,
+            opens: self.opens,
         };
         let (send, receive) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
@@ -377,16 +382,15 @@ impl Application {
     /// names a record still lists (closing only).
     pub(crate) fn poll_sweep(&mut self, wait: bool) -> Option<Option<BTreeSet<String>>> {
         let receive = self.sweep.as_ref()?;
-        let outcome = if wait {
+        // A job close or open already gave up waiting for is not waited for again.
+        let outcome = if wait && !self.sweep_detached {
             match receive.recv_timeout(self.sweep_wait) {
                 Ok(outcome) => Some(outcome),
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                     // Its document is about to go: the job no longer keeps `busy` set.
-                    if !self.sweep_detached {
-                        self.sweep_detached = true;
-                        self.busy = false;
-                        self.status = format!("{}.{STILL_RUNNING}", self.status.trim_end_matches('.'));
-                    }
+                    self.sweep_detached = true;
+                    self.busy = false;
+                    self.status = with_note(&self.status, STILL_RUNNING);
                     return None;
                 }
                 Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => None,
@@ -401,7 +405,9 @@ impl Application {
         self.sweep = None;
         // A job close or open stopped waiting for no longer keeps `busy` set; another job may.
         let detached = std::mem::take(&mut self.sweep_detached);
-        if !detached {
+        if detached {
+            self.status = self.status.replace(STILL_RUNNING.trim_start(), "").trim_end().to_string();
+        } else {
             self.busy = false;
         }
         let Some(outcome) = outcome else {
@@ -415,14 +421,15 @@ impl Application {
             self.error = Some("The unused sample cleanup stopped unexpectedly. A file it removed is kept in removed-samples; one it was moving stays in the mapset.".into());
             return Some(None);
         };
-        Some(self.apply_sweep(outcome, detached))
+        Some(self.apply_sweep(outcome))
     }
 
-    /// `detached`: close or open stopped waiting, so the document the job served is gone.
-    fn apply_sweep(&mut self, outcome: Outcome, detached: bool) -> Option<BTreeSet<String>> {
-        let Outcome { closing, root, to_pending, mut pending, removed, problem, keep } = outcome;
+    fn apply_sweep(&mut self, outcome: Outcome) -> Option<BTreeSet<String>> {
+        let Outcome { closing, root, to_pending, mut pending, removed, problem, keep, opens } = outcome;
         let same_mapset = |document: &super::Document| document.path.parent() == Some(root.as_path());
-        let Some(document) = self.document.as_mut().filter(|document| !detached && same_mapset(document)) else {
+        // A failed open keeps the document the job served; a new open or a close does not.
+        let served = opens == self.opens;
+        let Some(document) = self.document.as_mut().filter(|document| served && same_mapset(document)) else {
             // Its document is gone: the files waiting to leave stay, and the next Save tries again.
             for moving in &to_pending {
                 pending.release(&moving.file.name);
@@ -433,6 +440,9 @@ impl Application {
                 for file in &removed {
                     document.files.retain(|name| !name.eq_ignore_ascii_case(&file.name));
                 }
+            }
+            if let Some(problem) = &problem {
+                self.status = with_note(&self.status, problem);
             }
             return keep;
         };
@@ -498,7 +508,39 @@ fn in_a_copy(copies: &[SampleIdentity], name: &str) -> bool {
     })
 }
 
+/// `status` with `note` after it, as one more sentence.
+pub(crate) fn with_note(status: &str, note: &str) -> String {
+    let (status, note) = (status.trim_end_matches(['.', ' ']), note.trim_start());
+    match status {
+        "" => note.to_string(),
+        _ if status.ends_with('…') => format!("{status} {note}"),
+        _ => format!("{status}. {note}"),
+    }
+}
+
 /// The words for the status line.
 pub(crate) fn removed_status(count: usize) -> Option<String> {
     (count > 0).then(|| format!("Removed {count} unused sample file{}.", if count == 1 { "" } else { "s" }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_cleanup_whose_map_closed_still_says_why_nothing_was_removed() {
+        let mut app = Application::headless();
+        app.sweep_detached = true;
+        app.status = format!("Closed.{STILL_RUNNING}");
+        let (send, receive) = std::sync::mpsc::channel();
+        send.send(Outcome {
+            closing: true, root: PathBuf::from("mapset"), to_pending: Vec::new(), pending: pending::Pending::default(),
+            removed: Vec::new(), problem: Some("No unused sample files were removed. The recovery copy x.json could not be read.".into()),
+            keep: None, opens: 0,
+        }).unwrap();
+        app.sweep = Some(receive);
+        app.poll_sweep(false);
+        assert!(app.status.contains("x.json could not be read"), "{}", app.status);
+        assert!(!app.status.contains("still finishing"), "{}", app.status);
+    }
 }

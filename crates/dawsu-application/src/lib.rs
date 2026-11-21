@@ -1462,7 +1462,7 @@ impl Application {
         let outgoing_mapset = self.document.as_ref().and_then(|d| d.path.parent().map(Path::to_path_buf));
         self.status = "Opening map and decoding audio…".into();
         if self.sweep_detached {
-            self.status.push_str(sweep::STILL_RUNNING);
+            self.status = sweep::with_note(&self.status, sweep::STILL_RUNNING);
         }
         std::thread::spawn(move || {
             let result = (|| {
@@ -1648,6 +1648,9 @@ impl Application {
                     } else {
                         "Difficulty loaded".into()
                     };
+                    if self.sweep_detached {
+                        self.status = sweep::with_note(&self.status, sweep::STILL_RUNNING);
+                    }
                     self.save_preferences();
                     self.checkpoint = Some(checkpoint);
                     self.restored_recovery = restored_id;
@@ -1656,6 +1659,9 @@ impl Application {
                 JobResult::Open(_, _, Err(e)) => {
                     self.error = Some(e);
                     self.status = "Open failed; previous document kept".into();
+                    if self.sweep_detached {
+                        self.status = sweep::with_note(&self.status, sweep::STILL_RUNNING);
+                    }
                 }
                 JobResult::Stretched {
                     path,
@@ -5817,6 +5823,10 @@ Sample,0,0,\"{story}\",100
         second.preferences.default_samples = scratch.path("skin");
         open(&mut second, map);
         second.document.as_mut().unwrap().composer.apply("Edit", |hits| hits.set_volume(dawsu_hitsounding::MomentId(0), 70));
+        // The copy is still there when the cleanup runs, and its lane names the file.
+        let copies: Vec<String> = std::fs::read_dir(second.data_root.join("recovery")).unwrap().flatten()
+            .filter(|entry| entry.path().is_file()).map(|entry| std::fs::read_to_string(entry.path()).unwrap()).collect();
+        assert!(copies.iter().any(|copy| copy.contains("normal-hitclap7.wav")), "the copy names the file");
         save_through_summary(&mut second, scratch.path("backups"));
         assert!(!folder.join("normal-hitclap7.wav").exists(), "a lane with no hit keeps nothing, in a copy too");
         assert_eq!(std::fs::read(second.data_root.join("removed-samples").join(format!("{sha256}.wav"))).unwrap(), bytes);
@@ -5867,14 +5877,13 @@ Sample,0,0,\"{story}\",100
         let other = pending::Presence::enter(&app.data_root, &folder.canonicalize().unwrap()).unwrap();
         assert!(other.others_live(), "the cleanup keeps the mapset marked open");
         drop(other);
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while app.sweep.is_some() {
-            app.poll();
-            assert!(Instant::now() < deadline);
-            std::thread::sleep(Duration::from_millis(5));
-        }
+        let again = Instant::now();
+        app.poll_sweep(true);
+        assert!(again.elapsed() < Duration::from_millis(50), "a job already given up on is not waited for again: {:?}", again.elapsed());
+        finish_sweep(&mut app);
         *sweep::BEFORE_MOVE.lock().unwrap() = None;
         assert!(!folder.join("normal-hitclap7.wav").exists(), "it still finishes");
+        assert!(!app.status.contains("still finishing"), "{}", app.status);
         let probe = pending::Presence::enter(&app.data_root, &folder.canonicalize().unwrap()).unwrap();
         assert!(!probe.others_live(), "and the mapset is free again");
     }
@@ -5899,16 +5908,74 @@ Sample,0,0,\"{story}\",100
         let opens = app.opens;
         save_through_summary(&mut app, scratch.path("backups"));
         assert_eq!(app.opens, opens + 1, "opened while the cleanup still ran");
+        assert!(app.sweep.is_some(), "the job is still running");
+        assert!(app.status.contains("Unused sample cleanup is still finishing in the background"), "{}", app.status);
+        finish_sweep(&mut app);
+        *sweep::BEFORE_MOVE.lock().unwrap() = None;
+        assert_eq!(std::fs::read(folder.join("normal-hitnormal2.wav")).unwrap(), TONE, "back under its name");
+        assert!(!mapset(&folder).iter().any(|name| name.ends_with(".dawsu-moving")));
+        assert!(ledger(&app).iter().any(|name| name == "normal-hitnormal2.wav"), "still dawsu!'s; the next Save tries again");
+        assert!(!app.status.contains("still finishing"), "{}", app.status);
+    }
+
+    /// Polls until the cleanup job is done.
+    fn finish_sweep(app: &mut Application) {
         let deadline = Instant::now() + Duration::from_secs(10);
         while app.sweep.is_some() {
             app.poll();
             assert!(Instant::now() < deadline);
             std::thread::sleep(Duration::from_millis(5));
         }
+    }
+
+    #[test]
+    fn when_the_next_map_fails_to_open_the_cleanup_finishes_for_the_map_still_open() {
+        let scratch = Scratch::new("sweep-open-fails");
+        let (mut app, _, folder) = two_layers_in(&scratch, true, Some(scratch.path("data")));
+        use_layer_2(&mut app);
+        save_through_summary(&mut app, scratch.path("backups"));
+        fn slow(path: &Path) {
+            if path.to_string_lossy().contains("sweep-open-fails") {
+                std::thread::sleep(Duration::from_millis(500));
+            }
+        }
+        mix_with_skin(&mut app);
+        app.request_open(scratch.path("missing").join("gone.osu"));
+        app.sweep_wait = Duration::from_millis(100);
+        let _turn = sweep::HOOK_TURN.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        *sweep::BEFORE_MOVE.lock().unwrap() = Some(slow);
+        app.save_with_backups(scratch.path("backups"));
+        wait(&mut app);
+        assert!(app.error.take().is_some(), "the open failed");
+        finish_sweep(&mut app);
         *sweep::BEFORE_MOVE.lock().unwrap() = None;
-        assert_eq!(std::fs::read(folder.join("normal-hitnormal2.wav")).unwrap(), TONE, "back under its name");
-        assert!(!mapset(&folder).iter().any(|name| name.ends_with(".dawsu-moving")));
-        assert!(ledger(&app).iter().any(|name| name == "normal-hitnormal2.wav"), "still dawsu!'s; the next Save tries again");
+        assert!(!folder.join("normal-hitnormal2.wav").exists(), "the same map is still open, so the file leaves as planned");
+        assert!(app.document().unwrap().pending.get("normal-hitnormal2.wav").is_some(), "as a pending file");
+    }
+
+    #[test]
+    fn a_cleanup_stops_when_another_session_opens_the_mapset_while_it_runs() {
+        static OTHER: std::sync::Mutex<Option<pending::Presence>> = std::sync::Mutex::new(None);
+        fn open_elsewhere(path: &Path) {
+            if path.to_string_lossy().contains("sweep-other-opens") {
+                let mapset = path.parent().unwrap().canonicalize().unwrap();
+                let data_root = mapset.parent().unwrap().join("data");
+                *OTHER.lock().unwrap() = Some(pending::Presence::enter(&data_root, &mapset).unwrap());
+            }
+        }
+        let scratch = Scratch::new("sweep-other-opens");
+        let (mut app, _, folder) = two_layers_in(&scratch, true, Some(scratch.path("data")));
+        unused_file(&app, &folder);
+        app.document.as_mut().unwrap().composer.apply("Edit", |hits| hits.set_volume(dawsu_hitsounding::MomentId(0), 80));
+        let _turn = sweep::HOOK_TURN.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        *sweep::BEFORE_MOVE.lock().unwrap() = Some(open_elsewhere);
+        save_through_summary(&mut app, scratch.path("backups"));
+        *sweep::BEFORE_MOVE.lock().unwrap() = None;
+        assert!(OTHER.lock().unwrap().is_some(), "the hook ran");
+        assert!(folder.join("normal-hitclap7.wav").exists(), "another session opened the mapset, so nothing moves");
+        *OTHER.lock().unwrap() = None;
+        app.close_document();
+        assert!(!folder.join("normal-hitclap7.wav").exists(), "the next cleanup takes it out");
     }
 
     #[test]
