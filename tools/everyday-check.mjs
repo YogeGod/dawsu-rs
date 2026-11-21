@@ -420,6 +420,7 @@ try {
     expect(drawn.colours > 1, "the timeline canvas is blank");
     hitsBeforeEdits = (await hits()).length;
     expect(hitsBeforeEdits > 0, "the map's hits are not shown");
+    did({ do: "open", seen: await namedHits() });
     return `${await read(() => window.scene.lanes.length)} lanes, ${hitsBeforeEdits} hits`;
   });
 

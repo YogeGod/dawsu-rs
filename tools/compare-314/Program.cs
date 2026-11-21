@@ -7,6 +7,7 @@
 // wrote and does each edit at the times dawsu! ended up with (after its snap), so the two apps are
 // compared on what they do with the same edit, not on where a mouse landed:
 //
+//   open      lists the hits 3.1.4 shows on the opened map
 //   place     adds a hit on the named lane, through 3.1.4's edit session (the same call its Draw tool makes)
 //   move      moves the selected hit by the same amount, through the session
 //   volume    types the value into 3.1.4's volume box with "Set all" and applies it (its own clamp applies)
@@ -114,6 +115,7 @@ try
                 if (Flash.GetValue(w) is string { Length: > 0 } said) result["status"] = said;
                 break;
             }
+            case "open": result["seen"] = Named(w); break;
             case "delete": Press(Key.Delete); result["seen"] = Named(w); break;
             case "undo": Press(Key.Z, RawInputModifiers.Control); result["seen"] = Named(w); break;
             case "redo": Press(Key.Y, RawInputModifiers.Control); result["seen"] = Named(w); break;

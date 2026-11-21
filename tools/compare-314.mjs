@@ -13,6 +13,8 @@
 //   --keep     keep the work folder (map copies, results) under target/compare-314/
 //
 // What it does:
+//   0. Copies the map's folder and adds a short silent WAV for each sound file its hits name but the
+//      folder lacks (3.1.4 will not save without them; the fixtures carry no audio).
 //   1. Runs the everyday check (the robot mapper) on a copy of the map and keeps its edited copy.
 //   2. Replays the same edits in 3.1.4's own window on a second copy, without a screen and without
 //      sound, and saves through 3.1.4's own Save (tools/compare-314/Program.cs).
@@ -42,11 +44,44 @@ for (let i = 2; i < process.argv.length; i++) {
   if (!flag) i++;
 }
 if (!args.exe) throw new Error("--exe is required: the built dawsu-tauri.exe");
-const original = resolve(args.map ?? join(repo, "tests/fixtures/save-pack/synthetic/lf-no-final-newline.osu"));
+const given = resolve(args.map ?? join(repo, "tests/fixtures/save-pack/synthetic/lf-no-final-newline.osu"));
+if (!existsSync(given)) throw new Error(`no map at ${given}`);
 const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..*/, "");
 const root = join(repo, "target", "compare-314");
 const work = join(root, `${stamp}-${process.pid}`);
 mkdirSync(work, { recursive: true });
+
+// 0. The map, with a stand-in for each sound file it names but its folder lacks. 3.1.4 refuses to save
+// a map whose hit names a missing file ("Save stopped: Missing clap-custom.wav."), and the fixtures
+// carry no audio, so both apps get the same complete copy: each missing file becomes a short silent
+// WAV under the name the map uses. The given map's folder is only read.
+const source = join(work, "source");
+cpSync(dirname(given), source, { recursive: true, dereference: true });
+const original = join(source, basename(given));
+const standIns = [];
+{
+  let section = "";
+  const present = new Set(readdirSync(source).map(name => name.toLowerCase()));
+  for (const line of readFileSync(original, "latin1").split(/\r?\n/)) {
+    if (/^\[.*\]$/.test(line.trim())) { section = line.trim(); continue; }
+    if (section !== "[HitObjects]") continue;
+    const name = line.split(",").at(-1).split(":")[4]?.trim();
+    if (!name || present.has(name.toLowerCase()) || /[\\/]/.test(name)) continue;
+    writeFileSync(join(source, name), silentWav());
+    present.add(name.toLowerCase());
+    standIns.push(name);
+  }
+}
+function silentWav() {
+  const samples = 4410; // 0.1 s, 16-bit mono, 44.1 kHz
+  const wav = Buffer.alloc(44 + samples * 2);
+  wav.write("RIFF", 0); wav.writeUInt32LE(36 + samples * 2, 4); wav.write("WAVEfmt ", 8);
+  wav.writeUInt32LE(16, 16); wav.writeUInt16LE(1, 20); wav.writeUInt16LE(1, 22); wav.writeUInt32LE(44100, 24);
+  wav.writeUInt32LE(88200, 28); wav.writeUInt16LE(2, 32); wav.writeUInt16LE(16, 34); wav.write("data", 36);
+  wav.writeUInt32LE(samples * 2, 40);
+  return wav;
+}
+if (standIns.length) console.log(`0/4 silent stand-ins for sound files the map names but lacks: ${standIns.join(", ")}`);
 
 function run(command, list, options = {}) {
   const result = spawnSync(command, list, { encoding: "utf8", maxBuffer: 64 << 20, ...options });
@@ -233,20 +268,34 @@ const editedMoments = moments.filter(moment => moment.edited);
 const editedSame = editedMoments.filter(moment => moment.same).length;
 
 // 5. What each app showed after each edit.
+// Hit lists are compared as what changed since the map opened in that app, because the two apps
+// may read the opened map differently (that shows on the "open" line once, not on every edit after it).
+const opened = { dawsu: robot.actions.find(action => action.do === "open")?.seen, v314: twin.steps?.find(step => step.do === "open")?.seen };
+const changes = (list, start) => Array.isArray(list) && Array.isArray(start)
+  ? { added: list.filter(hit => !start.includes(hit)), removed: start.filter(hit => !list.includes(hit)) } : list;
+const showChange = change => change && typeof change === "object" && !Array.isArray(change)
+  ? [change.added.length ? `added ${change.added.join(", ")}` : "", change.removed.length ? `removed ${change.removed.join(", ")}` : ""].filter(Boolean).join("; ") || "no change"
+  : null;
 const show = value => value === null || value === undefined ? "nothing" : Array.isArray(value) ? `${value.length} hits` : String(value);
 const steps = robot.actions.map((action, index) => {
   const other = twin.steps?.[index];
-  const label = action.do === "place" ? `place a hit on ${action.lane} (dawsu! put it at ${action.seen} ms)`
+  const label = action.do === "open" ? "open the map (the hits each app reads from it)"
+    : action.do === "place" ? `place a hit on ${action.lane} (dawsu! put it at ${action.seen} ms)`
     : action.do === "move" ? `move it by ${action.by} ms`
     : action.do === "volume" ? `type ${action.value}% as its volume`
     : action.do === "add-file" ? `add the sample ${action.file} to the mapset` : action.do;
-  const ours = action.seen, theirs = other?.seen;
+  const relative = action.do !== "open";
+  const ours = relative ? changes(action.seen, opened.dawsu) : action.seen;
+  const theirs = relative ? changes(other?.seen, opened.v314) : other?.seen;
   const same = action.do === "add-file" || JSON.stringify(ours) === JSON.stringify(theirs);
   return { edit: label, same, dawsu: ours ?? null, v314: theirs ?? null, note: other?.status ?? other?.note ?? null,
-    text: same ? null : `dawsu! ${show(ours)}, 3.1.4 ${show(theirs)}${other?.status ? ` (3.1.4 said: "${other.status}")` : ""}` };
+    text: same ? null : action.do === "open"
+      ? `dawsu! shows ${ours?.filter(hit => !theirs?.includes(hit)).join(", ") || "nothing more"}; 3.1.4 shows ${theirs?.filter(hit => !ours?.includes(hit)).join(", ") || "nothing more"}`
+      : `dawsu! ${showChange(ours) ?? show(ours)}, 3.1.4 ${showChange(theirs) ?? show(theirs)}${other?.status ? ` (3.1.4 said: "${other.status}")` : ""}` };
 });
 
 const summary = {
+  standIns,
   robot: robotLast,
   twin: twin.error ? `3.1.4 stopped: ${twin.error}` : `3.1.4 saved: ${twin.saved}`,
   sounds: { same: sameCount, total: moments.length, edited: { same: editedSame, total: editedMoments.length } },
