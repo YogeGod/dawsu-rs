@@ -108,13 +108,17 @@ test("while playing the clock holds still on a small step back and stops at the 
 });
 
 test("the preview asks for the objects once per difficulty, not again when the answer arrives", async () => {
-  // Effects do not run under svelte/server, so this reads the source: the fetch effect may look at
-  // `model` (which its own answer sets) only through untrack, or it asks again forever.
+  // Effects do not run under svelte/server, so this reads the source of the fetch effect: it may
+  // set `model` (its own answer does) but read it only inside untrack, or it asks again forever.
   const { readFileSync } = await import("node:fs");
   const source = readFileSync(new URL("../src/parts/MapPreview.svelte", import.meta.url), "utf8");
-  const effect = source.slice(source.indexOf("invoke(") - 600, source.indexOf("invoke("));
-  const reads = effect.match(/model\?\.\w+/g) ?? [];
-  assert.ok(reads.length > 0);
+  const call = source.indexOf('invoke("map_preview_objects"');
+  const effect = source.slice(source.lastIndexOf("$effect(() => {", call), source.indexOf("});", call));
   assert.ok(effect.includes("untrack(() => model?.path)"));
-  assert.equal(effect.replace("untrack(() => model?.path)", "").match(/model\?\./g), null);
+  const reads = effect
+    .replace(/untrack\(\(\) => [^)]*\)/g, "")
+    .replace(/\/\/.*$/gm, "")
+    .replace(/\bmodel = /g, "")
+    .match(/\bmodel\b/g);
+  assert.equal(reads, null);
 });
