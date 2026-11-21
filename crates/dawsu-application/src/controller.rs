@@ -275,6 +275,19 @@ mod tests {
     }
 
     #[test]
+    fn ctrl_dragging_a_spread_never_takes_a_sound_under_5_percent() {
+        let (mut c, normal) = normal_80_clap_50();
+        c.selected.replace([HitKey { moment: 0, lane: clap() }, HitKey { moment: 1, lane: normal.clone() }]);
+        let second = |c: &Composer| c.hitsounds().moments()[1].hit_volume(&normal);
+        let at = |y: f64| PointerInput { y, ..bar(1000.0, 80.0, Mods::CTRL) };
+        // The mean of 80, 50 and 100 is 76.7; moving up 180 px puts each sound 4 times as far from it,
+        // which would take the clap to -30.
+        let mut stroke = ControllerStroke::start(&mut c, at(0.0), 1.0).unwrap();
+        stroke.finish(&mut c, at(-180.0));
+        assert_eq!((normal_and_clap(&c, &normal), second(&c)), ((90, 5), 100));
+    }
+
+    #[test]
     fn dragging_several_bars_moves_each_moment_by_its_own_change() {
         let (mut c, normal) = normal_80_clap_50();
         c.selected.replace([HitKey { moment: 0, lane: clap() }, HitKey { moment: 1, lane: normal.clone() }]);
