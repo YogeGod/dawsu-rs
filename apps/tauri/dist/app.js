@@ -41,6 +41,7 @@ let browserPreview = null;
 let browserModel = null;
 let browserTree = null;
 let usedLaneKeys = null;
+let laneFilterText = "";
 let showLaneInfo = false;
 let laneRows = [];
 let lanePositions = new Map();
@@ -95,8 +96,6 @@ let frame = 0;
 const nameOf = (path) => path.split(/[\\/]/).at(-1);
 const limit = (x, min, max) => Math.min(Math.max(x, min), Math.max(min, max));
 const command = (id) => act({ kind: "command", id });
-const toggle = (id, kind) => $(id).addEventListener("change", () => act({ kind, on: $(id).checked }));
-const number = (id, fallback) => $(id).valueAsNumber || ($(id).value === "0" ? 0 : fallback);
 
 function makeButton(label, click) {
   const button = document.createElement("button");
@@ -236,8 +235,8 @@ function show(next) {
       selectionLaneAnchor = null;
       if (selectionLanesOnly) act({ kind: "volume_scope", path: view.scene.path, lanes: null }, false);
       selectionLanesOnly = false;
-      $("used-only").checked = false;
-      $("lane-filter").value = "";
+      laneFilterText = "";
+      window.dawsuUi?.laneOptions?.(false, "");
     }
     if (loaded || !layoutWrites) hydrateLaneLayout(view.scene.laneLayout);
     // A lane that starts showing (a new layer from +, Ctrl+L or the lane menu, one Add lane shows
@@ -308,7 +307,6 @@ function show(next) {
   paintSoon();
   try { window.dawsuUi?.update(view, scene); } catch (error) { console.error(error); }
   setStatusNotice(missingUiParts());
-  $("triplet-snap").checked = window.dawsuUi?.snapGroup?.() === "triplets";
 }
 
 // The map chip in the ribbon. Map metadata comes from the .osu file, so it is set as text only.
@@ -323,10 +321,6 @@ function renderFrame(path) {
 function missingUiParts() {
   if (document.readyState !== "complete") return "";
   return document.querySelectorAll("[data-ui-mount]:not([data-ui-ready])").length ? "Part of the editor did not load" : "";
-}
-
-function setValue(id, value) {
-  if (document.activeElement !== $(id)) $(id).value = value;
 }
 
 // "Artist - Title (Creator) [Difficulty].osu" gives the map name and "[Difficulty]"; other names show whole.
@@ -638,7 +632,7 @@ function groupedLaneRows(eligible) {
 }
 
 function renderLanes() {
-  const filter = ($("lane-filter").value ?? "").trim().toLowerCase();
+  const filter = laneFilterText.trim().toLowerCase();
   const eligible = (row, alias) => {
     const lane = scene.lanes[row];
     if (usedLaneKeys !== null && (!lane || !usedLaneKeys.has(lane.key))) return false;
@@ -1012,12 +1006,6 @@ function drawBookmarks(ctx, marks, start, zoom, width) {
 
 function renderScene() {
   renderLanes();
-  $("snap").checked = scene.snap;
-  $("object-lines").checked = view.objectLines;
-  setValue("snap-mode", scene.snapMode);
-  setValue("beats", scene.beats);
-  setValue("divisor", scene.divisor);
-  setValue("lane-height", scene.rowHeight);
   renderSelection();
   const difficulty = $("difficulty");
   const pathKey = JSON.stringify([scene.path, scene.difficulties]);
@@ -2479,7 +2467,6 @@ function changeView(start, zoom, rowHeight = scene.rowHeight, rowAnchorY = 0) {
       scroll.scrollTop = (previousScroll + rowAnchorY) * rowHeight / previousHeight - rowAnchorY;
     }
     window.dawsuUi?.viewport?.(zoom, rowHeight);
-    setValue("lane-height", rowHeight);
     refreshLaneToolbar();
     handOverHitCard(null);
     paintSoon();
@@ -2495,7 +2482,6 @@ function changeView(start, zoom, rowHeight = scene.rowHeight, rowAnchorY = 0) {
         scroll.scrollTop = previousScroll;
       }
       window.dawsuUi?.viewport?.(previousZoom, previousHeight);
-      setValue("lane-height", previousHeight);
       paintSoon();
       throw error;
     }
@@ -2508,11 +2494,6 @@ function stepWheelSnap(finer) {
   const divisor = window.dawsuUi?.wheelSnap?.(finer);
   if (divisor) act({ kind: "snap", on: scene.snap, mode: scene.snapMode, beats: 1, divisor });
 }
-
-// The Triplets box shows the group; ticking it picks 1/6 and unticking 1/4, as lazer's group button does.
-$("triplet-snap").addEventListener("change", () => {
-  if (scene) act({ kind: "snap", on: scene.snap, mode: scene.snapMode, beats: 1, divisor: $("triplet-snap").checked ? 6 : 4 });
-});
 
 $("scroll").addEventListener("wheel", (event) => {
   if (!scene) return;
@@ -3244,13 +3225,7 @@ $("ramp-shape").addEventListener("change", () => {
 for (const button of document.querySelectorAll("[data-action]")) {
   button.addEventListener("click", () => act({ kind: button.dataset.action }));
 }
-for (const id of ["snap", "snap-mode", "beats", "divisor"]) {
-  $(id).addEventListener("change", () => {
-    act({ kind: "snap", on: $("snap").checked, mode: $("snap-mode").value,
-      beats: limit(number("beats", scene.beats), 1, 64), divisor: limit(number("divisor", scene.divisor), 1, 64) });
-  });
-}
-$("time-signatures").addEventListener("click", () => {
+function openTimeSignaturesDialog() {
   if (!scene || view.busy) return;
   const path = scene.path;
   const input = document.createElement("textarea");
@@ -3284,51 +3259,78 @@ $("time-signatures").addEventListener("click", () => {
       await act({ kind: "time_signatures", map: path, value });
     }, true],
   ]);
-});
-toggle("object-lines", "object_lines");
+}
 function setLaneHeight(height) {
   if (scene && !view.busy && !drag) changeView(scene.viewStart, scene.zoom, height);
 }
-
-$("lane-height-in").addEventListener("click", () => {
-  if (scene) setLaneHeight(Math.round(scene.rowHeight * 1.15));
-});
-$("lane-height-out").addEventListener("click", () => {
-  if (scene) setLaneHeight(Math.round(scene.rowHeight / 1.15));
-});
-$("lane-height").addEventListener("input", () => {
-  if (requests < 2) setLaneHeight(+$("lane-height").value);
-});
-$("lane-height").addEventListener("change", () => setLaneHeight(+$("lane-height").value));
-$("collapse-layers").addEventListener("click", () => {
-  if (!scene || view.busy || drag) return;
-  for (const family of familyParents.values()) collapsedFamilies.add(family);
-  renderLanes();
-  paintSoon();
-  saveLaneLayout();
-});
-$("lane-filter").addEventListener("input", () => {
-  if (!scene || drag) return;
-  renderLanes();
-  paintSoon();
-});
-$("used-only").addEventListener("change", () => {
-  if (!scene || view.busy || drag) {
-    $("used-only").checked = usedLaneKeys !== null;
-    return;
-  }
-  if ($("used-only").checked) {
-    // Snapshot used lanes so a row does not disappear when its last hit is moved or erased.
-    usedLaneKeys = new Set();
-    for (const [, , , hits] of scene.moments) {
-      for (const [row] of hits) usedLaneKeys.add(scene.lanes[row].key);
+function clampSnapInput(value, fallback) {
+  const numeric = typeof value === "string" ? (value.trim() === "" ? NaN : Number(value)) : Number(value);
+  return Number.isFinite(numeric) ? limit(Math.trunc(numeric), 1, 64) : fallback;
+}
+function popoverAction(kind, ...args) {
+  switch (kind) {
+    case "objectLines":
+      return act({ kind: "object_lines", on: !!args[0] });
+    case "snap": {
+      if (!scene) return;
+      const patch = args[0] ?? {};
+      return act({
+        kind: "snap",
+        on: patch.on ?? scene.snap,
+        mode: patch.mode ?? scene.snapMode,
+        beats: clampSnapInput(patch.beats, scene.beats),
+        divisor: clampSnapInput(patch.divisor, scene.divisor),
+      });
     }
-  } else {
-    usedLaneKeys = null;
+    case "tripletSnap":
+      if (scene) return act({ kind: "snap", on: scene.snap, mode: scene.snapMode, beats: 1, divisor: args[0] ? 6 : 4 });
+      return;
+    case "timeSignatures":
+      return openTimeSignaturesDialog();
+    case "laneHeightStep":
+      if (scene) return setLaneHeight(Math.round(scene.rowHeight * args[0]));
+      return;
+    case "laneHeight": {
+      const [height, live] = args;
+      if (!live || requests < 2) return setLaneHeight(height);
+      return;
+    }
+    case "collapseLayers":
+      if (!scene || view.busy || drag) return;
+      for (const family of familyParents.values()) collapsedFamilies.add(family);
+      renderLanes();
+      paintSoon();
+      saveLaneLayout();
+      return;
+    case "laneFilter":
+      laneFilterText = String(args[0] ?? "");
+      window.dawsuUi?.laneOptions?.(usedLaneKeys !== null, laneFilterText);
+      if (!scene || drag) return;
+      renderLanes();
+      paintSoon();
+      return;
+    case "usedOnly": {
+      const on = !!args[0];
+      if (!scene || view.busy || drag) {
+        window.dawsuUi?.laneOptions?.(usedLaneKeys !== null, laneFilterText);
+        return;
+      }
+      if (on) {
+        // Snapshot used lanes so a row does not disappear when its last hit is moved or erased.
+        usedLaneKeys = new Set();
+        for (const [, , , hits] of scene.moments) {
+          for (const [row] of hits) usedLaneKeys.add(scene.lanes[row].key);
+        }
+      } else {
+        usedLaneKeys = null;
+      }
+      window.dawsuUi?.laneOptions?.(usedLaneKeys !== null, laneFilterText);
+      renderLanes();
+      paintSoon();
+      return;
+    }
   }
-  renderLanes();
-  paintSoon();
-});
+}
 function openSiblingDifficulty(path) {
   if (scene && !view.busy && !drag && path && path !== scene.path) act({ kind: "open", path });
 }

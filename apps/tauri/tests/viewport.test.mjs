@@ -271,8 +271,7 @@ test("wheel follows the active keyboard preset and stops at the snap limits", as
   assert.deepEqual(await roll({ ctrlKey: true, deltaY: -120 }), {
     prevented: true, action: { kind: "snap", on: false, mode: "relative", beats: 1, divisor: 8 },
   });
-  get("triplet-snap").checked = true;
-  get("triplet-snap").events.get("change")();
+  evaluate('popoverAction("tripletSnap", true)');
   await settle();
   assert.equal(calls.pop().action.divisor, 6, "ticking Triplets picks 1/6, as lazer's Triplets button does");
   assert.equal((await roll({ altKey: true, deltaY: -120 })).action.kind, "view");
@@ -304,10 +303,10 @@ test("after 1/3 is picked, Ctrl+wheel steps only through 1/1, 1/3, 1/6 and 1/12"
   };
   evaluate('Object.assign(scene, { snap: true, snapMode: "grid", sections: [], lanes: [] })');
   pick(4);
-  assert.equal(get("triplet-snap").checked, false);
+  assert.equal(evaluate("window.dawsuUi.snapGroup()"), "common");
   assert.equal(await roll(-120), 8, "Common: 1/4 to 1/8");
   pick(3);
-  assert.equal(get("triplet-snap").checked, true, "the Triplets box shows the group");
+  assert.equal(evaluate("window.dawsuUi.snapGroup()"), "triplets", "the Triplets box shows the group");
   assert.equal(await roll(-120), 6);
   pick(6);
   assert.equal(await roll(-120), 12);
@@ -494,19 +493,16 @@ test("lane rows tint only in a colour the mapper picked", async () => {
 });
 
 test("lane height buttons and slider send the same viewport action as wheel zoom", async () => {
-  const { calls, get, settle } = await frontend();
-  const larger = get("lane-height-in").events.get("click");
-  assert.equal(typeof larger, "function");
-  larger();
+  const { calls, evaluate, settle } = await frontend();
+  evaluate('popoverAction("laneHeightStep", 1.15)');
   await settle();
   assert.deepEqual(calls.pop(), { scene: false, action: { kind: "view", start: 1000, zoom: 1, row_height: 35 } });
 
-  get("lane-height-out").events.get("click")();
+  evaluate('popoverAction("laneHeightStep", 1 / 1.15)');
   await settle();
   assert.equal(calls.pop().action.row_height, 30);
 
-  get("lane-height").value = "42";
-  get("lane-height").events.get("change")();
+  evaluate('popoverAction("laneHeight", 42, false)');
   await settle();
   assert.equal(calls.pop().action.row_height, 42);
 });

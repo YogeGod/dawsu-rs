@@ -104,7 +104,7 @@ test("the main lane's arrow folds its layers, saved in collapsed_families", asyn
 });
 
 test("without a shown main lane, layers are ordinary lanes and a fold never hides them", async () => {
-  const { evaluate, get } = await frontend();
+  const { evaluate } = await frontend();
   const folded = { collapsed_families: ["normal-hitfinish"] };
   // Main lane removed (not in the lane order).
   load(evaluate, { laneOrder: [1, 2, 3], layout: folded });
@@ -112,15 +112,12 @@ test("without a shown main lane, layers are ordinary lanes and a fold never hide
   assert.ok(rows(evaluate).every(row => !row.layer && !row.family));
   // Main lane filtered out.
   load(evaluate, { layout: folded });
-  get("lane-filter").value = "hitfinish2";
-  get("lane-filter").events.get("input")();
+  evaluate('popoverAction("laneFilter", "hitfinish2")');
   assert.deepEqual(order(evaluate), ["normal", 3]);
-  get("lane-filter").value = "";
-  get("lane-filter").events.get("input")();
+  evaluate('popoverAction("laneFilter", "")');
   // Main lane unused under Used only.
   evaluate("scene.moments = [[1000, 80, true, [[2, false], [3, false]]]]");
-  get("used-only").checked = true;
-  get("used-only").events.get("change")();
+  evaluate('popoverAction("usedOnly", true)');
   assert.deepEqual(order(evaluate), ["normal", 3, 2]);
 });
 

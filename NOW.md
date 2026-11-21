@@ -6,12 +6,12 @@ Repo-side snapshot of active M3 work on `origin/main` (`2b8b94c`). The master sp
 
 - **Milestone:** M3 Hitsound Editor — near finish. Hard cutoff before M4 (Node Graph): finish deleting legacy `apps/tauri/dist/app.js` (~186 KB / 4,205 lines on `main`).
 - **Already migrated to Svelte 5 runes (`apps/tauri/ui/src/parts/`):**
-  - Top bar & transport: `SnapSlider`, `ToolPills`, `AuditionPill`, `TransportBar` (with `bridge.playhead` isolating 85 ms playback ticks and seeks from unrelated Svelte components), `PlayheadGroup`, `EditorMenu`
+  - Top bar & transport: `SnapSlider`, `ToolPills`, `AuditionPill`, `TransportBar` (with `bridge.playhead` isolating 85 ms playback ticks and seeks from unrelated Svelte components), `PlayheadGroup`, `EditorMenu`, `GridOptions`, `LaneOptions`
   - Lanes & timeline chrome: `LaneHeaders`, `HitCard` (timeline surface itself stays on `<canvas>`)
   - Inspector & map preview: `InspectorHead`, `InspectorSelection`, `InspectorLane`, `InspectorDifficulty`, `InspectorBookmarks`, `InspectorHistory`, `ProblemMap`, `MapPreview`
   - Browser & bottom drawer: `BrowserHead`, `BrowserList`, `BrowserPreview`, `BottomPanel`, `Mixer`, `MixerStrip`, `Fader`, `StatusBar`
   - Second windows: `ExportWindow`, `DrumDetectWindow`
-- **Still left in `apps/tauri/dist/app.js` (on `main`):** remaining editor wiring, dialogs, start screen, shortcut editor, menus/ribbon glue, and the `#options-Grid` ("More snaps") popover.
+- **Still left in `apps/tauri/dist/app.js` (on `main`):** remaining editor wiring, dialogs, start screen, shortcut editor, and menus/ribbon glue.
 
 ## Next priorities (M3 finish)
 

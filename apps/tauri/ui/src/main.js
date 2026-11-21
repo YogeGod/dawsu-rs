@@ -21,12 +21,14 @@ import PlayheadGroup from "./parts/PlayheadGroup.svelte";
 import ExportWindow from "./parts/ExportWindow.svelte";
 import DrumDetectWindow from "./parts/DrumDetectWindow.svelte";
 import EditorMenu from "./parts/EditorMenu.svelte";
+import GridOptions from "./parts/GridOptions.svelte";
 import HitCard from "./parts/HitCard.svelte";
 import InspectorBookmarks from "./parts/InspectorBookmarks.svelte";
 import InspectorDifficulty from "./parts/InspectorDifficulty.svelte";
 import InspectorHistory from "./parts/InspectorHistory.svelte";
 import InspectorLane from "./parts/InspectorLane.svelte";
 import InspectorSelection from "./parts/InspectorSelection.svelte";
+import LaneOptions from "./parts/LaneOptions.svelte";
 import MapPreview from "./parts/MapPreview.svelte";
 import SnapSlider from "./parts/SnapSlider.svelte";
 import StatusBar from "./parts/StatusBar.svelte";
@@ -37,6 +39,7 @@ import TransportBar from "./parts/TransportBar.svelte";
 const parts = {
   tools: ToolPills, snap: SnapSlider, audition: AuditionPill, transport: TransportBar,
   playhead: PlayheadGroup, lanes: LaneHeaders, "status-bar": StatusBar,
+  "grid-options": GridOptions, "lane-options": LaneOptions,
   // The timeline's hit hover card, at body level.
   "hit-card": HitCard,
   // The popup the menu bar, the right-click tool picker and the lane menu share (#editor-menu).
