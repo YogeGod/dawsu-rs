@@ -23,9 +23,11 @@ pub(super) fn create(
     let stem = lane_name(&family);
     let default_name = format!("{stem}.wav");
     let defaults_list = crate::pending::sample_folder(defaults);
-    let default = find_case_insensitive(&defaults_list, &default_name)
-        .ok_or_else(|| format!("No default WAV for {stem} in the configured sample folder."))?;
-    let source = safe_child(defaults, default)?;
+    let source = match find_case_insensitive(&defaults_list, &default_name) {
+        Some(default) => safe_child(defaults, default)?,
+        None => crate::default_sounds::path(&default_name)
+            .ok_or_else(|| format!("No default WAV for {stem} in the configured sample folder."))?,
+    };
     let clip = decode(&source)?;
     let bytes =
         std::fs::read(&source).map_err(|error| format!("Reading {default_name}: {error}"))?;

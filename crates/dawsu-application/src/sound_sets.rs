@@ -2240,7 +2240,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_skin_hitnormal_with_no_default_file_is_left_as_it_is_and_named_in_the_status() {
+    fn a_skin_hitnormal_with_no_default_file_plays_the_shipped_sound() {
         let f = fixture("d6b-skin-missing");
         std::fs::write(&f.set, set_text("Clap", &[("drum-hitclap.wav", 4000)])).unwrap();
         let mut app = app(&f);
@@ -2249,7 +2249,7 @@ pub(crate) mod tests {
         app.seek(1000.0);
         app.place_sound_set_file(&map, &f.set).unwrap();
         assert_eq!(editor_files(&app, &f), ["a.osu", "drum-hitclap2.wav"]);
-        assert!(app.status.contains("saves as a mix"), "{}", app.status);
+        assert!(!app.status.contains("saves as a mix"), "{}", app.status);
         assert_eq!(app.document().unwrap().composer.hitsounds().placements().len(), 1);
     }
 
@@ -2303,6 +2303,11 @@ pub(crate) mod tests {
         assert_eq!(keys.len(), 3);
         composer.selected.replace(keys);
         (f, app, map)
+    }
+
+    /// The bytes of a default sound dawsu! ships.
+    fn shipped(name: &str) -> Vec<u8> {
+        std::fs::read(crate::default_sounds::path(name).unwrap()).unwrap()
     }
 
     fn skin_lane(name: &str) -> SampleIdentity {
@@ -2394,11 +2399,13 @@ pub(crate) mod tests {
         assert!(refused(&mut app).contains("one time"));
         app.document.as_mut().unwrap().composer.selected.replace([]);
         assert!(refused(&mut app).contains("Select"));
-        // A skin sound the default samples don't have.
+        // A skin sound the default samples don't have: osu!'s own sound, shipped with dawsu!.
         app.document.as_mut().unwrap().composer.selected.replace([dawsu_editor_composer::HitKey { moment: 1, lane: skin_lane("soft-hitclap") }]);
-        assert!(refused(&mut app).contains("soft-hitclap"));
-        // A numbered sound whose file is missing plays the skin's sound: saved as that when the
-        // default samples have it, else refused by name.
+        app.save_sound_set_from_selection(&map, "Shipped clap").unwrap();
+        let set = saved(&f, "Shipped clap");
+        assert_eq!(set.members.iter().map(|m| (m.lane.key(), m.audio.clone())).collect::<Vec<_>>(), [("Skin|soft-hitclap".to_string(), shipped("soft-hitclap.wav"))]);
+        // A numbered sound whose file is missing plays the skin's sound: the default samples'
+        // file when they have it, else the shipped one.
         std::fs::remove_file(f.map.with_file_name("drum-hitclap2.wav")).unwrap();
         let mut app = super::tests::app(&f);
         app.preferences.default_samples = f.scratch.path("defaults");
@@ -2406,11 +2413,9 @@ pub(crate) mod tests {
         let composer = &mut app.document.as_mut().unwrap().composer;
         let clap = composer.hitsounds().moment(dawsu_hitsounding::MomentId(0)).hits().find(|l| crate::lane_name(l) == "drum-hitclap2").unwrap().clone();
         composer.selected.replace([dawsu_editor_composer::HitKey { moment: 0, lane: clap }]);
-        match app.save_sound_set_from_selection(&map, "Set") {
-            Err(SaveSetError::Refused(why)) => assert_eq!(why, "drum-hitclap2 wasn't found, so it can't go in a sound set."),
-            other => panic!("{other:?}"),
-        }
-        assert!(library_files(&f).is_empty());
+        app.save_sound_set_from_selection(&map, "Shipped").unwrap();
+        let set = saved(&f, "Shipped");
+        assert_eq!(set.members.iter().map(|m| (m.lane.key(), m.audio.clone())).collect::<Vec<_>>(), [("Skin|drum-hitclap".to_string(), shipped("drum-hitclap.wav"))]);
         std::fs::write(f.scratch.path("defaults").join("drum-hitclap.wav"), wav(11)).unwrap();
         app.save_sound_set_from_selection(&map, "Set").unwrap();
         let set = saved(&f, "Set");
