@@ -1541,6 +1541,17 @@ pub(crate) mod tests {
         app.audio = None;
         app.project_root = Some(f.scratch.path("projects"));
         app.preferences.hitsound_library = Some(f.scratch.path("library"));
+        // The skin's own sounds, for a hit whose sound isn't in the mapset folder.
+        let skin = f.scratch.path("skin-sounds");
+        if !skin.is_dir() {
+            std::fs::create_dir(&skin).unwrap();
+            for bank in ["normal", "soft", "drum"] {
+                for sound in ["hitnormal", "hitwhistle", "hitfinish", "hitclap"] {
+                    std::fs::write(skin.join(format!("{bank}-{sound}.wav")), wav(2000)).unwrap();
+                }
+            }
+        }
+        app.preferences.default_samples = skin;
         app
     }
 
@@ -2500,6 +2511,7 @@ Mode:0
         restored.error = None;
         restored.audio = None;
         restored.project_root = app.project_root.clone();
+        restored.preferences.default_samples = app.preferences.default_samples.clone();
         restored.restore_recovery(&offer.id).unwrap();
         wait(&mut restored);
         assert!(restored.error.is_none(), "{:?}", restored.error);

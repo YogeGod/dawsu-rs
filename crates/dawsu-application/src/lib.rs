@@ -750,6 +750,10 @@ impl Default for Preferences {
         }
     }
 }
+/// The developer's local default sounds, used by the desktop app when no default sounds
+/// folder is saved ([`Application::for_desktop`]). On other computers the folder is missing
+/// and nothing changes.
+const LOCAL_DEFAULT_SAMPLES: &str = "E:/GitHub/dawsu-hitsounding-editor/src/OsuHitsound.Audio/DefaultSamples";
 pub fn data_folder() -> PathBuf {
     if let Some(path) = std::env::var_os("LOCALAPPDATA") {
         PathBuf::from(path).join("dawsu-rs")
@@ -921,19 +925,28 @@ impl Application {
     pub fn new() -> Self {
         Self::with_data_root(data_folder())
     }
+    /// The desktop app's start: [`Self::with_data_root`], then the local default sounds when
+    /// the preferences name no default sounds folder. Tests that build the app in the same
+    /// process start with `with_data_root` alone, so they never see a folder that exists on
+    /// one computer only.
+    pub fn for_desktop(data_root: PathBuf) -> Self {
+        let mut app = Self::with_data_root(data_root);
+        app.use_local_default_samples(Path::new(LOCAL_DEFAULT_SAMPLES));
+        app
+    }
+    /// Uses `local` as the default sounds folder when none is saved and the folder exists.
+    /// The folder is only read. Its non-commercial sounds are never bundled.
+    fn use_local_default_samples(&mut self, local: &Path) {
+        if self.preferences.default_samples.as_os_str().is_empty() && local.is_dir() {
+            self.preferences.default_samples = local.to_path_buf();
+        }
+    }
     pub fn with_data_root(data_root: PathBuf) -> Self {
         let file = data_root.join("preferences.json");
         let legacy = std::env::var_os("LOCALAPPDATA")
             .map(|base| PathBuf::from(base).join("OsuHitsoundEditor").join("preferences.json"));
         let (mut preferences, first_launch) = preferences::load(&file, legacy.as_deref());
         preferences.master_gain = preferences.master_gain.clamp(0.2, 1.0);
-        // Local development fallback is read-only. These non-commercial assets are never bundled.
-        let local = PathBuf::from(
-            "E:/GitHub/dawsu-hitsounding-editor/src/OsuHitsound.Audio/DefaultSamples",
-        );
-        if preferences.default_samples.as_os_str().is_empty() && local.is_dir() {
-            preferences.default_samples = local;
-        }
         let output = open_preferred_audio(&preferences, preferences.audio_buffer_ms);
         let (audio, error) = match output {
             Ok(engine) => (Some(engine), None),
@@ -5410,5 +5423,41 @@ mod sample_file_clip {
         std::fs::write(&path, wave(8)).unwrap();
         let (ms, _) = app.sample_file_outline(&path, 4).unwrap();
         assert!((ms - 8000.0 / 48000.0).abs() < 1e-9, "a changed file is decoded again");
+    }
+}
+
+#[cfg(test)]
+mod local_default_samples {
+    use super::*;
+    use dawsu_test_support::Scratch;
+
+    #[test]
+    fn starting_from_a_data_folder_takes_default_sounds_from_its_preferences_only() {
+        let scratch = Scratch::new("data-root-defaults");
+        let app = Application::with_data_root(scratch.path("data"));
+        assert!(
+            app.preferences.default_samples.as_os_str().is_empty(),
+            "no folder outside the data folder: {}",
+            app.preferences.default_samples.display()
+        );
+    }
+
+    #[test]
+    fn the_desktop_start_uses_the_local_default_sounds_only_when_none_are_saved() {
+        let scratch = Scratch::new("local-defaults");
+        let local = scratch.path("local");
+        std::fs::create_dir(&local).unwrap();
+
+        let mut app = Application::headless();
+        app.use_local_default_samples(&scratch.path("missing"));
+        assert!(app.preferences.default_samples.as_os_str().is_empty(), "a missing folder is not used");
+
+        app.use_local_default_samples(&local);
+        assert_eq!(app.preferences.default_samples, local);
+
+        let saved = scratch.path("saved");
+        app.preferences.default_samples = saved.clone();
+        app.use_local_default_samples(&local);
+        assert_eq!(app.preferences.default_samples, saved, "a saved folder is kept");
     }
 }
