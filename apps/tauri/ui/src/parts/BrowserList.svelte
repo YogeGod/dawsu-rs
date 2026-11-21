@@ -13,7 +13,7 @@
 
 {#if model.root}
   <div class="browser-row browser-root" title={model.rootTitle}>
-    <span class="browser-icon">{@html FolderOpen}</span><span class="browser-name">{model.root}</span>
+    <span class="browser-icon">{@html Folder}</span><span class="browser-name">{model.root}</span>
   </div>
 {/if}
 {#each model.rows as row (row.key)}

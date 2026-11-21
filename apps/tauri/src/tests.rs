@@ -2696,12 +2696,12 @@ fn the_sample_preview_gives_the_length_and_outline_of_a_library_sample_or_a_lane
     open(&mut app, &path);
     let source = |value: serde_json::Value| -> super::PreviewSource { serde_json::from_value(value).unwrap() };
     let library_sample = |path: &str| source(serde_json::json!({ "kind": "library", "location": { "root": library, "path": path } }));
-    let preview = super::sample_outline(&app, library_sample("drums/snare.wav")).unwrap();
+    let preview = super::sample_outline(&mut app, library_sample("drums/snare.wav")).unwrap();
     assert!((preview["ms"].as_f64().unwrap() - 4000.0 / 48000.0).abs() < 1e-9, "{preview}");
     let peaks: Vec<f64> = serde_json::from_value(preview["peaks"].clone()).unwrap();
     assert_eq!(peaks.len(), super::PREVIEW_BARS);
     assert_eq!(peaks.iter().copied().fold(0.0, f64::max), 1.0);
-    assert!(super::sample_outline(&app, library_sample("../outside.wav")).is_err());
+    assert!(super::sample_outline(&mut app, library_sample("../outside.wav")).is_err());
 
     let active = app.active_lane;
     let target = serde_json::json!({
@@ -2715,7 +2715,7 @@ fn the_sample_preview_gives_the_length_and_outline_of_a_library_sample_or_a_lane
     wait_for_job(&mut app);
     assert!(app.error.is_none(), "{:?}", app.error);
     let row = app.active_lane;
-    let preview = super::sample_outline(&app, source(serde_json::json!({ "kind": "lane", "row": row }))).unwrap();
+    let preview = super::sample_outline(&mut app, source(serde_json::json!({ "kind": "lane", "row": row }))).unwrap();
     assert!((preview["ms"].as_f64().unwrap() - 4000.0 / 48000.0).abs() < 1e-9, "{preview}");
-    assert!(super::sample_outline(&app, source(serde_json::json!({ "kind": "lane", "row": 999 }))).is_err());
+    assert!(super::sample_outline(&mut app, source(serde_json::json!({ "kind": "lane", "row": 999 }))).is_err());
 }

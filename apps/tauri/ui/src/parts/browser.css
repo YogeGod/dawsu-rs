@@ -22,9 +22,13 @@
   justify-content: space-between;
   gap: 8px;
   margin-bottom: 6px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--editor-border);
 }
 .sample-browser-classic-head h2 {
   margin: 0;
+  padding: 0;
+  border: 0;
 }
 
 .browser-head {
@@ -92,9 +96,10 @@
   background: var(--editor-hover);
   color: var(--editor-text);
 }
-.browser-tabs button[aria-selected="true"] {
+.browser-tabs button[aria-pressed="true"],
+.browser-tabs button[aria-pressed="true"]:hover:not(:disabled) {
+  border: 0;
   background: var(--editor-selected);
-  box-shadow: var(--shadow-raised);
   color: var(--editor-accent);
 }
 .browser-folder {
@@ -123,7 +128,7 @@
   width: 100%;
   height: 28px;
   min-height: 28px;
-  padding: 0 12px 0 calc(12px + var(--depth, 0) * 12px);
+  padding: 0 12px 0 calc(12px + min(var(--depth, 0), 6) * 12px);
   border: 0;
   border-radius: var(--radius-6);
   background: transparent;
@@ -137,6 +142,7 @@
 .browser-row:disabled {
   background: transparent;
   color: var(--editor-disabled);
+  opacity: 1;
 }
 .browser-root {
   color: var(--editor-text);
@@ -175,7 +181,7 @@
 }
 .browser-note {
   margin: 0;
-  padding: 6px 12px 6px calc(12px + var(--depth, 0) * 12px);
+  padding: 6px 12px 6px calc(12px + min(var(--depth, 0), 6) * 12px);
   color: var(--editor-muted);
 }
 .browser-section {
@@ -202,6 +208,7 @@
   white-space: nowrap;
 }
 .browser-preview-length {
+  min-height: 1.25em;
   color: var(--editor-muted);
   font-variant-numeric: tabular-nums;
 }

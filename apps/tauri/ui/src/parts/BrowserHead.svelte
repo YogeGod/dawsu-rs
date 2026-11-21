@@ -15,10 +15,10 @@
     <input type="search" id="sample-browser-filter" placeholder="Search samples" aria-label="Search samples"
       value={model.filter} disabled={off} oninput={event => send("filter", event.currentTarget.value)}>
   </label>
-  <div class="browser-tabs" role="tablist" aria-label="Sample source">
-    <button type="button" id="sample-browser-mapset" role="tab" aria-selected={model.source === "mapset"}
+  <div class="browser-tabs" role="group" aria-label="Sample source">
+    <button type="button" id="sample-browser-mapset" aria-pressed={model.source === "mapset"}
       aria-controls="sample-browser-entries" disabled={off} onclick={() => send("source", "mapset")}>Mapset</button>
-    <button type="button" id="sample-browser-library" role="tab" aria-selected={model.source === "library"}
+    <button type="button" id="sample-browser-library" aria-pressed={model.source === "library"}
       aria-controls="sample-browser-entries" disabled={off} onclick={() => send("source", "library")}>Library</button>
   </div>
   {#if model.folder}

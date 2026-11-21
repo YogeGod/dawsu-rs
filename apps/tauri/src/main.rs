@@ -2247,7 +2247,7 @@ enum PreviewSource {
 }
 
 /// The Browser's sample preview: the sample's length in ms and its outline.
-fn sample_outline(app: &Application, source: PreviewSource) -> Result<Value, String> {
+fn sample_outline(app: &mut Application, source: PreviewSource) -> Result<Value, String> {
     let (ms, peaks) = match source {
         PreviewSource::Lane { row } => {
             let lane = app.document().and_then(|d| d.composer.lanes.get(row)).ok_or("No such lane.")?;
@@ -2255,7 +2255,7 @@ fn sample_outline(app: &Application, source: PreviewSource) -> Result<Value, Str
         }
         PreviewSource::Library { location } => {
             let sample = location.sample(app.preferences.hitsound_library.as_deref())?;
-            Application::sample_file_outline(&sample, PREVIEW_BARS)?
+            app.sample_file_outline(&sample, PREVIEW_BARS)?
         }
     };
     Ok(json!({ "ms": ms, "peaks": peaks }))

@@ -86,7 +86,7 @@ async function browserPage() {
 }
 
 test("the tree lists map folder samples under Mapset samples, folds folders and previews a sample", async () => {
-  const { calls, invoked, model, labels, action, settle } = await browserPage();
+  const { context, calls, invoked, model, labels, action, settle } = await browserPage();
   assert.equal(model().source, "mapset");
   assert.equal(model().classic, false);
   assert.equal(model().root, "Mapset samples");
@@ -104,6 +104,8 @@ test("the tree lists map folder samples under Mapset samples, folds folders and 
   assert.equal(model().rows[0].open, true);
 
   action("pick", "percussion/snare.wav");
+  // The name shows at once; the length and outline follow the backend's answer.
+  assert.deepEqual(model().preview, { name: "snare.wav", title: "percussion/snare.wav", ms: null, peaks: null });
   await settle();
   assert.deepEqual(calls.at(-1), {kind: "lane", row: 1, operation: "preview_sample"});
   assert.deepEqual(invoked.at(-1), ["sample_preview", { source: { kind: "lane", row: 1 } }]);
@@ -111,12 +113,17 @@ test("the tree lists map folder samples under Mapset samples, folds folders and 
   assert.deepEqual(model().preview, { name: "snare.wav", title: "percussion/snare.wav", ms: 210, peaks: [0.5, 1, 0.25] });
   assert.equal(model().canAssign, true);
 
-  // Play replays the selected sample without asking for its outline again.
+  // Play and picking the same row again ask for the outline again (the file may have changed),
+  // keeping the shown length meanwhile.
   const asked = invoked.length;
   action("play");
+  assert.equal(model().preview.ms, 210);
   await settle();
   assert.deepEqual(calls.at(-1), {kind: "lane", row: 1, operation: "preview_sample"});
-  assert.equal(invoked.length, asked);
+  assert.equal(invoked.length, asked + 1);
+  action("pick", "percussion/snare.wav");
+  await settle();
+  assert.equal(invoked.length, asked + 2);
 
   action("assign");
   await settle();
@@ -128,12 +135,25 @@ test("the tree lists map folder samples under Mapset samples, folds folders and 
   await settle();
   assert.deepEqual(model().preview, { name: "kick.wav", title: "kick.wav", ms: null, peaks: null });
 
+  // The search reaches into closed folders: a folder with a match shows open, one without hides.
+  action("toggle", "percussion");
+  assert.equal(model().rows[0].open, false);
   action("filter", "SNARE");
   assert.deepEqual(labels(), ["percussion", "snare.wav"]);
+  assert.equal(model().rows[0].open, true);
   assert.equal(model().filter, "SNARE");
   assert.equal(model().canAssign, false, "a sample the filter hides can't be used");
   action("filter", "nothing");
-  assert.deepEqual(model().rows.map(row => [row.kind, row.label]), [["folder", "percussion"], ["note", "No matching samples."]]);
+  assert.deepEqual(model().rows.map(row => [row.kind, row.label]), [["note", "No matching samples."]]);
+  action("filter", "");
+
+  // A picked sample whose lane is gone is dropped, so Play has nothing to play.
+  runInContext("scene = {...scene, lanes: scene.lanes.slice(0, 2)}; renderSampleBrowser();", context);
+  assert.equal(model().preview, null);
+  const sent = calls.length;
+  action("play");
+  await settle();
+  assert.equal(calls.length, sent);
 });
 
 test("the Library tab lists the hitsound library and previews its files", async () => {
@@ -144,6 +164,10 @@ test("the Library tab lists the hitsound library and previews its files", async 
   assert.equal(model().root, "library");
   assert.equal(model().defaults, false);
   assert.deepEqual(labels(), ["Drums"]);
+  // Folders not yet opened may still hold a match, so the search doesn't say there is none.
+  action("filter", "zzz");
+  assert.deepEqual(model().rows.map(row => [row.kind, row.label]), [["folder", "Drums"]]);
+  action("filter", "");
   action("toggle", "Drums");
   assert.deepEqual(model().rows.map(row => [row.kind, row.label]), [["folder", "Drums"], ["note", "Loading samples…"]]);
   await settle();
@@ -179,9 +203,13 @@ test("Classic opens one folder at a time with Up, inside the Inspector", async (
   assert.equal(model().classic, true);
   assert.equal(model().root, null);
   assert.equal(model().defaults, false, "Classic keeps to the folders it can open");
-  assert.deepEqual(model().folder, { label: "Map folder", title: "", canUp: false });
+  assert.deepEqual(model().folder, { label: "Mapset samples", title: "", canUp: false });
   assert.deepEqual(labels(), ["percussion", "kick.wav"]);
+  // Entering a folder replaces the rows, so focus moves to the first new row.
+  let focused = 0;
+  get("sample-browser-entries").querySelector = () => ({ focus() { focused++; } });
   action("toggle", "percussion");
+  assert.equal(focused, 1);
   assert.deepEqual(labels(), ["snare.wav"]);
   assert.deepEqual(model().folder, { label: "percussion", title: "percussion", canUp: true });
   action("up");
@@ -193,6 +221,18 @@ test("Classic opens one folder at a time with Up, inside the Inspector", async (
   await settle();
   assert.deepEqual(calls.at(-1), {kind: "replace_sample", target: {map: "copy.osu", lane: "normal"},
     path: "percussion/snare.wav", mapset: true});
+  // The Library in Classic: one folder at a time too.
+  action("source", "library");
+  await settle();
+  assert.deepEqual(model().folder, { label: "Library", title: "C:/fixtures/library", canUp: false });
+  assert.deepEqual(labels(), ["Drums"]);
+  action("toggle", "Drums");
+  await settle();
+  assert.deepEqual(labels(), ["clap.wav", "snare.wav"]);
+  assert.deepEqual(model().folder, { label: "Drums", title: "C:/fixtures/library/Drums", canUp: true });
+  action("up");
+  assert.deepEqual(labels(), ["Drums"]);
+  action("source", "mapset");
   // Close folds the Browser through the same path as every other switch.
   runInContext("var toggled = []; togglePanel = panel => toggled.push(panel);", context);
   get("sample-browser-close").listeners.get("click")();
@@ -212,4 +252,29 @@ test("a busy editor greys out the sample rows and both buttons", async () => {
   assert.equal(model().busy, true);
   assert.equal(model().canAssign, false);
   assert.equal(model().canPick, false);
+});
+
+test("opening another map clears the Library's picked sample and open folders too", async () => {
+  const { context, model, labels, action, settle } = await browserPage();
+  action("source", "library");
+  await settle();
+  action("toggle", "Drums");
+  await settle();
+  action("pick", "Drums/snare.wav");
+  await settle();
+  runInContext('scene = {...scene, path: "other.osu"}; renderSampleBrowser();', context);
+  await settle();
+  assert.equal(model().preview, null);
+  assert.deepEqual(labels(), ["Drums"]);
+});
+
+test("a very long sample list stops at 500 rows and asks for a search", async () => {
+  const { context, model, action } = await browserPage();
+  runInContext(`scene = {...scene, lanes: Array.from({length: 600}, (_, i) =>
+    ({key: "s" + i, sourceKey: "s" + i, name: "s" + i, sample: "s" + String(i).padStart(3, "0") + ".wav"}))};
+    renderSampleBrowser();`, context);
+  assert.equal(model().rows.length, 501);
+  assert.deepEqual(model().rows.at(-1), { kind: "note", key: "note:500", label: "Search to see more samples.", depth: 0 });
+  action("filter", "s599");
+  assert.deepEqual(model().rows.map(row => row.label), ["s599.wav"]);
 });

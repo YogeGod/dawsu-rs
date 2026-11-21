@@ -52,9 +52,11 @@ test("the head shows Mapset and Library tabs and the search field", () => {
   const mapset = button(html, "Mapset");
   const library = button(html, "Library");
   assert.match(mapset.tag, /id="sample-browser-mapset"/);
-  assert.match(mapset.tag, /aria-selected="true"/);
+  // Two switch buttons, not a tab list: the rows below are the same list for both.
+  assert.match(mapset.tag, /aria-pressed="true"/);
   assert.match(library.tag, /id="sample-browser-library"/);
-  assert.match(library.tag, /aria-selected="false"/);
+  assert.match(library.tag, /aria-pressed="false"/);
+  assert.doesNotMatch(html, /role="tab/);
   assert.equal(button(html, "Up"), undefined, "the tree has no Up button");
   const classic = shown(model({ classic: true, root: null, folder: { label: "percussion", title: "percussion", canUp: true } }), BrowserHead);
   assert.ok(!disabled(button(classic, "Up").tag));
@@ -64,6 +66,8 @@ test("the head shows Mapset and Library tabs and the search field", () => {
 test("the tree lists Mapset samples with file rows, the selected row, and greyed Default samples", () => {
   const html = shown(model(), BrowserList);
   assert.match(html, /Mapset samples/);
+  const root = html.match(/<div class="browser-row browser-root"[^]*?<\/div>/)[0];
+  assert.doesNotMatch(root, /m6 14 1\.5-2\.9/, "the top row uses the closed folder icon");
   const rows = buttons(html);
   assert.deepEqual(rows.map(row => row.text), ["percussion", "snare.wav", "kick.wav", "osu! skin", "Sample folders"]);
   assert.match(rows[0].tag, /aria-expanded="true"/);
@@ -94,6 +98,7 @@ test("the preview shows the file name, its real length and its outline with a pl
   // Undecoded: the name only, never a made-up length or outline.
   const bare = shown(model({ preview: { ...preview, ms: null, peaks: null } }), BrowserPreview);
   assert.doesNotMatch(bare, /Sample preview/);
+  assert.match(bare, /class="browser-preview-length"/, "the length line keeps its place while the length loads");
   assert.doesNotMatch(bare, /<rect\b/);
   assert.ok(disabled(button(bare, "Use in active lane").tag));
   const none = shown(model(), BrowserPreview);
@@ -122,4 +127,18 @@ test("the parts send only through sampleBrowserAction and use no static style", 
     assert.doesNotMatch(text, /\sstyle="/, name);
     assert.doesNotMatch(text, /data-(action|doc|map|command)\b/, name);
   }
+});
+
+test("the stylesheet keeps the selected tab on hover, caps the indent and dims a disabled row once", () => {
+  const css = readFileSync(new URL("../src/parts/browser.css", import.meta.url), "utf8");
+  // The declarations of the first rule whose selector list starts with `selector`.
+  const rule = selector => {
+    const at = css.indexOf("\n" + selector);
+    return at < 0 ? "" : css.slice(css.indexOf("{", at) + 1, css.indexOf("}", at));
+  };
+  assert.match(css, /\.browser-tabs button\[aria-pressed="true"\]:hover:not\(:disabled\)/);
+  assert.doesNotMatch(rule('.browser-tabs button[aria-pressed="true"]'), /box-shadow/);
+  assert.match(rule(".browser-row {"), /min\(var\(--depth, 0\), 6\)/);
+  assert.match(rule(".browser-row:disabled"), /opacity: 1/);
+  assert.match(rule(".sample-browser-classic-head {"), /border-bottom/);
 });

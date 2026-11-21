@@ -14,7 +14,8 @@
 {#if preview}
   <div class="browser-preview">
     <span class="browser-preview-name" title={preview.title}>{preview.name}</span>
-    {#if preview.ms !== null}<span class="browser-preview-length">Sample preview · {previewLength(preview.ms)}</span>{/if}
+    <!-- The line keeps its place while the length loads, so the outline doesn't jump. -->
+    <span class="browser-preview-length">{#if preview.ms !== null}Sample preview · {previewLength(preview.ms)}{/if}</span>
     <div class="browser-wave">
       <button type="button" class="browser-play" aria-label={"Play " + preview.name} title={"Play " + preview.name}
         disabled={off || model.busy} onclick={() => send("play")}>{@html Play}</button>
