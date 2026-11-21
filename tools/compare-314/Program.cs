@@ -59,6 +59,10 @@ EditHit? selected = null;
 try
 {
     // startAudio: false opens no audio device; usePreferences: false reads and writes no 3.1.4 settings.
+    // Save decodes samples with BASS, which 3.1.4's audio engine would have started. Device 0 is BASS's
+    // "no sound" device: it decodes and plays nothing, as 3.1.4's own SilentSamples.cs:38 starts it.
+    if (!ManagedBass.Bass.Init(0) && ManagedBass.Bass.LastError != ManagedBass.Errors.Already)
+        throw new InvalidOperationException($"BASS could not start for decoding ({ManagedBass.Bass.LastError})");
     w = new MainWindow(map, startAudio: false, showInspector: false, usePreferences: false) { Width = 1600, Height = 900 };
     w.Show();
     Wait(() => w.Loading.IsCompleted, "the map to open");
