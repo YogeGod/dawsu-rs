@@ -2860,10 +2860,4 @@ fn the_map_preview_sends_stacked_objects_with_combos_and_slider_paths() {
     assert_eq!(objects[2]["lengths"], serde_json::json!([0.0, 100.0]));
     assert_eq!(objects[2]["spans"], 1);
     assert!(map_preview(&app, &fixture.0.join("Other.osu")).is_err());
-    // A taiko difficulty has no preview.
-    let taiko = fixture.0.join("Taiko.osu");
-    fs::write(&taiko, b"osu file format v14\n\n[General]\nMode: 1\n\n[TimingPoints]\n0,500,4,1,0,100,1,0\n\n[HitObjects]\n200,200,1000,1,0\n").unwrap();
-    open(&mut app, &taiko);
-    let opened = app.document().unwrap().path.clone();
-    assert_eq!(map_preview(&app, &opened).unwrap()["unsupported"], true);
 }

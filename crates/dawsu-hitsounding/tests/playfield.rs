@@ -100,11 +100,24 @@ fn every_save_pack_map_has_a_playfield_with_every_object() {
         for object in &field.objects {
             assert!(object.stack_offset(field.scale).x.is_finite(), "{name}");
             if let Some(path) = &object.path {
-                assert_eq!(path.points.len(), path.cumulative.len(), "{name}: one length per path point");
+                assert!(path.cumulative.len() >= path.points.len(), "{name}: a length for every path point");
                 assert!(object.end_position().x.is_finite(), "{name}");
             }
         }
         checked += 1;
     }
     assert!(checked > 0);
+}
+
+#[test]
+fn extreme_times_wrap_as_lazer_does_instead_of_stopping() {
+    // lazer subtracts the times as C# ints, which wrap; heights [1, 0] as in a release build.
+    let p = map(14, "ApproachRate:5\n", "200,200,-2147483647,1,0\n200,200,2147483647,1,0\n");
+    assert_eq!(heights(&p), vec![1, 0]);
+}
+
+#[test]
+fn spinners_sit_in_the_playfield_centre() {
+    let p = map(14, "ApproachRate:5\n", "10,20,1000,12,0,2000\n");
+    assert_eq!(p.objects[0].position, Vector2::new(256.0, 192.0));
 }

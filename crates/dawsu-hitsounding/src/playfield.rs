@@ -104,6 +104,8 @@ pub fn playfield(file: &OsuFile) -> Option<Playfield> {
             let o = raw.get(&answer.line)?;
             let (x, y) = (o.x().clamp(0.0, 512.0), o.y().clamp(0.0, 512.0));
             let position = if version >= FIRST_LAZER_VERSION { Vector2::new(x, y) } else { Vector2::new(x.trunc(), y.trunc()) };
+            // Every spinner sits in the playfield's centre (ConvertHitObjectParser.cs:162).
+            let position = if matches!(o.kind(), ObjectKind::Spinner { .. }) { Vector2::new(256.0, 192.0) } else { position };
             let (path, span_count) = match (o.kind(), &answer.slider) {
                 (ObjectKind::Slider(fields), Some(slider)) => {
                     let points = slider_path::parse_curve(&fields.curve, position, version).ok()?;
@@ -138,7 +140,8 @@ pub fn playfield(file: &OsuFile) -> Option<Playfield> {
 fn scale_from_circle_size(circle_size: f32) -> f32 {
     const BROKEN_GAMEFIELD_ROUNDING_ALLOWANCE: f32 = 1.00041;
     let range = (f64::from(circle_size) - 5.0) / 5.0;
-    ((1.0f32 - 0.7f32 * range as f32) / 2.0) * BROKEN_GAMEFIELD_ROUNDING_ALLOWANCE
+    // C# works out 0.7f × range in double, then casts.
+    (((1.0 - f64::from(0.7f32) * range) as f32) / 2.0) * BROKEN_GAMEFIELD_ROUNDING_ALLOWANCE
 }
 
 /// `IBeatmapDifficultyInfo.DifficultyRangeInt` (`min` at 0, `mid` at 5, `max` at 10, truncated).
@@ -186,7 +189,7 @@ fn apply_stacking(objects: &mut [PlayfieldObject], threshold: f32) {
                     continue;
                 }
                 // Truncation to integer matches stable.
-                if (objects[object_i].start_time as i32 - objects[object_n].end_time as i32) as f32 > threshold {
+                if ((objects[object_i].start_time as i32).wrapping_sub(objects[object_n].end_time as i32)) as f32 > threshold {
                     break;
                 }
                 if object_n < extended_start_index {

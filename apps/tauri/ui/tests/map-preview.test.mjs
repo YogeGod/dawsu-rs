@@ -98,3 +98,11 @@ test("the preview shows only while View › Map preview is on, with a note befor
   assert.match(body, /Open a difficulty to see its preview/);
   bridge.mapPreview = false;
 });
+
+test("while playing the clock holds still on a small step back and stops at the song's end", () => {
+  const view = { position: 1000, playing: true, speed: 1, duration: 5000 };
+  assert.equal(clock(view, 0, 0, 1020), 1020);
+  assert.equal(clock(view, 0, 0, 1200), 1000);
+  assert.equal(clock({ ...view, position: 4990 }, 0, 100), 5000);
+  assert.equal(clock({ ...view, playing: false }, 0, 0, 1020), 1000);
+});

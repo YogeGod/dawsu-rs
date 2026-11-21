@@ -16,7 +16,7 @@ export const SPINNER_FADE = 240;
 const APPROACH_START = 4;
 const APPROACH_ALPHA = 0.9;
 
-const clamp01 = value => Math.min(1, Math.max(0, value));
+export const clamp01 = value => Math.min(1, Math.max(0, value));
 
 // Where the playfield sits in a box of width × height: the playfield pixel size and the corner.
 export function fit(width, height) {
@@ -29,11 +29,17 @@ export function fit(width, height) {
 }
 
 // The time the preview shows: the editor's position, moved on by the clock while playing, so the
-// preview runs smoothly between the editor's updates (about every 85 ms).
-export function clock(view, receivedAt, now) {
+// preview runs smoothly between the editor's updates (about every 85 ms). While playing it never
+// steps back by less than BACK_STEP (an update that lands a few ms behind the clock), and it stops
+// at the song's end.
+const BACK_STEP = 50;
+export function clock(view, receivedAt, now, previous = null) {
   if (!view) return 0;
   if (!view.playing) return view.position;
-  return view.position + Math.max(0, now - receivedAt) * (view.speed || 1);
+  let time = view.position + Math.max(0, now - receivedAt) * (view.speed || 1);
+  if (view.duration > 0) time = Math.min(time, view.duration);
+  if (previous !== null && time < previous && previous - time < BACK_STEP) time = previous;
+  return time;
 }
 
 // When an object stops showing.

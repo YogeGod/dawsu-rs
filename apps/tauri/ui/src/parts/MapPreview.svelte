@@ -2,7 +2,7 @@
   import { bridge } from "../lib/bridge.svelte.js";
   import { invoke } from "../lib/ipc.js";
   import {
-    AFTER_HIT, PLAYFIELD, approach, ball, clock, comboColour, fit, opacity, pathLength, pathTo, reverseArrow, snake, visible,
+    AFTER_HIT, PLAYFIELD, approach, clamp01, ball, clock, comboColour, fit, opacity, pathLength, pathTo, reverseArrow, snake, visible,
   } from "../lib/preview.js";
   import InspectorHead from "./InspectorHead.svelte";
 
@@ -25,6 +25,11 @@
     }
     let current = true;
     void key;
+    // A new difficulty: drop the last one's objects rather than draw them at the new playhead.
+    if (model?.path !== path) {
+      model = null;
+      error = "";
+    }
     invoke("map_preview_objects", { map: path })
       .then(next => { if (current) { model = next; error = ""; } })
       .catch(reason => { if (current) { model = null; error = String(reason); } });
@@ -38,13 +43,27 @@
     receivedAt = performance.now();
   });
 
-  // One frame per display refresh while shown.
+  // One frame per display refresh while shown. While paused it paints only when the time, the
+  // objects or the box change; a folded panel (0 wide) is not painted.
   $effect(() => {
     if (!on || !open || !canvas) return;
     let frame = 0;
+    let time = null;
+    let last = "";
+    let lastModel;
     const draw = () => {
-      paint(canvas, model, clock(bridge.view, receivedAt, performance.now()));
       frame = requestAnimationFrame(draw);
+      if (!canvas.clientWidth) return;
+      time = clock(bridge.view, receivedAt, performance.now(), time);
+      const state = [time, canvas.clientWidth, canvas.clientHeight, globalThis.devicePixelRatio].join();
+      if (state === last && lastModel === model) return;
+      last = state;
+      lastModel = model;
+      try {
+        paint(canvas, model, time);
+      } catch (reason) {
+        console.error(reason);
+      }
     };
     frame = requestAnimationFrame(draw);
     return () => cancelAnimationFrame(frame);
@@ -71,12 +90,15 @@
     g.strokeRect(0, 0, PLAYFIELD.width, PLAYFIELD.height);
     if (!map?.objects) return;
     const r = map.radius;
+    g.font = `600 ${Math.round(r * 0.8)}px system-ui, sans-serif`;
+    g.textAlign = "center";
+    g.textBaseline = "middle";
     for (const object of visible(map, time)) {
       const alpha = opacity(map, object, time);
       const colour = comboColour(map, object);
       g.globalAlpha = alpha;
       if (object.kind === "spinner") drawSpinner(g, object, time);
-      else if (object.kind === "slider") drawSlider(g, map, object, time, r, colour);
+      else if (object.kind === "slider") drawSlider(g, map, object, time, r, colour, alpha);
       else drawCircle(g, object.x, object.y, r, colour, object.combo, time >= object.time);
       const ring = approach(map, object, time);
       if (ring) {
@@ -103,32 +125,56 @@
     g.stroke();
     if (number && !hit) {
       g.fillStyle = "#ffffff";
-      g.font = `600 ${Math.round(r * 0.8)}px system-ui, sans-serif`;
-      g.textAlign = "center";
-      g.textBaseline = "middle";
       g.fillText(String(number), x, y + r * 0.04);
     }
   }
 
-  function drawSlider(g, map, object, time, r, colour) {
+  // A slider body drawn at full strength on its own layer, then laid on at the slider's opacity,
+  // so the white border does not show through the fill while it fades.
+  const layer = globalThis.document?.createElement("canvas");
+
+  function drawSlider(g, map, object, time, r, colour, alpha) {
     const points = pathTo(object, snake(map, object, time) * pathLength(object));
-    const trace = width => {
-      g.beginPath();
-      points.forEach((point, index) => (index ? g.lineTo(point.x, point.y) : g.moveTo(point.x, point.y)));
-      g.lineWidth = width;
-      g.lineCap = "round";
-      g.lineJoin = "round";
-      g.stroke();
+    const body = target => {
+      const trace = width => {
+        target.beginPath();
+        points.forEach((point, index) => (index ? target.lineTo(point.x, point.y) : target.moveTo(point.x, point.y)));
+        target.lineWidth = width;
+        target.lineCap = "round";
+        target.lineJoin = "round";
+        target.stroke();
+      };
+      // A white border round a darker fill of the combo colour.
+      target.strokeStyle = "#ffffff";
+      trace(r * 2);
+      target.strokeStyle = shade(colour, 0.35);
+      trace(r * 1.76);
     };
-    // The body: a white border round a darker fill of the combo colour.
-    g.strokeStyle = "#ffffff";
-    trace(r * 2);
-    g.strokeStyle = shade(colour, 0.35);
-    trace(r * 1.76);
+    const l = alpha < 1 && layer?.getContext("2d");
+    if (l) {
+      if (layer.width !== g.canvas.width || layer.height !== g.canvas.height) {
+        layer.width = g.canvas.width;
+        layer.height = g.canvas.height;
+      }
+      l.setTransform(1, 0, 0, 1, 0, 0);
+      l.clearRect(0, 0, layer.width, layer.height);
+      l.setTransform(g.getTransform());
+      body(l);
+      g.save();
+      g.setTransform(1, 0, 0, 1, 0, 0);
+      g.drawImage(layer, 0, 0);
+      g.restore();
+    } else {
+      body(g);
+    }
     const arrow = reverseArrow(object, time);
     if (arrow) drawArrow(g, arrow, r);
-    // The head stays until its time, then fades like a circle.
-    if (time < object.time + AFTER_HIT) drawCircle(g, object.x, object.y, r, colour, object.combo, time >= object.time);
+    // The head stays until its time, then fades out like a circle over AFTER_HIT.
+    if (time < object.time + AFTER_HIT) {
+      if (time >= object.time) g.globalAlpha = alpha * clamp01(1 - (time - object.time) / AFTER_HIT);
+      drawCircle(g, object.x, object.y, r, colour, object.combo, time >= object.time);
+      g.globalAlpha = alpha;
+    }
     const at = ball(object, time);
     if (at) {
       g.beginPath();

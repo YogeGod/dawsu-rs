@@ -1184,7 +1184,8 @@ fn combo_overlay(document: &dawsu_application::Document) -> Value {
 
 /// What the map preview draws for the open difficulty (`map`): circle size, approach time and each
 /// object's stacked place, times, path and combo, as osu!lazer works them out at 131fe72
-/// (`dawsu_hitsounding::playfield`). A taiko, catch or mania difficulty answers `unsupported`.
+/// (`dawsu_hitsounding::playfield`). A taiko, catch or mania difficulty answers
+/// `unsupported`; the editor refuses to open those today, so this is only a safeguard.
 /// A slider's path is flat `[x0, y0, x1, y1, …]` on the playfield, stack offset included.
 fn map_preview(app: &Application, map: &Path) -> Result<Value, String> {
     let document = app.document().ok_or("Open a difficulty first.")?;
