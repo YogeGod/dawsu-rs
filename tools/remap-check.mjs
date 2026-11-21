@@ -239,6 +239,12 @@ let goal = null, stripped = null, final = null, saveReview = [];
 try {
   // 2. The goal, then the stripped copy.
   await launch(originalMap);
+  // A fresh profile asks for a key preset once, before the map shows (as in everyday-check).
+  await until(() => (window.scene?.lanes?.length > 0 && window.scene.moments.length > 0)
+    || [...document.querySelectorAll("button")].some(b => b.textContent.includes("DAW-like") && b.offsetParent),
+    null, "the original copy showed neither hits nor the key preset question", 60000);
+  const firstPreset = page().getByRole("button", { name: "DAW-like" });
+  if (await firstPreset.count() && await firstPreset.first().isVisible()) await firstPreset.first().click();
   await until(() => window.scene?.lanes?.length > 0 && window.scene.moments.length > 0, null, "the original copy showed no hits", 60000);
   goal = await sectionHits();
   await quit();
