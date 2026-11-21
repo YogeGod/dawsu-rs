@@ -1200,7 +1200,8 @@ fn snapshot(app: &Application, include_scene: bool) -> Value {
                 });
             }
             json!({
-                "title": d.title, "path": d.path, "difficulties": d.difficulties,
+                "title": d.title, "mapTitle": d.map_title(), "version": d.version(),
+                "path": d.path, "difficulties": d.difficulties,
                 "lanes": lanes, "laneOrder": lane_order, "moments": moments, "sections": sections, "waveform": waveform,
                 "gameplay": gameplay_overlay(d),
                 "laneRevision": c.history.version(),
@@ -1256,6 +1257,7 @@ fn snapshot(app: &Application, include_scene: bool) -> Value {
         "revert": app.revert_requested, "review": review, "activeLane": app.active_lane,
         "saveProblemReview": app.save_problem_review(), "objectLines": app.preferences.object_lines,
         "classicBrowser": app.preferences.classic_browser,
+        "outputDevice": app.device_name(),
         "hitsoundLibrary": app.preferences.hitsound_library,
         "panels": {
             "browser": app.preferences.show_browser,
