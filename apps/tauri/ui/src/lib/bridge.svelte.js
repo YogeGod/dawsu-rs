@@ -19,6 +19,11 @@ export class Bridge {
   // The snap group the slider and the wheel step through (lazer's Common, Triplets or a custom one).
   // Worked out from each snap the editor shows, never saved.
   snapGroup = $state.raw(null);
+  // The Mixer's lane strips app.js last built (mixerModel), replaced whole.
+  mixer = $state.raw(null);
+  // The bottom panel's tab ("volume" or "mixer"): kept in this window only, never saved; app.js
+  // reads it to lay the panel out and to draw the volume canvas.
+  bottomTab = $state("volume");
 
   // No map, a job running or a fault: the parts show but take no input.
   get disabled() {
@@ -41,6 +46,10 @@ export class Bridge {
   handOverBrowser(model, flush = flushSync) {
     this.browser = model;
     flush();
+  }
+
+  handOverMixer(strips) {
+    this.mixer = strips;
   }
 
   // menus.js measures the popup and focuses its first row right after handing the rows over.

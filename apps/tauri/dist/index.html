@@ -22,7 +22,7 @@
   <div class="panel-switches" role="group" aria-label="Panels">
     <button id="view-browser" type="button" data-doc aria-label="Browser" aria-controls="tree-browser-host" aria-pressed="false" title="Browser"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/></svg></button>
     <button id="view-inspector" type="button" data-doc aria-label="Inspector" aria-controls="editor-inspector" aria-pressed="false" title="Inspector"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M15 3v18"/></svg></button>
-    <button id="view-controller" type="button" data-doc aria-label="Volume panel" aria-controls="volume-controller-panel" aria-pressed="false" title="Volume panel"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M2 14h4M10 8h4M18 16h4"/></svg></button>
+    <button id="view-controller" type="button" data-doc aria-label="Volume and Mixer" aria-controls="volume-controller-panel" aria-pressed="false" title="Volume and Mixer"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M2 14h4M10 8h4M18 16h4"/></svg></button>
   </div>
 </header>
 <button id="layout-edit-entry" type="button" data-doc hidden>Layout…</button>
@@ -171,7 +171,7 @@
       <div class="scroll" id="scroll"><div id="lanes" data-ui-mount="lanes"></div><canvas id="grid" tabindex="-1" aria-label="Hitsound timeline" aria-haspopup="menu" aria-expanded="false"></canvas></div>
       <div id="volume-controller-panel" class="controller">
         <div class="lane-title volume-title">
-          <span>Volume</span>
+          <div data-ui-mount="bottom-panel"></div>
           <select id="ramp-shape" aria-label="Ramp shape" title="Shape for the Ramp tool and Shift+drag" data-doc>
             <option value="Linear">Linear</option>
             <option value="EaseIn">Ease in</option>
@@ -180,6 +180,7 @@
           </select>
         </div>
         <canvas id="controller" aria-label="Hit volume lane"></canvas>
+        <div class="mixer-host" data-ui-mount="mixer"></div>
       </div>
       <div class="overview">
         <div class="lane-title ruler-controls" role="group" aria-label="Timeline view">

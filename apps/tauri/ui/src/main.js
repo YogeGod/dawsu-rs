@@ -3,6 +3,7 @@ import "./shell.css";
 import "./parts/pill.css";
 import "./parts/inspector.css";
 import "./parts/browser.css";
+import "./parts/bottom-panel.css";
 import { mount } from "svelte";
 import { bridge } from "./lib/bridge.svelte.js";
 import * as commandList from "./lib/commands.js";
@@ -12,7 +13,9 @@ import AuditionPill from "./parts/AuditionPill.svelte";
 import BrowserHead from "./parts/BrowserHead.svelte";
 import BrowserList from "./parts/BrowserList.svelte";
 import BrowserPreview from "./parts/BrowserPreview.svelte";
+import BottomPanel from "./parts/BottomPanel.svelte";
 import LaneHeaders from "./parts/LaneHeaders.svelte";
+import Mixer from "./parts/Mixer.svelte";
 import PlayheadGroup from "./parts/PlayheadGroup.svelte";
 import ExportWindow from "./parts/ExportWindow.svelte";
 import DrumDetectWindow from "./parts/DrumDetectWindow.svelte";
@@ -36,6 +39,8 @@ const parts = {
   "inspector-bookmarks": InspectorBookmarks, "inspector-history": InspectorHistory,
   // The Browser (#sample-browser): tabs and search, the sample tree, the preview with Use and Browse.
   "browser-head": BrowserHead, "browser-list": BrowserList, "browser-preview": BrowserPreview,
+  // The bottom panel: its side column (tabs or the folded strip) and the Mixer tab.
+  "bottom-panel": BottomPanel, mixer: Mixer,
   // The whole page of the Export window (export.html).
   "export-window": ExportWindow,
   // The whole page of the drum detection window (drum.html).
@@ -46,6 +51,7 @@ const parts = {
 bridge.lanes = globalThis.currentLaneHeaders?.() ?? null;
 bridge.inspector = globalThis.currentInspector?.() ?? null;
 bridge.browser = globalThis.currentBrowser?.() ?? null;
+bridge.mixer = globalThis.currentMixer?.() ?? null;
 
 for (const host of document.querySelectorAll("[data-ui-mount]")) {
   const part = parts[host.dataset.uiMount];
@@ -79,6 +85,14 @@ export function inspector(model) {
 export function browser(model) {
   bridge.handOverBrowser(model);
 }
+
+// app.js hands over the Mixer's lane strips each time renderLanes() changes them.
+export function mixer(strips) {
+  bridge.handOverMixer(strips);
+}
+
+// The bottom panel's tab, read by app.js's renderPanelLayout() and paint().
+export const bottomTab = () => bridge.bottomTab;
 
 // The one command list menus.js builds every menu from.
 export const commands = commandList;

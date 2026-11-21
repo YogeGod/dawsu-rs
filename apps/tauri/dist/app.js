@@ -469,7 +469,8 @@ function renderPanelLayout() {
   namesToggle.ariaExpanded = String(laneNames !== false);
   namesToggle.title = namesToggle.ariaLabel = laneNames === false ? "Show lane names" : "Hide lane names";
   namesToggle.textContent = laneNames === false ? "›" : "‹";
-  $("volume-controller-panel").hidden = !controller;
+  // Folded shows the bottom panel's 34 px strip; the tab is kept in the bundle, never saved.
+  $("volume-controller-panel").dataset.bottom = controller ? window.dawsuUi?.bottomTab?.() ?? "volume" : "folded";
   if (dock && scene) {
     dock({ browserStyle: view.classicBrowser ? "classic" : "tree",
       browserOpen: !!view.panels.browser, inspectorOpen: !!view.panels.inspector });
@@ -699,6 +700,51 @@ function renderLanes() {
     laneHeaders = laneHeaderModel(drumNames);
     try { window.dawsuUi?.lanes(laneHeaders); } catch (error) { console.error(error); }
   }
+  const strips = mixerModel();
+  const key = JSON.stringify(strips);
+  if (key !== mixerKey) {
+    mixerKey = key;
+    mixerStrips = strips;
+    try { window.dawsuUi?.mixer?.(mixerStrips); } catch (error) { console.error(error); }
+  }
+}
+
+// The Mixer's lane strips ("mixer" part): one per lane with hits, in lane-list order (the folders
+// in their order, then the map file lanes), whatever the filter or a folded folder hides.
+let mixerStrips = [];
+let mixerKey = "";
+
+function currentMixer() {
+  return mixerStrips;
+}
+
+function mixerModel() {
+  const numbers = new Map(orderedLaneRows().map((row, index) => [row, index + 1]));
+  const used = [...numbers.keys()].filter(row => scene.lanes[row]?.hitCount > 0);
+  const inFolder = new Set(sampleFolderOrder);
+  const rows = [...sampleFolderOrder.flatMap(group => used.filter(row => scene.lanes[row].group === group)),
+    ...used.filter(row => !inFolder.has(scene.lanes[row].group))];
+  const anySolo = scene.lanes.some(lane => lane?.solo);
+  // The drum view numbers its rows by drum: a strip takes its drum row's number and name, or no
+  // number when no drum row shows the lane.
+  const drumRows = view.drumView?.enabled ? new Map() : null;
+  for (const header of drumRows ? laneHeaders.rows : []) {
+    if (header.type === "lane" && !drumRows.has(header.row)) drumRows.set(header.row, header);
+  }
+  return rows.map(row => {
+    const lane = scene.lanes[row];
+    const sound = laneSound(lane);
+    const drum = drumRows?.get(row);
+    return {
+      key: "lane:" + row, row, number: drumRows ? drum?.number ?? "" : numbers.get(row),
+      name: drum?.name ?? (renamedLanes.has(lane.colourKey) ? laneDisplayName(lane) : sound.name),
+      set: sound.set, icon: sound.icon,
+      // Yoge, 2026-11-20 (ADR 0068): a lane is grey unless the mapper picked a colour.
+      colour: laneColours.get(lane.colourKey) ?? null,
+      selected: selectionLaneKeys.has(lane.key), muted: !!lane.muted, solo: !!lane.solo,
+      quiet: !!lane.muted || (anySolo && !lane.solo),
+    };
+  });
 }
 
 // The rows the Svelte lane headers draw ("lanes" part), as plain data. Lane state stays here.
@@ -1531,7 +1577,8 @@ function paint() {
   const g = prepare(grid, canvasHeight);
   const r = prepare(ruler);
   const volumePanel = $("volume-controller-panel");
-  const v = volumePanel.hidden || volumePanel.dataset?.layoutBarHidden !== undefined ? null : prepare(controller);
+  const v = volumePanel.hidden || volumePanel.dataset?.layoutBarHidden !== undefined ||
+    (volumePanel.dataset?.bottom ?? "volume") !== "volume" ? null : prepare(controller);
   const o = prepare(overview);
   const { start, zoom } = { start: scene.viewStart, zoom: scene.zoom };
   const xOf = (time) => (time - start) * zoom;
@@ -3593,7 +3640,7 @@ function openViewSettings() {
   if (!scene || !view.panels || view.busy) return;
   const options = [
     ["Inspector", "inspector", panelOn("inspector")],
-    ["Volume panel", "controller", view.panels.controller],
+    ["Volume and Mixer", "controller", view.panels.controller],
     ["Lane names", "lane_names", view.panels.laneNames],
     ["Browser", "browser", panelOn("browser")],
   ];

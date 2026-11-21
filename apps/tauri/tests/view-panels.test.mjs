@@ -65,7 +65,7 @@ test("View switches fold and open panels and reclaim their timeline tracks, then
   const controls = runInContext("viewControls", context);
   for (const [label, name, layout, track] of [
     ["Inspector", "inspector", "view-inspector", "ariaPressed"],
-    ["Volume panel", "controller", "editor-arrange", "controller"],
+    ["Volume and Mixer", "controller", "editor-arrange", "controller"],
     ["Lane names", "lane_names", "editor-arrange", "laneNames"],
   ]) {
     const { control } = controls.find(item => item.text === label);

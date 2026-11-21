@@ -319,7 +319,7 @@ test("each menu groups the editor's existing commands like the design, with no s
     "Add lane…", "Delete active lane…",
   ]);
   assert.deepEqual(open("view"), [
-    "Browser", "Inspector", "Volume panel", "Lane names", "—",
+    "Browser", "Inspector", "Volume and Mixer", "Lane names", "—",
     "Song waveform", "Object lines", "Used lanes only", "Collapse sample layers", "Filter lanes…", "Taller lanes",
     "Shorter lanes", "—",
     "Zoom in", "Zoom out", "Fit difficulty", "—",
