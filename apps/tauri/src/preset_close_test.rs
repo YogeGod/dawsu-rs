@@ -11,7 +11,7 @@ fn closing_before_a_preset_choice_preserves_onboarding() {
         let initial = profile.join("launch.osu");
         fs::write(&initial, b"osu file format v14\n\n[Metadata]\nTitle:Launch test\n\n[HitObjects]\n256,192,0,1,0,0:0:0:0:\n").unwrap();
         let first = editor_thread(Some(initial.clone()));
-        let startup = ask(&first, |tx| Request::View(false, None, tx)).unwrap();
+        let startup = ask(&first, |tx| Request::View(false, None, false, tx)).unwrap();
         assert_eq!(startup["firstLaunch"], true);
         assert_eq!(startup["busy"], false);
         assert_eq!(startup["hasDocument"], false);
@@ -28,6 +28,7 @@ fn closing_before_a_preset_choice_preserves_onboarding() {
                 Some(Action::KeyPreset {
                     name: "osu!".into(),
                 }),
+                false,
                 tx,
             )
         })
@@ -35,7 +36,7 @@ fn closing_before_a_preset_choice_preserves_onboarding() {
         assert_eq!(chosen["firstLaunch"], false);
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         loop {
-            let view = ask(&second, |tx| Request::View(false, None, tx)).unwrap();
+            let view = ask(&second, |tx| Request::View(false, None, false, tx)).unwrap();
             if view["hasDocument"] == true {
                 break;
             }
@@ -55,7 +56,7 @@ fn closing_before_a_preset_choice_preserves_onboarding() {
         persisted["master_gain"] = serde_json::json!(0.05);
         fs::write(&preferences, serde_json::to_vec(&persisted).unwrap()).unwrap();
         let reopened = editor_thread(None);
-        let view = ask(&reopened, |tx| Request::View(false, None, tx)).unwrap();
+        let view = ask(&reopened, |tx| Request::View(false, None, false, tx)).unwrap();
         assert!((view["main"].as_f64().unwrap() - 0.2).abs() < 1e-6);
         assert_eq!(ask(&reopened, Request::SongsDirectory).unwrap(), Some(songs));
 

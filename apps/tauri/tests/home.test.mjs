@@ -21,7 +21,8 @@ test("Home asks before leaving an edited difficulty and preserves recent and res
     if (!elements.has(id)) elements.set(id, element());
     return elements.get(id);
   };
-  const scene = {path: "edited.osu", lanes: []};
+  // A real scene carries its timing sections; one without them makes the screen ask again.
+  const scene = {path: "edited.osu", lanes: [], sections: []};
   const status = {busy: false, hasDocument: true, pendingHome: false, showHome: false, recent: ["recent.osu"]};
   const context = createContext({
     document: {

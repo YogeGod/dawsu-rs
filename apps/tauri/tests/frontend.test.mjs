@@ -148,6 +148,33 @@ test("panning and zooming retain the scene and request only a status update", as
   assert.equal(evaluate("scene.waveform[0][0]"), 0.5);
 });
 
+test("the map's timing sections and waveform stay once loading ends with a frame that leaves them out", async () => {
+  const { evaluate } = await frontend();
+  const base = '{ path: "Map.osu", previewKey: 7, viewStart: 0, zoom: .1, rowHeight: 30, lanes: [], moments: [] }';
+  // This harness has no lane DOM; only the data show() keeps is checked here.
+  evaluate("renderScene = () => {}");
+  // The editor sends the static map data once, in the first frame of the open map.
+  evaluate(`show({ busy: true, hasDocument: true, duration: 4000, status: "Loading",
+    scene: { ...${base}, sections: [[0, 500, 4]], waveform: [[0.5]], gameplay: null, combos: null } })`);
+  evaluate(`show({ busy: false, hasDocument: true, duration: 4000, status: "Difficulty loaded", scene: ${base} })`);
+  assert.equal(evaluate("JSON.stringify(scene.sections)"), "[[0,500,4]]");
+  assert.equal(evaluate("scene.waveform[0][0]"), 0.5);
+  assert.doesNotThrow(() => evaluate("sectionBars(scene.sections)"));
+});
+
+test("a reloaded screen asks the editor again for the map's static data it never got", async () => {
+  const { evaluate, calls, responses } = await frontend();
+  evaluate("renderScene = () => {}");
+  const base = { path: "Map.osu", previewKey: 7, viewStart: 0, zoom: .1, rowHeight: 30, lanes: [], moments: [] };
+  // The editor sent the static data to the page before the reload, so this frame leaves it out.
+  responses.push({ busy: false, hasDocument: true, duration: 4000, scene: base },
+    { busy: false, hasDocument: true, duration: 4000, scene: { ...base, sections: [[0, 500, 4]], waveform: [] } });
+  await evaluate("act(null)");
+  assert.deepEqual(JSON.parse(JSON.stringify(calls.map(call => call.args))),
+    [{ scene: true, action: null }, { scene: true, action: null, fresh: true }]);
+  assert.equal(evaluate("JSON.stringify(scene.sections)"), "[[0,500,4]]");
+});
+
 test("native drop sends an archive to Open without unpacking it in the frontend", async () => {
   const { listeners, calls, settle } = await frontend();
   listeners.get("tauri://drag-drop")({ payload: { paths: ["E:\\Map.OSZ"] } });
@@ -286,7 +313,7 @@ test("cursors follow the current editing tool, Alt and cycle ruler geometry", as
   evaluate('view.tool = "Mute"; refreshToolCursor()');
   assert.equal(cursors.controller.cursor, "var(--cursor-draw)");
   const css = await readFile(new URL("../dist/style.css", import.meta.url), "utf8");
-  assert.match(css, /--cursor-draw:url\("studio-assets\/icons\/cursor-draw\.svg"\) 4 4,crosshair/);
+  assert.match(css, /--cursor-draw:url\("studio-assets\/icons\/cursor-draw\.svg"\) 3 3,crosshair/);
   assert.match(css, /--cursor-erase:url\("studio-assets\/icons\/cursor-erase\.svg"\) 5 27,crosshair/);
   windowEvents.get("blur")();
   assert.equal(cursors.controller.cursor, "crosshair", "blur clears a held modifier");

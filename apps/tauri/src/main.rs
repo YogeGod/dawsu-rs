@@ -1499,7 +1499,8 @@ fn snapshot_with_static(app: &Application, include_scene: bool, include_static: 
 }
 
 enum Request {
-    View(bool, Option<Action>, mpsc::Sender<Value>),
+    /// Scene wanted, the action, and `fresh`: the screen lacks the static map data, so send it again.
+    View(bool, Option<Action>, bool, mpsc::Sender<Value>),
     Help(mpsc::Sender<Result<Value, String>>),
     AudioOutputs(Option<OutputBackend>, mpsc::Sender<Value>),
     Shortcuts(mpsc::Sender<Value>),
@@ -1726,7 +1727,7 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
         }
         loop {
             match receive.recv_timeout(Duration::from_millis(25)) {
-                Ok(Request::View(scene, action, response)) => {
+                Ok(Request::View(scene, action, fresh, response)) => {
                     let view = guard(&mut app, &mut fault, |app| {
                         match action {
                             Some(Action::Open { path }) if app.first_launch => {
@@ -1750,7 +1751,7 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                         let current_hs_mode = app.document().is_some_and(|d| d.hs_mode);
                         let include_static = if want_scene && app.document().is_some() {
                             let key = (app.document_generation(), app.waveform.len());
-                            let changed = static_scene_key != Some(key) || last_hs_mode != current_hs_mode;
+                            let changed = fresh || static_scene_key != Some(key) || last_hs_mode != current_hs_mode;
                             static_scene_key = Some(key);
                             last_hs_mode = current_hs_mode;
                             changed
@@ -2092,8 +2093,9 @@ fn editor_view(
     state: State<'_, Editor>,
     scene: bool,
     action: Option<Action>,
+    fresh: Option<bool>,
 ) -> Result<Value, String> {
-    ask(&state, |tx| Request::View(scene, action, tx))
+    ask(&state, |tx| Request::View(scene, action, fresh.unwrap_or(false), tx))
 }
 
 #[tauri::command]
@@ -2586,7 +2588,7 @@ fn pick_map(
         dialog.add_filter("osu! difficulty or mapset", &["osu", "osz"]).pick_file()
     };
     ask(&state, |tx| {
-        Request::View(true, selected.map(|path| Action::Open { path }), tx)
+        Request::View(true, selected.map(|path| Action::Open { path }), false, tx)
     })
 }
 
@@ -2596,7 +2598,7 @@ fn pick_sample(window: tauri::WebviewWindow, state: State<'_, Editor>, target: S
         .set_title("Choose replacement sample")
         .add_filter("Audio sample", &["wav", "ogg", "mp3"])
         .pick_file();
-    ask(&state, |tx| Request::View(true, selected.map(|path| Action::ReplaceSample { target, path, mapset: false }), tx))
+    ask(&state, |tx| Request::View(true, selected.map(|path| Action::ReplaceSample { target, path, mapset: false }), false, tx))
 }
 
 /// The library list for Edit > Place sound set: names, ids and counts only.
@@ -2656,7 +2658,7 @@ fn pick_sound_set(window: tauri::WebviewWindow, state: State<'_, Editor>, map: P
         .set_title("Place sound set")
         .add_filter("dawsu! sound set", &["dawsuset"])
         .pick_file();
-    ask(&state, |tx| Request::View(true, selected.map(|path| Action::PlaceSoundSet { map, path }), tx))
+    ask(&state, |tx| Request::View(true, selected.map(|path| Action::PlaceSoundSet { map, path }), false, tx))
 }
 
 fn songs_dialog(window: &tauri::WebviewWindow, state: &Editor) -> Result<rfd::FileDialog, String> {

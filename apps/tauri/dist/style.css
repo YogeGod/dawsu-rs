@@ -8,7 +8,7 @@
   --line:#2b2b30;--divider:#2b2b30;--hi:#5ac8fa;--hi-hover:#8ee0ff;--text:#f5f5f7;--muted:#98989f;--on-accent:#08080a;
   --field:#0e0e10;--button:#242428;--button-border:#2b2b30;
   --ruler:#1a1a1d;--lane:#151517;--lane-alt:#0e0e10;--group:#1c1c1f;
-  --cursor-draw:url("studio-assets/icons/cursor-draw.svg") 4 4,crosshair;
+  --cursor-draw:url("studio-assets/icons/cursor-draw.svg") 3 3,crosshair;
   --cursor-erase:url("studio-assets/icons/cursor-erase.svg") 5 27,crosshair;
   font:13px "Segoe UI",system-ui,sans-serif}
 body{margin:0;background:var(--base);color:var(--text);height:100vh;display:flex;flex-direction:column;overflow:hidden;user-select:none;-webkit-user-select:none}
