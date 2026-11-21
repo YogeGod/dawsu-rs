@@ -6,6 +6,7 @@
   import { folderChip, laneIcons } from "../lib/lanes.js";
   import Folder from "../icons/Folder.svg?raw";
   import FolderOpen from "../icons/FolderOpen.svg?raw";
+  import Plus from "../icons/Plus.svg?raw";
 
   // app.js keeps the lane state and builds these rows in renderLanes(); this part only draws them
   // and hands each click back through laneHeaderAction().
@@ -81,6 +82,12 @@
   {/if}
 {/each}
 
+<!-- v3 f1: the last row adds a lane. It keeps the id menus.js presses; no command binds a key to it. -->
+{#if headers}
+  <button type="button" id="add-lane" class="add-lane-row" class:compact={!names} aria-label="Add lane" title="Add lane"
+    disabled={headers.busy} onclick={() => globalThis.openAddLane?.()}>{@html Plus}{#if names}<span>Add lane</span>{/if}</button>
+{/if}
+
 <style>
   /* Every row is one canvas row tall; app.js sets --lane-row-height on #lanes. */
   .lane {
@@ -108,6 +115,41 @@
   .lane.lane-selected {
     outline: 1px solid var(--editor-accent);
     outline-offset: -1px;
+  }
+  .add-lane-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    height: var(--lane-row-height, 34px);
+    min-height: 0;
+    padding: 0 16px;
+    border: 0;
+    border-bottom: 1px solid var(--editor-canvas);
+    border-radius: 0;
+    background: var(--editor-panel);
+    color: var(--editor-secondary);
+    font: 500 13px var(--font-ui);
+    cursor: pointer;
+  }
+  .add-lane-row.compact {
+    padding: 0 10px;
+  }
+  .add-lane-row:hover:not(:disabled) {
+    color: var(--editor-text);
+  }
+  .add-lane-row:disabled {
+    color: var(--editor-disabled);
+    cursor: default;
+  }
+  .add-lane-row:focus-visible {
+    outline: 2px solid var(--editor-focus);
+    outline-offset: -2px;
+  }
+  .add-lane-row :global(svg) {
+    width: 14px;
+    height: 14px;
+    flex: none;
   }
   .spine {
     align-self: stretch;

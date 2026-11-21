@@ -72,7 +72,7 @@ test("Add restores a chosen lane and Delete keeps its confirmed difficulty, iden
     closeModal = () => {};
     renderLanes();
   `);
-  get("add-lane").events.get("click")();
+  evaluate("openAddLane()");
   await evaluate("pending");
   assert.deepEqual(calls.shift(), { map: "first.osu" });
   assert.equal(evaluate("opened[1]"), "Add lane");

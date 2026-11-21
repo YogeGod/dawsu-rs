@@ -318,3 +318,19 @@ test("the ruler band is 40 px of #0c0c0c with a 1 px --editor-selected bottom ed
   assert.ok(edge > 0 && ruler.calls[edge - 1].args.join() === "0.5,39.5", "bottom edge");
   assert.ok(ruler.calls.slice(edge).some(call => call.name === "stroke" && call.stroke === "#454545"));
 });
+
+test("under the last lane the timeline shows the Add lane row's hint", async () => {
+  const { get, paint, evaluate } = await canvases();
+  const grid = get("grid");
+  get("scroll").clientHeight = 200;
+  evaluate(`scene.lanes = [{ key: "A", colourKey: "Skin|normal-hitclap", name: "normal-hitclap", group: "normal" }];
+    scene.moments = []; renderLanes();`);
+  paint("");
+  const rows = evaluate("laneRows.length");
+  const hint = grid.calls.find(call => call.name === "fillText" && call.args[0] === "Drop a sample from the Browser to add a lane");
+  assert.ok(hint, "hint");
+  // Centred in the row after the last lane row, 30 px rows.
+  assert.equal(hint.args[2], rows * 30 + 15);
+  // In the hint's row the grid draws no lane row of its own.
+  assert.equal(evaluate("laneRows[" + rows + "]"), undefined);
+});

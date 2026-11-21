@@ -62,7 +62,7 @@ const slateTimeline = {
   arrange: "#151515", alternateRow: "#1c1c1c", activeRow: "#454545", group: "#292929",
   ruler: "#0c0c0c", rulerBar: "#ffffff", rulerEdge: "#454545", overview: "#1c1c1c", waveform: "#1c2727",
   volume: "#151515", divider: "#383838", beatLine: "#383838", barLine: "#545454",
-  cycle: "#efc16a", loop: "#77bdfa0f", locator: "#858585", playhead: "#a1d0f7",
+  cycle: "#efc16a", loop: "#77bdfa0f", locator: "#858585", playhead: "#a1d0f7", hint: "#858585",
 };
 const levelColours = [[58, 108, 240], [154, 72, 216], [236, 58, 58]];
 const volumePalette = Array.from({ length: 101 }, (_, volume) => {
@@ -894,7 +894,8 @@ function refreshLaneDelete() {
     : "Delete active lane";
 }
 
-$("add-lane").addEventListener("click", () => {
+// The Add lane row at the end of the lane column (LaneHeaders part) and the menus' Add lane….
+function openAddLane() {
   if (!scene || view.busy || drag) return;
   const map = scene.path;
   run(async () => {
@@ -918,7 +919,7 @@ $("add-lane").addEventListener("click", () => {
       }, true],
     ]);
   });
-});
+}
 
 $("delete-lane").addEventListener("click", () => {
   const lane = deletableLane();
@@ -1567,6 +1568,15 @@ function paint() {
       g.ctx.fillRect(0, y, g.width, rowHeight);
     }
     if (lane !== undefined) line(g.ctx, slateTimeline.divider, 0, y + rowHeight - .5, g.width, y + rowHeight - .5);
+  }
+  // The Add lane row's hint, in the row under the last lane (f1).
+  const hintY = (laneRows.length + .5) * rowHeight - scrollTop;
+  if (hintY > -rowHeight && hintY < g.height + rowHeight) {
+    g.ctx.font = "12px Inter, system-ui, sans-serif";
+    g.ctx.textBaseline = "middle";
+    g.ctx.fillStyle = slateTimeline.hint;
+    g.ctx.fillText("Drop a sample from the Browser to add a lane", 16, hintY);
+    g.ctx.textBaseline = "alphabetic";
   }
   if (range) {
     g.ctx.fillStyle = "#77bdfa35";

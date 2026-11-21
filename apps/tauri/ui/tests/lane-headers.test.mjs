@@ -16,7 +16,9 @@ function shown(rows, names = true, busy = false) {
   bridge.lanes = { names, busy, rows };
   return render(LaneHeaders).body;
 }
-const rowsOf = html => html.split(/(?=<div class="lane\b)/).slice(1);
+// The Add lane row closes the column; it is not a lane row.
+const rowsOf = html => html.split(/(?=<div class="lane\b)|(?=<button[^>]*id="add-lane")/)
+  .filter(row => row.startsWith('<div class="lane'));
 const buttons = html => [...html.matchAll(/<button\b[^>]*>([^]*?)<\/button>/g)].map(match => ({
   tag: match[0].slice(0, match[0].indexOf(">") + 1), text: match[1].replace(/<[^>]+>/g, "").trim(),
 }));
@@ -160,4 +162,21 @@ test("− removes the lane: named for screen readers, after +, disabled while bu
   assert.doesNotMatch(rowsOf(shown([lane({ remove: null })]))[0], /lane-remove/);
   // With lane names hidden it stays, beside +.
   assert.deepEqual(buttons(rowsOf(shown([lane({ addLayer: "Add", remove })], false))[0]).map(button => button.text), ["M", "S", "▶", "+", "−"]);
+});
+
+// v3 §4 and f1: the last row of the lane column adds a lane. No command is bound to it, so it
+// shows no shortcut; menus.js presses it by its id.
+test("the last row is Add lane, after the lanes, and waits while a job runs", () => {
+  bridge.lanes = null;
+  assert.doesNotMatch(render(LaneHeaders).body, /id="add-lane"/);
+  const html = shown([folder(), lane()]);
+  const add = buttons(html).at(-1);
+  assert.match(add.tag, /id="add-lane"/);
+  assert.match(add.tag, /class="add-lane-row[^"]*"/);
+  assert.equal(add.text, "Add lane");
+  assert.doesNotMatch(add.tag, /disabled/);
+  assert.ok(html.indexOf('id="add-lane"') > html.lastIndexOf('data-lane-row="0"'));
+  assert.match(buttons(shown([lane()], true, true)).at(-1).tag, /disabled/);
+  // With lane names hidden the row keeps its + only.
+  assert.equal(buttons(shown([lane()], false)).at(-1).text, "");
 });
