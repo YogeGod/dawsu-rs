@@ -149,7 +149,7 @@ test("timeline canvases paint with the design's colours", async () => {
   assert.deepEqual(ruler.arcs, [{ fill: "#e6eef2", stroke: "#1c2727" }, { fill: "#e6eef2", stroke: "#1c2727" }]);
   assert.ok(ruler.fills.includes("#62d6cfd9"), "slider body");
   assert.ok(ruler.fills.includes("#e6eef2"), "spinner body");
-  assert.ok(ruler.fills.includes("#c4c4c4"), "ruler labels in --editor-secondary");
+  assert.ok(ruler.fills.includes("#ffffff"), "ruler bar numbers white (v3 §5)");
   assert.ok(ruler.strokes.includes("#858585"), "locators in --editor-disabled");
   // Grid lines stay brighter than the design's --editor-grid and --editor-major so beats
   // still outrank the osu!lazer snap ticks between them; the playhead is --editor-focus.

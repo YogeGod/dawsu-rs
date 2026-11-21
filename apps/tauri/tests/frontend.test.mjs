@@ -108,8 +108,8 @@ test("clicks near bookmark flags seek to the exact bookmark, leaving the lower w
     rulerEvents.get("pointerdown")({button:0, clientX:120, clientY:y});
     await settle();
   };
-  await click(30);
-  await click(65);
+  await click(50);
+  await click(70);
   assert.deepEqual(calls.filter(call=>call.args.action?.kind === "seek").map(call=>call.args.action.ms), [1025, 1000]);
 });
 

@@ -17,7 +17,7 @@ let rulerDrag = null;
 let overviewDrag = null;
 let overviewTarget = null;
 let overviewNavigation = null;
-const rulerBandHeight = 21;
+const rulerBandHeight = 40;
 const defaultWaveformHeight = 56;
 let waveformHeight = defaultWaveformHeight;
 let visibleWaveformHeight = defaultWaveformHeight;
@@ -59,7 +59,7 @@ let rulerWarningMarkers = [];
 // Canvas surfaces match the surrounding editor chrome.
 const slateTimeline = {
   arrange: "#151515", alternateRow: "#1c1c1c", activeRow: "#454545", group: "#292929",
-  ruler: "#252525", rulerBar: "#c4c4c4", overview: "#1c1c1c", waveform: "#1c2727",
+  ruler: "#0c0c0c", rulerBar: "#ffffff", rulerEdge: "#454545", overview: "#1c1c1c", waveform: "#1c2727",
   volume: "#151515", divider: "#383838", beatLine: "#383838", barLine: "#545454",
   cycle: "#efc16a", loop: "#77bdfa0f", locator: "#858585", playhead: "#a1d0f7",
 };
@@ -991,7 +991,7 @@ function drawBookmarks(ctx, marks, start, zoom, width) {
     ctx.fillRect(x, rulerBandHeight, 2, bookmarkFlagHeight);
     ctx.fillRect(x, rulerBandHeight, 9, 5);
     const labelWidth = Math.min(180, (visible[i + 1]?.[1] ?? width) - x - 10);
-    if (mark.label && labelWidth > 24) ctx.fillText(mark.label, x + 5, 36, labelWidth);
+    if (mark.label && labelWidth > 24) ctx.fillText(mark.label, x + 5, rulerBandHeight + 15, labelWidth);
   }
 }
 
@@ -1253,6 +1253,16 @@ const snapColours = {
   9: "#b3d944", 12: "#cc6600", 16: "#6644cc",
 };
 
+// v3 §5: a snap tick's height on the ruler by its reduced divisor (1/5, 1/7, 1/9 take the smallest).
+const snapTickHeights = { 2: 9, 3: 7, 4: 7, 6: 5, 8: 5, 12: 4, 16: 4 };
+
+function reducedDivisor(tick, divisor) {
+  let remainder = Math.abs(tick % divisor);
+  let factor = divisor;
+  while (remainder) [factor, remainder] = [remainder, factor % remainder];
+  return divisor / factor;
+}
+
 function snapColour(tick, divisor) {
   let remainder = Math.abs(tick % divisor);
   let factor = divisor;
@@ -1278,7 +1288,8 @@ function drawTimingGrid(ctx, start, end, zoom, top, bottom, ruler = false) {
           if (tick % scene.divisor === 0) continue;
           const x = (origin + tick * step - start) * zoom;
           const color = snapColour(tick, scene.divisor);
-          line(ctx, ruler ? color : color + "42", x, ruler ? bottom - 5 : top, x, bottom);
+          const height = snapTickHeights[reducedDivisor(tick, scene.divisor)] ?? 4;
+          line(ctx, ruler ? color : color + "42", x, ruler ? bottom - height : top, x, bottom);
         }
       }
     }
@@ -1290,7 +1301,8 @@ function drawTimingGrid(ctx, start, end, zoom, top, bottom, ruler = false) {
       const bar = !scene.editorBars?.length && tick % meter === 0;
       const longSnap = useSnap && scene.beats > 1 && tick % scene.beats === 0;
       const color = ruler ? snapColours[1] : bar || longSnap ? slateTimeline.barLine : slateTimeline.beatLine;
-      line(ctx, color, x, ruler ? bottom - (bar || longSnap ? 9 : 7) : top, x, bottom);
+      // v3 §5: bar lines run the ruler's full height, beat ticks are 12 px.
+      line(ctx, color, x, ruler && !bar && !longSnap ? bottom - 12 : top, x, bottom);
     }
   }
   for (const [i, section] of (scene.editorBars ?? []).entries()) {
@@ -1302,10 +1314,10 @@ function drawTimingGrid(ctx, start, end, zoom, top, bottom, ruler = false) {
     if (begin >= until || !Number.isFinite(step) || step <= 0) continue;
     for (let n = Math.ceil((begin - section.start) / step); section.start + n * step < until; n++) {
       const x = (section.start + n * step - start) * zoom;
-      line(ctx, slateTimeline.barLine, x, ruler ? 3 : top, x, bottom);
+      line(ctx, ruler ? slateTimeline.rulerBar : slateTimeline.barLine, x, top, x, bottom);
       if (ruler) {
         ctx.fillStyle = slateTimeline.rulerBar;
-        ctx.fillText(String(section.bar + n * stride), x + 5, 14);
+        ctx.fillText(String(section.bar + n * stride), x + 5, 10);
       }
     }
   }
@@ -1635,18 +1647,22 @@ function paint() {
   const beats = beatLengths(scene.sections);
   const objectSize = time => objectDiameter(beats, time, zoom, r.height - rulerBandHeight);
   drawGameplay(r.ctx, scene.gameplay, xOf, waveformMiddle, r.width, objectSize);
+  // v3 §5: the 40 px ruler, #0c0c0c with a 1 px --editor-selected bottom edge, bar numbers 13 px/600.
   r.ctx.fillStyle = slateTimeline.ruler;
   r.ctx.fillRect(0, 0, r.width, rulerBandHeight);
-  r.ctx.font = "11px Consolas, monospace";
+  line(r.ctx, slateTimeline.rulerEdge, 0, rulerBandHeight - .5, r.width, rulerBandHeight - .5);
+  r.ctx.font = "600 13px Inter, system-ui, sans-serif";
+  r.ctx.textBaseline = "top";
   drawTimingGrid(r.ctx, start, end, zoom, 0, rulerBandHeight, true);
   const rulerSteps = [25, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 30000, 60000];
   const labelStep = rulerSteps.find((step) => step * zoom >= 76) ?? 120000;
   for (let time = Math.ceil(start / labelStep) * labelStep; !scene.editorBars?.length && time < end; time += labelStep) {
     const x = xOf(time);
-    line(r.ctx, slateTimeline.barLine, x, 3, x, 21);
+    line(r.ctx, slateTimeline.rulerBar, x, 0, x, rulerBandHeight);
     r.ctx.fillStyle = slateTimeline.rulerBar;
-    r.ctx.fillText(clock(time), x + 5, 14);
+    r.ctx.fillText(clock(time), x + 5, 10);
   }
+  r.ctx.textBaseline = "alphabetic";
   const preview = rulerDrag?.path === scene.path ? rulerDrag.preview : null;
   const [left, right, cycling] = preview ?? [view.left, view.right, view.cycle];
   const spanStart = xOf(Math.min(left, right));

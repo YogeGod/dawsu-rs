@@ -63,15 +63,15 @@ test("object circles scale with zoom: half a beat on screen × 0.8, between 18 a
   // 500 ms beats at 0.1 px/ms: half a beat is 25 px, so circles are 20 px.
   paint("scene.zoom = .1");
   assert.deepEqual(circles(ruler), [
-    { x: 10, y: 50.5, diameter: 20, fill: "#e6eef2", stroke: "#1c2727" },
-    { x: 40, y: 50.5, diameter: 20, fill: "#e6eef2", stroke: "#1c2727" },
+    { x: 10, y: 60, diameter: 20, fill: "#e6eef2", stroke: "#1c2727" },
+    { x: 40, y: 60, diameter: 20, fill: "#e6eef2", stroke: "#1c2727" },
     // A repeat sits on the track at the track's height; the slider end is full size.
-    { x: 60, y: 50.5, diameter: 13.2, fill: "#e6eef2", stroke: "#1c2727" },
-    { x: 80, y: 50.5, diameter: 20, fill: "#e6eef2", stroke: "#1c2727" },
+    { x: 60, y: 60, diameter: 13.2, fill: "#e6eef2", stroke: "#1c2727" },
+    { x: 80, y: 60, diameter: 20, fill: "#e6eef2", stroke: "#1c2727" },
   ]);
   // The slider track is 66% of the circle height with fully rounded ends, teal as before.
   const track = ruler.calls.find(call => call.name === "roundRect");
-  assert.deepEqual(track.args.map(round), [40, 43.9, 40, 13.2, 6.6]);
+  assert.deepEqual(track.args.map(round), [40, 53.4, 40, 13.2, 6.6]);
   assert.ok(ruler.calls.some(call => call.name === "fill" && call.fill === "#62d6cfd9"), "slider track fill");
   // Spinners keep their thin bar.
   assert.ok(ruler.calls.some(call => call.name === "fillRect" && call.fill === "#e6eef2" && call.args[3] === 5));
@@ -103,11 +103,11 @@ test("slider tracks keep their rounded ends where the canvas has no roundRect()"
   const path = ruler.calls.slice(start, start + 7).map(call => [call.name, ...call.args.map(round)]);
   // A 40 × 13.2 px track from x 40 with 6.6 px corners: two half circles joined by straight edges.
   assert.deepEqual(path, [
-    ["moveTo", 46.6, 43.9],
-    ["arcTo", 80, 43.9, 80, 57.1, 6.6],
-    ["arcTo", 80, 57.1, 40, 57.1, 6.6],
-    ["arcTo", 40, 57.1, 40, 43.9, 6.6],
-    ["arcTo", 40, 43.9, 80, 43.9, 6.6],
+    ["moveTo", 46.6, 53.4],
+    ["arcTo", 80, 53.4, 80, 66.6, 6.6],
+    ["arcTo", 80, 66.6, 40, 66.6, 6.6],
+    ["arcTo", 40, 66.6, 40, 53.4, 6.6],
+    ["arcTo", 40, 53.4, 80, 53.4, 6.6],
     ["closePath"],
     ["fill"],
   ]);
@@ -116,24 +116,24 @@ test("slider tracks keep their rounded ends where the canvas has no roundRect()"
 
 test("clicking anywhere on a drawn circle or slider track picks that object", async () => {
   const { evaluate } = await canvases();
-  // Ruler 80 px tall: the waveform lane's middle is y 50.5. At 0.1 px/ms circles are 20 px
+  // Ruler 80 px tall: the waveform lane's middle is y 60. At 0.1 px/ms circles are 20 px
   // and the slider track 13.2 px; after 2000 ms the faster timing makes circles 18 px.
   evaluate("scene.zoom = .1; scene.gameplay.points.push(['circle', 2200, 3])");
   const target = (ms, y) => evaluate(`JSON.stringify(waveformTarget(${ms}, ${y}, 80))`);
   const pick = (object, time, node) => JSON.stringify({ object, time, node });
-  assert.equal(target(190, 50.5), pick(0, 100, true), "9 px right of the circle's centre");
-  assert.equal(target(100, 59.5), pick(0, 100, true), "9 px below the circle's centre");
-  assert.equal(target(210, 50.5), "null", "11 px away misses");
-  assert.equal(target(700, 56.5), pick(1, 400, false), "the track 6 px below its middle");
-  assert.equal(target(700, 57.5), "null", "7 px below misses the 13.2 px track");
-  assert.equal(target(2285, 50.5), pick(3, 2200, true), "8.5 px into an 18 px circle");
-  assert.equal(target(2295, 50.5), "null", "9.5 px misses an 18 px circle");
+  assert.equal(target(190, 60), pick(0, 100, true), "9 px right of the circle's centre");
+  assert.equal(target(100, 69), pick(0, 100, true), "9 px below the circle's centre");
+  assert.equal(target(210, 60), "null", "11 px away misses");
+  assert.equal(target(700, 66), pick(1, 400, false), "the track 6 px below its middle");
+  assert.equal(target(700, 67), "null", "7 px below misses the 13.2 px track");
+  assert.equal(target(2285, 60), pick(3, 2200, true), "8.5 px into an 18 px circle");
+  assert.equal(target(2295, 60), "null", "9.5 px misses an 18 px circle");
 });
 
 test("object circles never grow past the waveform lane", async () => {
   const { get, paint } = await canvases();
   const ruler = get("ruler");
-  ruler.clientHeight = 41;
+  ruler.clientHeight = 60;
   paint("scene.zoom = .25");
   assert.deepEqual(circles(ruler).map(circle => circle.diameter), [20, 20, 13.2, 20]);
 });
@@ -171,16 +171,16 @@ test("the cycle region is a faint accent band under a warning-yellow bar on the 
   const rects = () => ruler.calls.filter(call => call.name === "fillRect").map(call => [call.fill, ...call.args]);
   // Locators at 100 and 700 ms at 0.25 px/ms: the region runs from x 25 to 175.
   paint("scene.zoom = .25; Object.assign(view, { left: 100, right: 700, cycle: true })");
-  assert.ok(rects().some(rect => rect.join() === ["#77bdfa0f", 25, 0, 150, 20].join()), "faint accent band");
+  assert.ok(rects().some(rect => rect.join() === ["#77bdfa0f", 25, 0, 150, 39].join()), "faint accent band");
   assert.ok(rects().some(rect => rect.join() === ["#efc16a", 25, 1, 150, 4].join()), "warning-yellow bar");
   assert.ok(!ruler.calls.some(call => [call.fill, call.stroke].some(colour => colour?.startsWith("#2fbf4a"))), "no green");
   assert.ok(ruler.calls.some(call => call.name === "stroke" && call.stroke === "#858585"), "locator lines stay");
   // With the cycle off the locator span stays grey; reversed locators stay orange.
   paint("view.cycle = false");
-  assert.ok(rects().some(rect => rect.join() === ["#85858522", 25, 0, 150, 20].join()));
+  assert.ok(rects().some(rect => rect.join() === ["#85858522", 25, 0, 150, 39].join()));
   assert.ok(!rects().some(rect => rect[0] === "#efc16a"));
   paint("Object.assign(view, { left: 700, right: 100, cycle: true })");
-  assert.ok(rects().some(rect => rect.join() === ["#f0aa7046", 25, 0, 150, 20].join()));
+  assert.ok(rects().some(rect => rect.join() === ["#f0aa7046", 25, 0, 150, 39].join()));
   assert.ok(!rects().some(rect => rect[0] === "#efc16a"));
 });
 
@@ -201,9 +201,9 @@ test("a click on a slider repeat counts only inside its drawn size", async () =>
   const target = (ms, y) => evaluate(`JSON.stringify(waveformTarget(${ms}, ${y}, 80))`);
   const pick = (object, time, node) => JSON.stringify({ object, time, node });
   // The repeat at 600 ms is drawn at the track's 13.2 px, not the 20 px of the head and end.
-  assert.equal(target(600, 56.5), pick(1, 600, true), "6 px below the repeat's centre");
-  assert.equal(target(680, 50.5), pick(1, 400, false), "8 px beside it is the track");
-  assert.equal(target(600, 58.5), "null", "8 px below misses");
+  assert.equal(target(600, 66), pick(1, 600, true), "6 px below the repeat's centre");
+  assert.equal(target(680, 60), pick(1, 400, false), "8 px beside it is the track");
+  assert.equal(target(600, 68), "null", "8 px below misses");
 });
 
 test("circle sizes and clicks stay right with thousands of timing sections", async () => {
@@ -219,8 +219,8 @@ test("circle sizes and clicks stay right with thousands of timing sections", asy
     // A click just inside the circle's edge picks it; just outside misses.
     const inside = time + (diameter / 2 - .5) / .2;
     const outside = time + (diameter / 2 + .5) / .2;
-    assert.equal(evaluate(`waveformTarget(${inside}, 50.5, 80)?.time`), time, `click inside at ${time} ms`);
-    assert.equal(evaluate(`waveformTarget(${outside}, 50.5, 80)`), null, `click outside at ${time} ms`);
+    assert.equal(evaluate(`waveformTarget(${inside}, 60, 80)?.time`), time, `click inside at ${time} ms`);
+    assert.equal(evaluate(`waveformTarget(${outside}, 60, 80)`), null, `click outside at ${time} ms`);
   }
 });
 
@@ -228,11 +228,11 @@ test("slider-track clicks work where arrays have no findLast()", async () => {
   const { evaluate } = await canvases();
   // Older WebKit WebViews on macOS and Linux lack Array.prototype.findLast.
   evaluate("scene.zoom = .1; delete Array.prototype.findLast");
-  assert.equal(evaluate("JSON.stringify(waveformTarget(700, 56.5, 80))"),
+  assert.equal(evaluate("JSON.stringify(waveformTarget(700, 66, 80))"),
     JSON.stringify({ object: 1, time: 400, node: false }));
   // Overlapping spans: the later one wins, as before.
   evaluate("scene.gameplay.spans.push(['slider', 650, 750, 5])");
-  assert.equal(evaluate("waveformTarget(700, 56.5, 80).object"), 5);
+  assert.equal(evaluate("waveformTarget(700, 66, 80).object"), 5);
 });
 
 test("the left and right locators are L and R flags at the top of the ruler", async () => {
@@ -323,4 +323,15 @@ test("a folded main lane outlines its layers' hits in their volume colours; unfo
     .map(call => call.name === "fill" ? ["fill", call.fill] : ["stroke", call.stroke]);
   assert.deepEqual(order, [["fill", volume(80)], ["stroke", volume(30)], ["stroke", volume(100)]]);
   assert.deepEqual(tops(), [45 - 6, 45 - 7.5, 45 - 10]);
+});
+
+test("the ruler band is 40 px of #0c0c0c with a 1 px --editor-selected bottom edge", async () => {
+  const { get, paint } = await canvases();
+  const ruler = get("ruler");
+  paint("scene.zoom = .1");
+  assert.ok(ruler.calls.some(call => call.name === "fillRect" && call.fill === "#0c0c0c" &&
+    call.args.join() === "0,0,300,40"), "band");
+  const edge = ruler.calls.findIndex(call => call.name === "lineTo" && call.args[1] === 39.5 && call.args[0] === 300.5);
+  assert.ok(edge > 0 && ruler.calls[edge - 1].args.join() === "0.5,39.5", "bottom edge");
+  assert.ok(ruler.calls.slice(edge).some(call => call.name === "stroke" && call.stroke === "#454545"));
 });

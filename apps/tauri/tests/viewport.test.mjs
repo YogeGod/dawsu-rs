@@ -351,6 +351,50 @@ test("ruler colours distinguish reduced beat divisions and reset at a tempo chan
   assert.equal(Object.values(ticks(1)).includes("#8866ee"), false);
 });
 
+test("the 40 px ruler draws bars full height, beats 12 px and snap ticks at the divisor's height", async () => {
+  const { evaluate } = await frontend();
+  evaluate('scene = { sections: [[0, 480, 4]], snap: true, snapMode: "grid", beats: 1, divisor: 4 }');
+  // Each tick as [top, colour] at its time; every tick ends at the ruler's bottom (40 px).
+  evaluate(`function rulerTicks(zoom) {
+    const ticks = {}; let x, top;
+    const ctx = { beginPath() {}, moveTo(at, y) { x = at - .5; top = y; }, lineTo(_, y) { this.bottom = y; },
+      stroke() { ticks[x / zoom] = [top, this.bottom, this.strokeStyle]; }, fillText() {} };
+    drawTimingGrid(ctx, 0, 1000, zoom, 0, 40, true);
+    return ticks;
+  }`);
+  const ticks = () => JSON.parse(evaluate("JSON.stringify(rulerTicks(1))"));
+  const quarters = ticks();
+  assert.deepEqual(quarters[0], [0, 40, "#ffffff"], "bar line, full height");
+  assert.deepEqual(quarters[480], [28, 40, "#ffffff"], "beat tick, 12 px");
+  assert.deepEqual(quarters[240], [31, 40, "#ed1121"], "1/2, 9 px");
+  assert.deepEqual(quarters[120], [33, 40, "#66ccff"], "1/4, 7 px");
+  evaluate("scene.divisor = 3");
+  assert.deepEqual(ticks()[160], [33, 40, "#8866ee"], "1/3, 7 px");
+  evaluate("scene.divisor = 8");
+  assert.deepEqual(ticks()[60], [35, 40, "#ffcc22"], "1/8, 5 px");
+  evaluate("scene.divisor = 6");
+  assert.deepEqual(ticks()[80], [35, 40, "#eeaa00"], "1/6, 5 px");
+  evaluate("scene.divisor = 16");
+  assert.deepEqual(ticks()[30], [36, 40, "#6644cc"], "1/16, 4 px");
+  evaluate("scene.divisor = 12");
+  assert.deepEqual(ticks()[40], [36, 40, "#cc6600"], "1/12, 4 px");
+});
+
+test("bar numbers sit 10 px from the ruler's top; bar lines run its full height", async () => {
+  const { evaluate } = await frontend();
+  const result = evaluate(`
+    scene = { sections: [[0, 500, 4]], snap: false, editorBars: [{ start: 0, beat: 500, numerator: 4, bar: 1 }] };
+    const labels = [], lines = [];
+    let from;
+    const ctx = { beginPath() {}, moveTo(x, y) { from = [x - .5, y]; }, lineTo(_, y) { lines.push([...from, y, this.strokeStyle]); },
+      stroke() {}, fillText(text, x, y) { labels.push([text, x - 5, y, this.fillStyle]); } };
+    drawTimingGrid(ctx, 0, 4500, .1, 0, 40, true);
+    // The beat tick at 200 px draws first; the editor bar line draws over it.
+    JSON.stringify([labels[1], lines.filter(line => line[0] === 200).at(-1)]);
+  `);
+  assert.deepEqual(JSON.parse(result), [["2", 200, 10, "#ffffff"], [200, 0, 40, "#ffffff"]]);
+});
+
 test("time signature bars draw at their new positions while snap colours stay on the map grid", async () => {
   const { evaluate } = await frontend();
   const result = evaluate(`
