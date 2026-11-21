@@ -33,11 +33,14 @@ import InspectorLane from "./parts/InspectorLane.svelte";
 import InspectorSelection from "./parts/InspectorSelection.svelte";
 import LaneOptions from "./parts/LaneOptions.svelte";
 import MapPreview from "./parts/MapPreview.svelte";
+import MidiImportModal from "./parts/MidiImportModal.svelte";
 import NodeGraphWindow from "./parts/NodeGraphWindow.svelte";
+import PreferencesModal from "./parts/PreferencesModal.svelte";
 import PreviewWindow from "./parts/PreviewWindow.svelte";
 import SnapSlider from "./parts/SnapSlider.svelte";
 import StartScreen from "./parts/StartScreen.svelte";
 import StatusBar from "./parts/StatusBar.svelte";
+import ToastStack from "./parts/ToastStack.svelte";
 import ToolPills from "./parts/ToolPills.svelte";
 import TransportBar from "./parts/TransportBar.svelte";
 
@@ -46,8 +49,11 @@ const parts = {
   tools: ToolPills, snap: SnapSlider, audition: AuditionPill, transport: TransportBar,
   playhead: PlayheadGroup, lanes: LaneHeaders, "status-bar": StatusBar,
   "grid-options": GridOptions, "lane-options": LaneOptions, "start-screen": StartScreen,
-  // The timeline's hit hover card, at body level.
+  // The timeline's hit hover card, preferences modal, and toast stack, at body level.
   "hit-card": HitCard,
+  preferences: PreferencesModal,
+  "midi-import": MidiImportModal,
+  toasts: ToastStack,
   // The popup the menu bar, the right-click tool picker and the lane menu share (#editor-menu).
   menu: EditorMenu,
   "inspector-selection": InspectorSelection, "inspector-lane": InspectorLane, "inspector-difficulty": InspectorDifficulty,
@@ -95,7 +101,6 @@ function linkPreviewWindow(view) {
     bridge.mapPreview = true;
     sendPreview(true);
   });
-  if (view?.previewWindow) invoke("preview_window_open").catch(error => console.error(error));
 }
 let lastSent = "";
 function sendPreview(force = false) {

@@ -83,7 +83,7 @@ test("a lane header row carries its number, sound name, set tag, icon and contro
   const [normal, skin, clap, , , , kick] = rows.slice(1);
   assert.deepEqual(normal, {
     type: "lane", key: "lane:0", row: 0, number: 1, name: "Normal", label: "soft-hitnormal", display: "soft-hitnormal",
-    title: "soft-hitnormal · Select and audition · Ctrl/Cmd toggles · Shift selects a range",
+    title: "soft-hitnormal. Click to select and audition; Ctrl/Cmd toggles; Shift selects a range",
     tag: "Soft", icon: "normal", colour: null, folder: "soft", active: false, selected: false,
     muted: false, solo: false, quiet: false, layer: false,
     family: { collapsed: false, label: "Collapse soft-hitnormal layers" },
@@ -102,7 +102,7 @@ test("a lane header row carries its number, sound name, set tag, icon and contro
   assert.equal(lanes(evaluate)[2].tag, "Soft");
 
   evaluate("showLaneInfo = true; renderLanes();");
-  assert.equal(lanes(evaluate)[0].name, "soft-hitnormal · idx 1");
+  assert.equal(lanes(evaluate)[0].name, "soft-hitnormal (idx 1)");
   assert.equal(lanes(evaluate)[0].display, "soft-hitnormal", "M and S keep the plain name");
 
   evaluate("showLaneInfo = false; view.panels = { laneNames: false }; renderLanes();");
@@ -186,6 +186,67 @@ test("the drum view keeps its rows and names and adds no tags", async () => {
   assert.equal(rows[0].icon, "clap");
   evaluate("view.drumView.enabled = false; renderLanes();");
   assert.equal(evaluate("JSON.stringify(laneRows)"), '["soft",0,4,1,2,5,6,3]');
+});
+
+test("Drum Map Setup lists built-in presets and lets the mapper assign any drum row", async () => {
+  const invoked = [];
+  const controls = new Map();
+  function element() {
+    return {
+      events: new Map(), children: [], dataset: {}, attributes: {}, classes: [],
+      style: { setProperty(name, value) { this[name] = value; } },
+      classList: { add(name) { this.owner.classes.push(name); }, toggle() {} },
+      addEventListener(name, listener) { this.events.set(name, listener); },
+      setAttribute(name, value) { this.attributes[name] = String(value); },
+      append(...children) { this.children.push(...children); },
+      prepend(...children) { this.children.unshift(...children); }, focus() {},
+      showModal() { this.open = true; }, close() { this.open = false; },
+      replaceChildren(...children) { this.children = children; },
+    };
+  }
+  const create = () => { const made = element(); made.classList.owner = made; return made; };
+  const get = id => { if (!controls.has(id)) controls.set(id, create()); return controls.get(id); };
+  const context = createContext({
+    document: { getElementById: get, createElement: create, querySelectorAll: () => [], addEventListener() {} },
+    window: { __TAURI__: {
+      core: { invoke: async (name, args) => {
+        invoked.push([name, args]);
+        return { busy: false, hasDocument: true, position: 0 };
+      } },
+      event: { listen() {} },
+    } },
+    ResizeObserver: class { observe() {} },
+    Option: class { constructor(text, value) { this.text = text; this.value = value; } },
+    requestAnimationFrame() {},
+    setInterval() {},
+    console,
+  });
+  await bootEditor(context);
+  runInContext(fixture + `view.drumView = {
+    enabled: true,
+    name: "Two kicks",
+    presets: ["Full kit, all 12 samples", "Two kicks"],
+    rows: [
+      { index: 0, name: "Kick", laneKey: "Skin|soft-hitnormal", assigned: true },
+      { index: 1, name: "Ghost", laneKey: null, assigned: false },
+    ],
+    lanes: [{ key: "Skin|soft-hitnormal", sceneKey: "n", name: "soft-hitnormal" }],
+  };
+  openDrumMapSetup(1);`, context);
+  assert.equal(runInContext("modalKind", context), "drum-map-setup");
+  const body = get("dialog-body").children;
+  const presetSelect = body[0].children[1].children[0];
+  presetSelect.value = "Full kit, all 12 samples";
+  presetSelect.events.get("change")();
+  await runInContext("pending", context);
+  const ghostSelect = body[1].children[1].children[1];
+  ghostSelect.value = "Skin|soft-hitnormal";
+  ghostSelect.events.get("change")();
+  await runInContext("pending", context);
+  assert.deepEqual(invoked.filter(([name]) => name === "drum_map_action"), [
+    ["drum_map_action", { map: "a.osu", action: { kind: "load_builtin", name: "Full kit, all 12 samples" } }],
+    ["drum_map_action", { map: "a.osu", action: { kind: "assign_row", row_index: 1, lane_key: "Skin|soft-hitnormal" } }],
+  ]);
 });
 
 test("the header column keeps the design's 250px width and colours every web view draws", async () => {

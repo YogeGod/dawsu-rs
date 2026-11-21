@@ -40,7 +40,10 @@
       {/if}
     </div>
   {:else if row.type === "drum"}
-    <div class="lane" class:compact={!names}>
+    <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
+    <div class="lane unassigned-drum-row" class:compact={!names}
+      onclick={() => globalThis.openDrumMapSetup?.(row.drumRowIndex)}
+      ondblclick={() => globalThis.openDrumMapSetup?.(row.drumRowIndex)}>
       <span class="name unassigned-drum" title={row.title}>{names ? row.name : "–"}</span>
     </div>
   {:else}
@@ -51,7 +54,8 @@
       style:--lh-strip={shade.strip} style:--lh-tile={shade.tile} style:--lh-header={shade.header}
       style:--lh-hover={shade.hover} style:--lh-selected={shade.selected}
       style:--lh-spine={row.folder ? folder.strip : undefined}
-      onclick={event => on.rowClick(event, row.row)}>
+      onclick={event => on.rowClick(event, row.row)}
+      ondblclick={() => { if (headers?.drum) globalThis.openDrumMapSetup?.(row.drumRowIndex); }}>
       <span class="spine"></span>
       <span class="num">{row.number}</span>
       <!-- A numbered layer hangs under its main lane, which folds it like a folder. -->
@@ -84,6 +88,13 @@
 
 <!-- v3 f1: the last row adds a lane. It keeps the id menus.js presses; no command binds a key to it. -->
 {#if headers}
+  {#if headers.drum}
+    <button type="button" id="drum-map-setup" class="add-lane-row drum-setup-row" class:compact={!names}
+      aria-label="Drum map setup" title={headers.drumName ? headers.drumName + " (Presets and Setup)" : "Drum map setup"}
+      disabled={headers.busy} onclick={() => globalThis.openDrumMapSetup?.()}>
+      {#if names}<span>{headers.drumName ? headers.drumName + " (Setup…)" : "Drum map setup…"}</span>{:else}<span>Setup</span>{/if}
+    </button>
+  {/if}
   <button type="button" id="add-lane" class="add-lane-row" class:compact={!names} aria-label="Add lane" title={names ? undefined : "Add lane"}
     disabled={headers.busy} onclick={() => globalThis.openAddLane?.()}>{@html Plus}{#if names}<span>Add lane</span>{/if}</button>
 {/if}
@@ -252,10 +263,21 @@
   .family-head .lane-disclosure {
     color: var(--editor-secondary);
   }
+  .unassigned-drum-row {
+    cursor: pointer;
+  }
+  .unassigned-drum-row:hover .unassigned-drum {
+    color: var(--editor-text);
+  }
   .unassigned-drum {
     padding-left: 8px;
     color: var(--editor-muted);
     font-weight: 400;
+  }
+  .drum-setup-row span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   /* The tag gives way before the name: its slot shrinks first and clips it. */
   .tag-slot {

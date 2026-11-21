@@ -6,15 +6,15 @@ import { bootEditor } from "./editor-runtime.mjs";
 
 const css = await readFile(new URL("../dist/style.css", import.meta.url), "utf8");
 
-// Values from the design handoff's tokens.css (--dark-* palette, --editor-* roles).
+// Logic Pro for iPad cool slate surfaces (--dark-* palette, --editor-* roles).
 const surfaces = {
-  "--base": "#151515", "--field": "#151515", "--lane-alt": "#151515",
-  "--panel": "#1c1c1c", "--lane": "#1c1c1c",
-  "--chrome": "#292929", "--raised": "#292929", "--group": "#292929",
-  "--ruler": "#252525", "--button": "#2c2c2c", "--control": "#3c3c3c",
-  "--line": "#383838", "--divider": "#383838", "--button-border": "#383838",
-  "--text": "#f1f1f1", "--title-text": "#c4c4c4", "--muted": "#a3a3a3",
-  "--hi": "#77bdfa", "--hi-hover": "#a1d0f7", "--on-accent": "#101010",
+  "--base": "#0f1218", "--field": "#0f1218", "--lane-alt": "#0f1218",
+  "--panel": "#161a23", "--lane": "#161a23",
+  "--chrome": "#1f2430", "--raised": "#1f2430", "--group": "#1f2430",
+  "--ruler": "#1b202b", "--button": "#252c3b", "--control": "#2f384b",
+  "--line": "#2c3445", "--divider": "#2c3445", "--button-border": "#2c3445",
+  "--text": "#f2f5fa", "--title-text": "#c4cddb", "--muted": "#96a3b8",
+  "--hi": "#4fa8ff", "--hi-hover": "#84c5ff", "--on-accent": "#08111c",
 };
 const blueGreys = [
   "#171b22", "#20252e", "#262d37", "#303a48", "#15181e", "#303946", "#394655", "#38414f",
@@ -55,8 +55,8 @@ function lastDeclared(selector, property) {
 }
 
 test("the top bar stays chrome while the ribbon sits on the darker panel", () => {
-  assert.equal(root[lastDeclared("header.chrome", "background")], "#292929");
-  assert.equal(root[lastDeclared(".tools.chrome", "background")], "#1c1c1c");
+  assert.equal(root[lastDeclared("header.chrome", "background")], "#1f2430");
+  assert.equal(root[lastDeclared(".tools.chrome", "background")], "#161a23");
 });
 
 test("muted and secondary text reads at 4.5:1 or better on every bar", () => {
@@ -139,26 +139,25 @@ async function paintedCanvases() {
 
 test("timeline canvases paint with the design's colours", async () => {
   const { ruler, grid, overview, volume } = await paintedCanvases();
-  // Song waveform: teal shades on --editor-tealtint, bass to treble.
-  assert.equal(ruler.fills[0], "#1c2727");
-  for (const shade of ["#315c59", "#3c7673", "#46908c", "#51aaa5"]) {
-    assert.ok(ruler.fills.includes(shade), `ruler waveform ${shade}`);
-    assert.ok(!overview.fills.includes(shade), `no overview waveform ${shade}`);
-  }
+  // Song waveform: osu!lazer blue/cyan trapezoid fills on --editor-tealtint.
+  assert.equal(ruler.fills[0], "#132229");
+  const isLazerWave = f => /^rgba\((?:[0-9]{1,2}|1\d\d|2[0-3]\d),\d+,(?:1[89]\d|2\d\d),\d+\.\d{3}\)$/.test(f);
+  assert.ok(ruler.fills.some(isLazerWave), "ruler osu!lazer waveform fill");
+  assert.ok(!overview.fills.some(isLazerWave), "no overview waveform");
   // Gameplay objects without combo data: --editor-readout circles with a white ring (timeline-spec §9);
   // slider tracks are that colour 38 % into #111111 with an 85 % white edge.
   assert.deepEqual(ruler.arcs, [{ fill: "#e6eef2", stroke: "#ffffff" }, { fill: "#e6eef2", stroke: "#ffffff" }]);
   assert.ok(ruler.fills.includes("#626567"), "slider body");
   assert.ok(ruler.strokes.includes("#ffffffd9"), "slider edge");
   assert.ok(ruler.fills.includes("#e6eef2"), "spinner body");
-  assert.ok(ruler.fills.includes("#ffffff"), "ruler bar numbers white (v3 §5)");
-  assert.ok(ruler.strokes.includes("#858585"), "locators in --editor-disabled");
+  assert.ok(ruler.fills.includes("#f2f5fa"), "ruler bar numbers crisp white (v3 §5)");
+  assert.ok(ruler.strokes.includes("#7b8ba3"), "locators in cool slate");
   // v3 §5 (Yoge): grid lines stay neutral white at low alpha; snap colours show only on the ruler.
   // The playhead is --editor-focus.
-  assert.ok(grid.strokes.includes("rgba(255,255,255,.04)"), "beat lines");
-  assert.ok(grid.strokes.includes("rgba(255,255,255,.10)"), "bar lines");
+  assert.ok(grid.strokes.includes("rgba(255,255,255,.045)"), "beat lines");
+  assert.ok(grid.strokes.includes("rgba(255,255,255,.22)"), "bar lines");
   assert.ok(!grid.strokes.some(colour => /^#(ed1121|66ccff|8866ee)/.test(colour)), "no snap colours on the grid");
-  for (const canvas of [grid, ruler, overview, volume]) assert.ok(canvas.strokes.includes("#a1d0f7"), "playhead");
+  for (const canvas of [grid, ruler, overview, volume]) assert.ok(canvas.strokes.includes("#84c5ff"), "playhead");
   // Object lines take the spec's teal at the old 40% strength (10% vanishes on the rows);
   // the marked range and marquee use the accent.
   assert.ok(grid.strokes.includes("#62d6cf65"), "object lines");

@@ -1,9 +1,9 @@
 // Timeline viewport, pointer gestures, ruler/locator/bookmark/waveform/overview interactions,
 // hit hover card, and scroll/zoom/wheel snap wiring.
 import {
-  bookmarkFlagHeight, clock, defaultWaveformHeight, describeOutputProblem, limit,
-  locatorFlagHeight, locatorFlagWidth, minZoom, nameOf, objectReach, objectSize,
-  rulerBandHeight, sampleFolderNames,
+  bookmarkFlagHeight, bookmarkHalfWidth, clock, defaultWaveformHeight, describeOutputProblem,
+  hitHalfWidth, limit, locatorFlagHeight, locatorFlagWidth, minZoom, nameOf, objectReach,
+  objectSize, rulerBandHeight, sampleFolderNames,
 } from "./helpers.js";
 
 export function attachTimeline(ctx) {
@@ -29,6 +29,22 @@ export function attachTimeline(ctx) {
     }
   }
 
+  // Pick the nearest hit on `row` (or any moment when `row === null`, e.g. the volume lane)
+  // within a zoom-independent pixel half-width (`hitHalfWidth`), so targets stay easy to click
+  // and sweep at every zoom level.
+  function nearestHitTime(ms, row, zoom) {
+    let best = hitHalfWidth / zoom;
+    let found = null;
+    for (const [time, , , hits] of state.scene.moments) {
+      const distance = Math.abs(time - ms);
+      if (distance < best && (row === null ? hits.length > 0 : hits.some(([laneRow]) => row === laneRow))) {
+        best = distance;
+        found = time;
+      }
+    }
+    return found;
+  }
+
   function pointer(event, phase, gesture = state.drag) {
     const rect = gesture.surface.getBoundingClientRect();
     const x = event.clientX - rect.x;
@@ -43,16 +59,22 @@ export function attachTimeline(ctx) {
     }
     const row = valueLane || gesture.panning ? state.view.activeLane : gesture.lastRow;
     let ms = gesture.start + x / gesture.zoom;
-    if ((phase === "down" || phase === "double_click") && !valueLane &&
-        ["Select", "Erase", "Mute", "Ramp"].includes(state.view.tool)) {
-      let best = 6.5 / gesture.zoom;
-      for (const [time, , , hits] of state.scene.moments) {
-        if (Math.abs(time - ms) < best && hits.some(([laneRow]) => row === laneRow)) {
-          best = Math.abs(time - ms);
-          gesture.hit = time;
-        }
+    const tool = state.view.tool;
+    if (!valueLane && (
+      ((phase === "down" || phase === "double_click") && ["Select", "Erase", "Mute", "Ramp"].includes(tool)) ||
+      (phase === "move" && ["Erase", "Mute"].includes(tool))
+    )) {
+      const hit = nearestHitTime(ms, row, gesture.zoom);
+      if (hit != null) {
+        if (phase !== "move") gesture.hit = hit;
+        ms = hit;
       }
-      if (gesture.hit != null) ms = gesture.hit;
+    } else if (valueLane && phase === "down" && !event.altKey) {
+      const hit = nearestHitTime(ms, null, gesture.zoom);
+      if (hit != null) {
+        gesture.hit = hit;
+        ms = hit;
+      }
     }
     return {
       kind: "pointer", phase, ms, row, x, y,
@@ -67,7 +89,7 @@ export function attachTimeline(ctx) {
     // On a folded main lane, Select and Erase open the layer whose outline was clicked; Draw (and the
     // other tools) get the click, so Draw stacks a hit on the main lane. A folded folder always opens.
     if (!folder && (!state.collapsedFamilies.has(family) || !["Select", "Erase"].includes(state.view.tool))) return false;
-    const tolerance = 6.5 / state.scene.zoom;
+    const tolerance = hitHalfWidth / state.scene.zoom;
     let nearest;
     let distance = tolerance;
     for (const [at, , , hits] of state.scene.moments) {
@@ -157,7 +179,7 @@ export function attachTimeline(ctx) {
     const row = state.laneRows[visibleRow];
     if (typeof row !== "number") return null;
     const ms = state.scene.viewStart + (event.clientX - rect.left) / state.scene.zoom;
-    let best = 6.5 / state.scene.zoom;
+    let best = hitHalfWidth / state.scene.zoom;
     let found = null;
     for (const moment of state.scene.moments) {
       const distance = Math.abs(moment[0] - ms);
@@ -292,7 +314,7 @@ export function attachTimeline(ctx) {
 
   function bookmarkNearFlag(ms, y) {
     if (y >= rulerBandHeight + bookmarkFlagHeight) return null;
-    let nearest = 5 / state.scene.zoom;
+    let nearest = bookmarkHalfWidth / state.scene.zoom;
     let bookmark = null;
     for (const mark of state.scene.bookmarks ?? []) {
       const distance = Math.abs(mark.time - ms);
@@ -362,8 +384,24 @@ export function attachTimeline(ctx) {
 
   // A locator follows the pointer's distance from where its flag or line was grabbed, and stops at
   // the other locator: L never passes R, R never passes L.
+  function snapToActiveGrid(ms) {
+    if (!state.scene?.snap || !state.scene.sections?.length) return ms;
+    const sections = state.scene.sections;
+    let active = sections[0];
+    for (const s of sections) {
+      if (s[0] <= ms) active = s;
+      else break;
+    }
+    const [start, beatLen] = active;
+    if (!(beatLen > 0)) return ms;
+    const step = beatLen * (state.scene.beats || 1) / (state.scene.divisor || 4);
+    if (!(step > 0)) return ms;
+    return start + Math.round((ms - start) / step) * step;
+  }
+
   function locatorDragTo(gesture, x) {
-    const to = gesture[gesture.mode] + (x - gesture.x) / gesture.zoom;
+    const raw = gesture[gesture.mode] + (x - gesture.x) / gesture.zoom;
+    const to = snapToActiveGrid(raw);
     // Locators already reversed by the set shortcuts drag freely, as the backend lets them.
     const ordered = gesture.left <= gesture.right;
     if (gesture.mode === "left") return limit(to, 0, ordered ? gesture.right : gesture.duration);
@@ -533,6 +571,10 @@ export function attachTimeline(ctx) {
       surface.addEventListener("pointerleave", () => {
         if (state.cursorSurface === surface) state.cursorSurface = null;
         if (surface === grid) handOverHitCard(null);
+        if (surface === controller && state.volumeHoverTime !== null) {
+          state.volumeHoverTime = null;
+          ctx.paintSoon();
+        }
       });
     }
 
@@ -569,6 +611,15 @@ export function attachTimeline(ctx) {
       });
       surface.addEventListener("pointermove", (event) => {
         if (surface === grid) handOverHitCard(hitCardAt(event));
+        if (surface === controller && state.scene && !state.view.busy) {
+          const rect = controller.getBoundingClientRect();
+          const ms = state.scene.viewStart + (event.clientX - rect.x) / state.scene.zoom;
+          const hovered = nearestHitTime(ms, null, state.scene.zoom);
+          if (hovered !== state.volumeHoverTime) {
+            state.volumeHoverTime = hovered;
+            ctx.paintSoon();
+          }
+        }
         if (event.pointerId !== state.drag?.id || perf().now() - state.drag.last < 32 || state.requests > 2) return;
         state.drag.last = perf().now();
         state.drag.lastPoint = pointer(event, "move");

@@ -282,7 +282,7 @@ test("every open, command and toggle a part sends reaches its inspectorAction ca
 
   // Bookmarks: + and the buttons that act on the picked row, a row pick and a History step.
   const bookmarkKinds = keys("bookmark");
-  assert.deepEqual(bookmarkKinds, ["add", "goTo", "rename", "remove"]);
+  assert.deepEqual(bookmarkKinds, ["add", "rename", "goTo", "remove"]);
   assert.match(part, /on\.pickBookmark\(row\.time\)/);
   assert.match(part, /on\.history\(step\.position\)/);
   evaluate(`view = { busy: false, position: 750 }; scene = { path: "a.osu", bookmarks: [{ time: 500, label: "Intro" }],

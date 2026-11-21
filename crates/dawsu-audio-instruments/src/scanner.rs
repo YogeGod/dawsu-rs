@@ -1,0 +1,290 @@
+//! Cross-platform VST3 folder discovery and `--scan` output parsing.
+
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
+use std::fmt;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+/// Metadata for a single VST3 plug-in class reported by `dawsu_vst3_host --scan`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Vst3PluginInfo {
+    pub path: PathBuf,
+    pub uid: String,
+    pub name: String,
+    pub vendor: String,
+    pub is_instrument: bool,
+    pub is_effect: bool,
+}
+
+/// Failure while scanning a VST3 plug-in or parsing `--scan` output.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScanError {
+    SpawnFailed(String),
+    HostExited { code: Option<i32>, stderr: String },
+    HostReported(String),
+    MalformedLine(String),
+}
+
+impl fmt::Display for ScanError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::SpawnFailed(msg) => write!(f, "failed to launch VST3 host for scan: {msg}"),
+            Self::HostExited { code, stderr } => {
+                write!(f, "VST3 host exited with {:?}: {}", code, stderr.trim())
+            }
+            Self::HostReported(msg) => write!(f, "VST3 scan error: {msg}"),
+            Self::MalformedLine(line) => write!(f, "malformed --scan output line: {line}"),
+        }
+    }
+}
+
+impl std::error::Error for ScanError {}
+
+/// Standard system and user VST3 search directories for the current OS.
+pub fn default_vst3_dirs() -> Vec<PathBuf> {
+    #[cfg(target_os = "windows")]
+    {
+        let common = std::env::var_os("CommonProgramFiles")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(r"C:\Program Files\Common Files"));
+        vec![common.join("VST3")]
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let mut dirs = vec![PathBuf::from("/Library/Audio/Plug-Ins/VST3")];
+        if let Some(home) = std::env::var_os("HOME") {
+            dirs.push(PathBuf::from(home).join("Library/Audio/Plug-Ins/VST3"));
+        }
+        dirs
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let mut dirs = vec![
+            PathBuf::from("/usr/lib/vst3"),
+            PathBuf::from("/usr/local/lib/vst3"),
+        ];
+        if let Some(home) = std::env::var_os("HOME") {
+            dirs.push(PathBuf::from(home).join(".vst3"));
+        }
+        dirs
+    }
+}
+
+/// Discovers `.vst3` plug-in paths across the platform's default VST3 folders.
+pub fn discover_vst3_paths() -> Vec<PathBuf> {
+    discover_vst3_paths_in(&default_vst3_dirs())
+}
+
+/// Discovers `.vst3` bundles and flat `.vst3` files under `roots`.
+///
+/// Once a directory entry has a `.vst3` extension (case-insensitive), it is recorded
+/// as a plug-in and never recursed into, so nested binaries such as
+/// `Plugin.vst3/Contents/x86_64-win/Plugin.vst3` are skipped.
+pub fn discover_vst3_paths_in(roots: &[PathBuf]) -> Vec<PathBuf> {
+    let mut found = BTreeSet::new();
+    for root in roots {
+        if root.is_dir() {
+            walk_dir(root, &mut found);
+        }
+    }
+    found.into_iter().collect()
+}
+
+fn walk_dir(dir: &Path, found: &mut BTreeSet<PathBuf>) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if is_vst3_path(&path) {
+            found.insert(path);
+            // Never recurse inside a .vst3 bundle directory.
+            continue;
+        }
+        if path.is_dir() {
+            walk_dir(&path, found);
+        }
+    }
+}
+
+fn is_vst3_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("vst3"))
+}
+
+/// Parses a single stdout line from `dawsu_vst3_host --scan`.
+///
+/// Expected class format: `CLASS\t<uid>\t<name>\t<vendor>\t<subcategories>`
+pub fn parse_scan_line(plugin_path: &Path, raw_line: &str) -> Result<Option<Vst3PluginInfo>, ScanError> {
+    let line = raw_line.trim_end_matches(['\r', '\n']);
+    if line.is_empty() {
+        return Ok(None);
+    }
+    if let Some(msg) = line.strip_prefix("ERROR\t") {
+        return Err(ScanError::HostReported(msg.to_string()));
+    }
+    let Some(rest) = line.strip_prefix("CLASS\t") else {
+        return Ok(None);
+    };
+    let parts: Vec<&str> = rest.split('\t').collect();
+    if parts.len() != 4 {
+        return Err(ScanError::MalformedLine(line.to_string()));
+    }
+    let uid = parts[0].trim();
+    let name = parts[1].trim();
+    let vendor = parts[2].trim();
+    let subcategories = parts[3].trim();
+    if uid.is_empty() || name.is_empty() {
+        return Err(ScanError::MalformedLine(line.to_string()));
+    }
+
+    let is_instrument = has_subcategory(subcategories, "Instrument");
+    let is_effect = has_subcategory(subcategories, "Fx");
+
+    Ok(Some(Vst3PluginInfo {
+        path: plugin_path.to_path_buf(),
+        uid: uid.to_string(),
+        name: name.to_string(),
+        vendor: vendor.to_string(),
+        is_instrument,
+        is_effect,
+    }))
+}
+
+fn has_subcategory(subcategories: &str, needle: &str) -> bool {
+    subcategories
+        .split('|')
+        .any(|token| token.trim().eq_ignore_ascii_case(needle))
+}
+
+/// Parses the full stdout of `dawsu_vst3_host --scan <plugin.vst3>`.
+pub fn parse_scan_output(plugin_path: &Path, stdout: &str) -> Result<Vec<Vst3PluginInfo>, ScanError> {
+    let mut plugins = Vec::new();
+    for line in stdout.lines() {
+        if let Some(info) = parse_scan_line(plugin_path, line)? {
+            plugins.push(info);
+        }
+    }
+    Ok(plugins)
+}
+
+/// Invokes `host_executable --scan <plugin_path>` and parses the reported classes.
+pub fn scan_plugin(host_executable: &Path, plugin_path: &Path) -> Result<Vec<Vst3PluginInfo>, ScanError> {
+    let output = Command::new(host_executable)
+        .arg("--scan")
+        .arg(plugin_path)
+        .output()
+        .map_err(|err| ScanError::SpawnFailed(err.to_string()))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed = parse_scan_output(plugin_path, &stdout)?;
+    if !output.status.success() {
+        return Err(ScanError::HostExited {
+            code: output.status.code(),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        });
+    }
+    Ok(parsed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn make_temp_dir(label: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("dawsu-vst3-scan-{label}-{nanos}"));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn skips_nested_binaries_inside_vst3_bundles() {
+        let root = make_temp_dir("nested");
+
+        // Bundle with nested .vst3 binary inside Contents/x86_64-win/
+        let bundle = root.join("Vital.vst3");
+        let nested_dir = bundle.join("Contents").join("x86_64-win");
+        fs::create_dir_all(&nested_dir).unwrap();
+        fs::write(nested_dir.join("Vital.vst3"), b"binary").unwrap();
+
+        // Vendor subfolder with an effect bundle and a flat .VST3 file
+        let vendor_dir = root.join("FabFilter");
+        let fx_bundle = vendor_dir.join("Pro-Q 3.vst3");
+        fs::create_dir_all(fx_bundle.join("Contents").join("x86_64-win")).unwrap();
+        fs::write(
+            fx_bundle.join("Contents").join("x86_64-win").join("Pro-Q 3.vst3"),
+            b"binary",
+        )
+        .unwrap();
+        let flat_plugin = vendor_dir.join("LegacySynth.VST3");
+        fs::write(&flat_plugin, b"flat-dll").unwrap();
+
+        // Unrelated file
+        fs::write(vendor_dir.join("readme.txt"), b"ignore").unwrap();
+
+        let found = discover_vst3_paths_in(&[root.clone()]);
+        let _ = fs::remove_dir_all(&root);
+
+        assert_eq!(found.len(), 3, "expected 3 top-level plugins, got {found:?}");
+        assert!(found.contains(&bundle));
+        assert!(found.contains(&fx_bundle));
+        assert!(found.contains(&flat_plugin));
+        assert!(
+            !found.iter().any(|p| p.to_string_lossy().contains("Contents")),
+            "nested bundle binary should be skipped: {found:?}"
+        );
+    }
+
+    #[test]
+    fn parses_instrument_and_fx_scan_lines() {
+        let path = Path::new("/plugins/Multi.vst3");
+        let stdout = "\
+CLASS\t0123456789ABCDEF0123456789ABCDEF\tVital\tVital Audio\tInstrument|Synth\r\n\
+CLASS\tFEDCBA9876543210FEDCBA9876543210\tValhallaRoom\tValhalla DSP\tFx|Reverb\n\
+CLASS\tAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA1\tHybridBox\tAcme\tInstrument|Fx|Sampler\n";
+
+        let plugins = parse_scan_output(path, stdout).unwrap();
+        assert_eq!(plugins.len(), 3);
+
+        assert_eq!(plugins[0].name, "Vital");
+        assert_eq!(plugins[0].vendor, "Vital Audio");
+        assert!(plugins[0].is_instrument);
+        assert!(!plugins[0].is_effect);
+
+        assert_eq!(plugins[1].name, "ValhallaRoom");
+        assert!(!plugins[1].is_instrument);
+        assert!(plugins[1].is_effect);
+
+        assert_eq!(plugins[2].name, "HybridBox");
+        assert!(plugins[2].is_instrument);
+        assert!(plugins[2].is_effect);
+
+        // Verify JSON serialization round-trip
+        let json = serde_json::to_string(&plugins).unwrap();
+        let decoded: Vec<Vst3PluginInfo> = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded, plugins);
+    }
+
+    #[test]
+    fn reports_error_and_malformed_scan_lines() {
+        let path = Path::new("/plugins/Broken.vst3");
+        let err = parse_scan_output(path, "ERROR\tFailed to load module\n").unwrap_err();
+        assert_eq!(
+            err,
+            ScanError::HostReported("Failed to load module".to_string())
+        );
+
+        let err = parse_scan_line(path, "CLASS\tonly-two-fields").unwrap_err();
+        assert!(matches!(err, ScanError::MalformedLine(_)));
+    }
+}

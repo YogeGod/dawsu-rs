@@ -163,7 +163,7 @@ test("Drums view keeps aliases at distinct positions and routes them to the same
   evaluate("delete view.drumView;");
   get("drums-view").events.get("click")();
   await evaluate("pending");
-  assert.deepEqual(calls.pop(), { map: "fixture.osu" });
+  assert.deepEqual(calls.pop(), { map: "fixture.osu", on: true });
 });
 
 test("lane selection scopes volume independently of hit selection and skips invisible rows in a Shift range", async () => {

@@ -25,12 +25,14 @@ export const items = [
   // File
   { id: "openMap", label: "Open map…", icon: "FolderOpen", command: "open", run: ["call", "openMap"], enabled: "idle" },
   { id: "importOsz", label: "Import .osz…", icon: "PackageOpen", command: "importOsz", enabled: "idle" },
+  { id: "importMidi", label: "Import MIDI…", icon: "PackageOpen", run: ["call", "openMidiImport"], enabled: "document" },
   { id: "openFolder", label: "Open map folder", icon: "Folder", command: "openFolder" },
   { id: "save", label: "Save", icon: "Save", command: "save" },
   { id: "revert", label: "Revert to saved…", icon: "RotateCcw", command: "revert" },
   { id: "export", label: "Export…", icon: "Package", run: ["click", "export-entry"], enabled: "document" },
   { id: "startScreen", label: "Start screen", icon: "House", run: ["call", "goHome"] },
   { id: "folders", label: "Folders…", icon: "Folder", run: ["call", "openFolders"], enabled: "idle" },
+  { id: "preferences", label: "Preferences…", icon: "Settings", run: ["call", "openPreferences"], enabled: "idle" },
 
   // Edit
   { id: "undo", label: "Undo", icon: "Undo2", command: "undo", enabled: "undo", history: -1 },
@@ -123,7 +125,7 @@ export const items = [
 // Where each row sits. "-" is a divider; one at the start or end of a menu, or next to another, is
 // left out (Map has no Difficulty row, and so no divider under it, without a sibling difficulty).
 export const menus = {
-  file: ["openMap", "importOsz", "openFolder", "-", "save", "revert", "export", "-", "startScreen", "folders"],
+  file: ["openMap", "importOsz", "importMidi", "openFolder", "-", "save", "revert", "export", "-", "startScreen", "folders", "-", "preferences"],
   edit: [
     "undo", "redo", "-",
     "cut", "copy", "paste", "duplicate", "delete", "selectAll", "-",

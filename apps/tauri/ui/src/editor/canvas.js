@@ -122,21 +122,70 @@ export function attachCanvas(ctx) {
     }
   }
 
+  // osu!lazer WaveformGraph.cs + Timeline.cs palette:
+  // Base #66ccff @ 20% alpha -> Mid #44aadd -> High #2299bb -> Low (bass) #ddffff.
+  function lazerWaveColour(low, mid, high) {
+    let r = 102, g = 204, b = 255, a = 0.20;
+    const blend = (tr, tg, tb, t) => {
+      const k = limit(t, 0, 1);
+      r += (tr - r) * k;
+      g += (tg - g) * k;
+      b += (tb - b) * k;
+      a += (1 - a) * k;
+    };
+    blend(68, 170, 221, mid);
+    blend(34, 153, 187, high);
+    blend(221, 255, 255, low);
+    return `rgba(${Math.round(r)},${Math.round(g)},${Math.round(b)},${a.toFixed(3)})`;
+  }
+
   function waveform(context2d, width, center, height, start, span) {
     const bins = state.scene.waveform;
     if (!bins.length || !state.view.duration) return;
     // Playback reads the song at position - offset, so the drawn song moves by the same offset.
     const songStart = start - (state.view.offset ?? 0);
-    for (const [channel, color] of [[0, "#315c59"], [1, "#3c7673"], [2, "#46908c"], [3, "#51aaa5"]]) {
-      context2d.fillStyle = color;
-      for (let x = 0; x < width; x += 2) {
-        const a = Math.floor((songStart + x * span / width) / state.view.duration * bins.length);
-        const b = Math.min(bins.length, Math.ceil((songStart + (x + 2) * span / width) / state.view.duration * bins.length));
-        let peak = 0;
-        for (let i = Math.max(0, a); i < b; i++) peak = Math.max(peak, bins[i][channel]);
-        const extent = limit(peak, 0, 1) * height;
-        context2d.fillRect(x, center - extent, 2, extent * 2);
+    const step = 2;
+    let prevX = null;
+    let prevL = 0;
+    let prevR = 0;
+    for (let x = 0; x <= width; x += step) {
+      const t0 = songStart + x * span / width;
+      const t1 = songStart + (x + step) * span / width;
+      const a = Math.max(0, Math.floor(t0 / state.view.duration * bins.length));
+      const b = Math.min(bins.length, Math.max(a + 1, Math.ceil(t1 / state.view.duration * bins.length)));
+      if (a >= bins.length || t1 < 0) {
+        prevX = null;
+        continue;
       }
+      let ampL = 0, ampR = 0, low = 0, mid = 0, high = 0, count = 0;
+      for (let i = a; i < b; i++) {
+        const bin = bins[i];
+        ampL += bin[4] ?? bin[0];
+        ampR += bin[5] ?? bin[0];
+        low += bin[1];
+        mid += bin[2];
+        high += bin[3];
+        count++;
+      }
+      if (!count) {
+        prevX = null;
+        continue;
+      }
+      ampL = limit(ampL / count, 0, 1) * height + 0.75;
+      ampR = limit(ampR / count, 0, 1) * height + 0.75;
+      if (prevX !== null) {
+        context2d.fillStyle = lazerWaveColour(low / count, mid / count, high / count);
+        context2d.beginPath();
+        context2d.moveTo(prevX, center - prevL);
+        context2d.lineTo(x, center - ampL);
+        context2d.lineTo(x, center + ampR);
+        context2d.lineTo(prevX, center + prevR);
+        context2d.closePath();
+        context2d.fill();
+      }
+      prevX = x;
+      prevL = ampL;
+      prevR = ampR;
     }
   }
 
@@ -190,10 +239,10 @@ export function attachCanvas(ctx) {
 
   function fillHitDiamond(context2d, x, y) {
     context2d.beginPath();
-    context2d.moveTo(x, y - 6);
-    context2d.lineTo(x + 6, y);
-    context2d.lineTo(x, y + 6);
-    context2d.lineTo(x - 6, y);
+    context2d.moveTo(x, y - 8);
+    context2d.lineTo(x + 8, y);
+    context2d.lineTo(x, y + 8);
+    context2d.lineTo(x - 8, y);
     context2d.closePath();
     context2d.fill();
   }
@@ -248,13 +297,131 @@ export function attachCanvas(ctx) {
     const sliderEnds = state.sliderEndCache.ends;
     return (kind, time, object) => {
       const ends = kind === "slider" ? sliderEnds.get(object) : null;
-      const repeat = ends && time !== ends[0] && time !== ends[1];
-      return { radius: repeat ? diameter * 0.66 / 2 : diameter / 2, head: !ends || time === ends[0] };
+      const repeat = Boolean(ends && time !== ends[0] && time !== ends[1]);
+      const tail = Boolean(ends && time === ends[1] && ends[1] !== ends[0]);
+      return { radius: repeat ? diameter * 0.66 / 2 : diameter / 2, head: !ends || time === ends[0], repeat, tail };
     };
+  }
+
+  function tintedHitCircle(skin, colour) {
+    let cached = skin.tinted.get(colour);
+    if (cached) return cached;
+    const src = skin.hitcircle;
+    const w = src.naturalWidth || src.width;
+    const h = src.naturalHeight || src.height;
+    const off = env.document.createElement("canvas");
+    off.width = w;
+    off.height = h;
+    const octx = off.getContext("2d");
+    // v3 timeline-spec §9: solid combo-colour disc clipped to hitcircle alpha,
+    // then hitcircle drawn on top with overlay blend at 50% for shading.
+    octx.drawImage(src, 0, 0);
+    octx.globalCompositeOperation = "source-in";
+    octx.fillStyle = colour;
+    octx.fillRect(0, 0, w, h);
+    octx.globalCompositeOperation = "overlay";
+    octx.globalAlpha = 0.5;
+    octx.drawImage(src, 0, 0);
+    octx.globalAlpha = 1;
+    octx.globalCompositeOperation = "destination-in";
+    octx.drawImage(src, 0, 0);
+    octx.globalCompositeOperation = "source-over";
+    if (skin.tinted.size > 64) skin.tinted.clear();
+    skin.tinted.set(colour, off);
+    return off;
+  }
+
+  function drawSkinImage(context2d, img, cx, cy, scale) {
+    const w = (img.naturalWidth || img.width) * scale;
+    const h = (img.naturalHeight || img.height) * scale;
+    context2d.drawImage(img, cx - w / 2, cy - h / 2, w, h);
+  }
+
+  function drawSkinNumber(context2d, skin, cx, cy, scale, number) {
+    const overlap = 4; // @2x pixels (osu!'s default HitCircleOverlap = 2 px at 1x)
+    const digits = String(number);
+    let totalWidth = overlap;
+    for (let i = 0; i < digits.length; i++) {
+      const g = skin.digits?.[Number(digits[i])];
+      if (!g) return;
+      totalWidth += (g.naturalWidth || g.width) - overlap;
+    }
+    let x = cx - (totalWidth * scale) / 2;
+    for (let i = 0; i < digits.length; i++) {
+      const g = skin.digits[Number(digits[i])];
+      const gw = g.naturalWidth || g.width;
+      const gh = g.naturalHeight || g.height;
+      context2d.drawImage(g, x, cy - (gh * scale) / 2, gw * scale, gh * scale);
+      x += (gw - overlap) * scale;
+    }
+  }
+
+  function drawSkinCircle(context2d, skin, cx, cy, radius, colour, combo, arrow = false) {
+    const srcW = skin.hitcircle.naturalWidth || skin.hitcircle.width;
+    if (!(srcW > 0) || !(radius > 0)) return;
+    const side = (radius * 2) / (skin.circleFill || 0.92);
+    const scale = side / srcW;
+    drawSkinImage(context2d, tintedHitCircle(skin, colour), cx, cy, scale);
+    drawSkinImage(context2d, skin.overlay, cx, cy, scale);
+    if (arrow && skin.reverseArrow) drawSkinImage(context2d, skin.reverseArrow, cx, cy, scale);
+    else if (combo > 0) drawSkinNumber(context2d, skin, cx, cy, scale * 0.8, combo);
   }
 
   function drawGameplay(context2d, gameplay, xOf, y, width, diameter) {
     if (!gameplay) return;
+    const skin = state.skinTextures?.ready ? state.skinTextures : null;
+    if (skin) {
+      const radius = diameter / 2;
+      context2d.lineWidth = 2;
+      for (const [kind, start, end, object] of gameplay.spans) {
+        const left = xOf(start);
+        const right = xOf(end);
+        if (right < -objectReach || left > width + objectReach) continue;
+        if (kind === "slider") {
+          const track = diameter * 0.66;
+          const trackW = Math.max(2, right - left);
+          const top = y - track / 2;
+          context2d.fillStyle = trackShade(comboOf(object).colour);
+          roundedTrack(context2d, left, top, trackW, track, Math.min(track, trackW) / 2);
+          context2d.fill();
+          const inner = Math.max(0, trackW - 2);
+          context2d.strokeStyle = "#ffffffd9";
+          roundedTrack(context2d, left + 1, top + 1, inner, Math.max(0, track - 2), Math.min(Math.max(0, track - 2), inner) / 2);
+          context2d.stroke();
+          continue;
+        }
+        context2d.fillStyle = objectWhite;
+        const from = Math.max(0, left);
+        const to = Math.min(width, right);
+        context2d.fillRect(from, y - 2.5, Math.max(1, to - from), 5);
+      }
+      const radiusOf = nodeRadii(gameplay.points, diameter);
+      const points = gameplay.points;
+      // Draw slider tails and repeats first so slider heads with combo digits sit cleanly on top.
+      for (let at = points.length - 1; at >= 0; at--) {
+        const [kind, time, object] = points[at];
+        const info = radiusOf(kind, time, object);
+        if (info.head) continue;
+        const x = xOf(time);
+        if (x < -objectReach || x > width + objectReach) continue;
+        const { colour } = comboOf(object);
+        const r = info.tail ? radius * 0.8 : radius * 0.55;
+        drawSkinCircle(context2d, skin, x, y, r, colour, 0, info.repeat);
+      }
+      for (const [at, [kind, time, object]] of points.entries()) {
+        const info = radiusOf(kind, time, object);
+        if (!info.head) continue;
+        const x = xOf(time);
+        if (x < -objectReach || x > width + objectReach) continue;
+        const next = points[at + 1];
+        const nextX = next ? xOf(next[1]) : Infinity;
+        if (next && radiusOf(next[0], next[1], next[2]).head && nextX - x < 2) continue;
+        const { number, colour } = comboOf(object);
+        drawSkinCircle(context2d, skin, x, y, radius, colour, number || 0, false);
+      }
+      context2d.lineWidth = 1;
+      return;
+    }
     context2d.lineWidth = 2;
     for (const [kind, start, end, object] of gameplay.spans) {
       const left = xOf(start);
@@ -380,6 +547,13 @@ export function attachCanvas(ctx) {
       context2d.fill();
       context2d.stroke();
     }
+    // Bookmarks on this difficulty: crisp cyan ticks along the top edge of the overview strip.
+    context2d.fillStyle = "#79d7dc";
+    for (const mark of state.scene.bookmarks ?? []) {
+      const bx = mark.time * width / duration;
+      if (bx < 0 || bx > width) continue;
+      context2d.fillRect(Math.round(bx) - 1, 0, 2, 7);
+    }
     const playX = playheadPosition() * width / duration;
     line(context2d, slateTimeline.playhead, playX, 0, playX, height);
   }
@@ -406,16 +580,62 @@ export function attachCanvas(ctx) {
     }
   }
 
-  function drawBookmarks(context2d, marks, start, zoom, width) {
+  function drawBookmarks(context2d, marks, start, zoom, width, height = rulerBandHeight + bookmarkFlagHeight) {
     const visible = marks.map(mark => [mark, (mark.time - start) * zoom])
       .filter(([, x]) => x >= 0 && x <= width);
-    context2d.fillStyle = "#79d7dc";
+    if (!visible.length) return;
+    context2d.save?.();
+    context2d.font = "600 11px Inter, system-ui, sans-serif";
+    const flagHeight = 16;
     for (const [i, [mark, x]] of visible.entries()) {
-      context2d.fillRect(x, rulerBandHeight, 2, bookmarkFlagHeight);
-      context2d.fillRect(x, rulerBandHeight, 9, 5);
-      const labelWidth = Math.min(180, (visible[i + 1]?.[1] ?? width) - x - 10);
-      if (mark.label && labelWidth > 24) context2d.fillText(mark.label, x + 5, rulerBandHeight + 15, labelWidth);
+      const sx = Math.round(x);
+      if (height > rulerBandHeight) {
+        context2d.fillStyle = "rgba(121,215,220,.30)";
+        context2d.fillRect(sx, rulerBandHeight, 1, height - rulerBandHeight);
+      }
+      context2d.fillStyle = "#79d7dc";
+      context2d.fillRect(sx, rulerBandHeight, 2, bookmarkFlagHeight);
+      const nextX = visible[i + 1]?.[1] ?? width;
+      if (mark.label) {
+        const measured = context2d.measureText?.(mark.label)?.width ?? (mark.label.length * 6.5);
+        const naturalWidth = Math.min(180, Math.ceil(measured) + 12);
+        const spaceRight = nextX - sx - 6;
+        const flipLeft = sx + naturalWidth > width - 4 && sx > naturalWidth + 4;
+        const pillWidth = flipLeft
+          ? Math.min(naturalWidth, sx - 4)
+          : Math.min(naturalWidth, Math.max(24, spaceRight));
+        const flagX = flipLeft ? sx - pillWidth : sx + 2;
+        if (pillWidth > 24) {
+          context2d.fillStyle = "rgba(15,36,40,.94)";
+          context2d.fillRect(flagX, rulerBandHeight, pillWidth, flagHeight);
+          context2d.fillStyle = "#79d7dc";
+          context2d.fillRect(flagX, rulerBandHeight, pillWidth, 1);
+          context2d.fillRect(flagX, rulerBandHeight + flagHeight - 1, pillWidth, 1);
+          context2d.fillRect(flipLeft ? flagX : flagX + pillWidth - 1, rulerBandHeight, 1, flagHeight);
+          context2d.fillStyle = "#e6fbff";
+          context2d.fillText(mark.label, flagX + 5, rulerBandHeight + 12, pillWidth - 8);
+        } else {
+          context2d.fillStyle = "#79d7dc";
+          context2d.fillRect(flipLeft ? sx - 10 : sx, rulerBandHeight, 10, 6);
+        }
+      } else {
+        const flipLeft = sx + 12 > width;
+        const dir = flipLeft ? -1 : 1;
+        if (context2d.beginPath && context2d.moveTo && context2d.lineTo && context2d.closePath && context2d.fill) {
+          context2d.fillStyle = "#79d7dc";
+          context2d.beginPath();
+          context2d.moveTo(sx + (flipLeft ? 0 : 2), rulerBandHeight);
+          context2d.lineTo(sx + (flipLeft ? 0 : 2) + dir * 11, rulerBandHeight + 5);
+          context2d.lineTo(sx + (flipLeft ? 0 : 2), rulerBandHeight + 11);
+          context2d.closePath();
+          context2d.fill();
+        } else {
+          context2d.fillStyle = "#79d7dc";
+          context2d.fillRect(flipLeft ? sx - 10 : sx, rulerBandHeight, 10, 6);
+        }
+      }
     }
+    context2d.restore?.();
   }
 
   function paint() {
@@ -439,12 +659,21 @@ export function attachCanvas(ctx) {
     if (v) {
       v.ctx.fillStyle = slateTimeline.volume;
       v.ctx.fillRect(0, 0, v.width, v.height);
-      v.ctx.font = '10px "Roboto Mono", monospace';
-      for (const percent of [100, 50, 0]) {
+      v.ctx.font = '10px Inter, system-ui, sans-serif';
+      for (const percent of [100, 75, 50, 25, 0]) {
         const y = v.height - 1 - percent * (v.height - 3) / 100;
-        line(v.ctx, slateTimeline.beatLine, 0, y, v.width, y);
+        const major = percent === 100 || percent === 50 || percent === 0;
+        line(v.ctx, major ? slateTimeline.beatLine : "rgba(255,255,255,.04)", 0, y, v.width, y);
         v.ctx.fillStyle = "#a3a3a3";
-        if (v.height >= 64) v.ctx.fillText(String(percent), 5, percent === 0 ? y - 3 : y + 11);
+        const showLabel = major ? v.height >= 64 : v.height >= 96;
+        if (showLabel) v.ctx.fillText(String(percent), 5, percent === 0 ? y - 3 : y + 11);
+      }
+      if (state.volumeHoverTime != null) {
+        const hx = xOf(state.volumeHoverTime);
+        if (hx >= -8 && hx <= v.width + 8) {
+          v.ctx.fillStyle = "rgba(119,189,250,.14)";
+          v.ctx.fillRect(hx - 4.5, 0, 9, v.height);
+        }
       }
     }
     for (let row = Math.floor(scrollTop / rowHeight); row <= Math.ceil((scrollTop + g.height) / rowHeight); row++) {
@@ -475,6 +704,24 @@ export function attachCanvas(ctx) {
       }
     }
     drawTimingGrid(g.ctx, start, end, zoom, 0, g.height);
+    if (state.volumeHoverTime != null) {
+      const hx = xOf(state.volumeHoverTime);
+      if (hx >= -8 && hx <= g.width + 8) {
+        g.ctx.fillStyle = "rgba(119,189,250,.14)";
+        g.ctx.fillRect(hx - 4.5, 0, 9, g.height);
+      }
+    }
+    const problemTimes = new Set();
+    for (const problem of state.view.outputProblems ?? []) {
+      if (problem.timeline === state.scene.path) problemTimes.add(Math.round(problem.time));
+    }
+    if (problemTimes.size) {
+      g.ctx.fillStyle = "rgba(232,107,114,.12)";
+      for (const t of problemTimes) {
+        const px = xOf(t);
+        if (px >= -8 && px <= g.width + 8) g.ctx.fillRect(px - 4.5, 0, 9, g.height);
+      }
+    }
     let lastObjectPixel = null;
     for (const [time, volume, object, hits] of state.scene.moments) {
       const x = xOf(time);
@@ -487,18 +734,32 @@ export function attachCanvas(ctx) {
       const colour = volumeColour(volume);
       if (v) {
         const volumeHeight = limit(volume, 0, 100) / 100 * (v.height - 3);
+        const anySelected = hits.some(([, selected]) => selected);
+        const topY = v.height - volumeHeight;
         v.ctx.fillStyle = colour;
-        v.ctx.fillRect(x - 1, v.height - volumeHeight, 2, volumeHeight);
+        v.ctx.fillRect(x - 2.5, topY, 5, volumeHeight);
+        // Bright 5x5 top cap (white when selected), matching 3.1.4 VolumeLane.
+        v.ctx.fillStyle = anySelected ? "#ffffff" : colour;
+        v.ctx.fillRect(x - 2.5, Math.max(0, topY - 2), 5, 5);
+        // White horizontal ticks for any per-hit volumes that differ from the moment's shared volume.
+        for (const [, , , hitVolume] of hits) {
+          if (hitVolume != null && hitVolume !== volume) {
+            const tickY = v.height - limit(hitVolume, 0, 100) / 100 * (v.height - 3);
+            v.ctx.fillStyle = "#ffffff";
+            v.ctx.fillRect(x - 3, tickY - 0.5, 6, 1.5);
+          }
+        }
       }
+      const hasProblem = problemTimes.has(Math.round(time));
       for (const [row, selected, listenMuted, hitVolume] of hits) {
         for (const visibleRow of state.laneVisualPositions.get(row) ?? []) {
           const y = (visibleRow + 0.5) * rowHeight - scrollTop;
           if (y < -8 || y > g.height + 8) continue;
           g.ctx.fillStyle = listenMuted ? "#858585" : volumeColour(hitVolume ?? volume);
           fillHitDiamond(g.ctx, x, y);
-          if (selected) {
+          if (selected || hasProblem) {
             g.ctx.lineWidth = 2;
-            g.ctx.strokeStyle = "#ffffff";
+            g.ctx.strokeStyle = selected ? "#ffffff" : "#e86b72";
             g.ctx.stroke();
             g.ctx.lineWidth = 1;
           }
@@ -520,7 +781,7 @@ export function attachCanvas(ctx) {
             const inside = nested.get(parent) ?? 0;
             nested.set(parent, inside + 1);
             g.ctx.strokeStyle = colour;
-            strokeHitDiamond(g.ctx, x, y, 7.5 + 2.5 * inside);
+            strokeHitDiamond(g.ctx, x, y, 9.5 + 2.5 * inside);
           } else {
             g.ctx.globalAlpha *= 0.3;
             g.ctx.fillStyle = colour;
@@ -558,6 +819,7 @@ export function attachCanvas(ctx) {
     const waveformMiddle = (r.height + rulerBandHeight) / 2;
     const waveAmplitude = Math.min(state.waveformHeight, Math.max(0, r.height - rulerBandHeight)) / 2;
     if (state.waveformShown && waveAmplitude > 0) waveform(r.ctx, r.width, waveformMiddle, waveAmplitude, start, r.width / zoom);
+    if (r.height > rulerBandHeight) drawTimingGrid(r.ctx, start, end, zoom, rulerBandHeight, r.height, false);
     const ngOverlay = visibleViewerOverlay(
       ctx.ui()?.nodeGraphViewer?.(), start, end, xOf, rulerBandHeight + 2, Math.max(0, r.height - rulerBandHeight - 4),
     );
@@ -612,7 +874,12 @@ export function attachCanvas(ctx) {
       line(r.ctx, slateTimeline.locator, xOf(time), 0, xOf(time), r.height);
     }
     drawLocatorFlags(r.ctx, r.width, left, right, cycling && left <= right);
-    drawBookmarks(r.ctx, state.scene.bookmarks ?? [], start, zoom, r.width);
+    drawBookmarks(r.ctx, state.scene.bookmarks ?? [], start, zoom, r.width, r.height);
+    for (const mark of state.scene.bookmarks ?? []) {
+      const bx = xOf(mark.time);
+      if (bx < 0 || bx > g.width) continue;
+      line(g.ctx, "rgba(121,215,220,.16)", bx, 0, bx, g.height);
+    }
     const playhead = xOf(playheadPosition());
     line(g.ctx, slateTimeline.playhead, playhead, 0, playhead, g.height);
     line(r.ctx, slateTimeline.playhead, playhead, 0, playhead, r.height);

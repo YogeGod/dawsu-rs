@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { createContext, runInContext } from "node:vm";
 import { bootEditor } from "./editor-runtime.mjs";
 
-const playheadColour = "#a1d0f7";
+const playheadColour = "#84c5ff";
 
 // The editor with fake canvases, a clock and animation frames the test runs by hand. The editor
 // answers each refresh with `state`; the test changes it as playback goes on.

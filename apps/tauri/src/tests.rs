@@ -611,6 +611,48 @@ fn a_drum_view_row_on_a_hidden_lane_never_names_another_spelling_of_its_file() {
 }
 
 #[test]
+fn drum_view_loads_builtin_presets_and_assigns_rows() {
+    let fixture = Fixture::new("drum-view-builtin");
+    let path = fixture.0.join("Hard.osu");
+    let bytes = b"osu file format v14\n\n[General]\nMode:0\n\n[TimingPoints]\n0,500,4,1,0,100,1,0\n\n[HitObjects]\n256,192,1000,1,8,0:0:0:0:\n";
+    fs::write(&path, bytes).unwrap();
+
+    let mut app = Application::headless();
+    open(&mut app, &path);
+    let map = app.document().unwrap().path.clone();
+    let mut drums = super::drum_view::DrumView::default();
+
+    assert!(drums.load_builtin(&app, &map, "Does not exist").is_err());
+    drums.load_builtin(&app, &map, "Two kicks").unwrap();
+
+    let read = |drums: &super::drum_view::DrumView, app: &Application| {
+        let mut shown = snapshot(app, true);
+        drums.decorate(app, &mut shown);
+        shown
+    };
+    let shown = read(&drums, &app);
+    assert_eq!(shown["drumView"]["enabled"], true);
+    assert_eq!(shown["drumView"]["name"], "Two kicks");
+    assert_eq!(shown["drumView"]["presets"].as_array().unwrap().len(), 10);
+    let setup_rows = shown["drumView"]["rows"].as_array().unwrap();
+    assert!(!setup_rows.is_empty());
+
+    // Assign row 0 to Skin|normal-hitclap, then unassign it.
+    drums.assign_row(&app, &map, 0, Some("Skin|normal-hitclap")).unwrap();
+    let assigned = read(&drums, &app);
+    assert_eq!(assigned["drumView"]["rows"][0]["laneKey"], "Skin|normal-hitclap");
+    assert_eq!(assigned["drumView"]["rows"][0]["assigned"], true);
+
+    drums.assign_row(&app, &map, 0, None).unwrap();
+    let cleared = read(&drums, &app);
+    assert!(cleared["drumView"]["rows"][0]["laneKey"].is_null());
+    assert_eq!(cleared["drumView"]["rows"][0]["assigned"], false);
+
+    assert!(drums.assign_row(&app, &map, 999, None).is_err());
+    assert!(!app.is_dirty());
+}
+
+#[test]
 fn lane_actions_hide_restore_and_undo_without_removing_the_sample() {
     let fixture = Fixture::new("lane-actions");
     let map_path = fixture.0.join("Lane.osu");
@@ -1309,7 +1351,9 @@ fn dense_scene_and_dirty_switch_use_the_real_editor_state() {
             peak: 0.8,
             low: 0.3,
             mid: 0.2,
-            high: 0.1
+            high: 0.1,
+            amp_l: 0.8,
+            amp_r: 0.8,
         };
         4_000
     ];

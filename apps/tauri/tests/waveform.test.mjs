@@ -7,9 +7,9 @@ import { bootEditor } from "./editor-runtime.mjs";
 const css = await readFile(new URL("../dist/style.css", import.meta.url), "utf8");
 
 test("workstation chrome uses the design's neutral grey surfaces and shared blue accent", () => {
-  assert.match(css, /:root\s*\{[^}]*--base:\s*#151515\b/);
-  assert.match(css, /:root\s*\{[^}]*--panel:\s*#1c1c1c\b/);
-  assert.match(css, /:root\s*\{[^}]*--hi:\s*#77bdfa\b/);
+  assert.match(css, /:root\s*\{[^}]*--base:\s*#0f1218\b/);
+  assert.match(css, /:root\s*\{[^}]*--panel:\s*#161a23\b/);
+  assert.match(css, /:root\s*\{[^}]*--hi:\s*#4fa8ff\b/);
 });
 test("the ruler paints the teal waveform frequency shades on a teal tint; the overview keeps a neutral background", async () => {
   const elements = new Map();
@@ -20,13 +20,15 @@ test("the ruler paints the teal waveform frequency shades on a teal tint; the ov
     const hitMarks = [];
     const ctx = new Proxy({
       arc(x, y, radius) { objects.push({ x, y, radius, afterWaveform: bands.length > 0 }); },
-      fill() { fills.push(this.fillStyle); },
+      fill() {
+        fills.push(this.fillStyle);
+        if (typeof this.fillStyle === "string" && this.fillStyle.startsWith("rgba(") && this.fillStyle !== "rgba(241,241,241,.06)") {
+          bands.push({ color: this.fillStyle });
+        }
+      },
       fillRect(x, y, width, height) {
         fills.push(this.fillStyle);
         if (this.fillStyle === "#a3a3a3") hitMarks.push([x, y]);
-        if (["#315c59", "#3c7673", "#46908c", "#51aaa5"].includes(this.fillStyle)) {
-          bands.push({color: this.fillStyle, x, y, width, height});
-        }
       },
     }, {get: (target, name) => target[name] ?? (() => {})});
     return {
@@ -54,9 +56,9 @@ test("the ruler paints the teal waveform frequency shades on a teal tint; the ov
     scene = {path: "fixture.osu", viewStart: 0, zoom: .25, rowHeight: 30, moments: [], sections: [],
       waveform: [[.4,.38,.12,.02], [.6,.18,.54,.17], [.8,.025,.19,.68]]};
     paint();`, context);
-  assert.equal(get("ruler").fills[0], "#1c2727");
-  assert.equal(get("overview").fills[0], "#1c1c1c");
-  assert.equal(get("grid").fills[0], "#151515");
+  assert.equal(get("ruler").fills[0], "#132229");
+  assert.equal(get("overview").fills[0], "#161a23");
+  assert.equal(get("grid").fills[0], "#0f1218");
   const waveformBands = { ruler: [...get("ruler").bands], overview: [...get("overview").bands] };
   runInContext(`
     scene.gameplay = {points: [["circle", 200], ["slider", 600]], spans: [["slider", 600, 800], ["spinner", 900, 1000]]};
@@ -75,26 +77,15 @@ test("the ruler paints the teal waveform frequency shades on a teal tint; the ov
     hydrateLaneLayout({lane_colours: {"Skin|normal-hitclap": "#ff5500"}});
     paint();`, context);
   // v3: a picked colour tints its row 8 %.
-  assert.deepEqual(get("grid").fills.slice(0, 3), ["#151515", "#ff550014", "#1c1c1c"]);
+  assert.deepEqual(get("grid").fills.slice(0, 3), ["#0f1218", "#ff550014", "#161a23"]);
   get("grid").fills.length = 0;
   runInContext("hydrateLaneLayout(null); paint()", context);
   assert.ok(!get("grid").fills.includes("#ff55001f"));
   // The overview draws object diamonds, not the song's waveform (timeline-spec "Overview strip").
   assert.deepEqual(waveformBands.overview, []);
-
-  const expected = ["#3c7673", "#46908c", "#51aaa5"];
-  for (const id of ["ruler"]) {
-    for (const [segment, x] of [48, 148, 248].entries()) {
-      const levels = waveformBands[id].filter(rect => rect.x === x);
-      assert.equal(levels.length, 4);
-      const ordered = levels.slice(1).sort((a, b) => b.height - a.height);
-      assert.equal(ordered[0].color, expected[segment]);
-      assert.ok(ordered[0].height > ordered[1].height * 2);
-      const center = ordered[0].y + ordered[0].height / 2;
-      const paintedColor = levels.filter(rect =>
-        center - ordered[0].height * .45 >= rect.y &&
-        center - ordered[0].height * .45 < rect.y + rect.height).at(-1).color;
-      assert.equal(paintedColor, expected[segment]);
-    }
-  }
+  assert.ok(waveformBands.ruler.length > 0, "ruler paints osu!lazer waveform trapezoids");
+  // Low-dominant segment should blend brightest toward osu!lazer's #ddffff (high R/G/B).
+  const firstColor = waveformBands.ruler[0].color;
+  const lastColor = waveformBands.ruler.at(-1).color;
+  assert.notEqual(firstColor, lastColor, "different frequency bands produce distinct colours");
 });

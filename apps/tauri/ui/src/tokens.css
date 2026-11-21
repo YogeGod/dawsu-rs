@@ -2,21 +2,21 @@
    (collections: Palette 34, Editor colors 35, Editor dimensions 12).
    Components use only --editor-* (semantic). --dark-* is the palette layer. */
 :root {
-  /* Palette (dark) */
-  --dark-canvas: #151515;   --dark-panel: #1c1c1c;   --dark-chrome: #292929;
-  --dark-control: #2c2c2c;  --dark-hover: #3c3c3c;   --dark-selected: #454545;
-  --dark-border: #383838;   --dark-grid: #252525;    --dark-ruler: #252525;
-  --dark-major: #373737;    --dark-ink: #111111;     --dark-white: #ffffff;
-  --dark-text: #f1f1f1;     --dark-secondary: #c4c4c4; --dark-muted: #a3a3a3;
-  --dark-disabled: #858585; --dark-readout: #e6eef2;
-  --dark-accent: #77bdfa;   --dark-accentink: #101010; --dark-focus: #a1d0f7;
-  --dark-play: #69d995;     --dark-meter: #72d8a0;
-  --dark-error: #fa838c;    --dark-warning: #efc16a;
-  --dark-kick: #f1ad67;     --dark-kicktint: #26221d;   /* Normal sounds */
-  --dark-hat: #9c9cfc;      --dark-hattint: #202126;    /* Whistle */
-  --dark-percussion: #a7d67d; --dark-perctint: #22251e; /* Finish */
-  --dark-clap: #e28dd1;     --dark-claptint: #241f23;   /* Clap */
-  --dark-teal: #62d6cf;     --dark-tealtint: #1c2727;   /* Song / objects */
+  /* Palette (dark — Logic Pro for iPad cool slate) */
+  --dark-canvas: #0f1218;   --dark-panel: #161a23;   --dark-chrome: #1f2430;
+  --dark-control: #252c3b;  --dark-hover: #2f384b;   --dark-selected: #3a465e;
+  --dark-border: #2c3445;   --dark-grid: #1b202b;    --dark-ruler: #1b202b;
+  --dark-major: #343e52;    --dark-ink: #090b10;     --dark-white: #ffffff;
+  --dark-text: #f2f5fa;     --dark-secondary: #c4cddb; --dark-muted: #96a3b8;
+  --dark-disabled: #6f7b90; --dark-readout: #e8f2fc;
+  --dark-accent: #4fa8ff;   --dark-accentink: #08111c; --dark-focus: #84c5ff;
+  --dark-play: #4cd964;     --dark-meter: #5ce088;
+  --dark-error: #ff6b7a;    --dark-warning: #f5b841;
+  --dark-kick: #f1ad67;     --dark-kicktint: #201e22;   /* Normal sounds */
+  --dark-hat: #9c9cfc;      --dark-hattint: #1b1e2b;    /* Whistle */
+  --dark-percussion: #a7d67d; --dark-perctint: #1b2321; /* Finish */
+  --dark-clap: #e28dd1;     --dark-claptint: #221c27;   /* Clap */
+  --dark-teal: #4fd8d0;     --dark-tealtint: #132229;   /* Song / objects */
 
   /* Editor colors (semantic, alias the palette) */
   --editor-canvas: var(--dark-canvas);   --editor-panel: var(--dark-panel);
@@ -65,22 +65,22 @@
   --glow-playhead: 0 0 3px rgba(161,208,247,.35);
 
   /* Ruler */
-  --ruler-bg: #0c0c0c;
-  --ruler-tick: #f1f1f1;
+  --ruler-bg: #0b0e14;
+  --ruler-tick: #f2f5fa;
   /* osu! beat-divisor tick colours (ruler only, never the editor grid) */
   --snap-2: #ed1121; --snap-3: #8866ee; --snap-4: #66ccff; --snap-6: #cc6600;
   --snap-8: #ffcc22; --snap-12: #995500; --snap-16: #6644cc;
   /* Editor grid stays neutral */
-  --grid-sub: rgba(255,255,255,.025); --grid-beat: rgba(255,255,255,.04); --grid-bar: rgba(255,255,255,.10);
+  --grid-sub: rgba(180,205,245,.03); --grid-beat: rgba(180,205,245,.06); --grid-bar: rgba(200,220,255,.14);
 
 
   /* Mute / solo */
-  --ms-idle: rgba(0,0,0,.35); --ms-edge: rgba(255,255,255,.18);
+  --ms-idle: rgba(9,11,16,.45); --ms-edge: rgba(200,220,255,.16);
   --mute-on: var(--editor-accent); --solo-on: var(--editor-warning);
 
   /* Transport */
-  --transport-seg: #252525; --transport-seg-on: var(--editor-selected);
-  --transport-rec-on: #402426; --readout-value: var(--editor-focus);
+  --transport-seg: #1b202c; --transport-seg-on: var(--editor-selected);
+  --transport-rec-on: #47212a; --readout-value: var(--editor-focus);
 
   /* osu! star-rating colour stops (osu-web), interpolate in gamma 2.2 */
   --sr-0_1: #4290fb; --sr-1_25: #4fc0ff; --sr-2: #4fffd5; --sr-2_5: #7cff4f; --sr-3_3: #f6f05c;

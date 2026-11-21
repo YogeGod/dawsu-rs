@@ -322,6 +322,219 @@ impl CueIndex {
     }
 }
 
+/// Zero-latency, stereo-linked peak limiter for the master bus.
+/// Transparent (unity gain) whenever the frame peak stays at or below `CEILING`,
+/// with instant attack on overloads and a 50 ms exponential release back to 1.0.
+struct MasterLimiter {
+    gain: f32,
+    release_coeff: f32,
+}
+
+impl MasterLimiter {
+    const CEILING: f32 = 0.98;
+    const RELEASE_SECS: f64 = 0.05;
+
+    fn new(sample_rate: u32) -> Self {
+        let rate = f64::from(sample_rate.max(1));
+        let release_coeff = (1.0 - (-1.0 / (Self::RELEASE_SECS * rate)).exp()) as f32;
+        Self {
+            gain: 1.0,
+            release_coeff,
+        }
+    }
+
+    fn reset(&mut self) {
+        self.gain = 1.0;
+    }
+
+    fn process_frame(&mut self, frame: &mut [f32]) {
+        let mut peak = 0.0_f32;
+        for sample in frame.iter() {
+            let mag = sample.abs();
+            if mag > peak {
+                peak = mag;
+            }
+        }
+        let target = if peak > Self::CEILING {
+            Self::CEILING / peak
+        } else {
+            1.0
+        };
+        if target < self.gain {
+            self.gain = target;
+        } else if self.gain < 1.0 {
+            self.gain += (target - self.gain) * self.release_coeff;
+            if (1.0 - self.gain) < 1e-5 && target == 1.0 {
+                self.gain = 1.0;
+            }
+        }
+        if self.gain < 1.0 {
+            for sample in frame.iter_mut() {
+                *sample = (*sample * self.gain).clamp(-1.0, 1.0);
+            }
+        } else {
+            for sample in frame.iter_mut() {
+                if !sample.is_finite() {
+                    *sample = 0.0;
+                }
+            }
+        }
+    }
+}
+
+struct SongStretcher {
+    sample_rate: u32,
+    stretch: Option<signalsmith_stretch::Stretch>,
+    in_buf: Vec<f32>,
+    out_buf: Vec<f32>,
+    discard_buf: Vec<f32>,
+    out_pos: usize,
+    out_len: usize,
+    primed: bool,
+    primed_song_ptr: usize,
+    primed_speed: f64,
+    read_frame: f64,
+    in_frac: f64,
+    expected_song_ms: f64,
+}
+
+impl SongStretcher {
+    const CHUNK_OUT: usize = 256;
+
+    fn new(sample_rate: u32) -> Self {
+        Self {
+            sample_rate: sample_rate.max(1),
+            stretch: None,
+            in_buf: Vec::new(),
+            out_buf: vec![0.0; Self::CHUNK_OUT * 2],
+            discard_buf: Vec::new(),
+            out_pos: 0,
+            out_len: 0,
+            primed: false,
+            primed_song_ptr: 0,
+            primed_speed: 1.0,
+            read_frame: 0.0,
+            in_frac: 0.0,
+            expected_song_ms: 0.0,
+        }
+    }
+
+    fn reset(&mut self) {
+        self.primed = false;
+        self.out_pos = 0;
+        self.out_len = 0;
+        self.in_frac = 0.0;
+    }
+
+    fn fill_input(&mut self, song: &AudioClip, start_frame: f64, count: usize) {
+        let needed = count * 2;
+        if self.in_buf.len() < needed {
+            self.in_buf.resize(needed, 0.0);
+        }
+        let ratio = song.sample_rate as f64 / self.sample_rate as f64;
+        for i in 0..count {
+            let src_frame = (start_frame + i as f64) * ratio;
+            self.in_buf[i * 2] = song.sample(src_frame, 0);
+            self.in_buf[i * 2 + 1] = song.sample(src_frame, 1);
+        }
+    }
+
+    fn prime(&mut self, song: &AudioClip, song_time_ms: f64, speed: f64) {
+        let sample_rate = self.sample_rate;
+        let stretch = self
+            .stretch
+            .get_or_insert_with(|| signalsmith_stretch::Stretch::preset_default(2, sample_rate));
+        stretch.reset();
+        let in_lat = stretch.input_latency();
+        let out_lat = stretch.output_latency();
+
+        let base_frame = song_time_ms * sample_rate as f64 / 1000.0;
+        let start_in = base_frame - out_lat as f64 * speed;
+
+        if in_lat > 0 {
+            self.fill_input(song, start_in, in_lat);
+            if let Some(stretch) = self.stretch.as_mut() {
+                stretch.seek(&self.in_buf[..in_lat * 2], speed);
+            }
+        }
+        self.read_frame = start_in + in_lat as f64;
+
+        if out_lat > 0 {
+            let discard_in = (out_lat as f64 * speed).round() as usize;
+            self.fill_input(song, self.read_frame, discard_in);
+            let discard_samples = out_lat * 2;
+            if self.discard_buf.len() < discard_samples {
+                self.discard_buf.resize(discard_samples, 0.0);
+            }
+            if let Some(stretch) = self.stretch.as_mut() {
+                stretch.process(
+                    &self.in_buf[..discard_in * 2],
+                    &mut self.discard_buf[..discard_samples],
+                );
+            }
+            self.read_frame += discard_in as f64;
+        }
+
+        self.primed = true;
+        self.primed_song_ptr = song as *const AudioClip as usize;
+        self.primed_speed = speed;
+        self.in_frac = 0.0;
+        self.out_pos = 0;
+        self.out_len = 0;
+        self.expected_song_ms = song_time_ms;
+    }
+
+    fn next_frame(&mut self, song: &AudioClip, song_time_ms: f64, speed: f64) -> [f32; 2] {
+        let song_ptr = song as *const AudioClip as usize;
+        if !self.primed
+            || self.primed_song_ptr != song_ptr
+            || (self.primed_speed - speed).abs() > 1e-6
+            || (song_time_ms - self.expected_song_ms).abs() > 2.0
+        {
+            self.prime(song, song_time_ms, speed);
+        }
+
+        if self.out_pos >= self.out_len {
+            let in_exact = self.in_frac + Self::CHUNK_OUT as f64 * speed;
+            let in_frames = in_exact.floor() as usize;
+            self.in_frac = in_exact - in_frames as f64;
+            self.fill_input(song, self.read_frame, in_frames);
+            self.read_frame += in_frames as f64;
+            if let Some(stretch) = self.stretch.as_mut() {
+                stretch.process(
+                    &self.in_buf[..in_frames * 2],
+                    &mut self.out_buf[..Self::CHUNK_OUT * 2],
+                );
+            }
+            self.out_pos = 0;
+            self.out_len = Self::CHUNK_OUT;
+        }
+
+        let idx = self.out_pos * 2;
+        self.out_pos += 1;
+        self.expected_song_ms += speed * 1000.0 / self.sample_rate as f64;
+        [self.out_buf[idx], self.out_buf[idx + 1]]
+    }
+}
+
+/// Real-time stereo audio source mixed into playback ahead of the master limiter.
+///
+/// Implementations run on the audio output thread and must not block, lock, or allocate.
+pub trait LiveAudioSource: Send {
+    fn process_block(
+        &mut self,
+        left: &mut [f32],
+        right: &mut [f32],
+        sample_rate: u32,
+        is_playing: bool,
+    );
+}
+
+#[inline]
+fn sanitize_live_sample(sample: f32) -> f32 {
+    if sample.is_finite() { sample } else { 0.0 }
+}
+
 pub struct Mixer {
     pub song: Option<Arc<AudioClip>>,
     pub cues: Vec<ScheduledSound>,
@@ -340,8 +553,15 @@ pub struct Mixer {
     cue_index: CueIndex,
     next_cue: usize,
     indexed: bool,
+    limiter: MasterLimiter,
+    stretcher: SongStretcher,
+    live_source: Option<Box<dyn LiveAudioSource>>,
+    live_left: Vec<f32>,
+    live_right: Vec<f32>,
 }
 impl Mixer {
+    const LIVE_BLOCK_FRAMES: usize = 512;
+
     pub fn new(sample_rate: u32) -> Self {
         Self {
             song: None,
@@ -360,11 +580,26 @@ impl Mixer {
             cue_index: CueIndex::default(),
             next_cue: 0,
             indexed: false,
+            limiter: MasterLimiter::new(sample_rate),
+            stretcher: SongStretcher::new(sample_rate),
+            live_source: None,
+            live_left: vec![0.0; Self::LIVE_BLOCK_FRAMES],
+            live_right: vec![0.0; Self::LIVE_BLOCK_FRAMES],
         }
+    }
+    /// Replaces the live audio source, returning the previous source so callers
+    /// can drop it off the audio thread.
+    pub fn set_live_source(
+        &mut self,
+        source: Option<Box<dyn LiveAudioSource>>,
+    ) -> Option<Box<dyn LiveAudioSource>> {
+        std::mem::replace(&mut self.live_source, source)
     }
     pub fn seek(&mut self, ms: f64) {
         self.position_ms = if ms.is_finite() { ms.max(0.0) } else { 0.0 };
         self.indexed = false;
+        self.limiter.reset();
+        self.stretcher.reset();
     }
     pub fn audition(&mut self, clip: Arc<AudioClip>, gain: f32) {
         if self.voices.len() < 32 {
@@ -381,94 +616,154 @@ impl Mixer {
         self.listen = clip.map(|clip| Voice { clip, frame: 0.0, gain: 1.0 });
     }
     pub fn render(&mut self, out: &mut [f32], channels: usize) {
-        for frame in out.chunks_mut(channels.max(1)) {
-            if let Some((left, right)) = self.cycle {
-                if self.playing && right > left && self.position_ms >= right {
-                    self.seek(left);
+        let out_channels = channels.max(1);
+        let block_samples = Self::LIVE_BLOCK_FRAMES * out_channels;
+        for block in out.chunks_mut(block_samples) {
+            let block_frames = block.len() / out_channels;
+            let has_live = if block_frames > 0 {
+                if let Some(source) = self.live_source.as_mut() {
+                    let left = &mut self.live_left[..block_frames];
+                    let right = &mut self.live_right[..block_frames];
+                    left.fill(0.0);
+                    right.fill(0.0);
+                    source.process_block(left, right, self.sample_rate, self.playing);
+                    true
+                } else {
+                    false
                 }
-            }
-            if self.playing {
-                if !self.indexed {
-                    self.active_cues.clear();
-                    self.next_cue = self
-                        .cues
-                        .partition_point(|cue| cue.at_ms <= self.position_ms);
-                    if self.cue_index.leaves == 0 {
-                        // Direct mixer users may supply their own cue vector.
-                        self.active_cues
-                            .extend((0..self.next_cue).filter(|i| {
-                                self.position_ms < cue_end(&self.cues[*i], self.speed)
-                            }));
-                    } else {
-                        self.cue_index.overlaps(
-                            &self.cues,
-                            self.next_cue,
-                            self.position_ms,
-                            self.speed,
-                            &mut self.active_cues,
-                        );
+            } else {
+                false
+            };
+            for (frame_idx, frame) in block.chunks_mut(out_channels).enumerate() {
+                if let Some((left, right)) = self.cycle {
+                    if self.playing && right > left && self.position_ms >= right {
+                        self.seek(left);
                     }
-                    self.indexed = true;
                 }
-                while self.next_cue < self.cues.len()
-                    && self.cues[self.next_cue].at_ms <= self.position_ms
-                {
-                    self.active_cues.push(self.next_cue);
-                    self.next_cue += 1;
-                }
-                let position = self.position_ms;
-                let cues = &self.cues;
-                let speed = self.speed;
-                self.active_cues
-                    .retain(|i| position < cue_end(&cues[*i], speed));
-            }
-            for (channel, value) in frame.iter_mut().enumerate() {
-                let mut mix = 0.0;
                 if self.playing {
-                    if let Some(song) = &self.song {
-                        mix += song.sample(
-                            (self.position_ms - self.song_offset) / self.speed
-                                * song.sample_rate as f64
-                                / 1000.0,
-                            channel,
-                        ) * self.song_gain;
-                    }
-                    // Cues read by source position, so seek and cycle cannot double-trigger or skip a cue.
-                    for index in &self.active_cues {
-                        let cue = &self.cues[*index];
-                        let elapsed = self.position_ms - cue.at_ms;
-                        if elapsed < 0.0 {
-                            continue;
+                    if !self.indexed {
+                        self.active_cues.clear();
+                        self.next_cue = self
+                            .cues
+                            .partition_point(|cue| cue.at_ms <= self.position_ms);
+                        if self.cue_index.leaves == 0 {
+                            // Direct mixer users may supply their own cue vector.
+                            self.active_cues
+                                .extend((0..self.next_cue).filter(|i| {
+                                    self.position_ms < cue_end(&self.cues[*i], self.speed)
+                                }));
+                        } else {
+                            self.cue_index.overlaps(
+                                &self.cues,
+                                self.next_cue,
+                                self.position_ms,
+                                self.speed,
+                                &mut self.active_cues,
+                            );
                         }
-                        let mut source =
-                            elapsed / self.speed * cue.clip.sample_rate as f64 / 1000.0;
-                        if let Some(end) = cue.end_ms {
-                            if self.position_ms >= end {
+                        self.indexed = true;
+                    }
+                    while self.next_cue < self.cues.len()
+                        && self.cues[self.next_cue].at_ms <= self.position_ms
+                    {
+                        self.active_cues.push(self.next_cue);
+                        self.next_cue += 1;
+                    }
+                    let position = self.position_ms;
+                    let cues = &self.cues;
+                    let speed = self.speed;
+                    self.active_cues
+                        .retain(|i| position < cue_end(&cues[*i], speed));
+                }
+                let speed = if self.speed.is_finite() && self.speed > 0.0 {
+                    self.speed
+                } else {
+                    1.0
+                };
+                let stretched_song_frame = if self.playing && (speed - 1.0).abs() > 1e-6 {
+                    self.song.as_ref().map(|song| {
+                        self.stretcher.next_frame(
+                            song,
+                            self.position_ms - self.song_offset,
+                            speed,
+                        )
+                    })
+                } else {
+                    None
+                };
+                for (channel, value) in frame.iter_mut().enumerate() {
+                    let mut mix = 0.0;
+                    if self.playing {
+                        if let Some([l, r]) = stretched_song_frame {
+                            let sample = if out_channels == 1 {
+                                (l + r) * 0.5
+                            } else if channel == 0 {
+                                l
+                            } else {
+                                r
+                            };
+                            mix += sample * self.song_gain;
+                        } else if let Some(song) = &self.song {
+                            mix += song.sample(
+                                (self.position_ms - self.song_offset)
+                                    * song.sample_rate as f64
+                                    / 1000.0,
+                                channel,
+                            ) * self.song_gain;
+                        }
+                        // Cues read by source position, so seek and cycle cannot double-trigger or skip a cue.
+                        for index in &self.active_cues {
+                            let cue = &self.cues[*index];
+                            let elapsed = self.position_ms - cue.at_ms;
+                            if elapsed < 0.0 {
                                 continue;
                             }
-                            let len = cue.clip.samples.len() / cue.clip.channels;
-                            if len > 0 {
-                                source %= len as f64;
+                            let mut source =
+                                elapsed / self.speed * cue.clip.sample_rate as f64 / 1000.0;
+                            if let Some(end) = cue.end_ms {
+                                if self.position_ms >= end {
+                                    continue;
+                                }
+                                let len = cue.clip.samples.len() / cue.clip.channels;
+                                if len > 0 {
+                                    source %= len as f64;
+                                }
                             }
+                            mix += cue.clip.sample(source, channel) * cue.gain;
                         }
-                        mix += cue.clip.sample(source, channel) * cue.gain;
                     }
+                    for voice in self.voices.iter().chain(&self.listen) {
+                        mix += voice.clip.sample(voice.frame, channel) * voice.gain;
+                    }
+                    if has_live && frame_idx < block_frames {
+                        let live_l = sanitize_live_sample(self.live_left[frame_idx]);
+                        let live_r = sanitize_live_sample(self.live_right[frame_idx]);
+                        mix += if out_channels == 1 {
+                            (live_l + live_r) * 0.5
+                        } else if channel == 0 {
+                            live_l
+                        } else if channel == 1 {
+                            live_r
+                        } else {
+                            0.0
+                        };
+                    }
+                    *value = mix * self.master_gain;
                 }
-                for voice in self.voices.iter().chain(&self.listen) {
-                    mix += voice.clip.sample(voice.frame, channel) * voice.gain;
+                self.limiter.process_frame(frame);
+                for voice in self.voices.iter_mut().chain(&mut self.listen) {
+                    voice.frame += voice.clip.sample_rate as f64 / self.sample_rate as f64;
                 }
-                *value = (mix * self.master_gain).clamp(-1.0, 1.0);
-            }
-            for voice in self.voices.iter_mut().chain(&mut self.listen) {
-                voice.frame += voice.clip.sample_rate as f64 / self.sample_rate as f64;
-            }
-            self.voices
-                .retain(|v| v.frame < (v.clip.samples.len() / v.clip.channels) as f64);
-            if self.listen.as_ref().is_some_and(|v| v.frame >= (v.clip.samples.len() / v.clip.channels.max(1)) as f64) {
-                self.listen = None;
-            }
-            if self.playing {
-                self.position_ms += self.speed * 1000.0 / self.sample_rate as f64;
+                self.voices
+                    .retain(|v| v.frame < (v.clip.samples.len() / v.clip.channels) as f64);
+                if self.listen.as_ref().is_some_and(|v| {
+                    v.frame >= (v.clip.samples.len() / v.clip.channels.max(1)) as f64
+                }) {
+                    self.listen = None;
+                }
+                if self.playing {
+                    self.position_ms += self.speed * 1000.0 / self.sample_rate as f64;
+                }
             }
         }
     }
@@ -497,12 +792,21 @@ impl Schedule {
     }
 
     fn swap_into(mut self, mixer: &mut Mixer) -> Self {
+        let song_changed = match (&self.song, &mixer.song) {
+            (Some(a), Some(b)) => !Arc::ptr_eq(a, b),
+            (None, None) => false,
+            _ => true,
+        };
+        let speed_changed = (self.speed - mixer.speed).abs() > 1e-6;
         std::mem::swap(&mut self.song, &mut mixer.song);
         std::mem::swap(&mut self.cues, &mut mixer.cues);
         std::mem::swap(&mut self.active, &mut mixer.active_cues);
         std::mem::swap(&mut self.index, &mut mixer.cue_index);
         std::mem::swap(&mut self.speed, &mut mixer.speed);
         mixer.indexed = false;
+        if song_changed || speed_changed {
+            mixer.stretcher.reset();
+        }
         self
     }
 }
@@ -574,6 +878,7 @@ fn buffer_request(
 
 enum Command {
     Load(Schedule, Retired),
+    SetLiveSource(Option<Box<dyn LiveAudioSource>>),
     Play(bool),
     Seek(f64),
     Audition(Arc<AudioClip>, f32),
@@ -588,6 +893,7 @@ pub struct AudioEngine {
     effective_buffer_ms: Option<u32>,
     send: mpsc::Sender<Command>,
     retirements: Mutex<Vec<Retired>>,
+    retired_live_sources: Mutex<mpsc::Receiver<Box<dyn LiveAudioSource>>>,
     listen: ListenSlot,
     position: Arc<AtomicU64>,
     playing: Arc<AtomicBool>,
@@ -638,11 +944,12 @@ impl AudioEngine {
                 validate_buffer_ms(ms)?;
             }
             let (send, receive) = mpsc::channel();
+            let (retire_live_tx, retire_live_rx) = mpsc::sync_channel(16);
             let position = Arc::new(AtomicU64::new(0));
             let playing = Arc::new(AtomicBool::new(false));
             let errors = Arc::new(AtomicU64::new(0));
             let peak = Arc::new(AtomicU32::new(0));
-            let mut state = StreamRender::new(NATIVE_SAMPLE_RATE, 2, receive,
+            let mut state = StreamRender::new(NATIVE_SAMPLE_RATE, 2, receive, retire_live_tx,
                 position.clone(), playing.clone(), peak.clone());
             let render = move |out: &mut [i16]| state.fill(out);
             let stream = match backend {
@@ -658,6 +965,7 @@ impl AudioEngine {
                 _stream: OutputStream::Native { _stream: stream },
                 send, position, playing, errors, peak,
                 retirements: Mutex::new(Vec::new()),
+                retired_live_sources: Mutex::new(retire_live_rx),
                 listen: ListenSlot::default(),
             });
         }
@@ -734,12 +1042,13 @@ impl AudioEngine {
             config.buffer_size = buffer_request(ms, config.sample_rate, supported.buffer_size())?;
         }
         let (send, receive) = mpsc::channel();
+        let (retire_live_tx, retire_live_rx) = mpsc::sync_channel(16);
         let position = Arc::new(AtomicU64::new(0));
         let playing = Arc::new(AtomicBool::new(false));
         let errors = Arc::new(AtomicU64::new(0));
         let peak = Arc::new(AtomicU32::new(0));
         let render = StreamRender::new(
-            config.sample_rate, config.channels as usize, receive,
+            config.sample_rate, config.channels as usize, receive, retire_live_tx,
             position.clone(), playing.clone(), peak.clone(),
         );
         let stream = match supported.sample_format() {
@@ -757,6 +1066,7 @@ impl AudioEngine {
             backend,
             effective_buffer_ms: None,
             retirements: Mutex::new(Vec::new()),
+            retired_live_sources: Mutex::new(retire_live_rx),
             listen: ListenSlot::default(),
             send,
             position,
@@ -798,8 +1108,32 @@ impl AudioEngine {
     /// if a callback has yet to hand one back.
     pub fn collect_retired(&self) -> bool {
         let mut slots = self.retirements.lock().unwrap_or_else(|e| e.into_inner());
+        let live_rx = self
+            .retired_live_sources
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        while live_rx.try_recv().is_ok() {}
         let listening = self.listen.collect();
         collect_retired(&mut slots) || listening
+    }
+
+    /// Installs or replaces the live audio source mixed ahead of the master limiter.
+    ///
+    /// The previous source is sent back over a bounded non-blocking channel so it is
+    /// dropped on the caller's thread rather than the real-time audio thread.
+    pub fn set_live_source(&self, source: Option<Box<dyn LiveAudioSource>>) {
+        let live_rx = self
+            .retired_live_sources
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        while live_rx.try_recv().is_ok() {}
+        drop(live_rx);
+        let _ = self.send.send(Command::SetLiveSource(source));
+    }
+
+    /// Detaches any active live audio source.
+    pub fn clear_live_source(&self) {
+        self.set_live_source(None);
     }
 
     /// Plays `clip` in place of the current Listen clip; `None` stops Listen.
@@ -848,6 +1182,7 @@ impl AudioEngine {
 struct StreamRender {
     mixer: Mixer,
     receive: mpsc::Receiver<Command>,
+    retire_live: mpsc::SyncSender<Box<dyn LiveAudioSource>>,
     position: Arc<AtomicU64>,
     playing: Arc<AtomicBool>,
     peak: Arc<AtomicU32>,
@@ -860,6 +1195,7 @@ impl StreamRender {
         rate: u32,
         channels: usize,
         receive: mpsc::Receiver<Command>,
+        retire_live: mpsc::SyncSender<Box<dyn LiveAudioSource>>,
         position: Arc<AtomicU64>,
         playing: Arc<AtomicBool>,
         peak: Arc<AtomicU32>,
@@ -869,6 +1205,7 @@ impl StreamRender {
         Self {
             mixer: Mixer::new(rate),
             receive,
+            retire_live,
             position,
             playing,
             peak,
@@ -884,6 +1221,11 @@ impl StreamRender {
                     let old = schedule.swap_into(&mut self.mixer);
                     let _ = slot.set(old);
                 }
+                Command::SetLiveSource(source) => {
+                    if let Some(old) = self.mixer.set_live_source(source) {
+                        let _ = self.retire_live.try_send(old);
+                    }
+                }
                 Command::Play(on) => self.mixer.playing = on,
                 Command::Seek(ms) => self.mixer.seek(ms),
                 Command::Audition(clip, gain) => self.mixer.audition(clip, gain),
@@ -893,7 +1235,10 @@ impl StreamRender {
                     self.mixer.master_gain = master;
                 }
                 Command::Cycle(range) => self.mixer.cycle = range,
-                Command::Offset(ms) => self.mixer.song_offset = ms,
+                Command::Offset(ms) => {
+                    self.mixer.song_offset = ms;
+                    self.mixer.stretcher.reset();
+                }
             }
         }
         let mut highest = 0.0_f32;
@@ -980,10 +1325,11 @@ mod callback_benchmark {
     #[test]
     fn shared_renderer_produces_native_stereo_pcm_and_updates_telemetry() {
         let (send, receive) = mpsc::channel();
+        let (retire_live_tx, _retire_live_rx) = mpsc::sync_channel(16);
         let position = Arc::new(AtomicU64::new(0));
         let playing = Arc::new(AtomicBool::new(false));
         let peak = Arc::new(AtomicU32::new(0));
-        let mut render = StreamRender::new(48_000, 2, receive, position.clone(), playing, peak.clone());
+        let mut render = StreamRender::new(48_000, 2, receive, retire_live_tx, position.clone(), playing, peak.clone());
         send.send(Command::Seek(400.0)).unwrap();
         send.send(Command::Audition(Arc::new(AudioClip {
             samples: vec![0.25; 2], channels: 1, sample_rate: 48_000,
@@ -1231,5 +1577,253 @@ mod peak_tests {
         let silent = AudioClip { samples: vec![0.0; 6], channels: 2, sample_rate: 8 };
         assert_eq!(silent.peaks(3), [0.0, 0.0, 0.0]);
         assert!(mono.peaks(0).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod limiter_tests {
+    use super::*;
+
+    #[test]
+    fn master_limiter_is_transparent_below_ceiling_and_prevents_overload_clipping() {
+        let mut mixer = Mixer::new(1000);
+        mixer.playing = true;
+        // Below ceiling (0.5): output is bit-exact.
+        mixer.song = Some(Arc::new(AudioClip {
+            samples: vec![0.5; 20],
+            channels: 2,
+            sample_rate: 1000,
+        }));
+        let mut quiet = vec![0.0; 8];
+        mixer.render(&mut quiet, 2);
+        assert_eq!(quiet, vec![0.5; 8]);
+
+        // Overload: stereo song (L=0.86, R=0.43) + click (L=0.50, R=0.25) -> L=1.36, R=0.68.
+        let mut mixer = Mixer::new(1000);
+        mixer.playing = true;
+        mixer.song = Some(Arc::new(AudioClip {
+            samples: [0.86_f32, 0.43].repeat(300),
+            channels: 2,
+            sample_rate: 1000,
+        }));
+        mixer.cues = vec![ScheduledSound {
+            at_ms: 0.0,
+            end_ms: None,
+            clip: Arc::new(AudioClip {
+                samples: [0.50_f32, 0.25].repeat(2),
+                channels: 2,
+                sample_rate: 1000,
+            }),
+            gain: 1.0,
+        }];
+        let mut out = vec![0.0; 600];
+        mixer.render(&mut out, 2);
+        // Peak frame is limited to the 0.98 ceiling and keeps the exact 2:1 stereo ratio.
+        assert!((out[0] - MasterLimiter::CEILING).abs() < 1e-5, "got {}", out[0]);
+        assert!((out[1] - MasterLimiter::CEILING * 0.5).abs() < 1e-5, "got {}", out[1]);
+        assert!(out.iter().all(|s| s.abs() <= MasterLimiter::CEILING + 1e-5));
+        // After the 2 ms click ends and ~250 ms of release passes, gain returns to unity (0.86).
+        let tail_l = out[out.len() - 2];
+        assert!((tail_l - 0.86).abs() < 0.01, "expected release back to 0.86, got {tail_l}");
+
+        // Seek resets gain reduction immediately.
+        let mut seek_mixer = Mixer::new(1000);
+        seek_mixer.playing = true;
+        seek_mixer.song = Some(Arc::new(AudioClip {
+            samples: vec![1.5; 40],
+            channels: 2,
+            sample_rate: 1000,
+        }));
+        let mut hot = vec![0.0; 4];
+        seek_mixer.render(&mut hot, 2);
+        assert!(seek_mixer.limiter.gain < 0.7);
+        seek_mixer.seek(0.0);
+        assert_eq!(seek_mixer.limiter.gain, 1.0);
+    }
+}
+
+#[cfg(test)]
+mod streaming_stretch_tests {
+    use super::*;
+
+    fn stereo_sine(sample_rate: u32, seconds: usize, freq_hz: f32) -> Arc<AudioClip> {
+        let frames = sample_rate as usize * seconds;
+        let mut samples = Vec::with_capacity(frames * 2);
+        for i in 0..frames {
+            let v = (2.0 * std::f32::consts::PI * freq_hz * i as f32 / sample_rate as f32).sin() * 0.5;
+            samples.push(v);
+            samples.push(v);
+        }
+        Arc::new(AudioClip {
+            samples,
+            channels: 2,
+            sample_rate,
+        })
+    }
+
+    #[test]
+    fn mixer_streams_pitch_preserving_stretch_at_half_and_one_point_five_speed() {
+        let rate = 48_000;
+        let song = stereo_sine(rate, 4, 220.0);
+
+        for speed in [0.5_f64, 1.5_f64] {
+            let mut mixer = Mixer::new(rate);
+            mixer.song = Some(song.clone());
+            mixer.speed = speed;
+            mixer.playing = true;
+            mixer.seek(500.0);
+
+            // Render 0.5 seconds of stereo output across multiple callback-sized blocks.
+            let total_frames = (rate / 2) as usize;
+            let mut out = vec![0.0_f32; total_frames * 2];
+            for chunk in out.chunks_mut(512 * 2) {
+                mixer.render(chunk, 2);
+            }
+
+            assert!(
+                out.iter().all(|s| s.is_finite() && s.abs() <= 1.0),
+                "speed {speed}: output must be finite and bounded"
+            );
+            let peak = out.iter().fold(0.0_f32, |a, &b| a.max(b.abs()));
+            assert!(
+                peak > 0.1,
+                "speed {speed}: expected non-silent stretched output, peak={peak}"
+            );
+            // Position advances by rendered_ms * speed.
+            let expected_pos = 500.0 + 500.0 * speed;
+            assert!(
+                (mixer.position_ms - expected_pos).abs() < 1.0,
+                "speed {speed}: expected pos ~{expected_pos}, got {}",
+                mixer.position_ms
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod live_source_tests {
+    use super::*;
+
+    struct ConstantLiveSource {
+        left_value: f32,
+        right_value: f32,
+        last_sample_rate: Arc<AtomicU32>,
+        last_playing: Arc<AtomicBool>,
+    }
+
+    impl LiveAudioSource for ConstantLiveSource {
+        fn process_block(
+            &mut self,
+            left: &mut [f32],
+            right: &mut [f32],
+            sample_rate: u32,
+            is_playing: bool,
+        ) {
+            self.last_sample_rate.store(sample_rate, Ordering::Relaxed);
+            self.last_playing.store(is_playing, Ordering::Relaxed);
+            left.fill(self.left_value);
+            right.fill(self.right_value);
+        }
+    }
+
+    #[test]
+    fn mock_live_source_mixes_cleanly_through_master_limiter() {
+        let rate_seen = Arc::new(AtomicU32::new(0));
+        let playing_seen = Arc::new(AtomicBool::new(false));
+
+        // 1. Quiet live source passes through transparently when below ceiling.
+        let mut mixer = Mixer::new(48_000);
+        mixer.playing = false;
+        mixer.set_live_source(Some(Box::new(ConstantLiveSource {
+            left_value: 0.25,
+            right_value: -0.125,
+            last_sample_rate: rate_seen.clone(),
+            last_playing: playing_seen.clone(),
+        })));
+        let mut quiet = vec![0.0_f32; 8];
+        mixer.render(&mut quiet, 2);
+        assert_eq!(rate_seen.load(Ordering::Relaxed), 48_000);
+        assert!(!playing_seen.load(Ordering::Relaxed));
+        for frame in quiet.chunks_exact(2) {
+            assert_eq!(frame, [0.25, -0.125]);
+        }
+
+        // 2. Live source + song overload is caught by MasterLimiter, preserving 2:1 stereo ratio.
+        let mut mixer = Mixer::new(1000);
+        mixer.playing = true;
+        mixer.song = Some(Arc::new(AudioClip {
+            samples: [0.60_f32, 0.30].repeat(64),
+            channels: 2,
+            sample_rate: 1000,
+        }));
+        mixer.set_live_source(Some(Box::new(ConstantLiveSource {
+            left_value: 0.90,
+            right_value: 0.45,
+            last_sample_rate: rate_seen.clone(),
+            last_playing: playing_seen.clone(),
+        })));
+        let mut out = vec![0.0_f32; 64];
+        mixer.render(&mut out, 2);
+        assert!(playing_seen.load(Ordering::Relaxed));
+        assert!(
+            (out[0] - MasterLimiter::CEILING).abs() < 1e-5,
+            "expected left limited to ceiling, got {}",
+            out[0]
+        );
+        assert!(
+            (out[1] - MasterLimiter::CEILING * 0.5).abs() < 1e-5,
+            "expected right to preserve 2:1 ratio, got {}",
+            out[1]
+        );
+        assert!(out.iter().all(|s| s.is_finite() && s.abs() <= MasterLimiter::CEILING + 1e-5));
+
+        // 3. Non-finite samples from a live source are sanitized and do not poison output.
+        let mut mixer = Mixer::new(48_000);
+        mixer.set_live_source(Some(Box::new(ConstantLiveSource {
+            left_value: f32::NAN,
+            right_value: f32::INFINITY,
+            last_sample_rate: rate_seen,
+            last_playing: playing_seen,
+        })));
+        let mut sanitized = vec![0.0_f32; 8];
+        mixer.render(&mut sanitized, 2);
+        assert_eq!(sanitized, vec![0.0_f32; 8]);
+    }
+
+    #[test]
+    fn stream_render_swaps_and_retires_live_source_without_audio_thread_drop() {
+        let (send, receive) = mpsc::channel();
+        let (retire_live_tx, retire_live_rx) = mpsc::sync_channel(16);
+        let position = Arc::new(AtomicU64::new(0));
+        let playing = Arc::new(AtomicBool::new(false));
+        let peak = Arc::new(AtomicU32::new(0));
+        let mut render = StreamRender::new(
+            48_000,
+            2,
+            receive,
+            retire_live_tx,
+            position,
+            playing,
+            peak.clone(),
+        );
+
+        send.send(Command::SetLiveSource(Some(Box::new(ConstantLiveSource {
+            left_value: 0.5,
+            right_value: 0.5,
+            last_sample_rate: Arc::new(AtomicU32::new(0)),
+            last_playing: Arc::new(AtomicBool::new(false)),
+        }))))
+        .unwrap();
+
+        let mut pcm = [0_i16; 8];
+        render.fill(&mut pcm);
+        assert!(retire_live_rx.try_recv().is_err());
+        assert_eq!(f32::from_bits(peak.load(Ordering::Relaxed)), 0.5);
+
+        // Replacing with None hands the previous source back over the retirement channel.
+        send.send(Command::SetLiveSource(None)).unwrap();
+        render.fill(&mut pcm);
+        assert!(retire_live_rx.try_recv().is_ok());
+        assert!(retire_live_rx.try_recv().is_err());
     }
 }

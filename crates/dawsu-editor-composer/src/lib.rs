@@ -442,6 +442,51 @@ impl ToolTarget for Composer {
         }
         .time(&self.tempo, &self.object_times, time)
     }
+    fn snap_steps(&self, from: SongTime, to: SongTime) -> Vec<SongTime> {
+        let start = self.snap(from);
+        let end = self.snap(to);
+        if !self.snap_enabled || (end.ms() - start.ms()).abs() < 1e-6 {
+            return vec![end];
+        }
+        let forward = end.ms() > start.ms();
+        if self.snap_mode == SnapMode::Objects {
+            let (lo, hi) = if forward { (start.ms(), end.ms()) } else { (end.ms(), start.ms()) };
+            let mut steps: Vec<SongTime> = self
+                .object_times
+                .iter()
+                .copied()
+                .filter(|t| t.ms() >= lo - 1e-6 && t.ms() <= hi + 1e-6)
+                .collect();
+            if !forward {
+                steps.reverse();
+            }
+            if steps.is_empty() {
+                steps.push(end);
+            }
+            return steps;
+        }
+        let dir = if forward { 1 } else { -1 };
+        let mut steps = Vec::new();
+        let mut cur = start;
+        for _ in 0..256 {
+            let next = self.tempo.grid_step(cur, dir, self.spacing);
+            if (next.ms() - cur.ms()).abs() < 1e-6 {
+                break;
+            }
+            if (forward && next.ms() > end.ms() + 1e-6) || (!forward && next.ms() < end.ms() - 1e-6) {
+                break;
+            }
+            steps.push(next);
+            cur = next;
+            if (cur.ms() - end.ms()).abs() < 1e-6 {
+                break;
+            }
+        }
+        if steps.last().is_none_or(|last| (last.ms() - end.ms()).abs() >= 1e-6) {
+            steps.push(end);
+        }
+        steps
+    }
     fn snap_offset(&self, from: SongTime, raw: f64) -> f64 {
         Snap {
             on: self.snap_enabled,

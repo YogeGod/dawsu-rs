@@ -1,0 +1,15 @@
+[package]
+name = "dawsu-audio-instruments"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+dawsu-foundation = { path = "../dawsu-foundation" }
+midir = "0.10"
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+dawsu-audio = { path = "../dawsu-audio" }
+serde_json = "1"

@@ -831,6 +831,7 @@ name = "dawsu-application"
 version = "0.1.0"
 dependencies = [
  "dawsu-audio",
+ "dawsu-audio-instruments",
  "dawsu-editor",
  "dawsu-editor-composer",
  "dawsu-editor-nodal",
@@ -840,6 +841,7 @@ dependencies = [
  "dawsu-hitsounding",
  "dawsu-osu-format",
  "dawsu-test-support",
+ "rustfft",
  "serde",
  "serde_json",
 ]
@@ -855,6 +857,16 @@ dependencies = [
  "signalsmith-stretch",
  "symphonia",
  "windows",
+]
+
+[[package]]
+name = "dawsu-audio-instruments"
+version = "0.1.0"
+dependencies = [
+ "dawsu-audio",
+ "dawsu-foundation",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -920,6 +932,17 @@ dependencies = [
  "dawsu-osu-format",
  "dawsu-test-support",
  "roxmltree",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "dawsu-keysounding"
+version = "0.1.0"
+dependencies = [
+ "dawsu-foundation",
+ "dawsu-hitsounding",
+ "dawsu-osu-format",
  "serde",
  "serde_json",
 ]
