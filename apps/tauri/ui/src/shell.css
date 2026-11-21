@@ -36,7 +36,7 @@
 #editor-header #save {
   display: inline-flex;
   align-items: center;
-  gap: 7px;
+  gap: 6px;
   height: 32px;
   min-height: 0;
   padding: 0 12px;
