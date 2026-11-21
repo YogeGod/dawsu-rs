@@ -39,6 +39,9 @@ fn a_folder_of_many_files_opens_quickly_and_finds_the_same_samples() {
         other => panic!("{other:?}"),
     };
     let took = start.elapsed();
+    // Index 11 finds no file and plays the skin's sample.
+    let eleventh = hits.moments().iter().find(|m| m.time().ms() == 2000.0).expect("the circle at 2000 ms");
+    assert!(eleventh.hits().all(|lane| matches!(hits.lane(lane).map(|l| &l.source), Some(LaneSource::Skin))), "{eleventh:?}");
     // The listed names, in their own case, play.
     let sources: Vec<_> = hits.lanes().iter().filter_map(|lane| match &lane.source {
         LaneSource::File(name) => Some(name.as_str()),

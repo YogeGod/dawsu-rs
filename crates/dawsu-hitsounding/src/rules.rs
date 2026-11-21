@@ -12,7 +12,7 @@ use crate::lazer::slider_path::{self, FIRST_LAZER_VERSION};
 use crate::lazer::vector::Vector2;
 use dawsu_foundation::{CustomIndex, Hitsound, SampleIdentity, SampleSet, SliderSound, Sound};
 use dawsu_osu_format::number::{parse_double, parse_int, try_parse_int, MAX_PARSE_VALUE};
-use dawsu_osu_format::{check_map_path, FolderIndex, LineId, ObjectKind, OsuFile};
+use dawsu_osu_format::{check_map_path, find_case_insensitive, FolderIndex, LineId, ObjectKind, OsuFile};
 
 /// `LegacyDecoder.LATEST_VERSION`: a file with no version header counts as this.
 const LATEST_VERSION: u32 = 14;
@@ -168,18 +168,23 @@ fn resolve(samples: &[LegacySample], folder: &FolderIndex) -> Vec<Sample> {
 
 /// Which file plays (R11 to R13): from index 1, the map folder by the beatmap skin's lookup
 /// names, each with R12's extensions; otherwise, or when nothing matches, the skin.
+/// One sample alone searches the listing as it is; `resolve_in` takes an index for many.
 pub(crate) fn resolve_one(sample: &LegacySample, folder_files: &[String]) -> Sample {
-    resolve_in(sample, &FolderIndex::new(folder_files))
+    resolve_with(sample, |name| find_case_insensitive(folder_files, name))
 }
 
 fn resolve_in(sample: &LegacySample, folder: &FolderIndex) -> Sample {
-    let plays = beatmap_file(sample, folder)
+    resolve_with(sample, |name| folder.find(name))
+}
+
+fn resolve_with<'a>(sample: &LegacySample, find: impl Fn(&str) -> Option<&'a str>) -> Sample {
+    let plays = beatmap_file(sample, find)
         .map(Plays::BeatmapFile)
         .unwrap_or_else(|| Plays::Skin { lookup_names: sample.legacy_lookup_names(false) });
     Sample { lazer: sample.clone(), lookup_names: sample.lookup_names(), plays, played_volume: played_volume(sample.volume) }
 }
 
-fn beatmap_file(sample: &LegacySample, folder: &FolderIndex) -> Option<String> {
+fn beatmap_file<'a>(sample: &LegacySample, find: impl Fn(&str) -> Option<&'a str>) -> Option<String> {
     // LegacyBeatmapSkin.GetSample: beatmap samples only when the sample uses them (index 1 or more).
     if !sample.use_beatmap_samples {
         return None;
@@ -191,7 +196,7 @@ fn beatmap_file(sample: &LegacySample, folder: &FolderIndex) -> Option<String> {
             if check_map_path(&candidate).is_err() {
                 continue;
             }
-            if let Some(found) = folder.find(&candidate) {
+            if let Some(found) = find(&candidate) {
                 return Some(found.to_string());
             }
         }
