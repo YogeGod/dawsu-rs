@@ -2,7 +2,7 @@
 
 use dawsu_foundation::safe_write::BackupPolicy;
 use dawsu_osu_format::{
-    check_map_path, find_case_insensitive, list_folder, round_trip_check, LineEnding, OsuFile, PathRefusal, Refusal, SaveOutcome,
+    check_map_path, find_case_insensitive, list_folder, round_trip_check, FolderIndex, LineEnding, OsuFile, PathRefusal, Refusal, SaveOutcome,
     SetOutcome,
 };
 use dawsu_test_support::{save_pack_bytes, save_pack_files, Scratch};
@@ -291,6 +291,19 @@ fn a_folder_is_listed_and_found_case_insensitively() {
     assert_eq!(find_case_insensitive(&listing, "soft-hitclap2.wav"), Some("Soft-HitClap2.wav"));
     assert_eq!(find_case_insensitive(&listing, "SB/A.PNG"), Some("sb/a.png"));
     assert_eq!(find_case_insensitive(&listing, "missing.wav"), None);
+}
+
+#[test]
+fn a_folder_index_finds_what_the_listing_search_finds() {
+    // Two names that differ only in case (possible on Linux): the first listed wins, as before.
+    let listing: Vec<String> = ["A.wav", "Soft-HitClap2.wav", "a.wav", "sb/A.png", "sb/a.png"]
+        .map(String::from).to_vec();
+    let index = FolderIndex::new(&listing);
+    for name in ["a.wav", "A.WAV", "soft-hitclap2.wav", "SB/a.PNG", r"sb\a.png", "missing.wav", ""] {
+        assert_eq!(index.find(name), find_case_insensitive(&listing, name), "{name}");
+    }
+    assert_eq!(index.find("a.wav"), Some("A.wav"));
+    assert_eq!(index.find(r"sb\A.PNG"), Some("sb/A.png"));
 }
 
 #[test]
