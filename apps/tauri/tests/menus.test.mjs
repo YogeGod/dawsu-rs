@@ -758,3 +758,8 @@ test("app.js keeps a failing menu refresh from stopping the rest of show()", asy
   const app = await readFile(new URL("../dist/app.js", import.meta.url), "utf8");
   assert.match(app, /try \{ window\.refreshEditorMenu\?\.\(\); \} catch \(error\) \{ console\.error\(error\); \}/);
 });
+
+test("the menu popup grows to fit a row with a long key hint instead of wrapping its label", () => {
+  assert.match(css, /#editor-menu\{[^}]*width:max-content;min-width:min\(330px,calc\(100vw - 8px\)\);max-width:calc\(100vw - 8px\)/);
+  assert.match(css, /\.menu-choice-group\{contain:inline-size;/, "choice buttons still wrap instead of widening the menu");
+});
