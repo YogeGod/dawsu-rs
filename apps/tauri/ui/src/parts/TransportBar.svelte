@@ -9,6 +9,7 @@
   import Repeat2 from "../icons/Repeat2.svg?raw";
   import Square from "../icons/Square.svg?raw";
   import Play from "../icons/Play.svg?raw";
+  import Circle from "../icons/Circle.svg?raw";
   import ChevronLeft from "../icons/ChevronLeft.svg?raw";
   import ChevronRight from "../icons/ChevronRight.svg?raw";
   import Copy from "../icons/Copy.svg?raw";
@@ -58,6 +59,8 @@
       disabled={disabled.playback} onclick={() => send("stop")}>{@html Square}</button>
     <button type="button" class="seg" class:playing aria-label="Play" title="Play or pause" aria-pressed={playing}
       disabled={disabled.playback} onclick={() => toggle("play")}>{@html Play}</button>
+    <!-- Recording has no code yet (Yoge, 2026-11-21): Record shows greyed out. -->
+    <button type="button" class="seg record" aria-label="Record" title="Record" disabled>{@html Circle}</button>
   </div>
   <div class="readout">
     <span class="time">{shown.time}</span>

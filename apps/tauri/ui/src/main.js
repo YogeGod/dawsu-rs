@@ -1,4 +1,5 @@
 import "./tokens.css";
+import "./shell.css";
 import "./parts/pill.css";
 import "./parts/inspector.css";
 import { mount } from "svelte";
