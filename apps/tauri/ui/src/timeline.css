@@ -59,6 +59,23 @@
   stroke-linecap: round;
   stroke-linejoin: round;
 }
+/* v3 §4: a greyed move-vertical glyph heads the lane height buttons. */
+.lane-tool-glyph {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 20px;
+  color: var(--editor-disabled);
+}
+.lane-tool-glyph svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
 .lane-tool-divider {
   flex: none;
   width: 1px;
@@ -187,7 +204,7 @@
   width: 18px;
   min-width: 18px;
 }
-.arrange[data-lane-names="false"] .lane-tool-divider {
+.arrange[data-lane-names="false"] :is(.lane-tool-divider, .lane-tool-glyph) {
   display: none;
 }
 .arrange[data-lane-names="false"] .song-strip {

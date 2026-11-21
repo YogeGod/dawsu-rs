@@ -768,3 +768,15 @@ test("the menu popup grows to fit a row with a long key hint instead of wrapping
   assert.match(css, /#editor-menu\{[^}]*width:max-content;min-width:min\(330px,calc\(100vw - 8px\)\);max-width:calc\(100vw - 8px\)/);
   assert.match(css, /\.menu-choice-group\{contain:inline-size;/, "choice buttons still wrap instead of widening the menu");
 });
+
+// v3: the lane toolbar has no lane names button; View › Lane names switches them.
+test("View › Lane names switches the lane names", () => {
+  const { get, calls, view } = fixture();
+  view.panels = { laneNames: true };
+  get("menu-view").click();
+  const row = menuButtons(get("editor-menu")).find(item => item.textContent === "Lane names");
+  assert.ok(row, "Lane names row");
+  assert.equal(row.attributes["aria-checked"], "true");
+  row.click();
+  assert.deepEqual(calls.at(-1), { kind: "panel", panel: "lane_names", on: false });
+});

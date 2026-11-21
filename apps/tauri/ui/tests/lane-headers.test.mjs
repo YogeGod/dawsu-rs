@@ -177,6 +177,9 @@ test("the last row is Add lane, after the lanes, and waits while a job runs", ()
   assert.doesNotMatch(add.tag, /disabled/);
   assert.ok(html.indexOf('id="add-lane"') > html.lastIndexOf('data-lane-row="0"'));
   assert.match(buttons(shown([lane()], true, true)).at(-1).tag, /disabled/);
-  // With lane names hidden the row keeps its + only.
-  assert.equal(buttons(shown([lane()], false)).at(-1).text, "");
+  // Its name shows, so it needs no tooltip; with lane names hidden it keeps its + and a tooltip.
+  assert.doesNotMatch(add.tag, /title=/);
+  const iconOnly = buttons(shown([lane()], false)).at(-1);
+  assert.equal(iconOnly.text, "");
+  assert.match(iconOnly.tag, /title="Add lane"/);
 });

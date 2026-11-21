@@ -2051,10 +2051,16 @@ new ResizeObserver(paintSoon).observe($("scroll"));
 const waveformGrip = $("waveform-resize");
 let waveformDrag = null;
 
+// The waveform switch shows on only while a waveform shows: switched on and the Song row not dragged to nothing.
+function refreshWaveformSwitch() {
+  $("ruler-waveform").setAttribute?.("aria-pressed", String(waveformShown && waveformHeight > 0));
+}
+
 function setWaveformHeight(requested) {
   waveformHeight = limit(Math.round(requested), 0, 200);
   if (waveformHeight) visibleWaveformHeight = waveformHeight;
   $("editor-arrange").style.setProperty("--wave-height", waveformHeight + "px");
+  refreshWaveformSwitch();
   // Under 52 px the Song row has room for one line: its buttons stay, its name goes.
   $("editor-arrange").dataset.songRow = waveformHeight >= 52 ? "tall" : "short";
   waveformGrip.setAttribute("aria-valuenow", String(waveformHeight));
@@ -3235,7 +3241,7 @@ $("ruler-waveform").addEventListener("click", () => {
   if (scene && !view.busy && !waveformDrag) {
     // v3 §4 (Yoge): the switch hides only the waveform; the Song row, circles and digits stay.
     waveformShown = !waveformShown;
-    $("ruler-waveform").setAttribute?.("aria-pressed", String(waveformShown));
+    refreshWaveformSwitch();
     paintSoon();
   }
 });

@@ -547,6 +547,16 @@ test("the lane toolbar holds zoom, Fit all and lane height; the Song row holds t
   click("ruler-waveform");
   assert.equal(get("editor-arrange").style["--wave-height"], "88px");
   assert.equal(get("ruler-waveform")["aria-pressed"], "true");
+  // Dragged to nothing, the Song row shows no waveform, so the switch shows off.
+  evaluate("setWaveformHeight(0)");
+  assert.equal(get("ruler-waveform")["aria-pressed"], "false");
+  evaluate("setWaveformHeight(88)");
+  assert.equal(get("ruler-waveform")["aria-pressed"], "true");
+  // v3 §4: a greyed move-vertical glyph heads the lane height buttons; Fit all and the waveform
+  // switch wait while a job runs (data-doc).
+  assert.match(toolbar, /class="lane-tool-glyph" aria-hidden="true"[\s\S]*id="lane-shorter"/);
+  assert.match(html, /id="ruler-fit"[^>]*data-doc/);
+  assert.match(html, /id="ruler-waveform"[^>]*data-doc/);
   click("ruler-zoom-out");
   click("ruler-zoom-in");
   click("lane-shorter");

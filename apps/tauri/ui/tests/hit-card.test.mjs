@@ -31,3 +31,10 @@ test("the card waits 500 ms, or shows at once within 1 s of the last one", () =>
   assert.equal(tooltipDelay(10_000, 9_200), 0);
   assert.equal(tooltipDelay(10_000, 8_900), 500);
 });
+
+test("the card stays inside the window", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const source = await readFile(new URL("../src/parts/HitCard.svelte", import.meta.url), "utf8");
+  assert.match(source, /left: clamp\(/);
+  assert.match(source, /top: max\(/);
+});

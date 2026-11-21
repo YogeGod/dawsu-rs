@@ -41,8 +41,9 @@
   /* states.md: the hit tooltip sits above the hit. */
   .hit-card {
     position: fixed;
-    left: var(--hit-x);
-    top: var(--hit-y);
+    /* Centred above the hit, kept inside the window (the card is at most 320 px wide). */
+    left: clamp(170px, var(--hit-x), calc(100vw - 170px));
+    top: max(var(--hit-y), 80px);
     z-index: 50;
     max-width: 320px;
     padding: 8px 12px;

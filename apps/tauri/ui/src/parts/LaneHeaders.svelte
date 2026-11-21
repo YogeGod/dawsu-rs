@@ -84,7 +84,7 @@
 
 <!-- v3 f1: the last row adds a lane. It keeps the id menus.js presses; no command binds a key to it. -->
 {#if headers}
-  <button type="button" id="add-lane" class="add-lane-row" class:compact={!names} aria-label="Add lane" title="Add lane"
+  <button type="button" id="add-lane" class="add-lane-row" class:compact={!names} aria-label="Add lane" title={names ? undefined : "Add lane"}
     disabled={headers.busy} onclick={() => globalThis.openAddLane?.()}>{@html Plus}{#if names}<span>Add lane</span>{/if}</button>
 {/if}
 
