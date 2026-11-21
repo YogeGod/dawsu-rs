@@ -161,6 +161,7 @@
 .browser-row.browser-selected,
 .browser-row.browser-selected:hover:not(:disabled) {
   background: var(--editor-selected);
+  color: var(--editor-text);
 }
 .browser-selected .browser-icon {
   color: var(--editor-accent);

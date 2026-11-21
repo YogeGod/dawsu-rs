@@ -176,6 +176,7 @@ test("Classic opens one folder at a time with Up, inside the Inspector", async (
   assert.deepEqual(calls.at(-1), {kind: "browser_style", classic: true});
   assert.equal(model().classic, true);
   assert.equal(model().root, null);
+  assert.equal(model().defaults, false, "Classic keeps to the folders it can open");
   assert.deepEqual(model().folder, { label: "Map folder", title: "", canUp: false });
   assert.deepEqual(labels(), ["percussion", "kick.wav"]);
   action("toggle", "percussion");

@@ -2784,8 +2784,8 @@ function renderSampleBrowser() {
     // The tree's top row: the map folder, or the library folder by its name (full path in the tooltip).
     root: classic ? null : !library ? "Mapset samples" : browserLibrary ? nameOf(browserLibrary.replace(/[\\/]+$/, "")) : null,
     rootTitle: library ? browserLibrary : null,
-    // osu! skin and Sample folders: shown greyed out, nothing lists them yet.
-    defaults: !library,
+    // osu! skin and Sample folders: shown greyed out in the tree, nothing lists them yet.
+    defaults: !library && !classic,
     folder: classic ? {
       label: browserFolder ? nameOf(browserFolder) : library ? "Library" : "Map folder",
       title: library ? [browserLibrary, browserFolder].filter(Boolean).join("/") : browserFolder,
