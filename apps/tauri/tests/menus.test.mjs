@@ -3,7 +3,10 @@ import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { createContext, runInContext } from "node:vm";
 
+import * as commandList from "../ui/src/lib/commands.js";
+
 const code = await readFile(new URL("../dist/menus.js", import.meta.url), "utf8");
+const commandsSource = await readFile(new URL("../ui/src/lib/commands.js", import.meta.url), "utf8");
 const html = await readFile(new URL("../dist/index.html", import.meta.url), "utf8");
 // The Inspector's Lane and Difficulty buttons live in a Svelte part and keep the ids the menus click.
 const inspectorPart = (await Promise.all(["Selection", "Lane", "Difficulty"].map(name =>
@@ -12,6 +15,7 @@ const css = await readFile(new URL("../dist/style.css", import.meta.url), "utf8"
 const catalogue = (await Promise.all([
   "../../../crates/dawsu-application/src/commands.rs",
   "../../../crates/dawsu-editor/src/editing_commands.rs",
+  "../../../crates/dawsu-editor/src/tools.rs",
 ].map(path => readFile(new URL(path, import.meta.url), "utf8")))).join(" ");
 
 function fixture() {
@@ -39,7 +43,47 @@ function fixture() {
       click() { if (!this.disabled) this.events.get("click")?.(); },
       contains(target) { return this === target || this.children.some(child => child.contains?.(target)); },
       getBoundingClientRect() { return { left: 8, bottom: 45 }; },
+      querySelectorAll(type) {
+        return this.children.flatMap(child => [...(child.type === type ? [child] : []), ...child.querySelectorAll?.(type) ?? []]);
+      },
     };
+  }
+  // Stands in for EditorMenu.svelte: draws the rows menus.js hands over into #editor-menu, keeping
+  // each button between refreshes of the same open menu, as Svelte updates them in place.
+  let drawn = null;
+  function drawMenu(model) {
+    const popup = get("editor-menu");
+    if (!model) {
+      drawn = null;
+      popup.replaceChildren();
+      return;
+    }
+    if (drawn?.open !== model.open) drawn = { open: model.open, buttons: new Map() };
+    const button = row => {
+      const node = drawn.buttons.get(row.index) ?? element("button");
+      drawn.buttons.set(row.index, node);
+      Object.assign(node, { textContent: row.label, className: row.className, disabled: row.disabled, tabIndex: -1 });
+      node.attributes.role = row.role;
+      if (row.checked === undefined) delete node.attributes["aria-checked"];
+      else node.attributes["aria-checked"] = String(row.checked);
+      node.children = [
+        ...row.icon ? [Object.assign(element("img"), { className: "button-icon", src: "studio-assets/icons/" + row.icon + ".svg" })] : [],
+        ...row.chip ? [Object.assign(element("kbd"), { textContent: row.keys, hidden: !row.keys })] : [],
+        ...row.switch ? [Object.assign(element("span"), { className: "menu-switch" })] : [],
+      ];
+      node.events.set("click", () => context.menuAction(row.index));
+      return node;
+    };
+    popup.replaceChildren(...model.rows.map(row => {
+      if (row.type === "item") return button(row.item);
+      const node = element("div");
+      if (row.type === "separator") return Object.assign(node, { className: "menu-separator", attributes: { role: "separator" } });
+      const heading = Object.assign(element("div"), { className: "menu-choice-label", textContent: row.label });
+      const choices = Object.assign(element("div"), { className: "menu-choices" });
+      choices.append(...row.choices.map(button));
+      node.append(heading, choices);
+      return Object.assign(node, { className: "menu-choice-group", attributes: { role: "group", "aria-label": row.label } });
+    }));
   }
   function get(id) {
     if (!elements.has(id)) elements.set(id, Object.assign(element("div"), { id }));
@@ -56,16 +100,16 @@ function fixture() {
   const scene = { path: "Test.osu", selection: {count:1}, lanes: [
     {sourceKey:"first", canDelete:false}, {sourceKey:"second", canDelete:true, canReplace:true, canAddLayer:true, colourKey:"second"},
   ] };
-  const commands = { entries: [["undo", "Undo", ["Alt+U"]], ["save", "Save", ["Ctrl+S"]]] };
-  const window = { innerWidth: 900, innerHeight: 640, addEventListener() {} };
+  const commands = { entries: [["undo", "Undo", ["Alt+U"]], ["save", "Save", ["Ctrl+S"]],
+    ["cycle", "Cycle", ["Alt+C"]], ["addNumberedLayer", "Add numbered layer", ["Ctrl+L"]]] };
+  const window = { innerWidth: 900, innerHeight: 640, addEventListener() {},
+    dawsuUi: { commands: commandList, menu: drawMenu } };
   const context = createContext({
     $: get, document, window, view, scene, speedButtons, drag: null, dialog: {},
     lanePositions: new Map([[0,0],[1,1]]),
     adjacentLaneForMove: () => null,
     run(task) { return task(); },
     async update(action) { calls.push(JSON.parse(JSON.stringify(action))); view.activeLane = action.row; },
-    toolIcons: { Select: "MousePointer2", Draw: "Drumstick", Erase: "Eraser", Mute: "VolumeX",
-      Grab: "Hand", Range: "Scan", Ramp: "TrendingUp" },
     playbackStartChoices: [
       ["cursor", "Cursor"], ["left", "Left locator"], ["selection", "Selection"],
       ["selection_or_left", "Selection or left locator"],
@@ -225,8 +269,10 @@ const menuLabels = popup => popup.children.map(child => child.className === "men
 
 test("the menu bar runs File, Edit, Playback, Map and View in the design's order", () => {
   const menus = html.match(/<nav id="editor-menus"[^>]*>(.*?)<\/nav>/s)?.[1];
-  assert.deepEqual([...menus.matchAll(/id="menu-(\w+)"/g)].map(match => match[1]),
-    ["file", "edit", "playback", "map", "view"]);
+  assert.deepEqual([...menus.matchAll(/id="menu-(\w+)"/g)].map(match => match[1]), commandList.menuBar);
+  assert.deepEqual(commandList.menuBar, ["file", "edit", "playback", "map", "view"]);
+  assert.ok(code.includes("const menuNames = " + JSON.stringify(commandList.menuBar).replaceAll(",", ", ") + ";"),
+    "menus.js wires the bar's buttons in the list's order");
   const { document, get, key } = fixture();
   get("menu-file").focus();
   key("ArrowRight", get("menu-file").events.get("keydown"));
@@ -285,7 +331,10 @@ test("each menu groups the editor's existing commands like the design, with no s
 });
 
 test("menus only click ribbon controls that exist in the window", () => {
-  const ids = new Set([...code.matchAll(/(?:click|\$)\("([\w-]+)"\)/g)].map(match => match[1]));
+  const ids = new Set([
+    ...[...code.matchAll(/(?:click|\$)\("([\w-]+)"\)/g)].map(match => match[1]),
+    ...[...commandsSource.matchAll(/\["(?:onLane", ")?click", "([\w-]+)"\]/g)].map(match => match[1]),
+  ]);
   for (const id of ["folders", "audio", "open", "go-home", "used-only", "ruler-waveform"]) assert.ok(ids.has(id), id);
   for (const id of ids) assert.match(html + inspectorPart, new RegExp('id="' + id + '"'), id);
 });
@@ -518,15 +567,19 @@ test("the bar-menu look stays off the right-click tool picker and the lane menu"
 });
 
 test("every command a menu runs or shows a key for is in the editor's command catalogue", () => {
-  const known = new Set([...catalogue.matchAll(/(?:CommandDefinition::new|\bdef)\(\s*"(\w+)"/g)].map(match => match[1]));
-  for (const id of ["undo", "save", "importOsz", "addBookmark", "start", "cycle"]) assert.ok(known.has(id), "catalogue reader finds " + id);
+  // tools.rs names the tool commands in a tuple; the Rust test in dawsu-tauri also checks the other way.
+  const known = new Set([...catalogue.matchAll(/(?:CommandDefinition::new|\bdef)\(\s*"(\w+)"|\(\s*"(tool\w+)",/g)]
+    .map(match => match[1] ?? match[2]));
+  for (const id of ["undo", "save", "importOsz", "addBookmark", "start", "cycle", "toolSelect", "toolRamp"]) {
+    assert.ok(known.has(id), "catalogue reader finds " + id);
+  }
   assert.ok(!known.has("notACommand"));
-  const used = [
-    ...code.matchAll(/menuCommand\(.*?,\s*(?:null|"\w+"),\s*"(\w+)"/g),
-    ...code.matchAll(/shortcut: "(\w+)"\s*[,}]/g),
-  ].map(match => match[1]);
-  assert.ok(used.length > 25, "menus.js commands are found");
-  for (const id of used) assert.ok(known.has(id), id + " is not a catalogue command");
+  const used = commandList.items.map(item => item.command).filter(Boolean);
+  assert.ok(used.length > 25, "commands.js commands are found");
+  for (const id of [...used, ...commandList.keyOnly]) {
+    assert.ok(known.has(id) || /^(?:seek\w+|snap\d)$/.test(id), id + " is not a catalogue command");
+  }
+  assert.doesNotMatch(code, /command\("\w+"\)/, "menus.js names no command of its own; commands.js does");
 });
 
 test("the tool picker can be opened by the Svelte tool pills", () => {
@@ -641,4 +694,72 @@ test("Map > Drum hit detection… opens the drum detection window", async () => 
   item.click();
   await settle();
   assert.deepEqual(calls.map(([name]) => name), ["drum_window_open"]);
+});
+
+test("Cycle between L and R and Add numbered layer show their keys and still act as before", async () => {
+  const { get, calls } = fixture();
+  const popup = get("editor-menu");
+  const hint = button => button.children.find(child => child.type === "kbd")?.textContent;
+  get("menu-playback").click();
+  await settle();
+  const cycle = menuButtons(popup).find(button => button.textContent === "Cycle between L and R");
+  assert.equal(hint(cycle), "Alt+C");
+  cycle.click();
+  assert.equal(popup.hidden, false, "a switch row keeps the menu open");
+  assert.deepEqual(calls.at(-1), { kind: "cycle", on: true });
+
+  const lanes = get("lanes"), name = get("second-name");
+  name.dataset = { laneRow: "1" };
+  name.closest = () => name;
+  lanes.events.get("contextmenu")({ target: name, clientX: 10, clientY: 10, preventDefault() {} });
+  await settle();
+  const layer = menuButtons(popup).find(button => button.textContent === "Add numbered layer");
+  assert.equal(hint(layer), "Ctrl+L");
+  layer.click();
+  await settle();
+  assert.deepEqual(calls.slice(-2), [{ kind: "lane", row: 1, operation: "activate" }, { kind: "lane", row: 1, operation: "add_layer" }]);
+});
+
+test("every rule, call, choice source and run kind the command list names exists in menus.js", () => {
+  const { context } = fixture();
+  const [rules, calls, sources] = ["menuRules", "menuCalls", "menuChoiceSources"].map(name => runInContext(name, context));
+  const kinds = new Set([...code.matchAll(/kind === "(\w+)"/g)].map(match => match[1]));
+  for (const item of commandList.items) {
+    for (const rule of [item.enabled, item.checked].filter(Boolean)) assert.ok(rule in rules, item.id + ": rule " + rule);
+    if (item.choices) assert.ok(item.choices in sources, item.id + ": choices " + item.choices);
+    if (!item.run) continue;
+    assert.ok(kinds.has(item.run[0]), item.id + ": run kind " + item.run[0]);
+    if (item.run[0] === "call") assert.equal(typeof calls[item.run[1]], "function", item.id + ": call " + item.run[1]);
+  }
+});
+
+test("a menu that cannot load its command list says so in the status line", () => {
+  const { get, window } = fixture();
+  window.dawsuUi.commands = undefined;
+  get("menu-edit").click();
+  assert.equal(get("editor-menu").hidden, undefined, "no menu opens");
+  assert.equal(get("status").textContent, "The menus did not load");
+});
+
+test("a refresh with nothing changed hands the rows over only once", async () => {
+  const { get, window, context } = fixture();
+  let handed = 0;
+  const draw = window.dawsuUi.menu;
+  window.dawsuUi.menu = model => { handed += 1; draw(model); };
+  get("menu-edit").click();
+  await settle();
+  const after = handed;
+  context.refreshEditorMenu();
+  context.refreshEditorMenu();
+  assert.equal(handed, after);
+});
+
+test("app.js keeps a failing menu refresh from stopping the rest of show()", async () => {
+  const app = await readFile(new URL("../dist/app.js", import.meta.url), "utf8");
+  assert.match(app, /try \{ window\.refreshEditorMenu\?\.\(\); \} catch \(error\) \{ console\.error\(error\); \}/);
+});
+
+test("the menu popup grows to fit a row with a long key hint instead of wrapping its label", () => {
+  assert.match(css, /#editor-menu\{[^}]*width:max-content;min-width:min\(330px,calc\(100vw - 8px\)\);max-width:calc\(100vw - 8px\)/);
+  assert.match(css, /\.menu-choice-group\{contain:inline-size;/, "choice buttons still wrap instead of widening the menu");
 });

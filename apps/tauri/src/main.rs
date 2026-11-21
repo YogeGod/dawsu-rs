@@ -1544,6 +1544,8 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                             app.cancel_timeline_edit();
                         }
                         view["shortcutHelp"] = json!(std::mem::take(&mut app.help_requested));
+                        // The Inspector's bookmark pick follows Previous and Next, from a button, menu or key.
+                        view["bookmarkStep"] = json!(app.bookmark_step.take());
                         view["shortcutOpen"] = json!(std::mem::take(&mut app.requests).iter()
                             .any(|request| matches!(request, PlatformRequest::OpenMap)));
                         view

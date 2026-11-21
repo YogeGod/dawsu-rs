@@ -20,7 +20,7 @@
       <button data-action="review_save" data-doc><img class="button-icon" src="studio-assets/icons/Save.svg" alt="">Save <span id="save-problem-badge" hidden></span></button>
 </header>
 
-<div id="editor-menu" role="menu" hidden></div>
+<div id="editor-menu" role="menu" data-ui-mount="menu" hidden></div>
 <section id="home">
   <div class="home-panel">
     <img class="home-logo" src="studio-assets/dawsu.png" alt="dawsu!">
@@ -227,21 +227,9 @@
       <section class="inspector-part" aria-label="Selection"><div data-ui-mount="inspector-selection"></div></section>
       <section class="inspector-part" aria-label="Lane"><div data-ui-mount="inspector-lane"></div></section>
       <section class="inspector-part" aria-label="Difficulty"><div data-ui-mount="inspector-difficulty"></div></section>
-      <section class="inspector-bookmarks"><details open><summary><h2>Bookmarks</h2></summary>
-        <select id="bookmarks" aria-label="Bookmarks" size="2" disabled></select>
-        <p id="bookmarks-empty" class="dim" hidden>No bookmarks. Add one at the playhead with +.</p>
-        <div class="row inspector-actions">
-          <button id="jump-bookmark" disabled>Go to</button>
-          <button id="rename-bookmark" disabled>Rename…</button>
-          <button id="remove-bookmark" disabled>Remove</button>
-        </div>
-        <div class="row inspector-actions">
-          <button data-command="previousBookmark" data-doc>Previous</button>
-          <button data-command="nextBookmark" data-doc>Next</button>
-        </div>
-      </details><button id="add-bookmark" class="inspector-header-action" data-doc aria-label="Add bookmark" title="Add bookmark at the playhead">+</button></section>
+      <section class="inspector-part" aria-label="Bookmarks"><div data-ui-mount="inspector-bookmarks"></div></section>
       <div id="classic-browser-host" hidden></div>
-      <section><details open><summary><h2>History</h2></summary><div id="history"></div></details></section>
+      <section class="inspector-part" aria-label="History"><div data-ui-mount="inspector-history"></div></section>
     </aside>
   </main>
 </section>

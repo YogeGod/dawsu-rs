@@ -59,18 +59,21 @@ async function frontend() {
   return { evaluate, get, sent, model, handed };
 }
 
-test("Selection, Lane and Difficulty are Svelte parts in sections Layout… can move; Bookmarks and History stay", () => {
-  assert.equal(sections.length, 3);
+test("every Inspector section is a Svelte part in a section Layout… can move", () => {
+  assert.equal(sections.length, 5);
   const mounts = [...inspector.matchAll(/<section class="inspector-part" aria-label="([^"]+)"><div data-ui-mount="([\w-]+)"><\/div><\/section>/g)]
     .map(match => [match[1], match[2]]);
-  assert.deepEqual(mounts, [["Selection", "inspector-selection"], ["Lane", "inspector-lane"], ["Difficulty", "inspector-difficulty"]]);
-  const headings = [...inspector.matchAll(/<section[^>]*>\s*<details open>\s*<summary><h2>([^<]*)<\/h2><\/summary>/g)]
-    .map(match => match[1]);
-  assert.deepEqual(headings, ["Bookmarks", "History"]);
-  for (const [, summary] of inspector.matchAll(/<summary>([\s\S]*?)<\/summary>/g)) assert.doesNotMatch(summary, /<button/);
-  for (const id of ["add-bookmark", "bookmarks", "jump-bookmark", "rename-bookmark", "remove-bookmark",
-    "classic-browser-host", "history"]) assert.match(inspector, new RegExp(`id="${id}"`), id);
-  for (const command of ["previousBookmark", "nextBookmark"]) assert.match(inspector, new RegExp(`data-command="${command}"`));
+  assert.deepEqual(mounts, [["Selection", "inspector-selection"], ["Lane", "inspector-lane"], ["Difficulty", "inspector-difficulty"],
+    ["Bookmarks", "inspector-bookmarks"], ["History", "inspector-history"]]);
+  // The classic browser still docks between Bookmarks and History.
+  assert.match(inspector, /data-ui-mount="inspector-bookmarks"><\/div><\/section>\s*<div id="classic-browser-host" hidden><\/div>\s*<section class="inspector-part" aria-label="History">/);
+  assert.doesNotMatch(inspector, /<details|<summary/);
+  for (const id of ["add-bookmark", "bookmarks", "bookmarks-empty", "jump-bookmark", "rename-bookmark", "remove-bookmark", "history"]) {
+    assert.doesNotMatch(html, new RegExp(`id="${id}"`), id);
+  }
+  assert.doesNotMatch(html, /data-command="(previous|next)Bookmark"/);
+  // docking.js keeps History's scroll place by this id, now on the Svelte list.
+  assert.match(part, /id="history"/);
   // The moved sections' markup and its rules are gone from the old files.
   for (const id of ["selected", "selection-fields", "selection-start-input", "volume-mode", "slider-body-fields",
     "insert", "protect", "audition", "hs", "active-lane-name", "active-lane-colour-swatch", "edit-range"]) {
@@ -79,7 +82,8 @@ test("Selection, Lane and Difficulty are Svelte parts in sections Layout… can 
   assert.doesNotMatch(html, /data-volume=/);
   for (const dead of ["#selection-start-input", "#active-lane-colour-swatch", ".inspector-row", ".inspector-controls",
     ".inspector-value-button", "#apply-slider-body", ".selection-value"]) assert.ok(!css.includes(dead), dead);
-  assert.match(css, /#editor-inspector summary::-webkit-details-marker\s*\{\s*display:\s*none/);
+  for (const dead of ["#bookmarks", "#history", ".inspector-header-action", ".inspector-actions", "#editor-inspector summary",
+    "#editor-inspector details"]) assert.ok(!css.includes(dead), dead);
   // menus.js and the New difficulty shortcut click these by id.
   for (const id of ["lane-colour", "replace-sample", "generate", "new", "copy", "merge-settings"]) {
     assert.match(part, new RegExp(`id="${id}"`), id);
@@ -251,21 +255,6 @@ test("the lane colour dialog opens on grey for an unpicked lane and writes nothi
   assert.equal(evaluate('laneColours.get("Skin|clap")'), "#9e9e9e");
 });
 
-test("Bookmarks list as rows sized to the marks and say when there are none", async () => {
-  const { evaluate, get } = await frontend();
-  evaluate(`view = { busy: false }; scene = { path: "a.osu", bookmarks: [
-    { time: 500, label: "Intro" }, { time: 1000, label: "" }, { time: 2000, label: "Kiai" }] }; renderBookmarks();`);
-  assert.equal(get("bookmarks").size, 3);
-  assert.equal(get("bookmarks").hidden, false);
-  assert.equal(get("bookmarks-empty").hidden, true);
-  evaluate(`scene = { path: "b.osu", bookmarks: Array.from({ length: 9 }, (_, i) => ({ time: i * 100, label: "" })) };
-    renderBookmarks();`);
-  assert.equal(get("bookmarks").size, 6);
-  evaluate('scene = { path: "c.osu", bookmarks: [] }; renderBookmarks();');
-  assert.equal(get("bookmarks").hidden, true);
-  assert.equal(get("bookmarks-empty").hidden, false);
-});
-
 test("every open, command and toggle a part sends reaches its inspectorAction case", async () => {
   const { evaluate, sent } = await frontend();
   const keys = kind => [...new Set([...part.matchAll(new RegExp(`on\\.${kind}\\("([\\w]+)"`, "g"))].map(match => match[1]))];
@@ -279,7 +268,8 @@ test("every open, command and toggle a part sends reaches its inspectorAction ca
   assert.deepEqual(JSON.parse(evaluate("JSON.stringify(reached)")), opens.map(kind => openers[kind]));
 
   const commands = keys("command");
-  assert.deepEqual(commands, ["quantizeDialog", "repeat", "duplicate", "delete", "editRange", "scaleByVolume"]);
+  assert.deepEqual(commands, ["previousBookmark", "nextBookmark", "quantizeDialog", "repeat", "duplicate", "delete", "editRange",
+    "scaleByVolume"]);
   await sent();
   for (const id of commands) evaluate(`inspectorAction("command", "${id}")`);
   assert.deepEqual(await sent(), commands.map(id => ({ kind: "command", id })));
@@ -288,6 +278,22 @@ test("every open, command and toggle a part sends reaches its inspectorAction ca
     .map(path => readFile(new URL("../../../crates/" + path, import.meta.url), "utf8")))).join(" ");
   const known = new Set([...catalogue.matchAll(/(?:CommandDefinition::new|\bdef)\(\s*"(\w+)"/g)].map(match => match[1]));
   for (const id of commands) assert.ok(known.has(id), id + " is not a catalogue command");
+
+  // Bookmarks: + and the buttons that act on the picked row, a row pick and a History step.
+  const bookmarkKinds = keys("bookmark");
+  assert.deepEqual(bookmarkKinds, ["add", "goTo", "rename", "remove"]);
+  assert.match(part, /on\.pickBookmark\(row\.time\)/);
+  assert.match(part, /on\.history\(step\.position\)/);
+  evaluate(`view = { busy: false, position: 750 }; scene = { path: "a.osu", bookmarks: [{ time: 500, label: "Intro" }],
+    history: ["Draw hit"], historyPosition: 1 }; editBookmark = mark => reached.push("edit " + (mark?.time ?? "new"));
+    handOverInspector = () => {}; reached.length = 0;`);
+  await sent();
+  evaluate('inspectorAction("pickBookmark", 500)');
+  for (const kind of bookmarkKinds) evaluate(`inspectorAction("bookmark", "${kind}")`);
+  evaluate('inspectorAction("history", 0)');
+  assert.deepEqual(JSON.parse(evaluate("JSON.stringify(reached)")), ["edit new", "edit 500"]);
+  assert.deepEqual(await sent(), [{ kind: "bookmark_jump", time: 500 }, { kind: "bookmark_jump", time: 500 },
+    { kind: "bookmark_edit", path: "a.osu", time: 500, label: null }, { kind: "history", position: 0 }]);
 
   const toggles = keys("toggle");
   assert.deepEqual(toggles.sort(), ["audition", "hs_mode", "protect"]);
@@ -307,6 +313,9 @@ test("Layout… moves each Inspector section whole, never the buttons inside a S
   assert.match(docking, /panels\.inspector\.append\(\.\.\.draft\.inspector\)/);
   assert.match(docking, /panels\.inspector\.append\(\.\.\.initialInspector\)/);
   assert.match(docking, /button\.closest\("[^"]*\[data-ui-mount\][^"]*"\)/);
+  // History's list only exists once the bundle mounts it, after docking.js starts, so it is looked up each time.
+  assert.match(docking, /const scrollAreas = \(\) => \[[^\]]*byId\("history"\)[^\]]*\]\.filter\(Boolean\)/);
+  assert.match(docking, /for \(const area of scrollAreas\(\)\)/);
   // Each section names itself for the grip's tooltip.
   for (const [, label] of inspector.matchAll(/<section class="inspector-part" aria-label="([^"]+)">/g)) assert.ok(label);
   assert.match(css, /#editor-inspector > section > \.layout-move-handle/);

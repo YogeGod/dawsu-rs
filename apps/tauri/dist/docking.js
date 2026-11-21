@@ -72,7 +72,8 @@
     };
     const classicHost = byId("classic-browser-host");
     const sampleBrowser = byId("sample-browser");
-    const scrollAreas = [...Object.values(panels), byId("scroll"), byId("history"), byId("sample-browser-entries")];
+    // History's list is a Svelte part mounted after this script starts, so the areas are looked up each time.
+    const scrollAreas = () => [...Object.values(panels), byId("scroll"), byId("history"), byId("sample-browser-entries")].filter(Boolean);
     const scroll = new Map();
     const visible = new Set(["timeline"]);
     const tabButtons = new Map();
@@ -286,7 +287,7 @@
       const classic = browser === "classic" && !detached && shown.has("inspector") && shown.has("browser");
       const focusedPanel = classicHost.contains(focused) ? "browser" :
         Object.keys(panels).find(panel => panels[panel].contains(focused) || tabButtons.get(panel) === focused);
-      for (const area of scrollAreas) {
+      for (const area of scrollAreas()) {
         if (area.getClientRects().length) scroll.set(area, [area.scrollLeft, area.scrollTop]);
       }
       root.dataset.docking = "";

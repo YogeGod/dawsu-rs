@@ -4,7 +4,39 @@ import { laneGrey, tintName } from "./colour.js";
 export const emptyInspector = Object.freeze({
   busy: false, doc: false, selection: null, scope: "all", hint: "", range: false,
   insertVolume: 100, protect: false, audition: false, hs: false, lane: null,
+  bookmarks: [], bookmark: null, history: [], historyPosition: 0,
 });
+
+// v3's bookmark rows: dot, label and time. A bookmark with no label shows its time alone, as the old list did.
+export function bookmarkRows(marks, picked) {
+  return (marks ?? []).map(mark => ({
+    time: mark.time, label: mark.label || "", clock: mark.clock, current: mark.time === picked,
+  }));
+}
+
+// A bookmark row gets a tooltip with its label only while the label is cut off; set on hover, so
+// it follows the dock's width.
+export function cutOffTitle(row, label) {
+  const shown = row.querySelector(".insp-mark-label");
+  if (label && shown && shown.scrollWidth > shown.clientWidth) row.title = label;
+  else row.removeAttribute("title");
+}
+
+// Scrolls list just enough to show item whole, as scrollIntoView's block "nearest" does, but
+// only the list: scrollIntoView would scroll the Inspector too. A folded list has no box and stays.
+export function scrollNearest(list, item) {
+  if (!item || !list.getClientRects().length) return;
+  const box = list.getBoundingClientRect();
+  const row = item.getBoundingClientRect();
+  if (row.top < box.top) list.scrollTop -= box.top - row.top;
+  else if (row.bottom > box.bottom) list.scrollTop += row.bottom - box.bottom;
+}
+
+// History's steps, newest first. Steps after the current one are undone and can be redone.
+export function historyRows(steps, position) {
+  return steps.map((label, index) => ({ label, position: index, current: index === position, undone: index > position }))
+    .reverse();
+}
 
 // The Lane colour row: grey and "None" until the mapper picks a colour (Yoge, ADR 0068).
 export function laneTint(lane) {
@@ -77,5 +109,9 @@ export function inspectorHandlers(send) {
     },
     toggle: (kind, event) => send("toggle", kind, event.currentTarget.checked),
     open: kind => send(kind),
+    // A bookmark row picks its bookmark and goes to it; add, goTo, rename and remove act on the pick.
+    pickBookmark: time => send("pickBookmark", time),
+    bookmark: kind => send("bookmark", kind),
+    history: position => send("history", position),
   };
 }

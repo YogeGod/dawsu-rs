@@ -3,6 +3,7 @@ import "./parts/pill.css";
 import "./parts/inspector.css";
 import { mount } from "svelte";
 import { bridge } from "./lib/bridge.svelte.js";
+import * as commandList from "./lib/commands.js";
 import { nextGroup, stepInGroup } from "./lib/snap.js";
 import Boundary from "./lib/Boundary.svelte";
 import AuditionPill from "./parts/AuditionPill.svelte";
@@ -10,7 +11,10 @@ import LaneHeaders from "./parts/LaneHeaders.svelte";
 import PlayheadGroup from "./parts/PlayheadGroup.svelte";
 import ExportWindow from "./parts/ExportWindow.svelte";
 import DrumDetectWindow from "./parts/DrumDetectWindow.svelte";
+import EditorMenu from "./parts/EditorMenu.svelte";
+import InspectorBookmarks from "./parts/InspectorBookmarks.svelte";
 import InspectorDifficulty from "./parts/InspectorDifficulty.svelte";
+import InspectorHistory from "./parts/InspectorHistory.svelte";
 import InspectorLane from "./parts/InspectorLane.svelte";
 import InspectorSelection from "./parts/InspectorSelection.svelte";
 import SnapSlider from "./parts/SnapSlider.svelte";
@@ -21,7 +25,10 @@ import TransportBar from "./parts/TransportBar.svelte";
 const parts = {
   tools: ToolPills, snap: SnapSlider, audition: AuditionPill, transport: TransportBar,
   playhead: PlayheadGroup, lanes: LaneHeaders,
+  // The popup the menu bar, the right-click tool picker and the lane menu share (#editor-menu).
+  menu: EditorMenu,
   "inspector-selection": InspectorSelection, "inspector-lane": InspectorLane, "inspector-difficulty": InspectorDifficulty,
+  "inspector-bookmarks": InspectorBookmarks, "inspector-history": InspectorHistory,
   // The whole page of the Export window (export.html).
   "export-window": ExportWindow,
   // The whole page of the drum detection window (drum.html).
@@ -54,9 +61,18 @@ export function lanes(headers) {
   bridge.handOverLanes(headers);
 }
 
-// app.js hands over the Inspector's model each time renderSelection() or renderActiveLane() runs.
+// app.js hands over the Inspector's model each time renderSelection() or renderActiveLane() runs,
+// and when a bookmark row is picked.
 export function inspector(model) {
   bridge.handOverInspector(model);
+}
+
+// The one command list menus.js builds every menu from.
+export const commands = commandList;
+
+// menus.js hands over the open menu's rows (null when it closes).
+export function menu(model) {
+  bridge.handOverMenu(model);
 }
 
 // The Playhead group's Centre, read by app.js's followPlayhead().

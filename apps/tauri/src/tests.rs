@@ -2431,3 +2431,28 @@ fn the_export_window_is_titled_with_the_map_and_difficulty() {
     assert_eq!(export_title(&named), "Export · yuikonnu - Kokuhaku [Hard]");
     assert_eq!(export_title(&serde_json::json!({ "source": null })), "Export");
 }
+
+/// The frontend's one command list (`ui/src/lib/commands.js`) names every catalogue command once,
+/// either on a menu row (`command: "id"`) or under `keyOnly`, and names nothing the catalogue lacks.
+#[test]
+fn the_menu_command_list_matches_the_command_catalogue() {
+    use std::collections::BTreeSet;
+    let list = include_str!("../ui/src/lib/commands.js");
+    let mut named = BTreeSet::new();
+    for part in list.split("command: \"").skip(1) {
+        named.insert(part.split('"').next().unwrap().to_owned());
+    }
+    let key_only = list.split("export const keyOnly = [").nth(1).unwrap().split("];").next().unwrap();
+    for (index, part) in key_only.split('"').enumerate() {
+        if index % 2 == 1 {
+            assert!(named.insert(part.to_owned()), "{part} is on a menu row and in keyOnly");
+        }
+    }
+    let catalogue: BTreeSet<String> =
+        Application::headless().shortcuts().into_iter().map(|(id, _, _)| id.to_owned()).collect();
+    assert!(catalogue.len() > 60, "the catalogue lists its commands");
+    let missing: Vec<_> = catalogue.difference(&named).collect();
+    let unknown: Vec<_> = named.difference(&catalogue).collect();
+    assert!(missing.is_empty(), "catalogue commands missing from commands.js: {missing:?}");
+    assert!(unknown.is_empty(), "commands.js names commands the catalogue lacks: {unknown:?}");
+}

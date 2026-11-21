@@ -89,9 +89,10 @@ test("the old tool buttons and the old Follow and Return toggles left style.css"
   assert.match(toolbarCss, /@media\s*\(forced-colors:\s*active\)\s*\{[^{}]*aria-pressed=true[^{}]*\{[^}]*outline/);
 });
 
-test("toolIcons keeps all seven tools for the right-click picker, in the parts' order", async () => {
+test("the right-click picker keeps all seven tools, in the parts' order", async () => {
   const { TOOLS } = await import("../ui/src/lib/tools.js");
-  const names = [...app.match(/const toolIcons = \{([^}]*)\}/)[1].matchAll(/(\w+):/g)].map(match => match[1]);
+  const { items, menus } = await import("../ui/src/lib/commands.js");
+  const names = menus.tool.map(id => items.find(item => item.id === id).label);
   assert.deepEqual(names, TOOLS);
   assert.equal(names.length, 7);
 });

@@ -1,70 +1,184 @@
 "use strict";
 
 const menuPopup = $("editor-menu");
+// The bar's order; a test checks it against menuBar in ui/src/lib/commands.js and index.html.
 const menuNames = ["file", "edit", "playback", "map", "view"];
 let editorMenu = null;
+let menuOpens = 0;
 
 function canEditFromMenu() {
   return !!scene && !view.busy && !drag;
 }
 
-function menuIcon(glyph) {
-  const image = document.createElement("img");
-  image.className = "button-icon";
-  image.src = "studio-assets/icons/" + glyph + ".svg";
-  image.alt = "";
-  return image;
+// Rules a row's `enabled` or `checked` names in ui/src/lib/commands.js; `target` is the right-clicked lane.
+const laneAllowed = predicate => target => {
+  const row = laneMenuRow(target);
+  return row !== -1 && predicate(scene.lanes[row], row);
+};
+const menuRules = {
+  edit: canEditFromMenu,
+  idle: () => !view.busy && !drag,
+  document: () => !!scene && !view.busy,
+  selection: () => canEditFromMenu() && !!scene.selection?.count,
+  range: () => canEditFromMenu() && !!scene.range,
+  placement: () => canEditFromMenu() && scene.placement != null,
+  undo: () => canEditFromMenu() && !$("undo").disabled,
+  redo: () => canEditFromMenu() && !$("redo").disabled,
+  deleteLane: () => canEditFromMenu() && !$("delete-lane").disabled,
+  never: () => false,
+  lane: laneAllowed(() => true),
+  laneRename: laneAllowed(lane => !!lane.colourKey && !view.drumView?.enabled),
+  laneUp: laneAllowed((_, row) => adjacentLaneForMove(row, -1) !== null),
+  laneDown: laneAllowed((_, row) => adjacentLaneForMove(row, 1) !== null),
+  laneReplace: laneAllowed(lane => lane.canReplace),
+  laneColour: laneAllowed(lane => lane.colourKey),
+  laneLayer: laneAllowed(lane => lane.canAddLayer),
+  laneDelete: laneAllowed(lane => lane.canDelete),
+  waveform: () => $("ruler-waveform").getAttribute("aria-pressed") === "true",
+  usedOnly: () => !!$("used-only").checked,
+  tool: (_, item) => view.tool === item.run[1],
+};
+
+// The segmented choice rows, filled when their menu opens.
+const menuChoiceSources = {
+  difficulty: {
+    list: () => scene?.path ? Array.from($("difficulty").options ?? [], option => [option.value, option.text]) : [],
+    current: () => scene?.path,
+    choose: path => openSiblingDifficulty(path),
+  },
+  playbackStart: {
+    list: () => playbackStartChoices,
+    current: () => view.playbackStart ?? "cursor",
+    choose: value => act({ kind: "playback_start", value }, false),
+  },
+  speed: {
+    list: () => speedButtons.map(button => [Number(button.dataset.playbackSpeed), button.textContent.replace("%", "")]),
+    current: () => view.speed,
+    choose: value => act({ kind: "speed", value }),
+  },
+  exportStyle: { list: () => [["objects", "Per-object"]], current: () => "objects", choose: () => {} },
+};
+
+// What ["call", name] rows run.
+const menuCalls = {
+  placeSoundSet: () => placeSoundSet(),
+  saveSoundSet: () => saveSoundSet(),
+  openSoundSetPlacement: () => openSoundSetPlacement(),
+  goToEnd: () => act({ kind: "seek", ms: view.duration }),
+  openDrumWindow: () => invoke("drum_window_open").catch(error => { $("status").textContent = String(error); }),
+  requestDrumMap: () => requestDrumMap(),
+  editLayout: () => dock?.editLayout(),
+};
+
+const menuField = path => path.split(".").reduce((value, key) => value?.[key], { view, scene });
+
+function runMenuEntry({ item, target, value, source }) {
+  if (source) {
+    source.choose(value);
+    return;
+  }
+  const [kind, first, second, third] = item.run ?? ["command", item.command];
+  if (kind === "command") command(first);
+  else if (kind === "click") $(first)?.click();
+  else if (kind === "act") act(first);
+  else if (kind === "toggle" && third) act({ kind: first, on: !menuField(second) }, false);
+  else if (kind === "toggle") act({ kind: first, on: !menuField(second) });
+  else if (kind === "panel") act({ kind: "panel", panel: first, on: !view.panels?.[second ?? first] });
+  else if (kind === "tool") act({ kind: "tool", name: first });
+  else if (kind === "call") menuCalls[first]();
+  else if (kind === "lane" && first === "rename") renameLane(laneMenuRow(target));
+  else if (kind === "lane") moveLane(laneMenuRow(target), first === "up" ? -1 : 1);
+  else if (kind === "onLane") {
+    laneMenuAction(target, row => first === "layer" ? act({ kind: "lane", row, operation: "add_layer" }) : $(second)?.click());
+  }
 }
 
-function menuItem(label, glyph, execute, {
-  shortcut, enabled = canEditFromMenu, checked, radio = false,
-} = {}) {
-  const button = makeButton(label, () => {
-    if (!enabled()) return;
-    if (!checked) closeEditorMenu();
-    execute();
-    refreshEditorMenu();
-  });
-  button.tabIndex = -1;
-  button.className = radio ? "menu-choice" : glyph ? "menu-item" : "menu-item menu-item-plain";
-  button.setAttribute("role", radio ? "menuitemradio" : checked ? "menuitemcheckbox" : "menuitem");
-  if (glyph) button.prepend(menuIcon(glyph));
-  const chip = shortcut ? document.createElement("kbd") : null;
-  if (chip) {
-    chip.hidden = true;
-    button.append(chip);
-  }
-  if (checked && !radio) {
-    const indicator = document.createElement("span");
-    indicator.className = "menu-switch";
-    indicator.setAttribute("aria-hidden", "true");
-    button.append(indicator);
-  }
-  editorMenu.items.push({ button, enabled, checked, shortcut, chip });
-  return button;
+// A switch, tool or choice row's state; undefined for a plain row.
+function menuChecked({ item, target, value, source }) {
+  if (source) return source.current() === value;
+  if (item.checked) return !!menuRules[item.checked](target, item);
+  const [kind, first, second] = item.run ?? [];
+  if (kind === "toggle") return !!menuField(second);
+  if (kind === "panel") return !!view.panels?.[second ?? first];
+  return undefined;
 }
 
-function menuCommand(label, glyph, id, enabled) {
-  return menuItem(label, glyph, () => command(id), { shortcut: id, enabled });
+const menuEnabled = entry => !!menuRules[entry.item.enabled ?? "edit"](entry.target, entry.item);
+
+// One menu's rows from the command list, with one entry per button in page order.
+function menuEntries(name, target) {
+  const list = window.dawsuUi?.commands;
+  if (!list?.menus[name]) {
+    $("status").textContent = "The menus did not load";
+    return null;
+  }
+  const byId = new Map(list.items.map(item => [item.id, item]));
+  const rows = [];
+  const entries = [];
+  const entry = (item, extra) => {
+    const added = { item, target, index: entries.length, keys: "", ...extra };
+    entries.push(added);
+    return added;
+  };
+  const step = offset => scene?.history?.[scene.historyPosition + offset];
+  for (const id of list.menus[name]) {
+    if (id === "-") {
+      if (rows.length && rows[rows.length - 1].type !== "separator") rows.push({ type: "separator" });
+      continue;
+    }
+    const item = byId.get(id);
+    if (item.choices) {
+      const source = menuChoiceSources[item.choices];
+      const choices = source.list();
+      if (choices.length) {
+        rows.push({ type: "choices", label: item.label,
+          choices: choices.map(([value, text]) => entry(item, { value, label: text, source })) });
+      }
+      continue;
+    }
+    const action = item.history === undefined ? null : step(item.history);
+    rows.push({ type: "item", entry: entry(item, { label: action ? item.label + " · " + action : item.label }) });
+  }
+  while (rows.length && rows[rows.length - 1].type === "separator") rows.pop();
+  return { rows, entries };
 }
 
-function menuChoices(label, choices, current, choose, enabled) {
-  const group = document.createElement("div");
-  group.className = "menu-choice-group";
-  group.setAttribute("role", "group");
-  group.setAttribute("aria-label", label);
-  const heading = document.createElement("div");
-  heading.className = "menu-choice-label";
-  heading.append(document.createTextNode(label));
-  const row = document.createElement("div");
-  row.className = "menu-choices";
-  for (const [value, text] of choices) {
-    row.append(menuItem(text, null, () => choose(value), {
-      enabled, radio: true, checked: () => current() === value,
-    }));
-  }
-  group.append(heading, row);
-  return group;
+// The plain model EditorMenu.svelte draws; disabled and checked are worked out again on each refresh.
+function menuModel(menu) {
+  const plain = entry => {
+    const radio = !!(entry.item.radio || entry.source);
+    const checked = menuChecked(entry);
+    entry.disabled = !menuEnabled(entry);
+    return {
+      index: entry.index, label: entry.label, icon: entry.source ? null : entry.item.icon ?? null,
+      role: radio ? "menuitemradio" : checked !== undefined ? "menuitemcheckbox" : "menuitem",
+      className: radio ? "menu-choice" : entry.item.icon ? "menu-item" : "menu-item menu-item-plain",
+      checked, disabled: entry.disabled, chip: !!entry.item.command, keys: entry.keys,
+      switch: checked !== undefined && !radio,
+    };
+  };
+  return {
+    open: menu.open,
+    rows: menu.rows.map(row => row.type === "separator" ? row : row.type === "choices"
+      ? { type: "choices", label: row.label, choices: row.choices.map(plain) }
+      : { type: "item", item: plain(row.entry) }),
+  };
+}
+
+// A click on a row: EditorMenu.svelte calls this with the row's index.
+function menuAction(index) {
+  const entry = editorMenu?.entries[index];
+  if (!entry || !menuEnabled(entry)) return;
+  if (entry.item.close || menuChecked(entry) === undefined) closeEditorMenu();
+  runMenuEntry(entry);
+  refreshEditorMenu();
+}
+
+// The open menu's enabled buttons, in page order.
+function menuButtons() {
+  if (!editorMenu) return [];
+  const buttons = Array.from(menuPopup.querySelectorAll("button"));
+  return editorMenu.entries.filter(entry => !entry.disabled).map(entry => buttons[entry.index]).filter(Boolean);
 }
 
 function laneMenuRow(target) {
@@ -308,175 +422,12 @@ function saveSoundSet() {
   field.focus?.();
 }
 
-function menuItems(name, target) {
-  const click = (id) => () => $(id)?.click();
-  const idle = () => !view.busy && !drag;
-  const selection = () => canEditFromMenu() && !!scene.selection?.count;
-  const panel = (label, glyph, key, field) => menuItem(label, glyph, () =>
-    act({ kind: "panel", panel: key, on: !view.panels?.[field] }), {
-    checked: () => !!view.panels?.[field],
-  });
-  const toggle = (label, glyph, kind, field) => menuItem(label, glyph, () =>
-    act({ kind, on: !view[field] }, false), { checked: () => !!view[field] });
-  if (name === "lane") {
-    const allowed = predicate => () => {
-      const row = laneMenuRow(target);
-      return row !== -1 && predicate(scene.lanes[row], row);
-    };
-    const onLane = (label, glyph, action, predicate) =>
-      menuItem(label, glyph, () => laneMenuAction(target, action), { enabled: allowed(predicate) });
-    return [
-      menuItem("Rename…", null, () => renameLane(laneMenuRow(target)),
-        { enabled: allowed(lane => !!lane.colourKey && !view.drumView?.enabled) }),
-      menuItem("Move up", null, () => moveLane(laneMenuRow(target), -1),
-        { enabled: allowed((_, row) => adjacentLaneForMove(row, -1) !== null) }),
-      menuItem("Move down", null, () => moveLane(laneMenuRow(target), 1),
-        { enabled: allowed((_, row) => adjacentLaneForMove(row, 1) !== null) }),
-      onLane("Replace sample…", "FolderOpen", click("replace-sample"), lane => lane.canReplace),
-      onLane("Lane colour…", null, click("lane-colour"), lane => lane.colourKey),
-      onLane("Add numbered layer", "Drumstick", row => act({ kind: "lane", row, operation: "add_layer" }), lane => lane.canAddLayer),
-      menuItem("Add lane…", null, click("add-lane"), { enabled: allowed(() => true) }),
-      onLane("Delete lane…", "Eraser", click("delete-lane"), lane => lane.canDelete),
-    ];
-  }
-  if (name === "tool") {
-    return Object.entries(toolIcons).map(([tool, glyph]) =>
-      menuItem(tool, glyph, () => {
-        closeEditorMenu();
-        act({ kind: "tool", name: tool });
-      }, {
-        shortcut: "tool" + tool,
-        radio: true,
-        checked: () => view.tool === tool,
-      }));
-  }
-  const separator = () => {
-    const line = document.createElement("div");
-    line.className = "menu-separator";
-    line.setAttribute("role", "separator");
-    return line;
-  };
-  const flag = (label, glyph, kind, on) => menuItem(label, glyph, () => act({ kind, on: !on() }),
-    { checked: () => !!on() });
-  const control = (label, glyph, id, on) => menuItem(label, glyph, click(id), { checked: on });
-  const step = offset => scene?.history?.[scene.historyPosition + offset];
-  const named = (label, action) => action ? label + " · " + action : label;
-  if (name === "file") {
-    return [
-      menuItem("Open map…", "FolderOpen", click("open"), { shortcut: "open", enabled: idle }),
-      menuCommand("Import .osz…", "FolderOpen", "importOsz", idle),
-      menuCommand("Open map folder", "FolderOpen", "openFolder"),
-      separator(),
-      menuCommand("Save", "Save", "save"),
-      menuCommand("Revert to saved…", "Undo2", "revert"),
-      menuItem("Export…", "Redo2", click("export-entry"), { enabled: () => !!scene && !view.busy }),
-      separator(),
-      menuItem("Start screen", "House", click("go-home")),
-      menuItem("Folders…", "Settings", click("folders"), { enabled: idle }),
-    ];
-  }
-  if (name === "map") {
-    const difficulties = scene?.path ? Array.from($("difficulty").options ?? [], option => [option.value, option.text]) : [];
-    return [
-      ...difficulties.length ? [menuChoices("Difficulty", difficulties, () => scene?.path, path => {
-        closeEditorMenu();
-        openSiblingDifficulty(path);
-      }), separator()] : [],
-      menuItem("New hitsound difficulty…", "Drumstick", click("new"), { shortcut: "newDiff" }),
-      separator(),
-      menuItem("Generate hitsound difficulty…", "TrendingUp", click("generate"), { shortcut: "generate" }),
-      menuItem("Copy hitsounds…", "Redo2", click("copy")),
-      menuItem("Drum hit detection…", "Drumstick", () => invoke("drum_window_open").catch(error => { $("status").textContent = String(error); })),
-      menuChoices("Generate export style", [["objects", "Per-object"]],
-        () => "objects", () => {}, () => false),
-      separator(),
-      menuCommand("Add bookmark", null, "addBookmark"),
-      menuCommand("Previous bookmark", null, "previousBookmark"),
-      menuCommand("Next bookmark", null, "nextBookmark"),
-      separator(),
-      menuItem("Add lane…", "Drumstick", click("add-lane")),
-      menuItem("Delete active lane…", "Eraser", click("delete-lane"),
-        { enabled: () => canEditFromMenu() && !$("delete-lane").disabled }),
-    ];
-  }
-  if (name === "edit") {
-    return [
-      menuCommand(named("Undo", step(-1)), "Undo2", "undo", () => canEditFromMenu() && !$("undo").disabled),
-      menuCommand(named("Redo", step(0)), "Redo2", "redo", () => canEditFromMenu() && !$("redo").disabled),
-      separator(),
-      menuCommand("Cut", "Eraser", "cut", selection),
-      menuCommand("Copy", "Redo2", "copy", selection),
-      menuCommand("Paste at playhead", "Redo2", "paste"),
-      menuCommand("Duplicate", "Redo2", "duplicate", selection),
-      menuCommand("Delete", "Eraser", "delete", selection),
-      menuCommand("Select all", "MousePointer2", "selectAll"),
-      separator(),
-      menuCommand("Quantize…", "Scan", "quantizeDialog", selection),
-      menuCommand("Repeat…", "Redo2", "repeat", selection),
-      menuCommand("Edit range…", "Scan", "editRange", () => canEditFromMenu() && !!scene.range),
-      menuCommand("Scale by volume…", "TrendingUp", "scaleByVolume"),
-      menuItem("Place sound set…", null, placeSoundSet),
-      menuItem("Save selection as sound set…", null, saveSoundSet, { enabled: selection }),
-      menuItem("Sound set placement…", null, openSoundSetPlacement,
-        { enabled: () => canEditFromMenu() && scene.placement != null }),
-      separator(),
-      flag("Protect hitnormals from deletion", null, "protect", () => scene?.protect),
-      flag("Audition when placing hits", null, "audition", () => view.audition),
-    ];
-  }
-  if (name === "view") {
-    return [
-      panel("Browser", "PanelLeft", "browser", "browser"),
-      panel("Inspector", "PanelRight", "inspector", "inspector"),
-      panel("Volume panel", "TrendingUp", "controller", "controller"),
-      panel("Lane names", "Scan", "lane_names", "laneNames"),
-      separator(),
-      control("Song waveform", null, "ruler-waveform", () => $("ruler-waveform").getAttribute("aria-pressed") === "true"),
-      menuItem("Object lines", "Scan", () => act({ kind: "object_lines", on: !view.objectLines }),
-        { checked: () => !!view.objectLines }),
-      control("Used lanes only", null, "used-only", () => !!$("used-only").checked),
-      menuItem("Collapse sample layers", "Scan", click("collapse-layers")),
-      separator(),
-      menuCommand("Zoom in", "Scan", "zoomIn"),
-      menuCommand("Zoom out", "Scan", "zoomOut"),
-      menuItem("Fit difficulty", "Scan", click("fit")),
-      separator(),
-      menuItem("Time signatures…", "Drumstick", click("time-signatures")),
-      menuItem("Open drum map…", "Drumstick", () => requestDrumMap()),
-      menuItem("Edit layout…", "Scan", () => dock?.editLayout()),
-      menuItem("View settings…", "Settings", click("panel-view")),
-      separator(),
-      menuItem("Shortcuts", "Info", click("help"), { shortcut: "help", enabled: idle }),
-    ];
-  }
-  if (name !== "playback") return [];
-  const speeds = speedButtons.map(button =>
-    [Number(button.dataset.playbackSpeed), button.textContent.replace("%", "")]);
-  return [
-    menuItem("Play / pause", "Play", () => act({ kind: "play" }), { shortcut: "play" }),
-    menuItem("Stop", "Square", () => act({ kind: "stop" }), { shortcut: "stop" }),
-    menuCommand("Go to start", "SkipBack", "start"),
-    menuItem("Go to end", "SkipForward", () => act({ kind: "seek", ms: view.duration })),
-    separator(),
-    menuChoices("Start playing from", playbackStartChoices, () => view.playbackStart ?? "cursor",
-      value => act({ kind: "playback_start", value }, false)),
-    separator(),
-    toggle("Return on stop", "Undo2", "return_on_stop", "returnOnStop"),
-    toggle("Follow playhead", "Scan", "follow", "follow"),
-    flag("Cycle between L and R", null, "cycle", () => view.cycle),
-    separator(),
-    menuChoices("Speed · pitch stays the same", speeds, () => view.speed, value => act({ kind: "speed", value })),
-    separator(),
-    toggle("Mute song", "VolumeX", "song_muted", "songMuted"),
-    menuItem("Audio output…", "Settings", click("audio"), { enabled: idle }),
-  ];
-}
-
 function closeEditorMenu(restore = true) {
   if (!editorMenu) return;
   const { trigger } = editorMenu;
   editorMenu = null;
   menuPopup.hidden = true;
+  window.dawsuUi?.menu?.(null);
   trigger.setAttribute("aria-expanded", "false");
   if (restore) trigger.focus();
 }
@@ -487,18 +438,21 @@ function refreshEditorMenu() {
     closeEditorMenu(false);
     return;
   }
-  for (const { button, enabled, checked } of editorMenu.items) {
-    button.disabled = !enabled();
-    if (checked) button.setAttribute("aria-checked", String(checked()));
-  }
+  // Hand the rows over only when something changed: show() refreshes on every editor update.
+  const model = menuModel(editorMenu);
+  const drawn = JSON.stringify(model);
+  if (drawn === editorMenu.drawn) return;
+  editorMenu.drawn = drawn;
+  window.dawsuUi?.menu?.(model);
 }
 
 function openEditorMenu(name, last = false, point = null) {
   closeEditorMenu(false);
+  const built = menuEntries(name, point?.target);
+  if (!built) return;
   const trigger = point?.trigger ?? $("menu-" + name);
-  const menu = { name, trigger, items: [] };
+  const menu = { name, trigger, open: ++menuOpens, ...built };
   editorMenu = menu;
-  menuPopup.replaceChildren(...menuItems(name, point?.target));
   if (point) {
     menuPopup.removeAttribute("aria-labelledby");
     menuPopup.setAttribute("aria-label", point.label);
@@ -506,6 +460,9 @@ function openEditorMenu(name, last = false, point = null) {
     menuPopup.removeAttribute("aria-label");
     menuPopup.setAttribute("aria-labelledby", trigger.id);
   }
+  // The bundle draws the rows before this returns, so the popup can be measured and focused.
+  refreshEditorMenu();
+  if (editorMenu !== menu) return;
   menuPopup.hidden = false;
   trigger.setAttribute("aria-expanded", "true");
   const bounds = trigger.getBoundingClientRect();
@@ -517,18 +474,16 @@ function openEditorMenu(name, last = false, point = null) {
     : bounds.bottom;
   menuPopup.style.left = Math.max(4, Math.min(left, window.innerWidth - menuPopup.offsetWidth - 4)) + "px";
   menuPopup.style.top = top + "px";
-  refreshEditorMenu();
-  const items = menu.items.filter(item => !item.button.disabled);
-  (last ? items[items.length - 1] : items[0])?.button.focus();
+  const buttons = menuButtons();
+  (last ? buttons[buttons.length - 1] : buttons[0])?.focus();
 
   invoke("editor_shortcuts").then(({ entries }) => {
     if (editorMenu !== menu) return;
     const bindings = new Map(entries.map(([id, , keys]) => [id, keys]));
-    for (const { shortcut, chip } of menu.items) {
-      if (!chip) continue;
-      chip.textContent = bindings.get(shortcut)?.join(" / ") ?? "";
-      chip.hidden = !chip.textContent;
+    for (const entry of menu.entries) {
+      if (entry.item.command) entry.keys = bindings.get(entry.item.command)?.join(" / ") ?? "";
     }
+    refreshEditorMenu();
   }).catch(() => {});
 }
 
@@ -596,7 +551,7 @@ document.addEventListener("keydown", event => {
     closeEditorMenu();
     return;
   }
-  const nodes = editorMenu.items.map(item => item.button).filter(button => !button.disabled);
+  const nodes = menuButtons();
   if (!nodes.length) return;
   const index = nodes.indexOf(document.activeElement);
   const step = key === "ArrowUp" || key === "ArrowLeft" ? -1 : 1;
