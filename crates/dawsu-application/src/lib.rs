@@ -16,8 +16,10 @@ mod lane_edit;
 mod layers;
 mod mixes;
 pub mod output;
+pub mod node_graph;
 mod project;
 pub use project::lane_key as lane_layout_key;
+pub use node_graph::{NodeGraphAction, NodeGraphView, ViewerOverlay};
 pub use dawsu_audio::{OutputBackend, OutputDevice};
 mod preferences;
 mod shortcuts;
@@ -87,6 +89,7 @@ pub struct Document {
     export_settings: Option<ExportSettings>,
     drum_lanes: Option<DrumLanes>,
     export_choices: Option<ExportChoices>,
+    node_graph_bindings: Option<std::collections::BTreeMap<String, String>>,
 }
 impl Document {
     /// The map's `Title` from the `.osu` metadata, or empty when it has none.
@@ -183,6 +186,7 @@ impl Document {
             export_settings: None,
             drum_lanes: None,
             export_choices: None,
+            node_graph_bindings: None,
         })
     }
     pub fn lane_layout(&self) -> Option<&LaneLayout> {
@@ -902,6 +906,7 @@ pub struct Application {
     /// next open.
     opens: u64,
     drum: drum_detect::DrumDetect,
+    node_graph: node_graph::NodeGraphState,
 }
 impl Application {
     pub fn new() -> Self {
@@ -947,6 +952,11 @@ impl Application {
     }
     pub fn headless() -> Self {
         Self::create(Preferences::default(), false, None, None, false, data_folder())
+    }
+    pub fn headless_with_projects(data_root: PathBuf) -> Self {
+        let mut app = Self::create(Preferences::default(), false, None, None, false, data_root.clone());
+        app.project_root = Some(data_root.join("projects"));
+        app
     }
     fn create(
         preferences: Preferences,
@@ -1022,6 +1032,7 @@ impl Application {
             sound_set_check_pending: false,
             opens: 0,
             drum: Default::default(),
+            node_graph: Default::default(),
         }
     }
 
@@ -1249,6 +1260,7 @@ impl Application {
             export_settings: document.export_settings.clone(),
             drum_lanes: document.drum_lanes.clone(),
             export_choices: document.export_choices.clone(),
+            node_graph_bindings: document.node_graph_bindings.clone(),
             lane_slots: saved_slots.or_else(|| self.project.as_ref().and_then(|p| p.settings.lane_slots.clone())),
         })
     }
@@ -1323,6 +1335,7 @@ impl Application {
         self.stop();
         self.cancel_controller_stroke();
         self.clear_drum_detection();
+        self.clear_node_graph_run();
         if let Some(d) = self.document.as_mut() {
             self.tools.cancel(&mut d.composer);
         }
@@ -1418,6 +1431,7 @@ impl Application {
         self.refresh_recovery_edit();
         self.check_set_versions_when_read();
         self.poll_drum_detection();
+        self.poll_node_graph();
         // Before main's job: its arms can return early.
         self.poll_export();
         if !self.cancel.load(Ordering::Relaxed)
@@ -1478,6 +1492,7 @@ impl Application {
                     }
                     self.song = loaded.song;
                     self.drum.song_loaded();
+                    self.node_graph_song_loaded();
                     self.stretched_song = self.song.clone();
                     self.playback_speed = 1.0;
                     self.samples = loaded.samples;
@@ -2827,6 +2842,7 @@ fn load(
     document.export_settings = project.as_ref().and_then(|p| p.settings.export_settings.clone());
     document.drum_lanes = project.as_ref().and_then(|p| p.settings.drum_lanes.clone());
     document.export_choices = project.as_ref().and_then(|p| p.settings.export_choices.clone());
+    document.node_graph_bindings = project.as_ref().and_then(|p| p.settings.node_graph_bindings.clone());
     if let Some(layout) = &mut document.lane_layout {
         layout.normalise();
     }

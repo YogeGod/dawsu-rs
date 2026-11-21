@@ -2865,3 +2865,33 @@ fn the_map_preview_sends_stacked_objects_with_combos_and_slider_paths() {
     assert_eq!(objects[2]["spans"], 1);
     assert!(map_preview(&app, &fixture.0.join("Other.osu")).is_err());
 }
+
+#[test]
+fn node_graph_tauri_actions_round_trip_and_export_json() {
+    let mut app = Application::headless();
+    let initial = serde_json::to_value(app.node_graph_view()).unwrap();
+    assert_eq!(initial["nodes"].as_array().unwrap().len(), 21);
+    assert_eq!(initial["catalog"].as_array().unwrap().len(), 18);
+
+    let add: dawsu_application::NodeGraphAction = serde_json::from_value(serde_json::json!({
+        "kind": "add_node",
+        "typeId": "output.viewer",
+        "x": 120.0,
+        "y": 240.0
+    }))
+    .unwrap();
+    app.node_graph_action(add).unwrap();
+    let after_add = serde_json::to_value(app.node_graph_view()).unwrap();
+    assert_eq!(after_add["nodes"].as_array().unwrap().len(), 22);
+    assert_eq!(after_add["canUndo"], true);
+
+    let exported = app.node_graph_export_json().unwrap();
+    assert!(exported.contains("\"dawsu-graph\""));
+    let import: dawsu_application::NodeGraphAction = serde_json::from_value(serde_json::json!({
+        "kind": "import_json",
+        "json": exported
+    }))
+    .unwrap();
+    app.node_graph_action(import).unwrap();
+    assert_eq!(app.node_graph_view().nodes.len(), 22);
+}
