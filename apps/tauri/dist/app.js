@@ -92,6 +92,12 @@ let requests = 0;
 let refreshing = false;
 let lastRefresh = 0;
 let frame = 0;
+// While playing, the playhead is drawn on every frame (playbackFrame), not only when the editor's
+// view arrives (every 85 ms). It moves on from the last reported position at the playback speed.
+let playbackFrame = 0;
+let playheadAnchor = { position: 0, at: 0 };
+// Centre's view start the editor was last told of; frames scroll the view between those updates.
+let centreSentStart = null;
 
 const nameOf = (path) => path.split(/[\\/]/).at(-1);
 const limit = (x, min, max) => Math.min(Math.max(x, min), Math.max(min, max));
@@ -211,7 +217,10 @@ function show(next) {
   }
   const previousTool = view.tool;
   const wasBusy = view.busy;
+  // Where the line is now, from the view before this one.
+  const drawn = playheadPosition();
   view = next;
+  anchorPlayhead(drawn);
   if (view.tool !== previousTool) refreshToolCursor();
   if (!view.hasDocument || view.showHome) scene = null;
   if (view.scene) {
@@ -313,6 +322,7 @@ function show(next) {
   renderDialogs();
   try { window.refreshEditorMenu?.(); } catch (error) { console.error(error); }
   paintSoon();
+  if (scene && view.playing) animatePlayback();
   try { window.dawsuUi?.update(view, scene); } catch (error) { console.error(error); }
   $("triplet-snap").checked = window.dawsuUi?.snapGroup?.() === "triplets";
 }
@@ -1454,7 +1464,51 @@ function visibleWarningMarkers(problems, path, start, zoom, width) {
 }
 
 function paintSoon() {
-  if (!frame) frame = requestAnimationFrame(() => { frame = 0; paint(); });
+  // While playing, the next playback frame paints anyway.
+  if (!frame && !playbackFrame) frame = requestAnimationFrame(() => { frame = 0; paint(); });
+}
+
+// The audio clock reports in steps of its buffer, so a report up to this far behind the drawn line
+// leaves the line where it is instead of pulling it back a pixel or two.
+const playheadHold = 20;
+// With no new view for this long (the editor is busy), the line stops instead of running on.
+const playheadReach = 250;
+
+// Each view from the editor sets where the playhead is, and when. `drawn` is where the line was
+// just before this view.
+function anchorPlayhead(drawn) {
+  if (!view.playing) return;
+  const behind = drawn - view.position;
+  const held = behind > 0 && behind <= playheadHold;
+  playheadAnchor = { position: held ? drawn : view.position, at: performance.now() };
+}
+
+// Where the playhead is drawn now: the last report moved on at the playback speed while playing.
+// While cycling it waits at the right locator for the editor to wrap.
+function playheadPosition() {
+  let position = view.position;
+  if (view.playing && Number.isFinite(position)) {
+    const elapsed = Math.min(Math.max(0, performance.now() - playheadAnchor.at), playheadReach);
+    position = playheadAnchor.position + elapsed * (view.speed || 1);
+    if (view.cycle && view.left < view.right && playheadAnchor.position <= view.right) position = Math.min(position, view.right);
+    if (Number.isFinite(view.duration)) position = Math.min(position, view.duration);
+  }
+  return position;
+}
+
+// Paints every frame while playing; stops, with one last paint, when playback stops.
+function animatePlayback() {
+  if (playbackFrame) return;
+  playbackFrame = requestAnimationFrame(function step() {
+    playbackFrame = 0;
+    if (!scene || !view.playing) {
+      paintSoon();
+      return;
+    }
+    followPlayhead(true);
+    paint();
+    playbackFrame = requestAnimationFrame(step);
+  });
 }
 
 function fillHitDiamond(ctx, x, y) {
@@ -1676,7 +1730,7 @@ function drawOverview({ ctx, width, height }, start, visible) {
     ctx.fill();
     ctx.stroke();
   }
-  const playX = view.position * width / duration;
+  const playX = playheadPosition() * width / duration;
   line(ctx, slateTimeline.playhead, playX, 0, playX, height);
 }
 
@@ -1850,15 +1904,16 @@ function paint() {
   }
   drawLocatorFlags(r.ctx, r.width, left, right, cycling && left <= right);
   drawBookmarks(r.ctx, scene.bookmarks ?? [], start, zoom, r.width);
-  line(g.ctx, slateTimeline.playhead, xOf(view.position), 0, xOf(view.position), g.height);
-  line(r.ctx, slateTimeline.playhead, xOf(view.position), 0, xOf(view.position), r.height);
+  const playhead = xOf(playheadPosition());
+  line(g.ctx, slateTimeline.playhead, playhead, 0, playhead, g.height);
+  line(r.ctx, slateTimeline.playhead, playhead, 0, playhead, r.height);
   rulerWarningMarkers = visibleWarningMarkers(view.outputProblems ?? [], scene.path, start, zoom, r.width);
   refreshRulerWarningTooltip();
   r.ctx.fillStyle = "#f0aa70";
   for (const marker of rulerWarningMarkers) {
     r.ctx.fillRect(marker.x - 3, r.height - 9, 6, 6);
   }
-  if (v) line(v.ctx, slateTimeline.playhead, xOf(view.position), 0, xOf(view.position), v.height);
+  if (v) line(v.ctx, slateTimeline.playhead, playhead, 0, playhead, v.height);
   drawOverview(o, start, g.width / zoom);
 }
 
@@ -2458,17 +2513,25 @@ function timelineStart(start, zoom) {
   return limit(start, 0, view.duration - grid.clientWidth / zoom);
 }
 
-function followPlayhead() {
+// Called with each view from the editor, and with `frame` on each playback frame.
+function followPlayhead(frame = false) {
   if (!view.follow || !view.playing || view.busy || drag || rulerDrag || overviewDrag || !grid.clientWidth) return;
   const visible = grid.clientWidth / scene.zoom;
+  const position = playheadPosition();
   // The Playhead group's Centre (window only): the view moves so the playhead stays in the middle.
+  // Each frame scrolls the view here; the editor is told of it with each of its views, not per frame.
   if (window.dawsuUi?.centre?.()) {
-    const start = timelineStart(view.position - visible / 2, scene.zoom);
-    if (Math.abs(start - scene.viewStart) * scene.zoom >= 1) changeView(start, scene.zoom);
+    const start = timelineStart(position - visible / 2, scene.zoom);
+    if (frame) scene.viewStart = start;
+    else if (Math.abs(start - (centreSentStart ?? scene.viewStart)) * scene.zoom >= 1) {
+      centreSentStart = start;
+      changeView(start, scene.zoom);
+    }
     return;
   }
-  if (view.position >= scene.viewStart && view.position <= scene.viewStart + visible * .98) return;
-  const start = timelineStart(view.position - visible * .02, scene.zoom);
+  centreSentStart = null;
+  if (position >= scene.viewStart && position <= scene.viewStart + visible * .98) return;
+  const start = timelineStart(position - visible * .02, scene.zoom);
   if (start !== scene.viewStart) changeView(start, scene.zoom);
 }
 
@@ -4191,7 +4254,8 @@ window.__TAURI__.event.listen("editor-close-requested", ({ payload }) => {
 let quitAfterSave = false;
 setInterval(async () => {
   const now = performance.now();
-  if (view.fault || requests || refreshing || now - lastRefresh < (view.playing || view.busy ? 85 : 1000)) return;
+  // While playing or busy, every tick asks; a gate at the timer's own 85 ms skipped every other tick.
+  if (view.fault || requests || refreshing || (!view.playing && !view.busy && now - lastRefresh < 1000)) return;
   refreshing = true;
   lastRefresh = now;
   await run(() => update(null, false));
