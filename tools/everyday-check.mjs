@@ -7,19 +7,13 @@
 //   --map           a difficulty whose whole folder is copied first; the copy is opened and edited,
 //                   the original is only read (default: tests/fixtures/save-pack/synthetic/
 //                   lf-no-final-newline.osu, a standard map with circles, a slider and a spinner;
-//                   no fixture has its audio file, so the song is silent). Any map works: the
-//                   edits are planned from the map itself (see planEdits): a hit on an empty beat
-//                   away from every object, a whistle on a plain circle, and a whistle on a circle
-//                   that names its own sound file when the map has one (else that step is skipped).
+//                   no fixture has its audio file, so the song is silent). The steps use that
+//                   map's lanes and times (circles at 0 and 3500 ms, an empty spot at 4500 ms), so
+//                   another map fails the steps that edit; use it to check start-up and windows
+//                   on a variant of the same folder.
 //   --shots         where a failing step's screenshot goes (default: <profile>/shots)
 //   --json          also write the results as data to this file
 //   --keep-profile  keep the profile folder (map copy, settings, WebView2 profile) after the run
-//   --quick         only the steps that edit and save: skips the menus, the seven tools, the panels,
-//                   the windows and the zoom step (for runs over many maps)
-//
-// The --json file also lists the edits the run made, in order, with what the editor showed after
-// each ("actions"), and where the edited copy is ("mapCopy"). tools/compare-314.mjs replays those
-// edits in dawsu! 3.1.4 and compares the two saved maps.
 //
 // The JS tests run against a hand-written page (apps/tauri/tests/fake-dom.mjs); this runs the real
 // one. Every step acts through real input: mouse clicks and drags, key presses, buttons and menu
@@ -136,47 +130,6 @@ function writeLaneSample() {
 const copyBefore = snapshot(mapFolder);
 const osuBefore = readFileSync(mapCopy);
 
-// Where the edits go, read from the map: its first red line's beat, its objects, and from those an
-// empty beat (two beats clear of every object, for the placed hit), a plain circle (no whistle, no
-// sound file of its own, alone at its time) and a circle that names its own sound file (optional).
-function planEdits(text) {
-  let section = "", red = null;
-  const objects = [];
-  for (const raw of text.split(/\r?\n/)) {
-    const line = raw.trim();
-    if (/^\[.*\]$/.test(line)) { section = line; continue; }
-    if (!line || line.startsWith("//")) continue;
-    const fields = line.split(",");
-    if (section === "[TimingPoints]" && fields.length >= 2 && !red) {
-      const beat = Number(fields[1]);
-      if (beat > 0 && (fields.length < 7 || fields[6].trim() === "1")) red = { offset: Number(fields[0]), beat };
-    }
-    if (section === "[HitObjects]" && fields.length >= 5) {
-      const type = Number(fields[3]), time = Math.round(Number(fields[2]));
-      // A spinner's end is field 6; a mania hold's is the first part of field 6.
-      const end = type & 8 ? Number(fields[5]) : type & 128 ? Number(fields[5]?.split(":")[0]) : time;
-      const sample = type & 1 && fields.length >= 6 ? fields[5].split(":") : [];
-      objects.push({ time, end: Number.isFinite(end) ? end : time, circle: !!(type & 1), whistle: !!(Number(fields[4]) & 2), file: sample[4]?.trim() || "" });
-    }
-  }
-  const beat = red?.beat ?? 500, offset = red?.offset ?? 0;
-  const alone = object => objects.filter(other => other.time === object.time).length === 1;
-  const plain = objects.find(o => o.circle && !o.whistle && !o.file && alone(o));
-  const custom = objects.find(o => o.circle && !o.whistle && o.file && alone(o) && o !== plain);
-  const clear = time => objects.every(o => (o.end < time - 2 * beat || o.time > time + 2 * beat));
-  const first = objects.length ? Math.min(...objects.map(o => o.time)) : offset;
-  const last = objects.length ? Math.max(...objects.map(o => o.end)) : offset;
-  let empty = null;
-  for (let k = Math.ceil((first - offset) / beat); offset + k * beat <= last && empty === null; k++) {
-    if (clear(offset + k * beat)) empty = Math.round(offset + k * beat);
-  }
-  empty ??= Math.round(offset + Math.ceil((last - offset) / beat + 4) * beat);
-  // Clicked this far after a circle, the 1/4 snap still lands on it.
-  const nudge = Math.max(1, Math.min(40, Math.floor(beat / 4 * 0.3)));
-  return { beat, empty, plain: plain?.time ?? null, custom: custom?.time ?? null, customFile: custom?.file ?? null, nudge };
-}
-const plan = planEdits(osuBefore.toString("latin1"));
-
 // One running editor: its process, its pages and the errors they report.
 let app = null;
 let current = null;
@@ -243,21 +196,12 @@ async function quit() {
 
 // The steps and their results.
 const results = [];
-// The edits, in order, for tools/compare-314.mjs: what was done and what the editor showed after.
-const actions = [];
-const did = action => actions.push({ step: current, ...action });
 let errorsChecked = 0;
 // When the map never opened, the steps that need it are skipped rather than failed one by one.
 let noMap = null;
 const opensMap = new Set(["Open the map copy and see lanes and a drawn timeline"]);
-const quickSkips = /^(Open the .* menu|Pick each of the seven tools|Fold and show|Open and close|Zoom and scroll)/;
 async function step(name, body, always = false) {
   const number = String(results.length + 1).padStart(2, "0");
-  if (args.quick && quickSkips.test(name)) {
-    results.push({ number, name, status: "SKIP", detail: "quick run" });
-    console.log(`SKIP ${number} ${name} — quick run`);
-    return;
-  }
   if (noMap && !always) {
     results.push({ number, name, status: "SKIP", detail: noMap });
     console.log(`SKIP ${number} ${name} — ${noMap}`);
@@ -313,7 +257,7 @@ async function until(fn, arg, what, timeout = 8000) {
   while (Date.now() < end) {
     last = await read(fn, arg).catch(error => ({ error: error.message }));
     if (last && !last.error) return last;
-    await sleep(50);
+    await sleep(100);
   }
   throw new Error(`${what} (last: ${JSON.stringify(last)?.slice(0, 160)})`);
 }
@@ -337,7 +281,7 @@ const hits = () => read(() => window.scene.moments.flatMap(([time, volume, , lis
 const scene = fn => read(fn);
 // The same by lane name, as "3500 ms normal-hitwhistle": rows renumber when lanes come and go.
 const namedHits = () => read(() => window.scene.moments.flatMap(([time, , , list]) =>
-  list.map(([row]) => `${Math.round(time)} ms ${window.scene.lanes[row]?.name ?? "row " + row}`)).sort());
+  list.map(([row]) => `${time} ms ${window.scene.lanes[row]?.name ?? "row " + row}`)).sort());
 
 // Where a time and a lane are on the timeline canvas, in page pixels.
 async function at(time, row) {
@@ -351,47 +295,6 @@ async function at(time, row) {
   expect(point.x > point.grid.x && point.x < point.grid.x + point.grid.width, `time ${time} is outside the visible timeline`);
   expect(point.y > point.grid.y && point.y < point.grid.y + point.grid.height, `lane row ${row} is outside the visible timeline`);
   return point;
-}
-
-// Brings a time and a lane row into view as a mapper would: Fit all, zoom in until one pixel is at
-// most 5 ms, click the overview strip at that time, and turn the wheel over the lanes until the row
-// shows. Short maps already show everything after Fit all.
-async function reveal(time, row) {
-  await page().click("#ruler-fit");
-  await until(() => window.scene.viewStart === 0, null, "Fit all did not go back to the start");
-  for (let i = 0; i < 16; i++) {
-    const zoom = await read(() => window.scene.zoom);
-    if (zoom >= 0.2 || await read(() => document.getElementById("ruler-zoom-in").disabled)) break;
-    await page().click("#ruler-zoom-in");
-    await until(zoom => window.scene.zoom > zoom, zoom, "Zoom in did not zoom in");
-  }
-  const visible = () => read(time => {
-    const width = document.getElementById("grid").clientWidth / window.scene.zoom;
-    return time > window.scene.viewStart + width * 0.05 && time < window.scene.viewStart + width * 0.95;
-  }, time);
-  if (!await visible()) {
-    const box = await read(() => document.getElementById("overview").getBoundingClientRect().toJSON());
-    const duration = await read(() => window.view.duration);
-    expect(duration > 0, "the editor reports no song length");
-    await page().mouse.click(box.x + box.width * Math.min(1, time / duration), box.y + box.height / 2);
-    await until(time => {
-      const width = document.getElementById("grid").clientWidth / window.scene.zoom;
-      return time > window.scene.viewStart && time < window.scene.viewStart + width;
-    }, time, `clicking the overview did not bring ${time} ms into view`);
-  }
-  const grid = await read(() => document.getElementById("grid").getBoundingClientRect().toJSON());
-  await page().mouse.move(grid.x + grid.width / 2, grid.y + grid.height / 2);
-  for (let turn = 0; turn < 40; turn++) {
-    const where = await read(row => {
-      const lane = document.querySelector(`#lanes [data-lane-row="${row}"]`)?.getBoundingClientRect();
-      const grid = document.getElementById("grid").getBoundingClientRect();
-      if (!lane) return 0;
-      return lane.y < grid.y ? -1 : lane.y + lane.height > grid.y + grid.height ? 1 : 0;
-    }, row);
-    if (!where) break;
-    await page().mouse.wheel(0, where * 120);
-    await sleep(80);
-  }
 }
 
 // A row of the open popup menu, by its text.
@@ -510,7 +413,6 @@ try {
     expect(drawn.colours > 1, "the timeline canvas is blank");
     hitsBeforeEdits = (await hits()).length;
     expect(hitsBeforeEdits > 0, "the map's hits are not shown");
-    did({ do: "open", seen: await namedHits() });
     return `${await read(() => window.scene.lanes.length)} lanes, ${hitsBeforeEdits} hits`;
   });
 
@@ -568,8 +470,7 @@ try {
     expect(laneRow >= 0, "no normal-hitnormal lane");
     await pickTool("Draw");
     const before = await hits();
-    await reveal(plan.empty, laneRow);
-    const point = await at(plan.empty, laneRow);
+    const point = await at(4500, laneRow);
     await page().mouse.click(point.x, point.y);
     const after = await until(count => window.scene.moments.reduce((sum, moment) => sum + moment[3].length, 0) === count + 1 &&
       window.scene.moments.flatMap(([time, , , list]) => list.map(([row]) => [time, row])), before.length, "the hit count did not go up by one");
@@ -577,7 +478,6 @@ try {
     expect(added.length === 1, `expected one new hit, found ${JSON.stringify(added)}`);
     placed = added[0];
     expect(placed[1] === laneRow, `the hit landed on lane row ${placed[1]}, not ${laneRow}`);
-    did({ do: "place", lane: "normal-hitnormal", at: plan.empty, seen: placed[0] });
     return `hit at ${placed[0]} ms on ${await read(row => window.scene.lanes[row].name, laneRow)}`;
   });
 
@@ -615,7 +515,6 @@ try {
     }, placed, `the selected hit did not move (at the press: ${JSON.stringify(pressed)})`);
     const count = (await hits()).length;
     expect(count === hitsBeforeEdits + 1, `the drag changed the hit count to ${count}`);
-    did({ do: "move", from: placed[0], by: moved - placed[0], seen: moved });
     placed = [moved, placed[1]];
     return `now at ${moved} ms`;
   });
@@ -629,7 +528,6 @@ try {
     await page().locator('form[aria-label="Change volume"] button[type="submit"]').click();
     await until(([time, row]) => window.scene.moments.some(([t, volume, , list]) =>
       t === time && list.some(([r, , , hitVolume]) => r === row && (hitVolume ?? volume) === 60)), placed, "the hit's volume did not become 60");
-    did({ do: "volume", value: 60, seen: 60 });
     // A mapper types 2: the hit must not end up under 5%.
     await amount.fill("2");
     await page().locator('form[aria-label="Change volume"] button[type="submit"]').click();
@@ -644,7 +542,6 @@ try {
     await until(() => !window.view.busy, null, "the editor stayed busy after the volume change");
     const typed = await read(([time, row]) => window.scene.moments.flatMap(([t, volume, , list]) =>
       t === time ? list.filter(([r]) => r === row).map(([, , , hitVolume]) => hitVolume ?? volume) : [])[0], placed);
-    did({ do: "volume", value: 2, seen: typed });
     expect(typed >= 5, `typing 2% and Apply set the hit's volume to ${typed}%`);
     const low = await read(() => {
       const found = [];
@@ -667,7 +564,6 @@ try {
     await until(count => window.scene.moments.reduce((sum, moment) => sum + moment[3].length, 0) === count,
       hitsBeforeEdits, "the hit count did not go back down");
     withoutPlaced = await namedHits();
-    did({ do: "delete", seen: withoutPlaced });
     const gone = withPlaced.filter(name => !withoutPlaced.includes(name));
     expect(withoutPlaced.every(name => withPlaced.includes(name)) && gone.length <= 1,
       `Delete changed other hits: before ${JSON.stringify(withPlaced)}, after ${JSON.stringify(withoutPlaced)}`);
@@ -681,7 +577,6 @@ try {
     await until(count => window.scene.moments.reduce((sum, moment) => sum + moment[3].length, 0) === count + 1,
       hitsBeforeEdits, `${keys.undo} did not bring the hit back`);
     const back = await namedHits();
-    did({ do: "undo", seen: back });
     expect(JSON.stringify(back) === JSON.stringify(withPlaced), `Undo brought back different hits: ${JSON.stringify(back)}`);
     return keys.undo;
   });
@@ -694,7 +589,6 @@ try {
     await until(count => window.scene.moments.reduce((sum, moment) => sum + moment[3].length, 0) === count,
       hitsBeforeEdits, `${keys.redo} did not remove the hit again`);
     const again = await namedHits();
-    did({ do: "redo", seen: again });
     expect(JSON.stringify(again) === JSON.stringify(withoutPlaced), `Redo left different hits: ${JSON.stringify(again)}`);
     return keys.redo;
   });
@@ -702,7 +596,6 @@ try {
   await step("Add a lane", async () => {
     const before = await read(() => window.scene.lanes.length);
     writeLaneSample();
-    did({ do: "add-file", file: laneSample });
     await page().getByRole("button", { name: "Add lane" }).last().click();
     await dialogShown("Add lane");
     const choices = await read(() => Array.from(document.querySelectorAll("#dialog-body option"), option => option.textContent));
@@ -837,22 +730,26 @@ try {
 
   // Two whistles to save: one on a plain circle, which Save writes into its line, and one on the
   // circle with a custom clap file, which Save can only write as a mix of new sample files.
-  for (const [time, kind] of [[plan.plain, "the plain circle"], [plan.custom, `the circle with its own sound file (${plan.customFile})`]]) {
-    await step(`Add a whistle to ${kind}${time === null ? "" : ` at ${time} ms`}`, async () => {
+  for (const [time, kind] of [[0, "the plain circle"], [3500, "the circle with a custom clap"]]) {
+    await step(`Add a whistle to ${kind} at ${time} ms`, async () => {
       if (!silent) return needsSilence();
-      if (time === null) return { skip: "the map has no such circle" };
       const whistle = await read(() => window.scene.lanes.findIndex(lane => lane.name === "normal-hitwhistle"));
       expect(whistle >= 0, "no normal-hitwhistle lane");
+      await page().click("#ruler-fit");
+      await until(() => window.scene.viewStart === 0, null, "Fit all did not go back to the start");
+      // The lanes scrolled to the top, so the Normal set's lanes are in view.
+      const box = await read(() => document.getElementById("grid").getBoundingClientRect().toJSON());
+      await page().mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+      await page().mouse.wheel(0, -2000);
+      await until(() => document.getElementById("scroll").scrollTop === 0, null, "the lanes did not scroll to the top");
       await pickTool("Draw");
-      await reveal(time, whistle);
       const before = (await hits()).length;
       // A little after the circle, inside its first quarter beat: the snap puts the hit on the circle.
-      const point = await at(time + plan.nudge, whistle);
+      const point = await at(time + 40, whistle);
       await page().mouse.click(point.x, point.y);
       await until(([count, row, time]) => window.scene.moments.reduce((sum, moment) => sum + moment[3].length, 0) === count + 1 &&
         window.scene.moments.some(([t, , , list]) => t === time && list.some(([r]) => r === row)), [before, whistle, time],
         `no whistle appeared on the circle at ${time} ms`);
-      did({ do: "place", lane: "normal-hitwhistle", at: time + plan.nudge, seen: time });
       await pickTool("Select");
     });
   }
@@ -877,7 +774,6 @@ try {
     }
     expect(!(await read(() => window.view.dirty)), "the editor still shows unsaved changes");
     savedHits = await namedHits();
-    did({ do: "save", seen: savedHits });
     return reviewed.join("; ");
   });
 
@@ -896,9 +792,8 @@ try {
     const changed = before.map((line, index) => [index, line, after[index]]).filter(([, line, now]) => line !== now);
     expect(changed.length, "nothing in the .osu changed");
     const objects = before.indexOf("[HitObjects]") === -1 ? before.findIndex(line => line.trim() === "[HitObjects]") : before.indexOf("[HitObjects]");
-    const edited = [plan.plain, plan.custom].filter(time => time !== null);
-    const stray = changed.filter(([index, line]) => index <= objects || !edited.includes(Math.round(Number(line.split(",")[2]))));
-    expect(!stray.length, `lines other than the circles at ${edited.join(" and ")} ms changed: ${stray.map(([index, line, now]) =>
+    const stray = changed.filter(([index, line]) => index <= objects || !["0", "3500"].includes(line.split(",")[2]));
+    expect(!stray.length, `lines other than the circles at 0 and 3500 ms changed: ${stray.map(([index, line, now]) =>
       `line ${index + 1}: ${JSON.stringify(line)} → ${JSON.stringify(now)}`).join("; ")}`);
     return changed.map(([index, line, now]) => `line ${index + 1}: ${line.trim()} → ${now.trim()}`).join("; ");
   });
@@ -946,7 +841,7 @@ try {
     expect(!missing.length && !extra.length, `${what}: missing ${missing.join(", ") || "none"}; extra ${extra.join(", ") || "none"}`);
     return `${now.length} hits`;
   };
-  const mixed = hit => plan.custom !== null && hit.startsWith(`${plan.custom} ms `);
+  const mixed = hit => hit.startsWith("3500 ms ");
   await step("Reopening the saved copy shows the same hits", async () => {
     expect(savedHits, "Save did not finish, so there is nothing to compare");
     await quit();
@@ -960,13 +855,12 @@ try {
   // project keeps no record of the lanes it was drawn on: reopened, the circle plays those files
   // (as crates/dawsu-application/src/lib.rs hs_save_mix_reopens_without_duplicate_project_hits expects).
   await step("Reopening shows the mixed circle as the sample files Save wrote", async () => {
-    if (plan.custom === null) return { skip: "the map has no circle with its own sound file" };
     expect(reopened, "the reopen did not finish, so there is nothing to compare");
-    const now = reopened.filter(mixed).map(hit => hit.slice(`${plan.custom} ms `.length));
-    expect(now.length, `the circle at ${plan.custom} ms has no hits after reopening`);
+    const now = reopened.filter(mixed).map(hit => hit.slice("3500 ms ".length));
+    expect(now.length, "the circle at 3500 ms has no hits after reopening");
     const written = mixFiles.map(name => name.replace(/\.(wav|ogg|mp3)$/i, ""));
     const other = now.filter(name => !written.includes(name));
-    expect(written.length && !other.length, `at ${plan.custom} ms: ${now.join(", ")}; Save wrote: ${mixFiles.join(", ") || "nothing"}`);
+    expect(written.length && !other.length, `at 3500 ms: ${now.join(", ")}; Save wrote: ${mixFiles.join(", ") || "nothing"}`);
     return now.join(", ");
   });
   await step("No errors after the last step", async () => {
@@ -980,7 +874,7 @@ try {
   console.log(`run time: ${seconds} s`);
   console.log(`everyday check: ${passed} of ${results.length} steps passed`);
   if (args.json) {
-    writeFileSync(resolve(args.json), JSON.stringify({ exe, map: original, profile, mapCopy, plan, passed, total: results.length, seconds, steps: results, actions }, null, 2) + "\n");
+    writeFileSync(resolve(args.json), JSON.stringify({ exe, map: original, profile, passed, total: results.length, seconds, steps: results }, null, 2) + "\n");
   }
   if (failed || !results.length) process.exitCode = 1;
   if (!args["keep-profile"]) {
