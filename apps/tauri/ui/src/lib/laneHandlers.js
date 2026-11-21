@@ -12,6 +12,7 @@ export function laneHandlers(send, tick) {
     mix: (row, operation) => send("mix", row, operation),
     family: row => send("family", row),
     addLayer: row => send("addLayer", row),
+    remove: row => send("remove", row),
     fold: set => send("folder", set),
     // The folder name folds too, as the old header's name button did.
     foldName: set => send("folder", set),

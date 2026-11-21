@@ -243,7 +243,11 @@ impl Application {
         let document = self.document.as_ref();
         let saved = |key: Option<&String>| key.and_then(|key| project::lane_identity(key))
             .filter(|lane| !slider_body(lane))
-            .filter(|lane| document.is_some_and(|d| d.composer.hitsounds().lane(lane).is_some()));
+            // A removed (hidden) lane is never proposed again.
+            .filter(|lane| document.is_some_and(|d| {
+                let hits = d.composer.hitsounds();
+                hits.lane(lane).is_some() && !hits.is_lane_hidden(lane)
+            }));
         let mapping = document.and_then(|d| d.drum_lanes.as_ref());
         let kick = saved(mapping.and_then(|m| m.kick.as_ref()));
         // One lane for both drums is never offered, also from a project saved with it.
@@ -1182,6 +1186,12 @@ mod tests {
         let fixture = Scratch::new("drum-detect-hidden");
         let mut app = open(&fixture);
         app.document.as_mut().unwrap().composer.history.update_external(|h| h.set_lane_hidden(&lane(Hitsound::Whistle), true));
+        // A removed (hidden) lane saved for kicks is never proposed again; the saved snare still is.
+        app.document.as_mut().unwrap().drum_lanes = Some(DrumLanes {
+            kick: Some(project::lane_key(&lane(Hitsound::Whistle))), snare: Some(project::lane_key(&lane(Hitsound::Clap))),
+        });
+        let options = app.drum_options();
+        assert_eq!((options.kick, options.snare), (None, Some(lane(Hitsound::Clap))));
         let name = crate::lane_name(&lane(Hitsound::Whistle));
         let view = app.drum_detection();
         assert!(view.lanes.iter().any(|(l, _, hidden)| *l == lane(Hitsound::Whistle) && *hidden));
