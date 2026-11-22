@@ -63,7 +63,7 @@
     <button type="button" class="seg" class:playing aria-label="Play" title="Play or pause" aria-pressed={playing}
       disabled={disabled.playback} onclick={() => toggle("play")}>{@html Play}</button>
     <!-- Recording has no code yet (Yoge, 2026-11-21): Record shows greyed out. -->
-    <button type="button" class="seg record" aria-label="Record" title="Record" disabled>{@html Circle}</button>
+    <button type="button" class="seg record" aria-label="Record" title="Record (Coming soon)" disabled>{@html Circle}</button>
   </div>
   <div class="readout">
     <span class="time">{time}</span>

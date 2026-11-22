@@ -21,6 +21,12 @@
     <button type="button" id="sample-browser-library" aria-pressed={model.source === "library"}
       aria-controls="sample-browser-entries" disabled={off} onclick={() => send("source", "library")}>Library</button>
   </div>
+  <div class="browser-folder-shortcuts" role="group" aria-label="Folder shortcuts">
+    <button type="button" id="browser-open-mapset-folder" disabled={off} title="Open Mapset Folder"
+      onclick={() => send("openMapsetFolder")}>Open Mapset Folder</button>
+    <button type="button" id="browser-open-library-folder" disabled={off} title="Open Sample Library Folder"
+      onclick={() => send("openLibraryFolder")}>Open Library Folder</button>
+  </div>
   {#if model.folder}
     <div class="browser-folder">
       <button type="button" disabled={off || !model.folder.canUp} onclick={() => send("up")}>Up</button>

@@ -52,6 +52,9 @@ impl StagedMix {
     pub(super) fn is_reused(&self) -> bool {
         self.reuse
     }
+    pub(super) fn wav_bytes(&self) -> &[u8] {
+        &self.wav
+    }
 
     pub(super) fn digest(&self) -> String {
         sha256_hex(&self.wav)

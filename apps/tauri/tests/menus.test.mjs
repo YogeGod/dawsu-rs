@@ -319,7 +319,7 @@ test("each menu groups the editor's existing commands like the design, with no s
   assert.deepEqual(open("map"), [
     "Difficulty: Hard | Insane", "—",
     "New hitsound difficulty…", "—",
-    "Generate hitsound difficulty…", "Copy hitsounds…", "Drum hit detection…", "Node graph…",
+    "Export to mapset…", "Copy hitsounds…", "Drum hit detection…", "Node graph…",
     "Generate export style: Per-object", "—",
     "Add bookmark", "Previous bookmark", "Next bookmark", "—",
     "Add lane…", "Delete active lane…",
@@ -330,7 +330,7 @@ test("each menu groups the editor's existing commands like the design, with no s
     "Shorter lanes", "—",
     "Zoom in", "Zoom out", "Fit difficulty", "—",
     "Time signatures…", "Open drum map…", "Edit layout…", "View settings…", "—",
-    "Shortcuts",
+    "Quick Start tour…", "Shortcuts",
   ]);
   for (const name of ["file", "edit", "playback", "map", "view"]) {
     get("menu-" + name).click();

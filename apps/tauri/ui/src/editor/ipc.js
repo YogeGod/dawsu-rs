@@ -97,6 +97,19 @@ export function attachIpc(ctx) {
     $("map-title").textContent = state.scene?.mapTitle || (path ? nameOf(path).replace(/\.osu$/i, "") : "");
     $("map-version").textContent = state.scene?.version ?? "";
     $("map-version").hidden = !state.scene?.version;
+    const hsBadge = $("map-hs-badge");
+    if (hsBadge) hsBadge.hidden = !state.scene?.hs;
+    const songFile = $("song-filename");
+    if (songFile) {
+      songFile.textContent = state.scene?.songFile ?? "";
+      songFile.title = state.scene?.songFile ?? "";
+    }
+    const silentBadge = $("song-silent-badge");
+    if (silentBadge) {
+      const silentCount = state.scene?.silentObjectTimes?.length ?? 0;
+      silentBadge.hidden = silentCount === 0;
+      silentBadge.textContent = silentCount ? `${silentCount} silent` : "";
+    }
     $("difficulty").title = path;
   }
 
@@ -115,6 +128,13 @@ export function attachIpc(ctx) {
     // Where the line is now, from the view before this one.
     const drawn = ctx.playheadPosition();
     state.view = next;
+    if (wasBusy && !state.view.busy && state.scene?.path && /^Saved\b/i.test(state.view.status ?? "")) {
+      ctx.ui()?.showToast?.({
+        tone: "success",
+        title: `${state.view.status} · Backup saved`,
+        openFolderPath: state.scene.path,
+      });
+    }
     ctx.anchorPlayhead(drawn);
     if (state.view.tool !== previousTool) ctx.refreshToolCursor();
     if (!state.view.hasDocument || state.view.showHome) state.scene = null;
@@ -173,6 +193,16 @@ export function attachIpc(ctx) {
     }
     $("save-problem-badge").hidden = problems.length === 0;
     $("save-problem-badge").textContent = problems.length ? String(problems.length) : "";
+    const prevWarn = $("overview-prev-warning");
+    const nextWarn = $("overview-next-warning");
+    const warnCount = $("overview-warning-count");
+    if (prevWarn && nextWarn && warnCount) {
+      const showWarnNav = problems.length > 0;
+      prevWarn.hidden = !showWarnNav;
+      nextWarn.hidden = !showWarnNav;
+      warnCount.hidden = !showWarnNav;
+      warnCount.textContent = showWarnNav ? String(problems.length) : "";
+    }
     // One wording for the count: the badge, Save's name and the status bar.
     const cannotSave = problems.length + (problems.length === 1 ? " moment" : " moments") + " can't be saved";
     $("save-problem-badge").title = cannotSave;

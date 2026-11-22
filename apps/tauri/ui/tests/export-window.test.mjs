@@ -20,13 +20,13 @@ const view = {
 
 test("a map without stored choices starts with Copy's defaults and every difficulty included", () => {
   const choices = choicesFrom(view);
-  assert.deepEqual(choices, { leftOut: [], matchWithin: 5, copyVolumes: true, base: false, sliderAudio: false, laterWins: false });
+  assert.deepEqual(choices, { leftOut: [], matchWithin: 5, copyVolumes: true, base: false, sliderAudio: false, laterWins: false, startIndex: 100 });
   assert.notEqual(choices.leftOut, defaultChoices.leftOut, "choices never share the frozen defaults' list");
   assert.deepEqual(choicesFrom({ choices: { leftOut: ["a.osu"], matchWithin: 3, copyVolumes: false } }),
-    { leftOut: ["a.osu"], matchWithin: 3, copyVolumes: false, base: false, sliderAudio: false, laterWins: false },
+    { leftOut: ["a.osu"], matchWithin: 3, copyVolumes: false, base: false, sliderAudio: false, laterWins: false, startIndex: 100 },
     "choices stored before the base difficulty read it as off");
   assert.deepEqual(choicesFrom({ choices: { leftOut: [], matchWithin: 3, copyVolumes: true, base: true, sliderAudio: true, laterWins: true } }),
-    { leftOut: [], matchWithin: 3, copyVolumes: true, base: true, sliderAudio: true, laterWins: true });
+    { leftOut: [], matchWithin: 3, copyVolumes: true, base: true, sliderAudio: true, laterWins: true, startIndex: 100 });
   assert.deepEqual(included(view.targets, { leftOut: ["Artist - Song (Mapper) [Hard].osu"] }), [insane]);
 });
 

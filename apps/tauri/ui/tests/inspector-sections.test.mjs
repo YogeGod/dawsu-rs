@@ -82,7 +82,7 @@ test("the bridge hands the Inspector over at once and parts render before it", (
   bridge.handOverInspector(null, flushSync);
   const html = shown(null);
   assert.match(html, /Nothing selected/);
-  for (const text of ["Generate…", "Merge settings…", "Scale by volume…"]) assert.ok(disabled(button(html, text).tag), text);
+  for (const text of ["Export to mapset…", "Merge settings…", "Scale by volume…"]) assert.ok(disabled(button(html, text).tag), text);
 });
 
 test("each section is a fold header with a chevron that controls its body; folding keeps the body", () => {
@@ -155,7 +155,7 @@ const gates = [
   ["#lane-colour", { lane: lane() }, { lane: null }],
   ["Replace sample…", { lane: lane() }, { doc: false }],
   ["Replace sample…", { lane: lane() }, { lane: lane({ canReplace: false }) }],
-  ["Generate…", {}, { doc: false }],
+  ["Export to mapset…", {}, { doc: false }],
   ["Merge settings…", {}, { doc: false }],
 ];
 
@@ -165,9 +165,9 @@ test("every button waits exactly where the old markup made it wait", () => {
     assert.ok(!disabled(find(shown(model(on)), name).tag), name + " enabled");
     assert.ok(disabled(find(shown(model({ ...on, ...off })), name).tag), name + " disabled by " + JSON.stringify(off));
   }
-  // New… and Copy… never waited; Insert volume and the switches neither.
+  // New… never waited; Insert volume and the switches neither.
   const busy = shown(model({ busy: true, doc: false }));
-  for (const text of ["New…", "Copy…"]) assert.ok(!disabled(button(busy, text).tag), text);
+  for (const text of ["New…"]) assert.ok(!disabled(button(busy, text).tag), text);
   assert.doesNotMatch(busy, /aria-label="(Insert volume|Protect normals|Audition|Hitsounding mode)"[^>]*disabled/);
 });
 
@@ -188,10 +188,10 @@ test("Lane shows v3's title, the file and Lane colour: None in grey until the ma
   assert.match(byId(shown(model()), "lane-colour").tag, /aria-label="Lane colour"/);
 });
 
-test("Difficulty keeps Hitsounding mode and the four buttons, with the ids the menus click", () => {
+test("Difficulty keeps Hitsounding mode and the three buttons, with the ids the menus click", () => {
   const html = shown(model({ hs: true }));
   assert.match(html, /aria-label="Hitsounding mode"[^>]*checked/);
-  for (const [id, text] of [["generate", "Generate…"], ["new", "New…"], ["copy", "Copy…"], ["merge-settings", "Merge settings…"],
+  for (const [id, text] of [["export-to-mapset", "Export to mapset…"], ["new", "New…"], ["merge-settings", "Merge settings…"],
     ["replace-sample", "Replace sample…"]]) {
     assert.match(button(html, text).tag, new RegExp(`id="${id}"`), text);
   }

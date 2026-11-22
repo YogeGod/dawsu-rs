@@ -57,12 +57,13 @@ test("review shows what will change for each file before applying the write", as
 
   assert.deepEqual(Array.from(context.output.text), [
     "Editing Source.osu",
+    "Updates 2 difficulties · 3 objects changed · 7 timing lines affected. Backups are saved first.",
     "Files this action will write",
     "Create: New.osu",
     "0 objects changed · 4 added · 0 removed · 2 timing lines affected",
     "Replace: Hard.osu",
     "3 objects changed · 0 added · 1 removed · 5 timing lines affected",
-    "Sample mixes",
+    "Generated samples (1)",
     "Check each difficulty before writing.",
     "Hard.osu · 1,250 ms · slider tick · sample.wav",
   ]);

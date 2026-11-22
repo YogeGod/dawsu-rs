@@ -16,15 +16,21 @@ export function attachTimeline(ctx) {
     ctx.renderLanes();
     ctx.renderSelection();
     const difficulty = $("difficulty");
-    const pathKey = JSON.stringify([state.scene.path, state.scene.difficulties]);
+    const hsSet = new Set(state.scene.hsDifficulties ?? []);
+    if (state.scene.hs) hsSet.add(state.scene.path);
+    const pathKey = JSON.stringify([state.scene.path, state.scene.difficulties, [...hsSet], Boolean(state.scene.hs)]);
     if (difficulty.dataset.state !== pathKey) {
       difficulty.dataset.state = pathKey;
       const paths = [...new Set([state.scene.path, ...state.scene.difficulties])];
       const OptionCtor = env.Option ?? Option;
-      difficulty.replaceChildren(...paths.map((path) => {
+      const options = paths.map((path) => {
         const name = nameOf(path);
-        return new OptionCtor(name.match(/\[([^\]]+)\]\.osu$/i)?.[1] || name, path);
-      }));
+        const label = name.match(/\[([^\]]+)\]\.osu$/i)?.[1] || name;
+        return new OptionCtor(hsSet.has(path) ? `${label} [HS]` : label, path);
+      });
+      options.push(new OptionCtor(state.scene.hs ? "Turn off HS mode" : "Turn on HS mode", "__toggle_hs__"));
+      options.push(new OptionCtor("+ Create Hitsound diff", "__create_hs__"));
+      difficulty.replaceChildren(...options);
       difficulty.value = state.scene.path;
     }
   }
@@ -775,6 +781,14 @@ export function attachTimeline(ctx) {
         if (state.rulerDrag && state.rulerDrag.id === event.pointerId) endRulerDrag(event);
       });
     }
+    ruler.addEventListener("contextmenu", event => {
+      event.preventDefault();
+      if (!state.scene || state.view.busy || state.drag || state.rulerDrag) return;
+      const bounds = ruler.getBoundingClientRect();
+      const ms = state.scene.viewStart + (event.clientX - bounds.left) / state.scene.zoom;
+      const time = Math.round(limit(ms, 0, state.view.duration ?? ms));
+      ctx.act({ kind: "bookmark", operation: "add", time, label: "" });
+    });
 
     overview.addEventListener("pointerdown", event => {
       if (!state.scene || state.view.busy || state.drag || state.rulerDrag || state.overviewDrag || event.button !== 0) return;

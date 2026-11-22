@@ -21,6 +21,9 @@
   // The id of this window's last write, so only its own result shows.
   let lastRun = $state(null);
   let adoptedFor = initialView?.source?.path;
+  let writeTo = $state("mapset");
+  let showAdvanced = $state(false);
+  let oszSavedMessage = $state("");
   let pollTimer;
   let previewTimer = null;
   let closed = false;
@@ -94,16 +97,46 @@
 
   async function exportNow() {
     if (!status.canExport || run) return;
+    oszSavedMessage = "";
+    if (writeTo === "osz") {
+      try {
+        const oszPath = await invoke("pick_osz_export_path", { defaultName: source?.title || "mapset" });
+        if (!oszPath) return;
+        run = { id: null };
+        await invoke("export_run_osz", { previewId: sent.id, oszPath });
+        run = null;
+        actionError = null;
+        oszSavedMessage = "Exported .osz archive.";
+        globalThis.window?.__TAURI__?.event?.emit?.("toast://show", {
+          tone: "success",
+          title: `Exported ${status.count} ${status.count === 1 ? "difficulty" : "difficulties"} to .osz`,
+          openFolderPath: oszPath,
+        });
+      } catch (error) {
+        run = null;
+        actionError = String(error);
+      }
+      return;
+    }
     run = { id: null };
     try {
       const id = await invoke("export_run", { previewId: sent.id });
       run = { id };
       lastRun = id;
       actionError = null;
+      globalThis.window?.__TAURI__?.event?.emit?.("toast://show", {
+        tone: "success",
+        title: `Exported ${status.count} ${status.count === 1 ? "difficulty" : "difficulties"} · Backups saved`,
+        openFolderPath: source?.path,
+      });
     } catch (error) {
       run = null;
       actionError = String(error);
     }
+  }
+
+  function auditionMix(index) {
+    invoke("audition_export_mix", { index }).catch(error => (actionError = String(error)));
   }
 
   async function close() {
@@ -229,6 +262,16 @@
                     {/each}
                   {/if}
                 </div>
+                {#if on && status.preview?.targets}
+                  {@const targetBins = status.preview.targets.find(t => t.path === path)?.bins}
+                  {#if targetBins?.length}
+                    <div class="coverage-strip" aria-hidden="true">
+                      {#each targetBins as [density, warn], idx (idx)}
+                        <span class="bin d{density}" class:warn={warn > 0}></span>
+                      {/each}
+                    </div>
+                  {/if}
+                {/if}
               </div>
             </li>
           {/each}
@@ -241,10 +284,50 @@
 
   <aside class="panel">
     <h2>Write to</h2>
-    <div class="write-card">
+    <button type="button" class="write-card" class:selected={writeTo === "mapset"} onclick={() => (writeTo = "mapset")}>
       <strong>Into the mapset</strong>
       <p>Updates every included difficulty in place. Each changed file is backed up first.</p>
-    </div>
+    </button>
+    <button type="button" class="write-card" class:selected={writeTo === "osz"} onclick={() => (writeTo = "osz")}>
+      <strong>Export .osz archive</strong>
+      <p>Packages the mapset, updated difficulties, and generated samples into a new .osz file.</p>
+    </button>
+
+    {#if status.preview?.mixes?.length}
+      <h2>Generated samples</h2>
+      <div class="mix-list">
+        {#each status.preview.mixes as mixPath, idx (mixPath)}
+          <div class="mix-row">
+            <button type="button" class="mix-play" aria-label={"Play " + fileName(mixPath)} onclick={() => auditionMix(idx)}>▶</button>
+            <span class="mix-name" title={mixPath}>{fileName(mixPath)}</span>
+            <span class="mix-tag">{status.preview.mixReused?.[idx] ? "Reused" : "New"}</span>
+          </div>
+        {/each}
+      </div>
+    {/if}
+
+    <button type="button" class="advanced-toggle" aria-expanded={showAdvanced} onclick={() => (showAdvanced = !showAdvanced)}>
+      {showAdvanced ? "▾ Advanced" : "▸ Advanced"}
+    </button>
+    {#if showAdvanced}
+      <div class="advanced-box">
+        <label class="adv-field">
+          Start custom index
+          <input type="number" min="2" max="999999" bind:value={choices.startIndex} />
+        </label>
+        <div class="adv-note">Format: WAV (44.1 kHz / 16-bit)</div>
+      </div>
+    {/if}
+
+    {#if view?.backups}
+      <div class="backups-note" title={view.backups}>
+        <span>Backups</span>
+        <code>{view.backups}</code>
+      </div>
+    {/if}
+    {#if oszSavedMessage}
+      <p class="osz-done">{oszSavedMessage}</p>
+    {/if}
   </aside>
 
   <footer class="actions">
@@ -490,4 +573,125 @@
   .primary { background: var(--editor-accent); color: var(--editor-accentink); }
   .primary:disabled { background: var(--editor-selected); color: var(--editor-disabled); cursor: default; }
   button:focus-visible { outline: 2px solid var(--editor-focus); outline-offset: 2px; }
+
+  button.write-card {
+    width: 100%;
+    text-align: left;
+    border: 1px solid transparent;
+    cursor: pointer;
+    margin-bottom: 10px;
+  }
+  button.write-card.selected {
+    border-color: var(--editor-accent);
+  }
+  .coverage-strip {
+    display: flex;
+    align-items: flex-end;
+    gap: 1px;
+    height: 18px;
+    margin-top: 8px;
+  }
+  .coverage-strip .bin {
+    flex: 1;
+    min-width: 1px;
+    height: 3px;
+    border-radius: 1px;
+    background: rgba(255, 255, 255, 0.08);
+  }
+  .coverage-strip .bin.d1 { height: 6px; background: rgba(74, 222, 128, 0.35); }
+  .coverage-strip .bin.d2 { height: 10px; background: rgba(74, 222, 128, 0.5); }
+  .coverage-strip .bin.d3 { height: 14px; background: rgba(74, 222, 128, 0.65); }
+  .coverage-strip .bin.d4 { height: 18px; background: rgba(74, 222, 128, 0.8); }
+  .coverage-strip .bin.warn { background: var(--editor-warning); }
+  .mix-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-bottom: 14px;
+    max-height: 180px;
+    overflow-y: auto;
+  }
+  .mix-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 6px;
+    border-radius: 6px;
+    background: var(--editor-ink);
+  }
+  .mix-play {
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    border: 0;
+    background: var(--editor-clap, var(--editor-accent));
+    color: var(--editor-ink);
+    font-size: 11px;
+    cursor: pointer;
+    flex: none;
+  }
+  .mix-name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 12px;
+  }
+  .mix-tag {
+    font-size: 11px;
+    color: var(--editor-muted);
+    flex: none;
+  }
+  .advanced-toggle {
+    background: none;
+    border: 0;
+    padding: 4px 0;
+    color: var(--editor-secondary);
+    font: 600 12px var(--font-ui);
+    cursor: pointer;
+    text-align: left;
+  }
+  .advanced-box {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 10px;
+    margin-top: 6px;
+    border-radius: 8px;
+    background: var(--editor-ink);
+  }
+  .adv-field {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    font-size: 12px;
+  }
+  .adv-field input {
+    width: 84px;
+  }
+  .adv-note {
+    font-size: 11px;
+    color: var(--editor-muted);
+  }
+  .backups-note {
+    margin-top: auto;
+    padding-top: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    font-size: 11px;
+    color: var(--editor-muted);
+  }
+  .backups-note code {
+    font-family: inherit;
+    color: var(--editor-secondary);
+    word-break: break-all;
+  }
+  .osz-done {
+    margin: 8px 0 0;
+    font-size: 12px;
+    color: var(--editor-play);
+  }
 </style>

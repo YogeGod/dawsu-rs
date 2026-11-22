@@ -239,14 +239,32 @@ export function attachBrowser(ctx) {
         state.browserPreview = { path, source, ms: null, peaks: null };
       }
       ctx.run(() => requestSamplePreview(path, source, action));
-    } else if (kind === "assign") {
+    } else if (kind === "assign" || kind === "apply") {
+      if (kind === "apply" && value) state.browserSample = value;
       const target = sampleTarget();
-      if (!target || !state.browserSample || !state.browserModel?.canAssign) return;
+      if (!target || !state.browserSample || (kind === "assign" && !state.browserModel?.canAssign)) return;
       if (state.browserSource === "library") {
         ctx.act({ kind: "replace_library_sample", target, location: { root: state.browserLibrary, path: state.browserSample } });
       } else {
         ctx.act({ kind: "replace_sample", target, path: state.browserSample, mapset: true });
       }
+      return;
+    } else if (kind === "addLane") {
+      if (!state.browserSample || state.view.busy) return;
+      if (state.browserSource === "library") {
+        ctx.act({ kind: "add_library_lane", map: state.scene.path, location: { root: state.browserLibrary, path: state.browserSample } });
+      } else {
+        ctx.act({ kind: "add_sample_lane", map: state.scene.path, path: state.browserSample, mapset: true });
+      }
+      return;
+    } else if (kind === "openMapsetFolder") {
+      const mapPath = state.scene?.path;
+      if (mapPath) invoke("open_folder_in_os", { path: mapPath }).catch(err => ctx.setStatusNotice(String(err)));
+      return;
+    } else if (kind === "openLibraryFolder") {
+      const lib = state.view?.hitsoundLibrary;
+      if (lib) invoke("open_folder_in_os", { path: lib }).catch(err => ctx.setStatusNotice(String(err)));
+      else ctx.openFolders?.();
       return;
     } else if (kind === "browse") {
       const target = sampleTarget();

@@ -27,18 +27,8 @@
   {:else}
     <button type="button" class="browser-row browser-sample" class:browser-selected={row.selected}
       style:--depth={row.depth + nest} title={row.title} aria-pressed={row.selected} disabled={model.busy}
-      onclick={() => send("pick", row.key)}>
+      onclick={() => send("pick", row.key)} ondblclick={() => send("apply", row.key)}>
       <span class="browser-icon">{@html Volume1}</span><span class="browser-name">{row.label}</span>
     </button>
   {/if}
 {/each}
-{#if model.defaults}
-  <h3 class="browser-section">Default samples</h3>
-  <!-- Nothing lists the osu! skin samples or the sample folders yet, so both rows stay greyed out. -->
-  <button type="button" class="browser-row" disabled>
-    <span class="browser-icon">{@html Folder}</span><span class="browser-name">osu! skin</span>
-  </button>
-  <button type="button" class="browser-row" disabled>
-    <span class="browser-icon">{@html Folder}</span><span class="browser-name">Sample folders</span>
-  </button>
-{/if}

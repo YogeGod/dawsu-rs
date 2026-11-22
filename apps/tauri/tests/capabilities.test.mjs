@@ -18,7 +18,7 @@ const invoked = files => new Set(files.flatMap(({ text }) =>
   [...text.matchAll(/invoke\(\s*"([a-z_]+)"/g)].map(match => match[1])));
 
 const exportPage = ["ui/src/lib/ipc.js", "ui/src/lib/export.js", "ui/src/parts/ExportWindow.svelte"];
-const exportCommands = ["export_view", "export_preview", "export_run", "close_export_window", "show_in_editor"];
+const exportCommands = ["export_view", "export_preview", "export_run", "pick_osz_export_path", "export_run_osz", "audition_export_mix", "open_folder_in_os", "close_export_window", "show_in_editor"];
 const drumPage = ["ui/src/lib/ipc.js", "ui/src/lib/drum.js", "ui/src/parts/DrumDetectWindow.svelte"];
 const previewPage = ["ui/src/lib/ipc.js", "ui/src/parts/PreviewWindow.svelte", "ui/src/parts/PreviewCanvas.svelte"];
 const previewCommands = ["map_preview_objects"];
@@ -45,7 +45,7 @@ test("main may call every command its scripts and parts call, and opens Export",
   assert.ok(needed.length > 20, "the invoke pattern no longer matches editor sources");
   assert.deepEqual(needed.filter(command => !main.permissions.includes(permission(command))), []);
   assert.ok(main.permissions.includes("core:event:default"));
-  for (const command of [...exportCommands, ...drumCommands, ...nodeGraphCommands]) assert.ok(!main.permissions.includes(permission(command)), command);
+  for (const command of [...exportCommands.filter(c => c !== "open_folder_in_os"), ...drumCommands, ...nodeGraphCommands]) assert.ok(!main.permissions.includes(permission(command)), command);
   assert.ok(main.permissions.includes(permission("drum_window_open")));
   assert.ok(main.permissions.includes(permission("open_node_graph_window")));
 });

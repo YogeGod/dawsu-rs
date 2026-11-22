@@ -518,7 +518,7 @@ test("the lane toolbar holds zoom, Fit all and lane height; the Song row holds t
   const order = ["ruler-zoom-out", "ruler-zoom-in", "ruler-fit", "lane-shorter", "lane-taller"].map(id => toolbar.indexOf(`id="${id}"`));
   assert.ok(order.every((at, i) => at >= 0 && (i === 0 || at > order[i - 1])), "toolbar order " + order);
   const overviewCell = html.slice(html.indexOf('class="overview"'), html.indexOf('id="overview"'));
-  assert.doesNotMatch(overviewCell, /<button/);
+  assert.match(overviewCell, /id="overview-hide-warnings"/);
   // v3 §4 and §8: the waveform switch sits in the Song row, not the lane toolbar.
   const songRow = html.slice(html.indexOf('class="lane-title song-row'), html.indexOf('id="ruler"'));
   assert.match(songRow, /id="song-mute"[\s\S]*id="song-solo"[\s\S]*id="ruler-waveform"/);

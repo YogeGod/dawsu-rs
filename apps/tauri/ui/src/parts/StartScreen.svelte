@@ -21,6 +21,10 @@
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6.5h6l2 2h10V19H3z"/></svg>
       <span><strong>Open map…</strong><small>An .osu difficulty or .osz mapset</small></span>
     </button>
+    <button id="home-open-folder" type="button" class="home-action" disabled={busy} onclick={() => send("openFolder")}>
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6.5h6l2 2h10V19H3z"/></svg>
+      <span><strong>Open folder…</strong><small>A mapset folder from Songs</small></span>
+    </button>
     <button id="home-import" type="button" class="home-action" disabled={busy} onclick={() => send("importOsz")}>
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 4.5h17v4h-17zM5 8.5V19h14V8.5M12 11v5m-2.5-2.5L12 16l2.5-2.5"/></svg>
       <span><strong>Import .osz…</strong><small>Unpack a mapset and open it</small></span>
@@ -45,7 +49,7 @@
   </section>
   <div class="home-drop">
     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h8l4 4v14H6zM14 3v4h4M12 10v7m-3-3 3 3 3-3"/></svg>
-    Or drop an .osu or .osz file anywhere in this window
+    Or drop an .osu, .osz, or mapset folder anywhere in this window
   </div>
   <section id="home-recent" class="home-recent" aria-labelledby="home-recent-title" hidden={!recent.length}>
     <h2 id="home-recent-title">Recent</h2>
@@ -53,7 +57,12 @@
       {#each recent as item (item.path)}
         <button type="button" class="home-recent-map" title={item.path}
           onclick={() => send("openRecent", item.path)}>
-          <strong>{item.name}</strong><span>{item.difficulty}</span>
+          {#if item.backgroundUrl}
+            <img class="home-recent-bg" src={item.backgroundUrl} alt="" loading="lazy">
+          {/if}
+          <strong>{item.name}</strong>
+          <span>{item.difficulty}</span>
+          {#if item.isHs}<span class="home-recent-hs">HS</span>{/if}
         </button>
       {/each}
     </div>

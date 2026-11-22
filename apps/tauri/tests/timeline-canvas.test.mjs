@@ -418,7 +418,7 @@ test("the overview draws object diamonds by density, problem diamonds and the vi
     [7.5, 36.5, "rgba(196,196,196,1.00)"],
     [150.5, 36.5, "rgba(196,196,196,0.65)"],
     // Only this difficulty's problems, above the viewport box.
-    [225, 35, "#efc16a"],
+    [225, 35, "#f59e0b"],
   ]);
   assert.ok(overview.calls.some(call => call.name === "stroke" && call.stroke === "#151517"), "problem edge");
   // The viewport box: 3000 ms of 4000 on screen, 1 px --editor-text with a 2 px radius.
@@ -478,7 +478,7 @@ test("the overview counts each object once, spinners included, and merges proble
     spans: [["slider", 100, 300, 0], ["spinner", 1500, 2000, 1]] };
     view.outputProblems = [{ timeline: "fixture.osu", time: 1000 }, { timeline: "fixture.osu", time: 1002 }]`);
   const fills = overview.calls.filter((call, at) => call.name === "fill" && overview.calls[at - 1]?.name === "closePath").map(call => call.fill);
-  assert.deepEqual(fills, ["rgba(196,196,196,1.00)", "rgba(196,196,196,1.00)", "#efc16a"]);
+  assert.deepEqual(fills, ["rgba(196,196,196,1.00)", "rgba(196,196,196,1.00)", "#f59e0b"]);
 });
 
 test("a click on two circles at one spot picks the later object, the one drawn on top", async () => {

@@ -3,7 +3,7 @@
 // What the Export window starts with for a map it has no stored choices for. The base hitsound
 // difficulty is a new file in the mapset, so it is written only once the mapper turns it on.
 export const defaultChoices = Object.freeze({
-  leftOut: [], matchWithin: 5, copyVolumes: true, base: false, sliderAudio: false, laterWins: false,
+  leftOut: [], matchWithin: 5, copyVolumes: true, base: false, sliderAudio: false, laterWins: false, startIndex: 100,
 });
 
 // Generate's name for the difficulty it makes (HITSOUNDS_VERSION in dawsu-hitsounding).
@@ -11,12 +11,12 @@ export const baseName = "Hitsounds";
 
 // The old Copy dialog's defaults for every option this slice does not show yet, so Export copies
 // exactly as Copy did with Match within and Copy volumes set.
-export function copyOptions({ matchWithin, copyVolumes, laterWins = false }) {
+export function copyOptions({ matchWithin, copyVolumes, laterWins = false, startIndex = 100 }) {
   return {
     mode: "overwrite_everything",
     leniency: matchWithin,
     collision_policy: laterWins ? "later_wins" : "merge",
-    start_index: 100,
+    start_index: Number.isFinite(startIndex) && startIndex >= 2 ? Math.trunc(startIndex) : 100,
     never_silent_hitnormals: false,
     copy_hitsounds: true,
     copy_body_hitsounds: true,
@@ -55,6 +55,7 @@ export function choicesFrom(view) {
     base: typeof stored.base === "boolean" ? stored.base : defaultChoices.base,
     sliderAudio: typeof stored.sliderAudio === "boolean" ? stored.sliderAudio : defaultChoices.sliderAudio,
     laterWins: typeof stored.laterWins === "boolean" ? stored.laterWins : defaultChoices.laterWins,
+    startIndex: Number.isFinite(stored.startIndex) ? stored.startIndex : defaultChoices.startIndex,
   };
 }
 
@@ -73,7 +74,7 @@ export function exportLabel(count) {
 export function optionsKey(view, choices) {
   const targets = included(view?.targets, choices);
   return JSON.stringify([view?.source?.path ?? null, targets, choices.matchWithin, choices.copyVolumes,
-    choices.base, choices.sliderAudio, choices.laterWins === true]);
+    choices.base, choices.sliderAudio, choices.laterWins === true, choices.startIndex ?? 100]);
 }
 
 export function previewRequest(view, choices) {

@@ -258,6 +258,66 @@ impl Application {
         self.run_export_in(preview_id, self.backups_folder())
     }
 
+    pub fn audition_export_mix(&self, index: usize) -> Result<(), String> {
+        let clip = self.export.preview.as_ref()
+            .and_then(|preview| preview.plan.mix_clip(index))
+            .ok_or("This generated sample is no longer in the preview.")?;
+        let audio = self.audio.as_ref().ok_or("Audio output is unavailable.")?;
+        audio.audition(Arc::new(clip), 1.0);
+        Ok(())
+    }
+
+    pub fn target_coverage_bins(&self, target: &std::path::Path, problems: &[OutputProblem]) -> Vec<[u8; 2]> {
+        let mut bins = vec![[0_u8, 0_u8]; 100];
+        let duration = self.duration_ms().max(1.0);
+        if let Ok(bytes) = std::fs::read(target) {
+            let file = dawsu_osu_format::OsuFile::read(bytes).file;
+            let mut counts = [0_usize; 100];
+            for obj in file.hit_objects() {
+                let idx = ((obj.time() / duration) * 100.0).clamp(0.0, 99.0) as usize;
+                counts[idx] += 1;
+            }
+            let max_count = counts.iter().copied().max().unwrap_or(1).max(1);
+            for (i, &c) in counts.iter().enumerate() {
+                if c > 0 {
+                    bins[i][0] = (((c * 4) + max_count - 1) / max_count).clamp(1, 4) as u8;
+                }
+            }
+        }
+        for p in problems {
+            if p.target == target {
+                let idx = ((p.time / duration) * 100.0).clamp(0.0, 99.0) as usize;
+                bins[idx][1] = 1;
+            }
+        }
+        bins
+    }
+
+    pub fn run_export_osz(&self, preview_id: u64, osz_path: &std::path::Path) -> Result<(), String> {
+        let preview = self.export.preview.as_ref()
+            .filter(|p| p.id == preview_id && self.preview_is_current(p))
+            .ok_or("The map or the options changed since this preview. Preview again.")?;
+        let source_dir = self.document.as_ref()
+            .and_then(|d| d.path.parent())
+            .ok_or("Open a difficulty first.")?;
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos());
+        let staging = std::env::temp_dir().join(format!("dawsu-osz-{}-{unique}", std::process::id()));
+        let res = (|| {
+            preview.plan.stage_to_dir(source_dir, &staging)?;
+            match dawsu_osu_format::export_osz(&staging, osz_path, &|| false, &mut |_, _| {})
+                .map_err(|e| e.to_string())?
+            {
+                dawsu_osu_format::OszExport::Exported => Ok(()),
+                dawsu_osu_format::OszExport::TargetInsideFolder => Err("Save the .osz outside the mapset folder.".into()),
+                dawsu_osu_format::OszExport::Cancelled => Err("Export cancelled.".into()),
+            }
+        })();
+        let _ = std::fs::remove_dir_all(&staging);
+        res
+    }
+
     /// Answers with the write's id, which the window matches against `write_id`.
     pub(crate) fn run_export_in(&mut self, preview_id: u64, backups: PathBuf) -> Result<u64, String> {
         if self.busy {

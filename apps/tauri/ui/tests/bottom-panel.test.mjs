@@ -133,7 +133,7 @@ test("open, the Volume tab offers Per object; Volume curve and Reset levels are 
   assert.deepEqual(buttonsOf(html),
     [["Volume", true, false], ["Mixer", false, false], ["Per object", true, false], ["Volume curve", false, true]]);
   const mixer = panel(view(), "mixer");
-  assert.deepEqual(buttonsOf(mixer), [["Volume", false, false], ["Mixer", true, false], ["Reset levels", false, true]]);
+  assert.deepEqual(buttonsOf(mixer), [["Volume", false, false], ["Mixer", true, false], ["Reset levels", false, false]]);
   assert.doesNotMatch(html + mixer, /\sstyle=|\sid=/);
 });
 
@@ -178,39 +178,35 @@ test("M and S work on every strip and name the lane's set", () => {
   assert.deepEqual(clap.map(tag => [label(tag), pressed(tag)]), [["Mute Clap (Soft)", true], ["Solo Clap (Soft)", false]]);
 });
 
-test("only the Song and Master faders work; nothing shows a level the editor does not have", () => {
+test("Song, per-lane, and Master faders are active", () => {
   const html = mixer();
   const sliders = tags(html, "div").filter(tag => /role="slider"/.test(tag));
-  assert.deepEqual(sliders.map(label), ["Song volume", "Master volume"]);
+  assert.deepEqual(sliders.map(label), ["Song volume", "Normal volume", "Clap volume", "Master volume"]);
   assert.match(sliders[0], /aria-valuemin="0" aria-valuemax="100" aria-valuenow="70" aria-valuetext="−3.10 dB"/);
-  assert.match(sliders[1], /aria-valuemin="20" aria-valuemax="100" aria-valuenow="90" aria-valuetext="−0.92 dB"/);
+  assert.match(sliders[3], /aria-valuemin="20" aria-valuemax="100" aria-valuenow="90" aria-valuetext="−0.92 dB"/);
   const [song, normal] = strips(html);
-  // Lane faders have no cap and no marked travel: there is no per-lane level yet.
   assert.equal((song.match(/class="cap/g) ?? []).length, 1);
-  assert.equal((normal.match(/class="cap/g) ?? []).length, 0);
+  assert.equal((normal.match(/class="cap/g) ?? []).length, 1);
   assert.equal((song.match(/class="reach top/g) ?? []).length, 1);
   assert.equal((song.match(/class="reach bottom/g) ?? []).length, 0, "the song reaches silence");
-  assert.equal((normal.match(/class="reach/g) ?? []).length, 0);
   const master = html.slice(masterAt(html));
   assert.equal((master.match(/class="reach (top|bottom)/g) ?? []).length, 2);
-  // Pan is greyed out, empty and not a control; the meters are empty.
+  // Pan is greyed out with Coming soon; levels and peaks are active.
   for (const part of strips(html)) {
-    assert.match(part, /<div class="box pan off[^"]*" aria-hidden="true"><\/div>/);
+    assert.match(part, /<div class="box pan off[^"]*" title="Pan \(Coming soon\)" aria-hidden="true"><\/div>/);
     assert.equal(tags(part, "button").filter(tag => label(tag) === "Pan").length, 0);
     assert.doesNotMatch(part, /class="meter[^"]*"[^>]*>\s*<div\b[^>]*class="fill/);
   }
-  // Song and Master show their gain in dB (Yoge, 2026-11-21); lane levels and every peak have no
-  // backend yet, so they are greyed out and empty.
   const boxes = [...html.matchAll(/<span class="box (level|peak)([^"]*)"[^>]*>([^<]*)<\/span>/g)]
     .map(([, kind, classes, inside]) => [kind, /\boff\b/.test(classes), inside]);
   assert.deepEqual(boxes, [
-    ["level", false, "−3.10"], ["peak", true, ""],
-    ["level", true, ""], ["peak", true, ""],
-    ["level", true, ""], ["peak", true, ""],
-    ["level", false, "−0.92"], ["peak", true, ""],
+    ["level", false, "−3.10"], ["peak", false, "−∞"],
+    ["level", false, "0.00"], ["peak", false, "−∞"],
+    ["level", false, "0.00"], ["peak", false, "−∞"],
+    ["level", false, "−0.92"], ["peak", false, "−∞"],
   ]);
-  // The master's peak bars are there, greyed out and empty.
-  assert.match(master, /<div class="peak-bars off[^"]*" aria-hidden="true"><div[^>]*><\/div>\s*<div[^>]*><\/div><\/div>/);
+  // The master's peak bars are live.
+  assert.match(master, /<div class="peak-bars [^"]*" aria-hidden="true">/);
   assert.doesNotMatch(text(html), /dBFS|kHz|\bms\b|Default device/);
   // style: directives render as attributes only on the server; ui-bundle.test.mjs checks the sources.
   assert.doesNotMatch(html, /\sid=/);

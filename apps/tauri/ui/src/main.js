@@ -32,10 +32,12 @@ import InspectorHistory from "./parts/InspectorHistory.svelte";
 import InspectorLane from "./parts/InspectorLane.svelte";
 import InspectorSelection from "./parts/InspectorSelection.svelte";
 import LaneOptions from "./parts/LaneOptions.svelte";
+import LoadingOverlay from "./parts/LoadingOverlay.svelte";
 import MapPreview from "./parts/MapPreview.svelte";
 import NodeGraphWindow from "./parts/NodeGraphWindow.svelte";
 import PreferencesModal from "./parts/PreferencesModal.svelte";
 import PreviewWindow from "./parts/PreviewWindow.svelte";
+import QuickStartTour from "./parts/QuickStartTour.svelte";
 import SnapSlider from "./parts/SnapSlider.svelte";
 import StartScreen from "./parts/StartScreen.svelte";
 import StatusBar from "./parts/StatusBar.svelte";
@@ -52,6 +54,8 @@ const parts = {
   "hit-card": HitCard,
   preferences: PreferencesModal,
   toasts: ToastStack,
+  "quick-start": QuickStartTour,
+  "loading-overlay": LoadingOverlay,
   // The popup the menu bar, the right-click tool picker and the lane menu share (#editor-menu).
   menu: EditorMenu,
   "inspector-selection": InspectorSelection, "inspector-lane": InspectorLane, "inspector-difficulty": InspectorDifficulty,
@@ -192,7 +196,7 @@ export function laneOptions(usedOnly, filter) {
 
 // Boot the main editor runtime only on the editor window (never on export.html or drum.html).
 const uiBridge = {
-  update, lanes, inspector, browser, mixer, toggleMapPreview, mapPreviewOn, setNodeGraphViewer, nodeGraphViewer, bottomTab, hitCard, commands, menu, centre, wheelSnap, snapGroup, statusNotice, viewport, laneOptions,
+  bridge, showToast: (...args) => globalThis.showToast?.(...args), update, lanes, inspector, browser, mixer, toggleMapPreview, mapPreviewOn, setNodeGraphViewer, nodeGraphViewer, bottomTab, hitCard, commands, menu, centre, wheelSnap, snapGroup, statusNotice, viewport, laneOptions,
 };
 if (document.getElementById("grid")) {
   createEditor(globalThis, { ui: uiBridge });

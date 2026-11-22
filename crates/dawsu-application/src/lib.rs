@@ -923,6 +923,7 @@ pub struct Application {
     document: Option<Document>,
     audio: Option<AudioEngine>,
     samples: HashMap<SampleIdentity, Arc<AudioClip>>,
+    pub lane_gains: HashMap<SampleIdentity, f32>,
     song: Option<Arc<AudioClip>>,
     /// The sample file last auditioned or outlined from the Browser, kept while the file is unchanged
     /// so a pick decodes it once for both.
@@ -1023,6 +1024,7 @@ impl Application {
         let legacy = std::env::var_os("LOCALAPPDATA")
             .map(|base| PathBuf::from(base).join("OsuHitsoundEditor").join("preferences.json"));
         let (mut preferences, first_launch) = preferences::load(&file, legacy.as_deref());
+        preferences::detect_songs_folder_if_empty(&mut preferences);
         preferences.master_gain = preferences.master_gain.clamp(0.2, 1.0);
         let output = open_preferred_audio(&preferences, preferences.audio_buffer_ms);
         let (audio, error) = match output {
@@ -1075,6 +1077,7 @@ impl Application {
             sample_watch: sample_watch::Watch::default(),
             audio,
             samples: HashMap::new(),
+            lane_gains: HashMap::new(),
             song: None,
             playback_speed: 1.0,
             waveform: Vec::new(),
@@ -1522,13 +1525,26 @@ impl Application {
                     .map_err(|e| e.to_string())?
                     {
                         dawsu_osu_format::OszImport::Imported { folder } => {
-                            std::fs::read_dir(folder)
+                            let mut osu_files: Vec<PathBuf> = std::fs::read_dir(folder)
                                 .map_err(|e| e.to_string())?
                                 .filter_map(Result::ok)
                                 .map(|e| e.path())
-                                .find(|p| {
+                                .filter(|p| {
                                     p.extension().is_some_and(|e| e.eq_ignore_ascii_case("osu"))
                                 })
+                                .collect();
+                            osu_files.sort();
+                            let preferred = osu_files.iter().find(|p| {
+                                p.file_stem()
+                                    .and_then(|s| s.to_str())
+                                    .is_some_and(|s| {
+                                        let lower = s.to_ascii_lowercase();
+                                        lower.contains("[hitsound") || lower.contains("[hs]")
+                                    })
+                            });
+                            preferred
+                                .cloned()
+                                .or_else(|| osu_files.into_iter().next())
                                 .ok_or("Archive contains no difficulty")?
                         }
                         other => return Err(refusals::import(&other)),
@@ -2710,6 +2726,60 @@ impl Application {
         Ok(())
     }
 
+    /// Adds a sample file as a lane. Files outside the mapset folder are copied into it immediately.
+    pub fn add_sample_as_lane(&mut self, expected_map: &Path, source: &Path) -> Result<(), String> {
+        if self.busy || self.is_stroke_open() {
+            return Err("Finish the current operation before adding a lane.".into());
+        }
+        let d = self.document.as_ref().ok_or("Open a difficulty first.")?;
+        if d.path != expected_map {
+            return Err("The open difficulty changed while adding a lane.".into());
+        }
+        let root = d.path.parent().ok_or("Missing mapset folder")?;
+        let source = source.canonicalize().map_err(|e| format!("Opening {}: {e}", source.display()))?;
+        let ext = source.extension().and_then(|e| e.to_str())
+            .map(str::to_ascii_lowercase)
+            .filter(|e| matches!(e.as_str(), "wav" | "ogg" | "mp3"))
+            .ok_or("Choose a WAV, OGG, or MP3 sample.")?;
+        let bytes = std::fs::read(&source).map_err(|e| format!("Reading sample: {e}"))?;
+        let clip = dawsu_audio::decode(&source)?;
+
+        let name = if let Ok(rel) = source.strip_prefix(root) {
+            rel.to_string_lossy().replace('\\', "/")
+        } else {
+            let file_name = source.file_name().and_then(|s| s.to_str()).ok_or("Invalid sample filename.")?;
+            let stem = source.file_stem().and_then(|s| s.to_str()).unwrap_or("sample");
+            let mut candidate = file_name.to_string();
+            let mut n = 2_usize;
+            while root.join(&candidate).exists() {
+                if std::fs::read(root.join(&candidate)).is_ok_and(|existing| existing == bytes) {
+                    break;
+                }
+                candidate = format!("{stem}-{n}.{ext}");
+                n += 1;
+            }
+            if !root.join(&candidate).exists() {
+                std::fs::write(root.join(&candidate), &bytes).map_err(|e| format!("Copying sample into mapset: {e}"))?;
+            }
+            candidate
+        };
+
+        let lane = dawsu_hitsounding::rules::read_sample_file_name(&name)
+            .unwrap_or_else(|| SampleIdentity::File(name.clone()));
+        self.register_samples(vec![(name.clone(), clip)], false);
+        if let Some(d) = &mut self.document {
+            if !d.files.iter().any(|f| f.eq_ignore_ascii_case(&name)) {
+                d.files.push(name.clone());
+            }
+            if let Some(row) = d.composer.lanes.iter().position(|id| *id == lane) {
+                self.active_lane = row;
+            }
+        }
+        self.status = format!("Added lane {name}.");
+        self.sync_audio();
+        Ok(())
+    }
+
     fn add_numbered_layer(&mut self) -> Result<(), String> {
         if self.busy || self.is_stroke_open() {
             return Err("Finish the current operation before adding a sample layer.".into());
@@ -2829,14 +2899,74 @@ impl Application {
         cue_list(audible, &self.muted, &self.solo)
             .into_iter()
             .filter_map(|cue| {
+                let lane_gain = self.lane_gains.get(cue.sample()).copied().unwrap_or(1.0);
                 Some(ScheduledSound {
                     at_ms: cue.time().ms(),
                     end_ms: cue.loop_end().map(|t| t.ms()),
                     clip: self.samples.get(cue.sample())?.clone(),
-                    gain: cue.gain() as f32,
+                    gain: cue.gain() as f32 * lane_gain,
                 })
             })
             .collect()
+    }
+
+    pub fn lane_gain(&self, lane: &SampleIdentity) -> f32 {
+        self.lane_gains.get(lane).copied().unwrap_or(1.0)
+    }
+
+    pub fn set_lane_gain(&mut self, row: usize, gain: f32) {
+        let Some(d) = &self.document else { return; };
+        let Some(lane) = d.composer.lanes.get(row).cloned() else { return; };
+        let clamped = gain.clamp(0.0, 2.0);
+        if (clamped - 1.0).abs() < 0.0001 {
+            self.lane_gains.remove(&lane);
+        } else {
+            self.lane_gains.insert(lane, clamped);
+        }
+        self.sync_audio();
+    }
+
+    pub fn reset_mixer_levels(&mut self) {
+        self.lane_gains.clear();
+        self.preferences.song_gain = 1.0;
+        self.preferences.master_gain = 1.0;
+        if let Some(a) = &self.audio {
+            a.gains(self.playback_song_gain(), self.preferences.master_gain);
+        }
+        self.save_preferences();
+        self.sync_audio();
+    }
+
+    pub fn master_peak(&self) -> f32 {
+        self.audio
+            .as_ref()
+            .map_or(0.0, |a| f32::from_bits(a.peak.load(Ordering::Relaxed)).clamp(0.0, 1.0))
+    }
+
+    pub fn lane_peaks(&self) -> Vec<f32> {
+        let Some(d) = &self.document else { return Vec::new(); };
+        if !self.is_playing() {
+            return vec![0.0; d.composer.lanes.len()];
+        }
+        let pos = self.position_ms();
+        let hits = d.composer.hitsounds();
+        let mut peaks = vec![0.0_f32; d.composer.lanes.len()];
+        for moment in hits.moments() {
+            let dt = pos - moment.time().ms();
+            if (-20.0..=140.0).contains(&dt) {
+                let env = if dt < 0.0 { 1.0 } else { (1.0 - (dt / 140.0) as f32).max(0.0) };
+                for lane in moment.hits() {
+                    if let Some(idx) = d.composer.lanes.iter().position(|l| l == lane) {
+                        let gain = self.lane_gain(lane);
+                        let level = (moment.hit_volume(lane) as f32 / 100.0) * gain * env;
+                        if level > peaks[idx] {
+                            peaks[idx] = level.min(1.0);
+                        }
+                    }
+                }
+            }
+        }
+        peaks
     }
     fn sync_audio(&mut self) {
         if let Some(d) = &self.document {

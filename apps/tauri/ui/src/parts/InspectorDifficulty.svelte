@@ -23,9 +23,8 @@
       </label>
     </div>
     <div class="insp-actions">
-      <button id="generate" type="button" disabled={!model.doc} onclick={() => on.open("generate")}>Generate…</button>
+      <button id="export-to-mapset" type="button" disabled={!model.doc} onclick={() => globalThis.openExportWindow?.()}>Export to mapset…</button>
       <button id="new" type="button" onclick={() => on.open("new")}>New…</button>
-      <button id="copy" type="button" onclick={() => on.open("copy")}>Copy…</button>
       <button id="merge-settings" type="button" aria-haspopup="dialog" disabled={!model.doc}
         onclick={() => on.open("mergeSettings")}>Merge settings…</button>
     </div>

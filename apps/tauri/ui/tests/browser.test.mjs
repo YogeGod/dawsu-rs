@@ -63,20 +63,19 @@ test("the head shows Mapset and Library tabs and the search field", () => {
   assert.match(classic, /<output[^>]*title="percussion"[^>]*>percussion<\/output>/);
 });
 
-test("the tree lists Mapset samples with file rows, the selected row, and greyed Default samples", () => {
+test("the tree lists Mapset samples with file rows and the selected row", () => {
   const html = shown(model(), BrowserList);
   assert.match(html, /Mapset samples/);
   const root = html.match(/<div class="browser-row browser-root"[^]*?<\/div>/)[0];
   assert.doesNotMatch(root, /m6 14 1\.5-2\.9/, "the top row uses the closed folder icon");
   const rows = buttons(html);
-  assert.deepEqual(rows.map(row => row.text), ["percussion", "snare.wav", "kick.wav", "osu! skin", "Sample folders"]);
+  assert.deepEqual(rows.map(row => row.text), ["percussion", "snare.wav", "kick.wav"]);
   assert.match(rows[0].tag, /aria-expanded="true"/);
   assert.match(rows[1].tag, /aria-pressed="true"/);
   assert.match(rows[1].tag, /browser-selected/);
   assert.doesNotMatch(rows[2].tag, /browser-selected/);
   assert.match(rows[1].tag, /--depth: 2/, "a file inside a folder under Mapset samples sits two steps in");
-  assert.ok(disabled(rows[3].tag) && disabled(rows[4].tag), "osu! skin and Sample folders have no code yet");
-  assert.match(html, /Default samples/);
+  assert.doesNotMatch(html, /Default samples/);
   const library = shown(model({ source: "library", root: "library", defaults: false }), BrowserList);
   assert.doesNotMatch(library, /Default samples/);
   const busy = shown(model({ busy: true }), BrowserList);

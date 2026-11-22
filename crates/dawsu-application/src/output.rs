@@ -99,6 +99,51 @@ impl WritePlan {
         self.mixes.iter().map(|mix| mix.path.as_path())
     }
 
+    pub fn mix_reused(&self) -> Vec<bool> {
+        self.mixes.iter().map(mixes::StagedMix::is_reused).collect()
+    }
+
+    pub(crate) fn stage_to_dir(&self, source_dir: &Path, staging_dir: &Path) -> Result<(), String> {
+        fn copy_dir(src: &Path, dst: &Path) -> Result<(), String> {
+            std::fs::create_dir_all(dst).map_err(|e| e.to_string())?;
+            for entry in std::fs::read_dir(src).map_err(|e| e.to_string())? {
+                let entry = entry.map_err(|e| e.to_string())?;
+                let path = entry.path();
+                let name = entry.file_name();
+                if name.to_string_lossy().starts_with(".importing-") {
+                    continue;
+                }
+                let target = dst.join(&name);
+                if path.is_dir() {
+                    copy_dir(&path, &target)?;
+                } else if path.is_file() {
+                    std::fs::copy(&path, &target).map_err(|e| e.to_string())?;
+                }
+            }
+            Ok(())
+        }
+        copy_dir(source_dir, staging_dir)?;
+        for file in &self.files {
+            if let Ok(rel) = file.path.strip_prefix(source_dir) {
+                let target = staging_dir.join(rel);
+                if let Some(parent) = target.parent() {
+                    std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+                }
+                std::fs::write(&target, &file.file.to_bytes()).map_err(|e| e.to_string())?;
+            }
+        }
+        for mix in self.mixes.iter().chain(self.pending.iter()) {
+            if let Ok(rel) = mix.path.strip_prefix(source_dir) {
+                let target = staging_dir.join(rel);
+                if let Some(parent) = target.parent() {
+                    std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+                }
+                std::fs::write(&target, mix.wav_bytes()).map_err(|e| e.to_string())?;
+            }
+        }
+        Ok(())
+    }
+
     pub(super) fn mix_clip(&self, index: usize) -> Option<dawsu_audio::AudioClip> {
         self.mixes.get(index).map(mixes::StagedMix::clip)
     }

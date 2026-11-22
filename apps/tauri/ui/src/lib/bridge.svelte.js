@@ -30,8 +30,10 @@ export class Bridge {
   // The bottom panel's tab ("volume" or "mixer"): kept in this window only, never saved; app.js
   // reads it to lay the panel out and to draw the volume canvas.
   bottomTab = $state("volume");
-  // View › Map preview: kept in this window only, never saved.
-  mapPreview = $state(false);
+  // View › Map preview: docked open by default in Inspector.
+  mapPreview = $state(true);
+  // 1-click Hide warnings switch in overview bar.
+  hideWarnings = $state(false);
   // Transient status notice (errors, fault, or missing UI part) pushed by app.js.
   statusNotice = $state("");
   // Optimistic timeline zoom & lane height during changeView() drags before Rust replies.

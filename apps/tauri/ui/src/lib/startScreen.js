@@ -10,9 +10,14 @@ export function recentMapName(path) {
 }
 
 export function recentItems(view) {
+  const metaByPath = new Map((view?.recentMeta ?? []).map(entry => [entry.path, entry]));
+  const convert = globalThis.window?.__TAURI__?.core?.convertFileSrc;
   return (view?.recent ?? []).map(path => {
     const [name, difficulty] = recentMapName(path);
-    return { path, name, difficulty };
+    const meta = metaByPath.get(path);
+    if (!meta) return { path, name, difficulty };
+    const backgroundUrl = meta.background && convert ? convert(meta.background) : (meta.background || "");
+    return { path, name, difficulty, backgroundUrl, isHs: Boolean(meta.isHs) };
   });
 }
 

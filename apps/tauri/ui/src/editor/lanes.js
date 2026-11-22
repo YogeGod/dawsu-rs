@@ -299,6 +299,8 @@ export function attachLanes(ctx) {
         colour: state.laneColours.get(lane.colourKey) ?? null,
         selected: state.selectionLaneKeys.has(lane.key), muted: !!lane.muted, solo: !!lane.solo,
         quiet: !!lane.muted || (anySolo && !lane.solo),
+        gain: typeof lane.gain === "number" ? lane.gain : 1,
+        peak: state.view.lanePeaks?.[row] ?? 0,
       };
     });
   }
@@ -514,7 +516,7 @@ export function attachLanes(ctx) {
       });
     });
 
-    const openFile = makeButton("Open .dawsudrum file…", () => {
+    const openFile = makeButton("Import/Export kit…", () => {
       if (state.scene?.path !== map || state.view.busy || state.drag) return;
       ctx.run(async () => {
         if (state.scene?.path !== map || state.view.busy || state.drag) return;
@@ -597,7 +599,7 @@ export function attachLanes(ctx) {
 
     ctx.modal(
       "drum-map-setup",
-      "Drum Map Setup",
+      "Drum Kit Setup",
       [labeled("Preset", presetBar), list],
       [["Done", () => ctx.closeModal(), true]],
     );
@@ -619,8 +621,11 @@ export function attachLanes(ctx) {
       const candidates = await invoke("lane_add_candidates", { map });
       if (state.scene?.path !== map || state.view.busy || state.drag) return;
       if (!candidates.length) {
-        ctx.modal("add-lane", "Add lane", [paragraph("No new samples or hidden lanes. Put a WAV, OGG, or MP3 file in the map folder to add a lane.")],
-          [["Done", () => ctx.closeModal(), true]]);
+        ctx.modal("add-lane", "Add lane", [paragraph("No hidden lanes left. Pick a sample from the mapset folder or your sample library.")], [
+          ["Cancel", () => ctx.closeModal()],
+          ["Browse library…", () => { ctx.closeModal(); ctx.run(async () => ctx.show(await invoke("pick_lane_sample", { map, useLibrary: true }))); }],
+          ["Choose file…", () => { ctx.closeModal(); ctx.run(async () => ctx.show(await invoke("pick_lane_sample", { map, useLibrary: false }))); }, true],
+        ]);
         return;
       }
       const OptionCtor = env.Option ?? Option;
@@ -629,6 +634,8 @@ export function attachLanes(ctx) {
       lane.value = candidates[0].key;
       ctx.modal("add-lane", "Add lane", [labeled("Sample", lane)], [
         ["Cancel", () => ctx.closeModal()],
+        ["Browse library…", () => { ctx.closeModal(); ctx.run(async () => ctx.show(await invoke("pick_lane_sample", { map, useLibrary: true }))); }],
+        ["Choose file…", () => { ctx.closeModal(); ctx.run(async () => ctx.show(await invoke("pick_lane_sample", { map, useLibrary: false }))); }],
         ["Add", () => {
           const target = { map, lane: lane.value };
           ctx.closeModal();

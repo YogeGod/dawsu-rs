@@ -90,9 +90,9 @@
 {#if headers}
   {#if headers.drum}
     <button type="button" id="drum-map-setup" class="add-lane-row drum-setup-row" class:compact={!names}
-      aria-label="Drum map setup" title={headers.drumName ? headers.drumName + " (Presets and Setup)" : "Drum map setup"}
+      aria-label="Drum kit setup" title={headers.drumName ? headers.drumName + " (Presets and Setup)" : "Drum kit setup"}
       disabled={headers.busy} onclick={() => globalThis.openDrumMapSetup?.()}>
-      {#if names}<span>{headers.drumName ? headers.drumName + " (Setup…)" : "Drum map setup…"}</span>{:else}<span>Setup</span>{/if}
+      {#if names}<span>{headers.drumName ? headers.drumName + " (Kit Setup…)" : "Drum kit setup…"}</span>{:else}<span>Kit</span>{/if}
     </button>
   {/if}
   <button type="button" id="add-lane" class="add-lane-row" class:compact={!names} aria-label="Add lane" title={names ? undefined : "Add lane"}

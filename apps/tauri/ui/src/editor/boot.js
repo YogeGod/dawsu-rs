@@ -74,10 +74,10 @@ const exportedMethods = [
   "refreshLaneToolbar", "changeView", "stepWheelSnap", "fitTimeline",
   "modal", "closeModal", "showOutputProblem", "renderDialogs",
   "openMergeSettings", "openGenerate", "openNewDifficulty", "openCopy",
-  "openLaneColour", "openReplaceSample", "openMap", "goHome",
+  "openLaneColour", "openReplaceSample", "openMap", "openMapFolder", "openMapFolderPath", "goHome",
   "openSiblingDifficulty", "chooseSiblingDifficulty", "showTimelineEdit",
   "editBookmark", "openTimeSignatures",
-  "openFolders", "openAudioOutput", "openViewSettings", "openPreferences", "showHelp", "showShortcutEditor",
+  "openFolders", "openAudioOutput", "openViewSettings", "openPreferences", "showHelp", "showShortcutEditor", "openQuickStartTour", "openExportWindow",
   "clampSnapInput", "popoverAction", "startScreenAction", "statusBarAction",
 ];
 
@@ -205,6 +205,8 @@ export function createEditor(env = globalThis, { ui = null, autoStart = true, ex
         return;
       case "open":
         return ctx.openMap();
+      case "openFolder":
+        return ctx.openMapFolder();
       case "importOsz":
         return ctx.run(async () => ctx.show(await invoke("pick_map", { archiveOnly: true })));
       case "folders":
@@ -240,7 +242,9 @@ export function createEditor(env = globalThis, { ui = null, autoStart = true, ex
     }
   }
 
-  Object.assign(ctx, { clampSnapInput, popoverAction, startScreenAction, statusBarAction });
+  const openQuickStartTour = () => env.window?.openQuickStartTour?.();
+  const openExportWindow = () => invoke("open_export_window").catch((error) => { ctx.setStatusNotice(String(error)); });
+  Object.assign(ctx, { clampSnapInput, popoverAction, startScreenAction, statusBarAction, openQuickStartTour, openExportWindow });
 
   // Bind remaining top-level controls.
   $("ramp-shape").addEventListener("change", () => {
@@ -249,18 +253,59 @@ export function createEditor(env = globalThis, { ui = null, autoStart = true, ex
   for (const button of env.document.querySelectorAll("[data-action]")) {
     button.addEventListener("click", () => ctx.act({ kind: button.dataset.action }));
   }
-  $("difficulty").addEventListener("change", () => {
+  $("difficulty").addEventListener("change", async () => {
     if (!state.scene) return;
-    const path = $("difficulty").value;
+    const value = $("difficulty").value;
     $("difficulty").value = state.scene.path;
-    ctx.openSiblingDifficulty(path);
+    if (value === "__toggle_hs__") {
+      await ctx.act({ kind: "hs_mode", on: !state.scene.hs });
+      return;
+    }
+    if (value === "__create_hs__") {
+      const sibling = state.scene.path;
+      await ctx.run(async () => {
+        const created = await invoke("create_hitsound_diff", { siblingPath: sibling });
+        if (created) {
+          await ctx.act({ kind: "open", path: created });
+          await ctx.act({ kind: "hs_mode", on: true });
+        }
+      });
+      return;
+    }
+    ctx.openSiblingDifficulty(value);
   });
-  // The Export window opens beside the editor. Generate, Copy and Merge settings stay until it replaces them.
-  $("export-entry").addEventListener("click", () => {
-    invoke("open_export_window").catch((error) => { ctx.setStatusNotice(String(error)); });
-  });
+  $("export-entry").addEventListener("click", openExportWindow);
   $("song-mute").addEventListener("click", () => ctx.act({ kind: "song_muted", on: !state.view.songMuted }, false));
   $("song-solo").addEventListener("click", () => ctx.act({ kind: "song_solo", on: !state.view.songSolo }, false));
+  let silentJumpIndex = -1;
+  $("song-silent-badge").addEventListener("click", async () => {
+    const times = state.scene?.silentObjectTimes ?? [];
+    if (!times.length || state.view.busy) return;
+    silentJumpIndex = (silentJumpIndex + 1) % times.length;
+    const targetMs = times[silentJumpIndex];
+    await ctx.act({ kind: "seek", ms: targetMs }, false);
+    if (state.scene && elements.grid.clientWidth > 0) {
+      await ctx.changeView(targetMs - elements.grid.clientWidth / state.scene.zoom / 2, state.scene.zoom);
+    }
+  });
+  $("overview-prev-warning").addEventListener("click", () => {
+    const problems = state.view.outputProblems ?? [];
+    if (!problems.length || state.view.busy) return;
+    const prev = state.outputProblemIndex <= 0 ? problems.length - 1 : state.outputProblemIndex - 1;
+    ctx.showOutputProblem(prev);
+  });
+  $("overview-next-warning").addEventListener("click", () => {
+    const problems = state.view.outputProblems ?? [];
+    if (!problems.length || state.view.busy) return;
+    ctx.showOutputProblem(state.outputProblemIndex + 1);
+  });
+  $("overview-hide-warnings").addEventListener("click", () => {
+    const bridge = ctx.ui()?.bridge;
+    const next = !bridge?.hideWarnings;
+    if (bridge) bridge.hideWarnings = next;
+    $("overview-hide-warnings").ariaPressed = String(next);
+    ctx.paintSoon();
+  });
 
   // Global keyboard handler.
   env.document.addEventListener("keydown", (event) => {
@@ -334,7 +379,13 @@ export function createEditor(env = globalThis, { ui = null, autoStart = true, ex
     }
     const target = ctx.sampleTarget();
     const path = payload.paths.find((path) => /\.(wav|ogg|mp3)$/i.test(path));
-    if (target && path) ctx.act({ kind: "replace_sample", target, path, mapset: false });
+    if (target && path) {
+      ctx.act({ kind: "replace_sample", target, path, mapset: false });
+      return;
+    }
+    if (payload.paths.length && !path) {
+      ctx.openMapFolderPath?.(payload.paths[0]);
+    }
   });
 
   env.window.__TAURI__.event.listen("node-graph-viewer", ({ payload }) => {

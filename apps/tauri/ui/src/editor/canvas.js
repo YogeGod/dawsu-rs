@@ -536,11 +536,12 @@ export function attachCanvas(ctx) {
     roundedTrack(context2d, boxLeft + 0.5, 3.5, boxWidth - 1, Math.max(0, height - 7), 2);
     context2d.fill();
     context2d.stroke();
-    // Problems on this difficulty: 7 px --editor-warning diamonds with a 1 px --editor-panel edge.
-    context2d.fillStyle = "#efc16a";
+    // Problems on this difficulty: 7 px amber diamonds with a 1 px --editor-panel edge.
+    const hideWarnings = !!ctx.ui()?.bridge?.hideWarnings;
+    context2d.fillStyle = "#f59e0b";
     context2d.strokeStyle = slateTimeline.overview;
     const drawnProblems = new Set();
-    for (const problem of state.view.outputProblems ?? []) {
+    if (!hideWarnings) for (const problem of state.view.outputProblems ?? []) {
       const x = Math.round(problem.time * width / duration);
       if (problem.timeline !== state.scene.path || drawnProblems.has(x)) continue;
       drawnProblems.add(x);
@@ -712,12 +713,15 @@ export function attachCanvas(ctx) {
         g.ctx.fillRect(hx - 4.5, 0, 9, g.height);
       }
     }
+    const hideWarnings = !!ctx.ui()?.bridge?.hideWarnings;
     const problemTimes = new Set();
-    for (const problem of state.view.outputProblems ?? []) {
-      if (problem.timeline === state.scene.path) problemTimes.add(Math.round(problem.time));
+    if (!hideWarnings) {
+      for (const problem of state.view.outputProblems ?? []) {
+        if (problem.timeline === state.scene.path) problemTimes.add(Math.round(problem.time));
+      }
     }
     if (problemTimes.size) {
-      g.ctx.fillStyle = "rgba(232,107,114,.12)";
+      g.ctx.fillStyle = "rgba(245,158,11,.14)";
       for (const t of problemTimes) {
         const px = xOf(t);
         if (px >= -8 && px <= g.width + 8) g.ctx.fillRect(px - 4.5, 0, 9, g.height);
@@ -760,7 +764,7 @@ export function attachCanvas(ctx) {
           fillHitDiamond(g.ctx, x, y);
           if (selected || hasProblem) {
             g.ctx.lineWidth = 2;
-            g.ctx.strokeStyle = selected ? "#ffffff" : "#e86b72";
+            g.ctx.strokeStyle = selected ? "#ffffff" : "#f59e0b";
             g.ctx.stroke();
             g.ctx.lineWidth = 1;
           }
@@ -884,9 +888,9 @@ export function attachCanvas(ctx) {
     const playhead = xOf(playheadPosition());
     line(g.ctx, slateTimeline.playhead, playhead, 0, playhead, g.height);
     line(r.ctx, slateTimeline.playhead, playhead, 0, playhead, r.height);
-    state.rulerWarningMarkers = visibleWarningMarkers(state.view.outputProblems ?? [], state.scene.path, start, zoom, r.width);
+    state.rulerWarningMarkers = hideWarnings ? [] : visibleWarningMarkers(state.view.outputProblems ?? [], state.scene.path, start, zoom, r.width);
     ctx.refreshRulerWarningTooltip();
-    r.ctx.fillStyle = "#f0aa70";
+    r.ctx.fillStyle = "#f59e0b";
     for (const marker of state.rulerWarningMarkers) {
       r.ctx.fillRect(marker.x - 3, r.height - 9, 6, 6);
     }

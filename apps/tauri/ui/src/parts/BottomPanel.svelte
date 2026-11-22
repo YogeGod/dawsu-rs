@@ -58,10 +58,10 @@
   {#if tab === "volume"}
     <div class="seg" role="group" aria-label="Volume mode">
       <button type="button" aria-pressed="true">Per object</button>
-      <button type="button" aria-pressed="false" disabled>Volume curve</button>
+      <button type="button" aria-pressed="false" disabled title="Volume curve (Coming soon)">Volume curve</button>
     </div>
   {:else}
-    <button type="button" class="reset" disabled>Reset levels</button>
+    <button type="button" class="reset" {disabled} onclick={() => globalThis.act?.({ kind: "reset_mixer_levels" }, false)}>Reset levels</button>
   {/if}
 {/if}
 
@@ -107,8 +107,13 @@
     padding: 0;
     border: 0;
     background: none;
-    color: var(--editor-disabled);
+    color: var(--editor-text);
     font: 500 13px var(--font-ui);
+    cursor: pointer;
+  }
+  .reset:disabled {
+    color: var(--editor-disabled);
+    cursor: default;
   }
   .folded {
     flex: 1;

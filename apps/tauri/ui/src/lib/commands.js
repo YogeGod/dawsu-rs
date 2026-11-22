@@ -68,8 +68,8 @@ export const items = [
   // Map
   { id: "difficulty", label: "Difficulty", choices: "difficulty", close: true },
   { id: "newDifficulty", label: "New hitsound difficulty…", icon: "FilePlus", command: "newDiff", run: ["click", "new"] },
-  { id: "generate", label: "Generate hitsound difficulty…", icon: "Package", command: "generate", run: ["click", "generate"] },
-  { id: "copyHitsounds", label: "Copy hitsounds…", icon: "Copy", run: ["click", "copy"] },
+  { id: "generate", label: "Export to mapset…", icon: "Package", command: "generate", run: ["call", "openExportWindow"] },
+  { id: "copyHitsounds", label: "Copy hitsounds…", icon: "Copy", run: ["call", "openExportWindow"] },
   { id: "drumDetection", label: "Drum hit detection…", icon: "Drum", run: ["call", "openDrumWindow"] },
   { id: "nodeGraph", label: "Node graph…", icon: "Layers", run: ["call", "openNodeGraphWindow"] },
   { id: "exportStyle", label: "Generate export style", choices: "exportStyle", enabled: "never" },
@@ -99,6 +99,7 @@ export const items = [
   { id: "drumMap", label: "Open drum map…", icon: "Drum", run: ["call", "requestDrumMap"] },
   { id: "editLayout", label: "Edit layout…", icon: "LayoutPanelLeft", run: ["call", "editLayout"] },
   { id: "viewSettings", label: "View settings…", icon: "Settings", run: ["call", "openViewSettings"] },
+  { id: "quickStartTour", label: "Quick Start tour…", run: ["call", "openQuickStartTour"] },
   { id: "shortcuts", label: "Shortcuts", icon: "Keyboard", command: "help", run: ["call", "showHelp"], enabled: "idle" },
 
   // Right-click on the timeline (and the fourth tool pill): the seven tools, in TOOLS' order (tools.js).
@@ -150,7 +151,7 @@ export const menus = {
     "songWaveform", "objectLines", "usedOnly", "collapseLayers", "filterLanes", "tallerLanes", "shorterLanes", "-",
     "zoomIn", "zoomOut", "fit", "-",
     "timeSignatures", "drumMap", "editLayout", "viewSettings", "-",
-    "shortcuts",
+    "quickStartTour", "shortcuts",
   ],
   tool: ["toolSelect", "toolDraw", "toolErase", "toolMute", "toolGrab", "toolRange", "toolRamp"],
   lane: ["laneRename", "laneMoveUp", "laneMoveDown", "laneReplaceSample", "laneColour", "laneAddLayer", "laneAdd", "laneDelete"],

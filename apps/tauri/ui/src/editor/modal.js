@@ -106,9 +106,13 @@ export function attachModal(ctx) {
     } else if (state.view.saveReview) {
       const answer = (apply) => { ctx.closeModal(); ctx.act({ kind: "answer_save_review", apply }); };
       const files = state.view.saveReview.map(([operation, path]) => paragraph(operation + " · " + path));
+      const summary = files.length
+        ? `${files.length} ${files.length === 1 ? "file" : "files"} will be updated. A backup is saved before writing.`
+        : "No files need to change.";
       ctx.modal("save-review", "Review Save", [
         paragraph("Editing " + nameOf(state.scene.path)),
-        ...files.length ? files : [paragraph("No files need to change.")],
+        paragraph(summary),
+        ...files,
       ], [["Cancel", () => answer(false)], [files.length ? "Save" : "Done", () => answer(true), true]], () => answer(false));
     } else if (state.view.pendingHome) {
       const resolve = (choice) => { ctx.closeModal(); ctx.act({ kind: "home_choice", choice }); };
@@ -126,6 +130,13 @@ export function attachModal(ctx) {
         [["Cancel", cancel], ["Revert", () => { ctx.closeModal(); ctx.act({ kind: "confirm_revert" }); }, true]], cancel);
     } else if (state.view.review) {
       const answer = (apply) => { ctx.closeModal(); ctx.act({ kind: "output", apply }); };
+      const diffCount = state.view.review.files.length;
+      const totalChanged = state.view.review.files.reduce((sum, f) => sum + (f.changed || 0), 0);
+      const totalTiming = state.view.review.files.reduce((sum, f) => sum + (f.timing || 0), 0);
+      const plainSummary = paragraph(
+        `Updates ${diffCount} ${diffCount === 1 ? "difficulty" : "difficulties"} · ` +
+        `${totalChanged} objects changed · ${totalTiming} timing lines affected. Backups are saved first.`
+      );
       const heading = env.document.createElement("h3");
       heading.textContent = "Files this action will write";
       const files = state.view.review.files.flatMap((file) => [
@@ -142,8 +153,19 @@ export function attachModal(ctx) {
         return row;
       });
       const mixHeading = env.document.createElement("h3");
-      mixHeading.textContent = "Sample mixes";
+      mixHeading.textContent = `Generated samples (${mixes.length})`;
       const mixSection = mixes.length ? [mixHeading, ...mixes] : [];
+      const unusedList = state.view.review.unusedGenerated ?? [];
+      const cleanupSection = [];
+      if (unusedList.length) {
+        const cleanupCheck = env.document.createElement("input");
+        cleanupCheck.type = "checkbox";
+        cleanupCheck.checked = false;
+        const cleanupLabel = env.document.createElement("label");
+        cleanupLabel.className = "row";
+        cleanupLabel.append(cleanupCheck, `Remove ${unusedList.length} unused dawsu!-generated sample(s)`);
+        cleanupSection.push(cleanupLabel);
+      }
       const combinations = state.view.review.combinations ?? [];
       const includeSliderAudio = Boolean(state.view.review.includeSliderAudio);
       const choices = combinations.length ? [["Edit merge rules…", () => {
@@ -153,8 +175,8 @@ export function attachModal(ctx) {
           await ctx.openMergeSettings(combinations, true, includeSliderAudio);
         });
       }]] : [];
-      const source = state.scene ? [paragraph("Editing " + nameOf(state.scene.path))] : [];
-      ctx.modal("review", state.view.review.label, [...source, heading, ...files, ...mixSection, ...details],
+      const source = state.scene ? [paragraph("Editing " + nameOf(state.scene.path)), plainSummary] : [plainSummary];
+      ctx.modal("review", state.view.review.label, [...source, heading, ...files, ...mixSection, ...cleanupSection, ...details],
         [["Cancel", () => answer(false)], ...choices, ["Write files", () => answer(true), true]], () => answer(false));
     } else if (state.view.editDialog && state.scene) {
       ctx.showTimelineEdit(state.view.editDialog);
@@ -163,9 +185,9 @@ export function attachModal(ctx) {
     } else if (state.view.firstLaunch) {
       const choose = (name) => ctx.act({ kind: "key_preset", name });
       ctx.modal("key-preset", "Choose your keyboard preset", [
-        paragraph("DAW-like uses the editor’s default timeline shortcuts."),
-        paragraph("osu! lets you seek through the beat grid with the arrow keys."),
-      ], [["DAW-like", () => choose("DAW"), true], ["osu!", () => choose("osu!")]], () => {});
+        paragraph("osu! Editor: arrow keys move on snap, Space plays, 1–3 switch tools."),
+        paragraph("DAW (Cubase / FL): standard DAW timeline shortcuts."),
+      ], [["osu! Editor", () => choose("osu!"), true], ["DAW (Cubase / FL)", () => choose("DAW")]], () => {});
     } else if (["error", "pending", "pending-home", "revert", "review", "save-review", "save-problems", "key-preset", "timeline-edit", "sound-set-update"].includes(state.modalKind)) {
       ctx.closeModal();
     }

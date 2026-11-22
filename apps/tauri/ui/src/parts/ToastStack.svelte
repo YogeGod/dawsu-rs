@@ -10,13 +10,21 @@
 
   function pushToast(input) {
     const id = nextId++;
+    const actions = [...(input?.actions || [])];
+    if (input?.openFolderPath) {
+      const folderPath = input.openFolderPath;
+      actions.push({
+        label: "Open Mapset Folder",
+        onClick: () => globalThis.window?.__TAURI__?.core?.invoke?.("open_folder_in_os", { path: folderPath }).catch(() => {}),
+      });
+    }
     const item = {
       id,
       tone: input?.tone || "info",
       title: input?.title || "Notice",
       body: input?.body || "",
-      actions: input?.actions || [],
-      sticky: Boolean(input?.sticky || input?.actions?.length),
+      actions,
+      sticky: Boolean(input?.sticky || actions.length),
     };
     toasts = [item, ...toasts].slice(0, 3);
     if (!item.sticky) {

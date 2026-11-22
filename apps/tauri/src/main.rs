@@ -294,6 +294,20 @@ enum Action {
         target: SampleTarget,
         location: library::Location,
     },
+    AddSampleLane {
+        map: PathBuf,
+        path: PathBuf,
+        mapset: bool,
+    },
+    AddLibraryLane {
+        map: PathBuf,
+        location: library::Location,
+    },
+    SetLaneGain {
+        row: usize,
+        gain: f32,
+    },
+    ResetMixerLevels,
     PlaceSoundSet {
         map: PathBuf,
         path: PathBuf,
@@ -609,6 +623,25 @@ impl Action {
                     app.error = Some(error);
                 }
             }
+            Self::AddSampleLane { map, path, mapset } => {
+                let resolved = if mapset {
+                    app.document().and_then(|d| d.path.parent()).map(|root| root.join(&path)).unwrap_or(path)
+                } else {
+                    path
+                };
+                if let Err(error) = app.add_sample_as_lane(&map, &resolved) {
+                    app.error = Some(error);
+                }
+            }
+            Self::AddLibraryLane { map, location } => {
+                if let Err(error) = location.sample(app.preferences.hitsound_library.as_deref())
+                    .and_then(|sample| app.add_sample_as_lane(&map, &sample))
+                {
+                    app.error = Some(error);
+                }
+            }
+            Self::SetLaneGain { row, gain } => app.set_lane_gain(row, gain),
+            Self::ResetMixerLevels => app.reset_mixer_levels(),
             Self::Pending { choice } => match choice.as_str() {
                 "save" => app.save(),
                 "discard" => app.discard_and_open(),
@@ -1321,6 +1354,7 @@ fn snapshot_with_static(app: &Application, include_scene: bool, include_static: 
                     "sourceKey": scene_lane_key(lane), "sample": sample,
                     "colourKey": dawsu_application::lane_layout_key(slot),
                     "name": lane_name(slot), "muted": app.is_muted(lane), "solo": app.is_solo(lane),
+                    "gain": app.lane_gain(lane),
                     "canAddLayer": index.is_some(),
                     "canReplace": !matches!(lane, SampleIdentity::Standard { sound: Sound::Slider(_), .. }),
                     "hitCount": hit_count, "canDelete": !read_only && !protected,
@@ -1380,9 +1414,19 @@ fn snapshot_with_static(app: &Application, include_scene: bool, include_static: 
                     "volume": body.volume(),
                 });
             }
+            let song_file = d.file.section_values("General").into_iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("AudioFilename"))
+                .map(|(_, v)| v.trim().to_string())
+                .unwrap_or_default();
+            let silent_object_times: Vec<f64> = model.moments().iter()
+                .filter(|m| !matches!(m.place(), Place::NoObject) && m.hits().next().is_none())
+                .map(|m| m.time().ms())
+                .collect();
             let mut scene = json!({
                 "title": d.title, "mapTitle": d.map_title(), "version": d.version(),
                 "path": d.path, "difficulties": d.difficulties,
+                "hsDifficulties": d.difficulties.iter().filter(|p| is_osu_hs_diff(p)).cloned().collect::<Vec<_>>(),
+                "songFile": song_file, "silentObjectTimes": silent_object_times,
                 "lanes": lanes, "laneOrder": lane_order, "moments": moments,
                 // The map preview asks for its objects again when this changes (map_preview).
                 "previewKey": app.document_generation(),
@@ -1435,6 +1479,10 @@ fn snapshot_with_static(app: &Application, include_scene: bool, include_static: 
             "includeSliderAudio": plan.includes_slider_audio(),
         })
     });
+    let recent_meta: Vec<Value> = app.preferences.recent.iter().map(|path| {
+        let (background, is_hs) = recent_osu_meta(path);
+        json!({ "path": path, "background": background, "isHs": is_hs })
+    }).collect();
     let mut result = json!({
         "scene": scene, "hasDocument": document.is_some(), "busy": app.busy, "playing": app.is_playing(),
         "laneCount": document.map_or(0, |d| d.composer.lanes.len()),
@@ -1461,7 +1509,9 @@ fn snapshot_with_static(app: &Application, include_scene: bool, include_static: 
             "target": problem.target, "timeline": problem.timeline,
             "time": problem.time, "message": problem.message,
         })).collect::<Vec<_>>(),
-        "recent": app.preferences.recent, "firstLaunch": app.first_launch,
+        "recent": app.preferences.recent,
+        "recentMeta": recent_meta,
+        "firstLaunch": app.first_launch,
     });
     // The map preview was in its own window when the editor last closed: main opens it again.
     result["previewWindow"] = json!(app.preferences.preview_window.is_some_and(|place| place.open));
@@ -1472,6 +1522,8 @@ fn snapshot_with_static(app: &Application, include_scene: bool, include_static: 
         "open": app.sound_set_prompt_open(),
     })).collect::<Vec<_>>());
     result["songSolo"] = json!(app.song_solo());
+    result["masterPeak"] = json!(app.master_peak());
+    result["lanePeaks"] = json!(app.lane_peaks());
     result["editDialog"] = json!(app.requested_edit());
     result["quantizeStrength"] = json!(app.quantize_strength());
     let tab_routes = [false, true].into_iter().flat_map(|ctrl| {
@@ -1531,6 +1583,8 @@ enum Request {
     /// The difficulty the window showed, and its options.
     ExportPreview(PathBuf, ExportOptions, mpsc::Sender<Result<u64, String>>),
     ExportRun(u64, mpsc::Sender<Result<u64, String>>),
+    ExportRunOsz(u64, PathBuf, mpsc::Sender<Result<(), String>>),
+    AuditionExportMix(usize, mpsc::Sender<Result<(), String>>),
     /// The Export window closed: its preview stops and is forgotten. Needs no answer.
     ExportClose,
     /// The drum detection window's requests, answered with its view.
@@ -1668,15 +1722,20 @@ fn export_snapshot(app: &Application, cache: &mut ExportCache) -> Value {
             "base": preview.plan.generated_file().and_then(|path| preview.plan.files.iter().find(|file| file.path == path))
                 .map(|file| json!({ "path": file.path, "replaces": file.expected.is_some() })),
             "mixes": preview.plan.mix_paths().collect::<Vec<_>>(),
-            "targets": preview.plan.targets.iter().map(|counts| json!({
-                "path": counts.path,
-                "matched": counts.matched,
-                "unmatched": counts.unmatched,
-                "changed": counts.changed,
-                "collisions": counts.collisions,
-                "keptFromSilent": counts.kept_from_silent,
-                "muted": counts.muted,
-            })).collect::<Vec<_>>(),
+            "mixReused": preview.plan.mix_reused(),
+            "targets": preview.plan.targets.iter().map(|counts| {
+                let bins = app.target_coverage_bins(&counts.path, &status.problems);
+                json!({
+                    "path": counts.path,
+                    "matched": counts.matched,
+                    "unmatched": counts.unmatched,
+                    "changed": counts.changed,
+                    "collisions": counts.collisions,
+                    "keptFromSilent": counts.kept_from_silent,
+                    "muted": counts.muted,
+                    "bins": bins,
+                })
+            }).collect::<Vec<_>>(),
         })),
     })
 }
@@ -1699,6 +1758,14 @@ fn answer_export(app: &mut Application, fault: &mut Option<String>, cache: &mut 
         }
         Request::ExportRun(preview_id, response) => {
             let result = guard(app, fault, |app| app.run_export(preview_id)).and_then(|result| result);
+            let _ = response.send(result);
+        }
+        Request::ExportRunOsz(preview_id, osz_path, response) => {
+            let result = guard(app, fault, |app| app.run_export_osz(preview_id, &osz_path)).and_then(|result| result);
+            let _ = response.send(result);
+        }
+        Request::AuditionExportMix(index, response) => {
+            let result = guard(app, fault, |app| app.audition_export_mix(index)).and_then(|result| result);
             let _ = response.send(result);
         }
         _ => unreachable!("only Export requests reach answer_export"),
@@ -2016,7 +2083,7 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                     };
                     let _ = response.send(result);
                 }
-                Ok(request @ (Request::ExportView(_) | Request::ExportPreview(..) | Request::ExportRun(..))) => {
+                Ok(request @ (Request::ExportView(_) | Request::ExportPreview(..) | Request::ExportRun(..) | Request::ExportRunOsz(..) | Request::AuditionExportMix(..))) => {
                     answer_export(&mut app, &mut fault, &mut export_cache, request);
                 }
                 Ok(Request::ExportClose) => {
@@ -2155,6 +2222,30 @@ fn export_preview(state: State<'_, Editor>, options: ExportOptionsJson) -> Resul
 #[tauri::command]
 fn export_run(state: State<'_, Editor>, preview_id: u64) -> Result<u64, String> {
     ask(&state, |tx| Request::ExportRun(preview_id, tx))?
+}
+
+#[tauri::command]
+fn pick_osz_export_path(window: tauri::WebviewWindow, default_name: String) -> Result<Option<PathBuf>, String> {
+    let mut name = if default_name.trim().is_empty() { "mapset".to_string() } else { default_name.trim().to_string() };
+    if !name.to_ascii_lowercase().ends_with(".osz") {
+        name.push_str(".osz");
+    }
+    Ok(rfd::FileDialog::new()
+        .set_parent(&window)
+        .set_title("Export .osz archive")
+        .add_filter("osu! beatmap archive", &["osz"])
+        .set_file_name(&name)
+        .save_file())
+}
+
+#[tauri::command]
+fn export_run_osz(state: State<'_, Editor>, preview_id: u64, osz_path: PathBuf) -> Result<(), String> {
+    ask(&state, |tx| Request::ExportRunOsz(preview_id, osz_path, tx))?
+}
+
+#[tauri::command]
+fn audition_export_mix(state: State<'_, Editor>, index: usize) -> Result<(), String> {
+    ask(&state, |tx| Request::AuditionExportMix(index, tx))?
 }
 
 /// Opens the Export window beside the editor, or brings it forward when it is open.
@@ -2592,6 +2683,204 @@ fn pick_map(
     })
 }
 
+fn is_osu_hs_diff(path: &Path) -> bool {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return false;
+    };
+    let mut section = "";
+    let mut version = String::new();
+    let mut has_objects = false;
+    for raw in text.lines() {
+        let line = raw.trim();
+        if line.starts_with('[') && line.ends_with(']') {
+            section = &line[1..line.len() - 1];
+            continue;
+        }
+        if section.eq_ignore_ascii_case("Metadata") {
+            if let Some(rest) = line.strip_prefix("Version:") {
+                version = rest.trim().to_ascii_lowercase();
+            }
+        } else if section.eq_ignore_ascii_case("HitObjects") && !line.is_empty() && !line.starts_with("//") {
+            has_objects = true;
+            break;
+        }
+    }
+    version.contains("hitsound")
+        || version == "hs"
+        || version.ends_with(" hs")
+        || version.contains("[hs]")
+        || (!has_objects && !version.is_empty())
+}
+
+fn recent_osu_meta(path: &Path) -> (Option<PathBuf>, bool) {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return (None, false);
+    };
+    let mut section = "";
+    let mut bg: Option<PathBuf> = None;
+    let mut version = String::new();
+    let mut has_objects = false;
+    for raw in text.lines() {
+        let line = raw.trim();
+        if line.starts_with('[') && line.ends_with(']') {
+            section = &line[1..line.len() - 1];
+            continue;
+        }
+        if section.eq_ignore_ascii_case("Events") && bg.is_none() && line.starts_with("0,0,") {
+            if let Some(first_quote) = line.find('"') {
+                if let Some(end_quote) = line[first_quote + 1..].find('"') {
+                    let rel = &line[first_quote + 1..first_quote + 1 + end_quote];
+                    if let Some(parent) = path.parent() {
+                        let candidate = parent.join(rel);
+                        if candidate.is_file() {
+                            bg = Some(candidate);
+                        }
+                    }
+                }
+            }
+        } else if section.eq_ignore_ascii_case("Metadata") {
+            if let Some(rest) = line.strip_prefix("Version:") {
+                version = rest.trim().to_ascii_lowercase();
+            }
+        } else if section.eq_ignore_ascii_case("HitObjects") && !line.is_empty() && !line.starts_with("//") {
+            has_objects = true;
+        }
+    }
+    let is_hs = version.contains("hitsound")
+        || version == "hs"
+        || version.ends_with(" hs")
+        || version.contains("[hs]")
+        || (!has_objects && !version.is_empty());
+    (bg, is_hs)
+}
+
+#[tauri::command]
+fn pick_map_folder(window: tauri::WebviewWindow, state: State<'_, Editor>) -> Result<Option<PathBuf>, String> {
+    let dialog = songs_dialog(&window, &state)?;
+    Ok(dialog.set_title("Open mapset folder").pick_folder())
+}
+
+#[tauri::command]
+fn inspect_mapset_folder(path: PathBuf) -> Result<Value, String> {
+    if path.is_file() {
+        return Ok(json!({ "kind": "open", "path": path }));
+    }
+    if !path.is_dir() {
+        return Err("That folder does not exist.".into());
+    }
+    let mut diffs: Vec<PathBuf> = std::fs::read_dir(&path)
+        .map_err(|e| e.to_string())?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|p| p.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("osu")))
+        .collect();
+    diffs.sort();
+    if diffs.is_empty() {
+        return Err("This folder contains no .osu difficulty files.".into());
+    }
+    if diffs.len() == 1 {
+        return Ok(json!({ "kind": "open", "path": diffs[0] }));
+    }
+    let entries: Vec<Value> = diffs
+        .iter()
+        .map(|p| {
+            let is_hs = is_osu_hs_diff(p);
+            let name = p.file_stem().and_then(|s| s.to_str()).unwrap_or("").to_string();
+            json!({ "path": p, "name": name, "isHs": is_hs })
+        })
+        .collect();
+    if let Some(hs_path) = diffs.iter().find(|p| is_osu_hs_diff(p)) {
+        return Ok(json!({ "kind": "open", "path": hs_path }));
+    }
+    Ok(json!({ "kind": "choose", "folder": path, "difficulties": entries }))
+}
+
+#[tauri::command]
+fn create_hitsound_diff(sibling_path: PathBuf) -> Result<PathBuf, String> {
+    let folder = sibling_path
+        .parent()
+        .ok_or_else(|| "Difficulty has no parent folder.".to_string())?;
+    let text = std::fs::read_to_string(&sibling_path).map_err(|e| e.to_string())?;
+    let mut version_name = "Hitsounds".to_string();
+    let mut suffix = 2;
+    let stem_prefix = sibling_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .map(|s| s.split('[').next().unwrap_or(s).trim())
+        .filter(|s| !s.is_empty())
+        .unwrap_or("Map");
+    let mut target = folder.join(format!("{stem_prefix} [{version_name}].osu"));
+    while target.exists() {
+        version_name = format!("Hitsounds {suffix}");
+        target = folder.join(format!("{stem_prefix} [{version_name}].osu"));
+        suffix += 1;
+    }
+
+    let mut out = String::new();
+    let mut section = String::new();
+    let mut wrote_version = false;
+    for raw in text.lines() {
+        let trimmed = raw.trim();
+        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            section = trimmed[1..trimmed.len() - 1].to_string();
+            out.push_str(raw);
+            out.push('\n');
+            continue;
+        }
+        if section.eq_ignore_ascii_case("HitObjects") {
+            continue;
+        }
+        if section.eq_ignore_ascii_case("Metadata") && trimmed.starts_with("Version:") {
+            out.push_str(&format!("Version:{version_name}\n"));
+            wrote_version = true;
+            continue;
+        }
+        if section.eq_ignore_ascii_case("Metadata") && trimmed.starts_with("BeatmapID:") {
+            out.push_str("BeatmapID:0\n");
+            continue;
+        }
+        out.push_str(raw);
+        out.push('\n');
+    }
+    if !wrote_version {
+        out.push_str(&format!("\n[Metadata]\nVersion:{version_name}\n"));
+    }
+    std::fs::write(&target, out).map_err(|e| e.to_string())?;
+    Ok(target)
+}
+
+#[tauri::command]
+fn open_folder_in_os(path: PathBuf) -> Result<(), String> {
+    let dir = if path.is_file() {
+        path.parent().unwrap_or(&path).to_path_buf()
+    } else {
+        path
+    };
+    if !dir.is_dir() {
+        return Err("Folder does not exist.".into());
+    }
+    #[cfg(target_os = "windows")]
+    let mut cmd = {
+        let mut c = std::process::Command::new("explorer");
+        c.arg(&dir);
+        c
+    };
+    #[cfg(target_os = "macos")]
+    let mut cmd = {
+        let mut c = std::process::Command::new("open");
+        c.arg(&dir);
+        c
+    };
+    #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+    let mut cmd = {
+        let mut c = std::process::Command::new("xdg-open");
+        c.arg(&dir);
+        c
+    };
+    cmd.spawn().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 #[tauri::command]
 fn pick_sample(window: tauri::WebviewWindow, state: State<'_, Editor>, target: SampleTarget) -> Result<Value, String> {
     let selected = rfd::FileDialog::new().set_parent(&window)
@@ -2728,6 +3017,34 @@ fn sample_outline(app: &mut Application, source: PreviewSource) -> Result<Value,
 #[tauri::command]
 fn sample_preview(source: PreviewSource, state: State<'_, Editor>) -> Result<Value, String> {
     ask(&state, |tx| Request::SamplePreview(source, tx))?
+}
+
+#[tauri::command]
+fn pick_lane_sample(
+    window: tauri::WebviewWindow,
+    state: State<'_, Editor>,
+    map: PathBuf,
+    use_library: Option<bool>,
+) -> Result<Value, String> {
+    let mut dialog = rfd::FileDialog::new()
+        .set_parent(&window)
+        .set_title("Add sample lane")
+        .add_filter("Audio sample", &["wav", "ogg", "mp3"]);
+    if use_library == Some(true) {
+        if let Some(lib) = ask(&state, Request::LibraryDirectory)? {
+            if lib.is_dir() {
+                dialog = dialog.set_directory(lib);
+            }
+        }
+    } else if let Some(dir) = map.parent() {
+        if dir.is_dir() {
+            dialog = dialog.set_directory(dir);
+        }
+    }
+    let selected = dialog.pick_file();
+    ask(&state, |tx| {
+        Request::View(true, selected.map(|path| Action::AddSampleLane { map, path, mapset: false }), false, tx)
+    })
 }
 
 #[tauri::command]
@@ -2873,6 +3190,9 @@ fn main() {
             export_view,
             export_preview,
             export_run,
+            pick_osz_export_path,
+            export_run_osz,
+            audition_export_mix,
             open_export_window,
             close_export_window,
             show_in_editor,
@@ -2902,6 +3222,10 @@ fn main() {
             import_key_file,
             export_key_file,
             pick_map,
+            pick_map_folder,
+            inspect_mapset_folder,
+            create_hitsound_diff,
+            open_folder_in_os,
             pick_sample,
             pick_sound_set,
             sound_set_library,
@@ -2911,6 +3235,7 @@ fn main() {
             pick_hitsound_library,
             list_library,
             sample_preview,
+            pick_lane_sample,
             lane_add_candidates,
             map_preview_objects,
             pick_drum_map,

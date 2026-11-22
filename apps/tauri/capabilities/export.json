@@ -7,6 +7,10 @@
     "allow-export-view",
     "allow-export-preview",
     "allow-export-run",
+    "allow-pick-osz-export-path",
+    "allow-export-run-osz",
+    "allow-audition-export-mix",
+    "allow-open-folder-in-os",
     "allow-close-export-window",
     "allow-show-in-editor"
   ]

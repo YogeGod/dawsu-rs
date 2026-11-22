@@ -99,7 +99,7 @@ test("Difficulty shows the strip: one Tab stop, real counts, and the counts it c
   assert.match(html, /class="pm-frame"/);
   // Positions go through custom properties, which the browser sets through the CSSOM (the CSP blocks style="").
   assert.match(html, /style="--at: 25%;"/);
-  for (const [id, text] of [["generate", "Generate…"], ["new", "New…"], ["copy", "Copy…"], ["merge-settings", "Merge settings…"]]) {
+  for (const [id, text] of [["export-to-mapset", "Export to mapset…"], ["new", "New…"], ["merge-settings", "Merge settings…"]]) {
     assert.match(html, new RegExp(`<button id="${id}"[^>]*>${text}</button>`), text);
   }
 });

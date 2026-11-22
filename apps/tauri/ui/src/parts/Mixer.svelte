@@ -14,6 +14,7 @@
   const disabled = $derived(bridge.disabled);
   const song = $derived(typeof view?.song === "number" ? view.song : null);
   const main = $derived(typeof view?.main === "number" ? view.main : null);
+  const masterPeak = $derived(typeof view?.masterPeak === "number" ? view.masterPeak : 0);
   const device = $derived(view?.outputDevice || "");
   const songIcon = '<path d="M2 8h1M4.5 5.5v5M7 3v10M9.5 5v6M12 6.5v3M14 8h.5"/>';
 
@@ -44,6 +45,8 @@
       <MixerStrip label={strip.name + ", lane " + strip.number} name={strip.name} set={strip.set} number={strip.number}
         icon={laneIcons[strip.icon] ?? laneIcons.file} colour={strip.colour} selected={strip.selected} quiet={strip.quiet}
         muted={strip.muted} solo={strip.solo} muteLabel={"Mute " + strip.name + " (" + strip.set + ")"} soloLabel={"Solo " + strip.name + " (" + strip.set + ")"} {disabled}
+        gain={strip.gain ?? 1} min={0} max={1.5} gainLabel={strip.name + " volume"} readout={dbText(strip.gain ?? 1)} peak={strip.peak ?? 0}
+        onlevel={value => act({ kind: "set_lane_gain", row: strip.row, gain: value })}
         onmute={() => lane("mix", strip.row, "mute")} onsolo={() => lane("mix", strip.row, "solo")}
         onselect={event => lane("select", strip.row, event)} />
     {/each}
@@ -57,8 +60,11 @@
         <span class="caption">Level</span>
         <span class="box level {main === null ? 'off' : ''}">{main === null ? "" : dbText(main)}</span>
         <span class="caption">Peak</span>
-        <span class="box peak off"></span>
-        <div class="peak-bars off" aria-hidden="true"><div></div><div></div></div>
+        <span class="box peak {main === null ? 'off' : ''}">{main === null ? "" : dbText(masterPeak)}</span>
+        <div class="peak-bars {main === null ? 'off' : ''}" aria-hidden="true">
+          <div><span style:width="{Math.round(Math.min(1, masterPeak) * 100)}%"></span></div>
+          <div><span style:width="{Math.round(Math.min(1, masterPeak) * 100)}%"></span></div>
+        </div>
       </div>
     </div>
   </section>
@@ -149,6 +155,14 @@
     height: 4px;
     border-radius: 2px;
     background: rgba(0, 0, 0, 0.45);
+    overflow: hidden;
+  }
+  .peak-bars div span {
+    display: block;
+    height: 100%;
+    border-radius: 2px;
+    background: var(--editor-play);
+    transition: width 60ms linear;
   }
   .peak-bars.off {
     opacity: 0.45;

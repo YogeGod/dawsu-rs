@@ -91,13 +91,13 @@ test("Space routes to the timeline shortcut from a focused button", async () => 
   assert.deepEqual(editor.keys.map(({ key, code }) => [key, code]), [[" ", "Space"]]);
 });
 
-for (const [label, preset] of [["DAW-like", "DAW"], ["osu!", "osu!"]]) {
+for (const [label, preset] of [["osu! Editor", "osu!"], ["DAW (Cubase / FL)", "DAW"]]) {
   test("chooses and remembers the " + label + " keyboard preset", async () => {
     const preferences = {};
     const first = await launch(preferences);
     assert.equal(first.dialog.open, true);
     assert.equal(first.title, "Choose your keyboard preset");
-    assert.deepEqual(first.options.map((button) => button.textContent), ["DAW-like", "osu!"]);
+    assert.deepEqual(first.options.map((button) => button.textContent), ["osu! Editor", "DAW (Cubase / FL)"]);
     first.dialog.events.get("cancel")({ preventDefault() {} });
     assert.equal(first.dialog.open, true);
     first.options.find((button) => button.textContent === label).click();

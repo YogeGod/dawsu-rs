@@ -86,7 +86,7 @@ test("every Inspector section is a Svelte part in a section Layout… can move",
   for (const dead of ["#bookmarks", "#history", ".inspector-header-action", ".inspector-actions", "#editor-inspector summary",
     "#editor-inspector details"]) assert.ok(!css.includes(dead), dead);
   // menus.js and the New difficulty shortcut click these by id.
-  for (const id of ["lane-colour", "replace-sample", "generate", "new", "copy", "merge-settings"]) {
+  for (const id of ["lane-colour", "replace-sample", "export-to-mapset", "new", "merge-settings"]) {
     assert.match(part, new RegExp(`id="${id}"`), id);
   }
 });
@@ -260,9 +260,9 @@ test("every open, command and toggle a part sends reaches its inspectorAction ca
   const { evaluate, sent } = await frontend();
   const keys = kind => [...new Set([...part.matchAll(new RegExp(`on\\.${kind}\\("([\\w]+)"`, "g"))].map(match => match[1]))];
   const opens = keys("open");
-  assert.deepEqual(opens.sort(), ["copy", "generate", "laneColour", "mergeSettings", "new", "replaceSample"]);
-  const openers = { laneColour: "openLaneColour", replaceSample: "openReplaceSample", generate: "openGenerate",
-    new: "openNewDifficulty", copy: "openCopy", mergeSettings: "openMergeSettings" };
+  assert.deepEqual(opens.sort(), ["laneColour", "mergeSettings", "new", "replaceSample"]);
+  const openers = { laneColour: "openLaneColour", replaceSample: "openReplaceSample",
+    new: "openNewDifficulty", mergeSettings: "openMergeSettings" };
   evaluate(`globalThis.reached = []; run = task => task();
     ${Object.values(openers).map(name => `${name} = () => reached.push("${name}");`).join(" ")}`);
   for (const kind of opens) evaluate(`inspectorAction("${kind}")`);

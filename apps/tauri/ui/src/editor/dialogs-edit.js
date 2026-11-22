@@ -110,7 +110,58 @@ export function attachEditDialogs(ctx) {
 
   // File › Open map… and Ctrl+O's fallback; the start screen's Open map… button.
   function openMap() {
-    return ctx.run(async () => ctx.show(await invoke("pick_map")));
+    return ctx.run(async () => {
+      ctx.show(await invoke("pick_map"));
+      if (state.scene && state.view?.tool === "Select") await ctx.act({ kind: "tool", tool: "Draw" }, false);
+    });
+  }
+
+  async function openMapFolderPath(folderPath) {
+    if (!folderPath || state.view.busy) return;
+    try {
+      const res = await invoke("inspect_mapset_folder", { path: folderPath });
+      if (!res) return;
+      if (res.kind === "open") {
+        await ctx.act({ kind: "open", path: res.path });
+        if (state.scene && state.view?.tool === "Select") await ctx.act({ kind: "tool", tool: "Draw" }, false);
+        return;
+      }
+      if (res.kind === "choose" && Array.isArray(res.difficulties) && res.difficulties.length) {
+        const list = env.document.createElement("div");
+        list.className = "diff-picker-list";
+        const createBtn = makeButton("+ Create Hitsound diff", async () => {
+          ctx.closeModal();
+          await ctx.run(async () => {
+            const created = await invoke("create_hitsound_diff", { siblingPath: res.difficulties[0].path });
+            if (created) {
+              await ctx.act({ kind: "open", path: created });
+              await ctx.act({ kind: "hs_mode", on: true });
+            }
+          });
+        });
+        createBtn.className = "primary";
+        list.append(createBtn);
+        for (const diff of res.difficulties) {
+          const btn = makeButton(diff.isHs ? `${diff.name} [HS]` : diff.name, () => {
+            ctx.closeModal();
+            ctx.act({ kind: "open", path: diff.path });
+          });
+          list.append(btn);
+        }
+        ctx.modal("difficulty-chooser", "Choose a difficulty", [
+          paragraph("No Hitsound difficulty found yet. Create one or pick a difficulty to edit:"),
+          list,
+        ], [["Cancel", () => ctx.closeModal()]]);
+      }
+    } catch (error) {
+      ctx.modal("error", "Could not open folder", [paragraph(String(error))], [["OK", () => ctx.closeModal(), true]]);
+    }
+  }
+
+  async function openMapFolder() {
+    if (state.view.busy) return;
+    const folder = await invoke("pick_map_folder");
+    if (folder) await openMapFolderPath(folder);
   }
 
   // File › Start screen.
@@ -145,8 +196,24 @@ export function attachEditDialogs(ctx) {
       open();
     });
     choices.addEventListener("dblclick", open);
-    ctx.modal("difficulty-chooser", "Switch difficulty", [choices],
-      [["Cancel", () => ctx.closeModal()], ["Open", open, true]]);
+    ctx.modal("difficulty-chooser", "Switch difficulty", [choices], [
+      ["Cancel", () => ctx.closeModal()],
+      ["+ Create Hitsound diff", async () => {
+        ctx.closeModal();
+        await ctx.run(async () => {
+          const created = await invoke("create_hitsound_diff", { siblingPath: currentPath });
+          if (created) {
+            await ctx.act({ kind: "open", path: created });
+            await ctx.act({ kind: "hs_mode", on: true });
+          }
+        });
+      }],
+      [state.scene.hs ? "Turn off HS mode" : "Turn on HS mode", () => {
+        ctx.closeModal();
+        ctx.act({ kind: "hs_mode", on: !state.scene.hs });
+      }],
+      ["Open", open, true],
+    ]);
     choices.focus();
     return true;
   }
@@ -235,28 +302,60 @@ export function attachEditDialogs(ctx) {
   function openTimeSignatures() {
     if (!state.scene || state.view.busy) return;
     const path = state.scene.path;
-    const field = env.document.createElement("textarea");
-    field.rows = 6;
-    field.cols = 28;
-    field.setAttribute("aria-label", "Bar and time signature changes");
-    field.placeholder = "33 7/8";
-    field.value = (state.scene.timeSignatures ?? []).map(({ bar, numerator, denominator }) =>
-      `${bar} ${numerator}/${denominator}`).join("\n");
+    const OptionCtor = env.Option ?? Option;
+    const rowsHost = env.document.createElement("div");
+    rowsHost.className = "ts-rows";
     const error = paragraph("");
     error.setAttribute("role", "alert");
+
+    const entries = (state.scene.timeSignatures ?? []).map(item => ({ ...item }));
+    if (!entries.length) entries.push({ bar: 1, numerator: 4, denominator: 4 });
+
+    function renderRows() {
+      rowsHost.replaceChildren(...entries.map((entry, idx) => {
+        const row = env.document.createElement("div");
+        row.className = "ts-row";
+        const bar = input("number", entry.bar, 1, 999999);
+        bar.setAttribute("aria-label", "Bar");
+        bar.addEventListener("input", () => { entry.bar = Math.trunc(bar.valueAsNumber || 1); });
+        const beats = input("number", entry.numerator, 1, 32);
+        beats.setAttribute("aria-label", "Beats per bar");
+        beats.addEventListener("input", () => { entry.numerator = Math.trunc(beats.valueAsNumber || 4); });
+        const unit = env.document.createElement("select");
+        unit.setAttribute("aria-label", "Beat unit");
+        for (const d of [1, 2, 4, 8, 16]) unit.append(new OptionCtor(String(d), String(d)));
+        unit.value = String(entry.denominator);
+        unit.addEventListener("change", () => { entry.denominator = Number(unit.value); });
+        const del = makeButton("Remove", () => {
+          entries.splice(idx, 1);
+          renderRows();
+        });
+        row.append(labeled("Bar", bar), labeled("Beats", beats), labeled("/", unit), del);
+        return row;
+      }));
+    }
+    renderRows();
+    const addBtn = makeButton("+ Add time signature", () => {
+      const lastBar = entries.length ? entries[entries.length - 1].bar + 1 : 1;
+      entries.push({ bar: lastBar, numerator: 4, denominator: 4 });
+      renderRows();
+    });
+
     ctx.modal("time-signatures", "Time signatures", [
-      paragraph("Enter one change per line, such as 33 7/8 for 7/8 from bar 33. These changes affect the editor ruler."),
-      field,
+      paragraph("Set the bar number and time signature for each section of the ruler."),
+      rowsHost,
+      addBtn,
       error,
     ], [
       ["Cancel", () => ctx.closeModal()],
       ["Apply", async () => {
         if (state.scene?.path !== path) return ctx.closeModal();
         const value = [];
-        for (const line of field.value.trim().split("\n").filter(entry => entry.trim())) {
-          const parts = /^(\d+)\s+(\d+)\s*\/\s*(\d+)$/.exec(line.trim());
-          const [bar, numerator, denominator] = parts?.slice(1).map(Number) ?? [];
-          if (!bar || bar > 4294967295 || numerator < 1 || numerator > 32 || ![1, 2, 4, 8, 16].includes(denominator)) {
+        for (const entry of entries) {
+          const bar = Math.trunc(Number(entry.bar));
+          const numerator = Math.trunc(Number(entry.numerator));
+          const denominator = Number(entry.denominator);
+          if (!bar || bar < 1 || bar > 4294967295 || numerator < 1 || numerator > 32 || ![1, 2, 4, 8, 16].includes(denominator)) {
             error.textContent = "Use bar 1 or later, 1–32 beats, and a beat unit of 1, 2, 4, 8 or 16.";
             return;
           }
@@ -269,7 +368,7 @@ export function attachEditDialogs(ctx) {
   }
 
   Object.assign(ctx, {
-    openLaneColour, openReplaceSample, openMap, goHome,
+    openLaneColour, openReplaceSample, openMap, openMapFolder, openMapFolderPath, goHome,
     openSiblingDifficulty, chooseSiblingDifficulty, showTimelineEdit,
     editBookmark, openTimeSignatures,
   });
