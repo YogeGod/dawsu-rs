@@ -23,7 +23,17 @@
       stop?.();
     };
   });
+
+  // Space plays and stops the editor from this window too, unless a text or number field has it.
+  function forwardSpace(event) {
+    if (event.key !== " " || event.repeat || event.ctrlKey || event.altKey || event.shiftKey || event.metaKey) return;
+    if (event.target?.closest?.("input, textarea, select, [contenteditable]")) return;
+    event.preventDefault();
+    globalThis.window?.__TAURI__?.event?.emitTo("main", "preview-space").catch(reason => console.error(reason));
+  }
 </script>
+
+<svelte:window onkeydown={forwardSpace} />
 
 <PreviewCanvas view={shown.view} path={shown.path} previewKey={shown.previewKey} fill />
 

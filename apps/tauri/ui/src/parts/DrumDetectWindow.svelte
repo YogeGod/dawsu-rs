@@ -1,6 +1,7 @@
 <script>
   import { onDestroy, onMount } from "svelte";
   import { invoke } from "../lib/ipc.js";
+  import { forwardSpace } from "../lib/space.js";
   import {
     applyRequest, autoStart, blockDrops, canCheck, checkLine, forget, initialState, isChecked, isFresh, landsText,
     laneLabel, listenFrom, nextPoll, progressText, reviewRequest, settle, startRequest, stripMarks, take, ticked, timeText,
@@ -214,6 +215,8 @@
     release?.();
   });
 </script>
+
+<svelte:window onkeydown={forwardSpace} />
 
 <div class="drum">
   <aside class="side">

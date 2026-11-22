@@ -13,6 +13,8 @@ dawsu-hitsounding = { path = "../dawsu-hitsounding" }
 dawsu-editor = { path = "../dawsu-editor" }
 dawsu-editor-composer = { path = "../dawsu-editor-composer" }
 dawsu-audio = { path = "../dawsu-audio" }
+dawsu-audio-instruments = { path = "../dawsu-audio-instruments" }
+dawsu-keysounding = { path = "../dawsu-keysounding" }
 dawsu-graph = { path = "../dawsu-graph" }
 dawsu-graph-audio = { path = "../dawsu-graph-audio" }
 dawsu-editor-nodal = { path = "../dawsu-editor-nodal" }

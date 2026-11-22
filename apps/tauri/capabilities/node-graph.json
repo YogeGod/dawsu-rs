@@ -4,6 +4,7 @@
     "node-graph"
   ],
   "permissions": [
+    "core:event:default",
     "allow-node-graph-view",
     "allow-node-graph-action",
     "allow-node-graph-export-json",

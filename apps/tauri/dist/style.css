@@ -11,7 +11,10 @@
   --cursor-draw:url("studio-assets/icons/cursor-draw.svg") 3 3,crosshair;
   --cursor-erase:url("studio-assets/icons/cursor-erase.svg") 5 27,crosshair;
   font:13px "Segoe UI",system-ui,sans-serif}
-body{margin:0;background:var(--base);color:var(--text);height:100vh;display:flex;flex-direction:column;overflow:hidden;user-select:none;-webkit-user-select:none}
+/* 100%, not 100vh: Preferences scales the page with zoom on <html>, which scales vh too and left a bar
+   under (or cut off) the editor at every scale but 100%. */
+html{height:100%;overflow:hidden;background:var(--base)}
+body{margin:0;background:var(--base);color:var(--text);height:100%;display:flex;flex-direction:column;overflow:hidden;user-select:none;-webkit-user-select:none}
 input,textarea,[contenteditable]{user-select:text;-webkit-user-select:text}
 [hidden]{display:none!important}
 button,input,select{font:inherit;color:inherit}button,select,input[type=number]{border:1px solid var(--button-border);border-radius:5px;background:var(--button);min-height:28px;padding:3px 8px}
@@ -236,7 +239,7 @@ aside section > :last-child { margin-bottom:0; }
 #editor-menu[aria-labelledby]{grid-template-columns:minmax(0,1fr);gap:0;padding:6px;border-color:var(--line);border-radius:8px;box-shadow:0 14px 36px rgba(0,0,0,.55)}
 #editor-menu[aria-labelledby] .menu-item{gap:10px;min-height:30px;padding:4px 10px;border-radius:4px}
 #editor-menu[aria-labelledby] .menu-item:hover:not(:disabled),#editor-menu[aria-labelledby] .menu-item:focus-visible{background:var(--control);border-color:transparent;outline:0}
-#editor-menu[aria-labelledby] .menu-item .button-icon{margin:0;opacity:.8}
+#editor-menu[aria-labelledby] .menu-item .button-icon{margin:0}
 #editor-menu[aria-labelledby] .menu-item-plain{padding-left:36px}
 #editor-menu[aria-labelledby] .menu-item kbd{padding:0;border:0;color:var(--muted);font-size:12px}
 #editor-menu[aria-labelledby] .menu-switch{width:28px;height:16px;padding:2px;border-radius:8px;background:var(--control)}

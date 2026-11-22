@@ -82,14 +82,10 @@ test("a mark goes to its time; Left, Right, Home and End move between marks", ()
   assert.deepEqual(key("Enter", 1), [null, false], "Enter clicks the mark as usual");
 });
 
-test("Difficulty shows the strip: one Tab stop, real counts, and the counts it can't make greyed out and empty", () => {
+test("Difficulty shows the strip: one Tab stop and real counts, without placeholders for counts it can't make", () => {
   const html = shown(input({ problems: [problem(50000)], orphaned: [100000], objects: [1000], viewStart: 0, viewWidth: 20000 }));
   assert.match(html, /class="pm-name" title="Hard">Hard</);
-  assert.match(html, /class="pm-sum pm-off" title="Not counted yet\." aria-label="Sound right: not counted yet"[^>]*>– of – sound right</);
-  for (const word of ["silent", "fallback"]) {
-    const name = word[0].toUpperCase() + word.slice(1);
-    assert.match(html, new RegExp(`class="pm-count pm-off" title="Not counted yet\\." aria-label="${name}: not counted yet"[^>]*><i[^>]*></i>– ${word}<`), word);
-  }
+  assert.doesNotMatch(html, /pm-off|sound right|– silent|– fallback|Not counted yet/);
   assert.match(html, /class="pm-count pm-orphaned" title="Moments with hits and no object"[^>]*><i[^>]*><\/i>1 hit with no object</);
   assert.match(html, /class="pm-count pm-unsaved"[^>]*><i[^>]*><\/i>1 can't be saved</);
   assert.match(html, /<div class="pm-track" role="group" aria-label="Problems across the song"/);

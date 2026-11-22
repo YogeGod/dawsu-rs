@@ -1,6 +1,7 @@
 <script>
   import { onDestroy, onMount } from "svelte";
   import { invoke } from "../lib/ipc.js";
+  import { forwardSpace } from "../lib/space.js";
   import {
     BAND_PRESETS,
     BEAT_DIVISORS,
@@ -349,6 +350,8 @@
   }
 
   function handleWindowKeyDown(event) {
+    // Space plays and stops the editor from this window too, in both modes, unless a field has it.
+    if (forwardSpace(event)) return;
     if (mode !== "raw" || event.defaultPrevented) return;
     if (event.target?.closest?.("input, select, textarea")) return;
     const mod = event.ctrlKey || event.metaKey;

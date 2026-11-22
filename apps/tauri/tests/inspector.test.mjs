@@ -297,7 +297,9 @@ test("every open, command and toggle a part sends reaches its inspectorAction ca
     { kind: "bookmark_edit", path: "a.osu", time: 500, label: null }, { kind: "history", position: 0 }]);
 
   const toggles = keys("toggle");
-  assert.deepEqual(toggles.sort(), ["audition", "hs_mode", "protect"]);
+  assert.deepEqual(toggles.sort(), ["audition", "protect"]);
+  // Hitsounding mode moved to Preferences › This map, out of the Difficulty section.
+  assert.doesNotMatch(part, /aria-label="Hitsounding mode"/);
   evaluate("view = { busy: false }; scene = { path: 'a.osu' };");
   for (const kind of toggles) evaluate(`inspectorAction("toggle", "${kind}", true)`);
   assert.deepEqual(await sent(), toggles.map(kind => ({ kind, on: true })));

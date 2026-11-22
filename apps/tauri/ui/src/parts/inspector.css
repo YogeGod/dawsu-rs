@@ -1,11 +1,13 @@
 /* v3 Inspector sections (Selection, Lane, Difficulty): 30 px fold headers, 30 px label/value rows on
    --editor-chrome. Shared by the three parts, so the classes carry an insp- prefix. */
+/* Flat sections split by one divider, no card per section (v3 §1: no gradients). */
 .insp {
-  margin: 6px 8px;
-  padding: 2px 6px 6px;
-  border: 1px solid rgba(255, 255, 255, 0.07);
-  border-radius: 8px;
-  background: linear-gradient(180deg, #1b1b1e 0%, #141416 100%);
+  margin: 0;
+  padding: 2px 12px 8px;
+  border: 0;
+  border-bottom: 1px solid var(--editor-border);
+  border-radius: 0;
+  background: transparent;
   font-size: 12px;
 }
 .insp-title {

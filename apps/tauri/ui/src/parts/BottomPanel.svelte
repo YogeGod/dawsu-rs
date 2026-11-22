@@ -55,14 +55,6 @@
     <button type="button" aria-pressed={tab === "volume"} onclick={() => choose("volume")}>Volume</button>
     <button type="button" aria-pressed={tab === "mixer"} onclick={() => choose("mixer")}>Mixer</button>
   </div>
-  {#if tab === "volume"}
-    <div class="seg" role="group" aria-label="Volume mode">
-      <button type="button" aria-pressed="true">Per object</button>
-      <button type="button" aria-pressed="false" disabled>Volume curve</button>
-    </div>
-  {:else}
-    <button type="button" class="reset" disabled>Reset levels</button>
-  {/if}
 {/if}
 
 <style>
@@ -98,17 +90,6 @@
   .seg button:disabled {
     color: var(--editor-disabled);
     cursor: default;
-  }
-  /* F3's Reset levels sits at the bottom of the side column; lanes have no levels to reset yet. */
-  .reset {
-    margin-top: auto;
-    align-self: flex-end;
-    min-height: 0;
-    padding: 0;
-    border: 0;
-    background: none;
-    color: var(--editor-disabled);
-    font: 500 13px var(--font-ui);
   }
   .folded {
     flex: 1;

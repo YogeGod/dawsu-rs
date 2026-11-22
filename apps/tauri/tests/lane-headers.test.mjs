@@ -188,7 +188,7 @@ test("the drum view keeps its rows and names and adds no tags", async () => {
   assert.equal(evaluate("JSON.stringify(laneRows)"), '["soft",0,4,1,2,5,6,3]');
 });
 
-test("Drum Map Setup lists built-in presets and lets the mapper assign any drum row", async () => {
+async function drumSetupEditor() {
   const invoked = [];
   const controls = new Map();
   function element() {
@@ -222,6 +222,11 @@ test("Drum Map Setup lists built-in presets and lets the mapper assign any drum 
     console,
   });
   await bootEditor(context);
+  return { invoked, get, context };
+}
+
+test("Drum Map Setup lists built-in presets and lets the mapper assign any drum row", async () => {
+  const { invoked, get, context } = await drumSetupEditor();
   runInContext(fixture + `view.drumView = {
     enabled: true,
     name: "Two kicks",
@@ -247,6 +252,61 @@ test("Drum Map Setup lists built-in presets and lets the mapper assign any drum 
     ["drum_map_action", { map: "a.osu", action: { kind: "load_builtin", name: "Full kit, all 12 samples" } }],
     ["drum_map_action", { map: "a.osu", action: { kind: "assign_row", row_index: 1, lane_key: "Skin|soft-hitnormal" } }],
   ]);
+});
+
+test("Drum Map Setup switches Auto-detect and Hide unassigned, detects now, and moves rows by button or drag", async () => {
+  const { invoked, get, context } = await drumSetupEditor();
+  runInContext(fixture + `view.drumView = {
+    enabled: true, name: "Two kicks", autoDetect: true, hideUnassigned: false,
+    presets: ["Two kicks"],
+    rows: [
+      { index: 0, name: "Kick", laneKey: "Skin|soft-hitnormal", assigned: true },
+      { index: 1, name: "Snare", laneKey: null, assigned: false },
+      { index: 2, name: "Ghost", laneKey: null, assigned: false },
+    ],
+    lanes: [{ key: "Skin|soft-hitnormal", sceneKey: "n", name: "soft-hitnormal" }],
+  };
+  openDrumMapSetup();`, context);
+  const body = get("dialog-body").children;
+  const [autoDetect, hide, detectNow] = body[2].children;
+  assert.equal(autoDetect.children[1].checked, true);
+  assert.equal(hide.children[1].checked, false);
+  const [first, , last] = body[1].children;
+  assert.equal(first.children[2].disabled, true, "the first row cannot move up");
+  assert.equal(last.children[3].disabled, true, "the last row cannot move down");
+
+  const pending = () => runInContext("pending", context);
+  hide.children[1].checked = true;
+  hide.children[1].events.get("change")();
+  await pending();
+  autoDetect.children[1].checked = false;
+  autoDetect.children[1].events.get("change")();
+  await pending();
+  detectNow.events.get("click")();
+  await pending();
+  first.children[3].events.get("click")();
+  await pending();
+  last.children[2].events.get("click")();
+  await pending();
+  const drag = { preventDefault() {}, dataTransfer: {} };
+  last.events.get("dragstart")(drag);
+  first.events.get("dragover")(drag);
+  first.events.get("drop")(drag);
+  await pending();
+  assert.deepEqual(invoked.filter(([name]) => name === "drum_map_action").map(([, args]) => args.action), [
+    { kind: "set_hide_unassigned", on: true },
+    { kind: "set_auto_detect", on: false },
+    { kind: "auto_detect" },
+    { kind: "move_row", from_index: 0, to_index: 1 },
+    { kind: "move_row", from_index: 2, to_index: 1 },
+    { kind: "move_row", from_index: 2, to_index: 0 },
+  ]);
+});
+
+test("the drum lane column shows a one-click Hide unassigned switch that sends the drum map action", async () => {
+  const part = await readFile(new URL("../ui/src/parts/LaneHeaders.svelte", import.meta.url), "utf8");
+  assert.match(part, /drumMapAction\?\.\(\{ kind: "set_hide_unassigned", on: !drumView\.hideUnassigned \}\)/);
+  assert.match(part, /aria-pressed=\{!!drumView\.hideUnassigned\}/);
 });
 
 test("the header column keeps the design's 250px width and colours every web view draws", async () => {

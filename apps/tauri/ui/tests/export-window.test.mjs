@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { render } from "svelte/server";
 import {
   adoptChoices, afterPoll, baseStatus, ownWriteError, blockDrops, choicesFrom, runOutcome, statusLine, copyOptions, defaultChoices, difficultyName, exportLabel, exportState, included,
-  laneSwatches, matchWithinValid, optionsKey, pollDelay, previewRequest, targetCounts,
+  laneSwatches, matchWithinValid, openWarnings, optionsKey, pollDelay, previewRequest, targetCounts, warningsLabel,
 } from "../src/lib/export.js";
 import ExportWindow from "../src/parts/ExportWindow.svelte";
 
@@ -252,4 +253,28 @@ test("a write error shows only for this window's own last run", () => {
   assert.equal(ownWriteError(1, failed), null);
   assert.equal(ownWriteError(null, failed), null, "an error from before the window opened");
   assert.equal(ownWriteError(2, { ...failed, writing: true }), null);
+});
+
+test("the footer's warning count opens the list of warnings", () => {
+  const source = readFileSync(new URL("../src/parts/ExportWindow.svelte", import.meta.url), "utf8");
+  // A button, not a label: it says whether the list is open and which list it opens. A click flips it.
+  assert.match(source, /<button type="button" class="warnings" aria-expanded=\{showWarnings\} aria-controls="export-warnings"\s*onclick=\{\(\) => \(showWarnings = !showWarnings\)\}>\{warningsLabel\(line\.count\)\}<\/button>/);
+  assert.match(source, /const warnings = \$derived\(openWarnings\(showWarnings, line, problems\)\)/);
+  assert.match(source, /\{#if warnings\.length\}\s*<ul class="warning-list" id="export-warnings"[^>]*>\s*\{#each warnings as message/);
+
+  const problems = [{ message: "Hard: 2 hits fall outside any object." }, { message: "Insane: clap has no sample." }];
+  const line = statusLine({ view: {}, problems });
+  assert.equal(line.text, problems[0].message, "the first warning shows in the footer");
+  assert.equal(warningsLabel(line.count), "2 warnings");
+  assert.equal(warningsLabel(1), "1 warning");
+  // Closed: no list. Clicked open: every warning, in order. Clicked again: closed.
+  let open = false;
+  assert.deepEqual(openWarnings(open, line, problems), []);
+  open = !open;
+  assert.deepEqual(openWarnings(open, line, problems), problems.map(problem => problem.message));
+  open = !open;
+  assert.deepEqual(openWarnings(open, line, problems), []);
+  // Left open while the warnings go (a new preview with none, or an error line): the list goes too.
+  assert.deepEqual(openWarnings(true, statusLine({ view: {}, problems: [] }), []), []);
+  assert.deepEqual(openWarnings(true, statusLine({ view: {}, pollError: "Lost the editor", problems }), problems), []);
 });

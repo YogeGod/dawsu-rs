@@ -244,7 +244,7 @@ export function attachSettingsDialogs(ctx) {
     presets.className = "shortcut-presets";
     presets.setAttribute("role", "group");
     presets.setAttribute("aria-label", "Key preset");
-    for (const [label, name] of [["DAW-like keys", "DAW"], ["osu! editor controls", "osu!"]]) {
+    for (const [label, name] of [["osu! editor controls", "osu!"], ["DAW-like keys", "DAW"]]) {
       const button = makeButton(label, () => {
         if (shortcuts.preset !== name) refresh(() => ctx.update({ kind: "key_preset", name }));
       });
@@ -412,10 +412,18 @@ export function attachSettingsDialogs(ctx) {
     search.focus();
   }
 
+  // Edit › Preferences…: the Svelte modal registers openPreferencesModal once it mounts and drops it
+  // when it unmounts, so a modal that failed to mount falls back to the View dialog instead of
+  // calling this function again through the global of the same name.
   function openPreferences(tab = "general") {
-    if (typeof globalThis.openPreferences === "function") {
-      globalThis.openPreferences(tab);
-      return;
+    const modal = env.openPreferencesModal ?? globalThis.openPreferencesModal;
+    if (typeof modal === "function" && modal !== openPreferences) {
+      try {
+        modal(tab);
+        return;
+      } catch (error) {
+        console.error(error);
+      }
     }
     openViewSettings();
   }

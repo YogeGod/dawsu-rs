@@ -25,6 +25,8 @@ export const items = [
   // File
   { id: "openMap", label: "Open map…", icon: "FolderOpen", command: "open", run: ["call", "openMap"], enabled: "idle" },
   { id: "importOsz", label: "Import .osz…", icon: "PackageOpen", command: "importOsz", enabled: "idle" },
+  { id: "importMidi", label: "Import MIDI…", icon: "Music", run: ["call", "openMidiImport"], enabled: "document" },
+  { id: "exportMidi", label: "Export MIDI…", icon: "Music", run: ["call", "exportMidi"], enabled: "document" },
   { id: "openFolder", label: "Open map folder", icon: "Folder", command: "openFolder" },
   { id: "save", label: "Save", icon: "Save", command: "save" },
   { id: "revert", label: "Revert to saved…", icon: "RotateCcw", command: "revert" },
@@ -61,6 +63,8 @@ export const items = [
   { id: "returnOnStop", label: "Return on stop", icon: "UndoDot", run: ["toggle", "return_on_stop", "view.returnOnStop", true] },
   { id: "follow", label: "Follow playhead", icon: "LocateFixed", run: ["toggle", "follow", "view.follow", true] },
   { id: "cycle", label: "Cycle between L and R", icon: "Repeat", command: "cycle", run: ["toggle", "cycle", "view.cycle"] },
+  { id: "locatorsToSelection", label: "Locators to selection", command: "locatorsToSelection" },
+  { id: "playLocatorRange", label: "Play locator range", command: "playLocatorRange" },
   { id: "speed", label: "Speed · pitch stays the same", choices: "speed" },
   { id: "muteSong", label: "Mute song", icon: "VolumeX", run: ["toggle", "song_muted", "view.songMuted", true] },
   { id: "audioOutput", label: "Audio output…", icon: "Volume2", run: ["click", "audio"], enabled: "idle" },
@@ -72,6 +76,9 @@ export const items = [
   { id: "copyHitsounds", label: "Copy hitsounds…", icon: "Copy", run: ["click", "copy"] },
   { id: "drumDetection", label: "Drum hit detection…", icon: "Drum", run: ["call", "openDrumWindow"] },
   { id: "nodeGraph", label: "Node graph…", icon: "Layers", run: ["call", "openNodeGraphWindow"] },
+  { id: "keysounds", label: "Keysounds & VST3…", icon: "AudioWaveform", run: ["call", "openKeysounds"], enabled: "document" },
+  // Out of the Inspector's Difficulty section (Preferences › This map has it too).
+  { id: "hsMode", label: "Hitsounding mode", run: ["toggle", "hs_mode", "scene.hs"] },
   { id: "exportStyle", label: "Generate export style", choices: "exportStyle", enabled: "never" },
   { id: "addBookmark", label: "Add bookmark", icon: "BookmarkPlus", command: "addBookmark" },
   { id: "previousBookmark", label: "Previous bookmark", icon: "ArrowLeftToLine", command: "previousBookmark" },
@@ -86,6 +93,7 @@ export const items = [
   { id: "mapPreview", label: "Map preview", icon: "ScanEye", run: ["call", "toggleMapPreview"], checked: "mapPreview", enabled: "document" },
   { id: "laneNames", label: "Lane names", icon: "Tag", run: ["panel", "lane_names", "laneNames"] },
   { id: "songWaveform", label: "Song waveform", icon: "AudioWaveform", run: ["click", "ruler-waveform"], checked: "waveform" },
+  { id: "soundFirst", label: "Sound-first · hide missing-object warnings", run: ["click", "ruler-sound-first"], checked: "soundFirst" },
   { id: "objectLines", label: "Object lines", icon: "AlignHorizontalSpaceAround", run: ["toggle", "object_lines", "view.objectLines"] },
   { id: "usedOnly", label: "Used lanes only", icon: "ListFilter", run: ["click", "used-only"], checked: "usedOnly" },
   { id: "collapseLayers", label: "Collapse sample layers", icon: "ListCollapse", run: ["click", "collapse-layers"] },
@@ -99,6 +107,7 @@ export const items = [
   { id: "drumMap", label: "Open drum map…", icon: "Drum", run: ["call", "requestDrumMap"] },
   { id: "editLayout", label: "Edit layout…", icon: "LayoutPanelLeft", run: ["call", "editLayout"] },
   { id: "viewSettings", label: "View settings…", icon: "Settings", run: ["call", "openViewSettings"] },
+  { id: "quickStart", label: "Quick start tour", run: ["call", "openQuickStart"] },
   { id: "shortcuts", label: "Shortcuts", icon: "Keyboard", command: "help", run: ["call", "showHelp"], enabled: "idle" },
 
   // Right-click on the timeline (and the fourth tool pill): the seven tools, in TOOLS' order (tools.js).
@@ -124,7 +133,7 @@ export const items = [
 // Where each row sits. "-" is a divider; one at the start or end of a menu, or next to another, is
 // left out (Map has no Difficulty row, and so no divider under it, without a sibling difficulty).
 export const menus = {
-  file: ["openMap", "importOsz", "openFolder", "-", "save", "revert", "export", "-", "startScreen", "folders", "-", "preferences"],
+  file: ["openMap", "importOsz", "importMidi", "openFolder", "-", "save", "revert", "export", "exportMidi", "-", "startScreen", "folders", "-", "preferences"],
   edit: [
     "undo", "redo", "-",
     "cut", "copy", "paste", "duplicate", "delete", "selectAll", "-",
@@ -134,23 +143,24 @@ export const menus = {
   playback: [
     "play", "stop", "goToStart", "goToEnd", "-",
     "playbackStart", "-",
-    "returnOnStop", "follow", "cycle", "-",
+    "returnOnStop", "follow", "cycle", "locatorsToSelection", "playLocatorRange", "-",
     "speed", "-",
     "muteSong", "audioOutput",
   ],
   map: [
     "difficulty", "-",
     "newDifficulty", "-",
-    "generate", "copyHitsounds", "drumDetection", "nodeGraph", "exportStyle", "-",
+    "generate", "copyHitsounds", "drumDetection", "nodeGraph", "keysounds", "exportStyle", "-",
+    "hsMode", "-",
     "addBookmark", "previousBookmark", "nextBookmark", "-",
     "addLane", "deleteActiveLane",
   ],
   view: [
     "browser", "inspector", "volumePanel", "mapPreview", "laneNames", "-",
-    "songWaveform", "objectLines", "usedOnly", "collapseLayers", "filterLanes", "tallerLanes", "shorterLanes", "-",
+    "songWaveform", "soundFirst", "objectLines", "usedOnly", "collapseLayers", "filterLanes", "tallerLanes", "shorterLanes", "-",
     "zoomIn", "zoomOut", "fit", "-",
     "timeSignatures", "drumMap", "editLayout", "viewSettings", "-",
-    "shortcuts",
+    "quickStart", "shortcuts",
   ],
   tool: ["toolSelect", "toolDraw", "toolErase", "toolMute", "toolGrab", "toolRange", "toolRamp"],
   lane: ["laneRename", "laneMoveUp", "laneMoveDown", "laneReplaceSample", "laneColour", "laneAddLayer", "laneAdd", "laneDelete"],
@@ -163,7 +173,7 @@ export const keyOnly = [
   "nudgeLeft", "nudgeRight", "gridLeft", "gridRight", "navUp", "navDown", "selectPrevious", "selectNext",
   "addPrevious", "addNext", "navAddUp", "navAddDown",
   "openHitsoundFolder", "reviewOutput", "first", "last", "deselect", "snap",
-  "jumpLeft", "jumpRight", "setLeft", "setRight", "locatorsToSelection", "playLocatorRange", "removeBookmark",
+  "jumpLeft", "jumpRight", "setLeft", "setRight", "removeBookmark",
   "seekBack", "seekBackFar", "seekForward", "seekForwardFar",
   "snap1", "snap2", "snap3", "snap4", "snap5", "snap6", "snap7", "snap8", "snap9",
 ];

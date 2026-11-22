@@ -55,7 +55,7 @@ async function frontend() {
   status.hasDocument = true;
   const evaluate = (code) => runInContext(code, context);
   evaluate('view = { busy: false, hasDocument: true, duration: 10_000 }; scene = { path: "fixture.osu", viewStart: 1000, zoom: 1, rowHeight: 30 }');
-  return { calls, documentEvents, evaluate, get, state: ctx.state, status, settle: () => evaluate("pending") };
+  return { calls, ctx, documentEvents, evaluate, get, state: ctx.state, status, settle: () => evaluate("pending") };
 }
 
 // The snap part of the Svelte bundle (ui/src/main.js and bridge.svelte.js), on the real ui/src/lib/snap.js.
@@ -398,17 +398,17 @@ test("editor grid lines stay neutral: sub-beats follow the snap, then beats and 
   const lines = () => JSON.parse(evaluate("JSON.stringify(testGridLines())"));
   const quarters = lines();
   // v3 §5 (Yoge): only the ruler is coloured; grid lines run the full height in white at low alpha.
-  assert.deepEqual(quarters[0], [0, 300, "rgba(255,255,255,.22)"], "bar");
-  assert.deepEqual(quarters[480], [0, 300, "rgba(255,255,255,.045)"], "beat");
-  assert.deepEqual(quarters[120], [0, 300, "rgba(255,255,255,.025)"], "1/4");
-  assert.deepEqual(quarters[240], [0, 300, "rgba(255,255,255,.025)"], "1/2");
+  assert.deepEqual(quarters[0], [0, 300, "rgba(255,255,255,.26)"], "bar");
+  assert.deepEqual(quarters[480], [0, 300, "rgba(255,255,255,.07)"], "beat");
+  assert.deepEqual(quarters[120], [0, 300, "rgba(255,255,255,.04)"], "1/4");
+  assert.deepEqual(quarters[240], [0, 300, "rgba(255,255,255,.04)"], "1/2");
   evaluate("scene.divisor = 3");
-  assert.deepEqual(lines()[160], [0, 300, "rgba(255,255,255,.025)"], "sub-beats follow the divisor");
+  assert.deepEqual(lines()[160], [0, 300, "rgba(255,255,255,.04)"], "sub-beats follow the divisor");
   assert.equal(lines()[120], undefined);
   evaluate("scene.snap = false");
   assert.equal(lines()[160], undefined, "no sub-beats with snap off");
   evaluate("scene.editorBars = [{ start: 0, beat: 480, numerator: 3, bar: 1 }]");
-  assert.deepEqual(lines()[1440], [0, 300, "rgba(255,255,255,.22)"], "a time signature's bar");
+  assert.deepEqual(lines()[1440], [0, 300, "rgba(255,255,255,.26)"], "a time signature's bar");
 });
 
 test("bar numbers sit 10 px from the ruler's top; bar lines run its full height", async () => {
@@ -742,6 +742,9 @@ test("at 150% UI scale, grid clicks/hitboxes and Volume-lane hover resolve to ex
   // Grid hover card at the same zoomed coordinates resolves to row 1, 1000 ms.
   const cardKey = evaluate("hitCardAt({ clientX: 891, clientY: 157.5 })?.key ?? null");
   assert.ok(cardKey?.startsWith("1:1000:"), `expected hit card for row 1 at 1000 ms, got ${cardKey}`);
+  // The card is placed in CSS pixels: grid edge 150/1.5 + 500 across, 90/1.5 + row 1's middle down.
+  // (Checked against the fake page only; the real WebView's zoom is not run here.)
+  assert.deepEqual([...evaluate("[hitCardAt({ clientX: 891, clientY: 157.5 }).x, hitCardAt({ clientX: 891, clientY: 157.5 }).y]")], [600, 105]);
 
   // Volume-lane hover at visual x=900 (logical x=500 -> 1000 ms) must set volumeHoverTime to 1000, not 1500.
   fire(controller, "pointermove", { clientX: 900, clientY: 570 });
@@ -754,4 +757,70 @@ test("at 150% UI scale, grid clicks/hitboxes and Volume-lane hover resolve to ex
   // Moving to empty space at visual x=450 (logical x=200 -> 400 ms) clears volumeHoverTime.
   fire(controller, "pointermove", { clientX: 450, clientY: 570 });
   assert.equal(state.volumeHoverTime, null);
+});
+
+test("at 150% UI scale a ruler click seeks to the time under the pointer", async () => {
+  const { calls, evaluate, get, settle } = await frontend();
+  get("ruler").getBoundingClientRect = () => ({ x: 150, y: 90, left: 150, top: 90, width: 1500, height: 90 });
+  evaluate('document.documentElement.dataset.uiScale = "150"; scene.viewStart = 0; scene.zoom = 0.5');
+  // Visual x 450 is CSS x 200, 400 ms; visual y 165 is CSS y 50, under the 40 px bar band.
+  get("ruler").events.get("pointerdown")({ button: 0, pointerId: 1, clientX: 450, clientY: 165,
+    ctrlKey: false, metaKey: false, altKey: false, shiftKey: false });
+  await settle();
+  assert.deepEqual(calls.at(-1).action, { kind: "seek", ms: 400 });
+});
+
+test("wheel zoom ticks that arrive while the editor answers add up instead of being dropped", async () => {
+  const { calls, ctx, get, state, settle } = await frontend();
+  const wheel = get("scroll").events.get("wheel");
+  const roll = () => wheel({ ctrlKey: true, shiftKey: false, altKey: false, deltaX: 0, deltaY: 100, clientX: 0, preventDefault() {} });
+  state.requests = 2;
+  roll();
+  roll();
+  await settle();
+  assert.deepEqual(calls, [], "nothing goes while two requests are in flight");
+  state.requests = 0;
+  ctx.flushWheel();
+  await settle();
+  assert.equal(calls.length, 1, "both ticks go as one step");
+  assert.ok(Math.abs(calls[0].action.zoom - Math.exp(-200 * 0.003)) < 1e-9);
+});
+
+test("Follow holds off for a moment after a wheel scroll during playback", async () => {
+  const { calls, ctx, evaluate, get, settle, status } = await frontend();
+  // The editor's answers keep playing with Follow on, the playhead past the shown second.
+  Object.assign(status, { follow: true, playing: true, position: 9000 });
+  evaluate("view = { ...view, follow: true, playing: true, position: 9000 }; anchorPlayhead(9000)");
+  get("scroll").events.get("wheel")({ ctrlKey: false, shiftKey: true, altKey: false, deltaX: 0, deltaY: 100,
+    clientX: 0, preventDefault() {} });
+  await settle();
+  calls.length = 0;
+  ctx.followPlayhead();
+  await settle();
+  assert.deepEqual(calls, [], "the playhead is out of view, but the mapper just scrolled");
+  evaluate("performance.now = () => 5000");
+  ctx.followPlayhead();
+  await settle();
+  assert.equal(calls.at(-1)?.action.kind, "view", "Follow takes over again");
+});
+
+test("a finished Save or Export write says so in a toast once, and a failed one does not", async () => {
+  const { ctx, evaluate, status } = await frontend();
+  const toasts = [];
+  evaluate("window").showToast = toast => toasts.push(toast.title + ": " + toast.body);
+  const answer = async fields => { Object.assign(status, fields); await ctx.act(null); };
+  await answer({ dirty: true, status: "Moved 1 hit" });
+  await answer({ dirty: false, status: "Saved with backup" });
+  await answer({});
+  await answer({ dirty: true });
+  await answer({ dirty: false });
+  await answer({ status: "Wrote 3 reviewed files with backups" });
+  // A view still busy after the write (a sweep) tells it too, and the idle one after it doesn't again.
+  await answer({ dirty: true, status: "Moved 1 hit" });
+  await answer({ dirty: false, busy: true, status: "Wrote 2 reviewed files with backups" });
+  await answer({ busy: false });
+  await answer({ dirty: true, status: "Moved 1 hit" });
+  await answer({ dirty: false, status: "Saved with backup", error: "Disk full" });
+  assert.deepEqual(toasts, ["Saved: Saved with backup", "Saved: Saved with backup", "Files written: Wrote 3 reviewed files with backups",
+    "Files written: Wrote 2 reviewed files with backups"]);
 });

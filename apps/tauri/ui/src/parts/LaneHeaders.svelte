@@ -13,6 +13,8 @@
   const headers = $derived(bridge.lanes);
   const rows = $derived(headers?.rows ?? []);
   const names = $derived(headers?.names !== false);
+  // The drum map's switches (Rust sends them with the view while the drum view is on).
+  const drumView = $derived(headers?.drum ? bridge.view?.drumView ?? null : null);
   const folder = folderShades();
   const on = laneHandlers((...args) => globalThis.laneHeaderAction?.(...args), tick);
 </script>
@@ -94,6 +96,15 @@
       disabled={headers.busy} onclick={() => globalThis.openDrumMapSetup?.()}>
       {#if names}<span>{headers.drumName ? headers.drumName + " (Setup…)" : "Drum map setup…"}</span>{:else}<span>Setup</span>{/if}
     </button>
+    {#if drumView}
+      <!-- One click from the lane column; Drum Map Setup has the same switch and Auto-detect. -->
+      <button type="button" id="drum-hide-unassigned" class="add-lane-row drum-setup-row" class:compact={!names}
+        aria-pressed={!!drumView.hideUnassigned} disabled={headers.busy}
+        title={drumView.hideUnassigned ? "Show the drum rows no sample fills" : "Hide the drum rows no sample fills"}
+        onclick={() => globalThis.drumMapAction?.({ kind: "set_hide_unassigned", on: !drumView.hideUnassigned })}>
+        <span>{names ? (drumView.hideUnassigned ? "Show unassigned rows" : "Hide unassigned rows") : (drumView.hideUnassigned ? "Show" : "Hide")}</span>
+      </button>
+    {/if}
   {/if}
   <button type="button" id="add-lane" class="add-lane-row" class:compact={!names} aria-label="Add lane" title={names ? undefined : "Add lane"}
     disabled={headers.busy} onclick={() => globalThis.openAddLane?.()}>{@html Plus}{#if names}<span>Add lane</span>{/if}</button>

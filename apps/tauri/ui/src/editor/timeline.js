@@ -46,6 +46,9 @@ export function attachTimeline(ctx) {
   }
 
   const uiScale = () => (Number(env.document?.documentElement?.dataset?.uiScale) || 100) / 100;
+  const perf = () => env.performance ?? performance;
+  // How long a wheel scroll or zoom during playback keeps Follow from moving the view.
+  const followYieldMs = 1200;
 
   function pointerIn(surface, event) {
     const rect = surface.getBoundingClientRect();
@@ -53,6 +56,13 @@ export function attachTimeline(ctx) {
     const left = rect.left ?? rect.x ?? 0;
     const top = rect.top ?? rect.y ?? 0;
     return { x: (event.clientX - left) / s, y: (event.clientY - top) / s, rect };
+  }
+
+  // A screen point on the ruler in its own CSS pixels, with the ruler's size in them too.
+  function rulerPoint(point, bounds = ruler.getBoundingClientRect()) {
+    const s = uiScale();
+    const { x, y } = pointerIn({ getBoundingClientRect: () => bounds }, point);
+    return { x, y, width: (bounds.width ?? 0) / s, height: (bounds.height ?? 0) / s };
   }
 
   function pointer(event, phase, gesture = state.drag) {
@@ -202,8 +212,11 @@ export function attachTimeline(ctx) {
     const lane = state.scene.lanes?.[row];
     const name = state.renamedLanes.has(lane?.colourKey) ? ctx.laneDisplayName(lane) : ctx.laneSound(lane).name;
     const set = sampleFolderNames[lane?.group];
-    const x = rect.left + (time - state.scene.viewStart) * state.scene.zoom;
-    const y = rect.top + (visibleRow + 0.5) * state.scene.rowHeight - scrollTop;
+    // The card is placed in CSS pixels, which the UI scale enlarges again: the grid's screen edge
+    // is divided by it, the offsets inside the grid already are CSS pixels.
+    const s = uiScale();
+    const x = (rect.left ?? rect.x ?? 0) / s + (time - state.scene.viewStart) * state.scene.zoom;
+    const y = (rect.top ?? rect.y ?? 0) / s + (visibleRow + 0.5) * state.scene.rowHeight - scrollTop;
     const title = set ? name + " · " + set : name;
     const detail = "Volume " + Math.round(hitVolume ?? volume) + "% · " + (onObject ? "on " : "") + hitObjectName(time, onObject);
     return {
@@ -245,9 +258,7 @@ export function attachTimeline(ctx) {
   function refreshRulerCursor() {
     let gesture = state.rulerDrag?.mode;
     if (!gesture && state.scene && state.rulerPointer) {
-      const { left, top, width } = ruler.getBoundingClientRect();
-      const x = state.rulerPointer.clientX - left;
-      const y = state.rulerPointer.clientY - top;
+      const { x, y, width } = rulerPoint(state.rulerPointer);
       if (x >= 0 && x < width && y >= 0 && y < rulerBandHeight) gesture = rulerGestureAt(x, y);
     }
     const cursor = gesture === "left" || gesture === "right" ? "ew-resize"
@@ -257,7 +268,7 @@ export function attachTimeline(ctx) {
 
   function trackRulerPointer(event) {
     const bounds = ruler.getBoundingClientRect();
-    const x = event.clientX - bounds.left;
+    const { x } = rulerPoint(event, bounds);
     state.rulerPointer = { clientX: event.clientX, clientY: event.clientY };
     refreshRulerCursor();
     if (state.rulerDrag && state.rulerDrag.id === event.pointerId) {
@@ -271,9 +282,8 @@ export function attachTimeline(ctx) {
   function refreshRulerWarningTooltip(bounds) {
     let nearest = null;
     if (state.rulerPointer && !state.rulerDrag && state.rulerWarningMarkers.length) {
-      const rect = bounds ?? ruler.getBoundingClientRect();
-      const x = state.rulerPointer.clientX - rect.left;
-      const y = state.rulerPointer.clientY - rect.top;
+      const rect = rulerPoint(state.rulerPointer, bounds ?? ruler.getBoundingClientRect());
+      const { x, y } = rect;
       if (x >= 0 && x < rect.width && y >= rect.height - 13 && y < rect.height) {
         let distance = Infinity;
         for (const marker of state.rulerWarningMarkers) {
@@ -440,8 +450,10 @@ export function attachTimeline(ctx) {
   function panOverview(event) {
     if (!state.overviewDrag || state.overviewDrag.id !== event.pointerId ||
         state.overviewDrag.path !== state.scene?.path || !overview.clientWidth) return;
-    const fraction = limit((event.clientX - overview.getBoundingClientRect().left) / overview.clientWidth, 0, 1);
+    const fraction = limit((event.clientX - overview.getBoundingClientRect().left) / (overview.clientWidth * uiScale()), 0, 1);
     state.overviewTarget = { path: state.overviewDrag.path, fraction };
+    // Let go of, the strip's view stays a moment before Follow may move it again.
+    state.manualScrollAt = perf().now();
     // Keep the latest position while the previous viewport update is pending.
     state.overviewNavigation ??= drainOverviewNavigation().finally(() => { state.overviewNavigation = null; });
   }
@@ -453,7 +465,9 @@ export function attachTimeline(ctx) {
   // Called with each view from the editor, and with `frame` on each playback frame.
   function followPlayhead(frame = false) {
     if (!state.view.follow || !state.view.playing || state.view.busy ||
-        state.drag || state.rulerDrag || state.overviewDrag || !grid.clientWidth) return;
+        state.drag || state.rulerDrag || state.overviewDrag || state.overviewNavigation || !grid.clientWidth) return;
+    // A wheel scroll or zoom during playback holds Follow off for a moment, so the two don't fight.
+    if (perf().now() - (state.manualScrollAt ?? -Infinity) < followYieldMs) return;
     const visible = grid.clientWidth / state.scene.zoom;
     const position = ctx.playheadPosition();
     // The Playhead group's Centre (window only): the view moves so the playhead stays in the middle.
@@ -554,6 +568,33 @@ export function attachTimeline(ctx) {
     if (divisor) ctx.act({ kind: "snap", on: state.scene.snap, mode: state.scene.snapMode, beats: 1, divisor });
   }
 
+  // One waiting wheel move: a new one of the same kind adds to it, another kind replaces it.
+  function queueWheel(move) {
+    const queued = state.wheelQueued;
+    if (queued?.kind !== move.kind) state.wheelQueued = move;
+    else if (move.kind === "rows") state.wheelQueued = { ...move, steps: queued.steps + move.steps };
+    else if (move.kind === "zoom") state.wheelQueued = { ...move, deltaY: queued.deltaY + move.deltaY };
+    else state.wheelQueued = { ...move, delta: queued.delta + move.delta };
+  }
+
+  // Sends the waiting wheel move once at most one request is in flight; ipc.js's run() calls this
+  // again as each request finishes.
+  function flushWheel() {
+    const move = state.wheelQueued;
+    if (!move || state.requests > 1) return;
+    state.wheelQueued = null;
+    if (!state.scene || state.view.busy || state.drag) return;
+    const { viewStart, zoom, rowHeight } = state.scene;
+    if (move.kind === "rows") {
+      changeView(viewStart, zoom, Math.round(rowHeight * 1.15 ** move.steps), move.anchor);
+    } else if (move.kind === "zoom") {
+      const next = limit(zoom * Math.exp(-move.deltaY * 0.003), minZoom, 3);
+      changeView(viewStart + Math.max(0, move.x) * (1 / zoom - 1 / next), next);
+    } else {
+      changeView(viewStart + move.delta / zoom, zoom);
+    }
+  }
+
   function fitTimeline() {
     if (state.scene && !state.view.busy && state.view.duration > 0 && grid.clientWidth > 0) {
       changeView(0, grid.clientWidth / state.view.duration);
@@ -586,7 +627,6 @@ export function attachTimeline(ctx) {
       });
     }
 
-    const perf = () => env.performance ?? performance;
     for (const surface of [grid, controller]) {
       surface.addEventListener("pointerdown", (event) => {
         if (surface === grid) handOverHitCard(null);
@@ -722,9 +762,8 @@ export function attachTimeline(ctx) {
     });
     ruler.addEventListener("pointerdown", (event) => {
       if (!state.scene || state.view.busy || state.drag || state.rulerDrag || event.button !== 0) return;
-      const bounds = ruler.getBoundingClientRect();
-      const x = event.clientX - bounds.left;
-      const y = event.clientY - bounds.top;
+      const bounds = rulerPoint(event);
+      const { x, y } = bounds;
       const ms = state.scene.viewStart + x / state.scene.zoom;
       const side = event.ctrlKey || event.metaKey ? "left" : event.altKey ? "right" : null;
       const flag = event.shiftKey && !side && y < rulerBandHeight ? rulerGestureAt(x, y) : null;
@@ -750,9 +789,9 @@ export function attachTimeline(ctx) {
     ruler.addEventListener("dblclick", event => {
       if (!state.scene || state.view.busy || state.drag || state.rulerDrag || event.button !== 0 ||
           event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return;
-      const bounds = ruler.getBoundingClientRect();
-      const ms = state.scene.viewStart + (event.clientX - bounds.left) / state.scene.zoom;
-      const y = event.clientY - bounds.top;
+      const bounds = rulerPoint(event);
+      const ms = state.scene.viewStart + bounds.x / state.scene.zoom;
+      const { y } = bounds;
       if (bookmarkNearFlag(ms, y)) return;
       const target = waveformTarget(ms, y, bounds.height);
       if (target) ctx.act({ kind: "waveform_object", path: state.scene.path, ...target, preview: true });
@@ -760,7 +799,7 @@ export function attachTimeline(ctx) {
     ruler.addEventListener("pointerup", event => {
       if (!state.rulerDrag || state.rulerDrag.id !== event.pointerId) return;
       const gesture = endRulerDrag(event);
-      const x = event.clientX - ruler.getBoundingClientRect().left;
+      const { x } = rulerPoint(event);
       // A click without a drag moves the playhead to the snapped time, on a flag or inside the range too.
       const moved = Math.abs(x - gesture.x) >= 3;
       const locator = gesture.mode === "left" || gesture.mode === "right";
@@ -800,7 +839,7 @@ export function attachTimeline(ctx) {
       if (!state.scene) return;
       const { ctrlKey, shiftKey, altKey, deltaX, deltaY } = event;
       const osu = state.view.keyPreset === "osu!";
-      const x = event.clientX - grid.getBoundingClientRect().x;
+      const x = pointerIn(grid, event).x;
       const rows = ctrlKey && shiftKey;
       const horizontal = deltaX && !deltaY;
       const snap = !horizontal && (osu ? ctrlKey : altKey && !ctrlKey);
@@ -809,19 +848,23 @@ export function attachTimeline(ctx) {
       const seek = osu && (shiftKey || x >= 0);
       if (!(rows || snap || zoomTime || pan || seek) || (!deltaX && !deltaY)) return;
       event.preventDefault();
-      if (state.requests > 1 || state.view.busy || state.drag) return;
-      if (rows) {
-        if (!deltaY) return;
-        const height = Math.round(state.scene.rowHeight * (deltaY < 0 ? 1.15 : 1 / 1.15));
-        const anchor = event.clientY - $("scroll").getBoundingClientRect().top;
-        changeView(state.scene.viewStart, state.scene.zoom, height, anchor);
-      } else if (snap) {
+      if (state.view.busy || state.drag) return;
+      // Zoom, pan and lane height add up while the editor is still answering, and go as one step
+      // when it has (flushWheel); snap steps and seeks are skipped meanwhile.
+      const move = rows ? (deltaY ? { kind: "rows", steps: deltaY < 0 ? 1 : -1, anchor: pointerIn($("scroll"), event).y } : null)
+        : snap ? null
+        : zoomTime ? { kind: "zoom", deltaY, x }
+        : pan ? { kind: "pan", delta: deltaX || deltaY } : null;
+      if (rows && !move) return;
+      if (move) {
+        if (move.kind !== "rows") state.manualScrollAt = perf().now();
+        queueWheel(move);
+        flushWheel();
+        return;
+      }
+      if (state.requests > 1) return;
+      if (snap) {
         stepWheelSnap(deltaY < 0);
-      } else if (zoomTime) {
-        const zoom = limit(state.scene.zoom * Math.exp(-deltaY * 0.003), minZoom, 3);
-        changeView(state.scene.viewStart + Math.max(0, x) * (1 / state.scene.zoom - 1 / zoom), zoom);
-      } else if (pan) {
-        changeView(state.scene.viewStart + (deltaX || deltaY) / state.scene.zoom, state.scene.zoom);
       } else {
         const id = (deltaY < 0 ? "seekBack" : "seekForward") + (shiftKey ? "Far" : "");
         ctx.act({ kind: "command", id }, false);
@@ -836,6 +879,14 @@ export function attachTimeline(ctx) {
         refreshWaveformSwitch();
         ctx.paintSoon();
       }
+    });
+    // Sound-first: one click hides the missing-object warnings on the ruler, timeline and overview.
+    $("ruler-sound-first").setAttribute?.("aria-pressed", String(state.soundFirst));
+    $("ruler-sound-first").addEventListener("click", () => {
+      state.soundFirst = !state.soundFirst;
+      try { env.window.localStorage?.setItem("dawsu.soundFirst", state.soundFirst ? "1" : "0"); } catch {}
+      $("ruler-sound-first").setAttribute?.("aria-pressed", String(state.soundFirst));
+      ctx.paintSoon();
     });
     // The lane toolbar (v3 §4): zoom, and Shorter and Taller lanes as View › Shorter lanes and Taller lanes.
     for (const [id, action] of [["ruler-zoom-out", "zoomOut"], ["ruler-zoom-in", "zoomIn"], ["lane-shorter", "rowsOut"], ["lane-taller", "rowsIn"]]) {
@@ -853,6 +904,6 @@ export function attachTimeline(ctx) {
     waveformTarget, bookmarkNearFlag, locatorFlags, rulerGestureAt,
     locatorPreview, locatorDragTo, endRulerDrag, drainOverviewNavigation,
     panOverview, timelineStart, followPlayhead, queueFollow, resizeLaneHeaders,
-    refreshLaneToolbar, changeView, stepWheelSnap, fitTimeline, bindTimeline,
+    refreshLaneToolbar, changeView, stepWheelSnap, queueWheel, flushWheel, fitTimeline, bindTimeline,
   });
 }

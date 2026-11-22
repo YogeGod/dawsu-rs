@@ -154,8 +154,8 @@ test("timeline canvases paint with the design's colours", async () => {
   assert.ok(ruler.strokes.includes("#8e8e96"), "locators in neutral grey");
   // v3 §5 (Yoge): grid lines stay neutral white at low alpha; snap colours show only on the ruler.
   // The playhead is crisp white (Logic Pro iPad).
-  assert.ok(grid.strokes.includes("rgba(255,255,255,.045)"), "beat lines");
-  assert.ok(grid.strokes.includes("rgba(255,255,255,.22)"), "bar lines");
+  assert.ok(grid.strokes.includes("rgba(255,255,255,.07)"), "beat lines");
+  assert.ok(grid.strokes.includes("rgba(255,255,255,.26)"), "bar lines");
   assert.ok(!grid.strokes.some(colour => /^#(ed1121|66ccff|8866ee)/.test(colour)), "no snap colours on the grid");
   for (const canvas of [grid, ruler, overview, volume]) assert.ok(canvas.strokes.includes("#f5f5f7"), "playhead");
   // Object lines take the spec's teal at the old 40% strength (10% vanishes on the rows);

@@ -280,6 +280,7 @@ enum Action {
     Home,
     HomeChoice { choice: String },
     ChangeShortcut { id: String, chord: Option<ShortcutInput> },
+    ResetShortcuts,
     Resume,
     BrowserStyle { classic: bool },
     ReplaceSample {
@@ -533,6 +534,7 @@ impl Action {
                     app.error = Some(error);
                 }
             }
+            Self::ResetShortcuts => app.reset_shortcuts(),
             Self::Open { path } => {
                 if map_path(&path) {
                     app.request_open(path);
@@ -1457,12 +1459,14 @@ fn snapshot_with_static(app: &Application, include_scene: bool, include_static: 
             "controller": app.preferences.show_controller,
             "laneNames": app.preferences.lane_names,
         },
-        "outputProblems": app.output_problems().iter().map(|problem| json!({
-            "target": problem.target, "timeline": problem.timeline,
-            "time": problem.time, "message": problem.message,
-        })).collect::<Vec<_>>(),
         "recent": app.preferences.recent, "firstLaunch": app.first_launch,
     });
+    result["hsMode"] = json!(document.is_some_and(|d| d.hs_mode));
+    result["songsFolder"] = json!((!app.preferences.songs_folder.as_os_str().is_empty()).then_some(&app.preferences.songs_folder));
+    result["outputProblems"] = json!(app.output_problems().iter().map(|problem| json!({
+        "target": problem.target, "timeline": problem.timeline,
+        "time": problem.time, "message": problem.message,
+    })).collect::<Vec<_>>());
     // The map preview was in its own window when the editor last closed: main opens it again.
     result["previewWindow"] = json!(app.preferences.preview_window.is_some_and(|place| place.open));
     result["outputDevice"] = json!(app.device_name());
@@ -1542,6 +1546,16 @@ enum Request {
     NodeGraphAction(dawsu_application::NodeGraphAction, mpsc::Sender<Result<Value, String>>),
     NodeGraphExportJson(mpsc::Sender<Result<String, String>>),
     NodeGraphClose,
+    /// MIDI import, export, live MIDI recording, VST3 scan, and Keysounding actions.
+    InspectMidiFile(String, mpsc::Sender<Result<dawsu_application::MidiInspectResult, String>>),
+    ApplyMidiImport(
+        dawsu_application::MidiImportOptions,
+        mpsc::Sender<Result<dawsu_application::MidiImportOutcome, String>>,
+    ),
+    ExportMidiFile(PathBuf, mpsc::Sender<Result<usize, String>>),
+    MidiRecordToggle(Option<usize>, Option<u32>, mpsc::Sender<Result<dawsu_application::MidiRecordStatus, String>>),
+    Vst3Scan(mpsc::Sender<Result<dawsu_application::Vst3ScanReport, String>>),
+    KeysoundsAction(Value, mpsc::Sender<Result<Value, String>>),
 }
 struct Editor(mpsc::Sender<Request>);
 
@@ -1718,7 +1732,7 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
         let mut export_cache = ExportCache::default();
         let mut playback_start = PlaybackStart::default();
         let mut home = home::Route::default();
-        let mut drums = drum_view::DrumView::default();
+        let mut drums = drum_view::DrumView::for_editor();
         let mut static_scene_key: Option<(u64, usize)> = None;
         let mut last_hs_mode = false;
         let mut pending_initial_open = initial.filter(|path| map_path(path));
@@ -1969,6 +1983,18 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                             drum_view::DrumMapAction::AssignRow { row_index, lane_key } => {
                                 drums.assign_row(app, &map, row_index, lane_key.as_deref())
                             }
+                            drum_view::DrumMapAction::AutoDetect => {
+                                drums.auto_detect_now(app, &map)
+                            }
+                            drum_view::DrumMapAction::SetAutoDetect { on } => {
+                                drums.set_auto_detect(app, &map, on)
+                            }
+                            drum_view::DrumMapAction::SetHideUnassigned { on } => {
+                                drums.set_hide_unassigned(app, &map, on)
+                            }
+                            drum_view::DrumMapAction::MoveRow { from_index, to_index } => {
+                                drums.move_row(app, &map, from_index, to_index)
+                            }
                         }.map(|()| {
                             let mut view = snapshot(app, !home.visible());
                             home.add_status(&mut view);
@@ -2032,6 +2058,79 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                     if fault.is_none() {
                         let _ = guard(&mut app, &mut fault, Application::cancel_drum_detection);
                     }
+                }
+                Ok(Request::InspectMidiFile(path, response)) => {
+                    let result = guard(&mut app, &mut fault, |app| {
+                        let document = app.document().ok_or("Open a difficulty first.")?;
+                        let lanes: Vec<dawsu_hitsounding::Lane> = document
+                            .composer
+                            .lanes
+                            .iter()
+                            .cloned()
+                            .map(|identity| dawsu_hitsounding::Lane {
+                                source: match &identity {
+                                    dawsu_foundation::SampleIdentity::File(n) => {
+                                        dawsu_hitsounding::LaneSource::File(n.clone())
+                                    }
+                                    dawsu_foundation::SampleIdentity::Standard { .. } => {
+                                        dawsu_hitsounding::LaneSource::Skin
+                                    }
+                                },
+                                identity,
+                            })
+                            .collect();
+                        dawsu_application::inspect_midi_file(
+                            Path::new(&path),
+                            &lanes,
+                            drums.active_map(app),
+                        )
+                    })
+                    .and_then(|r| r);
+                    let _ = response.send(result);
+                }
+                Ok(Request::ApplyMidiImport(options, response)) => {
+                    let result = guard(&mut app, &mut fault, |app| {
+                        let drum_map = drums.active_map(app).cloned();
+                        app.apply_midi_import(&options, drum_map.as_ref())
+                    })
+                    .and_then(|r| r);
+                    let _ = response.send(result);
+                }
+                Ok(Request::ExportMidiFile(path, response)) => {
+                    let result = guard(&mut app, &mut fault, |app| app.export_midi(&path))
+                        .and_then(|r| r);
+                    let _ = response.send(result);
+                }
+                Ok(Request::MidiRecordToggle(port_index, snap, response)) => {
+                    let result = guard(&mut app, &mut fault, |app| {
+                        let drum_map = drums.active_map(app).cloned();
+                        app.toggle_midi_recording(port_index, drum_map.as_ref(), snap)
+                    })
+                    .and_then(|r| r);
+                    let _ = response.send(result);
+                }
+                Ok(Request::Vst3Scan(response)) => {
+                    let result = guard(&mut app, &mut fault, |app| app.scan_vst3_plugins(&[]))
+                        .and_then(|r| r);
+                    let _ = response.send(result);
+                }
+                Ok(Request::KeysoundsAction(payload, response)) => {
+                    let result = guard(&mut app, &mut fault, |app| {
+                        let kind = payload.get("kind").and_then(|v| v.as_str()).unwrap_or("view");
+                        if kind == "add_track" {
+                            let name = payload.get("name").and_then(|v| v.as_str()).unwrap_or("Keysound Track");
+                            let plugin = payload.get("vst3Plugin").and_then(|v| v.as_str());
+                            app.keysounds_add_track(name, plugin);
+                        } else if kind == "delete_track" {
+                            if let Some(id) = payload.get("trackId").and_then(|v| v.as_u64()) {
+                                app.keysounds.document.delete_track(id);
+                            }
+                        } else if kind == "scan_vst3" {
+                            let _ = app.scan_vst3_plugins(&[]);
+                        }
+                        app.keysounds_summary()
+                    });
+                    let _ = response.send(result);
                 }
                 Ok(Request::NodeGraphView(response)) => {
                     let result = guard(&mut app, &mut fault, |app| {
@@ -2594,10 +2693,13 @@ fn pick_map(
 
 #[tauri::command]
 fn pick_sample(window: tauri::WebviewWindow, state: State<'_, Editor>, target: SampleTarget) -> Result<Value, String> {
-    let selected = rfd::FileDialog::new().set_parent(&window)
+    let mut dialog = rfd::FileDialog::new().set_parent(&window)
         .set_title("Choose replacement sample")
-        .add_filter("Audio sample", &["wav", "ogg", "mp3"])
-        .pick_file();
+        .add_filter("Audio sample", &["wav", "ogg", "mp3"]);
+    if let Ok(Ok(folder)) = ask(&state, |tx| Request::Folder(folders::Folder::Map, tx)) {
+        dialog = dialog.set_directory(folder);
+    }
+    let selected = dialog.pick_file();
     ask(&state, |tx| Request::View(true, selected.map(|path| Action::ReplaceSample { target, path, mapset: false }), false, tx))
 }
 
@@ -2807,6 +2909,91 @@ fn skin_textures() -> Value {
     skin_textures::load_skin_textures_json()
 }
 
+#[tauri::command]
+fn pick_midi_file(window: tauri::WebviewWindow) -> Option<String> {
+    rfd::FileDialog::new()
+        .set_parent(&window)
+        .set_title("Import MIDI file")
+        .add_filter("MIDI file", &["mid", "midi"])
+        .pick_file()
+        .map(|path| path.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
+fn inspect_midi_file(
+    path: String,
+    state: State<'_, Editor>,
+) -> Result<dawsu_application::MidiInspectResult, String> {
+    ask(&state, |tx| Request::InspectMidiFile(path, tx))?
+}
+
+#[tauri::command]
+fn apply_midi_import(
+    path: String,
+    tracks: Vec<usize>,
+    use_beatmap_tempo: Option<bool>,
+    offset_ms: Option<f64>,
+    snap: Option<bool>,
+    follow_volume: Option<bool>,
+    state: State<'_, Editor>,
+) -> Result<dawsu_application::MidiImportOutcome, String> {
+    let options = dawsu_application::MidiImportOptions {
+        path,
+        tracks,
+        use_beatmap_tempo: use_beatmap_tempo.unwrap_or(true),
+        offset_ms: offset_ms.unwrap_or(0.0),
+        snap: snap.unwrap_or(true),
+        follow_volume: follow_volume.unwrap_or(false),
+    };
+    ask(&state, |tx| Request::ApplyMidiImport(options, tx))?
+}
+
+#[tauri::command]
+fn export_midi_file(
+    window: tauri::WebviewWindow,
+    state: State<'_, Editor>,
+) -> Result<Option<usize>, String> {
+    let mut dialog = rfd::FileDialog::new()
+        .set_parent(&window)
+        .set_title("Export MIDI file")
+        .add_filter("MIDI file", &["mid"])
+        .set_file_name("hitsounds.mid");
+    if let Ok(Ok(folder)) = ask(&state, |tx| Request::Folder(folders::Folder::Map, tx)) {
+        dialog = dialog.set_directory(folder);
+    }
+    let Some(mut path) = dialog.save_file() else {
+        return Ok(None);
+    };
+    if path.extension().is_none() {
+        path.set_extension("mid");
+    }
+    ask(&state, |tx| Request::ExportMidiFile(path, tx))?.map(Some)
+}
+
+#[tauri::command]
+fn midi_input_ports() -> Vec<String> {
+    dawsu_application::list_midi_input_ports()
+}
+
+#[tauri::command]
+fn midi_record_toggle(
+    port_index: Option<usize>,
+    snap_divisor: Option<u32>,
+    state: State<'_, Editor>,
+) -> Result<dawsu_application::MidiRecordStatus, String> {
+    ask(&state, |tx| Request::MidiRecordToggle(port_index, snap_divisor, tx))?
+}
+
+#[tauri::command]
+fn vst3_scan(state: State<'_, Editor>) -> Result<dawsu_application::Vst3ScanReport, String> {
+    ask(&state, Request::Vst3Scan)?
+}
+
+#[tauri::command]
+fn keysounds_action(payload: Value, state: State<'_, Editor>) -> Result<Value, String> {
+    ask(&state, |tx| Request::KeysoundsAction(payload, tx))?
+}
+
 fn close_requested(label: &str, editor: &Editor) -> CloseDecision {
     // Closing Export or the drum detection window never waits on the editor.
     match label {
@@ -2918,7 +3105,15 @@ fn main() {
             drum_map_action,
             open_editor_folder,
             close_editor,
-            skin_textures
+            skin_textures,
+            pick_midi_file,
+            inspect_midi_file,
+            apply_midi_import,
+            export_midi_file,
+            midi_input_ports,
+            midi_record_toggle,
+            vst3_scan,
+            keysounds_action
         ])
         .run(tauri::generate_context!())
         .expect("start the dawsu! Tauri editor");

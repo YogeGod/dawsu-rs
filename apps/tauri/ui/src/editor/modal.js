@@ -163,9 +163,9 @@ export function attachModal(ctx) {
     } else if (state.view.firstLaunch) {
       const choose = (name) => ctx.act({ kind: "key_preset", name });
       ctx.modal("key-preset", "Choose your keyboard preset", [
-        paragraph("DAW-like uses the editor’s default timeline shortcuts."),
         paragraph("osu! lets you seek through the beat grid with the arrow keys."),
-      ], [["DAW-like", () => choose("DAW"), true], ["osu!", () => choose("osu!")]], () => {});
+        paragraph("DAW-like uses the editor’s default timeline shortcuts."),
+      ], [["osu!", () => choose("osu!"), true], ["DAW-like", () => choose("DAW")]], () => {});
     } else if (["error", "pending", "pending-home", "revert", "review", "save-review", "save-problems", "key-preset", "timeline-edit", "sound-set-update"].includes(state.modalKind)) {
       ctx.closeModal();
     }

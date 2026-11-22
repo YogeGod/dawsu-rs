@@ -298,8 +298,8 @@ test("each menu groups the editor's existing commands like the design, with no s
   const popup = get("editor-menu");
   const open = name => { get("menu-" + name).click(); return menuLabels(popup); };
   assert.deepEqual(open("file"), [
-    "Open map…", "Import .osz…", "Open map folder", "—",
-    "Save", "Revert to saved…", "Export…", "—",
+    "Open map…", "Import .osz…", "Import MIDI…", "Open map folder", "—",
+    "Save", "Revert to saved…", "Export…", "Export MIDI…", "—",
     "Start screen", "Folders…", "—", "Preferences…",
   ]);
   assert.deepEqual(open("edit"), [
@@ -312,7 +312,7 @@ test("each menu groups the editor's existing commands like the design, with no s
   assert.deepEqual(open("playback"), [
     "Play / pause", "Stop", "Go to start", "Go to end", "—",
     "Start playing from: Cursor | Left locator | Selection | Selection or left locator", "—",
-    "Return on stop", "Follow playhead", "Cycle between L and R", "—",
+    "Return on stop", "Follow playhead", "Cycle between L and R", "Locators to selection", "Play locator range", "—",
     "Speed · pitch stays the same: 25 | 50 | 75 | 100 | 125 | 150", "—",
     "Mute song", "Audio output…",
   ]);
@@ -320,17 +320,18 @@ test("each menu groups the editor's existing commands like the design, with no s
     "Difficulty: Hard | Insane", "—",
     "New hitsound difficulty…", "—",
     "Generate hitsound difficulty…", "Copy hitsounds…", "Drum hit detection…", "Node graph…",
-    "Generate export style: Per-object", "—",
+    "Keysounds & VST3…", "Generate export style: Per-object", "—",
+    "Hitsounding mode", "—",
     "Add bookmark", "Previous bookmark", "Next bookmark", "—",
     "Add lane…", "Delete active lane…",
   ]);
   assert.deepEqual(open("view"), [
     "Browser", "Inspector", "Volume and Mixer", "Map preview", "Lane names", "—",
-    "Song waveform", "Object lines", "Used lanes only", "Collapse sample layers", "Filter lanes…", "Taller lanes",
+    "Song waveform", "Sound-first · hide missing-object warnings", "Object lines", "Used lanes only", "Collapse sample layers", "Filter lanes…", "Taller lanes",
     "Shorter lanes", "—",
     "Zoom in", "Zoom out", "Fit difficulty", "—",
     "Time signatures…", "Open drum map…", "Edit layout…", "View settings…", "—",
-    "Shortcuts",
+    "Quick start tour", "Shortcuts",
   ]);
   for (const name of ["file", "edit", "playback", "map", "view"]) {
     get("menu-" + name).click();
@@ -343,7 +344,7 @@ test("menus only click ribbon controls that exist in the window", () => {
     ...[...code.matchAll(/(?:click|\$)\("([\w-]+)"\)/g)].map(match => match[1]),
     ...[...commandsSource.matchAll(/\["(?:onLane", ")?click", "([\w-]+)"\]/g)].map(match => match[1]),
   ]);
-  for (const id of ["audio", "used-only", "ruler-waveform", "export-entry"]) assert.ok(ids.has(id), id);
+  for (const id of ["audio", "used-only", "ruler-waveform", "ruler-sound-first", "export-entry"]) assert.ok(ids.has(id), id);
   for (const id of ids) assert.match(html + inspectorPart + lanesPart + statusBarPart + gridOptionsPart + laneOptionsPart, new RegExp('id="' + id + '"'), id);
 });
 

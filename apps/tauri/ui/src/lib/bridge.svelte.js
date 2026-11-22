@@ -30,8 +30,8 @@ export class Bridge {
   // The bottom panel's tab ("volume" or "mixer"): kept in this window only, never saved; app.js
   // reads it to lay the panel out and to draw the volume canvas.
   bottomTab = $state("volume");
-  // View › Map preview: kept in this window only, never saved.
-  mapPreview = $state(false);
+  // View › Map preview: on when the editor opens, kept in this window only, never saved.
+  mapPreview = $state(true);
   // Transient status notice (errors, fault, or missing UI part) pushed by app.js.
   statusNotice = $state("");
   // Optimistic timeline zoom & lane height during changeView() drags before Rust replies.
@@ -44,6 +44,8 @@ export class Bridge {
   nodeGraphViewer = $state.raw(null);
   // The map preview is open in its own window (Rust's preview-window event).
   previewWindow = $state(false);
+  // The Quick start tour's step (1-5), or 0 while it is closed. Kept in this window only.
+  quickStart = $state(0);
 
   // No map, a job running or a fault: the parts show but take no input.
   get disabled() {

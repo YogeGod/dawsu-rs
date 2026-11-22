@@ -78,6 +78,8 @@ pub struct WritePlan {
     pub details: Vec<String>,
     /// Copy's counts per target, in target order. Empty for Generate.
     pub targets: Vec<TargetCounts>,
+    /// The target difficulties whose per-difficulty project should start with HS mode on.
+    pub(super) hs_mode_targets: Vec<PathBuf>,
     pub source: PathBuf,
     pub version: u64,
 }
@@ -315,7 +317,7 @@ pub(super) fn generate_report(
                 label: "Generate hitsound difficulty".into(),
                 generated: Some((target.clone(), mixes.staged.len())),
                 files: vec![PlannedFile {
-                    path: target,
+                    path: target.clone(),
                     file,
                     expected: previous.map(|output| output.bytes),
                 }],
@@ -326,6 +328,7 @@ pub(super) fn generate_report(
                 include_slider_audio,
                 details: vec![details.into()],
                 targets: Vec::new(),
+                hs_mode_targets: vec![target.clone()],
                 source: source.path.clone(),
                 version: source.version,
             };
@@ -337,7 +340,10 @@ pub(super) fn generate_report(
 }
 pub fn new_diff(source: &Source, name: &str) -> Result<WritePlan, String> {
     match dawsu_hitsounding::generate::new_hitsound_diff(&source.file,&source.path.file_name().unwrap().to_string_lossy(),name,&folder(source)?){
-        NewDiff::Planned{file,file_name}=>Ok(WritePlan{label:"New hitsound difficulty".into(),mixes:Vec::new(),pending:Vec::new(),ledger:None,combinations:Vec::new(),targets:Vec::new(),generation:None,generated:None,include_slider_audio:false,files:vec![PlannedFile{path:source.path.parent().unwrap().join(file_name),file,expected:None}],details:vec!["All gameplay objects are removed in the new difficulty; the source stays unchanged.".into()],source:source.path.clone(),version:source.version}),other=>Err(crate::refusals::new_difficulty(&other))
+        NewDiff::Planned{file,file_name}=>{
+            let target_path = source.path.parent().unwrap().join(file_name);
+            Ok(WritePlan{label:"New hitsound difficulty".into(),mixes:Vec::new(),pending:Vec::new(),ledger:None,combinations:Vec::new(),targets:Vec::new(),generation:None,generated:None,include_slider_audio:false,files:vec![PlannedFile{path:target_path.clone(),file,expected:None}],details:vec!["All gameplay objects are removed in the new difficulty; the source stays unchanged.".into()],hs_mode_targets:vec![target_path],source:source.path.clone(),version:source.version})
+        },other=>Err(crate::refusals::new_difficulty(&other))
     }
 }
 pub fn copy(
@@ -429,6 +435,7 @@ fn copy_after(
         files: Vec::new(),
         details: Vec::new(),
         targets: Vec::new(),
+        hs_mode_targets: Vec::new(),
         source: source.path.clone(),
         version: source.version,
     };
@@ -584,6 +591,7 @@ pub(super) fn export_report(
         include_slider_audio: base.include_slider_audio,
         details,
         targets: plan.targets,
+        hs_mode_targets: base.hs_mode_targets,
         source: plan.source,
         version: plan.version,
     };

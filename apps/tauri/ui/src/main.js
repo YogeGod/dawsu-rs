@@ -32,10 +32,13 @@ import InspectorHistory from "./parts/InspectorHistory.svelte";
 import InspectorLane from "./parts/InspectorLane.svelte";
 import InspectorSelection from "./parts/InspectorSelection.svelte";
 import LaneOptions from "./parts/LaneOptions.svelte";
+import KeysoundsModal from "./parts/KeysoundsModal.svelte";
 import MapPreview from "./parts/MapPreview.svelte";
+import MidiImportModal from "./parts/MidiImportModal.svelte";
 import NodeGraphWindow from "./parts/NodeGraphWindow.svelte";
 import PreferencesModal from "./parts/PreferencesModal.svelte";
 import PreviewWindow from "./parts/PreviewWindow.svelte";
+import QuickStartTour from "./parts/QuickStartTour.svelte";
 import SnapSlider from "./parts/SnapSlider.svelte";
 import StartScreen from "./parts/StartScreen.svelte";
 import StatusBar from "./parts/StatusBar.svelte";
@@ -51,7 +54,12 @@ const parts = {
   // The timeline's hit hover card, preferences modal, and toast stack, at body level.
   "hit-card": HitCard,
   preferences: PreferencesModal,
+  // File › Import MIDI… and Map › Keysounds & VST3…, at body level.
+  "midi-import": MidiImportModal,
+  keysounds: KeysoundsModal,
   toasts: ToastStack,
+  // The Quick start tour card (View › Quick start tour), at body level.
+  "quick-start": QuickStartTour,
   // The popup the menu bar, the right-click tool picker and the lane menu share (#editor-menu).
   menu: EditorMenu,
   "inspector-selection": InspectorSelection, "inspector-lane": InspectorLane, "inspector-difficulty": InspectorDifficulty,
@@ -142,6 +150,11 @@ export function toggleMapPreview() {
   bridge.mapPreview = !bridge.mapPreview;
 }
 export const mapPreviewOn = () => bridge.mapPreview;
+
+// View › Quick start tour: opens the tour at step 1, done or not.
+export function openQuickStart() {
+  bridge.quickStart = 1;
+}
 
 // Synced timeline preview pushed from the dedicated Node Graph window.
 export function setNodeGraphViewer(viewer) {

@@ -75,7 +75,7 @@ test("the transport sits in the top bar after the menus as the Svelte part, with
     'id="locator-right"', 'id="play-icon"', 'id="play-label"']) {
     assert.ok(!html.includes(gone), gone);
   }
-  assert.ok(header.indexOf('data-action="review_save"') > header.indexOf('data-ui-mount="transport"'), "Save stays at the right end");
+  assert.ok(header.indexOf('id="save"') > header.indexOf('data-ui-mount="transport"'), "Save stays at the right end");
   assert.doesNotMatch(topbarCss, /:has\(|color-mix\(|aspect-ratio/);
   assert.doesNotMatch(topbarCss, /\.top-transport\s*\{[^}]*overflow:\s*hidden/, "the transport never clips silently");
   assert.doesNotMatch(topbarCss, /button:disabled\s*\{\s*opacity:\s*1\s*\}/);

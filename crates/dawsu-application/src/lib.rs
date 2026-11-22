@@ -8,6 +8,7 @@ mod commands;
 mod edit_workflows;
 mod controller;
 mod editor_meter;
+pub mod drum_classify;
 mod drum_detect;
 mod export;
 mod export_settings;
@@ -20,10 +21,26 @@ mod pending;
 mod sweep;
 pub mod output;
 pub mod node_graph;
+pub mod midi_import;
+pub mod midi_record;
+pub mod vst3;
 mod project;
 pub use project::lane_key as lane_layout_key;
 pub use node_graph::{NodeGraphAction, NodeGraphView, ViewerOverlay};
 pub use dawsu_audio::{OutputBackend, OutputDevice};
+pub use dawsu_audio_instruments::midi_in::{
+    MidiInputEvent, MidiInputRouter, decode_midi_bytes, list_midi_input_ports,
+};
+pub use midi_import::{
+    MidiImportOptions, MidiImportOutcome, MidiInspectResult, MidiTrackSummary, apply_midi_import,
+    export_midi_file, inspect_midi_file,
+};
+pub use midi_record::MidiRecordStatus;
+pub use vst3::{
+    BounceFormat, BounceOptions, BounceOutput, LoadedPluginSummary, MidiPreviewNote, PluginRole,
+    ScanSkip, VelocityExportMode, Vst3BounceJob, Vst3DrumExportPlan, Vst3DrumHit, Vst3Error,
+    Vst3HitAssignment, Vst3Manager, Vst3ScanReport, plan_vst3_drum_export,
+};
 mod preferences;
 mod shortcuts;
 mod problems;
@@ -997,6 +1014,9 @@ pub struct Application {
     opens: u64,
     drum: drum_detect::DrumDetect,
     node_graph: node_graph::NodeGraphState,
+    pub midi_recorder: midi_record::MidiRecorder,
+    pub keysounds: dawsu_keysounding::KeysoundProject,
+    pub vst3: vst3::Vst3Manager,
 }
 impl Application {
     pub fn new() -> Self {
@@ -1137,6 +1157,9 @@ impl Application {
             opens: 0,
             drum: Default::default(),
             node_graph: Default::default(),
+            midi_recorder: midi_record::MidiRecorder::new(),
+            keysounds: dawsu_keysounding::KeysoundProject::new("", "Keysounds"),
+            vst3: vst3::Vst3Manager::new(),
         }
     }
 
@@ -1426,6 +1449,132 @@ impl Application {
             self.error = Some(e);
         }
     }
+    /// Imports selected MIDI tracks into the active document as one undo step.
+    pub fn apply_midi_import(
+        &mut self,
+        options: &MidiImportOptions,
+        drum_map: Option<&dawsu_hitsounding::drums::DrumMap>,
+    ) -> Result<MidiImportOutcome, String> {
+        if self.busy {
+            return Err("Wait for the current job to finish before importing MIDI.".into());
+        }
+        let document = self.document.as_mut().ok_or("Open a difficulty first.")?;
+        let outcome = midi_import::apply_midi_import(&mut document.composer, options, drum_map)?;
+        self.refresh_recovery_edit();
+        self.status = format!(
+            "Imported {} MIDI hits ({} skipped).",
+            outcome.added, outcome.skipped
+        );
+        Ok(outcome)
+    }
+
+    /// Exports the active document's hitsounds (and any keysound tracks) to a Standard MIDI File.
+    pub fn export_midi(&self, path: &Path) -> Result<usize, String> {
+        let document = self.document.as_ref().ok_or("Open a difficulty first.")?;
+        let bpm = document
+            .composer
+            .tempo
+            .sections()
+            .first()
+            .map(|s| 60_000.0 / s.beat_length_ms)
+            .unwrap_or(120.0);
+        let ks = (!self.keysounds.document.tracks.is_empty()).then_some(&self.keysounds);
+        midi_import::export_midi_file(path, &document.composer, bpm, ks)
+    }
+
+    /// Arms or disarms live MIDI recording; disarming commits any captured notes as one undo step.
+    pub fn toggle_midi_recording(
+        &mut self,
+        port_index: Option<usize>,
+        drum_map: Option<&dawsu_hitsounding::drums::DrumMap>,
+        snap_divisor: Option<u32>,
+    ) -> Result<midi_record::MidiRecordStatus, String> {
+        if self.midi_recorder.armed {
+            let port_name = self.midi_recorder.port_name.clone();
+            let notes = self.midi_recorder.disarm();
+            let mut committed = 0usize;
+            if !notes.is_empty() {
+                if let Some(doc) = self.document.as_mut() {
+                    committed = midi_record::commit_to_composer(
+                        &notes,
+                        &mut doc.composer,
+                        drum_map,
+                        snap_divisor,
+                    )?;
+                    self.refresh_recovery_edit();
+                }
+                if let Some(first_track) = self.keysounds.document.tracks.first() {
+                    let tid = first_track.id;
+                    midi_record::commit_to_keysounds(&notes, &mut self.keysounds, tid, 200.0);
+                }
+                self.status = format!("Recorded {committed} MIDI hits.");
+            } else {
+                self.status = "MIDI recording stopped.".into();
+            }
+            return Ok(midi_record::MidiRecordStatus {
+                armed: false,
+                port_name,
+                buffered_notes: 0,
+                committed_notes: committed,
+            });
+        }
+        let port_name = self.midi_recorder.arm(port_index)?;
+        self.status = match &port_name {
+            Some(name) => format!("MIDI recording armed ({name}). Press Space to play and record."),
+            None => "MIDI recording armed (no hardware MIDI port; ready for virtual input).".into(),
+        };
+        Ok(midi_record::MidiRecordStatus {
+            armed: true,
+            port_name,
+            buffered_notes: 0,
+            committed_notes: 0,
+        })
+    }
+
+    /// Scans the standard system VST3 folders (plus `extra_folders`) for instrument/FX plugins.
+    pub fn scan_vst3_plugins(&mut self, extra_folders: &[PathBuf]) -> Result<vst3::Vst3ScanReport, String> {
+        if !extra_folders.is_empty() {
+            let mut dirs = self.vst3.search_dirs().to_vec();
+            dirs.extend(extra_folders.iter().cloned());
+            self.vst3.set_search_dirs(dirs);
+        }
+        self.vst3.scan_plugins().map_err(|e| e.to_string())
+    }
+
+    /// Returns a JSON summary of the keysound tracks, notes, and scanned VST3 instruments.
+    pub fn keysounds_summary(&self) -> serde_json::Value {
+        serde_json::json!({
+            "targetDifficulty": self.keysounds.target_difficulty,
+            "tracks": self.keysounds.document.tracks.iter().map(|t| serde_json::json!({
+                "id": t.id,
+                "name": t.name,
+                "channel": t.channel,
+                "isDrum": t.is_drum,
+                "muted": t.muted,
+                "noteCount": t.notes.len(),
+                "instrument": t.instrument.name,
+            })).collect::<Vec<_>>(),
+            "vst3Plugins": self.vst3.scanned_plugins().iter().map(|p| serde_json::json!({
+                "id": p.uid,
+                "name": p.name,
+                "vendor": p.vendor,
+                "isInstrument": p.is_instrument,
+            })).collect::<Vec<_>>(),
+        })
+    }
+
+    /// Adds a keysound track (optionally naming a scanned VST3 instrument) and returns its ID.
+    pub fn keysounds_add_track(&mut self, name: &str, vst3_plugin_name: Option<&str>) -> u64 {
+        let ch = (self.keysounds.document.tracks.len() % 15) as u8;
+        let id = self.keysounds.document.add_track(name, ch, false);
+        if let Some(plugin) = vst3_plugin_name {
+            if let Some(track) = self.keysounds.document.tracks.iter_mut().find(|t| t.id == id) {
+                track.instrument.name = plugin.to_string();
+            }
+        }
+        id
+    }
+
     pub fn request_open(&mut self, path: PathBuf) {
         if self.busy {
             return;
@@ -1585,6 +1734,7 @@ impl Application {
         self.check_set_versions_when_read();
         self.poll_drum_detection();
         self.poll_node_graph();
+        let _ = self.midi_recorder.poll(self.position_ms(), self.is_playing());
         // Before main's job: its arms can return early.
         self.poll_export();
         if !self.cancel.load(Ordering::Relaxed)
@@ -2142,6 +2292,9 @@ impl Application {
             a.offset(self.song_offset);
         }
     }
+    pub fn lane_clip(&self, lane: &SampleIdentity) -> Option<Arc<AudioClip>> {
+        self.clip_for_lane(lane).cloned()
+    }
     fn clip_for_lane(&self, lane: &SampleIdentity) -> Option<&Arc<AudioClip>> {
         let model = self.document()?.composer.hitsounds().lane(lane)?;
         self.samples.get(&model.plays_as())
@@ -2592,9 +2745,23 @@ impl Application {
         self.jobs = Some(receive);
         self.busy = true;
         self.status = "Writing reviewed output…".into();
+        let project_root = self.project_root.clone();
         std::thread::spawn(move || {
             let result = plan.apply(&backups, &|| cancel.load(Ordering::Relaxed))
-                .map(|count| (count, generate_receipt::record(&plan).err(), plan.pending_names()));
+                .map(|count| {
+                    if let Some(root) = project_root.as_deref() {
+                        for path in &plan.hs_mode_targets {
+                            if let Ok(mut proj) = project::Project::load(root, None, path)
+                                && proj.settings.hs_mode.is_none()
+                            {
+                                let mut next = proj.settings.clone();
+                                next.hs_mode = Some(true);
+                                let _ = proj.save(next);
+                            }
+                        }
+                    }
+                    (count, generate_receipt::record(&plan).err(), plan.pending_names())
+                });
             let _ = send.send(JobResult::Output(result));
         });
     }
@@ -6550,6 +6717,45 @@ Sample,0,0,\"{story}\",100
         for path in [a, b] {
             assert_eq!(std::fs::read(path).unwrap(), original);
         }
+    }
+
+    #[test]
+    fn new_hitsound_difficulty_opens_with_hs_mode_enabled_by_default() {
+        let fixture = Scratch::new("new-diff-hs-mode");
+        let source_path = fixture.path("Artist - Title [Hard].osu");
+        let original = include_bytes!("../tests/project-fixture.osu");
+        std::fs::write(&source_path, original).unwrap();
+        let sessions = fixture.path("sessions");
+
+        let mut app = Application::headless();
+        app.project_root = Some(sessions.clone());
+        open(&mut app, source_path);
+        assert!(!app.document().unwrap().hs_mode);
+
+        app.new_diff("Hitsounds".into());
+        let wait = |app: &mut Application| {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while app.busy {
+                app.poll();
+                assert!(Instant::now() < deadline);
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            assert!(app.error.is_none(), "{:?}", app.error);
+        };
+        wait(&mut app);
+        let plan = app.output_review.as_ref().expect("new_diff prepares write plan");
+        let created = plan.files[0].path.clone();
+        app.apply_output();
+        wait(&mut app);
+        assert!(created.exists());
+
+        let mut reopened = Application::headless();
+        reopened.project_root = Some(sessions);
+        open(&mut reopened, created);
+        assert!(
+            reopened.document().unwrap().hs_mode,
+            "new hitsound difficulty should open with hitsounding mode enabled by default"
+        );
     }
 
     #[test]

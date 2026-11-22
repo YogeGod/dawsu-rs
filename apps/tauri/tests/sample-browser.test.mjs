@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { createContext, runInContext } from "node:vm";
+import { sampleKey } from "../ui/src/lib/browser.js";
 import { dockingRules } from "./docking-rules.mjs";
 import { bootEditor, readEditorSource } from "./editor-runtime.mjs";
 
@@ -46,7 +47,7 @@ async function browserPage() {
       __TAURI__: {
         core: { invoke: async (command, args) => {
           if (command === "editor_view") calls.push(JSON.parse(JSON.stringify(args?.action ?? null)));
-          else invoked.push([command, JSON.parse(JSON.stringify(args))]);
+          else invoked.push([command, JSON.parse(JSON.stringify(args ?? null))]);
           if (command === "editor_view" && args?.action?.kind === "browser_style") {
             classicBrowser = args.action.classic;
           }
@@ -91,7 +92,8 @@ test("the tree lists map folder samples under Mapset samples, folds folders and 
   assert.equal(model().source, "mapset");
   assert.equal(model().classic, false);
   assert.equal(model().root, "Mapset samples");
-  assert.equal(model().defaults, true, "the Default samples section shows on the Mapset tab");
+  assert.equal(model().defaults, undefined, "no greyed Default samples rows");
+  assert.equal(model().target, "normal-hitnormal", "Use names the active lane");
   assert.deepEqual(labels(), ["percussion", "kick.wav"]);
   assert.deepEqual(model().rows.map(row => [row.kind, row.depth, row.open ?? null, row.selected]),
     [["folder", 0, false, false], ["sample", 0, null, false]]);
@@ -157,21 +159,80 @@ test("the tree lists map folder samples under Mapset samples, folds folders and 
   assert.equal(calls.length, sent);
 });
 
+test("ArrowDown and ArrowUp play the next sample row; Enter uses it in the active lane", async () => {
+  const { calls, invoked, model, action, settle } = await browserPage();
+  action("toggle", "percussion");
+  // The rows BrowserList draws: one button per sample row, in the list's order.
+  const list = { querySelectorAll: () => buttons };
+  const focused = [];
+  const buttons = model().rows.filter(row => row.kind === "sample").map(row => ({
+    row: () => model().rows.find(item => item.key === row.key),
+    dataset: { sample: row.key }, parentElement: list, focus() { focused.push(row.key); },
+  }));
+  const [snare, kick] = buttons;
+  const press = (button, key, init = {}) => {
+    const event = { key, currentTarget: button, ctrlKey: false, altKey: false, metaKey: false, shiftKey: false,
+      prevented: false, preventDefault() { this.prevented = true; }, ...init };
+    sampleKey(event, button.row(), action);
+    return event;
+  };
+
+  assert.equal(press(snare, "ArrowDown").prevented, true, "the timeline doesn't get the key");
+  assert.deepEqual(focused, ["kick.wav"]);
+  await settle();
+  assert.equal(kick.row().selected, true);
+  assert.deepEqual(model().preview.name, "kick.wav");
+  assert.deepEqual(calls.at(-1), { kind: "lane", row: 2, operation: "preview_sample" });
+  assert.deepEqual(invoked.at(-1), ["sample_preview", { source: { kind: "lane", row: 2 } }]);
+
+  press(kick, "ArrowUp");
+  await settle();
+  assert.deepEqual(focused, ["kick.wav", "percussion/snare.wav"]);
+  assert.equal(snare.row().selected, true);
+  assert.deepEqual(invoked.at(-1), ["sample_preview", { source: { kind: "lane", row: 1 } }]);
+
+  // Past either end, or with a modifier held, nothing moves or plays.
+  const asked = invoked.length;
+  press(snare, "ArrowUp");
+  press(kick, "ArrowDown", { shiftKey: true });
+  await settle();
+  assert.equal(focused.length, 2);
+  assert.equal(invoked.length, asked);
+  assert.equal(snare.row().selected, true);
+
+  // Enter on the picked row uses it in the active lane (normal-hitnormal).
+  press(snare, "Enter");
+  await settle();
+  assert.deepEqual(calls.at(-1), { kind: "replace_sample", target: { map: "copy.osu", lane: "normal" },
+    path: "percussion/snare.wav", mapset: true });
+  // Enter on a row not yet picked picks it first, then uses it.
+  assert.equal(press(kick, "Enter").prevented, true);
+  await settle();
+  assert.equal(kick.row().selected, true);
+  assert.deepEqual(calls.at(-1), { kind: "replace_sample", target: { map: "copy.osu", lane: "normal" },
+    path: "kick.wav", mapset: true });
+});
+
 test("the Library tab lists the hitsound library and previews its files", async () => {
   const { calls, invoked, model, labels, action, settle } = await browserPage();
   action("source", "library");
   await settle();
   assert.equal(model().source, "library");
   assert.equal(model().root, "library");
-  assert.equal(model().defaults, false);
+  assert.equal(model().chooseLibrary, false);
   assert.deepEqual(labels(), ["Drums"]);
-  // Folders not yet opened may still hold a match, so the search doesn't say there is none.
+  // The search opens folders not listed yet, like the Mapset tab: while one loads it shows open,
+  // then it hides when nothing in it matches.
   action("filter", "zzz");
-  assert.deepEqual(model().rows.map(row => [row.kind, row.label]), [["folder", "Drums"]]);
-  action("filter", "");
-  action("toggle", "Drums");
-  assert.deepEqual(model().rows.map(row => [row.kind, row.label]), [["folder", "Drums"], ["note", "Loading samples…"]]);
+  assert.deepEqual(model().rows.map(row => [row.kind, row.label, row.open ?? null]),
+    [["folder", "Drums", true], ["note", "Loading samples…", null]]);
   await settle();
+  assert.deepEqual(model().rows.map(row => [row.kind, row.label]), [["note", "No matching samples."]]);
+  action("filter", "SNARE");
+  assert.deepEqual(labels(), ["Drums", "snare.wav"], "a match in a closed subfolder opens it");
+  action("filter", "");
+  assert.deepEqual(labels(), ["Drums"], "clearing the search folds what it opened");
+  action("toggle", "Drums");
   assert.deepEqual(labels(), ["Drums", "clap.wav", "snare.wav"]);
   action("filter", "SNARE");
   assert.deepEqual(labels(), ["Drums", "snare.wav"]);
@@ -190,6 +251,35 @@ test("the Library tab lists the hitsound library and previews its files", async 
   assert.equal(model().preview, null);
 });
 
+test("picks made while a preview is on its way replace each other: only the last one plays", async () => {
+  const { calls, invoked, model, action, settle } = await browserPage();
+  action("toggle", "percussion");
+  await settle();
+  const sent = calls.length;
+  const asked = invoked.length;
+  action("pick", "percussion/snare.wav");
+  action("pick", "kick.wav");
+  action("pick", "percussion/snare.wav");
+  action("pick", "kick.wav");
+  await settle();
+  await settle();
+  // Each pick replaced the one before it while it waited its turn.
+  assert.deepEqual(calls.slice(sent).map(call => call.row), [2]);
+  assert.deepEqual(invoked.slice(asked).map(([, args]) => args.source.row), [2]);
+  assert.equal(model().preview.title, "kick.wav");
+});
+
+test("an unset Library offers to choose its folder there", async () => {
+  const { context, invoked, model, action, settle } = await browserPage();
+  runInContext("view = {...view, hitsoundLibrary: null}; renderSampleBrowser();", context);
+  action("source", "library");
+  assert.equal(model().chooseLibrary, true);
+  assert.deepEqual(model().rows.map(row => row.label), ["No library folder chosen yet."]);
+  action("chooseLibrary");
+  await settle();
+  assert.equal(invoked.at(-1)[0], "pick_hitsound_library");
+});
+
 test("Classic opens one folder at a time with Up, inside the Inspector", async () => {
   const { context, calls, model, labels, action, settle, get } = await browserPage();
   runInContext(`let controls;
@@ -203,7 +293,7 @@ test("Classic opens one folder at a time with Up, inside the Inspector", async (
   assert.deepEqual(calls.at(-1), {kind: "browser_style", classic: true});
   assert.equal(model().classic, true);
   assert.equal(model().root, null);
-  assert.equal(model().defaults, false, "Classic keeps to the folders it can open");
+  assert.equal(model().defaults, undefined, "Classic keeps to the folders it can open");
   assert.deepEqual(model().folder, { label: "Mapset samples", title: "", canUp: false });
   assert.deepEqual(labels(), ["percussion", "kick.wav"]);
   // Entering a folder replaces the rows, so focus moves to the first new row.

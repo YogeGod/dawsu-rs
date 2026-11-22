@@ -2,9 +2,29 @@
 
 // What the parts show before the first hand-over: nothing to pick, every control greyed out.
 export const emptyBrowser = Object.freeze({
-  source: "mapset", classic: false, filter: "", busy: true, root: null, rootTitle: null, defaults: false,
-  folder: null, rows: [], preview: null, canAssign: false, canPick: false,
+  source: "mapset", classic: false, filter: "", busy: true, root: null, rootTitle: null, chooseLibrary: false,
+  folder: null, rows: [], preview: null, canAssign: false, canPick: false, target: null,
 });
+
+// A key on a sample row. ArrowUp and ArrowDown move to the next sample row and play it; Enter uses
+// the sample in the active lane (picking it first). preventDefault keeps the keys from the
+// timeline's shortcuts.
+export function sampleKey(event, row, send) {
+  if (event.ctrlKey || event.altKey || event.metaKey || event.shiftKey) return;
+  if (event.key === "Enter") {
+    event.preventDefault();
+    if (!row.selected) send("pick", row.key);
+    send("assign");
+    return;
+  }
+  if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+  event.preventDefault();
+  const samples = [...(event.currentTarget.parentElement?.querySelectorAll(".browser-sample:not(:disabled)") ?? [])];
+  const next = samples[samples.indexOf(event.currentTarget) + (event.key === "ArrowDown" ? 1 : -1)];
+  if (!next) return;
+  next.focus();
+  send("pick", next.dataset.sample);
+}
 
 // v3's "Sample preview · 0.21 s".
 export const previewLength = ms => (ms / 1000).toFixed(2) + " s";
