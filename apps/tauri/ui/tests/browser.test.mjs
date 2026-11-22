@@ -152,3 +152,18 @@ test("the stylesheet keeps the selected tab on hover, caps the indent and dims a
   assert.match(rule(".browser-row:disabled"), /opacity: 1/);
   assert.match(rule(".sample-browser-classic-head {"), /border-bottom/);
 });
+
+test("a sample dropped on a lane row replaces that lane's sample from the Mapset or the Library", async () => {
+  const { sampleDropAction, sampleDragType } = await import("../src/lib/browser.js");
+  assert.equal(sampleDragType, "application/x-dawsu-sample");
+  const lane = { sourceKey: "file:kick.wav", canReplace: true };
+  assert.deepEqual(sampleDropAction({ path: "drums/snare.wav", source: "mapset" }, "Map.osu", lane),
+    { kind: "replace_sample", target: { map: "Map.osu", lane: "file:kick.wav" }, path: "drums/snare.wav", mapset: true });
+  assert.deepEqual(sampleDropAction({ path: "kits/clap.wav", source: "library", root: "E:/lib" }, "Map.osu", lane),
+    { kind: "replace_library_sample", target: { map: "Map.osu", lane: "file:kick.wav" },
+      location: { root: "E:/lib", path: "kits/clap.wav" } });
+  assert.equal(sampleDropAction({ path: "a.wav", source: "mapset" }, "Map.osu", { ...lane, canReplace: false }), null,
+    "a slider-body lane keeps its sample");
+  assert.equal(sampleDropAction({ path: "a.wav", source: "mapset" }, "Map.osu", null), null, "no lane under the drop");
+  assert.equal(sampleDropAction({ path: "a.wav", source: "library", root: null }, "Map.osu", lane), null);
+});

@@ -11,7 +11,10 @@ mod batch;
 mod lane_edit;
 mod sound_sets;
 mod workflows;
-pub use batch::{BatchCounts, BatchHit, BatchOptions, BatchPlan, BatchRefusal, BatchReport, BatchRow, Lands, Policy};
+pub use batch::{
+    BatchCounts, BatchHit, BatchOptions, BatchPlan, BatchRefusal, BatchReport, BatchRow, Lands,
+    PatternStampOptions, Policy, quantize_stamp_volume,
+};
 pub use sound_sets::{MOMENT_HITNORMAL, SetHitnormal};
 pub use workflows::{RangeOperation, VolumeScope};
 

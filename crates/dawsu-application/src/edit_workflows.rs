@@ -1,5 +1,5 @@
 use super::Application;
-pub use dawsu_editor_composer::{RangeOperation, VolumeScope};
+pub use dawsu_editor_composer::{PatternStampOptions, RangeOperation, VolumeScope};
 use std::path::Path;
 
 pub enum TimelineEdit {
@@ -69,5 +69,20 @@ impl Application {
         if !changed {
             self.status = "No matching hits changed".into();
         }
+    }
+
+    pub fn pattern_stamp(&mut self, options: PatternStampOptions) -> usize {
+        self.cancel_timeline_edit();
+        if self.busy || self.is_stroke_open() {
+            return 0;
+        }
+        let Some(document) = self.document.as_mut() else {
+            return 0;
+        };
+        let count = document.composer.pattern_stamp(&options);
+        if count == 0 {
+            self.status = "No matching hits changed".into();
+        }
+        count
     }
 }

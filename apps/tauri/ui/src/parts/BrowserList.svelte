@@ -1,6 +1,6 @@
 <script>
   import { bridge } from "../lib/bridge.svelte.js";
-  import { emptyBrowser, sampleKey } from "../lib/browser.js";
+  import { emptyBrowser, sampleDragType, sampleKey } from "../lib/browser.js";
   import Folder from "../icons/Folder.svg?raw";
   import FolderOpen from "../icons/FolderOpen.svg?raw";
   import Volume1 from "../icons/Volume1.svg?raw";
@@ -9,6 +9,13 @@
   // Rows sit one step in under the tree's top row (Mapset samples or the library folder).
   const nest = $derived(model.root ? 1 : 0);
   const send = (...args) => globalThis.sampleBrowserAction?.(...args);
+  // Drag a sample onto a lane row (lane column or timeline) to make it that lane's sample.
+  function dragStart(event, row) {
+    if (model.busy || !event.dataTransfer) return;
+    event.dataTransfer.setData(sampleDragType, row.key);
+    event.dataTransfer.effectAllowed = "copy";
+    send("drag", row.key);
+  }
 </script>
 
 {#if model.root}
@@ -27,7 +34,9 @@
   {:else}
     <button type="button" class="browser-row browser-sample" class:browser-selected={row.selected}
       style:--depth={row.depth + nest} title={row.title} aria-pressed={row.selected} disabled={model.busy}
-      data-sample={row.key} onclick={() => send("pick", row.key)} ondblclick={() => send("assign")}
+      data-sample={row.key} draggable={!model.busy} ondragstart={event => dragStart(event, row)}
+      ondragend={() => send("dragEnd")}
+      onclick={() => send("pick", row.key)} ondblclick={() => send("assign")}
       onkeydown={event => sampleKey(event, row, send)}>
       <span class="browser-icon">{@html Volume1}</span><span class="browser-name">{row.label}</span>
     </button>

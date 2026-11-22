@@ -330,6 +330,9 @@ enum Action {
         id: String,
     },
     TimelineEdit { path: PathBuf, edit: TimelineEditRequest },
+    PatternStamp { count: usize, step_ms: f64, snap_to_objects: bool, quantize_volumes: bool },
+    CloneSampleVariant { lane: usize },
+    AlternateVariants { from_lane: usize, to_lane: usize },
     CancelTimelineEdit,
     Key {
         key: String,
@@ -620,6 +623,30 @@ impl Action {
             Self::TimelineEdit { path, edit } => {
                 if let Some(edit) = edit.parse() {
                     app.apply_timeline_edit(&path, edit);
+                }
+            }
+            Self::PatternStamp {
+                count,
+                step_ms,
+                snap_to_objects,
+                quantize_volumes,
+            } => {
+                app.pattern_stamp(dawsu_application::PatternStampOptions {
+                    repeat_count: count,
+                    step_ms,
+                    snap_to_objects,
+                    quantize_volumes,
+                    ..Default::default()
+                });
+            }
+            Self::CloneSampleVariant { lane } => {
+                if let Err(error) = app.clone_sample_variant(lane) {
+                    app.error = Some(error);
+                }
+            }
+            Self::AlternateVariants { from_lane, to_lane } => {
+                if let Err(error) = app.alternate_variants(from_lane, to_lane) {
+                    app.error = Some(error);
                 }
             }
             Self::CancelTimelineEdit => app.cancel_timeline_edit(),
@@ -1398,6 +1425,7 @@ fn snapshot_with_static(app: &Application, include_scene: bool, include_static: 
                 "viewStart": c.view_start, "zoom": app.zoom, "rowHeight": app.row_height,
                 "range": c.range.map(|r| [r.from.ms(), r.to.ms()]),
                 "repeatGap": app.requested_edit().filter(|&id| id == "repeat").and_then(|_| c.repeat_gap()),
+                "patternStampStep": app.requested_edit().filter(|&id| id == "pattern_stamp").and_then(|_| c.pattern_stamp_step()),
                 "laneLayout": d.lane_layout(),
                 "timeSignatures": d.time_signatures(), "editorBars": d.editor_bars(),
                 "bookmarks": d.bookmarks().iter().map(|b| json!({"time": b.time.ms(), "label": b.label})).collect::<Vec<_>>(),
@@ -1430,9 +1458,14 @@ fn snapshot_with_static(app: &Application, include_scene: bool, include_static: 
                     + summary.green_lines_removed + summary.red_lines_changed,
             })
         }).collect::<Vec<_>>();
+        let mut details = plan.details.clone();
+        details.extend(plan.volume_clarity_lines());
         json!({
-            "label": plan.label, "details": plan.details, "files": files,
+            "label": plan.label, "details": details, "files": files,
             "mixes": plan.mix_paths().collect::<Vec<_>>(),
+            "createdMixes": plan.created_mix_paths().collect::<Vec<_>>(),
+            "reusedMixes": plan.reused_mix_paths().collect::<Vec<_>>(),
+            "volumeSummary": plan.volume_clarity_lines(),
             "combinations": plan.export_combinations(),
             "includeSliderAudio": plan.includes_slider_audio(),
         })
@@ -1462,6 +1495,7 @@ fn snapshot_with_static(app: &Application, include_scene: bool, include_static: 
         "recent": app.preferences.recent, "firstLaunch": app.first_launch,
     });
     result["hsMode"] = json!(document.is_some_and(|d| d.hs_mode));
+    result["hasOriginalSnapshot"] = json!(app.has_original_snapshot());
     result["songsFolder"] = json!((!app.preferences.songs_folder.as_os_str().is_empty()).then_some(&app.preferences.songs_folder));
     result["outputProblems"] = json!(app.output_problems().iter().map(|problem| json!({
         "target": problem.target, "timeline": problem.timeline,
@@ -1556,6 +1590,7 @@ enum Request {
     MidiRecordToggle(Option<usize>, Option<u32>, mpsc::Sender<Result<dawsu_application::MidiRecordStatus, String>>),
     Vst3Scan(mpsc::Sender<Result<dawsu_application::Vst3ScanReport, String>>),
     KeysoundsAction(Value, mpsc::Sender<Result<Value, String>>),
+    RevertMapsetToOriginal(mpsc::Sender<Result<usize, String>>),
 }
 struct Editor(mpsc::Sender<Request>);
 
@@ -1682,6 +1717,9 @@ fn export_snapshot(app: &Application, cache: &mut ExportCache) -> Value {
             "base": preview.plan.generated_file().and_then(|path| preview.plan.files.iter().find(|file| file.path == path))
                 .map(|file| json!({ "path": file.path, "replaces": file.expected.is_some() })),
             "mixes": preview.plan.mix_paths().collect::<Vec<_>>(),
+            "createdMixes": preview.plan.created_mix_paths().collect::<Vec<_>>(),
+            "reusedMixes": preview.plan.reused_mix_paths().collect::<Vec<_>>(),
+            "volumeSummary": preview.plan.volume_clarity_lines(),
             "targets": preview.plan.targets.iter().map(|counts| json!({
                 "path": counts.path,
                 "matched": counts.matched,
@@ -2115,21 +2153,13 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                     let _ = response.send(result);
                 }
                 Ok(Request::KeysoundsAction(payload, response)) => {
-                    let result = guard(&mut app, &mut fault, |app| {
-                        let kind = payload.get("kind").and_then(|v| v.as_str()).unwrap_or("view");
-                        if kind == "add_track" {
-                            let name = payload.get("name").and_then(|v| v.as_str()).unwrap_or("Keysound Track");
-                            let plugin = payload.get("vst3Plugin").and_then(|v| v.as_str());
-                            app.keysounds_add_track(name, plugin);
-                        } else if kind == "delete_track" {
-                            if let Some(id) = payload.get("trackId").and_then(|v| v.as_u64()) {
-                                app.keysounds.document.delete_track(id);
-                            }
-                        } else if kind == "scan_vst3" {
-                            let _ = app.scan_vst3_plugins(&[]);
-                        }
-                        app.keysounds_summary()
-                    });
+                    let result = guard(&mut app, &mut fault, |app| app.keysounds_action(&payload))
+                        .and_then(|r| r);
+                    let _ = response.send(result);
+                }
+                Ok(Request::RevertMapsetToOriginal(response)) => {
+                    let result = guard(&mut app, &mut fault, |app| app.revert_mapset_to_original())
+                        .and_then(|r| r);
                     let _ = response.send(result);
                 }
                 Ok(Request::NodeGraphView(response)) => {
@@ -2994,6 +3024,11 @@ fn keysounds_action(payload: Value, state: State<'_, Editor>) -> Result<Value, S
     ask(&state, |tx| Request::KeysoundsAction(payload, tx))?
 }
 
+#[tauri::command]
+fn revert_mapset_to_original(state: State<'_, Editor>) -> Result<usize, String> {
+    ask(&state, Request::RevertMapsetToOriginal)?
+}
+
 fn close_requested(label: &str, editor: &Editor) -> CloseDecision {
     // Closing Export or the drum detection window never waits on the editor.
     match label {
@@ -3113,7 +3148,8 @@ fn main() {
             midi_input_ports,
             midi_record_toggle,
             vst3_scan,
-            keysounds_action
+            keysounds_action,
+            revert_mapset_to_original
         ])
         .run(tauri::generate_context!())
         .expect("start the dawsu! Tauri editor");

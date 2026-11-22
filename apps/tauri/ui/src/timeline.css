@@ -93,6 +93,19 @@
     display: none;
   }
 }
+/* 1280 px (1920 px at 150 %): the five lane tools tighten so Taller isn't cut off at the column's edge. */
+@media (max-width: 1360px) {
+  .lane-title-controls {
+    gap: 0;
+    padding: 0 4px;
+  }
+  .lane-tool-divider {
+    margin: 0 2px;
+  }
+  .lane-tool-glyph {
+    width: 14px;
+  }
+}
 
 /* Song · objects header (v3 §4): a 24 px teal strip, the name, then M, S and the waveform switch,
    on the teal tint. Under 52 px (app.js sets data-song-row) only the buttons stay. */
@@ -216,4 +229,13 @@
 }
 .arrange[data-lane-names="false"] .song-body {
   padding: 0 6px;
+}
+
+/* A Browser sample dragged over a lane row: the header it would land on, and the timeline under it. */
+#lanes .lane.sample-drop-target {
+  box-shadow: inset 0 0 0 2px var(--editor-accent);
+}
+#grid.sample-drop {
+  outline: 2px dashed var(--editor-accent);
+  outline-offset: -2px;
 }

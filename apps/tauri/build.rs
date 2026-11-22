@@ -61,6 +61,7 @@ const COMMANDS: &[&str] = &[
     "midi_record_toggle",
     "vst3_scan",
     "keysounds_action",
+    "revert_mapset_to_original",
 ];
 
 fn main() {

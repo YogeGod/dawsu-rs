@@ -5,11 +5,11 @@
 //! shows are the counts Apply gives. Grid lines arrive with each hit ([`BatchHit::grid`]): the
 //! caller measures them against the map's grid, so this step does no grid maths of its own.
 
-use crate::{Composer, HitKey};
+use crate::{Composer, HitKey, normal};
 use dawsu_editor::tempo::SnapSpacing;
 use dawsu_foundation::{SampleIdentity, SongTime};
 use dawsu_hitsounding::{MomentId, Place};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::convert::Infallible;
 
 /// One generated hit.
@@ -310,4 +310,299 @@ impl Composer {
         self.selected.replace(added.clone());
         Ok(BatchReport { counts: plan.counts, added })
     }
+
+    /// Default step in ms for [`Self::pattern_stamp`]: the active bar length at the start of the
+    /// selection, scaled up to whole bars if the selection spans more than one bar.
+    pub fn pattern_stamp_step(&self) -> Option<f64> {
+        let times = self
+            .selected
+            .items()
+            .iter()
+            .filter_map(|key| {
+                self.hitsounds()
+                    .moments()
+                    .get(key.moment)
+                    .filter(|m| m.has_hit(&key.lane))
+            })
+            .map(|m| m.time().ms());
+        let first = times.clone().reduce(f64::min)?;
+        let last = times.reduce(f64::max)?;
+        let section = self.tempo.section_at(SongTime::from_ms(first));
+        let bar_ms = section.beat_length_ms * f64::from(section.beats_per_bar.max(1));
+        if !bar_ms.is_finite() || bar_ms <= 0.0 {
+            return None;
+        }
+        let bars = (((last - first) / bar_ms).floor().max(0.0) as u32) + 1;
+        Some(bar_ms * f64::from(bars))
+    }
+
+    /// Stamps the currently selected hits as a relative-offset groove `options.repeat_count` times
+    /// after the selection, optionally snapping to nearby gameplay objects and quantizing volumes
+    /// to 3 clean levels (`35%`, `70%`, `100%`). Everything applies as one `"Pattern stamp"` undo
+    /// step and selects the stamped hits. Returns the number of hits added.
+    pub fn pattern_stamp(&mut self, options: &PatternStampOptions) -> usize {
+        if self.history.is_transaction_open()
+            || options.repeat_count == 0
+            || options.repeat_count > 256
+        {
+            return 0;
+        }
+        let selected_hits: Vec<(f64, SampleIdentity, i32)> = self
+            .selected_keys_in_order()
+            .into_iter()
+            .filter_map(|key| {
+                let moment = self.hitsounds().moments().get(key.moment)?;
+                moment.has_hit(&key.lane).then(|| {
+                    let volume = moment.hit_volume(&key.lane);
+                    (moment.time().ms(), key.lane, volume)
+                })
+            })
+            .collect();
+        if selected_hits.is_empty() {
+            return 0;
+        }
+        let Some(first) = selected_hits.iter().map(|(t, _, _)| *t).reduce(f64::min) else {
+            return 0;
+        };
+        let step_ms = if options.step_ms.is_finite() && options.step_ms > 0.0 {
+            options.step_ms
+        } else {
+            let Some(inferred) = self.pattern_stamp_step() else {
+                return 0;
+            };
+            inferred
+        };
+        if !step_ms.is_finite() || step_ms <= 0.0 {
+            return 0;
+        }
+        let leniency = if options.object_leniency_ms.is_finite() && options.object_leniency_ms >= 0.0 {
+            options.object_leniency_ms
+        } else {
+            15.0
+        };
+        let pattern: Vec<(f64, SampleIdentity, i32)> = selected_hits
+            .into_iter()
+            .map(|(time, lane, vol)| {
+                let volume = if options.quantize_volumes {
+                    quantize_stamp_volume(vol)
+                } else {
+                    vol
+                };
+                (time - first, lane, volume)
+            })
+            .collect();
+        let pattern_lanes: HashSet<SampleIdentity> =
+            pattern.iter().map(|(_, lane, _)| lane.clone()).collect();
+
+        let model = self.hitsounds();
+        let span_start = first + step_ms - 1.0;
+        let span_end = first + (options.repeat_count as f64 + 1.0) * step_ms - 1.0;
+        let mut clear_targets: Vec<(MomentId, SampleIdentity)> = Vec::new();
+        let mut cleared_set: HashSet<(usize, SampleIdentity)> = HashSet::new();
+        if options.clear_existing {
+            for (index, moment) in model.moments().iter().enumerate() {
+                let t = moment.time().ms();
+                if t >= span_start && t < span_end {
+                    for lane in moment.hits() {
+                        if pattern_lanes.contains(lane) && (!self.protect_normals || !normal(lane)) {
+                            clear_targets.push((MomentId(index), lane.clone()));
+                            cleared_set.insert((index, lane.clone()));
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut objects: Vec<(MomentId, f64)> = model
+            .moments()
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| m.place() != Place::NoObject)
+            .map(|(i, m)| (MomentId(i), m.time().ms()))
+            .collect();
+        objects.sort_by(|a, b| a.1.total_cmp(&b.1).then(a.0.0.cmp(&b.0.0)));
+
+        let all_existing: Vec<(MomentId, f64)> = model
+            .moments()
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| m.place() != Place::NoObject || m.hits().next().is_some())
+            .map(|(i, m)| (MomentId(i), m.time().ms()))
+            .collect();
+        let loose_existing: Vec<(MomentId, f64)> = model
+            .moments()
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| m.place() == Place::NoObject)
+            .map(|(i, m)| (MomentId(i), m.time().ms()))
+            .collect();
+
+        let mut taken: HashMap<SampleIdentity, Vec<f64>> = HashMap::new();
+        for (index, moment) in model.moments().iter().enumerate() {
+            for lane in moment.hits() {
+                if !cleared_set.contains(&(index, lane.clone())) {
+                    taken.entry(lane.clone()).or_default().push(moment.time().ms());
+                }
+            }
+        }
+        for times in taken.values_mut() {
+            times.sort_by(f64::total_cmp);
+        }
+
+        let dedupe_ms = 1.0;
+        let near_any = |times: &[f64], time: f64| {
+            let at = times.partition_point(|t| *t < time - dedupe_ms);
+            times.get(at).is_some_and(|t| (t - time).abs() <= dedupe_ms)
+        };
+        let nearest_object = |time: f64| {
+            let at = objects.partition_point(|o| o.1 < time);
+            let before = at
+                .checked_sub(1)
+                .map(|i| objects.partition_point(|o| o.1 < objects[i].1));
+            [before, Some(at)]
+                .into_iter()
+                .flatten()
+                .filter_map(|i| objects.get(i))
+                .map(|&(id, t)| (id, t, (t - time).abs()))
+                .min_by(|a, b| a.2.total_cmp(&b.2))
+                .filter(|o| o.2 <= leniency)
+        };
+
+        let mut new_moments: Vec<(f64, i32)> = Vec::new();
+        let mut placements: Vec<(Target, SampleIdentity, i32)> = Vec::new();
+
+        for copy in 1..=options.repeat_count {
+            let base = first + (copy as f64) * step_ms;
+            for (offset, lane, volume) in &pattern {
+                let raw_time = base + offset;
+                if !raw_time.is_finite() || raw_time < 0.0 {
+                    continue;
+                }
+                let (target, placed_time) = if options.snap_to_objects {
+                    match nearest_object(raw_time) {
+                        Some((id, t, _)) => (Target::Existing(id), t),
+                        None => {
+                            let existing = loose_existing
+                                .iter()
+                                .map(|&(id, t)| (Target::Existing(id), t));
+                            let made = new_moments
+                                .iter()
+                                .enumerate()
+                                .map(|(n, &(t, _))| (Target::New(n), t));
+                            match existing
+                                .chain(made)
+                                .filter(|(_, t)| (t - raw_time).abs() <= dedupe_ms)
+                                .min_by(|a, b| (a.1 - raw_time).abs().total_cmp(&(b.1 - raw_time).abs()))
+                            {
+                                Some(found) => found,
+                                None => {
+                                    new_moments.push((raw_time, *volume));
+                                    (Target::New(new_moments.len() - 1), raw_time)
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    let existing = all_existing
+                        .iter()
+                        .map(|&(id, t)| (Target::Existing(id), t));
+                    let made = new_moments
+                        .iter()
+                        .enumerate()
+                        .map(|(n, &(t, _))| (Target::New(n), t));
+                    match existing
+                        .chain(made)
+                        .filter(|(_, t)| (t - raw_time).abs() <= 0.5)
+                        .min_by(|a, b| (a.1 - raw_time).abs().total_cmp(&(b.1 - raw_time).abs()))
+                    {
+                        Some(found) => found,
+                        None => {
+                            new_moments.push((raw_time, *volume));
+                            (Target::New(new_moments.len() - 1), raw_time)
+                        }
+                    }
+                };
+                if taken.get(lane).is_some_and(|times| near_any(times, placed_time)) {
+                    continue;
+                }
+                let times = taken.entry(lane.clone()).or_default();
+                times.insert(times.partition_point(|t| *t < placed_time), placed_time);
+                placements.push((target, lane.clone(), *volume));
+            }
+        }
+
+        if placements.is_empty() && clear_targets.is_empty() {
+            return 0;
+        }
+
+        let mut added = Vec::with_capacity(placements.len());
+        let _ = self.history.apply("Pattern stamp", true, |h| {
+            for (id, lane) in &clear_targets {
+                h.remove_hit(*id, lane);
+            }
+            let created: Vec<MomentId> = new_moments
+                .iter()
+                .map(|&(t, vol)| h.add_moment(SongTime::from_ms(t), vol))
+                .collect();
+            for (target, lane, volume) in &placements {
+                let id = match *target {
+                    Target::Existing(id) => id,
+                    Target::New(n) => created[n],
+                };
+                h.add_hit_with_volume(id, lane.clone(), *volume);
+                added.push(HitKey { moment: id.0, lane: lane.clone() });
+            }
+            Ok::<_, Infallible>(())
+        });
+        for key in &added {
+            if !self.lanes.contains(&key.lane) {
+                self.lanes.push(key.lane.clone());
+            }
+        }
+        if !added.is_empty() {
+            self.selected.replace(added.clone());
+        }
+        added.len()
+    }
+}
+
+/// Options for [`Composer::pattern_stamp`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PatternStampOptions {
+    /// How many times to stamp the selected pattern after the selection.
+    pub repeat_count: usize,
+    /// Step between consecutive stamps in ms. When `<= 0.0` (or non-finite), inferred from the
+    /// active bar length at the start of the selection.
+    pub step_ms: f64,
+    /// Snap each stamped hit to the nearest gameplay object within `object_leniency_ms`.
+    pub snap_to_objects: bool,
+    /// Maximum distance in ms to snap a stamped hit onto a gameplay object (default 15 ms).
+    pub object_leniency_ms: f64,
+    /// Quantize stamped hit volumes to 3 clean levels (`35%`, `70%`, `100%`) so osu!stable green
+    /// lines stay minimal.
+    pub quantize_volumes: bool,
+    /// Clear existing hits on the pattern's lanes across the stamped span before placing.
+    pub clear_existing: bool,
+}
+
+impl Default for PatternStampOptions {
+    fn default() -> Self {
+        Self {
+            repeat_count: 4,
+            step_ms: 0.0,
+            snap_to_objects: true,
+            object_leniency_ms: 15.0,
+            quantize_volumes: false,
+            clear_existing: false,
+        }
+    }
+}
+
+/// Snaps a volume percentage to 3 clean levels (`35%`, `70%`, `100%`) to minimize green-line bloat.
+pub fn quantize_stamp_volume(volume: i32) -> i32 {
+    const LEVELS: [i32; 3] = [35, 70, 100];
+    LEVELS
+        .into_iter()
+        .min_by_key(|&level| (level - volume).abs())
+        .unwrap_or(100)
 }

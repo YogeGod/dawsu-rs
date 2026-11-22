@@ -448,6 +448,36 @@ aside[data-folded] {
     padding: 0 9px;
   }
 }
+/* 1280 px is a 1920 px screen at 150 %. The top bar tightens and the transport may shrink (style.css
+   pins it at flex-shrink 0), so Export, Save and the three panel switches stay on screen. Row 2 wraps
+   instead of crushing the map chip to a letter. */
+@media (max-width: 1360px) {
+  #editor-header.chrome {
+    gap: 6px;
+    padding: 0 10px;
+  }
+  #editor-header #editor-menus {
+    gap: 14px;
+    padding: 0 10px;
+  }
+  #editor-header .top-transport {
+    flex: 1 1 auto;
+    min-width: 0;
+    justify-content: safe center;
+    overflow: hidden;
+  }
+  #editor-header :is(#export-entry, #save, .panel-switches, .brand, #editor-menus) {
+    flex-shrink: 0;
+  }
+  #editor-ribbon.tools.chrome {
+    flex-wrap: wrap;
+    row-gap: 4px;
+    padding-block: 4px;
+  }
+  #editor-ribbon .map-chip {
+    min-width: 120px;
+  }
+}
 @media (max-width: 1279px) {
   #editor-ribbon .lane-mode-label {
     display: none;

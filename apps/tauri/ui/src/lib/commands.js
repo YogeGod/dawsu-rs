@@ -30,6 +30,7 @@ export const items = [
   { id: "openFolder", label: "Open map folder", icon: "Folder", command: "openFolder" },
   { id: "save", label: "Save", icon: "Save", command: "save" },
   { id: "revert", label: "Revert to saved…", icon: "RotateCcw", command: "revert" },
+  { id: "revertOriginal", label: "Revert mapset to original…", icon: "RotateCcw", run: ["call", "revertMapsetToOriginal"], enabled: "originalSnapshot" },
   { id: "export", label: "Export…", icon: "Package", run: ["click", "export-entry"], enabled: "document" },
   { id: "startScreen", label: "Start screen", icon: "House", run: ["call", "goHome"] },
   { id: "folders", label: "Folders…", icon: "Folder", run: ["call", "openFolders"], enabled: "idle" },
@@ -46,6 +47,7 @@ export const items = [
   { id: "selectAll", label: "Select all", icon: "SquareDashedMousePointer", command: "selectAll" },
   { id: "quantize", label: "Quantize…", icon: "AlignHorizontalJustifyCenter", command: "quantizeDialog", enabled: "selection" },
   { id: "repeat", label: "Repeat…", icon: "Repeat2", command: "repeat", enabled: "selection" },
+  { id: "patternStamp", label: "Pattern stamp…", icon: "Repeat2", command: "patternStamp", enabled: "selection" },
   { id: "editRange", label: "Edit range…", icon: "SquareDashed", command: "editRange", enabled: "range" },
   { id: "scaleByVolume", label: "Scale by volume…", icon: "ChartNoAxesColumn", command: "scaleByVolume" },
   { id: "placeSoundSet", label: "Place sound set…", run: ["call", "placeSoundSet"] },
@@ -126,6 +128,8 @@ export const items = [
   { id: "laneReplaceSample", label: "Replace sample…", icon: "FolderOpen", run: ["onLane", "click", "replace-sample"], enabled: "laneReplace" },
   { id: "laneColour", label: "Lane colour…", run: ["onLane", "click", "lane-colour"], enabled: "laneColour" },
   { id: "laneAddLayer", label: "Add numbered layer", icon: "Layers", command: "addNumberedLayer", run: ["onLane", "layer"], enabled: "laneLayer" },
+  { id: "laneCloneVariant", label: "Clone as next numbered variant", icon: "CopyPlus", run: ["onLane", "clone"], enabled: "laneClone" },
+  { id: "laneAlternate", label: "Alternate selected hits with next lane", icon: "Repeat2", run: ["onLane", "alternate"], enabled: "laneAlternate" },
   { id: "laneAdd", label: "Add lane…", icon: "Plus", run: ["click", "add-lane"], enabled: "lane" },
   { id: "laneDelete", label: "Delete lane…", icon: "Trash2", run: ["onLane", "call", "deleteActiveLane"], enabled: "laneDelete" },
 ];
@@ -133,11 +137,11 @@ export const items = [
 // Where each row sits. "-" is a divider; one at the start or end of a menu, or next to another, is
 // left out (Map has no Difficulty row, and so no divider under it, without a sibling difficulty).
 export const menus = {
-  file: ["openMap", "importOsz", "importMidi", "openFolder", "-", "save", "revert", "export", "exportMidi", "-", "startScreen", "folders", "-", "preferences"],
+  file: ["openMap", "importOsz", "importMidi", "openFolder", "-", "save", "revert", "revertOriginal", "export", "exportMidi", "-", "startScreen", "folders", "-", "preferences"],
   edit: [
     "undo", "redo", "-",
     "cut", "copy", "paste", "duplicate", "delete", "selectAll", "-",
-    "quantize", "repeat", "editRange", "scaleByVolume", "placeSoundSet", "saveSoundSet", "soundSetPlacement", "-",
+    "quantize", "repeat", "patternStamp", "editRange", "scaleByVolume", "placeSoundSet", "saveSoundSet", "soundSetPlacement", "-",
     "protect", "audition",
   ],
   playback: [
@@ -163,7 +167,7 @@ export const menus = {
     "quickStart", "shortcuts",
   ],
   tool: ["toolSelect", "toolDraw", "toolErase", "toolMute", "toolGrab", "toolRange", "toolRamp"],
-  lane: ["laneRename", "laneMoveUp", "laneMoveDown", "laneReplaceSample", "laneColour", "laneAddLayer", "laneAdd", "laneDelete"],
+  lane: ["laneRename", "laneMoveUp", "laneMoveDown", "laneReplaceSample", "laneColour", "laneAddLayer", "laneCloneVariant", "laneAlternate", "laneAdd", "laneDelete"],
 };
 
 // Catalogue commands no menu row stands for, so no menu shows their keys. They run from their keys

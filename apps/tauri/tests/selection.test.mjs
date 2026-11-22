@@ -77,6 +77,24 @@ test("selection card shows its first hit and distinguishes relative and absolute
     'modal = (_kind, title, content, buttons) => { globalThis.editModal = { title, content, buttons }; }; ' +
     'closeModal = () => {}; renderDialogs();', context);
   assert.equal(context.editModal.title, "Repeat");
+  // Edit › Pattern stamp…: Rust suggests the step; Stamp sends the four choices as one action.
+  const plainCreate = context.document.createElement;
+  context.document.createElement = () => ({ children: [], dataset: {}, addEventListener() {}, setAttribute() {},
+    append(...nodes) { this.children.push(...nodes); } });
+  runInContext('view.editDialog = "pattern_stamp"; scene.patternStampStep = 500; renderDialogs();', context);
+  context.document.createElement = plainCreate;
+  assert.equal(context.editModal.title, "Pattern stamp");
+  const fields = context.editModal.content.filter(node => node.children?.length === 2).map(node => node.children[1]);
+  assert.deepEqual(fields.map(field => field.value), [4, 500, "", ""]);
+  assert.equal(fields[2].checked, true, "Snap to gameplay objects starts on");
+  Object.assign(fields[0], { valueAsNumber: 8 });
+  Object.assign(fields[1], { valueAsNumber: 250 });
+  fields[3].checked = true;
+  context.editModal.buttons.find(([label]) => label === "Stamp")[1]();
+  await runInContext("pending", context);
+  assert.deepEqual(JSON.parse(JSON.stringify(calls.at(-1))), {
+    kind: "pattern_stamp", count: 8, step_ms: 250, snap_to_objects: true, quantize_volumes: true,
+  });
   runInContext('view.editDialog = null; scene.path = "Selected.osu"; scene.selection = { count: 2, start: 1120, object: "2 moments" };', context);
   assert.equal(model().selection.start, "00:01.120");
   runInContext('inspectorAction("moveStart", "1330.5")', context);

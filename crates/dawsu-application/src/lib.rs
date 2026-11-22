@@ -17,6 +17,7 @@ mod gain_recovery;
 mod lane_edit;
 mod layers;
 mod mixes;
+mod original_snapshot;
 mod pending;
 mod sweep;
 pub mod output;
@@ -24,6 +25,7 @@ pub mod node_graph;
 pub mod midi_import;
 pub mod midi_record;
 pub mod vst3;
+mod keysound_session;
 mod project;
 pub use project::lane_key as lane_layout_key;
 pub use node_graph::{NodeGraphAction, NodeGraphView, ViewerOverlay};
@@ -66,7 +68,7 @@ pub use project::LaneLayout;
 pub use recovery::RecoveryOffer;
 pub use sound_sets::{LibrarySet, PlacementView, SaveSetError, SetUpdatePrompt, SoundSetLibrary};
 pub use waveform::WaveBin;
-pub use edit_workflows::{RangeOperation, TimelineEdit, VolumeScope};
+pub use edit_workflows::{PatternStampOptions, RangeOperation, TimelineEdit, VolumeScope};
 
 use dawsu_audio::{AudioClip, AudioEngine, ScheduledSound};
 use dawsu_editor::tempo::{SnapSpacing, TempoMap, TimingSection};
@@ -1575,6 +1577,11 @@ impl Application {
         id
     }
 
+    /// Executes a Keysounding Piano Roll / VST3 / `[Keysounds]` generation action.
+    pub fn keysounds_action(&mut self, payload: &serde_json::Value) -> Result<serde_json::Value, String> {
+        keysound_session::handle(self, payload)
+    }
+
     pub fn request_open(&mut self, path: PathBuf) {
         if self.busy {
             return;
@@ -1593,6 +1600,31 @@ impl Application {
             self.pending_open = None;
             self.start_open(OpenSource::Map(path), false);
         }
+    }
+
+    pub fn has_original_snapshot(&self) -> bool {
+        self.document
+            .as_ref()
+            .and_then(|d| d.path.parent())
+            .is_some_and(|folder| original_snapshot::has_snapshot(&self.data_root, folder))
+    }
+
+    pub fn revert_mapset_to_original(&mut self) -> Result<usize, String> {
+        if self.busy || self.is_stroke_open() {
+            return Err("Finish the current operation before reverting the mapset.".into());
+        }
+        let path = self
+            .document
+            .as_ref()
+            .map(|d| d.path.clone())
+            .ok_or("Open a difficulty first.")?;
+        let folder = path.parent().ok_or("Missing mapset folder.")?;
+        let restored = original_snapshot::restore(&self.data_root, folder)?;
+        self.pending_open = None;
+        self.revert_requested = false;
+        self.start_open(OpenSource::Map(path), false);
+        self.status = format!("Reverted {restored} mapset file(s) to original snapshot (pre-revert backup saved).");
+        Ok(restored)
     }
 
     pub fn discard_and_open(&mut self) {
@@ -1775,6 +1807,9 @@ impl Application {
                         return;
                     }
                     let path = loaded.document.path.clone();
+                    if let Some(folder) = path.parent() {
+                        let _ = original_snapshot::capture_once(&self.data_root, folder);
+                    }
                     // The outgoing difficulty closes here.
                     let keep = loaded.outgoing_keep;
                     self.forget_unneeded_pending(keep);

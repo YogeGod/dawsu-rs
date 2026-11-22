@@ -44,6 +44,7 @@
     "allow-midi-input-ports",
     "allow-midi-record-toggle",
     "allow-vst3-scan",
-    "allow-keysounds-action"
+    "allow-keysounds-action",
+    "allow-revert-mapset-to-original"
   ]
 }

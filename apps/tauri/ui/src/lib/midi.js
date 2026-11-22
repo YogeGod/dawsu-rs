@@ -103,3 +103,84 @@ export function keysoundsAdd(name, plugin) {
   return payload;
 }
 export const keysoundsDelete = trackId => ({ kind: "delete_track", trackId });
+
+// Piano roll payloads. Rust reads pitch, velocity, noteIndex and semitones as whole numbers (a
+// fraction falls back to its default), so they are rounded here.
+const whole = (value, low, high) => Math.min(high, Math.max(low, Math.round(Number(value) || 0)));
+const ms = value => Math.max(0, Math.round(Number(value) || 0));
+export const KEYSOUND_NOTE_MS = 250;
+export const QUANTIZE_MS = 125;
+export const keysoundsAddNote = (trackId, startMs, pitch, velocity = 100, lengthMs = KEYSOUND_NOTE_MS) =>
+  ({ kind: "add_note", trackId, startMs: ms(startMs), endMs: ms(startMs) + ms(lengthMs), pitch: whole(pitch, 0, 127), velocity: whole(velocity, 1, 127) });
+export const keysoundsMoveNote = (trackId, noteIndex, startMs, pitch) =>
+  ({ kind: "move_note", trackId, noteIndex, startMs: ms(startMs), pitch: whole(pitch, 0, 127) });
+export const keysoundsResizeNote = (trackId, noteIndex, endMs) => ({ kind: "resize_note", trackId, noteIndex, endMs: ms(endMs) });
+export const keysoundsDeleteNote = (trackId, noteIndex) => ({ kind: "delete_note", trackId, noteIndex });
+export const keysoundsSetVelocity = (trackId, noteIndex, velocity) =>
+  ({ kind: "set_velocity", trackId, noteIndex, velocity: whole(velocity, 1, 127) });
+export const keysoundsQuantize = (trackId, stepMs = QUANTIZE_MS) => ({ kind: "quantize_notes", trackId, stepMs });
+export const keysoundsTranspose = (trackId, semitones) => ({ kind: "transpose_notes", trackId, semitones: whole(semitones, -127, 127) });
+export const keysoundsPreview = (trackId, pitch, velocity = 100, durationMs = 200) =>
+  ({ kind: "preview_note", trackId, pitch: whole(pitch, 0, 127), velocity: whole(velocity, 1, 127), durationMs: ms(durationMs) });
+export const keysoundsGenerate = () => ({ kind: "generate_keysounds" });
+// load_vst3 takes the scanned plug-in's file and id (summary.vst3Plugins), or null when none is picked.
+export function keysoundsLoadVst3(trackId, plugin) {
+  if (trackId == null || !plugin?.path) return null;
+  return { kind: "load_vst3", trackId, pluginPath: plugin.path, pluginUid: plugin.id ?? null, pluginName: plugin.name ?? "VST3 Instrument" };
+}
+
+export function generateToast(generated) {
+  if (!generated) return null;
+  const unsynced = generated.unsyncedCount ?? 0;
+  return {
+    tone: "success",
+    title: "[Keysounds] generated",
+    body: `Wrote ${generated.fileName} with ${plural(generated.syncedCount ?? 0, "synced note")}` +
+      (unsynced ? ` (${unsynced} not on an object).` : "."),
+  };
+}
+
+// The roll's geometry: C2 (36) at the bottom to C6 (84) at the top, one row per semitone.
+export const ROLL_LOW = 36;
+export const ROLL_HIGH = 84;
+export const ROW_PX = 14;
+export const PX_PER_MS = 0.16;
+const NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+export const pitchName = pitch => `${NAMES[pitch % 12]}${Math.floor(pitch / 12) - 1}`;
+export const isBlackKey = pitch => NAMES[pitch % 12].length > 1;
+export const rollPitches = () => Array.from({ length: ROLL_HIGH - ROLL_LOW + 1 }, (_, i) => ROLL_HIGH - i);
+export const pitchRow = pitch => (ROLL_HIGH - pitch) * ROW_PX;
+export const pitchAtY = y => whole(ROLL_HIGH - Math.floor(y / ROW_PX), ROLL_LOW, ROLL_HIGH);
+// The time under x, snapped down to the grid step.
+export const msAtX = (x, stepMs = QUANTIZE_MS) => Math.max(0, Math.floor(x / PX_PER_MS / stepMs) * stepMs);
+// The roll's width in ms: past the last note's end by two seconds, at least eight seconds.
+export const rollSpanMs = notes => Math.max(8000, ...(notes ?? []).map(note => note.endMs + 2000));
+// Velocity from a point in the velocity lane (top = 127).
+export const velocityAtY = (y, height) => whole(127 * (1 - y / Math.max(1, height)), 1, 127);
+
+// What a finished note drag sends: a move snaps start and pitch to the grid, a resize the end.
+// Null when the note did not change (a plain click selects it).
+export function noteDragPayload(trackId, note, mode, dx, dy, stepMs = QUANTIZE_MS) {
+  if (mode === "resize") {
+    const endMs = Math.max(note.startMs + stepMs, Math.round((note.endMs + dx / PX_PER_MS) / stepMs) * stepMs);
+    return endMs === note.endMs ? null : keysoundsResizeNote(trackId, note.index, endMs);
+  }
+  const startMs = Math.max(0, Math.round((note.startMs + dx / PX_PER_MS) / stepMs) * stepMs);
+  const pitch = whole(note.pitch - Math.round(dy / ROW_PX), ROLL_LOW, ROLL_HIGH);
+  if (startMs === note.startMs && pitch === note.pitch) return null;
+  return keysoundsMoveNote(trackId, note.index, startMs, pitch);
+}
+
+// The note's index after Rust re-sorted the track: the one at this start and pitch.
+export function findNoteIndex(notes, startMs, pitch) {
+  const found = (notes ?? []).find(note => note.pitch === pitch && Math.abs(note.startMs - startMs) < 1);
+  return found ? found.index : null;
+}
+
+// The Rust host sidecar's state in one line.
+export function sidecarStatus(summary) {
+  if (!summary) return "";
+  const loaded = summary.loadedPlugins?.length ?? 0;
+  if (!summary.sidecarAvailable) return "VST3 host not found: notes preview with the built-in tone.";
+  return loaded ? `VST3 host ready · ${plural(loaded, "instrument")} loaded.` : "VST3 host ready · no instrument loaded.";
+}

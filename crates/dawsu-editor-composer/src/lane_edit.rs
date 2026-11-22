@@ -54,4 +54,64 @@ impl Composer {
         });
         true
     }
+
+    /// Moves every second selected hit on `from_lane` (in chronological order) onto `to_lane`.
+    pub fn alternate_lane_hits(
+        &mut self,
+        from_lane: &SampleIdentity,
+        to_lane: &SampleIdentity,
+    ) -> usize {
+        if from_lane == to_lane {
+            return 0;
+        }
+        let hits = self.hitsounds();
+        if hits.lane(from_lane).is_none() || hits.lane(to_lane).is_none() {
+            return 0;
+        }
+        let mut selected_on_lane: Vec<_> = self
+            .selected_keys_in_order()
+            .into_iter()
+            .filter(|key| {
+                &key.lane == from_lane
+                    && hits
+                        .moments()
+                        .get(key.moment)
+                        .is_some_and(|m| m.has_hit(from_lane))
+            })
+            .collect();
+        selected_on_lane.sort_by(|a, b| {
+            let ta = hits.moments()[a.moment].time().ms();
+            let tb = hits.moments()[b.moment].time().ms();
+            ta.total_cmp(&tb).then_with(|| a.moment.cmp(&b.moment))
+        });
+        let to_move: Vec<_> = selected_on_lane
+            .into_iter()
+            .enumerate()
+            .filter_map(|(idx, key)| (idx % 2 == 1).then_some(key))
+            .collect();
+        if to_move.is_empty() {
+            return 0;
+        }
+        let moved_count = to_move.len();
+        self.apply("Alternate variants", |hits| {
+            for key in &to_move {
+                hits.remove_hit(MomentId(key.moment), from_lane);
+                hits.add_hit(MomentId(key.moment), to_lane.clone());
+            }
+        });
+        if !self.lanes.contains(to_lane) {
+            self.lanes.push(to_lane.clone());
+        }
+        let mut updated_selection: Vec<_> = self.selected_keys_in_order();
+        for key in &to_move {
+            if let Some(entry) = updated_selection
+                .iter_mut()
+                .find(|k| k.moment == key.moment && &k.lane == from_lane)
+            {
+                entry.lane = to_lane.clone();
+            }
+        }
+        self.selected.replace(updated_selection);
+        moved_count
+    }
 }

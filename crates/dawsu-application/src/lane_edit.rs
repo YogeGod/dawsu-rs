@@ -107,6 +107,151 @@ impl Application {
         self.status = status;
         Ok(())
     }
+
+    /// Clones `lane`'s sample file to the next numbered variant (`name2.ext`, `name3.ext`, ...)
+    /// in the mapset folder and adds it as a visible lane right after `lane`.
+    pub fn clone_sample_variant(&mut self, lane: usize) -> Result<SampleIdentity, String> {
+        if self.busy || self.is_stroke_open() {
+            return Err("Finish the current operation before cloning a sample variant.".into());
+        }
+        let doc = self.document().ok_or("Open a difficulty first.")?;
+        let expected_map = doc.path.clone();
+        let source_identity = doc
+            .composer
+            .lanes
+            .get(lane)
+            .cloned()
+            .ok_or("Choose a valid lane to clone.")?;
+        if matches!(
+            source_identity,
+            SampleIdentity::Standard {
+                sound: dawsu_foundation::Sound::Slider(_),
+                ..
+            }
+        ) {
+            return Err("Slider body samples cannot be cloned here.".into());
+        }
+        let hits = doc.composer.hitsounds();
+        let slot = hits.lane_slot(&source_identity).unwrap_or(&source_identity);
+        let source_name = match &hits
+            .lane(slot)
+            .or_else(|| hits.lane(&source_identity))
+            .ok_or("This lane has no sample entry.")?
+            .source
+        {
+            dawsu_hitsounding::LaneSource::File(name) => name.clone(),
+            dawsu_hitsounding::LaneSource::Skin => {
+                return Err("Only mapset sample files can be cloned as numbered variants.".into());
+            }
+        };
+        let root = expected_map.parent().ok_or("Missing mapset folder")?;
+        let source_path = if let Some(pending) = doc
+            .pending
+            .files()
+            .find(|f| f.name.eq_ignore_ascii_case(&source_name))
+        {
+            pending.path.clone()
+        } else {
+            safe_child(root, &source_name)?
+        };
+        let bytes = std::fs::read(&source_path)
+            .map_err(|e| format!("Reading {source_name}: {e}"))?;
+
+        let mut existing: Vec<String> = doc.files.clone();
+        existing.extend(doc.pending.files().map(|f| f.name.clone()));
+        if let Ok(disk_files) = list_folder(root) {
+            existing.extend(disk_files);
+        }
+        let variant_name = next_numbered_variant_name(&existing, &source_name);
+        let target_path = root.join(&variant_name);
+        dawsu_foundation::safe_write::write_new(&target_path, &bytes)
+            .map_err(|e| format!("Writing {variant_name}: {e}"))?;
+        let clip = dawsu_audio::decode(&target_path)?;
+        self.register_added_samples(vec![(variant_name.clone(), clip)]);
+        let variant_identity = read_sample_file_name(&variant_name)
+            .unwrap_or_else(|| SampleIdentity::File(variant_name.clone()));
+        let doc = self.document.as_mut().expect("open map was just validated");
+        doc.composer
+            .history
+            .update_external(|hits| hits.set_lane_hidden(&variant_identity, true));
+        doc.composer.show_lane(&variant_identity);
+        if let Some(pos) = doc.composer.lanes.iter().position(|l| l == &variant_identity) {
+            doc.composer.lanes.remove(pos);
+        }
+        let insert_at = (lane + 1).min(doc.composer.lanes.len());
+        doc.composer.lanes.insert(insert_at, variant_identity.clone());
+        self.active_lane = insert_at;
+        self.status = format!("Cloned {source_name} as {variant_name}.");
+        Ok(variant_identity)
+    }
+
+    /// Moves every second selected hit on `from_lane` (chronologically) onto `to_lane`
+    /// as a single undoable edit.
+    pub fn alternate_variants(&mut self, from_lane: usize, to_lane: usize) -> Result<usize, String> {
+        if self.busy || self.is_stroke_open() {
+            return Err("Finish the current operation before alternating variants.".into());
+        }
+        if from_lane == to_lane {
+            return Err("Choose two different lanes to alternate.".into());
+        }
+        let doc = self.document.as_mut().ok_or("Open a difficulty first.")?;
+        let from_id = doc
+            .composer
+            .lanes
+            .get(from_lane)
+            .cloned()
+            .ok_or("Source lane is unavailable.")?;
+        let to_id = doc
+            .composer
+            .lanes
+            .get(to_lane)
+            .cloned()
+            .ok_or("Target variant lane is unavailable.")?;
+        let moved = doc.composer.alternate_lane_hits(&from_id, &to_id);
+        if moved == 0 {
+            return Err("Select at least two hits on the source lane to alternate.".into());
+        }
+        let from_name = lane_label(doc, &from_id);
+        let to_name = lane_label(doc, &to_id);
+        self.status = format!("Alternated {moved} hits from {from_name} to {to_name}.");
+        Ok(moved)
+    }
+}
+
+/// Computes the next free numbered variant filename (e.g. `soft-hitwhistle.wav` ->
+/// `soft-hitwhistle2.wav`, `soft-hitwhistle2.wav` -> `soft-hitwhistle3.wav`), checking
+/// `existing_names` case-insensitively.
+pub fn next_numbered_variant_name(existing_names: &[String], source_name: &str) -> String {
+    let (stem, ext) = match source_name.rfind('.') {
+        Some(dot) if dot > 0 => (&source_name[..dot], Some(&source_name[dot..])),
+        _ => (source_name, None),
+    };
+    let digit_start = stem
+        .char_indices()
+        .rev()
+        .take_while(|(_, ch)| ch.is_ascii_digit())
+        .last()
+        .map(|(idx, _)| idx)
+        .unwrap_or(stem.len());
+    let (base, mut next_num) = if digit_start < stem.len() && digit_start > 0 {
+        let parsed = stem[digit_start..].parse::<u32>().unwrap_or(1);
+        (&stem[..digit_start], parsed.saturating_add(1).max(2))
+    } else {
+        (stem, 2)
+    };
+    loop {
+        let candidate = match ext {
+            Some(ext) => format!("{base}{next_num}{ext}"),
+            None => format!("{base}{next_num}"),
+        };
+        if !existing_names
+            .iter()
+            .any(|name| name.eq_ignore_ascii_case(&candidate))
+        {
+            return candidate;
+        }
+        next_num = next_num.saturating_add(1);
+    }
 }
 
 /// A lane's name as its header shows it: the mapper's own name, else the sound and its number
@@ -173,4 +318,29 @@ fn fresh_lane_files(
         }
     }
     Ok(candidates)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::next_numbered_variant_name;
+
+    #[test]
+    fn numbered_variant_increments_and_avoids_case_insensitive_collisions() {
+        let existing = vec![
+            "soft-hitwhistle.wav".to_owned(),
+            "SOFT-HITWHISTLE2.WAV".to_owned(),
+        ];
+        assert_eq!(
+            next_numbered_variant_name(&existing, "soft-hitwhistle.wav"),
+            "soft-hitwhistle3.wav"
+        );
+        assert_eq!(
+            next_numbered_variant_name(&existing, "soft-hitwhistle2.wav"),
+            "soft-hitwhistle3.wav"
+        );
+        assert_eq!(
+            next_numbered_variant_name(&[], "drum-snare.wav"),
+            "drum-snare2.wav"
+        );
+    }
 }
