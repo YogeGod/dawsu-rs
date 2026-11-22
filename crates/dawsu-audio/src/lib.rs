@@ -517,6 +517,24 @@ impl SongStretcher {
     }
 }
 
+/// Real-time stereo audio source mixed into playback ahead of the master limiter.
+///
+/// Implementations run on the audio output thread and must not block, lock, or allocate.
+pub trait LiveAudioSource: Send {
+    fn process_block(
+        &mut self,
+        left: &mut [f32],
+        right: &mut [f32],
+        sample_rate: u32,
+        is_playing: bool,
+    );
+}
+
+#[inline]
+fn sanitize_live_sample(sample: f32) -> f32 {
+    if sample.is_finite() { sample } else { 0.0 }
+}
+
 pub struct Mixer {
     pub song: Option<Arc<AudioClip>>,
     pub cues: Vec<ScheduledSound>,
@@ -538,8 +556,13 @@ pub struct Mixer {
     indexed: bool,
     limiter: MasterLimiter,
     stretcher: SongStretcher,
+    live_source: Option<Box<dyn LiveAudioSource>>,
+    live_left: Vec<f32>,
+    live_right: Vec<f32>,
 }
 impl Mixer {
+    const LIVE_BLOCK_FRAMES: usize = 512;
+
     pub fn new(sample_rate: u32) -> Self {
         Self {
             song: None,
@@ -561,7 +584,18 @@ impl Mixer {
             indexed: false,
             limiter: MasterLimiter::new(sample_rate),
             stretcher: SongStretcher::new(sample_rate),
+            live_source: None,
+            live_left: vec![0.0; Self::LIVE_BLOCK_FRAMES],
+            live_right: vec![0.0; Self::LIVE_BLOCK_FRAMES],
         }
+    }
+    /// Replaces the live audio source, returning the previous source so callers
+    /// can drop it off the audio thread.
+    pub fn set_live_source(
+        &mut self,
+        source: Option<Box<dyn LiveAudioSource>>,
+    ) -> Option<Box<dyn LiveAudioSource>> {
+        std::mem::replace(&mut self.live_source, source)
     }
     pub fn seek(&mut self, ms: f64) {
         self.position_ms = if ms.is_finite() { ms.max(0.0) } else { 0.0 };
@@ -585,7 +619,24 @@ impl Mixer {
     }
     pub fn render(&mut self, out: &mut [f32], channels: usize) {
         let out_channels = channels.max(1);
-        for frame in out.chunks_mut(out_channels) {
+        let block_samples = Self::LIVE_BLOCK_FRAMES * out_channels;
+        for block in out.chunks_mut(block_samples) {
+            let block_frames = block.len() / out_channels;
+            let has_live = if block_frames > 0 {
+                if let Some(source) = self.live_source.as_mut() {
+                    let left = &mut self.live_left[..block_frames];
+                    let right = &mut self.live_right[..block_frames];
+                    left.fill(0.0);
+                    right.fill(0.0);
+                    source.process_block(left, right, self.sample_rate, self.playing);
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+            for (frame_idx, frame) in block.chunks_mut(out_channels).enumerate() {
                 if let Some((left, right)) = self.cycle {
                     if self.playing && right > left && self.position_ms >= right {
                         self.seek(left);
@@ -686,6 +737,19 @@ impl Mixer {
                     for voice in self.voices.iter().chain(&self.listen) {
                         mix += voice.clip.sample(voice.frame, channel) * voice.gain;
                     }
+                    if has_live && frame_idx < block_frames {
+                        let live_l = sanitize_live_sample(self.live_left[frame_idx]);
+                        let live_r = sanitize_live_sample(self.live_right[frame_idx]);
+                        mix += if out_channels == 1 {
+                            (live_l + live_r) * 0.5
+                        } else if channel == 0 {
+                            live_l
+                        } else if channel == 1 {
+                            live_r
+                        } else {
+                            0.0
+                        };
+                    }
                     *value = mix * self.master_gain;
                 }
                 if self.limiter_enabled {
@@ -709,6 +773,7 @@ impl Mixer {
                     self.position_ms += self.speed * 1000.0 / self.sample_rate as f64;
                 }
             }
+        }
     }
 }
 
@@ -821,6 +886,7 @@ fn buffer_request(
 
 enum Command {
     Load(Schedule, Retired),
+    SetLiveSource(Option<Box<dyn LiveAudioSource>>),
     Play(bool),
     Seek(f64),
     Audition(Arc<AudioClip>, f32),
@@ -835,6 +901,7 @@ pub struct AudioEngine {
     effective_buffer_ms: Option<u32>,
     send: mpsc::Sender<Command>,
     retirements: Mutex<Vec<Retired>>,
+    retired_live_sources: Mutex<mpsc::Receiver<Box<dyn LiveAudioSource>>>,
     listen: ListenSlot,
     position: Arc<AtomicU64>,
     playing: Arc<AtomicBool>,
@@ -885,11 +952,12 @@ impl AudioEngine {
                 validate_buffer_ms(ms)?;
             }
             let (send, receive) = mpsc::channel();
+            let (retire_live_tx, retire_live_rx) = mpsc::sync_channel(16);
             let position = Arc::new(AtomicU64::new(0));
             let playing = Arc::new(AtomicBool::new(false));
             let errors = Arc::new(AtomicU64::new(0));
             let peak = Arc::new(AtomicU32::new(0));
-            let mut state = StreamRender::new(NATIVE_SAMPLE_RATE, 2, receive,
+            let mut state = StreamRender::new(NATIVE_SAMPLE_RATE, 2, receive, retire_live_tx,
                 position.clone(), playing.clone(), peak.clone());
             let render = move |out: &mut [i16]| state.fill(out);
             let stream = match backend {
@@ -905,6 +973,7 @@ impl AudioEngine {
                 _stream: OutputStream::Native { _stream: stream },
                 send, position, playing, errors, peak,
                 retirements: Mutex::new(Vec::new()),
+                retired_live_sources: Mutex::new(retire_live_rx),
                 listen: ListenSlot::default(),
             });
         }
@@ -981,12 +1050,13 @@ impl AudioEngine {
             config.buffer_size = buffer_request(ms, config.sample_rate, supported.buffer_size())?;
         }
         let (send, receive) = mpsc::channel();
+        let (retire_live_tx, retire_live_rx) = mpsc::sync_channel(16);
         let position = Arc::new(AtomicU64::new(0));
         let playing = Arc::new(AtomicBool::new(false));
         let errors = Arc::new(AtomicU64::new(0));
         let peak = Arc::new(AtomicU32::new(0));
         let render = StreamRender::new(
-            config.sample_rate, config.channels as usize, receive,
+            config.sample_rate, config.channels as usize, receive, retire_live_tx,
             position.clone(), playing.clone(), peak.clone(),
         );
         let stream = match supported.sample_format() {
@@ -1004,6 +1074,7 @@ impl AudioEngine {
             backend,
             effective_buffer_ms: None,
             retirements: Mutex::new(Vec::new()),
+            retired_live_sources: Mutex::new(retire_live_rx),
             listen: ListenSlot::default(),
             send,
             position,
@@ -1045,8 +1116,32 @@ impl AudioEngine {
     /// if a callback has yet to hand one back.
     pub fn collect_retired(&self) -> bool {
         let mut slots = self.retirements.lock().unwrap_or_else(|e| e.into_inner());
+        let live_rx = self
+            .retired_live_sources
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        while live_rx.try_recv().is_ok() {}
         let listening = self.listen.collect();
         collect_retired(&mut slots) || listening
+    }
+
+    /// Installs or replaces the live audio source mixed ahead of the master limiter.
+    ///
+    /// The previous source is sent back over a bounded non-blocking channel so it is
+    /// dropped on the caller's thread rather than the real-time audio thread.
+    pub fn set_live_source(&self, source: Option<Box<dyn LiveAudioSource>>) {
+        let live_rx = self
+            .retired_live_sources
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        while live_rx.try_recv().is_ok() {}
+        drop(live_rx);
+        let _ = self.send.send(Command::SetLiveSource(source));
+    }
+
+    /// Detaches any active live audio source.
+    pub fn clear_live_source(&self) {
+        self.set_live_source(None);
     }
 
     /// Plays `clip` in place of the current Listen clip; `None` stops Listen.
@@ -1095,6 +1190,7 @@ impl AudioEngine {
 struct StreamRender {
     mixer: Mixer,
     receive: mpsc::Receiver<Command>,
+    retire_live: mpsc::SyncSender<Box<dyn LiveAudioSource>>,
     position: Arc<AtomicU64>,
     playing: Arc<AtomicBool>,
     peak: Arc<AtomicU32>,
@@ -1107,6 +1203,7 @@ impl StreamRender {
         rate: u32,
         channels: usize,
         receive: mpsc::Receiver<Command>,
+        retire_live: mpsc::SyncSender<Box<dyn LiveAudioSource>>,
         position: Arc<AtomicU64>,
         playing: Arc<AtomicBool>,
         peak: Arc<AtomicU32>,
@@ -1116,6 +1213,7 @@ impl StreamRender {
         Self {
             mixer: Mixer::new(rate),
             receive,
+            retire_live,
             position,
             playing,
             peak,
@@ -1130,6 +1228,11 @@ impl StreamRender {
                 Command::Load(schedule, slot) => {
                     let old = schedule.swap_into(&mut self.mixer);
                     let _ = slot.set(old);
+                }
+                Command::SetLiveSource(source) => {
+                    if let Some(old) = self.mixer.set_live_source(source) {
+                        let _ = self.retire_live.try_send(old);
+                    }
                 }
                 Command::Play(on) => self.mixer.playing = on,
                 Command::Seek(ms) => self.mixer.seek(ms),
@@ -1230,10 +1333,11 @@ mod callback_benchmark {
     #[test]
     fn shared_renderer_produces_native_stereo_pcm_and_updates_telemetry() {
         let (send, receive) = mpsc::channel();
+        let (retire_live_tx, _retire_live_rx) = mpsc::sync_channel(16);
         let position = Arc::new(AtomicU64::new(0));
         let playing = Arc::new(AtomicBool::new(false));
         let peak = Arc::new(AtomicU32::new(0));
-        let mut render = StreamRender::new(48_000, 2, receive, position.clone(), playing, peak.clone());
+        let mut render = StreamRender::new(48_000, 2, receive, retire_live_tx, position.clone(), playing, peak.clone());
         send.send(Command::Seek(400.0)).unwrap();
         send.send(Command::Audition(Arc::new(AudioClip {
             samples: vec![0.25; 2], channels: 1, sample_rate: 48_000,
@@ -1601,5 +1705,133 @@ mod streaming_stretch_tests {
                 mixer.position_ms
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod live_source_tests {
+    use super::*;
+
+    struct ConstantLiveSource {
+        left_value: f32,
+        right_value: f32,
+        last_sample_rate: Arc<AtomicU32>,
+        last_playing: Arc<AtomicBool>,
+    }
+
+    impl LiveAudioSource for ConstantLiveSource {
+        fn process_block(
+            &mut self,
+            left: &mut [f32],
+            right: &mut [f32],
+            sample_rate: u32,
+            is_playing: bool,
+        ) {
+            self.last_sample_rate.store(sample_rate, Ordering::Relaxed);
+            self.last_playing.store(is_playing, Ordering::Relaxed);
+            left.fill(self.left_value);
+            right.fill(self.right_value);
+        }
+    }
+
+    #[test]
+    fn mock_live_source_mixes_cleanly_through_master_limiter() {
+        let rate_seen = Arc::new(AtomicU32::new(0));
+        let playing_seen = Arc::new(AtomicBool::new(false));
+
+        // 1. Quiet live source passes through transparently when below ceiling.
+        let mut mixer = Mixer::new(48_000);
+        mixer.playing = false;
+        mixer.set_live_source(Some(Box::new(ConstantLiveSource {
+            left_value: 0.25,
+            right_value: -0.125,
+            last_sample_rate: rate_seen.clone(),
+            last_playing: playing_seen.clone(),
+        })));
+        let mut quiet = vec![0.0_f32; 8];
+        mixer.render(&mut quiet, 2);
+        assert_eq!(rate_seen.load(Ordering::Relaxed), 48_000);
+        assert!(!playing_seen.load(Ordering::Relaxed));
+        for frame in quiet.chunks_exact(2) {
+            assert_eq!(frame, [0.25, -0.125]);
+        }
+
+        // 2. Live source + song overload is caught by MasterLimiter, preserving 2:1 stereo ratio.
+        let mut mixer = Mixer::new(1000);
+        mixer.playing = true;
+        mixer.song = Some(Arc::new(AudioClip {
+            samples: [0.60_f32, 0.30].repeat(64),
+            channels: 2,
+            sample_rate: 1000,
+        }));
+        mixer.set_live_source(Some(Box::new(ConstantLiveSource {
+            left_value: 0.90,
+            right_value: 0.45,
+            last_sample_rate: rate_seen.clone(),
+            last_playing: playing_seen.clone(),
+        })));
+        let mut out = vec![0.0_f32; 64];
+        mixer.render(&mut out, 2);
+        assert!(playing_seen.load(Ordering::Relaxed));
+        assert!(
+            (out[0] - MasterLimiter::CEILING).abs() < 1e-5,
+            "expected left limited to ceiling, got {}",
+            out[0]
+        );
+        assert!(
+            (out[1] - MasterLimiter::CEILING * 0.5).abs() < 1e-5,
+            "expected right to preserve 2:1 ratio, got {}",
+            out[1]
+        );
+        assert!(out.iter().all(|s| s.is_finite() && s.abs() <= MasterLimiter::CEILING + 1e-5));
+
+        // 3. Non-finite samples from a live source are sanitized and do not poison output.
+        let mut mixer = Mixer::new(48_000);
+        mixer.set_live_source(Some(Box::new(ConstantLiveSource {
+            left_value: f32::NAN,
+            right_value: f32::INFINITY,
+            last_sample_rate: rate_seen,
+            last_playing: playing_seen,
+        })));
+        let mut sanitized = vec![0.0_f32; 8];
+        mixer.render(&mut sanitized, 2);
+        assert_eq!(sanitized, vec![0.0_f32; 8]);
+    }
+
+    #[test]
+    fn stream_render_swaps_and_retires_live_source_without_audio_thread_drop() {
+        let (send, receive) = mpsc::channel();
+        let (retire_live_tx, retire_live_rx) = mpsc::sync_channel(16);
+        let position = Arc::new(AtomicU64::new(0));
+        let playing = Arc::new(AtomicBool::new(false));
+        let peak = Arc::new(AtomicU32::new(0));
+        let mut render = StreamRender::new(
+            48_000,
+            2,
+            receive,
+            retire_live_tx,
+            position,
+            playing,
+            peak.clone(),
+        );
+
+        send.send(Command::SetLiveSource(Some(Box::new(ConstantLiveSource {
+            left_value: 0.5,
+            right_value: 0.5,
+            last_sample_rate: Arc::new(AtomicU32::new(0)),
+            last_playing: Arc::new(AtomicBool::new(false)),
+        }))))
+        .unwrap();
+
+        let mut pcm = [0_i16; 8];
+        render.fill(&mut pcm);
+        assert!(retire_live_rx.try_recv().is_err());
+        assert_eq!(f32::from_bits(peak.load(Ordering::Relaxed)), 0.5);
+
+        // Replacing with None hands the previous source back over the retirement channel.
+        send.send(Command::SetLiveSource(None)).unwrap();
+        render.fill(&mut pcm);
+        assert!(retire_live_rx.try_recv().is_ok());
+        assert!(retire_live_rx.try_recv().is_err());
     }
 }

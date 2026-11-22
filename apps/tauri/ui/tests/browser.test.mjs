@@ -9,7 +9,7 @@ import BrowserList from "../src/parts/BrowserList.svelte";
 import BrowserPreview from "../src/parts/BrowserPreview.svelte";
 
 const model = (more = {}) => ({
-  ...emptyBrowser, source: "mapset", root: "Mapset samples", defaults: true, canPick: true,
+  ...emptyBrowser, source: "mapset", root: "Mapset samples", canPick: true,
   rows: [
     { kind: "folder", key: "percussion", label: "percussion", title: "percussion", depth: 0, open: true, selected: false },
     { kind: "sample", key: "percussion/snare.wav", label: "snare.wav", title: "percussion/snare.wav", depth: 1, selected: true },
@@ -57,28 +57,36 @@ test("the head shows Mapset and Library tabs and the search field", () => {
   assert.match(library.tag, /id="sample-browser-library"/);
   assert.match(library.tag, /aria-pressed="false"/);
   assert.doesNotMatch(html, /role="tab/);
+  // One click to the mapset's and the library's folders, through open_editor_folder.
+  const folders = buttons(html).filter(item => /browser-open-folder/.test(item.tag));
+  assert.deepEqual(folders.map(item => item.tag.match(/aria-label="([^"]+)"/)[1]), ["Open mapset folder", "Open sample library folder"]);
+  assert.ok(folders.every(item => !disabled(item.tag)));
+  assert.match(source("BrowserHead"), /invoke\("open_editor_folder", \{ folder \}\)/);
+  assert.match(source("BrowserHead"), /openFolder\("map"\)[^]*openFolder\("library"\)/);
   assert.equal(button(html, "Up"), undefined, "the tree has no Up button");
   const classic = shown(model({ classic: true, root: null, folder: { label: "percussion", title: "percussion", canUp: true } }), BrowserHead);
   assert.ok(!disabled(button(classic, "Up").tag));
   assert.match(classic, /<output[^>]*title="percussion"[^>]*>percussion<\/output>/);
 });
 
-test("the tree lists Mapset samples with file rows, the selected row, and greyed Default samples", () => {
+test("the tree lists Mapset samples with file rows and the selected row, and no dead Default samples rows", () => {
   const html = shown(model(), BrowserList);
   assert.match(html, /Mapset samples/);
   const root = html.match(/<div class="browser-row browser-root"[^]*?<\/div>/)[0];
   assert.doesNotMatch(root, /m6 14 1\.5-2\.9/, "the top row uses the closed folder icon");
   const rows = buttons(html);
-  assert.deepEqual(rows.map(row => row.text), ["percussion", "snare.wav", "kick.wav", "osu! skin", "Sample folders"]);
+  assert.deepEqual(rows.map(row => row.text), ["percussion", "snare.wav", "kick.wav"]);
   assert.match(rows[0].tag, /aria-expanded="true"/);
   assert.match(rows[1].tag, /aria-pressed="true"/);
   assert.match(rows[1].tag, /browser-selected/);
   assert.doesNotMatch(rows[2].tag, /browser-selected/);
   assert.match(rows[1].tag, /--depth: 2/, "a file inside a folder under Mapset samples sits two steps in");
-  assert.ok(disabled(rows[3].tag) && disabled(rows[4].tag), "osu! skin and Sample folders have no code yet");
-  assert.match(html, /Default samples/);
-  const library = shown(model({ source: "library", root: "library", defaults: false }), BrowserList);
-  assert.doesNotMatch(library, /Default samples/);
+  assert.match(rows[1].tag, /data-sample="percussion\/snare\.wav"/, "ArrowUp and ArrowDown find the next sample by it");
+  assert.doesNotMatch(html, /Default samples|osu! skin|Sample folders/);
+  assert.equal(button(html, "Choose library folder…"), undefined);
+  const unset = shown(model({ source: "library", root: null, chooseLibrary: true, busy: false,
+    rows: [{ kind: "note", key: "note:0", label: "No library folder chosen yet.", depth: 0 }] }), BrowserList);
+  assert.ok(!disabled(button(unset, "Choose library folder…").tag), "an unset Library offers its folder picker");
   const busy = shown(model({ busy: true }), BrowserList);
   assert.ok(disabled(button(busy, "snare.wav").tag));
   assert.ok(!disabled(button(busy, "percussion").tag), "folders still open while a job runs");
@@ -94,6 +102,8 @@ test("the preview shows the file name, its real length and its outline with a pl
   assert.equal((html.match(/<rect\b/g) ?? []).length, 2);
   assert.match(button(html, "").tag, /aria-label="Play soft-hitclap2\.wav"/);
   assert.ok(!disabled(button(html, "Use in active lane").tag));
+  const named = shown(model({ preview, canAssign: true, target: "Soft Clap" }), BrowserPreview);
+  assert.ok(button(named, "Use in Soft Clap"), "Use names the lane it replaces");
   assert.ok(!disabled(button(html, "Browse…").tag));
   // Undecoded: the name only, never a made-up length or outline.
   const bare = shown(model({ preview: { ...preview, ms: null, peaks: null } }), BrowserPreview);

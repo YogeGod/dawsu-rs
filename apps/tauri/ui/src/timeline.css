@@ -172,6 +172,10 @@
   background: var(--editor-teal);
   color: var(--editor-ink);
 }
+.ruler-sidebar #ruler-sound-first[aria-pressed="true"] {
+  background: var(--editor-warning);
+  color: var(--editor-ink);
+}
 .ruler-sidebar .song-row button:focus-visible {
   outline: 2px solid var(--editor-focus);
   outline-offset: 0;

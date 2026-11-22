@@ -97,7 +97,7 @@ test("the shortcut editor lists commands by area with key chips and a preset swi
 
   const presets = ui.byClass("shortcut-presets")[0];
   const pressed = () => presets.children.map(button => [ui.text(button), button.getAttribute("aria-pressed")]);
-  assert.deepEqual(pressed(), [["DAW-like keys", "true"], ["osu! editor controls", "false"]]);
+  assert.deepEqual(pressed(), [["osu! editor controls", "false"], ["DAW-like keys", "true"]]);
   ui.button("osu! editor controls").click();
   await ui.settle();
   assert.deepEqual(ui.edits.at(-1), {kind: "key_preset", name: "osu!"});

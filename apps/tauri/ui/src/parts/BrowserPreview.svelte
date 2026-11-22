@@ -28,6 +28,6 @@
   </div>
 {/if}
 <div class="browser-actions">
-  <button type="button" disabled={off || !model.canAssign} onclick={() => send("assign")}>Use in active lane</button>
+  <button type="button" disabled={off || !model.canAssign} onclick={() => send("assign")}>{model.target ? "Use in " + model.target : "Use in active lane"}</button>
   <button type="button" disabled={off || !model.canPick} onclick={() => send("browse")}>Browse…</button>
 </div>

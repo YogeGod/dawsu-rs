@@ -480,6 +480,17 @@ export function attachLanes(ctx) {
     });
   }
 
+  // One Drum Map Setup action from outside the dialog (the lane column's Hide unassigned switch).
+  function drumMapAction(action) {
+    if (!state.scene || state.view.busy || state.drag || !state.view.drumView) return;
+    const map = state.scene.path;
+    ctx.run(async () => {
+      if (state.scene?.path !== map || state.view.busy || state.drag) return;
+      const next = await invoke("drum_map_action", { map, action });
+      if (next) ctx.show(next);
+    });
+  }
+
   function openDrumMapSetup(focusRowIndex = null) {
     if (!state.scene || state.view.busy || state.drag || !state.view.drumView) return;
     const map = state.scene.path;
@@ -498,20 +509,24 @@ export function attachLanes(ctx) {
     }
     presetSelect.append(...presets.map(name => new OptionCtor(name, name)));
     presetSelect.value = presets.includes(activePreset) ? activePreset : "";
-    presetSelect.addEventListener("change", () => {
-      const name = presetSelect.value;
-      if (!name || state.scene?.path !== map || state.view.busy || state.drag) return;
+    // Sends one Drum Map Setup action; a change to the rows reopens the dialog on the new rows.
+    const stale = () => state.scene?.path !== map || state.view.busy || state.drag;
+    function drumAction(action, reopen = true, focusRow = null) {
+      if (stale()) return;
       ctx.run(async () => {
-        if (state.scene?.path !== map || state.view.busy || state.drag) return;
-        const next = await invoke("drum_map_action", { map, action: { kind: "load_builtin", name } });
-        if (next) {
-          ctx.show(next);
-          if (state.modalKind === "drum-map-setup") {
-            ctx.closeModal();
-            openDrumMapSetup();
-          }
+        if (stale()) return;
+        const next = await invoke("drum_map_action", { map, action });
+        if (!next) return;
+        ctx.show(next);
+        if (reopen && state.modalKind === "drum-map-setup") {
+          ctx.closeModal();
+          openDrumMapSetup(focusRow);
         }
       });
+    }
+    presetSelect.addEventListener("change", () => {
+      const name = presetSelect.value;
+      if (name) drumAction({ kind: "load_builtin", name });
     });
 
     const openFile = makeButton("Open .dawsudrum file…", () => {
@@ -556,17 +571,41 @@ export function attachLanes(ctx) {
     list.style.marginTop = "8px";
 
     let focusedSelect = null;
-    for (const row of drumView.rows ?? []) {
+    const rows = drumView.rows ?? [];
+    const moveRow = (from, to) => {
+      if (to < 0 || to >= rows.length || from === to) return;
+      drumAction({ kind: "move_row", from_index: from, to_index: to }, true, to);
+    };
+    let dragFrom = null;
+    for (const row of rows) {
       const line = env.document.createElement("div");
-      line.className = "row";
+      line.className = "row drum-setup-line";
       line.style.display = "flex";
       line.style.alignItems = "center";
       line.style.justifyContent = "space-between";
-      line.style.gap = "12px";
+      line.style.gap = "8px";
+      // Drag a row onto another to put it there; the arrow buttons do the same from the keyboard.
+      line.draggable = true;
+      line.addEventListener("dragstart", (event) => {
+        dragFrom = row.index;
+        if (event?.dataTransfer) event.dataTransfer.effectAllowed = "move";
+      });
+      line.addEventListener("dragover", (event) => {
+        if (dragFrom !== null) event?.preventDefault?.();
+      });
+      line.addEventListener("drop", (event) => {
+        event?.preventDefault?.();
+        const from = dragFrom;
+        dragFrom = null;
+        if (from !== null) moveRow(from, row.index);
+      });
+      line.addEventListener("dragend", () => { dragFrom = null; });
 
       const label = env.document.createElement("span");
       label.textContent = row.name;
-      if (!row.assigned) label.style.opacity = "0.7";
+      label.style.flex = "1 1 auto";
+      // Unassigned rows stay readable: a muted colour, never a faded smudge.
+      if (!row.assigned) label.style.color = "var(--editor-secondary)";
 
       const select = env.document.createElement("select");
       select.setAttribute("aria-label", "Sample lane for " + row.name);
@@ -578,27 +617,50 @@ export function attachLanes(ctx) {
       const matched = row.assigned && row.laneKey && laneChoices.some(choice => choice.key === row.laneKey);
       select.value = matched ? row.laneKey : "";
       select.addEventListener("change", () => {
-        if (state.scene?.path !== map || state.view.busy || state.drag) return;
-        const laneKey = select.value || null;
-        ctx.run(async () => {
-          if (state.scene?.path !== map || state.view.busy || state.drag) return;
-          const next = await invoke("drum_map_action", {
-            map,
-            action: { kind: "assign_row", row_index: row.index, lane_key: laneKey },
-          });
-          if (next) ctx.show(next);
-        });
+        drumAction({ kind: "assign_row", row_index: row.index, lane_key: select.value || null }, false);
       });
 
+      const up = makeButton("↑", () => moveRow(row.index, row.index - 1));
+      up.title = "Move up";
+      up.setAttribute("aria-label", "Move " + row.name + " up");
+      up.disabled = row.index === 0;
+      const down = makeButton("↓", () => moveRow(row.index, row.index + 1));
+      down.title = "Move down";
+      down.setAttribute("aria-label", "Move " + row.name + " down");
+      down.disabled = row.index === rows.length - 1;
+
       if (focusRowIndex !== null && row.index === focusRowIndex) focusedSelect = select;
-      line.append(label, select);
+      line.append(label, select, up, down);
       list.append(line);
     }
+
+    // 4. Auto-detect and Hide unassigned rows.
+    const drumSwitch = (text, checked, kind) => {
+      const box = env.document.createElement("input");
+      box.type = "checkbox";
+      box.checked = Boolean(checked);
+      box.addEventListener("change", () => drumAction({ kind, on: box.checked }));
+      return labeled(text, box);
+    };
+    const options = env.document.createElement("div");
+    options.className = "row drum-setup-options";
+    options.style.display = "flex";
+    options.style.alignItems = "center";
+    options.style.flexWrap = "wrap";
+    options.style.gap = "12px";
+    options.style.marginTop = "10px";
+    const detectNow = makeButton("Auto-detect now", () => drumAction({ kind: "auto_detect" }));
+    detectNow.title = "Match the drum rows to this mapset's samples by their sound";
+    options.append(
+      drumSwitch("Auto-detect on open", drumView.autoDetect, "set_auto_detect"),
+      drumSwitch("Hide unassigned rows", drumView.hideUnassigned, "set_hide_unassigned"),
+      detectNow,
+    );
 
     ctx.modal(
       "drum-map-setup",
       "Drum Map Setup",
-      [labeled("Preset", presetBar), list],
+      [labeled("Preset", presetBar), list, options],
       [["Done", () => ctx.closeModal(), true]],
     );
     focusedSelect?.focus?.();
@@ -689,7 +751,7 @@ export function attachLanes(ctx) {
     refreshLanePresentation, groupedLaneRows, renderLanes, currentMixer,
     mixerModel, currentLaneHeaders, laneHeaderModel, laneHeaderAction,
     mixSelectedLanes, volumeScopeHint, updateVolumeScope, selectVolumeLane,
-    requestDrumMap, setDrumView, openDrumMapSetup, deletableLane, openAddLane, deleteActiveLane,
+    requestDrumMap, setDrumView, drumMapAction, openDrumMapSetup, deletableLane, openAddLane, deleteActiveLane,
     laneTint, setLaneHeight, bindLanes,
   });
 }

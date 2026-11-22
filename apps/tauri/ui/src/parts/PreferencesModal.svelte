@@ -2,7 +2,8 @@
   import { onMount } from "svelte";
   import { bridge } from "../lib/bridge.svelte.js";
   import { invoke } from "../lib/ipc.js";
-  import { playbackStartChoices, shortcutName } from "../editor/helpers.js";
+  import { keyInput, playbackStartChoices, shortcutName } from "../editor/helpers.js";
+  import { readPort, scanSummary, writePort } from "../lib/midi.js";
 
   const SCALES = [90, 100, 110, 125, 150, 175, 200];
   const TABS = [
@@ -11,6 +12,7 @@
     { id: "audio", label: "Audio output" },
     { id: "view", label: "Editor view" },
     { id: "shortcuts", label: "Shortcuts" },
+    { id: "midi", label: "MIDI Input & VST3" },
     { id: "updates", label: "Updates" },
   ];
 
@@ -18,7 +20,6 @@
   let scope = $state("app");
   let tab = $state("general");
   let scale = $state(readSavedScale());
-  let appliedScale = $state(100);
 
   // Shortcuts state
   let shortcuts = $state([]);
@@ -32,6 +33,14 @@
   let selectedDevice = $state("");
   let bufferMs = $state("");
   let audioError = $state("");
+
+  // MIDI Input & VST3 state: the port MIDI Record arms is kept in localStorage (lib/midi.js).
+  let midiPorts = $state([]);
+  let midiPort = $state("");
+  let midiError = $state("");
+  let vst3Scanning = $state(false);
+  let vst3Report = $state(null);
+  let vst3Error = $state("");
 
   const view = $derived(bridge.view ?? {});
   const scene = $derived(bridge.scene);
@@ -56,6 +65,12 @@
         globalThis.document.documentElement.dataset.uiScale = String(next);
       }
     } catch {}
+    // The canvases size their backing store by the scale: lay out again and repaint at once,
+    // so no stretched frame or empty strip shows until the next resize.
+    globalThis.requestAnimationFrame?.(() => {
+      try { globalThis.dispatchEvent?.(new Event("resize")); } catch {}
+      globalThis.paintSoon?.();
+    });
   }
 
   function stepScale(delta) {
@@ -90,25 +105,65 @@
     }
   }
 
+  const storage = () => { try { return globalThis.localStorage; } catch { return null; } };
+
+  async function loadMidiPorts() {
+    try {
+      midiPorts = (await invoke("midi_input_ports")) ?? [];
+      midiError = "";
+      const saved = readPort(storage());
+      midiPort = saved != null && saved < midiPorts.length ? String(saved) : "";
+    } catch (err) {
+      midiPorts = [];
+      midiError = String(err);
+    }
+  }
+
+  function pickMidiPort(value) {
+    midiPort = value;
+    writePort(storage(), value === "" ? null : Number(value));
+  }
+
+  async function scanVst3() {
+    if (vst3Scanning) return;
+    vst3Scanning = true;
+    vst3Error = "";
+    try {
+      vst3Report = await invoke("vst3_scan");
+    } catch (err) {
+      vst3Error = String(err);
+    } finally {
+      vst3Scanning = false;
+    }
+  }
+
   async function openModal(initialTab = "general") {
     tab = TABS.some(t => t.id === initialTab) ? initialTab : "general";
     scope = "app";
-    appliedScale = scale;
     capturingId = null;
     open = true;
-    await Promise.all([loadShortcuts(), loadAudio(null)]);
+    await Promise.all([loadShortcuts(), loadAudio(null), loadMidiPorts()]);
   }
 
-  function cancelModal() {
-    applyScale(appliedScale);
+  // Every choice here applies the moment it is made, so there is nothing to apply or cancel: Close only closes.
+  function closeModal() {
     capturingId = null;
     open = false;
   }
 
-  function commitModal() {
-    appliedScale = scale;
-    capturingId = null;
-    open = false;
+  // The editor's timeline shortcuts stay off while this is open (boot.js reads the flag).
+  $effect(() => {
+    globalThis.dawsuPreferencesOpen = open;
+    return () => { globalThis.dawsuPreferencesOpen = false; };
+  });
+
+  // The tabs with something to put back: General's interface scale and the Shortcuts tab's keys.
+  const resetLabel = $derived(scope !== "app" ? null
+    : tab === "general" ? "Reset scale to 100%" : tab === "shortcuts" ? "Reset all shortcuts" : null);
+
+  function resetTab() {
+    if (tab === "general") applyScale(100);
+    else if (tab === "shortcuts") resetAllShortcuts();
   }
 
   async function pickPreset(nextPreset) {
@@ -146,23 +201,30 @@
     }
   }
 
+  // Rust sends each key as its formatted name ("Ctrl+O"); an older shape may still be a chord object.
+  function keyLabel(key) {
+    if (typeof key === "string") return key;
+    if (key && typeof key.code === "string") return shortcutName(key) || key.key || "";
+    return "";
+  }
+
+  function keysLabel(keys) {
+    const names = (keys ?? []).map(keyLabel).filter(Boolean);
+    return names.length ? names.join(", ") : "Unbound";
+  }
+
   function onShortcutKeydown(event, entry) {
     if (capturingId !== entry.id) return;
+    if (["Control", "Shift", "Alt", "Meta"].includes(event.key) || event.repeat) return;
     event.preventDefault();
     event.stopPropagation();
-    if (event.key === "Escape") {
+    const chord = keyInput(event);
+    if (chord.key === "Escape" && !chord.ctrl && !chord.shift && !chord.alt) {
       capturingId = null;
       return;
     }
-    if (["Control", "Shift", "Alt", "Meta"].includes(event.key)) return;
-    const parts = [];
-    if (event.ctrlKey || event.metaKey) parts.push("Ctrl");
-    if (event.altKey) parts.push("Alt");
-    if (event.shiftKey) parts.push("Shift");
-    parts.push(event.key.length === 1 ? event.key.toUpperCase() : event.key);
-    const nextKey = parts.join("+");
     capturingId = null;
-    invoke("editor_view", { scene: false, action: { kind: "change_shortcut", id: entry.id, chord: nextKey } })
+    invoke("editor_view", { scene: false, action: { kind: "change_shortcut", id: entry.id, chord } })
       .then(loadShortcuts)
       .catch(() => {});
   }
@@ -186,7 +248,7 @@
     if (!q) return shortcuts;
     return shortcuts.filter(s =>
       (s.label || s.id || "").toLowerCase().includes(q) ||
-      (s.keys || []).join(" ").toLowerCase().includes(q)
+      (s.keys || []).map(keyLabel).join(" ").toLowerCase().includes(q)
     );
   });
 
@@ -211,7 +273,7 @@
   function onGlobalKey(event) {
     if (open && event.key === "Escape" && !capturingId) {
       event.preventDefault();
-      cancelModal();
+      closeModal();
       return;
     }
     if ((event.ctrlKey || event.metaKey) && !event.altKey) {
@@ -233,9 +295,12 @@
 
   onMount(() => {
     applyScale(scale);
-    globalThis.openPreferences = openModal;
+    // dialogs-settings.js's openPreferences (the menus' Preferences…) calls this; it is never the
+    // global openPreferences itself, so the two cannot call each other forever.
+    globalThis.openPreferencesModal = openModal;
     globalThis.addEventListener("keydown", onGlobalKey);
     return () => {
+      if (globalThis.openPreferencesModal === openModal) delete globalThis.openPreferencesModal;
       globalThis.removeEventListener("keydown", onGlobalKey);
     };
   });
@@ -243,7 +308,7 @@
 
 {#if open}
   <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-  <div class="pref-backdrop" onclick={(e) => { if (e.target === e.currentTarget) cancelModal(); }}>
+  <div class="pref-backdrop" onclick={(e) => { if (e.target === e.currentTarget) closeModal(); }}>
     <div class="pref-modal" role="dialog" aria-modal="true" aria-label="Preferences">
       <header class="pref-head">
         <span class="pref-title">Preferences</span>
@@ -251,7 +316,7 @@
           <button type="button" role="tab" aria-selected={scope === "app"} class:active={scope === "app"} onclick={() => (scope = "app")}>App</button>
           <button type="button" role="tab" aria-selected={scope === "map"} class:active={scope === "map"} disabled={!scene} onclick={() => (scope = "map")}>This map</button>
         </div>
-        <button type="button" class="pref-close" aria-label="Close preferences" onclick={cancelModal}>×</button>
+        <button type="button" class="pref-close" aria-label="Close preferences" onclick={closeModal}>×</button>
       </header>
 
       <div class="pref-body">
@@ -310,8 +375,8 @@
             <div class="pref-group">
               <span class="pref-label">Controls</span>
               <div class="pref-seg">
-                <button type="button" class:active={preset !== "osu!"} onclick={() => pickPreset("DAW")}>DAW-like keys</button>
                 <button type="button" class:active={preset === "osu!"} onclick={() => pickPreset("osu!")}>osu! editor controls</button>
+                <button type="button" class:active={preset !== "osu!"} onclick={() => pickPreset("DAW")}>DAW-like keys</button>
               </div>
               <p class="pref-caption">
                 {preset === "osu!"
@@ -453,8 +518,8 @@
             <div class="pref-group pref-shortcuts">
               <div class="pref-shortcut-bar">
                 <div class="pref-seg">
-                  <button type="button" class:active={preset === "DAW"} onclick={() => pickPreset("DAW")}>DAW-like</button>
                   <button type="button" class:active={preset === "osu!"} onclick={() => pickPreset("osu!")}>osu!</button>
+                  <button type="button" class:active={preset === "DAW"} onclick={() => pickPreset("DAW")}>DAW-like</button>
                 </div>
                 <input type="search" class="pref-search" placeholder="Search commands or keys" bind:value={shortcutQuery} />
                 <button type="button" onclick={resetAllShortcuts}>Reset all</button>
@@ -466,12 +531,59 @@
                     <span class="pref-shortcut-name">{entry.label || entry.id}</span>
                     <button type="button" class="pref-key-chip" class:capturing={capturingId === entry.id}
                       onclick={() => (capturingId = capturingId === entry.id ? null : entry.id)}>
-                      {capturingId === entry.id ? "Press keys…" : (entry.keys?.length ? entry.keys.map(shortcutName).join(", ") : "Unbound")}
+                      {capturingId === entry.id ? "Press keys… · Esc cancels" : keysLabel(entry.keys)}
                     </button>
                     <button type="button" class="pref-reset-btn" title="Clear shortcut" onclick={() => resetShortcut(entry)}>Clear</button>
                   </div>
                 {/each}
               </div>
+            </div>
+
+          {:else if tab === "midi"}
+            <div class="pref-group">
+              <div class="pref-row-head">
+                <span class="pref-label">MIDI input</span>
+                <button type="button" onclick={loadMidiPorts}>Refresh</button>
+              </div>
+              <p class="pref-caption">MIDI Record in the transport bar listens on this port.</p>
+              {#if midiPorts.length}
+                <label class="pref-field">
+                  <span>Input port</span>
+                  <select value={midiPort} onchange={(e) => pickMidiPort(e.currentTarget.value)}>
+                    <option value="">First available port</option>
+                    {#each midiPorts as name, index (index)}
+                      <option value={String(index)}>{name}</option>
+                    {/each}
+                  </select>
+                </label>
+              {:else}
+                <p class="pref-caption">No MIDI input ports found. Connect a MIDI keyboard or drum pad, then press Refresh.</p>
+              {/if}
+              {#if midiError}
+                <p class="pref-error">{midiError}</p>
+              {/if}
+            </div>
+
+            <hr class="pref-divider" />
+
+            <div class="pref-group">
+              <div class="pref-row-head">
+                <span class="pref-label">VST3 plug-ins</span>
+                <button type="button" disabled={vst3Scanning} onclick={scanVst3}>{vst3Scanning ? "Scanning…" : "Scan VST3 plug-ins"}</button>
+              </div>
+              <p class="pref-caption">Scans the system VST3 folder. Keysound tracks can use the instruments found (Map › Keysounds & VST3…).</p>
+              {#if vst3Error}
+                <p class="pref-error">{vst3Error}</p>
+              {:else if vst3Report}
+                <p class="pref-caption">{scanSummary(vst3Report)}</p>
+                {#if vst3Report.plugins?.length}
+                  <ul class="pref-plugin-list">
+                    {#each vst3Report.plugins as plugin (plugin.uid ?? plugin.name)}
+                      <li><span>{plugin.name}</span><span class="pref-hint">{plugin.vendor}{plugin.is_instrument ? " · Instrument" : plugin.is_effect ? " · Effect" : ""}</span></li>
+                    {/each}
+                  </ul>
+                {/if}
+              {/if}
             </div>
 
           {:else if tab === "updates"}
@@ -485,8 +597,10 @@
       </div>
 
       <footer class="pref-foot">
-        <button type="button" onclick={cancelModal}>Cancel</button>
-        <button type="button" class="pref-primary" onclick={commitModal}>Apply</button>
+        {#if resetLabel}
+          <button type="button" class="pref-reset-tab" onclick={resetTab}>{resetLabel}</button>
+        {/if}
+        <button type="button" class="pref-primary" onclick={closeModal}>Close</button>
       </footer>
     </div>
   </div>
@@ -521,7 +635,7 @@
     height: 56px;
     padding: 0 20px;
     border-bottom: 1px solid var(--editor-border);
-    background: linear-gradient(180deg, #1e1e21 0%, #151517 100%);
+    background: var(--editor-chrome);
   }
   .pref-title {
     font-size: 14px;
@@ -766,6 +880,9 @@
     border-top: 1px solid var(--editor-border);
     background: var(--editor-chrome);
   }
+  .pref-reset-tab {
+    margin-right: auto;
+  }
   .pref-primary {
     background: var(--editor-accent);
     color: var(--editor-accentink);
@@ -773,5 +890,24 @@
   }
   .pref-primary:hover {
     background: var(--editor-focus);
+  }
+  .pref-plugin-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    max-height: 220px;
+    margin: 0;
+    padding: 0;
+    overflow-y: auto;
+    list-style: none;
+  }
+  .pref-plugin-list li {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 6px 10px;
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.025);
+    font-size: 12px;
   }
 </style>

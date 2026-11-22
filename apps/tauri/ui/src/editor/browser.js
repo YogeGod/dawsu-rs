@@ -1,6 +1,9 @@
 // Sample browser tree, library folder loading, preview requests, and Browser actions.
 import { browserRowLimit, byFolderThenName, nameOf } from "./helpers.js";
 
+// How many library folders a search may list on its own before it stops opening new ones.
+const libraryCrawlLimit = 200;
+
 export function attachBrowser(ctx) {
   const { env, state, dom } = ctx;
   const { $ } = dom;
@@ -104,11 +107,19 @@ export function attachBrowser(ctx) {
     if (state.browserScene === state.scene && state.browserState === key) return;
     state.browserScene = state.scene;
     state.browserState = key;
-    // While searching the map folder, a folder shows (open) only when a sample under it matches.
+    // While searching, a folder shows (open) only when a sample under it matches. A library folder
+    // not listed yet is asked for and counts as a match until its answer says otherwise; past
+    // libraryCrawlLimit listed folders the search stops opening new ones.
+    const crawlable = folder => state.browserLibraryFolders.has(folder) || state.browserLibraryFolders.size < libraryCrawlLimit;
     const matching = new Map();
     const hasMatch = folder => {
       if (!matching.has(folder)) {
-        matching.set(folder, tree.get(folder).some(([path, row]) =>
+        let entries = tree?.get(folder);
+        if (library) {
+          if (crawlable(folder)) requestLibraryFolder(folder);
+          entries = state.browserLibraryFolders.get(folder);
+        }
+        matching.set(folder, !Array.isArray(entries) || entries.some(([path, row]) =>
           row === null ? hasMatch(path) : nameOf(path).toLowerCase().includes(filter)));
       }
       return matching.get(folder);
@@ -116,17 +127,19 @@ export function attachBrowser(ctx) {
     const rows = [];
     const visibleSamples = new Set();
     let full = false;
+    let loading = false;
     const note = (label, depth) => rows.push({ kind: "note", key: "note:" + rows.length, label, depth });
     const addRows = (folder, depth) => {
       let entries;
       if (library) {
         if (!state.browserLibrary) {
-          note("Choose a hitsound library folder in Folders.", depth);
+          note("No library folder chosen yet.", depth);
           return;
         }
         requestLibraryFolder(folder);
         entries = state.browserLibraryFolders.get(folder);
         if (!Array.isArray(entries)) {
+          loading ||= !entries;
           note(entries || "Loading samples…", depth);
           return;
         }
@@ -141,9 +154,10 @@ export function attachBrowser(ctx) {
         const directory = row === null;
         const label = nameOf(path);
         if (!directory && !label.toLowerCase().includes(filter)) continue;
-        if (directory && filter && !library && !hasMatch(path)) continue;
+        // Classic's library folders open one at a time, so its search keeps to the folder shown.
+        if (directory && filter && !(library && classic) && !hasMatch(path)) continue;
         if (!directory) visibleSamples.add(path);
-        const open = !classic && (state.browserExpanded.has(path) || !!filter && !library);
+        const open = !classic && (state.browserExpanded.has(path) || !!filter && (!library || crawlable(path)));
         rows.push(directory
           ? { kind: "folder", key: path, label, title: path, depth, open, selected: false }
           : { kind: "sample", key: path, label, title: path, depth, selected: state.browserSample === path });
@@ -153,7 +167,7 @@ export function attachBrowser(ctx) {
     addRows(classic ? state.browserFolder : "", 0);
     if (full) note("Search to see more samples.", 0);
     const unopened = rows.some(row => row.kind === "folder" && !row.open);
-    if (!rows.length || filter && !visibleSamples.size && !unopened) {
+    if (!rows.length || filter && !visibleSamples.size && !unopened && !loading) {
       note(filter ? "No matching samples." : "No samples in this folder.", 0);
     }
     const preview = state.browserSample && state.browserPreview?.path === state.browserSample && state.browserPreview.source === state.browserSource
@@ -166,8 +180,8 @@ export function attachBrowser(ctx) {
       // The tree's top row: the map folder, or the library folder by its name (full path in the tooltip).
       root: classic ? null : !library ? "Mapset samples" : state.browserLibrary ? nameOf(state.browserLibrary.replace(/[\\/]+$/, "")) : null,
       rootTitle: library ? state.browserLibrary : null,
-      // osu! skin and Sample folders: shown greyed out in the tree, nothing lists them yet.
-      defaults: !library && !classic,
+      // The Library tab without a folder offers to choose one there.
+      chooseLibrary: library && !state.browserLibrary,
       folder: classic ? {
         label: state.browserFolder ? nameOf(state.browserFolder) : library ? "Library" : "Mapset samples",
         title: library ? [state.browserLibrary, state.browserFolder].filter(Boolean).join("/") : state.browserFolder,
@@ -177,6 +191,8 @@ export function attachBrowser(ctx) {
       preview,
       canAssign: !!sampleTarget() && visibleSamples.has(state.browserSample),
       canPick: !!sampleTarget(),
+      // The lane Use replaces, by the name its header shows.
+      target: sampleTarget() ? ctx.laneTitle(state.scene.lanes[state.view.activeLane]) : null,
     };
     try { ctx.ui()?.browser?.(state.browserModel); } catch (error) { (env.console ?? console).error(error); }
   }
@@ -194,7 +210,7 @@ export function attachBrowser(ctx) {
 
   // Asks the backend for a sample's length and outline (source and lane taken at pick time); an answer
   // for an older pick is dropped. Each pick and Play asks again, so a file changed on disk shows anew.
-  async function requestSamplePreview(path, source, action) {
+  async function requestSamplePreview(path, source, action, request = state.previewRequest) {
     let answer = null;
     try {
       answer = await invoke("sample_preview", {
@@ -204,9 +220,26 @@ export function attachBrowser(ctx) {
     } catch {
       // Without an answer the preview shows the file name only.
     }
-    if (!answer || state.browserPreview?.path !== path || state.browserPreview.source !== source) return;
+    if (!answer || request !== state.previewRequest || state.browserPreview?.path !== path || state.browserPreview.source !== source) return;
     state.browserPreview = { path, source, ms: answer.ms, peaks: answer.peaks };
     if (state.scene) ctx.renderSampleBrowser();
+  }
+
+  // One sample plays and is measured at a time. Picks made meanwhile (ArrowDown held through a
+  // folder) replace each other, so only the last one waits: each ask carries a request id, and an
+  // answer for an older one is dropped.
+  function audition(next) {
+    state.previewRequest = (state.previewRequest ?? 0) + 1;
+    const queued = !!state.auditionNext;
+    state.auditionNext = { ...next, request: state.previewRequest };
+    if (queued) return;
+    ctx.run(async () => {
+      const { path, source, action, request } = state.auditionNext;
+      state.auditionNext = null;
+      if (request !== state.previewRequest) return;
+      await ctx.update(action, false);
+      await requestSamplePreview(path, source, action, request);
+    });
   }
 
   // What the Browser parts do: switch tab, search, fold or open a folder, pick, play, Up, Use, Browse.
@@ -232,13 +265,11 @@ export function attachBrowser(ctx) {
       const path = kind === "pick" ? value : state.browserSample;
       if (state.view.busy || !path) return;
       const source = state.browserSource;
-      const action = samplePreviewAction(path);
-      ctx.act(action, false);
       if (path !== state.browserSample || state.browserPreview?.path !== path || state.browserPreview.source !== source) {
         state.browserSample = path;
         state.browserPreview = { path, source, ms: null, peaks: null };
       }
-      ctx.run(() => requestSamplePreview(path, source, action));
+      audition({ path, source, action: samplePreviewAction(path) });
     } else if (kind === "assign") {
       const target = sampleTarget();
       if (!target || !state.browserSample || !state.browserModel?.canAssign) return;
@@ -251,6 +282,14 @@ export function attachBrowser(ctx) {
     } else if (kind === "browse") {
       const target = sampleTarget();
       if (target) pickSample(target);
+      return;
+    } else if (kind === "chooseLibrary") {
+      if (state.view.busy) return;
+      ctx.run(async () => {
+        // A cancelled picker answers nothing.
+        const next = await invoke("pick_hitsound_library");
+        if (next) ctx.show(next);
+      });
       return;
     }
     ctx.renderSampleBrowser();
@@ -265,6 +304,6 @@ export function attachBrowser(ctx) {
   Object.assign(ctx, {
     sampleTarget, pickSample, mapsetSamples, requestLibraryFolder, resetBrowserFolder,
     mapsetTree, renderSampleBrowser, currentBrowser, samplePreviewAction,
-    requestSamplePreview, sampleBrowserAction, bindBrowser,
+    requestSamplePreview, audition, sampleBrowserAction, bindBrowser,
   });
 }

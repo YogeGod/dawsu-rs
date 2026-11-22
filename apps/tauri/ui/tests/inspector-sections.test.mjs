@@ -188,9 +188,9 @@ test("Lane shows v3's title, the file and Lane colour: None in grey until the ma
   assert.match(byId(shown(model()), "lane-colour").tag, /aria-label="Lane colour"/);
 });
 
-test("Difficulty keeps Hitsounding mode and the four buttons, with the ids the menus click", () => {
+test("Difficulty keeps the four buttons with the ids the menus click; Hitsounding mode moved to Map and Preferences", () => {
   const html = shown(model({ hs: true }));
-  assert.match(html, /aria-label="Hitsounding mode"[^>]*checked/);
+  assert.doesNotMatch(html, /aria-label="Hitsounding mode"/);
   for (const [id, text] of [["generate", "Generate…"], ["new", "New…"], ["copy", "Copy…"], ["merge-settings", "Merge settings…"],
     ["replace-sample", "Replace sample…"]]) {
     assert.match(button(html, text).tag, new RegExp(`id="${id}"`), text);

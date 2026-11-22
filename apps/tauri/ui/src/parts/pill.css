@@ -1,13 +1,13 @@
-/* v3 toolbar pills (tools and Audition) inside a dark well. */
+/* v3 §3 toolbar pills (tools and Audition) inside a dark well: well radius 6, pills radius 4. */
 .ui-well {
   display: flex;
   align-items: center;
   gap: 2px;
   height: 32px;
   padding: 0 4px;
-  border-radius: 999px;
-  background: #141416;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), inset 0 0 0 1px var(--editor-border);
+  border-radius: 6px;
+  background: var(--editor-ink);
+  box-shadow: var(--shadow-well);
 }
 .ui-pill {
   display: inline-flex;
@@ -17,7 +17,7 @@
   min-height: 26px;
   padding: 0 12px;
   border: 0;
-  border-radius: 999px;
+  border-radius: 4px;
   background: transparent;
   color: var(--editor-text);
   font: inherit;

@@ -1,6 +1,6 @@
 <script>
   import { bridge } from "../lib/bridge.svelte.js";
-  import { emptyBrowser } from "../lib/browser.js";
+  import { emptyBrowser, sampleKey } from "../lib/browser.js";
   import Folder from "../icons/Folder.svg?raw";
   import FolderOpen from "../icons/FolderOpen.svg?raw";
   import Volume1 from "../icons/Volume1.svg?raw";
@@ -27,18 +27,12 @@
   {:else}
     <button type="button" class="browser-row browser-sample" class:browser-selected={row.selected}
       style:--depth={row.depth + nest} title={row.title} aria-pressed={row.selected} disabled={model.busy}
-      onclick={() => send("pick", row.key)}>
+      data-sample={row.key} onclick={() => send("pick", row.key)} ondblclick={() => send("assign")}
+      onkeydown={event => sampleKey(event, row, send)}>
       <span class="browser-icon">{@html Volume1}</span><span class="browser-name">{row.label}</span>
     </button>
   {/if}
 {/each}
-{#if model.defaults}
-  <h3 class="browser-section">Default samples</h3>
-  <!-- Nothing lists the osu! skin samples or the sample folders yet, so both rows stay greyed out. -->
-  <button type="button" class="browser-row" disabled>
-    <span class="browser-icon">{@html Folder}</span><span class="browser-name">osu! skin</span>
-  </button>
-  <button type="button" class="browser-row" disabled>
-    <span class="browser-icon">{@html Folder}</span><span class="browser-name">Sample folders</span>
-  </button>
+{#if model.chooseLibrary}
+  <button type="button" class="browser-choose" disabled={model.busy} onclick={() => send("chooseLibrary")}>Choose library folder…</button>
 {/if}

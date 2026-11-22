@@ -4,6 +4,8 @@
   import {
     clickGate, copyText, readout, segmentsDisabled, selectionValue, transportActions,
   } from "../lib/transport.js";
+  import { invoke } from "../lib/ipc.js";
+  import { readPort, recordArgs, recordToast } from "../lib/midi.js";
   import SkipBack from "../icons/SkipBack.svg?raw";
   import SkipForward from "../icons/SkipForward.svg?raw";
   import Repeat2 from "../icons/Repeat2.svg?raw";
@@ -21,6 +23,10 @@
   let copyResult = $state(null);
   let copyTimer;
   const toggles = clickGate();
+  // MIDI Record: armed listens on the port Preferences › MIDI Input & VST3 picked; disarming
+  // commits the recorded notes as hits (Rust's midi_record_toggle).
+  let armed = $state(false);
+  let arming = $state(false);
 
   const view = $derived(bridge.view);
   const scene = $derived(bridge.scene);
@@ -43,6 +49,24 @@
     copyTimer = setTimeout(() => (copyResult = null), 1200);
   }
   onDestroy(() => clearTimeout(copyTimer));
+
+  const storage = () => { try { return globalThis.localStorage; } catch { return null; } };
+
+  async function toggleRecord() {
+    if (arming) return;
+    arming = true;
+    try {
+      const status = await invoke("midi_record_toggle", recordArgs(readPort(storage()), bridge.scene));
+      armed = !!status?.armed;
+      const toast = recordToast(status);
+      if (toast) globalThis.showToast?.(toast);
+      if (!armed && status?.committedNotes) await act(null);
+    } catch (error) {
+      globalThis.showToast?.({ tone: "error", title: "MIDI Record", body: String(error) });
+    } finally {
+      arming = false;
+    }
+  }
 </script>
 
 <div class="transport">
@@ -62,8 +86,9 @@
       disabled={disabled.playback} onclick={() => send("stop")}>{@html Square}</button>
     <button type="button" class="seg" class:playing aria-label="Play" title="Play or pause" aria-pressed={playing}
       disabled={disabled.playback} onclick={() => toggle("play")}>{@html Play}</button>
-    <!-- Recording has no code yet (Yoge, 2026-11-21): Record shows greyed out. -->
-    <button type="button" class="seg record" aria-label="Record" title="Record" disabled>{@html Circle}</button>
+    <button type="button" class="seg record" class:armed aria-label="MIDI Record"
+      title={armed ? "Stop MIDI recording and add the notes" : "Arm MIDI recording"} aria-pressed={armed}
+      disabled={disabled.playback || arming} onclick={toggleRecord}>{@html Circle}</button>
   </div>
   <div class="readout">
     <span class="time">{time}</span>
@@ -146,6 +171,10 @@
   .seg.playing[aria-pressed="true"],
   .seg.playing[aria-pressed="true"]:hover:not(:disabled) {
     color: var(--editor-play);
+  }
+  .seg.record.armed,
+  .seg.record.armed:hover:not(:disabled) {
+    color: var(--editor-error);
   }
   .seg:disabled {
     cursor: default;

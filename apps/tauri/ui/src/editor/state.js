@@ -13,6 +13,8 @@ export function createState() {
     waveformHeight: defaultWaveformHeight,
     visibleWaveformHeight: defaultWaveformHeight,
     waveformShown: true,
+    // Sound-first: hide the missing-object warning markers (kept in localStorage, this computer only).
+    soundFirst: globalThis.localStorage?.getItem?.("dawsu.soundFirst") === "1",
     waveformDrag: null,
     markedRange: null,
 
@@ -64,6 +66,10 @@ export function createState() {
     sectionBarCache: null,
     sliderEndCache: null,
     overviewBinCache: null,
+    // Playback frames reuse these canvas copies (canvas.js paintFrame); paintSoon() drops them.
+    staticLayers: null,
+    layerCopies: null,
+    lastLayerKey: null,
     skinTextures: null,
 
     cursorSurface: null,
@@ -76,7 +82,8 @@ export function createState() {
     modalKind: "",
     modalClose: null,
     outputProblemIndex: -1,
-    outputProblemList: "",
+    // JSON of the last view's problems; "[]" is no problems, so the first show() keeps cached layers.
+    outputProblemList: "[]",
     rulerWarningMarkers: [],
 
     pending: Promise.resolve(),

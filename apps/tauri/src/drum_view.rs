@@ -1,6 +1,10 @@
 use dawsu_application::Application;
-use dawsu_hitsounding::drums::{
-    DrumMap, DrumViewRow, MAX_DAWSUDRUM_BYTES, drum_rows, lane_for_key, lane_key, read_dawsudrum,
+use dawsu_hitsounding::{
+    Lane,
+    drums::{
+        DrumMap, DrumViewRow, MAX_DAWSUDRUM_BYTES, drum_rows, lane_for_key, lane_key,
+        read_dawsudrum,
+    },
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -16,6 +20,10 @@ use std::{
 pub(super) enum DrumMapAction {
     LoadBuiltin { name: String },
     AssignRow { row_index: usize, lane_key: Option<String> },
+    AutoDetect,
+    SetAutoDetect { on: bool },
+    SetHideUnassigned { on: bool },
+    MoveRow { from_index: usize, to_index: usize },
 }
 
 /// The 10 built-in drum map presets bundled into every release.
@@ -62,17 +70,45 @@ pub(super) const BUILTIN_DRUM_MAPS: &[(&str, &str)] = &[
     ),
 ];
 
-#[derive(Default)]
 pub(super) struct DrumView {
     mapsets: HashMap<PathBuf, Kit>,
+    auto_detect: bool,
+    hide_unassigned: bool,
+}
+
+impl Default for DrumView {
+    fn default() -> Self {
+        Self {
+            mapsets: HashMap::new(),
+            auto_detect: true,
+            hide_unassigned: false,
+        }
+    }
 }
 
 struct Kit {
     preset: DrumMap,
     enabled: bool,
+    auto_detected: bool,
 }
 
 impl DrumView {
+    /// Editor startup configuration: automatically detects kits from sounds and hides unassigned lanes.
+    pub(super) fn active_map(&self, app: &Application) -> Option<&DrumMap> {
+        let document = app.document()?;
+        let folder = document.path.parent()?;
+        let kit = self.mapsets.get(folder)?;
+        kit.enabled.then_some(&kit.preset)
+    }
+
+    pub(super) fn for_editor() -> Self {
+        Self {
+            mapsets: HashMap::new(),
+            auto_detect: true,
+            hide_unassigned: true,
+        }
+    }
+
     pub(super) fn load(
         &mut self, app: &Application, expected_map: &Path, path: &Path,
     ) -> Result<(), String> {
@@ -87,7 +123,7 @@ impl DrumView {
         let mut preset = read_dawsudrum(&text).map_err(|error| error.to_string())?;
         // This view uses only the instrument order and settings. Embedded audio stays in the selected file.
         preset.audio = Vec::new();
-        self.mapsets.insert(folder.into(), Kit { preset, enabled: true });
+        self.mapsets.insert(folder.into(), Kit { preset, enabled: true, auto_detected: false });
         Ok(())
     }
 
@@ -95,13 +131,56 @@ impl DrumView {
         &mut self, app: &Application, expected_map: &Path, name: &str,
     ) -> Result<(), String> {
         let folder = current_mapset(app, expected_map)?;
-        let (_, json_text) = BUILTIN_DRUM_MAPS
-            .iter()
-            .find(|(preset_name, _)| *preset_name == name)
-            .ok_or_else(|| format!("Unknown drum map preset: {name}"))?;
-        let mut preset = read_dawsudrum(json_text).map_err(|error| error.to_string())?;
-        preset.audio = Vec::new();
-        self.mapsets.insert(folder.into(), Kit { preset, enabled: true });
+        let lanes = visible_lanes(app);
+        let preset = read_and_bind_builtin(name, &lanes)?;
+        self.mapsets.insert(folder.into(), Kit { preset, enabled: true, auto_detected: false });
+        Ok(())
+    }
+
+    pub(super) fn auto_detect_now(
+        &mut self, app: &Application, expected_map: &Path,
+    ) -> Result<(), String> {
+        let folder = current_mapset(app, expected_map)?;
+        let lanes = visible_lanes(app);
+        let preset = dawsu_application::drum_classify::auto_detect_drum_map(&lanes, |id| app.lane_clip(id));
+        self.mapsets.insert(folder.into(), Kit { preset, enabled: true, auto_detected: true });
+        Ok(())
+    }
+
+    pub(super) fn set_auto_detect(
+        &mut self, app: &Application, expected_map: &Path, on: bool,
+    ) -> Result<(), String> {
+        let folder = current_mapset(app, expected_map)?.to_path_buf();
+        self.auto_detect = on;
+        if on {
+            self.auto_detect_now(app, expected_map)?;
+        } else if self.mapsets.get(&folder).is_some_and(|kit| kit.auto_detected) {
+            self.load_builtin(app, expected_map, BUILTIN_DRUM_MAPS[0].0)?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn set_hide_unassigned(
+        &mut self, app: &Application, expected_map: &Path, on: bool,
+    ) -> Result<(), String> {
+        current_mapset(app, expected_map)?;
+        self.hide_unassigned = on;
+        Ok(())
+    }
+
+    pub(super) fn move_row(
+        &mut self, app: &Application, expected_map: &Path, from_index: usize, to_index: usize,
+    ) -> Result<(), String> {
+        let folder = current_mapset(app, expected_map)?;
+        let kit = self.mapsets.get_mut(folder).ok_or("Open a drum map first.")?;
+        let len = kit.preset.rows.len();
+        if from_index >= len || to_index >= len {
+            return Err("That drum row does not exist.".into());
+        }
+        if from_index != to_index {
+            let row = kit.preset.rows.remove(from_index);
+            kit.preset.rows.insert(to_index, row);
+        }
         Ok(())
     }
 
@@ -141,14 +220,17 @@ impl DrumView {
     pub(super) fn toggle(
         &mut self, app: &Application, expected_map: &Path, on: bool,
     ) -> Result<(), String> {
-        let folder = current_mapset(app, expected_map)?;
-        if let Some(kit) = self.mapsets.get_mut(folder) {
+        let folder = current_mapset(app, expected_map)?.to_path_buf();
+        if let Some(kit) = self.mapsets.get_mut(&folder) {
             kit.enabled = on;
         } else if on {
-            let mut preset = read_dawsudrum(BUILTIN_DRUM_MAPS[0].1)
-                .map_err(|error| error.to_string())?;
-            preset.audio = Vec::new();
-            self.mapsets.insert(folder.into(), Kit { preset, enabled: true });
+            if self.auto_detect {
+                self.auto_detect_now(app, expected_map)?;
+            } else {
+                let lanes = visible_lanes(app);
+                let preset = read_and_bind_builtin(BUILTIN_DRUM_MAPS[0].0, &lanes)?;
+                self.mapsets.insert(folder, Kit { preset, enabled: true, auto_detected: false });
+            }
         }
         Ok(())
     }
@@ -162,13 +244,7 @@ impl DrumView {
         let model = composer.hitsounds();
         let definitions: HashMap<_, _> = model.lanes().iter().map(|lane| (&lane.identity, lane)).collect();
         let presets: Vec<&str> = BUILTIN_DRUM_MAPS.iter().map(|(name, _)| *name).collect();
-        let visible_lanes: Vec<_> = composer
-            .lanes
-            .iter()
-            .filter(|id| !model.is_lane_hidden(id))
-            .filter_map(|id| definitions.get(id).copied())
-            .cloned()
-            .collect();
+        let visible_lanes = visible_lanes(app);
         let assignable_lanes: Vec<Value> = visible_lanes
             .iter()
             .map(|lane| {
@@ -203,6 +279,8 @@ impl DrumView {
             view["drumView"] = json!({
                 "enabled": kit.enabled,
                 "name": kit.preset.name,
+                "autoDetect": self.auto_detect,
+                "hideUnassigned": self.hide_unassigned,
                 "presets": presets,
                 "rows": setup_rows,
                 "lanes": assignable_lanes,
@@ -258,6 +336,8 @@ impl DrumView {
         view["drumView"] = json!({
             "enabled": kit.enabled,
             "name": kit.preset.name,
+            "autoDetect": self.auto_detect,
+            "hideUnassigned": self.hide_unassigned,
             "presets": presets,
             "rows": setup_rows,
             "lanes": assignable_lanes,
@@ -282,17 +362,83 @@ impl DrumView {
                     "drumRowIndex": index,
                 }))
             }
-            DrumViewRow::Unassigned(row) => Some(json!({
+            DrumViewRow::Unassigned(row) => (!self.hide_unassigned).then(|| json!({
                 "row": null,
                 "name": row.name,
                 "drumRowIndex": index,
             })),
             DrumViewRow::Other(lane) => {
+                if self.hide_unassigned {
+                    return None;
+                }
                 let row = *rows.get(&lane.identity)?;
                 shown_rows.insert(row).then(|| json!({"row": row, "name": null}))
             }
         }).collect::<Vec<_>>();
         view["scene"]["drumRows"] = json!(shown);
+    }
+}
+
+fn visible_lanes(app: &Application) -> Vec<Lane> {
+    let Some(document) = app.document() else {
+        return Vec::new();
+    };
+    let composer = &document.composer;
+    let model = composer.hitsounds();
+    let definitions: HashMap<_, _> = model.lanes().iter().map(|lane| (&lane.identity, lane)).collect();
+    composer
+        .lanes
+        .iter()
+        .filter(|id| !model.is_lane_hidden(id))
+        .filter_map(|id| definitions.get(id).copied())
+        .cloned()
+        .collect()
+}
+
+fn read_and_bind_builtin(name: &str, lanes: &[Lane]) -> Result<DrumMap, String> {
+    let (_, json_text) = BUILTIN_DRUM_MAPS
+        .iter()
+        .find(|(preset_name, _)| *preset_name == name)
+        .ok_or_else(|| format!("Unknown drum map preset: {name}"))?;
+    let mut preset = read_dawsudrum(json_text).map_err(|error| error.to_string())?;
+    preset.audio = Vec::new();
+    bind_builtin_preset(&mut preset, lanes);
+    Ok(preset)
+}
+
+/// Built-in presets name standard mapset files like `BeatmapFile|drum-hitnormal.wav`. When a
+/// difficulty uses the skin's default sound or a numbered variant (`Skin|drum-hitnormal`), bind it
+/// automatically instead of leaving the preset's rows unassigned.
+fn bind_builtin_preset(preset: &mut DrumMap, lanes: &[Lane]) {
+    for row in &mut preset.rows {
+        let Some(key) = row.lane.as_deref() else { continue };
+        if lane_for_key(key, lanes).is_some() {
+            continue;
+        }
+        let Some(file) = key.strip_prefix("BeatmapFile|") else { continue };
+        let stem = file
+            .rsplit(['/', '\\'])
+            .next()
+            .unwrap_or(file)
+            .split('.')
+            .next()
+            .unwrap_or(file)
+            .to_ascii_lowercase();
+        let skin_target = format!("Skin|{stem}");
+        if let Some(idx) = lane_for_key(&skin_target, lanes) {
+            row.lane = Some(lane_key(&lanes[idx]));
+            continue;
+        }
+        // Fallback: match the standard set-sound family (e.g. a custom numbered index `drum-hitnormal2`).
+        if let Some(matched) = lanes.iter().find(|lane| {
+            let name = super::lane_name(&lane.identity).to_ascii_lowercase();
+            name == stem
+                || name
+                    .strip_prefix(&stem)
+                    .is_some_and(|suffix| !suffix.is_empty() && suffix.bytes().all(|b| b.is_ascii_digit()))
+        }) {
+            row.lane = Some(lane_key(matched));
+        }
     }
 }
 

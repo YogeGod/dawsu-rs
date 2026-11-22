@@ -53,6 +53,14 @@ const COMMANDS: &[&str] = &[
     "open_editor_folder",
     "close_editor",
     "skin_textures",
+    "pick_midi_file",
+    "inspect_midi_file",
+    "apply_midi_import",
+    "export_midi_file",
+    "midi_input_ports",
+    "midi_record_toggle",
+    "vst3_scan",
+    "keysounds_action",
 ];
 
 fn main() {

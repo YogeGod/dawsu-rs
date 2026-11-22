@@ -379,6 +379,15 @@ impl Application {
         Ok(())
     }
 
+    /// Resets all shortcuts in the active preset back to their default bindings.
+    pub fn reset_shortcuts(&mut self) {
+        let definitions = self.catalogue.definitions();
+        let name = &self.preferences.key_preset;
+        let map = KeyMap::from_preset(definitions, preset(name));
+        let status = format!("Reset shortcuts for the {name} preset.");
+        self.install_shortcuts(map, status);
+    }
+
     pub fn import_shortcuts(&mut self, path: &Path) -> Result<(), String> {
         let bytes = std::fs::read(path).map_err(|error| format!("Opening key file: {error}"))?;
         let file: KeyFile = serde_json::from_slice(crate::preferences::without_bom(&bytes))

@@ -23,7 +23,11 @@ export function attachIpc(ctx) {
     const result = state.pending.then(task).catch((error) => {
       setStatusNotice(String(error));
       (env.console ?? console).error(error);
-    }).finally(() => { state.requests--; });
+    }).finally(() => {
+      state.requests--;
+      // A wheel zoom or pan held back while the editor answered goes now.
+      ctx.flushWheel?.();
+    });
     state.pending = result;
     return result;
   }
@@ -100,6 +104,23 @@ export function attachIpc(ctx) {
     $("difficulty").title = path;
   }
 
+  // Save and the Export window's write run in the background and finish here, in a later view:
+  // a toast that goes by itself says so. A failed write keeps its error and gets no toast. The
+  // last message told is kept, so a view still busy after the write (a sweep) can't swallow it.
+  function announceWrite(before, after, hadMap) {
+    const status = after.status ?? "";
+    const title = /^Saved\b/.test(status) ? "Saved" : /^Wrote \d+ reviewed files?\b/.test(status) ? "Files written" : null;
+    if (!title) {
+      state.announcedWrite = null;
+      return;
+    }
+    if (!hadMap || after.error) return;
+    // The same message again is news only when the map became saved with it (a second Save).
+    if (status === state.announcedWrite && !(before.dirty && !after.dirty)) return;
+    state.announcedWrite = status;
+    try { env.window.showToast?.({ tone: "success", title, body: status }); } catch (error) { (env.console ?? console).error(error); }
+  }
+
   function show(next) {
     if (next.fault) {
       // A new object, so the Svelte parts see the fault and disable.
@@ -112,6 +133,8 @@ export function attachIpc(ctx) {
     }
     const previousTool = state.view.tool;
     const wasBusy = state.view.busy;
+    const before = state.view;
+    const hadMap = !!state.scene;
     // Where the line is now, from the view before this one.
     const drawn = ctx.playheadPosition();
     state.view = next;
@@ -200,10 +223,12 @@ export function attachIpc(ctx) {
     ctx.refreshHitCard();
     ctx.renderDialogs();
     try { env.window.refreshEditorMenu?.(); } catch (error) { (env.console ?? console).error(error); }
-    ctx.paintSoon();
+    // A playback poll without a scene moved only the playhead: the cached canvas layers still hold.
+    ctx.paintSoon(Boolean(state.view.playing && !next.scene));
     if (state.scene && state.view.playing) ctx.animatePlayback();
     try { ctx.ui()?.update?.(state.view, state.scene); } catch (error) { (env.console ?? console).error(error); }
     setStatusNotice(missingUiParts());
+    announceWrite(before, state.view, hadMap);
   }
 
   Object.assign(ctx, {

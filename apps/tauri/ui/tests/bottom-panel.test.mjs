@@ -128,12 +128,12 @@ test("folded, the panel is one strip that opens it; no V key, since V jumps to t
   assert.equal(disabled(tags(panel(view({ panels: { controller: false } }), "volume", null), "button")[0]), true);
 });
 
-test("open, the Volume tab offers Per object; Volume curve and Reset levels are greyed out", () => {
+test("open, the panel shows only its Volume and Mixer tabs, with no buttons that can never be pressed", () => {
   const html = panel(view());
-  assert.deepEqual(buttonsOf(html),
-    [["Volume", true, false], ["Mixer", false, false], ["Per object", true, false], ["Volume curve", false, true]]);
+  assert.deepEqual(buttonsOf(html), [["Volume", true, false], ["Mixer", false, false]]);
   const mixer = panel(view(), "mixer");
-  assert.deepEqual(buttonsOf(mixer), [["Volume", false, false], ["Mixer", true, false], ["Reset levels", false, true]]);
+  assert.deepEqual(buttonsOf(mixer), [["Volume", false, false], ["Mixer", true, false]]);
+  assert.doesNotMatch(html + mixer, /Volume curve|Reset levels|Per object/);
   assert.doesNotMatch(html + mixer, /\sstyle=|\sid=/);
 });
 

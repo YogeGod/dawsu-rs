@@ -35,6 +35,17 @@ function sameRecovery(a, b) {
   return true;
 }
 
+// Drum Map Setup's switches and rows; the view sends a new object on every update.
+function sameDrumView(a, b) {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  if (!!a.enabled !== !!b.enabled || (a.name ?? null) !== (b.name ?? null) ||
+    !!a.autoDetect !== !!b.autoDetect || !!a.hideUnassigned !== !!b.hideUnassigned) return false;
+  const ra = a.rows ?? [], rb = b.rows ?? [];
+  return ra.length === rb.length && ra.every((row, i) => row.name === rb[i].name &&
+    (row.laneKey ?? null) === (rb[i].laneKey ?? null) && !!row.assigned === !!rb[i].assigned);
+}
+
 export function sameUiView(a, b) {
   if (a === b) return true;
   if (!a || !b) return false;
@@ -63,6 +74,14 @@ export function sameUiView(a, b) {
     !!a.hasDocument === !!b.hasDocument &&
     !!a.previewWindow === !!b.previewWindow &&
     !!a.objectLines === !!b.objectLines &&
+    // Preferences and the drum lane column read these.
+    !!a.hsMode === !!b.hsMode &&
+    (a.songsFolder || "") === (b.songsFolder || "") &&
+    (a.hitsoundLibrary || "") === (b.hitsoundLibrary || "") &&
+    Object.is(a.offset ?? 0, b.offset ?? 0) &&
+    (a.playbackStart ?? null) === (b.playbackStart ?? null) &&
+    !!a.classicBrowser === !!b.classicBrowser &&
+    sameDrumView(a.drumView, b.drumView) &&
     sameStrings(a.warnings, b.warnings) &&
     sameProblems(a.outputProblems, b.outputProblems) &&
     sameStrings(a.recent, b.recent) &&

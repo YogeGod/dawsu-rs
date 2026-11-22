@@ -27,8 +27,6 @@
 <div class="pm">
   <div class="pm-head">
     <span class="pm-name" title={strip.name}>{strip.name}</span>
-    <!-- The editor has no check behind these counts yet, so they show greyed out and empty. -->
-    <span class="pm-sum pm-off" title="Not counted yet." aria-label="Sound right: not counted yet">– of – sound right</span>
   </div>
   <div class="pm-strip">
     <div class="pm-track" role="group" aria-label="Problems across the song" bind:clientWidth={width}>
@@ -46,8 +44,6 @@
     </div>
   </div>
   <div class="pm-legend">
-    <span class="pm-count pm-off" title="Not counted yet." aria-label="Silent: not counted yet"><i></i>– silent</span>
-    <span class="pm-count pm-off" title="Not counted yet." aria-label="Fallback: not counted yet"><i></i>– fallback</span>
     <span class="pm-count pm-orphaned" title="Moments with hits and no object"><i></i>{strip.orphaned === 1
       ? "1 hit with no object" : strip.orphaned + " hits with no object"}</span>
     <!-- Save problems are known only after a Save check of this version, so no zero is shown. -->

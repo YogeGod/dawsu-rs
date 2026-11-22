@@ -4,7 +4,7 @@ use dawsu_editor::tempo::{Snap, SnapMode, SnapSpacing, TempoMap};
 use dawsu_editor::tools::{PointerInput, TimeRange, ToolPreview, ToolTarget};
 use dawsu_editor::{Clipboard, EditHistory, Selection};
 use dawsu_foundation::{Hitsound, SampleIdentity, SongTime, Sound};
-use dawsu_hitsounding::{Hitsounds, MomentId, Place};
+use dawsu_hitsounding::{Hitsounds, MomentId};
 use std::{collections::BTreeSet, convert::Infallible};
 
 mod batch;
@@ -89,13 +89,23 @@ impl Composer {
     pub fn mark_saved(&mut self) {
         self.history.mark_clean();
     }
+    fn prune_selection(&mut self) {
+        let kept: Vec<_> = {
+            let moments = self.hitsounds().moments();
+            self.selected_keys_in_order()
+                .into_iter()
+                .filter(|key| moments.get(key.moment).is_some_and(|m| m.has_hit(&key.lane)))
+                .collect()
+        };
+        self.selected.replace(kept);
+    }
     pub fn undo(&mut self) {
         self.history.undo();
-        self.selected.clear();
+        self.prune_selection();
     }
     pub fn redo(&mut self) {
         self.history.redo();
-        self.selected.clear();
+        self.prune_selection();
     }
     pub fn apply(&mut self, label: &str, edit: impl FnOnce(&mut Hitsounds)) {
         let _ = self.history.apply(label, true, |h| {
@@ -277,9 +287,6 @@ impl Composer {
             let id = MomentId(index);
             let moment = hits.moment(id);
             if let Some(lanes) = lanes {
-                if moment.place() == Place::NoObject {
-                    continue;
-                }
                 for lane in moment.hits() {
                     let before = moment.hit_volume(lane);
                     let after = edit(before);
@@ -625,5 +632,116 @@ impl ToolTarget for Composer {
     }
     fn show_preview(&mut self, preview: ToolPreview) {
         self.preview = preview;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dawsu_editor::keys::Mods;
+    use dawsu_editor::tempo::TimingSection;
+    use dawsu_editor::tools::{PointerButton, PointerSurface, ToolBox, ToolKind};
+    use dawsu_foundation::{CustomIndex, SampleSet};
+    use dawsu_hitsounding::{Decompiled, Place, decompile};
+    use dawsu_osu_format::OsuFile;
+
+    fn empty_composer() -> Composer {
+        let f = OsuFile::read(b"osu file format v14\n[General]\nMode:0\n[TimingPoints]\n0,500,4,1,0,100,1,0\n[HitObjects]\n".to_vec()).file;
+        let Decompiled::Done(h) = decompile(&f, &[], &|| false, &mut |_, _| {}) else {
+            panic!("empty fixture")
+        };
+        Composer::new(h)
+    }
+
+    fn lane_normal() -> SampleIdentity {
+        SampleIdentity::Standard {
+            set: SampleSet::Normal,
+            sound: Sound::Hit(Hitsound::Normal),
+            index: CustomIndex::new(0),
+        }
+    }
+
+    fn lane_clap() -> SampleIdentity {
+        SampleIdentity::Standard {
+            set: SampleSet::Normal,
+            sound: Sound::Hit(Hitsound::Clap),
+            index: CustomIndex::new(0),
+        }
+    }
+
+    #[test]
+    fn undo_and_redo_preserve_surviving_selection() {
+        let mut composer = empty_composer();
+        let normal = lane_normal();
+        let clap = lane_clap();
+        composer.add(100.0, normal.clone(), 80, 5.0);
+        composer.add(200.0, clap.clone(), 80, 5.0);
+
+        let k1 = HitKey { moment: 0, lane: normal.clone() };
+        let k2 = HitKey { moment: 1, lane: clap.clone() };
+        composer.selected.replace([k1.clone(), k2.clone()]);
+
+        composer.undo();
+        let after_undo = composer.selected_keys_in_order();
+        assert_eq!(after_undo, vec![k1.clone()]);
+
+        composer.redo();
+        let after_redo = composer.selected_keys_in_order();
+        assert_eq!(after_redo, vec![k1]);
+    }
+
+    #[test]
+    fn volume_for_lanes_updates_no_object_moments() {
+        let mut composer = empty_composer();
+        let normal = lane_normal();
+        let clap = lane_clap();
+        composer.add(100.0, normal.clone(), 80, 5.0);
+        composer.add(100.0, clap.clone(), 80, 5.0);
+        composer.selected.replace([
+            HitKey { moment: 0, lane: normal.clone() },
+            HitKey { moment: 0, lane: clap.clone() },
+        ]);
+
+        let scope = BTreeSet::from([clap.clone()]);
+        assert!(composer.volume_for_lanes(55, false, Some(&scope)));
+        let m = composer.hitsounds().moment(MomentId(0));
+        assert_eq!(m.place(), Place::NoObject);
+        assert_eq!(m.hit_volume(&clap), 55);
+        assert_eq!(m.hit_volume(&normal), 80);
+    }
+
+    #[test]
+    fn draw_paint_inserts_dense_hits_under_10ms_apart() {
+        let mut composer = empty_composer();
+        let lane = lane_normal();
+        composer.lanes = vec![lane];
+        // Fast tempo (500 BPM => 120 ms/beat) with 1/16 snap => 7.5 ms step (< 10 ms).
+        composer.tempo = TempoMap::new(vec![TimingSection {
+            start: SongTime::from_ms(0.0),
+            beat_length_ms: 120.0,
+            beats_per_bar: 4,
+        }]);
+        composer.spacing = SnapSpacing::fraction(16).unwrap();
+
+        let mut tools = ToolBox::new();
+        tools.select_tool(ToolKind::Draw, &mut composer);
+
+        let ev = |ms: f64| PointerInput {
+            time: SongTime::from_ms(ms),
+            row: 0,
+            row_value: None,
+            surface: PointerSurface::Grid,
+            button: PointerButton::Left,
+            mods: Mods::NONE,
+            click_count: 1,
+            x: 0.0,
+            y: 0.0,
+        };
+
+        tools.down(&mut composer, ev(0.0));
+        tools.moved(&mut composer, ev(15.0));
+        tools.up(&mut composer, ev(15.0));
+
+        assert_eq!(composer.hitsounds().moments().len(), 3);
     }
 }

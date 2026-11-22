@@ -31,7 +31,7 @@ export function attachCanvas(ctx) {
     const context2d = canvas.getContext("2d");
     context2d.setTransform(scale, 0, 0, scale, 0, 0);
     context2d.clearRect(0, 0, width, height);
-    return { ctx: context2d, width, height };
+    return { ctx: context2d, width, height, scale };
   }
 
   function line(context2d, color, x1, y1, x2, y2) {
@@ -125,7 +125,19 @@ export function attachCanvas(ctx) {
 
   // osu!lazer WaveformGraph.cs + Timeline.cs palette:
   // Base #66ccff @ 20% alpha -> Mid #44aadd -> High #2299bb -> Low (bass) #ddffff.
+  // The waveform asks for a colour every 2 px; the three bands are rounded to 1/16 so each colour
+  // string is built once and reused, not allocated again on every frame.
+  const waveLevels = 16;
+  const waveColours = new Array((waveLevels + 1) ** 3);
   function lazerWaveColour(low, mid, high) {
+    const ql = Math.round(limit(low, 0, 1) * waveLevels);
+    const qm = Math.round(limit(mid, 0, 1) * waveLevels);
+    const qh = Math.round(limit(high, 0, 1) * waveLevels);
+    const index = (ql * (waveLevels + 1) + qm) * (waveLevels + 1) + qh;
+    return waveColours[index] ??= blendWaveColour(ql / waveLevels, qm / waveLevels, qh / waveLevels);
+  }
+
+  function blendWaveColour(low, mid, high) {
     let r = 102, g = 204, b = 255, a = 0.20;
     const blend = (tr, tg, tb, t) => {
       const k = limit(t, 0, 1);
@@ -190,9 +202,89 @@ export function attachCanvas(ctx) {
     }
   }
 
-  function paintSoon() {
+  // keepLayers: show() during playback with no new scene; layerKey() already holds every view field
+  // paint() draws from, so a poll that only moved the position keeps the cached layers.
+  function paintSoon(keepLayers = false) {
+    // Something changed: the next frame paints every layer again instead of reusing the cached ones.
+    if (!keepLayers) state.staticLayers = null;
     // While playing, the next playback frame paints anyway.
     if (!state.frame && !state.playbackFrame) state.frame = raf(() => { state.frame = 0; ctx.paint(); });
+  }
+
+  // timeline-spec: while playing, only the playhead moves. A full paint keeps a copy of each canvas
+  // without the playhead; the frames after it copy that back and draw the playhead alone, until the
+  // view, scroll, zoom, size or anything paintSoon() hears about changes.
+  function layerKey() {
+    const scroll = $("scroll");
+    const view = state.view;
+    return [state.scene, view.activeLane, view.objectLines, view.left, view.right, view.cycle, view.duration,
+      view.offset, view.tool, state.outputProblemList, state.scene.viewStart, state.scene.zoom, state.scene.rowHeight,
+      scroll.scrollTop, scroll.clientHeight, elements.grid.clientWidth, elements.ruler.clientWidth,
+      elements.ruler.clientHeight, elements.overview.clientWidth, elements.controller.clientHeight,
+      env.window.devicePixelRatio || 1, env.document?.documentElement?.dataset?.uiScale ?? "100",
+      state.laneRows, state.waveformShown, state.waveformHeight, state.soundFirst];
+  }
+
+  function sameKey(a, b) {
+    if (!a || a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) if (!Object.is(a[i], b[i])) return false;
+    return true;
+  }
+
+  function keepLayers(layers) {
+    try {
+      const kept = [];
+      for (const [canvas, drawn] of layers) {
+        if (!drawn) continue;
+        const copy = state.layerCopies?.get(canvas) ?? env.document.createElement("canvas");
+        if (copy.width !== canvas.width) copy.width = canvas.width;
+        if (copy.height !== canvas.height) copy.height = canvas.height;
+        const copyContext = copy.getContext?.("2d");
+        if (typeof copyContext?.drawImage !== "function") return null;
+        copyContext.globalCompositeOperation = "copy";
+        copyContext.drawImage(canvas, 0, 0);
+        (state.layerCopies ??= new Map()).set(canvas, copy);
+        kept.push([canvas, copy, drawn]);
+      }
+      return kept;
+    } catch {
+      return null;
+    }
+  }
+
+  // One playback frame: the cached layers and the playhead when nothing else changed, else a full paint.
+  function paintFrame() {
+    if (!state.scene || $("workspace").hidden || $("editor-arrange").hidden) return;
+    const cached = state.staticLayers;
+    if (!cached || !sameKey(cached.key, layerKey())) {
+      ctx.paint();
+      return;
+    }
+    const surfaces = {};
+    for (const [canvas, copy, drawn] of cached.layers) {
+      const context2d = canvas.getContext("2d");
+      context2d.setTransform(1, 0, 0, 1, 0, 0);
+      context2d.globalCompositeOperation = "copy";
+      context2d.drawImage(copy, 0, 0);
+      context2d.globalCompositeOperation = "source-over";
+      context2d.setTransform(cached.scale, 0, 0, cached.scale, 0, 0);
+      surfaces[drawn.name] = { ctx: context2d, width: drawn.width, height: drawn.height };
+    }
+    drawPlayheads(surfaces.g, surfaces.r, surfaces.v ?? null, surfaces.o);
+  }
+
+  // The playhead on the grid, the ruler, the volume lane and the overview strip.
+  function drawPlayheads(g, r, v, o) {
+    const position = playheadPosition();
+    const playhead = (position - state.scene.viewStart) * state.scene.zoom;
+    if (g) line(g.ctx, slateTimeline.playhead, playhead, 0, playhead, g.height);
+    if (r) line(r.ctx, slateTimeline.playhead, playhead, 0, playhead, r.height);
+    if (v) line(v.ctx, slateTimeline.playhead, playhead, 0, playhead, v.height);
+    const duration = state.view.duration;
+    if (o && duration > 0 && o.width > 0) {
+      const playX = position * o.width / duration;
+      line(o.ctx, slateTimeline.playhead, playX, 0, playX, o.height);
+    }
   }
 
   // Each view from the editor sets where the playhead is, and when. `drawn` is where the line was
@@ -233,7 +325,7 @@ export function attachCanvas(ctx) {
         return;
       }
       ctx.followPlayhead(true);
-      ctx.paint();
+      paintFrame();
       state.playbackFrame = raf(step);
     });
   }
@@ -536,15 +628,14 @@ export function attachCanvas(ctx) {
     roundedTrack(context2d, boxLeft + 0.5, 3.5, boxWidth - 1, Math.max(0, height - 7), 2);
     context2d.fill();
     context2d.stroke();
-    // Problems on this difficulty: 7 px --editor-warning diamonds with a 1 px --editor-panel edge.
-    context2d.fillStyle = "#efc16a";
+    // Problems on this difficulty: 7 px amber diamonds with a 1 px --editor-panel edge, amber so they
+    // never read as a red 1/1 tick. Problems under 8 px apart are one diamond; Sound-first hides them.
+    context2d.fillStyle = "#fbbf24";
     context2d.strokeStyle = slateTimeline.overview;
-    const drawnProblems = new Set();
-    for (const problem of state.view.outputProblems ?? []) {
-      const x = Math.round(problem.time * width / duration);
-      if (problem.timeline !== state.scene.path || drawnProblems.has(x)) continue;
-      drawnProblems.add(x);
-      diamond(context2d, problem.time * width / duration, middle, 5);
+    const overviewProblems = state.soundFirst ? []
+      : visibleWarningMarkers(state.view.outputProblems ?? [], state.scene.path, 0, width / duration, width);
+    for (const marker of overviewProblems) {
+      diamond(context2d, marker.x, middle, 5);
       context2d.fill();
       context2d.stroke();
     }
@@ -555,8 +646,6 @@ export function attachCanvas(ctx) {
       if (bx < 0 || bx > width) continue;
       context2d.fillRect(Math.round(bx) - 1, 0, 2, 7);
     }
-    const playX = playheadPosition() * width / duration;
-    line(context2d, slateTimeline.playhead, playX, 0, playX, height);
   }
 
   function drawLocatorFlags(context2d, width, left, right, cycling) {
@@ -713,11 +802,11 @@ export function attachCanvas(ctx) {
       }
     }
     const problemTimes = new Set();
-    for (const problem of state.view.outputProblems ?? []) {
+    for (const problem of state.soundFirst ? [] : state.view.outputProblems ?? []) {
       if (problem.timeline === state.scene.path) problemTimes.add(Math.round(problem.time));
     }
     if (problemTimes.size) {
-      g.ctx.fillStyle = "rgba(232,107,114,.12)";
+      g.ctx.fillStyle = "rgba(245,158,11,.12)";
       for (const t of problemTimes) {
         const px = xOf(t);
         if (px >= -8 && px <= g.width + 8) g.ctx.fillRect(px - 4.5, 0, 9, g.height);
@@ -881,17 +970,27 @@ export function attachCanvas(ctx) {
       if (bx < 0 || bx > g.width) continue;
       line(g.ctx, "rgba(121,215,220,.16)", bx, 0, bx, g.height);
     }
-    const playhead = xOf(playheadPosition());
-    line(g.ctx, slateTimeline.playhead, playhead, 0, playhead, g.height);
-    line(r.ctx, slateTimeline.playhead, playhead, 0, playhead, r.height);
-    state.rulerWarningMarkers = visibleWarningMarkers(state.view.outputProblems ?? [], state.scene.path, start, zoom, r.width);
+    state.rulerWarningMarkers = state.soundFirst ? []
+      : visibleWarningMarkers(state.view.outputProblems ?? [], state.scene.path, start, zoom, r.width);
     ctx.refreshRulerWarningTooltip();
-    r.ctx.fillStyle = "#f0aa70";
+    r.ctx.fillStyle = "#f59e0b";
     for (const marker of state.rulerWarningMarkers) {
       r.ctx.fillRect(marker.x - 3, r.height - 9, 6, 6);
     }
-    if (v) line(v.ctx, slateTimeline.playhead, playhead, 0, playhead, v.height);
     drawOverview(o, start, g.width / zoom);
+    // Only playback reuses the layers, so only then are they copied, and only once the same view has
+    // painted twice: while Centre scrolls every frame, a copy would never be used.
+    const key = layerKey();
+    const repeated = sameKey(state.lastLayerKey, key);
+    state.lastLayerKey = key;
+    const layers = state.view.playing && repeated ? keepLayers([
+      [grid, { name: "g", width: g.width, height: g.height }],
+      [ruler, { name: "r", width: r.width, height: r.height }],
+      [controller, v && { name: "v", width: v.width, height: v.height }],
+      [overview, { name: "o", width: o.width, height: o.height }],
+    ]) : null;
+    state.staticLayers = layers ? { key, layers, scale: g.scale } : null;
+    drawPlayheads(g, r, v, o);
   }
 
   Object.assign(ctx, {
@@ -899,6 +998,6 @@ export function attachCanvas(ctx) {
     anchorPlayhead, playheadPosition, animatePlayback,
     fillHitDiamond, strokeHitDiamond, comboOf, roundedTrack, nodeRadii,
     drawGameplay, overviewBins, diamond, drawOverview, drawLocatorFlags,
-    drawBookmarks, paint,
+    drawBookmarks, paint, paintFrame, drawPlayheads,
   });
 }

@@ -653,6 +653,73 @@ fn drum_view_loads_builtin_presets_and_assigns_rows() {
 }
 
 #[test]
+fn drum_view_for_editor_binds_builtins_toggles_auto_detect_hides_unassigned_and_reorders_rows() {
+    let fixture = Fixture::new("drum-view-editor");
+    let path = fixture.0.join("Hard.osu");
+    let map_bytes = b"osu file format v14\n\n[General]\nMode:0\n\n[TimingPoints]\n0,500,4,1,0,100,1,0\n\n[HitObjects]\n256,192,1000,1,8,0:0:0:0:\n";
+    fs::write(&path, map_bytes).unwrap();
+
+    // Skin-only difficulty: built-in presets should bind automatically onto Skin|* lanes.
+    let mut app = Application::headless();
+    open(&mut app, &path);
+    let map = app.document().unwrap().path.clone();
+    let mut drums = super::drum_view::DrumView::for_editor();
+
+    let read = |drums: &super::drum_view::DrumView, app: &Application| {
+        let mut shown = snapshot(app, true);
+        drums.decorate(app, &mut shown);
+        shown
+    };
+
+    // Turning drum view on uses auto_detect by default and hides unassigned/Other rows by default.
+    drums.toggle(&app, &map, true).unwrap();
+    let auto_shown = read(&drums, &app);
+    assert_eq!(auto_shown["drumView"]["enabled"], true);
+    assert_eq!(auto_shown["drumView"]["autoDetect"], true);
+    assert_eq!(auto_shown["drumView"]["hideUnassigned"], true);
+    let auto_setup = auto_shown["drumView"]["rows"].as_array().unwrap();
+    assert!(auto_setup.iter().any(|row| row["assigned"] == false), "{auto_setup:?}");
+    let auto_rows = auto_shown["scene"]["drumRows"].as_array().unwrap();
+    assert!(auto_rows.iter().all(|row| row["row"].is_number()), "{auto_rows:?}");
+
+    // Turning hide_unassigned off reveals the unassigned template rows in scene.drumRows.
+    drums.set_hide_unassigned(&app, &map, false).unwrap();
+    let expanded = read(&drums, &app);
+    assert_eq!(expanded["drumView"]["hideUnassigned"], false);
+    let expanded_rows = expanded["scene"]["drumRows"].as_array().unwrap();
+    assert!(expanded_rows.len() > auto_rows.len(), "{expanded_rows:?}");
+    assert!(expanded_rows.iter().any(|row| row["row"].is_null()), "{expanded_rows:?}");
+
+    // Turning auto_detect off falls back from auto-detected kit to the first built-in preset.
+    drums.set_auto_detect(&app, &map, false).unwrap();
+    let fallback = read(&drums, &app);
+    assert_eq!(fallback["drumView"]["autoDetect"], false);
+    assert_ne!(fallback["drumView"]["name"], auto_shown["drumView"]["name"]);
+
+    // Loading the 12-sample built-in preset binds its standard rows to Skin|* lanes.
+    drums.load_builtin(&app, &map, "Full kit, all 12 samples").unwrap();
+    drums.set_hide_unassigned(&app, &map, true).unwrap();
+    let full = read(&drums, &app);
+    let setup_rows = full["drumView"]["rows"].as_array().unwrap();
+    assert_eq!(setup_rows.len(), 12);
+    assert!(setup_rows.iter().all(|row| row["assigned"] == true), "{setup_rows:?}");
+    let shown_rows = full["scene"]["drumRows"].as_array().unwrap();
+    assert_eq!(shown_rows.len(), 12, "{shown_rows:?}");
+    let first_before = setup_rows[0]["name"].as_str().unwrap().to_owned();
+    let second_before = setup_rows[1]["name"].as_str().unwrap().to_owned();
+
+    // Moving row 0 to index 1 reorders both drumView.rows and scene.drumRows.
+    drums.move_row(&app, &map, 0, 1).unwrap();
+    let moved = read(&drums, &app);
+    assert_eq!(moved["drumView"]["rows"][0]["name"], second_before);
+    assert_eq!(moved["drumView"]["rows"][1]["name"], first_before);
+    assert_eq!(moved["scene"]["drumRows"][0]["name"], second_before);
+    assert_eq!(moved["scene"]["drumRows"][1]["name"], first_before);
+    assert!(drums.move_row(&app, &map, 0, 999).is_err());
+    assert!(!app.is_dirty());
+}
+
+#[test]
 fn lane_actions_hide_restore_and_undo_without_removing_the_sample() {
     let fixture = Fixture::new("lane-actions");
     let map_path = fixture.0.join("Lane.osu");
@@ -1989,6 +2056,16 @@ fn shortcut_change_routes_the_new_f1_alternative_on_home() {
     assert!(route.handle(key("F1"), &mut app).is_none());
     let action = route.handle(key("F5"), &mut app).unwrap();
     action.run(&mut app);
+    assert!(app.help_requested);
+
+    app.help_requested = false;
+    serde_json::from_value::<Action>(serde_json::json!({ "kind": "reset_shortcuts" }))
+        .unwrap()
+        .run(&mut app);
+    assert!(app.error.is_none());
+    assert!(route.handle(key("F5"), &mut app).is_none());
+    let restored = route.handle(key("F1"), &mut app).unwrap();
+    restored.run(&mut app);
     assert!(app.help_requested);
 }
 #[test]

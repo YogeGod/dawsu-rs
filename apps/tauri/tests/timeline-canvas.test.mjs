@@ -418,7 +418,7 @@ test("the overview draws object diamonds by density, problem diamonds and the vi
     [7.5, 36.5, "rgba(196,196,196,1.00)"],
     [150.5, 36.5, "rgba(196,196,196,0.65)"],
     // Only this difficulty's problems, above the viewport box.
-    [225, 35, "#efc16a"],
+    [225, 35, "#fbbf24"],
   ]);
   assert.ok(overview.calls.some(call => call.name === "stroke" && call.stroke === "#151517"), "problem edge");
   // The viewport box: 3000 ms of 4000 on screen, 1 px --editor-text with a 2 px radius.
@@ -478,7 +478,35 @@ test("the overview counts each object once, spinners included, and merges proble
     spans: [["slider", 100, 300, 0], ["spinner", 1500, 2000, 1]] };
     view.outputProblems = [{ timeline: "fixture.osu", time: 1000 }, { timeline: "fixture.osu", time: 1002 }]`);
   const fills = overview.calls.filter((call, at) => call.name === "fill" && overview.calls[at - 1]?.name === "closePath").map(call => call.fill);
-  assert.deepEqual(fills, ["rgba(196,196,196,1.00)", "rgba(196,196,196,1.00)", "#efc16a"]);
+  assert.deepEqual(fills, ["rgba(196,196,196,1.00)", "rgba(196,196,196,1.00)", "#fbbf24"]);
+});
+
+test("zoomed out, problems under 8 px apart on the overview are one amber diamond; Sound-first hides them all", async () => {
+  const { get, paint, evaluate } = await canvases();
+  const overview = get("overview"), ruler = get("ruler");
+  // 300 px for 3000 ms: 1000 and 1050 ms sit 5 px apart (one diamond), 2000 ms stands alone.
+  const problems = `view.duration = 3000; scene.gameplay = { points: [], spans: [] };
+    view.outputProblems = [{ timeline: "fixture.osu", time: 1000 }, { timeline: "fixture.osu", time: 1050 },
+      { timeline: "fixture.osu", time: 2000 }]`;
+  const amber = () => overview.calls.filter((call, at) => call.name === "fill" && overview.calls[at - 1]?.name === "closePath" &&
+    call.fill === "#fbbf24").length;
+  paint(problems);
+  assert.equal(amber(), 2);
+  assert.ok(!ruler.calls.some(call => call.fill === "#f0aa70" || call.fill === "#efc16a"), "no old red-orange markers");
+  paint(`${problems}; soundFirst = true`);
+  assert.equal(amber(), 0);
+  assert.deepEqual(evaluate("rulerWarningMarkers"), []);
+  assert.ok(!ruler.calls.some(call => call.name === "fillRect" && call.fill === "#f59e0b"), "no ruler warning squares");
+  paint(`${problems}; soundFirst = false`);
+  assert.equal(amber(), 2);
+  assert.ok(ruler.calls.some(call => call.name === "fillRect" && call.fill === "#f59e0b"), "amber ruler warning squares");
+  // The Song row's one-click switch flips it and shows its state.
+  get("ruler-sound-first").listeners.click[0]();
+  assert.equal(evaluate("soundFirst"), true);
+  paint("0");
+  assert.equal(amber(), 0);
+  get("ruler-sound-first").listeners.click[0]();
+  assert.equal(evaluate("soundFirst"), false);
 });
 
 test("a click on two circles at one spot picks the later object, the one drawn on top", async () => {
@@ -518,4 +546,47 @@ test("classic skin textures draw full-height slider tracks, tinted circles, over
   assert.ok(drawn.includes("overlay"), "hitcircleoverlay drawn");
   assert.ok(drawn.includes("reverseArrow"), "reversearrow drawn on slider repeat");
   assert.ok(drawn.includes("d1") && drawn.includes("d2"), "skin combo digits drawn on circle and slider head");
+});
+
+test("while playing, a frame copies the cached layers back and draws only the playhead until something changes", async () => {
+  const { get, paint, evaluate } = await canvases();
+  const grid = get("grid");
+  const names = canvas => canvas.calls.map(call => call.name);
+  const clear = () => { for (const id of ["grid", "ruler", "overview"]) get(id).calls.length = 0; };
+  paint("view.playing = true; view.position = 1000");
+  assert.ok(names(grid).includes("fillRect"), "the first frame paints every layer");
+  assert.equal(evaluate("staticLayers"), null, "one paint is not copied: Centre may scroll every frame");
+  evaluate("paintFrame()");
+  assert.notEqual(evaluate("staticLayers"), null, "the same view painted twice is copied");
+  // The editor's playback poll: a new view object, a later position, no scene.
+  evaluate("show({ ...view, position: 1085 })");
+  clear();
+  evaluate("paintFrame()");
+  // Copy back (transform reset, drawImage, transform restored), then one playhead line.
+  assert.deepEqual(names(grid), ["setTransform", "drawImage", "setTransform", "beginPath", "moveTo", "lineTo", "stroke"]);
+  const drawnAt = grid.calls.find(call => call.name === "moveTo").args[0];
+  assert.ok(Math.abs(drawnAt - (evaluate("playheadPosition()") * 0.1 + 0.5)) < 1, "the playhead is drawn where it is now");
+  assert.ok(!names(get("ruler")).includes("fillText"), "the ruler's bar numbers come from the copy");
+  // A poll that changes what is drawn (here the locators) paints every layer again.
+  evaluate("show({ ...view, position: 1170, right: 2000 })");
+  clear();
+  evaluate("paintFrame()");
+  assert.ok(names(grid).includes("fillRect"));
+  // A scroll in time, or anything else paintSoon() hears about, does too.
+  evaluate("paintFrame()");
+  clear();
+  evaluate("scene.viewStart = 50; paintFrame()");
+  assert.ok(names(grid).includes("fillRect"));
+  evaluate("paintFrame()");
+  clear();
+  evaluate("paintSoon(); paintFrame()");
+  assert.ok(names(grid).includes("fillRect"));
+  // Stopped, nothing is copied.
+  evaluate("view.playing = false; paint(); paint()");
+  assert.equal(evaluate("staticLayers"), null);
+});
+
+test("the waveform builds each band colour once and reuses it", async () => {
+  const source = await readFile(new URL("../ui/src/editor/canvas.js", import.meta.url), "utf8");
+  assert.match(source, /waveColours\[index\] \?\?= blendWaveColour/);
 });

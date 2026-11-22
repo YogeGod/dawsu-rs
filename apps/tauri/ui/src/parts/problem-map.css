@@ -22,14 +22,6 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.pm-sum {
-  flex: none;
-  color: var(--editor-muted);
-  white-space: nowrap;
-}
-.pm .pm-off {
-  color: var(--editor-disabled);
-}
 .pm-strip {
   position: relative;
   height: 34px;

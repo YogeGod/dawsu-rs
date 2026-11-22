@@ -4,6 +4,7 @@
     "drum"
   ],
   "permissions": [
+    "core:event:default",
     "allow-drum-context",
     "allow-drum-detect-start",
     "allow-drum-review",

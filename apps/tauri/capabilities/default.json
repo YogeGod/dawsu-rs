@@ -36,6 +36,14 @@
     "allow-drum-map-action",
     "allow-open-editor-folder",
     "allow-close-editor",
-    "allow-skin-textures"
+    "allow-skin-textures",
+    "allow-pick-midi-file",
+    "allow-inspect-midi-file",
+    "allow-apply-midi-import",
+    "allow-export-midi-file",
+    "allow-midi-input-ports",
+    "allow-midi-record-toggle",
+    "allow-vst3-scan",
+    "allow-keysounds-action"
   ]
 }

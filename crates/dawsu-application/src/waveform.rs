@@ -18,7 +18,7 @@ const MAX_BINS: usize = 12_000;
 const KERNEL_WIDTH_FACTOR: usize = 3;
 
 /// In-place radix-2 Cooley-Tukey forward FFT on a power-of-two buffer of `(re, im)` pairs.
-fn fft_radix2_inplace(buf: &mut [(f32, f32)]) {
+pub(crate) fn fft_radix2_inplace(buf: &mut [(f32, f32)]) {
     let n = buf.len();
     debug_assert!(n.is_power_of_two());
     let mut j = 0usize;

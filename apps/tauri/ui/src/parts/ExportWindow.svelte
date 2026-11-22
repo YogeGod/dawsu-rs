@@ -1,9 +1,11 @@
 <script>
   import { onDestroy, onMount } from "svelte";
   import { invoke } from "../lib/ipc.js";
+  import { forwardSpace } from "../lib/space.js";
   import {
     adoptChoices, afterPoll, baseName, baseStatus, blockDrops, choicesFrom, difficultyName, exportLabel, exportState, fileName,
-    laneSwatches, matchWithinValid, optionsKey, ownWriteError, pollDelay, previewRequest, statusLine, targetCounts,
+    laneSwatches, matchWithinValid, openWarnings, optionsKey, ownWriteError, pollDelay, previewRequest, statusLine, targetCounts,
+    warningsLabel,
   } from "../lib/export.js";
 
   // The editor's answer to export_view, replaced whole on every poll. A test may pass one in.
@@ -20,6 +22,8 @@
   let run = $state.raw(null);
   // The id of this window's last write, so only its own result shows.
   let lastRun = $state(null);
+  // The footer's "N warnings", opened into the list of them.
+  let showWarnings = $state(false);
   let adoptedFor = initialView?.source?.path;
   let pollTimer;
   let previewTimer = null;
@@ -36,6 +40,7 @@
     view, pollError, actionError, writeError: ownWriteError(lastRun, view),
     stale: status.stale, running: !!run, problems,
   }));
+  const warnings = $derived(openWarnings(showWarnings, line, problems));
 
   function schedulePoll() {
     clearTimeout(pollTimer);
@@ -136,6 +141,8 @@
     release?.();
   });
 </script>
+
+<svelte:window onkeydown={forwardSpace} />
 
 <div class="export">
   <div class="routing">
@@ -250,7 +257,10 @@
   <footer class="actions">
     <div class="status" role="status">
       {#if line}
-        {#if line.count}<span class="warnings">{line.count} {line.count === 1 ? "warning" : "warnings"}</span>{/if}
+        {#if line.count}
+          <button type="button" class="warnings" aria-expanded={showWarnings} aria-controls="export-warnings"
+            onclick={() => (showWarnings = !showWarnings)}>{warningsLabel(line.count)}</button>
+        {/if}
         <span class="first" class:error={line.tone === "error"} role={line.tone === "error" ? "alert" : null}>{line.text}</span>
         {#if line.again}
           <button type="button" class="link" onclick={preview}>{line.tone === "stale" ? "Refresh" : "Preview again"}</button>
@@ -258,6 +268,11 @@
       {/if}
       <button type="button" class="link" onclick={showInEditor}>Show in editor</button>
     </div>
+    {#if warnings.length}
+      <ul class="warning-list" id="export-warnings" aria-label="Warnings">
+        {#each warnings as message, index (index)}<li>{message}</li>{/each}
+      </ul>
+    {/if}
     <button type="button" class="secondary" onclick={close}>Cancel</button>
     <button type="button" class="primary" disabled={!status.canExport || !!run} onclick={exportNow}>{exportLabel(status.count)}</button>
   </footer>
@@ -449,6 +464,7 @@
   .write-card p { margin: 4px 0 0; color: var(--editor-muted); }
 
   .actions {
+    position: relative;
     grid-column: 1 / -1;
     display: flex;
     align-items: center;
@@ -462,10 +478,29 @@
   .status .first { min-width: 0; }
   .warnings {
     padding: 4px 10px;
+    border: 0;
     border-radius: 6px;
     background: rgba(239, 193, 106, .12);
     color: var(--editor-warning);
+    font: inherit;
+    white-space: nowrap;
+    cursor: pointer;
   }
+  .warning-list {
+    position: absolute;
+    left: 40px;
+    bottom: calc(100% + 8px);
+    width: min(560px, calc(100% - 80px));
+    max-height: 240px;
+    margin: 0;
+    padding: 8px 12px 8px 28px;
+    overflow: auto;
+    border-radius: 8px;
+    background: var(--editor-panel);
+    box-shadow: inset 0 0 0 1px var(--editor-border), var(--shadow-card);
+    color: var(--editor-text);
+  }
+  .warning-list li + li { margin-top: 4px; }
   .error { color: var(--editor-error); }
   .link {
     padding: 0;

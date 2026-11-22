@@ -82,10 +82,12 @@ export const snapColours = {
 
 // v3 §5 (Yoge): editor grid lines stay neutral; only the ruler shows the snap colours.
 // Sub-beats follow the snap divisor. They draw above the lane tint and below the hits.
+// Neutral grid (osu! snap colours stay on the ruler), a step brighter than tokens.css's
+// --grid-sub/-beat/-bar so sub-beats still read on the darker arrange rows.
 export const gridLines = {
-  sub: "rgba(255,255,255,.025)",
-  beat: "rgba(255,255,255,.045)",
-  bar: "rgba(255,255,255,.22)",
+  sub: "rgba(255,255,255,.04)",
+  beat: "rgba(255,255,255,.07)",
+  bar: "rgba(255,255,255,.26)",
 };
 
 // v3 §5: a snap tick's height on the ruler by its reduced divisor (1/5, 1/7, 1/9 take the smallest).

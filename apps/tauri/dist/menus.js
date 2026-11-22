@@ -35,6 +35,7 @@ const menuRules = {
   laneLayer: laneAllowed(lane => lane.canAddLayer),
   laneDelete: laneAllowed(lane => lane.canDelete),
   waveform: () => $("ruler-waveform").getAttribute("aria-pressed") === "true",
+  soundFirst: () => $("ruler-sound-first").getAttribute("aria-pressed") === "true",
   usedOnly: () => !!$("used-only").checked,
   mapPreview: () => !!window.dawsuUi?.mapPreviewOn?.(),
   tool: (_, item) => view.tool === item.run[1],
@@ -60,6 +61,14 @@ const menuChoiceSources = {
   exportStyle: { list: () => [["objects", "Per-object"]], current: () => "objects", choose: () => {} },
 };
 
+// File › Export MIDI…: Rust asks where to save and writes the open difficulty's hits as a .mid.
+function exportMidi() {
+  return invoke("export_midi_file").then(written => {
+    if (written == null) return;
+    window.showToast?.({ tone: "success", title: "MIDI exported", body: `Wrote ${written} note${written === 1 ? "" : "s"}.` });
+  }).catch(error => { $("status").textContent = String(error); });
+}
+
 // What ["call", name] rows run.
 const menuCalls = {
   placeSoundSet: () => placeSoundSet(),
@@ -75,9 +84,13 @@ const menuCalls = {
   openFolders: () => openFolders(),
   openViewSettings: () => openViewSettings(),
   openPreferences: () => openPreferences(),
+  openMidiImport: () => globalThis.openMidiImport?.(),
+  exportMidi: () => exportMidi(),
+  openKeysounds: () => globalThis.openKeysounds?.(),
   showHelp: () => run(showHelp),
   deleteActiveLane: () => deleteActiveLane(),
   toggleMapPreview: () => window.dawsuUi?.toggleMapPreview?.(),
+  openQuickStart: () => window.dawsuUi?.openQuickStart?.(),
 };
 
 const menuField = path => path.split(".").reduce((value, key) => value?.[key], { view, scene });

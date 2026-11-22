@@ -216,8 +216,11 @@ async function launch(map) {
     page.on("pageerror", error => errors.push({ step: current, text: `${where()}: page error: ${error.message}${origin(error) ? ` (${origin(error)})` : ""}` }));
   };
   context.on("page", listen);
-  await context.addInitScript(() => window.addEventListener("unhandledrejection", event =>
-    console.error("unhandled promise rejection: " + (event.reason?.stack ?? event.reason))));
+  await context.addInitScript(() => {
+    try { localStorage.setItem("dawsu.quickStartDone", "1"); } catch {}
+    window.addEventListener("unhandledrejection", event =>
+      console.error("unhandled promise rejection: " + (event.reason?.stack ?? event.reason)));
+  });
   let page = null;
   for (let i = 0; i < 40 && !page; i++) {
     page = context.pages()[0] ?? null;
@@ -724,7 +727,7 @@ try {
   await step("Open and close the map preview window", async () => {
     // The preview sits in the Inspector: show it first if a step before folded it.
     if (await read(() => document.getElementById("view-inspector").getAttribute("aria-pressed") !== "true")) await page().click("#view-inspector");
-    await fromMenu("View", "Map preview");
+    if (await read(() => !window.dawsuUi?.mapPreviewOn?.())) await fromMenu("View", "Map preview");
     const popOut = page().getByRole("button", { name: "Open in its own window" });
     await popOut.waitFor({ timeout: 5000 });
     await popOut.click();

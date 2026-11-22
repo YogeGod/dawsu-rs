@@ -53,7 +53,7 @@ test("main may call every command its scripts and parts call, and opens Export",
 test("the node graph window may call only the node graph commands", () => {
   const ng = capability("node-graph");
   assert.deepEqual(ng.windows, ["node-graph"]);
-  assert.deepEqual([...ng.permissions].sort(), nodeGraphCommands.map(permission).sort());
+  assert.deepEqual([...ng.permissions].sort(), ["core:event:default", ...nodeGraphCommands.map(permission)].sort());
   const page = invoked(nodeGraphPage.map(name => ({ name, text: read(name) })));
   assert.deepEqual([...page].sort(), [...nodeGraphCommands].sort(), "the page calls each command it may call");
 });
@@ -61,8 +61,8 @@ test("the node graph window may call only the node graph commands", () => {
 test("the drum detection window may call only the drum commands", () => {
   const drum = capability("drum");
   assert.deepEqual(drum.windows, ["drum"]);
-  // The page neither listens for nor emits events, so it gets no event permission either.
-  assert.deepEqual(drum.permissions, drumCommands.map(permission));
+  // It emits "preview-space" to main for Spacebar playback, plus its own drum commands.
+  assert.deepEqual(drum.permissions, ["core:event:default", ...drumCommands.map(permission)]);
   const page = invoked(drumPage.map(name => ({ name, text: read(name) })));
   assert.deepEqual([...page].sort(), [...drumCommands].sort(), "the page calls each command it may call");
 });
@@ -70,8 +70,8 @@ test("the drum detection window may call only the drum commands", () => {
 test("the Export window may call only the export commands", () => {
   const exported = capability("export");
   assert.deepEqual(exported.windows, ["export"]);
-  // The page neither listens for nor emits events, so it gets no event permission either.
-  assert.deepEqual(exported.permissions, exportCommands.map(permission));
+  // It emits "preview-space" to main for Spacebar playback, plus its own export commands.
+  assert.deepEqual(exported.permissions, ["core:event:default", ...exportCommands.map(permission)]);
   const page = invoked(exportPage.map(name => ({ name, text: read(name) })));
   assert.deepEqual([...page].filter(command => !exportCommands.includes(command)), []);
 });

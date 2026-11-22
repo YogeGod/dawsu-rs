@@ -21,7 +21,7 @@ import { attachTimeline } from "./timeline.js";
 
 const mutableStateFields = [
   "view", "scene", "drag", "rulerDrag", "overviewDrag", "overviewTarget", "overviewNavigation",
-  "waveformHeight", "visibleWaveformHeight", "waveformShown", "waveformDrag", "markedRange",
+  "waveformHeight", "visibleWaveformHeight", "waveformShown", "soundFirst", "waveformDrag", "markedRange",
   "browserMap", "browserFolder", "browserSample", "browserSource", "browserLibrary",
   "browserLibraryFolders", "browserScene", "browserState", "browserFilter", "browserPreview",
   "browserModel", "browserTree", "usedLaneKeys", "laneFilterText", "showLaneInfo", "laneRows", "lanePositions",
@@ -29,7 +29,7 @@ const mutableStateFields = [
   "familyLayers", "laneRemoving", "previewParents", "orderedLaneKeys", "sampleFolderOrder",
   "layoutWrites", "mixerStrips", "mixerKey", "laneHeaders", "bookmarkPick", "selectedHitsScene",
   "selectedHits", "inspectorState", "problemStripKept", "sectionBarCache", "sliderEndCache",
-  "overviewBinCache", "skinTextures", "cursorSurface", "cursorAltDraw", "hoveredHit", "lastHover", "rulerPointer",
+  "overviewBinCache", "staticLayers", "layerCopies", "lastLayerKey", "skinTextures", "cursorSurface", "cursorAltDraw", "hoveredHit", "lastHover", "rulerPointer",
   "modalKind", "modalClose", "outputProblemIndex", "outputProblemList", "rulerWarningMarkers",
   "pending", "requests", "refreshing", "lastRefresh", "frame",
   "playbackFrame", "playheadAnchor", "centreSentStart", "followQueued", "quitAfterSave",
@@ -51,7 +51,7 @@ const exportedMethods = [
   "refreshLanePresentation", "groupedLaneRows", "renderLanes", "currentMixer",
   "mixerModel", "currentLaneHeaders", "laneHeaderModel", "laneHeaderAction",
   "mixSelectedLanes", "volumeScopeHint", "updateVolumeScope", "selectVolumeLane",
-  "requestDrumMap", "setDrumView", "openDrumMapSetup", "deletableLane", "openAddLane", "deleteActiveLane",
+  "requestDrumMap", "setDrumView", "drumMapAction", "openDrumMapSetup", "deletableLane", "openAddLane", "deleteActiveLane",
   "laneTint", "setLaneHeight",
   "followBookmarkPick", "selectedBookmark", "renderActiveLane", "selectedHitDetails",
   "renderSelection", "handOverInspector", "inspectorLaneNames", "currentInspector",
@@ -63,7 +63,7 @@ const exportedMethods = [
   "anchorPlayhead", "playheadPosition", "animatePlayback",
   "fillHitDiamond", "strokeHitDiamond", "comboOf", "roundedTrack", "nodeRadii",
   "drawGameplay", "overviewBins", "diamond", "drawOverview", "drawLocatorFlags",
-  "drawBookmarks", "paint",
+  "drawBookmarks", "paint", "paintFrame",
   "renderScene", "pointer", "revealLayerPreview", "scrollGrab", "refreshToolCursor",
   "updateCursorModifiers", "handOverHitCard", "hitObjectName", "refreshHitCard",
   "hitCardAt", "refreshWaveformSwitch", "setWaveformHeight", "finishWaveformDrag",
@@ -255,6 +255,11 @@ export function createEditor(env = globalThis, { ui = null, autoStart = true, ex
     $("difficulty").value = state.scene.path;
     ctx.openSiblingDifficulty(path);
   });
+  // Save writes at once through the editor's save command, as Ctrl+S does, instead of review_save's
+  // file-by-file review first. Moments Save can't write still stop it with the Save hitsounds summary.
+  $("save").addEventListener("click", () => {
+    if (state.scene && !state.view.busy) ctx.command("save");
+  });
   // The Export window opens beside the editor. Generate, Copy and Merge settings stay until it replaces them.
   $("export-entry").addEventListener("click", () => {
     invoke("open_export_window").catch((error) => { ctx.setStatusNotice(String(error)); });
@@ -262,10 +267,29 @@ export function createEditor(env = globalThis, { ui = null, autoStart = true, ex
   $("song-mute").addEventListener("click", () => ctx.act({ kind: "song_muted", on: !state.view.songMuted }, false));
   $("song-solo").addEventListener("click", () => ctx.act({ kind: "song_solo", on: !state.view.songSolo }, false));
 
+  // A select, checkbox or slider keeps focus after a click, and the keyboard handler below ignores
+  // keys aimed at it: let go of it once used, so Space and Ctrl+Z reach the timeline again.
+  // Dialogs and Preferences keep their focus for keyboard users.
+  const releasable = "select, input[type=checkbox], input[type=range]";
+  const releaseControl = (event) => {
+    const control = event.target?.closest?.(releasable);
+    if (!control || control.closest("dialog, [role=dialog]")) return;
+    // A select lets go once picked (its pointerup opens its list), a slider once let go of (a change
+    // also comes from each arrow key), a checkbox either way (a click on its label sends no pointerup to it).
+    const kind = control.tagName === "SELECT" ? "select" : control.type;
+    if (event.type === "change" ? kind === "range" : kind === "select") return;
+    control.blur?.();
+  };
+  env.document.addEventListener("change", releaseControl);
+  env.document.addEventListener("pointerup", releaseControl);
+
   // Global keyboard handler.
   env.document.addEventListener("keydown", (event) => {
     if (event.defaultPrevented || event.repeat || event.isComposing || elements.dialog.open ||
         event.target.closest("input, select, textarea, [contenteditable]")) return;
+    // An open menu, Preferences or a Svelte modal (MIDI import, Keysounds) owns the keyboard:
+    // no timeline shortcut runs behind it.
+    if ($("editor-menu")?.hidden === false || env.window.dawsuPreferencesOpen || env.window.dawsuModalOpen) return;
     const { key, code, ctrl, shift, alt } = keyInput(event);
     if (state.rulerDrag) {
       if (key === "Escape" && !ctrl && !shift && !alt) {
@@ -340,6 +364,13 @@ export function createEditor(env = globalThis, { ui = null, autoStart = true, ex
   env.window.__TAURI__.event.listen("node-graph-viewer", ({ payload }) => {
     ctx.ui()?.setNodeGraphViewer?.(payload ?? null);
     ctx.paintSoon();
+  });
+
+  // Space in the map preview window plays and stops here, through the same key route as the editor's own.
+  env.window.__TAURI__.event.listen("preview-space", () => {
+    if (!state.scene || state.view.busy || elements.dialog.open || $("editor-menu")?.hidden === false ||
+        env.window.dawsuPreferencesOpen || env.window.dawsuModalOpen) return;
+    ctx.act({ kind: "key", key: " ", code: "Space", ctrl: false, shift: false, alt: false });
   });
 
   env.window.__TAURI__.event.listen("node-graph-applied", () => {

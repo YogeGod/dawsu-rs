@@ -397,7 +397,15 @@ pub fn catalogue() -> CommandCatalog<Application> {
         &kernel::zoom_in(),
         areas::HS_TIMELINE,
         |a| {
+            let old_zoom = a.zoom;
             a.zoom = (a.zoom * 1.3).min(3.0);
+            if let Some(d) = a.document() {
+                let view_start = d.composer.view_start;
+                let pos = a.position_ms();
+                if pos >= view_start {
+                    a.set_view_start((pos - (pos - view_start) * (old_zoom / a.zoom)).max(0.0));
+                }
+            }
             Ok(())
         },
         None,
@@ -406,7 +414,15 @@ pub fn catalogue() -> CommandCatalog<Application> {
         &kernel::zoom_out(),
         areas::HS_TIMELINE,
         |a| {
+            let old_zoom = a.zoom;
             a.zoom = (a.zoom / 1.3).max(crate::MIN_ZOOM);
+            if let Some(d) = a.document() {
+                let view_start = d.composer.view_start;
+                let pos = a.position_ms();
+                if pos >= view_start {
+                    a.set_view_start((pos - (pos - view_start) * (old_zoom / a.zoom)).max(0.0));
+                }
+            }
             Ok(())
         },
         None,

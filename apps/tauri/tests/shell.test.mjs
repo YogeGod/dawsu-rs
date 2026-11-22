@@ -35,7 +35,9 @@ test("the top bar reads brand, menus, transport, Export, Save, then the three pa
   // v3 2.1: an accent diamond, not the old image logo.
   assert.match(header, /class="brand"><span class="brand-diamond" aria-hidden="true"><\/span>dawsu!<\/strong>/);
   assert.doesNotMatch(header, /id="title"|id="layout-edit-entry"/);
-  assert.match(header, /id="save"[^>]*data-action="review_save"/);
+  // Save sends the save command, as Ctrl+S does (boot.js), not review_save's file-by-file review.
+  assert.match(header, /id="save"/);
+  assert.doesNotMatch(header, /data-action="review_save"/);
 });
 
 test("row 2 holds the map chip, Hitsounds/Drums, tools, Audition, Playhead and Snap, in that order", () => {

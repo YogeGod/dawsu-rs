@@ -527,10 +527,15 @@ impl<I: Clone + Eq + Hash> ToolBox<I> {
             }
             Stroke::Paint { row, last_time } => {
                 for at in target.snap_steps(*last_time, e.time) {
-                    let mut probe = e;
-                    probe.time = at;
-                    probe.row = *row;
-                    if target.hit_test(&probe).is_none() {
+                    if target
+                        .in_range(
+                            SongTime::from_ms(at.ms() - 0.5),
+                            SongTime::from_ms(at.ms() + 0.5),
+                            *row,
+                            *row,
+                        )
+                        .is_empty()
+                    {
                         target.insert(at, *row);
                     }
                     *last_time = at;

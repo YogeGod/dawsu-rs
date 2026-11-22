@@ -192,6 +192,11 @@ export function statusLine({ view, pollError, actionError, writeError, stale, ru
   return null;
 }
 
+// The footer's "N warnings" button and the list it opens: the messages while open, none while
+// closed or once no warning is left.
+export const warningsLabel = count => count + (count === 1 ? " warning" : " warnings");
+export const openWarnings = (open, line, problems) => (open && line?.count ? problems.map(problem => problem.message) : []);
+
 // This window's own failed write, once its last run's result is in.
 export const ownWriteError = (lastRun, view) =>
   lastRun !== null && lastRun !== undefined && view?.writeId === lastRun && !view.writing ? view.writeError ?? null : null;
