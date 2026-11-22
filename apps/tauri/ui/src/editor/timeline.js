@@ -897,7 +897,7 @@ export function attachTimeline(ctx) {
   }
 
   Object.assign(ctx, {
-    renderScene, pointer, revealLayerPreview, scrollGrab, refreshToolCursor,
+    renderScene, pointer, pointerIn, revealLayerPreview, scrollGrab, refreshToolCursor,
     updateCursorModifiers, handOverHitCard, hitObjectName, refreshHitCard,
     hitCardAt, refreshWaveformSwitch, setWaveformHeight, finishWaveformDrag,
     refreshRulerCursor, trackRulerPointer, refreshRulerWarningTooltip,

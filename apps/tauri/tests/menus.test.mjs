@@ -299,13 +299,13 @@ test("each menu groups the editor's existing commands like the design, with no s
   const open = name => { get("menu-" + name).click(); return menuLabels(popup); };
   assert.deepEqual(open("file"), [
     "Open map…", "Import .osz…", "Import MIDI…", "Open map folder", "—",
-    "Save", "Revert to saved…", "Export…", "Export MIDI…", "—",
+    "Save", "Revert to saved…", "Revert mapset to original…", "Export…", "Export MIDI…", "—",
     "Start screen", "Folders…", "—", "Preferences…",
   ]);
   assert.deepEqual(open("edit"), [
     "Undo", "Redo", "—",
     "Cut", "Copy", "Paste at playhead", "Duplicate", "Delete", "Select all", "—",
-    "Quantize…", "Repeat…", "Edit range…", "Scale by volume…", "Place sound set…", "Save selection as sound set…",
+    "Quantize…", "Repeat…", "Pattern stamp…", "Edit range…", "Scale by volume…", "Place sound set…", "Save selection as sound set…",
     "Sound set placement…", "—",
     "Protect hitnormals from deletion", "Audition when placing hits",
   ]);
@@ -761,6 +761,62 @@ test("Cycle between L and R and Add numbered layer show their keys and still act
   layer.click();
   await settle();
   assert.deepEqual(calls.slice(-2), [{ kind: "lane", row: 1, operation: "activate" }, { kind: "lane", row: 1, operation: "add_layer" }]);
+});
+
+test("the lane menu clones a numbered variant and alternates two or more selected hits with the next lane", async () => {
+  const { get, calls, scene, view, context } = fixture();
+  const popup = get("editor-menu"), lanes = get("lanes");
+  const openOn = async (row) => {
+    const name = get("lane-name-" + row);
+    name.dataset = { laneRow: String(row) };
+    name.closest = () => name;
+    lanes.events.get("contextmenu")({ target: name, clientX: 10, clientY: 10, preventDefault() {} });
+    await settle();
+    return label => menuButtons(popup).find(button => button.textContent === label)
+      ?? popup.children.find(button => button.textContent === label);
+  };
+  let row = await openOn(1);
+  assert.equal(row("Clone as next numbered variant").disabled, false);
+  assert.equal(row("Alternate selected hits with next lane").disabled, true, "the last lane has no next lane");
+  row("Clone as next numbered variant").click();
+  await settle();
+  assert.deepEqual(calls.slice(-2), [{ kind: "lane", row: 1, operation: "activate" }, { kind: "clone_sample_variant", lane: 1 }]);
+
+  context.closeEditorMenu?.();
+  scene.lanes[0].canReplace = true;
+  view.laneCount = 2;
+  row = await openOn(0);
+  assert.equal(row("Alternate selected hits with next lane").disabled, true, "one selected hit is not enough");
+  scene.selection = { count: 2 };
+  context.refreshEditorMenu();
+  assert.equal(row("Alternate selected hits with next lane").disabled, false);
+  row("Alternate selected hits with next lane").click();
+  await settle();
+  assert.deepEqual(calls.slice(-2), [{ kind: "lane", row: 0, operation: "activate" },
+    { kind: "alternate_variants", from_lane: 0, to_lane: 1 }]);
+});
+
+test("File › Revert mapset to original… opens only with a first-open copy of the mapset", async () => {
+  const { get, calls, view, context } = fixture();
+  const popup = get("editor-menu");
+  const revert = () => menuButtons(popup).find(button => button.textContent === "Revert mapset to original…")
+    ?? popup.children.find(button => button.textContent === "Revert mapset to original…");
+  let asked = 0;
+  context.confirmRevertToOriginal = () => { asked += 1; };
+  view.hasDocument = true;
+  get("menu-file").click();
+  assert.equal(revert().disabled, true, "no snapshot yet");
+  view.hasOriginalSnapshot = true;
+  view.hasDocument = false;
+  context.refreshEditorMenu();
+  assert.equal(revert().disabled, true, "no difficulty open");
+  view.hasDocument = true;
+  context.refreshEditorMenu();
+  assert.equal(revert().disabled, false);
+  revert().click();
+  assert.equal(asked, 1);
+  assert.equal(calls.some(call => Array.isArray(call) && call[0] === "revert_mapset_to_original"), false,
+    "the menu row only asks; the dialog's Revert button invokes");
 });
 
 test("every rule, call, choice source and run kind the command list names exists in menus.js", () => {

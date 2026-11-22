@@ -36,3 +36,18 @@ export function outlineBars(peaks) {
     return { x: index + 0.15, y: Math.round((1 - height) / 2 * 1000) / 1000, width: 0.7, height };
   });
 }
+
+// A Browser sample dragged onto a lane row. The drag carries only the sample's path under this type;
+// the editor keeps where it came from (Mapset or Library, and the library folder) from dragstart.
+export const sampleDragType = "application/x-dawsu-sample";
+
+// What dropping `drag` ({ path, source, root }) on `lane` (a scene lane, or null) of `map` sends:
+// that lane's sample becomes the dropped one, as the Browser's Use does for the active lane.
+export function sampleDropAction(drag, map, lane) {
+  if (!drag?.path || !map || !lane?.canReplace) return null;
+  const target = { map, lane: lane.sourceKey };
+  if (drag.source === "library") {
+    return drag.root ? { kind: "replace_library_sample", target, location: { root: drag.root, path: drag.path } } : null;
+  }
+  return { kind: "replace_sample", target, path: drag.path, mapset: true };
+}

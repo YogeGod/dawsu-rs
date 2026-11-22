@@ -7,6 +7,7 @@
     laneSwatches, matchWithinValid, openWarnings, optionsKey, ownWriteError, pollDelay, previewRequest, statusLine, targetCounts,
     warningsLabel,
   } from "../lib/export.js";
+  import { reviewMixSections } from "../lib/review.js";
 
   // The editor's answer to export_view, replaced whole on every poll. A test may pass one in.
   let { initialView = null } = $props();
@@ -36,6 +37,8 @@
   const problems = $derived(status.preview ? view?.problems ?? [] : []);
   const matchValid = $derived(matchWithinValid(choices.matchWithin));
   const baseText = $derived(baseStatus(status.preview));
+  // Which .wav files the export creates or reuses, and how volumes are written.
+  const mixInfo = $derived(reviewMixSections(status.preview));
   const line = $derived(statusLine({
     view, pollError, actionError, writeError: ownWriteError(lastRun, view),
     stale: status.stale, running: !!run, problems,
@@ -252,6 +255,18 @@
       <strong>Into the mapset</strong>
       <p>Updates every included difficulty in place. Each changed file is backed up first.</p>
     </div>
+    {#if mixInfo.sections.length || mixInfo.volumes.length}
+      <div class="write-details" aria-label="Sample files and volumes">
+        {#each mixInfo.sections as section (section.title)}
+          <strong>{section.title}</strong>
+          <ul>{#each section.rows as row (row.path)}<li title={row.path}>{fileName(row.path)}</li>{/each}</ul>
+        {/each}
+        {#if mixInfo.volumes.length}
+          <strong>Volumes</strong>
+          {#each mixInfo.volumes as message, index (index)}<p>{message}</p>{/each}
+        {/if}
+      </div>
+    {/if}
   </aside>
 
   <footer class="actions">
@@ -462,6 +477,10 @@
     box-shadow: inset 0 0 0 1px var(--editor-accent);
   }
   .write-card p { margin: 4px 0 0; color: var(--editor-muted); }
+  .write-details { margin-top: 12px; padding: 0 4px; }
+  .write-details strong { display: block; margin-top: 10px; }
+  .write-details ul { margin: 4px 0 0; padding-left: 18px; color: var(--editor-muted); }
+  .write-details p { margin: 4px 0 0; color: var(--editor-muted); }
 
   .actions {
     position: relative;

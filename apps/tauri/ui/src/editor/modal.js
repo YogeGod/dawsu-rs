@@ -1,6 +1,7 @@
 // Shared modal dialog frame and backend-driven dialogs (Save review, Save problems,
 // Output review, Pending open/home, Revert, Key preset, Error, Sound-set prompts).
 import { describeOutputProblem, nameOf, outputProblemTime } from "./helpers.js";
+import { reviewMixSections } from "../lib/review.js";
 
 export function attachModal(ctx) {
   const { env, state, dom, elements } = ctx;
@@ -133,17 +134,22 @@ export function attachModal(ctx) {
         paragraph(file.changed + " objects changed · " + file.added + " added · " + file.removed +
           " removed · " + file.timing + " timing lines affected"),
       ]);
-      const details = state.view.review.details.map(paragraph);
-      const mixes = (state.view.review.mixes ?? []).map((path, index) => {
+      const { sections: mixGroups, volumes, details: otherDetails } = reviewMixSections(state.view.review);
+      const details = otherDetails.map(paragraph);
+      const heading3 = (text) => {
+        const node = env.document.createElement("h3");
+        node.textContent = text;
+        return node;
+      };
+      // Audition takes the mix's place in `mixes`, so each row keeps that index after grouping.
+      const mixSection = mixGroups.flatMap(({ title, rows }) => [heading3(title), ...rows.map(({ path, index }) => {
         const row = env.document.createElement("div");
         row.className = "row";
         const label = paragraph(path);
         row.append(label, makeButton("Audition mix", () => ctx.act({ kind: "audition_output_mix", index }, false)));
         return row;
-      });
-      const mixHeading = env.document.createElement("h3");
-      mixHeading.textContent = "Sample mixes";
-      const mixSection = mixes.length ? [mixHeading, ...mixes] : [];
+      })]);
+      const volumeSection = volumes.length ? [heading3("Volumes"), ...volumes.map(paragraph)] : [];
       const combinations = state.view.review.combinations ?? [];
       const includeSliderAudio = Boolean(state.view.review.includeSliderAudio);
       const choices = combinations.length ? [["Edit merge rules…", () => {
@@ -154,7 +160,7 @@ export function attachModal(ctx) {
         });
       }]] : [];
       const source = state.scene ? [paragraph("Editing " + nameOf(state.scene.path))] : [];
-      ctx.modal("review", state.view.review.label, [...source, heading, ...files, ...mixSection, ...details],
+      ctx.modal("review", state.view.review.label, [...source, heading, ...files, ...mixSection, ...volumeSection, ...details],
         [["Cancel", () => answer(false)], ...choices, ["Write files", () => answer(true), true]], () => answer(false));
     } else if (state.view.editDialog && state.scene) {
       ctx.showTimelineEdit(state.view.editDialog);

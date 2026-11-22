@@ -220,6 +220,12 @@ pub fn catalogue() -> CommandCatalog<Application> {
         Some(can_edit_selection),
     );
     registry.bind(
+        &CommandDefinition::new("patternStamp", "Stamp selected pattern across beats or objects"),
+        areas::HS_HIT_EDITING,
+        |app| request_edit(app, "pattern_stamp"),
+        Some(can_edit_selection),
+    );
+    registry.bind(
         &CommandDefinition::new("editRange", "Copy, move or delete hits in the marked range"),
         areas::HS_HIT_EDITING,
         |app| request_edit(app, "range"),

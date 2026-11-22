@@ -369,3 +369,66 @@ test("a very long sample list stops at 500 rows and asks for a search", async ()
   action("filter", "s599");
   assert.deepEqual(model().rows.map(row => row.label), ["s599.wav"]);
 });
+
+test("a sample dragged from the Browser onto a lane row replaces that lane's sample", async () => {
+  const { context, calls, get, action, settle } = await browserPage();
+  const marks = [];
+  const classList = name => ({ toggle() {}, add: cls => marks.push([name, "+", cls]), remove: cls => marks.push([name, "-", cls]) });
+  get("grid").classList = classList("grid");
+  const header = { getAttribute: name => name === "data-lane-row" ? "0" : null, classList: classList("normal") };
+  get("lanes").querySelector = selector => selector === '.lane[data-lane-row="0"]' ? header : null;
+  get("lanes").contains = () => false;
+  runInContext("laneRows = [0, 1, 2]; lanePositions = new Map([[0, 0], [1, 1], [2, 2]]);", context);
+  const lanes = get("lanes").listeners;
+  const drag = path => ({
+    target: { closest: () => header },
+    dataTransfer: { types: ["application/x-dawsu-sample"], getData: () => path, dropEffect: "" },
+    prevented: false, preventDefault() { this.prevented = true; },
+  });
+
+  action("drag", "percussion/snare.wav");
+  const over = drag("percussion/snare.wav");
+  lanes.get("dragover")(over);
+  assert.equal(over.prevented, true, "the lane row accepts the drop");
+  assert.equal(over.dataTransfer.dropEffect, "copy");
+  assert.ok(marks.some(([name, op, cls]) => name === "normal" && op === "+" && cls === "sample-drop-target"));
+  const dropped = drag("percussion/snare.wav");
+  lanes.get("drop")(dropped);
+  await settle();
+  assert.equal(dropped.prevented, true);
+  // Rust replaces the active lane's sample, so the lane under the drop is activated first.
+  assert.deepEqual(calls.slice(-2), [{ kind: "lane", row: 0, operation: "activate" },
+    { kind: "replace_sample", target: { map: "copy.osu", lane: "normal" }, path: "percussion/snare.wav", mapset: true }]);
+  assert.ok(marks.at(-1)[1] === "-", "the highlight clears on drop");
+
+  // A lane whose sample can't change (no canReplace here: Snare) takes no drop.
+  header.getAttribute = name => name === "data-lane-row" ? "1" : null;
+  action("drag", "kick.wav");
+  const refused = drag("kick.wav");
+  lanes.get("dragover")(refused);
+  assert.equal(refused.prevented, false);
+  const asked = calls.length;
+  lanes.get("drop")(drag("kick.wav"));
+  await settle();
+  assert.equal(calls.length, asked);
+
+  // Over the timeline the row comes from the pointer's height: 10 px down a 20 px row is lane 0.
+  runInContext("scene.rowHeight = 20;", context);
+  get("grid").getBoundingClientRect = () => ({ left: 0, top: 0 });
+  get("scroll").scrollTop = 0;
+  const grid = get("grid").listeners;
+  action("drag", "kick.wav");
+  const overGrid = { ...drag("kick.wav"), clientX: 50, clientY: 10 };
+  grid.get("dragover")(overGrid);
+  assert.equal(overGrid.prevented, true);
+  assert.ok(marks.some(([name, op, cls]) => name === "grid" && op === "+" && cls === "sample-drop"));
+  grid.get("drop")({ ...drag("kick.wav"), clientX: 50, clientY: 10 });
+  await settle();
+  assert.deepEqual(calls.slice(-2), [{ kind: "lane", row: 0, operation: "activate" },
+    { kind: "replace_sample", target: { map: "copy.osu", lane: "normal" }, path: "kick.wav", mapset: true }]);
+  // Below the last lane there is no row to land on.
+  action("drag", "kick.wav");
+  const below = { ...drag("kick.wav"), clientX: 50, clientY: 70 };
+  grid.get("dragover")(below);
+  assert.equal(below.prevented, false);
+});

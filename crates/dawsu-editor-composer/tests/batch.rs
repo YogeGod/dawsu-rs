@@ -2,7 +2,10 @@
 //! come from `dawsu-graph-audio`'s classic fixture (`create.json`).
 
 use dawsu_editor::tempo::{TempoMap, TimingSection};
-use dawsu_editor_composer::{BatchHit, BatchOptions, BatchRefusal, Composer, Lands, Policy};
+use dawsu_editor_composer::{
+    BatchHit, BatchOptions, BatchRefusal, Composer, HitKey, Lands, PatternStampOptions, Policy,
+    quantize_stamp_volume,
+};
 use dawsu_foundation::{SampleIdentity, SongTime};
 use dawsu_graph_audio::classic::{grid_shift, on_grid};
 use dawsu_hitsounding::{Decompiled, Place, decompile};
@@ -318,4 +321,169 @@ fn applying_shows_a_hidden_target_lane() {
     c.history.apply("Hide", false, |h| { h.set_lane_hidden(&lane("kick"), true); Ok::<_, ()>(()) }).unwrap();
     c.add_batch("Drum hit detection", &[hit("kick", 1000.0, 1.0)], &BatchOptions::default()).unwrap();
     assert!(!c.hitsounds().is_lane_hidden(&lane("kick")));
+}
+
+// ---- Pattern stamp ----
+
+fn select_hits(c: &mut Composer, targets: &[(&str, f64)]) {
+    let keys: Vec<HitKey> = targets
+        .iter()
+        .map(|&(name, time)| {
+            let l = lane(name);
+            let moment = c
+                .hitsounds()
+                .moments()
+                .iter()
+                .position(|m| (m.time().ms() - time).abs() < 0.5 && m.has_hit(&l))
+                .expect("selected hit exists");
+            HitKey { moment, lane: l }
+        })
+        .collect();
+    c.selected.replace(keys);
+}
+
+#[test]
+fn pattern_stamp_repeats_two_lane_kick_snare_four_times_with_inferred_bar() {
+    // 120 BPM, 4/4 => bar length = 2000 ms.
+    let mut c = composer();
+    c.add(1000.0, lane("kick"), 80, 1.0);
+    c.add(1500.0, lane("snare"), 90, 1.0);
+    select_hits(&mut c, &[("kick", 1000.0), ("snare", 1500.0)]);
+    assert_eq!(c.pattern_stamp_step(), Some(2000.0));
+
+    let added = c.pattern_stamp(&PatternStampOptions {
+        repeat_count: 4,
+        step_ms: 0.0, // infer 1-bar = 2000 ms
+        snap_to_objects: false,
+        object_leniency_ms: 15.0,
+        quantize_volumes: false,
+        clear_existing: false,
+    });
+    assert_eq!(added, 8);
+    assert_eq!(
+        hits_on(&c, "kick").into_iter().map(|(t, _)| t).collect::<Vec<_>>(),
+        vec![1000.0, 3000.0, 5000.0, 7000.0, 9000.0]
+    );
+    assert_eq!(
+        hits_on(&c, "snare").into_iter().map(|(t, _)| t).collect::<Vec<_>>(),
+        vec![1500.0, 3500.0, 5500.0, 7500.0, 9500.0]
+    );
+    assert_eq!(c.selected.items().len(), 8);
+}
+
+#[test]
+fn pattern_stamp_snaps_to_objects_within_leniency_and_respects_toggle() {
+    // Object at 3010 ms is within 15 ms of 3000 ms; object at 5025 ms is outside 15 ms of 5000 ms.
+    let osu = "osu file format v14\n[General]\nSampleSet:Soft\nMode:0\n[Metadata]\nVersion:Test\n\
+        [TimingPoints]\n0,500,4,2,0,45,1,0\n\
+        [HitObjects]\n\
+        100,100,1000,1,0,0:0:0:0:\n\
+        100,100,3010,1,0,0:0:0:0:\n\
+        100,100,5025,1,0,0:0:0:0:\n";
+    let mut c = composer_for(osu);
+    c.add(1000.0, lane("kick"), 80, 1.0);
+    select_hits(&mut c, &[("kick", 1000.0)]);
+
+    let added = c.pattern_stamp(&PatternStampOptions {
+        repeat_count: 2,
+        step_ms: 2000.0,
+        snap_to_objects: true,
+        object_leniency_ms: 15.0,
+        quantize_volumes: false,
+        clear_existing: false,
+    });
+    assert_eq!(added, 2);
+    assert_eq!(
+        hits_on(&c, "kick"),
+        vec![(1000.0, true), (3010.0, true), (5000.0, false)]
+    );
+
+    // Undo and stamp with snap_to_objects = false: 3000 ms stays loose, does not snap to 3010 ms.
+    c.undo();
+    select_hits(&mut c, &[("kick", 1000.0)]);
+    let added = c.pattern_stamp(&PatternStampOptions {
+        repeat_count: 1,
+        step_ms: 2000.0,
+        snap_to_objects: false,
+        object_leniency_ms: 15.0,
+        quantize_volumes: false,
+        clear_existing: false,
+    });
+    assert_eq!(added, 1);
+    assert_eq!(hits_on(&c, "kick"), vec![(1000.0, true), (3000.0, false)]);
+}
+
+#[test]
+fn pattern_stamp_quantizes_volumes_to_three_clean_levels() {
+    assert_eq!(quantize_stamp_volume(20), 35);
+    assert_eq!(quantize_stamp_volume(52), 35);
+    assert_eq!(quantize_stamp_volume(53), 70);
+    assert_eq!(quantize_stamp_volume(85), 70);
+    assert_eq!(quantize_stamp_volume(86), 100);
+    assert_eq!(quantize_stamp_volume(100), 100);
+
+    let mut c = composer();
+    c.add(1000.0, lane("kick"), 22, 1.0);
+    c.add(1500.0, lane("snare"), 64, 1.0);
+    c.add(1750.0, lane("tom"), 92, 1.0);
+    // Existing object moments keep their timing-point volume (45%) on `add`, so set explicit per-hit volumes.
+    c.apply("Set volumes", |h| {
+        for (name, time, vol) in [("kick", 1000.0, 22), ("snare", 1500.0, 64), ("tom", 1750.0, 92)] {
+            let l = lane(name);
+            let id = h
+                .moments()
+                .iter()
+                .position(|m| (m.time().ms() - time).abs() < 0.5 && m.has_hit(&l))
+                .expect("hit exists");
+            h.set_hit_volume(dawsu_hitsounding::MomentId(id), &l, vol);
+        }
+    });
+    select_hits(&mut c, &[("kick", 1000.0), ("snare", 1500.0), ("tom", 1750.0)]);
+
+    let added = c.pattern_stamp(&PatternStampOptions {
+        repeat_count: 1,
+        step_ms: 2000.0,
+        snap_to_objects: false,
+        object_leniency_ms: 15.0,
+        quantize_volumes: true,
+        clear_existing: false,
+    });
+    assert_eq!(added, 3);
+
+    let volume_at = |name: &str, time: f64| {
+        let l = lane(name);
+        c.hitsounds()
+            .moments()
+            .iter()
+            .find(|m| (m.time().ms() - time).abs() < 0.5 && m.has_hit(&l))
+            .map(|m| m.hit_volume(&l))
+    };
+    assert_eq!(volume_at("kick", 3000.0), Some(35));
+    assert_eq!(volume_at("snare", 3500.0), Some(70));
+    assert_eq!(volume_at("tom", 3750.0), Some(100));
+}
+
+#[test]
+fn pattern_stamp_rolls_back_in_a_single_undo_step() {
+    let mut c = composer();
+    c.add(1000.0, lane("kick"), 80, 1.0);
+    c.add(1500.0, lane("snare"), 85, 1.0);
+    select_hits(&mut c, &[("kick", 1000.0), ("snare", 1500.0)]);
+    let steps_before = c.history.steps().len();
+
+    let added = c.pattern_stamp(&PatternStampOptions {
+        repeat_count: 3,
+        step_ms: 2000.0,
+        snap_to_objects: true,
+        object_leniency_ms: 15.0,
+        quantize_volumes: true,
+        clear_existing: false,
+    });
+    assert_eq!(added, 6);
+    assert_eq!(c.history.steps().len(), steps_before + 1);
+    assert_eq!(c.history.steps().last().copied(), Some("Pattern stamp"));
+
+    c.undo();
+    assert_eq!(hits_on(&c, "kick"), vec![(1000.0, true)]);
+    assert_eq!(hits_on(&c, "snare"), vec![(1500.0, true)]);
 }

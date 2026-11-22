@@ -147,3 +147,106 @@ test("editing a Generate merge rule discards the old review and stages a fresh o
   assert.equal(calls[3][1].action.map, map);
   assert.equal(calls[4][1].action.include_slider_audio, true);
 });
+
+test("review lists new and reused .wav files apart and says once how volumes are written", async () => {
+  const calls = [];
+  const makeElement = () => ({
+    events: new Map(), children: [], dataset: {},
+    addEventListener(name, callback) { this.events.set(name, callback); },
+    append(...children) { this.children.push(...children); },
+    prepend(child) { this.children.unshift(child); },
+  });
+  const element = makeElement();
+  const context = createContext({
+    document: { getElementById: () => element, createElement: makeElement, querySelectorAll: () => [], addEventListener() {} },
+    window: { __TAURI__: {
+      core: { invoke: async (name, args) => { calls.push({ name, args }); return { busy: false, hasDocument: false }; } },
+      event: { listen() {} },
+    } },
+    ResizeObserver: class { observe() {} },
+    setInterval() {},
+    requestAnimationFrame() {},
+  });
+  await bootEditor(context);
+  calls.length = 0;
+  const volume = "Per-object .osu volumes only: 3 object(s) updated, 0 new timing lines needed.";
+  const wavs = "Sample mixes: 1 new .wav created, 1 existing .wav reused.";
+  context.review = {
+    label: "Save hitsounds",
+    details: ["Check each difficulty before writing.", volume, wavs],
+    mixes: ["Mapset/soft-hitclap2.wav", "Mapset/normal-hitwhistle3.wav"],
+    createdMixes: ["Mapset/normal-hitwhistle3.wav"],
+    reusedMixes: ["Mapset/soft-hitclap2.wav"],
+    volumeSummary: [volume, wavs],
+    files: [{ path: "Hard.osu", replace: true, changed: 3, added: 0, removed: 0, timing: 0 }],
+  };
+  runInContext(`
+    modal = (kind, title, content, buttons) => {
+      globalThis.output = { kind, title, text: content.map(node => node.textContent).filter(Boolean), content, buttons };
+    };
+    closeModal = () => {};
+    scene = { path: "Mapset/Source.osu" };
+    view = { review };
+    renderDialogs();
+  `, context);
+  assert.deepEqual(Array.from(context.output.text), [
+    "Editing Source.osu",
+    "Files this action will write",
+    "Replace: Hard.osu",
+    "3 objects changed · 0 added · 0 removed · 0 timing lines affected",
+    "New .wav files dawsu! creates",
+    "Existing .wav files reused (left as they are)",
+    "Volumes", volume, wavs,
+    "Check each difficulty before writing.",
+  ]);
+  const rows = context.output.content.filter(node => node.className === "row");
+  assert.deepEqual(rows.map(row => row.children[0].textContent), ["Mapset/normal-hitwhistle3.wav", "Mapset/soft-hitclap2.wav"]);
+  rows[0].children[1].events.get("click")();
+  await runInContext("pending", context);
+  assert.equal(calls[0].args.action.kind, "audition_output_mix");
+  assert.equal(calls[0].args.action.index, 1, "Audition plays the mix by its place in mixes");
+});
+
+test("Revert mapset to original asks first, with Cancel as the default, then invokes the revert and refreshes", async () => {
+  const calls = [];
+  const makeElement = () => ({
+    events: new Map(), children: [], dataset: {},
+    addEventListener(name, callback) { this.events.set(name, callback); },
+    append(...children) { this.children.push(...children); },
+    prepend(child) { this.children.unshift(child); },
+  });
+  const element = makeElement();
+  const context = createContext({
+    document: { getElementById: () => element, createElement: makeElement, querySelectorAll: () => [], addEventListener() {} },
+    window: { __TAURI__: {
+      core: { invoke: async (name, args) => { calls.push({ name, args }); return name === "revert_mapset_to_original" ? 2 : { busy: false, hasDocument: false }; } },
+      event: { listen() {} },
+    } },
+    ResizeObserver: class { observe() {} },
+    setInterval() {},
+    requestAnimationFrame() {},
+  });
+  await bootEditor(context);
+  calls.length = 0;
+  runInContext(`
+    globalThis.opened = [];
+    modal = (kind, title, content, buttons) => { opened.push({ kind, title, text: content.map(node => node.textContent), buttons }); };
+    closeModal = () => {};
+    scene = { path: "Mapset/Hard.osu" };
+    view = { hasDocument: true, hasOriginalSnapshot: false, busy: false };
+    confirmRevertToOriginal();
+  `, context);
+  assert.equal(context.opened.length, 0, "no first-open copy, no dialog");
+  runInContext(`view = { hasDocument: true, hasOriginalSnapshot: true, busy: false }; confirmRevertToOriginal();`, context);
+  const [dialog] = context.opened;
+  assert.equal(dialog.kind, "revert-original");
+  assert.equal(dialog.title, "Revert mapset to original?");
+  assert.match(dialog.text.join(" "), /saved and unsaved/);
+  assert.match(dialog.text.join(" "), /backup/);
+  const [cancel, confirm] = dialog.buttons;
+  assert.deepEqual([cancel[0], cancel[2]], ["Cancel", true], "Cancel is the default button");
+  assert.equal(confirm[0], "Revert mapset");
+  confirm[1]();
+  await runInContext("pending", context);
+  assert.deepEqual(calls.map(call => call.name), ["revert_mapset_to_original", "editor_view"]);
+});

@@ -101,6 +101,52 @@ impl WritePlan {
         self.mixes.iter().map(|mix| mix.path.as_path())
     }
 
+    pub fn created_mix_paths(&self) -> impl Iterator<Item = &Path> {
+        self.mixes
+            .iter()
+            .filter(|mix| !mix.is_reused())
+            .map(|mix| mix.path.as_path())
+    }
+
+    pub fn reused_mix_paths(&self) -> impl Iterator<Item = &Path> {
+        self.mixes
+            .iter()
+            .filter(|mix| mix.is_reused())
+            .map(|mix| mix.path.as_path())
+    }
+
+    /// Plain-English summary of per-object `.osu` volume updates, timing-line changes, and
+    /// created vs. reused `.wav` mixes for the Write Review modal.
+    pub fn volume_clarity_lines(&self) -> Vec<String> {
+        let mut object_changes = 0usize;
+        let mut timing_changes = 0usize;
+        for target in &self.files {
+            let summary = target.file.change_summary();
+            object_changes += summary.hit_objects_changed;
+            timing_changes += summary.green_lines_added
+                + summary.green_lines_edited
+                + summary.green_lines_removed;
+        }
+        let created_wav = self.created_mix_paths().count();
+        let reused_wav = self.reused_mix_paths().count();
+        let mut lines = Vec::new();
+        if object_changes > 0 && timing_changes == 0 {
+            lines.push(format!(
+                "Per-object .osu volumes only: {object_changes} object(s) updated, 0 new timing lines needed."
+            ));
+        } else if timing_changes > 0 {
+            lines.push(format!(
+                "Per-object .osu changes: {object_changes} | Timing-line volume changes: {timing_changes} (used where shared moments or slider bodies need distinct volumes)."
+            ));
+        }
+        if created_wav > 0 || reused_wav > 0 {
+            lines.push(format!(
+                "Sample mixes: {created_wav} new .wav created, {reused_wav} existing .wav reused."
+            ));
+        }
+        lines
+    }
+
     pub(super) fn mix_clip(&self, index: usize) -> Option<dawsu_audio::AudioClip> {
         self.mixes.get(index).map(mixes::StagedMix::clip)
     }
@@ -597,4 +643,36 @@ pub(super) fn export_report(
     };
     export.add_pending(source)?;
     Ok(export)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn volume_clarity_lines_reports_created_and_reused_mixes() {
+        let dir = std::env::temp_dir().join("dawsu-output-clarity-test");
+        let plan = WritePlan {
+            label: "Test".into(),
+            files: Vec::new(),
+            mixes: vec![
+                mixes::StagedMix::pending(&dir, "new_mix.wav", vec![1, 2, 3]),
+            ],
+            pending: Vec::new(),
+            ledger: None,
+            combinations: Vec::new(),
+            generation: None,
+            generated: None,
+            include_slider_audio: false,
+            details: Vec::new(),
+            targets: Vec::new(),
+            hs_mode_targets: Vec::new(),
+            source: dir.join("map.osu"),
+            version: 1,
+        };
+        let lines = plan.volume_clarity_lines();
+        assert_eq!(plan.created_mix_paths().count(), 1);
+        assert_eq!(plan.reused_mix_paths().count(), 0);
+        assert!(lines.iter().any(|l| l.contains("1 new .wav created, 0 existing .wav reused")));
+    }
 }

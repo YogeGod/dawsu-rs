@@ -118,6 +118,28 @@ export function attachEditDialogs(ctx) {
     if (!state.drag && !state.view.busy) ctx.act({ kind: "home" });
   }
 
+  // File › Revert mapset to original…: puts every .osu in this mapset folder back the way it was when
+  // dawsu! first opened it. Rust saves a backup of the current files first, then reopens the map.
+  function confirmRevertToOriginal() {
+    if (!state.scene || !state.view.hasDocument || !state.view.hasOriginalSnapshot || state.view.busy || state.drag) return;
+    const map = state.scene.path;
+    ctx.modal("revert-original", "Revert mapset to original?", [
+      paragraph("Every .osu file in this mapset folder goes back to how it was when dawsu! first opened it."),
+      paragraph("This undoes all changes since then, saved and unsaved, in every difficulty of this mapset. Undo can't bring them back."),
+      paragraph("dawsu! saves a backup of the current files first, so nothing is lost for good."),
+    ], [
+      ["Cancel", () => ctx.closeModal(), true],
+      ["Revert mapset", () => {
+        ctx.closeModal();
+        ctx.run(async () => {
+          if (state.scene?.path !== map || state.view.busy) return;
+          await invoke("revert_mapset_to_original");
+          await ctx.update();
+        });
+      }],
+    ]);
+  }
+
   function openSiblingDifficulty(path) {
     if (state.scene && !state.view.busy && !state.drag && path && path !== state.scene.path) {
       ctx.act({ kind: "open", path });
@@ -188,6 +210,30 @@ export function attachEditDialogs(ctx) {
           submit({ copies: n, gap_steps: steps });
         } else fail.textContent = "Enter 1–64 copies and a gap of 1–1024 steps.";
       }, "Repeat");
+    } else if (kind === "pattern_stamp") {
+      const count = input("number", 4, 1, 64);
+      const step = input("number", +(state.scene.patternStampStep ?? 2000).toFixed(3), 1, "", "any");
+      const snapToObjects = input("checkbox", "", 0, 0);
+      snapToObjects.checked = true;
+      const quantizeVolumes = input("checkbox", "", 0, 0);
+      openEdit("Pattern stamp", [
+        labeled("Repeats", count),
+        labeled("Step (ms)", step),
+        labeled("Snap to gameplay objects", snapToObjects),
+        labeled("Quantize volumes (35 / 70 / 100%)", quantizeVolumes),
+      ], () => {
+        const n = count.valueAsNumber, ms = step.valueAsNumber;
+        if (Number.isInteger(n) && n >= 1 && n <= 64 && Number.isFinite(ms) && ms > 0) {
+          ctx.closeModal();
+          ctx.act({
+            kind: "pattern_stamp",
+            count: n,
+            step_ms: ms,
+            snap_to_objects: snapToObjects.checked,
+            quantize_volumes: quantizeVolumes.checked,
+          });
+        } else fail.textContent = "Enter 1–64 repeats and a positive step in milliseconds.";
+      }, "Stamp");
     } else if (kind === "range" && state.scene.range) {
       const operation = choice([["copy", "Copy"], ["move", "Move"], ["delete", "Delete"]], "copy");
       const offset = input("number", +(state.scene.range[1] - state.scene.range[0]).toFixed(3), "", "", "any");
@@ -269,7 +315,7 @@ export function attachEditDialogs(ctx) {
   }
 
   Object.assign(ctx, {
-    openLaneColour, openReplaceSample, openMap, goHome,
+    openLaneColour, openReplaceSample, openMap, goHome, confirmRevertToOriginal,
     openSiblingDifficulty, chooseSiblingDifficulty, showTimelineEdit,
     editBookmark, openTimeSignatures,
   });

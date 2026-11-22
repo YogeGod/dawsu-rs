@@ -25,6 +25,8 @@ const menuRules = {
   undo: () => canEditFromMenu() && scene.historyPosition !== 0,
   redo: () => canEditFromMenu() && scene.historyPosition !== scene.history?.length,
   deleteLane: () => canEditFromMenu() && !!deletableLane(),
+  // File › Revert mapset to original…: only once dawsu! has a first-open copy of this mapset.
+  originalSnapshot: () => !!scene && !!view.hasDocument && !!view.hasOriginalSnapshot && !view.busy && !drag,
   never: () => false,
   lane: laneAllowed(() => true),
   laneRename: laneAllowed(lane => !!lane.colourKey && !view.drumView?.enabled),
@@ -33,6 +35,8 @@ const menuRules = {
   laneReplace: laneAllowed(lane => lane.canReplace),
   laneColour: laneAllowed(lane => lane.colourKey),
   laneLayer: laneAllowed(lane => lane.canAddLayer),
+  laneClone: laneAllowed(lane => lane.canReplace),
+  laneAlternate: laneAllowed((_, row) => row + 1 < (view.laneCount ?? scene.lanes.length) && (scene.selection?.count ?? 0) >= 2),
   laneDelete: laneAllowed(lane => lane.canDelete),
   waveform: () => $("ruler-waveform").getAttribute("aria-pressed") === "true",
   soundFirst: () => $("ruler-sound-first").getAttribute("aria-pressed") === "true",
@@ -91,6 +95,7 @@ const menuCalls = {
   deleteActiveLane: () => deleteActiveLane(),
   toggleMapPreview: () => window.dawsuUi?.toggleMapPreview?.(),
   openQuickStart: () => window.dawsuUi?.openQuickStart?.(),
+  revertMapsetToOriginal: () => confirmRevertToOriginal(),
 };
 
 const menuField = path => path.split(".").reduce((value, key) => value?.[key], { view, scene });
@@ -114,6 +119,8 @@ function runMenuEntry({ item, target, value, source }) {
   else if (kind === "lane") moveLane(laneMenuRow(target), first === "up" ? -1 : 1);
   else if (kind === "onLane") {
     laneMenuAction(target, row => first === "layer" ? act({ kind: "lane", row, operation: "add_layer" })
+      : first === "clone" ? act({ kind: "clone_sample_variant", lane: row })
+      : first === "alternate" ? act({ kind: "alternate_variants", from_lane: row, to_lane: row + 1 })
       : first === "call" ? menuCalls[second]() : $(second)?.click());
   }
 }

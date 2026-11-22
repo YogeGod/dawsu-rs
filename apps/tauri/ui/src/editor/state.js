@@ -24,6 +24,8 @@ export function createState() {
     browserSource: "mapset",
     browserLibrary: null,
     browserLibraryFolders: new Map(),
+    // A Browser sample being dragged onto a lane row: { path, source, root }.
+    sampleDrag: null,
     browserExpanded: new Set(),
     browserScene: null,
     browserState: "",
