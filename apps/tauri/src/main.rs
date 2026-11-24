@@ -4759,6 +4759,41 @@ async fn check_for_updates() -> Result<updater::UpdateCheckResult, String> {
         .map_err(|e| format!("Update check task failed: {e}"))?
 }
 
+#[tauri::command]
+async fn download_update(
+    version: String,
+    installer_url: String,
+    sha256sums_url: String,
+) -> Result<updater::DownloadedUpdate, String> {
+    let data_root = dawsu_application::data_folder();
+    tauri::async_runtime::spawn_blocking(move || {
+        updater::download_and_verify_update(&data_root, &version, &installer_url, &sha256sums_url)
+    })
+    .await
+    .map_err(|e| format!("Update download task failed: {e}"))?
+}
+
+#[tauri::command]
+fn install_update_on_close(
+    window: tauri::WebviewWindow,
+    staged: State<'_, updater::StagedUpdate>,
+    installer_path: String,
+) -> Result<(), String> {
+    let data_root = dawsu_application::data_folder();
+    let verified = updater::validate_staged_installer_path(&data_root, &installer_path)?;
+    staged.stage(verified);
+    // Trigger the normal window close so unsaved work is asked about first (same as v3.1.4).
+    window
+        .close()
+        .map_err(|e| format!("Could not close window to apply update: {e}"))?;
+    Ok(())
+}
+
+#[tauri::command]
+fn cancel_staged_update(staged: State<'_, updater::StagedUpdate>) {
+    staged.clear();
+}
+
 fn close_requested(label: &str, editor: &Editor) -> CloseDecision {
     // Closing Export or the drum detection window never waits on the editor.
     match label {
@@ -4782,6 +4817,7 @@ fn main() {
     tauri::Builder::default()
         .manage(editor_thread(initial))
         .manage(SongsIndexCache(std::sync::Arc::new(std::sync::Mutex::new(None))))
+        .manage(updater::StagedUpdate::default())
         .on_window_event(|window, event| {
             let app = window.app_handle();
             match (window.label(), event) {
@@ -4907,10 +4943,18 @@ fn main() {
             preview_revert_mapset_to_original,
             revert_mapset_to_original,
             undo_mapset_revert,
-            check_for_updates
+            check_for_updates,
+            download_update,
+            install_update_on_close,
+            cancel_staged_update
         ])
-        .run(tauri::generate_context!())
-        .expect("start the dawsu! Tauri editor");
+        .build(tauri::generate_context!())
+        .expect("start the dawsu! Tauri editor")
+        .run(|app_handle, event| {
+            if let tauri::RunEvent::Exit = event {
+                app_handle.state::<updater::StagedUpdate>().launch_if_staged();
+            }
+        });
 }
 
 #[cfg(test)]

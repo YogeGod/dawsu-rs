@@ -1,15 +1,50 @@
-//! GitHub Releases update checker, semantic version comparison, and SHA-256 verification.
+//! GitHub Releases update checker, SHA-256 verified downloader, and install-on-close staging.
 //!
-//! Network access happens only when the user explicitly invokes `check_for_updates`
-//! from Preferences › Updates — never on startup and never during automated tests.
+//! Network access happens only when the user explicitly clicks Check / Download in
+//! Preferences › Updates — never on startup and never during automated tests.
 
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Mutex;
 
 pub const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const LATEST_RELEASE_API_URL: &str =
     "https://api.github.com/repos/YogeGod/dawsu-rs/releases/latest";
+
+/// Holds a SHA-256-verified installer staged to launch once the main window finishes closing.
+#[derive(Default)]
+pub struct StagedUpdate(Mutex<Option<PathBuf>>);
+
+impl StagedUpdate {
+    pub fn stage(&self, path: PathBuf) {
+        if let Ok(mut guard) = self.0.lock() {
+            *guard = Some(path);
+        }
+    }
+
+    pub fn clear(&self) {
+        if let Ok(mut guard) = self.0.lock() {
+            *guard = None;
+        }
+    }
+
+    pub fn take(&self) -> Option<PathBuf> {
+        self.0.lock().ok().and_then(|mut guard| guard.take())
+    }
+
+    pub fn launch_if_staged(&self) {
+        let Some(installer) = self.take() else {
+            return;
+        };
+        if !installer.is_file() {
+            return;
+        }
+        let _ = spawn_installer(&installer);
+    }
+}
 
 /// Parsed semantic version (`MAJOR.MINOR.PATCH[-PRERELEASE][+BUILD]`).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -148,11 +183,22 @@ pub struct UpdateCheckResult {
     pub current_version: String,
     pub latest_version: String,
     pub update_available: bool,
+    pub is_installed: bool,
     pub release_url: String,
     pub notes: String,
     pub installer_url: Option<String>,
+    pub installer_name: Option<String>,
     pub portable_url: Option<String>,
     pub sha256sums_url: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DownloadedUpdate {
+    pub version: String,
+    pub installer_path: String,
+    pub sha256: String,
+    pub size_bytes: u64,
 }
 
 #[derive(Deserialize)]
@@ -257,23 +303,62 @@ pub fn parse_github_release(json_str: &str) -> Result<ParsedRelease, String> {
     })
 }
 
+/// Returns true when the given executable sits inside an installed copy (e.g. Inno Setup
+/// `unins000.exe` next to the binary on Windows, or a `.app` bundle on macOS) rather than
+/// a portable zip or `target/debug` build.
+pub fn is_installed_copy_at(exe_path: &Path) -> bool {
+    let Some(dir) = exe_path.parent() else {
+        return false;
+    };
+    if cfg!(target_os = "windows") {
+        dir.join("unins000.exe").is_file()
+    } else if cfg!(target_os = "macos") {
+        exe_path
+            .components()
+            .any(|c| c.as_os_str().to_string_lossy().ends_with(".app"))
+    } else {
+        false
+    }
+}
+
+pub fn is_installed_copy() -> bool {
+    std::env::current_exe()
+        .ok()
+        .is_some_and(|p| is_installed_copy_at(&p))
+}
+
+fn asset_filename_from_url(url: &str) -> Option<String> {
+    let without_query = url.split(['?', '#']).next()?;
+    let name = without_query.rsplit('/').next()?.trim();
+    if name.is_empty() || name.contains("..") || name.contains('\\') {
+        None
+    } else {
+        Some(name.to_string())
+    }
+}
+
 /// Builds the UI-facing update check result from the current version and parsed release.
 pub fn build_update_result(current_version: &str, release: ParsedRelease) -> UpdateCheckResult {
     let update_available = is_newer_version(current_version, &release.version);
+    let installer_name = release
+        .installer_url
+        .as_deref()
+        .and_then(asset_filename_from_url);
     UpdateCheckResult {
         current_version: current_version.to_string(),
         latest_version: release.version,
         update_available,
+        is_installed: is_installed_copy(),
         release_url: release.release_url,
         notes: release.notes,
         installer_url: release.installer_url,
+        installer_name,
         portable_url: release.portable_url,
         sha256sums_url: release.sha256sums_url,
     }
 }
 
 /// Computes the lowercase hex SHA-256 digest of `bytes` (FIPS 180-4, pure Rust).
-#[allow(dead_code)]
 pub fn sha256_hex(bytes: &[u8]) -> String {
     const K: [u32; 64] = [
         0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4,
@@ -362,13 +447,11 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
     out
 }
 
-#[allow(dead_code)]
 fn is_valid_sha256_hex(hex: &str) -> bool {
     hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
 /// Verifies `bytes` against an expected 64-character hex SHA-256 digest.
-#[allow(dead_code)]
 pub fn verify_sha256(bytes: &[u8], expected_hex: &str) -> Result<(), String> {
     let expected = expected_hex.trim().to_ascii_lowercase();
     if !is_valid_sha256_hex(&expected) {
@@ -389,7 +472,6 @@ pub fn verify_sha256(bytes: &[u8], expected_hex: &str) -> Result<(), String> {
 }
 
 /// Looks up `filename` in a `SHA256SUMS.txt` manifest (`<hash>  <filename>` or `<hash> *<filename>`).
-#[allow(dead_code)]
 pub fn parse_sha256sums(text: &str, filename: &str) -> Option<String> {
     let target = filename.trim();
     if target.is_empty() {
@@ -425,27 +507,38 @@ pub fn parse_sha256sums(text: &str, filename: &str) -> Option<String> {
     case_insensitive_match
 }
 
-/// Fetches the latest release JSON from GitHub Releases over HTTPS with a short timeout.
-///
-/// Only called when the user explicitly clicks "Check for updates".
-pub fn check_latest_release() -> Result<UpdateCheckResult, String> {
+fn format_check_error(stderr: &str, status: std::process::ExitStatus) -> String {
+    if stderr.contains("404") {
+        return "No public release was found (if the repository is still private, automatic update checks will work once it is public).".into();
+    }
+    if stderr.is_empty() {
+        format!("GitHub Releases check failed (status {status}).")
+    } else {
+        format!("GitHub Releases check failed: {stderr}")
+    }
+}
+
+fn curl_https_bytes(url: &str, timeout_secs: u64, accept: Option<&str>) -> Result<Vec<u8>, String> {
+    let url = require_https(url, "update download")?;
     let user_agent = format!("dawsu-updater/{CURRENT_VERSION}");
     let mut cmd = Command::new(if cfg!(windows) { "curl.exe" } else { "curl" });
+    let timeout = timeout_secs.to_string();
     cmd.args([
         "--silent",
         "--show-error",
         "--fail",
         "--location",
         "--max-time",
-        "8",
+        &timeout,
         "--proto",
         "=https",
         "-H",
-        "Accept: application/vnd.github+json",
-        "-H",
         &format!("User-Agent: {user_agent}"),
-        LATEST_RELEASE_API_URL,
     ]);
+    if let Some(accept) = accept {
+        cmd.args(["-H", &format!("Accept: {accept}")]);
+    }
+    cmd.arg(&url);
 
     #[cfg(target_os = "windows")]
     {
@@ -456,21 +549,159 @@ pub fn check_latest_release() -> Result<UpdateCheckResult, String> {
 
     let output = cmd
         .output()
-        .map_err(|e| format!("Could not run HTTPS check ({e})."))?;
+        .map_err(|e| format!("Could not run HTTPS request ({e})."))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        return Err(if stderr.is_empty() {
-            format!("GitHub Releases check failed (status {}).", output.status)
-        } else {
-            format!("GitHub Releases check failed: {stderr}")
-        });
+        return Err(format_check_error(&stderr, output.status));
     }
+    Ok(output.stdout)
+}
 
-    let body = String::from_utf8(output.stdout)
+/// Fetches the latest release JSON from GitHub Releases over HTTPS with a short timeout.
+///
+/// Only called when the user explicitly clicks "Check for updates".
+pub fn check_latest_release() -> Result<UpdateCheckResult, String> {
+    let stdout = curl_https_bytes(
+        LATEST_RELEASE_API_URL,
+        8,
+        Some("application/vnd.github+json"),
+    )?;
+    let body = String::from_utf8(stdout)
         .map_err(|e| format!("GitHub Releases returned non-UTF-8 response: {e}"))?;
     let parsed = parse_github_release(&body)?;
     Ok(build_update_result(CURRENT_VERSION, parsed))
+}
+
+/// Folder under app data where verified update installers are staged.
+pub fn updates_dir(data_root: &Path) -> PathBuf {
+    data_root.join("updates")
+}
+
+/// Verifies `installer_bytes` against `sha256sums_text` for `filename` and atomically writes the
+/// verified installer into `<data_root>/updates/<version>/<filename>`. If verification fails,
+/// nothing is written (and any stray temp file is removed).
+pub fn verify_and_write_installer(
+    data_root: &Path,
+    version: &str,
+    filename: &str,
+    installer_bytes: &[u8],
+    sha256sums_text: &str,
+) -> Result<DownloadedUpdate, String> {
+    if parse_semver(version).is_none() {
+        return Err(format!("Invalid update version '{version}'."));
+    }
+    let clean_name = filename.trim();
+    if clean_name.is_empty()
+        || clean_name.contains(['/', '\\'])
+        || clean_name.contains("..")
+    {
+        return Err("Invalid installer filename.".into());
+    }
+    let expected_hex = parse_sha256sums(sha256sums_text, clean_name).ok_or_else(|| {
+        format!("SHA256SUMS.txt does not list a checksum for {clean_name}. Refusing to install.")
+    })?;
+    verify_sha256(installer_bytes, &expected_hex)?;
+
+    let safe_version = version
+        .trim()
+        .strip_prefix('v')
+        .or_else(|| version.trim().strip_prefix('V'))
+        .unwrap_or(version.trim());
+    let target_dir = updates_dir(data_root).join(safe_version);
+    fs::create_dir_all(&target_dir)
+        .map_err(|e| format!("Could not create updates folder: {e}"))?;
+    let dest = target_dir.join(clean_name);
+    let tmp = target_dir.join(format!("{clean_name}.part"));
+    if let Err(e) = fs::write(&tmp, installer_bytes) {
+        let _ = fs::remove_file(&tmp);
+        return Err(format!("Could not write downloaded installer: {e}"));
+    }
+    if dest.exists() {
+        let _ = fs::remove_file(&dest);
+    }
+    if let Err(e) = fs::rename(&tmp, &dest) {
+        let _ = fs::remove_file(&tmp);
+        return Err(format!("Could not finalize downloaded installer: {e}"));
+    }
+
+    Ok(DownloadedUpdate {
+        version: safe_version.to_string(),
+        installer_path: dest.to_string_lossy().into_owned(),
+        sha256: expected_hex,
+        size_bytes: installer_bytes.len() as u64,
+    })
+}
+
+/// Downloads `SHA256SUMS.txt` and the release installer over HTTPS, verifies the SHA-256 digest,
+/// and saves the verified installer inside `<data_root>/updates/<version>/`.
+pub fn download_and_verify_update(
+    data_root: &Path,
+    version: &str,
+    installer_url: &str,
+    sha256sums_url: &str,
+) -> Result<DownloadedUpdate, String> {
+    let filename = asset_filename_from_url(installer_url)
+        .ok_or_else(|| "Installer URL does not end with a valid filename.".to_string())?;
+    let sums_bytes = curl_https_bytes(sha256sums_url, 20, None)?;
+    let sums_text = String::from_utf8(sums_bytes)
+        .map_err(|e| format!("SHA256SUMS.txt is not valid UTF-8: {e}"))?;
+    let installer_bytes = curl_https_bytes(installer_url, 180, None)?;
+    verify_and_write_installer(data_root, version, &filename, &installer_bytes, &sums_text)
+}
+
+/// Validates that a staged installer path is a real file inside `<data_root>/updates/`.
+pub fn validate_staged_installer_path(data_root: &Path, raw: &str) -> Result<PathBuf, String> {
+    let candidate = PathBuf::from(raw.trim());
+    if !candidate.is_file() {
+        return Err("Downloaded installer file not found.".into());
+    }
+    let canon_root = updates_dir(data_root)
+        .canonicalize()
+        .map_err(|_| "Updates folder does not exist.".to_string())?;
+    let canon_file = candidate
+        .canonicalize()
+        .map_err(|e| format!("Could not resolve installer path: {e}"))?;
+    if !canon_file.starts_with(&canon_root) {
+        return Err("Refusing to run an installer outside dawsu!'s updates folder.".into());
+    }
+    Ok(canon_file)
+}
+
+pub fn installer_launch_args() -> &'static [&'static str] {
+    if cfg!(target_os = "windows") {
+        // Inno Setup silent upgrade: waits for dawsu! to exit, updates in place, and relaunches.
+        &["/SILENT", "/CLOSEAPPLICATIONS", "/RESTARTAPPLICATIONS"]
+    } else {
+        &[]
+    }
+}
+
+fn spawn_installer(installer_path: &Path) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        Command::new(installer_path)
+            .args(installer_launch_args())
+            .spawn()
+            .map_err(|e| format!("Could not launch installer: {e}"))?;
+        Ok(())
+    }
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("open")
+            .arg(installer_path)
+            .spawn()
+            .map_err(|e| format!("Could not open update package: {e}"))?;
+        Ok(())
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        Command::new("xdg-open")
+            .arg(installer_path)
+            .spawn()
+            .map_err(|e| format!("Could not open update package: {e}"))?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -570,5 +801,85 @@ mod tests {
 
         assert!(parse_sha256sums(&manifest, "missing-file.zip").is_none());
         assert!(verify_sha256(data, "not-hex").is_err());
+    }
+
+    fn temp_test_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("dawsu-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn verify_and_write_installer_accepts_valid_hash_and_rejects_tampered_bytes() {
+        let root = temp_test_dir("updater-verify-stage");
+        let data_root = root.join("appdata");
+        let installer_bytes = b"MZ-fake-inno-setup-binary-bytes";
+        let digest = sha256_hex(installer_bytes);
+        let sums = format!("{digest}  dawsu-v1.1.0-windows-x64-setup.exe\n");
+
+        let ok = verify_and_write_installer(
+            &data_root,
+            "v1.1.0",
+            "dawsu-v1.1.0-windows-x64-setup.exe",
+            installer_bytes,
+            &sums,
+        )
+        .expect("valid installer must verify and stage");
+        assert_eq!(ok.version, "1.1.0");
+        assert_eq!(ok.sha256, digest);
+        assert_eq!(ok.size_bytes, installer_bytes.len() as u64);
+        assert!(Path::new(&ok.installer_path).is_file());
+        assert!(validate_staged_installer_path(&data_root, &ok.installer_path).is_ok());
+
+        // Tampered bytes must be refused and leave no file in the new version folder.
+        let mut tampered = installer_bytes.to_vec();
+        tampered[0] ^= 0xff;
+        let err = verify_and_write_installer(
+            &data_root,
+            "v1.2.0",
+            "dawsu-v1.2.0-windows-x64-setup.exe",
+            &tampered,
+            &format!("{digest}  dawsu-v1.2.0-windows-x64-setup.exe\n"),
+        )
+        .expect_err("tampered installer must be rejected");
+        assert!(err.contains("SHA-256 mismatch"), "{err}");
+        assert!(!updates_dir(&data_root).join("1.2.0").exists());
+
+        // Path outside updates folder must be refused.
+        let outside = root.join("outside.exe");
+        fs::write(&outside, b"bad").unwrap();
+        assert!(validate_staged_installer_path(&data_root, &outside.to_string_lossy()).is_err());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn staged_update_state_and_installed_detection() {
+        let staged = StagedUpdate::default();
+        assert!(staged.take().is_none());
+        staged.stage(PathBuf::from("C:/tmp/setup.exe"));
+        staged.clear();
+        assert!(staged.take().is_none());
+
+        staged.stage(PathBuf::from("C:/tmp/setup.exe"));
+        assert_eq!(staged.take(), Some(PathBuf::from("C:/tmp/setup.exe")));
+        assert!(staged.take().is_none());
+
+        let root = temp_test_dir("updater-installed-check");
+        let portable_dir = root.join("portable");
+        fs::create_dir_all(&portable_dir).unwrap();
+        let portable_exe = portable_dir.join("dawsu.exe");
+        fs::write(&portable_exe, b"exe").unwrap();
+        assert!(!is_installed_copy_at(&portable_exe));
+
+        if cfg!(target_os = "windows") {
+            let installed_dir = root.join("installed");
+            fs::create_dir_all(&installed_dir).unwrap();
+            let installed_exe = installed_dir.join("dawsu.exe");
+            fs::write(&installed_exe, b"exe").unwrap();
+            fs::write(installed_dir.join("unins000.exe"), b"unins").unwrap();
+            assert!(is_installed_copy_at(&installed_exe));
+        }
+        let _ = fs::remove_dir_all(&root);
     }
 }
