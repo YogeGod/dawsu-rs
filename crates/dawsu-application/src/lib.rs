@@ -1316,6 +1316,7 @@ impl Application {
         let legacy = std::env::var_os("LOCALAPPDATA")
             .map(|base| PathBuf::from(base).join("OsuHitsoundEditor").join("preferences.json"));
         let (mut preferences, first_launch) = preferences::load(&file, legacy.as_deref());
+        preferences::detect_songs_folder_if_empty(&mut preferences);
         preferences.master_gain = preferences.master_gain.clamp(0.2, 1.0);
         let output = open_preferred_audio(&preferences, preferences.audio_buffer_ms);
         let (audio, error) = match output {

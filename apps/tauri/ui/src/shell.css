@@ -558,3 +558,79 @@ aside[data-folded] {
     max-width: 120px;
   }
 }
+
+.hs-badge,
+.home-recent-hs {
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--editor-accent);
+  color: #111111;
+  font: 700 10px/1 var(--font-ui);
+  letter-spacing: 0.04em;
+  flex: none;
+}
+
+.home-recent-bg {
+  width: 44px;
+  height: 28px;
+  object-fit: cover;
+  border-radius: 4px;
+  flex: none;
+  background: var(--editor-canvas);
+}
+
+.diff-picker-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 280px;
+  overflow-y: auto;
+}
+
+.loading-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.loading-card {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 18px;
+  border-radius: 10px;
+  background: var(--editor-panel);
+  border: 1px solid var(--editor-border);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.5);
+}
+.loading-spinner {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 2px solid var(--editor-border);
+  border-top-color: var(--editor-accent);
+  animation: dawsu-spin 0.8s linear infinite;
+}
+.loading-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 160px;
+}
+.loading-text strong {
+  font: 600 13px/1.2 var(--font-ui);
+  color: var(--editor-text);
+}
+.loading-text span {
+  font: 12px/1.2 var(--font-ui);
+  color: var(--editor-secondary);
+}
+@keyframes dawsu-spin {
+  to { transform: rotate(360deg); }
+}

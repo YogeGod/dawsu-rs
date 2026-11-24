@@ -74,7 +74,8 @@ const exportedMethods = [
   "refreshLaneToolbar", "changeView", "stepWheelSnap", "fitTimeline",
   "modal", "closeModal", "showOutputProblem", "renderDialogs",
   "openMergeSettings", "openGenerate", "openNewDifficulty", "openCopy",
-  "openLaneColour", "openReplaceSample", "openMap", "openFromOsu", "pickDrumStem", "goHome", "confirmRevertToOriginal", "undoMapsetRevert",
+  "openLaneColour", "openReplaceSample", "openMap", "openMapFolder", "openMapFolderPath",
+  "createAndOpenHitsoundDiff", "pickAndCreateHitsoundDiff", "openFromOsu", "pickDrumStem", "goHome", "confirmRevertToOriginal", "undoMapsetRevert",
   "openSiblingDifficulty", "chooseSiblingDifficulty", "showTimelineEdit",
   "editBookmark", "openTimeSignatures",
   "openFolders", "openAudioOutput", "openViewSettings", "openPreferences", "showHelp", "showShortcutEditor",
@@ -205,6 +206,10 @@ export function createEditor(env = globalThis, { ui = null, autoStart = true, ex
         return;
       case "open":
         return ctx.openMap();
+      case "openFolder":
+        return ctx.openMapFolder();
+      case "createHsDiff":
+        return arg ? ctx.createAndOpenHitsoundDiff(arg, true) : ctx.pickAndCreateHitsoundDiff();
       case "openFromOsu":
         return ctx.openFromOsu();
       case "importOsz":
@@ -258,11 +263,19 @@ export function createEditor(env = globalThis, { ui = null, autoStart = true, ex
   for (const button of env.document.querySelectorAll("[data-action]")) {
     button.addEventListener("click", () => ctx.act({ kind: button.dataset.action }));
   }
-  $("difficulty").addEventListener("change", () => {
+  $("difficulty").addEventListener("change", async () => {
     if (!state.scene) return;
-    const path = $("difficulty").value;
+    const value = $("difficulty").value;
     $("difficulty").value = state.scene.path;
-    ctx.openSiblingDifficulty(path);
+    if (value === "__toggle_hs__") {
+      await ctx.act({ kind: "hs_mode", on: !state.scene.hs });
+      return;
+    }
+    if (value === "__create_hs__") {
+      await ctx.createAndOpenHitsoundDiff(state.scene.path, false);
+      return;
+    }
+    ctx.openSiblingDifficulty(value);
   });
   // Save writes at once through the editor's save command, as Ctrl+S does, instead of review_save's
   // file-by-file review first. Moments Save can't write still stop it with the Save hitsounds summary.
@@ -392,7 +405,13 @@ export function createEditor(env = globalThis, { ui = null, autoStart = true, ex
     }
     const target = ctx.sampleTarget();
     const path = payload.paths.find((path) => /\.(wav|ogg|mp3)$/i.test(path));
-    if (target && path) ctx.act({ kind: "replace_sample", target, path, mapset: false });
+    if (target && path) {
+      ctx.act({ kind: "replace_sample", target, path, mapset: false });
+      return;
+    }
+    if (payload.paths.length && !path) {
+      ctx.openMapFolderPath?.(payload.paths[0]);
+    }
   });
 
   env.window.__TAURI__.event.listen("node-graph-viewer", ({ payload }) => {

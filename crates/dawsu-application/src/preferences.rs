@@ -24,6 +24,34 @@ pub(super) fn without_bom(bytes: &[u8]) -> &[u8] {
     bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(bytes)
 }
 
+/// Probes standard cross-platform osu! Songs locations when `songs_folder` is not yet configured.
+pub(super) fn detect_songs_folder_if_empty(preferences: &mut Preferences) {
+    detect_songs_folder_with(preferences, default_songs_candidates());
+}
+
+fn detect_songs_folder_with(preferences: &mut Preferences, candidates: Vec<PathBuf>) {
+    if !preferences.songs_folder.as_os_str().is_empty() {
+        return;
+    }
+    if let Some(found) = candidates.into_iter().find(|path| path.is_dir()) {
+        preferences.songs_folder = found;
+    }
+}
+
+fn default_songs_candidates() -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+        candidates.push(PathBuf::from(local).join("osu!").join("Songs"));
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        let home = PathBuf::from(home);
+        candidates.push(home.join("Library").join("Application Support").join("osu!").join("Songs"));
+        candidates.push(home.join(".local").join("share").join("osu-wine").join("osu!").join("Songs"));
+        candidates.push(home.join(".local").join("share").join("osu!").join("Songs"));
+    }
+    candidates
+}
+
 #[derive(Default, Deserialize)]
 #[serde(default, rename_all = "PascalCase")]
 struct LegacyPreferences {
@@ -150,5 +178,22 @@ mod tests {
         assert!(!first && !pref.classic_browser);
         assert_eq!(std::fs::read(&native).unwrap(), b"invalid");
         assert_eq!(std::fs::read(&legacy).unwrap(), bytes);
+    }
+
+    #[test]
+    fn songs_folder_auto_detection_respects_existing_value_and_picks_first_existing_dir() {
+        let fixture = Scratch::new("songs-autodetect");
+        let missing = fixture.path("missing");
+        let existing = fixture.path("Songs");
+        std::fs::create_dir_all(&existing).unwrap();
+
+        let mut pref = Preferences::default();
+        detect_songs_folder_with(&mut pref, vec![missing.clone(), existing.clone()]);
+        assert_eq!(pref.songs_folder, existing);
+
+        let custom = fixture.path("CustomSongs");
+        pref.songs_folder = custom.clone();
+        detect_songs_folder_with(&mut pref, vec![existing]);
+        assert_eq!(pref.songs_folder, custom);
     }
 }

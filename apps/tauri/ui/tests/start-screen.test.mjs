@@ -5,6 +5,7 @@ import { bridge } from "../src/lib/bridge.svelte.js";
 import {
   SETUP_CHECKLIST_DISMISSED_KEY,
   dismissSetupChecklist,
+  isHitsoundVersion,
   isSetupChecklistDismissed,
   recentItems,
   recentMapName,
@@ -25,6 +26,25 @@ test("startScreen helpers format recent map names and gate recovery offers", () 
     { path: mapPath, name: "yuikonnu - Chikyuu Saigo no Kokuhaku wo", difficulty: "[Kokuhaku in 2019]" },
     { path: "C:/maps/recent.osu", name: "recent", difficulty: "" },
   ]);
+
+  const enriched = recentItems({
+    recent: [mapPath],
+    recentMeta: [{ path: mapPath, background: "data:image/png;base64,AA==", isHs: true }],
+  });
+  assert.deepEqual(enriched, [
+    {
+      path: mapPath,
+      name: "yuikonnu - Chikyuu Saigo no Kokuhaku wo",
+      difficulty: "[Kokuhaku in 2019]",
+      backgroundUrl: "data:image/png;base64,AA==",
+      isHs: true,
+    },
+  ]);
+
+  assert.equal(isHitsoundVersion("Hitsounds"), true);
+  assert.equal(isHitsoundVersion("HS"), true);
+  assert.equal(isHitsoundVersion("Normal HS"), true);
+  assert.equal(isHitsoundVersion("Insane"), false);
 
   const recovery = { error: "", offers: [{ id: "rec-1", mapset: "Song", difficulty: "Hard", created_ms: 1700000000000 }] };
   assert.equal(recoveryState({ hasDocument: true, recovery }, null).visible, false);
@@ -48,9 +68,10 @@ test("StartScreen renders actions, drop zone, resume, recent maps and recovery c
     },
   }, null);
   let html = render(StartScreen).body;
-  for (const id of ["home-resume", "home-open", "home-open-osu", "home-import", "home-folders", "recovery", "recovery-entries", "home-recent", "recent"]) {
+  for (const id of ["home-resume", "home-open", "home-create-hs", "home-open-osu", "home-import", "home-folders", "recovery", "recovery-entries", "home-recent", "recent"]) {
     assert.match(html, new RegExp('id="' + id + '"'), id);
   }
+  assert.match(html, /Create Hitsound diff…/);
   assert.match(html, /Open from osu!/);
   assert.match(html, /class="home-drop"[^>]*>[\s\S]*?\.osu[\s\S]*?\.osz/);
   assert.doesNotMatch(html, /id="home-resume"[^>]*hidden/);

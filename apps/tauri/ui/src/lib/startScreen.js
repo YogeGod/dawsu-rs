@@ -9,10 +9,26 @@ export function recentMapName(path) {
   return match ? [match[1], match[2]] : [file, ""];
 }
 
+export function isHitsoundVersion(version) {
+  const v = String(version ?? "").trim().toLowerCase();
+  return Boolean(
+    v && (v.includes("hitsound") || v === "hs" || v.endsWith(" hs") || v.includes("[hs]"))
+  );
+}
+
 export function recentItems(view) {
+  const metaByPath = new Map((view?.recentMeta ?? []).map(entry => [entry.path, entry]));
   return (view?.recent ?? []).map(path => {
     const [name, difficulty] = recentMapName(path);
-    return { path, name, difficulty };
+    const meta = metaByPath.get(path);
+    if (!meta) return { path, name, difficulty };
+    return {
+      path,
+      name,
+      difficulty,
+      backgroundUrl: meta.background || "",
+      isHs: Boolean(meta.isHs),
+    };
   });
 }
 

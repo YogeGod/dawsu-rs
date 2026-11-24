@@ -3,7 +3,7 @@ import { clock, laneGrey } from "./helpers.js";
 
 export function attachEditDialogs(ctx) {
   const { env, state, dom, elements } = ctx;
-  const { $, paragraph, input, labeled } = dom;
+  const { $, makeButton, paragraph, input, labeled } = dom;
   const { invoke } = env.window.__TAURI__.core;
 
   // The Inspector's Lane colour (and the lane menu, by its id): opens on grey until the mapper picks a colour.
@@ -124,6 +124,67 @@ export function attachEditDialogs(ctx) {
     return ctx.run(async () => ctx.show(await invoke("pick_map")));
   }
 
+  function createAndOpenHitsoundDiff(siblingPath, reuseExisting = false) {
+    if (!siblingPath || state.view.busy) return;
+    return ctx.run(async () => {
+      const created = await invoke("create_hitsound_diff", {
+        siblingPath,
+        reuseExisting: Boolean(reuseExisting),
+      });
+      if (created) {
+        await ctx.act({ kind: "open", path: created });
+        await ctx.act({ kind: "hs_mode", on: true });
+      }
+    });
+  }
+
+  async function pickAndCreateHitsoundDiff() {
+    if (state.view.busy) return;
+    const picked = await invoke("pick_map_for_hitsound_diff");
+    if (picked) await createAndOpenHitsoundDiff(picked, true);
+  }
+
+  async function openMapFolderPath(folderPath) {
+    if (!folderPath || state.view.busy) return;
+    try {
+      const res = await invoke("inspect_mapset_folder", { path: folderPath });
+      if (!res) return;
+      if (res.kind === "open") {
+        await ctx.act({ kind: "open", path: res.path });
+        return;
+      }
+      if (res.kind === "choose" && Array.isArray(res.difficulties) && res.difficulties.length) {
+        const list = env.document.createElement("div");
+        list.className = "diff-picker-list";
+        const createBtn = makeButton("+ Create Hitsound diff", () => {
+          ctx.closeModal();
+          createAndOpenHitsoundDiff(res.difficulties[0].path, false);
+        });
+        createBtn.className = "primary";
+        list.append(createBtn);
+        for (const diff of res.difficulties) {
+          const btn = makeButton(diff.isHs ? `${diff.name} [HS]` : diff.name, () => {
+            ctx.closeModal();
+            ctx.act({ kind: "open", path: diff.path });
+          });
+          list.append(btn);
+        }
+        ctx.modal("difficulty-chooser", "Choose a difficulty", [
+          paragraph("No Hitsound difficulty found yet. Create one or pick a difficulty to edit:"),
+          list,
+        ], [["Cancel", () => ctx.closeModal()]]);
+      }
+    } catch (error) {
+      ctx.modal("error", "Could not open folder", [paragraph(String(error))], [["OK", () => ctx.closeModal(), true]]);
+    }
+  }
+
+  async function openMapFolder() {
+    if (state.view.busy) return;
+    const folder = await invoke("pick_map_folder");
+    if (folder) await openMapFolderPath(folder);
+  }
+
   // File › Open from osu! and the start screen's Open from osu! button.
   function openFromOsu() {
     return ctx.run(async () => {
@@ -232,9 +293,12 @@ export function attachEditDialogs(ctx) {
     const OptionCtor = env.Option ?? Option;
     const choices = env.document.createElement("select");
     choices.id = "difficulty-choice";
-    choices.size = Math.min(8, ribbon.options.length);
+    const diffOptions = [...ribbon.options].filter(
+      option => option.value !== "__create_hs__" && option.value !== "__toggle_hs__",
+    );
+    choices.size = Math.min(8, diffOptions.length);
     choices.setAttribute("aria-label", "Difficulty in the current mapset");
-    choices.append(...[...ribbon.options].map(option => new OptionCtor(option.text, option.value)));
+    choices.append(...diffOptions.map(option => new OptionCtor(option.text, option.value)));
     choices.value = currentPath;
     const open = () => {
       ctx.closeModal();
@@ -246,8 +310,18 @@ export function attachEditDialogs(ctx) {
       open();
     });
     choices.addEventListener("dblclick", open);
-    ctx.modal("difficulty-chooser", "Switch difficulty", [choices],
-      [["Cancel", () => ctx.closeModal()], ["Open", open, true]]);
+    ctx.modal("difficulty-chooser", "Switch difficulty", [choices], [
+      ["Cancel", () => ctx.closeModal()],
+      ["+ Create Hitsound diff", () => {
+        ctx.closeModal();
+        createAndOpenHitsoundDiff(currentPath, false);
+      }],
+      [state.scene.hs ? "Turn off HS mode" : "Turn on HS mode", () => {
+        ctx.closeModal();
+        ctx.act({ kind: "hs_mode", on: !state.scene.hs });
+      }],
+      ["Open", open, true],
+    ]);
     choices.focus();
     return true;
   }
@@ -394,7 +468,8 @@ export function attachEditDialogs(ctx) {
   }
 
   Object.assign(ctx, {
-    openLaneColour, openReplaceSample, openMap, openFromOsu, goHome, confirmRevertToOriginal, undoMapsetRevert,
+    openLaneColour, openReplaceSample, openMap, openMapFolder, openMapFolderPath,
+    createAndOpenHitsoundDiff, pickAndCreateHitsoundDiff, openFromOsu, goHome, confirmRevertToOriginal, undoMapsetRevert,
     openSiblingDifficulty, chooseSiblingDifficulty, showTimelineEdit,
     editBookmark, openTimeSignatures,
   });
