@@ -1631,6 +1631,7 @@ struct OutputReviewSnapshot {
     label: String,
     mixes: Vec<PathBuf>,
     reused_mixes: Vec<PathBuf>,
+    sample_warnings: Vec<String>,
     volume_summary: Vec<String>,
 }
 
@@ -1957,6 +1958,8 @@ fn snapshot_with_static(app: &Application, include_scene: bool, include_static: 
         }).collect::<Vec<_>>();
         let mut details = plan.details.clone();
         details.extend(plan.volume_clarity_lines());
+        let sample_warnings = plan.sample_warning_lines();
+        details.extend(sample_warnings.iter().cloned());
         OutputReviewSnapshot {
             combinations: serde_json::to_value(plan.export_combinations()).unwrap_or_default(),
             created_mixes: plan.created_mix_paths().map(Path::to_path_buf).collect(),
@@ -1966,6 +1969,7 @@ fn snapshot_with_static(app: &Application, include_scene: bool, include_static: 
             label: plan.label.clone(),
             mixes: plan.mix_paths().map(Path::to_path_buf).collect(),
             reused_mixes: plan.reused_mix_paths().map(Path::to_path_buf).collect(),
+            sample_warnings,
             volume_summary: plan.volume_clarity_lines(),
         }
     });
@@ -2307,6 +2311,7 @@ fn export_snapshot(app: &Application, cache: &mut ExportCache) -> Value {
             "mixes": preview.plan.mix_paths().collect::<Vec<_>>(),
             "createdMixes": preview.plan.created_mix_paths().collect::<Vec<_>>(),
             "reusedMixes": preview.plan.reused_mix_paths().collect::<Vec<_>>(),
+            "sampleWarnings": preview.plan.sample_warning_lines(),
             "volumeSummary": preview.plan.volume_clarity_lines(),
             "targets": preview.plan.targets.iter().map(|counts| json!({
                 "path": counts.path,
@@ -3071,6 +3076,8 @@ struct ExportOptionsJson {
     base: bool,
     #[serde(default, rename = "sliderAudio")]
     slider_audio: bool,
+    #[serde(default, rename = "autoFixStagedMixes")]
+    auto_fix_staged_mixes: bool,
 }
 
 /// "Export · <map title> [<difficulty>]", or "Export" with no map open.
@@ -3099,7 +3106,11 @@ fn export_view(window: tauri::WebviewWindow, state: State<'_, Editor>) -> Result
 fn export_preview(state: State<'_, Editor>, options: ExportOptionsJson) -> Result<u64, String> {
     let source = options.source;
     let options = ExportOptions {
-        targets: options.targets, copy: options.options, base: options.base, slider_audio: options.slider_audio,
+        targets: options.targets,
+        copy: options.options,
+        base: options.base,
+        slider_audio: options.slider_audio,
+        auto_fix_staged_mixes: options.auto_fix_staged_mixes,
     };
     ask(&state, |tx| Request::ExportPreview(source, options, tx))?
 }

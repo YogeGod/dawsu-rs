@@ -80,6 +80,8 @@ pub struct WritePlan {
     pub targets: Vec<TargetCounts>,
     /// The target difficulties whose per-difficulty project should start with HS mode on.
     pub(super) hs_mode_targets: Vec<PathBuf>,
+    /// Non-blocking osu! Ranking Criteria & playback warnings for newly staged mixes.
+    pub sample_warnings: Vec<crate::sample_checks::SampleHealthReport>,
     pub source: PathBuf,
     pub version: u64,
 }
@@ -145,6 +147,31 @@ impl WritePlan {
             ));
         }
         lines
+    }
+
+    /// Plain-English osu! Ranking Criteria warnings for newly staged sample mixes.
+    pub fn sample_warning_lines(&self) -> Vec<String> {
+        self.sample_warnings
+            .iter()
+            .flat_map(crate::sample_checks::SampleHealthReport::warnings)
+            .collect()
+    }
+
+    /// Inspects newly staged mixes in this plan and records any RC health warnings.
+    pub(super) fn check_staged_mixes(&mut self) {
+        self.sample_warnings.clear();
+        for mix in self.mixes.iter().filter(|mix| !mix.is_reused()) {
+            let name = mix
+                .path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| mix.path.display().to_string());
+            if let Some(report) = crate::sample_checks::inspect_wav_bytes(name, mix.wav_bytes())
+                && !report.is_healthy()
+            {
+                self.sample_warnings.push(report);
+            }
+        }
     }
 
     pub(super) fn mix_clip(&self, index: usize) -> Option<dawsu_audio::AudioClip> {
@@ -282,12 +309,38 @@ fn folder(source: &Source) -> Result<Vec<(String, Option<String>)>, String> {
 pub fn generate(source: &Source, cancel: &dyn Fn() -> bool) -> Result<WritePlan, String> {
     generate_report(source, Path::new(""), None, None, false, cancel, &mut Vec::new(), &mut |_, _| {})
 }
+#[allow(clippy::too_many_arguments)]
 pub(super) fn generate_report(
     source: &Source,
     defaults: &Path,
     settings: Option<&crate::ExportSettings>,
     projects: Option<&Path>,
     include_slider_audio: bool,
+    cancel: &dyn Fn() -> bool,
+    diagnostics: &mut Vec<OutputProblem>,
+    progress: &mut dyn FnMut(usize, usize),
+) -> Result<WritePlan, String> {
+    generate_report_with_options(
+        source,
+        defaults,
+        settings,
+        projects,
+        include_slider_audio,
+        false,
+        cancel,
+        diagnostics,
+        progress,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn generate_report_with_options(
+    source: &Source,
+    defaults: &Path,
+    settings: Option<&crate::ExportSettings>,
+    projects: Option<&Path>,
+    include_slider_audio: bool,
+    auto_fix_staged_mixes: bool,
     cancel: &dyn Fn() -> bool,
     diagnostics: &mut Vec<OutputProblem>,
     progress: &mut dyn FnMut(usize, usize),
@@ -329,7 +382,7 @@ pub(super) fn generate_report(
             let staged = if problems.is_empty() {
                 Ok((file, mixes::MixFiles::default()))
             } else if can_mix {
-                crate::mixes::stage_in_file(
+                crate::mixes::stage_in_file_with_options(
                     &source.hits,
                     file,
                     &problems,
@@ -342,6 +395,7 @@ pub(super) fn generate_report(
                     old_mixes,
                     2,
                     &source.pending,
+                    auto_fix_staged_mixes,
                     cancel,
                 )
             } else {
@@ -383,10 +437,12 @@ pub(super) fn generate_report(
                 details: vec![details.into()],
                 targets: Vec::new(),
                 hs_mode_targets: vec![target.clone()],
+                sample_warnings: Vec::new(),
                 source: source.path.clone(),
                 version: source.version,
             };
             plan.add_pending(source)?;
+            plan.check_staged_mixes();
             Ok(plan)
         }
         other => Err(crate::refusals::generate(&other)),
@@ -396,7 +452,7 @@ pub fn new_diff(source: &Source, name: &str) -> Result<WritePlan, String> {
     match dawsu_hitsounding::generate::new_hitsound_diff(&source.file,&source.path.file_name().unwrap().to_string_lossy(),name,&folder(source)?){
         NewDiff::Planned{file,file_name}=>{
             let target_path = source.path.parent().unwrap().join(file_name);
-            Ok(WritePlan{label:"New hitsound difficulty".into(),mixes:Vec::new(),pending:Vec::new(),ledger:None,combinations:Vec::new(),targets:Vec::new(),generation:None,generated:None,include_slider_audio:false,files:vec![PlannedFile{path:target_path.clone(),file,expected:None}],details:vec!["All gameplay objects are removed in the new difficulty; the source stays unchanged.".into()],hs_mode_targets:vec![target_path],source:source.path.clone(),version:source.version})
+            Ok(WritePlan{label:"New hitsound difficulty".into(),mixes:Vec::new(),pending:Vec::new(),ledger:None,combinations:Vec::new(),targets:Vec::new(),generation:None,generated:None,include_slider_audio:false,files:vec![PlannedFile{path:target_path.clone(),file,expected:None}],details:vec!["All gameplay objects are removed in the new difficulty; the source stays unchanged.".into()],hs_mode_targets:vec![target_path],sample_warnings:Vec::new(),source:source.path.clone(),version:source.version})
         },other=>Err(crate::refusals::new_difficulty(&other))
     }
 }
@@ -417,15 +473,17 @@ pub(super) fn copy_report(
     diagnostics: &mut Vec<OutputProblem>,
     progress: &mut dyn FnMut(usize, usize),
 ) -> Result<WritePlan, String> {
-    copy_after(source, defaults, targets, options, Vec::new(), cancel, diagnostics, progress)
+    copy_after(source, defaults, targets, options, Vec::new(), false, cancel, diagnostics, progress)
 }
 /// Copy, planned after mixes staged earlier in the same write, so no index or name is taken twice.
+#[allow(clippy::too_many_arguments)]
 fn copy_after(
     source: &Source,
     defaults: &Path,
     targets: &[PathBuf],
     options: &CopyOptions,
     already_staged: Vec<mixes::StagedMix>,
+    auto_fix_staged_mixes: bool,
     cancel: &dyn Fn() -> bool,
     diagnostics: &mut Vec<OutputProblem>,
     progress: &mut dyn FnMut(usize, usize),
@@ -490,6 +548,7 @@ fn copy_after(
         details: Vec::new(),
         targets: Vec::new(),
         hs_mode_targets: Vec::new(),
+        sample_warnings: Vec::new(),
         source: source.path.clone(),
         version: source.version,
     };
@@ -504,7 +563,7 @@ fn copy_after(
                 let staged = if target.problems.is_empty() {
                     Ok((target.file, mixes::MixFiles::default()))
                 } else if can_mix {
-                    mixes::stage_in_file(
+                    mixes::stage_in_file_with_options(
                         &source.hits,
                         target.file,
                         &target.problems,
@@ -517,6 +576,7 @@ fn copy_after(
                         &[],
                         options.start_index,
                         &source.pending,
+                        auto_fix_staged_mixes,
                         cancel,
                     )
                 } else {
@@ -573,8 +633,8 @@ fn copy_after(
                     ));
                 }
                 plan.mixes.extend(mixes.staged);
-                mixes::stage_timed_copy(&source.hits, &mut file, &path, defaults, &target.slider_placements,
-                    &mut plan.mixes, &mut plan.details, &source.pending, cancel, earlier)?;
+                mixes::stage_timed_copy_with_options(&source.hits, &mut file, &path, defaults, &target.slider_placements,
+                    &mut plan.mixes, &mut plan.details, &source.pending, auto_fix_staged_mixes, cancel, earlier)?;
                 plan.files.push(PlannedFile {
                     path,
                     file,
@@ -588,6 +648,7 @@ fn copy_after(
         return Err(refused);
     }
     plan.add_pending(source)?;
+    plan.check_staged_mixes();
     Ok(plan)
 
 }
@@ -605,11 +666,28 @@ pub(super) fn export_report(
     progress: &mut dyn FnMut(usize, usize),
 ) -> Result<WritePlan, String> {
     if !options.base {
-        return copy_report(source, defaults, &options.targets, &options.copy, cancel, diagnostics, progress);
+        return copy_after(
+            source,
+            defaults,
+            &options.targets,
+            &options.copy,
+            Vec::new(),
+            options.auto_fix_staged_mixes,
+            cancel,
+            diagnostics,
+            progress,
+        );
     }
     let mut generate_total = 0;
-    let mut base = generate_report(
-        source, defaults, settings, projects, options.slider_audio, cancel, diagnostics,
+    let mut base = generate_report_with_options(
+        source,
+        defaults,
+        settings,
+        projects,
+        options.slider_audio,
+        options.auto_fix_staged_mixes,
+        cancel,
+        diagnostics,
         &mut |done, total| {
             generate_total = total;
             progress(done, total);
@@ -626,8 +704,15 @@ pub(super) fn export_report(
         return Err("The base hitsound difficulty cannot also be a Copy target.".into());
     }
     let mut plan = copy_after(
-        source, defaults, &options.targets, &options.copy, std::mem::take(&mut base.mixes),
-        cancel, diagnostics, &mut |done, total| progress(generate_total + done, generate_total + total),
+        source,
+        defaults,
+        &options.targets,
+        &options.copy,
+        std::mem::take(&mut base.mixes),
+        options.auto_fix_staged_mixes,
+        cancel,
+        diagnostics,
+        &mut |done, total| progress(generate_total + done, generate_total + total),
     )?;
     let mut files = base.files;
     files.append(&mut plan.files);
@@ -646,10 +731,12 @@ pub(super) fn export_report(
         details,
         targets: plan.targets,
         hs_mode_targets: base.hs_mode_targets,
+        sample_warnings: Vec::new(),
         source: plan.source,
         version: plan.version,
     };
     export.add_pending(source)?;
+    export.check_staged_mixes();
     Ok(export)
 }
 
@@ -675,6 +762,7 @@ mod tests {
             details: Vec::new(),
             targets: Vec::new(),
             hs_mode_targets: Vec::new(),
+            sample_warnings: Vec::new(),
             source: dir.join("map.osu"),
             version: 1,
         };

@@ -50,6 +50,7 @@ mod problems;
 mod recovery;
 mod refusals;
 mod roll_back;
+pub mod sample_checks;
 mod sound_sets;
 mod unwritten;
 mod sample_watch;
@@ -68,6 +69,7 @@ pub use export_settings::{ExportCombination, ExportSettings};
 pub use original_snapshot::SnapshotPreview;
 pub use project::LaneLayout;
 pub use recovery::RecoveryOffer;
+pub use sample_checks::{FixedWav, SampleHealthIssue, SampleHealthReport};
 pub use sound_sets::{LibrarySet, PlacementView, SaveSetError, SetUpdatePrompt, SoundSetLibrary};
 pub use waveform::WaveBin;
 pub use edit_workflows::{PatternStampOptions, RangeOperation, TimelineEdit, VolumeScope};
@@ -3196,17 +3198,47 @@ impl Application {
         });
     }
     pub fn generate(&mut self) {
-        self.generate_with_slider_audio(false);
+        self.generate_with_options(false, false);
     }
 
     pub fn generate_with_slider_audio(&mut self, include_slider_audio: bool) {
+        self.generate_with_options(include_slider_audio, false);
+    }
+
+    pub fn generate_with_options(
+        &mut self,
+        include_slider_audio: bool,
+        auto_fix_staged_mixes: bool,
+    ) {
         let defaults = self.preferences.default_samples.clone();
         let settings = self.document.as_ref().and_then(|document| document.export_settings.clone());
         let projects = self.project_root.clone();
         self.review_job(move |source, cancel, diagnostics, progress| {
-            output::generate_report(&source, &defaults, settings.as_ref(), projects.as_deref(),
-                include_slider_audio, &|| cancel.load(Ordering::Relaxed), diagnostics, progress)
+            output::generate_report_with_options(
+                &source,
+                &defaults,
+                settings.as_ref(),
+                projects.as_deref(),
+                include_slider_audio,
+                auto_fix_staged_mixes,
+                &|| cancel.load(Ordering::Relaxed),
+                diagnostics,
+                progress,
+            )
         });
+    }
+
+    /// Audits hitsound audio files in the open mapset folder against osu! Ranking Criteria
+    /// and playback rules. Never modifies any file on disk; returns reports for samples with issues.
+    pub fn audit_mapset_samples(&self) -> Result<Vec<SampleHealthReport>, String> {
+        let document = self.document.as_ref().ok_or("Open a difficulty first.")?;
+        let root = document.path.parent().ok_or("Missing mapset folder.")?;
+        let song_audio = document.file.value("General", "AudioFilename");
+        Ok(sample_checks::audit_folder(
+            root,
+            &document.files,
+            song_audio.as_deref(),
+        ))
     }
     pub fn new_diff(&mut self, name: String) {
         self.review_job(move |source, _, _, _| output::new_diff(&source, &name));
