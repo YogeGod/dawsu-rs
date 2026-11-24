@@ -380,6 +380,7 @@ export function attachIpc(ctx) {
       (before.error ?? null) === (next.error ?? null) &&
       (before.rampShape ?? "Linear") === (next.rampShape ?? "Linear") &&
       !!before.hasOriginalSnapshot === !!next.hasOriginalSnapshot &&
+      !!before.canUndoRevert === !!next.canUndoRevert &&
       sameSoundSetPrompts(before.soundSetPrompts, next.soundSetPrompts) &&
       !before.revert && !before.review && !before.editDialog && !before.saveProblemReview &&
       !before.pendingHome && !next.pendingHome &&

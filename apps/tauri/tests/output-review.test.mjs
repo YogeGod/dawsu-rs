@@ -207,7 +207,7 @@ test("review lists new and reused .wav files apart and says once how volumes are
   assert.equal(calls[0].args.action.index, 1, "Audition plays the mix by its place in mixes");
 });
 
-test("Revert mapset to original asks first, with Cancel as the default, then invokes the revert and refreshes", async () => {
+test("Revert mapset to original previews snapshot date and deleted diffs, asks with Cancel default, then invokes revert and refreshes", async () => {
   const calls = [];
   const makeElement = () => ({
     events: new Map(), children: [], dataset: {},
@@ -219,7 +219,18 @@ test("Revert mapset to original asks first, with Cancel as the default, then inv
   const context = createContext({
     document: { getElementById: () => element, createElement: makeElement, querySelectorAll: () => [], addEventListener() {} },
     window: { __TAURI__: {
-      core: { invoke: async (name, args) => { calls.push({ name, args }); return name === "revert_mapset_to_original" ? 2 : { busy: false, hasDocument: false }; } },
+      core: { invoke: async (name, args) => {
+        calls.push({ name, args });
+        if (name === "preview_revert_mapset_to_original") {
+          return {
+            snapshotDate: "2026-11-24",
+            existingFiles: ["Easy.osu"],
+            deletedFiles: ["Hard.osu"],
+            canUndoRevert: false,
+          };
+        }
+        return name === "revert_mapset_to_original" ? 1 : { busy: false, hasDocument: false };
+      } },
       event: { listen() {} },
     } },
     ResizeObserver: class { observe() {} },
@@ -230,23 +241,46 @@ test("Revert mapset to original asks first, with Cancel as the default, then inv
   calls.length = 0;
   runInContext(`
     globalThis.opened = [];
-    modal = (kind, title, content, buttons) => { opened.push({ kind, title, text: content.map(node => node.textContent), buttons }); };
+    modal = (kind, title, content, buttons) => {
+      opened.push({
+        kind,
+        title,
+        text: content.map(node => node.textContent ?? node.children.filter(c => typeof c === "string").join("")),
+        content,
+        buttons,
+      });
+    };
     closeModal = () => {};
-    scene = { path: "Mapset/Hard.osu" };
+    scene = { path: "Mapset/Easy.osu" };
     view = { hasDocument: true, hasOriginalSnapshot: false, busy: false };
     confirmRevertToOriginal();
   `, context);
   assert.equal(context.opened.length, 0, "no first-open copy, no dialog");
-  runInContext(`view = { hasDocument: true, hasOriginalSnapshot: true, busy: false }; confirmRevertToOriginal();`, context);
+  await runInContext(`view = { hasDocument: true, hasOriginalSnapshot: true, busy: false }; confirmRevertToOriginal();`, context);
+  await runInContext("pending", context);
   const [dialog] = context.opened;
   assert.equal(dialog.kind, "revert-original");
   assert.equal(dialog.title, "Revert mapset to original?");
+  assert.match(dialog.text.join(" "), /2026-11-24/);
+  assert.match(dialog.text.join(" "), /Hard\.osu was deleted since then/);
   assert.match(dialog.text.join(" "), /saved and unsaved/);
   assert.match(dialog.text.join(" "), /backup/);
+  const checkbox = dialog.content
+    .flatMap(node => node.children ?? [])
+    .find(child => typeof child === "object" && child.type === "checkbox");
+  assert.ok(checkbox, "deleted difficulty has a checkbox");
+  assert.equal(checkbox.checked, false, "deleted difficulty starts unchecked");
   const [cancel, confirm] = dialog.buttons;
   assert.deepEqual([cancel[0], cancel[2]], ["Cancel", true], "Cancel is the default button");
   assert.equal(confirm[0], "Revert mapset");
   confirm[1]();
   await runInContext("pending", context);
-  assert.deepEqual(calls.map(call => call.name), ["revert_mapset_to_original", "editor_view"]);
+  assert.deepEqual(
+    calls.map(call => [call.name, call.args]),
+    [
+      ["preview_revert_mapset_to_original", undefined],
+      ["revert_mapset_to_original", { includeDeleted: [] }],
+      ["editor_view", { action: null, scene: true }],
+    ]
+  );
 });

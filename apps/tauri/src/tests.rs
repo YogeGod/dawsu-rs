@@ -3400,6 +3400,7 @@ fn typed_scene_matches_legacy_json_bytes_exactly() {
         });
         result["hsMode"] = json!(document.is_some_and(|d| d.hs_mode));
         result["hasOriginalSnapshot"] = json!(app.has_original_snapshot());
+        result["canUndoRevert"] = json!(app.can_undo_revert());
         result["songsFolder"] = json!((!app.preferences.songs_folder.as_os_str().is_empty()).then_some(&app.preferences.songs_folder));
         result["outputProblems"] = json!([]);
         result["previewWindow"] = json!(app.preferences.preview_window.is_some_and(|place| place.open));

@@ -27,6 +27,8 @@ const menuRules = {
   deleteLane: () => canEditFromMenu() && !!deletableLane(),
   // File › Revert mapset to original…: only once dawsu! has a first-open copy of this mapset.
   originalSnapshot: () => !!scene && !!view.hasDocument && !!view.hasOriginalSnapshot && !view.busy && !drag,
+  // File › Undo revert: enabled while a pre-revert backup exists for this mapset.
+  undoRevert: () => !!scene && !!view.hasDocument && !!view.canUndoRevert && !view.busy && !drag,
   never: () => false,
   lane: laneAllowed(() => true),
   laneRename: laneAllowed(lane => !!lane.colourKey && !view.drumView?.enabled),
@@ -97,6 +99,7 @@ const menuCalls = {
   toggleMapPreview: () => window.dawsuUi?.toggleMapPreview?.(),
   openQuickStart: () => window.dawsuUi?.openQuickStart?.(),
   revertMapsetToOriginal: () => confirmRevertToOriginal(),
+  undoMapsetRevert: () => undoMapsetRevert(),
 };
 
 const menuField = path => path.split(".").reduce((value, key) => value?.[key], { view, scene });

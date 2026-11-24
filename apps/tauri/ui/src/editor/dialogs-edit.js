@@ -145,26 +145,78 @@ export function attachEditDialogs(ctx) {
     if (!state.drag && !state.view.busy) ctx.act({ kind: "home" });
   }
 
-  // File › Revert mapset to original…: puts every .osu in this mapset folder back the way it was when
-  // dawsu! first opened it. Rust saves a backup of the current files first, then reopens the map.
+  // File › Revert mapset to original…: puts existing .osu files in this mapset folder back the way
+  // they were when dawsu! first opened it. Deleted difficulties stay deleted unless opted in.
   function confirmRevertToOriginal() {
     if (!state.scene || !state.view.hasDocument || !state.view.hasOriginalSnapshot || state.view.busy || state.drag) return;
     const map = state.scene.path;
-    ctx.modal("revert-original", "Revert mapset to original?", [
-      paragraph("Every .osu file in this mapset folder goes back to how it was when dawsu! first opened it."),
-      paragraph("This undoes all changes since then, saved and unsaved, in every difficulty of this mapset. Undo can't bring them back."),
-      paragraph("dawsu! saves a backup of the current files first, so nothing is lost for good."),
-    ], [
-      ["Cancel", () => ctx.closeModal(), true],
-      ["Revert mapset", () => {
-        ctx.closeModal();
-        ctx.run(async () => {
-          if (state.scene?.path !== map || state.view.busy) return;
-          await invoke("revert_mapset_to_original");
-          await ctx.update();
+    return ctx.run(async () => {
+      let preview;
+      try {
+        preview = await invoke("preview_revert_mapset_to_original");
+      } catch (reason) {
+        env.window?.showToast?.({
+          tone: "warning",
+          title: "Revert mapset to original",
+          body: String(reason),
         });
-      }],
-    ]);
+        return;
+      }
+      if (state.scene?.path !== map || state.view.busy || state.drag) return;
+      const deletedChecks = (preview.deletedFiles ?? []).map(name => {
+        const box = input("checkbox", "", 0, 0);
+        box.checked = false;
+        return { name, box, row: labeled(`${name} was deleted since then`, box) };
+      });
+      const content = [
+        paragraph(`Snapshot saved on ${preview.snapshotDate}. Every existing .osu file in this mapset folder goes back to how it was when dawsu! first opened it.`),
+        paragraph("This undoes all changes since then, saved and unsaved, in every difficulty of this mapset. Undo can't bring them back."),
+        paragraph("dawsu! saves a backup of the current files first, so nothing is lost for good."),
+        ...(deletedChecks.length ? [
+          paragraph("Deleted difficulties stay deleted unless you choose to bring them back:"),
+          ...deletedChecks.map(entry => entry.row),
+        ] : []),
+      ];
+      ctx.modal("revert-original", "Revert mapset to original?", content, [
+        ["Cancel", () => ctx.closeModal(), true],
+        ["Revert mapset", () => {
+          const includeDeleted = deletedChecks.filter(entry => entry.box.checked).map(entry => entry.name);
+          ctx.closeModal();
+          ctx.run(async () => {
+            if (state.scene?.path !== map || state.view.busy) return;
+            try {
+              await invoke("revert_mapset_to_original", { includeDeleted });
+              await ctx.update();
+            } catch (reason) {
+              env.window?.showToast?.({
+                tone: "error",
+                title: "Revert mapset to original",
+                body: String(reason),
+              });
+            }
+          });
+        }],
+      ]);
+    });
+  }
+
+  // File › Undo revert: restores existing .osu files from the newest pre-revert backup for this mapset.
+  function undoMapsetRevert() {
+    if (!state.scene || !state.view.hasDocument || !state.view.canUndoRevert || state.view.busy || state.drag) return;
+    const map = state.scene.path;
+    return ctx.run(async () => {
+      if (state.scene?.path !== map || state.view.busy) return;
+      try {
+        await invoke("undo_mapset_revert");
+        await ctx.update();
+      } catch (reason) {
+        env.window?.showToast?.({
+          tone: "error",
+          title: "Undo revert",
+          body: String(reason),
+        });
+      }
+    });
   }
 
   function openSiblingDifficulty(path) {
@@ -342,7 +394,7 @@ export function attachEditDialogs(ctx) {
   }
 
   Object.assign(ctx, {
-    openLaneColour, openReplaceSample, openMap, openFromOsu, goHome, confirmRevertToOriginal,
+    openLaneColour, openReplaceSample, openMap, openFromOsu, goHome, confirmRevertToOriginal, undoMapsetRevert,
     openSiblingDifficulty, chooseSiblingDifficulty, showTimelineEdit,
     editBookmark, openTimeSignatures,
   });

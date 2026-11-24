@@ -55,6 +55,8 @@
     "allow-vst3-scan",
     "allow-drum-vst-action",
     "allow-keysounds-action",
-    "allow-revert-mapset-to-original"
+    "allow-preview-revert-mapset-to-original",
+    "allow-revert-mapset-to-original",
+    "allow-undo-mapset-revert"
   ]
 }
