@@ -405,6 +405,41 @@ aside[data-folded] {
   padding: 1px 6px;
   font-size: 11px;
 }
+#statusbar .status-hints {
+  display: inline-flex;
+  flex: 1 1 0;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+  overflow: hidden;
+  white-space: nowrap;
+  font-size: var(--text-xs);
+  color: var(--editor-secondary);
+}
+#statusbar .status-hint {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 5px;
+}
+#statusbar .status-hint kbd {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 5px;
+  border: 1px solid var(--editor-border);
+  border-radius: var(--radius-4);
+  background: var(--editor-panel);
+  color: var(--editor-text);
+  font-family: var(--font-ui);
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 1.1;
+}
+@media (max-width: 1119px) {
+  #statusbar .status-hints {
+    display: none;
+  }
+}
 #statusbar .status-right {
   flex: 0 1 auto;
   min-width: 0;

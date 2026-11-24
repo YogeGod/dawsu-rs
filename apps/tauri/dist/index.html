@@ -94,7 +94,7 @@
     </div>
   </div>
   <main id="editor-dock" class="dock">
-    <aside id="tree-browser-host" aria-label="Browser" hidden>
+    <aside id="tree-browser-host" aria-label="Browser" data-hint-zone="browser" hidden>
       <div class="panel-head"><h2>Browser</h2><button id="browser-fold" type="button" data-doc class="panel-fold" aria-label="Fold Browser" title="Fold Browser" aria-controls="tree-browser-host"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18M16 15l-3-3 3-3"/></svg></button></div>
       <nav class="panel-rail" aria-label="Browser" hidden>
         <button id="browser-unfold" type="button" data-doc aria-label="Open Browser" title="Open Browser" aria-controls="tree-browser-host"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18M14 9l3 3-3 3"/></svg></button>
@@ -134,12 +134,12 @@
             </div>
           </div>
         </div>
-        <canvas id="ruler" aria-label="Time ruler, song waveform and gameplay objects"></canvas>
+        <canvas id="ruler" aria-label="Time ruler, song waveform and gameplay objects" data-hint-zone="ruler"></canvas>
         <div id="waveform-resize" role="separator" tabindex="0" aria-orientation="horizontal"
              aria-label="Waveform height" aria-valuemin="0" aria-valuemax="200" aria-valuenow="84"
              title="Drag to resize waveform. Double-click to reset."></div>
       </div>
-      <div class="scroll" id="scroll"><div id="lanes" data-ui-mount="lanes"></div><canvas id="grid" tabindex="-1" aria-label="Hitsound timeline" aria-haspopup="menu" aria-expanded="false"></canvas></div>
+      <div class="scroll" id="scroll"><div id="lanes" data-ui-mount="lanes" data-hint-zone="lanes"></div><canvas id="grid" tabindex="-1" aria-label="Hitsound timeline" aria-haspopup="menu" aria-expanded="false" data-hint-zone="timeline"></canvas></div>
       <div id="volume-controller-panel" class="controller">
         <div class="lane-title volume-title">
           <div data-ui-mount="bottom-panel"></div>
@@ -150,16 +150,16 @@
             <option value="SCurve">S-curve</option>
           </select>
         </div>
-        <canvas id="controller" aria-label="Hit volume lane"></canvas>
+        <canvas id="controller" aria-label="Hit volume lane" data-hint-zone="volume"></canvas>
         <div class="mixer-host" data-ui-mount="mixer"></div>
       </div>
       <div class="overview">
         <div class="lane-title ruler-controls"><span>Objects overview</span></div>
-        <canvas id="overview" aria-label="Song overview"></canvas>
+        <canvas id="overview" aria-label="Song overview" data-hint-zone="overview"></canvas>
       </div>
 
     </div>
-    <aside id="editor-inspector" aria-label="Inspector">
+    <aside id="editor-inspector" aria-label="Inspector" data-hint-zone="inspector">
       <div class="panel-head"><h2>Inspector</h2><button id="inspector-fold" type="button" data-doc class="panel-fold" aria-label="Fold Inspector" title="Fold Inspector" aria-controls="editor-inspector"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M15 3v18M8 9l3 3-3 3"/></svg></button></div>
       <nav class="panel-rail" aria-label="Inspector" hidden>
         <button id="inspector-unfold" type="button" data-doc aria-label="Open Inspector" title="Open Inspector" aria-controls="editor-inspector"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M15 3v18M10 15l-3-3 3-3"/></svg></button>

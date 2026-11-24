@@ -1,5 +1,6 @@
 <script>
   import { bridge } from "../lib/bridge.svelte.js";
+  import { hasPriorityStatus, hintsFor } from "../lib/hints.js";
   import {
     audioLabel, cannotSaveLabel, hitLaneCounts, PLAYBACK_SPEEDS, problemTooltip, selectionLabel, splitFileName,
     statusText, ZOOM_MAX, ZOOM_MIN, ZOOM_STEP, zoomSliderValue,
@@ -14,6 +15,10 @@
   const cannotSave = $derived(cannotSaveLabel(problems.length));
   const problemTip = $derived(problemTooltip(problems));
   const status = $derived(statusText(bridge.statusNotice, view));
+  const hints = $derived(hasScene && !hasPriorityStatus(bridge.statusNotice, view)
+    ? hintsFor(bridge.hint, view?.tool)
+    : []);
+  const showHints = $derived(hints.length > 0);
   const path = $derived(scene?.path ?? "");
   const fileParts = $derived(splitFileName(path));
   const counts = $derived(hitLaneCounts(scene));
@@ -34,7 +39,14 @@
   {view?.playing ? "Playing" : "Stopped"}
 </span>
 <span id="selection-count" class="selection-count" hidden={!selected}>{selectionLabel(selected)}</span>
-<span id="status" role="status" title={status}>{status}</span>
+<span id="status" role="status" title={status} hidden={showHints}>{status}</span>
+{#if showHints}
+  <span id="hint-bar" class="status-hints" aria-hidden="true">
+    {#each hints as item (item.keys + ":" + item.action)}
+      <span class="status-hint"><kbd>{item.keys}</kbd><span>{item.action}</span></span>
+    {/each}
+  </span>
+{/if}
 <span id="external-osu-notice" class="external-osu-notice" role="alert" hidden={!view?.externalOsuChanged}>
   <span class="external-osu-label">.osu changed on disk</span>
   <button id="reload-from-disk" type="button" disabled={!!view?.busy}

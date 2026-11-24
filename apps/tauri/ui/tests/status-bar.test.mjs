@@ -2,10 +2,12 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { render } from "svelte/server";
 import { bridge } from "../src/lib/bridge.svelte.js";
+import { hasPriorityStatus, hintsFor, hintZoneFromTarget } from "../src/lib/hints.js";
 import {
   audioLabel, cannotSaveLabel, hitLaneCounts, nameOf, PLAYBACK_SPEEDS, problemTooltip, selectionLabel,
   splitFileName, statusText, ZOOM_MIN, zoomSliderValue,
 } from "../src/lib/statusbar.js";
+import { TOOLS } from "../src/lib/tools.js";
 import StatusBar from "../src/parts/StatusBar.svelte";
 
 const map = {
@@ -47,9 +49,10 @@ test("statusbar helpers format file names, problems, counts, status and audio la
   assert.equal(zoomSliderValue(0.1), -1);
 });
 
-function shown(view, scene = map, notice = "") {
+function shown(view, scene = map, notice = "", hint = null) {
   bridge.set(view, scene);
   bridge.statusNotice = notice;
+  bridge.setHint(hint);
   return render(StatusBar).body;
 }
 
@@ -95,4 +98,62 @@ test("StatusBar hides map controls when no map is open and disables jobs cleanly
   assert.match(empty, /id="status"[^>]*>Part of the editor did not load</);
   assert.match(empty, /id="audio"[^>]*>Audio output</);
   bridge.statusNotice = "";
+  bridge.setHint(null);
+});
+
+test("hintsFor returns tool-aware timeline hints, panel hints, and empty for unknown zones", () => {
+  for (const tool of TOOLS) {
+    const items = hintsFor("timeline", tool);
+    assert.ok(items.length >= 2, `timeline hints for ${tool}`);
+    for (const item of items) {
+      assert.ok(item.keys.length > 0 && item.action.length > 0);
+    }
+  }
+  assert.ok(hintsFor("timeline", "Draw").some(item => item.keys === "Click" && item.action === "Place hit"));
+  assert.ok(hintsFor("timeline", "Select").some(item => item.keys === "Drag" && item.action === "Box select"));
+  assert.ok(hintsFor("timeline", "Ramp").some(item => item.keys === "Drag" && item.action === "Ramp volume"));
+  assert.ok(hintsFor("ruler", "Select").some(item => item.keys === "Ctrl+Click" && item.action === "L locator"));
+  assert.ok(hintsFor("volume", "Select").some(item => item.keys === "Shift+Drag" && item.action === "Ramp"));
+  assert.ok(hintsFor("lanes", "Select").some(item => item.keys === "M" && item.action === "Mute"));
+  assert.ok(hintsFor("mixer", "Select").some(item => item.keys === "Drag fader"));
+  assert.ok(hintsFor("browser", "Select").length >= 2);
+  assert.ok(hintsFor("inspector", "Select").length >= 2);
+  assert.ok(hintsFor("overview", "Select").length >= 2);
+  assert.deepEqual(hintsFor("unknown", "Select"), []);
+  assert.deepEqual(hintsFor(null, "Select"), []);
+  assert.deepEqual(hintsFor("", "Draw"), []);
+
+  assert.equal(hintZoneFromTarget({ closest: () => ({ dataset: { hintZone: "ruler" } }) }), "ruler");
+  assert.equal(hintZoneFromTarget({ closest: () => null }), null);
+  assert.equal(hintZoneFromTarget(null), null);
+
+  assert.equal(hasPriorityStatus("", { busy: false, fault: null, status: "Ready" }), false);
+  assert.equal(hasPriorityStatus("Error", { busy: false }), true);
+  assert.equal(hasPriorityStatus("", { busy: true }), true);
+  assert.equal(hasPriorityStatus("", { fault: "Stopped" }), true);
+});
+
+test("StatusBar renders kbd hover hints when bridge.hint is set and falls back cleanly", () => {
+  const withHint = shown({ busy: false, tool: "Draw", status: "Ready" }, map, "", "timeline");
+  assert.match(withHint, /id="hint-bar"/);
+  assert.match(withHint, /<kbd>Click<\/kbd><span>Place hit<\/span>/);
+  assert.match(withHint, /<kbd>Right-click<\/kbd><span>Delete<\/span>/);
+  assert.match(withHint, /id="status"[^>]*hidden/);
+
+  const cleared = shown({ busy: false, tool: "Draw", status: "Ready" }, map, "", null);
+  assert.doesNotMatch(cleared, /id="hint-bar"/);
+  assert.doesNotMatch(cleared, /id="status"[^>]*hidden/);
+  assert.match(cleared, /id="status"[^>]*>Ready</);
+
+  // Active status notice or busy job keeps normal status visible instead of flickering to hints.
+  const busy = shown({ busy: true, tool: "Draw", status: "Saving" }, map, "", "timeline");
+  assert.doesNotMatch(busy, /id="hint-bar"/);
+  assert.doesNotMatch(busy, /id="status"[^>]*hidden/);
+
+  const notice = shown({ busy: false, tool: "Draw", status: "Ready" }, map, "Audio stopped", "ruler");
+  assert.doesNotMatch(notice, /id="hint-bar"/);
+  assert.match(notice, /id="status"[^>]*>Audio stopped</);
+
+  bridge.statusNotice = "";
+  bridge.setHint(null);
 });
