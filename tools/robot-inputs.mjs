@@ -210,6 +210,9 @@ function claims(paths) {
     // A loop that builds its ids at run time says what it goes through in a comment.
     for (const [, list] of source.matchAll(/\/\/ covers-all:(.*)/g)) for (const id of list.trim().split(/\s+/)) found.add(id);
   }
+  // The control crawl presses what it finds on screen, so only a run can say which controls it
+  // reached: a static claim never counts a whole window of controls.
+  for (const id of [...found]) if (id.startsWith("control:") && id.includes("*")) found.delete(id);
   return found;
 }
 function ran(files) {
@@ -235,7 +238,7 @@ function ran(files) {
   for (const entry of inventory.filter(entry => entry.kind === "control")) {
     const [, surface, , rest] = /^control:([^:]+):([^:]+):(.+)$/.exec(entry.id);
     const match = /^(.*) \(([^)]+)\)( \d+)?$/.exec(rest);
-    if (!match) continue;
+    if (!match || !match[1].replace(/\{…\}/g, "").trim()) continue;
     const pattern = new RegExp("^" + match[1].toLowerCase().split("{…}").map(part => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join(".*") + "$");
     const type = match[2] === "summary" ? "summary" : match[2];
     if (labels.some(label => label.surface === surface && label.type === type && pattern.test(label.name))) found.add(entry.id);
@@ -244,7 +247,7 @@ function ran(files) {
   const seen = details.join(" ");
   for (const entry of inventory.filter(entry => entry.kind === "dialog")) {
     const title = entry.what.replace(/^[^:]+: /, "").replace(/ \(Svelte.*\)$/, "").replace(/\{…\}.*$/, "").trim();
-    if (title && (seen.includes(`"${title}`) || seen.includes(`${title} opened`))) found.add(entry.id);
+    if (title && seen.includes(`"${title}"`)) found.add(entry.id);
   }
   return found;
 }
@@ -266,7 +269,7 @@ const lines = [
   "",
   `Read from the code at ${new Date().toISOString().slice(0, 10)} by tools/robot-inputs.mjs.`,
   "",
-  `| Kind | Inputs | Robot before | Robot now${reached ? " | Reached in the run" : ""} |`,
+  `| Kind | Inputs | Robot before (tried) | Robot now (tried)${reached ? " | Reached in the run" : ""} |`,
   `|---|---:|---:|---:${reached ? "|---:" : ""}|`,
   ...table.map(row => `| ${row.kind} | ${row.total} | ${row.before} | ${row.after}${reached ? ` | ${row.reached}` : ""} |`),
   `| **all** | ${inventory.length} | ${table.reduce((s, r) => s + r.before, 0)} | ${table.reduce((s, r) => s + r.after, 0)}${reached ? ` | ${table.reduce((s, r) => s + r.reached, 0)}` : ""} |`,

@@ -156,9 +156,13 @@ export function createRobot({ repo, exe, name, shots: shotsArg, opensMap = [] })
 
   async function launch(map, extraArgs = []) {
     const port = await freePort();
+    // TEMP and TMP point into the profile too: the editor looks there for osu!lazer's "Edit
+    // externally" folders, which are real maps.
+    const temp = join(profile, "temp");
+    mkdirSync(temp, { recursive: true });
     const child = spawn(exe, [...(map ? [map] : []), ...extraArgs], {
       // WebView2 finds its profile without LOCALAPPDATA; name it, or a running dawsu! shares its browser.
-      env: { ...process.env, LOCALAPPDATA: profile, WEBVIEW2_USER_DATA_FOLDER: join(profile, "webview2"),
+      env: { ...process.env, LOCALAPPDATA: profile, TEMP: temp, TMP: temp, WEBVIEW2_USER_DATA_FOLDER: join(profile, "webview2"),
         WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${port}` },
       stdio: "ignore",
     });

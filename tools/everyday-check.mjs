@@ -140,7 +140,7 @@ try {
 
   await step("Pick each of the seven tools", async () => {
     for (const tool of ["Draw", "Erase", "Mute", "Grab", "Range", "Ramp", "Select"]) await pickTool(tool);
-  }, { covers: ["menu:tool.toolMute", "menu:tool.toolGrab", "menu:tool.toolRange", "menu:tool.toolRamp"] });
+  });
 
   await step("Change the snap with the snap slider", async () => {
     const before = await scene(() => window.scene.beats + "/" + window.scene.divisor);

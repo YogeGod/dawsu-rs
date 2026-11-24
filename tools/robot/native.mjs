@@ -21,10 +21,15 @@ export function startNative() {
     if (answer.ready) return ready(true);
     waiting.shift()?.(answer);
   });
-  shell.on("exit", () => {
+  const stopped = () => {
     ready(false);
+    api.available = false;
+    api.reason = "the native helper (PowerShell) stopped";
     for (const done of waiting.splice(0)) done({ ok: false, error: "the native helper stopped" });
-  });
+  };
+  shell.on("exit", stopped);
+  shell.on("error", stopped);
+  shell.stdin.on("error", () => {});
   const send = async command => {
     if (!(await started) || shell.exitCode !== null) return { ok: false, error: "the native helper is not running" };
     return new Promise(done => {
@@ -33,7 +38,7 @@ export function startNative() {
     });
   };
   const list = answer => (answer.windows ?? []).filter(Boolean);
-  return {
+  const api = {
     available: true,
     dialogs: async pid => list(await send(`dialogs ${pid}`)),
     cancel: async pid => (await send(`cancel ${pid}`)).closed ?? 0,
@@ -43,6 +48,7 @@ export function startNative() {
     closeMain: pid => send(`closemain ${pid}`),
     stop: () => { try { shell.stdin.end(); shell.kill(); } catch {} },
   };
+  return api;
 }
 
 function disabled(reason) {

@@ -20,7 +20,8 @@
 // through every menu row, every command by its key in each preset, every Ctrl+K entry, every mouse
 // action the editor lists in Shortcuts and mouse actions, and the features merged on 2026-11-24;
 // then presses every control it can see in the main window, its dialogs and the other windows; and
-// last checks that the original folder is byte-identical and that Save left no unused files.
+// last checks that the original folder is byte-identical. The Save step checks that Save left no
+// file the difficulty does not play; the last step lists what the whole run left in the copy.
 //
 // Like tools/everyday-check.mjs it acts only through real input (mouse, keys, the windows' own
 // controls, and the native file pickers through tools/robot/native.ps1) and reads the page only
@@ -84,17 +85,62 @@ const replacementWav = join(inputs, "every-input-replacement.wav");
 silentWav(replacementWav);
 const copyBefore = snapshot(mapFolder);
 
+// Whether a difficulty plays a sample file: its name is in the .osu, or it is a set-sound-index file
+// whose custom index a hit object or timing line uses (as tools/everyday-check.mjs checks it).
+function playedBy(osu, path) {
+  const name = path.split("/").pop();
+  if (osu.includes(name)) return true;
+  const match = /^(normal|soft|drum)-(hit(normal|whistle|finish|clap)|slider(slide|whistle|tick))(\d+)\.(wav|ogg|mp3)$/i.exec(name);
+  if (!match) return false;
+  const indexes = new Set();
+  let section = "";
+  for (const line of osu.split(/\r?\n/)) {
+    if (/^\[.*\]$/.test(line.trim())) section = line.trim();
+    const fields = line.split(",");
+    if (section === "[TimingPoints]" && fields.length > 4) indexes.add(Number(fields[4]));
+    if (section === "[HitObjects]" && fields.length > 5) {
+      const sample = fields[fields.length - 1].split(":");
+      if (sample.length >= 4) indexes.add(Number(sample[2]));
+    }
+  }
+  return indexes.has(Number(match[5]));
+}
+
 // The step wrapper: --only and --skip pick steps; `covers` names inventory entries (tools/robot-inputs.mjs).
 const always = new Set(["Start with no map and see the start screen", "Open the map copy", "The original map folder is byte-identical",
   "No errors after the last step"]);
+// Set when the editor ever shows a map outside the run's profile: the rest of the run is skipped, so
+// nothing can be saved into a real mapset.
+let outside = null;
+const inProfile = path => !path || resolve(path).toLowerCase().startsWith(resolve(profile).toLowerCase());
 async function step(name, body, covers = [], options = {}) {
   if (!always.has(name) && ((only && !only.test(name)) || (skip && skip.test(name)))) return;
+  if (outside && !options.always) {
+    await robot.step(name, async () => ({ skip: outside }), { covers: [] });
+    return;
+  }
   await robot.step(name, async result => {
     result.reached = [];
-    const note = await body(result);
-    // A step that ends with the editor stuck elsewhere would fail every step after it.
-    await settle().catch(() => {});
-    return note;
+    // An editor that quit in the last step (its window closed) is started again on the copy.
+    if (robot.app && robot.app.child.exitCode !== null) {
+      await robot.quit();
+      await launch(mapCopy);
+      await until(() => window.scene?.lanes?.length > 0, null, "the editor did not reopen the copy", 60000);
+      probe = null;
+    }
+    try {
+      const note = await body(result);
+      // A step that ends with the editor stuck elsewhere would fail every step after it.
+      await settle().catch(() => {});
+      return note;
+    } finally {
+      const path = robot.app?.page ? await read(() => window.scene?.path ?? null).catch(() => null) : null;
+      if (!inProfile(path)) {
+        outside = `the editor opened ${path}, outside the run's copy, so the run stopped`;
+        await robot.quit();
+        throw new Error(outside);
+      }
+    }
   }, { covers, ...options });
 }
 
@@ -213,15 +259,23 @@ async function settle() {
     await page().locator('[aria-label="Transport"] button[aria-label="Stop"]').click().catch(() => {});
     await until(() => !window.view.playing, null, "playback did not stop", 3000).catch(() => {});
   }
-  if (now.audition) await page().locator('button[aria-label="Audition"]').click().catch(() => {});
+  // Whatever a step pressed, the song and the sample folders stay muted and Audition stays off.
+  if (now.path) await silence().catch(() => {});
 }
 
 // Explorer windows: the ones open before an input, so only the editor's new ones are closed.
+// Only windows showing one of the run's own folders are closed; any other Explorer window is the
+// mapper's own and stays open.
+const runFolders = () => [basename(mapFolder), "map", "inputs", "outputs", "songs", basename(profile), "every-input"].map(name => name.toLowerCase());
+const ours = window => runFolders().some(name => window.title.toLowerCase() === name || window.title.toLowerCase().includes(name));
 async function closeNewExplorers(before) {
   const now = await native.explorers();
-  const opened = now.filter(window => !before.some(old => old.hwnd === window.hwnd));
+  const opened = now.filter(window => !before.some(old => old.hwnd === window.hwnd) && ours(window));
   for (const window of opened) await native.close(window.hwnd);
-  return opened;
+  // Explorer may show the folder in a window that was already open.
+  const reused = now.filter(window => before.some(old => old.hwnd === window.hwnd) && ours(window) &&
+    before.find(old => old.hwnd === window.hwnd).title !== window.title);
+  return [...opened, ...reused];
 }
 
 // The robot's own hit: placed on an empty part of the song, so the probes never move the map's hits.
@@ -429,18 +483,19 @@ const needs = {
 const specs = {
   // File
   open: { expect: { native: true } },
-  openFromOsu: { expect: { respond: true } },
+  // Opens the map osu! has open, which is a real mapset: never pressed by the robot.
+  openFromOsu: { unsafe: "Open from osu! opens the map open in osu!, a real mapset, so the robot never presses it" },
   importOsz: { expect: { native: true } },
   importMidi: { expect: { modal: "Import MIDI" } },
   importManiaHitsounds: { expect: { native: true } },
   exportMidi: { expect: { native: true } },
   openFolder: { expect: { explorer: true } },
-  save: { needs: ["probe"], expect: { changed: ["dirty", "dialog"] }, after: finishSave },
-  revert: { needs: ["probe"], expect: { dialog: "Revert to saved" } },
+  save: { needs: ["probe"], before: () => makeEdit(), expect: { changed: ["dirty", "dialog"] }, after: finishSave },
+  revert: { needs: ["probe"], before: () => makeEdit(), expect: { dialog: "Revert to saved" }, undo: true },
   revertOriginal: { expect: { dialog: "Revert mapset to original" } },
   undoRevert: { expect: { respond: true } },
   export: { expect: { modal: "Export" } },
-  startScreen: { expect: { changed: ["home"] } },
+  startScreen: { expect: { changed: ["home"], dialog: "Save changes before going Home?" } },
   folders: { expect: { dialog: "Folders" } },
   preferences: { expect: { modal: "Preferences" } },
   // Edit
@@ -524,6 +579,17 @@ const specs = {
   toolGrab: { expect: { changed: ["tool"] } },
   toolRange: { expect: { changed: ["tool"] } },
   toolRamp: { expect: { changed: ["tool"] } },
+  // The lane right-click menu (on the robot's lane).
+  laneRename: { needs: ["probe"], expect: { dialog: "Rename lane" } },
+  laneMoveUp: { needs: ["probe"], expect: { changed: ["laneOrder", "folders", "history"], orQuiet: "the lane is already the first one it can be" }, undo: true },
+  laneMoveDown: { needs: ["probe"], expect: { changed: ["laneOrder", "folders", "history"], orQuiet: "the lane is already the last one it can be" }, undo: true },
+  laneReplaceSample: { needs: ["probe"], expect: { dialog: "Replace sample on" } },
+  laneColour: { needs: ["probe"], expect: { dialog: "Lane colour" } },
+  laneAddLayer: { needs: ["probe"], expect: { changed: ["lanes", "history"] }, undo: true },
+  laneCloneVariant: { needs: ["probe"], expect: { changed: ["lanes", "history"] }, undo: true },
+  laneAlternate: { needs: ["two"], expect: { changed: ["hits", "selected", "history"] }, undo: true },
+  laneAdd: { needs: ["probe"], expect: { dialog: "Add lane" } },
+  laneDelete: { needs: ["probe"], expect: { dialog: "Delete lane" } },
   // Key-only commands
   volumeUp: { needs: ["selection"], expect: { changed: ["selected", "history"] }, undo: true },
   volumeDown: { needs: ["selection"], expect: { changed: ["selected", "history"] }, undo: true },
@@ -626,12 +692,14 @@ const rows = await (async () => {
   return { items, menus, keyOnly };
 })();
 const itemById = new Map(rows.items.map(item => [item.id, item]));
-const specOf = id => specs[id] ?? specs[itemById.get(id)?.command ?? ""] ?? null;
+// A row's command decides (Quantize… is quantizeDialog, not the Q key's quantize); a row without one uses its id.
+const specOf = id => specs[itemById.get(id)?.command ?? ""] ?? specs[id] ?? null;
 
 // Run one input and check what it did. `press` gives the input; `id` picks the spec.
 async function probeInput(id, press, result, label) {
   const spec = specOf(id);
   if (!spec) throw new Error(`the robot has no expectation for ${id}: add one to specs in tools/every-input.mjs`);
+  if (spec.unsafe) return { skip: spec.unsafe };
   for (const need of spec.needs ?? []) await needs[need]();
   if (spec.before) await spec.before();
   await sleep(150);
@@ -651,8 +719,9 @@ async function probeInput(id, press, result, label) {
     else if (want.native && !native.available) seen = "skipped: " + native.reason;
     else if (want.window && others().length > windowsBefore) seen = `${others().at(-1).url().split("/").pop()} opened`;
     else if (want.dialog !== undefined && after.dialog?.startsWith(want.dialog)) seen = `"${after.dialog}" opened`;
-    else if (want.modal !== undefined && after.modals && after.modals.split("|").some(name => name.startsWith(want.modal))) seen = `${after.modals} opened`;
-    else if ((want.explorer || want.explorerOk) && (await native.explorers()).some(window => !explorersBefore.some(old => old.hwnd === window.hwnd))) seen = "an Explorer window opened";
+    else if (want.modal !== undefined && after.modals && after.modals.split("|").some(name => name.startsWith(want.modal))) seen = `"${after.modals}" opened`;
+    else if ((want.explorer || want.explorerOk) && (await native.explorers()).some(window => ours(window) &&
+      !explorersBefore.some(old => old.hwnd === window.hwnd && old.title === window.title))) seen = "an Explorer window opened";
     else if (want.changed && want.changed.some(key => changed.includes(key))) seen = describe(before, after, want.changed.filter(key => changed.includes(key)));
     else if (want.respond && changed.length) seen = describe(before, after, changed);
   }
@@ -664,6 +733,20 @@ async function probeInput(id, press, result, label) {
     else {
       throw new Error(`${label}: expected ${JSON.stringify(want)}, but ${changed.length ? describe(before, after, changed) : "nothing changed"}`);
     }
+  }
+  if (spec.twice) {
+    const mid = await fingerprint();
+    await press();
+    const keys = (want.changed ?? differs(before, mid)).filter(key => JSON.stringify(mid[key]) !== JSON.stringify(before[key]));
+    const back = Date.now() + 3000;
+    let restored = false;
+    while (Date.now() < back && !restored) {
+      await sleep(150);
+      const now = await fingerprint();
+      restored = keys.every(key => JSON.stringify(now[key]) === JSON.stringify(before[key]));
+    }
+    if (!restored) throw new Error(`${label}: pressed a second time, it did not switch back (${describe(before, await fingerprint(), keys)})`);
+    seen += ", and back";
   }
   if (want.window && others().length > windowsBefore) {
     const opened = others().at(-1);
@@ -684,21 +767,6 @@ async function probeInput(id, press, result, label) {
     const redo = menuRow("Redo");
     if (await redo.isEnabled()) await redo.click(); else await page().keyboard.press("Escape");
     await undoTo(before.history);
-  }
-  if (spec.twice) {
-    const mid = await fingerprint();
-    await press();
-    const keys = (want.changed ?? differs(before, mid)).filter(key => JSON.stringify(mid[key]) !== JSON.stringify(before[key]));
-    const back = Date.now() + 3000;
-    let restored = false;
-    while (Date.now() < back && !restored) {
-      await sleep(150);
-      const now = await fingerprint();
-      restored = keys.every(key => JSON.stringify(now[key]) === JSON.stringify(before[key]));
-    }
-    await settle();
-    if (!restored) throw new Error(`${label}: pressed a second time, it did not switch back (${describe(before, await fingerprint(), keys)})`);
-    seen += ", and back";
   }
   return seen;
 }
@@ -733,11 +801,10 @@ const keyCodes = { ".": "Period", "-": "Minus", "=": "Equal", "/": "Slash", "\\"
   "Numpad +": "NumpadAdd", "Numpad .": "NumpadDecimal", "Numpad Enter": "NumpadEnter" };
 // "Ctrl+Shift+Z" as Playwright presses it, by key position: letters as KeyZ so the page sees "z" or "Z".
 function keyPress(keys) {
-  const parts = keys.split("+");
-  // "Numpad +" and "Ctrl++" style names keep their plus.
-  let key = parts.pop();
-  if (key === "" && parts.at(-1) === "") { parts.pop(); key = "+"; }
-  if (key === "" ) key = "+";
+  // "Numpad +" ends in a plus of its own: take it off before splitting the modifiers.
+  const numpadPlus = keys.endsWith("Numpad +");
+  const parts = (numpadPlus ? keys.slice(0, -"Numpad +".length) : keys).split("+").filter(Boolean);
+  let key = numpadPlus ? "Numpad +" : parts.pop();
   const mods = parts.map(mod => ({ Ctrl: "Control", Shift: "Shift", Alt: "Alt" }[mod] ?? mod));
   let name = keyCodes[key] ?? key;
   if (/^[A-Z]$/.test(key)) name = `Key${key}`;
@@ -799,24 +866,34 @@ try {
     }
   }, ["dialog:key-preset"]);
 
-  await step("Start screen: point the Songs folder at the run's copy and pick the mapset", async result => {
-    // Preferences › General › osu! Songs folder: Change… opens a folder picker, answered with the copy's Songs folder.
-    await page().keyboard.press("Control+Comma").catch(() => {});
-    let dialog = page().getByRole("dialog", { name: "Preferences" });
-    if (!(await dialog.isVisible().catch(() => false))) {
-      const button = page().getByRole("button", { name: /Preferences|Settings/ }).first();
-      if (await button.count()) await button.click();
-    }
-    if (!(await dialog.isVisible().catch(() => false))) return { skip: "the start screen has no way to Preferences" };
-    await dialog.getByRole("button", { name: "Change…" }).first().click();
+  await step("Start screen: point the Songs folder at the run's copy and open the mapset from the picker", async result => {
+    // Folders… › Choose Songs folder… opens a folder picker, answered with the run's own Songs folder.
+    await page().click("#home-folders");
+    await robot.dialogShown("Folders");
+    await dialogButton("Choose Songs folder…").click();
     await answerPicker(songs, "the Songs folder picker");
-    await until(songs => (window.view.songsFolder ?? "").toLowerCase().includes("songs"), songs, "the Songs folder was not set", 5000);
-    await dialog.getByRole("button", { name: "Close preferences" }).click();
-    // The picker lists the copy's mapset; opening it goes to the copy under the run's own Songs folder.
-    const text = await until(() => document.getElementById("home").innerText.length > 0 && document.getElementById("home").innerText, null, "the start screen is empty", 10000);
+    const want = resolve(songs).toLowerCase();
+    await until(want => (window.view.songsFolder ?? "").replaceAll("/", "\\").toLowerCase().replace(/\\$/, "") === want ||
+      (window.view.songsFolder ?? "").toLowerCase() === want, want, "the Songs folder is not the run's own copy", 5000)
+      .catch(async error => {
+        // Never go on with another Songs folder: it could be a real one.
+        outside = `the Songs folder became ${await read(() => window.view.songsFolder)}, not the run's copy, so the run stopped`;
+        await robot.quit();
+        throw error;
+      });
+    await settle();
+    // The picker lists the copy's mapset; a difficulty button opens it from the run's Songs folder.
+    const diff = page().locator("#home-songs button.home-song-diff:not(.home-song-create-hs)").first();
+    await diff.waitFor({ state: "visible", timeout: 20000 });
+    const search = page().getByLabel("Search Songs folder");
+    await search.fill(basename(original).slice(0, 4));
+    await search.fill("");
+    await diff.click();
+    const opened = await until(want => window.scene?.path && !window.view.busy && window.scene.path, null, "the picked difficulty did not open", 60000);
+    expect(inProfile(opened) && opened.toLowerCase().includes("songs"), `the picker opened ${opened}, not the run's Songs copy`);
     result.reached.push("feature:map-picker");
-    return `start screen shows ${text.split("\n").filter(Boolean).length} lines with the run's Songs folder set`;
-  }, ["feature:map-picker", "control:main:PreferencesModal:*"]);
+    return `opened ${basename(opened)} from the run's Songs folder`;
+  }, ["feature:map-picker", "dialog:folders", "control:main:StartScreen:Search Songs folder (text)"]);
   await robot.quit();
 
   await step("Open the map copy", async () => {
@@ -848,6 +925,7 @@ try {
           let disabled = false;
           const seen = await probeInput(id, async () => { disabled = (await viaMenu(menu, item)).disabled; }, null, `${menu} › ${item.label}`)
             .catch(error => { if (disabled) return null; throw error; });
+          if (seen?.skip) return seen;
           if (disabled) return { skip: `${menu} › ${item.label} is disabled here` };
           return seen;
         }, [`menu:${menu}.${id}`]);
@@ -959,6 +1037,7 @@ try {
         let disabled = false;
         const seen = await probeInput(id, async () => { disabled = (await viaPalette(label)).disabled; }, null, `Ctrl+K ${label}`)
           .catch(error => { if (disabled) return null; throw error; });
+        if (seen?.skip) return seen;
         if (disabled) return { skip: `"${label}" is disabled in the palette here` };
         return seen;
       }, [`palette:run:${id}`, "palette:enter-runs"]);
@@ -1001,14 +1080,25 @@ try {
   }, ["key:page:Tab-routes"]);
   await step("Ctrl+= and Ctrl+- change the interface scale, Ctrl+0 resets it", async () => {
     await page().mouse.move(300, 5);
-    const before = await fingerprint();
+    const width = () => read(() => document.getElementById("grid").getBoundingClientRect().width);
+    const start = await width();
     await page().keyboard.press("Control+Equal");
-    await sleep(400);
-    const bigger = await fingerprint();
+    await sleep(500);
+    const bigger = await width();
     await page().keyboard.press("Control+Digit0");
-    await sleep(400);
-    expect(differs(before, bigger).some(key => ["scale", "rowHeight", "zoom"].includes(key)) || bigger.toasts > before.toasts,
-      "Ctrl+= changed nothing on screen");
+    await sleep(500);
+    const reset = await width();
+    await page().keyboard.press("Control+Minus");
+    await sleep(500);
+    const smaller = await width();
+    await page().keyboard.press("Control+Digit0");
+    await sleep(500);
+    const back = await width();
+    expect(bigger < start, `Ctrl+= did not make the interface bigger (timeline ${start} → ${bigger} px wide)`);
+    expect(Math.abs(reset - start) < 2, `Ctrl+0 did not reset the scale (${start} → ${reset} px)`);
+    expect(smaller > start, `Ctrl+- did not make the interface smaller (${start} → ${smaller} px)`);
+    expect(Math.abs(back - start) < 2, `Ctrl+0 did not reset after Ctrl+- (${start} → ${back} px)`);
+    return `timeline ${Math.round(start)} px; Ctrl+= ${Math.round(bigger)}, Ctrl+- ${Math.round(smaller)}, Ctrl+0 back`;
   }, ["key:page:Ctrl+=/-/0-scale"]);
   await step("Shift+F10 on a lane opens its menu", async () => {
     await ensureProbe();
@@ -1411,7 +1501,7 @@ try {
   }, ["mouse:Click / Ctrl+click / Shift+click a lane name", "mouse:Right-click a lane name", "mouse:Click a collapsed hit preview",
     "mouse:Drag a sample-set folder header"]);
 
-  await step("Mouse: hover shows a hint, the snap slider takes the wheel, the playhead drags", async () => {
+  await step("Mouse: hover shows a hint, and the wheel over the snap slider", async result => {
     await ensureProbe();
     const point = await pointAt(probe[0], probe[1]);
     await mouse().move(5, 5);
@@ -1427,9 +1517,12 @@ try {
     await mouse().move(slider.x + slider.width / 2, slider.y + slider.height / 2);
     await mouse().wheel(0, -120);
     await sleep(400);
-    notes.push((await fingerprint()).snap !== snap.snap ? "snap slider wheel changed the snap" : "snap slider ignores the wheel");
+    if ((await fingerprint()).snap !== snap.snap) {
+      notes.push("the wheel over the snap slider changed the snap");
+      result.reached.push("mouse:Wheel over the snap slider");
+    } else notes.push("the snap slider does not take the wheel (not counted as reached)");
     return notes.join("; ");
-  }, ["mouse:Hover a hit or lane (hint bar)", "feature:hint-bar", "mouse:Wheel over the snap slider"]);
+  }, ["mouse:Hover a hit or lane (hint bar)", "feature:hint-bar"]);
 
   await step("Mouse: drag the panel edges", async () => {
     const edges = await read(() => Array.from(document.querySelectorAll("[data-dock-splitter], .dock-splitter, [role=separator]"))
@@ -1535,8 +1628,7 @@ try {
     const reviewed = await finishSave();
     const after = snapshot(mapFolder);
     const added = [...after.keys()].filter(name => !before.has(name));
-    const osu = readFileSync(mapCopy, "latin1");
-    const unused = added.filter(name => !osu.includes(name.split("/").pop()) && !/\d+\.(wav|ogg|mp3)$/i.test(name));
+    const unused = added.filter(name => !playedBy(readFileSync(mapCopy, "latin1"), name));
     expect(!unused.length, `Save added files the difficulty never plays: ${unused.join(", ")}`);
     return `${reviewed.join("; ") || "no review"}; new files: ${added.join(", ") || "none"}`;
   }, ["feature:save-check", "menu:file.save"]);
@@ -1565,8 +1657,7 @@ try {
     await menuRow("Import mania hitsounds…").click();
     await answerPicker(maniaCopy, "the mania picker");
     await until(([history, toasts]) => `${window.scene.historyPosition}/${window.scene.history.length}` !== history ||
-      document.querySelectorAll(".toast-card").length > toasts || document.getElementById("status").textContent.length > 0,
-    [history, toasts], "importing the mania difficulty showed nothing", 10000);
+      document.querySelectorAll(".toast-card").length > toasts, [history, toasts], "importing the mania difficulty made no edit and showed no message", 10000);
     const status = await read(() => (document.querySelector(".toast-card")?.innerText ?? document.getElementById("status").textContent).replace(/\s+/g, " "));
     await undoTo(history);
     return status.slice(0, 120);
@@ -1661,8 +1752,8 @@ try {
       if (await filter.count() && await filter.isVisible()) await filter.click();
     }
     const moved = differs(before, next).filter(key => ["position", "start", "selected", "selection"].includes(key));
-    return moved.length ? `N: ${describe(before, next, moved)}; Shift+N: ${describe(next, back, differs(next, back).filter(key => ["position", "start"].includes(key)))}`
-      : "N and Shift+N: no coverage issue to step to in this map";
+    if (!moved.length) return { skip: "this map has no coverage issue for N and Shift+N to step to" };
+    return `N: ${describe(before, next, moved)}; Shift+N: ${describe(next, back, differs(next, back).filter(key => ["position", "start"].includes(key)))}`;
   }, ["feature:review-list", "key:page:N-next-issue", "key:page:Shift+N-previous-issue"]);
 
   await step("Feature: Export window: Ogg Vorbis mix, fallback sound, .osu changes view, then Cancel", async () => {
@@ -1672,13 +1763,15 @@ try {
     const window = await windowOpened("export.html", 3000).catch(() => null);
     const surface = window ?? dialog;
     const notes = [];
-    const format = surface.locator("select").filter({ has: surface.locator('option[value="ogg_vorbis"]') }).first();
-    if (await format.count()) {
-      await format.selectOption("ogg_vorbis");
-      notes.push("Ogg Vorbis chosen");
-    } else notes.push("no mix format list shown");
-    const fallback = surface.locator("select").filter({ hasText: /fallback|None/i }).first();
-    if (await fallback.count()) notes.push("fallback list shown");
+    const format = surface.locator('select:has(option[value="ogg_vorbis"])').first();
+    expect(await format.count(), "the Export window shows no mix format list with Ogg Vorbis");
+    const was = await format.inputValue();
+    await format.selectOption("ogg_vorbis");
+    notes.push("Ogg Vorbis chosen");
+    await format.selectOption(was);
+    const fallback = surface.getByText(/fallback/i).first();
+    expect(await fallback.count(), "the Export window shows no fallback sound choice");
+    notes.push("fallback sound choice shown");
     const diff = surface.locator("summary.osu-diff-toggle").first();
     if (await diff.count()) {
       await diff.click();
@@ -1761,7 +1854,12 @@ try {
   // a selector for its root; the crawl presses each visible control once (a switch twice, so it ends
   // as it was), closes whatever that opened, and opens the surface again if the control closed it.
   const crawled = new Set();
-  const danger = /^(Quit|Exit|Delete( lane)?|Revert|Discard|Reset all|Remove|Clear all|Overwrite)\b/i;
+  // Left alone: what ends the run or loses work, what reaches outside the run (updates, the system's
+  // plug-in folder), the shortcut keys themselves, and anything that makes sound (the song and folder
+  // mutes stay on, Audition and the lane names that audition stay off, Play and Record are not pressed).
+  const danger = /^(Quit|Exit|Delete( lane)?|Revert|Discard|Reset|Remove|Clear|Overwrite|Check for updates|Scan|Rescan|Play|Pause|Preview|Listen|Audition|Select and audition|MIDI Record|Record|Mute|Solo|Unmute)\b/i;
+  const leaveAlone = control => danger.test(control.name) || control.link || /\b(pref-key-chip|lane-mute|lane-solo)\b/.test(control.classes) ||
+    ["song-mute", "song-solo", "song-stem"].includes(control.id);
   const listControls = (surfacePage, selector) => surfacePage.evaluate(({ selector }) => {
     const root = selector ? document.querySelector(selector) : document.body;
     if (!root) return [];
@@ -1773,34 +1871,48 @@ try {
       .filter(node => visible(node) && !node.disabled && node.getAttribute("aria-disabled") !== "true")
       // The menu bar and its popup are the menu steps' work; another surface's dialog is its own crawl.
       .filter(node => !node.closest("#editor-menu, #editor-menus") && (selector || !node.closest('[role="dialog"], dialog')));
+    const seen = new Map();
     return nodes.map((node, index) => {
       node.dataset.robotCrawl = String(index);
       const type = node.tagName === "INPUT" ? (node.type || "text") : node.getAttribute("role") || node.tagName.toLowerCase();
-      return { index, name: name(node), type, link: !!node.closest("a[href^=http]") };
+      const label = name(node);
+      // The same name and type twice: the second is "name #2", so each keeps its own key.
+      const base = `${label} (${type})`;
+      seen.set(base, (seen.get(base) ?? 0) + 1);
+      return { index, name: label, type, key: seen.get(base) > 1 ? `${base} #${seen.get(base)}` : base,
+        pressed: node.hasAttribute("aria-pressed"), id: node.id, classes: String(node.className?.baseVal ?? node.className ?? ""),
+        link: !!node.closest("a[href^=http]") };
     });
   }, { selector });
+  // Each control is found again by its key just before it is pressed, so a surface that an earlier
+  // control closed and the crawl opened again is still gone through to the end.
   async function crawl(surfaceName, surface, result) {
     let done = 0;
-    for (let pass = 0; pass < 2; pass++) {
-      const controls = await listControls(surface.page(), surface.selector);
-      for (const control of controls) {
-        const key = `${surfaceName}:${control.name} (${control.type})`;
-        if (crawled.has(key) || !control.name) continue;
-        crawled.add(key);
-        if (danger.test(control.name) || control.link || surface.skipNames?.test(control.name)) {
-          result.notes ??= [];
-          result.notes.push(`left alone: ${control.name}`);
-          continue;
-        }
+    const tried = new Set();
+    for (let pass = 0; pass < 3; pass++) {
+      const keys = (await listControls(surface.page(), surface.selector)).map(control => control.key);
+      for (const wanted of keys) {
+        const key = `${surfaceName}:${wanted}`;
+        if (crawled.has(key) || tried.has(key)) continue;
         if (!(await surface.open())) break;
         const here = surface.page();
+        const control = (await listControls(here, surface.selector)).find(control => control.key === wanted);
+        if (!control || !control.name) continue;
+        tried.add(key);
+        if (leaveAlone(control) || surface.skipNames?.test(control.name)) {
+          crawled.add(key);
+          result.notes ??= [];
+          if (result.notes.length < 40) result.notes.push(`left alone: ${control.name}`);
+          continue;
+        }
         const target = here.locator(`[data-robot-crawl="${control.index}"]`).first();
-        if (!(await target.count()) || !(await target.isVisible().catch(() => false))) continue;
+        if (!(await target.isVisible().catch(() => false))) continue;
         const explorersBefore = await native.explorers();
         try {
-          if (["checkbox", "switch"].includes(control.type)) {
+          // A switch (a checkbox, or a button that stays pressed) is pressed twice, so it ends as it was.
+          if (["checkbox", "switch"].includes(control.type) || control.pressed) {
             await target.click({ timeout: 2000 });
-            await sleep(200);
+            await sleep(250);
             if (await target.isVisible().catch(() => false)) await target.click({ timeout: 2000 }).catch(() => {});
           } else if (control.type === "select") {
             const value = await target.inputValue();
@@ -1817,7 +1929,7 @@ try {
             await here.keyboard.press("ArrowDown");
             await target.blur();
           } else if (["text", "search"].includes(control.type)) {
-            if ((await target.getAttribute("readonly")) !== null) continue;
+            if ((await target.getAttribute("readonly")) !== null) { crawled.add(key); continue; }
             const value = await target.inputValue();
             await target.fill(value + "a");
             await target.fill(value);
@@ -1825,7 +1937,8 @@ try {
           } else {
             await target.click({ timeout: 2000 });
           }
-          result.reached.push(`control:${key}`);
+          crawled.add(key);
+          result.reached.push(`control:${surfaceName.split(":")[0]}:${control.name} (${control.type})`);
           done++;
         } catch (error) {
           result.notes ??= [];
