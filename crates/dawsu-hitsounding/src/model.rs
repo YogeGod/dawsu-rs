@@ -62,14 +62,46 @@ pub enum Place {
 }
 
 /// A moment: one time, a default volume and the lanes sounding there.
+///
+/// Backed by copy-on-write `Arc<MomentData>` so cloning a full `Hitsounds` document
+/// for undo/redo history shares untouched moments instead of deep-copying every `BTreeSet`/`BTreeMap`.
+#[derive(Clone, PartialEq)]
+pub struct Moment(std::sync::Arc<MomentData>);
+
 #[derive(Debug, Clone, PartialEq)]
-pub struct Moment {
+pub struct MomentData {
     pub(crate) time: SongTime,
     pub(crate) place: Place,
     pub(crate) volume: i32,
     pub(crate) hits: BTreeSet<SampleIdentity>,
     hit_volumes: BTreeMap<SampleIdentity, i32>,
     baseline: Option<MomentBaseline>,
+}
+
+impl std::ops::Deref for Moment {
+    type Target = MomentData;
+    fn deref(&self) -> &MomentData {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for Moment {
+    fn deref_mut(&mut self) -> &mut MomentData {
+        std::sync::Arc::make_mut(&mut self.0)
+    }
+}
+
+impl std::fmt::Debug for Moment {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Moment")
+            .field("time", &self.0.time)
+            .field("place", &self.0.place)
+            .field("volume", &self.0.volume)
+            .field("hits", &self.0.hits)
+            .field("hit_volumes", &self.0.hit_volumes)
+            .field("baseline", &self.0.baseline)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -81,7 +113,19 @@ struct MomentBaseline {
 
 impl Moment {
     fn new(time: SongTime, place: Place, volume: i32, hits: BTreeSet<SampleIdentity>) -> Self {
-        Self { time, place, volume, hits, hit_volumes: BTreeMap::new(), baseline: None }
+        Self(std::sync::Arc::new(MomentData {
+            time,
+            place,
+            volume,
+            hits,
+            hit_volumes: BTreeMap::new(),
+            baseline: None,
+        }))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn shares_allocation(&self, other: &Self) -> bool {
+        std::sync::Arc::ptr_eq(&self.0, &other.0)
     }
 
     pub(crate) fn decoded(time: SongTime, place: Place, volume: i32, hits: BTreeSet<SampleIdentity>) -> Self {
@@ -91,11 +135,12 @@ impl Moment {
     }
 
     fn remember_baseline(&mut self) {
-        self.baseline = Some(MomentBaseline {
-            hits: self.hits.clone(),
-            volume: self.volume,
-            hit_volumes: self.hit_volumes.clone(),
-        });
+        let baseline = MomentBaseline {
+            hits: self.0.hits.clone(),
+            volume: self.0.volume,
+            hit_volumes: self.0.hit_volumes.clone(),
+        };
+        self.baseline = Some(baseline);
     }
 
     pub fn time(&self) -> SongTime {
@@ -381,6 +426,9 @@ impl Hitsounds {
         let slot = self.lane_slots.remove(source).unwrap_or_else(|| source.clone());
         self.bind_lane_slot(replacement.clone(), slot);
         for moment in &mut self.moments {
+            if !moment.has_hit(source) {
+                continue;
+            }
             if moment.hits.remove(source) {
                 let gain = moment.hit_volumes.remove(source).unwrap_or(moment.volume);
                 if moment.hits.insert(replacement.clone()) {
@@ -751,9 +799,11 @@ impl Hitsounds {
     pub fn set_body_volume(&mut self, body: usize, volume: i32) {
         let object = self.bodies[body].object;
         self.bodies[body].volume = volume;
-        if let Some(head) = self.moments.iter_mut().find(|m| m.place == Place::SliderNode { object, node: 0 }) {
+        if let Some(idx) = self.moments.iter().position(|m| m.place == Place::SliderNode { object, node: 0 }) {
+            let head = &mut self.moments[idx];
             // The body plays at the head's own volume, so the head's hits move by the body's change.
-            head.move_volume_from(head.volume, volume);
+            let from = head.volume;
+            head.move_volume_from(from, volume);
         }
     }
 }
@@ -787,5 +837,92 @@ pub(crate) fn legacy_sample(identity: &SampleIdentity) -> LegacySample {
     match identity {
         SampleIdentity::Standard { set, sound, index } => LegacySample::legacy(sound_name(*sound), Some(set_name(*set)), 100, false, index.get() as i32, false),
         SampleIdentity::File(name) => LegacySample::file(name, 100),
+    }
+}
+
+#[cfg(test)]
+mod cow_tests {
+    use super::*;
+    use dawsu_foundation::CustomIndex;
+
+    fn lane(sound: Hitsound) -> SampleIdentity {
+        SampleIdentity::Standard {
+            set: SampleSet::Normal,
+            sound: Sound::Hit(sound),
+            index: CustomIndex::new(0),
+        }
+    }
+
+    fn make_dense_hitsounds(count: usize) -> Hitsounds {
+        let normal = lane(Hitsound::Normal);
+        let mut hs = Hitsounds {
+            lanes: Vec::new(),
+            moments: Vec::new(),
+            bodies: Vec::new(),
+            folder_files: Vec::new(),
+            lane_slots: BTreeMap::new(),
+            hidden_lanes: BTreeSet::new(),
+            placements: Vec::new(),
+        };
+        for i in 0..count {
+            let id = hs.add_moment(SongTime::from_ms(i as f64 * 100.0), 80);
+            hs.add_hit(id, normal.clone());
+        }
+        hs
+    }
+
+    #[test]
+    fn cloning_hitsounds_shares_untouched_moments_and_copies_only_edited_ones() {
+        let clap = lane(Hitsound::Clap);
+        let whistle = lane(Hitsound::Whistle);
+        let original = make_dense_hitsounds(256);
+        let mut edited = original.clone();
+        edited.add_hit(MomentId(42), clap.clone());
+
+        assert!(
+            !original.moments()[42].shares_allocation(&edited.moments()[42]),
+            "edited moment must detach via copy-on-write"
+        );
+        for i in 0..256 {
+            if i != 42 {
+                assert!(
+                    original.moments()[i].shares_allocation(&edited.moments()[i]),
+                    "untouched moment {i} must keep sharing Arc allocation"
+                );
+            }
+        }
+
+        // replace_lane must also skip untouched moments without detaching them.
+        let before_replace = edited.clone();
+        edited.replace_lane(&clap, whistle);
+        assert!(!before_replace.moments()[42].shares_allocation(&edited.moments()[42]));
+        assert!(before_replace.moments()[10].shares_allocation(&edited.moments()[10]));
+    }
+
+    #[test]
+    fn two_hundred_edits_undo_and_redo_round_trip_identically() {
+        let clap = lane(Hitsound::Clap);
+        let original = make_dense_hitsounds(250);
+        let mut history = Vec::with_capacity(201);
+        let mut current = original.clone();
+        history.push(current.clone());
+
+        for step in 0..200 {
+            let idx = MomentId(step % 250);
+            if step % 2 == 0 {
+                current.add_hit(idx, clap.clone());
+            } else {
+                current.set_volume(idx, 50 + (step as i32 % 50));
+            }
+            history.push(current.clone());
+        }
+
+        let final_doc = current.clone();
+        assert_eq!(history.first().unwrap(), &original);
+        assert_eq!(history.last().unwrap(), &final_doc);
+        // Untouched moments (200..250) still share the exact same Arc across all 201 snapshots.
+        for i in 200..250 {
+            assert!(history[0].moments()[i].shares_allocation(&history[200].moments()[i]));
+        }
     }
 }
