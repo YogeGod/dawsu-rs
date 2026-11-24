@@ -17,6 +17,9 @@ pub struct ExportOptions {
     pub base: bool,
     /// Generate's slider slide, whistle and tick audio, for the base difficulty.
     pub slider_audio: bool,
+    /// Opt-in: auto-fix osu! RC health issues (late impact, <25 ms, <1024 B, bloated silence)
+    /// on newly rendered/staged mixes. Default `false` preserves exact raw PCM output.
+    pub auto_fix_staged_mixes: bool,
 }
 
 /// What the Export window last chose for a map, kept with the session. Older builds ignore it.
@@ -1154,7 +1157,7 @@ mod tests {
     fn copy_never_points_a_target_at_a_wav_generate_owns() {
         let (_scratch, source, target) = timed_mapset("export-timed-owned");
         let mut app = opened(&source);
-        let options = ExportOptions { targets: vec![target.clone()], copy: timed_copy(), base: true, slider_audio: true };
+        let options = ExportOptions { targets: vec![target.clone()], copy: timed_copy(), base: true, slider_audio: true, ..ExportOptions::default() };
         app.request_export_preview(options.clone()).unwrap();
         wait_preview(&mut app);
         let status = app.export_status();
@@ -1208,7 +1211,7 @@ mod tests {
         let copy = |start_index| CopyOptions {
             mode: dawsu_hitsounding::copy::CopyMode::OverwriteOnlyDefined, start_index, ..CopyOptions::default()
         };
-        let export = |start_index| ExportOptions { targets: vec![target.clone()], copy: copy(start_index), base: true, slider_audio: false };
+        let export = |start_index| ExportOptions { targets: vec![target.clone()], copy: copy(start_index), base: true, slider_audio: false, ..ExportOptions::default() };
         let names = |mixes: &[crate::mixes::StagedMix]| mixes.iter()
             .map(|mix| mix.path.file_name().unwrap().to_string_lossy().into_owned()).collect::<Vec<_>>();
 

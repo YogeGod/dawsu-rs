@@ -57,6 +57,10 @@ impl StagedMix {
         sha256_hex(&self.wav)
     }
 
+    pub(super) fn wav_bytes(&self) -> &[u8] {
+        &self.wav
+    }
+
     pub(super) fn new_generated<'a>(
         root: &Path,
         wav: Vec<u8>,
@@ -101,6 +105,7 @@ impl StagedMix {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn stage_in_file(
     source: &Hitsounds,
     file: OsuFile,
@@ -114,6 +119,41 @@ pub(super) fn stage_in_file(
     previous_mixes: &[String],
     start_index: u32,
     pending: &Pending,
+    cancel: &dyn Fn() -> bool,
+) -> Result<(OsuFile, MixFiles), String> {
+    stage_in_file_with_options(
+        source,
+        file,
+        problems,
+        root,
+        defaults,
+        expected,
+        placement,
+        already_staged,
+        settings,
+        previous_mixes,
+        start_index,
+        pending,
+        false,
+        cancel,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn stage_in_file_with_options(
+    source: &Hitsounds,
+    file: OsuFile,
+    problems: &[SaveProblem],
+    root: &Path,
+    defaults: &Path,
+    expected: &[u8],
+    placement: Placement,
+    already_staged: &[StagedMix],
+    settings: Option<&ExportSettings>,
+    previous_mixes: &[String],
+    start_index: u32,
+    pending: &Pending,
+    auto_fix: bool,
     cancel: &dyn Fn() -> bool,
 ) -> Result<(OsuFile, MixFiles), String> {
     let listing = listing(root, pending)?;
@@ -135,10 +175,11 @@ pub(super) fn stage_in_file(
             start_index,
             previous_mixes,
             pending,
+            auto_fix,
             cancel,
         )?;
     } else {
-        files.prepare(
+        files.prepare_with_options(
             source,
             &mut hits,
             problems,
@@ -148,6 +189,7 @@ pub(super) fn stage_in_file(
             already_staged,
             start_index,
             pending,
+            auto_fix,
             cancel,
         )?;
     }
@@ -176,6 +218,7 @@ pub(super) fn stage_in_file(
 }
 
 impl MixFiles {
+    #[allow(clippy::too_many_arguments)]
     fn prepare_export(
         &mut self,
         source: &Hitsounds,
@@ -189,6 +232,7 @@ impl MixFiles {
         // The target's reuse set: mix files it already references, reused when their sound matches.
         previous_mixes: &[String],
         pending: &Pending,
+        auto_fix: bool,
         cancel: &dyn Fn() -> bool,
     ) -> Result<(), String> {
         settings.validate()?;
@@ -370,7 +414,7 @@ impl MixFiles {
                     .into_iter()
                     .filter(|(_, _, cues)| !(settings.pair_samples && cues.is_empty()))
                     .collect();
-                let waves = render_roles(roles, cancel)?;
+                let waves = render_roles(roles, auto_fix, cancel)?;
                 let reused = reusable_export_index(root, pending, &waves, &previous_mixes)?;
                 let index = match reused {
                     Some(index) => index,
@@ -496,7 +540,8 @@ impl MixFiles {
         Ok(())
     }
 
-    pub(crate) fn prepare(
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn prepare_with_options(
         &mut self,
         source: &Hitsounds,
         target: &mut Hitsounds,
@@ -507,6 +552,7 @@ impl MixFiles {
         already_staged: &[StagedMix],
         start_index: u32,
         pending: &Pending,
+        auto_fix: bool,
         cancel: &dyn Fn() -> bool,
     ) -> Result<(), String> {
         let defaults_list = crate::pending::sample_folder(defaults);
@@ -554,7 +600,7 @@ impl MixFiles {
             let sample = if let Some(sample) = rendered.get(&key) {
                 sample.clone()
             } else {
-                let wav = render_layers(source, Some(target), layers, root, pending, defaults, &defaults_list, &mut clips, cancel)?;
+                let wav = render_layers(source, Some(target), layers, root, pending, defaults, &defaults_list, &mut clips, auto_fix, cancel)?;
                 let (sample, staged) = if let Some(indexes) = indexes.as_mut().filter(|_| slider) {
                     let (index, reuse) = indexes.allocate(root, &wav)?;
                     let identity = SampleIdentity::Standard {
@@ -589,7 +635,7 @@ impl MixFiles {
 fn render_layers(
     source: &Hitsounds, target: Option<&Hitsounds>, layers: &[(SampleIdentity, i32)],
     root: &Path, pending: &Pending, defaults: &Path, defaults_list: &[String],
-    clips: &mut HashMap<SampleIdentity, Arc<AudioClip>>, cancel: &dyn Fn() -> bool,
+    clips: &mut HashMap<SampleIdentity, Arc<AudioClip>>, auto_fix: bool, cancel: &dyn Fn() -> bool,
 ) -> Result<Vec<u8>, String> {
     let mut cues = Vec::with_capacity(layers.len());
     for (identity, volume) in layers {
@@ -600,7 +646,7 @@ fn render_layers(
             gain: *volume as f32 / 100.0,
         });
     }
-    render(cues, cancel)
+    render_with_options(cues, auto_fix, cancel)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -634,6 +680,7 @@ type RoleWaves = Vec<(SampleSet, Hitsound, Vec<u8>)>;
 /// with paired samples it passes no empty role, since the skin plays a missing hitnormal.
 fn render_roles(
     roles: Vec<(SampleSet, Hitsound, Vec<ScheduledSound>)>,
+    auto_fix: bool,
     cancel: &dyn Fn() -> bool,
 ) -> Result<RoleWaves, String> {
     let mut waves = Vec::with_capacity(roles.len());
@@ -650,16 +697,17 @@ fn render_roles(
                 }),
             });
         }
-        let wav = render(cues, cancel)?;
+        let wav = render_with_options(cues, auto_fix, cancel)?;
         waves.push((bank, role, wav));
     }
     Ok(waves)
 }
 
-pub(super) fn stage_timed_copy(
+#[allow(clippy::too_many_arguments)]
+pub(super) fn stage_timed_copy_with_options(
     source: &Hitsounds, file: &mut OsuFile, path: &Path, defaults: &Path,
     placements: &[dawsu_hitsounding::copy::SliderCopyPlacement],
-    staged: &mut Vec<StagedMix>, details: &mut Vec<String>, pending: &Pending, cancel: &dyn Fn() -> bool,
+    staged: &mut Vec<StagedMix>, details: &mut Vec<String>, pending: &Pending, auto_fix: bool, cancel: &dyn Fn() -> bool,
     // Mixes before this index belong to an earlier part of the write (Generate): their names stay
     // reserved, but a target never points at them.
     own_from: usize,
@@ -682,7 +730,7 @@ pub(super) fn stage_timed_copy(
         let name = if let Some(name) = rendered.get(layers) {
             name.clone()
         } else {
-            let wav = render_layers(source, None, layers, root, pending, defaults, &defaults_list, &mut clips, cancel)?;
+            let wav = render_layers(source, None, layers, root, pending, defaults, &defaults_list, &mut clips, auto_fix, cancel)?;
             let name = if let Some(previous) = staged[own_from..].iter().find(|mix| mix.index.is_none() && mix.wav == wav) {
                 previous.path.file_name().ok_or("Missing staged filename")?.to_string_lossy().into_owned()
             } else {
@@ -1142,7 +1190,20 @@ pub(super) fn render(
     cues: Vec<ScheduledSound>,
     cancel: &dyn Fn() -> bool,
 ) -> Result<Vec<u8>, String> {
-    encode(&mix(cues, cancel)?)
+    render_with_options(cues, false, cancel)
+}
+
+pub(super) fn render_with_options(
+    cues: Vec<ScheduledSound>,
+    auto_fix: bool,
+    cancel: &dyn Fn() -> bool,
+) -> Result<Vec<u8>, String> {
+    let mixed = mix(cues, cancel)?;
+    if auto_fix {
+        Ok(crate::sample_checks::auto_fix_wav_pcm(&mixed, SAMPLE_RATE, CHANNELS)?.wav)
+    } else {
+        encode(&mixed)
+    }
 }
 
 /// The cues mixed at the mix sample rate, interleaved, each value within full scale.
