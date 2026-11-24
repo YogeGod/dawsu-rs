@@ -74,6 +74,13 @@
       <button type="button" class="name" data-lane-row={row.row} aria-haspopup="menu" aria-expanded="false"
         aria-label={"Select and audition " + row.label} aria-pressed={row.selected} title={row.title}
         onclick={event => on.select(event, row.row)}>{names ? row.name : "▶"}</button>
+      {#if names && (row.vstRouted || row.vstBypassed)}
+        <button type="button" class="vst-tag" class:bypassed={!!row.vstBypassed}
+          aria-pressed={!!row.vstRouted}
+          aria-label={(row.vstRouted ? "Use sample instead of VST3 for " : "Route through VST3 for ") + row.display}
+          title={row.vstRouted ? "Routed to Drum VST3 — click to play original sample instead" : "VST3 bypassed — click to route back through Drum VST3"}
+          onclick={() => on.toggleVst(row.row)}>VST</button>
+      {/if}
       {#if names && row.tag}<span class="tag-slot"><span class="tag">{row.tag}</span></span>{/if}
       {#if row.addLayer}
         <button type="button" class="lane-add-layer" aria-label={row.addLayer} title={row.addLayer}
@@ -313,6 +320,42 @@
   .lane:is(:hover, :focus-within) .tag {
     display: inline-block;
   }
+  .vst-tag {
+    flex: none;
+    min-height: 0;
+    padding: 1px 5px;
+    border: 1px solid var(--editor-border);
+    border-radius: 4px;
+    background: var(--editor-control);
+    color: var(--editor-muted);
+    font-family: var(--font-ui);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.03em;
+    line-height: 14px;
+    cursor: pointer;
+  }
+  .vst-tag[aria-pressed="true"] {
+    border-color: var(--editor-accent);
+    background: var(--editor-selected);
+    color: var(--editor-accent);
+  }
+  .vst-tag[aria-pressed="true"]:hover:not(:disabled) {
+    border-color: var(--editor-accent);
+    background: var(--editor-hover);
+    color: var(--editor-accent);
+  }
+  .vst-tag.bypassed,
+  .vst-tag.bypassed:hover:not(:disabled) {
+    border-color: var(--editor-border);
+    background: var(--editor-control);
+    color: var(--editor-muted);
+    opacity: 0.68;
+  }
+  .vst-tag.bypassed:hover:not(:disabled) {
+    opacity: 1;
+    color: var(--editor-secondary);
+  }
   .lane-disclosure,
   .lane-add-layer,
   .lane-remove {
@@ -403,6 +446,7 @@
   .fold:focus-visible,
   .ms:focus-visible,
   .name:focus-visible,
+  .vst-tag:focus-visible,
   .lane-disclosure:focus-visible,
   .lane-add-layer:focus-visible,
   .lane-remove:focus-visible {
@@ -450,6 +494,7 @@
   }
   @media (forced-colors: active) {
     .ms[aria-pressed="true"],
+    .vst-tag[aria-pressed="true"],
     .lane.active {
       outline: 2px solid Highlight;
       outline-offset: -2px;

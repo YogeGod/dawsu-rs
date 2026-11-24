@@ -9,7 +9,11 @@ import {
   vst3InstrumentOptions, writeDrumVst3,
 } from "../src/lib/drumVst3.js";
 import { isChecked } from "../src/lib/drum.js";
+import { bridge } from "../src/lib/bridge.svelte.js";
+import { laneHandlers } from "../src/lib/laneHandlers.js";
+import { attachLanes } from "../src/editor/lanes.js";
 import DrumDetectWindow from "../src/parts/DrumDetectWindow.svelte";
+import LaneHeaders from "../src/parts/LaneHeaders.svelte";
 
 const fakeStorage = (entries = {}) => {
   const data = new Map(Object.entries(entries));
@@ -208,4 +212,109 @@ test("DrumDetectWindow, KeysoundsModal, and Drum Map Setup expose the Use VST3 s
   assert.match(lanes, /Use VST3 sounds for drum map/);
   assert.match(lanes, /invoke\("vst3_scan"\)/);
   assert.match(lanes, /syncDrumVst3Track/);
+});
+
+test("LaneHeaders renders a clickable VST tag when vstRouted/vstBypassed is set and toggles per-lane routing", async () => {
+  const baseLane = (more = {}) => ({
+    type: "lane", key: "lane:0", row: 0, number: 1, name: "Normal", label: "normal-hitnormal",
+    display: "normal-hitnormal", title: "normal-hitnormal", tag: "Normal · skin", icon: "normal",
+    colour: null, folder: "normal", active: false, selected: false, muted: false, solo: false,
+    quiet: false, layer: false, family: null, addLayer: null, remove: null, ...more,
+  });
+
+  // Unrouted lane has no VST tag; routed lane shows lit VST tag; bypassed lane shows dimmed VST tag.
+  bridge.lanes = {
+    names: true,
+    busy: false,
+    rows: [
+      baseLane({ key: "lane:0", row: 0, vstRouted: true }),
+      baseLane({ key: "lane:1", row: 1, name: "Clap", vstBypassed: true }),
+      baseLane({ key: "lane:2", row: 2, name: "Kick" }),
+    ],
+  };
+  const html = render(LaneHeaders).body;
+  const rows = html.split(/(?=<div class="lane\b)/).filter(r => r.startsWith('<div class="lane'));
+  assert.equal(rows.length, 3);
+  assert.match(rows[0], /<button type="button" class="vst-tag\b[^"]*"[^>]*aria-pressed="true"[^>]*>VST<\/button>/);
+  assert.doesNotMatch(rows[0], /class="vst-tag[^"]*\bbypassed\b/);
+  assert.match(rows[1], /<button type="button" class="vst-tag[^"]*\bbypassed\b[^"]*"[^>]*aria-pressed="false"[^>]*>VST<\/button>/);
+  assert.doesNotMatch(rows[2], /class="vst-tag/);
+
+  // Compact mode (names hidden) omits the VST tag so M/S stay uncluttered.
+  bridge.lanes = { names: false, busy: false, rows: [baseLane({ vstRouted: true })] };
+  assert.doesNotMatch(render(LaneHeaders).body, /class="vst-tag/);
+
+  // Handler forwards toggleVst(row) cleanly.
+  const sent = [];
+  const handlers = laneHandlers((...args) => sent.push(args), async () => {});
+  handlers.toggleVst(0);
+  assert.deepEqual(sent, [["toggleVst", 0]]);
+
+  // End-to-end laneHeaderModel + laneHeaderAction("toggleVst", row) calls toggle_lane and refreshes scene.
+  const calls = [];
+  const laneNode = { style: { setProperty() {} }, dataset: {} };
+  const state = {
+    orderedLaneKeys: [], renamedLanes: new Map(), sampleFolderOrder: ["normal"],
+    collapsedFolders: new Set(), laneColours: new Map(), collapsedFamilies: new Set(),
+    selectionLaneKeys: new Set(), laneFilterText: "", usedLaneKeys: null,
+    showLaneInfo: false, layoutWrites: 0, drag: null,
+    view: { busy: false, activeLane: 0, panels: { laneNames: true }, drumView: null },
+    scene: {
+      path: "map.osu", rowHeight: 30, laneOrder: [0],
+      lanes: [{
+        key: "n", sourceKey: "n", name: "normal-hitnormal", family: "normal-hitnormal",
+        group: "normal", index: 0, colourKey: "Skin|normal-hitnormal", hitCount: 2,
+        vstRouted: true, vstBypassed: false,
+      }],
+    },
+  };
+  let laneHeadersModel = null;
+  const ctx = {
+    env: {
+      window: {
+        __TAURI__: {
+          core: {
+            invoke: async (cmd, args) => {
+              calls.push({ cmd, args });
+              if (cmd === "drum_vst_action" && args?.payload?.kind === "toggle_lane") {
+                const l = state.scene.lanes[args.payload.row];
+                l.vstRouted = !l.vstRouted;
+                l.vstBypassed = !l.vstRouted;
+              }
+              return {};
+            },
+          },
+        },
+      },
+      console,
+    },
+    state,
+    dom: {
+      $: id => (id === "lanes" ? laneNode : null),
+      makeButton: () => ({}), input: () => ({}), labeled: () => ({}), paragraph: () => ({}),
+    },
+    run: task => task(),
+    update: async (...args) => {
+      calls.push({ update: args });
+      ctx.renderLanes();
+    },
+    ui: () => ({ lanes: model => { laneHeadersModel = model; }, mixer: () => {} }),
+    paintSoon: () => {},
+    renderActiveLane: () => {},
+  };
+  attachLanes(ctx);
+  ctx.renderLanes();
+  assert.equal(laneHeadersModel.rows[1].vstRouted, true);
+  assert.equal(laneHeadersModel.rows[1].vstBypassed, undefined);
+
+  await ctx.laneHeaderAction("toggleVst", 0);
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.ok(calls.some(c => c.cmd === "drum_vst_action" && c.args.payload.kind === "toggle_lane" && c.args.payload.row === 0));
+  assert.ok(calls.some(c => Array.isArray(c.update) && c.update[0] === null && c.update[1] === true));
+  assert.equal(laneHeadersModel.rows[1].vstRouted, undefined);
+  assert.equal(laneHeadersModel.rows[1].vstBypassed, true);
+
+  bridge.lanes = laneHeadersModel;
+  const afterHtml = render(LaneHeaders).body;
+  assert.match(afterHtml, /<button type="button" class="vst-tag[^"]*\bbypassed\b[^"]*"[^>]*aria-pressed="false"[^>]*>VST<\/button>/);
 });

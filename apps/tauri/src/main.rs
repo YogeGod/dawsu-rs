@@ -1396,6 +1396,10 @@ struct SceneLane {
     sample: Option<String>,
     solo: bool,
     source_key: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    vst_bypassed: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    vst_routed: Option<bool>,
 }
 
 struct SceneHit {
@@ -1798,6 +1802,15 @@ fn snapshot_with_static(app: &Application, include_scene: bool, include_static: 
                 let protected = c.protect_normals && hit_count > 0
                     && matches!(slot, SampleIdentity::Standard { sound: Sound::Hit(dawsu_foundation::Hitsound::Normal), .. });
                 let plays_as = model.lane(lane).map(|m| m.plays_as()).unwrap_or_else(|| lane.clone());
+                let (vst_routed, vst_bypassed) = match &app.drum_vst {
+                    Some(vst) if vst.is_enabled() => {
+                        let has_note = vst.routed_notes().contains_key(lane);
+                        let bypassed = has_note && vst.is_lane_vst_muted(lane);
+                        (Some(has_note && !bypassed), Some(bypassed))
+                    }
+                    Some(_) => (Some(false), Some(false)),
+                    None => (None, None),
+                };
                 SceneLane {
                     can_add_layer: index.is_some(),
                     can_delete: !read_only && !protected,
@@ -1814,6 +1827,8 @@ fn snapshot_with_static(app: &Application, include_scene: bool, include_static: 
                     sample,
                     solo: app.is_solo(lane),
                     source_key: scene_lane_key(lane),
+                    vst_bypassed,
+                    vst_routed,
                 }
             }).collect::<Vec<_>>();
             let selected: std::collections::HashSet<_> = c.selected.items().iter()
@@ -2416,7 +2431,10 @@ fn non_playback_signature(
         prompt.placements.hash(&mut hasher);
         prompt.edited_keep_files.hash(&mut hasher);
     }
-    app.drum_vst.as_ref().map(|v| (&v.instance_id, v.is_enabled(), v.routed_notes().len())).hash(&mut hasher);
+    app.drum_vst
+        .as_ref()
+        .map(|v| (&v.instance_id, v.is_enabled(), v.routed_notes().len(), v.muted_vst_lanes().len()))
+        .hash(&mut hasher);
     app.drum_vst_loading.hash(&mut hasher);
     app.revert_requested.hash(&mut hasher);
     app.output_review.as_ref().map(|p| (&p.label, p.files.len(), p.details.len())).hash(&mut hasher);
@@ -3896,6 +3914,15 @@ fn handle_drum_vst_action(
             let on = payload.get("enabled").and_then(Value::as_bool).unwrap_or(false);
             app.set_drum_vst_routing(drums.routed_midi_notes(app));
             app.set_drum_vst_enabled(on);
+            Ok(drum_vst_status_json(app))
+        }
+        "toggle_lane" => {
+            let row = payload
+                .get("row")
+                .and_then(Value::as_u64)
+                .ok_or("Missing lane row")? as usize;
+            app.set_drum_vst_routing(drums.routed_midi_notes(app));
+            app.toggle_drum_vst_lane(row)?;
             Ok(drum_vst_status_json(app))
         }
         "unload" => {

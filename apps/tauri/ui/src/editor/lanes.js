@@ -351,6 +351,8 @@ export function attachLanes(ctx) {
         // The drum view adds no lanes (vault rule) and removes none.
         addLayer: !drum && lane.canAddLayer ? "Add numbered " + lane.name + " layer" : null,
         remove: drum ? null : { label: "Remove " + (state.renamedLanes.has(lane.colourKey) ? displayName : sound.name), disabled: !lane.canDelete },
+        ...(lane.vstRouted ? { vstRouted: true } : {}),
+        ...(lane.vstBypassed ? { vstBypassed: true } : {}),
         ...(drum ? { drumRowIndex: drumRowIndices[position] ?? null } : {}),
       };
     });
@@ -419,6 +421,15 @@ export function attachLanes(ctx) {
         state.laneRemoving = true;
         ctx.act({ kind: "delete_lane", target: { map: state.scene.path, lane: lane.sourceKey }, revision: state.scene.laneRevision })
           .finally(() => { state.laneRemoving = false; });
+        break;
+      }
+      case "toggleVst": {
+        const [row] = args;
+        if (typeof row !== "number") return;
+        ctx.run(async () => {
+          await invoke("drum_vst_action", { payload: { kind: "toggle_lane", row } });
+          await ctx.update(null, true);
+        });
         break;
       }
     }
@@ -935,7 +946,7 @@ export function attachLanes(ctx) {
     const unloadBtn = makeButton("Unload", () => {
       ctx.run(async () => {
         live = await invoke("drum_vst_action", { payload: { kind: "unload" } });
-        await ctx.update(null, false);
+        await ctx.update(null, true);
         refreshControls();
       });
     });
@@ -1025,7 +1036,7 @@ export function attachLanes(ctx) {
         statusLine.textContent = "Loading VST3 instrument…";
         try {
           live = await invoke("drum_vst_action", { payload: { kind: "load", pluginPath, pluginUid: pluginUid || null } });
-          await ctx.update(null, false);
+          await ctx.update(null, true);
           refreshControls();
         } catch (err) {
           statusLine.textContent = String(err);
@@ -1036,7 +1047,7 @@ export function attachLanes(ctx) {
     enableBox.addEventListener("change", () => {
       ctx.run(async () => {
         live = await invoke("drum_vst_action", { payload: { kind: "toggle", enabled: enableBox.checked } });
-        await ctx.update(null, false);
+        await ctx.update(null, true);
         refreshControls();
       });
     });
@@ -1119,7 +1130,7 @@ export function attachLanes(ctx) {
         }
         ctx.run(async () => {
           await invoke("drum_vst_action", { payload: { kind: "toggle", enabled: !live.enabled } });
-          await ctx.update(null, false);
+          await ctx.update(null, true);
           syncDrumVst3Button();
         });
       });
