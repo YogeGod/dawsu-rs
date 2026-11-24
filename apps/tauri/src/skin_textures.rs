@@ -8,6 +8,7 @@ const PNG_MAGIC: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
 const WANTED: &[(&str, &str)] = &[
     ("hitcircle@2x.png", "hitcircle"),
     ("hitcircleoverlay@2x.png", "overlay"),
+    ("approachcircle@2x.png", "approachCircle"),
     ("reversearrow@2x.png", "reverseArrow"),
     ("default-0@2x.png", "0"),
     ("default-1@2x.png", "1"),
@@ -44,14 +45,200 @@ pub fn load_skin_textures_json() -> Value {
         .get("reverseArrow")
         .map(|png| Value::String(png_data_url(png)))
         .unwrap_or(Value::Null);
+    let approach_circle = raw
+        .get("approachCircle")
+        .map(|png| Value::String(png_data_url(png)))
+        .unwrap_or(Value::Null);
 
     json!({
         "hitcircle": png_data_url(hitcircle),
         "overlay": png_data_url(overlay),
+        "approachCircle": approach_circle,
         "reverseArrow": reverse_arrow,
         "digits": digits,
         "circleFill": 0.92,
+        "overlap": -2,
+        "overlayAboveNumber": true,
     })
+}
+
+/// Lists built-in skins (Argon, osu!lazer Classic) and any osu! skin folders found in the
+/// osu! Skins directory beside `songs_folder` or the default osu! stable install.
+pub fn list_available_skins(songs_folder: Option<&Path>) -> Value {
+    let mut entries = vec![json!({ "id": "argon", "name": "Argon (osu!lazer)" })];
+    if find_lazer_resources().is_some() {
+        entries.push(json!({ "id": "classic", "name": "Classic (osu!lazer)" }));
+    }
+    let mut roots: Vec<PathBuf> = Vec::new();
+    if let Some(songs) = songs_folder {
+        if let Some(parent) = songs.parent() {
+            let skins = parent.join("Skins");
+            if skins.is_dir() {
+                roots.push(skins);
+            }
+        }
+    }
+    #[cfg(target_os = "windows")]
+    if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+        let skins = Path::new(&local).join("osu!").join("Skins");
+        if skins.is_dir() && !roots.iter().any(|r| r == &skins) {
+            roots.push(skins);
+        }
+    }
+    #[cfg(target_os = "macos")]
+    if let Some(home) = std::env::var_os("HOME") {
+        let skins = Path::new(&home).join("Library/Application Support/osu!/Skins");
+        if skins.is_dir() && !roots.iter().any(|r| r == &skins) {
+            roots.push(skins);
+        }
+    }
+    #[cfg(target_os = "linux")]
+    if let Some(home) = std::env::var_os("HOME") {
+        let skins = Path::new(&home).join(".local/share/osu/Skins");
+        if skins.is_dir() && !roots.iter().any(|r| r == &skins) {
+            roots.push(skins);
+        }
+    }
+
+    let mut found: Vec<(String, PathBuf)> = Vec::new();
+    for root in roots {
+        if let Ok(read) = std::fs::read_dir(&root) {
+            for entry in read.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    let has_skin = path.join("skin.ini").is_file()
+                        || path.join("hitcircle@2x.png").is_file()
+                        || path.join("hitcircle.png").is_file();
+                    if has_skin {
+                        let name = entry.file_name().to_string_lossy().into_owned();
+                        found.push((name, path));
+                    }
+                }
+            }
+        }
+    }
+    found.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
+    for (name, path) in found {
+        entries.push(json!({
+            "id": format!("dir:{}", path.display()),
+            "name": name,
+        }));
+    }
+    Value::Array(entries)
+}
+
+/// Loads hitcircle/overlay/approach/arrow/digit PNGs and `skin.ini` hints from a custom osu! skin folder.
+pub fn load_skin_from_dir(dir: &Path) -> Result<Value, String> {
+    if !dir.is_dir() {
+        return Err(format!("Skin folder not found: {}", dir.display()));
+    }
+    let mut prefix = String::from("default");
+    let mut overlap: i32 = -2;
+    let mut overlay_above_number = true;
+    let mut combo_colours: Vec<String> = Vec::new();
+    let mut slider_border: Option<String> = None;
+    let mut slider_track: Option<String> = None;
+
+    if let Ok(ini) = std::fs::read_to_string(dir.join("skin.ini")) {
+        for raw_line in ini.lines() {
+            let line = raw_line.split("//").next().unwrap_or("").trim();
+            let Some((k, v)) = line.split_once(':') else {
+                continue;
+            };
+            let key = k.trim();
+            let val = v.trim();
+            if key.eq_ignore_ascii_case("HitCirclePrefix") && !val.is_empty() {
+                prefix = val.replace('\\', "/");
+            } else if key.eq_ignore_ascii_case("HitCircleOverlap") {
+                if let Ok(n) = val.parse::<i32>() {
+                    overlap = n;
+                }
+            } else if key.eq_ignore_ascii_case("HitCircleOverlayAboveNumber")
+                || key.eq_ignore_ascii_case("HitCircleOverlayAboveNumer")
+            {
+                overlay_above_number = val != "0";
+            } else if key.len() == 6 && key[..5].eq_ignore_ascii_case("Combo") {
+                if let Some(hex) = parse_rgb_triplet(val) {
+                    combo_colours.push(hex);
+                }
+            } else if key.eq_ignore_ascii_case("SliderBorder") {
+                slider_border = parse_rgb_triplet(val);
+            } else if key.eq_ignore_ascii_case("SliderTrackOverride") {
+                slider_track = parse_rgb_triplet(val);
+            }
+        }
+    }
+
+    let read_sprite = |stem: &str| -> (Option<String>, bool) {
+        let p2 = dir.join(format!("{stem}@2x.png"));
+        if let Ok(bytes) = std::fs::read(&p2) {
+            return (Some(png_data_url(&bytes)), true);
+        }
+        let p1 = dir.join(format!("{stem}.png"));
+        if let Ok(bytes) = std::fs::read(&p1) {
+            return (Some(png_data_url(&bytes)), false);
+        }
+        (None, false)
+    };
+
+    let (hitcircle, _) = read_sprite("hitcircle");
+    let (overlay, _) = read_sprite("hitcircleoverlay");
+    let (slider_end_circle, _) = read_sprite("sliderendcircle");
+    let (slider_end_overlay, _) = read_sprite("sliderendcircleoverlay");
+    let (approach_circle, _) = read_sprite("approachcircle");
+    let (reverse_arrow, _) = read_sprite("reversearrow");
+    let mut digits = Vec::with_capacity(10);
+    let mut digit_hd = false;
+    for i in 0..10 {
+        let stem = format!("{prefix}-{i}");
+        let (url, hd) = read_sprite(&stem);
+        let (url, hd) = if url.is_some() {
+            (url, hd)
+        } else {
+            read_sprite(&format!("default-{i}"))
+        };
+        if hd {
+            digit_hd = true;
+        }
+        digits.push(match url {
+            Some(u) => Value::String(u),
+            None => Value::Null,
+        });
+    }
+
+    if hitcircle.is_none() && overlay.is_none() {
+        return Err("That folder does not contain hitcircle.png or hitcircle@2x.png.".into());
+    }
+
+    Ok(json!({
+        "hitcircle": hitcircle,
+        "overlay": overlay,
+        "sliderEndCircle": slider_end_circle,
+        "sliderEndOverlay": slider_end_overlay,
+        "approachCircle": approach_circle,
+        "reverseArrow": reverse_arrow,
+        "digits": digits,
+        "digitHd": digit_hd,
+        "overlap": overlap,
+        "overlayAboveNumber": overlay_above_number,
+        "comboColours": combo_colours,
+        "sliderBorder": slider_border,
+        "sliderTrack": slider_track,
+        "circleFill": 1.0,
+    }))
+}
+
+fn parse_rgb_triplet(val: &str) -> Option<String> {
+    let parts: Vec<u8> = val
+        .split(',')
+        .take(3)
+        .filter_map(|p| p.trim().parse::<u8>().ok())
+        .collect();
+    if parts.len() == 3 {
+        Some(format!("#{:02x}{:02x}{:02x}", parts[0], parts[1], parts[2]))
+    } else {
+        None
+    }
 }
 
 pub fn find_lazer_resources() -> Option<PathBuf> {

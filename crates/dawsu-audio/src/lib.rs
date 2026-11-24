@@ -552,7 +552,10 @@ pub struct Mixer {
     pub playing: bool,
     pub position_ms: f64,
     pub song_gain: f32,
+    pub hitsound_gain: f32,
     pub master_gain: f32,
+    pub song_peak: f32,
+    pub hitsound_peak: f32,
     pub song_offset: f64,
     pub cycle: Option<(f64, f64)>,
     pub speed: f64,
@@ -584,7 +587,10 @@ impl Mixer {
             playing: false,
             position_ms: 0.0,
             song_gain: 1.0,
+            hitsound_gain: 1.0,
             master_gain: 1.0,
+            song_peak: 0.0,
+            hitsound_peak: 0.0,
             song_offset: 0.0,
             cycle: None,
             speed: 1.0,
@@ -732,7 +738,8 @@ impl Mixer {
                     1.0
                 };
                 for (channel, value) in frame.iter_mut().enumerate() {
-                    let mut mix = 0.0;
+                    let mut song_mix = 0.0;
+                    let mut hs_mix = 0.0;
                     if self.playing {
                         if let Some([l, r]) = stretched_song_frame {
                             let sample = if out_channels == 1 {
@@ -742,9 +749,9 @@ impl Mixer {
                             } else {
                                 r
                             };
-                            mix += sample * self.song_gain * song_fade;
+                            song_mix += sample * self.song_gain * song_fade;
                         } else if let Some(song) = &self.song {
-                            mix += song.sample(
+                            song_mix += song.sample(
                                 (self.position_ms - self.song_offset)
                                     * song.sample_rate as f64
                                     / 1000.0,
@@ -770,12 +777,15 @@ impl Mixer {
                                     source %= len as f64;
                                 }
                             }
-                            mix += cue.clip.sample(source, channel) * cue.gain;
+                            hs_mix += cue.clip.sample(source, channel) * cue.gain * self.hitsound_gain;
                         }
                     }
                     for voice in self.voices.iter().chain(&self.listen) {
-                        mix += voice.clip.sample(voice.frame, channel) * voice.gain;
+                        hs_mix += voice.clip.sample(voice.frame, channel) * voice.gain * self.hitsound_gain;
                     }
+                    self.song_peak = self.song_peak.max(song_mix.abs());
+                    self.hitsound_peak = self.hitsound_peak.max(hs_mix.abs());
+                    let mut mix = song_mix + hs_mix;
                     if has_live && frame_idx < block_frames {
                         let live_l = sanitize_live_sample(self.live_left[frame_idx]);
                         let live_r = sanitize_live_sample(self.live_right[frame_idx]);
@@ -931,6 +941,7 @@ enum Command {
     Audition(Arc<AudioClip>, f32),
     Listen(Option<Arc<AudioClip>>),
     Gains(f32, f32),
+    HitsoundGain(f32),
     Cycle(Option<(f64, f64)>),
     Offset(f64),
 }
@@ -947,6 +958,7 @@ pub struct AudioEngine {
     playing: Arc<AtomicBool>,
     pub errors: Arc<AtomicU64>,
     pub peak: Arc<AtomicU32>,
+    pub bus_peaks: Arc<AtomicU64>,
     pub device_name: String,
     device_id: Option<String>,
 }
@@ -997,8 +1009,10 @@ impl AudioEngine {
             let playing = Arc::new(AtomicBool::new(false));
             let errors = Arc::new(AtomicU64::new(0));
             let peak = Arc::new(AtomicU32::new(0));
+            let bus_peaks = Arc::new(AtomicU64::new(0));
             let mut state = StreamRender::new(NATIVE_SAMPLE_RATE, 2, receive, retire_live_tx,
-                position.clone(), playing.clone(), peak.clone());
+                position.clone(), playing.clone(), peak.clone())
+                .with_bus_peaks(bus_peaks.clone());
             let render = move |out: &mut [i16]| state.fill(out);
             let stream = match backend {
                 OutputBackend::Mme => mme::open(device_id, buffer_ms, render, errors.clone()),
@@ -1011,7 +1025,7 @@ impl AudioEngine {
                 device_name: stream.name.clone(),
                 device_id: device_id.map(str::to_owned),
                 _stream: OutputStream::Native { _stream: stream },
-                send, position, playing, errors, peak,
+                send, position, playing, errors, peak, bus_peaks,
                 retirements: Mutex::new(Vec::new()),
                 retired_live_sources: Mutex::new(retire_live_rx),
                 auditions: Mutex::new(Vec::new()),
@@ -1096,10 +1110,12 @@ impl AudioEngine {
         let playing = Arc::new(AtomicBool::new(false));
         let errors = Arc::new(AtomicU64::new(0));
         let peak = Arc::new(AtomicU32::new(0));
+        let bus_peaks = Arc::new(AtomicU64::new(0));
         let render = StreamRender::new(
             config.sample_rate, config.channels as usize, receive, retire_live_tx,
             position.clone(), playing.clone(), peak.clone(),
-        );
+        )
+        .with_bus_peaks(bus_peaks.clone());
         let stream = match supported.sample_format() {
             cpal::SampleFormat::F32 => stream::<f32>(&device, config, render, errors.clone()),
             cpal::SampleFormat::F64 => stream::<f64>(&device, config, render, errors.clone()),
@@ -1123,6 +1139,7 @@ impl AudioEngine {
             playing,
             errors,
             peak,
+            bus_peaks,
             device_name: name,
             device_id,
         })
@@ -1217,11 +1234,23 @@ impl AudioEngine {
             .send
             .send(Command::Gains(song.clamp(0.0, 1.0), master.clamp(0.2, 1.0)));
     }
+    pub fn hitsound_gain(&self, hitsound: f32) {
+        let _ = self
+            .send
+            .send(Command::HitsoundGain(hitsound.clamp(0.0, 2.0)));
+    }
     pub fn cycle(&self, range: Option<(f64, f64)>) {
         let _ = self.send.send(Command::Cycle(range));
     }
     pub fn offset(&self, ms: f64) {
         let _ = self.send.send(Command::Offset(ms));
+    }
+    pub fn peaks(&self) -> (f32, f32, f32) {
+        let master = f32::from_bits(self.peak.load(Ordering::Relaxed));
+        let packed = self.bus_peaks.load(Ordering::Relaxed);
+        let song = f32::from_bits((packed >> 32) as u32);
+        let hitsounds = f32::from_bits(packed as u32);
+        (master, song, hitsounds)
     }
     pub fn position_ms(&self) -> f64 {
         f64::from_bits(self.position.load(Ordering::Relaxed))
@@ -1243,6 +1272,7 @@ struct StreamRender {
     position: Arc<AtomicU64>,
     playing: Arc<AtomicBool>,
     peak: Arc<AtomicU32>,
+    bus_peaks: Option<Arc<AtomicU64>>,
     channels: usize,
     scratch: Vec<f32>,
 }
@@ -1266,9 +1296,15 @@ impl StreamRender {
             position,
             playing,
             peak,
+            bus_peaks: None,
             channels,
             scratch: vec![0.0; samples],
         }
+    }
+
+    fn with_bus_peaks(mut self, bus_peaks: Arc<AtomicU64>) -> Self {
+        self.bus_peaks = Some(bus_peaks);
+        self
     }
 
     fn fill<T: cpal::SizedSample + cpal::FromSample<f32>>(&mut self, out: &mut [T]) {
@@ -1291,6 +1327,9 @@ impl StreamRender {
                     self.mixer.song_gain = song;
                     self.mixer.master_gain = master;
                 }
+                Command::HitsoundGain(hitsound) => {
+                    self.mixer.hitsound_gain = hitsound;
+                }
                 Command::Cycle(range) => self.mixer.cycle = range,
                 Command::Offset(ms) => {
                     self.mixer.song_offset = ms;
@@ -1299,6 +1338,8 @@ impl StreamRender {
             }
         }
         let mut highest = 0.0_f32;
+        self.mixer.song_peak = 0.0;
+        self.mixer.hitsound_peak = 0.0;
         for chunk in out.chunks_mut(self.scratch.len()) {
             let buffer = &mut self.scratch[..chunk.len()];
             self.mixer.render(buffer, self.channels);
@@ -1308,6 +1349,11 @@ impl StreamRender {
             }
         }
         self.peak.store(highest.to_bits(), Ordering::Relaxed);
+        if let Some(bus) = &self.bus_peaks {
+            let packed = ((self.mixer.song_peak.to_bits() as u64) << 32)
+                | (self.mixer.hitsound_peak.to_bits() as u64);
+            bus.store(packed, Ordering::Relaxed);
+        }
         self.position.store(self.mixer.position_ms.to_bits(), Ordering::Relaxed);
         self.playing.store(self.mixer.playing, Ordering::Relaxed);
     }

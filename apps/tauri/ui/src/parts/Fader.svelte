@@ -2,9 +2,12 @@
   import { dbText, faderKey, faderPosition, faderReach, faderSender, positionGain, releaseFader, scaleMarks } from "../lib/mixer.js";
 
   // v3 §6 fader block: slot, dB scale and meter. A gain of null means the editor has no level for
-  // this channel yet: the slot shows greyed out with no cap. The meter stays empty (no levels yet).
+  // this channel yet: the slot shows greyed out with no cap. `peak` (0..1+) drives the live meter.
   // The cap and the scale share one 138 px travel; the part the gain can't reach is dimmed.
-  let { gain = null, min = 0, max = 1, label, disabled = false, onchange } = $props();
+  let { gain = null, min = 0, max = 1, label, disabled = false, peak = null, onchange } = $props();
+  const meterPct = $derived(peak != null && peak > 0.0005 ? Math.round((1 - faderPosition(peak)) * 100) : 0);
+  const meterClip = $derived(peak != null && peak >= 0.98);
+  const meterHot = $derived(peak != null && peak >= 0.5 && peak < 0.98);
 
   let slot = $state();
   // The value under the pointer while dragging. After a release the cap keeps it until the last
@@ -80,7 +83,10 @@
   <div class="scale" aria-hidden="true">
     {#each scaleMarks as [mark, at] (mark)}<span style:--fader-at={at}>{mark}</span>{/each}
   </div>
-  <div class="meter off" aria-hidden="true"><div></div><div></div></div>
+  <div class="meter" class:off={peak === null} aria-hidden="true">
+    <div class="meter-ch"><span class="meter-bar" class:hot={meterHot} class:clip={meterClip} style:height={meterPct + "%"}></span></div>
+    <div class="meter-ch"><span class="meter-bar" class:hot={meterHot} class:clip={meterClip} style:height={meterPct + "%"}></span></div>
+  </div>
 </div>
 
 <style>
@@ -178,8 +184,25 @@
     padding: 1px;
     box-sizing: border-box;
   }
-  .meter div {
+  .meter-ch {
     flex: 1;
+    display: flex;
+    align-items: flex-end;
+    background: rgba(255, 255, 255, 0.04);
+    border-radius: 1px;
+    overflow: hidden;
+  }
+  .meter-bar {
+    width: 100%;
+    background: var(--editor-meter, #34c759);
+    border-radius: 1px;
+    transition: height 55ms linear;
+  }
+  .meter-bar.hot {
+    background: var(--editor-warning, #ffd60a);
+  }
+  .meter-bar.clip {
+    background: var(--editor-error, #ff453a);
   }
   .meter.off {
     opacity: 0.45;

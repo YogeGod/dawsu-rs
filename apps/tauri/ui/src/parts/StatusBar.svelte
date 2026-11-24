@@ -46,7 +46,7 @@
 <button id="cancel-job" type="button" hidden={!view?.busy}
   onclick={() => send("cancelJob")}>Cancel job</button>
 <div class="status-right">
-  <span id="file-name" class="status-file" title={path} hidden={!path}>
+  <span id="file-name" class="status-file" title={path} hidden>
     <span id="file-name-head">{fileParts.head}</span><span id="file-name-tail">{fileParts.tail}</span>
   </span>
   <span id="hit-lane-counts" class="status-counts" hidden={!hasScene}>{counts}</span>

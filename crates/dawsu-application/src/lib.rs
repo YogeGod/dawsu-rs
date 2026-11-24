@@ -266,6 +266,7 @@ const DIFFICULTY_CHANGED: &str =
 /// The farthest the timeline zooms out, in pixels per millisecond: low enough that Fit shows a
 /// 30-minute song in a 1000 px timeline. The view, Zoom out and reopening all use it.
 pub const MIN_ZOOM: f64 = 0.0005;
+pub const DEFAULT_SONG_OFFSET_MS: f64 = -22.0;
 
 pub struct SaveReport {
     pub file: OsuFile,
@@ -763,6 +764,10 @@ pub struct Preferences {
     pub audio_buffer_ms: Option<u32>,
     pub song_gain: f32,
     pub song_muted: bool,
+    #[serde(default = "default_hitsound_gain")]
+    pub hitsound_gain: f32,
+    #[serde(default)]
+    pub hitsounds_muted: bool,
     pub master_gain: f32,
     pub audition: bool,
     pub follow: bool,
@@ -793,6 +798,10 @@ pub struct WindowPlace {
     pub height: f64,
     pub open: bool,
 }
+fn default_hitsound_gain() -> f32 {
+    1.0
+}
+
 fn system_audio_backend(backend: &OutputBackend) -> bool {
     *backend == OutputBackend::System
 }
@@ -807,6 +816,9 @@ fn open_preferred_audio(preferences: &Preferences, buffer_ms: Option<u32>) -> Re
 impl Preferences {
     fn effective_song_gain(&self) -> f32 {
         if self.song_muted { 0.0 } else { self.song_gain }
+    }
+    fn effective_hitsound_gain(&self) -> f32 {
+        if self.hitsounds_muted { 0.0 } else { self.hitsound_gain }
     }
 }
 
@@ -823,6 +835,8 @@ impl Default for Preferences {
             audio_buffer_ms: None,
             song_gain: 0.7,
             song_muted: false,
+            hitsound_gain: 1.0,
+            hitsounds_muted: false,
             master_gain: 0.2,
             audition: true,
             follow: false,
@@ -982,7 +996,9 @@ pub struct Application {
     cancel: Arc<AtomicBool>,
     muted: Vec<SampleIdentity>,
     solo: Vec<SampleIdentity>,
+    lane_gains: HashMap<SampleIdentity, f32>,
     song_solo: bool,
+    hitsounds_solo: bool,
     cached_version: u64,
     cached_listen_version: u64,
     pub zoom: f64,
@@ -1070,6 +1086,7 @@ impl Application {
         };
         if let Some(a) = &audio {
             a.gains(preferences.effective_song_gain(), preferences.master_gain);
+            a.hitsound_gain(preferences.effective_hitsound_gain());
         }
         Self::create(preferences, first_launch, audio, error, true, data_root)
     }
@@ -1130,7 +1147,9 @@ impl Application {
             cancel: Arc::new(AtomicBool::new(false)),
             muted: Vec::new(),
             solo: Vec::new(),
+            lane_gains: HashMap::new(),
             song_solo: false,
+            hitsounds_solo: false,
             sample_file: None,
             cached_version: 0,
             cached_listen_version: 0,
@@ -1139,7 +1158,7 @@ impl Application {
             locator_left: 0.0,
             locator_right: 10000.0,
             cycle: false,
-            song_offset: 0.0,
+            song_offset: DEFAULT_SONG_OFFSET_MS,
             active_lane: 0,
             selection_lane_scope: None,
             playback_start: 0.0,
@@ -1849,6 +1868,8 @@ impl Application {
                     self.muted.clear();
                     self.solo.clear();
                     self.song_solo = false;
+                    self.hitsounds_solo = false;
+                    self.lane_gains.clear();
                     self.active_lane = 0;
                     self.restore_active_lane(None);
                     self.preferences.recent.retain(|p| p != &path);
@@ -1867,7 +1888,11 @@ impl Application {
                         .unwrap_or(duration)
                         .clamp(0.0, duration);
                     self.cycle = settings.cycle && self.locator_left < self.locator_right;
-                    self.song_offset = settings.song_offset;
+                    self.song_offset = if self.project.is_some() {
+                        settings.song_offset
+                    } else {
+                        DEFAULT_SONG_OFFSET_MS
+                    };
                     self.zoom = settings.zoom.unwrap_or(0.12).clamp(MIN_ZOOM, 3.0);
                     self.row_height = settings.row_height.unwrap_or(30.0).clamp(20.0, 65.0);
                     self.set_view_start(settings.view_start.clamp(0.0, duration));
@@ -2313,17 +2338,27 @@ impl Application {
         }
     }
     fn playback_song_gain(&self) -> f32 {
-        if !self.solo.is_empty() && !self.song_solo {
+        if (!self.solo.is_empty() || self.hitsounds_solo) && !self.song_solo {
             0.0
         } else {
             self.preferences.effective_song_gain()
         }
     }
 
+    pub fn playback_hitsound_gain(&self) -> f32 {
+        if self.song_solo && !self.hitsounds_solo && self.solo.is_empty() {
+            0.0
+        } else {
+            self.preferences.effective_hitsound_gain()
+        }
+    }
+
     pub fn gains_changed(&mut self) {
         self.preferences.master_gain = self.preferences.master_gain.clamp(0.2, 1.0);
+        self.preferences.hitsound_gain = self.preferences.hitsound_gain.clamp(0.0, 2.0);
         if let Some(a) = &self.audio {
             a.gains(self.playback_song_gain(), self.preferences.master_gain);
+            a.hitsound_gain(self.playback_hitsound_gain());
         }
     }
     pub fn cycle_changed(&mut self) {
@@ -2347,7 +2382,7 @@ impl Application {
     }
     fn audition_lane(&self, lane: &SampleIdentity, gain: f32) {
         if let (Some(a), Some(clip)) = (&self.audio, self.clip_for_lane(lane)) {
-            a.audition(clip.clone(), gain);
+            a.audition(clip.clone(), gain * self.lane_gain(lane));
         }
     }
     pub fn audition_sample_file(&mut self, source: &Path) -> Result<(), String> {
@@ -2404,6 +2439,37 @@ impl Application {
             self.song_solo = on;
             self.sync_audio();
         }
+    }
+
+    pub fn hitsounds_solo(&self) -> bool {
+        self.hitsounds_solo
+    }
+
+    pub fn audio_peaks(&self) -> (f32, f32, f32) {
+        self.audio.as_ref().map_or((0.0, 0.0, 0.0), |a| a.peaks())
+    }
+    pub fn set_hitsounds_solo(&mut self, on: bool) {
+        if self.document.is_some() && self.hitsounds_solo != on {
+            self.hitsounds_solo = on;
+            self.sync_audio();
+        }
+    }
+
+    pub fn lane_gain(&self, lane: &SampleIdentity) -> f32 {
+        self.lane_gains.get(lane).copied().unwrap_or(1.0)
+    }
+
+    pub fn set_lane_gain(&mut self, lane: SampleIdentity, gain: f32) {
+        if !gain.is_finite() {
+            return;
+        }
+        let clamped = gain.clamp(0.0, 2.0);
+        if (clamped - 1.0).abs() < 1e-4 {
+            self.lane_gains.remove(&lane);
+        } else {
+            self.lane_gains.insert(lane, clamped);
+        }
+        self.sync_audio();
     }
 
     pub fn set_speed(&mut self, speed: f64) {
@@ -2587,7 +2653,9 @@ impl Application {
 
     pub fn set_view_start(&mut self, ms: f64) {
         if let Some(d) = self.document.as_mut() {
-            d.composer.view_start = ms.max(0.0);
+            if ms.is_finite() {
+                d.composer.view_start = ms;
+            }
         }
     }
     pub fn set_snap(&mut self, enabled: bool, division: u32) {
@@ -3035,7 +3103,7 @@ impl Application {
     }
 
     fn scheduled_sounds(&self, d: &Document) -> Vec<ScheduledSound> {
-        if self.song_solo && self.solo.is_empty() {
+        if self.song_solo && !self.hitsounds_solo && self.solo.is_empty() {
             return Vec::new();
         }
         let composer = &d.composer;
@@ -3057,11 +3125,12 @@ impl Application {
         cue_list(audible, &self.muted, &self.solo)
             .into_iter()
             .filter_map(|cue| {
+                let lane_gain = self.lane_gain(cue.sample());
                 Some(ScheduledSound {
                     at_ms: cue.time().ms(),
                     end_ms: cue.loop_end().map(|t| t.ms()),
                     clip: self.samples.get(cue.sample())?.clone(),
-                    gain: cue.gain() as f32,
+                    gain: cue.gain() as f32 * lane_gain,
                 })
             })
             .collect()
@@ -3078,6 +3147,7 @@ impl Application {
                     self.playback_speed,
                 );
                 a.gains(self.playback_song_gain(), self.preferences.master_gain);
+                a.hitsound_gain(self.playback_hitsound_gain());
             }
         }
     }
@@ -7232,7 +7302,7 @@ Sample,0,0,\"{story}\",100
         app.zoom = 0.35;
         app.set_view_start(125.0);
         open(&mut app, other);
-        assert_eq!(app.song_offset, 0.0);
+        assert_eq!(app.song_offset, DEFAULT_SONG_OFFSET_MS);
         open(&mut app, map.clone());
         assert_eq!(app.song_offset, -42.5);
         assert_eq!(

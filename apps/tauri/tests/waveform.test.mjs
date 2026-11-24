@@ -28,6 +28,9 @@ test("the ruler paints the teal waveform frequency shades on a teal tint; the ov
       },
       fillRect(x, y, width, height) {
         fills.push(this.fillStyle);
+        if (typeof this.fillStyle === "string" && this.fillStyle.startsWith("rgba(") && width === 1 && height > 2) {
+          bands.push({ color: this.fillStyle });
+        }
         if (this.fillStyle === "#a3a3a3") hitMarks.push([x, y]);
       },
     }, {get: (target, name) => target[name] ?? (() => {})});

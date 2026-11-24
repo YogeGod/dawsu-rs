@@ -17,7 +17,7 @@ const VERSION: u32 = 1;
 const MAX_PROJECT_BYTES: u64 = 192 * 1024 * 1024;
 const MAX_LEGACY_BYTES: u64 = 192 * 1024 * 1024;
 
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub(crate) struct SessionSettings {
     pub song_offset: f64,
@@ -66,6 +66,36 @@ pub(crate) struct SessionSettings {
     /// Output slot -> hitsound lane bindings for the M4 node graph. Older builds ignore the field.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub node_graph_bindings: Option<BTreeMap<String, String>>,
+}
+
+impl Default for SessionSettings {
+    fn default() -> Self {
+        Self {
+            song_offset: crate::DEFAULT_SONG_OFFSET_MS,
+            locator_left: 0.0,
+            locator_right: None,
+            cycle: false,
+            zoom: None,
+            row_height: None,
+            view_start: 0.0,
+            bookmarks: None,
+            unanchored: None,
+            lane_layout: None,
+            lane_slots: None,
+            hidden_lanes: None,
+            hs_mode: None,
+            hs_circle_ownership: None,
+            gain_recovery: None,
+            unwritten: None,
+            sound_sets: None,
+            pending_samples: None,
+            time_signatures: None,
+            export_settings: None,
+            drum_lanes: None,
+            export_choices: None,
+            node_graph_bindings: None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

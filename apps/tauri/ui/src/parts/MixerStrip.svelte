@@ -1,12 +1,13 @@
 <script>
-  import { stripClickSelects, stripShades } from "../lib/mixer.js";
+  import { dbText, stripClickSelects, stripShades } from "../lib/mixer.js";
   import Fader from "./Fader.svelte";
 
   // One v3 mixer strip (§6, 8b footer). Pan, the meter and the peak readout have no backend yet,
   // so they show greyed out and empty; a strip without a gain has a fader without a cap and no level.
   let { label, name, set = "", number = "", icon, colour = null, selected = false, quiet = false,
     muted = false, solo = false, muteLabel, soloLabel, disabled = false, onmute, onsolo, onselect,
-    gain = null, min = 0, max = 1, gainLabel, readout = null, onlevel } = $props();
+    gain = null, min = 0, max = 1, gainLabel, readout = null, peak = null, onlevel } = $props();
+  const peakText = $derived(peak != null && peak > 0.001 ? dbText(peak) : "");
 
   const shade = $derived(stripShades(colour));
 
@@ -25,10 +26,10 @@
     <button type="button" class="ms solo" aria-label={soloLabel} aria-pressed={solo} {disabled} onclick={onsolo}>S</button>
   </div>
   <div class="box pan off" aria-hidden="true"></div>
-  <Fader {gain} {min} {max} label={gainLabel} {disabled} onchange={onlevel} />
+  <Fader {gain} {min} {max} label={gainLabel} {disabled} {peak} onchange={onlevel} />
   <div class="row">
     <span class="box level {readout === null ? 'off' : ''}">{readout ?? ""}</span>
-    <span class="box peak off"></span>
+    <span class="box peak {peak === null ? 'off' : ''}">{peakText}</span>
   </div>
   <div class="foot">
     <span class="set"><svg viewBox="0 0 16 16" aria-hidden="true">{@html icon}</svg>{set}</span>

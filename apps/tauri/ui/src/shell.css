@@ -3,7 +3,7 @@
 
 /* Icons drawn inline in index.html. */
 #editor-header button svg,
-#editor-ribbon .map-chip svg,
+#editor-header .map-chip svg,
 #editor-ribbon .lane-mode svg,
 .panel-head svg,
 .panel-rail svg {
@@ -179,21 +179,24 @@
   padding-left: 0;
   border-left: 0;
 }
-#editor-ribbon .map-chip {
+#editor-header .map-chip {
   position: relative;
   display: flex;
   flex: 0 1 auto;
   align-items: center;
   gap: 10px;
   min-width: 0;
-  max-width: 480px;
+  max-width: 300px;
   height: 32px;
   padding: 0 10px 0 12px;
   border-radius: 6px;
   background: var(--editor-ink);
   box-shadow: var(--shadow-well);
 }
-#editor-ribbon .map-chip:hover {
+#editor-header[data-empty="true"] .map-chip {
+  display: none;
+}
+#editor-header .map-chip:hover {
   background: var(--editor-panel);
 }
 .map-chip-title {
@@ -226,7 +229,7 @@
 }
 /* The sibling list sits over the whole chip, laid out but see-through, so Ctrl+O can read it and its
    focus ring still shows. */
-#editor-ribbon .map-chip #difficulty {
+#editor-header .map-chip #difficulty {
   position: absolute;
   inset: 0;
   width: 100%;
@@ -242,10 +245,10 @@
   color: transparent;
   cursor: pointer;
 }
-#editor-ribbon .map-chip #difficulty:disabled {
+#editor-header .map-chip #difficulty:disabled {
   cursor: default;
 }
-#editor-ribbon .map-chip #difficulty option {
+#editor-header .map-chip #difficulty option {
   background: var(--editor-panel);
   color: var(--editor-text);
 }
@@ -434,8 +437,8 @@ aside[data-folded] {
   #editor-header.chrome {
     gap: 8px;
   }
-  #editor-ribbon .map-chip {
-    max-width: 360px;
+  #editor-header .map-chip {
+    max-width: 220px;
   }
   #statusbar .status-device {
     max-width: 160px;
@@ -474,8 +477,9 @@ aside[data-folded] {
     row-gap: 4px;
     padding-block: 4px;
   }
-  #editor-ribbon .map-chip {
-    min-width: 120px;
+  #editor-header .map-chip {
+    min-width: 96px;
+    max-width: 180px;
   }
 }
 @media (max-width: 1279px) {
@@ -485,8 +489,8 @@ aside[data-folded] {
   #editor-ribbon .lane-mode {
     width: auto;
   }
-  #editor-ribbon .map-chip {
-    max-width: 220px;
+  #editor-header .map-chip {
+    max-width: 150px;
   }
 }
 @media (max-width: 1119px) {
@@ -495,7 +499,7 @@ aside[data-folded] {
     gap: 8px;
     padding: 0 10px;
   }
-  #editor-ribbon .map-chip {
-    max-width: 160px;
+  #editor-header .map-chip {
+    max-width: 120px;
   }
 }

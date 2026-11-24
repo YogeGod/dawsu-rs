@@ -6,6 +6,9 @@
     applyRequest, autoStart, blockDrops, canCheck, checkLine, forget, initialState, isChecked, isFresh, landsText,
     laneLabel, listenFrom, nextPoll, progressText, reviewRequest, settle, startRequest, stripMarks, take, ticked, timeText,
   } from "../lib/drum.js";
+  import {
+    detectedRowsToDrumNotes, readDrumVst3, syncDrumVst3Track, vst3InstrumentOptions, writeDrumVst3,
+  } from "../lib/drumVst3.js";
 
   // The editor's answer to drum_context and the window's own state beside it (drum.js `take`).
   // A test may pass an answer in.
@@ -23,6 +26,11 @@
   let pollTimer;
   let closed = false;
   let canvas = $state(null);
+  const storage = () => { try { return typeof window !== "undefined" ? window.localStorage : null; } catch { return null; } };
+  let drumVst3 = $state(readDrumVst3(storage()));
+  let vst3Plugins = $state([]);
+  let vst3Scanning = $state(false);
+  let vst3Status = $state("");
 
   const view = $derived(state.view);
   const rows = $derived(state.rows);
@@ -153,9 +161,76 @@
     else send(() => invoke("drum_listen", { map: view.map, from: listenFrom(rows, picked), ticked: ticked(rows, overrides) }));
   }
 
+  async function scanVst3() {
+    if (vst3Scanning) return;
+    vst3Scanning = true;
+    vst3Status = "Scanning VST3 instruments…";
+    try {
+      const report = await invoke("vst3_scan");
+      vst3Plugins = vst3InstrumentOptions(report);
+      if (drumVst3.enabled && !drumVst3.pluginId && vst3Plugins.length) {
+        drumVst3 = writeDrumVst3(storage(), {
+          enabled: true,
+          pluginId: vst3Plugins[0].id,
+          pluginName: vst3Plugins[0].name,
+          pluginPath: vst3Plugins[0].path,
+        });
+      }
+      vst3Status = vst3Plugins.length
+        ? `Found ${vst3Plugins.length} VST3 ${vst3Plugins.length === 1 ? "instrument" : "instruments"}.`
+        : "No VST3 instruments found.";
+    } catch (failure) {
+      vst3Status = String(failure);
+    } finally {
+      vst3Scanning = false;
+    }
+  }
+
+  async function syncDetectedToVst3() {
+    if (!drumVst3.enabled) return;
+    const pickedPlugin = vst3Plugins.find(p => p.id === drumVst3.pluginId) ?? (drumVst3.pluginName ? {
+      id: drumVst3.pluginId,
+      name: drumVst3.pluginName,
+      path: drumVst3.pluginPath,
+    } : null);
+    const hits = ready ? detectedRowsToDrumNotes(rows, overrides, isChecked) : [];
+    try {
+      const result = await syncDrumVst3Track(invoke, { plugin: pickedPlugin, hits });
+      if (result) {
+        vst3Status = `Routed ${result.addedNotes} drum ${result.addedNotes === 1 ? "hit" : "hits"} to Drum Map (VST3).`;
+      }
+    } catch (failure) {
+      vst3Status = String(failure);
+    }
+  }
+
+  async function toggleDrumVst3(checked) {
+    drumVst3 = writeDrumVst3(storage(), { ...drumVst3, enabled: checked });
+    if (checked) {
+      if (!vst3Plugins.length) await scanVst3();
+      if (ready) await syncDetectedToVst3();
+    } else {
+      vst3Status = "";
+    }
+  }
+
+  async function pickVst3Plugin(id) {
+    const pickedPlugin = vst3Plugins.find(p => p.id === id) ?? null;
+    drumVst3 = writeDrumVst3(storage(), {
+      enabled: drumVst3.enabled,
+      pluginId: pickedPlugin?.id ?? "",
+      pluginName: pickedPlugin?.name ?? "",
+      pluginPath: pickedPlugin?.path ?? "",
+    });
+    if (drumVst3.enabled && ready) await syncDetectedToVst3();
+  }
+
   async function apply() {
     const request = applyRequest(state);
-    if (request && await send(() => invoke("drum_apply", request))) close();
+    if (request && await send(() => invoke("drum_apply", request))) {
+      if (drumVst3.enabled) await syncDetectedToVst3();
+      close();
+    }
   }
 
   async function close() {
@@ -207,6 +282,7 @@
   let release;
   onMount(() => {
     release = blockDrops(window);
+    if (drumVst3.enabled) scanVst3();
     poll();
   });
   onDestroy(() => {
@@ -284,6 +360,31 @@
       </div>
     {/if}
     {/key}
+
+    <h2>VST3 Drum Sounds</h2>
+    <div class="vst3-box">
+      <label class="vst3-toggle">
+        <input type="checkbox" checked={drumVst3.enabled}
+          onchange={event => toggleDrumVst3(event.currentTarget.checked)}>
+        <span>Use VST3 sounds for drum map</span>
+      </label>
+      <div class="vst3-picker">
+        <select aria-label="VST3 drum instrument" value={drumVst3.pluginId} disabled={!drumVst3.enabled || vst3Scanning}
+          onchange={event => pickVst3Plugin(event.currentTarget.value)}>
+          <option value="">{vst3Plugins.length ? "Select VST3 instrument…" : "No VST3 instruments"}</option>
+          {#if drumVst3.pluginId && drumVst3.pluginName && !vst3Plugins.some(p => p.id === drumVst3.pluginId)}
+            <option value={drumVst3.pluginId}>{drumVst3.pluginName}</option>
+          {/if}
+          {#each vst3Plugins as choice (choice.id)}
+            <option value={choice.id}>{choice.name}{choice.vendor ? ` · ${choice.vendor}` : ""}</option>
+          {/each}
+        </select>
+        <button type="button" class="link" disabled={vst3Scanning} onclick={scanVst3}>
+          {vst3Scanning ? "Scanning…" : "Scan"}
+        </button>
+      </div>
+      {#if vst3Status}<p class="vst3-status">{vst3Status}</p>{/if}
+    </div>
 
     <div class="notes">
       {#each view?.state === "ready" ? view.unhides ?? [] : [] as name (name)}
@@ -469,6 +570,12 @@
   }
   .field input:focus { outline: none; }
   .field:focus-within { box-shadow: inset 0 0 0 1px var(--editor-focus); }
+  .vst3-box { display: flex; flex-direction: column; gap: 8px; padding: 10px 6px; color: var(--editor-secondary); }
+  .vst3-toggle { display: flex; align-items: center; gap: 8px; color: var(--editor-text); cursor: pointer; }
+  .vst3-toggle input { margin: 0; accent-color: var(--editor-accent); }
+  .vst3-picker { display: flex; align-items: center; gap: 8px; }
+  .vst3-picker select { flex: 1; min-width: 0; }
+  .vst3-status { margin: 0; font-size: 11px; color: var(--editor-muted); }
   .notes { margin-top: auto; padding: 0 6px 8px; color: var(--editor-muted); line-height: 1.5; }
   .notes p { margin: 8px 0 0; }
 

@@ -7,10 +7,17 @@
   // itself and draws them to fill the window. It says "preview-ready" once it listens, so the
   // editor sends the current state straight away.
   let shown = $state.raw({ view: null, path: null, previewKey: null });
+  let skinId = $state((() => {
+    try { return globalThis.localStorage?.getItem("dawsu.previewSkin") || "argon"; } catch { return "argon"; }
+  })());
 
   onMount(() => {
+    const onStorage = e => {
+      if (e.key === "dawsu.previewSkin") skinId = e.newValue || "argon";
+    };
+    globalThis.window?.addEventListener?.("storage", onStorage);
     const events = globalThis.window?.__TAURI__?.event;
-    if (!events) return;
+    if (!events) return () => globalThis.window?.removeEventListener?.("storage", onStorage);
     let stop = null;
     let gone = false;
     events.listen("preview-view", ({ payload }) => { shown = payload; }).then(unlisten => {
@@ -21,6 +28,7 @@
     return () => {
       gone = true;
       stop?.();
+      globalThis.window?.removeEventListener?.("storage", onStorage);
     };
   });
 
@@ -35,7 +43,7 @@
 
 <svelte:window onkeydown={forwardSpace} />
 
-<PreviewCanvas view={shown.view} path={shown.path} previewKey={shown.previewKey} fill />
+<PreviewCanvas view={shown.view} path={shown.path} previewKey={shown.previewKey} {skinId} fill />
 
 <style>
   /* preview.html has no style.css: the page's own frame lives here, scoped to that body. */

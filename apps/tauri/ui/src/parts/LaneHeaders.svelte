@@ -131,12 +131,13 @@
     background: var(--lh-hover, var(--editor-panel));
   }
   .lane.active,
-  .lane.active:hover {
+  .lane.active:hover,
+  .lane.lane-selected,
+  .lane.lane-selected:hover {
     background: var(--lh-selected);
   }
   .lane.lane-selected {
-    outline: 1px solid var(--editor-accent);
-    outline-offset: -1px;
+    box-shadow: inset 0 0 0 1px var(--editor-accent);
   }
   .add-lane-row {
     display: flex;

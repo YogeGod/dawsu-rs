@@ -11,6 +11,12 @@
   <button id="menu-map" aria-haspopup="menu" aria-expanded="false" aria-controls="editor-menu">Map</button>
   <button id="menu-view" aria-haspopup="menu" aria-expanded="false" aria-controls="editor-menu">View</button>
 </nav>
+  <div class="map-chip" role="group" aria-label="Map">
+    <span id="map-title" class="map-chip-title"></span>
+    <span id="map-version" class="map-chip-version"></span>
+    <svg class="map-chip-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+    <select id="difficulty" aria-label="Difficulty" data-doc></select>
+  </div>
   <div id="top-transport" class="top-transport" role="group" aria-label="Playback controls">
     <div data-ui-mount="transport"></div>
   </div>
@@ -64,16 +70,11 @@
   </section>
 
   <div id="editor-ribbon" class="tools chrome">
-  <div class="ribbon-group map-chip" role="group" aria-label="Map">
-    <span id="map-title" class="map-chip-title"></span>
-    <span id="map-version" class="map-chip-version"></span>
-    <svg class="map-chip-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
-    <select id="difficulty" aria-label="Difficulty" data-doc></select>
-  </div>
   <div class="ribbon-group" role="group" aria-label="Lane mode">
     <div class="row lane-mode" role="group" aria-label="Lane view">
       <button id="samples-view" type="button" aria-pressed="true" aria-label="Hitsounds" data-doc><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 13a2 2 0 0 0 2-2V7a2 2 0 0 1 4 0v13a2 2 0 0 0 4 0V4a2 2 0 0 1 4 0v13a2 2 0 0 0 4 0v-4a2 2 0 0 1 2-2"/></svg><span class="lane-mode-label">Hitsounds</span></button>
       <button id="drums-view" type="button" aria-pressed="false" aria-label="Drums" data-doc><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m2 2 8 8M22 2l-8 8"/><ellipse cx="12" cy="9" rx="10" ry="5"/><path d="M7 13.4v7.9M12 14v8M17 13.4v7.9M2 9v8a10 5 0 0 0 20 0V9"/></svg><span class="lane-mode-label">Drums</span></button>
+      <button id="drums-vst3-toggle" type="button" aria-pressed="false" aria-label="Drum VST3" title="Use VST3 drum sounds" data-doc hidden><span class="lane-mode-label">VST3</span></button>
     </div>
   </div>
     <div class="ribbon-group" role="group" aria-label="Tool">
@@ -179,6 +180,7 @@
 <div id="statusbar" data-ui-mount="status-bar"><span id="status" role="status"></span></div>
 <div data-ui-mount="hit-card"></div>
 <div data-ui-mount="preferences"></div>
+<div data-ui-mount="export-modal"></div>
 <div data-ui-mount="midi-import"></div>
 <div data-ui-mount="keysounds"></div>
 <div data-ui-mount="toasts"></div>

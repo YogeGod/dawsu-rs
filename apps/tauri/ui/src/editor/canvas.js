@@ -58,6 +58,14 @@ export function attachCanvas(ctx) {
     return state.sectionBarCache.bars;
   }
 
+  // Cubase-style musical power-of-two bar thinning (1, 2, 4, 8, 16, 32, 64...) when zoomed far out.
+  function musicalBarStride(widthOfBar, minPx) {
+    if (!(widthOfBar > 0)) return 1;
+    let bars = 1;
+    while (bars * widthOfBar < minPx && bars < 1024) bars *= 2;
+    return bars;
+  }
+
   function drawTimingGrid(context2d, start, end, zoom, top, bottom, ruler = false) {
     const useSnap = state.scene.snap && state.scene.snapMode !== "objects";
     const firstBars = sectionBars(state.scene.sections);
@@ -67,8 +75,8 @@ export function attachCanvas(ctx) {
       const until = Math.min(end, state.scene.sections[i + 1]?.[0] ?? end);
       if (begin >= until) continue;
       const widthOfBar = beat * meter * zoom;
-      const stride = widthOfBar < 10 ? meter * Math.ceil(24 / widthOfBar) :
-        beat * zoom < 8 ? meter : 1;
+      const stride = widthOfBar < 24 ? meter * musicalBarStride(widthOfBar, 28) :
+        beat * zoom < 12 ? meter : 1;
 
       if (useSnap && state.scene.beats === 1 && state.scene.divisor > 1) {
         const step = beat / state.scene.divisor;
@@ -84,17 +92,16 @@ export function attachCanvas(ctx) {
       }
 
       const step = beat * stride;
+      const every = musicalBarStride(widthOfBar, 60);
       for (let n = Math.ceil((begin - origin) / step); origin + n * step < until; n++) {
         const tick = n * stride;
         const x = (origin + n * step - start) * zoom;
         const bar = !state.scene.editorBars?.length && tick % meter === 0;
         const longSnap = useSnap && state.scene.beats > 1 && tick % state.scene.beats === 0;
         const color = ruler ? snapColours[1] : bar || longSnap ? gridLines.bar : gridLines.beat;
-        // v3 §5: bar numbers on the ruler, every few bars when bars are under 60 px wide, counted from
-        // the section's first bar. A label that would run into the next section's first one is left out.
+        // v3 §5 + Cubase musical thinning: bar numbers on power-of-two bar intervals (1, 2, 4, 8, 16...).
         const barIndex = Math.floor(tick / meter);
         const barNumber = firstBars[i] + barIndex;
-        const every = Math.max(1, Math.ceil(60 / widthOfBar));
         const nextSection = state.scene.sections[i + 1]?.[0];
         const room = nextSection === undefined ? Infinity : (nextSection - start) * zoom - x;
         if (ruler && bar && ((barIndex % every) + every) % every === 0 && room >= String(barNumber).length * 8 + 8) {
@@ -109,7 +116,7 @@ export function attachCanvas(ctx) {
       const begin = Math.max(start, section.start);
       const until = Math.min(end, state.scene.editorBars[i + 1]?.start ?? end);
       const length = section.beat * section.numerator;
-      const stride = Math.max(1, Math.ceil((ruler ? 60 : 10) / (length * zoom)));
+      const stride = musicalBarStride(length * zoom, ruler ? 60 : 28);
       const step = length * stride;
       if (begin >= until || !Number.isFinite(step) || step <= 0) continue;
       for (let n = Math.ceil((begin - section.start) / step); section.start + n * step < until; n++) {
@@ -123,10 +130,10 @@ export function attachCanvas(ctx) {
     }
   }
 
-  // osu!lazer WaveformGraph.cs + Timeline.cs palette:
-  // Base #66ccff @ 20% alpha -> Mid #44aadd -> High #2299bb -> Low (bass) #ddffff.
-  // The waveform asks for a colour every 2 px; the three bands are rounded to 1/16 so each colour
-  // string is built once and reused, not allocated again on every frame.
+  // High-detail un!stable-style 3-band frequency palette:
+  // Low (bass/kicks) = vivid crimson/orange-red, Mid (snares/vocals) = crisp emerald/cyan-blue,
+  // High (hi-hats/cymbals) = bright gold/ice-white, blended smoothly by band energy.
+  // The three bands are quantized to 1/16 so each colour string is built once and reused.
   const waveLevels = 16;
   const waveColours = new Array((waveLevels + 1) ** 3);
   function lazerWaveColour(low, mid, high) {
@@ -138,67 +145,96 @@ export function attachCanvas(ctx) {
   }
 
   function blendWaveColour(low, mid, high) {
-    let r = 102, g = 204, b = 255, a = 0.20;
-    const blend = (tr, tg, tb, t) => {
-      const k = limit(t, 0, 1);
-      r += (tr - r) * k;
-      g += (tg - g) * k;
-      b += (tb - b) * k;
-      a += (1 - a) * k;
-    };
-    blend(68, 170, 221, mid);
-    blend(34, 153, 187, high);
-    blend(221, 255, 255, low);
+    const total = low + mid + high;
+    if (total <= 1e-4) return "rgba(110,160,195,0.280)";
+    const wL = low ** 1.35;
+    const wM = mid ** 1.35;
+    const wH = high ** 1.35;
+    const wSum = wL + wM + wH || 1;
+    const r = (255 * wL + 32 * wM + 255 * wH) / wSum;
+    const g = (62 * wL + 216 * wM + 244 * wH) / wSum;
+    const b = (48 * wL + 206 * wM + 196 * wH) / wSum;
+    const intensity = Math.max(low, mid, high);
+    const a = 0.55 + 0.40 * limit(intensity, 0, 1);
     return `rgba(${Math.round(r)},${Math.round(g)},${Math.round(b)},${a.toFixed(3)})`;
   }
 
   function waveform(context2d, width, center, height, start, span) {
     const bins = state.scene.waveform;
-    if (!bins.length || !state.view.duration) return;
+    const duration = state.view.duration;
+    if (!bins.length || !duration || width <= 0) return;
     // Playback reads the song at position - offset, so the drawn song moves by the same offset.
     const songStart = start - (state.view.offset ?? 0);
-    const step = 2;
-    let prevX = null;
-    let prevL = 0;
-    let prevR = 0;
-    for (let x = 0; x <= width; x += step) {
-      const t0 = songStart + x * span / width;
-      const t1 = songStart + (x + step) * span / width;
-      const a = Math.max(0, Math.floor(t0 / state.view.duration * bins.length));
-      const b = Math.min(bins.length, Math.max(a + 1, Math.ceil(t1 / state.view.duration * bins.length)));
-      if (a >= bins.length || t1 < 0) {
-        prevX = null;
-        continue;
-      }
-      let ampL = 0, ampR = 0, low = 0, mid = 0, high = 0, count = 0;
-      for (let i = a; i < b; i++) {
+    const cols = Math.ceil(width);
+    const binScale = bins.length / duration;
+    const msPerPx = span / width;
+    if (!state.waveCoreTops || state.waveCoreTops.length < cols) {
+      state.waveCoreTops = new Float32Array(cols);
+      state.waveCoreHeights = new Float32Array(cols);
+    }
+    const coreTops = state.waveCoreTops;
+    const coreHeights = state.waveCoreHeights;
+    coreHeights.fill(0, 0, cols);
+    let lastColour = "";
+
+    for (let x = 0; x < cols; x++) {
+      const t0 = songStart + x * msPerPx;
+      const t1 = t0 + msPerPx;
+      if (t1 < 0) continue;
+      const a = Math.max(0, Math.floor(t0 * binScale));
+      if (a >= bins.length) break;
+      const b = Math.min(bins.length, Math.max(a + 1, Math.ceil(t1 * binScale)));
+      const innerStep = b - a > 12 ? Math.floor((b - a) / 8) : 1;
+
+      let maxL = 0, maxR = 0, sumSqL = 0, sumSqR = 0;
+      let wLow = 0, wMid = 0, wHigh = 0, wAmp = 0;
+      let sumLow = 0, sumMid = 0, sumHigh = 0, count = 0;
+      for (let i = a; i < b; i += innerStep) {
         const bin = bins[i];
-        ampL += bin[4] ?? bin[0];
-        ampR += bin[5] ?? bin[0];
-        low += bin[1];
-        mid += bin[2];
-        high += bin[3];
+        const l = bin[4] ?? bin[0];
+        const r = bin[5] ?? bin[0];
+        if (l > maxL) maxL = l;
+        if (r > maxR) maxR = r;
+        sumSqL += l * l;
+        sumSqR += r * r;
+        const amp = Math.max(l, r);
+        wLow += bin[1] * amp;
+        wMid += bin[2] * amp;
+        wHigh += bin[3] * amp;
+        wAmp += amp;
+        sumLow += bin[1];
+        sumMid += bin[2];
+        sumHigh += bin[3];
         count++;
       }
-      if (!count) {
-        prevX = null;
-        continue;
+      if (!count) continue;
+
+      const peakL = limit(maxL, 0, 1) * height + 0.5;
+      const peakR = limit(maxR, 0, 1) * height + 0.5;
+      const colLow = wAmp > 1e-4 ? wLow / wAmp : sumLow / count;
+      const colMid = wAmp > 1e-4 ? wMid / wAmp : sumMid / count;
+      const colHigh = wAmp > 1e-4 ? wHigh / wAmp : sumHigh / count;
+      const colour = lazerWaveColour(colLow, colMid, colHigh);
+      if (colour !== lastColour) {
+        context2d.fillStyle = colour;
+        lastColour = colour;
       }
-      ampL = limit(ampL / count, 0, 1) * height + 0.75;
-      ampR = limit(ampR / count, 0, 1) * height + 0.75;
-      if (prevX !== null) {
-        context2d.fillStyle = lazerWaveColour(low / count, mid / count, high / count);
-        context2d.beginPath();
-        context2d.moveTo(prevX, center - prevL);
-        context2d.lineTo(x, center - ampL);
-        context2d.lineTo(x, center + ampR);
-        context2d.lineTo(prevX, center + prevR);
-        context2d.closePath();
-        context2d.fill();
+      context2d.fillRect(x, center - peakL, 1, Math.max(1, peakL + peakR));
+
+      const rmsL = limit(Math.sqrt(sumSqL / count), 0, 1) * height * 0.72;
+      const rmsR = limit(Math.sqrt(sumSqR / count), 0, 1) * height * 0.72;
+      const coreH = rmsL + rmsR;
+      if (coreH >= 1.5) {
+        coreTops[x] = center - rmsL;
+        coreHeights[x] = coreH;
       }
-      prevX = x;
-      prevL = ampL;
-      prevR = ampR;
+    }
+
+    // Subtle inner RMS/core highlight pass for depth without obscuring transients.
+    context2d.fillStyle = "rgba(255,255,255,0.20)";
+    for (let x = 0; x < cols; x++) {
+      const h = coreHeights[x];
+      if (h > 0) context2d.fillRect(x, coreTops[x], 1, h);
     }
   }
 
@@ -273,9 +309,61 @@ export function attachCanvas(ctx) {
     drawPlayheads(surfaces.g, surfaces.r, surfaces.v ?? null, surfaces.o);
   }
 
+  // Subtle playback hitlighting on diamonds as the playhead crosses them (140 ms ease-out glow).
+  // Drawn on top of the cached static layers in drawPlayheads() so it adds zero static-layer invalidation.
+  function drawPlaybackHitLighting(g, position) {
+    if (!state.view.playing || !g || !state.scene?.moments?.length || state.view.hitsoundsMuted) return;
+    const moments = state.scene.moments;
+    const windowMs = 140;
+    const minTime = position - windowMs;
+    // Binary search for the first moment >= minTime.
+    let lo = 0, hi = moments.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >>> 1;
+      if (moments[mid][0] < minTime) lo = mid + 1;
+      else hi = mid;
+    }
+    const start = state.scene.viewStart;
+    const zoom = state.scene.zoom;
+    const rowHeight = state.scene.rowHeight;
+    const scrollTop = $("scroll").scrollTop;
+    const lanes = state.scene.lanes ?? [];
+    const anySolo = lanes.some(l => l?.solo);
+    const ctx2d = g.ctx;
+    ctx2d.save();
+    for (let i = lo; i < moments.length; i++) {
+      const [time, , , hits] = moments[i];
+      if (time > position) break;
+      const x = (time - start) * zoom;
+      if (x < -16 || x > g.width + 16) continue;
+      const t = 1 - (position - time) / windowMs;
+      const ease = t * t;
+      const haloSize = 8 + 4 * (1 - t);
+      for (const [row, , listenMuted] of hits) {
+        if (listenMuted) continue;
+        const laneInfo = lanes[row];
+        if (laneInfo?.muted || (anySolo && !laneInfo?.solo)) continue;
+        const visibleRow = state.lanePositions.get(row);
+        if (visibleRow === undefined) continue;
+        const y = (visibleRow + 0.5) * rowHeight - scrollTop;
+        if (y < -16 || y > g.height + 16) continue;
+        // Soft expanding outer glow diamond
+        ctx2d.fillStyle = `rgba(255, 255, 255, ${(0.28 * ease).toFixed(3)})`;
+        diamond(ctx2d, x, y, haloSize);
+        ctx2d.fill();
+        // Crisp bright inner highlight on the diamond itself
+        ctx2d.fillStyle = `rgba(255, 255, 255, ${(0.55 * ease).toFixed(3)})`;
+        diamond(ctx2d, x, y, 7.5);
+        ctx2d.fill();
+      }
+    }
+    ctx2d.restore();
+  }
+
   // The playhead on the grid, the ruler, the volume lane and the overview strip.
   function drawPlayheads(g, r, v, o) {
     const position = playheadPosition();
+    if (g) drawPlaybackHitLighting(g, position);
     const playhead = (position - state.scene.viewStart) * state.scene.zoom;
     if (g) line(g.ctx, slateTimeline.playhead, playhead, 0, playhead, g.height);
     if (r) line(r.ctx, slateTimeline.playhead, playhead, 0, playhead, r.height);
@@ -769,11 +857,13 @@ export function attachCanvas(ctx) {
     for (let row = Math.floor(scrollTop / rowHeight); row <= Math.ceil((scrollTop + g.height) / rowHeight); row++) {
       const y = row * rowHeight - scrollTop;
       const lane = state.laneRows[row];
-      g.ctx.fillStyle = lane === state.view.activeLane ? slateTimeline.activeRow : row % 2 ? slateTimeline.alternateRow : slateTimeline.arrange;
+      const laneObj = typeof lane === "number" ? state.scene.lanes?.[lane] : null;
+      const highlighted = lane === state.view.activeLane || (laneObj != null && state.selectionLaneKeys?.has(laneObj.key));
+      g.ctx.fillStyle = highlighted ? slateTimeline.activeRow : row % 2 ? slateTimeline.alternateRow : slateTimeline.arrange;
       if (lane === undefined) g.ctx.fillStyle = slateTimeline.arrange;
       else if (typeof lane === "string") g.ctx.fillStyle = slateTimeline.group;
       g.ctx.fillRect(0, y, g.width, rowHeight);
-      const tint = typeof lane === "number" ? ctx.laneTint(state.scene.lanes?.[lane], lane === state.view.activeLane) : null;
+      const tint = laneObj ? ctx.laneTint(laneObj, highlighted) : null;
       if (tint) {
         g.ctx.fillStyle = tint;
         g.ctx.fillRect(0, y, g.width, rowHeight);
@@ -841,27 +931,60 @@ export function attachCanvas(ctx) {
       }
       g.ctx.stroke();
     }
+    // Determine which lanes appear in the volume editor lane:
+    // if hits are selected, show only the lanes with selected hits;
+    // otherwise if multiple lanes are selected in the lane headers, show those;
+    // otherwise show only the active/highlighted lane.
+    let volumeLanes = null;
+    if (v) {
+      const selectedLanes = new Set();
+      for (let i = 0; i < moments.length; i++) {
+        const mHits = moments[i][3];
+        for (let j = 0; j < mHits.length; j++) {
+          if (mHits[j][1]) selectedLanes.add(mHits[j][0]);
+        }
+      }
+      if (selectedLanes.size > 0) {
+        volumeLanes = selectedLanes;
+      } else if ((state.selectionLaneKeys?.size ?? 0) > 1 && state.scene.lanes) {
+        volumeLanes = new Set();
+        for (let row = 0; row < state.scene.lanes.length; row++) {
+          if (state.selectionLaneKeys.has(state.scene.lanes[row]?.key)) volumeLanes.add(row);
+        }
+        if (volumeLanes.size === 0 && state.view.activeLane != null) volumeLanes.add(state.view.activeLane);
+      } else if (state.view.activeLane != null) {
+        volumeLanes = new Set([state.view.activeLane]);
+      } else {
+        volumeLanes = new Set();
+      }
+    }
     for (let mIdx = firstMoment; mIdx < moments.length; mIdx++) {
       const [time, volume, , hits] = moments[mIdx];
       if (time > maxVisibleTime) break;
       const x = xOf(time);
       if (x < -8 || x > g.width + 8) continue;
-      const colour = volumeColour(volume);
-      if (v) {
-        const volumeHeight = limit(volume, 0, 100) / 100 * (v.height - 3);
-        const anySelected = hits.some(([, selected]) => selected);
-        const topY = v.height - volumeHeight;
-        v.ctx.fillStyle = colour;
-        v.ctx.fillRect(x - 2.5, topY, 5, volumeHeight);
-        // Bright 5x5 top cap (white when selected), matching 3.1.4 VolumeLane.
-        v.ctx.fillStyle = anySelected ? "#ffffff" : colour;
-        v.ctx.fillRect(x - 2.5, Math.max(0, topY - 2), 5, 5);
-        // White horizontal ticks for any per-hit volumes that differ from the moment's shared volume.
-        for (const [, , , hitVolume] of hits) {
-          if (hitVolume != null && hitVolume !== volume) {
-            const tickY = v.height - limit(hitVolume, 0, 100) / 100 * (v.height - 3);
-            v.ctx.fillStyle = "#ffffff";
-            v.ctx.fillRect(x - 3, tickY - 0.5, 6, 1.5);
+      if (v && volumeLanes.size > 0) {
+        const volumeHits = hits.filter(([row]) => volumeLanes.has(row));
+        if (volumeHits.length > 0) {
+          const primary = volumeHits.find(([row]) => row === state.view.activeLane) ?? volumeHits[0];
+          const barVolume = primary[3] ?? volume;
+          const barColour = volumeColour(barVolume);
+          const volumeHeight = limit(barVolume, 0, 100) / 100 * (v.height - 3);
+          const anySelected = volumeHits.some(([, selected]) => selected);
+          const topY = v.height - volumeHeight;
+          v.ctx.fillStyle = barColour;
+          v.ctx.fillRect(x - 2.5, topY, 5, volumeHeight);
+          // Bright 5x5 top cap (white when selected), matching 3.1.4 VolumeLane.
+          v.ctx.fillStyle = anySelected ? "#ffffff" : barColour;
+          v.ctx.fillRect(x - 2.5, Math.max(0, topY - 2), 5, 5);
+          // White horizontal ticks for any other shown hit volumes that differ from the bar height.
+          for (const [, , , hitVolume] of volumeHits) {
+            const effVolume = hitVolume ?? volume;
+            if (effVolume !== barVolume) {
+              const tickY = v.height - limit(effVolume, 0, 100) / 100 * (v.height - 3);
+              v.ctx.fillStyle = "#ffffff";
+              v.ctx.fillRect(x - 3, tickY - 0.5, 6, 1.5);
+            }
           }
         }
       }
@@ -906,7 +1029,7 @@ export function attachCanvas(ctx) {
         }
       }
     }
-    if (state.drag?.surface === grid && state.drag.lastPoint && ["Select", "Range"].includes(state.view.tool)) {
+    if (state.drag?.surface === grid && state.drag.lastPoint && !state.cursorAltDraw && state.drag.button !== "right" && ["Select", "Range"].includes(state.view.tool)) {
       const x = state.drag.firstPoint.x;
       const y = state.drag.firstPoint.y - scrollTop;
       const width = state.drag.lastPoint.x - x;
@@ -973,17 +1096,17 @@ export function attachCanvas(ctx) {
     const spanStart = xOf(Math.min(left, right));
     const spanWidth = xOf(Math.max(left, right)) - spanStart;
     if (cycling && left <= right) {
-      // The design's loop region: a faint accent band under a warning-yellow bar.
+      // The design's loop region: a faint accent band under a crisp 5 px warning-yellow bar.
       r.ctx.fillStyle = slateTimeline.loop;
       r.ctx.fillRect(spanStart, 0, spanWidth, rulerBandHeight - 1);
       r.ctx.fillStyle = slateTimeline.cycle;
-      r.ctx.fillRect(spanStart, 1, spanWidth, 4);
+      r.ctx.fillRect(spanStart, 0, spanWidth, 5);
     } else {
       const colour = left > right ? "#f0aa70" : slateTimeline.locator;
       r.ctx.fillStyle = colour + (cycling ? "46" : "22");
       r.ctx.fillRect(spanStart, 0, spanWidth, rulerBandHeight - 1);
       r.ctx.fillStyle = colour;
-      r.ctx.fillRect(spanStart, 0, spanWidth, 2);
+      r.ctx.fillRect(spanStart, 0, spanWidth, 3);
     }
     for (const time of [left, right]) {
       line(r.ctx, slateTimeline.locator, xOf(time), 0, xOf(time), r.height);

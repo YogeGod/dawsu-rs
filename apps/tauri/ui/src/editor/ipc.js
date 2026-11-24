@@ -32,6 +32,8 @@ export function attachIpc(ctx) {
     return result;
   }
 
+  let lastActionKind = null;
+
   async function update(action, full = true) {
     let next = await invoke("editor_view", { scene: full, action: action ?? null });
     if (!next.fault && !full && (state.view.busy !== next.busy || state.view.hasDocument !== next.hasDocument ||
@@ -50,6 +52,7 @@ export function attachIpc(ctx) {
       next = await invoke("editor_view", { scene: true, action: null, fresh: true });
       if (!next.fault) next.bookmarkStep ??= step;
     }
+    lastActionKind = action?.kind ?? null;
     ctx.show(next);
     if (next.shortcutHelp) await ctx.showHelp();
     if (next.shortcutOpen && !next.busy && !ctx.chooseSiblingDifficulty()) ctx.show(await invoke("pick_map"));
@@ -82,8 +85,82 @@ export function attachIpc(ctx) {
     }
   }
 
+  const TOOL_COMMAND_NAMES = {
+    toolSelect: "Select",
+    toolDraw: "Draw",
+    toolErase: "Erase",
+    toolMute: "Mute",
+    toolGrab: "Grab",
+    toolRange: "Range",
+    toolRamp: "Ramp",
+  };
+
+  function optimisticToolFor(action) {
+    if (!action) return null;
+    if (action.kind === "tool" && typeof action.name === "string") return action.name;
+    if (action.kind === "command" && Object.hasOwn(TOOL_COMMAND_NAMES, action.id)) return TOOL_COMMAND_NAMES[action.id];
+    if (action.kind === "key" && !action.ctrl && !action.shift && !action.alt) {
+      const osu = state.view?.keyPreset === "osu!";
+      if (action.key === "1") return "Select";
+      if (action.key === "2") return osu ? "Draw" : "Grab";
+      if (action.key === "3" && !osu) return "Draw";
+      if (action.key === "5") return "Mute";
+      if (action.key === "6") return "Ramp";
+    }
+    return null;
+  }
+
+  function tryLaneColourHistory(action) {
+    if (!state.scene || state.view.busy || state.drag) return false;
+    const isUndo = (action?.kind === "command" && action.id === "undo")
+      || (action?.kind === "key" && action.ctrl && !action.shift && !action.alt && String(action.key).toLowerCase() === "z");
+    const isRedo = (action?.kind === "command" && action.id === "redo")
+      || (action?.kind === "key" && action.ctrl && !action.alt && (
+        (String(action.key).toLowerCase() === "y" && !action.shift)
+        || (String(action.key).toLowerCase() === "z" && action.shift)
+      ));
+    const currentPos = state.scene?.history?.position ?? 0;
+    if (isUndo && state.laneColourUndo?.length) {
+      const top = state.laneColourUndo[state.laneColourUndo.length - 1];
+      if (top.historyPos === currentPos) {
+        state.laneColourUndo.pop();
+        state.laneColourRedo.push(top);
+        if (top.before) state.laneColours.set(top.key, top.before);
+        else state.laneColours.delete(top.key);
+        ctx.renderActiveLane();
+        ctx.renderLanes();
+        ctx.paintSoon();
+        ctx.saveLaneLayout(true);
+        return true;
+      }
+    }
+    if (isRedo && state.laneColourRedo?.length) {
+      const top = state.laneColourRedo[state.laneColourRedo.length - 1];
+      if (top.historyPos === currentPos) {
+        state.laneColourRedo.pop();
+        state.laneColourUndo.push(top);
+        if (top.after) state.laneColours.set(top.key, top.after);
+        else state.laneColours.delete(top.key);
+        ctx.renderActiveLane();
+        ctx.renderLanes();
+        ctx.paintSoon();
+        ctx.saveLaneLayout(true);
+        return true;
+      }
+    }
+    return false;
+  }
+
   function act(action, full = true) {
-    return ctx.run(() => ctx.update(action, full));
+    if (tryLaneColourHistory(action)) return Promise.resolve();
+    const optimisticTool = optimisticToolFor(action);
+    if (optimisticTool && state.scene && !state.view.busy && !state.view.fault && state.view.tool !== optimisticTool) {
+      state.view = { ...state.view, tool: optimisticTool };
+      ctx.refreshToolCursor();
+      try { ctx.ui()?.update?.(state.view, state.scene); } catch (error) { (env.console ?? console).error(error); }
+    }
+    const requestFull = action?.kind === "tool" ? false : full;
+    return ctx.run(() => ctx.update(action, requestFull));
   }
 
   const command = (id) => ctx.act({ kind: "command", id });
@@ -146,6 +223,7 @@ export function attachIpc(ctx) {
       if (loaded) {
         state.overviewDrag = null;
         state.overviewTarget = null;
+        state.rulerSeekTarget = null;
         state.usedLaneKeys = null;
         state.markedRange = null;
         state.selectionLaneKeys.clear();
@@ -162,9 +240,9 @@ export function attachIpc(ctx) {
       const before = !loaded && state.scene ? new Set(shownRows(state.scene)) : null;
       const unfolded = before ? shownRows(state.view.scene).filter(row => !before.has(row))
         .filter(row => state.collapsedFamilies.delete(state.view.scene.lanes[row]?.family)) : [];
-      // Centre scrolls the view on every frame; the editor's scene carries an older start.
-      const centring = !loaded && state.scene && state.view.playing && state.view.follow && ctx.ui()?.centre?.();
-      if (centring) state.view.scene.viewStart = state.scene.viewStart;
+      // Centre keeps the playhead locked in the middle while playing, paused, seeking, or zooming.
+      const centring = !loaded && state.scene && state.view.follow && ctx.ui()?.centre?.() && elements.grid.clientWidth > 0;
+      if (centring) state.view.scene.viewStart = ctx.playheadPosition() - elements.grid.clientWidth / state.view.scene.zoom / 2;
       // Static map data (waveform, gameplay objects, combos, timing sections) is omitted on
       // incremental edits for the same loaded document so clicks and drags stay fast. It is kept on
       // the "Difficulty loaded" frame too: the editor sent it once, in the frame before.
@@ -178,6 +256,29 @@ export function attachIpc(ctx) {
       state.scene = state.view.scene;
       if (unfolded.length) ctx.saveLaneLayout();
     }
+    // Fast path for pure 12-Hz playback polls: skip DOM/menu/dialog churn when only playhead/peaks moved.
+    const purePlaybackPoll = Boolean(
+      state.scene && !next.scene && before.playing && next.playing && lastActionKind === null &&
+      !next.busy && !before.busy && next.hasDocument && !next.showHome &&
+      before.dirty === next.dirty && before.fault === next.fault &&
+      before.left === next.left && before.right === next.right && before.cycle === next.cycle &&
+      before.activeLane === next.activeLane && before.tool === next.tool &&
+      before.follow === next.follow && before.offset === next.offset &&
+      before.songMuted === next.songMuted && before.songSolo === next.songSolo &&
+      before.hitsoundsMuted === next.hitsoundsMuted && before.hitsoundsSolo === next.hitsoundsSolo &&
+      before.song === next.song && before.main === next.main && before.hitsounds === next.hitsounds &&
+      (before.outputProblems?.length ?? 0) === (next.outputProblems?.length ?? 0) &&
+      !next.revert && !next.review && !next.editDialog && !next.saveProblemReview
+    );
+    if (purePlaybackPoll) {
+      ctx.followBookmarkPick();
+      ctx.followPlayhead();
+      ctx.paintSoon(true);
+      ctx.animatePlayback();
+      try { ctx.ui()?.update?.(state.view, state.scene); } catch (error) { (env.console ?? console).error(error); }
+      return;
+    }
+
     ctx.followBookmarkPick();
     if (state.rulerPointer || state.rulerDrag) ctx.refreshRulerCursor();
     $("home").hidden = !!state.scene;
@@ -210,6 +311,7 @@ export function attachIpc(ctx) {
     $("samples-view").ariaPressed = String(!state.view.drumView?.enabled);
     $("drums-view").ariaPressed = String(!!state.view.drumView?.enabled);
     $("drums-view").title = state.view.drumView?.name ?? "Open a drum map";
+    ctx.syncDrumVst3Button?.();
     $("ramp-shape").value = state.view.rampShape ?? "Linear";
     $("song-mute").ariaPressed = String(!!state.view.songMuted);
     $("song-solo").ariaPressed = String(!!state.view.songSolo);
@@ -222,9 +324,19 @@ export function attachIpc(ctx) {
     ctx.refreshLaneToolbar();
     ctx.refreshHitCard();
     ctx.renderDialogs();
-    try { env.window.refreshEditorMenu?.(); } catch (error) { (env.console ?? console).error(error); }
-    // A playback poll without a scene moved only the playhead: the cached canvas layers still hold.
-    ctx.paintSoon(Boolean(state.view.playing && !next.scene));
+    const toolOnlyUpdate = !next.scene && lastActionKind === "tool";
+    const playheadOnlyUpdate = !next.scene &&
+      (lastActionKind === "seek" || lastActionKind === "ruler_locators") &&
+      before.left === state.view.left &&
+      before.right === state.view.right &&
+      before.cycle === state.view.cycle &&
+      before.offset === state.view.offset;
+    lastActionKind = null;
+    if (!toolOnlyUpdate && !playheadOnlyUpdate) {
+      try { env.window.refreshEditorMenu?.(); } catch (error) { (env.console ?? console).error(error); }
+    }
+    // A playback poll or playhead-only seek without a scene moved only the playhead: the cached canvas layers still hold.
+    ctx.paintSoon(Boolean((state.view.playing && !next.scene) || playheadOnlyUpdate));
     if (state.scene && state.view.playing) ctx.animatePlayback();
     try { ctx.ui()?.update?.(state.view, state.scene); } catch (error) { (env.console ?? console).error(error); }
     setStatusNotice(missingUiParts());

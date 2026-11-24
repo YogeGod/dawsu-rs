@@ -58,6 +58,17 @@ export function attachEditDialogs(ctx) {
     const change = (colour) => {
       ctx.closeModal();
       if (state.scene?.path !== path || state.view.busy || state.drag) return;
+      const before = state.laneColours.get(lane.colourKey) ?? null;
+      const after = colour ?? null;
+      if (before !== after) {
+        state.laneColourUndo.push({
+          key: lane.colourKey,
+          before,
+          after,
+          historyPos: state.scene?.history?.position ?? 0,
+        });
+        state.laneColourRedo = [];
+      }
       if (colour) state.laneColours.set(lane.colourKey, colour);
       else state.laneColours.delete(lane.colourKey);
       ctx.renderActiveLane();
@@ -111,6 +122,22 @@ export function attachEditDialogs(ctx) {
   // File › Open map… and Ctrl+O's fallback; the start screen's Open map… button.
   function openMap() {
     return ctx.run(async () => ctx.show(await invoke("pick_map")));
+  }
+
+  // File › Open from osu! and the start screen's Open from osu! button.
+  function openFromOsu() {
+    return ctx.run(async () => {
+      try {
+        const path = await invoke("open_from_osu");
+        if (path) await ctx.act({ kind: "open", path });
+      } catch (reason) {
+        env.window?.showToast?.({
+          tone: "warning",
+          title: "Open from osu!",
+          body: String(reason),
+        });
+      }
+    });
   }
 
   // File › Start screen.
@@ -315,7 +342,7 @@ export function attachEditDialogs(ctx) {
   }
 
   Object.assign(ctx, {
-    openLaneColour, openReplaceSample, openMap, goHome, confirmRevertToOriginal,
+    openLaneColour, openReplaceSample, openMap, openFromOsu, goHome, confirmRevertToOriginal,
     openSiblingDifficulty, chooseSiblingDifficulty, showTimelineEdit,
     editBookmark, openTimeSignatures,
   });

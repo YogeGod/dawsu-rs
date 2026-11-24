@@ -40,10 +40,10 @@ test("StartScreen renders actions, drop zone, resume, recent maps and recovery c
     },
   }, null);
   let html = render(StartScreen).body;
-  for (const id of ["home-resume", "home-open", "home-import", "home-folders", "recovery", "recovery-entries", "home-recent", "recent"]) {
+  for (const id of ["home-resume", "home-open", "home-open-osu", "home-import", "home-folders", "recovery", "recovery-entries", "home-recent", "recent"]) {
     assert.match(html, new RegExp('id="' + id + '"'), id);
   }
-  assert.doesNotMatch(html, /Open from osu!/);
+  assert.match(html, /Open from osu!/);
   assert.match(html, /class="home-drop"[^>]*>[\s\S]*?\.osu[\s\S]*?\.osz/);
   assert.doesNotMatch(html, /id="home-resume"[^>]*hidden/);
   assert.doesNotMatch(html, /id="home-recent"[^>]*hidden/);

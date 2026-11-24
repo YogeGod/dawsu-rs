@@ -57,11 +57,18 @@ export function circle(g, accent, number, outerFill = true) {
   disc(g, INNER_GRADIENT / 2, vertical(g, INNER_GRADIENT, darken(accent, 0.5), darken(accent, 0.6)));
   disc(g, INNER_FILL / 2, fill);
   if (number > 0) {
+    const text = String(number);
     g.fillStyle = "#ffffff";
     g.font = "700 44px system-ui, sans-serif";
     g.textAlign = "center";
     g.textBaseline = "middle";
-    g.fillText(String(number), 0, -2);
+    const metrics = g.measureText?.(text);
+    const yOffset = metrics
+      && Number.isFinite(metrics.actualBoundingBoxAscent)
+      && Number.isFinite(metrics.actualBoundingBoxDescent)
+      ? (metrics.actualBoundingBoxAscent - metrics.actualBoundingBoxDescent) / 2
+      : 0;
+    g.fillText(text, 0, yOffset);
   }
   ring(g, "#ffffff", DIAMETER, BORDER);
 }

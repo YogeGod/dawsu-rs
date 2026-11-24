@@ -10,7 +10,8 @@
   import { reviewMixSections } from "../lib/review.js";
 
   // The editor's answer to export_view, replaced whole on every poll. A test may pass one in.
-  let { initialView = null } = $props();
+  // When embedded inside the editor via ExportModal, `onclose` closes the modal instead of an OS window.
+  let { initialView = null, onclose = null } = $props();
   let view = $state.raw(initialView);
   let choices = $state(choicesFrom(initialView));
   // The last preview this window asked for: { id, key }. null from the moment an option changes.
@@ -119,6 +120,10 @@
     clearTimeout(pollTimer);
     // A choice still waiting for its preview is sent first, so the editor keeps it with the map.
     if (previewTimer !== null) await preview();
+    if (onclose) {
+      onclose();
+      return;
+    }
     try {
       await invoke("close_export_window");
     } catch (error) {

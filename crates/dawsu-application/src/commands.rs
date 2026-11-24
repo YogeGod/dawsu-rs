@@ -279,12 +279,15 @@ pub fn catalogue() -> CommandCatalog<Application> {
         Some(can_edit_selection),
     );
     registry.bind(
-        &CommandDefinition::new("jumpToSelection", "Move playhead to the start of the selection")
+        &CommandDefinition::new("jumpToSelection", "Play from the start of the selection")
             .keys(&[K::new(Key::Space, Mods::ALT)]),
         areas::HS_TIMELINE,
         |app| {
             if let Some(start) = app.document().and_then(selection_start) {
                 app.seek(start);
+                if !app.is_playing() {
+                    app.play_pause();
+                }
             }
             Ok(())
         },

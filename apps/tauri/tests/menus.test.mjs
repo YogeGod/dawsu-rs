@@ -207,14 +207,19 @@ test("lane menu activates the right-clicked lane without audition before opening
   assert.deepEqual(calls,[{kind:"lane",row:1,operation:"activate"},{deleteActiveLane:1}]);
 });
 
-test("right-click opens the seven timeline tools without invoking an edit", () => {
-  const { document, get, calls, key, view } = fixture();
+test("grid right-click suppresses the browser menu without opening the tool picker; openEditorMenu('tool') opens the seven tools", () => {
+  const { document, get, calls, key, view, context } = fixture();
   const popup = get("editor-menu"), grid = get("grid");
   view.tool = "Erase";
   const click = { clientX: 895, clientY: 637, preventDefault() { this.defaultPrevented = true; } };
-  assert.equal(typeof grid.events.get("contextmenu"), "function", "grid registers a tool picker");
+  assert.equal(typeof grid.events.get("contextmenu"), "function", "grid suppresses browser context menu");
   grid.events.get("contextmenu")(click);
   assert.equal(click.defaultPrevented, true);
+  assert.notEqual(popup.hidden, false, "right-click on grid does not open the tool picker");
+  assert.equal(popup.children.length, 0);
+  assert.deepEqual(calls, []);
+
+  context.window.openEditorMenu("tool", false, { x: 895, y: 637, trigger: grid, label: "Timeline tools" });
   assert.equal(popup.attributes["aria-label"], "Timeline tools");
   assert.equal(popup.style.left, "566px");
   assert.equal(popup.style.top, "416px");
@@ -226,7 +231,7 @@ test("right-click opens the seven timeline tools without invoking an edit", () =
   assert.equal(key("Escape"), true);
   assert.equal(document.activeElement, grid);
 
-  grid.events.get("contextmenu")(click);
+  context.window.openEditorMenu("tool", false, { x: 895, y: 637, trigger: grid, label: "Timeline tools" });
   key("ArrowDown");
   assert.equal(document.activeElement.textContent, "Draw");
   document.activeElement.click();
@@ -298,7 +303,7 @@ test("each menu groups the editor's existing commands like the design, with no s
   const popup = get("editor-menu");
   const open = name => { get("menu-" + name).click(); return menuLabels(popup); };
   assert.deepEqual(open("file"), [
-    "Open map…", "Import .osz…", "Import MIDI…", "Open map folder", "—",
+    "Open map…", "Open from osu!", "Import .osz…", "Import MIDI…", "Open map folder", "—",
     "Save", "Revert to saved…", "Revert mapset to original…", "Export…", "Export MIDI…", "—",
     "Start screen", "Folders…", "—", "Preferences…",
   ]);
@@ -552,7 +557,7 @@ test("the bar-menu look stays off the right-click tool picker and the lane menu"
   }
   assert.doesNotMatch(block, /:has\(|color-mix\(/, "macOS and Linux WebViews may lack :has() and color-mix()");
 
-  const { get, scene } = fixture();
+  const { get, scene, context } = fixture();
   const popup = get("editor-menu");
   get("menu-edit").click();
   assert.equal(popup.attributes["aria-labelledby"], "menu-edit");
@@ -562,7 +567,7 @@ test("the bar-menu look stays off the right-click tool picker and the lane menu"
   assert.doesNotMatch(icon.className, /\bmenu-item-plain\b/);
 
   const grid = get("grid");
-  grid.events.get("contextmenu")({ clientX: 10, clientY: 10, preventDefault() {} });
+  context.window.openEditorMenu("tool", false, { x: 10, y: 10, trigger: grid, label: "Timeline tools" });
   assert.equal(popup.attributes["aria-labelledby"], undefined);
   assert.equal(popup.attributes["aria-label"], "Timeline tools");
 

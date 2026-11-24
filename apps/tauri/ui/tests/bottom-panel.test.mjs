@@ -155,12 +155,13 @@ function mixer(v = view(), strips = [strip(), strip({ key: "lane:3", row: 3, num
 const masterAt = html => html.search(/<section class="master\b/);
 const strips = html => html.slice(0, masterAt(html)).split(/(?=<div class="strip\b)/).slice(1);
 
-test("the Mixer is the Song strip, one strip per used lane, then the master output", () => {
+test("the Mixer is the Song bus, Hitsounds bus, one strip per used lane, then the master output", () => {
   const html = mixer();
-  const [song, normal, clap] = strips(html);
-  assert.equal(strips(html).length, 3);
+  const [song, hitsounds, normal, clap] = strips(html);
+  assert.equal(strips(html).length, 4);
   assert.match(song, /aria-label="Song"/);
   assert.match(song, new RegExp("--strip-colour: " + songColour));
+  assert.match(hitsounds, /aria-label="Hitsounds"/);
   assert.match(normal, /aria-label="Normal, lane 1"/);
   assert.match(clap, /aria-label="Clap, lane 4"/);
   // v3 8b footer: the lane icon, the set name and the lane number; the name bar shows the sound.
@@ -172,25 +173,25 @@ test("the Mixer is the Song strip, one strip per used lane, then the master outp
 
 test("M and S work on every strip and name the lane's set", () => {
   const html = mixer(view({ songMuted: true }));
-  const [song, normal, clap] = strips(html).map(part => tags(part, "button").filter(tag => /Mute|Solo/.test(label(tag) ?? "")));
+  const [song, hitsounds, normal, clap] = strips(html).map(part => tags(part, "button").filter(tag => /Mute|Solo/.test(label(tag) ?? "")));
   assert.deepEqual(song.map(tag => [label(tag), pressed(tag), disabled(tag)]), [["Mute song", true, false], ["Solo song", false, false]]);
+  assert.deepEqual(hitsounds.map(tag => [label(tag), pressed(tag)]), [["Mute all hitsounds", false], ["Solo all hitsounds", false]]);
   assert.deepEqual(normal.map(tag => [label(tag), pressed(tag)]), [["Mute Normal (Soft)", false], ["Solo Normal (Soft)", false]]);
   assert.deepEqual(clap.map(tag => [label(tag), pressed(tag)]), [["Mute Clap (Soft)", true], ["Solo Clap (Soft)", false]]);
 });
 
-test("only the Song and Master faders work; nothing shows a level the editor does not have", () => {
+test("Song, Hitsounds bus, every lane strip, and Master faders work and show dB levels", () => {
   const html = mixer();
   const sliders = tags(html, "div").filter(tag => /role="slider"/.test(tag));
-  assert.deepEqual(sliders.map(label), ["Song volume", "Master volume"]);
+  assert.deepEqual(sliders.map(label), ["Song volume", "Hitsounds bus volume", "Normal volume", "Clap volume", "Master volume"]);
   assert.match(sliders[0], /aria-valuemin="0" aria-valuemax="100" aria-valuenow="70" aria-valuetext="−3.10 dB"/);
-  assert.match(sliders[1], /aria-valuemin="20" aria-valuemax="100" aria-valuenow="90" aria-valuetext="−0.92 dB"/);
-  const [song, normal] = strips(html);
-  // Lane faders have no cap and no marked travel: there is no per-lane level yet.
+  assert.match(sliders[4], /aria-valuemin="20" aria-valuemax="100" aria-valuenow="90" aria-valuetext="−0.92 dB"/);
+  const [song, hitsounds, normal] = strips(html);
   assert.equal((song.match(/class="cap/g) ?? []).length, 1);
-  assert.equal((normal.match(/class="cap/g) ?? []).length, 0);
+  assert.equal((hitsounds.match(/class="cap/g) ?? []).length, 1);
+  assert.equal((normal.match(/class="cap/g) ?? []).length, 1);
   assert.equal((song.match(/class="reach top/g) ?? []).length, 1);
   assert.equal((song.match(/class="reach bottom/g) ?? []).length, 0, "the song reaches silence");
-  assert.equal((normal.match(/class="reach/g) ?? []).length, 0);
   const master = html.slice(masterAt(html));
   assert.equal((master.match(/class="reach (top|bottom)/g) ?? []).length, 2);
   // Pan is greyed out, empty and not a control; the meters are empty.
@@ -199,18 +200,17 @@ test("only the Song and Master faders work; nothing shows a level the editor doe
     assert.equal(tags(part, "button").filter(tag => label(tag) === "Pan").length, 0);
     assert.doesNotMatch(part, /class="meter[^"]*"[^>]*>\s*<div\b[^>]*class="fill/);
   }
-  // Song and Master show their gain in dB (Yoge, 2026-11-21); lane levels and every peak have no
-  // backend yet, so they are greyed out and empty.
   const boxes = [...html.matchAll(/<span class="box (level|peak)([^"]*)"[^>]*>([^<]*)<\/span>/g)]
     .map(([, kind, classes, inside]) => [kind, /\boff\b/.test(classes), inside]);
   assert.deepEqual(boxes, [
     ["level", false, "−3.10"], ["peak", true, ""],
-    ["level", true, ""], ["peak", true, ""],
-    ["level", true, ""], ["peak", true, ""],
+    ["level", false, "0.00"], ["peak", true, ""],
+    ["level", false, "0.00"], ["peak", true, ""],
+    ["level", false, "0.00"], ["peak", true, ""],
     ["level", false, "−0.92"], ["peak", true, ""],
   ]);
-  // The master's peak bars are there, greyed out and empty.
-  assert.match(master, /<div class="peak-bars off[^"]*" aria-hidden="true"><div[^>]*><\/div>\s*<div[^>]*><\/div><\/div>/);
+  // The master's peak bars are there, greyed out when no peaks are present yet.
+  assert.match(master, /<div class="peak-bars off[^"]*" aria-hidden="true">[\s\S]*?<span class="peak-fill/);
   assert.doesNotMatch(text(html), /dBFS|kHz|\bms\b|Default device/);
   // style: directives render as attributes only on the server; ui-bundle.test.mjs checks the sources.
   assert.doesNotMatch(html, /\sid=/);

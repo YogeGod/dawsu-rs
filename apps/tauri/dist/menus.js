@@ -84,6 +84,7 @@ const menuCalls = {
   requestDrumMap: () => requestDrumMap(),
   editLayout: () => dock?.editLayout(),
   openMap: () => openMap(),
+  openFromOsu: () => openFromOsu(),
   goHome: () => goHome(),
   openFolders: () => openFolders(),
   openViewSettings: () => openViewSettings(),
@@ -522,13 +523,7 @@ function openEditorMenu(name, last = false, point = null) {
 }
 
 $("grid").addEventListener("contextmenu", event => {
-  if (!scene) return;
   event.preventDefault();
-  if (canEditFromMenu() && !dialog.open) {
-    openEditorMenu("tool", false, {
-      x: event.clientX, y: event.clientY, trigger: $("grid"), label: "Timeline tools",
-    });
-  }
 });
 
 function openLaneMenu(event, keyboard = false) {

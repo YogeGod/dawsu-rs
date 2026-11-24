@@ -21,6 +21,10 @@
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6.5h6l2 2h10V19H3z"/></svg>
       <span><strong>Open map…</strong><small>An .osu difficulty or .osz mapset</small></span>
     </button>
+    <button id="home-open-osu" type="button" class="home-action" disabled={busy} onclick={() => send("openFromOsu")}>
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 17H7A5 5 0 0 1 7 7h2m6 0h2a5 5 0 1 1 0 10h-2m-7-5h8"/></svg>
+      <span><strong>Open from osu!</strong><small>Open the map active in osu! editor</small></span>
+    </button>
     <button id="home-import" type="button" class="home-action" disabled={busy} onclick={() => send("importOsz")}>
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 4.5h17v4h-17zM5 8.5V19h14V8.5M12 11v5m-2.5-2.5L12 16l2.5-2.5"/></svg>
       <span><strong>Import .osz…</strong><small>Unpack a mapset and open it</small></span>

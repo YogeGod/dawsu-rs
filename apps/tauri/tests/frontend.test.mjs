@@ -440,13 +440,14 @@ test("a plain click on the ruler band moves the playhead there, inside or outsid
     rulerEvents.get("pointerdown")({ button: 0, pointerId, clientX, clientY });
     rulerEvents.get("pointerup")({ pointerId, clientX: clientX + 1, clientY });
   };
-  click(45, 16, 1);
-  click(90, 16, 2);
+  click(45, 6, 1);
+  click(90, 6, 2);
   click(30, 6, 3);
   await settle();
   const sent = JSON.parse(JSON.stringify(calls.map(call => call.args.action).filter(Boolean)));
   const seek = ms => ({ kind: "ruler_locators", path: "Expert.osu", gesture: "seek", from: ms, to: ms });
-  assert.deepEqual(sent, [seek(45), seek(90), seek(30)], "no Cycle toggle and no locator change");
+  // Clicking inside the top cycle bar (45) does not seek (so double-clicking it never moves the playhead).
+  assert.deepEqual(sent, [seek(90), seek(30)], "no Cycle toggle and no locator change");
   assert.equal(evaluate("rulerDrag"), null);
 });
 
@@ -458,8 +459,8 @@ test("dragging on the ruler band still draws, moves and drags the locators", asy
     rulerEvents.get("pointermove")({ pointerId, clientX: to, clientY });
     rulerEvents.get("pointerup")({ pointerId, clientX: to, clientY });
   };
-  drag(80, 95, 16, 1);
-  drag(45, 55, 16, 2);
+  drag(80, 95, 6, 1);
+  drag(45, 55, 6, 2);
   drag(25, 35, 6, 3);
   await settle();
   const sent = calls.map(call => call.args.action).filter(Boolean).map(({ kind, gesture, from, to }) => [kind, gesture, from, to]);

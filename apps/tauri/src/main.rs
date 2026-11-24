@@ -6,6 +6,7 @@ mod folders;
 mod home;
 mod keyboard;
 mod library;
+mod osu_link;
 mod selection;
 mod skin_textures;
 
@@ -386,6 +387,8 @@ enum Action {
         x: f64,
         y: f64,
         value: Option<f64>,
+        #[serde(default)]
+        button: Option<String>,
         shift: bool,
         ctrl: bool,
         alt: bool,
@@ -445,6 +448,21 @@ enum Action {
     Gains {
         song: f32,
         main: f32,
+        #[serde(default)]
+        hitsounds: Option<f32>,
+    },
+    HitsoundGain {
+        gain: f32,
+    },
+    HitsoundsMuted {
+        on: bool,
+    },
+    HitsoundsSolo {
+        on: bool,
+    },
+    LaneGain {
+        row: usize,
+        gain: f32,
     },
     SongMuted {
         on: bool,
@@ -761,6 +779,7 @@ impl Action {
                 x,
                 y,
                 value,
+                button,
                 shift,
                 ctrl,
                 alt,
@@ -789,7 +808,11 @@ impl Action {
                         } else {
                             PointerSurface::Grid
                         },
-                        button: PointerButton::Left,
+                        button: if button.as_deref() == Some("right") {
+                            PointerButton::Right
+                        } else {
+                            PointerButton::Left
+                        },
                         mods,
                         click_count,
                         x,
@@ -882,10 +905,37 @@ impl Action {
                     app.error = Some(error);
                 }
             }
-            Self::Gains { song, main } => {
+            Self::Gains { song, main, hitsounds } => {
                 app.preferences.song_gain = song.clamp(0.0, 1.0);
                 app.preferences.master_gain = main.clamp(0.2, 1.0);
+                if let Some(hs) = hitsounds {
+                    app.preferences.hitsound_gain = hs.clamp(0.0, 2.0);
+                }
                 app.gains_changed();
+            }
+            Self::HitsoundGain { gain } => {
+                app.preferences.hitsound_gain = gain.clamp(0.0, 2.0);
+                app.gains_changed();
+            }
+            Self::HitsoundsMuted { on } => {
+                app.preferences.hitsounds_muted = on;
+                app.gains_changed();
+            }
+            Self::HitsoundsSolo { on } => app.set_hitsounds_solo(on),
+            Self::LaneGain { row, gain } => {
+                let target = app.document().and_then(|d| {
+                    let lane = d.composer.lanes.get(row)?;
+                    Some(
+                        d.composer
+                            .hitsounds()
+                            .lane(lane)
+                            .map(|m| m.plays_as())
+                            .unwrap_or_else(|| lane.clone()),
+                    )
+                });
+                if let Some(lane) = target {
+                    app.set_lane_gain(lane, gain);
+                }
             }
             Self::OutputSettings { backend, device_id, ms } => {
                 if let Err(error) = app.set_output_settings(backend, device_id, ms) {
@@ -922,7 +972,8 @@ impl Action {
                 zoom,
                 row_height,
             } => {
-                app.set_view_start(start.clamp(0.0, app.duration_ms()));
+                let bound = app.duration_ms().max(600_000.0) * 10.0;
+                app.set_view_start(start.clamp(-bound, bound));
                 app.zoom = zoom.clamp(dawsu_application::MIN_ZOOM, 3.0);
                 app.row_height = row_height.clamp(20.0, 65.0);
             }
@@ -1345,11 +1396,13 @@ fn snapshot_with_static(app: &Application, include_scene: bool, include_static: 
                 let read_only = matches!(slot, SampleIdentity::Standard { sound: Sound::Slider(_), .. });
                 let protected = c.protect_normals && hit_count > 0
                     && matches!(slot, SampleIdentity::Standard { sound: Sound::Hit(dawsu_foundation::Hitsound::Normal), .. });
+                let plays_as = model.lane(lane).map(|m| m.plays_as()).unwrap_or_else(|| lane.clone());
                 json!({
                     "family": family, "index": index, "group": group, "key": scene_lane_key(slot),
                     "sourceKey": scene_lane_key(lane), "sample": sample,
                     "colourKey": dawsu_application::lane_layout_key(slot),
                     "name": lane_name(slot), "muted": app.is_muted(lane), "solo": app.is_solo(lane),
+                    "gain": app.lane_gain(&plays_as),
                     "canAddLayer": index.is_some(),
                     "canReplace": !matches!(lane, SampleIdentity::Standard { sound: Sound::Slider(_), .. }),
                     "hitCount": hit_count, "canDelete": !read_only && !protected,
@@ -1510,6 +1563,15 @@ fn snapshot_with_static(app: &Application, include_scene: bool, include_static: 
         "open": app.sound_set_prompt_open(),
     })).collect::<Vec<_>>());
     result["songSolo"] = json!(app.song_solo());
+    result["hitsounds"] = json!(app.preferences.hitsound_gain);
+    result["hitsoundsMuted"] = json!(app.preferences.hitsounds_muted);
+    result["hitsoundsSolo"] = json!(app.hitsounds_solo());
+    let (master_peak, song_peak, hitsound_peak) = app.audio_peaks();
+    result["peaks"] = json!({
+        "master": master_peak,
+        "song": song_peak,
+        "hitsounds": hitsound_peak,
+    });
     result["editDialog"] = json!(app.requested_edit());
     result["quantizeStrength"] = json!(app.quantize_strength());
     let tab_routes = [false, true].into_iter().flat_map(|ctrl| {
@@ -2203,12 +2265,36 @@ fn ask_within<T>(editor: &mpsc::Sender<Request>, wait: Duration, request: impl F
 
 #[tauri::command]
 fn editor_view(
+    window: tauri::WebviewWindow,
     state: State<'_, Editor>,
     scene: bool,
     action: Option<Action>,
     fresh: Option<bool>,
 ) -> Result<Value, String> {
-    ask(&state, |tx| Request::View(scene, action, fresh.unwrap_or(false), tx))
+    let view = ask(&state, |tx| Request::View(scene, action, fresh.unwrap_or(false), tx))?;
+    if let Some(scene_val) = view.get("scene") {
+        if !scene_val.is_null() {
+            let map_title = scene_val.get("title").and_then(Value::as_str).unwrap_or("");
+            let version = scene_val.get("version").and_then(Value::as_str).unwrap_or("");
+            let file_stem = scene_val
+                .get("path")
+                .and_then(Value::as_str)
+                .and_then(|p| Path::new(p).file_stem())
+                .and_then(|s| s.to_str())
+                .unwrap_or("");
+            let title = if !version.is_empty() && !map_title.is_empty() {
+                format!("{map_title} [{version}] — dawsu!")
+            } else if !file_stem.is_empty() {
+                format!("{file_stem} — dawsu!")
+            } else {
+                "dawsu!".to_string()
+            };
+            let _ = window.set_title(&title);
+        } else if view.get("hasDocument").and_then(Value::as_bool) == Some(false) {
+            let _ = window.set_title("dawsu!");
+        }
+    }
+    Ok(view)
 }
 
 #[tauri::command]
@@ -2924,6 +3010,42 @@ fn skin_textures() -> Value {
 }
 
 #[tauri::command]
+fn preview_skins(state: State<'_, Editor>) -> Result<Value, String> {
+    let songs = ask(&state, Request::SongsDirectory)?;
+    Ok(skin_textures::list_available_skins(songs.as_deref()))
+}
+
+#[tauri::command]
+fn preview_skin_load(skin_id: String) -> Result<Value, String> {
+    if skin_id == "argon" || skin_id.is_empty() {
+        return Ok(Value::Null);
+    }
+    if skin_id == "classic" {
+        return Ok(skin_textures::load_skin_textures_json());
+    }
+    if let Some(dir) = skin_id.strip_prefix("dir:") {
+        return skin_textures::load_skin_from_dir(Path::new(dir));
+    }
+    Err(format!("Unknown preview skin: {skin_id}"))
+}
+
+#[tauri::command]
+fn pick_skin_folder(window: tauri::WebviewWindow) -> Option<String> {
+    rfd::FileDialog::new()
+        .set_parent(&window)
+        .set_title("Choose osu! skin folder")
+        .pick_folder()
+        .map(|path| path.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
+fn open_from_osu(state: State<'_, Editor>) -> Result<String, String> {
+    let songs = ask(&state, Request::SongsDirectory)?;
+    let path = osu_link::find_open_osu_map(songs.as_deref())?;
+    Ok(path.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
 fn pick_midi_file(window: tauri::WebviewWindow) -> Option<String> {
     rfd::FileDialog::new()
         .set_parent(&window)
@@ -3125,6 +3247,10 @@ fn main() {
             open_editor_folder,
             close_editor,
             skin_textures,
+            preview_skins,
+            preview_skin_load,
+            pick_skin_folder,
+            open_from_osu,
             pick_midi_file,
             inspect_midi_file,
             apply_midi_import,
