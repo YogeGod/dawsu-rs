@@ -165,14 +165,51 @@ test("Lane carries the picked colour or none, never the sound colour", async () 
 
 test("renderSelection and renderActiveLane hand the model to the Svelte part", async () => {
   const { evaluate, handed } = await frontend();
-  evaluate(`view = { busy: false, activeLane: 0 }; scene = { path: "a.osu", lanes: [{ key: "k", name: "Kick" }],
+  evaluate(`view = { busy: false, activeLane: null }; scene = { path: "a.osu", lanes: [{ key: "k", name: "Kick" }],
     moments: [], selection: { count: 1, start: 0, object: "Circle" } };`);
   handed.length = 0;
-  evaluate("renderSelection(); renderActiveLane();");
+  evaluate("renderSelection(); view.activeLane = 0; renderActiveLane();");
   assert.equal(handed.length, 2);
   assert.equal(handed[0].selection.summary, "1 hit selected");
   assert.equal(handed[1].lane.title, "Kick");
   assert.deepEqual(JSON.parse(evaluate("JSON.stringify(currentInspector())")), handed[1]);
+});
+
+test("two show() calls with the same view hand the Inspector over at most once, while a changed selection updates immediately", async () => {
+  const { evaluate, handed } = await frontend();
+  const baseScene = {
+    path: "a.osu",
+    difficulties: ["a.osu"],
+    lanes: [{ key: "k", name: "Kick" }],
+    moments: [],
+    viewStart: 0,
+    zoom: 0.5,
+    rowHeight: 30,
+    bookmarks: [],
+    history: [],
+    historyPosition: 0,
+    selection: { count: 1, start: 0, object: "Circle" },
+  };
+  const view = { busy: false, hasDocument: true, activeLane: 0, position: 0, duration: 9000, scene: baseScene };
+  handed.length = 0;
+  evaluate(`const sameView = ${JSON.stringify(view)}; show(sameView); show(sameView);`);
+  assert.equal(handed.length, 1, "two show() calls with the same view hand the Inspector over once");
+  assert.equal(handed[0].selection.summary, "1 hit selected");
+
+  // A subsequent update without scene (e.g. playhead tick) with unchanged Inspector state also skips hand-over.
+  evaluate(`show(${JSON.stringify({ ...view, position: 250, scene: undefined })});`);
+  assert.equal(handed.length, 1, "an unchanged Inspector model skips redundant hand-overs");
+
+  // A changed selection still reaches the Inspector immediately.
+  const nextScene = {
+    ...baseScene,
+    moments: [[1000, 80, true, [[0, true]]]],
+    selection: { count: 1, start: 1000, object: "Slider head" },
+  };
+  evaluate(`show(${JSON.stringify({ ...view, scene: nextScene })});`);
+  assert.equal(handed.length, 2);
+  assert.equal(handed[1].selection.start, "00:01.000");
+  assert.equal(handed[1].selection.object, "Slider head");
 });
 
 test("Start takes osu! editor times and plain milliseconds", async () => {
