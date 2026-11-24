@@ -2255,6 +2255,15 @@ enum Request {
     ),
     SharedBaseClearOverrides(mpsc::Sender<Result<dawsu_application::SharedBaseStatus, String>>),
     SharedBaseClear(mpsc::Sender<Result<dawsu_application::SharedBaseStatus, String>>),
+    StemSeparationStatus(mpsc::Sender<Result<dawsu_application::StemSeparationStatus, String>>),
+    StemSeparationStart(
+        dawsu_application::StemSeparationStartOptions,
+        mpsc::Sender<Result<dawsu_application::StemSeparationStatus, String>>,
+    ),
+    StemSeparationCancel(mpsc::Sender<Result<dawsu_application::StemSeparationStatus, String>>),
+    StemSeparationDeleteCache(
+        mpsc::Sender<Result<dawsu_application::StemSeparationStatus, String>>,
+    ),
 }
 struct Editor(mpsc::Sender<Request>);
 
@@ -3057,6 +3066,29 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                     let result = guard(&mut app, &mut fault, |app| app.shared_base_clear())
                         .and_then(|r| r);
                     tick_cache.invalidate();
+                    let _ = response.send(result);
+                }
+                Ok(Request::StemSeparationStatus(response)) => {
+                    let result = guard(&mut app, &mut fault, |app| app.stem_separation_status());
+                    tick_cache.invalidate();
+                    let _ = response.send(result);
+                }
+                Ok(Request::StemSeparationStart(options, response)) => {
+                    let result =
+                        guard(&mut app, &mut fault, |app| app.stem_separation_start(options))
+                            .and_then(|r| r);
+                    tick_cache.invalidate();
+                    let _ = response.send(result);
+                }
+                Ok(Request::StemSeparationCancel(response)) => {
+                    let result = guard(&mut app, &mut fault, |app| app.stem_separation_cancel());
+                    let _ = response.send(result);
+                }
+                Ok(Request::StemSeparationDeleteCache(response)) => {
+                    let result = guard(&mut app, &mut fault, |app| {
+                        app.stem_separation_delete_cache()
+                    })
+                    .and_then(|r| r);
                     let _ = response.send(result);
                 }
                 Ok(Request::MidiRecordToggle(port_index, snap, response)) => {
@@ -4168,6 +4200,40 @@ fn shared_base_clear(
 }
 
 #[tauri::command]
+fn stem_separation_status(
+    state: State<'_, Editor>,
+) -> Result<dawsu_application::StemSeparationStatus, String> {
+    ask(&state, Request::StemSeparationStatus)?
+}
+
+#[tauri::command]
+fn stem_separation_start(
+    force_rerun: Option<bool>,
+    custom_model_path: Option<String>,
+    state: State<'_, Editor>,
+) -> Result<dawsu_application::StemSeparationStatus, String> {
+    let options = dawsu_application::StemSeparationStartOptions {
+        force_rerun: force_rerun.unwrap_or(false),
+        custom_model_path,
+    };
+    ask(&state, |tx| Request::StemSeparationStart(options, tx))?
+}
+
+#[tauri::command]
+fn stem_separation_cancel(
+    state: State<'_, Editor>,
+) -> Result<dawsu_application::StemSeparationStatus, String> {
+    ask(&state, Request::StemSeparationCancel)?
+}
+
+#[tauri::command]
+fn stem_separation_delete_cache(
+    state: State<'_, Editor>,
+) -> Result<dawsu_application::StemSeparationStatus, String> {
+    ask(&state, Request::StemSeparationDeleteCache)?
+}
+
+#[tauri::command]
 fn midi_input_ports() -> Vec<String> {
     dawsu_application::list_midi_input_ports()
 }
@@ -4568,6 +4634,10 @@ fn main() {
             shared_base_apply,
             shared_base_clear_overrides,
             shared_base_clear,
+            stem_separation_status,
+            stem_separation_start,
+            stem_separation_cancel,
+            stem_separation_delete_cache,
             midi_input_ports,
             midi_record_toggle,
             vst3_scan,

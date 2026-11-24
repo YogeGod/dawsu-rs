@@ -1,6 +1,7 @@
 //! Documents, playback, storage and background jobs.
 
 pub mod base_layer;
+pub mod stem_separation;
 mod bookmarks;
 mod default_sounds;
 mod slider_body;
@@ -31,6 +32,9 @@ mod keysound_session;
 mod project;
 pub use base_layer::{
     BaseHit, BaseMoment, SharedBaseApplyResult, SharedBaseLayer, SharedBaseStatus,
+};
+pub use stem_separation::{
+    StemSeparationJobState, StemSeparationStartOptions, StemSeparationStatus,
 };
 pub use project::lane_key as lane_layout_key;
 pub use node_graph::{NodeGraphAction, NodeGraphView, ViewerOverlay};
@@ -1205,6 +1209,7 @@ pub struct Application {
     drum_stem_job: Option<mpsc::Receiver<JobResult>>,
     drum_stem_cancel: Arc<AtomicBool>,
     drum_stem_generation: u64,
+    stem_separation: stem_separation::StemSeparationManager,
     waveform_revision: u64,
     pending_locator_right: Option<(f64, Option<f64>, bool)>,
     #[cfg(test)]
@@ -1395,6 +1400,7 @@ impl Application {
             drum_stem_job: None,
             drum_stem_cancel: Arc::new(AtomicBool::new(false)),
             drum_stem_generation: 0,
+            stem_separation: stem_separation::StemSeparationManager::default(),
             waveform_revision: 0,
             pending_locator_right: None,
             #[cfg(test)]
