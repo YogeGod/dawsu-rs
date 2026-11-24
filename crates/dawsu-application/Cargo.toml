@@ -21,6 +21,11 @@ dawsu-editor-nodal = { path = "../dawsu-editor-nodal" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 vorbis_rs = { version = "0.5.6", default-features = false }
+ort = { version = "2.0.0-rc.10", default-features = false, features = ["load-dynamic", "std"] }
+reqwest = { version = "0.13", default-features = false, features = ["blocking", "default-tls"] }
+sha2 = "0.10"
+zip = { version = "9.6", default-features = false, features = ["deflate"] }
+flate2 = "1.1"
 
 [dev-dependencies]
 dawsu-test-support = { path = "../dawsu-test-support" }

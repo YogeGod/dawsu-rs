@@ -115,6 +115,7 @@ const menuCalls = {
   exportMidi: () => exportMidi(),
   openKeysounds: () => globalThis.openKeysounds?.(),
   openSharedBase: () => globalThis.openSharedBase?.(),
+  openStemSeparation: () => globalThis.openStemSeparation?.(),
   showHelp: () => run(showHelp),
   deleteActiveLane: () => deleteActiveLane(),
   toggleMapPreview: () => window.dawsuUi?.toggleMapPreview?.(),

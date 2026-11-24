@@ -319,7 +319,7 @@ test("each menu groups the editor's existing commands like the design, with no s
     "Start playing from: Cursor | Left locator | Selection | Selection or left locator", "—",
     "Return on stop", "Follow playhead", "Cycle between L and R", "Locators to selection", "Play locator range", "—",
     "Speed · pitch stays the same: 25 | 50 | 75 | 100 | 125 | 150", "—",
-    "Mute song", "Monitor drum stem", "Attach drum stem…", "Clear drum stem", "—", "Audio output…",
+    "Mute song", "Monitor drum stem", "Separate drums (AI)…", "Attach drum stem…", "Clear drum stem", "—", "Audio output…",
   ]);
   assert.deepEqual(open("map"), [
     "Difficulty: Hard | Insane", "—",
