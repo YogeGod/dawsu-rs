@@ -3689,6 +3689,68 @@ fn songs_dialog(window: &tauri::WebviewWindow, state: &Editor) -> Result<rfd::Fi
     })
 }
 
+struct SongsIndexCache(
+    std::sync::Arc<std::sync::Mutex<Option<(PathBuf, &'static str, Vec<dawsu_application::songs_index::SongMapsetEntry>)>>>,
+);
+
+#[tauri::command]
+async fn songs_index_search(
+    query: String,
+    refresh: bool,
+    state: State<'_, Editor>,
+    cache: State<'_, SongsIndexCache>,
+) -> Result<dawsu_application::songs_index::SongsSearchResult, String> {
+    let Some(songs_dir) = ask(&state, Request::SongsDirectory)? else {
+        return Ok(dawsu_application::songs_index::SongsSearchResult {
+            total_mapsets: 0,
+            total_diffs: 0,
+            source: "none",
+            matches: Vec::new(),
+        });
+    };
+    let cache_arc = std::sync::Arc::clone(&cache.0);
+    tauri::async_runtime::spawn_blocking(move || {
+        const SEARCH_LIMIT: usize = 50;
+        if !refresh {
+            if let Ok(guard) = cache_arc.lock() {
+                if let Some((cached_dir, source, entries)) = guard.as_ref() {
+                    if cached_dir == &songs_dir {
+                        let total_diffs = entries.iter().map(|m| m.diffs.len()).sum();
+                        let matches = dawsu_application::songs_index::search_songs_index(
+                            entries,
+                            &query,
+                            SEARCH_LIMIT,
+                        );
+                        return Ok(dawsu_application::songs_index::SongsSearchResult {
+                            total_mapsets: entries.len(),
+                            total_diffs,
+                            source,
+                            matches,
+                        });
+                    }
+                }
+            }
+        }
+        let (entries, source) =
+            dawsu_application::songs_index::build_songs_index_with_source(&songs_dir);
+        let total_mapsets = entries.len();
+        let total_diffs = entries.iter().map(|m| m.diffs.len()).sum();
+        let matches =
+            dawsu_application::songs_index::search_songs_index(&entries, &query, SEARCH_LIMIT);
+        if let Ok(mut guard) = cache_arc.lock() {
+            *guard = Some((songs_dir, source, entries));
+        }
+        Ok(dawsu_application::songs_index::SongsSearchResult {
+            total_mapsets,
+            total_diffs,
+            source,
+            matches,
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[tauri::command]
 fn pick_songs_folder(
     window: tauri::WebviewWindow,
@@ -4226,6 +4288,7 @@ fn main() {
     let initial = std::env::args_os().nth(1).map(PathBuf::from);
     tauri::Builder::default()
         .manage(editor_thread(initial))
+        .manage(SongsIndexCache(std::sync::Arc::new(std::sync::Mutex::new(None))))
         .on_window_event(|window, event| {
             let app = window.app_handle();
             match (window.label(), event) {
@@ -4307,6 +4370,7 @@ fn main() {
             sound_set_placement,
             save_sound_set,
             pick_songs_folder,
+            songs_index_search,
             pick_hitsound_library,
             list_library,
             sample_preview,

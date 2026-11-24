@@ -62,6 +62,7 @@ mod recovery;
 mod refusals;
 mod roll_back;
 pub mod sample_checks;
+pub mod songs_index;
 mod sound_sets;
 mod unwritten;
 mod osu_watch;

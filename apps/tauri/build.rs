@@ -41,6 +41,7 @@ const COMMANDS: &[&str] = &[
     "sound_set_placement",
     "save_sound_set",
     "pick_songs_folder",
+    "songs_index_search",
     "pick_hitsound_library",
     "list_library",
     "sample_preview",

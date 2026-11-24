@@ -212,6 +212,7 @@ export function createEditor(env = globalThis, { ui = null, autoStart = true, ex
       case "folders":
         return ctx.openFolders();
       case "openRecent":
+      case "openPath":
         return ctx.act({ kind: "open", path: arg });
       case "restoreRecovery":
         return ctx.act({ kind: "restore_recovery", id: arg });
