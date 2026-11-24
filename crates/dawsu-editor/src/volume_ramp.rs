@@ -1,5 +1,5 @@
 //! Value ramps for the Ramp tool, ported from the old app's `OsuHitsound.Lanes/VolumeRamp.cs` at
-//! `c81774e` (dawsu!'s own code). Values are osu! volumes 1-100 (Keysound: velocities).
+//! `c81774e` (dawsu!'s own code). Values are osu! volumes 5-100 (saved-volume floor; Keysound: velocities).
 
 /// The curve of a ramp.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -11,7 +11,10 @@ pub enum RampShape {
     SCurve,
 }
 
-/// The value at `t` (0 to 1) of a ramp from `from` to `to`, rounded half away from zero and kept 1-100.
+/// Saved-volume floor (5%); matches `dawsu_hitsounding::rules::SAVED_VOLUME_FLOOR`.
+const SAVED_VOLUME_FLOOR: i32 = 5;
+
+/// The value at `t` (0 to 1) of a ramp from `from` to `to`, rounded half away from zero and kept 5-100.
 pub fn ramp_at(shape: RampShape, t: f64, from: i32, to: i32) -> i32 {
     let t = t.clamp(0.0, 1.0);
     let k = match shape {
@@ -20,7 +23,7 @@ pub fn ramp_at(shape: RampShape, t: f64, from: i32, to: i32) -> i32 {
         RampShape::SCurve => t * t * (3.0 - 2.0 * t),
         RampShape::Linear => t,
     };
-    ((from as f64 + (to - from) as f64 * k).round() as i32).clamp(1, 100)
+    ((from as f64 + (to - from) as f64 * k).round() as i32).clamp(SAVED_VOLUME_FLOOR, 100)
 }
 
 /// Values for items between two times: each gets the ramp value at its place between the ends.
@@ -56,4 +59,18 @@ pub fn ramp<K: Clone>(
             )
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ramp_at_clamps_to_saved_volume_floor() {
+        assert_eq!(ramp_at(RampShape::Linear, 0.0, 0, 100), 5);
+        assert_eq!(ramp_at(RampShape::Linear, 0.0, 1, 100), 5);
+        assert_eq!(ramp_at(RampShape::Linear, 0.0, 4, 100), 5);
+        assert_eq!(ramp_at(RampShape::Linear, 1.0, 100, 0), 5);
+        assert_eq!(ramp_at(RampShape::Linear, 1.0, 0, 120), 100);
+    }
 }

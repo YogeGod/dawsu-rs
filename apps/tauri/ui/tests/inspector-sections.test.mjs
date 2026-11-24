@@ -140,6 +140,13 @@ test("the slider body fields show the selected slider's sounds", () => {
   assert.match(none, /<select[^>]*aria-label="Slide and tick sample set"[^>]*disabled/);
 });
 
+test("Body and head volume and Insert volume inputs enforce the 5% saved-volume floor", () => {
+  const body = { key: "k", set: "soft", whistle: true, whistleSet: "auto", volume: 60 };
+  const html = shown(model({ selection: selection({ sliderBody: body }) }));
+  assert.match(html, /<input[^>]*min="5"[^>]*max="100"[^>]*aria-label="Body and head volume"/);
+  assert.match(html, /<input[^>]*min="5"[^>]*max="100"[^>]*aria-label="Insert volume"/);
+});
+
 // Each control's gate, as the old markup had it: [button, model that enables it, change that disables it].
 const gates = [
   ["Move", { selection: selection() }, { busy: true }],

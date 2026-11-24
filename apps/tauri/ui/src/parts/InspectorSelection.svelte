@@ -113,7 +113,7 @@
             </select>
           </label>
           <label class="insp-row">Body and head volume
-            <span class="insp-value"><input class="insp-field insp-number" type="number" min="0" max="100"
+            <span class="insp-value"><input class="insp-field insp-number" type="number" min="5" max="100"
               aria-label="Body and head volume" bind:value={bodyVolume} disabled={model.busy}>%</span>
           </label>
         </div>
@@ -122,7 +122,7 @@
     {/if}
     <div class="insp-rows">
       <label class="insp-row">Insert volume
-        <span class="insp-value"><input class="insp-field insp-number" type="number" min="0" max="100"
+        <span class="insp-value"><input class="insp-field insp-number" type="number" min="5" max="100"
           aria-label="Insert volume" value={shownValue(insertHeld, model.insertVolume)}
           onfocus={() => (insertHeld = model.insertVolume)}
           onblur={event => { insertHeld = null; insertHold.release(event.currentTarget, model.insertVolume); }}
