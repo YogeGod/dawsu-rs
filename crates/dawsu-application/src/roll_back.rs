@@ -120,6 +120,8 @@ pub(crate) struct Rolled {
     pub owned: BTreeSet<LineId>,
     /// The circle HS mode made for each group, by the group's file time, in `out`.
     pub circles: BTreeMap<i64, LineId>,
+    /// Empty owned HS circles removed during compile.
+    pub removed_circles: BTreeSet<LineId>,
     /// With roll-back off: the problems that stop Save.
     pub refused: Vec<SaveProblem>,
     /// How many compiles it took; the tests check it stays within [`MAX_ROUNDS`].
@@ -184,6 +186,7 @@ pub(crate) fn compile_with_roll_back(
                         left_out,
                         owned: pass.owned,
                         circles: pass.circles.into_iter().map(|(line, time)| (time, line)).collect(),
+                        removed_circles: pass.removed_circles,
                         refused: Vec::new(),
                         rounds: round,
                     });
@@ -202,6 +205,7 @@ pub(crate) fn compile_with_roll_back(
                 left_out,
                 owned: pass.owned,
                 circles: BTreeMap::new(),
+                removed_circles: BTreeSet::new(),
                 refused: failing,
                 rounds: round,
             });
