@@ -1523,6 +1523,7 @@ fn snapshot_with_static(app: &Application, include_scene: bool, include_static: 
             "includeSliderAudio": plan.includes_slider_audio(),
         })
     });
+    let output_problems = app.output_problems();
     let mut result = json!({
         "scene": scene, "hasDocument": document.is_some(), "busy": app.busy, "playing": app.is_playing(),
         "laneCount": document.map_or(0, |d| d.composer.lanes.len()),
@@ -1536,7 +1537,7 @@ fn snapshot_with_static(app: &Application, include_scene: bool, include_static: 
         "keyPreset": app.preferences.key_preset,
         "rampShape": format!("{:?}", app.ramp_shape()),
         "revert": app.revert_requested, "review": review, "activeLane": app.active_lane,
-        "saveProblemReview": app.save_problem_review(), "objectLines": app.preferences.object_lines,
+        "saveProblemReview": app.save_problem_review_requested() && !output_problems.is_empty(), "objectLines": app.preferences.object_lines,
         "classicBrowser": app.preferences.classic_browser,
         "hitsoundLibrary": app.preferences.hitsound_library,
         "panels": {
@@ -1550,7 +1551,7 @@ fn snapshot_with_static(app: &Application, include_scene: bool, include_static: 
     result["hsMode"] = json!(document.is_some_and(|d| d.hs_mode));
     result["hasOriginalSnapshot"] = json!(app.has_original_snapshot());
     result["songsFolder"] = json!((!app.preferences.songs_folder.as_os_str().is_empty()).then_some(&app.preferences.songs_folder));
-    result["outputProblems"] = json!(app.output_problems().iter().map(|problem| json!({
+    result["outputProblems"] = json!(output_problems.iter().map(|problem| json!({
         "target": problem.target, "timeline": problem.timeline,
         "time": problem.time, "message": problem.message,
     })).collect::<Vec<_>>());

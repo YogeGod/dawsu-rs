@@ -2157,6 +2157,11 @@ impl Application {
         self.save_problem_review && !self.output_problems().is_empty()
     }
 
+    /// Whether the Save hitsounds problem summary was requested, before checking if any problems remain.
+    pub fn save_problem_review_requested(&self) -> bool {
+        self.save_problem_review
+    }
+
     /// True while a reviewed Save waits for the mapper's answer.
     pub fn save_review_pending(&self) -> bool {
         self.pending_save_review.is_some()
