@@ -1,4 +1,4 @@
-use super::{Action, PlaybackStart, encode_waveform_bytes, lane_add_choices, lane_by_key, map_preview, scene_lane_key, snapshot, sound_set_library_view};
+use super::{Action, PlaybackStart, encode_waveform_bytes, lane_add_choices, lane_by_key, map_preview, scene_lane_key, snapshot, snapshot_view, snapshot_with_static, sound_set_library_view};
 use dawsu_application::{Application, WaveBin};
 use std::fmt::Write as _;
 use std::fs;
@@ -173,8 +173,8 @@ fn select_double_click_seeks_to_an_existing_hit_and_inserts_once_on_empty_space(
         .position(|lane| lane["name"] == "normal-hitclap").unwrap() as i32;
     let click = |app: &mut Application, ms, ctrl| {
         Action::Pointer {
-            phase: "double_click".into(), ms, row, x: 12.0, y: 12.0, value: None,
-            button: None, shift: false, ctrl, alt: false,
+            phase: "double_click".into(), ms, row, x: 12.0, y: 12.0, value: None, button: None,
+            shift: false, ctrl, alt: false,
         }.run(app);
     };
 
@@ -243,8 +243,8 @@ fn gameplay_overlay_projects_objects_and_skips_unanchored_hits() {
     Action::Tool { name: "Draw".into() }.run(&mut app);
     for phase in ["down", "up"] {
         Action::Pointer {
-            phase: phase.into(), ms: 4250.0, row: 1, x: 4250.0, y: 12.0, value: None,
-            button: None, shift: false, ctrl: false, alt: false,
+            phase: phase.into(), ms: 4250.0, row: 1, x: 4250.0, y: 12.0, value: None, button: None,
+            shift: false, ctrl: false, alt: false,
         }.run(&mut app);
     }
     assert!(app.document().unwrap().composer.hitsounds().moments().iter().any(|moment|
@@ -384,9 +384,9 @@ fn drum_view_uses_a_preset_without_changing_the_mapset_and_follows_sibling_diffi
     assert!(drums.load(&app, &sibling, &preset).is_err());
     drums.load(&app, &expected, &preset).unwrap();
     let read = |drums: &super::drum_view::DrumView, app: &Application| {
-        let mut scene = snapshot(app, true);
+        let mut scene = snapshot_view(app, true);
         drums.decorate(app, &mut scene);
-        scene
+        serde_json::to_value(scene).unwrap()
     };
     let shown = read(&drums, &app);
     assert_eq!(shown["drumView"]["enabled"], true);
@@ -465,8 +465,9 @@ fn drum_view_rows_follow_a_replaced_lane_and_leave_hidden_lanes_hidden() {
     let plain = snapshot(&app, true);
     let order = plain["scene"]["laneOrder"].as_array().unwrap().clone();
     let read = |drums: &super::drum_view::DrumView| {
-        let mut shown = plain.clone();
+        let mut shown = snapshot_view(&app, true);
         drums.decorate(&app, &mut shown);
+        let shown = serde_json::to_value(shown).unwrap();
         assert_eq!(shown["scene"]["lanes"], plain["scene"]["lanes"]);
         assert_eq!(shown["scene"]["laneOrder"], plain["scene"]["laneOrder"]);
         shown["scene"]["drumRows"].as_array().unwrap().clone()
@@ -532,9 +533,9 @@ fn drum_view_rows_find_a_sample_under_another_spelling_and_keep_hidden_ones_hidd
     let mut drums = super::drum_view::DrumView::default();
     drums.load(&app, &map, &preset).unwrap();
     let read = |drums: &super::drum_view::DrumView, app: &Application| {
-        let mut shown = snapshot(app, true);
+        let mut shown = snapshot_view(app, true);
         drums.decorate(app, &mut shown);
-        shown
+        serde_json::to_value(shown).unwrap()
     };
     let shown = read(&drums, &app);
     let rows = shown["scene"]["drumRows"].as_array().unwrap();
@@ -585,9 +586,9 @@ fn a_drum_view_row_on_a_hidden_lane_never_names_another_spelling_of_its_file() {
     let mut drums = super::drum_view::DrumView::default();
     drums.load(&app, &map, &preset).unwrap();
     let read = |drums: &super::drum_view::DrumView, app: &Application| {
-        let mut shown = snapshot(app, true);
+        let mut shown = snapshot_view(app, true);
         drums.decorate(app, &mut shown);
-        shown
+        serde_json::to_value(shown).unwrap()
     };
     let lane = |shown: &serde_json::Value, file: &str| {
         let lanes = shown["scene"]["lanes"].as_array().unwrap();
@@ -626,9 +627,9 @@ fn drum_view_loads_builtin_presets_and_assigns_rows() {
     drums.load_builtin(&app, &map, "Two kicks").unwrap();
 
     let read = |drums: &super::drum_view::DrumView, app: &Application| {
-        let mut shown = snapshot(app, true);
+        let mut shown = snapshot_view(app, true);
         drums.decorate(app, &mut shown);
-        shown
+        serde_json::to_value(shown).unwrap()
     };
     let shown = read(&drums, &app);
     assert_eq!(shown["drumView"]["enabled"], true);
@@ -666,9 +667,9 @@ fn drum_view_for_editor_binds_builtins_toggles_auto_detect_hides_unassigned_and_
     let mut drums = super::drum_view::DrumView::for_editor();
 
     let read = |drums: &super::drum_view::DrumView, app: &Application| {
-        let mut shown = snapshot(app, true);
+        let mut shown = snapshot_view(app, true);
         drums.decorate(app, &mut shown);
-        shown
+        serde_json::to_value(shown).unwrap()
     };
 
     // Turning drum view on uses auto_detect by default and hides unassigned/Other rows by default.
@@ -1148,8 +1149,8 @@ fn protect_normals_keeps_noop_deletes_clean_and_still_removes_additions() {
     let click = |app: &mut Application| {
         for phase in ["down","up"] {
             Action::Pointer {
-                phase:phase.into(), ms:1000.0, row, x:120.0, y:12.0, value:None,
-                button: None, shift:false, ctrl:false, alt:false,
+                phase:phase.into(), ms:1000.0, row, x:120.0, y:12.0, value:None, button:None,
+                shift:false, ctrl:false, alt:false,
             }.run(app);
         }
     };
@@ -1522,7 +1523,8 @@ fn dense_scene_and_dirty_switch_use_the_real_editor_state() {
             x: 10.0,
             y: 10.0,
             value: None,
-            button: None, shift: false,
+            button: None,
+            shift: false,
             ctrl: false,
             alt: false,
         }
@@ -1540,7 +1542,8 @@ fn dense_scene_and_dirty_switch_use_the_real_editor_state() {
             x: 10.0,
             y: 10.0,
             value: None,
-            button: None, shift: false,
+            button: None,
+            shift: false,
             ctrl: false,
             alt: false,
         }
@@ -1799,9 +1802,9 @@ fn home_route_preserves_cancel_and_failed_save_and_reloads_after_discard() {
 
     let send = |route: &mut Route, app: &mut Application, action| {
         assert!(route.handle(action, app).is_none());
-        let mut view = snapshot(app, false);
+        let mut view = snapshot_view(app, false);
         route.add_status(&mut view);
-        view
+        serde_json::to_value(view).unwrap()
     };
     let confirm = |choice: &str| Action::HomeChoice { choice: choice.into() };
     assert_eq!(send(&mut route, &mut app, Action::Home)["pendingHome"], true);
@@ -2214,8 +2217,8 @@ fn selection_start_moves_the_chosen_hits_together_and_undoes_once() {
     for (index, (ms, row)) in [1120.0, 1295.0].into_iter().zip(rows).enumerate() {
         for phase in ["down", "up"] {
             Action::Pointer {
-                phase: phase.into(), ms, row, x: ms, y: 12.0, value: None,
-                button: None, shift: false, ctrl: index > 0, alt: false,
+                phase: phase.into(), ms, row, x: ms, y: 12.0, value: None, button: None,
+                shift: false, ctrl: index > 0, alt: false,
             }.run(&mut app);
         }
     }
@@ -3206,5 +3209,327 @@ fn encode_waveform_bytes_round_trips_exact_f32_bins() {
         assert_eq!(got.high.to_bits(), expected.high.to_bits());
         assert_eq!(got.amp_l.to_bits(), expected.amp_l.to_bits());
         assert_eq!(got.amp_r.to_bits(), expected.amp_r.to_bits());
+    }
+}
+
+#[test]
+fn typed_scene_matches_legacy_json_bytes_exactly() {
+    use dawsu_application::lane_name;
+    use dawsu_editor::{
+        keys::{Key, KeyCombination, Mods},
+        tempo::SnapMode,
+        tools::ToolPreview,
+        volume_ramp::ramp_at,
+    };
+    use dawsu_foundation::{CustomIndex, SampleIdentity, SongTime, Sound};
+    use dawsu_hitsounding::{LaneSource, Place};
+    use serde_json::{Value, json};
+
+    fn legacy_snapshot_json(app: &Application, include_scene: bool, include_static: bool) -> Value {
+        let document = app.document();
+        let position = app.position_ms();
+        let musical_position = document.map(|document| {
+            let composer = &document.composer;
+            let time = SongTime::from_ms(position);
+            let tempo = composer.tempo.section_at(time);
+            let (beat, (numerator, denominator)) = document.editor_bar_at(time);
+            let tick = (beat.beat_fraction * 480.0 + 1e-9).floor() as u32;
+            let snap = if composer.snap_enabled {
+                format!("{}/{}", composer.spacing.beats(), composer.spacing.divisions())
+            } else {
+                "Snap off".into()
+            };
+            format!(
+                "{}.{}.{:03} · {:.1} BPM · {numerator}/{denominator} · {snap}",
+                beat.bar, beat.beat, tick.min(479), 60_000.0 / tempo.beat_length_ms,
+            )
+        });
+        let scene = if include_scene {
+            document.map(|d| {
+                let c = &d.composer;
+                let model = c.hitsounds();
+                let row_by_lane: std::collections::HashMap<_, _> =
+                    c.lanes.iter().enumerate().map(|(row, lane)| (lane, row)).collect();
+                let mut hit_counts = std::collections::HashMap::new();
+                for lane in model.moments().iter().flat_map(|moment| moment.hits()) {
+                    *hit_counts.entry(lane).or_insert(0) += 1;
+                }
+                let (lane_order, backing_slots) = super::lane_header_rows(d, &|lane| hit_counts.contains_key(lane));
+                let lanes = c.lanes.iter().enumerate().map(|(row, lane)| {
+                    let slot = backing_slots.get(&row).copied().unwrap_or(lane);
+                    let (family, index, group) = match slot {
+                        SampleIdentity::Standard { set, sound, index } => {
+                            let family = lane_name(&SampleIdentity::Standard { set: *set, sound: *sound, index: CustomIndex::new(0) });
+                            (Some(family), Some(index.get()), Some(super::sample_set_name(*set)))
+                        }
+                        SampleIdentity::File(_) => (None, None, None),
+                    };
+                    let sample = model.lane(lane).and_then(|lane| match &lane.source {
+                        LaneSource::File(name) => Some(name),
+                        LaneSource::Skin => None,
+                    });
+                    let hit_count = hit_counts.get(lane).copied().unwrap_or(0);
+                    let read_only = matches!(slot, SampleIdentity::Standard { sound: Sound::Slider(_), .. });
+                    let protected = c.protect_normals && hit_count > 0
+                        && matches!(slot, SampleIdentity::Standard { sound: Sound::Hit(dawsu_foundation::Hitsound::Normal), .. });
+                    let plays_as = model.lane(lane).map(|m| m.plays_as()).unwrap_or_else(|| lane.clone());
+                    json!({
+                        "family": family, "index": index, "group": group, "key": scene_lane_key(slot),
+                        "sourceKey": scene_lane_key(lane), "sample": sample,
+                        "colourKey": dawsu_application::lane_layout_key(slot),
+                        "name": lane_name(slot), "muted": app.is_muted(lane), "solo": app.is_solo(lane),
+                        "gain": app.lane_gain(&plays_as),
+                        "canAddLayer": index.is_some(),
+                        "canReplace": !matches!(lane, SampleIdentity::Standard { sound: Sound::Slider(_), .. }),
+                        "hitCount": hit_count, "canDelete": !read_only && !protected,
+                    })
+                }).collect::<Vec<_>>();
+                let selected: std::collections::HashSet<_> = c.selected.items().iter()
+                    .map(|key| (key.moment, &key.lane)).collect();
+                let listen_muted: std::collections::HashSet<_> = c.listen_muted.iter()
+                    .map(|key| (key.moment, &key.lane)).collect();
+                let moments = c.hitsounds().moments().iter().enumerate().map(|(i, moment)| {
+                    let hits = moment.hits().filter_map(|lane| row_by_lane.get(lane)
+                        .map(|row| {
+                            let selected = selected.contains(&(i, lane));
+                            let muted = listen_muted.contains(&(i, lane));
+                            let gain = moment.hit_volume(lane);
+                            if gain != moment.volume() {
+                                json!([row, selected, muted, gain])
+                            } else if muted {
+                                json!([row, selected, true])
+                            } else {
+                                json!([row, selected])
+                            }
+                        })).collect::<Vec<_>>();
+                    json!([moment.time().ms(), moment.reference_volume(), moment.place() != Place::NoObject, hits])
+                }).collect::<Vec<_>>();
+                let sections = include_static.then(|| {
+                    c.tempo.sections().iter()
+                        .map(|s| json!([s.start.ms(), s.beat_length_ms, s.beats_per_bar]))
+                        .collect::<Vec<_>>()
+                });
+                let ramp_preview = match c.preview {
+                    ToolPreview::RampLine { from, to, shape } => {
+                        let (from, to) = if from.0 > to.0 { (to, from) } else { (from, to) };
+                        Some((0..=16).map(|sample| {
+                            let fraction = sample as f64 / 16.0;
+                            let time = from.0.ms() + (to.0.ms() - from.0.ms()) * fraction;
+                            (time, ramp_at(shape, fraction, from.1, to.1))
+                        }).collect::<Vec<_>>())
+                    }
+                    _ => None,
+                };
+                let mut selection = super::selection::summary(model, selected.iter().copied())
+                    .map(|s| serde_json::to_value(s).unwrap());
+                if let Some(selection) = selection.as_mut()
+                    && let Some(index) = d.selected_slider_body_index()
+                {
+                    let body = &model.bodies()[index];
+                    selection["sliderBody"] = json!({
+                        "index": index,
+                        "start": body.start().ms(),
+                        "set": body.set().map(super::sample_set_name),
+                        "whistle": body.whistle(),
+                        "whistleSet": body.whistle_set().map_or("auto", super::sample_set_name),
+                        "volume": body.volume(),
+                    });
+                }
+                let mut scene = json!({
+                    "title": d.title, "mapTitle": d.map_title(), "version": d.version(),
+                    "path": d.path, "difficulties": d.difficulties,
+                    "lanes": lanes, "laneOrder": lane_order, "moments": moments,
+                    "previewKey": app.document_generation(),
+                    "orphanedHits": dawsu_application::orphaned_hit_times(model, d.hs_mode),
+                    "laneRevision": c.history.version(),
+                    "selection": selection, "history": c.history.steps(), "historyPosition": c.history.position(),
+                    "snap": c.snap_enabled, "snapMode": match c.snap_mode { SnapMode::Grid => "grid", SnapMode::GridRelative => "relative", SnapMode::Objects => "objects" },
+                    "beats": c.spacing.beats(), "divisor": c.spacing.divisions(),
+                    "insertVolume": c.insert_volume, "protect": c.protect_normals, "hs": d.hs_mode,
+                    "viewStart": c.view_start, "zoom": app.zoom, "rowHeight": app.row_height,
+                    "range": c.range.map(|r| [r.from.ms(), r.to.ms()]),
+                    "repeatGap": app.requested_edit().filter(|&id| id == "repeat").and_then(|_| c.repeat_gap()),
+                    "patternStampStep": app.requested_edit().filter(|&id| id == "pattern_stamp").and_then(|_| c.pattern_stamp_step()),
+                    "laneLayout": d.lane_layout(),
+                    "timeSignatures": d.time_signatures(), "editorBars": d.editor_bars(),
+                    "bookmarks": d.bookmarks().iter().map(|b| json!({"time": b.time.ms(), "label": b.label})).collect::<Vec<_>>(),
+                    "rampPreview": ramp_preview,
+                    "placement": c.selected_placement(),
+                });
+                if include_static {
+                    scene["sections"] = json!(sections.unwrap_or_default());
+                    scene["gameplay"] = serde_json::to_value(super::gameplay_overlay(d)).unwrap();
+                    scene["combos"] = serde_json::to_value(super::combo_overlay(d)).unwrap();
+                } else if d.hs_mode {
+                    scene["gameplay"] = serde_json::to_value(super::gameplay_overlay(d)).unwrap();
+                }
+                scene
+            })
+        } else {
+            None
+        };
+        let mut result = json!({
+            "scene": scene, "hasDocument": document.is_some(), "busy": app.busy, "playing": app.is_playing(),
+            "laneCount": document.map_or(0, |d| d.composer.lanes.len()),
+            "position": position, "musicalPosition": musical_position, "duration": app.duration_ms(), "dirty": app.is_dirty(),
+            "status": app.status, "error": app.error, "warnings": app.warnings, "speed": app.playback_speed,
+            "song": app.preferences.song_gain, "main": app.preferences.master_gain,
+            "returnOnStop": app.preferences.return_on_stop, "songMuted": app.preferences.song_muted,
+            "audition": app.preferences.audition, "offset": app.song_offset,
+            "left": app.locator_left, "right": app.locator_right, "cycle": app.cycle, "follow": app.preferences.follow,
+            "tool": format!("{:?}", app.tool()), "pendingOpen": app.pending_open.is_some(),
+            "keyPreset": app.preferences.key_preset,
+            "rampShape": format!("{:?}", app.ramp_shape()),
+            "revert": app.revert_requested, "review": Value::Null, "activeLane": app.active_lane,
+            "saveProblemReview": app.save_problem_review_requested() && !app.output_problems().is_empty(), "objectLines": app.preferences.object_lines,
+            "classicBrowser": app.preferences.classic_browser,
+            "hitsoundLibrary": app.preferences.hitsound_library,
+            "panels": {
+                "browser": app.preferences.show_browser,
+                "inspector": app.preferences.show_inspector,
+                "controller": app.preferences.show_controller,
+                "laneNames": app.preferences.lane_names,
+            },
+            "recent": app.preferences.recent, "firstLaunch": app.first_launch,
+        });
+        result["hsMode"] = json!(document.is_some_and(|d| d.hs_mode));
+        result["hasOriginalSnapshot"] = json!(app.has_original_snapshot());
+        result["songsFolder"] = json!((!app.preferences.songs_folder.as_os_str().is_empty()).then_some(&app.preferences.songs_folder));
+        result["outputProblems"] = json!([]);
+        result["previewWindow"] = json!(app.preferences.preview_window.is_some_and(|place| place.open));
+        result["outputDevice"] = json!(app.device_name());
+        result["saveReview"] = json!(app.save_review_files());
+        result["soundSetPrompts"] = json!([]);
+        result["songSolo"] = json!(app.song_solo());
+        result["drumVst"] = json!(Value::Null);
+        result["hitsounds"] = json!(app.preferences.hitsound_gain);
+        result["hitsoundsMuted"] = json!(app.preferences.hitsounds_muted);
+        result["hitsoundsSolo"] = json!(app.hitsounds_solo());
+        let (master_peak, song_peak, hitsound_peak) = app.audio_peaks();
+        result["peaks"] = json!({
+            "master": master_peak,
+            "song": song_peak,
+            "hitsounds": hitsound_peak,
+        });
+        result["editDialog"] = json!(app.requested_edit());
+        result["quantizeStrength"] = json!(app.quantize_strength());
+        let tab_routes = [false, true].into_iter().flat_map(|ctrl| {
+            [false, true].into_iter().flat_map(move |shift| {
+                [false, true].into_iter().filter_map(move |alt| {
+                    let mut mods = Mods::NONE;
+                    for (pressed, flag) in [(ctrl, Mods::CTRL), (shift, Mods::SHIFT), (alt, Mods::ALT)] {
+                        if pressed {
+                            mods = mods.union(flag);
+                        }
+                    }
+                    let id = app.keymap.command_for(KeyCombination::new(Key::Tab, mods))?;
+                    Some((ctrl, shift, alt, matches!(id, "open" | "help")))
+                })
+            })
+        }).collect::<Vec<_>>();
+        result["tabRoutes"] = json!(tab_routes);
+        result
+    }
+
+    let fixture = Fixture::new("typed-scene-parity");
+    let path = fixture.0.join("Parity.osu");
+    // Four moments covering: normal hits, clap + custom gain, slider with body, and orphaned hit.
+    fs::write(
+        &path,
+        b"osu file format v14\n\n[Metadata]\nTitle:Parity\nVersion:Hard\n\n[TimingPoints]\n0,500,4,2,0,80,1,0\n1000,-100,4,2,0,60,0,0\n\n[HitObjects]\n256,192,0,1,8,0:0:0:0:\n256,192,500,1,2,0:0:0:0:custom.wav\n256,192,1000,2,0,L|356:192,1,100,2|0,0:0|0:0,0:0:0:0:\n",
+    ).unwrap();
+    let wave = b"RIFF\x26\0\0\0WAVEfmt \x10\0\0\0\x01\0\x01\0\x80\xbb\0\0\0w\x01\0\x02\0\x10\0data\x02\0\0\0\x00\x40";
+    fs::write(fixture.0.join("custom.wav"), wave).unwrap();
+
+    let mut app = Application::headless();
+    open(&mut app, &path);
+    let doc_path = app.document().unwrap().path.clone();
+
+    // Draw an extra hit at 1500 ms (NoObject) and select/mute/gain hits so all hit tuple shapes appear.
+    let lanes = snapshot(&app, true)["scene"]["lanes"].as_array().unwrap().clone();
+    let clap_row = lanes.iter().position(|lane| lane["name"] == "soft-hitclap" && lane["index"] == 0).unwrap() as i32;
+    let custom_lane = lanes.iter().find(|lane| lane["sample"] == "custom.wav").unwrap();
+    let custom_key = custom_lane["key"].as_str().unwrap().to_owned();
+    let custom_row = lanes.iter().position(|lane| lane["sample"] == "custom.wav").unwrap() as i32;
+
+    Action::Tool { name: "Draw".into() }.run(&mut app);
+    for phase in ["down", "up"] {
+        Action::Pointer {
+            phase: phase.into(), ms: 1500.0, row: clap_row, x: 12.0, y: 12.0,
+            value: None, button: None, shift: false, ctrl: false, alt: false,
+        }.run(&mut app);
+    }
+
+    // Mute the clap hit at 0 ms (listen-only mute, [row, selected, true]).
+    Action::Tool { name: "Mute".into() }.run(&mut app);
+    for phase in ["down", "up"] {
+        Action::Pointer {
+            phase: phase.into(), ms: 0.0, row: clap_row, x: 12.0, y: 12.0,
+            value: None, button: None, shift: false, ctrl: false, alt: false,
+        }.run(&mut app);
+    }
+
+    // Select the custom.wav hit at 500 ms and set a custom per-hit gain ([row, true, false, 45]).
+    Action::Tool { name: "Select".into() }.run(&mut app);
+    for phase in ["down", "up"] {
+        Action::Pointer {
+            phase: phase.into(), ms: 500.0, row: custom_row, x: 12.0, y: 12.0,
+            value: None, button: None, shift: false, ctrl: false, alt: false,
+        }.run(&mut app);
+    }
+    Action::VolumeScope { path: doc_path.clone(), lanes: Some(vec![custom_key]) }.run(&mut app);
+    Action::Volume { value: 45, relative: false }.run(&mut app);
+
+    // Also add the orphaned clap hit at 1500 ms to the selection (selected, [row, true]).
+    for phase in ["down", "up"] {
+        Action::Pointer {
+            phase: phase.into(), ms: 1500.0, row: clap_row, x: 12.0, y: 12.0,
+            value: None, button: None, shift: false, ctrl: true, alt: false,
+        }.run(&mut app);
+    }
+
+    // Also add a bookmark so bookmarks are exercised.
+    Action::BookmarkAdd { path: doc_path, time: 500.0, label: "Mid".into() }.run(&mut app);
+
+    for include_static in [true, false] {
+        let old = legacy_snapshot_json(&app, true, include_static);
+        let new = snapshot_with_static(&app, true, include_static);
+        if include_static {
+            let mut has_plain = false;
+            let mut has_selected = false;
+            let mut has_muted = false;
+            let mut has_custom_gain = false;
+            for moment in old["scene"]["moments"].as_array().unwrap() {
+                for hit in moment[3].as_array().unwrap() {
+                    let parts = hit.as_array().unwrap();
+                    match parts.as_slice() {
+                        [_, sel] if sel == &serde_json::json!(false) => has_plain = true,
+                        [_, sel] if sel == &serde_json::json!(true) => has_selected = true,
+                        [_, _, muted] if muted == &serde_json::json!(true) => has_muted = true,
+                        [_, _, _, _] => has_custom_gain = true,
+                        _ => {}
+                    }
+                }
+            }
+            assert!(has_plain && has_selected && has_muted && has_custom_gain,
+                "fixture should cover all hit shapes: plain={has_plain} selected={has_selected} muted={has_muted} gain={has_custom_gain}");
+        }
+        assert_eq!(
+            serde_json::to_string(&old).unwrap(),
+            serde_json::to_string(&new).unwrap(),
+            "mismatch in standard mode (include_static={include_static})"
+        );
+    }
+
+    // Toggle HS mode on and verify both include_static=true and include_static=false.
+    Action::HsMode { on: true }.run(&mut app);
+    for include_static in [true, false] {
+        let old = legacy_snapshot_json(&app, true, include_static);
+        let new = snapshot_with_static(&app, true, include_static);
+        assert_eq!(
+            serde_json::to_string(&old).unwrap(),
+            serde_json::to_string(&new).unwrap(),
+            "mismatch in HS mode (include_static={include_static})"
+        );
     }
 }

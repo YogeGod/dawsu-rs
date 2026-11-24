@@ -1,12 +1,32 @@
 use dawsu_foundation::SampleIdentity;
 use dawsu_hitsounding::{Hitsounds, Place};
-use serde_json::{Value, json};
+use serde::Serialize;
 use std::collections::HashSet;
+
+#[derive(Serialize)]
+pub(super) struct SelectionSummary {
+    pub(super) count: usize,
+    pub(super) object: String,
+    #[serde(rename = "sliderBody", skip_serializing_if = "Option::is_none")]
+    pub(super) slider_body: Option<SliderBodySelection>,
+    pub(super) start: f64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct SliderBodySelection {
+    pub(super) index: usize,
+    pub(super) set: Option<&'static str>,
+    pub(super) start: f64,
+    pub(super) volume: i32,
+    pub(super) whistle: bool,
+    pub(super) whistle_set: &'static str,
+}
 
 pub(super) fn summary<'a>(
     hits: &Hitsounds,
     selection: impl Iterator<Item = (usize, &'a SampleIdentity)>,
-) -> Option<Value> {
+) -> Option<SelectionSummary> {
     let mut count = 0;
     let mut start = f64::INFINITY;
     let mut anchored = HashSet::new();
@@ -50,5 +70,10 @@ pub(super) fn summary<'a>(
         }
         count => format!("{count} object moments"),
     };
-    Some(json!({"count": count, "start": start, "object": object}))
+    Some(SelectionSummary {
+        count,
+        object,
+        slider_body: None,
+        start,
+    })
 }

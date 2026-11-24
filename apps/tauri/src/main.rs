@@ -1186,7 +1186,13 @@ fn assign_sample(app: &mut Application, target: SampleTarget, path: PathBuf, map
 }
 
 
-fn gameplay_overlay(document: &dawsu_application::Document) -> Value {
+#[derive(serde::Serialize)]
+struct GameplayOverlay {
+    points: Vec<(&'static str, f64, usize)>,
+    spans: Vec<(&'static str, f64, f64, usize)>,
+}
+
+fn gameplay_overlay(document: &dawsu_application::Document) -> GameplayOverlay {
     let model = document.composer.hitsounds();
     let objects = document.file.hit_objects();
     let index_by_line: std::collections::HashMap<_, _> = objects.iter().enumerate()
@@ -1222,7 +1228,7 @@ fn gameplay_overlay(document: &dawsu_application::Document) -> Value {
             }
         }
     }
-    json!({ "points": points, "spans": spans })
+    GameplayOverlay { points, spans }
 }
 
 /// Each object's combo number and colour, as osu!lazer works them out at 131fe72:
@@ -1275,8 +1281,14 @@ fn combo_info(document: &dawsu_application::Document) -> (Vec<(u32, usize, usize
     (combos, map_colours)
 }
 
+#[derive(serde::Serialize)]
+struct ComboOverlay {
+    colours: Vec<String>,
+    objects: Vec<(u32, usize)>,
+}
+
 /// The timeline's combo overlay: `colours`, and `objects` as `[number, colour]` per object (see `combo_info`).
-fn combo_overlay(document: &dawsu_application::Document) -> Value {
+fn combo_overlay(document: &dawsu_application::Document) -> ComboOverlay {
     let (combos, map_colours) = combo_info(document);
     let objects: Vec<(u32, usize)> = combos.iter().map(|&(number, combo, with_offsets)| {
         (number, if map_colours.is_empty() { combo % 4 } else { with_offsets % map_colours.len() })
@@ -1286,7 +1298,7 @@ fn combo_overlay(document: &dawsu_application::Document) -> Value {
     } else {
         map_colours
     };
-    json!({ "colours": colours, "objects": objects })
+    ComboOverlay { colours, objects }
 }
 
 /// What the map preview draws for the open difficulty (`map`): circle size, approach time and each
@@ -1345,11 +1357,378 @@ fn map_preview(app: &Application, map: &Path) -> Result<Value, String> {
     }))
 }
 
-fn snapshot(app: &Application, include_scene: bool) -> Value {
+#[derive(serde::Serialize)]
+#[serde(untagged)]
+enum ViewResponse {
+    View(Box<ViewSnapshot>),
+    Fault { fault: String },
+    NameTaken { #[serde(rename = "nameTaken")] name_taken: String },
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SceneLane {
+    can_add_layer: bool,
+    can_delete: bool,
+    can_replace: bool,
+    colour_key: String,
+    family: Option<String>,
+    gain: f64,
+    group: Option<&'static str>,
+    hit_count: usize,
+    index: Option<u32>,
+    key: String,
+    muted: bool,
+    name: String,
+    sample: Option<String>,
+    solo: bool,
+    source_key: String,
+}
+
+struct SceneHit {
+    row: usize,
+    selected: bool,
+    muted: bool,
+    gain: Option<i32>,
+}
+
+impl serde::Serialize for SceneHit {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeSeq;
+        let len = if self.gain.is_some() { 4 } else if self.muted { 3 } else { 2 };
+        let mut seq = serializer.serialize_seq(Some(len))?;
+        seq.serialize_element(&self.row)?;
+        seq.serialize_element(&self.selected)?;
+        if let Some(gain) = self.gain {
+            seq.serialize_element(&self.muted)?;
+            seq.serialize_element(&gain)?;
+        } else if self.muted {
+            seq.serialize_element(&true)?;
+        }
+        seq.end()
+    }
+}
+
+struct SceneMomentEntry {
+    time: f64,
+    volume: i32,
+    on_object: bool,
+    hits_start: usize,
+    hits_end: usize,
+}
+
+struct SceneMoments {
+    moments: Vec<SceneMomentEntry>,
+    hits: Vec<SceneHit>,
+}
+
+impl serde::Serialize for SceneMoments {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeSeq;
+        struct MomentTuple<'a> {
+            entry: &'a SceneMomentEntry,
+            hits: &'a [SceneHit],
+        }
+        impl serde::Serialize for MomentTuple<'_> {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                use serde::ser::SerializeSeq;
+                let mut seq = serializer.serialize_seq(Some(4))?;
+                seq.serialize_element(&self.entry.time)?;
+                seq.serialize_element(&self.entry.volume)?;
+                seq.serialize_element(&self.entry.on_object)?;
+                seq.serialize_element(self.hits)?;
+                seq.end()
+            }
+        }
+        let mut seq = serializer.serialize_seq(Some(self.moments.len()))?;
+        for entry in &self.moments {
+            seq.serialize_element(&MomentTuple {
+                entry,
+                hits: &self.hits[entry.hits_start..entry.hits_end],
+            })?;
+        }
+        seq.end()
+    }
+}
+
+#[derive(serde::Serialize)]
+struct SceneBookmark {
+    label: Option<String>,
+    time: f64,
+}
+
+#[derive(serde::Serialize)]
+struct SceneTimeSignature {
+    bar: u32,
+    denominator: u32,
+    numerator: u32,
+}
+
+impl From<&EditorTimeSignature> for SceneTimeSignature {
+    fn from(s: &EditorTimeSignature) -> Self {
+        Self { bar: s.bar, denominator: s.denominator, numerator: s.numerator }
+    }
+}
+
+#[derive(serde::Serialize)]
+struct SceneEditorBarSection {
+    bar: i64,
+    beat: f64,
+    denominator: u32,
+    numerator: u32,
+    start: f64,
+}
+
+impl From<&dawsu_application::EditorBarSection> for SceneEditorBarSection {
+    fn from(s: &dawsu_application::EditorBarSection) -> Self {
+        Self { bar: s.bar, beat: s.beat, denominator: s.denominator, numerator: s.numerator, start: s.start }
+    }
+}
+
+#[derive(serde::Serialize)]
+struct SceneLaneLayout {
+    collapsed_families: std::collections::BTreeSet<String>,
+    collapsed_folders: std::collections::BTreeSet<String>,
+    folder_order: Vec<String>,
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    lane_colours: std::collections::BTreeMap<String, String>,
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    lane_names: std::collections::BTreeMap<String, String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    lane_order: Vec<String>,
+}
+
+impl From<&LaneLayout> for SceneLaneLayout {
+    fn from(layout: &LaneLayout) -> Self {
+        Self {
+            collapsed_families: layout.collapsed_families.clone(),
+            collapsed_folders: layout.collapsed_folders.clone(),
+            folder_order: layout.folder_order.clone(),
+            lane_colours: layout.lane_colours.clone(),
+            lane_names: layout.lane_names.clone(),
+            lane_order: layout.lane_order.clone(),
+        }
+    }
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SceneSnapshot {
+    beats: u32,
+    bookmarks: Vec<SceneBookmark>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    combos: Option<ComboOverlay>,
+    difficulties: Vec<PathBuf>,
+    divisor: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    drum_rows: Option<Vec<drum_view::DrumRowSnapshot>>,
+    editor_bars: Vec<SceneEditorBarSection>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    gameplay: Option<GameplayOverlay>,
+    history: Vec<String>,
+    history_position: usize,
+    hs: bool,
+    insert_volume: i32,
+    lane_layout: Option<SceneLaneLayout>,
+    lane_order: Vec<usize>,
+    lane_revision: u64,
+    lanes: Vec<SceneLane>,
+    map_title: String,
+    moments: SceneMoments,
+    orphaned_hits: Vec<f64>,
+    path: PathBuf,
+    pattern_stamp_step: Option<f64>,
+    placement: Option<u64>,
+    preview_key: u64,
+    protect: bool,
+    ramp_preview: Option<Vec<(f64, i32)>>,
+    range: Option<[f64; 2]>,
+    repeat_gap: Option<u32>,
+    row_height: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sections: Option<Vec<(f64, f64, u32)>>,
+    selection: Option<selection::SelectionSummary>,
+    snap: bool,
+    snap_mode: &'static str,
+    time_signatures: Vec<SceneTimeSignature>,
+    title: String,
+    version: String,
+    view_start: f64,
+    zoom: f64,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DrumVstSnapshot {
+    enabled: bool,
+    instance_id: String,
+    loaded: bool,
+    mapped_lanes: usize,
+    plugin_name: String,
+    plugin_path: String,
+    plugin_uid: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+struct OutputProblemSnapshot {
+    message: String,
+    target: PathBuf,
+    time: f64,
+    timeline: PathBuf,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PanelsSnapshot {
+    browser: bool,
+    controller: bool,
+    inspector: bool,
+    lane_names: bool,
+}
+
+#[derive(serde::Serialize)]
+struct PeaksSnapshot {
+    hitsounds: f64,
+    master: f64,
+    song: f64,
+}
+
+#[derive(serde::Serialize)]
+struct PlannedFileSnapshot {
+    added: usize,
+    changed: usize,
+    path: PathBuf,
+    removed: usize,
+    replace: bool,
+    timing: usize,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OutputReviewSnapshot {
+    combinations: Value,
+    created_mixes: Vec<PathBuf>,
+    details: Vec<String>,
+    files: Vec<PlannedFileSnapshot>,
+    include_slider_audio: bool,
+    label: String,
+    mixes: Vec<PathBuf>,
+    reused_mixes: Vec<PathBuf>,
+    volume_summary: Vec<String>,
+}
+
+#[derive(serde::Serialize)]
+struct RecoveryOfferSnapshot {
+    created_ms: u64,
+    difficulty: String,
+    id: String,
+    mapset: String,
+}
+
+#[derive(serde::Serialize)]
+#[serde(untagged)]
+enum RecoverySnapshot {
+    Offers { offers: Vec<RecoveryOfferSnapshot> },
+    Error { error: String },
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SoundSetPromptSnapshot {
+    edited_keep_files: usize,
+    name: String,
+    open: u64,
+    placements: usize,
+    set_id: String,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ViewSnapshot {
+    active_lane: usize,
+    audition: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    bookmark_step: Option<Option<f64>>,
+    busy: bool,
+    classic_browser: bool,
+    cycle: bool,
+    dirty: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    drum_view: Option<drum_view::DrumViewSnapshot>,
+    drum_vst: Option<DrumVstSnapshot>,
+    duration: f64,
+    edit_dialog: Option<&'static str>,
+    error: Option<String>,
+    first_launch: bool,
+    follow: bool,
+    has_document: bool,
+    has_original_snapshot: bool,
+    hitsound_library: Option<PathBuf>,
+    hitsounds: f64,
+    hitsounds_muted: bool,
+    hitsounds_solo: bool,
+    hs_mode: bool,
+    key_preset: String,
+    lane_count: usize,
+    left: f64,
+    main: f64,
+    musical_position: Option<String>,
+    object_lines: bool,
+    offset: f64,
+    output_device: String,
+    output_problems: Vec<OutputProblemSnapshot>,
+    panels: PanelsSnapshot,
+    peaks: PeaksSnapshot,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pending_home: Option<bool>,
+    pending_open: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    playback_start: Option<PlaybackStart>,
+    playing: bool,
+    position: f64,
+    preview_window: bool,
+    quantize_strength: f64,
+    ramp_shape: String,
+    recent: Vec<PathBuf>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    recovery: Option<RecoverySnapshot>,
+    return_on_stop: bool,
+    revert: bool,
+    review: Option<OutputReviewSnapshot>,
+    right: f64,
+    save_problem_review: bool,
+    save_review: Option<Vec<(&'static str, PathBuf)>>,
+    scene: Option<SceneSnapshot>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    shortcut_action: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    shortcut_help: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    shortcut_open: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    show_home: Option<bool>,
+    song: f64,
+    song_muted: bool,
+    song_solo: bool,
+    songs_folder: Option<PathBuf>,
+    sound_set_prompts: Vec<SoundSetPromptSnapshot>,
+    speed: f64,
+    status: String,
+    tab_routes: Vec<(bool, bool, bool, bool)>,
+    tool: String,
+    warnings: Vec<String>,
+}
+
+fn snapshot_view(app: &Application, include_scene: bool) -> ViewSnapshot {
     snapshot_with_static(app, include_scene, true)
 }
 
-fn snapshot_with_static(app: &Application, include_scene: bool, include_static: bool) -> Value {
+#[cfg(test)]
+fn snapshot(app: &Application, include_scene: bool) -> Value {
+    serde_json::to_value(snapshot_view(app, include_scene)).unwrap()
+}
+
+fn snapshot_with_static(app: &Application, include_scene: bool, include_static: bool) -> ViewSnapshot {
     let document = app.document();
     let position = app.position_ms();
     let musical_position = document.map(|document| {
@@ -1389,7 +1768,7 @@ fn snapshot_with_static(app: &Application, include_scene: bool, include_static: 
                     SampleIdentity::File(_) => (None, None, None),
                 };
                 let sample = model.lane(lane).and_then(|lane| match &lane.source {
-                    LaneSource::File(name) => Some(name),
+                    LaneSource::File(name) => Some(name.clone()),
                     LaneSource::Skin => None,
                 });
                 let hit_count = hit_counts.get(lane).copied().unwrap_or(0);
@@ -1397,40 +1776,61 @@ fn snapshot_with_static(app: &Application, include_scene: bool, include_static: 
                 let protected = c.protect_normals && hit_count > 0
                     && matches!(slot, SampleIdentity::Standard { sound: Sound::Hit(dawsu_foundation::Hitsound::Normal), .. });
                 let plays_as = model.lane(lane).map(|m| m.plays_as()).unwrap_or_else(|| lane.clone());
-                json!({
-                    "family": family, "index": index, "group": group, "key": scene_lane_key(slot),
-                    "sourceKey": scene_lane_key(lane), "sample": sample,
-                    "colourKey": dawsu_application::lane_layout_key(slot),
-                    "name": lane_name(slot), "muted": app.is_muted(lane), "solo": app.is_solo(lane),
-                    "gain": app.lane_gain(&plays_as),
-                    "canAddLayer": index.is_some(),
-                    "canReplace": !matches!(lane, SampleIdentity::Standard { sound: Sound::Slider(_), .. }),
-                    "hitCount": hit_count, "canDelete": !read_only && !protected,
-                })
+                SceneLane {
+                    can_add_layer: index.is_some(),
+                    can_delete: !read_only && !protected,
+                    can_replace: !matches!(lane, SampleIdentity::Standard { sound: Sound::Slider(_), .. }),
+                    colour_key: dawsu_application::lane_layout_key(slot),
+                    family,
+                    gain: f64::from(app.lane_gain(&plays_as)),
+                    group,
+                    hit_count,
+                    index,
+                    key: scene_lane_key(slot),
+                    muted: app.is_muted(lane),
+                    name: lane_name(slot),
+                    sample,
+                    solo: app.is_solo(lane),
+                    source_key: scene_lane_key(lane),
+                }
             }).collect::<Vec<_>>();
             let selected: std::collections::HashSet<_> = c.selected.items().iter()
                 .map(|key| (key.moment, &key.lane)).collect();
             let listen_muted: std::collections::HashSet<_> = c.listen_muted.iter()
                 .map(|key| (key.moment, &key.lane)).collect();
-            let moments = c.hitsounds().moments().iter().enumerate().map(|(i, moment)| {
-                let hits = moment.hits().filter_map(|lane| row_by_lane.get(lane)
-                    .map(|row| {
-                        let selected = selected.contains(&(i, lane));
-                        let muted = listen_muted.contains(&(i, lane));
-                        let gain = moment.hit_volume(lane);
-                        if gain != moment.volume() {
-                            json!([row, selected, muted, gain])
-                        } else if muted {
-                            json!([row, selected, true])
-                        } else {
-                            json!([row, selected])
-                        }
-                    })).collect::<Vec<_>>();
-                json!([moment.time().ms(), moment.reference_volume(), moment.place() != Place::NoObject, hits])
-            }).collect::<Vec<_>>();
+            let source_moments = c.hitsounds().moments();
+            let mut moment_entries = Vec::with_capacity(source_moments.len());
+            let mut hit_entries = Vec::with_capacity(source_moments.len());
+            for (i, moment) in source_moments.iter().enumerate() {
+                let hits_start = hit_entries.len();
+                let moment_vol = moment.volume();
+                for lane in moment.hits() {
+                    let Some(&row) = row_by_lane.get(lane) else { continue };
+                    let is_selected = selected.contains(&(i, lane));
+                    let muted = listen_muted.contains(&(i, lane));
+                    let gain = moment.hit_volume(lane);
+                    hit_entries.push(SceneHit {
+                        row,
+                        selected: is_selected,
+                        muted,
+                        gain: (gain != moment_vol).then_some(gain),
+                    });
+                }
+                moment_entries.push(SceneMomentEntry {
+                    time: moment.time().ms(),
+                    volume: moment.reference_volume(),
+                    on_object: moment.place() != Place::NoObject,
+                    hits_start,
+                    hits_end: hit_entries.len(),
+                });
+            }
+            let moments = SceneMoments {
+                moments: moment_entries,
+                hits: hit_entries,
+            };
             let sections = include_static.then(|| {
                 c.tempo.sections().iter()
-                    .map(|s| json!([s.start.ms(), s.beat_length_ms, s.beats_per_bar]))
+                    .map(|s| (s.start.ms(), s.beat_length_ms, s.beats_per_bar))
                     .collect::<Vec<_>>()
             });
             let ramp_preview = match c.preview {
@@ -1449,46 +1849,58 @@ fn snapshot_with_static(app: &Application, include_scene: bool, include_static: 
                 && let Some(index) = d.selected_slider_body_index()
             {
                 let body = &model.bodies()[index];
-                selection["sliderBody"] = json!({
-                    "index": index,
-                    "start": body.start().ms(),
-                    "set": body.set().map(sample_set_name),
-                    "whistle": body.whistle(),
-                    "whistleSet": body.whistle_set().map_or("auto", sample_set_name),
-                    "volume": body.volume(),
+                selection.slider_body = Some(selection::SliderBodySelection {
+                    index,
+                    set: body.set().map(sample_set_name),
+                    start: body.start().ms(),
+                    volume: body.volume(),
+                    whistle: body.whistle(),
+                    whistle_set: body.whistle_set().map_or("auto", sample_set_name),
                 });
             }
-            let mut scene = json!({
-                "title": d.title, "mapTitle": d.map_title(), "version": d.version(),
-                "path": d.path, "difficulties": d.difficulties,
-                "lanes": lanes, "laneOrder": lane_order, "moments": moments,
+            SceneSnapshot {
+                beats: c.spacing.beats(),
+                bookmarks: d.bookmarks().iter().map(|b| SceneBookmark {
+                    label: b.label.clone(),
+                    time: b.time.ms(),
+                }).collect(),
+                combos: include_static.then(|| combo_overlay(d)),
+                difficulties: d.difficulties.clone(),
+                divisor: c.spacing.divisions(),
+                drum_rows: None,
+                editor_bars: d.editor_bars().iter().map(Into::into).collect(),
+                gameplay: (include_static || d.hs_mode).then(|| gameplay_overlay(d)),
+                history: c.history.steps().into_iter().map(str::to_owned).collect(),
+                history_position: c.history.position(),
+                hs: d.hs_mode,
+                insert_volume: c.insert_volume,
+                lane_layout: d.lane_layout().map(Into::into),
+                lane_order,
+                lane_revision: c.history.version(),
+                lanes,
+                map_title: d.map_title(),
+                moments,
+                orphaned_hits: dawsu_application::orphaned_hit_times(model, d.hs_mode),
+                path: d.path.clone(),
+                pattern_stamp_step: app.requested_edit().filter(|&id| id == "pattern_stamp").and_then(|_| c.pattern_stamp_step()),
+                placement: c.selected_placement(),
                 // The map preview asks for its objects again when this changes (map_preview).
-                "previewKey": app.document_generation(),
-                // Inspector › Difficulty's orphaned marks: the times of hits with no object (none in HS mode).
-                "orphanedHits": dawsu_application::orphaned_hit_times(model, d.hs_mode),
-                "laneRevision": c.history.version(),
-                "selection": selection, "history": c.history.steps(), "historyPosition": c.history.position(),
-                "snap": c.snap_enabled, "snapMode": match c.snap_mode { SnapMode::Grid => "grid", SnapMode::GridRelative => "relative", SnapMode::Objects => "objects" },
-                "beats": c.spacing.beats(), "divisor": c.spacing.divisions(),
-                "insertVolume": c.insert_volume, "protect": c.protect_normals, "hs": d.hs_mode,
-                "viewStart": c.view_start, "zoom": app.zoom, "rowHeight": app.row_height,
-                "range": c.range.map(|r| [r.from.ms(), r.to.ms()]),
-                "repeatGap": app.requested_edit().filter(|&id| id == "repeat").and_then(|_| c.repeat_gap()),
-                "patternStampStep": app.requested_edit().filter(|&id| id == "pattern_stamp").and_then(|_| c.pattern_stamp_step()),
-                "laneLayout": d.lane_layout(),
-                "timeSignatures": d.time_signatures(), "editorBars": d.editor_bars(),
-                "bookmarks": d.bookmarks().iter().map(|b| json!({"time": b.time.ms(), "label": b.label})).collect::<Vec<_>>(),
-                "rampPreview": ramp_preview,
-                "placement": c.selected_placement(),
-            });
-            if include_static {
-                scene["sections"] = json!(sections.unwrap_or_default());
-                scene["gameplay"] = gameplay_overlay(d);
-                scene["combos"] = combo_overlay(d);
-            } else if d.hs_mode {
-                scene["gameplay"] = gameplay_overlay(d);
+                preview_key: app.document_generation(),
+                protect: c.protect_normals,
+                ramp_preview,
+                range: c.range.map(|r| [r.from.ms(), r.to.ms()]),
+                repeat_gap: app.requested_edit().filter(|&id| id == "repeat").and_then(|_| c.repeat_gap()),
+                row_height: f64::from(app.row_height),
+                sections,
+                selection,
+                snap: c.snap_enabled,
+                snap_mode: match c.snap_mode { SnapMode::Grid => "grid", SnapMode::GridRelative => "relative", SnapMode::Objects => "objects" },
+                time_signatures: d.time_signatures().iter().map(Into::into).collect(),
+                title: d.title.clone(),
+                version: d.version(),
+                view_start: c.view_start,
+                zoom: app.zoom,
             }
-            scene
         })
     } else {
         None
@@ -1496,89 +1908,39 @@ fn snapshot_with_static(app: &Application, include_scene: bool, include_static: 
     let review = app.output_review.as_ref().map(|plan| {
         let files = plan.files.iter().map(|file| {
             let summary = file.file.change_summary();
-            json!({
-                "path": file.path,
-                "replace": file.expected.is_some(),
-                "changed": summary.hit_objects_changed,
-                "added": summary.hit_objects_added,
-                "removed": summary.hit_objects_removed,
-                "timing": summary.green_lines_added + summary.green_lines_edited
+            PlannedFileSnapshot {
+                added: summary.hit_objects_added,
+                changed: summary.hit_objects_changed,
+                path: file.path.clone(),
+                removed: summary.hit_objects_removed,
+                replace: file.expected.is_some(),
+                timing: summary.green_lines_added + summary.green_lines_edited
                     + summary.green_lines_removed + summary.red_lines_changed,
-            })
+            }
         }).collect::<Vec<_>>();
         let mut details = plan.details.clone();
         details.extend(plan.volume_clarity_lines());
-        json!({
-            "label": plan.label, "details": details, "files": files,
-            "mixes": plan.mix_paths().collect::<Vec<_>>(),
-            "createdMixes": plan.created_mix_paths().collect::<Vec<_>>(),
-            "reusedMixes": plan.reused_mix_paths().collect::<Vec<_>>(),
-            "volumeSummary": plan.volume_clarity_lines(),
-            "combinations": plan.export_combinations(),
-            "includeSliderAudio": plan.includes_slider_audio(),
-        })
+        OutputReviewSnapshot {
+            combinations: serde_json::to_value(plan.export_combinations()).unwrap_or_default(),
+            created_mixes: plan.created_mix_paths().map(Path::to_path_buf).collect(),
+            details,
+            files,
+            include_slider_audio: plan.includes_slider_audio(),
+            label: plan.label.clone(),
+            mixes: plan.mix_paths().map(Path::to_path_buf).collect(),
+            reused_mixes: plan.reused_mix_paths().map(Path::to_path_buf).collect(),
+            volume_summary: plan.volume_clarity_lines(),
+        }
     });
     let output_problems = app.output_problems();
-    let mut result = json!({
-        "scene": scene, "hasDocument": document.is_some(), "busy": app.busy, "playing": app.is_playing(),
-        "laneCount": document.map_or(0, |d| d.composer.lanes.len()),
-        "position": position, "musicalPosition": musical_position, "duration": app.duration_ms(), "dirty": app.is_dirty(),
-        "status": app.status, "error": app.error, "warnings": app.warnings, "speed": app.playback_speed,
-        "song": app.preferences.song_gain, "main": app.preferences.master_gain,
-        "returnOnStop": app.preferences.return_on_stop, "songMuted": app.preferences.song_muted,
-        "audition": app.preferences.audition, "offset": app.song_offset,
-        "left": app.locator_left, "right": app.locator_right, "cycle": app.cycle, "follow": app.preferences.follow,
-        "tool": format!("{:?}", app.tool()), "pendingOpen": app.pending_open.is_some(),
-        "keyPreset": app.preferences.key_preset,
-        "rampShape": format!("{:?}", app.ramp_shape()),
-        "revert": app.revert_requested, "review": review, "activeLane": app.active_lane,
-        "saveProblemReview": app.save_problem_review_requested() && !output_problems.is_empty(), "objectLines": app.preferences.object_lines,
-        "classicBrowser": app.preferences.classic_browser,
-        "hitsoundLibrary": app.preferences.hitsound_library,
-        "panels": {
-            "browser": app.preferences.show_browser,
-            "inspector": app.preferences.show_inspector,
-            "controller": app.preferences.show_controller,
-            "laneNames": app.preferences.lane_names,
-        },
-        "recent": app.preferences.recent, "firstLaunch": app.first_launch,
-    });
-    result["hsMode"] = json!(document.is_some_and(|d| d.hs_mode));
-    result["hasOriginalSnapshot"] = json!(app.has_original_snapshot());
-    result["songsFolder"] = json!((!app.preferences.songs_folder.as_os_str().is_empty()).then_some(&app.preferences.songs_folder));
-    result["outputProblems"] = json!(output_problems.iter().map(|problem| json!({
-        "target": problem.target, "timeline": problem.timeline,
-        "time": problem.time, "message": problem.message,
-    })).collect::<Vec<_>>());
-    // The map preview was in its own window when the editor last closed: main opens it again.
-    result["previewWindow"] = json!(app.preferences.preview_window.is_some_and(|place| place.open));
-    result["outputDevice"] = json!(app.device_name());
-    result["saveReview"] = json!(app.save_review_files());
-    result["soundSetPrompts"] = json!(document.map(|_| app.sound_set_prompts()).unwrap_or_default().iter().map(|p| json!({
-        "setId": p.set_id, "name": p.name, "placements": p.placements, "editedKeepFiles": p.edited_keep_files,
-        "open": app.sound_set_prompt_open(),
-    })).collect::<Vec<_>>());
-    result["songSolo"] = json!(app.song_solo());
-    result["drumVst"] = json!(app.drum_vst.as_ref().map(|v| json!({
-        "loaded": true,
-        "instanceId": v.instance_id,
-        "pluginName": v.plugin_name,
-        "pluginPath": v.plugin_path,
-        "pluginUid": v.plugin_uid,
-        "enabled": v.is_enabled(),
-        "mappedLanes": v.routed_notes().len(),
-    })));
-    result["hitsounds"] = json!(app.preferences.hitsound_gain);
-    result["hitsoundsMuted"] = json!(app.preferences.hitsounds_muted);
-    result["hitsoundsSolo"] = json!(app.hitsounds_solo());
+    let save_problem_review = app.save_problem_review_requested() && !output_problems.is_empty();
+    let output_problems = output_problems.into_iter().map(|problem| OutputProblemSnapshot {
+        message: problem.message,
+        target: problem.target,
+        time: problem.time,
+        timeline: problem.timeline,
+    }).collect();
     let (master_peak, song_peak, hitsound_peak) = app.audio_peaks();
-    result["peaks"] = json!({
-        "master": master_peak,
-        "song": song_peak,
-        "hitsounds": hitsound_peak,
-    });
-    result["editDialog"] = json!(app.requested_edit());
-    result["quantizeStrength"] = json!(app.quantize_strength());
     let tab_routes = [false, true].into_iter().flat_map(|ctrl| {
         [false, true].into_iter().flat_map(move |shift| {
             [false, true].into_iter().filter_map(move |alt| {
@@ -1593,14 +1955,117 @@ fn snapshot_with_static(app: &Application, include_scene: bool, include_static: 
             })
         })
     }).collect::<Vec<_>>();
-    result["tabRoutes"] = json!(tab_routes);
-    if include_scene && document.is_none() {
-        result["recovery"] = match app.recovery_offers() {
-            Ok(offers) => json!({ "offers": offers }),
-            Err(error) => json!({ "error": format!("Could not list recovery copies. {error}") }),
-        };
+    let recovery = if include_scene && document.is_none() {
+        Some(match app.recovery_offers() {
+            Ok(offers) => RecoverySnapshot::Offers {
+                offers: offers.into_iter().map(|o| RecoveryOfferSnapshot {
+                    created_ms: o.created_ms,
+                    difficulty: o.difficulty,
+                    id: o.id,
+                    mapset: o.mapset,
+                }).collect(),
+            },
+            Err(error) => RecoverySnapshot::Error {
+                error: format!("Could not list recovery copies. {error}"),
+            },
+        })
+    } else {
+        None
+    };
+    ViewSnapshot {
+        active_lane: app.active_lane,
+        audition: app.preferences.audition,
+        bookmark_step: None,
+        busy: app.busy,
+        classic_browser: app.preferences.classic_browser,
+        cycle: app.cycle,
+        dirty: app.is_dirty(),
+        drum_view: None,
+        drum_vst: app.drum_vst.as_ref().map(|v| DrumVstSnapshot {
+            enabled: v.is_enabled(),
+            instance_id: v.instance_id.clone(),
+            loaded: true,
+            mapped_lanes: v.routed_notes().len(),
+            plugin_name: v.plugin_name.clone(),
+            plugin_path: v.plugin_path.clone(),
+            plugin_uid: v.plugin_uid.clone(),
+        }),
+        duration: app.duration_ms(),
+        edit_dialog: app.requested_edit(),
+        error: app.error.clone(),
+        first_launch: app.first_launch,
+        follow: app.preferences.follow,
+        has_document: document.is_some(),
+        has_original_snapshot: app.has_original_snapshot(),
+        hitsound_library: app.preferences.hitsound_library.clone(),
+        hitsounds: f64::from(app.preferences.hitsound_gain),
+        hitsounds_muted: app.preferences.hitsounds_muted,
+        hitsounds_solo: app.hitsounds_solo(),
+        hs_mode: document.is_some_and(|d| d.hs_mode),
+        key_preset: app.preferences.key_preset.clone(),
+        lane_count: document.map_or(0, |d| d.composer.lanes.len()),
+        left: app.locator_left,
+        main: f64::from(app.preferences.master_gain),
+        musical_position,
+        object_lines: app.preferences.object_lines,
+        offset: app.song_offset,
+        output_device: app.device_name().to_owned(),
+        output_problems,
+        panels: PanelsSnapshot {
+            browser: app.preferences.show_browser,
+            controller: app.preferences.show_controller,
+            inspector: app.preferences.show_inspector,
+            lane_names: app.preferences.lane_names,
+        },
+        peaks: PeaksSnapshot {
+            hitsounds: f64::from(hitsound_peak),
+            master: f64::from(master_peak),
+            song: f64::from(song_peak),
+        },
+        pending_home: None,
+        pending_open: app.pending_open.is_some(),
+        playback_start: None,
+        playing: app.is_playing(),
+        position,
+        // The map preview was in its own window when the editor last closed: main opens it again.
+        preview_window: app.preferences.preview_window.is_some_and(|place| place.open),
+        quantize_strength: app.quantize_strength(),
+        ramp_shape: format!("{:?}", app.ramp_shape()),
+        recent: app.preferences.recent.clone(),
+        recovery,
+        return_on_stop: app.preferences.return_on_stop,
+        revert: app.revert_requested,
+        review,
+        right: app.locator_right,
+        save_problem_review,
+        save_review: app.save_review_files().map(|files| {
+            files.into_iter().map(|(label, path)| (label, path.to_path_buf())).collect()
+        }),
+        scene,
+        shortcut_action: None,
+        shortcut_help: None,
+        shortcut_open: None,
+        show_home: None,
+        song: f64::from(app.preferences.song_gain),
+        song_muted: app.preferences.song_muted,
+        song_solo: app.song_solo(),
+        songs_folder: (!app.preferences.songs_folder.as_os_str().is_empty())
+            .then(|| app.preferences.songs_folder.clone()),
+        sound_set_prompts: document.map(|_| app.sound_set_prompts()).unwrap_or_default().iter().map(|p| {
+            SoundSetPromptSnapshot {
+                edited_keep_files: p.edited_keep_files,
+                name: p.name.clone(),
+                open: app.sound_set_prompt_open(),
+                placements: p.placements,
+                set_id: p.set_id.clone(),
+            }
+        }).collect(),
+        speed: app.playback_speed,
+        status: app.status.clone(),
+        tab_routes,
+        tool: format!("{:?}", app.tool()),
+        warnings: app.warnings.clone(),
     }
-    result
 }
 
 fn encode_waveform_bytes(bins: &[dawsu_application::WaveBin]) -> Vec<u8> {
@@ -1615,7 +2080,7 @@ fn encode_waveform_bytes(bins: &[dawsu_application::WaveBin]) -> Vec<u8> {
 
 enum Request {
     /// Scene wanted, the action, and `fresh`: the screen lacks the static map data, so send it again.
-    View(bool, Option<Action>, bool, mpsc::Sender<Value>),
+    View(bool, Option<Action>, bool, mpsc::Sender<ViewResponse>),
     Waveform(mpsc::Sender<Result<Vec<u8>, String>>),
     Help(mpsc::Sender<Result<Value, String>>),
     AudioOutputs(Option<OutputBackend>, mpsc::Sender<Value>),
@@ -1623,14 +2088,14 @@ enum Request {
     ExportSettings(mpsc::Sender<Option<(PathBuf, ExportSettings)>>),
     KeyFile(PathBuf, bool, mpsc::Sender<Result<(), String>>),
     SongsDirectory(mpsc::Sender<Option<PathBuf>>),
-    SetSongsDirectory(PathBuf, mpsc::Sender<Result<Value, String>>),
+    SetSongsDirectory(PathBuf, mpsc::Sender<Result<ViewResponse, String>>),
     LibraryDirectory(mpsc::Sender<Option<PathBuf>>),
-    SetLibraryDirectory(PathBuf, mpsc::Sender<Result<Value, String>>),
+    SetLibraryDirectory(PathBuf, mpsc::Sender<Result<ViewResponse, String>>),
     LibraryEntries(library::Location, mpsc::Sender<Result<Vec<(String, bool)>, String>>),
     SamplePreview(PreviewSource, mpsc::Sender<Result<Value, String>>),
     SoundSetLibrary(mpsc::Sender<Result<Value, String>>),
     SoundSetPlacement(PathBuf, u64, mpsc::Sender<Result<Value, String>>),
-    SaveSoundSet(PathBuf, String, mpsc::Sender<Result<Value, String>>),
+    SaveSoundSet(PathBuf, String, mpsc::Sender<Result<ViewResponse, String>>),
     LaneAddCandidates(PathBuf, mpsc::Sender<Result<Value, String>>),
     MapPreview(PathBuf, mpsc::Sender<Result<Value, String>>),
     /// The map preview window's place, kept for the next open; `true` also saves the preferences.
@@ -1638,8 +2103,8 @@ enum Request {
     PreviewPlaceGet(mpsc::Sender<Option<dawsu_application::WindowPlace>>),
     /// Only whether the preview window is open changed; `true` also saves the preferences.
     PreviewOpen(bool, bool),
-    DrumView(PathBuf, Option<PathBuf>, bool, mpsc::Sender<Result<Value, String>>),
-    DrumMapAction(PathBuf, drum_view::DrumMapAction, mpsc::Sender<Result<Value, String>>),
+    DrumView(PathBuf, Option<PathBuf>, bool, mpsc::Sender<Result<ViewResponse, String>>),
+    DrumMapAction(PathBuf, drum_view::DrumMapAction, mpsc::Sender<Result<ViewResponse, String>>),
     Folder(folders::Folder, mpsc::Sender<Result<PathBuf, String>>),
     Close(bool, mpsc::Sender<Result<(), String>>),
     // The Export window's own requests. Each always answers, with an error after a fault.
@@ -1896,20 +2361,20 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                         let mut view = snapshot_with_static(app, want_scene, include_static);
                         home.add_status(&mut view);
                         drums.decorate(app, &mut view);
-                        view["playbackStart"] = json!(playback_start);
+                        view.playback_start = Some(playback_start);
                         if let Some(request @ ("filter" | "newDiff" | "openFolder" | "importOsz" | "openHitsoundFolder" | "reviewOutput")) = app.requested_edit() {
-                            view["shortcutAction"] = json!(request);
-                            view["editDialog"] = Value::Null;
+                            view.shortcut_action = Some(request);
+                            view.edit_dialog = None;
                             app.cancel_timeline_edit();
                         }
-                        view["shortcutHelp"] = json!(std::mem::take(&mut app.help_requested));
+                        view.shortcut_help = Some(std::mem::take(&mut app.help_requested));
                         // The Inspector's bookmark pick follows Previous and Next, from a button, menu or key.
-                        view["bookmarkStep"] = json!(app.bookmark_step.take());
-                        view["shortcutOpen"] = json!(std::mem::take(&mut app.requests).iter()
+                        view.bookmark_step = Some(app.bookmark_step.take());
+                        view.shortcut_open = Some(std::mem::take(&mut app.requests).iter()
                             .any(|request| matches!(request, PlatformRequest::OpenMap)));
-                        view
+                        ViewResponse::View(Box::new(view))
                     })
-                    .unwrap_or_else(|message| json!({ "fault": message }));
+                    .unwrap_or_else(|message| ViewResponse::Fault { fault: message });
                     let _ = response.send(view);
                 }
                 Ok(Request::Waveform(response)) => {
@@ -1980,11 +2445,11 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                         } else {
                             app.preferences.songs_folder = folder;
                             app.save_preferences();
-                            let mut view = snapshot(app, false);
+                            let mut view = snapshot_view(app, false);
                             home.add_status(&mut view);
                             drums.decorate(app, &mut view);
-                            view["playbackStart"] = json!(playback_start);
-                            Ok(view)
+                            view.playback_start = Some(playback_start);
+                            Ok(ViewResponse::View(Box::new(view)))
                         }
                     })
                     .and_then(|result| result);
@@ -2008,11 +2473,11 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                         }
                         app.preferences.hitsound_library = Some(folder);
                         app.save_preferences();
-                        let mut view = snapshot(app, false);
+                        let mut view = snapshot_view(app, false);
                         home.add_status(&mut view);
                         drums.decorate(app, &mut view);
-                        view["playbackStart"] = json!(playback_start);
-                        Ok(view)
+                        view.playback_start = Some(playback_start);
+                        Ok(ViewResponse::View(Box::new(view)))
                     })
                     .and_then(|result| result);
                     let _ = response.send(result);
@@ -2041,13 +2506,15 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                 Ok(Request::SaveSoundSet(map, name, response)) => {
                     let result = guard(&mut app, &mut fault, |app| match app.save_sound_set_from_selection(&map, &name) {
                         Ok(()) => {
-                            let mut view = snapshot(app, !home.visible());
+                            let mut view = snapshot_view(app, !home.visible());
                             home.add_status(&mut view);
                             drums.decorate(app, &mut view);
-                            view["playbackStart"] = json!(playback_start);
-                            Ok(view)
+                            view.playback_start = Some(playback_start);
+                            Ok(ViewResponse::View(Box::new(view)))
                         }
-                        Err(dawsu_application::SaveSetError::NameTaken(message)) => Ok(json!({ "nameTaken": message })),
+                        Err(dawsu_application::SaveSetError::NameTaken(message)) => {
+                            Ok(ViewResponse::NameTaken { name_taken: message })
+                        }
                         Err(dawsu_application::SaveSetError::Refused(message)) => Err(message),
                     })
                     .and_then(|result| result);
@@ -2086,11 +2553,11 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                             None => drums.toggle(app, &map, on),
                         }.map(|()| {
                             app.set_drum_vst_routing(drums.routed_midi_notes(app));
-                            let mut view = snapshot(app, !home.visible());
+                            let mut view = snapshot_view(app, !home.visible());
                             home.add_status(&mut view);
                             drums.decorate(app, &mut view);
-                            view["playbackStart"] = json!(playback_start);
-                            view
+                            view.playback_start = Some(playback_start);
+                            ViewResponse::View(Box::new(view))
                         })
                     })
                     .and_then(|result| result);
@@ -2122,11 +2589,11 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                             }
                         }.map(|()| {
                             app.set_drum_vst_routing(drums.routed_midi_notes(app));
-                            let mut view = snapshot(app, !home.visible());
+                            let mut view = snapshot_view(app, !home.visible());
                             home.add_status(&mut view);
                             drums.decorate(app, &mut view);
-                            view["playbackStart"] = json!(playback_start);
-                            view
+                            view.playback_start = Some(playback_start);
+                            ViewResponse::View(Box::new(view))
                         })
                     })
                     .and_then(|result| result);
@@ -2303,16 +2770,15 @@ fn editor_view(
     scene: bool,
     action: Option<Action>,
     fresh: Option<bool>,
-) -> Result<Value, String> {
+) -> Result<ViewResponse, String> {
     let view = ask(&state, |tx| Request::View(scene, action, fresh.unwrap_or(false), tx))?;
-    if let Some(scene_val) = view.get("scene") {
-        if !scene_val.is_null() {
-            let map_title = scene_val.get("title").and_then(Value::as_str).unwrap_or("");
-            let version = scene_val.get("version").and_then(Value::as_str).unwrap_or("");
+    if let ViewResponse::View(snapshot) = &view {
+        if let Some(scene_val) = &snapshot.scene {
+            let map_title = scene_val.title.as_str();
+            let version = scene_val.version.as_str();
             let file_stem = scene_val
-                .get("path")
-                .and_then(Value::as_str)
-                .and_then(|p| Path::new(p).file_stem())
+                .path
+                .file_stem()
                 .and_then(|s| s.to_str())
                 .unwrap_or("");
             let title = if !version.is_empty() && !map_title.is_empty() {
@@ -2323,7 +2789,7 @@ fn editor_view(
                 "dawsu!".to_string()
             };
             let _ = window.set_title(&title);
-        } else if view.get("hasDocument").and_then(Value::as_bool) == Some(false) {
+        } else if !snapshot.has_document {
             let _ = window.set_title("dawsu!");
         }
     }
@@ -2815,7 +3281,7 @@ fn pick_map(
     window: tauri::WebviewWindow,
     state: State<'_, Editor>,
     archive_only: Option<bool>,
-) -> Result<Value, String> {
+) -> Result<ViewResponse, String> {
     let dialog = songs_dialog(&window, &state)?;
     let selected = if archive_only == Some(true) {
         dialog.set_title("Import an .osz")
@@ -2831,7 +3297,7 @@ fn pick_map(
 }
 
 #[tauri::command]
-fn pick_sample(window: tauri::WebviewWindow, state: State<'_, Editor>, target: SampleTarget) -> Result<Value, String> {
+fn pick_sample(window: tauri::WebviewWindow, state: State<'_, Editor>, target: SampleTarget) -> Result<ViewResponse, String> {
     let mut dialog = rfd::FileDialog::new().set_parent(&window)
         .set_title("Choose replacement sample")
         .add_filter("Audio sample", &["wav", "ogg", "mp3"]);
@@ -2886,7 +3352,7 @@ fn sound_set_placement(state: State<'_, Editor>, map: PathBuf, id: u64) -> Resul
 /// window's thread; a 7 s timeout while the editor still saves would make a retry look like a
 /// name clash.
 #[tauri::command]
-async fn save_sound_set(state: State<'_, Editor>, map: PathBuf, name: String) -> Result<Value, String> {
+async fn save_sound_set(state: State<'_, Editor>, map: PathBuf, name: String) -> Result<ViewResponse, String> {
     let editor = state.0.clone();
     tauri::async_runtime::spawn_blocking(move || {
         ask_within(&editor, Duration::from_secs(120), |tx| Request::SaveSoundSet(map, name, tx))
@@ -2894,7 +3360,7 @@ async fn save_sound_set(state: State<'_, Editor>, map: PathBuf, name: String) ->
 }
 
 #[tauri::command]
-fn pick_sound_set(window: tauri::WebviewWindow, state: State<'_, Editor>, map: PathBuf) -> Result<Value, String> {
+fn pick_sound_set(window: tauri::WebviewWindow, state: State<'_, Editor>, map: PathBuf) -> Result<ViewResponse, String> {
     let selected = rfd::FileDialog::new().set_parent(&window)
         .set_title("Place sound set")
         .add_filter("dawsu! sound set", &["dawsuset"])
@@ -2914,7 +3380,7 @@ fn songs_dialog(window: &tauri::WebviewWindow, state: &Editor) -> Result<rfd::Fi
 fn pick_songs_folder(
     window: tauri::WebviewWindow,
     state: State<'_, Editor>,
-) -> Result<Option<Value>, String> {
+) -> Result<Option<ViewResponse>, String> {
     let Some(folder) = songs_dialog(&window, &state)?.set_title("Choose Songs folder").pick_folder() else {
         return Ok(None);
     };
@@ -2925,7 +3391,7 @@ fn pick_songs_folder(
 fn pick_hitsound_library(
     window: tauri::WebviewWindow,
     state: State<'_, Editor>,
-) -> Result<Option<Value>, String> {
+) -> Result<Option<ViewResponse>, String> {
     let mut dialog = rfd::FileDialog::new().set_parent(&window).set_title("Choose hitsound library folder");
     if let Some(folder) = ask(&state, Request::LibraryDirectory)? {
         dialog = dialog.set_directory(folder);
@@ -2986,14 +3452,14 @@ fn pick_drum_map(
     map: PathBuf,
     window: tauri::WebviewWindow,
     state: State<'_, Editor>,
-) -> Result<Option<Value>, String> {
+) -> Result<Option<ViewResponse>, String> {
     let Some(path) = rfd::FileDialog::new().set_parent(&window).set_title("Open drum map")
         .add_filter("Drum map", &["dawsudrum"]).pick_file() else { return Ok(None) };
     ask(&state, |tx| Request::DrumView(map, Some(path), true, tx))?.map(Some)
 }
 
 #[tauri::command]
-fn set_drum_view(map: PathBuf, on: bool, state: State<'_, Editor>) -> Result<Value, String> {
+fn set_drum_view(map: PathBuf, on: bool, state: State<'_, Editor>) -> Result<ViewResponse, String> {
     ask(&state, |tx| Request::DrumView(map, None, on, tx))?
 }
 
@@ -3002,7 +3468,7 @@ fn drum_map_action(
     map: PathBuf,
     action: drum_view::DrumMapAction,
     state: State<'_, Editor>,
-) -> Result<Value, String> {
+) -> Result<ViewResponse, String> {
     ask(&state, |tx| Request::DrumMapAction(map, action, tx))?
 }
 
