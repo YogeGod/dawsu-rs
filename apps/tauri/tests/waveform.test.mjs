@@ -92,3 +92,106 @@ test("the ruler paints the teal waveform frequency shades on a teal tint; the ov
   const lastColor = waveformBands.ruler.at(-1).color;
   assert.notEqual(firstColor, lastColor, "different frequency bands produce distinct colours");
 });
+
+test("waveform() draws identical fillRect and fillStyle calls from Float32Array and nested arrays", () => {
+  const nestedBins = [
+    [0.5, 0.375, 0.125, 0.0625, 0.5, 0.25],
+    [0.75, 0.125, 0.625, 0.25, 0.625, 0.75],
+    [0.875, 0.0625, 0.25, 0.75, 0.875, 0.5],
+    [0.25, 0.5, 0.5, 0.5, 0.25, 0.125],
+  ];
+  const typedBins = new Float32Array(nestedBins.flat());
+
+  function drawWith(bins) {
+    const context = createContext({
+      document: {
+        getElementById: () => ({
+          clientWidth: 200, clientHeight: 80, scrollTop: 0, dataset: {}, style: {}, children: [],
+          addEventListener() {}, append() {}, prepend() {}, setAttribute() {},
+          getContext: () => ({}),
+        }),
+        createElement: () => ({}),
+        querySelectorAll: () => [],
+        addEventListener() {},
+      },
+      window: {
+        devicePixelRatio: 1,
+        __TAURI__: { core: { invoke: async () => ({}) }, event: { listen() {} } },
+      },
+      ResizeObserver: class { observe() {} },
+      requestAnimationFrame() {},
+      setInterval() {},
+      console,
+    });
+    bootEditor(context, { autoStart: false });
+    const ops = [];
+    const mockCtx = {
+      _fillStyle: "",
+      get fillStyle() { return this._fillStyle; },
+      set fillStyle(v) { this._fillStyle = v; ops.push(["fillStyle", v]); },
+      fillRect(x, y, w, h) { ops.push(["fillRect", x, y, w, h]); },
+    };
+    runInContext(`
+      view = { hasDocument: true, duration: 1000, offset: 0 };
+      scene = { path: "fixture.osu", viewStart: 0, zoom: 0.2, rowHeight: 30, moments: [], sections: [] };
+    `, context);
+    context.scene.waveform = bins;
+    context.waveform(mockCtx, 200, 40, 30, 0, 1000);
+    return ops;
+  }
+
+  const fromNested = drawWith(nestedBins);
+  const fromTyped = drawWith(typedBins);
+  assert.ok(fromNested.length > 0, "waveform() emitted draw calls");
+  assert.deepEqual(fromTyped, fromNested);
+});
+
+test("ipc fetches binary editor_waveform once per (path, previewKey), stores Float32Array, and repaints", async () => {
+  const bins = [0.5, 0.25, 0.125, 0.0625, 0.5, 0.25, 0.75, 0.125, 0.5, 0.25, 0.625, 0.75];
+  const raw = new Float32Array(bins);
+  const calls = [];
+  let paints = 0;
+  const element = () => ({
+    clientWidth: 200, clientHeight: 80, scrollTop: 0, dataset: {}, style: {}, children: [],
+    addEventListener() {}, append() {}, prepend() {}, setAttribute() {},
+    getContext: () => new Proxy({}, { get: () => () => {} }),
+  });
+  const elements = new Map();
+  const get = id => (elements.has(id) ? elements : elements.set(id, element())).get(id);
+  const context = createContext({
+    document: { getElementById: get, createElement: element, querySelectorAll: () => [], addEventListener() {} },
+    window: {
+      devicePixelRatio: 1,
+      __TAURI__: {
+        core: {
+          invoke: async (name) => {
+            calls.push(name);
+            if (name === "editor_waveform") return raw.buffer.slice(0);
+            return { busy: false, hasDocument: false };
+          },
+        },
+        event: { listen() {} },
+      },
+    },
+    ResizeObserver: class { observe() {} },
+    requestAnimationFrame() {},
+    setInterval() {},
+    console,
+  });
+  bootEditor(context, { autoStart: false });
+  runInContext(`
+    renderScene = () => {};
+    renderSelection = () => {};
+    paintSoon = () => { globalThis.__paints = (globalThis.__paints || 0) + 1; };
+    const s = { path: "Map.osu", previewKey: 3, viewStart: 0, zoom: 0.2, rowHeight: 30, lanes: [], moments: [], sections: [[0, 500, 4]] };
+    show({ busy: false, hasDocument: true, duration: 4000, scene: { ...s } });
+    // Second frame with same (path, previewKey) must not re-fetch editor_waveform.
+    show({ busy: false, hasDocument: true, duration: 4000, scene: { ...s } });
+  `, context);
+  await new Promise(resolve => setTimeout(resolve, 10));
+  paints = runInContext("globalThis.__paints", context);
+  assert.deepEqual(calls, ["editor_waveform"]);
+  assert.equal(context.scene.waveform instanceof Float32Array, true);
+  assert.deepEqual(Array.from(context.scene.waveform), bins);
+  assert.ok(paints >= 2, "paintSoon called on waveform arrival");
+});

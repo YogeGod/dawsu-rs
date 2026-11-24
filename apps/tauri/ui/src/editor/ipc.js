@@ -37,6 +37,36 @@ export function attachIpc(ctx) {
   }
 
   let lastActionKind = null;
+  let waveformFetchKey = null;
+
+  function toFloat32Waveform(buf) {
+    if (!buf) return new Float32Array(0);
+    if (ArrayBuffer.isView(buf)) {
+      return new Float32Array(buf.buffer, buf.byteOffset, Math.floor(buf.byteLength / 4));
+    }
+    if (typeof buf.byteLength === "number" &&
+        (buf instanceof ArrayBuffer || Object.prototype.toString.call(buf) === "[object ArrayBuffer]")) {
+      return new Float32Array(buf, 0, Math.floor(buf.byteLength / 4));
+    }
+    return new Float32Array(0);
+  }
+
+  function ensureWaveform(scene) {
+    if (!scene || scene.waveform != null || !scene.path || scene.previewKey == null) return;
+    const key = `${scene.path}\0${scene.previewKey}`;
+    if (waveformFetchKey === key) return;
+    waveformFetchKey = key;
+    invoke("editor_waveform").then((buf) => {
+      const bins = toFloat32Waveform(buf);
+      if (state.scene && state.scene.path === scene.path && state.scene.previewKey === scene.previewKey) {
+        state.scene.waveform = bins;
+        ctx.paintSoon();
+      }
+    }).catch((error) => {
+      if (waveformFetchKey === key) waveformFetchKey = null;
+      (env.console ?? console).error(error);
+    });
+  }
 
   async function update(action, full = true) {
     let next = await invoke("editor_view", { scene: full, action: action ?? null });
@@ -252,7 +282,10 @@ export function attachIpc(ctx) {
     state.view = next;
     if (!heldPendingSeek) ctx.anchorPlayhead(drawn);
     if (state.view.tool !== previousTool) ctx.refreshToolCursor();
-    if (!state.view.hasDocument || state.view.showHome) state.scene = null;
+    if (!state.view.hasDocument || state.view.showHome) {
+      state.scene = null;
+      waveformFetchKey = null;
+    }
     if (state.view.scene) {
       const loaded = state.view.scene.path !== state.scene?.path || (wasBusy && state.view.status === "Difficulty loaded");
       if (loaded) {
@@ -290,6 +323,7 @@ export function attachIpc(ctx) {
         state.view.scene.sections ??= state.scene.sections;
       }
       state.scene = state.view.scene;
+      ensureWaveform(state.scene);
       if (unfolded.length) ctx.saveLaneLayout();
     }
     const pollBase = samePollBase(before, next);

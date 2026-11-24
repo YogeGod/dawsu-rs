@@ -6,6 +6,7 @@
   "permissions": [
     "core:event:default",
     "allow-editor-view",
+    "allow-editor-waveform",
     "allow-editor-help",
     "allow-editor-export-settings",
     "allow-open-export-window",

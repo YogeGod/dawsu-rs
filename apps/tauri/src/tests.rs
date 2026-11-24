@@ -1,4 +1,4 @@
-use super::{Action, PlaybackStart, lane_add_choices, lane_by_key, map_preview, scene_lane_key, snapshot, sound_set_library_view};
+use super::{Action, PlaybackStart, encode_waveform_bytes, lane_add_choices, lane_by_key, map_preview, scene_lane_key, snapshot, sound_set_library_view};
 use dawsu_application::{Application, WaveBin};
 use std::fmt::Write as _;
 use std::fs;
@@ -153,7 +153,7 @@ fn the_scene_lists_the_times_of_hits_with_no_object() {
     let row = snapshot(&app, true)["scene"]["lanes"].as_array().unwrap().iter()
         .position(|lane| lane["name"] == "normal-hitclap").unwrap() as i32;
     Action::Pointer {
-        phase: "double_click".into(), ms: 1500.0, row, x: 12.0, y: 12.0, value: None, shift: false, ctrl: false, alt: false,
+        phase: "double_click".into(), ms: 1500.0, row, x: 12.0, y: 12.0, value: None, button: None, shift: false, ctrl: false, alt: false,
     }.run(&mut app);
     assert_eq!(snapshot(&app, true)["scene"]["orphanedHits"], serde_json::json!([1500.0]));
     Action::HsMode { on: true }.run(&mut app);
@@ -174,7 +174,7 @@ fn select_double_click_seeks_to_an_existing_hit_and_inserts_once_on_empty_space(
     let click = |app: &mut Application, ms, ctrl| {
         Action::Pointer {
             phase: "double_click".into(), ms, row, x: 12.0, y: 12.0, value: None,
-            shift: false, ctrl, alt: false,
+            button: None, shift: false, ctrl, alt: false,
         }.run(app);
     };
 
@@ -244,7 +244,7 @@ fn gameplay_overlay_projects_objects_and_skips_unanchored_hits() {
     for phase in ["down", "up"] {
         Action::Pointer {
             phase: phase.into(), ms: 4250.0, row: 1, x: 4250.0, y: 12.0, value: None,
-            shift: false, ctrl: false, alt: false,
+            button: None, shift: false, ctrl: false, alt: false,
         }.run(&mut app);
     }
     assert!(app.document().unwrap().composer.hitsounds().moments().iter().any(|moment|
@@ -806,7 +806,7 @@ fn switching_dirty_difficulties_respects_all_three_choices_and_stale_save() {
         for phase in ["down", "up"] {
             Action::Pointer {
                 phase: phase.into(), ms: 1000.0, row, x: 100.0, y: 0.0,
-                value: None, shift: false, ctrl: false, alt: false,
+                value: None, button: None, shift: false, ctrl: false, alt: false,
             }.run(app);
         }
         assert!(app.is_dirty());
@@ -876,7 +876,7 @@ fn grab_and_mute_are_view_only_and_erasing_a_stroke_is_one_undo_step() {
     let point = |app: &mut Application, phase: &str, ms| {
         Action::Pointer {
             phase: phase.into(), ms, row, x: ms, y: 0.0,
-            value: None, shift: false, ctrl: false, alt: false,
+            value: None, button: None, shift: false, ctrl: false, alt: false,
         }.run(app);
     };
     let clap_count = |app: &Application| app.document().unwrap().composer.hitsounds()
@@ -1084,7 +1084,7 @@ fn ctrl_drag_spreads_and_squeezes_volumes_with_different_effective_gains() {
     for phase in ["down", "up"] {
         Action::Pointer {
             phase: phase.into(), ms: 1000.0, row: clap as i32, x: 120.0, y: 12.0,
-            value: None, shift: false, ctrl: false, alt: false,
+            value: None, button: None, shift: false, ctrl: false, alt: false,
         }.run(&mut app);
     }
     let set_scope = |app: &mut Application, lanes: serde_json::Value| {
@@ -1105,7 +1105,7 @@ fn ctrl_drag_spreads_and_squeezes_volumes_with_different_effective_gains() {
     let drag = |app: &mut Application, phase: &str, y: f64| {
         Action::Pointer {
             phase: phase.into(), ms: 1000.0, row: 0, x: 120.0, y,
-            value: Some(100.0-y), shift: false, ctrl: true, alt: false,
+            value: Some(100.0-y), button: None, shift: false, ctrl: true, alt: false,
         }.run(app);
     };
     let originals = [[60,40],[80,80]];
@@ -1149,7 +1149,7 @@ fn protect_normals_keeps_noop_deletes_clean_and_still_removes_additions() {
         for phase in ["down","up"] {
             Action::Pointer {
                 phase:phase.into(), ms:1000.0, row, x:120.0, y:12.0, value:None,
-                shift:false, ctrl:false, alt:false,
+                button: None, shift:false, ctrl:false, alt:false,
             }.run(app);
         }
     };
@@ -1189,7 +1189,7 @@ fn controller_drags_paint_shared_moments_and_undo_as_one_gesture() {
     let send = |app: &mut Application, phase: &str, ms, value, alt| {
         Action::Pointer {
             phase: phase.into(), ms, row: 0, x: ms, y: 100.0 - value,
-            value: Some(value), shift: false, ctrl: false, alt,
+            value: Some(value), button: None, shift: false, ctrl: false, alt,
         }.run(app);
     };
     let levels = |app: &Application| -> Vec<i64> {
@@ -1248,7 +1248,7 @@ fn selection_volume_scope_applies_to_the_chosen_lane_and_shortcut() {
     for phase in ["down", "up"] {
         Action::Pointer {
             phase: phase.into(), ms: 1000.0, row: normal as i32, x: 0.0, y: 0.0,
-            value: None, shift: false, ctrl: false, alt: false,
+            value: None, button: None, shift: false, ctrl: false, alt: false,
         }.run(&mut app);
     }
     let apply_scope = |app: &mut Application, path: &Value, lanes: Value| {
@@ -1300,7 +1300,7 @@ fn a_volume_bar_shows_where_its_hits_play_when_none_plays_at_the_moment_s_own_vo
     for phase in ["down", "up"] {
         Action::Pointer {
             phase: phase.into(), ms: 1000.0, row: normal as i32, x: 0.0, y: 0.0,
-            value: None, shift: false, ctrl: false, alt: false,
+            value: None, button: None, shift: false, ctrl: false, alt: false,
         }.run(&mut app);
     }
     let action: Action = serde_json::from_value(json!({
@@ -1346,7 +1346,7 @@ fn ramp_shape_action_applies_curves_through_the_volume_controller() {
         for (phase, (ms, value)) in [("down", start), ("move", end), ("up", end)] {
             Action::Pointer {
                 phase: phase.into(), ms, row: 0, x: ms, y: 100.0 - value,
-                value: Some(value), shift, ctrl: false, alt: false,
+                value: Some(value), button: None, shift, ctrl: false, alt: false,
             }.run(&mut app);
             if phase == "move" {
                 let scene = snapshot(&app, true)["scene"].clone();
@@ -1430,7 +1430,8 @@ fn dense_scene_and_dirty_switch_use_the_real_editor_state() {
     let full_bytes = serde_json::to_vec(&full).unwrap().len();
     let elapsed = start.elapsed();
     assert_eq!(full["scene"]["moments"].as_array().unwrap().len(), 20_000);
-    assert_eq!(full["scene"]["waveform"].as_array().unwrap().len(), 4_000);
+    assert!(full["scene"].get("waveform").is_none());
+    assert_eq!(encode_waveform_bytes(&app.waveform).len(), 4_000 * 24);
     let status = snapshot(&app, false);
     assert!(status["scene"].is_null());
     app.seek(1200.0);
@@ -1521,7 +1522,7 @@ fn dense_scene_and_dirty_switch_use_the_real_editor_state() {
             x: 10.0,
             y: 10.0,
             value: None,
-            shift: false,
+            button: None, shift: false,
             ctrl: false,
             alt: false,
         }
@@ -1539,7 +1540,7 @@ fn dense_scene_and_dirty_switch_use_the_real_editor_state() {
             x: 10.0,
             y: 10.0,
             value: None,
-            shift: false,
+            button: None, shift: false,
             ctrl: false,
             alt: false,
         }
@@ -1791,7 +1792,7 @@ fn home_route_preserves_cancel_and_failed_save_and_reloads_after_discard() {
     for phase in ["down", "up"] {
         Action::Pointer {
             phase: phase.into(), ms: 1000.0, row, x: 12.0, y: 12.0,
-            value: None, shift: false, ctrl: false, alt: false,
+            value: None, button: None, shift: false, ctrl: false, alt: false,
         }.run(&mut app);
     }
     assert!(app.is_dirty());
@@ -1965,7 +1966,7 @@ fn save_applies_volume_floor_only_to_the_edited_hit() {
     for phase in ["down", "up"] {
         Action::Pointer {
             phase: phase.into(), ms: 1000.0, row, x: 12.0, y: 12.0,
-            value: None, shift: false, ctrl: false, alt: false,
+            value: None, button: None, shift: false, ctrl: false, alt: false,
         }.run(&mut app);
     }
     assert_eq!(snapshot(&app, true)["scene"]["selection"]["count"], 1);
@@ -2007,7 +2008,7 @@ fn shortcut_adds_the_nearest_hit_in_the_next_eligible_visible_lane() {
     for phase in ["down", "up"] {
         Action::Pointer {
             phase: phase.into(), ms: 1000.0, row: anchor as i32, x: 10.0, y: 10.0,
-            value: None, shift: false, ctrl: false, alt: false,
+            value: None, button: None, shift: false, ctrl: false, alt: false,
         }.run(&mut app);
     }
 
@@ -2092,7 +2093,7 @@ fn timeline_edit_actions_quantize_repeat_edit_the_range_and_scale_once() {
     let point = |app: &mut Application, phase: &str, ms: f64| {
         Action::Pointer {
             phase: phase.into(), ms, row: clap_row, x: ms, y: 12.0,
-            value: None, shift: false, ctrl: false, alt: false,
+            value: None, button: None, shift: false, ctrl: false, alt: false,
         }.run(app);
     };
     let apply = |app: &mut Application, edit| {
@@ -2214,7 +2215,7 @@ fn selection_start_moves_the_chosen_hits_together_and_undoes_once() {
         for phase in ["down", "up"] {
             Action::Pointer {
                 phase: phase.into(), ms, row, x: ms, y: 12.0, value: None,
-                shift: false, ctrl: index > 0, alt: false,
+                button: None, shift: false, ctrl: index > 0, alt: false,
             }.run(&mut app);
         }
     }
@@ -2277,7 +2278,8 @@ fn opened_song_exposes_three_frequency_bands_at_their_original_positions() {
     open(&mut app, &map);
     let state = snapshot(&app, true);
     assert_eq!(state["duration"], 1200.0);
-    let bins = state["scene"]["waveform"].as_array().unwrap();
+    assert!(state["scene"].get("waveform").is_none());
+    let bins = &app.waveform;
     assert!(bins.len() <= 4000);
     for (segment, amplitude) in [0.4, 0.6, 0.8].into_iter().enumerate() {
         let first = (segment * 3 + 1) * bins.len() / 9;
@@ -2285,7 +2287,8 @@ fn opened_song_exposes_three_frequency_bands_at_their_original_positions() {
         let mut levels = [0.0f64; 4];
         for bin in &bins[first..last] {
             for (index, level) in levels.iter_mut().enumerate() {
-                *level = level.max(bin[index].as_f64().unwrap());
+                let value = [bin.peak, bin.low, bin.mid, bin.high][index];
+                *level = level.max(f64::from(value));
             }
         }
         assert!((levels[0] - amplitude).abs() < 0.02, "{levels:?}");
@@ -2379,7 +2382,7 @@ fn home_save_with_left_out_moments_goes_home_after_the_summarys_save() {
             for phase in ["down", "up"] {
                 Action::Pointer {
                     phase: phase.into(), ms: 2500.0, row, x: 12.0, y: 12.0,
-                    value: None, shift: false, ctrl: false, alt: false,
+                    value: None, button: None, shift: false, ctrl: false, alt: false,
                 }.run(app);
             }
         }
@@ -2724,7 +2727,7 @@ fn export_preview_waits_without_an_error_while_a_drag_is_open() {
     let send = |app: &mut Application, phase: &str| {
         Action::Pointer {
             phase: phase.into(), ms: 1000.0, row: 0, x: 1000.0, y: 70.0,
-            value: Some(30.0), shift: false, ctrl: false, alt: false,
+            value: Some(30.0), button: None, shift: false, ctrl: false, alt: false,
         }.run(app);
     };
     send(&mut app, "down");
@@ -3022,7 +3025,7 @@ fn removing_a_lane_takes_its_hits_in_one_step_and_keeps_its_layers() {
     for phase in ["down", "up"] {
         Action::Pointer {
             phase: phase.into(), ms: 1500.0, row: clap, x: 12.0, y: 12.0,
-            value: None, shift: false, ctrl: false, alt: false,
+            value: None, button: None, shift: false, ctrl: false, alt: false,
         }.run(&mut app);
     }
     assert!(app.error.is_none(), "{:?}", app.error);
@@ -3152,4 +3155,56 @@ fn node_graph_tauri_actions_round_trip_and_export_json() {
     .unwrap();
     app.node_graph_action(import).unwrap();
     assert_eq!(app.node_graph_view().nodes.len(), 22);
+}
+
+#[test]
+fn encode_waveform_bytes_round_trips_exact_f32_bins() {
+    assert!(encode_waveform_bytes(&[]).is_empty());
+
+    let mut app = Application::headless();
+    app.waveform = vec![
+        WaveBin {
+            peak: 0.912_345_6,
+            low: 0.123_456_7,
+            mid: 0.456_789_1,
+            high: 0.789_012_3,
+            amp_l: 0.812_5,
+            amp_r: 0.637_5,
+        },
+        WaveBin {
+            peak: 0.0,
+            low: 1.0,
+            mid: 0.5,
+            high: 0.25,
+            amp_l: 0.000_976_562_5,
+            amp_r: 0.999_999_9,
+        },
+    ];
+    let bytes = encode_waveform_bytes(&app.waveform);
+    assert_eq!(bytes.len(), app.waveform.len() * 6 * 4);
+    let decoded: Vec<WaveBin> = bytes
+        .chunks_exact(24)
+        .map(|chunk| {
+            let f = |offset: usize| {
+                f32::from_le_bytes(chunk[offset..offset + 4].try_into().unwrap())
+            };
+            WaveBin {
+                peak: f(0),
+                low: f(4),
+                mid: f(8),
+                high: f(12),
+                amp_l: f(16),
+                amp_r: f(20),
+            }
+        })
+        .collect();
+    assert_eq!(decoded.len(), app.waveform.len());
+    for (got, expected) in decoded.iter().zip(app.waveform.iter()) {
+        assert_eq!(got.peak.to_bits(), expected.peak.to_bits());
+        assert_eq!(got.low.to_bits(), expected.low.to_bits());
+        assert_eq!(got.mid.to_bits(), expected.mid.to_bits());
+        assert_eq!(got.high.to_bits(), expected.high.to_bits());
+        assert_eq!(got.amp_l.to_bits(), expected.amp_l.to_bits());
+        assert_eq!(got.amp_r.to_bits(), expected.amp_r.to_bits());
+    }
 }
