@@ -191,6 +191,22 @@ impl WritePlan {
                     target.path.display()
                 ));
             }
+            let bytes = target.file.to_bytes();
+            let read = OsuFile::read(bytes);
+            if read.file.format_version().is_none() {
+                return Err(format!(
+                    "Save verification stopped before writing {}: compiled output is missing a valid osu! file format header.",
+                    target.path.display()
+                ));
+            }
+            if let dawsu_hitsounding::Decompiled::UnsupportedMode { mode } =
+                dawsu_hitsounding::decompile(&read.file, &[], &|| false, &mut |_, _| {})
+            {
+                return Err(format!(
+                    "Save verification stopped before writing {}: compiled output parsed as unsupported game mode {mode}.",
+                    target.path.display()
+                ));
+            }
         }
         if let Some(root) = self.source.parent() {
             let pending_names = self.pending_names();

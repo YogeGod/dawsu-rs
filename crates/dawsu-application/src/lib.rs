@@ -312,6 +312,7 @@ struct Pass {
     problems: Vec<SaveProblem>,
     owned: BTreeSet<LineId>,
     circles: std::collections::BTreeMap<LineId, i64>,
+    removed_circles: BTreeSet<LineId>,
 }
 fn compile_pass(
     file: &OsuFile,
@@ -324,6 +325,7 @@ fn compile_pass(
 ) -> Result<Pass, String> {
     let mut owned = owned.clone();
     let mut circles = std::collections::BTreeMap::new();
+    let mut removed_circles = BTreeSet::new();
     let (out, mut problems) = if hs {
         let groups = dawsu_hitsounding::hs::hs_groups(file, hits);
         match dawsu_hitsounding::hs::compile_hs(file, hits, Placement::OnObjects, cancel, progress) {
@@ -343,6 +345,7 @@ fn compile_pass(
                     }
                 }
                 problems.retain(|problem| !matches!(problem.place, dawsu_hitsounding::Place::Circle(id) if removed.contains(&id)));
+                removed_circles = removed.into_iter().map(dawsu_hitsounding::ObjectId::line).collect();
                 circles = created.iter().map(|id| id.line()).zip(groups.into_keys()).collect();
                 owned.extend(created.into_iter().map(dawsu_hitsounding::ObjectId::line));
                 (file, problems)
@@ -366,7 +369,7 @@ fn compile_pass(
             problem.kind = dawsu_hitsounding::ProblemKind::SliderSoundOnHit(lane.clone());
         }
     }
-    Ok(Pass { out, problems, owned, circles })
+    Ok(Pass { out, problems, owned, circles, removed_circles })
 }
 /// Save's first compile pass, without sample mixes or writing. Recovery checks the last save with it.
 fn compile_snapshot(
@@ -430,6 +433,7 @@ fn prepare_save(
     }
     let placement = if hs { Placement::OnObjects } else { Placement::GreenLines };
     let mut mix_files = mixes::MixFiles::default();
+    let mut final_mix_target: Option<Hitsounds> = None;
     let mut checked = false;
     // A part that can't be written as drawn is rolled back first; the mixes the rest needs are
     // then rendered afresh each round. Without a project nothing could keep a left-out part.
@@ -441,6 +445,7 @@ fn prepare_save(
         &|problem| mixes::can_render(problem, placement),
         &mut |pass, effective, mixable| {
             mix_files = mixes::MixFiles::default();
+            final_mix_target = None;
             if mixable.is_empty() {
                 return Ok(Ok(pass.out.clone()));
             }
@@ -467,7 +472,10 @@ fn prepare_save(
                 return Err(error);
             }
             match compile(&pass.out, &target, placement, cancel, &mut |_, _| {}) {
-                Compiled::Done { file, problems } if problems.is_empty() => Ok(Ok(file)),
+                Compiled::Done { file, problems } if problems.is_empty() => {
+                    final_mix_target = Some(target);
+                    Ok(Ok(file))
+                }
                 Compiled::Done { problems, .. } => Ok(Err(problems)),
                 Compiled::Cancelled => Err("Save cancelled".into()),
             }
@@ -485,7 +493,9 @@ fn prepare_save(
             problem_description(&refused[0].kind, refused[0].time.ms())
         ));
     }
-    let (out, owned, effective, left_out, circles) = (rolled.out, rolled.owned, rolled.effective, rolled.left_out, rolled.circles);
+    let (out, owned, effective, left_out, circles, removed_circles) = (
+        rolled.out, rolled.owned, rolled.effective, rolled.left_out, rolled.circles, rolled.removed_circles,
+    );
     let written = effective.clone();
     // The pending files the written difficulty plays go into the mapset with its mixes; the
     // project keeps the others the drawn hits still play.
@@ -542,6 +552,17 @@ fn prepare_save(
         (!record.is_empty() || replaces).then_some(record)
     });
     let bytes = out.to_bytes();
+    let verify_expected = build_verify_expected(
+        &file,
+        &effective,
+        hs,
+        &circles,
+        &removed_circles,
+        final_mix_target.as_ref(),
+        &editor,
+    )?;
+    dawsu_hitsounding::verify_compiled_osu(&bytes, &verify_expected, &editor)
+        .map_err(|mismatch| mismatch.to_string())?;
     let ownership = project::HsCircleOwnership::capture(&out, &bytes, &owned);
     let map_changed = bytes != expected;
     // With the map unchanged, a revision the project already holds is not written again.
@@ -552,11 +573,117 @@ fn prepare_save(
         path: path.to_path_buf(), backups, expected, out, mix_files, recovery_revision,
         ownership, inputs, map_changed, left_out, written, unwritten, sound_sets, loose, drawn: hits.clone(),
         pending_writes, pending_kept, ledger: pending.ledger(),
+        verify_expected, verify_folder_files: editor,
     };
     plan.check_current(project, cancel)?;
     // Left-out parts are listed for the Save hitsounds summary, which every Save shows first.
     diagnostics.extend(plan.left_out.iter().map(|entry| left_out_problem(entry, path)));
     Ok(plan)
+}
+
+/// Builds the expected hitsound state for read-back verification of a compiled Save output.
+fn build_verify_expected(
+    compile_base: &OsuFile,
+    effective: &Hitsounds,
+    hs: bool,
+    created_circles: &std::collections::BTreeMap<i64, LineId>,
+    removed_circles: &BTreeSet<LineId>,
+    mix_target: Option<&Hitsounds>,
+    folder_files: &[String],
+) -> Result<Hitsounds, String> {
+    let mut base_file = compile_base.clone();
+    let mut created_lines: Vec<(i64, LineId)> = Vec::new();
+    if hs {
+        for &line in removed_circles {
+            base_file.remove_hit_object(line).map_err(|error| {
+                format!(
+                    "Save verification could not model removed circle: {}.",
+                    refusals::line(&error)
+                )
+            })?;
+        }
+        for &time in created_circles.keys() {
+            let line = base_file.insert_hit_object(&format!("256,192,{time},1,0,0:0:0:0:"));
+            created_lines.push((time, line));
+        }
+    }
+    let mut expected = match decompile(&base_file, folder_files, &|| false, &mut |_, _| {}) {
+        Decompiled::Done(h) => h,
+        other => {
+            return Err(format!(
+                "Save verification could not decompile base difficulty: {}",
+                refusals::open(&other)
+            ));
+        }
+    };
+    for b in effective.bodies().iter().filter(|b| b.is_changed()) {
+        if let Some(i) = expected.bodies().iter().position(|t| t.object() == b.object()) {
+            expected.set_body_state(i, b.state());
+        }
+    }
+    let by_place: HashMap<dawsu_hitsounding::Place, dawsu_hitsounding::MomentId> = expected
+        .moments()
+        .iter()
+        .enumerate()
+        .map(|(i, m)| (m.place(), dawsu_hitsounding::MomentId(i)))
+        .collect();
+    for m in effective
+        .moments()
+        .iter()
+        .filter(|m| m.is_changed() && m.place() != dawsu_hitsounding::Place::NoObject)
+    {
+        if let Some(&id) = by_place.get(&m.place()) {
+            let hits: Vec<_> = m
+                .hits()
+                .map(|lane| (lane.clone(), m.hit_volume(lane)))
+                .collect();
+            expected.set_moment_state(id, m.volume(), hits);
+        }
+    }
+    if hs && !created_lines.is_empty() {
+        let groups = dawsu_hitsounding::hs::hs_groups(compile_base, effective);
+        for &(time, line) in &created_lines {
+            let Some(members) = groups.get(&time) else { continue };
+            let Some(id) = expected.moments().iter().enumerate().find_map(|(i, m)| {
+                matches!(m.place(), dawsu_hitsounding::Place::Circle(obj) if obj.line() == line)
+                    .then_some(dawsu_hitsounding::MomentId(i))
+            }) else {
+                continue;
+            };
+            let layers: Vec<(SampleIdentity, i32)> = members
+                .iter()
+                .map(|mid| effective.moment(*mid))
+                .flat_map(|m| m.hits().map(|h| (h.clone(), m.hit_volume(h))))
+                .collect();
+            let volumes: BTreeSet<i32> = layers
+                .iter()
+                .map(|(_, v)| dawsu_hitsounding::rules::saved_volume(*v))
+                .collect();
+            let lanes: BTreeSet<&SampleIdentity> = layers.iter().map(|(l, _)| l).collect();
+            if !layers.is_empty() && volumes.len() == 1 && lanes.len() == layers.len() {
+                expected.set_moment_state(id, layers[0].1, layers);
+            }
+        }
+    }
+    if let Some(mix_target) = mix_target {
+        if expected.moments().len() != mix_target.moments().len() {
+            return Err(format!(
+                "Save verification stopped before writing: expected {} hit moments, but mix pass had {}.",
+                expected.moments().len(),
+                mix_target.moments().len(),
+            ));
+        }
+        for (i, m) in mix_target.moments().iter().enumerate() {
+            if m.is_changed() {
+                let hits: Vec<_> = m
+                    .hits()
+                    .map(|lane| (lane.clone(), m.hit_volume(lane)))
+                    .collect();
+                expected.set_moment_state(dawsu_hitsounding::MomentId(i), m.volume(), hits);
+            }
+        }
+    }
+    Ok(expected)
 }
 
 /// The status line's words for project records a failed write after the `.osu` write could not keep.
@@ -626,6 +753,10 @@ struct PreparedSave {
     pending_kept: Vec<pending::PendingSample>,
     /// Where the files this Save creates are recorded.
     ledger: Option<pending::Ledger>,
+    /// Expected hitsound state for read-back verification right before writing to disk.
+    verify_expected: Hitsounds,
+    /// Folder listing (including staged mixes and pending files) for read-back verification.
+    verify_folder_files: Vec<String>,
 }
 
 impl PreparedSave {
@@ -708,6 +839,14 @@ impl PreparedSave {
         }
         if cancel() {
             return Err(publication.failed("Save cancelled before writing".into()));
+        }
+        let out_bytes = self.out.to_bytes();
+        if let Err(mismatch) = dawsu_hitsounding::verify_compiled_osu(
+            &out_bytes,
+            &self.verify_expected,
+            &self.verify_folder_files,
+        ) {
+            return Err(publication.failed(mismatch.to_string()));
         }
         match self.out.save_over_expected(&self.path, &self.expected, &BackupPolicy::new(self.backups, 20)) {
             Ok(SaveOutcome::Saved { .. } | SaveOutcome::NothingToSave) => {
@@ -9080,5 +9219,72 @@ mod drum_vst_routing_tests {
         let (sounds, midi) = app.scheduled_audio_and_midi(app.document().unwrap());
         assert!(sounds.is_empty());
         assert_eq!(midi.len(), 3);
+    }
+
+    #[test]
+    fn save_readback_verification_catches_tampered_output_without_overwriting_disk() {
+        const TEST_MAP: &[u8] = b"osu file format v14\r\n\r\n[General]\r\nSampleSet: Normal\r\n\r\n[Difficulty]\r\nSliderMultiplier:1.4\r\nSliderTickRate:1\r\n\r\n[TimingPoints]\r\n0,500,4,1,0,70,1,0\r\n\r\n[HitObjects]\r\n256,192,1000,1,0,0:0:0:0:\r\n100,100,2000,2,0,L|200:100,1,140\r\n";
+        let scratch = Scratch::new("save-readback-verify");
+        let folder = scratch.path("mapset");
+        std::fs::create_dir(&folder).unwrap();
+        let map = folder.join("a.osu");
+        std::fs::write(&map, TEST_MAP).unwrap();
+        let original_bytes = std::fs::read(&map).unwrap();
+
+        let document = Document::read(&map).unwrap();
+        let mut hits = document.composer.hitsounds().clone();
+        hits.add_hit(
+            dawsu_hitsounding::MomentId(0),
+            SampleIdentity::Standard {
+                set: SampleSet::Normal,
+                sound: Sound::Hit(Hitsound::Clap),
+                index: dawsu_foundation::CustomIndex::new(0),
+            },
+        );
+        hits.set_volume(dawsu_hitsounding::MomentId(0), 65);
+
+        let mut diagnostics = Vec::new();
+        let mut plan = prepare_save(
+            document.compile_base.clone(),
+            &hits,
+            &document.written,
+            document.file.original_bytes().to_vec(),
+            &document.path,
+            scratch.path("backups"),
+            false,
+            &BTreeSet::new(),
+            Path::new(""),
+            &document.pending,
+            None,
+            false,
+            &|| false,
+            &mut diagnostics,
+            &mut |_, _| {},
+        )
+        .expect("valid compiled output should pass read-back verification");
+
+        // Deliberately tamper with the compiled output's hitsound field before applying to disk.
+        let compiled_text = String::from_utf8(plan.out.to_bytes()).unwrap();
+        let tampered_text = compiled_text.replace("256,192,1000,1,8,", "256,192,1000,1,4,");
+        assert_ne!(compiled_text, tampered_text);
+        plan.out = OsuFile::read(tampered_text.into_bytes()).file;
+
+        let err = plan
+            .apply(None, &|| false)
+            .err()
+            .expect("tampered output must be rejected before writing");
+        assert!(
+            err.contains("1000 ms"),
+            "error should report the mismatched timestamp: {err}"
+        );
+        assert!(
+            err.contains("normal-hitclap") && err.contains("normal-hitfinish"),
+            "error should describe expected vs actual samples: {err}"
+        );
+        assert_eq!(
+            std::fs::read(&map).unwrap(),
+            original_bytes,
+            "original .osu file on disk must remain untouched when verification fails"
+        );
     }
 }

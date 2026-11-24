@@ -152,7 +152,20 @@ pub(super) fn stage_in_file(
         )?;
     }
     match compile(&file, &hits, placement, cancel, &mut |_, _| {}) {
-        Compiled::Done { file, problems } if problems.is_empty() => Ok((file, files)),
+        Compiled::Done { file, problems } if problems.is_empty() => {
+            let mut after_listing = listing;
+            after_listing.extend(
+                files
+                    .staged
+                    .iter()
+                    .filter_map(|mix| mix.path.file_name()?.to_str().map(str::to_owned)),
+            );
+            after_listing.sort();
+            after_listing.dedup();
+            dawsu_hitsounding::verify_compiled_osu(&file.to_bytes(), &hits, &after_listing)
+                .map_err(|mismatch| mismatch.to_string())?;
+            Ok((file, files))
+        }
         Compiled::Done { problems, .. } => Err(format!(
             "Could not make the sample mix at {:.0} ms: {}",
             problems[0].time.ms(),
