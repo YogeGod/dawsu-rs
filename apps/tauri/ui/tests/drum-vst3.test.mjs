@@ -210,7 +210,8 @@ test("DrumDetectWindow, KeysoundsModal, and Drum Map Setup expose the Use VST3 s
 
   const lanes = readFileSync(new URL("../src/editor/lanes.js", import.meta.url), "utf8");
   assert.match(lanes, /Use VST3 sounds for drum map/);
-  assert.match(lanes, /invoke\("vst3_scan"\)/);
+  assert.match(lanes, /kind:\s*"list_installed"/);
+  assert.match(lanes, /kind:\s*"browse"/);
   assert.match(lanes, /syncDrumVst3Track/);
 });
 

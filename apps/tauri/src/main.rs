@@ -3894,6 +3894,44 @@ fn handle_drum_vst_action(
         .ok_or("Missing drum_vst_action kind")?;
     match kind {
         "status" => Ok(drum_vst_status_json(app)),
+        "list_installed" => {
+            let plugins = dawsu_application::vst3::list_installed_vst3_in(app.vst3.search_dirs());
+            let folders: Vec<String> = app
+                .vst3
+                .search_dirs()
+                .iter()
+                .map(|p| p.to_string_lossy().into_owned())
+                .collect();
+            Ok(json!({
+                "plugins": plugins.into_iter().map(|p| json!({
+                    "name": p.label,
+                    "path": p.path.to_string_lossy(),
+                })).collect::<Vec<_>>(),
+                "folders": folders,
+            }))
+        }
+        "browse" => {
+            let mut dialog = rfd::FileDialog::new()
+                .set_title("Choose a VST3 instrument")
+                .add_filter("VST3 plug-in", &["vst3"]);
+            if let Some(dir) = app.vst3.search_dirs().iter().find(|d| d.is_dir()) {
+                dialog = dialog.set_directory(dir);
+            }
+            if let Some(path) = dialog.pick_file() {
+                let name = path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("VST3")
+                    .to_string();
+                Ok(json!({
+                    "picked": true,
+                    "name": name,
+                    "path": path.to_string_lossy(),
+                }))
+            } else {
+                Ok(json!({ "picked": false }))
+            }
+        }
         "load" => {
             let path = payload
                 .get("pluginPath")

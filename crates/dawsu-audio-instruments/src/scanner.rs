@@ -74,6 +74,63 @@ pub fn default_vst3_dirs() -> Vec<PathBuf> {
     }
 }
 
+/// Lightweight entry for an installed `.vst3` bundle/file discovered directly from disk
+/// without spawning the sidecar host (mirrors v3.1.4's `Vst3Picker.Installed()`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InstalledVst3 {
+    pub label: String,
+    pub path: PathBuf,
+}
+
+/// Lists installed `.vst3` plug-ins under the platform's default VST3 folders without launching
+/// any plug-in binaries. Disambiguates duplicate filenames with their relative path.
+pub fn list_installed_vst3() -> Vec<InstalledVst3> {
+    list_installed_vst3_in(&default_vst3_dirs())
+}
+
+/// Lists installed `.vst3` plug-ins under `roots` without launching any plug-in binaries.
+pub fn list_installed_vst3_in(roots: &[PathBuf]) -> Vec<InstalledVst3> {
+    let paths = discover_vst3_paths_in(roots);
+    let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let entries: Vec<(String, PathBuf)> = paths
+        .into_iter()
+        .map(|path| {
+            let stem = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("VST3")
+                .to_string();
+            *counts.entry(stem.to_lowercase()).or_insert(0) += 1;
+            (stem, path)
+        })
+        .collect();
+
+    let mut result: Vec<InstalledVst3> = entries
+        .into_iter()
+        .map(|(stem, path)| {
+            let label = if counts.get(&stem.to_lowercase()).copied().unwrap_or(0) > 1 {
+                let rel = roots
+                    .iter()
+                    .find_map(|root| path.strip_prefix(root).ok())
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| path.to_string_lossy().into_owned());
+                format!("{stem} — {rel}")
+            } else {
+                stem
+            };
+            InstalledVst3 { label, path }
+        })
+        .collect();
+
+    result.sort_by(|a, b| {
+        a.label
+            .to_lowercase()
+            .cmp(&b.label.to_lowercase())
+            .then_with(|| a.path.cmp(&b.path))
+    });
+    result
+}
+
 /// Discovers `.vst3` plug-in paths across the platform's default VST3 folders.
 pub fn discover_vst3_paths() -> Vec<PathBuf> {
     discover_vst3_paths_in(&default_vst3_dirs())
@@ -332,5 +389,32 @@ CLASS\tAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA1\tHybridBox\tAcme\tInstrument|Fx|Sampler\
 
         let err = parse_scan_line(path, "CLASS\tonly-two-fields").unwrap_err();
         assert!(matches!(err, ScanError::MalformedLine(_)));
+    }
+
+    #[test]
+    fn lists_installed_vst3s_sorted_and_disambiguates_duplicates() {
+        let root = std::env::temp_dir().join(format!(
+            "dawsu-vst3-installed-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("GGD Matt Garstka.vst3/Contents/x86_64-win")).unwrap();
+        fs::write(
+            root.join("GGD Matt Garstka.vst3/Contents/x86_64-win/GGD Matt Garstka.vst3"),
+            b"bin",
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("VendorA")).unwrap();
+        fs::create_dir_all(root.join("VendorB")).unwrap();
+        fs::write(root.join("VendorA/Drums.vst3"), b"a").unwrap();
+        fs::write(root.join("VendorB/Drums.vst3"), b"b").unwrap();
+
+        let items = list_installed_vst3_in(&[root.clone()]);
+        let _ = fs::remove_dir_all(&root);
+
+        assert_eq!(items.len(), 3);
+        assert!(items[0].label.starts_with("Drums — VendorA"));
+        assert!(items[1].label.starts_with("Drums — VendorB"));
+        assert_eq!(items[2].label, "GGD Matt Garstka");
     }
 }

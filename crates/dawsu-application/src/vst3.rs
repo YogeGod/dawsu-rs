@@ -9,8 +9,9 @@ use dawsu_audio_instruments::bounce::{trim_silence_tail, write_wav_f32, write_wa
 use dawsu_audio_instruments::host::{
     HostError, HostSession, MidiEvent, ProcessTransport, RenderRequest, Vst3HostConfig,
 };
-use dawsu_audio_instruments::scanner::{
-    ScanError, Vst3PluginInfo, default_vst3_dirs, discover_vst3_paths_in, scan_plugin,
+pub use dawsu_audio_instruments::scanner::{
+    InstalledVst3, ScanError, Vst3PluginInfo, default_vst3_dirs, discover_vst3_paths_in,
+    list_installed_vst3, list_installed_vst3_in, scan_plugin,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
