@@ -10,6 +10,7 @@ mod library;
 mod osu_link;
 mod selection;
 mod skin_textures;
+mod updater;
 
 use dawsu_application::{Application, OutputBackend, ExportOptions, ExportSettings, MixFormat, PlatformRequest, EditorTimeSignature, LaneLayout, PointerPhase, RangeOperation, TimelineEdit, VolumeScope, lane_name};
 use dawsu_editor::{
@@ -4328,6 +4329,13 @@ fn undo_mapset_revert(state: State<'_, Editor>) -> Result<usize, String> {
     ask(&state, Request::UndoMapsetRevert)?
 }
 
+#[tauri::command]
+async fn check_for_updates() -> Result<updater::UpdateCheckResult, String> {
+    tauri::async_runtime::spawn_blocking(updater::check_latest_release)
+        .await
+        .map_err(|e| format!("Update check task failed: {e}"))?
+}
+
 fn close_requested(label: &str, editor: &Editor) -> CloseDecision {
     // Closing Export or the drum detection window never waits on the editor.
     match label {
@@ -4461,7 +4469,8 @@ fn main() {
             keysounds_action,
             preview_revert_mapset_to_original,
             revert_mapset_to_original,
-            undo_mapset_revert
+            undo_mapset_revert,
+            check_for_updates
         ])
         .run(tauri::generate_context!())
         .expect("start the dawsu! Tauri editor");

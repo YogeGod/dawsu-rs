@@ -95,6 +95,12 @@
   let vst3Report = $state(null);
   let vst3Error = $state("");
 
+  // Updates state: checked only when the user clicks "Check for updates".
+  let updateChecking = $state(false);
+  let updateResult = $state(null);
+  let updateError = $state("");
+  let updateCopied = $state(false);
+
   const view = $derived(bridge.view ?? {});
   const scene = $derived(bridge.scene);
   const busy = $derived(Boolean(view.busy));
@@ -187,6 +193,31 @@
       vst3Error = String(err);
     } finally {
       vst3Scanning = false;
+    }
+  }
+
+  async function checkForUpdates() {
+    if (updateChecking) return;
+    updateChecking = true;
+    updateError = "";
+    updateCopied = false;
+    try {
+      updateResult = await invoke("check_for_updates");
+    } catch (err) {
+      updateResult = null;
+      updateError = String(err);
+    } finally {
+      updateChecking = false;
+    }
+  }
+
+  async function copyReleaseUrl() {
+    if (!updateResult?.releaseUrl) return;
+    try {
+      await globalThis.navigator?.clipboard?.writeText(updateResult.releaseUrl);
+      updateCopied = true;
+    } catch {
+      updateCopied = false;
     }
   }
 
@@ -763,8 +794,34 @@
 
           {:else if tab === "updates"}
             <div class="pref-group">
-              <span class="pref-label">dawsu! Desktop</span>
-              <p class="pref-caption">Cross-platform Rust + Svelte 5 studio build. Check GitHub Releases for newer builds.</p>
+              <div class="pref-row-head">
+                <span class="pref-label">dawsu! Desktop</span>
+                <button type="button" disabled={updateChecking} onclick={checkForUpdates}>
+                  {updateChecking ? "Checking…" : "Check for updates"}
+                </button>
+              </div>
+              <p class="pref-caption">
+                Checks GitHub Releases only when you click the button. Always verify downloaded installers and portable archives against <code>SHA256SUMS.txt</code>.
+              </p>
+              {#if updateError}
+                <p class="pref-error">{updateError}</p>
+              {:else if updateResult}
+                {#if updateResult.updateAvailable}
+                  <p class="pref-label">Update available: v{updateResult.latestVersion}</p>
+                  <p class="pref-caption">Installed version: v{updateResult.currentVersion}</p>
+                {:else}
+                  <p class="pref-caption">You are up to date (v{updateResult.currentVersion}; latest release v{updateResult.latestVersion}).</p>
+                {/if}
+                {#if updateResult.notes}
+                  <p class="pref-caption">{updateResult.notes}</p>
+                {/if}
+                {#if updateResult.releaseUrl}
+                  <div class="pref-path-row">
+                    <input type="text" readonly value={updateResult.releaseUrl} aria-label="Release page URL" />
+                    <button type="button" onclick={copyReleaseUrl}>{updateCopied ? "Copied" : "Copy link"}</button>
+                  </div>
+                {/if}
+              {/if}
             </div>
           {/if}
         </section>

@@ -60,6 +60,7 @@
     "allow-keysounds-action",
     "allow-preview-revert-mapset-to-original",
     "allow-revert-mapset-to-original",
-    "allow-undo-mapset-revert"
+    "allow-undo-mapset-revert",
+    "allow-check-for-updates"
   ]
 }
