@@ -1,5 +1,6 @@
 //! Documents, playback, storage and background jobs.
 
+pub mod base_layer;
 mod bookmarks;
 mod default_sounds;
 mod slider_body;
@@ -28,6 +29,9 @@ pub mod midi_record;
 pub mod vst3;
 mod keysound_session;
 mod project;
+pub use base_layer::{
+    BaseHit, BaseMoment, SharedBaseApplyResult, SharedBaseLayer, SharedBaseStatus,
+};
 pub use project::lane_key as lane_layout_key;
 pub use node_graph::{NodeGraphAction, NodeGraphView, ViewerOverlay};
 pub use dawsu_audio::{OutputBackend, OutputDevice};
@@ -1239,6 +1243,7 @@ pub struct Application {
     pub row_height: f32,
     project_root: Option<PathBuf>,
     project: Option<project::Project>,
+    base_layer_track: Option<base_layer::BaseLayerTrack>,
     pub locator_left: f64,
     pub locator_right: f64,
     pub cycle: bool,
@@ -1441,6 +1446,7 @@ impl Application {
             project_root: persist_preferences.then(|| data_root.join("projects")),
             data_root,
             project: None,
+            base_layer_track: None,
             checkpoint: None,
             restored_recovery: None,
             sound_set_prompts: Vec::new(),
@@ -1491,6 +1497,7 @@ impl Application {
         if let (Some(copy), Some(document)) = (&mut self.checkpoint, &self.document) {
             copy.refresh(document);
         }
+        self.record_shared_base_overrides_if_needed();
     }
     pub fn is_playing(&self) -> bool {
         self.audio.as_ref().is_some_and(|a| a.is_playing())
@@ -1659,6 +1666,7 @@ impl Application {
         };
         self.forget_unneeded_pending(keep);
         self.document = None;
+        self.base_layer_track = None;
         self.checkpoint = None;
         self.osu_watch.clear();
         self.external_osu_changed = false;
@@ -2459,6 +2467,7 @@ impl Application {
                     let mut checkpoint = recovery::Checkpoint::new(&loaded.document);
                     let restored_id = loaded.recovery.map(|copy| copy.resume(&mut checkpoint));
                     self.document = Some(loaded.document);
+                    self.sync_shared_base_track();
                     // Reviews of the outgoing load must not match this one: history versions restart.
                     self.document_generation += 1;
                     self.opens += 1;

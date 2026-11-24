@@ -114,6 +114,7 @@ const menuCalls = {
   importManiaHitsounds: () => importManiaHitsounds(),
   exportMidi: () => exportMidi(),
   openKeysounds: () => globalThis.openKeysounds?.(),
+  openSharedBase: () => globalThis.openSharedBase?.(),
   showHelp: () => run(showHelp),
   deleteActiveLane: () => deleteActiveLane(),
   toggleMapPreview: () => window.dawsuUi?.toggleMapPreview?.(),

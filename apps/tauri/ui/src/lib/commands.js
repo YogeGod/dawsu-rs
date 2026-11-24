@@ -82,6 +82,7 @@ export const items = [
   { id: "newDifficulty", label: "New hitsound difficulty…", icon: "FilePlus", command: "newDiff", run: ["click", "new"] },
   { id: "generate", label: "Generate hitsound difficulty…", icon: "Package", command: "generate", run: ["click", "generate"] },
   { id: "copyHitsounds", label: "Copy hitsounds…", icon: "Copy", run: ["click", "copy"] },
+  { id: "sharedBase", label: "Shared Base layer…", icon: "Layers", run: ["call", "openSharedBase"], enabled: "document" },
   { id: "drumDetection", label: "Drum hit detection…", icon: "Drum", run: ["call", "openDrumWindow"] },
   { id: "nodeGraph", label: "Node graph…", icon: "Layers", run: ["call", "openNodeGraphWindow"] },
   { id: "keysounds", label: "Keysounds & VST3…", icon: "AudioWaveform", run: ["call", "openKeysounds"], enabled: "document" },
@@ -161,7 +162,7 @@ export const menus = {
   map: [
     "difficulty", "-",
     "newDifficulty", "-",
-    "generate", "copyHitsounds", "drumDetection", "nodeGraph", "keysounds", "exportStyle", "-",
+    "generate", "copyHitsounds", "sharedBase", "drumDetection", "nodeGraph", "keysounds", "exportStyle", "-",
     "hsMode", "-",
     "addBookmark", "previousBookmark", "nextBookmark", "-",
     "addLane", "deleteActiveLane",
