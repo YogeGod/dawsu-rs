@@ -1,14 +1,18 @@
 //! Keysounding Piano Roll editing, live note preview, VST3 instrument loading, and
 //! `[Keysounds]` difficulty generation.
 
+use crate::pending::{Ledger, PendingSample};
 use crate::{Application, MidiPreviewNote};
 use dawsu_audio::AudioClip;
-use dawsu_foundation::safe_write::{BackupPolicy, replace, write_new};
-use dawsu_keysounding::generate::plan_generate_keysounds;
+use dawsu_foundation::digest::sha256_hex;
+use dawsu_foundation::safe_write::{self, BackupPolicy, replace};
+use dawsu_keysounding::generate::{GeneratePlan, plan_generate_keysounds};
 use dawsu_keysounding::model::ExportSettings;
 use dawsu_keysounding::{KeysoundNote, editing};
+use dawsu_osu_format::{check_map_path, find_case_insensitive, list_folder};
 use serde_json::{Value, json};
-use std::path::PathBuf;
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 fn synth_note_clip(pitch: u8, velocity: u8, duration_ms: f64) -> Arc<AudioClip> {
@@ -244,40 +248,46 @@ pub(crate) fn handle(app: &mut Application, payload: &Value) -> Result<Value, St
             }
         }
         "generate_keysounds" => {
-            let document = app.document.as_ref().ok_or("Open a difficulty first.")?;
-            let open_path = document.path.clone();
-            let file_name = document
-                .path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("map.osu")
-                .to_string();
-            let folder = document
-                .path
-                .parent()
-                .ok_or("Active beatmap has no parent folder.")?
-                .to_path_buf();
-            let plan = plan_generate_keysounds(
-                &app.keysounds.document,
-                &document.file,
-                &file_name,
-                &ExportSettings::default(),
-            );
+            // Finish any earlier cleanup job before checking and writing mapset files.
+            app.poll_sweep(true);
+            let (open_path, file_name, folder, pending_taken, ledger, mut plan) = {
+                let document = app.document.as_ref().ok_or("Open a difficulty first.")?;
+                let open_path = document.path.clone();
+                let file_name = document
+                    .path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("map.osu")
+                    .to_string();
+                let folder = document
+                    .path
+                    .parent()
+                    .ok_or("Active beatmap has no parent folder.")?
+                    .to_path_buf();
+                let plan = plan_generate_keysounds(
+                    &app.keysounds.document,
+                    &document.file,
+                    &file_name,
+                    &ExportSettings::default(),
+                );
+                (
+                    open_path,
+                    file_name,
+                    folder,
+                    document.pending.taken_names(),
+                    document.pending.ledger(),
+                    plan,
+                )
+            };
+            let _ = file_name;
             let out_path = folder.join(&plan.file_name);
             if out_path == open_path {
                 return Err("Cannot overwrite the currently open difficulty with [Keysounds].".into());
             }
             // Render and write each manifest WAV before writing [Keysounds].osu so no dangling
             // sample references are ever emitted.
-            for entry in &plan.manifest {
-                let wav_path = folder.join(&entry.filename);
-                if !wav_path.exists() {
-                    let clip = synth_note_clip(entry.pitch, entry.velocity, entry.duration_ms);
-                    let wav_bytes = encode_clip_wav(&clip);
-                    write_new(&wav_path, &wav_bytes)
-                        .map_err(|e| format!("Writing {}: {e}", entry.filename))?;
-                }
-            }
+            let (written_names, guard) =
+                prepare_and_write_wavs(&folder, &mut plan, &pending_taken, ledger.as_ref())?;
             let bytes = plan.file.to_bytes();
             let backed_up = if out_path.exists() {
                 let previous = std::fs::read(&out_path).map_err(|e| e.to_string())?;
@@ -292,14 +302,19 @@ pub(crate) fn handle(app: &mut Application, payload: &Value) -> Result<Value, St
                     }
                 }
             } else {
-                dawsu_foundation::safe_write::create(&out_path, &bytes)
-                    .map_err(|e| e.to_string())?;
+                safe_write::create(&out_path, &bytes).map_err(|e| e.to_string())?;
                 false
             };
+            guard.keep();
             if let Some(doc) = app.document.as_mut() {
                 if !doc.difficulties.iter().any(|p| p == &out_path) {
                     doc.difficulties.push(out_path.clone());
                     doc.difficulties.sort();
+                }
+                if !written_names.is_empty() {
+                    doc.files.extend(written_names);
+                    doc.files.sort();
+                    doc.files.dedup();
                 }
             }
             let synced_count = plan.sync.synced.len();
@@ -310,6 +325,9 @@ pub(crate) fn handle(app: &mut Application, payload: &Value) -> Result<Value, St
                 synced_count,
                 plan.manifest.len()
             );
+            if !app.busy {
+                app.start_sweep(false);
+            }
             let mut out = summary(app);
             out["generated"] = json!({
                 "fileName": plan.file_name,
@@ -355,28 +373,212 @@ fn encode_clip_wav(clip: &AudioClip) -> Vec<u8> {
     wav
 }
 
+struct CreatedKeysoundsGuard {
+    created: Vec<(PathBuf, Vec<u8>)>,
+    ledger: Option<(Ledger, Vec<String>, Vec<PendingSample>)>,
+}
+
+impl CreatedKeysoundsGuard {
+    fn keep(mut self) {
+        self.created.clear();
+        self.ledger = None;
+    }
+
+    fn rollback(&mut self) {
+        let mut still_ours = Vec::new();
+        for (path, wav) in self.created.drain(..).rev() {
+            let result = match std::fs::read(&path) {
+                Ok(bytes) if bytes == wav => std::fs::remove_file(&path),
+                Err(error) => Err(error),
+                Ok(_) => continue,
+            };
+            if let Err(error) = result
+                && error.kind() != std::io::ErrorKind::NotFound
+            {
+                let changed = std::fs::read(&path).is_ok_and(|bytes| bytes != wav);
+                if !changed
+                    && let Some(name) = path.file_name()
+                {
+                    still_ours.push(name.to_string_lossy().into_owned());
+                }
+            }
+        }
+        if let Some((ledger, names, replaced)) = self.ledger.take() {
+            let gone: Vec<String> = names
+                .into_iter()
+                .filter(|name| !still_ours.iter().any(|ours| ours.eq_ignore_ascii_case(name)))
+                .collect();
+            let _ = ledger.update(|entries| {
+                entries.retain(|entry| !gone.iter().any(|name| name.eq_ignore_ascii_case(&entry.name)));
+                entries.extend(
+                    replaced
+                        .into_iter()
+                        .filter(|earlier| gone.iter().any(|name| name.eq_ignore_ascii_case(&earlier.name))),
+                );
+            });
+        }
+    }
+}
+
+impl Drop for CreatedKeysoundsGuard {
+    fn drop(&mut self) {
+        self.rollback();
+    }
+}
+
+fn numbered_sample_name(filename: &str, suffix: u32) -> String {
+    if suffix <= 1 {
+        return filename.to_string();
+    }
+    match filename.rsplit_once('.') {
+        Some((stem, ext)) => format!("{stem}_{suffix}.{ext}"),
+        None => format!("{filename}_{suffix}"),
+    }
+}
+
+fn candidate_stem_taken_elsewhere(
+    candidate: &str,
+    reserved_names: &BTreeSet<String>,
+    disk_files: &[String],
+) -> bool {
+    let lower = candidate.to_ascii_lowercase();
+    let (stem, current_ext) = lower.rsplit_once('.').unwrap_or((lower.as_str(), ""));
+    ["wav", "ogg", "mp3"].iter().any(|ext| {
+        let probe = format!("{stem}.{ext}");
+        reserved_names.contains(&probe)
+            || (*ext != current_ext && find_case_insensitive(disk_files, &probe).is_some())
+    })
+}
+
+#[allow(clippy::disallowed_methods)]
+fn prepare_and_write_wavs(
+    folder: &Path,
+    plan: &mut GeneratePlan,
+    pending_taken: &BTreeSet<String>,
+    ledger: Option<&Ledger>,
+) -> Result<(Vec<String>, CreatedKeysoundsGuard), String> {
+    let disk_files = list_folder(folder).map_err(|e| e.to_string())?;
+    let mut reserved_names = pending_taken.clone();
+    let mut renames: BTreeMap<String, String> = BTreeMap::new();
+    let mut to_write: Vec<(String, Vec<u8>, String)> = Vec::new();
+
+    for entry in &plan.manifest {
+        let clip = synth_note_clip(entry.pitch, entry.velocity, entry.duration_ms);
+        let wav_bytes = encode_clip_wav(&clip);
+        let digest = sha256_hex(&wav_bytes);
+
+        let chosen = (1u32..)
+            .find_map(|suffix| {
+                let candidate = numbered_sample_name(&entry.filename, suffix);
+                if let Err(e) = check_map_path(&candidate) {
+                    return Some(Err(crate::refusals::file_name(&e)));
+                }
+                let lower = candidate.to_ascii_lowercase();
+                if reserved_names.contains(&lower) {
+                    return None;
+                }
+                if let Some(existing_name) = find_case_insensitive(&disk_files, &candidate) {
+                    let existing_path = folder.join(existing_name);
+                    if std::fs::read(&existing_path)
+                        .is_ok_and(|bytes| sha256_hex(&bytes) == digest)
+                    {
+                        return Some(Ok((existing_name.to_string(), None)));
+                    }
+                    return None;
+                }
+                let direct_path = folder.join(&candidate);
+                if direct_path.symlink_metadata().is_ok() {
+                    if std::fs::read(&direct_path)
+                        .is_ok_and(|bytes| sha256_hex(&bytes) == digest)
+                    {
+                        return Some(Ok((candidate, None)));
+                    }
+                    return None;
+                }
+                if candidate_stem_taken_elsewhere(&candidate, &reserved_names, &disk_files) {
+                    return None;
+                }
+                Some(Ok((candidate, Some((wav_bytes.clone(), digest.clone())))))
+            })
+            .ok_or_else(|| format!("No free sample filename for {}", entry.filename))??;
+
+        let (chosen_name, write_payload) = chosen;
+        reserved_names.insert(chosen_name.to_ascii_lowercase());
+        if chosen_name != entry.filename {
+            renames.insert(entry.filename.clone(), chosen_name.clone());
+        }
+        if let Some((bytes, sha256)) = write_payload {
+            to_write.push((chosen_name, bytes, sha256));
+        }
+    }
+
+    let ledger_entries: Vec<PendingSample> = to_write
+        .iter()
+        .map(|(name, _, sha256)| PendingSample {
+            name: name.clone(),
+            sha256: sha256.clone(),
+        })
+        .collect();
+    let ledger_state = match (ledger, ledger_entries.is_empty()) {
+        (Some(ledger), false) => {
+            let replaced = ledger.add(&ledger_entries)?;
+            let names = ledger_entries.into_iter().map(|entry| entry.name).collect();
+            Some((ledger.clone(), names, replaced))
+        }
+        _ => None,
+    };
+
+    let mut guard = CreatedKeysoundsGuard {
+        created: Vec::with_capacity(to_write.len()),
+        ledger: ledger_state,
+    };
+    let mut written_names = Vec::with_capacity(to_write.len());
+    for (name, bytes, _) in to_write {
+        let wav_path = folder.join(&name);
+        safe_write::create(&wav_path, &bytes).map_err(|e| format!("Writing {name}: {e}"))?;
+        guard.created.push((wav_path, bytes));
+        written_names.push(name);
+    }
+
+    plan.remap_sample_filenames(&renames);
+    Ok((written_names, guard))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dawsu_osu_format::OsuFile;
     use dawsu_test_support::Scratch;
     use std::fs;
 
-    #[test]
-    fn piano_roll_crud_preview_and_generate_keysounds_difficulty() {
-        let scratch = Scratch::new("keysound-session");
-        let map_dir = scratch.path("mapset");
-        fs::create_dir_all(&map_dir).unwrap();
-        let map_path = map_dir.join("Artist - Song (Mapper) [Hard].osu");
-        let osu = b"osu file format v14\r\n[General]\r\nMode:0\r\n[Metadata]\r\nArtist:Artist\r\nTitle:Song\r\nCreator:Mapper\r\nVersion:Hard\r\n[Difficulty]\r\nSliderMultiplier:1.4\r\nSliderTickRate:1\r\n[TimingPoints]\r\n0,500,4,1,0,100,1,0\r\n[HitObjects]\r\n256,192,1000,1,0,0:0:0:0:\r\n";
-        fs::write(&map_path, osu).unwrap();
-
-        let mut app = Application::with_data_root(scratch.path("data"));
-        app.error = None;
-        app.request_open(map_path.clone());
+    fn poll_until_idle(app: &mut Application) {
         while app.busy {
             app.poll();
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
+    }
+
+    fn setup_mapset(name: &str, hit_objects: &str) -> (Scratch, PathBuf, Application) {
+        let scratch = Scratch::new(name);
+        let map_dir = scratch.path("mapset");
+        fs::create_dir_all(&map_dir).unwrap();
+        let map_path = map_dir.join("Artist - Song (Mapper) [Hard].osu");
+        let osu = format!(
+            "osu file format v14\r\n[General]\r\nMode:0\r\n[Metadata]\r\nArtist:Artist\r\nTitle:Song\r\nCreator:Mapper\r\nVersion:Hard\r\n[Difficulty]\r\nSliderMultiplier:1.4\r\nSliderTickRate:1\r\n[TimingPoints]\r\n0,500,4,1,0,100,1,0\r\n[HitObjects]\r\n{hit_objects}"
+        );
+        fs::write(&map_path, osu.as_bytes()).unwrap();
+
+        let mut app = Application::with_data_root(scratch.path("data"));
+        app.error = None;
+        app.request_open(map_path);
+        poll_until_idle(&mut app);
+        (scratch, map_dir, app)
+    }
+
+    #[test]
+    fn piano_roll_crud_preview_and_generate_keysounds_difficulty() {
+        let (_scratch, _map_dir, mut app) =
+            setup_mapset("keysound-session", "256,192,1000,1,0,0:0:0:0:\r\n");
 
         let res = handle(&mut app, &json!({ "kind": "add_track", "name": "Piano" })).unwrap();
         let tid = res["tracks"][0]["id"].as_u64().unwrap();
@@ -405,8 +607,139 @@ mod tests {
         assert_eq!(res["tracks"][0]["notes"][0]["startMs"], 1000.0);
 
         let result = handle(&mut app, &json!({ "kind": "generate_keysounds" })).unwrap();
+        poll_until_idle(&mut app);
         let out_path = PathBuf::from(result["generated"]["path"].as_str().unwrap());
         assert!(out_path.is_file());
         assert_eq!(result["generated"]["syncedCount"], 1);
+    }
+
+    #[test]
+    fn generate_keysounds_avoids_overwriting_existing_sample_with_different_bytes() {
+        let (_scratch, map_dir, mut app) =
+            setup_mapset("keysound-collision", "256,192,1000,1,0,0:0:0:0:\r\n");
+
+        let res = handle(&mut app, &json!({ "kind": "add_track", "name": "Piano" })).unwrap();
+        let tid = res["tracks"][0]["id"].as_u64().unwrap();
+        handle(
+            &mut app,
+            &json!({ "kind": "add_note", "trackId": tid, "startMs": 1000.0, "endMs": 1150.0, "pitch": 60, "velocity": 100 }),
+        )
+        .unwrap();
+
+        let doc = app.document.as_ref().unwrap();
+        let expected_plan = plan_generate_keysounds(
+            &app.keysounds.document,
+            &doc.file,
+            "Artist - Song (Mapper) [Hard].osu",
+            &ExportSettings::default(),
+        );
+        assert_eq!(expected_plan.manifest.len(), 1);
+        let expected_first_name = expected_plan.manifest[0].filename.clone();
+        let preexisting_bytes = b"RIFFuser-preexisting-sample";
+        let preexisting_path = map_dir.join(&expected_first_name);
+        fs::write(&preexisting_path, preexisting_bytes).unwrap();
+
+        let result = handle(&mut app, &json!({ "kind": "generate_keysounds" })).unwrap();
+        poll_until_idle(&mut app);
+
+        assert_eq!(fs::read(&preexisting_path).unwrap(), preexisting_bytes);
+        let expected_fallback = numbered_sample_name(&expected_first_name, 2);
+        let fallback_path = map_dir.join(&expected_fallback);
+        assert!(fallback_path.is_file(), "expected fallback WAV {expected_fallback}");
+
+        let out_path = PathBuf::from(result["generated"]["path"].as_str().unwrap());
+        let generated_osu = OsuFile::read(fs::read(&out_path).unwrap()).file;
+        let objects = generated_osu.hit_objects();
+        let hit_sample_name = objects[0]
+            .hit_sample()
+            .and_then(|s| s.filename.as_deref());
+        assert_eq!(hit_sample_name, Some(expected_fallback.as_str()));
+
+        let ledger_names: Vec<String> = app
+            .document
+            .as_ref()
+            .unwrap()
+            .pending
+            .ledger()
+            .unwrap()
+            .entries()
+            .unwrap()
+            .into_iter()
+            .map(|entry| entry.name)
+            .collect();
+        assert_eq!(ledger_names, vec![expected_fallback.clone()]);
+
+        // Regenerating with the same note reuses the identical fallback file without creating _3.wav.
+        let fallback_bytes = fs::read(&fallback_path).unwrap();
+        handle(&mut app, &json!({ "kind": "generate_keysounds" })).unwrap();
+        poll_until_idle(&mut app);
+        assert_eq!(fs::read(&fallback_path).unwrap(), fallback_bytes);
+        assert!(!map_dir.join(numbered_sample_name(&expected_first_name, 3)).exists());
+    }
+
+    #[test]
+    fn regenerate_with_fewer_notes_records_and_sweeps_unused_keysound_wav() {
+        let (scratch, map_dir, mut app) = setup_mapset(
+            "keysound-sweep",
+            "256,192,1000,1,0,0:0:0:0:\r\n256,192,1500,1,0,0:0:0:0:\r\n",
+        );
+
+        let res = handle(&mut app, &json!({ "kind": "add_track", "name": "Piano" })).unwrap();
+        let tid = res["tracks"][0]["id"].as_u64().unwrap();
+        handle(
+            &mut app,
+            &json!({ "kind": "add_note", "trackId": tid, "startMs": 1000.0, "endMs": 1150.0, "pitch": 60, "velocity": 100 }),
+        )
+        .unwrap();
+        handle(
+            &mut app,
+            &json!({ "kind": "add_note", "trackId": tid, "startMs": 1500.0, "endMs": 1650.0, "pitch": 64, "velocity": 100 }),
+        )
+        .unwrap();
+
+        let first = handle(&mut app, &json!({ "kind": "generate_keysounds" })).unwrap();
+        poll_until_idle(&mut app);
+        assert_eq!(first["generated"]["manifestCount"], 2);
+
+        let ledger = app.document.as_ref().unwrap().pending.ledger().unwrap();
+        let initial_entries = ledger.entries().unwrap();
+        assert_eq!(initial_entries.len(), 2);
+        let kept_entry = initial_entries
+            .iter()
+            .find(|e| e.name.contains("_p060_"))
+            .unwrap()
+            .clone();
+        let dropped_entry = initial_entries
+            .iter()
+            .find(|e| e.name.contains("_p064_"))
+            .unwrap()
+            .clone();
+        assert!(map_dir.join(&kept_entry.name).is_file());
+        assert!(map_dir.join(&dropped_entry.name).is_file());
+
+        // Remove the second note (pitch 64) and regenerate with fewer notes.
+        handle(&mut app, &json!({ "kind": "delete_note", "trackId": tid, "noteIndex": 1 })).unwrap();
+        let second = handle(&mut app, &json!({ "kind": "generate_keysounds" })).unwrap();
+        poll_until_idle(&mut app);
+        assert_eq!(second["generated"]["manifestCount"], 1);
+
+        assert!(map_dir.join(&kept_entry.name).is_file());
+        assert!(
+            !map_dir.join(&dropped_entry.name).exists(),
+            "unused keysound WAV {} should have been swept from mapset",
+            dropped_entry.name
+        );
+        assert!(
+            scratch
+                .path("data")
+                .join("removed-samples")
+                .join(format!("{}.wav", dropped_entry.sha256))
+                .is_file(),
+            "swept keysound WAV should be preserved in removed-samples"
+        );
+        assert!(app.status.contains("Removed 1 unused sample file"), "{}", app.status);
+
+        let remaining_names: Vec<String> = ledger.entries().unwrap().into_iter().map(|e| e.name).collect();
+        assert_eq!(remaining_names, vec![kept_entry.name]);
     }
 }
