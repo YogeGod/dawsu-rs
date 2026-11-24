@@ -2195,6 +2195,10 @@ enum Request {
         mpsc::Sender<Result<dawsu_application::MidiImportOutcome, String>>,
     ),
     ExportMidiFile(PathBuf, mpsc::Sender<Result<usize, String>>),
+    ImportManiaHitsounds(
+        PathBuf,
+        mpsc::Sender<Result<dawsu_application::ManiaImportReport, String>>,
+    ),
     MidiRecordToggle(Option<usize>, Option<u32>, mpsc::Sender<Result<dawsu_application::MidiRecordStatus, String>>),
     Vst3Scan(mpsc::Sender<Result<dawsu_application::Vst3ScanReport, String>>),
     DrumVstAction(Value, mpsc::Sender<Result<Value, String>>),
@@ -2945,6 +2949,14 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                 Ok(Request::ExportMidiFile(path, response)) => {
                     let result = guard(&mut app, &mut fault, |app| app.export_midi(&path))
                         .and_then(|r| r);
+                    let _ = response.send(result);
+                }
+                Ok(Request::ImportManiaHitsounds(path, response)) => {
+                    let result = guard(&mut app, &mut fault, |app| {
+                        app.import_mania_hitsound_diff(&path)
+                    })
+                    .and_then(|r| r);
+                    tick_cache.invalidate();
                     let _ = response.send(result);
                 }
                 Ok(Request::MidiRecordToggle(port_index, snap, response)) => {
@@ -3913,6 +3925,24 @@ fn export_midi_file(
 }
 
 #[tauri::command]
+fn import_mania_hitsounds(
+    window: tauri::WebviewWindow,
+    state: State<'_, Editor>,
+) -> Result<Option<dawsu_application::ManiaImportReport>, String> {
+    let mut dialog = rfd::FileDialog::new()
+        .set_parent(&window)
+        .set_title("Import mania hitsound difficulty")
+        .add_filter("osu! beatmap", &["osu"]);
+    if let Ok(Ok(folder)) = ask(&state, |tx| Request::Folder(folders::Folder::Map, tx)) {
+        dialog = dialog.set_directory(folder);
+    }
+    let Some(path) = dialog.pick_file() else {
+        return Ok(None);
+    };
+    ask(&state, |tx| Request::ImportManiaHitsounds(path, tx))?.map(Some)
+}
+
+#[tauri::command]
 fn midi_input_ports() -> Vec<String> {
     dawsu_application::list_midi_input_ports()
 }
@@ -4296,6 +4326,7 @@ fn main() {
             inspect_midi_file,
             apply_midi_import,
             export_midi_file,
+            import_mania_hitsounds,
             midi_input_ports,
             midi_record_toggle,
             vst3_scan,

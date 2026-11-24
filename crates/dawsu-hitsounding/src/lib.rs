@@ -11,6 +11,7 @@ pub mod error;
 pub mod generate;
 pub mod hs;
 pub mod lazer;
+pub mod mania_import;
 pub mod model;
 pub mod playfield;
 pub mod rules;

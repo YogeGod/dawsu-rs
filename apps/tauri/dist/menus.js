@@ -75,6 +75,23 @@ function exportMidi() {
   }).catch(error => { $("status").textContent = String(error); });
 }
 
+// File › Import mania hitsounds…: Rust asks for a Mode 3 .osu file and imports its hitsounds in one Undo step.
+function importManiaHitsounds() {
+  return invoke("import_mania_hitsounds").then(report => {
+    if (report == null) return;
+    if (typeof invoke === "function" && typeof show === "function") {
+      invoke("editor_view").then(show).catch(() => {});
+    }
+    const hits = report.hitsImported ?? 0;
+    const lanes = report.lanesTouched ?? 0;
+    window.showToast?.({
+      tone: "success",
+      title: "Mania hitsounds imported",
+      body: `Imported ${hits} hit${hits === 1 ? "" : "s"} across ${lanes} lane${lanes === 1 ? "" : "s"}.`,
+    });
+  }).catch(error => { $("status").textContent = String(error); });
+}
+
 // What ["call", name] rows run.
 const menuCalls = {
   placeSoundSet: () => placeSoundSet(),
@@ -92,6 +109,7 @@ const menuCalls = {
   openViewSettings: () => openViewSettings(),
   openPreferences: () => openPreferences(),
   openMidiImport: () => globalThis.openMidiImport?.(),
+  importManiaHitsounds: () => importManiaHitsounds(),
   exportMidi: () => exportMidi(),
   openKeysounds: () => globalThis.openKeysounds?.(),
   showHelp: () => run(showHelp),

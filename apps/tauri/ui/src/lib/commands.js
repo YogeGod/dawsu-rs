@@ -27,6 +27,7 @@ export const items = [
   { id: "openFromOsu", label: "Open from osu!", icon: "FolderOpen", run: ["call", "openFromOsu"], enabled: "idle" },
   { id: "importOsz", label: "Import .osz…", icon: "PackageOpen", command: "importOsz", enabled: "idle" },
   { id: "importMidi", label: "Import MIDI…", icon: "Music", run: ["call", "openMidiImport"], enabled: "document" },
+  { id: "importManiaHitsounds", label: "Import mania hitsounds…", icon: "Music", run: ["call", "importManiaHitsounds"], enabled: "document" },
   { id: "exportMidi", label: "Export MIDI…", icon: "Music", run: ["call", "exportMidi"], enabled: "document" },
   { id: "openFolder", label: "Open map folder", icon: "Folder", command: "openFolder" },
   { id: "save", label: "Save", icon: "Save", command: "save" },
@@ -139,7 +140,7 @@ export const items = [
 // Where each row sits. "-" is a divider; one at the start or end of a menu, or next to another, is
 // left out (Map has no Difficulty row, and so no divider under it, without a sibling difficulty).
 export const menus = {
-  file: ["openMap", "openFromOsu", "importOsz", "importMidi", "openFolder", "-", "save", "revert", "revertOriginal", "undoRevert", "export", "exportMidi", "-", "startScreen", "folders", "-", "preferences"],
+  file: ["openMap", "openFromOsu", "importOsz", "importMidi", "importManiaHitsounds", "openFolder", "-", "save", "revert", "revertOriginal", "undoRevert", "export", "exportMidi", "-", "startScreen", "folders", "-", "preferences"],
   edit: [
     "undo", "redo", "-",
     "cut", "copy", "paste", "duplicate", "delete", "selectAll", "-",

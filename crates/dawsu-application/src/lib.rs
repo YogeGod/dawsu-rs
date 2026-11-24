@@ -38,6 +38,17 @@ pub use midi_import::{
     MidiImportOptions, MidiImportOutcome, MidiInspectResult, MidiTrackSummary, apply_midi_import,
     export_midi_file, inspect_midi_file,
 };
+
+/// Summary returned after importing hitsounds from an osu!mania (Mode 3) difficulty.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManiaImportReport {
+    pub hits_imported: usize,
+    pub lanes_touched: usize,
+    pub lanes_added: usize,
+    pub matched_moments: usize,
+    pub created_moments: usize,
+}
 pub use midi_record::MidiRecordStatus;
 pub use vst3::{
     BounceFormat, BounceOptions, BounceOutput, LoadedPluginSummary, MidiPreviewNote, PluginRole,
@@ -1768,6 +1779,115 @@ impl Application {
             outcome.added, outcome.skipped
         );
         Ok(outcome)
+    }
+
+    /// Imports hitsounds from an osu!mania (Mode 3) `.osu` difficulty onto the open document's
+    /// timeline as one single Undo step.
+    pub fn import_mania_hitsound_diff(&mut self, path: &Path) -> Result<ManiaImportReport, String> {
+        if self.busy {
+            return Err(
+                "Wait for the current job to finish before importing mania hitsounds.".into(),
+            );
+        }
+        if self.document.is_none() {
+            return Err("Open a difficulty first.".into());
+        }
+        let bytes = std::fs::read(path)
+            .map_err(|e| format!("Could not read mania hitsound file: {e}"))?;
+        let hits = dawsu_hitsounding::mania_import::parse_mania_hitsounds_bytes(&bytes)?;
+        if hits.is_empty() {
+            self.status = "No hitsounds found in that mania difficulty.".into();
+            return Ok(ManiaImportReport {
+                hits_imported: 0,
+                lanes_touched: 0,
+                lanes_added: 0,
+                matched_moments: 0,
+                created_moments: 0,
+            });
+        }
+
+        const MATCH_TOLERANCE_MS: f64 = 5.0;
+        let document = self.document.as_mut().ok_or("Open a difficulty first.")?;
+        let existing_lanes: std::collections::BTreeSet<SampleIdentity> = document
+            .composer
+            .hitsounds()
+            .lanes()
+            .iter()
+            .map(|l| l.identity.clone())
+            .collect();
+        let mut touched_lanes: std::collections::BTreeSet<SampleIdentity> =
+            std::collections::BTreeSet::new();
+        let mut matched_moments = 0usize;
+        let mut created_moments = 0usize;
+        let hits_imported = hits.len();
+
+        document
+            .composer
+            .apply("Import mania hitsounds", |h| {
+                for hit in &hits {
+                    touched_lanes.insert(hit.lane.clone());
+                    let existing_moment = h
+                        .moments()
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, m)| (m.time().ms() - hit.time_ms).abs() <= MATCH_TOLERANCE_MS)
+                        .min_by(|(_, a), (_, b)| {
+                            let da = (a.time().ms() - hit.time_ms).abs();
+                            let db = (b.time().ms() - hit.time_ms).abs();
+                            da.total_cmp(&db).then_with(|| {
+                                let a_loose = matches!(a.place(), dawsu_hitsounding::Place::NoObject);
+                                let b_loose = matches!(b.place(), dawsu_hitsounding::Place::NoObject);
+                                a_loose.cmp(&b_loose)
+                            })
+                        })
+                        .map(|(i, _)| dawsu_hitsounding::MomentId(i));
+
+                    let moment = match existing_moment {
+                        Some(id) => {
+                            matched_moments += 1;
+                            id
+                        }
+                        None => {
+                            created_moments += 1;
+                            h.add_moment(SongTime::from_ms(hit.time_ms), hit.volume)
+                        }
+                    };
+
+                    if h.moment(moment).has_hit(&hit.lane) {
+                        h.set_hit_volume(moment, &hit.lane, hit.volume);
+                    } else {
+                        h.add_hit_with_volume(moment, hit.lane.clone(), hit.volume);
+                    }
+                }
+            });
+
+        let mut lanes_added = 0usize;
+        for lane in &touched_lanes {
+            if !existing_lanes.contains(lane) {
+                lanes_added += 1;
+            }
+            if !document.composer.lanes.contains(lane) {
+                document.composer.lanes.push(lane.clone());
+            }
+        }
+
+        let lanes_touched = touched_lanes.len();
+        self.sync_audio();
+        self.refresh_recovery_edit();
+        self.status = format!(
+            "Imported {} {} from {} {} (Mania hitsound diff).",
+            hits_imported,
+            if hits_imported == 1 { "hit" } else { "hits" },
+            lanes_touched,
+            if lanes_touched == 1 { "lane" } else { "lanes" },
+        );
+        Ok(ManiaImportReport {
+            hits_imported,
+            lanes_touched,
+            lanes_added,
+            matched_moments,
+            created_moments,
+        })
     }
 
     /// Exports the active document's hitsounds (and any keysound tracks) to a Standard MIDI File.
@@ -9628,6 +9748,96 @@ mod greenline_cleanup_tests {
         assert!(!after.contains("250,-100,4,1,0,100,0,0\n"));
         assert!(after.contains("500,-50,4,1,0,100,0,0\n"));
         assert!(plan.details.iter().any(|d| d.contains("Removed 1 redundant greenline.")));
+    }
+
+    #[test]
+    fn import_mania_hitsound_diff_adds_lanes_places_hits_and_undoes_in_one_step() {
+        let scratch = Scratch::new("mania-hs-import");
+        let std_path = scratch.path("Artist - Song (Mapper) [Hard].osu");
+        let mania_path = scratch.path("Artist - Song (Mapper) [Hitsounds].osu");
+        let non_mania_path = scratch.path("Artist - Song (Mapper) [Other].osu");
+
+        let std_map = concat!(
+            "osu file format v14\n",
+            "[General]\n",
+            "Mode: 0\n",
+            "SampleSet: Normal\n",
+            "[Metadata]\n",
+            "Version: Hard\n",
+            "[TimingPoints]\n",
+            "0,500,4,1,0,100,1,0\n",
+            "[HitObjects]\n",
+            "256,192,1000,1,0,0:0:0:0:\n",
+        );
+        let mania_map = concat!(
+            "osu file format v14\n",
+            "[General]\n",
+            "Mode: 3\n",
+            "SampleSet: Normal\n",
+            "[TimingPoints]\n",
+            "0,500,4,2,2,70,1,0\n",
+            "[HitObjects]\n",
+            "64,192,1002,1,8,0:0:0:85:\n",
+            "192,192,1002,1,0,0:0:0:60:kick.wav\n",
+            "320,192,2000,1,0,0:0:0:0:snare.wav\n",
+        );
+        std::fs::write(&std_path, std_map).unwrap();
+        std::fs::write(&mania_path, mania_map).unwrap();
+        std::fs::write(&non_mania_path, std_map).unwrap();
+
+        let mut app = Application::create(
+            Preferences::default(),
+            false,
+            None,
+            None,
+            false,
+            scratch.path("data"),
+        );
+        app.open_now(OpenSource::Map(std_path));
+        wait_busy(&mut app);
+
+        let before_moments = app.document().unwrap().composer.hitsounds().moments().to_vec();
+        let before_lanes = app.document().unwrap().composer.hitsounds().lanes().to_vec();
+
+        // Refuses non-mania diff cleanly without modifying document.
+        let err = app.import_mania_hitsound_diff(&non_mania_path).unwrap_err();
+        assert!(err.contains("Mode: 3"), "expected mania error, got: {err}");
+        assert_eq!(app.document().unwrap().composer.hitsounds().moments(), before_moments.as_slice());
+
+        // Imports mania diff: snaps 1002 ms onto existing 1000 ms object, creates 2000 ms loose moment.
+        let report = app.import_mania_hitsound_diff(&mania_path).unwrap();
+        assert!(report.hits_imported >= 3);
+        assert!(report.lanes_added >= 2);
+        assert!(report.created_moments >= 1);
+        assert!(app.status.contains("Mania hitsound diff"));
+
+        let hs = app.document().unwrap().composer.hitsounds();
+        let kick = SampleIdentity::File("kick.wav".into());
+        let snare = SampleIdentity::File("snare.wav".into());
+        let soft_clap_2 = SampleIdentity::Standard {
+            set: SampleSet::Soft,
+            sound: dawsu_foundation::Sound::Hit(dawsu_foundation::Hitsound::Clap),
+            index: dawsu_foundation::CustomIndex::new(2),
+        };
+        assert!(hs.lane(&kick).is_some());
+        assert!(hs.lane(&snare).is_some());
+        assert!(hs.lane(&soft_clap_2).is_some());
+
+        let m1000 = hs.moments().iter().find(|m| (m.time().ms() - 1000.0).abs() < 0.1).unwrap();
+        assert!(m1000.has_hit(&kick));
+        assert_eq!(m1000.hit_volume(&kick), 60);
+        assert!(m1000.has_hit(&soft_clap_2));
+        assert_eq!(m1000.hit_volume(&soft_clap_2), 85);
+
+        let m2000 = hs.moments().iter().find(|m| (m.time().ms() - 2000.0).abs() < 0.1).unwrap();
+        assert_eq!(m2000.place(), dawsu_hitsounding::Place::NoObject);
+        assert!(m2000.has_hit(&snare));
+        assert_eq!(m2000.hit_volume(&snare), 70);
+
+        // Single undo() reverts everything cleanly.
+        app.document.as_mut().unwrap().composer.undo();
+        assert_eq!(app.document().unwrap().composer.hitsounds().moments(), before_moments.as_slice());
+        assert_eq!(app.document().unwrap().composer.hitsounds().lanes(), before_lanes.as_slice());
     }
 }
 

@@ -62,6 +62,7 @@ const COMMANDS: &[&str] = &[
     "inspect_midi_file",
     "apply_midi_import",
     "export_midi_file",
+    "import_mania_hitsounds",
     "midi_input_ports",
     "midi_record_toggle",
     "vst3_scan",
