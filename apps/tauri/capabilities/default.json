@@ -20,6 +20,7 @@
     "allow-export-key-file",
     "allow-pick-map",
     "allow-pick-sample",
+    "allow-pick-drum-stem",
     "allow-pick-sound-set",
     "allow-sound-set-library",
     "allow-sound-set-placement",

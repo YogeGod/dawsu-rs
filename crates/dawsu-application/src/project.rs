@@ -69,6 +69,9 @@ pub(crate) struct SessionSettings {
     /// Per-map Drum VST3 instrument selection, toggle, and saved preset state. Older builds ignore it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub drum_vst: Option<DrumVstSession>,
+    /// Optional drum stem audio path for instant Song <-> Stem monitoring. Older builds ignore it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drum_stem_path: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -108,6 +111,7 @@ impl Default for SessionSettings {
             export_choices: None,
             node_graph_bindings: None,
             drum_vst: None,
+            drum_stem_path: None,
         }
     }
 }

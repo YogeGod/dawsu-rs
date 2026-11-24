@@ -805,11 +805,8 @@ mod tests {
             base: false,
             slider_audio: false,
             later_wins: false,
-<<<<<<< HEAD
             mix_format: crate::MixFormat::Wav16,
-=======
             slider_end_mute: Default::default(),
->>>>>>> 92204cb (feat(copy,export): automatic slider-end and optional spinner-end muting)
         };
         assert_eq!(app.document().unwrap().export_choices(), Some(&expected));
         wait_preview(&mut app);
@@ -1121,14 +1118,10 @@ mod tests {
         assert!(choices.base && choices.slider_audio);
         let old: ExportChoices =
             serde_json::from_str(r#"{"left_out":[],"match_within":5.0,"copy_volumes":true}"#).unwrap();
-<<<<<<< HEAD
-        assert!(!old.base && !old.slider_audio);
+        assert!(!old.base && !old.slider_audio && !old.slider_end_mute.enabled);
         assert_eq!(old.mix_format, crate::MixFormat::Wav16);
         let roundtrip: ExportChoices = serde_json::from_str(&serde_json::to_string(&old).unwrap()).unwrap();
         assert_eq!(roundtrip.mix_format, crate::MixFormat::Wav16);
-=======
-        assert!(!old.base && !old.slider_audio && !old.slider_end_mute.enabled);
->>>>>>> 92204cb (feat(copy,export): automatic slider-end and optional spinner-end muting)
     }
 
     /// The sample index files Generate stages under merge settings, after `already` and from `start`.

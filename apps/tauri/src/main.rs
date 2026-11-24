@@ -481,6 +481,11 @@ enum Action {
     SongSolo {
         on: bool,
     },
+    ToggleStemMonitor,
+    LoadDrumStem {
+        path: PathBuf,
+    },
+    ClearDrumStem,
     OutputSettings {
         backend: OutputBackend,
         device_id: Option<String>,
@@ -971,6 +976,11 @@ impl Action {
                 app.gains_changed();
             }
             Self::SongSolo { on } => app.set_song_solo(on),
+            Self::ToggleStemMonitor => {
+                app.toggle_monitor_stem();
+            }
+            Self::LoadDrumStem { path } => app.load_drum_stem(path),
+            Self::ClearDrumStem => app.clear_drum_stem(),
             Self::Audition { on } => app.preferences.audition = on,
             Self::Offset { ms } => {
                 app.song_offset = ms.clamp(-60_000.0, 60_000.0);
@@ -1763,6 +1773,14 @@ struct ViewSnapshot {
     sound_set_prompts: Vec<SoundSetPromptSnapshot>,
     speed: f64,
     status: String,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    stem_active: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    stem_loaded: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    stem_loading: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stem_name: Option<String>,
     tab_routes: Vec<(bool, bool, bool, bool)>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tick_rev: Option<u64>,
@@ -2138,6 +2156,10 @@ fn snapshot_with_static(app: &Application, include_scene: bool, include_static: 
         }).collect(),
         speed: app.playback_speed,
         status: app.status.clone(),
+        stem_active: app.is_monitoring_stem(),
+        stem_loaded: app.has_drum_stem(),
+        stem_loading: app.drum_stem_loading,
+        stem_name: app.drum_stem_name(),
         tab_routes,
         tick_rev: None,
         tool: format!("{:?}", app.tool()),
@@ -2479,8 +2501,11 @@ fn non_playback_signature(
     app.hitsounds_solo().hash(&mut hasher);
     app.duration_ms().to_bits().hash(&mut hasher);
     app.song_loading.hash(&mut hasher);
+    app.drum_stem_loading.hash(&mut hasher);
+    app.has_drum_stem().hash(&mut hasher);
+    app.is_monitoring_stem().hash(&mut hasher);
     app.waveform_revision().hash(&mut hasher);
-    app.waveform.len().hash(&mut hasher);
+    app.active_waveform().len().hash(&mut hasher);
     let problems = app.output_problems();
     problems.len().hash(&mut hasher);
     for problem in &problems {
@@ -2609,7 +2634,7 @@ fn next_view_response(
     let want_scene = scene && !home.visible();
     let current_hs_mode = app.document().is_some_and(|d| d.hs_mode);
     let include_static = if want_scene && app.document().is_some() {
-        let key = (app.document_generation(), app.waveform_revision(), app.waveform.len());
+        let key = (app.document_generation(), app.waveform_revision(), app.active_waveform().len());
         let changed = fresh || cache.static_scene_key != Some(key) || cache.last_hs_mode != current_hs_mode;
         cache.static_scene_key = Some(key);
         cache.last_hs_mode = current_hs_mode;
@@ -2681,7 +2706,7 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                     let _ = response.send(view);
                 }
                 Ok(Request::Waveform(response)) => {
-                    let result = guard(&mut app, &mut fault, |app| encode_waveform_bytes(&app.waveform));
+                    let result = guard(&mut app, &mut fault, |app| encode_waveform_bytes(app.active_waveform()));
                     let _ = response.send(result);
                 }
                 // After a fault, a request without an error channel gets no answer.
@@ -3642,6 +3667,18 @@ fn pick_sample(window: tauri::WebviewWindow, state: State<'_, Editor>, target: S
     ask(&state, |tx| Request::View(true, selected.map(|path| Action::ReplaceSample { target, path, mapset: false }), false, None, tx))
 }
 
+#[tauri::command]
+fn pick_drum_stem(window: tauri::WebviewWindow, state: State<'_, Editor>) -> Result<ViewResponse, String> {
+    let mut dialog = rfd::FileDialog::new().set_parent(&window)
+        .set_title("Attach drum stem")
+        .add_filter("Audio", &["wav", "ogg", "mp3", "flac"]);
+    if let Ok(Ok(folder)) = ask(&state, |tx| Request::Folder(folders::Folder::Map, tx)) {
+        dialog = dialog.set_directory(folder);
+    }
+    let selected = dialog.pick_file();
+    ask(&state, |tx| Request::View(true, selected.map(|path| Action::LoadDrumStem { path }), false, None, tx))
+}
+
 /// The library list for Edit > Place sound set: names, ids and counts only.
 fn sound_set_library_view(app: &Application) -> Value {
     let library = match app.sound_set_library() {
@@ -4386,6 +4423,7 @@ fn main() {
             export_key_file,
             pick_map,
             pick_sample,
+            pick_drum_stem,
             pick_sound_set,
             sound_set_library,
             sound_set_placement,

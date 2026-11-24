@@ -72,6 +72,9 @@ export const items = [
   { id: "playLocatorRange", label: "Play locator range", command: "playLocatorRange" },
   { id: "speed", label: "Speed · pitch stays the same", choices: "speed" },
   { id: "muteSong", label: "Mute song", icon: "VolumeX", run: ["toggle", "song_muted", "view.songMuted", true] },
+  { id: "toggleStemMonitor", label: "Monitor drum stem", icon: "AudioWaveform", command: "toggleStemMonitor", run: ["act", { kind: "toggle_stem_monitor" }], enabled: "stemLoaded", checked: "stemActive" },
+  { id: "attachDrumStem", label: "Attach drum stem…", icon: "FolderOpen", run: ["call", "pickDrumStem"], enabled: "document" },
+  { id: "clearDrumStem", label: "Clear drum stem", icon: "Trash2", run: ["act", { kind: "clear_drum_stem" }], enabled: "stemLoaded" },
   { id: "audioOutput", label: "Audio output…", icon: "Volume2", run: ["click", "audio"], enabled: "idle" },
 
   // Map
@@ -152,7 +155,8 @@ export const menus = {
     "playbackStart", "-",
     "returnOnStop", "follow", "cycle", "locatorsToSelection", "playLocatorRange", "-",
     "speed", "-",
-    "muteSong", "audioOutput",
+    "muteSong", "toggleStemMonitor", "attachDrumStem", "clearDrumStem", "-",
+    "audioOutput",
   ],
   map: [
     "difficulty", "-",
