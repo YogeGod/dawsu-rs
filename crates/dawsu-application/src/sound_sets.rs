@@ -967,7 +967,7 @@ impl Application {
                 r.accepted_digest = Some(prompt.digest.clone());
             }
         };
-        if let (Some(mut settings), Some(_)) = (self.session_settings(None, None, None), self.project.as_ref()) {
+        if let (Some(mut settings), Some(_)) = (self.session_settings(None, None, None, None), self.project.as_ref()) {
             if let Some(links) = settings.sound_sets.as_mut() {
                 for record in links.current.iter_mut().chain(links.pending.iter_mut()) {
                     accept(&mut record.placements);
