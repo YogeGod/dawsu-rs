@@ -1,5 +1,6 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
+mod crash;
 mod drum_view;
 mod drum_window;
 mod folders;
@@ -4139,6 +4140,7 @@ fn close_requested(label: &str, editor: &Editor) -> CloseDecision {
 }
 
 fn main() {
+    crash::install();
     let initial = std::env::args_os().nth(1).map(PathBuf::from);
     tauri::Builder::default()
         .manage(editor_thread(initial))
