@@ -12,6 +12,7 @@
     "allow-drum-listen-stop",
     "allow-drum-apply",
     "allow-drum-pick-stem",
-    "allow-close-drum-window"
+    "allow-close-drum-window",
+    "allow-keysounds-action"
   ]
 }

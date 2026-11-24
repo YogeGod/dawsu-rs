@@ -8,6 +8,9 @@
     keysoundsPreview, keysoundsQuantize, keysoundsScan, keysoundsSetVelocity, keysoundsTranspose, keysoundsView,
     msAtX, noteDragPayload, pitchAtY, pitchName, pitchRow, rollPitches, rollSpanMs, sidecarStatus, velocityAtY,
   } from "../lib/midi.js";
+  import {
+    readDrumVst3, sceneDrumHitsToNotes, syncDrumVst3Track, writeDrumVst3,
+  } from "../lib/drumVst3.js";
 
   // Map › Keysounds & VST3…: the keysound tracks Rust keeps for this map as a piano roll, each
   // optionally played by a scanned VST3 instrument. menus.js calls globalThis.openKeysounds.
@@ -25,6 +28,8 @@
   let velDrag = $state(null);
   let rollScroll = $state(null);
   let velScroll = $state(null);
+  const storage = () => { try { return typeof window !== "undefined" ? window.localStorage : null; } catch { return null; } };
+  let drumVst3 = $state(readDrumVst3(storage()));
 
   const VEL_PX = 64;
   const pitches = rollPitches();
@@ -68,7 +73,38 @@
     open = true;
     name = "";
     selected = null;
+    drumVst3 = readDrumVst3(storage());
+    if (drumVst3.pluginId) pluginId = drumVst3.pluginId;
     await send(keysoundsView());
+  }
+
+  async function toggleDrumVst3(checked) {
+    const picked = summary?.vst3Plugins?.find(p => p.id === pluginId) ?? null;
+    drumVst3 = writeDrumVst3(storage(), {
+      enabled: checked,
+      pluginId: picked?.id ?? drumVst3.pluginId ?? "",
+      pluginName: picked?.name ?? drumVst3.pluginName ?? "",
+      pluginPath: picked?.path ?? drumVst3.pluginPath ?? "",
+    });
+    if (!checked || loading) return;
+    loading = true;
+    error = "";
+    try {
+      const hits = sceneDrumHitsToNotes(bridge.scene, bridge.view?.drumView);
+      const result = await syncDrumVst3Track(invoke, {
+        plugin: picked ?? (drumVst3.pluginName ? { id: drumVst3.pluginId, name: drumVst3.pluginName, path: drumVst3.pluginPath } : null),
+        hits,
+      });
+      if (result?.summary) summary = result.summary;
+      if (result?.trackId != null) {
+        trackId = result.trackId;
+        selected = null;
+      }
+    } catch (err) {
+      error = String(err);
+    } finally {
+      loading = false;
+    }
   }
 
   async function addTrack() {
@@ -255,7 +291,17 @@
           <button type="button" disabled={loading} onclick={addTrack}>Add track</button>
         </div>
         <div class="ks-group">
-          <select aria-label="VST3 instrument" bind:value={pluginId} disabled={!instruments.length}>
+          <select aria-label="VST3 instrument" bind:value={pluginId} disabled={!instruments.length}
+            onchange={() => {
+              if (!drumVst3.enabled) return;
+              const picked = summary?.vst3Plugins?.find(p => p.id === pluginId) ?? null;
+              drumVst3 = writeDrumVst3(storage(), {
+                enabled: true,
+                pluginId: picked?.id ?? "",
+                pluginName: picked?.name ?? "",
+                pluginPath: picked?.path ?? "",
+              });
+            }}>
             <option value="">No instrument</option>
             {#each instruments as choice (choice.id)}
               <option value={choice.id}>{choice.name}{choice.vendor ? ` · ${choice.vendor}` : ""}</option>
@@ -264,6 +310,11 @@
           <button type="button" disabled={loading || !track || !pluginId || !summary?.sidecarAvailable}
             onclick={loadVst3}>Load VST3</button>
           <button type="button" disabled={loading} onclick={() => send(keysoundsScan())}>Scan VST3</button>
+          <label class="ks-drum-vst3">
+            <input type="checkbox" checked={drumVst3.enabled} disabled={loading}
+              onchange={(e) => toggleDrumVst3(e.currentTarget.checked)} />
+            <span>Use VST3 sounds for drum map</span>
+          </label>
         </div>
         <div class="ks-group">
           <button type="button" disabled={loading || !notes.length} onclick={() => trackAction(id => keysoundsQuantize(id, QUANTIZE_MS))}>Quantize 125 ms</button>
@@ -415,6 +466,20 @@
   }
   .ks-group input {
     width: 130px;
+  }
+  .ks-drum-vst3 {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    color: var(--editor-text);
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .ks-drum-vst3 input {
+    width: auto;
+    margin: 0;
+    accent-color: var(--editor-accent);
   }
   .ks-status {
     display: flex;

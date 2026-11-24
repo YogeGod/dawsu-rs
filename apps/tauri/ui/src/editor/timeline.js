@@ -85,9 +85,10 @@ export function attachTimeline(ctx) {
     const row = valueLane || gesture.panning ? state.view.activeLane : gesture.lastRow;
     let ms = gesture.start + x / gesture.zoom;
     const tool = state.view.tool;
+    const rightClick = gesture.button === "right";
     if (!valueLane && (
-      ((phase === "down" || phase === "double_click") && ["Select", "Erase", "Mute", "Ramp"].includes(tool)) ||
-      (phase === "move" && ["Erase", "Mute"].includes(tool))
+      ((phase === "down" || phase === "double_click") && (rightClick || ["Select", "Erase", "Mute", "Ramp"].includes(tool))) ||
+      (phase === "move" && (rightClick || ["Erase", "Mute"].includes(tool)))
     )) {
       const hit = nearestHitTime(ms, row, gesture.zoom);
       if (hit != null) {
@@ -105,6 +106,7 @@ export function attachTimeline(ctx) {
       kind: "pointer", phase, ms, row, x, y,
       value: valueLane ? limit((height - y) / Math.max(1, height - 3) * 100, 1, 100) : null,
       shift: event.shiftKey, ctrl: event.ctrlKey || event.metaKey, alt: event.altKey,
+      ...(rightClick ? { button: "right" } : {}),
     };
   }
 
@@ -265,11 +267,41 @@ export function attachTimeline(ctx) {
     let gesture = state.rulerDrag?.mode;
     if (!gesture && state.scene && state.rulerPointer) {
       const { x, y, width } = rulerPoint(state.rulerPointer);
-      if (x >= 0 && x < width && y >= 0 && y < rulerBandHeight) gesture = rulerGestureAt(x, y);
+      if (x >= 0 && x < width && y >= 0 && y < rulerBandHeight) {
+        const hit = rulerGestureAt(x, y);
+        gesture = y < rulerBandHeight / 2 || hit === "left" || hit === "right" ? hit : "scrub";
+      }
     }
     const cursor = gesture === "left" || gesture === "right" ? "ew-resize"
       : gesture === "move" ? "pointer" : "default";
     if (ruler.style.cursor !== cursor) ruler.style.cursor = cursor;
+  }
+
+  function optimisticSeek(ms) {
+    const clampedMs = limit(ms, 0, state.view.duration);
+    const prevStart = state.scene.viewStart;
+    state.view = { ...state.view, position: clampedMs };
+    state.playheadAnchor = { position: clampedMs, at: perf().now(), held: false };
+    if (isCentred() && grid.clientWidth > 0) {
+      state.scene.viewStart = centredStart(state.scene.zoom);
+      state.centreSentStart = state.scene.viewStart;
+    }
+    ctx.paintSoon(state.scene.viewStart === prevStart);
+    return clampedMs;
+  }
+
+  async function drainRulerSeek() {
+    while (state.rulerSeekTarget) {
+      const { path, ms } = state.rulerSeekTarget;
+      state.rulerSeekTarget = null;
+      if (state.scene?.path !== path || state.view.busy) continue;
+      await ctx.act({ kind: "seek", ms }, false);
+    }
+  }
+
+  function queueRulerSeek(path, ms) {
+    state.rulerSeekTarget = { path, ms };
+    state.rulerSeekDrain ??= drainRulerSeek().finally(() => { state.rulerSeekDrain = null; });
   }
 
   function trackRulerPointer(event) {
@@ -278,8 +310,17 @@ export function attachTimeline(ctx) {
     state.rulerPointer = { clientX: event.clientX, clientY: event.clientY };
     refreshRulerCursor();
     if (state.rulerDrag && state.rulerDrag.id === event.pointerId) {
-      state.rulerDrag.preview = locatorPreview(state.rulerDrag, x);
-      ctx.paintSoon();
+      if (state.rulerDrag.mode === "scrub") {
+        const ms = snapToActiveGrid(state.rulerDrag.start + x / state.rulerDrag.zoom);
+        const clampedMs = optimisticSeek(ms);
+        if (clampedMs !== state.rulerDrag.lastSeekMs) {
+          state.rulerDrag.lastSeekMs = clampedMs;
+          queueRulerSeek(state.rulerDrag.path, clampedMs);
+        }
+      } else {
+        state.rulerDrag.preview = locatorPreview(state.rulerDrag, x);
+        ctx.paintSoon();
+      }
       return;
     }
     refreshRulerWarningTooltip(bounds);
@@ -435,10 +476,10 @@ export function attachTimeline(ctx) {
   function endRulerDrag(event) {
     const current = state.rulerDrag;
     state.rulerDrag = null;
-    if (ruler.hasPointerCapture(current.id)) ruler.releasePointerCapture(current.id);
+    if (ruler.hasPointerCapture?.(current.id)) ruler.releasePointerCapture?.(current.id);
     state.rulerPointer = { clientX: event.clientX, clientY: event.clientY };
     refreshRulerCursor();
-    ctx.paintSoon();
+    ctx.paintSoon(current.mode === "scrub");
     return current;
   }
 
@@ -464,33 +505,42 @@ export function attachTimeline(ctx) {
     state.overviewNavigation ??= drainOverviewNavigation().finally(() => { state.overviewNavigation = null; });
   }
 
+  function isCentred() {
+    return Boolean(state.view?.follow && ctx.ui()?.centre?.());
+  }
+
+  function centredStart(zoom) {
+    return ctx.playheadPosition() - grid.clientWidth / zoom / 2;
+  }
+
   function timelineStart(start, zoom) {
+    if (isCentred() && grid.clientWidth > 0) return centredStart(zoom);
     return limit(start, 0, state.view.duration - grid.clientWidth / zoom);
   }
 
   // Called with each view from the editor, and with `frame` on each playback frame.
   function followPlayhead(frame = false) {
-    if (!state.view.follow || !state.view.playing || state.view.busy ||
+    if (!state.view.follow || state.view.busy ||
         state.drag || state.rulerDrag || state.overviewDrag || state.overviewNavigation || !grid.clientWidth) return;
-    // A wheel scroll or zoom during playback holds Follow off for a moment, so the two don't fight.
-    if (perf().now() - (state.manualScrollAt ?? -Infinity) < followYieldMs) return;
-    const visible = grid.clientWidth / state.scene.zoom;
-    const position = ctx.playheadPosition();
-    // The Playhead group's Centre (window only): the view moves so the playhead stays in the middle.
-    // Each frame scrolls the view here; the editor is told of it with each of its views, not per frame.
-    // Follow's view changes take the zoom when their turn comes (changeView with a start function),
-    // so a wheel zoom queued before one is kept instead of being put back.
+    // The Playhead group's Centre (window only): the view ALWAYS stays locked with the playhead
+    // dead-center — while playing, paused, seeking, or zooming out/in (never clamped to 0).
     if (ctx.ui()?.centre?.()) {
-      const centred = zoom => timelineStart(ctx.playheadPosition() - grid.clientWidth / zoom / 2, zoom);
+      const centred = zoom => centredStart(zoom);
       const start = centred(state.scene.zoom);
-      if (frame) state.scene.viewStart = start;
+      const prev = state.scene.viewStart;
+      if (frame || !state.view.playing) state.scene.viewStart = start;
       // Not from the answer to Centre's own change: at high zoom every answer would differ by a
       // pixel and ask again at once. The next refresh tells the editor.
-      else if (!state.followQueued && Math.abs(start - (state.centreSentStart ?? state.scene.viewStart)) * state.scene.zoom >= 1) {
+      if (!frame && !state.followQueued && Math.abs(start - (state.centreSentStart ?? prev)) * state.scene.zoom >= 0.5) {
         queueFollow(zoom => (state.centreSentStart = centred(zoom)));
       }
       return;
     }
+    if (!state.view.playing) return;
+    // A wheel scroll or zoom during playback holds Follow off for a moment, so the two don't fight.
+    if (perf().now() - (state.manualScrollAt ?? -Infinity) < followYieldMs) return;
+    const visible = grid.clientWidth / state.scene.zoom;
+    const position = ctx.playheadPosition();
     state.centreSentStart = null;
     if (state.followQueued || (position >= state.scene.viewStart && position <= state.scene.viewStart + visible * 0.98)) return;
     const paged = zoom => timelineStart(ctx.playheadPosition() - grid.clientWidth / zoom * 0.02, zoom);
@@ -595,8 +645,9 @@ export function attachTimeline(ctx) {
       changeView(viewStart, zoom, Math.round(rowHeight * 1.15 ** move.steps), move.anchor);
     } else if (move.kind === "zoom") {
       const next = limit(zoom * Math.exp(-move.deltaY * 0.003), minZoom, 3);
-      changeView(viewStart + Math.max(0, move.x) * (1 / zoom - 1 / next), next);
-    } else {
+      const nextStart = isCentred() ? centredStart(next) : viewStart + Math.max(0, move.x) * (1 / zoom - 1 / next);
+      changeView(nextStart, next);
+    } else if (!isCentred()) {
       changeView(viewStart + move.delta / zoom, zoom);
     }
   }
@@ -636,14 +687,15 @@ export function attachTimeline(ctx) {
     for (const surface of [grid, controller]) {
       surface.addEventListener("pointerdown", (event) => {
         if (surface === grid) handOverHitCard(null);
-        if (!state.scene || state.view.busy || state.drag || state.rulerDrag || event.button !== 0) return;
-        const panning = surface === grid && state.view.tool === "Grab" && !event.altKey;
+        const rightClick = surface === grid && event.button === 2;
+        if (!state.scene || state.view.busy || state.drag || state.rulerDrag || (event.button !== 0 && !rightClick)) return;
+        const panning = !rightClick && surface === grid && state.view.tool === "Grab" && !event.altKey;
         if (surface === grid && !panning) {
           const { x, y } = pointerIn(grid, event);
           const row = state.laneRows[Math.floor((y + $("scroll").scrollTop) / state.scene.rowHeight)];
           if (row === undefined) return;
           const time = state.scene.viewStart + x / state.scene.zoom;
-          if (revealLayerPreview(row, time, y)) {
+          if (!rightClick && revealLayerPreview(row, time, y)) {
             event.preventDefault();
             return;
           }
@@ -654,12 +706,13 @@ export function attachTimeline(ctx) {
         if (HtmlElement && env.document.activeElement instanceof HtmlElement) env.document.activeElement.blur();
         surface.setPointerCapture(event.pointerId);
         state.drag = {
-          surface, id: event.pointerId, start: state.scene.viewStart, zoom: state.scene.zoom,
+          surface, id: event.pointerId, button: rightClick ? "right" : "left",
+          start: state.scene.viewStart, zoom: state.scene.zoom,
           rows: state.laneRows, last: 0, panning, scrollTop: $("scroll").scrollTop,
         };
         state.drag.firstPoint = pointer(event, "down");
         state.drag.firstVisualRow = state.drag.lastVisualRow;
-        state.drag.markingRange = surface === grid && state.view.tool === "Range";
+        state.drag.markingRange = !rightClick && surface === grid && state.view.tool === "Range";
         ctx.act(state.drag.firstPoint);
       });
       surface.addEventListener("pointermove", (event) => {
@@ -778,18 +831,47 @@ export function attachTimeline(ctx) {
       } else if (side) {
         ctx.act({ kind: "ruler_locators", path: state.scene.path, gesture: side, from: ms, to: ms }, false);
       } else if (y < rulerBandHeight) {
-        ruler.setPointerCapture(event.pointerId);
-        state.rulerDrag = {
-          path: state.scene.path, id: event.pointerId, x, start: state.scene.viewStart,
-          zoom: state.scene.zoom, mode: rulerGestureAt(x, y), left: state.view.left, right: state.view.right,
-          cycling: state.view.cycle, duration: state.view.duration,
-        };
-        refreshRulerCursor();
+        const mode = rulerGestureAt(x, y);
+        const isLocatorZone = y < rulerBandHeight / 2 || mode === "left" || mode === "right";
+        ruler.setPointerCapture?.(event.pointerId);
+        if (isLocatorZone) {
+          state.rulerDrag = {
+            path: state.scene.path, id: event.pointerId, x, start: state.scene.viewStart,
+            zoom: state.scene.zoom, mode, left: state.view.left, right: state.view.right,
+            cycling: state.view.cycle, duration: state.view.duration,
+          };
+          refreshRulerCursor();
+        } else {
+          const start = state.scene.viewStart;
+          const snapped = snapToActiveGrid(ms);
+          const clampedMs = optimisticSeek(snapped);
+          state.rulerDrag = {
+            path: state.scene.path, id: event.pointerId, x, start,
+            zoom: state.scene.zoom, mode: "scrub", lastSeekMs: clampedMs,
+          };
+          queueRulerSeek(state.scene.path, clampedMs);
+          refreshRulerCursor();
+        }
       } else {
         const bookmark = bookmarkNearFlag(ms, y);
         const target = bookmark ? null : waveformTarget(ms, y, bounds.height);
-        if (target) ctx.act({ kind: "waveform_object", path: state.scene.path, ...target, preview: false });
-        else ctx.act({ kind: "seek", ms: limit(bookmark?.time ?? ms, 0, state.view.duration) }, false);
+        if (target) {
+          ctx.act({ kind: "waveform_object", path: state.scene.path, ...target, preview: false });
+        } else if (bookmark) {
+          const clampedMs = optimisticSeek(bookmark.time);
+          queueRulerSeek(state.scene.path, clampedMs);
+        } else {
+          ruler.setPointerCapture?.(event.pointerId);
+          const start = state.scene.viewStart;
+          const snapped = snapToActiveGrid(ms);
+          const clampedMs = optimisticSeek(snapped);
+          state.rulerDrag = {
+            path: state.scene.path, id: event.pointerId, x, start,
+            zoom: state.scene.zoom, mode: "scrub", lastSeekMs: clampedMs,
+          };
+          queueRulerSeek(state.scene.path, clampedMs);
+          refreshRulerCursor();
+        }
       }
     });
     ruler.addEventListener("dblclick", event => {
@@ -798,6 +880,14 @@ export function attachTimeline(ctx) {
       const bounds = rulerPoint(event);
       const ms = state.scene.viewStart + bounds.x / state.scene.zoom;
       const { y } = bounds;
+      if (y < rulerBandHeight) {
+        const gesture = rulerGestureAt(bounds.x, y);
+        if ((y < rulerBandHeight / 2 && gesture === "move") || gesture === "left" || gesture === "right") {
+          event.preventDefault();
+          ctx.act({ kind: "cycle", on: !state.view.cycle }, false);
+        }
+        return;
+      }
       if (bookmarkNearFlag(ms, y)) return;
       const target = waveformTarget(ms, y, bounds.height);
       if (target) ctx.act({ kind: "waveform_object", path: state.scene.path, ...target, preview: true });
@@ -806,8 +896,15 @@ export function attachTimeline(ctx) {
       if (!state.rulerDrag || state.rulerDrag.id !== event.pointerId) return;
       const gesture = endRulerDrag(event);
       const { x } = rulerPoint(event);
-      // A click without a drag moves the playhead to the snapped time, on a flag or inside the range too.
+      if (gesture.mode === "scrub") {
+        const ms = snapToActiveGrid(gesture.start + x / gesture.zoom);
+        const clampedMs = optimisticSeek(ms);
+        if (clampedMs !== gesture.lastSeekMs) queueRulerSeek(gesture.path, clampedMs);
+        return;
+      }
+      // Clicking/double-clicking on the cycle bar (or a second click of a double-click) never seeks the playhead.
       const moved = Math.abs(x - gesture.x) >= 3;
+      if (!moved && (gesture.mode === "move" || event.detail >= 2)) return;
       const locator = gesture.mode === "left" || gesture.mode === "right";
       const from = gesture.start + gesture.x / gesture.zoom;
       ctx.act({
@@ -817,7 +914,10 @@ export function attachTimeline(ctx) {
     });
     for (const type of ["pointercancel", "lostpointercapture"]) {
       ruler.addEventListener(type, event => {
-        if (state.rulerDrag && state.rulerDrag.id === event.pointerId) endRulerDrag(event);
+        if (state.rulerDrag && state.rulerDrag.id === event.pointerId) {
+          const gesture = endRulerDrag(event);
+          if (gesture.mode === "scrub") state.rulerSeekTarget = null;
+        }
       });
     }
 

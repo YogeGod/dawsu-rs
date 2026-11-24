@@ -45,6 +45,8 @@ export function createState() {
     selectionLanesOnly: false,
     collapsedFamilies: new Set(),
     laneColours: new Map(),
+    laneColourUndo: [],
+    laneColourRedo: [],
     familyParents: new Map(),
     familyLayers: new Map(),
     laneRemoving: false,

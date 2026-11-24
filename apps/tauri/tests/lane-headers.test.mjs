@@ -328,3 +328,20 @@ test("app.js and the v3 tokens keep nothing the lane part replaced", async () =>
   const tokens = await readFile(new URL("../ui/src/tokens.css", import.meta.url), "utf8");
   assert.doesNotMatch(tokens, /--lane-|--folder-|hue = 25/);
 });
+
+test("Shift-click and Ctrl-click multi-lane selection includes the active anchor and the bottom lane", async () => {
+  const { evaluate } = await frontend();
+  evaluate(fixture);
+  // fixture has view.activeLane = 1 ("c2") and laneRows = ["soft", 0, 4, 1, 2, 5, 6, 3].
+  // Shift-clicking the bottom-most lane (row 3, key "k") right after load selects from activeLane through the bottom lane.
+  evaluate("laneHeaderAction('select', 3, { shiftKey: true })");
+  assert.equal(evaluate("JSON.stringify([...selectionLaneKeys])"), '["c2","s","sw","t","k"]');
+  const selectedRows = lanes(evaluate).filter(row => row.selected).map(row => row.row);
+  assert.deepEqual(selectedRows, [1, 2, 5, 6, 3]);
+  assert.equal(lanes(evaluate).at(-1).selected, true, "bottom-most lane header is marked selected");
+
+  // Ctrl-clicking from a fresh activeLane (with empty selectionLaneKeys) keeps both activeLane and the clicked lane.
+  evaluate("selectionLaneKeys.clear(); selectionLaneAnchor = null; laneHeaderAction('select', 3, { ctrlKey: true })");
+  assert.equal(evaluate("JSON.stringify([...selectionLaneKeys])"), '["c2","k"]');
+  assert.equal(lanes(evaluate).at(-1).selected, true, "bottom-most lane header is marked selected after Ctrl-click");
+});

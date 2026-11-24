@@ -5,6 +5,7 @@
   ],
   "permissions": [
     "core:event:default",
-    "allow-map-preview-objects"
+    "allow-map-preview-objects",
+    "allow-preview-skin-load"
   ]
 }

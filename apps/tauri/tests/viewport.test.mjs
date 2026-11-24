@@ -213,17 +213,25 @@ test("Centre keeps the playhead in the middle while following, and only while Fo
   await evaluate("act(null, false)");
   await settle();
   assert.equal(evaluate("scene.viewStart"), 1900);
-  // Near the start the view cannot scroll further back.
+  // Near the start Centre still keeps the playhead dead-center (negative viewStart allowed).
   status.position = 200;
   await evaluate("act(null, false)");
   await settle();
-  assert.equal(evaluate("scene.viewStart"), 0);
+  assert.equal(evaluate("scene.viewStart"), -300);
   calls.length = 0;
   await evaluate("act(null, false)");
   await settle();
   assert.ok(calls.every(call => call.action?.kind !== "view"), "no view change when the view already shows it");
+  // While paused and zooming out, Centre keeps the playhead dead-center.
+  status.playing = false;
+  await evaluate("changeView(0, 0.25)");
+  await settle();
+  assert.equal(evaluate("scene.viewStart"), 200 - 1000 / 0.25 / 2);
   // Centre off: the old paging, which leaves an on-screen playhead alone.
   centre = false;
+  status.playing = true;
+  await evaluate("changeView(0, 1)");
+  await settle();
   status.position = 900;
   await evaluate("act(null, false)");
   await settle();

@@ -66,9 +66,12 @@ export function sameUiView(a, b) {
     (a.panels?.laneNames === false) === (b.panels?.laneNames === false) &&
     Object.is(a.song, b.song) &&
     Object.is(a.main, b.main) &&
+    Object.is(a.hitsounds, b.hitsounds) &&
     (a.outputDevice || "") === (b.outputDevice || "") &&
     !!a.songMuted === !!b.songMuted &&
     !!a.songSolo === !!b.songSolo &&
+    !!a.hitsoundsMuted === !!b.hitsoundsMuted &&
+    !!a.hitsoundsSolo === !!b.hitsoundsSolo &&
     (a.status || "") === (b.status || "") &&
     !!a.showHome === !!b.showHome &&
     !!a.hasDocument === !!b.hasDocument &&

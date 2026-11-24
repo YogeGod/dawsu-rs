@@ -12,6 +12,7 @@ import { invoke } from "./lib/ipc.js";
 import { bridge } from "./lib/bridge.svelte.js";
 import * as commandList from "./lib/commands.js";
 import { nextGroup, stepInGroup } from "./lib/snap.js";
+import { applyColorConfig, readColorConfig } from "./lib/theme.js";
 import Boundary from "./lib/Boundary.svelte";
 import AuditionPill from "./parts/AuditionPill.svelte";
 import BrowserHead from "./parts/BrowserHead.svelte";
@@ -22,6 +23,7 @@ import LaneHeaders from "./parts/LaneHeaders.svelte";
 import Mixer from "./parts/Mixer.svelte";
 import PlayheadGroup from "./parts/PlayheadGroup.svelte";
 import ExportWindow from "./parts/ExportWindow.svelte";
+import ExportModal from "./parts/ExportModal.svelte";
 import DrumDetectWindow from "./parts/DrumDetectWindow.svelte";
 import EditorMenu from "./parts/EditorMenu.svelte";
 import GridOptions from "./parts/GridOptions.svelte";
@@ -74,6 +76,7 @@ const parts = {
   "bottom-panel": BottomPanel, mixer: Mixer,
   // The whole page of the Export window (export.html).
   "export-window": ExportWindow,
+  "export-modal": ExportModal,
   // The whole page of the drum detection window (drum.html).
   "drum-window": DrumDetectWindow,
   // The whole page of the map preview's own window (preview.html).
@@ -210,6 +213,7 @@ const uiBridge = {
 if (document.getElementById("grid")) {
   createEditor(globalThis, { ui: uiBridge });
 }
+applyColorConfig(readColorConfig());
 
 bridge.lanes = globalThis.currentLaneHeaders?.() ?? null;
 bridge.inspector = globalThis.currentInspector?.() ?? null;

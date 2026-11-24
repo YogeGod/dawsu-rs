@@ -10,12 +10,36 @@
   import Ramp from "../icons/TrendingUp.svg?raw";
 
   const icons = { Select, Draw, Erase, Mute, Grab, Range, Ramp };
-  const tool = $derived(bridge.view?.tool ?? null);
+  let altHeld = $state(false);
+  const actualTool = $derived(bridge.view?.tool ?? null);
+  const tool = $derived(altHeld && actualTool === "Select" ? "Draw" : actualTool);
   const disabled = $derived(bridge.disabled);
   const pills = $derived(toolPills(tool));
   const buttons = {};
   let well;
   let hadFocus = false;
+
+  function pickTool(name) {
+    if (bridge.view && bridge.view.tool !== name) {
+      bridge.view = { ...bridge.view, tool: name };
+    }
+    act(toolAction(name));
+  }
+
+  $effect(() => {
+    const syncAlt = (event) => {
+      altHeld = !!(event.altKey && !event.ctrlKey && !event.metaKey && !event.getModifierState?.("AltGraph"));
+    };
+    const clearAlt = () => { altHeld = false; };
+    window.addEventListener("keydown", syncAlt, true);
+    window.addEventListener("keyup", syncAlt, true);
+    window.addEventListener("blur", clearAlt);
+    return () => {
+      window.removeEventListener("keydown", syncAlt, true);
+      window.removeEventListener("keyup", syncAlt, true);
+      window.removeEventListener("blur", clearAlt);
+    };
+  });
 
   // The fourth pill shows an off-toolbar tool by its icon only; pressing it opens the right-click tool picker.
   function openPicker(event) {
@@ -28,11 +52,11 @@
   // A pick from the picker gives focus back to the fourth pill, which the new tool then replaces:
   // keep the focus in the toolbar on the new tool's pill.
   $effect.pre(() => {
-    tool;
+    actualTool;
     hadFocus = !!well?.contains(document.activeElement);
   });
   $effect(() => {
-    const current = tool;
+    const current = actualTool;
     if (hadFocus && current && !well.contains(document.activeElement)) buttons[current]?.focus();
   });
 </script>
@@ -41,7 +65,7 @@
   {#each pills as name, index (name)}
     {#if index < 3}
       <button type="button" class="ui-pill" aria-pressed={name === tool} title={`${name} (${index + 1})`} {disabled}
-        bind:this={buttons[name]} onclick={() => act(toolAction(name))}>{@html icons[name]}{name}</button>
+        bind:this={buttons[name]} onclick={() => pickTool(name)}>{@html icons[name]}{name}</button>
     {:else}
       <button data-more-tools type="button" class="ui-pill ui-pill-icon current" aria-haspopup="menu" aria-label={name} title={`${name}, More tools (4)`}
         {disabled} bind:this={buttons[name]} onclick={openPicker}>{@html icons[name]}<span aria-hidden="true">▾</span></button>

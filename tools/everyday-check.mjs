@@ -362,15 +362,11 @@ async function fromMenu(menu, row) {
   await button.click();
 }
 async function pickTool(name) {
-  // Select, Draw and Erase have pills (a fourth pill shows a picked tool by its icon only).
+  // Select, Draw and Erase have pills; other tools switch directly via tool action (right-click tool popup was removed).
   const pill = page().locator('[aria-label="Editing tools"]').getByRole("button", { name, exact: true });
   if (["Select", "Draw", "Erase"].includes(name)) await pill.click({ timeout: 5000 });
   else {
-    // Mute, Grab, Range and Ramp are in the right-click picker on the timeline.
-    const box = await read(() => document.getElementById("grid").getBoundingClientRect().toJSON());
-    await page().mouse.click(box.x + box.width - 20, box.y + box.height - 10, { button: "right" });
-    await until(() => !document.getElementById("editor-menu").hidden, null, "the right-click tool picker did not open", 4000);
-    await menuRow(name).click();
+    await read(toolName => window.act({ kind: "tool", name: toolName }, false), name);
   }
   await until(name => window.view.tool === name, name, `the tool stayed ${await read(() => window.view.tool)}, not ${name}`, 4000);
 }
@@ -712,9 +708,10 @@ try {
 
   await step("Open and close the Export window", async () => {
     await page().click("#export-entry");
-    const window = await windowOpened("export.html");
-    await window.getByRole("button", { name: "Cancel" }).click();
-    await windowClosed(window, "Export");
+    const dialog = page().getByRole("dialog", { name: "Export" });
+    await dialog.waitFor({ state: "visible" });
+    await dialog.getByRole("button", { name: "Cancel" }).click();
+    await dialog.waitFor({ state: "hidden" });
   });
 
   await step("Open and close the drum window", async () => {

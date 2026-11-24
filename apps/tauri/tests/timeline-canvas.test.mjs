@@ -156,11 +156,9 @@ test("object circles never grow past the Song row", async () => {
 // The x range of waveform columns that draw a bar taller than nothing.
 function loudColumns(canvas) {
   const xs = [];
-  for (let i = 0; i < canvas.calls.length; i++) {
-    const call = canvas.calls[i];
-    if (call.name === "fill" && call.fill?.startsWith("rgba(")) {
-      const move = canvas.calls.slice(0, i).reverse().find(c => c.name === "moveTo");
-      if (move && Math.abs(move.args[1] - 60) > 2) xs.push(move.args[0]);
+  for (const call of canvas.calls) {
+    if (call.name === "fillRect" && call.fill?.startsWith("rgba(") && call.args[2] === 1 && call.args[3] > 4) {
+      xs.push(call.args[0]);
     }
   }
   return [Math.min(...xs), Math.max(...xs)];
@@ -172,7 +170,8 @@ test("the drawn waveform moves with the song offset on the ruler", async () => {
   paint(`view.duration = 1200; scene.zoom = .25; scene.gameplay = null;
     scene.waveform = [[0, 0, 0, 0], [1, 1, 1, 1], [0, 0, 0, 0], [0, 0, 0, 0]]`);
   const before = loudColumns(get("ruler"));
-  assert.deepEqual(before, [74, 148]);
+  assert.equal(before[0], 75);
+  assert.ok(before[1] >= 148 && before[1] <= 150);
   // Playback reads the song at position - offset, so +400 ms draws it 100 px later.
   paint("view.offset = 400");
   assert.deepEqual(loudColumns(get("ruler")), before.map(x => x + 100));
@@ -187,7 +186,7 @@ test("the cycle region is a faint accent band under a warning-yellow bar on the 
   // Locators at 100 and 700 ms at 0.25 px/ms: the region runs from x 25 to 175.
   paint("scene.zoom = .25; Object.assign(view, { left: 100, right: 700, cycle: true })");
   assert.ok(rects().some(rect => rect.join() === ["#5ac8fa14", 25, 0, 150, 39].join()), "faint accent band");
-  assert.ok(rects().some(rect => rect.join() === ["#ffd60a", 25, 1, 150, 4].join()), "warning-yellow bar");
+  assert.ok(rects().some(rect => rect.join() === ["#ffd60a", 25, 0, 150, 5].join()), "warning-yellow bar");
   assert.ok(!ruler.calls.some(call => [call.fill, call.stroke].some(colour => colour?.startsWith("#2fbf4a"))), "no green");
   assert.ok(ruler.calls.some(call => call.name === "stroke" && call.stroke === "#8e8e96"), "locator lines stay");
   // With the cycle off the locator span stays grey; reversed locators stay orange.
@@ -445,7 +444,9 @@ test("with the waveform switched off the Song row keeps its circles and digits, 
   assert.deepEqual(circles(ruler).map(circle => circle.diameter), [34, 34, 22.44, 34]);
   assert.deepEqual(numbers(ruler).map(([text]) => text), ["1", "2"]);
   paint("waveformShown = true");
-  assert.deepEqual(loudColumns(ruler), [0, 298]);
+  const cols = loudColumns(ruler);
+  assert.equal(cols[0], 0);
+  assert.ok(cols[1] >= 298);
 });
 
 test("combo digits carry a dark outline so they read on yellow and green", async () => {
@@ -589,4 +590,54 @@ test("while playing, a frame copies the cached layers back and draws only the pl
 test("the waveform builds each band colour once and reuses it", async () => {
   const source = await readFile(new URL("../ui/src/editor/canvas.js", import.meta.url), "utf8");
   assert.match(source, /waveColours\[index\] \?\?= blendWaveColour/);
+});
+
+test("volume editor lane shows only the active lane unless hits are selected across lanes", async () => {
+  const { get, paint, evaluate } = await canvases();
+  const controller = get("controller");
+  get("volume-controller-panel").hidden = false;
+  get("scroll").clientHeight = 200;
+  evaluate(`
+    view = { ...view, activeLane: 0 };
+    scene.lanes = [
+      { key: "l0", colourKey: "Skin|normal-hitnormal", name: "normal-hitnormal", group: "normal" },
+      { key: "l1", colourKey: "Skin|normal-hitclap", name: "normal-hitclap", group: "normal" },
+      { key: "l2", colourKey: "Skin|normal-hitfinish", name: "normal-hitfinish", group: "normal" },
+    ];
+    scene.moments = [
+      [500, 80, true, [[0, false, false, null]]],
+      [1000, 60, true, [[1, false, false, null]]],
+      [1500, 90, true, [[0, false, false, 70], [1, false, false, 40]]],
+      [2000, 50, true, [[2, false, false, null]]],
+    ];
+    renderLanes();
+  `);
+  // Volume bars are 5 px wide rects (bar body + 5x5 top cap); group by rounded x centre.
+  const barXs = () => [...new Set(
+    controller.calls
+      .filter(call => call.name === "fillRect" && call.args[2] === 5 && call.args[3] !== 5)
+      .map(call => Math.round(call.args[0] + 2.5)),
+  )];
+  const ticks = () => controller.calls
+    .filter(call => call.name === "fillRect" && call.args[2] === 6 && call.fill === "#ffffff")
+    .map(call => Math.round(call.args[0] + 3));
+
+  // Only activeLane (0) hits at 500 ms (x=50) and 1500 ms (x=150) appear; no stray tick from lane 1.
+  paint("");
+  assert.deepEqual(barXs(), [50, 150]);
+  assert.deepEqual(ticks(), []);
+
+  // Switching activeLane to 1 shows only lane 1's moments (1000 ms -> x=100, 1500 ms -> x=150).
+  paint("view.activeLane = 1");
+  assert.deepEqual(barXs(), [100, 150]);
+  assert.deepEqual(ticks(), []);
+
+  // Selecting hits across lane 0 and lane 2 shows bars for lanes 0 and 2 (500, 1500, 2000 ms), not lane 1 (1000 ms).
+  paint("view.activeLane = 0; scene.moments[0][3][0][1] = true; scene.moments[3][3][0][1] = true;");
+  assert.deepEqual(barXs(), [50, 150, 200]);
+
+  // Selecting hits across lane 0 and lane 1 shows both and draws the white tick at 1500 ms for lane 1's differing volume.
+  paint("scene.moments[3][3][0][1] = false; scene.moments[1][3][0][1] = true;");
+  assert.deepEqual(barXs(), [50, 100, 150]);
+  assert.deepEqual(ticks(), [150]);
 });

@@ -121,7 +121,7 @@ test("the Mixer gets one strip per used lane in lane-list order, with the header
       ["Normal", "Drum", "normal", 6], ["Kick", "File", "file", 5]]);
   for (const strip of strips) assert.equal(strip.number, numbers.get(strip.row), strip.name);
   assert.deepEqual(strips[0], { key: "lane:0", row: 0, number: 1, name: "Normal", set: "Soft", icon: "normal",
-    colour: null, selected: false, muted: false, solo: false, quiet: true });
+    colour: null, selected: false, muted: false, solo: false, gain: 1, quiet: true });
   assert.deepEqual(strips.map(strip => [strip.muted, strip.solo, strip.quiet]).slice(2),
     [[false, true, false], [false, false, true], [true, false, true]]);
   assert.deepEqual(JSON.parse(JSON.stringify(handed)), strips, "handed to the bundle");

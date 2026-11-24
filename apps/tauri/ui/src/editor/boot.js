@@ -74,7 +74,7 @@ const exportedMethods = [
   "refreshLaneToolbar", "changeView", "stepWheelSnap", "fitTimeline",
   "modal", "closeModal", "showOutputProblem", "renderDialogs",
   "openMergeSettings", "openGenerate", "openNewDifficulty", "openCopy",
-  "openLaneColour", "openReplaceSample", "openMap", "goHome", "confirmRevertToOriginal",
+  "openLaneColour", "openReplaceSample", "openMap", "openFromOsu", "goHome", "confirmRevertToOriginal",
   "openSiblingDifficulty", "chooseSiblingDifficulty", "showTimelineEdit",
   "editBookmark", "openTimeSignatures",
   "openFolders", "openAudioOutput", "openViewSettings", "openPreferences", "showHelp", "showShortcutEditor",
@@ -205,6 +205,8 @@ export function createEditor(env = globalThis, { ui = null, autoStart = true, ex
         return;
       case "open":
         return ctx.openMap();
+      case "openFromOsu":
+        return ctx.openFromOsu();
       case "importOsz":
         return ctx.run(async () => ctx.show(await invoke("pick_map", { archiveOnly: true })));
       case "folders":
@@ -260,9 +262,10 @@ export function createEditor(env = globalThis, { ui = null, autoStart = true, ex
   $("save").addEventListener("click", () => {
     if (state.scene && !state.view.busy) ctx.command("save");
   });
-  // The Export window opens beside the editor. Generate, Copy and Merge settings stay until it replaces them.
+  // Export opens inside the editor as a modal dialog (falling back to the standalone window if not mounted).
   $("export-entry").addEventListener("click", () => {
-    invoke("open_export_window").catch((error) => { ctx.setStatusNotice(String(error)); });
+    if (typeof env.window.openExportModal === "function") env.window.openExportModal();
+    else invoke("open_export_window").catch((error) => { ctx.setStatusNotice(String(error)); });
   });
   $("song-mute").addEventListener("click", () => ctx.act({ kind: "song_muted", on: !state.view.songMuted }, false));
   $("song-solo").addEventListener("click", () => ctx.act({ kind: "song_solo", on: !state.view.songSolo }, false));

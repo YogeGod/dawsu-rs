@@ -19,11 +19,11 @@ const invoked = files => new Set(files.flatMap(({ text }) =>
 
 const exportPage = ["ui/src/lib/ipc.js", "ui/src/lib/export.js", "ui/src/parts/ExportWindow.svelte"];
 const exportCommands = ["export_view", "export_preview", "export_run", "close_export_window", "show_in_editor"];
-const drumPage = ["ui/src/lib/ipc.js", "ui/src/lib/drum.js", "ui/src/parts/DrumDetectWindow.svelte"];
+const drumPage = ["ui/src/lib/ipc.js", "ui/src/lib/drum.js", "ui/src/lib/drumVst3.js", "ui/src/parts/DrumDetectWindow.svelte"];
 const previewPage = ["ui/src/lib/ipc.js", "ui/src/parts/PreviewWindow.svelte", "ui/src/parts/PreviewCanvas.svelte"];
-const previewCommands = ["map_preview_objects"];
+const previewCommands = ["map_preview_objects", "preview_skin_load"];
 const drumCommands = ["drum_context", "drum_detect_start", "drum_review", "drum_listen",
-  "drum_listen_stop", "drum_apply", "drum_pick_stem", "close_drum_window"];
+  "drum_listen_stop", "drum_apply", "drum_pick_stem", "close_drum_window", "keysounds_action"];
 const nodeGraphPage = ["ui/src/lib/ipc.js", "ui/src/lib/node-graph.js", "ui/src/parts/NodeGraphWindow.svelte"];
 const nodeGraphCommands = ["node_graph_view", "node_graph_action", "node_graph_export_json",
   "node_graph_pick_open", "node_graph_pick_save", "node_graph_pick_audio", "close_node_graph_window", "show_in_editor"];
@@ -45,7 +45,7 @@ test("main may call every command its scripts and parts call, and opens Export",
   assert.ok(needed.length > 20, "the invoke pattern no longer matches editor sources");
   assert.deepEqual(needed.filter(command => !main.permissions.includes(permission(command))), []);
   assert.ok(main.permissions.includes("core:event:default"));
-  for (const command of [...exportCommands, ...drumCommands, ...nodeGraphCommands]) assert.ok(!main.permissions.includes(permission(command)), command);
+  for (const command of ["close_export_window", ...drumCommands.filter(c => c !== "vst3_scan" && c !== "keysounds_action"), ...nodeGraphCommands.filter(c => c !== "show_in_editor")]) assert.ok(!main.permissions.includes(permission(command)), command);
   assert.ok(main.permissions.includes(permission("drum_window_open")));
   assert.ok(main.permissions.includes(permission("open_node_graph_window")));
 });

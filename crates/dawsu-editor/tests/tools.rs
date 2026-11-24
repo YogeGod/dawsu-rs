@@ -194,6 +194,10 @@ impl ToolTarget for Fake {
         });
     }
 
+    fn insert_value(&self) -> i32 {
+        50
+    }
+
     fn toggle_listen_mute(&mut self, item: &u32) {
         if !self.muted.remove(item) {
             self.muted.insert(*item);
@@ -371,6 +375,54 @@ fn a_draw_stroke_is_one_undo_step() {
 }
 
 #[test]
+fn fast_draw_drag_fills_every_intermediate_snap_line_without_skipping() {
+    let mut f = Fake::new(&[]);
+    let mut tb = tool(ToolKind::Draw, &mut f);
+    // Single fast move jumping across 4 quarter-beat grid lines (0 -> 500 ms at 125 ms spacing).
+    tb.down(&mut f, p(10.0, 1));
+    tb.moved(&mut f, p(505.0, 1));
+    tb.up(&mut f, p(505.0, 1));
+    assert_eq!(
+        f.hits(),
+        vec![(0.0, 1), (125.0, 1), (250.0, 1), (375.0, 1), (500.0, 1)],
+        "every intermediate 1/4 snap line must be filled"
+    );
+    assert_eq!(f.history.steps(), vec!["Draw"]);
+
+    // Backward fast drag across 3 snap lines on another row (1000 -> 625 ms).
+    tb.down(&mut f, p(1000.0, 2));
+    tb.moved(&mut f, p(620.0, 2));
+    tb.up(&mut f, p(620.0, 2));
+    assert_eq!(
+        f.hits(),
+        vec![
+            (0.0, 1),
+            (125.0, 1),
+            (250.0, 1),
+            (375.0, 1),
+            (500.0, 1),
+            (625.0, 2),
+            (750.0, 2),
+            (875.0, 2),
+            (1000.0, 2),
+        ]
+    );
+    assert_eq!(f.history.steps(), vec!["Draw", "Draw"]);
+}
+
+#[test]
+fn fast_draw_drag_with_snap_off_does_not_spam_intermediate_hits() {
+    let mut f = Fake::new(&[]);
+    f.snap.on = false;
+    let mut tb = tool(ToolKind::Draw, &mut f);
+    tb.down(&mut f, p(100.0, 0));
+    tb.moved(&mut f, p(600.0, 0));
+    tb.up(&mut f, p(600.0, 0));
+    assert_eq!(f.hits(), vec![(100.0, 0), (600.0, 0)]);
+    assert_eq!(f.history.steps(), vec!["Draw"]);
+}
+
+#[test]
 fn a_draw_stroke_starting_on_a_hit_erases() {
     let mut f = Fake::new(&[(500.0, 0), (625.0, 0), (2000.0, 0)]);
     let mut tb = tool(ToolKind::Draw, &mut f);
@@ -432,8 +484,13 @@ fn ramp_sets_values_along_the_ramp_as_one_step_and_acts_as_select_in_the_grid() 
 }
 
 #[test]
-fn right_click_opens_the_tool_picker_and_never_deletes() {
-    for kind in ToolKind::ALL {
+fn right_click_opens_the_tool_picker_on_other_tools_and_empty_select() {
+    for kind in [
+        ToolKind::Grab,
+        ToolKind::Range,
+        ToolKind::Erase,
+        ToolKind::Mute,
+    ] {
         let mut f = Fake::new(&[(500.0, 0)]);
         let mut tb = tool(kind, &mut f);
         let right = with(p(500.0, 0), |e| e.button = PointerButton::Right);
@@ -447,6 +504,179 @@ fn right_click_opens_the_tool_picker_and_never_deletes() {
         );
         assert!(f.history.steps().is_empty());
     }
+    // Select (and Ramp in the grid, which acts as Select) opens the tool picker on empty space.
+    for kind in [ToolKind::Select, ToolKind::Ramp] {
+        let mut f = Fake::new(&[(500.0, 0)]);
+        let mut tb = tool(kind, &mut f);
+        let right = with(p(1000.0, 0), |e| e.button = PointerButton::Right);
+        tb.down(&mut f, right);
+        tb.up(&mut f, right);
+        assert_eq!(f.pickers, 1, "{kind:?} on empty space");
+        assert_eq!(f.hits(), vec![(500.0, 0)]);
+        assert!(f.history.steps().is_empty());
+    }
+}
+
+#[test]
+fn draw_delete_drag_erases_zoomed_out_and_fast_crossed_hits_in_own_row_as_one_step() {
+    // Hits at 500, 625, 750, 875 on row 0, plus a hit at 750 on row 1 and 2000 on row 0.
+    let mut f = Fake::new(&[
+        (500.0, 0),
+        (625.0, 0),
+        (750.0, 0),
+        (875.0, 0),
+        (750.0, 1),
+        (2000.0, 0),
+    ]);
+    f.selection.replace([0, 1, 4]);
+    let mut tb = tool(ToolKind::Draw, &mut f);
+    // Click 35 ms away from 500 ms (beyond 10 ms hit_test, but snaps to 500 ms on 1/4 grid).
+    tb.down(&mut f, p(535.0, 0));
+    // Fast drag straight to 870 ms (snaps to 875 ms) while drifting to row 1.
+    tb.moved(&mut f, p(870.0, 1));
+    tb.up(&mut f, p(870.0, 1));
+    assert_eq!(
+        f.hits(),
+        vec![(750.0, 1), (2000.0, 0)],
+        "erases every crossed hit on the starting row, leaves other rows untouched"
+    );
+    assert_eq!(f.history.steps(), vec!["Erase"]);
+    assert_eq!(f.selection.items(), &HashSet::from([4]));
+    assert_eq!(f.preview, ToolPreview::None);
+
+    // Undo restores all four deleted hits at once.
+    f.history.undo();
+    assert_eq!(f.hits().len(), 6);
+}
+
+#[test]
+fn draw_vertical_drag_adjusts_volume_for_stroke_notes_and_stops_on_release() {
+    let mut f = Fake::new(&[(2000.0, 0)]);
+    // Even if something was previously selected, Draw clears selection and never selects drawn notes.
+    f.selection.replace([0]);
+    let mut tb = tool(ToolKind::Draw, &mut f);
+    let at_y = |ms, row, y| with(p(ms, row), |e| e.y = y);
+    // Press at y = 100 -> creates hit at 0 ms with base volume 50.
+    tb.down(&mut f, at_y(0.0, 0, 100.0));
+    assert!(f.selection.is_empty(), "Draw must not leave selection active");
+    // Drag across 250 ms while drifting vertically -> re-anchors without changing volume while drawing.
+    tb.moved(&mut f, at_y(250.0, 0, 80.0));
+    let drawn_values = |f: &Fake| -> Vec<(f64, i32)> {
+        let mut v: Vec<(f64, i32)> = f
+            .history
+            .document()
+            .hits
+            .iter()
+            .filter(|h| h.time < 1000.0)
+            .map(|h| (h.time, h.value))
+            .collect();
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        v
+    };
+    assert_eq!(drawn_values(&f), vec![(0.0, 50), (125.0, 50), (250.0, 50)]);
+    // Stop horizontal drawing and deliberately drag UP by 78 px (60 px past 18 px deadzone -> +21 volume = 71).
+    tb.moved(&mut f, at_y(250.0, 0, 2.0));
+    assert_eq!(drawn_values(&f), vec![(0.0, 71), (125.0, 71), (250.0, 71)]);
+    // Drag far DOWN -> clamps to 5, and existing untouched hit at 2000 ms keeps 50.
+    tb.moved(&mut f, at_y(250.0, 0, 500.0));
+    assert_eq!(drawn_values(&f), vec![(0.0, 5), (125.0, 5), (250.0, 5)]);
+    assert_eq!(f.history.document().hits[0].value, 50);
+    // Drag far UP -> clamps to 100.
+    tb.moved(&mut f, at_y(250.0, 0, -400.0));
+    assert_eq!(drawn_values(&f), vec![(0.0, 100), (125.0, 100), (250.0, 100)]);
+    tb.up(&mut f, at_y(250.0, 0, -400.0));
+    assert!(f.selection.is_empty());
+    assert_eq!(f.history.steps(), vec!["Draw"]);
+    // Moving after release must not modify drawn notes.
+    tb.moved(&mut f, at_y(250.0, 0, 500.0));
+    assert_eq!(drawn_values(&f), vec![(0.0, 100), (125.0, 100), (250.0, 100)]);
+}
+
+#[test]
+fn alt_draw_from_select_adjusts_volume_and_never_selects_drawn_notes() {
+    let mut f = Fake::new(&[]);
+    let mut tb = tool(ToolKind::Select, &mut f);
+    let alt_y = |ms, row, y| {
+        with(p(ms, row), |e| {
+            e.mods = Mods::ALT;
+            e.y = y;
+        })
+    };
+    tb.down(&mut f, alt_y(0.0, 1, 100.0));
+    tb.moved(&mut f, alt_y(250.0, 1, 100.0));
+    // After finishing horizontal stroke, drag DOWN by 78 px (60 px past 18 px deadzone -> 50 - 21 = 29).
+    tb.moved(&mut f, alt_y(250.0, 1, 178.0));
+    tb.up(&mut f, alt_y(250.0, 1, 178.0));
+    let mut values: Vec<(f64, i32)> = f
+        .history
+        .document()
+        .hits
+        .iter()
+        .map(|h| (h.time, h.value))
+        .collect();
+    values.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    assert_eq!(values, vec![(0.0, 29), (125.0, 29), (250.0, 29)]);
+    assert!(f.selection.is_empty());
+    assert_eq!(tb.active(), ToolKind::Select);
+}
+
+#[test]
+fn draw_never_selects_or_starts_marquee_or_moves_hits() {
+    let mut f = Fake::new(&[(500.0, 0), (1000.0, 0)]);
+    let mut tb = tool(ToolKind::Draw, &mut f);
+    // Paint drag over empty space: no marquee, no selection change.
+    tb.down(&mut f, p(0.0, 0));
+    tb.moved(&mut f, p(250.0, 0));
+    assert_eq!(f.preview, ToolPreview::None);
+    assert!(f.selection.is_empty());
+    tb.up(&mut f, p(250.0, 0));
+    assert!(f.selection.is_empty());
+    assert_eq!(f.preview, ToolPreview::None);
+
+    // Click on an existing hit with Draw: erases instead of selecting/moving.
+    tb.down(&mut f, p(500.0, 0));
+    tb.moved(&mut f, p(625.0, 0));
+    tb.up(&mut f, p(625.0, 0));
+    assert!(f.selection.is_empty());
+    assert!(!f.hits().contains(&(500.0, 0)));
+    assert!(!f.hits().contains(&(625.0, 0)));
+}
+
+#[test]
+fn draw_right_click_drag_erases_crossed_hits_in_one_step() {
+    let mut f = Fake::new(&[(500.0, 0), (750.0, 1), (1000.0, 1), (2000.0, 0)]);
+    let mut tb = tool(ToolKind::Draw, &mut f);
+    let right = |ms, row| with(p(ms, row), |e| e.button = PointerButton::Right);
+    tb.down(&mut f, right(400.0, 0));
+    tb.moved(&mut f, right(1050.0, 1));
+    tb.up(&mut f, right(1050.0, 1));
+    assert_eq!(f.hits(), vec![(2000.0, 0)]);
+    assert_eq!(f.history.steps(), vec!["Erase"]);
+    assert_eq!(f.pickers, 0);
+}
+
+#[test]
+fn select_right_click_on_hit_deletes_immediately_and_drag_erases_in_one_step() {
+    let mut f = Fake::new(&[(500.0, 0), (750.0, 0), (1000.0, 1), (2000.0, 0)]);
+    f.selection.replace([0, 3]);
+    let mut tb = tool(ToolKind::Select, &mut f);
+    let right = |ms, row| with(p(ms, row), |e| e.button = PointerButton::Right);
+    tb.down(&mut f, right(500.0, 0));
+    assert_eq!(
+        f.hits(),
+        vec![(750.0, 0), (1000.0, 1), (2000.0, 0)],
+        "right-clicking a hit in Select deletes it immediately"
+    );
+    tb.moved(&mut f, right(1000.0, 1));
+    tb.up(&mut f, right(1000.0, 1));
+    assert_eq!(f.hits(), vec![(2000.0, 0)]);
+    assert_eq!(f.history.steps(), vec!["Erase"]);
+    assert_eq!(f.selection.items(), &HashSet::from([3]));
+    assert_eq!(f.pickers, 0);
+
+    // Undo restores all three erased hits in one step.
+    f.history.undo();
+    assert_eq!(f.hits().len(), 4);
 }
 
 #[test]

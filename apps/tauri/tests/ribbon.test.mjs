@@ -15,9 +15,9 @@ test("the ribbon compacts its grouped controls while keeping Save labeled", () =
   assert.doesNotMatch(save, /class="ribbon-(?:caption|tool-label)"/);
 });
 
-test("the sibling difficulty picker is available from the ribbon with the inspector hidden", () => {
-  const ribbon = html.match(/<div id="editor-ribbon"[^>]*>(.*?)<main id="editor-dock"/s)?.[1];
-  assert.match(ribbon, /<select id="difficulty"[^>]*data-doc/);
+test("the sibling difficulty picker is available from the top header bar with the inspector hidden", () => {
+  const header = html.match(/<header id="editor-header"[^>]*>(.*?)<\/header>/s)?.[1];
+  assert.match(header, /<select id="difficulty"[^>]*data-doc/);
   assert.equal([...html.matchAll(/id="difficulty"/g)].length, 1);
 });
 

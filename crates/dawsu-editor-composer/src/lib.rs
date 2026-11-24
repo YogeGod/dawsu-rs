@@ -647,6 +647,9 @@ impl ToolTarget for Composer {
             Ok::<_, Infallible>(())
         });
     }
+    fn insert_value(&self) -> i32 {
+        self.insert_volume
+    }
     fn toggle_listen_mute(&mut self, item: &HitKey) {
         if let Some(i) = self.listen_muted.iter().position(|k| k == item) {
             self.listen_muted.remove(i);

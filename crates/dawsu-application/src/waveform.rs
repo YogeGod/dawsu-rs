@@ -4,7 +4,7 @@
 //! 1. 1 ms resolution stereo peak points (`amp_l`, `amp_r`, clamped to `[0, 1]`).
 //! 2. 1024-sample Hann-windowed radix-2 FFT for Low (20–100 Hz), Mid (100–2000 Hz),
 //!    and High (2000–12000 Hz) intensities.
-//! 3. Gaussian weighted mean resampling down to at most `MAX_BINS` (12,000) bins.
+//! 3. Gaussian weighted mean resampling down to at most `MAX_BINS` (45,000) bins.
 //! 4. Track-wide normalization by `low_max`, `mid_max`, `high_max`.
 use dawsu_audio::AudioClip;
 
@@ -14,7 +14,7 @@ const LOW_MIN_HZ: f32 = 20.0;
 const MID_MIN_HZ: f32 = 100.0;
 const HIGH_MIN_HZ: f32 = 2000.0;
 const HIGH_MAX_HZ: f32 = 12000.0;
-const MAX_BINS: usize = 12_000;
+const MAX_BINS: usize = 45_000;
 const KERNEL_WIDTH_FACTOR: usize = 3;
 
 /// In-place radix-2 Cooley-Tukey forward FFT on a power-of-two buffer of `(re, im)` pairs.
@@ -395,14 +395,14 @@ mod tests {
         assert!((bins[50].amp_r - 0.25).abs() < 1e-4);
         assert!((bins[50].peak - 0.8).abs() < 1e-4);
 
-        // 20-second mono track (20,000 ms) resamples down to MAX_BINS (12,000).
+        // 60-second mono track (60,000 ms) resamples down to MAX_BINS (45,000).
         let long = AudioClip {
             sample_rate: 8_000,
             channels: 1,
-            samples: vec![0.5; 8_000 * 20],
+            samples: vec![0.5; 8_000 * 60],
         };
         let long_bins = analyse(&long);
         assert_eq!(long_bins.len(), MAX_BINS);
-        assert!((long_bins[6000].peak - 0.5).abs() < 0.02);
+        assert!((long_bins[MAX_BINS / 2].peak - 0.5).abs() < 0.02);
     }
 }

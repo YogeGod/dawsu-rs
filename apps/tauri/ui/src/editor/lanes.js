@@ -1,5 +1,9 @@
 // Lane ordering, folders, numbered families, drum view, lane headers, and Mixer strip models.
 import { laneSounds, sampleFolderNames } from "./helpers.js";
+import {
+  drumRowToMidiNote, previewDrumVst3Hit, readDrumVst3, sceneDrumHitsToNotes, syncDrumVst3Track,
+  vst3InstrumentOptions, writeDrumVst3,
+} from "../lib/drumVst3.js";
 
 export function attachLanes(ctx) {
   const { env, state, dom } = ctx;
@@ -298,6 +302,7 @@ export function attachLanes(ctx) {
         // Yoge, 2026-11-20 (ADR 0068): a lane is grey unless the mapper picked a colour.
         colour: state.laneColours.get(lane.colourKey) ?? null,
         selected: state.selectionLaneKeys.has(lane.key), muted: !!lane.muted, solo: !!lane.solo,
+        gain: typeof lane.gain === "number" ? lane.gain : 1,
         quiet: !!lane.muted || (anySolo && !lane.solo),
       };
     });
@@ -445,22 +450,27 @@ export function attachLanes(ctx) {
   function selectVolumeLane(row, event) {
     const key = state.scene.lanes[row].key;
     const toggle = !!(event.ctrlKey || event.metaKey);
+    const activeKey = state.view.activeLane != null ? state.scene.lanes[state.view.activeLane]?.key ?? null : null;
     if (!toggle) state.selectionLaneKeys.clear();
+    else if (state.selectionLaneKeys.size === 0 && activeKey != null) state.selectionLaneKeys.add(activeKey);
     const visible = event.shiftKey
       ? [...new Set(state.laneRows.filter(item => typeof item === "number").map(item => state.scene.lanes[item].key))]
       : [];
-    const start = visible.indexOf(state.selectionLaneAnchor);
+    const anchor = state.selectionLaneAnchor ?? activeKey;
+    const start = visible.indexOf(anchor);
     const end = visible.indexOf(key);
     if (start >= 0 && end >= 0) {
       for (const item of visible.slice(Math.min(start, end), Math.max(start, end) + 1)) {
         state.selectionLaneKeys.add(item);
       }
+      state.selectionLaneAnchor = anchor;
     } else {
       if (!toggle || !state.selectionLaneKeys.delete(key)) state.selectionLaneKeys.add(key);
       state.selectionLaneAnchor = key;
     }
     if (state.selectionLanesOnly) updateVolumeScope();
     ctx.renderLanes();
+    ctx.paintSoon();
   }
 
   function requestDrumMap() {
@@ -607,6 +617,17 @@ export function attachLanes(ctx) {
       // Unassigned rows stay readable: a muted colour, never a faded smudge.
       if (!row.assigned) label.style.color = "var(--editor-secondary)";
 
+      const midiNote = drumRowToMidiNote(row);
+      const midiBadge = makeButton("GM " + midiNote, () => {
+        if (!readDrumVst3(env.window?.localStorage ?? globalThis.localStorage).enabled) return;
+        ctx.run(async () => { await previewDrumVst3Hit(invoke, row); });
+      });
+      midiBadge.title = "General MIDI note " + midiNote + " (click to audition when VST3 drum sounds are on)";
+      midiBadge.style.fontSize = "11px";
+      midiBadge.style.padding = "2px 6px";
+      midiBadge.style.minWidth = "52px";
+      midiBadge.style.opacity = readDrumVst3(env.window?.localStorage ?? globalThis.localStorage).enabled ? "1" : "0.55";
+
       const select = env.document.createElement("select");
       select.setAttribute("aria-label", "Sample lane for " + row.name);
       select.style.minWidth = "210px";
@@ -630,7 +651,7 @@ export function attachLanes(ctx) {
       down.disabled = row.index === rows.length - 1;
 
       if (focusRowIndex !== null && row.index === focusRowIndex) focusedSelect = select;
-      line.append(label, select, up, down);
+      line.append(label, select, up, down, midiBadge);
       list.append(line);
     }
 
@@ -657,12 +678,123 @@ export function attachLanes(ctx) {
       detectNow,
     );
 
+    // 5. VST3 drum instrument toggle & selector (`dawsu.drumVst3` in localStorage).
+    const storage = env.window?.localStorage ?? globalThis.localStorage;
+    let drumVst3 = readDrumVst3(storage);
+    let vst3Plugins = [];
+
+    const vst3Toggle = env.document.createElement("input");
+    vst3Toggle.type = "checkbox";
+    vst3Toggle.checked = drumVst3.enabled;
+    const vst3Select = env.document.createElement("select");
+    vst3Select.setAttribute("aria-label", "VST3 drum instrument");
+    vst3Select.style.flex = "1 1 auto";
+    vst3Select.style.minWidth = "180px";
+    const vst3Status = env.document.createElement("div");
+    vst3Status.style.fontSize = "11px";
+    vst3Status.style.color = "var(--editor-secondary)";
+    vst3Status.style.marginTop = "4px";
+
+    const fillVst3Select = () => {
+      vst3Select.innerHTML = "";
+      vst3Select.append(new OptionCtor(vst3Plugins.length ? "Select VST3 drum instrument…" : "No VST3 instruments scanned", ""));
+      for (const choice of vst3Plugins) {
+        vst3Select.append(new OptionCtor(choice.name + (choice.vendor ? " · " + choice.vendor : ""), choice.id));
+      }
+      if (drumVst3.pluginId && vst3Plugins.some(c => c.id === drumVst3.pluginId)) {
+        vst3Select.value = drumVst3.pluginId;
+      } else if (drumVst3.pluginId && drumVst3.pluginName) {
+        vst3Select.append(new OptionCtor(drumVst3.pluginName, drumVst3.pluginId));
+        vst3Select.value = drumVst3.pluginId;
+      } else {
+        vst3Select.value = "";
+      }
+      vst3Select.disabled = !drumVst3.enabled;
+    };
+
+    const syncVst3 = async () => {
+      if (!drumVst3.enabled) return;
+      const picked = vst3Plugins.find(c => c.id === drumVst3.pluginId) ?? (drumVst3.pluginName ? {
+        id: drumVst3.pluginId,
+        name: drumVst3.pluginName,
+        path: drumVst3.pluginPath,
+      } : null);
+      const hits = sceneDrumHitsToNotes(state.scene, state.view.drumView ?? drumView);
+      try {
+        const result = await syncDrumVst3Track(invoke, { plugin: picked, hits });
+        vst3Status.textContent = result
+          ? `Drum Map (VST3) track ready${picked?.name ? " · " + picked.name : ""} (${result.addedNotes} mapped ${result.addedNotes === 1 ? "hit" : "hits"}).`
+          : "";
+      } catch (err) {
+        vst3Status.textContent = String(err);
+      }
+    };
+
+    const scanVst3 = async (andSync = false) => {
+      vst3Status.textContent = "Scanning VST3 instruments…";
+      try {
+        const report = await invoke("vst3_scan");
+        vst3Plugins = vst3InstrumentOptions(report);
+        if (drumVst3.enabled && !drumVst3.pluginId && vst3Plugins.length) {
+          drumVst3 = writeDrumVst3(storage, {
+            enabled: true,
+            pluginId: vst3Plugins[0].id,
+            pluginName: vst3Plugins[0].name,
+            pluginPath: vst3Plugins[0].path,
+          });
+        }
+        fillVst3Select();
+        vst3Status.textContent = vst3Plugins.length
+          ? `Found ${vst3Plugins.length} VST3 ${vst3Plugins.length === 1 ? "instrument" : "instruments"}.`
+          : "No VST3 instruments found. Install one in the system VST3 folder, then scan again.";
+        if (andSync && drumVst3.enabled) await syncVst3();
+      } catch (err) {
+        vst3Status.textContent = String(err);
+      }
+    };
+
+    const scanBtn = makeButton("Scan VST3", () => { ctx.run(() => scanVst3(drumVst3.enabled)); });
+    vst3Toggle.addEventListener("change", () => {
+      drumVst3 = writeDrumVst3(storage, { ...drumVst3, enabled: vst3Toggle.checked });
+      syncDrumVst3Button();
+      vst3Select.disabled = !drumVst3.enabled;
+      if (drumVst3.enabled) {
+        ctx.run(() => (vst3Plugins.length ? syncVst3() : scanVst3(true)));
+      } else {
+        vst3Status.textContent = "Using mapset sample lanes.";
+      }
+    });
+    vst3Select.addEventListener("change", () => {
+      const picked = vst3Plugins.find(c => c.id === vst3Select.value) ?? null;
+      drumVst3 = writeDrumVst3(storage, {
+        enabled: vst3Toggle.checked,
+        pluginId: picked?.id ?? "",
+        pluginName: picked?.name ?? "",
+        pluginPath: picked?.path ?? "",
+      });
+      if (drumVst3.enabled) ctx.run(() => syncVst3());
+    });
+    fillVst3Select();
+
+    const vst3Row = env.document.createElement("div");
+    vst3Row.className = "row drum-vst3-row";
+    vst3Row.style.display = "flex";
+    vst3Row.style.alignItems = "center";
+    vst3Row.style.flexWrap = "wrap";
+    vst3Row.style.gap = "8px";
+    vst3Row.style.marginTop = "10px";
+    vst3Row.append(labeled("Use VST3 sounds for drum map", vst3Toggle), vst3Select, scanBtn);
+
+    const vst3Wrap = env.document.createElement("div");
+    vst3Wrap.append(vst3Row, vst3Status);
+
     ctx.modal(
       "drum-map-setup",
       "Drum Map Setup",
-      [labeled("Preset", presetBar), list, options],
+      [labeled("Preset", presetBar), list, options, vst3Wrap],
       [["Done", () => ctx.closeModal(), true]],
     );
+    if (drumVst3.enabled) ctx.run(() => scanVst3(false));
     focusedSelect?.focus?.();
   }
 
@@ -731,6 +863,19 @@ export function attachLanes(ctx) {
     if (state.scene && !state.view.busy && !state.drag) ctx.changeView(state.scene.viewStart, state.scene.zoom, height);
   }
 
+  function syncDrumVst3Button() {
+    const btn = $("drums-vst3-toggle");
+    if (!btn) return;
+    const inDrums = !!state.view.drumView?.enabled;
+    btn.hidden = !inDrums;
+    const storage = env.window?.localStorage ?? globalThis.localStorage;
+    const cfg = readDrumVst3(storage);
+    btn.ariaPressed = String(!!cfg.enabled);
+    btn.title = cfg.enabled
+      ? ("Drum VST3: On" + (cfg.pluginName ? " · " + cfg.pluginName : "") + " (click to turn off)")
+      : "Drum VST3: Off (click to use VST3 drum sounds)";
+  }
+
   function bindLanes() {
     $("samples-view").addEventListener("click", () => {
       if (state.scene && !state.view.busy && !state.drag && state.view.drumView?.enabled) {
@@ -742,6 +887,38 @@ export function attachLanes(ctx) {
       if (state.view.drumView?.enabled) openDrumMapSetup();
       else setDrumView(true);
     });
+    const vst3Btn = $("drums-vst3-toggle");
+    if (vst3Btn) {
+      vst3Btn.addEventListener("click", () => {
+        if (!state.scene || state.view.busy || state.drag || !state.view.drumView?.enabled) return;
+        const storage = env.window?.localStorage ?? globalThis.localStorage;
+        const current = readDrumVst3(storage);
+        const nextEnabled = !current.enabled;
+        let next = writeDrumVst3(storage, { ...current, enabled: nextEnabled });
+        syncDrumVst3Button();
+        renderLanes();
+        if (!nextEnabled) return;
+        ctx.run(async () => {
+          let plugin = next.pluginName ? { id: next.pluginId, name: next.pluginName, path: next.pluginPath } : null;
+          if (!plugin) {
+            const report = await invoke("vst3_scan");
+            const choices = vst3InstrumentOptions(report);
+            if (choices.length) {
+              plugin = choices[0];
+              next = writeDrumVst3(storage, {
+                enabled: true,
+                pluginId: plugin.id,
+                pluginName: plugin.name,
+                pluginPath: plugin.path,
+              });
+              syncDrumVst3Button();
+            }
+          }
+          const hits = sceneDrumHitsToNotes(state.scene, state.view.drumView);
+          await syncDrumVst3Track(invoke, { plugin, hits });
+        });
+      });
+    }
   }
 
   Object.assign(ctx, {
@@ -751,7 +928,7 @@ export function attachLanes(ctx) {
     refreshLanePresentation, groupedLaneRows, renderLanes, currentMixer,
     mixerModel, currentLaneHeaders, laneHeaderModel, laneHeaderAction,
     mixSelectedLanes, volumeScopeHint, updateVolumeScope, selectVolumeLane,
-    requestDrumMap, setDrumView, drumMapAction, openDrumMapSetup, deletableLane, openAddLane, deleteActiveLane,
+    requestDrumMap, setDrumView, drumMapAction, openDrumMapSetup, syncDrumVst3Button, deletableLane, openAddLane, deleteActiveLane,
     laneTint, setLaneHeight, bindLanes,
   });
 }

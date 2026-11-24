@@ -3,9 +3,9 @@
 //! The tool box drives one stroke at a time against a `ToolTarget` the composer implements. Every
 //! change a stroke makes runs in one edit transaction (begin on Down, commit on Up, cancel on Esc),
 //! so a drag is one undo step that is visible while it runs and fully rolled back when cancelled.
-//! Right-click opens the tool picker and never deletes. Mute is listening-only: no transaction.
-//! Behaviour follows the 3.1.x arrange view and piano roll (the tool table in
-//! `later/design-details.md`).
+//! Right-click erases in Draw (and on a hit in Select), and opens the tool picker elsewhere. Mute
+//! is listening-only: no transaction. Behaviour follows the 3.1.x arrange view and piano roll (the
+//! tool table in `later/design-details.md`).
 
 use crate::commands::{CommandDefinition, MouseAction};
 use crate::keys::{Key, KeyCombination as K, Mods};
@@ -108,8 +108,59 @@ pub trait ToolTarget {
     fn snap(&self, time: SongTime) -> SongTime;
     /// Every snapped time between `from` and `to` (inclusive of `snap(to)`), in drag order,
     /// so fast Draw drags never skip intermediate grid lines.
-    fn snap_steps(&self, _from: SongTime, to: SongTime) -> Vec<SongTime> {
-        vec![self.snap(to)]
+    fn snap_steps(&self, from: SongTime, to: SongTime) -> Vec<SongTime> {
+        const DEDUP_MS: f64 = 1.0;
+        const MAX_STEPS: usize = 256;
+        let start = self.snap(from);
+        let end = self.snap(to);
+        if (end.ms() - start.ms()).abs() < DEDUP_MS {
+            return vec![end];
+        }
+        // If a tiny offset away from `start` isn't pulled back by `snap`, snapping is off.
+        let probe = SongTime::from_ms(start.ms() + 0.123);
+        if (self.snap(probe).ms() - probe.ms()).abs() < 1e-6 {
+            return vec![end];
+        }
+        let forward = end.ms() > start.ms();
+        let (lo, hi) = if forward {
+            (start.ms(), end.ms())
+        } else {
+            (end.ms(), start.ms())
+        };
+        let mut found = Vec::new();
+        let mut stack = vec![(lo, hi)];
+        while let Some((a, b)) = stack.pop() {
+            if found.len() >= MAX_STEPS || b - a < DEDUP_MS {
+                continue;
+            }
+            let mid = 0.5 * (a + b);
+            let s = self.snap(SongTime::from_ms(mid)).ms();
+            if s > a + DEDUP_MS && s < b - DEDUP_MS {
+                found.push(s);
+                stack.push((s, b));
+                stack.push((a, s));
+            }
+        }
+        found.sort_by(f64::total_cmp);
+        let mut steps: Vec<SongTime> = Vec::with_capacity(found.len() + 1);
+        for ms in found {
+            if steps
+                .last()
+                .is_none_or(|prev| (ms - prev.ms()).abs() >= DEDUP_MS)
+            {
+                steps.push(SongTime::from_ms(ms));
+            }
+        }
+        if !forward {
+            steps.reverse();
+        }
+        if steps
+            .last()
+            .is_none_or(|prev| (end.ms() - prev.ms()).abs() >= DEDUP_MS)
+        {
+            steps.push(end);
+        }
+        steps
     }
     /// The snapped offset for dragging an item at `from` by `raw_ms`.
     fn snap_offset(&self, from: SongTime, raw_ms: f64) -> f64;
@@ -124,6 +175,10 @@ pub trait ToolTarget {
     fn delete(&mut self, items: &[Self::Item]);
     fn move_by(&mut self, items: &[Self::Item], delta_ms: f64, delta_rows: i32);
     fn set_values(&mut self, values: &[(Self::Item, i32)]);
+    /// The starting volume/value for newly drawn items (baseline for vertical drag adjustment).
+    fn insert_value(&self) -> i32 {
+        100
+    }
 
     /// Listening and view actions: never undo steps.
     fn toggle_listen_mute(&mut self, item: &Self::Item);
@@ -220,6 +275,10 @@ impl ToolKind {
                     "Double-click empty space (Select tool)",
                     "Insert an item there, as Draw would"
                 ),
+                m!(
+                    "Right-click a hit / drag (Select)",
+                    "Delete the hit and any hits dragged across"
+                ),
                 m!("Right-click in the grid", "Pick a tool"),
             ],
             ToolKind::Grab => &[m!("Drag (Grab)", "Pan time and rows")],
@@ -230,8 +289,9 @@ impl ToolKind {
             ToolKind::Draw => &[
                 m!(
                     "Click / drag (Draw)",
-                    "Paint items; a stroke starting on an item erases"
+                    "Paint items; a stroke starting on an item erases in that lane"
                 ),
+                m!("Right-click / drag (Draw)", "Erase hits dragged across"),
                 m!("Alt+drag", "Draw with any tool"),
             ],
             ToolKind::Erase => &[m!(
@@ -274,8 +334,16 @@ enum Stroke<I> {
     Paint {
         row: i32,
         last_time: SongTime,
+        start_y: f64,
+        base_volume: i32,
+        current_volume: i32,
+        volume_adjusted: bool,
+        created: Vec<I>,
     },
-    Wipe,
+    Wipe {
+        row: i32,
+        last_time: SongTime,
+    },
     Erase {
         last: PointerInput,
     },
@@ -320,29 +388,89 @@ impl<I: Clone + Eq + Hash> ToolBox<I> {
         self.stroke.is_some()
     }
 
-    pub fn down<T: ToolTarget<Item = I>>(&mut self, target: &mut T, e: PointerInput) {
-        if self.stroke.is_some() {
-            return;
-        }
-        if e.button == PointerButton::Right {
-            target.open_tool_picker(&e);
-            return;
-        }
-        if e.button != PointerButton::Left {
-            return;
-        }
-        self.saved_selection = Some(target.selection().snapshot());
+    fn effective_tool(&self, e: &PointerInput) -> ToolKind {
         let tool = match e.surface {
             PointerSurface::ValueLane if e.mods.shift() => ToolKind::Ramp,
             PointerSurface::Grid if e.mods.alt() => ToolKind::Draw,
             _ => self.active,
         };
         // The Ramp tool acts as Select in the grid.
-        let tool = if tool == ToolKind::Ramp && e.surface == PointerSurface::Grid {
+        if tool == ToolKind::Ramp && e.surface == PointerSurface::Grid {
             ToolKind::Select
         } else {
             tool
-        };
+        }
+    }
+
+    /// Hits that a Draw press/move at `e` on `row` targets: checks the snapped grid position
+    /// (matching the 5 ms merge window so zoomed-out clicks on a hit still erase it), and falls
+    /// back to `hit_test` when snapping is off.
+    fn draw_hits_at<T: ToolTarget<Item = I>>(
+        target: &T,
+        e: &PointerInput,
+        row: i32,
+        at: SongTime,
+    ) -> Vec<I> {
+        let mut hits = target.in_range(
+            SongTime::from_ms(at.ms() - 5.0),
+            SongTime::from_ms(at.ms() + 5.0),
+            row,
+            row,
+        );
+        if hits.is_empty()
+            && e.row == row
+            && (at.ms() - e.time.ms()).abs() < 1e-6
+            && let Some(hit) = target.hit_test(e)
+        {
+            hits.push(hit);
+        }
+        hits
+    }
+
+    pub fn down<T: ToolTarget<Item = I>>(&mut self, target: &mut T, e: PointerInput) {
+        if self.stroke.is_some() {
+            return;
+        }
+        let tool = self.effective_tool(&e);
+        if e.button == PointerButton::Right {
+            match tool {
+                ToolKind::Draw => {
+                    self.saved_selection = Some(target.selection().snapshot());
+                    target.begin("Erase");
+                    let at = target.snap(e.time);
+                    let mut initial = Self::draw_hits_at(target, &e, e.row, at);
+                    if let Some(hit) = target.hit_test(&e)
+                        && !initial.contains(&hit)
+                    {
+                        initial.push(hit);
+                    }
+                    if !initial.is_empty() {
+                        for item in &initial {
+                            target.selection().remove(item);
+                        }
+                        target.delete(&initial);
+                    }
+                    self.stroke = Some(Stroke::Erase { last: e });
+                }
+                ToolKind::Select => {
+                    if let Some(hit) = target.hit_test(&e) {
+                        self.saved_selection = Some(target.selection().snapshot());
+                        target.begin("Erase");
+                        target.selection().remove(&hit);
+                        target.delete(&[hit]);
+                        self.stroke = Some(Stroke::Erase { last: e });
+                    } else {
+                        target.open_tool_picker(&e);
+                    }
+                }
+                _ => target.open_tool_picker(&e),
+            }
+            return;
+        }
+        if e.button != PointerButton::Left {
+            return;
+        }
+        self.saved_selection = Some(target.selection().snapshot());
         match tool {
             ToolKind::Select => self.select_down(target, e),
             ToolKind::Grab => self.stroke = Some(Stroke::Pan { last: e }),
@@ -359,18 +487,34 @@ impl<I: Clone + Eq + Hash> ToolBox<I> {
                 });
             }
             ToolKind::Draw => {
-                if let Some(hit) = target.hit_test(&e) {
+                let at = target.snap(e.time);
+                let hits = Self::draw_hits_at(target, &e, e.row, at);
+                if !hits.is_empty() {
                     target.begin("Erase");
-                    target.selection().remove(&hit);
-                    target.delete(&[hit]);
-                    self.stroke = Some(Stroke::Wipe);
+                    for item in &hits {
+                        target.selection().remove(item);
+                    }
+                    target.delete(&hits);
+                    self.stroke = Some(Stroke::Wipe {
+                        row: e.row,
+                        last_time: e.time,
+                    });
                 } else {
+                    target.selection().clear();
                     target.begin("Draw");
-                    let at = target.snap(e.time);
-                    target.insert(at, e.row);
+                    let base_volume = target.insert_value().clamp(5, 100);
+                    let mut created = Vec::new();
+                    if let Some(item) = target.insert(at, e.row) {
+                        created.push(item);
+                    }
                     self.stroke = Some(Stroke::Paint {
                         row: e.row,
                         last_time: at,
+                        start_y: e.y,
+                        base_volume,
+                        current_volume: base_volume,
+                        volume_adjusted: false,
+                        created,
                     });
                 }
             }
@@ -525,31 +669,92 @@ impl<I: Clone + Eq + Hash> ToolBox<I> {
                     to_row: start.row.max(e.row),
                 });
             }
-            Stroke::Paint { row, last_time } => {
+            Stroke::Paint {
+                row,
+                last_time,
+                start_y,
+                base_volume,
+                current_volume,
+                volume_adjusted,
+                created,
+            } => {
+                let mut added_any = false;
                 for at in target.snap_steps(*last_time, e.time) {
+                    if (at.ms() - last_time.ms()).abs() < 1.0 {
+                        continue;
+                    }
                     if target
                         .in_range(
-                            SongTime::from_ms(at.ms() - 0.5),
-                            SongTime::from_ms(at.ms() + 0.5),
+                            SongTime::from_ms(at.ms() - 1.0),
+                            SongTime::from_ms(at.ms() + 1.0),
                             *row,
                             *row,
                         )
                         .is_empty()
+                        && let Some(item) = target.insert(at, *row)
                     {
-                        target.insert(at, *row);
+                        created.push(item);
+                        added_any = true;
                     }
                     *last_time = at;
                 }
-            }
-            Stroke::Wipe => {
-                if let Some(hit) = target.hit_test(&e) {
-                    target.selection().remove(&hit);
-                    target.delete(&[hit]);
+                const DEADZONE_PX: f64 = 18.0;
+                const VOLUME_PER_PX: f64 = 0.35;
+                if added_any && !*volume_adjusted {
+                    // While actively drawing horizontally, re-anchor Y so natural hand drift never edits volume.
+                    *start_y = e.y;
+                } else {
+                    let dy = *start_y - e.y;
+                    if *volume_adjusted || dy.abs() >= DEADZONE_PX {
+                        *volume_adjusted = true;
+                        let effective_dy = if dy > 0.0 {
+                            (dy - DEADZONE_PX).max(0.0)
+                        } else {
+                            (dy + DEADZONE_PX).min(0.0)
+                        };
+                        let next_volume =
+                            (*base_volume + (effective_dy * VOLUME_PER_PX).round() as i32).clamp(5, 100);
+                        if (next_volume != *current_volume || added_any) && !created.is_empty() {
+                            *current_volume = next_volume;
+                            let updates: Vec<(I, i32)> =
+                                created.iter().cloned().map(|item| (item, *current_volume)).collect();
+                            target.set_values(&updates);
+                        }
+                    }
                 }
+            }
+            Stroke::Wipe { row, last_time } => {
+                let (from, to) = ordered(*last_time, e.time);
+                let mut crossed = target.in_range(from, to, *row, *row);
+                let at = target.snap(e.time);
+                for item in Self::draw_hits_at(target, &e, *row, at) {
+                    if !crossed.contains(&item) {
+                        crossed.push(item);
+                    }
+                }
+                if e.row == *row
+                    && let Some(hit) = target.hit_test(&e)
+                    && !crossed.contains(&hit)
+                {
+                    crossed.push(hit);
+                }
+                if !crossed.is_empty() {
+                    for item in &crossed {
+                        target.selection().remove(item);
+                    }
+                    target.delete(&crossed);
+                }
+                *last_time = e.time;
             }
             Stroke::Erase { last } => {
                 let (from, to) = ordered(last.time, e.time);
-                let crossed = target.in_range(from, to, last.row.min(e.row), last.row.max(e.row));
+                let mut crossed =
+                    target.in_range(from, to, last.row.min(e.row), last.row.max(e.row));
+                if let Some(hit) = target.hit_test(&e)
+                    && !crossed.contains(&hit)
+                {
+                    crossed.push(hit);
+                }
                 if !crossed.is_empty() {
                     for item in &crossed {
                         target.selection().remove(item);
@@ -614,7 +819,7 @@ impl<I: Clone + Eq + Hash> ToolBox<I> {
                     target.set_range(None);
                 }
             }
-            Stroke::Paint { .. } | Stroke::Wipe | Stroke::Erase { .. } => target.commit(),
+            Stroke::Paint { .. } | Stroke::Wipe { .. } | Stroke::Erase { .. } => target.commit(),
             Stroke::Ramp { start, last } => {
                 target.show_preview(ToolPreview::None);
                 let (from, to) = ordered(start.0, last.0);
@@ -647,7 +852,8 @@ impl<I: Clone + Eq + Hash> ToolBox<I> {
         // Only strokes that changed the selection as a side effect put it back.
         if matches!(
             stroke,
-            Stroke::Wipe
+            Stroke::Paint { .. }
+                | Stroke::Wipe { .. }
                 | Stroke::Erase { .. }
                 | Stroke::Marquee {
                     additive: false,
@@ -660,7 +866,7 @@ impl<I: Clone + Eq + Hash> ToolBox<I> {
         match stroke {
             Stroke::Move { moved: true, .. }
             | Stroke::Paint { .. }
-            | Stroke::Wipe
+            | Stroke::Wipe { .. }
             | Stroke::Erase { .. } => target.cancel(),
             Stroke::Marquee { .. } | Stroke::Range { .. } | Stroke::Ramp { .. } => {
                 target.show_preview(ToolPreview::None)

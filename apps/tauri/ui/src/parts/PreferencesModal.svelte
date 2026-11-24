@@ -4,6 +4,10 @@
   import { invoke } from "../lib/ipc.js";
   import { keyInput, playbackStartChoices, shortcutName } from "../editor/helpers.js";
   import { readPort, scanSummary, writePort } from "../lib/midi.js";
+  import {
+    COLOR_ROWS, SCHEMES, applyColorConfig, defaultColorConfig, hexToHsb, hsbToHex,
+    readColorConfig, resolvePalette, rowStartHsb, writeColorConfig,
+  } from "../lib/theme.js";
 
   const SCALES = [90, 100, 110, 125, 150, 175, 200];
   const TABS = [
@@ -11,10 +15,59 @@
     { id: "folders", label: "Folders" },
     { id: "audio", label: "Audio output" },
     { id: "view", label: "Editor view" },
+    { id: "colours", label: "Colours" },
     { id: "shortcuts", label: "Shortcuts" },
     { id: "midi", label: "MIDI Input & VST3" },
     { id: "updates", label: "Updates" },
   ];
+
+  const COLOR_GROUPS = ["Custom Colors", "Grid Colors", "Ruler Colors"];
+  let colorConfig = $state(readColorConfig());
+  let expandedColorRow = $state(null);
+
+  function updateColorConfig(next) {
+    colorConfig = next;
+    writeColorConfig(next);
+    applyColorConfig(next);
+  }
+
+  function pickScheme(schemeId) {
+    updateColorConfig({ ...colorConfig, scheme: schemeId });
+  }
+
+  function toggleColorRow(row, enabled) {
+    const rows = { ...(colorConfig.rows ?? {}) };
+    if (enabled) {
+      rows[row.id] = rowStartHsb(row, colorConfig.scheme);
+    } else {
+      delete rows[row.id];
+      for (const child of COLOR_ROWS) {
+        if (child.requires === row.id) delete rows[child.id];
+      }
+      if (expandedColorRow === row.id) expandedColorRow = null;
+    }
+    updateColorConfig({ ...colorConfig, rows });
+  }
+
+  function setColorRowChannel(row, channel, value) {
+    const rows = { ...(colorConfig.rows ?? {}) };
+    const current = rows[row.id] ?? rowStartHsb(row, colorConfig.scheme);
+    rows[row.id] = { ...current, [channel]: value };
+    updateColorConfig({ ...colorConfig, rows });
+  }
+
+  function shownRowHex(row) {
+    const hsb = colorConfig.rows?.[row.id];
+    if (!hsb) return null;
+    if (row.hasHue) return hsbToHex(hsb);
+    const schemeHue = colorConfig.rows?.scheme?.h ?? hexToHsb(resolvePalette({ scheme: colorConfig.scheme, rows: {} }).panel).h;
+    return hsbToHex({ h: schemeHue, s: hsb.s, b: hsb.b });
+  }
+
+  function resetColours() {
+    expandedColorRow = null;
+    updateColorConfig(defaultColorConfig());
+  }
 
   let open = $state(false);
   let scope = $state("app");
@@ -157,12 +210,15 @@
     return () => { globalThis.dawsuPreferencesOpen = false; };
   });
 
-  // The tabs with something to put back: General's interface scale and the Shortcuts tab's keys.
+  // The tabs with something to put back: General's interface scale, Colours, and Shortcuts.
   const resetLabel = $derived(scope !== "app" ? null
-    : tab === "general" ? "Reset scale to 100%" : tab === "shortcuts" ? "Reset all shortcuts" : null);
+    : tab === "general" ? "Reset scale to 100%"
+    : tab === "colours" ? "Defaults"
+    : tab === "shortcuts" ? "Reset all shortcuts" : null);
 
   function resetTab() {
     if (tab === "general") applyScale(100);
+    else if (tab === "colours") resetColours();
     else if (tab === "shortcuts") resetAllShortcuts();
   }
 
@@ -549,6 +605,71 @@
                 <span>Classic Browser inside Inspector</span>
               </label>
             </div>
+
+          {:else if tab === "colours"}
+            <div class="pref-group">
+              <span class="pref-label">Default Color Schemes</span>
+              <div class="colour-schemes" role="group" aria-label="Default Color Schemes">
+                {#each SCHEMES as scheme (scheme.id)}
+                  <button type="button" class="scheme-swatch" class:active={colorConfig.scheme === scheme.id}
+                    title={scheme.name} aria-label={scheme.name + " colour scheme"} aria-pressed={colorConfig.scheme === scheme.id}
+                    onclick={() => pickScheme(scheme.id)}>
+                    <span class="scheme-chip" style:background={scheme.swatch}></span>
+                  </button>
+                {/each}
+              </div>
+              <p class="pref-caption">Changes show immediately across the editor and timeline. Press Defaults to restore Obsidian.</p>
+            </div>
+
+            {#each COLOR_GROUPS as group (group)}
+              <div class="pref-group colour-group">
+                <span class="pref-label">{group}</span>
+                {#each COLOR_ROWS.filter(r => r.group === group) as row (row.id)}
+                  {@const enabled = Boolean(colorConfig.rows?.[row.id])}
+                  {@const parentMissing = Boolean(row.requires && !colorConfig.rows?.[row.requires])}
+                  {@const current = colorConfig.rows?.[row.id] ?? rowStartHsb(row, colorConfig.scheme)}
+                  {@const hex = shownRowHex(row)}
+                  <div class="colour-row">
+                    <label class="pref-check colour-check">
+                      <input type="checkbox" checked={enabled} disabled={parentMissing}
+                        onchange={(e) => toggleColorRow(row, e.currentTarget.checked)} />
+                      <span>{row.label}</span>
+                    </label>
+                    <button type="button" class="colour-swatch-btn" disabled={!enabled}
+                      aria-label={row.group + " " + row.label + " colour"}
+                      aria-expanded={expandedColorRow === row.id}
+                      onclick={() => (expandedColorRow = expandedColorRow === row.id ? null : row.id)}>
+                      <span class="colour-swatch-fill" style:background={hex ?? "transparent"}></span>
+                      <span class="colour-swatch-caret" aria-hidden="true">▾</span>
+                    </button>
+                  </div>
+                  {#if enabled && expandedColorRow === row.id}
+                    <div class="colour-sliders">
+                      {#if row.hasHue}
+                        <label class="colour-slider-row">
+                          <span>Hue</span>
+                          <input type="range" min="0" max="360" step="1" value={Math.round(current.h)}
+                            oninput={(e) => setColorRowChannel(row, "h", Number(e.currentTarget.value))} />
+                          <span class="colour-val">{Math.round(current.h)}</span>
+                        </label>
+                      {/if}
+                      <label class="colour-slider-row">
+                        <span>Saturation</span>
+                        <input type="range" min="0" max="100" step="1" value={Math.round(current.s * 100)}
+                          oninput={(e) => setColorRowChannel(row, "s", Number(e.currentTarget.value) / 100)} />
+                        <span class="colour-val">{Math.round(current.s * 100)}</span>
+                      </label>
+                      <label class="colour-slider-row">
+                        <span>Brightness</span>
+                        <input type="range" min="0" max="100" step="1" value={Math.round(current.b * 100)}
+                          oninput={(e) => setColorRowChannel(row, "b", Number(e.currentTarget.value) / 100)} />
+                        <span class="colour-val">{Math.round(current.b * 100)}</span>
+                      </label>
+                    </div>
+                  {/if}
+                {/each}
+              </div>
+            {/each}
 
           {:else if tab === "shortcuts"}
             <div class="pref-group pref-shortcuts">
@@ -945,5 +1066,93 @@
     border-radius: 6px;
     background: rgba(255, 255, 255, 0.025);
     font-size: 12px;
+  }
+  .colour-schemes {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .scheme-swatch {
+    width: 52px;
+    height: 30px;
+    padding: 3px;
+    border-radius: 4px;
+    border: 2px solid transparent;
+    background: var(--editor-control);
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .scheme-swatch.active {
+    border-color: var(--editor-accent);
+  }
+  .scheme-chip {
+    width: 100%;
+    height: 100%;
+    border-radius: 2px;
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.14);
+  }
+  .colour-group {
+    margin-top: 10px;
+  }
+  .colour-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    max-width: 300px;
+  }
+  .colour-check {
+    flex: 1;
+  }
+  .colour-swatch-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    height: 24px;
+    padding: 2px 6px;
+    border-radius: 4px;
+    border: 1px solid var(--editor-border);
+    background: var(--editor-control);
+    color: var(--editor-text);
+    cursor: pointer;
+  }
+  .colour-swatch-btn:disabled {
+    opacity: 0.4;
+    cursor: default;
+  }
+  .colour-swatch-fill {
+    width: 20px;
+    height: 14px;
+    border-radius: 2px;
+    border: 1px solid rgba(255, 255, 255, 0.18);
+  }
+  .colour-swatch-caret {
+    font-size: 10px;
+  }
+  .colour-sliders {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin: 4px 0 8px 22px;
+    padding: 8px 10px;
+    max-width: 320px;
+    border-radius: 6px;
+    background: var(--editor-chrome);
+    border: 1px solid var(--editor-border);
+  }
+  .colour-slider-row {
+    display: grid;
+    grid-template-columns: 72px 1fr 30px;
+    align-items: center;
+    gap: 8px;
+    font-size: 11px;
+    color: var(--editor-secondary);
+  }
+  .colour-val {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    color: var(--editor-text);
   }
 </style>

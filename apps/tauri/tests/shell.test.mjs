@@ -26,12 +26,17 @@ const inOrder = (text, markers, label) => {
   }
 };
 
-test("the top bar reads brand, menus, transport, Export, Save, then the three panel switches", () => {
+test("the top bar reads brand, menus, map chip, transport, Export, Save, then the three panel switches", () => {
   const header = between(html, '<header id="editor-header"', "</header>");
   assert.match(header, /<\/strong>\s*<span class="header-divider" aria-hidden="true"><\/span>\s*<nav id="editor-menus"/);
-  inOrder(header, ['class="brand"', 'id="editor-menus"', 'id="top-transport"', 'id="export-entry"',
+  inOrder(header, ['class="brand"', 'id="editor-menus"', 'aria-label="Map"', 'id="top-transport"', 'id="export-entry"',
     'class="header-divider"', 'id="save"', 'id="view-browser"', 'id="view-inspector"', 'id="view-controller"'], "top bar");
   assert.equal(header.split('class="header-divider"').length - 1, 3);
+  const chip = between(header, 'aria-label="Map"', 'id="top-transport"');
+  inOrder(chip, ['id="map-title"', 'id="map-version"', 'id="difficulty"'], "map chip");
+  // Ctrl+O lists sibling difficulties from the select, so it stays laid out under the chip.
+  assert.doesNotMatch(chip, /id="difficulty"[^>]*hidden/);
+  assert.doesNotMatch(app, /\$\("difficulty"\)\.hidden/);
   // v3 2.1: an accent diamond, not the old image logo.
   assert.match(header, /class="brand"><span class="brand-diamond" aria-hidden="true"><\/span>dawsu!<\/strong>/);
   assert.doesNotMatch(header, /id="title"|id="layout-edit-entry"/);
@@ -40,15 +45,10 @@ test("the top bar reads brand, menus, transport, Export, Save, then the three pa
   assert.doesNotMatch(header, /data-action="review_save"/);
 });
 
-test("row 2 holds the map chip, Hitsounds/Drums, tools, Audition, Playhead and Snap, in that order", () => {
+test("row 2 holds Hitsounds/Drums, tools, Audition, Playhead and Snap, in that order", () => {
   const ribbon = between(html, '<div id="editor-ribbon"', '<main id="editor-dock"');
   const groups = [...ribbon.matchAll(/class="ribbon-group[^"]*" role="group" aria-label="([^"]+)"/g)].map(match => match[1]);
-  assert.deepEqual(groups, ["Map", "Lane mode", "Tool", "Audition", "Playhead", "Grid"]);
-  const chip = between(ribbon, 'aria-label="Map"', 'aria-label="Lane mode"');
-  inOrder(chip, ['id="map-title"', 'id="map-version"', 'id="difficulty"'], "map chip");
-  // Ctrl+O lists sibling difficulties from the select, so it stays laid out under the chip.
-  assert.doesNotMatch(chip, /id="difficulty"[^>]*hidden/);
-  assert.doesNotMatch(app, /\$\("difficulty"\)\.hidden/);
+  assert.deepEqual(groups, ["Lane mode", "Tool", "Audition", "Playhead", "Grid"]);
 });
 
 test("the removed controls are gone and each keeps a path in a menu or a key", async () => {

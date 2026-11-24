@@ -307,7 +307,7 @@ test("only TransportBar and MapPreview read bridge.playhead across all Svelte pa
     .filter(name => name.endsWith(".svelte"))
     .filter(name => readFileSync(new URL(name, partsDir), "utf8").includes("bridge.playhead"))
     .sort();
-  assert.deepEqual(readers, ["MapPreview.svelte", "TransportBar.svelte"]);
+  assert.deepEqual(readers, ["MapPreview.svelte", "Mixer.svelte", "TransportBar.svelte"]);
   const transportSource = readFileSync(new URL("TransportBar.svelte", partsDir), "utf8");
   assert.match(transportSource, /readout\(\s*bridge\.playhead\s*,\s*scene\s*\)/);
 });

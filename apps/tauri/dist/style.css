@@ -225,6 +225,7 @@ aside section > :last-child { margin-bottom:0; }
 .ribbon-options:popover-open { position:fixed; inset:auto; top:94px; left:clamp(12px,40vw,700px); max-width:min(450px,90vw); margin:0; padding:12px; border:1px solid var(--line); border-radius:8px; background:var(--panel); color:var(--text); flex-wrap:wrap; gap:10px; box-shadow:0 6px 20px #0007; }
 #song-mute[aria-pressed=true] { background:var(--mute-on); color:var(--editor-ink); }
 #song-solo[aria-pressed=true] { background:var(--solo-on); color:var(--editor-ink); }
+#drums-vst3-toggle[aria-pressed="true"] { border-color:var(--hi); background:color-mix(in srgb,var(--hi) 22%,var(--control)); color:var(--hi); font-weight:600; }
 .tint-palette { display:grid; grid-template-columns:repeat(18,minmax(0,1fr)); gap:8px; padding:8px 0 16px; }
 .tint-palette input { appearance:none; width:100%; min-width:0; height:16px; margin:0; border:1px solid transparent; border-radius:4px; cursor:pointer; }
 .tint-palette input:checked { outline:2px solid #f1f1f1; outline-offset:1px; }
@@ -250,7 +251,9 @@ aside section > :last-child { margin-bottom:0; }
 #editor-menu[aria-labelledby] .menu-choice-group{margin:0;padding:4px 6px 6px;border-top:0}
 #editor-menu[aria-labelledby] .menu-choice-label{margin:0 0 6px 4px;font-size:12px}
 #editor-menu[aria-labelledby] .menu-choices{flex-wrap:nowrap;gap:0;padding:3px;border-radius:6px;background:var(--button)}
+#editor-menu[aria-labelledby] .menu-choices.menu-choices-list{flex-direction:column;gap:2px;max-height:220px;overflow-y:auto}
 #editor-menu[aria-labelledby] .menu-choices .menu-choice{flex:1 1 auto;min-width:0;min-height:26px;padding:3px 6px;white-space:normal;line-height:1.2;border:0;border-radius:4px;background:transparent;color:var(--text)}
+#editor-menu[aria-labelledby] .menu-choices.menu-choices-list .menu-choice{flex:0 0 auto;width:100%;justify-content:flex-start;text-align:left;padding:5px 8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 #editor-menu[aria-labelledby] .menu-choices .menu-choice:hover:not(:disabled){background:var(--button-border)}
 #editor-menu[aria-labelledby] .menu-choices .menu-choice[aria-checked="true"],#editor-menu[aria-labelledby] .menu-choices .menu-choice[aria-checked="true"]:hover:not(:disabled){background:var(--control);color:var(--hi);font-weight:600}
 /* Save with problems (design f8): problem-count chip, the difficulty, then one row per problem with its time and Show. */
@@ -341,7 +344,7 @@ aside section > :last-child { margin-bottom:0; }
 #home .home-panel h1{margin:0;font-size:20px;font-weight:650}
 #home .home-panel>p{max-width:520px;margin:-8px 0 8px;color:#c4c4c4}
 #home-resume{min-height:32px;padding:4px 16px}
-.home-actions{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px;width:min(680px,100%)}
+.home-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;width:min(680px,100%)}
 .home-action{display:flex;align-items:center;gap:12px;min-height:76px;padding:12px 16px;border:0;border-radius:8px;background:#292929;color:var(--text);text-align:left;white-space:normal}
 .home-action:hover:not(:disabled){background:#3c3c3c}
 .home-action strong{display:block;font-weight:600}

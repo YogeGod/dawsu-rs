@@ -101,6 +101,8 @@ export const stripClickSelects = target => !target?.closest?.("button, .fader, .
 
 // The Song strip's colour: v3's teal (--editor-teal), as a hex for the strip shades.
 export const songColour = "#4fd8d0";
+// The Hitsounds bus strip's colour: warm amber to stand apart from Song and sample lanes.
+export const hitsoundColour = "#f0a040";
 
 // v3: fill 20 % into #181818 (selected 42 %), edge 30 % into the canvas, name bar the colour.
 // A lane is grey unless the mapper picked a colour (ADR 0068).
