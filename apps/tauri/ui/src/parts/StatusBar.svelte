@@ -35,6 +35,13 @@
 </span>
 <span id="selection-count" class="selection-count" hidden={!selected}>{selectionLabel(selected)}</span>
 <span id="status" role="status" title={status}>{status}</span>
+<span id="external-osu-notice" class="external-osu-notice" role="alert" hidden={!view?.externalOsuChanged}>
+  <span class="external-osu-label">.osu changed on disk</span>
+  <button id="reload-from-disk" type="button" disabled={!!view?.busy}
+    onclick={() => send("reloadFromDisk")}>Reload from disk</button>
+  <button id="keep-my-edits" type="button"
+    onclick={() => send("dismissExternalOsuChange")}>Keep my edits</button>
+</span>
 <span id="problem-summary" class="problem-summary" title={problemTip} hidden={!problems.length}>
   <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.5 14.5 13.5h-13zM8 6.5v3M8 11.5v.01"/></svg>
   <span id="problem-summary-text">{cannotSave}</span>

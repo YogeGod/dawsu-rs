@@ -53,6 +53,7 @@ mod roll_back;
 pub mod sample_checks;
 mod sound_sets;
 mod unwritten;
+mod osu_watch;
 mod sample_watch;
 pub mod waveform;
 use dawsu_editor::commands::{
@@ -1060,6 +1061,17 @@ enum OpenSource {
     Map(PathBuf),
     Recovery(PathBuf),
 }
+struct ReloadPreserve {
+    position_ms: f64,
+    view_start: f64,
+    zoom: f64,
+    row_height: f32,
+    was_playing: bool,
+    playback_speed: f64,
+    song_path: Option<PathBuf>,
+    forced: bool,
+    status_note: &'static str,
+}
 struct PendingSave {
     version: u64,
     hs: bool,
@@ -1080,7 +1092,7 @@ impl PendingSave {
 }
 
 enum JobResult {
-    Open(Option<u64>, bool, Result<Loaded, String>),
+    Open(Option<u64>, bool, Option<ReloadPreserve>, Result<Loaded, String>),
     SongReady {
         generation: u64,
         song: Option<Arc<AudioClip>>,
@@ -1131,6 +1143,8 @@ impl JobProgress {
 
 pub struct Application {
     sample_watch: sample_watch::Watch,
+    osu_watch: osu_watch::OsuWatch,
+    pub external_osu_changed: bool,
     document: Option<Document>,
     audio: Option<AudioEngine>,
     samples: HashMap<SampleIdentity, Arc<AudioClip>>,
@@ -1313,6 +1327,8 @@ impl Application {
         Self {
             document: None,
             sample_watch: sample_watch::Watch::default(),
+            osu_watch: osu_watch::OsuWatch::default(),
+            external_osu_changed: false,
             audio,
             samples: HashMap::new(),
             song: None,
@@ -1596,6 +1612,8 @@ impl Application {
         self.forget_unneeded_pending(keep);
         self.document = None;
         self.checkpoint = None;
+        self.osu_watch.clear();
+        self.external_osu_changed = false;
     }
 
     /// Forgets the pending files no record lists. `keep` are the listed names when a job read them.
@@ -1956,7 +1974,55 @@ impl Application {
         self.start_open(source, true);
     }
 
+    pub fn reload_from_disk(&mut self) {
+        self.start_reload_from_disk("Reloaded changes from disk", true);
+    }
+
+    pub fn dismiss_external_osu_change(&mut self) {
+        self.external_osu_changed = false;
+        if let Some(d) = &self.document {
+            self.osu_watch.dismiss(&d.path);
+        }
+        self.status = "Kept your edits. Save will still check for conflicts.".into();
+    }
+
+    fn start_reload_from_disk(&mut self, status_note: &'static str, forced: bool) {
+        if self.busy || self.is_stroke_open() {
+            return;
+        }
+        let Some(d) = &self.document else {
+            return;
+        };
+        let path = d.path.clone();
+        let song_path = d
+            .file
+            .general("AudioFilename")
+            .and_then(|name| d.path.parent().and_then(|folder| safe_child(folder, &name).ok()));
+        let preserve = ReloadPreserve {
+            position_ms: self.position_ms(),
+            view_start: d.composer.view_start,
+            zoom: self.zoom,
+            row_height: self.row_height,
+            was_playing: self.is_playing(),
+            playback_speed: self.playback_speed,
+            song_path,
+            forced,
+            status_note,
+        };
+        self.external_osu_changed = false;
+        self.start_open_inner(OpenSource::Map(path), false, Some(preserve));
+    }
+
     fn start_open(&mut self, source: OpenSource, keep_settings: bool) {
+        self.start_open_inner(source, keep_settings, None);
+    }
+
+    fn start_open_inner(
+        &mut self,
+        source: OpenSource,
+        keep_settings: bool,
+        preserve: Option<ReloadPreserve>,
+    ) {
         // A cleanup the last Save started finishes before the difficulty changes.
         self.poll_sweep(true);
         self.sweep_after_open = false;
@@ -1965,7 +2031,10 @@ impl Application {
             self.error = Some(error);
             return;
         }
-        self.stop();
+        let is_live_reload = preserve.is_some();
+        if !is_live_reload {
+            self.stop();
+        }
         self.cancel_controller_stroke();
         self.clear_drum_detection();
         self.clear_node_graph_run();
@@ -1974,16 +2043,18 @@ impl Application {
         }
         self.cancel.store(true, Ordering::Relaxed);
         self.cancel = Arc::new(AtomicBool::new(false));
-        self.song_cancel.store(true, Ordering::Relaxed);
-        self.song_cancel = Arc::new(AtomicBool::new(false));
-        self.song_job = None;
-        self.song_loading = false;
-        self.pending_play_on_song = false;
-        self.pending_locator_right = None;
-        self.drum_vst_cancel.store(true, Ordering::Relaxed);
-        self.drum_vst_cancel = Arc::new(AtomicBool::new(false));
-        self.drum_vst_job = None;
-        self.drum_vst_loading = false;
+        if !is_live_reload {
+            self.song_cancel.store(true, Ordering::Relaxed);
+            self.song_cancel = Arc::new(AtomicBool::new(false));
+            self.song_job = None;
+            self.song_loading = false;
+            self.pending_play_on_song = false;
+            self.pending_locator_right = None;
+            self.drum_vst_cancel.store(true, Ordering::Relaxed);
+            self.drum_vst_cancel = Arc::new(AtomicBool::new(false));
+            self.drum_vst_job = None;
+            self.drum_vst_loading = false;
+        }
         let cancel = self.cancel.clone();
         let defaults = self.preferences.default_samples.clone();
         let project_root = self.project_root.clone();
@@ -2057,7 +2128,7 @@ impl Application {
                 loaded.outgoing_keep = outgoing_mapset.and_then(|mapset| recorded_pending(project_root.as_deref(), &data_root, &mapset));
                 Ok(loaded)
             })();
-            let _ = send.send(JobResult::Open(outgoing, keep_settings, result));
+            let _ = send.send(JobResult::Open(outgoing, keep_settings, preserve, result));
             // Housekeeping of dawsu!'s data folder, after the open so it never delays it.
             pending::prune_kept_copies(&data_root, project_root.as_deref(), pending::PRUNE_MIN_AGE);
             pending::cap_removed_samples(
@@ -2162,9 +2233,16 @@ impl Application {
             self.jobs = None;
             self.busy = false;
             match result {
-                JobResult::Open(outgoing, keep_settings, Ok(loaded)) => {
+                JobResult::Open(outgoing, keep_settings, preserve, Ok(loaded)) => {
                     if self.document.as_ref().map(|d| d.composer.history.version()) != outgoing {
                         self.sweep_after_open = false;
+                        if preserve.as_ref().is_some_and(|p| !p.forced) {
+                            // The mapper started editing while an automatic reload was in flight.
+                            // Never discard their new edits — surface the external-change notice.
+                            self.external_osu_changed = true;
+                            self.status = "Map changed on disk. Reload or keep your edits.".into();
+                            return;
+                        }
                         self.pending_open = Some(loaded.document.path);
                         self.status =
                             "The outgoing difficulty changed. Review your edits before switching."
@@ -2200,9 +2278,6 @@ impl Application {
                     self.document = Some(loaded.document);
                     // Reviews of the outgoing load must not match this one: history versions restart.
                     self.document_generation += 1;
-                    self.song_generation = self.document_generation;
-                    self.drum_vst_generation = self.document_generation;
-                    self.waveform_revision += 1;
                     self.opens += 1;
                     self.output_review = None;
                     self.export.clear();
@@ -2212,34 +2287,51 @@ impl Application {
                     self.output_problems.clear();
                     self.output_problem_revision = None;
                     self.save_problem_review = false;
+                    self.external_osu_changed = false;
                     self.sample_watch = sample_watch::Watch::default();
+                    self.osu_watch.reset_for(&path);
                     if let Some(d) = self.document.as_mut() {
                         d.composer.protect_normals = self.preferences.protect_hitnormals;
                     }
-                    self.song_cancel.store(true, Ordering::Relaxed);
-                    self.song_job = None;
-                    self.song_loading = false;
-                    self.pending_play_on_song = false;
-                    self.pending_locator_right = None;
-                    self.song = None;
-                    self.drum_vst_cancel.store(true, Ordering::Relaxed);
-                    self.drum_vst_job = None;
-                    self.drum_vst_loading = false;
-                    self.drum_vst_saved = None;
-                    self.clear_live_drum_vst();
+                    let keep_song = preserve.as_ref().is_some_and(|p| {
+                        p.song_path == loaded.song_path && (self.song.is_some() || self.song_loading)
+                    });
+                    if !keep_song {
+                        self.song_generation = self.document_generation;
+                        self.waveform_revision += 1;
+                        self.song_cancel.store(true, Ordering::Relaxed);
+                        self.song_job = None;
+                        self.song_loading = false;
+                        self.pending_play_on_song = false;
+                        self.pending_locator_right = None;
+                        self.song = None;
+                        self.waveform.clear();
+                    }
+                    let keep_drum_vst = preserve.is_some() && self.drum_vst.is_some();
+                    if !keep_drum_vst {
+                        self.drum_vst_generation = self.document_generation;
+                        self.drum_vst_cancel.store(true, Ordering::Relaxed);
+                        self.drum_vst_job = None;
+                        self.drum_vst_loading = false;
+                        self.drum_vst_saved = None;
+                        self.clear_live_drum_vst();
+                    }
                     self.drum.song_loaded();
                     self.node_graph_song_loaded();
-                    self.playback_speed = 1.0;
                     self.samples = loaded.samples;
-                    self.waveform.clear();
                     self.warnings = loaded.warnings;
-                    self.muted.clear();
-                    self.solo.clear();
-                    self.song_solo = false;
-                    self.hitsounds_solo = false;
-                    self.lane_gains.clear();
-                    self.active_lane = 0;
-                    self.restore_active_lane(None);
+                    if preserve.is_none() {
+                        self.playback_speed = 1.0;
+                        self.muted.clear();
+                        self.solo.clear();
+                        self.song_solo = false;
+                        self.hitsounds_solo = false;
+                        self.lane_gains.clear();
+                        self.active_lane = 0;
+                        self.restore_active_lane(None);
+                    } else {
+                        self.restore_active_lane(None);
+                    }
                     self.preferences.recent.retain(|p| p != &path);
                     self.preferences.recent.insert(0, path);
                     self.preferences.recent.truncate(20);
@@ -2261,36 +2353,50 @@ impl Application {
                     } else {
                         DEFAULT_SONG_OFFSET_MS
                     };
-                    self.zoom = settings.zoom.unwrap_or(0.12).clamp(MIN_ZOOM, 3.0);
-                    self.row_height = settings.row_height.unwrap_or(30.0).clamp(20.0, 65.0);
-                    self.set_view_start(settings.view_start.clamp(0.0, duration));
-                    self.seek(0.0);
+                    if let Some(keep_view) = &preserve {
+                        self.zoom = keep_view.zoom.clamp(MIN_ZOOM, 3.0);
+                        self.row_height = keep_view.row_height.clamp(20.0, 65.0);
+                        self.set_view_start(keep_view.view_start.clamp(0.0, duration));
+                        self.playback_speed = keep_view.playback_speed;
+                        if !keep_view.was_playing {
+                            self.seek(keep_view.position_ms.clamp(0.0, duration));
+                        }
+                    } else {
+                        self.zoom = settings.zoom.unwrap_or(0.12).clamp(MIN_ZOOM, 3.0);
+                        self.row_height = settings.row_height.unwrap_or(30.0).clamp(20.0, 65.0);
+                        self.set_view_start(settings.view_start.clamp(0.0, duration));
+                        self.seek(0.0);
+                    }
                     self.cycle_changed();
-                    let base_status = if restored_id.is_some() {
+                    let base_status = if let Some(keep_view) = &preserve {
+                        keep_view.status_note
+                    } else if restored_id.is_some() {
                         "Recovery copy restored. Save the difficulty to clear the offer."
                     } else {
                         "Difficulty loaded"
                     };
                     let mut vst_status_note: Option<String> = None;
-                    if let Some(saved_vst) = settings.drum_vst.clone() {
-                        self.drum_vst_saved = Some(saved_vst.clone());
-                        if !Path::new(&saved_vst.plugin_path).exists() {
-                            vst_status_note = Some(format!(
-                                "Drum VST3 unavailable: plugin not found at {}",
-                                saved_vst.plugin_path
-                            ));
+                    if !keep_drum_vst {
+                        if let Some(saved_vst) = settings.drum_vst.clone() {
+                            self.drum_vst_saved = Some(saved_vst.clone());
+                            if !Path::new(&saved_vst.plugin_path).exists() {
+                                vst_status_note = Some(format!(
+                                    "Drum VST3 unavailable: plugin not found at {}",
+                                    saved_vst.plugin_path
+                                ));
+                            } else {
+                                self.spawn_drum_vst_restore(saved_vst);
+                                vst_status_note = Some("Loading drum kit…".into());
+                            }
                         } else {
-                            self.spawn_drum_vst_restore(saved_vst);
-                            vst_status_note = Some("Loading drum kit…".into());
-                        }
-                    } else {
-                        self.drum_vst_saved = None;
-                        if self.drum_vst.is_some() {
-                            self.clear_live_drum_vst();
+                            self.drum_vst_saved = None;
+                            if self.drum_vst.is_some() {
+                                self.clear_live_drum_vst();
+                            }
                         }
                     }
                     self.sync_audio();
-                    if let Some(song_path) = loaded.song_path {
+                    if !keep_song && let Some(song_path) = loaded.song_path {
                         if settings.locator_right.is_none_or(|r| r > duration) {
                             self.pending_locator_right =
                                 Some((duration, settings.locator_right, settings.cycle));
@@ -2318,7 +2424,7 @@ impl Application {
                 JobResult::DrumVstReady { .. } => {
                     self.apply_drum_vst_job_result(result);
                 }
-                JobResult::Open(_, _, Err(e)) => {
+                JobResult::Open(_, _, _, Err(e)) => {
                     self.sweep_after_open = false;
                     self.error = Some(e);
                     self.status = "Open failed; previous document kept".into();
@@ -2422,6 +2528,8 @@ impl Application {
                             }
                             if let Some(d) = self.document.as_mut().filter(|d| d.path == path) {
                                 d.file = report.file;
+                                self.osu_watch.reset_for(&d.path);
+                                self.external_osu_changed = false;
                                 self.document_generation += 1;
                                 self.export.clear();
                                 d.written = last_written(&compiled, hs_mode);
@@ -2500,6 +2608,7 @@ impl Application {
             }
         }
         self.poll_sample_folder();
+        self.poll_osu_watch();
         if !self.is_stroke_open()
             && self.document.as_ref().is_some_and(|d| {
                 d.composer.history.version() != self.cached_version
@@ -3643,6 +3752,27 @@ impl Application {
             self.status = format!("Another program wrote {} in the mapset. dawsu!'s new sample of that name keeps playing; rename or remove the other file before saving.", differing.join(", "));
         }
         self.register_added_samples(additions);
+    }
+
+    fn poll_osu_watch(&mut self) {
+        if self.busy || self.is_stroke_open() {
+            return;
+        }
+        let Some(document) = &self.document else {
+            return;
+        };
+        if !self
+            .osu_watch
+            .poll(&document.path, document.file.original_bytes())
+        {
+            return;
+        }
+        if !document.composer.dirty() {
+            self.start_reload_from_disk("Reloaded changes from disk", false);
+        } else {
+            self.external_osu_changed = true;
+            self.status = "Map changed on disk. Reload or keep your edits.".into();
+        }
     }
 
     /// After a write kept its files: the pending files it wrote are mapset files now, and the
@@ -9498,5 +9628,218 @@ mod greenline_cleanup_tests {
         assert!(!after.contains("250,-100,4,1,0,100,0,0\n"));
         assert!(after.contains("500,-50,4,1,0,100,0,0\n"));
         assert!(plan.details.iter().any(|d| d.contains("Removed 1 redundant greenline.")));
+    }
+}
+
+#[cfg(test)]
+mod live_osu_reload_tests {
+    use super::*;
+    use dawsu_test_support::Scratch;
+    use std::time::Duration;
+
+    const BASE_MAP: &str = concat!(
+        "osu file format v14\n",
+        "[General]\n",
+        "Mode:0\n",
+        "SampleSet:Normal\n",
+        "[Metadata]\n",
+        "Version:Hard\n",
+        "[TimingPoints]\n",
+        "0,500,4,1,0,100,1,0\n",
+        "[HitObjects]\n",
+        "256,192,1000,1,0,0:0:0:0:\n",
+    );
+
+    fn wait_busy(app: &mut Application) {
+        for _ in 0..2000 {
+            app.poll();
+            if !app.busy {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        panic!("timed out waiting for background job");
+    }
+
+    fn make_app(scratch: &Scratch) -> Application {
+        Application::create(
+            Preferences::default(),
+            false,
+            None,
+            None,
+            false,
+            scratch.path("data"),
+        )
+    }
+
+    #[test]
+    fn clean_document_auto_reloads_on_external_osu_edit_and_preserves_view_and_playhead() {
+        let scratch = Scratch::new("live-osu-reload-clean");
+        let path = scratch.path("Artist - Song (Mapper) [Hard].osu");
+        std::fs::write(&path, BASE_MAP).unwrap();
+
+        let mut app = make_app(&scratch);
+        app.open_now(OpenSource::Map(path.clone()));
+        wait_busy(&mut app);
+
+        assert_eq!(app.document().unwrap().composer.hitsounds().moments().len(), 1);
+        assert!(!app.is_dirty());
+
+        // Set custom view and playhead state before external edit.
+        app.zoom = 0.42;
+        app.row_height = 44.0;
+        app.set_view_start(250.0);
+        app.seek(600.0);
+        app.osu_watch
+            .set_timings(Duration::ZERO, Duration::from_millis(15));
+
+        // Simulate osu! saving a new hitobject at 2000 ms.
+        let updated = format!("{BASE_MAP}300,200,2000,1,0,0:0:0:0:\n");
+        std::fs::write(&path, &updated).unwrap();
+
+        // First poll starts debounce; should not reload immediately.
+        app.poll();
+        assert!(!app.busy, "watcher should debounce before reloading");
+        assert!(!app.external_osu_changed);
+
+        // Wait past debounce window, then poll -> triggers clean auto-reload.
+        std::thread::sleep(Duration::from_millis(25));
+        app.poll();
+        assert!(app.busy, "clean document should automatically start reloading");
+        wait_busy(&mut app);
+
+        assert!(!app.external_osu_changed);
+        assert_eq!(app.status, "Reloaded changes from disk");
+        let doc = app.document().unwrap();
+        assert_eq!(doc.composer.hitsounds().moments().len(), 2);
+        assert!((app.zoom - 0.42).abs() < 1e-6);
+        assert!((app.row_height - 44.0).abs() < 1e-4);
+        assert!((doc.composer.view_start - 250.0).abs() < 1e-6);
+        assert!((app.position_ms() - 600.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn dirty_document_keeps_edits_on_external_osu_change_and_supports_dismiss_and_reload() {
+        let scratch = Scratch::new("live-osu-reload-dirty");
+        let path = scratch.path("Artist - Song (Mapper) [Hard].osu");
+        std::fs::write(&path, BASE_MAP).unwrap();
+
+        let mut app = make_app(&scratch);
+        app.open_now(OpenSource::Map(path.clone()));
+        wait_busy(&mut app);
+
+        // Make an unsaved hitsound edit (add Clap at moment 0).
+        let clap = SampleIdentity::Standard {
+            set: SampleSet::Normal,
+            sound: Sound::Hit(Hitsound::Clap),
+            index: dawsu_foundation::CustomIndex::new(0),
+        };
+        app.document
+            .as_mut()
+            .unwrap()
+            .composer
+            .history
+            .apply("Add hit", true, |hits| {
+                hits.add_hit(dawsu_hitsounding::MomentId(0), clap.clone());
+                Ok::<_, ()>(())
+            })
+            .unwrap();
+        assert!(app.is_dirty());
+
+        app.osu_watch.set_timings(Duration::ZERO, Duration::ZERO);
+
+        // External edit #1: add hitobject at 2000 ms.
+        let updated1 = format!("{BASE_MAP}300,200,2000,1,0,0:0:0:0:\n");
+        std::fs::write(&path, &updated1).unwrap();
+        app.poll();
+
+        assert!(!app.busy, "dirty document must NOT auto-reload");
+        assert!(app.external_osu_changed);
+        assert!(app.is_dirty(), "unsaved edits must remain intact");
+        assert_eq!(
+            app.document().unwrap().composer.hitsounds().moments().len(),
+            1,
+            "external file must not overwrite dirty document"
+        );
+        assert!(
+            app.document()
+                .unwrap()
+                .composer
+                .hitsounds()
+                .moments()[0]
+                .has_hit(&clap),
+            "mapper's unsaved Clap hit must still be present"
+        );
+
+        // Choose "Keep my edits": clears notice and does not re-trigger for the same bytes.
+        app.dismiss_external_osu_change();
+        assert!(!app.external_osu_changed);
+        assert!(app.is_dirty());
+        app.poll();
+        assert!(
+            !app.external_osu_changed,
+            "dismissed external edit must not re-alert on subsequent polls"
+        );
+
+        // External edit #2: add hitobject at 3000 ms -> alerts again.
+        let updated2 = format!("{updated1}320,210,3000,1,0,0:0:0:0:\n");
+        std::fs::write(&path, &updated2).unwrap();
+        app.poll();
+        assert!(app.external_osu_changed);
+        assert!(!app.busy);
+
+        // Choose "Reload from disk": reloads cleanly and clears dirty state.
+        app.reload_from_disk();
+        assert!(app.busy);
+        wait_busy(&mut app);
+
+        assert!(!app.external_osu_changed);
+        assert!(!app.is_dirty());
+        assert_eq!(app.status, "Reloaded changes from disk");
+        assert_eq!(app.document().unwrap().composer.hitsounds().moments().len(), 3);
+    }
+
+    #[test]
+    fn saving_from_dawsu_does_not_trigger_external_osu_change() {
+        let scratch = Scratch::new("live-osu-reload-own-save");
+        let path = scratch.path("Artist - Song (Mapper) [Hard].osu");
+        std::fs::write(&path, BASE_MAP).unwrap();
+
+        let mut app = make_app(&scratch);
+        app.open_now(OpenSource::Map(path.clone()));
+        wait_busy(&mut app);
+
+        let clap = SampleIdentity::Standard {
+            set: SampleSet::Normal,
+            sound: Sound::Hit(Hitsound::Clap),
+            index: dawsu_foundation::CustomIndex::new(0),
+        };
+        app.document
+            .as_mut()
+            .unwrap()
+            .composer
+            .history
+            .apply("Add hit", true, |hits| {
+                hits.add_hit(dawsu_hitsounding::MomentId(0), clap);
+                Ok::<_, ()>(())
+            })
+            .unwrap();
+        assert!(app.is_dirty());
+
+        app.osu_watch.set_timings(Duration::ZERO, Duration::ZERO);
+        app.save();
+        wait_busy(&mut app);
+
+        assert!(!app.is_dirty());
+        assert!(!app.external_osu_changed);
+        assert_eq!(app.status, "Saved with backup");
+
+        // Poll repeatedly after our own save: must NOT trigger reload or external_osu_changed.
+        for _ in 0..5 {
+            app.poll();
+            assert!(!app.busy);
+            assert!(!app.external_osu_changed);
+            assert_eq!(app.status, "Saved with backup");
+        }
     }
 }

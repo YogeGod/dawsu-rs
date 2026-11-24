@@ -229,6 +229,10 @@ export function createEditor(env = globalThis, { ui = null, autoStart = true, ex
         return;
       case "cancelJob":
         return ctx.act({ kind: "cancel_job" });
+      case "reloadFromDisk":
+        return ctx.act({ kind: "reload_from_disk" });
+      case "dismissExternalOsuChange":
+        return ctx.act({ kind: "dismiss_external_osu_change" });
       case "fit":
         return ctx.fitTimeline();
       case "zoom": {
