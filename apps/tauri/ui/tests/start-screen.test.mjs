@@ -71,3 +71,29 @@ test("StartScreen renders actions, drop zone, resume, recent maps and recovery c
   assert.match(html, /id="home-folders"[^>]*disabled/);
   assert.doesNotMatch(html, /\sstyle=/);
 });
+
+test("StartScreen shows Songs folder search when songsFolder is configured", () => {
+  bridge.set({
+    busy: false,
+    hasDocument: false,
+    showHome: true,
+    recent: [],
+    songsFolder: "",
+  }, null);
+  let html = render(StartScreen).body;
+  assert.match(html, /id="home-songs"[^>]*hidden/);
+
+  bridge.set({
+    busy: false,
+    hasDocument: false,
+    showHome: true,
+    recent: [],
+    songsFolder: "C:\\osu!\\Songs",
+  }, null);
+  html = render(StartScreen).body;
+  assert.doesNotMatch(html, /id="home-songs"[^>]*hidden/);
+  assert.match(html, /id="home-songs-search"/);
+  assert.match(html, /id="home-songs-refresh"/);
+  assert.match(html, /id="home-songs-list"/);
+  assert.doesNotMatch(html, /\sstyle=/);
+});

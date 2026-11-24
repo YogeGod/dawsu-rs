@@ -25,6 +25,7 @@
     "allow-sound-set-placement",
     "allow-save-sound-set",
     "allow-pick-songs-folder",
+    "allow-songs-index-search",
     "allow-pick-hitsound-library",
     "allow-list-library",
     "allow-sample-preview",

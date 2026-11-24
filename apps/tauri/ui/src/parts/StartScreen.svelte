@@ -1,13 +1,74 @@
 <script>
   import { bridge } from "../lib/bridge.svelte.js";
+  import { invoke } from "../lib/ipc.js";
   import { recentItems, recoveryState } from "../lib/startScreen.js";
+
+  const MODE_LABELS = { 1: "taiko", 2: "catch", 3: "mania" };
 
   const view = $derived(bridge.view);
   const scene = $derived(bridge.scene);
   const busy = $derived(!!view?.busy);
   const recent = $derived(recentItems(view));
   const recovery = $derived(recoveryState(view, scene));
+  const songsFolder = $derived(view?.songsFolder || "");
+  const hasSongsFolder = $derived(Boolean(songsFolder));
   const send = (...args) => globalThis.startScreenAction?.(...args);
+
+  let songsQuery = $state("");
+  let songsMatches = $state.raw([]);
+  let songsTotal = $state(0);
+  let songsLoading = $state(false);
+  let songsError = $state("");
+  let searchSeq = 0;
+  let debounceTimer = null;
+
+  async function runSongsSearch(query, refresh = false) {
+    if (typeof window === "undefined" || !window.__TAURI__?.core?.invoke) return;
+    if (!songsFolder) {
+      songsMatches = [];
+      songsTotal = 0;
+      songsError = "";
+      return;
+    }
+    const seq = ++searchSeq;
+    songsLoading = true;
+    songsError = "";
+    try {
+      const res = await invoke("songs_index_search", { query, refresh });
+      if (seq !== searchSeq) return;
+      songsMatches = res?.matches ?? [];
+      songsTotal = res?.totalMapsets ?? 0;
+    } catch (err) {
+      if (seq !== searchSeq) return;
+      songsError = String(err || "Could not read Songs folder.");
+      songsMatches = [];
+    } finally {
+      if (seq === searchSeq) songsLoading = false;
+    }
+  }
+
+  $effect(() => {
+    const folder = songsFolder;
+    const query = songsQuery;
+    if (!folder) {
+      songsMatches = [];
+      songsTotal = 0;
+      songsError = "";
+      return;
+    }
+    clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(() => {
+      runSongsSearch(query, false);
+    }, query ? 120 : 0);
+    return () => clearTimeout(debounceTimer);
+  });
+
+  function mapsetHeading(set) {
+    const artist = set.artist?.trim();
+    const title = set.title?.trim();
+    if (artist && title) return `${artist} - ${title}`;
+    return title || artist || set.folder;
+  }
 </script>
 
 <div class="home-panel">
@@ -51,6 +112,58 @@
     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h8l4 4v14H6zM14 3v4h4M12 10v7m-3-3 3 3 3-3"/></svg>
     Or drop an .osu or .osz file anywhere in this window
   </div>
+  <section id="home-songs" class="home-songs" aria-labelledby="home-songs-title" hidden={!hasSongsFolder}>
+    <div class="home-songs-head">
+      <h2 id="home-songs-title">Songs folder</h2>
+      {#if songsTotal > 0}
+        <span class="home-songs-count">{songsTotal.toLocaleString()} mapsets</span>
+      {/if}
+      <button id="home-songs-refresh" type="button" class="home-songs-refresh"
+        disabled={busy || songsLoading} onclick={() => runSongsSearch(songsQuery, true)}>
+        {songsLoading ? "Indexing…" : "Refresh"}
+      </button>
+    </div>
+    <input
+      id="home-songs-search"
+      class="home-songs-search"
+      type="search"
+      placeholder="Search artist, title, mapper, diff, tags, or BeatmapSetID…"
+      aria-label="Search Songs folder"
+      disabled={busy}
+      bind:value={songsQuery}
+    />
+    <div id="home-songs-list" class="home-songs-list">
+      {#if songsError}
+        <p class="home-songs-empty">{songsError}</p>
+      {:else if songsLoading && !songsMatches.length}
+        <p class="home-songs-empty">Indexing Songs folder…</p>
+      {:else if !songsMatches.length}
+        <p class="home-songs-empty">{songsQuery.trim() ? "No matching mapsets" : "No mapsets found in Songs folder"}</p>
+      {:else}
+        {#each songsMatches as set (set.folder)}
+          <div class="home-song-set">
+            <div class="home-song-meta">
+              <strong>{mapsetHeading(set)}</strong>
+              {#if set.creator}
+                <span class="home-song-creator">by {set.creator}</span>
+              {/if}
+            </div>
+            <div class="home-song-diffs">
+              {#each set.diffs as diff (diff.path)}
+                <button type="button" class="home-song-diff" title={diff.path} disabled={busy}
+                  onclick={() => send("openPath", diff.path)}>
+                  <span>{diff.version}</span>
+                  {#if MODE_LABELS[diff.mode]}
+                    <small>{MODE_LABELS[diff.mode]}</small>
+                  {/if}
+                </button>
+              {/each}
+            </div>
+          </div>
+        {/each}
+      {/if}
+    </div>
+  </section>
   <section id="home-recent" class="home-recent" aria-labelledby="home-recent-title" hidden={!recent.length}>
     <h2 id="home-recent-title">Recent</h2>
     <div id="recent">
@@ -68,5 +181,118 @@
   .recovery-entries {
     max-height: 200px;
     overflow-y: auto;
+  }
+  .home-songs {
+    width: 100%;
+    text-align: left;
+    display: grid;
+    gap: 10px;
+    padding: 12px 14px;
+    border: 1px solid var(--editor-border);
+    border-radius: var(--radius-8);
+    background: var(--editor-panel);
+  }
+  .home-songs-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .home-songs-head h2 {
+    margin: 0;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--editor-text);
+  }
+  .home-songs-count {
+    font-size: 12px;
+    color: var(--editor-muted);
+  }
+  .home-songs-refresh {
+    margin-left: auto;
+    min-height: 26px;
+    padding: 0 10px;
+    border: 1px solid var(--editor-border);
+    border-radius: var(--radius-6);
+    background: var(--editor-control);
+    color: var(--editor-secondary);
+    font-size: 12px;
+  }
+  .home-songs-refresh:hover:not(:disabled) {
+    background: var(--editor-hover);
+    color: var(--editor-text);
+  }
+  .home-songs-search {
+    width: 100%;
+    height: 32px;
+    padding: 0 10px;
+    border: 1px solid var(--editor-border);
+    border-radius: var(--radius-6);
+    background: var(--editor-canvas);
+    color: var(--editor-text);
+    font-size: 13px;
+  }
+  .home-songs-list {
+    display: grid;
+    gap: 6px;
+    max-height: 240px;
+    overflow-y: auto;
+  }
+  .home-songs-empty {
+    margin: 4px 2px;
+    font-size: 12px;
+    color: var(--editor-muted);
+  }
+  .home-song-set {
+    display: grid;
+    gap: 6px;
+    padding: 8px 10px;
+    border-radius: var(--radius-6);
+    background: var(--editor-chrome);
+  }
+  .home-song-meta {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    min-width: 0;
+  }
+  .home-song-meta strong {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--editor-text);
+  }
+  .home-song-creator {
+    flex: none;
+    font-size: 12px;
+    color: var(--editor-muted);
+  }
+  .home-song-diffs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .home-song-diff {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    min-height: 24px;
+    padding: 2px 9px;
+    border: 1px solid var(--editor-border);
+    border-radius: 999px;
+    background: var(--editor-control);
+    color: var(--editor-text);
+    font-size: 12px;
+  }
+  .home-song-diff:hover:not(:disabled) {
+    border-color: var(--editor-accent);
+    background: var(--editor-hover);
+  }
+  .home-song-diff small {
+    font-size: 10px;
+    color: var(--editor-muted);
+    text-transform: uppercase;
   }
 </style>
