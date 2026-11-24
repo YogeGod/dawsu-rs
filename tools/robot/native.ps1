@@ -66,18 +66,25 @@ public static class RobotWindows {
   [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern IntPtr SendMessage(IntPtr hwnd, uint message, IntPtr wparam, StringBuilder lparam);
   const uint WM_GETTEXT = 0x000D;
 
-  // The picker's name box: only the Edit inside the control with id 1148 (the file name or folder
-  // box). Any other box (search, address) is never typed into, so a wrong folder is never picked.
+  // The picker's name box: only the Edit inside the control with id 1148 (the file name box of a
+  // file picker) or 1152 (the "Folder:" box of a folder picker). Any other box (search, address) is
+  // never typed into, so a wrong folder is never picked.
   public static string Choose(IntPtr dialog, string path) {
     IntPtr edit = IntPtr.Zero;
+    var seen = new List<string>();
     EnumChildWindows(dialog, (hwnd, l) => {
-      if (ClassOf(hwnd) != "Edit" || !IsWindowVisible(hwnd) || !IsWindowEnabled(hwnd)) return true;
+      if (ClassOf(hwnd) != "Edit") return true;
+      var ids = new List<string>();
+      for (IntPtr up = hwnd; up != IntPtr.Zero && up != dialog; up = GetParent(up)) ids.Add(GetDlgCtrlID(up).ToString());
+      seen.Add("Edit[" + string.Join(">", ids) + (IsWindowVisible(hwnd) ? "" : " hidden") + (IsWindowEnabled(hwnd) ? "" : " disabled") + "]");
+      if (!IsWindowVisible(hwnd) || !IsWindowEnabled(hwnd)) return true;
       for (IntPtr up = hwnd; up != IntPtr.Zero && up != dialog; up = GetParent(up)) {
-        if (GetDlgCtrlID(up) == 1148) { edit = hwnd; return false; }
+        int id = GetDlgCtrlID(up);
+        if (id == 1148 || id == 1152) { edit = hwnd; return false; }
       }
       return true;
     }, IntPtr.Zero);
-    if (edit == IntPtr.Zero) return "the picker has no name box (control 1148)";
+    if (edit == IntPtr.Zero) return "the picker has no name box (control 1148 or 1152); its text boxes: " + (seen.Count == 0 ? "none" : string.Join(", ", seen));
     SendMessage(edit, WM_SETTEXT, IntPtr.Zero, path);
     var typed = new StringBuilder(1024);
     SendMessage(edit, WM_GETTEXT, (IntPtr)1024, typed);

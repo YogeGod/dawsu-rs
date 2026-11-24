@@ -35,7 +35,7 @@
 //
 // Windows only in practice (WebView2 remote debugging and the native pickers).
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { checkProvenance, createRobot, parseArgs, silentWav, sleep, snapshot } from "./robot/core.mjs";
 import { startNative } from "./robot/native.mjs";
@@ -112,7 +112,14 @@ const always = new Set(["Start with no map and see the start screen", "Open the 
 // Set when the editor ever shows a map outside the run's profile: the rest of the run is skipped, so
 // nothing can be saved into a real mapset.
 let outside = null;
-const inProfile = path => !path || resolve(path).toLowerCase().startsWith(resolve(profile).toLowerCase());
+// Windows can report a path with its long-path prefix (\\?\E:\...); it names the same file.
+const plainPath = path => resolve(String(path).replace(/^\\\\\?\\UNC\\/i, "\\\\").replace(/^\\\\\?\\/, "")).toLowerCase();
+const inProfile = path => {
+  if (!path) return true;
+  const root = plainPath(profile);
+  const full = plainPath(path);
+  return full === root || full.startsWith(root.endsWith(sep) ? root : root + sep);
+};
 async function step(name, body, covers = [], options = {}) {
   if (!always.has(name) && ((only && !only.test(name)) || (skip && skip.test(name)))) return;
   if (outside && !options.always) {
@@ -415,7 +422,13 @@ async function answerPicker(path, what) {
   const end = Date.now() + 8000;
   while (Date.now() < end && !(await native.dialogs(pid())).length) await sleep(200);
   expect((await native.dialogs(pid())).length, `${what} did not open`);
-  const answer = await native.choose(pid(), path);
+  // The picker's window shows before its boxes are built: try again for a few seconds while the
+  // name box is missing (never with any other box).
+  let answer = await native.choose(pid(), path);
+  for (const until = Date.now() + 5000; !answer.ok && /no name box/.test(answer.error ?? "") && Date.now() < until;) {
+    await sleep(300);
+    answer = await native.choose(pid(), path);
+  }
   expect(answer.ok, `${what} could not be answered: ${answer.error ?? "the name box or OK button was not found"}`);
   await sleep(600);
 }
@@ -872,9 +885,15 @@ try {
     await robot.dialogShown("Folders");
     await dialogButton("Choose Songs folder…").click();
     await answerPicker(songs, "the Songs folder picker");
-    const want = resolve(songs).toLowerCase();
-    await until(want => (window.view.songsFolder ?? "").replaceAll("/", "\\").toLowerCase().replace(/\\$/, "") === want ||
-      (window.view.songsFolder ?? "").toLowerCase() === want, want, "the Songs folder is not the run's own copy", 5000)
+    const want = plainPath(songs);
+    const songsSet = async () => {
+      for (const end = Date.now() + 5000; Date.now() < end; await sleep(200)) {
+        const now = await read(() => window.view.songsFolder ?? "");
+        if (now && plainPath(now.replaceAll("/", "\\")) === want) return;
+      }
+      throw new Error("the Songs folder is not the run's own copy");
+    };
+    await songsSet()
       .catch(async error => {
         // Never go on with another Songs folder: it could be a real one.
         outside = `the Songs folder became ${await read(() => window.view.songsFolder)}, not the run's copy, so the run stopped`;
