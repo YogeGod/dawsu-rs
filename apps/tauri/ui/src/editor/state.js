@@ -71,6 +71,7 @@ export function createState() {
     sectionBarCache: null,
     sliderEndCache: null,
     overviewBinCache: null,
+    gameplayIndexCache: null,
     // Playback frames reuse these canvas copies (canvas.js paintFrame); paintSoon() drops them.
     staticLayers: null,
     layerCopies: null,

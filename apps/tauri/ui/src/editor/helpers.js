@@ -210,3 +210,33 @@ export function keyInput(event) {
     alt: !!event.altKey,
   };
 }
+
+/**
+ * Finds the best matching moment within `tolerance` of `ms` on a time-sorted `moments` array.
+ * Binary-searches to `ms - tolerance` and stops past `ms + tolerance`.
+ */
+export function findNearestMoment(moments, ms, tolerance, match, { strict = true } = {}) {
+  if (!moments?.length || !(strict ? tolerance > 0 : tolerance >= 0)) return null;
+  // Compare `ms - time > tolerance` (monotone in sorted `time`) so the search cutoff matches `Math.abs(time - ms)`.
+  let lo = 0;
+  let hi = moments.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (ms - moments[mid][0] > tolerance) lo = mid + 1;
+    else hi = mid;
+  }
+  let best = tolerance;
+  let found = null;
+  for (let i = lo; i < moments.length; i++) {
+    const moment = moments[i];
+    const time = moment[0];
+    if (time - ms > tolerance) break;
+    const distance = Math.abs(time - ms);
+    if (!(strict ? distance < best : distance <= best)) continue;
+    const value = match(moment);
+    if (value === undefined) continue;
+    best = distance;
+    found = value;
+  }
+  return found;
+}

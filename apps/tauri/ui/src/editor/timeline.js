@@ -2,8 +2,8 @@
 // hit hover card, and scroll/zoom/wheel snap wiring.
 import {
   bookmarkFlagHeight, bookmarkHalfWidth, clock, defaultWaveformHeight, describeOutputProblem,
-  hitHalfWidth, limit, locatorFlagHeight, locatorFlagWidth, minZoom, nameOf, objectReach,
-  objectSize, rulerBandHeight, sampleFolderNames,
+  findNearestMoment, hitHalfWidth, limit, locatorFlagHeight, locatorFlagWidth, minZoom, nameOf,
+  objectReach, objectSize, rulerBandHeight, sampleFolderNames,
 } from "./helpers.js";
 
 export function attachTimeline(ctx) {
@@ -33,16 +33,12 @@ export function attachTimeline(ctx) {
   // within a zoom-independent pixel half-width (`hitHalfWidth`), so targets stay easy to click
   // and sweep at every zoom level.
   function nearestHitTime(ms, row, zoom) {
-    let best = hitHalfWidth / zoom;
-    let found = null;
-    for (const [time, , , hits] of state.scene.moments) {
-      const distance = Math.abs(time - ms);
-      if (distance < best && (row === null ? hits.length > 0 : hits.some(([laneRow]) => row === laneRow))) {
-        best = distance;
-        found = time;
-      }
-    }
-    return found;
+    return findNearestMoment(
+      state.scene.moments,
+      ms,
+      hitHalfWidth / zoom,
+      ([time, , , hits]) => ((row === null ? hits.length > 0 : hits.some(([laneRow]) => row === laneRow)) ? time : undefined),
+    );
   }
 
   const uiScale = () => (Number(env.document?.documentElement?.dataset?.uiScale) || 100) / 100;
@@ -174,20 +170,48 @@ export function attachTimeline(ctx) {
     try { ctx.ui()?.hitCard?.(card); } catch (error) { (env.console ?? console).error(error); }
   }
 
+  // Cache point-by-time and slider-node-times maps per `state.scene.gameplay` identity.
+  function gameplayIndex(gameplay) {
+    if (!state.gameplayIndexCache || state.gameplayIndexCache.gameplay !== gameplay) {
+      const byTime = new Map();
+      const sliderNodes = new Map();
+      for (const point of gameplay?.points ?? []) {
+        const [kind, at, object] = point;
+        if (!byTime.has(at)) byTime.set(at, point);
+        if (kind === "slider") {
+          let nodes = sliderNodes.get(object);
+          if (!nodes) {
+            nodes = [];
+            sliderNodes.set(object, nodes);
+          }
+          nodes.push(at);
+        }
+      }
+      state.gameplayIndexCache = { gameplay, byTime, sliderNodes };
+    }
+    return state.gameplayIndexCache;
+  }
+
   // What a moment's object is on the Song row: "circle 3", "slider 2" (its head), "slider 2 end" or
   // "slider 2 repeat", "spinner end"; "no object" for a hit without one.
   function hitObjectName(time, onObject) {
     if (!onObject) return "no object";
-    const points = state.scene.gameplay?.points ?? [];
-    const point = points.find(([, at]) => at === time);
+    const { byTime, sliderNodes } = gameplayIndex(state.scene.gameplay);
+    const point = byTime.get(time);
     if (!point) return "spinner end";
     const [kind, , object] = point;
     const number = state.scene.combos?.objects?.[object]?.[0];
     const name = kind + (number ? " " + number : "");
     if (kind !== "slider") return name;
-    const nodes = points.filter(([nodeKind, , nodeObject]) => nodeKind === "slider" && nodeObject === object).map(([, at]) => at);
-    if (time === Math.min(...nodes)) return name;
-    return name + (time === Math.max(...nodes) ? " end" : " repeat");
+    const nodes = sliderNodes.get(object) ?? [];
+    let min = Infinity;
+    let max = -Infinity;
+    for (const at of nodes) {
+      if (at < min) min = at;
+      if (at > max) max = at;
+    }
+    if (time === min) return name;
+    return name + (time === max ? " end" : " repeat");
   }
 
   // A new scene (a keyboard zoom, Delete, Undo) can move or remove the hovered hit.
@@ -205,16 +229,16 @@ export function attachTimeline(ctx) {
     const row = state.laneRows[visibleRow];
     if (typeof row !== "number") return null;
     const ms = state.scene.viewStart + pointerX / state.scene.zoom;
-    let best = hitHalfWidth / state.scene.zoom;
-    let found = null;
-    for (const moment of state.scene.moments) {
-      const distance = Math.abs(moment[0] - ms);
-      if (distance > best) continue;
-      const hit = moment[3].find(([lane]) => lane === row);
-      if (!hit) continue;
-      best = distance;
-      found = [moment, hit];
-    }
+    const found = findNearestMoment(
+      state.scene.moments,
+      ms,
+      hitHalfWidth / state.scene.zoom,
+      (moment) => {
+        const hit = moment[3].find(([lane]) => lane === row);
+        return hit ? [moment, hit] : undefined;
+      },
+      { strict: false },
+    );
     if (!found) return null;
     const [[time, volume, onObject], [, , , hitVolume]] = found;
     const lane = state.scene.lanes?.[row];
@@ -1005,7 +1029,7 @@ export function attachTimeline(ctx) {
   }
 
   Object.assign(ctx, {
-    renderScene, pointer, pointerIn, revealLayerPreview, scrollGrab, refreshToolCursor,
+    renderScene, nearestHitTime, pointer, pointerIn, revealLayerPreview, scrollGrab, refreshToolCursor,
     updateCursorModifiers, handOverHitCard, hitObjectName, refreshHitCard,
     hitCardAt, refreshWaveformSwitch, setWaveformHeight, finishWaveformDrag,
     refreshRulerCursor, trackRulerPointer, refreshRulerWarningTooltip,
