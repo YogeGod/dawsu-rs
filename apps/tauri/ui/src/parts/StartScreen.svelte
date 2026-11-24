@@ -1,9 +1,16 @@
 <script>
   import { bridge } from "../lib/bridge.svelte.js";
   import { invoke } from "../lib/ipc.js";
-  import { recentItems, recoveryState } from "../lib/startScreen.js";
+  import {
+    dismissSetupChecklist,
+    isSetupChecklistDismissed,
+    recentItems,
+    recoveryState,
+    setupChecklistState,
+  } from "../lib/startScreen.js";
 
   const MODE_LABELS = { 1: "taiko", 2: "catch", 3: "mania" };
+  const storage = () => { try { return globalThis.localStorage; } catch { return null; } };
 
   const view = $derived(bridge.view);
   const scene = $derived(bridge.scene);
@@ -13,6 +20,14 @@
   const songsFolder = $derived(view?.songsFolder || "");
   const hasSongsFolder = $derived(Boolean(songsFolder));
   const send = (...args) => globalThis.startScreenAction?.(...args);
+
+  let checklistDismissed = $state(isSetupChecklistDismissed(storage()));
+  const checklist = $derived(setupChecklistState(view, checklistDismissed));
+
+  function dismissChecklist() {
+    dismissSetupChecklist(storage());
+    checklistDismissed = true;
+  }
 
   let songsQuery = $state("");
   let songsMatches = $state.raw([]);
@@ -95,6 +110,34 @@
       <span><strong>Folders…</strong><small>Songs folder and hitsound library</small></span>
     </button>
   </div>
+  <section id="home-setup" class="home-setup" aria-labelledby="home-setup-title" hidden={!checklist.visible}>
+    <div class="home-setup-head">
+      <h2 id="home-setup-title">Get set up</h2>
+      <span class="home-setup-progress">{checklist.completedCount} of {checklist.totalCount} done</span>
+      <button id="home-setup-dismiss" type="button" class="home-setup-dismiss" onclick={dismissChecklist}>Dismiss</button>
+    </div>
+    <ul class="home-setup-list">
+      {#each checklist.steps as step (step.id)}
+        <li class="home-setup-item" class:done={step.done} data-step={step.id}>
+          <span class="home-setup-check" aria-hidden="true">
+            {#if step.done}
+              <svg viewBox="0 0 16 16"><path d="M3.5 8.5 6.5 11.5 12.5 4.5"/></svg>
+            {/if}
+          </span>
+          <span class="home-setup-copy">
+            <strong>{step.label}</strong>
+            <small>{step.detail}</small>
+          </span>
+          {#if step.done}
+            <span class="home-setup-done">Done</span>
+          {:else}
+            <button type="button" class="home-setup-action" disabled={busy}
+              onclick={() => send(step.action)}>{step.actionLabel}</button>
+          {/if}
+        </li>
+      {/each}
+    </ul>
+  </section>
   <section id="recovery" aria-labelledby="recovery-title" hidden={!recovery.visible}>
     <h2 id="recovery-title">Recovery copies</h2>
     <div id="recovery-entries" class="recovery-entries">
@@ -181,6 +224,125 @@
   .recovery-entries {
     max-height: 200px;
     overflow-y: auto;
+  }
+  .home-setup {
+    width: 100%;
+    text-align: left;
+    display: grid;
+    gap: 10px;
+    padding: 12px 14px;
+    border: 1px solid var(--editor-border);
+    border-radius: var(--radius-8);
+    background: var(--editor-panel);
+  }
+  .home-setup-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .home-setup-head h2 {
+    margin: 0;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--editor-text);
+  }
+  .home-setup-progress {
+    font-size: 12px;
+    color: var(--editor-muted);
+  }
+  .home-setup-dismiss {
+    margin-left: auto;
+    min-height: 24px;
+    padding: 0 8px;
+    border: 0;
+    border-radius: var(--radius-6);
+    background: transparent;
+    color: var(--editor-muted);
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .home-setup-dismiss:hover {
+    background: var(--editor-hover);
+    color: var(--editor-text);
+  }
+  .home-setup-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    gap: 6px;
+  }
+  .home-setup-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 10px;
+    border-radius: var(--radius-6);
+    background: var(--editor-chrome);
+  }
+  .home-setup-check {
+    flex: none;
+    width: 18px;
+    height: 18px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 1.5px solid var(--editor-border);
+    border-radius: 999px;
+    color: var(--editor-text);
+  }
+  .home-setup-item.done .home-setup-check {
+    border-color: var(--editor-accent);
+    background: var(--editor-accent);
+    color: #111111;
+  }
+  .home-setup-check svg {
+    width: 12px;
+    height: 12px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2.2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+  .home-setup-copy {
+    flex: 1;
+    min-width: 0;
+    display: grid;
+    gap: 2px;
+  }
+  .home-setup-copy strong {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--editor-text);
+  }
+  .home-setup-item.done .home-setup-copy strong {
+    color: var(--editor-muted);
+  }
+  .home-setup-copy small {
+    font-size: 12px;
+    color: var(--editor-muted);
+  }
+  .home-setup-action {
+    flex: none;
+    min-height: 26px;
+    padding: 0 10px;
+    border: 1px solid var(--editor-border);
+    border-radius: var(--radius-6);
+    background: var(--editor-control);
+    color: var(--editor-text);
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .home-setup-action:hover:not(:disabled) {
+    border-color: var(--editor-accent);
+    background: var(--editor-hover);
+  }
+  .home-setup-done {
+    flex: none;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--editor-muted);
   }
   .home-songs {
     width: 100%;

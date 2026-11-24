@@ -75,4 +75,7 @@ test("startScreenAction opens recent maps, imports .osz archives and opens Folde
   assert.deepEqual(calls.at(-1), { name: "pick_map", args: { archiveOnly: true } });
   evaluate('startScreenAction("folders")');
   assert.equal(evaluate("folders"), 1);
+  evaluate('var prefsTab = ""; openPreferences = tab => { prefsTab = tab; };');
+  evaluate('startScreenAction("shortcuts")');
+  assert.equal(evaluate("prefsTab"), "shortcuts");
 });

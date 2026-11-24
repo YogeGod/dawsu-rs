@@ -2,7 +2,15 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { render } from "svelte/server";
 import { bridge } from "../src/lib/bridge.svelte.js";
-import { recentItems, recentMapName, recoveryState } from "../src/lib/startScreen.js";
+import {
+  SETUP_CHECKLIST_DISMISSED_KEY,
+  dismissSetupChecklist,
+  isSetupChecklistDismissed,
+  recentItems,
+  recentMapName,
+  recoveryState,
+  setupChecklistState,
+} from "../src/lib/startScreen.js";
 import StartScreen from "../src/parts/StartScreen.svelte";
 
 const mapPath = "C:\\Songs\\1 yuikonnu - Chikyuu\\yuikonnu - Chikyuu Saigo no Kokuhaku wo (RealCuT) [Kokuhaku in 2019].osu";
@@ -96,4 +104,104 @@ test("StartScreen shows Songs folder search when songsFolder is configured", () 
   assert.match(html, /id="home-songs-refresh"/);
   assert.match(html, /id="home-songs-list"/);
   assert.doesNotMatch(html, /\sstyle=/);
+});
+
+test("setupChecklistState tracks live progress, completion, and dismissal", () => {
+  const store = new Map();
+  const storage = {
+    getItem: key => store.get(key) ?? null,
+    setItem: (key, value) => store.set(key, String(value)),
+  };
+
+  assert.equal(isSetupChecklistDismissed(storage), false);
+
+  const empty = setupChecklistState({ songsFolder: "", keyPreset: null, firstLaunch: true, recent: [] }, false);
+  assert.equal(empty.visible, true);
+  assert.equal(empty.allDone, false);
+  assert.equal(empty.completedCount, 0);
+  assert.deepEqual(empty.steps.map(s => [s.id, s.done]), [
+    ["songs-folder", false],
+    ["shortcut-style", false],
+    ["first-map", false],
+  ]);
+
+  const partial = setupChecklistState({ songsFolder: "C:\\osu!\\Songs", keyPreset: "DAW", firstLaunch: false, recent: [] }, false);
+  assert.equal(partial.visible, true);
+  assert.equal(partial.completedCount, 2);
+  assert.deepEqual(partial.steps.map(s => [s.id, s.done]), [
+    ["songs-folder", true],
+    ["shortcut-style", true],
+    ["first-map", false],
+  ]);
+
+  const complete = setupChecklistState({ songsFolder: "C:\\osu!\\Songs", keyPreset: "osu!", firstLaunch: false, recent: [mapPath] }, false);
+  assert.equal(complete.allDone, true);
+  assert.equal(complete.visible, false);
+
+  dismissSetupChecklist(storage);
+  assert.equal(store.get(SETUP_CHECKLIST_DISMISSED_KEY), "1");
+  assert.equal(isSetupChecklistDismissed(storage), true);
+  assert.equal(setupChecklistState({ songsFolder: "", keyPreset: null, recent: [] }, true).visible, false);
+});
+
+test("StartScreen renders Get set up checklist when incomplete and hides when dismissed or complete", () => {
+  const previousStorage = globalThis.localStorage;
+  const store = new Map();
+  globalThis.localStorage = {
+    getItem: key => store.get(key) ?? null,
+    setItem: (key, value) => store.set(key, String(value)),
+  };
+
+  try {
+    // Incomplete: visible with action buttons for remaining steps and Done for completed ones.
+    bridge.set({
+      busy: false,
+      hasDocument: false,
+      showHome: true,
+      songsFolder: "C:\\osu!\\Songs",
+      keyPreset: null,
+      firstLaunch: true,
+      recent: [],
+    }, null);
+    let html = render(StartScreen).body;
+    assert.match(html, /id="home-setup"/);
+    assert.doesNotMatch(html, /id="home-setup"[^>]*hidden/);
+    assert.match(html, /Get set up/);
+    assert.match(html, /1 of 3 done/);
+    assert.match(html, /data-step="songs-folder"[^>]*>[\s\S]*?Done/);
+    assert.match(html, /data-step="shortcut-style"[^>]*>[\s\S]*?Open Shortcuts/);
+    assert.match(html, /data-step="first-map"[^>]*>[\s\S]*?Open map/);
+    assert.match(html, /id="home-setup-dismiss"/);
+    assert.doesNotMatch(html, /\sstyle=/);
+
+    // All 3 complete: automatically hidden.
+    bridge.set({
+      busy: false,
+      hasDocument: false,
+      showHome: true,
+      songsFolder: "C:\\osu!\\Songs",
+      keyPreset: "DAW",
+      firstLaunch: false,
+      recent: [mapPath],
+    }, null);
+    html = render(StartScreen).body;
+    assert.match(html, /id="home-setup"[^>]*hidden/);
+
+    // Dismissed in localStorage: stays hidden even when incomplete.
+    store.set(SETUP_CHECKLIST_DISMISSED_KEY, "1");
+    bridge.set({
+      busy: false,
+      hasDocument: false,
+      showHome: true,
+      songsFolder: "",
+      keyPreset: null,
+      firstLaunch: true,
+      recent: [],
+    }, null);
+    html = render(StartScreen).body;
+    assert.match(html, /id="home-setup"[^>]*hidden/);
+  } finally {
+    if (previousStorage === undefined) delete globalThis.localStorage;
+    else globalThis.localStorage = previousStorage;
+  }
 });

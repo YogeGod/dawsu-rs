@@ -32,3 +32,62 @@ export function recoveryState(view, scene) {
     offers,
   };
 }
+
+export const SETUP_CHECKLIST_DISMISSED_KEY = "dawsu.setupChecklistDismissed";
+
+export function isSetupChecklistDismissed(storage) {
+  try {
+    return storage?.getItem?.(SETUP_CHECKLIST_DISMISSED_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+export function dismissSetupChecklist(storage) {
+  try {
+    storage?.setItem?.(SETUP_CHECKLIST_DISMISSED_KEY, "1");
+  } catch {
+    // Ignore storage errors in restricted environments.
+  }
+}
+
+export function setupChecklistState(view, dismissed = false) {
+  const hasSongsFolder = Boolean(view?.songsFolder && String(view.songsFolder).trim());
+  const hasShortcutStyle = Boolean(view?.keyPreset) && !view?.firstLaunch;
+  const hasOpenedMap = (view?.recent?.length ?? 0) > 0;
+  const steps = [
+    {
+      id: "songs-folder",
+      label: "Set your Songs folder",
+      detail: "Search and open maps straight from osu! Songs",
+      done: hasSongsFolder,
+      action: "folders",
+      actionLabel: "Open Folders",
+    },
+    {
+      id: "shortcut-style",
+      label: "Pick your shortcut style",
+      detail: "Choose DAW-like or osu! keyboard shortcuts",
+      done: hasShortcutStyle,
+      action: "shortcuts",
+      actionLabel: "Open Shortcuts",
+    },
+    {
+      id: "first-map",
+      label: "Open your first map",
+      detail: "Open an .osu difficulty or .osz mapset",
+      done: hasOpenedMap,
+      action: "open",
+      actionLabel: "Open map",
+    },
+  ];
+  const completedCount = steps.filter(step => step.done).length;
+  const allDone = completedCount === steps.length;
+  return {
+    visible: !dismissed && !allDone,
+    allDone,
+    completedCount,
+    totalCount: steps.length,
+    steps,
+  };
+}

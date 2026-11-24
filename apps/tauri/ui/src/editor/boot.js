@@ -211,6 +211,8 @@ export function createEditor(env = globalThis, { ui = null, autoStart = true, ex
         return ctx.run(async () => ctx.show(await invoke("pick_map", { archiveOnly: true })));
       case "folders":
         return ctx.openFolders();
+      case "shortcuts":
+        return ctx.openPreferences("shortcuts");
       case "openRecent":
       case "openPath":
         return ctx.act({ kind: "open", path: arg });
