@@ -9,6 +9,246 @@ use dawsu_hitsounding::{
 use dawsu_osu_format::{OsuFile, SaveOutcome};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+
+/// Maximum number of individual changed lines returned per `.osu` file diff so huge diffs stay fast.
+pub const DEFAULT_DIFF_MAX_LINES: usize = 200;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OsuDiffKind {
+    Added,
+    Removed,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OsuDiffLine {
+    /// Active `.osu` section header (e.g. `[TimingPoints]`, `[HitObjects]`), if any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub section: Option<String>,
+    /// 1-based line number (in the existing file for `Removed`, in the proposed file for `Added`).
+    pub line: usize,
+    pub kind: OsuDiffKind,
+    pub text: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OsuDiffSummary {
+    pub added: usize,
+    pub removed: usize,
+    pub truncated: usize,
+    pub entries: Vec<OsuDiffLine>,
+}
+
+impl OsuDiffSummary {
+    pub fn is_empty(&self) -> bool {
+        self.added == 0 && self.removed == 0
+    }
+}
+
+fn split_osu_lines(bytes: &[u8]) -> Vec<String> {
+    if bytes.is_empty() {
+        return Vec::new();
+    }
+    let text = String::from_utf8_lossy(bytes);
+    text.split('\n')
+        .map(|line| line.strip_suffix('\r').unwrap_or(line).to_owned())
+        .collect()
+}
+
+fn section_headers(lines: &[String]) -> Vec<Option<String>> {
+    let mut current: Option<String> = None;
+    let mut out = Vec::with_capacity(lines.len());
+    for line in lines {
+        let trimmed = line.trim();
+        if trimmed.len() > 2 && trimmed.starts_with('[') && trimmed.ends_with(']') {
+            current = Some(trimmed.to_owned());
+        }
+        out.push(current.clone());
+    }
+    out
+}
+
+enum RawEdit {
+    Removed(usize),
+    Added(usize),
+}
+
+/// Bounded Myers O((N+M)D) shortest edit script. Returns `None` if edit distance exceeds `max_d`.
+fn myers_diff(a: &[String], b: &[String], max_d: usize) -> Option<Vec<RawEdit>> {
+    let n = a.len();
+    let m = b.len();
+    let max = (n + m).min(max_d);
+    let offset = max as isize;
+    let mut v = vec![0u32; 2 * max + 1];
+    let mut trace: Vec<Vec<u32>> = Vec::new();
+    let mut found_d = None;
+
+    for d in 0..=max {
+        let d_i = d as isize;
+        for k in (-d_i..=d_i).step_by(2) {
+            let idx = (k + offset) as usize;
+            let mut x = if d == 0 {
+                0usize
+            } else if k == -d_i || (k != d_i && v[idx - 1] < v[idx + 1]) {
+                v[idx + 1] as usize
+            } else {
+                v[idx - 1] as usize + 1
+            };
+            let mut y = (x as isize - k) as usize;
+            while x < n && y < m && a[x] == b[y] {
+                x += 1;
+                y += 1;
+            }
+            v[idx] = x as u32;
+            if x >= n && y >= m {
+                trace.push(v.clone());
+                found_d = Some(d);
+                break;
+            }
+        }
+        if found_d.is_some() {
+            break;
+        }
+        trace.push(v.clone());
+    }
+
+    let found_d = found_d?;
+    let mut edits = Vec::new();
+    let mut x = n;
+    let mut y = m;
+
+    for d in (1..=found_d).rev() {
+        let prev_v = &trace[d - 1];
+        let k = x as isize - y as isize;
+        let d_i = d as isize;
+        let prev_k = if k == -d_i
+            || (k != d_i && prev_v[(k - 1 + offset) as usize] < prev_v[(k + 1 + offset) as usize])
+        {
+            k + 1
+        } else {
+            k - 1
+        };
+        let prev_x = prev_v[(prev_k + offset) as usize] as usize;
+        let prev_y = (prev_x as isize - prev_k) as usize;
+
+        while x > prev_x && y > prev_y {
+            x -= 1;
+            y -= 1;
+        }
+        if x == prev_x {
+            edits.push(RawEdit::Added(prev_y));
+        } else {
+            edits.push(RawEdit::Removed(prev_x));
+        }
+        x = prev_x;
+        y = prev_y;
+    }
+
+    edits.reverse();
+    Some(edits)
+}
+
+/// Linear-time fallback when a file has more than `MAX_D` line edits (e.g. marathon diffs).
+fn fallback_diff(a: &[String], b: &[String]) -> Vec<RawEdit> {
+    let mut edits = Vec::new();
+    let shared = a.len().min(b.len());
+    for i in 0..shared {
+        if a[i] != b[i] {
+            edits.push(RawEdit::Removed(i));
+            edits.push(RawEdit::Added(i));
+        }
+    }
+    for i in shared..a.len() {
+        edits.push(RawEdit::Removed(i));
+    }
+    for j in shared..b.len() {
+        edits.push(RawEdit::Added(j));
+    }
+    edits
+}
+
+/// Computes a bounded, section-aware changed-lines diff between existing and proposed `.osu` bytes.
+pub fn compute_osu_line_diff(
+    old_bytes: &[u8],
+    new_bytes: &[u8],
+    max_entries: usize,
+) -> OsuDiffSummary {
+    if old_bytes == new_bytes {
+        return OsuDiffSummary::default();
+    }
+    let old_lines = split_osu_lines(old_bytes);
+    let new_lines = split_osu_lines(new_bytes);
+    if old_lines == new_lines {
+        return OsuDiffSummary::default();
+    }
+
+    let old_sections = section_headers(&old_lines);
+    let new_sections = section_headers(&new_lines);
+
+    let mut prefix = 0usize;
+    let min_len = old_lines.len().min(new_lines.len());
+    while prefix < min_len && old_lines[prefix] == new_lines[prefix] {
+        prefix += 1;
+    }
+
+    let mut suffix = 0usize;
+    while suffix < (old_lines.len() - prefix)
+        && suffix < (new_lines.len() - prefix)
+        && old_lines[old_lines.len() - 1 - suffix] == new_lines[new_lines.len() - 1 - suffix]
+    {
+        suffix += 1;
+    }
+
+    let a = &old_lines[prefix..old_lines.len() - suffix];
+    let b = &new_lines[prefix..new_lines.len() - suffix];
+
+    const MAX_MYERS_D: usize = 512;
+    let edits = if a.is_empty() {
+        (0..b.len()).map(RawEdit::Added).collect()
+    } else if b.is_empty() {
+        (0..a.len()).map(RawEdit::Removed).collect()
+    } else {
+        myers_diff(a, b, MAX_MYERS_D).unwrap_or_else(|| fallback_diff(a, b))
+    };
+
+    let mut summary = OsuDiffSummary::default();
+    for edit in edits {
+        match edit {
+            RawEdit::Removed(rel) => {
+                summary.removed += 1;
+                if summary.entries.len() < max_entries {
+                    let idx = prefix + rel;
+                    summary.entries.push(OsuDiffLine {
+                        section: old_sections[idx].clone(),
+                        line: idx + 1,
+                        kind: OsuDiffKind::Removed,
+                        text: old_lines[idx].clone(),
+                    });
+                } else {
+                    summary.truncated += 1;
+                }
+            }
+            RawEdit::Added(rel) => {
+                summary.added += 1;
+                if summary.entries.len() < max_entries {
+                    let idx = prefix + rel;
+                    summary.entries.push(OsuDiffLine {
+                        section: new_sections[idx].clone(),
+                        line: idx + 1,
+                        kind: OsuDiffKind::Added,
+                        text: new_lines[idx].clone(),
+                    });
+                } else {
+                    summary.truncated += 1;
+                }
+            }
+        }
+    }
+    summary
+}
 
 pub struct Source {
     pub file: OsuFile,
@@ -42,6 +282,26 @@ pub struct PlannedFile {
     pub path: PathBuf,
     pub file: OsuFile,
     pub expected: Option<Vec<u8>>,
+    diff_cache: OnceLock<OsuDiffSummary>,
+}
+impl PlannedFile {
+    fn new(path: PathBuf, file: OsuFile, expected: Option<Vec<u8>>) -> Self {
+        Self {
+            path,
+            file,
+            expected,
+            diff_cache: OnceLock::new(),
+        }
+    }
+
+    /// Cached changed-lines diff between the on-disk snapshot (`expected`) and the planned `.osu`.
+    pub fn diff_summary(&self) -> &OsuDiffSummary {
+        self.diff_cache.get_or_init(|| {
+            let old = self.expected.as_deref().unwrap_or(&[]);
+            let new = self.file.to_bytes();
+            compute_osu_line_diff(old, &new, DEFAULT_DIFF_MAX_LINES)
+        })
+    }
 }
 /// What Copy did to one target, counted for the Export window.
 #[derive(Clone, Debug, PartialEq)]
@@ -456,11 +716,11 @@ pub(super) fn generate_report_with_options(
             let mut plan = WritePlan {
                 label: "Generate hitsound difficulty".into(),
                 generated: Some((target.clone(), mixes.staged.len())),
-                files: vec![PlannedFile {
-                    path: target.clone(),
+                files: vec![PlannedFile::new(
+                    target.clone(),
                     file,
-                    expected: previous.map(|output| output.bytes),
-                }],
+                    previous.map(|output| output.bytes),
+                )],
                 pending: Vec::new(), ledger: None,
                 mixes: mixes.staged,
                 combinations: mixes.combinations,
@@ -484,7 +744,7 @@ pub fn new_diff(source: &Source, name: &str) -> Result<WritePlan, String> {
     match dawsu_hitsounding::generate::new_hitsound_diff(&source.file,&source.path.file_name().unwrap().to_string_lossy(),name,&folder(source)?){
         NewDiff::Planned{file,file_name}=>{
             let target_path = source.path.parent().unwrap().join(file_name);
-            Ok(WritePlan{label:"New hitsound difficulty".into(),mixes:Vec::new(),pending:Vec::new(),ledger:None,combinations:Vec::new(),targets:Vec::new(),generation:None,generated:None,include_slider_audio:false,files:vec![PlannedFile{path:target_path.clone(),file,expected:None}],details:vec!["All gameplay objects are removed in the new difficulty; the source stays unchanged.".into()],hs_mode_targets:vec![target_path],sample_warnings:Vec::new(),source:source.path.clone(),version:source.version})
+            Ok(WritePlan{label:"New hitsound difficulty".into(),mixes:Vec::new(),pending:Vec::new(),ledger:None,combinations:Vec::new(),targets:Vec::new(),generation:None,generated:None,include_slider_audio:false,files:vec![PlannedFile::new(target_path.clone(),file,None)],details:vec!["All gameplay objects are removed in the new difficulty; the source stays unchanged.".into()],hs_mode_targets:vec![target_path],sample_warnings:Vec::new(),source:source.path.clone(),version:source.version})
         },other=>Err(crate::refusals::new_difficulty(&other))
     }
 }
@@ -667,11 +927,11 @@ fn copy_after(
                 plan.mixes.extend(mixes.staged);
                 mixes::stage_timed_copy_with_options(&source.hits, &mut file, &path, defaults, &target.slider_placements,
                     &mut plan.mixes, &mut plan.details, &source.pending, auto_fix_staged_mixes, cancel, earlier)?;
-                plan.files.push(PlannedFile {
+                plan.files.push(PlannedFile::new(
                     path,
                     file,
-                    expected: Some(expected),
-                });
+                    Some(expected),
+                ));
             }
             other => return Err(format!("{}: {}", path.display(), crate::refusals::copy_target(&other))),
         }
@@ -802,5 +1062,92 @@ mod tests {
         assert_eq!(plan.created_mix_paths().count(), 1);
         assert_eq!(plan.reused_mix_paths().count(), 0);
         assert!(lines.iter().any(|l| l.contains("1 new .wav created, 0 existing .wav reused")));
+    }
+
+    #[test]
+    fn osu_line_diff_identical_files_is_empty() {
+        let content = b"[TimingPoints]\r\n1000,500,4,1,0,100,1,0\r\n\r\n[HitObjects]\r\n256,192,1000,1,0,0:0:0:0:\r\n";
+        let diff = compute_osu_line_diff(content, content, DEFAULT_DIFF_MAX_LINES);
+        assert!(diff.is_empty());
+        assert_eq!(diff.added, 0);
+        assert_eq!(diff.removed, 0);
+        assert_eq!(diff.truncated, 0);
+        assert!(diff.entries.is_empty());
+    }
+
+    #[test]
+    fn osu_line_diff_reports_inserted_greenline_and_edited_hitobject_with_line_numbers() {
+        let old = concat!(
+            "[TimingPoints]\n",
+            "1000,500,4,1,0,100,1,0\n",
+            "\n",
+            "[HitObjects]\n",
+            "256,192,1000,1,0,0:0:0:0:\n",
+            "256,192,2000,1,0,0:0:0:0:\n",
+        );
+        let new = concat!(
+            "[TimingPoints]\n",
+            "1000,500,4,1,0,100,1,0\n",
+            "1500,-100,4,2,1,80,0,0\n",
+            "\n",
+            "[HitObjects]\n",
+            "256,192,1000,1,4,0:0:0:80:\n",
+            "256,192,2000,1,0,0:0:0:0:\n",
+        );
+        let diff = compute_osu_line_diff(old.as_bytes(), new.as_bytes(), DEFAULT_DIFF_MAX_LINES);
+        assert_eq!(diff.added, 2);
+        assert_eq!(diff.removed, 1);
+        assert_eq!(diff.truncated, 0);
+        assert_eq!(
+            diff.entries,
+            vec![
+                OsuDiffLine {
+                    section: Some("[TimingPoints]".into()),
+                    line: 3,
+                    kind: OsuDiffKind::Added,
+                    text: "1500,-100,4,2,1,80,0,0".into(),
+                },
+                OsuDiffLine {
+                    section: Some("[HitObjects]".into()),
+                    line: 5,
+                    kind: OsuDiffKind::Removed,
+                    text: "256,192,1000,1,0,0:0:0:0:".into(),
+                },
+                OsuDiffLine {
+                    section: Some("[HitObjects]".into()),
+                    line: 6,
+                    kind: OsuDiffKind::Added,
+                    text: "256,192,1000,1,4,0:0:0:80:".into(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn osu_line_diff_truncates_cleanly_at_cap() {
+        let mut old = String::from("[HitObjects]\n");
+        let mut new = String::from("[HitObjects]\n");
+        for i in 0..10 {
+            old.push_str(&format!("256,192,{},1,0,0:0:0:0:\n", i * 100));
+            new.push_str(&format!("256,192,{},1,8,0:0:0:70:\n", i * 100));
+        }
+        let diff = compute_osu_line_diff(old.as_bytes(), new.as_bytes(), 5);
+        assert_eq!(diff.added, 10);
+        assert_eq!(diff.removed, 10);
+        assert_eq!(diff.entries.len(), 5);
+        assert_eq!(diff.truncated, 15);
+    }
+
+    #[test]
+    fn osu_line_diff_handles_brand_new_file() {
+        let new = "[Metadata]\nVersion:Hitsounds\n[HitObjects]\n256,192,1000,1,2,0:0:0:0:";
+        let diff = compute_osu_line_diff(&[], new.as_bytes(), 2);
+        assert_eq!(diff.added, 4);
+        assert_eq!(diff.removed, 0);
+        assert_eq!(diff.entries.len(), 2);
+        assert_eq!(diff.truncated, 2);
+        assert_eq!(diff.entries[0].line, 1);
+        assert_eq!(diff.entries[0].kind, OsuDiffKind::Added);
+        assert_eq!(diff.entries[1].section.as_deref(), Some("[Metadata]"));
     }
 }
