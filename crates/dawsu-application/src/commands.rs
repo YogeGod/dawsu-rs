@@ -702,6 +702,16 @@ pub fn catalogue() -> CommandCatalog<Application> {
         Some(|app| app.document.is_some()),
     );
     registry.bind(
+        &CommandDefinition::new("toggleStemMonitor", "Toggle Song / Stem monitor")
+            .keys(&[K::plain(Key::T)]),
+        areas::HS_PLAYBACK,
+        |app| {
+            app.toggle_monitor_stem();
+            Ok(())
+        },
+        Some(|app| app.document.is_some() && !app.busy),
+    );
+    registry.bind(
         &CommandDefinition::new("help", "Show shortcuts and mouse actions")
             .keys(&[K::plain(Key::F1)]),
         areas::HELP,

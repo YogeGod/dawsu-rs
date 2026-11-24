@@ -44,6 +44,8 @@ const menuRules = {
   soundFirst: () => $("ruler-sound-first").getAttribute("aria-pressed") === "true",
   usedOnly: () => !!$("used-only").checked,
   mapPreview: () => !!window.dawsuUi?.mapPreviewOn?.(),
+  stemLoaded: () => canEditFromMenu() && !!view.stemLoaded,
+  stemActive: () => !!view.stemActive,
   tool: (_, item) => view.tool === item.run[1],
 };
 
@@ -118,6 +120,7 @@ const menuCalls = {
   openQuickStart: () => window.dawsuUi?.openQuickStart?.(),
   revertMapsetToOriginal: () => confirmRevertToOriginal(),
   undoMapsetRevert: () => undoMapsetRevert(),
+  pickDrumStem: () => pickDrumStem(),
 };
 
 const menuField = path => path.split(".").reduce((value, key) => value?.[key], { view, scene });

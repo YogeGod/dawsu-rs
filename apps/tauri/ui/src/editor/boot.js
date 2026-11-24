@@ -74,7 +74,7 @@ const exportedMethods = [
   "refreshLaneToolbar", "changeView", "stepWheelSnap", "fitTimeline",
   "modal", "closeModal", "showOutputProblem", "renderDialogs",
   "openMergeSettings", "openGenerate", "openNewDifficulty", "openCopy",
-  "openLaneColour", "openReplaceSample", "openMap", "openFromOsu", "goHome", "confirmRevertToOriginal", "undoMapsetRevert",
+  "openLaneColour", "openReplaceSample", "openMap", "openFromOsu", "pickDrumStem", "goHome", "confirmRevertToOriginal", "undoMapsetRevert",
   "openSiblingDifficulty", "chooseSiblingDifficulty", "showTimelineEdit",
   "editBookmark", "openTimeSignatures",
   "openFolders", "openAudioOutput", "openViewSettings", "openPreferences", "showHelp", "showShortcutEditor",
@@ -274,6 +274,20 @@ export function createEditor(env = globalThis, { ui = null, autoStart = true, ex
   });
   $("song-mute").addEventListener("click", () => ctx.act({ kind: "song_muted", on: !state.view.songMuted }, false));
   $("song-solo").addEventListener("click", () => ctx.act({ kind: "song_solo", on: !state.view.songSolo }, false));
+  ctx.pickDrumStem = () => ctx.run(async () => ctx.show(await invoke("pick_drum_stem")));
+  const songStem = $("song-stem");
+  if (songStem) {
+    songStem.addEventListener("click", () => {
+      if (!state.scene || state.view.busy || state.view.stemLoading) return;
+      if (state.view.stemLoaded) ctx.act({ kind: "toggle_stem_monitor" }, false);
+      else ctx.pickDrumStem();
+    });
+    songStem.addEventListener("contextmenu", (event) => {
+      if (!state.scene || state.view.busy || !state.view.stemLoaded) return;
+      event.preventDefault();
+      ctx.act({ kind: "clear_drum_stem" }, false);
+    });
+  }
 
   // A select, checkbox or slider keeps focus after a click, and the keyboard handler below ignores
   // keys aimed at it: let go of it once used, so Space and Ctrl+Z reach the timeline again.
@@ -419,7 +433,7 @@ export function createEditor(env = globalThis, { ui = null, autoStart = true, ex
   startInterval(async () => {
     const now = perf().now();
     // While playing or busy, every tick asks; a gate at the timer's own 85 ms skipped every other tick.
-    if (state.view.fault || state.requests || state.refreshing || (!state.view.playing && !state.view.busy && !state.view.songLoading && now - state.lastRefresh < 1000)) return;
+    if (state.view.fault || state.requests || state.refreshing || (!state.view.playing && !state.view.busy && !state.view.songLoading && !state.view.stemLoading && now - state.lastRefresh < 1000)) return;
     state.refreshing = true;
     state.lastRefresh = now;
     await ctx.run(() => ctx.update(null, false));

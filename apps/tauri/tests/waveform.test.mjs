@@ -205,6 +205,74 @@ test("ipc fetches binary editor_waveform once per (path, previewKey), stores Flo
   assert.ok(paints >= 3, "paintSoon called on waveform arrival");
 });
 
+test("ipc re-fetches binary editor_waveform when stem toggle changes waveformRevision/stemActive or previewKey", async () => {
+  const songBins = [0.5, 0.25, 0.125, 0.0625, 0.5, 0.25];
+  const stemBins = [0.875, 0.75, 0.5, 0.25, 0.875, 0.875];
+  const calls = [];
+  let waveformReply = new Float32Array(songBins).buffer;
+  const element = () => ({
+    clientWidth: 200, clientHeight: 80, scrollTop: 0, dataset: {}, style: {}, children: [],
+    addEventListener() {}, append() {}, prepend() {}, setAttribute() {},
+    getContext: () => new Proxy({}, { get: () => () => {} }),
+  });
+  const elements = new Map();
+  const get = id => (elements.has(id) ? elements : elements.set(id, element())).get(id);
+  const context = createContext({
+    document: { getElementById: get, createElement: element, querySelectorAll: () => [], addEventListener() {} },
+    window: {
+      devicePixelRatio: 1,
+      __TAURI__: {
+        core: {
+          invoke: async (name) => {
+            calls.push(name);
+            if (name === "editor_waveform") return waveformReply.slice(0);
+            return { busy: false, hasDocument: false };
+          },
+        },
+        event: { listen() {} },
+      },
+    },
+    ResizeObserver: class { observe() {} },
+    requestAnimationFrame() {},
+    setInterval() {},
+    console,
+  });
+  bootEditor(context, { autoStart: false });
+  runInContext(`
+    renderScene = () => {};
+    renderSelection = () => {};
+    paintSoon = () => {};
+    const s = { path: "Map.osu", previewKey: 3, viewStart: 0, zoom: 0.2, rowHeight: 30, lanes: [], moments: [], sections: [[0, 500, 4]] };
+    show({ busy: false, hasDocument: true, songLoading: false, waveformRevision: 1, stemLoaded: true, stemActive: false, stemName: "drums.wav", duration: 4000, scene: { ...s } });
+  `, context);
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.deepEqual(calls, ["editor_waveform"]);
+  assert.deepEqual(Array.from(context.scene.waveform), songBins);
+  assert.equal(get("song-stem").textContent, "Song");
+  assert.equal(get("song-stem").ariaPressed, "false");
+
+  // Toggle to stem (without a full scene payload — light action response).
+  waveformReply = new Float32Array(stemBins).buffer;
+  runInContext(`
+    show({ busy: false, hasDocument: true, songLoading: false, waveformRevision: 2, stemLoaded: true, stemActive: true, stemName: "drums.wav", duration: 4000 });
+  `, context);
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.deepEqual(calls, ["editor_waveform", "editor_waveform"]);
+  assert.deepEqual(Array.from(context.scene.waveform), stemBins);
+  assert.equal(get("song-stem").textContent, "Stem");
+  assert.equal(get("song-stem").ariaPressed, "true");
+
+  // Toggle back to song via previewKey / revision bump.
+  waveformReply = new Float32Array(songBins).buffer;
+  runInContext(`
+    show({ busy: false, hasDocument: true, songLoading: false, waveformRevision: 3, stemLoaded: true, stemActive: false, stemName: "drums.wav", duration: 4000, scene: { ...s, previewKey: 4 } });
+  `, context);
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.deepEqual(calls, ["editor_waveform", "editor_waveform", "editor_waveform"]);
+  assert.deepEqual(Array.from(context.scene.waveform), songBins);
+  assert.equal(get("song-stem").textContent, "Song");
+});
+
 test("the Song row shows a subtle Loading song label while the waveform is still decoding", () => {
   const elements = new Map();
   function element() {

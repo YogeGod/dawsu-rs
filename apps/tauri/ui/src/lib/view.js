@@ -72,6 +72,10 @@ export function sameUiView(a, b) {
     (a.outputDevice || "") === (b.outputDevice || "") &&
     !!a.songMuted === !!b.songMuted &&
     !!a.songSolo === !!b.songSolo &&
+    !!a.stemLoaded === !!b.stemLoaded &&
+    !!a.stemLoading === !!b.stemLoading &&
+    !!a.stemActive === !!b.stemActive &&
+    (a.stemName || "") === (b.stemName || "") &&
     !!a.hitsoundsMuted === !!b.hitsoundsMuted &&
     !!a.hitsoundsSolo === !!b.hitsoundsSolo &&
     (a.status || "") === (b.status || "") &&

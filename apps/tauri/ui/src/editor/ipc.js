@@ -54,13 +54,14 @@ export function attachIpc(ctx) {
   function ensureWaveform(scene) {
     if (!scene || scene.waveform != null || !scene.path || scene.previewKey == null) return;
     const rev = state.view?.waveformRevision ?? 0;
-    const key = `${scene.path}\0${scene.previewKey}\0${rev}`;
+    const stem = state.view?.stemActive ? 1 : 0;
+    const key = `${scene.path}\0${scene.previewKey}\0${rev}\0${stem}`;
     if (waveformFetchKey === key) return;
     waveformFetchKey = key;
     invoke("editor_waveform").then((buf) => {
       const bins = toFloat32Waveform(buf);
       if (state.scene && state.scene.path === scene.path && state.scene.previewKey === scene.previewKey &&
-          (state.view?.waveformRevision ?? 0) === rev) {
+          (state.view?.waveformRevision ?? 0) === rev && (state.view?.stemActive ? 1 : 0) === stem) {
         state.scene.waveform = bins;
         ctx.paintSoon();
       }
@@ -78,6 +79,9 @@ export function attachIpc(ctx) {
     if (!next.fault && !full && (state.view.busy !== next.busy || (!next.tick && (state.view.hasDocument !== next.hasDocument ||
         state.view.laneCount !== next.laneCount || state.view.showHome !== next.showHome ||
         !!state.view.songLoading !== !!next.songLoading ||
+        !!state.view.stemLoading !== !!next.stemLoading ||
+        !!state.view.stemLoaded !== !!next.stemLoaded ||
+        !!state.view.stemActive !== !!next.stemActive ||
         (state.view.waveformRevision ?? 0) !== (next.waveformRevision ?? 0))))) {
       // The editor names a Previous or Next bookmark step once, in the first answer.
       const step = next.bookmarkStep;
@@ -243,6 +247,8 @@ export function attachIpc(ctx) {
     return Boolean(
       state.scene && !next.scene && lastActionKind === null &&
       !next.busy && !before.busy && !!before.songLoading === !!next.songLoading &&
+      !!before.stemLoading === !!next.stemLoading && !!before.stemLoaded === !!next.stemLoaded &&
+      !!before.stemActive === !!next.stemActive &&
       (before.waveformRevision ?? 0) === (next.waveformRevision ?? 0) &&
       next.hasDocument && !next.showHome &&
       !!before.dirty === !!next.dirty && (before.fault ?? null) === (next.fault ?? null) &&
@@ -305,6 +311,8 @@ export function attachIpc(ctx) {
       next = merged;
     }
     const waveformChanged = (Boolean(before.songLoading) && !next.songLoading) ||
+      (Boolean(before.stemLoading) && !next.stemLoading) ||
+      (Boolean(before.stemActive) !== Boolean(next.stemActive)) ||
       ((before.waveformRevision ?? 0) !== (next.waveformRevision ?? 0));
     if (waveformChanged) waveformFetchKey = null;
     state.view = next;
@@ -436,6 +444,30 @@ export function attachIpc(ctx) {
     $("ramp-shape").value = state.view.rampShape ?? "Linear";
     $("song-mute").ariaPressed = String(!!state.view.songMuted);
     $("song-solo").ariaPressed = String(!!state.view.songSolo);
+    const stemButton = $("song-stem");
+    if (stemButton) {
+      const stemLoaded = !!state.view.stemLoaded;
+      const stemLoading = !!state.view.stemLoading;
+      const stemActive = !!state.view.stemActive;
+      const stemName = state.view.stemName || "stem";
+      stemButton.ariaPressed = String(stemActive);
+      stemButton.dataset.loaded = String(stemLoaded);
+      if (stemLoading) {
+        stemButton.textContent = "Stem…";
+        stemButton.title = `Loading drum stem (${stemName})…`;
+        stemButton.setAttribute("aria-label", `Loading drum stem ${stemName}`);
+      } else if (stemLoaded) {
+        stemButton.textContent = stemActive ? "Stem" : "Song";
+        stemButton.title = stemActive
+          ? `Monitoring stem: ${stemName} — click or press T for Song (right-click to clear)`
+          : `Monitoring song (stem ready: ${stemName}) — click or press T for Stem (right-click to clear)`;
+        stemButton.setAttribute("aria-label", stemActive ? `Monitoring stem ${stemName}` : `Monitoring song, switch to stem ${stemName}`);
+      } else {
+        stemButton.textContent = "+ Stem";
+        stemButton.title = "Attach a drum stem audio file (T toggles Song / Stem)";
+        stemButton.setAttribute("aria-label", "Attach drum stem");
+      }
+    }
 
     ctx.renderPanelLayout();
     if (state.view.scene) ctx.renderScene();

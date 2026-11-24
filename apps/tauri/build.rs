@@ -36,6 +36,7 @@ const COMMANDS: &[&str] = &[
     "export_key_file",
     "pick_map",
     "pick_sample",
+    "pick_drum_stem",
     "pick_sound_set",
     "sound_set_library",
     "sound_set_placement",

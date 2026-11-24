@@ -1111,6 +1111,13 @@ enum JobResult {
         waveform: Vec<WaveBin>,
         warning: Option<String>,
     },
+    DrumStemReady {
+        generation: u64,
+        path: PathBuf,
+        clip: Option<Arc<AudioClip>>,
+        waveform: Vec<WaveBin>,
+        warning: Option<String>,
+    },
     DrumVstReady {
         generation: u64,
         saved: project::DrumVstSession,
@@ -1183,6 +1190,15 @@ pub struct Application {
     song_job: Option<mpsc::Receiver<JobResult>>,
     song_cancel: Arc<AtomicBool>,
     song_generation: u64,
+    drum_stem_path: Option<PathBuf>,
+    drum_stem: Option<Arc<AudioClip>>,
+    drum_stem_waveform: Option<Arc<Vec<WaveBin>>>,
+    pub drum_stem_loading: bool,
+    monitor_stem: bool,
+    drum_stem_auto_monitor: bool,
+    drum_stem_job: Option<mpsc::Receiver<JobResult>>,
+    drum_stem_cancel: Arc<AtomicBool>,
+    drum_stem_generation: u64,
     waveform_revision: u64,
     pending_locator_right: Option<(f64, Option<f64>, bool)>,
     #[cfg(test)]
@@ -1363,6 +1379,15 @@ impl Application {
             song_job: None,
             song_cancel: Arc::new(AtomicBool::new(false)),
             song_generation: 0,
+            drum_stem_path: None,
+            drum_stem: None,
+            drum_stem_waveform: None,
+            drum_stem_loading: false,
+            monitor_stem: false,
+            drum_stem_auto_monitor: false,
+            drum_stem_job: None,
+            drum_stem_cancel: Arc::new(AtomicBool::new(false)),
+            drum_stem_generation: 0,
             waveform_revision: 0,
             pending_locator_right: None,
             #[cfg(test)]
@@ -1604,6 +1629,15 @@ impl Application {
         self.pending_locator_right = None;
         self.song_generation += 1;
         self.song = None;
+        self.drum_stem_cancel.store(true, Ordering::Relaxed);
+        self.drum_stem_job = None;
+        self.drum_stem_loading = false;
+        self.drum_stem_auto_monitor = false;
+        self.drum_stem_generation += 1;
+        self.drum_stem_path = None;
+        self.drum_stem = None;
+        self.drum_stem_waveform = None;
+        self.monitor_stem = false;
         self.drum_vst_cancel.store(true, Ordering::Relaxed);
         self.drum_vst_job = None;
         self.drum_vst_loading = false;
@@ -1729,6 +1763,10 @@ impl Application {
                             .and_then(|p| p.settings.drum_vst.clone())
                     })
             }),
+            drum_stem_path: self
+                .drum_stem_path
+                .as_ref()
+                .map(|p| p.to_string_lossy().into_owned()),
         })
     }
 
@@ -2171,6 +2209,11 @@ impl Application {
             self.song_loading = false;
             self.pending_play_on_song = false;
             self.pending_locator_right = None;
+            self.drum_stem_cancel.store(true, Ordering::Relaxed);
+            self.drum_stem_cancel = Arc::new(AtomicBool::new(false));
+            self.drum_stem_job = None;
+            self.drum_stem_loading = false;
+            self.drum_stem_auto_monitor = false;
             self.drum_vst_cancel.store(true, Ordering::Relaxed);
             self.drum_vst_cancel = Arc::new(AtomicBool::new(false));
             self.drum_vst_job = None;
@@ -2313,6 +2356,22 @@ impl Application {
         if let Some(result) = song_result {
             self.apply_song_job_result(result);
         }
+        let stem_result = match self.drum_stem_job.as_ref().map(|r| r.try_recv()) {
+            Some(Ok(result)) => {
+                self.drum_stem_job = None;
+                Some(result)
+            }
+            Some(Err(mpsc::TryRecvError::Disconnected)) => {
+                self.drum_stem_job = None;
+                self.drum_stem_loading = false;
+                self.drum_stem_auto_monitor = false;
+                None
+            }
+            _ => None,
+        };
+        if let Some(result) = stem_result {
+            self.apply_drum_stem_job_result(result);
+        }
         let drum_vst_result = match self.drum_vst_job.as_ref().map(|r| r.try_recv()) {
             Some(Ok(result)) => {
                 self.drum_vst_job = None;
@@ -2427,6 +2486,15 @@ impl Application {
                         self.pending_locator_right = None;
                         self.song = None;
                         self.waveform.clear();
+                        self.drum_stem_generation = self.document_generation;
+                        self.drum_stem_cancel.store(true, Ordering::Relaxed);
+                        self.drum_stem_job = None;
+                        self.drum_stem_loading = false;
+                        self.drum_stem_auto_monitor = false;
+                        self.drum_stem_path = None;
+                        self.drum_stem = None;
+                        self.drum_stem_waveform = None;
+                        self.monitor_stem = false;
                     }
                     let keep_drum_vst = preserve.is_some() && self.drum_vst.is_some();
                     if !keep_drum_vst {
@@ -2524,6 +2592,13 @@ impl Application {
                         }
                         self.spawn_song_decode(song_path);
                     }
+                    if let Some(stem_path_str) = settings.drum_stem_path.clone() {
+                        let stem_path = PathBuf::from(&stem_path_str);
+                        if stem_path.exists() {
+                            self.drum_stem_path = Some(stem_path.clone());
+                            self.spawn_drum_stem_decode(stem_path, false);
+                        }
+                    }
                     self.status = match vst_status_note {
                         Some(note) => format!("{base_status} ({note})"),
                         None => base_status.into(),
@@ -2541,6 +2616,9 @@ impl Application {
                 }
                 JobResult::SongReady { .. } => {
                     self.apply_song_job_result(result);
+                }
+                JobResult::DrumStemReady { .. } => {
+                    self.apply_drum_stem_job_result(result);
                 }
                 JobResult::DrumVstReady { .. } => {
                     self.apply_drum_vst_job_result(result);
@@ -3028,6 +3106,194 @@ impl Application {
             }
         } else if self.status == "Loading song…" {
             self.status = "Difficulty loaded".into();
+        }
+    }
+
+    pub fn active_song_clip(&self) -> Option<Arc<AudioClip>> {
+        if self.monitor_stem && self.drum_stem.is_some() {
+            self.drum_stem.clone()
+        } else {
+            self.song.clone()
+        }
+    }
+
+    pub fn active_waveform(&self) -> &[WaveBin] {
+        if self.monitor_stem
+            && let Some(wf) = self.drum_stem_waveform.as_deref()
+        {
+            return wf;
+        }
+        &self.waveform
+    }
+
+    pub fn has_drum_stem(&self) -> bool {
+        self.drum_stem.is_some()
+    }
+
+    pub fn is_monitoring_stem(&self) -> bool {
+        self.monitor_stem && self.drum_stem.is_some()
+    }
+
+    pub fn drum_stem_path(&self) -> Option<&Path> {
+        self.drum_stem_path.as_deref()
+    }
+
+    pub fn drum_stem_name(&self) -> Option<String> {
+        if self.drum_stem.is_none() && !self.drum_stem_loading {
+            return None;
+        }
+        self.drum_stem_path
+            .as_deref()
+            .and_then(Path::file_name)
+            .map(|n| n.to_string_lossy().into_owned())
+    }
+
+    pub fn load_drum_stem(&mut self, path: PathBuf) {
+        if self.document.is_none() {
+            return;
+        }
+        let was_monitoring = self.monitor_stem;
+        self.drum_stem_path = Some(path.clone());
+        self.drum_stem = None;
+        self.drum_stem_waveform = None;
+        self.monitor_stem = false;
+        if was_monitoring {
+            self.waveform_revision += 1;
+            self.sync_audio();
+        }
+        self.status = "Loading drum stem…".into();
+        self.spawn_drum_stem_decode(path, true);
+        let _ = self.save_session();
+    }
+
+    pub fn clear_drum_stem(&mut self) {
+        self.drum_stem_cancel.store(true, Ordering::Relaxed);
+        self.drum_stem_job = None;
+        self.drum_stem_loading = false;
+        self.drum_stem_auto_monitor = false;
+        self.drum_stem_generation += 1;
+        let had_stem = self.drum_stem_path.is_some() || self.drum_stem.is_some();
+        let was_monitoring = self.monitor_stem;
+        self.drum_stem_path = None;
+        self.drum_stem = None;
+        self.drum_stem_waveform = None;
+        self.monitor_stem = false;
+        if was_monitoring {
+            self.waveform_revision += 1;
+            self.sync_audio();
+        }
+        if had_stem {
+            self.status = "Drum stem cleared".into();
+            let _ = self.save_session();
+        }
+    }
+
+    pub fn toggle_monitor_stem(&mut self) -> bool {
+        if self.document.is_none() {
+            return false;
+        }
+        if self.drum_stem.is_none() {
+            self.status = if self.drum_stem_loading {
+                "Loading drum stem…".into()
+            } else {
+                "No drum stem attached — click + Stem to load one".into()
+            };
+            return false;
+        }
+        self.monitor_stem = !self.monitor_stem;
+        self.waveform_revision += 1;
+        self.sync_audio();
+        self.status = if self.monitor_stem {
+            let name = self.drum_stem_name().unwrap_or_else(|| "stem".into());
+            format!("Monitoring drum stem ({name})")
+        } else {
+            "Monitoring song".into()
+        };
+        self.monitor_stem
+    }
+
+    fn spawn_drum_stem_decode(&mut self, path: PathBuf, auto_monitor: bool) {
+        self.drum_stem_cancel.store(true, Ordering::Relaxed);
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.drum_stem_cancel = cancel.clone();
+        let (send, receive) = mpsc::channel();
+        self.drum_stem_job = Some(receive);
+        self.drum_stem_loading = true;
+        self.drum_stem_auto_monitor = auto_monitor;
+        self.drum_stem_generation += 1;
+        let generation = self.drum_stem_generation;
+        std::thread::spawn(move || {
+            if cancel.load(Ordering::Relaxed) {
+                let _ = send.send(JobResult::DrumStemReady {
+                    generation,
+                    path,
+                    clip: None,
+                    waveform: Vec::new(),
+                    warning: None,
+                });
+                return;
+            }
+            let (clip, waveform, warning) =
+                match dawsu_audio::decode_with_cancel(&path, &|| cancel.load(Ordering::Relaxed)) {
+                    Ok(audio) => {
+                        let wf = if cancel.load(Ordering::Relaxed) {
+                            Vec::new()
+                        } else {
+                            waveform::analyse(&audio)
+                        };
+                        (Some(audio), wf, None)
+                    }
+                    Err(e) => {
+                        if cancel.load(Ordering::Relaxed) {
+                            (None, Vec::new(), None)
+                        } else {
+                            (None, Vec::new(), Some(format!("Drum stem unavailable: {e}")))
+                        }
+                    }
+                };
+            let _ = send.send(JobResult::DrumStemReady {
+                generation,
+                path,
+                clip,
+                waveform,
+                warning,
+            });
+        });
+    }
+
+    fn apply_drum_stem_job_result(&mut self, result: JobResult) {
+        let JobResult::DrumStemReady { generation, path, clip, waveform, warning } = result else {
+            return;
+        };
+        if generation != self.drum_stem_generation || self.document.is_none() {
+            return;
+        }
+        self.drum_stem_loading = false;
+        let auto_monitor = std::mem::take(&mut self.drum_stem_auto_monitor);
+        if let Some(clip) = clip {
+            self.drum_stem_path = Some(path);
+            self.drum_stem = Some(clip);
+            self.drum_stem_waveform = Some(Arc::new(waveform));
+            if auto_monitor {
+                self.monitor_stem = true;
+                self.waveform_revision += 1;
+                self.sync_audio();
+                let name = self.drum_stem_name().unwrap_or_else(|| "stem".into());
+                self.status = format!("Monitoring drum stem ({name})");
+            } else if self.status == "Loading drum stem…" {
+                self.status = "Drum stem ready (press T to toggle)".into();
+            }
+        } else {
+            self.drum_stem_path = None;
+            self.drum_stem = None;
+            self.drum_stem_waveform = None;
+            self.monitor_stem = false;
+            if let Some(w) = warning {
+                self.warnings.push(w);
+            }
+            if self.status == "Loading drum stem…" {
+                self.status = "Drum stem unavailable".into();
+            }
         }
     }
 
@@ -4017,7 +4283,7 @@ impl Application {
             }
             if let Some(a) = &self.audio {
                 a.load_at_speed(
-                    self.song.clone(),
+                    self.active_song_clip(),
                     cues,
                     self.playback_speed,
                 );
@@ -9016,6 +9282,130 @@ mod shipped_default_sounds {
         assert_eq!(path_for(&slide, &defaults).unwrap(), defaults.join("Soft-SliderSlide.ogg").canonicalize().unwrap());
         let kick = skin(SampleSet::Drum, Sound::Hit(Hitsound::Normal), 0);
         assert_eq!(path_for(&kick, &defaults).unwrap(), defaults.join("drum-hitnormal.wav").canonicalize().unwrap());
+    }
+}
+
+#[cfg(test)]
+mod drum_stem_monitor {
+    use super::*;
+    use dawsu_test_support::Scratch;
+    use std::time::{Duration, Instant};
+
+    fn test_wav(frames: u32, freq_hz: f32) -> Vec<u8> {
+        let data = frames * 2;
+        let mut wav = b"RIFF".to_vec();
+        wav.extend((36 + data).to_le_bytes());
+        wav.extend(b"WAVEfmt \x10\0\0\0\x01\0\x01\0\x80\xbb\0\0\0w\x01\0\x02\0\x10\0data");
+        wav.extend(data.to_le_bytes());
+        for i in 0..frames {
+            let phase = 2.0 * std::f32::consts::PI * freq_hz * (i as f32 / 48_000.0);
+            let sample = (phase.sin() * 18_000.0) as i16;
+            wav.extend(sample.to_le_bytes());
+        }
+        wav
+    }
+
+    fn wait_open(app: &mut Application) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while app.busy {
+            app.poll();
+            assert!(Instant::now() < deadline, "open job timed out");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(app.error.is_none(), "{:?}", app.error);
+    }
+
+    fn wait_audio(app: &mut Application) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while app.song_loading || app.drum_stem_loading {
+            app.poll();
+            assert!(Instant::now() < deadline, "audio decode job timed out");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    fn headless_with_projects(data_root: PathBuf) -> Application {
+        let mut app = Application::headless();
+        app.project_root = Some(data_root.join("projects"));
+        app.data_root = data_root;
+        app
+    }
+
+    #[test]
+    fn drum_stem_decodes_async_swaps_clip_and_coloured_waveform_and_persists_in_session() {
+        let scratch = Scratch::new("drum-stem-monitor");
+        let map = scratch.path("Map.osu");
+        std::fs::write(
+            &map,
+            b"osu file format v14\n[General]\nMode:0\nAudioFilename: song.wav\n[TimingPoints]\n0,500,4,1,1,100,1,0\n[HitObjects]\n256,192,1000,1,0,0:0:0:0:\n",
+        )
+        .unwrap();
+        // Song: 1 second high-ish tone (2000 Hz); Stem: 2 seconds bass tone (90 Hz) so length & colour differ.
+        std::fs::write(scratch.path("song.wav"), test_wav(48_000, 2000.0)).unwrap();
+        let stem_path = scratch.path("drums.wav");
+        std::fs::write(&stem_path, test_wav(48_000 * 2, 90.0)).unwrap();
+
+        let data_root = scratch.path("data");
+        let mut app = headless_with_projects(data_root.clone());
+        app.request_open(map.clone());
+        wait_open(&mut app);
+        wait_audio(&mut app);
+
+        assert!(!app.has_drum_stem());
+        assert!(!app.is_monitoring_stem());
+        let song_clip = app.active_song_clip().expect("song decoded");
+        let song_wf_len = app.active_waveform().len();
+        assert!(song_wf_len > 0);
+
+        let rev_before = app.waveform_revision();
+        app.load_drum_stem(stem_path.clone());
+        assert!(app.drum_stem_loading);
+        wait_audio(&mut app);
+
+        assert!(app.has_drum_stem());
+        assert!(app.is_monitoring_stem(), "explicit attach switches monitor to stem");
+        assert_eq!(app.drum_stem_name().as_deref(), Some("drums.wav"));
+        assert!(app.waveform_revision() > rev_before);
+
+        let stem_clip = app.active_song_clip().expect("stem clip active");
+        assert!(!Arc::ptr_eq(&song_clip, &stem_clip));
+        let stem_wf = app.active_waveform();
+        assert!(stem_wf.len() > song_wf_len, "2s stem waveform has more bins than 1s song");
+        assert!(stem_wf.iter().any(|b| b.low > 0.0), "stem waveform carries frequency-coloured low band");
+
+        // Toggle back to Song via T command / toggle_monitor_stem.
+        let rev_stem = app.waveform_revision();
+        assert!(!app.toggle_monitor_stem());
+        assert!(!app.is_monitoring_stem());
+        assert!(Arc::ptr_eq(&app.active_song_clip().unwrap(), &song_clip));
+        assert_eq!(app.active_waveform().len(), song_wf_len);
+        assert!(app.waveform_revision() > rev_stem);
+
+        // Toggle via command catalogue ("toggleStemMonitor").
+        app.command("toggleStemMonitor");
+        assert!(app.is_monitoring_stem());
+        assert!(Arc::ptr_eq(&app.active_song_clip().unwrap(), &stem_clip));
+
+        // Verify SessionSettings persisted drum_stem_path and re-opening restores it off-thread.
+        app.close_document();
+        assert!(!app.has_drum_stem());
+        assert!(!app.is_monitoring_stem());
+
+        let mut reopened = headless_with_projects(data_root);
+        reopened.request_open(map);
+        wait_open(&mut reopened);
+        wait_audio(&mut reopened);
+        assert!(reopened.has_drum_stem(), "reopening map restores persisted drum_stem_path");
+        assert!(!reopened.is_monitoring_stem(), "reopen starts monitoring song until toggled");
+        assert_eq!(reopened.drum_stem_name().as_deref(), Some("drums.wav"));
+        assert!(reopened.toggle_monitor_stem());
+        assert!(reopened.is_monitoring_stem());
+
+        // Clear removes stem and restores song monitoring.
+        reopened.clear_drum_stem();
+        assert!(!reopened.has_drum_stem());
+        assert!(!reopened.is_monitoring_stem());
+        assert!(reopened.drum_stem_path().is_none());
     }
 }
 
