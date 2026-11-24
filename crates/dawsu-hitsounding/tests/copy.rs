@@ -3,7 +3,7 @@
 //! from the old app's `HitsoundCopierTests.cs` and `SimultaneousCopyTests.cs` at c81774e.
 
 use dawsu_foundation::{CustomIndex, Hitsound, SampleIdentity, SampleSet, Sound};
-use dawsu_hitsounding::copy::{copy_hitsounds, CopyCollisionPolicy, CopyMode, CopyOptions, CopyOutcome, TargetOutcome, TargetPlan};
+use dawsu_hitsounding::copy::{copy_hitsounds, CopyCollisionPolicy, CopyMode, CopyOptions, CopyOutcome, SliderEndMuteOptions, TargetOutcome, TargetPlan};
 use dawsu_hitsounding::rules::{answer, Answer};
 use dawsu_hitsounding::{decompile, Decompiled, Hitsounds, MomentId, ProblemKind};
 use dawsu_osu_format::OsuFile;
@@ -99,6 +99,13 @@ const ONLY_DEFINED: CopyOptions = CopyOptions {
     min_length: 0.5,
     muted_index: None,
     muted_sample_set: None,
+    slider_end_mute: SliderEndMuteOptions {
+        enabled: false,
+        min_beats: 0.5,
+        mute_spinner_ends: false,
+        only_unhit: true,
+        divisors: Vec::new(),
+    },
 };
 
 // ---------------------------------------------------------------- the identity and the invariants

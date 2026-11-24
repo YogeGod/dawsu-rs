@@ -3,9 +3,10 @@
   import { invoke } from "../lib/ipc.js";
   import { forwardSpace } from "../lib/space.js";
   import {
-    adoptChoices, afterPoll, baseDiff, baseName, baseStatus, blockDrops, choicesFrom, difficultyName, exportLabel, exportState, fileName,
-    laneSwatches, matchWithinValid, openWarnings, optionsKey, ownWriteError, pollDelay, previewRequest, statusLine, targetCounts, targetDiff,
-    warningsLabel,
+    adoptChoices, afterPoll, baseDiff, baseName, baseStatus, blockDrops, choicesFrom, difficultyName,
+    divisorPresetFrom, divisorPresets, divisorsFromPreset, exportLabel, exportState, fileName,
+    laneSwatches, matchWithinValid, minBeatsValid, openWarnings, optionsKey, ownWriteError, pollDelay,
+    previewRequest, statusLine, targetCounts, targetDiff, warningsLabel,
   } from "../lib/export.js";
   import { reviewMixSections } from "../lib/review.js";
 
@@ -37,6 +38,8 @@
   const swatches = $derived(laneSwatches(source));
   const problems = $derived(status.preview ? view?.problems ?? [] : []);
   const matchValid = $derived(matchWithinValid(choices.matchWithin));
+  const muteBeatsValid = $derived(!choices.sliderEndMute.enabled || minBeatsValid(choices.sliderEndMute.minBeats));
+  const divisorPreset = $derived(divisorPresetFrom(choices.sliderEndMute.divisors));
   const baseText = $derived(baseStatus(status.preview));
   const baseOsuDiff = $derived(choices.base ? baseDiff(status.preview) : null);
   // Which .wav files the export creates or reuses, and how volumes are written.
@@ -76,7 +79,7 @@
   async function preview() {
     clearTimeout(previewTimer);
     previewTimer = null;
-    if (!view?.source || !matchValid) return;
+    if (!view?.source || !matchValid || !muteBeatsValid) return;
     const asked = key;
     try {
       const id = await invoke("export_preview", previewRequest(view, choices));
@@ -203,7 +206,42 @@
             <option value="ogg_vorbis">Ogg Vorbis</option>
           </select>
         </label>
+        <span class="divider" aria-hidden="true"></span>
+        <label class="switch-label" title="Set un-hit slider ends to 5% volume. Ends with a matched hitsound are never muted.">
+          Mute un-hit slider ends
+          <button type="button" class="switch" role="switch" aria-checked={choices.sliderEndMute.enabled}
+            aria-label="Mute un-hit slider ends"
+            onclick={() => (choices.sliderEndMute.enabled = !choices.sliderEndMute.enabled)}></button>
+        </label>
       </section>
+
+      {#if choices.sliderEndMute.enabled}
+        <section class="mute-options" aria-label="Slider-end muting options">
+          <label class="mute-field">
+            Min length
+            <span class="field" class:invalid={!muteBeatsValid}>
+              <input type="number" min="0" max="64" step="0.25" bind:value={choices.sliderEndMute.minBeats}
+                aria-label="Minimum slider length in beats"
+                aria-invalid={!muteBeatsValid}>
+              beats
+            </span>
+          </label>
+          <label class="mute-field">
+            Beat snap
+            <select class="select" aria-label="Mute on beat divisor" value={divisorPreset}
+              onchange={event => (choices.sliderEndMute.divisors = divisorsFromPreset(event.currentTarget.value))}>
+              {#each divisorPresets as preset (preset.id)}
+                <option value={preset.id}>{preset.label}</option>
+              {/each}
+            </select>
+          </label>
+          <label class="check">
+            <input type="checkbox" bind:checked={choices.sliderEndMute.muteSpinnerEnds}>
+            Also mute spinner ends
+          </label>
+          <span class="mute-note">5% volume · keeps hitsounded ends</span>
+        </section>
+      {/if}
 
       <ul class="targets">
         <li class="target" class:off={!choices.base}>
@@ -430,6 +468,31 @@
     cursor: pointer;
   }
   select.field:focus { outline: none; box-shadow: inset 0 0 0 1px var(--editor-focus); }
+
+  .mute-options {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px 16px;
+    margin-top: 8px;
+    padding: 10px 18px;
+    border-radius: 8px;
+    background: var(--editor-panel);
+    box-shadow: inset 0 0 0 1px var(--editor-border);
+  }
+  .mute-field { display: flex; align-items: center; gap: 8px; white-space: nowrap; color: var(--editor-secondary); }
+  .select {
+    height: 32px;
+    padding: 0 10px;
+    border: 0;
+    border-radius: 6px;
+    background: var(--editor-ink);
+    box-shadow: var(--shadow-well);
+    color: var(--editor-text);
+    font: inherit;
+  }
+  .select:focus-visible { outline: 2px solid var(--editor-focus); outline-offset: 1px; }
+  .mute-note { margin-left: auto; color: var(--editor-muted); font-size: 12px; white-space: nowrap; }
 
   .switch {
     position: relative;

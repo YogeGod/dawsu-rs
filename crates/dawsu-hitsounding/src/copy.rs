@@ -39,6 +39,39 @@ pub enum CopyCollisionPolicy {
     LaterWins,
 }
 
+/// Automatic slider-end (and optional spinner-end) muting options.
+///
+/// Off by default (`enabled: false`) so Copy/Export leaves slider and spinner ends alone unless
+/// the mapper opts in. Muted ends always respect osu!'s 5% saved volume floor.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct SliderEndMuteOptions {
+    /// Master toggle. Default `false`.
+    pub enabled: bool,
+    /// Minimum slider length in beats before its end can be muted (default `0.5`).
+    /// Sliders shorter than this are never muted.
+    pub min_beats: f64,
+    /// Also mute un-hit spinner ends (default `false`).
+    pub mute_spinner_ends: bool,
+    /// Only mute ends that do not already have a placed/matched hitsound (default `true`).
+    pub only_unhit: bool,
+    /// Beat divisors whose ends are muted (e.g. `[2, 4]`, `[3]`, `[4, 3, 8, 6, 16, 12]`).
+    /// Empty means mute on any beat divisor.
+    pub divisors: Vec<u32>,
+}
+
+impl Default for SliderEndMuteOptions {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            min_beats: 0.5,
+            mute_spinner_ends: false,
+            only_unhit: true,
+            divisors: Vec::new(),
+        }
+    }
+}
+
 /// Options for Copy hitsounds (matching Mapping Tools' defaults, except Merge is the default collision policy).
 #[derive(Debug, Clone, PartialEq)]
 pub struct CopyOptions {
@@ -71,7 +104,7 @@ pub struct CopyOptions {
     pub ignore_hitsound_satisfied_samples: bool,
     /// Skip a storyboard sample whenever a target moment is within the leniency.
     pub ignore_whenever_hitsound: bool,
-    /// Mute target slider and spinner ends the source has nothing for, filtered by snap and length.
+    /// Legacy toggle: mute target slider and spinner ends using `beat_divisors`/`muted_divisors`/`min_length`.
     pub mute_slider_ends: bool,
     /// Beat divisors in priority order: an end snaps to the nearest, and the first it falls on decides.
     pub beat_divisors: Vec<u32>,
@@ -83,6 +116,8 @@ pub struct CopyOptions {
     pub muted_index: Option<u32>,
     /// The sample set muted ends play in; `None` keeps theirs.
     pub muted_sample_set: Option<SampleSet>,
+    /// Structured automatic slider-end (and optional spinner-end) muting options.
+    pub slider_end_mute: SliderEndMuteOptions,
 }
 
 impl Default for CopyOptions {
@@ -109,6 +144,7 @@ impl Default for CopyOptions {
             min_length: 0.5,
             muted_index: None,
             muted_sample_set: None,
+            slider_end_mute: SliderEndMuteOptions::default(),
         }
     }
 }
@@ -243,10 +279,10 @@ fn validate(o: &CopyOptions) -> Result<(), String> {
     if !o.leniency.is_finite() || o.leniency < 0.0 {
         return Err("the leniency must be a number of milliseconds, 0 or more".into());
     }
-    if o.beat_divisors.iter().chain(&o.muted_divisors).any(|d| *d == 0) {
+    if o.beat_divisors.iter().chain(&o.muted_divisors).chain(&o.slider_end_mute.divisors).any(|d| *d == 0) {
         return Err("beat divisors must be 1 or more".into());
     }
-    if !o.min_length.is_finite() || o.min_length < 0.0 {
+    if !o.min_length.is_finite() || o.min_length < 0.0 || !o.slider_end_mute.min_beats.is_finite() || o.slider_end_mute.min_beats < 0.0 {
         return Err("the minimum slider length must be 0 beats or more".into());
     }
     Ok(())
@@ -540,7 +576,7 @@ fn plan_target(source: &Hitsounds, source_file: &OsuFile, target: &OsuFile, fold
     }
 
     let mut muted = 0;
-    if options.mute_slider_ends {
+    if options.slider_end_mute.enabled || options.mute_slider_ends {
         muted = mute_ends(&mut to, target, &target_cp, target_offset, &matched, options, &mut changed);
     }
     if options.copy_hitsounds {
@@ -578,9 +614,16 @@ pub(crate) fn set_moment(h: &mut Hitsounds, id: MomentId, lanes: &[SampleIdentit
     true
 }
 
-/// Mapping Tools' slider-end filter and mute (old `IsMutable`): an unmatched end of a slider
-/// without repeats or of a spinner, with no additions, at least `min_length` beats long, whose
-/// time snaps first to a muted divisor, gets a hitnormal at 5 %. Returns how many were muted.
+/// Automatic slider-end (and optional spinner-end) muting.
+///
+/// When `o.slider_end_mute.enabled` is true, uses `SliderEndMuteOptions`:
+/// - Never mutes an end that already has a matched source hitsound.
+/// - When `only_unhit` is true (default), also skips ends that carry non-normal additions or custom sample files.
+/// - Sliders shorter than `min_beats` are never muted; spinners are muted only when `mute_spinner_ends` is true.
+/// - Empty `divisors` mutes on any beat position; non-empty `divisors` mutes only when the end's coarsest snap divisor is listed.
+/// - Always writes `MINIMUM_PLAYED_VOLUME` (5%), never below osu!'s 5% saved volume floor.
+///
+/// When only the legacy `o.mute_slider_ends` flag is true, preserves the legacy Mapping Tools filter.
 fn mute_ends(to: &mut Hitsounds, target: &OsuFile, cp: &ControlPoints, offset: f64, matched: &HashMap<usize, Vec<usize>>, o: &CopyOptions, changed: &mut usize) -> usize {
     let starts: HashMap<ObjectId, f64> = target.hit_objects().iter().map(|h| (ObjectId(h.line()), h.time() + offset)).collect();
     let mut last_node: HashMap<ObjectId, usize> = HashMap::new();
@@ -590,36 +633,70 @@ fn mute_ends(to: &mut Hitsounds, target: &OsuFile, cp: &ControlPoints, offset: f
             *e = (*e).max(node);
         }
     }
+    let structured = o.slider_end_mute.enabled;
     let mut muted = 0;
     for i in 0..to.moments().len() {
         let m = to.moments()[i].clone();
-        let object = match m.place() {
-            Place::SliderNode { object, node: 1 } if last_node.get(&object) == Some(&1) => object,
-            Place::SpinnerEnd(object) => object,
+        let (object, is_spinner) = match m.place() {
+            Place::SliderNode { object, node } if structured && node >= 1 && last_node.get(&object) == Some(&node) => (object, false),
+            Place::SliderNode { object, node: 1 } if !structured && last_node.get(&object) == Some(&1) => (object, false),
+            Place::SpinnerEnd(object) if !structured || o.slider_end_mute.mute_spinner_ends => (object, true),
             _ => continue,
         };
-        if matched.contains_key(&i) || m.hits().any(|l| matches!(l, SampleIdentity::Standard { sound: Sound::Hit(h), .. } if *h != Hitsound::Normal)) {
+        // Crucial rule: never mute an end that already has a matched source hitsound.
+        if matched.contains_key(&i) {
+            continue;
+        }
+        let has_placed_hitsound = m.hits().any(|l| match l {
+            SampleIdentity::Standard { sound: Sound::Hit(h), .. } => *h != Hitsound::Normal,
+            _ => true,
+        });
+        if (!structured || o.slider_end_mute.only_unhit) && has_placed_hitsound {
             continue;
         }
         let time = m.time().ms();
-        if !cp.timing.iter().any(|t| t.time <= time - 1.0) {
-            continue;
-        }
-        let red = cp.timing_point_at(time - 1.0);
-        if red.beat_length <= 0.0 || time - starts.get(&object).copied().unwrap_or(time) < o.min_length * red.beat_length - 1e-6 {
-            continue;
-        }
-        let all: Vec<f64> = o.beat_divisors.iter().chain(&o.muted_divisors).map(|d| f64::from(*d)).collect();
-        let snapped = all
-            .iter()
-            .map(|d| red.time + ((time - red.time) / (red.beat_length / d)).round_ties_even() * (red.beat_length / d))
-            .fold((f64::INFINITY, 0.0), |best, t| if (t - time).abs() < best.0 { ((t - time).abs(), t) } else { best })
-            .1;
-        let beats = (snapped - red.time) / red.beat_length;
-        let on = |d: f64| ((beats * d) - (beats * d).round_ties_even()).abs() < 1e-6;
-        let Some(first) = all.iter().copied().find(|d| on(*d)) else { continue };
-        if !o.muted_divisors.iter().any(|d| f64::from(*d) == first) {
-            continue;
+        let min_beats = if structured { o.slider_end_mute.min_beats } else { o.min_length };
+        if !is_spinner || !structured {
+            if !cp.timing.iter().any(|t| t.time <= time - 1.0) {
+                continue;
+            }
+            let red = cp.timing_point_at(time - 1.0);
+            if red.beat_length <= 0.0 {
+                continue;
+            }
+            if !is_spinner && time - starts.get(&object).copied().unwrap_or(time) < min_beats * red.beat_length - 1e-6 {
+                continue;
+            }
+            if structured {
+                if !o.slider_end_mute.divisors.is_empty()
+                    && !matches_beat_divisor(time, red.time, red.beat_length, &o.slider_end_mute.divisors)
+                {
+                    continue;
+                }
+            } else {
+                let all: Vec<f64> = o.beat_divisors.iter().chain(&o.muted_divisors).map(|d| f64::from(*d)).collect();
+                let snapped = all
+                    .iter()
+                    .map(|d| red.time + ((time - red.time) / (red.beat_length / d)).round_ties_even() * (red.beat_length / d))
+                    .fold((f64::INFINITY, 0.0), |best, t| if (t - time).abs() < best.0 { ((t - time).abs(), t) } else { best })
+                    .1;
+                let beats = (snapped - red.time) / red.beat_length;
+                let on = |d: f64| ((beats * d) - (beats * d).round_ties_even()).abs() < 1e-6;
+                let Some(first) = all.iter().copied().find(|d| on(*d)) else { continue };
+                if !o.muted_divisors.iter().any(|d| f64::from(*d) == first) {
+                    continue;
+                }
+            }
+        } else if !o.slider_end_mute.divisors.is_empty() {
+            if !cp.timing.iter().any(|t| t.time <= time - 1.0) {
+                continue;
+            }
+            let red = cp.timing_point_at(time - 1.0);
+            if red.beat_length <= 0.0
+                || !matches_beat_divisor(time, red.time, red.beat_length, &o.slider_end_mute.divisors)
+            {
+                continue;
+            }
         }
         let normal = m.hits().find_map(|l| match l {
             SampleIdentity::Standard { set, sound: Sound::Hit(Hitsound::Normal), index } => Some((*set, index.get())),
@@ -634,6 +711,33 @@ fn mute_ends(to: &mut Hitsounds, target: &OsuFile, cp: &ControlPoints, offset: f
         }
     }
     muted
+}
+
+/// Returns true if `time` snaps coarsest to one of `divisors` under the active red timing point.
+fn matches_beat_divisor(time: f64, red_time: f64, beat_length: f64, divisors: &[u32]) -> bool {
+    let mut priority: Vec<u32> = vec![1, 2, 4, 3, 8, 6, 16, 12];
+    for &d in divisors {
+        if !priority.contains(&d) {
+            priority.push(d);
+        }
+    }
+    let snapped = priority
+        .iter()
+        .map(|&d| {
+            let step = beat_length / f64::from(d);
+            red_time + ((time - red_time) / step).round_ties_even() * step
+        })
+        .fold((f64::INFINITY, 0.0), |best, t| if (t - time).abs() < best.0 { ((t - time).abs(), t) } else { best })
+        .1;
+    let beats = (snapped - red_time) / beat_length;
+    let on = |d: u32| {
+        let scaled = beats * f64::from(d);
+        (scaled - scaled.round_ties_even()).abs() < 1e-6
+    };
+    let Some(first) = priority.into_iter().find(|&d| on(d)) else {
+        return false;
+    };
+    divisors.contains(&first)
 }
 
 /// Slider bodies (plan decision B): a target slider whose head took a source slider head's sounds
@@ -829,5 +933,165 @@ mod tests {
     #[test]
     fn numbers_print_like_dotnet_s_three_decimals() {
         assert_eq!((number(1500.0), number(12.25), number(0.0004), number(80.0)), ("1500".into(), "12.25".into(), "0".into(), "80".into()));
+    }
+
+    fn test_map(objects: &str) -> OsuFile {
+        let text = format!(
+            "osu file format v14\r\n\r\n[General]\r\nMode:0\r\nSampleSet: Normal\r\n\r\n[Difficulty]\r\nSliderMultiplier:1.4\r\nSliderTickRate:1\r\n\r\n[TimingPoints]\r\n0,500,4,2,1,60,1,0\r\n\r\n[HitObjects]\r\n{objects}\r\n"
+        );
+        OsuFile::read(text.into_bytes()).file
+    }
+
+    fn run_plan(source: &OsuFile, target: &OsuFile, options: &CopyOptions) -> TargetPlan {
+        let dec = match decompile(source, &[], &|| false, &mut |_, _| {}) {
+            Decompiled::Done(h) => h,
+            _ => panic!("decompile failed"),
+        };
+        match copy_hitsounds(&dec, source, std::slice::from_ref(target), &[], options, &|| false, &mut |_, _| {}) {
+            CopyOutcome::Targets(mut list) => match list.remove(0) {
+                TargetOutcome::Planned(plan) => *plan,
+                other => panic!("unexpected target outcome: {other:?}"),
+            },
+            other => panic!("unexpected copy outcome: {other:?}"),
+        }
+    }
+
+    fn moment_volumes(file: &OsuFile) -> Vec<(f64, Place, i32, Vec<SampleIdentity>)> {
+        let parsed = OsuFile::read(file.to_bytes()).file;
+        let dec = match decompile(&parsed, &[], &|| false, &mut |_, _| {}) {
+            Decompiled::Done(h) => h,
+            _ => panic!("decompile failed"),
+        };
+        dec.moments()
+            .iter()
+            .map(|m| (m.time().ms(), m.place(), m.volume(), m.hits().cloned().collect()))
+            .collect()
+    }
+
+    #[test]
+    fn slider_end_mute_default_is_disabled_and_changes_nothing() {
+        let source = test_map("256,192,1000,1,0,0:0:0:0:");
+        let len = 1.4 * 100.0 * 0.75; // 0.75 beats -> ends at 1375 ms
+        let target = test_map(&format!("100,100,1000,2,0,L|300:100,1,{len},0|0,0:0|0:0,0:0:0:0:"));
+        let options = CopyOptions::default();
+        assert!(!options.slider_end_mute.enabled);
+        let plan = run_plan(&source, &target, &options);
+        assert_eq!(plan.muted, 0);
+        let moments = moment_volumes(&plan.file);
+        assert_eq!(moments.last().unwrap().2, 60, "unmuted slider end stays at 60%");
+    }
+
+    #[test]
+    fn slider_end_mute_mutes_unhit_slider_ends_above_min_beats_and_preserves_matched_ends() {
+        // Source has a hit at 1000 (slider 1 head), a hit at 2500 (slider 2 tail with clap), and nothing at 1375 (slider 1 tail) or 3125 (short slider 3 tail).
+        let source = test_map(concat!(
+            "256,192,1000,1,0,0:0:0:0:\r\n",
+            "256,192,2500,1,8,0:0:0:80:",
+        ));
+        let len_075 = 1.4 * 100.0 * 0.75; // 0.75 beats (>= 0.5) -> 1000..1375 (un-hit)
+        let len_100 = 1.4 * 100.0 * 1.0;  // 1.00 beats (>= 0.5) -> 2000..2500 (HIT by source at 2500!)
+        let len_025 = 1.4 * 100.0 * 0.25; // 0.25 beats (< 0.5)  -> 3000..3125 (too short)
+        let target = test_map(&format!(
+            "100,100,1000,2,0,L|300:100,1,{len_075},0|0,0:0|0:0,0:0:0:0:\r\n\
+             100,100,2000,2,0,L|300:100,1,{len_100},0|0,0:0|0:0,0:0:0:0:\r\n\
+             100,100,3000,2,0,L|300:100,1,{len_025},0|0,0:0|0:0,0:0:0:0:"
+        ));
+        let options = CopyOptions {
+            slider_end_mute: SliderEndMuteOptions {
+                enabled: true,
+                min_beats: 0.5,
+                mute_spinner_ends: false,
+                only_unhit: true,
+                divisors: Vec::new(),
+            },
+            ..CopyOptions::default()
+        };
+        let plan = run_plan(&source, &target, &options);
+        assert_eq!(plan.muted, 1, "only the un-hit slider >= 0.5 beats should be muted");
+        let moments = moment_volumes(&plan.file);
+        // Slider 1 tail at 1375 ms -> muted to 5% (never < 5%)
+        let tail1 = moments.iter().find(|m| (m.0 - 1375.0).abs() < 1.0).unwrap();
+        assert_eq!(tail1.2, MINIMUM_PLAYED_VOLUME);
+        assert!(tail1.2 >= 5);
+        // Slider 2 tail at 2500 ms -> matched source clap at 80%, NEVER muted!
+        let tail2 = moments.iter().find(|m| (m.0 - 2500.0).abs() < 1.0).unwrap();
+        assert_eq!(tail2.2, 80, "matched slider end keeps its 80% volume");
+        assert!(tail2.3.iter().any(|l| matches!(l, SampleIdentity::Standard { sound: Sound::Hit(Hitsound::Clap), .. })));
+        // Slider 3 tail at 3125 ms -> shorter than min_beats (0.25 < 0.5), untouched at 60%
+        let tail3 = moments.iter().find(|m| (m.0 - 3125.0).abs() < 1.0).unwrap();
+        assert_eq!(tail3.2, 60, "slider shorter than min_beats is never muted");
+    }
+
+    #[test]
+    fn slider_end_mute_divisors_filters_by_beat_snap() {
+        let source = test_map("256,192,1000,1,0,0:0:0:0:");
+        let len_quarter = 1.4 * 100.0 * 0.75; // 1000..1375 (1/4 beat)
+        let len_whole = 1.4 * 100.0 * 1.0;    // 2000..2500 (1/1 beat)
+        let target = test_map(&format!(
+            "100,100,1000,2,0,L|300:100,1,{len_quarter},0|0,0:0|0:0,0:0:0:0:\r\n\
+             100,100,2000,2,0,L|300:100,1,{len_whole},0|0,0:0|0:0,0:0:0:0:"
+        ));
+        let options = CopyOptions {
+            slider_end_mute: SliderEndMuteOptions {
+                enabled: true,
+                min_beats: 0.5,
+                mute_spinner_ends: false,
+                only_unhit: true,
+                divisors: vec![4],
+            },
+            ..CopyOptions::default()
+        };
+        let plan = run_plan(&source, &target, &options);
+        assert_eq!(plan.muted, 1, "only the 1/4 slider end is muted; 1/1 end is untouched");
+        let moments = moment_volumes(&plan.file);
+        assert_eq!(moments.iter().find(|m| (m.0 - 1375.0).abs() < 1.0).unwrap().2, 5);
+        assert_eq!(moments.iter().find(|m| (m.0 - 2500.0).abs() < 1.0).unwrap().2, 60);
+    }
+
+    #[test]
+    fn slider_end_mute_spinner_ends_respects_toggle_and_preserves_hit_spinner_ends() {
+        // Source hits spinner 2's end at 4000 ms (with finish at 90%), does NOT hit spinner 1's end at 2000 ms.
+        let source = test_map("256,192,4000,1,4,0:0:0:90:");
+        let target = test_map(concat!(
+            "256,192,1000,8,0,2000,0:0:0:0:\r\n",
+            "256,192,3000,8,0,4000,0:0:0:0:",
+        ));
+
+        // With mute_spinner_ends: false (default), neither spinner end is muted.
+        let off = CopyOptions {
+            slider_end_mute: SliderEndMuteOptions {
+                enabled: true,
+                min_beats: 0.5,
+                mute_spinner_ends: false,
+                only_unhit: true,
+                divisors: Vec::new(),
+            },
+            ..CopyOptions::default()
+        };
+        let plan_off = run_plan(&source, &target, &off);
+        assert_eq!(plan_off.muted, 0);
+        let m_off = moment_volumes(&plan_off.file);
+        assert_eq!(m_off.iter().find(|m| (m.0 - 2000.0).abs() < 1.0).unwrap().2, 60);
+
+        // With mute_spinner_ends: true, un-hit spinner 1 end (2000 ms) is muted to 5%,
+        // while hit spinner 2 end (4000 ms) keeps its matched finish at 90%.
+        let on = CopyOptions {
+            slider_end_mute: SliderEndMuteOptions {
+                enabled: true,
+                min_beats: 0.5,
+                mute_spinner_ends: true,
+                only_unhit: true,
+                divisors: Vec::new(),
+            },
+            ..CopyOptions::default()
+        };
+        let plan_on = run_plan(&source, &target, &on);
+        assert_eq!(plan_on.muted, 1);
+        let m_on = moment_volumes(&plan_on.file);
+        let spin1 = m_on.iter().find(|m| (m.0 - 2000.0).abs() < 1.0).unwrap();
+        assert_eq!(spin1.2, 5);
+        let spin2 = m_on.iter().find(|m| (m.0 - 4000.0).abs() < 1.0).unwrap();
+        assert_eq!(spin2.2, 90);
+        assert!(spin2.3.iter().any(|l| matches!(l, SampleIdentity::Standard { sound: Sound::Hit(Hitsound::Finish), .. })));
     }
 }
