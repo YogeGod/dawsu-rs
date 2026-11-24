@@ -2,10 +2,40 @@
 
 export const mixFormats = Object.freeze(["wav16", "wav32f", "ogg_vorbis"]);
 
+// Default automatic slider-end muting options (off by default).
+export const defaultSliderEndMute = Object.freeze({
+  enabled: false, minBeats: 0.5, muteSpinnerEnds: false, onlyUnhit: true, divisors: Object.freeze([]),
+});
+
+export const divisorPresets = Object.freeze([
+  { id: "any", label: "Any beat", divisors: [] },
+  { id: "offbeat", label: "Off-beat (not 1/1)", divisors: [2, 4, 3, 8, 6, 16, 12] },
+  { id: "2", label: "1/2 beats", divisors: [2] },
+  { id: "4", label: "1/4 beats", divisors: [4] },
+  { id: "3", label: "1/3 beats", divisors: [3] },
+  { id: "2,4", label: "1/2 & 1/4", divisors: [2, 4] },
+]);
+
+export function divisorPresetFrom(divisors) {
+  const list = Array.isArray(divisors) ? divisors : [];
+  if (list.length === 0) return "any";
+  const key = list.join(",");
+  for (const preset of divisorPresets) {
+    if (preset.divisors.join(",") === key) return preset.id;
+  }
+  return "any";
+}
+
+export function divisorsFromPreset(id) {
+  const found = divisorPresets.find(preset => preset.id === id);
+  return found ? [...found.divisors] : [];
+}
+
 // What the Export window starts with for a map it has no stored choices for. The base hitsound
 // difficulty is a new file in the mapset, so it is written only once the mapper turns it on.
 export const defaultChoices = Object.freeze({
-  leftOut: [], matchWithin: 5, copyVolumes: true, base: false, sliderAudio: false, laterWins: false, mixFormat: "wav16",
+  leftOut: [], matchWithin: 5, copyVolumes: true, base: false, sliderAudio: false, laterWins: false,
+  mixFormat: "wav16", sliderEndMute: defaultSliderEndMute,
 });
 
 // Generate's name for the difficulty it makes (HITSOUNDS_VERSION in dawsu-hitsounding).
@@ -13,8 +43,8 @@ export const baseName = "Hitsounds";
 
 // The old Copy dialog's defaults for every option this slice does not show yet, so Export copies
 // exactly as Copy did with Match within and Copy volumes set.
-export function copyOptions({ matchWithin, copyVolumes, laterWins = false }) {
-  return {
+export function copyOptions({ matchWithin, copyVolumes, laterWins = false, sliderEndMute = null }) {
+  const options = {
     mode: "overwrite_everything",
     leniency: matchWithin,
     collision_policy: laterWins ? "later_wins" : "merge",
@@ -37,6 +67,16 @@ export function copyOptions({ matchWithin, copyVolumes, laterWins = false }) {
     muted_index: null,
     muted_sample_set: null,
   };
+  if (sliderEndMute?.enabled) {
+    options.slider_end_mute = {
+      enabled: true,
+      min_beats: Number.isFinite(sliderEndMute.minBeats) ? sliderEndMute.minBeats : defaultSliderEndMute.minBeats,
+      mute_spinner_ends: sliderEndMute.muteSpinnerEnds === true,
+      only_unhit: sliderEndMute.onlyUnhit !== false,
+      divisors: Array.isArray(sliderEndMute.divisors) ? [...sliderEndMute.divisors] : [],
+    };
+  }
+  return options;
 }
 
 export const fileName = path => String(path).split(/[\\/]/).pop();
@@ -47,9 +87,22 @@ export function difficultyName(path) {
   return name.match(/\[([^\]]*)\]\.osu$/i)?.[1] || name.replace(/\.osu$/i, "");
 }
 
+function sliderEndMuteFrom(stored) {
+  if (!stored || typeof stored !== "object") {
+    return { ...defaultSliderEndMute, divisors: [] };
+  }
+  return {
+    enabled: typeof stored.enabled === "boolean" ? stored.enabled : defaultSliderEndMute.enabled,
+    minBeats: Number.isFinite(stored.minBeats) ? stored.minBeats : defaultSliderEndMute.minBeats,
+    muteSpinnerEnds: typeof stored.muteSpinnerEnds === "boolean" ? stored.muteSpinnerEnds : defaultSliderEndMute.muteSpinnerEnds,
+    onlyUnhit: typeof stored.onlyUnhit === "boolean" ? stored.onlyUnhit : defaultSliderEndMute.onlyUnhit,
+    divisors: Array.isArray(stored.divisors) ? stored.divisors.filter(d => Number.isInteger(d) && d >= 1) : [],
+  };
+}
+
 export function choicesFrom(view) {
   const stored = view?.choices;
-  if (!stored) return { ...defaultChoices, leftOut: [] };
+  if (!stored) return { ...defaultChoices, leftOut: [], sliderEndMute: sliderEndMuteFrom(null) };
   return {
     leftOut: Array.isArray(stored.leftOut) ? [...stored.leftOut] : [],
     matchWithin: Number.isFinite(stored.matchWithin) ? stored.matchWithin : defaultChoices.matchWithin,
@@ -58,6 +111,7 @@ export function choicesFrom(view) {
     sliderAudio: typeof stored.sliderAudio === "boolean" ? stored.sliderAudio : defaultChoices.sliderAudio,
     laterWins: typeof stored.laterWins === "boolean" ? stored.laterWins : defaultChoices.laterWins,
     mixFormat: mixFormats.includes(stored.mixFormat) ? stored.mixFormat : defaultChoices.mixFormat,
+    sliderEndMute: sliderEndMuteFrom(stored.sliderEndMute),
   };
 }
 
@@ -66,6 +120,9 @@ export const included = (targets, choices) =>
 
 // Match within is in ms, as Copy's timing tolerance was: 0 to 1000.
 export const matchWithinValid = value => Number.isFinite(value) && value >= 0 && value <= 1000;
+
+// Minimum slider length for slider-end muting is in beats: 0 to 64.
+export const minBeatsValid = value => Number.isFinite(value) && value >= 0 && value <= 64;
 
 export function exportLabel(count) {
   if (count === 0) return "Export";
@@ -76,8 +133,10 @@ export function exportLabel(count) {
 export function optionsKey(view, choices) {
   const targets = included(view?.targets, choices);
   const mixFormat = mixFormats.includes(choices.mixFormat) ? choices.mixFormat : defaultChoices.mixFormat;
+  const mute = choices.sliderEndMute;
   return JSON.stringify([view?.source?.path ?? null, targets, choices.matchWithin, choices.copyVolumes,
-    choices.base, choices.sliderAudio, choices.laterWins === true, mixFormat]);
+    choices.base, choices.sliderAudio, choices.laterWins === true, mixFormat,
+    mute?.enabled === true ? [mute.minBeats, mute.muteSpinnerEnds === true, mute.onlyUnhit !== false, mute.divisors ?? []] : false]);
 }
 
 export function previewRequest(view, choices) {
@@ -104,8 +163,9 @@ export function exportState(view, sent, choices) {
   const stale = mine && (preview.stale || preview.version !== source?.version || preview.source !== source?.path);
   // The base hitsound difficulty is one more difficulty written.
   const count = included(view?.targets, choices).length + (choices.base ? 1 : 0);
+  const muteValid = !choices.sliderEndMute?.enabled || minBeatsValid(choices.sliderEndMute.minBeats);
   const canExport = mine && !stale && count > 0 && !!source && !view.busy && !view.writing
-    && matchWithinValid(choices.matchWithin);
+    && matchWithinValid(choices.matchWithin) && muteValid;
   return { canExport, stale, count, preview: mine && !stale ? preview : null };
 }
 

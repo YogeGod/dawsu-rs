@@ -3,8 +3,11 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { render } from "svelte/server";
 import {
-  adoptChoices, afterPoll, baseDiff, baseStatus, ownWriteError, blockDrops, choicesFrom, diffView, runOutcome, statusLine, copyOptions, defaultChoices, difficultyName, exportLabel, exportState, included,
-  laneSwatches, matchWithinValid, openWarnings, optionsKey, pollDelay, previewRequest, targetCounts, targetDiff, warningsLabel,
+  adoptChoices, afterPoll, baseDiff, baseStatus, ownWriteError, blockDrops, choicesFrom, diffView,
+  divisorPresetFrom, divisorsFromPreset, minBeatsValid, runOutcome, statusLine, copyOptions,
+  defaultChoices, defaultSliderEndMute, difficultyName, exportLabel, exportState, included,
+  laneSwatches, matchWithinValid, openWarnings, optionsKey, pollDelay, previewRequest, targetCounts,
+  targetDiff, warningsLabel,
 } from "../src/lib/export.js";
 import ExportWindow from "../src/parts/ExportWindow.svelte";
 
@@ -21,13 +24,15 @@ const view = {
 
 test("a map without stored choices starts with Copy's defaults and every difficulty included", () => {
   const choices = choicesFrom(view);
-  assert.deepEqual(choices, { leftOut: [], matchWithin: 5, copyVolumes: true, base: false, sliderAudio: false, laterWins: false, mixFormat: "wav16" });
+  const muteOff = { enabled: false, minBeats: 0.5, muteSpinnerEnds: false, onlyUnhit: true, divisors: [] };
+  assert.deepEqual(choices, { leftOut: [], matchWithin: 5, copyVolumes: true, base: false, sliderAudio: false, laterWins: false, mixFormat: "wav16", sliderEndMute: muteOff });
   assert.notEqual(choices.leftOut, defaultChoices.leftOut, "choices never share the frozen defaults' list");
+  assert.notEqual(choices.sliderEndMute, defaultSliderEndMute, "sliderEndMute never shares the frozen default");
   assert.deepEqual(choicesFrom({ choices: { leftOut: ["a.osu"], matchWithin: 3, copyVolumes: false } }),
-    { leftOut: ["a.osu"], matchWithin: 3, copyVolumes: false, base: false, sliderAudio: false, laterWins: false, mixFormat: "wav16" },
+    { leftOut: ["a.osu"], matchWithin: 3, copyVolumes: false, base: false, sliderAudio: false, laterWins: false, mixFormat: "wav16", sliderEndMute: muteOff },
     "choices stored before the base difficulty read it as off");
   assert.deepEqual(choicesFrom({ choices: { leftOut: [], matchWithin: 3, copyVolumes: true, base: true, sliderAudio: true, laterWins: true, mixFormat: "ogg_vorbis" } }),
-    { leftOut: [], matchWithin: 3, copyVolumes: true, base: true, sliderAudio: true, laterWins: true, mixFormat: "ogg_vorbis" });
+    { leftOut: [], matchWithin: 3, copyVolumes: true, base: true, sliderAudio: true, laterWins: true, mixFormat: "ogg_vorbis", sliderEndMute: muteOff });
   assert.deepEqual(included(view.targets, { leftOut: ["Artist - Song (Mapper) [Hard].osu"] }), [insane]);
 });
 
@@ -348,4 +353,51 @@ test("ExportWindow renders the collapsible .osu diff when diff data is present a
     props: { initialView: withoutDiffView, initialSent: { id: 9, key } },
   }).body;
   assert.doesNotMatch(renderedWithoutDiff, /<details class="osu-diff/);
+});
+
+test("slider-end mute controls render collapsed by default, expand when enabled, and round-trip in choices", () => {
+  assert.ok(minBeatsValid(0) && minBeatsValid(0.5) && minBeatsValid(64));
+  assert.ok(!minBeatsValid(-0.1) && !minBeatsValid(65) && !minBeatsValid(NaN));
+  assert.equal(divisorPresetFrom([]), "any");
+  assert.equal(divisorPresetFrom([2, 4]), "2,4");
+  assert.deepEqual(divisorsFromPreset("4"), [4]);
+  assert.deepEqual(divisorsFromPreset("offbeat"), [2, 4, 3, 8, 6, 16, 12]);
+
+  // Default (off): toggle is rendered aria-checked="false", detailed options stay hidden.
+  const offBody = render(ExportWindow, { props: { initialView: view } }).body;
+  assert.match(offBody, /role="switch" aria-checked="false" aria-label="Mute un-hit slider ends"/);
+  assert.doesNotMatch(offBody, /aria-label="Slider-end muting options"/);
+  assert.equal(previewRequest(view, choicesFrom(view)).options.options.slider_end_mute, undefined);
+
+  // Enabled in stored choices: round-trips through choicesFrom, optionsKey, previewRequest, and renders controls.
+  const stored = {
+    ...view,
+    choices: {
+      leftOut: [],
+      matchWithin: 5,
+      copyVolumes: true,
+      base: false,
+      sliderAudio: false,
+      laterWins: false,
+      sliderEndMute: { enabled: true, minBeats: 0.75, muteSpinnerEnds: true, onlyUnhit: true, divisors: [4] },
+    },
+  };
+  const choices = choicesFrom(stored);
+  assert.deepEqual(choices.sliderEndMute, {
+    enabled: true, minBeats: 0.75, muteSpinnerEnds: true, onlyUnhit: true, divisors: [4],
+  });
+  assert.notEqual(optionsKey(view, choices), optionsKey(view, choicesFrom(view)));
+
+  const req = previewRequest(stored, choices);
+  assert.deepEqual(req.options.options.slider_end_mute, {
+    enabled: true, min_beats: 0.75, mute_spinner_ends: true, only_unhit: true, divisors: [4],
+  });
+
+  const onBody = render(ExportWindow, { props: { initialView: stored } }).body;
+  assert.match(onBody, /role="switch" aria-checked="true" aria-label="Mute un-hit slider ends"/);
+  assert.match(onBody, /aria-label="Slider-end muting options"/);
+  assert.match(onBody, /value="0\.75"[^>]*aria-label="Minimum slider length in beats"/);
+  assert.match(onBody, /aria-label="Mute on beat divisor"/);
+  assert.match(onBody, /<input type="checkbox"[^>]*checked[^>]*>\s*Also mute spinner ends/);
+  assert.match(onBody, /5% volume · keeps hitsounded ends/);
 });

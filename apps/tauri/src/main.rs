@@ -157,6 +157,8 @@ struct CopyOptionsJson {
     muted_index: Option<u32>,
     #[serde(deserialize_with = "deserialize_sample_set")]
     muted_sample_set: Option<SampleSet>,
+    #[serde(default)]
+    slider_end_mute: dawsu_hitsounding::copy::SliderEndMuteOptions,
 }
 
 fn default_copy_start_index() -> u32 {
@@ -2306,6 +2308,13 @@ fn export_snapshot(app: &Application, cache: &mut ExportCache) -> Value {
             "sliderAudio": choices.slider_audio,
             "laterWins": choices.later_wins,
             "mixFormat": choices.mix_format,
+            "sliderEndMute": {
+                "enabled": choices.slider_end_mute.enabled,
+                "minBeats": choices.slider_end_mute.min_beats,
+                "muteSpinnerEnds": choices.slider_end_mute.mute_spinner_ends,
+                "onlyUnhit": choices.slider_end_mute.only_unhit,
+                "divisors": choices.slider_end_mute.divisors,
+            },
         })),
         "error": status.error,
         "writing": status.writing,
