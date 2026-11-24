@@ -29,9 +29,15 @@ pub struct RecoveryOffer {
 
 pub(super) struct Checkpoint {
     revision: u64,
+    pending_revision: u64,
     mapset: String,
     difficulty: String,
-    data: CheckpointData,
+    source: PathBuf,
+    digest: String,
+    files: Vec<String>,
+    last_save: Option<LastSave>,
+    working: WorkingSnapshot,
+    pending: Vec<crate::pending::PendingSample>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -54,6 +60,24 @@ pub(super) struct CheckpointData {
     /// copies from earlier builds have none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pending: Vec<crate::pending::PendingSample>,
+}
+
+#[derive(Serialize)]
+struct CheckpointDataRef<'a> {
+    source: &'a PathBuf,
+    digest: &'a str,
+    files: &'a [String],
+    last_save: Option<&'a LastSave>,
+    working: Working,
+    #[serde(skip_serializing_if = "<[_]>::is_empty")]
+    pending: &'a [crate::pending::PendingSample],
+}
+
+struct WorkingSnapshot {
+    hits: Hitsounds,
+    row_order: Vec<SampleIdentity>,
+    dirty: bool,
+    hs_mode: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -196,23 +220,22 @@ impl Checkpoint {
         };
         Self {
             revision: document.composer.history.version(),
+            pending_revision: document.pending.revision(),
             mapset: metadata("Title", "Mapset"),
             difficulty: metadata("Version", "Difficulty"),
-            data: CheckpointData {
-                source: document.path.clone(),
-                digest: sha256_hex(document.file.original_bytes()),
-                files: document.files.clone(),
-                last_save: None,
-                working: Working::capture(document),
-                pending: pending_list(document),
-            },
+            source: document.path.clone(),
+            digest: sha256_hex(document.file.original_bytes()),
+            files: document.files.clone(),
+            last_save: None,
+            working: WorkingSnapshot::capture(document),
+            pending: pending_list(document),
         }
     }
 
     pub(super) fn after_save(document: &Document, hits: &Hitsounds, drawn: &Hitsounds, hs_mode: bool) -> Self {
         let mut checkpoint = Self::new(document);
         let original = document.compile_base.original_bytes();
-        checkpoint.data.last_save = Some(LastSave {
+        checkpoint.last_save = Some(LastSave {
             original: (original != document.file.original_bytes()).then(|| original.to_vec()),
             hits: WorkingHits::capture(hits),
             hs_mode,
@@ -222,15 +245,18 @@ impl Checkpoint {
     }
 
     pub(super) fn refresh(&mut self, document: &Document) {
-        if self.data.source == document.path {
-            self.data.pending = pending_list(document);
+        if self.source != document.path {
+            return;
+        }
+        if self.pending_revision != document.pending.revision() {
+            self.pending = pending_list(document);
+            self.pending_revision = document.pending.revision();
         }
         let history = &document.composer.history;
-        if self.data.source == document.path
-            && !history.is_transaction_open()
-            && (self.revision != history.version() || self.data.working.hs_mode != document.hs_mode)
+        if !history.is_transaction_open()
+            && (self.revision != history.version() || self.working.hs_mode != document.hs_mode)
         {
-            self.data.working = Working::capture(document);
+            self.working = WorkingSnapshot::capture(document);
             self.revision = history.version();
         }
     }
@@ -247,6 +273,14 @@ impl Checkpoint {
             std::process::id(),
             NEXT_COPY.fetch_add(1, Ordering::Relaxed)
         );
+        let checkpoint = CheckpointDataRef {
+            source: &self.source,
+            digest: &self.digest,
+            files: &self.files,
+            last_save: self.last_save.as_ref(),
+            working: self.working.to_working(),
+            pending: &self.pending,
+        };
         let record = Record {
             version: VERSION,
             offer: RecoveryOffer {
@@ -255,7 +289,7 @@ impl Checkpoint {
                 difficulty: self.difficulty.clone(),
                 created_ms,
             },
-            checkpoint: &self.data,
+            checkpoint,
         };
         let directory = root.join("recovery");
         fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
@@ -266,19 +300,22 @@ impl Checkpoint {
     }
 }
 
-impl Working {
+impl WorkingSnapshot {
     fn capture(document: &Document) -> Self {
         Self {
-            hits: WorkingHits::capture(document.composer.hitsounds()),
-            row_order: document
-                .composer
-                .lanes
-                .iter()
-                .cloned()
-                .map(Sample)
-                .collect(),
+            hits: document.composer.hitsounds().clone(),
+            row_order: document.composer.lanes.clone(),
             dirty: document.composer.dirty(),
             hs_mode: document.hs_mode,
+        }
+    }
+
+    fn to_working(&self) -> Working {
+        Working {
+            hits: WorkingHits::capture(&self.hits),
+            row_order: self.row_order.iter().cloned().map(Sample).collect(),
+            dirty: self.dirty,
+            hs_mode: self.hs_mode,
         }
     }
 }
@@ -471,7 +508,7 @@ impl RecoveryCopy {
     }
 
     pub(super) fn resume(self, checkpoint: &mut Checkpoint) -> String {
-        checkpoint.data.last_save = self.checkpoint.last_save;
+        checkpoint.last_save = self.checkpoint.last_save;
         self.offer.id
     }
 }
@@ -627,4 +664,178 @@ pub(super) fn copies_play(data_root: &Path, mapset: &Path) -> Result<Vec<SampleI
         out.extend(data.pending.iter().map(|file| SampleIdentity::File(file.name.clone())));
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::pending::Pending;
+    use dawsu_test_support::Scratch;
+
+    const TEST_OSU: &[u8] = include_bytes!("../tests/project-fixture.osu");
+
+    fn eager_record_bytes(document: &Document, checkpoint: &Checkpoint, offer: &RecoveryOffer) -> Vec<u8> {
+        let eager = Record {
+            version: VERSION,
+            offer: offer.clone(),
+            checkpoint: CheckpointData {
+                source: document.path.clone(),
+                digest: sha256_hex(document.file.original_bytes()),
+                files: document.files.clone(),
+                last_save: checkpoint.last_save.as_ref().map(|save| LastSave {
+                    original: save.original.clone(),
+                    hits: WorkingHits {
+                        lanes: save.hits.lanes.iter().map(|s| Sample(s.0.clone())).collect(),
+                        moments: save.hits.moments.iter().map(|m| WorkingMoment {
+                            time_bits: m.time_bits,
+                            volume: m.volume,
+                            hits: m.hits.iter().map(|s| Sample(s.0.clone())).collect(),
+                            hit_volumes: m.hit_volumes.clone(),
+                        }).collect(),
+                        placements: save.hits.placements.iter().map(|p| WorkingPlacement {
+                            id: p.id,
+                            set_id: p.set_id.clone(),
+                            set_digest: p.set_digest.clone(),
+                            accepted_digest: p.accepted_digest.clone(),
+                            moment: p.moment,
+                            gain: p.gain,
+                            applied: p.applied.iter().map(|a| WorkingApplied {
+                                member_id: a.member_id.clone(),
+                                lane: Sample(a.lane.0.clone()),
+                                volume: a.volume,
+                                added: a.added,
+                            }).collect(),
+                        }).collect(),
+                    },
+                    hs_mode: save.hs_mode,
+                    drawn: save.drawn.as_ref().map(|d| WorkingHits {
+                        lanes: d.lanes.iter().map(|s| Sample(s.0.clone())).collect(),
+                        moments: d.moments.iter().map(|m| WorkingMoment {
+                            time_bits: m.time_bits,
+                            volume: m.volume,
+                            hits: m.hits.iter().map(|s| Sample(s.0.clone())).collect(),
+                            hit_volumes: m.hit_volumes.clone(),
+                        }).collect(),
+                        placements: d.placements.iter().map(|p| WorkingPlacement {
+                            id: p.id,
+                            set_id: p.set_id.clone(),
+                            set_digest: p.set_digest.clone(),
+                            accepted_digest: p.accepted_digest.clone(),
+                            moment: p.moment,
+                            gain: p.gain,
+                            applied: p.applied.iter().map(|a| WorkingApplied {
+                                member_id: a.member_id.clone(),
+                                lane: Sample(a.lane.0.clone()),
+                                volume: a.volume,
+                                added: a.added,
+                            }).collect(),
+                        }).collect(),
+                    }),
+                }),
+                working: Working {
+                    hits: WorkingHits::capture(document.composer.hitsounds()),
+                    row_order: document.composer.lanes.iter().cloned().map(Sample).collect(),
+                    dirty: document.composer.dirty(),
+                    hs_mode: document.hs_mode,
+                },
+                pending: pending_list(document),
+            },
+        };
+        serde_json::to_vec(&eager).unwrap()
+    }
+
+    #[test]
+    fn lazy_checkpoint_write_is_byte_identical_to_eager_checkpoint_data() {
+        let scratch = Scratch::new("lazy-recovery-json");
+        let mapset = scratch.path("mapset");
+        let data_root = scratch.path("data");
+        fs::create_dir_all(&mapset).unwrap();
+        let osu_path = mapset.join("map.osu");
+        fs::write(&osu_path, TEST_OSU).unwrap();
+
+        let mut document = Document::read(&osu_path).unwrap();
+        document.pending = Pending::for_mapset(&data_root, &mapset);
+        let mut checkpoint = Checkpoint::new(&document);
+
+        let offer = checkpoint.write(&data_root).unwrap();
+        let written = fs::read(pending_path(&data_root, &offer.id).unwrap()).unwrap();
+        assert_eq!(written, eager_record_bytes(&document, &checkpoint, &offer));
+
+        // Edit hits, reorder lanes, toggle hs_mode, and add a pending file.
+        document.composer.apply("Add hit and override volume", |hits| {
+            let id = hits.add_moment(SongTime::from_ms(1250.5), 75);
+            let lane = SampleIdentity::File("snare.wav".into());
+            hits.add_hit(id, lane.clone());
+            hits.set_hit_volume(id, &lane, 55);
+        });
+        document.composer.lanes.reverse();
+        document.hs_mode = true;
+        document.pending.add("snare.wav", b"RIFFdemo").unwrap();
+        checkpoint.refresh(&document);
+
+        let offer = checkpoint.write(&data_root).unwrap();
+        let written = fs::read(pending_path(&data_root, &offer.id).unwrap()).unwrap();
+        assert_eq!(written, eager_record_bytes(&document, &checkpoint, &offer));
+
+        // Also check after_save with drawn != compiled and after releasing pending.
+        let compiled = document.composer.hitsounds().clone();
+        let mut drawn = compiled.clone();
+        drawn.set_volume(MomentId(0), 40);
+        let mut after_save = Checkpoint::after_save(&document, &compiled, &drawn, document.hs_mode);
+        document.pending.release("snare.wav");
+        after_save.refresh(&document);
+
+        let offer = after_save.write(&data_root).unwrap();
+        let written = fs::read(pending_path(&data_root, &offer.id).unwrap()).unwrap();
+        assert_eq!(written, eager_record_bytes(&document, &after_save, &offer));
+    }
+
+    #[test]
+    fn refresh_skips_open_transactions_and_tracks_pending_revision() {
+        let scratch = Scratch::new("lazy-recovery-refresh");
+        let mapset = scratch.path("mapset");
+        let data_root = scratch.path("data");
+        fs::create_dir_all(&mapset).unwrap();
+        let osu_path = mapset.join("map.osu");
+        fs::write(&osu_path, TEST_OSU).unwrap();
+
+        let mut document = Document::read(&osu_path).unwrap();
+        document.pending = Pending::for_mapset(&data_root, &mapset);
+        let mut checkpoint = Checkpoint::new(&document);
+        let initial_rev = checkpoint.revision;
+        let initial_pending_rev = checkpoint.pending_revision;
+
+        // No changes: refresh is a no-op.
+        checkpoint.refresh(&document);
+        assert_eq!(checkpoint.revision, initial_rev);
+        assert_eq!(checkpoint.pending_revision, initial_pending_rev);
+
+        // Open transaction: edits must NOT update the checkpoint snapshot.
+        document.composer.history.begin("Open stroke");
+        let _ = document.composer.history.edit(true, |hits| {
+            hits.set_volume(MomentId(0), 33);
+            Ok::<_, std::convert::Infallible>(())
+        });
+        checkpoint.refresh(&document);
+        assert_eq!(checkpoint.revision, initial_rev);
+        assert_eq!(checkpoint.working.hits.moments()[0].volume(), 100);
+
+        // Commit transaction: checkpoint updates on refresh.
+        document.composer.history.commit();
+        checkpoint.refresh(&document);
+        assert_eq!(checkpoint.revision, document.composer.history.version());
+        assert_eq!(checkpoint.working.hits.moments()[0].volume(), 33);
+
+        // Pending add updates pending_revision and pending list; release updates it again.
+        document.pending.add("kick.wav", b"RIFFkick").unwrap();
+        checkpoint.refresh(&document);
+        assert_eq!(checkpoint.pending_revision, document.pending.revision());
+        assert_eq!(checkpoint.pending.len(), 1);
+        assert_eq!(checkpoint.pending[0].name, "kick.wav");
+
+        document.pending.release("kick.wav");
+        checkpoint.refresh(&document);
+        assert_eq!(checkpoint.pending_revision, document.pending.revision());
+        assert!(checkpoint.pending.is_empty());
+    }
 }
