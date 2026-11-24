@@ -21,13 +21,13 @@ const view = {
 
 test("a map without stored choices starts with Copy's defaults and every difficulty included", () => {
   const choices = choicesFrom(view);
-  assert.deepEqual(choices, { leftOut: [], matchWithin: 5, copyVolumes: true, base: false, sliderAudio: false, laterWins: false });
+  assert.deepEqual(choices, { leftOut: [], matchWithin: 5, copyVolumes: true, base: false, sliderAudio: false, laterWins: false, mixFormat: "wav16" });
   assert.notEqual(choices.leftOut, defaultChoices.leftOut, "choices never share the frozen defaults' list");
   assert.deepEqual(choicesFrom({ choices: { leftOut: ["a.osu"], matchWithin: 3, copyVolumes: false } }),
-    { leftOut: ["a.osu"], matchWithin: 3, copyVolumes: false, base: false, sliderAudio: false, laterWins: false },
+    { leftOut: ["a.osu"], matchWithin: 3, copyVolumes: false, base: false, sliderAudio: false, laterWins: false, mixFormat: "wav16" },
     "choices stored before the base difficulty read it as off");
-  assert.deepEqual(choicesFrom({ choices: { leftOut: [], matchWithin: 3, copyVolumes: true, base: true, sliderAudio: true, laterWins: true } }),
-    { leftOut: [], matchWithin: 3, copyVolumes: true, base: true, sliderAudio: true, laterWins: true });
+  assert.deepEqual(choicesFrom({ choices: { leftOut: [], matchWithin: 3, copyVolumes: true, base: true, sliderAudio: true, laterWins: true, mixFormat: "ogg_vorbis" } }),
+    { leftOut: [], matchWithin: 3, copyVolumes: true, base: true, sliderAudio: true, laterWins: true, mixFormat: "ogg_vorbis" });
   assert.deepEqual(included(view.targets, { leftOut: ["Artist - Song (Mapper) [Hard].osu"] }), [insane]);
 });
 
@@ -41,8 +41,10 @@ test("the preview asks for the shown map, the included difficulties and Copy's o
   assert.equal(request.options.options.copy_volumes, false);
   assert.equal(request.options.base, false);
   assert.equal(request.options.sliderAudio, false);
-  const later = previewRequest(view, { ...choices, laterWins: true });
+  assert.equal(request.options.mixFormat, "wav16");
+  const later = previewRequest(view, { ...choices, laterWins: true, mixFormat: "wav32f" });
   assert.equal(later.options.options.collision_policy, "later_wins");
+  assert.equal(later.options.mixFormat, "wav32f");
   const withBase = previewRequest(view, { ...choices, base: true, sliderAudio: true });
   assert.equal(withBase.options.base, true);
   assert.equal(withBase.options.sliderAudio, true);
@@ -164,6 +166,10 @@ test("each difficulty is a row with its include switch; a left-out one keeps its
   assert.match(body, /role="switch" aria-checked="false" aria-label="Include Hard"/);
   assert.match(body, /Left out · keeps its own hitsounds/);
   assert.match(body, /role="switch" aria-checked="true" aria-label="Copy volumes"/);
+  assert.match(body, /aria-label="Sample format"/);
+  assert.match(body, /<option value="wav16"[^>]*>16-bit WAV<\/option>/);
+  assert.match(body, /<option value="wav32f"[^>]*>32-bit float WAV<\/option>/);
+  assert.match(body, /<option value="ogg_vorbis"[^>]*>Ogg Vorbis<\/option>/);
   assert.match(body, /value="5"/);
   // No preview yet: Export counts the included difficulty but stays disabled.
   assert.match(body, /<button[^>]*class="primary[^"]*"[^>]*disabled[^>]*>Export 1 difficulty<\/button>/);

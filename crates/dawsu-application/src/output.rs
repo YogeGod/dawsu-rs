@@ -402,8 +402,19 @@ impl WritePlan {
             ));
         }
         if created_wav > 0 || reused_wav > 0 {
+            let ext = if self.mixes.iter().all(|mix| {
+                mix.path.extension().is_some_and(|e| e.eq_ignore_ascii_case("ogg"))
+            }) {
+                ".ogg"
+            } else if self.mixes.iter().all(|mix| {
+                mix.path.extension().is_some_and(|e| e.eq_ignore_ascii_case("wav"))
+            }) {
+                ".wav"
+            } else {
+                "sample file(s)"
+            };
             lines.push(format!(
-                "Sample mixes: {created_wav} new .wav created, {reused_wav} existing .wav reused."
+                "Sample mixes: {created_wav} new {ext} created, {reused_wav} existing {ext} reused."
             ));
         }
         lines
@@ -612,13 +623,14 @@ pub(super) fn generate_report(
     diagnostics: &mut Vec<OutputProblem>,
     progress: &mut dyn FnMut(usize, usize),
 ) -> Result<WritePlan, String> {
-    generate_report_with_options(
+    generate_report_with_options_and_format(
         source,
         defaults,
         settings,
         projects,
         include_slider_audio,
         false,
+        mixes::MixFormat::Wav16,
         cancel,
         diagnostics,
         progress,
@@ -633,6 +645,33 @@ pub(super) fn generate_report_with_options(
     projects: Option<&Path>,
     include_slider_audio: bool,
     auto_fix_staged_mixes: bool,
+    cancel: &dyn Fn() -> bool,
+    diagnostics: &mut Vec<OutputProblem>,
+    progress: &mut dyn FnMut(usize, usize),
+) -> Result<WritePlan, String> {
+    generate_report_with_options_and_format(
+        source,
+        defaults,
+        settings,
+        projects,
+        include_slider_audio,
+        auto_fix_staged_mixes,
+        mixes::MixFormat::Wav16,
+        cancel,
+        diagnostics,
+        progress,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn generate_report_with_options_and_format(
+    source: &Source,
+    defaults: &Path,
+    settings: Option<&crate::ExportSettings>,
+    projects: Option<&Path>,
+    include_slider_audio: bool,
+    auto_fix_staged_mixes: bool,
+    format: mixes::MixFormat,
     cancel: &dyn Fn() -> bool,
     diagnostics: &mut Vec<OutputProblem>,
     progress: &mut dyn FnMut(usize, usize),
@@ -686,6 +725,7 @@ pub(super) fn generate_report_with_options(
                     settings,
                     old_mixes,
                     2,
+                    format,
                     &source.pending,
                     auto_fix_staged_mixes,
                     cancel,
@@ -704,7 +744,7 @@ pub(super) fn generate_report_with_options(
             })?;
             if include_slider_audio {
                 let slider_mixes = crate::slider_export::stage(
-                    source, &mut file, root, defaults, old_bytes, &mixes.staged, cancel,
+                    source, &mut file, root, defaults, old_bytes, &mixes.staged, format, cancel,
                 )?;
                 mixes.staged.extend(slider_mixes);
             }
@@ -765,7 +805,7 @@ pub(super) fn copy_report(
     diagnostics: &mut Vec<OutputProblem>,
     progress: &mut dyn FnMut(usize, usize),
 ) -> Result<WritePlan, String> {
-    copy_after(source, defaults, targets, options, Vec::new(), false, cancel, diagnostics, progress)
+    copy_after(source, defaults, targets, options, Vec::new(), false, mixes::MixFormat::Wav16, cancel, diagnostics, progress)
 }
 /// Copy, planned after mixes staged earlier in the same write, so no index or name is taken twice.
 #[allow(clippy::too_many_arguments)]
@@ -776,6 +816,7 @@ fn copy_after(
     options: &CopyOptions,
     already_staged: Vec<mixes::StagedMix>,
     auto_fix_staged_mixes: bool,
+    format: mixes::MixFormat,
     cancel: &dyn Fn() -> bool,
     diagnostics: &mut Vec<OutputProblem>,
     progress: &mut dyn FnMut(usize, usize),
@@ -867,6 +908,7 @@ fn copy_after(
                         None,
                         &[],
                         options.start_index,
+                        format,
                         &source.pending,
                         auto_fix_staged_mixes,
                         cancel,
@@ -926,7 +968,7 @@ fn copy_after(
                 }
                 plan.mixes.extend(mixes.staged);
                 mixes::stage_timed_copy_with_options(&source.hits, &mut file, &path, defaults, &target.slider_placements,
-                    &mut plan.mixes, &mut plan.details, &source.pending, auto_fix_staged_mixes, cancel, earlier)?;
+                    &mut plan.mixes, &mut plan.details, &source.pending, format, auto_fix_staged_mixes, cancel, earlier)?;
                 plan.files.push(PlannedFile::new(
                     path,
                     file,
@@ -965,19 +1007,21 @@ pub(super) fn export_report(
             &options.copy,
             Vec::new(),
             options.auto_fix_staged_mixes,
+            options.mix_format,
             cancel,
             diagnostics,
             progress,
         );
     }
     let mut generate_total = 0;
-    let mut base = generate_report_with_options(
+    let mut base = generate_report_with_options_and_format(
         source,
         defaults,
         settings,
         projects,
         options.slider_audio,
         options.auto_fix_staged_mixes,
+        options.mix_format,
         cancel,
         diagnostics,
         &mut |done, total| {
@@ -1002,6 +1046,7 @@ pub(super) fn export_report(
         &options.copy,
         std::mem::take(&mut base.mixes),
         options.auto_fix_staged_mixes,
+        options.mix_format,
         cancel,
         diagnostics,
         &mut |done, total| progress(generate_total + done, generate_total + total),

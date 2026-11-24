@@ -2695,7 +2695,7 @@ fn export_requests_answer_with_the_export_view_and_errors_after_a_fault() {
         assert!(counts[field].is_u64(), "{field}: {counts}");
     }
     assert_eq!(view["choices"], serde_json::json!({
-        "leftOut": [], "matchWithin": 5.0, "copyVolumes": true, "base": false, "sliderAudio": false, "laterWins": false,
+        "leftOut": [], "matchWithin": 5.0, "copyVolumes": true, "base": false, "sliderAudio": false, "laterWins": false, "mixFormat": "wav16",
     }));
     assert!(view["preview"]["base"].is_null(), "no base difficulty without the base choice");
     assert_eq!((&view["writing"], &view["written"], &view["writeError"]), (&serde_json::json!(false), &serde_json::Value::Null, &serde_json::Value::Null));

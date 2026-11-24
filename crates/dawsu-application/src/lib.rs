@@ -66,6 +66,7 @@ pub use dawsu_graph_audio::classic::Drum;
 pub use drum_detect::{DrumDetectState, DrumDetectView, DrumLanes, DrumOptions, DrumRow, DrumSource, ObjectKind, RowLands, GRIDS, MAX_OBJECT_MS};
 pub use export::{ExportChoices, ExportOptions, ExportPreview, ExportStatus, PreviewOrigin, Stale};
 pub use export_settings::{ExportCombination, ExportSettings};
+pub use mixes::MixFormat;
 pub use original_snapshot::SnapshotPreview;
 pub use project::LaneLayout;
 pub use recovery::RecoveryOffer;
