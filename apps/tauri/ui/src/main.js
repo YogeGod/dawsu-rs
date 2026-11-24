@@ -36,6 +36,7 @@ import InspectorHistory from "./parts/InspectorHistory.svelte";
 import InspectorLane from "./parts/InspectorLane.svelte";
 import InspectorSelection from "./parts/InspectorSelection.svelte";
 import LaneOptions from "./parts/LaneOptions.svelte";
+import LoadingOverlay from "./parts/LoadingOverlay.svelte";
 import KeysoundsModal from "./parts/KeysoundsModal.svelte";
 import MapPreview from "./parts/MapPreview.svelte";
 import MidiImportModal from "./parts/MidiImportModal.svelte";
@@ -68,6 +69,8 @@ const parts = {
   toasts: ToastStack,
   // The Quick start tour card (View › Quick start tour), at body level.
   "quick-start": QuickStartTour,
+  // Centred loading overlay shown if a map/audio load takes >300 ms.
+  "loading-overlay": LoadingOverlay,
   // Global Ctrl+K Command Palette modal, at body level.
   "command-palette": CommandPalette,
   // The popup the menu bar, the right-click tool picker and the lane menu share (#editor-menu).

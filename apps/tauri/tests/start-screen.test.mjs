@@ -54,7 +54,8 @@ const mapPath = "C:\\Songs\\1 yuikonnu - Chikyuu\\yuikonnu - Chikyuu Saigo no Ko
 test("the empty screen mounts StartScreen in #home with Open map, Import .osz, Folders, drop zone and recent maps", () => {
   assert.match(html, /<section id="home" data-ui-mount="start-screen"><\/section>/);
   const actions = [...startScreenSvelte.matchAll(/<button id="([\w-]+)"[^>]*class="home-action"/g)].map(match => match[1]);
-  assert.deepEqual(actions, ["home-open", "home-open-osu", "home-import", "home-folders"]);
+  assert.deepEqual(actions, ["home-open", "home-create-hs", "home-open-osu", "home-import", "home-folders"]);
+  assert.match(startScreenSvelte, /Create Hitsound diff…/);
   assert.match(startScreenSvelte, /Open from osu!/);
   assert.match(startScreenSvelte, /class="home-drop"[\s\S]*?\.osu[\s\S]*?\.osz/);
   assert.match(startScreenSvelte, /id="home-recent"[\s\S]*?id="recent"/);

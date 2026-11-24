@@ -166,13 +166,13 @@ test("Save in the top bar saves at once, as Ctrl+S does", async () => {
   assert.deepEqual(editor.keys, [{ kind: "command", id: "save" }]);
 });
 
-for (const [label, preset] of [["DAW-like", "DAW"], ["osu!", "osu!"]]) {
+for (const [label, preset] of [["DAW-like", "DAW"], ["osu! Editor", "osu!"]]) {
   test("chooses and remembers the " + label + " keyboard preset", async () => {
     const preferences = {};
     const first = await launch(preferences);
     assert.equal(first.dialog.open, true);
     assert.equal(first.title, "Choose your keyboard preset");
-    assert.deepEqual(first.options.map((button) => button.textContent), ["osu!", "DAW-like"]);
+    assert.deepEqual(first.options.map((button) => button.textContent), ["osu! Editor", "DAW-like"]);
     first.dialog.events.get("cancel")({ preventDefault() {} });
     assert.equal(first.dialog.open, true);
     first.options.find((button) => button.textContent === label).click();

@@ -298,6 +298,29 @@ fn png_data_url(png: &[u8]) -> String {
     out
 }
 
+/// Safely encodes a small local image file (<= 2 MiB) as a `data:image/...;base64,...` URL
+/// compatible with the app's strict `img-src 'self' data:` CSP.
+pub(crate) fn image_data_url(path: &Path) -> Option<String> {
+    const MAX_THUMBNAIL_BYTES: u64 = 2 * 1024 * 1024;
+    let mime = match path.extension().and_then(|e| e.to_str())?.to_ascii_lowercase().as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "webp" => "image/webp",
+        "gif" => "image/gif",
+        _ => return None,
+    };
+    let meta = std::fs::metadata(path).ok()?;
+    if !meta.is_file() || meta.len() == 0 || meta.len() > MAX_THUMBNAIL_BYTES {
+        return None;
+    }
+    let bytes = std::fs::read(path).ok()?;
+    let prefix = format!("data:{mime};base64,");
+    let mut out = String::with_capacity(prefix.len() + (bytes.len() + 2) / 3 * 4);
+    out.push_str(&prefix);
+    encode_base64(&bytes, &mut out);
+    Some(out)
+}
+
 fn encode_base64(input: &[u8], out: &mut String) {
     const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     for chunk in input.chunks(3) {

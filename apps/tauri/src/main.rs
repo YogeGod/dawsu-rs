@@ -1582,6 +1582,7 @@ struct SceneSnapshot {
     history: Vec<String>,
     history_position: usize,
     hs: bool,
+    hs_difficulties: Vec<PathBuf>,
     insert_volume: i32,
     lane_layout: Option<SceneLaneLayout>,
     lane_order: Vec<usize>,
@@ -1638,6 +1639,15 @@ struct PanelsSnapshot {
     controller: bool,
     inspector: bool,
     lane_names: bool,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RecentMetaSnapshot {
+    path: PathBuf,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    background: Option<String>,
+    is_hs: bool,
 }
 
 #[derive(serde::Serialize)]
@@ -1751,6 +1761,8 @@ struct ViewSnapshot {
     quantize_strength: f64,
     ramp_shape: String,
     recent: Vec<PathBuf>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    recent_meta: Option<Vec<RecentMetaSnapshot>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     recovery: Option<RecoverySnapshot>,
     return_on_stop: bool,
@@ -1961,6 +1973,7 @@ fn snapshot_with_static(app: &Application, include_scene: bool, include_static: 
                 history: c.history.steps().into_iter().map(str::to_owned).collect(),
                 history_position: c.history.position(),
                 hs: d.hs_mode,
+                hs_difficulties: d.difficulties.iter().filter(|p| is_osu_hs_diff(p)).cloned().collect(),
                 insert_volume: c.insert_volume,
                 lane_layout: d.lane_layout().map(Into::into),
                 lane_order,
@@ -2127,6 +2140,13 @@ fn snapshot_with_static(app: &Application, include_scene: bool, include_static: 
         quantize_strength: app.quantize_strength(),
         ramp_shape: format!("{:?}", app.ramp_shape()),
         recent: app.preferences.recent.clone(),
+        recent_meta: (document.is_none() || include_scene).then(|| {
+            app.preferences
+                .recent
+                .iter()
+                .map(|path| cached_recent_meta(path))
+                .collect()
+        }),
         recovery,
         return_on_stop: app.preferences.return_on_stop,
         clean_redundant_greenlines: app.preferences.clean_redundant_greenlines,
@@ -3741,6 +3761,243 @@ fn pick_map(
     })
 }
 
+fn is_osu_hs_diff(path: &Path) -> bool {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return false;
+    };
+    let mut section = "";
+    let mut version = String::new();
+    let mut has_objects = false;
+    for raw in text.lines() {
+        let line = raw.trim();
+        if line.starts_with('[') && line.ends_with(']') {
+            section = &line[1..line.len() - 1];
+            continue;
+        }
+        if section.eq_ignore_ascii_case("Metadata") {
+            if let Some(rest) = line.strip_prefix("Version:") {
+                version = rest.trim().to_ascii_lowercase();
+            }
+        } else if section.eq_ignore_ascii_case("HitObjects") && !line.is_empty() && !line.starts_with("//") {
+            has_objects = true;
+            break;
+        }
+    }
+    version.contains("hitsound")
+        || version == "hs"
+        || version.ends_with(" hs")
+        || version.contains("[hs]")
+        || (!has_objects && !version.is_empty())
+}
+
+fn recent_osu_meta(path: &Path) -> (Option<String>, bool) {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return (None, false);
+    };
+    let mut section = "";
+    let mut bg: Option<PathBuf> = None;
+    let mut version = String::new();
+    let mut has_objects = false;
+    for raw in text.lines() {
+        let line = raw.trim();
+        if line.starts_with('[') && line.ends_with(']') {
+            section = &line[1..line.len() - 1];
+            continue;
+        }
+        if section.eq_ignore_ascii_case("Events") && bg.is_none() && line.starts_with("0,0,") {
+            if let Some(first_quote) = line.find('"') {
+                if let Some(end_quote) = line[first_quote + 1..].find('"') {
+                    let rel = &line[first_quote + 1..first_quote + 1 + end_quote];
+                    if let Some(parent) = path.parent() {
+                        let candidate = parent.join(rel);
+                        if candidate.is_file() {
+                            bg = Some(candidate);
+                        }
+                    }
+                }
+            }
+        } else if section.eq_ignore_ascii_case("Metadata") {
+            if let Some(rest) = line.strip_prefix("Version:") {
+                version = rest.trim().to_ascii_lowercase();
+            }
+        } else if section.eq_ignore_ascii_case("HitObjects") && !line.is_empty() && !line.starts_with("//") {
+            has_objects = true;
+        }
+    }
+    let is_hs = version.contains("hitsound")
+        || version == "hs"
+        || version.ends_with(" hs")
+        || version.contains("[hs]")
+        || (!has_objects && !version.is_empty());
+    let background = bg.as_deref().and_then(skin_textures::image_data_url);
+    (background, is_hs)
+}
+
+fn cached_recent_meta(path: &Path) -> RecentMetaSnapshot {
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<PathBuf, (Option<String>, bool)>>> =
+        std::sync::OnceLock::new();
+    let cache = CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+    if let Ok(guard) = cache.lock() {
+        if let Some((background, is_hs)) = guard.get(path) {
+            return RecentMetaSnapshot {
+                path: path.to_path_buf(),
+                background: background.clone(),
+                is_hs: *is_hs,
+            };
+        }
+    }
+    let (background, is_hs) = recent_osu_meta(path);
+    if let Ok(mut guard) = cache.lock() {
+        if guard.len() >= 64 {
+            guard.clear();
+        }
+        guard.insert(path.to_path_buf(), (background.clone(), is_hs));
+    }
+    RecentMetaSnapshot {
+        path: path.to_path_buf(),
+        background,
+        is_hs,
+    }
+}
+
+#[tauri::command]
+fn pick_map_folder(window: tauri::WebviewWindow, state: State<'_, Editor>) -> Result<Option<PathBuf>, String> {
+    let dialog = songs_dialog(&window, &state)?;
+    Ok(dialog.set_title("Open mapset folder").pick_folder())
+}
+
+#[tauri::command]
+fn pick_map_for_hitsound_diff(
+    window: tauri::WebviewWindow,
+    state: State<'_, Editor>,
+) -> Result<Option<PathBuf>, String> {
+    let dialog = songs_dialog(&window, &state)?;
+    Ok(dialog
+        .set_title("Pick a difficulty in the mapset")
+        .add_filter("osu! beatmap difficulty", &["osu"])
+        .pick_file())
+}
+
+#[tauri::command]
+fn inspect_mapset_folder(path: PathBuf) -> Result<Value, String> {
+    if path.is_file() {
+        return Ok(json!({ "kind": "open", "path": path }));
+    }
+    if !path.is_dir() {
+        return Err("That folder does not exist.".into());
+    }
+    let mut diffs: Vec<PathBuf> = std::fs::read_dir(&path)
+        .map_err(|e| e.to_string())?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|p| p.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("osu")))
+        .collect();
+    diffs.sort();
+    if diffs.is_empty() {
+        return Err("This folder contains no .osu difficulty files.".into());
+    }
+    if diffs.len() == 1 {
+        return Ok(json!({ "kind": "open", "path": diffs[0] }));
+    }
+    let entries: Vec<Value> = diffs
+        .iter()
+        .map(|p| {
+            let is_hs = is_osu_hs_diff(p);
+            let name = p.file_stem().and_then(|s| s.to_str()).unwrap_or("").to_string();
+            json!({ "path": p, "name": name, "isHs": is_hs })
+        })
+        .collect();
+    if let Some(hs_path) = diffs.iter().find(|p| is_osu_hs_diff(p)) {
+        return Ok(json!({ "kind": "open", "path": hs_path }));
+    }
+    Ok(json!({ "kind": "choose", "folder": path, "difficulties": entries }))
+}
+
+#[tauri::command]
+fn create_hitsound_diff(sibling_path: PathBuf, reuse_existing: Option<bool>) -> Result<PathBuf, String> {
+    let (folder, resolved_sibling) = if sibling_path.is_dir() {
+        let mut diffs: Vec<PathBuf> = std::fs::read_dir(&sibling_path)
+            .map_err(|e| e.to_string())?
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|p| p.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("osu")))
+            .collect();
+        diffs.sort();
+        let first = diffs
+            .into_iter()
+            .next()
+            .ok_or_else(|| "This folder contains no .osu difficulty files.".to_string())?;
+        (sibling_path, first)
+    } else {
+        let parent = sibling_path
+            .parent()
+            .ok_or_else(|| "Difficulty has no parent folder.".to_string())?
+            .to_path_buf();
+        (parent, sibling_path)
+    };
+
+    if reuse_existing == Some(true) {
+        let mut diffs: Vec<PathBuf> = std::fs::read_dir(&folder)
+            .map_err(|e| e.to_string())?
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|p| p.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("osu")))
+            .collect();
+        diffs.sort();
+        if let Some(existing_hs) = diffs.into_iter().find(|p| is_osu_hs_diff(p)) {
+            return Ok(existing_hs);
+        }
+    }
+
+    let text = std::fs::read_to_string(&resolved_sibling).map_err(|e| e.to_string())?;
+    let mut version_name = "Hitsounds".to_string();
+    let mut suffix = 2;
+    let stem_prefix = resolved_sibling
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .map(|s| s.split('[').next().unwrap_or(s).trim())
+        .filter(|s| !s.is_empty())
+        .unwrap_or("Map");
+    let mut target = folder.join(format!("{stem_prefix} [{version_name}].osu"));
+    while target.exists() {
+        version_name = format!("Hitsounds {suffix}");
+        target = folder.join(format!("{stem_prefix} [{version_name}].osu"));
+        suffix += 1;
+    }
+
+    let mut out = String::new();
+    let mut section = String::new();
+    let mut wrote_version = false;
+    for raw in text.lines() {
+        let trimmed = raw.trim();
+        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            section = trimmed[1..trimmed.len() - 1].to_string();
+            out.push_str(raw);
+            out.push('\n');
+            continue;
+        }
+        if section.eq_ignore_ascii_case("HitObjects") {
+            continue;
+        }
+        if section.eq_ignore_ascii_case("Metadata") && trimmed.starts_with("Version:") {
+            out.push_str(&format!("Version:{version_name}\n"));
+            wrote_version = true;
+            continue;
+        }
+        if section.eq_ignore_ascii_case("Metadata") && trimmed.starts_with("BeatmapID:") {
+            out.push_str("BeatmapID:0\n");
+            continue;
+        }
+        out.push_str(raw);
+        out.push('\n');
+    }
+    if !wrote_version {
+        out.push_str(&format!("\n[Metadata]\nVersion:{version_name}\n"));
+    }
+    std::fs::write(&target, out).map_err(|e| e.to_string())?;
+    Ok(target)
+}
+
 #[tauri::command]
 fn pick_sample(window: tauri::WebviewWindow, state: State<'_, Editor>, target: SampleTarget) -> Result<ViewResponse, String> {
     let mut dialog = rfd::FileDialog::new().set_parent(&window)
@@ -4600,6 +4857,10 @@ fn main() {
             import_key_file,
             export_key_file,
             pick_map,
+            pick_map_folder,
+            pick_map_for_hitsound_diff,
+            inspect_mapset_folder,
+            create_hitsound_diff,
             pick_sample,
             pick_drum_stem,
             pick_sound_set,

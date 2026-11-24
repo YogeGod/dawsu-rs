@@ -223,6 +223,8 @@ export function attachIpc(ctx) {
     $("map-title").textContent = state.scene?.mapTitle || (path ? nameOf(path).replace(/\.osu$/i, "") : "");
     $("map-version").textContent = state.scene?.version ?? "";
     $("map-version").hidden = !state.scene?.version;
+    const hsBadge = $("map-hs-badge");
+    if (hsBadge) hsBadge.hidden = !state.scene?.hs;
     $("difficulty").title = path;
   }
 

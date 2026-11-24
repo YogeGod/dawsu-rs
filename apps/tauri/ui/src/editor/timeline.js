@@ -16,15 +16,21 @@ export function attachTimeline(ctx) {
     ctx.renderLanes();
     ctx.renderSelection();
     const difficulty = $("difficulty");
-    const pathKey = JSON.stringify([state.scene.path, state.scene.difficulties]);
+    const hsSet = new Set(state.scene.hsDifficulties ?? []);
+    const pathKey = JSON.stringify([state.scene.path, state.scene.difficulties, Boolean(state.scene.hs), [...hsSet]]);
     if (difficulty.dataset.state !== pathKey) {
       difficulty.dataset.state = pathKey;
       const paths = [...new Set([state.scene.path, ...state.scene.difficulties])];
       const OptionCtor = env.Option ?? Option;
-      difficulty.replaceChildren(...paths.map((path) => {
+      const options = paths.map((path) => {
         const name = nameOf(path);
-        return new OptionCtor(name.match(/\[([^\]]+)\]\.osu$/i)?.[1] || name, path);
-      }));
+        const base = name.match(/\[([^\]]+)\]\.osu$/i)?.[1] || name;
+        const label = (hsSet.has(path) || (path === state.scene.path && state.scene.hs)) ? `${base} [HS]` : base;
+        return new OptionCtor(label, path);
+      });
+      options.push(new OptionCtor("+ Create Hitsound diff", "__create_hs__"));
+      options.push(new OptionCtor(state.scene.hs ? "Turn off HS mode" : "Turn on HS mode", "__toggle_hs__"));
+      difficulty.replaceChildren(...options);
       difficulty.value = state.scene.path;
     }
   }

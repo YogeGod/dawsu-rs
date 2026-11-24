@@ -3,6 +3,7 @@
   import { invoke } from "../lib/ipc.js";
   import {
     dismissSetupChecklist,
+    isHitsoundVersion,
     isSetupChecklistDismissed,
     recentItems,
     recoveryState,
@@ -97,6 +98,10 @@
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6.5h6l2 2h10V19H3z"/></svg>
       <span><strong>Open map…</strong><small>An .osu difficulty or .osz mapset</small></span>
     </button>
+    <button id="home-create-hs" type="button" class="home-action" disabled={busy} onclick={() => send("createHsDiff")}>
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+      <span><strong>Create Hitsound diff…</strong><small>Start a blank [Hitsounds] diff for a mapset</small></span>
+    </button>
     <button id="home-open-osu" type="button" class="home-action" disabled={busy} onclick={() => send("openFromOsu")}>
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 17H7A5 5 0 0 1 7 7h2m6 0h2a5 5 0 1 1 0 10h-2m-7-5h8"/></svg>
       <span><strong>Open from osu!</strong><small>Open the map active in osu! editor</small></span>
@@ -153,7 +158,7 @@
   </section>
   <div class="home-drop">
     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h8l4 4v14H6zM14 3v4h4M12 10v7m-3-3 3 3 3-3"/></svg>
-    Or drop an .osu or .osz file anywhere in this window
+    Or drop an .osu, .osz, or mapset folder anywhere in this window
   </div>
   <section id="home-songs" class="home-songs" aria-labelledby="home-songs-title" hidden={!hasSongsFolder}>
     <div class="home-songs-head">
@@ -196,11 +201,22 @@
                 <button type="button" class="home-song-diff" title={diff.path} disabled={busy}
                   onclick={() => send("openPath", diff.path)}>
                   <span>{diff.version}</span>
+                  {#if isHitsoundVersion(diff.version)}
+                    <span class="home-song-hs">HS</span>
+                  {/if}
                   {#if MODE_LABELS[diff.mode]}
                     <small>{MODE_LABELS[diff.mode]}</small>
                   {/if}
                 </button>
               {/each}
+              {#if set.diffs?.length}
+                <button type="button" class="home-song-diff home-song-create-hs"
+                  title="Create or open a [Hitsounds] difficulty for this mapset"
+                  disabled={busy}
+                  onclick={() => send("createHsDiff", set.diffs[0].path)}>
+                  + Hitsounds
+                </button>
+              {/if}
             </div>
           </div>
         {/each}
@@ -213,7 +229,11 @@
       {#each recent as item (item.path)}
         <button type="button" class="home-recent-map" title={item.path}
           onclick={() => send("openRecent", item.path)}>
+          {#if item.backgroundUrl}
+            <img class="home-recent-bg" src={item.backgroundUrl} alt="" loading="lazy">
+          {/if}
           <strong>{item.name}</strong><span>{item.difficulty}</span>
+          {#if item.isHs}<span class="home-recent-hs">HS</span>{/if}
         </button>
       {/each}
     </div>
@@ -456,5 +476,21 @@
     font-size: 10px;
     color: var(--editor-muted);
     text-transform: uppercase;
+  }
+  .home-song-hs {
+    display: inline-flex;
+    align-items: center;
+    height: 15px;
+    padding: 0 5px;
+    border-radius: 999px;
+    background: var(--editor-accent);
+    color: #111111;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+  }
+  .home-song-create-hs {
+    border-style: dashed;
+    color: var(--editor-accent);
   }
 </style>
