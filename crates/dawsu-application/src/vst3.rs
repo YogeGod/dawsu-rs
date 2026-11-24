@@ -649,6 +649,35 @@ impl Vst3Manager {
         Ok(())
     }
 
+    /// Queries pitched note names (`NOTENAMES`) from a loaded VST3 instrument.
+    pub fn note_names(&mut self, instance_id: &str) -> Result<Vec<(u8, String)>, Vst3Error> {
+        let instance = self
+            .instances
+            .get_mut(instance_id)
+            .ok_or_else(|| Vst3Error::PluginNotFound(instance_id.to_string()))?;
+        Ok(instance.session.note_names()?)
+    }
+
+    /// Takes the shared-memory audio channel from a loaded live VST3 instance so it can be
+    /// attached to the audio output thread.
+    pub fn take_shm(
+        &mut self,
+        instance_id: &str,
+    ) -> Result<Option<dawsu_audio_instruments::ShmChannel>, Vst3Error> {
+        let instance = self
+            .instances
+            .get_mut(instance_id)
+            .ok_or_else(|| Vst3Error::PluginNotFound(instance_id.to_string()))?;
+        Ok(instance.session.take_shm())
+    }
+
+    /// Returns `(plugin_path, plugin_uid)` for a loaded instance.
+    pub fn instance_info(&self, instance_id: &str) -> Option<(PathBuf, Option<String>)> {
+        self.instances
+            .get(instance_id)
+            .map(|inst| (inst.plugin_path.clone(), inst.plugin_uid.clone()))
+    }
+
     /// Records a MIDI preview note for a loaded VST3 instance after verifying it is alive.
     pub fn send_preview_note(
         &mut self,
@@ -719,11 +748,12 @@ impl Vst3Manager {
         })
     }
 
-    /// Executes a [`Vst3DrumExportPlan`] by bouncing every [`Vst3BounceJob`] through the
-    /// loaded VST3 instrument into `out_dir/<filename>`.
+    /// Executes a [`Vst3DrumExportPlan`] by bouncing every [`Vst3BounceJob`] through an isolated
+    /// `--offline` VST3 host into `out_dir/<filename>` as a valid stereo WAV file.
     ///
-    /// Gracefully returns [`Vst3Error::SidecarNotBuilt`] if the `dawsu-vst3-host` sidecar
-    /// binary has not been compiled yet.
+    /// Copies the live instance's current component state into the offline host so kit/preset
+    /// settings match what the mapper hears, and converts the host's raw interleaved float32
+    /// output into a proper RIFF WAV file via [`Self::bounce_audio_to_wav`].
     pub fn execute_vst3_drum_export(
         &mut self,
         instance_id: &str,
@@ -732,9 +762,20 @@ impl Vst3Manager {
         sample_rate: u32,
     ) -> Result<Vec<BounceOutput>, Vst3Error> {
         let _ = self.host_executable()?;
-        if !self.instances.contains_key(instance_id) {
-            return Err(Vst3Error::PluginNotFound(instance_id.to_string()));
+        let (plugin_path, plugin_uid) = self
+            .instance_info(instance_id)
+            .ok_or_else(|| Vst3Error::PluginNotFound(instance_id.to_string()))?;
+        let state_b64 = self.get_plugin_state(instance_id).ok();
+
+        let offline_summary =
+            self.load_plugin(plugin_path, plugin_uid, PluginRole::Instrument, true)?;
+        let offline_id = offline_summary.id.clone();
+        if let Some(state) = state_b64.as_deref()
+            && !state.is_empty()
+        {
+            let _ = self.set_plugin_state(&offline_id, state);
         }
+
         let out_dir = out_dir.as_ref();
         std::fs::create_dir_all(out_dir)
             .map_err(|err| Vst3Error::Bounce(format!("create output dir failed: {err}")))?;
@@ -744,21 +785,37 @@ impl Vst3Manager {
             ..BounceOptions::default()
         };
         let mut outputs = Vec::with_capacity(plan.jobs.len());
-        for job in &plan.jobs {
-            let events = Self::preview_note_to_midi_events(
-                MidiPreviewNote {
-                    channel: 9,
-                    note: job.pitch,
-                    velocity: job.midi_velocity,
-                    duration_ms: 250,
-                },
-                sample_rate,
-            )
-            .to_vec();
-            let out_path = out_dir.join(&job.filename);
-            let output = self.bounce_midi_to_wav(instance_id, events, out_path, &options)?;
-            outputs.push(output);
-        }
+        let result = (|| -> Result<(), Vst3Error> {
+            for job in &plan.jobs {
+                let events = Self::preview_note_to_midi_events(
+                    MidiPreviewNote {
+                        channel: 9,
+                        note: job.pitch,
+                        velocity: job.midi_velocity,
+                        duration_ms: 100,
+                    },
+                    sample_rate,
+                )
+                .to_vec();
+                let raw_path = out_dir.join(format!(".{}.f32.tmp", job.filename));
+                let wav_path = out_dir.join(&job.filename);
+                let rendered = self.bounce_midi_to_wav(&offline_id, events, &raw_path, &options)?;
+                let raw_bytes = std::fs::read(&raw_path).map_err(|err| {
+                    Vst3Error::Bounce(format!("read raw VST3 render failed: {err}"))
+                })?;
+                let _ = std::fs::remove_file(&raw_path);
+                let mut interleaved = Vec::with_capacity(raw_bytes.len() / 4);
+                for chunk in raw_bytes.chunks_exact(4) {
+                    interleaved.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
+                }
+                let mut wav = Self::bounce_audio_to_wav(&interleaved, &wav_path, &options)?;
+                wav.truncated = rendered.truncated;
+                outputs.push(wav);
+            }
+            Ok(())
+        })();
+        let _ = self.unload_plugin(&offline_id);
+        result?;
         Ok(outputs)
     }
 

@@ -714,6 +714,7 @@ void AudioThread(Shm* shm, HANDLE req, HANDLE done, HANDLE parent)
 
         int frames = shm->frames < 1 ? 0 : shm->frames > MaxFrames ? MaxFrames : shm->frames;
         int count = shm->eventCount < 0 ? 0 : shm->eventCount > MaxEvents ? MaxEvents : shm->eventCount;
+        block.context.sampleRate = shm->sampleRate > 0 ? shm->sampleRate : 44100;
         block.Begin();
         for (int i = 0; i < count; i++)
         {

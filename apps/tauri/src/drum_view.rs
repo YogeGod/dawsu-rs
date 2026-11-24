@@ -20,6 +20,7 @@ use std::{
 pub(super) enum DrumMapAction {
     LoadBuiltin { name: String },
     AssignRow { row_index: usize, lane_key: Option<String> },
+    SetMidiNote { row_index: usize, midi_note: Option<u8> },
     AutoDetect,
     SetAutoDetect { on: bool },
     SetHideUnassigned { on: bool },
@@ -217,6 +218,64 @@ impl DrumView {
         Ok(())
     }
 
+    pub(super) fn set_midi_note(
+        &mut self,
+        app: &Application,
+        expected_map: &Path,
+        row_index: usize,
+        midi_note: Option<u8>,
+    ) -> Result<(), String> {
+        let folder = current_mapset(app, expected_map)?;
+        let kit = self.mapsets.get_mut(folder).ok_or("Open a drum map first.")?;
+        let row = kit.preset.rows.get_mut(row_index).ok_or("That drum row does not exist.")?;
+        row.midi_note = midi_note.map(|n| n.min(127));
+        Ok(())
+    }
+
+    /// Computes the lane -> MIDI note routing table matching v3.1.4 `MainWindow.DrumVst.cs:35-54`:
+    /// skin defaults (`hitnormal=36, hitclap=38, hitwhistle=42, hitfinish=49`) overridden by the
+    /// active drum map's assigned rows (`Some(n)` maps, `None` explicitly keeps sample playback).
+    pub(super) fn routed_midi_notes(
+        &self,
+        app: &Application,
+    ) -> HashMap<dawsu_foundation::SampleIdentity, u8> {
+        let mut notes = HashMap::new();
+        let Some(document) = app.document() else {
+            return notes;
+        };
+        for lane in &document.composer.lanes {
+            if let Some(note) = dawsu_application::drum_vst::default_skin_midi_note(lane) {
+                notes.insert(lane.clone(), note);
+            }
+        }
+        let Some(folder) = document.path.parent() else {
+            return notes;
+        };
+        let Some(kit) = self.mapsets.get(folder) else {
+            return notes;
+        };
+        let lanes = visible_lanes(app);
+        let mut seen = HashSet::new();
+        for row in &kit.preset.rows {
+            let Some(key) = row.lane.as_deref() else {
+                continue;
+            };
+            let Some(idx) = lane_for_key(key, &lanes) else {
+                continue;
+            };
+            let id = lanes[idx].identity.clone();
+            if !seen.insert(id.clone()) {
+                continue;
+            }
+            if let Some(midi_note) = row.midi_note {
+                notes.insert(id, midi_note.min(127));
+            } else {
+                notes.remove(&id);
+            }
+        }
+        notes
+    }
+
     pub(super) fn toggle(
         &mut self, app: &Application, expected_map: &Path, on: bool,
     ) -> Result<(), String> {
@@ -273,6 +332,7 @@ impl DrumView {
                         "name": row.name,
                         "laneKey": matched.as_deref().or(row.lane.as_deref()),
                         "assigned": matched.is_some(),
+                        "midiNote": row.midi_note,
                     })
                 })
                 .collect();
@@ -320,6 +380,7 @@ impl DrumView {
                         "name": row.name,
                         "laneKey": lane_key(lane),
                         "assigned": true,
+                        "midiNote": row.midi_note,
                     })
                 }
                 DrumViewRow::Instrument { row, .. } | DrumViewRow::Unassigned(row) => {
@@ -328,6 +389,7 @@ impl DrumView {
                         "name": row.name,
                         "laneKey": row.lane,
                         "assigned": false,
+                        "midiNote": row.midi_note,
                     })
                 }
                 DrumViewRow::Other(_) => unreachable!("first kit.preset.rows.len() entries are preset rows"),

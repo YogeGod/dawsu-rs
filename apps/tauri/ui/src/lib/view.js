@@ -85,6 +85,10 @@ export function sameUiView(a, b) {
     (a.playbackStart ?? null) === (b.playbackStart ?? null) &&
     !!a.classicBrowser === !!b.classicBrowser &&
     sameDrumView(a.drumView, b.drumView) &&
+    !!a.drumVst?.loaded === !!b.drumVst?.loaded &&
+    !!a.drumVst?.enabled === !!b.drumVst?.enabled &&
+    (a.drumVst?.pluginName || "") === (b.drumVst?.pluginName || "") &&
+    (a.drumVst?.mappedLanes ?? 0) === (b.drumVst?.mappedLanes ?? 0) &&
     sameStrings(a.warnings, b.warnings) &&
     sameProblems(a.outputProblems, b.outputProblems) &&
     sameStrings(a.recent, b.recent) &&

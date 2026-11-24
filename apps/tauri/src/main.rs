@@ -1563,6 +1563,15 @@ fn snapshot_with_static(app: &Application, include_scene: bool, include_static: 
         "open": app.sound_set_prompt_open(),
     })).collect::<Vec<_>>());
     result["songSolo"] = json!(app.song_solo());
+    result["drumVst"] = json!(app.drum_vst.as_ref().map(|v| json!({
+        "loaded": true,
+        "instanceId": v.instance_id,
+        "pluginName": v.plugin_name,
+        "pluginPath": v.plugin_path,
+        "pluginUid": v.plugin_uid,
+        "enabled": v.is_enabled(),
+        "mappedLanes": v.routed_notes().len(),
+    })));
     result["hitsounds"] = json!(app.preferences.hitsound_gain);
     result["hitsoundsMuted"] = json!(app.preferences.hitsounds_muted);
     result["hitsoundsSolo"] = json!(app.hitsounds_solo());
@@ -1651,6 +1660,7 @@ enum Request {
     ExportMidiFile(PathBuf, mpsc::Sender<Result<usize, String>>),
     MidiRecordToggle(Option<usize>, Option<u32>, mpsc::Sender<Result<dawsu_application::MidiRecordStatus, String>>),
     Vst3Scan(mpsc::Sender<Result<dawsu_application::Vst3ScanReport, String>>),
+    DrumVstAction(Value, mpsc::Sender<Result<Value, String>>),
     KeysoundsAction(Value, mpsc::Sender<Result<Value, String>>),
     RevertMapsetToOriginal(mpsc::Sender<Result<usize, String>>),
 }
@@ -2064,6 +2074,7 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                             Some(path) => drums.load(app, &map, &path),
                             None => drums.toggle(app, &map, on),
                         }.map(|()| {
+                            app.set_drum_vst_routing(drums.routed_midi_notes(app));
                             let mut view = snapshot(app, !home.visible());
                             home.add_status(&mut view);
                             drums.decorate(app, &mut view);
@@ -2083,6 +2094,9 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                             drum_view::DrumMapAction::AssignRow { row_index, lane_key } => {
                                 drums.assign_row(app, &map, row_index, lane_key.as_deref())
                             }
+                            drum_view::DrumMapAction::SetMidiNote { row_index, midi_note } => {
+                                drums.set_midi_note(app, &map, row_index, midi_note)
+                            }
                             drum_view::DrumMapAction::AutoDetect => {
                                 drums.auto_detect_now(app, &map)
                             }
@@ -2096,6 +2110,7 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                                 drums.move_row(app, &map, from_index, to_index)
                             }
                         }.map(|()| {
+                            app.set_drum_vst_routing(drums.routed_midi_notes(app));
                             let mut view = snapshot(app, !home.visible());
                             home.add_status(&mut view);
                             drums.decorate(app, &mut view);
@@ -2196,6 +2211,13 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                 Ok(Request::Vst3Scan(response)) => {
                     let result = guard(&mut app, &mut fault, |app| app.scan_vst3_plugins(&[]))
                         .and_then(|r| r);
+                    let _ = response.send(result);
+                }
+                Ok(Request::DrumVstAction(payload, response)) => {
+                    let result = guard(&mut app, &mut fault, |app| {
+                        handle_drum_vst_action(app, &drums, &payload)
+                    })
+                    .and_then(|r| r);
                     let _ = response.send(result);
                 }
                 Ok(Request::KeysoundsAction(payload, response)) => {
@@ -3126,6 +3148,175 @@ fn vst3_scan(state: State<'_, Editor>) -> Result<dawsu_application::Vst3ScanRepo
 }
 
 #[tauri::command]
+fn drum_vst_action(payload: Value, state: State<'_, Editor>) -> Result<Value, String> {
+    ask(&state, |tx| Request::DrumVstAction(payload, tx))?
+}
+
+fn handle_drum_vst_action(
+    app: &mut Application,
+    drums: &drum_view::DrumView,
+    payload: &Value,
+) -> Result<Value, String> {
+    let kind = payload
+        .get("kind")
+        .and_then(Value::as_str)
+        .ok_or("Missing drum_vst_action kind")?;
+    match kind {
+        "status" => Ok(drum_vst_status_json(app)),
+        "load" => {
+            let path = payload
+                .get("pluginPath")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+                .ok_or("Choose a VST3 plug-in file first.")?;
+            let uid = payload
+                .get("pluginUid")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned);
+            app.load_drum_vst(PathBuf::from(path), uid)
+                .map_err(|e| e.to_string())?;
+            app.set_drum_vst_routing(drums.routed_midi_notes(app));
+            Ok(drum_vst_status_json(app))
+        }
+        "toggle" => {
+            let on = payload.get("enabled").and_then(Value::as_bool).unwrap_or(false);
+            app.set_drum_vst_routing(drums.routed_midi_notes(app));
+            app.set_drum_vst_enabled(on);
+            Ok(drum_vst_status_json(app))
+        }
+        "unload" => {
+            app.unload_drum_vst();
+            Ok(drum_vst_status_json(app))
+        }
+        "open_editor" => {
+            let id = app
+                .drum_vst
+                .as_ref()
+                .map(|v| v.instance_id.clone())
+                .ok_or("Load a Drum VST3 instrument first.")?;
+            app.vst3.open_editor(&id).map_err(|e| e.to_string())?;
+            Ok(drum_vst_status_json(app))
+        }
+        "close_editor" => {
+            let id = app
+                .drum_vst
+                .as_ref()
+                .map(|v| v.instance_id.clone())
+                .ok_or("Load a Drum VST3 instrument first.")?;
+            app.vst3.close_editor(&id).map_err(|e| e.to_string())?;
+            let _ = app.save_drum_vst_session_state();
+            Ok(drum_vst_status_json(app))
+        }
+        "preview_note" => {
+            let note = payload.get("note").and_then(Value::as_u64).unwrap_or(36).min(127) as u8;
+            let velocity = payload.get("velocity").and_then(Value::as_u64).unwrap_or(100).clamp(1, 127) as u8;
+            if let Some(vst) = &app.drum_vst {
+                vst.preview(note, velocity);
+            }
+            Ok(json!({ "ok": true }))
+        }
+        "note_names" => {
+            let id = app
+                .drum_vst
+                .as_ref()
+                .map(|v| v.instance_id.clone())
+                .ok_or("Load a Drum VST3 instrument first.")?;
+            let names = app.vst3.note_names(&id).map_err(|e| e.to_string())?;
+            Ok(json!({
+                "notes": names.into_iter().map(|(note, name)| json!({ "note": note, "name": name })).collect::<Vec<_>>()
+            }))
+        }
+        "sync_state" => {
+            app.save_drum_vst_session_state().map_err(|e| e.to_string())?;
+            Ok(drum_vst_status_json(app))
+        }
+        "save_state" => {
+            let b64 = app.save_drum_vst_session_state().map_err(|e| e.to_string())?;
+            let picked = rfd::FileDialog::new()
+                .set_title("Save Drum VST3 state")
+                .set_file_name("drums-state.bin")
+                .add_filter("VST3 state", &["bin", "vststate"])
+                .save_file();
+            if let Some(path) = picked {
+                std::fs::write(&path, b64.as_bytes()).map_err(|e| e.to_string())?;
+                Ok(json!({ "saved": true, "path": path.to_string_lossy() }))
+            } else {
+                Ok(json!({ "saved": false }))
+            }
+        }
+        "load_state" => {
+            let picked = rfd::FileDialog::new()
+                .set_title("Load Drum VST3 state")
+                .add_filter("VST3 state", &["bin", "vststate"])
+                .pick_file();
+            if let Some(path) = picked {
+                let raw = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+                app.restore_drum_vst_state_b64(raw.trim()).map_err(|e| e.to_string())?;
+                Ok(json!({ "loaded": true, "path": path.to_string_lossy() }))
+            } else {
+                Ok(json!({ "loaded": false }))
+            }
+        }
+        "plan_render" => {
+            let exact = payload.get("exact").and_then(Value::as_bool).unwrap_or(false);
+            let mode = if exact {
+                dawsu_application::VelocityExportMode::ExactPerVolume
+            } else {
+                dawsu_application::VelocityExportMode::Tiered { max_interval: 20 }
+            };
+            app.set_drum_vst_routing(drums.routed_midi_notes(app));
+            let plan = app.plan_drum_vst_render(mode)?;
+            Ok(json!({
+                "exact": exact,
+                "hitCount": plan.assignments.len(),
+                "jobCount": plan.jobs.len(),
+                "jobs": plan.jobs.iter().map(|j| json!({
+                    "filename": j.filename,
+                    "pitch": j.pitch,
+                    "midiVelocity": j.midi_velocity,
+                })).collect::<Vec<_>>(),
+            }))
+        }
+        "render_wavs" => {
+            let exact = payload.get("exact").and_then(Value::as_bool).unwrap_or(false);
+            let mode = if exact {
+                dawsu_application::VelocityExportMode::ExactPerVolume
+            } else {
+                dawsu_application::VelocityExportMode::Tiered { max_interval: 20 }
+            };
+            app.set_drum_vst_routing(drums.routed_midi_notes(app));
+            let (plan, outputs) = app.render_drum_vst_to_wavs(mode)?;
+            Ok(json!({
+                "renderedCount": outputs.len(),
+                "hitCount": plan.assignments.len(),
+                "files": outputs.iter().map(|o| o.path.file_name().and_then(|n| n.to_str()).unwrap_or("")).collect::<Vec<_>>(),
+            }))
+        }
+        _ => Err(format!("Unknown drum_vst_action: {kind}")),
+    }
+}
+
+fn drum_vst_status_json(app: &Application) -> Value {
+    match &app.drum_vst {
+        Some(v) => json!({
+            "loaded": true,
+            "instanceId": v.instance_id,
+            "pluginName": v.plugin_name,
+            "pluginPath": v.plugin_path,
+            "pluginUid": v.plugin_uid,
+            "enabled": v.is_enabled(),
+            "mappedLanes": v.routed_notes().len(),
+        }),
+        None => json!({
+            "loaded": false,
+            "enabled": false,
+            "mappedLanes": 0,
+        }),
+    }
+}
+
+#[tauri::command]
 fn keysounds_action(payload: Value, state: State<'_, Editor>) -> Result<Value, String> {
     ask(&state, |tx| Request::KeysoundsAction(payload, tx))?
 }
@@ -3258,6 +3449,7 @@ fn main() {
             midi_input_ports,
             midi_record_toggle,
             vst3_scan,
+            drum_vst_action,
             keysounds_action,
             revert_mapset_to_original
         ])
