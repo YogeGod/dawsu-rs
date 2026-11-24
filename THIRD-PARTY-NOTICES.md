@@ -122,6 +122,13 @@ Permission to use, copy, modify, and/or distribute this software for any purpose
 THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 ```
 
+## Downloaded only when the user asks for drum separation (not shipped)
+
+dawsu! does not include these files. Playback › Separate drums (AI)… downloads them into dawsu!'s app data folder, and `crates/dawsu-application/src/stem_separation.rs` refuses any file whose SHA-256 differs from the pinned one.
+
+- **ONNX Runtime 1.22.0** (Microsoft, MIT Licence), from the official `Microsoft.ML.OnnxRuntime` NuGet package.
+- **HT-Demucs ONNX model** `htdemucs_fp16weights.onnx`, from the Hugging Face repository `StemSplitio/htdemucs-onnx` at revision `d54ed9eb60e258ea82131c6ee14578628816456a`. That repository is marked MIT. It converts Meta's Demucs (facebookresearch/demucs, MIT code), whose README says the licence of the trained weights is not clear.
+
 ## osu! default sounds (ppy/osu-resources)
 
 dawsu! ships 21 of osu!'s default sounds, unchanged: hitnormal, hitwhistle, hitfinish, hitclap, sliderslide, slidertick and sliderwhistle for the normal, soft and drum sets. They are in `crates/dawsu-application/assets/default-sounds/`, copied from [`osu.Game.Resources/Skins/Legacy/`](https://github.com/ppy/osu-resources/tree/46d344264e5938e168cfbbd2c8fab5f572ebeda4/osu.Game.Resources/Skins/Legacy) at tag `2026.1021.0` (commit `46d344264e5938e168cfbbd2c8fab5f572ebeda4`).

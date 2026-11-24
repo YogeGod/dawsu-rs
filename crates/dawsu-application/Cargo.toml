@@ -25,7 +25,6 @@ ort = { version = "2.0.0-rc.10", default-features = false, features = ["load-dyn
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "default-tls"] }
 sha2 = "0.10"
 zip = { version = "9.6", default-features = false, features = ["deflate"] }
-flate2 = "1.1"
 
 [dev-dependencies]
 dawsu-test-support = { path = "../dawsu-test-support" }
