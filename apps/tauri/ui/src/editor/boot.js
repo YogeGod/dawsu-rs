@@ -295,9 +295,9 @@ export function createEditor(env = globalThis, { ui = null, autoStart = true, ex
   env.document.addEventListener("keydown", (event) => {
     if (event.defaultPrevented || event.repeat || event.isComposing || elements.dialog.open ||
         event.target.closest("input, select, textarea, [contenteditable]")) return;
-    // An open menu, Preferences or a Svelte modal (MIDI import, Keysounds) owns the keyboard:
+    // An open menu, Preferences or a Svelte modal (MIDI import, Keysounds, Command Palette) owns the keyboard:
     // no timeline shortcut runs behind it.
-    if ($("editor-menu")?.hidden === false || env.window.dawsuPreferencesOpen || env.window.dawsuModalOpen) return;
+    if ($("editor-menu")?.hidden === false || env.window.dawsuPreferencesOpen || env.window.dawsuModalOpen || env.window.dawsuCommandPaletteOpen) return;
     const { key, code, ctrl, shift, alt } = keyInput(event);
     if (state.rulerDrag) {
       if (key === "Escape" && !ctrl && !shift && !alt) {
@@ -387,7 +387,7 @@ export function createEditor(env = globalThis, { ui = null, autoStart = true, ex
   // Space in the map preview window plays and stops here, through the same key route as the editor's own.
   env.window.__TAURI__.event.listen("preview-space", () => {
     if (!state.scene || state.view.busy || elements.dialog.open || $("editor-menu")?.hidden === false ||
-        env.window.dawsuPreferencesOpen || env.window.dawsuModalOpen) return;
+        env.window.dawsuPreferencesOpen || env.window.dawsuModalOpen || env.window.dawsuCommandPaletteOpen) return;
     ctx.act({ kind: "key", key: " ", code: "Space", ctrl: false, shift: false, alt: false });
   });
 
