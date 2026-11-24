@@ -2326,6 +2326,7 @@ impl Application {
         if let Some(a) = &self.audio {
             a.play(false);
             if self.preferences.return_on_stop {
+                self.playback_start = self.return_position;
                 a.seek(self.return_position);
             }
         }

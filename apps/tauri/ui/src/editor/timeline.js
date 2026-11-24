@@ -282,6 +282,7 @@ export function attachTimeline(ctx) {
     const prevStart = state.scene.viewStart;
     state.view = { ...state.view, position: clampedMs };
     state.playheadAnchor = { position: clampedMs, at: perf().now(), held: false };
+    state.pendingSeek = { path: state.scene.path, ms: clampedMs, at: perf().now() };
     if (isCentred() && grid.clientWidth > 0) {
       state.scene.viewStart = centredStart(state.scene.zoom);
       state.centreSentStart = state.scene.viewStart;
@@ -591,6 +592,7 @@ export function attachTimeline(ctx) {
       current.viewStart = timelineStart(start, zoom);
       current.zoom = zoom;
       current.rowHeight = rowHeight;
+      if (isCentred()) state.centreSentStart = current.viewStart;
       if (rowHeight !== previousHeight) {
         resizeLaneHeaders(rowHeight);
         scroll.scrollTop = (previousScroll + rowAnchorY) * rowHeight / previousHeight - rowAnchorY;

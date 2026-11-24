@@ -244,7 +244,7 @@ export function attachCanvas(ctx) {
     // Something changed: the next frame paints every layer again instead of reusing the cached ones.
     if (!keepLayers) state.staticLayers = null;
     // While playing, the next playback frame paints anyway.
-    if (!state.frame && !state.playbackFrame) state.frame = raf(() => { state.frame = 0; ctx.paint(); });
+    if (!state.frame && !state.playbackFrame) state.frame = raf(() => { state.frame = 0; paintFrame(); });
   }
 
   // timeline-spec: while playing, only the playhead moves. A full paint keeps a copy of each canvas

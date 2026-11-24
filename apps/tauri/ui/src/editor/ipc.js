@@ -214,8 +214,24 @@ export function attachIpc(ctx) {
     const hadMap = !!state.scene;
     // Where the line is now, from the view before this one.
     const drawn = ctx.playheadPosition();
+    let heldPendingSeek = false;
+    if (state.pendingSeek && state.scene && state.pendingSeek.path === state.scene.path && !next.scene) {
+      const scrubbing = state.rulerDrag?.mode === "scrub" || Boolean(state.rulerSeekTarget || state.rulerSeekDrain);
+      const tolerance = next.playing ? 250 : 1;
+      const arrived = Number.isFinite(next.position) && Math.abs(next.position - state.pendingSeek.ms) <= tolerance;
+      const expired = (env.window?.performance ?? performance).now() - state.pendingSeek.at > 400;
+      if (!scrubbing && (arrived || expired)) {
+        state.pendingSeek = null;
+      } else {
+        // Ignore stale in-flight poll/seek positions while our optimistic seek is still settling.
+        next = { ...next, position: state.pendingSeek.ms };
+        heldPendingSeek = true;
+      }
+    } else if (state.pendingSeek && next.scene && next.scene.path !== state.pendingSeek.path) {
+      state.pendingSeek = null;
+    }
     state.view = next;
-    ctx.anchorPlayhead(drawn);
+    if (!heldPendingSeek) ctx.anchorPlayhead(drawn);
     if (state.view.tool !== previousTool) ctx.refreshToolCursor();
     if (!state.view.hasDocument || state.view.showHome) state.scene = null;
     if (state.view.scene) {
@@ -224,6 +240,7 @@ export function attachIpc(ctx) {
         state.overviewDrag = null;
         state.overviewTarget = null;
         state.rulerSeekTarget = null;
+        state.pendingSeek = null;
         state.usedLaneKeys = null;
         state.markedRange = null;
         state.selectionLaneKeys.clear();
