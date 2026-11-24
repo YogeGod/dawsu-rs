@@ -1,4 +1,5 @@
 /target
+/dist/
 /.handoff/
 /tools/lazer-oracle/bin/
 /tools/lazer-oracle/obj/

@@ -73,6 +73,7 @@ const COMMANDS: &[&str] = &[
     "preview_revert_mapset_to_original",
     "revert_mapset_to_original",
     "undo_mapset_revert",
+    "check_for_updates",
 ];
 
 fn main() {
