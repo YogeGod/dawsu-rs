@@ -466,3 +466,61 @@ test("dragging on the ruler band still draws, moves and drags the locators", asy
   const sent = calls.map(call => call.args.action).filter(Boolean).map(({ kind, gesture, from, to }) => [kind, gesture, from, to]);
   assert.deepEqual(sent, [["ruler_locators", "draw", 80, 95], ["ruler_locators", "move", 45, 55], ["ruler_locators", "left", 25, 30]]);
 });
+
+test("tick: true responses merge into state.view while preserving all other view fields", async () => {
+  const { calls, evaluate, responses } = await frontend();
+  evaluate(`
+    followBookmarkPick = () => {};
+    followPlayhead = () => {};
+    paintSoon = () => {};
+    animatePlayback = () => {};
+    anchorPlayhead = () => {};
+    scene = { path: "Map.osu", viewStart: 0, zoom: 0.1, rowHeight: 30, lanes: [], moments: [], sections: [[0, 500, 4]] };
+    show({
+      tickRev: 4, hasDocument: true, busy: false, playing: true, position: 1000, duration: 5000,
+      tool: "Draw", activeLane: 2, dirty: true, left: 100, right: 2000, cycle: true, follow: true,
+      offset: -12, song: 0.8, main: 0.9, hitsounds: 0.7, songMuted: false, songSolo: false,
+      hitsoundsMuted: false, hitsoundsSolo: false, status: "Playing", warnings: ["warn"],
+      outputProblems: [{ time: 500, message: "m" }], recent: ["a.osu"],
+      peaks: { master: 0.1, song: 0.1, hitsounds: 0.0 },
+      musicalPosition: "0.2.000 · 120.0 BPM · 4/4 · 1/4",
+    });
+  `);
+  responses.push({
+    tick: true,
+    rev: 4,
+    position: 1250,
+    playing: true,
+    busy: false,
+    peaks: { master: 0.6, song: 0.5, hitsounds: 0.4 },
+    musicalPosition: "0.2.120 · 120.0 BPM · 4/4 · 1/4",
+  });
+  await evaluate("update(null, false)");
+  assert.deepEqual(JSON.parse(JSON.stringify(calls)), [{
+    name: "editor_view",
+    args: { scene: false, action: null, tickRev: 4 },
+  }]);
+  const merged = JSON.parse(evaluate("JSON.stringify(view)"));
+  assert.equal(evaluate("view.tick"), undefined);
+  assert.equal(merged.position, 1250);
+  assert.deepEqual(merged.peaks, { master: 0.6, song: 0.5, hitsounds: 0.4 });
+  assert.equal(merged.musicalPosition, "0.2.120 · 120.0 BPM · 4/4 · 1/4");
+  assert.equal(merged.tickRev, 4);
+  assert.equal(merged.tool, "Draw");
+  assert.equal(merged.activeLane, 2);
+  assert.equal(merged.dirty, true);
+  assert.equal(merged.left, 100);
+  assert.equal(merged.right, 2000);
+  assert.equal(merged.cycle, true);
+  assert.equal(merged.follow, true);
+  assert.equal(merged.offset, -12);
+  assert.equal(merged.song, 0.8);
+  assert.equal(merged.main, 0.9);
+  assert.equal(merged.hitsounds, 0.7);
+  assert.equal(merged.status, "Playing");
+  assert.deepEqual(merged.warnings, ["warn"]);
+  assert.deepEqual(merged.outputProblems, [{ time: 500, message: "m" }]);
+  assert.deepEqual(merged.recent, ["a.osu"]);
+  assert.equal(merged.duration, 5000);
+  assert.equal(merged.hasDocument, true);
+});

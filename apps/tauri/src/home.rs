@@ -86,8 +86,12 @@ impl Route {
         matches!(self, Self::Parked | Self::Opening)
     }
 
+    pub(super) fn pending(&self) -> bool {
+        matches!(self, Self::Review)
+    }
+
     pub(super) fn add_status(&self, view: &mut ViewSnapshot) {
         view.show_home = Some(self.visible());
-        view.pending_home = Some(matches!(self, Self::Review));
+        view.pending_home = Some(self.pending());
     }
 }
