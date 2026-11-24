@@ -22,3 +22,14 @@ default-members = ["apps/tauri"]
 edition = "2024"
 rust-version = "1.100.0"
 publish = false
+
+# Debug builds stay debuggable, but dependencies (decode, JSON, FFT, stretch) run at full speed.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
