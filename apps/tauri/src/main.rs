@@ -4753,39 +4753,45 @@ fn undo_mapset_revert(state: State<'_, Editor>) -> Result<usize, String> {
 }
 
 #[tauri::command]
-async fn check_for_updates() -> Result<updater::UpdateCheckResult, String> {
-    tauri::async_runtime::spawn_blocking(updater::check_latest_release)
+async fn check_for_updates(
+    staged: State<'_, updater::StagedUpdate>,
+) -> Result<updater::UpdateCheckResult, String> {
+    let (result, parsed) = tauri::async_runtime::spawn_blocking(updater::check_latest_release_parsed)
         .await
-        .map_err(|e| format!("Update check task failed: {e}"))?
+        .map_err(|e| format!("Update check task failed: {e}"))??;
+    staged.record_release(parsed);
+    Ok(result)
 }
 
 #[tauri::command]
 async fn download_update(
-    version: String,
-    installer_url: String,
-    sha256sums_url: String,
+    staged: State<'_, updater::StagedUpdate>,
 ) -> Result<updater::DownloadedUpdate, String> {
+    let release = staged
+        .last_release()
+        .ok_or_else(|| "Click Check for updates first.".to_string())?;
     let data_root = dawsu_application::data_folder();
-    tauri::async_runtime::spawn_blocking(move || {
-        updater::download_and_verify_update(&data_root, &version, &installer_url, &sha256sums_url)
+    let (ui_result, verified) = tauri::async_runtime::spawn_blocking(move || {
+        updater::download_and_verify_release(&data_root, &release)
     })
     .await
-    .map_err(|e| format!("Update download task failed: {e}"))?
+    .map_err(|e| format!("Update download task failed: {e}"))??;
+    staged.record_download(verified);
+    Ok(ui_result)
 }
 
 #[tauri::command]
 fn install_update_on_close(
     window: tauri::WebviewWindow,
     staged: State<'_, updater::StagedUpdate>,
-    installer_path: String,
 ) -> Result<(), String> {
     let data_root = dawsu_application::data_folder();
-    let verified = updater::validate_staged_installer_path(&data_root, &installer_path)?;
-    staged.stage(verified);
+    staged.arm_verified_download(&data_root)?;
     // Trigger the normal window close so unsaved work is asked about first (same as v3.1.4).
-    window
-        .close()
-        .map_err(|e| format!("Could not close window to apply update: {e}"))?;
+    if let Err(e) = window.close() {
+        staged.clear();
+        return Err(format!("Could not close window to apply update: {e}"));
+    }
     Ok(())
 }
 
@@ -4952,7 +4958,10 @@ fn main() {
         .expect("start the dawsu! Tauri editor")
         .run(|app_handle, event| {
             if let tauri::RunEvent::Exit = event {
-                app_handle.state::<updater::StagedUpdate>().launch_if_staged();
+                let data_root = dawsu_application::data_folder();
+                app_handle
+                    .state::<updater::StagedUpdate>()
+                    .launch_if_staged(&data_root);
             }
         });
 }

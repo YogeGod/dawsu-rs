@@ -448,6 +448,7 @@ export function createEditor(env = globalThis, { ui = null, autoStart = true, ex
         await ctx.act({ kind: "save" });
         if (state.view.busy) state.quitAfterSave = true;
         else if (!state.view.dirty) ctx.run(() => invoke("close_editor", { discard: false }));
+        else invoke("cancel_staged_update").catch(() => {});
       }, true],
     ]);
   });

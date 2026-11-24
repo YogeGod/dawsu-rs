@@ -215,18 +215,14 @@
   }
 
   async function downloadAndInstallUpdate() {
-    if (updateDownloading || !updateResult?.installerUrl || !updateResult?.sha256sumsUrl) return;
+    if (updateChecking || updateDownloading || !updateResult?.installerUrl || !updateResult?.sha256sumsUrl) return;
     updateDownloading = true;
     updateError = "";
     updateStatus = `Downloading and verifying dawsu! v${updateResult.latestVersion}…`;
     try {
-      const downloaded = await invoke("download_update", {
-        version: updateResult.latestVersion,
-        installerUrl: updateResult.installerUrl,
-        sha256sumsUrl: updateResult.sha256sumsUrl,
-      });
+      const downloaded = await invoke("download_update");
       updateStatus = `v${downloaded.version} verified (SHA-256). Closing dawsu! to install…`;
-      await invoke("install_update_on_close", { installerPath: downloaded.installerPath });
+      await invoke("install_update_on_close");
     } catch (err) {
       updateError = String(err);
       updateStatus = "";
