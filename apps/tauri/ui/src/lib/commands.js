@@ -32,6 +32,7 @@ export const items = [
   { id: "save", label: "Save", icon: "Save", command: "save" },
   { id: "revert", label: "Revert to saved…", icon: "RotateCcw", command: "revert" },
   { id: "revertOriginal", label: "Revert mapset to original…", icon: "RotateCcw", run: ["call", "revertMapsetToOriginal"], enabled: "originalSnapshot" },
+  { id: "undoRevert", label: "Undo revert", icon: "Undo2", run: ["call", "undoMapsetRevert"], enabled: "undoRevert" },
   { id: "export", label: "Export…", icon: "Package", run: ["click", "export-entry"], enabled: "document" },
   { id: "startScreen", label: "Start screen", icon: "House", run: ["call", "goHome"] },
   { id: "folders", label: "Folders…", icon: "Folder", run: ["call", "openFolders"], enabled: "idle" },
@@ -138,7 +139,7 @@ export const items = [
 // Where each row sits. "-" is a divider; one at the start or end of a menu, or next to another, is
 // left out (Map has no Difficulty row, and so no divider under it, without a sibling difficulty).
 export const menus = {
-  file: ["openMap", "openFromOsu", "importOsz", "importMidi", "openFolder", "-", "save", "revert", "revertOriginal", "export", "exportMidi", "-", "startScreen", "folders", "-", "preferences"],
+  file: ["openMap", "openFromOsu", "importOsz", "importMidi", "openFolder", "-", "save", "revert", "revertOriginal", "undoRevert", "export", "exportMidi", "-", "startScreen", "folders", "-", "preferences"],
   edit: [
     "undo", "redo", "-",
     "cut", "copy", "paste", "duplicate", "delete", "selectAll", "-",

@@ -1663,6 +1663,7 @@ struct ViewSnapshot {
     #[serde(skip_serializing_if = "Option::is_none")]
     bookmark_step: Option<Option<f64>>,
     busy: bool,
+    can_undo_revert: bool,
     classic_browser: bool,
     cycle: bool,
     dirty: bool,
@@ -1998,6 +1999,7 @@ fn snapshot_with_static(app: &Application, include_scene: bool, include_static: 
         audition: app.preferences.audition,
         bookmark_step: None,
         busy: app.busy,
+        can_undo_revert: app.can_undo_revert(),
         classic_browser: app.preferences.classic_browser,
         cycle: app.cycle,
         dirty: app.is_dirty(),
@@ -2159,7 +2161,9 @@ enum Request {
     Vst3Scan(mpsc::Sender<Result<dawsu_application::Vst3ScanReport, String>>),
     DrumVstAction(Value, mpsc::Sender<Result<Value, String>>),
     KeysoundsAction(Value, mpsc::Sender<Result<Value, String>>),
-    RevertMapsetToOriginal(mpsc::Sender<Result<usize, String>>),
+    PreviewRevertMapsetToOriginal(mpsc::Sender<Result<dawsu_application::SnapshotPreview, String>>),
+    RevertMapsetToOriginal(Vec<String>, mpsc::Sender<Result<usize, String>>),
+    UndoMapsetRevert(mpsc::Sender<Result<usize, String>>),
 }
 struct Editor(mpsc::Sender<Request>);
 
@@ -2423,6 +2427,7 @@ fn non_playback_signature(
     app.pending_open.is_some().hash(&mut hasher);
     app.first_launch.hash(&mut hasher);
     app.has_original_snapshot().hash(&mut hasher);
+    app.can_undo_revert().hash(&mut hasher);
     app.device_name().hash(&mut hasher);
     app.quantize_strength().to_bits().hash(&mut hasher);
     app.preferences.key_preset.hash(&mut hasher);
@@ -2910,8 +2915,23 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                     tick_cache.invalidate();
                     let _ = response.send(result);
                 }
-                Ok(Request::RevertMapsetToOriginal(response)) => {
-                    let result = guard(&mut app, &mut fault, |app| app.revert_mapset_to_original())
+                Ok(Request::PreviewRevertMapsetToOriginal(response)) => {
+                    let result = guard(&mut app, &mut fault, |app| {
+                        app.preview_revert_mapset_to_original()
+                    })
+                    .and_then(|r| r);
+                    let _ = response.send(result);
+                }
+                Ok(Request::RevertMapsetToOriginal(include_deleted, response)) => {
+                    let result = guard(&mut app, &mut fault, |app| {
+                        app.revert_mapset_to_original(&include_deleted)
+                    })
+                    .and_then(|r| r);
+                    tick_cache.invalidate();
+                    let _ = response.send(result);
+                }
+                Ok(Request::UndoMapsetRevert(response)) => {
+                    let result = guard(&mut app, &mut fault, |app| app.undo_mapset_revert())
                         .and_then(|r| r);
                     tick_cache.invalidate();
                     let _ = response.send(result);
@@ -4015,8 +4035,25 @@ fn keysounds_action(payload: Value, state: State<'_, Editor>) -> Result<Value, S
 }
 
 #[tauri::command]
-fn revert_mapset_to_original(state: State<'_, Editor>) -> Result<usize, String> {
-    ask(&state, Request::RevertMapsetToOriginal)?
+fn preview_revert_mapset_to_original(
+    state: State<'_, Editor>,
+) -> Result<dawsu_application::SnapshotPreview, String> {
+    ask(&state, Request::PreviewRevertMapsetToOriginal)?
+}
+
+#[tauri::command]
+fn revert_mapset_to_original(
+    include_deleted: Option<Vec<String>>,
+    state: State<'_, Editor>,
+) -> Result<usize, String> {
+    ask(&state, |tx| {
+        Request::RevertMapsetToOriginal(include_deleted.unwrap_or_default(), tx)
+    })?
+}
+
+#[tauri::command]
+fn undo_mapset_revert(state: State<'_, Editor>) -> Result<usize, String> {
+    ask(&state, Request::UndoMapsetRevert)?
 }
 
 fn close_requested(label: &str, editor: &Editor) -> CloseDecision {
@@ -4145,7 +4182,9 @@ fn main() {
             vst3_scan,
             drum_vst_action,
             keysounds_action,
-            revert_mapset_to_original
+            preview_revert_mapset_to_original,
+            revert_mapset_to_original,
+            undo_mapset_revert
         ])
         .run(tauri::generate_context!())
         .expect("start the dawsu! Tauri editor");

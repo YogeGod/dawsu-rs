@@ -65,6 +65,7 @@ pub use dawsu_graph_audio::classic::Drum;
 pub use drum_detect::{DrumDetectState, DrumDetectView, DrumLanes, DrumOptions, DrumRow, DrumSource, ObjectKind, RowLands, GRIDS, MAX_OBJECT_MS};
 pub use export::{ExportChoices, ExportOptions, ExportPreview, ExportStatus, PreviewOrigin, Stale};
 pub use export_settings::{ExportCombination, ExportSettings};
+pub use original_snapshot::SnapshotPreview;
 pub use project::LaneLayout;
 pub use recovery::RecoveryOffer;
 pub use sound_sets::{LibrarySet, PlacementView, SaveSetError, SetUpdatePrompt, SoundSetLibrary};
@@ -987,6 +988,7 @@ pub struct Application {
     quantize_strength: f64,
     pub revert_requested: bool,
     has_original_snapshot: Arc<AtomicBool>,
+    can_undo_revert: Arc<AtomicBool>,
     pub busy: bool,
     pub song_loading: bool,
     pending_play_on_song: bool,
@@ -1017,6 +1019,7 @@ pub struct Application {
     sweep_detached: bool,
     /// How long close and open wait for a cleanup job (Yoge, 2026-11-21: 5 seconds).
     sweep_wait: std::time::Duration,
+    sweep_after_open: bool,
     job_progress: Option<JobProgress>,
     cancel: Arc<AtomicBool>,
     muted: Vec<SampleIdentity>,
@@ -1163,6 +1166,7 @@ impl Application {
             quantize_strength: 100.0,
             revert_requested: false,
             has_original_snapshot: Arc::new(AtomicBool::new(false)),
+            can_undo_revert: Arc::new(AtomicBool::new(false)),
             busy: false,
             song_loading: false,
             pending_play_on_song: false,
@@ -1188,6 +1192,7 @@ impl Application {
             sweep: None,
             sweep_detached: false,
             sweep_wait: std::time::Duration::from_secs(5),
+            sweep_after_open: false,
             job_progress: None,
             cancel: Arc::new(AtomicBool::new(false)),
             muted: Vec::new(),
@@ -1721,7 +1726,21 @@ impl Application {
         self.document.is_some() && self.has_original_snapshot.load(Ordering::Relaxed)
     }
 
-    pub fn revert_mapset_to_original(&mut self) -> Result<usize, String> {
+    pub fn can_undo_revert(&self) -> bool {
+        self.document.is_some() && self.can_undo_revert.load(Ordering::Relaxed)
+    }
+
+    pub fn preview_revert_mapset_to_original(&self) -> Result<SnapshotPreview, String> {
+        let path = self
+            .document
+            .as_ref()
+            .map(|d| &d.path)
+            .ok_or("Open a difficulty first.")?;
+        let folder = path.parent().ok_or("Missing mapset folder.")?;
+        original_snapshot::preview(&self.data_root, folder)
+    }
+
+    pub fn revert_mapset_to_original(&mut self, include_deleted: &[String]) -> Result<usize, String> {
         if self.busy || self.is_stroke_open() {
             return Err("Finish the current operation before reverting the mapset.".into());
         }
@@ -1730,12 +1749,36 @@ impl Application {
             .as_ref()
             .map(|d| d.path.clone())
             .ok_or("Open a difficulty first.")?;
-        let folder = path.parent().ok_or("Missing mapset folder.")?;
-        let restored = original_snapshot::restore(&self.data_root, folder)?;
+        let folder = path.parent().ok_or("Missing mapset folder.")?.to_path_buf();
+        let restored = original_snapshot::restore_with_options(&self.data_root, &folder, include_deleted)?;
         self.pending_open = None;
         self.revert_requested = false;
         self.start_open(OpenSource::Map(path), false);
+        self.sweep_after_open = true;
+        self.can_undo_revert.store(
+            original_snapshot::has_pre_revert_backup(&self.data_root, &folder),
+            Ordering::Relaxed,
+        );
         self.status = format!("Reverted {restored} mapset file(s) to original snapshot (pre-revert backup saved).");
+        Ok(restored)
+    }
+
+    pub fn undo_mapset_revert(&mut self) -> Result<usize, String> {
+        if self.busy || self.is_stroke_open() {
+            return Err("Finish the current operation before undoing the revert.".into());
+        }
+        let path = self
+            .document
+            .as_ref()
+            .map(|d| d.path.clone())
+            .ok_or("Open a difficulty first.")?;
+        let folder = path.parent().ok_or("Missing mapset folder.")?.to_path_buf();
+        let restored = original_snapshot::undo_revert(&self.data_root, &folder)?;
+        self.pending_open = None;
+        self.revert_requested = false;
+        self.start_open(OpenSource::Map(path), false);
+        self.sweep_after_open = true;
+        self.status = format!("Restored {restored} mapset file(s) from pre-revert backup.");
         Ok(restored)
     }
 
@@ -1754,6 +1797,7 @@ impl Application {
     fn start_open(&mut self, source: OpenSource, keep_settings: bool) {
         // A cleanup the last Save started finishes before the difficulty changes.
         self.poll_sweep(true);
+        self.sweep_after_open = false;
         self.cancel_timeline_edit();
         if keep_settings && let Err(error) = self.save_session() {
             self.error = Some(error);
@@ -1958,6 +2002,7 @@ impl Application {
             match result {
                 JobResult::Open(outgoing, keep_settings, Ok(loaded)) => {
                     if self.document.as_ref().map(|d| d.composer.history.version()) != outgoing {
+                        self.sweep_after_open = false;
                         self.pending_open = Some(loaded.document.path);
                         self.status =
                             "The outgoing difficulty changed. Review your edits before switching."
@@ -1965,12 +2010,17 @@ impl Application {
                         return;
                     }
                     if keep_settings && let Err(error) = self.save_session() {
+                        self.sweep_after_open = false;
                         self.error = Some(error);
                         return;
                     }
                     let path = loaded.document.path.clone();
                     let snap_flag = Arc::new(AtomicBool::new(false));
                     self.has_original_snapshot = snap_flag.clone();
+                    let has_undo = path
+                        .parent()
+                        .is_some_and(|folder| original_snapshot::has_pre_revert_backup(&self.data_root, folder));
+                    self.can_undo_revert = Arc::new(AtomicBool::new(has_undo));
                     if let Some(folder) = path.parent().map(Path::to_path_buf) {
                         let data_root = self.data_root.clone();
                         std::thread::spawn(move || {
@@ -2096,6 +2146,9 @@ impl Application {
                     self.checkpoint = Some(checkpoint);
                     self.restored_recovery = restored_id;
                     self.ask_about_set_versions();
+                    if std::mem::take(&mut self.sweep_after_open) {
+                        self.start_sweep(false);
+                    }
                 }
                 JobResult::SongReady { .. } => {
                     self.apply_song_job_result(result);
@@ -2104,6 +2157,7 @@ impl Application {
                     self.apply_drum_vst_job_result(result);
                 }
                 JobResult::Open(_, _, Err(e)) => {
+                    self.sweep_after_open = false;
                     self.error = Some(e);
                     self.status = "Open failed; previous document kept".into();
                     if self.sweep_detached {

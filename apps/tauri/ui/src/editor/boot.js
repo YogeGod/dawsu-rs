@@ -74,7 +74,7 @@ const exportedMethods = [
   "refreshLaneToolbar", "changeView", "stepWheelSnap", "fitTimeline",
   "modal", "closeModal", "showOutputProblem", "renderDialogs",
   "openMergeSettings", "openGenerate", "openNewDifficulty", "openCopy",
-  "openLaneColour", "openReplaceSample", "openMap", "openFromOsu", "goHome", "confirmRevertToOriginal",
+  "openLaneColour", "openReplaceSample", "openMap", "openFromOsu", "goHome", "confirmRevertToOriginal", "undoMapsetRevert",
   "openSiblingDifficulty", "chooseSiblingDifficulty", "showTimelineEdit",
   "editBookmark", "openTimeSignatures",
   "openFolders", "openAudioOutput", "openViewSettings", "openPreferences", "showHelp", "showShortcutEditor",

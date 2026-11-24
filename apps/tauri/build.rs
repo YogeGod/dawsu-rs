@@ -67,7 +67,9 @@ const COMMANDS: &[&str] = &[
     "vst3_scan",
     "drum_vst_action",
     "keysounds_action",
+    "preview_revert_mapset_to_original",
     "revert_mapset_to_original",
+    "undo_mapset_revert",
 ];
 
 fn main() {

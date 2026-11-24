@@ -304,7 +304,7 @@ test("each menu groups the editor's existing commands like the design, with no s
   const open = name => { get("menu-" + name).click(); return menuLabels(popup); };
   assert.deepEqual(open("file"), [
     "Open map…", "Open from osu!", "Import .osz…", "Import MIDI…", "Open map folder", "—",
-    "Save", "Revert to saved…", "Revert mapset to original…", "Export…", "Export MIDI…", "—",
+    "Save", "Revert to saved…", "Revert mapset to original…", "Undo revert", "Export…", "Export MIDI…", "—",
     "Start screen", "Folders…", "—", "Preferences…",
   ]);
   assert.deepEqual(open("edit"), [
@@ -822,6 +822,18 @@ test("File › Revert mapset to original… opens only with a first-open copy of
   assert.equal(asked, 1);
   assert.equal(calls.some(call => Array.isArray(call) && call[0] === "revert_mapset_to_original"), false,
     "the menu row only asks; the dialog's Revert button invokes");
+
+  const undoRevert = () => menuButtons(popup).find(button => button.textContent === "Undo revert")
+    ?? popup.children.find(button => button.textContent === "Undo revert");
+  let undone = 0;
+  context.undoMapsetRevert = () => { undone += 1; };
+  get("menu-file").click();
+  assert.equal(undoRevert().disabled, true, "no pre-revert backup yet");
+  view.canUndoRevert = true;
+  context.refreshEditorMenu();
+  assert.equal(undoRevert().disabled, false);
+  undoRevert().click();
+  assert.equal(undone, 1);
 });
 
 test("every rule, call, choice source and run kind the command list names exists in menus.js", () => {
