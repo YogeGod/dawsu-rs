@@ -1764,6 +1764,7 @@ fn copy_review_uses_the_exact_requested_options() {
         min_length: 0.75,
         muted_index: Some(7),
         muted_sample_set: Some(SampleSet::Drum),
+        slider_end_mute: Default::default(),
         fallback_sound: None,
     });
 
