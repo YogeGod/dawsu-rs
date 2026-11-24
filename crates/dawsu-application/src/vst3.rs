@@ -408,6 +408,7 @@ pub struct Vst3Manager {
     scanned_plugins: Vec<Vst3PluginInfo>,
     instances: BTreeMap<String, LoadedInstance>,
     next_instance_id: u64,
+    next_shm_seq: u64,
 }
 
 impl Default for Vst3Manager {
@@ -430,6 +431,7 @@ impl Vst3Manager {
             scanned_plugins: Vec::new(),
             instances: BTreeMap::new(),
             next_instance_id: 1,
+            next_shm_seq: 1,
         }
     }
 
@@ -554,6 +556,38 @@ impl Vst3Manager {
         self.load_plugin(plugin_path, plugin_uid, PluginRole::Effect, false)
     }
 
+    /// Allocates a unique shared-memory channel name for spawning a sidecar off-thread.
+    pub fn next_shm_name(&mut self) -> String {
+        let seq = self.next_shm_seq;
+        self.next_shm_seq += 1;
+        format!("dawsu_vst3_{}_{}", std::process::id(), seq)
+    }
+
+    /// Attaches a pre-spawned sidecar [`HostSession`] into this manager as a loaded instance.
+    pub fn insert_loaded_session(
+        &mut self,
+        plugin_path: impl Into<PathBuf>,
+        plugin_uid: Option<String>,
+        role: PluginRole,
+        session: HostSession<ProcessTransport>,
+    ) -> LoadedPluginSummary {
+        let id_num = self.next_instance_id;
+        self.next_instance_id += 1;
+        let id = format!("vst3-{id_num}");
+        let mut instance = LoadedInstance {
+            id: id.clone(),
+            role,
+            plugin_path: plugin_path.into(),
+            plugin_uid,
+            editor_open: false,
+            last_preview_note: None,
+            session,
+        };
+        let summary = instance.summary();
+        self.instances.insert(id, instance);
+        summary
+    }
+
     /// Loads a VST3 plug-in (instrument or effect, live or offline) in a dedicated sidecar.
     pub fn load_plugin(
         &mut self,
@@ -564,32 +598,17 @@ impl Vst3Manager {
     ) -> Result<LoadedPluginSummary, Vst3Error> {
         let host_executable = self.host_executable()?;
         let plugin_path = plugin_path.into();
-        let id_num = self.next_instance_id;
-        let id = format!("vst3-{id_num}");
         let pid = std::process::id();
         let config = Vst3HostConfig {
             host_executable,
-            shm_name: format!("dawsu_vst3_{pid}_{id_num}"),
+            shm_name: self.next_shm_name(),
             parent_pid: pid,
             plugin_path: plugin_path.clone(),
             plugin_uid: plugin_uid.clone(),
             offline,
         };
         let session = HostSession::spawn(&config)?;
-        self.next_instance_id += 1;
-
-        let mut instance = LoadedInstance {
-            id: id.clone(),
-            role,
-            plugin_path,
-            plugin_uid,
-            editor_open: false,
-            last_preview_note: None,
-            session,
-        };
-        let summary = instance.summary();
-        self.instances.insert(id, instance);
-        Ok(summary)
+        Ok(self.insert_loaded_session(plugin_path, plugin_uid, role, session))
     }
 
     /// Shuts down and removes a loaded VST3 plug-in instance.

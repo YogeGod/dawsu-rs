@@ -2413,6 +2413,7 @@ fn non_playback_signature(
         prompt.edited_keep_files.hash(&mut hasher);
     }
     app.drum_vst.as_ref().map(|v| (&v.instance_id, v.is_enabled(), v.routed_notes().len())).hash(&mut hasher);
+    app.drum_vst_loading.hash(&mut hasher);
     app.revert_requested.hash(&mut hasher);
     app.output_review.as_ref().map(|p| (&p.label, p.files.len(), p.details.len())).hash(&mut hasher);
     app.requested_edit().hash(&mut hasher);
