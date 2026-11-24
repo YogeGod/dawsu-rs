@@ -385,6 +385,26 @@ aside[data-folded] {
   color: var(--editor-secondary);
   white-space: nowrap;
 }
+#statusbar .external-osu-notice:not([hidden]) {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  padding: 1px 6px;
+  border: 1px solid var(--editor-accent, #5ea1ff);
+  border-radius: 4px;
+  background: rgba(94, 161, 255, 0.14);
+  font-size: 11px;
+  white-space: nowrap;
+}
+#statusbar .external-osu-notice .external-osu-label {
+  color: var(--editor-text);
+  font-weight: 500;
+}
+#statusbar .external-osu-notice button {
+  padding: 1px 6px;
+  font-size: 11px;
+}
 #statusbar .status-right {
   flex: 0 1 auto;
   min-width: 0;

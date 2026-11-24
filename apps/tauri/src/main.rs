@@ -361,6 +361,8 @@ enum Action {
     DismissSaveProblemReview,
     ConfirmRevert,
     CancelRevert,
+    ReloadFromDisk,
+    DismissExternalOsuChange,
     Play,
     PlaybackStart { value: PlaybackStart },
     ReturnOnStop { on: bool },
@@ -712,6 +714,8 @@ impl Action {
             Self::DismissSaveProblemReview => app.dismiss_save_problem_review(),
             Self::ConfirmRevert => app.confirm_revert(),
             Self::CancelRevert => app.revert_requested = false,
+            Self::ReloadFromDisk => app.reload_from_disk(),
+            Self::DismissExternalOsuChange => app.dismiss_external_osu_change(),
             Self::Play => app.play_pause_from(playback_start.position(app)),
             Self::PlaybackStart { value } => *playback_start = value,
             Self::ReturnOnStop { on } => {
@@ -1687,6 +1691,8 @@ struct ViewSnapshot {
     duration: f64,
     edit_dialog: Option<&'static str>,
     error: Option<String>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    external_osu_changed: bool,
     first_launch: bool,
     follow: bool,
     has_document: bool,
@@ -2046,6 +2052,7 @@ fn snapshot_with_static(app: &Application, include_scene: bool, include_static: 
         duration: app.duration_ms(),
         edit_dialog: app.requested_edit(),
         error: app.error.clone(),
+        external_osu_changed: app.external_osu_changed,
         first_launch: app.first_launch,
         follow: app.preferences.follow,
         has_document: document.is_some(),
@@ -2473,6 +2480,7 @@ fn non_playback_signature(
         .hash(&mut hasher);
     app.drum_vst_loading.hash(&mut hasher);
     app.revert_requested.hash(&mut hasher);
+    app.external_osu_changed.hash(&mut hasher);
     app.output_review.as_ref().map(|p| (&p.label, p.files.len(), p.details.len())).hash(&mut hasher);
     app.requested_edit().hash(&mut hasher);
     app.bookmark_step.map(f64::to_bits).hash(&mut hasher);
