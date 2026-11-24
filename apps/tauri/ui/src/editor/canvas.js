@@ -175,54 +175,84 @@ export function attachCanvas(ctx) {
     const coreTops = state.waveCoreTops;
     const coreHeights = state.waveCoreHeights;
     coreHeights.fill(0, 0, cols);
+
+    // Cache computed waveform columns keyed by absolute song-time pixel column so Centre-mode
+    // playback scrolling reuses 98%+ of columns without re-scanning bins or computing colours.
+    let cache = state.waveColCache;
+    if (!cache || cache.bins !== bins || cache.duration !== duration ||
+        cache.msPerPx !== msPerPx || cache.height !== height) {
+      cache = { bins, duration, msPerPx, height, map: new Map() };
+      state.waveColCache = cache;
+    }
+    const absCol0 = Math.floor(songStart / msPerPx);
+    const subPx = songStart - absCol0 * msPerPx;
+    const useCache = Math.abs(subPx) < msPerPx * 0.5 || state.view.playing;
     let lastColour = "";
 
     for (let x = 0; x < cols; x++) {
-      const t0 = songStart + x * msPerPx;
-      const t1 = t0 + msPerPx;
-      if (t1 < 0) continue;
-      const a = Math.max(0, Math.floor(t0 * binScale));
-      if (a >= bins.length) break;
-      const b = Math.min(bins.length, Math.max(a + 1, Math.ceil(t1 * binScale)));
-      const innerStep = b - a > 12 ? Math.floor((b - a) / 8) : 1;
+      const absCol = absCol0 + x;
+      let entry = useCache ? cache.map.get(absCol) : undefined;
+      if (entry === undefined) {
+        const t0 = useCache ? absCol * msPerPx : songStart + x * msPerPx;
+        const t1 = t0 + msPerPx;
+        if (t1 < 0) {
+          if (useCache) cache.map.set(absCol, null);
+          continue;
+        }
+        const a = Math.max(0, Math.floor(t0 * binScale));
+        if (a >= bins.length) break;
+        const b = Math.min(bins.length, Math.max(a + 1, Math.ceil(t1 * binScale)));
+        const innerStep = b - a > 12 ? Math.floor((b - a) / 8) : 1;
 
-      let maxL = 0, maxR = 0, sumSqL = 0, sumSqR = 0;
-      let wLow = 0, wMid = 0, wHigh = 0, wAmp = 0;
-      let sumLow = 0, sumMid = 0, sumHigh = 0, count = 0;
-      for (let i = a; i < b; i += innerStep) {
-        const bin = bins[i];
-        const l = bin[4] ?? bin[0];
-        const r = bin[5] ?? bin[0];
-        if (l > maxL) maxL = l;
-        if (r > maxR) maxR = r;
-        sumSqL += l * l;
-        sumSqR += r * r;
-        const amp = Math.max(l, r);
-        wLow += bin[1] * amp;
-        wMid += bin[2] * amp;
-        wHigh += bin[3] * amp;
-        wAmp += amp;
-        sumLow += bin[1];
-        sumMid += bin[2];
-        sumHigh += bin[3];
-        count++;
+        let maxL = 0, maxR = 0, sumSqL = 0, sumSqR = 0;
+        let wLow = 0, wMid = 0, wHigh = 0, wAmp = 0;
+        let sumLow = 0, sumMid = 0, sumHigh = 0, count = 0;
+        for (let i = a; i < b; i += innerStep) {
+          const bin = bins[i];
+          const l = bin[4] ?? bin[0];
+          const r = bin[5] ?? bin[0];
+          if (l > maxL) maxL = l;
+          if (r > maxR) maxR = r;
+          sumSqL += l * l;
+          sumSqR += r * r;
+          const amp = Math.max(l, r);
+          wLow += bin[1] * amp;
+          wMid += bin[2] * amp;
+          wHigh += bin[3] * amp;
+          wAmp += amp;
+          sumLow += bin[1];
+          sumMid += bin[2];
+          sumHigh += bin[3];
+          count++;
+        }
+        if (!count) {
+          if (useCache) cache.map.set(absCol, null);
+          continue;
+        }
+
+        const peakL = limit(maxL, 0, 1) * height + 0.5;
+        const peakR = limit(maxR, 0, 1) * height + 0.5;
+        const colLow = wAmp > 1e-4 ? wLow / wAmp : sumLow / count;
+        const colMid = wAmp > 1e-4 ? wMid / wAmp : sumMid / count;
+        const colHigh = wAmp > 1e-4 ? wHigh / wAmp : sumHigh / count;
+        const colour = lazerWaveColour(colLow, colMid, colHigh);
+        const rmsL = limit(Math.sqrt(sumSqL / count), 0, 1) * height * 0.72;
+        const rmsR = limit(Math.sqrt(sumSqR / count), 0, 1) * height * 0.72;
+        entry = [peakL, peakR, colour, rmsL, rmsR];
+        if (useCache) {
+          if (cache.map.size > 12000) cache.map.clear();
+          cache.map.set(absCol, entry);
+        }
       }
-      if (!count) continue;
+      if (!entry) continue;
 
-      const peakL = limit(maxL, 0, 1) * height + 0.5;
-      const peakR = limit(maxR, 0, 1) * height + 0.5;
-      const colLow = wAmp > 1e-4 ? wLow / wAmp : sumLow / count;
-      const colMid = wAmp > 1e-4 ? wMid / wAmp : sumMid / count;
-      const colHigh = wAmp > 1e-4 ? wHigh / wAmp : sumHigh / count;
-      const colour = lazerWaveColour(colLow, colMid, colHigh);
+      const [peakL, peakR, colour, rmsL, rmsR] = entry;
       if (colour !== lastColour) {
         context2d.fillStyle = colour;
         lastColour = colour;
       }
       context2d.fillRect(x, center - peakL, 1, Math.max(1, peakL + peakR));
 
-      const rmsL = limit(Math.sqrt(sumSqL / count), 0, 1) * height * 0.72;
-      const rmsR = limit(Math.sqrt(sumSqR / count), 0, 1) * height * 0.72;
       const coreH = rmsL + rmsR;
       if (coreH >= 1.5) {
         coreTops[x] = center - rmsL;
@@ -696,16 +726,55 @@ export function attachCanvas(ctx) {
     context2d.closePath();
   }
 
-  function drawOverview({ ctx: context2d, width, height }, start, visible) {
-    context2d.fillStyle = slateTimeline.overview;
-    context2d.fillRect(0, 0, width, height);
+  function drawOverview({ ctx: context2d, width, height, scale = 1 }, start, visible) {
     const duration = state.view.duration;
-    if (!(duration > 0) || width <= 0) return;
+    if (!(duration > 0) || width <= 0) {
+      context2d.fillStyle = slateTimeline.overview;
+      context2d.fillRect(0, 0, width, height);
+      return;
+    }
     const middle = height / 2;
-    for (const [x, strength] of overviewBins(state.scene.gameplay, width, duration)) {
-      context2d.fillStyle = "rgba(196,196,196," + strength.toFixed(2) + ")";
-      diamond(context2d, x, middle, 3.5);
-      context2d.fill();
+    // Cache the static overview background + density diamonds separately from `viewStart` so
+    // Centre-mode playback scrolling blits it in one drawImage call instead of redrawing 200+ diamonds.
+    let blittedBase = false;
+    if (state.view.playing && typeof context2d.drawImage === "function" && height > 0) {
+      const baseKey = [state.scene.gameplay, width, height, duration, scale];
+      if (!state.overviewBaseCache || !sameKey(state.overviewBaseCache.key, baseKey)) {
+        try {
+          const off = state.overviewBaseCache?.canvas ?? env.document.createElement("canvas");
+          const pw = Math.max(1, Math.round(width * scale));
+          const ph = Math.max(1, Math.round(height * scale));
+          if (off.width !== pw) off.width = pw;
+          if (off.height !== ph) off.height = ph;
+          const octx = off.getContext?.("2d");
+          if (octx && typeof octx.fillRect === "function") {
+            octx.setTransform?.(scale, 0, 0, scale, 0, 0);
+            octx.fillStyle = slateTimeline.overview;
+            octx.fillRect(0, 0, width, height);
+            for (const [x, strength] of overviewBins(state.scene.gameplay, width, duration)) {
+              octx.fillStyle = "rgba(196,196,196," + strength.toFixed(2) + ")";
+              diamond(octx, x, middle, 3.5);
+              octx.fill();
+            }
+            state.overviewBaseCache = { key: baseKey, canvas: off };
+          }
+        } catch {
+          state.overviewBaseCache = null;
+        }
+      }
+      if (state.overviewBaseCache?.canvas) {
+        context2d.drawImage(state.overviewBaseCache.canvas, 0, 0, width, height);
+        blittedBase = true;
+      }
+    }
+    if (!blittedBase) {
+      context2d.fillStyle = slateTimeline.overview;
+      context2d.fillRect(0, 0, width, height);
+      for (const [x, strength] of overviewBins(state.scene.gameplay, width, duration)) {
+        context2d.fillStyle = "rgba(196,196,196," + strength.toFixed(2) + ")";
+        diamond(context2d, x, middle, 3.5);
+        context2d.fill();
+      }
     }
     // The viewport box: 1 px --editor-text, radius 2, at least 8 px wide.
     // The box stays inside the strip: its 1 px edge is drawn within its width.
@@ -720,9 +789,13 @@ export function attachCanvas(ctx) {
     // never read as a red 1/1 tick. Problems under 8 px apart are one diamond; Sound-first hides them.
     context2d.fillStyle = "#fbbf24";
     context2d.strokeStyle = slateTimeline.overview;
-    const overviewProblems = state.soundFirst ? []
-      : visibleWarningMarkers(state.view.outputProblems ?? [], state.scene.path, 0, width / duration, width);
-    for (const marker of overviewProblems) {
+    const probKey = [state.soundFirst, state.outputProblemList, state.scene.path, width, duration];
+    if (!state.overviewProblemCache || !sameKey(state.overviewProblemCache.key, probKey)) {
+      const markers = state.soundFirst ? []
+        : visibleWarningMarkers(state.view.outputProblems ?? [], state.scene.path, 0, width / duration, width);
+      state.overviewProblemCache = { key: probKey, markers };
+    }
+    for (const marker of state.overviewProblemCache.markers) {
       diamond(context2d, marker.x, middle, 5);
       context2d.fill();
       context2d.stroke();
