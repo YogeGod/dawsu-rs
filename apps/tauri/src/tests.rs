@@ -3653,3 +3653,81 @@ fn slim_tick_polls_return_tick_when_unchanged_and_full_view_on_status_warning_or
     assert_eq!(after_loading["songLoading"], false);
     assert!(after_loading["tickRev"].as_u64().unwrap() > rev5);
 }
+
+#[test]
+fn scene_lane_exposes_vst_routed_and_bypassed_and_toggle_lane_switches_them() {
+    struct NoopProcessor;
+    impl dawsu_application::drum_vst::DrumBlockProcessor for NoopProcessor {
+        fn process_block(
+            &mut self,
+            _sample_rate: f64,
+            _events: &[dawsu_application::drum_vst::ShmEvent],
+            left: &mut [f32],
+            right: &mut [f32],
+        ) -> bool {
+            left.fill(0.0);
+            right.fill(0.0);
+            true
+        }
+    }
+
+    let fixture = Fixture::new("scene-vst-routed");
+    let map = fixture.0.join("map.osu");
+    fs::write(
+        &map,
+        "osu file format v14\n\n[General]\nMode:0\n\n[TimingPoints]\n0,500,4,1,0,100,1,0\n\n[HitObjects]\n256,192,1000,1,0,0:0:0:0:\n",
+    )
+    .unwrap();
+    let mut app = Application::headless();
+    open(&mut app, &map);
+    let drums = super::drum_view::DrumView::for_editor();
+
+    // Before loading a Drum VST3, vstRouted/vstBypassed are omitted from SceneLane JSON.
+    let without_vst = serde_json::to_value(super::snapshot_view(&app, true)).unwrap();
+    let lanes_before = without_vst["scene"]["lanes"].as_array().unwrap();
+    assert!(lanes_before[0].get("vstRouted").is_none());
+    assert!(lanes_before[0].get("vstBypassed").is_none());
+
+    let (handle, _source) = dawsu_application::drum_vst::DrumVstLiveHandle::new(
+        "vst-1".into(),
+        "Test Kit".into(),
+        "kit.vst3".into(),
+        None,
+        true,
+        Box::new(NoopProcessor),
+    );
+    app.drum_vst = Some(handle);
+    app.set_drum_vst_routing(drums.routed_midi_notes(&app));
+
+    let with_vst = serde_json::to_value(super::snapshot_view(&app, true)).unwrap();
+    let normal_row = with_vst["scene"]["lanes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .position(|lane| lane["name"] == "normal-hitnormal")
+        .unwrap();
+    assert_eq!(with_vst["scene"]["lanes"][normal_row]["vstRouted"], true);
+    assert_eq!(with_vst["scene"]["lanes"][normal_row]["vstBypassed"], false);
+
+    // Toggling the lane off sets vstRouted=false, vstBypassed=true.
+    super::handle_drum_vst_action(
+        &mut app,
+        &drums,
+        &serde_json::json!({ "kind": "toggle_lane", "row": normal_row }),
+    )
+    .unwrap();
+    let bypassed = serde_json::to_value(super::snapshot_view(&app, true)).unwrap();
+    assert_eq!(bypassed["scene"]["lanes"][normal_row]["vstRouted"], false);
+    assert_eq!(bypassed["scene"]["lanes"][normal_row]["vstBypassed"], true);
+
+    // Toggling it back on restores vstRouted=true, vstBypassed=false.
+    super::handle_drum_vst_action(
+        &mut app,
+        &drums,
+        &serde_json::json!({ "kind": "toggle_lane", "row": normal_row }),
+    )
+    .unwrap();
+    let restored = serde_json::to_value(super::snapshot_view(&app, true)).unwrap();
+    assert_eq!(restored["scene"]["lanes"][normal_row]["vstRouted"], true);
+    assert_eq!(restored["scene"]["lanes"][normal_row]["vstBypassed"], false);
+}

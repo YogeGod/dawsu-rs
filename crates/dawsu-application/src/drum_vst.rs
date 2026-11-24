@@ -1,12 +1,13 @@
 //! Real-time VST3 drum instrument playback, MIDI Channel 10 scheduling, live audition,
 //! and lane-to-MIDI routing (parity with v3.1.4 `DrumInstrumentPlayback` / `MainWindow.DrumVst`).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock, mpsc};
 
 use dawsu_audio::LiveAudioSource;
-use dawsu_audio_instruments::{MAX_EVENTS, ShmChannel, ShmEvent};
+use dawsu_audio_instruments::{MAX_EVENTS, ShmChannel};
+pub use dawsu_audio_instruments::ShmEvent;
 use dawsu_foundation::{Hitsound, SampleIdentity, Sound};
 
 /// Fixed MIDI Channel 10 (0-indexed 9) status bytes, matching v3.1.4 `DrumInstrumentPlayback`.
@@ -60,6 +61,7 @@ pub struct DrumVstLiveHandle {
     schedule: Arc<RwLock<Vec<DrumMidiCue>>>,
     preview_tx: mpsc::SyncSender<(u8, u8)>,
     routed_notes: HashMap<SampleIdentity, u8>,
+    muted_vst_lanes: HashSet<SampleIdentity>,
 }
 
 impl DrumVstLiveHandle {
@@ -83,6 +85,7 @@ impl DrumVstLiveHandle {
             schedule: schedule.clone(),
             preview_tx,
             routed_notes: HashMap::new(),
+            muted_vst_lanes: HashSet::new(),
         };
         let source = DrumVstLiveSource {
             processor,
@@ -120,8 +123,27 @@ impl DrumVstLiveHandle {
         &self.routed_notes
     }
 
+    pub fn muted_vst_lanes(&self) -> &HashSet<SampleIdentity> {
+        &self.muted_vst_lanes
+    }
+
+    pub fn is_lane_vst_muted(&self, lane: &SampleIdentity) -> bool {
+        self.muted_vst_lanes.contains(lane)
+    }
+
+    /// Toggles VST3 routing off/on for one lane. Returns `true` when routed to VST3,
+    /// `false` when bypassed back to sample playback.
+    pub fn toggle_lane_vst(&mut self, lane: &SampleIdentity) -> bool {
+        if self.muted_vst_lanes.remove(lane) {
+            true
+        } else {
+            self.muted_vst_lanes.insert(lane.clone());
+            false
+        }
+    }
+
     pub fn routed_note_for(&self, lane: &SampleIdentity) -> Option<u8> {
-        if !self.is_enabled() {
+        if !self.is_enabled() || self.muted_vst_lanes.contains(lane) {
             return None;
         }
         self.routed_notes.get(lane).copied()
