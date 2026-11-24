@@ -524,3 +524,14 @@ test("tick: true responses merge into state.view while preserving all other view
   assert.equal(merged.duration, 5000);
   assert.equal(merged.hasDocument, true);
 });
+
+test("finishing background song decoding refreshes the scene to pull the waveform", async () => {
+  const { calls, evaluate, responses } = await frontend();
+  evaluate("view = { busy: false, hasDocument: true, laneCount: 4, songLoading: true };");
+  responses.push(
+    { busy: false, hasDocument: true, laneCount: 4, songLoading: false },
+    { busy: false, hasDocument: true, laneCount: 4, songLoading: false },
+  );
+  await evaluate("update(null, false)");
+  assert.deepEqual(calls.map(call => call.args.scene), [false, true]);
+});

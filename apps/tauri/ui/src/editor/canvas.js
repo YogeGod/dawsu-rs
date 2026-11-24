@@ -310,7 +310,7 @@ export function attachCanvas(ctx) {
     const scroll = $("scroll");
     const view = state.view;
     return [state.scene, state.scene.waveform, view.activeLane, view.objectLines, view.left, view.right, view.cycle, view.duration,
-      view.offset, view.tool, state.outputProblemList, state.scene.viewStart, state.scene.zoom, state.scene.rowHeight,
+      view.offset, view.tool, !!view.songLoading, state.outputProblemList, state.scene.viewStart, state.scene.zoom, state.scene.rowHeight,
       scroll.scrollTop, scroll.clientHeight, elements.grid.clientWidth, elements.ruler.clientWidth,
       elements.ruler.clientHeight, elements.overview.clientWidth, elements.controller.clientHeight,
       env.window.devicePixelRatio || 1, env.document?.documentElement?.dataset?.uiScale ?? "100",
@@ -1156,6 +1156,15 @@ export function attachCanvas(ctx) {
     const waveformMiddle = (r.height + rulerBandHeight) / 2;
     const waveAmplitude = Math.min(state.waveformHeight, Math.max(0, r.height - rulerBandHeight)) / 2;
     if (state.waveformShown && waveAmplitude > 0) waveform(r.ctx, r.width, waveformMiddle, waveAmplitude, start, r.width / zoom);
+    if (state.view?.songLoading && !state.scene.waveform?.length && r.height > rulerBandHeight + 16) {
+      r.ctx.save();
+      r.ctx.font = "500 11px Inter, system-ui, sans-serif";
+      r.ctx.fillStyle = "rgba(230, 238, 242, 0.45)";
+      r.ctx.textAlign = "left";
+      r.ctx.textBaseline = "middle";
+      r.ctx.fillText("Loading song…", 12, waveformMiddle);
+      r.ctx.restore();
+    }
     if (r.height > rulerBandHeight) drawTimingGrid(r.ctx, start, end, zoom, rulerBandHeight, r.height, false);
     const ngOverlay = visibleViewerOverlay(
       ctx.ui()?.nodeGraphViewer?.(), start, end, xOf, rulerBandHeight + 2, Math.max(0, r.height - rulerBandHeight - 4),

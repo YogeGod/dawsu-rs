@@ -886,9 +886,8 @@ pub enum PointerPhase {
 struct Loaded {
     document: Document,
     project: Option<project::Project>,
-    song: Option<Arc<AudioClip>>,
+    song_path: Option<PathBuf>,
     samples: HashMap<SampleIdentity, Arc<AudioClip>>,
-    waveform: Vec<WaveBin>,
     warnings: Vec<String>,
     recovery: Option<recovery::RecoveryCopy>,
     /// The pending names a record of the outgoing mapset still lists, read by the open job.
@@ -919,6 +918,12 @@ impl PendingSave {
 
 enum JobResult {
     Open(Option<u64>, bool, Result<Loaded, String>),
+    SongReady {
+        generation: u64,
+        song: Option<Arc<AudioClip>>,
+        waveform: Vec<WaveBin>,
+        warning: Option<String>,
+    },
     Save {
         version: u64,
         path: PathBuf,
@@ -975,6 +980,17 @@ pub struct Application {
     pub revert_requested: bool,
     has_original_snapshot: Arc<AtomicBool>,
     pub busy: bool,
+    pub song_loading: bool,
+    pending_play_on_song: bool,
+    song_job: Option<mpsc::Receiver<JobResult>>,
+    song_cancel: Arc<AtomicBool>,
+    song_generation: u64,
+    waveform_revision: u64,
+    pending_locator_right: Option<(f64, Option<f64>, bool)>,
+    #[cfg(test)]
+    song_decode_hold: Option<Arc<AtomicBool>>,
+    #[cfg(test)]
+    started_play_count: usize,
     pub output_review: Option<output::WritePlan>,
     export: export::Slot,
     /// Counts loads and Saves of the open difficulty, for the Export preview's identity.
@@ -1133,6 +1149,17 @@ impl Application {
             revert_requested: false,
             has_original_snapshot: Arc::new(AtomicBool::new(false)),
             busy: false,
+            song_loading: false,
+            pending_play_on_song: false,
+            song_job: None,
+            song_cancel: Arc::new(AtomicBool::new(false)),
+            song_generation: 0,
+            waveform_revision: 0,
+            pending_locator_right: None,
+            #[cfg(test)]
+            song_decode_hold: None,
+            #[cfg(test)]
+            started_play_count: 0,
             output_review: None,
             export: export::Slot::default(),
             document_generation: 0,
@@ -1345,9 +1372,23 @@ impl Application {
         self.document_generation
     }
 
+    /// Counts background song/waveform completions for the open difficulty.
+    pub fn waveform_revision(&self) -> u64 {
+        self.waveform_revision
+    }
+
     /// Closes the difficulty: its pending files no record still lists are forgotten and their
     /// names released, so the numbers free up. Call after `save_session`.
     pub fn close_document(&mut self) {
+        self.song_cancel.store(true, Ordering::Relaxed);
+        self.song_job = None;
+        self.song_loading = false;
+        self.pending_play_on_song = false;
+        self.pending_locator_right = None;
+        self.song_generation += 1;
+        self.song = None;
+        self.waveform.clear();
+        self.waveform_revision += 1;
         // A cleanup still running after a Save finishes first. One still running past the wait
         // finishes in the background, and this close cleans up nothing: the next one does.
         self.poll_sweep(true);
@@ -1686,6 +1727,12 @@ impl Application {
         }
         self.cancel.store(true, Ordering::Relaxed);
         self.cancel = Arc::new(AtomicBool::new(false));
+        self.song_cancel.store(true, Ordering::Relaxed);
+        self.song_cancel = Arc::new(AtomicBool::new(false));
+        self.song_job = None;
+        self.song_loading = false;
+        self.pending_play_on_song = false;
+        self.pending_locator_right = None;
         let cancel = self.cancel.clone();
         let defaults = self.preferences.default_samples.clone();
         let project_root = self.project_root.clone();
@@ -1771,6 +1818,13 @@ impl Application {
     }
     pub fn cancel_job(&mut self) {
         self.cancel.store(true, Ordering::Relaxed);
+        self.song_cancel.store(true, Ordering::Relaxed);
+        self.pending_play_on_song = false;
+        if !self.busy {
+            self.song_loading = false;
+            self.song_job = None;
+            self.pending_locator_right = None;
+        }
         self.status = "Cancelling…".into();
     }
     pub fn collect_retired_audio(&self) -> bool {
@@ -1799,6 +1853,23 @@ impl Application {
         let _ = self.midi_recorder.poll(self.position_ms(), self.is_playing());
         // Before main's job: its arms can return early.
         self.poll_export();
+        let song_result = match self.song_job.as_ref().map(|r| r.try_recv()) {
+            Some(Ok(result)) => {
+                self.song_job = None;
+                Some(result)
+            }
+            Some(Err(mpsc::TryRecvError::Disconnected)) => {
+                self.song_job = None;
+                self.song_loading = false;
+                self.pending_play_on_song = false;
+                self.pending_locator_right = None;
+                None
+            }
+            _ => None,
+        };
+        if let Some(result) = song_result {
+            self.apply_song_job_result(result);
+        }
         if !self.cancel.load(Ordering::Relaxed)
             && let Some(progress) = &self.job_progress
             && let Ok(mut current) = progress.current.try_lock()
@@ -1856,6 +1927,8 @@ impl Application {
                     self.document = Some(loaded.document);
                     // Reviews of the outgoing load must not match this one: history versions restart.
                     self.document_generation += 1;
+                    self.song_generation = self.document_generation;
+                    self.waveform_revision += 1;
                     self.opens += 1;
                     self.output_review = None;
                     self.export.clear();
@@ -1869,12 +1942,17 @@ impl Application {
                     if let Some(d) = self.document.as_mut() {
                         d.composer.protect_normals = self.preferences.protect_hitnormals;
                     }
-                    self.song = loaded.song;
+                    self.song_cancel.store(true, Ordering::Relaxed);
+                    self.song_job = None;
+                    self.song_loading = false;
+                    self.pending_play_on_song = false;
+                    self.pending_locator_right = None;
+                    self.song = None;
                     self.drum.song_loaded();
                     self.node_graph_song_loaded();
                     self.playback_speed = 1.0;
                     self.samples = loaded.samples;
-                    self.waveform = loaded.waveform;
+                    self.waveform.clear();
                     self.warnings = loaded.warnings;
                     self.muted.clear();
                     self.solo.clear();
@@ -1917,6 +1995,13 @@ impl Application {
                         self.unload_drum_vst();
                     }
                     self.sync_audio();
+                    if let Some(song_path) = loaded.song_path {
+                        if settings.locator_right.is_none_or(|r| r > duration) {
+                            self.pending_locator_right =
+                                Some((duration, settings.locator_right, settings.cycle));
+                        }
+                        self.spawn_song_decode(song_path);
+                    }
                     self.status = if restored_id.is_some() {
                         "Recovery copy restored. Save the difficulty to clear the offer.".into()
                     } else {
@@ -1929,6 +2014,9 @@ impl Application {
                     self.checkpoint = Some(checkpoint);
                     self.restored_recovery = restored_id;
                     self.ask_about_set_versions();
+                }
+                JobResult::SongReady { .. } => {
+                    self.apply_song_job_result(result);
                 }
                 JobResult::Open(_, _, Err(e)) => {
                     self.error = Some(e);
@@ -2313,6 +2401,101 @@ impl Application {
             let _ = send.send(job);
         });
     }
+    fn spawn_song_decode(&mut self, song_path: PathBuf) {
+        self.song_cancel.store(true, Ordering::Relaxed);
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.song_cancel = cancel.clone();
+        let (send, receive) = mpsc::channel();
+        self.song_job = Some(receive);
+        self.song_loading = true;
+        let generation = self.song_generation;
+        #[cfg(test)]
+        let hold = self.song_decode_hold.clone();
+        std::thread::spawn(move || {
+            #[cfg(test)]
+            if let Some(hold) = hold {
+                while hold.load(Ordering::Relaxed) && !cancel.load(Ordering::Relaxed) {
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+            }
+            if cancel.load(Ordering::Relaxed) {
+                let _ = send.send(JobResult::SongReady {
+                    generation,
+                    song: None,
+                    waveform: Vec::new(),
+                    warning: None,
+                });
+                return;
+            }
+            let (song, waveform, warning) =
+                match dawsu_audio::decode_with_cancel(&song_path, &|| cancel.load(Ordering::Relaxed)) {
+                    Ok(audio) => {
+                        let wf = if cancel.load(Ordering::Relaxed) {
+                            Vec::new()
+                        } else {
+                            waveform::analyse(&audio)
+                        };
+                        (Some(audio), wf, None)
+                    }
+                    Err(e) => {
+                        if cancel.load(Ordering::Relaxed) {
+                            (None, Vec::new(), None)
+                        } else {
+                            (None, Vec::new(), Some(format!("Song audio unavailable: {e}")))
+                        }
+                    }
+                };
+            let _ = send.send(JobResult::SongReady {
+                generation,
+                song,
+                waveform,
+                warning,
+            });
+        });
+    }
+
+    fn apply_song_job_result(&mut self, result: JobResult) {
+        let JobResult::SongReady { generation, song, waveform, warning } = result else {
+            return;
+        };
+        if generation != self.song_generation || self.document.is_none() {
+            return;
+        }
+        self.song = song;
+        self.waveform = waveform;
+        self.song_loading = false;
+        self.waveform_revision += 1;
+        if let Some(w) = warning {
+            self.warnings.push(w);
+        }
+        if let Some((pre_duration, saved_right, saved_cycle)) = self.pending_locator_right.take()
+            && (self.locator_right - pre_duration).abs() < 1e-6
+        {
+            let duration = self.duration_ms();
+            self.locator_right = saved_right.unwrap_or(duration).clamp(0.0, duration);
+            self.cycle = saved_cycle && self.locator_left < self.locator_right;
+            self.cycle_changed();
+        }
+        self.sync_audio();
+        if std::mem::take(&mut self.pending_play_on_song) {
+            let start = self.playback_start;
+            self.seek(start);
+            self.return_position = self.playback_start;
+            if let Some(a) = &self.audio {
+                a.play(true);
+            }
+            #[cfg(test)]
+            {
+                self.started_play_count += 1;
+            }
+            if self.status == "Loading song…" {
+                self.status = "Difficulty loaded".into();
+            }
+        } else if self.status == "Loading song…" {
+            self.status = "Difficulty loaded".into();
+        }
+    }
+
     pub fn play_pause(&mut self) {
         self.play_pause_from(None);
     }
@@ -2324,6 +2507,22 @@ impl Application {
             self.stop();
             return;
         }
+        if self.song_loading {
+            if self.pending_play_on_song && start.is_none() {
+                self.pending_play_on_song = false;
+                self.status = "Loading song…".into();
+                return;
+            }
+            if let Some(start) = start {
+                self.seek(start);
+            } else {
+                self.playback_start = self.position_ms();
+            }
+            self.return_position = self.playback_start;
+            self.pending_play_on_song = true;
+            self.status = "Loading song…".into();
+            return;
+        }
         if let Some(start) = start {
             self.seek(start);
         } else {
@@ -2333,6 +2532,10 @@ impl Application {
         if let Some(a) = &self.audio {
             a.play(true);
         }
+        #[cfg(test)]
+        {
+            self.started_play_count += 1;
+        }
     }
     /// Plays from `start` whether or not it is already playing (play_pause_from toggles).
     pub fn play_from(&mut self, start: f64) {
@@ -2341,11 +2544,21 @@ impl Application {
         }
         self.seek(start);
         self.return_position = self.playback_start;
+        if self.song_loading {
+            self.pending_play_on_song = true;
+            self.status = "Loading song…".into();
+            return;
+        }
         if let Some(a) = &self.audio {
             a.play(true);
         }
+        #[cfg(test)]
+        {
+            self.started_play_count += 1;
+        }
     }
     pub fn stop(&mut self) {
+        self.pending_play_on_song = false;
         if let Some(a) = &self.audio {
             a.play(false);
             if self.preferences.return_on_stop {
@@ -3631,97 +3844,74 @@ fn load(
             unique_sources.push((source, resolved));
         }
     }
-    let song_name = document.file.general("AudioFilename");
-    let song_result_mutex: Mutex<(Option<Arc<AudioClip>>, Vec<WaveBin>, Option<String>)> =
-        Mutex::new((None, Vec::new(), None));
+    let song_path = match document.file.general("AudioFilename") {
+        Some(name) => match safe_child(folder, &name) {
+            Ok(path) => Some(path),
+            Err(e) => {
+                warnings.push(format!("Song audio unavailable: {e}"));
+                None
+            }
+        },
+        None => None,
+    };
     let samples_mutex: Mutex<(HashMap<SampleIdentity, Arc<AudioClip>>, Vec<String>)> =
         Mutex::new((HashMap::with_capacity(unique_sources.len()), Vec::new()));
 
-    let worker_count = std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(2)
-        .clamp(1, 6);
-    let next_idx = std::sync::atomic::AtomicUsize::new(0);
+    if !unique_sources.is_empty() {
+        let worker_count = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(2)
+            .clamp(1, 6);
+        let next_idx = std::sync::atomic::AtomicUsize::new(0);
 
-    std::thread::scope(|scope| {
-        // Branch 1: decode song audio and compute its FFT waveform concurrently with sample decodes.
-        let song_name_ref = song_name.as_deref();
-        let song_out = &song_result_mutex;
-        let cancel_ref = &cancel;
-        scope.spawn(move || {
-            if let Some(name) = song_name_ref {
-                match safe_child(folder, name)
-                    .and_then(|p| dawsu_audio::decode_with_cancel(&p, &|| cancel_ref.load(Ordering::Relaxed)))
-                {
-                    Ok(audio) => {
-                        let wf = if cancel_ref.load(Ordering::Relaxed) {
-                            Vec::new()
-                        } else {
-                            waveform::analyse(&audio)
+        std::thread::scope(|scope| {
+            // Decode unique hitsound samples in parallel across worker threads; the song audio
+            // and its FFT waveform decode asynchronously after the document opens.
+            let sample_workers = worker_count.min(unique_sources.len());
+            for _ in 0..sample_workers {
+                let sources_ref = &unique_sources;
+                let idx_ref = &next_idx;
+                let out_ref = &samples_mutex;
+                let cancel_ref = &cancel;
+                scope.spawn(move || {
+                    let mut local_clips = Vec::new();
+                    let mut local_warnings = Vec::new();
+                    loop {
+                        if cancel_ref.load(Ordering::Relaxed) {
+                            break;
+                        }
+                        let i = idx_ref.fetch_add(1, Ordering::Relaxed);
+                        let Some((source, resolved)) = sources_ref.get(i) else {
+                            break;
                         };
-                        if let Ok(mut guard) = song_out.lock() {
-                            *guard = (Some(audio), wf, None);
+                        match resolved
+                            .as_ref()
+                            .map_err(Clone::clone)
+                            .and_then(|path| dawsu_audio::decode_with_cancel(path, &|| cancel_ref.load(Ordering::Relaxed)))
+                        {
+                            Ok(clip) => local_clips.push((source.clone(), clip)),
+                            Err(error) => local_warnings.push(error),
                         }
                     }
-                    Err(e) => {
-                        if let Ok(mut guard) = song_out.lock() {
-                            guard.2 = Some(format!("Song audio unavailable: {e}"));
-                        }
+                    if let Ok(mut guard) = out_ref.lock() {
+                        guard.0.extend(local_clips);
+                        guard.1.extend(local_warnings);
                     }
-                }
+                });
             }
         });
-
-        // Branch 2: decode unique hitsound samples in parallel across worker threads.
-        let sample_workers = worker_count.min(unique_sources.len().max(1));
-        for _ in 0..sample_workers {
-            let sources_ref = &unique_sources;
-            let idx_ref = &next_idx;
-            let out_ref = &samples_mutex;
-            let cancel_ref = &cancel;
-            scope.spawn(move || {
-                let mut local_clips = Vec::new();
-                let mut local_warnings = Vec::new();
-                loop {
-                    if cancel_ref.load(Ordering::Relaxed) {
-                        break;
-                    }
-                    let i = idx_ref.fetch_add(1, Ordering::Relaxed);
-                    let Some((source, resolved)) = sources_ref.get(i) else {
-                        break;
-                    };
-                    match resolved
-                        .as_ref()
-                        .map_err(Clone::clone)
-                        .and_then(|path| dawsu_audio::decode_with_cancel(path, &|| cancel_ref.load(Ordering::Relaxed)))
-                    {
-                        Ok(clip) => local_clips.push((source.clone(), clip)),
-                        Err(error) => local_warnings.push(error),
-                    }
-                }
-                if let Ok(mut guard) = out_ref.lock() {
-                    guard.0.extend(local_clips);
-                    guard.1.extend(local_warnings);
-                }
-            });
-        }
-    });
+    }
 
     if cancel.load(Ordering::Relaxed) {
         return Err("Open cancelled".into());
-    }
-    let (song, waveform, song_warning) = song_result_mutex.into_inner().unwrap_or_default();
-    if let Some(w) = song_warning {
-        warnings.push(w);
     }
     let (samples, sample_warnings) = samples_mutex.into_inner().unwrap_or_default();
     warnings.extend(sample_warnings);
     Ok(Loaded {
         document,
         project,
-        song,
+        song_path,
         samples,
-        waveform,
         warnings,
         recovery,
         outgoing_keep: None,
@@ -7769,5 +7959,198 @@ mod shipped_default_sounds {
         assert_eq!(path_for(&slide, &defaults).unwrap(), defaults.join("Soft-SliderSlide.ogg").canonicalize().unwrap());
         let kick = skin(SampleSet::Drum, Sound::Hit(Hitsound::Normal), 0);
         assert_eq!(path_for(&kick, &defaults).unwrap(), defaults.join("drum-hitnormal.wav").canonicalize().unwrap());
+    }
+}
+
+#[cfg(test)]
+mod async_song_decode {
+    use super::*;
+    use dawsu_test_support::Scratch;
+    use std::time::{Duration, Instant};
+
+    fn test_wav(frames: u32) -> Vec<u8> {
+        let data = frames * 2;
+        let mut wav = b"RIFF".to_vec();
+        wav.extend((36 + data).to_le_bytes());
+        wav.extend(b"WAVEfmt \x10\0\0\0\x01\0\x01\0\x80\xbb\0\0\0w\x01\0\x02\0\x10\0data");
+        wav.extend(data.to_le_bytes());
+        for i in 0..frames {
+            let sample = (((i % 100) as f32 / 100.0) * 16_000.0) as i16;
+            wav.extend(sample.to_le_bytes());
+        }
+        wav
+    }
+
+    fn wait_open(app: &mut Application) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while app.busy {
+            app.poll();
+            assert!(Instant::now() < deadline, "open job timed out");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(app.error.is_none(), "{:?}", app.error);
+    }
+
+    fn wait_song(app: &mut Application) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while app.song_loading {
+            app.poll();
+            assert!(Instant::now() < deadline, "song decode job timed out");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn document_is_open_and_editable_before_song_ready_and_pending_play_starts_on_arrival() {
+        let scratch = Scratch::new("async-song-ready");
+        let map = scratch.path("Map.osu");
+        std::fs::write(
+            &map,
+            b"osu file format v14\n[General]\nMode:0\nAudioFilename: song.wav\n[TimingPoints]\n0,500,4,1,1,100,1,0\n[HitObjects]\n256,192,1000,1,0,0:0:0:0:\n",
+        )
+        .unwrap();
+        // 4 seconds of audio so song duration (4000 ms) exceeds document duration (3000 ms).
+        std::fs::write(scratch.path("song.wav"), test_wav(48_000 * 4)).unwrap();
+
+        let hold = Arc::new(AtomicBool::new(true));
+        let mut app = Application::headless();
+        app.song_decode_hold = Some(hold.clone());
+        app.request_open(map);
+        wait_open(&mut app);
+
+        assert!(app.document().is_some());
+        assert!(!app.busy);
+        assert!(app.song_loading);
+        assert!(app.song.is_none());
+        assert!(app.waveform.is_empty());
+        assert_eq!(app.duration_ms(), 3000.0);
+
+        // Edits work immediately while the song is still decoding.
+        let hit_lane = app
+            .document()
+            .unwrap()
+            .composer
+            .hitsounds()
+            .moments()[0]
+            .hits()
+            .next()
+            .unwrap()
+            .clone();
+        app.select_hit(HitKey { moment: 0, lane: hit_lane }, false);
+        app.selection_volume(55, false);
+        assert!(app.is_dirty());
+        assert_eq!(
+            app.document().unwrap().composer.hitsounds().moments()[0].volume(),
+            55
+        );
+
+        // Pressing Play while song_loading queues playback rather than starting out of sync.
+        app.play_pause_from(Some(250.0));
+        assert!(app.pending_play_on_song);
+        assert_eq!(app.started_play_count, 0);
+        assert_eq!(app.status, "Loading song…");
+        assert_eq!(app.position_ms(), 250.0);
+
+        let rev_before = app.waveform_revision();
+        hold.store(false, Ordering::Relaxed);
+        wait_song(&mut app);
+
+        assert!(!app.song_loading);
+        assert!(app.song.is_some());
+        assert!(!app.waveform.is_empty());
+        assert!(app.waveform_revision() > rev_before);
+        assert!(!app.pending_play_on_song);
+        assert_eq!(app.started_play_count, 1);
+        assert!((app.duration_ms() - 4000.0).abs() < 1.0);
+        assert!((app.locator_right - 4000.0).abs() < 1.0);
+        assert!(app.is_dirty());
+    }
+
+    #[test]
+    fn opening_a_second_map_cancels_first_decode_and_drops_late_song_ready() {
+        let scratch = Scratch::new("async-song-generation");
+        let first = scratch.path("First.osu");
+        let second = scratch.path("Second.osu");
+        std::fs::write(
+            &first,
+            b"osu file format v14\n[General]\nMode:0\nAudioFilename: song1.wav\n[TimingPoints]\n0,500,4,1,1,100,1,0\n[HitObjects]\n256,192,1000,1,0,0:0:0:0:\n",
+        )
+        .unwrap();
+        std::fs::write(
+            &second,
+            b"osu file format v14\n[General]\nMode:0\nAudioFilename: song2.wav\n[TimingPoints]\n0,500,4,1,1,100,1,0\n[HitObjects]\n256,192,1000,1,0,0:0:0:0:\n",
+        )
+        .unwrap();
+        std::fs::write(scratch.path("song1.wav"), test_wav(48_000)).unwrap();
+        std::fs::write(scratch.path("song2.wav"), test_wav(48_000 * 2)).unwrap();
+
+        let hold = Arc::new(AtomicBool::new(true));
+        let mut app = Application::headless();
+        app.song_decode_hold = Some(hold.clone());
+        app.request_open(first);
+        wait_open(&mut app);
+        let gen1 = app.document_generation();
+        let first_cancel = app.song_cancel.clone();
+        assert!(!first_cancel.load(Ordering::Relaxed));
+
+        // Release hold as we switch to the second difficulty.
+        hold.store(false, Ordering::Relaxed);
+        app.request_open(second);
+        assert!(first_cancel.load(Ordering::Relaxed), "switching maps cancels old song decode");
+        wait_open(&mut app);
+        wait_song(&mut app);
+
+        let gen2 = app.document_generation();
+        assert_ne!(gen1, gen2);
+        let second_wf_len = app.waveform.len();
+        let second_rev = app.waveform_revision();
+        assert!((app.duration_ms() - 2000.0).abs() < 1.0);
+
+        // Inject a stale SongReady from the first generation and ensure it is dropped cleanly.
+        app.pending_play_on_song = false;
+        let stale_clip = Arc::new(AudioClip {
+            samples: vec![0.5; 48_000 * 5],
+            channels: 1,
+            sample_rate: 48_000,
+        });
+        app.apply_song_job_result(JobResult::SongReady {
+            generation: gen1,
+            song: Some(stale_clip.clone()),
+            waveform: vec![WaveBin { peak: 0.9, low: 0.1, mid: 0.2, high: 0.3, amp_l: 0.9, amp_r: 0.9 }; 3],
+            warning: Some("stale warning".into()),
+        });
+        assert_eq!(app.waveform.len(), second_wf_len);
+        assert_eq!(app.waveform_revision(), second_rev);
+        assert!(!Arc::ptr_eq(app.song.as_ref().unwrap(), &stale_clip));
+        assert!(app.warnings.is_empty());
+    }
+
+    #[test]
+    fn play_from_while_song_loading_waits_and_stop_clears_pending_play() {
+        let scratch = Scratch::new("async-song-stop");
+        let map = scratch.path("Map.osu");
+        std::fs::write(
+            &map,
+            b"osu file format v14\n[General]\nMode:0\nAudioFilename: song.wav\n[TimingPoints]\n0,500,4,1,1,100,1,0\n[HitObjects]\n256,192,1000,1,0,0:0:0:0:\n",
+        )
+        .unwrap();
+        std::fs::write(scratch.path("song.wav"), test_wav(48_000 * 2)).unwrap();
+
+        let hold = Arc::new(AtomicBool::new(true));
+        let mut app = Application::headless();
+        app.song_decode_hold = Some(hold.clone());
+        app.request_open(map);
+        wait_open(&mut app);
+
+        app.play_from(400.0);
+        assert!(app.pending_play_on_song);
+        assert_eq!(app.status, "Loading song…");
+        app.stop();
+        assert!(!app.pending_play_on_song);
+
+        hold.store(false, Ordering::Relaxed);
+        wait_song(&mut app);
+        assert_eq!(app.started_play_count, 0);
+        assert_eq!(app.status, "Difficulty loaded");
     }
 }

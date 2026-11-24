@@ -53,12 +53,14 @@ export function attachIpc(ctx) {
 
   function ensureWaveform(scene) {
     if (!scene || scene.waveform != null || !scene.path || scene.previewKey == null) return;
-    const key = `${scene.path}\0${scene.previewKey}`;
+    const rev = state.view?.waveformRevision ?? 0;
+    const key = `${scene.path}\0${scene.previewKey}\0${rev}`;
     if (waveformFetchKey === key) return;
     waveformFetchKey = key;
     invoke("editor_waveform").then((buf) => {
       const bins = toFloat32Waveform(buf);
-      if (state.scene && state.scene.path === scene.path && state.scene.previewKey === scene.previewKey) {
+      if (state.scene && state.scene.path === scene.path && state.scene.previewKey === scene.previewKey &&
+          (state.view?.waveformRevision ?? 0) === rev) {
         state.scene.waveform = bins;
         ctx.paintSoon();
       }
@@ -74,7 +76,9 @@ export function attachIpc(ctx) {
       : { scene: full, action: action ?? null };
     let next = await invoke("editor_view", request);
     if (!next.fault && !full && (state.view.busy !== next.busy || (!next.tick && (state.view.hasDocument !== next.hasDocument ||
-        state.view.laneCount !== next.laneCount || state.view.showHome !== next.showHome)))) {
+        state.view.laneCount !== next.laneCount || state.view.showHome !== next.showHome ||
+        !!state.view.songLoading !== !!next.songLoading ||
+        (state.view.waveformRevision ?? 0) !== (next.waveformRevision ?? 0))))) {
       // The editor names a Previous or Next bookmark step once, in the first answer.
       const step = next.bookmarkStep;
       next = await invoke("editor_view", { scene: true, action: null });
@@ -238,7 +242,9 @@ export function attachIpc(ctx) {
   function samePollBase(before, next) {
     return Boolean(
       state.scene && !next.scene && lastActionKind === null &&
-      !next.busy && !before.busy && next.hasDocument && !next.showHome &&
+      !next.busy && !before.busy && !!before.songLoading === !!next.songLoading &&
+      (before.waveformRevision ?? 0) === (next.waveformRevision ?? 0) &&
+      next.hasDocument && !next.showHome &&
       !!before.dirty === !!next.dirty && (before.fault ?? null) === (next.fault ?? null) &&
       before.left === next.left && before.right === next.right && before.cycle === next.cycle &&
       before.activeLane === next.activeLane && before.tool === next.tool &&
@@ -298,6 +304,9 @@ export function attachIpc(ctx) {
       }
       next = merged;
     }
+    const waveformChanged = (Boolean(before.songLoading) && !next.songLoading) ||
+      ((before.waveformRevision ?? 0) !== (next.waveformRevision ?? 0));
+    if (waveformChanged) waveformFetchKey = null;
     state.view = next;
     if (!heldPendingSeek) ctx.anchorPlayhead(drawn);
     if (state.view.tool !== previousTool) ctx.refreshToolCursor();
@@ -336,7 +345,7 @@ export function attachIpc(ctx) {
       // the "Difficulty loaded" frame too: the editor sent it once, in the frame before.
       if (state.scene && state.view.scene.path === state.scene.path &&
           state.view.scene.previewKey === state.scene.previewKey) {
-        state.view.scene.waveform ??= state.scene.waveform;
+        if (!waveformChanged) state.view.scene.waveform ??= state.scene.waveform;
         state.view.scene.gameplay ??= state.scene.gameplay;
         state.view.scene.combos ??= state.scene.combos;
         state.view.scene.sections ??= state.scene.sections;
@@ -344,6 +353,9 @@ export function attachIpc(ctx) {
       state.scene = state.view.scene;
       ensureWaveform(state.scene);
       if (unfolded.length) ctx.saveLaneLayout();
+    } else if (waveformChanged && state.scene) {
+      state.scene.waveform = undefined;
+      ensureWaveform(state.scene);
     }
     const pollBase = samePollBase(before, next);
     // Fast path for pure 12-Hz playback polls: skip DOM/menu/dialog churn when only playhead/peaks moved.
