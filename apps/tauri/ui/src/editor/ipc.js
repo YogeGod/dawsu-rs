@@ -69,9 +69,12 @@ export function attachIpc(ctx) {
   }
 
   async function update(action, full = true) {
-    let next = await invoke("editor_view", { scene: full, action: action ?? null });
-    if (!next.fault && !full && (state.view.busy !== next.busy || state.view.hasDocument !== next.hasDocument ||
-        state.view.laneCount !== next.laneCount || state.view.showHome !== next.showHome)) {
+    const request = !action && !full
+      ? { scene: false, action: null, tickRev: state.view?.tickRev ?? null }
+      : { scene: full, action: action ?? null };
+    let next = await invoke("editor_view", request);
+    if (!next.fault && !full && (state.view.busy !== next.busy || (!next.tick && (state.view.hasDocument !== next.hasDocument ||
+        state.view.laneCount !== next.laneCount || state.view.showHome !== next.showHome)))) {
       // The editor names a Previous or Next bookmark step once, in the first answer.
       const step = next.bookmarkStep;
       next = await invoke("editor_view", { scene: true, action: null });
@@ -278,6 +281,22 @@ export function attachIpc(ctx) {
       }
     } else if (state.pendingSeek && next.scene && next.scene.path !== state.pendingSeek.path) {
       state.pendingSeek = null;
+    }
+    if (next.tick === true) {
+      const { tick: _tick, ...tickFields } = next;
+      const merged = { ...state.view, ...tickFields };
+      if (state.scene && before.playing === merged.playing) {
+        state.view = merged;
+        if (!heldPendingSeek) ctx.anchorPlayhead(drawn);
+        ctx.followBookmarkPick();
+        ctx.followPlayhead();
+        ctx.paintSoon(true);
+        if (state.view.playing) ctx.animatePlayback();
+        try { ctx.ui()?.update?.(state.view, state.scene); } catch (error) { (env.console ?? console).error(error); }
+        lastActionKind = null;
+        return;
+      }
+      next = merged;
     }
     state.view = next;
     if (!heldPendingSeek) ctx.anchorPlayhead(drawn);

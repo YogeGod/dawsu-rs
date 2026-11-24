@@ -12,7 +12,7 @@ fn closing_before_a_preset_choice_preserves_onboarding() {
         fs::write(&initial, b"osu file format v14\n\n[Metadata]\nTitle:Launch test\n\n[HitObjects]\n256,192,0,1,0,0:0:0:0:\n").unwrap();
         let first = editor_thread(Some(initial.clone()));
         let startup = serde_json::to_value(
-            ask(&first, |tx| Request::View(false, None, false, tx)).unwrap(),
+            ask(&first, |tx| Request::View(false, None, false, None, tx)).unwrap(),
         )
         .unwrap();
         assert_eq!(startup["firstLaunch"], true);
@@ -33,6 +33,7 @@ fn closing_before_a_preset_choice_preserves_onboarding() {
                         name: "osu!".into(),
                     }),
                     false,
+                    None,
                     tx,
                 )
             })
@@ -43,7 +44,7 @@ fn closing_before_a_preset_choice_preserves_onboarding() {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         loop {
             let view = serde_json::to_value(
-                ask(&second, |tx| Request::View(false, None, false, tx)).unwrap(),
+                ask(&second, |tx| Request::View(false, None, false, None, tx)).unwrap(),
             )
             .unwrap();
             if view["hasDocument"] == true {
@@ -66,7 +67,7 @@ fn closing_before_a_preset_choice_preserves_onboarding() {
         fs::write(&preferences, serde_json::to_vec(&persisted).unwrap()).unwrap();
         let reopened = editor_thread(None);
         let view = serde_json::to_value(
-            ask(&reopened, |tx| Request::View(false, None, false, tx)).unwrap(),
+            ask(&reopened, |tx| Request::View(false, None, false, None, tx)).unwrap(),
         )
         .unwrap();
         assert!((view["main"].as_f64().unwrap() - 0.2).abs() < 1e-6);

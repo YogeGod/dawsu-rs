@@ -36,7 +36,7 @@ use tauri::{Emitter, Manager, State};
 #[cfg(feature = "recovery-smoke")]
 const RECOVERY_SMOKE_DATA: &str = "DAWSU_RECOVERY_SMOKE_DATA";
 
-#[derive(Clone, Copy, Default, Deserialize, serde::Serialize)]
+#[derive(Clone, Copy, Default, PartialEq, Eq, Hash, Deserialize, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 enum PlaybackStart {
     #[default]
@@ -1358,9 +1358,22 @@ fn map_preview(app: &Application, map: &Path) -> Result<Value, String> {
 }
 
 #[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ViewTickSnapshot {
+    tick: bool,
+    rev: u64,
+    position: f64,
+    playing: bool,
+    busy: bool,
+    peaks: PeaksSnapshot,
+    musical_position: Option<String>,
+}
+
+#[derive(serde::Serialize)]
 #[serde(untagged)]
 enum ViewResponse {
     View(Box<ViewSnapshot>),
+    Tick(ViewTickSnapshot),
     Fault { fault: String },
     NameTaken { #[serde(rename = "nameTaken")] name_taken: String },
 }
@@ -1715,6 +1728,8 @@ struct ViewSnapshot {
     speed: f64,
     status: String,
     tab_routes: Vec<(bool, bool, bool, bool)>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tick_rev: Option<u64>,
     tool: String,
     warnings: Vec<String>,
 }
@@ -1728,10 +1743,8 @@ fn snapshot(app: &Application, include_scene: bool) -> Value {
     serde_json::to_value(snapshot_view(app, include_scene)).unwrap()
 }
 
-fn snapshot_with_static(app: &Application, include_scene: bool, include_static: bool) -> ViewSnapshot {
-    let document = app.document();
-    let position = app.position_ms();
-    let musical_position = document.map(|document| {
+fn musical_position_text(app: &Application, position: f64) -> Option<String> {
+    app.document().map(|document| {
         let composer = &document.composer;
         let time = SongTime::from_ms(position);
         let tempo = composer.tempo.section_at(time);
@@ -1746,7 +1759,13 @@ fn snapshot_with_static(app: &Application, include_scene: bool, include_static: 
             "{}.{}.{:03} · {:.1} BPM · {numerator}/{denominator} · {snap}",
             beat.bar, beat.beat, tick.min(479), 60_000.0 / tempo.beat_length_ms,
         )
-    });
+    })
+}
+
+fn snapshot_with_static(app: &Application, include_scene: bool, include_static: bool) -> ViewSnapshot {
+    let document = app.document();
+    let position = app.position_ms();
+    let musical_position = musical_position_text(app, position);
     let scene = if include_scene {
         document.map(|d| {
             let c = &d.composer;
@@ -2063,6 +2082,7 @@ fn snapshot_with_static(app: &Application, include_scene: bool, include_static: 
         speed: app.playback_speed,
         status: app.status.clone(),
         tab_routes,
+        tick_rev: None,
         tool: format!("{:?}", app.tool()),
         warnings: app.warnings.clone(),
     }
@@ -2079,8 +2099,9 @@ fn encode_waveform_bytes(bins: &[dawsu_application::WaveBin]) -> Vec<u8> {
 }
 
 enum Request {
-    /// Scene wanted, the action, and `fresh`: the screen lacks the static map data, so send it again.
-    View(bool, Option<Action>, bool, mpsc::Sender<ViewResponse>),
+    /// Scene wanted, the action, `fresh` (the screen lacks the static map data), and `tick_rev`
+    /// (the last full view's revision for slim playback polls).
+    View(bool, Option<Action>, bool, Option<u64>, mpsc::Sender<ViewResponse>),
     Waveform(mpsc::Sender<Result<Vec<u8>, String>>),
     Help(mpsc::Sender<Result<Value, String>>),
     AudioOutputs(Option<OutputBackend>, mpsc::Sender<Value>),
@@ -2301,6 +2322,226 @@ fn answer_export(app: &mut Application, fault: &mut Option<String>, cache: &mut 
     }
 }
 
+#[derive(Default)]
+struct ViewTickCache {
+    rev: u64,
+    last_non_playback_sig: Option<u64>,
+    drums_rev: u64,
+    static_scene_key: Option<(u64, usize)>,
+    last_hs_mode: bool,
+}
+
+impl ViewTickCache {
+    fn invalidate(&mut self) {
+        self.rev += 1;
+        self.last_non_playback_sig = None;
+    }
+}
+
+fn non_playback_signature(
+    app: &Application,
+    home: &home::Route,
+    playback_start: PlaybackStart,
+    drums_rev: u64,
+) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    app.status.hash(&mut hasher);
+    app.error.hash(&mut hasher);
+    app.warnings.hash(&mut hasher);
+    app.busy.hash(&mut hasher);
+    app.is_playing().hash(&mut hasher);
+    let doc = app.document();
+    doc.is_some().hash(&mut hasher);
+    if let Some(d) = doc {
+        app.document_generation().hash(&mut hasher);
+        d.composer.history.version().hash(&mut hasher);
+        d.composer.lanes.len().hash(&mut hasher);
+        d.hs_mode.hash(&mut hasher);
+        d.composer.snap_enabled.hash(&mut hasher);
+        d.composer.spacing.beats().hash(&mut hasher);
+        d.composer.spacing.divisions().hash(&mut hasher);
+        d.path.hash(&mut hasher);
+    }
+    home.visible().hash(&mut hasher);
+    home.pending().hash(&mut hasher);
+    app.is_dirty().hash(&mut hasher);
+    std::mem::discriminant(&app.tool()).hash(&mut hasher);
+    std::mem::discriminant(&app.ramp_shape()).hash(&mut hasher);
+    app.active_lane.hash(&mut hasher);
+    app.locator_left.to_bits().hash(&mut hasher);
+    app.locator_right.to_bits().hash(&mut hasher);
+    app.cycle.hash(&mut hasher);
+    app.preferences.follow.hash(&mut hasher);
+    app.preferences.return_on_stop.hash(&mut hasher);
+    app.preferences.audition.hash(&mut hasher);
+    app.preferences.object_lines.hash(&mut hasher);
+    app.preferences.classic_browser.hash(&mut hasher);
+    app.song_offset.to_bits().hash(&mut hasher);
+    app.playback_speed.to_bits().hash(&mut hasher);
+    app.preferences.song_gain.to_bits().hash(&mut hasher);
+    app.preferences.master_gain.to_bits().hash(&mut hasher);
+    app.preferences.hitsound_gain.to_bits().hash(&mut hasher);
+    app.preferences.song_muted.hash(&mut hasher);
+    app.preferences.hitsounds_muted.hash(&mut hasher);
+    app.song_solo().hash(&mut hasher);
+    app.hitsounds_solo().hash(&mut hasher);
+    app.duration_ms().to_bits().hash(&mut hasher);
+    app.waveform.len().hash(&mut hasher);
+    let problems = app.output_problems();
+    problems.len().hash(&mut hasher);
+    for problem in &problems {
+        problem.target.hash(&mut hasher);
+        problem.timeline.hash(&mut hasher);
+        problem.time.to_bits().hash(&mut hasher);
+        problem.message.hash(&mut hasher);
+    }
+    (app.save_problem_review_requested() && !problems.is_empty()).hash(&mut hasher);
+    app.save_review_files().as_ref().map(Vec::len).hash(&mut hasher);
+    app.sound_set_prompt_open().hash(&mut hasher);
+    let prompts = app.sound_set_prompts();
+    prompts.len().hash(&mut hasher);
+    for prompt in prompts {
+        prompt.set_id.hash(&mut hasher);
+        prompt.placements.hash(&mut hasher);
+        prompt.edited_keep_files.hash(&mut hasher);
+    }
+    app.drum_vst.as_ref().map(|v| (&v.instance_id, v.is_enabled(), v.routed_notes().len())).hash(&mut hasher);
+    app.revert_requested.hash(&mut hasher);
+    app.output_review.as_ref().map(|p| (&p.label, p.files.len(), p.details.len())).hash(&mut hasher);
+    app.requested_edit().hash(&mut hasher);
+    app.bookmark_step.map(f64::to_bits).hash(&mut hasher);
+    app.help_requested.hash(&mut hasher);
+    app.requests.iter().any(|request| matches!(request, PlatformRequest::OpenMap)).hash(&mut hasher);
+    app.pending_open.is_some().hash(&mut hasher);
+    app.first_launch.hash(&mut hasher);
+    app.has_original_snapshot().hash(&mut hasher);
+    app.device_name().hash(&mut hasher);
+    app.quantize_strength().to_bits().hash(&mut hasher);
+    app.preferences.key_preset.hash(&mut hasher);
+    app.preferences.hitsound_library.hash(&mut hasher);
+    app.preferences.songs_folder.hash(&mut hasher);
+    app.preferences.show_browser.hash(&mut hasher);
+    app.preferences.show_inspector.hash(&mut hasher);
+    app.preferences.show_controller.hash(&mut hasher);
+    app.preferences.lane_names.hash(&mut hasher);
+    app.preferences.recent.len().hash(&mut hasher);
+    app.preferences.recent.first().hash(&mut hasher);
+    app.preferences.preview_window.map(|p| p.open).hash(&mut hasher);
+    playback_start.hash(&mut hasher);
+    drums_rev.hash(&mut hasher);
+    hasher.finish()
+}
+
+fn decorate_and_stamp_view(
+    app: &Application,
+    home: &home::Route,
+    drums: &drum_view::DrumView,
+    playback_start: PlaybackStart,
+    cache: &mut ViewTickCache,
+    want_scene: bool,
+) -> ViewResponse {
+    let mut view = snapshot_view(app, want_scene);
+    home.add_status(&mut view);
+    drums.decorate(app, &mut view);
+    view.playback_start = Some(playback_start);
+    cache.rev += 1;
+    cache.last_non_playback_sig = Some(non_playback_signature(app, home, playback_start, cache.drums_rev));
+    view.tick_rev = Some(cache.rev);
+    ViewResponse::View(Box::new(view))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn next_view_response(
+    app: &mut Application,
+    home: &mut home::Route,
+    drums: &drum_view::DrumView,
+    playback_start: &mut PlaybackStart,
+    cache: &mut ViewTickCache,
+    pending_initial_open: &mut Option<PathBuf>,
+    scene: bool,
+    action: Option<Action>,
+    fresh: bool,
+    tick_rev: Option<u64>,
+) -> ViewResponse {
+    let had_action = action.is_some();
+    match action {
+        Some(Action::Open { path }) if app.first_launch => {
+            if map_path(&path) {
+                *pending_initial_open = Some(path);
+            }
+        }
+        Some(action) => {
+            if let Some(action) = home.handle(action, app) {
+                action.run_with_start(app, playback_start);
+            }
+        }
+        None => {}
+    }
+    if !app.first_launch
+        && let Some(path) = pending_initial_open.take()
+    {
+        app.request_open(path);
+    }
+    app.poll();
+    home.settle(app);
+
+    if !had_action && !scene && !fresh && tick_rev == Some(cache.rev) {
+        let sig = non_playback_signature(app, home, *playback_start, cache.drums_rev);
+        if cache.last_non_playback_sig == Some(sig) {
+            let position = app.position_ms();
+            let (master_peak, song_peak, hitsound_peak) = app.audio_peaks();
+            return ViewResponse::Tick(ViewTickSnapshot {
+                tick: true,
+                rev: cache.rev,
+                position,
+                playing: app.is_playing(),
+                busy: app.busy,
+                peaks: PeaksSnapshot {
+                    hitsounds: f64::from(hitsound_peak),
+                    master: f64::from(master_peak),
+                    song: f64::from(song_peak),
+                },
+                musical_position: musical_position_text(app, position),
+            });
+        }
+    }
+
+    let want_scene = scene && !home.visible();
+    let current_hs_mode = app.document().is_some_and(|d| d.hs_mode);
+    let include_static = if want_scene && app.document().is_some() {
+        let key = (app.document_generation(), app.waveform.len());
+        let changed = fresh || cache.static_scene_key != Some(key) || cache.last_hs_mode != current_hs_mode;
+        cache.static_scene_key = Some(key);
+        cache.last_hs_mode = current_hs_mode;
+        changed
+    } else {
+        if home.visible() || app.document().is_none() {
+            cache.static_scene_key = None;
+            cache.last_hs_mode = false;
+        }
+        false
+    };
+    let mut view = snapshot_with_static(app, want_scene, include_static);
+    home.add_status(&mut view);
+    drums.decorate(app, &mut view);
+    view.playback_start = Some(*playback_start);
+    if let Some(request @ ("filter" | "newDiff" | "openFolder" | "importOsz" | "openHitsoundFolder" | "reviewOutput")) = app.requested_edit() {
+        view.shortcut_action = Some(request);
+        view.edit_dialog = None;
+        app.cancel_timeline_edit();
+    }
+    view.shortcut_help = Some(std::mem::take(&mut app.help_requested));
+    // The Inspector's bookmark pick follows Previous and Next, from a button, menu or key.
+    view.bookmark_step = Some(app.bookmark_step.take());
+    view.shortcut_open = Some(std::mem::take(&mut app.requests).iter()
+        .any(|request| matches!(request, PlatformRequest::OpenMap)));
+    cache.rev += 1;
+    cache.last_non_playback_sig = Some(non_playback_signature(app, home, *playback_start, cache.drums_rev));
+    view.tick_rev = Some(cache.rev);
+    ViewResponse::View(Box::new(view))
+}
+
 fn editor_thread(initial: Option<PathBuf>) -> Editor {
     let (send, receive) = mpsc::channel();
     std::thread::spawn(move || {
@@ -2315,64 +2556,27 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
         let mut playback_start = PlaybackStart::default();
         let mut home = home::Route::default();
         let mut drums = drum_view::DrumView::for_editor();
-        let mut static_scene_key: Option<(u64, usize)> = None;
-        let mut last_hs_mode = false;
+        let mut tick_cache = ViewTickCache::default();
         let mut pending_initial_open = initial.filter(|path| map_path(path));
         if !app.first_launch && let Some(path) = pending_initial_open.take() {
             let _ = guard(&mut app, &mut fault, |app| app.request_open(path));
         }
         loop {
             match receive.recv_timeout(Duration::from_millis(25)) {
-                Ok(Request::View(scene, action, fresh, response)) => {
+                Ok(Request::View(scene, action, fresh, tick_rev, response)) => {
                     let view = guard(&mut app, &mut fault, |app| {
-                        match action {
-                            Some(Action::Open { path }) if app.first_launch => {
-                                if map_path(&path) {
-                                    pending_initial_open = Some(path);
-                                }
-                            }
-                            Some(action) => {
-                                if let Some(action) = home.handle(action, app) {
-                                    action.run_with_start(app, &mut playback_start);
-                                }
-                            }
-                            None => {}
-                        }
-                        if !app.first_launch && let Some(path) = pending_initial_open.take() {
-                            app.request_open(path);
-                        }
-                        app.poll();
-                        home.settle(app);
-                        let want_scene = scene && !home.visible();
-                        let current_hs_mode = app.document().is_some_and(|d| d.hs_mode);
-                        let include_static = if want_scene && app.document().is_some() {
-                            let key = (app.document_generation(), app.waveform.len());
-                            let changed = fresh || static_scene_key != Some(key) || last_hs_mode != current_hs_mode;
-                            static_scene_key = Some(key);
-                            last_hs_mode = current_hs_mode;
-                            changed
-                        } else {
-                            if home.visible() || app.document().is_none() {
-                                static_scene_key = None;
-                                last_hs_mode = false;
-                            }
-                            false
-                        };
-                        let mut view = snapshot_with_static(app, want_scene, include_static);
-                        home.add_status(&mut view);
-                        drums.decorate(app, &mut view);
-                        view.playback_start = Some(playback_start);
-                        if let Some(request @ ("filter" | "newDiff" | "openFolder" | "importOsz" | "openHitsoundFolder" | "reviewOutput")) = app.requested_edit() {
-                            view.shortcut_action = Some(request);
-                            view.edit_dialog = None;
-                            app.cancel_timeline_edit();
-                        }
-                        view.shortcut_help = Some(std::mem::take(&mut app.help_requested));
-                        // The Inspector's bookmark pick follows Previous and Next, from a button, menu or key.
-                        view.bookmark_step = Some(app.bookmark_step.take());
-                        view.shortcut_open = Some(std::mem::take(&mut app.requests).iter()
-                            .any(|request| matches!(request, PlatformRequest::OpenMap)));
-                        ViewResponse::View(Box::new(view))
+                        next_view_response(
+                            app,
+                            &mut home,
+                            &drums,
+                            &mut playback_start,
+                            &mut tick_cache,
+                            &mut pending_initial_open,
+                            scene,
+                            action,
+                            fresh,
+                            tick_rev,
+                        )
                     })
                     .unwrap_or_else(|message| ViewResponse::Fault { fault: message });
                     let _ = response.send(view);
@@ -2394,6 +2598,9 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                         if import { app.import_shortcuts(&path) } else { app.export_shortcuts(&path) }
                     })
                     .and_then(|result| result);
+                    if import && result.is_ok() {
+                        tick_cache.invalidate();
+                    }
                     let _ = response.send(result);
                 }
                 Ok(Request::AudioOutputs(requested, response)) => {
@@ -2445,11 +2652,7 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                         } else {
                             app.preferences.songs_folder = folder;
                             app.save_preferences();
-                            let mut view = snapshot_view(app, false);
-                            home.add_status(&mut view);
-                            drums.decorate(app, &mut view);
-                            view.playback_start = Some(playback_start);
-                            Ok(ViewResponse::View(Box::new(view)))
+                            Ok(decorate_and_stamp_view(app, &home, &drums, playback_start, &mut tick_cache, false))
                         }
                     })
                     .and_then(|result| result);
@@ -2473,11 +2676,7 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                         }
                         app.preferences.hitsound_library = Some(folder);
                         app.save_preferences();
-                        let mut view = snapshot_view(app, false);
-                        home.add_status(&mut view);
-                        drums.decorate(app, &mut view);
-                        view.playback_start = Some(playback_start);
-                        Ok(ViewResponse::View(Box::new(view)))
+                        Ok(decorate_and_stamp_view(app, &home, &drums, playback_start, &mut tick_cache, false))
                     })
                     .and_then(|result| result);
                     let _ = response.send(result);
@@ -2505,13 +2704,7 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                 }
                 Ok(Request::SaveSoundSet(map, name, response)) => {
                     let result = guard(&mut app, &mut fault, |app| match app.save_sound_set_from_selection(&map, &name) {
-                        Ok(()) => {
-                            let mut view = snapshot_view(app, !home.visible());
-                            home.add_status(&mut view);
-                            drums.decorate(app, &mut view);
-                            view.playback_start = Some(playback_start);
-                            Ok(ViewResponse::View(Box::new(view)))
-                        }
+                        Ok(()) => Ok(decorate_and_stamp_view(app, &home, &drums, playback_start, &mut tick_cache, !home.visible())),
                         Err(dawsu_application::SaveSetError::NameTaken(message)) => {
                             Ok(ViewResponse::NameTaken { name_taken: message })
                         }
@@ -2553,11 +2746,8 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                             None => drums.toggle(app, &map, on),
                         }.map(|()| {
                             app.set_drum_vst_routing(drums.routed_midi_notes(app));
-                            let mut view = snapshot_view(app, !home.visible());
-                            home.add_status(&mut view);
-                            drums.decorate(app, &mut view);
-                            view.playback_start = Some(playback_start);
-                            ViewResponse::View(Box::new(view))
+                            tick_cache.drums_rev += 1;
+                            decorate_and_stamp_view(app, &home, &drums, playback_start, &mut tick_cache, !home.visible())
                         })
                     })
                     .and_then(|result| result);
@@ -2589,11 +2779,8 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                             }
                         }.map(|()| {
                             app.set_drum_vst_routing(drums.routed_midi_notes(app));
-                            let mut view = snapshot_view(app, !home.visible());
-                            home.add_status(&mut view);
-                            drums.decorate(app, &mut view);
-                            view.playback_start = Some(playback_start);
-                            ViewResponse::View(Box::new(view))
+                            tick_cache.drums_rev += 1;
+                            decorate_and_stamp_view(app, &home, &drums, playback_start, &mut tick_cache, !home.visible())
                         })
                     })
                     .and_then(|result| result);
@@ -2633,9 +2820,15 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                         })
                         .and_then(|result| result)
                     };
+                    if result.is_ok() {
+                        tick_cache.invalidate();
+                    }
                     let _ = response.send(result);
                 }
                 Ok(request @ (Request::ExportView(_) | Request::ExportPreview(..) | Request::ExportRun(..))) => {
+                    if matches!(request, Request::ExportRun(..)) {
+                        tick_cache.invalidate();
+                    }
                     answer_export(&mut app, &mut fault, &mut export_cache, request);
                 }
                 Ok(Request::ExportClose) => {
@@ -2645,6 +2838,7 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                 }
                 Ok(Request::Drum(request, response)) => {
                     let result = guard(&mut app, &mut fault, |app| drum_window::answer(app, request)).and_then(|result| result);
+                    tick_cache.invalidate();
                     let _ = response.send(result);
                 }
                 Ok(Request::DrumClose) => {
@@ -2671,6 +2865,7 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                         app.apply_midi_import(&options, drum_map.as_ref())
                     })
                     .and_then(|r| r);
+                    tick_cache.invalidate();
                     let _ = response.send(result);
                 }
                 Ok(Request::ExportMidiFile(path, response)) => {
@@ -2684,11 +2879,13 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                         app.toggle_midi_recording(port_index, drum_map.as_ref(), snap)
                     })
                     .and_then(|r| r);
+                    tick_cache.invalidate();
                     let _ = response.send(result);
                 }
                 Ok(Request::Vst3Scan(response)) => {
                     let result = guard(&mut app, &mut fault, |app| app.scan_vst3_plugins(&[]))
                         .and_then(|r| r);
+                    tick_cache.invalidate();
                     let _ = response.send(result);
                 }
                 Ok(Request::DrumVstAction(payload, response)) => {
@@ -2696,16 +2893,20 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                         handle_drum_vst_action(app, &drums, &payload)
                     })
                     .and_then(|r| r);
+                    tick_cache.drums_rev += 1;
+                    tick_cache.invalidate();
                     let _ = response.send(result);
                 }
                 Ok(Request::KeysoundsAction(payload, response)) => {
                     let result = guard(&mut app, &mut fault, |app| app.keysounds_action(&payload))
                         .and_then(|r| r);
+                    tick_cache.invalidate();
                     let _ = response.send(result);
                 }
                 Ok(Request::RevertMapsetToOriginal(response)) => {
                     let result = guard(&mut app, &mut fault, |app| app.revert_mapset_to_original())
                         .and_then(|r| r);
+                    tick_cache.invalidate();
                     let _ = response.send(result);
                 }
                 Ok(Request::NodeGraphView(response)) => {
@@ -2722,6 +2923,7 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                         serde_json::to_value(app.node_graph_view()).map_err(|e| e.to_string())
                     })
                     .and_then(|result| result);
+                    tick_cache.invalidate();
                     let _ = response.send(result);
                 }
                 Ok(Request::NodeGraphExportJson(response)) => {
@@ -2770,8 +2972,9 @@ fn editor_view(
     scene: bool,
     action: Option<Action>,
     fresh: Option<bool>,
+    tick_rev: Option<u64>,
 ) -> Result<ViewResponse, String> {
-    let view = ask(&state, |tx| Request::View(scene, action, fresh.unwrap_or(false), tx))?;
+    let view = ask(&state, |tx| Request::View(scene, action, fresh.unwrap_or(false), tick_rev, tx))?;
     if let ViewResponse::View(snapshot) = &view {
         if let Some(scene_val) = &snapshot.scene {
             let map_title = scene_val.title.as_str();
@@ -3292,7 +3495,7 @@ fn pick_map(
         dialog.add_filter("osu! difficulty or mapset", &["osu", "osz"]).pick_file()
     };
     ask(&state, |tx| {
-        Request::View(true, selected.map(|path| Action::Open { path }), false, tx)
+        Request::View(true, selected.map(|path| Action::Open { path }), false, None, tx)
     })
 }
 
@@ -3305,7 +3508,7 @@ fn pick_sample(window: tauri::WebviewWindow, state: State<'_, Editor>, target: S
         dialog = dialog.set_directory(folder);
     }
     let selected = dialog.pick_file();
-    ask(&state, |tx| Request::View(true, selected.map(|path| Action::ReplaceSample { target, path, mapset: false }), false, tx))
+    ask(&state, |tx| Request::View(true, selected.map(|path| Action::ReplaceSample { target, path, mapset: false }), false, None, tx))
 }
 
 /// The library list for Edit > Place sound set: names, ids and counts only.
@@ -3365,7 +3568,7 @@ fn pick_sound_set(window: tauri::WebviewWindow, state: State<'_, Editor>, map: P
         .set_title("Place sound set")
         .add_filter("dawsu! sound set", &["dawsuset"])
         .pick_file();
-    ask(&state, |tx| Request::View(true, selected.map(|path| Action::PlaceSoundSet { map, path }), false, tx))
+    ask(&state, |tx| Request::View(true, selected.map(|path| Action::PlaceSoundSet { map, path }), false, None, tx))
 }
 
 fn songs_dialog(window: &tauri::WebviewWindow, state: &Editor) -> Result<rfd::FileDialog, String> {

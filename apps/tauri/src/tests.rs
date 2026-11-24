@@ -3533,3 +3533,91 @@ fn typed_scene_matches_legacy_json_bytes_exactly() {
         );
     }
 }
+
+#[test]
+fn slim_tick_polls_return_tick_when_unchanged_and_full_view_on_status_warning_or_job_change() {
+    let fixture = Fixture::new("slim-tick");
+    let map = fixture.0.join("map.osu");
+    fs::write(
+        &map,
+        "osu file format v14\n[General]\nMode:0\n[TimingPoints]\n0,500,4,1,0,100,1,0\n[HitObjects]\n256,192,500,1,0,0:0:0:0:\n",
+    )
+    .unwrap();
+    let mut app = Application::headless();
+    open(&mut app, &map);
+    let mut home = super::home::Route::default();
+    let drums = super::drum_view::DrumView::for_editor();
+    let mut playback_start = PlaybackStart::default();
+    let mut cache = super::ViewTickCache::default();
+    let mut pending = None;
+
+    let initial = serde_json::to_value(super::next_view_response(
+        &mut app, &mut home, &drums, &mut playback_start, &mut cache, &mut pending,
+        true, None, false, None,
+    ))
+    .unwrap();
+    assert!(initial.get("tick").is_none());
+    assert!(initial["scene"].is_object());
+    let rev1 = initial["tickRev"].as_u64().unwrap();
+
+    let tick1 = serde_json::to_value(super::next_view_response(
+        &mut app, &mut home, &drums, &mut playback_start, &mut cache, &mut pending,
+        false, None, false, Some(rev1),
+    ))
+    .unwrap();
+    assert_eq!(tick1["tick"], true);
+    assert_eq!(tick1["rev"], rev1);
+    assert!(tick1.get("scene").is_none());
+    assert!(tick1["peaks"]["master"].is_number());
+    assert!(tick1["musicalPosition"].is_string());
+
+    // Status change invalidates the non-playback signature -> returns full view with bumped tickRev.
+    app.status = "Saved map".into();
+    let after_status = serde_json::to_value(super::next_view_response(
+        &mut app, &mut home, &drums, &mut playback_start, &mut cache, &mut pending,
+        false, None, false, Some(rev1),
+    ))
+    .unwrap();
+    assert!(after_status.get("tick").is_none());
+    assert_eq!(after_status["status"], "Saved map");
+    let rev2 = after_status["tickRev"].as_u64().unwrap();
+    assert!(rev2 > rev1);
+
+    let tick2 = serde_json::to_value(super::next_view_response(
+        &mut app, &mut home, &drums, &mut playback_start, &mut cache, &mut pending,
+        false, None, false, Some(rev2),
+    ))
+    .unwrap();
+    assert_eq!(tick2["tick"], true);
+    assert_eq!(tick2["rev"], rev2);
+
+    // Warning change invalidates the signature -> returns full view.
+    app.warnings.push("Missing sample".into());
+    let after_warning = serde_json::to_value(super::next_view_response(
+        &mut app, &mut home, &drums, &mut playback_start, &mut cache, &mut pending,
+        false, None, false, Some(rev2),
+    ))
+    .unwrap();
+    assert!(after_warning.get("tick").is_none());
+    assert_eq!(after_warning["warnings"], serde_json::json!(["Missing sample"]));
+    let rev3 = after_warning["tickRev"].as_u64().unwrap();
+    assert!(rev3 > rev2);
+
+    let tick3 = serde_json::to_value(super::next_view_response(
+        &mut app, &mut home, &drums, &mut playback_start, &mut cache, &mut pending,
+        false, None, false, Some(rev3),
+    ))
+    .unwrap();
+    assert_eq!(tick3["tick"], true);
+
+    // Job busy flag change invalidates the signature -> returns full view.
+    app.busy = true;
+    let after_busy = serde_json::to_value(super::next_view_response(
+        &mut app, &mut home, &drums, &mut playback_start, &mut cache, &mut pending,
+        false, None, false, Some(rev3),
+    ))
+    .unwrap();
+    assert!(after_busy.get("tick").is_none());
+    assert_eq!(after_busy["busy"], true);
+    assert!(after_busy["tickRev"].as_u64().unwrap() > rev3);
+}
