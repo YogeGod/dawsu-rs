@@ -79,8 +79,8 @@ use dawsu_editor_composer::{Composer, HitKey};
 use dawsu_foundation::safe_write::BackupPolicy;
 use dawsu_foundation::{Hitsound, SampleIdentity, SampleSet, SliderSound, SongTime, Sound};
 use dawsu_hitsounding::{
-    Compiled, Decompiled, Hitsounds, Lane, LaneSource, Placement, SaveProblem, compile, cue_list,
-    decompile,
+    Compiled, Decompiled, Hitsounds, Lane, LaneSource, Placement, SaveProblem, compile,
+    cue_list_filtered, decompile,
 };
 use dawsu_osu_format::{LineId, OsuFile, SaveOutcome, check_map_path, find_case_insensitive, list_folder};
 use serde::{Deserialize, Serialize};
@@ -3140,23 +3140,20 @@ impl Application {
         }
         let composer = &d.composer;
         let hits = composer.hitsounds();
-        // Per-hit mute is keyed by moment and lane. Apply it before the cue list
-        // resolves multiple lanes to possibly the same physical sample.
-        let mut filtered;
-        let audible = if composer.listen_muted.is_empty() {
-            hits
-        } else {
-            filtered = hits.clone();
-            for key in &composer.listen_muted {
-                if key.moment < filtered.moments().len() {
-                    filtered.remove_hit(dawsu_hitsounding::MomentId(key.moment), &key.lane);
-                }
-            }
-            &filtered
-        };
+        // Per-hit mute is keyed by moment and lane. Apply it before cue_list_filtered resolves
+        // multiple lanes to possibly the same physical sample, without cloning `hits`.
+        let muted_set: Option<std::collections::HashSet<(usize, &SampleIdentity)>> =
+            (composer.listen_muted.len() > 16)
+                .then(|| composer.listen_muted.iter().map(|k| (k.moment, &k.lane)).collect());
         let mut sounds = Vec::new();
         let mut midi_cues = Vec::new();
-        for cue in cue_list(audible, &self.muted, &self.solo) {
+        for cue in cue_list_filtered(hits, &self.muted, &self.solo, |moment, lane| {
+            if let Some(set) = &muted_set {
+                set.contains(&(moment, lane))
+            } else {
+                composer.listen_muted.iter().any(|k| k.moment == moment && &k.lane == lane)
+            }
+        }) {
             let lane_gain = self.lane_gain(cue.sample());
             if let Some(vst) = &self.drum_vst
                 && let Some(note) = vst.routed_note_for(cue.sample())
