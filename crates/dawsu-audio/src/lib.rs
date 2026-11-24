@@ -153,6 +153,21 @@ impl AudioClip {
         a + (b - a) * part
     }
 }
+/// Maximum number of samples pre-reserved from container metadata so a
+/// corrupted header frame count cannot trigger an OOM panic.
+const MAX_DECODE_PRE_RESERVE_SAMPLES: usize = 120_000_000;
+
+fn decode_pre_reserve_samples(num_frames: Option<u64>, channels: usize) -> usize {
+    num_frames
+        .map(|frames| {
+            usize::try_from(frames)
+                .unwrap_or(usize::MAX)
+                .saturating_mul(channels)
+                .min(MAX_DECODE_PRE_RESERVE_SAMPLES)
+        })
+        .unwrap_or(0)
+}
+
 pub fn decode(path: &Path) -> Result<Arc<AudioClip>, String> {
     decode_with_cancel(path, &|| false)
 }
@@ -196,6 +211,10 @@ pub fn decode_with_cancel(
         .make_audio_decoder(&params, &AudioDecoderOptions::default().gapless(true))
         .map_err(|e| e.to_string())?;
     let mut samples = Vec::new();
+    let reserve = decode_pre_reserve_samples(track.num_frames, channels);
+    if reserve > 0 {
+        samples.reserve(reserve);
+    }
     while let Some(packet) = reader.next_packet().map_err(|e| e.to_string())? {
         if cancel() {
             return Err("Audio decoding cancelled".into());
@@ -2001,5 +2020,75 @@ mod live_source_tests {
         render.fill(&mut pcm);
         assert!(retire_live_rx.try_recv().is_ok());
         assert!(retire_live_rx.try_recv().is_err());
+    }
+}
+
+#[cfg(test)]
+mod decode_tests {
+    use super::*;
+
+    fn write_test_pcm16_wav(path: &Path, sample_rate: u32, channels: u16, frames: usize) {
+        let data_bytes = (frames * usize::from(channels) * 2) as u32;
+        let riff_size = 36 + data_bytes;
+        let byte_rate = sample_rate * u32::from(channels) * 2;
+        let block_align = channels * 2;
+        let mut bytes = Vec::with_capacity(44 + data_bytes as usize);
+        bytes.extend_from_slice(b"RIFF");
+        bytes.extend_from_slice(&riff_size.to_le_bytes());
+        bytes.extend_from_slice(b"WAVE");
+        bytes.extend_from_slice(b"fmt ");
+        bytes.extend_from_slice(&16_u32.to_le_bytes());
+        bytes.extend_from_slice(&1_u16.to_le_bytes()); // PCM
+        bytes.extend_from_slice(&channels.to_le_bytes());
+        bytes.extend_from_slice(&sample_rate.to_le_bytes());
+        bytes.extend_from_slice(&byte_rate.to_le_bytes());
+        bytes.extend_from_slice(&block_align.to_le_bytes());
+        bytes.extend_from_slice(&16_u16.to_le_bytes());
+        bytes.extend_from_slice(b"data");
+        bytes.extend_from_slice(&data_bytes.to_le_bytes());
+        for frame in 0..frames {
+            for ch in 0..usize::from(channels) {
+                let sample: i16 = if ch == 0 {
+                    ((frame % 100) as i16) * 100
+                } else {
+                    -((frame % 100) as i16) * 100
+                };
+                bytes.extend_from_slice(&sample.to_le_bytes());
+            }
+        }
+        std::fs::write(path, bytes).unwrap();
+    }
+
+    #[test]
+    fn decode_pre_reserve_handles_missing_normal_and_corrupted_frame_counts() {
+        assert_eq!(decode_pre_reserve_samples(None, 2), 0);
+        assert_eq!(decode_pre_reserve_samples(Some(0), 2), 0);
+        assert_eq!(decode_pre_reserve_samples(Some(48_000 * 180), 2), 48_000 * 180 * 2);
+        assert_eq!(
+            decode_pre_reserve_samples(Some(u64::MAX), 2),
+            MAX_DECODE_PRE_RESERVE_SAMPLES
+        );
+        assert_eq!(
+            decode_pre_reserve_samples(Some(100_000_000), 4),
+            MAX_DECODE_PRE_RESERVE_SAMPLES
+        );
+    }
+
+    #[test]
+    fn decode_with_cancel_pre_reserves_and_decodes_pcm_wav() {
+        let frames = 10_000;
+        let channels = 2;
+        let path = std::env::temp_dir().join(format!(
+            "dawsu_audio_g9_decode_{}.wav",
+            std::process::id()
+        ));
+        write_test_pcm16_wav(&path, 44_100, channels as u16, frames);
+        let clip = decode_with_cancel(&path, &|| false);
+        let _ = std::fs::remove_file(&path);
+        let clip = clip.unwrap();
+        assert_eq!(clip.channels, channels);
+        assert_eq!(clip.sample_rate, 44_100);
+        assert_eq!(clip.samples.len(), frames * channels);
+        assert_eq!(clip.samples.capacity(), frames * channels);
     }
 }
