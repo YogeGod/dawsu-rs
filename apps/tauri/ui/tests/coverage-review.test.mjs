@@ -9,6 +9,7 @@ import {
   coverageIssueLabel,
   filterCoverageIssues,
   nextCoverageIssue,
+  normalizeCoverage,
   prevCoverageIssue,
   visibleCoverageIssues,
 } from "../src/lib/coverageReview.js";
@@ -150,4 +151,23 @@ test("CoverageReview renders counts, filter chips, issue rows, and stepping cont
     bridge.coverageFilter = prevFilter;
     bridge.coverageFocusTime = prevFocus;
   }
+});
+
+test("normalizeCoverage prefers Rust coverage summary and preserves fallbackActive", () => {
+  const summary = normalizeCoverage(
+    {
+      matched: 3,
+      empty: 0,
+      orphaned: 1,
+      totalObjects: 3,
+      fallbackActive: true,
+      issues: [{ id: "orphaned:4", kind: "orphaned", time: 1500, hitCount: 2 }],
+    },
+    [[1000, 80, true, []]],
+  );
+  assert.equal(summary.matched, 3);
+  assert.equal(summary.empty, 0);
+  assert.equal(summary.fallbackActive, true);
+  assert.equal(summary.issues.length, 1);
+  assert.equal(summary.issues[0].clock, "00:01.500");
 });

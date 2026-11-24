@@ -35,3 +35,14 @@ export function formatApplySummary(result) {
   if (unmatched > 0) parts.push(`${unmatched} unmatched`);
   return `${parts.join(" · ")}. Press Ctrl+Z to undo in one step.`;
 }
+
+export function formatApplyAllSummary(result) {
+  const updated = result?.updatedDiffs ?? 0;
+  const moments = result?.totalAppliedMoments ?? 0;
+  const skipped = result?.totalSkippedOverrides ?? 0;
+  const failed = Array.isArray(result?.failedDiffs) ? result.failedDiffs.length : 0;
+  const parts = [`Updated ${plural(updated, "diff")} (${plural(moments, "moment")})`];
+  if (skipped > 0) parts.push(`${plural(skipped, "override")} kept`);
+  if (failed > 0) parts.push(`${plural(failed, "diff")} skipped with issues`);
+  return `${parts.join(" · ")}.`;
+}

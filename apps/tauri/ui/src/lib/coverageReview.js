@@ -67,6 +67,30 @@ export function analyzeCoverage(moments) {
 }
 
 /**
+ * Normalize Rust's `scene.coverage` summary (attaching formatted clock labels),
+ * falling back to local `analyzeCoverage(moments)` only when Rust coverage is absent.
+ */
+export function normalizeCoverage(rustCoverage, moments) {
+  if (rustCoverage && typeof rustCoverage === "object" && Array.isArray(rustCoverage.issues)) {
+    return {
+      matched: Number(rustCoverage.matched) || 0,
+      empty: Number(rustCoverage.empty) || 0,
+      orphaned: Number(rustCoverage.orphaned) || 0,
+      totalObjects: Number(rustCoverage.totalObjects) || 0,
+      fallbackActive: Boolean(rustCoverage.fallbackActive),
+      issues: rustCoverage.issues.map(item => ({
+        id: String(item.id ?? ""),
+        kind: item.kind === "orphaned" ? "orphaned" : "empty",
+        time: Number(item.time) || 0,
+        clock: formatTime(Number(item.time) || 0),
+        hitCount: Number(item.hitCount) || 0,
+      })),
+    };
+  }
+  return { ...analyzeCoverage(moments), fallbackActive: false };
+}
+
+/**
  * Filter coverage issues by kind ("all", "empty", or "orphaned").
  */
 export function filterCoverageIssues(issues, filter = "all") {

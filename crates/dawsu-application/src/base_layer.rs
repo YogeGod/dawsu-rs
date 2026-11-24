@@ -67,6 +67,17 @@ pub struct SharedBaseApplyResult {
     pub status: SharedBaseStatus,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SharedBaseApplyAllResult {
+    pub updated_diffs: usize,
+    pub skipped_diffs: usize,
+    pub total_applied_moments: usize,
+    pub total_skipped_overrides: usize,
+    pub failed_diffs: Vec<String>,
+    pub status: SharedBaseStatus,
+}
+
 pub(crate) type MomentSnapshot = BTreeMap<i64, Vec<(String, i32)>>;
 
 pub(crate) struct BaseLayerTrack {
@@ -476,6 +487,205 @@ impl Application {
         })
     }
 
+    /// Applies the mapset's Shared Base to the currently open difficulty (in memory, 1 Undo step)
+    /// and to every other sibling `.osu` difficulty in the mapset folder (with read-back
+    /// verification and backups). Respects per-diff overrides unless `overwrite_overrides` is true.
+    pub fn shared_base_apply_to_all_diffs(
+        &mut self,
+        leniency_ms: f64,
+        overwrite_overrides: bool,
+    ) -> Result<SharedBaseApplyAllResult, String> {
+        if self.busy {
+            return Err("Wait for the current job to finish first.".into());
+        }
+        let current_result = self.shared_base_apply_to_current(leniency_ms, overwrite_overrides)?;
+        let path = self.shared_base_file_path()?;
+        let mut layer = load_base(&path)?
+            .ok_or_else(|| "No Shared Base captured for this mapset yet.".to_string())?;
+        let leniency = clamp_leniency(leniency_ms);
+
+        let (current_path, siblings, folder_files) = {
+            let document = self.document.as_ref().ok_or("Open a difficulty first.")?;
+            (
+                document.path.clone(),
+                document.difficulties.clone(),
+                document.files.clone(),
+            )
+        };
+
+        let mut updated_diffs = usize::from(current_result.applied_moments > 0);
+        let mut skipped_diffs = usize::from(current_result.applied_moments == 0);
+        let mut total_applied_moments = current_result.applied_moments;
+        let mut total_skipped_overrides = current_result.skipped_overrides;
+        let mut failed_diffs = Vec::new();
+        let mut layer_dirty = false;
+        let policy = dawsu_foundation::safe_write::BackupPolicy::new(self.backups_folder(), 20);
+
+        for sibling_path in siblings {
+            if sibling_path == current_path {
+                continue;
+            }
+            let diff_name = sibling_path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| sibling_path.display().to_string());
+            let sibling_key = diff_name.to_ascii_lowercase();
+
+            let original_bytes = match fs::read(&sibling_path) {
+                Ok(bytes) => bytes,
+                Err(e) => {
+                    failed_diffs.push(format!("{diff_name}: could not read ({e})"));
+                    continue;
+                }
+            };
+            let parsed = dawsu_osu_format::OsuFile::read(original_bytes.clone());
+            let mut hits = match dawsu_hitsounding::decompile(
+                &parsed.file,
+                &folder_files,
+                &|| false,
+                &mut |_, _| {},
+            ) {
+                dawsu_hitsounding::Decompiled::Done(hits) => hits,
+                dawsu_hitsounding::Decompiled::UnsupportedMode { .. } => {
+                    skipped_diffs += 1;
+                    continue;
+                }
+                dawsu_hitsounding::Decompiled::Cancelled => {
+                    skipped_diffs += 1;
+                    continue;
+                }
+            };
+
+            let diff_overrides = layer.overrides_by_diff.get(&sibling_key);
+            let mut planned: Vec<(MomentId, i64, i64, Vec<(SampleIdentity, i32)>)> = Vec::new();
+            let mut sibling_skipped = 0usize;
+
+            for base_moment in &layer.moments {
+                let Some((moment_id, matched_ms)) =
+                    find_matching_object_moment(&hits, base_moment.time_ms, leniency)
+                else {
+                    continue;
+                };
+                let is_overridden = diff_overrides.is_some_and(|set| {
+                    set.contains(&matched_ms) || set.contains(&base_moment.time_ms)
+                });
+                if is_overridden && !overwrite_overrides {
+                    sibling_skipped += 1;
+                    continue;
+                }
+                let mut resolved_hits = Vec::with_capacity(base_moment.hits.len());
+                for hit in &base_moment.hits {
+                    if let Some(identity) = resolve_sample(&hit.sample) {
+                        resolved_hits.push((identity, i32::from(hit.volume.min(100))));
+                    }
+                }
+                planned.push((moment_id, matched_ms, base_moment.time_ms, resolved_hits));
+            }
+
+            total_skipped_overrides += sibling_skipped;
+            if planned.is_empty() {
+                skipped_diffs += 1;
+                continue;
+            }
+
+            for (moment_id, _, _, new_hits) in &planned {
+                let existing: Vec<SampleIdentity> =
+                    hits.moment(*moment_id).hits().cloned().collect();
+                for lane in existing {
+                    hits.remove_hit(*moment_id, &lane);
+                }
+                for (lane, volume) in new_hits {
+                    hits.add_hit_with_volume(*moment_id, lane.clone(), *volume);
+                }
+            }
+
+            let (out_file, problems) = match dawsu_hitsounding::compile(
+                &parsed.file,
+                &hits,
+                dawsu_hitsounding::Placement::GreenLines,
+                &|| false,
+                &mut |_, _| {},
+            ) {
+                dawsu_hitsounding::Compiled::Done { file, problems } => (file, problems),
+                dawsu_hitsounding::Compiled::Cancelled => {
+                    skipped_diffs += 1;
+                    continue;
+                }
+            };
+            if !problems.is_empty() {
+                failed_diffs.push(format!(
+                    "{diff_name}: {} compile problem(s) (open this diff to review)",
+                    problems.len()
+                ));
+                continue;
+            }
+            let out_bytes = out_file.to_bytes();
+            if out_bytes == original_bytes {
+                skipped_diffs += 1;
+                continue;
+            }
+            if let Err(mismatch) =
+                dawsu_hitsounding::verify_compiled_osu(&out_bytes, &hits, &folder_files)
+            {
+                failed_diffs.push(format!("{diff_name}: verification failed ({mismatch})"));
+                continue;
+            }
+            match out_file
+                .save_over_expected(&sibling_path, &original_bytes, &policy)
+            {
+                Ok(dawsu_osu_format::SaveOutcome::Saved { .. }) => {
+                    updated_diffs += 1;
+                    total_applied_moments += planned.len();
+                    if overwrite_overrides
+                        && let Some(set) = layer.overrides_by_diff.get_mut(&sibling_key)
+                    {
+                        for (_, matched_ms, base_ms, _) in &planned {
+                            set.remove(matched_ms);
+                            set.remove(base_ms);
+                        }
+                        if set.is_empty() {
+                            layer.overrides_by_diff.remove(&sibling_key);
+                        }
+                        layer_dirty = true;
+                    }
+                }
+                Ok(dawsu_osu_format::SaveOutcome::NothingToSave) => {
+                    skipped_diffs += 1;
+                }
+                Ok(other) => {
+                    failed_diffs.push(format!(
+                        "{diff_name}: {}",
+                        crate::refusals::write(&other)
+                    ));
+                }
+                Err(e) => {
+                    failed_diffs.push(format!("{diff_name}: {e}"));
+                }
+            }
+        }
+
+        if layer_dirty {
+            let _ = save_base(&path, &layer);
+        }
+
+        let status = self
+            .document
+            .as_ref()
+            .map(|doc| build_status(doc, Some(&layer)))
+            .unwrap_or_default();
+        self.status = format!(
+            "Applied Shared Base across {updated_diffs} diff(s) ({total_applied_moments} moments, {total_skipped_overrides} overrides kept)."
+        );
+        Ok(SharedBaseApplyAllResult {
+            updated_diffs,
+            skipped_diffs,
+            total_applied_moments,
+            total_skipped_overrides,
+            failed_diffs,
+            status,
+        })
+    }
+
     pub fn shared_base_clear_current_overrides(&mut self) -> Result<SharedBaseStatus, String> {
         let path = self.shared_base_file_path()?;
         let key = {
@@ -820,5 +1030,135 @@ mod tests {
         assert!(!cleared.enabled);
         assert!(!cleared.has_base);
         assert!(!base_path.exists());
+    }
+
+    #[test]
+    fn apply_base_to_all_diffs_updates_siblings_safely_and_keeps_overrides() {
+        let scratch = dawsu_test_support::Scratch::new("base-layer-apply-all");
+        let mapset = scratch.path("mapset");
+        fs::create_dir_all(&mapset).unwrap();
+
+        let insane = mapset.join("Map - Test (Author) [Insane].osu");
+        let hard = mapset.join("Map - Test (Author) [Hard].osu");
+        let normal = mapset.join("Map - Test (Author) [Normal].osu");
+
+        fs::write(
+            &insane,
+            sample_osu(
+                "Insane",
+                &[
+                    "256,192,1000,1,8,0:0:0:85:",
+                    "256,192,2000,1,4,0:0:0:75:",
+                ],
+            ),
+        )
+        .unwrap();
+        fs::write(
+            &hard,
+            sample_osu(
+                "Hard",
+                &["256,192,1000,1,0,0:0:0:100:", "256,192,2000,1,0,0:0:0:100:"],
+            ),
+        )
+        .unwrap();
+        fs::write(
+            &normal,
+            sample_osu("Normal", &["256,192,1000,1,0,0:0:0:100:"]),
+        )
+        .unwrap();
+
+        let mut app = app_with_temp_data(&scratch);
+        open_map(&mut app, &insane);
+        app.shared_base_capture_current().unwrap();
+
+        // Mark 1000ms on Hard as a per-diff override so Apply All keeps it untouched.
+        let projects_dir = scratch.path("appdata").join("projects");
+        let base_path = storage_path(&projects_dir, &insane).unwrap();
+        let mut layer = load_base(&base_path).unwrap().unwrap();
+        layer
+            .overrides_by_diff
+            .entry("map - test (author) [hard].osu".into())
+            .or_default()
+            .insert(1000);
+        save_base(&base_path, &layer).unwrap();
+
+        let res = app.shared_base_apply_to_all_diffs(5.0, false).unwrap();
+        assert!(res.failed_diffs.is_empty(), "unexpected failures: {:?}", res.failed_diffs);
+        assert_eq!(res.updated_diffs, 3);
+        assert_eq!(res.total_skipped_overrides, 1);
+
+        let hard_text = fs::read_to_string(&hard).unwrap();
+        assert!(
+            hard_text.contains("256,192,1000,1,0,"),
+            "overridden 1000ms on Hard should stay untouched: {hard_text}"
+        );
+        assert!(
+            hard_text.contains("256,192,2000,1,4,"),
+            "2000ms on Hard should receive finish from Base: {hard_text}"
+        );
+
+        let normal_text = fs::read_to_string(&normal).unwrap();
+        assert!(
+            normal_text.contains("256,192,1000,1,8,"),
+            "1000ms on Normal should receive clap from Base: {normal_text}"
+        );
+    }
+
+    #[test]
+    fn coverage_summary_respects_fallback_sound() {
+        let scratch = dawsu_test_support::Scratch::new("coverage-fallback-sound");
+        let mapset = scratch.path("mapset");
+        fs::create_dir_all(&mapset).unwrap();
+        let diff = mapset.join("Map - Test (Author) [Normal].osu");
+        fs::write(
+            &diff,
+            sample_osu("Normal", &["256,192,1000,1,0,0:0:0:100:"]),
+        )
+        .unwrap();
+
+        let mut app = app_with_temp_data(&scratch);
+        open_map(&mut app, &diff);
+        // Remove the default hitnormal so the 1000ms object has 0 explicit hits.
+        let doc = app.document.as_mut().unwrap();
+        let moment_id = MomentId(0);
+        let existing: Vec<_> = doc
+            .composer
+            .hitsounds()
+            .moment(moment_id)
+            .hits()
+            .cloned()
+            .collect();
+        doc.composer.apply("Clear hits", |h| {
+            for lane in existing {
+                h.remove_hit(moment_id, &lane);
+            }
+        });
+
+        let without_fallback = doc.coverage_summary();
+        assert!(!without_fallback.fallback_active);
+        assert_eq!(without_fallback.empty, 1);
+        assert_eq!(without_fallback.matched, 0);
+
+        doc.export_choices = Some(crate::ExportChoices {
+            left_out: Vec::new(),
+            match_within: 5.0,
+            copy_volumes: true,
+            base: false,
+            slider_audio: false,
+            later_wins: false,
+            mix_format: crate::MixFormat::Wav16,
+            slider_end_mute: dawsu_hitsounding::copy::SliderEndMuteOptions::default(),
+            fallback_sound: Some(dawsu_hitsounding::copy::FallbackSound {
+                set: dawsu_foundation::SampleSet::Soft,
+                sound: dawsu_foundation::Hitsound::Normal,
+                volume: 60,
+            }),
+        });
+
+        let with_fallback = doc.coverage_summary();
+        assert!(with_fallback.fallback_active);
+        assert_eq!(with_fallback.empty, 0);
+        assert_eq!(with_fallback.matched, 1);
+        assert!(with_fallback.issues.is_empty());
     }
 }

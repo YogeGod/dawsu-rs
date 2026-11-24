@@ -69,6 +69,7 @@ pub(super) struct StagedMix {
     wav: Vec<u8>,
     reuse: bool,
     index: Option<u32>,
+    trimmed_leading_silence_ms: f64,
 }
 
 impl StagedMix {
@@ -84,9 +85,24 @@ impl StagedMix {
         &self.wav
     }
 
+    pub(super) fn trimmed_leading_silence_ms(&self) -> f64 {
+        self.trimmed_leading_silence_ms
+    }
+
     pub(super) fn new_generated<'a>(
         root: &Path,
         wav: Vec<u8>,
+        format: MixFormat,
+        mut existing: impl Iterator<Item = &'a String>,
+        names: &mut BTreeSet<String>,
+    ) -> Result<(String, Self), String> {
+        Self::new_generated_with_trim(root, wav, 0.0, format, &mut existing, names)
+    }
+
+    pub(super) fn new_generated_with_trim<'a>(
+        root: &Path,
+        wav: Vec<u8>,
+        trimmed_leading_silence_ms: f64,
         format: MixFormat,
         mut existing: impl Iterator<Item = &'a String>,
         names: &mut BTreeSet<String>,
@@ -106,6 +122,7 @@ impl StagedMix {
             wav,
             reuse: reusable.is_some(),
             index: None,
+            trimmed_leading_silence_ms,
         };
         Ok((name, mix))
     }
@@ -116,7 +133,7 @@ impl StagedMix {
     pub(super) fn pending(root: &Path, name: &str, bytes: Vec<u8>) -> Self {
         let path = root.join(name);
         let reuse = fs::read(&path).is_ok_and(|on_disk| on_disk == bytes);
-        Self { path, wav: bytes, reuse, index: None }
+        Self { path, wav: bytes, reuse, index: None, trimmed_leading_silence_ms: 0.0 }
     }
 
     pub(super) fn clip(&self) -> AudioClip {
@@ -158,6 +175,7 @@ impl StagedMix {
     }
 }
 
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub(super) fn stage_in_file(
     source: &Hitsounds,
@@ -486,8 +504,12 @@ impl MixFiles {
                     .filter(|(_, _, cues)| !(settings.pair_samples && cues.is_empty()))
                     .collect();
                 let waves = render_roles(roles, format, auto_fix, cancel)?;
+                let wave_bytes: Vec<(SampleSet, Hitsound, Vec<u8>)> = waves
+                    .iter()
+                    .map(|(bank, role, rendered)| (*bank, *role, rendered.bytes.clone()))
+                    .collect();
                 let (index, reused) =
-                    indexes.allocate_export(root, pending, &waves, format, &previous_mixes)?;
+                    indexes.allocate_export(root, pending, &wave_bytes, format, &previous_mixes)?;
                 let outputs: Vec<_> = slots
                     .iter()
                     .map(|(bank, role)| SampleIdentity::Standard {
@@ -499,7 +521,9 @@ impl MixFiles {
                 let ext = format.extension();
                 self.stage_roles(
                     root,
-                    waves.into_iter().map(|(bank, role, bytes)| (bank, role, ext.to_string(), bytes)),
+                    waves.into_iter().map(|(bank, role, rendered)| {
+                        (bank, role, ext.to_string(), rendered.bytes, rendered.trimmed_leading_silence_ms)
+                    }),
                     index,
                     reused,
                 );
@@ -512,14 +536,21 @@ impl MixFiles {
     }
 
     /// Stages the role files at `index`.
-    fn stage_roles(&mut self, root: &Path, files: impl IntoIterator<Item = RoleOutput>, index: u32, reuse: bool) {
-        for (bank, role, extension, bytes) in files {
+    fn stage_roles(
+        &mut self,
+        root: &Path,
+        files: impl IntoIterator<Item = (SampleSet, Hitsound, String, Vec<u8>, f64)>,
+        index: u32,
+        reuse: bool,
+    ) {
+        for (bank, role, extension, bytes, trimmed_leading_silence_ms) in files {
             let name = format!("{}{index}.{extension}", export_settings::slot_name(bank, role));
             self.staged.push(StagedMix {
                 path: root.join(name),
                 wav: bytes,
                 reuse,
                 index: Some(index),
+                trimmed_leading_silence_ms,
             });
         }
     }
@@ -586,7 +617,12 @@ impl MixFiles {
                         Some(index) => *index,
                         None => {
                             let (index, reuse) = indexes.allocate_roles(root, pending, &files)?;
-                            self.stage_roles(root, files, index, reuse);
+                            self.stage_roles(
+                                root,
+                                files.into_iter().map(|(set, role, ext, bytes)| (set, role, ext, bytes, 0.0)),
+                                index,
+                                reuse,
+                            );
                             by_files.insert(key, index);
                             index
                         }
@@ -680,9 +716,9 @@ impl MixFiles {
             let sample = if let Some(sample) = rendered.get(&key) {
                 sample.clone()
             } else {
-                let wav = render_layers(source, Some(target), layers, root, pending, defaults, &defaults_list, &mut clips, format, auto_fix, cancel)?;
+                let rendered_mix = render_layers(source, Some(target), layers, root, pending, defaults, &defaults_list, &mut clips, format, auto_fix, cancel)?;
                 let (sample, staged) = if let Some(indexes) = indexes.as_mut().filter(|_| slider) {
-                    let (index, reuse) = indexes.allocate(root, &wav, format)?;
+                    let (index, reuse) = indexes.allocate(root, &rendered_mix.bytes, format)?;
                     let identity = SampleIdentity::Standard {
                         set: SampleSet::Normal,
                         sound: Sound::Hit(Hitsound::Normal),
@@ -692,13 +728,21 @@ impl MixFiles {
                         identity,
                         StagedMix {
                             path: root.join(indexed_name(index, format)),
-                            wav,
+                            wav: rendered_mix.bytes,
                             reuse,
                             index: Some(index),
+                            trimmed_leading_silence_ms: rendered_mix.trimmed_leading_silence_ms,
                         },
                     )
                 } else {
-                    let (name, staged) = StagedMix::new_generated(root, wav, format, existing.iter(), &mut names)?;
+                    let (name, staged) = StagedMix::new_generated_with_trim(
+                        root,
+                        rendered_mix.bytes,
+                        rendered_mix.trimmed_leading_silence_ms,
+                        format,
+                        existing.iter(),
+                        &mut names,
+                    )?;
                     (SampleIdentity::File(name), staged)
                 };
                 self.staged.push(staged);
@@ -714,12 +758,17 @@ impl MixFiles {
     }
 }
 
+struct RenderedMix {
+    bytes: Vec<u8>,
+    trimmed_leading_silence_ms: f64,
+}
+
 #[allow(clippy::too_many_arguments)]
 fn render_layers(
     source: &Hitsounds, target: Option<&Hitsounds>, layers: &[(SampleIdentity, i32)],
     root: &Path, pending: &Pending, defaults: &Path, defaults_list: &[String],
     clips: &mut HashMap<SampleIdentity, Arc<AudioClip>>, format: MixFormat, auto_fix: bool, cancel: &dyn Fn() -> bool,
-) -> Result<Vec<u8>, String> {
+) -> Result<RenderedMix, String> {
     let mut cues = Vec::with_capacity(layers.len());
     for (identity, volume) in layers {
         cues.push(ScheduledSound {
@@ -755,7 +804,7 @@ fn load_clip(
     Ok(clips[identity].clone())
 }
 
-type RoleWaves = Vec<(SampleSet, Hitsound, Vec<u8>)>;
+type RenderedRoleWaves = Vec<(SampleSet, Hitsound, RenderedMix)>;
 
 /// One WAV per role, each sound at its cue's gain. A role with no sound is written silent: a
 /// missing numbered hitnormal would fall back to the skin's plain one (lazer 131fe72:
@@ -766,7 +815,7 @@ fn render_roles(
     format: MixFormat,
     auto_fix: bool,
     cancel: &dyn Fn() -> bool,
-) -> Result<RoleWaves, String> {
+) -> Result<RenderedRoleWaves, String> {
     let mut waves = Vec::with_capacity(roles.len());
     for (bank, role, mut cues) in roles {
         if cues.is_empty() {
@@ -781,8 +830,8 @@ fn render_roles(
                 }),
             });
         }
-        let bytes = render_with_options(cues, format, auto_fix, cancel)?;
-        waves.push((bank, role, bytes));
+        let rendered = render_with_options(cues, format, auto_fix, cancel)?;
+        waves.push((bank, role, rendered));
     }
     Ok(waves)
 }
@@ -815,11 +864,18 @@ pub(super) fn stage_timed_copy_with_options(
         let name = if let Some(name) = rendered.get(layers) {
             name.clone()
         } else {
-            let wav = render_layers(source, None, layers, root, pending, defaults, &defaults_list, &mut clips, format, auto_fix, cancel)?;
-            let name = if let Some(previous) = staged[own_from..].iter().find(|mix| mix.index.is_none() && mix.wav == wav) {
+            let rendered_mix = render_layers(source, None, layers, root, pending, defaults, &defaults_list, &mut clips, format, auto_fix, cancel)?;
+            let name = if let Some(previous) = staged[own_from..].iter().find(|mix| mix.index.is_none() && mix.wav == rendered_mix.bytes) {
                 previous.path.file_name().ok_or("Missing staged filename")?.to_string_lossy().into_owned()
             } else {
-                let (name, mix) = StagedMix::new_generated(root, wav, format, existing.iter(), &mut names)?;
+                let (name, mix) = StagedMix::new_generated_with_trim(
+                    root,
+                    rendered_mix.bytes,
+                    rendered_mix.trimmed_leading_silence_ms,
+                    format,
+                    existing.iter(),
+                    &mut names,
+                )?;
                 staged.push(mix);
                 name
             };
@@ -1390,7 +1446,7 @@ pub(super) fn render(
     cues: Vec<ScheduledSound>,
     cancel: &dyn Fn() -> bool,
 ) -> Result<Vec<u8>, String> {
-    render_with_options(cues, MixFormat::Wav16, false, cancel)
+    Ok(render_with_options(cues, MixFormat::Wav16, false, cancel)?.bytes)
 }
 
 pub(super) fn render_format(
@@ -1398,20 +1454,27 @@ pub(super) fn render_format(
     format: MixFormat,
     cancel: &dyn Fn() -> bool,
 ) -> Result<Vec<u8>, String> {
-    render_with_options(cues, format, false, cancel)
+    Ok(render_with_options(cues, format, false, cancel)?.bytes)
 }
 
-pub(super) fn render_with_options(
+fn render_with_options(
     cues: Vec<ScheduledSound>,
     format: MixFormat,
     auto_fix: bool,
     cancel: &dyn Fn() -> bool,
-) -> Result<Vec<u8>, String> {
+) -> Result<RenderedMix, String> {
     let mixed = mix(cues, cancel)?;
     if auto_fix && format == MixFormat::Wav16 {
-        Ok(crate::sample_checks::auto_fix_wav_pcm(&mixed, SAMPLE_RATE, CHANNELS)?.wav)
+        let fixed = crate::sample_checks::auto_fix_wav_pcm(&mixed, SAMPLE_RATE, CHANNELS)?;
+        Ok(RenderedMix {
+            bytes: fixed.wav,
+            trimmed_leading_silence_ms: fixed.trimmed_ms,
+        })
     } else {
-        encode_format(&mixed, format)
+        Ok(RenderedMix {
+            bytes: encode_format(&mixed, format)?,
+            trimmed_leading_silence_ms: 0.0,
+        })
     }
 }
 
@@ -1575,8 +1638,8 @@ mod tests {
         let first = scratch.path("first.wav");
         let second = scratch.path("second.wav");
         let staged = [
-            StagedMix { path: first.clone(), wav: vec![1], reuse: false, index: None },
-            StagedMix { path: second.clone(), wav: vec![2], reuse: false, index: None },
+            StagedMix { path: first.clone(), wav: vec![1], reuse: false, index: None, trimmed_leading_silence_ms: 0.0 },
+            StagedMix { path: second.clone(), wav: vec![2], reuse: false, index: None, trimmed_leading_silence_ms: 0.0 },
         ];
         let result = publish(&staged, None, &|| {
             if !first.exists() {
@@ -1618,8 +1681,8 @@ mod tests {
         fs::create_dir(&root).unwrap();
         let ledger = Pending::for_mapset(&scratch.path("data"), &root).ledger().unwrap();
         let staged = [
-            StagedMix { path: root.join("dawsu-mix-a-1.wav"), wav: vec![1], reuse: false, index: None },
-            StagedMix { path: root.join("dawsu-mix-b-1.wav"), wav: vec![2], reuse: false, index: None },
+            StagedMix { path: root.join("dawsu-mix-a-1.wav"), wav: vec![1], reuse: false, index: None, trimmed_leading_silence_ms: 0.0 },
+            StagedMix { path: root.join("dawsu-mix-b-1.wav"), wav: vec![2], reuse: false, index: None, trimmed_leading_silence_ms: 0.0 },
         ];
         let publication = publish(&staged, Some(&ledger), &|| false).unwrap();
         // One file can't be removed: it stays, and so does its entry, so a cleanup can retry it.
@@ -1659,8 +1722,8 @@ mod tests {
         // then fails on its second file.
         ledger.add(&[crate::pending::PendingSample { name: "c.wav".into(), sha256: sha256_hex(&[7]) }]).unwrap();
         let staged = [
-            StagedMix { path: root.join("c.wav"), wav: vec![3], reuse: false, index: None },
-            StagedMix { path: root.join("c.wav"), wav: vec![3], reuse: false, index: None },
+            StagedMix { path: root.join("c.wav"), wav: vec![3], reuse: false, index: None, trimmed_leading_silence_ms: 0.0 },
+            StagedMix { path: root.join("c.wav"), wav: vec![3], reuse: false, index: None, trimmed_leading_silence_ms: 0.0 },
         ];
         assert!(publish(&staged, Some(&ledger), &|| false).is_err());
         let entries: Vec<_> = ledger.entries().unwrap().into_iter().map(|entry| (entry.name, entry.sha256)).collect();
@@ -1672,7 +1735,7 @@ mod tests {
     fn publish_refuses_one_index_file_for_two_sounds() {
         let scratch = dawsu_test_support::Scratch::new("mix-index-twice");
         let path = scratch.path("normal-hitnormal2.wav");
-        let mix = |wav: u8, reuse: bool| StagedMix { path: path.clone(), wav: vec![wav], reuse, index: Some(2) };
+        let mix = |wav: u8, reuse: bool| StagedMix { path: path.clone(), wav: vec![wav], reuse, index: Some(2), trimmed_leading_silence_ms: 0.0 };
         for staged in [[mix(1, false), mix(2, false)], [mix(1, false), mix(1, false)]] {
             let error = publish(&staged, None, &|| false).err().expect("refused");
             assert!(error.contains("Sample index 2 would hold two different sounds"), "{error}");
@@ -1702,6 +1765,7 @@ mod tests {
             wav,
             reuse: false,
             index: None,
+            trimmed_leading_silence_ms: 0.0,
         };
         let preview = staged.clip();
         assert_eq!(preview.samples, [0.125, 0.125]);
@@ -1821,7 +1885,7 @@ mod tests {
             assert!((a - b).abs() < 1e-6, "sample mismatch: {a} vs {b}");
         }
 
-        let staged = StagedMix { path, wav: encoded, reuse: false, index: None };
+        let staged = StagedMix { path, wav: encoded, reuse: false, index: None, trimmed_leading_silence_ms: 0.0 };
         let preview = staged.clip();
         assert_eq!(preview.sample_rate, SAMPLE_RATE);
         assert_eq!(preview.channels, CHANNELS);
@@ -1853,7 +1917,7 @@ mod tests {
         let peak = decoded.samples.iter().fold(0.0_f32, |p, s| p.max(s.abs()));
         assert!(peak > 0.3, "decoded Ogg should preserve audible waveform, peak={peak}");
 
-        let staged = StagedMix { path, wav: first, reuse: false, index: None };
+        let staged = StagedMix { path, wav: first, reuse: false, index: None, trimmed_leading_silence_ms: 0.0 };
         let preview = staged.clip();
         assert_eq!(preview.sample_rate, SAMPLE_RATE);
         assert_eq!(preview.channels, CHANNELS);

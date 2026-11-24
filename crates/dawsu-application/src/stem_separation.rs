@@ -110,14 +110,48 @@ struct SharedJob {
     song_path: Option<PathBuf>,
 }
 
+#[derive(Debug, Clone)]
+struct CachedSongHash {
+    path: PathBuf,
+    len: u64,
+    modified: Option<std::time::SystemTime>,
+    sha256: String,
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct StemSeparationManager {
     active: Option<Arc<SharedJob>>,
     generation: u64,
     applied_generation: u64,
+    cached_song_hash: Mutex<Option<CachedSongHash>>,
 }
 
 impl StemSeparationManager {
+    fn song_sha256_hex(&self, song_path: &Path) -> Result<String, String> {
+        let meta = fs::metadata(song_path)
+            .map_err(|e| format!("Could not read song metadata for stem cache key: {e}"))?;
+        let len = meta.len();
+        let modified = meta.modified().ok();
+        if let Ok(guard) = self.cached_song_hash.lock()
+            && let Some(entry) = guard.as_ref()
+            && entry.path == song_path
+            && entry.len == len
+            && entry.modified == modified
+        {
+            return Ok(entry.sha256.clone());
+        }
+        let sha256 = file_sha256_hex(song_path)?;
+        if let Ok(mut guard) = self.cached_song_hash.lock() {
+            *guard = Some(CachedSongHash {
+                path: song_path.to_path_buf(),
+                len,
+                modified,
+                sha256: sha256.clone(),
+            });
+        }
+        Ok(sha256)
+    }
+
     fn current_state(&self) -> StemSeparationJobState {
         match &self.active {
             Some(job) => job
@@ -793,7 +827,7 @@ impl Application {
 
     fn cached_stem_for_open_song(&self) -> Option<PathBuf> {
         let song_path = self.open_song_path()?;
-        let hash = file_sha256_hex(&song_path).ok()?;
+        let hash = self.stem_separation.song_sha256_hex(&song_path).ok()?;
         let cached = stem_cache_path(&self.data_root, &hash);
         if cached.is_file() { Some(cached) } else { None }
     }
@@ -856,7 +890,7 @@ impl Application {
             .clone()
             .ok_or_else(|| "Wait for the song audio to finish loading first.".to_string())?;
 
-        let song_hash = file_sha256_hex(&song_path)?;
+        let song_hash = self.stem_separation.song_sha256_hex(&song_path)?;
         let out_stem_path = stem_cache_path(&self.data_root, &song_hash);
 
         if !options.force_rerun && out_stem_path.is_file() {
@@ -1279,5 +1313,24 @@ mod tests {
         }
         assert!(DEFAULT_MODEL_URL.starts_with("https://") && !DEFAULT_MODEL_URL.contains("/resolve/main/"));
         assert!(ORT_PACKAGE_URL.starts_with("https://api.nuget.org/") && ORT_PACKAGE_URL.contains(ORT_RELEASE_VERSION));
+    }
+
+    #[test]
+    fn song_sha256_cache_reuses_unchanged_file_and_invalidates_on_change() {
+        let scratch = dawsu_test_support::Scratch::new("stem-song-hash-cache");
+        let song = scratch.path("audio.mp3");
+        fs::write(&song, b"first-version-of-song").unwrap();
+
+        let mgr = StemSeparationManager::default();
+        let h1 = mgr.song_sha256_hex(&song).unwrap();
+        let h2 = mgr.song_sha256_hex(&song).unwrap();
+        assert_eq!(h1, h2);
+        assert_eq!(h1, file_sha256_hex(&song).unwrap());
+
+        // Different size invalidates the cached hash immediately.
+        fs::write(&song, b"second-longer-version-of-song-bytes").unwrap();
+        let h3 = mgr.song_sha256_hex(&song).unwrap();
+        assert_ne!(h1, h3);
+        assert_eq!(h3, file_sha256_hex(&song).unwrap());
     }
 }
