@@ -21,7 +21,7 @@ use dawsu_editor::{
 use dawsu_foundation::{CustomIndex, SampleIdentity, SampleSet, SongTime, Sound};
 use dawsu_hitsounding::{
     LaneSource, Place,
-    copy::{CopyCollisionPolicy, CopyMode, CopyOptions},
+    copy::{CopyCollisionPolicy, CopyMode, CopyOptions, FallbackSound},
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -159,6 +159,8 @@ struct CopyOptionsJson {
     muted_sample_set: Option<SampleSet>,
     #[serde(default)]
     slider_end_mute: dawsu_hitsounding::copy::SliderEndMuteOptions,
+    #[serde(default)]
+    fallback_sound: Option<FallbackSound>,
 }
 
 fn default_copy_start_index() -> u32 {
@@ -2349,6 +2351,7 @@ fn export_snapshot(app: &Application, cache: &mut ExportCache) -> Value {
                 "onlyUnhit": choices.slider_end_mute.only_unhit,
                 "divisors": choices.slider_end_mute.divisors,
             },
+            "fallbackSound": choices.fallback_sound,
         })),
         "error": status.error,
         "writing": status.writing,
@@ -2400,6 +2403,7 @@ fn export_snapshot(app: &Application, cache: &mut ExportCache) -> Value {
                     "collisions": counts.collisions,
                     "keptFromSilent": counts.kept_from_silent,
                     "muted": counts.muted,
+                    "fallbackApplied": counts.fallback_applied,
                 });
                 if let Some(diff) = diff {
                     entry["diff"] = json!(diff);

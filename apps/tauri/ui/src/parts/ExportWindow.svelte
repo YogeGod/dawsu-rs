@@ -3,7 +3,7 @@
   import { invoke } from "../lib/ipc.js";
   import { forwardSpace } from "../lib/space.js";
   import {
-    adoptChoices, afterPoll, baseDiff, baseName, baseStatus, blockDrops, choicesFrom, difficultyName,
+    adoptChoices, afterPoll, baseDiff, baseName, baseStatus, blockDrops, choicesFrom, clampFallbackVolume, difficultyName,
     divisorPresetFrom, divisorPresets, divisorsFromPreset, exportLabel, exportState, fileName,
     laneSwatches, matchWithinValid, minBeatsValid, openWarnings, optionsKey, ownWriteError, pollDelay,
     previewRequest, statusLine, targetCounts, targetDiff, warningsLabel,
@@ -103,6 +103,20 @@
     choices.leftOut = choices.leftOut.includes(name)
       ? choices.leftOut.filter(item => item !== name)
       : [...choices.leftOut, name];
+  }
+
+  function setFallbackSet(value) {
+    if (value === "off") {
+      choices.fallbackSound = null;
+      return;
+    }
+    const volume = choices.fallbackSound?.volume ?? 80;
+    choices.fallbackSound = { set: value, sound: "normal", volume };
+  }
+
+  function setFallbackVolume(value) {
+    if (!choices.fallbackSound || !Number.isFinite(value)) return;
+    choices.fallbackSound = { ...choices.fallbackSound, volume: clampFallbackVolume(value) };
   }
 
   async function exportNow() {
@@ -213,6 +227,37 @@
             aria-label="Mute un-hit slider ends"
             onclick={() => (choices.sliderEndMute.enabled = !choices.sliderEndMute.enabled)}></button>
         </label>
+        <span class="divider" aria-hidden="true"></span>
+        <label class="format" title="Optional hitsound for target objects that did not match any source hit.">
+          Fallback sound
+          <select
+            class="field select"
+            aria-label="Fallback sound for un-hit objects"
+            value={choices.fallbackSound?.set ?? "off"}
+            onchange={(event) => setFallbackSet(event.currentTarget.value)}
+          >
+            <option value="off">Off</option>
+            <option value="normal">Normal</option>
+            <option value="soft">Soft</option>
+            <option value="drum">Drum</option>
+          </select>
+        </label>
+        {#if choices.fallbackSound}
+          <label class="format">
+            <span class="field">
+              <input
+                type="number"
+                min="5"
+                max="100"
+                step="1"
+                aria-label="Fallback sound volume"
+                value={choices.fallbackSound.volume}
+                oninput={(event) => setFallbackVolume(event.currentTarget.valueAsNumber)}
+              >
+              %
+            </span>
+          </label>
+        {/if}
       </section>
 
       {#if choices.sliderEndMute.enabled}

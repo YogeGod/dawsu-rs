@@ -72,6 +72,10 @@ pub(crate) struct SessionSettings {
     /// Optional drum stem audio path for instant Song <-> Stem monitoring. Older builds ignore it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub drum_stem_path: Option<String>,
+    /// Persistent map of mix content SHA-256 hex -> assigned custom index so re-exports keep custom
+    /// indices stable across sessions. Older builds ignore the field.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub export_index_schema: BTreeMap<String, u32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -112,6 +116,7 @@ impl Default for SessionSettings {
             node_graph_bindings: None,
             drum_vst: None,
             drum_stem_path: None,
+            export_index_schema: BTreeMap::new(),
         }
     }
 }

@@ -129,6 +129,7 @@ pub struct Document {
     export_settings: Option<ExportSettings>,
     drum_lanes: Option<DrumLanes>,
     export_choices: Option<ExportChoices>,
+    export_index_schema: std::collections::BTreeMap<String, u32>,
     /// Sample files dawsu! made that the mapset does not hold yet. Their names are in the hits'
     /// folder listing, not in `files`.
     pending: pending::Pending,
@@ -236,6 +237,7 @@ impl Document {
             export_settings: None,
             drum_lanes: None,
             export_choices: None,
+            export_index_schema: std::collections::BTreeMap::new(),
             pending: pending::Pending::default(),
             pending_sets: Vec::new(),
             presence: None,
@@ -1144,7 +1146,7 @@ enum JobResult {
     },
     Review(Result<output::WritePlan, String>, Vec<OutputProblem>),
     /// The files written, a receipt warning, and the pending files the write put in the mapset.
-    Output(Result<(usize, Option<String>, Vec<String>), String>),
+    Output(Result<(usize, Option<String>, Vec<String>, std::collections::BTreeMap<String, u32>), String>),
 }
 #[derive(Clone)]
 struct JobProgress {
@@ -1745,6 +1747,7 @@ impl Application {
             export_settings: document.export_settings.clone(),
             drum_lanes: document.drum_lanes.clone(),
             export_choices: document.export_choices.clone(),
+            export_index_schema: document.export_index_schema.clone(),
             node_graph_bindings: document.node_graph_bindings.clone(),
             lane_slots: saved_slots.or_else(|| self.project.as_ref().and_then(|p| p.settings.lane_slots.clone())),
             drum_vst: saved_drum_vst.unwrap_or_else(|| {
@@ -2676,7 +2679,7 @@ impl Application {
                     Err(e) if self.export.take_write(&Err(e.clone())) => {
                         self.status = "Output did not complete".into();
                     }
-                    Ok((count, tracking_warning, published)) => {
+                    Ok((count, tracking_warning, published, index_schema)) => {
                         self.export.take_write(&Ok(count));
                         self.pending_published(&published, &[]);
                         self.status = format!("Wrote {count} reviewed files with backups");
@@ -2686,6 +2689,9 @@ impl Application {
                         }
                         self.start_sweep(false);
                         if let Some(d) = self.document.as_mut() {
+                            if !index_schema.is_empty() {
+                                d.export_index_schema.extend(index_schema);
+                            }
                             if let Ok(entries) = std::fs::read_dir(d.path.parent().unwrap()) {
                                 d.difficulties = entries
                                     .filter_map(Result::ok)
@@ -3994,7 +4000,7 @@ impl Application {
                             }
                         }
                     }
-                    (count, generate_receipt::record(&plan).err(), plan.pending_names())
+                    (count, generate_receipt::record(&plan).err(), plan.pending_names(), plan.export_index_schema)
                 });
             let _ = send.send(JobResult::Output(result));
         });
@@ -4960,6 +4966,7 @@ fn load(
     document.export_settings = project.as_ref().and_then(|p| p.settings.export_settings.clone());
     document.drum_lanes = project.as_ref().and_then(|p| p.settings.drum_lanes.clone());
     document.export_choices = project.as_ref().and_then(|p| p.settings.export_choices.clone());
+    document.export_index_schema = project.as_ref().map(|p| p.settings.export_index_schema.clone()).unwrap_or_default();
     document.node_graph_bindings = project.as_ref().and_then(|p| p.settings.node_graph_bindings.clone());
     if let Some(layout) = &mut document.lane_layout {
         layout.normalise();

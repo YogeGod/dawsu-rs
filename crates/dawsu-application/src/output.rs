@@ -258,6 +258,8 @@ pub struct Source {
     pub version: u64,
     /// The open document's pending files: mixes read them and allocations skip their names.
     pub(crate) pending: crate::pending::Pending,
+    /// Persistent map of mix content SHA-256 hex -> assigned custom index.
+    pub(crate) export_index_schema: std::collections::BTreeMap<String, u32>,
 }
 impl Source {
     pub fn from_document(d: &Document) -> Self {
@@ -275,6 +277,7 @@ impl Source {
             },
             version: d.composer.history.version(),
             pending: d.pending.clone(),
+            export_index_schema: d.export_index_schema.clone(),
         }
     }
 }
@@ -319,6 +322,8 @@ pub struct TargetCounts {
     pub kept_from_silent: usize,
     /// Slider and spinner ends muted.
     pub muted: usize,
+    /// Unmatched target gameplay object edges given the optional fallback sound.
+    pub fallback_applied: usize,
 }
 
 pub struct WritePlan {
@@ -342,6 +347,8 @@ pub struct WritePlan {
     pub(super) hs_mode_targets: Vec<PathBuf>,
     /// Non-blocking osu! Ranking Criteria & playback warnings for newly staged mixes.
     pub sample_warnings: Vec<crate::sample_checks::SampleHealthReport>,
+    /// Updated custom-index stability schema produced while staging mixes.
+    pub(super) export_index_schema: std::collections::BTreeMap<String, u32>,
     pub source: PathBuf,
     pub version: u64,
 }
@@ -728,6 +735,7 @@ pub(super) fn generate_report_with_options_and_format(
                     format,
                     &source.pending,
                     auto_fix_staged_mixes,
+                    &source.export_index_schema,
                     cancel,
                 )
             } else {
@@ -770,6 +778,7 @@ pub(super) fn generate_report_with_options_and_format(
                 targets: Vec::new(),
                 hs_mode_targets: vec![target.clone()],
                 sample_warnings: Vec::new(),
+                export_index_schema: mixes.index_schema,
                 source: source.path.clone(),
                 version: source.version,
             };
@@ -784,7 +793,7 @@ pub fn new_diff(source: &Source, name: &str) -> Result<WritePlan, String> {
     match dawsu_hitsounding::generate::new_hitsound_diff(&source.file,&source.path.file_name().unwrap().to_string_lossy(),name,&folder(source)?){
         NewDiff::Planned{file,file_name}=>{
             let target_path = source.path.parent().unwrap().join(file_name);
-            Ok(WritePlan{label:"New hitsound difficulty".into(),mixes:Vec::new(),pending:Vec::new(),ledger:None,combinations:Vec::new(),targets:Vec::new(),generation:None,generated:None,include_slider_audio:false,files:vec![PlannedFile::new(target_path.clone(),file,None)],details:vec!["All gameplay objects are removed in the new difficulty; the source stays unchanged.".into()],hs_mode_targets:vec![target_path],sample_warnings:Vec::new(),source:source.path.clone(),version:source.version})
+            Ok(WritePlan{label:"New hitsound difficulty".into(),mixes:Vec::new(),pending:Vec::new(),ledger:None,combinations:Vec::new(),targets:Vec::new(),generation:None,generated:None,include_slider_audio:false,files:vec![PlannedFile::new(target_path.clone(),file,None)],details:vec!["All gameplay objects are removed in the new difficulty; the source stays unchanged.".into()],hs_mode_targets:vec![target_path],sample_warnings:Vec::new(),export_index_schema:Default::default(),source:source.path.clone(),version:source.version})
         },other=>Err(crate::refusals::new_difficulty(&other))
     }
 }
@@ -882,6 +891,7 @@ fn copy_after(
         targets: Vec::new(),
         hs_mode_targets: Vec::new(),
         sample_warnings: Vec::new(),
+        export_index_schema: source.export_index_schema.clone(),
         source: source.path.clone(),
         version: source.version,
     };
@@ -911,6 +921,7 @@ fn copy_after(
                         format,
                         &source.pending,
                         auto_fix_staged_mixes,
+                        &plan.export_index_schema,
                         cancel,
                     )
                 } else {
@@ -927,6 +938,7 @@ fn copy_after(
                         continue;
                     }
                 };
+                plan.export_index_schema.extend(mixes.index_schema);
                 plan.targets.push(TargetCounts {
                     path: path.clone(),
                     matched: target.matched,
@@ -935,6 +947,7 @@ fn copy_after(
                     collisions: target.collisions.len(),
                     kept_from_silent: target.kept_from_silent,
                     muted: target.muted,
+                    fallback_applied: target.fallback_applied,
                 });
                 plan.details.push(format!(
                     "{}: {} matched, {} unmatched source moments",
@@ -1055,6 +1068,8 @@ pub(super) fn export_report(
     files.append(&mut plan.files);
     let mut details = base.details;
     details.append(&mut plan.details);
+    let mut merged_schema = base.export_index_schema;
+    merged_schema.extend(plan.export_index_schema);
     let mut export = WritePlan {
         label: "Export hitsounds".into(),
         files,
@@ -1069,6 +1084,7 @@ pub(super) fn export_report(
         targets: plan.targets,
         hs_mode_targets: base.hs_mode_targets,
         sample_warnings: Vec::new(),
+        export_index_schema: merged_schema,
         source: plan.source,
         version: plan.version,
     };
@@ -1100,6 +1116,7 @@ mod tests {
             targets: Vec::new(),
             hs_mode_targets: Vec::new(),
             sample_warnings: Vec::new(),
+            export_index_schema: Default::default(),
             source: dir.join("map.osu"),
             version: 1,
         };

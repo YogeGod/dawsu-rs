@@ -46,6 +46,9 @@ pub struct ExportChoices {
     /// Automatic slider-end (and optional spinner-end) muting choices.
     #[serde(default)]
     pub slider_end_mute: dawsu_hitsounding::copy::SliderEndMuteOptions,
+    /// Optional fallback sound for unmatched target gameplay object edges.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback_sound: Option<dawsu_hitsounding::copy::FallbackSound>,
 }
 
 /// Which window a preview belongs to, so main never shows it as its own review.
@@ -189,6 +192,7 @@ impl Application {
                 later_wins: options.copy.collision_policy == dawsu_hitsounding::copy::CopyCollisionPolicy::LaterWins,
                 mix_format: options.mix_format,
                 slider_end_mute: options.copy.slider_end_mute.clone(),
+                fallback_sound: options.copy.fallback_sound,
             });
         }
         self.export.stop();
@@ -807,6 +811,7 @@ mod tests {
             later_wins: false,
             mix_format: crate::MixFormat::Wav16,
             slider_end_mute: Default::default(),
+            fallback_sound: None,
         };
         assert_eq!(app.document().unwrap().export_choices(), Some(&expected));
         wait_preview(&mut app);
