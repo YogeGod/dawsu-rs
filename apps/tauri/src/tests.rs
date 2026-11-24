@@ -48,6 +48,12 @@ fn skin_sounds(label: &str, wave: &[u8]) -> Fixture {
 fn open(app: &mut Application, path: &Path) {
     Action::Open { path: path.into() }.run(app);
     wait_for_job(app);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while app.song_loading {
+        app.poll();
+        assert!(Instant::now() < deadline, "song decode job did not finish");
+        std::thread::sleep(Duration::from_millis(5));
+    }
 }
 
 #[test]
@@ -3401,6 +3407,8 @@ fn typed_scene_matches_legacy_json_bytes_exactly() {
         result["saveReview"] = json!(app.save_review_files());
         result["soundSetPrompts"] = json!([]);
         result["songSolo"] = json!(app.song_solo());
+        result["songLoading"] = json!(app.song_loading);
+        result["waveformRevision"] = json!(app.waveform_revision());
         result["drumVst"] = json!(Value::Null);
         result["hitsounds"] = json!(app.preferences.hitsound_gain);
         result["hitsoundsMuted"] = json!(app.preferences.hitsounds_muted);
@@ -3619,5 +3627,28 @@ fn slim_tick_polls_return_tick_when_unchanged_and_full_view_on_status_warning_or
     .unwrap();
     assert!(after_busy.get("tick").is_none());
     assert_eq!(after_busy["busy"], true);
-    assert!(after_busy["tickRev"].as_u64().unwrap() > rev3);
+    let rev4 = after_busy["tickRev"].as_u64().unwrap();
+    assert!(rev4 > rev3);
+
+    // song_loading change invalidates the signature -> returns full view.
+    app.song_loading = true;
+    let while_loading = serde_json::to_value(super::next_view_response(
+        &mut app, &mut home, &drums, &mut playback_start, &mut cache, &mut pending,
+        false, None, false, Some(rev4),
+    ))
+    .unwrap();
+    assert!(while_loading.get("tick").is_none());
+    assert_eq!(while_loading["songLoading"], true);
+    let rev5 = while_loading["tickRev"].as_u64().unwrap();
+    assert!(rev5 > rev4);
+
+    app.song_loading = false;
+    let after_loading = serde_json::to_value(super::next_view_response(
+        &mut app, &mut home, &drums, &mut playback_start, &mut cache, &mut pending,
+        false, None, false, Some(rev5),
+    ))
+    .unwrap();
+    assert!(after_loading.get("tick").is_none());
+    assert_eq!(after_loading["songLoading"], false);
+    assert!(after_loading["tickRev"].as_u64().unwrap() > rev5);
 }

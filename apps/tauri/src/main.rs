@@ -1721,6 +1721,7 @@ struct ViewSnapshot {
     #[serde(skip_serializing_if = "Option::is_none")]
     show_home: Option<bool>,
     song: f64,
+    song_loading: bool,
     song_muted: bool,
     song_solo: bool,
     songs_folder: Option<PathBuf>,
@@ -1732,6 +1733,7 @@ struct ViewSnapshot {
     tick_rev: Option<u64>,
     tool: String,
     warnings: Vec<String>,
+    waveform_revision: u64,
 }
 
 fn snapshot_view(app: &Application, include_scene: bool) -> ViewSnapshot {
@@ -2066,6 +2068,7 @@ fn snapshot_with_static(app: &Application, include_scene: bool, include_static: 
         shortcut_open: None,
         show_home: None,
         song: f64::from(app.preferences.song_gain),
+        song_loading: app.song_loading,
         song_muted: app.preferences.song_muted,
         song_solo: app.song_solo(),
         songs_folder: (!app.preferences.songs_folder.as_os_str().is_empty())
@@ -2085,6 +2088,7 @@ fn snapshot_with_static(app: &Application, include_scene: bool, include_static: 
         tick_rev: None,
         tool: format!("{:?}", app.tool()),
         warnings: app.warnings.clone(),
+        waveform_revision: app.waveform_revision(),
     }
 }
 
@@ -2327,7 +2331,7 @@ struct ViewTickCache {
     rev: u64,
     last_non_playback_sig: Option<u64>,
     drums_rev: u64,
-    static_scene_key: Option<(u64, usize)>,
+    static_scene_key: Option<(u64, u64, usize)>,
     last_hs_mode: bool,
 }
 
@@ -2387,6 +2391,8 @@ fn non_playback_signature(
     app.song_solo().hash(&mut hasher);
     app.hitsounds_solo().hash(&mut hasher);
     app.duration_ms().to_bits().hash(&mut hasher);
+    app.song_loading.hash(&mut hasher);
+    app.waveform_revision().hash(&mut hasher);
     app.waveform.len().hash(&mut hasher);
     let problems = app.output_problems();
     problems.len().hash(&mut hasher);
@@ -2510,7 +2516,7 @@ fn next_view_response(
     let want_scene = scene && !home.visible();
     let current_hs_mode = app.document().is_some_and(|d| d.hs_mode);
     let include_static = if want_scene && app.document().is_some() {
-        let key = (app.document_generation(), app.waveform.len());
+        let key = (app.document_generation(), app.waveform_revision(), app.waveform.len());
         let changed = fresh || cache.static_scene_key != Some(key) || cache.last_hs_mode != current_hs_mode;
         cache.static_scene_key = Some(key);
         cache.last_hs_mode = current_hs_mode;

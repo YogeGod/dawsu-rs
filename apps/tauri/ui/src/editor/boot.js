@@ -404,7 +404,7 @@ export function createEditor(env = globalThis, { ui = null, autoStart = true, ex
   startInterval(async () => {
     const now = perf().now();
     // While playing or busy, every tick asks; a gate at the timer's own 85 ms skipped every other tick.
-    if (state.view.fault || state.requests || state.refreshing || (!state.view.playing && !state.view.busy && now - state.lastRefresh < 1000)) return;
+    if (state.view.fault || state.requests || state.refreshing || (!state.view.playing && !state.view.busy && !state.view.songLoading && now - state.lastRefresh < 1000)) return;
     state.refreshing = true;
     state.lastRefresh = now;
     await ctx.run(() => ctx.update(null, false));

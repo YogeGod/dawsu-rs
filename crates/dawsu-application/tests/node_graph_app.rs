@@ -77,7 +77,7 @@ Version: Hard
     std::fs::write(&osu_path, osu).unwrap();
     let mut app = Application::headless_with_projects(scratch.path("data"));
     app.request_open(osu_path.clone());
-    wait_until(&mut app, |a| !a.busy && a.document().is_some());
+    wait_until(&mut app, |a| !a.busy && !a.song_loading && a.document().is_some());
     assert!(app.error.is_none(), "{:?}", app.error);
     (app, osu_path)
 }

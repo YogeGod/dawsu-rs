@@ -51,6 +51,7 @@ export function sameUiView(a, b) {
   if (!a || !b) return false;
   return (
     !!a.busy === !!b.busy &&
+    !!a.songLoading === !!b.songLoading &&
     (a.fault ?? null) === (b.fault ?? null) &&
     !!a.playing === !!b.playing &&
     !!a.cycle === !!b.cycle &&

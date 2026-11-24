@@ -146,10 +146,11 @@ test("waveform() draws identical fillRect and fillStyle calls from Float32Array 
   assert.deepEqual(fromTyped, fromNested);
 });
 
-test("ipc fetches binary editor_waveform once per (path, previewKey), stores Float32Array, and repaints", async () => {
+test("ipc fetches binary editor_waveform once per (path, previewKey), stores Float32Array, and re-fetches when songLoading finishes", async () => {
   const bins = [0.5, 0.25, 0.125, 0.0625, 0.5, 0.25, 0.75, 0.125, 0.5, 0.25, 0.625, 0.75];
   const raw = new Float32Array(bins);
   const calls = [];
+  let waveformReply = new ArrayBuffer(0);
   let paints = 0;
   const element = () => ({
     clientWidth: 200, clientHeight: 80, scrollTop: 0, dataset: {}, style: {}, children: [],
@@ -166,7 +167,7 @@ test("ipc fetches binary editor_waveform once per (path, previewKey), stores Flo
         core: {
           invoke: async (name) => {
             calls.push(name);
-            if (name === "editor_waveform") return raw.buffer.slice(0);
+            if (name === "editor_waveform") return waveformReply.slice(0);
             return { busy: false, hasDocument: false };
           },
         },
@@ -184,14 +185,62 @@ test("ipc fetches binary editor_waveform once per (path, previewKey), stores Flo
     renderSelection = () => {};
     paintSoon = () => { globalThis.__paints = (globalThis.__paints || 0) + 1; };
     const s = { path: "Map.osu", previewKey: 3, viewStart: 0, zoom: 0.2, rowHeight: 30, lanes: [], moments: [], sections: [[0, 500, 4]] };
-    show({ busy: false, hasDocument: true, duration: 4000, scene: { ...s } });
-    // Second frame with same (path, previewKey) must not re-fetch editor_waveform.
-    show({ busy: false, hasDocument: true, duration: 4000, scene: { ...s } });
+    show({ busy: false, hasDocument: true, songLoading: true, waveformRevision: 0, duration: 4000, scene: { ...s } });
+    // Second frame while still loading must not re-fetch editor_waveform.
+    show({ busy: false, hasDocument: true, songLoading: true, waveformRevision: 0, duration: 4000, scene: { ...s } });
+  `, context);
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.deepEqual(calls, ["editor_waveform"]);
+  assert.equal(context.scene.waveform.length, 0);
+
+  waveformReply = raw.buffer;
+  runInContext(`
+    show({ busy: false, hasDocument: true, songLoading: false, waveformRevision: 1, duration: 4000, scene: { ...s } });
   `, context);
   await new Promise(resolve => setTimeout(resolve, 10));
   paints = runInContext("globalThis.__paints", context);
-  assert.deepEqual(calls, ["editor_waveform"]);
+  assert.deepEqual(calls, ["editor_waveform", "editor_waveform"]);
   assert.equal(context.scene.waveform instanceof Float32Array, true);
   assert.deepEqual(Array.from(context.scene.waveform), bins);
-  assert.ok(paints >= 2, "paintSoon called on waveform arrival");
+  assert.ok(paints >= 3, "paintSoon called on waveform arrival");
+});
+
+test("the Song row shows a subtle Loading song label while the waveform is still decoding", () => {
+  const elements = new Map();
+  function element() {
+    const texts = [];
+    const ctx = new Proxy({
+      fillText(text, x, y) { texts.push({ text, x, y, fill: this.fillStyle }); },
+    }, { get: (target, name) => target[name] ?? (() => {}) });
+    return {
+      texts, getContext: () => ctx, clientWidth: 300, clientHeight: 80, scrollTop: 0,
+      dataset: {}, style: {}, children: [], addEventListener() {}, append() {}, prepend() {},
+    };
+  }
+  const get = id => {
+    if (!elements.has(id)) elements.set(id, element());
+    return elements.get(id);
+  };
+  const context = createContext({
+    document: { getElementById: get, createElement: element, querySelectorAll: () => [], addEventListener() {} },
+    window: { devicePixelRatio: 1, __TAURI__: {
+      core: { invoke: async () => ({ hasDocument: false, busy: false }) },
+      event: { listen() {} },
+    } },
+    ResizeObserver: class { observe() {} }, requestAnimationFrame() {}, setInterval() {},
+    console,
+  });
+  bootEditor(context, { autoStart: false });
+  get("volume-controller-panel").hidden = true;
+  runInContext(`
+    view = { hasDocument: true, songLoading: true, duration: 1200, position: 0, left: 0, right: 1200 };
+    scene = { path: "fixture.osu", viewStart: 0, zoom: .25, rowHeight: 30, moments: [], sections: [], waveform: [] };
+    paint();`, context);
+  assert.ok(get("ruler").texts.some(t => t.text === "Loading song…"), "shows Loading song… while decoding");
+  get("ruler").texts.length = 0;
+  runInContext(`
+    view = { ...view, songLoading: false };
+    scene = { ...scene, waveform: [[.4,.38,.12,.02]] };
+    paint();`, context);
+  assert.ok(!get("ruler").texts.some(t => t.text === "Loading song…"), "clears label once waveform arrives");
 });
