@@ -96,6 +96,7 @@
       summary = await invoke("keysounds_action", { payload: keysoundsGenerate() });
       const toast = generateToast(summary?.generated);
       if (toast) globalThis.showToast?.(toast);
+      globalThis.act?.(null, true);
     } catch (err) {
       error = String(err);
       globalThis.showToast?.({ tone: "error", title: "Generate [Keysounds]", body: String(err) });

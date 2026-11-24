@@ -37,15 +37,34 @@ pub fn decompile(file: &OsuFile, folder_files: &[String], cancel: &dyn Fn() -> b
         }
     }
     // Sample files: every .wav, .mp3 and .ogg file, sub-folders included, except the song
-    // (hitsound domain Responsibility 8).
-    let song = file.general("AudioFilename").map(|s| s.to_lowercase());
+    // (hitsound domain Responsibility 8), resolving duplicates by osu!lazer R12 (.wav > .mp3 > .ogg).
+    let song = file.general("AudioFilename").map(|s| s.replace('\\', "/").to_lowercase());
+    let mut folder_ranked: BTreeMap<SampleIdentity, (usize, String)> = BTreeMap::new();
     for name in folder_files {
         let lower = name.to_lowercase();
-        let is_sample = [".wav", ".mp3", ".ogg"].iter().any(|e| lower.ends_with(e));
-        if is_sample && Some(&lower) != song.as_ref() {
+        let rank = if lower.ends_with(".wav") {
+            Some(0)
+        } else if lower.ends_with(".mp3") {
+            Some(1)
+        } else if lower.ends_with(".ogg") {
+            Some(2)
+        } else {
+            None
+        };
+        if let Some(rank) = rank && Some(&lower) != song.as_ref() {
             let identity = rules::read_sample_file_name(name).unwrap_or_else(|| SampleIdentity::File(name.clone()));
-            lanes.entry(identity).or_insert_with(|| LaneSource::File(name.clone()));
+            folder_ranked
+                .entry(identity)
+                .and_modify(|entry| {
+                    if rank < entry.0 {
+                        *entry = (rank, name.clone());
+                    }
+                })
+                .or_insert_with(|| (rank, name.clone()));
         }
+    }
+    for (identity, (_, name)) in folder_ranked {
+        lanes.insert(identity, LaneSource::File(name));
     }
 
     let mut moments = Vec::new();

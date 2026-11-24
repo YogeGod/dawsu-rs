@@ -156,20 +156,22 @@ impl Application {
         };
         let bytes = std::fs::read(&source_path)
             .map_err(|e| format!("Reading {source_name}: {e}"))?;
-
-        let mut existing: Vec<String> = doc.files.clone();
-        existing.extend(doc.pending.files().map(|f| f.name.clone()));
-        if let Ok(disk_files) = list_folder(root) {
-            existing.extend(disk_files);
-        }
-        let variant_name = next_numbered_variant_name(&existing, &source_name);
-        let target_path = root.join(&variant_name);
-        dawsu_foundation::safe_write::write_new(&target_path, &bytes)
-            .map_err(|e| format!("Writing {variant_name}: {e}"))?;
-        let clip = dawsu_audio::decode(&target_path)?;
-        self.register_added_samples(vec![(variant_name.clone(), clip)]);
+        let clip = dawsu_audio::decode(&source_path)?;
+        let ext = Path::new(&source_name)
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(str::to_ascii_lowercase)
+            .filter(|e| matches!(e.as_str(), "wav" | "ogg" | "mp3"))
+            .unwrap_or_else(|| "wav".to_string());
+        let variant_name = super::layers::create_backing(doc, &source_identity, &ext, &bytes)?;
         let variant_identity = read_sample_file_name(&variant_name)
             .unwrap_or_else(|| SampleIdentity::File(variant_name.clone()));
+        self.document
+            .as_mut()
+            .expect("open map was just validated")
+            .pending
+            .add(&variant_name, &bytes)?;
+        self.register_samples(vec![(variant_name.clone(), clip)], false);
         let doc = self.document.as_mut().expect("open map was just validated");
         doc.composer
             .history

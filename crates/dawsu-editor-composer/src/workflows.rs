@@ -362,8 +362,7 @@ impl Composer {
                     }
                     VolumeScope::All => moment.hits().next().is_some(),
                 };
-                (moment.place() != Place::NoObject
-                    && (lanes_only || (min..=max).contains(&before))
+                ((lanes_only || (min..=max).contains(&before))
                     && in_scope
                     && (!lanes_only && volume != before
                         || gains.iter().any(|(lane, gain)| *gain != moment.hit_volume(lane))))

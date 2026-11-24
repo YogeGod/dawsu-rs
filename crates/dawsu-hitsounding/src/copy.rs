@@ -654,21 +654,40 @@ fn copy_bodies(source: &Hitsounds, to: &mut Hitsounds, before: &[Moment], matche
     for b in 0..to.bodies().len() {
         let object = to.bodies()[b].object();
         let Some(&head) = head_of.get(&object) else { continue };
-        match matched.get(&head).and_then(|s| s.iter().rev().find(|&&idx| matches!(from[idx].place(), Place::SliderNode { node: 0, .. })).or_else(|| s.last())) {
+        let matched_source = matched.get(&head).and_then(|s| {
+            s.iter()
+                .rev()
+                .find(|&&idx| matches!(from[idx].place(), Place::SliderNode { node: 0, .. }))
+                .or_else(|| s.last())
+        });
+        match matched_source {
             Some(&s) => {
-                if !o.copy_body_hitsounds {
-                    continue;
-                }
-                let Place::SliderNode { object: source_object, node: 0 } = from[s].place() else { continue };
-                let Some(src) = source.bodies().iter().find(|x| x.object() == source_object) else { continue };
-                to.set_body_whistle(b, src.whistle());
-                if let Some(set) = src.set() {
-                    if to.bodies()[b].set() != Some(set) {
-                        to.set_body_set(b, set);
+                if o.copy_body_hitsounds {
+                    if let Place::SliderNode { object: source_object, node: 0 } = from[s].place() {
+                        if let Some(src) = source.bodies().iter().find(|x| x.object() == source_object) {
+                            to.set_body_whistle(b, src.whistle());
+                            if o.copy_sample_sets {
+                                if let Some(set) = src.set() {
+                                    if to.bodies()[b].set() != Some(set) {
+                                        to.set_body_set(b, set);
+                                    }
+                                }
+                                if to.bodies()[b].whistle_set() != src.whistle_set() {
+                                    to.set_body_whistle_set(b, src.whistle_set());
+                                }
+                            }
+                        }
                     }
                 }
             }
-            None if o.mode == CopyMode::OverwriteEverything => to.set_body_whistle(b, false),
+            None if o.mode == CopyMode::OverwriteEverything => {
+                if o.copy_body_hitsounds {
+                    to.set_body_whistle(b, false);
+                    if o.copy_sample_sets && to.bodies()[b].whistle_set().is_some() {
+                        to.set_body_whistle_set(b, None);
+                    }
+                }
+            }
             None => continue,
         }
         let head_volume = to.moments()[head].volume();

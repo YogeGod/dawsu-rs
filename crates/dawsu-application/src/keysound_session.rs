@@ -245,6 +245,7 @@ pub(crate) fn handle(app: &mut Application, payload: &Value) -> Result<Value, St
         }
         "generate_keysounds" => {
             let document = app.document.as_ref().ok_or("Open a difficulty first.")?;
+            let open_path = document.path.clone();
             let file_name = document
                 .path
                 .file_name()
@@ -254,7 +255,8 @@ pub(crate) fn handle(app: &mut Application, payload: &Value) -> Result<Value, St
             let folder = document
                 .path
                 .parent()
-                .ok_or("Active beatmap has no parent folder.")?;
+                .ok_or("Active beatmap has no parent folder.")?
+                .to_path_buf();
             let plan = plan_generate_keysounds(
                 &app.keysounds.document,
                 &document.file,
@@ -262,17 +264,44 @@ pub(crate) fn handle(app: &mut Application, payload: &Value) -> Result<Value, St
                 &ExportSettings::default(),
             );
             let out_path = folder.join(&plan.file_name);
+            if out_path == open_path {
+                return Err("Cannot overwrite the currently open difficulty with [Keysounds].".into());
+            }
+            // Render and write each manifest WAV before writing [Keysounds].osu so no dangling
+            // sample references are ever emitted.
+            for entry in &plan.manifest {
+                let wav_path = folder.join(&entry.filename);
+                if !wav_path.exists() {
+                    let clip = synth_note_clip(entry.pitch, entry.velocity, entry.duration_ms);
+                    let wav_bytes = encode_clip_wav(&clip);
+                    write_new(&wav_path, &wav_bytes)
+                        .map_err(|e| format!("Writing {}: {e}", entry.filename))?;
+                }
+            }
             let bytes = plan.file.to_bytes();
             let backed_up = if out_path.exists() {
                 let previous = std::fs::read(&out_path).map_err(|e| e.to_string())?;
                 let policy = BackupPolicy::new(app.data_root.join("backups"), 20);
-                replace(&out_path, &previous, &bytes, &policy)
-                    .map_err(|e| e.to_string())?;
-                true
+                match replace(&out_path, &previous, &bytes, &policy).map_err(|e| e.to_string())? {
+                    dawsu_foundation::safe_write::WriteOutcome::Saved { .. } => true,
+                    dawsu_foundation::safe_write::WriteOutcome::ChangedOnDisk => {
+                        return Err(format!(
+                            "{} changed on disk during write. Try again.",
+                            plan.file_name
+                        ));
+                    }
+                }
             } else {
-                write_new(&out_path, &bytes).map_err(|e| e.to_string())?;
+                dawsu_foundation::safe_write::create(&out_path, &bytes)
+                    .map_err(|e| e.to_string())?;
                 false
             };
+            if let Some(doc) = app.document.as_mut() {
+                if !doc.difficulties.iter().any(|p| p == &out_path) {
+                    doc.difficulties.push(out_path.clone());
+                    doc.difficulties.sort();
+                }
+            }
             let synced_count = plan.sync.synced.len();
             let unsynced_count = plan.sync.unsynced.len();
             app.status = format!(
@@ -296,6 +325,34 @@ pub(crate) fn handle(app: &mut Application, payload: &Value) -> Result<Value, St
     }
 
     Ok(summary(app))
+}
+
+fn encode_clip_wav(clip: &AudioClip) -> Vec<u8> {
+    let channels = clip.channels.max(1) as u16;
+    let sample_rate = clip.sample_rate.max(1);
+    let data_bytes = (clip.samples.len() * 2) as u32;
+    let mut wav = Vec::with_capacity(44 + data_bytes as usize);
+    wav.extend_from_slice(b"RIFF");
+    wav.extend_from_slice(&(36 + data_bytes).to_le_bytes());
+    wav.extend_from_slice(b"WAVE");
+    wav.extend_from_slice(b"fmt ");
+    wav.extend_from_slice(&16u32.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes()); // PCM
+    wav.extend_from_slice(&channels.to_le_bytes());
+    wav.extend_from_slice(&sample_rate.to_le_bytes());
+    let byte_rate = sample_rate * u32::from(channels) * 2;
+    wav.extend_from_slice(&byte_rate.to_le_bytes());
+    let block_align = channels * 2;
+    wav.extend_from_slice(&block_align.to_le_bytes());
+    wav.extend_from_slice(&16u16.to_le_bytes()); // bits per sample
+    wav.extend_from_slice(b"data");
+    wav.extend_from_slice(&data_bytes.to_le_bytes());
+    for &sample in &clip.samples {
+        let clamped = sample.clamp(-1.0, 1.0);
+        let pcm = (clamped * 32767.0).round() as i16;
+        wav.extend_from_slice(&pcm.to_le_bytes());
+    }
+    wav
 }
 
 #[cfg(test)]

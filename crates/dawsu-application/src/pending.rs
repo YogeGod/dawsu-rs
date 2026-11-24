@@ -116,6 +116,7 @@ impl Pending {
         safe_write::create(&claim, sha256.as_bytes())
             .map_err(|_| format!("{name} was just taken by another dawsu! window. Try again."))?;
         let kept = || std::fs::read(&path).is_ok_and(|stored| stored == bytes);
+        let _prune_lock = store.samples.parent().and_then(|root| removed_samples_lock(root).ok());
         let stored = std::fs::create_dir_all(&store.samples).map_err(|e| e.to_string()).and_then(|()| {
             if kept() {
                 // Kept by an earlier sample with the same bytes: it counts from today.
@@ -312,6 +313,10 @@ pub(crate) fn left_out_without_project(name: &str) -> String {
 /// now uses: that difficulty would start playing it.
 #[allow(clippy::disallowed_methods)]
 pub(crate) fn check_indexes_free(root: &Path, saved: &Path, writes: &[String]) -> Result<(), String> {
+    check_indexes_free_except(root, &[saved], writes)
+}
+
+pub(crate) fn check_indexes_free_except(root: &Path, skip: &[&Path], writes: &[String]) -> Result<(), String> {
     let indexes: BTreeMap<u32, &String> = writes.iter().filter_map(|name| match read_sample_file_name(name)? {
         SampleIdentity::Standard { index, .. } => Some((index.get(), name)),
         SampleIdentity::File(_) => None,
@@ -319,9 +324,14 @@ pub(crate) fn check_indexes_free(root: &Path, saved: &Path, writes: &[String]) -
     if indexes.is_empty() {
         return Ok(());
     }
-    let own = saved.file_name().map(|name| name.to_string_lossy().to_ascii_lowercase());
+    let skipped: BTreeSet<String> = skip
+        .iter()
+        .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().to_ascii_lowercase()))
+        .collect();
     for other in list_folder(root).map_err(|e| e.to_string())? {
-        if !Path::new(&other).extension().is_some_and(|e| e.eq_ignore_ascii_case("osu")) || Some(other.to_ascii_lowercase()) == own {
+        if !Path::new(&other).extension().is_some_and(|e| e.eq_ignore_ascii_case("osu"))
+            || skipped.contains(&other.to_ascii_lowercase())
+        {
             continue;
         }
         let (used, _) = crate::layers::reservations(root, std::slice::from_ref(&other))?;
@@ -646,6 +656,7 @@ pub(crate) fn keep_removed(data_root: &Path, name: &str, sha256: &str, bytes: &[
 /// Returns how many moved.
 pub(crate) fn prune_kept_copies(data_root: &Path, project_root: Option<&Path>, min_age: std::time::Duration) -> usize {
     let Some(project_root) = project_root else { return 0 };
+    let Ok(_lock) = removed_samples_lock(data_root) else { return 0 };
     let copies: Vec<PathBuf> = files_under(&data_root.join("pending-samples")).into_iter()
         .filter(|path| age(path).is_some_and(|age| age >= min_age)).collect();
     if copies.is_empty() {
@@ -663,7 +674,6 @@ pub(crate) fn prune_kept_copies(data_root: &Path, project_root: Option<&Path>, m
             named.push('\n');
         }
     }
-    let Ok(_lock) = removed_samples_lock(data_root) else { return 0 };
     let mut moved = 0;
     for copy in copies {
         let Some(sha256) = copy.file_stem().map(|stem| stem.to_string_lossy().to_ascii_lowercase()) else { continue };

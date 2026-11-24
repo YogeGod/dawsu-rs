@@ -21,7 +21,12 @@ pub fn clean_up_green_lines(file: &OsuFile) -> Cleanup {
     let default_bank = crate::lazer::control_points::default_sample_set(file);
     let default_volume = file.general("SampleVolume").and_then(|v| dawsu_osu_format::number::parse_int(&v).ok()).unwrap_or(100);
     let mut points = file.timing_points();
-    points.sort_by(|a, b| a.time().total_cmp(&b.time()));
+    // Red lines before green lines at the same timestamp (matching osu!lazer R7 & lazer::control_points).
+    points.sort_by(|a, b| {
+        a.time()
+            .total_cmp(&b.time())
+            .then_with(|| b.uninherited().cmp(&a.uninherited()))
+    });
     let mut in_force: Option<Values> = None;
     let mut redundant = Vec::new();
     for tp in &points {

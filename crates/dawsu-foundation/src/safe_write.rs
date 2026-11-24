@@ -77,11 +77,39 @@ pub fn rename_waiting(from: &Path, to: &Path) -> Result<(), Error> {
 }
 
 /// Publishes a new file atomically without replacing an existing destination.
+/// Falls back to `create_new` when the filesystem (e.g. FAT32/exFAT) does not support hard links.
 pub fn create(target: &Path, bytes: &[u8]) -> Result<(), Error> {
     let temp = write_temporary(target, bytes)?;
     let result = fs::hard_link(&temp, target);
     let _ = fs::remove_file(&temp);
-    result.map_err(|e| Error::io("creating the file", target, e))
+    match result {
+        Ok(()) => Ok(()),
+        Err(e) if hard_link_unsupported(&e) && !target.exists() => {
+            match OpenOptions::new().write(true).create_new(true).open(target) {
+                Ok(file) => write_and_sync(file, bytes).map_err(|err| {
+                    let _ = fs::remove_file(target);
+                    Error::io("creating the file", target, err)
+                }),
+                Err(err) => Err(Error::io("creating the file", target, err)),
+            }
+        }
+        Err(e) => Err(Error::io("creating the file", target, e)),
+    }
+}
+
+fn hard_link_unsupported(e: &std::io::Error) -> bool {
+    if e.kind() == ErrorKind::Unsupported {
+        return true;
+    }
+    #[cfg(windows)]
+    if matches!(e.raw_os_error(), Some(1 | 50)) {
+        return true;
+    }
+    #[cfg(unix)]
+    if e.kind() == ErrorKind::PermissionDenied {
+        return true;
+    }
+    false
 }
 
 /// Writes `new_bytes` over `target`, which the caller read as `read_bytes`, in the order of

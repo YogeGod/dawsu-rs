@@ -375,6 +375,6 @@ mod tests {
         let target = String::from_utf8(plan.files[0].file.to_bytes()).unwrap();
         let digest = sha256_hex(format!("{listing}{target}").as_bytes());
         eprintln!("{listing}{target}\n{digest}");
-        assert_eq!(digest, "c11875a61d6b732382ec9c065c06f9289a5efc095343ef9825c55855eb5a4d73");
+        assert_eq!(digest, "ae70034a7ff92768e11f6d919b3b82b817a5e1c9f80f4344bb2101600d001a37");
     }
 }

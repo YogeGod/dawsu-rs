@@ -307,7 +307,7 @@ pub fn plan_generate_keysounds(
                 } else if let Some(s) = existing {
                     entries.push(format_existing_sample(s));
                 } else {
-                    entries.push("0:0".to_string());
+                    entries.push(String::new());
                 }
             }
             let _ = file.set_field(line, 9, &entries.join("|"));
@@ -434,10 +434,23 @@ fn slider_span_duration_ms(
     let Some(length) = length else {
         return 0.0;
     };
-    let mut beat_length = 500.0_f64;
+    let slider_multiplier = slider_multiplier.clamp(0.4, 3.6);
+    let mut sorted: Vec<_> = timing_points.iter().collect();
+    // Match osu!lazer (LegacyBeatmapDecoder.cs:581-598): sort by time, red before green on ties.
+    sorted.sort_by(|a, b| {
+        a.time()
+            .total_cmp(&b.time())
+            .then_with(|| b.uninherited().cmp(&a.uninherited()))
+    });
+    // Match osu!lazer (ControlPointInfo.cs:75): before first red line use first red line, else 1000 ms.
+    let mut beat_length = sorted
+        .iter()
+        .find(|tp| tp.uninherited() && tp.beat_length() > 0.0 && tp.beat_length().is_finite())
+        .map(|tp| tp.beat_length())
+        .unwrap_or(1000.0);
     let mut sv_multiplier = 1.0_f64;
 
-    for tp in timing_points {
+    for tp in sorted {
         if tp.time() > start_ms {
             break;
         }

@@ -2,7 +2,7 @@
 //! can revert the whole mapset to its original state after saving edits.
 
 use crate::pending::mapset_key;
-use dawsu_foundation::safe_write::{self, BackupPolicy, WriteOutcome};
+use dawsu_foundation::safe_write;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -87,6 +87,7 @@ pub(crate) fn restore(data_root: &Path, mapset_folder: &Path) -> Result<usize, S
     std::fs::create_dir_all(&backup_dir)
         .map_err(|e| format!("Creating pre-revert backup folder: {e}"))?;
 
+    let mut backups: Vec<(PathBuf, Option<Vec<u8>>)> = Vec::new();
     for (name, current_path) in osu_entries(mapset_folder)? {
         let bytes = std::fs::read(&current_path)
             .map_err(|e| format!("Backing up {name} before revert: {e}"))?;
@@ -94,27 +95,28 @@ pub(crate) fn restore(data_root: &Path, mapset_folder: &Path) -> Result<usize, S
             .map_err(|e| format!("Writing pre-revert backup for {name}: {e}"))?;
     }
 
-    let policy = BackupPolicy::new(backup_dir.clone(), 50);
     let mut restored = 0usize;
     for (name, snap_path) in originals {
         let orig_bytes = std::fs::read(&snap_path)
             .map_err(|e| format!("Reading original snapshot {name}: {e}"))?;
         let target = mapset_folder.join(&name);
-        if target.exists() {
-            let expected = std::fs::read(&target)
-                .map_err(|e| format!("Reading current {name} before restore: {e}"))?;
-            match safe_write::replace(&target, &expected, &orig_bytes, &policy)
-                .map_err(|e| format!("Restoring {name}: {e}"))?
-            {
-                WriteOutcome::Saved { .. } => {}
-                WriteOutcome::ChangedOnDisk => {
-                    return Err(format!("{name} changed on disk during revert. Try again."));
+        let prev = std::fs::read(&target).ok();
+        let write_res = safe_write::write_new(&target, &orig_bytes)
+            .map_err(|e| format!("Restoring {name}: {e}"));
+        if let Err(err) = write_res {
+            for (prev_path, prev_bytes) in backups.into_iter().rev() {
+                match prev_bytes {
+                    Some(b) => {
+                        let _ = safe_write::write_new(&prev_path, &b);
+                    }
+                    None => {
+                        let _ = std::fs::remove_file(&prev_path);
+                    }
                 }
             }
-        } else {
-            safe_write::create(&target, &orig_bytes)
-                .map_err(|e| format!("Recreating {name}: {e}"))?;
+            return Err(err);
         }
+        backups.push((target, prev));
         restored += 1;
     }
 

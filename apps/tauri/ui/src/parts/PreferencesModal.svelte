@@ -168,14 +168,21 @@
 
   async function pickPreset(nextPreset) {
     try {
-      await invoke("editor_view", { scene: false, action: { kind: "key_preset", name: nextPreset } });
+      const next = await invoke("editor_view", { scene: false, action: { kind: "key_preset", name: nextPreset } });
+      applyReturnedView(next);
+      if (next?.error) {
+        globalThis.showToast?.({ tone: "error", title: "Controls", body: next.error });
+        return;
+      }
       await loadShortcuts();
       globalThis.showToast?.({
         tone: "success",
         title: "Controls updated",
         body: nextPreset === "osu!" ? "Switched to osu! editor controls." : "Switched to DAW-like keys.",
       });
-    } catch {}
+    } catch (err) {
+      globalThis.showToast?.({ tone: "error", title: "Controls", body: String(err) });
+    }
   }
 
   async function applyAudioOutput() {
@@ -186,10 +193,16 @@
       return;
     }
     try {
-      await invoke("editor_view", {
+      const next = await invoke("editor_view", {
         scene: false,
         action: { kind: "output_settings", backend: selectedBackend, device_id: selectedDevice || null, ms },
       });
+      applyReturnedView(next);
+      if (next?.error) {
+        audioError = next.error;
+        globalThis.showToast?.({ tone: "error", title: "Audio output", body: next.error });
+        return;
+      }
       await loadAudio(selectedBackend);
       globalThis.showToast?.({
         tone: "success",
@@ -225,22 +238,45 @@
     }
     capturingId = null;
     invoke("editor_view", { scene: false, action: { kind: "change_shortcut", id: entry.id, chord } })
-      .then(loadShortcuts)
-      .catch(() => {});
+      .then(async next => {
+        applyReturnedView(next);
+        if (next?.error) {
+          globalThis.showToast?.({ tone: "error", title: "Shortcut", body: next.error });
+          return;
+        }
+        await loadShortcuts();
+      })
+      .catch(err => {
+        globalThis.showToast?.({ tone: "error", title: "Shortcut", body: String(err) });
+      });
   }
 
   async function resetShortcut(entry) {
     try {
-      await invoke("editor_view", { scene: false, action: { kind: "change_shortcut", id: entry.id, chord: null } });
+      const next = await invoke("editor_view", { scene: false, action: { kind: "change_shortcut", id: entry.id, chord: null } });
+      applyReturnedView(next);
+      if (next?.error) {
+        globalThis.showToast?.({ tone: "error", title: "Shortcut", body: next.error });
+        return;
+      }
       await loadShortcuts();
-    } catch {}
+    } catch (err) {
+      globalThis.showToast?.({ tone: "error", title: "Shortcut", body: String(err) });
+    }
   }
 
   async function resetAllShortcuts() {
     try {
-      await invoke("editor_view", { scene: false, action: { kind: "reset_shortcuts" } });
+      const next = await invoke("editor_view", { scene: false, action: { kind: "reset_shortcuts" } });
+      applyReturnedView(next);
+      if (next?.error) {
+        globalThis.showToast?.({ tone: "error", title: "Shortcuts", body: next.error });
+        return;
+      }
       await loadShortcuts();
-    } catch {}
+    } catch (err) {
+      globalThis.showToast?.({ tone: "error", title: "Shortcuts", body: String(err) });
+    }
   }
 
   const filteredShortcuts = $derived.by(() => {

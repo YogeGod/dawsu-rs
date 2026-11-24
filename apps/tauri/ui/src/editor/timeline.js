@@ -55,7 +55,13 @@ export function attachTimeline(ctx) {
     const s = uiScale();
     const left = rect.left ?? rect.x ?? 0;
     const top = rect.top ?? rect.y ?? 0;
-    return { x: (event.clientX - left) / s, y: (event.clientY - top) / s, rect };
+    return {
+      x: (event.clientX - left) / s,
+      y: (event.clientY - top) / s,
+      width: (rect.width ?? 0) / s,
+      height: (rect.height ?? 0) / s,
+      rect,
+    };
   }
 
   // A screen point on the ruler in its own CSS pixels, with the ruler's size in them too.
@@ -66,7 +72,7 @@ export function attachTimeline(ctx) {
   }
 
   function pointer(event, phase, gesture = state.drag) {
-    const { x, y: localY, rect } = pointerIn(gesture.surface, event);
+    const { x, y: localY, height } = pointerIn(gesture.surface, event);
     const valueLane = gesture.surface === controller;
     const y = localY + (valueLane || gesture.panning ? 0 : $("scroll").scrollTop);
     const rowUnderPointer = Math.floor(y / state.scene.rowHeight);
@@ -97,7 +103,7 @@ export function attachTimeline(ctx) {
     }
     return {
       kind: "pointer", phase, ms, row, x, y,
-      value: valueLane ? limit((rect.height - y) / Math.max(1, rect.height - 3) * 100, 1, 100) : null,
+      value: valueLane ? limit((height - y) / Math.max(1, height - 3) * 100, 1, 100) : null,
       shift: event.shiftKey, ctrl: event.ctrlKey || event.metaKey, alt: event.altKey,
     };
   }
@@ -418,9 +424,9 @@ export function attachTimeline(ctx) {
   }
 
   function locatorDragTo(gesture, x) {
-    const raw = gesture[gesture.mode] + (x - gesture.x) / gesture.zoom;
-    const to = snapToActiveGrid(raw);
+    const to = gesture[gesture.mode] + (x - gesture.x) / gesture.zoom;
     // Locators already reversed by the set shortcuts drag freely, as the backend lets them.
+    // Snapping is performed authoritatively by Rust (`document.composer.snap`) on `ruler_locators`.
     const ordered = gesture.left <= gesture.right;
     if (gesture.mode === "left") return limit(to, 0, ordered ? gesture.right : gesture.duration);
     return limit(to, ordered ? gesture.left : 0, gesture.duration);

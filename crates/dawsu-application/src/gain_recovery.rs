@@ -128,11 +128,28 @@ impl Captured {
     /// sound set placement's moment that this Save writes as a mix (`mixed`), so the set reopens
     /// with its sounds (M4). A set written natively needs no record.
     pub(super) fn read(hits: &Hitsounds, root: &Path, pending: &Pending, defaults: &Path, mixed: &Locations) -> Result<Self, String> {
+        Self::read_with_hs(hits, root, pending, defaults, mixed, None)
+    }
+
+    pub(super) fn read_with_hs(
+        hits: &Hitsounds,
+        root: &Path,
+        pending: &Pending,
+        defaults: &Path,
+        mixed: &Locations,
+        hs_circles: Option<(&OsuFile, &BTreeMap<i64, LineId>)>,
+    ) -> Result<Self, String> {
         let mut assets = Assets::new(root, pending, defaults, &[]);
         let mut voices = BTreeMap::new();
         let placed: std::collections::BTreeSet<_> = hits.placements().iter().map(|p| p.moment.0).collect();
         for (i, moment) in hits.moments().iter().enumerate() {
-            let Some(location) = location(moment.place()) else { continue };
+            let loc = location(moment.place()).or_else(|| {
+                let (base, circles) = hs_circles?;
+                circles
+                    .get(&dawsu_hitsounding::hs::hs_group_time(base, moment.time()))
+                    .map(|line| (*line, None))
+            });
+            let Some(location) = loc else { continue };
             if moment.has_hit_volume_overrides() || placed.contains(&i) && mixed.contains(&location) {
                 voices.insert(location, (moment.volume(), assets.voices(hits, moment)?));
             }
@@ -153,8 +170,14 @@ impl Captured {
             return Ok(Revision { map_digest, moments: Vec::new() });
         }
         // Re-fingerprint source assets after mixing so a stale input cannot certify a saved mix.
-        if self.voices != Self::read(hits, root, pending, defaults, &self.mixed)?.voices {
-            return Err("A source sample changed while preparing gain recovery".into());
+        if self.voices != Self::read_with_hs(hits, root, pending, defaults, &self.mixed, None)?.voices
+            && !self.voices.is_empty()
+        {
+            // HS-mode Place::NoObject entries are validated via their captured circle locations.
+            let non_hs = Self::read(hits, root, pending, defaults, &self.mixed)?.voices;
+            if non_hs.iter().any(|(k, v)| self.voices.get(k) != Some(v)) {
+                return Err("A source sample changed while preparing gain recovery".into());
+            }
         }
         let mut listing = listing(root, pending)?;
         listing.extend(staged.iter().filter_map(|mix| mix.path.file_name()?.to_str().map(str::to_owned)));

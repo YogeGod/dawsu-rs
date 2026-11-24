@@ -81,8 +81,11 @@ fn folder_name(archive: &Path) -> String {
 }
 
 fn unique() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
     let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
-    format!("{}-{nanos:x}", std::process::id())
+    format!("{}-{nanos:x}-{seq}", std::process::id())
 }
 
 /// Imports an `.osz` archive into a new folder of `songs` (Responsibility 10, invariant 10).
@@ -195,10 +198,13 @@ fn place(staging: &Path, songs: &Path, name: &str) -> Result<OszImport, Error> {
                 break candidate;
             }
         };
-        match fs::rename(staging, &folder) {
+        if folder.exists() {
+            continue;
+        }
+        match dawsu_foundation::safe_write::rename_waiting(staging, &folder) {
             Ok(()) => return Ok(OszImport::Imported { folder }),
             Err(_) if folder.exists() => continue,
-            Err(e) => return Err(Error::io("moving the imported folder into place", &folder, e)),
+            Err(e) => return Err(Error::Write(e)),
         }
     }
     Err(Error::io("moving the imported folder into place", songs, io::Error::new(io::ErrorKind::AlreadyExists, "no free folder name after 20 tries")))
@@ -222,11 +228,26 @@ pub fn export_osz(folder: &Path, target: &Path, cancel: &dyn Fn() -> bool, progr
     files.sort();
 
     let name = target.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "export.osz".into());
-    let temp = target_dir.join(format!(".{name}.partial-{}", unique()));
-    let out = fs::File::create_new(&temp).map_err(|e| Error::io("writing the archive", &temp, e))?;
+    let (temp, out) = {
+        let mut created = None;
+        for _ in 0..32 {
+            let candidate = target_dir.join(format!(".{name}.partial-{}", unique()));
+            match fs::File::create_new(&candidate) {
+                Ok(file) => {
+                    created = Some((candidate, file));
+                    break;
+                }
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(e) => return Err(Error::io("writing the archive", &candidate, e)),
+            }
+        }
+        created.ok_or_else(|| Error::io("writing the archive", target, io::Error::new(io::ErrorKind::AlreadyExists, "could not allocate temporary archive name")))?
+    };
     let result = write_zip(out, &root, &files, &temp, cancel, progress);
     let outcome = match result {
-        Ok(true) => fs::rename(&temp, target).map(|()| OszExport::Exported).map_err(|e| Error::io("moving the archive into place", target, e)),
+        Ok(true) => dawsu_foundation::safe_write::rename_waiting(&temp, target)
+            .map(|()| OszExport::Exported)
+            .map_err(Error::Write),
         Ok(false) => Ok(OszExport::Cancelled),
         Err(e) => Err(e),
     };
