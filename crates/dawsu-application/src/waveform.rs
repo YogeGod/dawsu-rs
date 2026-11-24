@@ -80,6 +80,7 @@ fn eval_gaussian(x: f32, sigma: f32) -> f32 {
     INV_SQRT_2_PI * (-0.5 * x * x / (sigma * sigma)).exp() / sigma
 }
 
+#[cfg(test)]
 fn compute_intensity(magnitudes: &[f32], sample_rate: f32, start_freq: f32, end_freq: f32) -> f32 {
     let start_bin = ((FFT_BINS as f32 * 2.0 * start_freq / sample_rate) as usize).min(magnitudes.len());
     let end_bin = ((FFT_BINS as f32 * 2.0 * end_freq / sample_rate) as usize).min(magnitudes.len());
@@ -143,70 +144,162 @@ pub fn analyse(audio: &AudioClip) -> Vec<WaveBin> {
         return Vec::new();
     }
 
-    // Pass 1: 1 ms resolution stereo peak points.
+    // Pass 1 & Pass 2: parallelized across CPU cores for fast multi-minute track analysis.
     let frames_per_point = (audio.sample_rate as usize / 1000).max(1);
     let second_ch = if channels > 1 { 1 } else { 0 };
     let point_count = frames.div_ceil(frames_per_point);
-    let mut points = Vec::with_capacity(point_count);
+    let mut points = vec![RawPoint::default(); point_count];
 
-    for point_idx in 0..point_count {
-        let start_frame = point_idx * frames_per_point;
-        let end_frame = (start_frame + frames_per_point).min(frames);
-        let mut amp_l = 0.0_f32;
-        let mut amp_r = 0.0_f32;
-        for f in start_frame..end_frame {
-            let base = f * channels;
-            amp_l = amp_l.max(audio.samples[base].abs());
-            amp_r = amp_r.max(audio.samples[base + second_ch].abs());
-        }
-        points.push(RawPoint {
-            amp_l: amp_l.min(1.0),
-            amp_r: amp_r.min(1.0),
-            low: 0.0,
-            mid: 0.0,
-            high: 0.0,
-        });
-    }
-
-    // Pass 2: 1024-sample Hann-windowed FFT stepped across the track.
     let window: Vec<f32> = (0..FFT_SIZE)
         .map(|n| {
             0.5 * (1.0 - (2.0 * std::f32::consts::PI * n as f32 / (FFT_SIZE - 1) as f32).cos())
         })
         .collect();
-    let mut fft_buf = vec![(0.0_f32, 0.0_f32); FFT_SIZE];
-    let mut magnitudes = vec![0.0_f32; FFT_BINS];
+    // Precompute radix-2 stage twiddle factors once for FFT_SIZE (eliminates sin_cos per chunk).
+    let twiddles: Vec<Vec<(f32, f32)>> = {
+        let mut stages = Vec::new();
+        let mut len = 2usize;
+        while len <= FFT_SIZE {
+            let half = len >> 1;
+            let mut stage = Vec::with_capacity(half);
+            let step = -2.0 * std::f32::consts::PI / len as f32;
+            for k in 0..half {
+                let (im, re) = (step * k as f32).sin_cos();
+                stage.push((re, im));
+            }
+            stages.push(stage);
+            len <<= 1;
+        }
+        stages
+    };
+    let bit_rev: Vec<usize> = {
+        let mut rev = vec![0usize; FFT_SIZE];
+        let mut j = 0usize;
+        for i in 1..FFT_SIZE {
+            let mut bit = FFT_SIZE >> 1;
+            while j & bit != 0 {
+                j ^= bit;
+                bit >>= 1;
+            }
+            j ^= bit;
+            rev[i] = j;
+        }
+        rev
+    };
+
     let sample_rate = audio.sample_rate as f32;
     let inv_channels = 1.0 / channels as f32;
+    let low_start = ((FFT_BINS as f32 * 2.0 * LOW_MIN_HZ / sample_rate) as usize).min(FFT_BINS);
+    let mid_start = ((FFT_BINS as f32 * 2.0 * MID_MIN_HZ / sample_rate) as usize).min(FFT_BINS);
+    let high_start = ((FFT_BINS as f32 * 2.0 * HIGH_MIN_HZ / sample_rate) as usize).min(FFT_BINS);
+    let high_end = ((FFT_BINS as f32 * 2.0 * HIGH_MAX_HZ / sample_rate) as usize).min(FFT_BINS);
+
+    let fft_blocks = frames.div_ceil(FFT_SIZE);
+    let threads = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(2)
+        .clamp(1, 8);
+
+    // Pass 1: 1 ms stereo peaks (parallelized in point chunks).
+    if point_count >= 2048 && threads > 1 {
+        let chunk_pts = point_count.div_ceil(threads);
+        std::thread::scope(|scope| {
+            for (chunk_idx, slice) in points.chunks_mut(chunk_pts).enumerate() {
+                let base_pt = chunk_idx * chunk_pts;
+                let samples = &audio.samples;
+                scope.spawn(move || {
+                    for (local, pt) in slice.iter_mut().enumerate() {
+                        let start_frame = (base_pt + local) * frames_per_point;
+                        let end_frame = (start_frame + frames_per_point).min(frames);
+                        let mut amp_l = 0.0_f32;
+                        let mut amp_r = 0.0_f32;
+                        for f in start_frame..end_frame {
+                            let base = f * channels;
+                            amp_l = amp_l.max(samples[base].abs());
+                            amp_r = amp_r.max(samples[base + second_ch].abs());
+                        }
+                        pt.amp_l = amp_l.min(1.0);
+                        pt.amp_r = amp_r.min(1.0);
+                    }
+                });
+            }
+        });
+    } else {
+        for (point_idx, pt) in points.iter_mut().enumerate() {
+            let start_frame = point_idx * frames_per_point;
+            let end_frame = (start_frame + frames_per_point).min(frames);
+            let mut amp_l = 0.0_f32;
+            let mut amp_r = 0.0_f32;
+            for f in start_frame..end_frame {
+                let base = f * channels;
+                amp_l = amp_l.max(audio.samples[base].abs());
+                amp_r = amp_r.max(audio.samples[base + second_ch].abs());
+            }
+            pt.amp_l = amp_l.min(1.0);
+            pt.amp_r = amp_r.min(1.0);
+        }
+    }
+
+    // Pass 2: 1024-sample Hann-windowed FFTs (parallelized across block chunks).
+    let mut block_bands = vec![(0.0_f32, 0.0_f32, 0.0_f32); fft_blocks];
+    let run_block_range = |start_block: usize, out_slice: &mut [(f32, f32, f32)]| {
+        let mut fft_buf = vec![(0.0_f32, 0.0_f32); FFT_SIZE];
+        let mut magnitudes = vec![0.0_f32; FFT_BINS];
+        for (offset, dst) in out_slice.iter_mut().enumerate() {
+            let frame_pos = (start_block + offset) * FFT_SIZE;
+            let available = (frames - frame_pos).min(FFT_SIZE);
+            for i in 0..available {
+                let base = (frame_pos + i) * channels;
+                let mut mono = 0.0_f32;
+                for c in 0..channels {
+                    mono += audio.samples[base + c];
+                }
+                fft_buf[bit_rev[i]] = (mono * inv_channels * window[i], 0.0);
+            }
+            for i in available..FFT_SIZE {
+                fft_buf[bit_rev[i]] = (0.0, 0.0);
+            }
+            let mut len = 2usize;
+            for stage in &twiddles {
+                let half = len >> 1;
+                for chunk in fft_buf.chunks_exact_mut(len) {
+                    for (k, &(w_re, w_im)) in stage.iter().enumerate() {
+                        let (u_re, u_im) = chunk[k];
+                        let (v_re, v_im) = chunk[k + half];
+                        let t_re = v_re * w_re - v_im * w_im;
+                        let t_im = v_re * w_im + v_im * w_re;
+                        chunk[k] = (u_re + t_re, u_im + t_im);
+                        chunk[k + half] = (u_re - t_re, u_im - t_im);
+                    }
+                }
+                len <<= 1;
+            }
+            for (mag, &(re, im)) in magnitudes.iter_mut().zip(fft_buf.iter().take(FFT_BINS)) {
+                *mag = (re * re + im * im).sqrt();
+            }
+            let low: f32 = magnitudes[low_start..mid_start].iter().sum();
+            let mid: f32 = magnitudes[mid_start..high_start].iter().sum();
+            let high: f32 = magnitudes[high_start..high_end].iter().sum();
+            *dst = (low, mid, high);
+        }
+    };
+
+    if fft_blocks >= 64 && threads > 1 {
+        let chunk_blocks = fft_blocks.div_ceil(threads);
+        std::thread::scope(|scope| {
+            for (chunk_idx, slice) in block_bands.chunks_mut(chunk_blocks).enumerate() {
+                let start_block = chunk_idx * chunk_blocks;
+                scope.spawn(move || run_block_range(start_block, slice));
+            }
+        });
+    } else {
+        run_block_range(0, &mut block_bands);
+    }
 
     let mut current_point = 0usize;
-    let mut frame_pos = 0usize;
-    while frame_pos < frames {
-        let available = (frames - frame_pos).min(FFT_SIZE);
-        for i in 0..available {
-            let base = (frame_pos + i) * channels;
-            let mut mono = 0.0_f32;
-            for c in 0..channels {
-                mono += audio.samples[base + c];
-            }
-            fft_buf[i] = (mono * inv_channels * window[i], 0.0);
-        }
-        for slot in &mut fft_buf[available..FFT_SIZE] {
-            *slot = (0.0, 0.0);
-        }
-
-        fft_radix2_inplace(&mut fft_buf);
-
-        for (mag, &(re, im)) in magnitudes.iter_mut().zip(fft_buf.iter().take(FFT_BINS)) {
-            *mag = re.hypot(im);
-        }
-
-        let low = compute_intensity(&magnitudes, sample_rate, LOW_MIN_HZ, MID_MIN_HZ);
-        let mid = compute_intensity(&magnitudes, sample_rate, MID_MIN_HZ, HIGH_MIN_HZ);
-        let high = compute_intensity(&magnitudes, sample_rate, HIGH_MIN_HZ, HIGH_MAX_HZ);
-
-        frame_pos += available;
-        while current_point < points.len() && current_point * frames_per_point < frame_pos {
+    for (block_idx, &(low, mid, high)) in block_bands.iter().enumerate() {
+        let block_end = ((block_idx + 1) * FFT_SIZE).min(frames);
+        while current_point < points.len() && current_point * frames_per_point < block_end {
             let p = &mut points[current_point];
             p.low = low;
             p.mid = mid;
