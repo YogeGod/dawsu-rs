@@ -946,7 +946,7 @@ export function attachLanes(ctx) {
         try {
           const res = await invoke("drum_vst_action", { payload: { kind: "render_wavs", exact: exactBox.checked } });
           await ctx.update(null, false);
-          renderInfo.textContent = `Rendered ${res.renderedCount} WAV ${res.renderedCount === 1 ? "file" : "files"} for ${res.hitCount} mapped hits into the map folder.`;
+          renderInfo.textContent = `Staged ${res.renderedCount} WAV ${res.renderedCount === 1 ? "file" : "files"} and switched ${res.hitCount} mapped ${res.hitCount === 1 ? "hit" : "hits"} onto lanes (written to the mapset when you Save).`;
         } catch (err) {
           renderInfo.textContent = String(err);
         } finally {

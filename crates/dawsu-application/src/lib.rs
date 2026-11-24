@@ -3829,34 +3829,70 @@ impl Application {
         Ok(())
     }
 
-    /// Plans a "Render drums to WAVs…" bake over all hits on currently routed VST3 drum lanes.
+    /// Plans a "Render drums to WAVs…" bake over all hits on currently routed VST3 drum lanes,
+    /// picking free filenames that do not collide with existing mapset or pending files.
     pub fn plan_drum_vst_render(&self, mode: VelocityExportMode) -> Result<Vst3DrumExportPlan, String> {
+        let (plan, _) = self.plan_drum_vst_render_with_sources(mode)?;
+        Ok(plan)
+    }
+
+    fn plan_drum_vst_render_with_sources(
+        &self,
+        mode: VelocityExportMode,
+    ) -> Result<(Vst3DrumExportPlan, Vec<(usize, SampleIdentity, i32)>), String> {
         let d = self.document.as_ref().ok_or("Open a difficulty first.")?;
         let vst = self.drum_vst.as_ref().ok_or("Load a Drum VST3 instrument first.")?;
         let routed = vst.routed_notes();
         let mut hits = Vec::new();
-        for moment in d.composer.hitsounds().moments() {
+        let mut sources = Vec::new();
+        for (moment_idx, moment) in d.composer.hitsounds().moments().iter().enumerate() {
             for lane in moment.hits() {
                 if let Some(&pitch) = routed.get(lane) {
-                    let volume = moment.hit_volume(lane).clamp(5, 100) as u8;
+                    let orig_vol = moment.hit_volume(lane);
+                    let volume = orig_vol.clamp(5, 100) as u8;
                     hits.push(Vst3DrumHit {
                         time_ms: moment.time().ms(),
                         name: lane_name(lane),
                         pitch,
                         volume,
                     });
+                    sources.push((moment_idx, lane.clone(), orig_vol));
                 }
             }
         }
-        Ok(plan_vst3_drum_export(&hits, mode))
+        let mut plan = plan_vst3_drum_export(&hits, mode);
+        if !plan.jobs.is_empty() {
+            let root = d.path.parent().ok_or("Map folder unavailable.")?;
+            let mut taken = mixes::reserved_mix_names(root, &[], &d.pending)?;
+            vst3::assign_free_vst3_filenames(&mut plan, &mut taken)?;
+        }
+        Ok((plan, sources))
     }
 
-    /// Executes "Render drums to WAVs…" into the mapset folder (default: Tiered velocity).
+    /// Executes "Render drums to WAVs…" into dawsu!'s render staging folder, registers the WAVs
+    /// as pending samples, and switches routed hits onto those WAV lanes in one Undo step.
     pub fn render_drum_vst_to_wavs(
         &mut self,
         mode: VelocityExportMode,
     ) -> Result<(Vst3DrumExportPlan, Vec<BounceOutput>), String> {
-        let plan = self.plan_drum_vst_render(mode)?;
+        self.render_drum_vst_to_wavs_with(mode, |vst3, instance_id, plan, staging_dir| {
+            vst3.execute_vst3_drum_export(instance_id, plan, staging_dir, 44_100)
+                .map_err(|e| e.to_string())
+        })
+    }
+
+    pub(crate) fn render_drum_vst_to_wavs_with<F>(
+        &mut self,
+        mode: VelocityExportMode,
+        render_export: F,
+    ) -> Result<(Vst3DrumExportPlan, Vec<BounceOutput>), String>
+    where
+        F: FnOnce(&mut Vst3Manager, &str, &Vst3DrumExportPlan, &Path) -> Result<Vec<BounceOutput>, String>,
+    {
+        if self.busy || self.is_stroke_open() {
+            return Err("Finish the current operation before rendering drums.".into());
+        }
+        let (plan, hit_sources) = self.plan_drum_vst_render_with_sources(mode)?;
         if plan.jobs.is_empty() {
             return Err("No hits found on mapped VST3 drum lanes.".into());
         }
@@ -3865,20 +3901,88 @@ impl Application {
             .as_ref()
             .map(|v| v.instance_id.clone())
             .ok_or("Load a Drum VST3 instrument first.")?;
-        let out_dir = self
+        let mapset_root = self
             .document
             .as_ref()
             .and_then(|d| d.path.parent().map(Path::to_path_buf))
             .ok_or("Map folder unavailable.")?;
-        let outputs = self
-            .vst3
-            .execute_vst3_drum_export(&instance_id, &plan, &out_dir, 44_100)
-            .map_err(|e| e.to_string())?;
+        let staging_dir = self
+            .data_root
+            .join("renders")
+            .join(pending::mapset_key(&mapset_root));
+        let outputs = render_export(&mut self.vst3, &instance_id, &plan, &staging_dir)?;
+
+        let mut staged_samples = Vec::with_capacity(outputs.len());
+        let read_result = (|| -> Result<(), String> {
+            for output in &outputs {
+                let name = output
+                    .path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .ok_or_else(|| format!("Invalid rendered WAV path: {}", output.path.display()))?
+                    .to_string();
+                let bytes = std::fs::read(&output.path)
+                    .map_err(|e| format!("Reading rendered WAV {name}: {e}"))?;
+                let clip = dawsu_audio::decode(&output.path)?;
+                staged_samples.push((name, bytes, clip));
+            }
+            Ok(())
+        })();
+        for output in &outputs {
+            let _ = std::fs::remove_file(&output.path);
+        }
+        read_result?;
+
+        let mut added_names: Vec<String> = Vec::with_capacity(staged_samples.len());
+        let mut additions = Vec::with_capacity(staged_samples.len());
+        {
+            let d = self.document.as_mut().expect("open document");
+            for (name, bytes, clip) in staged_samples {
+                if let Err(err) = d.pending.add(&name, &bytes) {
+                    for added in &added_names {
+                        d.pending.release(added);
+                    }
+                    return Err(err);
+                }
+                added_names.push(name.clone());
+                additions.push((name, clip));
+            }
+        }
+        self.register_samples(additions, false);
+
+        {
+            let doc = self.document.as_mut().expect("open document");
+            let composer = &mut doc.composer;
+            let mut selected = composer.selected.items().iter().cloned().collect::<Vec<_>>();
+            composer.history.begin("Render VST3 drums");
+            let _ = composer.history.edit(true, |hits| {
+                for assignment in &plan.assignments {
+                    let (moment_idx, source_lane, orig_vol) = &hit_sources[assignment.hit_index];
+                    let moment_id = dawsu_hitsounding::MomentId(*moment_idx);
+                    let target_lane = SampleIdentity::File(assignment.filename.clone());
+                    if source_lane != &target_lane {
+                        hits.remove_hit(moment_id, source_lane);
+                        hits.add_hit_with_volume(moment_id, target_lane.clone(), *orig_vol);
+                        for sel in &mut selected {
+                            if sel.moment == *moment_idx && &sel.lane == source_lane {
+                                sel.lane = target_lane.clone();
+                            }
+                        }
+                    }
+                }
+                Ok::<_, std::convert::Infallible>(())
+            });
+            composer.history.commit();
+            composer.selected.replace(selected);
+        }
+
+        self.sync_audio();
         self.status = format!(
-            "Rendered {} VST3 drum WAV {} ({} mapped hits).",
+            "Staged {} VST3 drum WAV {} and switched {} mapped {} onto lanes (written to mapset on Save).",
             outputs.len(),
             if outputs.len() == 1 { "file" } else { "files" },
-            plan.assignments.len()
+            plan.assignments.len(),
+            if plan.assignments.len() == 1 { "hit" } else { "hits" },
         );
         Ok((plan, outputs))
     }
@@ -6368,6 +6472,135 @@ Title:");
         save_through_summary(&mut app, scratch.path("backups"));
         let entries = app.document().unwrap().pending.ledger().unwrap().entries().unwrap();
         assert_eq!(entries, [pending::PendingSample { name: "normal-hitnormal2.wav".into(), sha256: dawsu_foundation::digest::sha256_hex(TONE) }]);
+    }
+
+    #[test]
+    fn vst_drum_render_stages_avoids_existing_mapset_file_switches_lanes_in_one_undo_step_and_saves_cleanly() {
+        struct NullBlockProcessor;
+        impl drum_vst::DrumBlockProcessor for NullBlockProcessor {
+            fn process_block(
+                &mut self,
+                _sample_rate: f64,
+                _events: &[dawsu_audio_instruments::ShmEvent],
+                left: &mut [f32],
+                right: &mut [f32],
+            ) -> bool {
+                left.fill(0.0);
+                right.fill(0.0);
+                true
+            }
+        }
+
+        let scratch = Scratch::new("vst-render-staging");
+        let mapset_dir = scratch.path("mapset");
+        std::fs::create_dir_all(&mapset_dir).unwrap();
+        let osu = mapset_dir.join("Map.osu");
+        std::fs::write(
+            &osu,
+            b"osu file format v14\n[General]\nMode:0\n[TimingPoints]\n0,500,4,1,0,100,1,0\n[HitObjects]\n256,192,1000,1,0,0:0:0:73:\n256,192,1500,1,0,0:0:0:73:\n",
+        )
+        .unwrap();
+        // Pre-place vst-kick-v73.wav with known bytes in the mapset folder.
+        let existing_bytes = b"KNOWN_MAPSET_WAV_BYTES_DO_NOT_OVERWRITE".to_vec();
+        let existing_path = mapset_dir.join("vst-kick-v73.wav");
+        std::fs::write(&existing_path, &existing_bytes).unwrap();
+
+        let mut app = Application::headless_with_projects(scratch.path("data"));
+        open(&mut app, osu.clone());
+
+        // Move the two moments onto a lane whose name sanitizes to "kick" at volume 73
+        // (producing "vst-kick-v73.wav").
+        let kick_lane = SampleIdentity::File("kick".into());
+        let normal_lane = SampleIdentity::Standard {
+            set: SampleSet::Normal,
+            sound: Sound::Hit(Hitsound::Normal),
+            index: dawsu_foundation::CustomIndex::new(0),
+        };
+        {
+            let doc = app.document.as_mut().unwrap();
+            doc.composer.apply("Use kick lane", |hits| {
+                for m in [dawsu_hitsounding::MomentId(0), dawsu_hitsounding::MomentId(1)] {
+                    hits.remove_hit(m, &normal_lane);
+                    hits.add_hit_with_volume(m, kick_lane.clone(), 73);
+                }
+            });
+        }
+        let undo_steps_before = app.document().unwrap().composer.history.position();
+
+        let (mut handle, _) = drum_vst::DrumVstLiveHandle::new(
+            "vst3-1".into(),
+            "TestDrums".into(),
+            "TestDrums.vst3".into(),
+            None,
+            true,
+            Box::new(NullBlockProcessor),
+        );
+        handle.set_routed_notes(HashMap::from([(kick_lane.clone(), 36)]));
+        app.drum_vst = Some(handle);
+
+        let expected_staging_dir = app
+            .data_root
+            .join("renders")
+            .join(pending::mapset_key(&mapset_dir.canonicalize().unwrap()));
+        let mut observed_staging_dir = None;
+
+        let (plan, outputs) = app
+            .render_drum_vst_to_wavs_with(VelocityExportMode::default(), |_vst3, _id, plan, staging_dir| {
+                observed_staging_dir = Some(staging_dir.to_path_buf());
+                vst3::execute_vst3_drum_export_with(plan, staging_dir, 44_100, |_events, raw_path, _opts| {
+                    let mut raw = Vec::new();
+                    for sample in [0.5_f32, -0.5, 0.25, -0.25] {
+                        raw.extend_from_slice(&sample.to_le_bytes());
+                    }
+                    std::fs::write(raw_path, raw).unwrap();
+                    Ok(false)
+                })
+                .map_err(|e| e.to_string())
+            })
+            .unwrap();
+
+        assert_eq!(observed_staging_dir.as_deref(), Some(expected_staging_dir.as_path()));
+        assert_eq!(plan.jobs.len(), 1);
+        let free_name = plan.jobs[0].filename.clone();
+        assert_ne!(free_name, "vst-kick-v73.wav");
+        assert_eq!(free_name, "vst-kick-v73-2.wav");
+        assert_eq!(outputs.len(), 1);
+        assert!(outputs[0].path.starts_with(&expected_staging_dir));
+
+        // Mapset file must be byte-identical and NO new file written to mapset before Save!
+        assert_eq!(std::fs::read(&existing_path).unwrap(), existing_bytes);
+        assert_eq!(mapset(&mapset_dir), vec!["Map.osu", "vst-kick-v73.wav"]);
+
+        // Rendered WAV is pending, playable in editor, and routed hits switched in ONE Undo step.
+        let rendered_lane = SampleIdentity::File(free_name.clone());
+        {
+            let doc = app.document().unwrap();
+            assert!(doc.pending.get(&free_name).is_some());
+            assert!(!doc.files.iter().any(|f| f == &free_name));
+            assert!(app.clip_for_lane(&rendered_lane).is_some());
+            assert_eq!(doc.composer.history.position(), undo_steps_before + 1);
+            let m0 = doc.composer.hitsounds().moment(dawsu_hitsounding::MomentId(0));
+            let m1 = doc.composer.hitsounds().moment(dawsu_hitsounding::MomentId(1));
+            assert!(!m0.has_hit(&kick_lane) && m0.has_hit(&rendered_lane));
+            assert!(!m1.has_hit(&kick_lane) && m1.has_hit(&rendered_lane));
+        }
+
+        // Single Undo restores all routed hits back onto the original lane.
+        assert!(app.document.as_mut().unwrap().composer.history.undo());
+        {
+            let doc = app.document().unwrap();
+            let m0 = doc.composer.hitsounds().moment(dawsu_hitsounding::MomentId(0));
+            let m1 = doc.composer.hitsounds().moment(dawsu_hitsounding::MomentId(1));
+            assert!(m0.has_hit(&kick_lane) && !m0.has_hit(&rendered_lane));
+            assert!(m1.has_hit(&kick_lane) && !m1.has_hit(&rendered_lane));
+        }
+
+        // Redo + Save writes vst-kick-v73-2.wav into the mapset and tracks it on the ledger.
+        assert!(app.document.as_mut().unwrap().composer.history.redo());
+        save_through_summary(&mut app, scratch.path("backups"));
+        assert_eq!(std::fs::read(&existing_path).unwrap(), existing_bytes);
+        assert!(mapset_dir.join(&free_name).is_file());
+        assert!(ledger(&app).iter().any(|name| name == &free_name));
     }
 
     fn back_to_skin(app: &mut Application) {

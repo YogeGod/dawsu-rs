@@ -1085,7 +1085,7 @@ impl Drop for PublishedMixes<'_> {
     }
 }
 
-pub(super) fn reserved_mix_names(root: &Path, staged: &[StagedMix], pending: &Pending) -> Result<BTreeSet<String>, String> {
+pub(crate) fn reserved_mix_names(root: &Path, staged: &[StagedMix], pending: &Pending) -> Result<BTreeSet<String>, String> {
     let files = listing(root, pending)?;
     let (_, mut names) = crate::layers::reservations(root, &files)?;
     names.extend(pending.taken_names());
@@ -1101,7 +1101,7 @@ pub(super) fn reserved_mix_names(root: &Path, staged: &[StagedMix], pending: &Pe
     Ok(names)
 }
 
-fn name_is_reserved(name: &str, names: &BTreeSet<String>) -> bool {
+pub(crate) fn name_is_reserved(name: &str, names: &BTreeSet<String>) -> bool {
     let lower = name.to_ascii_lowercase();
     if names.contains(&lower) {
         return true;
