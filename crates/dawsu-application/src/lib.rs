@@ -275,6 +275,7 @@ pub const DEFAULT_SONG_OFFSET_MS: f64 = -22.0;
 pub struct SaveReport {
     pub file: OsuFile,
     pub problems: Vec<SaveProblem>,
+    pub cleaned_greenlines: usize,
     written: Hitsounds,
     drawn: Hitsounds,
     left_out: Vec<roll_back::LeftOut>,
@@ -288,11 +289,18 @@ pub struct SaveReport {
     pending_kept: Vec<String>,
 }
 pub fn save_document(document: &Document, backups: PathBuf) -> Result<SaveReport, String> {
+    save_document_with_cleanup(document, backups, false)
+}
+pub fn save_document_with_cleanup(
+    document: &Document,
+    backups: PathBuf,
+    clean_redundant_greenlines: bool,
+) -> Result<SaveReport, String> {
     prepare_save(
         document.compile_base.clone(), document.composer.hitsounds(), &document.written,
         document.file.original_bytes().to_vec(), &document.path, backups, document.hs_mode,
         &document.owned_hs_circles, Path::new(""), &document.pending, None, false,
-        &|| false, &mut Vec::new(), &mut |_, _| {},
+        clean_redundant_greenlines, &|| false, &mut Vec::new(), &mut |_, _| {},
     )?.apply(None, &|| false)
 }
 fn compile_for_save(
@@ -400,6 +408,7 @@ fn prepare_save(
     pending: &pending::Pending,
     project: Option<&project::Project>,
     review: bool,
+    clean_redundant_greenlines: bool,
     cancel: &dyn Fn() -> bool,
     diagnostics: &mut Vec<OutputProblem>,
     progress: &mut dyn FnMut(usize, usize),
@@ -495,9 +504,16 @@ fn prepare_save(
             problem_description(&refused[0].kind, refused[0].time.ms())
         ));
     }
-    let (out, owned, effective, left_out, circles, removed_circles) = (
+    let (mut out, owned, effective, left_out, circles, removed_circles) = (
         rolled.out, rolled.owned, rolled.effective, rolled.left_out, rolled.circles, rolled.removed_circles,
     );
+    let cleaned_greenlines = if clean_redundant_greenlines {
+        let cleanup = dawsu_hitsounding::cleanup::clean_up_green_lines(&out);
+        out = cleanup.file;
+        cleanup.removed
+    } else {
+        0
+    };
     let written = effective.clone();
     // The pending files the written difficulty plays go into the mapset with its mixes; the
     // project keeps the others the drawn hits still play.
@@ -572,7 +588,7 @@ fn prepare_save(
         .and_then(|project| project.settings.gain_recovery.as_ref())
         .is_some_and(|record| record.is_current(&expected, revision)));
     let plan = PreparedSave {
-        path: path.to_path_buf(), backups, expected, out, mix_files, recovery_revision,
+        path: path.to_path_buf(), backups, expected, out, cleaned_greenlines, mix_files, recovery_revision,
         ownership, inputs, map_changed, left_out, written, unwritten, sound_sets, loose, drawn: hits.clone(),
         pending_writes, pending_kept, ledger: pending.ledger(),
         verify_expected, verify_folder_files: editor,
@@ -732,6 +748,7 @@ struct PreparedSave {
     backups: PathBuf,
     expected: Vec<u8>,
     out: OsuFile,
+    cleaned_greenlines: usize,
     mix_files: mixes::MixFiles,
     recovery_revision: Option<gain_recovery::Revision>,
     ownership: Option<project::HsCircleOwnership>,
@@ -874,6 +891,7 @@ impl PreparedSave {
                 Ok(SaveReport {
                     file: OsuFile::read(bytes).file,
                     problems: Vec::new(),
+                    cleaned_greenlines: self.cleaned_greenlines,
                     written: self.written,
                     drawn: self.drawn,
                     left_out: self.left_out,
@@ -927,6 +945,7 @@ pub struct Preferences {
     #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub key_overrides: std::collections::BTreeMap<String, std::collections::BTreeMap<String, Vec<String>>>,
     pub protect_hitnormals: bool,
+    pub clean_redundant_greenlines: bool,
     /// The map preview's own window: where it was, and whether it was open when the editor closed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub preview_window: Option<WindowPlace>,
@@ -995,6 +1014,7 @@ impl Default for Preferences {
             key_preset: "DAW".into(),
             key_overrides: Default::default(),
             protect_hitnormals: false,
+            clean_redundant_greenlines: false,
             preview_window: None,
         }
     }
@@ -2456,10 +2476,13 @@ impl Application {
                             self.checkpoint =
                                 Some(recovery::Checkpoint::after_save(document, &compiled, &drawn, hs_mode));
                             let left_out = document.left_out.len();
+                            let cleaned = report.cleaned_greenlines;
                             self.status = if archive_error.is_some() {
                                 "Difficulty saved. Recovery copy is still pending.".into()
                             } else if left_out > 0 {
                                 format!("Saved with backup. {left_out} part{} left out.", if left_out == 1 { "" } else { "s" })
+                            } else if cleaned > 0 {
+                                format!("Saved with backup. Removed {cleaned} redundant greenline{}.", if cleaned == 1 { "" } else { "s" })
                             } else {
                                 "Saved with backup".into()
                             };
@@ -2632,6 +2655,7 @@ impl Application {
             self.session_settings(Some(saved_hits), Some(saved_slots), None, None)
         });
         let defaults = self.preferences.default_samples.clone();
+        let clean_redundant_greenlines = self.preferences.clean_redundant_greenlines;
         let pending = d.pending.clone();
         let (send, receive) = mpsc::channel();
         self.jobs = Some(receive);
@@ -2649,7 +2673,7 @@ impl Application {
             let mut diagnostics = Vec::new();
             let result = prepare_save(
                 file, &hits, &written, expected, &path, backups, hs, &owned, &defaults, &pending,
-                project.as_ref(), review, &cancelled, &mut diagnostics,
+                project.as_ref(), review, clean_redundant_greenlines, &cancelled, &mut diagnostics,
                 &mut |done, total| progress.report(done, total),
             ).map(|plan| {
                 let settings = settings.map(|mut settings| {
@@ -3350,10 +3374,11 @@ impl Application {
         auto_fix_staged_mixes: bool,
     ) {
         let defaults = self.preferences.default_samples.clone();
+        let clean_redundant_greenlines = self.preferences.clean_redundant_greenlines;
         let settings = self.document.as_ref().and_then(|document| document.export_settings.clone());
         let projects = self.project_root.clone();
         self.review_job(move |source, cancel, diagnostics, progress| {
-            output::generate_report_with_options(
+            let mut plan = output::generate_report_with_options(
                 &source,
                 &defaults,
                 settings.as_ref(),
@@ -3363,7 +3388,11 @@ impl Application {
                 &|| cancel.load(Ordering::Relaxed),
                 diagnostics,
                 progress,
-            )
+            )?;
+            if clean_redundant_greenlines {
+                plan.clean_redundant_greenlines();
+            }
+            Ok(plan)
         });
     }
 
@@ -3388,8 +3417,13 @@ impl Application {
         options: dawsu_hitsounding::copy::CopyOptions,
     ) {
         let defaults = self.preferences.default_samples.clone();
+        let clean_redundant_greenlines = self.preferences.clean_redundant_greenlines;
         self.review_job(move |source, cancel, diagnostics, progress| {
-            output::copy_report(&source, &defaults, &targets, &options, &|| cancel.load(Ordering::Relaxed), diagnostics, progress)
+            let mut plan = output::copy_report(&source, &defaults, &targets, &options, &|| cancel.load(Ordering::Relaxed), diagnostics, progress)?;
+            if clean_redundant_greenlines {
+                plan.clean_redundant_greenlines();
+            }
+            Ok(plan)
         });
     }
     pub fn audition_output_mix(&self, index: usize) -> Result<(), String> {
@@ -4853,7 +4887,7 @@ mod project_workflow {
     fn prepare(scratch: &Scratch, document: &Document, hits: &Hitsounds, project: Option<&project::Project>, diagnostics: &mut Vec<OutputProblem>) -> Result<PreparedSave, String> {
         prepare_save(
             document.compile_base.clone(), hits, &document.written, document.file.original_bytes().to_vec(), &document.path,
-            scratch.path("backups"), true, &BTreeSet::new(), Path::new(""), &document.pending, project, false, &|| false, diagnostics, &mut |_, _| {},
+            scratch.path("backups"), true, &BTreeSet::new(), Path::new(""), &document.pending, project, false, false, &|| false, diagnostics, &mut |_, _| {},
 
         )
     }
@@ -6609,7 +6643,7 @@ Title:");
         let plan = prepare_save(
             document.compile_base.clone(), document.composer.hitsounds(), &document.written, document.file.original_bytes().to_vec(),
             &document.path, scratch.path("backups"), false, &BTreeSet::new(), Path::new(""), &document.pending, Some(&project), false,
-            &|| false, &mut Vec::new(), &mut |_, _| {},
+            false, &|| false, &mut Vec::new(), &mut |_, _| {},
         ).unwrap();
         // The `.osu` write fails, as a crash right after the project write would leave it.
         std::fs::write(scratch.path("backups"), b"not a folder").unwrap();
@@ -9289,6 +9323,7 @@ mod drum_vst_routing_tests {
             &document.pending,
             None,
             false,
+            false,
             &|| false,
             &mut diagnostics,
             &mut |_, _| {},
@@ -9318,5 +9353,149 @@ mod drum_vst_routing_tests {
             original_bytes,
             "original .osu file on disk must remain untouched when verification fails"
         );
+    }
+}
+
+#[cfg(test)]
+mod greenline_cleanup_tests {
+    use super::*;
+    use dawsu_test_support::Scratch;
+
+    fn wait_busy(app: &mut Application) {
+        for _ in 0..2000 {
+            app.poll();
+            if !app.busy {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        panic!("timed out waiting for background job");
+    }
+
+    #[test]
+    fn save_leaves_redundant_greenlines_untouched_by_default_and_cleans_when_enabled() {
+        let scratch = Scratch::new("greenline-cleanup-save");
+        let path = scratch.path("Artist - Song (Mapper) [Hard].osu");
+        let original = concat!(
+            "osu file format v14\n",
+            "[General]\n",
+            "Mode:0\n",
+            "SampleSet:Normal\n",
+            "[Metadata]\n",
+            "Version:Hard\n",
+            "[TimingPoints]\n",
+            "0,500,4,1,0,100,1,0\n",
+            "500,-100,4,1,0,100,0,0\n",
+            "1000,-100,4,1,0,60,0,0\n",
+            "1500,-100,4,1,0,60,0,0\n",
+            "2000,-50,4,1,0,60,0,0\n",
+            "[HitObjects]\n",
+            "256,192,1000,1,0,0:0:0:0:\n",
+        );
+        std::fs::write(&path, original).unwrap();
+        let backups = scratch.path("backups");
+
+        // Default (OFF): untouched .osu lines stay 100% byte-identical.
+        let doc = Document::read(&path).unwrap();
+        let report_off = save_document(&doc, backups.clone()).unwrap();
+        assert_eq!(report_off.cleaned_greenlines, 0);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+
+        // Enabled (ON): removes the 2 redundant no-op greenlines (500ms and 1500ms) while
+        // preserving the red line (0ms) and real volume/SV changes (1000ms and 2000ms).
+        let report_on = save_document_with_cleanup(&doc, backups, true).unwrap();
+        assert_eq!(report_on.cleaned_greenlines, 2);
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert!(after.contains("0,500,4,1,0,100,1,0\n"));
+        assert!(!after.contains("500,-100,4,1,0,100,0,0\n"));
+        assert!(after.contains("1000,-100,4,1,0,60,0,0\n"));
+        assert!(!after.contains("1500,-100,4,1,0,60,0,0\n"));
+        assert!(after.contains("2000,-50,4,1,0,60,0,0\n"));
+    }
+
+    #[test]
+    fn application_save_respects_clean_redundant_greenlines_preference() {
+        let scratch = Scratch::new("greenline-cleanup-app-pref");
+        let path = scratch.path("Artist - Song (Mapper) [Hard].osu");
+        let original = concat!(
+            "osu file format v14\n",
+            "[General]\n",
+            "Mode:0\n",
+            "SampleSet:Normal\n",
+            "[Metadata]\n",
+            "Version:Hard\n",
+            "[TimingPoints]\n",
+            "0,500,4,1,0,100,1,0\n",
+            "500,-100,4,1,0,100,0,0\n",
+            "1000,-100,4,1,0,75,0,0\n",
+            "[HitObjects]\n",
+            "256,192,1000,1,0,0:0:0:0:\n",
+        );
+        std::fs::write(&path, original).unwrap();
+
+        let mut app = Application::create(
+            Preferences::default(),
+            false,
+            None,
+            None,
+            false,
+            scratch.path("data"),
+        );
+        assert!(!app.preferences.clean_redundant_greenlines);
+        app.open_now(OpenSource::Map(path.clone()));
+        wait_busy(&mut app);
+
+        // Save with preference OFF -> byte-identical.
+        app.save();
+        wait_busy(&mut app);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+        assert_eq!(app.status, "Saved with backup");
+
+        // Enable preference and Save -> removes the redundant 500ms greenline.
+        app.preferences.clean_redundant_greenlines = true;
+        app.save();
+        wait_busy(&mut app);
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert!(!after.contains("500,-100,4,1,0,100,0,0\n"));
+        assert!(after.contains("1000,-100,4,1,0,75,0,0\n"));
+        assert_eq!(app.status, "Saved with backup. Removed 1 redundant greenline.");
+    }
+
+    #[test]
+    fn write_plan_clean_redundant_greenlines_preserves_real_changes() {
+        let scratch = Scratch::new("greenline-cleanup-export");
+        let source_path = scratch.path("Artist - Song (Mapper) [Source].osu");
+        let target_path = scratch.path("Artist - Song (Mapper) [Target].osu");
+        let map_text = concat!(
+            "osu file format v14\n",
+            "[General]\n",
+            "Mode:0\n",
+            "SampleSet:Normal\n",
+            "[Metadata]\n",
+            "Version:Target\n",
+            "[TimingPoints]\n",
+            "0,500,4,1,0,100,1,0\n",
+            "250,-100,4,1,0,100,0,0\n",
+            "500,-50,4,1,0,100,0,0\n",
+            "[HitObjects]\n",
+            "256,192,1000,1,0,0:0:0:0:\n",
+        );
+        std::fs::write(&source_path, map_text).unwrap();
+        std::fs::write(&target_path, map_text).unwrap();
+        let doc = Document::read(&source_path).unwrap();
+        let source = output::Source::from_document(&doc);
+        let mut plan = output::copy(
+            &source,
+            &[target_path],
+            &dawsu_hitsounding::copy::CopyOptions::default(),
+            &|| false,
+        ).unwrap();
+        let before = String::from_utf8(plan.files[0].file.to_bytes()).unwrap();
+        assert!(before.contains("250,-100,4,1,0,100,0,0\n"));
+        assert_eq!(plan.clean_redundant_greenlines(), 1);
+        let after = String::from_utf8(plan.files[0].file.to_bytes()).unwrap();
+        assert!(!after.contains("250,-100,4,1,0,100,0,0\n"));
+        assert!(after.contains("500,-50,4,1,0,100,0,0\n"));
+        assert!(plan.details.iter().any(|d| d.contains("Removed 1 redundant greenline.")));
     }
 }

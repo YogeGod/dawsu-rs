@@ -364,6 +364,7 @@ enum Action {
     Play,
     PlaybackStart { value: PlaybackStart },
     ReturnOnStop { on: bool },
+    CleanRedundantGreenlines { on: bool },
     Stop,
     Start,
     Seek {
@@ -715,6 +716,10 @@ impl Action {
             Self::PlaybackStart { value } => *playback_start = value,
             Self::ReturnOnStop { on } => {
                 app.preferences.return_on_stop = on;
+                app.save_preferences();
+            }
+            Self::CleanRedundantGreenlines { on } => {
+                app.preferences.clean_redundant_greenlines = on;
                 app.save_preferences();
             }
             Self::Stop => app.command("stop"),
@@ -1671,6 +1676,7 @@ struct ViewSnapshot {
     busy: bool,
     can_undo_revert: bool,
     classic_browser: bool,
+    clean_redundant_greenlines: bool,
     cycle: bool,
     dirty: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -2077,6 +2083,7 @@ fn snapshot_with_static(app: &Application, include_scene: bool, include_static: 
         recent: app.preferences.recent.clone(),
         recovery,
         return_on_stop: app.preferences.return_on_stop,
+        clean_redundant_greenlines: app.preferences.clean_redundant_greenlines,
         revert: app.revert_requested,
         review,
         right: app.locator_right,
@@ -2403,6 +2410,7 @@ fn non_playback_signature(
     app.cycle.hash(&mut hasher);
     app.preferences.follow.hash(&mut hasher);
     app.preferences.return_on_stop.hash(&mut hasher);
+    app.preferences.clean_redundant_greenlines.hash(&mut hasher);
     app.preferences.audition.hash(&mut hasher);
     app.preferences.object_lines.hash(&mut hasher);
     app.preferences.classic_browser.hash(&mut hasher);
