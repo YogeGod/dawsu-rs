@@ -324,7 +324,7 @@ test("each menu groups the editor's existing commands like the design, with no s
   assert.deepEqual(open("map"), [
     "Difficulty: Hard | Insane", "—",
     "New hitsound difficulty…", "—",
-    "Generate hitsound difficulty…", "Copy hitsounds…", "Drum hit detection…", "Node graph…",
+    "Generate hitsound difficulty…", "Copy hitsounds…", "Shared Base layer…", "Drum hit detection…", "Node graph…",
     "Keysounds & VST3…", "Generate export style: Per-object", "—",
     "Hitsounding mode", "—",
     "Add bookmark", "Previous bookmark", "Next bookmark", "—",

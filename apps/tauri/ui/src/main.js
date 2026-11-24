@@ -43,6 +43,7 @@ import NodeGraphWindow from "./parts/NodeGraphWindow.svelte";
 import PreferencesModal from "./parts/PreferencesModal.svelte";
 import PreviewWindow from "./parts/PreviewWindow.svelte";
 import QuickStartTour from "./parts/QuickStartTour.svelte";
+import SharedBaseModal from "./parts/SharedBaseModal.svelte";
 import SnapSlider from "./parts/SnapSlider.svelte";
 import StartScreen from "./parts/StartScreen.svelte";
 import StatusBar from "./parts/StatusBar.svelte";
@@ -61,6 +62,7 @@ const parts = {
   // File › Import MIDI… and Map › Keysounds & VST3…, at body level.
   "midi-import": MidiImportModal,
   keysounds: KeysoundsModal,
+  "shared-base": SharedBaseModal,
   toasts: ToastStack,
   // The Quick start tour card (View › Quick start tour), at body level.
   "quick-start": QuickStartTour,

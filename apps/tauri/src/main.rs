@@ -2245,6 +2245,16 @@ enum Request {
     PreviewRevertMapsetToOriginal(mpsc::Sender<Result<dawsu_application::SnapshotPreview, String>>),
     RevertMapsetToOriginal(Vec<String>, mpsc::Sender<Result<usize, String>>),
     UndoMapsetRevert(mpsc::Sender<Result<usize, String>>),
+    SharedBaseStatus(mpsc::Sender<Result<dawsu_application::SharedBaseStatus, String>>),
+    SharedBaseSetEnabled(bool, mpsc::Sender<Result<dawsu_application::SharedBaseStatus, String>>),
+    SharedBaseCapture(mpsc::Sender<Result<dawsu_application::SharedBaseStatus, String>>),
+    SharedBaseApply(
+        f64,
+        bool,
+        mpsc::Sender<Result<dawsu_application::SharedBaseApplyResult, String>>,
+    ),
+    SharedBaseClearOverrides(mpsc::Sender<Result<dawsu_application::SharedBaseStatus, String>>),
+    SharedBaseClear(mpsc::Sender<Result<dawsu_application::SharedBaseStatus, String>>),
 }
 struct Editor(mpsc::Sender<Request>);
 
@@ -3007,6 +3017,45 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                         app.import_mania_hitsound_diff(&path)
                     })
                     .and_then(|r| r);
+                    tick_cache.invalidate();
+                    let _ = response.send(result);
+                }
+                Ok(Request::SharedBaseStatus(response)) => {
+                    let result = guard(&mut app, &mut fault, |app| app.shared_base_status());
+                    let _ = response.send(result);
+                }
+                Ok(Request::SharedBaseSetEnabled(enabled, response)) => {
+                    let result = guard(&mut app, &mut fault, |app| {
+                        app.shared_base_set_enabled(enabled)
+                    })
+                    .and_then(|r| r);
+                    let _ = response.send(result);
+                }
+                Ok(Request::SharedBaseCapture(response)) => {
+                    let result =
+                        guard(&mut app, &mut fault, |app| app.shared_base_capture_current())
+                            .and_then(|r| r);
+                    tick_cache.invalidate();
+                    let _ = response.send(result);
+                }
+                Ok(Request::SharedBaseApply(leniency_ms, overwrite_overrides, response)) => {
+                    let result = guard(&mut app, &mut fault, |app| {
+                        app.shared_base_apply_to_current(leniency_ms, overwrite_overrides)
+                    })
+                    .and_then(|r| r);
+                    tick_cache.invalidate();
+                    let _ = response.send(result);
+                }
+                Ok(Request::SharedBaseClearOverrides(response)) => {
+                    let result = guard(&mut app, &mut fault, |app| {
+                        app.shared_base_clear_current_overrides()
+                    })
+                    .and_then(|r| r);
+                    let _ = response.send(result);
+                }
+                Ok(Request::SharedBaseClear(response)) => {
+                    let result = guard(&mut app, &mut fault, |app| app.shared_base_clear())
+                        .and_then(|r| r);
                     tick_cache.invalidate();
                     let _ = response.send(result);
                 }
@@ -4068,6 +4117,57 @@ fn import_mania_hitsounds(
 }
 
 #[tauri::command]
+fn shared_base_status(
+    state: State<'_, Editor>,
+) -> Result<dawsu_application::SharedBaseStatus, String> {
+    ask(&state, Request::SharedBaseStatus)?
+}
+
+#[tauri::command]
+fn shared_base_set_enabled(
+    enabled: bool,
+    state: State<'_, Editor>,
+) -> Result<dawsu_application::SharedBaseStatus, String> {
+    ask(&state, |tx| Request::SharedBaseSetEnabled(enabled, tx))?
+}
+
+#[tauri::command]
+fn shared_base_capture(
+    state: State<'_, Editor>,
+) -> Result<dawsu_application::SharedBaseStatus, String> {
+    ask(&state, Request::SharedBaseCapture)?
+}
+
+#[tauri::command]
+fn shared_base_apply(
+    leniency_ms: Option<f64>,
+    overwrite_overrides: Option<bool>,
+    state: State<'_, Editor>,
+) -> Result<dawsu_application::SharedBaseApplyResult, String> {
+    ask(&state, |tx| {
+        Request::SharedBaseApply(
+            leniency_ms.unwrap_or(5.0),
+            overwrite_overrides.unwrap_or(false),
+            tx,
+        )
+    })?
+}
+
+#[tauri::command]
+fn shared_base_clear_overrides(
+    state: State<'_, Editor>,
+) -> Result<dawsu_application::SharedBaseStatus, String> {
+    ask(&state, Request::SharedBaseClearOverrides)?
+}
+
+#[tauri::command]
+fn shared_base_clear(
+    state: State<'_, Editor>,
+) -> Result<dawsu_application::SharedBaseStatus, String> {
+    ask(&state, Request::SharedBaseClear)?
+}
+
+#[tauri::command]
 fn midi_input_ports() -> Vec<String> {
     dawsu_application::list_midi_input_ports()
 }
@@ -4462,6 +4562,12 @@ fn main() {
             apply_midi_import,
             export_midi_file,
             import_mania_hitsounds,
+            shared_base_status,
+            shared_base_set_enabled,
+            shared_base_capture,
+            shared_base_apply,
+            shared_base_clear_overrides,
+            shared_base_clear,
             midi_input_ports,
             midi_record_toggle,
             vst3_scan,
