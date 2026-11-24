@@ -202,6 +202,8 @@ const fingerprint = () => read(() => {
     usedOnly: !!document.getElementById("used-only")?.checked,
     mapPreview: !!window.dawsuUi?.mapPreviewOn?.(),
     collapse: document.getElementById("collapse-layers")?.getAttribute("aria-pressed") ?? null,
+    // Lane families folded with Collapse sample layers: their headers offer "Expand … layers".
+    foldedFamilies: document.querySelectorAll('#lanes [aria-label^="Expand "][aria-label$=" layers"]').length,
     folders: Array.from(document.querySelectorAll("#lanes .sample-folder")).map(node =>
       `${node.dataset.sampleSet}:${node.querySelector(".fold")?.getAttribute("aria-expanded")}`).join(","),
     songMute: document.getElementById("song-mute")?.getAttribute("aria-pressed") ?? null,
@@ -254,7 +256,7 @@ async function settle() {
       const button = page().locator("#dialog-actions button", { hasText: /^(Cancel|Close|Done|No|Keep editing|OK)$/ }).first();
       if (await button.count()) await button.click().catch(() => {});
     } else if (still.modals) {
-      const close = page().locator('[role="dialog"] button').filter({ hasText: /^(Cancel|Close|Done|×|Skip|Not now)$/ }).first();
+      const close = page().locator('[role="dialog"] button').filter({ hasText: /^(Cancel|Close|Done|×|Skip|Skip tour|Not now)$/ }).first();
       const named = page().locator('[role="dialog"] button[aria-label^="Close"]').first();
       if (await named.count() && await named.isVisible()) await named.click().catch(() => {});
       else if (await close.count() && await close.isVisible()) await close.click().catch(() => {});
@@ -499,7 +501,8 @@ const specs = {
   // Opens the map osu! has open, which is a real mapset: never pressed by the robot.
   openFromOsu: { unsafe: "Open from osu! opens the map open in osu!, a real mapset, so the robot never presses it" },
   importOsz: { expect: { native: true } },
-  importMidi: { expect: { modal: "Import MIDI" } },
+  // Import MIDI… asks for the .mid with a native picker first; its dialog opens only after a file is picked.
+  importMidi: { expect: { native: true } },
   importManiaHitsounds: { expect: { native: true } },
   exportMidi: { expect: { native: true } },
   openFolder: { expect: { explorer: true } },
@@ -571,15 +574,18 @@ const specs = {
   soundFirst: { expect: { changed: ["soundFirst"] }, twice: true },
   objectLines: { expect: { changed: ["objectLines"] }, twice: true },
   usedOnly: { expect: { changed: ["usedOnly", "lanes"] }, twice: true },
-  collapseLayers: { expect: { respond: true, quiet: true }, twice: true },
-  filter: { expect: { respond: true } },
+  // Collapse sample layers only folds (boot.js "collapseLayers"); each family is opened again by its own Expand button.
+  collapseLayers: { expect: { changed: ["foldedFamilies"], orQuiet: "every layer family was already folded" }, after: expandFamilies },
+  // Filter lanes… puts the caret in the lane filter box.
+  filter: { expect: { focus: "lane-filter" } },
   rowsIn: { expect: { changed: ["rowHeight"] } },
   rowsOut: { expect: { changed: ["rowHeight"] } },
   zoomIn: { expect: { changed: ["zoom"] } },
   zoomOut: { expect: { changed: ["zoom"] } },
   fit: { before: async () => page().click("#ruler-zoom-in"), expect: { changed: ["zoom", "start"] } },
   timeSignatures: { expect: { dialog: "Time signatures" } },
-  drumMap: { expect: { respond: true } },
+  // Open drum map… asks for the drum map file with a native picker (lanes.js requestDrumMap → pick_drum_map).
+  drumMap: { expect: { native: true } },
   editLayout: { expect: { changed: ["layout"] } },
   viewSettings: { expect: { dialog: "View" } },
   quickStart: { expect: { modal: "" } },
@@ -648,6 +654,17 @@ async function makeEdit() {
   await openMenu("Edit");
   await menuRow("Duplicate").click();
   await until(() => window.scene.historyPosition > 0, null, "Duplicate made no edit", 3000);
+}
+async function expandFamilies() {
+  // Open every folded layer family again, so the later steps see every lane.
+  for (let i = 0; i < 40; i++) {
+    const button = page().locator('#lanes [aria-label^="Expand "][aria-label$=" layers"]').first();
+    if (!(await button.count())) return;
+    await button.scrollIntoViewIfNeeded().catch(() => {});
+    await button.click();
+    await sleep(150);
+  }
+  throw new Error("the folded layer families did not all open again");
 }
 async function copySelection() {
   await openMenu("Edit");
@@ -730,6 +747,7 @@ async function probeInput(id, press, result, label) {
     const changed = differs(before, after).filter(key => !["focus", "hint", "status", "busy"].includes(key));
     if (want.native && native.available && (await native.dialogs(pid())).length) seen = "a file picker opened";
     else if (want.native && !native.available) seen = "skipped: " + native.reason;
+    else if (want.focus && after.focus === want.focus) seen = `the caret moved to ${want.focus}`;
     else if (want.window && others().length > windowsBefore) seen = `${others().at(-1).url().split("/").pop()} opened`;
     else if (want.dialog !== undefined && after.dialog?.startsWith(want.dialog)) seen = `"${after.dialog}" opened`;
     else if (want.modal !== undefined && after.modals && after.modals.split("|").some(name => name.startsWith(want.modal))) seen = `"${after.modals}" opened`;
