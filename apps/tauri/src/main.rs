@@ -1433,10 +1433,6 @@ fn snapshot_with_static(app: &Application, include_scene: bool, include_static: 
                     .map(|s| json!([s.start.ms(), s.beat_length_ms, s.beats_per_bar]))
                     .collect::<Vec<_>>()
             });
-            let waveform = include_static.then(|| {
-                app.waveform.iter()
-                    .map(|b| json!([b.peak, b.low, b.mid, b.high, b.amp_l, b.amp_r])).collect::<Vec<_>>()
-            });
             let ramp_preview = match c.preview {
                 ToolPreview::RampLine { from, to, shape } => {
                     let (from, to) = if from.0 > to.0 { (to, from) } else { (from, to) };
@@ -1487,7 +1483,6 @@ fn snapshot_with_static(app: &Application, include_scene: bool, include_static: 
             });
             if include_static {
                 scene["sections"] = json!(sections.unwrap_or_default());
-                scene["waveform"] = json!(waveform.unwrap_or_default());
                 scene["gameplay"] = gameplay_overlay(d);
                 scene["combos"] = combo_overlay(d);
             } else if d.hs_mode {
@@ -1608,9 +1603,20 @@ fn snapshot_with_static(app: &Application, include_scene: bool, include_static: 
     result
 }
 
+fn encode_waveform_bytes(bins: &[dawsu_application::WaveBin]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(bins.len() * 6 * 4);
+    for bin in bins {
+        for value in [bin.peak, bin.low, bin.mid, bin.high, bin.amp_l, bin.amp_r] {
+            out.extend_from_slice(&value.to_le_bytes());
+        }
+    }
+    out
+}
+
 enum Request {
     /// Scene wanted, the action, and `fresh`: the screen lacks the static map data, so send it again.
     View(bool, Option<Action>, bool, mpsc::Sender<Value>),
+    Waveform(mpsc::Sender<Result<Vec<u8>, String>>),
     Help(mpsc::Sender<Result<Value, String>>),
     AudioOutputs(Option<OutputBackend>, mpsc::Sender<Value>),
     Shortcuts(mpsc::Sender<Value>),
@@ -1905,6 +1911,10 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                     })
                     .unwrap_or_else(|message| json!({ "fault": message }));
                     let _ = response.send(view);
+                }
+                Ok(Request::Waveform(response)) => {
+                    let result = guard(&mut app, &mut fault, |app| encode_waveform_bytes(&app.waveform));
+                    let _ = response.send(result);
                 }
                 // After a fault, a request without an error channel gets no answer.
                 Ok(Request::Shortcuts(response)) => {
@@ -2318,6 +2328,12 @@ fn editor_view(
         }
     }
     Ok(view)
+}
+
+#[tauri::command]
+fn editor_waveform(state: State<'_, Editor>) -> Result<tauri::ipc::Response, String> {
+    let bytes = ask(&state, Request::Waveform)??;
+    Ok(tauri::ipc::Response::new(bytes))
 }
 
 #[tauri::command]
@@ -3388,6 +3404,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             editor_view,
+            editor_waveform,
             editor_help,
             editor_export_settings,
             export_view,

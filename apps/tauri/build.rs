@@ -2,6 +2,7 @@
 // capability in capabilities/ allows (apps/tauri/tests/capabilities.test.mjs checks the lists).
 const COMMANDS: &[&str] = &[
     "editor_view",
+    "editor_waveform",
     "editor_help",
     "editor_export_settings",
     "export_view",

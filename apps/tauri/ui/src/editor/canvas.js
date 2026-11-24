@@ -161,12 +161,14 @@ export function attachCanvas(ctx) {
 
   function waveform(context2d, width, center, height, start, span) {
     const bins = state.scene.waveform;
+    const isTyped = bins instanceof Float32Array || Object.prototype.toString.call(bins) === "[object Float32Array]";
+    const binCount = isTyped ? Math.floor(bins.length / 6) : (bins?.length ?? 0);
     const duration = state.view.duration;
-    if (!bins.length || !duration || width <= 0) return;
+    if (!binCount || !duration || width <= 0) return;
     // Playback reads the song at position - offset, so the drawn song moves by the same offset.
     const songStart = start - (state.view.offset ?? 0);
     const cols = Math.ceil(width);
-    const binScale = bins.length / duration;
+    const binScale = binCount / duration;
     const msPerPx = span / width;
     if (!state.waveCoreTops || state.waveCoreTops.length < cols) {
       state.waveCoreTops = new Float32Array(cols);
@@ -200,30 +202,54 @@ export function attachCanvas(ctx) {
           continue;
         }
         const a = Math.max(0, Math.floor(t0 * binScale));
-        if (a >= bins.length) break;
-        const b = Math.min(bins.length, Math.max(a + 1, Math.ceil(t1 * binScale)));
+        if (a >= binCount) break;
+        const b = Math.min(binCount, Math.max(a + 1, Math.ceil(t1 * binScale)));
         const innerStep = b - a > 12 ? Math.floor((b - a) / 8) : 1;
 
         let maxL = 0, maxR = 0, sumSqL = 0, sumSqR = 0;
         let wLow = 0, wMid = 0, wHigh = 0, wAmp = 0;
         let sumLow = 0, sumMid = 0, sumHigh = 0, count = 0;
-        for (let i = a; i < b; i += innerStep) {
-          const bin = bins[i];
-          const l = bin[4] ?? bin[0];
-          const r = bin[5] ?? bin[0];
-          if (l > maxL) maxL = l;
-          if (r > maxR) maxR = r;
-          sumSqL += l * l;
-          sumSqR += r * r;
-          const amp = Math.max(l, r);
-          wLow += bin[1] * amp;
-          wMid += bin[2] * amp;
-          wHigh += bin[3] * amp;
-          wAmp += amp;
-          sumLow += bin[1];
-          sumMid += bin[2];
-          sumHigh += bin[3];
-          count++;
+        if (isTyped) {
+          for (let i = a; i < b; i += innerStep) {
+            const base = i * 6;
+            const l = bins[base + 4];
+            const r = bins[base + 5];
+            const low = bins[base + 1];
+            const mid = bins[base + 2];
+            const high = bins[base + 3];
+            if (l > maxL) maxL = l;
+            if (r > maxR) maxR = r;
+            sumSqL += l * l;
+            sumSqR += r * r;
+            const amp = l > r ? l : r;
+            wLow += low * amp;
+            wMid += mid * amp;
+            wHigh += high * amp;
+            wAmp += amp;
+            sumLow += low;
+            sumMid += mid;
+            sumHigh += high;
+            count++;
+          }
+        } else {
+          for (let i = a; i < b; i += innerStep) {
+            const bin = bins[i];
+            const l = bin[4] ?? bin[0];
+            const r = bin[5] ?? bin[0];
+            if (l > maxL) maxL = l;
+            if (r > maxR) maxR = r;
+            sumSqL += l * l;
+            sumSqR += r * r;
+            const amp = Math.max(l, r);
+            wLow += bin[1] * amp;
+            wMid += bin[2] * amp;
+            wHigh += bin[3] * amp;
+            wAmp += amp;
+            sumLow += bin[1];
+            sumMid += bin[2];
+            sumHigh += bin[3];
+            count++;
+          }
         }
         if (!count) {
           if (useCache) cache.map.set(absCol, null);
@@ -283,7 +309,7 @@ export function attachCanvas(ctx) {
   function layerKey() {
     const scroll = $("scroll");
     const view = state.view;
-    return [state.scene, view.activeLane, view.objectLines, view.left, view.right, view.cycle, view.duration,
+    return [state.scene, state.scene.waveform, view.activeLane, view.objectLines, view.left, view.right, view.cycle, view.duration,
       view.offset, view.tool, state.outputProblemList, state.scene.viewStart, state.scene.zoom, state.scene.rowHeight,
       scroll.scrollTop, scroll.clientHeight, elements.grid.clientWidth, elements.ruler.clientWidth,
       elements.ruler.clientHeight, elements.overview.clientWidth, elements.controller.clientHeight,
