@@ -246,10 +246,10 @@ impl LiveAudioSource for DrumVstLiveSource {
             let eff_speed = if speed.is_finite() && speed > 0.0 { speed } else { 1.0 };
             let block_ms = frames as f64 * eff_speed * 1000.0 / rate;
             let window_start = match self.last_block_end_ms {
-                Some(prev) if (position_ms - prev).abs() < 2.0 => prev,
+                Some(prev) if (position_ms - prev).abs() <= block_ms => prev,
                 _ => position_ms,
             };
-            let window_end = position_ms + block_ms;
+            let window_end = window_start + block_ms;
             self.last_block_end_ms = Some(window_end);
 
             let schedule = self.schedule.clone();
@@ -259,7 +259,7 @@ impl LiveAudioSource for DrumVstLiveSource {
                     if cue.at_ms >= window_end {
                         break;
                     }
-                    let rel_ms = (cue.at_ms - position_ms).max(0.0);
+                    let rel_ms = (cue.at_ms - window_start).max(0.0);
                     let offset = ((rel_ms * rate / (eff_speed * 1000.0)).round() as usize)
                         .min(frames.saturating_sub(1));
                     self.trigger_note(offset, cue.note, cue.velocity, release_frames);
@@ -269,8 +269,18 @@ impl LiveAudioSource for DrumVstLiveSource {
             self.last_block_end_ms = None;
         }
 
-        // Keep events ordered by sample offset for the VST3 host.
-        self.events.sort_by_key(|e| e.offset);
+        // Keep events ordered by sample offset for the VST3 host without allocating.
+        // Insertion sort is stable (preserving Note Off before Note On at equal offsets)
+        // and performs zero heap allocations even above `slice::sort`'s merge threshold.
+        for idx in 1..self.events.len() {
+            let event = self.events[idx];
+            let mut j = idx;
+            while j > 0 && self.events[j - 1].offset > event.offset {
+                self.events[j] = self.events[j - 1];
+                j -= 1;
+            }
+            self.events[j] = event;
+        }
         let _ = self
             .processor
             .process_block(rate, &self.events, &mut left[..frames], &mut right[..frames]);
@@ -305,10 +315,24 @@ pub fn gain_to_midi_velocity(gain: f32) -> u8 {
 mod tests {
     use super::*;
     use dawsu_foundation::{CustomIndex, SampleSet};
+    use std::sync::Mutex;
 
     struct RecordingProcessor {
-        calls: Vec<Vec<ShmEvent>>,
+        calls: Arc<Mutex<Vec<Vec<ShmEvent>>>>,
         fill_value: f32,
+    }
+
+    impl RecordingProcessor {
+        fn new(fill_value: f32) -> (Self, Arc<Mutex<Vec<Vec<ShmEvent>>>>) {
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            (
+                Self {
+                    calls: calls.clone(),
+                    fill_value,
+                },
+                calls,
+            )
+        }
     }
 
     impl DrumBlockProcessor for RecordingProcessor {
@@ -319,7 +343,7 @@ mod tests {
             left: &mut [f32],
             right: &mut [f32],
         ) -> bool {
-            self.calls.push(events.to_vec());
+            self.calls.lock().unwrap().push(events.to_vec());
             left.fill(self.fill_value);
             right.fill(self.fill_value);
             true
@@ -328,10 +352,7 @@ mod tests {
 
     #[test]
     fn schedules_timeline_cues_previews_retriggers_and_resets_cc120_123() {
-        let proc = RecordingProcessor {
-            calls: Vec::new(),
-            fill_value: 0.25,
-        };
+        let (proc, _calls) = RecordingProcessor::new(0.25);
         let (handle, mut source) = DrumVstLiveHandle::new(
             "vst3-1".into(),
             "Test Kit".into(),
@@ -364,6 +385,154 @@ mod tests {
         source.process_timeline_block(&mut l, &mut r, 44_100, true, 0.0, 1.0);
         assert_eq!(l[0], 0.0);
         assert_eq!(r[0], 0.0);
+    }
+
+    #[test]
+    fn jitter_at_fractional_speeds_fires_each_cue_exactly_once() {
+        const SAMPLE_RATE: u32 = 44_100;
+        const FRAMES: usize = 512;
+        let jitter_pattern = [0.0, -3.0, 3.0, -2.5, 2.8, -1.9, 2.9];
+
+        for speed in [0.75_f64, 1.5_f64] {
+            let (proc, calls) = RecordingProcessor::new(0.0);
+            let (handle, mut source) = DrumVstLiveHandle::new(
+                "vst3-jitter".into(),
+                "Test Kit".into(),
+                "kit.vst3".into(),
+                None,
+                true,
+                Box::new(proc),
+            );
+
+            let block_ms = FRAMES as f64 * speed * 1000.0 / SAMPLE_RATE as f64;
+            // Place cues near block boundaries (including inside the +-3 ms jitter band) and mid-block.
+            let mut cues = Vec::new();
+            let mut note_on_counts: HashMap<(u8, u8), usize> = HashMap::new();
+            for i in 0..24 {
+                let at_ms = match i % 3 {
+                    0 => (i as f64 / 3.0 + 1.0) * block_ms - 0.4,
+                    1 => (i as f64 / 3.0 + 1.0) * block_ms + 0.4,
+                    _ => (i as f64 / 3.0 + 0.5) * block_ms,
+                };
+                let note = 36 + (i as u8 % 16);
+                let velocity = 60 + i as u8;
+                cues.push(DrumMidiCue { at_ms, note, velocity });
+                note_on_counts.insert((note, velocity), 0);
+            }
+            let max_at_ms = cues.iter().map(|c| c.at_ms).fold(0.0_f64, f64::max);
+            handle.set_schedule(cues);
+
+            let mut l = [0.0f32; FRAMES];
+            let mut r = [0.0f32; FRAMES];
+            let total_blocks = (max_at_ms / block_ms).ceil() as usize + 2;
+            for block_idx in 0..total_blocks {
+                let nominal = block_idx as f64 * block_ms;
+                let jitter = if block_idx == 0 {
+                    0.0
+                } else {
+                    jitter_pattern[block_idx % jitter_pattern.len()]
+                };
+                let pos = (nominal + jitter).max(0.0);
+                source.process_timeline_block(&mut l, &mut r, SAMPLE_RATE, true, pos, speed);
+            }
+
+            let recorded = calls.lock().unwrap();
+            for block_events in recorded.iter() {
+                for ev in block_events {
+                    if ev.status == NOTE_ON_CH10 {
+                        *note_on_counts.entry((ev.data1, ev.data2)).or_insert(0) += 1;
+                    }
+                }
+            }
+
+            for ((note, velocity), count) in &note_on_counts {
+                assert_eq!(
+                    *count, 1,
+                    "speed={speed}: expected cue (note={note}, vel={velocity}) to fire once, got {count}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn insertion_sort_preserves_note_off_before_note_on_with_many_events() {
+        const SAMPLE_RATE: u32 = 44_100;
+        const FRAMES: usize = 512;
+        let (proc, calls) = RecordingProcessor::new(0.0);
+        let (handle, mut source) = DrumVstLiveHandle::new(
+            "vst3-sort".into(),
+            "Test Kit".into(),
+            "kit.vst3".into(),
+            None,
+            true,
+            Box::new(proc),
+        );
+
+        let block_ms = FRAMES as f64 * 1000.0 / SAMPLE_RATE as f64;
+        // Block 0: trigger 12 notes so `active_releases` holds pending Note Offs expiring in block 8.
+        // In block 8 (at 8 * block_ms), those Note Offs fire at various offsets while previews (offset 0)
+        // and retriggered timeline cues (at offsets before, equal to, and after those Note Offs)
+        // produce > 30 unsorted events with shared offsets.
+        let mut cues = Vec::new();
+        for i in 0..12u8 {
+            let note = 36 + i;
+            let initial_ms = (i as f64) * 0.5;
+            cues.push(DrumMidiCue { at_ms: initial_ms, note, velocity: 90 });
+
+            // Re-trigger the same note twice at identical timestamps inside block 8.
+            let block8_ms = 8.0 * block_ms + (11 - i) as f64 * 0.6;
+            cues.push(DrumMidiCue { at_ms: block8_ms, note, velocity: 100 });
+            cues.push(DrumMidiCue { at_ms: block8_ms, note, velocity: 110 });
+        }
+        handle.set_schedule(cues);
+
+        let mut l = [0.0f32; FRAMES];
+        let mut r = [0.0f32; FRAMES];
+        for block_idx in 0..8 {
+            source.process_timeline_block(
+                &mut l,
+                &mut r,
+                SAMPLE_RATE,
+                true,
+                block_idx as f64 * block_ms,
+                1.0,
+            );
+        }
+
+        // Queue previews at offset 0 on already-active notes so Note Off + Note On appear at offset 0 too.
+        handle.preview(36, 95);
+        handle.preview(37, 96);
+        source.process_timeline_block(&mut l, &mut r, SAMPLE_RATE, true, 8.0 * block_ms, 1.0);
+
+        let recorded = calls.lock().unwrap();
+        let block8_events = &recorded[8];
+        assert!(
+            block8_events.len() > 30,
+            "expected > 30 events in block 8, got {}",
+            block8_events.len()
+        );
+        assert!(
+            block8_events.windows(2).all(|w| w[0].offset <= w[1].offset),
+            "events must be sorted by non-decreasing offset: {block8_events:?}"
+        );
+
+        // Verify that for every retriggered note at the same offset, Note Off precedes Note On.
+        for note in 36..48u8 {
+            let mut offsets_seen: HashMap<i32, Vec<u8>> = HashMap::new();
+            for ev in block8_events.iter().filter(|e| e.data1 == note) {
+                offsets_seen.entry(ev.offset).or_default().push(ev.status);
+            }
+            for (offset, statuses) in offsets_seen {
+                if statuses.contains(&NOTE_OFF_CH10) && statuses.contains(&NOTE_ON_CH10) {
+                    let first_off = statuses.iter().position(|&s| s == NOTE_OFF_CH10).unwrap();
+                    let first_on = statuses.iter().position(|&s| s == NOTE_ON_CH10).unwrap();
+                    assert!(
+                        first_off < first_on,
+                        "note {note} at offset {offset}: Note Off must precede Note On, got {statuses:?}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
