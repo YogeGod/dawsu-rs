@@ -96,6 +96,20 @@ export function sameUiView(a, b) {
   );
 }
 
+function sameSoundSetPrompts(a, b) {
+  const left = a ?? [];
+  const right = b ?? [];
+  if (left === right) return true;
+  if (left.length !== right.length) return false;
+  for (let i = 0; i < left.length; i++) {
+    if (left[i].setId !== right[i].setId || left[i].name !== right[i].name ||
+        left[i].placements !== right[i].placements ||
+        left[i].editedKeepFiles !== right[i].editedKeepFiles ||
+        !!left[i].open !== !!right[i].open) return false;
+  }
+  return true;
+}
+
 export function samePlayhead(a, b) {
   if (a === b) return true;
   if (!a || !b) return false;
@@ -108,3 +122,5 @@ export function samePlayhead(a, b) {
     Object.is(a.speed, b.speed)
   );
 }
+
+export { sameSoundSetPrompts };

@@ -1,12 +1,16 @@
 // Core backend RPC loop, top-level view synchronization, frame chrome, and Home lists.
 import { nameOf, recentMapName } from "./helpers.js";
+import { sameSoundSetPrompts, sameUiView } from "../lib/view.js";
 
 export function attachIpc(ctx) {
   const { env, state, dom, elements } = ctx;
   const { $, makeButton, paragraph } = dom;
   const { invoke } = env.window.__TAURI__.core;
 
+  let lastStatusNotice = "";
+
   function setStatusNotice(text) {
+    lastStatusNotice = text || "";
     if (ctx.ui()?.statusNotice) {
       ctx.ui().statusNotice(text);
       return;
@@ -198,6 +202,21 @@ export function attachIpc(ctx) {
     try { env.window.showToast?.({ tone: "success", title, body: status }); } catch (error) { (env.console ?? console).error(error); }
   }
 
+  function samePollBase(before, next) {
+    return Boolean(
+      state.scene && !next.scene && lastActionKind === null &&
+      !next.busy && !before.busy && next.hasDocument && !next.showHome &&
+      !!before.dirty === !!next.dirty && (before.fault ?? null) === (next.fault ?? null) &&
+      before.left === next.left && before.right === next.right && before.cycle === next.cycle &&
+      before.activeLane === next.activeLane && before.tool === next.tool &&
+      before.follow === next.follow && before.offset === next.offset &&
+      before.songMuted === next.songMuted && before.songSolo === next.songSolo &&
+      before.hitsoundsMuted === next.hitsoundsMuted && before.hitsoundsSolo === next.hitsoundsSolo &&
+      before.song === next.song && before.main === next.main && before.hitsounds === next.hitsounds &&
+      !next.revert && !next.review && !next.editDialog && !next.saveProblemReview
+    );
+  }
+
   function show(next) {
     if (next.fault) {
       // A new object, so the Svelte parts see the fault and disable.
@@ -273,19 +292,11 @@ export function attachIpc(ctx) {
       state.scene = state.view.scene;
       if (unfolded.length) ctx.saveLaneLayout();
     }
+    const pollBase = samePollBase(before, next);
     // Fast path for pure 12-Hz playback polls: skip DOM/menu/dialog churn when only playhead/peaks moved.
-    const purePlaybackPoll = Boolean(
-      state.scene && !next.scene && before.playing && next.playing && lastActionKind === null &&
-      !next.busy && !before.busy && next.hasDocument && !next.showHome &&
-      before.dirty === next.dirty && before.fault === next.fault &&
-      before.left === next.left && before.right === next.right && before.cycle === next.cycle &&
-      before.activeLane === next.activeLane && before.tool === next.tool &&
-      before.follow === next.follow && before.offset === next.offset &&
-      before.songMuted === next.songMuted && before.songSolo === next.songSolo &&
-      before.hitsoundsMuted === next.hitsoundsMuted && before.hitsoundsSolo === next.hitsoundsSolo &&
-      before.song === next.song && before.main === next.main && before.hitsounds === next.hitsounds &&
-      (before.outputProblems?.length ?? 0) === (next.outputProblems?.length ?? 0) &&
-      !next.revert && !next.review && !next.editDialog && !next.saveProblemReview
+    const purePlaybackPoll = pollBase && Boolean(
+      before.playing && next.playing &&
+      (before.outputProblems?.length ?? 0) === (next.outputProblems?.length ?? 0)
     );
     if (purePlaybackPoll) {
       ctx.followBookmarkPick();
@@ -293,6 +304,33 @@ export function attachIpc(ctx) {
       ctx.paintSoon(true);
       ctx.animatePlayback();
       try { ctx.ui()?.update?.(state.view, state.scene); } catch (error) { (env.console ?? console).error(error); }
+      return;
+    }
+    // Fast path for 1-Hz idle polls while paused: skip DOM/menu/dialog/canvas work when nothing changed.
+    const idlePoll = pollBase && Boolean(
+      !before.playing && !next.playing &&
+      sameUiView(before, next) &&
+      Object.is(before.position, next.position) &&
+      (before.musicalPosition ?? null) === (next.musicalPosition ?? null) &&
+      (before.error ?? null) === (next.error ?? null) &&
+      (before.rampShape ?? "Linear") === (next.rampShape ?? "Linear") &&
+      !!before.hasOriginalSnapshot === !!next.hasOriginalSnapshot &&
+      sameSoundSetPrompts(before.soundSetPrompts, next.soundSetPrompts) &&
+      !before.revert && !before.review && !before.editDialog && !before.saveProblemReview &&
+      !before.pendingHome && !next.pendingHome &&
+      !before.pendingOpen && !next.pendingOpen &&
+      !before.saveReview && !next.saveReview &&
+      !before.firstLaunch && !next.firstLaunch &&
+      next.bookmarkStep == null
+    );
+    if (idlePoll) {
+      const hadBookmarkPick = state.bookmarkPick;
+      ctx.followBookmarkPick();
+      if (hadBookmarkPick && !state.bookmarkPick) ctx.renderActiveLane();
+      if (state.rulerPointer || state.rulerDrag) ctx.refreshRulerCursor();
+      try { ctx.ui()?.update?.(state.view, state.scene); } catch (error) { (env.console ?? console).error(error); }
+      const missing = missingUiParts();
+      if (missing || lastStatusNotice) setStatusNotice(missing);
       return;
     }
 
