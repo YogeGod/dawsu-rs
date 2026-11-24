@@ -303,7 +303,7 @@ test("each menu groups the editor's existing commands like the design, with no s
   const popup = get("editor-menu");
   const open = name => { get("menu-" + name).click(); return menuLabels(popup); };
   assert.deepEqual(open("file"), [
-    "Open map…", "Open from osu!", "Import .osz…", "Import MIDI…", "Open map folder", "—",
+    "Open map…", "Open from osu!", "Import .osz…", "Import MIDI…", "Import mania hitsounds…", "Open map folder", "—",
     "Save", "Revert to saved…", "Revert mapset to original…", "Undo revert", "Export…", "Export MIDI…", "—",
     "Start screen", "Folders…", "—", "Preferences…",
   ]);

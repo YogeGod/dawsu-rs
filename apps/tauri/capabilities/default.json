@@ -50,6 +50,7 @@
     "allow-inspect-midi-file",
     "allow-apply-midi-import",
     "allow-export-midi-file",
+    "allow-import-mania-hitsounds",
     "allow-midi-input-ports",
     "allow-midi-record-toggle",
     "allow-vst3-scan",
