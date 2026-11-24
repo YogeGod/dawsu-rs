@@ -1,6 +1,5 @@
-use super::{Action, map_path};
+use super::{Action, ViewSnapshot, map_path};
 use dawsu_application::Application;
-use serde_json::Value;
 
 #[derive(Default)]
 pub(super) enum Route {
@@ -87,8 +86,8 @@ impl Route {
         matches!(self, Self::Parked | Self::Opening)
     }
 
-    pub(super) fn add_status(&self, view: &mut Value) {
-        view["showHome"] = self.visible().into();
-        view["pendingHome"] = matches!(self, Self::Review).into();
+    pub(super) fn add_status(&self, view: &mut ViewSnapshot) {
+        view.show_home = Some(self.visible());
+        view.pending_home = Some(matches!(self, Self::Review));
     }
 }

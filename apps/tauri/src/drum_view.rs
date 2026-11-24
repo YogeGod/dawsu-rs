@@ -6,8 +6,7 @@ use dawsu_hitsounding::{
         read_dawsudrum,
     },
 };
-use serde::Deserialize;
-use serde_json::{Value, json};
+use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet},
     fs::File,
@@ -294,7 +293,7 @@ impl DrumView {
         Ok(())
     }
 
-    pub(super) fn decorate(&self, app: &Application, view: &mut Value) {
+    pub(super) fn decorate(&self, app: &Application, view: &mut super::ViewSnapshot) {
         let Some(document) = app.document() else { return };
         let Some(kit) = document.path.parent().and_then(|mapset| self.mapsets.get(mapset)) else {
             return;
@@ -302,21 +301,19 @@ impl DrumView {
         let composer = &document.composer;
         let model = composer.hitsounds();
         let definitions: HashMap<_, _> = model.lanes().iter().map(|lane| (&lane.identity, lane)).collect();
-        let presets: Vec<&str> = BUILTIN_DRUM_MAPS.iter().map(|(name, _)| *name).collect();
+        let presets: Vec<&'static str> = BUILTIN_DRUM_MAPS.iter().map(|(name, _)| *name).collect();
         let visible_lanes = visible_lanes(app);
-        let assignable_lanes: Vec<Value> = visible_lanes
+        let assignable_lanes: Vec<AssignableLane> = visible_lanes
             .iter()
-            .map(|lane| {
-                json!({
-                    "key": lane_key(lane),
-                    "sceneKey": super::scene_lane_key(&lane.identity),
-                    "name": super::lane_name(&lane.identity),
-                })
+            .map(|lane| AssignableLane {
+                key: lane_key(lane),
+                name: super::lane_name(&lane.identity),
+                scene_key: super::scene_lane_key(&lane.identity),
             })
             .collect();
 
-        let Some(order) = view["scene"]["laneOrder"].as_array().filter(|_| kit.enabled) else {
-            let setup_rows: Vec<Value> = kit
+        let Some(scene) = view.scene.as_ref().filter(|_| kit.enabled) else {
+            let setup_rows: Vec<DrumSetupRow> = kit
                 .preset
                 .rows
                 .iter()
@@ -327,35 +324,34 @@ impl DrumView {
                         .as_deref()
                         .and_then(|key| lane_for_key(key, &visible_lanes))
                         .map(|i| lane_key(&visible_lanes[i]));
-                    json!({
-                        "index": index,
-                        "name": row.name,
-                        "laneKey": matched.as_deref().or(row.lane.as_deref()),
-                        "assigned": matched.is_some(),
-                        "midiNote": row.midi_note,
-                    })
+                    DrumSetupRow {
+                        assigned: matched.is_some(),
+                        index,
+                        lane_key: matched.or_else(|| row.lane.clone()),
+                        midi_note: row.midi_note,
+                        name: row.name.clone(),
+                    }
                 })
                 .collect();
-            view["drumView"] = json!({
-                "enabled": kit.enabled,
-                "name": kit.preset.name,
-                "autoDetect": self.auto_detect,
-                "hideUnassigned": self.hide_unassigned,
-                "presets": presets,
-                "rows": setup_rows,
-                "lanes": assignable_lanes,
+            view.drum_view = Some(DrumViewSnapshot {
+                auto_detect: self.auto_detect,
+                enabled: kit.enabled,
+                hide_unassigned: self.hide_unassigned,
+                lanes: assignable_lanes,
+                name: kit.preset.name.clone(),
+                presets,
+                rows: setup_rows,
             });
             return;
         };
         // A replaced lane shows in the place of the lane it fills (the scene's `key`). A drum-map row
         // may name either lane; both stand for the one shown row.
         let filled = |row: usize| {
-            let shown = &view["scene"]["lanes"][row];
-            let key = shown["key"].as_str().filter(|key| Some(*key) != shown["sourceKey"].as_str())?;
+            let shown = scene.lanes.get(row)?;
+            let key = (shown.key != shown.source_key).then_some(shown.key.as_str())?;
             model.lanes().iter().find(|lane| super::scene_lane_key(&lane.identity) == key)
         };
-        let available: Vec<_> = order.iter().filter_map(|value| {
-            let row = value.as_u64()? as usize;
+        let available: Vec<_> = scene.lane_order.iter().filter_map(|&row| {
             let identity = composer.lanes.get(row)?;
             Some((row, *definitions.get(identity)?))
         }).flat_map(|(row, lane)| std::iter::once((row, lane)).chain(filled(row).map(|slot| (row, slot)))).collect();
@@ -369,41 +365,32 @@ impl DrumView {
             .filter_map(|lane| definitions.get(lane).copied());
         let lanes = available.iter().map(|(_, lane)| *lane).chain(hidden).cloned().collect::<Vec<_>>();
         let entries = drum_rows(Some(&kit.preset), &lanes);
-        let setup_rows: Vec<Value> = entries
+        let setup_rows: Vec<DrumSetupRow> = entries
             .iter()
             .take(kit.preset.rows.len())
             .enumerate()
             .map(|(index, entry)| match entry {
                 DrumViewRow::Instrument { row, lane } if rows.contains_key(&lane.identity) => {
-                    json!({
-                        "index": index,
-                        "name": row.name,
-                        "laneKey": lane_key(lane),
-                        "assigned": true,
-                        "midiNote": row.midi_note,
-                    })
+                    DrumSetupRow {
+                        assigned: true,
+                        index,
+                        lane_key: Some(lane_key(lane)),
+                        midi_note: row.midi_note,
+                        name: row.name.clone(),
+                    }
                 }
                 DrumViewRow::Instrument { row, .. } | DrumViewRow::Unassigned(row) => {
-                    json!({
-                        "index": index,
-                        "name": row.name,
-                        "laneKey": row.lane,
-                        "assigned": false,
-                        "midiNote": row.midi_note,
-                    })
+                    DrumSetupRow {
+                        assigned: false,
+                        index,
+                        lane_key: row.lane.clone(),
+                        midi_note: row.midi_note,
+                        name: row.name.clone(),
+                    }
                 }
                 DrumViewRow::Other(_) => unreachable!("first kit.preset.rows.len() entries are preset rows"),
             })
             .collect();
-        view["drumView"] = json!({
-            "enabled": kit.enabled,
-            "name": kit.preset.name,
-            "autoDetect": self.auto_detect,
-            "hideUnassigned": self.hide_unassigned,
-            "presets": presets,
-            "rows": setup_rows,
-            "lanes": assignable_lanes,
-        });
         // Several drum-map rows on one lane show as one row, at the first of them and under all
         // their names, so the view never shows a lane twice.
         let mut names: HashMap<usize, Vec<&str>> = HashMap::new();
@@ -418,27 +405,81 @@ impl DrumView {
         let shown = entries.iter().enumerate().filter_map(|(index, entry)| match entry {
             DrumViewRow::Instrument { lane, .. } => {
                 let row = *rows.get(&lane.identity)?;
-                shown_rows.insert(row).then(|| json!({
-                    "row": row,
-                    "name": names[&row].join(" / "),
-                    "drumRowIndex": index,
-                }))
+                shown_rows.insert(row).then(|| DrumRowSnapshot {
+                    drum_row_index: Some(index),
+                    name: Some(names[&row].join(" / ")),
+                    row: Some(row),
+                })
             }
-            DrumViewRow::Unassigned(row) => (!self.hide_unassigned).then(|| json!({
-                "row": null,
-                "name": row.name,
-                "drumRowIndex": index,
-            })),
+            DrumViewRow::Unassigned(row) => (!self.hide_unassigned).then(|| DrumRowSnapshot {
+                drum_row_index: Some(index),
+                name: Some(row.name.clone()),
+                row: None,
+            }),
             DrumViewRow::Other(lane) => {
                 if self.hide_unassigned {
                     return None;
                 }
                 let row = *rows.get(&lane.identity)?;
-                shown_rows.insert(row).then(|| json!({"row": row, "name": null}))
+                shown_rows.insert(row).then(|| DrumRowSnapshot {
+                    drum_row_index: None,
+                    name: None,
+                    row: Some(row),
+                })
             }
         }).collect::<Vec<_>>();
-        view["scene"]["drumRows"] = json!(shown);
+        view.drum_view = Some(DrumViewSnapshot {
+            auto_detect: self.auto_detect,
+            enabled: kit.enabled,
+            hide_unassigned: self.hide_unassigned,
+            lanes: assignable_lanes,
+            name: kit.preset.name.clone(),
+            presets,
+            rows: setup_rows,
+        });
+        if let Some(scene) = view.scene.as_mut() {
+            scene.drum_rows = Some(shown);
+        }
     }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct AssignableLane {
+    key: String,
+    name: String,
+    scene_key: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct DrumSetupRow {
+    assigned: bool,
+    index: usize,
+    lane_key: Option<String>,
+    midi_note: Option<u8>,
+    name: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct DrumViewSnapshot {
+    auto_detect: bool,
+    enabled: bool,
+    hide_unassigned: bool,
+    lanes: Vec<AssignableLane>,
+    name: String,
+    presets: Vec<&'static str>,
+    rows: Vec<DrumSetupRow>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct DrumRowSnapshot {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    drum_row_index: Option<usize>,
+    name: Option<String>,
+    row: Option<usize>,
 }
 
 fn visible_lanes(app: &Application) -> Vec<Lane> {
