@@ -250,6 +250,70 @@ pub fn plan_generate_keysounds(
     let _ = file.set_value("Metadata", "BeatmapID", "0");
     let file_name = file_name_for(reference_map, reference_file_name, version);
 
+    apply_sync_filenames(&mut file, &sync.synced);
+
+    // Build deduplicated sample manifest keyed by filename.
+    let tracks_by_id: BTreeMap<u64, &KeysoundTrack> = doc.tracks.iter().map(|t| (t.id, t)).collect();
+    let mut manifest_map: BTreeMap<String, SampleManifestEntry> = BTreeMap::new();
+    let mut seen_filenames: BTreeSet<String> = BTreeSet::new();
+
+    for placed in &sync.synced {
+        if let Some(entry) = manifest_map.get_mut(&placed.filename) {
+            entry.usage_count += 1;
+            continue;
+        }
+        let (_, q_vel, q_dur) =
+            sample_filename(placed.track_id, placed.pitch, placed.velocity, placed.duration_ms, settings);
+        let instrument = tracks_by_id
+            .get(&placed.track_id)
+            .map(|t| t.instrument.clone())
+            .unwrap_or_default();
+        seen_filenames.insert(placed.filename.clone());
+        manifest_map.insert(
+            placed.filename.clone(),
+            SampleManifestEntry {
+                filename: placed.filename.clone(),
+                track_id: placed.track_id,
+                instrument,
+                pitch: placed.pitch,
+                velocity: q_vel,
+                duration_ms: f64::from(q_dur),
+                usage_count: 1,
+            },
+        );
+    }
+
+    let manifest = manifest_map.into_values().collect();
+    GeneratePlan {
+        file,
+        file_name,
+        sync,
+        manifest,
+    }
+}
+
+impl GeneratePlan {
+    /// Updates generated hit object, sync, and manifest references after resolving filename
+    /// collisions in the mapset folder.
+    pub fn remap_sample_filenames(&mut self, renames: &BTreeMap<String, String>) {
+        if renames.is_empty() {
+            return;
+        }
+        for placed in &mut self.sync.synced {
+            if let Some(updated) = renames.get(&placed.filename) {
+                placed.filename = updated.clone();
+            }
+        }
+        for entry in &mut self.manifest {
+            if let Some(updated) = renames.get(&entry.filename) {
+                entry.filename = updated.clone();
+            }
+        }
+        apply_sync_filenames(&mut self.file, &self.sync.synced);
+    }
+}
+
+fn apply_sync_filenames(file: &mut OsuFile, synced: &[SyncedNote]) {
     // Index existing hit objects by LineId for patching.
     let objects_by_line: BTreeMap<LineId, HitObject> = file
         .hit_objects()
@@ -260,7 +324,7 @@ pub fn plan_generate_keysounds(
     // Collect slider node updates grouped by slider LineId so multi-node sliders are written in one pass.
     let mut slider_node_filenames: BTreeMap<LineId, BTreeMap<usize, String>> = BTreeMap::new();
 
-    for placed in &sync.synced {
+    for placed in synced {
         match placed.target {
             SyncTarget::Circle { line } => {
                 if let Some(obj) = objects_by_line.get(&line) {
@@ -312,45 +376,6 @@ pub fn plan_generate_keysounds(
             }
             let _ = file.set_field(line, 9, &entries.join("|"));
         }
-    }
-
-    // Build deduplicated sample manifest keyed by filename.
-    let tracks_by_id: BTreeMap<u64, &KeysoundTrack> = doc.tracks.iter().map(|t| (t.id, t)).collect();
-    let mut manifest_map: BTreeMap<String, SampleManifestEntry> = BTreeMap::new();
-    let mut seen_filenames: BTreeSet<String> = BTreeSet::new();
-
-    for placed in &sync.synced {
-        if let Some(entry) = manifest_map.get_mut(&placed.filename) {
-            entry.usage_count += 1;
-            continue;
-        }
-        let (_, q_vel, q_dur) =
-            sample_filename(placed.track_id, placed.pitch, placed.velocity, placed.duration_ms, settings);
-        let instrument = tracks_by_id
-            .get(&placed.track_id)
-            .map(|t| t.instrument.clone())
-            .unwrap_or_default();
-        seen_filenames.insert(placed.filename.clone());
-        manifest_map.insert(
-            placed.filename.clone(),
-            SampleManifestEntry {
-                filename: placed.filename.clone(),
-                track_id: placed.track_id,
-                instrument,
-                pitch: placed.pitch,
-                velocity: q_vel,
-                duration_ms: f64::from(q_dur),
-                usage_count: 1,
-            },
-        );
-    }
-
-    let manifest = manifest_map.into_values().collect();
-    GeneratePlan {
-        file,
-        file_name,
-        sync,
-        manifest,
     }
 }
 
