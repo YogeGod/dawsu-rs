@@ -11,6 +11,7 @@ import { createEditor } from "./editor/boot.js";
 import { invoke } from "./lib/ipc.js";
 import { bridge } from "./lib/bridge.svelte.js";
 import * as commandList from "./lib/commands.js";
+import { hintZoneFromTarget } from "./lib/hints.js";
 import { nextGroup, stepInGroup } from "./lib/snap.js";
 import { applyColorConfig, readColorConfig } from "./lib/theme.js";
 import Boundary from "./lib/Boundary.svelte";
@@ -215,12 +216,22 @@ export function setCoverageFocus(time) {
   bridge.coverageFocusTime = Number.isFinite(time) ? time : null;
 }
 
+export function hint(zone) {
+  bridge.setHint(zone);
+}
+
 // Boot the main editor runtime only on the editor window (never on export.html or drum.html).
 const uiBridge = {
-  update, lanes, inspector, browser, mixer, toggleMapPreview, mapPreviewOn, setNodeGraphViewer, nodeGraphViewer, bottomTab, hitCard, commands, menu, centre, wheelSnap, snapGroup, statusNotice, viewport, laneOptions, coverageFilter, setCoverageFocus,
+  update, lanes, inspector, browser, mixer, toggleMapPreview, mapPreviewOn, setNodeGraphViewer, nodeGraphViewer, bottomTab, hitCard, commands, menu, centre, wheelSnap, snapGroup, statusNotice, viewport, laneOptions, coverageFilter, setCoverageFocus, hint,
 };
 if (document.getElementById("grid")) {
   createEditor(globalThis, { ui: uiBridge });
+  const workspace = document.getElementById("workspace");
+  workspace?.addEventListener("pointerover", event => {
+    bridge.setHint(hintZoneFromTarget(event.target));
+  });
+  workspace?.addEventListener("pointerleave", () => bridge.setHint(null));
+  globalThis.window?.addEventListener("blur", () => bridge.setHint(null));
 }
 applyColorConfig(readColorConfig());
 

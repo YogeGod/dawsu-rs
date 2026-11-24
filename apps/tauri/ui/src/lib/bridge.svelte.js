@@ -34,6 +34,8 @@ export class Bridge {
   mapPreview = $state(true);
   // Transient status notice (errors, fault, or missing UI part) pushed by app.js.
   statusNotice = $state("");
+  // Active hover hint zone ("timeline", "ruler", "volume", "lanes", "mixer", "browser", "inspector", "overview"), or null.
+  hint = $state(null);
   // Optimistic timeline zoom & lane height during changeView() drags before Rust replies.
   zoom = $state(null);
   rowHeight = $state(null);
@@ -96,6 +98,11 @@ export class Bridge {
     this.laneFilter = laneFilter ?? "";
   }
 
+  setHint(zone) {
+    const next = zone || null;
+    if (this.hint !== next) this.hint = next;
+  }
+
   set(view, scene) {
     this.latestView = view;
     if (scene !== this.scene) {
@@ -103,6 +110,7 @@ export class Bridge {
       this.scene = scene;
       this.zoom = scene ? scene.zoom : null;
       this.rowHeight = scene ? scene.rowHeight : null;
+      if (!scene && this.hint !== null) this.hint = null;
     }
     if (!samePlayhead(this.playhead, view)) this.playhead = view;
     if (!sameUiView(this.view, view)) this.view = view;
