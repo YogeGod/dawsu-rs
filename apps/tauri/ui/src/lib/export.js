@@ -124,6 +124,32 @@ export function baseStatus(preview) {
   return base.replaces ? "Replaces earlier, backed up" : "New difficulty";
 }
 
+// Groups consecutive changed `.osu` lines under their active section header (e.g. `[TimingPoints]`).
+export function diffView(diff) {
+  if (!diff || (!diff.added && !diff.removed)) return null;
+  const groups = [];
+  for (const entry of diff.entries ?? []) {
+    const section = entry.section ?? null;
+    const last = groups[groups.length - 1];
+    if (last && last.section === section) {
+      last.entries.push(entry);
+    } else {
+      groups.push({ section, entries: [entry] });
+    }
+  }
+  return {
+    added: diff.added ?? 0,
+    removed: diff.removed ?? 0,
+    truncated: diff.truncated ?? 0,
+    groups,
+  };
+}
+
+export const baseDiff = preview => diffView(preview?.base?.diff ?? null);
+
+export const targetDiff = (preview, path) =>
+  diffView(preview?.targets?.find(item => item.path === path)?.diff ?? null);
+
 // Poll faster while something is running, so progress and the result show without delay.
 export const pollDelay = view => (view?.busy || view?.previewing || view?.writing ? 100 : 250);
 

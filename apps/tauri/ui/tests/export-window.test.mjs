@@ -3,8 +3,8 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { render } from "svelte/server";
 import {
-  adoptChoices, afterPoll, baseStatus, ownWriteError, blockDrops, choicesFrom, runOutcome, statusLine, copyOptions, defaultChoices, difficultyName, exportLabel, exportState, included,
-  laneSwatches, matchWithinValid, openWarnings, optionsKey, pollDelay, previewRequest, targetCounts, warningsLabel,
+  adoptChoices, afterPoll, baseDiff, baseStatus, ownWriteError, blockDrops, choicesFrom, diffView, runOutcome, statusLine, copyOptions, defaultChoices, difficultyName, exportLabel, exportState, included,
+  laneSwatches, matchWithinValid, openWarnings, optionsKey, pollDelay, previewRequest, targetCounts, targetDiff, warningsLabel,
 } from "../src/lib/export.js";
 import ExportWindow from "../src/parts/ExportWindow.svelte";
 
@@ -277,4 +277,69 @@ test("the footer's warning count opens the list of warnings", () => {
   // Left open while the warnings go (a new preview with none, or an error line): the list goes too.
   assert.deepEqual(openWarnings(true, statusLine({ view: {}, problems: [] }), []), []);
   assert.deepEqual(openWarnings(true, statusLine({ view: {}, pollError: "Lost the editor", problems }), problems), []);
+});
+
+test("ExportWindow renders the collapsible .osu diff when diff data is present and hides it when absent", () => {
+  assert.equal(diffView(null), null);
+  assert.equal(diffView({ added: 0, removed: 0, truncated: 0, entries: [] }), null);
+
+  const sampleDiff = {
+    added: 2,
+    removed: 1,
+    truncated: 4,
+    entries: [
+      { section: "[TimingPoints]", line: 12, kind: "added", text: "1500,-100,4,2,1,80,0,0" },
+      { section: "[HitObjects]", line: 40, kind: "removed", text: "256,192,1000,1,0,0:0:0:0:" },
+      { section: "[HitObjects]", line: 41, kind: "added", text: "256,192,1000,1,4,0:0:0:80:" },
+    ],
+  };
+  const choices = choicesFrom(view);
+  const key = optionsKey(view, choices);
+  const withDiffView = {
+    ...view,
+    preview: {
+      id: 9,
+      stale: false,
+      source: view.source.path,
+      version: view.source.version,
+      targets: [
+        { path: insane, matched: 10, unmatched: 0, changed: 2, collisions: 0, keptFromSilent: 0, muted: 0, diff: sampleDiff },
+        { path: hard, matched: 5, unmatched: 0, changed: 0, collisions: 0, keptFromSilent: 0, muted: 0 },
+      ],
+    },
+  };
+  assert.equal(targetDiff(withDiffView.preview, insane).groups.length, 2);
+  assert.equal(targetDiff(withDiffView.preview, hard), null);
+  assert.equal(baseDiff(withDiffView.preview), null);
+
+  const renderedWithDiff = render(ExportWindow, {
+    props: { initialView: withDiffView, initialSent: { id: 9, key } },
+  }).body;
+  assert.match(renderedWithDiff, /<details class="osu-diff/);
+  assert.match(renderedWithDiff, /Compare <code[^>]*>\.osu<\/code>/);
+  assert.match(renderedWithDiff, /\+2<\/span>\s*\/\s*<span[^>]*>-1<\/span>\s*lines/);
+  assert.match(renderedWithDiff, /\[TimingPoints\]/);
+  assert.match(renderedWithDiff, /\[HitObjects\]/);
+  assert.match(renderedWithDiff, /1500,-100,4,2,1,80,0,0/);
+  assert.match(renderedWithDiff, /… 4 more changed lines/);
+  // Only Insane has diff data; Hard has none, so exactly one `<details class="osu-diff` appears.
+  assert.equal((renderedWithDiff.match(/<details class="osu-diff/g) ?? []).length, 1);
+
+  const withoutDiffView = {
+    ...view,
+    preview: {
+      id: 9,
+      stale: false,
+      source: view.source.path,
+      version: view.source.version,
+      targets: [
+        { path: insane, matched: 10, unmatched: 0, changed: 0, collisions: 0, keptFromSilent: 0, muted: 0 },
+        { path: hard, matched: 5, unmatched: 0, changed: 0, collisions: 0, keptFromSilent: 0, muted: 0 },
+      ],
+    },
+  };
+  const renderedWithoutDiff = render(ExportWindow, {
+    props: { initialView: withoutDiffView, initialSent: { id: 9, key } },
+  }).body;
+  assert.doesNotMatch(renderedWithoutDiff, /<details class="osu-diff/);
 });

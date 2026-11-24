@@ -1620,6 +1620,8 @@ struct PeaksSnapshot {
 struct PlannedFileSnapshot {
     added: usize,
     changed: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    diff: Option<dawsu_application::output::OsuDiffSummary>,
     path: PathBuf,
     removed: usize,
     replace: bool,
@@ -1953,9 +1955,11 @@ fn snapshot_with_static(app: &Application, include_scene: bool, include_static: 
     let review = app.output_review.as_ref().map(|plan| {
         let files = plan.files.iter().map(|file| {
             let summary = file.file.change_summary();
+            let diff = file.diff_summary();
             PlannedFileSnapshot {
                 added: summary.hit_objects_added,
                 changed: summary.hit_objects_changed,
+                diff: (!diff.is_empty()).then(|| diff.clone()),
                 path: file.path.clone(),
                 removed: summary.hit_objects_removed,
                 replace: file.expected.is_some(),
@@ -2315,21 +2319,38 @@ fn export_snapshot(app: &Application, cache: &mut ExportCache) -> Value {
             "files": preview.plan.files.iter().map(|file| &file.path).collect::<Vec<_>>(),
             // The base hitsound difficulty, and whether it replaces the one Generate made before.
             "base": preview.plan.generated_file().and_then(|path| preview.plan.files.iter().find(|file| file.path == path))
-                .map(|file| json!({ "path": file.path, "replaces": file.expected.is_some() })),
+                .map(|file| {
+                    let diff = file.diff_summary();
+                    let mut entry = json!({ "path": file.path, "replaces": file.expected.is_some() });
+                    if !diff.is_empty() {
+                        entry["diff"] = json!(diff);
+                    }
+                    entry
+                }),
             "mixes": preview.plan.mix_paths().collect::<Vec<_>>(),
             "createdMixes": preview.plan.created_mix_paths().collect::<Vec<_>>(),
             "reusedMixes": preview.plan.reused_mix_paths().collect::<Vec<_>>(),
             "sampleWarnings": preview.plan.sample_warning_lines(),
             "volumeSummary": preview.plan.volume_clarity_lines(),
-            "targets": preview.plan.targets.iter().map(|counts| json!({
-                "path": counts.path,
-                "matched": counts.matched,
-                "unmatched": counts.unmatched,
-                "changed": counts.changed,
-                "collisions": counts.collisions,
-                "keptFromSilent": counts.kept_from_silent,
-                "muted": counts.muted,
-            })).collect::<Vec<_>>(),
+            "targets": preview.plan.targets.iter().map(|counts| {
+                let diff = preview.plan.files.iter()
+                    .find(|file| file.path == counts.path)
+                    .map(|file| file.diff_summary())
+                    .filter(|diff| !diff.is_empty());
+                let mut entry = json!({
+                    "path": counts.path,
+                    "matched": counts.matched,
+                    "unmatched": counts.unmatched,
+                    "changed": counts.changed,
+                    "collisions": counts.collisions,
+                    "keptFromSilent": counts.kept_from_silent,
+                    "muted": counts.muted,
+                });
+                if let Some(diff) = diff {
+                    entry["diff"] = json!(diff);
+                }
+                entry
+            }).collect::<Vec<_>>(),
         })),
     })
 }

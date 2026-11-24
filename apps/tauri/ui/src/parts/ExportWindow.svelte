@@ -3,19 +3,19 @@
   import { invoke } from "../lib/ipc.js";
   import { forwardSpace } from "../lib/space.js";
   import {
-    adoptChoices, afterPoll, baseName, baseStatus, blockDrops, choicesFrom, difficultyName, exportLabel, exportState, fileName,
-    laneSwatches, matchWithinValid, openWarnings, optionsKey, ownWriteError, pollDelay, previewRequest, statusLine, targetCounts,
+    adoptChoices, afterPoll, baseDiff, baseName, baseStatus, blockDrops, choicesFrom, difficultyName, exportLabel, exportState, fileName,
+    laneSwatches, matchWithinValid, openWarnings, optionsKey, ownWriteError, pollDelay, previewRequest, statusLine, targetCounts, targetDiff,
     warningsLabel,
   } from "../lib/export.js";
   import { reviewMixSections } from "../lib/review.js";
 
   // The editor's answer to export_view, replaced whole on every poll. A test may pass one in.
   // When embedded inside the editor via ExportModal, `onclose` closes the modal instead of an OS window.
-  let { initialView = null, onclose = null } = $props();
+  let { initialView = null, initialSent = null, onclose = null } = $props();
   let view = $state.raw(initialView);
   let choices = $state(choicesFrom(initialView));
   // The last preview this window asked for: { id, key }. null from the moment an option changes.
-  let sent = $state.raw(null);
+  let sent = $state.raw(initialSent);
   // The last export_view failed: cleared by the next answer.
   let pollError = $state(null);
   // A preview, Export, close or Show in editor the editor refused: cleared by the next one that works.
@@ -38,6 +38,7 @@
   const problems = $derived(status.preview ? view?.problems ?? [] : []);
   const matchValid = $derived(matchWithinValid(choices.matchWithin));
   const baseText = $derived(baseStatus(status.preview));
+  const baseOsuDiff = $derived(choices.base ? baseDiff(status.preview) : null);
   // Which .wav files the export creates or reuses, and how volumes are written.
   const mixInfo = $derived(reviewMixSections(status.preview));
   const line = $derived(statusLine({
@@ -219,11 +220,35 @@
                 Slider slide, whistle and tick audio
               </label>
             </div>
+            {#if baseOsuDiff}
+              <details class="osu-diff">
+                <summary class="osu-diff-toggle">
+                  Compare <code>.osu</code>
+                  (<span class="osu-diff-add">+{baseOsuDiff.added}</span> / <span class="osu-diff-rem">-{baseOsuDiff.removed}</span> lines)
+                </summary>
+                <div class="osu-diff-body">
+                  {#each baseOsuDiff.groups as group, gi (gi)}
+                    {#if group.section}<div class="osu-diff-section">{group.section}</div>{/if}
+                    {#each group.entries as entry, ei (ei)}
+                      <div class="osu-diff-line {entry.kind}">
+                        <span class="osu-diff-ln">{entry.line}</span>
+                        <span class="osu-diff-sign">{entry.kind === "added" ? "+" : "-"}</span>
+                        <span class="osu-diff-text">{entry.text}</span>
+                      </div>
+                    {/each}
+                  {/each}
+                  {#if baseOsuDiff.truncated > 0}
+                    <div class="osu-diff-more">… {baseOsuDiff.truncated} more changed {baseOsuDiff.truncated === 1 ? "line" : "lines"}</div>
+                  {/if}
+                </div>
+              </details>
+            {/if}
           </div>
         </li>
           {#each view.targets ?? [] as path (path)}
             {@const on = !choices.leftOut.includes(fileName(path))}
             {@const counts = on ? targetCounts(status.preview, path) : null}
+            {@const diff = on ? targetDiff(status.preview, path) : null}
             <li class="target" class:off={!on}>
               <span class="port" aria-hidden="true"></span>
               <div class="card">
@@ -244,6 +269,29 @@
                     {/each}
                   {/if}
                 </div>
+                {#if diff}
+                  <details class="osu-diff">
+                    <summary class="osu-diff-toggle">
+                      Compare <code>.osu</code>
+                      (<span class="osu-diff-add">+{diff.added}</span> / <span class="osu-diff-rem">-{diff.removed}</span> lines)
+                    </summary>
+                    <div class="osu-diff-body">
+                      {#each diff.groups as group, gi (gi)}
+                        {#if group.section}<div class="osu-diff-section">{group.section}</div>{/if}
+                        {#each group.entries as entry, ei (ei)}
+                          <div class="osu-diff-line {entry.kind}">
+                            <span class="osu-diff-ln">{entry.line}</span>
+                            <span class="osu-diff-sign">{entry.kind === "added" ? "+" : "-"}</span>
+                            <span class="osu-diff-text">{entry.text}</span>
+                          </div>
+                        {/each}
+                      {/each}
+                      {#if diff.truncated > 0}
+                        <div class="osu-diff-more">… {diff.truncated} more changed {diff.truncated === 1 ? "line" : "lines"}</div>
+                      {/if}
+                    </div>
+                  </details>
+                {/if}
               </div>
             </li>
           {/each}
@@ -467,6 +515,79 @@
   .count.matched::before { background: var(--editor-play); }
   .count.unmatched::before { background: var(--editor-error); }
   .count.replaced::before, .count.kept::before, .count.muted::before { background: var(--editor-warning); }
+
+  .osu-diff {
+    margin-top: 10px;
+    border-top: 1px solid var(--editor-border);
+    padding-top: 8px;
+  }
+  .osu-diff-toggle {
+    cursor: pointer;
+    color: var(--editor-secondary);
+    font-size: 12px;
+    user-select: none;
+    list-style-position: outside;
+  }
+  .osu-diff-toggle code {
+    font-family: var(--font-mono);
+    font-size: 11px;
+  }
+  .osu-diff-add { color: var(--editor-play); font-variant-numeric: tabular-nums; }
+  .osu-diff-rem { color: var(--editor-error); font-variant-numeric: tabular-nums; }
+  .osu-diff-body {
+    margin-top: 8px;
+    max-height: 220px;
+    overflow: auto;
+    border-radius: 6px;
+    background: var(--editor-ink);
+    box-shadow: var(--shadow-well);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    line-height: 1.45;
+  }
+  .osu-diff-section {
+    padding: 4px 10px 2px;
+    color: var(--editor-accent);
+    font-weight: 600;
+    background: rgba(255, 255, 255, .03);
+    border-top: 1px solid var(--editor-border);
+  }
+  .osu-diff-section:first-child { border-top: 0; }
+  .osu-diff-line {
+    display: grid;
+    grid-template-columns: 44px 16px 1fr;
+    padding: 1px 10px 1px 6px;
+    white-space: pre;
+  }
+  .osu-diff-line.added {
+    background: rgba(52, 199, 89, .10);
+    color: var(--editor-text);
+  }
+  .osu-diff-line.removed {
+    background: rgba(255, 69, 58, .10);
+    color: var(--editor-text);
+  }
+  .osu-diff-ln {
+    text-align: right;
+    padding-right: 8px;
+    color: var(--editor-disabled);
+    font-variant-numeric: tabular-nums;
+    user-select: none;
+  }
+  .osu-diff-sign {
+    text-align: center;
+    font-weight: 600;
+    user-select: none;
+  }
+  .osu-diff-line.added .osu-diff-sign { color: var(--editor-play); }
+  .osu-diff-line.removed .osu-diff-sign { color: var(--editor-error); }
+  .osu-diff-text { min-width: 0; }
+  .osu-diff-more {
+    padding: 5px 10px;
+    color: var(--editor-muted);
+    border-top: 1px solid var(--editor-border);
+    font-style: italic;
+  }
 
   .panel {
     padding: 28px 24px;
