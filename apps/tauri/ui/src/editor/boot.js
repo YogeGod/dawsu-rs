@@ -55,7 +55,7 @@ const exportedMethods = [
   "laneTint", "setLaneHeight",
   "followBookmarkPick", "selectedBookmark", "renderActiveLane", "selectedHitDetails",
   "renderSelection", "handOverInspector", "inspectorLaneNames", "currentInspector",
-  "keptList", "problemStripData", "inspectorModel", "inspectorAction",
+  "keptList", "problemStripData", "inspectorModel", "inspectorAction", "stepCoverageIssue",
   "sampleTarget", "pickSample", "mapsetSamples", "requestLibraryFolder", "resetBrowserFolder",
   "mapsetTree", "renderSampleBrowser", "currentBrowser", "samplePreviewAction",
   "requestSamplePreview", "sampleBrowserAction",
@@ -335,6 +335,12 @@ export function createEditor(env = globalThis, { ui = null, autoStart = true, ex
         env.window.openEditorMenu("tool", false, { x: box.left, y: box.bottom, trigger, label: "Timeline tools" });
         return;
       }
+    }
+    // N / Shift+N steps to the next / previous coverage issue in the active Inspector filter.
+    if ((key === "n" || key === "N") && !ctrl && !alt && state.scene) {
+      event.preventDefault();
+      ctx.stepCoverageIssue(shift ? -1 : 1);
+      return;
     }
     if (key === "Tab") {
       if (!ctrl && !alt && event.target.closest("[data-dock-control]")) return;

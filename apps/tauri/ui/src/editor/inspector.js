@@ -1,4 +1,5 @@
 // Inspector model builder, problem strip cache, bookmark tracking, and Inspector action router.
+import { analyzeCoverage, filterCoverageIssues, stepCoverageIssue as findCoverageStep } from "../lib/coverageReview.js";
 import { bookmarkJumpWait, clock, limit, parseClock } from "./helpers.js";
 
 export function attachInspector(ctx) {
@@ -242,9 +243,22 @@ export function attachInspector(ctx) {
     return false;
   }
 
+  // Step forward (+1) or backward (-1) through the open difficulty's filtered coverage issues.
+  function stepCoverageIssue(direction = 1) {
+    if (!state.scene || state.view?.busy) return null;
+    const filter = ctx.ui()?.coverageFilter?.() ?? "all";
+    const { issues } = analyzeCoverage(state.scene.moments);
+    const filtered = filterCoverageIssues(issues, filter);
+    const target = findCoverageStep(filtered, state.view?.position ?? 0, direction);
+    if (!target) return null;
+    ctx.ui()?.setCoverageFocus?.(target.time);
+    inspectorAction("jump", target.time);
+    return target;
+  }
+
   Object.assign(ctx, {
     followBookmarkPick, selectedBookmark, renderActiveLane, selectedHitDetails,
     renderSelection, handOverInspector, inspectorLaneNames, currentInspector,
-    keptList, problemStripData, inspectorModel, inspectorAction,
+    keptList, problemStripData, inspectorModel, inspectorAction, stepCoverageIssue,
   });
 }
