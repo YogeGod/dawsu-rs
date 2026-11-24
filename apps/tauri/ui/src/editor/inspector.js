@@ -52,8 +52,22 @@ export function attachInspector(ctx) {
     handOverInspector();
   }
 
+  function sameInspector(a, b) {
+    if (Object.is(a, b)) return true;
+    if (!a || !b || typeof a !== "object" || typeof b !== "object") return false;
+    if (Array.isArray(a) || Array.isArray(b)) return false;
+    const keys = Object.keys(a);
+    if (keys.length !== Object.keys(b).length) return false;
+    for (const key of keys) {
+      if (!Object.prototype.hasOwnProperty.call(b, key) || !sameInspector(a[key], b[key])) return false;
+    }
+    return true;
+  }
+
   function handOverInspector() {
-    state.inspectorState = inspectorModel();
+    const next = inspectorModel();
+    if (sameInspector(state.inspectorState, next)) return;
+    state.inspectorState = next;
     try {
       ctx.ui()?.inspector?.(state.inspectorState);
     } catch (error) {

@@ -333,7 +333,6 @@ export function attachIpc(ctx) {
     $("song-mute").ariaPressed = String(!!state.view.songMuted);
     $("song-solo").ariaPressed = String(!!state.view.songSolo);
 
-    ctx.renderActiveLane();
     ctx.renderPanelLayout();
     if (state.view.scene) ctx.renderScene();
     else ctx.renderSelection();
