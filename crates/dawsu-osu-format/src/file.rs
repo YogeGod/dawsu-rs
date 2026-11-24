@@ -526,10 +526,23 @@ impl OsuFile {
     /// Sets field `index` (0-based, comma-separated) of a line, filling any missing fields
     /// before it with what osu! played for them (invariant 6).
     pub fn set_field(&mut self, id: LineId, index: usize, text: &str) -> Result<SetOutcome, Refusal> {
+        if text.contains(['\r', '\n']) {
+            return Err(Refusal::LineBreak);
+        }
         let i = self.index_of(id).ok_or(Refusal::NotFound)?;
         let section = self.lines[i].section.clone();
         let content = std::str::from_utf8(&self.lines[i].content).map_err(|_| Refusal::NotUtf8)?.to_string();
-        let mut fields: Vec<String> = content.split(',').map(String::from).collect();
+        let (data, comment_suffix) = if section.as_deref() != Some("Metadata") {
+            if let Some(pos) = content.find("//") {
+                let before = content[..pos].trim_end_matches([' ', '\t']);
+                (before, &content[before.len()..])
+            } else {
+                (content.as_str(), "")
+            }
+        } else {
+            (content.as_str(), "")
+        };
+        let mut fields: Vec<String> = data.split(',').map(String::from).collect();
         if index < fields.len() {
             if fields[index] == text {
                 return Ok(SetOutcome::Unchanged);
@@ -542,8 +555,10 @@ impl OsuFile {
             }
             fields.push(text.to_string());
         }
+        let mut rebuilt = fields.join(",");
+        rebuilt.push_str(comment_suffix);
         let line = &mut self.lines[i];
-        line.content = fields.join(",").into_bytes();
+        line.content = rebuilt.into_bytes();
         line.edited = line.content != line.original || line.origin == Origin::Inserted;
         Ok(SetOutcome::Changed)
     }
@@ -883,11 +898,15 @@ impl OsuFile {
 
     /// Writes this difficulty as a new file; a file already at the target is left alone.
     pub fn save_new(&self, target: &Path) -> Result<SaveOutcome, Error> {
-        if target.exists() {
-            return Ok(SaveOutcome::AlreadyExists);
+        match safe_write::create(target, &self.to_bytes()) {
+            Ok(()) => Ok(SaveOutcome::Saved { warnings: vec![] }),
+            Err(dawsu_foundation::Error::Io { source, .. })
+                if source.kind() == std::io::ErrorKind::AlreadyExists =>
+            {
+                Ok(SaveOutcome::AlreadyExists)
+            }
+            Err(e) => Err(Error::Write(e)),
         }
-        safe_write::write_new(target, &self.to_bytes()).map_err(Error::Write)?;
-        Ok(SaveOutcome::Saved { warnings: vec![] })
     }
 }
 

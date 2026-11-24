@@ -170,7 +170,10 @@ impl WritePlan {
         }
         self.ledger = source.pending.ledger();
         self.pending = used.into_values().map(|(name, bytes)| mixes::StagedMix::pending(root, &name, bytes)).collect();
-        let writes = [mix_names.clone(), self.pending_names()].concat();
+        let pending_names = self.pending_names();
+        let skip: Vec<&Path> = self.files.iter().map(|f| f.path.as_path()).collect();
+        crate::pending::check_indexes_free_except(root, &skip, &pending_names)?;
+        let writes = [mix_names.clone(), pending_names].concat();
         let mut editor = crate::pending::listing(root, &source.pending)?;
         editor.extend(mix_names);
         editor.sort();
@@ -188,6 +191,11 @@ impl WritePlan {
                     target.path.display()
                 ));
             }
+        }
+        if let Some(root) = self.source.parent() {
+            let pending_names = self.pending_names();
+            let skip: Vec<&Path> = self.files.iter().map(|f| f.path.as_path()).collect();
+            crate::pending::check_indexes_free_except(root, &skip, &pending_names)?;
         }
         // One all-or-nothing write: the mixes, then the pending files the difficulties play.
         let publication = mixes::publish(self.mixes.iter().chain(&self.pending), self.ledger.as_ref(), cancel)?;

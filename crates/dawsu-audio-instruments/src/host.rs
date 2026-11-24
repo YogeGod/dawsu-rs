@@ -273,6 +273,13 @@ impl HostTransport for ProcessTransport {
     }
 }
 
+impl Drop for ProcessTransport {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
 /// Active session talking to one isolated VST3 sidecar host process.
 pub struct HostSession<T: HostTransport = ProcessTransport> {
     transport: T,
@@ -299,7 +306,13 @@ impl<T: HostTransport> HostSession<T> {
                 "host exited before sending READY".to_string(),
             ));
         };
-        let (plugin_name, protocol_version) = parse_ready_banner(&banner)?;
+        let (plugin_name, protocol_version) = match parse_ready_banner(&banner) {
+            Ok(parsed) => parsed,
+            Err(err) => {
+                transport.kill();
+                return Err(err);
+            }
+        };
         if protocol_version != PROTOCOL_VERSION {
             transport.kill();
             return Err(HostError::ProtocolMismatch {

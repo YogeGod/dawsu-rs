@@ -44,6 +44,7 @@ pub struct Composer {
     pub listen_version: u64,
     pub preview: ToolPreview,
     clipboard: Clipboard<(SampleIdentity, i32)>,
+    move_stroke: Option<(Hitsounds, Vec<(HitKey, f64, i32)>, f64, i32)>,
 }
 
 impl Composer {
@@ -81,6 +82,7 @@ impl Composer {
             listen_version: 0,
             preview: ToolPreview::None,
             clipboard: Clipboard::new(),
+            move_stroke: None,
         }
     }
     pub fn hitsounds(&self) -> &Hitsounds {
@@ -176,21 +178,31 @@ impl Composer {
         let keys: Vec<_> = self
             .selected_keys_in_order()
             .into_iter()
-            .map(|key| {
-                (
-                    key.clone(),
-                    target(
-                        &self.tempo,
-                        self.hitsounds().moments()[key.moment].time().ms(),
-                    ),
-                )
+            .filter_map(|key| {
+                let moment = self.hitsounds().moments().get(key.moment)?;
+                if !moment.has_hit(&key.lane) {
+                    return None;
+                }
+                let old_ms = moment.time().ms();
+                let new_ms = target(&self.tempo, old_ms);
+                Some((key, old_ms, new_ms))
             })
             .collect();
+        if keys.is_empty() {
+            return;
+        }
+        let any_changed = keys.iter().any(|(key, old_ms, new_ms)| {
+            (new_ms - old_ms).abs() > 1e-6
+                || destination.as_ref().is_some_and(|dest| dest != &key.lane)
+        });
+        if !any_changed {
+            return;
+        }
         let mut moved = Vec::new();
         self.apply("Move hits", |h| {
             let values: Vec<_> = keys
                 .iter()
-                .map(|(k, time)| (k.clone(), *time, h.moments()[k.moment].hit_volume(&k.lane)))
+                .map(|(k, _, time)| (k.clone(), *time, h.moments()[k.moment].hit_volume(&k.lane)))
                 .collect();
             for (key, _, _) in &values {
                 h.remove_hit(MomentId(key.moment), &key.lane);
@@ -518,12 +530,15 @@ impl ToolTarget for Composer {
         .offset(&self.tempo, &self.object_times, from, raw)
     }
     fn begin(&mut self, label: &str) {
+        self.move_stroke = None;
         self.history.begin(label);
     }
     fn commit(&mut self) {
+        self.move_stroke = None;
         self.history.commit();
     }
     fn cancel(&mut self) {
+        self.move_stroke = None;
         self.history.cancel();
     }
     fn insert(&mut self, at: SongTime, row: i32) -> Option<HitKey> {
@@ -559,31 +574,51 @@ impl ToolTarget for Composer {
     }
     fn move_by(&mut self, items: &[HitKey], delta: f64, rows: i32) {
         let lanes = self.lanes.clone();
-        let mut new = Vec::new();
+        if items.is_empty() || lanes.is_empty() {
+            return;
+        }
         let primary = self.selected.primary().cloned();
-        let _ = self.history.edit(true, |h| {
+        if self.move_stroke.is_none() {
+            let base_hits = self.hitsounds().clone();
             let mut values: Vec<_> = items
                 .iter()
-                .map(|k| {
-                    (
-                        k.clone(),
-                        h.moments()[k.moment].time().ms(),
-                        h.moments()[k.moment].hit_volume(&k.lane),
-                    )
+                .filter_map(|k| {
+                    let moment = base_hits.moments().get(k.moment)?;
+                    if !moment.has_hit(&k.lane) {
+                        return None;
+                    }
+                    Some((k.clone(), moment.time().ms(), moment.hit_volume(&k.lane)))
                 })
                 .collect();
+            if values.is_empty() {
+                return;
+            }
             values.sort_unstable_by(|(a, _, _), (b, _, _)| {
                 (Some(a) != primary.as_ref(), a.moment, &a.lane)
                     .cmp(&(Some(b) != primary.as_ref(), b.moment, &b.lane))
             });
-            for (k, _, _) in &values {
+            self.move_stroke = Some((base_hits, values, 0.0, 0));
+        }
+        let Some((base_hits, values, total_delta, total_rows)) = self.move_stroke.as_mut() else {
+            return;
+        };
+        *total_delta += delta;
+        *total_rows += rows;
+        let base_snapshot = base_hits.clone();
+        let snapshot_values = values.clone();
+        let applied_delta = *total_delta;
+        let applied_rows = *total_rows;
+        let mut new = Vec::new();
+        let _ = self.history.edit(true, |h| {
+            *h = base_snapshot;
+            for (k, _, _) in &snapshot_values {
                 h.remove_hit(MomentId(k.moment), &k.lane);
             }
-            for (k, t, v) in values {
+            for (k, t, v) in snapshot_values {
                 let old = lanes.iter().position(|l| *l == k.lane).unwrap_or(0) as i32;
-                let mut row = (old + rows).clamp(0, lanes.len() as i32 - 1);
-                while rows != 0 && h.is_lane_hidden(&lanes[row as usize]) {
-                    let next = row + rows.signum();
+                let mut row = (old + applied_rows).clamp(0, lanes.len() as i32 - 1);
+                while applied_rows != 0 && h.is_lane_hidden(&lanes[row as usize]) {
+                    let next = row + applied_rows.signum();
                     if !(0..lanes.len() as i32).contains(&next) {
                         row = old;
                         break;
@@ -591,7 +626,7 @@ impl ToolTarget for Composer {
                     row = next;
                 }
                 let lane = lanes[row as usize].clone();
-                let moment = destination_at(h, (t + delta).max(0.0), v, 5.0);
+                let moment = destination_at(h, (t + applied_delta).max(0.0), v, 5.0);
                 h.add_hit_with_volume(moment, lane.clone(), v);
                 new.push(HitKey { moment: moment.0, lane });
             }

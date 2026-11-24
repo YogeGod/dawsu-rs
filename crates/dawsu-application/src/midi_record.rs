@@ -163,26 +163,9 @@ fn quantize_ms(tempo: &TempoMap, time_ms: f64, snap_divisor: Option<u32>) -> f64
 
 fn map_pitch_to_lane(
     pitch: u8,
-    drum_lanes: &HashMap<u8, SampleIdentity>,
-    fallback_lane: Option<&SampleIdentity>,
+    note_to_lane: &HashMap<u8, SampleIdentity>,
 ) -> Option<SampleIdentity> {
-    if let Some(id) = drum_lanes.get(&pitch) {
-        return Some(id.clone());
-    }
-    if let Some(id) = fallback_lane {
-        return Some(id.clone());
-    }
-    let sound = match pitch % 4 {
-        0 => Hitsound::Normal,
-        1 => Hitsound::Whistle,
-        2 => Hitsound::Finish,
-        _ => Hitsound::Clap,
-    };
-    Some(SampleIdentity::Standard {
-        set: dawsu_foundation::SampleSet::Normal,
-        sound: Sound::Hit(sound),
-        index: dawsu_foundation::CustomIndex::new(0),
-    })
+    note_to_lane.get(&pitch).cloned()
 }
 
 /// Commits recorded MIDI notes into `composer` as a single `"Record MIDI"` undo step.
@@ -195,31 +178,29 @@ pub fn commit_to_composer(
     if notes.is_empty() {
         return Ok(0);
     }
-    let lanes_for_drums: Vec<Lane> = composer
-        .lanes
-        .iter()
-        .cloned()
-        .map(|identity| Lane {
-            source: match &identity {
-                SampleIdentity::File(name) => LaneSource::File(name.clone()),
-                SampleIdentity::Standard { .. } => LaneSource::Skin,
-            },
-            identity,
-        })
+    let real_lanes = composer.hitsounds().lanes();
+    let mut note_to_lane: HashMap<u8, SampleIdentity> = render_notes(drum_map, real_lanes)
+        .into_iter()
+        .map(|(identity, midi_note)| (midi_note, identity))
         .collect();
-    let drum_lanes: HashMap<u8, SampleIdentity> = drum_map
-        .map(|map| {
-            render_notes(Some(map), &lanes_for_drums)
-                .into_iter()
-                .map(|(identity, midi_note)| (midi_note, identity))
-                .collect()
-        })
-        .unwrap_or_default();
+    // Map remaining visible lanes sequentially from middle C (60) upward (tdd-application.md Resp 35).
+    let mut next_note: u8 = 60;
+    for lane in &composer.lanes {
+        if note_to_lane.values().any(|existing| existing == lane) {
+            continue;
+        }
+        while next_note < 127 && note_to_lane.contains_key(&next_note) {
+            next_note += 1;
+        }
+        if !note_to_lane.contains_key(&next_note) {
+            note_to_lane.insert(next_note, lane.clone());
+            next_note = next_note.saturating_add(1);
+        }
+    }
 
-    let fallback_lane = composer.lanes.first().cloned();
     let mut hits = Vec::with_capacity(notes.len());
     for note in notes {
-        let Some(lane) = map_pitch_to_lane(note.pitch, &drum_lanes, fallback_lane.as_ref()) else {
+        let Some(lane) = map_pitch_to_lane(note.pitch, &note_to_lane) else {
             continue;
         };
         let time_ms = quantize_ms(&composer.tempo, note.time_ms, snap_divisor);

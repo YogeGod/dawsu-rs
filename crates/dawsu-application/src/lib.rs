@@ -508,7 +508,8 @@ fn prepare_save(
     } else {
         gain_recovery::mixed_locations(&out, root, pending, &mix_files.staged, cancel)?
     };
-    let recovery = gain_recovery::Captured::read(&effective, root, pending, defaults, &mixed)?;
+    let hs_circles = if hs { Some((&file, &circles)) } else { None };
+    let recovery = gain_recovery::Captured::read_with_hs(&effective, root, pending, defaults, &mixed, hs_circles)?;
     if cancel() {
         return Err("Save cancelled before writing".into());
     }
@@ -2416,12 +2417,30 @@ impl Application {
     }
     fn grid_seek_steps(&mut self, direction: i32, count: u8) {
         let time = SongTime::from_ms(self.position_ms());
+        let playing = self.is_playing();
         if let Some(d) = self.document.as_ref() {
             let composer = &d.composer;
-            let target = (0..count).fold(time, |at, _| {
-                composer.tempo.grid_step(at, direction, composer.spacing)
-            });
-            self.seek(target.ms());
+            let target_ms = if playing {
+                // Match osu!lazer (Editor.cs:1329 + EditorClock.cs:116-136): unsnapped continuous
+                // seek while playing, scaled by BPM and running multiplier.
+                let section = composer.tempo.section_at(time);
+                let beat_len = if section.beat_length_ms > 0.0 {
+                    section.beat_length_ms
+                } else {
+                    500.0
+                };
+                let bpm = 60_000.0 / beat_len;
+                let running_mult = 1.0 + (250.0 / beat_len).floor();
+                let delta = beat_len * f64::from(count) * (bpm / 120.0) * running_mult;
+                time.ms() + delta * f64::from(direction.signum())
+            } else {
+                (0..count)
+                    .fold(time, |at, _| {
+                        composer.tempo.grid_step(at, direction, composer.spacing)
+                    })
+                    .ms()
+            };
+            self.seek(target_ms);
         }
     }
     pub fn set_tool(&mut self, tool: ToolKind) {

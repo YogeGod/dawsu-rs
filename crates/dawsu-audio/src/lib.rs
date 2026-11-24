@@ -402,12 +402,21 @@ impl SongStretcher {
     const CHUNK_OUT: usize = 256;
 
     fn new(sample_rate: u32) -> Self {
+        let rate = sample_rate.max(1);
+        let stretch = signalsmith_stretch::Stretch::preset_default(2, rate);
+        let in_lat = stretch.input_latency();
+        let out_lat = stretch.output_latency();
+        // Pre-allocate worst-case buffers off the audio thread (up to 2.0x speed).
+        let max_in_frames = in_lat
+            .max(out_lat.saturating_mul(2))
+            .max(Self::CHUNK_OUT.saturating_mul(2))
+            .max(1);
         Self {
-            sample_rate: sample_rate.max(1),
-            stretch: None,
-            in_buf: Vec::new(),
+            sample_rate: rate,
+            stretch: Some(stretch),
+            in_buf: vec![0.0; max_in_frames * 2],
             out_buf: vec![0.0; Self::CHUNK_OUT * 2],
-            discard_buf: Vec::new(),
+            discard_buf: vec![0.0; out_lat.max(1) * 2],
             out_pos: 0,
             out_len: 0,
             primed: false,
@@ -449,7 +458,9 @@ impl SongStretcher {
         let out_lat = stretch.output_latency();
 
         let base_frame = song_time_ms * sample_rate as f64 / 1000.0;
-        let start_in = base_frame - out_lat as f64 * speed;
+        // Discarding `out_lat` output frames below aligns output frame 0 directly to `base_frame`
+        // (matching Signalsmith Stretch's `exact()`), so `start_in` must NOT subtract `out_lat * speed`.
+        let start_in = base_frame;
 
         if in_lat > 0 {
             self.fill_input(song, start_in, in_lat);
@@ -559,6 +570,9 @@ pub struct Mixer {
     live_source: Option<Box<dyn LiveAudioSource>>,
     live_left: Vec<f32>,
     live_right: Vec<f32>,
+    seek_fade_pos: usize,
+    seek_fade_frames: usize,
+    seek_fade_active: bool,
 }
 impl Mixer {
     const LIVE_BLOCK_FRAMES: usize = 512;
@@ -587,6 +601,9 @@ impl Mixer {
             live_source: None,
             live_left: vec![0.0; Self::LIVE_BLOCK_FRAMES],
             live_right: vec![0.0; Self::LIVE_BLOCK_FRAMES],
+            seek_fade_pos: 0,
+            seek_fade_frames: (sample_rate as usize / 200).max(1),
+            seek_fade_active: false,
         }
     }
     /// Replaces the live audio source, returning the previous source so callers
@@ -598,10 +615,20 @@ impl Mixer {
         std::mem::replace(&mut self.live_source, source)
     }
     pub fn seek(&mut self, ms: f64) {
+        self.seek_internal(ms, true);
+    }
+
+    fn seek_internal(&mut self, ms: f64, declick_song: bool) {
         self.position_ms = if ms.is_finite() { ms.max(0.0) } else { 0.0 };
         self.indexed = false;
         self.limiter.reset();
         self.stretcher.reset();
+        if declick_song && self.playing {
+            self.seek_fade_pos = 0;
+            self.seek_fade_active = true;
+        } else {
+            self.seek_fade_active = false;
+        }
     }
     pub fn audition(&mut self, clip: Arc<AudioClip>, gain: f32) {
         if self.voices.len() < 32 {
@@ -639,7 +666,7 @@ impl Mixer {
             for (frame_idx, frame) in block.chunks_mut(out_channels).enumerate() {
                 if let Some((left, right)) = self.cycle {
                     if self.playing && right > left && self.position_ms >= right {
-                        self.seek(left);
+                        self.seek_internal(left, false);
                     }
                 }
                 if self.playing {
@@ -693,6 +720,17 @@ impl Mixer {
                 } else {
                     None
                 };
+                let song_fade = if self.seek_fade_active {
+                    self.seek_fade_pos += 1;
+                    let factor =
+                        (self.seek_fade_pos as f32 / self.seek_fade_frames as f32).min(1.0);
+                    if self.seek_fade_pos >= self.seek_fade_frames {
+                        self.seek_fade_active = false;
+                    }
+                    factor
+                } else {
+                    1.0
+                };
                 for (channel, value) in frame.iter_mut().enumerate() {
                     let mut mix = 0.0;
                     if self.playing {
@@ -704,14 +742,15 @@ impl Mixer {
                             } else {
                                 r
                             };
-                            mix += sample * self.song_gain;
+                            mix += sample * self.song_gain * song_fade;
                         } else if let Some(song) = &self.song {
                             mix += song.sample(
                                 (self.position_ms - self.song_offset)
                                     * song.sample_rate as f64
                                     / 1000.0,
                                 channel,
-                            ) * self.song_gain;
+                            ) * self.song_gain
+                                * song_fade;
                         }
                         // Cues read by source position, so seek and cycle cannot double-trigger or skip a cue.
                         for index in &self.active_cues {
@@ -902,6 +941,7 @@ pub struct AudioEngine {
     send: mpsc::Sender<Command>,
     retirements: Mutex<Vec<Retired>>,
     retired_live_sources: Mutex<mpsc::Receiver<Box<dyn LiveAudioSource>>>,
+    auditions: Mutex<Vec<Arc<AudioClip>>>,
     listen: ListenSlot,
     position: Arc<AtomicU64>,
     playing: Arc<AtomicBool>,
@@ -974,6 +1014,7 @@ impl AudioEngine {
                 send, position, playing, errors, peak,
                 retirements: Mutex::new(Vec::new()),
                 retired_live_sources: Mutex::new(retire_live_rx),
+                auditions: Mutex::new(Vec::new()),
                 listen: ListenSlot::default(),
             });
         }
@@ -1075,6 +1116,7 @@ impl AudioEngine {
             effective_buffer_ms: None,
             retirements: Mutex::new(Vec::new()),
             retired_live_sources: Mutex::new(retire_live_rx),
+            auditions: Mutex::new(Vec::new()),
             listen: ListenSlot::default(),
             send,
             position,
@@ -1122,7 +1164,10 @@ impl AudioEngine {
             .unwrap_or_else(|e| e.into_inner());
         while live_rx.try_recv().is_ok() {}
         let listening = self.listen.collect();
-        collect_retired(&mut slots) || listening
+        let mut auditions = self.auditions.lock().unwrap_or_else(|e| e.into_inner());
+        auditions.retain(|clip| Arc::strong_count(clip) > 1);
+        let auditioning = !auditions.is_empty();
+        collect_retired(&mut slots) || listening || auditioning
     }
 
     /// Installs or replaces the live audio source mixed ahead of the master limiter.
@@ -1161,6 +1206,10 @@ impl AudioEngine {
         let _ = self.send.send(Command::Seek(ms));
     }
     pub fn audition(&self, clip: Arc<AudioClip>, gain: f32) {
+        let mut auditions = self.auditions.lock().unwrap_or_else(|e| e.into_inner());
+        auditions.retain(|held| Arc::strong_count(held) > 1);
+        auditions.push(clip.clone());
+        drop(auditions);
         let _ = self.send.send(Command::Audition(clip, gain));
     }
     pub fn gains(&self, song: f32, master: f32) {

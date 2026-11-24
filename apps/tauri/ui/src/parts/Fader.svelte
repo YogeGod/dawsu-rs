@@ -17,8 +17,19 @@
     if (!dragging) held = null;
   });
 
+  const uiZoom = () => {
+    try {
+      const z = Number.parseFloat(getComputedStyle(document.documentElement).zoom);
+      return Number.isFinite(z) && z > 0 ? z : 1;
+    } catch {
+      return 1;
+    }
+  };
   // The cap's centre is 6 px below the slot's top at the top of the travel.
-  const gainAt = event => positionGain((event.clientY - slot.getBoundingClientRect().top - 6) / 138, min, max);
+  const gainAt = event => {
+    const dy = (event.clientY - slot.getBoundingClientRect().top) / uiZoom();
+    return positionGain((dy - 6) / 138, min, max);
+  };
 
   function down(event) {
     if (disabled || event.button !== 0) return;

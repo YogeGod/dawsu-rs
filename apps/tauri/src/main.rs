@@ -2100,26 +2100,10 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                 Ok(Request::InspectMidiFile(path, response)) => {
                     let result = guard(&mut app, &mut fault, |app| {
                         let document = app.document().ok_or("Open a difficulty first.")?;
-                        let lanes: Vec<dawsu_hitsounding::Lane> = document
-                            .composer
-                            .lanes
-                            .iter()
-                            .cloned()
-                            .map(|identity| dawsu_hitsounding::Lane {
-                                source: match &identity {
-                                    dawsu_foundation::SampleIdentity::File(n) => {
-                                        dawsu_hitsounding::LaneSource::File(n.clone())
-                                    }
-                                    dawsu_foundation::SampleIdentity::Standard { .. } => {
-                                        dawsu_hitsounding::LaneSource::Skin
-                                    }
-                                },
-                                identity,
-                            })
-                            .collect();
+                        let lanes = document.composer.hitsounds().lanes();
                         dawsu_application::inspect_midi_file(
                             Path::new(&path),
-                            &lanes,
+                            lanes,
                             drums.active_map(app),
                         )
                     })

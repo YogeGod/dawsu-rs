@@ -95,6 +95,13 @@ pub fn discover_vst3_paths_in(roots: &[PathBuf]) -> Vec<PathBuf> {
 }
 
 fn walk_dir(dir: &Path, found: &mut BTreeSet<PathBuf>) {
+    walk_dir_depth(dir, found, 16);
+}
+
+fn walk_dir_depth(dir: &Path, found: &mut BTreeSet<PathBuf>, depth: usize) {
+    if depth == 0 {
+        return;
+    }
     let Ok(entries) = fs::read_dir(dir) else {
         return;
     };
@@ -105,8 +112,8 @@ fn walk_dir(dir: &Path, found: &mut BTreeSet<PathBuf>) {
             // Never recurse inside a .vst3 bundle directory.
             continue;
         }
-        if path.is_dir() {
-            walk_dir(&path, found);
+        if entry.file_type().is_ok_and(|ft| ft.is_dir() && !ft.is_symlink()) {
+            walk_dir_depth(&path, found, depth - 1);
         }
     }
 }
@@ -173,20 +180,59 @@ pub fn parse_scan_output(plugin_path: &Path, stdout: &str) -> Result<Vec<Vst3Plu
     Ok(plugins)
 }
 
-/// Invokes `host_executable --scan <plugin_path>` and parses the reported classes.
+/// Invokes `host_executable --scan <plugin_path>` and parses the reported classes,
+/// enforcing a 10-second timeout so a hanging plug-in cannot wedge the editor.
 pub fn scan_plugin(host_executable: &Path, plugin_path: &Path) -> Result<Vec<Vst3PluginInfo>, ScanError> {
-    let output = Command::new(host_executable)
+    use std::io::Read;
+    use std::process::Stdio;
+    use std::time::{Duration, Instant};
+
+    let mut child = Command::new(host_executable)
         .arg("--scan")
         .arg(plugin_path)
-        .output()
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .map_err(|err| ScanError::SpawnFailed(err.to_string()))?;
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(ScanError::HostReported(
+                        "Plugin scan timed out after 10 seconds.".to_string(),
+                    ));
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(err) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(ScanError::SpawnFailed(err.to_string()));
+            }
+        }
+    };
+
+    let mut stdout_bytes = Vec::new();
+    if let Some(mut out) = child.stdout.take() {
+        let _ = out.read_to_end(&mut stdout_bytes);
+    }
+    let mut stderr_bytes = Vec::new();
+    if let Some(mut err) = child.stderr.take() {
+        let _ = err.read_to_end(&mut stderr_bytes);
+    }
+
+    let stdout = String::from_utf8_lossy(&stdout_bytes);
     let parsed = parse_scan_output(plugin_path, &stdout)?;
-    if !output.status.success() {
+    if !status.success() {
         return Err(ScanError::HostExited {
-            code: output.status.code(),
-            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+            code: status.code(),
+            stderr: String::from_utf8_lossy(&stderr_bytes).into_owned(),
         });
     }
     Ok(parsed)

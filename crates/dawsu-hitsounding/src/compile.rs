@@ -694,29 +694,47 @@ impl Context {
         Ok(())
     }
 
-    /// The raw lines at the latest time at or before `time`, in file order.
-    fn lines_at_or_before(&self, trial: &OsuFile, time: f64) -> Vec<String> {
+    /// The parsed timing points at the latest time at or before `time`, ordered red-before-green
+    /// (preserving file order within each kind, matching osu!lazer R7).
+    fn points_at_or_before(&self, trial: &OsuFile, time: f64) -> Vec<dawsu_osu_format::TimingPoint> {
         let points = trial.timing_points();
-        let latest = points.iter().map(|t| t.time() + self.offset).filter(|t| *t <= time).fold(f64::NEG_INFINITY, f64::max);
-        points.iter().filter(|t| t.time() + self.offset == latest).filter_map(|t| trial.line_text(t.line())).collect()
+        let latest = points
+            .iter()
+            .map(|t| t.time() + self.offset)
+            .filter(|t| *t <= time)
+            .fold(f64::NEG_INFINITY, f64::max);
+        let mut at_latest: Vec<_> = points
+            .into_iter()
+            .filter(|t| t.time() + self.offset == latest)
+            .collect();
+        at_latest.sort_by(|a, b| b.uninherited().cmp(&a.uninherited()));
+        at_latest
     }
 
     /// The beat length that keeps the slider velocity in force at `time`: the green line there,
     /// or -100 (velocity 1) after a red line or before any line.
     fn beat_length_text(&self, trial: &OsuFile, time: f64) -> String {
-        let at_latest = self.lines_at_or_before(trial, time);
+        let at_latest = self.points_at_or_before(trial, time);
         at_latest
             .iter()
             .rev()
-            .find(|l| l.split(',').nth(6).is_some_and(|u| u.trim() == "0"))
-            .and_then(|l| l.split(',').nth(1).map(|b| b.trim().to_string()))
+            .find(|tp| !tp.uninherited())
+            .map(|tp| time_text(tp.beat_length()))
             .unwrap_or_else(|| "-100".to_string())
     }
 
     fn meter_and_effects(&self, trial: &OsuFile, time: f64) -> (String, String) {
-        let last = self.lines_at_or_before(trial, time).pop();
-        let field = |i: usize, default: &str| last.as_ref().and_then(|l| l.split(',').nth(i).map(|f| f.trim().to_string())).unwrap_or_else(|| default.to_string());
-        (field(2, "4"), field(7, "0"))
+        let at_latest = self.points_at_or_before(trial, time);
+        let last = at_latest.last();
+        let meter = last
+            .and_then(|tp| tp.meter())
+            .unwrap_or(4)
+            .to_string();
+        let effects = last
+            .and_then(|tp| tp.effects())
+            .unwrap_or(0)
+            .to_string();
+        (meter, effects)
     }
 }
 

@@ -298,6 +298,28 @@ impl MixFiles {
                 };
                 let mut components = BTreeMap::<Hitsound, Vec<ScheduledSound>>::new();
                 components.entry(Hitsound::Normal).or_default();
+                let has_normal_layer = settings.pair_samples
+                    && layers.iter().any(|(lane, _)| {
+                        !matches!(
+                            lane,
+                            SampleIdentity::Standard {
+                                sound: Sound::Hit(
+                                    Hitsound::Whistle | Hitsound::Finish | Hitsound::Clap
+                                ),
+                                ..
+                            }
+                        )
+                    });
+                let object_volume = if settings.pair_samples && !has_normal_layer {
+                    layers
+                        .iter()
+                        .map(|(_, v)| *v)
+                        .max()
+                        .unwrap_or(100)
+                        .clamp(5, 100)
+                } else {
+                    100
+                };
                 for (lane, volume) in layers {
                     let role = if settings.pair_samples {
                         match lane {
@@ -314,7 +336,7 @@ impl MixFiles {
                         at_ms: 0.0,
                         end_ms: None,
                         clip: inputs[lane].1.clone(),
-                        gain: *volume as f32 / 100.0,
+                        gain: *volume as f32 / object_volume as f32,
                     });
                 }
                 let roles: Vec<_> = components
@@ -355,9 +377,9 @@ impl MixFiles {
                     index,
                     reused.is_some(),
                 );
-                &*rendered.entry(key).or_insert(outputs)
+                &*rendered.entry(key).or_insert((outputs, object_volume))
             };
-            replace_moment(target, moment, outputs.iter().cloned());
+            replace_moment_with_volume(target, moment, outputs.0.iter().cloned(), outputs.1);
         }
         Ok(())
     }
@@ -785,14 +807,23 @@ fn replace_moment(
     moment: MomentId,
     samples: impl IntoIterator<Item = SampleIdentity>,
 ) {
+    replace_moment_with_volume(target, moment, samples, 100);
+}
+
+fn replace_moment_with_volume(
+    target: &mut Hitsounds,
+    moment: MomentId,
+    samples: impl IntoIterator<Item = SampleIdentity>,
+    volume: i32,
+) {
     for identity in target.moment(moment).hits().cloned().collect::<Vec<_>>() {
         target.remove_hit(moment, &identity);
     }
     for sample in samples {
         target.add_hit(moment, sample);
     }
-    // The layer volumes are already baked into the WAV.
-    target.set_volume(moment, 100);
+    // The layer volumes are baked relative to `volume`.
+    target.set_volume(moment, volume);
 }
 
 struct IndexedMixes {
@@ -1071,9 +1102,18 @@ pub(super) fn reserved_mix_names(root: &Path, staged: &[StagedMix], pending: &Pe
 }
 
 fn name_is_reserved(name: &str, names: &BTreeSet<String>) -> bool {
-    let stem = name.to_ascii_lowercase();
-    let stem = stem.strip_suffix(".wav").unwrap_or(&stem);
-    ["wav", "ogg", "mp3"].into_iter().any(|extension| names.contains(&format!("{stem}.{extension}")))
+    let lower = name.to_ascii_lowercase();
+    if names.contains(&lower) {
+        return true;
+    }
+    let stem = lower
+        .strip_suffix(".wav")
+        .or_else(|| lower.strip_suffix(".ogg"))
+        .or_else(|| lower.strip_suffix(".mp3"))
+        .unwrap_or(&lower);
+    ["wav", "ogg", "mp3"]
+        .into_iter()
+        .any(|extension| names.contains(&format!("{stem}.{extension}")))
 }
 
 fn reserve_name(stem: &str, names: &mut BTreeSet<String>) -> Result<String, String> {
