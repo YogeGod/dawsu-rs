@@ -7,6 +7,7 @@ export function createState() {
     scene: null,
     drag: null,
     rulerDrag: null,
+    pendingSeek: null,
     overviewDrag: null,
     overviewTarget: null,
     overviewNavigation: null,

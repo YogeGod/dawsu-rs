@@ -936,8 +936,8 @@ fn buffer_request(
 enum Command {
     Load(Schedule, Retired),
     SetLiveSource(Option<Box<dyn LiveAudioSource>>),
-    Play(bool),
-    Seek(f64),
+    Play(bool, u64),
+    Seek(f64, u64),
     Audition(Arc<AudioClip>, f32),
     Listen(Option<Arc<AudioClip>>),
     Gains(f32, f32),
@@ -956,6 +956,7 @@ pub struct AudioEngine {
     listen: ListenSlot,
     position: Arc<AtomicU64>,
     playing: Arc<AtomicBool>,
+    command_seq: Arc<AtomicU64>,
     pub errors: Arc<AtomicU64>,
     pub peak: Arc<AtomicU32>,
     pub bus_peaks: Arc<AtomicU64>,
@@ -1007,12 +1008,14 @@ impl AudioEngine {
             let (retire_live_tx, retire_live_rx) = mpsc::sync_channel(16);
             let position = Arc::new(AtomicU64::new(0));
             let playing = Arc::new(AtomicBool::new(false));
+            let command_seq = Arc::new(AtomicU64::new(0));
             let errors = Arc::new(AtomicU64::new(0));
             let peak = Arc::new(AtomicU32::new(0));
             let bus_peaks = Arc::new(AtomicU64::new(0));
             let mut state = StreamRender::new(NATIVE_SAMPLE_RATE, 2, receive, retire_live_tx,
                 position.clone(), playing.clone(), peak.clone())
-                .with_bus_peaks(bus_peaks.clone());
+                .with_bus_peaks(bus_peaks.clone())
+                .with_command_seq(command_seq.clone());
             let render = move |out: &mut [i16]| state.fill(out);
             let stream = match backend {
                 OutputBackend::Mme => mme::open(device_id, buffer_ms, render, errors.clone()),
@@ -1025,7 +1028,7 @@ impl AudioEngine {
                 device_name: stream.name.clone(),
                 device_id: device_id.map(str::to_owned),
                 _stream: OutputStream::Native { _stream: stream },
-                send, position, playing, errors, peak, bus_peaks,
+                send, position, playing, command_seq, errors, peak, bus_peaks,
                 retirements: Mutex::new(Vec::new()),
                 retired_live_sources: Mutex::new(retire_live_rx),
                 auditions: Mutex::new(Vec::new()),
@@ -1108,6 +1111,7 @@ impl AudioEngine {
         let (retire_live_tx, retire_live_rx) = mpsc::sync_channel(16);
         let position = Arc::new(AtomicU64::new(0));
         let playing = Arc::new(AtomicBool::new(false));
+        let command_seq = Arc::new(AtomicU64::new(0));
         let errors = Arc::new(AtomicU64::new(0));
         let peak = Arc::new(AtomicU32::new(0));
         let bus_peaks = Arc::new(AtomicU64::new(0));
@@ -1115,7 +1119,8 @@ impl AudioEngine {
             config.sample_rate, config.channels as usize, receive, retire_live_tx,
             position.clone(), playing.clone(), peak.clone(),
         )
-        .with_bus_peaks(bus_peaks.clone());
+        .with_bus_peaks(bus_peaks.clone())
+        .with_command_seq(command_seq.clone());
         let stream = match supported.sample_format() {
             cpal::SampleFormat::F32 => stream::<f32>(&device, config, render, errors.clone()),
             cpal::SampleFormat::F64 => stream::<f64>(&device, config, render, errors.clone()),
@@ -1137,6 +1142,7 @@ impl AudioEngine {
             send,
             position,
             playing,
+            command_seq,
             errors,
             peak,
             bus_peaks,
@@ -1217,10 +1223,15 @@ impl AudioEngine {
     }
 
     pub fn play(&self, on: bool) {
-        let _ = self.send.send(Command::Play(on));
+        let seq = self.command_seq.fetch_add(1, Ordering::AcqRel) + 1;
+        self.playing.store(on, Ordering::Release);
+        let _ = self.send.send(Command::Play(on, seq));
     }
     pub fn seek(&self, ms: f64) {
-        let _ = self.send.send(Command::Seek(ms));
+        let clamped = if ms.is_finite() { ms.max(0.0) } else { 0.0 };
+        let seq = self.command_seq.fetch_add(1, Ordering::AcqRel) + 1;
+        self.position.store(clamped.to_bits(), Ordering::Release);
+        let _ = self.send.send(Command::Seek(clamped, seq));
     }
     pub fn audition(&self, clip: Arc<AudioClip>, gain: f32) {
         let mut auditions = self.auditions.lock().unwrap_or_else(|e| e.into_inner());
@@ -1273,6 +1284,8 @@ struct StreamRender {
     playing: Arc<AtomicBool>,
     peak: Arc<AtomicU32>,
     bus_peaks: Option<Arc<AtomicU64>>,
+    command_seq: Option<Arc<AtomicU64>>,
+    applied_seq: u64,
     channels: usize,
     scratch: Vec<f32>,
 }
@@ -1297,6 +1310,8 @@ impl StreamRender {
             playing,
             peak,
             bus_peaks: None,
+            command_seq: None,
+            applied_seq: 0,
             channels,
             scratch: vec![0.0; samples],
         }
@@ -1304,6 +1319,11 @@ impl StreamRender {
 
     fn with_bus_peaks(mut self, bus_peaks: Arc<AtomicU64>) -> Self {
         self.bus_peaks = Some(bus_peaks);
+        self
+    }
+
+    fn with_command_seq(mut self, command_seq: Arc<AtomicU64>) -> Self {
+        self.command_seq = Some(command_seq);
         self
     }
 
@@ -1319,8 +1339,19 @@ impl StreamRender {
                         let _ = self.retire_live.try_send(old);
                     }
                 }
-                Command::Play(on) => self.mixer.playing = on,
-                Command::Seek(ms) => self.mixer.seek(ms),
+                Command::Play(on, seq) => {
+                    self.applied_seq = self.applied_seq.max(seq);
+                    let was_playing = self.mixer.playing;
+                    self.mixer.playing = on;
+                    if on && !was_playing {
+                        self.mixer.seek_fade_pos = 0;
+                        self.mixer.seek_fade_active = true;
+                    }
+                }
+                Command::Seek(ms, seq) => {
+                    self.applied_seq = self.applied_seq.max(seq);
+                    self.mixer.seek(ms);
+                }
                 Command::Audition(clip, gain) => self.mixer.audition(clip, gain),
                 Command::Listen(clip) => self.mixer.listen(clip),
                 Command::Gains(song, master) => {
@@ -1354,8 +1385,14 @@ impl StreamRender {
                 | (self.mixer.hitsound_peak.to_bits() as u64);
             bus.store(packed, Ordering::Relaxed);
         }
-        self.position.store(self.mixer.position_ms.to_bits(), Ordering::Relaxed);
-        self.playing.store(self.mixer.playing, Ordering::Relaxed);
+        let synced = self
+            .command_seq
+            .as_ref()
+            .map_or(true, |seq| self.applied_seq >= seq.load(Ordering::Acquire));
+        if synced {
+            self.position.store(self.mixer.position_ms.to_bits(), Ordering::Relaxed);
+            self.playing.store(self.mixer.playing, Ordering::Relaxed);
+        }
     }
 }
 
@@ -1433,7 +1470,7 @@ mod callback_benchmark {
         let playing = Arc::new(AtomicBool::new(false));
         let peak = Arc::new(AtomicU32::new(0));
         let mut render = StreamRender::new(48_000, 2, receive, retire_live_tx, position.clone(), playing, peak.clone());
-        send.send(Command::Seek(400.0)).unwrap();
+        send.send(Command::Seek(400.0, 1)).unwrap();
         send.send(Command::Audition(Arc::new(AudioClip {
             samples: vec![0.25; 2], channels: 1, sample_rate: 48_000,
         }), 1.0)).unwrap();
