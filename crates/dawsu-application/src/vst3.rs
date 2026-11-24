@@ -13,7 +13,7 @@ use dawsu_audio_instruments::scanner::{
     ScanError, Vst3PluginInfo, default_vst3_dirs, discover_vst3_paths_in, scan_plugin,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
 
@@ -317,6 +317,36 @@ pub fn plan_vst3_drum_export(
         assignments,
         saved_files_vs_exact,
     }
+}
+
+/// Ensures every job (and its hit assignments) in `plan` takes a filename that is free in
+/// `taken_names` (case-insensitively, including `.wav`/`.ogg`/`.mp3` stem collisions).
+pub(crate) fn assign_free_vst3_filenames(
+    plan: &mut Vst3DrumExportPlan,
+    taken_names: &mut BTreeSet<String>,
+) -> Result<(), String> {
+    for (job_index, job) in plan.jobs.iter_mut().enumerate() {
+        let chosen = if !crate::mixes::name_is_reserved(&job.filename, taken_names) {
+            job.filename.clone()
+        } else {
+            let (stem, ext) = match job.filename.rsplit_once('.') {
+                Some((s, e)) if !s.is_empty() && !e.is_empty() => (s, e),
+                _ => (job.filename.as_str(), "wav"),
+            };
+            (2..=u32::MAX)
+                .map(|n| format!("{stem}-{n}.{ext}"))
+                .find(|candidate| !crate::mixes::name_is_reserved(candidate, taken_names))
+                .ok_or_else(|| "No safe sample filename is available for rendered drums.".to_string())?
+        };
+        taken_names.insert(chosen.to_ascii_lowercase());
+        if chosen != job.filename {
+            job.filename = chosen.clone();
+            for assignment in plan.assignments.iter_mut().filter(|a| a.job_index == job_index) {
+                assignment.filename = chosen.clone();
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Errors returned by [`Vst3Manager`].
@@ -795,47 +825,31 @@ impl Vst3Manager {
             let _ = self.set_plugin_state(&offline_id, state);
         }
 
-        let out_dir = out_dir.as_ref();
-        std::fs::create_dir_all(out_dir)
-            .map_err(|err| Vst3Error::Bounce(format!("create output dir failed: {err}")))?;
-
-        let options = BounceOptions {
+        let result = execute_vst3_drum_export_with(
+            plan,
+            out_dir.as_ref(),
             sample_rate,
-            ..BounceOptions::default()
-        };
-        let mut outputs = Vec::with_capacity(plan.jobs.len());
-        let result = (|| -> Result<(), Vst3Error> {
-            for job in &plan.jobs {
-                let events = Self::preview_note_to_midi_events(
-                    MidiPreviewNote {
-                        channel: 9,
-                        note: job.pitch,
-                        velocity: job.midi_velocity,
-                        duration_ms: 100,
-                    },
-                    sample_rate,
-                )
-                .to_vec();
-                let raw_path = out_dir.join(format!(".{}.f32.tmp", job.filename));
-                let wav_path = out_dir.join(&job.filename);
-                let rendered = self.bounce_midi_to_wav(&offline_id, events, &raw_path, &options)?;
-                let raw_bytes = std::fs::read(&raw_path).map_err(|err| {
-                    Vst3Error::Bounce(format!("read raw VST3 render failed: {err}"))
-                })?;
-                let _ = std::fs::remove_file(&raw_path);
-                let mut interleaved = Vec::with_capacity(raw_bytes.len() / 4);
-                for chunk in raw_bytes.chunks_exact(4) {
-                    interleaved.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
-                }
-                let mut wav = Self::bounce_audio_to_wav(&interleaved, &wav_path, &options)?;
-                wav.truncated = rendered.truncated;
-                outputs.push(wav);
-            }
-            Ok(())
-        })();
+            |events, raw_path, options| {
+                let instance = self
+                    .instances
+                    .get_mut(&offline_id)
+                    .ok_or_else(|| Vst3Error::PluginNotFound(offline_id.clone()))?;
+                let request = RenderRequest {
+                    out_path: raw_path.to_path_buf(),
+                    max_frames: options.max_frames,
+                    quiet_frames: options.quiet_frames,
+                    threshold: f64::from(options.silence_threshold),
+                    events,
+                };
+                instance
+                    .session
+                    .render(&request)
+                    .map(|rendered| rendered.truncated)
+                    .map_err(Vst3Error::from)
+            },
+        );
         let _ = self.unload_plugin(&offline_id);
-        result?;
-        Ok(outputs)
+        result
     }
 
     /// Bounces interleaved stereo `f32` audio directly to a WAV file using `bounce.rs`.
@@ -883,6 +897,66 @@ impl Vst3Manager {
     pub fn loaded_count(&self) -> usize {
         self.instances.len()
     }
+}
+
+/// Executes every bounce job in `plan` into `out_dir`, removing all `.f32.tmp` and WAV files
+/// created during this render if any job fails.
+pub(crate) fn execute_vst3_drum_export_with<F>(
+    plan: &Vst3DrumExportPlan,
+    out_dir: &Path,
+    sample_rate: u32,
+    mut render_raw: F,
+) -> Result<Vec<BounceOutput>, Vst3Error>
+where
+    F: FnMut(Vec<MidiEvent>, &Path, &BounceOptions) -> Result<bool, Vst3Error>,
+{
+    std::fs::create_dir_all(out_dir)
+        .map_err(|err| Vst3Error::Bounce(format!("create output dir failed: {err}")))?;
+
+    let options = BounceOptions {
+        sample_rate,
+        ..BounceOptions::default()
+    };
+    let mut outputs = Vec::with_capacity(plan.jobs.len());
+    let mut created_files: Vec<PathBuf> = Vec::new();
+    let result = (|| -> Result<(), Vst3Error> {
+        for job in &plan.jobs {
+            let events = Vst3Manager::preview_note_to_midi_events(
+                MidiPreviewNote {
+                    channel: 9,
+                    note: job.pitch,
+                    velocity: job.midi_velocity,
+                    duration_ms: 100,
+                },
+                sample_rate,
+            )
+            .to_vec();
+            let raw_path = out_dir.join(format!(".{}.f32.tmp", job.filename));
+            let wav_path = out_dir.join(&job.filename);
+            created_files.push(raw_path.clone());
+            let truncated = render_raw(events, &raw_path, &options)?;
+            let raw_bytes = std::fs::read(&raw_path).map_err(|err| {
+                Vst3Error::Bounce(format!("read raw VST3 render failed: {err}"))
+            })?;
+            let _ = std::fs::remove_file(&raw_path);
+            let mut interleaved = Vec::with_capacity(raw_bytes.len() / 4);
+            for chunk in raw_bytes.chunks_exact(4) {
+                interleaved.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
+            }
+            created_files.push(wav_path.clone());
+            let mut wav = Vst3Manager::bounce_audio_to_wav(&interleaved, &wav_path, &options)?;
+            wav.truncated = truncated;
+            outputs.push(wav);
+        }
+        Ok(())
+    })();
+    if result.is_err() {
+        for path in created_files {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+    result?;
+    Ok(outputs)
 }
 
 fn sidecar_binary_names() -> &'static [&'static str] {
@@ -1236,5 +1310,89 @@ mod tests {
         assert!(matches!(err, Vst3Error::SidecarNotBuilt { .. }));
 
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn forced_failure_on_second_job_cleans_up_tmp_and_partial_wavs() {
+        let root = make_temp_dir("drum-export-failure-cleanup");
+        let unrelated = root.join("keep-me.wav");
+        fs::write(&unrelated, b"unrelated").unwrap();
+
+        let hits = vec![
+            Vst3DrumHit {
+                time_ms: 0.0,
+                pitch: 36,
+                volume: 73,
+                name: "Kick".into(),
+            },
+            Vst3DrumHit {
+                time_ms: 250.0,
+                pitch: 38,
+                volume: 80,
+                name: "Snare".into(),
+            },
+        ];
+        let plan = plan_vst3_drum_export(&hits, VelocityExportMode::default());
+        assert_eq!(plan.jobs.len(), 2);
+
+        let mut call_count = 0usize;
+        let err = execute_vst3_drum_export_with(&plan, &root, 44_100, |_events, raw_path, _opts| {
+            call_count += 1;
+            if call_count == 1 {
+                let mut bytes = Vec::new();
+                for sample in [0.5_f32, -0.5, 0.25, -0.25] {
+                    bytes.extend_from_slice(&sample.to_le_bytes());
+                }
+                fs::write(raw_path, bytes).unwrap();
+                Ok(false)
+            } else {
+                // Simulate partial .f32.tmp written before the sidecar fails on job 2.
+                fs::write(raw_path, b"partial-raw-data").unwrap();
+                Err(Vst3Error::Bounce("simulated second job failure".into()))
+            }
+        })
+        .unwrap_err();
+
+        assert!(err.to_string().contains("simulated second job failure"), "{err}");
+        let entries: Vec<String> = fs::read_dir(&root)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            entries,
+            vec!["keep-me.wav".to_string()],
+            "all .f32.tmp and partial WAV files from the failed render must be removed"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn assign_free_vst3_filenames_avoids_case_insensitive_and_extension_collisions() {
+        let hits = vec![
+            Vst3DrumHit {
+                time_ms: 0.0,
+                pitch: 36,
+                volume: 73,
+                name: "Kick".into(),
+            },
+            Vst3DrumHit {
+                time_ms: 100.0,
+                pitch: 38,
+                volume: 80,
+                name: "Snare".into(),
+            },
+        ];
+        let mut plan = plan_vst3_drum_export(&hits, VelocityExportMode::default());
+        let mut taken = BTreeSet::from([
+            "vst-kick-v73.wav".to_string(),
+            "vst-snare-v80.ogg".to_string(),
+        ]);
+        assign_free_vst3_filenames(&mut plan, &mut taken).unwrap();
+        assert_eq!(plan.jobs[0].filename, "vst-kick-v73-2.wav");
+        assert_eq!(plan.assignments[0].filename, "vst-kick-v73-2.wav");
+        assert_eq!(plan.jobs[1].filename, "vst-snare-v80-2.wav");
+        assert_eq!(plan.assignments[1].filename, "vst-snare-v80-2.wav");
     }
 }
