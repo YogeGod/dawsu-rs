@@ -1999,13 +1999,14 @@ impl Application {
                     self.set_view_start(settings.view_start.clamp(0.0, duration));
                     self.seek(0.0);
                     self.cycle_changed();
-                    if let Some(saved_vst) = settings.drum_vst.clone() {
-                        if let Err(err) = self.restore_drum_vst_session(&saved_vst) {
-                            self.status = format!("Difficulty loaded (Drum VST3 unavailable: {err})");
+                    let vst_note: Option<String> = if let Some(saved_vst) = settings.drum_vst.clone() {
+                        self.restore_drum_vst_session(&saved_vst).err()
+                    } else {
+                        if self.drum_vst.is_some() {
+                            self.detach_drum_vst();
                         }
-                    } else if self.drum_vst.is_some() {
-                        self.detach_drum_vst();
-                    }
+                        None
+                    };
                     self.sync_audio();
                     if let Some(song_path) = loaded.song_path {
                         if settings.locator_right.is_none_or(|r| r > duration) {
@@ -2019,6 +2020,9 @@ impl Application {
                     } else {
                         "Difficulty loaded".into()
                     };
+                    if let Some(err) = vst_note {
+                        self.status = format!("{} (Drum VST3 unavailable: {err})", self.status);
+                    }
                     if self.sweep_detached {
                         self.status = sweep::with_note(&self.status, sweep::STILL_RUNNING);
                     }
@@ -7886,6 +7890,40 @@ Sample,0,0,\"{story}\",100
         open(&mut app, other);
         open(&mut app, map);
         assert_eq!(app.zoom, fit);
+    }
+
+    #[test]
+    fn opening_map_with_missing_drum_vst_keeps_unavailable_note_in_status() {
+        let fixture = Scratch::new("missing-drum-vst-status");
+        let map = fixture.path("map.osu");
+        let sessions = fixture.path("sessions");
+        let missing_vst = fixture.path("missing-drums.vst3");
+        std::fs::write(&map, include_bytes!("../tests/project-fixture.osu")).unwrap();
+
+        let mut project = project::Project::load(&sessions, None, &map).unwrap();
+        let mut settings = project.settings.clone();
+        settings.drum_vst = Some(project::DrumVstSession {
+            plugin_path: missing_vst.to_string_lossy().into_owned(),
+            plugin_uid: None,
+            enabled: true,
+            state_b64: None,
+        });
+        project.save(settings).unwrap();
+
+        let mut app = Application::headless();
+        app.project_root = Some(sessions);
+        open(&mut app, map);
+
+        assert!(
+            app.status.contains("Drum VST3 unavailable"),
+            "expected Drum VST3 unavailable note in status, got: {:?}",
+            app.status
+        );
+        assert!(
+            app.status.starts_with("Difficulty loaded"),
+            "expected base status before note, got: {:?}",
+            app.status
+        );
     }
 }
 
