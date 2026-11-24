@@ -310,6 +310,10 @@ export function createEditor(env = globalThis, { ui = null, autoStart = true, ex
       event.preventDefault();
       const { surface, firstPoint, lastPoint, id } = state.drag;
       state.drag = null;
+      if (state.drawStrokePreview) {
+        state.drawStrokePreview = null;
+        ctx.paintSoon();
+      }
       if (surface.hasPointerCapture(id)) surface.releasePointerCapture(id);
       ctx.act({ ...(lastPoint ?? firstPoint), phase: "cancel" });
       return;

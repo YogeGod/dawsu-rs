@@ -424,6 +424,135 @@ fn nearest_moment(h: &Hitsounds, time: f64, tolerance: f64) -> Option<MomentId> 
         .map(|(i, _)| MomentId(i))
 }
 
+/// Maximum snapped steps a single Draw paint stroke can place at once, so an
+/// accidental zoomed-out drag can never freeze the editor.
+pub const MAX_PAINT_STROKE_STEPS: usize = 512;
+
+impl Composer {
+    /// Computes every snapped step between `start_ms` and `end_ms` (inclusive of
+    /// both endpoints, in drag order), respecting snap on/off, `snap_mode`
+    /// (`Grid`, `GridRelative`, `Objects`), timing sections, and beat divisor.
+    /// Capped at [`MAX_PAINT_STROKE_STEPS`] steps.
+    pub fn paint_stroke_steps(&self, start_ms: f64, end_ms: f64) -> Vec<SongTime> {
+        if !start_ms.is_finite() || !end_ms.is_finite() {
+            return Vec::new();
+        }
+        let from = SongTime::from_ms(start_ms.max(0.0));
+        let to = SongTime::from_ms(end_ms.max(0.0));
+        let start = self.snap(from);
+        let end = self.snap(to);
+        if !self.snap_enabled || (end.ms() - start.ms()).abs() < 1e-6 {
+            return vec![end];
+        }
+        let forward = end.ms() > start.ms();
+        if self.snap_mode == SnapMode::Objects {
+            let (lo, hi) = if forward {
+                (start.ms(), end.ms())
+            } else {
+                (end.ms(), start.ms())
+            };
+            let mut raw: Vec<SongTime> = self
+                .object_times
+                .iter()
+                .copied()
+                .filter(|t| t.ms() >= lo - 1e-6 && t.ms() <= hi + 1e-6)
+                .collect();
+            if !forward {
+                raw.reverse();
+            }
+            let mut steps: Vec<SongTime> = Vec::with_capacity(raw.len().min(MAX_PAINT_STROKE_STEPS));
+            for t in raw {
+                if steps.len() >= MAX_PAINT_STROKE_STEPS {
+                    break;
+                }
+                if steps.last().is_none_or(|prev| (t.ms() - prev.ms()).abs() >= 1.0) {
+                    steps.push(t);
+                }
+            }
+            if steps.is_empty() {
+                steps.push(end);
+            }
+            return steps;
+        }
+        let dir = if forward { 1 } else { -1 };
+        let mut steps = vec![start];
+        let mut cur = start;
+        while steps.len() < MAX_PAINT_STROKE_STEPS {
+            let next = self.tempo.grid_step(cur, dir, self.spacing);
+            if (next.ms() - cur.ms()).abs() < 1e-6 {
+                break;
+            }
+            if (forward && next.ms() > end.ms() + 1e-6)
+                || (!forward && next.ms() < end.ms() - 1e-6)
+            {
+                break;
+            }
+            steps.push(next);
+            cur = next;
+            if (cur.ms() - end.ms()).abs() < 1e-6 {
+                break;
+            }
+        }
+        if steps.len() < MAX_PAINT_STROKE_STEPS
+            && steps.last().is_none_or(|last| (last.ms() - end.ms()).abs() >= 1e-6)
+        {
+            steps.push(end);
+        }
+        steps
+    }
+
+    /// Paints hits onto `row` at every snapped step between `start_ms` and
+    /// `end_ms` that does not already have a hit on that lane, respecting
+    /// `insert_volume` and recording a single Undo step. Returns the number of
+    /// newly placed hits.
+    pub fn paint_hits_on_lane(&mut self, row: usize, start_ms: f64, end_ms: f64) -> usize {
+        let Some(lane) = self.lanes.get(row).cloned() else {
+            return 0;
+        };
+        let steps = self.paint_stroke_steps(start_ms, end_ms);
+        if steps.is_empty() {
+            return 0;
+        }
+        let mut to_place: Vec<SongTime> = Vec::with_capacity(steps.len());
+        for at in steps {
+            if to_place.iter().any(|prev| (prev.ms() - at.ms()).abs() < 5.0) {
+                continue;
+            }
+            if let Some(id) = nearest_moment(self.hitsounds(), at.ms(), 5.0)
+                && self.hitsounds().moments()[id.0].has_hit(&lane)
+            {
+                continue;
+            }
+            to_place.push(at);
+        }
+        if to_place.is_empty() {
+            return 0;
+        }
+        let volume = self.insert_volume;
+        let mut placed = 0usize;
+        self.history.begin("Paint draw stroke");
+        let _ = self.history.edit(true, |h| {
+            for at in &to_place {
+                let existing = nearest_moment(h, at.ms(), 5.0);
+                if let Some(id) = existing
+                    && h.moments()[id.0].has_hit(&lane)
+                {
+                    continue;
+                }
+                let id = existing.unwrap_or_else(|| h.add_moment(*at, volume));
+                h.add_hit_with_volume(id, lane.clone(), volume);
+                placed += 1;
+            }
+            Ok::<_, Infallible>(())
+        });
+        self.history.commit();
+        if placed > 0 {
+            self.audition_requests.push(lane);
+        }
+        placed
+    }
+}
+
 impl ToolTarget for Composer {
     type Item = HitKey;
     fn hit_test(&self, at: &PointerInput) -> Option<HitKey> {
@@ -494,6 +623,7 @@ impl ToolTarget for Composer {
             if !forward {
                 steps.reverse();
             }
+            steps.truncate(MAX_PAINT_STROKE_STEPS);
             if steps.is_empty() {
                 steps.push(end);
             }
@@ -502,7 +632,7 @@ impl ToolTarget for Composer {
         let dir = if forward { 1 } else { -1 };
         let mut steps = Vec::new();
         let mut cur = start;
-        for _ in 0..256 {
+        for _ in 0..MAX_PAINT_STROKE_STEPS {
             let next = self.tempo.grid_step(cur, dir, self.spacing);
             if (next.ms() - cur.ms()).abs() < 1e-6 {
                 break;
@@ -516,7 +646,9 @@ impl ToolTarget for Composer {
                 break;
             }
         }
-        if steps.last().is_none_or(|last| (last.ms() - end.ms()).abs() >= 1e-6) {
+        if steps.len() < MAX_PAINT_STROKE_STEPS
+            && steps.last().is_none_or(|last| (last.ms() - end.ms()).abs() >= 1e-6)
+        {
             steps.push(end);
         }
         steps

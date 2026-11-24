@@ -1,9 +1,9 @@
 // Timeline viewport, pointer gestures, ruler/locator/bookmark/waveform/overview interactions,
 // hit hover card, and scroll/zoom/wheel snap wiring.
 import {
-  bookmarkFlagHeight, bookmarkHalfWidth, clock, defaultWaveformHeight, describeOutputProblem,
-  findNearestMoment, hitHalfWidth, limit, locatorFlagHeight, locatorFlagWidth, minZoom, nameOf,
-  objectReach, objectSize, rulerBandHeight, sampleFolderNames,
+  bookmarkFlagHeight, bookmarkHalfWidth, clock, computeDrawStrokeSteps, defaultWaveformHeight,
+  describeOutputProblem, findNearestMoment, hitHalfWidth, limit, locatorFlagHeight, locatorFlagWidth,
+  minZoom, nameOf, objectReach, objectSize, rulerBandHeight, sampleFolderNames, snapTimeInScene,
 } from "./helpers.js";
 
 export function attachTimeline(ctx) {
@@ -739,6 +739,30 @@ export function attachTimeline(ctx) {
         state.drag.firstPoint = pointer(event, "down");
         state.drag.firstVisualRow = state.drag.lastVisualRow;
         state.drag.markingRange = !rightClick && surface === grid && state.view.tool === "Range";
+        const drawingStroke = !rightClick && surface === grid && !panning
+          && (state.view.tool === "Draw" || event.altKey)
+          && state.scene.snap
+          && typeof state.drag.firstPoint.row === "number";
+        if (drawingStroke) {
+          const snappedStart = snapTimeInScene(state.scene, state.drag.firstPoint.ms);
+          const startsOnHit = !!findNearestMoment(
+            state.scene.moments,
+            snappedStart,
+            5.0,
+            ([, , , hits]) => (hits.some(([r]) => r === state.drag.firstPoint.row) ? true : undefined),
+            { strict: false },
+          );
+          if (!startsOnHit) {
+            state.drag.drawPaint = {
+              row: state.drag.firstPoint.row,
+              startMs: state.drag.firstPoint.ms,
+              endMs: state.drag.firstPoint.ms,
+              active: false,
+              steps: [],
+              newSteps: [],
+            };
+          }
+        }
         ctx.act(state.drag.firstPoint);
       });
       surface.addEventListener("pointermove", (event) => {
@@ -752,7 +776,27 @@ export function attachTimeline(ctx) {
             ctx.paintSoon();
           }
         }
-        if (event.pointerId !== state.drag?.id || perf().now() - state.drag.last < 32 || state.requests > 2) return;
+        if (event.pointerId !== state.drag?.id) return;
+        if (state.drag.drawPaint && state.scene) {
+          const dp = state.drag.drawPaint;
+          const { x } = pointerIn(grid, event);
+          const currentMs = Math.max(0, state.drag.start + x / state.drag.zoom);
+          const { steps, newSteps } = computeDrawStrokeSteps(state.scene, dp.startMs, currentMs, dp.row);
+          if (steps.length > 1 || dp.active) {
+            dp.active = true;
+            dp.endMs = currentMs;
+            dp.steps = steps;
+            dp.newSteps = newSteps;
+            state.drawStrokePreview = {
+              row: dp.row,
+              steps: newSteps,
+              volume: state.scene.insertVolume ?? 100,
+            };
+            ctx.paintSoon();
+            return;
+          }
+        }
+        if (perf().now() - state.drag.last < 32 || state.requests > 2) return;
         state.drag.last = perf().now();
         state.drag.lastPoint = pointer(event, "move");
         scrollGrab(state.drag.lastPoint);
@@ -763,6 +807,25 @@ export function attachTimeline(ctx) {
           if (event.pointerId !== state.drag?.id) return;
           const released = type === "pointerup";
           const end = pointer(event, released ? "up" : "cancel");
+          const dp = state.drag.drawPaint;
+          if (state.drawStrokePreview) {
+            state.drawStrokePreview = null;
+            ctx.paintSoon();
+          }
+          if (released && dp?.active) {
+            const { steps } = computeDrawStrokeSteps(state.scene, dp.startMs, end.ms, dp.row);
+            if (steps.length > 1) {
+              ctx.act({ ...end, phase: "cancel" });
+              ctx.act({
+                kind: "paint_draw_stroke",
+                row: dp.row,
+                start_ms: dp.startMs,
+                end_ms: end.ms,
+              });
+              state.drag = null;
+              return;
+            }
+          }
           const moved = released && Math.hypot(end.x - state.drag.firstPoint.x, end.y - state.drag.firstPoint.y) > 3;
           if (released && state.drag.markingRange) {
             const first = state.drag.firstVisualRow ?? -1;
