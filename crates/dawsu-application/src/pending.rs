@@ -30,11 +30,18 @@ struct Store {
     ledger: PathBuf,
 }
 
+static NEXT_REVISION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+fn next_revision() -> u64 {
+    NEXT_REVISION.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
 /// The open mapset's pending files. Cheap to clone: a Save job takes a snapshot.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Pending {
     files: Arc<BTreeMap<String, PendingFile>>,
     store: Option<Store>,
+    revision: u64,
 }
 
 /// The key that names a mapset in dawsu!'s data folder, as the sound set snapshot record names it.
@@ -51,7 +58,12 @@ impl Pending {
                 claims: data_root.join("pending-names").join(mapset_key(mapset)),
                 ledger: data_root.join("created-samples").join(format!("{}.json", mapset_key(mapset))),
             }),
+            revision: next_revision(),
         }
+    }
+
+    pub(crate) fn revision(&self) -> u64 {
+        self.revision
     }
 
     pub(crate) fn get(&self, name: &str) -> Option<&PendingFile> {
@@ -134,6 +146,7 @@ impl Pending {
         }
         let file = PendingFile { name: name.to_string(), sha256, path };
         Arc::make_mut(&mut self.files).insert(name.to_ascii_lowercase(), file.clone());
+        self.revision = next_revision();
         Ok(file)
     }
 
@@ -160,12 +173,14 @@ impl Pending {
         }
         let file = PendingFile { name: name.to_string(), sha256: sha256.to_string(), path };
         Arc::make_mut(&mut self.files).insert(name.to_ascii_lowercase(), file.clone());
+        self.revision = next_revision();
         Ok(file)
     }
 
     /// Takes in a pending file a cleanup job kept, with its claim already made.
     pub(crate) fn adopt(&mut self, file: PendingFile) {
         Arc::make_mut(&mut self.files).insert(file.name.to_ascii_lowercase(), file);
+        self.revision = next_revision();
     }
 
     /// Drops a pending file and its claim only while it holds the bytes `sha256` names.
@@ -177,10 +192,11 @@ impl Pending {
 
     /// Drops a pending file and its claim: a Save wrote it into the mapset, or keeping it failed.
     pub(crate) fn release(&mut self, name: &str) {
-        if Arc::make_mut(&mut self.files).remove(&name.to_ascii_lowercase()).is_some()
-            && let Some(store) = &self.store
-        {
-            let _ = std::fs::remove_file(store.claims.join(name.to_ascii_lowercase()));
+        if Arc::make_mut(&mut self.files).remove(&name.to_ascii_lowercase()).is_some() {
+            self.revision = next_revision();
+            if let Some(store) = &self.store {
+                let _ = std::fs::remove_file(store.claims.join(name.to_ascii_lowercase()));
+            }
         }
     }
 }
