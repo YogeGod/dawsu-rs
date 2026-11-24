@@ -760,10 +760,15 @@ export function attachLanes(ctx) {
     };
 
     const scanVst3 = async (andSync = false) => {
-      vst3Status.textContent = "Scanning VST3 instruments…";
+      vst3Status.textContent = "Reading VST3 folder…";
       try {
-        const report = await invoke("vst3_scan");
-        vst3Plugins = vst3InstrumentOptions(report);
+        const res = await invoke("drum_vst_action", { payload: { kind: "list_installed" } });
+        vst3Plugins = (res?.plugins ?? []).map(p => ({
+          id: p.path || "",
+          name: p.name || p.path || "",
+          vendor: "",
+          path: p.path || "",
+        })).filter(p => p.path);
         if (drumVst3.enabled && !drumVst3.pluginId && vst3Plugins.length) {
           drumVst3 = writeDrumVst3(storage, {
             enabled: true,
@@ -774,15 +779,15 @@ export function attachLanes(ctx) {
         }
         fillVst3Select();
         vst3Status.textContent = vst3Plugins.length
-          ? `Found ${vst3Plugins.length} VST3 ${vst3Plugins.length === 1 ? "instrument" : "instruments"}.`
-          : "No VST3 instruments found. Install one in the system VST3 folder, then scan again.";
+          ? `Found ${vst3Plugins.length} installed VST3 ${vst3Plugins.length === 1 ? "plug-in" : "plug-ins"}.`
+          : "No VST3 plug-ins found in the system VST3 folder.";
         if (andSync && drumVst3.enabled) await syncVst3();
       } catch (err) {
         vst3Status.textContent = String(err);
       }
     };
 
-    const scanBtn = makeButton("Scan VST3", () => { ctx.run(() => scanVst3(drumVst3.enabled)); });
+    const scanBtn = makeButton("Refresh VST3", () => { ctx.run(() => scanVst3(drumVst3.enabled)); });
     vst3Toggle.addEventListener("change", () => {
       drumVst3 = writeDrumVst3(storage, { ...drumVst3, enabled: vst3Toggle.checked });
       syncDrumVst3Button();
@@ -1002,46 +1007,83 @@ export function attachLanes(ctx) {
 
     const fillSelect = () => {
       pluginSelect.innerHTML = "";
-      pluginSelect.append(new OptionCtor(vst3Plugins.length ? "Choose VST3 drum instrument…" : "Click Scan VST3 to find instruments", ""));
+      pluginSelect.append(new OptionCtor(vst3Plugins.length ? "Choose VST3 drum instrument…" : "No .vst3 plug-ins found in VST3 folder", ""));
       for (const p of vst3Plugins) {
-        pluginSelect.append(new OptionCtor(p.name + (p.vendor ? " · " + p.vendor : ""), p.path + "||" + p.id));
+        pluginSelect.append(new OptionCtor(p.name + (p.vendor ? " · " + p.vendor : ""), p.path + "||" + (p.id || "")));
       }
       if (live?.pluginPath) {
         const match = vst3Plugins.find(p => p.path === live.pluginPath);
-        if (match) pluginSelect.value = match.path + "||" + match.id;
+        if (match) {
+          pluginSelect.value = match.path + "||" + (match.id || "");
+        } else {
+          const customLabel = live.pluginName || live.pluginPath;
+          const customVal = live.pluginPath + "||" + (live.pluginUid || "");
+          pluginSelect.append(new OptionCtor(customLabel, customVal));
+          pluginSelect.value = customVal;
+        }
       }
     };
 
-    const scanBtn = makeButton("Scan VST3", () => {
-      ctx.run(async () => {
-        statusLine.textContent = "Scanning VST3 instruments…";
-        try {
-          const report = await invoke("vst3_scan");
-          vst3Plugins = vst3InstrumentOptions(report);
-          fillSelect();
+    const loadInstalled = async () => {
+      try {
+        const res = await invoke("drum_vst_action", { payload: { kind: "list_installed" } });
+        vst3Plugins = (res?.plugins ?? []).map(p => ({
+          id: "",
+          name: p.name || p.path,
+          vendor: "",
+          path: p.path || "",
+        })).filter(p => p.path);
+        fillSelect();
+        if (!live?.loaded) {
           statusLine.textContent = vst3Plugins.length
-            ? `Found ${vst3Plugins.length} VST3 ${vst3Plugins.length === 1 ? "instrument" : "instruments"}.`
-            : "No VST3 instruments found in system VST3 folders.";
-        } catch (err) {
-          statusLine.textContent = String(err);
+            ? `Found ${vst3Plugins.length} installed VST3 ${vst3Plugins.length === 1 ? "plug-in" : "plug-ins"} in your VST3 folder.`
+            : "No VST3 plug-ins found in the system VST3 folder. Use Browse… to pick one.";
         }
-      });
-    });
+      } catch (err) {
+        statusLine.textContent = String(err);
+      }
+    };
+
+    const loadSelectedPath = async (pluginPath, pluginUid = null) => {
+      if (!pluginPath) return;
+      loadBtn.disabled = true;
+      browseBtn.disabled = true;
+      statusLine.textContent = "Loading VST3 instrument…";
+      try {
+        live = await invoke("drum_vst_action", { payload: { kind: "load", pluginPath, pluginUid: pluginUid || null } });
+        await ctx.update(null, true);
+        fillSelect();
+        refreshControls();
+      } catch (err) {
+        statusLine.textContent = String(err);
+      } finally {
+        loadBtn.disabled = false;
+        browseBtn.disabled = false;
+      }
+    };
 
     const loadBtn = makeButton("Load", () => {
       const val = pluginSelect.value;
       if (!val) return;
       const [pluginPath, pluginUid] = val.split("||");
+      ctx.run(() => loadSelectedPath(pluginPath, pluginUid || null));
+    });
+
+    const browseBtn = makeButton("Browse…", () => {
       ctx.run(async () => {
-        statusLine.textContent = "Loading VST3 instrument…";
-        try {
-          live = await invoke("drum_vst_action", { payload: { kind: "load", pluginPath, pluginUid: pluginUid || null } });
-          await ctx.update(null, true);
-          refreshControls();
-        } catch (err) {
-          statusLine.textContent = String(err);
+        const res = await invoke("drum_vst_action", { payload: { kind: "browse" } });
+        if (!res?.picked || !res?.path) return;
+        if (!vst3Plugins.some(p => p.path === res.path)) {
+          vst3Plugins = [...vst3Plugins, { id: "", name: res.name || res.path, vendor: "", path: res.path }];
+          fillSelect();
         }
+        pluginSelect.value = res.path + "||";
+        await loadSelectedPath(res.path, null);
       });
+    });
+
+    const refreshBtn = makeButton("Refresh", () => {
+      ctx.run(() => loadInstalled());
     });
 
     enableBox.addEventListener("change", () => {
@@ -1058,7 +1100,7 @@ export function attachLanes(ctx) {
     pickerRow.style.display = "flex";
     pickerRow.style.gap = "8px";
     pickerRow.style.flexWrap = "wrap";
-    pickerRow.append(pluginSelect, loadBtn, scanBtn);
+    pickerRow.append(pluginSelect, loadBtn, browseBtn, refreshBtn);
 
     const actionsRow = env.document.createElement("div");
     actionsRow.className = "row";
@@ -1088,6 +1130,7 @@ export function attachLanes(ctx) {
       renderRow,
       renderInfo,
     ], [["Done", () => ctx.closeModal(), true]]);
+    ctx.run(() => loadInstalled());
   }
 
   function syncDrumVst3Button() {
