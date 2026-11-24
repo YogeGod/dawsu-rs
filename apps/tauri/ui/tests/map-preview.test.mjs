@@ -3,7 +3,8 @@ import { test } from "node:test";
 import { render } from "svelte/server";
 import { bridge } from "../src/lib/bridge.svelte.js";
 import {
-  AFTER_HIT, approach, ball, clock, fit, opacity, pathTo, pointAt, reverseArrow, sliderProgress, snake, visible,
+  AFTER_HIT, SPINNER_FADE, approach, ball, clock, fit, followPointRange, opacity, pathTo, pointAt, reverseArrow,
+  sliderProgress, snake, visible,
 } from "../src/lib/preview.js";
 import MapPreview from "../src/parts/MapPreview.svelte";
 
@@ -180,4 +181,150 @@ test("the spinner disc is nothing until half the approach, a dot at its time, th
   assert.ok(Math.abs(spinnerGrowth(1200 - 1e-9, 1200) - 0.2) < 1e-6);
   assert.ok(spinnerGrowth(1200, 1200) - 0.2 < 1e-9);
   assert.equal(spinnerGrowth(1800, 1200), 1);
+});
+
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function linearVisible(map, time) {
+  if (!map?.objects) return [];
+  const fadeEnd = obj => obj.end + (obj.kind === "spinner" ? SPINNER_FADE : AFTER_HIT);
+  return map.objects.filter(obj => time >= obj.time - map.preempt && time <= fadeEnd(obj)).reverse();
+}
+
+function linearPointAt(object, distance) {
+  const path = object.path ?? [];
+  const lengths = object.lengths ?? [];
+  const count = path.length / 2;
+  if (!count) return { x: object.x, y: object.y };
+  let index = lengths.findIndex(length => length >= distance);
+  if (index < 0) index = count;
+  if (index <= 0) return { x: path[0], y: path[1] };
+  if (index >= count) return { x: path[2 * count - 2], y: path[2 * count - 1] };
+  const [d0, d1] = [lengths[index - 1], lengths[index]];
+  const [x0, y0, x1, y1] = [path[2 * index - 2], path[2 * index - 1], path[2 * index], path[2 * index + 1]];
+  if (Math.abs(d1 - d0) < 1e-3) return { x: x0, y: y0 };
+  const w = (distance - d0) / (d1 - d0);
+  return { x: x0 + (x1 - x0) * w, y: y0 + (y1 - y0) * w };
+}
+
+function linearPathTo(object, distance) {
+  const path = object.path ?? [];
+  const lengths = object.lengths ?? [];
+  const points = [];
+  for (let i = 0; i < path.length / 2 && lengths[i] <= distance; i++) points.push({ x: path[2 * i], y: path[2 * i + 1] });
+  points.push(linearPointAt(object, distance));
+  return points;
+}
+
+test("visible matches the linear filter across long sliders, spinners, boundaries, and random times", () => {
+  const complexModel = Object.freeze({
+    radius: 36.5,
+    preempt: 1200,
+    fadeIn: 400,
+    colours: ["#ff0000"],
+    objects: [
+      { kind: "circle", time: 1000, end: 1000, x: 10, y: 10, combo: 1, colour: 0 },
+      // Long slider starting early and outlasting several later objects
+      { kind: "slider", time: 1200, end: 12000, x: 50, y: 50, combo: 2, colour: 0, path: [50, 50, 300, 50], lengths: [0, 250], spans: 1 },
+      { kind: "circle", time: 2000, end: 2000, x: 80, y: 80, combo: 3, colour: 0 },
+      // Long spinner starting before later circles, with shorter 240 ms fadeout
+      { kind: "spinner", time: 3000, end: 8000, x: 256, y: 192, combo: 1, colour: 0 },
+      { kind: "circle", time: 4000, end: 4000, x: 120, y: 120, combo: 1, colour: 0 },
+      { kind: "slider", time: 8100, end: 8500, x: 150, y: 150, combo: 2, colour: 0, path: [150, 150, 250, 150], lengths: [0, 100], spans: 1 },
+      { kind: "circle", time: 12500, end: 12500, x: 200, y: 200, combo: 3, colour: 0 },
+      { kind: "spinner", time: 15000, end: 16000, x: 256, y: 192, combo: 1, colour: 0 },
+    ],
+  });
+
+  const boundaryTimes = [
+    -500, -200, -199, 0, 1000, 1700, 1701, 2700, 2701,
+    8239, 8240, 8241, 10000, 12699, 12700, 12701, 16240, 16241, NaN, Infinity, -Infinity,
+  ];
+  for (const t of boundaryTimes) {
+    assert.deepEqual(visible(complexModel, t), linearVisible(complexModel, t), `boundary time ${t}`);
+  }
+
+  const rng = mulberry32(0x5eed1234);
+  for (let i = 0; i < 400; i++) {
+    const t = -500 + rng() * 18000;
+    assert.deepEqual(visible(complexModel, t), linearVisible(complexModel, t), `random time ${t}`);
+  }
+
+  assert.deepEqual(visible({ preempt: 1200, objects: [] }, 1000), []);
+  assert.deepEqual(visible(null, 1000), []);
+});
+
+test("pointAt and pathTo match linear search across 0, end, duplicate lengths, and random distances", () => {
+  const dupSlider = {
+    kind: "slider",
+    time: 1000,
+    end: 2000,
+    x: 10,
+    y: 20,
+    path: [10, 20, 10, 20, 60, 20, 60, 20, 60, 20.0005, 130, 90, 130, 90],
+    lengths: [0, 0, 50, 50, 50.0005, 148.99, 148.99],
+  };
+  const emptySlider = { kind: "slider", time: 1000, end: 2000, x: 42, y: 84, path: [], lengths: [] };
+
+  const edgeDistances = [-10, 0, 1e-6, 25, 50, 50.0002, 50.0005, 100, 148.99, 200, NaN];
+  for (const d of edgeDistances) {
+    assert.deepEqual(pointAt(dupSlider, d), linearPointAt(dupSlider, d), `pointAt edge ${d}`);
+    assert.deepEqual(pathTo(dupSlider, d), linearPathTo(dupSlider, d), `pathTo edge ${d}`);
+    assert.deepEqual(pointAt(emptySlider, d), linearPointAt(emptySlider, d), `empty pointAt ${d}`);
+    assert.deepEqual(pathTo(emptySlider, d), linearPathTo(emptySlider, d), `empty pathTo ${d}`);
+  }
+
+  const rng = mulberry32(0xbeef9876);
+  for (let i = 0; i < 300; i++) {
+    const d = -20 + rng() * 200;
+    assert.deepEqual(pointAt(dupSlider, d), linearPointAt(dupSlider, d), `random pointAt ${d}`);
+    assert.deepEqual(pathTo(dupSlider, d), linearPathTo(dupSlider, d), `random pathTo ${d}`);
+  }
+});
+
+test("followPointRange includes every active consecutive pair across long objects and random times", () => {
+  const objs = [
+    { kind: "circle", time: 500, end: 500, combo: 1 },
+    { kind: "slider", time: 1000, end: 9000, combo: 2 },
+    { kind: "circle", time: 9400, end: 9400, combo: 3 },
+    { kind: "circle", time: 9800, end: 9800, combo: 4 },
+    { kind: "spinner", time: 10500, end: 13000, combo: 1 },
+    { kind: "circle", time: 13500, end: 13500, combo: 1 },
+    { kind: "circle", time: 13900, end: 13900, combo: 2 },
+  ];
+  const fpPreempt = 800;
+  const activePairsLinear = t => {
+    const out = [];
+    for (let i = 0; i < objs.length - 1; i++) {
+      const startTime = objs[i].end ?? objs[i].time;
+      const endTime = objs[i + 1].time;
+      if (t >= startTime - fpPreempt && t <= endTime + 150) out.push(i);
+    }
+    return out;
+  };
+  const activePairsBsearch = t => {
+    const { start, end } = followPointRange(objs, t, fpPreempt);
+    const out = [];
+    for (let i = start; i < end; i++) {
+      const startTime = objs[i].end ?? objs[i].time;
+      const endTime = objs[i + 1].time;
+      if (t >= startTime - fpPreempt && t <= endTime + 150) out.push(i);
+    }
+    return out;
+  };
+
+  const rng = mulberry32(0xcafe1111);
+  for (let i = 0; i < 300; i++) {
+    const t = -500 + rng() * 16000;
+    assert.deepEqual(activePairsBsearch(t), activePairsLinear(t), `followPointRange time ${t}`);
+  }
+  assert.deepEqual(activePairsBsearch(NaN), []);
 });

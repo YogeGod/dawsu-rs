@@ -45,11 +45,59 @@ export function clock(view, receivedAt, now, previous = null) {
 // When an object stops showing.
 const fadeEnd = object => object.end + (object.kind === "spinner" ? SPINNER_FADE : AFTER_HIT);
 
+// First index in [lo, hi) where `pred(i)` holds, or `hi` if none.
+function bsearch(lo, hi, pred) {
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (pred(mid)) hi = mid;
+    else lo = mid + 1;
+  }
+  return lo;
+}
+
+const maxEndCache = new WeakMap();
+
+// Running maximum of `fadeEnd` across `objects`, so long sliders/spinners that started earlier are never skipped.
+function maxEndSoFar(objects) {
+  const cached = maxEndCache.get(objects);
+  if (cached && cached.length === objects.length) return cached;
+  const maxEnds = new Float64Array(objects.length);
+  let max = -Infinity;
+  for (let i = 0; i < objects.length; i++) {
+    const end = fadeEnd(objects[i]);
+    if (end > max) max = end;
+    maxEnds[i] = max;
+  }
+  maxEndCache.set(objects, maxEnds);
+  return maxEnds;
+}
+
 // The objects on screen at `time`, in drawing order: the latest first, so the next one is on top.
 export function visible(model, time) {
-  if (!model?.objects) return [];
-  const shown = model.objects.filter(object => time >= object.time - model.preempt && time <= fadeEnd(object));
+  const objects = model?.objects;
+  if (!objects?.length) return [];
+  const maxEnds = maxEndSoFar(objects);
+  const start = bsearch(0, objects.length, i => maxEnds[i] >= time);
+  const preempt = model.preempt;
+  const shown = [];
+  for (let i = start; i < objects.length; i++) {
+    const object = objects[i];
+    const appear = object.time - preempt;
+    if (appear > time) break;
+    if (time >= appear && time <= fadeEnd(object)) shown.push(object);
+  }
   return shown.reverse();
+}
+
+// Index range [start, end) of consecutive object pairs `(i, i + 1)` whose follow points can be visible at `time`.
+export function followPointRange(objects, time, preempt) {
+  const n = objects?.length ?? 0;
+  if (n < 2) return { start: 0, end: 0 };
+  const minNextTime = time - 150;
+  const start = bsearch(1, n, i => objects[i].time >= minNextTime) - 1;
+  const maxPrevTime = time + preempt;
+  const end = bsearch(start, n - 1, i => objects[i].time > maxPrevTime);
+  return { start, end };
 }
 
 // An object's opacity: it fades in over the fade-in time from (time − preempt), stays until its end,
@@ -89,8 +137,8 @@ export function pointAt(object, distance) {
   const lengths = object.lengths ?? [];
   const count = path.length / 2;
   if (!count) return { x: object.x, y: object.y };
-  let index = lengths.findIndex(length => length >= distance);
-  if (index < 0) index = count;
+  let index = bsearch(0, lengths.length, i => lengths[i] >= distance);
+  if (index >= lengths.length) index = count;
   if (index <= 0) return { x: path[0], y: path[1] };
   if (index >= count) return { x: path[2 * count - 2], y: path[2 * count - 1] };
   const [d0, d1] = [lengths[index - 1], lengths[index]];
@@ -104,8 +152,10 @@ export function pointAt(object, distance) {
 export function pathTo(object, distance) {
   const path = object.path ?? [];
   const lengths = object.lengths ?? [];
+  const limit = Math.min(Math.ceil(path.length / 2), lengths.length);
+  const end = bsearch(0, limit, i => !(lengths[i] <= distance));
   const points = [];
-  for (let i = 0; i < path.length / 2 && lengths[i] <= distance; i++) points.push({ x: path[2 * i], y: path[2 * i + 1] });
+  for (let i = 0; i < end; i++) points.push({ x: path[2 * i], y: path[2 * i + 1] });
   points.push(pointAt(object, distance));
   return points;
 }
