@@ -3,8 +3,8 @@
   import { invoke } from "../lib/ipc.js";
   import * as argon from "../lib/argon.js";
   import {
-    AFTER_HIT, PLAYFIELD, approach, arrowsShown, ballAt, bodyOpacity, clamp01, clock, comboColour, fit, pathLength, pathTo,
-    pieceOpacity, pointAt, snake, ticksShown, visible,
+    AFTER_HIT, PLAYFIELD, approach, arrowsShown, ballAt, bodyOpacity, clamp01, clock, comboColour, fit,
+    followPointRange, pathLength, pathTo, pieceOpacity, pointAt, snake, ticksShown, visible,
   } from "../lib/preview.js";
 
   // The map preview's playfield: osu!'s objects at the playhead, in lazer's default (Argon) look.
@@ -218,7 +218,8 @@
     const preempt = Math.min(800, map.preempt || 600);
     const fadeIn = Math.min(400, map.fadeIn || 240);
     const dotRadius = Math.max(2.2, 4 * unit);
-    for (let i = 0; i < objs.length - 1; i++) {
+    const { start, end } = followPointRange(objs, time, preempt);
+    for (let i = start; i < end; i++) {
       const prev = objs[i];
       const next = objs[i + 1];
       if (prev.kind === "spinner" || next.kind === "spinner") continue;
