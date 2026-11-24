@@ -924,6 +924,14 @@ enum JobResult {
         waveform: Vec<WaveBin>,
         warning: Option<String>,
     },
+    DrumVstReady {
+        generation: u64,
+        saved: project::DrumVstSession,
+        result: Result<
+            dawsu_audio_instruments::HostSession<dawsu_audio_instruments::ProcessTransport>,
+            String,
+        >,
+    },
     Save {
         version: u64,
         path: PathBuf,
@@ -1055,7 +1063,14 @@ pub struct Application {
     pub keysounds: dawsu_keysounding::KeysoundProject,
     pub vst3: vst3::Vst3Manager,
     pub drum_vst: Option<drum_vst::DrumVstLiveHandle>,
+    pub drum_vst_loading: bool,
+    drum_vst_job: Option<mpsc::Receiver<JobResult>>,
+    drum_vst_cancel: Arc<AtomicBool>,
+    drum_vst_generation: u64,
     drum_vst_state_b64: Option<String>,
+    drum_vst_saved: Option<project::DrumVstSession>,
+    #[cfg(test)]
+    drum_vst_restore_hold: Option<Arc<AtomicBool>>,
 }
 impl Application {
     pub fn new() -> Self {
@@ -1215,7 +1230,14 @@ impl Application {
             keysounds: dawsu_keysounding::KeysoundProject::new("", "Keysounds"),
             vst3: vst3::Vst3Manager::new(),
             drum_vst: None,
+            drum_vst_loading: false,
+            drum_vst_job: None,
+            drum_vst_cancel: Arc::new(AtomicBool::new(false)),
+            drum_vst_generation: 0,
             drum_vst_state_b64: None,
+            drum_vst_saved: None,
+            #[cfg(test)]
+            drum_vst_restore_hold: None,
         }
     }
 
@@ -1387,6 +1409,12 @@ impl Application {
         self.pending_locator_right = None;
         self.song_generation += 1;
         self.song = None;
+        self.drum_vst_cancel.store(true, Ordering::Relaxed);
+        self.drum_vst_job = None;
+        self.drum_vst_loading = false;
+        self.drum_vst_generation += 1;
+        self.drum_vst_saved = None;
+        self.clear_live_drum_vst();
         self.waveform.clear();
         self.waveform_revision += 1;
         // A cleanup still running after a Save finishes first. One still running past the wait
@@ -1497,6 +1525,7 @@ impl Application {
                         enabled: h.is_enabled(),
                         state_b64: self.drum_vst_state_b64.clone(),
                     })
+                    .or_else(|| self.drum_vst_saved.clone())
                     .or_else(|| {
                         self.project
                             .as_ref()
@@ -1745,6 +1774,10 @@ impl Application {
         self.song_loading = false;
         self.pending_play_on_song = false;
         self.pending_locator_right = None;
+        self.drum_vst_cancel.store(true, Ordering::Relaxed);
+        self.drum_vst_cancel = Arc::new(AtomicBool::new(false));
+        self.drum_vst_job = None;
+        self.drum_vst_loading = false;
         let cancel = self.cancel.clone();
         let defaults = self.preferences.default_samples.clone();
         let project_root = self.project_root.clone();
@@ -1882,6 +1915,22 @@ impl Application {
         if let Some(result) = song_result {
             self.apply_song_job_result(result);
         }
+        let drum_vst_result = match self.drum_vst_job.as_ref().map(|r| r.try_recv()) {
+            Some(Ok(result)) => {
+                self.drum_vst_job = None;
+                Some(result)
+            }
+            Some(Err(mpsc::TryRecvError::Disconnected)) => {
+                self.drum_vst_job = None;
+                self.drum_vst_loading = false;
+                self.set_drum_vst_unavailable_status("background load stopped");
+                None
+            }
+            _ => None,
+        };
+        if let Some(result) = drum_vst_result {
+            self.apply_drum_vst_job_result(result);
+        }
         if !self.cancel.load(Ordering::Relaxed)
             && let Some(progress) = &self.job_progress
             && let Ok(mut current) = progress.current.try_lock()
@@ -1940,6 +1989,7 @@ impl Application {
                     // Reviews of the outgoing load must not match this one: history versions restart.
                     self.document_generation += 1;
                     self.song_generation = self.document_generation;
+                    self.drum_vst_generation = self.document_generation;
                     self.waveform_revision += 1;
                     self.opens += 1;
                     self.output_review = None;
@@ -1960,6 +2010,11 @@ impl Application {
                     self.pending_play_on_song = false;
                     self.pending_locator_right = None;
                     self.song = None;
+                    self.drum_vst_cancel.store(true, Ordering::Relaxed);
+                    self.drum_vst_job = None;
+                    self.drum_vst_loading = false;
+                    self.drum_vst_saved = None;
+                    self.clear_live_drum_vst();
                     self.drum.song_loaded();
                     self.node_graph_song_loaded();
                     self.playback_speed = 1.0;
@@ -1999,14 +2054,29 @@ impl Application {
                     self.set_view_start(settings.view_start.clamp(0.0, duration));
                     self.seek(0.0);
                     self.cycle_changed();
-                    let vst_note: Option<String> = if let Some(saved_vst) = settings.drum_vst.clone() {
-                        self.restore_drum_vst_session(&saved_vst).err()
+                    let base_status = if restored_id.is_some() {
+                        "Recovery copy restored. Save the difficulty to clear the offer."
                     } else {
-                        if self.drum_vst.is_some() {
-                            self.detach_drum_vst();
-                        }
-                        None
+                        "Difficulty loaded"
                     };
+                    let mut vst_status_note: Option<String> = None;
+                    if let Some(saved_vst) = settings.drum_vst.clone() {
+                        self.drum_vst_saved = Some(saved_vst.clone());
+                        if !Path::new(&saved_vst.plugin_path).exists() {
+                            vst_status_note = Some(format!(
+                                "Drum VST3 unavailable: plugin not found at {}",
+                                saved_vst.plugin_path
+                            ));
+                        } else {
+                            self.spawn_drum_vst_restore(saved_vst);
+                            vst_status_note = Some("Loading drum kit…".into());
+                        }
+                    } else {
+                        self.drum_vst_saved = None;
+                        if self.drum_vst.is_some() {
+                            self.clear_live_drum_vst();
+                        }
+                    }
                     self.sync_audio();
                     if let Some(song_path) = loaded.song_path {
                         if settings.locator_right.is_none_or(|r| r > duration) {
@@ -2015,14 +2085,10 @@ impl Application {
                         }
                         self.spawn_song_decode(song_path);
                     }
-                    self.status = if restored_id.is_some() {
-                        "Recovery copy restored. Save the difficulty to clear the offer.".into()
-                    } else {
-                        "Difficulty loaded".into()
+                    self.status = match vst_status_note {
+                        Some(note) => format!("{base_status} ({note})"),
+                        None => base_status.into(),
                     };
-                    if let Some(err) = vst_note {
-                        self.status = format!("{} (Drum VST3 unavailable: {err})", self.status);
-                    }
                     if self.sweep_detached {
                         self.status = sweep::with_note(&self.status, sweep::STILL_RUNNING);
                     }
@@ -2033,6 +2099,9 @@ impl Application {
                 }
                 JobResult::SongReady { .. } => {
                     self.apply_song_job_result(result);
+                }
+                JobResult::DrumVstReady { .. } => {
+                    self.apply_drum_vst_job_result(result);
                 }
                 JobResult::Open(_, _, Err(e)) => {
                     self.error = Some(e);
@@ -3430,44 +3499,36 @@ impl Application {
         }
     }
 
-    /// Loads a VST3 drum instrument into an isolated sidecar and attaches it to live audio playback.
-    pub fn load_drum_vst(
-        &mut self,
-        plugin_path: PathBuf,
-        plugin_uid: Option<String>,
-    ) -> Result<LoadedPluginSummary, Vst3Error> {
-        self.load_drum_vst_inner(plugin_path, plugin_uid, true)
+    fn clear_live_drum_vst(&mut self) {
+        if let Some(a) = &self.audio {
+            a.clear_live_source();
+        }
+        if let Some(vst) = self.drum_vst.take() {
+            let _ = self.vst3.unload_plugin(&vst.instance_id);
+        }
+        self.drum_vst_state_b64 = None;
     }
 
-    fn load_drum_vst_inner(
+    fn attach_drum_vst_instance(
         &mut self,
-        plugin_path: PathBuf,
+        summary: &LoadedPluginSummary,
+        plugin_path: &Path,
         plugin_uid: Option<String>,
-        save_session: bool,
-    ) -> Result<LoadedPluginSummary, Vst3Error> {
-        let summary = self.vst3.load_instrument(plugin_path.clone(), plugin_uid.clone())?;
-        let shm = match self.vst3.take_shm(&summary.id) {
-            Ok(Some(shm)) => shm,
-            Ok(None) => {
-                let _ = self.vst3.unload_plugin(&summary.id);
-                return Err(Vst3Error::Bounce(
-                    "VST3 shared-memory audio channel unavailable".to_string(),
-                ));
-            }
-            Err(err) => {
-                let _ = self.vst3.unload_plugin(&summary.id);
-                return Err(err);
-            }
-        };
+        enabled: bool,
+        state_b64: Option<String>,
+    ) -> Result<(), Vst3Error> {
+        let shm = self.vst3.take_shm(&summary.id)?.ok_or_else(|| {
+            Vst3Error::Bounce("VST3 shared-memory audio channel unavailable".to_string())
+        })?;
         // Detach any outgoing instrument only after the replacement loads so a failure
         // leaves both the live setup and the saved per-map session intact.
-        self.detach_drum_vst();
+        self.clear_live_drum_vst();
         let (mut handle, source) = drum_vst::DrumVstLiveHandle::new(
             summary.id.clone(),
             summary.name.clone(),
             plugin_path.to_string_lossy().into_owned(),
             plugin_uid,
-            true,
+            enabled,
             Box::new(shm),
         );
         // Seed skin lane defaults immediately until drum_view supplies explicit drum-map rows.
@@ -3484,37 +3545,175 @@ impl Application {
             a.set_live_source(Some(Box::new(source)));
         }
         self.drum_vst = Some(handle);
-        self.drum_vst_state_b64 = self.vst3.get_plugin_state(&summary.id).ok();
-        self.sync_audio();
-        if save_session {
-            let _ = self.write_session(None, None, None, None);
-        }
-        Ok(summary)
-    }
-
-    fn restore_drum_vst_session(&mut self, saved: &project::DrumVstSession) -> Result<(), String> {
-        // Clear any instrument left over from the previous map without rewriting this map's session.
-        self.detach_drum_vst();
-        let path = PathBuf::from(&saved.plugin_path);
-        if !path.exists() {
-            return Err(format!("plugin not found at {}", saved.plugin_path));
-        }
-        let summary = self
-            .load_drum_vst_inner(path, saved.plugin_uid.clone(), false)
-            .map_err(|e| e.to_string())?;
-        if let Some(state_b64) = saved.state_b64.as_deref()
-            && !state_b64.is_empty()
-        {
-            if let Err(err) = self.vst3.set_plugin_state(&summary.id, state_b64) {
-                self.detach_drum_vst();
-                return Err(err.to_string());
-            }
-            self.drum_vst_state_b64 = Some(state_b64.to_string());
-        }
-        self.set_drum_vst_enabled(saved.enabled);
+        self.drum_vst_state_b64 = state_b64;
         Ok(())
     }
 
+    fn clear_drum_vst_loading_status(&mut self) {
+        if self.status.contains(" (Loading drum kit…)") {
+            self.status = self.status.replace(" (Loading drum kit…)", "");
+        } else if self.status == "Loading drum kit…" {
+            self.status = "Difficulty loaded".into();
+        }
+    }
+
+    fn set_drum_vst_unavailable_status(&mut self, err: &str) {
+        let note = format!("Drum VST3 unavailable: {err}");
+        if self.status.contains(" (Loading drum kit…)") {
+            self.status = self.status.replace(" (Loading drum kit…)", &format!(" ({note})"));
+        } else if self.status == "Loading drum kit…" || self.status == "Difficulty loaded" {
+            self.status = format!("Difficulty loaded ({note})");
+        } else {
+            self.status = note;
+        }
+    }
+
+    fn spawn_drum_vst_restore(&mut self, saved: project::DrumVstSession) {
+        self.drum_vst_cancel.store(true, Ordering::Relaxed);
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.drum_vst_cancel = cancel.clone();
+        let (send, receive) = mpsc::channel();
+        self.drum_vst_job = Some(receive);
+        self.drum_vst_loading = true;
+        let generation = self.document_generation();
+        let host_exe = self.vst3.host_executable();
+        let shm_name = self.vst3.next_shm_name();
+        let pid = std::process::id();
+        #[cfg(test)]
+        let hold = self.drum_vst_restore_hold.clone();
+        std::thread::spawn(move || {
+            #[cfg(test)]
+            if let Some(hold) = hold {
+                while hold.load(Ordering::Relaxed) && !cancel.load(Ordering::Relaxed) {
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+            }
+            if cancel.load(Ordering::Relaxed) {
+                let _ = send.send(JobResult::DrumVstReady {
+                    generation,
+                    saved,
+                    result: Err("cancelled".into()),
+                });
+                return;
+            }
+            let result = (|| -> Result<
+                dawsu_audio_instruments::HostSession<dawsu_audio_instruments::ProcessTransport>,
+                String,
+            > {
+                let host_executable = host_exe.map_err(|e| e.to_string())?;
+                let config = dawsu_audio_instruments::Vst3HostConfig {
+                    host_executable,
+                    shm_name,
+                    parent_pid: pid,
+                    plugin_path: PathBuf::from(&saved.plugin_path),
+                    plugin_uid: saved.plugin_uid.clone(),
+                    offline: false,
+                };
+                let mut session = dawsu_audio_instruments::HostSession::spawn(&config)
+                    .map_err(|e| e.to_string())?;
+                if cancel.load(Ordering::Relaxed) {
+                    let _ = session.quit();
+                    return Err("cancelled".into());
+                }
+                if let Some(state_b64) = saved.state_b64.as_deref()
+                    && !state_b64.is_empty()
+                {
+                    let _ = session.set_state(state_b64);
+                }
+                Ok(session)
+            })();
+            if cancel.load(Ordering::Relaxed) {
+                if let Ok(mut session) = result {
+                    let _ = session.quit();
+                }
+                return;
+            }
+            let _ = send.send(JobResult::DrumVstReady {
+                generation,
+                saved,
+                result,
+            });
+        });
+    }
+
+    fn apply_drum_vst_job_result(&mut self, result: JobResult) {
+        let JobResult::DrumVstReady { generation, saved, result } = result else {
+            return;
+        };
+        if generation != self.drum_vst_generation || self.document.is_none() {
+            if let Ok(mut session) = result {
+                let _ = session.quit();
+            }
+            return;
+        }
+        self.drum_vst_loading = false;
+        match result {
+            Ok(session) => {
+                let plugin_path = PathBuf::from(&saved.plugin_path);
+                let summary = self.vst3.insert_loaded_session(
+                    &plugin_path,
+                    saved.plugin_uid.clone(),
+                    PluginRole::Instrument,
+                    session,
+                );
+                let state_b64 = saved
+                    .state_b64
+                    .clone()
+                    .filter(|s| !s.is_empty())
+                    .or_else(|| self.vst3.get_plugin_state(&summary.id).ok());
+                match self.attach_drum_vst_instance(
+                    &summary,
+                    &plugin_path,
+                    saved.plugin_uid.clone(),
+                    saved.enabled,
+                    state_b64,
+                ) {
+                    Ok(()) => {
+                        self.drum_vst_saved = None;
+                        self.sync_audio();
+                        self.clear_drum_vst_loading_status();
+                    }
+                    Err(err) => {
+                        let _ = self.vst3.unload_plugin(&summary.id);
+                        self.drum_vst_saved = Some(saved);
+                        self.set_drum_vst_unavailable_status(&err.to_string());
+                    }
+                }
+            }
+            Err(err) => {
+                self.drum_vst_saved = Some(saved);
+                self.set_drum_vst_unavailable_status(&err);
+            }
+        }
+    }
+
+    /// Loads a VST3 drum instrument into an isolated sidecar and attaches it to live audio playback.
+    pub fn load_drum_vst(
+        &mut self,
+        plugin_path: PathBuf,
+        plugin_uid: Option<String>,
+    ) -> Result<LoadedPluginSummary, Vst3Error> {
+        let summary = self.vst3.load_instrument(plugin_path.clone(), plugin_uid.clone())?;
+        let state_b64 = self.vst3.get_plugin_state(&summary.id).ok();
+        if let Err(err) = self.attach_drum_vst_instance(
+            &summary,
+            &plugin_path,
+            plugin_uid,
+            true,
+            state_b64,
+        ) {
+            let _ = self.vst3.unload_plugin(&summary.id);
+            return Err(err);
+        }
+        self.drum_vst_cancel.store(true, Ordering::Relaxed);
+        self.drum_vst_job = None;
+        self.drum_vst_loading = false;
+        self.drum_vst_generation += 1;
+        self.drum_vst_saved = None;
+        self.sync_audio();
+        let _ = self.write_session(None, None, None, None);
+        Ok(summary)
+    }
     /// Instant ON/OFF toggle for live VST3 drum routing (keeps plugin loaded in memory).
     pub fn set_drum_vst_enabled(&mut self, enabled: bool) {
         if let Some(vst) = &self.drum_vst {
@@ -3538,21 +3737,15 @@ impl Application {
         }
     }
 
-    /// Detaches and unloads the active live VST3 drum instrument in memory without updating the saved session.
-    fn detach_drum_vst(&mut self) {
-        if let Some(a) = &self.audio {
-            a.clear_live_source();
-        }
-        if let Some(vst) = self.drum_vst.take() {
-            let _ = self.vst3.unload_plugin(&vst.instance_id);
-        }
-        self.drum_vst_state_b64 = None;
-        self.sync_audio();
-    }
-
     /// Detaches and unloads the active live VST3 drum instrument and clears it from the saved session.
     pub fn unload_drum_vst(&mut self) {
-        self.detach_drum_vst();
+        self.drum_vst_cancel.store(true, Ordering::Relaxed);
+        self.drum_vst_job = None;
+        self.drum_vst_loading = false;
+        self.drum_vst_generation += 1;
+        self.drum_vst_saved = None;
+        self.clear_live_drum_vst();
+        self.sync_audio();
         let _ = self.write_session(None, None, None, Some(None));
     }
 
@@ -8291,22 +8484,6 @@ mod async_song_decode {
             Some(saved_vst.clone())
         );
 
-        // Even when the plugin path exists on disk, a failed load during restore preserves the session.
-        let broken = scratch.path("broken.vst3");
-        std::fs::write(&broken, b"not a vst3").unwrap();
-        let broken_session = project::DrumVstSession {
-            plugin_path: broken.to_string_lossy().into_owned(),
-            ..saved_vst.clone()
-        };
-        assert!(app.restore_drum_vst_session(&broken_session).is_err());
-        assert_eq!(
-            project::Project::load(&root, None, &canonical)
-                .unwrap()
-                .settings
-                .drum_vst,
-            Some(saved_vst)
-        );
-
         // Explicit unload still clears the saved Drum VST3 session.
         app.unload_drum_vst();
         assert!(
@@ -8316,5 +8493,183 @@ mod async_song_decode {
                 .drum_vst
                 .is_none()
         );
+    }
+
+    fn stored(app: &Application) -> project::SessionSettings {
+        let path = &app.document().unwrap().path;
+        project::Project::load(app.project_root.as_ref().unwrap(), None, path)
+            .unwrap()
+            .settings
+    }
+
+    fn wait_drum_vst(app: &mut Application) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while app.drum_vst_loading {
+            app.poll();
+            assert!(Instant::now() < deadline, "drum VST3 restore job timed out");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn opening_map_with_saved_drum_vst_is_nonblocking_and_preserves_session_on_error() {
+        let scratch = Scratch::new("async-drum-vst-open");
+        let projects = scratch.path("projects");
+        let map = scratch.path("Map.osu");
+        std::fs::write(
+            &map,
+            b"osu file format v14\n[General]\nMode:0\n[TimingPoints]\n0,500,4,1,1,100,1,0\n[HitObjects]\n256,192,1000,1,0,0:0:0:0:\n",
+        )
+        .unwrap();
+        let plugin_path = scratch.path("DummyKit.vst3");
+        std::fs::write(&plugin_path, b"dummy vst3").unwrap();
+
+        let saved_vst = project::DrumVstSession {
+            plugin_path: plugin_path.to_string_lossy().into_owned(),
+            plugin_uid: Some("uid-kit-1".into()),
+            enabled: true,
+            state_b64: Some("AQID".into()),
+        };
+        let mut proj = project::Project::load(&projects, None, &map).unwrap();
+        let mut settings = proj.settings.clone();
+        settings.drum_vst = Some(saved_vst.clone());
+        proj.save(settings).unwrap();
+
+        let hold = Arc::new(AtomicBool::new(true));
+        let mut app = Application::headless();
+        app.project_root = Some(projects.clone());
+        app.vst3 = vst3::Vst3Manager::with_search_dirs(Vec::new())
+            .with_host_executable(scratch.path("missing-dawsu-vst3-host.exe"));
+        app.drum_vst_restore_hold = Some(hold.clone());
+        app.request_open(map.clone());
+        wait_open(&mut app);
+
+        // Map opens immediately and is editable while the sidecar restore is still running.
+        assert!(app.document().is_some());
+        assert!(!app.busy);
+        assert!(app.drum_vst_loading);
+        assert!(app.drum_vst.is_none());
+        assert!(
+            app.status.contains("Loading drum kit…"),
+            "unexpected status while loading drum kit: {}",
+            app.status
+        );
+
+        let hit_lane = app
+            .document()
+            .unwrap()
+            .composer
+            .hitsounds()
+            .moments()[0]
+            .hits()
+            .next()
+            .unwrap()
+            .clone();
+        app.select_hit(HitKey { moment: 0, lane: hit_lane }, false);
+        app.selection_volume(60, false);
+        assert!(app.is_dirty());
+
+        // Saving while loading must not lose the saved Drum VST3 session.
+        app.save_session().unwrap();
+        assert_eq!(stored(&app).drum_vst.as_ref(), Some(&saved_vst));
+
+        // Let the background restore finish (fails cleanly because sidecar isn't built in unit test).
+        hold.store(false, Ordering::Relaxed);
+        wait_drum_vst(&mut app);
+        assert!(!app.drum_vst_loading);
+        assert!(
+            app.status.contains("Drum VST3 unavailable:"),
+            "unexpected status after unavailable VST3: {}",
+            app.status
+        );
+        app.save_session().unwrap();
+        assert_eq!(stored(&app).drum_vst.as_ref(), Some(&saved_vst));
+
+        // Missing plugin path reports unavailable immediately without spawning a background thread.
+        std::fs::remove_file(&plugin_path).unwrap();
+        let mut reopened = Application::headless();
+        reopened.project_root = Some(projects);
+        reopened.request_open(map);
+        wait_open(&mut reopened);
+        assert!(!reopened.drum_vst_loading);
+        assert!(
+            reopened.status.contains("Drum VST3 unavailable:"),
+            "unexpected status for missing plugin file: {}",
+            reopened.status
+        );
+        reopened.save_session().unwrap();
+        assert_eq!(stored(&reopened).drum_vst.as_ref(), Some(&saved_vst));
+    }
+
+    #[test]
+    fn opening_second_map_cancels_first_drum_vst_restore_and_drops_stale_ready() {
+        let scratch = Scratch::new("async-drum-vst-gen");
+        let projects = scratch.path("projects");
+        let first = scratch.path("First.osu");
+        let second = scratch.path("Second.osu");
+        std::fs::write(
+            &first,
+            b"osu file format v14\n[General]\nMode:0\n[TimingPoints]\n0,500,4,1,1,100,1,0\n[HitObjects]\n256,192,1000,1,0,0:0:0:0:\n",
+        )
+        .unwrap();
+        std::fs::write(
+            &second,
+            b"osu file format v14\n[General]\nMode:0\n[TimingPoints]\n0,500,4,1,1,100,1,0\n[HitObjects]\n256,192,1000,1,0,0:0:0:0:\n",
+        )
+        .unwrap();
+        let plugin_path = scratch.path("DummyKit.vst3");
+        std::fs::write(&plugin_path, b"dummy vst3").unwrap();
+
+        let saved_vst = project::DrumVstSession {
+            plugin_path: plugin_path.to_string_lossy().into_owned(),
+            plugin_uid: Some("uid-kit-1".into()),
+            enabled: true,
+            state_b64: None,
+        };
+        let mut proj = project::Project::load(&projects, None, &first).unwrap();
+        let mut settings = proj.settings.clone();
+        settings.drum_vst = Some(saved_vst.clone());
+        proj.save(settings).unwrap();
+
+        let hold = Arc::new(AtomicBool::new(true));
+        let mut app = Application::headless();
+        app.project_root = Some(projects);
+        app.vst3 = vst3::Vst3Manager::with_search_dirs(Vec::new())
+            .with_host_executable(scratch.path("missing-dawsu-vst3-host.exe"));
+        app.drum_vst_restore_hold = Some(hold.clone());
+
+        app.request_open(first);
+        wait_open(&mut app);
+        let gen1 = app.document_generation();
+        let first_cancel = app.drum_vst_cancel.clone();
+        assert!(app.drum_vst_loading);
+        assert!(!first_cancel.load(Ordering::Relaxed));
+
+        // Switch to the second map (which has no saved VST3).
+        hold.store(false, Ordering::Relaxed);
+        app.request_open(second);
+        assert!(
+            first_cancel.load(Ordering::Relaxed),
+            "switching maps cancels old drum VST3 restore"
+        );
+        wait_open(&mut app);
+        wait_drum_vst(&mut app);
+
+        let gen2 = app.document_generation();
+        assert_ne!(gen1, gen2);
+        assert!(!app.drum_vst_loading);
+        assert!(app.drum_vst.is_none());
+        let status_before = app.status.clone();
+
+        // Inject a stale DrumVstReady for gen1 and verify it is ignored cleanly.
+        app.apply_drum_vst_job_result(JobResult::DrumVstReady {
+            generation: gen1,
+            saved: saved_vst,
+            result: Err("stale vst error".into()),
+        });
+        assert_eq!(app.status, status_before);
+        assert!(!app.drum_vst_loading);
+        assert!(app.drum_vst.is_none());
+        assert!(app.drum_vst_saved.is_none());
     }
 }
