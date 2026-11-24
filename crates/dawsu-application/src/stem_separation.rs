@@ -22,10 +22,21 @@ pub const CHUNK_SAMPLES: usize = 343_980;
 pub const HOP_SAMPLES: usize = 257_985;
 /// Default HT-Demucs fp16-weights ONNX model (~166 MB).
 pub const DEFAULT_MODEL_FILENAME: &str = "htdemucs_fp16weights.onnx";
-pub const DEFAULT_MODEL_URL: &str =
-    "https://huggingface.co/StemSplitio/htdemucs-onnx/resolve/main/htdemucs_fp16weights.onnx";
+/// Pinned to one revision of the repository, so the address always serves the same file.
+pub const DEFAULT_MODEL_URL: &str = "https://huggingface.co/StemSplitio/htdemucs-onnx/resolve/d54ed9eb60e258ea82131c6ee14578628816456a/htdemucs_fp16weights.onnx";
+/// SHA-256 and size of the pinned model (the repository's LFS object id). A download or a cached
+/// copy that differs is refused, so a changed or damaged file is never run.
+pub const DEFAULT_MODEL_SHA256: &str = "d05c269d0178d2a72ad484b10b11dd370193fc923201c3b27a99f848745db70a";
+pub const DEFAULT_MODEL_SIZE: u64 = 165_612_636;
 /// Official Microsoft ONNX Runtime release version for on-demand dynamic loading.
 pub const ORT_RELEASE_VERSION: &str = "1.22.0";
+/// Microsoft's official NuGet package of that release. One package holds the native library for
+/// every supported platform, and nuget.org publishes its hash, so it is pinned here and checked
+/// before anything is unpacked (its SHA-512 matched nuget.org's catalog entry on 2026-11-24).
+pub const ORT_PACKAGE_URL: &str =
+    "https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime/1.22.0/microsoft.ml.onnxruntime.1.22.0.nupkg";
+pub const ORT_PACKAGE_SHA256: &str = "d571e63a2329baacb713f441e65ad75284de354db6e1ac435fe4bebbb417986a";
+pub const ORT_PACKAGE_SIZE: u64 = 121_402_697;
 
 static ATOMIC_TEMP_COUNTER: AtomicU64 = AtomicU64::new(1);
 static ORT_ENV: OnceLock<Result<ort::environment::Environment, String>> = OnceLock::new();
@@ -174,6 +185,32 @@ pub fn stem_cache_path(data_root: &Path, song_sha256: &str) -> PathBuf {
     stems_dir(data_root).join(format!("{song_sha256}-drums.wav"))
 }
 
+fn hex(digest: &[u8]) -> String {
+    let mut out = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        use std::fmt::Write;
+        let _ = write!(&mut out, "{byte:02x}");
+    }
+    out
+}
+
+/// Whether the file at `path` has exactly this SHA-256 (lowercase hex). A missing or unreadable
+/// file does not match.
+pub fn file_matches_sha256(path: &Path, expected_hex: &str) -> bool {
+    let Ok(file) = File::open(path) else { return false };
+    let mut reader = BufReader::new(file);
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        match reader.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => hasher.update(&buf[..n]),
+            Err(_) => return false,
+        }
+    }
+    hex(&hasher.finalize()) == expected_hex
+}
+
 /// Computes lowercase hex SHA-256 of a file by streaming in 64 KiB chunks.
 pub fn file_sha256_hex(path: &Path) -> Result<String, String> {
     let file = File::open(path)
@@ -210,95 +247,50 @@ pub fn onnxruntime_lib_filename() -> &'static str {
     }
 }
 
-/// Official Microsoft ONNX Runtime release archive URL for the current OS + arch.
-fn onnxruntime_download_url() -> Result<(&'static str, bool), String> {
+/// Where this platform's library sits inside the pinned NuGet package, with its SHA-256 and size.
+/// The hashes are of the files in `ORT_PACKAGE_URL` (checked 2026-11-24).
+fn onnxruntime_package_entry() -> Result<(&'static str, &'static str, u64), String> {
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-    return Ok((
-        "https://github.com/microsoft/onnxruntime/releases/download/v1.22.0/onnxruntime-win-x64-1.22.0.zip",
-        true,
-    ));
+    return Ok(("runtimes/win-x64/native/onnxruntime.dll", "579b636403983254346a5c1d80bd28f1519cd1e284cd204f8d4ff41f8d711559", 12_418_080));
     #[cfg(all(target_os = "windows", target_arch = "aarch64"))]
-    return Ok((
-        "https://github.com/microsoft/onnxruntime/releases/download/v1.22.0/onnxruntime-win-arm64-1.22.0.zip",
-        true,
-    ));
+    return Ok(("runtimes/win-arm64/native/onnxruntime.dll", "79281671a386ed1baab9dbdbb09fe55f99577011472e9526cf9d0b468bb6bcc7", 12_679_728));
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    return Ok((
-        "https://github.com/microsoft/onnxruntime/releases/download/v1.22.0/onnxruntime-osx-arm64-1.22.0.tgz",
-        false,
-    ));
+    return Ok(("runtimes/osx-arm64/native/libonnxruntime.dylib", "6c2f8af5def6e533f17383a4f07dc4eabbd4807d242a478b69f62fcfbe3c1dd3", 33_514_304));
     #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
-    return Ok((
-        "https://github.com/microsoft/onnxruntime/releases/download/v1.22.0/onnxruntime-osx-x86_64-1.22.0.tgz",
-        false,
-    ));
+    return Ok(("runtimes/osx-x64/native/libonnxruntime.dylib", "c3b6c4eb78c7f4b52fb51bfff605176a01cee050f829326bb073ddd22fb42849", 37_737_280));
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-    return Ok((
-        "https://github.com/microsoft/onnxruntime/releases/download/v1.22.0/onnxruntime-linux-x64-1.22.0.tgz",
-        false,
-    ));
+    return Ok(("runtimes/linux-x64/native/libonnxruntime.so", "3da6146e14e7b8aaec625dde11d6114c7457c87a5f93d744897da8781e35c673", 21_042_416));
     #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
-    return Ok((
-        "https://github.com/microsoft/onnxruntime/releases/download/v1.22.0/onnxruntime-linux-aarch64-1.22.0.tgz",
-        false,
-    ));
+    return Ok(("runtimes/linux-arm64/native/libonnxruntime.so", "0afd69a0ae38c5099fd0e8604dda398ac43dee67cd9c6394b5142b19e82528de", 17_643_256));
     #[allow(unreachable_code)]
     Err("Automatic ONNX Runtime download is not available for this CPU/OS. Set ORT_DYLIB_PATH to your local onnxruntime library.".into())
 }
 
-/// Searches standard locations for the ONNX Runtime shared library.
-pub fn find_onnxruntime_library(data_root: &Path) -> Option<PathBuf> {
+/// The ONNX Runtime library dawsu! may load: the file named by `ORT_DYLIB_PATH` (the user's own
+/// explicit choice), else the pinned library next to the executable or in `<app_data>/models/`.
+/// A library elsewhere on the system (`PATH`, System32, `/usr/lib`) is never loaded: Windows ships
+/// its own older `onnxruntime.dll`, and an unknown version or a planted file must not run.
+/// `verify` checks the pinned library's SHA-256; without it only its size is compared, which is
+/// cheap enough for the status the dialog polls.
+pub fn find_onnxruntime_library(data_root: &Path, verify: bool) -> Option<PathBuf> {
     if let Ok(env_path) = std::env::var("ORT_DYLIB_PATH") {
         let p = PathBuf::from(env_path);
         if p.is_file() {
             return Some(p);
         }
     }
-
+    let (_, expected, size) = onnxruntime_package_entry().ok()?;
     let filename = onnxruntime_lib_filename();
-
-    if let Ok(exe) = std::env::current_exe()
-        && let Some(dir) = exe.parent()
-    {
-        let next_to_exe = dir.join(filename);
-        if next_to_exe.is_file() {
-            return Some(next_to_exe);
-        }
-    }
-
-    let in_models = models_dir(data_root).join(filename);
-    if in_models.is_file() {
-        return Some(in_models);
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        for dir in [
-            "/usr/local/lib",
-            "/usr/lib",
-            "/usr/lib64",
-            "/opt/homebrew/lib",
-        ] {
-            let candidate = Path::new(dir).join(filename);
-            if candidate.is_file() {
-                return Some(candidate);
-            }
-        }
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        if let Ok(path_var) = std::env::var("PATH") {
-            for dir in std::env::split_paths(&path_var) {
-                let candidate = dir.join(filename);
-                if candidate.is_file() {
-                    return Some(candidate);
-                }
-            }
-        }
-    }
-
-    None
+    let next_to_exe = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.join(filename)));
+    next_to_exe
+        .into_iter()
+        .chain([models_dir(data_root).join(filename)])
+        .find(|candidate| {
+            fs::metadata(candidate).is_ok_and(|m| m.is_file() && m.len() == size)
+                && (!verify || file_matches_sha256(candidate, expected))
+        })
 }
 
 fn unique_temp_path(target: &Path) -> PathBuf {
@@ -321,12 +313,17 @@ fn atomic_rename(tmp: &Path, dest: &Path) -> io::Result<()> {
     fs::rename(tmp, dest)
 }
 
+/// Downloads `url` to `dest` through a temporary file. The bytes are hashed as they arrive, and
+/// the file only takes the name `dest` when its size and SHA-256 equal `expected`; otherwise the
+/// temporary file is removed and nothing is installed.
 fn download_file_atomic(
     url: &str,
     dest: &Path,
+    expected: (&str, u64),
     cancel: &AtomicBool,
     mut on_progress: impl FnMut(u64, Option<u64>),
 ) -> Result<(), String> {
+    let (expected_sha256, expected_size) = expected;
     if cancel.load(Ordering::SeqCst) {
         return Err("Cancelled".into());
     }
@@ -351,12 +348,13 @@ fn download_file_atomic(
         ));
     }
 
-    let total_bytes = response.content_length();
+    let total_bytes = response.content_length().or(Some(expected_size));
     let tmp = unique_temp_path(dest);
     let write_result = (|| -> Result<(), String> {
         let mut out = BufWriter::new(
             File::create(&tmp).map_err(|e| format!("Could not create temp file: {e}"))?,
         );
+        let mut hasher = Sha256::new();
         let mut downloaded = 0u64;
         let mut buf = [0u8; 64 * 1024];
         on_progress(0, total_bytes);
@@ -370,14 +368,21 @@ fn download_file_atomic(
             if n == 0 {
                 break;
             }
+            downloaded += n as u64;
+            if downloaded > expected_size {
+                return Err(checksum_refusal(url));
+            }
+            hasher.update(&buf[..n]);
             out.write_all(&buf[..n])
                 .map_err(|e| format!("Could not write downloaded file: {e}"))?;
-            downloaded += n as u64;
             on_progress(downloaded, total_bytes);
         }
         out.flush()
             .map_err(|e| format!("Could not finish writing file: {e}"))?;
         drop(out);
+        if downloaded != expected_size || hex(&hasher.finalize()) != expected_sha256 {
+            return Err(checksum_refusal(url));
+        }
         atomic_rename(&tmp, dest).map_err(|e| format!("Could not save downloaded file: {e}"))?;
         Ok(())
     })();
@@ -388,129 +393,43 @@ fn download_file_atomic(
     write_result
 }
 
-fn is_onnxruntime_lib_entry(entry_name: &str) -> bool {
-    let base = entry_name
-        .rsplit(['/', '\\'])
-        .next()
-        .unwrap_or(entry_name)
-        .to_ascii_lowercase();
-    if cfg!(target_os = "windows") {
-        base == "onnxruntime.dll"
-    } else if cfg!(target_os = "macos") {
-        base == "libonnxruntime.dylib"
-            || (base.starts_with("libonnxruntime.") && base.ends_with(".dylib"))
-    } else {
-        base == "libonnxruntime.so" || base.starts_with("libonnxruntime.so.")
-    }
+fn checksum_refusal(url: &str) -> String {
+    format!(
+        "The downloaded file is not the one dawsu! expects, so it was not used ({url}). \
+         Try again later; if it keeps happening, the file on the server has changed."
+    )
 }
 
-fn extract_runtime_from_zip(archive_path: &Path, dest_lib: &Path) -> Result<(), String> {
-    let file = File::open(archive_path)
-        .map_err(|e| format!("Could not open ONNX Runtime zip archive: {e}"))?;
-    let mut zip = zip::ZipArchive::new(file)
-        .map_err(|e| format!("Could not read ONNX Runtime zip archive: {e}"))?;
-
-    for i in 0..zip.len() {
-        let mut entry = zip
-            .by_index(i)
-            .map_err(|e| format!("Could not read zip entry: {e}"))?;
-        if entry.is_dir() {
-            continue;
-        }
-        let is_match = entry
-            .name()
-            .ok()
-            .is_some_and(|name| is_onnxruntime_lib_entry(name.as_ref()));
-        if is_match {
-            let tmp = unique_temp_path(dest_lib);
-            let res = (|| -> Result<(), String> {
-                let mut out = File::create(&tmp)
-                    .map_err(|e| format!("Could not create runtime file: {e}"))?;
-                io::copy(&mut entry, &mut out)
-                    .map_err(|e| format!("Could not extract ONNX Runtime: {e}"))?;
-                out.flush()
-                    .map_err(|e| format!("Could not flush runtime file: {e}"))?;
-                drop(out);
-                atomic_rename(&tmp, dest_lib)
-                    .map_err(|e| format!("Could not install ONNX Runtime: {e}"))?;
-                Ok(())
-            })();
-            if res.is_err() {
-                let _ = fs::remove_file(&tmp);
-            }
-            return res;
-        }
-    }
-    Err("ONNX Runtime library was not found inside the downloaded archive.".into())
-}
-
-fn parse_tar_octal(field: &[u8]) -> Option<u64> {
-    let s = std::str::from_utf8(field)
-        .ok()?
-        .trim_matches(|c: char| c == '\0' || c.is_ascii_whitespace());
-    if s.is_empty() {
-        return Some(0);
-    }
-    u64::from_str_radix(s, 8).ok()
-}
-
-fn extract_runtime_from_tgz(archive_path: &Path, dest_lib: &Path) -> Result<(), String> {
-    let file = File::open(archive_path)
-        .map_err(|e| format!("Could not open ONNX Runtime archive: {e}"))?;
-    let mut gz = flate2::read::GzDecoder::new(BufReader::new(file));
-    let mut header = [0u8; 512];
-    let mut best_payload: Option<Vec<u8>> = None;
-
-    loop {
-        match gz.read_exact(&mut header) {
-            Ok(()) => {}
-            Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => break,
-            Err(e) => return Err(format!("Could not read tar header: {e}")),
-        }
-        if header.iter().all(|&b| b == 0) {
-            break;
-        }
-        let name_end = header[0..100].iter().position(|&b| b == 0).unwrap_or(100);
-        let name = String::from_utf8_lossy(&header[0..name_end]).into_owned();
-        let typeflag = header[156];
-        let size = parse_tar_octal(&header[124..136]).unwrap_or(0);
-        let padded = (size + 511) & !511;
-
-        let is_regular = typeflag == 0 || typeflag == b'0';
-        if is_regular && size > 0 && is_onnxruntime_lib_entry(&name) {
-            let mut payload = vec![0u8; size as usize];
-            gz.read_exact(&mut payload)
-                .map_err(|e| format!("Could not extract ONNX Runtime from archive: {e}"))?;
-            let rem = (padded - size) as usize;
-            if rem > 0 {
-                let mut pad = vec![0u8; rem];
-                let _ = gz.read_exact(&mut pad);
-            }
-            // Prefer the largest regular file (skips tiny symlinks/stubs).
-            if best_payload.as_ref().is_none_or(|prev| payload.len() > prev.len()) {
-                best_payload = Some(payload);
-            }
-        } else if padded > 0 {
-            let mut remaining = padded;
-            let mut sink = [0u8; 8192];
-            while remaining > 0 {
-                let step = remaining.min(sink.len() as u64) as usize;
-                gz.read_exact(&mut sink[..step])
-                    .map_err(|e| format!("Could not skip tar entry: {e}"))?;
-                remaining -= step as u64;
-            }
-        }
-    }
-
-    let payload = best_payload
-        .ok_or_else(|| "ONNX Runtime library was not found inside the downloaded archive.".to_string())?;
+/// Copies the zip entry named exactly `entry_name` to `dest_lib` through a temporary file, and
+/// installs it only when its SHA-256 equals `expected_sha256`.
+fn extract_runtime_from_package(
+    package_path: &Path,
+    entry_name: &str,
+    expected_sha256: &str,
+    dest_lib: &Path,
+) -> Result<(), String> {
+    let file = File::open(package_path)
+        .map_err(|e| format!("Could not open the ONNX Runtime package: {e}"))?;
+    let mut zip = zip::ZipArchive::new(BufReader::new(file))
+        .map_err(|e| format!("Could not read the ONNX Runtime package: {e}"))?;
+    let mut entry = zip
+        .by_name(entry_name)
+        .map_err(|_| "ONNX Runtime library was not found inside the downloaded package.".to_string())?;
     let tmp = unique_temp_path(dest_lib);
     let res = (|| -> Result<(), String> {
-        fs::write(&tmp, &payload)
-            .map_err(|e| format!("Could not write extracted ONNX Runtime: {e}"))?;
+        let mut out = BufWriter::new(
+            File::create(&tmp).map_err(|e| format!("Could not create runtime file: {e}"))?,
+        );
+        io::copy(&mut entry, &mut out)
+            .map_err(|e| format!("Could not extract ONNX Runtime: {e}"))?;
+        out.flush()
+            .map_err(|e| format!("Could not flush runtime file: {e}"))?;
+        drop(out);
+        if !file_matches_sha256(&tmp, expected_sha256) {
+            return Err("The ONNX Runtime library in the package is not the one dawsu! expects, so it was not installed.".into());
+        }
         atomic_rename(&tmp, dest_lib)
-            .map_err(|e| format!("Could not install ONNX Runtime: {e}"))?;
-        Ok(())
+            .map_err(|e| format!("Could not install ONNX Runtime: {e}"))
     })();
     if res.is_err() {
         let _ = fs::remove_file(&tmp);
@@ -519,27 +438,25 @@ fn extract_runtime_from_tgz(archive_path: &Path, dest_lib: &Path) -> Result<(), 
 }
 
 fn ensure_onnxruntime_library(data_root: &Path, cancel: &AtomicBool) -> Result<PathBuf, String> {
-    if let Some(existing) = find_onnxruntime_library(data_root) {
+    if let Some(existing) = find_onnxruntime_library(data_root, true) {
         return Ok(existing);
     }
-    let (url, is_zip) = onnxruntime_download_url()?;
+    let (entry_name, lib_sha256, _) = onnxruntime_package_entry()?;
     let models = models_dir(data_root);
     fs::create_dir_all(&models)
         .map_err(|e| format!("Could not create models folder: {e}"))?;
-    let archive_path = models.join(if is_zip {
-        format!("onnxruntime-{ORT_RELEASE_VERSION}.zip")
-    } else {
-        format!("onnxruntime-{ORT_RELEASE_VERSION}.tgz")
-    });
+    let package_path = models.join(format!("onnxruntime-{ORT_RELEASE_VERSION}.nupkg"));
     let dest_lib = models.join(onnxruntime_lib_filename());
 
-    download_file_atomic(url, &archive_path, cancel, |_, _| {})?;
-    let extract_res = if is_zip {
-        extract_runtime_from_zip(&archive_path, &dest_lib)
-    } else {
-        extract_runtime_from_tgz(&archive_path, &dest_lib)
-    };
-    let _ = fs::remove_file(&archive_path);
+    download_file_atomic(
+        ORT_PACKAGE_URL,
+        &package_path,
+        (ORT_PACKAGE_SHA256, ORT_PACKAGE_SIZE),
+        cancel,
+        |_, _| {},
+    )?;
+    let extract_res = extract_runtime_from_package(&package_path, entry_name, lib_sha256, &dest_lib);
+    let _ = fs::remove_file(&package_path);
     extract_res?;
     Ok(dest_lib)
 }
@@ -884,9 +801,10 @@ impl Application {
     fn build_stem_separation_status(&self) -> StemSeparationStatus {
         let model_path = default_model_path(&self.data_root);
         let model_meta = fs::metadata(&model_path).ok();
-        let model_ready = model_meta.as_ref().is_some_and(|m| m.is_file() && m.len() > 0);
+        // Size only: the full SHA-256 check runs before the model is used, not on every poll.
+        let model_ready = model_meta.as_ref().is_some_and(|m| m.is_file() && m.len() == DEFAULT_MODEL_SIZE);
         let model_size_bytes = model_meta.filter(|m| m.is_file()).map(|m| m.len());
-        let runtime_ready = find_onnxruntime_library(&self.data_root).is_some();
+        let runtime_ready = find_onnxruntime_library(&self.data_root, false).is_some();
         let song_path = self.open_song_path();
         let song_name = song_path
             .as_deref()
@@ -997,7 +915,9 @@ impl Application {
                         Some(p) => p,
                         None => {
                             let default_path = default_model_path(&data_root);
-                            if !default_path.is_file() {
+                            // A cached model is used only when it is the pinned file; an older
+                            // unchecked or damaged download is fetched again.
+                            if !file_matches_sha256(&default_path, DEFAULT_MODEL_SHA256) {
                                 set_job_state(
                                     &job,
                                     StemSeparationJobState::DownloadingModel {
@@ -1008,6 +928,7 @@ impl Application {
                                 download_file_atomic(
                                     DEFAULT_MODEL_URL,
                                     &default_path,
+                                    (DEFAULT_MODEL_SHA256, DEFAULT_MODEL_SIZE),
                                     &cancel,
                                     |downloaded_bytes, total_bytes| {
                                         set_job_state(
@@ -1265,5 +1186,98 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(err, "Cancelled");
+    }
+
+    fn write_package(path: &Path, entries: &[(&str, &[u8])]) {
+        let mut zip = zip::ZipWriter::new(File::create(path).unwrap());
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+        for (name, bytes) in entries {
+            zip.start_file(*name, options).unwrap();
+            zip.write_all(bytes).unwrap();
+        }
+        zip.finish().unwrap();
+    }
+
+    fn sha256_of(bytes: &[u8]) -> String {
+        hex(&Sha256::digest(bytes))
+    }
+
+    #[test]
+    fn file_matches_sha256_only_for_the_exact_bytes() {
+        let scratch = Scratch::new("stem-sha256-match");
+        let file = scratch.path("model.onnx");
+        fs::write(&file, b"pinned bytes").unwrap();
+        assert!(file_matches_sha256(&file, &sha256_of(b"pinned bytes")));
+        assert!(!file_matches_sha256(&file, &sha256_of(b"other bytes")));
+        assert!(!file_matches_sha256(&scratch.path("missing.onnx"), &sha256_of(b"pinned bytes")));
+    }
+
+    #[test]
+    fn package_extraction_installs_only_the_named_entry_with_the_pinned_hash() {
+        let scratch = Scratch::new("stem-runtime-extract");
+        let models = scratch.path("models");
+        fs::create_dir_all(&models).unwrap();
+        let package = models.join("onnxruntime.nupkg");
+        let wanted: &[u8] = b"the x64 library";
+        write_package(
+            &package,
+            &[
+                ("runtimes/win-arm64/native/onnxruntime.dll", b"the arm64 library"),
+                ("runtimes/win-x64/native/onnxruntime.dll", wanted),
+            ],
+        );
+        let dest = models.join("onnxruntime.dll");
+
+        // The exact entry is taken, not the first file with a matching name.
+        extract_runtime_from_package(&package, "runtimes/win-x64/native/onnxruntime.dll", &sha256_of(wanted), &dest)
+            .unwrap();
+        assert_eq!(fs::read(&dest).unwrap(), wanted);
+
+        // A library whose hash differs is refused and nothing new is installed.
+        fs::remove_file(&dest).unwrap();
+        let err = extract_runtime_from_package(
+            &package,
+            "runtimes/win-arm64/native/onnxruntime.dll",
+            &sha256_of(wanted),
+            &dest,
+        )
+        .unwrap_err();
+        assert!(err.contains("not the one dawsu! expects"), "{err}");
+        assert!(!dest.exists());
+        let leftovers: Vec<_> = fs::read_dir(&models)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.contains(".tmp."))
+            .collect();
+        assert!(leftovers.is_empty(), "temporary files left behind: {leftovers:?}");
+
+        // A missing entry is an error, not a silent success.
+        assert!(extract_runtime_from_package(&package, "runtimes/osx-arm64/native/libonnxruntime.dylib", &sha256_of(wanted), &dest).is_err());
+    }
+
+    #[test]
+    fn a_runtime_library_with_the_wrong_bytes_in_app_data_is_not_loaded() {
+        if std::env::var_os("ORT_DYLIB_PATH").is_some() || onnxruntime_package_entry().is_err() {
+            return; // An explicit user library, or no pinned build for this platform.
+        }
+        let scratch = Scratch::new("stem-runtime-find");
+        let data_root = scratch.path("app_data");
+        fs::create_dir_all(models_dir(&data_root)).unwrap();
+        let (_, _, size) = onnxruntime_package_entry().unwrap();
+        // Same size as the pinned library, different bytes: the size check passes, the hash fails.
+        fs::write(models_dir(&data_root).join(onnxruntime_lib_filename()), vec![0u8; size as usize]).unwrap();
+        assert!(find_onnxruntime_library(&data_root, true).is_none());
+    }
+
+    #[test]
+    fn pinned_download_constants_are_well_formed() {
+        for hash in [DEFAULT_MODEL_SHA256, ORT_PACKAGE_SHA256] {
+            assert_eq!(hash.len(), 64);
+            assert!(hash.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)));
+        }
+        assert!(DEFAULT_MODEL_URL.starts_with("https://") && !DEFAULT_MODEL_URL.contains("/resolve/main/"));
+        assert!(ORT_PACKAGE_URL.starts_with("https://api.nuget.org/") && ORT_PACKAGE_URL.contains(ORT_RELEASE_VERSION));
     }
 }

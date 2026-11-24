@@ -927,7 +927,6 @@ dependencies = [
  "dawsu-keysounding",
  "dawsu-osu-format",
  "dawsu-test-support",
- "flate2",
  "ort",
  "reqwest",
  "serde",
