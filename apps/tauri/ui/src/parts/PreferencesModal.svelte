@@ -496,6 +496,18 @@
               </div>
             </div>
 
+            <hr class="pref-divider" />
+
+            <div class="pref-group">
+              <span class="pref-label">Save & Export</span>
+              <label class="pref-check">
+                <input type="checkbox" checked={Boolean(view.cleanRedundantGreenlines)}
+                  onchange={(e) => sendAction({ kind: "clean_redundant_greenlines", on: e.currentTarget.checked })} />
+                <span>Clean redundant greenlines on Save & Export</span>
+              </label>
+              <p class="pref-caption">Removes extra green timing lines that don't change sample set, volume, slider velocity, or kiai. Off by default so untouched .osu lines stay identical.</p>
+            </div>
+
           {:else if tab === "folders"}
             <div class="pref-group">
               <span class="pref-label">Songs folder</span>

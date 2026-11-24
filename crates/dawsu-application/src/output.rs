@@ -178,6 +178,22 @@ impl WritePlan {
         self.mixes.get(index).map(mixes::StagedMix::clip)
     }
 
+    pub(crate) fn clean_redundant_greenlines(&mut self) -> usize {
+        let mut total = 0;
+        for target in &mut self.files {
+            let cleaned = dawsu_hitsounding::cleanup::clean_up_green_lines(&target.file);
+            if cleaned.removed > 0 {
+                target.file = cleaned.file;
+                total += cleaned.removed;
+            }
+        }
+        if total > 0 {
+            let noun = if total == 1 { "greenline" } else { "greenlines" };
+            self.details.push(format!("Removed {total} redundant {noun}."));
+        }
+        total
+    }
+
     /// The names of the pending files this plan writes into the mapset.
     pub(crate) fn pending_names(&self) -> Vec<String> {
         self.pending.iter().filter_map(|mix| mix.path.file_name()?.to_str().map(str::to_owned)).collect()

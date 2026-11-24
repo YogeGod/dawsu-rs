@@ -61,6 +61,7 @@ export function sameUiView(a, b) {
     (a.tool ?? null) === (b.tool ?? null) &&
     !!a.follow === !!b.follow &&
     !!a.returnOnStop === !!b.returnOnStop &&
+    !!a.cleanRedundantGreenlines === !!b.cleanRedundantGreenlines &&
     (a.panels?.controller === false) === (b.panels?.controller === false) &&
     (a.panels?.browser === false) === (b.panels?.browser === false) &&
     (a.panels?.inspector === false) === (b.panels?.inspector === false) &&

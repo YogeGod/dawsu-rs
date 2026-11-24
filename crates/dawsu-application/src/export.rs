@@ -57,6 +57,8 @@ pub struct ExportPreview {
     hs_mode: bool,
     /// The merge settings it was made with: changing them changes what the base difficulty writes.
     settings: Option<crate::ExportSettings>,
+    /// Whether redundant greenline cleanup was enabled when previewed.
+    clean_redundant_greenlines: bool,
 }
 
 type PreviewResult = (Result<output::WritePlan, String>, Vec<OutputProblem>);
@@ -66,6 +68,7 @@ struct Running {
     generation: u64,
     hs_mode: bool,
     settings: Option<crate::ExportSettings>,
+    clean_redundant_greenlines: bool,
     handle: JoinHandle<()>,
     cancel: Arc<AtomicBool>,
     receive: mpsc::Receiver<PreviewResult>,
@@ -206,6 +209,7 @@ impl Application {
                 && preview.generation == self.document_generation
                 && d.path == preview.plan.source && d.composer.history.version() == preview.plan.version
                 && d.hs_mode == preview.hs_mode
+                && self.preferences.clean_redundant_greenlines == preview.clean_redundant_greenlines
         });
         match document {
             None => Some(Stale::Map),
@@ -289,13 +293,18 @@ impl Application {
         if let Some(running) = &self.export.running {
             match running.receive.try_recv() {
                 Ok((result, problems)) => {
-                    let (id, generation, hs_mode) = (running.id, running.generation, running.hs_mode);
+                    let (id, generation, hs_mode, clean_redundant_greenlines) = (
+                        running.id, running.generation, running.hs_mode, running.clean_redundant_greenlines,
+                    );
                     let settings = running.settings.clone();
                     self.export.running = None;
                     self.export.problems = problems;
                     match result {
                         Ok(plan) => {
-                            self.export.preview = Some(ExportPreview { id, origin: PreviewOrigin::Export, plan, generation, hs_mode, settings });
+                            self.export.preview = Some(ExportPreview {
+                                id, origin: PreviewOrigin::Export, plan, generation, hs_mode, settings,
+                                clean_redundant_greenlines,
+                            });
                         }
                         Err(error) => self.export.error = Some(error),
                     }
@@ -327,6 +336,7 @@ impl Application {
         }
         let source = output::Source::from_document(document);
         let defaults = self.preferences.default_samples.clone();
+        let clean_redundant_greenlines = self.preferences.clean_redundant_greenlines;
         // As Generate in main: the map's merge settings, and the receipts in the project folder.
         let settings = document.export_settings.clone();
         let projects = self.project_root.clone();
@@ -353,10 +363,17 @@ impl Application {
                         *current = Some((done, total));
                     }
                 },
-            );
+            ).map(|mut plan| {
+                if clean_redundant_greenlines {
+                    plan.clean_redundant_greenlines();
+                }
+                plan
+            });
             let _ = send.send((result, problems));
         });
-        self.export.running = Some(Running { id, generation, hs_mode, settings, handle, cancel, receive, progress });
+        self.export.running = Some(Running {
+            id, generation, hs_mode, settings, clean_redundant_greenlines, handle, cancel, receive, progress,
+        });
     }
 }
 
