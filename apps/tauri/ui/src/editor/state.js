@@ -18,6 +18,7 @@ export function createState() {
     soundFirst: globalThis.localStorage?.getItem?.("dawsu.soundFirst") === "1",
     waveformDrag: null,
     markedRange: null,
+    drawStrokePreview: null,
 
     browserMap: "",
     browserFolder: "",

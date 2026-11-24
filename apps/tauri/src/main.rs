@@ -399,6 +399,11 @@ enum Action {
         ctrl: bool,
         alt: bool,
     },
+    PaintDrawStroke {
+        row: usize,
+        start_ms: f64,
+        end_ms: f64,
+    },
     History {
         position: usize,
     },
@@ -831,6 +836,13 @@ impl Action {
                         y,
                     },
                 );
+            }
+            Self::PaintDrawStroke {
+                row,
+                start_ms,
+                end_ms,
+            } => {
+                app.paint_hits_on_lane(row, start_ms, end_ms);
             }
             Self::History { position } => app.go_to_history(position),
             Self::Lane { row, operation } => {

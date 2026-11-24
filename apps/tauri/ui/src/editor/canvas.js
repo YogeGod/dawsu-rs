@@ -1140,6 +1140,29 @@ export function attachCanvas(ctx) {
         g.ctx.strokeRect(x, y, width, height);
       }
     }
+    if (state.drawStrokePreview?.steps?.length) {
+      const preview = state.drawStrokePreview;
+      const visibleRows = state.laneVisualPositions.get(preview.row) ?? [];
+      if (visibleRows.length) {
+        g.ctx.save();
+        g.ctx.globalAlpha = 0.55;
+        g.ctx.fillStyle = volumeColour(preview.volume ?? 100);
+        g.ctx.strokeStyle = "rgba(255,255,255,0.8)";
+        g.ctx.lineWidth = 1.25;
+        for (const stepTime of preview.steps) {
+          if (stepTime < minVisibleTime || stepTime > maxVisibleTime) continue;
+          const px = xOf(stepTime);
+          if (px < -8 || px > g.width + 8) continue;
+          for (const visibleRow of visibleRows) {
+            const py = (visibleRow + 0.5) * rowHeight - scrollTop;
+            if (py < -8 || py > g.height + 8) continue;
+            fillHitDiamond(g.ctx, px, py);
+            g.ctx.stroke();
+          }
+        }
+        g.ctx.restore();
+      }
+    }
     if (v && state.scene.rampPreview?.length) {
       v.ctx.strokeStyle = "#62d6cf";
       v.ctx.beginPath();

@@ -3477,6 +3477,23 @@ impl Application {
             d.composer.insert_volume = v.clamp(dawsu_hitsounding::rules::SAVED_VOLUME_FLOOR, 100);
         }
     }
+    /// Paints hits onto `row` at every snapped step between `start_ms` and `end_ms`
+    /// that does not already have a hit on that lane, respecting `insert_volume`,
+    /// snap mode, and beat divisor, recorded as a single Undo step.
+    pub fn paint_hits_on_lane(&mut self, row: usize, start_ms: f64, end_ms: f64) -> usize {
+        if self.busy || self.is_stroke_open() {
+            return 0;
+        }
+        let Some(d) = self.document.as_mut() else {
+            return 0;
+        };
+        let placed = d.composer.paint_hits_on_lane(row, start_ms, end_ms);
+        if placed > 0 {
+            self.active_lane = row;
+            self.refresh_recovery_edit();
+        }
+        placed
+    }
     pub fn set_selection_lane_scope(&mut self, lanes: Option<BTreeSet<SampleIdentity>>) -> Result<(), String> {
         if self.busy || self.is_stroke_open() {
             return Err("Finish the current edit before changing volume scope".into());
@@ -10052,5 +10069,126 @@ mod live_osu_reload_tests {
             assert!(!app.external_osu_changed);
             assert_eq!(app.status, "Saved with backup");
         }
+    }
+}
+
+#[cfg(test)]
+mod draw_paint_stroke_tests {
+    use super::*;
+    use dawsu_test_support::Scratch;
+
+    #[test]
+    fn paint_hits_on_lane_places_snapped_steps_skips_occupied_respects_volume_and_undoes_in_one_step() {
+        let scratch = Scratch::new("paint-draw-stroke");
+        let path = scratch.path("test.osu");
+        // 120 BPM (500 ms per beat) => 1/4 beat step = 125 ms.
+        // Existing circle at 1000 ms (normal-hitnormal at vol 100) and another at 1500 ms.
+        std::fs::write(
+            &path,
+            "osu file format v14\n[General]\nMode:0\n[TimingPoints]\n0,500,4,1,0,100,1,0\n[HitObjects]\n256,192,1000,1,0,0:0:0:0:\n256,192,1500,1,0,0:0:0:0:\n",
+        )
+        .unwrap();
+        let mut app = Application::headless();
+        app.request_open(path);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while app.busy {
+            app.poll();
+            assert!(std::time::Instant::now() < deadline, "open job timed out");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(app.error.is_none(), "{:?}", app.error);
+
+        let clap = SampleIdentity::Standard {
+            set: SampleSet::Normal,
+            sound: Sound::Hit(Hitsound::Clap),
+            index: dawsu_foundation::CustomIndex::new(0),
+        };
+        // Ensure clap lane exists and pre-place one clap at 1250 ms at volume 90.
+        let clap_row = {
+            let c = &mut app.document.as_mut().unwrap().composer;
+            c.add(1250.0, clap.clone(), 90, 5.0);
+            if !c.lanes.contains(&clap) {
+                c.lanes.push(clap.clone());
+            }
+            c.lanes.iter().position(|l| l == &clap).unwrap()
+        };
+        let history_before = app.document().unwrap().composer.history.position();
+
+        // Set 1/4 beat snap in Grid mode and insert_volume = 65.
+        app.set_snap_options(true, 1, 4, dawsu_editor::tempo::SnapMode::Grid);
+        app.set_insert_volume(65);
+
+        // Paint from 1000 ms to 1500 ms => steps 1000, 1125, 1250 (occupied), 1375, 1500.
+        let placed = app.paint_hits_on_lane(clap_row, 1000.0, 1500.0);
+        assert_eq!(placed, 4, "should place 4 new hits and skip occupied 1250 ms");
+
+        let c = &app.document().unwrap().composer;
+        assert_eq!(
+            c.history.position(),
+            history_before + 1,
+            "entire painted stroke must be a single undo step"
+        );
+        let mut clap_hits: Vec<(f64, i32)> = c
+            .hitsounds()
+            .moments()
+            .iter()
+            .filter(|m| m.has_hit(&clap))
+            .map(|m| (m.time().ms(), m.hit_volume(&clap)))
+            .collect();
+        clap_hits.sort_by(|a, b| a.0.total_cmp(&b.0));
+        assert_eq!(
+            clap_hits,
+            vec![
+                (1000.0, 65),
+                (1125.0, 65),
+                (1250.0, 90), // pre-existing hit kept its volume
+                (1375.0, 65),
+                (1500.0, 65),
+            ]
+        );
+
+        // Single undo removes all 4 painted hits and leaves only the pre-existing 1250 ms hit.
+        app.document.as_mut().unwrap().composer.undo();
+        let after_undo: Vec<(f64, i32)> = app
+            .document()
+            .unwrap()
+            .composer
+            .hitsounds()
+            .moments()
+            .iter()
+            .filter(|m| m.has_hit(&clap))
+            .map(|m| (m.time().ms(), m.hit_volume(&clap)))
+            .collect();
+        assert_eq!(after_undo, vec![(1250.0, 90)]);
+
+        // Objects snap mode paints only at object times (1000 ms and 1500 ms).
+        app.set_snap_options(true, 1, 4, dawsu_editor::tempo::SnapMode::Objects);
+        app.set_insert_volume(72);
+        let placed_obj = app.paint_hits_on_lane(clap_row, 990.0, 1510.0);
+        assert_eq!(placed_obj, 2);
+        let mut obj_hits: Vec<(f64, i32)> = app
+            .document()
+            .unwrap()
+            .composer
+            .hitsounds()
+            .moments()
+            .iter()
+            .filter(|m| m.has_hit(&clap))
+            .map(|m| (m.time().ms(), m.hit_volume(&clap)))
+            .collect();
+        obj_hits.sort_by(|a, b| a.0.total_cmp(&b.0));
+        assert_eq!(obj_hits, vec![(1000.0, 72), (1250.0, 90), (1500.0, 72)]);
+
+        // Undo objects stroke, then verify reverse drag and 512-step cap.
+        app.document.as_mut().unwrap().composer.undo();
+        app.set_snap_options(true, 1, 4, dawsu_editor::tempo::SnapMode::GridRelative);
+        app.set_insert_volume(55);
+        // Dragging backwards across 100,000 ms (800 steps) must be capped at 512 steps.
+        let placed_capped = app.paint_hits_on_lane(clap_row, 100_000.0, 0.0);
+        assert!(
+            placed_capped <= dawsu_editor_composer::MAX_PAINT_STROKE_STEPS,
+            "placed {placed_capped} hits, exceeding cap"
+        );
+        assert_eq!(placed_capped, dawsu_editor_composer::MAX_PAINT_STROKE_STEPS);
     }
 }
