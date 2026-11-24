@@ -539,6 +539,22 @@ pub trait LiveAudioSource: Send {
         sample_rate: u32,
         is_playing: bool,
     );
+
+    /// Timeline-aware stereo block processing; defaults to `process_block`.
+    fn process_timeline_block(
+        &mut self,
+        left: &mut [f32],
+        right: &mut [f32],
+        sample_rate: u32,
+        is_playing: bool,
+        _position_ms: f64,
+        _speed: f64,
+    ) {
+        self.process_block(left, right, sample_rate, is_playing);
+    }
+
+    /// Called on pause, seek, or cycle wrap so live instruments cut ringing tails cleanly.
+    fn reset(&mut self) {}
 }
 
 #[inline]
@@ -629,6 +645,9 @@ impl Mixer {
         self.indexed = false;
         self.limiter.reset();
         self.stretcher.reset();
+        if let Some(source) = self.live_source.as_mut() {
+            source.reset();
+        }
         if declick_song && self.playing {
             self.seek_fade_pos = 0;
             self.seek_fade_active = true;
@@ -655,13 +674,25 @@ impl Mixer {
         let block_samples = Self::LIVE_BLOCK_FRAMES * out_channels;
         for block in out.chunks_mut(block_samples) {
             let block_frames = block.len() / out_channels;
+            let block_speed = if self.speed.is_finite() && self.speed > 0.0 {
+                self.speed
+            } else {
+                1.0
+            };
             let has_live = if block_frames > 0 {
                 if let Some(source) = self.live_source.as_mut() {
                     let left = &mut self.live_left[..block_frames];
                     let right = &mut self.live_right[..block_frames];
                     left.fill(0.0);
                     right.fill(0.0);
-                    source.process_block(left, right, self.sample_rate, self.playing);
+                    source.process_timeline_block(
+                        left,
+                        right,
+                        self.sample_rate,
+                        self.playing,
+                        self.position_ms,
+                        block_speed,
+                    );
                     true
                 } else {
                     false
@@ -783,13 +814,10 @@ impl Mixer {
                     for voice in self.voices.iter().chain(&self.listen) {
                         hs_mix += voice.clip.sample(voice.frame, channel) * voice.gain * self.hitsound_gain;
                     }
-                    self.song_peak = self.song_peak.max(song_mix.abs());
-                    self.hitsound_peak = self.hitsound_peak.max(hs_mix.abs());
-                    let mut mix = song_mix + hs_mix;
                     if has_live && frame_idx < block_frames {
                         let live_l = sanitize_live_sample(self.live_left[frame_idx]);
                         let live_r = sanitize_live_sample(self.live_right[frame_idx]);
-                        mix += if out_channels == 1 {
+                        let live_sample = if out_channels == 1 {
                             (live_l + live_r) * 0.5
                         } else if channel == 0 {
                             live_l
@@ -798,7 +826,11 @@ impl Mixer {
                         } else {
                             0.0
                         };
+                        hs_mix += live_sample * self.hitsound_gain;
                     }
+                    self.song_peak = self.song_peak.max(song_mix.abs());
+                    self.hitsound_peak = self.hitsound_peak.max(hs_mix.abs());
+                    let mix = song_mix + hs_mix;
                     *value = mix * self.master_gain;
                 }
                 if self.limiter_enabled {
@@ -1346,6 +1378,10 @@ impl StreamRender {
                     if on && !was_playing {
                         self.mixer.seek_fade_pos = 0;
                         self.mixer.seek_fade_active = true;
+                    } else if !on && was_playing {
+                        if let Some(source) = self.mixer.live_source.as_mut() {
+                            source.reset();
+                        }
                     }
                 }
                 Command::Seek(ms, seq) => {

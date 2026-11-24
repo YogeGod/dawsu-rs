@@ -217,11 +217,18 @@ pub struct ProcessTransport {
 
 impl ProcessTransport {
     pub fn spawn(config: &Vst3HostConfig) -> Result<Self, HostError> {
-        let mut child = Command::new(&config.host_executable)
-            .args(config.args())
+        let mut cmd = Command::new(&config.host_executable);
+        cmd.args(config.args())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(Stdio::null());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
+        let mut child = cmd
             .spawn()
             .map_err(|err| HostError::SpawnFailed(err.to_string()))?;
 
@@ -283,6 +290,7 @@ impl Drop for ProcessTransport {
 /// Active session talking to one isolated VST3 sidecar host process.
 pub struct HostSession<T: HostTransport = ProcessTransport> {
     transport: T,
+    shm: Option<crate::shm::ShmChannel>,
     plugin_name: String,
     protocol_version: u32,
     next_id: u64,
@@ -291,10 +299,18 @@ pub struct HostSession<T: HostTransport = ProcessTransport> {
 }
 
 impl HostSession<ProcessTransport> {
-    /// Spawns `dawsu_vst3_host` and completes the `READY` handshake.
+    /// Spawns `dawsu_vst3_host` (creating shared memory first) and completes the `READY` handshake.
     pub fn spawn(config: &Vst3HostConfig) -> Result<Self, HostError> {
+        let shm = crate::shm::ShmChannel::create(&config.shm_name, 44_100.0)?;
         let transport = ProcessTransport::spawn(config)?;
-        Self::from_transport(transport)
+        let mut session = Self::from_transport(transport)?;
+        session.shm = Some(shm);
+        Ok(session)
+    }
+
+    /// Moves the shared-memory audio channel out of the session (for attaching to the audio thread).
+    pub fn take_shm(&mut self) -> Option<crate::shm::ShmChannel> {
+        self.shm.take()
     }
 }
 
@@ -322,6 +338,7 @@ impl<T: HostTransport> HostSession<T> {
         }
         Ok(Self {
             transport,
+            shm: None,
             plugin_name,
             protocol_version,
             next_id: 1,

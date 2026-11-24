@@ -66,6 +66,19 @@ pub(crate) struct SessionSettings {
     /// Output slot -> hitsound lane bindings for the M4 node graph. Older builds ignore the field.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub node_graph_bindings: Option<BTreeMap<String, String>>,
+    /// Per-map Drum VST3 instrument selection, toggle, and saved preset state. Older builds ignore it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub drum_vst: Option<DrumVstSession>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DrumVstSession {
+    pub plugin_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plugin_uid: Option<String>,
+    pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state_b64: Option<String>,
 }
 
 impl Default for SessionSettings {
@@ -94,6 +107,7 @@ impl Default for SessionSettings {
             drum_lanes: None,
             export_choices: None,
             node_graph_bindings: None,
+            drum_vst: None,
         }
     }
 }

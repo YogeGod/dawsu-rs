@@ -64,6 +64,7 @@ const COMMANDS: &[&str] = &[
     "midi_input_ports",
     "midi_record_toggle",
     "vst3_scan",
+    "drum_vst_action",
     "keysounds_action",
     "revert_mapset_to_original",
 ];

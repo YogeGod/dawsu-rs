@@ -52,6 +52,7 @@
     "allow-midi-input-ports",
     "allow-midi-record-toggle",
     "allow-vst3-scan",
+    "allow-drum-vst-action",
     "allow-keysounds-action",
     "allow-revert-mapset-to-original"
   ]

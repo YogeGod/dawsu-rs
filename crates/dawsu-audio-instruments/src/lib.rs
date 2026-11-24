@@ -7,6 +7,7 @@ pub mod bounce;
 pub mod host;
 pub mod midi_in;
 pub mod scanner;
+pub mod shm;
 
 pub use bounce::{encode_wav_f32, encode_wav_i16, trim_silence_tail, write_wav_f32, write_wav_i16};
 pub use host::{
@@ -19,3 +20,4 @@ pub use scanner::{
     ScanError, Vst3PluginInfo, default_vst3_dirs, discover_vst3_paths, discover_vst3_paths_in,
     parse_scan_line, parse_scan_output, scan_plugin,
 };
+pub use shm::ShmChannel;

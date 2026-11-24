@@ -10,6 +10,7 @@ mod controller;
 mod editor_meter;
 pub mod drum_classify;
 mod drum_detect;
+pub mod drum_vst;
 mod export;
 mod export_settings;
 mod generate_receipt;
@@ -1037,6 +1038,8 @@ pub struct Application {
     pub midi_recorder: midi_record::MidiRecorder,
     pub keysounds: dawsu_keysounding::KeysoundProject,
     pub vst3: vst3::Vst3Manager,
+    pub drum_vst: Option<drum_vst::DrumVstLiveHandle>,
+    drum_vst_state_b64: Option<String>,
 }
 impl Application {
     pub fn new() -> Self {
@@ -1184,6 +1187,8 @@ impl Application {
             midi_recorder: midi_record::MidiRecorder::new(),
             keysounds: dawsu_keysounding::KeysoundProject::new("", "Keysounds"),
             vst3: vst3::Vst3Manager::new(),
+            drum_vst: None,
+            drum_vst_state_b64: None,
         }
     }
 
@@ -1441,6 +1446,12 @@ impl Application {
             export_choices: document.export_choices.clone(),
             node_graph_bindings: document.node_graph_bindings.clone(),
             lane_slots: saved_slots.or_else(|| self.project.as_ref().and_then(|p| p.settings.lane_slots.clone())),
+            drum_vst: self.drum_vst.as_ref().map(|h| project::DrumVstSession {
+                plugin_path: h.plugin_path.clone(),
+                plugin_uid: h.plugin_uid.clone(),
+                enabled: h.is_enabled(),
+                state_b64: self.drum_vst_state_b64.clone(),
+            }),
         })
     }
 
@@ -1898,6 +1909,13 @@ impl Application {
                     self.set_view_start(settings.view_start.clamp(0.0, duration));
                     self.seek(0.0);
                     self.cycle_changed();
+                    if let Some(saved_vst) = settings.drum_vst.clone() {
+                        if let Err(err) = self.restore_drum_vst_session(&saved_vst) {
+                            self.status = format!("Difficulty loaded (Drum VST3 unavailable: {err})");
+                        }
+                    } else if self.drum_vst.is_some() {
+                        self.unload_drum_vst();
+                    }
                     self.sync_audio();
                     self.status = if restored_id.is_some() {
                         "Recovery copy restored. Save the difficulty to clear the offer.".into()
@@ -2382,6 +2400,16 @@ impl Application {
         self.audition_lane(lane, 1.0);
     }
     fn audition_lane(&self, lane: &SampleIdentity, gain: f32) {
+        if let Some(vst) = &self.drum_vst
+            && let Some(note) = vst.routed_note_for(lane)
+        {
+            let audible = !self.muted.contains(lane)
+                && (self.solo.is_empty() || self.solo.contains(lane));
+            if audible {
+                vst.preview(note, drum_vst::gain_to_midi_velocity(gain * self.lane_gain(lane)));
+            }
+            return;
+        }
         if let (Some(a), Some(clip)) = (&self.audio, self.clip_for_lane(lane)) {
             a.audition(clip.clone(), gain * self.lane_gain(lane));
         }
@@ -3104,8 +3132,11 @@ impl Application {
     }
 
     fn scheduled_sounds(&self, d: &Document) -> Vec<ScheduledSound> {
+        self.scheduled_audio_and_midi(d).0
+    }
+    fn scheduled_audio_and_midi(&self, d: &Document) -> (Vec<ScheduledSound>, Vec<drum_vst::DrumMidiCue>) {
         if self.song_solo && !self.hitsounds_solo && self.solo.is_empty() {
-            return Vec::new();
+            return (Vec::new(), Vec::new());
         }
         let composer = &d.composer;
         let hits = composer.hitsounds();
@@ -3123,24 +3154,39 @@ impl Application {
             }
             &filtered
         };
-        cue_list(audible, &self.muted, &self.solo)
-            .into_iter()
-            .filter_map(|cue| {
-                let lane_gain = self.lane_gain(cue.sample());
-                Some(ScheduledSound {
+        let mut sounds = Vec::new();
+        let mut midi_cues = Vec::new();
+        for cue in cue_list(audible, &self.muted, &self.solo) {
+            let lane_gain = self.lane_gain(cue.sample());
+            if let Some(vst) = &self.drum_vst
+                && let Some(note) = vst.routed_note_for(cue.sample())
+            {
+                midi_cues.push(drum_vst::DrumMidiCue {
+                    at_ms: cue.time().ms(),
+                    note,
+                    velocity: drum_vst::gain_to_midi_velocity(cue.gain() as f32 * lane_gain),
+                });
+                continue;
+            }
+            if let Some(clip) = self.samples.get(cue.sample()) {
+                sounds.push(ScheduledSound {
                     at_ms: cue.time().ms(),
                     end_ms: cue.loop_end().map(|t| t.ms()),
-                    clip: self.samples.get(cue.sample())?.clone(),
+                    clip: clip.clone(),
                     gain: cue.gain() as f32 * lane_gain,
-                })
-            })
-            .collect()
+                });
+            }
+        }
+        (sounds, midi_cues)
     }
     fn sync_audio(&mut self) {
         if let Some(d) = &self.document {
             self.cached_version = d.composer.history.version();
             self.cached_listen_version = d.composer.listen_version;
-            let cues = self.scheduled_sounds(d);
+            let (cues, midi_cues) = self.scheduled_audio_and_midi(d);
+            if let Some(vst) = &self.drum_vst {
+                vst.set_schedule(midi_cues);
+            }
             if let Some(a) = &self.audio {
                 a.load_at_speed(
                     self.song.clone(),
@@ -3151,6 +3197,179 @@ impl Application {
                 a.hitsound_gain(self.playback_hitsound_gain());
             }
         }
+    }
+
+    /// Loads a VST3 drum instrument into an isolated sidecar and attaches it to live audio playback.
+    pub fn load_drum_vst(
+        &mut self,
+        plugin_path: PathBuf,
+        plugin_uid: Option<String>,
+    ) -> Result<LoadedPluginSummary, Vst3Error> {
+        self.unload_drum_vst();
+        let summary = self.vst3.load_instrument(plugin_path.clone(), plugin_uid.clone())?;
+        let shm = self.vst3.take_shm(&summary.id)?.ok_or_else(|| {
+            Vst3Error::Bounce("VST3 shared-memory audio channel unavailable".to_string())
+        })?;
+        let (mut handle, source) = drum_vst::DrumVstLiveHandle::new(
+            summary.id.clone(),
+            summary.name.clone(),
+            plugin_path.to_string_lossy().into_owned(),
+            plugin_uid,
+            true,
+            Box::new(shm),
+        );
+        // Seed skin lane defaults immediately until drum_view supplies explicit drum-map rows.
+        if let Some(d) = &self.document {
+            let mut notes = HashMap::new();
+            for lane in &d.composer.lanes {
+                if let Some(note) = drum_vst::default_skin_midi_note(lane) {
+                    notes.insert(lane.clone(), note);
+                }
+            }
+            handle.set_routed_notes(notes);
+        }
+        if let Some(a) = &self.audio {
+            a.set_live_source(Some(Box::new(source)));
+        }
+        self.drum_vst = Some(handle);
+        self.drum_vst_state_b64 = self.vst3.get_plugin_state(&summary.id).ok();
+        self.sync_audio();
+        let _ = self.write_session(None, None, None);
+        Ok(summary)
+    }
+
+    fn restore_drum_vst_session(&mut self, saved: &project::DrumVstSession) -> Result<(), String> {
+        let path = PathBuf::from(&saved.plugin_path);
+        if !path.exists() {
+            return Err(format!("plugin not found at {}", saved.plugin_path));
+        }
+        let summary = self
+            .load_drum_vst(path, saved.plugin_uid.clone())
+            .map_err(|e| e.to_string())?;
+        if let Some(state_b64) = saved.state_b64.as_deref()
+            && !state_b64.is_empty()
+        {
+            let _ = self.vst3.set_plugin_state(&summary.id, state_b64);
+            self.drum_vst_state_b64 = Some(state_b64.to_string());
+        }
+        self.set_drum_vst_enabled(saved.enabled);
+        Ok(())
+    }
+
+    /// Instant ON/OFF toggle for live VST3 drum routing (keeps plugin loaded in memory).
+    pub fn set_drum_vst_enabled(&mut self, enabled: bool) {
+        if let Some(vst) = &self.drum_vst {
+            vst.set_enabled(enabled);
+        }
+        self.sync_audio();
+        let _ = self.write_session(None, None, None);
+    }
+
+    /// Updates the lane -> MIDI note routing map (from `DrumView` + skin defaults).
+    pub fn set_drum_vst_routing(&mut self, notes: HashMap<SampleIdentity, u8>) {
+        let changed = self
+            .drum_vst
+            .as_ref()
+            .is_some_and(|vst| vst.routed_notes() != &notes);
+        if let Some(vst) = &mut self.drum_vst {
+            vst.set_routed_notes(notes);
+        }
+        if changed {
+            self.sync_audio();
+        }
+    }
+
+    /// Detaches and unloads the active live VST3 drum instrument.
+    pub fn unload_drum_vst(&mut self) {
+        if let Some(a) = &self.audio {
+            a.clear_live_source();
+        }
+        if let Some(vst) = self.drum_vst.take() {
+            let _ = self.vst3.unload_plugin(&vst.instance_id);
+        }
+        self.drum_vst_state_b64 = None;
+        self.sync_audio();
+        let _ = self.write_session(None, None, None);
+    }
+
+    /// Refreshes the cached VST3 component state chunk and saves it into the map's session.
+    pub fn save_drum_vst_session_state(&mut self) -> Result<String, Vst3Error> {
+        let id = self
+            .drum_vst
+            .as_ref()
+            .map(|v| v.instance_id.clone())
+            .ok_or_else(|| Vst3Error::PluginNotFound("No Drum VST3 loaded".into()))?;
+        let b64 = self.vst3.get_plugin_state(&id)?;
+        self.drum_vst_state_b64 = Some(b64.clone());
+        let _ = self.write_session(None, None, None);
+        Ok(b64)
+    }
+
+    /// Restores a base64 state chunk into the active Drum VST3 and saves it into the map's session.
+    pub fn restore_drum_vst_state_b64(&mut self, state_b64: &str) -> Result<(), Vst3Error> {
+        let id = self
+            .drum_vst
+            .as_ref()
+            .map(|v| v.instance_id.clone())
+            .ok_or_else(|| Vst3Error::PluginNotFound("No Drum VST3 loaded".into()))?;
+        self.vst3.set_plugin_state(&id, state_b64)?;
+        self.drum_vst_state_b64 = Some(state_b64.to_string());
+        let _ = self.write_session(None, None, None);
+        Ok(())
+    }
+
+    /// Plans a "Render drums to WAVs…" bake over all hits on currently routed VST3 drum lanes.
+    pub fn plan_drum_vst_render(&self, mode: VelocityExportMode) -> Result<Vst3DrumExportPlan, String> {
+        let d = self.document.as_ref().ok_or("Open a difficulty first.")?;
+        let vst = self.drum_vst.as_ref().ok_or("Load a Drum VST3 instrument first.")?;
+        let routed = vst.routed_notes();
+        let mut hits = Vec::new();
+        for moment in d.composer.hitsounds().moments() {
+            for lane in moment.hits() {
+                if let Some(&pitch) = routed.get(lane) {
+                    let volume = moment.hit_volume(lane).clamp(5, 100) as u8;
+                    hits.push(Vst3DrumHit {
+                        time_ms: moment.time().ms(),
+                        name: lane_name(lane),
+                        pitch,
+                        volume,
+                    });
+                }
+            }
+        }
+        Ok(plan_vst3_drum_export(&hits, mode))
+    }
+
+    /// Executes "Render drums to WAVs…" into the mapset folder (default: Tiered velocity).
+    pub fn render_drum_vst_to_wavs(
+        &mut self,
+        mode: VelocityExportMode,
+    ) -> Result<(Vst3DrumExportPlan, Vec<BounceOutput>), String> {
+        let plan = self.plan_drum_vst_render(mode)?;
+        if plan.jobs.is_empty() {
+            return Err("No hits found on mapped VST3 drum lanes.".into());
+        }
+        let instance_id = self
+            .drum_vst
+            .as_ref()
+            .map(|v| v.instance_id.clone())
+            .ok_or("Load a Drum VST3 instrument first.")?;
+        let out_dir = self
+            .document
+            .as_ref()
+            .and_then(|d| d.path.parent().map(Path::to_path_buf))
+            .ok_or("Map folder unavailable.")?;
+        let outputs = self
+            .vst3
+            .execute_vst3_drum_export(&instance_id, &plan, &out_dir, 44_100)
+            .map_err(|e| e.to_string())?;
+        self.status = format!(
+            "Rendered {} VST3 drum WAV {} ({} mapped hits).",
+            outputs.len(),
+            if outputs.len() == 1 { "file" } else { "files" },
+            plan.assignments.len()
+        );
+        Ok((plan, outputs))
     }
 }
 impl Default for Application {
