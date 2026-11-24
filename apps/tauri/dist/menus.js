@@ -617,3 +617,14 @@ document.addEventListener("pointerdown", event => {
 window.addEventListener("resize", () => closeEditorMenu(false));
 window.refreshEditorMenu = refreshEditorMenu;
 window.openEditorMenu = openEditorMenu;
+window.closeEditorMenu = closeEditorMenu;
+window.dawsuPaletteMenu = {
+  isEnabled: item => !!menuRules[item.enabled ?? "edit"](null, item),
+  isChecked: item => menuChecked({ item, target: null }),
+  runItem: item => {
+    if (!menuRules[item.enabled ?? "edit"](null, item)) return false;
+    runMenuEntry({ item, target: null });
+    refreshEditorMenu();
+    return true;
+  },
+};

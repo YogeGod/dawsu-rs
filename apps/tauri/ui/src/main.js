@@ -19,6 +19,7 @@ import BrowserHead from "./parts/BrowserHead.svelte";
 import BrowserList from "./parts/BrowserList.svelte";
 import BrowserPreview from "./parts/BrowserPreview.svelte";
 import BottomPanel from "./parts/BottomPanel.svelte";
+import CommandPalette from "./parts/CommandPalette.svelte";
 import LaneHeaders from "./parts/LaneHeaders.svelte";
 import Mixer from "./parts/Mixer.svelte";
 import PlayheadGroup from "./parts/PlayheadGroup.svelte";
@@ -62,6 +63,8 @@ const parts = {
   toasts: ToastStack,
   // The Quick start tour card (View › Quick start tour), at body level.
   "quick-start": QuickStartTour,
+  // Global Ctrl+K Command Palette modal, at body level.
+  "command-palette": CommandPalette,
   // The popup the menu bar, the right-click tool picker and the lane menu share (#editor-menu).
   menu: EditorMenu,
   "inspector-selection": InspectorSelection, "inspector-lane": InspectorLane, "inspector-difficulty": InspectorDifficulty,

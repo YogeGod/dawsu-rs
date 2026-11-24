@@ -210,6 +210,12 @@
     return () => { globalThis.dawsuPreferencesOpen = false; };
   });
 
+  // Command Palette stays out of the way while capturing a custom shortcut binding.
+  $effect(() => {
+    globalThis.dawsuShortcutCapturing = Boolean(open && capturingId);
+    return () => { globalThis.dawsuShortcutCapturing = false; };
+  });
+
   // The tabs with something to put back: General's interface scale, Colours, and Shortcuts.
   const resetLabel = $derived(scope !== "app" ? null
     : tab === "general" ? "Reset scale to 100%"

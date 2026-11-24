@@ -49,6 +49,9 @@ export class Bridge {
   // Active coverage review filter ("all", "empty", or "orphaned") and last jumped issue time.
   coverageFilter = $state("all");
   coverageFocusTime = $state(null);
+  // Global Ctrl+K Command Palette open state and last loaded active shortcuts.
+  commandPaletteOpen = $state(false);
+  commandPaletteShortcuts = $state.raw(null);
 
   // No map, a job running or a fault: the parts show but take no input.
   get disabled() {
