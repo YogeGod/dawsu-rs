@@ -72,6 +72,95 @@ impl Default for SliderEndMuteOptions {
     }
 }
 
+/// Optional fallback sound applied to unmatched target gameplay object edges during Copy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct FallbackSound {
+    #[serde(with = "sample_set_serde")]
+    pub set: SampleSet,
+    #[serde(default = "default_fallback_hitsound", with = "hitsound_serde")]
+    pub sound: Hitsound,
+    #[serde(default = "default_fallback_volume", deserialize_with = "deserialize_fallback_volume")]
+    pub volume: i32,
+}
+
+impl FallbackSound {
+    pub fn new(set: SampleSet, sound: Hitsound, volume: i32) -> Self {
+        Self {
+            set,
+            sound,
+            volume: volume.clamp(MINIMUM_PLAYED_VOLUME, 100),
+        }
+    }
+
+    pub fn clamped_volume(self) -> i32 {
+        self.volume.clamp(MINIMUM_PLAYED_VOLUME, 100)
+    }
+}
+
+fn default_fallback_hitsound() -> Hitsound {
+    Hitsound::Normal
+}
+
+fn default_fallback_volume() -> i32 {
+    80
+}
+
+fn deserialize_fallback_volume<'de, D>(deserializer: D) -> Result<i32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw = <i32 as serde::Deserialize>::deserialize(deserializer)?;
+    Ok(raw.clamp(MINIMUM_PLAYED_VOLUME, 100))
+}
+
+mod sample_set_serde {
+    use dawsu_foundation::SampleSet;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(set: &SampleSet, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(match set {
+            SampleSet::Normal => "normal",
+            SampleSet::Soft => "soft",
+            SampleSet::Drum => "drum",
+        })
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<SampleSet, D::Error> {
+        let s = String::deserialize(deserializer)?;
+        match s.to_ascii_lowercase().as_str() {
+            "normal" => Ok(SampleSet::Normal),
+            "soft" => Ok(SampleSet::Soft),
+            "drum" => Ok(SampleSet::Drum),
+            other => Err(serde::de::Error::custom(format!("unknown sample set '{other}'"))),
+        }
+    }
+}
+
+mod hitsound_serde {
+    use dawsu_foundation::Hitsound;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(sound: &Hitsound, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(match sound {
+            Hitsound::Normal => "normal",
+            Hitsound::Whistle => "whistle",
+            Hitsound::Finish => "finish",
+            Hitsound::Clap => "clap",
+        })
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Hitsound, D::Error> {
+        let s = String::deserialize(deserializer)?;
+        match s.to_ascii_lowercase().as_str() {
+            "normal" => Ok(Hitsound::Normal),
+            "whistle" => Ok(Hitsound::Whistle),
+            "finish" => Ok(Hitsound::Finish),
+            "clap" => Ok(Hitsound::Clap),
+            other => Err(serde::de::Error::custom(format!("unknown hitsound '{other}'"))),
+        }
+    }
+}
+
 /// Options for Copy hitsounds (matching Mapping Tools' defaults, except Merge is the default collision policy).
 #[derive(Debug, Clone, PartialEq)]
 pub struct CopyOptions {
@@ -118,6 +207,8 @@ pub struct CopyOptions {
     pub muted_sample_set: Option<SampleSet>,
     /// Structured automatic slider-end (and optional spinner-end) muting options.
     pub slider_end_mute: SliderEndMuteOptions,
+    /// Optional fallback sound for target gameplay object edges that did not match any source moment.
+    pub fallback_sound: Option<FallbackSound>,
 }
 
 impl Default for CopyOptions {
@@ -145,6 +236,7 @@ impl Default for CopyOptions {
             muted_index: None,
             muted_sample_set: None,
             slider_end_mute: SliderEndMuteOptions::default(),
+            fallback_sound: None,
         }
     }
 }
@@ -191,6 +283,8 @@ pub struct TargetPlan {
     pub merged: usize,
     /// Slider and spinner ends muted.
     pub muted: usize,
+    /// Unmatched target gameplay object edges given the optional fallback sound.
+    pub fallback_applied: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -443,6 +537,7 @@ fn plan_target(source: &Hitsounds, source_file: &OsuFile, target: &OsuFile, fold
     }).collect();
     let mut problems = Vec::new();
     let mut changed = 0;
+    let mut changed_moments: HashSet<usize> = HashSet::new();
     let mut kept_from_silent = 0;
     let mut merged = 0;
     let mut silent_normal = |lane: &SampleIdentity| {
@@ -569,15 +664,48 @@ fn plan_target(source: &Hitsounds, source_file: &OsuFile, target: &OsuFile, fold
             for (lane, gain) in lanes.iter().zip(gains) {
                 to.set_hit_volume(id, lane, gain);
             }
-            changed += 1;
-        } else if set_moment(&mut to, id, &lanes, volume) {
+            if changed_moments.insert(i) {
+                changed += 1;
+            }
+        } else if set_moment(&mut to, id, &lanes, volume) && changed_moments.insert(i) {
             changed += 1;
         }
     }
 
-    let mut muted = 0;
-    if options.slider_end_mute.enabled || options.mute_slider_ends {
-        muted = mute_ends(&mut to, target, &target_cp, target_offset, &matched, options, &mut changed);
+    let (muted, muted_indices) = if options.slider_end_mute.enabled || options.mute_slider_ends {
+        mute_ends(&mut to, target, &target_cp, target_offset, &matched, options, &mut changed, &mut changed_moments)
+    } else {
+        (0, HashSet::new())
+    };
+    let mut fallback_applied = 0;
+    if options.copy_hitsounds
+        && let Some(fb) = options.fallback_sound
+    {
+        let fb_volume = fb.clamped_volume();
+        let fb_lanes = if fb.sound == Hitsound::Normal {
+            vec![hitnormal(fb.set, 0)]
+        } else {
+            vec![
+                hitnormal(fb.set, 0),
+                SampleIdentity::Standard {
+                    set: fb.set,
+                    sound: Sound::Hit(fb.sound),
+                    index: CustomIndex::new(0),
+                },
+            ]
+        };
+        for (i, m) in before.iter().enumerate() {
+            if matched.contains_key(&i)
+                || muted_indices.contains(&i)
+                || matches!(m.place(), Place::NoObject)
+            {
+                continue;
+            }
+            fallback_applied += 1;
+            if set_moment(&mut to, MomentId(i), &fb_lanes, fb_volume) && changed_moments.insert(i) {
+                changed += 1;
+            }
+        }
     }
     if options.copy_hitsounds {
         copy_bodies(source, &mut to, &before, &matched, &from, options);
@@ -594,7 +722,19 @@ fn plan_target(source: &Hitsounds, source_file: &OsuFile, target: &OsuFile, fold
     problems.sort_by(|a, b| a.time.ms().total_cmp(&b.time.ms()));
     let (dropped, slider_placements) = slider::plan(dropped, &from, to.bodies(), target_offset - source_offset, options, cancel)?;
     let dropped = dropped.into_iter().map(|s| from[s].time()).collect();
-    Some(TargetOutcome::Planned(Box::new(TargetPlan { file, problems, dropped, collisions, slider_placements, matched: matched_count, changed, muted, kept_from_silent, merged })))
+    Some(TargetOutcome::Planned(Box::new(TargetPlan {
+        file,
+        problems,
+        dropped,
+        collisions,
+        slider_placements,
+        matched: matched_count,
+        changed,
+        muted,
+        kept_from_silent,
+        merged,
+        fallback_applied,
+    })))
 }
 
 /// Sets a moment's hits and volume; false when they are already what it holds.
@@ -615,16 +755,18 @@ pub(crate) fn set_moment(h: &mut Hitsounds, id: MomentId, lanes: &[SampleIdentit
 }
 
 /// Automatic slider-end (and optional spinner-end) muting.
-///
-/// When `o.slider_end_mute.enabled` is true, uses `SliderEndMuteOptions`:
-/// - Never mutes an end that already has a matched source hitsound.
-/// - When `only_unhit` is true (default), also skips ends that carry non-normal additions or custom sample files.
-/// - Sliders shorter than `min_beats` are never muted; spinners are muted only when `mute_spinner_ends` is true.
-/// - Empty `divisors` mutes on any beat position; non-empty `divisors` mutes only when the end's coarsest snap divisor is listed.
-/// - Always writes `MINIMUM_PLAYED_VOLUME` (5%), never below osu!'s 5% saved volume floor.
-///
-/// When only the legacy `o.mute_slider_ends` flag is true, preserves the legacy Mapping Tools filter.
-fn mute_ends(to: &mut Hitsounds, target: &OsuFile, cp: &ControlPoints, offset: f64, matched: &HashMap<usize, Vec<usize>>, o: &CopyOptions, changed: &mut usize) -> usize {
+/// Returns how many were muted and their moment indices.
+#[allow(clippy::too_many_arguments)]
+fn mute_ends(
+    to: &mut Hitsounds,
+    target: &OsuFile,
+    cp: &ControlPoints,
+    offset: f64,
+    matched: &HashMap<usize, Vec<usize>>,
+    o: &CopyOptions,
+    changed: &mut usize,
+    changed_moments: &mut HashSet<usize>,
+) -> (usize, HashSet<usize>) {
     let starts: HashMap<ObjectId, f64> = target.hit_objects().iter().map(|h| (ObjectId(h.line()), h.time() + offset)).collect();
     let mut last_node: HashMap<ObjectId, usize> = HashMap::new();
     for m in to.moments() {
@@ -635,6 +777,7 @@ fn mute_ends(to: &mut Hitsounds, target: &OsuFile, cp: &ControlPoints, offset: f
     }
     let structured = o.slider_end_mute.enabled;
     let mut muted = 0;
+    let mut muted_indices = HashSet::new();
     for i in 0..to.moments().len() {
         let m = to.moments()[i].clone();
         let (object, is_spinner) = match m.place() {
@@ -706,11 +849,12 @@ fn mute_ends(to: &mut Hitsounds, target: &OsuFile, cp: &ControlPoints, offset: f
         let set = o.muted_sample_set.or(normal.map(|n| n.0)).unwrap_or(state.set);
         let index = o.muted_index.or(normal.map(|n| n.1)).unwrap_or(state.index);
         muted += 1;
-        if set_moment(to, MomentId(i), &[hitnormal(set, index)], MINIMUM_PLAYED_VOLUME) {
+        muted_indices.insert(i);
+        if set_moment(to, MomentId(i), &[hitnormal(set, index)], MINIMUM_PLAYED_VOLUME) && changed_moments.insert(i) {
             *changed += 1;
         }
     }
-    muted
+    (muted, muted_indices)
 }
 
 /// Returns true if `time` snaps coarsest to one of `divisors` under the active red timing point.
@@ -1093,5 +1237,88 @@ mod tests {
         let spin2 = m_on.iter().find(|m| (m.0 - 4000.0).abs() < 1.0).unwrap();
         assert_eq!(spin2.2, 90);
         assert!(spin2.3.iter().any(|l| matches!(l, SampleIdentity::Standard { sound: Sound::Hit(Hitsound::Finish), .. })));
+    }
+
+    #[test]
+    fn fallback_sound_applies_only_to_unmatched_objects_and_clamps_volume() {
+        let source_bytes = concat!(
+            "osu file format v14\n",
+            "[General]\nMode:0\n",
+            "[TimingPoints]\n0,500,4,1,0,100,1,0\n",
+            "[HitObjects]\n",
+            "256,192,1000,1,8,3:3:0:85:\n",
+        );
+        let target_bytes = concat!(
+            "osu file format v14\n",
+            "[General]\nMode:0\n",
+            "[TimingPoints]\n0,500,4,1,0,100,1,0\n",
+            "[HitObjects]\n",
+            "256,192,1000,1,0,0:0:0:90:\n",
+            "256,192,2000,1,0,1:0:0:90:\n",
+        );
+        let source_file = OsuFile::read(source_bytes.as_bytes().to_vec()).file;
+        let target_file = OsuFile::read(target_bytes.as_bytes().to_vec()).file;
+        let Decompiled::Done(source_hits) = decompile(&source_file, &[], &|| false, &mut |_, _| {}) else {
+            panic!("decompile source");
+        };
+
+        // With fallback_sound: Some(Soft Normal @ 60%), matched object at 1000ms keeps Drum Clap @ 85%,
+        // while unmatched object at 2000ms gets Soft Normal @ 60%.
+        let opts_with_fallback = CopyOptions {
+            mode: CopyMode::OverwriteOnlyDefined,
+            fallback_sound: Some(FallbackSound::new(SampleSet::Soft, Hitsound::Normal, 60)),
+            ..CopyOptions::default()
+        };
+        let CopyOutcome::Targets(mut outcomes) = copy_hitsounds(
+            &source_hits, &source_file, std::slice::from_ref(&target_file), &[], &opts_with_fallback, &|| false, &mut |_, _| {},
+        ) else {
+            panic!("copy outcome");
+        };
+        let TargetOutcome::Planned(plan) = outcomes.remove(0) else {
+            panic!("target planned");
+        };
+        assert_eq!(plan.matched, 1);
+        assert_eq!(plan.fallback_applied, 1);
+        let Decompiled::Done(result_hits) = decompile(&plan.file, &[], &|| false, &mut |_, _| {}) else {
+            panic!("decompile result");
+        };
+        let m0 = &result_hits.moments()[0];
+        assert_eq!(m0.volume(), 85);
+        assert!(m0.hits().any(|h| matches!(h, SampleIdentity::Standard { set: SampleSet::Drum, sound: Sound::Hit(Hitsound::Clap), .. })));
+        let m1 = &result_hits.moments()[1];
+        assert_eq!(m1.volume(), 60);
+        let m1_hits: Vec<_> = m1.hits().cloned().collect();
+        assert_eq!(m1_hits, vec![hitnormal(SampleSet::Soft, 0)]);
+
+        // With fallback_sound: None, unmatched object at 2000ms stays untouched (Normal @ 90%).
+        let opts_no_fallback = CopyOptions {
+            mode: CopyMode::OverwriteOnlyDefined,
+            fallback_sound: None,
+            ..CopyOptions::default()
+        };
+        let CopyOutcome::Targets(mut outcomes) = copy_hitsounds(
+            &source_hits, &source_file, std::slice::from_ref(&target_file), &[], &opts_no_fallback, &|| false, &mut |_, _| {},
+        ) else {
+            panic!("copy outcome");
+        };
+        let TargetOutcome::Planned(plan_none) = outcomes.remove(0) else {
+            panic!("target planned");
+        };
+        assert_eq!(plan_none.fallback_applied, 0);
+        let Decompiled::Done(result_none) = decompile(&plan_none.file, &[], &|| false, &mut |_, _| {}) else {
+            panic!("decompile result_none");
+        };
+        let m1_none = &result_none.moments()[1];
+        assert_eq!(m1_none.volume(), 90);
+        let m1_none_hits: Vec<_> = m1_none.hits().cloned().collect();
+        assert_eq!(m1_none_hits, vec![hitnormal(SampleSet::Normal, 0)]);
+
+        // Volume clamps to 5..=100 (respecting dawsu!'s 5% floor) both via new() and serde.
+        assert_eq!(FallbackSound::new(SampleSet::Drum, Hitsound::Normal, 0).volume, MINIMUM_PLAYED_VOLUME);
+        assert_eq!(FallbackSound::new(SampleSet::Drum, Hitsound::Normal, 150).volume, 100);
+        let low: FallbackSound = serde_json::from_str(r#"{"set":"soft","sound":"normal","volume":1}"#).unwrap();
+        assert_eq!(low.volume, MINIMUM_PLAYED_VOLUME);
+        let high: FallbackSound = serde_json::from_str(r#"{"set":"soft","sound":"normal","volume":200}"#).unwrap();
+        assert_eq!(high.volume, 100);
     }
 }

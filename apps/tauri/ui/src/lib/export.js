@@ -1,6 +1,22 @@
 // Plain logic for the Export window, tested under node without a webview.
 
 export const mixFormats = Object.freeze(["wav16", "wav32f", "ogg_vorbis"]);
+export const fallbackSets = Object.freeze(["normal", "soft", "drum"]);
+
+export function clampFallbackVolume(value) {
+  const n = Number.isFinite(value) ? Math.round(value) : 80;
+  return Math.max(5, Math.min(100, n));
+}
+
+export function normalizeFallbackSound(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  const set = typeof raw.set === "string" ? raw.set.toLowerCase() : "";
+  if (!fallbackSets.includes(set)) return null;
+  const sound = typeof raw.sound === "string" && ["normal", "whistle", "finish", "clap"].includes(raw.sound.toLowerCase())
+    ? raw.sound.toLowerCase()
+    : "normal";
+  return { set, sound, volume: clampFallbackVolume(raw.volume) };
+}
 
 // Default automatic slider-end muting options (off by default).
 export const defaultSliderEndMute = Object.freeze({
@@ -35,7 +51,7 @@ export function divisorsFromPreset(id) {
 // difficulty is a new file in the mapset, so it is written only once the mapper turns it on.
 export const defaultChoices = Object.freeze({
   leftOut: [], matchWithin: 5, copyVolumes: true, base: false, sliderAudio: false, laterWins: false,
-  mixFormat: "wav16", sliderEndMute: defaultSliderEndMute,
+  mixFormat: "wav16", sliderEndMute: defaultSliderEndMute, fallbackSound: null,
 });
 
 // Generate's name for the difficulty it makes (HITSOUNDS_VERSION in dawsu-hitsounding).
@@ -43,7 +59,7 @@ export const baseName = "Hitsounds";
 
 // The old Copy dialog's defaults for every option this slice does not show yet, so Export copies
 // exactly as Copy did with Match within and Copy volumes set.
-export function copyOptions({ matchWithin, copyVolumes, laterWins = false, sliderEndMute = null }) {
+export function copyOptions({ matchWithin, copyVolumes, laterWins = false, sliderEndMute = null, fallbackSound = null }) {
   const options = {
     mode: "overwrite_everything",
     leniency: matchWithin,
@@ -75,6 +91,10 @@ export function copyOptions({ matchWithin, copyVolumes, laterWins = false, slide
       only_unhit: sliderEndMute.onlyUnhit !== false,
       divisors: Array.isArray(sliderEndMute.divisors) ? [...sliderEndMute.divisors] : [],
     };
+  }
+  const fallback = normalizeFallbackSound(fallbackSound);
+  if (fallback) {
+    options.fallback_sound = fallback;
   }
   return options;
 }
@@ -112,6 +132,7 @@ export function choicesFrom(view) {
     laterWins: typeof stored.laterWins === "boolean" ? stored.laterWins : defaultChoices.laterWins,
     mixFormat: mixFormats.includes(stored.mixFormat) ? stored.mixFormat : defaultChoices.mixFormat,
     sliderEndMute: sliderEndMuteFrom(stored.sliderEndMute),
+    fallbackSound: normalizeFallbackSound(stored.fallbackSound),
   };
 }
 
@@ -134,9 +155,11 @@ export function optionsKey(view, choices) {
   const targets = included(view?.targets, choices);
   const mixFormat = mixFormats.includes(choices.mixFormat) ? choices.mixFormat : defaultChoices.mixFormat;
   const mute = choices.sliderEndMute;
+  const fallback = normalizeFallbackSound(choices.fallbackSound);
   return JSON.stringify([view?.source?.path ?? null, targets, choices.matchWithin, choices.copyVolumes,
     choices.base, choices.sliderAudio, choices.laterWins === true, mixFormat,
-    mute?.enabled === true ? [mute.minBeats, mute.muteSpinnerEnds === true, mute.onlyUnhit !== false, mute.divisors ?? []] : false]);
+    mute?.enabled === true ? [mute.minBeats, mute.muteSpinnerEnds === true, mute.onlyUnhit !== false, mute.divisors ?? []] : false,
+    fallback]);
 }
 
 export function previewRequest(view, choices) {
@@ -180,6 +203,7 @@ export function targetCounts(preview, path) {
   if (counts.collisions) items.push({ tone: "replaced", text: `${counts.collisions} replaced` });
   if (counts.keptFromSilent) items.push({ tone: "kept", text: `${counts.keptFromSilent} kept to avoid silence` });
   if (counts.muted) items.push({ tone: "muted", text: `${counts.muted} ends muted` });
+  if (counts.fallbackApplied) items.push({ tone: "fallback", text: `${counts.fallbackApplied} fallback` });
   return { changed: counts.changed, items };
 }
 

@@ -60,6 +60,7 @@ fn mix_place(place: Place) -> Option<(ObjectId, Option<usize>)> {
 pub(crate) struct MixFiles {
     pub(super) staged: Vec<StagedMix>,
     pub(super) combinations: Vec<export_settings::ExportCombination>,
+    pub(super) index_schema: BTreeMap<String, u32>,
 }
 
 #[derive(Clone)]
@@ -189,6 +190,7 @@ pub(super) fn stage_in_file(
         format,
         pending,
         false,
+        &BTreeMap::new(),
         cancel,
     )
 }
@@ -209,6 +211,7 @@ pub(super) fn stage_in_file_with_options(
     format: MixFormat,
     pending: &Pending,
     auto_fix: bool,
+    index_schema: &BTreeMap<String, u32>,
     cancel: &dyn Fn() -> bool,
 ) -> Result<(OsuFile, MixFiles), String> {
     let listing = listing(root, pending)?;
@@ -232,6 +235,7 @@ pub(super) fn stage_in_file_with_options(
             previous_mixes,
             pending,
             auto_fix,
+            index_schema,
             cancel,
         )?;
     } else {
@@ -247,6 +251,7 @@ pub(super) fn stage_in_file_with_options(
             format,
             pending,
             auto_fix,
+            index_schema,
             cancel,
         )?;
     }
@@ -291,6 +296,7 @@ impl MixFiles {
         previous_mixes: &[String],
         pending: &Pending,
         auto_fix: bool,
+        index_schema: &BTreeMap<String, u32>,
         cancel: &dyn Fn() -> bool,
     ) -> Result<(), String> {
         settings.validate()?;
@@ -302,7 +308,14 @@ impl MixFiles {
             .enumerate()
             .filter_map(|(index, moment)| Some((mix_place(moment.place())?, MomentId(index))))
             .collect();
-        let mut indexes = IndexedMixes::read(root, &OsuFile::read(Vec::new()).file, already_staged, start_index, pending)?;
+        let mut indexes = IndexedMixes::read_with_schema(
+            root,
+            &OsuFile::read(Vec::new()).file,
+            already_staged,
+            start_index,
+            pending,
+            index_schema.clone(),
+        )?;
         let previous_mixes = previous_mixes
             .iter()
             .map(String::as_str)
@@ -473,11 +486,8 @@ impl MixFiles {
                     .filter(|(_, _, cues)| !(settings.pair_samples && cues.is_empty()))
                     .collect();
                 let waves = render_roles(roles, format, auto_fix, cancel)?;
-                let reused = reusable_export_index(root, pending, &waves, format, &previous_mixes)?;
-                let index = match reused {
-                    Some(index) => index,
-                    None => indexes.reserve()?,
-                };
+                let (index, reused) =
+                    indexes.allocate_export(root, pending, &waves, format, &previous_mixes)?;
                 let outputs: Vec<_> = slots
                     .iter()
                     .map(|(bank, role)| SampleIdentity::Standard {
@@ -491,12 +501,13 @@ impl MixFiles {
                     root,
                     waves.into_iter().map(|(bank, role, bytes)| (bank, role, ext.to_string(), bytes)),
                     index,
-                    reused.is_some(),
+                    reused,
                 );
                 &*rendered.entry(key).or_insert((outputs, object_volume))
             };
             replace_moment_with_volume(target, moment, outputs.0.iter().cloned(), outputs.1);
         }
+        self.index_schema = indexes.into_schema();
         Ok(())
     }
 
@@ -613,6 +624,7 @@ impl MixFiles {
         format: MixFormat,
         pending: &Pending,
         auto_fix: bool,
+        index_schema: &BTreeMap<String, u32>,
         cancel: &dyn Fn() -> bool,
     ) -> Result<(), String> {
         let defaults_list = crate::pending::sample_folder(defaults);
@@ -634,7 +646,14 @@ impl MixFiles {
             .iter()
             .any(|problem| matches!(problem.place, Place::SliderNode { .. }))
         {
-            Some(IndexedMixes::read(root, &expected, already_staged, start_index, pending)?)
+            Some(IndexedMixes::read_with_schema(
+                root,
+                &expected,
+                already_staged,
+                start_index,
+                pending,
+                index_schema.clone(),
+            )?)
         } else {
             None
         };
@@ -687,6 +706,9 @@ impl MixFiles {
                 sample
             };
             replace_moment(target, moment, [sample]);
+        }
+        if let Some(indexes) = indexes {
+            self.index_schema = indexes.into_schema();
         }
         Ok(())
     }
@@ -952,10 +974,27 @@ fn replace_moment_with_volume(
     target.set_volume(moment, volume);
 }
 
+fn role_waves_digest(waves: &[(SampleSet, Hitsound, Vec<u8>)], format: MixFormat) -> String {
+    let mut data = Vec::new();
+    for (bank, role, bytes) in waves {
+        data.extend_from_slice(export_settings::slot_name(*bank, *role).as_bytes());
+        data.push(b'.');
+        data.extend_from_slice(format.extension().as_bytes());
+        data.push(b':');
+        data.extend_from_slice(&(bytes.len() as u64).to_le_bytes());
+        data.extend_from_slice(bytes);
+    }
+    sha256_hex(&data)
+}
+
 struct IndexedMixes {
     reserved: BTreeSet<u32>,
     next: u32,
     reuse: BTreeSet<u32>,
+    /// Persistent map of mix content SHA-256 hex -> preferred custom index.
+    schema: BTreeMap<String, u32>,
+    /// Indices claimed by entries in `schema` so newly inserted mixes skip over them.
+    schema_indices: BTreeSet<u32>,
 }
 
 fn indexed_name(index: u32, format: MixFormat) -> String {
@@ -1002,6 +1041,17 @@ fn hitnormal_indexes(root: &Path, pending: &Pending, has_hitnormal: bool) -> Res
 
 impl IndexedMixes {
     fn read(root: &Path, expected: &OsuFile, already_staged: &[StagedMix], start_index: u32, pending: &Pending) -> Result<Self, String> {
+        Self::read_with_schema(root, expected, already_staged, start_index, pending, BTreeMap::new())
+    }
+
+    fn read_with_schema(
+        root: &Path,
+        expected: &OsuFile,
+        already_staged: &[StagedMix],
+        start_index: u32,
+        pending: &Pending,
+        schema: BTreeMap<String, u32>,
+    ) -> Result<Self, String> {
         let mut reserved = occupied_indexes(root, pending)?;
         reserved.extend(already_staged.iter().filter_map(|mix| mix.index));
         let reuse = expected
@@ -1011,23 +1061,91 @@ impl IndexedMixes {
             .filter(|index| *index > 1)
             .map(|index| index as u32)
             .collect();
+        let schema_indices = schema.values().copied().filter(|&index| index > 1 && index <= i32::MAX as u32).collect();
         Ok(Self {
             reserved,
             next: start_index,
             reuse,
+            schema,
+            schema_indices,
         })
     }
 
+    fn into_schema(self) -> BTreeMap<String, u32> {
+        self.schema
+    }
+
+    fn allocate_export(
+        &mut self,
+        root: &Path,
+        pending: &Pending,
+        waves: &[(SampleSet, Hitsound, Vec<u8>)],
+        format: MixFormat,
+        previous: &BTreeSet<&str>,
+    ) -> Result<(u32, bool), String> {
+        let digest = role_waves_digest(waves, format);
+        if let Some(reused) = reusable_export_index(root, pending, waves, format, previous)? {
+            self.reserved.insert(reused);
+            self.schema.insert(digest, reused);
+            self.schema_indices.insert(reused);
+            return Ok((reused, true));
+        }
+        if let Some(&preferred) = self.schema.get(&digest)
+            && preferred > 1
+            && preferred <= i32::MAX as u32
+        {
+            let suffix = format!(".{}", format.extension());
+            let hitnormals = hitnormal_indexes(root, pending, waves.iter().any(|(_, role, _)| *role == Hitsound::Normal))?;
+            if !hitnormals.contains(&preferred)
+                && waves.iter().all(|(bank, role, wav)| {
+                    let name = format!("{}{preferred}{suffix}", export_settings::slot_name(*bank, *role));
+                    has_contents(root, &name, wav)
+                })
+            {
+                self.reserved.insert(preferred);
+                return Ok((preferred, true));
+            }
+            if !self.reserved.contains(&preferred) {
+                self.reserved.insert(preferred);
+                return Ok((preferred, false));
+            }
+        }
+        let index = self.reserve_unclaimed()?;
+        self.schema.insert(digest, index);
+        self.schema_indices.insert(index);
+        Ok((index, false))
+    }
+
     fn allocate(&mut self, root: &Path, wav: &[u8], format: MixFormat) -> Result<(u32, bool), String> {
+        let digest = sha256_hex(wav);
         // A referenced mix belongs to the version we read. Revalidate it when publishing.
         if let Some(&existing) = self
             .reuse
             .iter()
             .find(|index| has_contents(root, &indexed_name(**index, format), wav))
         {
+            self.reserved.insert(existing);
+            self.schema.insert(digest, existing);
+            self.schema_indices.insert(existing);
             return Ok((existing, true));
         }
-        Ok((self.reserve()?, false))
+        if let Some(&preferred) = self.schema.get(&digest)
+            && preferred > 1
+            && preferred <= i32::MAX as u32
+        {
+            if has_contents(root, &indexed_name(preferred, format), wav) {
+                self.reserved.insert(preferred);
+                return Ok((preferred, true));
+            }
+            if !self.reserved.contains(&preferred) {
+                self.reserved.insert(preferred);
+                return Ok((preferred, false));
+            }
+        }
+        let index = self.reserve_unclaimed()?;
+        self.schema.insert(digest, index);
+        self.schema_indices.insert(index);
+        Ok((index, false))
     }
 
     /// An index whose files already hold exactly these role files, or a free one. Without a
@@ -1044,6 +1162,23 @@ impl IndexedMixes {
             return Ok((existing, true));
         }
         Ok((self.reserve()?, false))
+    }
+
+    /// Reserves the next free index, skipping both occupied indices and indices reserved by
+    /// `schema_indices` for other known mixes. Falls back to `reserve()` if needed.
+    fn reserve_unclaimed(&mut self) -> Result<u32, String> {
+        let mut candidate = self.next;
+        while candidate <= i32::MAX as u32
+            && (self.reserved.contains(&candidate) || self.schema_indices.contains(&candidate))
+        {
+            candidate += 1;
+        }
+        if candidate <= i32::MAX as u32 {
+            self.reserved.insert(candidate);
+            self.next = candidate + 1;
+            return Ok(candidate);
+        }
+        self.reserve()
     }
 
     fn reserve(&mut self) -> Result<u32, String> {
@@ -1723,5 +1858,53 @@ mod tests {
         assert_eq!(preview.sample_rate, SAMPLE_RATE);
         assert_eq!(preview.channels, CHANNELS);
         assert_eq!(preview.samples.len(), decoded.samples.len());
+    }
+
+    #[test]
+    fn export_index_schema_keeps_unchanged_mix_indices_stable_across_reexports() {
+        let scratch = dawsu_test_support::Scratch::new("mix-index-schema-stability");
+        let root = scratch.path("mapset");
+        fs::create_dir(&root).unwrap();
+        let empty = OsuFile::read(Vec::new()).file;
+        let pending = Pending::default();
+
+        let mix_a = vec![1u8, 2, 3, 4];
+        let mix_b = vec![5u8, 6, 7, 8];
+        let mix_new_earlier = vec![9u8, 10, 11, 12];
+
+        // First export: mix_a and mix_b get custom indices 100 and 101.
+        let mut first = IndexedMixes::read_with_schema(&root, &empty, &[], 100, &pending, BTreeMap::new()).unwrap();
+        let (idx_a_1, reuse_a_1) = first.allocate(&root, &mix_a, MixFormat::Wav16).unwrap();
+        let (idx_b_1, reuse_b_1) = first.allocate(&root, &mix_b, MixFormat::Wav16).unwrap();
+        assert_eq!((idx_a_1, reuse_a_1), (100, false));
+        assert_eq!((idx_b_1, reuse_b_1), (101, false));
+        let schema_after_first = first.into_schema();
+        assert_eq!(schema_after_first.get(&sha256_hex(&mix_a)), Some(&100));
+        assert_eq!(schema_after_first.get(&sha256_hex(&mix_b)), Some(&101));
+
+        // Second export in a clean folder (or after cleanup): a brand-new mix is inserted EARLIER
+        // in the timeline before mix_a and mix_b. With export_index_schema, mix_new_earlier skips
+        // 100 and 101 (taking 102) so mix_a stays 100 and mix_b stays 101.
+        let mut second = IndexedMixes::read_with_schema(&root, &empty, &[], 100, &pending, schema_after_first).unwrap();
+        let (idx_new, _) = second.allocate(&root, &mix_new_earlier, MixFormat::Wav16).unwrap();
+        let (idx_a_2, _) = second.allocate(&root, &mix_a, MixFormat::Wav16).unwrap();
+        let (idx_b_2, _) = second.allocate(&root, &mix_b, MixFormat::Wav16).unwrap();
+        assert_eq!(idx_new, 102, "new mix inserted earlier must skip schema-claimed indices");
+        assert_eq!(idx_a_2, 100, "unchanged mix_a keeps custom index 100");
+        assert_eq!(idx_b_2, 101, "unchanged mix_b keeps custom index 101");
+
+        // Also verify export-role allocation (prepare_export path) preserves custom indices across sessions.
+        let waves_old = vec![(SampleSet::Soft, Hitsound::Clap, mix_a.clone())];
+        let waves_new = vec![(SampleSet::Soft, Hitsound::Clap, mix_new_earlier.clone())];
+        let mut exp1 = IndexedMixes::read_with_schema(&root, &empty, &[], 2, &pending, BTreeMap::new()).unwrap();
+        let (old_idx_1, _) = exp1.allocate_export(&root, &pending, &waves_old, MixFormat::Wav16, &BTreeSet::new()).unwrap();
+        assert_eq!(old_idx_1, 2);
+        let exp_schema = exp1.into_schema();
+
+        let mut exp2 = IndexedMixes::read_with_schema(&root, &empty, &[], 2, &pending, exp_schema).unwrap();
+        let (new_idx_2, _) = exp2.allocate_export(&root, &pending, &waves_new, MixFormat::Wav16, &BTreeSet::new()).unwrap();
+        let (old_idx_2, _) = exp2.allocate_export(&root, &pending, &waves_old, MixFormat::Wav16, &BTreeSet::new()).unwrap();
+        assert_eq!(new_idx_2, 3);
+        assert_eq!(old_idx_2, 2);
     }
 }

@@ -106,6 +106,7 @@ const ONLY_DEFINED: CopyOptions = CopyOptions {
         only_unhit: true,
         divisors: Vec::new(),
     },
+    fallback_sound: None,
 };
 
 // ---------------------------------------------------------------- the identity and the invariants

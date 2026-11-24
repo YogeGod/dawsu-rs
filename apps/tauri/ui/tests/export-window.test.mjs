@@ -25,14 +25,14 @@ const view = {
 test("a map without stored choices starts with Copy's defaults and every difficulty included", () => {
   const choices = choicesFrom(view);
   const muteOff = { enabled: false, minBeats: 0.5, muteSpinnerEnds: false, onlyUnhit: true, divisors: [] };
-  assert.deepEqual(choices, { leftOut: [], matchWithin: 5, copyVolumes: true, base: false, sliderAudio: false, laterWins: false, mixFormat: "wav16", sliderEndMute: muteOff });
+  assert.deepEqual(choices, { leftOut: [], matchWithin: 5, copyVolumes: true, base: false, sliderAudio: false, laterWins: false, mixFormat: "wav16", sliderEndMute: muteOff, fallbackSound: null });
   assert.notEqual(choices.leftOut, defaultChoices.leftOut, "choices never share the frozen defaults' list");
   assert.notEqual(choices.sliderEndMute, defaultSliderEndMute, "sliderEndMute never shares the frozen default");
   assert.deepEqual(choicesFrom({ choices: { leftOut: ["a.osu"], matchWithin: 3, copyVolumes: false } }),
-    { leftOut: ["a.osu"], matchWithin: 3, copyVolumes: false, base: false, sliderAudio: false, laterWins: false, mixFormat: "wav16", sliderEndMute: muteOff },
+    { leftOut: ["a.osu"], matchWithin: 3, copyVolumes: false, base: false, sliderAudio: false, laterWins: false, mixFormat: "wav16", sliderEndMute: muteOff, fallbackSound: null },
     "choices stored before the base difficulty read it as off");
-  assert.deepEqual(choicesFrom({ choices: { leftOut: [], matchWithin: 3, copyVolumes: true, base: true, sliderAudio: true, laterWins: true, mixFormat: "ogg_vorbis" } }),
-    { leftOut: [], matchWithin: 3, copyVolumes: true, base: true, sliderAudio: true, laterWins: true, mixFormat: "ogg_vorbis", sliderEndMute: muteOff });
+  assert.deepEqual(choicesFrom({ choices: { leftOut: [], matchWithin: 3, copyVolumes: true, base: true, sliderAudio: true, laterWins: true, mixFormat: "ogg_vorbis", fallbackSound: { set: "soft", sound: "normal", volume: 60 } } }),
+    { leftOut: [], matchWithin: 3, copyVolumes: true, base: true, sliderAudio: true, laterWins: true, mixFormat: "ogg_vorbis", sliderEndMute: muteOff, fallbackSound: { set: "soft", sound: "normal", volume: 60 } });
   assert.deepEqual(included(view.targets, { leftOut: ["Artist - Song (Mapper) [Hard].osu"] }), [insane]);
 });
 
@@ -363,13 +363,11 @@ test("slider-end mute controls render collapsed by default, expand when enabled,
   assert.deepEqual(divisorsFromPreset("4"), [4]);
   assert.deepEqual(divisorsFromPreset("offbeat"), [2, 4, 3, 8, 6, 16, 12]);
 
-  // Default (off): toggle is rendered aria-checked="false", detailed options stay hidden.
   const offBody = render(ExportWindow, { props: { initialView: view } }).body;
   assert.match(offBody, /role="switch" aria-checked="false" aria-label="Mute un-hit slider ends"/);
   assert.doesNotMatch(offBody, /aria-label="Slider-end muting options"/);
   assert.equal(previewRequest(view, choicesFrom(view)).options.options.slider_end_mute, undefined);
 
-  // Enabled in stored choices: round-trips through choicesFrom, optionsKey, previewRequest, and renders controls.
   const stored = {
     ...view,
     choices: {
@@ -400,4 +398,46 @@ test("slider-end mute controls render collapsed by default, expand when enabled,
   assert.match(onBody, /aria-label="Mute on beat divisor"/);
   assert.match(onBody, /<input type="checkbox"[^>]*checked[^>]*>\s*Also mute spinner ends/);
   assert.match(onBody, /5% volume · keeps hitsounded ends/);
+});
+
+test("ExportWindow renders the fallback sound selector, omits it when Off, and round-trips in choices", () => {
+  const defaultBody = render(ExportWindow, { props: { initialView: view } }).body;
+  assert.match(defaultBody, /aria-label="Fallback sound for un-hit objects"/);
+  assert.match(defaultBody, /<option value="off"[^>]*>Off<\/option>/);
+  assert.match(defaultBody, /<option value="normal"[^>]*>Normal<\/option>/);
+  assert.match(defaultBody, /<option value="soft"[^>]*>Soft<\/option>/);
+  assert.match(defaultBody, /<option value="drum"[^>]*>Drum<\/option>/);
+  assert.doesNotMatch(defaultBody, /aria-label="Fallback sound volume"/, "volume input stays hidden while Off");
+
+  const offReq = previewRequest(view, choicesFrom(view));
+  assert.equal("fallback_sound" in offReq.options.options, false, "Off omits fallback_sound from payload");
+
+  const stored = {
+    ...view,
+    choices: {
+      leftOut: [],
+      matchWithin: 5,
+      copyVolumes: true,
+      fallbackSound: { set: "soft", sound: "normal", volume: 60 },
+    },
+  };
+  const adopted = choicesFrom(stored);
+  assert.deepEqual(adopted.fallbackSound, { set: "soft", sound: "normal", volume: 60 });
+
+  const onReq = previewRequest(stored, adopted);
+  assert.deepEqual(onReq.options.options.fallback_sound, { set: "soft", sound: "normal", volume: 60 });
+  assert.notEqual(optionsKey(view, choicesFrom(view)), optionsKey(stored, adopted));
+
+  const onBody = render(ExportWindow, { props: { initialView: stored } }).body;
+  assert.match(onBody, /aria-label="Fallback sound volume"/);
+  assert.match(onBody, /value="60"/);
+
+  assert.deepEqual(
+    choicesFrom({ choices: { fallbackSound: { set: "drum", sound: "normal", volume: 1 } } }).fallbackSound,
+    { set: "drum", sound: "normal", volume: 5 },
+  );
+  assert.deepEqual(
+    choicesFrom({ choices: { fallbackSound: { set: "normal", sound: "normal", volume: 250 } } }).fallbackSound,
+    { set: "normal", sound: "normal", volume: 100 },
+  );
 });
