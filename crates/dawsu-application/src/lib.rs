@@ -958,6 +958,7 @@ pub struct Application {
     edit_dialog: Option<&'static str>,
     quantize_strength: f64,
     pub revert_requested: bool,
+    has_original_snapshot: Arc<AtomicBool>,
     pub busy: bool,
     pub output_review: Option<output::WritePlan>,
     export: export::Slot,
@@ -1110,6 +1111,7 @@ impl Application {
             edit_dialog: None,
             quantize_strength: 100.0,
             revert_requested: false,
+            has_original_snapshot: Arc::new(AtomicBool::new(false)),
             busy: false,
             output_review: None,
             export: export::Slot::default(),
@@ -1604,10 +1606,7 @@ impl Application {
     }
 
     pub fn has_original_snapshot(&self) -> bool {
-        self.document
-            .as_ref()
-            .and_then(|d| d.path.parent())
-            .is_some_and(|folder| original_snapshot::has_snapshot(&self.data_root, folder))
+        self.document.is_some() && self.has_original_snapshot.load(Ordering::Relaxed)
     }
 
     pub fn revert_mapset_to_original(&mut self) -> Result<usize, String> {
@@ -1808,8 +1807,16 @@ impl Application {
                         return;
                     }
                     let path = loaded.document.path.clone();
-                    if let Some(folder) = path.parent() {
-                        let _ = original_snapshot::capture_once(&self.data_root, folder);
+                    let snap_flag = Arc::new(AtomicBool::new(false));
+                    self.has_original_snapshot = snap_flag.clone();
+                    if let Some(folder) = path.parent().map(Path::to_path_buf) {
+                        let data_root = self.data_root.clone();
+                        std::thread::spawn(move || {
+                            let _ = original_snapshot::capture_once(&data_root, &folder);
+                            if original_snapshot::has_snapshot(&data_root, &folder) {
+                                snap_flag.store(true, Ordering::Relaxed);
+                            }
+                        });
                     }
                     // The outgoing difficulty closes here.
                     let keep = loaded.outgoing_keep;
@@ -3318,49 +3325,105 @@ fn load(
         }
     }
     let folder = document.path.parent().ok_or("Missing folder")?;
-    let song = if let Some(name) = document.file.general("AudioFilename") {
-        match safe_child(folder, &name)
-            .and_then(|p| dawsu_audio::decode_with_cancel(&p, &|| cancel.load(Ordering::Relaxed)))
-        {
-            Ok(audio) => Some(audio),
-            Err(e) => {
-                warnings.push(format!("Song audio unavailable: {e}"));
-                None
-            }
-        }
-    } else {
-        None
-    };
-    let mut samples = HashMap::new();
     let defaults_list = if defaults.is_dir() {
         crate::pending::sample_folder(defaults)
     } else {
         Vec::new()
     };
+    let mut unique_sources: Vec<(SampleIdentity, Result<PathBuf, String>)> = Vec::new();
+    let mut seen_sources = std::collections::HashSet::new();
     for lane in document.composer.hitsounds().lanes() {
-        if cancel.load(Ordering::Relaxed) {
-            return Err("Open cancelled".into());
-        }
         let source = lane.plays_as();
-        if samples.contains_key(&source) {
-            continue;
-        }
-        match sample_path(lane, folder, &document.pending, defaults, &defaults_list)
-            .and_then(|path| dawsu_audio::decode_with_cancel(&path, &|| cancel.load(Ordering::Relaxed)))
-        {
-            Ok(clip) => {
-                samples.insert(source, clip);
-            }
-            Err(error) => warnings.push(error),
+        if seen_sources.insert(source.clone()) {
+            let resolved = sample_path(lane, folder, &document.pending, defaults, &defaults_list);
+            unique_sources.push((source, resolved));
         }
     }
-    let waveform = song
-        .as_ref()
-        .map(|audio| waveform::analyse(audio))
-        .unwrap_or_default();
+    let song_name = document.file.general("AudioFilename");
+    let song_result_mutex: Mutex<(Option<Arc<AudioClip>>, Vec<WaveBin>, Option<String>)> =
+        Mutex::new((None, Vec::new(), None));
+    let samples_mutex: Mutex<(HashMap<SampleIdentity, Arc<AudioClip>>, Vec<String>)> =
+        Mutex::new((HashMap::with_capacity(unique_sources.len()), Vec::new()));
+
+    let worker_count = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(2)
+        .clamp(1, 6);
+    let next_idx = std::sync::atomic::AtomicUsize::new(0);
+
+    std::thread::scope(|scope| {
+        // Branch 1: decode song audio and compute its FFT waveform concurrently with sample decodes.
+        let song_name_ref = song_name.as_deref();
+        let song_out = &song_result_mutex;
+        let cancel_ref = &cancel;
+        scope.spawn(move || {
+            if let Some(name) = song_name_ref {
+                match safe_child(folder, name)
+                    .and_then(|p| dawsu_audio::decode_with_cancel(&p, &|| cancel_ref.load(Ordering::Relaxed)))
+                {
+                    Ok(audio) => {
+                        let wf = if cancel_ref.load(Ordering::Relaxed) {
+                            Vec::new()
+                        } else {
+                            waveform::analyse(&audio)
+                        };
+                        if let Ok(mut guard) = song_out.lock() {
+                            *guard = (Some(audio), wf, None);
+                        }
+                    }
+                    Err(e) => {
+                        if let Ok(mut guard) = song_out.lock() {
+                            guard.2 = Some(format!("Song audio unavailable: {e}"));
+                        }
+                    }
+                }
+            }
+        });
+
+        // Branch 2: decode unique hitsound samples in parallel across worker threads.
+        let sample_workers = worker_count.min(unique_sources.len().max(1));
+        for _ in 0..sample_workers {
+            let sources_ref = &unique_sources;
+            let idx_ref = &next_idx;
+            let out_ref = &samples_mutex;
+            let cancel_ref = &cancel;
+            scope.spawn(move || {
+                let mut local_clips = Vec::new();
+                let mut local_warnings = Vec::new();
+                loop {
+                    if cancel_ref.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    let i = idx_ref.fetch_add(1, Ordering::Relaxed);
+                    let Some((source, resolved)) = sources_ref.get(i) else {
+                        break;
+                    };
+                    match resolved
+                        .as_ref()
+                        .map_err(Clone::clone)
+                        .and_then(|path| dawsu_audio::decode_with_cancel(path, &|| cancel_ref.load(Ordering::Relaxed)))
+                    {
+                        Ok(clip) => local_clips.push((source.clone(), clip)),
+                        Err(error) => local_warnings.push(error),
+                    }
+                }
+                if let Ok(mut guard) = out_ref.lock() {
+                    guard.0.extend(local_clips);
+                    guard.1.extend(local_warnings);
+                }
+            });
+        }
+    });
+
     if cancel.load(Ordering::Relaxed) {
         return Err("Open cancelled".into());
     }
+    let (song, waveform, song_warning) = song_result_mutex.into_inner().unwrap_or_default();
+    if let Some(w) = song_warning {
+        warnings.push(w);
+    }
+    let (samples, sample_warnings) = samples_mutex.into_inner().unwrap_or_default();
+    warnings.extend(sample_warnings);
     Ok(Loaded {
         document,
         project,

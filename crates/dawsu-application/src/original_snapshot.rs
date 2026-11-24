@@ -36,6 +36,10 @@ fn osu_entries(folder: &Path) -> Result<Vec<(String, PathBuf)>, String> {
     Ok(files)
 }
 
+/// Maximum `.osu` files in a single folder to auto-snapshot (prevents copying thousands of
+/// unrelated beatmaps if a user opens a loose `.osu` inside a giant folder).
+const MAX_MAPSET_OSU_FILES: usize = 64;
+
 /// Captures an immutable first-open snapshot of every `.osu` file in `mapset_folder`
 /// under `data_root/original-snapshots/<key>/`. If a snapshot already exists with
 /// `.osu` files, it is left untouched and returns `Ok(false)`.
@@ -43,12 +47,12 @@ pub(crate) fn capture_once(data_root: &Path, mapset_folder: &Path) -> Result<boo
     if has_snapshot(data_root, mapset_folder) {
         return Ok(false);
     }
-    let dir = snapshot_dir(data_root, mapset_folder);
-    std::fs::create_dir_all(&dir).map_err(|e| format!("Creating snapshot folder: {e}"))?;
     let files = osu_entries(mapset_folder)?;
-    if files.is_empty() {
+    if files.is_empty() || files.len() > MAX_MAPSET_OSU_FILES {
         return Ok(false);
     }
+    let dir = snapshot_dir(data_root, mapset_folder);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("Creating snapshot folder: {e}"))?;
     for (name, path) in files {
         let bytes =
             std::fs::read(&path).map_err(|e| format!("Reading {name} for snapshot: {e}"))?;
@@ -64,7 +68,17 @@ pub(crate) fn capture_once(data_root: &Path, mapset_folder: &Path) -> Result<boo
 /// Returns true if an original snapshot with at least one `.osu` file exists for `mapset_folder`.
 pub(crate) fn has_snapshot(data_root: &Path, mapset_folder: &Path) -> bool {
     let dir = snapshot_dir(data_root, mapset_folder);
-    dir.is_dir() && osu_entries(&dir).is_ok_and(|files| !files.is_empty())
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return false;
+    };
+    entries.flatten().any(|entry| {
+        let path = entry.path();
+        path.is_file()
+            && path
+                .extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| e.eq_ignore_ascii_case("osu"))
+    })
 }
 
 /// Backs up current `.osu` files to `data_root/backups/pre-revert-<unix_ms>/` and

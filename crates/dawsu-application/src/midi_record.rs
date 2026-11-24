@@ -3,9 +3,8 @@
 use dawsu_audio_instruments::midi_in::{MidiInputEvent, MidiInputRouter, list_midi_input_ports};
 use dawsu_editor::tempo::{SnapSpacing, TempoMap};
 use dawsu_editor_composer::{BatchHit, BatchOptions, Composer, Policy};
-use dawsu_foundation::{Hitsound, SampleIdentity, SongTime, Sound};
+use dawsu_foundation::{SampleIdentity, SongTime};
 use dawsu_hitsounding::drums::{DrumMap, render_notes};
-use dawsu_hitsounding::{Lane, LaneSource};
 use dawsu_keysounding::{KeysoundNote, KeysoundProject};
 use serde::Serialize;
 use std::collections::HashMap;

@@ -223,6 +223,7 @@ impl Application {
 /// Computes the next free numbered variant filename (e.g. `soft-hitwhistle.wav` ->
 /// `soft-hitwhistle2.wav`, `soft-hitwhistle2.wav` -> `soft-hitwhistle3.wav`), checking
 /// `existing_names` case-insensitively.
+#[cfg(test)]
 pub fn next_numbered_variant_name(existing_names: &[String], source_name: &str) -> String {
     let (stem, ext) = match source_name.rfind('.') {
         Some(dot) if dot > 0 => (&source_name[..dot], Some(&source_name[dot..])),

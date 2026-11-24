@@ -812,15 +812,40 @@ export function attachCanvas(ctx) {
         if (px >= -8 && px <= g.width + 8) g.ctx.fillRect(px - 4.5, 0, 9, g.height);
       }
     }
-    let lastObjectPixel = null;
-    for (const [time, volume, object, hits] of state.scene.moments) {
+    // Binary search into sorted `moments` so off-screen moments are skipped in O(log N) per frame.
+    const moments = state.scene.moments;
+    const minVisibleTime = start - 8 / zoom;
+    const maxVisibleTime = end + 8 / zoom;
+    let firstMoment = 0;
+    let hiMoment = moments.length;
+    while (firstMoment < hiMoment) {
+      const mid = (firstMoment + hiMoment) >>> 1;
+      if (moments[mid][0] < minVisibleTime) firstMoment = mid + 1;
+      else hiMoment = mid;
+    }
+    // Batch all visible object vertical guide lines into one Canvas stroke.
+    if (state.view.objectLines) {
+      let lastObjectPixel = null;
+      g.ctx.strokeStyle = "#62d6cf65";
+      g.ctx.beginPath();
+      for (let mIdx = firstMoment; mIdx < moments.length; mIdx++) {
+        const [time, , object] = moments[mIdx];
+        if (time > maxVisibleTime) break;
+        if (!object) continue;
+        const objectPixel = Math.round(xOf(time));
+        if (objectPixel !== lastObjectPixel) {
+          g.ctx.moveTo(objectPixel + 0.5, 0);
+          g.ctx.lineTo(objectPixel + 0.5, g.height);
+          lastObjectPixel = objectPixel;
+        }
+      }
+      g.ctx.stroke();
+    }
+    for (let mIdx = firstMoment; mIdx < moments.length; mIdx++) {
+      const [time, volume, , hits] = moments[mIdx];
+      if (time > maxVisibleTime) break;
       const x = xOf(time);
       if (x < -8 || x > g.width + 8) continue;
-      const objectPixel = Math.round(x);
-      if (object && state.view.objectLines && objectPixel !== lastObjectPixel) {
-        line(g.ctx, "#62d6cf65", objectPixel, 0, objectPixel, g.height);
-        lastObjectPixel = objectPixel;
-      }
       const colour = volumeColour(volume);
       if (v) {
         const volumeHeight = limit(volume, 0, 100) / 100 * (v.height - 3);
