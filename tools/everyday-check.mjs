@@ -33,386 +33,43 @@
 // Windows only in practice (WebView2 remote debugging), written to stay portable. Playwright Core
 // is found in DAWSU_PLAYWRIGHT_CORE or the npm cache, as tools/ui-screenshot.mjs does; nothing is
 // installed.
-import { spawn, spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
-import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { createRequire } from "node:module";
-import { createServer } from "node:net";
-import { basename, dirname, join, relative, resolve } from "node:path";
+import { cpSync, existsSync, readFileSync } from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { checkProvenance, createRobot, parseArgs, playwrightKey, silentWav, sleep, snapshot } from "./robot/core.mjs";
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const args = {};
-for (let i = 2; i < process.argv.length; i++) {
-  const value = process.argv[i + 1];
-  const flag = value === undefined || value.startsWith("--");
-  args[process.argv[i].replace(/^--/, "")] = flag ? true : value;
-  if (!flag) i++;
-}
+const args = parseArgs();
 if (!args.exe) throw new Error("--exe is required: the built dawsu-tauri.exe");
 const exe = resolve(args.exe);
 if (!existsSync(exe)) throw new Error(`no editor at ${exe}`);
-
-// Provenance and freshness check: verify the binary is newer than HEAD and the UI build stamp.
-const headShortRes = spawnSync("git", ["rev-parse", "--short", "HEAD"], { cwd: repo, encoding: "utf8" });
-const headShort = headShortRes.status === 0 && headShortRes.stdout.trim() ? headShortRes.stdout.trim() : "unknown";
-const headTimeRes = spawnSync("git", ["log", "-1", "--format=%ct"], { cwd: repo, encoding: "utf8" });
-const headEpochSec = headTimeRes.status === 0 ? Number.parseInt(headTimeRes.stdout.trim(), 10) : Number.NaN;
-const headMtimeMs = Number.isFinite(headEpochSec) ? headEpochSec * 1000 : null;
-const headIso = headMtimeMs !== null ? new Date(headMtimeMs).toISOString() : "unknown";
-
-const exeMtimeMs = statSync(exe).mtimeMs;
-const exeMtimeIso = new Date(exeMtimeMs).toISOString();
-
-const buildStampPath = join(repo, "apps", "tauri", "dist", "ui", "build-stamp.json");
-const hasBuildStamp = existsSync(buildStampPath);
-const stampMtimeMs = hasBuildStamp ? statSync(buildStampPath).mtimeMs : null;
-const stampIso = stampMtimeMs !== null ? new Date(stampMtimeMs).toISOString() : "missing";
-
-const staleReasons = [];
-if (headMtimeMs !== null && exeMtimeMs < headMtimeMs) {
-  staleReasons.push(`binary is older than latest commit ${headShort} (${headIso})`);
-}
-if (!hasBuildStamp) {
-  staleReasons.push("apps/tauri/dist/ui/build-stamp.json is missing");
-} else if (exeMtimeMs < stampMtimeMs) {
-  staleReasons.push(`binary is older than apps/tauri/dist/ui/build-stamp.json (${stampIso})`);
-}
-const isStale = staleReasons.length > 0;
-const allowStale = Boolean(args["allow-stale"]);
-
-console.log(`provenance repo: ${repo} (HEAD ${headShort})`);
-console.log(`provenance exe:  ${exe} (mtime ${exeMtimeIso})`);
-if (!isStale) {
-  console.log(`provenance freshness: FRESH (newer than HEAD ${headShort} [${headIso}] and build-stamp.json [${stampIso}])`);
-} else {
-  const verdict = allowStale ? "STALE (continuing because --allow-stale was passed)" : "STALE";
-  console.log(`provenance freshness: ${verdict} — ${staleReasons.join("; ")}`);
-  if (!allowStale) {
-    console.error(
-      `Refusing to run everyday-check on a stale build: ${staleReasons.join("; ")}.\n` +
-      `Rebuild the UI (npm run build in apps/tauri/ui) and the app binary (cargo build -p dawsu-tauri --locked) first, ` +
-      `or pass --allow-stale to bypass this check.`
-    );
-    process.exit(1);
-  }
-}
+checkProvenance(repo, exe, Boolean(args["allow-stale"]), "everyday-check");
 
 for (const key of ["map", "shots", "json"]) if (args[key] === true) throw new Error(`--${key} needs a value`);
 const original = resolve(args.map ?? join(repo, "tests/fixtures/save-pack/synthetic/lf-no-final-newline.osu"));
 if (!existsSync(original)) throw new Error(`no map at ${original}`);
 const started = Date.now();
 
-function playwrightCore() {
-  const candidates = [];
-  if (process.env.DAWSU_PLAYWRIGHT_CORE) candidates.push(process.env.DAWSU_PLAYWRIGHT_CORE);
-  const npm = spawnSync("npm config get cache", { encoding: "utf8", shell: true });
-  const npx = join(npm.stdout?.trim() ?? "", "_npx");
-  if (npm.status === 0 && existsSync(npx)) {
-    for (const entry of readdirSync(npx)) candidates.push(join(npx, entry, "node_modules", "playwright-core"));
-  }
-  const found = candidates.find(path => existsSync(join(path, "package.json")));
-  if (!found) throw new Error("Playwright Core not found: set DAWSU_PLAYWRIGHT_CORE to its folder");
-  return createRequire(join(found, "package.json"))(found).chromium;
-}
-
-const freePort = () => new Promise((done, fail) => {
-  const server = createServer().listen(0, "127.0.0.1", () => {
-    const { port } = server.address();
-    server.close(() => done(port));
-  }).on("error", fail);
-});
-const sleep = ms => new Promise(done => setTimeout(done, ms));
-
-// Every file under a folder, by its path inside it, with its bytes' hash.
-function snapshot(folder) {
-  const files = new Map();
-  const walk = dir => {
-    for (const name of readdirSync(dir)) {
-      const path = join(dir, name);
-      if (statSync(path).isDirectory()) walk(path);
-      else files.set(relative(folder, path).replaceAll("\\", "/"), createHash("sha256").update(readFileSync(path)).digest("hex"));
-    }
-  };
-  walk(folder);
-  return files;
-}
-
-// Found before any folder is made, so a missing Playwright leaves nothing behind.
-const chromium = playwrightCore();
-
+// Playwright is found before any folder is made, so a missing Playwright leaves nothing behind.
 // The profile, map copy and shots stay next to the build (target/ is ignored and on the build drive).
-const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..*/, "");
-const profile = resolve(join(repo, "target", "everyday-check", `${stamp}-${process.pid}`));
-const shots = resolve(args.shots ?? join(profile, "shots"));
+const robot = createRobot({ repo, exe, name: "everyday-check", shots: args.shots,
+  opensMap: ["Open the map copy and see lanes and a drawn timeline"] });
+const { profile, launch, quit, step, page, read, until, expect, hits, namedHits, at, menuRow, openMenu, fromMenu,
+  pickTool, dialogTitle, dialogShown, dialogButton, dialogClosed, windowOpened, windowClosed, menuKeys } = robot;
 const mapFolder = join(profile, "map");
 const mapCopy = join(mapFolder, basename(original));
-mkdirSync(profile, { recursive: true });
-mkdirSync(shots, { recursive: true });
 const originalBefore = snapshot(dirname(original));
 // dereference: a link in the map's folder is copied as the file it points at, so the editor can
 // never write through the copy into the original.
 cpSync(dirname(original), mapFolder, { recursive: true, dereference: true });
 // No fixture folder holds a spare sample, so Add lane would have nothing to offer. The Add lane step
-// puts this short silent WAV (16-bit mono, 44.1 kHz, 0.1 s) in the copy first, as a mapper drops a
-// new sample into the open mapset. The original folder is never written.
+// puts this short silent WAV in the copy first, as a mapper drops a new sample into the open mapset.
+// The original folder is never written.
 const laneSample = "everyday-check-lane.wav";
-function writeLaneSample() {
-  const samples = 4410;
-  const wav = Buffer.alloc(44 + samples * 2);
-  wav.write("RIFF", 0);
-  wav.writeUInt32LE(36 + samples * 2, 4);
-  wav.write("WAVEfmt ", 8);
-  wav.writeUInt32LE(16, 16);
-  wav.writeUInt16LE(1, 20);
-  wav.writeUInt16LE(1, 22);
-  wav.writeUInt32LE(44100, 24);
-  wav.writeUInt32LE(88200, 28);
-  wav.writeUInt16LE(2, 32);
-  wav.writeUInt16LE(16, 34);
-  wav.write("data", 36);
-  wav.writeUInt32LE(samples * 2, 40);
-  writeFileSync(join(mapFolder, laneSample), wav);
-}
+const writeLaneSample = () => silentWav(join(mapFolder, laneSample));
 const copyBefore = snapshot(mapFolder);
 const osuBefore = readFileSync(mapCopy);
-
-// One running editor: its process, its pages and the errors they report.
-let app = null;
-let current = null;
-const errors = [];
-
-async function launch(map) {
-  const port = await freePort();
-  const child = spawn(exe, map ? [map] : [], {
-    // WebView2 finds its profile without LOCALAPPDATA; name it, or a running dawsu! shares its browser.
-    env: { ...process.env, LOCALAPPDATA: profile, WEBVIEW2_USER_DATA_FOLDER: join(profile, "webview2"),
-      WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${port}` },
-    stdio: "ignore",
-  });
-  // Known at once, so a start that fails half-way is still shot and closed.
-  app = { child, browser: null, context: null, page: null };
-  let browser = null;
-  for (let i = 0; i < 120 && !browser && child.exitCode === null; i++) {
-    await sleep(500);
-    browser = await chromium.connectOverCDP(`http://127.0.0.1:${port}`).catch(() => null);
-  }
-  if (!browser) {
-    throw new Error(child.exitCode === null ? "the editor's WebView2 never opened its debugging port"
-      : `the editor exited at start with code ${child.exitCode}`);
-  }
-  app.browser = browser;
-  const context = browser.contexts()[0];
-  app.context = context;
-  // A broken screen should fail a step in seconds, not wait out Playwright's 30 s per click.
-  context.setDefaultTimeout(5000);
-  const listen = page => {
-    const where = () => page.url().split("/").pop() || "page";
-    page.on("console", message => {
-      if (message.type() === "error") errors.push({ step: current, text: `${where()}: console error: ${message.text()}` });
-    });
-    // Where a page error was thrown: its first stack line, with the page's own address left out.
-    const origin = error => (error.stack ?? "").split("\n").find(line => /^\s+at /.test(line))?.trim().replace(/https?:\/\/[^/]+\//g, "") ?? "";
-    page.on("pageerror", error => errors.push({ step: current, text: `${where()}: page error: ${error.message}${origin(error) ? ` (${origin(error)})` : ""}` }));
-  };
-  context.on("page", listen);
-  await context.addInitScript(() => {
-    try { localStorage.setItem("dawsu.quickStartDone", "1"); } catch {}
-    window.addEventListener("unhandledrejection", event =>
-      console.error("unhandled promise rejection: " + (event.reason?.stack ?? event.reason)));
-  });
-  let page = null;
-  for (let i = 0; i < 40 && !page; i++) {
-    page = context.pages()[0] ?? null;
-    if (!page) await sleep(250);
-  }
-  if (!page) throw new Error("the editor opened no window");
-  app.page = page;
-  for (const open of context.pages()) listen(open);
-  // Listen from the very start: load the page again with the listeners in place.
-  await page.reload();
-  await page.waitForFunction(() => typeof window.scene !== "undefined" && document.readyState === "complete", null, { timeout: 30000 });
-  return app;
-}
-
-async function quit() {
-  if (!app) return;
-  const { browser, child } = app;
-  app = null;
-  await browser?.close().catch(() => {});
-  child.kill();
-  await new Promise(done => (child.exitCode !== null ? done() : child.once("exit", done)));
-}
-
-// The steps and their results.
-const results = [];
-let errorsChecked = 0;
-// When the map never opened, the steps that need it are skipped rather than failed one by one.
-let noMap = null;
-const opensMap = new Set(["Open the map copy and see lanes and a drawn timeline"]);
-async function step(name, body, always = false) {
-  const number = String(results.length + 1).padStart(2, "0");
-  if (noMap && !always) {
-    results.push({ number, name, status: "SKIP", detail: noMap });
-    console.log(`SKIP ${number} ${name} — ${noMap}`);
-    return;
-  }
-  current = number;
-  const result = { number, name, status: "PASS", detail: "" };
-  let threw = false;
-  try {
-    const note = await body();
-    if (typeof note === "string") result.detail = note;
-    if (note?.skip) {
-      result.status = "SKIP";
-      result.detail = note.skip;
-    }
-  } catch (error) {
-    threw = true;
-    result.status = "FAIL";
-    result.detail = error.message;
-  }
-  await sleep(150);
-  // This step's errors, and any that came between the last step and this one.
-  const raised = errors.slice(errorsChecked).filter(error => error.step === number || error.step === null);
-  errorsChecked = errors.length;
-  if (raised.length) {
-    result.status = "FAIL";
-    // The same error many times reads as one line with a count.
-    const counts = new Map();
-    for (const { text } of raised) counts.set(text, (counts.get(text) ?? 0) + 1);
-    result.errors = [...counts].map(([text, count]) => count > 1 ? `${text} (×${count})` : text);
-    result.detail = [result.detail, ...result.errors].filter(Boolean).join(" | ");
-  }
-  result.detail = result.detail.replace(/\s*\n\s*/g, " ");
-  if (result.status === "FAIL" && app?.context) {
-    const path = join(shots, `${number}-${name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/-$/, "")}.png`);
-    const target = app.context.pages().filter(page => !page.isClosed()).at(-1) ?? app.page;
-    if (await target.screenshot({ path }).then(() => true, () => false)) result.screenshot = path;
-  }
-  results.push(result);
-  // Only a map that never showed stops the rest; errors while it opened fail this step alone.
-  if (threw && opensMap.has(name)) noMap = `the map did not open in step ${number}`;
-  console.log(`${result.status} ${number} ${name}${result.detail ? " — " + result.detail : ""}${result.screenshot ? " (" + result.screenshot + ")" : ""}`);
-  current = null;
-  // A dialog or menu a failed step left open would block the next one.
-  if (result.status === "FAIL" && app?.page) await tidy().catch(() => {});
-}
-
-const page = () => app.page;
-const read = (fn, arg) => page().evaluate(fn, arg);
-async function until(fn, arg, what, timeout = 8000) {
-  const end = Date.now() + timeout;
-  let last;
-  while (Date.now() < end) {
-    last = await read(fn, arg).catch(error => ({ error: error.message }));
-    if (last && !last.error) return last;
-    await sleep(100);
-  }
-  throw new Error(`${what} (last: ${JSON.stringify(last)?.slice(0, 160)})`);
-}
-const expect = (ok, message) => {
-  if (!ok) throw new Error(message);
-};
-
-// Close any open dialog and menu.
-async function tidy() {
-  for (let i = 0; i < 3; i++) {
-    const open = await read(() => document.getElementById("dialog")?.open || !document.getElementById("editor-menu")?.hidden).catch(() => false);
-    if (!open) return;
-    await page().keyboard.press("Escape");
-    await sleep(250);
-  }
-}
-
-// Every hit in the open difficulty: [time, lane row, selected, volume].
-const hits = () => read(() => window.scene.moments.flatMap(([time, volume, , list]) =>
-  list.map(([row, selected, , hitVolume]) => [time, row, !!selected, hitVolume ?? volume])));
 const scene = fn => read(fn);
-// The same by lane name, as "3500 ms normal-hitwhistle": rows renumber when lanes come and go.
-const namedHits = () => read(() => window.scene.moments.flatMap(([time, , , list]) =>
-  list.map(([row]) => `${time} ms ${window.scene.lanes[row]?.name ?? "row " + row}`)).sort());
-
-// Where a time and a lane are on the timeline canvas, in page pixels.
-async function at(time, row) {
-  const point = await read(([time, row]) => {
-    const grid = document.getElementById("grid").getBoundingClientRect();
-    const lane = document.querySelector(`#lanes [data-lane-row="${row}"]`)?.getBoundingClientRect();
-    if (!lane) return null;
-    return { x: grid.x + (time - window.scene.viewStart) * window.scene.zoom, y: lane.y + lane.height / 2, grid };
-  }, [time, row]);
-  if (!point) throw new Error(`lane row ${row} has no header on screen`);
-  expect(point.x > point.grid.x && point.x < point.grid.x + point.grid.width, `time ${time} is outside the visible timeline`);
-  expect(point.y > point.grid.y && point.y < point.grid.y + point.grid.height, `lane row ${row} is outside the visible timeline`);
-  return point;
-}
-
-// A row of the open popup menu, by its text.
-const menuRow = text => page().locator("#editor-menu button").filter({ hasText: text }).first();
-async function openMenu(name) {
-  await page().click(`#menu-${name.toLowerCase()}`);
-  await until(() => !document.getElementById("editor-menu").hidden &&
-    document.querySelectorAll("#editor-menu button").length > 0, null, `the ${name} menu did not open`, 4000);
-}
-async function fromMenu(menu, row) {
-  await openMenu(menu);
-  const button = menuRow(row);
-  expect(await button.count(), `${menu} has no "${row}" row`);
-  expect(await button.isEnabled(), `${menu} › ${row} is disabled`);
-  await button.click();
-}
-async function pickTool(name) {
-  // Select, Draw and Erase have pills; other tools switch directly via tool action (right-click tool popup was removed).
-  const pill = page().locator('[aria-label="Editing tools"]').getByRole("button", { name, exact: true });
-  if (["Select", "Draw", "Erase"].includes(name)) await pill.click({ timeout: 5000 });
-  else {
-    await read(toolName => window.act({ kind: "tool", name: toolName }, false), name);
-  }
-  await until(name => window.view.tool === name, name, `the tool stayed ${await read(() => window.view.tool)}, not ${name}`, 4000);
-}
-const dialogTitle = () => read(() => document.getElementById("dialog").open ? document.getElementById("dialog-title").textContent : null);
-async function dialogShown(title) {
-  await until(title => document.getElementById("dialog").open &&
-    document.getElementById("dialog-title").textContent.startsWith(title), title,
-    `no "${title}" dialog opened (open: ${JSON.stringify(await dialogTitle())})`, 6000);
-}
-const dialogButton = text => page().locator("#dialog-actions button", { hasText: text }).first();
-async function dialogClosed() {
-  await until(() => !document.getElementById("dialog").open, null, "the dialog did not close", 4000);
-}
-// Another editor window, found by the page it loads.
-async function windowOpened(name) {
-  const end = Date.now() + 15000;
-  while (Date.now() < end) {
-    const found = app.context.pages().find(candidate => !candidate.isClosed() && candidate.url().endsWith("/" + name));
-    if (found) {
-      await found.waitForSelector("[data-ui-ready]", { timeout: Math.max(1000, end - Date.now()) });
-      return found;
-    }
-    await sleep(200);
-  }
-  throw new Error(`no ${name} window opened`);
-}
-async function windowClosed(window, name) {
-  const end = Date.now() + 8000;
-  while (Date.now() < end && !window.isClosed()) await sleep(200);
-  expect(window.isClosed(), `the ${name} window did not close`);
-}
-// The keys a menu row shows for its command, as Playwright names them ("Ctrl+Shift+Z" → "Control+Shift+Z").
-const keyNames = { Ctrl: "Control", Del: "Delete", Esc: "Escape", Cmd: "Meta" };
-const playwrightKey = keys => keys.split("+").map(key => keyNames[key] ?? key).join("+");
-async function menuKeys(menu, row) {
-  await openMenu(menu);
-  const button = menuRow(row);
-  let keys = "";
-  // The keys arrive a moment after the menu opens (editor_shortcuts).
-  for (let i = 0; i < 50 && !keys; i++) {
-    keys = (await button.locator(".menu-keys, kbd, [class*=key]").allTextContents().catch(() => [])).join("").trim();
-    if (!keys) await sleep(100);
-  }
-  await page().keyboard.press("Escape");
-  return keys;
-}
 
 // Steps that place, select or move hits run only once Audition is off, so nothing plays.
 let silent = false;
@@ -440,7 +97,7 @@ try {
     }
     const text = await read(() => document.getElementById("home").innerText);
     expect(text.includes("Open a map"), `the start screen reads: ${text.slice(0, 80)}`);
-  });
+  }, { covers: ["dialog:key-preset"] });
   await quit();
 
   await step("Open the map copy and see lanes and a drawn timeline", async () => {
@@ -479,11 +136,11 @@ try {
     }
     await until(() => window.view.audition === false, null, "Audition is still on");
     silent = true;
-  });
+  }, { covers: ["control:main:AuditionPill:Audition (button)"] });
 
   await step("Pick each of the seven tools", async () => {
     for (const tool of ["Draw", "Erase", "Mute", "Grab", "Range", "Ramp", "Select"]) await pickTool(tool);
-  });
+  }, { covers: ["menu:tool.toolMute", "menu:tool.toolGrab", "menu:tool.toolRange", "menu:tool.toolRamp"] });
 
   await step("Change the snap with the snap slider", async () => {
     const before = await scene(() => window.scene.beats + "/" + window.scene.divisor);
@@ -525,7 +182,7 @@ try {
     placed = added[0];
     expect(placed[1] === laneRow, `the hit landed on lane row ${placed[1]}, not ${laneRow}`);
     return `hit at ${placed[0]} ms on ${await read(row => window.scene.lanes[row].name, laneRow)}`;
-  });
+  }, { covers: ["mouse:Click / drag (Draw)"] });
 
   await step("Select the hit", async () => {
     if (!silent) return needsSilence();
@@ -535,7 +192,7 @@ try {
     await page().mouse.click(point.x, point.y);
     await until(([time, row]) => window.scene.selection?.count === 1 && window.scene.moments.some(([t, , , list]) =>
       t === time && list.some(([r, selected]) => r === row && selected)), placed, "the hit was not selected");
-  });
+  }, { covers: ["mouse:Click / drag (Select)"] });
 
   await step("Move the hit with a drag", async () => {
     if (!silent) return needsSilence();
@@ -613,7 +270,7 @@ try {
     const gone = withPlaced.filter(name => !withoutPlaced.includes(name));
     expect(withoutPlaced.every(name => withPlaced.includes(name)) && gone.length <= 1,
       `Delete changed other hits: before ${JSON.stringify(withPlaced)}, after ${JSON.stringify(withoutPlaced)}`);
-  });
+  }, { covers: ["key:delete@DAW"] });
 
   await step("Undo brings the hit back", async () => {
     if (!silent) return needsSilence();
@@ -625,7 +282,7 @@ try {
     const back = await namedHits();
     expect(JSON.stringify(back) === JSON.stringify(withPlaced), `Undo brought back different hits: ${JSON.stringify(back)}`);
     return keys.undo;
-  });
+  }, { covers: ["key:undo@DAW"] });
 
   await step("Redo removes it again", async () => {
     if (!silent) return needsSilence();
@@ -637,7 +294,7 @@ try {
     const again = await namedHits();
     expect(JSON.stringify(again) === JSON.stringify(withoutPlaced), `Redo left different hits: ${JSON.stringify(again)}`);
     return keys.redo;
-  });
+  }, { covers: ["key:redo@DAW"] });
 
   await step("Add a lane", async () => {
     const before = await read(() => window.scene.lanes.length);
@@ -656,7 +313,7 @@ try {
     await dialogClosed();
     await until(before => window.scene.lanes.length === before + 1, before, "the lane count did not go up by one");
     return `added ${choice} (${choices.length} offered)`;
-  });
+  }, { covers: ["dialog:add-lane"] });
 
   for (const [name, id, part] of [["Browser", "view-browser", "#sample-browser"], ["Inspector", "view-inspector", '#editor-inspector section[aria-label="Selection"]'],
     ["Volume and Mixer", "view-controller", "#controller"]]) {
@@ -683,14 +340,14 @@ try {
     await dialogShown("View");
     await dialogButton("Done").click();
     await dialogClosed();
-  });
+  }, { covers: ["menu:view.viewSettings", "dialog:editor-view"] });
 
   await step("Open and close Folders…", async () => {
     await fromMenu("File", "Folders…");
     await dialogShown("Folders");
     await page().keyboard.press("Escape");
     await dialogClosed();
-  });
+  }, { covers: ["menu:file.folders", "dialog:folders"] });
 
   await step("Open and close the shortcut editor", async () => {
     await fromMenu("View", "Shortcuts");
@@ -704,7 +361,7 @@ try {
     await dialogButton("Close").click();
     await dialogClosed();
     return `${rows} rows`;
-  });
+  }, { covers: ["menu:view.shortcuts", "dialog:help", "dialog:shortcut-editor"] });
 
   await step("Open and close the Export window", async () => {
     await page().click("#export-entry");
@@ -712,14 +369,14 @@ try {
     await dialog.waitFor({ state: "visible" });
     await dialog.getByRole("button", { name: "Cancel" }).click();
     await dialog.waitFor({ state: "hidden" });
-  });
+  }, { covers: ["dialog:export-modal"] });
 
   await step("Open and close the drum window", async () => {
     await fromMenu("Map", "Drum hit detection…");
     const window = await windowOpened("drum.html");
     await window.getByRole("button", { name: "Cancel" }).click();
     await windowClosed(window, "drum");
-  });
+  }, { covers: ["menu:map.drumDetection", "window:drum"] });
 
   await step("Open and close the map preview window", async () => {
     // The preview sits in the Inspector: show it first if a step before folded it.
@@ -734,14 +391,14 @@ try {
     await fromMenu("View", "Map preview");
     expect(await read(() => typeof window.dawsuUi?.mapPreviewOn === "function"), "the page no longer has dawsuUi.mapPreviewOn to ask");
     await until(() => !window.dawsuUi.mapPreviewOn(), null, "View › Map preview did not switch the preview off", 4000);
-  });
+  }, { covers: ["menu:view.mapPreview", "window:preview"] });
 
   await step("Open and close the node graph window", async () => {
     await fromMenu("Map", "Node graph…");
     const window = await windowOpened("node-graph.html");
     await window.locator("button", { hasText: /^Close$/ }).first().click();
     await windowClosed(window, "node graph");
-  });
+  }, { covers: ["menu:map.nodeGraph", "window:node-graph"] });
 
   await step("Zoom and scroll the timeline", async () => {
     const view = () => read(() => ({ zoom: window.scene.zoom, start: window.scene.viewStart, top: document.getElementById("scroll").scrollTop }));
@@ -773,7 +430,7 @@ try {
     await page().click("#ruler-fit");
     await until(zoom => window.scene.zoom < zoom && window.scene.viewStart === 0, wheeled.zoom, "Fit all did not show the whole song");
     await until(() => document.getElementById("scroll").scrollTop === 0, null, "the lanes did not scroll back to the top");
-  });
+  }, { covers: ["mouse:Ctrl+wheel (DAW-like) / Alt+wheel (osu!)", "mouse:Shift+wheel", "mouse:Wheel without modifiers"] });
 
   // Two whistles to save: one on a plain circle, which Save writes into its line, and one on the
   // circle with a custom clap file, which Save can only write as a mix of new sample files.
@@ -798,7 +455,7 @@ try {
         window.scene.moments.some(([t, , , list]) => t === time && list.some(([r]) => r === row)), [before, whistle, time],
         `no whistle appeared on the circle at ${time} ms`);
       await pickTool("Select");
-    });
+    }, { covers: ["mouse:Click / drag (Draw)"] });
   }
 
   await step("Save, through the save review", async () => {
@@ -822,7 +479,7 @@ try {
     expect(!(await read(() => window.view.dirty)), "the editor still shows unsaved changes");
     savedHits = await namedHits();
     return reviewed.join("; ");
-  });
+  }, { covers: ["dialog:save-review", "feature:save-check"] });
 
   await step("The original fixture folder is byte-identical", async () => {
     await quit();
@@ -914,30 +571,6 @@ try {
     await sleep(500);
   }, true);
 } finally {
-  await quit();
-  const passed = results.filter(result => result.status === "PASS").length;
-  const failed = results.filter(result => result.status === "FAIL").length;
-  const seconds = Math.round((Date.now() - started) / 1000);
-  console.log(`run time: ${seconds} s`);
-  console.log(`everyday check: ${passed} of ${results.length} steps passed`);
-  if (args.json) {
-    writeFileSync(resolve(args.json), JSON.stringify({ exe, map: original, profile, passed, total: results.length, seconds, steps: results }, null, 2) + "\n");
-  }
-  if (failed || !results.length) process.exitCode = 1;
-  if (!args["keep-profile"]) {
-    for (const name of readdirSync(profile)) {
-      const folder = join(profile, name);
-      if (folder === shots) continue;
-      try {
-        rmSync(folder, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
-      } catch (error) {
-        console.warn(`could not remove ${folder}: ${error.message}`);
-      }
-    }
-    // The shots stay when a step failed; an empty profile folder goes.
-    try {
-      if (!args.shots && !readdirSync(shots).length) rmSync(shots, { recursive: true, force: true });
-      if (!readdirSync(profile).length) rmSync(profile, { recursive: true, force: true });
-    } catch {}
-  }
+  process.exitCode = await robot.finish({ started, json: args.json, keepProfile: args["keep-profile"],
+    extra: { map: original }, label: "everyday check" });
 }
