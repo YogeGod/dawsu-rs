@@ -1,6 +1,7 @@
 <script>
   import { bridge } from "../lib/bridge.svelte.js";
   import { emptyInspector, inspectorHandlers } from "../lib/inspector.js";
+  import CoverageReview from "./CoverageReview.svelte";
   import InspectorHead from "./InspectorHead.svelte";
   import ProblemMap from "./ProblemMap.svelte";
 
@@ -15,6 +16,7 @@
   <!-- Folded, the buttons stay in the page: the Map menu and the New difficulty shortcut click them by id. -->
   <div id="inspector-difficulty-body" hidden={!open}>
     <ProblemMap />
+    <CoverageReview />
     <div class="insp-actions">
       <button id="generate" type="button" disabled={!model.doc} onclick={() => on.open("generate")}>Generate…</button>
       <button id="new" type="button" onclick={() => on.open("new")}>New…</button>

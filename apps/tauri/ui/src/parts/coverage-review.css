@@ -1,0 +1,202 @@
+/* Inspector › Difficulty › Coverage review list: compact collapsible coverage summary & issue jumper. */
+.cov {
+  margin: 6px 0 8px;
+  border-top: 1px solid rgba(200, 220, 255, 0.08);
+  padding-top: 4px;
+  font-size: var(--text-sm);
+}
+.cov-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 26px;
+  padding: 2px 4px;
+  border: 0;
+  border-radius: var(--radius-4);
+  background: transparent;
+  color: var(--editor-text);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+}
+.cov-head:hover:not(:disabled) {
+  background: var(--editor-chrome);
+  color: var(--editor-white);
+}
+.cov-chevron {
+  display: grid;
+  flex: none;
+  width: 14px;
+  height: 14px;
+  color: var(--editor-muted);
+  transition: transform 0.12s;
+}
+.cov-chevron.cov-folded {
+  transform: rotate(-90deg);
+}
+.cov-chevron svg {
+  width: 14px;
+  height: 14px;
+}
+.cov-title {
+  flex: 1;
+  min-width: 0;
+}
+.cov-badge {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--editor-chrome);
+  color: var(--editor-muted);
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+}
+.cov-badge.cov-badge-warn {
+  color: var(--editor-kick);
+}
+.cov-badge.cov-badge-ok {
+  color: var(--editor-play);
+}
+.cov-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px 2px 2px;
+}
+.cov-stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 4px;
+}
+.cov-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 4px 6px;
+  border-radius: var(--radius-4);
+  background: var(--editor-chrome);
+}
+.cov-stat-label {
+  color: var(--editor-muted);
+  font-size: 10px;
+}
+.cov-stat-value {
+  color: var(--editor-readout);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.cov-stat-matched .cov-stat-value {
+  color: var(--editor-play);
+}
+.cov-stat-empty .cov-stat-value {
+  color: var(--editor-warning);
+}
+.cov-stat-orphaned .cov-stat-value {
+  color: var(--editor-kick);
+}
+.cov-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.cov-chip {
+  flex: 1 1 auto;
+  min-height: 22px;
+  padding: 2px 6px;
+  border: 1px solid var(--editor-border);
+  border-radius: var(--radius-4);
+  background: var(--editor-chrome);
+  color: var(--editor-secondary);
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+.cov-chip:hover:not(:disabled) {
+  background: var(--editor-hover);
+  color: var(--editor-text);
+}
+.cov-chip[aria-pressed="true"] {
+  border-color: var(--editor-accent);
+  background: var(--editor-rowfocus);
+  color: var(--editor-white);
+}
+.cov-nav {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.cov-nav button {
+  flex: 1;
+  min-height: 24px;
+  padding: 2px 8px;
+  font-size: var(--text-xs);
+}
+.cov-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 168px;
+  overflow-y: auto;
+}
+.cov-row {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  height: 26px;
+  min-height: 26px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--radius-4);
+  background: transparent;
+  color: var(--editor-text);
+  font-size: var(--text-xs);
+  font-weight: 400;
+  text-align: left;
+  cursor: pointer;
+}
+.cov-row:hover:not(:disabled) {
+  background: var(--editor-chrome);
+  color: var(--editor-white);
+}
+.cov-row[aria-current="true"] {
+  background: var(--editor-rowfocus);
+  color: var(--editor-white);
+}
+.cov-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+}
+.cov-dot-empty {
+  background: var(--editor-warning);
+}
+.cov-dot-orphaned {
+  background: var(--editor-kick);
+}
+.cov-row-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cov-row-time {
+  flex: none;
+  margin-left: auto;
+  color: var(--editor-muted);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+.cov-empty,
+.cov-more {
+  margin: 0;
+  padding: 4px 6px;
+  color: var(--editor-muted);
+  font-size: var(--text-xs);
+}

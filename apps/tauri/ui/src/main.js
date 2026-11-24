@@ -206,9 +206,15 @@ export function laneOptions(usedOnly, filter) {
   bridge.setLaneOptions(usedOnly, filter);
 }
 
+// Active coverage review filter and focus time shared with boot.js for N / Shift+N stepping.
+export const coverageFilter = () => bridge.coverageFilter;
+export function setCoverageFocus(time) {
+  bridge.coverageFocusTime = Number.isFinite(time) ? time : null;
+}
+
 // Boot the main editor runtime only on the editor window (never on export.html or drum.html).
 const uiBridge = {
-  update, lanes, inspector, browser, mixer, toggleMapPreview, mapPreviewOn, setNodeGraphViewer, nodeGraphViewer, bottomTab, hitCard, commands, menu, centre, wheelSnap, snapGroup, statusNotice, viewport, laneOptions,
+  update, lanes, inspector, browser, mixer, toggleMapPreview, mapPreviewOn, setNodeGraphViewer, nodeGraphViewer, bottomTab, hitCard, commands, menu, centre, wheelSnap, snapGroup, statusNotice, viewport, laneOptions, coverageFilter, setCoverageFocus,
 };
 if (document.getElementById("grid")) {
   createEditor(globalThis, { ui: uiBridge });

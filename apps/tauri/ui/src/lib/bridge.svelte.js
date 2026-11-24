@@ -46,6 +46,9 @@ export class Bridge {
   previewWindow = $state(false);
   // The Quick start tour's step (1-5), or 0 while it is closed. Kept in this window only.
   quickStart = $state(0);
+  // Active coverage review filter ("all", "empty", or "orphaned") and last jumped issue time.
+  coverageFilter = $state("all");
+  coverageFocusTime = $state(null);
 
   // No map, a job running or a fault: the parts show but take no input.
   get disabled() {
