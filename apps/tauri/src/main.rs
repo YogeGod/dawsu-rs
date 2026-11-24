@@ -11,7 +11,7 @@ mod osu_link;
 mod selection;
 mod skin_textures;
 
-use dawsu_application::{Application, OutputBackend, ExportOptions, ExportSettings, PlatformRequest, EditorTimeSignature, LaneLayout, PointerPhase, RangeOperation, TimelineEdit, VolumeScope, lane_name};
+use dawsu_application::{Application, OutputBackend, ExportOptions, ExportSettings, MixFormat, PlatformRequest, EditorTimeSignature, LaneLayout, PointerPhase, RangeOperation, TimelineEdit, VolumeScope, lane_name};
 use dawsu_editor::{
     keys::{Key, KeyCombination, Mods},
     tempo::SnapMode,
@@ -2294,6 +2294,7 @@ fn export_snapshot(app: &Application, cache: &mut ExportCache) -> Value {
             "base": choices.base,
             "sliderAudio": choices.slider_audio,
             "laterWins": choices.later_wins,
+            "mixFormat": choices.mix_format,
         })),
         "error": status.error,
         "writing": status.writing,
@@ -3108,6 +3109,8 @@ struct ExportOptionsJson {
     slider_audio: bool,
     #[serde(default, rename = "autoFixStagedMixes")]
     auto_fix_staged_mixes: bool,
+    #[serde(default, rename = "mixFormat")]
+    mix_format: MixFormat,
 }
 
 /// "Export · <map title> [<difficulty>]", or "Export" with no map open.
@@ -3141,6 +3144,7 @@ fn export_preview(state: State<'_, Editor>, options: ExportOptionsJson) -> Resul
         base: options.base,
         slider_audio: options.slider_audio,
         auto_fix_staged_mixes: options.auto_fix_staged_mixes,
+        mix_format: options.mix_format,
     };
     ask(&state, |tx| Request::ExportPreview(source, options, tx))?
 }

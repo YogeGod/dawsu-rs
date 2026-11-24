@@ -194,6 +194,15 @@
             aria-label="Later moment wins"
             onclick={() => (choices.laterWins = !choices.laterWins)}></button>
         </label>
+        <span class="divider" aria-hidden="true"></span>
+        <label class="format">
+          Sample format
+          <select class="field select" aria-label="Sample format" bind:value={choices.mixFormat}>
+            <option value="wav16">16-bit WAV</option>
+            <option value="wav32f">32-bit float WAV</option>
+            <option value="ogg_vorbis">Ogg Vorbis</option>
+          </select>
+        </label>
       </section>
 
       <ul class="targets">
@@ -412,6 +421,15 @@
   .field:focus-within { box-shadow: inset 0 0 0 1px var(--editor-focus); }
   .divider { width: 1px; height: 24px; background: var(--editor-border); }
   .switch-label { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
+  .format { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
+  select.field {
+    border: 0;
+    color: var(--editor-text);
+    font: inherit;
+    padding: 0 8px;
+    cursor: pointer;
+  }
+  select.field:focus { outline: none; box-shadow: inset 0 0 0 1px var(--editor-focus); }
 
   .switch {
     position: relative;

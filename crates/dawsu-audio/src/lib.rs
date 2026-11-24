@@ -171,19 +171,35 @@ fn decode_pre_reserve_samples(num_frames: Option<u64>, channels: usize) -> usize
 pub fn decode(path: &Path) -> Result<Arc<AudioClip>, String> {
     decode_with_cancel(path, &|| false)
 }
+pub fn decode_bytes(bytes: Vec<u8>, extension: Option<&str>) -> Result<Arc<AudioClip>, String> {
+    decode_source(Box::new(std::io::Cursor::new(bytes)), extension, "memory", &|| false)
+}
 pub fn decode_with_cancel(
     path: &Path,
     cancel: &dyn Fn() -> bool,
 ) -> Result<Arc<AudioClip>, String> {
     let source = File::open(path).map_err(|e| format!("Opening {}: {e}", path.display()))?;
+    decode_source(
+        Box::new(source),
+        path.extension().and_then(|s| s.to_str()),
+        &path.display().to_string(),
+        cancel,
+    )
+}
+fn decode_source(
+    source: Box<dyn symphonia::core::io::MediaSource>,
+    extension: Option<&str>,
+    label: &str,
+    cancel: &dyn Fn() -> bool,
+) -> Result<Arc<AudioClip>, String> {
     let mut hint = Hint::new();
-    if let Some(ext) = path.extension().and_then(|s| s.to_str()) {
+    if let Some(ext) = extension {
         hint.with_extension(ext);
     }
     let mut reader = symphonia::default::get_probe()
         .probe(
             &hint,
-            MediaSourceStream::new(Box::new(source), Default::default()),
+            MediaSourceStream::new(source, Default::default()),
             FormatOptions::default(),
             MetadataOptions::default(),
         )
@@ -224,7 +240,7 @@ pub fn decode_with_cancel(
         }
         let buffer = decoder
             .decode(&packet)
-            .map_err(|e| format!("Decoding {}: {e}", path.display()))?;
+            .map_err(|e| format!("Decoding {label}: {e}"))?;
         let old = samples.len();
         samples.resize(old + buffer.samples_interleaved(), 0.0);
         buffer.copy_to_slice_interleaved(&mut samples[old..]);

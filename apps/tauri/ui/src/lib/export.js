@@ -1,9 +1,11 @@
 // Plain logic for the Export window, tested under node without a webview.
 
+export const mixFormats = Object.freeze(["wav16", "wav32f", "ogg_vorbis"]);
+
 // What the Export window starts with for a map it has no stored choices for. The base hitsound
 // difficulty is a new file in the mapset, so it is written only once the mapper turns it on.
 export const defaultChoices = Object.freeze({
-  leftOut: [], matchWithin: 5, copyVolumes: true, base: false, sliderAudio: false, laterWins: false,
+  leftOut: [], matchWithin: 5, copyVolumes: true, base: false, sliderAudio: false, laterWins: false, mixFormat: "wav16",
 });
 
 // Generate's name for the difficulty it makes (HITSOUNDS_VERSION in dawsu-hitsounding).
@@ -55,6 +57,7 @@ export function choicesFrom(view) {
     base: typeof stored.base === "boolean" ? stored.base : defaultChoices.base,
     sliderAudio: typeof stored.sliderAudio === "boolean" ? stored.sliderAudio : defaultChoices.sliderAudio,
     laterWins: typeof stored.laterWins === "boolean" ? stored.laterWins : defaultChoices.laterWins,
+    mixFormat: mixFormats.includes(stored.mixFormat) ? stored.mixFormat : defaultChoices.mixFormat,
   };
 }
 
@@ -72,11 +75,13 @@ export function exportLabel(count) {
 // Everything a preview depends on that this window chooses. A preview sent with another key is old.
 export function optionsKey(view, choices) {
   const targets = included(view?.targets, choices);
+  const mixFormat = mixFormats.includes(choices.mixFormat) ? choices.mixFormat : defaultChoices.mixFormat;
   return JSON.stringify([view?.source?.path ?? null, targets, choices.matchWithin, choices.copyVolumes,
-    choices.base, choices.sliderAudio, choices.laterWins === true]);
+    choices.base, choices.sliderAudio, choices.laterWins === true, mixFormat]);
 }
 
 export function previewRequest(view, choices) {
+  const mixFormat = mixFormats.includes(choices.mixFormat) ? choices.mixFormat : defaultChoices.mixFormat;
   return {
     options: {
       source: view.source.path,
@@ -84,6 +89,7 @@ export function previewRequest(view, choices) {
       options: copyOptions(choices),
       base: choices.base === true,
       sliderAudio: choices.sliderAudio === true,
+      mixFormat,
     },
   };
 }

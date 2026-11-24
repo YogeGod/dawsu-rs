@@ -28,6 +28,7 @@ pub(super) fn stage(
     defaults: &Path,
     previous: &[u8],
     already_staged: &[StagedMix],
+    format: mixes::MixFormat,
     cancel: &dyn Fn() -> bool,
 ) -> Result<Vec<StagedMix>, String> {
     let offset = offset_for(file.format_version());
@@ -116,8 +117,8 @@ pub(super) fn stage(
                     clip: clip.clone(),
                 });
             }
-            let wav = mixes::render(cues, cancel)?;
-            let (name, mix) = StagedMix::new_generated(root, wav, existing.iter(), &mut names)?;
+            let bytes = mixes::render_format(cues, format, cancel)?;
+            let (name, mix) = StagedMix::new_generated(root, bytes, format, existing.iter(), &mut names)?;
             staged.push(mix);
             rendered.insert(layers, name.clone());
             name
@@ -223,6 +224,7 @@ mod tests {
             &scratch.path("defaults"),
             &[],
             &[],
+            mixes::MixFormat::Wav16,
             &|| false,
         )
         .unwrap();
@@ -273,6 +275,7 @@ mod tests {
             &scratch.path("defaults"),
             &file.to_bytes(),
             &[],
+            mixes::MixFormat::Wav16,
             &|| false,
         )
         .unwrap();

@@ -13,12 +13,34 @@ use dawsu_hitsounding::{
 use dawsu_osu_format::OsuFile;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
+use std::num::{NonZeroU8, NonZeroU32};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use vorbis_rs::{VorbisBitrateManagementStrategy, VorbisEncoderBuilder};
 
 const SAMPLE_RATE: u32 = 48_000;
 const CHANNELS: usize = 2;
 pub(super) const PREFIX: &str = "dawsu-mix-";
+
+/// Audio format for hitsound mix files written during Export.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MixFormat {
+    #[default]
+    Wav16,
+    Wav32f,
+    OggVorbis,
+}
+
+impl MixFormat {
+    /// File extension without leading dot (`"wav"` or `"ogg"`).
+    pub const fn extension(self) -> &'static str {
+        match self {
+            Self::Wav16 | Self::Wav32f => "wav",
+            Self::OggVorbis => "ogg",
+        }
+    }
+}
 
 pub(crate) fn can_render(problem: &SaveProblem, placement: Placement) -> bool {
     (matches!(problem.place, Place::Circle(_) | Place::SpinnerEnd(_))
@@ -64,15 +86,19 @@ impl StagedMix {
     pub(super) fn new_generated<'a>(
         root: &Path,
         wav: Vec<u8>,
+        format: MixFormat,
         mut existing: impl Iterator<Item = &'a String>,
         names: &mut BTreeSet<String>,
     ) -> Result<(String, Self), String> {
+        let ext = format.extension();
+        let suffix = format!(".{ext}");
         let stem = format!("{PREFIX}{}-", sha256_hex(&wav));
-        let reusable =
-            existing.find(|name| name.starts_with(&stem) && has_contents(root, name, &wav));
+        let reusable = existing.find(|name| {
+            name.starts_with(&stem) && name.ends_with(&suffix) && has_contents(root, name, &wav)
+        });
         let name = match reusable {
             Some(name) => name.clone(),
-            None => reserve_name(&stem, names)?,
+            None => reserve_name(&stem, ext, names)?,
         };
         let mix = Self {
             path: root.join(&name),
@@ -93,15 +119,41 @@ impl StagedMix {
     }
 
     pub(super) fn clip(&self) -> AudioClip {
-        let samples = self.wav[44..]
-            .chunks_exact(2)
-            .map(|frame| f32::from(i16::from_le_bytes([frame[0], frame[1]])) / 32768.0)
-            .collect();
-        AudioClip {
-            samples,
-            channels: CHANNELS,
-            sample_rate: SAMPLE_RATE,
+        if self.wav.len() >= 44 && &self.wav[0..4] == b"RIFF" && &self.wav[8..12] == b"WAVE" {
+            let format_tag = u16::from_le_bytes([self.wav[20], self.wav[21]]);
+            if format_tag == 1 {
+                let samples = self.wav[44..]
+                    .chunks_exact(2)
+                    .map(|frame| f32::from(i16::from_le_bytes([frame[0], frame[1]])) / 32768.0)
+                    .collect();
+                return AudioClip {
+                    samples,
+                    channels: CHANNELS,
+                    sample_rate: SAMPLE_RATE,
+                };
+            }
+            if format_tag == 3 {
+                let samples = self.wav[44..]
+                    .chunks_exact(4)
+                    .map(|frame| f32::from_le_bytes([frame[0], frame[1], frame[2], frame[3]]))
+                    .collect();
+                return AudioClip {
+                    samples,
+                    channels: CHANNELS,
+                    sample_rate: SAMPLE_RATE,
+                };
+            }
         }
+        let ext = self.path.extension().and_then(|e| e.to_str()).or_else(|| {
+            self.wav.starts_with(b"OggS").then_some("ogg")
+        });
+        dawsu_audio::decode_bytes(self.wav.clone(), ext)
+            .map(|clip| (*clip).clone())
+            .unwrap_or(AudioClip {
+                samples: Vec::new(),
+                channels: CHANNELS,
+                sample_rate: SAMPLE_RATE,
+            })
     }
 }
 
@@ -118,6 +170,7 @@ pub(super) fn stage_in_file(
     settings: Option<&ExportSettings>,
     previous_mixes: &[String],
     start_index: u32,
+    format: MixFormat,
     pending: &Pending,
     cancel: &dyn Fn() -> bool,
 ) -> Result<(OsuFile, MixFiles), String> {
@@ -133,6 +186,7 @@ pub(super) fn stage_in_file(
         settings,
         previous_mixes,
         start_index,
+        format,
         pending,
         false,
         cancel,
@@ -152,6 +206,7 @@ pub(super) fn stage_in_file_with_options(
     settings: Option<&ExportSettings>,
     previous_mixes: &[String],
     start_index: u32,
+    format: MixFormat,
     pending: &Pending,
     auto_fix: bool,
     cancel: &dyn Fn() -> bool,
@@ -173,6 +228,7 @@ pub(super) fn stage_in_file_with_options(
             settings,
             already_staged,
             start_index,
+            format,
             previous_mixes,
             pending,
             auto_fix,
@@ -188,6 +244,7 @@ pub(super) fn stage_in_file_with_options(
             expected,
             already_staged,
             start_index,
+            format,
             pending,
             auto_fix,
             cancel,
@@ -229,6 +286,7 @@ impl MixFiles {
         settings: &ExportSettings,
         already_staged: &[StagedMix],
         start_index: u32,
+        format: MixFormat,
         // The target's reuse set: mix files it already references, reused when their sound matches.
         previous_mixes: &[String],
         pending: &Pending,
@@ -414,8 +472,8 @@ impl MixFiles {
                     .into_iter()
                     .filter(|(_, _, cues)| !(settings.pair_samples && cues.is_empty()))
                     .collect();
-                let waves = render_roles(roles, auto_fix, cancel)?;
-                let reused = reusable_export_index(root, pending, &waves, &previous_mixes)?;
+                let waves = render_roles(roles, format, auto_fix, cancel)?;
+                let reused = reusable_export_index(root, pending, &waves, format, &previous_mixes)?;
                 let index = match reused {
                     Some(index) => index,
                     None => indexes.reserve()?,
@@ -428,9 +486,10 @@ impl MixFiles {
                         index: CustomIndex::new(index),
                     })
                     .collect();
+                let ext = format.extension();
                 self.stage_roles(
                     root,
-                    waves.into_iter().map(|(bank, role, wav)| (bank, role, "wav".to_string(), wav)),
+                    waves.into_iter().map(|(bank, role, bytes)| (bank, role, ext.to_string(), bytes)),
                     index,
                     reused.is_some(),
                 );
@@ -551,17 +610,19 @@ impl MixFiles {
         expected: &[u8],
         already_staged: &[StagedMix],
         start_index: u32,
+        format: MixFormat,
         pending: &Pending,
         auto_fix: bool,
         cancel: &dyn Fn() -> bool,
     ) -> Result<(), String> {
         let defaults_list = crate::pending::sample_folder(defaults);
         let expected = OsuFile::read(expected.to_vec()).file;
+        let suffix = format!(".{}", format.extension());
         let existing: BTreeSet<_> = expected
             .hit_objects()
             .into_iter()
             .filter_map(|object| object.hit_sample()?.filename.clone())
-            .filter(|name| name.starts_with(PREFIX) && name.ends_with(".wav"))
+            .filter(|name| name.starts_with(PREFIX) && name.ends_with(&suffix))
             .collect();
         let moments: HashMap<_, _> = target
             .moments()
@@ -600,9 +661,9 @@ impl MixFiles {
             let sample = if let Some(sample) = rendered.get(&key) {
                 sample.clone()
             } else {
-                let wav = render_layers(source, Some(target), layers, root, pending, defaults, &defaults_list, &mut clips, auto_fix, cancel)?;
+                let wav = render_layers(source, Some(target), layers, root, pending, defaults, &defaults_list, &mut clips, format, auto_fix, cancel)?;
                 let (sample, staged) = if let Some(indexes) = indexes.as_mut().filter(|_| slider) {
-                    let (index, reuse) = indexes.allocate(root, &wav)?;
+                    let (index, reuse) = indexes.allocate(root, &wav, format)?;
                     let identity = SampleIdentity::Standard {
                         set: SampleSet::Normal,
                         sound: Sound::Hit(Hitsound::Normal),
@@ -611,14 +672,14 @@ impl MixFiles {
                     (
                         identity,
                         StagedMix {
-                            path: root.join(indexed_name(index)),
+                            path: root.join(indexed_name(index, format)),
                             wav,
                             reuse,
                             index: Some(index),
                         },
                     )
                 } else {
-                    let (name, staged) = StagedMix::new_generated(root, wav, existing.iter(), &mut names)?;
+                    let (name, staged) = StagedMix::new_generated(root, wav, format, existing.iter(), &mut names)?;
                     (SampleIdentity::File(name), staged)
                 };
                 self.staged.push(staged);
@@ -635,7 +696,7 @@ impl MixFiles {
 fn render_layers(
     source: &Hitsounds, target: Option<&Hitsounds>, layers: &[(SampleIdentity, i32)],
     root: &Path, pending: &Pending, defaults: &Path, defaults_list: &[String],
-    clips: &mut HashMap<SampleIdentity, Arc<AudioClip>>, auto_fix: bool, cancel: &dyn Fn() -> bool,
+    clips: &mut HashMap<SampleIdentity, Arc<AudioClip>>, format: MixFormat, auto_fix: bool, cancel: &dyn Fn() -> bool,
 ) -> Result<Vec<u8>, String> {
     let mut cues = Vec::with_capacity(layers.len());
     for (identity, volume) in layers {
@@ -646,7 +707,7 @@ fn render_layers(
             gain: *volume as f32 / 100.0,
         });
     }
-    render_with_options(cues, auto_fix, cancel)
+    render_with_options(cues, format, auto_fix, cancel)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -680,6 +741,7 @@ type RoleWaves = Vec<(SampleSet, Hitsound, Vec<u8>)>;
 /// with paired samples it passes no empty role, since the skin plays a missing hitnormal.
 fn render_roles(
     roles: Vec<(SampleSet, Hitsound, Vec<ScheduledSound>)>,
+    format: MixFormat,
     auto_fix: bool,
     cancel: &dyn Fn() -> bool,
 ) -> Result<RoleWaves, String> {
@@ -697,8 +759,8 @@ fn render_roles(
                 }),
             });
         }
-        let wav = render_with_options(cues, auto_fix, cancel)?;
-        waves.push((bank, role, wav));
+        let bytes = render_with_options(cues, format, auto_fix, cancel)?;
+        waves.push((bank, role, bytes));
     }
     Ok(waves)
 }
@@ -707,7 +769,8 @@ fn render_roles(
 pub(super) fn stage_timed_copy_with_options(
     source: &Hitsounds, file: &mut OsuFile, path: &Path, defaults: &Path,
     placements: &[dawsu_hitsounding::copy::SliderCopyPlacement],
-    staged: &mut Vec<StagedMix>, details: &mut Vec<String>, pending: &Pending, auto_fix: bool, cancel: &dyn Fn() -> bool,
+    staged: &mut Vec<StagedMix>, details: &mut Vec<String>, pending: &Pending,
+    format: MixFormat, auto_fix: bool, cancel: &dyn Fn() -> bool,
     // Mixes before this index belong to an earlier part of the write (Generate): their names stay
     // reserved, but a target never points at them.
     own_from: usize,
@@ -730,11 +793,11 @@ pub(super) fn stage_timed_copy_with_options(
         let name = if let Some(name) = rendered.get(layers) {
             name.clone()
         } else {
-            let wav = render_layers(source, None, layers, root, pending, defaults, &defaults_list, &mut clips, auto_fix, cancel)?;
+            let wav = render_layers(source, None, layers, root, pending, defaults, &defaults_list, &mut clips, format, auto_fix, cancel)?;
             let name = if let Some(previous) = staged[own_from..].iter().find(|mix| mix.index.is_none() && mix.wav == wav) {
                 previous.path.file_name().ok_or("Missing staged filename")?.to_string_lossy().into_owned()
             } else {
-                let (name, mix) = StagedMix::new_generated(root, wav, existing.iter(), &mut names)?;
+                let (name, mix) = StagedMix::new_generated(root, wav, format, existing.iter(), &mut names)?;
                 staged.push(mix);
                 name
             };
@@ -839,16 +902,18 @@ fn reusable_export_index(
     root: &Path,
     pending: &Pending,
     waves: &[(SampleSet, Hitsound, Vec<u8>)],
+    format: MixFormat,
     previous: &BTreeSet<&str>,
 ) -> Result<Option<u32>, String> {
     let Some((bank, role, _)) = waves.first() else { return Ok(None) };
     let prefix = export_settings::slot_name(*bank, *role);
+    let suffix = format!(".{}", format.extension());
     let hitnormals = hitnormal_indexes(root, pending, waves.iter().any(|(_, role, _)| *role == Hitsound::Normal))?;
     Ok(previous
         .iter()
         .filter_map(|name| {
             name.strip_prefix(prefix)?
-                .strip_suffix(".wav")?
+                .strip_suffix(&suffix)?
                 .parse::<u32>()
                 .ok()
         })
@@ -857,7 +922,7 @@ fn reusable_export_index(
                 && *index <= i32::MAX as u32
                 && !hitnormals.contains(index)
                 && waves.iter().all(|(bank, role, wav)| {
-                    let name = format!("{}{index}.wav", export_settings::slot_name(*bank, *role));
+                    let name = format!("{}{index}{suffix}", export_settings::slot_name(*bank, *role));
                     previous.contains(name.as_str()) && has_contents(root, &name, wav)
                 })
         }))
@@ -893,8 +958,8 @@ struct IndexedMixes {
     reuse: BTreeSet<u32>,
 }
 
-fn indexed_name(index: u32) -> String {
-    format!("normal-hitnormal{index}.wav")
+fn indexed_name(index: u32, format: MixFormat) -> String {
+    format!("normal-hitnormal{index}.{}", format.extension())
 }
 
 fn has_contents(root: &Path, name: &str, wav: &[u8]) -> bool {
@@ -953,12 +1018,12 @@ impl IndexedMixes {
         })
     }
 
-    fn allocate(&mut self, root: &Path, wav: &[u8]) -> Result<(u32, bool), String> {
-        // A referenced WAV belongs to the version we read. Revalidate it when publishing.
+    fn allocate(&mut self, root: &Path, wav: &[u8], format: MixFormat) -> Result<(u32, bool), String> {
+        // A referenced mix belongs to the version we read. Revalidate it when publishing.
         if let Some(&existing) = self
             .reuse
             .iter()
-            .find(|index| has_contents(root, &indexed_name(**index), wav))
+            .find(|index| has_contents(root, &indexed_name(**index, format), wav))
         {
             return Ok((existing, true));
         }
@@ -1177,9 +1242,9 @@ pub(crate) fn name_is_reserved(name: &str, names: &BTreeSet<String>) -> bool {
         .any(|extension| names.contains(&format!("{stem}.{extension}")))
 }
 
-fn reserve_name(stem: &str, names: &mut BTreeSet<String>) -> Result<String, String> {
+fn reserve_name(stem: &str, extension: &str, names: &mut BTreeSet<String>) -> Result<String, String> {
     let name = (1..=u32::MAX)
-        .map(|number| format!("{stem}{number}.wav"))
+        .map(|number| format!("{stem}{number}.{extension}"))
         .find(|name| !name_is_reserved(name, names))
         .ok_or("No safe sample filename is available for this mix.")?;
     names.insert(name.clone());
@@ -1190,19 +1255,28 @@ pub(super) fn render(
     cues: Vec<ScheduledSound>,
     cancel: &dyn Fn() -> bool,
 ) -> Result<Vec<u8>, String> {
-    render_with_options(cues, false, cancel)
+    render_with_options(cues, MixFormat::Wav16, false, cancel)
+}
+
+pub(super) fn render_format(
+    cues: Vec<ScheduledSound>,
+    format: MixFormat,
+    cancel: &dyn Fn() -> bool,
+) -> Result<Vec<u8>, String> {
+    render_with_options(cues, format, false, cancel)
 }
 
 pub(super) fn render_with_options(
     cues: Vec<ScheduledSound>,
+    format: MixFormat,
     auto_fix: bool,
     cancel: &dyn Fn() -> bool,
 ) -> Result<Vec<u8>, String> {
     let mixed = mix(cues, cancel)?;
-    if auto_fix {
+    if auto_fix && format == MixFormat::Wav16 {
         Ok(crate::sample_checks::auto_fix_wav_pcm(&mixed, SAMPLE_RATE, CHANNELS)?.wav)
     } else {
-        encode(&mixed)
+        encode_format(&mixed, format)
     }
 }
 
@@ -1251,8 +1325,16 @@ fn mix(cues: Vec<ScheduledSound>, cancel: &dyn Fn() -> bool) -> Result<Vec<f32>,
     Ok(out)
 }
 
+fn encode_format(samples: &[f32], format: MixFormat) -> Result<Vec<u8>, String> {
+    match format {
+        MixFormat::Wav16 => encode_wav16(samples),
+        MixFormat::Wav32f => encode_wav32f(samples),
+        MixFormat::OggVorbis => encode_ogg_vorbis(samples),
+    }
+}
+
 /// A 16-bit PCM WAV of interleaved samples at the mix sample rate.
-fn encode(samples: &[f32]) -> Result<Vec<u8>, String> {
+fn encode_wav16(samples: &[f32]) -> Result<Vec<u8>, String> {
     let data_size = u32::try_from(samples.len() * 2).map_err(|_| "Sample mix is too long for a WAV file")?;
     let mut wav = Vec::new();
     wav.try_reserve_exact(44 + data_size as usize)
@@ -1273,6 +1355,79 @@ fn encode(samples: &[f32]) -> Result<Vec<u8>, String> {
         wav.extend(((*value * 32768.0).round() as i16).to_le_bytes());
     }
     Ok(wav)
+}
+
+/// An IEEE 754 32-bit float WAV of interleaved samples at the mix sample rate.
+fn encode_wav32f(samples: &[f32]) -> Result<Vec<u8>, String> {
+    let data_size = samples
+        .len()
+        .checked_mul(4)
+        .and_then(|size| u32::try_from(size).ok())
+        .filter(|size| *size <= u32::MAX - 36)
+        .ok_or("Sample mix is too long for a WAV file")?;
+    let mut wav = Vec::new();
+    wav.try_reserve_exact(44 + data_size as usize)
+        .map_err(|error| error.to_string())?;
+    wav.extend(b"RIFF");
+    wav.extend((36 + data_size).to_le_bytes());
+    wav.extend(b"WAVEfmt ");
+    wav.extend(16u32.to_le_bytes());
+    wav.extend(3u16.to_le_bytes()); // IEEE float
+    wav.extend((CHANNELS as u16).to_le_bytes());
+    wav.extend(SAMPLE_RATE.to_le_bytes());
+    wav.extend((SAMPLE_RATE * CHANNELS as u32 * 4).to_le_bytes());
+    wav.extend((CHANNELS as u16 * 4).to_le_bytes());
+    wav.extend(32u16.to_le_bytes());
+    wav.extend(b"data");
+    wav.extend(data_size.to_le_bytes());
+    for value in samples {
+        wav.extend(value.to_le_bytes());
+    }
+    Ok(wav)
+}
+
+/// An Ogg Vorbis stream of interleaved samples at the mix sample rate.
+/// Uses a fixed stream serial so identical mixes produce byte-identical files for reuse.
+fn encode_ogg_vorbis(samples: &[f32]) -> Result<Vec<u8>, String> {
+    const STREAM_SERIAL: i32 = 1;
+    const QUALITY: f32 = 0.6;
+    const BLOCK_FRAMES: usize = 1024;
+
+    let sample_rate = NonZeroU32::new(SAMPLE_RATE).expect("SAMPLE_RATE > 0");
+    let channels = NonZeroU8::new(CHANNELS as u8).expect("CHANNELS > 0");
+    let mut encoder =
+        VorbisEncoderBuilder::new_with_serial(sample_rate, channels, Vec::new(), STREAM_SERIAL)
+            .bitrate_management_strategy(VorbisBitrateManagementStrategy::QualityVbr {
+                target_quality: QUALITY,
+            })
+            .build()
+            .map_err(|error| format!("Could not initialize Ogg Vorbis encoder: {error}"))?;
+
+    if samples.is_empty() {
+        encoder
+            .encode_audio_block([&[0.0_f32][..], &[0.0_f32][..]])
+            .map_err(|error| format!("Could not encode Ogg Vorbis audio: {error}"))?;
+    } else {
+        let mut left = Vec::with_capacity(BLOCK_FRAMES);
+        let mut right = Vec::with_capacity(BLOCK_FRAMES);
+        for chunk in samples.chunks(BLOCK_FRAMES * CHANNELS) {
+            left.clear();
+            right.clear();
+            for frame in chunk.chunks_exact(CHANNELS) {
+                left.push(frame[0]);
+                right.push(frame[1]);
+            }
+            if !left.is_empty() {
+                encoder
+                    .encode_audio_block([left.as_slice(), right.as_slice()])
+                    .map_err(|error| format!("Could not encode Ogg Vorbis audio: {error}"))?;
+            }
+        }
+    }
+
+    encoder
+        .finish()
+        .map_err(|error| format!("Could not finish Ogg Vorbis stream: {error}"))
 }
 
 #[cfg(test)]
@@ -1439,7 +1594,7 @@ mod tests {
         let settings = ExportSettings { pair_samples: true, ..ExportSettings::default() };
         let (file, mixes) = stage_in_file(
             hits, file, &problems, map.parent().unwrap(), Path::new(""), &[], Placement::OnObjects, &[], Some(&settings),
-            previous, 2, &Pending::default(), &|| false,
+            previous, 2, MixFormat::Wav16, &Pending::default(), &|| false,
         ).unwrap();
         (file, mixes.staged)
     }
@@ -1503,5 +1658,70 @@ mod tests {
         assert_eq!(file.hit_objects()[0].hit_sample().unwrap().index, 5);
         assert_eq!(staged_names(&staged).len(), 1);
         assert!(!staged[0].reuse);
+    }
+
+    #[test]
+    fn wav32f_round_trips_through_dawsu_audio_preserving_rate_channels_and_waveform() {
+        let scratch = dawsu_test_support::Scratch::new("mix-wav32f-roundtrip");
+        let frames = 256;
+        let mut samples = Vec::with_capacity(frames * CHANNELS);
+        for i in 0..frames {
+            let t = i as f32 / SAMPLE_RATE as f32;
+            samples.push((2.0 * std::f32::consts::PI * 440.0 * t).sin() * 0.75);
+            samples.push((2.0 * std::f32::consts::PI * 880.0 * t).cos() * 0.5);
+        }
+        let encoded = encode_format(&samples, MixFormat::Wav32f).unwrap();
+        assert_eq!(&encoded[0..4], b"RIFF");
+        assert_eq!(&encoded[8..12], b"WAVE");
+        assert_eq!(u16::from_le_bytes([encoded[20], encoded[21]]), 3); // IEEE float
+        assert_eq!(u16::from_le_bytes([encoded[34], encoded[35]]), 32); // 32 bits/sample
+
+        let path = scratch.path("float-mix.wav");
+        fs::write(&path, &encoded).unwrap();
+        let decoded = dawsu_audio::decode(&path).unwrap();
+        assert_eq!(decoded.sample_rate, SAMPLE_RATE);
+        assert_eq!(decoded.channels, CHANNELS);
+        assert_eq!(decoded.samples.len(), samples.len());
+        for (a, b) in decoded.samples.iter().zip(&samples) {
+            assert!((a - b).abs() < 1e-6, "sample mismatch: {a} vs {b}");
+        }
+
+        let staged = StagedMix { path, wav: encoded, reuse: false, index: None };
+        let preview = staged.clip();
+        assert_eq!(preview.sample_rate, SAMPLE_RATE);
+        assert_eq!(preview.channels, CHANNELS);
+        assert_eq!(preview.samples, samples);
+    }
+
+    #[test]
+    fn ogg_vorbis_round_trips_through_dawsu_audio_and_is_byte_deterministic() {
+        let scratch = dawsu_test_support::Scratch::new("mix-ogg-roundtrip");
+        let frames = 4096;
+        let mut samples = Vec::with_capacity(frames * CHANNELS);
+        for i in 0..frames {
+            let t = i as f32 / SAMPLE_RATE as f32;
+            let env = (1.0 - i as f32 / frames as f32).max(0.0);
+            samples.push((2.0 * std::f32::consts::PI * 440.0 * t).sin() * 0.6 * env);
+            samples.push((2.0 * std::f32::consts::PI * 660.0 * t).sin() * 0.5 * env);
+        }
+        let first = encode_format(&samples, MixFormat::OggVorbis).unwrap();
+        let second = encode_format(&samples, MixFormat::OggVorbis).unwrap();
+        assert_eq!(&first[0..4], b"OggS");
+        assert_eq!(first, second, "identical PCM must produce byte-identical Ogg Vorbis output");
+
+        let path = scratch.path("vorbis-mix.ogg");
+        fs::write(&path, &first).unwrap();
+        let decoded = dawsu_audio::decode(&path).unwrap();
+        assert_eq!(decoded.sample_rate, SAMPLE_RATE);
+        assert_eq!(decoded.channels, CHANNELS);
+        assert!(!decoded.samples.is_empty());
+        let peak = decoded.samples.iter().fold(0.0_f32, |p, s| p.max(s.abs()));
+        assert!(peak > 0.3, "decoded Ogg should preserve audible waveform, peak={peak}");
+
+        let staged = StagedMix { path, wav: first, reuse: false, index: None };
+        let preview = staged.clip();
+        assert_eq!(preview.sample_rate, SAMPLE_RATE);
+        assert_eq!(preview.channels, CHANNELS);
+        assert_eq!(preview.samples.len(), decoded.samples.len());
     }
 }

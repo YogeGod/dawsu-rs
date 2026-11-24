@@ -20,6 +20,8 @@ pub struct ExportOptions {
     /// Opt-in: auto-fix osu! RC health issues (late impact, <25 ms, <1024 B, bloated silence)
     /// on newly rendered/staged mixes. Default `false` preserves exact raw PCM output.
     pub auto_fix_staged_mixes: bool,
+    /// Audio format for generated/copied hitsound mix files.
+    pub mix_format: crate::MixFormat,
 }
 
 /// What the Export window last chose for a map, kept with the session. Older builds ignore it.
@@ -38,6 +40,9 @@ pub struct ExportChoices {
     /// Use "later moment wins" instead of the default Merge/Union for nearby source hits.
     #[serde(default)]
     pub later_wins: bool,
+    /// Audio format for generated/copied hitsound mix files. Choices saved before it existed read as 16-bit WAV.
+    #[serde(default)]
+    pub mix_format: crate::MixFormat,
 }
 
 /// Which window a preview belongs to, so main never shows it as its own review.
@@ -179,6 +184,7 @@ impl Application {
                 base: options.base,
                 slider_audio: options.slider_audio,
                 later_wins: options.copy.collision_policy == dawsu_hitsounding::copy::CopyCollisionPolicy::LaterWins,
+                mix_format: options.mix_format,
             });
         }
         self.export.stop();
@@ -795,6 +801,7 @@ mod tests {
             base: false,
             slider_audio: false,
             later_wins: false,
+            mix_format: crate::MixFormat::Wav16,
         };
         assert_eq!(app.document().unwrap().export_choices(), Some(&expected));
         wait_preview(&mut app);
@@ -1107,6 +1114,9 @@ mod tests {
         let old: ExportChoices =
             serde_json::from_str(r#"{"left_out":[],"match_within":5.0,"copy_volumes":true}"#).unwrap();
         assert!(!old.base && !old.slider_audio);
+        assert_eq!(old.mix_format, crate::MixFormat::Wav16);
+        let roundtrip: ExportChoices = serde_json::from_str(&serde_json::to_string(&old).unwrap()).unwrap();
+        assert_eq!(roundtrip.mix_format, crate::MixFormat::Wav16);
     }
 
     /// The sample index files Generate stages under merge settings, after `already` and from `start`.
@@ -1121,7 +1131,8 @@ mod tests {
         let settings = crate::ExportSettings::default();
         crate::mixes::stage_in_file(
             hits, file, &problems, source.parent().unwrap(), std::path::Path::new(""), &[],
-            dawsu_hitsounding::Placement::OnObjects, already, Some(&settings), &[], start, &crate::pending::Pending::default(), &|| false,
+            dawsu_hitsounding::Placement::OnObjects, already, Some(&settings), &[], start,
+            crate::MixFormat::Wav16, &crate::pending::Pending::default(), &|| false,
         ).unwrap().1.staged
     }
 
@@ -1335,5 +1346,86 @@ mod tests {
         assert!(written.contains("100,100,1000,1,0,"), "no finish at 1000: {written}");
         assert!(written.contains("100,100,1500,1,2,"), "the whistle stays: {written}");
         assert!(preview.plan.mixes.is_empty());
+    }
+
+    #[test]
+    fn export_with_ogg_vorbis_and_wav32f_stages_publishes_and_reuses_mixes() {
+        let scratch = Scratch::new("export-mix-formats");
+        let header = "osu file format v14\n[General]\nMode:0\n[Metadata]\nArtist:Artist\nTitle:Title\nCreator:Mapper\nVersion:Test\n[TimingPoints]\n0,500,4,1,0,100,1,0\n[HitObjects]\n";
+        let source = scratch.path("source.osu");
+        let target = scratch.path("target.osu");
+        std::fs::write(&source, format!("{header}256,192,1000,1,0,0:0:0:40:one.wav\n300,192,1000,1,0,0:0:0:80:two.wav\n")).unwrap();
+        std::fs::write(&target, format!("{header}100,100,1000,1,0,0:0:0:0:\n")).unwrap();
+        for (name, value) in [("one.wav", 8192_i16), ("two.wav", 16384)] {
+            let frames = 2048usize;
+            let data_size = (frames * 2) as u32;
+            let mut wav = Vec::with_capacity(44 + data_size as usize);
+            wav.extend(b"RIFF");
+            wav.extend((36 + data_size).to_le_bytes());
+            wav.extend(b"WAVEfmt ");
+            wav.extend(16u32.to_le_bytes());
+            wav.extend(1u16.to_le_bytes());
+            wav.extend(1u16.to_le_bytes());
+            wav.extend(48_000u32.to_le_bytes());
+            wav.extend((48_000u32 * 2).to_le_bytes());
+            wav.extend(2u16.to_le_bytes());
+            wav.extend(16u16.to_le_bytes());
+            wav.extend(b"data");
+            wav.extend(data_size.to_le_bytes());
+            for _ in 0..frames {
+                wav.extend(value.to_le_bytes());
+            }
+            std::fs::write(scratch.path(name), wav).unwrap();
+        }
+        let source = source.canonicalize().unwrap();
+        let target = target.canonicalize().unwrap();
+        let mut app = opened(&source);
+
+        // 1. Ogg Vorbis: stages .ogg, publishes, decodes cleanly, and re-export reuses it.
+        let ogg_opts = ExportOptions {
+            targets: vec![target.clone()],
+            mix_format: crate::MixFormat::OggVorbis,
+            ..ExportOptions::default()
+        };
+        let id = app.request_export_preview(ogg_opts.clone()).unwrap();
+        wait_preview(&mut app);
+        assert_eq!(app.export_status().error, None);
+        let ogg_paths: Vec<PathBuf> = app.export_status().preview.unwrap().plan.mix_paths().map(PathBuf::from).collect();
+        assert_eq!(ogg_paths.len(), 1);
+        assert_eq!(ogg_paths[0].extension().and_then(|e| e.to_str()), Some("ogg"));
+        assert_eq!(app.document().unwrap().export_choices().unwrap().mix_format, crate::MixFormat::OggVorbis);
+        app.run_export(id).unwrap();
+        wait_main(&mut app);
+        assert!(app.error.is_none(), "{:?}", app.error);
+        assert!(ogg_paths[0].exists());
+        assert_eq!(&std::fs::read(&ogg_paths[0]).unwrap()[0..4], b"OggS");
+        assert!(dawsu_audio::decode(&ogg_paths[0]).is_ok());
+
+        // Re-exporting identical mix with OggVorbis reuses the existing .ogg file byte-for-byte.
+        app.request_export_preview(ogg_opts).unwrap();
+        wait_preview(&mut app);
+        let preview = app.export_status().preview.unwrap();
+        assert_eq!(preview.plan.mixes.len(), 1);
+        assert!(preview.plan.mixes[0].is_reused(), "identical Ogg Vorbis mix should be reused");
+
+        // 2. 32-bit float WAV: stages IEEE float WAV (format tag = 3) and publishes cleanly.
+        let wav32f_opts = ExportOptions {
+            targets: vec![target],
+            mix_format: crate::MixFormat::Wav32f,
+            ..ExportOptions::default()
+        };
+        let id = app.request_export_preview(wav32f_opts).unwrap();
+        wait_preview(&mut app);
+        assert_eq!(app.export_status().error, None);
+        let float_paths: Vec<PathBuf> = app.export_status().preview.unwrap().plan.mix_paths().map(PathBuf::from).collect();
+        assert_eq!(float_paths.len(), 1);
+        assert_eq!(float_paths[0].extension().and_then(|e| e.to_str()), Some("wav"));
+        app.run_export(id).unwrap();
+        wait_main(&mut app);
+        assert!(app.error.is_none(), "{:?}", app.error);
+        let bytes = std::fs::read(&float_paths[0]).unwrap();
+        assert_eq!(u16::from_le_bytes([bytes[20], bytes[21]]), 3, "IEEE float format tag");
+        assert_eq!(u16::from_le_bytes([bytes[34], bytes[35]]), 32, "32 bits per sample");
+        assert!(dawsu_audio::decode(&float_paths[0]).is_ok());
     }
 }
