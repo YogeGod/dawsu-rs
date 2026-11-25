@@ -15,7 +15,9 @@ pub use host::{
     MidiEvent, PROTOCOL_MAGIC, PROTOCOL_VERSION, ProcessTransport, RenderRequest, RenderResult,
     ShmBlock, ShmEvent, Vst3HostConfig,
 };
-pub use midi_in::{MidiInputEvent, MidiInputRouter, decode_midi_bytes, list_midi_input_ports};
+pub use midi_in::{
+    MidiInputEvent, MidiInputRouter, TimestampedMidiEvent, decode_midi_bytes, list_midi_input_ports,
+};
 pub use scanner::{
     ScanError, Vst3PluginInfo, default_vst3_dirs, discover_vst3_paths, discover_vst3_paths_in,
     parse_scan_line, parse_scan_output, scan_plugin,

@@ -105,6 +105,7 @@ pub fn import_midi_tracks(timed: &TimedMidi) -> Vec<KeysoundTrack> {
             name: name.clone(),
             channel,
             is_drum,
+            is_drum_sync: false,
             muted: false,
             solo: false,
             instrument: InstrumentSettings {
@@ -113,6 +114,8 @@ pub fn import_midi_tracks(timed: &TimedMidi) -> Vec<KeysoundTrack> {
                 channel,
                 is_drum,
                 soundfont_path: None,
+                vst3_plugin_uid: None,
+                vst3_state_b64: None,
                 gain_db: 0.0,
             },
             notes,

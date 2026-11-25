@@ -9,6 +9,7 @@
     dirty = false,
     onselecttrack = null,
     onimportmidi = null,
+    onopen = null,
     onundo = null,
     onredo = null,
     onsave = null,
@@ -28,6 +29,7 @@
         {/each}
       </select>
       <button type="button" onclick={() => onimportmidi?.()}>Import .mid…</button>
+      <button type="button" onclick={() => onopen?.()}>Open .dawsuks…</button>
       <button type="button" disabled={!canUndo} onclick={() => onundo?.()}>Undo</button>
       <button type="button" disabled={!canRedo} onclick={() => onredo?.()}>Redo</button>
       <button type="button" onclick={() => onsave?.()}>{dirty ? "Save .dawsuks*" : "Save .dawsuks"}</button>

@@ -4,6 +4,7 @@ import {
   bookmarkFlagHeight, bookmarkHalfWidth, clock, computeDrawStrokeSteps, defaultWaveformHeight,
   describeOutputProblem, findNearestMoment, hitHalfWidth, limit, locatorFlagHeight, locatorFlagWidth,
   minZoom, nameOf, objectReach, objectSize, rulerBandHeight, sampleFolderNames, snapTimeInScene,
+  snapToActiveGridInScene,
 } from "./helpers.js";
 
 export function attachTimeline(ctx) {
@@ -480,19 +481,10 @@ export function attachTimeline(ctx) {
 
   // A locator follows the pointer's distance from where its flag or line was grabbed, and stops at
   // the other locator: L never passes R, R never passes L.
+  // Mirrors Rust's `TempoMap::snap` (`crates/dawsu-editor/src/tempo.rs`).
   function snapToActiveGrid(ms) {
     if (!state.scene?.snap || !state.scene.sections?.length) return ms;
-    const sections = state.scene.sections;
-    let active = sections[0];
-    for (const s of sections) {
-      if (s[0] <= ms) active = s;
-      else break;
-    }
-    const [start, beatLen] = active;
-    if (!(beatLen > 0)) return ms;
-    const step = beatLen * (state.scene.beats || 1) / (state.scene.divisor || 4);
-    if (!(step > 0)) return ms;
-    return start + Math.round((ms - start) / step) * step;
+    return snapToActiveGridInScene(state.scene, ms);
   }
 
   function locatorDragTo(gesture, x) {

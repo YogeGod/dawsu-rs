@@ -58,9 +58,25 @@ pub struct Vst3HostConfig {
     pub plugin_path: PathBuf,
     pub plugin_uid: Option<String>,
     pub offline: bool,
+    /// Target audio sample rate in Hz (`0` defaults to `44_100`).
+    #[serde(default = "default_sample_rate_hz")]
+    pub sample_rate_hz: u32,
+}
+
+fn default_sample_rate_hz() -> u32 {
+    44_100
 }
 
 impl Vst3HostConfig {
+    /// Effective sample rate in Hz (falls back to `44_100` when unset or zero).
+    pub fn effective_sample_rate_hz(&self) -> u32 {
+        if self.sample_rate_hz > 0 {
+            self.sample_rate_hz
+        } else {
+            44_100
+        }
+    }
+
     /// Builds the CLI argument list passed to `dawsu_vst3_host`.
     pub fn args(&self) -> Vec<String> {
         let mut args = vec![
@@ -77,6 +93,9 @@ impl Vst3HostConfig {
         if self.offline {
             args.push("--offline".to_string());
         }
+        let sr = self.effective_sample_rate_hz();
+        args.push("--sample-rate".to_string());
+        args.push(sr.to_string());
         args
     }
 }
@@ -301,7 +320,10 @@ pub struct HostSession<T: HostTransport = ProcessTransport> {
 impl HostSession<ProcessTransport> {
     /// Spawns `dawsu_vst3_host` (creating shared memory first) and completes the `READY` handshake.
     pub fn spawn(config: &Vst3HostConfig) -> Result<Self, HostError> {
-        let shm = crate::shm::ShmChannel::create(&config.shm_name, 44_100.0)?;
+        let shm = crate::shm::ShmChannel::create(
+            &config.shm_name,
+            f64::from(config.effective_sample_rate_hz()),
+        )?;
         let transport = ProcessTransport::spawn(config)?;
         let mut session = Self::from_transport(transport)?;
         session.shm = Some(shm);
@@ -736,5 +758,21 @@ mod tests {
         assert!(session.is_crashed());
         // Subsequent calls also report Crashed without hanging.
         assert!(matches!(session.hide(), Err(HostError::Crashed(_))));
+    }
+
+    #[test]
+    fn host_config_passes_negotiated_sample_rate_flag() {
+        let cfg = Vst3HostConfig {
+            host_executable: PathBuf::from("dawsu_vst3_host.exe"),
+            shm_name: "dawsu_test".into(),
+            parent_pid: 42,
+            plugin_path: PathBuf::from("Kit.vst3"),
+            plugin_uid: None,
+            offline: false,
+            sample_rate_hz: 48_000,
+        };
+        let args = cfg.args();
+        let pos = args.iter().position(|a| a == "--sample-rate").unwrap();
+        assert_eq!(args[pos + 1], "48000");
     }
 }

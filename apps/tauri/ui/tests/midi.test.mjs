@@ -59,6 +59,7 @@ test("MIDI Record sends the picked port and the snap's beat divisor", () => {
   assert.deepEqual(recordArgs(1, { beats: 1, divisor: 4 }), { portIndex: 1, snapDivisor: 4 });
   assert.deepEqual(recordArgs(null, { divisor: 12 }), { portIndex: null, snapDivisor: 12 });
   assert.deepEqual(recordArgs(0, { beats: 2, divisor: 1 }), { portIndex: 0, snapDivisor: null }, "2/1 has no beat divisor");
+  assert.deepEqual(recordArgs(1, { snap: false, beats: 1, divisor: 4 }), { portIndex: 1, snapDivisor: null }, "snap off disables MIDI record quantization");
   assert.deepEqual(recordArgs(undefined, null), { portIndex: null, snapDivisor: null });
 });
 
@@ -196,6 +197,10 @@ test("dragging a note body moves it, dragging its right edge resizes it, and a s
     { kind: "resize_note", trackId: 5, noteIndex: 2, endMs: 1125 }, "a note keeps one grid step");
   assert.equal(noteDragPayload(5, note, "move", 2, 3), null);
   assert.equal(noteDragPayload(5, note, "resize", 1, 0), null);
+  // Zero-distance click on an off-grid note must NOT quantize or mutate its timing.
+  const offGrid = { index: 3, startMs: 1037, endMs: 1287, pitch: 60, velocity: 90 };
+  assert.equal(noteDragPayload(5, offGrid, "move", 0, 0), null);
+  assert.equal(noteDragPayload(5, offGrid, "resize", 0, 0), null);
   // Rust re-sorts the track after a move; the selection follows the note by start and pitch.
   const sorted = [{ index: 0, startMs: 1200, pitch: 60 }, { index: 1, startMs: 1500, pitch: 62 }];
   assert.equal(findNoteIndex(sorted, 1500, 62), 1);

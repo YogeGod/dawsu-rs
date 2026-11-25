@@ -448,6 +448,10 @@ impl Default for Vst3Manager {
     }
 }
 
+/// Linear amplitude threshold corresponding to `-60 dBFS` (`10^(-60/20)`).
+pub const AUTO_TRIM_MINUS_60_DBFS: f32 = 0.001;
+
+/// Loads a VST3 instrument in a dedicated sidecar process.
 impl Vst3Manager {
     /// Creates a manager configured with the platform's default VST3 search folders.
     pub fn new() -> Self {
@@ -569,13 +573,29 @@ impl Vst3Manager {
         &self.scanned_plugins
     }
 
-    /// Loads a VST3 instrument in a dedicated sidecar process.
+    /// Loads a VST3 instrument in a dedicated sidecar process at 44.1 kHz.
     pub fn load_instrument(
         &mut self,
         plugin_path: impl Into<PathBuf>,
         plugin_uid: Option<String>,
     ) -> Result<LoadedPluginSummary, Vst3Error> {
-        self.load_plugin(plugin_path, plugin_uid, PluginRole::Instrument, false)
+        self.load_plugin_at_rate(plugin_path, plugin_uid, PluginRole::Instrument, false, 44_100)
+    }
+
+    /// Loads a VST3 instrument in a dedicated sidecar process at `sample_rate_hz`.
+    pub fn load_instrument_at_rate(
+        &mut self,
+        plugin_path: impl Into<PathBuf>,
+        plugin_uid: Option<String>,
+        sample_rate_hz: u32,
+    ) -> Result<LoadedPluginSummary, Vst3Error> {
+        self.load_plugin_at_rate(
+            plugin_path,
+            plugin_uid,
+            PluginRole::Instrument,
+            false,
+            sample_rate_hz,
+        )
     }
 
     /// Loads a VST3 audio effect in a dedicated sidecar process.
@@ -584,7 +604,7 @@ impl Vst3Manager {
         plugin_path: impl Into<PathBuf>,
         plugin_uid: Option<String>,
     ) -> Result<LoadedPluginSummary, Vst3Error> {
-        self.load_plugin(plugin_path, plugin_uid, PluginRole::Effect, false)
+        self.load_plugin_at_rate(plugin_path, plugin_uid, PluginRole::Effect, false, 44_100)
     }
 
     /// Allocates a unique shared-memory channel name for spawning a sidecar off-thread.
@@ -627,6 +647,18 @@ impl Vst3Manager {
         role: PluginRole,
         offline: bool,
     ) -> Result<LoadedPluginSummary, Vst3Error> {
+        self.load_plugin_at_rate(plugin_path, plugin_uid, role, offline, 44_100)
+    }
+
+    /// Loads a VST3 plug-in configured at the given `sample_rate_hz`.
+    pub fn load_plugin_at_rate(
+        &mut self,
+        plugin_path: impl Into<PathBuf>,
+        plugin_uid: Option<String>,
+        role: PluginRole,
+        offline: bool,
+        sample_rate_hz: u32,
+    ) -> Result<LoadedPluginSummary, Vst3Error> {
         let host_executable = self.host_executable()?;
         let plugin_path = plugin_path.into();
         let pid = std::process::id();
@@ -637,6 +669,7 @@ impl Vst3Manager {
             plugin_path: plugin_path.clone(),
             plugin_uid: plugin_uid.clone(),
             offline,
+            sample_rate_hz: if sample_rate_hz > 0 { sample_rate_hz } else { 44_100 },
         };
         let session = HostSession::spawn(&config)?;
         Ok(self.insert_loaded_session(plugin_path, plugin_uid, role, session))
@@ -800,10 +833,6 @@ impl Vst3Manager {
 
     /// Executes a [`Vst3DrumExportPlan`] by bouncing every [`Vst3BounceJob`] through an isolated
     /// `--offline` VST3 host into `out_dir/<filename>` as a valid stereo WAV file.
-    ///
-    /// Copies the live instance's current component state into the offline host so kit/preset
-    /// settings match what the mapper hears, and converts the host's raw interleaved float32
-    /// output into a proper RIFF WAV file via [`Self::bounce_audio_to_wav`].
     pub fn execute_vst3_drum_export(
         &mut self,
         instance_id: &str,
@@ -811,14 +840,33 @@ impl Vst3Manager {
         out_dir: impl AsRef<Path>,
         sample_rate: u32,
     ) -> Result<Vec<BounceOutput>, Vst3Error> {
+        self.execute_vst3_drum_export_with_options(instance_id, plan, out_dir, sample_rate, true, None)
+    }
+
+    /// Executes a [`Vst3DrumExportPlan`] with explicit `-60 dBFS` `auto_trim` control and
+    /// cooperative cancellation.
+    pub fn execute_vst3_drum_export_with_options(
+        &mut self,
+        instance_id: &str,
+        plan: &Vst3DrumExportPlan,
+        out_dir: impl AsRef<Path>,
+        sample_rate: u32,
+        auto_trim: bool,
+        cancel: Option<&crate::bounce_plan::BounceCancelToken>,
+    ) -> Result<Vec<BounceOutput>, Vst3Error> {
         let _ = self.host_executable()?;
         let (plugin_path, plugin_uid) = self
             .instance_info(instance_id)
             .ok_or_else(|| Vst3Error::PluginNotFound(instance_id.to_string()))?;
         let state_b64 = self.get_plugin_state(instance_id).ok();
 
-        let offline_summary =
-            self.load_plugin(plugin_path, plugin_uid, PluginRole::Instrument, true)?;
+        let offline_summary = self.load_plugin_at_rate(
+            plugin_path,
+            plugin_uid,
+            PluginRole::Instrument,
+            true,
+            sample_rate,
+        )?;
         let offline_id = offline_summary.id.clone();
         if let Some(state) = state_b64.as_deref()
             && !state.is_empty()
@@ -826,10 +874,12 @@ impl Vst3Manager {
             let _ = self.set_plugin_state(&offline_id, state);
         }
 
-        let result = execute_vst3_drum_export_with(
+        let result = execute_vst3_drum_export_with_options(
             plan,
             out_dir.as_ref(),
             sample_rate,
+            auto_trim,
+            cancel,
             |events, raw_path, options| {
                 let instance = self
                     .instances
@@ -839,7 +889,11 @@ impl Vst3Manager {
                     out_path: raw_path.to_path_buf(),
                     max_frames: options.max_frames,
                     quiet_frames: options.quiet_frames,
-                    threshold: f64::from(options.silence_threshold),
+                    threshold: f64::from(if options.silence_threshold > 0.0 {
+                        options.silence_threshold
+                    } else {
+                        1e-5
+                    }),
                     events,
                 };
                 instance
@@ -849,6 +903,87 @@ impl Vst3Manager {
                     .map_err(Vst3Error::from)
             },
         );
+        let _ = self.unload_plugin(&offline_id);
+        result
+    }
+
+    /// Renders a batch of MIDI event lists through an isolated `--offline` VST3 host and returns
+    /// interleaved stereo `f32` buffers at `sample_rate`. Copies state from `live_instance_id`
+    /// when loaded, otherwise falls back to `saved_state_b64`.
+    pub fn render_midi_batches_via_vst3(
+        &mut self,
+        live_instance_id: Option<&str>,
+        plugin_path: &Path,
+        plugin_uid: Option<String>,
+        saved_state_b64: Option<&str>,
+        batches: &[Vec<MidiEvent>],
+        sample_rate: u32,
+        cancel: Option<&crate::bounce_plan::BounceCancelToken>,
+    ) -> Result<Vec<Vec<f32>>, Vst3Error> {
+        let _ = self.host_executable()?;
+        let state_b64 = live_instance_id
+            .and_then(|id| self.get_plugin_state(id).ok())
+            .filter(|s| !s.is_empty())
+            .or_else(|| saved_state_b64.filter(|s| !s.is_empty()).map(str::to_owned));
+
+        let offline_summary = self.load_plugin_at_rate(
+            plugin_path.to_path_buf(),
+            plugin_uid,
+            PluginRole::Instrument,
+            true,
+            sample_rate,
+        )?;
+        let offline_id = offline_summary.id.clone();
+        if let Some(state) = state_b64.as_deref()
+            && !state.is_empty()
+        {
+            let _ = self.set_plugin_state(&offline_id, state);
+        }
+
+        let tmp_dir = std::env::temp_dir().join(format!(
+            "dawsu-ks-vst3-{}-{}",
+            std::process::id(),
+            self.next_shm_seq
+        ));
+        let _ = std::fs::create_dir_all(&tmp_dir);
+
+        let result = (|| -> Result<Vec<Vec<f32>>, Vst3Error> {
+            let mut clips = Vec::with_capacity(batches.len());
+            let sr = u64::from(sample_rate.max(8_000));
+            for (idx, events) in batches.iter().enumerate() {
+                if cancel.is_some_and(|c| c.is_cancelled()) {
+                    return Err(Vst3Error::Bounce("Render cancelled.".into()));
+                }
+                let last_frame = events.iter().map(|e| e.frame).max().unwrap_or(0);
+                let max_frames = (last_frame + sr * 6).max(sr * 10);
+                let raw_path = tmp_dir.join(format!("clip-{idx}.f32.tmp"));
+                let instance = self
+                    .instances
+                    .get_mut(&offline_id)
+                    .ok_or_else(|| Vst3Error::PluginNotFound(offline_id.clone()))?;
+                let request = RenderRequest {
+                    out_path: raw_path.clone(),
+                    max_frames,
+                    quiet_frames: sr / 2,
+                    threshold: f64::from(AUTO_TRIM_MINUS_60_DBFS),
+                    events: events.clone(),
+                };
+                let _ = instance.session.render(&request)?;
+                let raw_bytes = std::fs::read(&raw_path).map_err(|err| {
+                    Vst3Error::Bounce(format!("read raw VST3 render failed: {err}"))
+                })?;
+                let _ = std::fs::remove_file(&raw_path);
+                let mut interleaved = Vec::with_capacity(raw_bytes.len() / 4);
+                for chunk in raw_bytes.chunks_exact(4) {
+                    interleaved.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
+                }
+                let trimmed = trim_silence_tail(&interleaved, AUTO_TRIM_MINUS_60_DBFS).to_vec();
+                clips.push(trimmed);
+            }
+            Ok(clips)
+        })();
+
+        let _ = std::fs::remove_dir_all(&tmp_dir);
         let _ = self.unload_plugin(&offline_id);
         result
     }
@@ -902,10 +1037,27 @@ impl Vst3Manager {
 
 /// Executes every bounce job in `plan` into `out_dir`, removing all `.f32.tmp` and WAV files
 /// created during this render if any job fails.
+#[cfg(test)]
 pub(crate) fn execute_vst3_drum_export_with<F>(
     plan: &Vst3DrumExportPlan,
     out_dir: &Path,
     sample_rate: u32,
+    render_raw: F,
+) -> Result<Vec<BounceOutput>, Vst3Error>
+where
+    F: FnMut(Vec<MidiEvent>, &Path, &BounceOptions) -> Result<bool, Vst3Error>,
+{
+    execute_vst3_drum_export_with_options(plan, out_dir, sample_rate, true, None, render_raw)
+}
+
+/// Executes every bounce job in `plan` into `out_dir` with explicit `-60 dBFS` `auto_trim`
+/// and cooperative cancellation, removing all temp/WAV files created if cancelled or failed.
+pub(crate) fn execute_vst3_drum_export_with_options<F>(
+    plan: &Vst3DrumExportPlan,
+    out_dir: &Path,
+    sample_rate: u32,
+    auto_trim: bool,
+    cancel: Option<&crate::bounce_plan::BounceCancelToken>,
     mut render_raw: F,
 ) -> Result<Vec<BounceOutput>, Vst3Error>
 where
@@ -916,12 +1068,16 @@ where
 
     let options = BounceOptions {
         sample_rate,
+        silence_threshold: if auto_trim { AUTO_TRIM_MINUS_60_DBFS } else { 0.0 },
         ..BounceOptions::default()
     };
     let mut outputs = Vec::with_capacity(plan.jobs.len());
     let mut created_files: Vec<PathBuf> = Vec::new();
     let result = (|| -> Result<(), Vst3Error> {
         for job in &plan.jobs {
+            if cancel.is_some_and(|c| c.is_cancelled()) {
+                return Err(Vst3Error::Bounce("Render cancelled.".into()));
+            }
             let events = Vst3Manager::preview_note_to_midi_events(
                 MidiPreviewNote {
                     channel: 9,
@@ -1395,5 +1551,85 @@ mod tests {
         assert_eq!(plan.assignments[0].filename, "vst-kick-v73-2.wav");
         assert_eq!(plan.jobs[1].filename, "vst-snare-v80-2.wav");
         assert_eq!(plan.assignments[1].filename, "vst-snare-v80-2.wav");
+    }
+
+    #[test]
+    fn drum_export_auto_trim_and_cancel_work_as_configured() {
+        let root = std::env::temp_dir().join(format!(
+            "dawsu-vst3-autotrim-cancel-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let hits = vec![Vst3DrumHit {
+            time_ms: 0.0,
+            pitch: 36,
+            volume: 100,
+            name: "Kick".into(),
+        }];
+        let plan = plan_vst3_drum_export(&hits, VelocityExportMode::default());
+
+        // 0.25 s tone followed by 0.75 s silence at 48 kHz written as raw interleaved f32.
+        let render_one = |_events: Vec<MidiEvent>,
+                          raw_path: &Path,
+                          _opts: &BounceOptions|
+         -> Result<bool, Vst3Error> {
+            let mut bytes = Vec::with_capacity(48_000 * 2 * 4);
+            for i in 0..48_000usize {
+                let s = if i < 12_000 {
+                    0.5 * (i as f32 * 0.05).sin()
+                } else {
+                    0.0
+                };
+                bytes.extend_from_slice(&s.to_le_bytes());
+                bytes.extend_from_slice(&s.to_le_bytes());
+            }
+            fs::write(raw_path, bytes).map_err(|e| Vst3Error::Bounce(e.to_string()))?;
+            Ok(false)
+        };
+
+        let trimmed_dir = root.join("trimmed");
+        let untrimmed_dir = root.join("untrimmed");
+        let cancel = crate::bounce_plan::BounceCancelToken::new();
+        let trimmed = execute_vst3_drum_export_with_options(
+            &plan,
+            &trimmed_dir,
+            48_000,
+            true,
+            Some(&cancel),
+            render_one,
+        )
+        .unwrap();
+        let untrimmed = execute_vst3_drum_export_with_options(
+            &plan,
+            &untrimmed_dir,
+            48_000,
+            false,
+            Some(&cancel),
+            render_one,
+        )
+        .unwrap();
+
+        let trimmed_clip = dawsu_audio::decode(&trimmed[0].path).unwrap();
+        let untrimmed_clip = dawsu_audio::decode(&untrimmed[0].path).unwrap();
+        assert!(
+            trimmed_clip.samples.len() < untrimmed_clip.samples.len() / 2,
+            "auto_trim=true ({} samples) must trim trailing silence compared to auto_trim=false ({} samples)",
+            trimmed_clip.samples.len(),
+            untrimmed_clip.samples.len()
+        );
+
+        // Cancelled token aborts before writing output.
+        cancel.cancel();
+        let cancelled = execute_vst3_drum_export_with_options(
+            &plan,
+            &root.join("cancelled"),
+            48_000,
+            true,
+            Some(&cancel),
+            render_one,
+        );
+        assert!(cancelled.is_err(), "pre-cancelled bounce token must abort drum export");
+
+        let _ = fs::remove_dir_all(&root);
     }
 }

@@ -2369,7 +2369,7 @@ enum Request {
         mpsc::Sender<Result<dawsu_application::StemSeparationStatus, String>>,
     ),
 }
-struct Editor(mpsc::Sender<Request>);
+struct Editor(mpsc::Sender<Request>, dawsu_application::bounce_plan::BounceCancelToken);
 
 fn guard<T>(
     app: &mut Application,
@@ -2842,6 +2842,8 @@ fn next_view_response(
 
 fn editor_thread(initial: Option<PathBuf>) -> Editor {
     let (send, receive) = mpsc::channel();
+    let bounce_cancel = dawsu_application::bounce_plan::BounceCancelToken::new();
+    let thread_cancel = bounce_cancel.clone();
     std::thread::spawn(move || {
         let data_root = dawsu_application::data_folder();
         #[cfg(feature = "recovery-smoke")]
@@ -2849,6 +2851,7 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
             .filter(|path| !path.is_empty())
             .map_or(data_root, PathBuf::from);
         let mut app = Application::for_desktop(data_root);
+        app.bounce_cancel = thread_cancel;
         let mut fault = None;
         let mut export_cache = ExportCache::default();
         let mut playback_start = PlaybackStart::default();
@@ -3105,7 +3108,11 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                             if app.busy {
                                 Err("Wait for the current job to finish.".into())
                             } else if app.is_dirty() && !discard {
-                                Err("Save or discard the current difficulty before quitting.".into())
+                                if app.has_dirty_beatmap() {
+                                    Err("Save or discard the current difficulty before quitting.".into())
+                                } else {
+                                    Err("Save or discard unsaved Keysound changes before quitting.".into())
+                                }
                             } else {
                                 app.save_session().map(|()| {
                                     app.cancel_drum_detection();
@@ -3335,8 +3342,40 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                     let _ = response.send(result);
                 }
                 Ok(Request::KeysoundsAction(payload, response)) => {
-                    let result = guard(&mut app, &mut fault, |app| app.keysounds_action(&payload))
-                        .and_then(|r| r);
+                    let result = guard(&mut app, &mut fault, |app| {
+                        if payload.get("kind").and_then(Value::as_str) == Some("browse_dawsuks") {
+                            let mut dialog = rfd::FileDialog::new()
+                                .set_title("Open Keysound project")
+                                .add_filter("dawsu! Keysound project", &["dawsuks"]);
+                            if let Some(dir) = app
+                                .keysound_history
+                                .project_path
+                                .as_ref()
+                                .and_then(|p| p.parent().map(Path::to_path_buf))
+                                .or_else(|| {
+                                    let d = dawsu_application::data_folder().join("keysounds-projects");
+                                    d.is_dir().then_some(d)
+                                })
+                                .or_else(|| app.document().and_then(|d| d.path.parent().map(Path::to_path_buf)))
+                            {
+                                dialog = dialog.set_directory(dir);
+                            }
+                            if let Some(path) = dialog.pick_file() {
+                                let mut res = app.keysounds_action(&json!({
+                                    "kind": "load_dawsuks",
+                                    "path": path.to_string_lossy(),
+                                }))?;
+                                res["picked"] = json!(true);
+                                res["loadedPath"] = json!(path.to_string_lossy());
+                                Ok(res)
+                            } else {
+                                Ok(json!({ "picked": false }))
+                            }
+                        } else {
+                            app.keysounds_action(&payload)
+                        }
+                    })
+                    .and_then(|r| r);
                     tick_cache.invalidate();
                     let _ = response.send(result);
                 }
@@ -3400,7 +3439,7 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
             }
         }
     });
-    Editor(send)
+    Editor(send, bounce_cancel)
 }
 
 fn ask<T>(state: &Editor, request: impl FnOnce(mpsc::Sender<T>) -> Request) -> Result<T, String> {
@@ -4858,6 +4897,10 @@ fn vst3_scan(state: State<'_, Editor>) -> Result<dawsu_application::Vst3ScanRepo
 
 #[tauri::command]
 fn drum_vst_action(payload: Value, state: State<'_, Editor>) -> Result<Value, String> {
+    if payload.get("kind").and_then(Value::as_str) == Some("cancel_bounce") {
+        state.1.cancel();
+        return Ok(json!({ "cancelled": true }));
+    }
     ask(&state, |tx| Request::DrumVstAction(payload, tx))?
 }
 
@@ -5102,8 +5145,26 @@ fn handle_drum_vst_action(
                     "filename": j.filename,
                     "pitch": j.pitch,
                     "midiVelocity": j.midi_velocity,
+                    "hitCount": j.hit_count,
                 })).collect::<Vec<_>>(),
             }))
+        }
+        "preview_render" => {
+            let exact = payload.get("exact").and_then(Value::as_bool).unwrap_or(false);
+            let format = match payload.get("format").and_then(Value::as_str) {
+                Some("ogg_vorbis" | "ogg") => dawsu_application::bounce_plan::BounceAudioFormat::OggVorbis,
+                _ => dawsu_application::bounce_plan::BounceAudioFormat::Wav16,
+            };
+            let normalize = payload.get("normalize").and_then(Value::as_bool).unwrap_or(true);
+            let auto_trim = payload.get("autoTrim").and_then(Value::as_bool).unwrap_or(true);
+            let mode = if exact {
+                dawsu_application::VelocityExportMode::ExactPerVolume
+            } else {
+                dawsu_application::VelocityExportMode::Tiered { max_interval: 20 }
+            };
+            app.set_drum_vst_routing(drums.routed_midi_notes(app));
+            app.set_drum_vst_choke_groups(drums.choke_groups(app));
+            app.preview_drum_vst_render_with_options(mode, format, normalize, auto_trim)
         }
         "render_wavs" => {
             let exact = payload.get("exact").and_then(Value::as_bool).unwrap_or(false);
@@ -5112,6 +5173,7 @@ fn handle_drum_vst_action(
                 _ => dawsu_application::bounce_plan::BounceAudioFormat::Wav16,
             };
             let normalize = payload.get("normalize").and_then(Value::as_bool).unwrap_or(false);
+            let auto_trim = payload.get("autoTrim").and_then(Value::as_bool).unwrap_or(true);
             let mode = if exact {
                 dawsu_application::VelocityExportMode::ExactPerVolume
             } else {
@@ -5119,7 +5181,8 @@ fn handle_drum_vst_action(
             };
             app.set_drum_vst_routing(drums.routed_midi_notes(app));
             app.set_drum_vst_choke_groups(drums.choke_groups(app));
-            let (plan, outputs) = app.render_drum_vst_with_options(mode, format, normalize)?;
+            let (plan, outputs) =
+                app.render_drum_vst_with_options(mode, format, normalize, auto_trim)?;
             Ok(json!({
                 "renderedCount": outputs.len(),
                 "hitCount": plan.assignments.len(),
@@ -5152,6 +5215,10 @@ fn drum_vst_status_json(app: &Application) -> Value {
 
 #[tauri::command]
 fn keysounds_action(payload: Value, state: State<'_, Editor>) -> Result<Value, String> {
+    if payload.get("kind").and_then(Value::as_str) == Some("cancel_bounce") {
+        state.1.cancel();
+        return Ok(json!({ "cancelled": true }));
+    }
     ask(&state, |tx| Request::KeysoundsAction(payload, tx))?
 }
 

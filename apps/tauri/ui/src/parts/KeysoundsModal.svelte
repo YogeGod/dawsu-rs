@@ -104,6 +104,29 @@
     }
   }
 
+  async function openDawsuks() {
+    if (loading) return;
+    loading = true;
+    error = "";
+    try {
+      const res = await invoke("keysounds_action", { payload: { kind: "browse_dawsuks" } });
+      if (res?.picked) {
+        summary = res;
+        trackId = res.activeTrackId ?? res.tracks?.[0]?.id ?? null;
+        selected = null;
+        globalThis.showToast?.({ tone: "success", title: "Opened Keysound project", body: res.loadedPath ?? "" });
+      }
+    } catch (err) {
+      error = String(err);
+    } finally {
+      loading = false;
+    }
+  }
+
+  async function cancelBounce() {
+    await invoke("keysounds_action", { payload: { kind: "cancel_bounce" } }).catch(() => {});
+  }
+
   async function openBounceModal() {
     bounceOpen = true;
     await refreshBouncePreview();
@@ -250,6 +273,7 @@
     if (!drag) return;
     const { note, mode, dx, dy } = drag;
     drag = null;
+    if (Math.abs(dx) < 2 && Math.abs(dy) < 2) return;
     const payload = noteDragPayload(trackId, note, mode, dx, dy);
     if (!payload) return;
     if (await send(payload)) {
@@ -374,6 +398,7 @@
         dirty={Boolean(summary?.dirty)}
         onselecttrack={selectTrack}
         onimportmidi={() => { closeModal(); globalThis.openMidiImport?.(); }}
+        onopen={openDawsuks}
         onundo={() => send({ kind: "undo" })}
         onredo={() => send({ kind: "redo" })}
         onsave={() => send({ kind: "save_dawsuks" })}
@@ -526,6 +551,7 @@
         bind:flattenChords={bounceFlatten}
         bind:format={bounceFormat}
         onrender={refreshBouncePreview}
+        oncancel={cancelBounce}
         onaudition={sample => { for (const p of sample.pitches ?? [60]) preview(p); }}
         oncommit={() => generateWithBounceOpts({ velocityBuckets: bounceVelBuckets, durationBucketMs: bounceDurMs, flattenChords: bounceFlatten, format: bounceFormat })}
         onclose={() => { bounceOpen = false; }}

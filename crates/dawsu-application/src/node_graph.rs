@@ -750,7 +750,8 @@ impl Application {
     }
 
     fn graph_analysis_range(&self, song_duration_ms: f64) -> Result<AnalysisRange, String> {
-        let ceiling = song_duration_ms.max(self.duration_ms()).max(1.0);
+        let offset_end = song_duration_ms + self.song_offset.max(0.0);
+        let ceiling = offset_end.max(song_duration_ms).max(self.duration_ms()).max(1.0);
         if self.node_graph.use_locator_range && self.locator_right > self.locator_left {
             AnalysisRange::new(self.locator_left.max(0.0), self.locator_right)
                 .map_err(|e| format!("Invalid locator range: {e}"))
@@ -1410,8 +1411,11 @@ impl Application {
             .as_ref()
             .map(|s| s.duration_ms())
             .unwrap_or_else(|| self.duration_ms());
+        let song_timeline_end_ms = (song_duration_ms + song_offset_ms.max(0.0))
+            .max(song_duration_ms)
+            .max(1.0);
         let range = self.graph_analysis_range(song_duration_ms)?;
-        let song_range = AnalysisRange::new(0.0, song_duration_ms.max(1.0)).ok();
+        let song_range = AnalysisRange::new(0.0, song_timeline_end_ms).ok();
 
         let doc_snapshot = self.node_graph.session.document().clone();
         let graph_hash = doc_snapshot.structural_hash();
@@ -1452,7 +1456,7 @@ impl Application {
                         &mut cache_snapshot,
                         EvalTarget::AllLaneOutputs,
                         range,
-                        Some(song_duration_ms),
+                        Some(song_timeline_end_ms),
                         song_range,
                         &stop,
                         &mut report_progress,
@@ -1472,7 +1476,7 @@ impl Application {
                                 &mut cache_snapshot,
                                 EvalTarget::Socket(ep.clone()),
                                 range,
-                                Some(song_duration_ms),
+                                Some(song_timeline_end_ms),
                                 song_range,
                                 &stop,
                                 &mut dummy,
@@ -1496,7 +1500,7 @@ impl Application {
                                     &mut cache_snapshot,
                                     EvalTarget::Nodes(vec![viewer_id.clone()]),
                                     range,
-                                    Some(song_duration_ms),
+                                    Some(song_timeline_end_ms),
                                     song_range,
                                     &stop,
                                     &mut dummy,
@@ -1593,5 +1597,32 @@ impl Application {
             record.graph_name
         );
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn graph_analysis_range_includes_positive_song_offset_tail() {
+        let mut app = Application::new();
+        app.song_offset = 12_500.0;
+        let range = app.graph_analysis_range(60_000.0).unwrap();
+        assert_eq!(range.from_ms, 0.0);
+        assert!(
+            range.to_ms >= 72_500.0,
+            "whole-song analysis must include positive song_offset tail, got {}",
+            range.to_ms
+        );
+
+        // Negative song_offset must not shrink the whole-song ceiling below song_duration_ms.
+        app.song_offset = -5_000.0;
+        let neg_range = app.graph_analysis_range(60_000.0).unwrap();
+        assert!(
+            neg_range.to_ms >= 60_000.0,
+            "negative song_offset must not cut song duration short, got {}",
+            neg_range.to_ms
+        );
     }
 }

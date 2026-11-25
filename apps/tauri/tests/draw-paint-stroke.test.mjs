@@ -58,6 +58,17 @@ test("computeDrawStrokeSteps respects Objects snap mode, snap off, and 512-step 
 
   const hugeStroke = computeDrawStrokeSteps(sampleScene(), 0, 200_000, 1);
   assert.equal(hugeStroke.steps.length, MAX_DRAW_STROKE_STEPS);
+
+  // Across a tempo change where the next red line is closer than the active section's grid step,
+  // snapTimeInScene must pick the red line to match Rust's TempoMap::snap.
+  const tempoChange = sampleScene({
+    sections: [
+      [0, 500, 4],     // 125 ms steps: 1000, 1125, 1250
+      [1180, 400, 4],  // red line at 1180 ms
+    ],
+  });
+  assert.equal(snapTimeInScene(tempoChange, 1170), 1180, "must snap to closer next tempo section red line");
+  assert.equal(snapTimeInScene(tempoChange, 1130), 1125, "must keep active section step when closer");
 });
 
 async function drawFrontend() {

@@ -49,49 +49,84 @@ pub fn chord_voicing_key(pitches: &[u8]) -> String {
     format!("chord_{}", parts.join("_"))
 }
 
-/// Detects every osu!standard hit object where 2+ unmuted notes on a track land within `tolerance_ms`.
-/// Runs in $O(N \log M)$ via sorted binary search over object timestamps.
+/// Detects every beatmap slot where more unmuted notes land within `tolerance_ms` than there are
+/// simultaneous playable hit-object slots available (e.g. 2+ voices on one osu!standard hit circle,
+/// or 4 voices on a 2-column osu!mania chord — never flagging playable multi-column mania chords).
 pub fn detect_chords(doc: &KeysoundDocument, osu: &OsuFile, tolerance_ms: f64) -> Vec<ChordConflict> {
     let tol = tolerance_ms.max(0.0);
-    let mut object_times: Vec<(usize, f64)> = osu
-        .hit_objects()
+    let slots = crate::generate::extract_map_slots(osu);
+    if slots.is_empty() {
+        return Vec::new();
+    }
+    let mut sorted_slots: Vec<(usize, f64)> = slots
         .iter()
         .enumerate()
-        .map(|(i, obj)| (i, obj.time()))
+        .map(|(i, slot)| (i, slot.time_ms))
         .collect();
-    let raw_times: Vec<f64> = object_times.iter().map(|&(_, t)| t).collect();
-    object_times.sort_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+    sorted_slots.sort_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
 
     let mut conflicts = Vec::new();
     for track in &doc.tracks {
         if track.muted {
             continue;
         }
-        let mut by_object: BTreeMap<usize, Vec<(usize, u8)>> = BTreeMap::new();
-        for (note_idx, note) in track.notes.iter().enumerate() {
-            if note.muted {
-                continue;
-            }
-            let lo = object_times.partition_point(|&(_, t)| t < note.start_ms - tol);
-            let mut best: Option<(usize, f64)> = None;
-            for &(obj_idx, obj_time) in &object_times[lo..] {
-                if obj_time > note.start_ms + tol {
+        // Match unmuted notes (sorted by time, then highest pitch first) against free slots,
+        // mirroring `generate::preview_sync`.
+        let mut notes: Vec<(usize, f64, u8)> = track
+            .notes
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| !n.muted)
+            .map(|(idx, n)| (idx, n.start_ms, n.pitch))
+            .collect();
+        notes.sort_by(|a, b| a.1.total_cmp(&b.1).then_with(|| b.2.cmp(&a.2)).then_with(|| a.0.cmp(&b.0)));
+
+        let mut used_slots = vec![false; sorted_slots.len()];
+        // Map each claimed sorted-slot position to the notes assigned to it (primary + overflow).
+        let mut slot_groups: BTreeMap<usize, Vec<(usize, u8)>> = BTreeMap::new();
+
+        for (note_idx, start_ms, pitch) in notes {
+            let lo = sorted_slots.partition_point(|&(_, t)| t < start_ms - tol);
+            let mut best_free: Option<(usize, f64)> = None;
+            let mut best_any: Option<(usize, f64)> = None;
+            for pos in lo..sorted_slots.len() {
+                let (_, slot_time) = sorted_slots[pos];
+                if slot_time > start_ms + tol {
                     break;
                 }
-                let dist = (obj_time - note.start_ms).abs();
-                if best.is_none_or(|(_, best_dist)| dist < best_dist) {
-                    best = Some((obj_idx, dist));
+                let dist = (slot_time - start_ms).abs();
+                if best_any.is_none_or(|(_, d)| dist < d) {
+                    best_any = Some((pos, dist));
+                }
+                if !used_slots[pos] && best_free.is_none_or(|(_, d)| dist < d) {
+                    best_free = Some((pos, dist));
                 }
             }
-            if let Some((obj_idx, _)) = best {
-                by_object.entry(obj_idx).or_default().push((note_idx, note.pitch));
+            if let Some((pos, _)) = best_free {
+                used_slots[pos] = true;
+                slot_groups.entry(pos).or_default().push((note_idx, pitch));
+            } else if let Some((pos, _)) = best_any {
+                // No free slot remains within tolerance: attach overflow voice to the last claimed
+                // slot in this timestamp window so earlier playable mania columns remain untouched.
+                let mut overflow_pos = pos;
+                for cand in lo..sorted_slots.len() {
+                    let (_, slot_time) = sorted_slots[cand];
+                    if slot_time > start_ms + tol {
+                        break;
+                    }
+                    if used_slots[cand] && (slot_time - sorted_slots[pos].1).abs() <= tol {
+                        overflow_pos = cand;
+                    }
+                }
+                slot_groups.entry(overflow_pos).or_default().push((note_idx, pitch));
             }
         }
-        for (obj_idx, group) in by_object {
+
+        for (pos, group) in slot_groups {
             if group.len() < 2 {
                 continue;
             }
-            let time_ms = raw_times[obj_idx];
+            let (obj_idx, time_ms) = sorted_slots[pos];
             let note_indices: Vec<usize> = group.iter().map(|&(i, _)| i).collect();
             let mut pitches: Vec<u8> = group.iter().map(|&(_, p)| p).collect();
             pitches.sort_unstable();
@@ -223,5 +258,45 @@ mod tests {
         assert_eq!(detect_chords(&doc, &osu, 10.0).len(), 0);
         // Both chords share the same deduplicated split_group ID.
         assert_eq!(doc.tracks[0].notes[0].split_group, doc.tracks[0].notes[3].split_group);
+    }
+
+    #[test]
+    fn mania_simultaneous_columns_are_not_flagged_or_muted() {
+        // 4K osu!mania beatmap with 3 simultaneous objects at 1000 ms and 2 at 2000 ms.
+        let osu = OsuFile::read(
+            b"osu file format v14\n[General]\nMode:3\n[Difficulty]\nCircleSize:4\n[HitObjects]\n\
+              64,192,1000,1,0,0:0:0:0:\n\
+              192,192,1000,1,0,0:0:0:0:\n\
+              320,192,1000,1,0,0:0:0:0:\n\
+              64,192,2000,1,0,0:0:0:0:\n\
+              192,192,2000,1,0,0:0:0:0:\n"
+                .to_vec(),
+        )
+        .file;
+        let mut doc = KeysoundDocument::default();
+        let mut track = KeysoundTrack::new(1, "Piano", 0, false);
+        // 3 voices for 3 simultaneous mania columns -> 0 conflicts!
+        track.notes.push(KeysoundNote::new(1000.0, 1200.0, 60, 100));
+        track.notes.push(KeysoundNote::new(1000.0, 1200.0, 64, 100));
+        track.notes.push(KeysoundNote::new(1000.0, 1200.0, 67, 100));
+        // 4 voices for 2 simultaneous mania columns -> top voice keeps col 1, other 3 share col 2.
+        track.notes.push(KeysoundNote::new(2000.0, 2200.0, 60, 100));
+        track.notes.push(KeysoundNote::new(2000.0, 2200.0, 64, 100));
+        track.notes.push(KeysoundNote::new(2000.0, 2200.0, 67, 100));
+        track.notes.push(KeysoundNote::new(2000.0, 2200.0, 72, 100));
+        doc.tracks.push(track);
+
+        let conflicts = detect_chords(&doc, &osu, 10.0);
+        assert_eq!(conflicts.len(), 1, "only the 2000 ms overflow should conflict");
+        assert_eq!(conflicts[0].time_ms, 2000.0);
+        assert!(!conflicts[0].pitches.contains(&72), "top playable mania voice stays independent");
+
+        let resolved = resolve_all_chords(&mut doc, &osu, 10.0, ChordResolution::TopNoteOnly);
+        assert_eq!(resolved, 1);
+        // All 3 notes at 1000 ms remain unmuted; 2 playable voices remain unmuted at 2000 ms (72 and 67).
+        let unmuted_at_1000: Vec<u8> = doc.tracks[0].notes.iter().filter(|n| n.start_ms == 1000.0 && !n.muted).map(|n| n.pitch).collect();
+        let unmuted_at_2000: Vec<u8> = doc.tracks[0].notes.iter().filter(|n| n.start_ms == 2000.0 && !n.muted).map(|n| n.pitch).collect();
+        assert_eq!(unmuted_at_1000, vec![60, 64, 67]);
+        assert_eq!(unmuted_at_2000, vec![67, 72]);
     }
 }

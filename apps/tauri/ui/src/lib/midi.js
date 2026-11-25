@@ -52,6 +52,12 @@ export function importToast(outcome) {
 // midi_record_toggle's arguments: the picked port and the editor's snap as 1/divisor of a beat
 // (a snap of several beats, such as 2/1, has no beat divisor and sends none).
 export function recordArgs(portIndex, scene) {
+  if (scene?.snap === false) {
+    return {
+      portIndex: portIndex ?? null,
+      snapDivisor: null,
+    };
+  }
   const divisor = Number(scene?.divisor);
   const beats = Number(scene?.beats ?? 1);
   return {
@@ -162,9 +168,11 @@ export const velocityAtY = (y, height) => whole(127 * (1 - y / Math.max(1, heigh
 // Null when the note did not change (a plain click selects it).
 export function noteDragPayload(trackId, note, mode, dx, dy, stepMs = QUANTIZE_MS) {
   if (mode === "resize") {
+    if (!dx) return null;
     const endMs = Math.max(note.startMs + stepMs, Math.round((note.endMs + dx / PX_PER_MS) / stepMs) * stepMs);
     return endMs === note.endMs ? null : keysoundsResizeNote(trackId, note.index, endMs);
   }
+  if (!dx && !dy) return null;
   const startMs = Math.max(0, Math.round((note.startMs + dx / PX_PER_MS) / stepMs) * stepMs);
   const pitch = whole(note.pitch - Math.round(dy / ROW_PX), ROLL_LOW, ROLL_HIGH);
   if (startMs === note.startMs && pitch === note.pitch) return null;

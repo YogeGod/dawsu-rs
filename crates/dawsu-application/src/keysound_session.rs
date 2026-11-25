@@ -3,18 +3,20 @@
 
 use crate::pending::{Ledger, PendingSample};
 use crate::bounce_plan::{
-    BounceAudioFormat, calculate_osz_budget, encode_vorbis_ogg, uniform_batch_normalize,
+    BounceAudioFormat, BounceCancelToken, calculate_osz_budget, encode_vorbis_ogg,
+    uniform_batch_normalize,
 };
 use crate::{Application, MidiPreviewNote};
 use dawsu_audio::AudioClip;
+use dawsu_audio_instruments::MidiEvent;
 use dawsu_foundation::digest::sha256_hex;
-use dawsu_foundation::safe_write::{self, BackupPolicy, replace};
+use dawsu_foundation::safe_write::{self, BackupPolicy, WriteOutcome, replace};
 use dawsu_keysounding::chords::{
     ChordResolution, detect_chords, resolve_all_chords, resolve_chord,
 };
-use dawsu_keysounding::generate::{GeneratePlan, plan_generate_keysounds};
-use dawsu_keysounding::model::{ExportSettings, KeysoundDocument};
-use dawsu_keysounding::{KeysoundNote, editing};
+use dawsu_keysounding::generate::{GeneratePlan, SampleManifestEntry, plan_generate_keysounds};
+use dawsu_keysounding::model::{ExportSettings, KeysoundDocument, KeysoundTrack};
+use dawsu_keysounding::{KeysoundNote, KeysoundProject, editing};
 use dawsu_osu_format::{check_map_path, find_case_insensitive, list_folder};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -23,6 +25,7 @@ use std::sync::Arc;
 
 const MAX_KEYSOUND_UNDO: usize = 100;
 const MAX_DAWSUKS_BYTES: u64 = 16 * 1024 * 1024;
+const KEYSOUND_RENDER_RATE: u32 = 48_000;
 
 /// Bounded Undo/Redo, revision counter, dirty guard, and active-track scope for Keysounding.
 pub struct KeysoundUndoHistory {
@@ -35,6 +38,10 @@ pub struct KeysoundUndoHistory {
     pub dirty: bool,
     pub active_track_id: Option<u64>,
     pub project_path: Option<PathBuf>,
+    /// Exact bytes last loaded from or written to `project_path` (for optimistic-concurrency save).
+    pub saved_bytes: Option<Vec<u8>>,
+    /// Per-track loaded VST3 instance IDs (`track_id -> vst3 instance_id`).
+    pub track_instances: BTreeMap<u64, String>,
 }
 
 impl Default for KeysoundUndoHistory {
@@ -48,6 +55,8 @@ impl Default for KeysoundUndoHistory {
             dirty: false,
             active_track_id: None,
             project_path: None,
+            saved_bytes: None,
+            track_instances: BTreeMap::new(),
         }
     }
 }
@@ -94,8 +103,9 @@ impl KeysoundUndoHistory {
         true
     }
 
-    pub fn mark_saved(&mut self, path: PathBuf) {
+    pub fn mark_saved(&mut self, path: PathBuf, bytes: Vec<u8>) {
         self.project_path = Some(path);
+        self.saved_bytes = Some(bytes);
         self.saved_cursor = Some(self.cursor);
         self.dirty = false;
     }
@@ -132,29 +142,179 @@ fn validate_dawsuks_path(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+pub(crate) fn default_dawsuks_path_for(data_root: &Path, map_path: &Path) -> PathBuf {
+    let key = sha256_hex(map_path.to_string_lossy().as_bytes());
+    data_root
+        .join("keysounds-projects")
+        .join(format!("{}.dawsuks", &key[..16]))
+}
+
 fn default_dawsuks_path(app: &Application) -> Option<PathBuf> {
     let doc = app.document.as_ref()?;
-    let key = sha256_hex(doc.path.to_string_lossy().as_bytes());
-    let dir = app.data_root.join("keysounds-projects");
-    let _ = std::fs::create_dir_all(&dir);
-    Some(dir.join(format!("{}.dawsuks", &key[..16])))
+    let path = default_dawsuks_path_for(&app.data_root, &doc.path);
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    Some(path)
+}
+
+/// Resets Keysound state when switching or closing maps, unloading any Keysounds VST3 instances
+/// and automatically loading a previously saved bound `.dawsuks` project for `map_path` if present.
+pub(crate) fn reset_for_map(app: &mut Application, map_path: Option<&Path>) {
+    let old_instances: Vec<String> = app
+        .keysound_history
+        .track_instances
+        .values()
+        .cloned()
+        .collect();
+    for inst_id in old_instances {
+        let _ = app.vst3.unload_plugin(&inst_id);
+    }
+    let audio_hint = map_path
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    app.keysounds = KeysoundProject::new(audio_hint, "Keysounds");
+    app.keysound_history = KeysoundUndoHistory::default();
+
+    if let Some(path) = map_path {
+        let bound = default_dawsuks_path_for(&app.data_root, path);
+        if bound.is_file()
+            && let Ok(meta) = std::fs::metadata(&bound)
+            && meta.len() <= MAX_DAWSUKS_BYTES
+            && let Ok(raw_bytes) = std::fs::read(&bound)
+            && let Ok(text) = std::str::from_utf8(&raw_bytes)
+            && let Ok(loaded) = KeysoundProject::from_json(text)
+        {
+            let first_id = loaded.document.tracks.first().map(|t| t.id);
+            app.keysounds = loaded;
+            app.keysound_history = KeysoundUndoHistory {
+                project_path: Some(bound),
+                saved_bytes: Some(raw_bytes),
+                active_track_id: first_id,
+                ..KeysoundUndoHistory::default()
+            };
+        }
+    }
+}
+
+/// Saves the open Keysound project safely using optimistic concurrency against `saved_bytes`.
+pub(crate) fn save_dawsuks_to(
+    app: &mut Application,
+    explicit_path: Option<PathBuf>,
+    allow_overwrite_unloaded: bool,
+) -> Result<PathBuf, String> {
+    let path = match explicit_path {
+        Some(p) => {
+            validate_dawsuks_path(&p)?;
+            p
+        }
+        None => app
+            .keysound_history
+            .project_path
+            .clone()
+            .or_else(|| default_dawsuks_path(app))
+            .ok_or("Open a difficulty or choose a .dawsuks path first.")?,
+    };
+    validate_dawsuks_path(&path)?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let json_text = app.keysounds.to_json().map_err(|e| e.to_string())?;
+    let json_bytes = json_text.into_bytes();
+    if path.exists() {
+        let expected = if app.keysound_history.project_path.as_deref() == Some(path.as_path()) {
+            app.keysound_history.saved_bytes.clone()
+        } else if allow_overwrite_unloaded {
+            std::fs::read(&path).ok()
+        } else {
+            None
+        };
+        let Some(expected_bytes) = expected else {
+            return Err(
+                "A .dawsuks project already exists on disk and was not loaded into this session. Open it first or choose another path."
+                    .into(),
+            );
+        };
+        let policy = BackupPolicy::new(app.data_root.join("backups"), 10);
+        match replace(&path, &expected_bytes, &json_bytes, &policy).map_err(|e| e.to_string())? {
+            WriteOutcome::Saved { .. } => {
+                app.keysound_history.mark_saved(path.clone(), json_bytes);
+                Ok(path)
+            }
+            WriteOutcome::ChangedOnDisk => Err(
+                "Keysound project changed on disk since it was loaded. Reopen it or save under another name."
+                    .into(),
+            ),
+        }
+    } else {
+        safe_write::create(&path, &json_bytes).map_err(|e| e.to_string())?;
+        app.keysound_history.mark_saved(path.clone(), json_bytes);
+        Ok(path)
+    }
+}
+
+/// Loads a `.dawsuks` project from disk, updating `saved_bytes` baseline and clearing dirty state.
+pub(crate) fn load_dawsuks_from(app: &mut Application, path: PathBuf) -> Result<PathBuf, String> {
+    validate_dawsuks_path(&path)?;
+    let meta = std::fs::metadata(&path).map_err(|e| e.to_string())?;
+    if !meta.is_file() {
+        return Err("Project path must be a regular .dawsuks file.".to_string());
+    }
+    if meta.len() > MAX_DAWSUKS_BYTES {
+        return Err(format!(
+            "Project file is too large ({} bytes, limit {} bytes).",
+            meta.len(),
+            MAX_DAWSUKS_BYTES
+        ));
+    }
+    let raw_bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
+    let text = std::str::from_utf8(&raw_bytes)
+        .map_err(|e| format!("Invalid UTF-8 in .dawsuks project: {e}"))?;
+    let loaded = KeysoundProject::from_json(text).map_err(|e| e.to_string())?;
+    let old_instances: Vec<String> = app
+        .keysound_history
+        .track_instances
+        .values()
+        .cloned()
+        .collect();
+    for inst_id in old_instances {
+        let _ = app.vst3.unload_plugin(&inst_id);
+    }
+    let first_id = loaded.document.tracks.first().map(|t| t.id);
+    app.keysounds = loaded;
+    app.keysound_history = KeysoundUndoHistory {
+        project_path: Some(path.clone()),
+        saved_bytes: Some(raw_bytes),
+        active_track_id: first_id,
+        ..KeysoundUndoHistory::default()
+    };
+    Ok(path)
 }
 
 fn synth_chord_clip(pitches: &[u8], velocity: u8, duration_ms: f64) -> Arc<AudioClip> {
     let notes: &[u8] = if pitches.is_empty() { &[60] } else { pitches };
-    let sample_rate = 48_000u32;
-    let frames = ((duration_ms.clamp(40.0, 500.0) / 1000.0) * f64::from(sample_rate)) as usize;
+    let sample_rate = KEYSOUND_RENDER_RATE;
+    let dur_ms = duration_ms.clamp(40.0, 10_000.0);
+    let frames = ((dur_ms / 1000.0) * f64::from(sample_rate)) as usize;
+    let dur_sec = (dur_ms / 1000.0).max(0.04);
+    let decay_rate = (3.5 / dur_sec).clamp(0.8, 10.0);
     let amp = (f64::from(velocity.clamp(1, 127)) / 127.0) * (0.28 / (notes.len() as f64).sqrt());
     let freqs: Vec<f64> = notes
         .iter()
         .map(|&p| 440.0 * 2.0_f64.powf((f64::from(p.min(127)) - 69.0) / 12.0))
         .collect();
     let mut samples = Vec::with_capacity(frames * 2);
+    let release_frames = ((0.015 * f64::from(sample_rate)) as usize).min(frames / 4).max(1);
     for i in 0..frames {
         let t = i as f64 / f64::from(sample_rate);
         let attack = (t / 0.005).min(1.0);
-        let decay = (-t * 10.0).exp();
-        let env = attack * decay;
+        let decay = (-t * decay_rate).exp();
+        let release = if frames.saturating_sub(i) < release_frames {
+            frames.saturating_sub(i) as f64 / release_frames as f64
+        } else {
+            1.0
+        };
+        let env = attack * decay * release;
         let mut sum = 0.0f64;
         for &freq in &freqs {
             let phase = 2.0 * std::f64::consts::PI * freq * t;
@@ -173,6 +333,146 @@ fn synth_chord_clip(pitches: &[u8], velocity: u8, duration_ms: f64) -> Arc<Audio
 
 fn synth_note_clip(pitch: u8, velocity: u8, duration_ms: f64) -> Arc<AudioClip> {
     synth_chord_clip(&[pitch], velocity, duration_ms)
+}
+
+fn resolve_apply_batch_norm(payload: &Value) -> bool {
+    payload
+        .get("normalize")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true)
+}
+
+fn chord_midi_events(
+    channel: u8,
+    pitches: &[u8],
+    velocity: u8,
+    duration_ms: f64,
+    sample_rate: u32,
+) -> Vec<MidiEvent> {
+    let notes: &[u8] = if pitches.is_empty() { &[60] } else { pitches };
+    let ch = channel & 0x0F;
+    let vel = velocity.clamp(1, 127);
+    let off_frame = ((duration_ms.clamp(20.0, 10_000.0) / 1000.0) * f64::from(sample_rate.max(1)))
+        .round()
+        .max(1.0) as u64;
+    let mut events = Vec::with_capacity(notes.len() * 2);
+    for &p in notes {
+        events.push(MidiEvent {
+            frame: 0,
+            status: 0x90 | ch,
+            data1: p.min(127),
+            data2: vel,
+        });
+    }
+    for &p in notes {
+        events.push(MidiEvent {
+            frame: off_frame,
+            status: 0x80 | ch,
+            data1: p.min(127),
+            data2: 0,
+        });
+    }
+    events
+}
+
+/// Renders every manifest entry through its track's assigned VST3 instrument when available,
+/// falling back to the built-in synth only for unassigned tracks or when the sidecar is unavailable.
+fn render_manifest_clips(
+    app: &mut Application,
+    manifest: &[SampleManifestEntry],
+    cancel: &BounceCancelToken,
+) -> Result<Vec<Vec<f32>>, String> {
+    let mut clips: Vec<Option<Vec<f32>>> = vec![None; manifest.len()];
+    let mut by_track: BTreeMap<u64, Vec<usize>> = BTreeMap::new();
+    for (idx, entry) in manifest.iter().enumerate() {
+        by_track.entry(entry.track_id).or_default().push(idx);
+    }
+
+    for (tid, indices) in by_track {
+        if cancel.is_cancelled() {
+            return Err("Render cancelled.".into());
+        }
+        let live_id = app.keysound_history.track_instances.get(&tid).cloned();
+        let track_meta = app
+            .keysounds
+            .document
+            .tracks
+            .iter()
+            .find(|t| t.id == tid)
+            .map(|t| {
+                (
+                    t.channel,
+                    t.instrument.soundfont_path.clone(),
+                    t.instrument.vst3_plugin_uid.clone(),
+                    t.instrument.vst3_state_b64.clone(),
+                )
+            });
+
+        let vst3_info = live_id
+            .as_deref()
+            .and_then(|id| app.vst3.instance_info(id))
+            .or_else(|| {
+                track_meta.as_ref().and_then(|(_, path, uid, _)| {
+                    let raw = path.as_deref()?;
+                    if raw.to_ascii_lowercase().ends_with(".vst3") || Path::new(raw).exists() {
+                        Some((PathBuf::from(raw), uid.clone()))
+                    } else {
+                        None
+                    }
+                })
+            });
+
+        let channel = track_meta.as_ref().map_or(0, |m| m.0);
+        let saved_state = track_meta.as_ref().and_then(|m| m.3.as_deref());
+
+        if let Some((plugin_path, plugin_uid)) = vst3_info
+            && app.vst3.is_sidecar_available()
+        {
+            let batches: Vec<Vec<MidiEvent>> = indices
+                .iter()
+                .map(|&idx| {
+                    let entry = &manifest[idx];
+                    chord_midi_events(
+                        channel,
+                        &entry.chord_pitches,
+                        entry.velocity,
+                        entry.duration_ms,
+                        KEYSOUND_RENDER_RATE,
+                    )
+                })
+                .collect();
+            let rendered = app
+                .vst3
+                .render_midi_batches_via_vst3(
+                    live_id.as_deref(),
+                    &plugin_path,
+                    plugin_uid,
+                    saved_state,
+                    &batches,
+                    KEYSOUND_RENDER_RATE,
+                    Some(cancel),
+                )
+                .map_err(|e| e.to_string())?;
+            for (&idx, buf) in indices.iter().zip(rendered.into_iter()) {
+                clips[idx] = Some(buf);
+            }
+            continue;
+        }
+
+        for idx in indices {
+            if cancel.is_cancelled() {
+                return Err("Render cancelled.".into());
+            }
+            let entry = &manifest[idx];
+            clips[idx] = Some(
+                synth_chord_clip(&entry.chord_pitches, entry.velocity, entry.duration_ms)
+                    .samples
+                    .clone(),
+            );
+        }
+    }
+
+    Ok(clips.into_iter().map(|c| c.unwrap_or_default()).collect())
 }
 
 pub(crate) fn summary(app: &mut Application) -> Value {
@@ -204,9 +504,11 @@ pub(crate) fn summary(app: &mut Application) -> Value {
                 "name": t.name,
                 "channel": t.channel,
                 "isDrum": t.is_drum,
+                "isDrumSync": t.is_drum_sync,
                 "muted": t.muted,
                 "noteCount": t.notes.len(),
                 "instrument": t.instrument.name,
+                "vst3Path": t.instrument.soundfont_path,
                 "sustainSpans": if is_active { json!(t.sustain_spans) } else { json!([]) },
                 "notes": if is_active {
                     t.notes.iter().enumerate().map(|(index, n)| json!({
@@ -241,6 +543,7 @@ pub(crate) fn handle(app: &mut Application, payload: &Value) -> Result<Value, St
         kind,
         "add_track"
             | "delete_track"
+            | "sync_drum_track"
             | "add_note"
             | "move_note"
             | "resize_note"
@@ -255,6 +558,10 @@ pub(crate) fn handle(app: &mut Application, payload: &Value) -> Result<Value, St
 
     match kind {
         "view" => {}
+        "cancel_bounce" => {
+            app.bounce_cancel.cancel();
+            return Ok(json!({ "cancelled": true }));
+        }
         "select_track" => {
             app.keysound_history.active_track_id = track_id;
         }
@@ -265,32 +572,13 @@ pub(crate) fn handle(app: &mut Application, payload: &Value) -> Result<Value, St
             app.keysound_history.redo(&mut app.keysounds.document);
         }
         "save_dawsuks" => {
-            let path = match payload.get("path").and_then(|v| v.as_str()) {
-                Some(raw) => {
-                    let p = PathBuf::from(raw);
-                    validate_dawsuks_path(&p)?;
-                    p
-                }
-                None => app
-                    .keysound_history
-                    .project_path
-                    .clone()
-                    .or_else(|| default_dawsuks_path(app))
-                    .ok_or("Open a difficulty or choose a .dawsuks path first.")?,
-            };
-            validate_dawsuks_path(&path)?;
-            if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-            }
-            let json_text = app.keysounds.to_json().map_err(|e| e.to_string())?;
-            if path.exists() {
-                let prev = std::fs::read(&path).map_err(|e| e.to_string())?;
-                let policy = BackupPolicy::new(app.data_root.join("backups"), 10);
-                let _ = replace(&path, &prev, json_text.as_bytes(), &policy).map_err(|e| e.to_string())?;
-            } else {
-                safe_write::create(&path, json_text.as_bytes()).map_err(|e| e.to_string())?;
-            }
-            app.keysound_history.mark_saved(path);
+            let explicit_path = payload.get("path").and_then(|v| v.as_str()).map(PathBuf::from);
+            let allow_overwrite = payload
+                .get("overwrite")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let saved = save_dawsuks_to(app, explicit_path, allow_overwrite)?;
+            app.status = format!("Saved Keysound project ({}).", saved.display());
         }
         "load_dawsuks" => {
             let path = payload
@@ -298,26 +586,8 @@ pub(crate) fn handle(app: &mut Application, payload: &Value) -> Result<Value, St
                 .and_then(|v| v.as_str())
                 .map(PathBuf::from)
                 .ok_or("Missing .dawsuks path")?;
-            validate_dawsuks_path(&path)?;
-            let meta = std::fs::metadata(&path).map_err(|e| e.to_string())?;
-            if !meta.is_file() {
-                return Err("Project path must be a regular .dawsuks file.".to_string());
-            }
-            if meta.len() > MAX_DAWSUKS_BYTES {
-                return Err(format!(
-                    "Project file is too large ({} bytes, limit {} bytes).",
-                    meta.len(),
-                    MAX_DAWSUKS_BYTES
-                ));
-            }
-            let text = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
-            let loaded = dawsu_keysounding::KeysoundProject::from_json(&text).map_err(|e| e.to_string())?;
-            app.keysounds = loaded;
-            app.keysound_history = KeysoundUndoHistory {
-                project_path: Some(path),
-                active_track_id: app.keysounds.document.tracks.first().map(|t| t.id),
-                ..KeysoundUndoHistory::default()
-            };
+            let loaded_path = load_dawsuks_from(app, path)?;
+            app.status = format!("Opened Keysound project ({}).", loaded_path.display());
         }
         "resolve_chord" => {
             let policy = match payload.get("policy").and_then(|v| v.as_str()).unwrap_or("flatten_polyphonic") {
@@ -350,51 +620,75 @@ pub(crate) fn handle(app: &mut Application, payload: &Value) -> Result<Value, St
             }
         }
         "preview_bounce" => {
-            let document = app.document.as_ref().ok_or("Open a difficulty first.")?;
-            let settings = export_settings_from_payload(payload);
-            let file_name = document
-                .path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("map.osu");
-            let plan = plan_generate_keysounds(&app.keysounds.document, &document.file, file_name, &settings);
-            let base_bytes = document
-                .path
-                .parent()
-                .map(mapset_disk_bytes)
-                .unwrap_or(0);
-            let is_ogg = settings.sample_extension.eq_ignore_ascii_case("ogg");
+            app.bounce_cancel.reset();
+            let cancel = app.bounce_cancel.clone();
+            let (plan, base_bytes, is_ogg) = {
+                let document = app.document.as_ref().ok_or("Open a difficulty first.")?;
+                let settings = export_settings_from_payload(payload);
+                let file_name = document
+                    .path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("map.osu");
+                let plan = plan_generate_keysounds(
+                    &app.keysounds.document,
+                    &document.file,
+                    file_name,
+                    &settings,
+                );
+                let base_bytes = document
+                    .path
+                    .parent()
+                    .map(mapset_disk_bytes)
+                    .unwrap_or(0);
+                let is_ogg = settings.sample_extension.eq_ignore_ascii_case("ogg");
+                (plan, base_bytes, is_ogg)
+            };
             let target_dbfs = if is_ogg {
                 BounceAudioFormat::OggVorbis.target_peak_dbfs()
             } else {
                 BounceAudioFormat::Wav16.target_peak_dbfs()
             };
-            let mut raw_clips: Vec<Vec<f32>> = plan
-                .manifest
-                .iter()
-                .map(|entry| synth_chord_clip(&entry.chord_pitches, entry.velocity, entry.duration_ms).samples.clone())
-                .collect();
-            let norm = uniform_batch_normalize(&mut raw_clips, target_dbfs);
+            let apply_batch_norm = resolve_apply_batch_norm(payload);
+            let mut raw_clips = render_manifest_clips(app, &plan.manifest, &cancel)?;
+            let silent_indices = if apply_batch_norm {
+                uniform_batch_normalize(&mut raw_clips, target_dbfs).silent_clip_indices
+            } else {
+                raw_clips
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, c)| {
+                        c.iter().fold(0.0f32, |a, &b| a.max(b.abs()))
+                            < crate::bounce_plan::SILENT_PEAK_THRESHOLD
+                    })
+                    .map(|(i, _)| i)
+                    .collect()
+            };
             let mut bounced_bytes = 0u64;
             let mut samples_json = Vec::with_capacity(plan.manifest.len());
-            // Encode exact Ogg bytes for small manifests; estimate bitrate cleanly for large sets
-            // so preview never stalls the editor thread.
             let exact_ogg_preview = is_ogg && plan.manifest.len() <= 8;
             for (idx, entry) in plan.manifest.iter().enumerate() {
+                if cancel.is_cancelled() {
+                    return Err("Render cancelled.".into());
+                }
                 let bytes = if exact_ogg_preview {
-                    encode_vorbis_ogg(&raw_clips[idx], 48_000).map(|b| b.len() as u64).unwrap_or(0)
+                    encode_vorbis_ogg(&raw_clips[idx], KEYSOUND_RENDER_RATE)
+                        .map(|b| b.len() as u64)
+                        .unwrap_or(0)
                 } else if is_ogg {
-                    ((entry.duration_ms / 1000.0) * 16_000.0).round().max(1_400.0) as u64
+                    let dur_sec = raw_clips[idx].len() as f64 / (2.0 * f64::from(KEYSOUND_RENDER_RATE));
+                    (dur_sec * 16_000.0).round().max(1_400.0) as u64
                 } else {
                     44 + (raw_clips[idx].len() as u64) * 2
                 };
                 bounced_bytes = bounced_bytes.saturating_add(bytes);
-                let silent = norm.silent_clip_indices.contains(&idx);
+                let silent = silent_indices.contains(&idx);
                 let peak = raw_clips[idx].iter().fold(0.0f32, |a, &b| a.max(b.abs()));
                 let peak_dbfs = if peak > 1e-6 { 20.0 * peak.log10() } else { -99.0 };
+                let dur_ms = ((raw_clips[idx].len() as f64 / (2.0 * f64::from(KEYSOUND_RENDER_RATE))) * 1000.0).round() as u32;
                 samples_json.push(json!({
                     "filename": entry.filename,
-                    "durationMs": entry.duration_ms.round() as u32,
+                    "durationMs": dur_ms,
                     "peakDbfs": peak_dbfs,
                     "usageCount": entry.usage_count,
                     "silent": silent,
@@ -411,6 +705,7 @@ pub(crate) fn handle(app: &mut Application, payload: &Value) -> Result<Value, St
                 "bouncedBytes": bounced_bytes,
                 "budget": budget,
                 "samples": samples_json,
+                "normalized": apply_batch_norm,
             });
             return Ok(out);
         }
@@ -425,8 +720,114 @@ pub(crate) fn handle(app: &mut Application, payload: &Value) -> Result<Value, St
         }
         "delete_track" => {
             if let Some(id) = track_id {
+                if let Some(inst_id) = app.keysound_history.track_instances.remove(&id) {
+                    let _ = app.vst3.unload_plugin(&inst_id);
+                }
                 app.keysounds.document.delete_track(id);
             }
+        }
+        "sync_drum_track" => {
+            let track_name = payload
+                .get("trackName")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or("Drum Map (VST3)");
+            let plugin_path = payload
+                .get("pluginPath")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty());
+            let plugin_uid = payload
+                .get("pluginUid")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned);
+            let plugin_name = payload
+                .get("pluginName")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .unwrap_or("VST3 Drum Kit");
+            let mut parsed_notes: Vec<KeysoundNote> = Vec::new();
+            if let Some(arr) = payload.get("notes").and_then(|v| v.as_array()) {
+                for item in arr {
+                    let start_ms = item.get("startMs").and_then(|v| v.as_f64()).unwrap_or(0.0).max(0.0);
+                    let end_ms = item
+                        .get("endMs")
+                        .and_then(|v| v.as_f64())
+                        .unwrap_or(start_ms + 120.0)
+                        .max(start_ms + 20.0);
+                    let pitch = item.get("pitch").and_then(|v| v.as_u64()).unwrap_or(36).min(127) as u8;
+                    let velocity = item.get("velocity").and_then(|v| v.as_u64()).unwrap_or(100).clamp(1, 127) as u8;
+                    parsed_notes.push(KeysoundNote::new(start_ms, end_ms, pitch, velocity));
+                }
+            }
+
+            // Never delete or overwrite a user-created track by display name: only update the
+            // dedicated `is_drum_sync == true` mirror track.
+            let sync_id = if let Some(existing) = app.keysounds.document.tracks.iter().find(|t| t.is_drum_sync) {
+                existing.id
+            } else {
+                let next_id = app
+                    .keysounds
+                    .document
+                    .tracks
+                    .iter()
+                    .map(|t| t.id)
+                    .max()
+                    .map_or(1, |m| m + 1);
+                let mut track = KeysoundTrack::new(next_id, track_name, 9, true);
+                track.is_drum_sync = true;
+                app.keysounds.document.tracks.push(track);
+                next_id
+            };
+
+            if let Some(path) = plugin_path {
+                let needs_load = app
+                    .keysounds
+                    .document
+                    .tracks
+                    .iter()
+                    .find(|t| t.id == sync_id)
+                    .is_some_and(|t| t.instrument.soundfont_path.as_deref() != Some(path))
+                    || !app.keysound_history.track_instances.contains_key(&sync_id);
+                if needs_load {
+                    let sr = app.live_sample_rate();
+                    match app
+                        .vst3
+                        .load_instrument_at_rate(PathBuf::from(path), plugin_uid.clone(), sr)
+                    {
+                        Ok(loaded) => {
+                            if let Some(prev_inst) = app
+                                .keysound_history
+                                .track_instances
+                                .insert(sync_id, loaded.id.clone())
+                            {
+                                let _ = app.vst3.unload_plugin(&prev_inst);
+                            }
+                            let state = app.vst3.get_plugin_state(&loaded.id).ok();
+                            if let Some(track) =
+                                app.keysounds.document.tracks.iter_mut().find(|t| t.id == sync_id)
+                            {
+                                track.instrument.name = format!("{plugin_name} ({})", loaded.id);
+                                track.instrument.soundfont_path = Some(path.to_string());
+                                track.instrument.vst3_plugin_uid = plugin_uid;
+                                track.instrument.vst3_state_b64 = state;
+                            }
+                        }
+                        Err(err) => {
+                            if let Some(before) = snapshot_before {
+                                app.keysounds.document = before;
+                            }
+                            return Err(err.to_string());
+                        }
+                    }
+                }
+            }
+
+            if let Some(track) = app.keysounds.document.tracks.iter_mut().find(|t| t.id == sync_id) {
+                track.notes = parsed_notes;
+                track.sort_notes();
+            }
+            app.keysound_history.active_track_id = Some(sync_id);
         }
         "add_note" => {
             let id = track_id.ok_or("Missing trackId")?;
@@ -556,35 +957,105 @@ pub(crate) fn handle(app: &mut Application, payload: &Value) -> Result<Value, St
                 .get("pluginName")
                 .and_then(|v| v.as_str())
                 .unwrap_or("VST3 Instrument");
+            let sr = app.live_sample_rate();
             let loaded = app
                 .vst3
-                .load_instrument(PathBuf::from(plugin_path), plugin_uid)
+                .load_instrument_at_rate(PathBuf::from(plugin_path), plugin_uid.clone(), sr)
                 .map_err(|e| e.to_string())?;
+            if let Some(prev_inst) = app
+                .keysound_history
+                .track_instances
+                .insert(id, loaded.id.clone())
+            {
+                let _ = app.vst3.unload_plugin(&prev_inst);
+            }
+            let state = app.vst3.get_plugin_state(&loaded.id).ok();
             if let Some(track) = app.keysounds.document.tracks.iter_mut().find(|t| t.id == id) {
                 track.instrument.name = format!("{plugin_name} ({})", loaded.id);
+                track.instrument.soundfont_path = Some(plugin_path.to_string());
+                track.instrument.vst3_plugin_uid = plugin_uid;
+                track.instrument.vst3_state_b64 = state;
             }
+            app.keysound_history.active_track_id = Some(id);
         }
         "preview_note" => {
             let pitch = payload.get("pitch").and_then(|v| v.as_u64()).unwrap_or(60).min(127) as u8;
             let velocity = payload.get("velocity").and_then(|v| v.as_u64()).unwrap_or(100).clamp(1, 127) as u8;
             let duration_ms = payload.get("durationMs").and_then(|v| v.as_f64()).unwrap_or(140.0);
-            let loaded_id = app.vst3.list_loaded().into_iter().next().map(|p| p.id);
-            if let Some(instance_id) = loaded_id {
+            let target_track_id = track_id.or(app.keysound_history.active_track_id);
+            let live_id = target_track_id
+                .and_then(|tid| app.keysound_history.track_instances.get(&tid).cloned());
+            let track_meta = target_track_id.and_then(|tid| {
+                app.keysounds.document.tracks.iter().find(|t| t.id == tid).map(|t| {
+                    (
+                        t.channel,
+                        t.instrument.soundfont_path.clone(),
+                        t.instrument.vst3_plugin_uid.clone(),
+                        t.instrument.vst3_state_b64.clone(),
+                    )
+                })
+            });
+            let channel = track_meta.as_ref().map_or(0, |m| m.0);
+            let mut vst3_clip: Option<Arc<AudioClip>> = None;
+            if let Some(ref instance_id) = live_id {
                 let _ = app.vst3.send_preview_note(
-                    &instance_id,
+                    instance_id,
                     MidiPreviewNote {
-                        channel: 0,
+                        channel,
                         note: pitch,
                         velocity,
                         duration_ms: duration_ms.clamp(20.0, 4000.0).round() as u32,
                     },
                 );
             }
+            let vst3_info = live_id
+                .as_deref()
+                .and_then(|id| app.vst3.instance_info(id))
+                .or_else(|| {
+                    track_meta.as_ref().and_then(|(_, path, uid, _)| {
+                        let raw = path.as_deref()?;
+                        if raw.to_ascii_lowercase().ends_with(".vst3") || Path::new(raw).exists() {
+                            Some((PathBuf::from(raw), uid.clone()))
+                        } else {
+                            None
+                        }
+                    })
+                });
+            if let Some((plugin_path, plugin_uid)) = vst3_info
+                && app.vst3.is_sidecar_available()
+            {
+                let events =
+                    chord_midi_events(channel, &[pitch], velocity, duration_ms, KEYSOUND_RENDER_RATE);
+                let saved_state = track_meta.as_ref().and_then(|m| m.3.as_deref());
+                if let Ok(mut rendered) = app.vst3.render_midi_batches_via_vst3(
+                    live_id.as_deref(),
+                    &plugin_path,
+                    plugin_uid,
+                    saved_state,
+                    &[events],
+                    KEYSOUND_RENDER_RATE,
+                    None,
+                ) && let Some(samples) = rendered.pop()
+                    && !samples.is_empty()
+                {
+                    vst3_clip = Some(Arc::new(AudioClip {
+                        samples,
+                        channels: 2,
+                        sample_rate: KEYSOUND_RENDER_RATE,
+                    }));
+                }
+            }
             if let Some(audio) = app.audio.as_ref() {
-                audio.audition(synth_note_clip(pitch, velocity, duration_ms), 0.8);
+                if let Some(clip) = vst3_clip {
+                    audio.audition(clip, 0.9);
+                } else if live_id.is_none() {
+                    audio.audition(synth_note_clip(pitch, velocity, duration_ms), 0.8);
+                }
             }
         }
         "generate_keysounds" => {
+            app.bounce_cancel.reset();
+            let cancel = app.bounce_cancel.clone();
             // Finish any earlier cleanup job before checking and writing mapset files.
             app.poll_sweep(true);
             let (open_path, file_name, folder, pending_taken, ledger, mut plan) = {
@@ -622,20 +1093,18 @@ pub(crate) fn handle(app: &mut Application, payload: &Value) -> Result<Value, St
             if out_path == open_path {
                 return Err("Cannot overwrite the currently open difficulty with [Keysounds].".into());
             }
-            let apply_batch_norm = payload
-                .get("normalize")
-                .and_then(|v| v.as_bool())
-                .unwrap_or_else(|| {
-                    payload
-                        .get("format")
-                        .and_then(|v| v.as_str())
-                        .is_some_and(|f| f == "ogg_vorbis" || f == "ogg")
-                });
+            let apply_batch_norm = resolve_apply_batch_norm(payload);
+            let raw_clips = render_manifest_clips(app, &plan.manifest, &cancel)?;
+            if cancel.is_cancelled() {
+                return Err("Render cancelled.".into());
+            }
             // Render and write each manifest sample before writing [Keysounds].osu so no dangling
             // sample references are ever emitted.
             let (written_names, guard) = prepare_and_write_wavs(
                 &folder,
+                &app.data_root.join("backups"),
                 &mut plan,
+                raw_clips,
                 &pending_taken,
                 ledger.as_ref(),
                 apply_batch_norm,
@@ -768,7 +1237,7 @@ fn encode_clip_wav(clip: &AudioClip) -> Vec<u8> {
 }
 
 struct CreatedKeysoundsGuard {
-    created: Vec<(PathBuf, Vec<u8>)>,
+    created: Vec<(PathBuf, Vec<u8>, Option<Vec<u8>>)>,
     ledger: Option<(Ledger, Vec<String>, Vec<PendingSample>)>,
 }
 
@@ -780,9 +1249,12 @@ impl CreatedKeysoundsGuard {
 
     fn rollback(&mut self) {
         let mut still_ours = Vec::new();
-        for (path, wav) in self.created.drain(..).rev() {
+        for (path, wav, prior) in self.created.drain(..).rev() {
             let result = match std::fs::read(&path) {
-                Ok(bytes) if bytes == wav => std::fs::remove_file(&path),
+                Ok(bytes) if bytes == wav => match prior {
+                    Some(old) => std::fs::write(&path, old),
+                    None => std::fs::remove_file(&path),
+                },
                 Err(error) => Err(error),
                 Ok(_) => continue,
             };
@@ -847,25 +1319,24 @@ fn candidate_stem_taken_elsewhere(
 #[allow(clippy::disallowed_methods)]
 fn prepare_and_write_wavs(
     folder: &Path,
+    backup_root: &Path,
     plan: &mut GeneratePlan,
+    mut raw_clips: Vec<Vec<f32>>,
     pending_taken: &BTreeSet<String>,
     ledger: Option<&Ledger>,
     apply_batch_norm: bool,
 ) -> Result<(Vec<String>, CreatedKeysoundsGuard), String> {
     let disk_files = list_folder(folder).map_err(|e| e.to_string())?;
+    let ledger_hashes: BTreeMap<String, String> = ledger
+        .and_then(|l| l.entries().ok())
+        .unwrap_or_default()
+        .into_iter()
+        .map(|entry| (entry.name.to_ascii_lowercase(), entry.sha256))
+        .collect();
     let mut reserved_names = pending_taken.clone();
     let mut renames: BTreeMap<String, String> = BTreeMap::new();
-    let mut to_write: Vec<(String, Vec<u8>, String)> = Vec::new();
+    let mut to_write: Vec<(String, Vec<u8>, String, Option<Vec<u8>>)> = Vec::new();
 
-    let mut raw_clips: Vec<Vec<f32>> = plan
-        .manifest
-        .iter()
-        .map(|entry| {
-            synth_chord_clip(&entry.chord_pitches, entry.velocity, entry.duration_ms)
-                .samples
-                .clone()
-        })
-        .collect();
     if apply_batch_norm {
         let is_ogg_batch = plan
             .manifest
@@ -882,12 +1353,12 @@ fn prepare_and_write_wavs(
     for (entry, samples) in plan.manifest.iter().zip(raw_clips.into_iter()) {
         let is_ogg = entry.filename.to_ascii_lowercase().ends_with(".ogg");
         let wav_bytes = if is_ogg {
-            encode_vorbis_ogg(&samples, 48_000)?
+            encode_vorbis_ogg(&samples, KEYSOUND_RENDER_RATE)?
         } else {
             let clip = AudioClip {
                 samples,
                 channels: 2,
-                sample_rate: 48_000,
+                sample_rate: KEYSOUND_RENDER_RATE,
             };
             encode_clip_wav(&clip)
         };
@@ -905,26 +1376,46 @@ fn prepare_and_write_wavs(
                 }
                 if let Some(existing_name) = find_case_insensitive(&disk_files, &candidate) {
                     let existing_path = folder.join(existing_name);
-                    if std::fs::read(&existing_path)
-                        .is_ok_and(|bytes| sha256_hex(&bytes) == digest)
-                    {
-                        return Some(Ok((existing_name.to_string(), None)));
+                    if let Ok(existing_bytes) = std::fs::read(&existing_path) {
+                        let existing_sha = sha256_hex(&existing_bytes);
+                        if existing_sha == digest {
+                            return Some(Ok((existing_name.to_string(), None)));
+                        }
+                        if ledger_hashes
+                            .get(&existing_name.to_ascii_lowercase())
+                            .is_some_and(|recorded| recorded == &existing_sha)
+                        {
+                            return Some(Ok((
+                                existing_name.to_string(),
+                                Some((wav_bytes.clone(), digest.clone(), Some(existing_bytes))),
+                            )));
+                        }
                     }
                     return None;
                 }
                 let direct_path = folder.join(&candidate);
                 if direct_path.symlink_metadata().is_ok() {
-                    if std::fs::read(&direct_path)
-                        .is_ok_and(|bytes| sha256_hex(&bytes) == digest)
-                    {
-                        return Some(Ok((candidate, None)));
+                    if let Ok(existing_bytes) = std::fs::read(&direct_path) {
+                        let existing_sha = sha256_hex(&existing_bytes);
+                        if existing_sha == digest {
+                            return Some(Ok((candidate, None)));
+                        }
+                        if ledger_hashes
+                            .get(&lower)
+                            .is_some_and(|recorded| recorded == &existing_sha)
+                        {
+                            return Some(Ok((
+                                candidate,
+                                Some((wav_bytes.clone(), digest.clone(), Some(existing_bytes))),
+                            )));
+                        }
                     }
                     return None;
                 }
                 if candidate_stem_taken_elsewhere(&candidate, &reserved_names, &disk_files) {
                     return None;
                 }
-                Some(Ok((candidate, Some((wav_bytes.clone(), digest.clone())))))
+                Some(Ok((candidate, Some((wav_bytes.clone(), digest.clone(), None)))))
             })
             .ok_or_else(|| format!("No free sample filename for {}", entry.filename))??;
 
@@ -933,14 +1424,14 @@ fn prepare_and_write_wavs(
         if chosen_name != entry.filename {
             renames.insert(entry.filename.clone(), chosen_name.clone());
         }
-        if let Some((bytes, sha256)) = write_payload {
-            to_write.push((chosen_name, bytes, sha256));
+        if let Some((bytes, sha256, prior)) = write_payload {
+            to_write.push((chosen_name, bytes, sha256, prior));
         }
     }
 
     let ledger_entries: Vec<PendingSample> = to_write
         .iter()
-        .map(|(name, _, sha256)| PendingSample {
+        .map(|(name, _, sha256, _)| PendingSample {
             name: name.clone(),
             sha256: sha256.clone(),
         })
@@ -959,10 +1450,22 @@ fn prepare_and_write_wavs(
         ledger: ledger_state,
     };
     let mut written_names = Vec::with_capacity(to_write.len());
-    for (name, bytes, _) in to_write {
+    let policy = BackupPolicy::new(backup_root.to_path_buf(), 20);
+    for (name, bytes, _, prior) in to_write {
         let wav_path = folder.join(&name);
-        safe_write::create(&wav_path, &bytes).map_err(|e| format!("Writing {name}: {e}"))?;
-        guard.created.push((wav_path, bytes));
+        if let Some(ref old_bytes) = prior {
+            match replace(&wav_path, old_bytes, &bytes, &policy)
+                .map_err(|e| format!("Updating {name}: {e}"))?
+            {
+                dawsu_foundation::safe_write::WriteOutcome::Saved { .. } => {}
+                dawsu_foundation::safe_write::WriteOutcome::ChangedOnDisk => {
+                    return Err(format!("{name} changed on disk during write. Try again."));
+                }
+            }
+        } else {
+            safe_write::create(&wav_path, &bytes).map_err(|e| format!("Writing {name}: {e}"))?;
+        }
+        guard.created.push((wav_path, bytes, prior));
         written_names.push(name);
     }
 
@@ -1167,5 +1670,168 @@ mod tests {
 
         let remaining_names: Vec<String> = ledger.entries().unwrap().into_iter().map(|e| e.name).collect();
         assert_eq!(remaining_names, vec![kept_entry.name]);
+    }
+
+    #[test]
+    fn save_dawsuks_detects_external_disk_change_and_keeps_dirty() {
+        let (scratch, _map_dir, mut app) =
+            setup_mapset("keysound-save-race", "256,192,1000,1,0,0:0:0:0:\r\n");
+        let proj_path = scratch.path("my.dawsuks");
+        handle(&mut app, &json!({ "kind": "add_track", "name": "Piano" })).unwrap();
+        assert!(app.is_dirty(), "keysound-only edit must mark app dirty");
+
+        handle(&mut app, &json!({ "kind": "save_dawsuks", "path": proj_path.to_string_lossy() }))
+            .unwrap();
+        assert!(!app.is_dirty());
+
+        // External process modifies the .dawsuks file on disk.
+        let external = b"{\"version\":1,\"external\":true}";
+        fs::write(&proj_path, external).unwrap();
+
+        handle(&mut app, &json!({ "kind": "add_track", "name": "Bass" })).unwrap();
+        assert!(app.is_dirty());
+
+        let err = handle(&mut app, &json!({ "kind": "save_dawsuks" })).unwrap_err();
+        assert!(err.contains("changed on disk"), "unexpected err: {err}");
+        assert!(app.is_dirty(), "failed save must keep dirty flag true");
+        assert_eq!(fs::read(&proj_path).unwrap(), external, "external bytes must stay intact");
+    }
+
+    #[test]
+    fn switching_maps_resets_keysounds_and_auto_restores_bound_project() {
+        let (scratch, map_dir, mut app) =
+            setup_mapset("keysound-map-switch", "256,192,1000,1,0,0:0:0:0:\r\n");
+        let map_a = app.document.as_ref().unwrap().path.clone();
+        let map_b = map_dir.join("Artist - Song (Mapper) [Normal].osu");
+        fs::write(
+            &map_b,
+            b"osu file format v14\r\n[General]\r\nMode:0\r\n[Metadata]\r\nArtist:Artist\r\nTitle:Song\r\nCreator:Mapper\r\nVersion:Normal\r\n[TimingPoints]\r\n0,500,4,1,0,100,1,0\r\n[HitObjects]\r\n256,192,1000,1,0,0:0:0:0:\r\n",
+        )
+        .unwrap();
+
+        // Add & save keysounds on map A via app.save() (keysound-only dirty save!).
+        handle(&mut app, &json!({ "kind": "add_track", "name": "Map A Lead" })).unwrap();
+        assert!(app.is_dirty());
+        app.save();
+        poll_until_idle(&mut app);
+        assert!(app.error.is_none(), "{:?}", app.error);
+        assert!(!app.is_dirty(), "app.save() should save dirty keysounds and clear dirty");
+
+        // Switch to map B -> map A's tracks and project_path must NOT leak into map B!
+        app.request_open(map_b.clone());
+        poll_until_idle(&mut app);
+        assert!(app.keysounds.document.tracks.is_empty());
+        assert!(app.keysound_history.project_path.is_none());
+
+        // Switch back to map A -> bound .dawsuks auto-restores cleanly!
+        app.request_open(map_a);
+        poll_until_idle(&mut app);
+        assert_eq!(app.keysounds.document.tracks.len(), 1);
+        assert_eq!(app.keysounds.document.tracks[0].name, "Map A Lead");
+        assert!(!app.is_dirty());
+        let _ = scratch;
+    }
+
+    #[test]
+    fn sync_drum_track_never_deletes_user_track_with_same_display_name() {
+        let (_scratch, _map_dir, mut app) =
+            setup_mapset("keysound-drum-sync", "256,192,1000,1,0,0:0:0:0:\r\n");
+
+        // User manually creates a track literally named "Drum Map (VST3)".
+        let res = handle(&mut app, &json!({ "kind": "add_track", "name": "Drum Map (VST3)" })).unwrap();
+        let user_tid = res["tracks"][0]["id"].as_u64().unwrap();
+        handle(
+            &mut app,
+            &json!({ "kind": "add_note", "trackId": user_tid, "startMs": 500.0, "endMs": 700.0, "pitch": 60, "velocity": 100 }),
+        )
+        .unwrap();
+
+        // Sync drum map -> must create a separate `is_drum_sync: true` track and leave user track intact!
+        let synced = handle(
+            &mut app,
+            &json!({
+                "kind": "sync_drum_track",
+                "trackName": "Drum Map (VST3)",
+                "notes": [{ "startMs": 1000, "endMs": 1120, "pitch": 45, "velocity": 110 }]
+            }),
+        )
+        .unwrap();
+        assert_eq!(synced["tracks"].as_array().unwrap().len(), 2);
+        let user_track = app.keysounds.document.tracks.iter().find(|t| t.id == user_tid).unwrap();
+        assert!(!user_track.is_drum_sync);
+        assert_eq!(user_track.notes.len(), 1);
+        assert_eq!(user_track.notes[0].pitch, 60);
+
+        let drum_track = app.keysounds.document.tracks.iter().find(|t| t.is_drum_sync).unwrap();
+        assert_eq!(drum_track.notes.len(), 1);
+        assert_eq!(drum_track.notes[0].pitch, 45);
+
+        // Single undo reverts the entire atomic drum sync in one step.
+        handle(&mut app, &json!({ "kind": "undo" })).unwrap();
+        assert_eq!(app.keysounds.document.tracks.len(), 1);
+        assert_eq!(app.keysounds.document.tracks[0].id, user_tid);
+    }
+
+    #[test]
+    fn wav_preview_bounce_and_generate_keysounds_match_normalization_and_duration() {
+        let (_scratch, map_dir, mut app) =
+            setup_mapset("keysound-wav-norm-parity", "256,192,1000,1,0,0:0:0:0:\r\n");
+        let res = handle(&mut app, &json!({ "kind": "add_track", "name": "Lead" })).unwrap();
+        let tid = res["tracks"][0]["id"].as_u64().unwrap();
+        // 1200 ms sustained note (> old 500 ms cap!).
+        handle(
+            &mut app,
+            &json!({ "kind": "add_note", "trackId": tid, "startMs": 1000.0, "endMs": 2200.0, "pitch": 60, "velocity": 64 }),
+        )
+        .unwrap();
+
+        let preview = handle(&mut app, &json!({ "kind": "preview_bounce", "format": "wav16" })).unwrap();
+        let preview_sample = &preview["bouncePreview"]["samples"][0];
+        let preview_peak = preview_sample["peakDbfs"].as_f64().unwrap();
+        let preview_dur = preview_sample["durationMs"].as_u64().unwrap();
+        assert!(preview_dur >= 1000, "sustained note must not be capped at 500 ms, got {preview_dur} ms");
+
+        let generated = handle(&mut app, &json!({ "kind": "generate_keysounds", "format": "wav16" })).unwrap();
+        poll_until_idle(&mut app);
+        let filename = preview_sample["filename"].as_str().unwrap();
+        let wav_path = map_dir.join(filename);
+        let decoded = dawsu_audio::decode(&wav_path).unwrap();
+        let actual_peak = decoded.samples.iter().fold(0.0f32, |a, &b| a.max(b.abs()));
+        let actual_peak_dbfs = 20.0 * f64::from(actual_peak).log10();
+        assert!(
+            (actual_peak_dbfs - preview_peak).abs() < 0.2,
+            "WAV preview ({preview_peak:.2} dBFS) and committed WAV ({actual_peak_dbfs:.2} dBFS) must match"
+        );
+        let _ = generated;
+    }
+
+    #[test]
+    fn midi_record_commits_to_active_keysound_track_with_undo() {
+        let (_scratch, _map_dir, mut app) =
+            setup_mapset("keysound-midi-active", "256,192,1000,1,0,0:0:0:0:\r\n");
+        let r1 = handle(&mut app, &json!({ "kind": "add_track", "name": "Track 1" })).unwrap();
+        let t1 = r1["tracks"][0]["id"].as_u64().unwrap();
+        let r2 = handle(&mut app, &json!({ "kind": "add_track", "name": "Track 2" })).unwrap();
+        let t2 = r2["tracks"][1]["id"].as_u64().unwrap();
+        handle(&mut app, &json!({ "kind": "select_track", "trackId": t2 })).unwrap();
+
+        // Arm, inject one note, disarm via toggle_midi_recording.
+        app.toggle_midi_recording(None, None, None).unwrap();
+        app.midi_recorder.record_event(
+            1000.0,
+            dawsu_audio_instruments::MidiInputEvent::NoteOn {
+                channel: 0,
+                pitch: 64,
+                velocity: 100,
+            },
+        );
+        app.toggle_midi_recording(None, None, None).unwrap();
+
+        assert_eq!(app.keysounds.document.tracks.iter().find(|t| t.id == t1).unwrap().notes.len(), 0);
+        assert_eq!(app.keysounds.document.tracks.iter().find(|t| t.id == t2).unwrap().notes.len(), 1);
+        assert!(app.keysound_history.can_undo());
+
+        handle(&mut app, &json!({ "kind": "undo" })).unwrap();
+        assert_eq!(app.keysounds.document.tracks.iter().find(|t| t.id == t2).unwrap().notes.len(), 0);
     }
 }

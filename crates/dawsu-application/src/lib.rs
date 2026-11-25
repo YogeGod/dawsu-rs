@@ -1361,6 +1361,7 @@ pub struct Application {
     pub midi_recorder: midi_record::MidiRecorder,
     pub keysounds: dawsu_keysounding::KeysoundProject,
     pub keysound_history: keysound_session::KeysoundUndoHistory,
+    pub bounce_cancel: bounce_plan::BounceCancelToken,
     pub vst3: vst3::Vst3Manager,
     pub drum_vst: Option<drum_vst::DrumVstLiveHandle>,
     pub drum_vst_loading: bool,
@@ -1545,6 +1546,7 @@ impl Application {
             midi_recorder: midi_record::MidiRecorder::new(),
             keysounds: dawsu_keysounding::KeysoundProject::new("", "Keysounds"),
             keysound_history: keysound_session::KeysoundUndoHistory::default(),
+            bounce_cancel: bounce_plan::BounceCancelToken::new(),
             vst3: vst3::Vst3Manager::new(),
             drum_vst: None,
             drum_vst_loading: false,
@@ -1561,8 +1563,17 @@ impl Application {
     pub fn document(&self) -> Option<&Document> {
         self.document.as_ref()
     }
-    pub fn is_dirty(&self) -> bool {
+    pub fn has_dirty_beatmap(&self) -> bool {
         self.document.as_ref().is_some_and(|d| d.composer.dirty())
+    }
+    pub fn has_dirty_keysounds(&self) -> bool {
+        self.keysound_history.dirty
+    }
+    pub fn is_dirty(&self) -> bool {
+        self.has_dirty_beatmap() || self.has_dirty_keysounds()
+    }
+    pub fn live_sample_rate(&self) -> u32 {
+        self.audio.as_ref().map_or(44_100, |a| a.sample_rate())
     }
     /// Writes the last completed state, even if the live editor was interrupted mid-edit.
     pub fn write_recovery_copy(&self) -> Result<Option<RecoveryOffer>, String> {
@@ -1759,6 +1770,7 @@ impl Application {
         self.checkpoint = None;
         self.osu_watch.clear();
         self.external_osu_changed = false;
+        keysound_session::reset_for_map(self, None);
     }
 
     /// Forgets the pending files no record lists. `keep` are the listed names when a job read them.
@@ -2052,7 +2064,11 @@ impl Application {
     ) -> Result<midi_record::MidiRecordStatus, String> {
         if self.midi_recorder.armed {
             let port_name = self.midi_recorder.port_name.clone();
-            let notes = self.midi_recorder.disarm();
+            let notes = self.midi_recorder.disarm_with_clock(
+                self.position_ms(),
+                self.is_playing(),
+                self.playback_speed,
+            );
             let mut committed = 0usize;
             if !notes.is_empty() {
                 if let Some(doc) = self.document.as_mut() {
@@ -2064,9 +2080,22 @@ impl Application {
                     )?;
                     self.refresh_recovery_edit();
                 }
-                if let Some(first_track) = self.keysounds.document.tracks.first() {
-                    let tid = first_track.id;
-                    midi_record::commit_to_keysounds(&notes, &mut self.keysounds, tid, 200.0);
+                let target_tid = self
+                    .keysound_history
+                    .active_track_id
+                    .filter(|id| self.keysounds.document.tracks.iter().any(|t| t.id == *id))
+                    .or_else(|| self.keysounds.document.tracks.first().map(|t| t.id));
+                if let Some(tid) = target_tid {
+                    let before = self.keysounds.document.clone();
+                    let ks_added =
+                        midi_record::commit_to_keysounds(&notes, &mut self.keysounds, tid, 200.0);
+                    if ks_added > 0 {
+                        self.keysound_history.record(before);
+                        self.keysound_history.active_track_id = Some(tid);
+                        if committed == 0 {
+                            committed = ks_added;
+                        }
+                    }
                 }
                 self.status = format!("Recorded {committed} MIDI hits.");
             } else {
@@ -2436,7 +2465,12 @@ impl Application {
         self.check_set_versions_when_read();
         self.poll_drum_detection();
         self.poll_node_graph();
-        let _ = self.midi_recorder.poll(self.position_ms(), self.is_playing());
+        let _ = self.midi_recorder.poll_with_clock(
+            self.position_ms(),
+            self.is_playing(),
+            self.playback_speed,
+            std::time::Instant::now(),
+        );
         // Before main's job: its arms can return early.
         self.poll_export();
         let song_result = match self.song_job.as_ref().map(|r| r.try_recv()) {
@@ -2608,6 +2642,9 @@ impl Application {
                     }
                     self.drum.song_loaded();
                     self.node_graph_song_loaded();
+                    if preserve.is_none() {
+                        keysound_session::reset_for_map(self, Some(&path));
+                    }
                     self.samples = loaded.samples;
                     self.warnings = loaded.warnings;
                     if preserve.is_none() {
@@ -3051,6 +3088,19 @@ impl Application {
         if self.is_stroke_open() {
             self.error = Some("Finish or cancel the current drag before saving.".into());
             return;
+        }
+        if self.has_dirty_keysounds() {
+            if let Err(err) = keysound_session::save_dawsuks_to(self, None, false) {
+                self.error = Some(err);
+                return;
+            }
+            if !self.has_dirty_beatmap() {
+                self.status = "Saved Keysound project.".into();
+                if let Some(path) = self.pending_open.take() {
+                    self.open_now(OpenSource::Map(path));
+                }
+                return;
+            }
         }
         let Some(d) = &self.document else {
             return;
@@ -4616,6 +4666,7 @@ impl Application {
         let pid = std::process::id();
         #[cfg(test)]
         let hold = self.drum_vst_restore_hold.clone();
+        let live_sr = self.live_sample_rate();
         std::thread::spawn(move || {
             #[cfg(test)]
             if let Some(hold) = hold {
@@ -4643,6 +4694,7 @@ impl Application {
                     plugin_path: PathBuf::from(&saved.plugin_path),
                     plugin_uid: saved.plugin_uid.clone(),
                     offline: false,
+                    sample_rate_hz: live_sr,
                 };
                 let mut session = dawsu_audio_instruments::HostSession::spawn(&config)
                     .map_err(|e| e.to_string())?;
@@ -4728,7 +4780,10 @@ impl Application {
         plugin_path: PathBuf,
         plugin_uid: Option<String>,
     ) -> Result<LoadedPluginSummary, Vst3Error> {
-        let summary = self.vst3.load_instrument(plugin_path.clone(), plugin_uid.clone())?;
+        let sr = self.live_sample_rate();
+        let summary = self
+            .vst3
+            .load_instrument_at_rate(plugin_path.clone(), plugin_uid.clone(), sr)?;
         let state_b64 = self.vst3.get_plugin_state(&summary.id).ok();
         if let Err(err) = self.attach_drum_vst_instance(
             &summary,
@@ -4883,21 +4938,195 @@ impl Application {
         &mut self,
         mode: VelocityExportMode,
     ) -> Result<(Vst3DrumExportPlan, Vec<BounceOutput>), String> {
-        self.render_drum_vst_with_options(mode, bounce_plan::BounceAudioFormat::Wav16, false)
+        self.render_drum_vst_with_options(mode, bounce_plan::BounceAudioFormat::Wav16, false, true)
     }
 
-    /// Renders routed VST3 drum hits with optional uniform batch peak normalisation and Ogg Vorbis
-    /// or 16-bit WAV output, staging them as pending mapset samples in one Undo step.
+    /// Renders routed VST3 drum hits with optional uniform batch peak normalisation, `-60 dBFS`
+    /// auto-trim, cooperative cancellation, and Ogg Vorbis or 16-bit WAV output, staging them as
+    /// pending mapset samples in one Undo step.
     pub fn render_drum_vst_with_options(
         &mut self,
         mode: VelocityExportMode,
         format: bounce_plan::BounceAudioFormat,
         normalize: bool,
+        auto_trim: bool,
     ) -> Result<(Vst3DrumExportPlan, Vec<BounceOutput>), String> {
-        self.render_drum_vst_to_wavs_formatted(mode, format, normalize, |vst3, instance_id, plan, staging_dir| {
-            vst3.execute_vst3_drum_export(instance_id, plan, staging_dir, 44_100)
+        self.bounce_cancel.reset();
+        let cancel = self.bounce_cancel.clone();
+        self.render_drum_vst_to_wavs_formatted(
+            mode,
+            format,
+            normalize,
+            move |vst3, instance_id, plan, staging_dir| {
+                vst3.execute_vst3_drum_export_with_options(
+                    instance_id,
+                    plan,
+                    staging_dir,
+                    44_100,
+                    auto_trim,
+                    Some(&cancel),
+                )
                 .map_err(|e| e.to_string())
-        })
+            },
+        )
+    }
+
+    /// Renders a non-destructive preview of the planned VST3 drum bounce and returns real measured
+    /// duration, sample peak (dBFS), usage count, silence flag, and encoded byte size per sample
+    /// without mutating the open difficulty or staging pending samples.
+    pub fn preview_drum_vst_render_with_options(
+        &mut self,
+        mode: VelocityExportMode,
+        format: bounce_plan::BounceAudioFormat,
+        normalize: bool,
+        auto_trim: bool,
+    ) -> Result<serde_json::Value, String> {
+        self.bounce_cancel.reset();
+        let cancel = self.bounce_cancel.clone();
+        self.preview_drum_vst_render_with(
+            mode,
+            format,
+            normalize,
+            move |vst3, instance_id, plan, staging_dir| {
+                vst3.execute_vst3_drum_export_with_options(
+                    instance_id,
+                    plan,
+                    staging_dir,
+                    44_100,
+                    auto_trim,
+                    Some(&cancel),
+                )
+                .map_err(|e| e.to_string())
+            },
+        )
+    }
+
+    pub(crate) fn preview_drum_vst_render_with<F>(
+        &mut self,
+        mode: VelocityExportMode,
+        format: bounce_plan::BounceAudioFormat,
+        normalize: bool,
+        render_export: F,
+    ) -> Result<serde_json::Value, String>
+    where
+        F: FnOnce(&mut Vst3Manager, &str, &Vst3DrumExportPlan, &Path) -> Result<Vec<BounceOutput>, String>,
+    {
+        let (plan, _) = self.plan_drum_vst_render_with_sources(mode)?;
+        let mapset_root = self
+            .document
+            .as_ref()
+            .and_then(|d| d.path.parent().map(Path::to_path_buf))
+            .ok_or("Map folder unavailable.")?;
+        let base_bytes: u64 = std::fs::read_dir(&mapset_root)
+            .ok()
+            .into_iter()
+            .flatten()
+            .filter_map(|e| e.ok())
+            .filter_map(|e| e.metadata().ok())
+            .filter(|m| m.is_file())
+            .map(|m| m.len())
+            .fold(0u64, u64::saturating_add);
+        if plan.jobs.is_empty() {
+            return Ok(serde_json::json!({
+                "baseBytes": base_bytes,
+                "bouncedBytes": 0u64,
+                "samples": [],
+            }));
+        }
+        let instance_id = self
+            .drum_vst
+            .as_ref()
+            .map(|v| v.instance_id.clone())
+            .ok_or("Load a Drum VST3 instrument first.")?;
+        let preview_dir = self
+            .data_root
+            .join("renders")
+            .join(format!("preview-{}", std::process::id()));
+        let outputs = render_export(&mut self.vst3, &instance_id, &plan, &preview_dir)?;
+
+        let mut clips: Vec<(String, std::sync::Arc<AudioClip>)> = Vec::with_capacity(outputs.len());
+        let read_result = (|| -> Result<(), String> {
+            for output in &outputs {
+                let name = output
+                    .path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("drum.wav")
+                    .to_string();
+                let clip = dawsu_audio::decode(&output.path)?;
+                clips.push((name, clip));
+            }
+            Ok(())
+        })();
+        for output in &outputs {
+            let _ = std::fs::remove_file(&output.path);
+        }
+        let _ = std::fs::remove_dir_all(&preview_dir);
+        read_result?;
+
+        let mut buffers: Vec<Vec<f32>> = clips
+            .iter()
+            .map(|(_, clip)| {
+                if clip.channels == 1 {
+                    let mut stereo = Vec::with_capacity(clip.samples.len() * 2);
+                    for &s in &clip.samples {
+                        stereo.push(s);
+                        stereo.push(s);
+                    }
+                    stereo
+                } else {
+                    clip.samples.clone()
+                }
+            })
+            .collect();
+        if normalize {
+            let _ = bounce_plan::uniform_batch_normalize(&mut buffers, format.target_peak_dbfs());
+        }
+        let want_ogg = matches!(format, bounce_plan::BounceAudioFormat::OggVorbis);
+        let mut bounced_bytes = 0u64;
+        let mut samples_json = Vec::with_capacity(plan.jobs.len());
+        for (idx, ((name, clip), stereo)) in clips.iter().zip(buffers.into_iter()).enumerate() {
+            if self.bounce_cancel.is_cancelled() {
+                return Err("Render cancelled.".into());
+            }
+            let sr = clip.sample_rate.max(8_000);
+            let frames = stereo.len() / 2;
+            let duration_ms = ((frames as f64 / f64::from(sr)) * 1000.0).round() as u32;
+            let peak = stereo
+                .iter()
+                .copied()
+                .filter(|s| s.is_finite())
+                .fold(0.0f32, |acc, s| acc.max(s.abs()));
+            let silent = peak < bounce_plan::SILENT_PEAK_THRESHOLD;
+            let peak_dbfs = if silent { -120.0 } else { 20.0 * peak.log10() };
+            let (final_name, bytes) = if want_ogg {
+                let encoded = bounce_plan::encode_vorbis_ogg(&stereo, sr)?;
+                let new_name = match name.rsplit_once('.') {
+                    Some((stem, _)) => format!("{stem}.ogg"),
+                    None => format!("{name}.ogg"),
+                };
+                (new_name, encoded.len() as u64)
+            } else {
+                (name.clone(), 44 + (stereo.len() as u64) * 2)
+            };
+            bounced_bytes = bounced_bytes.saturating_add(bytes);
+            let job = plan.jobs.get(idx);
+            samples_json.push(serde_json::json!({
+                "filename": final_name,
+                "durationMs": duration_ms,
+                "peakDbfs": peak_dbfs,
+                "usageCount": job.map_or(1, |j| j.hit_count),
+                "silent": silent,
+                "bytes": bytes,
+                "pitch": job.map_or(36, |j| j.pitch),
+                "velocity": job.map_or(100, |j| j.midi_velocity),
+            }));
+        }
+        Ok(serde_json::json!({
+            "baseBytes": base_bytes,
+            "bouncedBytes": bounced_bytes,
+            "samples": samples_json,
+        }))
     }
 
     #[cfg(test)]
