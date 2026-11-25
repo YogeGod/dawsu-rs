@@ -1599,3 +1599,288 @@ fn add_numbered_layers_skips_reserved_indexes_and_preserves_mapset_files() {
     assert!(cues.iter().any(|c| c.at_ms == 1500.0 && c.clip.samples == [0.25]));
 }
 
+#[test]
+fn task2_path1_create_hitsound_diff_preserves_bytes_and_seeds_custom_only_project() {
+    let scratch = Scratch::new("task2-path1-create");
+    let folder = scratch.path("mapset");
+    std::fs::create_dir_all(&folder).unwrap();
+    let source_path = folder.join("Artist - Song (Mapper) [Hard].osu");
+    let mut bytes = vec![0xEF, 0xBB, 0xBF]; // UTF-8 BOM
+    bytes.extend_from_slice(
+        concat!(
+            "osu file format v14\r\n",
+            "[General]\r\nMode: 0\r\n",
+            "[Editor]\r\nBookmarks: 1000,2000\r\n",
+            "[Metadata]\r\nTitle:Song\r\nArtist:Artist\r\nCreator:Mapper\r\nVersion:Hard\r\nBeatmapID:12345\r\n",
+            "[TimingPoints]\r\n0,500,4,1,0,80,1,0\r\n",
+            "[HitObjects]\r\n256,192,1000,1,0,0:0:0:0:\r\n",
+        )
+        .as_bytes(),
+    );
+    std::fs::write(&source_path, &bytes).unwrap();
+
+    let mut app = Application::headless();
+    app.project_root = Some(scratch.path("projects"));
+    let created = app
+        .create_hitsound_diff(&source_path, false, Some(crate::HsStarterMode::CustomOnly))
+        .unwrap();
+    let created_bytes = std::fs::read(&created).unwrap();
+    assert!(created_bytes.starts_with(&[0xEF, 0xBB, 0xBF]), "BOM must be preserved");
+    let text = String::from_utf8_lossy(&created_bytes);
+    assert!(text.contains("\r\n"), "CRLF must be preserved");
+    assert!(text.contains("Bookmarks: 1000,2000"), "Bookmarks must be preserved");
+    assert!(text.contains("Version:Hitsounds\r\n"), "Version must be Hitsounds");
+    assert!(text.contains("BeatmapID:0\r\n"), "BeatmapID must be reset to 0");
+
+    open(&mut app, created.clone());
+    let doc = app.document().unwrap();
+    assert!(doc.hs_mode);
+    assert_eq!(doc.starter_mode, Some(crate::HsStarterMode::CustomOnly));
+    let visible_count = doc
+        .composer
+        .hitsounds()
+        .lanes()
+        .iter()
+        .filter(|l| !doc.composer.hitsounds().is_lane_hidden(&l.identity))
+        .count();
+    assert_eq!(visible_count, 0, "Path 1 must open with 0 visible lanes");
+    assert!(doc.lane_layout().is_some_and(|l| l.plain_list));
+    assert_eq!(
+        doc.export_choices().map(|c| c.addition_only_normal),
+        Some(dawsu_hitsounding::index_packing::AdditionOnlyNormal::Silent)
+    );
+
+    // Calling reuse_existing=true returns the existing diff without overwriting its project.
+    let reused = app
+        .create_hitsound_diff(&source_path, true, Some(crate::HsStarterMode::Default12))
+        .unwrap();
+    assert_eq!(reused.canonicalize().unwrap(), created.canonicalize().unwrap());
+    open(&mut app, reused);
+    assert_eq!(
+        app.document().unwrap().starter_mode,
+        Some(crate::HsStarterMode::CustomOnly),
+        "reuse_existing must not overwrite existing starter_mode"
+    );
+}
+
+#[test]
+#[allow(clippy::disallowed_methods)]
+fn task2_add_lane_from_file_stages_safely_sanitizes_and_reuses_mapset_files() {
+    let scratch = Scratch::new("task2-add-lane");
+    let folder = scratch.path("mapset");
+    std::fs::create_dir_all(&folder).unwrap();
+    let map = folder.join("Artist - Song (Mapper) [Hard].osu");
+    std::fs::write(
+        &map,
+        "osu file format v14\n[General]\nMode: 0\n[Metadata]\nTitle:Song\nArtist:Artist\nCreator:Mapper\nVersion:Hard\n[TimingPoints]\n0,500,4,1,0,80,1,0\n[HitObjects]\n256,192,1000,1,0,0:0:0:0:\n",
+    )
+    .unwrap();
+    let wav = b"RIFF\x26\0\0\0WAVEfmt \x10\0\0\0\x01\0\x01\0\x80\xbb\0\0\0w\x01\0\x02\0\x10\0data\x02\0\0\0\x00\x40";
+    let existing_in_map = folder.join("existing-kick.wav");
+    std::fs::write(&existing_in_map, wav).unwrap();
+    let ext_standard = scratch.path("normal-hitnormal.wav");
+    let ext_comma = scratch.path("kick,1.wav");
+    std::fs::write(&ext_standard, wav).unwrap();
+    std::fs::write(&ext_comma, wav).unwrap();
+
+    let mut app = Application::headless();
+    app.project_root = Some(scratch.path("projects"));
+    let created = app
+        .create_hitsound_diff(&map, false, Some(crate::HsStarterMode::CustomOnly))
+        .unwrap();
+    open(&mut app, created.clone());
+    let doc_path = app.document().unwrap().path.clone();
+    let before_files = dawsu_osu_format::list_folder(&folder).unwrap();
+
+    // Verify pipe `|` and `,` are both sanitized by create_custom_file_name (cross-platform).
+    let (sanitized_pipe, _) =
+        crate::layers::create_custom_file_name(app.document().unwrap(), "kick,pipe|1", "wav", wav)
+            .unwrap();
+    assert!(!sanitized_pipe.contains(',') && !sanitized_pipe.contains('|'));
+
+    // External file named like a standard osu! sound must not hijack Standard index slot.
+    let id1 = app.add_lane_from_file(&doc_path, &ext_standard).unwrap();
+    assert!(matches!(id1, dawsu_foundation::SampleIdentity::File(_)));
+    assert!(!app.is_dirty());
+    assert_eq!(dawsu_osu_format::list_folder(&folder).unwrap(), before_files);
+
+    // External file with `,` must be sanitized.
+    let id2 = app.add_lane_from_file(&doc_path, &ext_comma).unwrap();
+    let dawsu_foundation::SampleIdentity::File(ref name2) = id2 else {
+        panic!("expected File lane");
+    };
+    assert!(!name2.contains(',') && !name2.contains('|'));
+    assert!(!app.is_dirty());
+    assert_eq!(dawsu_osu_format::list_folder(&folder).unwrap(), before_files);
+
+    // Undo hides the added lane cleanly.
+    app.command("undo");
+    assert!(app.document().unwrap().composer.hitsounds().is_lane_hidden(&id2));
+
+    // Adding a file already in the mapset unhides it with 0 duplicates.
+    let id3 = app.add_lane_from_file(&doc_path, &existing_in_map).unwrap();
+    assert_eq!(id3, dawsu_foundation::SampleIdentity::File("existing-kick.wav".into()));
+    assert!(!app.document().unwrap().composer.hitsounds().is_lane_hidden(&id3));
+    assert_eq!(dawsu_osu_format::list_folder(&folder).unwrap(), before_files);
+}
+
+#[test]
+fn task2_show_default_skin_lanes_and_index1_upgrade_work() {
+    let scratch = Scratch::new("task2-show-skin-index1");
+    let folder = scratch.path("mapset");
+    std::fs::create_dir_all(&folder).unwrap();
+    let map = folder.join("Artist - Song (Mapper) [Hard].osu");
+    std::fs::write(
+        &map,
+        "osu file format v14\n[General]\nMode: 0\n[Metadata]\nTitle:Song\nArtist:Artist\nCreator:Mapper\nVersion:Hard\n[TimingPoints]\n0,500,4,1,0,80,1,0\n[HitObjects]\n256,192,1000,1,0,0:0:0:0:\n",
+    )
+    .unwrap();
+    let wav = b"RIFF\x26\0\0\0WAVEfmt \x10\0\0\0\x01\0\x01\0\x80\xbb\0\0\0w\x01\0\x02\0\x10\0data\x02\0\0\0\x00\x40";
+    let ext = scratch.path("my-kick.wav");
+    std::fs::write(&ext, wav).unwrap();
+
+    let mut app = Application::headless();
+    app.project_root = Some(scratch.path("projects"));
+    let created = app
+        .create_hitsound_diff(&map, false, Some(crate::HsStarterMode::CustomOnly))
+        .unwrap();
+    open(&mut app, created);
+    let doc_path = app.document().unwrap().path.clone();
+
+    let pos_before = app.document().unwrap().composer.history.position();
+    let shown = app.show_default_skin_lanes(&doc_path).unwrap();
+    assert_eq!(shown, 12);
+    assert!(!app.is_dirty());
+    assert_eq!(app.document().unwrap().composer.history.position(), pos_before + 1);
+    // Calling again pushes no Undo step.
+    assert_eq!(app.show_default_skin_lanes(&doc_path).unwrap(), 0);
+    assert_eq!(app.document().unwrap().composer.history.position(), pos_before + 1);
+
+    // Replacing Index-0 skin lane upgrades to Index 1 (`normal-hitnormal.wav`) when unreserved.
+    let skin_normal = dawsu_foundation::SampleIdentity::Standard {
+        set: dawsu_foundation::SampleSet::Normal,
+        sound: dawsu_foundation::Sound::Hit(dawsu_foundation::Hitsound::Normal),
+        index: dawsu_foundation::CustomIndex::new(0),
+    };
+    app.active_lane = app
+        .document()
+        .unwrap()
+        .composer
+        .lanes
+        .iter()
+        .position(|l| l == &skin_normal)
+        .unwrap();
+    app.replace_lane_sample(&doc_path, &skin_normal, &ext).unwrap();
+    assert!(
+        app.document().unwrap().pending.get("normal-hitnormal.wav").is_some(),
+        "Replacing unreserved Index-0 skin lane should upgrade to Index 1"
+    );
+}
+
+#[test]
+fn task2_create_hitsound_diff_from_current_preserves_source_and_writes_hitsounds() {
+    let scratch = Scratch::new("task2-from-current");
+    let folder = scratch.path("mapset");
+    std::fs::create_dir_all(&folder).unwrap();
+    let map = folder.join("Artist - Song (Mapper) [Hard].osu");
+    let original = concat!(
+        "osu file format v14\r\n",
+        "[General]\r\nMode: 0\r\n",
+        "[Metadata]\r\nTitle:Song\r\nArtist:Artist\r\nCreator:Mapper\r\nVersion:Hard\r\n",
+        "[TimingPoints]\r\n0,500,4,1,0,80,1,0\r\n",
+        "[HitObjects]\r\n256,192,1000,1,8,0:0:0:0:\r\n",
+    );
+    std::fs::write(&map, original).unwrap();
+
+    let mut app = Application::headless();
+    app.project_root = Some(scratch.path("projects"));
+    open(&mut app, map.clone());
+    let created = app.create_hitsound_diff_from_current().unwrap();
+    assert_eq!(std::fs::read(&map).unwrap(), original.as_bytes(), "Source diff must remain byte-identical");
+    assert!(created.exists());
+    open(&mut app, created);
+    let doc = app.document().unwrap();
+    assert!(doc.hs_mode);
+    assert_eq!(doc.composer.hitsounds().moments().len(), 1);
+}
+
+#[test]
+fn task2_addition_only_normal_silent_exports_custom_indexed_additions_without_error() {
+    let scratch = Scratch::new("task2-silent-normal-custom-idx");
+    let folder = scratch.path("mapset");
+    std::fs::create_dir_all(&folder).unwrap();
+    let wav = b"RIFF\x26\0\0\0WAVEfmt \x10\0\0\0\x01\0\x01\0\x80\xbb\0\0\0w\x01\0\x02\0\x10\0data\x02\0\0\0\x00\x40";
+    std::fs::write(folder.join("normal-hitclap2.wav"), wav).unwrap();
+    let hs_path = folder.join("Artist - Song (Mapper) [Hitsounds].osu");
+    let target_path = folder.join("Artist - Song (Mapper) [Hard].osu");
+    std::fs::write(
+        &hs_path,
+        "osu file format v14\n[General]\nMode: 0\n[Metadata]\nTitle:Song\nArtist:Artist\nCreator:Mapper\nVersion:Hitsounds\n[TimingPoints]\n0,500,4,1,2,80,1,0\n[HitObjects]\n256,192,1000,1,8,0:0:2:0:\n256,192,2000,1,8,0:0:2:0:\n256,192,3000,1,2,0:0:0:0:\n",
+    )
+    .unwrap();
+    std::fs::write(
+        &target_path,
+        "osu file format v14\n[General]\nMode: 0\n[Metadata]\nTitle:Song\nArtist:Artist\nCreator:Mapper\nVersion:Hard\n[TimingPoints]\n0,500,4,1,0,80,1,0\n[HitObjects]\n256,192,1000,1,0,0:0:0:0:\n256,192,2000,2,0,L|356:192,1,100,0|0,0:0|0:0,0:0:0:0:\n256,192,3000,1,0,0:0:0:0:\n",
+    )
+    .unwrap();
+
+    let mut app = Application::headless();
+    app.project_root = Some(scratch.path("projects"));
+    open(&mut app, hs_path);
+    // Remove hitnormal from all moments in source so only additions remain (custom-indexed clap2
+    // on circle + slider, plus skin whistle on the 3rd circle).
+    let normal2 = dawsu_hitsounding::rules::read_sample_file_name("normal-hitnormal2.wav").unwrap();
+    let normal0 = dawsu_foundation::SampleIdentity::Standard {
+        set: dawsu_foundation::SampleSet::Normal,
+        sound: dawsu_foundation::Sound::Hit(dawsu_foundation::Hitsound::Normal),
+        index: dawsu_foundation::CustomIndex::new(0),
+    };
+    {
+        let doc = app.document.as_mut().unwrap();
+        doc.composer.apply("Remove normals", |hits| {
+            for i in 0..hits.moments().len() {
+                hits.remove_hit(dawsu_hitsounding::MomentId(i), &normal2);
+                hits.remove_hit(dawsu_hitsounding::MomentId(i), &normal0);
+            }
+        });
+    }
+    let source = crate::output::Source::from_document(app.document().unwrap());
+    let opts = crate::ExportOptions {
+        base: false,
+        targets: vec![target_path.clone()],
+        addition_only_normal: dawsu_hitsounding::index_packing::AdditionOnlyNormal::Silent,
+        ..Default::default()
+    };
+    let config = crate::output::ExportConfig {
+        defaults: &app.preferences.default_samples,
+        settings: None,
+        projects: app.project_root.as_deref(),
+        options: &opts,
+    };
+    let mut diagnostics = Vec::new();
+    let plan = crate::output::export_report(
+        &source,
+        &config,
+        &|| false,
+        &mut diagnostics,
+        &mut |_, _| {},
+    )
+    .expect("AdditionOnlyNormal::Silent must not fail with Sample mix lane is missing");
+    assert_eq!(plan.files.len(), 1);
+    let exported_osu = String::from_utf8_lossy(&plan.files[0].file.to_bytes()).into_owned();
+    // Circle at 1000 ms and slider head at 2000 ms (custom-indexed clap2) and circle at 3000 ms
+    // (skin whistle) must all export cleanly without falling back to default skin hitnormal.
+    assert!(
+        !plan.mixes.is_empty(),
+        "Expected staged silent-normal mixes for addition-only moments.\nOSU:\n{exported_osu}"
+    );
+    assert!(
+        plan.mixes.iter().all(|m| m.wav_bytes().starts_with(b"RIFF")),
+        "Every staged mix must be a valid WAV"
+    );
+    assert!(
+        exported_osu.contains("dawsu-mix-") && exported_osu.contains("2000,-100,4,1,"),
+        "Expected circle custom mix and slider-edge indexed greenline in exported .osu:\n{exported_osu}"
+    );
+}
+

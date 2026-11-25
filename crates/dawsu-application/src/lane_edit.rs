@@ -71,6 +71,162 @@ impl Application {
         Ok(())
     }
 
+    /// Adds an external or mapset audio file as a visible lane without writing to the mapset
+    /// folder until a hit on that lane is saved.
+    ///
+    /// - If `source` already lives inside the open mapset folder and matches an existing lane,
+    ///   unhides that lane (1 Undo step, 0 duplicate files).
+    /// - Otherwise decodes & validates the audio, stages its bytes under a collision-safe
+    ///   non-standard filename in `document.pending`, registers the lane, and reveals it in
+    ///   1 Undo step (`dirty = false`).
+    pub fn add_lane_from_file(
+        &mut self,
+        expected_map: &Path,
+        source: &Path,
+    ) -> Result<SampleIdentity, String> {
+        let doc = self.lane_edit_document(expected_map)?;
+        let root = doc
+            .path
+            .parent()
+            .ok_or("Missing mapset folder")?
+            .canonicalize()
+            .map_err(|e| format!("Opening mapset folder: {e}"))?;
+        let canonical = source
+            .canonicalize()
+            .map_err(|e| format!("Opening {}: {e}", source.display()))?;
+        let extension = canonical
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(str::to_ascii_lowercase)
+            .filter(|ext| matches!(ext.as_str(), "wav" | "ogg" | "mp3"))
+            .ok_or("Choose a WAV, OGG, or MP3 sample.")?;
+
+        // 1. If the file is already inside the mapset folder, reuse its existing lane or register
+        //    the on-disk file directly without duplicating bytes into pending.
+        if canonical.starts_with(&root) {
+            let hits = doc.composer.hitsounds();
+            let existing = hits
+                .lanes()
+                .iter()
+                .find(|lane| match &lane.source {
+                    dawsu_hitsounding::LaneSource::File(name) => {
+                        safe_child(&root, name).ok().as_ref() == Some(&canonical)
+                    }
+                    dawsu_hitsounding::LaneSource::Skin => false,
+                })
+                .map(|lane| lane.identity.clone());
+            if let Some(identity) = existing {
+                let doc = self.document.as_mut().expect("open map was just validated");
+                doc.composer.show_lane(&identity);
+                let slot = doc
+                    .composer
+                    .hitsounds()
+                    .lane_slot(&identity)
+                    .unwrap_or(&identity)
+                    .clone();
+                self.restore_active_lane(Some(slot));
+                self.status = format!(
+                    "Added {}",
+                    canonical.file_name().unwrap_or_default().to_string_lossy()
+                );
+                return Ok(identity);
+            }
+            if let Ok(rel) = canonical.strip_prefix(&root) {
+                let rel_name = rel.to_string_lossy().replace('\\', "/");
+                let before = file_stamp(&canonical).ok_or("This sample could not be read")?;
+                let clip = dawsu_audio::decode(&canonical)?;
+                if file_stamp(&canonical) != Some(before) {
+                    return Err("The sample changed while it was being read. Choose it again.".into());
+                }
+                let identity = read_sample_file_name(&rel_name)
+                    .unwrap_or_else(|| SampleIdentity::File(rel_name.clone()));
+                self.register_samples(vec![(rel_name, clip)], false);
+                let doc = self.document.as_mut().expect("open map was just validated");
+                doc.composer
+                    .history
+                    .update_external(|hits| hits.set_lane_hidden(&identity, true));
+                doc.composer.show_lane(&identity);
+                self.restore_active_lane(Some(identity.clone()));
+                self.status = format!(
+                    "Added {}",
+                    canonical.file_name().unwrap_or_default().to_string_lossy()
+                );
+                return Ok(identity);
+            }
+        }
+
+        // 2. External file: validate, decode, stage in pending under a safe non-standard name.
+        let bytes = std::fs::read(&canonical).map_err(|e| format!("Reading sample: {e}"))?;
+        let clip = dawsu_audio::decode(&canonical)?;
+        if !std::fs::read(&canonical).is_ok_and(|current| current == bytes) {
+            return Err("The sample changed while it was being read. Choose it again.".into());
+        }
+        let original_stem = canonical
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("sample")
+            .trim()
+            .to_string();
+        let (name, used_hash_fallback) =
+            super::layers::create_custom_file_name(doc, &original_stem, &extension, &bytes)?;
+        let identity = SampleIdentity::File(name.clone());
+
+        self.document
+            .as_mut()
+            .expect("open map was just validated")
+            .pending
+            .add(&name, &bytes)?;
+        self.register_samples(vec![(name.clone(), clip)], false);
+
+        let doc = self.document.as_mut().expect("open map was just validated");
+        if used_hash_fallback && !original_stem.is_empty() {
+            let mut layout = doc.lane_layout().cloned().unwrap_or_default();
+            layout
+                .lane_names
+                .insert(super::project::lane_key(&identity), original_stem.clone());
+            layout.normalise();
+            doc.lane_layout = Some(layout);
+        }
+        doc.composer
+            .history
+            .update_external(|hits| hits.set_lane_hidden(&identity, true));
+        doc.composer.show_lane(&identity);
+        self.restore_active_lane(Some(identity.clone()));
+        self.status = format!("Added {original_stem}.{extension}");
+        Ok(identity)
+    }
+
+    /// Unhides all currently hidden Index-0 default osu! skin lanes in 1 Undo step without
+    /// marking the document dirty. Pushes no Undo step when all 12 are already visible.
+    pub fn show_default_skin_lanes(&mut self, expected_map: &Path) -> Result<usize, String> {
+        let doc = self.lane_edit_document(expected_map)?;
+        let skin_lanes: Vec<SampleIdentity> = doc
+            .composer
+            .hitsounds()
+            .lanes()
+            .iter()
+            .filter(|lane| {
+                matches!(
+                    lane.identity,
+                    SampleIdentity::Standard {
+                        sound: dawsu_foundation::Sound::Hit(_),
+                        index,
+                        ..
+                    } if index.get() == 0
+                )
+            })
+            .map(|lane| lane.identity.clone())
+            .collect();
+        let doc = self.document.as_mut().expect("open map was just validated");
+        let shown = doc
+            .composer
+            .show_lanes("Show 12 default lanes", &skin_lanes);
+        if shown > 0 {
+            self.status = format!("Shown {shown} default skin lanes.");
+        }
+        Ok(shown)
+    }
+
     pub fn delete_lane(
         &mut self,
         expected_map: &Path,
@@ -163,7 +319,7 @@ impl Application {
             .map(str::to_ascii_lowercase)
             .filter(|e| matches!(e.as_str(), "wav" | "ogg" | "mp3"))
             .unwrap_or_else(|| "wav".to_string());
-        let variant_name = super::layers::create_backing(doc, &source_identity, &ext, &bytes)?;
+        let variant_name = super::layers::create_backing(doc, &source_identity, &ext, &bytes, false)?;
         let variant_identity = read_sample_file_name(&variant_name)
             .unwrap_or_else(|| SampleIdentity::File(variant_name.clone()));
         self.document

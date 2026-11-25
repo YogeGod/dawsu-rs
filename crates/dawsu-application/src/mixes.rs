@@ -240,6 +240,7 @@ pub(super) fn stage_in_file(
         false,
         crate::export_manifest::SingleSampleFormat::MatchMixFormat,
         &BTreeMap::new(),
+        None,
         cancel,
     )
 }
@@ -262,9 +263,17 @@ pub(super) fn stage_in_file_with_options(
     auto_fix: bool,
     single_format: crate::export_manifest::SingleSampleFormat,
     index_schema: &BTreeMap<String, u32>,
+    silent_normal_index: Option<u32>,
     cancel: &dyn Fn() -> bool,
 ) -> Result<(OsuFile, MixFiles), String> {
-    let listing = listing(root, pending)?;
+    let mut listing = listing(root, pending)?;
+    if let Some(silent_idx) = silent_normal_index {
+        let silent_name = format!("normal-hitnormal{silent_idx}.wav");
+        if !listing.iter().any(|n| n.eq_ignore_ascii_case(&silent_name)) {
+            listing.push(silent_name);
+            listing.sort();
+        }
+    }
     let mut hits = match decompile(&file, &listing, cancel, &mut |_, _| {}) {
         Decompiled::Done(hits) => hits,
         Decompiled::Cancelled => return Err("Sample mix preparation cancelled".into()),
@@ -303,6 +312,7 @@ pub(super) fn stage_in_file_with_options(
             auto_fix,
             single_format,
             index_schema,
+            silent_normal_index,
             cancel,
         )?;
     }
@@ -695,6 +705,7 @@ impl MixFiles {
         auto_fix: bool,
         single_format: crate::export_manifest::SingleSampleFormat,
         index_schema: &BTreeMap<String, u32>,
+        silent_normal_index: Option<u32>,
         cancel: &dyn Fn() -> bool,
     ) -> Result<(), String> {
         let defaults_list = crate::pending::sample_folder(defaults);
@@ -715,14 +726,18 @@ impl MixFiles {
             .iter()
             .any(|problem| matches!(problem.place, Place::SliderNode { .. }))
         {
-            Some(IndexedMixes::read_with_schema(
+            let mut idx = IndexedMixes::read_with_schema(
                 root,
                 &expected,
                 already_staged,
                 start_index,
                 pending,
                 index_schema.clone(),
-            )?)
+            )?;
+            if let Some(silent_idx) = silent_normal_index {
+                idx.reserved.insert(silent_idx);
+            }
+            Some(idx)
         } else {
             None
         };
@@ -774,7 +789,7 @@ impl MixFiles {
                     )?;
                     (SampleIdentity::File(name), staged)
                 } else {
-                    let rendered_mix = render_layers(source, Some(target), layers, root, pending, defaults, &defaults_list, &mut clips, format, auto_fix, cancel)?;
+                    let rendered_mix = render_layers(source, Some(target), layers, root, pending, defaults, &defaults_list, &mut clips, format, auto_fix, silent_normal_index, cancel)?;
                     if let Some(indexes) = indexes.as_mut().filter(|_| slider) {
                         let (index, reuse) = indexes.allocate(root, &rendered_mix.bytes, format)?;
                         let identity = SampleIdentity::Standard {
@@ -826,30 +841,71 @@ struct RenderedMix {
 fn render_layers(
     source: &Hitsounds, target: Option<&Hitsounds>, layers: &[(SampleIdentity, i32)],
     root: &Path, pending: &Pending, defaults: &Path, defaults_list: &[String],
-    clips: &mut HashMap<SampleIdentity, Arc<AudioClip>>, format: MixFormat, auto_fix: bool, cancel: &dyn Fn() -> bool,
+    clips: &mut HashMap<SampleIdentity, Arc<AudioClip>>, format: MixFormat, auto_fix: bool,
+    silent_normal_index: Option<u32>, cancel: &dyn Fn() -> bool,
 ) -> Result<RenderedMix, String> {
     let mut cues = Vec::with_capacity(layers.len());
     for (identity, volume) in layers {
         cues.push(ScheduledSound {
             at_ms: 0.0,
             end_ms: None,
-            clip: load_clip(source, target, identity, root, pending, defaults, defaults_list, clips, cancel)?,
+            clip: load_clip(source, target, identity, root, pending, defaults, defaults_list, clips, silent_normal_index, cancel)?,
             gain: *volume as f32 / 100.0,
         });
     }
     render_with_options(cues, format, auto_fix, cancel)
 }
 
+fn is_synthetic_silent_normal(identity: &SampleIdentity, silent_normal_index: Option<u32>) -> bool {
+    silent_normal_index.is_some_and(|silent_idx| {
+        matches!(
+            identity,
+            SampleIdentity::Standard {
+                set: SampleSet::Normal,
+                sound: Sound::Hit(Hitsound::Normal),
+                index,
+            } if index.get() == silent_idx
+        )
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 fn load_clip(
     source: &Hitsounds, target: Option<&Hitsounds>, identity: &SampleIdentity,
     root: &Path, pending: &Pending, defaults: &Path, defaults_list: &[String],
-    clips: &mut HashMap<SampleIdentity, Arc<AudioClip>>, cancel: &dyn Fn() -> bool,
+    clips: &mut HashMap<SampleIdentity, Arc<AudioClip>>,
+    silent_normal_index: Option<u32>, cancel: &dyn Fn() -> bool,
 ) -> Result<Arc<AudioClip>, String> {
     if !clips.contains_key(identity) {
+        if is_synthetic_silent_normal(identity, silent_normal_index) {
+            let silent = Arc::new(AudioClip {
+                samples: vec![0.0; CHANNELS],
+                channels: CHANNELS,
+                sample_rate: SAMPLE_RATE,
+            });
+            clips.insert(identity.clone(), silent);
+            return Ok(clips[identity].clone());
+        }
+        let skin_fallback = silent_normal_index.and_then(|silent_idx| match identity {
+            SampleIdentity::Standard { set, sound, index } if index.get() == silent_idx => {
+                Some(SampleIdentity::Standard {
+                    set: *set,
+                    sound: *sound,
+                    index: CustomIndex::new(0),
+                })
+            }
+            _ => None,
+        });
         let lane = source
             .lane(identity)
             .or_else(|| target.and_then(|target| target.lane(identity)))
+            .or_else(|| {
+                skin_fallback.as_ref().and_then(|fallback| {
+                    source
+                        .lane(fallback)
+                        .or_else(|| target.and_then(|target| target.lane(fallback)))
+                })
+            })
             .ok_or("Sample mix lane is missing")?;
         let path =
             sample_path(lane, root, pending, defaults, defaults_list).map_err(|error| {
@@ -961,6 +1017,7 @@ pub(super) fn render_tick_sample(
         &mut clips,
         format,
         auto_fix,
+        None,
         cancel,
     )?;
     Ok((format.extension().to_string(), rendered.bytes))
@@ -1009,7 +1066,7 @@ pub(super) fn stage_timed_copy_with_options(
             {
                 (ext, bytes, 0.0)
             } else {
-                let rendered_mix = render_layers(source, None, layers, root, pending, defaults, &defaults_list, &mut clips, format, auto_fix, cancel)?;
+                let rendered_mix = render_layers(source, None, layers, root, pending, defaults, &defaults_list, &mut clips, format, auto_fix, None, cancel)?;
                 (format.extension().to_string(), rendered_mix.bytes, rendered_mix.trimmed_leading_silence_ms)
             };
             let name = if let Some(previous) = staged[own_from..].iter().find(|mix| mix.index.is_none() && mix.wav == bytes) {
@@ -1071,7 +1128,7 @@ impl Assets<'_> {
             file.layers.iter().map(|(identity, v)| Ok(ScheduledSound {
                 at_ms: 0.0,
                 end_ms: None,
-                clip: load_clip(self.source, Some(target), identity, self.root, self.pending, self.defaults, &self.defaults_list, clips, cancel)?,
+                clip: load_clip(self.source, Some(target), identity, self.root, self.pending, self.defaults, &self.defaults_list, clips, None, cancel)?,
                 gain: *v as f32 / volume,
             })).collect::<Result<Vec<_>, String>>()
         };

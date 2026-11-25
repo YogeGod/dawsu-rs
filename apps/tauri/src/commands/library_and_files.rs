@@ -181,88 +181,63 @@ pub(crate) fn inspect_mapset_folder(path: PathBuf) -> Result<Value, String> {
 }
 
 #[tauri::command]
-pub(crate) fn create_hitsound_diff(sibling_path: PathBuf, reuse_existing: Option<bool>) -> Result<PathBuf, String> {
-    let (folder, resolved_sibling) = if sibling_path.is_dir() {
-        let mut diffs: Vec<PathBuf> = std::fs::read_dir(&sibling_path)
-            .map_err(|e| e.to_string())?
-            .filter_map(Result::ok)
-            .map(|entry| entry.path())
-            .filter(|p| p.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("osu")))
-            .collect();
-        diffs.sort();
-        let first = diffs
-            .into_iter()
-            .next()
-            .ok_or_else(|| "This folder contains no .osu difficulty files.".to_string())?;
-        (sibling_path, first)
-    } else {
-        let parent = sibling_path
-            .parent()
-            .ok_or_else(|| "Difficulty has no parent folder.".to_string())?
-            .to_path_buf();
-        (parent, sibling_path)
+pub(crate) fn create_hitsound_diff(
+    sibling_path: PathBuf,
+    reuse_existing: Option<bool>,
+    starter_mode: Option<String>,
+    state: State<'_, Editor>,
+    cache: State<'_, SongsIndexCache>,
+) -> Result<PathBuf, String> {
+    let parsed_mode = match starter_mode.as_deref() {
+        None | Some("") => None,
+        Some("custom_only") => Some(dawsu_application::HsStarterMode::CustomOnly),
+        Some("default_12") => Some(dawsu_application::HsStarterMode::Default12),
+        Some(other) => return Err(format!("Unknown starter mode: {other}")),
     };
+    let created = ask(&state, |tx| {
+        Request::CreateHitsoundDiff(sibling_path, reuse_existing.unwrap_or(false), parsed_mode, tx)
+    })??;
+    if let Ok(mut guard) = cache.0.lock() {
+        *guard = None;
+    }
+    Ok(created)
+}
 
-    if reuse_existing == Some(true) {
-        let mut diffs: Vec<PathBuf> = std::fs::read_dir(&folder)
-            .map_err(|e| e.to_string())?
-            .filter_map(Result::ok)
-            .map(|entry| entry.path())
-            .filter(|p| p.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("osu")))
-            .collect();
-        diffs.sort();
-        if let Some(existing_hs) = diffs.into_iter().find(|p| is_osu_hs_diff(p)) {
-            return Ok(existing_hs);
-        }
+#[tauri::command]
+pub(crate) fn create_hitsound_diff_from_current(
+    state: State<'_, Editor>,
+    cache: State<'_, SongsIndexCache>,
+) -> Result<PathBuf, String> {
+    let created = ask(&state, Request::CreateHitsoundDiffFromCurrent)??;
+    if let Ok(mut guard) = cache.0.lock() {
+        *guard = None;
     }
+    Ok(created)
+}
 
-    let text = std::fs::read_to_string(&resolved_sibling).map_err(|e| e.to_string())?;
-    let mut version_name = "Hitsounds".to_string();
-    let mut suffix = 2;
-    let stem_prefix = resolved_sibling
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .map(|s| s.split('[').next().unwrap_or(s).trim())
-        .filter(|s| !s.is_empty())
-        .unwrap_or("Map");
-    let mut target = folder.join(format!("{stem_prefix} [{version_name}].osu"));
-    while target.exists() {
-        version_name = format!("Hitsounds {suffix}");
-        target = folder.join(format!("{stem_prefix} [{version_name}].osu"));
-        suffix += 1;
+#[tauri::command]
+pub(crate) fn pick_lane_sample(
+    window: tauri::WebviewWindow,
+    state: State<'_, Editor>,
+    map: PathBuf,
+) -> Result<ViewResponse, String> {
+    let mut dialog = rfd::FileDialog::new()
+        .set_parent(&window)
+        .set_title("Add sample as lane")
+        .add_filter("Audio sample", &["wav", "ogg", "mp3"]);
+    if let Ok(Ok(folder)) = ask(&state, |tx| Request::Folder(folders::Folder::Map, tx)) {
+        dialog = dialog.set_directory(folder);
     }
-
-    let mut out = String::new();
-    let mut section = String::new();
-    let mut wrote_version = false;
-    for raw in text.lines() {
-        let trimmed = raw.trim();
-        if trimmed.starts_with('[') && trimmed.ends_with(']') {
-            section = trimmed[1..trimmed.len() - 1].to_string();
-            out.push_str(raw);
-            out.push('\n');
-            continue;
-        }
-        if section.eq_ignore_ascii_case("HitObjects") {
-            continue;
-        }
-        if section.eq_ignore_ascii_case("Metadata") && trimmed.starts_with("Version:") {
-            out.push_str(&format!("Version:{version_name}\n"));
-            wrote_version = true;
-            continue;
-        }
-        if section.eq_ignore_ascii_case("Metadata") && trimmed.starts_with("BeatmapID:") {
-            out.push_str("BeatmapID:0\n");
-            continue;
-        }
-        out.push_str(raw);
-        out.push('\n');
-    }
-    if !wrote_version {
-        out.push_str(&format!("\n[Metadata]\nVersion:{version_name}\n"));
-    }
-    std::fs::write(&target, out).map_err(|e| e.to_string())?;
-    Ok(target)
+    let selected = dialog.pick_file();
+    ask(&state, |tx| {
+        Request::View(
+            true,
+            selected.map(|path| Action::AddLaneFromFile { map, path }),
+            false,
+            None,
+            tx,
+        )
+    })
 }
 
 #[tauri::command]

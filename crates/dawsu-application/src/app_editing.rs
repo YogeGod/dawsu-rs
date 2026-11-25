@@ -520,7 +520,11 @@ impl Application {
             if !std::fs::read(&source).is_ok_and(|current| current == bytes) {
                 return Err("The sample changed while it was being read. Choose it again.".into());
             }
-            let name = layers::create_backing(d, expected_lane, &extension, &bytes)?;
+            let allow_index_one = matches!(
+                expected_lane,
+                SampleIdentity::Standard { index, .. } if index.get() == 0
+            );
+            let name = layers::create_backing(d, expected_lane, &extension, &bytes, allow_index_one)?;
             let lane = dawsu_hitsounding::rules::read_sample_file_name(&name)
                 .unwrap_or_else(|| SampleIdentity::File(name.clone()));
             self.document.as_mut().expect("open document").pending.add(&name, &bytes)?;

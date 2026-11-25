@@ -35,7 +35,7 @@ pub(super) fn create(
     let bytes =
         std::fs::read(&source).map_err(|error| format!("Reading {default_name}: {error}"))?;
 
-    let name = create_backing(document, &family, "wav", &bytes)?;
+    let name = create_backing(document, &family, "wav", &bytes, false)?;
     Ok((name, bytes, clip))
 }
 
@@ -47,6 +47,7 @@ pub(super) fn create_backing(
     lane: &SampleIdentity,
     extension: &str,
     bytes: &[u8],
+    allow_index_one: bool,
 ) -> Result<String, String> {
     let root = document.path.parent().ok_or("The map folder is unavailable.")?;
     let files = crate::pending::listing(root, &document.pending)?;
@@ -54,7 +55,9 @@ pub(super) fn create_backing(
     indexes.extend(document.pending.taken_indexes());
     references.extend(document.pending.taken_names());
     let name = match *lane {
-        SampleIdentity::Standard { set, sound, .. } => next_numbered(document, &files, &indexes, set, sound, extension)?,
+        SampleIdentity::Standard { set, sound, .. } => {
+            next_numbered(document, &files, &indexes, &references, set, sound, extension, allow_index_one)?
+        }
         SampleIdentity::File(_) => {
             let hash = dawsu_foundation::digest::sha256_hex(bytes);
             (1..=u32::MAX).map(|i| format!("dawsu-sample-{}-{i}.{extension}", &hash[..12]))
@@ -65,15 +68,95 @@ pub(super) fn create_backing(
     Ok(name)
 }
 
+/// Computes a collision-safe, non-standard custom sample filename for an external sample added as
+/// a new lane. Never collides with osu! standard `<set>-<sound>` names, `,`, `|`, `:`, existing
+/// disk/pending files, or `.osu`/`.osb` references. Returns `(file_name, used_hash_fallback)`.
+pub(super) fn create_custom_file_name(
+    document: &Document,
+    source_stem: &str,
+    extension: &str,
+    bytes: &[u8],
+) -> Result<(String, bool), String> {
+    let root = document.path.parent().ok_or("The map folder is unavailable.")?;
+    let files = crate::pending::listing(root, &document.pending)?;
+    let (_, mut references) = reservations(root, &files)?;
+    references.extend(document.pending.taken_names());
+
+    let sanitized: String = source_stem
+        .trim()
+        .chars()
+        .map(|c| {
+            if c.is_control() || matches!(c, '/' | '\\' | ':' | ',' | '|' | '*' | '?' | '"' | '<' | '>') {
+                '_'
+            } else {
+                c
+            }
+        })
+        .collect::<String>()
+        .trim_matches(['.', ' '])
+        .to_string();
+
+    let is_free_custom = |candidate: &str| {
+        !candidate.is_empty()
+            && !matches!(
+                read_sample_file_name(candidate),
+                Some(SampleIdentity::Standard { .. })
+            )
+            && !references.contains(&candidate.to_ascii_lowercase())
+            && find_case_insensitive(&files, candidate).is_none()
+    };
+
+    if !sanitized.is_empty() {
+        let base = format!("{sanitized}.{extension}");
+        // If the original name itself would parse as an osu! standard sample (e.g.
+        // `normal-hitnormal.wav`), use a hash-prefixed filename so it never hijacks a standard
+        // bank slot, while the caller stores `sanitized` as the display name.
+        if !matches!(
+            read_sample_file_name(&base),
+            Some(SampleIdentity::Standard { .. })
+        ) {
+            if is_free_custom(&base) {
+                return Ok((base, false));
+            }
+            for suffix in 2..=9999u32 {
+                let candidate = format!("{sanitized}-{suffix}.{extension}");
+                if is_free_custom(&candidate) {
+                    return Ok((candidate, false));
+                }
+            }
+        }
+    }
+
+    let hash = dawsu_foundation::digest::sha256_hex(bytes);
+    let name = (1..=u32::MAX)
+        .map(|i| format!("dawsu-sample-{}-{i}.{extension}", &hash[..12]))
+        .find(|name| is_free_custom(name))
+        .ok_or("No safe sample name is available in this mapset.")?;
+    Ok((name, true))
+}
+
+#[allow(clippy::too_many_arguments)]
 fn next_numbered(
     document: &Document,
     files: &[String],
     reserved: &BTreeSet<u32>,
+    references: &BTreeSet<String>,
     set: dawsu_foundation::SampleSet,
     sound: dawsu_foundation::Sound,
     extension: &str,
+    allow_index_one: bool,
 ) -> Result<String, String> {
     let stem = lane_name(&SampleIdentity::Standard { set, sound, index: CustomIndex::new(0) });
+    if allow_index_one && !reserved.contains(&1) {
+        let index_one_taken = ["wav", "ogg", "mp3"].iter().any(|ext| {
+            let candidate = format!("{stem}.{ext}");
+            references.contains(&candidate.to_ascii_lowercase())
+                || find_case_insensitive(files, &candidate).is_some()
+        });
+        if !index_one_taken {
+            return Ok(format!("{stem}.{extension}"));
+        }
+    }
     let file_lanes = files.iter().filter_map(|name| named_sample(name));
     let lanes = document.composer.lanes.iter().cloned().chain(file_lanes);
     let mut family_highest = 1;

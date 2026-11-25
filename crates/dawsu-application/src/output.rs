@@ -705,6 +705,35 @@ pub(super) fn generate_report_with_options_and_format(
     diagnostics: &mut Vec<OutputProblem>,
     progress: &mut dyn FnMut(usize, usize),
 ) -> Result<WritePlan, String> {
+    generate_report_for_version(
+        source,
+        dawsu_hitsounding::generate::HITSOUNDS_VERSION,
+        defaults,
+        settings,
+        projects,
+        include_slider_audio,
+        auto_fix_staged_mixes,
+        format,
+        cancel,
+        diagnostics,
+        progress,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn generate_report_for_version(
+    source: &Source,
+    version: &str,
+    defaults: &Path,
+    settings: Option<&crate::ExportSettings>,
+    projects: Option<&Path>,
+    include_slider_audio: bool,
+    auto_fix_staged_mixes: bool,
+    format: mixes::MixFormat,
+    cancel: &dyn Fn() -> bool,
+    diagnostics: &mut Vec<OutputProblem>,
+    progress: &mut dyn FnMut(usize, usize),
+) -> Result<WritePlan, String> {
     let name = source
         .path
         .file_name()
@@ -712,18 +741,23 @@ pub(super) fn generate_report_with_options_and_format(
         .to_string_lossy();
     let root = source.path.parent().ok_or("Missing mapset folder")?;
     let file_name = dawsu_hitsounding::generate::file_name_for(
-        &source.file, &name, dawsu_hitsounding::generate::HITSOUNDS_VERSION,
+        &source.file, &name, version,
     );
     let generation = projects.map(|projects| generate_receipt::path(projects, &source.path));
-    let previous = generate_receipt::previous(generation.as_deref(), &root.join(&file_name))?;
+    let previous = if version.eq_ignore_ascii_case(dawsu_hitsounding::generate::HITSOUNDS_VERSION) {
+        generate_receipt::previous(generation.as_deref(), &root.join(&file_name))?
+    } else {
+        None
+    };
     let mut siblings = folder(source)?;
     if previous.is_some() {
         siblings.retain(|(sibling, _)| sibling != &file_name);
     }
-    match dawsu_hitsounding::generate::generate(
+    match dawsu_hitsounding::generate::generate_with_version(
         &source.hits,
         &source.file,
         &name,
+        version,
         &siblings,
         cancel,
         progress,
@@ -759,6 +793,7 @@ pub(super) fn generate_report_with_options_and_format(
                     auto_fix_staged_mixes,
                     crate::export_manifest::SingleSampleFormat::MatchMixFormat,
                     &source.export_index_schema,
+                    None,
                     cancel,
                 )
             } else {
@@ -930,11 +965,19 @@ fn copy_after(
                 .is_ok_and(|clip| clip.samples.iter().all(|sample| sample.abs() < 1.0e-4))
         })
     };
+    let mut copy_folder_files = source.folder_files.clone();
+    if let Some(silent_idx) = reserved_silent_index {
+        let silent_name = format!("normal-hitnormal{silent_idx}.wav");
+        if !copy_folder_files.iter().any(|n| n.eq_ignore_ascii_case(&silent_name)) {
+            copy_folder_files.push(silent_name);
+            copy_folder_files.sort();
+        }
+    }
     let outcomes = match dawsu_hitsounding::copy::copy_hitsounds_with_silence(
         &source.hits,
         &source.file,
         &files,
-        &source.folder_files,
+        &copy_folder_files,
         &copy_opts,
         &mut is_silent,
         cancel,
@@ -990,6 +1033,7 @@ fn copy_after(
                         auto_fix_staged_mixes,
                         single_format,
                         &plan.export_index_schema,
+                        reserved_silent_index,
                         cancel,
                     )
                 } else {
@@ -1066,6 +1110,13 @@ fn copy_after(
         let used = plan.files.iter().any(|planned| {
             planned.file.hit_objects().iter().any(|obj| {
                 obj.hit_sample().is_some_and(|hs| hs.index as u32 == silent_idx)
+                    || matches!(
+                        obj.kind(),
+                        dawsu_osu_format::ObjectKind::Slider(slider)
+                            if slider.edge_sets.as_ref().is_some_and(|edges| {
+                                edges.iter().flatten().any(|edge| edge.index as u32 == silent_idx)
+                            })
+                    )
             }) || planned.file.timing_points().iter().any(|tp| {
                 tp.sample_index().is_some_and(|i| i as u32 == silent_idx)
             })

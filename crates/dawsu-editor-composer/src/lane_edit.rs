@@ -55,6 +55,27 @@ impl Composer {
         true
     }
 
+    /// Unhides every currently hidden lane in `lanes` as one undo step without marking dirty.
+    pub fn show_lanes(&mut self, label: &str, lanes: &[SampleIdentity]) -> usize {
+        let hits = self.hitsounds();
+        let to_show: Vec<_> = lanes
+            .iter()
+            .filter(|lane| hits.lane(lane).is_some() && hits.is_lane_hidden(lane))
+            .cloned()
+            .collect();
+        if to_show.is_empty() {
+            return 0;
+        }
+        let count = to_show.len();
+        let _ = self.history.apply(label, false, |hits| {
+            for lane in &to_show {
+                hits.set_lane_hidden(lane, false);
+            }
+            Ok::<_, Infallible>(())
+        });
+        count
+    }
+
     /// Moves every second selected hit on `from_lane` (in chronological order) onto `to_lane`.
     pub fn alternate_lane_hits(
         &mut self,
