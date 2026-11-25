@@ -16,6 +16,7 @@ mod skin_textures;
 mod updater;
 
 use bounce_commands::bounce_osz_budget;
+use keysound_commands::keysounds_dedup_report;
 use preview_diff_commands::preview_diff_ribbon;
 
 use dawsu_application::{Application, OutputBackend, ExportOptions, ExportSettings, MixFormat, PlatformRequest, EditorTimeSignature, LaneLayout, PointerPhase, RangeOperation, TimelineEdit, VolumeScope, lane_name};
@@ -4990,6 +4991,7 @@ fn main() {
             export_stop_listen,
             preview_diff_ribbon,
             bounce_osz_budget,
+            keysounds_dedup_report,
             open_export_window,
             close_export_window,
             show_in_editor,
