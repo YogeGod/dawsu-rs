@@ -11,6 +11,7 @@ const COMMANDS: &[&str] = &[
     "export_unused_dry_run",
     "export_listen_target",
     "export_stop_listen",
+    "preview_diff_ribbon",
     "open_export_window",
     "close_export_window",
     "show_in_editor",

@@ -54,6 +54,7 @@
     "allow-export-unused-dry-run",
     "allow-export-listen-target",
     "allow-export-stop-listen",
+    "allow-preview-diff-ribbon",
     "allow-show-in-editor",
     "allow-pick-midi-file",
     "allow-inspect-midi-file",

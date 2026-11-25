@@ -39,6 +39,7 @@ import LaneOptions from "./parts/LaneOptions.svelte";
 import LoadingOverlay from "./parts/LoadingOverlay.svelte";
 import KeysoundsModal from "./parts/KeysoundsModal.svelte";
 import MapPreview from "./parts/MapPreview.svelte";
+import MicroHud from "./parts/MicroHud.svelte";
 import MidiImportModal from "./parts/MidiImportModal.svelte";
 import NodeGraphWindow from "./parts/NodeGraphWindow.svelte";
 import OverviewDiagnostics from "./parts/OverviewDiagnostics.svelte";
@@ -61,6 +62,7 @@ const parts = {
   "grid-options": GridOptions, "lane-options": LaneOptions, "start-screen": StartScreen,
   // The timeline's hit hover card, preferences modal, and toast stack, at body level.
   "hit-card": HitCard,
+  "micro-hud": MicroHud,
   preferences: PreferencesModal,
   // File › Import MIDI… and Map › Keysounds & VST3…, at body level.
   "midi-import": MidiImportModal,

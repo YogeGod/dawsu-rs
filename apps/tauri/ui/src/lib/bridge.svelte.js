@@ -55,6 +55,9 @@ export class Bridge {
   // Global Ctrl+K Command Palette open state and last loaded active shortcuts.
   commandPaletteOpen = $state(false);
   commandPaletteShortcuts = $state.raw(null);
+  // Active editor workflow mode ("hitsounds" | "drums" | "keysounds") and floating Micro-HUD anchor.
+  mode = $state("hitsounds");
+  microHud = $state.raw(null);
 
   // No map, a job running or a fault: the parts show but take no input.
   get disabled() {

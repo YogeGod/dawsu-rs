@@ -8,9 +8,12 @@ mod home;
 mod keyboard;
 mod library;
 mod osu_link;
+mod preview_diff_commands;
 mod selection;
 mod skin_textures;
 mod updater;
+
+use preview_diff_commands::preview_diff_ribbon;
 
 use dawsu_application::{Application, OutputBackend, ExportOptions, ExportSettings, MixFormat, PlatformRequest, EditorTimeSignature, LaneLayout, PointerPhase, RangeOperation, TimelineEdit, VolumeScope, lane_name};
 use dawsu_editor::{
@@ -4982,6 +4985,7 @@ fn main() {
             export_unused_dry_run,
             export_listen_target,
             export_stop_listen,
+            preview_diff_ribbon,
             open_export_window,
             close_export_window,
             show_in_editor,
