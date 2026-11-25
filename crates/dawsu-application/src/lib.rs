@@ -3990,6 +3990,20 @@ impl Application {
         self.refresh_recovery_edit();
     }
 
+    pub fn set_moment_volume_at(&mut self, ms: f64, value: i32) -> bool {
+        if self.busy || self.is_stroke_open() {
+            return false;
+        }
+        let changed = self.document.as_mut().is_some_and(|d| {
+            d.composer
+                .set_moment_volume_at(ms, value, self.selection_lane_scope.as_ref())
+        });
+        if changed {
+            self.refresh_recovery_edit();
+        }
+        changed
+    }
+
     pub fn set_selection_sample_set(&mut self, set: SampleSet) -> bool {
         if self.busy || self.is_stroke_open() {
             return false;

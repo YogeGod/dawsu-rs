@@ -105,14 +105,21 @@ if (Test-Path $DefaultAssets) {
     Copy-Item -Recurse -Force $DefaultAssets (Join-Path $StageDir "assets")
 }
 
-# Build portable ZIP
+# Build flat portable ZIP (updater.rs enforces flat archives with no subdirectories and checks portable.marker)
+$PortableStageDir = Join-Path $OutputDir "portable-stage"
+if (Test-Path $PortableStageDir) { Remove-Item -Recurse -Force $PortableStageDir }
+New-Item -ItemType Directory -Force -Path $PortableStageDir | Out-Null
+Get-ChildItem -Path $StageDir -File | Copy-Item -Destination $PortableStageDir
+[System.IO.File]::WriteAllText((Join-Path $PortableStageDir "portable.marker"), "portable`n")
+
 $PortableName = "dawsu-v$Version-windows-x64-portable.zip"
 $PortableZip = Join-Path $OutputDir $PortableName
 if (Test-Path $PortableZip) {
     Remove-Item -Force $PortableZip
 }
 Write-Host "==> Creating portable archive: $PortableZip"
-Compress-Archive -Path (Join-Path $StageDir "*") -DestinationPath $PortableZip -CompressionLevel Optimal
+Compress-Archive -Path (Join-Path $PortableStageDir "*") -DestinationPath $PortableZip -CompressionLevel Optimal
+Remove-Item -Recurse -Force $PortableStageDir
 
 # Optional Inno Setup installer
 if (-not $SkipInstaller) {

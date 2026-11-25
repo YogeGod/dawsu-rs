@@ -6,6 +6,7 @@ import {
   minZoom, nameOf, objectReach, objectSize, rulerBandHeight, sampleFolderNames, snapTimeInScene,
   snapToActiveGridInScene,
 } from "./helpers.js";
+import { volumeBubbleAtMoment } from "../lib/volumeBubble.js";
 
 export function attachTimeline(ctx) {
   const { env, state, dom, elements } = ctx;
@@ -703,10 +704,28 @@ export function attachTimeline(ctx) {
         if (surface === grid) handOverHitCard(null);
         if (surface === controller && state.volumeHoverTime !== null) {
           state.volumeHoverTime = null;
+          ctx.ui()?.volumeBubble?.(null);
           ctx.paintSoon();
         }
       });
     }
+
+    controller.addEventListener("dblclick", (event) => {
+      if (!state.scene || state.view.busy) return;
+      const rect = controller.getBoundingClientRect();
+      const { x } = pointerIn(controller, event);
+      const ms = state.scene.viewStart + x / state.scene.zoom;
+      const target = nearestHitTime(ms, null, state.scene.zoom);
+      if (target == null) return;
+      const bubble = volumeBubbleAtMoment(state.scene, target, rect, {
+        editing: true,
+        viewportWidth: env.window?.innerWidth ?? 1440,
+      });
+      if (bubble) {
+        event.preventDefault();
+        ctx.ui()?.volumeBubble?.(bubble);
+      }
+    });
 
     for (const surface of [grid, controller]) {
       surface.addEventListener("pointerdown", (event) => {
@@ -771,6 +790,12 @@ export function attachTimeline(ctx) {
           const hovered = nearestHitTime(ms, null, state.scene.zoom);
           if (hovered !== state.volumeHoverTime) {
             state.volumeHoverTime = hovered;
+            const bubble = hovered != null
+              ? volumeBubbleAtMoment(state.scene, hovered, controller.getBoundingClientRect(), {
+                viewportWidth: env.window?.innerWidth ?? 1440,
+              })
+              : null;
+            ctx.ui()?.volumeBubble?.(bubble);
             ctx.paintSoon();
           }
         }
