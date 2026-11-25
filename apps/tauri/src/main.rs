@@ -1,5 +1,6 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
+mod bounce_commands;
 mod crash;
 mod drum_view;
 mod drum_window;
@@ -13,6 +14,7 @@ mod selection;
 mod skin_textures;
 mod updater;
 
+use bounce_commands::bounce_osz_budget;
 use preview_diff_commands::preview_diff_ribbon;
 
 use dawsu_application::{Application, OutputBackend, ExportOptions, ExportSettings, MixFormat, PlatformRequest, EditorTimeSignature, LaneLayout, PointerPhase, RangeOperation, TimelineEdit, VolumeScope, lane_name};
@@ -4986,6 +4988,7 @@ fn main() {
             export_listen_target,
             export_stop_listen,
             preview_diff_ribbon,
+            bounce_osz_budget,
             open_export_window,
             close_export_window,
             show_in_editor,

@@ -12,6 +12,7 @@ const COMMANDS: &[&str] = &[
     "export_listen_target",
     "export_stop_listen",
     "preview_diff_ribbon",
+    "bounce_osz_budget",
     "open_export_window",
     "close_export_window",
     "show_in_editor",

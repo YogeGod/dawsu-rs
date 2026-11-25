@@ -117,6 +117,34 @@ export function vst3InstrumentOptions(reportOrPlugins) {
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
+export const BUILTIN_DRUM_KITS = Object.freeze([
+  { id: "builtin:stock", name: "dawsu! Stock Kit", vendor: "Built-in", builtin: true },
+  { id: "builtin:multisampler", name: "Custom Multi-Sampler", vendor: "Built-in", builtin: true },
+]);
+
+/** Groups zero-plugin built-in kits alongside scanned VST3 drum instruments. */
+export function groupDrumInstruments(reportOrPlugins) {
+  return {
+    builtin: [...BUILTIN_DRUM_KITS],
+    vst3: vst3InstrumentOptions(reportOrPlugins),
+  };
+}
+
+/** Suggests the closest drum map preset name for a loaded drum plugin. */
+export function autoMatchDrumPreset(pluginName) {
+  const text = String(pluginName ?? "").toLowerCase();
+  if (/ggd|getgood|garstka|invasion|p4|okw/.test(text)) return "GGD Matt Garstka";
+  if (/mt\s*power|ssd|ezdrummer|superior|addictive/.test(text)) return "General MIDI";
+  return "Yoge Expanded Kit";
+}
+
+/** Formats audio block latency estimate in milliseconds. */
+export function formatHostLatency(blockFrames = 512, sampleRate = 48000) {
+  const frames = Math.max(32, Number(blockFrames) || 512);
+  const rate = Math.max(8000, Number(sampleRate) || 48000);
+  return `${((frames / rate) * 1000).toFixed(1)} ms`;
+}
+
 // Converts an osu! hit volume (0..100) or detection strength (0..1) into a MIDI velocity (1..127).
 export function volumeToVelocity(volume) {
   const value = Number(volume);

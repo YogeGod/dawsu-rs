@@ -29,6 +29,7 @@ pub mod midi_import;
 pub mod midi_record;
 pub mod vst3;
 mod keysound_session;
+pub mod bounce_plan;
 pub mod preview_diff;
 mod project;
 pub use base_layer::{

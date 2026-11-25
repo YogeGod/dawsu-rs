@@ -59,6 +59,7 @@ pub struct DrumVstLiveHandle {
     pub plugin_uid: Option<String>,
     enabled: Arc<AtomicBool>,
     schedule: Arc<RwLock<Vec<DrumMidiCue>>>,
+    choke_groups: Arc<RwLock<HashMap<u8, u8>>>,
     preview_tx: mpsc::SyncSender<(u8, u8)>,
     routed_notes: HashMap<SampleIdentity, u8>,
     muted_vst_lanes: HashSet<SampleIdentity>,
@@ -75,6 +76,7 @@ impl DrumVstLiveHandle {
     ) -> (Self, DrumVstLiveSource) {
         let enabled_flag = Arc::new(AtomicBool::new(enabled));
         let schedule = Arc::new(RwLock::new(Vec::new()));
+        let choke_groups = Arc::new(RwLock::new(HashMap::new()));
         let (preview_tx, preview_rx) = mpsc::sync_channel(128);
         let handle = Self {
             instance_id,
@@ -83,6 +85,7 @@ impl DrumVstLiveHandle {
             plugin_uid,
             enabled: enabled_flag.clone(),
             schedule: schedule.clone(),
+            choke_groups: choke_groups.clone(),
             preview_tx,
             routed_notes: HashMap::new(),
             muted_vst_lanes: HashSet::new(),
@@ -91,6 +94,7 @@ impl DrumVstLiveHandle {
             processor,
             enabled: enabled_flag,
             schedule,
+            choke_groups,
             preview_rx,
             events: Vec::with_capacity(128),
             active_releases: Vec::with_capacity(32),
@@ -112,6 +116,13 @@ impl DrumVstLiveHandle {
         cues.sort_by(|a, b| a.at_ms.total_cmp(&b.at_ms));
         if let Ok(mut guard) = self.schedule.write() {
             *guard = cues;
+        }
+    }
+
+    /// Maps MIDI note numbers (`0..=127`) to a choke group ID (e.g. `1` = Hi-Hat Choke Group A).
+    pub fn set_choke_groups(&self, groups: HashMap<u8, u8>) {
+        if let Ok(mut guard) = self.choke_groups.write() {
+            *guard = groups;
         }
     }
 
@@ -161,6 +172,7 @@ pub struct DrumVstLiveSource {
     processor: Box<dyn DrumBlockProcessor>,
     enabled: Arc<AtomicBool>,
     schedule: Arc<RwLock<Vec<DrumMidiCue>>>,
+    choke_groups: Arc<RwLock<HashMap<u8, u8>>>,
     preview_rx: mpsc::Receiver<(u8, u8)>,
     events: Vec<ShmEvent>,
     /// `(midi_note, frames_remaining_until_note_off)` — 100 ms release window like v3.1.4.
@@ -185,12 +197,34 @@ impl DrumVstLiveSource {
     fn trigger_note(&mut self, offset: usize, note: u8, velocity: u8, release_frames: usize) {
         let note = note & 0x7F;
         let velocity = velocity.clamp(1, 127);
+        // Choke group lookup: notes in a choke group hold open longer (up to 4 s) so a later
+        // peer trigger (e.g. closed hat after open hat) emits `NOTE_OFF_CH10` to cut it cleanly.
+        let choke_groups = Arc::clone(&self.choke_groups);
+        let effective_release = if let Ok(guard) = choke_groups.try_read() {
+            if let Some(&gid) = guard.get(&note) {
+                let mut i = 0;
+                while i < self.active_releases.len() {
+                    let (active_note, _) = self.active_releases[i];
+                    if active_note != note && guard.get(&active_note) == Some(&gid) {
+                        self.push_event(offset, NOTE_OFF_CH10, active_note, 0);
+                        self.active_releases.swap_remove(i);
+                    } else {
+                        i += 1;
+                    }
+                }
+                release_frames.saturating_mul(40)
+            } else {
+                release_frames
+            }
+        } else {
+            release_frames
+        };
         // Retrigger on an active note: emit Note Off right before Note On at the same offset.
         if let Some(existing) = self.active_releases.iter_mut().find(|(n, _)| *n == note) {
-            existing.1 = offset + release_frames;
+            existing.1 = offset + effective_release;
             self.push_event(offset, NOTE_OFF_CH10, note, 0);
         } else {
-            self.active_releases.push((note, offset + release_frames));
+            self.active_releases.push((note, offset + effective_release));
         }
         self.push_event(offset, NOTE_ON_CH10, note, velocity);
     }

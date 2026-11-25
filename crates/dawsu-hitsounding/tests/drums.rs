@@ -16,7 +16,7 @@ fn ids() -> impl FnMut() -> String {
 const ID: &str = "11111111-2222-4333-8444-555555555555";
 
 fn row(id: u32, name: &str, lane: Option<&str>, note: Option<u8>) -> DrumRow {
-    DrumRow { id: format!("aaaaaaaa-0000-4000-8000-{id:012}"), name: name.into(), lane: lane.map(String::from), slot: lane.map(String::from), midi_note: note }
+    DrumRow { id: format!("aaaaaaaa-0000-4000-8000-{id:012}"), name: name.into(), lane: lane.map(String::from), slot: lane.map(String::from), midi_note: note, choke_group: None }
 }
 
 fn map(rows: Vec<DrumRow>) -> DrumMap {

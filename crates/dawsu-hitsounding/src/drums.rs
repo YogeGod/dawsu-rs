@@ -38,6 +38,8 @@ pub struct DrumRow {
     pub slot: Option<String>,
     /// The instrument note it renders with; `None` leaves the lane out of a render.
     pub midi_note: Option<u8>,
+    /// Optional choke group (e.g. `Some(1)` = Choke Group A for Hi-Hat Closed/Pedal/Open).
+    pub choke_group: Option<u8>,
 }
 
 /// One sample's audio in a portable drum map, base64 in the file.
@@ -316,6 +318,8 @@ struct RowJson {
     /// Outer `None`: the field is missing (the row takes its default note); `Some(None)`: null.
     #[serde(default, deserialize_with = "present", skip_serializing_if = "Option::is_none")]
     midi_note: Option<Option<i64>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    choke_group: Option<u8>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -351,7 +355,7 @@ pub fn read_dawsudrum(text: &str) -> Result<DrumMap, DrumFileRefusal> {
                 Some(None) => None,
                 Some(Some(n)) => Some(u8::try_from(n).ok().filter(|n| *n <= 127).ok_or_else(|| invalid(format!("row \"{name}\" has a MIDI note outside 0-127")))?),
             };
-            Ok(DrumRow { id: r.id.ok_or_else(|| missing("row id"))?, name, lane: r.lane_key, slot: r.slot_key, midi_note })
+            Ok(DrumRow { id: r.id.ok_or_else(|| missing("row id"))?, name, lane: r.lane_key, slot: r.slot_key, midi_note, choke_group: r.choke_group })
         })
         .collect::<Result<Vec<_>, DrumFileRefusal>>()?;
     let audio = json
@@ -377,7 +381,7 @@ pub fn write_dawsudrum(map: &DrumMap) -> Result<String, DrumFileRefusal> {
     let json = MapJson {
         id: Some(map.id.clone()),
         name: Some(map.name.clone()),
-        rows: Some(map.rows.iter().map(|r| Some(RowJson { id: Some(r.id.clone()), name: Some(r.name.clone()), lane_key: r.lane.clone(), slot_key: r.slot.clone(), midi_note: Some(r.midi_note.map(i64::from)) })).collect()),
+        rows: Some(map.rows.iter().map(|r| Some(RowJson { id: Some(r.id.clone()), name: Some(r.name.clone()), lane_key: r.lane.clone(), slot_key: r.slot.clone(), midi_note: Some(r.midi_note.map(i64::from)), choke_group: r.choke_group })).collect()),
         audio: Some(map.audio.iter().map(|a| Some(AudioJson { lane_key: Some(a.lane.clone()), slot_key: Some(a.slot.clone()), bytes: Some(base64_encode(&a.bytes)) })).collect()),
     };
     let text = serde_json::to_string_pretty(&json).expect("a drum map always serialises");
@@ -397,7 +401,7 @@ pub fn default_drum_maps(new_id: &mut dyn FnMut() -> String) -> DrumMaps {
     let mut make = |name: &str, names: &[&str]| DrumMap {
         id: new_id(),
         name: name.into(),
-        rows: names.iter().map(|n| DrumRow { id: new_id(), name: (*n).into(), lane: None, slot: None, midi_note: default_note(n) }).collect(),
+        rows: names.iter().map(|n| DrumRow { id: new_id(), name: (*n).into(), lane: None, slot: None, midi_note: default_note(n), choke_group: None }).collect(),
         audio: Vec::new(),
     };
     let maps = vec![make("Yoge Expanded Kit", &EXPANDED), make("Yoge Simple Kit", &SIMPLE)];
@@ -704,7 +708,7 @@ pub fn read_drm(text: &str, fallback_name: &str, new_id: &mut dyn FnMut() -> Str
             .and_then(|n| u8::try_from(n).ok())
             .filter(|n| *n <= 127)
             .ok_or_else(|| invalid(format!("row \"{name}\" has no output note in 0-127")))?;
-        rows.push(DrumRow { id: new_id(), name: name.to_string(), lane: None, slot: None, midi_note: Some(note) });
+        rows.push(DrumRow { id: new_id(), name: name.to_string(), lane: None, slot: None, midi_note: Some(note), choke_group: None });
     }
     let title = named(root, "string", "Name").and_then(|n| n.attribute("value")).unwrap_or("").trim();
     let m = DrumMap { id: new_id(), name: if title.is_empty() { fallback_name.trim().to_string() } else { title.to_string() }, rows, audio: Vec::new() };

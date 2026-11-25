@@ -55,6 +55,7 @@
     "allow-export-listen-target",
     "allow-export-stop-listen",
     "allow-preview-diff-ribbon",
+    "allow-bounce-osz-budget",
     "allow-show-in-editor",
     "allow-pick-midi-file",
     "allow-inspect-midi-file",

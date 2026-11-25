@@ -368,6 +368,7 @@ fn drum_view_uses_a_preset_without_changing_the_mapset_and_follows_sibling_diffi
         lane: lane.map(str::to_owned),
         slot: None,
         midi_note: None,
+        choke_group: None,
     };
     let kit = DrumMap {
         id: "bbbbbbbb-0000-4000-8000-000000000001".into(),
@@ -450,7 +451,7 @@ fn drum_view_rows_follow_a_replaced_lane_and_leave_hidden_lanes_hidden() {
             id: "bbbbbbbb-0000-4000-8000-000000000002".into(),
             name: "Kit".into(),
             rows: rows.into_iter().enumerate().map(|(id, (name, lane))| DrumRow {
-                id: format!("aaaaaaaa-0000-4000-8000-{id:012}"), name: name.into(), lane, slot: None, midi_note: None,
+                id: format!("aaaaaaaa-0000-4000-8000-{id:012}"), name: name.into(), lane, slot: None, midi_note: None, choke_group: None,
             }).collect(),
             audio: Vec::new(),
         };
@@ -525,7 +526,7 @@ fn drum_view_rows_find_a_sample_under_another_spelling_and_keep_hidden_ones_hidd
             .into_iter()
             .enumerate()
             .map(|(id, (name, lane))| DrumRow {
-                id: format!("aaaaaaaa-0000-4000-8000-{id:012}"), name: name.into(), lane: Some(lane.into()), slot: None, midi_note: None,
+                id: format!("aaaaaaaa-0000-4000-8000-{id:012}"), name: name.into(), lane: Some(lane.into()), slot: None, midi_note: None, choke_group: None,
             })
             .collect(),
         audio: Vec::new(),
@@ -579,7 +580,7 @@ fn a_drum_view_row_on_a_hidden_lane_never_names_another_spelling_of_its_file() {
         id: "bbbbbbbb-0000-4000-8000-000000000004".into(),
         name: "Kick".into(),
         rows: vec![DrumRow {
-            id: "aaaaaaaa-0000-4000-8000-000000000000".into(), name: "Kick".into(), lane: Some("BeatmapFile|kick.wav".into()), slot: None, midi_note: Some(36),
+            id: "aaaaaaaa-0000-4000-8000-000000000000".into(), name: "Kick".into(), lane: Some("BeatmapFile|kick.wav".into()), slot: None, midi_note: Some(36), choke_group: None,
         }],
         audio: Vec::new(),
     };
