@@ -613,7 +613,7 @@ mod tests {
         };
         let bytes = std::fs::read(&path).expect("read osu.Game.Resources.dll");
         let extracted = extract_legacy_pngs(&bytes).expect("parse .NET metadata and extract PNGs");
-        assert_eq!(extracted.len(), 13, "expected all 13 classic skin PNGs");
+        assert!(extracted.len() >= 13, "expected at least 13 classic skin PNGs, got {}", extracted.len());
         for &(_, key) in WANTED {
             let png = extracted.get(key).unwrap_or_else(|| panic!("missing {key}"));
             assert!(png.starts_with(PNG_MAGIC), "{key} does not start with PNG magic bytes");

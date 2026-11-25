@@ -1688,10 +1688,10 @@ struct PanelsSnapshot {
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct RecentMetaSnapshot {
-    path: PathBuf,
     #[serde(skip_serializing_if = "Option::is_none")]
     background: Option<String>,
     is_hs: bool,
+    path: PathBuf,
 }
 
 #[derive(serde::Serialize)]

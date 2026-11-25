@@ -120,12 +120,12 @@ use std::sync::{Arc, Mutex, mpsc};
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CoverageSummary {
-    pub matched: usize,
     pub empty: usize,
+    pub fallback_active: bool,
     pub fallback_covered: usize,
+    pub matched: usize,
     pub orphaned: usize,
     pub total_objects: usize,
-    pub fallback_active: bool,
 }
 
 pub struct Document {

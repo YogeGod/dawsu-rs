@@ -6,24 +6,24 @@ use std::collections::HashSet;
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct SelectionAdditions {
-    pub(super) whistle: &'static str,
-    pub(super) finish: &'static str,
     pub(super) clap: &'static str,
+    pub(super) finish: &'static str,
+    pub(super) whistle: &'static str,
 }
 
 #[derive(Serialize)]
 pub(super) struct SelectionSummary {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) additions: Option<SelectionAdditions>,
     pub(super) count: usize,
+    #[serde(rename = "hasCustomFile", skip_serializing_if = "std::ops::Not::not")]
+    pub(super) has_custom_file: bool,
     pub(super) object: String,
+    #[serde(rename = "sampleSet", skip_serializing_if = "Option::is_none")]
+    pub(super) sample_set: Option<&'static str>,
     #[serde(rename = "sliderBody", skip_serializing_if = "Option::is_none")]
     pub(super) slider_body: Option<SliderBodySelection>,
     pub(super) start: f64,
-    #[serde(rename = "sampleSet", skip_serializing_if = "Option::is_none")]
-    pub(super) sample_set: Option<&'static str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) additions: Option<SelectionAdditions>,
-    #[serde(rename = "hasCustomFile", skip_serializing_if = "std::ops::Not::not")]
-    pub(super) has_custom_file: bool,
 }
 
 #[derive(Serialize)]
