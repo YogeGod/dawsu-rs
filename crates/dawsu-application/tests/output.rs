@@ -31,7 +31,7 @@ fn copy_refuses_source_duplicate_and_foreign_targets_before_any_write() {
     std::fs::write(&path, MAP).unwrap();
     std::fs::write(&target, MAP).unwrap();
     let source = output::Source::from_document(&Document::read(&path).unwrap());
-    assert!(output::copy(&source, &[path.clone()], &Default::default(), &|| false).is_err());
+    assert!(output::copy(&source, std::slice::from_ref(&path), &Default::default(), &|| false).is_err());
     assert!(
         output::copy(
             &source,
@@ -55,7 +55,7 @@ fn changed_target_invalidates_the_review_without_overwriting_it() {
     std::fs::write(&path, MAP).unwrap();
     std::fs::write(&target, MAP).unwrap();
     let source = output::Source::from_document(&Document::read(&path).unwrap());
-    let plan = output::copy(&source, &[target.clone()], &Default::default(), &|| false).unwrap();
+    let plan = output::copy(&source, std::slice::from_ref(&target), &Default::default(), &|| false).unwrap();
     std::fs::write(&target, b"external edits").unwrap();
     assert!(plan.apply(&scratch.path("backups"), &|| false).is_err());
     assert_eq!(std::fs::read(&target).unwrap(), b"external edits");

@@ -232,11 +232,11 @@ impl CustomIndexPool {
             if req.is_empty() {
                 continue;
             }
-            if !unique.iter().any(|u| *u == req) {
+            if !unique.contains(&req) {
                 unique.push(req);
             }
         }
-        unique.sort_by(|a, b| b.len().cmp(&a.len()));
+        unique.sort_by_key(|b| std::cmp::Reverse(b.len()));
 
         let mut next_idx = pool
             .buckets
@@ -370,7 +370,7 @@ mod tests {
     fn allow_growth_false_refuses_new_indices() {
         let r1 = BTreeMap::from([(slot(SampleSet::Normal, Hitsound::Normal), mix("a.wav"))]);
         let r2 = BTreeMap::from([(slot(SampleSet::Normal, Hitsound::Normal), mix("b.wav"))]);
-        let saved = CustomIndexPool::build_schema(&[r1.clone()], None, 1, true).unwrap();
+        let saved = CustomIndexPool::build_schema(std::slice::from_ref(&r1), None, 1, true).unwrap();
         let locked_ok = CustomIndexPool::build_schema(&[r1], Some(&saved), 1, false);
         assert!(locked_ok.is_ok());
         let locked_err = CustomIndexPool::build_schema(&[r2], Some(&saved), 1, false);

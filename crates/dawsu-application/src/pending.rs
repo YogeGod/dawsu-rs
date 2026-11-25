@@ -327,11 +327,11 @@ pub(crate) fn left_out_without_project(name: &str) -> String {
 
 /// A new sample file a Save writes must not take a custom index another difficulty of the mapset
 /// now uses: that difficulty would start playing it.
-#[allow(clippy::disallowed_methods)]
 pub(crate) fn check_indexes_free(root: &Path, saved: &Path, writes: &[String]) -> Result<(), String> {
     check_indexes_free_except(root, &[saved], writes)
 }
 
+#[allow(clippy::disallowed_methods)]
 pub(crate) fn check_indexes_free_except(root: &Path, skip: &[&Path], writes: &[String]) -> Result<(), String> {
     let indexes: BTreeMap<u32, &String> = writes.iter().filter_map(|name| match read_sample_file_name(name)? {
         SampleIdentity::Standard { index, .. } => Some((index.get(), name)),

@@ -101,11 +101,11 @@ fn resample_gaussian(points: &[RawPoint], target_count: usize) -> Vec<RawPoint> 
 
         let lo = start_idx.max(0) as usize;
         let hi = (end_idx.min(points.len() as isize)).max(0) as usize;
-        for j in lo..hi {
+        for (offset, p) in points[lo..hi].iter().enumerate() {
+            let j = lo + offset;
             let dist = (j as isize - center).unsigned_abs().min(kernel_width);
             let w = filter[dist];
             total_weight += w;
-            let p = &points[j];
             acc.amp_l += w * p.amp_l;
             acc.amp_r += w * p.amp_r;
             acc.low += w * p.low;
@@ -164,14 +164,14 @@ pub fn analyse(audio: &AudioClip) -> Vec<WaveBin> {
     let bit_rev: Vec<usize> = {
         let mut rev = vec![0usize; FFT_SIZE];
         let mut j = 0usize;
-        for i in 1..FFT_SIZE {
+        for slot in rev.iter_mut().skip(1) {
             let mut bit = FFT_SIZE >> 1;
             while j & bit != 0 {
                 j ^= bit;
                 bit >>= 1;
             }
             j ^= bit;
-            rev[i] = j;
+            *slot = j;
         }
         rev
     };

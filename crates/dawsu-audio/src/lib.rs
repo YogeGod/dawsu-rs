@@ -740,11 +740,10 @@ impl Mixer {
                 false
             };
             for (frame_idx, frame) in block.chunks_mut(out_channels).enumerate() {
-                if let Some((left, right)) = self.cycle {
-                    if self.playing && right > left && self.position_ms >= right {
+                if let Some((left, right)) = self.cycle
+                    && self.playing && right > left && self.position_ms >= right {
                         self.seek_internal(left, false);
                     }
-                }
                 if self.playing {
                     if !self.indexed {
                         self.active_cues.clear();
@@ -944,8 +943,10 @@ type Retired = Arc<OnceLock<Schedule>>;
 /// The caller's side of Listen. A Listen clip can be a whole song, so the audio thread never holds
 /// its last handle: the slot keeps one until the audio thread lets go, then frees it on the caller's
 /// thread in [`ListenSlot::collect`].
+type ListenState = (Option<Arc<AudioClip>>, Vec<Arc<AudioClip>>);
+
 #[derive(Default)]
-struct ListenSlot(Mutex<(Option<Arc<AudioClip>>, Vec<Arc<AudioClip>>)>);
+struct ListenSlot(Mutex<ListenState>);
 
 impl ListenSlot {
     /// Makes `clip` the current one and returns the handle to send to the audio thread.
@@ -1095,7 +1096,7 @@ impl AudioEngine {
                 OutputBackend::DirectSound => directsound::open(device_id, buffer_ms, render, errors.clone()),
                 OutputBackend::System | OutputBackend::Asio => unreachable!("CPAL output opened above"),
             }?;
-            return Ok(Self {
+            Ok(Self {
                 backend,
                 sample_rate: NATIVE_SAMPLE_RATE,
                 effective_buffer_ms: Some(stream.buffer_ms),
@@ -1107,7 +1108,7 @@ impl AudioEngine {
                 retired_live_sources: Mutex::new(retire_live_rx),
                 auditions: Mutex::new(Vec::new()),
                 listen: ListenSlot::default(),
-            });
+            })
         }
         #[cfg(not(windows))]
         Err(format!("{} output is available only on Windows", backend.label()))
@@ -1429,11 +1430,10 @@ impl StreamRender {
                     if on && !was_playing {
                         self.mixer.seek_fade_pos = 0;
                         self.mixer.seek_fade_active = true;
-                    } else if !on && was_playing {
-                        if let Some(source) = self.mixer.live_source.as_mut() {
+                    } else if !on && was_playing
+                        && let Some(source) = self.mixer.live_source.as_mut() {
                             source.reset();
                         }
-                    }
                 }
                 Command::Seek(ms, seq) => {
                     self.applied_seq = self.applied_seq.max(seq);
@@ -1481,7 +1481,7 @@ impl StreamRender {
         let synced = self
             .command_seq
             .as_ref()
-            .map_or(true, |seq| self.applied_seq >= seq.load(Ordering::Acquire));
+            .is_none_or(|seq| self.applied_seq >= seq.load(Ordering::Acquire));
         if synced {
             self.position.store(self.mixer.position_ms.to_bits(), Ordering::Relaxed);
             self.playing.store(self.mixer.playing, Ordering::Relaxed);
@@ -1977,7 +1977,7 @@ mod live_source_tests {
         mixer.render(&mut quiet, 2);
         assert_eq!(rate_seen.load(Ordering::Relaxed), 48_000);
         assert!(!playing_seen.load(Ordering::Relaxed));
-        for frame in quiet.chunks_exact(2) {
+        for &frame in quiet.as_chunks::<2>().0 {
             assert_eq!(frame, [0.25, -0.125]);
         }
 
@@ -2164,7 +2164,9 @@ mod decode_tests {
 
         // Zero-crossing count on direct 0.5x playback should be roughly half of pitch-preserved 0.5x.
         let crossings = |buf: &[f32]| -> usize {
-            buf.chunks_exact(2)
+            buf.as_chunks::<2>()
+                .0
+                .iter()
                 .skip(512)
                 .map(|f| f[0])
                 .collect::<Vec<_>>()

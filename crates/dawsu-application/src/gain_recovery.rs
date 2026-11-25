@@ -123,6 +123,15 @@ pub(super) struct Captured {
     mixed: Locations,
 }
 
+pub(super) struct RevisionInput<'a> {
+    pub hits: &'a Hitsounds,
+    pub file: &'a OsuFile,
+    pub root: &'a Path,
+    pub pending: &'a Pending,
+    pub defaults: &'a Path,
+    pub staged: &'a [StagedMix],
+}
+
 impl Captured {
     /// The moments whose gains a Save must record: those with their own hit volumes, and each
     /// sound set placement's moment that this Save writes as a mix (`mixed`), so the set reopens
@@ -162,9 +171,9 @@ impl Captured {
     }
 
     pub(super) fn revision(
-        self, hits: &Hitsounds, file: &OsuFile, root: &Path, pending: &Pending, defaults: &Path, staged: &[StagedMix],
-        cancel: &dyn Fn() -> bool,
+        self, input: &RevisionInput<'_>, cancel: &dyn Fn() -> bool,
     ) -> Result<Revision, String> {
+        let RevisionInput { hits, file, root, pending, defaults, staged } = *input;
         let map_digest = sha256_hex(&file.to_bytes());
         if self.voices.is_empty() {
             return Ok(Revision { map_digest, moments: Vec::new() });

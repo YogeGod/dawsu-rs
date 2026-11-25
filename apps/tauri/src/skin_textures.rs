@@ -70,14 +70,13 @@ pub fn list_available_skins(songs_folder: Option<&Path>) -> Value {
         entries.push(json!({ "id": "classic", "name": "Classic (osu!lazer)" }));
     }
     let mut roots: Vec<PathBuf> = Vec::new();
-    if let Some(songs) = songs_folder {
-        if let Some(parent) = songs.parent() {
+    if let Some(songs) = songs_folder
+        && let Some(parent) = songs.parent() {
             let skins = parent.join("Skins");
             if skins.is_dir() {
                 roots.push(skins);
             }
         }
-    }
     #[cfg(target_os = "windows")]
     if let Some(local) = std::env::var_os("LOCALAPPDATA") {
         let skins = Path::new(&local).join("osu!").join("Skins");
@@ -117,7 +116,7 @@ pub fn list_available_skins(songs_folder: Option<&Path>) -> Value {
             }
         }
     }
-    found.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
+    found.sort_by_key(|a| a.0.to_lowercase());
     for (name, path) in found {
         entries.push(json!({
             "id": format!("dir:{}", path.display()),
@@ -292,7 +291,7 @@ pub fn find_lazer_resources() -> Option<PathBuf> {
 }
 
 fn png_data_url(png: &[u8]) -> String {
-    let mut out = String::with_capacity(22 + (png.len() + 2) / 3 * 4);
+    let mut out = String::with_capacity(22 + png.len().div_ceil(3) * 4);
     out.push_str("data:image/png;base64,");
     encode_base64(png, &mut out);
     out
@@ -315,7 +314,7 @@ pub(crate) fn image_data_url(path: &Path) -> Option<String> {
     }
     let bytes = std::fs::read(path).ok()?;
     let prefix = format!("data:{mime};base64,");
-    let mut out = String::with_capacity(prefix.len() + (bytes.len() + 2) / 3 * 4);
+    let mut out = String::with_capacity(prefix.len() + bytes.len().div_ceil(3) * 4);
     out.push_str(&prefix);
     encode_base64(&bytes, &mut out);
     Some(out)
@@ -471,9 +470,9 @@ pub fn extract_legacy_pngs(bytes: &[u8]) -> Option<HashMap<String, Vec<u8>>> {
     let valid_mask = read_u64(bytes, t_off + 8)?;
     let mut row_counts = [0u32; 64];
     let mut pos = t_off + 24;
-    for t in 0..64 {
+    for (t, count) in row_counts.iter_mut().enumerate() {
         if (valid_mask >> t) & 1 != 0 {
-            row_counts[t] = read_u32(bytes, pos)?;
+            *count = read_u32(bytes, pos)?;
             pos += 4;
         }
     }
@@ -508,8 +507,8 @@ pub fn extract_legacy_pngs(bytes: &[u8]) -> Option<HashMap<String, Vec<u8>>> {
     let resolution_scope = coded(2, &[0x00, 0x1A, 0x23, 0x01]);
 
     // Advance past tables 0x00..0x27 to reach table 0x28 (ManifestResource).
-    for t in 0..0x28usize {
-        if row_counts[t] == 0 {
+    for (t, &count) in row_counts.iter().enumerate().take(0x28) {
+        if count == 0 {
             continue;
         }
         let row_size = match t {
@@ -555,7 +554,7 @@ pub fn extract_legacy_pngs(bytes: &[u8]) -> Option<HashMap<String, Vec<u8>>> {
             0x27 => 4 + 4 + s_idx * 2 + implementation,
             _ => return None,
         };
-        pos = pos.checked_add((row_counts[t] as usize).checked_mul(row_size)?)?;
+        pos = pos.checked_add((count as usize).checked_mul(row_size)?)?;
     }
 
     let wanted_map: HashMap<&str, &str> = WANTED.iter().copied().collect();

@@ -405,7 +405,7 @@ fn check_view(map: &DrumMap, lanes: &[Lane]) {
     let view = drum_rows(Some(map), lanes);
     let shown: Vec<&Lane> = view.iter().filter_map(|v| match v { DrumViewRow::Instrument { lane, .. } | DrumViewRow::Other(lane) => Some(*lane), DrumViewRow::Unassigned(_) => None }).collect();
     for lane in lanes {
-        assert!(shown.iter().any(|l| *l == lane), "every lane stays reachable");
+        assert!(shown.contains(&lane), "every lane stays reachable");
     }
     assert!(shown.iter().all(|l| lanes.contains(l)), "no lane is made up");
     let named = |r: &DrumRow| r.lane.as_deref().and_then(|k| lane_for_key(k, lanes));

@@ -98,7 +98,7 @@ impl NodeType for OnsetCurveNode {
             let (mut previous, mut current) =
                 (Vec::with_capacity(bins), Vec::with_capacity(bins));
             log_row(0, &mut previous);
-            for t in 1..frames {
+            for (t, out_slot) in out.iter_mut().enumerate().skip(1) {
                 if context.is_cancelled() {
                     return Err(EvalError::Cancelled);
                 }
@@ -119,7 +119,7 @@ impl NodeType for OnsetCurveNode {
                     };
                     s += (current[k] - prev).max(0.0);
                 }
-                out[t] = s / (hi - lo + 1) as f64;
+                *out_slot = s / (hi - lo + 1) as f64;
                 std::mem::swap(&mut previous, &mut current);
             }
         }

@@ -24,6 +24,12 @@ fn is_hitnormal(lane: &SampleIdentity) -> bool {
     matches!(lane, SampleIdentity::Standard { sound: Sound::Hit(Hitsound::Normal), .. })
 }
 
+/// One member hit of a sound set: `(member_id, lane, volume)`.
+pub type SoundSetHit = (String, SampleIdentity, i32);
+
+/// One placement update: `(placement_id, set_digest, gain, hits)`.
+pub type PlacementUpdate = (u64, String, i32, Vec<SoundSetHit>);
+
 impl Composer {
     /// The moment a set placed at `time` lands on, if one is within `tolerance`.
     pub fn moment_at(&self, time: f64, tolerance: f64) -> Option<MomentId> {
@@ -39,7 +45,8 @@ impl Composer {
     /// Places a sound set's hits at `time` (on the nearest moment within `tolerance`, else a new
     /// moment) as one undo step, selects the hits it added, and returns the placement's id. None,
     /// with no undo step, when the set is already placed there.
-    pub fn place_sound_set(&mut self, time: f64, set_id: &str, set_digest: &str, gain: i32, hits: &[(String, SampleIdentity, i32)], hitnormal: SetHitnormal, tolerance: f64) -> Option<u64> {
+    #[allow(clippy::too_many_arguments)]
+    pub fn place_sound_set(&mut self, time: f64, set_id: &str, set_digest: &str, gain: i32, hits: &[SoundSetHit], hitnormal: SetHitnormal, tolerance: f64) -> Option<u64> {
         if self.is_set_placed_at(time, set_id, tolerance) {
             return None;
         }
@@ -97,7 +104,7 @@ impl Composer {
     /// Plays each placement `(id, set digest, gain, hits)` as its set's new version, all as one
     /// undo step named `label`, and gives each new lane a row. Returns the times (ms) of the
     /// moments where the mapper's own hitnormal kept the set's new one out (D3).
-    pub fn update_placements(&mut self, label: &str, updates: &[(u64, String, i32, Vec<(String, SampleIdentity, i32)>)]) -> Vec<f64> {
+    pub fn update_placements(&mut self, label: &str, updates: &[PlacementUpdate]) -> Vec<f64> {
         let mut kept = Vec::new();
         if updates.is_empty() {
             return kept;
@@ -117,7 +124,7 @@ impl Composer {
 
     /// Sets a placement's volume as one undo step: `hits` are its set's members at `gain`.
     /// Members edited by hand keep their hits.
-    pub fn set_placement_gain(&mut self, id: u64, set_digest: &str, gain: i32, hits: &[(String, SampleIdentity, i32)]) {
+    pub fn set_placement_gain(&mut self, id: u64, set_digest: &str, gain: i32, hits: &[SoundSetHit]) {
         if self.hitsounds().placements().iter().any(|p| p.id == id) {
             self.apply("Set sound set volume", |h| {
                 h.update_placement(id, set_digest, gain, hits);
@@ -128,7 +135,7 @@ impl Composer {
 
     /// Puts a placement's edited members back as one undo step. With `current` (the set's
     /// digest and its hits at the placement's gain), members then follow the set's values.
-    pub fn reset_placement(&mut self, id: u64, current: Option<(&str, &[(String, SampleIdentity, i32)])>) {
+    pub fn reset_placement(&mut self, id: u64, current: Option<(&str, &[SoundSetHit])>) {
         let Some(gain) = self.hitsounds().placements().iter().find(|p| p.id == id).map(|p| p.gain) else { return };
         self.apply("Reset sound set edits", |h| {
             h.reset_placement(id);

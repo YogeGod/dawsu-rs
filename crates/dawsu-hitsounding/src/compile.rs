@@ -450,12 +450,11 @@ impl Context {
         };
         let field4 = (obj.hitsound() & !ADDITIONS) | want.additions;
 
-        if let Some(g) = green {
-            if let Err(kind) = self.place_green(trial, cp, answer.line, &g) {
+        if let Some(g) = green
+            && let Err(kind) = self.place_green(trial, cp, answer.line, &g) {
                 problem(problems, kind);
                 return Ok(false);
             }
-        }
         let line = obj.line();
         if field4 != obj.hitsound() {
             trial.set_field(line, 4, &field4.to_string()).map_err(|_| ())?;
@@ -541,12 +540,11 @@ impl Context {
         for m in moments {
             let Place::SliderNode { node, .. } = m.place() else { continue };
             let problem = |problems: &mut Vec<SaveProblem>, kind| problems.push(SaveProblem { time: m.time(), place: m.place(), kind });
-            if node == 0 {
-                if let Some(kind) = &body_volume_blocked {
+            if node == 0
+                && let Some(kind) = &body_volume_blocked {
                     problem(problems, kind.clone());
                     continue;
                 }
-            }
             let want = match native(m) {
                 Ok(Native { slot: Slot::File(_), .. }) => {
                     problem(problems, mix_plan(m));
@@ -707,7 +705,7 @@ impl Context {
             .into_iter()
             .filter(|t| t.time() + self.offset == latest)
             .collect();
-        at_latest.sort_by(|a, b| b.uninherited().cmp(&a.uninherited()));
+        at_latest.sort_by_key(|a| std::cmp::Reverse(a.uninherited()));
         at_latest
     }
 

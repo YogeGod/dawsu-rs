@@ -364,7 +364,7 @@ mod tests {
         assert_eq!(rows[1].status, PreviewDiffStatus::UnsupportedMode { mode: 3 });
 
         // Second call hits cache cleanly.
-        let rows2 = cache.project_ribbon(&[std_path.clone()], &[1002.0], 4000.0, 5.0, 32);
+        let rows2 = cache.project_ribbon(std::slice::from_ref(&std_path), &[1002.0], 4000.0, 5.0, 32);
         assert_eq!(rows2[0].version, "Hard");
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -104,11 +104,9 @@ fn osu_entries(folder: &Path) -> Result<Vec<(String, PathBuf)>, String> {
                 .extension()
                 .and_then(|e| e.to_str())
                 .is_some_and(|e| e.eq_ignore_ascii_case("osu"))
-        {
-            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+            && let Some(name) = path.file_name().and_then(|n| n.to_str()) {
                 files.push((name.to_owned(), path));
             }
-        }
     }
     files.sort_by(|a, b| a.0.cmp(&b.0));
     Ok(files)

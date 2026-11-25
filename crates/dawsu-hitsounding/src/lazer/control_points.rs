@@ -181,11 +181,10 @@ impl ControlPoints {
             Pending::Sample(mut s) => {
                 s.time = time;
                 // Intentionally not SamplePointAt: the first sample point is always considered.
-                if let Some(existing) = binary_search(&self.sample, time, |p| p.time) {
-                    if existing.bank == s.bank && existing.volume == s.volume && existing.custom_sample_bank == s.custom_sample_bank {
+                if let Some(existing) = binary_search(&self.sample, time, |p| p.time)
+                    && existing.bank == s.bank && existing.volume == s.volume && existing.custom_sample_bank == s.custom_sample_bank {
                         return;
                     }
-                }
                 insert_sorted(&mut self.sample, s, |p| p.time);
             }
         }

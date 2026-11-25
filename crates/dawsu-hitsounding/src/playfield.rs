@@ -89,12 +89,12 @@ pub fn playfield(file: &OsuFile) -> Option<Playfield> {
     let hit_objects = file.hit_objects();
     let raw: HashMap<LineId, &dawsu_osu_format::HitObject> = hit_objects.iter().map(|o| (o.line(), o)).collect();
 
-    let float = |key: &str| file.value("Difficulty", key).and_then(|v| parse_float(&v, MAX_PARSE_VALUE as f64).ok());
+    let float = |key: &str| file.value("Difficulty", key).and_then(|v| parse_float(&v, MAX_PARSE_VALUE).ok());
     // BeatmapDifficulty defaults to 5; without its own line the approach rate is the overall difficulty.
     let overall = float("OverallDifficulty").unwrap_or(5.0);
     let circle_size = float("CircleSize").unwrap_or(5.0).clamp(0.0, 10.0);
     let approach_rate = float("ApproachRate").unwrap_or(overall).clamp(0.0, 10.0);
-    let stack_leniency = file.general("StackLeniency").and_then(|v| parse_float(&v, MAX_PARSE_VALUE as f64).ok()).unwrap_or(0.7);
+    let stack_leniency = file.general("StackLeniency").and_then(|v| parse_float(&v, MAX_PARSE_VALUE).ok()).unwrap_or(0.7);
 
     let scale = scale_from_circle_size(circle_size);
     let preempt = f64::from(difficulty_range_int(f64::from(approach_rate), 1800.0, 1200.0, 450.0));
@@ -205,9 +205,9 @@ fn apply_stacking(objects: &mut [PlayfieldObject], threshold: f32) {
                 if objects[object_n].kind == Kind::Slider && distance(objects[object_n].end_position(), objects[object_i].position) < STACK_DISTANCE {
                     let offset = objects[object_i].stack_height - objects[object_n].stack_height + 1;
                     let end = objects[object_n].end_position();
-                    for j in object_n + 1..=i {
-                        if distance(end, objects[j].position) < STACK_DISTANCE {
-                            objects[j].stack_height -= offset;
+                    for obj in &mut objects[object_n + 1..=i] {
+                        if distance(end, obj.position) < STACK_DISTANCE {
+                            obj.stack_height -= offset;
                         }
                     }
                     break;

@@ -31,7 +31,7 @@ pub struct TimestampedMidiEvent {
 /// Returns `None` for malformed, truncated, or unsupported messages (e.g. SysEx, clock).
 pub fn decode_midi_bytes(msg: &[u8]) -> Option<MidiInputEvent> {
     let status = *msg.first()?;
-    if status < 0x80 || status >= 0xF0 {
+    if !(0x80..0xF0).contains(&status) {
         return None;
     }
     let kind = status & 0xF0;

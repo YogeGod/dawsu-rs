@@ -48,15 +48,12 @@ pub fn build_songs_index(songs_dir: &Path) -> Vec<SongMapsetEntry> {
 /// Same as [`build_songs_index`], also reporting which source populated it
 /// (`"osu!.db"` or `"folder-scan"`).
 pub fn build_songs_index_with_source(songs_dir: &Path) -> (Vec<SongMapsetEntry>, &'static str) {
-    if let Some(db_path) = songs_dir.parent().map(|parent| parent.join("osu!.db")) {
-        if let Ok(bytes) = fs::read(&db_path) {
-            if let Ok(entries) = parse_osu_db(&bytes, songs_dir) {
-                if !entries.is_empty() {
+    if let Some(db_path) = songs_dir.parent().map(|parent| parent.join("osu!.db"))
+        && let Ok(bytes) = fs::read(&db_path)
+            && let Ok(entries) = parse_osu_db(&bytes, songs_dir)
+                && !entries.is_empty() {
                     return (entries, "osu!.db");
                 }
-            }
-        }
-    }
     (scan_songs_folder_fallback(songs_dir), "folder-scan")
 }
 
@@ -357,7 +354,7 @@ fn finalize_mapsets(mut mapsets: Vec<SongMapsetEntry>) -> Vec<SongMapsetEntry> {
     for mapset in &mut mapsets {
         mapset
             .diffs
-            .sort_by(|a, b| a.version.to_lowercase().cmp(&b.version.to_lowercase()));
+            .sort_by_key(|a| a.version.to_lowercase());
     }
     mapsets.sort_by(|a, b| {
         a.artist

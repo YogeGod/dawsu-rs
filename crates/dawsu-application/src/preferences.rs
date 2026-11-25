@@ -73,11 +73,13 @@ struct LegacyPreferences {
 
 impl LegacyPreferences {
     fn convert(self) -> (Preferences, bool) {
-        let mut preferences = Preferences::default();
-        preferences.songs_folder = self.songs_folder.unwrap_or_default();
-        preferences.hitsound_library = self
-            .hitsound_folder
-            .filter(|path| !path.as_os_str().is_empty());
+        let mut preferences = Preferences {
+            songs_folder: self.songs_folder.unwrap_or_default(),
+            hitsound_library: self
+                .hitsound_folder
+                .filter(|path| !path.as_os_str().is_empty()),
+            ..Preferences::default()
+        };
         let mut seen = HashSet::new();
         preferences.recent = self
             .recent_maps

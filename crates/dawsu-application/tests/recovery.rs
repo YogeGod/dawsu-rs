@@ -96,7 +96,7 @@ fn recovery_restores_a_complete_unplaced_hit_and_leaves_an_open_stroke_out() {
     drop(editor);
 
     let mut restarted = map.app();
-    assert_eq!(restarted.recovery_offers().unwrap(), [copy.clone()]);
+    assert_eq!(restarted.recovery_offers().unwrap(), std::slice::from_ref(&copy));
     assert_eq!(copy.mapset, "Project persistence test");
     assert_eq!(copy.difficulty, "Hard");
     restore(&mut restarted, &copy.id);
@@ -197,7 +197,7 @@ fn changed_or_missing_source_keeps_the_offer_available_for_retry() {
     restore(&mut restarted, &copy.id);
     assert!(restarted.document().is_none());
     assert!(restarted.error.take().unwrap().contains("changed on disk"));
-    assert_eq!(restarted.recovery_offers().unwrap(), [copy.clone()]);
+    assert_eq!(restarted.recovery_offers().unwrap(), std::slice::from_ref(&copy));
     assert_eq!(fs::read(&map.path).unwrap(), changed);
 
     let moved = map.path.with_extension("moved.osu");
@@ -205,7 +205,7 @@ fn changed_or_missing_source_keeps_the_offer_available_for_retry() {
     restore(&mut restarted, &copy.id);
     assert!(restarted.document().is_none());
     assert!(restarted.error.take().unwrap().contains("missing or moved"));
-    assert_eq!(restarted.recovery_offers().unwrap(), [copy.clone()]);
+    assert_eq!(restarted.recovery_offers().unwrap(), std::slice::from_ref(&copy));
 
     fs::write(&map.path, FIXTURE).unwrap();
     restore(&mut restarted, &copy.id);
@@ -234,7 +234,7 @@ fn archive_failure_keeps_the_copy_and_reports_the_successful_save_separately() {
     assert!(restarted.status.contains("Difficulty saved"));
     assert!(restarted.error.take().unwrap().contains("archive"));
     assert_ne!(fs::read(&map.path).unwrap(), FIXTURE);
-    assert_eq!(restarted.recovery_offers().unwrap(), [copy.clone()]);
+    assert_eq!(restarted.recovery_offers().unwrap(), std::slice::from_ref(&copy));
 
     fs::remove_file(&archive).unwrap();
     restarted.save();

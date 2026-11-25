@@ -363,8 +363,7 @@ mod tests {
                 (lane(SampleSet::Drum, Hitsound::Finish, 4), 50),
             ]);
         });
-        let mut settings = ExportSettings::default();
-        settings.pair_samples = true;
+        let settings = ExportSettings { pair_samples: true, ..ExportSettings::default() };
         let plan = crate::output::generate_report(
             &crate::output::Source::from_document(&d), std::path::Path::new(""), Some(&settings), None, false,
             &|| false, &mut Vec::new(), &mut |_, _| {},

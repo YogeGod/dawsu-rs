@@ -135,16 +135,21 @@ pub fn save_manifest(
 ///   (unless `take_over_samples` is true).
 /// - Never removes any filename in `retained_names` (active export targets, undo history, or
 ///   crash recovery references).
+pub struct CleanupRoots<'a> {
+    pub mapset_root: &'a Path,
+    pub data_root: &'a Path,
+    pub backups_root: &'a Path,
+}
+
 pub fn cleanup_stale_samples(
-    mapset_root: &Path,
-    data_root: &Path,
-    backups_root: &Path,
+    roots: &CleanupRoots<'_>,
     manifest: &mut ExportOwnershipManifest,
     active_samples: &BTreeSet<String>,
     retained_names: &BTreeSet<String>,
     take_over_samples: bool,
     takeover_candidates: &BTreeSet<String>,
 ) -> Result<StaleCleanupReport, String> {
+    let CleanupRoots { mapset_root, data_root, backups_root } = *roots;
     let mut report = StaleCleanupReport::default();
     let canonical = mapset_root
         .canonicalize()
@@ -389,9 +394,11 @@ mod tests {
         let active = BTreeSet::from(["dawsu-mix-kept.wav".to_string()]);
         let retained = BTreeSet::from(["dawsu-mix-undo.wav".to_string()]);
         let report = cleanup_stale_samples(
-            &mapset,
-            &data,
-            &backups,
+            &CleanupRoots {
+                mapset_root: &mapset,
+                data_root: &data,
+                backups_root: &backups,
+            },
             &mut manifest,
             &active,
             &retained,

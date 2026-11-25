@@ -21,16 +21,21 @@ use std::{
 // The optional integer holds the exact bit representation of a loop duration in milliseconds.
 type Layer = (SampleIdentity, i32, Option<u64>);
 
+pub(super) struct StageInput<'a> {
+    pub source: &'a Source,
+    pub root: &'a Path,
+    pub defaults: &'a Path,
+    pub previous: &'a [u8],
+    pub already_staged: &'a [StagedMix],
+    pub format: mixes::MixFormat,
+}
+
 pub(super) fn stage(
-    source: &Source,
+    input: &StageInput<'_>,
     file: &mut OsuFile,
-    root: &Path,
-    defaults: &Path,
-    previous: &[u8],
-    already_staged: &[StagedMix],
-    format: mixes::MixFormat,
     cancel: &dyn Fn() -> bool,
 ) -> Result<Vec<StagedMix>, String> {
+    let StageInput { source, root, defaults, previous, already_staged, format } = *input;
     let offset = offset_for(file.format_version());
     let mut groups = BTreeMap::<i64, Vec<Layer>>::new();
     for body in source.hits.bodies() {
@@ -217,14 +222,17 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(native.len(), 2);
         let mut file = plain.clone();
+        let defaults = scratch.path("defaults");
         let assets = stage(
-            &source,
+            &StageInput {
+                source: &source,
+                root: &root,
+                defaults: &defaults,
+                previous: &[],
+                already_staged: &[],
+                format: mixes::MixFormat::Wav16,
+            },
             &mut file,
-            &root,
-            &scratch.path("defaults"),
-            &[],
-            &[],
-            mixes::MixFormat::Wav16,
             &|| false,
         )
         .unwrap();
@@ -268,14 +276,17 @@ mod tests {
         assert_eq!(fs::read(&path).unwrap(), original.as_bytes());
         mixes::publish(&assets, None, &|| false).unwrap().keep();
         let mut repeat = plain.clone();
+        let prev_bytes = file.to_bytes();
         let reused = stage(
-            &source,
+            &StageInput {
+                source: &source,
+                root: &root,
+                defaults: &defaults,
+                previous: &prev_bytes,
+                already_staged: &[],
+                format: mixes::MixFormat::Wav16,
+            },
             &mut repeat,
-            &root,
-            &scratch.path("defaults"),
-            &file.to_bytes(),
-            &[],
-            mixes::MixFormat::Wav16,
             &|| false,
         )
         .unwrap();

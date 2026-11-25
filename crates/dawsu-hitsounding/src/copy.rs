@@ -329,6 +329,7 @@ pub fn copy_hitsounds(
 }
 
 /// Plans Copy using the caller's decoded mapset sample silence check.
+#[allow(clippy::too_many_arguments)]
 pub fn copy_hitsounds_with_silence(
     source: &Hitsounds,
     source_file: &OsuFile,
@@ -361,7 +362,8 @@ pub fn copy_hitsounds_with_silence(
                 progress(completed + done, total);
             }
         };
-        match plan_target(source, source_file, target, folder_files, options, is_silent, cancel, &mut report) {
+        let ctx = CopyContext { source, source_file, folder_files, options };
+        match plan_target(&ctx, target, is_silent, cancel, &mut report) {
             Some(outcome) => outcomes.push(outcome),
             None => return CopyOutcome::Cancelled,
         }
@@ -566,8 +568,16 @@ fn retarget(lanes: &[SampleIdentity], set: SampleSet, index: u32) -> Vec<SampleI
         .collect()
 }
 
+struct CopyContext<'a> {
+    source: &'a Hitsounds,
+    source_file: &'a OsuFile,
+    folder_files: &'a [String],
+    options: &'a CopyOptions,
+}
+
 /// Plans one target; `None` when cancelled.
-fn plan_target(source: &Hitsounds, source_file: &OsuFile, target: &OsuFile, folder_files: &[String], options: &CopyOptions, is_silent: &mut dyn FnMut(&str) -> bool, cancel: &dyn Fn() -> bool, progress: &mut dyn FnMut(usize, usize)) -> Option<TargetOutcome> {
+fn plan_target(ctx: &CopyContext<'_>, target: &OsuFile, is_silent: &mut dyn FnMut(&str) -> bool, cancel: &dyn Fn() -> bool, progress: &mut dyn FnMut(usize, usize)) -> Option<TargetOutcome> {
+    let CopyContext { source, source_file, folder_files, options } = *ctx;
     let mut to = match decompile(target, folder_files, cancel, progress) {
         Decompiled::Done(h) => h,
         Decompiled::UnsupportedMode { mode } => return Some(TargetOutcome::UnsupportedMode { mode }),
@@ -984,23 +994,20 @@ fn copy_bodies(source: &Hitsounds, to: &mut Hitsounds, before: &[Moment], matche
         });
         match matched_source {
             Some(&s) => {
-                if o.copy_body_hitsounds {
-                    if let Place::SliderNode { object: source_object, node: 0 } = from[s].place() {
-                        if let Some(src) = source.bodies().iter().find(|x| x.object() == source_object) {
+                if o.copy_body_hitsounds
+                    && let Place::SliderNode { object: source_object, node: 0 } = from[s].place()
+                        && let Some(src) = source.bodies().iter().find(|x| x.object() == source_object) {
                             to.set_body_whistle(b, src.whistle());
                             if o.copy_sample_sets {
-                                if let Some(set) = src.set() {
-                                    if to.bodies()[b].set() != Some(set) {
+                                if let Some(set) = src.set()
+                                    && to.bodies()[b].set() != Some(set) {
                                         to.set_body_set(b, set);
                                     }
-                                }
                                 if to.bodies()[b].whistle_set() != src.whistle_set() {
                                     to.set_body_whistle_set(b, src.whistle_set());
                                 }
                             }
                         }
-                    }
-                }
             }
             None if o.mode == CopyMode::OverwriteEverything => {
                 if o.copy_body_hitsounds {

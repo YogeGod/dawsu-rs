@@ -69,8 +69,8 @@ impl MidiRecorder {
         self.last_clock = None;
         let ports = list_midi_input_ports();
         let chosen_idx = port_index.or(if ports.is_empty() { None } else { Some(0) });
-        if let Some(idx) = chosen_idx {
-            if let Some(name) = ports.get(idx).cloned() {
+        if let Some(idx) = chosen_idx
+            && let Some(name) = ports.get(idx).cloned() {
                 let mut router = MidiInputRouter::new();
                 let (tx, rx) = mpsc::channel();
                 router.connect_port_timestamped_channel(&name, tx)?;
@@ -81,7 +81,6 @@ impl MidiRecorder {
                 self.armed = true;
                 return Ok(Some(name));
             }
-        }
         self.router = None;
         self.rx = None;
         self.port_index = None;
@@ -159,14 +158,13 @@ impl MidiRecorder {
         let mut events = Vec::with_capacity(stamped_events.len());
         for stamped in stamped_events {
             events.push(stamped.event);
-            if self.armed && playing {
-                if let MidiInputEvent::NoteOn {
+            if self.armed && playing
+                && let MidiInputEvent::NoteOn {
                     channel,
                     pitch,
                     velocity,
                 } = stamped.event
-                {
-                    if velocity > 0 {
+                    && velocity > 0 {
                         let age_ms = now
                             .saturating_duration_since(stamped.received_at)
                             .as_secs_f64()
@@ -174,11 +172,10 @@ impl MidiRecorder {
                             * eff_speed;
                         let mut event_ms = (position_ms - age_ms).max(0.0);
                         // If playback started since the previous poll, don't project before the previous anchor.
-                        if let Some((prev_instant, prev_pos, prev_playing, _)) = prev_clock {
-                            if !prev_playing && stamped.received_at >= prev_instant {
+                        if let Some((prev_instant, prev_pos, prev_playing, _)) = prev_clock
+                            && !prev_playing && stamped.received_at >= prev_instant {
                                 event_ms = event_ms.max(prev_pos);
                             }
-                        }
                         self.recorded.push(RecordedMidiNote {
                             time_ms: event_ms,
                             pitch,
@@ -186,8 +183,6 @@ impl MidiRecorder {
                             channel,
                         });
                     }
-                }
-            }
         }
         events
     }
@@ -202,8 +197,7 @@ impl MidiRecorder {
             pitch,
             velocity,
         } = event
-        {
-            if velocity > 0 {
+            && velocity > 0 {
                 self.recorded.push(RecordedMidiNote {
                     time_ms: time_ms.max(0.0),
                     pitch,
@@ -211,7 +205,6 @@ impl MidiRecorder {
                     channel,
                 });
             }
-        }
     }
 }
 
@@ -256,8 +249,8 @@ pub fn commit_to_composer(
         while next_note < 127 && note_to_lane.contains_key(&next_note) {
             next_note += 1;
         }
-        if !note_to_lane.contains_key(&next_note) {
-            note_to_lane.insert(next_note, lane.clone());
+        if let std::collections::hash_map::Entry::Vacant(e) = note_to_lane.entry(next_note) {
+            e.insert(lane.clone());
             next_note = next_note.saturating_add(1);
         }
     }

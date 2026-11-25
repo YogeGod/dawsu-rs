@@ -49,7 +49,7 @@ fn timed_copy_reviews_tick_and_slide_samples_and_reapplies_without_duplicates() 
     assert_eq!(events.iter().map(|event| event.time).collect::<Vec<_>>(), [1500.0, 1750.0]);
     assert_eq!(events[0].path, events[1].path);
     let clip = dawsu_audio::decode(paths[0]).unwrap();
-    assert!((clip.samples[0] * events[0].volume as f32 / 100.0 - 0.2).abs() < 0.0001);
+    assert!((clip.samples[0] * events[0].volume / 100.0 - 0.2).abs() < 0.0001);
     review().apply(&scratch.path("backups"), &|| false).unwrap();
     assert_eq!(fs::read_to_string(&target).unwrap(), written);
     assert_eq!(fs::read_to_string(source_path).unwrap(), bytes);

@@ -103,9 +103,8 @@ fn endpoint_id(index: u32) -> Option<String> {
             (&mut bytes as *mut u32) as usize,
             0,
         ) != 0
-            || bytes < 2
-            || bytes > 65_536
-            || bytes % 2 != 0
+            || !(2..=65_536).contains(&bytes)
+            || !bytes.is_multiple_of(2)
         {
             return None;
         }

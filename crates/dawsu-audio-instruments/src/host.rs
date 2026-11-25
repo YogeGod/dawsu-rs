@@ -85,11 +85,10 @@ impl Vst3HostConfig {
             self.parent_pid.to_string(),
             self.plugin_path.to_string_lossy().into_owned(),
         ];
-        if let Some(uid) = &self.plugin_uid {
-            if !uid.is_empty() {
+        if let Some(uid) = &self.plugin_uid
+            && !uid.is_empty() {
                 args.push(uid.clone());
             }
-        }
         if self.offline {
             args.push("--offline".to_string());
         }

@@ -1049,7 +1049,7 @@ dependencies = [
 
 [[package]]
 name = "dawsu-tauri"
-version = "0.1.0"
+version = "1.1.0-alpha.2"
 dependencies = [
  "dawsu-application",
  "dawsu-editor",

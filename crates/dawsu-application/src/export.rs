@@ -246,6 +246,7 @@ impl Slot {
 
     /// Commits ownership manifest entries and archives stale dawsu!-owned samples AFTER the
     /// background Direct export write has succeeded.
+    #[allow(clippy::disallowed_methods)]
     pub(crate) fn commit_pending_manifest(&mut self, data_root: &Path) {
         let Some(commit) = self.pending_manifest.take() else {
             return;
@@ -275,9 +276,11 @@ impl Slot {
         }
         if commit.auto_cleanup_stale {
             let _ = export_manifest::cleanup_stale_samples(
-                &commit.mapset_root,
-                data_root,
-                &commit.backups,
+                &export_manifest::CleanupRoots {
+                    mapset_root: &commit.mapset_root,
+                    data_root,
+                    backups_root: &commit.backups,
+                },
                 &mut manifest,
                 &commit.active_sample_names,
                 &retained,
@@ -721,10 +724,12 @@ impl Application {
             let mut problems = Vec::new();
             let result = output::export_report(
                 &source,
-                &defaults,
-                thread_settings.as_ref(),
-                projects.as_deref(),
-                &thread_options,
+                &output::ExportConfig {
+                    defaults: &defaults,
+                    settings: thread_settings.as_ref(),
+                    projects: projects.as_deref(),
+                    options: &thread_options,
+                },
                 &|| cancel.load(Ordering::Relaxed),
                 &mut problems,
                 &mut |done, total| {
@@ -1092,7 +1097,7 @@ mod tests {
     #[test]
     fn export_preview_plans_the_same_writes_as_copy() {
         let set = mapset("export-parity");
-        let app = assert_parity(&set.source, options(&[set.target.clone()]));
+        let app = assert_parity(&set.source, options(std::slice::from_ref(&set.target)));
         assert_eq!(app.export_status().preview.unwrap().plan.mixes.len(), 0);
     }
 
@@ -1130,7 +1135,7 @@ mod tests {
         let set = mapset("export-apart");
         let mut app = opened(&set.source);
         app.status = "untouched".into();
-        app.request_export_preview(options(&[set.target.clone()])).unwrap();
+        app.request_export_preview(options(std::slice::from_ref(&set.target))).unwrap();
         assert!(!app.busy);
         assert!(app.jobs.is_none());
         wait_preview(&mut app);
@@ -1152,7 +1157,7 @@ mod tests {
         let set = mapset("export-wait");
         let mut app = opened(&set.source);
         app.busy = true;
-        app.request_export_preview(options(&[set.target.clone()])).unwrap();
+        app.request_export_preview(options(std::slice::from_ref(&set.target))).unwrap();
         app.poll_export();
         let status = app.export_status();
         assert!(status.waiting && !status.running);
@@ -1166,7 +1171,7 @@ mod tests {
         app.poll_export();
         assert!(app.export_status().preview.is_none());
 
-        app.request_export_preview(options(&[set.target.clone()])).unwrap();
+        app.request_export_preview(options(std::slice::from_ref(&set.target))).unwrap();
         app.cancel_job();
         wait_preview(&mut app);
         assert!(app.export_status().preview.is_some());
@@ -1180,11 +1185,11 @@ mod tests {
         let set = mapset("export-run");
         let backups = set.scratch.path("backups");
         let mut app = opened(&set.source);
-        let first = app.request_export_preview(options(&[set.target.clone()])).unwrap();
+        let first = app.request_export_preview(options(std::slice::from_ref(&set.target))).unwrap();
         wait_preview(&mut app);
         assert!(app.run_export_in(first + 1, backups.clone()).is_err());
 
-        let second = app.request_export_preview(options(&[set.target.clone()])).unwrap();
+        let second = app.request_export_preview(options(std::slice::from_ref(&set.target))).unwrap();
         assert!(second > first);
         assert!(app.run_export_in(first, backups.clone()).is_err());
         wait_preview(&mut app);
@@ -1195,7 +1200,7 @@ mod tests {
         assert!(app.run_export_in(second, backups.clone()).is_err());
         assert_eq!(std::fs::read_to_string(&set.target).unwrap(), set.target_bytes);
 
-        let third = app.request_export_preview(options(&[set.target.clone()])).unwrap();
+        let third = app.request_export_preview(options(std::slice::from_ref(&set.target))).unwrap();
         wait_preview(&mut app);
         app.run_export_in(third, backups.clone()).unwrap();
         assert!(app.output_review.is_none());
@@ -1212,7 +1217,7 @@ mod tests {
         let set = mapset("export-switch");
         let mut app = opened(&set.source);
         app.busy = true;
-        app.request_export_preview(options(&[set.target.clone()])).unwrap();
+        app.request_export_preview(options(std::slice::from_ref(&set.target))).unwrap();
         app.busy = false;
         app.request_open(set.target.clone());
         wait_main(&mut app);
@@ -1227,7 +1232,7 @@ mod tests {
     fn export_refuses_a_preview_of_another_difficulty() {
         let set = mapset("export-other-map");
         let mut app = opened(&set.source);
-        let id = app.request_export_preview(options(&[set.target.clone()])).unwrap();
+        let id = app.request_export_preview(options(std::slice::from_ref(&set.target))).unwrap();
         wait_preview(&mut app);
         let version = app.export_status().preview.unwrap().plan.version;
         app.request_open(set.target.clone());
@@ -1246,7 +1251,7 @@ mod tests {
         let mut app = opened(&set.source);
         edit_to(&mut app, 4);
         let version = app.document().unwrap().composer.history.version();
-        let id = app.request_export_preview(options(&[set.target.clone()])).unwrap();
+        let id = app.request_export_preview(options(std::slice::from_ref(&set.target))).unwrap();
         wait_preview(&mut app);
         app.copy_hitsounds(vec![set.target.clone()], options(&[]).copy);
         wait_main(&mut app);
@@ -1261,7 +1266,7 @@ mod tests {
         wait_main(&mut app);
         assert_eq!(std::fs::read_to_string(&set.target).unwrap(), set.target_bytes);
 
-        let id = app.request_export_preview(options(&[set.target.clone()])).unwrap();
+        let id = app.request_export_preview(options(std::slice::from_ref(&set.target))).unwrap();
         wait_preview(&mut app);
         let version = app.document().unwrap().composer.history.version();
         app.revert_requested = true;
@@ -1277,7 +1282,7 @@ mod tests {
         let set = mapset("export-save");
         let mut app = opened(&set.source);
         edit(&mut app);
-        let id = app.request_export_preview(options(&[set.target.clone()])).unwrap();
+        let id = app.request_export_preview(options(std::slice::from_ref(&set.target))).unwrap();
         wait_preview(&mut app);
         save(&mut app);
         assert!(app.run_export_in(id, set.scratch.path("backups")).is_err());
@@ -1287,7 +1292,7 @@ mod tests {
     #[test]
     fn export_preview_counts_each_target_as_copy_planned_it() {
         let set = mapset("export-counts");
-        let app = assert_parity(&set.source, options(&[set.target.clone()]));
+        let app = assert_parity(&set.source, options(std::slice::from_ref(&set.target)));
         let preview = app.export_status().preview.unwrap();
         assert_eq!(preview.plan.targets.len(), 1);
         let counts = &preview.plan.targets[0];
@@ -1302,7 +1307,7 @@ mod tests {
     fn a_failed_export_write_reports_to_export_not_main() {
         let set = mapset("export-write-error");
         let mut app = opened(&set.source);
-        let id = app.request_export_preview(options(&[set.target.clone()])).unwrap();
+        let id = app.request_export_preview(options(std::slice::from_ref(&set.target))).unwrap();
         wait_preview(&mut app);
         // Another program changes the target after the preview: the write refuses.
         std::fs::write(&set.target, set.target_bytes.replace("Target", "Changed")).unwrap();
@@ -1316,7 +1321,7 @@ mod tests {
         assert!(app.error.is_none(), "{:?}", app.error);
 
         // A new preview keeps the write result until the next write.
-        app.request_export_preview(options(&[set.target.clone()])).unwrap();
+        app.request_export_preview(options(std::slice::from_ref(&set.target))).unwrap();
         assert!(app.export_status().write_error.is_some());
         wait_preview(&mut app);
         let id = app.export_status().preview.unwrap().id;
@@ -1331,7 +1336,7 @@ mod tests {
     fn a_write_still_running_when_export_closes_reports_to_main() {
         let set = mapset("export-write-closed");
         let mut app = opened(&set.source);
-        let id = app.request_export_preview(options(&[set.target.clone()])).unwrap();
+        let id = app.request_export_preview(options(std::slice::from_ref(&set.target))).unwrap();
         wait_preview(&mut app);
         std::fs::write(&set.target, "changed").unwrap();
         app.run_export_in(id, set.scratch.path("backups")).unwrap();
@@ -1362,7 +1367,7 @@ mod tests {
 
         let mut app = opened(&set.source);
         assert_eq!(app.document().unwrap().export_choices(), Some(&expected));
-        app.request_export_preview(options(&[set.target.clone()])).unwrap();
+        app.request_export_preview(options(std::slice::from_ref(&set.target))).unwrap();
         assert_eq!(app.document().unwrap().export_choices().unwrap().left_out, Vec::<String>::new());
     }
 
@@ -1403,7 +1408,7 @@ mod tests {
     fn switching_hitsounding_mode_makes_the_preview_stale() {
         let set = mapset("export-hs-mode");
         let mut app = opened(&set.source);
-        let id = app.request_export_preview(options(&[set.target.clone()])).unwrap();
+        let id = app.request_export_preview(options(std::slice::from_ref(&set.target))).unwrap();
         wait_preview(&mut app);
         assert!(!app.export_status().stale);
         app.document.as_mut().unwrap().hs_mode ^= true;
@@ -1416,12 +1421,12 @@ mod tests {
         let set = mapset("export-write-id");
         let mut app = opened(&set.source);
         assert_eq!(app.export_status().write_id, None);
-        let id = app.request_export_preview(options(&[set.target.clone()])).unwrap();
+        let id = app.request_export_preview(options(std::slice::from_ref(&set.target))).unwrap();
         wait_preview(&mut app);
         let first = app.run_export_in(id, set.scratch.path("backups")).unwrap();
         assert_eq!(app.export_status().write_id, Some(first));
         wait_main(&mut app);
-        let id = app.request_export_preview(options(&[set.target.clone()])).unwrap();
+        let id = app.request_export_preview(options(std::slice::from_ref(&set.target))).unwrap();
         wait_preview(&mut app);
         let second = app.run_export_in(id, set.scratch.path("backups")).unwrap();
         assert!(second > first);
@@ -1442,8 +1447,8 @@ mod tests {
         app.apply_output_in(set.scratch.path("backups"));
         wait_main(&mut app);
         assert!(app.error.is_none(), "{:?}", app.error);
-        assert!(app.document().unwrap().difficulties.iter().any(|path| *path == generated));
-        assert_eq!(app.export_targets(), [set.target.clone()]);
+        assert!(app.document().unwrap().difficulties.contains(&generated));
+        assert_eq!(app.export_targets(), std::slice::from_ref(&set.target));
     }
 
     // Slice 2: the base hitsound difficulty (Generate) in the same write as Copy.
@@ -1550,7 +1555,7 @@ mod tests {
         let (_export_set, source, target, other) = mixed_mapset("export-base-copy");
         let other_bytes = std::fs::read(&other).unwrap();
         let mut app = opened(&source);
-        run_preview(&mut app, with_base(&[target.clone()], false));
+        run_preview(&mut app, with_base(std::slice::from_ref(&target), false));
         let exported = folder_files(source.parent().unwrap());
 
         let (_set, reference, reference_target, _) = mixed_mapset("export-base-copy-reference");
@@ -1565,7 +1570,7 @@ mod tests {
     fn the_receipt_lists_only_the_base_and_its_mixes_and_re_export_adds_no_wav() {
         let (_scratch, source, target, _) = mixed_mapset("export-base-receipt");
         let mut app = opened(&source);
-        app.request_export_preview(with_base(&[target.clone()], false)).unwrap();
+        app.request_export_preview(with_base(std::slice::from_ref(&target), false)).unwrap();
         wait_preview(&mut app);
         let plan = &app.export_status().preview.unwrap().plan;
         let generated = plan.generated_file().unwrap().to_path_buf();
@@ -1574,7 +1579,7 @@ mod tests {
             .map(|mix| mix.path.file_name().unwrap().to_string_lossy().into_owned()).collect::<Vec<_>>();
         let (base_names, copy_names) = (names(base_mixes), names(copy_mixes));
         assert!(!base_names.is_empty() && !copy_names.is_empty());
-        run_preview(&mut app, with_base(&[target.clone()], false));
+        run_preview(&mut app, with_base(std::slice::from_ref(&target), false));
 
         let projects = app.project_root.clone().unwrap();
         let receipt: serde_json::Value = serde_json::from_slice(
@@ -1586,7 +1591,7 @@ mod tests {
         assert!(targets.iter().all(|path| path.file_name() != generated.file_name()));
 
         let before = wavs(source.parent().unwrap());
-        app.request_export_preview(with_base(&[target.clone()], false)).unwrap();
+        app.request_export_preview(with_base(std::slice::from_ref(&target), false)).unwrap();
         wait_preview(&mut app);
         let plan = &app.export_status().preview.unwrap().plan;
         assert!(plan.mixes.iter().all(|mix| mix.is_reused()), "every mix is already on disk");
@@ -1600,8 +1605,14 @@ mod tests {
         let target_bytes = std::fs::read(&target).unwrap();
         let app = opened(&source);
         let plan = output::export_report(
-            &output::Source::from_document(app.document().unwrap()), std::path::Path::new(""), None,
-            app.project_root.as_deref(), &with_base(&[target.clone()], false), &|| false,
+            &output::Source::from_document(app.document().unwrap()),
+            &output::ExportConfig {
+                defaults: std::path::Path::new(""),
+                settings: None,
+                projects: app.project_root.as_deref(),
+                options: &with_base(std::slice::from_ref(&target), false),
+            },
+            &|| false,
             &mut Vec::new(), &mut |_, _| {},
         ).unwrap();
         let generated = plan.generated_file().unwrap().to_path_buf();
@@ -1624,8 +1635,14 @@ mod tests {
         let generated = crate::generate_receipt::output_path(app.project_root.as_deref().unwrap(), &source).unwrap();
         let generated = generated.canonicalize().unwrap();
         let error = output::export_report(
-            &output::Source::from_document(app.document().unwrap()), std::path::Path::new(""), None,
-            app.project_root.as_deref(), &with_base(&[generated], false), &|| false,
+            &output::Source::from_document(app.document().unwrap()),
+            &output::ExportConfig {
+                defaults: std::path::Path::new(""),
+                settings: None,
+                projects: app.project_root.as_deref(),
+                options: &with_base(&[generated], false),
+            },
+            &|| false,
             &mut Vec::new(), &mut |_, _| {},
         ).err().unwrap();
         assert_eq!(error, "The base hitsound difficulty cannot also be a Copy target.");

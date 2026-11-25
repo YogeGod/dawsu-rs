@@ -335,7 +335,7 @@ mod tests {
         // Unrelated file
         fs::write(vendor_dir.join("readme.txt"), b"ignore").unwrap();
 
-        let found = discover_vst3_paths_in(&[root.clone()]);
+        let found = discover_vst3_paths_in(std::slice::from_ref(&root));
         let _ = fs::remove_dir_all(&root);
 
         assert_eq!(found.len(), 3, "expected 3 top-level plugins, got {found:?}");
@@ -409,7 +409,7 @@ CLASS\tAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA1\tHybridBox\tAcme\tInstrument|Fx|Sampler\
         fs::write(root.join("VendorA/Drums.vst3"), b"a").unwrap();
         fs::write(root.join("VendorB/Drums.vst3"), b"b").unwrap();
 
-        let items = list_installed_vst3_in(&[root.clone()]);
+        let items = list_installed_vst3_in(std::slice::from_ref(&root));
         let _ = fs::remove_dir_all(&root);
 
         assert_eq!(items.len(), 3);

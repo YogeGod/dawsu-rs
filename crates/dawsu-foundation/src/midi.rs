@@ -720,8 +720,8 @@ fn encode_track(track: &MidiTrack) -> Vec<u8> {
     let has_track_name = events
         .iter()
         .any(|(_, _, k)| matches!(k, MidiEventKind::TrackName(_)));
-    if !has_track_name {
-        if let Some(name) = &track.name {
+    if !has_track_name
+        && let Some(name) = &track.name {
             let bytes = name.as_bytes();
             let len = bytes.len().min(u32::MAX as usize);
             write_vlq(&mut body, 0);
@@ -729,7 +729,6 @@ fn encode_track(track: &MidiTrack) -> Vec<u8> {
             write_vlq(&mut body, len as u64);
             body.extend_from_slice(&bytes[..len]);
         }
-    }
 
     for (tick, _, kind) in events {
         let delta = tick.saturating_sub(last_tick);

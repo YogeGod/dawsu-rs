@@ -444,16 +444,18 @@ fn render_manifest_clips(
             let rendered = app
                 .vst3
                 .render_midi_batches_via_vst3(
-                    live_id.as_deref(),
-                    &plugin_path,
-                    plugin_uid,
-                    saved_state,
+                    crate::vst3::Vst3RenderTarget {
+                        live_instance_id: live_id.as_deref(),
+                        plugin_path: &plugin_path,
+                        plugin_uid,
+                        saved_state_b64: saved_state,
+                    },
                     &batches,
                     KEYSOUND_RENDER_RATE,
                     Some(cancel),
                 )
                 .map_err(|e| e.to_string())?;
-            for (&idx, buf) in indices.iter().zip(rendered.into_iter()) {
+            for (&idx, buf) in indices.iter().zip(rendered) {
                 clips[idx] = Some(buf);
             }
             continue;
@@ -1028,10 +1030,12 @@ pub(crate) fn handle(app: &mut Application, payload: &Value) -> Result<Value, St
                     chord_midi_events(channel, &[pitch], velocity, duration_ms, KEYSOUND_RENDER_RATE);
                 let saved_state = track_meta.as_ref().and_then(|m| m.3.as_deref());
                 if let Ok(mut rendered) = app.vst3.render_midi_batches_via_vst3(
-                    live_id.as_deref(),
-                    &plugin_path,
-                    plugin_uid,
-                    saved_state,
+                    crate::vst3::Vst3RenderTarget {
+                        live_instance_id: live_id.as_deref(),
+                        plugin_path: &plugin_path,
+                        plugin_uid,
+                        saved_state_b64: saved_state,
+                    },
                     &[events],
                     KEYSOUND_RENDER_RATE,
                     None,
@@ -1335,7 +1339,8 @@ fn prepare_and_write_wavs(
         .collect();
     let mut reserved_names = pending_taken.clone();
     let mut renames: BTreeMap<String, String> = BTreeMap::new();
-    let mut to_write: Vec<(String, Vec<u8>, String, Option<Vec<u8>>)> = Vec::new();
+    type PendingKeysoundWrite = (String, Vec<u8>, String, Option<Vec<u8>>);
+    let mut to_write: Vec<PendingKeysoundWrite> = Vec::new();
 
     if apply_batch_norm {
         let is_ogg_batch = plan
@@ -1350,7 +1355,7 @@ fn prepare_and_write_wavs(
         let _ = uniform_batch_normalize(&mut raw_clips, target_dbfs);
     }
 
-    for (entry, samples) in plan.manifest.iter().zip(raw_clips.into_iter()) {
+    for (entry, samples) in plan.manifest.iter().zip(raw_clips) {
         let is_ogg = entry.filename.to_ascii_lowercase().ends_with(".ogg");
         let wav_bytes = if is_ogg {
             encode_vorbis_ogg(&samples, KEYSOUND_RENDER_RATE)?

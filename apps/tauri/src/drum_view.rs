@@ -462,7 +462,7 @@ impl DrumView {
                     return None;
                 }
                 let row = *rows.get(&lane.identity)?;
-                shown_rows.insert(row).then(|| DrumRowSnapshot {
+                shown_rows.insert(row).then_some(DrumRowSnapshot {
                     drum_row_index: None,
                     midi_note: None,
                     name: None,

@@ -292,7 +292,7 @@ impl NodalSession {
         if !changed {
             return Ok(());
         }
-        let _ = self
+        self
             .history
             .edit(true, |doc| {
                 for (id, x, y) in positions {

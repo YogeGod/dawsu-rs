@@ -27,16 +27,22 @@ fn fixture(name: &str) -> PathBuf {
 fn pattern_samples() -> Vec<f32> {
     std::fs::read(fixture("pattern.f32"))
         .unwrap()
-        .chunks_exact(4)
-        .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .copied()
+        .map(f32::from_le_bytes)
         .collect()
 }
 
 fn f64s(name: &str) -> Vec<f64> {
     std::fs::read(fixture(name))
         .unwrap()
-        .chunks_exact(8)
-        .map(|b| f64::from_le_bytes(b.try_into().unwrap()))
+        .as_chunks::<8>()
+        .0
+        .iter()
+        .copied()
+        .map(f64::from_le_bytes)
         .collect()
 }
 

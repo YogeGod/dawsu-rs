@@ -448,10 +448,10 @@ fn extract_features(clip: &AudioClip) -> Option<AcousticFeatures> {
             break;
         }
         windows += 1;
-        for i in 0..N {
+        for (i, slot) in fft_buf.iter_mut().enumerate().take(N) {
             let s = mono.get(start + i).copied().unwrap_or(0.0);
             let hann = 0.5 * (1.0 - (2.0 * std::f32::consts::PI * i as f32 / (N - 1) as f32).cos());
-            fft_buf[i] = (s * hann, 0.0);
+            *slot = (s * hann, 0.0);
         }
         crate::waveform::fft_radix2_inplace(&mut fft_buf);
         for (bin, &(re, im)) in fft_buf[..bins].iter().enumerate() {

@@ -31,14 +31,13 @@ pub fn import_midi_tracks(timed: &TimedMidi) -> Vec<KeysoundTrack> {
             let ch = ev.channel & 0x0F;
             if ev.pressed {
                 active_down.entry(ch).or_insert(ev.time_ms);
-            } else if let Some(start_ms) = active_down.remove(&ch) {
-                if ev.time_ms > start_ms {
+            } else if let Some(start_ms) = active_down.remove(&ch)
+                && ev.time_ms > start_ms {
                     sustain_by_track.entry((track.index, ch)).or_default().push(SustainSpan {
                         start_ms,
                         end_ms: ev.time_ms,
                     });
                 }
-            }
         }
         // Close any CC64 sustain held until end-of-track at that channel's last note end.
         for (ch, start_ms) in active_down {

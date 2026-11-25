@@ -75,6 +75,10 @@ jobs:
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
+      - name: Clippy lints
+        if: ${{ !cancelled() }}
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
       - name: Rust workspace tests
         if: ${{ !cancelled() }}
         run: cargo test --workspace --locked --no-fail-fast

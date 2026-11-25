@@ -125,7 +125,7 @@ pub fn uniform_batch_normalize(clips: &mut [Vec<f32>], target_dbfs: f32) -> Batc
 /// Truncates an interleaved stereo clip to `choke_duration_ms` with a 10 ms anti-click fade-out.
 pub fn apply_choke_fade(interleaved_stereo: &mut Vec<f32>, sample_rate: u32, choke_duration_ms: u32) {
     let channels = 2usize;
-    if interleaved_stereo.len() % channels != 0 {
+    if !interleaved_stereo.len().is_multiple_of(channels) {
         interleaved_stereo.pop();
     }
     let max_frames = ((f64::from(choke_duration_ms) / 1000.0) * f64::from(sample_rate.max(1))).round() as usize;
@@ -190,7 +190,7 @@ pub fn encode_vorbis_ogg(interleaved_stereo: &[f32], sample_rate: u32) -> Result
     }
     let mut left = Vec::with_capacity(frames);
     let mut right = Vec::with_capacity(frames);
-    for pair in interleaved_stereo.chunks_exact(2) {
+    for pair in interleaved_stereo.as_chunks::<2>().0 {
         let l = if pair[0].is_finite() { pair[0].clamp(-1.0, 1.0) } else { 0.0 };
         let r = if pair[1].is_finite() { pair[1].clamp(-1.0, 1.0) } else { 0.0 };
         left.push(l);
@@ -288,7 +288,7 @@ mod tests {
         let samples = vec![0.25f32; 4800 * 2];
         let ogg = encode_vorbis_ogg(&samples, 48_000).unwrap();
         assert!(ogg.starts_with(b"OggS"));
-        let safe = calculate_osz_budget(4 * 1024 * 1024, 1 * 1024 * 1024);
+        let safe = calculate_osz_budget(4 * 1024 * 1024, 1024 * 1024);
         assert_eq!(safe.status, BudgetStatus::Safe);
         let over = calculate_osz_budget(9 * 1024 * 1024, 2 * 1024 * 1024);
         assert_eq!(over.status, BudgetStatus::OverLimit);
