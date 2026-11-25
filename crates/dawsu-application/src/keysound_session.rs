@@ -6,14 +6,70 @@ use crate::{Application, MidiPreviewNote};
 use dawsu_audio::AudioClip;
 use dawsu_foundation::digest::sha256_hex;
 use dawsu_foundation::safe_write::{self, BackupPolicy, replace};
+use dawsu_keysounding::chords::{ChordResolution, detect_chords, resolve_all_chords};
 use dawsu_keysounding::generate::{GeneratePlan, plan_generate_keysounds};
-use dawsu_keysounding::model::ExportSettings;
+use dawsu_keysounding::model::{ExportSettings, KeysoundDocument};
 use dawsu_keysounding::{KeysoundNote, editing};
 use dawsu_osu_format::{check_map_path, find_case_insensitive, list_folder};
 use serde_json::{Value, json};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+
+const MAX_KEYSOUND_UNDO: usize = 100;
+
+/// Bounded Undo/Redo, revision counter, dirty guard, and active-track scope for Keysounding.
+#[derive(Default)]
+pub struct KeysoundUndoHistory {
+    undo_stack: VecDeque<KeysoundDocument>,
+    redo_stack: Vec<KeysoundDocument>,
+    pub revision: u64,
+    pub dirty: bool,
+    pub active_track_id: Option<u64>,
+    pub project_path: Option<PathBuf>,
+}
+
+impl KeysoundUndoHistory {
+    pub fn record(&mut self, before: KeysoundDocument) {
+        if self.undo_stack.len() >= MAX_KEYSOUND_UNDO {
+            self.undo_stack.pop_front();
+        }
+        self.undo_stack.push_back(before);
+        self.redo_stack.clear();
+        self.revision = self.revision.saturating_add(1);
+        self.dirty = true;
+    }
+
+    pub fn undo(&mut self, current: &mut KeysoundDocument) -> bool {
+        let Some(prev) = self.undo_stack.pop_back() else {
+            return false;
+        };
+        let now = std::mem::replace(current, prev);
+        self.redo_stack.push(now);
+        self.revision = self.revision.saturating_add(1);
+        self.dirty = true;
+        true
+    }
+
+    pub fn redo(&mut self, current: &mut KeysoundDocument) -> bool {
+        let Some(next) = self.redo_stack.pop() else {
+            return false;
+        };
+        let now = std::mem::replace(current, next);
+        self.undo_stack.push_back(now);
+        self.revision = self.revision.saturating_add(1);
+        self.dirty = true;
+        true
+    }
+
+    pub fn can_undo(&self) -> bool {
+        !self.undo_stack.is_empty()
+    }
+
+    pub fn can_redo(&self) -> bool {
+        !self.redo_stack.is_empty()
+    }
+}
 
 fn synth_note_clip(pitch: u8, velocity: u8, duration_ms: f64) -> Arc<AudioClip> {
     let sample_rate = 48_000u32;
@@ -41,26 +97,51 @@ fn synth_note_clip(pitch: u8, velocity: u8, duration_ms: f64) -> Arc<AudioClip> 
 
 pub(crate) fn summary(app: &mut Application) -> Value {
     let loaded = app.vst3.list_loaded();
+    let active_id = app
+        .keysound_history
+        .active_track_id
+        .filter(|id| app.keysounds.document.tracks.iter().any(|t| t.id == *id))
+        .or_else(|| app.keysounds.document.tracks.first().map(|t| t.id));
+    app.keysound_history.active_track_id = active_id;
+    let chord_conflicts = app
+        .document
+        .as_ref()
+        .map(|d| detect_chords(&app.keysounds.document, &d.file, 10.0))
+        .unwrap_or_default();
     json!({
         "targetDifficulty": app.keysounds.target_difficulty,
         "sidecarAvailable": app.vst3.is_sidecar_available(),
-        "tracks": app.keysounds.document.tracks.iter().map(|t| json!({
-            "id": t.id,
-            "name": t.name,
-            "channel": t.channel,
-            "isDrum": t.is_drum,
-            "muted": t.muted,
-            "noteCount": t.notes.len(),
-            "instrument": t.instrument.name,
-            "notes": t.notes.iter().enumerate().map(|(index, n)| json!({
-                "index": index,
-                "startMs": n.start_ms,
-                "endMs": n.end_ms,
-                "pitch": n.pitch,
-                "velocity": n.velocity,
-                "muted": n.muted,
-            })).collect::<Vec<_>>(),
-        })).collect::<Vec<_>>(),
+        "revision": app.keysound_history.revision,
+        "canUndo": app.keysound_history.can_undo(),
+        "canRedo": app.keysound_history.can_redo(),
+        "dirty": app.keysound_history.dirty,
+        "activeTrackId": active_id,
+        "chordConflicts": chord_conflicts,
+        "tracks": app.keysounds.document.tracks.iter().map(|t| {
+            let is_active = Some(t.id) == active_id;
+            json!({
+                "id": t.id,
+                "name": t.name,
+                "channel": t.channel,
+                "isDrum": t.is_drum,
+                "muted": t.muted,
+                "noteCount": t.notes.len(),
+                "instrument": t.instrument.name,
+                "sustainSpans": if is_active { json!(t.sustain_spans) } else { json!([]) },
+                "notes": if is_active {
+                    t.notes.iter().enumerate().map(|(index, n)| json!({
+                        "index": index,
+                        "startMs": n.start_ms,
+                        "endMs": n.end_ms,
+                        "pitch": n.pitch,
+                        "velocity": n.velocity,
+                        "muted": n.muted,
+                    })).collect::<Vec<_>>()
+                } else {
+                    Vec::new()
+                },
+            })
+        }).collect::<Vec<_>>(),
         "vst3Plugins": app.vst3.scanned_plugins().iter().map(|p| json!({
             "id": p.uid,
             "name": p.name,
@@ -76,8 +157,84 @@ pub(crate) fn handle(app: &mut Application, payload: &Value) -> Result<Value, St
     let kind = payload.get("kind").and_then(|v| v.as_str()).unwrap_or("view");
     let track_id = payload.get("trackId").and_then(|v| v.as_u64());
 
+    let mutating = matches!(
+        kind,
+        "add_track"
+            | "delete_track"
+            | "add_note"
+            | "move_note"
+            | "resize_note"
+            | "delete_note"
+            | "set_velocity"
+            | "quantize_notes"
+            | "transpose_notes"
+            | "resolve_all_chords"
+    );
+    if mutating {
+        let before = app.keysounds.document.clone();
+        app.keysound_history.record(before);
+    }
+
     match kind {
         "view" => {}
+        "select_track" => {
+            app.keysound_history.active_track_id = track_id;
+        }
+        "undo" => {
+            app.keysound_history.undo(&mut app.keysounds.document);
+        }
+        "redo" => {
+            app.keysound_history.redo(&mut app.keysounds.document);
+        }
+        "save_dawsuks" => {
+            let path = payload
+                .get("path")
+                .and_then(|v| v.as_str())
+                .map(PathBuf::from)
+                .or_else(|| app.keysound_history.project_path.clone())
+                .or_else(|| {
+                    app.document
+                        .as_ref()
+                        .and_then(|d| d.path.parent())
+                        .map(|dir| dir.join("keysounds.dawsuks"))
+                })
+                .ok_or("Open a difficulty or choose a .dawsuks path first.")?;
+            let json_text = app.keysounds.to_json().map_err(|e| e.to_string())?;
+            if path.exists() {
+                let prev = std::fs::read(&path).map_err(|e| e.to_string())?;
+                let policy = BackupPolicy::new(app.data_root.join("backups"), 10);
+                let _ = replace(&path, &prev, json_text.as_bytes(), &policy).map_err(|e| e.to_string())?;
+            } else {
+                safe_write::create(&path, json_text.as_bytes()).map_err(|e| e.to_string())?;
+            }
+            app.keysound_history.project_path = Some(path);
+            app.keysound_history.dirty = false;
+        }
+        "load_dawsuks" => {
+            let path = payload
+                .get("path")
+                .and_then(|v| v.as_str())
+                .map(PathBuf::from)
+                .ok_or("Missing .dawsuks path")?;
+            let text = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+            let loaded = dawsu_keysounding::KeysoundProject::from_json(&text).map_err(|e| e.to_string())?;
+            app.keysounds = loaded;
+            app.keysound_history = KeysoundUndoHistory {
+                project_path: Some(path),
+                active_track_id: app.keysounds.document.tracks.first().map(|t| t.id),
+                ..KeysoundUndoHistory::default()
+            };
+        }
+        "resolve_all_chords" => {
+            let policy = match payload.get("policy").and_then(|v| v.as_str()).unwrap_or("flatten_polyphonic") {
+                "top_note_only" | "top_only" => ChordResolution::TopNoteOnly,
+                _ => ChordResolution::FlattenPolyphonic,
+            };
+            if let Some(doc) = app.document.as_ref() {
+                let count = resolve_all_chords(&mut app.keysounds.document, &doc.file, 10.0, policy);
+                app.status = format!("Resolved {count} chord conflict(s).");
+            }
+        }
         "add_track" => {
             let name = payload
                 .get("name")

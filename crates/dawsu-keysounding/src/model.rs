@@ -106,6 +106,13 @@ impl Default for InstrumentSettings {
     }
 }
 
+/// One CC64 sustain-pedal hold interval (`start_ms..=end_ms`) extracted from MIDI import.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct SustainSpan {
+    pub start_ms: f64,
+    pub end_ms: f64,
+}
+
 /// One track of pitched keysound notes and its instrument settings.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct KeysoundTrack {
@@ -122,6 +129,8 @@ pub struct KeysoundTrack {
     pub instrument: InstrumentSettings,
     #[serde(default)]
     pub notes: Vec<KeysoundNote>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sustain_spans: Vec<SustainSpan>,
 }
 
 impl KeysoundTrack {
@@ -143,6 +152,7 @@ impl KeysoundTrack {
                 gain_db: 0.0,
             },
             notes: Vec::new(),
+            sustain_spans: Vec::new(),
         }
     }
 
@@ -327,6 +337,13 @@ pub struct ExportSettings {
     /// Difficulty Version name for the generated keysounds beatmap (default `"Keysounds"`).
     #[serde(default = "default_target_version")]
     pub target_version: String,
+    /// When true, simultaneous chord notes on one osu!standard hit circle flatten into one polyphonic sample.
+    #[serde(default = "default_flatten_chords")]
+    pub flatten_chords: bool,
+}
+
+fn default_flatten_chords() -> bool {
+    true
 }
 
 fn default_velocity_buckets() -> u8 {
@@ -357,6 +374,7 @@ impl Default for ExportSettings {
             sample_extension: default_sample_extension(),
             sync_tolerance_ms: default_sync_tolerance_ms(),
             target_version: default_target_version(),
+            flatten_chords: default_flatten_chords(),
         }
     }
 }

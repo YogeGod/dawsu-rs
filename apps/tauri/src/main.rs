@@ -7,6 +7,7 @@ mod drum_window;
 mod folders;
 mod home;
 mod keyboard;
+mod keysound_commands;
 mod library;
 mod osu_link;
 mod preview_diff_commands;
