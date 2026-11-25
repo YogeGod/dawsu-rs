@@ -61,6 +61,7 @@
     "allow-shared-base-set-enabled",
     "allow-shared-base-capture",
     "allow-shared-base-apply",
+    "allow-shared-base-apply-all",
     "allow-shared-base-clear-overrides",
     "allow-shared-base-clear",
     "allow-stem-separation-status",
@@ -75,6 +76,9 @@
     "allow-preview-revert-mapset-to-original",
     "allow-revert-mapset-to-original",
     "allow-undo-mapset-revert",
-    "allow-check-for-updates"
+    "allow-check-for-updates",
+    "allow-download-update",
+    "allow-install-update-on-close",
+    "allow-cancel-staged-update"
   ]
 }
