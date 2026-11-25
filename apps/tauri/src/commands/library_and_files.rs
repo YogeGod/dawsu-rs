@@ -58,45 +58,179 @@ pub(crate) fn is_osu_hs_diff(path: &Path) -> bool {
         || (!has_objects && !version.is_empty())
 }
 
-pub(crate) fn recent_osu_meta(path: &Path) -> (Option<String>, bool) {
-    let Ok(text) = std::fs::read_to_string(path) else {
-        return (None, false);
-    };
-    let mut section = "";
-    let mut bg: Option<PathBuf> = None;
-    let mut version = String::new();
-    let mut has_objects = false;
-    for raw in text.lines() {
-        let line = raw.trim();
-        if line.starts_with('[') && line.ends_with(']') {
-            section = &line[1..line.len() - 1];
-            continue;
-        }
-        if section.eq_ignore_ascii_case("Events") && bg.is_none() && line.starts_with("0,0,") {
-            if let Some(first_quote) = line.find('"')
-                && let Some(end_quote) = line[first_quote + 1..].find('"') {
-                    let rel = &line[first_quote + 1..first_quote + 1 + end_quote];
-                    if let Some(parent) = path.parent() {
-                        let candidate = parent.join(rel);
-                        if candidate.is_file() {
-                            bg = Some(candidate);
-                        }
-                    }
-                }
-        } else if section.eq_ignore_ascii_case("Metadata") {
-            if let Some(rest) = line.strip_prefix("Version:") {
-                version = rest.trim().to_ascii_lowercase();
-            }
-        } else if section.eq_ignore_ascii_case("HitObjects") && !line.is_empty() && !line.starts_with("//") {
-            has_objects = true;
+fn is_supported_bg_extension(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|ext| {
+            matches!(
+                ext.to_ascii_lowercase().as_str(),
+                "jpg" | "jpeg" | "png" | "webp" | "gif" | "bmp"
+            )
+        })
+}
+
+/// Resolves a relative beatmap background path inside `folder`, rejecting `..` or
+/// rooted paths and falling back to case-insensitive matching on case-sensitive OSes.
+fn resolve_safe_folder_image(folder: &Path, raw_rel: &str) -> Option<PathBuf> {
+    let cleaned = raw_rel.trim().trim_matches('"').trim();
+    if cleaned.is_empty() {
+        return None;
+    }
+    let normalized = cleaned.replace('\\', "/");
+    let rel_path = Path::new(&normalized);
+    let mut parts: Vec<&std::ffi::OsStr> = Vec::new();
+    for comp in rel_path.components() {
+        match comp {
+            std::path::Component::Normal(seg) => parts.push(seg),
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir
+            | std::path::Component::RootDir
+            | std::path::Component::Prefix(_) => return None,
         }
     }
-    let is_hs = version.contains("hitsound")
-        || version == "hs"
-        || version.ends_with(" hs")
-        || version.contains("[hs]")
-        || (!has_objects && !version.is_empty());
-    let background = bg.as_deref().and_then(skin_textures::image_data_url);
+    if parts.is_empty() {
+        return None;
+    }
+    let mut exact = folder.to_path_buf();
+    for seg in &parts {
+        exact.push(seg);
+    }
+    if exact.is_file() && is_supported_bg_extension(&exact) {
+        return Some(exact);
+    }
+    // Case-insensitive walk for macOS/Linux mapsets whose `.osu` casing differs from disk.
+    let mut cursor = folder.to_path_buf();
+    for seg in &parts {
+        let wanted = seg.to_string_lossy().to_ascii_lowercase();
+        let next = std::fs::read_dir(&cursor).ok()?.flatten().find_map(|entry| {
+            if entry.file_name().to_string_lossy().to_ascii_lowercase() == wanted {
+                Some(entry.path())
+            } else {
+                None
+            }
+        })?;
+        cursor = next;
+    }
+    (cursor.is_file() && is_supported_bg_extension(&cursor)).then_some(cursor)
+}
+
+/// Extracts the mapset background path from a `.osu` `[Events]` section following
+/// osu!lazer's `LegacyBeatmapDecoder` rules (`0`/`Background`, `1`/`Video` when
+/// pointing at an image, and Background-layer `4`/`Sprite` fallback).
+pub(crate) fn resolve_osu_background_path(osu_path: &Path) -> Option<PathBuf> {
+    use std::io::{BufRead, BufReader};
+    let folder = osu_path.parent()?;
+    let file = std::fs::File::open(osu_path).ok()?;
+    let mut reader = BufReader::new(file);
+    let mut section = String::new();
+    let mut sprite_fallback: Option<PathBuf> = None;
+    let mut line = String::new();
+
+    while reader.read_line(&mut line).ok()? > 0 {
+        let trimmed = line.trim().trim_start_matches('\u{feff}');
+        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            section.clear();
+            section.push_str(&trimmed[1..trimmed.len() - 1]);
+            if section.eq_ignore_ascii_case("TimingPoints")
+                || section.eq_ignore_ascii_case("HitObjects")
+            {
+                break;
+            }
+            line.clear();
+            continue;
+        }
+        if section.eq_ignore_ascii_case("Events")
+            && !trimmed.is_empty()
+            && !trimmed.starts_with("//")
+            && !trimmed.starts_with(' ')
+            && !trimmed.starts_with('_')
+        {
+            let parts: Vec<&str> = trimmed.split(',').collect();
+            let event_type = parts.first().map(|s| s.trim()).unwrap_or("");
+            if (event_type == "0" || event_type.eq_ignore_ascii_case("Background"))
+                && let Some(raw) = parts.get(2)
+                && let Some(found) = resolve_safe_folder_image(folder, raw)
+            {
+                return Some(found);
+            }
+            if (event_type == "1" || event_type.eq_ignore_ascii_case("Video"))
+                && let Some(raw) = parts.get(2)
+                && let Some(found) = resolve_safe_folder_image(folder, raw)
+            {
+                return Some(found);
+            }
+            if sprite_fallback.is_none()
+                && (event_type == "4" || event_type.eq_ignore_ascii_case("Sprite"))
+                && parts
+                    .get(1)
+                    .is_some_and(|layer| {
+                        let l = layer.trim();
+                        l == "0" || l.eq_ignore_ascii_case("Background")
+                    })
+                && let Some(raw) = parts.get(3)
+                && let Some(found) = resolve_safe_folder_image(folder, raw)
+            {
+                sprite_fallback = Some(found);
+            }
+        }
+        line.clear();
+    }
+    sprite_fallback
+}
+
+/// Resolves a mapset's background image path (checking `osu_path` first, then sibling
+/// `.osu` files in the same folder if e.g. `osu_path` is a blank `[Hitsounds]` diff),
+/// with a small in-memory folder cache.
+pub(crate) fn resolve_mapset_background_path(osu_path: &Path) -> Option<PathBuf> {
+    type BgCache = std::collections::HashMap<PathBuf, Option<PathBuf>>;
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<BgCache>> = std::sync::OnceLock::new();
+    let folder = osu_path.parent()?.to_path_buf();
+    let cache = CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+    if let Ok(guard) = cache.lock()
+        && let Some(cached) = guard.get(&folder)
+        && cached.as_ref().is_none_or(|p| p.is_file())
+    {
+        return cached.clone();
+    }
+
+    let mut resolved = resolve_osu_background_path(osu_path);
+    if resolved.is_none()
+        && let Ok(entries) = std::fs::read_dir(&folder)
+    {
+        let mut checked = 0usize;
+        for entry in entries.flatten() {
+            if checked >= 8 {
+                break;
+            }
+            let sibling = entry.path();
+            if sibling != osu_path
+                && sibling
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("osu"))
+            {
+                checked += 1;
+                if let Some(found) = resolve_osu_background_path(&sibling) {
+                    resolved = Some(found);
+                    break;
+                }
+            }
+        }
+    }
+
+    if let Ok(mut guard) = cache.lock() {
+        if guard.len() >= 1024 {
+            guard.clear();
+        }
+        guard.insert(folder, resolved.clone());
+    }
+    resolved
+}
+
+pub(crate) fn recent_osu_meta(path: &Path) -> (Option<String>, bool) {
+    let is_hs = is_osu_hs_diff(path);
+    let background = resolve_mapset_background_path(path)
+        .as_deref()
+        .and_then(skin_textures::image_data_url);
     (background, is_hs)
 }
 
@@ -447,6 +581,32 @@ pub(crate) async fn songs_index_search(
 }
 
 #[tauri::command]
+pub(crate) async fn mapset_background(osu_path: PathBuf) -> Result<tauri::ipc::Response, String> {
+    const MAX_BG_BYTES: u64 = 12 * 1024 * 1024;
+    if !osu_path
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("osu"))
+    {
+        return Ok(tauri::ipc::Response::new(Vec::new()));
+    }
+    let bytes = tauri::async_runtime::spawn_blocking(move || {
+        let Some(bg_path) = resolve_mapset_background_path(&osu_path) else {
+            return Vec::new();
+        };
+        let Ok(meta) = std::fs::metadata(&bg_path) else {
+            return Vec::new();
+        };
+        if !meta.is_file() || meta.len() == 0 || meta.len() > MAX_BG_BYTES {
+            return Vec::new();
+        }
+        std::fs::read(&bg_path).unwrap_or_default()
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(tauri::ipc::Response::new(bytes))
+}
+
+#[tauri::command]
 pub(crate) fn pick_songs_folder(
     window: tauri::WebviewWindow,
     state: State<'_, Editor>,
@@ -550,5 +710,51 @@ pub(crate) fn pick_skin_folder(window: tauri::WebviewWindow) -> Option<String> {
         .set_title("Choose osu! skin folder")
         .pick_folder()
         .map(|path| path.to_string_lossy().into_owned())
+}
+
+#[cfg(test)]
+mod background_tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_dir(label: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("dawsu_bg_{label}_{nanos}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn resolves_quoted_unquoted_video_image_and_sibling_backgrounds() {
+        let dir = temp_dir("formats");
+        let bg_jpg = dir.join("cover.jpg");
+        std::fs::write(&bg_jpg, b"\xFF\xD8\xFF\xE0fakejpg").unwrap();
+
+        // Standard quoted 0,0,"cover.jpg",0,0
+        let diff_a = dir.join("a.osu");
+        std::fs::write(&diff_a, "[Events]\n0,0,\"cover.jpg\",0,0\n[TimingPoints]\n").unwrap();
+        assert_eq!(resolve_osu_background_path(&diff_a), Some(bg_jpg.clone()));
+
+        // Unquoted 0,0,cover.jpg and image-in-Video (1,0,"cover.jpg")
+        let diff_b = dir.join("b.osu");
+        std::fs::write(&diff_b, "[Events]\n1,0,\"cover.jpg\"\n[HitObjects]\n").unwrap();
+        assert_eq!(resolve_osu_background_path(&diff_b), Some(bg_jpg.clone()));
+
+        // Blank [Hitsounds] diff with no background falls back to sibling diff in same folder
+        let diff_hs = dir.join("hs.osu");
+        std::fs::write(&diff_hs, "[Events]\n// no bg\n[TimingPoints]\n").unwrap();
+        assert_eq!(resolve_osu_background_path(&diff_hs), None);
+        assert_eq!(resolve_mapset_background_path(&diff_hs), Some(bg_jpg.clone()));
+
+        // Path traversal (..) is rejected
+        let diff_bad = dir.join("bad.osu");
+        std::fs::write(&diff_bad, "[Events]\n0,0,\"../secret.png\",0,0\n").unwrap();
+        assert_eq!(resolve_osu_background_path(&diff_bad), None);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 

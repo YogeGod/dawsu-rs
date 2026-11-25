@@ -65,7 +65,7 @@ test("MapsetIntakeCard disables non-standard difficulties and guards timing refe
   assert.match(html, /No osu!standard difficulty found to copy timing from/);
 });
 
-test("MapsetIntakeCard renders inline mode for the Start Screen right panel", () => {
+test("MapsetIntakeCard renders inline mode with mapset background artwork when provided", () => {
   const html = render(MapsetIntakeCard, {
     props: {
       inline: true,
@@ -73,12 +73,16 @@ test("MapsetIntakeCard renders inline mode for the Start Screen right panel", ()
         artist: "Camellia",
         title: "Ghost",
         folder: "ghost",
+        backgroundUrl: "data:image/png;base64,AA==",
         difficulties: [{ path: "/m/extra.osu", version: "Extra", mode: 0, isHs: false }],
       },
     },
   }).body;
   assert.match(html, /intake-card-inline/);
+  assert.match(html, /intake-hero-bg/);
+  assert.match(html, /data:image\/png;base64,AA==/);
   assert.doesNotMatch(html, /intake-backdrop/);
+  assert.doesNotMatch(html, /\sstyle=/);
 });
 
 test("MapsetIntakeCard guards against empty or corrupt mapset folders", () => {

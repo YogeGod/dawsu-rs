@@ -1182,6 +1182,7 @@ fn main() {
             commands::library_and_files::save_sound_set,
             commands::library_and_files::pick_songs_folder,
             commands::library_and_files::songs_index_search,
+            commands::library_and_files::mapset_background,
             commands::library_and_files::pick_hitsound_library,
             commands::library_and_files::list_library,
             commands::library_and_files::sample_preview,
