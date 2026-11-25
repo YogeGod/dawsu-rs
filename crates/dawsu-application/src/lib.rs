@@ -1,6 +1,7 @@
 //! Documents, playback, storage and background jobs.
 
 pub mod base_layer;
+pub mod export_manifest;
 pub mod stem_separation;
 mod bookmarks;
 mod default_sounds;
@@ -33,7 +34,18 @@ pub mod bounce_plan;
 pub mod preview_diff;
 mod project;
 pub use base_layer::{
-    BaseHit, BaseMoment, SharedBaseApplyAllResult, SharedBaseApplyResult, SharedBaseLayer, SharedBaseStatus,
+    BaseHit, BaseMoment, BaseRule, DiffProjectionTab, RelinkMapsetResult, SharedBaseApplyAllResult,
+    SharedBaseApplyResult, SharedBaseLayer, SharedBaseStatus, TimeRangeMs,
+};
+pub use dawsu_hitsounding::index_packing::{
+    AdditionOnlyNormal, CustomIndexBucket, CustomIndexPool, STANDARD_SILENT_WAV, SlotContent,
+    SlotKey,
+};
+pub use dawsu_hitsounding::tick_render::{SliderEditHistory, TickPolicy, TickWrite};
+pub use dawsu_hitsounding::volume_envelope::{CurveKind, VolumeEnvelope, VolumePoint};
+pub use export_manifest::{
+    ExportOwnershipManifest, ExportWriteMode, HitsoundOnlyExportResult, SingleSampleFormat,
+    StaleCleanupReport,
 };
 pub use stem_separation::{
     StemSeparationJobState, StemSeparationStartOptions, StemSeparationStatus,
@@ -1023,6 +1035,15 @@ pub struct Preferences {
     pub key_overrides: std::collections::BTreeMap<String, std::collections::BTreeMap<String, Vec<String>>>,
     pub protect_hitnormals: bool,
     pub clean_redundant_greenlines: bool,
+    /// Keep original song pitch when slowed down or sped up (default true).
+    #[serde(default = "default_true")]
+    pub keep_pitch: bool,
+    /// Automatically check GitHub Releases for newer builds when the app launches (default true).
+    #[serde(default = "default_true")]
+    pub auto_check_updates: bool,
+    /// Compact beat-step pad toggle mode on lane rows (default false).
+    #[serde(default)]
+    pub step_pads_mode: bool,
     /// The map preview's own window: where it was, and whether it was open when the editor closed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub preview_window: Option<WindowPlace>,
@@ -1039,6 +1060,9 @@ pub struct WindowPlace {
 }
 fn default_hitsound_gain() -> f32 {
     1.0
+}
+fn default_true() -> bool {
+    true
 }
 
 fn system_audio_backend(backend: &OutputBackend) -> bool {
@@ -1092,6 +1116,9 @@ impl Default for Preferences {
             key_overrides: Default::default(),
             protect_hitnormals: false,
             clean_redundant_greenlines: false,
+            keep_pitch: true,
+            auto_check_updates: true,
+            step_pads_mode: false,
             preview_window: None,
         }
     }
@@ -3610,6 +3637,42 @@ impl Application {
         self.sync_audio();
         self.status = format!("Playback speed: {:.0}%", speed * 100.0);
     }
+
+    pub fn set_keep_pitch(&mut self, enabled: bool) {
+        if self.preferences.keep_pitch == enabled {
+            return;
+        }
+        self.preferences.keep_pitch = enabled;
+        if let Some(a) = &self.audio {
+            a.keep_pitch(enabled);
+        }
+        self.save_preferences();
+        self.status = if enabled {
+            "Keep pitch during speed changes: On".into()
+        } else {
+            "Keep pitch during speed changes: Off".into()
+        };
+    }
+
+    pub fn set_auto_check_updates(&mut self, enabled: bool) {
+        if self.preferences.auto_check_updates == enabled {
+            return;
+        }
+        self.preferences.auto_check_updates = enabled;
+        self.save_preferences();
+    }
+
+    pub fn set_step_pads_mode(&mut self, enabled: bool) {
+        if self.preferences.step_pads_mode == enabled {
+            return;
+        }
+        self.preferences.step_pads_mode = enabled;
+        self.save_preferences();
+    }
+
+    pub fn take_siblings_changed(&mut self) -> bool {
+        self.osu_watch.take_siblings_changed()
+    }
     pub fn grid_seek(&mut self, direction: i32) {
         self.grid_seek_steps(direction, 1);
     }
@@ -4438,6 +4501,7 @@ impl Application {
                 vst.set_schedule(midi_cues);
             }
             if let Some(a) = &self.audio {
+                a.keep_pitch(self.preferences.keep_pitch);
                 a.load_at_speed(
                     self.active_song_clip(),
                     cues,

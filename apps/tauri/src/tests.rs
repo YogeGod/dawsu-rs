@@ -1767,6 +1767,8 @@ fn copy_review_uses_the_exact_requested_options() {
         muted_sample_set: Some(SampleSet::Drum),
         slider_end_mute: Default::default(),
         fallback_sound: None,
+        addition_only_normal: Default::default(),
+        silent_normal_index: None,
     });
 
     let mut app = Application::headless();
@@ -2701,6 +2703,15 @@ fn export_requests_answer_with_the_export_view_and_errors_after_a_fault() {
         "leftOut": [], "matchWithin": 5.0, "copyVolumes": true, "base": false, "sliderAudio": false, "laterWins": false, "mixFormat": "wav16",
         "sliderEndMute": { "enabled": false, "minBeats": 0.5, "divisors": [], "onlyUnhit": true, "muteSpinnerEnds": false },
         "fallbackSound": null,
+        "autoFixStagedMixes": false,
+        "writeMode": "direct",
+        "singleFormat": "source",
+        "additionOnlyNormal": "difficulty",
+        "tickPolicy": "ignore",
+        "allowSchemaGrowth": true,
+        "autoCleanupStale": true,
+        "takeOverSamples": false,
+        "applyVolumeEnvelope": true,
     }));
     assert!(view["preview"]["base"].is_null(), "no base difficulty without the base choice");
     assert_eq!((&view["writing"], &view["written"], &view["writeError"]), (&serde_json::json!(false), &serde_json::Value::Null, &serde_json::Value::Null));
@@ -3448,6 +3459,9 @@ fn typed_scene_matches_legacy_json_bytes_exactly() {
             })
         }).collect::<Vec<_>>();
         result["tabRoutes"] = json!(tab_routes);
+        result["keepPitch"] = json!(app.preferences.keep_pitch);
+        result["autoCheckUpdates"] = json!(app.preferences.auto_check_updates);
+        result["stepPadsMode"] = json!(app.preferences.step_pads_mode);
         result
     }
 

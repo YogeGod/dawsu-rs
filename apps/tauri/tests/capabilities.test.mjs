@@ -19,7 +19,7 @@ const invoked = files => new Set(files.flatMap(({ text }) =>
 
 const exportPage = ["ui/src/lib/ipc.js", "ui/src/lib/export.js", "ui/src/parts/ExportWindow.svelte"];
 const exportCommands = ["export_view", "export_preview", "export_run", "export_unused_dry_run",
-  "export_listen_target", "export_stop_listen", "close_export_window", "show_in_editor"];
+  "export_listen_target", "export_stop_listen", "export_pick_hitsound_only_dir", "close_export_window", "show_in_editor"];
 const drumPage = ["ui/src/lib/ipc.js", "ui/src/lib/drum.js", "ui/src/lib/drumVst3.js", "ui/src/parts/DrumDetectWindow.svelte"];
 const previewPage = ["ui/src/lib/ipc.js", "ui/src/parts/PreviewWindow.svelte", "ui/src/parts/PreviewCanvas.svelte"];
 const previewCommands = ["map_preview_objects", "preview_skin_load"];

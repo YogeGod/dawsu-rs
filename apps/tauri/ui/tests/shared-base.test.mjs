@@ -63,8 +63,11 @@ test("SharedBaseModal renders cleanly and exposes openSharedBase", () => {
   const source = readFileSync(new URL("../src/parts/SharedBaseModal.svelte", import.meta.url), "utf8");
   assert.match(source, /globalThis\.openSharedBase = openSharedBase/);
   assert.match(source, /Use Shared Base for this mapset/);
-  assert.match(source, /Capture current diff as Base/);
-  assert.match(source, /Apply Base to this diff/);
-  assert.match(source, /Reset this diff's overrides/);
+  assert.match(source, /Capture current difficulty as Base/);
+  assert.match(source, /Apply Base to this difficulty/);
+  assert.match(source, /Reset overrides/);
   assert.match(source, /Clear Shared Base/);
+  assert.match(source, /Live diff tabs/);
+  assert.match(source, /Lane rules/);
+  assert.match(source, /Volume curve/);
 });

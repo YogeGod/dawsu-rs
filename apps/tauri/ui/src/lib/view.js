@@ -57,6 +57,9 @@ export function sameUiView(a, b) {
     !!a.cycle === !!b.cycle &&
     Object.is(a.duration, b.duration) &&
     Object.is(a.speed, b.speed) &&
+    (a.keepPitch !== false) === (b.keepPitch !== false) &&
+    (a.autoCheckUpdates !== false) === (b.autoCheckUpdates !== false) &&
+    !!a.stepPadsMode === !!b.stepPadsMode &&
     !!a.audition === !!b.audition &&
     (a.tool ?? null) === (b.tool ?? null) &&
     !!a.follow === !!b.follow &&

@@ -28,18 +28,27 @@
 </script>
 
 <div id="playback-rates" class="playback-rates" role="group" aria-label="Playback speed"
-  title="Playback speed with pitch preserved" hidden={!hasScene}>
+  title={view?.keepPitch !== false ? "Playback speed (pitch preserved)" : "Playback speed (pitch follows speed)"} hidden={!hasScene}>
   {#each PLAYBACK_SPEEDS as speed (speed)}
     <button type="button" aria-label={"Playback speed " + Math.round(speed * 100) + "%"}
       aria-pressed={view?.speed === speed} disabled={docDisabled}
       onclick={() => send("speed", speed)}>{Math.round(speed * 100)}%</button>
   {/each}
+  <button id="keep-pitch-toggle" type="button" class="pitch-toggle"
+    aria-label="Keep song pitch when playback speed changes"
+    aria-pressed={view?.keepPitch !== false}
+    title={view?.keepPitch !== false ? "Keep pitch: On (click to pitch-shift with speed)" : "Keep pitch: Off (click to preserve song pitch)"}
+    disabled={docDisabled}
+    onclick={() => send("keepPitch", view?.keepPitch === false)}>Pitch</button>
 </div>
 <span id="play-state" class="play-state" data-playing={String(!!view?.playing)} hidden={!hasScene}>
   {view?.playing ? "Playing" : "Stopped"}
 </span>
 <span id="selection-count" class="selection-count" hidden={!selected}>{selectionLabel(selected)}</span>
-<span id="status" role="status" title={status} hidden={showHints}>{status}</span>
+<span id="status" role="status" aria-live="polite" title={status} hidden={showHints}>{status}</span>
+<span id="a11y-live" class="sr-only" role="status" aria-live="polite" aria-atomic="true">
+  {status}{selected ? ` · ${selectionLabel(selected)}` : ""}
+</span>
 {#if showHints}
   <span id="hint-bar" class="status-hints" aria-hidden="true">
     {#each hints as item (item.keys + ":" + item.action)}
@@ -70,6 +79,10 @@
   </span>
   <span id="hit-lane-counts" class="status-counts" hidden={!hasScene}>{counts}</span>
   <div id="status-view" class="status-view" role="group" aria-label="Timeline zoom" hidden={!hasScene}>
+    <button id="step-pads-toggle" type="button" aria-pressed={Boolean(view?.stepPadsMode)}
+      title="Show compact beat step pads on lane rows"
+      disabled={docDisabled}
+      onclick={() => send("stepPadsMode", !view?.stepPadsMode)}>Pads</button>
     <button id="fit" type="button" title="Fit the difficulty in the timeline" disabled={docDisabled}
       onclick={() => send("fit")}>Fit</button>
     <input type="range" min={ZOOM_MIN} max={ZOOM_MAX} step={ZOOM_STEP} id="zoom" aria-label="Timeline zoom"
@@ -80,3 +93,20 @@
   <button id="audio" type="button" class="status-device" aria-label={audio.ariaLabel} title={audio.ariaLabel}
     onclick={() => send("audio")}>{audio.text}</button>
 </div>
+
+<style>
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+  .pitch-toggle {
+    margin-left: 2px;
+  }
+</style>

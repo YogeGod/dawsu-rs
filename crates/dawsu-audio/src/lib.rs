@@ -610,6 +610,9 @@ pub struct Mixer {
     pub song_offset: f64,
     pub cycle: Option<(f64, f64)>,
     pub speed: f64,
+    /// When true (default), slowed or sped-up song playback keeps its original pitch via the
+    /// real-time stretcher. When false, the song reads directly at `speed` (classic pitch shift).
+    pub keep_pitch: bool,
     pub limiter_enabled: bool,
     sample_rate: u32,
     voices: Vec<Voice>,
@@ -645,6 +648,7 @@ impl Mixer {
             song_offset: 0.0,
             cycle: None,
             speed: 1.0,
+            keep_pitch: true,
             limiter_enabled: true,
             sample_rate,
             voices: Vec::with_capacity(32),
@@ -781,7 +785,7 @@ impl Mixer {
                 } else {
                     1.0
                 };
-                let stretched_song_frame = if self.playing && (speed - 1.0).abs() > 1e-6 {
+                let stretched_song_frame = if self.playing && self.keep_pitch && (speed - 1.0).abs() > 1e-6 {
                     self.song.as_ref().map(|song| {
                         self.stretcher.next_frame(
                             song,
@@ -1011,6 +1015,7 @@ enum Command {
     HitsoundGain(f32),
     Cycle(Option<(f64, f64)>),
     Offset(f64),
+    KeepPitch(bool),
 }
 pub struct AudioEngine {
     _stream: OutputStream,
@@ -1323,6 +1328,9 @@ impl AudioEngine {
     pub fn offset(&self, ms: f64) {
         let _ = self.send.send(Command::Offset(ms));
     }
+    pub fn keep_pitch(&self, enabled: bool) {
+        let _ = self.send.send(Command::KeepPitch(enabled));
+    }
     pub fn peaks(&self) -> (f32, f32, f32) {
         let master = f32::from_bits(self.peak.load(Ordering::Relaxed));
         let packed = self.bus_peaks.load(Ordering::Relaxed);
@@ -1436,6 +1444,12 @@ impl StreamRender {
                 Command::Offset(ms) => {
                     self.mixer.song_offset = ms;
                     self.mixer.stretcher.reset();
+                }
+                Command::KeepPitch(enabled) => {
+                    if self.mixer.keep_pitch != enabled {
+                        self.mixer.keep_pitch = enabled;
+                        self.mixer.stretcher.reset();
+                    }
                 }
             }
         }
@@ -2106,5 +2120,55 @@ mod decode_tests {
         assert_eq!(clip.sample_rate, 44_100);
         assert_eq!(clip.samples.len(), frames * channels);
         assert_eq!(clip.samples.capacity(), frames * channels);
+    }
+
+    #[test]
+    fn keep_pitch_toggle_switches_between_stretched_and_direct_playback() {
+        let rate = 48_000u32;
+        let frames = 48_000usize;
+        let mut samples = Vec::with_capacity(frames * 2);
+        for i in 0..frames {
+            let v = (2.0 * std::f32::consts::PI * 440.0 * i as f32 / rate as f32).sin() * 0.5;
+            samples.push(v);
+            samples.push(v);
+        }
+        let song = Arc::new(AudioClip {
+            samples,
+            channels: 2,
+            sample_rate: rate,
+        });
+
+        let mut direct = Mixer::new(rate);
+        direct.song = Some(song.clone());
+        direct.playing = true;
+        direct.speed = 0.5;
+        direct.keep_pitch = false;
+        let mut buf_direct = vec![0.0_f32; 4096 * 2];
+        direct.render(&mut buf_direct, 2);
+
+        let mut pitched = Mixer::new(rate);
+        pitched.song = Some(song);
+        pitched.playing = true;
+        pitched.speed = 0.5;
+        pitched.keep_pitch = true;
+        let mut buf_pitched = vec![0.0_f32; 4096 * 2];
+        pitched.render(&mut buf_pitched, 2);
+
+        // Zero-crossing count on direct 0.5x playback should be roughly half of pitch-preserved 0.5x.
+        let crossings = |buf: &[f32]| -> usize {
+            buf.chunks_exact(2)
+                .skip(512)
+                .map(|f| f[0])
+                .collect::<Vec<_>>()
+                .windows(2)
+                .filter(|w| w[0] <= 0.0 && w[1] > 0.0)
+                .count()
+        };
+        let zc_direct = crossings(&buf_direct);
+        let zc_pitched = crossings(&buf_pitched);
+        assert!(
+            zc_pitched > zc_direct + 8,
+            "keep_pitch=true ({zc_pitched} cycles) should preserve ~440Hz vs direct 0.5x ({zc_direct} cycles)"
+        );
     }
 }

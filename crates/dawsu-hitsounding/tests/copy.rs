@@ -107,6 +107,8 @@ const ONLY_DEFINED: CopyOptions = CopyOptions {
         divisors: Vec::new(),
     },
     fallback_sound: None,
+    addition_only_normal: dawsu_hitsounding::index_packing::AdditionOnlyNormal::Difficulty,
+    silent_normal_index: None,
 };
 
 // ---------------------------------------------------------------- the identity and the invariants

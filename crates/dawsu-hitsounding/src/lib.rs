@@ -10,13 +10,16 @@ pub mod drums;
 pub mod error;
 pub mod generate;
 pub mod hs;
+pub mod index_packing;
 pub mod lazer;
 pub mod mania_import;
 pub mod model;
 pub mod playfield;
 pub mod rules;
 pub mod sound_sets;
+pub mod tick_render;
 pub mod verify;
+pub mod volume_envelope;
 
 pub use compile::{compile, Compiled, Placement, ProblemKind, SaveProblem};
 pub use cues::{cue_list, cue_list_filtered};

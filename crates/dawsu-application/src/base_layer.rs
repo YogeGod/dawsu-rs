@@ -1,7 +1,8 @@
 use crate::project::{lane_identity, lane_key, path_digest};
-use crate::{Application, Document};
+use crate::{Application, Document, songs_index};
 use dawsu_foundation::SampleIdentity;
 use dawsu_hitsounding::rules::read_sample_file_name;
+use dawsu_hitsounding::volume_envelope::{VolumeEnvelope, apply_envelope_to_osu};
 use dawsu_hitsounding::{Hitsounds, MomentId, Place};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -13,6 +14,90 @@ pub const SHARED_BASE_VERSION: u32 = 1;
 pub const DEFAULT_LENIENCY_MS: f64 = 5.0;
 pub const MAX_LENIENCY_MS: f64 = 50.0;
 
+/// Inclusive time range in milliseconds for a per-difficulty Shared Base lane rule.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TimeRangeMs {
+    pub start_ms: i64,
+    pub end_ms: i64,
+}
+
+impl TimeRangeMs {
+    pub fn contains(self, time_ms: i64) -> bool {
+        let (lo, hi) = if self.start_ms <= self.end_ms {
+            (self.start_ms, self.end_ms)
+        } else {
+            (self.end_ms, self.start_ms)
+        };
+        (lo..=hi).contains(&time_ms)
+    }
+}
+
+/// Non-destructive per-difficulty rule applied on top of the Shared Base score.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum BaseRule {
+    /// Hide a lane in this difficulty, optionally only inside `range`.
+    MuteLane {
+        lane: String,
+        #[serde(default)]
+        range: Option<TimeRangeMs>,
+    },
+    /// Replace `from` with `to` in this difficulty, optionally only inside `range`.
+    ReplaceLane {
+        from: String,
+        to: String,
+        #[serde(default)]
+        range: Option<TimeRangeMs>,
+    },
+    /// Add a difficulty-only hit on `lane` at `time_ms`.
+    AddHit {
+        lane: String,
+        #[serde(rename = "timeMs", alias = "time_ms")]
+        time_ms: i64,
+        volume: u8,
+    },
+    /// Remove a Shared Base hit on `lane` at `time_ms` in this difficulty only.
+    RemoveHit {
+        lane: String,
+        #[serde(rename = "timeMs", alias = "time_ms")]
+        time_ms: i64,
+    },
+    /// Override a slider body's sample set and whistle in this difficulty.
+    SliderBody {
+        #[serde(rename = "sliderTimeMs", alias = "slider_time_ms")]
+        slider_time_ms: i64,
+        #[serde(rename = "sampleSet", alias = "sample_set")]
+        sample_set: String,
+        whistle: bool,
+    },
+}
+
+/// Live projection summary for one difficulty tab inside the open mapset.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiffProjectionTab {
+    pub file: String,
+    pub path: String,
+    pub version: String,
+    pub matched: usize,
+    pub empty: usize,
+    pub orphaned: usize,
+    pub rule_count: usize,
+    pub is_active: bool,
+    pub has_volume_envelope: bool,
+}
+
+/// Outcome of relinking a moved mapset folder.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RelinkMapsetResult {
+    pub old_path: String,
+    pub new_path: String,
+    pub migrated_base: bool,
+    pub migrated_project: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SharedBaseLayer {
     pub version: u32,
@@ -21,6 +106,15 @@ pub struct SharedBaseLayer {
     pub moments: Vec<BaseMoment>,
     #[serde(default)]
     pub overrides_by_diff: BTreeMap<String, BTreeSet<i64>>,
+    /// Per-difficulty named lane/range rules applied non-destructively over `moments`.
+    #[serde(default)]
+    pub rules_by_diff: BTreeMap<String, Vec<BaseRule>>,
+    /// Shared green-line-only master volume envelope for the mapset.
+    #[serde(default)]
+    pub volume_envelope: VolumeEnvelope,
+    /// Optional per-difficulty green-line-only volume envelopes overriding `volume_envelope`.
+    #[serde(default)]
+    pub volume_envelopes_by_diff: BTreeMap<String, VolumeEnvelope>,
 }
 
 impl Default for SharedBaseLayer {
@@ -31,8 +125,73 @@ impl Default for SharedBaseLayer {
             source_difficulty: None,
             moments: Vec::new(),
             overrides_by_diff: BTreeMap::new(),
+            rules_by_diff: BTreeMap::new(),
+            volume_envelope: VolumeEnvelope::default(),
+            volume_envelopes_by_diff: BTreeMap::new(),
         }
     }
+}
+
+/// Applies non-destructive per-difficulty [`BaseRule`]s to a copy of the Shared Base moments.
+pub fn apply_base_rules(base_moments: &[BaseMoment], rules: &[BaseRule]) -> Vec<BaseMoment> {
+    if rules.is_empty() {
+        return base_moments.to_vec();
+    }
+    let mut by_time: BTreeMap<i64, Vec<BaseHit>> = BTreeMap::new();
+    for m in base_moments {
+        by_time.insert(m.time_ms, m.hits.clone());
+    }
+    let in_range = |range: Option<TimeRangeMs>, t: i64| range.is_none_or(|r| r.contains(t));
+
+    for rule in rules {
+        match rule {
+            BaseRule::MuteLane { lane, range } => {
+                for (&t, hits) in &mut by_time {
+                    if in_range(*range, t) {
+                        hits.retain(|h| !h.sample.eq_ignore_ascii_case(lane));
+                    }
+                }
+            }
+            BaseRule::ReplaceLane { from, to, range } => {
+                for (&t, hits) in &mut by_time {
+                    if in_range(*range, t) {
+                        for h in hits.iter_mut() {
+                            if h.sample.eq_ignore_ascii_case(from) {
+                                h.sample = to.clone();
+                            }
+                        }
+                        // Deduplicate if `to` was already present at this timestamp.
+                        let mut seen = BTreeSet::new();
+                        hits.retain(|h| seen.insert(h.sample.to_ascii_lowercase()));
+                    }
+                }
+            }
+            BaseRule::AddHit { lane, time_ms, volume } => {
+                let hits = by_time.entry(*time_ms).or_default();
+                let vol = (*volume).clamp(5, 100);
+                if let Some(existing) = hits.iter_mut().find(|h| h.sample.eq_ignore_ascii_case(lane)) {
+                    existing.volume = vol;
+                } else {
+                    hits.push(BaseHit {
+                        sample: lane.clone(),
+                        volume: vol,
+                    });
+                }
+            }
+            BaseRule::RemoveHit { lane, time_ms } => {
+                if let Some(hits) = by_time.get_mut(time_ms) {
+                    hits.retain(|h| !h.sample.eq_ignore_ascii_case(lane));
+                }
+            }
+            BaseRule::SliderBody { .. } => {}
+        }
+    }
+
+    by_time
+        .into_iter()
+        .filter(|(_, hits)| !hits.is_empty())
+        .map(|(time_ms, hits)| BaseMoment { time_ms, hits })
+        .collect()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -249,6 +408,30 @@ fn diff_changed_times(before: &MomentSnapshot, after: &MomentSnapshot) -> Vec<i6
     changed
 }
 
+fn project_counts_for_hitsounds(
+    hitsounds: &Hitsounds,
+    base_moments: &[BaseMoment],
+    leniency_ms: f64,
+) -> (usize, usize, usize) {
+    let mut matched_objects: BTreeSet<usize> = BTreeSet::new();
+    let mut orphaned = 0usize;
+    for bm in base_moments {
+        if let Some((mid, _)) = find_matching_object_moment(hitsounds, bm.time_ms, leniency_ms) {
+            matched_objects.insert(mid.0);
+        } else {
+            orphaned += 1;
+        }
+    }
+    let total_objects = hitsounds
+        .moments()
+        .iter()
+        .filter(|m| !matches!(m.place(), Place::NoObject))
+        .count();
+    let matched = matched_objects.len();
+    let empty = total_objects.saturating_sub(matched);
+    (matched, empty, orphaned)
+}
+
 fn find_matching_object_moment(
     hitsounds: &Hitsounds,
     time_ms: i64,
@@ -390,6 +573,13 @@ impl Application {
         let document = self.document.as_mut().ok_or("Open a difficulty first.")?;
         let key = diff_key(document);
         let diff_overrides = layer.overrides_by_diff.get(&key);
+        let diff_rules = layer
+            .rules_by_diff
+            .get(&key)
+            .or_else(|| layer.rules_by_diff.get(&key.to_ascii_lowercase()))
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+        let effective_moments = apply_base_rules(&layer.moments, diff_rules);
 
         let mut planned: Vec<(MomentId, i64, i64, Vec<(SampleIdentity, i32)>)> = Vec::new();
         let mut skipped_overrides = 0usize;
@@ -398,7 +588,7 @@ impl Application {
 
         {
             let hitsounds = document.composer.hitsounds();
-            for base_moment in &layer.moments {
+            for base_moment in &effective_moments {
                 let Some((moment_id, matched_ms)) =
                     find_matching_object_moment(hitsounds, base_moment.time_ms, leniency)
                 else {
@@ -575,13 +765,20 @@ impl Application {
             };
 
             let diff_overrides = layer.overrides_by_diff.get(&sibling_key);
+            let sibling_rules = layer
+                .rules_by_diff
+                .get(&sibling_key)
+                .or_else(|| layer.rules_by_diff.get(&diff_name))
+                .map(Vec::as_slice)
+                .unwrap_or(&[]);
+            let effective_sibling_moments = apply_base_rules(&layer.moments, sibling_rules);
             // Deduplicate per MomentId: keep only the closest base moment within leniency.
             let mut best_by_moment: BTreeMap<usize, (MomentId, f64, i64, i64, Vec<(SampleIdentity, i32)>)> =
                 BTreeMap::new();
             let mut skipped_moment_ids: BTreeSet<usize> = BTreeSet::new();
             let mut unresolved_moments = 0usize;
 
-            for base_moment in &layer.moments {
+            for base_moment in &effective_sibling_moments {
                 let Some((moment_id, matched_ms)) =
                     find_matching_object_moment(&hits, base_moment.time_ms, leniency)
                 else {
@@ -664,6 +861,13 @@ impl Application {
                 ));
                 continue;
             }
+            let effective_env = layer
+                .volume_envelopes_by_diff
+                .get(&sibling_key)
+                .or_else(|| layer.volume_envelopes_by_diff.get(&diff_name))
+                .filter(|e| !e.is_empty())
+                .unwrap_or(&layer.volume_envelope);
+            let (out_file, _) = apply_envelope_to_osu(&out_file, effective_env);
             let out_bytes = out_file.to_bytes();
             let clear_sibling_overrides = |layer: &mut SharedBaseLayer| -> bool {
                 if !overwrite_overrides {
@@ -779,6 +983,344 @@ impl Application {
         self.base_layer_track = None;
         self.status = "Cleared Shared Base for this mapset.".into();
         Ok(SharedBaseStatus::default())
+    }
+
+    /// Returns the non-destructive per-difficulty Shared Base rules for the open difficulty (or
+    /// `diff_file` if specified).
+    pub fn shared_base_rules(&self, diff_file: Option<&str>) -> Vec<BaseRule> {
+        let Some(document) = self.document.as_ref() else {
+            return Vec::new();
+        };
+        let Ok(path) = storage_path(&self.shared_base_projects_root(), &document.path) else {
+            return Vec::new();
+        };
+        let Ok(Some(layer)) = load_base(&path) else {
+            return Vec::new();
+        };
+        let key = diff_file
+            .map(str::to_ascii_lowercase)
+            .unwrap_or_else(|| diff_key(document).to_ascii_lowercase());
+        layer
+            .rules_by_diff
+            .get(&key)
+            .or_else(|| diff_file.and_then(|d| layer.rules_by_diff.get(d)))
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// Appends a non-destructive per-difficulty rule (`MuteLane`, `ReplaceLane`, `AddHit`,
+    /// `RemoveHit`, or `SliderBody`) to the open difficulty (or named `diff_file`).
+    pub fn shared_base_add_rule(
+        &mut self,
+        diff_file: Option<&str>,
+        rule: BaseRule,
+    ) -> Result<Vec<BaseRule>, String> {
+        let path = self.shared_base_file_path()?;
+        let key = {
+            let document = self.document.as_ref().ok_or("Open a difficulty first.")?;
+            diff_file
+                .map(str::to_ascii_lowercase)
+                .unwrap_or_else(|| diff_key(document).to_ascii_lowercase())
+        };
+        let mut layer = load_base(&path)?.unwrap_or_default();
+        layer.version = SHARED_BASE_VERSION;
+        let rules = layer.rules_by_diff.entry(key.clone()).or_default();
+        if !rules.contains(&rule) {
+            rules.push(rule);
+        }
+        let result = rules.clone();
+        save_base(&path, &layer)?;
+        self.status = format!("Added per-difficulty lane rule ({} total).", result.len());
+        Ok(result)
+    }
+
+    /// Removes the per-difficulty rule at `index` for the open difficulty (or named `diff_file`).
+    pub fn shared_base_remove_rule(
+        &mut self,
+        diff_file: Option<&str>,
+        index: usize,
+    ) -> Result<Vec<BaseRule>, String> {
+        let path = self.shared_base_file_path()?;
+        let key = {
+            let document = self.document.as_ref().ok_or("Open a difficulty first.")?;
+            diff_file
+                .map(str::to_ascii_lowercase)
+                .unwrap_or_else(|| diff_key(document).to_ascii_lowercase())
+        };
+        let Some(mut layer) = load_base(&path)? else {
+            return Ok(Vec::new());
+        };
+        let remaining = if let Some(rules) = layer.rules_by_diff.get_mut(&key) {
+            if index < rules.len() {
+                rules.remove(index);
+            }
+            let out = rules.clone();
+            if rules.is_empty() {
+                layer.rules_by_diff.remove(&key);
+            }
+            out
+        } else {
+            Vec::new()
+        };
+        save_base(&path, &layer)?;
+        Ok(remaining)
+    }
+
+    /// Reads the shared or per-difficulty green-line-only master volume envelope.
+    pub fn shared_base_volume_envelope(&self, diff_file: Option<&str>) -> VolumeEnvelope {
+        let Some(document) = self.document.as_ref() else {
+            return VolumeEnvelope::default();
+        };
+        let Ok(path) = storage_path(&self.shared_base_projects_root(), &document.path) else {
+            return VolumeEnvelope::default();
+        };
+        let Ok(Some(layer)) = load_base(&path) else {
+            return VolumeEnvelope::default();
+        };
+        if let Some(diff) = diff_file {
+            let key = diff.to_ascii_lowercase();
+            if let Some(env) = layer
+                .volume_envelopes_by_diff
+                .get(&key)
+                .or_else(|| layer.volume_envelopes_by_diff.get(diff))
+            {
+                return env.clone();
+            }
+        }
+        layer.volume_envelope
+    }
+
+    /// Saves a green-line-only master volume envelope (shared when `diff_file` is `None`, or
+    /// per-difficulty when `diff_file` is `Some`).
+    pub fn shared_base_set_volume_envelope(
+        &mut self,
+        diff_file: Option<&str>,
+        envelope: VolumeEnvelope,
+    ) -> Result<VolumeEnvelope, String> {
+        let path = self.shared_base_file_path()?;
+        let mut layer = load_base(&path)?.unwrap_or_default();
+        layer.version = SHARED_BASE_VERSION;
+        let normalized = VolumeEnvelope::new(envelope.points);
+        if let Some(diff) = diff_file {
+            let key = diff.to_ascii_lowercase();
+            if normalized.is_empty() {
+                layer.volume_envelopes_by_diff.remove(&key);
+            } else {
+                layer.volume_envelopes_by_diff.insert(key, normalized.clone());
+            }
+        } else {
+            layer.volume_envelope = normalized.clone();
+        }
+        save_base(&path, &layer)?;
+        self.status = if normalized.is_empty() {
+            "Cleared master volume curve.".into()
+        } else {
+            format!("Saved master volume curve ({} point(s)).", normalized.points.len())
+        };
+        Ok(normalized)
+    }
+
+    /// Projects the Shared Base (or open difficulty's hits when no base exists yet) live across
+    /// every `.osu` difficulty in the mapset so the editor can show live difficulty tabs with
+    /// matched / empty / orphaned counts and rule badges.
+    pub fn shared_base_diff_projections(&self, leniency_ms: f64) -> Vec<DiffProjectionTab> {
+        let Some(document) = self.document.as_ref() else {
+            return Vec::new();
+        };
+        let leniency = clamp_leniency(leniency_ms);
+        let layer = storage_path(&self.shared_base_projects_root(), &document.path)
+            .ok()
+            .and_then(|p| load_base(&p).ok().flatten())
+            .unwrap_or_default();
+        let active_moments: Vec<BaseMoment> = if !layer.moments.is_empty() {
+            layer.moments.clone()
+        } else {
+            capture_moments(document.composer.hitsounds())
+        };
+        let active_canon = document
+            .path
+            .canonicalize()
+            .unwrap_or_else(|_| document.path.clone());
+        let folder_files = document
+            .path
+            .parent()
+            .and_then(|p| dawsu_osu_format::list_folder(p).ok())
+            .unwrap_or_default();
+
+        let mut tabs = Vec::with_capacity(document.difficulties.len());
+        for diff_path in &document.difficulties {
+            let canon = diff_path
+                .canonicalize()
+                .unwrap_or_else(|_| diff_path.clone());
+            let is_active = if cfg!(windows) {
+                canon
+                    .to_string_lossy()
+                    .eq_ignore_ascii_case(&active_canon.to_string_lossy())
+            } else {
+                canon == active_canon
+            };
+            let file_name = diff_path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| diff_path.display().to_string());
+            let lower_key = file_name.to_ascii_lowercase();
+            let rules = layer
+                .rules_by_diff
+                .get(&lower_key)
+                .or_else(|| layer.rules_by_diff.get(&file_name))
+                .map(Vec::as_slice)
+                .unwrap_or(&[]);
+            let effective = apply_base_rules(&active_moments, rules);
+            let has_volume_envelope = layer
+                .volume_envelopes_by_diff
+                .get(&lower_key)
+                .or_else(|| layer.volume_envelopes_by_diff.get(&file_name))
+                .is_some_and(|e| !e.is_empty());
+
+            let (version, matched, empty, orphaned) = if is_active {
+                let (m, e, o) =
+                    project_counts_for_hitsounds(document.composer.hitsounds(), &effective, leniency);
+                (diff_label(document), m, e, o)
+            } else {
+                match fs::read(diff_path) {
+                    Ok(bytes) => {
+                        let parsed = dawsu_osu_format::OsuFile::read(bytes).file;
+                        let ver = parsed
+                            .value("Metadata", "Version")
+                            .filter(|v| !v.trim().is_empty())
+                            .unwrap_or_else(|| file_name.clone());
+                        match dawsu_hitsounding::decompile(
+                            &parsed,
+                            &folder_files,
+                            &|| false,
+                            &mut |_, _| {},
+                        ) {
+                            dawsu_hitsounding::Decompiled::Done(h) => {
+                                let (m, e, o) =
+                                    project_counts_for_hitsounds(&h, &effective, leniency);
+                                (ver, m, e, o)
+                            }
+                            _ => (ver, 0, 0, 0),
+                        }
+                    }
+                    Err(_) => (file_name.clone(), 0, 0, 0),
+                }
+            };
+
+            tabs.push(DiffProjectionTab {
+                file: file_name,
+                path: diff_path.to_string_lossy().into_owned(),
+                version,
+                matched,
+                empty,
+                orphaned,
+                rule_count: rules.len(),
+                is_active,
+                has_volume_envelope,
+            });
+        }
+        tabs
+    }
+
+    /// Locates a moved mapset folder using `songs_folder` (matching exact folder name or
+    /// difficulty filename) or relinks directly to `explicit_new_folder`, migrating any stored
+    /// Shared Base and recent-file entry cleanly so work is never lost when a folder moves.
+    pub fn relink_moved_mapset(
+        &mut self,
+        missing_osu_path: &Path,
+        explicit_new_folder: Option<&Path>,
+    ) -> Result<RelinkMapsetResult, String> {
+        let missing_file = missing_osu_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or("Missing difficulty filename.")?;
+        let old_folder = missing_osu_path
+            .parent()
+            .ok_or("Missing old mapset folder.")?;
+        let old_folder_name = old_folder
+            .file_name()
+            .map(|n| n.to_string_lossy().to_ascii_lowercase())
+            .unwrap_or_default();
+
+        let new_osu_path = if let Some(folder) = explicit_new_folder {
+            let direct = folder.join(missing_file);
+            if direct.is_file() {
+                direct
+            } else {
+                // Fall back to first `.osu` file in the chosen folder if the diff was renamed.
+                fs::read_dir(folder)
+                    .map_err(|e| format!("Could not read folder: {e}"))?
+                    .flatten()
+                    .map(|e| e.path())
+                    .find(|p| {
+                        p.is_file()
+                            && p.extension()
+                                .is_some_and(|ext| ext.eq_ignore_ascii_case("osu"))
+                    })
+                    .ok_or("No .osu difficulty found in the chosen folder.")?
+            }
+        } else {
+            let songs_dir = &self.preferences.songs_folder;
+            if !songs_dir.is_dir() {
+                return Err("Set your osu! Songs folder in Preferences or pick the moved folder directly.".into());
+            }
+            let entries = songs_index::build_songs_index(songs_dir);
+            let mut best: Option<(u32, PathBuf)> = None;
+            for set in entries {
+                let folder_matches = set.folder.to_ascii_lowercase() == old_folder_name;
+                for diff in &set.diffs {
+                    let candidate = PathBuf::from(&diff.path);
+                    let file_matches = candidate
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .is_some_and(|n| n.eq_ignore_ascii_case(missing_file));
+                    let score = u32::from(folder_matches) * 2 + u32::from(file_matches) * 3;
+                    if score > 0 && candidate.is_file() && best.as_ref().is_none_or(|(s, _)| score > *s) {
+                        best = Some((score, candidate));
+                    }
+                }
+            }
+            best.map(|(_, p)| p)
+                .ok_or_else(|| format!("Could not locate {missing_file} in the Songs folder."))?
+        };
+
+        let projects_root = self.shared_base_projects_root();
+        let mut migrated_base = false;
+        let old_base_path = projects_root.join(format!("base-{}.json", path_digest(old_folder)));
+        if let Ok(new_base_path) = storage_path(&projects_root, &new_osu_path)
+            && old_base_path.is_file()
+            && old_base_path != new_base_path
+        {
+            if let Ok(Some(layer)) = load_base(&old_base_path)
+                && save_base(&new_base_path, &layer).is_ok()
+            {
+                migrated_base = true;
+            }
+        }
+
+        let mut migrated_project = false;
+        let old_proj_path = projects_root.join(format!("{}.json", path_digest(missing_osu_path)));
+        let new_proj_path = projects_root.join(format!("{}.json", path_digest(&new_osu_path)));
+        if old_proj_path.is_file() && old_proj_path != new_proj_path && !new_proj_path.exists() {
+            if fs::copy(&old_proj_path, &new_proj_path).is_ok() {
+                migrated_project = true;
+            }
+        }
+
+        // Replace missing path in recent maps list if present.
+        for recent in &mut self.preferences.recent {
+            if *recent == missing_osu_path {
+                *recent = new_osu_path.clone();
+            }
+        }
+        self.save_preferences();
+
+        Ok(RelinkMapsetResult {
+            old_path: missing_osu_path.to_string_lossy().into_owned(),
+            new_path: new_osu_path.to_string_lossy().into_owned(),
+            migrated_base,
+            migrated_project,
+        })
     }
 
     pub(crate) fn sync_shared_base_track(&mut self) {
@@ -1210,19 +1752,12 @@ mod tests {
         assert_eq!(without_fallback.matched, 0);
 
         doc.export_choices = Some(crate::ExportChoices {
-            left_out: Vec::new(),
-            match_within: 5.0,
-            copy_volumes: true,
-            base: false,
-            slider_audio: false,
-            later_wins: false,
-            mix_format: crate::MixFormat::Wav16,
-            slider_end_mute: dawsu_hitsounding::copy::SliderEndMuteOptions::default(),
             fallback_sound: Some(dawsu_hitsounding::copy::FallbackSound {
                 set: dawsu_foundation::SampleSet::Soft,
                 sound: dawsu_foundation::Hitsound::Normal,
                 volume: 60,
             }),
+            ..crate::ExportChoices::default()
         });
 
         let with_fallback = doc.coverage_summary();
@@ -1230,5 +1765,107 @@ mod tests {
         assert_eq!(with_fallback.empty, 0);
         assert_eq!(with_fallback.fallback_covered, 1);
         assert_eq!(with_fallback.matched, 1);
+    }
+
+    #[test]
+    fn per_diff_rules_mute_and_replace_lanes_within_time_ranges() {
+        let base = vec![
+            BaseMoment {
+                time_ms: 1000,
+                hits: vec![
+                    BaseHit { sample: "drum-hitnormal".into(), volume: 90 },
+                    BaseHit { sample: "soft-hitclap".into(), volume: 80 },
+                ],
+            },
+            BaseMoment {
+                time_ms: 3000,
+                hits: vec![
+                    BaseHit { sample: "drum-hitnormal".into(), volume: 90 },
+                    BaseHit { sample: "soft-hitclap".into(), volume: 80 },
+                ],
+            },
+        ];
+        let rules = vec![
+            BaseRule::MuteLane {
+                lane: "soft-hitclap".into(),
+                range: Some(TimeRangeMs { start_ms: 0, end_ms: 2000 }),
+            },
+            BaseRule::ReplaceLane {
+                from: "drum-hitnormal".into(),
+                to: "soft-hitwhistle".into(),
+                range: Some(TimeRangeMs { start_ms: 2500, end_ms: 4000 }),
+            },
+            BaseRule::AddHit {
+                lane: "normal-hitfinish".into(),
+                time_ms: 1500,
+                volume: 75,
+            },
+        ];
+        let out = apply_base_rules(&base, &rules);
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[0].time_ms, 1000);
+        assert_eq!(out[0].hits.len(), 1);
+        assert_eq!(out[0].hits[0].sample, "drum-hitnormal");
+        assert_eq!(out[1].time_ms, 1500);
+        assert_eq!(out[1].hits[0].sample, "normal-hitfinish");
+        assert_eq!(out[2].time_ms, 3000);
+        assert!(out[2].hits.iter().any(|h| h.sample == "soft-hitwhistle"));
+        assert!(out[2].hits.iter().any(|h| h.sample == "soft-hitclap"));
+    }
+
+    #[test]
+    fn live_diff_projections_and_volume_envelope_and_relink_moved_mapset() {
+        let scratch = dawsu_test_support::Scratch::new("shared-base-v2-relink");
+        let songs = scratch.path("Songs");
+        let old_dir = songs.join("12345 Artist - Title");
+        let moved_dir = songs.join("12345 Artist - Title (Moved)");
+        fs::create_dir_all(&old_dir).unwrap();
+        let hard = old_dir.join("Map [Hard].osu");
+        let normal = old_dir.join("Map [Normal].osu");
+        fs::write(&hard, sample_osu("Hard", &[
+            "256,192,1000,1,8,0:0:0:100:",
+            "256,192,2000,1,2,0:0:0:100:",
+        ])).unwrap();
+        fs::write(&normal, sample_osu("Normal", &[
+            "256,192,1000,1,0,0:0:0:100:",
+            "256,192,3000,1,0,0:0:0:100:",
+        ])).unwrap();
+
+        let mut app = app_with_temp_data(&scratch);
+        app.preferences.songs_folder = songs.clone();
+        open_map(&mut app, &hard);
+        app.shared_base_capture_current().unwrap();
+        let tabs = app.shared_base_diff_projections(5.0);
+        assert_eq!(tabs.len(), 2);
+        let normal_tab = tabs.iter().find(|t| t.version == "Normal").unwrap();
+        assert_eq!(normal_tab.matched, 1);
+        assert_eq!(normal_tab.empty, 1);
+        assert_eq!(normal_tab.orphaned, 1);
+
+        let saved_env = app
+            .shared_base_set_volume_envelope(
+                None,
+                VolumeEnvelope::new(vec![
+                    dawsu_hitsounding::volume_envelope::VolumePoint {
+                        time_ms: 1000,
+                        volume: 100,
+                        curve: dawsu_hitsounding::volume_envelope::CurveKind::Linear,
+                    },
+                    dawsu_hitsounding::volume_envelope::VolumePoint {
+                        time_ms: 2000,
+                        volume: 60,
+                        curve: dawsu_hitsounding::volume_envelope::CurveKind::Step,
+                    },
+                ]),
+            )
+            .unwrap();
+        assert_eq!(saved_env.points.len(), 2);
+        assert_eq!(app.shared_base_volume_envelope(None).points.len(), 2);
+
+        // Simulate moving the mapset folder on disk and relinking automatically via Songs folder.
+        fs::rename(&old_dir, &moved_dir).unwrap();
+        let relinked = app.relink_moved_mapset(&hard, None).unwrap();
+        assert!(relinked.new_path.contains("Moved"));
+        assert!(relinked.migrated_base);
     }
 }

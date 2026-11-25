@@ -87,6 +87,32 @@
     if (artist && title) return `${artist} - ${title}`;
     return title || artist || set.folder;
   }
+
+  async function relinkRecent(missingPath, pickFolder = false) {
+    if (busy) return;
+    try {
+      const res = await invoke("relink_moved_mapset", { missingPath, pickFolder });
+      if (res?.newPath) {
+        globalThis.showToast?.({
+          tone: "success",
+          title: "Mapset relinked",
+          body: res.migratedBase
+            ? "Moved folder found and Shared Base migrated."
+            : "Moved folder found.",
+        });
+        send("openPath", res.newPath);
+      }
+    } catch (err) {
+      if (!pickFolder) {
+        // Auto-locate in Songs folder did not find it; fall back to manual folder picker.
+        return relinkRecent(missingPath, true);
+      }
+      const msg = String(err || "");
+      if (!msg.toLowerCase().includes("cancelled")) {
+        globalThis.showToast?.({ tone: "error", title: "Could not relink mapset", body: msg });
+      }
+    }
+  }
 </script>
 
 <div class="home-panel">
@@ -232,14 +258,20 @@
     <h2 id="home-recent-title">Recent</h2>
     <div id="recent">
       {#each recent as item (item.path)}
-        <button type="button" class="home-recent-map" title={item.path}
-          onclick={() => send("openRecent", item.path)}>
-          {#if item.backgroundUrl}
-            <img class="home-recent-bg" src={item.backgroundUrl} alt="" loading="lazy">
-          {/if}
-          <strong>{item.name}</strong><span>{item.difficulty}</span>
-          {#if item.isHs}<span class="home-recent-hs">HS</span>{/if}
-        </button>
+        <div class="home-recent-row">
+          <button type="button" class="home-recent-map" title={item.path}
+            onclick={() => send("openRecent", item.path)}>
+            {#if item.backgroundUrl}
+              <img class="home-recent-bg" src={item.backgroundUrl} alt="" loading="lazy">
+            {/if}
+            <strong>{item.name}</strong><span>{item.difficulty}</span>
+            {#if item.isHs}<span class="home-recent-hs">HS</span>{/if}
+          </button>
+          <button type="button" class="home-recent-relink" disabled={busy}
+            title="Relink if this mapset folder moved (keeps Shared Base and project settings)"
+            aria-label={"Relink moved folder for " + item.name}
+            onclick={() => relinkRecent(item.path, false)}>Locate…</button>
+        </div>
       {/each}
     </div>
   </section>
@@ -504,5 +536,28 @@
   .home-song-create-hs {
     border-style: dashed;
     color: var(--editor-accent);
+  }
+  .home-recent-row {
+    display: flex;
+    align-items: stretch;
+    gap: 4px;
+  }
+  .home-recent-row .home-recent-map {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+  .home-recent-relink {
+    flex: 0 0 auto;
+    padding: 0 8px;
+    border: 1px solid var(--editor-border);
+    border-radius: 6px;
+    background: var(--editor-control);
+    color: var(--editor-muted);
+    font-size: 11px;
+    cursor: pointer;
+  }
+  .home-recent-relink:hover:not(:disabled) {
+    color: var(--editor-text);
+    border-color: var(--editor-accent);
   }
 </style>

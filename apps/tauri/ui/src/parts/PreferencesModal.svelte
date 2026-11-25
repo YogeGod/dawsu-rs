@@ -215,7 +215,7 @@
   }
 
   async function downloadAndInstallUpdate() {
-    if (updateChecking || updateDownloading || !updateResult?.installerUrl || !updateResult?.sha256sumsUrl) return;
+    if (updateChecking || updateDownloading || !(updateResult?.installerUrl || updateResult?.portableUrl) || !updateResult?.sha256sumsUrl) return;
     updateDownloading = true;
     updateError = "";
     updateStatus = `Downloading and verifying dawsu! v${updateResult.latestVersion}…`;
@@ -448,7 +448,28 @@
     // global openPreferences itself, so the two cannot call each other forever.
     globalThis.openPreferencesModal = openModal;
     globalThis.addEventListener("keydown", onGlobalKey);
+    let startupTimer = null;
+    const isDesktop = typeof window !== "undefined" && Boolean(window.__TAURI__?.core?.invoke) && !globalThis.navigator?.webdriver;
+    if (isDesktop) {
+      startupTimer = setTimeout(async () => {
+        if (bridge.view?.autoCheckUpdates === false || updateChecking || updateDownloading) return;
+        try {
+          const res = await invoke("check_for_updates");
+          if (res?.updateAvailable) {
+            updateResult = res;
+            globalThis.showToast?.({
+              tone: "info",
+              title: `dawsu! v${res.latestVersion} is available`,
+              body: "Open Preferences › Updates to download and install.",
+            });
+          }
+        } catch {
+          // Quiet startup check: stay silent when offline or rate-limited.
+        }
+      }, 2500);
+    }
     return () => {
+      if (startupTimer !== null) clearTimeout(startupTimer);
       if (globalThis.openPreferencesModal === openModal) delete globalThis.openPreferencesModal;
       globalThis.removeEventListener("keydown", onGlobalKey);
     };
@@ -658,6 +679,11 @@
                   onchange={(e) => sendAction({ kind: "return_on_stop", on: e.currentTarget.checked })} />
                 <span>Return playhead to start position on Stop</span>
               </label>
+              <label class="pref-check">
+                <input type="checkbox" checked={view.keepPitch !== false}
+                  onchange={(e) => sendAction({ kind: "keep_pitch", on: e.currentTarget.checked })} />
+                <span>Keep song pitch when playback speed is slowed or sped up</span>
+              </label>
             </div>
 
           {:else if tab === "view"}
@@ -672,6 +698,11 @@
                 <input type="checkbox" checked={Boolean(view.classicBrowser)}
                   onchange={(e) => sendAction({ kind: "browser_style", classic: e.currentTarget.checked })} />
                 <span>Classic Browser inside Inspector</span>
+              </label>
+              <label class="pref-check">
+                <input type="checkbox" checked={Boolean(view.stepPadsMode)}
+                  onchange={(e) => sendAction({ kind: "step_pads_mode", on: e.currentTarget.checked })} />
+                <span>Show beat step-sequencer pads on lane rows</span>
               </label>
             </div>
 
@@ -820,8 +851,13 @@
                   {updateChecking ? "Checking…" : "Check for updates"}
                 </button>
               </div>
+              <label class="pref-check">
+                <input type="checkbox" checked={view.autoCheckUpdates !== false}
+                  onchange={(e) => sendAction({ kind: "auto_check_updates", on: e.currentTarget.checked })} />
+                <span>Check GitHub Releases automatically when dawsu! starts</span>
+              </label>
               <p class="pref-caption">
-                Checks GitHub Releases only when you click the button. Always verify downloaded installers and portable archives against <code>SHA256SUMS.txt</code>.
+                Always verifies downloaded installers and portable ZIP archives against <code>SHA256SUMS.txt</code> before installing on exit.
               </p>
               {#if updateError}
                 <p class="pref-error">{updateError}</p>
@@ -829,15 +865,17 @@
                 {#if updateResult.updateAvailable}
                   <p class="pref-label">Update available: v{updateResult.latestVersion}</p>
                   <p class="pref-caption">Installed version: v{updateResult.currentVersion}</p>
-                  {#if updateResult.isInstalled && updateResult.installerUrl && updateResult.sha256sumsUrl}
+                  {#if (updateResult.installerUrl || updateResult.portableUrl) && updateResult.sha256sumsUrl}
                     <div class="pref-row-head">
                       <button type="button" class="pref-primary" disabled={updateDownloading} onclick={downloadAndInstallUpdate}>
                         {updateDownloading ? "Downloading…" : `Update to v${updateResult.latestVersion} and restart`}
                       </button>
                     </div>
-                    <p class="pref-caption">Downloads the installer, checks its SHA-256 hash, asks about unsaved work, and installs on close.</p>
-                  {:else if !updateResult.isInstalled}
-                    <p class="pref-caption">This copy wasn't installed with Setup, so it can't update itself. Download the newest release from the link below.</p>
+                    <p class="pref-caption">
+                      {updateResult.isInstalled
+                        ? "Downloads the installer, checks its SHA-256 hash, asks about unsaved work, and installs on close."
+                        : "Downloads the portable ZIP, checks its SHA-256 hash and flat archive safety, and swaps files on close."}
+                    </p>
                   {/if}
                 {:else}
                   <p class="pref-caption">You are up to date (v{updateResult.currentVersion}; latest release v{updateResult.latestVersion}).</p>

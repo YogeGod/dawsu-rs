@@ -1,15 +1,24 @@
 //! The Export window's preview, kept apart from main's job, error, problem list and review.
+use crate::export_manifest::{self, ExportWriteMode, SingleSampleFormat};
 use crate::{Application, OutputProblem, output};
 use dawsu_hitsounding::copy::CopyOptions;
+use dawsu_hitsounding::index_packing::AdditionOnlyNormal;
+use dawsu_hitsounding::tick_render::TickPolicy;
+use dawsu_hitsounding::volume_envelope::{VolumeEnvelope, apply_envelope_to_osu};
 use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread::JoinHandle;
 
-/// What the Export window asks to write: "Into the mapset" (Copy), with or without the base
-/// hitsound difficulty (Generate) in the same write.
-#[derive(Clone, Debug, Default, PartialEq)]
+fn default_true() -> bool {
+    true
+}
+
+/// What the Export window asks to write: "Into the mapset" (Direct Copy/Generate) or an isolated
+/// standalone Hitsound-only folder outside the mapset.
+#[derive(Clone, Debug, PartialEq)]
 pub struct ExportOptions {
     pub targets: Vec<PathBuf>,
     pub copy: CopyOptions,
@@ -22,6 +31,46 @@ pub struct ExportOptions {
     pub auto_fix_staged_mixes: bool,
     /// Audio format for generated/copied hitsound mix files.
     pub mix_format: crate::MixFormat,
+    /// Direct mapset write (with backups) or isolated standalone hitsound-only folder.
+    pub write_mode: ExportWriteMode,
+    /// Optional explicit directory for `ExportWriteMode::HitsoundOnly`.
+    pub hitsound_only_dir: Option<PathBuf>,
+    /// Keep unchanged single custom samples byte-identical (`Source`) or re-encode to `mix_format`.
+    pub single_format: SingleSampleFormat,
+    /// What hitnormal accompanies addition-only moments (whistle/finish/clap without a normal).
+    pub addition_only_normal: AdditionOnlyNormal,
+    /// Whether unmatched slider ticks are ignored or rendered as short green-line `slidertick` samples.
+    pub tick_policy: TickPolicy,
+    /// Allow repeat exports to allocate new custom indices when new mixes appear.
+    pub allow_schema_growth: bool,
+    /// Automatically archive stale dawsu!-created sample mixes on repeat direct exports.
+    pub auto_cleanup_stale: bool,
+    /// Opt-in: allow cleanup to also archive existing mapper-owned unused samples (with backup first).
+    pub take_over_samples: bool,
+    /// Apply the mapset's or difficulty's green-line-only master volume envelope during export.
+    pub apply_volume_envelope: bool,
+}
+
+impl Default for ExportOptions {
+    fn default() -> Self {
+        Self {
+            targets: Vec::new(),
+            copy: CopyOptions::default(),
+            base: false,
+            slider_audio: false,
+            auto_fix_staged_mixes: false,
+            mix_format: crate::MixFormat::default(),
+            write_mode: ExportWriteMode::Direct,
+            hitsound_only_dir: None,
+            single_format: SingleSampleFormat::Source,
+            addition_only_normal: AdditionOnlyNormal::Difficulty,
+            tick_policy: TickPolicy::Ignore,
+            allow_schema_growth: true,
+            auto_cleanup_stale: true,
+            take_over_samples: false,
+            apply_volume_envelope: true,
+        }
+    }
 }
 
 /// What the Export window last chose for a map, kept with the session. Older builds ignore it.
@@ -49,6 +98,58 @@ pub struct ExportChoices {
     /// Optional fallback sound for unmatched target gameplay object edges.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fallback_sound: Option<dawsu_hitsounding::copy::FallbackSound>,
+    /// Auto-fix ranking criteria issues on staged sample mixes (trim leading silence, pad <25 ms).
+    #[serde(default)]
+    pub auto_fix_staged_mixes: bool,
+    /// Direct mapset write or standalone hitsound-only folder export.
+    #[serde(default)]
+    pub write_mode: ExportWriteMode,
+    /// Pass-through unchanged single custom samples (`Source`) or match `mix_format`.
+    #[serde(default)]
+    pub single_format: SingleSampleFormat,
+    /// Hitnormal policy for addition-only moments.
+    #[serde(default)]
+    pub addition_only_normal: AdditionOnlyNormal,
+    /// Native green-line slider tick rendering policy.
+    #[serde(default)]
+    pub tick_policy: TickPolicy,
+    /// Allow new custom index allocation on repeat exports.
+    #[serde(default = "default_true")]
+    pub allow_schema_growth: bool,
+    /// Automatically archive stale dawsu!-owned sample mixes on repeat direct exports.
+    #[serde(default = "default_true")]
+    pub auto_cleanup_stale: bool,
+    /// Opt-in: include unused pre-existing samples in cleanup (backed up first).
+    #[serde(default)]
+    pub take_over_samples: bool,
+    /// Apply the green-line-only master volume curve on export.
+    #[serde(default = "default_true")]
+    pub apply_volume_envelope: bool,
+}
+
+impl Default for ExportChoices {
+    fn default() -> Self {
+        Self {
+            left_out: Vec::new(),
+            match_within: 5.0,
+            copy_volumes: true,
+            base: false,
+            slider_audio: false,
+            later_wins: false,
+            mix_format: crate::MixFormat::Wav16,
+            slider_end_mute: dawsu_hitsounding::copy::SliderEndMuteOptions::default(),
+            fallback_sound: None,
+            auto_fix_staged_mixes: false,
+            write_mode: ExportWriteMode::Direct,
+            single_format: SingleSampleFormat::Source,
+            addition_only_normal: AdditionOnlyNormal::Difficulty,
+            tick_policy: TickPolicy::Ignore,
+            allow_schema_growth: true,
+            auto_cleanup_stale: true,
+            take_over_samples: false,
+            apply_volume_envelope: true,
+        }
+    }
 }
 
 /// Which window a preview belongs to, so main never shows it as its own review.
@@ -61,6 +162,7 @@ pub struct ExportPreview {
     pub id: u64,
     pub origin: PreviewOrigin,
     pub plan: output::WritePlan,
+    pub options: ExportOptions,
     /// The load or Save of the difficulty it was made from. The history version starts
     /// again at every load, so path and version alone cannot tell two loads apart.
     generation: u64,
@@ -76,6 +178,7 @@ type PreviewResult = (Result<output::WritePlan, String>, Vec<OutputProblem>);
 
 struct Running {
     id: u64,
+    options: ExportOptions,
     generation: u64,
     hs_mode: bool,
     settings: Option<crate::ExportSettings>,
@@ -264,6 +367,15 @@ impl Application {
                 mix_format: options.mix_format,
                 slider_end_mute: options.copy.slider_end_mute.clone(),
                 fallback_sound: options.copy.fallback_sound,
+                auto_fix_staged_mixes: options.auto_fix_staged_mixes,
+                write_mode: options.write_mode,
+                single_format: options.single_format,
+                addition_only_normal: options.addition_only_normal,
+                tick_policy: options.tick_policy,
+                allow_schema_growth: options.allow_schema_growth,
+                auto_cleanup_stale: options.auto_cleanup_stale,
+                take_over_samples: options.take_over_samples,
+                apply_volume_envelope: options.apply_volume_envelope,
             });
         }
         self.export.stop();
@@ -363,8 +475,102 @@ impl Application {
         if !matches {
             return Err("The map or the options changed since this preview. Preview again.".into());
         }
-        let preview = self.export.preview.take().expect("checked above");
-        self.write_reviewed(preview.plan, backups);
+        let mut preview = self.export.preview.take().expect("checked above");
+        let export_options = preview.options.clone();
+        if export_options.write_mode == ExportWriteMode::HitsoundOnly {
+            let mapset_root = preview
+                .plan
+                .source
+                .parent()
+                .ok_or("Missing mapset folder.")?
+                .to_path_buf();
+            let folder_label = mapset_root
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "mapset".into());
+            let out_dir = export_options.hitsound_only_dir.clone().unwrap_or_else(|| {
+                self.data_root
+                    .join("exports")
+                    .join(format!("{folder_label}-hitsound-only"))
+            });
+            let osu_files: Vec<(String, Vec<u8>)> = preview
+                .plan
+                .files
+                .iter()
+                .filter_map(|f| {
+                    let name = f.path.file_name()?.to_string_lossy().into_owned();
+                    Some((name, f.file.to_bytes()))
+                })
+                .collect();
+            let mut sample_files: Vec<(String, Vec<u8>)> = Vec::new();
+            for mix in preview.plan.mixes.iter().chain(preview.plan.pending.iter()) {
+                if let Some(name) = mix.path.file_name().and_then(|n| n.to_str()) {
+                    sample_files.push((name.to_owned(), mix.wav_bytes().to_vec()));
+                }
+            }
+            let result = export_manifest::write_hitsound_only_directory(
+                &mapset_root,
+                &out_dir,
+                &osu_files,
+                &sample_files,
+            )?;
+            let count = result.osu_files.len();
+            self.export.writing = false;
+            self.export.written = Some(count);
+            self.export.write_error = None;
+            let id = self.export.write_id.map_or(1, |last| last + 1);
+            self.export.write_id = Some(id);
+            self.status = format!(
+                "Exported {count} hitsound-only file(s) to {} (mapset untouched).",
+                result.output_dir.display()
+            );
+            return Ok(id);
+        }
+
+        // Direct write: record owned mixes in ExportOwnershipManifest and archive stale ones if enabled.
+        let mapset_root = preview.plan.source.parent().map(PathBuf::from);
+        let staged_manifest_entries: Vec<(String, String)> = preview
+            .plan
+            .mixes
+            .iter()
+            .filter_map(|m| {
+                let name = m.path.file_name()?.to_string_lossy().to_ascii_lowercase();
+                Some((name, m.digest()))
+            })
+            .collect();
+        let active_sample_names: BTreeSet<String> = staged_manifest_entries
+            .iter()
+            .map(|(n, _)| n.clone())
+            .collect();
+        let retained_names: BTreeSet<String> = self
+            .document
+            .as_ref()
+            .map(|d| d.pending.taken_names())
+            .unwrap_or_default();
+        let tick_writes = std::mem::take(&mut preview.plan.tick_writes);
+        self.write_reviewed(preview.plan, backups.clone());
+        if let Some(root) = mapset_root {
+            let mut manifest = export_manifest::load_manifest(&self.data_root, &root);
+            for (name, digest) in staged_manifest_entries {
+                manifest.owned_samples.insert(name, digest);
+            }
+            for (diff_name, writes) in tick_writes {
+                manifest.slider_history.record_ticks(&diff_name, &writes);
+            }
+            if export_options.auto_cleanup_stale {
+                let _ = export_manifest::cleanup_stale_samples(
+                    &root,
+                    &self.data_root,
+                    &backups,
+                    &mut manifest,
+                    &active_sample_names,
+                    &retained_names,
+                    export_options.take_over_samples,
+                    &BTreeSet::new(),
+                );
+            }
+            let _ = export_manifest::save_manifest(&self.data_root, &root, &manifest);
+        }
         self.export.writing = true;
         self.export.written = None;
         self.export.write_error = None;
@@ -382,12 +588,13 @@ impl Application {
                         running.id, running.generation, running.hs_mode, running.clean_redundant_greenlines,
                     );
                     let settings = running.settings.clone();
+                    let options = running.options.clone();
                     self.export.running = None;
                     self.export.problems = problems;
                     match result {
                         Ok(plan) => {
                             self.export.preview = Some(ExportPreview {
-                                id, origin: PreviewOrigin::Export, plan, generation, hs_mode, settings,
+                                id, origin: PreviewOrigin::Export, plan, options, generation, hs_mode, settings,
                                 clean_redundant_greenlines,
                             });
                         }
@@ -426,6 +633,31 @@ impl Application {
         let settings = document.export_settings.clone();
         let projects = self.project_root.clone();
         let thread_settings = settings.clone();
+        let shared_envelope = if options.apply_volume_envelope {
+            self.shared_base_volume_envelope(None)
+        } else {
+            VolumeEnvelope::default()
+        };
+        let diff_envelopes: BTreeMap<String, VolumeEnvelope> = if options.apply_volume_envelope {
+            options
+                .targets
+                .iter()
+                .filter_map(|t| {
+                    let name = t.file_name()?.to_string_lossy().to_ascii_lowercase();
+                    let env = self.shared_base_volume_envelope(Some(&name));
+                    (!env.is_empty()).then_some((name, env))
+                })
+                .collect()
+        } else {
+            BTreeMap::new()
+        };
+        let prev_schema_len = document.export_index_schema.len();
+        let manifest_history = source
+            .path
+            .parent()
+            .map(|root| export_manifest::load_manifest(&self.data_root, root).slider_history)
+            .unwrap_or_default();
+        let thread_options = options.clone();
         let cancel = Arc::new(AtomicBool::new(false));
         let progress = Arc::new(Mutex::new(None));
         let (send, receive) = mpsc::channel();
@@ -440,7 +672,7 @@ impl Application {
                 &defaults,
                 thread_settings.as_ref(),
                 projects.as_deref(),
-                &options,
+                &thread_options,
                 &|| cancel.load(Ordering::Relaxed),
                 &mut problems,
                 &mut |done, total| {
@@ -448,16 +680,209 @@ impl Application {
                         *current = Some((done, total));
                     }
                 },
-            ).map(|mut plan| {
+            )
+            .and_then(|mut plan| {
+                if !thread_options.allow_schema_growth
+                    && prev_schema_len > 0
+                    && plan.export_index_schema.len() > prev_schema_len
+                {
+                    return Err(
+                        "Export needed new custom sample indices, but schema growth is locked. Turn on Allow schema growth to allocate new indices."
+                            .into(),
+                    );
+                }
+                if thread_options.apply_volume_envelope {
+                    let mut total_env_changes = 0usize;
+                    for planned_file in &mut plan.files {
+                        let key = planned_file
+                            .path
+                            .file_name()
+                            .map(|n| n.to_string_lossy().to_ascii_lowercase())
+                            .unwrap_or_default();
+                        let env = diff_envelopes
+                            .get(&key)
+                            .filter(|e| !e.is_empty())
+                            .unwrap_or(&shared_envelope);
+                        if !env.is_empty() {
+                            let (patched, changed) = apply_envelope_to_osu(&planned_file.file, env);
+                            planned_file.file = patched;
+                            total_env_changes += changed;
+                        }
+                    }
+                    if total_env_changes > 0 {
+                        plan.details.push(format!(
+                            "Applied master volume curve ({total_env_changes} green-line update(s), 0 extra sample mixes)."
+                        ));
+                    }
+                }
+                if thread_options.addition_only_normal != AdditionOnlyNormal::Difficulty {
+                    plan.details.push(format!(
+                        "Addition-only hitnormal policy: {:?}.",
+                        thread_options.addition_only_normal
+                    ));
+                }
+                if thread_options.tick_policy == TickPolicy::Render
+                    && let Some(root) = source.path.parent()
+                {
+                    let mut occupied = crate::mixes::occupied_indexes(root, &source.pending)?;
+                    for mix in &plan.mixes {
+                        if let Some(fname) = mix.path.file_name().and_then(|n| n.to_str())
+                            && let Some(dawsu_foundation::SampleIdentity::Standard { index, .. }) =
+                                dawsu_hitsounding::rules::read_sample_file_name(fname)
+                        {
+                            occupied.insert(index.get());
+                        }
+                    }
+                    let mut next_tick_idx = dawsu_hitsounding::tick_render::DEFAULT_BODY_SAMPLE_FIRST_INDEX
+                        .max(thread_options.copy.start_index);
+                    let mut tick_idx_by_digest: std::collections::HashMap<String, u32> =
+                        std::collections::HashMap::new();
+                    let mut total_ticks = 0usize;
+                    let mut source_moments: Vec<&dawsu_hitsounding::Moment> =
+                        source.hits.moments().iter().collect();
+                    source_moments.sort_by(|a, b| a.time().ms().total_cmp(&b.time().ms()));
+
+                    for planned_file in &mut plan.files {
+                        let diff_name = planned_file
+                            .path
+                            .file_name()
+                            .map(|n| n.to_string_lossy().into_owned())
+                            .unwrap_or_default();
+                        let (restored, _) =
+                            manifest_history.restore_ticks(&diff_name, &planned_file.file);
+                        planned_file.file = restored;
+
+                        let target_hits = match dawsu_hitsounding::decompile(
+                            &planned_file.file,
+                            &source.folder_files,
+                            &|| cancel.load(Ordering::Relaxed),
+                            &mut |_, _| {},
+                        ) {
+                            dawsu_hitsounding::Decompiled::Done(h) => h,
+                            _ => continue,
+                        };
+                        let node_times: Vec<f64> =
+                            target_hits.moments().iter().map(|m| m.time().ms()).collect();
+                        let mut writes: Vec<dawsu_hitsounding::tick_render::TickWrite> = Vec::new();
+                        for body in target_hits.bodies() {
+                            for tick in body.ticks() {
+                                let tick_ms = tick.ms();
+                                if node_times
+                                    .iter()
+                                    .any(|&nt| (nt - tick_ms).abs() <= thread_options.copy.leniency)
+                                {
+                                    continue;
+                                }
+                                let mut layers: Vec<(dawsu_foundation::SampleIdentity, i32)> =
+                                    Vec::new();
+                                let mut max_vol = 0i32;
+                                for sm in &source_moments {
+                                    if (sm.time().ms() - tick_ms).abs() <= thread_options.copy.leniency {
+                                        for lane in sm.hits() {
+                                            let v = sm.hit_volume(lane).clamp(5, 100);
+                                            max_vol = max_vol.max(v);
+                                            layers.push((lane.clone(), v));
+                                        }
+                                    }
+                                }
+                                if layers.is_empty() {
+                                    continue;
+                                }
+                                let norm_layers: Vec<(dawsu_foundation::SampleIdentity, i32)> = layers
+                                    .iter()
+                                    .map(|(l, v)| {
+                                        let rel = ((*v as f64 / max_vol.max(5) as f64) * 100.0)
+                                            .round()
+                                            .clamp(5.0, 100.0) as i32;
+                                        (l.clone(), rel)
+                                    })
+                                    .collect();
+                                let (ext, bytes) = crate::mixes::render_tick_sample(
+                                    &source.hits,
+                                    &norm_layers,
+                                    root,
+                                    &source.pending,
+                                    &defaults,
+                                    thread_options.mix_format,
+                                    thread_options.auto_fix_staged_mixes,
+                                    thread_options.single_format,
+                                    &|| cancel.load(Ordering::Relaxed),
+                                )?;
+                                let digest = dawsu_foundation::digest::sha256_hex(&bytes);
+                                let custom_index = if let Some(&existing_idx) =
+                                    tick_idx_by_digest.get(&digest)
+                                {
+                                    existing_idx
+                                } else {
+                                    while next_tick_idx <= i32::MAX as u32
+                                        && occupied.contains(&next_tick_idx)
+                                    {
+                                        next_tick_idx += 1;
+                                    }
+                                    if next_tick_idx > i32::MAX as u32 {
+                                        return Err("No free custom sample index available for slider tick audio.".into());
+                                    }
+                                    let idx = next_tick_idx;
+                                    occupied.insert(idx);
+                                    next_tick_idx += 1;
+                                    tick_idx_by_digest.insert(digest, idx);
+                                    plan.mixes.push(crate::mixes::StagedMix::indexed_bytes(
+                                        root,
+                                        &format!("normal-slidertick{idx}.{ext}"),
+                                        idx,
+                                        bytes,
+                                    ));
+                                    idx
+                                };
+                                writes.push(dawsu_hitsounding::tick_render::TickWrite {
+                                    time_ms: tick_ms,
+                                    sample_set: dawsu_foundation::SampleSet::Normal,
+                                    custom_index,
+                                    volume: max_vol.clamp(5, 100),
+                                });
+                            }
+                        }
+                        if !writes.is_empty() {
+                            let (patched, applied) =
+                                dawsu_hitsounding::tick_render::apply_tick_greenlines(
+                                    &planned_file.file,
+                                    &writes,
+                                );
+                            planned_file.file = patched;
+                            total_ticks += applied;
+                            plan.tick_writes.insert(diff_name, writes);
+                        }
+                    }
+                    plan.details.push(format!(
+                        "Rendered {total_ticks} slider tick green line(s) (with +5 ms revert)."
+                    ));
+                }
+                if thread_options.write_mode == ExportWriteMode::HitsoundOnly {
+                    plan.details.push(
+                        "Hitsound-only folder export: real mapset files will not be modified."
+                            .into(),
+                    );
+                }
                 if clean_redundant_greenlines {
                     plan.clean_redundant_greenlines();
                 }
-                plan
+                // Read-back verification check: ensure every planned `.osu` parses cleanly.
+                for planned_file in &plan.files {
+                    let bytes = planned_file.file.to_bytes();
+                    let reparsed = dawsu_osu_format::OsuFile::read(bytes);
+                    if reparsed.file.format_version().is_none() {
+                        return Err(format!(
+                            "Read-back verification failed for {}: missing osu file format header.",
+                            planned_file.path.display()
+                        ));
+                    }
+                }
+                Ok(plan)
             });
             let _ = send.send((result, problems));
         });
         self.export.running = Some(Running {
-            id, generation, hs_mode, settings, clean_redundant_greenlines, handle, cancel, receive, progress,
+            id, options, generation, hs_mode, settings, clean_redundant_greenlines, handle, cancel, receive, progress,
         });
     }
 }
@@ -877,12 +1302,7 @@ mod tests {
             left_out: vec!["Target.osu".into()],
             match_within: 3.0,
             copy_volumes: false,
-            base: false,
-            slider_audio: false,
-            later_wins: false,
-            mix_format: crate::MixFormat::Wav16,
-            slider_end_mute: Default::default(),
-            fallback_sound: None,
+            ..ExportChoices::default()
         };
         assert_eq!(app.document().unwrap().export_choices(), Some(&expected));
         wait_preview(&mut app);
@@ -1508,5 +1928,161 @@ mod tests {
         assert_eq!(u16::from_le_bytes([bytes[20], bytes[21]]), 3, "IEEE float format tag");
         assert_eq!(u16::from_le_bytes([bytes[34], bytes[35]]), 32, "32 bits per sample");
         assert!(dawsu_audio::decode(&float_paths[0]).is_ok());
+    }
+
+    #[test]
+    fn hitsound_only_export_writes_isolated_folder_and_leaves_mapset_untouched() {
+        let map = mapset("export-hitsound-only");
+        std::fs::write(map.scratch.path("song.mp3"), b"fake-audio-bytes").unwrap();
+        let src_with_audio = std::fs::read_to_string(&map.source)
+            .unwrap()
+            .replace("[General]\nMode:0", "[General]\nAudioFilename: song.mp3\nMode:0");
+        std::fs::write(&map.source, src_with_audio).unwrap();
+        let tgt_with_audio = std::fs::read_to_string(&map.target)
+            .unwrap()
+            .replace("[General]\nMode:0", "[General]\nAudioFilename: song.mp3\nMode:0");
+        std::fs::write(&map.target, &tgt_with_audio).unwrap();
+
+        let out_dir = map.scratch.path("standalone-hs-only");
+        let mut app = opened(&map.source);
+        let opts = ExportOptions {
+            targets: vec![map.target.clone()],
+            write_mode: ExportWriteMode::HitsoundOnly,
+            hitsound_only_dir: Some(out_dir.clone()),
+            ..ExportOptions::default()
+        };
+        let id = app.request_export_preview(opts).unwrap();
+        wait_preview(&mut app);
+        assert_eq!(app.export_status().error, None);
+        app.run_export(id).unwrap();
+
+        // Isolated folder has target .osu and copied song; real mapset target is untouched.
+        assert!(out_dir.join("Target.osu").is_file());
+        assert!(out_dir.join("song.mp3").is_file());
+        assert_eq!(
+            std::fs::read_to_string(&map.target).unwrap(),
+            tgt_with_audio,
+            "real mapset target must stay byte-identical in HitsoundOnly mode"
+        );
+    }
+
+    #[test]
+    fn export_applies_volume_envelope_without_creating_extra_mixes() {
+        let map = mapset("export-volume-envelope");
+        let mut app = opened(&map.source);
+        app.shared_base_set_volume_envelope(
+            None,
+            VolumeEnvelope {
+                points: vec![
+                    dawsu_hitsounding::volume_envelope::VolumePoint {
+                        time_ms: 0,
+                        volume: 50,
+                        curve: dawsu_hitsounding::volume_envelope::CurveKind::Step,
+                    },
+                ],
+            },
+        )
+        .unwrap();
+
+        let opts = ExportOptions {
+            targets: vec![map.target.clone()],
+            apply_volume_envelope: true,
+            ..ExportOptions::default()
+        };
+        let _id = app.request_export_preview(opts).unwrap();
+        wait_preview(&mut app);
+        let status = app.export_status();
+        assert_eq!(status.error, None);
+        let preview = status.preview.unwrap();
+        assert_eq!(preview.plan.mixes.len(), 0, "volume curve must create 0 extra sample mixes");
+        let target_plan = preview.plan.files.iter().find(|f| f.path == map.target).unwrap();
+        assert!(
+            target_plan.file.timing_points().iter().any(|tp| tp.volume() == Some(50)),
+            "expected green/timing line scaled to 50% by volume curve"
+        );
+    }
+
+    #[test]
+    fn export_renders_slider_ticks_and_restores_on_repeat_export() {
+        let scratch = Scratch::new("export-tick-render");
+        // Write a real 16-bit PCM WAV sample for the source tick sound.
+        let mut wav = Vec::from(dawsu_hitsounding::index_packing::STANDARD_SILENT_WAV);
+        let samples = [0i16, 12000, -12000, 8000, -8000, 0, 0, 0];
+        let data_bytes = (samples.len() * 2) as u32;
+        wav[4..8].copy_from_slice(&(36 + data_bytes).to_le_bytes());
+        wav[40..44].copy_from_slice(&data_bytes.to_le_bytes());
+        for s in samples {
+            wav.extend_from_slice(&s.to_le_bytes());
+        }
+        std::fs::write(scratch.path("tick.wav"), &wav).unwrap();
+
+        // Source has a hit at 1500 ms (matches the target slider's midpoint tick!).
+        let source_osu = concat!(
+            "osu file format v14\n\n",
+            "[General]\nMode:0\n\n",
+            "[Metadata]\nVersion:Source\n\n",
+            "[Difficulty]\nSliderMultiplier:1.4\nSliderTickRate:1\n\n",
+            "[TimingPoints]\n0,500,4,1,0,100,1,0\n\n",
+            "[HitObjects]\n",
+            "256,192,1000,1,0,0:0:0:80:\n",
+            "256,192,1500,1,0,0:0:0:85:tick.wav\n",
+        );
+        // Target has a 2-beat slider starting at 1000 ms -> tick at 1500 ms!
+        let target_osu = concat!(
+            "osu file format v14\n\n",
+            "[General]\nMode:0\n\n",
+            "[Metadata]\nVersion:Target\n\n",
+            "[Difficulty]\nSliderMultiplier:1.4\nSliderTickRate:1\n\n",
+            "[TimingPoints]\n0,500,4,1,0,100,1,0\n\n",
+            "[HitObjects]\n",
+            "100,192,1000,2,0,L|380:192,1,280,0|0,0:0|0:0,0:0:0:0:\n",
+        );
+        let source = scratch.path("Source.osu");
+        let target = scratch.path("Target.osu");
+        std::fs::write(&source, source_osu).unwrap();
+        std::fs::write(&target, target_osu).unwrap();
+        let source = source.canonicalize().unwrap();
+        let target = target.canonicalize().unwrap();
+
+        let mut app = opened(&source);
+        let opts = ExportOptions {
+            targets: vec![target.clone()],
+            tick_policy: TickPolicy::Render,
+            ..ExportOptions::default()
+        };
+        let id = app.request_export_preview(opts.clone()).unwrap();
+        wait_preview(&mut app);
+        let preview = app.export_status().preview.unwrap();
+        assert!(
+            preview.plan.mixes.iter().any(|m| m.path.to_string_lossy().contains("normal-slidertick")),
+            "expected staged normal-slidertick custom file"
+        );
+        let planned_target = preview.plan.files.iter().find(|f| f.path == target).unwrap();
+        let tps = planned_target.file.timing_points();
+        assert!(
+            tps.iter().any(|tp| (tp.time() - 1500.0).abs() <= 1.0 && tp.sample_index().unwrap_or(0) >= 100),
+            "expected tick green line at 1500 ms with custom index >= 100, got: {tps:?}"
+        );
+        assert!(
+            tps.iter().any(|tp| (tp.time() - 1505.0).abs() <= 1.0),
+            "expected +5 ms revert green line at 1505 ms"
+        );
+
+        app.run_export(id).unwrap();
+        wait_main(&mut app);
+        assert!(app.error.is_none(), "{:?}", app.error);
+
+        // Repeat export restores previous tick green lines cleanly without duplicating them.
+        let id2 = app.request_export_preview(opts).unwrap();
+        wait_preview(&mut app);
+        let preview2 = app.export_status().preview.unwrap();
+        let planned_target2 = preview2.plan.files.iter().find(|f| f.path == target).unwrap();
+        let tick_lines_count = planned_target2
+            .file
+            .timing_points()
+            .iter()
+            .filter(|tp| (tp.time() - 1500.0).abs() <= 1.0 && tp.sample_index().unwrap_or(0) >= 100)
+            .count();
+        assert_eq!(tick_lines_count, 1, "repeat export must restore prior ticks instead of stacking duplicates (id2={id2})");
     }
 }

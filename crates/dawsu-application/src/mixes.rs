@@ -68,7 +68,7 @@ pub(super) struct StagedMix {
     pub(super) path: PathBuf,
     wav: Vec<u8>,
     reuse: bool,
-    index: Option<u32>,
+    pub(super) index: Option<u32>,
     trimmed_leading_silence_ms: f64,
 }
 
@@ -104,10 +104,27 @@ impl StagedMix {
         wav: Vec<u8>,
         trimmed_leading_silence_ms: f64,
         format: MixFormat,
+        existing: impl Iterator<Item = &'a String>,
+        names: &mut BTreeSet<String>,
+    ) -> Result<(String, Self), String> {
+        Self::new_generated_ext(
+            root,
+            wav,
+            trimmed_leading_silence_ms,
+            format.extension(),
+            existing,
+            names,
+        )
+    }
+
+    pub(super) fn new_generated_ext<'a>(
+        root: &Path,
+        wav: Vec<u8>,
+        trimmed_leading_silence_ms: f64,
+        ext: &str,
         mut existing: impl Iterator<Item = &'a String>,
         names: &mut BTreeSet<String>,
     ) -> Result<(String, Self), String> {
-        let ext = format.extension();
         let suffix = format!(".{ext}");
         let stem = format!("{PREFIX}{}-", sha256_hex(&wav));
         let reusable = existing.find(|name| {
@@ -125,6 +142,19 @@ impl StagedMix {
             trimmed_leading_silence_ms,
         };
         Ok((name, mix))
+    }
+
+    /// Stages a pre-built indexed sample (such as a 44-byte silent hitnormal or `slidertick` file).
+    pub(super) fn indexed_bytes(root: &Path, name: &str, index: u32, bytes: Vec<u8>) -> Self {
+        let path = root.join(name);
+        let reuse = fs::read(&path).is_ok_and(|on_disk| on_disk == bytes);
+        Self {
+            path,
+            wav: bytes,
+            reuse,
+            index: Some(index),
+            trimmed_leading_silence_ms: 0.0,
+        }
     }
 
     /// A pending file a Save writes as it is, checked by its name when published. A file another
@@ -208,6 +238,7 @@ pub(super) fn stage_in_file(
         format,
         pending,
         false,
+        crate::export_manifest::SingleSampleFormat::MatchMixFormat,
         &BTreeMap::new(),
         cancel,
     )
@@ -229,6 +260,7 @@ pub(super) fn stage_in_file_with_options(
     format: MixFormat,
     pending: &Pending,
     auto_fix: bool,
+    single_format: crate::export_manifest::SingleSampleFormat,
     index_schema: &BTreeMap<String, u32>,
     cancel: &dyn Fn() -> bool,
 ) -> Result<(OsuFile, MixFiles), String> {
@@ -269,6 +301,7 @@ pub(super) fn stage_in_file_with_options(
             format,
             pending,
             auto_fix,
+            single_format,
             index_schema,
             cancel,
         )?;
@@ -660,17 +693,17 @@ impl MixFiles {
         format: MixFormat,
         pending: &Pending,
         auto_fix: bool,
+        single_format: crate::export_manifest::SingleSampleFormat,
         index_schema: &BTreeMap<String, u32>,
         cancel: &dyn Fn() -> bool,
     ) -> Result<(), String> {
         let defaults_list = crate::pending::sample_folder(defaults);
         let expected = OsuFile::read(expected.to_vec()).file;
-        let suffix = format!(".{}", format.extension());
         let existing: BTreeSet<_> = expected
             .hit_objects()
             .into_iter()
             .filter_map(|object| object.hit_sample()?.filename.clone())
-            .filter(|name| name.starts_with(PREFIX) && name.ends_with(&suffix))
+            .filter(|name| name.starts_with(PREFIX))
             .collect();
         let moments: HashMap<_, _> = target
             .moments()
@@ -716,34 +749,60 @@ impl MixFiles {
             let sample = if let Some(sample) = rendered.get(&key) {
                 sample.clone()
             } else {
-                let rendered_mix = render_layers(source, Some(target), layers, root, pending, defaults, &defaults_list, &mut clips, format, auto_fix, cancel)?;
-                let (sample, staged) = if let Some(indexes) = indexes.as_mut().filter(|_| slider) {
-                    let (index, reuse) = indexes.allocate(root, &rendered_mix.bytes, format)?;
-                    let identity = SampleIdentity::Standard {
-                        set: SampleSet::Normal,
-                        sound: Sound::Hit(Hitsound::Normal),
-                        index: CustomIndex::new(index),
-                    };
-                    (
-                        identity,
-                        StagedMix {
-                            path: root.join(indexed_name(index, format)),
-                            wav: rendered_mix.bytes,
-                            reuse,
-                            index: Some(index),
-                            trimmed_leading_silence_ms: rendered_mix.trimmed_leading_silence_ms,
-                        },
-                    )
-                } else {
-                    let (name, staged) = StagedMix::new_generated_with_trim(
+                let passthrough = (!slider && !auto_fix)
+                    .then(|| {
+                        passthrough_single_layer(
+                            source,
+                            Some(target),
+                            layers,
+                            root,
+                            pending,
+                            defaults,
+                            &defaults_list,
+                            single_format,
+                        )
+                    })
+                    .flatten();
+                let (sample, staged) = if let Some((ext, bytes)) = passthrough {
+                    let (name, staged) = StagedMix::new_generated_ext(
                         root,
-                        rendered_mix.bytes,
-                        rendered_mix.trimmed_leading_silence_ms,
-                        format,
+                        bytes,
+                        0.0,
+                        &ext,
                         existing.iter(),
                         &mut names,
                     )?;
                     (SampleIdentity::File(name), staged)
+                } else {
+                    let rendered_mix = render_layers(source, Some(target), layers, root, pending, defaults, &defaults_list, &mut clips, format, auto_fix, cancel)?;
+                    if let Some(indexes) = indexes.as_mut().filter(|_| slider) {
+                        let (index, reuse) = indexes.allocate(root, &rendered_mix.bytes, format)?;
+                        let identity = SampleIdentity::Standard {
+                            set: SampleSet::Normal,
+                            sound: Sound::Hit(Hitsound::Normal),
+                            index: CustomIndex::new(index),
+                        };
+                        (
+                            identity,
+                            StagedMix {
+                                path: root.join(indexed_name(index, format)),
+                                wav: rendered_mix.bytes,
+                                reuse,
+                                index: Some(index),
+                                trimmed_leading_silence_ms: rendered_mix.trimmed_leading_silence_ms,
+                            },
+                        )
+                    } else {
+                        let (name, staged) = StagedMix::new_generated_with_trim(
+                            root,
+                            rendered_mix.bytes,
+                            rendered_mix.trimmed_leading_silence_ms,
+                            format,
+                            existing.iter(),
+                            &mut names,
+                        )?;
+                        (SampleIdentity::File(name), staged)
+                    }
                 };
                 self.staged.push(staged);
                 rendered.insert(key, sample.clone());
@@ -837,11 +896,83 @@ fn render_roles(
 }
 
 #[allow(clippy::too_many_arguments)]
+fn passthrough_single_layer(
+    source: &Hitsounds,
+    target: Option<&Hitsounds>,
+    layers: &[(SampleIdentity, i32)],
+    root: &Path,
+    pending: &Pending,
+    defaults: &Path,
+    defaults_list: &[String],
+    single_format: crate::export_manifest::SingleSampleFormat,
+) -> Option<(String, Vec<u8>)> {
+    if single_format != crate::export_manifest::SingleSampleFormat::Source {
+        return None;
+    }
+    let [(identity, vol)] = layers else {
+        return None;
+    };
+    if *vol != 100 {
+        return None;
+    }
+    let lane = source
+        .lane(identity)
+        .or_else(|| target.and_then(|t| t.lane(identity)))?;
+    let path = sample_path(lane, root, pending, defaults, defaults_list).ok()?;
+    crate::export_manifest::passthrough_single_sample(&path, single_format)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn render_tick_sample(
+    source: &Hitsounds,
+    layers: &[(SampleIdentity, i32)],
+    root: &Path,
+    pending: &Pending,
+    defaults: &Path,
+    format: MixFormat,
+    auto_fix: bool,
+    single_format: crate::export_manifest::SingleSampleFormat,
+    cancel: &dyn Fn() -> bool,
+) -> Result<(String, Vec<u8>), String> {
+    let defaults_list = crate::pending::sample_folder(defaults);
+    if !auto_fix
+        && let Some((ext, bytes)) = passthrough_single_layer(
+            source,
+            None,
+            layers,
+            root,
+            pending,
+            defaults,
+            &defaults_list,
+            single_format,
+        )
+    {
+        return Ok((ext, bytes));
+    }
+    let mut clips = HashMap::new();
+    let rendered = render_layers(
+        source,
+        None,
+        layers,
+        root,
+        pending,
+        defaults,
+        &defaults_list,
+        &mut clips,
+        format,
+        auto_fix,
+        cancel,
+    )?;
+    Ok((format.extension().to_string(), rendered.bytes))
+}
+
+#[allow(clippy::too_many_arguments)]
 pub(super) fn stage_timed_copy_with_options(
     source: &Hitsounds, file: &mut OsuFile, path: &Path, defaults: &Path,
     placements: &[dawsu_hitsounding::copy::SliderCopyPlacement],
     staged: &mut Vec<StagedMix>, details: &mut Vec<String>, pending: &Pending,
-    format: MixFormat, auto_fix: bool, cancel: &dyn Fn() -> bool,
+    format: MixFormat, auto_fix: bool, single_format: crate::export_manifest::SingleSampleFormat,
+    cancel: &dyn Fn() -> bool,
     // Mixes before this index belong to an earlier part of the write (Generate): their names stay
     // reserved, but a target never points at them.
     own_from: usize,
@@ -864,15 +995,31 @@ pub(super) fn stage_timed_copy_with_options(
         let name = if let Some(name) = rendered.get(layers) {
             name.clone()
         } else {
-            let rendered_mix = render_layers(source, None, layers, root, pending, defaults, &defaults_list, &mut clips, format, auto_fix, cancel)?;
-            let name = if let Some(previous) = staged[own_from..].iter().find(|mix| mix.index.is_none() && mix.wav == rendered_mix.bytes) {
+            let (ext, bytes, trimmed_ms) = if !auto_fix
+                && let Some((ext, bytes)) = passthrough_single_layer(
+                    source,
+                    None,
+                    layers,
+                    root,
+                    pending,
+                    defaults,
+                    &defaults_list,
+                    single_format,
+                )
+            {
+                (ext, bytes, 0.0)
+            } else {
+                let rendered_mix = render_layers(source, None, layers, root, pending, defaults, &defaults_list, &mut clips, format, auto_fix, cancel)?;
+                (format.extension().to_string(), rendered_mix.bytes, rendered_mix.trimmed_leading_silence_ms)
+            };
+            let name = if let Some(previous) = staged[own_from..].iter().find(|mix| mix.index.is_none() && mix.wav == bytes) {
                 previous.path.file_name().ok_or("Missing staged filename")?.to_string_lossy().into_owned()
             } else {
-                let (name, mix) = StagedMix::new_generated_with_trim(
+                let (name, mix) = StagedMix::new_generated_ext(
                     root,
-                    rendered_mix.bytes,
-                    rendered_mix.trimmed_leading_silence_ms,
-                    format,
+                    bytes,
+                    trimmed_ms,
+                    &ext,
                     existing.iter(),
                     &mut names,
                 )?;
@@ -1066,7 +1213,7 @@ fn has_contents(root: &Path, name: &str, wav: &[u8]) -> bool {
 
 /// The custom indexes a new mix must not take: those the mapset's files and maps use, and those
 /// of pending files and of names claimed for them.
-fn occupied_indexes(root: &Path, pending: &Pending) -> Result<BTreeSet<u32>, String> {
+pub(super) fn occupied_indexes(root: &Path, pending: &Pending) -> Result<BTreeSet<u32>, String> {
     use dawsu_hitsounding::rules::read_sample_file_name;
     let files = listing(root, pending)?;
     let (mut reserved, _) = crate::layers::reservations(root, &files)?;

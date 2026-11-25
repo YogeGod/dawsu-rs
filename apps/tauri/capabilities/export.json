@@ -11,6 +11,7 @@
     "allow-export-unused-dry-run",
     "allow-export-listen-target",
     "allow-export-stop-listen",
+    "allow-export-pick-hitsound-only-dir",
     "allow-close-export-window",
     "allow-show-in-editor"
   ]
