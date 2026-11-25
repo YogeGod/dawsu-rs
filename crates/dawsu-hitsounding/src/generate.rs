@@ -48,11 +48,32 @@ pub fn generate(
     cancel: &dyn Fn() -> bool,
     progress: &mut dyn FnMut(usize, usize),
 ) -> GenerateOutcome {
-    let file_name = file_name_for(source_file, source_file_name, HITSOUNDS_VERSION);
+    generate_with_version(
+        source,
+        source_file,
+        source_file_name,
+        HITSOUNDS_VERSION,
+        folder,
+        cancel,
+        progress,
+    )
+}
+
+/// Same as [`generate`], but targets an explicit `version` (e.g. `"Hitsounds 2"`).
+pub fn generate_with_version(
+    source: &Hitsounds,
+    source_file: &OsuFile,
+    source_file_name: &str,
+    version: &str,
+    folder: &[(String, Option<String>)],
+    cancel: &dyn Fn() -> bool,
+    progress: &mut dyn FnMut(usize, usize),
+) -> GenerateOutcome {
+    let file_name = file_name_for(source_file, source_file_name, version);
     if folder.iter().any(|(name, _)| name.to_lowercase() == file_name.to_lowercase()) {
         return GenerateOutcome::NameTaken;
     }
-    if folder.iter().any(|(_, v)| v.as_deref().is_some_and(|v| v.to_lowercase() == HITSOUNDS_VERSION.to_lowercase())) {
+    if folder.iter().any(|(_, v)| v.as_deref().is_some_and(|v| v.to_lowercase() == version.to_lowercase())) {
         return GenerateOutcome::VersionTaken;
     }
 
@@ -68,7 +89,7 @@ pub fn generate(
         groups.entry(key).or_default().extend(m.hits().map(|h| (h.clone(), m.hit_volume(h))));
     }
 
-    let mut file = empty_copy(source_file, HITSOUNDS_VERSION);
+    let mut file = empty_copy(source_file, version);
     file.append_hit_objects(&groups.keys().map(|t| format!("256,192,{t},1,0,0:0:0:0:")).collect::<Vec<_>>());
     let mut circles = match decompile(&file, &[], cancel, &mut |_, _| {}) {
         Decompiled::Done(h) => h,

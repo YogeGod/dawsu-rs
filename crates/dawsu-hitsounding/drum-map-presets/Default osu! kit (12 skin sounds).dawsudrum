@@ -1,0 +1,91 @@
+{
+  "Id": "d92a4c71-8f30-4e1b-9c52-1a7e6f03b84d",
+  "Name": "Default osu! kit (12 skin sounds)",
+  "Rows": [
+    {
+      "Id": "2a1b3c4d-5e6f-4708-9a1b-2c3d4e5f6001",
+      "Name": "Drum Kick",
+      "LaneKey": "Skin|drum-hitnormal",
+      "SlotKey": "Skin|drum-hitnormal",
+      "MidiNote": 36
+    },
+    {
+      "Id": "2a1b3c4d-5e6f-4708-9a1b-2c3d4e5f6002",
+      "Name": "Normal Hit",
+      "LaneKey": "Skin|normal-hitnormal",
+      "SlotKey": "Skin|normal-hitnormal",
+      "MidiNote": 35
+    },
+    {
+      "Id": "2a1b3c4d-5e6f-4708-9a1b-2c3d4e5f6003",
+      "Name": "Soft Hit",
+      "LaneKey": "Skin|soft-hitnormal",
+      "SlotKey": "Skin|soft-hitnormal",
+      "MidiNote": 42
+    },
+    {
+      "Id": "2a1b3c4d-5e6f-4708-9a1b-2c3d4e5f6004",
+      "Name": "Soft Snare (Clap)",
+      "LaneKey": "Skin|soft-hitclap",
+      "SlotKey": "Skin|soft-hitclap",
+      "MidiNote": 38
+    },
+    {
+      "Id": "2a1b3c4d-5e6f-4708-9a1b-2c3d4e5f6005",
+      "Name": "Normal Clap",
+      "LaneKey": "Skin|normal-hitclap",
+      "SlotKey": "Skin|normal-hitclap",
+      "MidiNote": 40
+    },
+    {
+      "Id": "2a1b3c4d-5e6f-4708-9a1b-2c3d4e5f6006",
+      "Name": "Drum Tom (Clap)",
+      "LaneKey": "Skin|drum-hitclap",
+      "SlotKey": "Skin|drum-hitclap",
+      "MidiNote": 48
+    },
+    {
+      "Id": "2a1b3c4d-5e6f-4708-9a1b-2c3d4e5f6007",
+      "Name": "Soft Crash (Finish)",
+      "LaneKey": "Skin|soft-hitfinish",
+      "SlotKey": "Skin|soft-hitfinish",
+      "MidiNote": 49
+    },
+    {
+      "Id": "2a1b3c4d-5e6f-4708-9a1b-2c3d4e5f6008",
+      "Name": "Cymbal Finish",
+      "LaneKey": "Skin|normal-hitfinish",
+      "SlotKey": "Skin|normal-hitfinish",
+      "MidiNote": 57
+    },
+    {
+      "Id": "2a1b3c4d-5e6f-4708-9a1b-2c3d4e5f6009",
+      "Name": "Floor Tom (Finish)",
+      "LaneKey": "Skin|drum-hitfinish",
+      "SlotKey": "Skin|drum-hitfinish",
+      "MidiNote": 41
+    },
+    {
+      "Id": "2a1b3c4d-5e6f-4708-9a1b-2c3d4e5f600a",
+      "Name": "Whistle (soft)",
+      "LaneKey": "Skin|soft-hitwhistle",
+      "SlotKey": "Skin|soft-hitwhistle",
+      "MidiNote": null
+    },
+    {
+      "Id": "2a1b3c4d-5e6f-4708-9a1b-2c3d4e5f600b",
+      "Name": "Whistle",
+      "LaneKey": "Skin|normal-hitwhistle",
+      "SlotKey": "Skin|normal-hitwhistle",
+      "MidiNote": null
+    },
+    {
+      "Id": "2a1b3c4d-5e6f-4708-9a1b-2c3d4e5f600c",
+      "Name": "Whistle (drum)",
+      "LaneKey": "Skin|drum-hitwhistle",
+      "SlotKey": "Skin|drum-hitwhistle",
+      "MidiNote": null
+    }
+  ],
+  "Audio": []
+}

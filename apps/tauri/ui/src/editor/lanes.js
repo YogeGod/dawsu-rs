@@ -24,6 +24,7 @@ export function attachLanes(ctx) {
     }
     state.collapsedFamilies.clear();
     for (const family of layout?.collapsed_families ?? []) state.collapsedFamilies.add(family);
+    state.groupBySampleSet = !layout?.plain_list;
   }
 
   function saveLaneLayout(persist = false) {
@@ -35,6 +36,7 @@ export function attachLanes(ctx) {
       lane_colours: Object.fromEntries(state.laneColours),
       ...(state.renamedLanes.size ? { lane_names: Object.fromEntries(state.renamedLanes) } : {}),
       ...(state.orderedLaneKeys.length ? { lane_order: [...state.orderedLaneKeys] } : {}),
+      ...(state.groupBySampleSet === false ? { plain_list: true } : {}),
     };
     state.layoutWrites++;
     ctx.run(async () => {
@@ -362,11 +364,17 @@ export function attachLanes(ctx) {
         ...(drum ? { drumRowIndex: drumRowIndices[position] ?? null } : {}),
       };
     });
+    const visibleSet = new Set(state.scene.laneOrder ?? state.scene.lanes.map((_, idx) => idx));
+    const hiddenSkinCount = state.scene.lanes.reduce((count, lane, idx) => (
+      !visibleSet.has(idx) && lane?.index === 0 && lane?.group ? count + 1 : count
+    ), 0);
     return {
       names: state.view.panels?.laneNames !== false,
       busy: !!state.view.busy,
       drum,
       drumName: drum ? state.view.drumView?.name ?? null : null,
+      hiddenSkinCount,
+      groupBySampleSet: state.groupBySampleSet !== false,
       rows,
     };
   }
@@ -436,6 +444,18 @@ export function attachLanes(ctx) {
           await invoke("drum_vst_action", { payload: { kind: "toggle_lane", row } });
           await ctx.update(null, true);
         });
+        break;
+      }
+      case "showDefaultSkinLanes": {
+        ctx.act({ kind: "show_default_skin_lanes", map: state.scene.path });
+        break;
+      }
+      case "togglePlainList": {
+        state.groupBySampleSet = state.groupBySampleSet === false;
+        ctx.ui()?.laneOptions?.(state.usedLaneKeys !== null, state.laneFilterText, state.groupBySampleSet);
+        ctx.renderLanes();
+        ctx.paintSoon();
+        saveLaneLayout(true);
         break;
       }
     }

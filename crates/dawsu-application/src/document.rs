@@ -35,6 +35,7 @@ pub struct Document {
     pub files: Vec<String>,
     pub difficulties: Vec<PathBuf>,
     pub hs_mode: bool,
+    pub starter_mode: Option<crate::HsStarterMode>,
     pub(crate) compile_base: OsuFile,
     /// The hits as last written: the final compile input of the last Save, or the hits as opened.
     /// A part Save cannot write as drawn goes back to its state here (F052).
@@ -152,6 +153,7 @@ impl Document {
             files,
             difficulties,
             hs_mode: false,
+            starter_mode: None,
             lane_layout: None,
             time_signatures: Vec::new(),
             editor_bars: Vec::new(),

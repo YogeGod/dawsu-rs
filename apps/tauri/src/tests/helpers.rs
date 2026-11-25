@@ -44,7 +44,7 @@ pub(super) fn skin_sounds(label: &str, wave: &[u8]) -> Fixture {
     folder
 }
 
-pub(super) fn open(app: &mut Application, path: &Path) {
+pub(super) fn open_raw(app: &mut Application, path: &Path) {
     Action::Open { path: path.into() }.run(app);
     wait_for_job(app);
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -53,6 +53,12 @@ pub(super) fn open(app: &mut Application, path: &Path) {
         assert!(Instant::now() < deadline, "song decode job did not finish");
         std::thread::sleep(Duration::from_millis(5));
     }
+}
+
+pub(super) fn open(app: &mut Application, path: &Path) {
+    open_raw(app, path);
+    // Pre-existing editor tests expect Grid snap and all lanes visible on fresh open.
+    app.reset_fresh_open_for_tests();
 }
 
 pub(super) fn isolated_save_fixture(label: &str, test: &str) -> Option<Fixture> {

@@ -201,9 +201,15 @@ impl Pending {
     }
 }
 
-/// A pending file's name is one file in the mapset folder itself: no folder, drive or `..`.
+/// A pending file's name is one file in the mapset folder itself: no folder, drive, `.osu`
+/// delimiter (`,` or `|`), or `..`.
 fn bare_name(name: &str) -> Result<(), String> {
-    if name.is_empty() || name == "." || name == ".." || name.contains(['/', '\\', ':']) || name.chars().any(char::is_control) {
+    if name.is_empty()
+        || name == "."
+        || name == ".."
+        || name.contains(['/', '\\', ':', ',', '|'])
+        || name.chars().any(char::is_control)
+    {
         return Err(format!("{name:?} is not a sample file name in the mapset folder."));
     }
     Ok(())

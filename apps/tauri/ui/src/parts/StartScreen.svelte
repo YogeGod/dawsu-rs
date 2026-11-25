@@ -36,9 +36,26 @@
   let songsTotal = $state(0);
   let songsLoading = $state(false);
   let songsError = $state("");
-  let intakeMapset = $state(null);
+  let selectedMapsetFolder = $state("");
   let searchSeq = 0;
   let debounceTimer = null;
+
+  const selectedMapset = $derived.by(() => {
+    if (!songsMatches.length) return null;
+    const found = selectedMapsetFolder
+      ? songsMatches.find(s => s.folder === selectedMapsetFolder)
+      : null;
+    const set = found ?? songsMatches[0];
+    return set ? { ...set, difficulties: set.diffs ?? [] } : null;
+  });
+
+  function openIntakeForSet(set) {
+    selectedMapsetFolder = set.folder;
+    const payload = { ...set, difficulties: set.diffs ?? [] };
+    if (typeof window !== "undefined" && window.innerWidth < 1020) {
+      send("openMapsetIntake", payload);
+    }
+  }
 
   async function runSongsSearch(query, refresh = false) {
     if (typeof window === "undefined" || !window.__TAURI__?.core?.invoke) return;
@@ -115,7 +132,8 @@
   }
 </script>
 
-<div class="home-panel">
+<div class="home-panel" class:has-right-intake={Boolean(selectedMapset)}>
+  <div class="home-main">
   <img class="home-logo" src="studio-assets/dawsu.png" alt="dawsu!">
   <h1>Open a map to start hitsounding</h1>
   <p>Every sample in the mapset becomes a lane you draw hits on, over the song.</p>
@@ -217,10 +235,10 @@
         <p class="home-songs-empty">{songsQuery.trim() ? "No matching mapsets" : "No mapsets found in Songs folder"}</p>
       {:else}
         {#each songsMatches as set (set.folder)}
-          <div class="home-song-set">
+          <div class="home-song-set" class:selected={selectedMapset?.folder === set.folder}>
             <div class="home-song-meta">
               <button type="button" class="home-song-heading" disabled={busy}
-                onclick={() => { intakeMapset = { ...set, difficulties: set.diffs ?? [] }; }}>
+                onclick={() => openIntakeForSet(set)}>
                 <strong>{mapsetHeading(set)}</strong>
               </button>
               {#if set.creator}
@@ -242,9 +260,9 @@
               {/each}
               {#if set.diffs?.length}
                 <button type="button" class="home-song-diff home-song-create-hs"
-                  title="Create or open a [Hitsounds] difficulty for this mapset"
+                  title="Choose how to start hitsounding this mapset"
                   disabled={busy}
-                  onclick={() => send("createHsDiff", set.diffs[0].path)}>
+                  onclick={() => send("openMapsetIntake", { ...set, difficulties: set.diffs ?? [] })}>
                   + Hitsounds
                 </button>
               {/if}
@@ -275,16 +293,49 @@
       {/each}
     </div>
   </section>
-  <MapsetIntakeCard
-    mapset={intakeMapset}
-    {busy}
-    onopen={path => { intakeMapset = null; send("openPath", path); }}
-    oncreatehs={refPath => { intakeMapset = null; send("createHsDiff", refPath); }}
-    onclose={() => { intakeMapset = null; }}
-  />
+  </div>
+  {#if selectedMapset}
+    <div class="home-right-intake">
+      <MapsetIntakeCard
+        mapset={selectedMapset}
+        {busy}
+        inline={true}
+        onopen={path => send("openPath", path)}
+        oncreatehs={(refPath, starterMode) => send("createHsDiff", refPath, starterMode)}
+      />
+    </div>
+  {/if}
 </div>
 
 <style>
+  .home-panel.has-right-intake {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 360px;
+    gap: 20px;
+    align-items: start;
+    max-width: 1120px;
+  }
+  .home-main {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 16px;
+    min-width: 0;
+  }
+  .home-right-intake {
+    min-width: 0;
+  }
+  .home-song-set.selected {
+    border-color: var(--editor-accent);
+  }
+  @media (max-width: 1019px) {
+    .home-panel.has-right-intake {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .home-right-intake {
+      display: none;
+    }
+  }
   .recovery-entries {
     max-height: 200px;
     overflow-y: auto;

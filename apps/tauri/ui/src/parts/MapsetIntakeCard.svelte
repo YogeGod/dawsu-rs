@@ -1,104 +1,211 @@
 <script>
+  import { bridge } from "../lib/bridge.svelte.js";
   import { isHitsoundVersion } from "../lib/startScreen.js";
 
+  const MODE_LABELS = { 1: "taiko", 2: "catch", 3: "mania" };
+
   let {
-    mapset = null,
-    busy = false,
+    mapset = undefined,
+    busy = undefined,
+    inline = false,
     onopen = null,
     oncreatehs = null,
     onclose = null,
   } = $props();
 
-  const diffs = $derived(Array.isArray(mapset?.difficulties) ? mapset.difficulties : []);
-  const hsDiff = $derived(diffs.find(d => isHitsoundVersion(d?.version)) ?? null);
-  const nonHsDiffs = $derived(diffs.filter(d => !isHitsoundVersion(d?.version)));
+  const activeMapset = $derived(mapset !== undefined ? mapset : bridge.intakeMapset);
+  const isBusy = $derived(busy !== undefined ? !!busy : !!bridge.view?.busy);
+
+  const diffs = $derived(Array.isArray(activeMapset?.difficulties) ? activeMapset.difficulties : []);
+  const isStandard = diff => diff?.mode == null || diff.mode === 0;
+  const isHs = diff => Boolean(diff?.isHs) || isHitsoundVersion(diff?.version);
+  const hsDiff = $derived(diffs.find(d => isHs(d)) ?? null);
+  const standardNonHs = $derived(diffs.filter(d => !isHs(d) && isStandard(d)));
+  const standardDiffs = $derived(diffs.filter(d => isStandard(d)));
   let selectedRefPath = $state("");
 
   $effect(() => {
-    const first = nonHsDiffs[0]?.path ?? diffs[0]?.path ?? "";
-    if (!selectedRefPath || !diffs.some(d => d.path === selectedRefPath)) {
+    const candidates = standardNonHs.length ? standardNonHs : standardDiffs;
+    const first = candidates[0]?.path ?? "";
+    if (!selectedRefPath || !candidates.some(d => d.path === selectedRefPath)) {
       selectedRefPath = first;
     }
   });
 
   const heading = $derived.by(() => {
-    if (!mapset) return "";
-    const artist = mapset.artist?.trim();
-    const title = mapset.title?.trim();
+    if (!activeMapset) return "";
+    const artist = activeMapset.artist?.trim();
+    const title = activeMapset.title?.trim();
     if (artist && title) return `${artist} - ${title}`;
-    return title || artist || mapset.folder || "Mapset folder";
+    return title || artist || activeMapset.folder || "Mapset folder";
   });
 
   const folderError = $derived.by(() => {
-    if (!mapset) return "";
-    if (mapset.corrupt || mapset.error) return mapset.error || "This mapset folder could not be read.";
+    if (!activeMapset) return "";
+    if (activeMapset.corrupt || activeMapset.error) {
+      return activeMapset.error || "This mapset folder could not be read.";
+    }
     if (diffs.length === 0) return "No readable .osu difficulties found in this folder.";
     return "";
   });
 
+  function handleClose() {
+    if (onclose) onclose();
+    else bridge.intakeMapset = null;
+  }
+
+  function handleOpen(path) {
+    if (!path || isBusy) return;
+    if (onopen) onopen(path);
+    else {
+      bridge.intakeMapset = null;
+      globalThis.startScreenAction?.("openPath", path);
+    }
+  }
+
+  function handleCreateHs(refPath, starterMode) {
+    if (!refPath || isBusy) return;
+    if (oncreatehs) oncreatehs(refPath, starterMode);
+    else {
+      bridge.intakeMapset = null;
+      globalThis.startScreenAction?.("createHsDiff", refPath, starterMode);
+    }
+  }
+
   function onKeydown(event) {
-    if (event.key === "Escape" && mapset) {
+    if (!inline && event.key === "Escape" && activeMapset) {
       event.stopPropagation();
-      onclose?.();
+      handleClose();
     }
   }
 </script>
 
 <svelte:window onkeydown={onKeydown} />
 
-{#if mapset}
-  <div class="intake-backdrop" role="presentation"
-    onclick={e => { if (e.target === e.currentTarget) onclose?.(); }}>
-    <div class="intake-card" role="dialog" aria-modal="true" aria-label="Open mapset">
-      <header class="intake-head">
-        <div>
-          <p class="intake-eyebrow">Mapset</p>
-          <h2 class="intake-title">{heading}</h2>
-        </div>
-        <button type="button" class="intake-close" aria-label="Close" onclick={() => onclose?.()}>✕</button>
-      </header>
+{#snippet cardBody()}
+  <header class="intake-head">
+    <div class="intake-head-copy">
+      <p class="intake-eyebrow">{activeMapset.creator ? `Mapped by ${activeMapset.creator}` : "Mapset"}</p>
+      <h2 class="intake-title">{heading}</h2>
+    </div>
+    {#if !inline}
+      <button type="button" class="intake-close" aria-label="Close" onclick={handleClose}>✕</button>
+    {/if}
+  </header>
 
-      {#if folderError}
-        <p class="intake-error" role="alert">{folderError}</p>
-      {:else}
-        <div class="intake-diffs" role="list" aria-label="Difficulties">
-          {#each diffs as diff (diff.path)}
-            <button type="button" class="intake-diff" disabled={busy}
-              onclick={() => onopen?.(diff.path)}>
-              <span class="intake-diff-name">{diff.version || diff.fileName}</span>
-              {#if isHitsoundVersion(diff.version)}
-                <span class="intake-badge-hs">HS</span>
+  {#if folderError}
+    <p class="intake-error" role="alert">{folderError}</p>
+  {:else}
+    {#if hsDiff}
+      <div class="intake-continue">
+        <button type="button" class="primary intake-continue-btn" disabled={isBusy}
+          onclick={() => handleOpen(hsDiff.path)}>
+          Continue [{hsDiff.version || hsDiff.fileName}] →
+        </button>
+        <details class="intake-more">
+          <summary>Create another hitsound diff…</summary>
+          <div class="intake-paths">
+            {#if standardDiffs.length === 0}
+              <p class="intake-note">No osu!standard difficulty found to copy timing from.</p>
+            {:else}
+              {#if standardNonHs.length > 1}
+                <label class="intake-ref">
+                  <span>Timing reference</span>
+                  <select bind:value={selectedRefPath} disabled={isBusy}>
+                    {#each standardNonHs as diff (diff.path)}
+                      <option value={diff.path}>{diff.version || diff.fileName}</option>
+                    {/each}
+                  </select>
+                </label>
               {/if}
-            </button>
-          {/each}
-        </div>
-
-        <div class="intake-actions">
-          {#if hsDiff}
-            <button type="button" class="primary" disabled={busy}
-              onclick={() => onopen?.(hsDiff.path)}>
-              Open [{hsDiff.version}] →
-            </button>
-          {:else}
+              <button type="button" class="intake-path" disabled={isBusy || !selectedRefPath}
+                onclick={() => handleCreateHs(selectedRefPath, "custom_only")}>
+                <strong>Custom samples only</strong>
+                <small>Blank [Hitsounds] diff with 0 lanes — add your own .wav files.</small>
+              </button>
+              <button type="button" class="intake-path" disabled={isBusy || !selectedRefPath}
+                onclick={() => handleCreateHs(selectedRefPath, "default_12")}>
+                <strong>12 osu! default lanes</strong>
+                <small>Blank [Hitsounds] diff with osu!'s 12 skin sounds and Drum Map ready.</small>
+              </button>
+            {/if}
+          </div>
+        </details>
+      </div>
+    {:else}
+      <section class="intake-section" aria-label="New hitsound diff">
+        <p class="intake-section-label">Start a dedicated [Hitsounds] diff</p>
+        {#if standardDiffs.length === 0}
+          <p class="intake-note">No osu!standard difficulty found to copy timing from.</p>
+        {:else}
+          {#if standardNonHs.length > 1}
             <label class="intake-ref">
-              <span>Reference timing from</span>
-              <select bind:value={selectedRefPath} disabled={busy}>
-                {#each nonHsDiffs as diff (diff.path)}
+              <span>Timing reference</span>
+              <select bind:value={selectedRefPath} disabled={isBusy}>
+                {#each standardNonHs as diff (diff.path)}
                   <option value={diff.path}>{diff.version || diff.fileName}</option>
                 {/each}
               </select>
             </label>
-            <button type="button" class="primary" disabled={busy || !selectedRefPath}
-              onclick={() => oncreatehs?.(selectedRefPath)}>
-              Create [Hitsounds] &amp; Start Editing →
-            </button>
           {/if}
-        </div>
+          <div class="intake-paths">
+            <button type="button" class="intake-path intake-path-primary" disabled={isBusy || !selectedRefPath}
+              onclick={() => handleCreateHs(selectedRefPath, "custom_only")}>
+              <strong>Custom samples only</strong>
+              <small>Starts with 0 lanes — add your own .wav files or drop them onto the timeline.</small>
+            </button>
+            <button type="button" class="intake-path" disabled={isBusy || !selectedRefPath}
+              onclick={() => handleCreateHs(selectedRefPath, "default_12")}>
+              <strong>12 osu! default lanes</strong>
+              <small>Starts with osu!'s 12 default skin sounds in Drum Map order.</small>
+            </button>
+          </div>
+        {/if}
+      </section>
+    {/if}
 
-        <p class="intake-shield">Auto-backup stays on: your original mapset is snapshotted before any write.</p>
-      {/if}
+    <section class="intake-section" aria-label="Edit an existing difficulty directly">
+      <p class="intake-section-label">Or edit a difficulty directly</p>
+      <div class="intake-diffs" role="list" aria-label="Difficulties">
+        {#each diffs as diff (diff.path)}
+          {@const supported = isStandard(diff)}
+          <button
+            type="button"
+            class="intake-diff"
+            class:unsupported={!supported}
+            disabled={isBusy || !supported}
+            title={supported ? diff.path : `${MODE_LABELS[diff.mode] || "Unsupported"} mode is not supported`}
+            onclick={() => handleOpen(diff.path)}
+          >
+            <span class="intake-diff-name">{diff.version || diff.fileName}</span>
+            {#if isHs(diff)}
+              <span class="intake-badge-hs">HS</span>
+            {/if}
+            {#if !supported && MODE_LABELS[diff.mode]}
+              <span class="intake-badge-mode">{MODE_LABELS[diff.mode]}</span>
+            {/if}
+          </button>
+        {/each}
+      </div>
+    </section>
+
+    <p class="intake-shield">Auto-backup stays on: your original mapset is snapshotted before any write.</p>
+  {/if}
+{/snippet}
+
+{#if activeMapset}
+  {#if inline}
+    <aside class="intake-card intake-card-inline" aria-label="Selected mapset">
+      {@render cardBody()}
+    </aside>
+  {:else}
+    <div class="intake-backdrop" role="presentation"
+      onclick={e => { if (e.target === e.currentTarget) handleClose(); }}>
+      <div class="intake-card" role="dialog" aria-modal="true" aria-label="Open mapset">
+        {@render cardBody()}
+      </div>
     </div>
-  </div>
+  {/if}
 {/if}
 
 <style>
@@ -112,7 +219,7 @@
     padding: 16px;
   }
   .intake-card {
-    width: min(460px, 100%);
+    width: min(500px, 100%);
     padding: 18px 20px;
     border: 1px solid var(--editor-border);
     border-radius: 12px;
@@ -121,12 +228,21 @@
     display: flex;
     flex-direction: column;
     gap: 14px;
+    text-align: left;
+  }
+  .intake-card-inline {
+    width: 100%;
+    position: sticky;
+    top: 16px;
   }
   .intake-head {
     display: flex;
     align-items: flex-start;
     justify-content: space-between;
     gap: 12px;
+  }
+  .intake-head-copy {
+    min-width: 0;
   }
   .intake-eyebrow {
     margin: 0 0 2px;
@@ -139,8 +255,10 @@
     margin: 0;
     font-size: 16px;
     font-weight: 600;
+    overflow-wrap: anywhere;
   }
   .intake-close {
+    flex: none;
     min-width: 28px;
     min-height: 28px;
     border: 0;
@@ -160,6 +278,74 @@
     background: rgba(239, 68, 68, 0.14);
     color: #fca5a5;
     font-size: 12px;
+  }
+  .intake-note {
+    margin: 0;
+    font-size: 12px;
+    color: var(--editor-muted);
+  }
+  .intake-continue {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .intake-continue-btn {
+    width: 100%;
+  }
+  .intake-more summary {
+    cursor: pointer;
+    font-size: 12px;
+    color: var(--editor-secondary);
+    user-select: none;
+  }
+  .intake-more[open] .intake-paths {
+    margin-top: 8px;
+  }
+  .intake-section {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .intake-section-label {
+    margin: 0;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--editor-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .intake-paths {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .intake-path {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 10px 12px;
+    border: 1px solid var(--editor-border);
+    border-radius: 8px;
+    background: var(--editor-chrome);
+    color: var(--editor-text);
+    text-align: left;
+    cursor: pointer;
+  }
+  .intake-path-primary {
+    border-color: var(--editor-accent);
+    background: rgba(56, 189, 248, 0.1);
+  }
+  .intake-path:hover:not(:disabled) {
+    border-color: var(--editor-accent);
+    background: var(--editor-hover);
+  }
+  .intake-path strong {
+    font-size: 13px;
+    font-weight: 600;
+  }
+  .intake-path small {
+    font-size: 11px;
+    color: var(--editor-secondary);
   }
   .intake-diffs {
     display: flex;
@@ -181,6 +367,10 @@
   .intake-diff:hover:not(:disabled) {
     border-color: var(--editor-accent);
   }
+  .intake-diff.unsupported {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
   .intake-badge-hs {
     padding: 1px 5px;
     border-radius: 999px;
@@ -189,10 +379,13 @@
     font-size: 10px;
     font-weight: 600;
   }
-  .intake-actions {
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
+  .intake-badge-mode {
+    padding: 1px 5px;
+    border-radius: 999px;
+    background: rgba(148, 163, 184, 0.18);
+    color: var(--editor-secondary);
+    font-size: 10px;
+    font-weight: 500;
   }
   .intake-ref {
     display: flex;

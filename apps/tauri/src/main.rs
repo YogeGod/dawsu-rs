@@ -42,6 +42,13 @@ pub(crate) enum Request {
     Shortcuts(mpsc::Sender<Value>),
     ExportSettings(mpsc::Sender<Option<(PathBuf, ExportSettings)>>),
     KeyFile(PathBuf, bool, mpsc::Sender<Result<(), String>>),
+    CreateHitsoundDiff(
+        PathBuf,
+        bool,
+        Option<dawsu_application::HsStarterMode>,
+        mpsc::Sender<Result<PathBuf, String>>,
+    ),
+    CreateHitsoundDiffFromCurrent(mpsc::Sender<Result<PathBuf, String>>),
     SongsDirectory(mpsc::Sender<Option<PathBuf>>),
     SetSongsDirectory(PathBuf, mpsc::Sender<Result<ViewResponse, String>>),
     LibraryDirectory(mpsc::Sender<Option<PathBuf>>),
@@ -397,7 +404,7 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                         next_view_response(
                             app,
                             &mut home,
-                            &drums,
+                            &mut drums,
                             &mut playback_start,
                             &mut tick_cache,
                             &mut pending_initial_open,
@@ -471,6 +478,20 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                     }) {
                         let _ = response.send(value);
                     }
+                }
+                Ok(Request::CreateHitsoundDiff(sibling_path, reuse_existing, starter_mode, response)) => {
+                    let result = guard(&mut app, &mut fault, |app| {
+                        app.create_hitsound_diff(&sibling_path, reuse_existing, starter_mode)
+                    })
+                    .and_then(|result| result);
+                    let _ = response.send(result);
+                }
+                Ok(Request::CreateHitsoundDiffFromCurrent(response)) => {
+                    let result = guard(&mut app, &mut fault, |app| {
+                        app.create_hitsound_diff_from_current()
+                    })
+                    .and_then(|result| result);
+                    let _ = response.send(result);
                 }
                 Ok(Request::SetSongsDirectory(folder, response)) => {
                     let result = guard(&mut app, &mut fault, |app| {
@@ -960,6 +981,7 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                         let _ = guard(&mut app, &mut fault, |app| {
                             app.poll();
                             home.settle(app);
+                            drums.sync_on_document_open(app, &mut tick_cache);
                         });
                     }
                 }
@@ -1110,7 +1132,9 @@ fn main() {
             commands::library_and_files::pick_map_for_hitsound_diff,
             commands::library_and_files::inspect_mapset_folder,
             commands::library_and_files::create_hitsound_diff,
+            commands::library_and_files::create_hitsound_diff_from_current,
             commands::library_and_files::pick_sample,
+            commands::library_and_files::pick_lane_sample,
             commands::library_and_files::pick_drum_stem,
             commands::library_and_files::pick_sound_set,
             commands::library_and_files::sound_set_library,

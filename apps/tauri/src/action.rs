@@ -288,6 +288,17 @@ pub(crate) enum Action {
         target: SampleTarget,
         location: library::Location,
     },
+    AddLaneFromFile {
+        map: PathBuf,
+        path: PathBuf,
+    },
+    AddLaneFromLibrary {
+        map: PathBuf,
+        location: library::Location,
+    },
+    ShowDefaultSkinLanes {
+        map: PathBuf,
+    },
     PlaceSoundSet {
         map: PathBuf,
         path: PathBuf,
@@ -655,6 +666,24 @@ impl Action {
                 if let Err(error) = location.sample(app.preferences.hitsound_library.as_deref())
                     .and_then(|sample| assign_sample(app, target, sample, false))
                 {
+                    app.error = Some(error);
+                }
+            }
+            Self::AddLaneFromFile { map, path } => {
+                if let Err(error) = app.add_lane_from_file(&map, &path) {
+                    app.error = Some(error);
+                }
+            }
+            Self::AddLaneFromLibrary { map, location } => {
+                if let Err(error) = location
+                    .sample(app.preferences.hitsound_library.as_deref())
+                    .and_then(|sample| app.add_lane_from_file(&map, &sample))
+                {
+                    app.error = Some(error);
+                }
+            }
+            Self::ShowDefaultSkinLanes { map } => {
+                if let Err(error) = app.show_default_skin_lanes(&map) {
                     app.error = Some(error);
                 }
             }

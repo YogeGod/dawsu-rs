@@ -61,6 +61,8 @@ export class Bridge {
   // Active editor workflow mode ("hitsounds" | "drums" | "keysounds") and floating Micro-HUD anchor.
   mode = $state("hitsounds");
   microHud = $state.raw(null);
+  // Top-level 3-path Mapset Intake Card payload (shown outside #home so folder drops work while editing).
+  intakeMapset = $state.raw(null);
 
   // No map, a job running or a fault: the parts show but take no input.
   get disabled() {

@@ -1,3 +1,4 @@
+use dawsu_editor::tempo::SnapMode;
 use dawsu_foundation::{CustomIndex, SampleIdentity, SampleSet};
 use dawsu_foundation::{
     digest::sha256_hex,
@@ -16,6 +17,50 @@ use std::{
 const VERSION: u32 = 1;
 const MAX_PROJECT_BYTES: u64 = 192 * 1024 * 1024;
 const MAX_LEGACY_BYTES: u64 = 192 * 1024 * 1024;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HsStarterMode {
+    CustomOnly,
+    Default12,
+}
+
+impl HsStarterMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::CustomOnly => "custom_only",
+            Self::Default12 => "default_12",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum SavedSnapMode {
+    Grid,
+    GridRelative,
+    Objects,
+}
+
+impl From<SnapMode> for SavedSnapMode {
+    fn from(mode: SnapMode) -> Self {
+        match mode {
+            SnapMode::Grid => Self::Grid,
+            SnapMode::GridRelative => Self::GridRelative,
+            SnapMode::Objects => Self::Objects,
+        }
+    }
+}
+
+impl From<SavedSnapMode> for SnapMode {
+    fn from(mode: SavedSnapMode) -> Self {
+        match mode {
+            SavedSnapMode::Grid => Self::Grid,
+            SavedSnapMode::GridRelative => Self::GridRelative,
+            SavedSnapMode::Objects => Self::Objects,
+        }
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -38,6 +83,10 @@ pub(crate) struct SessionSettings {
     pub hidden_lanes: Option<BTreeSet<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hs_mode: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub starter_mode: Option<HsStarterMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snap_mode: Option<SavedSnapMode>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hs_circle_ownership: Option<HsCircleOwnership>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -104,6 +153,8 @@ impl Default for SessionSettings {
             lane_slots: None,
             hidden_lanes: None,
             hs_mode: None,
+            starter_mode: None,
+            snap_mode: None,
             hs_circle_ownership: None,
             gain_recovery: None,
             unwritten: None,
@@ -167,6 +218,8 @@ pub struct LaneLayout {
     pub lane_names: BTreeMap<String, String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub lane_order: Vec<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub plain_list: bool,
 }
 
 const SAMPLE_FOLDERS: [&str; 3] = ["normal", "soft", "drum"];
@@ -327,6 +380,7 @@ struct LegacyTimeSignature {
 pub(crate) struct Project {
     path: PathBuf,
     expected: Option<Vec<u8>>,
+    pub has_saved_file: bool,
     pub settings: SessionSettings,
     /// Sound set links the last open could not put back; each Save writes them again (M3).
     pub kept_links: Vec<super::sound_sets::PlacementRecord>,
@@ -339,7 +393,7 @@ impl Project {
     pub fn load(root: &Path, legacy_root: Option<&Path>, map: &Path) -> Result<Self, String> {
         let path = root.join(format!("{}.json", path_digest(map)));
         let expected = read_bounded(&path, MAX_PROJECT_BYTES)?;
-        let settings = if let Some(bytes) = &expected {
+        let (settings, has_saved_file) = if let Some(bytes) = &expected {
             let data: FileData = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
             if data.version != VERSION {
                 return Err(format!("Unsupported session file version {}", data.version));
@@ -374,15 +428,19 @@ impl Project {
                     settings.export_settings = settings.export_settings.or(legacy.export_settings);
                 }
             }
-            settings
+            (settings, true)
         } else if let Some(root) = legacy_root {
-            legacy_settings(root, map)?.unwrap_or_default()
+            match legacy_settings(root, map)? {
+                Some(legacy) => (legacy, true),
+                None => (SessionSettings::default(), false),
+            }
         } else {
-            SessionSettings::default()
+            (SessionSettings::default(), false)
         };
         Ok(Self {
             path,
             expected,
+            has_saved_file,
             settings,
             kept_links: Vec::new(),
             accepted_versions: Default::default(),
@@ -424,6 +482,7 @@ impl Project {
             safe_write::create(&self.path, &bytes).map_err(|e| e.to_string())?;
         }
         self.expected = Some(bytes);
+        self.has_saved_file = true;
         self.settings = settings;
         Ok(())
     }

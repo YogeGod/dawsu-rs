@@ -144,10 +144,15 @@ impl Application {
             hidden_lanes: {
                 let items: std::collections::BTreeSet<_> = document.composer.hitsounds()
                     .hidden_lanes().map(project::lane_key).collect();
-                (!items.is_empty() || self.project.as_ref().is_some_and(|p| p.settings.hidden_lanes.is_some()))
-                    .then_some(items)
+                (!items.is_empty()
+                    || self.project.as_ref().is_some_and(|p| {
+                        p.has_saved_file || p.settings.hidden_lanes.is_some()
+                    }))
+                .then_some(items)
             },
             hs_mode: Some(document.hs_mode),
+            starter_mode: document.starter_mode,
+            snap_mode: Some(document.composer.snap_mode.into()),
             hs_circle_ownership: saved_ownership.unwrap_or_else(|| {
                 self.project.as_ref().and_then(|p| p.settings.hs_circle_ownership.clone())
             }),
@@ -598,6 +603,10 @@ impl Application {
             song_path,
             forced,
             status_note,
+            snap_mode: d.composer.snap_mode,
+            snap_enabled: d.composer.snap_enabled,
+            spacing: d.composer.spacing,
+            hidden_lanes: d.composer.hitsounds().hidden_lanes().cloned().collect(),
         };
         self.external_osu_changed = false;
         self.start_open_inner(OpenSource::Map(path), false, Some(preserve));
@@ -910,6 +919,14 @@ impl Application {
                     self.osu_watch.reset_for(&path);
                     if let Some(d) = self.document.as_mut() {
                         d.composer.protect_normals = self.preferences.protect_hitnormals;
+                        if let Some(keep_view) = &preserve {
+                            d.composer.snap_mode = keep_view.snap_mode;
+                            d.composer.snap_enabled = keep_view.snap_enabled;
+                            d.composer.spacing = keep_view.spacing;
+                            d.composer.history.update_external(|hits| {
+                                hits.restore_hidden_lanes(keep_view.hidden_lanes.iter().cloned());
+                            });
+                        }
                     }
                     let keep_song = preserve.as_ref().is_some_and(|p| {
                         p.song_path == loaded.song_path && (self.song.is_some() || self.song_loading)
@@ -1590,6 +1607,267 @@ impl Application {
     pub fn new_diff(&mut self, name: String) {
         self.review_job(move |source, _, _, _| output::new_diff(&source, &name));
     }
+
+    /// Creates a new byte-preserving `[Hitsounds]` difficulty cloned from `sibling_path` (keeping
+    /// CRLF, BOM, non-UTF-8 lines, timing points, and bookmarks) and optionally seeds its
+    /// [`project::Project`] for a beginner starter path (`CustomOnly` or `Default12`).
+    ///
+    /// When `reuse_existing` is `true` and a hitsound diff already exists in the folder, returns
+    /// that path without touching or overwriting its saved project.
+    pub fn create_hitsound_diff(
+        &self,
+        sibling_path: &Path,
+        reuse_existing: bool,
+        starter_mode: Option<project::HsStarterMode>,
+    ) -> Result<PathBuf, String> {
+        let (folder, resolved_sibling) = if sibling_path.is_dir() {
+            let mut diffs: Vec<PathBuf> = std::fs::read_dir(sibling_path)
+                .map_err(|e| e.to_string())?
+                .filter_map(Result::ok)
+                .map(|entry| entry.path())
+                .filter(|p| p.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("osu")))
+                .collect();
+            diffs.sort();
+            if diffs.is_empty() {
+                return Err("This folder contains no .osu difficulty files.".into());
+            }
+            // Prefer an osu!standard (mode 0) difficulty as the timing reference when picking from a folder.
+            let chosen = diffs
+                .iter()
+                .find(|p| {
+                    std::fs::read(p)
+                        .ok()
+                        .map(|bytes| dawsu_osu_format::OsuFile::read(bytes).file)
+                        .is_some_and(|f| {
+                            f.general("Mode")
+                                .and_then(|m| m.trim().parse::<u8>().ok())
+                                .unwrap_or(0)
+                                == 0
+                        })
+                })
+                .cloned()
+                .unwrap_or_else(|| diffs[0].clone());
+            (sibling_path.to_path_buf(), chosen)
+        } else {
+            let parent = sibling_path
+                .parent()
+                .ok_or_else(|| "Difficulty has no parent folder.".to_string())?
+                .to_path_buf();
+            (parent, sibling_path.to_path_buf())
+        };
+
+        let mut sibling_entries: Vec<(String, Option<String>)> = Vec::new();
+        let mut osu_paths: Vec<PathBuf> = std::fs::read_dir(&folder)
+            .map_err(|e| e.to_string())?
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|p| p.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("osu")))
+            .collect();
+        osu_paths.sort();
+
+        for p in &osu_paths {
+            let Ok(bytes) = std::fs::read(p) else { continue };
+            let file = dawsu_osu_format::OsuFile::read(bytes).file;
+            let version = file.value("Metadata", "Version");
+            if reuse_existing && is_existing_hs_diff(&file, version.as_deref()) {
+                return Ok(p.clone());
+            }
+            if let Some(name) = p.file_name().and_then(|n| n.to_str()) {
+                sibling_entries.push((name.to_string(), version));
+            }
+        }
+
+        let source_bytes = std::fs::read(&resolved_sibling)
+            .map_err(|e| format!("Reading {}: {e}", resolved_sibling.display()))?;
+        let source_file = dawsu_osu_format::OsuFile::read(source_bytes).file;
+        let source_mode = source_file
+            .general("Mode")
+            .and_then(|m| m.trim().parse::<u8>().ok())
+            .unwrap_or(0);
+        if source_mode != 0 {
+            return Err("Choose an osu!standard difficulty as the timing reference for a Hitsounds diff.".into());
+        }
+        let source_name = resolved_sibling
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("map.osu");
+
+        let (planned, file_name) = (1..=999u32)
+            .find_map(|n| {
+                let version = if n == 1 {
+                    dawsu_hitsounding::generate::HITSOUNDS_VERSION.to_string()
+                } else {
+                    format!("{} {n}", dawsu_hitsounding::generate::HITSOUNDS_VERSION)
+                };
+                match dawsu_hitsounding::generate::new_hitsound_diff(
+                    &source_file,
+                    source_name,
+                    &version,
+                    &sibling_entries,
+                ) {
+                    dawsu_hitsounding::generate::NewDiff::Planned { file, file_name } => {
+                        Some((file, file_name))
+                    }
+                    _ => None,
+                }
+            })
+            .ok_or("Could not find a free Hitsounds difficulty name in this mapset.")?;
+
+        let target = folder.join(&file_name);
+        dawsu_foundation::safe_write::create(&target, &planned.to_bytes())
+            .map_err(|e| format!("Writing {file_name}: {e}"))?;
+
+        let canonical_target = target.canonicalize().unwrap_or_else(|_| target.clone());
+        if let Some(project_root) = self.project_root.as_deref() {
+            let folder_files = pending::sample_folder(&folder);
+            let mut proj = project::Project::load(project_root, None, &canonical_target)?;
+            let mut settings = proj.settings.clone();
+            settings.hs_mode = Some(true);
+            if let Some(mode) = starter_mode {
+                settings.starter_mode = Some(mode);
+                if let dawsu_hitsounding::Decompiled::Done(hits) =
+                    dawsu_hitsounding::decompile(&planned, &folder_files, &|| false, &mut |_, _| {})
+                {
+                    match mode {
+                        project::HsStarterMode::CustomOnly => {
+                            let all_hidden: std::collections::BTreeSet<String> = hits
+                                .lanes()
+                                .iter()
+                                .map(|lane| project::lane_key(&lane.identity))
+                                .collect();
+                            settings.hidden_lanes = Some(all_hidden);
+                            settings.lane_layout = Some(project::LaneLayout {
+                                plain_list: true,
+                                ..Default::default()
+                            });
+                            let mut choices = settings.export_choices.unwrap_or_default();
+                            choices.addition_only_normal =
+                                dawsu_hitsounding::index_packing::AdditionOnlyNormal::Silent;
+                            settings.export_choices = Some(choices);
+                        }
+                        project::HsStarterMode::Default12 => {
+                            let non_skin_hidden: std::collections::BTreeSet<String> = hits
+                                .lanes()
+                                .iter()
+                                .filter(|lane| {
+                                    !matches!(
+                                        lane.identity,
+                                        SampleIdentity::Standard {
+                                            sound: dawsu_foundation::Sound::Hit(_),
+                                            index,
+                                            ..
+                                        } if index.get() == 0
+                                    )
+                                })
+                                .map(|lane| project::lane_key(&lane.identity))
+                                .collect();
+                            settings.hidden_lanes = Some(non_skin_hidden);
+                        }
+                    }
+                }
+            }
+            proj.save(settings)?;
+        }
+
+        Ok(canonical_target)
+    }
+
+    /// Generates a standalone `[Hitsounds]` (or `[Hitsounds N]`) difficulty from the currently
+    /// open difficulty's hitsounds (preserving stacked / multi-volume moments via staged mixes),
+    /// leaving the open difficulty untouched on disk.
+    pub fn create_hitsound_diff_from_current(&self) -> Result<PathBuf, String> {
+        if self.busy || self.is_stroke_open() {
+            return Err("Finish the current operation before creating a Hitsounds diff.".into());
+        }
+        let doc = self.document.as_ref().ok_or("Open a difficulty first.")?;
+        let folder = doc
+            .path
+            .parent()
+            .ok_or("Difficulty has no parent folder.")?;
+        let source = output::Source::from_document(doc);
+        let source_name = doc
+            .path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("map.osu");
+
+        let mut existing_names = std::collections::BTreeSet::new();
+        let mut existing_versions = std::collections::BTreeSet::new();
+        for entry in std::fs::read_dir(folder).map_err(|e| e.to_string())?.flatten() {
+            let p = entry.path();
+            if !p.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("osu")) {
+                continue;
+            }
+            if let Some(name) = p.file_name().and_then(|n| n.to_str()) {
+                existing_names.insert(name.to_ascii_lowercase());
+            }
+            if let Ok(bytes) = std::fs::read(&p) {
+                let file = dawsu_osu_format::OsuFile::read(bytes).file;
+                if let Some(v) = file.value("Metadata", "Version") {
+                    existing_versions.insert(v.to_ascii_lowercase());
+                }
+            }
+        }
+
+        let version = (1..=999u32)
+            .map(|n| {
+                if n == 1 {
+                    dawsu_hitsounding::generate::HITSOUNDS_VERSION.to_string()
+                } else {
+                    format!("{} {n}", dawsu_hitsounding::generate::HITSOUNDS_VERSION)
+                }
+            })
+            .find(|v| {
+                let fname = dawsu_hitsounding::generate::file_name_for(&source.file, source_name, v);
+                !existing_versions.contains(&v.to_ascii_lowercase())
+                    && !existing_names.contains(&fname.to_ascii_lowercase())
+            })
+            .ok_or("Could not find a free Hitsounds difficulty name in this mapset.")?;
+
+        let mut diagnostics = Vec::new();
+        let mut plan = output::generate_report_for_version(
+            &source,
+            &version,
+            &self.preferences.default_samples,
+            doc.export_settings.as_ref(),
+            self.project_root.as_deref(),
+            false,
+            false,
+            mixes::MixFormat::Wav16,
+            &|| false,
+            &mut diagnostics,
+            &mut |_, _| {},
+        )?;
+        if self.preferences.clean_redundant_greenlines {
+            plan.clean_redundant_greenlines();
+        }
+        let target = plan
+            .generated_file()
+            .map(Path::to_path_buf)
+            .ok_or("No generated Hitsounds difficulty in write plan.")?;
+        plan.apply(&self.backups_folder(), &|| false)?;
+
+        let canonical_target = target.canonicalize().unwrap_or(target);
+        if let Some(project_root) = self.project_root.as_deref() {
+            let mut proj = project::Project::load(project_root, None, &canonical_target)?;
+            let mut settings = proj.settings.clone();
+            settings.hs_mode = Some(true);
+            proj.save(settings)?;
+        }
+        Ok(canonical_target)
+    }
+}
+
+fn is_existing_hs_diff(file: &dawsu_osu_format::OsuFile, version: Option<&str>) -> bool {
+    let lower = version.unwrap_or("").trim().to_ascii_lowercase();
+    lower.contains("hitsound")
+        || lower == "hs"
+        || lower.ends_with(" hs")
+        || lower.contains("[hs]")
+        || (file.hit_objects().is_empty() && !lower.is_empty())
+}
+
+impl Application {
     pub fn copy_hitsounds(
         &mut self,
         targets: Vec<PathBuf>,
@@ -1885,6 +2163,53 @@ pub(crate) fn load(
     }
     document.lane_layout = project.as_ref().and_then(|p| p.settings.lane_layout.clone());
     document.hs_mode = project.as_ref().and_then(|p| p.settings.hs_mode).unwrap_or(false);
+    document.starter_mode = project.as_ref().and_then(|p| p.settings.starter_mode);
+    if let Some(mode) = project.as_ref().and_then(|p| p.settings.snap_mode) {
+        document.composer.snap_mode = mode.into();
+    }
+    let has_saved_file = project.as_ref().is_some_and(|p| p.has_saved_file);
+    if recovery.is_none()
+        && !has_saved_file
+        && !document.hs_mode
+        && !document.composer.hitsounds().moments().is_empty()
+    {
+        // Path 3 first open (editing an existing gameplay difficulty directly):
+        // default to Objects snap and show only lanes that currently have hits
+        // (keeping normal-hitnormal Index 0 visible if no lane has hits yet).
+        document.composer.snap_mode = dawsu_editor::tempo::SnapMode::Objects;
+        let used: std::collections::BTreeSet<SampleIdentity> = document
+            .composer
+            .hitsounds()
+            .moments()
+            .iter()
+            .flat_map(|moment| moment.hits())
+            .cloned()
+            .collect();
+        let fallback_lane = SampleIdentity::Standard {
+            set: dawsu_foundation::SampleSet::Normal,
+            sound: dawsu_foundation::Sound::Hit(dawsu_foundation::Hitsound::Normal),
+            index: dawsu_foundation::CustomIndex::new(0),
+        };
+        let to_hide: Vec<SampleIdentity> = document
+            .composer
+            .hitsounds()
+            .lanes()
+            .iter()
+            .map(|lane| lane.identity.clone())
+            .filter(|id| {
+                if used.is_empty() {
+                    id != &fallback_lane
+                } else {
+                    !used.contains(id)
+                }
+            })
+            .collect();
+        if !to_hide.is_empty() {
+            document.composer.history.update_external(|hits| {
+                hits.restore_hidden_lanes(to_hide.iter().cloned());
+            });
+        }
+    }
     if let Some(ownership) = project.as_ref().and_then(|p| p.settings.hs_circle_ownership.as_ref()) {
         document.owned_hs_circles = ownership.verified_lines(&document.compile_base);
     }

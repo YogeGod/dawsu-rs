@@ -485,6 +485,20 @@ try {
     for (const tool of ["Draw", "Erase", "Mute", "Grab", "Range", "Ramp", "Select"]) await pickTool(tool);
   });
 
+  await step("Path 3 opens on Objects snap with used lanes, reveals 12 default lanes, and switches to Grid", async () => {
+    expect(await scene(() => window.scene.snapMode === "objects"), "fresh gameplay diff did not open on Objects snap");
+    const showDefault = page().locator("#show-default-skin-lanes");
+    if (await showDefault.isVisible()) {
+      await showDefault.click();
+      await until(() => window.scene.laneOrder.length >= 12, null, "Show 12 default lanes did not reveal all 12 skin lanes");
+    }
+    const modePill = page().locator("#snap-mode-toggle");
+    expect(await modePill.isVisible(), "Objects/Grid snap toggle pill is missing");
+    await modePill.click();
+    await until(() => window.scene.snapMode === "grid", null, "snap toggle pill did not switch from Objects to Grid");
+    return `${await scene(() => window.scene.laneOrder.length)} visible lanes, snapMode=grid`;
+  });
+
   await step("Change the snap with the snap slider", async () => {
     const before = await scene(() => window.scene.beats + "/" + window.scene.divisor);
     const box = await read(() => document.querySelector('[role="slider"][aria-label="Snap"]').getBoundingClientRect().toJSON());
@@ -910,6 +924,93 @@ try {
     expect(written.length && !other.length, `at 3500 ms: ${now.join(", ")}; Save wrote: ${mixFiles.join(", ") || "nothing"}`);
     return now.join(", ");
   });
+  await step("Path 1: Custom samples only opens with 0 lanes, plain list, Browser open, and adds a custom lane safely", async () => {
+    const extWav = join(profile, "path1-custom-kick.wav");
+    const samples = 4410;
+    const wav = Buffer.alloc(44 + samples * 2);
+    wav.write("RIFF", 0);
+    wav.writeUInt32LE(36 + samples * 2, 4);
+    wav.write("WAVEfmt ", 8);
+    wav.writeUInt32LE(16, 16);
+    wav.writeUInt16LE(1, 20);
+    wav.writeUInt16LE(1, 22);
+    wav.writeUInt32LE(44100, 24);
+    wav.writeUInt32LE(88200, 28);
+    wav.writeUInt16LE(2, 32);
+    wav.writeUInt16LE(16, 34);
+    wav.write("data", 36);
+    wav.writeUInt32LE(samples * 2, 40);
+    writeFileSync(extWav, wav);
+
+    const filesBefore = snapshot(mapFolder);
+    const created = await read(async (siblingPath) => {
+      return await window.__TAURI__.core.invoke("create_hitsound_diff", {
+        siblingPath,
+        reuseExisting: false,
+        starterMode: "custom_only",
+      });
+    }, mapCopy);
+    expect(typeof created === "string" && created.endsWith(".osu"), `unexpected created path: ${created}`);
+    await read(async (path) => {
+      await window.__TAURI__.core.invoke("editor_view", { scene: true, action: { kind: "open", path } });
+    }, created);
+    await until(
+      path => window.scene?.path?.toLowerCase() === path.toLowerCase() && window.scene.starterMode === "custom_only",
+      created,
+      "Path 1 [Hitsounds] diff did not open with custom_only starterMode",
+      15000,
+    );
+    const state1 = await read(() => ({
+      lanes: window.scene.laneOrder.length,
+      plainList: !!window.scene.laneLayout?.plain_list,
+      dropZone: !!document.querySelector(".empty-lanes-drop"),
+      browserOpen: window.view.panels?.browser !== false,
+    }));
+    expect(state1.lanes === 0, `expected 0 visible lanes in Path 1, got ${state1.lanes}`);
+    expect(state1.plainList, "expected plain_list=true in Path 1");
+    expect(state1.dropZone, "expected empty-lanes-drop zone in Path 1");
+    expect(state1.browserOpen, "expected Sample Browser open in Path 1");
+
+    await read(async ([map, path]) => {
+      await window.__TAURI__.core.invoke("editor_view", {
+        scene: true,
+        action: { kind: "add_lane_from_file", map, path },
+      });
+    }, [created, extWav]);
+    await until(() => window.scene.laneOrder.length === 1, null, "add_lane_from_file did not add 1 visible lane");
+    const filesAfter = snapshot(mapFolder);
+    const newWavs = [...filesAfter.keys()].filter(name => !filesBefore.has(name) && /\.(wav|ogg|mp3)$/i.test(name));
+    expect(newWavs.length === 0, `expected 0 new audio files in mapset before Save, found: ${newWavs.join(", ")}`);
+    return "0 lanes → 1 staged custom lane, 0 files written before Save";
+  });
+
+  await step("Path 2: 12 osu! default lanes auto-activates Default osu! kit with all 12 skin rows", async () => {
+    const created = await read(async (siblingPath) => {
+      return await window.__TAURI__.core.invoke("create_hitsound_diff", {
+        siblingPath,
+        reuseExisting: false,
+        starterMode: "default_12",
+      });
+    }, mapCopy);
+    expect(typeof created === "string" && created.endsWith(".osu"), `unexpected created path: ${created}`);
+    await read(async (path) => {
+      await window.__TAURI__.core.invoke("editor_view", { scene: true, action: { kind: "open", path } });
+    }, created);
+    await until(
+      path => window.scene?.path?.toLowerCase() === path.toLowerCase() && window.view?.drumView?.enabled === true,
+      created,
+      "Path 2 [Hitsounds] diff did not auto-activate Default osu! kit",
+      15000,
+    );
+    const state2 = await read(() => ({
+      name: window.view.drumView?.name,
+      rows: window.scene.drumRows?.length ?? 0,
+    }));
+    expect(state2.name === "Default osu! kit (12 skin sounds)", `unexpected drum kit: ${state2.name}`);
+    expect(state2.rows === 12, `expected 12 drum rows in Path 2, got ${state2.rows}`);
+    return `${state2.name} (${state2.rows} rows)`;
+  });
+
   await step("No errors after the last step", async () => {
     await sleep(500);
   }, true);

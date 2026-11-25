@@ -31,6 +31,10 @@ export function attachTimeline(ctx) {
         return new OptionCtor(label, path);
       });
       options.push(new OptionCtor("+ Create Hitsound diff", "__create_hs__"));
+      if (!state.scene.hs) {
+        options.push(new OptionCtor("Create [Hitsounds] from this diff", "__create_hs_from_current__"));
+        options.push(new OptionCtor("Capture Shared Base from this diff", "__capture_shared_base__"));
+      }
       options.push(new OptionCtor(state.scene.hs ? "Turn off HS mode" : "Turn on HS mode", "__toggle_hs__"));
       difficulty.replaceChildren(...options);
       difficulty.value = state.scene.path;

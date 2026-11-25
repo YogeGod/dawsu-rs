@@ -43,6 +43,7 @@ import LaneOptions from "./parts/LaneOptions.svelte";
 import LoadingOverlay from "./parts/LoadingOverlay.svelte";
 import KeysoundsModal from "./parts/KeysoundsModal.svelte";
 import MapPreview from "./parts/MapPreview.svelte";
+import MapsetIntakeCard from "./parts/MapsetIntakeCard.svelte";
 import MicroHud from "./parts/MicroHud.svelte";
 import MidiImportModal from "./parts/MidiImportModal.svelte";
 import NodeGraphWindow from "./parts/NodeGraphWindow.svelte";
@@ -84,6 +85,8 @@ const parts = {
   "loading-overlay": LoadingOverlay,
   // Global Ctrl+K Command Palette modal, at body level.
   "command-palette": CommandPalette,
+  // Unified 3-path Mapset Intake Card modal, at body level (works from Start Screen or while editing).
+  "mapset-intake": MapsetIntakeCard,
   // The popup the menu bar, the right-click tool picker and the lane menu share (#editor-menu).
   menu: EditorMenu,
   "inspector-selection": InspectorSelection, "inspector-lane": InspectorLane, "inspector-difficulty": InspectorDifficulty,
@@ -247,6 +250,14 @@ export function setMicroHud(hud) {
   bridge.microHud = hud ?? null;
 }
 
+export function openMapsetIntake(mapset) {
+  bridge.intakeMapset = mapset ?? null;
+}
+
+export function closeMapsetIntake() {
+  bridge.intakeMapset = null;
+}
+
 export function volumeBubble(next) {
   if (bridge.volumeBubble?.editing && next && !next.editing) return;
   bridge.volumeBubble = next ?? null;
@@ -254,7 +265,7 @@ export function volumeBubble(next) {
 
 // Boot the main editor runtime only on the editor window (never on export.html or drum.html).
 const uiBridge = {
-  update, lanes, inspector, browser, mixer, toggleMapPreview, mapPreviewOn, setNodeGraphViewer, nodeGraphViewer, bottomTab, hitCard, volumeBubble, commands, menu, centre, wheelSnap, snapGroup, statusNotice, viewport, laneOptions, coverageFilter, setCoverageFocus, hint, setMode, setMicroHud,
+  update, lanes, inspector, browser, mixer, toggleMapPreview, mapPreviewOn, setNodeGraphViewer, nodeGraphViewer, bottomTab, hitCard, volumeBubble, commands, menu, centre, wheelSnap, snapGroup, statusNotice, viewport, laneOptions, coverageFilter, setCoverageFocus, hint, setMode, setMicroHud, openMapsetIntake, closeMapsetIntake,
 };
 if (document.getElementById("grid")) {
   const showMicroHud = (x, y, extra = {}) => {
