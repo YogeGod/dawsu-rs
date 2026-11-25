@@ -1,6 +1,11 @@
 <script>
   import { bridge } from "../lib/bridge.svelte.js";
   import { invoke } from "../lib/ipc.js";
+  import {
+    getCachedBackground,
+    observeMapsetBg,
+    requestMapsetBackground,
+  } from "../lib/mapsetBackground.js";
   import MapsetIntakeCard from "./MapsetIntakeCard.svelte";
   import {
     dismissSetupChecklist,
@@ -37,8 +42,21 @@
   let songsLoading = $state(false);
   let songsError = $state("");
   let selectedMapsetFolder = $state("");
+  let bgUrls = $state({});
   let searchSeq = 0;
   let debounceTimer = null;
+
+  function primaryDiffPath(set) {
+    const diffs = set?.diffs ?? [];
+    const nonHs = diffs.find(d => !isHitsoundVersion(d.version));
+    return (nonHs ?? diffs[0])?.path || "";
+  }
+
+  function recordBgUrl(key, url) {
+    if (key && url && bgUrls[key] !== url) {
+      bgUrls[key] = url;
+    }
+  }
 
   const selectedMapset = $derived.by(() => {
     if (!songsMatches.length) return null;
@@ -46,12 +64,29 @@
       ? songsMatches.find(s => s.folder === selectedMapsetFolder)
       : null;
     const set = found ?? songsMatches[0];
-    return set ? { ...set, difficulties: set.diffs ?? [] } : null;
+    if (!set) return null;
+    const backgroundUrl = bgUrls[set.folder] || getCachedBackground(set.folder) || "";
+    return { ...set, difficulties: set.diffs ?? [], backgroundUrl };
+  });
+
+  $effect(() => {
+    const set = selectedMapset;
+    if (!set?.folder) return;
+    const osuPath = primaryDiffPath(set);
+    if (!osuPath) return;
+    const cached = requestMapsetBackground(set.folder, osuPath, (url) => {
+      recordBgUrl(set.folder, url);
+    });
+    if (cached) recordBgUrl(set.folder, cached);
   });
 
   function openIntakeForSet(set) {
     selectedMapsetFolder = set.folder;
-    const payload = { ...set, difficulties: set.diffs ?? [] };
+    const payload = {
+      ...set,
+      difficulties: set.diffs ?? [],
+      backgroundUrl: bgUrls[set.folder] || getCachedBackground(set.folder) || "",
+    };
     if (typeof window !== "undefined" && window.innerWidth < 1020) {
       send("openMapsetIntake", payload);
     }
@@ -248,17 +283,27 @@
         <p class="home-songs-empty">{songsQuery.trim() ? "No matching mapsets" : "No mapsets found in Songs folder"}</p>
       {:else}
         {#each songsMatches as set (set.folder)}
-          <div class="home-song-set" class:selected={selectedMapset?.folder === set.folder}>
-            <div class="home-song-banner {coverTone(set.folder)}" aria-hidden="true"></div>
+          {@const bgUrl = bgUrls[set.folder] || getCachedBackground(set.folder) || ""}
+          <div
+            class="home-song-set"
+            class:selected={selectedMapset?.folder === set.folder}
+            use:observeMapsetBg={{ key: set.folder, osuPath: primaryDiffPath(set), onLoad: recordBgUrl }}
+          >
+            <div class="home-song-backdrop {coverTone(set.folder)}" aria-hidden="true">
+              {#if bgUrl}
+                <img class="home-song-bg" src={bgUrl} alt="" decoding="async">
+              {/if}
+              <div class="home-song-scrim"></div>
+            </div>
             <div class="home-song-body">
               <div class="home-song-meta">
                 <button type="button" class="home-song-heading" disabled={busy}
                   onclick={() => openIntakeForSet(set)}>
                   <strong>{mapsetHeading(set)}</strong>
+                  {#if set.creator}
+                    <span class="home-song-creator">by {set.creator}</span>
+                  {/if}
                 </button>
-                {#if set.creator}
-                  <span class="home-song-creator">by {set.creator}</span>
-                {/if}
               </div>
               <div class="home-song-diffs">
                 {#each set.diffs as diff (diff.path)}
@@ -277,7 +322,7 @@
                   <button type="button" class="home-song-diff home-song-create-hs"
                     title="Choose how to start hitsounding this mapset"
                     disabled={busy}
-                    onclick={() => send("openMapsetIntake", { ...set, difficulties: set.diffs ?? [] })}>
+                    onclick={() => send("openMapsetIntake", { ...set, difficulties: set.diffs ?? [], backgroundUrl: bgUrl })}>
                     + Hitsounds
                   </button>
                 {/if}
@@ -336,17 +381,19 @@
   }
   :global(#home) .home-panel.has-right-intake {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) 380px;
-    gap: 24px;
+    grid-template-columns: minmax(0, 1fr) 340px;
+    justify-items: stretch;
+    gap: 20px;
     align-items: start;
-    width: min(1340px, 100%);
-    max-width: 1340px;
+    width: min(1380px, 100%);
+    max-width: 1380px;
   }
   .home-main {
     display: flex;
     flex-direction: column;
     align-items: stretch;
     gap: 16px;
+    width: 100%;
     min-width: 0;
   }
   .home-hero {
@@ -382,22 +429,30 @@
   }
   :global(#home .home-main .home-actions) {
     display: grid;
-    grid-template-columns: repeat(5, minmax(0, 1fr));
-    gap: 10px;
+    grid-template-columns: repeat(auto-fit, minmax(152px, 1fr));
+    gap: 8px;
     width: 100%;
   }
+  :global(#home .home-panel:not(.has-right-intake) .home-main .home-actions) {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+  }
   @media (max-width: 1120px) {
-    :global(#home .home-main .home-actions) {
-      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    :global(#home .home-panel:not(.has-right-intake) .home-main .home-actions) {
+      grid-template-columns: repeat(auto-fit, minmax(175px, 1fr));
     }
   }
   :global(#home .home-main .home-action) {
-    min-height: 68px;
-    padding: 10px 12px;
+    gap: 10px;
+    min-height: 64px;
+    padding: 10px 11px;
     border-radius: var(--radius-8);
     border: 1px solid var(--editor-border);
     background: var(--editor-panel);
     transition: border-color 0.14s ease, background 0.14s ease;
+  }
+  :global(#home .home-main .home-action svg) {
+    width: 20px;
+    height: 20px;
   }
   :global(#home .home-main .home-action:hover:not(:disabled)) {
     border-color: var(--editor-accent);
@@ -421,6 +476,7 @@
     height: 16px;
   }
   .home-right-intake {
+    width: 100%;
     min-width: 0;
     position: sticky;
     top: 16px;
@@ -431,7 +487,7 @@
     background: var(--editor-panel);
   }
   @media (max-width: 1019px) {
-    .home-panel.has-right-intake {
+    :global(#home) .home-panel.has-right-intake {
       grid-template-columns: minmax(0, 1fr);
     }
     .home-right-intake {
@@ -563,8 +619,10 @@
   }
   .home-songs {
     width: 100%;
+    min-width: 0;
     text-align: left;
-    display: grid;
+    display: flex;
+    flex-direction: column;
     gap: 10px;
     padding: 12px 14px;
     border: 1px solid var(--editor-border);
@@ -575,6 +633,8 @@
     display: flex;
     align-items: center;
     gap: 8px;
+    width: 100%;
+    min-width: 0;
   }
   .home-songs-head h2 {
     margin: 0;
@@ -588,6 +648,7 @@
   }
   .home-songs-refresh {
     margin-left: auto;
+    flex: none;
     min-height: 26px;
     padding: 0 10px;
     border: 1px solid var(--editor-border);
@@ -602,6 +663,7 @@
   }
   .home-songs-search {
     width: 100%;
+    min-width: 0;
     height: 32px;
     padding: 0 10px;
     border: 1px solid var(--editor-border);
@@ -612,11 +674,16 @@
   }
   .home-songs-list {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(225px, 1fr));
-    gap: 12px;
-    max-height: 400px;
+    grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+    grid-auto-rows: max-content;
+    align-content: start;
+    gap: 10px;
+    width: 100%;
+    min-width: 0;
+    max-height: 440px;
     overflow-y: auto;
-    padding-right: 2px;
+    overflow-x: hidden;
+    padding: 2px 4px 2px 2px;
   }
   .home-songs-empty {
     margin: 4px 2px;
@@ -625,22 +692,46 @@
     grid-column: 1 / -1;
   }
   .home-song-set {
+    position: relative;
     display: flex;
     flex-direction: column;
-    overflow: hidden;
+    min-width: 0;
+    min-height: 112px;
     border: 1px solid var(--editor-border);
     border-radius: 10px;
     background: var(--editor-chrome);
-    transition: border-color 0.14s ease, background 0.14s ease;
+    transition: border-color 0.14s ease, box-shadow 0.14s ease;
   }
   .home-song-set:hover {
     border-color: var(--editor-muted);
   }
-  .home-song-banner {
-    height: 44px;
+  .home-song-backdrop {
+    position: absolute;
+    inset: 0;
+    border-radius: 9px;
+    overflow: hidden;
+    pointer-events: none;
+  }
+  .home-song-bg {
     width: 100%;
-    flex: none;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+    height: 100%;
+    object-fit: cover;
+    object-position: center 35%;
+    display: block;
+    transition: transform 0.28s ease;
+  }
+  .home-song-set:hover .home-song-bg {
+    transform: scale(1.04);
+  }
+  .home-song-scrim {
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(
+      180deg,
+      rgba(10, 10, 13, 0.22) 0%,
+      rgba(10, 10, 13, 0.62) 48%,
+      rgba(10, 10, 13, 0.90) 100%
+    );
   }
   .home-art-0 { background: linear-gradient(135deg, #112332 0%, #1d445c 65%, #111c24 100%); }
   .home-art-1 { background: linear-gradient(135deg, #241932 0%, #4a2a54 65%, #191420 100%); }
@@ -649,22 +740,35 @@
   .home-art-4 { background: linear-gradient(135deg, #181c30 0%, #2e3762 65%, #141621 100%); }
   .home-art-5 { background: linear-gradient(135deg, #18231c 0%, #2d4935 65%, #131a16 100%); }
   .home-song-body {
+    position: relative;
+    z-index: 1;
     display: flex;
     flex-direction: column;
-    justify-content: space-between;
+    justify-content: flex-end;
     gap: 8px;
-    padding: 10px 12px 12px;
+    padding: 18px 12px 11px;
     flex: 1;
+    min-width: 0;
   }
   .home-song-meta {
     display: flex;
     flex-direction: column;
     gap: 2px;
+    flex: 1;
+    justify-content: flex-end;
     min-width: 0;
+    overflow: hidden;
   }
   .home-song-heading {
-    display: block;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+    gap: 2px;
     width: 100%;
+    height: 100%;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
     padding: 0;
     border: 0;
     background: transparent;
@@ -673,44 +777,64 @@
     color: inherit;
     font: inherit;
   }
+  .home-song-heading:hover:not(:disabled) {
+    background: transparent;
+    border-color: transparent;
+  }
   .home-song-heading:hover:not(:disabled) strong {
     color: var(--editor-accent);
   }
   .home-song-meta strong {
     display: block;
     min-width: 0;
+    max-width: 100%;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
     font-size: 13px;
-    font-weight: 600;
-    color: var(--editor-text);
+    font-weight: 650;
+    color: #ffffff;
+    text-shadow: 0 1px 4px rgba(0, 0, 0, 0.9);
   }
   .home-song-creator {
-    flex: none;
-    font-size: 12px;
-    color: var(--editor-muted);
+    display: block;
+    min-width: 0;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 11.5px;
+    color: rgba(235, 235, 240, 0.84);
+    text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9);
   }
   .home-song-diffs {
     display: flex;
     flex-wrap: wrap;
-    gap: 6px;
+    gap: 5px;
   }
   .home-song-diff {
     display: inline-flex;
     align-items: center;
     gap: 5px;
-    min-height: 24px;
-    padding: 2px 9px;
-    border: 1px solid var(--editor-border);
+    max-width: 100%;
+    min-height: 23px;
+    padding: 2px 8px;
+    border: 1px solid rgba(255, 255, 255, 0.14);
     border-radius: 999px;
-    background: var(--editor-control);
+    background: rgba(16, 16, 20, 0.78);
+    backdrop-filter: blur(6px);
     color: var(--editor-text);
-    font-size: 12px;
+    font-size: 11.5px;
+    overflow: hidden;
+  }
+  .home-song-diff > span:first-child {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .home-song-diff:hover:not(:disabled) {
     border-color: var(--editor-accent);
-    background: var(--editor-hover);
+    background: rgba(28, 28, 34, 0.92);
   }
   .home-song-diff small {
     font-size: 10px;
@@ -731,6 +855,7 @@
   }
   .home-song-create-hs {
     border-style: dashed;
+    border-color: rgba(90, 200, 250, 0.45);
     color: var(--editor-accent);
   }
   .home-recent {
@@ -753,9 +878,48 @@
     align-items: stretch;
     gap: 4px;
   }
-  .home-recent-row .home-recent-map {
+  :global(#home .home-recent-row .home-recent-map) {
+    position: relative;
+    overflow: hidden;
     flex: 1 1 auto;
     min-width: 0;
+    border: 1px solid var(--editor-border);
+    background: var(--editor-panel);
+  }
+  :global(#home .home-recent-row .home-recent-map:hover:not(:disabled)) {
+    border-color: var(--editor-muted);
+    background: var(--editor-chrome);
+  }
+  :global(#home .home-recent-row .home-recent-map::before),
+  :global(#home .home-recent-row .home-recent-map > :not(.home-recent-bg)) {
+    position: relative;
+    z-index: 1;
+  }
+  :global(#home .home-recent-row .home-recent-map strong) {
+    text-shadow: 0 1px 3px rgba(0, 0, 0, 0.85);
+  }
+  :global(#home .home-recent-row .home-recent-bg) {
+    position: absolute;
+    inset: 0;
+    z-index: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    object-position: center 35%;
+    opacity: 0.34;
+    pointer-events: none;
+  }
+  .home-recent-hs {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    height: 16px;
+    padding: 0 6px;
+    border-radius: 999px;
+    background: var(--editor-accent);
+    color: #111111;
+    font-size: 10px;
+    font-weight: 700;
   }
   .home-recent-relink {
     flex: 0 0 auto;

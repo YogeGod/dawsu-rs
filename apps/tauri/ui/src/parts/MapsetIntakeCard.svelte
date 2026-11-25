@@ -1,5 +1,6 @@
 <script>
   import { bridge } from "../lib/bridge.svelte.js";
+  import { getCachedBackground, requestMapsetBackground } from "../lib/mapsetBackground.js";
   import { isHitsoundVersion } from "../lib/startScreen.js";
 
   const MODE_LABELS = { 1: "taiko", 2: "catch", 3: "mania" };
@@ -23,6 +24,26 @@
   const standardNonHs = $derived(diffs.filter(d => !isHs(d) && isStandard(d)));
   const standardDiffs = $derived(diffs.filter(d => isStandard(d)));
   let selectedRefPath = $state("");
+  let fetchedBgByKey = $state({});
+
+  const bgKey = $derived(activeMapset?.folder || diffs[0]?.path || "");
+  const bgUrl = $derived(
+    activeMapset?.backgroundUrl ||
+    fetchedBgByKey[bgKey] ||
+    getCachedBackground(bgKey) ||
+    ""
+  );
+
+  $effect(() => {
+    const key = bgKey;
+    const firstNonHs = diffs.find(d => !isHs(d)) ?? diffs[0];
+    const osuPath = firstNonHs?.path || "";
+    if (!key || !osuPath || activeMapset?.backgroundUrl) return;
+    const cached = requestMapsetBackground(key, osuPath, (url) => {
+      if (url && fetchedBgByKey[key] !== url) fetchedBgByKey[key] = url;
+    });
+    if (cached && fetchedBgByKey[key] !== cached) fetchedBgByKey[key] = cached;
+  });
 
   $effect(() => {
     const candidates = standardNonHs.length ? standardNonHs : standardDiffs;
@@ -83,7 +104,13 @@
 <svelte:window onkeydown={onKeydown} />
 
 {#snippet cardBody()}
-  <header class="intake-head">
+  <header class="intake-head" class:has-bg={Boolean(bgUrl)}>
+    {#if bgUrl}
+      <div class="intake-hero-backdrop" aria-hidden="true">
+        <img class="intake-hero-bg" src={bgUrl} alt="" decoding="async">
+        <div class="intake-hero-scrim"></div>
+      </div>
+    {/if}
     <div class="intake-head-copy">
       <p class="intake-eyebrow">{activeMapset.creator ? `Mapped by ${activeMapset.creator}` : "Mapset"}</p>
       <h2 class="intake-title">{heading}</h2>
@@ -93,6 +120,7 @@
     {/if}
   </header>
 
+  <div class="intake-body">
   {#if folderError}
     <p class="intake-error" role="alert">{folderError}</p>
   {:else}
@@ -191,6 +219,7 @@
 
     <p class="intake-shield">Auto-backup stays on: your original mapset is snapshotted before any write.</p>
   {/if}
+  </div>
 {/snippet}
 
 {#if activeMapset}
@@ -220,34 +249,69 @@
   }
   .intake-card {
     width: min(500px, 100%);
-    padding: 18px 20px;
+    padding: 0;
     border: 1px solid var(--editor-border);
     border-radius: 12px;
     background: var(--editor-panel);
     color: var(--editor-text);
     display: flex;
     flex-direction: column;
-    gap: 14px;
+    overflow: hidden;
     text-align: left;
   }
   .intake-card-inline {
     width: 100%;
+    min-width: 0;
+    max-width: 100%;
     position: sticky;
     top: 16px;
   }
   .intake-head {
+    position: relative;
     display: flex;
-    align-items: flex-start;
+    align-items: flex-end;
     justify-content: space-between;
     gap: 12px;
+    padding: 18px 20px 14px;
+    min-height: 76px;
+    overflow: hidden;
+  }
+  .intake-head.has-bg {
+    min-height: 132px;
+    padding: 20px 20px 16px;
+  }
+  .intake-hero-backdrop {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+  }
+  .intake-hero-bg {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    object-position: center 35%;
+    display: block;
+  }
+  .intake-hero-scrim {
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(
+      180deg,
+      rgba(12, 12, 15, 0.14) 0%,
+      rgba(21, 21, 23, 0.58) 54%,
+      var(--editor-panel) 100%
+    );
   }
   .intake-head-copy {
+    position: relative;
+    z-index: 1;
     min-width: 0;
   }
   .intake-eyebrow {
     margin: 0 0 2px;
     font-size: 12px;
-    color: var(--editor-muted);
+    color: rgba(235, 235, 240, 0.82);
+    text-shadow: 0 1px 3px rgba(0, 0, 0, 0.85);
   }
   .intake-title {
     margin: 0;
@@ -255,20 +319,32 @@
     font-weight: 700;
     letter-spacing: -0.02em;
     overflow-wrap: anywhere;
+    color: #ffffff;
+    text-shadow: 0 1px 4px rgba(0, 0, 0, 0.9);
   }
   .intake-close {
+    position: relative;
+    z-index: 1;
+    align-self: flex-start;
     flex: none;
     min-width: 28px;
     min-height: 28px;
     border: 0;
     border-radius: 6px;
-    background: transparent;
-    color: var(--editor-secondary);
+    background: rgba(16, 16, 20, 0.65);
+    color: var(--editor-text);
     cursor: pointer;
   }
   .intake-close:hover {
     background: var(--editor-hover);
     color: var(--editor-text);
+  }
+  .intake-body {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    padding: 0 20px 18px;
+    min-width: 0;
   }
   .intake-error {
     margin: 0;
@@ -290,6 +366,7 @@
   }
   .intake-continue-btn {
     width: 100%;
+    white-space: normal;
   }
   .intake-more summary {
     cursor: pointer;
@@ -315,17 +392,22 @@
     display: flex;
     flex-direction: column;
     gap: 8px;
+    min-width: 0;
   }
   .intake-path {
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    gap: 3px;
+    width: 100%;
+    min-width: 0;
     padding: 10px 12px;
     border: 1px solid var(--editor-border);
     border-radius: 8px;
     background: var(--editor-chrome);
     color: var(--editor-text);
     text-align: left;
+    white-space: normal;
+    line-height: 1.35;
     cursor: pointer;
   }
   .intake-path-primary {

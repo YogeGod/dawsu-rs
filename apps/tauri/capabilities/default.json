@@ -33,6 +33,7 @@
     "allow-save-sound-set",
     "allow-pick-songs-folder",
     "allow-songs-index-search",
+    "allow-mapset-background",
     "allow-pick-hitsound-library",
     "allow-list-library",
     "allow-sample-preview",
