@@ -80,17 +80,6 @@ fn eval_gaussian(x: f32, sigma: f32) -> f32 {
     INV_SQRT_2_PI * (-0.5 * x * x / (sigma * sigma)).exp() / sigma
 }
 
-#[cfg(test)]
-fn compute_intensity(magnitudes: &[f32], sample_rate: f32, start_freq: f32, end_freq: f32) -> f32 {
-    let start_bin = ((FFT_BINS as f32 * 2.0 * start_freq / sample_rate) as usize).min(magnitudes.len());
-    let end_bin = ((FFT_BINS as f32 * 2.0 * end_freq / sample_rate) as usize).min(magnitudes.len());
-    let mut sum = 0.0_f32;
-    for &mag in &magnitudes[start_bin..end_bin] {
-        sum += mag;
-    }
-    sum
-}
-
 fn resample_gaussian(points: &[RawPoint], target_count: usize) -> Vec<RawPoint> {
     if points.is_empty() || target_count == 0 {
         return Vec::new();

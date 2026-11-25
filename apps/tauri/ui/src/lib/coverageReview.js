@@ -67,6 +67,30 @@ export function analyzeCoverage(moments) {
 }
 
 /**
+ * Combine Rust's lightweight `scene.coverage` counts (including `fallbackActive` / `fallbackCovered`)
+ * with the locally derived issue jump list from `scene.moments` (avoiding large IPC arrays on edits).
+ */
+export function normalizeCoverage(rustCoverage, moments) {
+  const local = analyzeCoverage(moments);
+  if (rustCoverage && typeof rustCoverage === "object") {
+    const fallbackActive = Boolean(rustCoverage.fallbackActive);
+    const issues = fallbackActive
+      ? local.issues.filter(item => item.kind !== "empty")
+      : local.issues;
+    return {
+      matched: Number(rustCoverage.matched) || 0,
+      empty: Number(rustCoverage.empty) || 0,
+      fallbackCovered: Number(rustCoverage.fallbackCovered) || 0,
+      orphaned: Number(rustCoverage.orphaned) || 0,
+      totalObjects: Number(rustCoverage.totalObjects) || 0,
+      fallbackActive,
+      issues,
+    };
+  }
+  return { ...local, fallbackCovered: 0, fallbackActive: false };
+}
+
+/**
  * Filter coverage issues by kind ("all", "empty", or "orphaned").
  */
 export function filterCoverageIssues(issues, filter = "all") {

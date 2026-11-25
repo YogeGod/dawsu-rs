@@ -1572,6 +1572,7 @@ struct SceneSnapshot {
     bookmarks: Vec<SceneBookmark>,
     #[serde(skip_serializing_if = "Option::is_none")]
     combos: Option<ComboOverlay>,
+    coverage: dawsu_application::CoverageSummary,
     difficulties: Vec<PathBuf>,
     divisor: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1965,6 +1966,7 @@ fn snapshot_with_static(app: &Application, include_scene: bool, include_static: 
                     time: b.time.ms(),
                 }).collect(),
                 combos: include_static.then(|| combo_overlay(d)),
+                coverage: d.coverage_summary(),
                 difficulties: d.difficulties.clone(),
                 divisor: c.spacing.divisions(),
                 drum_rows: None,
@@ -2272,6 +2274,11 @@ enum Request {
         f64,
         bool,
         mpsc::Sender<Result<dawsu_application::SharedBaseApplyResult, String>>,
+    ),
+    SharedBaseApplyAll(
+        f64,
+        bool,
+        mpsc::Sender<Result<dawsu_application::SharedBaseApplyAllResult, String>>,
     ),
     SharedBaseClearOverrides(mpsc::Sender<Result<dawsu_application::SharedBaseStatus, String>>),
     SharedBaseClear(mpsc::Sender<Result<dawsu_application::SharedBaseStatus, String>>),
@@ -3070,6 +3077,14 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                 Ok(Request::SharedBaseApply(leniency_ms, overwrite_overrides, response)) => {
                     let result = guard(&mut app, &mut fault, |app| {
                         app.shared_base_apply_to_current(leniency_ms, overwrite_overrides)
+                    })
+                    .and_then(|r| r);
+                    tick_cache.invalidate();
+                    let _ = response.send(result);
+                }
+                Ok(Request::SharedBaseApplyAll(leniency_ms, overwrite_overrides, response)) => {
+                    let result = guard(&mut app, &mut fault, |app| {
+                        app.shared_base_apply_to_all_diffs(leniency_ms, overwrite_overrides)
                     })
                     .and_then(|r| r);
                     tick_cache.invalidate();
@@ -4443,6 +4458,21 @@ fn shared_base_apply(
 }
 
 #[tauri::command]
+fn shared_base_apply_all(
+    leniency_ms: Option<f64>,
+    overwrite_overrides: Option<bool>,
+    state: State<'_, Editor>,
+) -> Result<dawsu_application::SharedBaseApplyAllResult, String> {
+    ask(&state, |tx| {
+        Request::SharedBaseApplyAll(
+            leniency_ms.unwrap_or(5.0),
+            overwrite_overrides.unwrap_or(false),
+            tx,
+        )
+    })?
+}
+
+#[tauri::command]
 fn shared_base_clear_overrides(
     state: State<'_, Editor>,
 ) -> Result<dawsu_application::SharedBaseStatus, String> {
@@ -4893,6 +4923,7 @@ fn main() {
             shared_base_set_enabled,
             shared_base_capture,
             shared_base_apply,
+            shared_base_apply_all,
             shared_base_clear_overrides,
             shared_base_clear,
             stem_separation_status,
