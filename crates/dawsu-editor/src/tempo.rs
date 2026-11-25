@@ -265,7 +265,7 @@ impl TempoMap {
             } else {
                 1
             };
-            SnapSpacing::new(beats, 1).unwrap()
+            SnapSpacing::new(beats, 1).expect("beats >= 1 and denominator is 1")
         };
         let left = SongTime::from_ms(start);
         let snapped = self.snap(left, spacing_at(left));

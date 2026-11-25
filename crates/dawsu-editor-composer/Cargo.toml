@@ -11,4 +11,4 @@ dawsu-hitsounding = { path = "../dawsu-hitsounding" }
 [dev-dependencies]
 dawsu-osu-format = { path = "../dawsu-osu-format" }
 dawsu-graph-audio = { path = "../dawsu-graph-audio" }
-serde_json = "1.0"
+serde_json = { workspace = true }

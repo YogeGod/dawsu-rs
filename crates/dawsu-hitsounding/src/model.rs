@@ -783,8 +783,8 @@ impl Hitsounds {
         }
     }
 
-    /// Sets the sample set of a slider body's slide and ticks; the slider whistle keeps its set
-    /// (roadmap, Yoge 2026-11-15). The index is not changed here (todo.md, slider body index).
+    /// Sets the sample set of a slider body's slide and ticks while keeping the slider whistle's
+    /// own set and leaving the custom sample index unchanged.
     pub fn set_body_set(&mut self, body: usize, set: SampleSet) {
         let b = &mut self.bodies[body];
         b.slide = with_set(&b.slide, set);

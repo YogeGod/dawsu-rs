@@ -209,7 +209,7 @@ impl SliderGeometry {
             return first;
         }
         if i >= self.points.len() {
-            return *self.points.last().unwrap();
+            return self.points.last().copied().unwrap_or(first);
         }
         let (p0, p1) = (self.points[i - 1], self.points[i]);
         let (d0, d1) = (self.cumulative[i - 1], self.cumulative[i]);
@@ -240,7 +240,7 @@ fn calculate_path(control_points: &[ControlPoint], optimise_catmull: bool) -> (V
             calculated.push(segment[0]);
         } else if segment.len() > 1 {
             let sub = calculate_sub_path(segment, kind, optimise_catmull, &mut optimised_length);
-            let skip_first = !calculated.is_empty() && !sub.is_empty() && *calculated.last().unwrap() == sub[0];
+            let skip_first = calculated.last().zip(sub.first()).is_some_and(|(a, b)| a == b);
             calculated.extend_from_slice(&sub[usize::from(skip_first)..]);
         }
         start = i;

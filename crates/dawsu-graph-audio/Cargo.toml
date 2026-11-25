@@ -9,5 +9,5 @@ publish.workspace = true
 [dependencies]
 dawsu-foundation = { path = "../dawsu-foundation" }
 dawsu-graph = { path = "../dawsu-graph" }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
+serde = { workspace = true }
+serde_json = { workspace = true }

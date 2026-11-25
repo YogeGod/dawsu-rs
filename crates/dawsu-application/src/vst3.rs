@@ -253,12 +253,12 @@ pub fn plan_vst3_drum_export(
             VelocityExportMode::Tiered { max_interval } => {
                 let mut grouped: Vec<Vec<(u8, Vec<usize>)>> = Vec::new();
                 for (vol, indices) in volume_groups {
-                    let fits = grouped
-                        .last()
-                        .and_then(|cluster| cluster.first())
-                        .is_some_and(|(min_vol, _)| vol.saturating_sub(*min_vol) <= max_interval);
-                    if fits {
-                        grouped.last_mut().unwrap().push((vol, indices));
+                    if let Some(last) = grouped.last_mut()
+                        && last
+                            .first()
+                            .is_some_and(|(min_vol, _)| vol.saturating_sub(*min_vol) <= max_interval)
+                    {
+                        last.push((vol, indices));
                     } else {
                         grouped.push(vec![(vol, indices)]);
                     }
