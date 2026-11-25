@@ -621,7 +621,7 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
     }
     padded.extend_from_slice(&bit_len.to_be_bytes());
 
-    for chunk in padded.chunks_exact(64) {
+    for chunk in padded.as_chunks::<64>().0 {
         let mut w = [0u32; 64];
         for i in 0..16 {
             w[i] = u32::from_be_bytes([
@@ -1204,6 +1204,13 @@ fn spawn_portable_swap(zip_path: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn current_version_is_valid_and_not_the_stale_placeholder() {
+        assert!(parse_semver(CURRENT_VERSION).is_some());
+        assert_ne!(CURRENT_VERSION, "0.1.0");
+        assert!(!is_newer_version(CURRENT_VERSION, CURRENT_VERSION));
+    }
 
     #[test]
     fn semver_comparison_handles_stable_prerelease_and_equal() {

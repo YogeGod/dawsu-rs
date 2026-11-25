@@ -470,7 +470,7 @@ mod tests {
         assert_eq!(sample_file_name(SampleSet::Soft, Sound::Hit(Hitsound::Clap), CustomIndex::new(0)), None);
         assert_eq!(read_sample_file_name("hitclap.wav"), None, "a bare name has no set");
         assert_eq!(read_sample_file_name("soft-hitclap1.wav"), None, "index 1 has no number");
-        assert_eq!(read_sample_file_name("SOFT-HITCLAP2.OGG").is_some(), true);
+        assert!(read_sample_file_name("SOFT-HITCLAP2.OGG").is_some());
     }
 
     #[test]

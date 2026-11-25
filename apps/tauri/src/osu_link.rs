@@ -17,11 +17,10 @@ pub fn find_open_osu_map(songs_folder: Option<&Path>) -> Result<PathBuf, String>
     }
 
     #[cfg(windows)]
-    if let Some(title) = find_osu_window_title() {
-        if let Some(found) = match_window_title_in_songs(&title, songs_folder) {
+    if let Some(title) = find_osu_window_title()
+        && let Some(found) = match_window_title_in_songs(&title, songs_folder) {
             return Ok(found);
         }
-    }
 
     Err(
         "No open osu! map found. Open a map in un!stable or osu!stable's editor, or use File → Edit externally in osu!lazer."
@@ -31,11 +30,10 @@ pub fn find_open_osu_map(songs_folder: Option<&Path>) -> Result<PathBuf, String>
 
 fn candidate_songs_folders(songs_folder: Option<&Path>) -> Vec<PathBuf> {
     let mut out = Vec::new();
-    if let Some(s) = songs_folder {
-        if s.is_dir() {
+    if let Some(s) = songs_folder
+        && s.is_dir() {
             out.push(s.to_path_buf());
         }
-    }
     #[cfg(windows)]
     if let Some(local) = std::env::var_os("LOCALAPPDATA") {
         let p = Path::new(&local).join("osu!").join("Songs");
@@ -80,15 +78,11 @@ fn resolve_in_songs(
                 .extension()
                 .and_then(|e| e.to_str())
                 .is_some_and(|e| e.eq_ignore_ascii_case("osu"))
-        {
-            if let (Ok(canon_songs), Ok(canon_file)) =
+            && let (Ok(canon_songs), Ok(canon_file)) =
                 (fs::canonicalize(songs), fs::canonicalize(&candidate))
-            {
-                if canon_file.starts_with(&canon_songs) {
+                && canon_file.starts_with(&canon_songs) {
                     return Ok(candidate);
                 }
-            }
-        }
     }
     Err(format!(
         "{client} reported '{folder}/{osu_file}', but it wasn't found in your Songs folder. Check Preferences → Folders."
@@ -115,7 +109,7 @@ pub fn find_lazer_external_edit(temp_dir: &Path) -> Option<PathBuf> {
             mounts.push((mtime, path));
         }
     }
-    mounts.sort_by(|a, b| b.0.cmp(&a.0));
+    mounts.sort_by_key(|a| std::cmp::Reverse(a.0));
     for (_, mount) in mounts {
         let Ok(files) = fs::read_dir(&mount) else {
             continue;

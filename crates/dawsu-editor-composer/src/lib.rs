@@ -44,8 +44,10 @@ pub struct Composer {
     pub listen_version: u64,
     pub preview: ToolPreview,
     clipboard: Clipboard<(SampleIdentity, i32)>,
-    move_stroke: Option<(Hitsounds, Vec<(HitKey, f64, i32)>, f64, i32)>,
+    move_stroke: Option<MoveStroke>,
 }
+
+type MoveStroke = (Hitsounds, Vec<(HitKey, f64, i32)>, f64, i32);
 
 impl Composer {
     pub fn new(hitsounds: Hitsounds) -> Self {
@@ -214,11 +216,10 @@ impl Composer {
                 moved.push(HitKey { moment: moment.0, lane });
             }
         });
-        if let Some(lane) = destination {
-            if !self.lanes.contains(&lane) {
+        if let Some(lane) = destination
+            && !self.lanes.contains(&lane) {
                 self.lanes.push(lane);
             }
-        }
         self.selected.replace(moved);
     }
     pub fn move_rows(&mut self, delta: i32) {
@@ -914,14 +915,13 @@ impl ToolTarget for Composer {
                 continue;
             }
             for lane in m.hits() {
-                if let Some(row) = self.lanes.iter().position(|l| l == lane) {
-                    if (first..=last).contains(&(row as i32)) {
+                if let Some(row) = self.lanes.iter().position(|l| l == lane)
+                    && (first..=last).contains(&(row as i32)) {
                         keys.push(HitKey {
                             moment: i,
                             lane: lane.clone(),
                         });
                     }
-                }
             }
         }
         keys

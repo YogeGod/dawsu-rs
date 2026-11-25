@@ -416,6 +416,8 @@ fn readable_path(root: &Path, pending: &crate::pending::Pending, name: &str) -> 
     }
 }
 
+type HitnormalAsset = (String, String, Vec<u8>);
+
 impl Application {
     /// The custom indexes a new snapshot must not take: those any difficulty or storyboard of the
     /// mapset uses, the open document's lanes and every snapshot the record holds.
@@ -436,7 +438,7 @@ impl Application {
     /// bytes, for D6b. None when the moment is new or holds no such hitnormal, or more than one
     /// (that moment saves as a mix anyway). A sound whose file can't be read is skipped with a
     /// note for the status line: the moment then saves as a mix.
-    fn moment_hitnormal(&self, root: &Path, moment: Option<dawsu_hitsounding::MomentId>) -> (Option<(String, String, Vec<u8>)>, Option<String>) {
+    fn moment_hitnormal(&self, root: &Path, moment: Option<dawsu_hitsounding::MomentId>) -> (Option<HitnormalAsset>, Option<String>) {
         let Some(moment) = moment else { return (None, None) };
         let hits = self.document.as_ref().expect("open document").composer.hitsounds();
         let placed = hits.placed_lanes(moment);
@@ -1281,7 +1283,7 @@ impl Application {
     pub fn sound_set_placement(&self, id: u64) -> Result<PlacementView, String> {
         let p = self.placement(id)?;
         let (edited, sounds) = self.document.as_ref().expect("open document").composer.placement_edits(id).unwrap_or_default();
-        let state = look_up(self.preferences.hitsound_library.as_deref(), &[p.set_id.clone()]).pop().map(|(_, s)| s);
+        let state = look_up(self.preferences.hitsound_library.as_deref(), std::slice::from_ref(&p.set_id)).pop().map(|(_, s)| s);
         let (name, frozen, newer) = match state {
             Some(InLibrary::Found { name, digest, .. }) if digest == p.set_digest => (Some(name), None, false),
             Some(InLibrary::Found { name, .. }) => (Some(name), Some("The library has another version of this set.".to_string()), true),
@@ -2013,7 +2015,7 @@ pub(crate) mod tests {
     fn an_old_project_without_the_field_loads() {
         let settings: crate::project::SessionSettings = serde_json::from_str(r#"{"song_offset":0,"zoom":0.3}"#).unwrap();
         assert!(settings.sound_sets.is_none());
-        let json = serde_json::to_value(&crate::project::SessionSettings::default()).unwrap();
+        let json = serde_json::to_value(crate::project::SessionSettings::default()).unwrap();
         assert!(json.get("sound_sets").is_none(), "no field is written without links");
     }
 

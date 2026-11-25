@@ -57,7 +57,7 @@ fn soak_export_one(source_osu: &Path, idx: usize) -> Result<(), String> {
     Document::read(&generated_path).map_err(|e| format!("reopen generated failed: {e}"))?;
 
     // 2. Copy to target difficulty and verify target reopens cleanly while source stays byte-identical.
-    let copy_plan = match output::copy(&source, &[target_path.clone()], &Default::default(), &|| false) {
+    let copy_plan = match output::copy(&source, std::slice::from_ref(&target_path), &Default::default(), &|| false) {
         Ok(plan) => plan,
         Err(e) => return Err(format!("output::copy refused cleanly: {e}")),
     };

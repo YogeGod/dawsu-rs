@@ -452,6 +452,13 @@ impl Default for Vst3Manager {
 pub const AUTO_TRIM_MINUS_60_DBFS: f32 = 0.001;
 
 /// Loads a VST3 instrument in a dedicated sidecar process.
+pub struct Vst3RenderTarget<'a> {
+    pub live_instance_id: Option<&'a str>,
+    pub plugin_path: &'a Path,
+    pub plugin_uid: Option<String>,
+    pub saved_state_b64: Option<&'a str>,
+}
+
 impl Vst3Manager {
     /// Creates a manager configured with the platform's default VST3 search folders.
     pub fn new() -> Self {
@@ -908,18 +915,16 @@ impl Vst3Manager {
     }
 
     /// Renders a batch of MIDI event lists through an isolated `--offline` VST3 host and returns
-    /// interleaved stereo `f32` buffers at `sample_rate`. Copies state from `live_instance_id`
-    /// when loaded, otherwise falls back to `saved_state_b64`.
+    /// interleaved stereo `f32` buffers at `sample_rate`. Copies state from `target.live_instance_id`
+    /// when loaded, otherwise falls back to `target.saved_state_b64`.
     pub fn render_midi_batches_via_vst3(
         &mut self,
-        live_instance_id: Option<&str>,
-        plugin_path: &Path,
-        plugin_uid: Option<String>,
-        saved_state_b64: Option<&str>,
+        target: Vst3RenderTarget<'_>,
         batches: &[Vec<MidiEvent>],
         sample_rate: u32,
         cancel: Option<&crate::bounce_plan::BounceCancelToken>,
     ) -> Result<Vec<Vec<f32>>, Vst3Error> {
+        let Vst3RenderTarget { live_instance_id, plugin_path, plugin_uid, saved_state_b64 } = target;
         let _ = self.host_executable()?;
         let state_b64 = live_instance_id
             .and_then(|id| self.get_plugin_state(id).ok())
@@ -974,7 +979,7 @@ impl Vst3Manager {
                 })?;
                 let _ = std::fs::remove_file(&raw_path);
                 let mut interleaved = Vec::with_capacity(raw_bytes.len() / 4);
-                for chunk in raw_bytes.chunks_exact(4) {
+                for chunk in raw_bytes.as_chunks::<4>().0 {
                     interleaved.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
                 }
                 let trimmed = trim_silence_tail(&interleaved, AUTO_TRIM_MINUS_60_DBFS).to_vec();
@@ -1097,7 +1102,7 @@ where
             })?;
             let _ = std::fs::remove_file(&raw_path);
             let mut interleaved = Vec::with_capacity(raw_bytes.len() / 4);
-            for chunk in raw_bytes.chunks_exact(4) {
+            for chunk in raw_bytes.as_chunks::<4>().0 {
                 interleaved.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
             }
             created_files.push(wav_path.clone());
@@ -1175,7 +1180,7 @@ mod tests {
 
         let scan_err = manager.scan_plugins().unwrap_err();
         assert!(
-            matches!(scan_err, Vst3Error::SidecarNotBuilt { ref searched } if searched == &[missing_sidecar.clone()]),
+            matches!(scan_err, Vst3Error::SidecarNotBuilt { ref searched } if searched == std::slice::from_ref(&missing_sidecar)),
             "unexpected scan error: {scan_err:?}"
         );
         assert!(scan_err.to_string().contains("not built yet"));

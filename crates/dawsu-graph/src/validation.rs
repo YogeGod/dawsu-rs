@@ -362,15 +362,14 @@ fn validate_node_params(
                     continue;
                 }
             }
-            SocketType::Enum if !spec.enum_values.is_empty() => {
-                if !value.is_string() {
+            SocketType::Enum if !spec.enum_values.is_empty()
+                && !value.is_string() => {
                     issues.push(ValidationIssue::InvalidParam {
                         node: node.id.clone(),
                         message: format!("parameter '{}' must be a string variant", spec.id),
                     });
                     continue;
                 }
-            }
             _ => {}
         }
         if let Some(num) = value.as_f64() {

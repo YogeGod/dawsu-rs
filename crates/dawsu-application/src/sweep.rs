@@ -271,18 +271,23 @@ enum Step {
     Drop,
 }
 
+struct KeepRules<'a> {
+    used: &'a BTreeSet<String>,
+    other_mode_indexes: &'a BTreeSet<u32>,
+    projects: &'a [String],
+    own_project: Option<&'a str>,
+    copies: &'a [SampleIdentity],
+}
+
 /// Shared retention decision used by both `clean_up()` and read-only `plan_sweep()`.
 fn is_kept_by_rules(
     name: &str,
     lower: &str,
-    used: &BTreeSet<String>,
-    other_mode_indexes: &BTreeSet<u32>,
-    projects: &[String],
-    own_project: Option<&str>,
-    copies: &[SampleIdentity],
+    rules: &KeepRules<'_>,
     undo_only: bool,
     closing: bool,
 ) -> bool {
+    let KeepRules { used, other_mode_indexes, projects, own_project, copies } = *rules;
     let index = match read_sample_file_name(name) {
         Some(SampleIdentity::Standard { index, .. }) => Some(index.get()),
         _ => None,
@@ -314,11 +319,13 @@ fn clean_up(request: &mut Request, outcome: &mut Outcome, entry: &pending::Pendi
     if is_kept_by_rules(
         name,
         &lower,
-        &keep.used,
-        &keep.other_mode_indexes,
-        &keep.projects,
-        keep.own_project.as_deref(),
-        &keep.copies,
+        &KeepRules {
+            used: &keep.used,
+            other_mode_indexes: &keep.other_mode_indexes,
+            projects: &keep.projects,
+            own_project: keep.own_project.as_deref(),
+            copies: &keep.copies,
+        },
         undo_only,
         request.closing,
     ) {
@@ -439,11 +446,13 @@ pub fn run_plan_sweep(snapshot: SweepDryRunSnapshot) -> Result<Vec<UnusedSampleC
             || is_kept_by_rules(
                 &entry.name,
                 &lower,
-                &used,
-                &other_mode_indexes,
-                &projects,
-                None,
-                &copies,
+                &KeepRules {
+                    used: &used,
+                    other_mode_indexes: &other_mode_indexes,
+                    projects: &projects,
+                    own_project: None,
+                    copies: &copies,
+                },
                 undo_only,
                 false,
             )
@@ -462,7 +471,7 @@ pub fn run_plan_sweep(snapshot: SweepDryRunSnapshot) -> Result<Vec<UnusedSampleC
             reason,
         });
     }
-    candidates.sort_by(|a, b| a.name.to_ascii_lowercase().cmp(&b.name.to_ascii_lowercase()));
+    candidates.sort_by_key(|a| a.name.to_ascii_lowercase());
     Ok(candidates)
 }
 

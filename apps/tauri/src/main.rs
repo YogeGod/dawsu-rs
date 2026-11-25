@@ -1119,7 +1119,9 @@ fn sample_set_name(set: SampleSet) -> &'static str {
 }
 
 fn mix_lanes(app: &mut Application, lanes: Vec<SampleIdentity>, operation: &str, clicked: Option<SampleIdentity>) {
-    let (enabled, toggle): (fn(&Application, &SampleIdentity) -> bool, fn(&mut Application, SampleIdentity)) =
+    type LanePredicate = fn(&Application, &SampleIdentity) -> bool;
+    type LaneToggle = fn(&mut Application, SampleIdentity);
+    let (enabled, toggle): (LanePredicate, LaneToggle) =
         match operation {
             "mute" => (Application::is_muted, Application::mute),
             "solo" => (Application::is_solo, Application::solo),
@@ -4098,8 +4100,8 @@ fn recent_osu_meta(path: &Path) -> (Option<String>, bool) {
             continue;
         }
         if section.eq_ignore_ascii_case("Events") && bg.is_none() && line.starts_with("0,0,") {
-            if let Some(first_quote) = line.find('"') {
-                if let Some(end_quote) = line[first_quote + 1..].find('"') {
+            if let Some(first_quote) = line.find('"')
+                && let Some(end_quote) = line[first_quote + 1..].find('"') {
                     let rel = &line[first_quote + 1..first_quote + 1 + end_quote];
                     if let Some(parent) = path.parent() {
                         let candidate = parent.join(rel);
@@ -4108,7 +4110,6 @@ fn recent_osu_meta(path: &Path) -> (Option<String>, bool) {
                         }
                     }
                 }
-            }
         } else if section.eq_ignore_ascii_case("Metadata") {
             if let Some(rest) = line.strip_prefix("Version:") {
                 version = rest.trim().to_ascii_lowercase();
@@ -4127,18 +4128,18 @@ fn recent_osu_meta(path: &Path) -> (Option<String>, bool) {
 }
 
 fn cached_recent_meta(path: &Path) -> RecentMetaSnapshot {
-    static CACHE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<PathBuf, (Option<String>, bool)>>> =
+    type RecentMetaCache = std::collections::HashMap<PathBuf, (Option<String>, bool)>;
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<RecentMetaCache>> =
         std::sync::OnceLock::new();
     let cache = CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
-    if let Ok(guard) = cache.lock() {
-        if let Some((background, is_hs)) = guard.get(path) {
+    if let Ok(guard) = cache.lock()
+        && let Some((background, is_hs)) = guard.get(path) {
             return RecentMetaSnapshot {
                 path: path.to_path_buf(),
                 background: background.clone(),
                 is_hs: *is_hs,
             };
         }
-    }
     let (background, is_hs) = recent_osu_meta(path);
     if let Ok(mut guard) = cache.lock() {
         if guard.len() >= 64 {
@@ -4383,9 +4384,8 @@ fn songs_dialog(window: &tauri::WebviewWindow, state: &Editor) -> Result<rfd::Fi
     })
 }
 
-struct SongsIndexCache(
-    std::sync::Arc<std::sync::Mutex<Option<(PathBuf, &'static str, Vec<dawsu_application::songs_index::SongMapsetEntry>)>>>,
-);
+type SongsIndexEntry = (PathBuf, &'static str, Vec<dawsu_application::songs_index::SongMapsetEntry>);
+struct SongsIndexCache(std::sync::Arc<std::sync::Mutex<Option<SongsIndexEntry>>>);
 
 #[tauri::command]
 async fn songs_index_search(
@@ -4405,10 +4405,10 @@ async fn songs_index_search(
     let cache_arc = std::sync::Arc::clone(&cache.0);
     tauri::async_runtime::spawn_blocking(move || {
         const SEARCH_LIMIT: usize = 50;
-        if !refresh {
-            if let Ok(guard) = cache_arc.lock() {
-                if let Some((cached_dir, source, entries)) = guard.as_ref() {
-                    if cached_dir == &songs_dir {
+        if !refresh
+            && let Ok(guard) = cache_arc.lock()
+                && let Some((cached_dir, source, entries)) = guard.as_ref()
+                    && cached_dir == &songs_dir {
                         let total_diffs = entries.iter().map(|m| m.diffs.len()).sum();
                         let matches = dawsu_application::songs_index::search_songs_index(
                             entries,
@@ -4422,9 +4422,6 @@ async fn songs_index_search(
                             matches,
                         });
                     }
-                }
-            }
-        }
         let (entries, source) =
             dawsu_application::songs_index::build_songs_index_with_source(&songs_dir);
         let total_mapsets = entries.len();

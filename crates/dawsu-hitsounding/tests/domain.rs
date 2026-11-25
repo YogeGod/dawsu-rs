@@ -182,8 +182,8 @@ fn the_cue_list_applies_the_played_volume_and_leaves_out_muted_and_unsoloed_lane
     assert_eq!(cues.len(), 3, "two hitnormals and the unsaved clap");
     assert!(cues.iter().all(|c| c.gain() == 0.05), "volume 3 plays at 5%");
     let normal = std(SampleSet::Soft, Hitsound::Normal, 1);
-    assert_eq!(cue_list(&h, &[normal.clone()], &[]).len(), 1, "muted hitnormals");
-    let soloed = cue_list(&h, &[], &[clap.clone()]);
+    assert_eq!(cue_list(&h, std::slice::from_ref(&normal), &[]).len(), 1, "muted hitnormals");
+    let soloed = cue_list(&h, &[], std::slice::from_ref(&clap));
     assert_eq!(soloed.len(), 1);
     assert_eq!(soloed[0].time(), SongTime::from_ms(1000.0));
     assert_eq!(soloed[0].sample(), &std(SampleSet::Soft, Hitsound::Clap, 0), "no file in the folder: the skin's clap plays");
@@ -201,7 +201,7 @@ fn clap_round_trip(placement: Placement) {
 
 /// Adds a clap to, or removes the claps from, every fifth moment.
 fn clap_edit(m: &dawsu_hitsounding::Moment, h: &mut Hitsounds, i: usize) -> bool {
-        if i % 5 != 0 {
+        if !i.is_multiple_of(5) {
             return false;
         }
         let claps: Vec<_> = m.hits().filter(|l| matches!(l, SampleIdentity::Standard { sound: Sound::Hit(Hitsound::Clap), .. })).cloned().collect();
@@ -217,7 +217,7 @@ fn clap_edit(m: &dawsu_hitsounding::Moment, h: &mut Hitsounds, i: usize) -> bool
 
 /// Sets the volume of the slider nodes among every fourth moment to 77.
 fn node_volume_edit(m: &dawsu_hitsounding::Moment, h: &mut Hitsounds, i: usize) -> bool {
-    if i % 4 != 0 || !matches!(m.place(), Place::SliderNode { .. }) {
+    if !i.is_multiple_of(4) || !matches!(m.place(), Place::SliderNode { .. }) {
         return false;
     }
     h.set_volume(MomentId(i), 77);

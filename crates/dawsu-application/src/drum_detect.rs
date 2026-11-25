@@ -505,10 +505,13 @@ impl Application {
 
     fn has_listen_sink(&self) -> bool {
         #[cfg(test)]
-        if self.drum.sink.is_some() {
-            return true;
+        {
+            self.drum.sink.is_some()
         }
-        false
+        #[cfg(not(test))]
+        {
+            false
+        }
     }
 
     fn listen_sink(&mut self, clip: Option<Arc<AudioClip>>) {
@@ -710,7 +713,7 @@ fn slider_body(lane: &SampleIdentity) -> bool {
 fn mono_mix(clip: &AudioClip) -> Cow<'_, [f32]> {
     match clip.channels.max(1) {
         1 => Cow::Borrowed(&clip.samples),
-        2 => Cow::Owned(clip.samples.chunks_exact(2).map(|f| (f[0] + f[1]) * 0.5).collect()),
+        2 => Cow::Owned(clip.samples.as_chunks::<2>().0.iter().map(|f| (f[0] + f[1]) * 0.5).collect()),
         channels => Cow::Owned(clip.samples.chunks_exact(channels).map(|f| f.iter().sum::<f32>() / channels as f32).collect()),
     }
 }
@@ -731,7 +734,7 @@ fn listen_clip(audio: &AudioClip, offset: f64, from: f64, until: f64, cues: &[(D
     let wanted = ((until - from) * rate / 1000.0).round().max(0.0) as i64;
     let frames = (source_frames as i64 - first).clamp(0, wanted) as usize;
     let mut samples = vec![0.0_f32; frames * 2];
-    for (i, frame) in samples.chunks_exact_mut(2).enumerate() {
+    for (i, frame) in samples.as_chunks_mut::<2>().0.iter_mut().enumerate() {
         let at = first + i as i64;
         if at >= 0 && (at as usize) < source_frames {
             let start = at as usize * channels;
@@ -785,8 +788,8 @@ mod tests {
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")));
         let path = manifest_dir.join("../dawsu-graph-audio/tests/fixtures/classic-3.1.4/pattern.f32");
-        let samples = std::fs::read(path).unwrap().chunks_exact(4)
-            .map(|b| f32::from_le_bytes(b.try_into().unwrap())).collect();
+        let samples = std::fs::read(path).unwrap().as_chunks::<4>().0.iter()
+            .map(|b| f32::from_le_bytes(*b)).collect();
         AudioClip { samples, channels: 1, sample_rate: 44_100 }
     }
 
@@ -932,7 +935,8 @@ mod tests {
         set_lanes(&mut app, Some(lane(Hitsound::Whistle)), Some(lane(Hitsound::Clap)));
         let (mut review, rows) = detect(&mut app);
         let curves = app.drum.ready.as_ref().unwrap().curves.clone();
-        let changes: [(&str, Box<dyn FnOnce(&mut DrumOptions)>); 5] = [
+        type OptionEdit = (&'static str, Box<dyn FnOnce(&mut DrumOptions)>);
+        let changes: [OptionEdit; 5] = [
             ("sensitivity", Box::new(|o| o.sensitivity = 90)),
             ("snap to objects", Box::new(|o| o.object_ms = 10.0)),
             ("grid", Box::new(|o| o.grid = Some(2))),
@@ -966,7 +970,8 @@ mod tests {
         assert_ne!(after, stamp);
         assert!(rows.iter().any(|row| row.lands == RowLands::Duplicate && !row.can_check()));
         // The map's tempo and the editor's grid spacing re-plan too, and so does a new run.
-        let edits: [(&str, Box<dyn FnOnce(&mut Application)>); 3] = [
+        type AppEdit = (&'static str, Box<dyn FnOnce(&mut Application)>);
+        let edits: [AppEdit; 3] = [
             ("tempo", Box::new(|app| app.document.as_mut().unwrap().composer.tempo = dawsu_editor::tempo::TempoMap::new(vec![
                 dawsu_editor::tempo::TimingSection { start: dawsu_foundation::SongTime::from_ms(0.0), beat_length_ms: 400.0, beats_per_bar: 4 },
             ]))),
@@ -999,7 +1004,7 @@ mod tests {
         assert!(rows.iter().all(|row| row.lands == RowLands::Flagged && !row.checked_by_default() && row.can_check()), "{rows:?}");
         assert_eq!(app.apply_drum_detection(review, &checked(&rows)).unwrap_err(), "Check at least one hit to add.");
         let kick = rows.iter().find(|row| row.drum == Drum::Kick).unwrap();
-        app.apply_drum_detection(review, &[kick.id.clone()]).unwrap();
+        app.apply_drum_detection(review, std::slice::from_ref(&kick.id)).unwrap();
         assert_eq!(app.status, "Added 1 drum hits: 0 on objects, 0 on grid lines, 1 off the grid.");
         assert_eq!(undo_steps(&mut app), 1);
         let added: Vec<_> = app.document().unwrap().composer.hitsounds().moments().iter()

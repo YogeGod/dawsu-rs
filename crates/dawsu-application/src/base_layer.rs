@@ -6,6 +6,10 @@ use dawsu_hitsounding::volume_envelope::{VolumeEnvelope, apply_envelope_to_osu};
 use dawsu_hitsounding::{Hitsounds, MomentId, Place};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
+
+type ResolvedBaseHit = (SampleIdentity, i32);
+type BestBaseMomentMatch = (MomentId, f64, i64, i64, Vec<ResolvedBaseHit>);
+type PlannedBaseMoment = (MomentId, i64, i64, Vec<ResolvedBaseHit>);
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -615,10 +619,7 @@ impl Application {
             .unwrap_or(&[]);
         let effective_moments = apply_base_rules(&layer.moments, diff_rules);
 
-        let mut best_by_moment: BTreeMap<
-            usize,
-            (MomentId, f64, i64, i64, Vec<(SampleIdentity, i32)>),
-        > = BTreeMap::new();
+        let mut best_by_moment: BTreeMap<usize, BestBaseMomentMatch> = BTreeMap::new();
         let mut skipped_moment_ids: BTreeSet<usize> = BTreeSet::new();
         let mut unmatched_base_moments = 0usize;
 
@@ -664,7 +665,7 @@ impl Application {
         }
 
         let skipped_overrides = skipped_moment_ids.len();
-        let planned: Vec<(MomentId, i64, i64, Vec<(SampleIdentity, i32)>)> = best_by_moment
+        let planned: Vec<PlannedBaseMoment> = best_by_moment
             .into_values()
             .map(|(id, _, matched_ms, base_ms, hits)| (id, matched_ms, base_ms, hits))
             .collect();
@@ -740,6 +741,7 @@ impl Application {
     /// Applies the mapset's Shared Base to the currently open difficulty (in memory, 1 Undo step)
     /// and to every other sibling `.osu` difficulty in the mapset folder (with read-back
     /// verification and backups). Respects per-diff overrides unless `overwrite_overrides` is true.
+    #[allow(clippy::disallowed_methods)]
     pub fn shared_base_apply_to_all_diffs(
         &mut self,
         leniency_ms: f64,
@@ -833,8 +835,7 @@ impl Application {
                 .unwrap_or(&[]);
             let effective_sibling_moments = apply_base_rules(&layer.moments, sibling_rules);
             // Deduplicate per MomentId: keep only the closest base moment within leniency.
-            let mut best_by_moment: BTreeMap<usize, (MomentId, f64, i64, i64, Vec<(SampleIdentity, i32)>)> =
-                BTreeMap::new();
+            let mut best_by_moment: BTreeMap<usize, BestBaseMomentMatch> = BTreeMap::new();
             let mut skipped_moment_ids: BTreeSet<usize> = BTreeSet::new();
             let mut unresolved_moments = 0usize;
 
@@ -886,7 +887,7 @@ impl Application {
                 continue;
             }
 
-            let planned: Vec<(MomentId, i64, i64, Vec<(SampleIdentity, i32)>)> = best_by_moment
+            let planned: Vec<PlannedBaseMoment> = best_by_moment
                 .into_values()
                 .map(|(id, _, matched_ms, base_ms, new_hits)| (id, matched_ms, base_ms, new_hits))
                 .collect();
@@ -1195,6 +1196,7 @@ impl Application {
     /// Projects the Shared Base (or open difficulty's hits when no base exists yet) live across
     /// every `.osu` difficulty in the mapset so the editor can show live difficulty tabs with
     /// matched / empty / orphaned counts and rule badges.
+    #[allow(clippy::disallowed_methods)]
     pub fn shared_base_diff_projections(&self, leniency_ms: f64) -> Vec<DiffProjectionTab> {
         let Some(document) = self.document.as_ref() else {
             return Vec::new();
@@ -1362,22 +1364,19 @@ impl Application {
         if let Ok(new_base_path) = storage_path(&projects_root, &new_osu_path)
             && old_base_path.is_file()
             && old_base_path != new_base_path
-        {
-            if let Ok(Some(layer)) = load_base(&old_base_path)
+            && let Ok(Some(layer)) = load_base(&old_base_path)
                 && save_base(&new_base_path, &layer).is_ok()
             {
                 migrated_base = true;
             }
-        }
 
         let mut migrated_project = false;
         let old_proj_path = projects_root.join(format!("{}.json", path_digest(missing_osu_path)));
         let new_proj_path = projects_root.join(format!("{}.json", path_digest(&new_osu_path)));
-        if old_proj_path.is_file() && old_proj_path != new_proj_path && !new_proj_path.exists() {
-            if fs::copy(&old_proj_path, &new_proj_path).is_ok() {
+        if old_proj_path.is_file() && old_proj_path != new_proj_path && !new_proj_path.exists()
+            && fs::copy(&old_proj_path, &new_proj_path).is_ok() {
                 migrated_project = true;
             }
-        }
 
         // Replace missing path in recent maps list if present.
         for recent in &mut self.preferences.recent {

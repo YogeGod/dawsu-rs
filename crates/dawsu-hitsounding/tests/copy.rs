@@ -551,7 +551,7 @@ fn copy_mixes_independent_gains_when_enabled_and_keeps_the_target_volume_policie
     let target = map("256,192,1000,1,0,0:0:0:50:");
     let floor = map("256,192,1000,1,0,0:0:0:5:");
     let make_plan = |target: &OsuFile, options: &CopyOptions| {
-        match copy_hitsounds(&edited, &source, &[target.clone()], &[], options, &|| false, &mut |_, _| {}) {
+        match copy_hitsounds(&edited, &source, std::slice::from_ref(target), &[], options, &|| false, &mut |_, _| {}) {
             CopyOutcome::Targets(mut targets) => match targets.remove(0) {
                 TargetOutcome::Planned(p) => p,
                 other => panic!("{other:?}"),

@@ -260,7 +260,7 @@ fn body_set_round_trip(maps: &[(String, OsuFile)]) -> usize {
         if !matches!(answer(file, &[]), Answer::Objects(_)) {
             continue;
         }
-        let before = dec(&file);
+        let before = dec(file);
         let mut h = before.clone();
         let mut wanted = Vec::new();
         for (i, b) in before.bodies().iter().enumerate().filter(|(i, _)| i % 3 == 0) {

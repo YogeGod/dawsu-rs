@@ -770,7 +770,16 @@ pub(super) fn generate_report_with_options_and_format(
             })?;
             if include_slider_audio {
                 let slider_mixes = crate::slider_export::stage(
-                    source, &mut file, root, defaults, old_bytes, &mixes.staged, format, cancel,
+                    &crate::slider_export::StageInput {
+                        source,
+                        root,
+                        defaults,
+                        previous: old_bytes,
+                        already_staged: &mixes.staged,
+                        format,
+                    },
+                    &mut file,
+                    cancel,
                 )?;
                 mixes.staged.extend(slider_mixes);
             }
@@ -1073,16 +1082,21 @@ fn copy_after(
 /// The Export window's one write: the base hitsound difficulty (Generate) when chosen, then Copy
 /// into the included difficulties. Copy is planned after Generate's mixes, and everything is
 /// written or rolled back together.
+pub(super) struct ExportConfig<'a> {
+    pub defaults: &'a Path,
+    pub settings: Option<&'a crate::ExportSettings>,
+    pub projects: Option<&'a Path>,
+    pub options: &'a crate::ExportOptions,
+}
+
 pub(super) fn export_report(
     source: &Source,
-    defaults: &Path,
-    settings: Option<&crate::ExportSettings>,
-    projects: Option<&Path>,
-    options: &crate::ExportOptions,
+    config: &ExportConfig<'_>,
     cancel: &dyn Fn() -> bool,
     diagnostics: &mut Vec<OutputProblem>,
     progress: &mut dyn FnMut(usize, usize),
 ) -> Result<WritePlan, String> {
+    let ExportConfig { defaults, settings, projects, options } = *config;
     if !options.base {
         return copy_after(
             source,

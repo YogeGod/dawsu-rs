@@ -1,7 +1,18 @@
 # NOW.md — Current Sprint (`dawsu-rs`)
 
-**Feature freeze is ON.** Do not add new windows, crates, or M4 Node Graph features until the core hitsound editor feels rock-solid on real beatmaps and matches 3.1.4's day-to-day mapper ergonomics.
+`origin/main` is `db6385f` (`v1.1.0-alpha.1` shipped). The M3 and v1.1 sprint is archived in `E:/Obsidian/Workspace/dawsu-rewrite/now.md`.
 
-- **Legacy `apps/tauri/dist/app.js`:** Retired (already split into `apps/tauri/ui/src/editor/*.js` and Svelte 5 parts).
-- **Single source of truth for sprint tasks:** `E:/Obsidian/Workspace/dawsu-rewrite/now.md` (mirror changes there, not in multiple competing lists).
-- **Real-app check rule:** Always run `npm run build` + `npm test` (in `apps/tauri/ui`), `node --test apps/tauri/tests/*.test.mjs`, and `cargo test --workspace --locked` before merging, and verify the real built binary boots cleanly. Never merge a PR before checks finish.
+**Feature freeze is ON.** No new windows, crates or features until the post-v1.1 tech-debt cleanup is done.
+
+## Active: post-v1.1 tech-debt cleanup (5 PRs)
+
+1. **PR 1 — Release, Clippy, Docs** (in progress): release workflow fixes, `cargo clippy --workspace --all-targets --locked -- -D warnings` clean, refreshed README, FEATURE-COVERAGE and NOW.
+2. **PR 2 — Split `main.rs`** (`apps/tauri/src/main.rs`).
+3. **PR 3 — Split `dawsu-application/src/lib.rs`.**
+4. **PR 4 — Frontend cleanup:** untrack `dist/ui/*`, split the 4 giant Svelte modals.
+5. **PR 5 — Workspace deps, `ort` feature gate, production `unwrap` cleanup, test suite split.**
+
+## Rules
+
+- **Single source of truth for sprint tasks:** `E:/Obsidian/Workspace/dawsu-rewrite/now.md`. Mirror changes there, not in competing lists.
+- **Real-app check:** run `npm --prefix apps/tauri/ui run build`, `npm --prefix apps/tauri/ui test`, `node --test apps/tauri/tests/*.test.mjs`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `cargo test --workspace --locked` and `node tools/everyday-check.mjs` before merging. Verify the built binary boots. Never merge a PR before checks finish.

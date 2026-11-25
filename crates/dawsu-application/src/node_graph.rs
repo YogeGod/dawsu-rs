@@ -139,7 +139,7 @@ struct GraphEvalDone {
 }
 
 enum GraphOutcome {
-    Done(GraphEvalDone),
+    Done(Box<GraphEvalDone>),
     Cancelled,
     Failed(String),
 }
@@ -875,6 +875,7 @@ impl Application {
                 self.node_graph.error = Some(msg);
             }
             GraphOutcome::Done(done) => {
+                let done = *done;
                 if done.song_stamp != self.node_graph.song_stamp
                     || done.run != self.node_graph.runs
                     || current_rev != Some(done.stamp.map_revision)
@@ -1515,7 +1516,7 @@ impl Application {
                         }
                     };
 
-                    GraphOutcome::Done(GraphEvalDone {
+                    GraphOutcome::Done(Box::new(GraphEvalDone {
                         result,
                         viewer_value,
                         updated_cache: cache_snapshot,
@@ -1523,7 +1524,7 @@ impl Application {
                         song_stamp,
                         run,
                         song_duration_ms,
-                    })
+                    }))
                 }));
                 let _ = send.send(match outcome {
                     Ok(done) => done,

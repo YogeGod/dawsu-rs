@@ -171,7 +171,7 @@ impl StagedMix {
             let format_tag = u16::from_le_bytes([self.wav[20], self.wav[21]]);
             if format_tag == 1 {
                 let samples = self.wav[44..]
-                    .chunks_exact(2)
+                    .as_chunks::<2>().0.iter()
                     .map(|frame| f32::from(i16::from_le_bytes([frame[0], frame[1]])) / 32768.0)
                     .collect();
                 return AudioClip {
@@ -182,7 +182,7 @@ impl StagedMix {
             }
             if format_tag == 3 {
                 let samples = self.wav[44..]
-                    .chunks_exact(4)
+                    .as_chunks::<4>().0.iter()
                     .map(|frame| f32::from_le_bytes([frame[0], frame[1], frame[2], frame[3]]))
                     .collect();
                 return AudioClip {
@@ -1758,7 +1758,7 @@ fn encode_ogg_vorbis(samples: &[f32]) -> Result<Vec<u8>, String> {
         for chunk in samples.chunks(BLOCK_FRAMES * CHANNELS) {
             left.clear();
             right.clear();
-            for frame in chunk.chunks_exact(CHANNELS) {
+            for frame in chunk.as_chunks::<CHANNELS>().0 {
                 left.push(frame[0]);
                 right.push(frame[1]);
             }

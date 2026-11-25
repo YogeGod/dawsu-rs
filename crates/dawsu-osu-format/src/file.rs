@@ -209,13 +209,11 @@ fn logical_text(content: &[u8], section: Option<&str>) -> Option<String> {
         return None;
     }
     let mut s: &str = &text;
-    if section != Some("Metadata") {
-        if let Some(i) = s.find("//") {
-            if i > 0 {
+    if section != Some("Metadata")
+        && let Some(i) = s.find("//")
+            && i > 0 {
                 s = &s[..i];
             }
-        }
-    }
     Some(s.trim_end().to_string())
 }
 
@@ -266,11 +264,10 @@ impl OsuFile {
         }
         let mut current: Option<String> = None;
         for line in &mut lines {
-            if let Some(text) = logical_text(&line.content, current.as_deref()) {
-                if let Some(name) = header_name(&text) {
+            if let Some(text) = logical_text(&line.content, current.as_deref())
+                && let Some(name) = header_name(&text) {
                     current = Some(name.to_string());
                 }
-            }
             line.section = current.clone();
         }
         let file = OsuFile { bom, lines, original: bytes.clone(), removed: Vec::new(), next_id };
@@ -427,11 +424,11 @@ impl OsuFile {
     fn last_line_of(&mut self, section_name: &str) -> usize {
         let header = self.ensure_section(section_name);
         let mut after = header;
-        for i in header + 1..self.lines.len() {
-            if self.lines[i].section.as_deref() != Some(section_name) {
+        for (i, line) in self.lines.iter().enumerate().skip(header + 1) {
+            if line.section.as_deref() != Some(section_name) {
                 break;
             }
-            if logical_text(&self.lines[i].content, Some(section_name)).is_some() {
+            if logical_text(&line.content, Some(section_name)).is_some() {
                 after = i;
             }
         }
@@ -644,11 +641,10 @@ impl OsuFile {
     fn ensure_section(&mut self, name: &str) -> usize {
         let sections = self.sections();
         for (i, line) in self.lines.iter().enumerate() {
-            if let Some(text) = logical_text(&line.content, sections[i].as_deref()) {
-                if header_name(&text) == Some(name) {
+            if let Some(text) = logical_text(&line.content, sections[i].as_deref())
+                && header_name(&text) == Some(name) {
                     return i;
                 }
-            }
         }
         let rank = SECTION_ORDER.iter().position(|s| *s == name).unwrap_or(SECTION_ORDER.len());
         let later = self.lines.iter().enumerate().find_map(|(i, line)| {
@@ -683,11 +679,10 @@ impl OsuFile {
         let mut after = header;
         for (i, _, text) in self.records_in(section) {
             let t = text.split(',').nth(if section == "HitObjects" { 2 } else { 0 }).and_then(|s| s.trim().parse::<f64>().ok());
-            if let Some(t) = t {
-                if t <= time {
+            if let Some(t) = t
+                && t <= time {
                     after = after.max(i);
                 }
-            }
         }
         after
     }

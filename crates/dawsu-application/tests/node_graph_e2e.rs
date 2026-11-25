@@ -43,8 +43,10 @@ fn pattern_samples() -> Vec<f32> {
     let path = workspace_root().join("crates/dawsu-graph-audio/tests/fixtures/classic-3.1.4/pattern.f32");
     std::fs::read(path)
         .unwrap()
-        .chunks_exact(4)
-        .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|b| f32::from_le_bytes(*b))
         .collect()
 }
 

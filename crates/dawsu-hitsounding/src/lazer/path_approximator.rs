@@ -220,16 +220,14 @@ fn bezier_approximate(control_points: &[Vector2], output: &mut Vec<Vector2>, sub
     let l = subdivision_buffer2;
     let r = subdivision_buffer1;
     r[..count].copy_from_slice(&control_points[..count]);
-    for i in 0..count {
-        l[i] = r[0];
+    for (i, slot) in l.iter_mut().enumerate().take(count) {
+        *slot = r[0];
         // r[count - i - 1] = midpoints[count - i - 1] assigns the array to itself here.
         for j in 0..count - i - 1 {
             r[j] = (r[j] + r[j + 1]) / 2.0;
         }
     }
-    for i in 0..count - 1 {
-        l[count + i] = r[i + 1];
-    }
+    l[count..count + (count - 1)].copy_from_slice(&r[1..count]);
     output.push(control_points[0]);
     for i in 1..count - 1 {
         let index = 2 * i;

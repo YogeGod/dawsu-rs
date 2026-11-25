@@ -146,6 +146,10 @@ pub struct TimingGrid {
     lines: Vec<TimingLine>,
 }
 
+/// Returned when a cancellable timing-grid calculation stops early.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Cancelled;
+
 impl TimingGrid {
     /// Sorts lines by `start_ms` (later line at the exact same time wins) and keeps valid positive beat lengths.
     pub fn new(mut lines: Vec<TimingLine>) -> Self {
@@ -220,7 +224,7 @@ impl TimingGrid {
         range: AnalysisRange,
         divisor: u32,
         cancel: &dyn Fn() -> bool,
-    ) -> Result<Vec<f64>, ()> {
+    ) -> Result<Vec<f64>, Cancelled> {
         let mut out = Vec::new();
         let divisor = f64::from(divisor.max(1));
         for (idx, section) in self.lines.iter().enumerate() {
@@ -243,7 +247,7 @@ impl TimingGrid {
             let mut steps = 0usize;
             loop {
                 if steps & 1023 == 0 && cancel() {
-                    return Err(());
+                    return Err(Cancelled);
                 }
                 let t = section.start_ms + n as f64 * step;
                 if t >= section_end - 1e-9 || t >= range.to_ms {

@@ -18,16 +18,54 @@ jobs:
   package-windows:
     name: Build & package Windows release
     runs-on: windows-latest
+    timeout-minutes: 90
+    env:
+      CARGO_TERM_COLOR: always
+      # signalsmith-stretch needs libclang; the Windows runner ships LLVM here.
+      LIBCLANG_PATH: C:\Program Files\LLVM\bin
+      # Pinned Steinberg VST 3 SDK release (MIT since 3.8). Matches E:\dawsu-source-cache\vst3sdk.
+      VST3_SDK_TAG: v3.8.1_build_84
     steps:
-      - uses: actions/checkout@v4
+      # Keep the repo's exact bytes (LF line endings) instead of Windows' CRLF.
+      - name: Keep LF line endings
+        run: git config --global core.autocrlf false
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@v5
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      # Installs the version in rust-toolchain.toml.
+      - name: Rust toolchain
+        run: rustup toolchain install --profile minimal
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: actions/setup-node@v5
         with:
-          node-version: "22"
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/tauri/ui/package-lock.json
+
+      - name: Cache VST 3 SDK
+        id: vst3sdk-cache
+        uses: actions/cache@v4
+        with:
+          path: vst3sdk
+          key: vst3sdk-${{ env.VST3_SDK_TAG }}
+
+      - name: Fetch VST 3 SDK
+        if: steps.vst3sdk-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          git clone --depth 1 --branch "$VST3_SDK_TAG" https://github.com/steinbergmedia/vst3sdk.git vst3sdk
+          git -C vst3sdk submodule update --init --depth 1 base pluginterfaces public.sdk cmake
+
+      - name: Build VST 3 host sidecar
+        shell: pwsh
+        run: |
+          cmake -S native/vst3-host -B native/vst3-host/build -DVST3_SDK_ROOT="$env:GITHUB_WORKSPACE/vst3sdk"
+          cmake --build native/vst3-host/build --config Release
+          if (-not (Test-Path native/vst3-host/build/Release/dawsu_vst3_host.exe)) {
+            throw "dawsu_vst3_host.exe was not produced"
+          }
 
       - name: Install Inno Setup 6
         shell: pwsh
@@ -54,9 +92,9 @@ jobs:
             $ver = "${{ github.ref_name }}".TrimStart('v', 'V')
           }
           if ($ver) {
-            powershell -ExecutionPolicy Bypass -File tools/package-release.ps1 -Version $ver -SkipBuild
+            powershell -ExecutionPolicy Bypass -File tools/package-release.ps1 -Version $ver -SkipBuild -RequireVst3Host
           } else {
-            powershell -ExecutionPolicy Bypass -File tools/package-release.ps1 -SkipBuild
+            powershell -ExecutionPolicy Bypass -File tools/package-release.ps1 -SkipBuild -RequireVst3Host
           }
 
       - name: Upload release artifacts
@@ -70,6 +108,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-') }}
           files: |
             dist/release/*-setup.exe
             dist/release/*-portable.zip

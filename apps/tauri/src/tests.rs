@@ -2474,8 +2474,8 @@ fn drum_window_requests_answer_with_its_view_and_never_touch_main_errors() {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")))
         .join("../../crates/dawsu-graph-audio/tests/fixtures/classic-3.1.4/pattern.f32");
-    let pcm: Vec<u8> = fs::read(pattern).unwrap().chunks_exact(4)
-        .flat_map(|b| (((f32::from_le_bytes(b.try_into().unwrap()) * 0.5).clamp(-1.0, 1.0) * 32767.0) as i16).to_le_bytes()).collect();
+    let pcm: Vec<u8> = fs::read(pattern).unwrap().as_chunks::<4>().0.iter()
+        .flat_map(|b| (((f32::from_le_bytes(*b) * 0.5).clamp(-1.0, 1.0) * 32767.0) as i16).to_le_bytes()).collect();
     let mut wav = b"RIFF".to_vec();
     wav.extend((36 + pcm.len() as u32).to_le_bytes());
     wav.extend(b"WAVEfmt ");
@@ -3208,7 +3208,9 @@ fn encode_waveform_bytes_round_trips_exact_f32_bins() {
     let bytes = encode_waveform_bytes(&app.waveform);
     assert_eq!(bytes.len(), app.waveform.len() * 6 * 4);
     let decoded: Vec<WaveBin> = bytes
-        .chunks_exact(24)
+        .as_chunks::<24>()
+        .0
+        .iter()
         .map(|chunk| {
             let f = |offset: usize| {
                 f32::from_le_bytes(chunk[offset..offset + 4].try_into().unwrap())

@@ -67,13 +67,17 @@ jobs:
       # Installs the version in rust-toolchain.toml.
       - name: Rust toolchain
         if: ${{ !cancelled() }}
-        run: rustup toolchain install --profile minimal
+        run: rustup toolchain install --profile minimal --component clippy
 
       # Only main saves the cache: pull requests reuse it without filling the cache space.
       - uses: Swatinem/rust-cache@v2
         if: ${{ !cancelled() }}
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Clippy lints
+        if: ${{ !cancelled() }}
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
       - name: Rust workspace tests
         if: ${{ !cancelled() }}

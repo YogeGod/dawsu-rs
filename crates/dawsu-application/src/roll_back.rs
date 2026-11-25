@@ -158,10 +158,13 @@ impl Unit {
 /// Compiles the drawn hits, rolling back each part that comes back as a problem. `mixable`
 /// decides which problems a sample mix will write instead; `finish` gets each clean pass and its
 /// mixable problems and returns the final file, or the problems that still stop it.
+type FinishRollBack<'a> =
+    &'a mut dyn FnMut(&Pass, &Hitsounds, Vec<SaveProblem>) -> Result<Result<OsuFile, Vec<SaveProblem>>, String>;
+
 pub(crate) fn compile_with_roll_back(
     inputs: &Inputs,
     mixable: &dyn Fn(&SaveProblem) -> bool,
-    finish: &mut dyn FnMut(&Pass, &Hitsounds, Vec<SaveProblem>) -> Result<Result<OsuFile, Vec<SaveProblem>>, String>,
+    finish: FinishRollBack<'_>,
     cancel: &dyn Fn() -> bool,
     progress: &mut dyn FnMut(usize, usize),
 ) -> Result<Rolled, String> {

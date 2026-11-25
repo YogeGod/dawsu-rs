@@ -20,7 +20,8 @@ param(
     [string]$Profile = "release",
     [string]$OutputDir = "",
     [switch]$SkipBuild,
-    [switch]$SkipInstaller
+    [switch]$SkipInstaller,
+    [switch]$RequireVst3Host
 )
 
 Set-StrictMode -Version Latest
@@ -29,13 +30,25 @@ $ErrorActionPreference = "Stop"
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $CargoTomlPath = Join-Path $RepoRoot "apps\tauri\Cargo.toml"
 
+$TauriConfPath = Join-Path $RepoRoot "apps/tauri/tauri.conf.json"
+
+$toml = Get-Content -Raw $CargoTomlPath
+if ($toml -match '(?m)^version\s*=\s*"([^"]+)"') {
+    $CargoVersion = $Matches[1]
+} else {
+    throw "Could not read version from $CargoTomlPath"
+}
+$ConfVersion = (Get-Content -Raw $TauriConfPath | ConvertFrom-Json).version
+if (-not $ConfVersion) {
+    throw "Could not read version from $TauriConfPath"
+}
+if ($CargoVersion -ne $ConfVersion) {
+    throw "Version mismatch: Cargo.toml has $CargoVersion but tauri.conf.json has $ConfVersion."
+}
 if (-not $Version) {
-    $toml = Get-Content -Raw $CargoTomlPath
-    if ($toml -match '(?m)^version\s*=\s*"([^"]+)"') {
-        $Version = $Matches[1]
-    } else {
-        throw "Could not read version from $CargoTomlPath"
-    }
+    $Version = $CargoVersion
+} elseif ($Version.TrimStart("v", "V") -ne $CargoVersion) {
+    throw "Version mismatch: -Version $Version but Cargo.toml/tauri.conf.json have $CargoVersion."
 }
 $Version = $Version.TrimStart("v", "V")
 
@@ -89,6 +102,8 @@ Copy-Item $TauriExe (Join-Path $StageDir "dawsu-tauri.exe")
 if ($Vst3HostExe) {
     Write-Host "==> Bundling VST3 sidecar: $Vst3HostExe"
     Copy-Item $Vst3HostExe (Join-Path $StageDir "dawsu_vst3_host.exe")
+} elseif ($RequireVst3Host) {
+    throw "dawsu_vst3_host.exe not found (checked: $($Vst3HostCandidates -join ', ')) and -RequireVst3Host was set."
 } else {
     Write-Warning "dawsu_vst3_host.exe not found; packaging without VST3 sidecar."
 }

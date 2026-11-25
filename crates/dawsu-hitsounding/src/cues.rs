@@ -140,7 +140,7 @@ Mode: 0
             sound: Sound::Hit(Hitsound::Normal),
             index: CustomIndex::new(0),
         };
-        let expected_muted = cue_list(&cloned, &[normal.clone()], &[]);
+        let expected_muted = cue_list(&cloned, std::slice::from_ref(&normal), &[]);
         let actual_muted = cue_list_filtered(&hits, &[normal], &[], |m, lane| {
             listen_muted.iter().any(|(mm, l)| *mm == m && l == lane)
         });

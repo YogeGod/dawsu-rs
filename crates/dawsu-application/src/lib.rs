@@ -386,10 +386,24 @@ pub fn save_document_with_cleanup(
     clean_redundant_greenlines: bool,
 ) -> Result<SaveReport, String> {
     prepare_save(
-        document.compile_base.clone(), document.composer.hitsounds(), &document.written,
-        document.file.original_bytes().to_vec(), &document.path, backups, document.hs_mode,
-        &document.owned_hs_circles, Path::new(""), &document.pending, None, false,
-        clean_redundant_greenlines, &|| false, &mut Vec::new(), &mut |_, _| {},
+        PrepareSaveInput {
+            file: document.compile_base.clone(),
+            hits: document.composer.hitsounds(),
+            written: &document.written,
+            expected: document.file.original_bytes().to_vec(),
+            path: &document.path,
+            backups,
+            hs: document.hs_mode,
+            owned: &document.owned_hs_circles,
+            defaults: Path::new(""),
+            pending: &document.pending,
+            project: None,
+            review: false,
+            clean_redundant_greenlines,
+        },
+        &|| false,
+        &mut Vec::new(),
+        &mut |_, _| {},
     )?.apply(None, &|| false)
 }
 fn compile_for_save(
@@ -484,24 +498,43 @@ fn compile_snapshot(
     )
     .map(|(file, problems, _)| (file, problems))
 }
-fn prepare_save(
+struct PrepareSaveInput<'a> {
     file: OsuFile,
-    hits: &Hitsounds,
-    written: &Hitsounds,
+    hits: &'a Hitsounds,
+    written: &'a Hitsounds,
     expected: Vec<u8>,
-    path: &Path,
+    path: &'a Path,
     backups: PathBuf,
     hs: bool,
-    owned: &BTreeSet<LineId>,
-    defaults: &Path,
-    pending: &pending::Pending,
-    project: Option<&project::Project>,
+    owned: &'a BTreeSet<LineId>,
+    defaults: &'a Path,
+    pending: &'a pending::Pending,
+    project: Option<&'a project::Project>,
     review: bool,
     clean_redundant_greenlines: bool,
+}
+
+fn prepare_save(
+    input: PrepareSaveInput<'_>,
     cancel: &dyn Fn() -> bool,
     diagnostics: &mut Vec<OutputProblem>,
     progress: &mut dyn FnMut(usize, usize),
 ) -> Result<PreparedSave, String> {
+    let PrepareSaveInput {
+        file,
+        hits,
+        written,
+        expected,
+        path,
+        backups,
+        hs,
+        owned,
+        defaults,
+        pending,
+        project,
+        review,
+        clean_redundant_greenlines,
+    } = input;
     let root = path.parent().ok_or("Missing mapset folder")?;
     let inputs = if review {
         let defaults_list = crate::pending::sample_folder(defaults);
@@ -637,7 +670,17 @@ fn prepare_save(
         .and_then(|project| project.settings.gain_recovery.as_ref())
         .is_some_and(|record| record.has_authored_for(&expected))
     {
-        Some(recovery.revision(&effective, &out, root, pending, defaults, &mix_files.staged, cancel)?)
+        Some(recovery.revision(
+            &gain_recovery::RevisionInput {
+                hits: &effective,
+                file: &out,
+                root,
+                pending,
+                defaults,
+                staged: &mix_files.staged,
+            },
+            cancel,
+        )?)
     } else {
         None
     };
@@ -1187,14 +1230,17 @@ impl PendingSave {
         let path = self.plan.path.clone();
         let result = self.plan.apply(self.project.as_mut(), cancel);
         JobResult::Save {
-            version: self.version, path, hs_mode: self.hs, project: self.project, settings: self.settings,
-            result, diagnostics: Vec::new(),
+            version: self.version, path, hs_mode: self.hs, project: self.project.map(Box::new), settings: self.settings.map(Box::new),
+            result: result.map(Box::new), diagnostics: Vec::new(),
         }
     }
 }
 
+type DrumVstSource = (usize, SampleIdentity, i32);
+type OutputJobResult = (usize, Option<String>, Vec<String>, std::collections::BTreeMap<String, u32>);
+
 enum JobResult {
-    Open(Option<u64>, bool, Option<ReloadPreserve>, Result<Loaded, String>),
+    Open(Option<u64>, bool, Option<ReloadPreserve>, Result<Box<Loaded>, String>),
     SongReady {
         generation: u64,
         song: Option<Arc<AudioClip>>,
@@ -1220,21 +1266,21 @@ enum JobResult {
         version: u64,
         path: PathBuf,
         hs_mode: bool,
-        settings: Option<project::SessionSettings>,
-        project: Option<project::Project>,
-        result: Result<SaveReport, String>,
+        settings: Option<Box<project::SessionSettings>>,
+        project: Option<Box<project::Project>>,
+        result: Result<Box<SaveReport>, String>,
         diagnostics: Vec<OutputProblem>,
     },
     SaveCheck {
         version: u64,
         path: PathBuf,
         hs: bool,
-        result: Result<PendingSave, String>,
+        result: Result<Box<PendingSave>, String>,
         diagnostics: Vec<OutputProblem>,
     },
-    Review(Result<output::WritePlan, String>, Vec<OutputProblem>),
+    Review(Result<Box<output::WritePlan>, String>, Vec<OutputProblem>),
     /// The files written, a receipt warning, and the pending files the write put in the mapset.
-    Output(Result<(usize, Option<String>, Vec<String>, std::collections::BTreeMap<String, u32>), String>),
+    Output(Result<OutputJobResult, String>),
 }
 #[derive(Clone)]
 struct JobProgress {
@@ -2157,11 +2203,10 @@ impl Application {
     pub fn keysounds_add_track(&mut self, name: &str, vst3_plugin_name: Option<&str>) -> u64 {
         let ch = (self.keysounds.document.tracks.len() % 15) as u8;
         let id = self.keysounds.document.add_track(name, ch, false);
-        if let Some(plugin) = vst3_plugin_name {
-            if let Some(track) = self.keysounds.document.tracks.iter_mut().find(|t| t.id == id) {
+        if let Some(plugin) = vst3_plugin_name
+            && let Some(track) = self.keysounds.document.tracks.iter_mut().find(|t| t.id == id) {
                 track.instrument.name = plugin.to_string();
             }
-        }
         id
     }
 
@@ -2421,7 +2466,7 @@ impl Application {
                 loaded.outgoing_keep = outgoing_mapset.and_then(|mapset| recorded_pending(project_root.as_deref(), &data_root, &mapset));
                 Ok(loaded)
             })();
-            let _ = send.send(JobResult::Open(outgoing, keep_settings, preserve, result));
+            let _ = send.send(JobResult::Open(outgoing, keep_settings, preserve, result.map(Box::new)));
             // Housekeeping of dawsu!'s data folder, after the open so it never delays it.
             pending::prune_kept_copies(&data_root, project_root.as_deref(), pending::PRUNE_MIN_AGE);
             pending::cap_removed_samples(
@@ -2548,6 +2593,7 @@ impl Application {
             self.busy = false;
             match result {
                 JobResult::Open(outgoing, keep_settings, preserve, Ok(loaded)) => {
+                    let loaded = *loaded;
                     if self.document.as_ref().map(|d| d.composer.history.version()) != outgoing {
                         self.sweep_after_open = false;
                         if preserve.as_ref().is_some_and(|p| !p.forced) {
@@ -2774,7 +2820,7 @@ impl Application {
                     self.save_problem_review = false;
                     match result {
                         Ok(plan) => {
-                            self.output_review = Some(plan);
+                            self.output_review = Some(*plan);
                             self.status = "Review the output before writing".into();
                         }
                         Err(e) => {
@@ -2792,6 +2838,7 @@ impl Application {
                         self.output_problems = diagnostics;
                         match result {
                             Ok(plan) => {
+                                let plan = *plan;
                                 if !plan.plan.left_out.is_empty() {
                                     self.save_problem_review = true;
                                     self.status = "Review the moments Save leaves out".into();
@@ -2855,12 +2902,15 @@ impl Application {
                     result,
                     diagnostics,
                 } => {
+                    let project = project.map(|p| *p);
+                    let settings = settings.map(|s| *s);
                     self.output_problems = diagnostics;
                     if project.is_some() {
                         self.project = project;
                     }
                     match result {
                         Ok(report) => {
+                            let report = *report;
                             let mut archive_error = None;
                             // A recovery copy keeps the whole compile input, loose hits included, as
                             // the state Undo returns to.
@@ -3138,8 +3188,23 @@ impl Application {
             let cancelled = || cancel.load(Ordering::Relaxed);
             let mut diagnostics = Vec::new();
             let result = prepare_save(
-                file, &hits, &written, expected, &path, backups, hs, &owned, &defaults, &pending,
-                project.as_ref(), review, clean_redundant_greenlines, &cancelled, &mut diagnostics,
+                PrepareSaveInput {
+                    file,
+                    hits: &hits,
+                    written: &written,
+                    expected,
+                    path: &path,
+                    backups,
+                    hs,
+                    owned: &owned,
+                    defaults: &defaults,
+                    pending: &pending,
+                    project: project.as_ref(),
+                    review,
+                    clean_redundant_greenlines,
+                },
+                &cancelled,
+                &mut diagnostics,
                 &mut |done, total| progress.report(done, total),
             ).map(|plan| {
                 let settings = settings.map(|mut settings| {
@@ -3155,16 +3220,16 @@ impl Application {
                 PendingSave { version, hs, plan, project: project.clone(), settings }
             });
             let job = if review {
-                JobResult::SaveCheck { version, path, hs, result, diagnostics }
+                JobResult::SaveCheck { version, path, hs, result: result.map(Box::new), diagnostics }
             } else {
                 match result {
                     // Every Save that leaves moments out shows the Save hitsounds summary first.
                     Ok(plan) if !plan.plan.left_out.is_empty() => {
-                        JobResult::SaveCheck { version, path, hs, result: Ok(plan), diagnostics }
+                        JobResult::SaveCheck { version, path, hs, result: Ok(Box::new(plan)), diagnostics }
                     }
                     Ok(plan) => plan.finish(&cancelled),
                     Err(error) => JobResult::Save {
-                        version, path, hs_mode: hs, project, settings: None, result: Err(error), diagnostics,
+                        version, path, hs_mode: hs, project: project.map(Box::new), settings: None, result: Err(error), diagnostics,
                     },
                 }
             };
@@ -3893,11 +3958,10 @@ impl Application {
     }
 
     pub fn set_view_start(&mut self, ms: f64) {
-        if let Some(d) = self.document.as_mut() {
-            if ms.is_finite() {
+        if let Some(d) = self.document.as_mut()
+            && ms.is_finite() {
                 d.composer.view_start = ms;
             }
-        }
     }
     pub fn set_snap(&mut self, enabled: bool, division: u32) {
         if let Some(d) = self.document.as_mut() {
@@ -4174,7 +4238,7 @@ impl Application {
             let result = prepare(source, cancel, &mut diagnostics, &mut |done, total| {
                 progress.report(done, total);
             });
-            let _ = send.send(JobResult::Review(result, diagnostics));
+            let _ = send.send(JobResult::Review(result.map(Box::new), diagnostics));
         });
     }
     pub fn generate(&mut self) {
@@ -4916,7 +4980,7 @@ impl Application {
     fn plan_drum_vst_render_with_sources(
         &self,
         mode: VelocityExportMode,
-    ) -> Result<(Vst3DrumExportPlan, Vec<(usize, SampleIdentity, i32)>), String> {
+    ) -> Result<(Vst3DrumExportPlan, Vec<DrumVstSource>), String> {
         let d = self.document.as_ref().ok_or("Open a difficulty first.")?;
         let vst = self.drum_vst.as_ref().ok_or("Load a Drum VST3 instrument first.")?;
         let routed = vst.routed_notes();
@@ -5099,7 +5163,7 @@ impl Application {
         let want_ogg = matches!(format, bounce_plan::BounceAudioFormat::OggVorbis);
         let mut bounced_bytes = 0u64;
         let mut samples_json = Vec::with_capacity(plan.jobs.len());
-        for (idx, ((name, clip), stereo)) in clips.iter().zip(buffers.into_iter()).enumerate() {
+        for (idx, ((name, clip), stereo)) in clips.iter().zip(buffers).enumerate() {
             if self.bounce_cancel.is_cancelled() {
                 return Err("Render cancelled.".into());
             }
@@ -5235,7 +5299,7 @@ impl Application {
                 let _ = bounce_plan::uniform_batch_normalize(&mut buffers, format.target_peak_dbfs());
             }
             let mut rename_map: HashMap<String, String> = HashMap::new();
-            for (idx, ((name, bytes, clip), stereo)) in staged_samples.iter_mut().zip(buffers.into_iter()).enumerate() {
+            for (idx, ((name, bytes, clip), stereo)) in staged_samples.iter_mut().zip(buffers).enumerate() {
                 let sr = clip.sample_rate.max(8_000);
                 if want_ogg {
                     let ogg_bytes = bounce_plan::encode_vorbis_ogg(&stereo, sr)?;
@@ -5612,7 +5676,8 @@ fn load(
         },
         None => None,
     };
-    let samples_mutex: Mutex<(HashMap<SampleIdentity, Arc<AudioClip>>, Vec<String>)> =
+    type DecodedSamplesMap = (HashMap<SampleIdentity, Arc<AudioClip>>, Vec<String>);
+    let samples_mutex: Mutex<DecodedSamplesMap> =
         Mutex::new((HashMap::with_capacity(unique_sources.len()), Vec::new()));
 
     if !unique_sources.is_empty() {
@@ -5783,12 +5848,10 @@ fn restore_project_hits(
         let time = hit.time.to_bits();
         if hit.default_volume.is_none()
             && let Some(count) = anchored.get_mut(&(time, lane.clone(), volume))
-        {
-            if *count > 0 {
+            && *count > 0 {
                 *count -= 1;
                 continue;
             }
-        }
         // Legacy rows have no moment identifier. Co-timed lanes share volume;
         // repeated voices on the same lane need distinct moments.
         let group = hit.group.unwrap_or_else(|| {
@@ -6019,9 +6082,24 @@ mod project_workflow {
 
     fn prepare(scratch: &Scratch, document: &Document, hits: &Hitsounds, project: Option<&project::Project>, diagnostics: &mut Vec<OutputProblem>) -> Result<PreparedSave, String> {
         prepare_save(
-            document.compile_base.clone(), hits, &document.written, document.file.original_bytes().to_vec(), &document.path,
-            scratch.path("backups"), true, &BTreeSet::new(), Path::new(""), &document.pending, project, false, false, &|| false, diagnostics, &mut |_, _| {},
-
+            PrepareSaveInput {
+                file: document.compile_base.clone(),
+                hits,
+                written: &document.written,
+                expected: document.file.original_bytes().to_vec(),
+                path: &document.path,
+                backups: scratch.path("backups"),
+                hs: true,
+                owned: &BTreeSet::new(),
+                defaults: Path::new(""),
+                pending: &document.pending,
+                project,
+                review: false,
+                clean_redundant_greenlines: false,
+            },
+            &|| false,
+            diagnostics,
+            &mut |_, _| {},
         )
     }
 
@@ -7027,8 +7105,7 @@ mod project_workflow {
         }
         layers.sort();
         let key = serde_json::to_string(&layers).unwrap();
-        let mut settings = ExportSettings::default();
-        settings.pair_samples = true;
+        let mut settings = ExportSettings { pair_samples: true, ..ExportSettings::default() };
         settings.rules.insert(key, "soft-hitwhistle".into());
         let path = fixture.path("merge-preset.json");
         let export = serde_json::to_vec_pretty(&settings).unwrap();
@@ -7154,7 +7231,7 @@ mod project_workflow {
         std::fs::write(fixture.path("late.WAV"), wav).unwrap();
         std::fs::write(fixture.path("song.wav"), wav).unwrap();
         assert!(!app.document().unwrap().composer.lanes.contains(&lane));
-        assert_eq!(app.scan_lane_add_candidates(&path).unwrap(), [lane.clone()]);
+        assert_eq!(app.scan_lane_add_candidates(&path).unwrap(), std::slice::from_ref(&lane));
         // No poll occurs between copy and explicit Add.
         app.show_lane(&path, &lane).unwrap();
         let doc = app.document().unwrap();
@@ -7164,7 +7241,7 @@ mod project_workflow {
         assert!(app.scan_lane_add_candidates(&path).unwrap().is_empty());
         app.command("undo");
         assert!(app.document().unwrap().composer.hitsounds().is_lane_hidden(&lane));
-        assert_eq!(app.scan_lane_add_candidates(&path).unwrap(), [lane.clone()]);
+        assert_eq!(app.scan_lane_add_candidates(&path).unwrap(), std::slice::from_ref(&lane));
         app.command("redo");
         assert!(!app.document().unwrap().composer.hitsounds().is_lane_hidden(&lane));
         assert_eq!(std::fs::read(&path).unwrap(), map);
@@ -7774,9 +7851,24 @@ Title:");
         let document = app.document().unwrap();
         let mut project = app.project.clone().unwrap();
         let plan = prepare_save(
-            document.compile_base.clone(), document.composer.hitsounds(), &document.written, document.file.original_bytes().to_vec(),
-            &document.path, scratch.path("backups"), false, &BTreeSet::new(), Path::new(""), &document.pending, Some(&project), false,
-            false, &|| false, &mut Vec::new(), &mut |_, _| {},
+            PrepareSaveInput {
+                file: document.compile_base.clone(),
+                hits: document.composer.hitsounds(),
+                written: &document.written,
+                expected: document.file.original_bytes().to_vec(),
+                path: &document.path,
+                backups: scratch.path("backups"),
+                hs: false,
+                owned: &BTreeSet::new(),
+                defaults: Path::new(""),
+                pending: &document.pending,
+                project: Some(&project),
+                review: false,
+                clean_redundant_greenlines: false,
+            },
+            &|| false,
+            &mut Vec::new(),
+            &mut |_, _| {},
         ).unwrap();
         // The `.osu` write fails, as a crash right after the project write would leave it.
         std::fs::write(scratch.path("backups"), b"not a folder").unwrap();
@@ -10568,19 +10660,21 @@ mod drum_vst_routing_tests {
 
         let mut diagnostics = Vec::new();
         let mut plan = prepare_save(
-            document.compile_base.clone(),
-            &hits,
-            &document.written,
-            document.file.original_bytes().to_vec(),
-            &document.path,
-            scratch.path("backups"),
-            false,
-            &BTreeSet::new(),
-            Path::new(""),
-            &document.pending,
-            None,
-            false,
-            false,
+            PrepareSaveInput {
+                file: document.compile_base.clone(),
+                hits: &hits,
+                written: &document.written,
+                expected: document.file.original_bytes().to_vec(),
+                path: &document.path,
+                backups: scratch.path("backups"),
+                hs: false,
+                owned: &BTreeSet::new(),
+                defaults: Path::new(""),
+                pending: &document.pending,
+                project: None,
+                review: false,
+                clean_redundant_greenlines: false,
+            },
             &|| false,
             &mut diagnostics,
             &mut |_, _| {},

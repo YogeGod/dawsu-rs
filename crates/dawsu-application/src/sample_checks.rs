@@ -186,13 +186,12 @@ pub fn inspect_file(path: &Path) -> Result<SampleHealthReport, String> {
         .is_some_and(|ext| ext.eq_ignore_ascii_case("wav"));
 
     // Symphonia may reject 0-frame 44-byte blank WAVs; check them directly first.
-    if is_wav && file_bytes == STANDARD_SILENT_WAV_BYTES {
-        if let Ok(bytes) = fs::read(path)
+    if is_wav && file_bytes == STANDARD_SILENT_WAV_BYTES
+        && let Ok(bytes) = fs::read(path)
             && let Some(report) = inspect_wav_bytes(&name, &bytes)
         {
             return Ok(report);
         }
-    }
 
     let clip = dawsu_audio::decode(path)
         .map_err(|error| format!("Could not decode {name}: {error}"))?;
@@ -442,7 +441,7 @@ fn parse_pcm_wav(wav: &[u8]) -> Option<ParsedWav> {
     let data = data_slice?;
     let samples = match (audio_format, bits_per_sample) {
         (1, 16) => data
-            .chunks_exact(2)
+            .as_chunks::<2>().0.iter()
             .map(|b| f32::from(i16::from_le_bytes([b[0], b[1]])) / 32768.0)
             .collect(),
         (1, 8) => data
@@ -450,14 +449,14 @@ fn parse_pcm_wav(wav: &[u8]) -> Option<ParsedWav> {
             .map(|&b| (f32::from(b) - 128.0) / 128.0)
             .collect(),
         (1, 24) => data
-            .chunks_exact(3)
+            .as_chunks::<3>().0.iter()
             .map(|b| {
                 let raw = i32::from_le_bytes([0, b[0], b[1], b[2]]) >> 8;
                 raw as f32 / 8_388_608.0
             })
             .collect(),
         (3, 32) => data
-            .chunks_exact(4)
+            .as_chunks::<4>().0.iter()
             .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
             .collect(),
         _ => return None,
