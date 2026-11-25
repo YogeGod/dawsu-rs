@@ -1,6 +1,6 @@
 <script>
   import {
-    baseName, difficultyName, fileName, targetCounts, targetCoveragePct, targetDiff,
+    baseName, difficultyName, fileName, targetCounts, targetCoverageBins, targetCoveragePct, targetDiff,
   } from "../../lib/export.js";
 
   let {
@@ -71,6 +71,7 @@
     {@const on = !choices.leftOut.includes(fileName(path))}
     {@const counts = on ? targetCounts(status.preview, path) : null}
     {@const coveragePct = on ? targetCoveragePct(status.preview, path) : null}
+    {@const coverageBins = on ? targetCoverageBins(status.preview, path) : []}
     {@const diff = on ? targetDiff(status.preview, path) : null}
     <li class="target" class:off={!on}>
       <span class="port" aria-hidden="true"></span>
@@ -102,7 +103,13 @@
             {/if}
           {/if}
         </div>
-        {#if on && coveragePct !== null}
+        {#if on && coverageBins.length}
+          <div class="coverage-bins" aria-hidden="true">
+            {#each coverageBins as tone, bi (bi)}
+              <span class="coverage-bin {tone}"></span>
+            {/each}
+          </div>
+        {:else if on && coveragePct !== null}
           <div class="coverage-bar" aria-hidden="true">
             <span class="coverage-fill" style:width={`${coveragePct}%`}></span>
           </div>
@@ -194,46 +201,21 @@
 
   .targets {
     list-style: none;
-    margin: 0;
-    padding: 10px 0 0 56px;
-    position: relative;
+    margin: 14px 0 0;
+    padding: 0;
+    display: grid;
+    gap: 10px;
   }
-  .targets::before {
-    content: "";
-    position: absolute;
-    left: 26px;
-    top: 0;
-    bottom: 47px;
-    width: 2px;
-    background: var(--editor-border);
-  }
-  .target { position: relative; margin-bottom: 10px; }
-  .target::before {
-    content: "";
-    position: absolute;
-    left: -30px;
-    top: 50%;
-    width: 30px;
-    border-top: 2px solid var(--editor-accent);
-  }
-  .target.off::before { border-top: 2px dashed var(--editor-disabled); }
-  .port {
-    position: absolute;
-    left: -35px;
-    top: calc(50% - 4px);
-    width: 10px;
-    height: 10px;
-    border-radius: 50%;
-    background: var(--editor-accent);
-  }
-  .off .port { background: var(--editor-disabled); }
+  .target { position: relative; }
+  .port { display: none; }
   .card {
-    padding: 12px 18px;
+    padding: 14px 18px;
+    border: 1px solid var(--editor-border);
     border-radius: 10px;
     background: var(--editor-panel);
     box-shadow: var(--shadow-card);
   }
-  .off .card { opacity: .55; }
+  .off .card { opacity: .52; }
   .line { display: flex; align-items: center; gap: 10px; }
   .spacer { flex: 1; }
   .pill {
@@ -343,10 +325,10 @@
     font-style: italic;
   }
   .listen-btn {
-    height: 24px;
-    padding: 0 10px;
+    height: 26px;
+    padding: 0 11px;
     border: 1px solid var(--editor-border);
-    border-radius: 999px;
+    border-radius: 6px;
     background: var(--editor-control);
     color: var(--editor-text);
     font: inherit;
@@ -361,8 +343,8 @@
   }
   .listen-btn[aria-pressed="true"] {
     border-color: var(--editor-accent);
-    background: var(--editor-tealtint);
-    color: var(--editor-accent);
+    background: var(--editor-accent);
+    color: var(--editor-accentink);
   }
   .coverage-pct {
     margin-left: auto;
@@ -370,6 +352,21 @@
     font-weight: 600;
     color: var(--editor-secondary);
   }
+  .coverage-bins {
+    display: grid;
+    grid-template-columns: repeat(36, 1fr);
+    gap: 2px;
+    height: 10px;
+    margin-top: 10px;
+    align-items: end;
+  }
+  .coverage-bin {
+    height: 100%;
+    border-radius: 2px;
+    background: rgba(52, 199, 89, 0.72);
+  }
+  .coverage-bin.warn { background: #e8a427; }
+  .coverage-bin.miss { background: var(--editor-error); }
   .coverage-bar {
     height: 4px;
     margin-top: 8px;
@@ -385,7 +382,7 @@
     transition: width 0.16s ease;
   }
   .dry-run-box {
-    margin: 14px 0 0 56px;
+    margin: 14px 0 0;
     padding: 10px 14px;
     border-radius: 8px;
     background: var(--editor-panel);

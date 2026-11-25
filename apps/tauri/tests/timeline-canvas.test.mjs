@@ -436,6 +436,23 @@ test("the overview draws object diamonds by density, problem diamonds and the vi
   assert.ok(end[0] + end[2] <= 300, JSON.stringify(end));
 });
 
+test("the overview draws multi-lane hitsound diamonds on distinct vertical tracks when moments exist", async () => {
+  const { get, paint } = await canvases();
+  const overview = get("overview");
+  paint(`view.duration = 4000; scene.zoom = .1;
+    scene.gameplay = { points: [["circle", 1000, 0]], spans: [] };
+    scene.moments = [
+      [1000, 90, true, [[0, false], [1, false], [2, false]]],
+      [2000, 35, true, [[0, false], [2, false]]]
+    ];`);
+  const diamonds = overview.calls.flatMap((call, at) => call.name === "fill" && overview.calls[at - 1]?.name === "closePath" &&
+    overview.calls[at - 5]?.name === "moveTo" ? [[round(overview.calls[at - 5].args[0]), round(overview.calls[at - 5].args[1]), call.fill]] : []);
+  const laneYs = new Set(diamonds.filter(([, , fill]) => !fill.startsWith("rgba(196,196,196,")).map(([, y]) => y));
+  assert.ok(laneYs.size >= 3, `expected at least 3 distinct lane tracks in overview, got ${[...laneYs]}`);
+  assert.ok(diamonds.some(([, , fill]) => fill === "#ff6b81"), "loud hits draw red");
+  assert.ok(diamonds.some(([, , fill]) => fill === "#64b5f6"), "quiet hits draw blue");
+});
+
 test("with the waveform switched off the Song row keeps its circles and digits, without the waveform", async () => {
   const { get, paint } = await canvases();
   const ruler = get("ruler");

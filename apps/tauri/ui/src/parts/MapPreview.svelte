@@ -75,8 +75,10 @@
         <p class="insp-summary">The map preview is in its own window.</p>
         <div class="insp-actions"><button type="button" onclick={bringBack}>Show it here</button></div>
       {:else}
-        <PreviewCanvas view={bridge.playhead} path={bridge.scene?.path ?? null} previewKey={bridge.scene?.previewKey ?? null}
-          active={open} {skinId} />
+        <div class="preview-frame">
+          <PreviewCanvas view={bridge.playhead} path={bridge.scene?.path ?? null} previewKey={bridge.scene?.previewKey ?? null}
+            active={open} {skinId} />
+        </div>
         <div class="skin-row">
           <label class="skin-label" for="preview-skin-select">Skin</label>
           <select id="preview-skin-select" class="skin-select" value={skinId} onchange={e => saveSkin(e.currentTarget.value)}>
@@ -86,22 +88,39 @@
           </select>
           <button type="button" class="skin-browse" onclick={browseSkin} title="Pick any osu! skin folder">Browse…</button>
         </div>
-        <div class="insp-actions"><button type="button" onclick={popOut}>Open in its own window</button></div>
+        <div class="insp-actions"><button type="button" class="popout-btn" onclick={popOut}>Open in its own window</button></div>
       {/if}
     </div>
   </div>
 {/if}
 
 <style>
+  .preview-frame {
+    max-height: 132px;
+    overflow: hidden;
+    border-radius: 6px;
+    border: 1px solid var(--editor-border);
+    background: #08080a;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .preview-frame :global(canvas) {
+    max-height: 132px;
+    width: auto !important;
+    max-width: 100%;
+    object-fit: contain;
+  }
   .skin-row {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 5px;
     margin-top: 6px;
+    min-width: 0;
   }
   .skin-label {
     font-size: 11px;
-    color: var(--editor-secondary);
+    color: var(--editor-muted);
     flex: none;
   }
   .skin-select {
@@ -109,12 +128,13 @@
     min-width: 0;
     height: 24px;
     padding: 0 6px;
-    border-radius: 3px;
+    border-radius: 5px;
     border: 1px solid var(--editor-border);
     background: var(--editor-control);
     color: var(--editor-text);
     color-scheme: dark;
     font: 11px var(--font-ui);
+    text-overflow: ellipsis;
   }
   .skin-select option {
     background: var(--editor-panel);
@@ -123,7 +143,11 @@
   .skin-browse {
     flex: none;
     height: 24px;
-    padding: 0 8px;
+    padding: 0 7px;
+    border-radius: 5px;
     font-size: 11px;
+  }
+  .popout-btn {
+    width: 100%;
   }
 </style>

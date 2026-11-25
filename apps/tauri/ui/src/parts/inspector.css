@@ -171,16 +171,54 @@
 .insp-slider-row {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 4px 6px;
-  border-radius: 4px;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 6px;
   background: var(--editor-chrome);
 }
+/* Blue (quiet) -> Purple (mid) -> Red (loud) gradient matching the timeline hit diamonds. */
 .insp-vol-slider {
+  -webkit-appearance: none;
+  appearance: none;
   flex: 1 1 auto;
   height: 6px;
-  accent-color: var(--editor-accent);
+  border-radius: 999px;
+  background: linear-gradient(90deg, #52a8ff 0%, #a56eff 50%, #ff556e 100%);
+  outline: none;
   cursor: pointer;
+}
+.insp-vol-slider::-webkit-slider-runnable-track {
+  height: 6px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #52a8ff 0%, #a56eff 50%, #ff556e 100%);
+}
+.insp-vol-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  margin-top: -4px;
+  border-radius: 50%;
+  border: 1.5px solid #0e0e10;
+  background: var(--editor-white);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.55);
+}
+.insp-vol-slider::-moz-range-track {
+  height: 6px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #52a8ff 0%, #a56eff 50%, #ff556e 100%);
+}
+.insp-vol-slider::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 1.5px solid #0e0e10;
+  background: var(--editor-white);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.55);
+}
+.insp-vol-slider:disabled {
+  opacity: 0.45;
+  cursor: default;
 }
 .insp-audition-btn {
   flex: none;
@@ -188,43 +226,55 @@
   min-height: 22px;
   padding: 0 6px;
   border: 1px solid var(--editor-border);
-  border-radius: 4px;
+  border-radius: 5px;
   background: var(--editor-panel);
   color: var(--editor-text);
   font-size: 11px;
   cursor: pointer;
 }
 .insp-audition-btn:hover:not(:disabled) {
+  border-color: var(--editor-accent);
   background: var(--editor-hover);
   color: var(--editor-white);
 }
 .insp-pill-bar {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
-  gap: 4px;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 6px;
+  background: var(--editor-ink);
+  box-shadow: var(--shadow-well);
 }
+#editor-inspector .insp-pill-bar .insp-pill,
 .insp-pill {
   min-height: 24px;
   padding: 0 6px;
-  border: 1px solid var(--editor-border);
+  border: 0;
   border-radius: 4px;
-  background: var(--editor-panel);
+  background: transparent;
   color: var(--editor-secondary);
   font-size: 11px;
   font-weight: 500;
   cursor: pointer;
 }
+#editor-inspector .insp-pill-bar .insp-pill:hover:not(:disabled),
 .insp-pill:hover:not(:disabled) {
   background: var(--editor-hover);
   color: var(--editor-text);
 }
+#editor-inspector .insp-pill-bar .insp-pill.insp-pill-on,
 .insp-pill-on {
-  border-color: var(--editor-accent);
+  border: 0;
   background: var(--editor-selected);
+  box-shadow: inset 0 0 0 1px rgba(90, 200, 250, 0.5);
   color: var(--editor-accent);
+  font-weight: 600;
 }
+#editor-inspector .insp-pill-bar .insp-pill.insp-pill-mixed,
 .insp-pill-mixed {
-  border-style: dashed;
+  border: 0;
+  box-shadow: inset 0 0 0 1px var(--editor-muted);
   color: var(--editor-text);
 }
 .insp-colour {

@@ -7,7 +7,7 @@ import {
   divisorPresetFrom, divisorsFromPreset, minBeatsValid, runOutcome, statusLine, copyOptions,
   defaultChoices, defaultSliderEndMute, difficultyName, exportLabel, exportState, exportSummary, included,
   laneSwatches, matchWithinValid, openWarnings, optionsKey, pollDelay, previewRequest, targetCounts,
-  targetCoveragePct, targetDiff, warningsLabel,
+  targetCoverageBins, targetCoveragePct, targetDiff, warningsLabel,
 } from "../src/lib/export.js";
 import ExportWindow from "../src/parts/ExportWindow.svelte";
 
@@ -474,6 +474,11 @@ test("targetCoveragePct and exportSummary compute per-target and overall match c
   }).body;
   assert.match(html, /90% covered/);
   assert.match(html, /50% covered/);
+  assert.match(html, /coverage-bins/);
   assert.match(html, /aria-label="Export summary"/);
   assert.match(html, /70%/);
+  const bins = targetCoverageBins(preview, insane, 20);
+  assert.equal(bins.length, 20);
+  assert.ok(bins.includes("miss"), "unmatched hits produce red miss bins");
+  assert.ok(bins.includes("ok"), "matched hits produce green ok bins");
 });
