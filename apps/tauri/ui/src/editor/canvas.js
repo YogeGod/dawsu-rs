@@ -758,11 +758,11 @@ export function attachCanvas(ctx) {
     return "#64b5f6";
   }
 
-  function paintOverviewBase(targetCtx, width, height, duration) {
-    targetCtx.fillStyle = slateTimeline.overview;
-    targetCtx.fillRect(0, 0, width, height);
-    const moments = state.scene?.moments ?? [];
-    // Collect active lane indices so the multi-lane minimap spreads across the vertical strip cleanly.
+  function overviewLaneDots(moments, width, height, duration) {
+    const cache = state.overviewLaneCache;
+    if (cache && cache.moments === moments && cache.width === width && cache.height === height && cache.duration === duration) {
+      return cache.dots;
+    }
     const activeLanes = [];
     const laneSlot = new Map();
     for (const moment of moments) {
@@ -776,7 +776,44 @@ export function attachCanvas(ctx) {
         }
       }
     }
-    const multiLane = activeLanes.length > 0 && height >= 28;
+    const dots = [];
+    if (activeLanes.length > 0 && height >= 28) {
+      const bandTop = 14;
+      const bandHeight = Math.max(10, height - bandTop - 4);
+      const laneCount = Math.min(activeLanes.length, 10);
+      const step = laneCount > 1 ? bandHeight / (laneCount - 1) : 0;
+      const cols = Math.max(1, Math.min(overviewColumns, Math.floor(width / 3)));
+      const colWidth = width / cols;
+      const drawn = new Set();
+      for (const moment of moments) {
+        const time = moment?.[0];
+        if (!(time >= 0 && time <= duration)) continue;
+        const hits = moment?.[3];
+        if (!Array.isArray(hits) || !hits.length) continue;
+        const col = Math.min(cols - 1, Math.floor((time / duration) * cols));
+        const x = (col + 0.5) * colWidth;
+        const colour = overviewVolumeHex(moment?.[1] ?? 100);
+        for (const hit of hits) {
+          const slot = laneSlot.get(hit?.[0]);
+          if (slot === undefined) continue;
+          const row = laneCount > 1 ? Math.floor((slot * (laneCount - 1)) / Math.max(1, activeLanes.length - 1)) : 0;
+          const key = (row << 12) | col;
+          if (drawn.has(key)) continue;
+          drawn.add(key);
+          const y = laneCount > 1 ? bandTop + row * step : bandTop + bandHeight / 2;
+          dots.push([x, y, colour]);
+        }
+      }
+    }
+    state.overviewLaneCache = { moments, width, height, duration, dots };
+    return dots;
+  }
+
+  function paintOverviewBase(targetCtx, width, height, duration) {
+    targetCtx.fillStyle = slateTimeline.overview;
+    targetCtx.fillRect(0, 0, width, height);
+    const dots = overviewLaneDots(state.scene?.moments ?? [], width, height, duration);
+    const multiLane = dots.length > 0;
     const objY = multiLane ? 7 : height / 2;
     for (const [x, strength] of overviewBins(state.scene.gameplay, width, duration)) {
       targetCtx.fillStyle = "rgba(196,196,196," + strength.toFixed(2) + ")";
@@ -784,31 +821,10 @@ export function attachCanvas(ctx) {
       targetCtx.fill();
     }
     if (multiLane) {
-      const bandTop = 14;
-      const bandHeight = Math.max(10, height - bandTop - 4);
-      const laneCount = Math.min(activeLanes.length, 16);
-      const step = laneCount > 1 ? bandHeight / (laneCount - 1) : 0;
-      const drawn = new Set();
-      for (const moment of moments) {
-        const time = moment?.[0];
-        if (!(time >= 0 && time <= duration)) continue;
-        const volume = moment?.[1] ?? 100;
-        const hits = moment?.[3];
-        if (!Array.isArray(hits) || !hits.length) continue;
-        const x = Math.round((time / duration) * width);
-        const colour = overviewVolumeHex(volume);
-        for (const hit of hits) {
-          const slot = laneSlot.get(hit?.[0]);
-          if (slot === undefined) continue;
-          const row = laneCount > 1 ? Math.floor((slot * (laneCount - 1)) / Math.max(1, activeLanes.length - 1)) : 0;
-          const key = (row << 14) | x;
-          if (drawn.has(key)) continue;
-          drawn.add(key);
-          const y = laneCount > 1 ? bandTop + row * step : bandTop + bandHeight / 2;
-          targetCtx.fillStyle = colour;
-          diamond(targetCtx, x, y, 2);
-          targetCtx.fill();
-        }
+      for (const [x, y, colour] of dots) {
+        targetCtx.fillStyle = colour;
+        diamond(targetCtx, x, y, 2);
+        targetCtx.fill();
       }
     }
   }
