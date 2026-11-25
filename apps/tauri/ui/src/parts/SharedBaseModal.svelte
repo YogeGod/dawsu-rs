@@ -9,6 +9,7 @@
     formatApplyAllSummary,
     formatApplySummary,
     formatStatusLine,
+    uniqueLaneOptions,
   } from "../lib/sharedBase.js";
 
   // Map › Shared Base layer…: per-mapset Shared Base score, live difficulty tabs,
@@ -55,7 +56,7 @@
 
   const hasDoc = $derived(Boolean(bridge.scene));
   const durationMs = $derived(Math.max(1000, bridge.view?.duration ?? 60000));
-  const laneOptions = $derived((bridge.scene?.lanes ?? []).map((l) => l.name).filter(Boolean));
+  const laneOptions = $derived(uniqueLaneOptions(bridge.scene?.lanes));
   const activeDiffFile = $derived(
     selectedDiffFile ||
       diffTabs.find((t) => t.isActive)?.file ||
@@ -328,7 +329,10 @@
     const yRatio = Math.max(0, Math.min(1, 1 - (event.clientY - rect.top) / Math.max(1, rect.height)));
     const timeMs = Math.round(xRatio * durationMs);
     const volume = Math.max(5, Math.min(100, Math.round(5 + yRatio * 95)));
-    saveEnvelope([...envelopePoints, { timeMs, volume, curve: "linear" }]);
+    saveEnvelope([
+      ...envelopePoints.filter((p) => p.timeMs !== timeMs),
+      { timeMs, volume, curve: "linear" },
+    ]);
   }
 
   function togglePointCurve(idx) {
@@ -583,7 +587,7 @@
           <svg class="sb-curve-svg" viewBox="0 0 360 96" onclick={onCurveSvgClick} role="img" aria-label="Master volume envelope curve">
             <line x1="0" y1="48" x2="360" y2="48" stroke="rgba(255,255,255,0.12)" stroke-dasharray="4 4" />
             <polyline fill="none" stroke="var(--editor-accent, #4a9eff)" stroke-width="2" points={svgPolyline} />
-            {#each envelopePoints as pt, idx (pt.timeMs)}
+            {#each envelopePoints as pt, idx (`${pt.timeMs}-${idx}`)}
               {@const cx = Math.max(4, Math.min(356, (pt.timeMs / durationMs) * 360))}
               {@const cy = 96 - ((Math.max(5, Math.min(100, pt.volume)) - 5) / 95) * 88 - 4}
               <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->

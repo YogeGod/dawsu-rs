@@ -13,7 +13,9 @@ import {
   tickPolicies,
   writeModes,
 } from "../src/lib/export.js";
+import { uniqueLaneOptions } from "../src/lib/sharedBase.js";
 import ExportWindow from "../src/parts/ExportWindow.svelte";
+import SharedBaseModal from "../src/parts/SharedBaseModal.svelte";
 import StatusBar from "../src/parts/StatusBar.svelte";
 import StepPadsRow from "../src/parts/StepPadsRow.svelte";
 
@@ -180,4 +182,34 @@ test("StepPadsRow renders 8 beat-snapped pads and highlights active hits on its 
   const src = readFileSync(new URL("../src/parts/StepPadsRow.svelte", import.meta.url), "utf8");
   assert.match(src, /kind:\s*"toggle_step_hit"/);
   assert.doesNotMatch(src, /kind:\s*"pointer"/);
+});
+
+test("SharedBaseModal deduplicates laneOptions and keys SVG volume points safely", () => {
+  assert.deepEqual(
+    uniqueLaneOptions([
+      { name: "soft-hitwhistle" },
+      { name: "drum-hitnormal" },
+      { name: "soft-hitwhistle" },
+      { name: "" },
+      {},
+    ]),
+    ["soft-hitwhistle", "drum-hitnormal"],
+  );
+  bridge.set(
+    { busy: false },
+    {
+      path: "C:/Songs/Set/Song [Hard].osu",
+      lanes: [
+        { name: "soft-hitwhistle" },
+        { name: "soft-hitwhistle" },
+        { name: "drum-hitnormal" },
+      ],
+      moments: [],
+    },
+  );
+  const { body } = render(SharedBaseModal);
+  assert.equal(typeof body, "string");
+  const sbSrc = readFileSync(new URL("../src/parts/SharedBaseModal.svelte", import.meta.url), "utf8");
+  assert.match(sbSrc, /uniqueLaneOptions\(/);
+  assert.match(sbSrc, /`\$\{pt\.timeMs\}-\$\{idx\}`/);
 });

@@ -46,3 +46,7 @@ export function formatApplyAllSummary(result) {
   if (failed > 0) parts.push(`${plural(failed, "diff")} skipped with issues`);
   return `${parts.join(" · ")}.`;
 }
+
+export function uniqueLaneOptions(lanes) {
+  return [...new Set((lanes ?? []).map((l) => l?.name).filter(Boolean))];
+}
