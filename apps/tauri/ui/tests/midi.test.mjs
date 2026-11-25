@@ -125,7 +125,7 @@ test("Keysounds shows the no-plug-ins message, Preferences lists MIDI ports and 
   const keysounds = source("KeysoundsModal.svelte");
   assert.match(keysounds, /invoke\("keysounds_action", \{ payload \}\)/);
   assert.match(keysounds, /\{NO_PLUGINS\}/);
-  const preferences = source("PreferencesModal.svelte");
+  const preferences = source("PreferencesModal.svelte") + "\n" + source("preferences/MidiVstTab.svelte");
   assert.match(preferences, /\{ id: "midi", label: "MIDI Input & VST3" \}/);
   assert.match(preferences, /invoke\("midi_input_ports"\)/);
   assert.match(preferences, /invoke\("vst3_scan"\)/);
@@ -223,7 +223,12 @@ test("Generate [Keysounds] toasts the written file and the synced count", () => 
 });
 
 test("the Keysounds modal wires every piano roll gesture to its keysounds_action", () => {
-  const keysounds = source("KeysoundsModal.svelte");
+  const keysounds = [
+    "KeysoundsModal.svelte",
+    "keysounds/KeysoundTrackBar.svelte",
+    "keysounds/KeysoundPianoRoll.svelte",
+    "keysounds/KeysoundVelocityLane.svelte",
+  ].map(source).join("\n");
   for (const wiring of [
     /send\(keysoundsAddNote\(trackId, startMs, pitch\)\)[\s\S]*?preview\(pitch\)/, // empty cell: add then play
     /noteDragPayload\(trackId, note, mode, dx, dy\)/, // pointerup on a dragged body or edge

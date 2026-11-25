@@ -9,7 +9,7 @@ import {
   sampleSetPills,
   stepDiagnostic,
   volumeSliderPercent,
-} from "../src/lib/inspectorV2.js";
+} from "../src/lib/inspector.js";
 import InspectorSelection from "../src/parts/InspectorSelection.svelte";
 import OverviewDiagnostics from "../src/parts/OverviewDiagnostics.svelte";
 

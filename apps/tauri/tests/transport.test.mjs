@@ -6,7 +6,7 @@ import { bootEditor, readEditorSource } from "./editor-runtime.mjs";
 
 const read = file => readFile(new URL("../dist/" + file, import.meta.url), "utf8");
 const [html, css, docking, statusBarSvelte] = await Promise.all([
-  read("index.html"), read("style.css"), read("docking.js"),
+  read("index.html"), readFile(new URL("../ui/src/legacy-chrome.css", import.meta.url), "utf8"), read("docking.js"),
   readFile(new URL("../ui/src/parts/StatusBar.svelte", import.meta.url), "utf8"),
 ]);
 const app = readEditorSource();

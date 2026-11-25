@@ -4,7 +4,7 @@ import { test } from "node:test";
 import { createContext, runInContext } from "node:vm";
 import { bootEditor } from "./editor-runtime.mjs";
 
-const css = await readFile(new URL("../dist/style.css", import.meta.url), "utf8");
+const css = await readFile(new URL("../ui/src/legacy-chrome.css", import.meta.url), "utf8");
 
 function element(type = "div") {
   return {

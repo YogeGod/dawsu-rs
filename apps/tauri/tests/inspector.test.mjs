@@ -8,7 +8,7 @@ import { bootEditor } from "./editor-runtime.mjs";
 const read = name => readFile(new URL("../dist/" + name, import.meta.url), "utf8");
 const parts = new URL("../ui/src/parts/", import.meta.url);
 const [html, css, ...sections] = await Promise.all([
-  ...["index.html", "style.css"].map(read),
+  read("index.html"), readFile(new URL("../ui/src/legacy-chrome.css", import.meta.url), "utf8"),
   ...readdirSync(parts).filter(name => /^Inspector(?!Head)\w+\.svelte$/.test(name)).sort()
     .map(name => readFile(new URL(name, parts), "utf8")),
 ]);

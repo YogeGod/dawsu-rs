@@ -4,7 +4,7 @@ import { test } from "node:test";
 import { createContext, runInContext } from "node:vm";
 import { bootEditor } from "./editor-runtime.mjs";
 
-const css = await readFile(new URL("../dist/style.css", import.meta.url), "utf8");
+const css = await readFile(new URL("../ui/src/legacy-chrome.css", import.meta.url), "utf8");
 
 test("workstation chrome uses the design's neutral grey surfaces and shared blue accent", () => {
   assert.match(css, /:root\s*\{[^}]*--base:\s*#0e0e10\b/);

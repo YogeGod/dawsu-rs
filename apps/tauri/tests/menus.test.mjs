@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
-import { createContext, runInContext } from "node:vm";
+import { initMenus } from "../ui/src/editor/menus.js";
 
 import * as commandList from "../ui/src/lib/commands.js";
 
-const code = await readFile(new URL("../dist/menus.js", import.meta.url), "utf8");
+const code = await readFile(new URL("../ui/src/editor/menus.js", import.meta.url), "utf8");
 const commandsSource = await readFile(new URL("../ui/src/lib/commands.js", import.meta.url), "utf8");
 const html = await readFile(new URL("../dist/index.html", import.meta.url), "utf8");
 // The Inspector's Lane and Difficulty buttons live in a Svelte part and keep the ids the menus click.
@@ -16,7 +16,7 @@ const lanesPart = await readFile(new URL("../ui/src/parts/LaneHeaders.svelte", i
 const statusBarPart = await readFile(new URL("../ui/src/parts/StatusBar.svelte", import.meta.url), "utf8");
 const gridOptionsPart = await readFile(new URL("../ui/src/parts/GridOptions.svelte", import.meta.url), "utf8");
 const laneOptionsPart = await readFile(new URL("../ui/src/parts/LaneOptions.svelte", import.meta.url), "utf8");
-const css = await readFile(new URL("../dist/style.css", import.meta.url), "utf8");
+const css = await readFile(new URL("../ui/src/legacy-chrome.css", import.meta.url), "utf8");
 const catalogue = (await Promise.all([
   "../../../crates/dawsu-application/src/commands.rs",
   "../../../crates/dawsu-editor/src/editing_commands.rs",
@@ -108,7 +108,7 @@ function fixture() {
     ["cycle", "Cycle", ["Alt+C"]], ["addNumberedLayer", "Add numbered layer", ["Ctrl+L"]]] };
   const window = { innerWidth: 900, innerHeight: 640, addEventListener() {},
     dawsuUi: { commands: commandList, menu: drawMenu } };
-  const context = createContext({
+  const context = {
     $: get, document, window, view, scene, speedButtons, drag: null, dialog: {},
     lanePositions: new Map([[0,0],[1,1]]),
     // app.js: the active lane when it can be deleted, and the Delete lane dialog.
@@ -147,14 +147,14 @@ function fixture() {
     openSiblingDifficulty(path) { calls.push({ sibling: path }); },
     panelOn: panel => !!view.panels?.[panel],
     togglePanel(panel) { calls.push({ togglePanel: panel }); },
-  });
-  runInContext(code, context);
+  };
+  const menusApi = initMenus(context);
   function key(key, handler = listeners.get("keydown")) {
     const event = { key, preventDefault() { this.defaultPrevented = true; } };
     handler(event);
     return !!event.defaultPrevented;
   }
-  return { document, get, view, scene, window, calls, listeners, key, modals, responses, context };
+  return { document, get, view, scene, window, calls, listeners, key, modals, responses, context, menusApi };
 }
 
 test("menus read current shortcut chips and keep arrow, Escape, Tab and outside-click handling local", async () => {
@@ -597,7 +597,7 @@ test("every command a menu runs or shows a key for is in the editor's command ca
 });
 
 test("the tool picker can be opened by the Svelte tool pills", () => {
-  assert.match(code, /^window\.openEditorMenu = openEditorMenu;$/m);
+  assert.match(code, /win\.openEditorMenu = openEditorMenu;/);
 });
 
 test("Sound set placement needs a selected placement and shows its set, edits, volume, reset and unlink", async () => {
@@ -837,8 +837,7 @@ test("File › Revert mapset to original… opens only with a first-open copy of
 });
 
 test("every rule, call, choice source and run kind the command list names exists in menus.js", () => {
-  const { context } = fixture();
-  const [rules, calls, sources] = ["menuRules", "menuCalls", "menuChoiceSources"].map(name => runInContext(name, context));
+  const { menusApi: { menuRules: rules, menuCalls: calls, menuChoiceSources: sources } } = fixture();
   const kinds = new Set([...code.matchAll(/kind === "(\w+)"/g)].map(match => match[1]));
   for (const item of commandList.items) {
     for (const rule of [item.enabled, item.checked].filter(Boolean)) assert.ok(rule in rules, item.id + ": rule " + rule);

@@ -2,7 +2,7 @@
   "productName": "dawsu! Tauri",
   "version": "1.1.0-alpha.2",
   "identifier": "dev.dawsu.editor.tauri",
-  "build": { "frontendDist": "dist" },
+  "build": { "beforeBuildCommand": "npm --prefix ui run build", "frontendDist": "dist" },
   "app": {
     "withGlobalTauri": true,
     "windows": [{ "label": "main", "title": "dawsu!", "width": 1440, "height": 900, "minWidth": 1024, "minHeight": 700 }],

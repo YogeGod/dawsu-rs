@@ -9,7 +9,7 @@ const html = await read("../dist/index.html");
 const statusBarSvelte = await read("../ui/src/parts/StatusBar.svelte");
 const app = readEditorSource();
 const docking = await read("../dist/docking.js");
-const menus = await read("../dist/menus.js");
+const menus = await read("../ui/src/editor/menus.js");
 
 const between = (text, start, end) => {
   const from = text.indexOf(start);

@@ -1,3 +1,4 @@
+import { modals } from "../lib/registry.js";
 // Settings, folders, audio output, view preferences, help search, and shortcut editor dialogs.
 import { keyInput, playbackStartChoices, shortcutName } from "./helpers.js";
 
@@ -416,7 +417,7 @@ export function attachSettingsDialogs(ctx) {
   // when it unmounts, so a modal that failed to mount falls back to the View dialog instead of
   // calling this function again through the global of the same name.
   function openPreferences(tab = "general") {
-    const modal = env.openPreferencesModal ?? globalThis.openPreferencesModal;
+    const modal = env.openPreferencesModal ?? modals.openPreferencesModal ?? globalThis.openPreferencesModal;
     if (typeof modal === "function" && modal !== openPreferences) {
       try {
         modal(tab);

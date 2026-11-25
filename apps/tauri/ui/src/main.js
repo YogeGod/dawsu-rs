@@ -1,4 +1,5 @@
 import "./tokens.css";
+import "./legacy-chrome.css";
 import "./shell.css";
 import "./parts/pill.css";
 import "./parts/inspector.css";
@@ -8,6 +9,7 @@ import "./parts/node-graph.css";
 import "./timeline.css";
 import { mount } from "svelte";
 import { createEditor } from "./editor/boot.js";
+import { initMenus } from "./editor/menus.js";
 import { invoke } from "./lib/ipc.js";
 import { bridge } from "./lib/bridge.svelte.js";
 import * as commandList from "./lib/commands.js";
@@ -255,10 +257,13 @@ const uiBridge = {
   update, lanes, inspector, browser, mixer, toggleMapPreview, mapPreviewOn, setNodeGraphViewer, nodeGraphViewer, bottomTab, hitCard, volumeBubble, commands, menu, centre, wheelSnap, snapGroup, statusNotice, viewport, laneOptions, coverageFilter, setCoverageFocus, hint, setMode, setMicroHud,
 };
 if (document.getElementById("grid")) {
-  globalThis.showMicroHud = (x, y, extra = {}) => {
+  const showMicroHud = (x, y, extra = {}) => {
     bridge.microHud = { x, y, mode: bridge.mode, ...extra };
   };
+  bridge.registerAction("showMicroHud", showMicroHud);
+  globalThis.showMicroHud = showMicroHud;
   createEditor(globalThis, { ui: uiBridge });
+  initMenus(globalThis, { ui: uiBridge });
   const workspace = document.getElementById("workspace");
   workspace?.addEventListener("pointerover", event => {
     bridge.setHint(hintZoneFromTarget(event.target));
@@ -268,10 +273,10 @@ if (document.getElementById("grid")) {
 }
 applyColorConfig(readColorConfig());
 
-bridge.lanes = globalThis.currentLaneHeaders?.() ?? null;
-bridge.inspector = globalThis.currentInspector?.() ?? null;
-bridge.browser = globalThis.currentBrowser?.() ?? null;
-bridge.mixer = globalThis.currentMixer?.() ?? null;
+bridge.lanes = bridge.callAction("currentLaneHeaders") ?? null;
+bridge.inspector = bridge.callAction("currentInspector") ?? null;
+bridge.browser = bridge.callAction("currentBrowser") ?? null;
+bridge.mixer = bridge.callAction("currentMixer") ?? null;
 
 for (const host of document.querySelectorAll("[data-ui-mount]")) {
   const part = parts[host.dataset.uiMount];

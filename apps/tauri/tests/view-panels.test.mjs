@@ -5,7 +5,7 @@ import { createContext, runInContext } from "node:vm";
 import { dockingRules } from "./docking-rules.mjs";
 import { bootEditor } from "./editor-runtime.mjs";
 
-const style = await readFile(new URL("../dist/style.css", import.meta.url), "utf8");
+const style = await readFile(new URL("../ui/src/legacy-chrome.css", import.meta.url), "utf8");
 
 test("View switches fold and open panels and reclaim their timeline tracks, then restore them", async () => {
   const elements = new Map();

@@ -1,6 +1,6 @@
 <script>
   import { bridge } from "../lib/bridge.svelte.js";
-  import { additionPills, parseVolumeDisplay, sampleSetPills } from "../lib/inspectorV2.js";
+  import { additionPills, parseVolumeDisplay, sampleSetPills } from "../lib/inspector.js";
   import { clampMicroHud, KEYSOUND_CHORD_POLICIES, microHudMode } from "../lib/microHud.js";
 
   const hud = $derived(bridge.microHud);

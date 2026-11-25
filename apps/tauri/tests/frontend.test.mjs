@@ -312,7 +312,7 @@ test("cursors follow the current editing tool, Alt and cycle ruler geometry", as
   assert.equal(cursors.controller.cursor, "pointer", "Grab keeps the legacy hand");
   evaluate('view.tool = "Mute"; refreshToolCursor()');
   assert.equal(cursors.controller.cursor, "var(--cursor-draw)");
-  const css = await readFile(new URL("../dist/style.css", import.meta.url), "utf8");
+  const css = await readFile(new URL("../dist/fonts.css", import.meta.url), "utf8");
   assert.match(css, /--cursor-draw:url\("studio-assets\/icons\/cursor-draw\.svg"\) 3 3,crosshair/);
   assert.match(css, /--cursor-erase:url\("studio-assets\/icons\/cursor-erase\.svg"\) 5 27,crosshair/);
   windowEvents.get("blur")();
