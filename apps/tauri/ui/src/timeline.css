@@ -219,6 +219,9 @@
 
 /* Keep #base-diff-strip in its own auto-sized top track so .ruler, .scroll, controller & overview keep exact heights. */
 #editor-arrange {
+  grid-template-rows: auto var(--ruler-row) minmax(0, 1fr) auto minmax(20px, max-content);
+}
+#editor-arrange[data-controller="false"] {
   grid-template-rows: auto var(--ruler-row) minmax(0, 1fr) minmax(20px, max-content);
 }
 
