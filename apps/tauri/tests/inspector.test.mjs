@@ -306,7 +306,7 @@ test("every open, command and toggle a part sends reaches its inspectorAction ca
   assert.deepEqual(JSON.parse(evaluate("JSON.stringify(reached)")), opens.map(kind => openers[kind]));
 
   const commands = keys("command");
-  assert.deepEqual(commands, ["previousBookmark", "nextBookmark", "quantizeDialog", "repeat", "duplicate", "delete", "editRange",
+  assert.deepEqual(commands, ["previousBookmark", "nextBookmark", "quantizeDialog", "repeat", "duplicate", "delete", "patternStamp", "editRange",
     "scaleByVolume"]);
   await sent();
   for (const id of commands) evaluate(`inspectorAction("command", "${id}")`);

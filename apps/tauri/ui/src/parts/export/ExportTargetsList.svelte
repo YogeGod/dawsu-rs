@@ -1,6 +1,6 @@
 <script>
   import {
-    baseName, difficultyName, fileName, targetCounts, targetDiff,
+    baseName, difficultyName, fileName, targetCounts, targetCoveragePct, targetDiff,
   } from "../../lib/export.js";
 
   let {
@@ -70,6 +70,7 @@
   {#each view.targets ?? [] as path (path)}
     {@const on = !choices.leftOut.includes(fileName(path))}
     {@const counts = on ? targetCounts(status.preview, path) : null}
+    {@const coveragePct = on ? targetCoveragePct(status.preview, path) : null}
     {@const diff = on ? targetDiff(status.preview, path) : null}
     <li class="target" class:off={!on}>
       <span class="port" aria-hidden="true"></span>
@@ -96,8 +97,16 @@
             {#each counts.items as item (item.tone)}
               <span class="count {item.tone}">{item.text}</span>
             {/each}
+            {#if coveragePct !== null}
+              <span class="coverage-pct">{coveragePct}% covered</span>
+            {/if}
           {/if}
         </div>
+        {#if on && coveragePct !== null}
+          <div class="coverage-bar" aria-hidden="true">
+            <span class="coverage-fill" style:width={`${coveragePct}%`}></span>
+          </div>
+        {/if}
         {#if diff}
           <details class="osu-diff">
             <summary class="osu-diff-toggle">
@@ -332,6 +341,92 @@
     color: var(--editor-muted);
     border-top: 1px solid var(--editor-border);
     font-style: italic;
+  }
+  .listen-btn {
+    height: 24px;
+    padding: 0 10px;
+    border: 1px solid var(--editor-border);
+    border-radius: 999px;
+    background: var(--editor-control);
+    color: var(--editor-text);
+    font: inherit;
+    font-size: 11px;
+    font-weight: 600;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .listen-btn:hover:not(:disabled) {
+    border-color: var(--editor-accent);
+    background: var(--editor-hover);
+  }
+  .listen-btn[aria-pressed="true"] {
+    border-color: var(--editor-accent);
+    background: var(--editor-tealtint);
+    color: var(--editor-accent);
+  }
+  .coverage-pct {
+    margin-left: auto;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--editor-secondary);
+  }
+  .coverage-bar {
+    height: 4px;
+    margin-top: 8px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.08);
+    overflow: hidden;
+  }
+  .coverage-fill {
+    display: block;
+    height: 100%;
+    border-radius: 999px;
+    background: var(--editor-play);
+    transition: width 0.16s ease;
+  }
+  .dry-run-box {
+    margin: 14px 0 0 56px;
+    padding: 10px 14px;
+    border-radius: 8px;
+    background: var(--editor-panel);
+    box-shadow: inset 0 0 0 1px var(--editor-border);
+  }
+  .dry-run-box summary {
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--editor-secondary);
+    user-select: none;
+  }
+  .dry-run-body {
+    margin-top: 10px;
+    display: grid;
+    gap: 8px;
+  }
+  .dry-run-empty {
+    margin: 0;
+    font-size: 12px;
+    color: var(--editor-muted);
+  }
+  .dry-run-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    gap: 4px;
+    max-height: 160px;
+    overflow: auto;
+  }
+  .dry-run-list li {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+    font-size: 12px;
+  }
+  .dry-run-list small {
+    color: var(--editor-muted);
+    font-size: 11px;
   }
   button:focus-visible { outline: 2px solid var(--editor-focus); outline-offset: 2px; }
 </style>

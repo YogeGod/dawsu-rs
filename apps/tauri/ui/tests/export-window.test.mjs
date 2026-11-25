@@ -5,9 +5,9 @@ import { render } from "svelte/server";
 import {
   adoptChoices, afterPoll, baseDiff, baseStatus, ownWriteError, blockDrops, choicesFrom, diffView,
   divisorPresetFrom, divisorsFromPreset, minBeatsValid, runOutcome, statusLine, copyOptions,
-  defaultChoices, defaultSliderEndMute, difficultyName, exportLabel, exportState, included,
+  defaultChoices, defaultSliderEndMute, difficultyName, exportLabel, exportState, exportSummary, included,
   laneSwatches, matchWithinValid, openWarnings, optionsKey, pollDelay, previewRequest, targetCounts,
-  targetDiff, warningsLabel,
+  targetCoveragePct, targetDiff, warningsLabel,
 } from "../src/lib/export.js";
 import ExportWindow from "../src/parts/ExportWindow.svelte";
 
@@ -446,4 +446,34 @@ test("ExportWindow renders the fallback sound selector, omits it when Off, and r
     choicesFrom({ choices: { fallbackSound: { set: "normal", sound: "normal", volume: 250 } } }).fallbackSound,
     { set: "normal", sound: "normal", volume: 100 },
   );
+});
+
+test("targetCoveragePct and exportSummary compute per-target and overall match coverage", () => {
+  const preview = {
+    id: 10,
+    stale: false,
+    source: view.source.path,
+    version: view.source.version,
+    targets: [
+      { path: insane, matched: 90, unmatched: 10, changed: 90, collisions: 0, keptFromSilent: 0, muted: 0 },
+      { path: hard, matched: 50, unmatched: 50, changed: 50, collisions: 0, keptFromSilent: 0, muted: 0 },
+    ],
+  };
+  assert.equal(targetCoveragePct(preview, insane), 90);
+  assert.equal(targetCoveragePct(preview, hard), 50);
+  const choices = choicesFrom(view);
+  assert.deepEqual(exportSummary(preview, view.targets, choices), {
+    count: 2,
+    matched: 140,
+    unmatched: 60,
+    changed: 140,
+    coveragePct: 70,
+  });
+  const html = render(ExportWindow, {
+    props: { initialView: { ...view, preview }, initialSent: { id: 10, key: optionsKey(view, choices) } },
+  }).body;
+  assert.match(html, /90% covered/);
+  assert.match(html, /50% covered/);
+  assert.match(html, /aria-label="Export summary"/);
+  assert.match(html, /70%/);
 });

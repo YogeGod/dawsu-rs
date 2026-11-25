@@ -1,5 +1,6 @@
 // Editing, lane, bookmark, difficulty switching, and time-signature dialogs.
 import { clock, laneGrey } from "./helpers.js";
+import { activeBarMs, rhythmPresets } from "../lib/rhythmGallery.js";
 
 export function attachEditDialogs(ctx) {
   const { env, state, dom, elements } = ctx;
@@ -354,12 +355,31 @@ export function attachEditDialogs(ctx) {
         } else fail.textContent = "Enter 1–64 copies and a gap of 1–1024 steps.";
       }, "Repeat");
     } else if (kind === "pattern_stamp") {
+      const presets = rhythmPresets(activeBarMs(state.scene));
       const count = input("number", 4, 1, 64);
-      const step = input("number", +(state.scene.patternStampStep ?? 2000).toFixed(3), 1, "", "any");
+      const step = input("number", +(activeBarMs(state.scene)).toFixed(3), 1, "", "any");
       const snapToObjects = input("checkbox", "", 0, 0);
       snapToObjects.checked = true;
       const quantizeVolumes = input("checkbox", "", 0, 0);
+      const presetStrip = env.document.createElement("div");
+      presetStrip.className = "rhythm-preset-strip";
+      presetStrip.setAttribute("role", "group");
+      presetStrip.setAttribute("aria-label", "Rhythm presets");
+      const chipButtons = [];
+      for (const preset of presets) {
+        const chip = makeButton(preset.modalLabel, () => {
+          count.value = String(preset.count);
+          step.value = String(preset.stepMs);
+          for (const btn of chipButtons) btn.setAttribute("aria-pressed", String(btn === chip));
+        });
+        chip.className = "rhythm-preset-chip";
+        chip.title = preset.title;
+        chip.setAttribute("aria-pressed", String(preset.id === "bar"));
+        chipButtons.push(chip);
+        presetStrip.append(chip);
+      }
       openEdit("Pattern stamp", [
+        presetStrip,
         labeled("Repeats", count),
         labeled("Step (ms)", step),
         labeled("Snap to gameplay objects", snapToObjects),
