@@ -4783,10 +4783,51 @@ fn undo_mapset_revert(state: State<'_, Editor>) -> Result<usize, String> {
 }
 
 #[tauri::command]
-async fn check_for_updates() -> Result<updater::UpdateCheckResult, String> {
-    tauri::async_runtime::spawn_blocking(updater::check_latest_release)
+async fn check_for_updates(
+    staged: State<'_, updater::StagedUpdate>,
+) -> Result<updater::UpdateCheckResult, String> {
+    let (result, parsed) = tauri::async_runtime::spawn_blocking(updater::check_latest_release_parsed)
         .await
-        .map_err(|e| format!("Update check task failed: {e}"))?
+        .map_err(|e| format!("Update check task failed: {e}"))??;
+    staged.record_release(parsed);
+    Ok(result)
+}
+
+#[tauri::command]
+async fn download_update(
+    staged: State<'_, updater::StagedUpdate>,
+) -> Result<updater::DownloadedUpdate, String> {
+    let release = staged
+        .last_release()
+        .ok_or_else(|| "Click Check for updates first.".to_string())?;
+    let data_root = dawsu_application::data_folder();
+    let (ui_result, verified) = tauri::async_runtime::spawn_blocking(move || {
+        updater::download_and_verify_release(&data_root, &release)
+    })
+    .await
+    .map_err(|e| format!("Update download task failed: {e}"))??;
+    staged.record_download(verified);
+    Ok(ui_result)
+}
+
+#[tauri::command]
+fn install_update_on_close(
+    window: tauri::WebviewWindow,
+    staged: State<'_, updater::StagedUpdate>,
+) -> Result<(), String> {
+    let data_root = dawsu_application::data_folder();
+    staged.arm_verified_download(&data_root)?;
+    // Trigger the normal window close so unsaved work is asked about first (same as v3.1.4).
+    if let Err(e) = window.close() {
+        staged.clear();
+        return Err(format!("Could not close window to apply update: {e}"));
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn cancel_staged_update(staged: State<'_, updater::StagedUpdate>) {
+    staged.clear();
 }
 
 fn close_requested(label: &str, editor: &Editor) -> CloseDecision {
@@ -4812,6 +4853,7 @@ fn main() {
     tauri::Builder::default()
         .manage(editor_thread(initial))
         .manage(SongsIndexCache(std::sync::Arc::new(std::sync::Mutex::new(None))))
+        .manage(updater::StagedUpdate::default())
         .on_window_event(|window, event| {
             let app = window.app_handle();
             match (window.label(), event) {
@@ -4938,10 +4980,21 @@ fn main() {
             preview_revert_mapset_to_original,
             revert_mapset_to_original,
             undo_mapset_revert,
-            check_for_updates
+            check_for_updates,
+            download_update,
+            install_update_on_close,
+            cancel_staged_update
         ])
-        .run(tauri::generate_context!())
-        .expect("start the dawsu! Tauri editor");
+        .build(tauri::generate_context!())
+        .expect("start the dawsu! Tauri editor")
+        .run(|app_handle, event| {
+            if let tauri::RunEvent::Exit = event {
+                let data_root = dawsu_application::data_folder();
+                app_handle
+                    .state::<updater::StagedUpdate>()
+                    .launch_if_staged(&data_root);
+            }
+        });
 }
 
 #[cfg(test)]

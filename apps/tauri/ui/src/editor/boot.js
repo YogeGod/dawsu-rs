@@ -432,18 +432,23 @@ export function createEditor(env = globalThis, { ui = null, autoStart = true, ex
 
   env.window.__TAURI__.event.listen("editor-close-requested", ({ payload }) => {
     if (state.view.fault) return;
+    const cancelClose = () => {
+      ctx.closeModal();
+      invoke("cancel_staged_update").catch(() => {});
+    };
     if (state.view.busy) {
-      ctx.modal("close-busy", "Job in progress", [paragraph(payload)], [["Keep editor open", () => ctx.closeModal(), true]]);
+      ctx.modal("close-busy", "Job in progress", [paragraph(payload)], [["Keep editor open", cancelClose, true]]);
       return;
     }
     ctx.modal("close-editor", "Quit dawsu!?", [paragraph(payload)], [
-      ["Cancel", () => ctx.closeModal()],
+      ["Cancel", cancelClose],
       ["Discard changes", () => ctx.run(() => invoke("close_editor", { discard: true }))],
       ["Save and quit", async () => {
         ctx.closeModal();
         await ctx.act({ kind: "save" });
         if (state.view.busy) state.quitAfterSave = true;
         else if (!state.view.dirty) ctx.run(() => invoke("close_editor", { discard: false }));
+        else invoke("cancel_staged_update").catch(() => {});
       }, true],
     ]);
   });

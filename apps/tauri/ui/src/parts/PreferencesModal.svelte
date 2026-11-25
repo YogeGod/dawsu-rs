@@ -97,6 +97,8 @@
 
   // Updates state: checked only when the user clicks "Check for updates".
   let updateChecking = $state(false);
+  let updateDownloading = $state(false);
+  let updateStatus = $state("");
   let updateResult = $state(null);
   let updateError = $state("");
   let updateCopied = $state(false);
@@ -197,9 +199,10 @@
   }
 
   async function checkForUpdates() {
-    if (updateChecking) return;
+    if (updateChecking || updateDownloading) return;
     updateChecking = true;
     updateError = "";
+    updateStatus = "";
     updateCopied = false;
     try {
       updateResult = await invoke("check_for_updates");
@@ -208,6 +211,23 @@
       updateError = String(err);
     } finally {
       updateChecking = false;
+    }
+  }
+
+  async function downloadAndInstallUpdate() {
+    if (updateChecking || updateDownloading || !updateResult?.installerUrl || !updateResult?.sha256sumsUrl) return;
+    updateDownloading = true;
+    updateError = "";
+    updateStatus = `Downloading and verifying dawsu! v${updateResult.latestVersion}…`;
+    try {
+      const downloaded = await invoke("download_update");
+      updateStatus = `v${downloaded.version} verified (SHA-256). Closing dawsu! to install…`;
+      await invoke("install_update_on_close");
+    } catch (err) {
+      updateError = String(err);
+      updateStatus = "";
+    } finally {
+      updateDownloading = false;
     }
   }
 
@@ -809,8 +829,21 @@
                 {#if updateResult.updateAvailable}
                   <p class="pref-label">Update available: v{updateResult.latestVersion}</p>
                   <p class="pref-caption">Installed version: v{updateResult.currentVersion}</p>
+                  {#if updateResult.isInstalled && updateResult.installerUrl && updateResult.sha256sumsUrl}
+                    <div class="pref-row-head">
+                      <button type="button" class="pref-primary" disabled={updateDownloading} onclick={downloadAndInstallUpdate}>
+                        {updateDownloading ? "Downloading…" : `Update to v${updateResult.latestVersion} and restart`}
+                      </button>
+                    </div>
+                    <p class="pref-caption">Downloads the installer, checks its SHA-256 hash, asks about unsaved work, and installs on close.</p>
+                  {:else if !updateResult.isInstalled}
+                    <p class="pref-caption">This copy wasn't installed with Setup, so it can't update itself. Download the newest release from the link below.</p>
+                  {/if}
                 {:else}
                   <p class="pref-caption">You are up to date (v{updateResult.currentVersion}; latest release v{updateResult.latestVersion}).</p>
+                {/if}
+                {#if updateStatus}
+                  <p class="pref-caption">{updateStatus}</p>
                 {/if}
                 {#if updateResult.notes}
                   <p class="pref-caption">{updateResult.notes}</p>

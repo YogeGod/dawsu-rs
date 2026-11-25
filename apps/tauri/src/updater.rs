@@ -1,15 +1,112 @@
-//! GitHub Releases update checker, semantic version comparison, and SHA-256 verification.
+//! GitHub Releases update checker, SHA-256 verified downloader, and install-on-close staging.
 //!
-//! Network access happens only when the user explicitly invokes `check_for_updates`
-//! from Preferences › Updates — never on startup and never during automated tests.
+//! Network access happens only when the user explicitly clicks Check / Download in
+//! Preferences › Updates — never on startup and never during automated tests.
 
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
+use std::fs::{self, File};
+use std::io::Read;
+use std::path::{Component, Path, PathBuf};
 use std::process::Command;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
 pub const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const LATEST_RELEASE_API_URL: &str =
     "https://api.github.com/repos/YogeGod/dawsu-rs/releases/latest";
+pub const RELEASE_ASSET_URL_PREFIX: &str =
+    "https://github.com/YogeGod/dawsu-rs/releases/download/";
+/// Maximum allowed installer download size (256 MiB).
+pub const MAX_INSTALLER_BYTES: u64 = 256 * 1024 * 1024;
+/// Maximum allowed `SHA256SUMS.txt` size (1 MiB).
+pub const MAX_SHA256SUMS_BYTES: u64 = 1024 * 1024;
+
+static PART_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifiedDownload {
+    pub version: String,
+    pub path: PathBuf,
+    pub expected_sha256: String,
+}
+
+#[derive(Default)]
+struct UpdaterInner {
+    last_release: Option<ParsedRelease>,
+    verified_download: Option<VerifiedDownload>,
+    armed_for_exit: bool,
+}
+
+/// Holds the last Rust-fetched release, the SHA-256-verified download, and whether it is armed
+/// to launch when the main window finishes closing. Neither URLs nor file paths are accepted
+/// from the webview.
+#[derive(Default)]
+pub struct StagedUpdate(Mutex<UpdaterInner>);
+
+impl StagedUpdate {
+    pub fn record_release(&self, release: ParsedRelease) {
+        let mut guard = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        guard.last_release = Some(release);
+    }
+
+    pub fn last_release(&self) -> Option<ParsedRelease> {
+        let guard = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        guard.last_release.clone()
+    }
+
+    pub fn record_download(&self, download: VerifiedDownload) {
+        let mut guard = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        guard.verified_download = Some(download);
+        guard.armed_for_exit = false;
+    }
+
+    pub fn arm_verified_download(&self, data_root: &Path) -> Result<VerifiedDownload, String> {
+        let mut guard = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(download) = guard.verified_download.clone() else {
+            return Err("No verified update has been downloaded yet.".into());
+        };
+        validate_staged_installer_path(data_root, &download.path)?;
+        guard.armed_for_exit = true;
+        Ok(download)
+    }
+
+    pub fn clear(&self) {
+        let mut guard = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        guard.armed_for_exit = false;
+    }
+
+    pub fn take_armed(&self) -> Option<VerifiedDownload> {
+        let mut guard = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if !guard.armed_for_exit {
+            return None;
+        }
+        guard.armed_for_exit = false;
+        guard.verified_download.take()
+    }
+
+    /// Re-verifies the armed installer's path and SHA-256 on disk right before launching it.
+    pub fn launch_if_staged(&self, data_root: &Path) {
+        let Some(download) = self.take_armed() else {
+            return;
+        };
+        let verified_path = match validate_staged_installer_path(data_root, &download.path) {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("[dawsu updater] refusing to launch staged update: {e}");
+                return;
+            }
+        };
+        if let Err(e) = verify_file_sha256(&verified_path, &download.expected_sha256) {
+            eprintln!("[dawsu updater] pre-launch SHA-256 check failed: {e}");
+            let _ = fs::remove_file(&verified_path);
+            return;
+        }
+        if let Err(e) = spawn_installer(&verified_path) {
+            eprintln!("[dawsu updater] failed to launch installer: {e}");
+        }
+    }
+}
 
 /// Parsed semantic version (`MAJOR.MINOR.PATCH[-PRERELEASE][+BUILD]`).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -148,11 +245,22 @@ pub struct UpdateCheckResult {
     pub current_version: String,
     pub latest_version: String,
     pub update_available: bool,
+    pub is_installed: bool,
     pub release_url: String,
     pub notes: String,
     pub installer_url: Option<String>,
+    pub installer_name: Option<String>,
     pub portable_url: Option<String>,
     pub sha256sums_url: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DownloadedUpdate {
+    pub version: String,
+    pub installer_path: String,
+    pub sha256: String,
+    pub size_bytes: u64,
 }
 
 #[derive(Deserialize)]
@@ -257,23 +365,119 @@ pub fn parse_github_release(json_str: &str) -> Result<ParsedRelease, String> {
     })
 }
 
+/// Returns true when the given executable sits inside an installed copy (e.g. Inno Setup
+/// `unins*.exe` next to the binary on Windows, or an installed `.app` outside `/Volumes/`
+/// on macOS) rather than a portable zip or `target/debug` build.
+pub fn is_installed_copy_at(exe_path: &Path) -> bool {
+    let Some(dir) = exe_path.parent() else {
+        return false;
+    };
+    if cfg!(target_os = "windows") {
+        fs::read_dir(dir)
+            .ok()
+            .into_iter()
+            .flatten()
+            .flatten()
+            .any(|entry| {
+                let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
+                name.starts_with("unins") && name.ends_with(".exe") && entry.path().is_file()
+            })
+    } else if cfg!(target_os = "macos") {
+        let s = exe_path.to_string_lossy();
+        !s.starts_with("/Volumes/")
+            && !s.contains("/target/")
+            && exe_path
+                .components()
+                .any(|c| c.as_os_str().to_string_lossy().ends_with(".app"))
+    } else {
+        false
+    }
+}
+
+pub fn is_installed_copy() -> bool {
+    std::env::current_exe()
+        .ok()
+        .is_some_and(|p| is_installed_copy_at(&p))
+}
+
+fn require_release_asset_url(url: &str, field: &str) -> Result<String, String> {
+    let trimmed = require_https(url, field)?;
+    if !trimmed.starts_with(RELEASE_ASSET_URL_PREFIX) {
+        return Err(format!(
+            "Refusing {field} URL outside {RELEASE_ASSET_URL_PREFIX}."
+        ));
+    }
+    Ok(trimmed)
+}
+
+fn validate_safe_filename(name: &str) -> Result<String, String> {
+    let clean = name.trim();
+    if clean.is_empty()
+        || clean.contains(['/', '\\', ':', '\0'])
+        || clean.contains("..")
+        || clean.bytes().any(|b| b.is_ascii_control())
+    {
+        return Err("Invalid installer filename.".into());
+    }
+    let mut comps = Path::new(clean).components();
+    match (comps.next(), comps.next()) {
+        (Some(Component::Normal(_)), None) => Ok(clean.to_string()),
+        _ => Err("Invalid installer filename.".into()),
+    }
+}
+
+fn sanitize_semver_dir(version: &str) -> Result<String, String> {
+    let parsed = parse_semver(version)
+        .ok_or_else(|| format!("Invalid update version '{version}'."))?;
+    let mut out = format!("{}.{}.{}", parsed.major, parsed.minor, parsed.patch);
+    if !parsed.pre.is_empty() {
+        out.push('-');
+        for (i, id) in parsed.pre.iter().enumerate() {
+            if i > 0 {
+                out.push('.');
+            }
+            match id {
+                PreId::Numeric(n) => out.push_str(&n.to_string()),
+                PreId::Alpha(s) => {
+                    if !s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
+                        return Err(format!("Invalid pre-release identifier in version '{version}'."));
+                    }
+                    out.push_str(s);
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn asset_filename_from_url(url: &str) -> Option<String> {
+    let without_query = url.split(['?', '#']).next()?;
+    let name = without_query.rsplit('/').next()?.trim();
+    validate_safe_filename(name).ok()
+}
+
 /// Builds the UI-facing update check result from the current version and parsed release.
 pub fn build_update_result(current_version: &str, release: ParsedRelease) -> UpdateCheckResult {
     let update_available = is_newer_version(current_version, &release.version);
+    let installer_name = release
+        .installer_url
+        .as_deref()
+        .and_then(asset_filename_from_url);
     UpdateCheckResult {
         current_version: current_version.to_string(),
         latest_version: release.version,
         update_available,
+        is_installed: is_installed_copy(),
         release_url: release.release_url,
         notes: release.notes,
         installer_url: release.installer_url,
+        installer_name,
         portable_url: release.portable_url,
         sha256sums_url: release.sha256sums_url,
     }
 }
 
 /// Computes the lowercase hex SHA-256 digest of `bytes` (FIPS 180-4, pure Rust).
-#[allow(dead_code)]
 pub fn sha256_hex(bytes: &[u8]) -> String {
     const K: [u32; 64] = [
         0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4,
@@ -362,13 +566,12 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
     out
 }
 
-#[allow(dead_code)]
 fn is_valid_sha256_hex(hex: &str) -> bool {
     hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
 /// Verifies `bytes` against an expected 64-character hex SHA-256 digest.
-#[allow(dead_code)]
+#[cfg(test)]
 pub fn verify_sha256(bytes: &[u8], expected_hex: &str) -> Result<(), String> {
     let expected = expected_hex.trim().to_ascii_lowercase();
     if !is_valid_sha256_hex(&expected) {
@@ -389,7 +592,6 @@ pub fn verify_sha256(bytes: &[u8], expected_hex: &str) -> Result<(), String> {
 }
 
 /// Looks up `filename` in a `SHA256SUMS.txt` manifest (`<hash>  <filename>` or `<hash> *<filename>`).
-#[allow(dead_code)]
 pub fn parse_sha256sums(text: &str, filename: &str) -> Option<String> {
     let target = filename.trim();
     if target.is_empty() {
@@ -425,52 +627,374 @@ pub fn parse_sha256sums(text: &str, filename: &str) -> Option<String> {
     case_insensitive_match
 }
 
-/// Fetches the latest release JSON from GitHub Releases over HTTPS with a short timeout.
-///
-/// Only called when the user explicitly clicks "Check for updates".
-pub fn check_latest_release() -> Result<UpdateCheckResult, String> {
+fn format_curl_error(context: &str, is_release_check: bool, stderr: &str, status: std::process::ExitStatus) -> String {
+    if is_release_check && stderr.contains("404") {
+        return "No public release was found (if the repository is still private, automatic update checks will work once it is public).".into();
+    }
+    if stderr.is_empty() {
+        format!("{context} failed (status {status}).")
+    } else {
+        format!("{context} failed: {stderr}")
+    }
+}
+
+fn build_curl_command(timeout_secs: u64, max_filesize: u64, accept: Option<&str>) -> Command {
     let user_agent = format!("dawsu-updater/{CURRENT_VERSION}");
     let mut cmd = Command::new(if cfg!(windows) { "curl.exe" } else { "curl" });
+    let timeout = timeout_secs.to_string();
+    let max_size = max_filesize.to_string();
     cmd.args([
         "--silent",
         "--show-error",
         "--fail",
         "--location",
+        "--max-redirs",
+        "5",
         "--max-time",
-        "8",
+        &timeout,
+        "--max-filesize",
+        &max_size,
         "--proto",
         "=https",
-        "-H",
-        "Accept: application/vnd.github+json",
+        "--proto-redir",
+        "=https",
         "-H",
         &format!("User-Agent: {user_agent}"),
-        LATEST_RELEASE_API_URL,
     ]);
-
+    if let Some(accept) = accept {
+        cmd.args(["-H", &format!("Accept: {accept}")]);
+    }
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
+    cmd
+}
+
+fn curl_https_bytes(
+    url: &str,
+    context: &str,
+    is_release_check: bool,
+    timeout_secs: u64,
+    max_filesize: u64,
+    accept: Option<&str>,
+) -> Result<Vec<u8>, String> {
+    let url = require_https(url, context)?;
+    let mut cmd = build_curl_command(timeout_secs, max_filesize, accept);
+    cmd.arg("--").arg(&url);
 
     let output = cmd
         .output()
-        .map_err(|e| format!("Could not run HTTPS check ({e})."))?;
+        .map_err(|e| format!("Could not run HTTPS request ({e})."))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        return Err(if stderr.is_empty() {
-            format!("GitHub Releases check failed (status {}).", output.status)
-        } else {
-            format!("GitHub Releases check failed: {stderr}")
-        });
+        return Err(format_curl_error(context, is_release_check, &stderr, output.status));
     }
+    Ok(output.stdout)
+}
 
-    let body = String::from_utf8(output.stdout)
+fn curl_https_to_file(
+    url: &str,
+    dest: &Path,
+    context: &str,
+    timeout_secs: u64,
+    max_filesize: u64,
+) -> Result<(), String> {
+    let url = require_https(url, context)?;
+    let mut cmd = build_curl_command(timeout_secs, max_filesize, None);
+    cmd.arg("--output").arg(dest).arg("--").arg(&url);
+
+    let output = cmd
+        .output()
+        .map_err(|e| format!("Could not run HTTPS download ({e})."))?;
+
+    if !output.status.success() {
+        let _ = fs::remove_file(dest);
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(format_curl_error(context, false, &stderr, output.status));
+    }
+    Ok(())
+}
+
+/// Computes the SHA-256 digest of a file on disk without buffering the whole file in memory.
+pub fn sha256_file_hex(path: &Path) -> Result<String, String> {
+    let mut file = File::open(path).map_err(|e| format!("Could not read file for SHA-256: {e}"))?;
+    let mut buf = Vec::new();
+    let meta = file.metadata().map_err(|e| format!("Could not stat file: {e}"))?;
+    if meta.len() > MAX_INSTALLER_BYTES {
+        return Err("Downloaded file exceeds maximum allowed installer size.".into());
+    }
+    buf.reserve(meta.len() as usize);
+    let mut chunk = [0u8; 65_536];
+    loop {
+        let n = file.read(&mut chunk).map_err(|e| format!("Could not read file: {e}"))?;
+        if n == 0 {
+            break;
+        }
+        if (buf.len() as u64) + (n as u64) > MAX_INSTALLER_BYTES {
+            return Err("Downloaded file exceeds maximum allowed installer size.".into());
+        }
+        buf.extend_from_slice(&chunk[..n]);
+    }
+    Ok(sha256_hex(&buf))
+}
+
+pub fn verify_file_sha256(path: &Path, expected_hex: &str) -> Result<(), String> {
+    let expected = expected_hex.trim().to_ascii_lowercase();
+    if !is_valid_sha256_hex(&expected) {
+        return Err("Expected SHA-256 digest must be 64 hexadecimal characters.".into());
+    }
+    let actual = sha256_file_hex(path)?;
+    let mut diff = 0u8;
+    for (a, b) in actual.bytes().zip(expected.bytes()) {
+        diff |= a ^ b;
+    }
+    if diff == 0 {
+        Ok(())
+    } else {
+        Err(format!("SHA-256 mismatch: expected {expected}, got {actual}."))
+    }
+}
+
+/// Fetches the latest release JSON from GitHub Releases over HTTPS with a short timeout.
+/// Returns both the UI result and the raw `ParsedRelease` for Rust-side download trust.
+pub fn check_latest_release_parsed() -> Result<(UpdateCheckResult, ParsedRelease), String> {
+    let stdout = curl_https_bytes(
+        LATEST_RELEASE_API_URL,
+        "GitHub Releases check",
+        true,
+        8,
+        MAX_SHA256SUMS_BYTES,
+        Some("application/vnd.github+json"),
+    )?;
+    let body = String::from_utf8(stdout)
         .map_err(|e| format!("GitHub Releases returned non-UTF-8 response: {e}"))?;
     let parsed = parse_github_release(&body)?;
-    Ok(build_update_result(CURRENT_VERSION, parsed))
+    let result = build_update_result(CURRENT_VERSION, parsed.clone());
+    Ok((result, parsed))
+}
+
+/// Folder under app data where verified update installers are staged.
+pub fn updates_dir(data_root: &Path) -> PathBuf {
+    data_root.join("updates")
+}
+
+/// Verifies `installer_bytes` against `sha256sums_text` for `filename` and atomically writes the
+/// verified installer into `<data_root>/updates/<version>/<filename>`. If verification fails,
+/// nothing is written (and any stray temp file is removed).
+#[cfg(test)]
+pub fn verify_and_write_installer(
+    data_root: &Path,
+    version: &str,
+    filename: &str,
+    installer_bytes: &[u8],
+    sha256sums_text: &str,
+) -> Result<DownloadedUpdate, String> {
+    let safe_version = sanitize_semver_dir(version)?;
+    let clean_name = validate_safe_filename(filename)?;
+    let expected_hex = parse_sha256sums(sha256sums_text, &clean_name).ok_or_else(|| {
+        format!("SHA256SUMS.txt does not list a checksum for {clean_name}. Refusing to install.")
+    })?;
+    verify_sha256(installer_bytes, &expected_hex)?;
+
+    let target_dir = updates_dir(data_root).join(&safe_version);
+    fs::create_dir_all(&target_dir)
+        .map_err(|e| format!("Could not create updates folder: {e}"))?;
+    let dest = target_dir.join(&clean_name);
+    let seq = PART_COUNTER.fetch_add(1, AtomicOrdering::Relaxed);
+    let tmp = target_dir.join(format!("{clean_name}.{}.{seq}.part", std::process::id()));
+    if let Err(e) = fs::write(&tmp, installer_bytes) {
+        let _ = fs::remove_file(&tmp);
+        return Err(format!("Could not write downloaded installer: {e}"));
+    }
+    if dest.exists() {
+        fs::remove_file(&dest)
+            .map_err(|e| {
+                let _ = fs::remove_file(&tmp);
+                format!("Could not replace previous installer file: {e}")
+            })?;
+    }
+    if let Err(e) = fs::rename(&tmp, &dest) {
+        let _ = fs::remove_file(&tmp);
+        return Err(format!("Could not finalize downloaded installer: {e}"));
+    }
+
+    Ok(DownloadedUpdate {
+        version: safe_version,
+        installer_path: dest.to_string_lossy().into_owned(),
+        sha256: expected_hex,
+        size_bytes: installer_bytes.len() as u64,
+    })
+}
+
+/// Downloads `SHA256SUMS.txt` and the release installer from a Rust-fetched `ParsedRelease`
+/// over HTTPS, verifies the SHA-256 digest on disk before moving into place, and deletes the
+/// temp file on any mismatch.
+pub fn download_and_verify_release(
+    data_root: &Path,
+    release: &ParsedRelease,
+) -> Result<(DownloadedUpdate, VerifiedDownload), String> {
+    let installer_url = release
+        .installer_url
+        .as_deref()
+        .ok_or_else(|| "This release does not include an installer.".to_string())?;
+    let sha256sums_url = release
+        .sha256sums_url
+        .as_deref()
+        .ok_or_else(|| "This release does not include SHA256SUMS.txt.".to_string())?;
+    let installer_url = require_release_asset_url(installer_url, "installer")?;
+    let sha256sums_url = require_release_asset_url(sha256sums_url, "SHA256SUMS.txt")?;
+
+    let safe_version = sanitize_semver_dir(&release.version)?;
+    let filename = asset_filename_from_url(&installer_url)
+        .ok_or_else(|| "Installer URL does not end with a valid filename.".to_string())?;
+    let sums_bytes = curl_https_bytes(
+        &sha256sums_url,
+        "SHA256SUMS.txt download",
+        false,
+        20,
+        MAX_SHA256SUMS_BYTES,
+        None,
+    )?;
+    let sums_text = String::from_utf8(sums_bytes)
+        .map_err(|e| format!("SHA256SUMS.txt is not valid UTF-8: {e}"))?;
+    let expected_hex = parse_sha256sums(&sums_text, &filename).ok_or_else(|| {
+        format!("SHA256SUMS.txt does not list a checksum for {filename}. Refusing to install.")
+    })?;
+
+    let target_dir = updates_dir(data_root).join(&safe_version);
+    fs::create_dir_all(&target_dir)
+        .map_err(|e| format!("Could not create updates folder: {e}"))?;
+    let seq = PART_COUNTER.fetch_add(1, AtomicOrdering::Relaxed);
+    let tmp = target_dir.join(format!("{filename}.{}.{seq}.part", std::process::id()));
+    curl_https_to_file(
+        &installer_url,
+        &tmp,
+        "Installer download",
+        180,
+        MAX_INSTALLER_BYTES,
+    )?;
+
+    if let Err(e) = verify_file_sha256(&tmp, &expected_hex) {
+        let _ = fs::remove_file(&tmp);
+        return Err(e);
+    }
+    let size_bytes = fs::metadata(&tmp).map(|m| m.len()).unwrap_or(0);
+    let dest = target_dir.join(&filename);
+    if dest.exists() {
+        fs::remove_file(&dest).map_err(|e| {
+            let _ = fs::remove_file(&tmp);
+            format!("Could not replace previous installer file: {e}")
+        })?;
+    }
+    if let Err(e) = fs::rename(&tmp, &dest) {
+        let _ = fs::remove_file(&tmp);
+        return Err(format!("Could not finalize downloaded installer: {e}"));
+    }
+
+    let ui_result = DownloadedUpdate {
+        version: safe_version.clone(),
+        installer_path: dest.to_string_lossy().into_owned(),
+        sha256: expected_hex.clone(),
+        size_bytes,
+    };
+    let verified = VerifiedDownload {
+        version: safe_version,
+        path: dest,
+        expected_sha256: expected_hex,
+    };
+    Ok((ui_result, verified))
+}
+
+/// Validates that a staged installer path is a real file inside `<data_root>/updates/`.
+pub fn validate_staged_installer_path(data_root: &Path, candidate: &Path) -> Result<PathBuf, String> {
+    if !candidate.is_file() {
+        return Err("Downloaded installer file not found.".into());
+    }
+    let canon_root = updates_dir(data_root)
+        .canonicalize()
+        .map_err(|_| "Updates folder does not exist.".to_string())?;
+    let canon_file = candidate
+        .canonicalize()
+        .map_err(|e| format!("Could not resolve installer path: {e}"))?;
+    if !canon_file.starts_with(&canon_root) {
+        return Err("Refusing to run an installer outside dawsu!'s updates folder.".into());
+    }
+    Ok(canon_file)
+}
+
+pub fn installer_launch_args() -> &'static [&'static str] {
+    if cfg!(target_os = "windows") {
+        // Inno Setup silent upgrade: waits for dawsu! to exit, updates in place, and relaunches.
+        &["/SILENT", "/CLOSEAPPLICATIONS", "/RESTARTAPPLICATIONS"]
+    } else {
+        &[]
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn to_wide_null(s: &str) -> Vec<u16> {
+    use std::os::windows::ffi::OsStrExt;
+    std::ffi::OsStr::new(s)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect()
+}
+
+fn spawn_installer(installer_path: &Path) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        // Use Win32 ShellExecuteW so Windows honors the Inno Setup UAC elevation manifest
+        // instead of failing with ERROR_ELEVATION_REQUIRED (740) under CreateProcessW.
+        #[link(name = "shell32")]
+        unsafe extern "system" {
+            fn ShellExecuteW(
+                hwnd: *mut core::ffi::c_void,
+                lp_operation: *const u16,
+                lp_file: *const u16,
+                lp_parameters: *const u16,
+                lp_directory: *const u16,
+                n_show_cmd: i32,
+            ) -> isize;
+        }
+        const SW_SHOWNORMAL: i32 = 1;
+        let verb = to_wide_null("open");
+        let file = to_wide_null(&installer_path.to_string_lossy());
+        let params = to_wide_null(&installer_launch_args().join(" "));
+        let result = unsafe {
+            ShellExecuteW(
+                core::ptr::null_mut(),
+                verb.as_ptr(),
+                file.as_ptr(),
+                params.as_ptr(),
+                core::ptr::null(),
+                SW_SHOWNORMAL,
+            )
+        };
+        if result <= 32 {
+            return Err(format!("ShellExecuteW failed with code {result}."));
+        }
+        Ok(())
+    }
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("open")
+            .arg(installer_path)
+            .spawn()
+            .map_err(|e| format!("Could not open update package: {e}"))?;
+        Ok(())
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        Command::new("xdg-open")
+            .arg(installer_path)
+            .spawn()
+            .map_err(|e| format!("Could not open update package: {e}"))?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -570,5 +1094,122 @@ mod tests {
 
         assert!(parse_sha256sums(&manifest, "missing-file.zip").is_none());
         assert!(verify_sha256(data, "not-hex").is_err());
+    }
+
+    fn temp_test_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("dawsu-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn verify_and_write_installer_accepts_valid_hash_and_rejects_tampered_bytes() {
+        let root = temp_test_dir("updater-verify-stage");
+        let data_root = root.join("appdata");
+        let installer_bytes = b"MZ-fake-inno-setup-binary-bytes";
+        let digest = sha256_hex(installer_bytes);
+        let sums = format!("{digest}  dawsu-v1.1.0-windows-x64-setup.exe\n");
+
+        let ok = verify_and_write_installer(
+            &data_root,
+            "v1.1.0",
+            "dawsu-v1.1.0-windows-x64-setup.exe",
+            installer_bytes,
+            &sums,
+        )
+        .expect("valid installer must verify and stage");
+        assert_eq!(ok.version, "1.1.0");
+        assert_eq!(ok.sha256, digest);
+        assert_eq!(ok.size_bytes, installer_bytes.len() as u64);
+        assert!(Path::new(&ok.installer_path).is_file());
+        assert!(validate_staged_installer_path(&data_root, Path::new(&ok.installer_path)).is_ok());
+        assert!(verify_file_sha256(Path::new(&ok.installer_path), &digest).is_ok());
+
+        // Tampered bytes must be refused and leave no file in the new version folder.
+        let mut tampered = installer_bytes.to_vec();
+        tampered[0] ^= 0xff;
+        let err = verify_and_write_installer(
+            &data_root,
+            "v1.2.0",
+            "dawsu-v1.2.0-windows-x64-setup.exe",
+            &tampered,
+            &format!("{digest}  dawsu-v1.2.0-windows-x64-setup.exe\n"),
+        )
+        .expect_err("tampered installer must be rejected");
+        assert!(err.contains("SHA-256 mismatch"), "{err}");
+        assert!(!updates_dir(&data_root).join("1.2.0").exists());
+
+        // Path outside updates folder must be refused.
+        let outside = root.join("outside.exe");
+        fs::write(&outside, b"bad").unwrap();
+        assert!(validate_staged_installer_path(&data_root, &outside).is_err());
+
+        // Filename sanitization rejects drive letters / ADS colons and traversal.
+        assert!(validate_safe_filename("C:evil.exe").is_err());
+        assert!(validate_safe_filename("foo.exe:bar").is_err());
+        assert!(validate_safe_filename("../evil.exe").is_err());
+        assert!(require_release_asset_url("https://evil.example/setup.exe", "installer").is_err());
+        assert!(
+            require_release_asset_url(
+                "https://github.com/YogeGod/dawsu-rs/releases/download/v1.0.0/setup.exe",
+                "installer",
+            )
+            .is_ok()
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn staged_update_state_and_installed_detection() {
+        let root = temp_test_dir("updater-installed-check");
+        let data_root = root.join("appdata");
+        let ok = verify_and_write_installer(
+            &data_root,
+            "v1.1.0",
+            "dawsu-v1.1.0-windows-x64-setup.exe",
+            b"verified-installer-bytes",
+            &format!(
+                "{}  dawsu-v1.1.0-windows-x64-setup.exe\n",
+                sha256_hex(b"verified-installer-bytes")
+            ),
+        )
+        .unwrap();
+
+        let staged = StagedUpdate::default();
+        assert!(staged.take_armed().is_none());
+        assert!(staged.arm_verified_download(&data_root).is_err());
+
+        staged.record_download(VerifiedDownload {
+            version: ok.version.clone(),
+            path: PathBuf::from(&ok.installer_path),
+            expected_sha256: ok.sha256.clone(),
+        });
+        // Not armed yet -> take_armed is None.
+        assert!(staged.take_armed().is_none());
+        // Arm then clear -> take_armed is None.
+        staged.arm_verified_download(&data_root).unwrap();
+        staged.clear();
+        assert!(staged.take_armed().is_none());
+        // Arm then take -> returns once.
+        staged.arm_verified_download(&data_root).unwrap();
+        assert!(staged.take_armed().is_some());
+        assert!(staged.take_armed().is_none());
+
+        let portable_dir = root.join("portable");
+        fs::create_dir_all(&portable_dir).unwrap();
+        let portable_exe = portable_dir.join("dawsu.exe");
+        fs::write(&portable_exe, b"exe").unwrap();
+        assert!(!is_installed_copy_at(&portable_exe));
+
+        if cfg!(target_os = "windows") {
+            let installed_dir = root.join("installed");
+            fs::create_dir_all(&installed_dir).unwrap();
+            let installed_exe = installed_dir.join("dawsu.exe");
+            fs::write(&installed_exe, b"exe").unwrap();
+            fs::write(installed_dir.join("unins001.exe"), b"unins").unwrap();
+            assert!(is_installed_copy_at(&installed_exe));
+        }
+        let _ = fs::remove_dir_all(&root);
     }
 }
