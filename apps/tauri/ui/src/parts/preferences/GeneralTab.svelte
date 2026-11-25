@@ -69,4 +69,10 @@
     <span>Clean redundant greenlines on Save & Export</span>
   </label>
   <p class="pref-caption">Removes extra green timing lines that don't change sample set, volume, slider velocity, or kiai. Off by default so untouched .osu lines stay identical.</p>
+  <label class="pref-check">
+    <input type="checkbox" checked={Boolean(view.reloadOsuAfterSave)}
+      onchange={(e) => onsendaction({ kind: "reload_osu_after_save", on: e.currentTarget.checked })} />
+    <span>Reload osu! editor after Save</span>
+  </label>
+  <p class="pref-caption">On Windows, brings osu!stable forward and sends Ctrl+L when the open difficulty matches. For osu!lazer external edits, reminds you to click Finish.</p>
 </div>

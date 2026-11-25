@@ -8,9 +8,14 @@
     vst3Scanning = false,
     vst3Report = null,
     vst3Error = "",
+    soundfontSummary = null,
+    soundfontError = "",
+    soundfontLoading = false,
     onloadmidi,
     onpickmidi,
     onscanvst3,
+    onpicksoundfont = null,
+    onauditionsoundfont = null,
   } = $props();
 </script>
 
@@ -59,3 +64,28 @@
     {/if}
   {/if}
 </div>
+
+{#if onpicksoundfont}
+  <hr class="pref-divider" />
+
+  <div class="pref-group">
+    <div class="pref-row-head">
+      <span class="pref-label">SoundFont / SFZ sampler</span>
+      <button type="button" disabled={soundfontLoading} onclick={onpicksoundfont}>
+        {soundfontLoading ? "Loading…" : "Test .sf2 / .sfz…"}
+      </button>
+    </div>
+    <p class="pref-caption">Plays .sf2 and .sfz instruments directly without a VST3 plug-in. Attach one to any track in Map › Keysounds & VST3….</p>
+    {#if soundfontError}
+      <p class="pref-error">{soundfontError}</p>
+    {:else if soundfontSummary}
+      <p class="pref-caption">
+        {soundfontSummary.name} ({soundfontSummary.format.toUpperCase()}) · {soundfontSummary.regionCount} region{soundfontSummary.regionCount === 1 ? "" : "s"}
+        {#if soundfontSummary.presets?.length > 1} · {soundfontSummary.presets.length} presets{/if}
+      </p>
+      {#if onauditionsoundfont}
+        <button type="button" onclick={() => onauditionsoundfont(soundfontSummary.path)}>Preview C4</button>
+      {/if}
+    {/if}
+  </div>
+{/if}

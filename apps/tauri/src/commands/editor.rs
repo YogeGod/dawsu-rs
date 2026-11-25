@@ -153,6 +153,14 @@ pub(crate) fn open_from_osu(state: State<'_, Editor>) -> Result<String, String> 
     Ok(path.to_string_lossy().into_owned())
 }
 
+#[tauri::command]
+pub(crate) fn reload_osu_editor(state: State<'_, Editor>) -> Result<osu_link::OsuReloadResult, String> {
+    let Some(path) = ask(&state, Request::CurrentDocumentPath)? else {
+        return Err("Open a difficulty before reloading it in osu!.".into());
+    };
+    Ok(osu_link::reload_osu_editor(&path))
+}
+
 
 #[tauri::command]
 pub(crate) fn relink_moved_mapset(

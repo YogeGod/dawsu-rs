@@ -104,6 +104,45 @@ pub(crate) fn vst3_scan(state: State<'_, Editor>) -> Result<dawsu_application::V
     ask(&state, Request::Vst3Scan)?
 }
 
+#[tauri::command]
+pub(crate) fn pick_soundfont_file(window: tauri::WebviewWindow) -> Option<String> {
+    rfd::FileDialog::new()
+        .set_parent(&window)
+        .set_title("Choose SoundFont or SFZ instrument")
+        .add_filter("SoundFont / SFZ", &["sf2", "sfz"])
+        .pick_file()
+        .map(|path| path.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
+pub(crate) fn inspect_soundfont_file(
+    path: String,
+    state: State<'_, Editor>,
+) -> Result<dawsu_application::SamplerSummary, String> {
+    ask(&state, |tx| Request::InspectSoundfontFile(std::path::PathBuf::from(path), tx))?
+}
+
+#[tauri::command]
+pub(crate) fn audition_soundfont_note(
+    path: String,
+    preset_index: Option<usize>,
+    pitch: Option<u8>,
+    velocity: Option<u8>,
+    duration_ms: Option<f64>,
+    state: State<'_, Editor>,
+) -> Result<(), String> {
+    ask(&state, |tx| {
+        Request::AuditionSoundfontNote(
+            std::path::PathBuf::from(path),
+            preset_index.unwrap_or(0),
+            pitch.unwrap_or(60),
+            velocity.unwrap_or(100),
+            duration_ms.unwrap_or(280.0),
+            tx,
+        )
+    })?
+}
+
 
 #[tauri::command]
 pub(crate) fn keysounds_action(payload: Value, state: State<'_, Editor>) -> Result<Value, String> {

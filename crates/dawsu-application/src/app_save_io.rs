@@ -85,6 +85,8 @@ impl Application {
         self.checkpoint = None;
         self.osu_watch.clear();
         self.external_osu_changed = false;
+        self.tap_recording_armed = false;
+        self.tap_recorded_hits.clear();
         keysound_session::reset_for_map(self, None);
     }
 
@@ -363,7 +365,8 @@ impl Application {
         midi_import::export_midi_file(path, &document.composer, bpm, ks)
     }
 
-    /// Arms or disarms live MIDI recording; disarming commits any captured notes as one undo step.
+    /// Arms or disarms live MIDI recording (and keyboard tap-recording on the timeline);
+    /// disarming commits any captured MIDI notes and keyboard taps cleanly.
     pub fn toggle_midi_recording(
         &mut self,
         port_index: Option<usize>,
@@ -377,6 +380,8 @@ impl Application {
                 self.is_playing(),
                 self.playback_speed,
             );
+            self.tap_recording_armed = false;
+            let taps = std::mem::take(&mut self.tap_recorded_hits);
             let mut committed = 0usize;
             if !notes.is_empty() {
                 if let Some(doc) = self.document.as_mut() {
@@ -405,9 +410,21 @@ impl Application {
                         }
                     }
                 }
-                self.status = format!("Recorded {committed} MIDI hits.");
+            }
+            if !taps.is_empty()
+                && let Some(doc) = self.document.as_mut()
+            {
+                let tap_added = midi_record::commit_taps_to_composer(&taps, &mut doc.composer)?;
+                committed += tap_added;
+                if tap_added > 0 {
+                    self.refresh_recovery_edit();
+                    self.sync_audio();
+                }
+            }
+            if committed > 0 {
+                self.status = format!("Recorded {committed} hits.");
             } else {
-                self.status = "MIDI recording stopped.".into();
+                self.status = "Recording stopped.".into();
             }
             return Ok(midi_record::MidiRecordStatus {
                 armed: false,
@@ -417,9 +434,11 @@ impl Application {
             });
         }
         let port_name = self.midi_recorder.arm(port_index)?;
+        self.tap_recording_armed = true;
+        self.tap_recorded_hits.clear();
         self.status = match &port_name {
             Some(name) => format!("MIDI recording armed ({name}). Press Space to play and record."),
-            None => "MIDI recording armed (no hardware MIDI port; ready for virtual input).".into(),
+            None => "Tap recording armed. Press Space and tap A–L or Numpad 1–9.".into(),
         };
         Ok(midi_record::MidiRecordStatus {
             armed: true,
@@ -427,6 +446,96 @@ impl Application {
             buffered_notes: 0,
             committed_notes: 0,
         })
+    }
+
+    /// True while live keyboard tap-recording (or MIDI recording) is armed.
+    pub fn tap_recording_armed(&self) -> bool {
+        self.tap_recording_armed || self.midi_recorder.armed
+    }
+
+    /// Number of buffered keyboard lane taps waiting to be committed on disarm.
+    pub fn tap_recorded_count(&self) -> usize {
+        self.tap_recorded_hits.len()
+    }
+
+    /// Plays `row`'s sample live immediately; if tap-recording is armed, records the tap at the
+    /// current playhead time so disarming commits the whole take as one Undo step.
+    pub fn tap_lane(&mut self, row: usize) -> bool {
+        if self.busy {
+            return false;
+        }
+        let Some((lane, volume)) = self.document.as_ref().and_then(|d| {
+            let lane = d.composer.lanes.get(row)?.clone();
+            let vol = d.composer.insert_volume.clamp(1, 100);
+            Some((lane, vol))
+        }) else {
+            return false;
+        };
+        self.active_lane = row;
+        self.audition_lane(&lane, volume as f32 / 100.0);
+        if self.tap_recording_armed() {
+            self.tap_recorded_hits.push(midi_record::RecordedTap {
+                time_ms: self.position_ms().max(0.0),
+                lane,
+                volume,
+            });
+        }
+        true
+    }
+
+    /// Arms or disarms live keyboard tap-recording on the timeline; disarming commits all
+    /// buffered taps in one single `"Record taps"` Undo step.
+    pub fn toggle_tap_recording(&mut self) -> Result<midi_record::TapRecordStatus, String> {
+        if self.tap_recording_armed() {
+            self.tap_recording_armed = false;
+            if self.midi_recorder.armed {
+                let _ = self.midi_recorder.disarm_with_clock(
+                    self.position_ms(),
+                    self.is_playing(),
+                    self.playback_speed,
+                );
+            }
+            let taps = std::mem::take(&mut self.tap_recorded_hits);
+            let mut committed = 0usize;
+            if !taps.is_empty()
+                && let Some(doc) = self.document.as_mut()
+            {
+                committed = midi_record::commit_taps_to_composer(&taps, &mut doc.composer)?;
+                if committed > 0 {
+                    self.refresh_recovery_edit();
+                    self.sync_audio();
+                }
+            }
+            self.status = if committed > 0 {
+                format!(
+                    "Recorded {committed} tap{}. Press Ctrl+Z to undo.",
+                    if committed == 1 { "" } else { "s" }
+                )
+            } else {
+                "Tap recording stopped.".into()
+            };
+            return Ok(midi_record::TapRecordStatus {
+                armed: false,
+                buffered_taps: 0,
+                committed_taps: committed,
+            });
+        }
+        self.tap_recording_armed = true;
+        self.tap_recorded_hits.clear();
+        self.status = "Tap recording armed. Press Space and tap A–L or Numpad 1–9.".into();
+        Ok(midi_record::TapRecordStatus {
+            armed: true,
+            buffered_taps: 0,
+            committed_taps: 0,
+        })
+    }
+
+    pub fn set_reload_osu_after_save(&mut self, enabled: bool) {
+        if self.preferences.reload_osu_after_save == enabled {
+            return;
+        }
+        self.preferences.reload_osu_after_save = enabled;
+        self.save_preferences();
     }
 
     /// Scans the standard system VST3 folders (plus `extra_folders`) for instrument/FX plugins.
@@ -437,6 +546,26 @@ impl Application {
             self.vst3.set_search_dirs(dirs);
         }
         self.vst3.scan_plugins().map_err(|e| e.to_string())
+    }
+
+    /// Parses and inspects an `.sfz` or `.sf2` SoundFont file, caching it for fast playback.
+    pub fn inspect_soundfont_file(
+        &mut self,
+        path: &Path,
+    ) -> Result<dawsu_audio_instruments::SamplerSummary, String> {
+        keysound_session::inspect_soundfont(self, path)
+    }
+
+    /// Renders and auditions one note from an `.sfz` or `.sf2` SoundFont file.
+    pub fn audition_soundfont_note(
+        &mut self,
+        path: &Path,
+        preset_index: usize,
+        pitch: u8,
+        velocity: u8,
+        duration_ms: f64,
+    ) -> Result<(), String> {
+        keysound_session::audition_soundfont_note(self, path, preset_index, pitch, velocity, duration_ms)
     }
 
     /// Returns a JSON summary of the keysound tracks, notes, and scanned VST3 instruments.

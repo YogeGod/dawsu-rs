@@ -66,6 +66,9 @@
   let vst3Scanning = $state(false);
   let vst3Report = $state(null);
   let vst3Error = $state("");
+  let soundfontSummary = $state(null);
+  let soundfontError = $state("");
+  let soundfontLoading = $state(false);
 
   // Updates state: checked only when the user clicks "Check for updates".
   let updateChecking = $state(false);
@@ -167,6 +170,33 @@
       vst3Error = String(err);
     } finally {
       vst3Scanning = false;
+    }
+  }
+
+  async function pickSoundfont() {
+    if (soundfontLoading) return;
+    soundfontLoading = true;
+    soundfontError = "";
+    try {
+      const path = await invoke("pick_soundfont_file");
+      if (path) {
+        soundfontSummary = await invoke("inspect_soundfont_file", { path });
+      }
+    } catch (err) {
+      soundfontError = String(err);
+      soundfontSummary = null;
+    } finally {
+      soundfontLoading = false;
+    }
+  }
+
+  async function auditionSoundfont(path) {
+    if (!path) return;
+    soundfontError = "";
+    try {
+      await invoke("audition_soundfont_note", { path, presetIndex: 0, pitch: 60, velocity: 100, durationMs: 300 });
+    } catch (err) {
+      soundfontError = String(err);
     }
   }
 
@@ -576,9 +606,14 @@
               {vst3Scanning}
               {vst3Report}
               {vst3Error}
+              {soundfontSummary}
+              {soundfontError}
+              {soundfontLoading}
               onloadmidi={loadMidiPorts}
               onpickmidi={pickMidiPort}
               onscanvst3={scanVst3}
+              onpicksoundfont={pickSoundfont}
+              onauditionsoundfont={auditionSoundfont}
             />
           {:else if tab === "updates"}
             <UpdatesTab

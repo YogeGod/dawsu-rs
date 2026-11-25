@@ -372,6 +372,9 @@ pub(crate) enum Action {
     KeepPitch { on: bool },
     AutoCheckUpdates { on: bool },
     StepPadsMode { on: bool },
+    ReloadOsuAfterSave { on: bool },
+    TapLane { row: usize },
+    TapRecordToggle,
     Stop,
     Start,
     Seek {
@@ -780,6 +783,15 @@ impl Action {
             Self::KeepPitch { on } => app.set_keep_pitch(on),
             Self::AutoCheckUpdates { on } => app.set_auto_check_updates(on),
             Self::StepPadsMode { on } => app.set_step_pads_mode(on),
+            Self::ReloadOsuAfterSave { on } => app.set_reload_osu_after_save(on),
+            Self::TapLane { row } => {
+                app.tap_lane(row);
+            }
+            Self::TapRecordToggle => {
+                if let Err(error) = app.toggle_tap_recording() {
+                    app.error = Some(error);
+                }
+            }
             Self::Stop => app.command("stop"),
             Self::Start => app.command("start"),
             Self::Seek { ms } => app.seek(ms),

@@ -50,6 +50,7 @@ pub(crate) enum Request {
     ),
     CreateHitsoundDiffFromCurrent(mpsc::Sender<Result<PathBuf, String>>),
     SongsDirectory(mpsc::Sender<Option<PathBuf>>),
+    CurrentDocumentPath(mpsc::Sender<Option<PathBuf>>),
     SetSongsDirectory(PathBuf, mpsc::Sender<Result<ViewResponse, String>>),
     LibraryDirectory(mpsc::Sender<Option<PathBuf>>),
     SetLibraryDirectory(PathBuf, mpsc::Sender<Result<ViewResponse, String>>),
@@ -102,6 +103,8 @@ pub(crate) enum Request {
     ),
     MidiRecordToggle(Option<usize>, Option<u32>, mpsc::Sender<Result<dawsu_application::MidiRecordStatus, String>>),
     Vst3Scan(mpsc::Sender<Result<dawsu_application::Vst3ScanReport, String>>),
+    InspectSoundfontFile(PathBuf, mpsc::Sender<Result<dawsu_application::SamplerSummary, String>>),
+    AuditionSoundfontNote(PathBuf, usize, u8, u8, f64, mpsc::Sender<Result<(), String>>),
     DrumVstAction(Value, mpsc::Sender<Result<Value, String>>),
     KeysoundsAction(Value, mpsc::Sender<Result<Value, String>>),
     PreviewRevertMapsetToOriginal(mpsc::Sender<Result<dawsu_application::SnapshotPreview, String>>),
@@ -475,6 +478,13 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                     if let Ok(value) = guard(&mut app, &mut fault, |app| {
                         let folder = &app.preferences.songs_folder;
                         folder.is_dir().then(|| folder.clone())
+                    }) {
+                        let _ = response.send(value);
+                    }
+                }
+                Ok(Request::CurrentDocumentPath(response)) => {
+                    if let Ok(value) = guard(&mut app, &mut fault, |app| {
+                        app.document().map(|d| d.path.clone())
                     }) {
                         let _ = response.send(value);
                     }
@@ -881,6 +891,18 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                     tick_cache.invalidate();
                     let _ = response.send(result);
                 }
+                Ok(Request::InspectSoundfontFile(path, response)) => {
+                    let result = guard(&mut app, &mut fault, |app| app.inspect_soundfont_file(&path))
+                        .and_then(|r| r);
+                    let _ = response.send(result);
+                }
+                Ok(Request::AuditionSoundfontNote(path, preset, pitch, velocity, dur, response)) => {
+                    let result = guard(&mut app, &mut fault, |app| {
+                        app.audition_soundfont_note(&path, preset, pitch, velocity, dur)
+                    })
+                    .and_then(|r| r);
+                    let _ = response.send(result);
+                }
                 Ok(Request::DrumVstAction(payload, response)) => {
                     let result = guard(&mut app, &mut fault, |app| {
                         handle_drum_vst_action(app, &mut drums, &payload)
@@ -913,6 +935,24 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                                 let mut res = app.keysounds_action(&json!({
                                     "kind": "load_dawsuks",
                                     "path": path.to_string_lossy(),
+                                }))?;
+                                res["picked"] = json!(true);
+                                res["loadedPath"] = json!(path.to_string_lossy());
+                                Ok(res)
+                            } else {
+                                Ok(json!({ "picked": false }))
+                            }
+                        } else if payload.get("kind").and_then(Value::as_str) == Some("browse_soundfont") {
+                            let track_id = payload.get("trackId").and_then(Value::as_u64);
+                            let dialog = rfd::FileDialog::new()
+                                .set_title("Choose SoundFont or SFZ instrument")
+                                .add_filter("SoundFont / SFZ", &["sf2", "sfz"]);
+                            if let Some(path) = dialog.pick_file() {
+                                let mut res = app.keysounds_action(&json!({
+                                    "kind": "load_soundfont",
+                                    "trackId": track_id,
+                                    "path": path.to_string_lossy(),
+                                    "presetIndex": 0,
                                 }))?;
                                 res["picked"] = json!(true);
                                 res["loadedPath"] = json!(path.to_string_lossy());
@@ -1157,6 +1197,7 @@ fn main() {
             commands::library_and_files::preview_skin_load,
             commands::library_and_files::pick_skin_folder,
             commands::editor::open_from_osu,
+            commands::editor::reload_osu_editor,
             commands::midi_keysounds::pick_midi_file,
             commands::midi_keysounds::inspect_midi_file,
             commands::midi_keysounds::apply_midi_import,
@@ -1184,6 +1225,9 @@ fn main() {
             commands::midi_keysounds::midi_input_ports,
             commands::midi_keysounds::midi_record_toggle,
             commands::midi_keysounds::vst3_scan,
+            commands::midi_keysounds::pick_soundfont_file,
+            commands::midi_keysounds::inspect_soundfont_file,
+            commands::midi_keysounds::audition_soundfont_note,
             commands::drum_and_graph::drum_vst_action,
             commands::midi_keysounds::keysounds_action,
             commands::editor::preview_revert_mapset_to_original,

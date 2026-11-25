@@ -204,6 +204,28 @@
     await send(keysoundsLoadVst3(trackId, plugin));
   }
 
+  async function loadSoundfont() {
+    if (loading || trackId == null) return;
+    loading = true;
+    error = "";
+    try {
+      const res = await invoke("keysounds_action", { payload: { kind: "browse_soundfont", trackId } });
+      if (res?.picked) {
+        summary = res;
+        globalThis.showToast?.({ tone: "success", title: "SoundFont loaded", body: res.loadedPath ?? "" });
+      }
+    } catch (err) {
+      error = String(err);
+    } finally {
+      loading = false;
+    }
+  }
+
+  async function selectSoundfontPreset(presetIndex) {
+    if (loading || trackId == null) return;
+    await send({ kind: "set_soundfont_preset", trackId, presetIndex });
+  }
+
   async function generate() {
     if (loading) return;
     loading = true;
@@ -371,6 +393,8 @@
         onaddtrack={addTrack}
         onpluginchange={onPluginChange}
         onloadvst3={loadVst3}
+        onloadsoundfont={loadSoundfont}
+        onselectpreset={selectSoundfontPreset}
         onsend={send}
         ontoggledrumvst3={toggleDrumVst3}
         ontrackaction={trackAction}
@@ -379,6 +403,8 @@
       <div class="ks-status">
         {#if error}
           <span class="ks-error" role="alert">{error}</span>
+        {:else if track?.isSoundfont}
+          <span class="ks-ready">SoundFont / SFZ ready · {track.instrument}</span>
         {:else if summary && !instruments.length}
           <span class="ks-empty">{NO_PLUGINS}</span>
         {:else}
