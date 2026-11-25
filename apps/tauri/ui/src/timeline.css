@@ -217,6 +217,11 @@
   height: 14px;
 }
 
+/* Keep #base-diff-strip in its own auto-sized top track so .ruler, .scroll, controller & overview keep exact heights. */
+#editor-arrange {
+  grid-template-rows: auto var(--ruler-row) minmax(0, 1fr) minmax(20px, max-content);
+}
+
 /* The overview strip's head (timeline-spec "Overview strip": 30 px). */
 .overview .ruler-controls {
   height: 30px;
