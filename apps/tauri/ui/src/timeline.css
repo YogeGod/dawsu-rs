@@ -217,12 +217,17 @@
   height: 14px;
 }
 
-/* Keep #base-diff-strip in its own auto-sized top track so .ruler, .scroll, controller & overview keep exact heights. */
+/* Keep #base-diff-strip in its own auto-sized top track without widening #editor-arrange's column. */
 #editor-arrange {
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto var(--ruler-row) minmax(0, 1fr) auto minmax(20px, max-content);
 }
 #editor-arrange[data-controller="false"] {
   grid-template-rows: auto var(--ruler-row) minmax(0, 1fr) minmax(20px, max-content);
+}
+#base-diff-strip {
+  min-width: 0;
+  overflow: hidden;
 }
 
 /* The overview strip's head (timeline-spec "Overview strip": 30 px). */
