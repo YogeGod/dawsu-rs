@@ -4,6 +4,7 @@ use dawsu_audio_instruments::midi_in::{
     MidiInputEvent, MidiInputRouter, TimestampedMidiEvent, list_midi_input_ports,
 };
 use dawsu_editor::tempo::{SnapSpacing, TempoMap};
+use dawsu_editor::tools::ToolTarget;
 use dawsu_editor_composer::{BatchHit, BatchOptions, Composer, Policy};
 use dawsu_foundation::{SampleIdentity, SongTime};
 use dawsu_hitsounding::drums::{DrumMap, render_notes};
@@ -20,6 +21,23 @@ pub struct RecordedMidiNote {
     pub pitch: u8,
     pub velocity: u8,
     pub channel: u8,
+}
+
+/// One live keyboard lane tap captured against the editor playback clock.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RecordedTap {
+    pub time_ms: f64,
+    pub lane: SampleIdentity,
+    pub volume: i32,
+}
+
+/// Summary returned when toggling live keyboard tap-recording on the timeline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TapRecordStatus {
+    pub armed: bool,
+    pub buffered_taps: usize,
+    pub committed_taps: usize,
 }
 
 /// Summary returned to the UI when toggling or querying MIDI recording.
@@ -291,6 +309,80 @@ pub fn commit_to_composer(
     Ok(report.counts.added)
 }
 
+/// Commits live keyboard lane taps into `composer` as a single `"Record taps"` undo step,
+/// respecting the composer's active snap mode (Grid, Grid relative, Objects, or Snap off)
+/// and preserving each tap's recorded volume.
+pub fn commit_taps_to_composer(
+    taps: &[RecordedTap],
+    composer: &mut Composer,
+) -> Result<usize, String> {
+    if taps.is_empty() {
+        return Ok(0);
+    }
+    if composer.history.is_transaction_open() {
+        return Err("Finish the current edit before committing taps.".into());
+    }
+    let mut planned: Vec<(f64, SampleIdentity, i32)> = Vec::with_capacity(taps.len());
+    for tap in taps {
+        if composer.hitsounds().lane(&tap.lane).is_none() {
+            continue;
+        }
+        let raw_time = tap.time_ms.max(0.0);
+        let time_ms = if composer.snap_enabled {
+            composer.snap(SongTime::from_ms(raw_time)).ms().max(0.0)
+        } else {
+            raw_time
+        };
+        let vol = tap.volume.clamp(1, 100);
+        let duplicate = planned
+            .iter()
+            .any(|(t, l, _)| l == &tap.lane && (*t - time_ms).abs() <= 2.0)
+            || composer
+                .hitsounds()
+                .moments()
+                .iter()
+                .any(|m| (m.time().ms() - time_ms).abs() <= 0.5 && m.has_hit(&tap.lane));
+        if !duplicate {
+            planned.push((time_ms, tap.lane.clone(), vol));
+        }
+    }
+    if planned.is_empty() {
+        return Ok(0);
+    }
+    let mut added_keys = Vec::with_capacity(planned.len());
+    let _ = composer.history.apply("Record taps", true, |h| {
+        for (time_ms, lane, vol) in &planned {
+            let existing = h
+                .moments()
+                .iter()
+                .enumerate()
+                .filter(|(_, m)| (m.time().ms() - *time_ms).abs() <= 0.5)
+                .min_by(|(_, a), (_, b)| {
+                    (a.time().ms() - *time_ms)
+                        .abs()
+                        .total_cmp(&(b.time().ms() - *time_ms).abs())
+                })
+                .map(|(i, _)| dawsu_hitsounding::MomentId(i));
+            let id = match existing {
+                Some(id) => id,
+                None => h.add_moment(SongTime::from_ms(*time_ms), *vol),
+            };
+            if !h.moment(id).has_hit(lane) {
+                h.add_hit_with_volume(id, lane.clone(), *vol);
+                added_keys.push(dawsu_editor_composer::HitKey {
+                    moment: id.0,
+                    lane: lane.clone(),
+                });
+            }
+        }
+        Ok::<_, std::convert::Infallible>(())
+    });
+    if !added_keys.is_empty() {
+        composer.selected.replace(added_keys.clone());
+    }
+    Ok(added_keys.len())
+}
+
 /// Commits recorded pitched MIDI notes into a [`KeysoundProject`] track.
 pub fn commit_to_keysounds(
     notes: &[RecordedMidiNote],
@@ -444,5 +536,47 @@ mod tests {
         assert!((notes[1].time_ms - 980.0).abs() < 2.0, "got {}", notes[1].time_ms);
         assert!((notes[2].time_ms - 1050.0).abs() < 25.0, "got {}", notes[2].time_ms);
         assert!(notes[1].time_ms - notes[0].time_ms > 50.0, "burst timestamps must stay distinct");
+    }
+
+    #[test]
+    fn keyboard_taps_snap_deduplicate_and_commit_in_one_undo_step() {
+        let map = "osu file format v14\n[General]\nMode:0\n[TimingPoints]\n0,500,4,1,0,100,1,0\n[HitObjects]\n256,192,1000,1,0,0:0:0:0:\n";
+        let osu = OsuFile::read(map.as_bytes().to_vec()).file;
+        let hitsounds = match decompile(&osu, &[], &|| false, &mut |_, _| {}) {
+            Decompiled::Done(hs) => hs,
+            _ => panic!("minimal osu file must decompile"),
+        };
+        let mut composer = Composer::new(hitsounds);
+        composer.tempo = TempoMap::new(vec![dawsu_editor::tempo::TimingSection {
+            start: SongTime::from_ms(0.0),
+            beat_length_ms: 500.0,
+            beats_per_bar: 4,
+        }]);
+        composer.snap_enabled = true;
+        composer.spacing = SnapSpacing::fraction(4).unwrap();
+
+        let lane_a = composer.lanes[0].clone();
+        let lane_b = composer.lanes[1].clone();
+        let before = composer.hitsounds().moments().len();
+        let taps = vec![
+            RecordedTap { time_ms: 1122.0, lane: lane_a.clone(), volume: 80 },
+            // Duplicate within 2 ms of the snapped 1125 ms tap on the same lane -> deduplicated.
+            RecordedTap { time_ms: 1126.0, lane: lane_a.clone(), volume: 80 },
+            RecordedTap { time_ms: 1495.0, lane: lane_b.clone(), volume: 65 },
+        ];
+        let added = commit_taps_to_composer(&taps, &mut composer).unwrap();
+        assert_eq!(added, 2);
+        assert_eq!(composer.hitsounds().moments().len(), before + 2);
+        let moments = composer.hitsounds().moments();
+        let m1 = moments.iter().find(|m| (m.time().ms() - 1125.0).abs() < 1e-6).unwrap();
+        assert!(m1.has_hit(&lane_a));
+        assert_eq!(m1.hit_volume(&lane_a), 80);
+        let m2 = moments.iter().find(|m| (m.time().ms() - 1500.0).abs() < 1e-6).unwrap();
+        assert!(m2.has_hit(&lane_b));
+        assert_eq!(m2.hit_volume(&lane_b), 65);
+
+        // One Undo step removes every tapped hit together.
+        composer.undo();
+        assert_eq!(composer.hitsounds().moments().len(), before);
     }
 }

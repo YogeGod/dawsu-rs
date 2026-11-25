@@ -365,6 +365,9 @@ fn typed_scene_matches_legacy_json_bytes_exactly() {
         result["keepPitch"] = json!(app.preferences.keep_pitch);
         result["autoCheckUpdates"] = json!(app.preferences.auto_check_updates);
         result["stepPadsMode"] = json!(app.preferences.step_pads_mode);
+        result["reloadOsuAfterSave"] = json!(app.preferences.reload_osu_after_save);
+        result["tapRecordedCount"] = json!(app.tap_recorded_count());
+        result["tapRecordingArmed"] = json!(app.tap_recording_armed());
         result
     }
 

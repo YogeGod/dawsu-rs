@@ -5,7 +5,8 @@
     clickGate, copyText, readout, segmentsDisabled, selectionValue, transportActions,
   } from "../lib/transport.js";
   import { invoke } from "../lib/ipc.js";
-  import { readPort, recordArgs, recordToast } from "../lib/midi.js";
+  import { readPort, recordArgs } from "../lib/midi.js";
+  import { tapAwareRecordToast } from "../lib/tapRecord.js";
   import SkipBack from "../icons/SkipBack.svg?raw";
   import SkipForward from "../icons/SkipForward.svg?raw";
   import Repeat2 from "../icons/Repeat2.svg?raw";
@@ -32,6 +33,7 @@
   const scene = $derived(bridge.scene);
   const playing = $derived(!!view?.playing);
   const cycle = $derived(!!view?.cycle);
+  const recordArmed = $derived(armed || !!view?.tapRecordingArmed);
   const disabled = $derived(segmentsDisabled(view, scene));
   const shown = $derived(readout(bridge.playhead, scene));
   const time = $derived(shown.time);
@@ -58,9 +60,9 @@
     try {
       const status = await invoke("midi_record_toggle", recordArgs(readPort(storage()), bridge.scene));
       armed = !!status?.armed;
-      const toast = recordToast(status);
+      const toast = tapAwareRecordToast(status);
       if (toast) globalThis.showToast?.(toast);
-      if (!armed && status?.committedNotes) await act(null);
+      await act(null, !armed && !!status?.committedNotes);
     } catch (error) {
       globalThis.showToast?.({ tone: "error", title: "MIDI Record", body: String(error) });
     } finally {
@@ -86,8 +88,8 @@
       disabled={disabled.playback} onclick={() => send("stop")}>{@html Square}</button>
     <button type="button" class="seg" class:playing aria-label="Play" title="Play or pause" aria-pressed={playing}
       disabled={disabled.playback} onclick={() => toggle("play")}>{@html Play}</button>
-    <button type="button" class="seg record" class:armed aria-label="MIDI Record"
-      title={armed ? "Stop MIDI recording and add the notes" : "Arm MIDI recording"} aria-pressed={armed}
+    <button type="button" class="seg record" class:armed={recordArmed} aria-label="MIDI Record"
+      title={recordArmed ? "Stop MIDI recording and add the notes" : "Arm MIDI recording"} aria-pressed={recordArmed}
       disabled={disabled.playback || arming} onclick={toggleRecord}>{@html Circle}</button>
   </div>
   <div class="readout">

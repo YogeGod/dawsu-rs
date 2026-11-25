@@ -19,6 +19,7 @@ import { attachModal } from "./modal.js";
 import { attachPanels } from "./panels.js";
 import { createState } from "./state.js";
 import { attachTimeline } from "./timeline.js";
+import { resolveVisibleTapRow, tapLaneSlotForKey } from "../lib/tapRecord.js";
 
 const mutableStateFields = [
   "view", "scene", "drag", "rulerDrag", "overviewDrag", "overviewTarget", "overviewNavigation",
@@ -395,6 +396,23 @@ export function createEditor(env = globalThis, { ui = null, autoStart = true, ex
     // Spacebar while a map is open must ONLY trigger Play/Pause, never activate a focused toolbar button.
     if (key === " " && !ctrl && !shift && !alt && state.scene && event.target.closest("button")) {
       event.target.closest("button").blur?.();
+    }
+    // Live keyboard lane tapping (F028/F029): Numpad 1–9 anytime, or A–L while tap recording is armed.
+    if (state.scene && !state.view.busy) {
+      const slot = tapLaneSlotForKey({ code, ctrl, shift, alt }, Boolean(state.view.tapRecordingArmed));
+      if (slot !== null) {
+        const row = resolveVisibleTapRow(state.laneRows, slot);
+        if (row !== null) {
+          event.preventDefault();
+          const rowEl = env.document.querySelector?.(`[data-lane-row="${row}"]`);
+          if (rowEl?.classList) {
+            rowEl.classList.add("tap-flash");
+            setTimeout(() => rowEl.classList.remove("tap-flash"), 140);
+          }
+          ctx.act({ kind: "tap_lane", row }, false);
+          return;
+        }
+      }
     }
     // Plain "4" opens the hidden-tools drop menu right under the More tools button.
     if (key === "4" && !ctrl && !shift && !alt && state.scene) {

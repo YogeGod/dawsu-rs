@@ -8,7 +8,7 @@ use crate::bounce_plan::{
 };
 use crate::{Application, MidiPreviewNote};
 use dawsu_audio::AudioClip;
-use dawsu_audio_instruments::MidiEvent;
+use dawsu_audio_instruments::{MidiEvent, SampleInstrument, SamplerClip, SamplerNote};
 use dawsu_foundation::digest::sha256_hex;
 use dawsu_foundation::safe_write::{self, BackupPolicy, WriteOutcome, replace};
 use dawsu_keysounding::chords::{
@@ -42,6 +42,8 @@ pub struct KeysoundUndoHistory {
     pub saved_bytes: Option<Vec<u8>>,
     /// Per-track loaded VST3 instance IDs (`track_id -> vst3 instance_id`).
     pub track_instances: BTreeMap<u64, String>,
+    /// Cached parsed `.sfz` / `.sf2` instruments so Piano Roll previews and bounces don't re-parse.
+    pub soundfont_cache: std::collections::HashMap<PathBuf, Arc<SampleInstrument>>,
 }
 
 impl Default for KeysoundUndoHistory {
@@ -57,6 +59,7 @@ impl Default for KeysoundUndoHistory {
             project_path: None,
             saved_bytes: None,
             track_instances: BTreeMap::new(),
+            soundfont_cache: std::collections::HashMap::new(),
         }
     }
 }
@@ -156,6 +159,91 @@ fn default_dawsuks_path(app: &Application) -> Option<PathBuf> {
         let _ = std::fs::create_dir_all(dir);
     }
     Some(path)
+}
+
+fn load_cached_soundfont(
+    app: &mut Application,
+    path: &Path,
+) -> Result<Arc<SampleInstrument>, String> {
+    if let Some(cached) = app.keysound_history.soundfont_cache.get(path) {
+        return Ok(cached.clone());
+    }
+    let loaded = Arc::new(SampleInstrument::load(path)?);
+    app.keysound_history
+        .soundfont_cache
+        .insert(path.to_path_buf(), loaded.clone());
+    Ok(loaded)
+}
+
+fn decode_sfz_sample(path: &Path) -> Result<SamplerClip, String> {
+    let clip = dawsu_audio::decode(path)?;
+    Ok(SamplerClip {
+        samples: clip.samples.clone(),
+        channels: clip.channels as u16,
+        sample_rate: clip.sample_rate,
+    })
+}
+
+pub(crate) fn render_soundfont_chord(
+    instrument: &SampleInstrument,
+    preset_index: usize,
+    pitches: &[u8],
+    velocity: u8,
+    duration_ms: f64,
+    sample_rate: u32,
+) -> Result<Vec<f32>, String> {
+    let notes: Vec<SamplerNote> = pitches
+        .iter()
+        .map(|&pitch| SamplerNote {
+            start_ms: 0.0,
+            duration_ms: duration_ms.clamp(20.0, 4000.0),
+            pitch,
+            velocity: velocity.clamp(1, 127),
+        })
+        .collect();
+    let audio = instrument.render_notes_with(preset_index, &notes, sample_rate, decode_sfz_sample)?;
+    Ok(audio.samples)
+}
+
+pub(crate) fn inspect_soundfont(
+    app: &mut Application,
+    path: &Path,
+) -> Result<dawsu_audio_instruments::SamplerSummary, String> {
+    let inst = load_cached_soundfont(app, path)?;
+    Ok(inst.summary())
+}
+
+pub(crate) fn audition_soundfont_note(
+    app: &mut Application,
+    path: &Path,
+    preset_index: usize,
+    pitch: u8,
+    velocity: u8,
+    duration_ms: f64,
+) -> Result<(), String> {
+    let inst = load_cached_soundfont(app, path)?;
+    let samples = render_soundfont_chord(
+        &inst,
+        preset_index,
+        &[pitch.min(127)],
+        velocity.clamp(1, 127),
+        duration_ms,
+        KEYSOUND_RENDER_RATE,
+    )?;
+    if samples.is_empty() {
+        return Err("No playable sample mapped to that key in this SoundFont.".into());
+    }
+    if let Some(audio) = app.audio.as_ref() {
+        audio.audition(
+            Arc::new(AudioClip {
+                samples,
+                channels: 2,
+                sample_rate: KEYSOUND_RENDER_RATE,
+            }),
+            0.9,
+        );
+    }
+    Ok(())
 }
 
 /// Resets Keysound state when switching or closing maps, unloading any Keysounds VST3 instances
@@ -405,14 +493,46 @@ fn render_manifest_clips(
                     t.instrument.soundfont_path.clone(),
                     t.instrument.vst3_plugin_uid.clone(),
                     t.instrument.vst3_state_b64.clone(),
+                    t.instrument.program.unwrap_or(0) as usize,
                 )
             });
+
+        // Pure-Rust SoundFont / SFZ rendering works on all platforms without a VST3 sidecar.
+        if let Some(sf_path_str) = track_meta.as_ref().and_then(|m| m.1.as_deref())
+            && SampleInstrument::is_soundfont_path(Path::new(sf_path_str))
+            && Path::new(sf_path_str).is_file()
+        {
+            let preset_index = track_meta.as_ref().map_or(0, |m| m.4);
+            let instrument = load_cached_soundfont(app, Path::new(sf_path_str))?;
+            for idx in indices {
+                if cancel.is_cancelled() {
+                    return Err("Render cancelled.".into());
+                }
+                let entry = &manifest[idx];
+                let samples = render_soundfont_chord(
+                    &instrument,
+                    preset_index,
+                    &entry.chord_pitches,
+                    entry.velocity,
+                    entry.duration_ms,
+                    KEYSOUND_RENDER_RATE,
+                )?;
+                clips[idx] = Some(if samples.is_empty() {
+                    synth_chord_clip(&entry.chord_pitches, entry.velocity, entry.duration_ms)
+                        .samples
+                        .clone()
+                } else {
+                    samples
+                });
+            }
+            continue;
+        }
 
         let vst3_info = live_id
             .as_deref()
             .and_then(|id| app.vst3.instance_info(id))
             .or_else(|| {
-                track_meta.as_ref().and_then(|(_, path, uid, _)| {
+                track_meta.as_ref().and_then(|(_, path, uid, _, _)| {
                     let raw = path.as_deref()?;
                     if raw.to_ascii_lowercase().ends_with(".vst3") || Path::new(raw).exists() {
                         Some((PathBuf::from(raw), uid.clone()))
@@ -501,6 +621,19 @@ pub(crate) fn summary(app: &mut Application) -> Value {
         "chordConflicts": chord_conflicts,
         "tracks": app.keysounds.document.tracks.iter().map(|t| {
             let is_active = Some(t.id) == active_id;
+            let sf_presets: Vec<String> = t
+                .instrument
+                .soundfont_path
+                .as_deref()
+                .filter(|p| SampleInstrument::is_soundfont_path(Path::new(p)))
+                .and_then(|p| app.keysound_history.soundfont_cache.get(Path::new(p)))
+                .map(|inst| inst.summary().presets)
+                .unwrap_or_default();
+            let is_soundfont = t
+                .instrument
+                .soundfont_path
+                .as_deref()
+                .is_some_and(|p| SampleInstrument::is_soundfont_path(Path::new(p)));
             json!({
                 "id": t.id,
                 "name": t.name,
@@ -511,6 +644,9 @@ pub(crate) fn summary(app: &mut Application) -> Value {
                 "noteCount": t.notes.len(),
                 "instrument": t.instrument.name,
                 "vst3Path": t.instrument.soundfont_path,
+                "isSoundfont": is_soundfont,
+                "soundfontPreset": t.instrument.program.unwrap_or(0),
+                "soundfontPresets": sf_presets,
                 "sustainSpans": if is_active { json!(t.sustain_spans) } else { json!([]) },
                 "notes": if is_active {
                     t.notes.iter().enumerate().map(|(index, n)| json!({
@@ -555,6 +691,8 @@ pub(crate) fn handle(app: &mut Application, payload: &Value) -> Result<Value, St
             | "transpose_notes"
             | "resolve_chord"
             | "resolve_all_chords"
+            | "load_soundfont"
+            | "set_soundfont_preset"
     );
     let snapshot_before = mutating.then(|| app.keysounds.document.clone());
 
@@ -980,6 +1118,43 @@ pub(crate) fn handle(app: &mut Application, payload: &Value) -> Result<Value, St
             }
             app.keysound_history.active_track_id = Some(id);
         }
+        "load_soundfont" => {
+            let id = track_id.ok_or("Missing trackId")?;
+            let path_str = payload
+                .get("path")
+                .and_then(|v| v.as_str())
+                .ok_or("Missing SoundFont path")?;
+            let preset_index = payload
+                .get("presetIndex")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0)
+                .min(255) as u8;
+            let inst = load_cached_soundfont(app, Path::new(path_str))?;
+            let info = inst.summary();
+            if let Some(prev_inst) = app.keysound_history.track_instances.remove(&id) {
+                let _ = app.vst3.unload_plugin(&prev_inst);
+            }
+            if let Some(track) = app.keysounds.document.tracks.iter_mut().find(|t| t.id == id) {
+                track.instrument.name = format!("{} ({})", info.name, info.format.to_uppercase());
+                track.instrument.soundfont_path = Some(path_str.to_string());
+                track.instrument.program = Some(preset_index);
+                track.instrument.vst3_plugin_uid = None;
+                track.instrument.vst3_state_b64 = None;
+            }
+            app.keysound_history.active_track_id = Some(id);
+            app.status = format!("Loaded SoundFont {} ({} regions).", info.name, info.region_count);
+        }
+        "set_soundfont_preset" => {
+            let id = track_id.ok_or("Missing trackId")?;
+            let preset_index = payload
+                .get("presetIndex")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0)
+                .min(255) as u8;
+            if let Some(track) = app.keysounds.document.tracks.iter_mut().find(|t| t.id == id) {
+                track.instrument.program = Some(preset_index);
+            }
+        }
         "preview_note" => {
             let pitch = payload.get("pitch").and_then(|v| v.as_u64()).unwrap_or(60).min(127) as u8;
             let velocity = payload.get("velocity").and_then(|v| v.as_u64()).unwrap_or(100).clamp(1, 127) as u8;
@@ -994,9 +1169,40 @@ pub(crate) fn handle(app: &mut Application, payload: &Value) -> Result<Value, St
                         t.instrument.soundfont_path.clone(),
                         t.instrument.vst3_plugin_uid.clone(),
                         t.instrument.vst3_state_b64.clone(),
+                        t.instrument.program.unwrap_or(0) as usize,
                     )
                 })
             });
+            // SoundFont / SFZ direct preview (cross-platform, zero sidecar needed).
+            if let Some(sf_path_str) = track_meta.as_ref().and_then(|m| m.1.as_deref())
+                && SampleInstrument::is_soundfont_path(Path::new(sf_path_str))
+                && Path::new(sf_path_str).is_file()
+            {
+                let preset_index = track_meta.as_ref().map_or(0, |m| m.4);
+                if let Ok(inst) = load_cached_soundfont(app, Path::new(sf_path_str))
+                    && let Ok(samples) = render_soundfont_chord(
+                        &inst,
+                        preset_index,
+                        &[pitch],
+                        velocity,
+                        duration_ms,
+                        KEYSOUND_RENDER_RATE,
+                    )
+                    && !samples.is_empty()
+                {
+                    if let Some(audio) = app.audio.as_ref() {
+                        audio.audition(
+                            Arc::new(AudioClip {
+                                samples,
+                                channels: 2,
+                                sample_rate: KEYSOUND_RENDER_RATE,
+                            }),
+                            0.9,
+                        );
+                    }
+                    return Ok(summary(app));
+                }
+            }
             let channel = track_meta.as_ref().map_or(0, |m| m.0);
             let mut vst3_clip: Option<Arc<AudioClip>> = None;
             if let Some(ref instance_id) = live_id {
@@ -1014,7 +1220,7 @@ pub(crate) fn handle(app: &mut Application, payload: &Value) -> Result<Value, St
                 .as_deref()
                 .and_then(|id| app.vst3.instance_info(id))
                 .or_else(|| {
-                    track_meta.as_ref().and_then(|(_, path, uid, _)| {
+                    track_meta.as_ref().and_then(|(_, path, uid, _, _)| {
                         let raw = path.as_deref()?;
                         if raw.to_ascii_lowercase().ends_with(".vst3") || Path::new(raw).exists() {
                             Some((PathBuf::from(raw), uid.clone()))
@@ -1838,5 +2044,92 @@ mod tests {
 
         handle(&mut app, &json!({ "kind": "undo" })).unwrap();
         assert_eq!(app.keysounds.document.tracks.iter().find(|t| t.id == t2).unwrap().notes.len(), 0);
+    }
+
+    #[test]
+    fn sfz_soundfont_loads_previews_and_bounces_keysounds_without_vst3_sidecar() {
+        let (scratch, map_dir, mut app) =
+            setup_mapset("keysound-sfz-bounce", "256,192,1000,1,0,0:0:0:0:\r\n");
+        let sfz_dir = scratch.dir().join("sfz-bank");
+        fs::create_dir_all(&sfz_dir).unwrap();
+        let wav_path = sfz_dir.join("tone.wav");
+        let mut stereo = Vec::with_capacity(4800 * 2);
+        for i in 0..4800 {
+            let v = (2.0 * std::f32::consts::PI * 440.0 * i as f32 / 48_000.0).sin() * 0.7;
+            stereo.push(v);
+            stereo.push(v);
+        }
+        dawsu_audio_instruments::write_wav_i16(&wav_path, &stereo, 48_000, None).unwrap();
+        let sfz_path = sfz_dir.join("lead.sfz");
+        fs::write(&sfz_path, "<region> lokey=36 hikey=84 pitch_keycenter=69 sample=tone.wav\n").unwrap();
+
+        let summary_inspected = app.inspect_soundfont_file(&sfz_path).unwrap();
+        assert_eq!(summary_inspected.format, "sfz");
+        assert_eq!(summary_inspected.region_count, 1);
+
+        let r = handle(&mut app, &json!({ "kind": "add_track", "name": "SFZ Lead" })).unwrap();
+        let tid = r["tracks"][0]["id"].as_u64().unwrap();
+        let loaded = handle(
+            &mut app,
+            &json!({
+                "kind": "load_soundfont",
+                "trackId": tid,
+                "path": sfz_path.to_string_lossy(),
+                "presetIndex": 0
+            }),
+        )
+        .unwrap();
+        assert_eq!(loaded["tracks"][0]["isSoundfont"], json!(true));
+
+        handle(
+            &mut app,
+            &json!({ "kind": "add_note", "trackId": tid, "startMs": 1000.0, "endMs": 1150.0, "pitch": 69, "velocity": 110 }),
+        )
+        .unwrap();
+        // Preview works cleanly without a VST3 sidecar.
+        handle(&mut app, &json!({ "kind": "preview_note", "trackId": tid, "pitch": 69, "velocity": 100 })).unwrap();
+
+        let preview = handle(&mut app, &json!({ "kind": "preview_bounce", "format": "wav16" })).unwrap();
+        let filename = preview["bouncePreview"]["samples"][0]["filename"].as_str().unwrap().to_string();
+        handle(&mut app, &json!({ "kind": "generate_keysounds", "format": "wav16" })).unwrap();
+        poll_until_idle(&mut app);
+
+        let bounced = dawsu_audio::decode(&map_dir.join(&filename)).unwrap();
+        let peak = bounced.samples.iter().fold(0.0_f32, |m, &s| m.max(s.abs()));
+        assert!(peak > 0.05, "SFZ bounced WAV must contain non-zero rendered audio, got peak {peak}");
+    }
+
+    #[test]
+    fn live_tap_lane_and_toggle_tap_recording_commit_in_one_undo_step() {
+        let (_scratch, _map_dir, mut app) =
+            setup_mapset("live-tap-record", "256,192,1000,1,0,0:0:0:0:\r\n");
+        app.reset_fresh_open_for_tests();
+        let before = app.document().unwrap().composer.hitsounds().moments().len();
+
+        // Tapping while unarmed auditions only and does not buffer or edit the map.
+        app.seek(1122.0);
+        assert!(app.tap_lane(0));
+        assert_eq!(app.tap_recorded_count(), 0);
+        assert_eq!(app.document().unwrap().composer.hitsounds().moments().len(), before);
+
+        // Arm, tap two lanes at different playhead times, then disarm -> commits as one Undo step.
+        let armed = app.toggle_tap_recording().unwrap();
+        assert!(armed.armed);
+        assert!(app.tap_recording_armed());
+
+        app.seek(1122.0);
+        assert!(app.tap_lane(0));
+        app.seek(1495.0);
+        assert!(app.tap_lane(1));
+        assert_eq!(app.tap_recorded_count(), 2);
+
+        let done = app.toggle_tap_recording().unwrap();
+        assert!(!done.armed);
+        assert_eq!(done.committed_taps, 2);
+        assert_eq!(app.tap_recorded_count(), 0);
+        assert_eq!(app.document().unwrap().composer.hitsounds().moments().len(), before + 2);
+
+        app.command("undo");
+        assert_eq!(app.document().unwrap().composer.hitsounds().moments().len(), before);
     }
 }

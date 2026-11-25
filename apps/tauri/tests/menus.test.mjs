@@ -304,7 +304,7 @@ test("each menu groups the editor's existing commands like the design, with no s
   const open = name => { get("menu-" + name).click(); return menuLabels(popup); };
   assert.deepEqual(open("file"), [
     "Open map…", "Open from osu!", "Import .osz…", "Import MIDI…", "Import mania hitsounds…", "Open map folder", "—",
-    "Save", "Revert to saved…", "Revert mapset to original…", "Undo revert", "Export…", "Export MIDI…", "—",
+    "Save", "Reload in osu!", "Revert to saved…", "Revert mapset to original…", "Undo revert", "Export…", "Export MIDI…", "—",
     "Start screen", "Folders…", "—", "Preferences…",
   ]);
   assert.deepEqual(open("edit"), [
@@ -315,7 +315,7 @@ test("each menu groups the editor's existing commands like the design, with no s
     "Protect hitnormals from deletion", "Audition when placing hits",
   ]);
   assert.deepEqual(open("playback"), [
-    "Play / pause", "Stop", "Go to start", "Go to end", "—",
+    "Play / pause", "Stop", "Go to start", "Go to end", "Tap record (A–L / Numpad 1–9)", "—",
     "Start playing from: Cursor | Left locator | Selection | Selection or left locator", "—",
     "Return on stop", "Follow playhead", "Cycle between L and R", "Locators to selection", "Play locator range", "—",
     "Speed · pitch stays the same: 25 | 50 | 75 | 100 | 125 | 150", "—",

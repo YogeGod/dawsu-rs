@@ -242,6 +242,26 @@ export function attachIpc(ctx) {
     // The same message again is news only when the map became saved with it (a second Save).
     if (status === state.announcedWrite && !(before.dirty && !after.dirty)) return;
     state.announcedWrite = status;
+    if (title === "Saved" && after.isLazerExternalEdit) {
+      try {
+        env.window.showToast?.({
+          tone: "success",
+          title: "Saved to osu!lazer",
+          body: `${status} Click Finish in osu!lazer to apply your changes.`,
+        });
+      } catch (error) { (env.console ?? console).error(error); }
+      return;
+    }
+    if (title === "Saved" && after.reloadOsuAfterSave) {
+      invoke("reload_osu_editor").then((res) => {
+        const toastTitle = res?.status === "reloaded_stable" ? "Saved & reloaded in osu!" : title;
+        const body = res?.status === "reloaded_stable" ? `${status} ${res.message}` : status;
+        env.window.showToast?.({ tone: "success", title: toastTitle, body });
+      }).catch(() => {
+        env.window.showToast?.({ tone: "success", title, body: status });
+      });
+      return;
+    }
     try { env.window.showToast?.({ tone: "success", title, body: status }); } catch (error) { (env.console ?? console).error(error); }
   }
 

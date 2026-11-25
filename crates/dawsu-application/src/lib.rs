@@ -72,6 +72,7 @@ pub use dawsu_audio::{OutputBackend, OutputDevice};
 pub use dawsu_audio_instruments::midi_in::{
     MidiInputEvent, MidiInputRouter, decode_midi_bytes, list_midi_input_ports,
 };
+pub use dawsu_audio_instruments::{SampleInstrument, SamplerNote, SamplerSummary};
 pub use midi_import::{
     MidiImportOptions, MidiImportOutcome, MidiInspectResult, MidiTrackSummary, apply_midi_import,
     export_midi_file, inspect_midi_file,
@@ -87,7 +88,7 @@ pub struct ManiaImportReport {
     pub matched_moments: usize,
     pub created_moments: usize,
 }
-pub use midi_record::MidiRecordStatus;
+pub use midi_record::{MidiRecordStatus, RecordedTap, TapRecordStatus};
 pub use vst3::{
     BounceFormat, BounceOptions, BounceOutput, LoadedPluginSummary, MidiPreviewNote, PluginRole,
     ScanSkip, VelocityExportMode, Vst3BounceJob, Vst3DrumExportPlan, Vst3DrumHit, Vst3Error,
@@ -199,6 +200,9 @@ pub struct Preferences {
     /// Compact beat-step pad toggle mode on lane rows (default false).
     #[serde(default)]
     pub step_pads_mode: bool,
+    /// Opt-in: after Save, send Ctrl+L to a matching osu!stable editor window on Windows (default false).
+    #[serde(default)]
+    pub reload_osu_after_save: bool,
     /// The map preview's own window: where it was, and whether it was open when the editor closed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub preview_window: Option<WindowPlace>,
@@ -274,6 +278,7 @@ impl Default for Preferences {
             keep_pitch: true,
             auto_check_updates: true,
             step_pads_mode: false,
+            reload_osu_after_save: false,
             preview_window: None,
         }
     }
@@ -521,6 +526,8 @@ pub struct Application {
     drum: drum_detect::DrumDetect,
     node_graph: node_graph::NodeGraphState,
     pub midi_recorder: midi_record::MidiRecorder,
+    tap_recording_armed: bool,
+    tap_recorded_hits: Vec<midi_record::RecordedTap>,
     pub keysounds: dawsu_keysounding::KeysoundProject,
     pub keysound_history: keysound_session::KeysoundUndoHistory,
     pub bounce_cancel: bounce_plan::BounceCancelToken,
@@ -725,6 +732,8 @@ impl Application {
             drum: Default::default(),
             node_graph: Default::default(),
             midi_recorder: midi_record::MidiRecorder::new(),
+            tap_recording_armed: false,
+            tap_recorded_hits: Vec::new(),
             keysounds: dawsu_keysounding::KeysoundProject::new("", "Keysounds"),
             keysound_history: keysound_session::KeysoundUndoHistory::default(),
             bounce_cancel: bounce_plan::BounceCancelToken::new(),

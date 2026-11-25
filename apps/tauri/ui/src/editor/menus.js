@@ -87,6 +87,7 @@ export function initMenus(env = globalThis, { ui: uiOverride = null, bridge: bri
     mapPreview: () => !!ui()?.mapPreviewOn?.(),
     stemLoaded: () => canEditFromMenu() && !!env.view.stemLoaded,
     stemActive: () => !!env.view.stemActive,
+    tapRecordingArmed: () => !!env.view.tapRecordingArmed,
     tool: (_, item) => env.view.tool === item.run[1],
   };
 
@@ -147,6 +148,17 @@ export function initMenus(env = globalThis, { ui: uiOverride = null, bridge: bri
     editLayout: () => env.dock?.editLayout(),
     openMap: () => openMap(),
     openFromOsu: () => openFromOsu(),
+    reloadInOsu: () => env.invoke("reload_osu_editor").then((res) => {
+      if (!res) return;
+      const tone = res.status === "reloaded_stable" ? "success" : "info";
+      const title = res.status === "reloaded_stable"
+        ? "Reloaded in osu!"
+        : res.status === "lazer_external_edit"
+          ? "osu!lazer external edit"
+          : "Reload in osu!";
+      win.showToast?.({ tone, title, body: res.message });
+      $("status").textContent = res.message;
+    }).catch((error) => { $("status").textContent = String(error); }),
     goHome: () => goHome(),
     openFolders: () => openFolders(),
     openViewSettings: () => openViewSettings(),

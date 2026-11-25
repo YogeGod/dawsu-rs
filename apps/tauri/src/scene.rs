@@ -539,6 +539,8 @@ pub(crate) struct ViewSnapshot {
     pub(crate) hitsounds_muted: bool,
     pub(crate) hitsounds_solo: bool,
     pub(crate) hs_mode: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) is_lazer_external_edit: bool,
     pub(crate) keep_pitch: bool,
     pub(crate) key_preset: String,
     pub(crate) lane_count: usize,
@@ -566,6 +568,7 @@ pub(crate) struct ViewSnapshot {
     pub(crate) recent_meta: Option<Vec<RecentMetaSnapshot>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) recovery: Option<RecoverySnapshot>,
+    pub(crate) reload_osu_after_save: bool,
     pub(crate) return_on_stop: bool,
     pub(crate) revert: bool,
     pub(crate) review: Option<OutputReviewSnapshot>,
@@ -599,6 +602,8 @@ pub(crate) struct ViewSnapshot {
     pub(crate) stem_name: Option<String>,
     pub(crate) step_pads_mode: bool,
     pub(crate) tab_routes: Vec<(bool, bool, bool, bool)>,
+    pub(crate) tap_recorded_count: usize,
+    pub(crate) tap_recording_armed: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) tick_rev: Option<u64>,
     pub(crate) tool: String,
@@ -918,6 +923,7 @@ pub(crate) fn snapshot_with_static(app: &Application, include_scene: bool, inclu
         hitsounds_muted: app.preferences.hitsounds_muted,
         hitsounds_solo: app.hitsounds_solo(),
         hs_mode: document.is_some_and(|d| d.hs_mode),
+        is_lazer_external_edit: document.is_some_and(|d| crate::osu_link::is_lazer_external_edit_path(&d.path)),
         key_preset: app.preferences.key_preset.clone(),
         lane_count: document.map_or(0, |d| d.composer.lanes.len()),
         left: app.locator_left,
@@ -957,10 +963,13 @@ pub(crate) fn snapshot_with_static(app: &Application, include_scene: bool, inclu
         }),
         recovery,
         return_on_stop: app.preferences.return_on_stop,
+        reload_osu_after_save: app.preferences.reload_osu_after_save,
         clean_redundant_greenlines: app.preferences.clean_redundant_greenlines,
         keep_pitch: app.preferences.keep_pitch,
         auto_check_updates: app.preferences.auto_check_updates,
         step_pads_mode: app.preferences.step_pads_mode,
+        tap_recorded_count: app.tap_recorded_count(),
+        tap_recording_armed: app.tap_recording_armed(),
         revert: app.revert_requested,
         review,
         right: app.locator_right,
@@ -1069,6 +1078,9 @@ pub(crate) fn non_playback_signature(
     app.preferences.keep_pitch.hash(&mut hasher);
     app.preferences.auto_check_updates.hash(&mut hasher);
     app.preferences.step_pads_mode.hash(&mut hasher);
+    app.preferences.reload_osu_after_save.hash(&mut hasher);
+    app.tap_recording_armed().hash(&mut hasher);
+    app.tap_recorded_count().hash(&mut hasher);
     app.preferences.audition.hash(&mut hasher);
     app.preferences.object_lines.hash(&mut hasher);
     app.preferences.classic_browser.hash(&mut hasher);

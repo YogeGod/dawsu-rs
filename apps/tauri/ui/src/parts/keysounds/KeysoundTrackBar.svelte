@@ -19,6 +19,8 @@
     onaddtrack,
     onpluginchange,
     onloadvst3,
+    onloadsoundfont = null,
+    onselectpreset = null,
     onsend,
     ontoggledrumvst3,
     ontrackaction,
@@ -44,6 +46,17 @@
     <button type="button" disabled={loading || !track || !pluginId || !sidecarAvailable}
       onclick={onloadvst3}>Load VST3</button>
     <button type="button" disabled={loading} onclick={() => onsend(keysoundsScan())}>Scan VST3</button>
+    {#if onloadsoundfont}
+      <button type="button" disabled={loading || !track} onclick={onloadsoundfont}>Load SFZ / SF2…</button>
+    {/if}
+    {#if track?.isSoundfont && track.soundfontPresets?.length > 1 && onselectpreset}
+      <select aria-label="SoundFont preset" value={track.soundfontPreset ?? 0} disabled={loading}
+        onchange={(e) => onselectpreset(Number(e.currentTarget.value))}>
+        {#each track.soundfontPresets as presetName, idx (idx)}
+          <option value={idx}>{presetName}</option>
+        {/each}
+      </select>
+    {/if}
     <label class="ks-drum-vst3">
       <input type="checkbox" checked={drumVst3.enabled} disabled={loading}
         onchange={(e) => ontoggledrumvst3(e.currentTarget.checked)} />

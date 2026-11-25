@@ -60,6 +60,10 @@ export function sameUiView(a, b) {
     (a.keepPitch !== false) === (b.keepPitch !== false) &&
     (a.autoCheckUpdates !== false) === (b.autoCheckUpdates !== false) &&
     !!a.stepPadsMode === !!b.stepPadsMode &&
+    !!a.reloadOsuAfterSave === !!b.reloadOsuAfterSave &&
+    !!a.isLazerExternalEdit === !!b.isLazerExternalEdit &&
+    !!a.tapRecordingArmed === !!b.tapRecordingArmed &&
+    (a.tapRecordedCount ?? 0) === (b.tapRecordedCount ?? 0) &&
     !!a.audition === !!b.audition &&
     (a.tool ?? null) === (b.tool ?? null) &&
     !!a.follow === !!b.follow &&

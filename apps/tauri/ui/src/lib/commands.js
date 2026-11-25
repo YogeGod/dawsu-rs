@@ -31,6 +31,7 @@ export const items = [
   { id: "exportMidi", label: "Export MIDI…", icon: "Music", run: ["call", "exportMidi"], enabled: "document" },
   { id: "openFolder", label: "Open map folder", icon: "Folder", command: "openFolder" },
   { id: "save", label: "Save", icon: "Save", command: "save" },
+  { id: "reloadInOsu", label: "Reload in osu!", icon: "RotateCcw", run: ["call", "reloadInOsu"], enabled: "document" },
   { id: "revert", label: "Revert to saved…", icon: "RotateCcw", command: "revert" },
   { id: "revertOriginal", label: "Revert mapset to original…", icon: "RotateCcw", run: ["call", "revertMapsetToOriginal"], enabled: "originalSnapshot" },
   { id: "undoRevert", label: "Undo revert", icon: "Undo2", run: ["call", "undoMapsetRevert"], enabled: "undoRevert" },
@@ -64,6 +65,7 @@ export const items = [
   { id: "stop", label: "Stop", icon: "Square", command: "stop", run: ["act", { kind: "stop" }] },
   { id: "goToStart", label: "Go to start", icon: "SkipBack", command: "start" },
   { id: "goToEnd", label: "Go to end", icon: "SkipForward", run: ["call", "goToEnd"] },
+  { id: "tapRecord", label: "Tap record (A–L / Numpad 1–9)", run: ["act", { kind: "tap_record_toggle" }], checked: "tapRecordingArmed", enabled: "document" },
   { id: "playbackStart", label: "Start playing from", choices: "playbackStart" },
   { id: "returnOnStop", label: "Return on stop", icon: "UndoDot", run: ["toggle", "return_on_stop", "view.returnOnStop", true] },
   { id: "follow", label: "Follow playhead", icon: "LocateFixed", run: ["toggle", "follow", "view.follow", true] },
@@ -145,7 +147,7 @@ export const items = [
 // Where each row sits. "-" is a divider; one at the start or end of a menu, or next to another, is
 // left out (Map has no Difficulty row, and so no divider under it, without a sibling difficulty).
 export const menus = {
-  file: ["openMap", "openFromOsu", "importOsz", "importMidi", "importManiaHitsounds", "openFolder", "-", "save", "revert", "revertOriginal", "undoRevert", "export", "exportMidi", "-", "startScreen", "folders", "-", "preferences"],
+  file: ["openMap", "openFromOsu", "importOsz", "importMidi", "importManiaHitsounds", "openFolder", "-", "save", "reloadInOsu", "revert", "revertOriginal", "undoRevert", "export", "exportMidi", "-", "startScreen", "folders", "-", "preferences"],
   edit: [
     "undo", "redo", "-",
     "cut", "copy", "paste", "duplicate", "delete", "selectAll", "-",
@@ -153,7 +155,7 @@ export const menus = {
     "protect", "audition",
   ],
   playback: [
-    "play", "stop", "goToStart", "goToEnd", "-",
+    "play", "stop", "goToStart", "goToEnd", "tapRecord", "-",
     "playbackStart", "-",
     "returnOnStop", "follow", "cycle", "locatorsToSelection", "playLocatorRange", "-",
     "speed", "-",
