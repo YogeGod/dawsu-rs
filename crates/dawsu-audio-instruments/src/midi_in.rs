@@ -5,6 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, mpsc};
+use std::time::Instant;
 
 /// A decoded live MIDI 1.0 channel voice event.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -15,6 +16,13 @@ pub enum MidiInputEvent {
     ControlChange { channel: u8, controller: u8, value: u8 },
     /// Signed 14-bit pitch bend value in `-8192..=8191` (`0` is center).
     PitchBend { channel: u8, value: i16 },
+}
+
+/// A decoded MIDI event paired with its monotonic capture timestamp (`Instant::now()`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TimestampedMidiEvent {
+    pub received_at: Instant,
+    pub event: MidiInputEvent,
 }
 
 /// Decodes a raw MIDI 1.0 message into a [`MidiInputEvent`].
@@ -120,10 +128,11 @@ impl MidiInputRouter {
         self.connections.clear();
     }
 
-    /// Connects to a specific MIDI input port by name and forwards decoded events to `callback`.
-    pub fn connect_port<F>(&mut self, port_name: &str, callback: F) -> Result<(), String>
+    /// Connects to a specific MIDI input port by name and forwards decoded events with arrival
+    /// timestamps (`Instant::now()`) to `callback`.
+    pub fn connect_port_timestamped<F>(&mut self, port_name: &str, callback: F) -> Result<(), String>
     where
-        F: Fn(MidiInputEvent) + Send + 'static,
+        F: Fn(TimestampedMidiEvent) + Send + 'static,
     {
         let midi_in = midir::MidiInput::new("dawsu-in")
             .map_err(|e| format!("Could not initialize MIDI input: {e}"))?;
@@ -137,8 +146,9 @@ impl MidiInputRouter {
                 port,
                 "dawsu-midi-in",
                 move |_stamp, message, _| {
+                    let received_at = Instant::now();
                     if let Some(event) = decode_midi_bytes(message) {
-                        callback(event);
+                        callback(TimestampedMidiEvent { received_at, event });
                     }
                 },
                 (),
@@ -146,6 +156,14 @@ impl MidiInputRouter {
             .map_err(|e| format!("Could not connect to MIDI port \"{port_name}\": {e}"))?;
         self.connections.push(connection);
         Ok(())
+    }
+
+    /// Connects to a specific MIDI input port by name and forwards decoded events to `callback`.
+    pub fn connect_port<F>(&mut self, port_name: &str, callback: F) -> Result<(), String>
+    where
+        F: Fn(MidiInputEvent) + Send + 'static,
+    {
+        self.connect_port_timestamped(port_name, move |stamped| callback(stamped.event))
     }
 
     /// Connects to every available MIDI input port and forwards decoded events to `callback`.
@@ -165,6 +183,17 @@ impl MidiInputRouter {
             }
         }
         Ok(connected)
+    }
+
+    /// Connects to a specific MIDI input port and sends decoded timestamped events to `tx`.
+    pub fn connect_port_timestamped_channel(
+        &mut self,
+        port_name: &str,
+        tx: mpsc::Sender<TimestampedMidiEvent>,
+    ) -> Result<(), String> {
+        self.connect_port_timestamped(port_name, move |ev| {
+            let _ = tx.send(ev);
+        })
     }
 
     /// Connects to a specific MIDI input port and sends decoded events to `tx`.

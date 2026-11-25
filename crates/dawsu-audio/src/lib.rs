@@ -1020,6 +1020,7 @@ enum Command {
 pub struct AudioEngine {
     _stream: OutputStream,
     backend: OutputBackend,
+    sample_rate: u32,
     effective_buffer_ms: Option<u32>,
     send: mpsc::Sender<Command>,
     retirements: Mutex<Vec<Retired>>,
@@ -1096,6 +1097,7 @@ impl AudioEngine {
             }?;
             return Ok(Self {
                 backend,
+                sample_rate: NATIVE_SAMPLE_RATE,
                 effective_buffer_ms: Some(stream.buffer_ms),
                 device_name: stream.name.clone(),
                 device_id: device_id.map(str::to_owned),
@@ -1137,6 +1139,10 @@ impl AudioEngine {
 
     pub fn backend(&self) -> OutputBackend {
         self.backend
+    }
+
+    pub fn sample_rate(&self) -> u32 {
+        self.sample_rate
     }
 
     pub fn effective_buffer_ms(&self) -> Option<u32> {
@@ -1187,8 +1193,9 @@ impl AudioEngine {
         let errors = Arc::new(AtomicU64::new(0));
         let peak = Arc::new(AtomicU32::new(0));
         let bus_peaks = Arc::new(AtomicU64::new(0));
+        let sample_rate = config.sample_rate;
         let render = StreamRender::new(
-            config.sample_rate, config.channels as usize, receive, retire_live_tx,
+            sample_rate, config.channels as usize, receive, retire_live_tx,
             position.clone(), playing.clone(), peak.clone(),
         )
         .with_bus_peaks(bus_peaks.clone())
@@ -1206,6 +1213,7 @@ impl AudioEngine {
         Ok(Self {
             _stream: OutputStream::System { _stream: stream },
             backend,
+            sample_rate,
             effective_buffer_ms: None,
             retirements: Mutex::new(Vec::new()),
             retired_live_sources: Mutex::new(retire_live_rx),

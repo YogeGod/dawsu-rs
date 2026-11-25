@@ -442,16 +442,18 @@ impl DrumView {
         }
         let mut shown_rows = HashSet::new();
         let shown = entries.iter().enumerate().filter_map(|(index, entry)| match entry {
-            DrumViewRow::Instrument { lane, .. } => {
+            DrumViewRow::Instrument { row: drum_row, lane } => {
                 let row = *rows.get(&lane.identity)?;
                 shown_rows.insert(row).then(|| DrumRowSnapshot {
                     drum_row_index: Some(index),
+                    midi_note: drum_row.midi_note,
                     name: Some(names[&row].join(" / ")),
                     row: Some(row),
                 })
             }
             DrumViewRow::Unassigned(row) => (!self.hide_unassigned).then(|| DrumRowSnapshot {
                 drum_row_index: Some(index),
+                midi_note: row.midi_note,
                 name: Some(row.name.clone()),
                 row: None,
             }),
@@ -462,6 +464,7 @@ impl DrumView {
                 let row = *rows.get(&lane.identity)?;
                 shown_rows.insert(row).then(|| DrumRowSnapshot {
                     drum_row_index: None,
+                    midi_note: None,
                     name: None,
                     row: Some(row),
                 })
@@ -519,6 +522,8 @@ pub(super) struct DrumViewSnapshot {
 pub(super) struct DrumRowSnapshot {
     #[serde(skip_serializing_if = "Option::is_none")]
     drum_row_index: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    midi_note: Option<u8>,
     name: Option<String>,
     row: Option<usize>,
 }

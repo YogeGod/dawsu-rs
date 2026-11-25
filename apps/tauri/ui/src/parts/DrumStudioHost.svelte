@@ -126,38 +126,48 @@
     }
   }
 
-  async function previewBounce({ mode, format }) {
+  let bounceReqSeq = 0;
+
+  async function previewBounce({ mode, format, autoTrim, normalize } = {}) {
+    const seq = ++bounceReqSeq;
     busy = true;
     try {
-      const plan = await invoke("drum_vst_action", {
-        payload: { kind: "plan_render", exact: mode === "exact" },
+      const res = await invoke("drum_vst_action", {
+        payload: {
+          kind: "preview_render",
+          exact: (mode ?? bounceMode) === "exact",
+          format: format ?? bounceFormat,
+          autoTrim: autoTrim ?? bounceAutoTrim,
+          normalize: normalize ?? bounceNormalize,
+        },
       });
-      const jobs = plan?.jobs ?? [];
-      const ext = format === "wav16" ? "wav" : "ogg";
-      const avgBytes = format === "wav16" ? 96000 : 18000;
-      bounceSamples = jobs.map(j => ({
-        filename: String(j.filename ?? "drum.wav").replace(/\.(wav|ogg)$/i, `.${ext}`),
-        durationMs: 250,
-        peakDbfs: format === "wav16" ? -1.0 : -1.5,
-        usageCount: 1,
-        silent: false,
-        pitch: j.pitch,
-        velocity: j.midiVelocity,
-      }));
-      const realBase = Number(plan?.baseBytes) || 0;
-      const estBounced = bounceSamples.length * avgBytes;
-      const budget = await invoke("bounce_osz_budget", { baseBytes: realBase, bouncedBytes: estBounced }).catch(() => null);
+      if (seq !== bounceReqSeq) return;
+      bounceSamples = res?.samples ?? [];
+      const realBase = Number(res?.baseBytes) || 0;
+      const realBounced = Number(res?.bouncedBytes) || 0;
+      const budget = await invoke("bounce_osz_budget", { baseBytes: realBase, bouncedBytes: realBounced }).catch(() => null);
+      if (seq !== bounceReqSeq) return;
       baseBytes = budget?.baseBytes ?? realBase;
-      bouncedBytes = budget?.bouncedBytes ?? estBounced;
+      bouncedBytes = budget?.bouncedBytes ?? realBounced;
     } catch (err) {
+      if (seq !== bounceReqSeq) return;
       bounceSamples = [];
-      reportError("Bounce Preview", err);
+      if (!String(err).toLowerCase().includes("cancelled")) {
+        reportError("Bounce Preview", err);
+      }
     } finally {
-      busy = false;
+      if (seq === bounceReqSeq) busy = false;
     }
   }
 
+  async function cancelBounce() {
+    bounceReqSeq += 1;
+    await invoke("drum_vst_action", { payload: { kind: "cancel_bounce" } }).catch(() => {});
+    busy = false;
+  }
+
   async function commitBounce() {
+    const seq = ++bounceReqSeq;
     busy = true;
     try {
       const res = await invoke("drum_vst_action", {
@@ -169,6 +179,7 @@
           autoTrim: bounceAutoTrim,
         },
       });
+      if (seq !== bounceReqSeq) return;
       bounceOpen = false;
       globalThis.showToast?.({
         tone: "success",
@@ -177,9 +188,12 @@
       });
       globalThis.act?.(null, true);
     } catch (err) {
-      reportError("Bounce VST3 Kit", err);
+      if (seq !== bounceReqSeq) return;
+      if (!String(err).toLowerCase().includes("cancelled")) {
+        reportError("Bounce VST3 Kit", err);
+      }
     } finally {
-      busy = false;
+      if (seq === bounceReqSeq) busy = false;
     }
   }
 
@@ -247,6 +261,7 @@
   bind:autoTrim={bounceAutoTrim}
   bind:normalize={bounceNormalize}
   onrender={previewBounce}
+  oncancel={cancelBounce}
   onaudition={sample => invoke("drum_vst_action", { payload: { kind: "preview_note", note: sample.pitch ?? 36, velocity: sample.velocity ?? 100 } }).catch(() => {})}
   oncommit={commitBounce}
   onclose={() => { bounceOpen = false; }}

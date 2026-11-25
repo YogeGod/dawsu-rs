@@ -2610,7 +2610,7 @@ fn place_sound_set_action_places_the_picked_set_at_the_playhead_or_reports_why_n
 fn only_closing_the_main_window_closes_the_editor() {
     use super::{CloseDecision, Editor, Request, close_requested, closed_with_main};
     let (send, receive) = std::sync::mpsc::channel();
-    let editor = Editor(send);
+    let editor = Editor(send, dawsu_application::bounce_plan::BounceCancelToken::new());
     assert_eq!(close_requested("drum", &editor), CloseDecision::Allow);
     assert!(matches!(receive.try_recv(), Ok(Request::DrumClose)), "closing drum detection stops its run and Listen");
     assert!(receive.try_recv().is_err());

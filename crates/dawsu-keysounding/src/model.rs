@@ -89,6 +89,10 @@ pub struct InstrumentSettings {
     pub is_drum: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub soundfont_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vst3_plugin_uid: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vst3_state_b64: Option<String>,
     #[serde(default)]
     pub gain_db: f64,
 }
@@ -101,6 +105,8 @@ impl Default for InstrumentSettings {
             channel: 0,
             is_drum: false,
             soundfont_path: None,
+            vst3_plugin_uid: None,
+            vst3_state_b64: None,
             gain_db: 0.0,
         }
     }
@@ -121,6 +127,9 @@ pub struct KeysoundTrack {
     pub channel: u8,
     #[serde(default)]
     pub is_drum: bool,
+    /// True only for the auto-generated Drum Map VST3 mirror track; user tracks stay false.
+    #[serde(default)]
+    pub is_drum_sync: bool,
     #[serde(default)]
     pub muted: bool,
     #[serde(default)]
@@ -141,6 +150,7 @@ impl KeysoundTrack {
             name: name.clone(),
             channel: channel & 0x0F,
             is_drum,
+            is_drum_sync: false,
             muted: false,
             solo: false,
             instrument: InstrumentSettings {
@@ -149,6 +159,8 @@ impl KeysoundTrack {
                 channel: channel & 0x0F,
                 is_drum,
                 soundfont_path: None,
+                vst3_plugin_uid: None,
+                vst3_state_b64: None,
                 gain_db: 0.0,
             },
             notes: Vec::new(),

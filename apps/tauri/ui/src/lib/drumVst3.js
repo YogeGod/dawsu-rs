@@ -174,20 +174,31 @@ export function detectedRowsToDrumNotes(rows, overrides = {}, isCheckedFn = null
 // (`scene.moments` + `scene.drumRows` / `drumView.rows`).
 export function sceneDrumHitsToNotes(scene, drumView) {
   const rowToPitch = new Map();
+  const setupRows = drumView?.rows ?? [];
   for (const entry of scene?.drumRows ?? []) {
-    if (typeof entry?.row !== "number" || !entry?.name) continue;
+    if (typeof entry?.row !== "number") continue;
+    const explicitNote = Number.isInteger(entry.midiNote)
+      ? entry.midiNote
+      : (entry.drumRowIndex != null && Number.isInteger(setupRows[entry.drumRowIndex]?.midiNote)
+        ? setupRows[entry.drumRowIndex].midiNote
+        : null);
+    if (explicitNote != null && explicitNote >= 0 && explicitNote <= 127) {
+      rowToPitch.set(entry.row, explicitNote);
+      continue;
+    }
+    if (!entry?.name) continue;
     // A combined label like "Kick / Kick 2" uses the primary drum piece name.
     const primaryName = String(entry.name).split("/")[0].trim();
     rowToPitch.set(entry.row, drumRowToMidiNote(primaryName));
   }
-  if (!rowToPitch.size && drumView?.rows?.length && scene?.lanes?.length) {
+  if (!rowToPitch.size && setupRows.length && scene?.lanes?.length) {
     const laneKeyToRow = new Map();
     for (let i = 0; i < scene.lanes.length; i++) {
       const lane = scene.lanes[i];
       if (lane?.sourceKey) laneKeyToRow.set(lane.sourceKey, i);
       if (lane?.key) laneKeyToRow.set(lane.key, i);
     }
-    for (const row of drumView.rows) {
+    for (const row of setupRows) {
       if (!row?.assigned || !row?.laneKey) continue;
       const sceneRow = laneKeyToRow.get(row.laneKey);
       if (sceneRow != null && !rowToPitch.has(sceneRow)) {
@@ -216,51 +227,38 @@ export function sceneDrumHitsToNotes(scene, drumView) {
   return notes.sort((a, b) => a.startMs - b.startMs || a.pitch - b.pitch);
 }
 
-// Creates or updates the Drum Map VST3 keysound track via `keysounds_action` IPC, loads the
-// chosen VST3 instrument when available, and populates mapped GM MIDI drum hits.
+// Creates or updates the dedicated Drum Map VST3 mirror track atomically via `keysounds_action`,
+// never deleting user-created tracks by display name.
 export async function syncDrumVst3Track(invoke, { plugin = null, hits = [], trackName = DRUM_MAP_TRACK_NAME } = {}) {
   if (typeof invoke !== "function") return null;
-  let summary = await invoke("keysounds_action", { payload: keysoundsView() });
-  const existing = (summary?.tracks ?? []).find(track => track.name === trackName) ?? null;
-
-  let trackId = existing?.id ?? null;
-  if (existing && hits.length > 0) {
-    summary = await invoke("keysounds_action", { payload: keysoundsDelete(existing.id) });
-    trackId = null;
+  const notes = (hits ?? []).map(hit => {
+    const startMs = Math.max(0, Math.round(Number(hit.startMs) || 0));
+    return {
+      startMs,
+      endMs: startMs + DRUM_NOTE_MS,
+      pitch: Math.max(0, Math.min(127, Math.round(Number(hit.pitch) || 36))),
+      velocity: Math.max(1, Math.min(127, Math.round(Number(hit.velocity) || 100))),
+    };
+  });
+  const payload = {
+    kind: "sync_drum_track",
+    trackName,
+    notes,
+  };
+  const pluginPath = plugin?.path || plugin?.pluginPath || null;
+  if (pluginPath) {
+    payload.pluginPath = pluginPath;
+    payload.pluginUid = plugin?.id || plugin?.pluginId || null;
+    payload.pluginName = plugin?.name || plugin?.pluginName || "VST3 Instrument";
   }
-
-  if (trackId == null) {
-    const before = new Set((summary?.tracks ?? []).map(track => track.id));
-    summary = await invoke("keysounds_action", { payload: keysoundsAdd(trackName, plugin?.name || null) });
-    trackId = (summary?.tracks ?? []).find(track => !before.has(track.id))?.id
-      ?? (summary?.tracks ?? []).find(track => track.name === trackName)?.id
-      ?? null;
-  }
-
-  if (trackId != null && plugin?.path && summary?.sidecarAvailable) {
-    const loadPayload = keysoundsLoadVst3(trackId, {
-      id: plugin.id || plugin.pluginId || null,
-      name: plugin.name || plugin.pluginName || "VST3 Instrument",
-      path: plugin.path || plugin.pluginPath,
-    });
-    if (loadPayload) {
-      summary = await invoke("keysounds_action", { payload: loadPayload });
-    }
-  }
-
-  let addedNotes = 0;
-  if (trackId != null) {
-    for (const hit of hits) {
-      summary = await invoke("keysounds_action", {
-        payload: keysoundsAddNote(trackId, hit.startMs, hit.pitch, hit.velocity ?? 100, DRUM_NOTE_MS),
-      });
-      addedNotes++;
-    }
-  }
+  const summary = await invoke("keysounds_action", { payload });
+  const track = (summary?.tracks ?? []).find(t => t.isDrumSync)
+    ?? (summary?.tracks ?? []).find(t => t.id === summary?.activeTrackId)
+    ?? null;
 
   return {
-    trackId,
-    addedNotes,
+    trackId: track?.id ?? null,
+    addedNotes: notes.length,
     pluginName: plugin?.name || plugin?.pluginName || "",
     summary,
   };

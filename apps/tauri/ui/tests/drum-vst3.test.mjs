@@ -138,35 +138,45 @@ test("detectedRowsToDrumNotes and sceneDrumHitsToNotes convert hits into dedupli
     drumRows: [
       { row: 0, name: "Kick / Kick 2", drumRowIndex: 0 },
       { row: 1, name: "Closed Hi-Hat", drumRowIndex: 1 },
+      { row: 2, name: "Snare", drumRowIndex: 2, midiNote: 40 },
     ],
     moments: [
-      [250, 80, true, [[0, false], [1, false]]],
+      [250, 80, true, [[0, false], [1, false], [2, false]]],
       [500, 100, true, [[1, false]]],
     ],
   };
   assert.deepEqual(sceneDrumHitsToNotes(scene, null), [
     { startMs: 250, pitch: 36, velocity: 102 },
+    { startMs: 250, pitch: 40, velocity: 102 },
     { startMs: 250, pitch: 42, velocity: 102 },
     { startMs: 500, pitch: 42, velocity: 127 },
   ]);
 });
 
-test("syncDrumVst3Track creates/updates the Drum Map (VST3) keysound track and routes hits via keysounds_action", async () => {
+test("syncDrumVst3Track sends atomic sync_drum_track via keysounds_action without deleting user tracks", async () => {
   const calls = [];
-  let tracks = [];
+  let tracks = [{ id: 99, name: DRUM_MAP_TRACK_NAME, isDrumSync: false, notes: [{ startMs: 10, endMs: 20, pitch: 60, velocity: 90 }] }];
   let nextId = 1;
   const fakeInvoke = async (cmd, args) => {
     calls.push({ cmd, payload: args.payload });
     const p = args.payload;
-    if (p.kind === "delete_track") {
-      tracks = tracks.filter(t => t.id !== p.trackId);
-    } else if (p.kind === "add_track") {
-      tracks.push({ id: nextId++, name: p.name, notes: [], instrument: p.vst3Plugin ?? "" });
-    } else if (p.kind === "add_note") {
-      const t = tracks.find(track => track.id === p.trackId);
-      t?.notes.push({ startMs: p.startMs, endMs: p.endMs, pitch: p.pitch, velocity: p.velocity });
+    if (p.kind === "sync_drum_track") {
+      let existing = tracks.find(t => t.isDrumSync);
+      if (!existing) {
+        existing = { id: nextId++, name: p.trackName, isDrumSync: true, notes: [], instrument: p.pluginName ?? "" };
+        tracks.push(existing);
+      }
+      existing.notes = p.notes;
+      existing.instrument = p.pluginName ?? existing.instrument;
     }
-    return { sidecarAvailable: true, tracks: structuredClone(tracks), vst3Plugins: [], loadedPlugins: [] };
+    const syncTrack = tracks.find(t => t.isDrumSync);
+    return {
+      sidecarAvailable: true,
+      activeTrackId: syncTrack?.id ?? null,
+      tracks: structuredClone(tracks),
+      vst3Plugins: [],
+      loadedPlugins: [],
+    };
   };
 
   const plugin = { id: "uid-ad2", name: "Addictive Drums 2", path: "C:/VST3/AD2.vst3" };
@@ -177,20 +187,22 @@ test("syncDrumVst3Track creates/updates the Drum Map (VST3) keysound track and r
   const first = await syncDrumVst3Track(fakeInvoke, { plugin, hits });
   assert.equal(first.trackId, 1);
   assert.equal(first.addedNotes, 2);
-  assert.equal(tracks.length, 1);
-  assert.equal(tracks[0].name, DRUM_MAP_TRACK_NAME);
-  assert.deepEqual(tracks[0].notes, [
+  assert.equal(tracks.length, 2, "user track with the same display name must survive");
+  assert.equal(tracks[0].id, 99);
+  assert.equal(tracks[1].isDrumSync, true);
+  assert.deepEqual(tracks[1].notes, [
     { startMs: 500, endMs: 500 + DRUM_NOTE_MS, pitch: 36, velocity: 120 },
     { startMs: 1000, endMs: 1000 + DRUM_NOTE_MS, pitch: 38, velocity: 105 },
   ]);
-  assert.ok(calls.some(c => c.cmd === "keysounds_action" && c.payload.kind === "load_vst3" && c.payload.pluginUid === "uid-ad2"));
+  assert.ok(calls.some(c => c.cmd === "keysounds_action" && c.payload.kind === "sync_drum_track" && c.payload.pluginUid === "uid-ad2"));
+  assert.ok(!calls.some(c => c.payload.kind === "delete_track"), "sync must not issue delete_track");
 
-  // Re-syncing replaces the existing Drum Map (VST3) track cleanly instead of duplicating notes.
+  // Re-syncing updates the existing drum-sync track in place instead of duplicating or deleting user tracks.
   const second = await syncDrumVst3Track(fakeInvoke, { plugin, hits: [{ startMs: 750, pitch: 42, velocity: 90 }] });
-  assert.equal(second.trackId, 2);
-  assert.equal(tracks.length, 1);
-  assert.equal(tracks[0].notes.length, 1);
-  assert.equal(tracks[0].notes[0].pitch, 42);
+  assert.equal(second.trackId, 1);
+  assert.equal(tracks.length, 2);
+  assert.equal(tracks[1].notes.length, 1);
+  assert.equal(tracks[1].notes[0].pitch, 42);
 
   // Previewing a drum row sends its GM note via keysounds_action preview_note.
   const previewPitch = await previewDrumVst3Hit(fakeInvoke, "Open Hi-Hat", 110);

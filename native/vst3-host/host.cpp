@@ -246,8 +246,24 @@ int Scan(const std::string& path)
 }
 
 bool offline = false; // --offline: a render host for Generate (no deadline; plug-ins may load samples synchronously)
+double configuredSampleRate = 44100.0;
 
-bool Load(const std::string& path, const std::string& uid, std::string& error)
+bool ConfigureProcessing(double sampleRate, std::string& error)
+{
+    if (!(sampleRate > 0.0) || !std::isfinite(sampleRate)) sampleRate = 44100.0;
+    ProcessSetup setup{offline ? kOffline : kRealtime, kSample32, MaxFrames, sampleRate};
+    if (processor->setupProcessing(setup) != kResultOk)
+    {
+        error = "The plug-in refused " + std::to_string((int)std::llround(sampleRate)) + " Hz processing.";
+        return false;
+    }
+    if (component->setActive(true) != kResultOk) { error = "The plug-in couldn't be activated."; return false; }
+    processor->setProcessing(true);
+    configuredSampleRate = sampleRate;
+    return true;
+}
+
+bool Load(const std::string& path, const std::string& uid, double initialSampleRate, std::string& error)
 {
     module = VST3::Hosting::Module::create(path, error);
     if (!module) return false;
@@ -282,10 +298,7 @@ bool Load(const std::string& path, const std::string& uid, std::string& error)
     for (int32 i = 0; i < inputs; i++) component->activateBus(kAudio, kInput, i, i == 0);
     if (component->getBusCount(kEvent, kInput) > 0) component->activateBus(kEvent, kInput, 0, true);
 
-    ProcessSetup setup{offline ? kOffline : kRealtime, kSample32, MaxFrames, 44100.0};
-    if (processor->setupProcessing(setup) != kResultOk) { error = "The plug-in refused 44.1 kHz processing."; return false; }
-    if (component->setActive(true) != kResultOk) { error = "The plug-in couldn't be activated."; return false; }
-    processor->setProcessing(true);
+    if (!ConfigureProcessing(initialSampleRate, error)) return false;
     ReadMidiMap();
     return true;
 }
@@ -477,7 +490,7 @@ struct Block
     Block()
     {
         data.prepare(*component, MaxFrames, kSample32);
-        context.sampleRate = 44100;
+        context.sampleRate = configuredSampleRate;
         context.tempo = 120;
         context.state = ProcessContext::kPlaying | ProcessContext::kTempoValid;
     }
@@ -602,7 +615,8 @@ std::string Render(const std::string& line)
     if (f.size() != 6 || f[0] != "RENDER") return "ERROR\tusage: RENDER <file> <max> <quiet> <threshold> <events>";
     long long maxFrames = _atoi64(f[2].c_str()), quietFrames = _atoi64(f[3].c_str());
     double threshold = atof(f[4].c_str());
-    if (maxFrames < 1 || maxFrames > 44100LL * 600 || quietFrames < 1 || !(threshold > 0)) return "ERROR\tBad render limits.";
+    long long sr = std::max<long long>(8000, (long long)std::llround(configuredSampleRate));
+    if (maxFrames < 1 || maxFrames > sr * 600 || quietFrames < 1 || !(threshold > 0)) return "ERROR\tBad render limits.";
 
     struct Ev { long long frame; uint8_t s, d1, d2; };
     std::vector<Ev> evs;
@@ -640,17 +654,17 @@ std::string Render(const std::string& line)
     {
         Reset();
         idleFloor = 0;
-        for (int done = 0; done < 44100; done += Chunk)
+        for (long long done = 0; done < sr; done += Chunk)
         {
             block.Process(Chunk, nullptr, nullptr, l.data(), r.data());
-            if (done >= 22050) idleFloor = std::max(idleFloor, Peak(Chunk));
+            if (done >= sr / 2) idleFloor = std::max(idleFloor, Peak(Chunk));
             block.Begin();
         }
     }
     threshold = std::max(threshold, (double)idleFloor * 2);
 
     Reset();
-    for (long long done = 0, quiet = 0; done < 44100LL * 5 && quiet < quietFrames; done += Chunk)
+    for (long long done = 0, quiet = 0; done < sr * 5 && quiet < quietFrames; done += Chunk)
     {
         block.Process(Chunk, nullptr, nullptr, l.data(), r.data());
         quiet = Peak(Chunk) < threshold ? quiet + Chunk : 0;
@@ -714,7 +728,20 @@ void AudioThread(Shm* shm, HANDLE req, HANDLE done, HANDLE parent)
 
         int frames = shm->frames < 1 ? 0 : shm->frames > MaxFrames ? MaxFrames : shm->frames;
         int count = shm->eventCount < 0 ? 0 : shm->eventCount > MaxEvents ? MaxEvents : shm->eventCount;
-        block.context.sampleRate = shm->sampleRate > 0 ? shm->sampleRate : 44100;
+        double requestedRate = (shm->sampleRate > 0 && std::isfinite(shm->sampleRate)) ? shm->sampleRate : configuredSampleRate;
+        if (std::fabs(requestedRate - configuredSampleRate) > 0.5)
+        {
+            std::lock_guard<std::mutex> g(processLock);
+            processor->setProcessing(false);
+            component->setActive(false);
+            std::string reconfigErr;
+            if (!ConfigureProcessing(requestedRate, reconfigErr))
+            {
+                // Keep the previous valid rate active if the plug-in rejects the new rate.
+                ConfigureProcessing(configuredSampleRate, reconfigErr);
+            }
+        }
+        block.context.sampleRate = configuredSampleRate;
         block.Begin();
         for (int i = 0; i < count; i++)
         {
@@ -748,9 +775,14 @@ int wmain(int argc, wchar_t** argv)
     if (argc == 3 && Arg(1) == "--scan") return Scan(Arg(2));
     if (argc < 5 || Arg(1) != "--host") { Reply("ERROR\tusage: --scan <plugin.vst3> | --host <name> <parentPid> <plugin.vst3> [<uid>] [--offline]"); return 1; }
     std::string uid;
+    double requestedSampleRate = 0.0;
     for (int i = 5; i < argc; i++)
-        if (Arg(i) == "--offline") offline = true;
-        else uid = Arg(i);
+    {
+        std::string a = Arg(i);
+        if (a == "--offline") offline = true;
+        else if (a == "--sample-rate" && i + 1 < argc) requestedSampleRate = atof(Arg(++i).c_str());
+        else uid = a;
+    }
 
     std::wstring name = argv[2];
     DWORD parentPid = (DWORD)_wtoi(argv[3]);
@@ -782,8 +814,11 @@ int wmain(int argc, wchar_t** argv)
     commandWindow = CreateWindowExW(0, commands.lpszClassName, nullptr, 0, 0, 0, 0, 0, HWND_MESSAGE, nullptr, wc.hInstance, nullptr);
     if (!commandWindow) { Reply("ERROR\tThe VST3 host couldn't start its command window."); return 1; }
 
+    double initialSampleRate = requestedSampleRate > 0.0
+        ? requestedSampleRate
+        : (shm->sampleRate > 0.0 && std::isfinite(shm->sampleRate) ? shm->sampleRate : 44100.0);
     std::string error;
-    if (!Load(Arg(4), uid, error)) { Reply("ERROR\t" + Clean(error)); return 2; }
+    if (!Load(Arg(4), uid, initialSampleRate, error)) { Reply("ERROR\t" + Clean(error)); return 2; }
     Reply("READY\t" + Clean(pluginName) + "\t" + std::to_string(Protocol));
 
     std::thread audio(AudioThread, shm, req, done, parent);

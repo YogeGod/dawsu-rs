@@ -1,6 +1,8 @@
 //! Live MIDI input recording into hitsound lanes and keysound tracks.
 
-use dawsu_audio_instruments::midi_in::{MidiInputEvent, MidiInputRouter, list_midi_input_ports};
+use dawsu_audio_instruments::midi_in::{
+    MidiInputEvent, MidiInputRouter, TimestampedMidiEvent, list_midi_input_ports,
+};
 use dawsu_editor::tempo::{SnapSpacing, TempoMap};
 use dawsu_editor_composer::{BatchHit, BatchOptions, Composer, Policy};
 use dawsu_foundation::{SampleIdentity, SongTime};
@@ -9,6 +11,7 @@ use dawsu_keysounding::{KeysoundNote, KeysoundProject};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::mpsc;
+use std::time::Instant;
 
 /// One captured MIDI Note-On event timestamped against the editor playback clock.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -35,8 +38,9 @@ pub struct MidiRecorder {
     pub port_index: Option<usize>,
     pub port_name: Option<String>,
     router: Option<MidiInputRouter>,
-    rx: Option<mpsc::Receiver<MidiInputEvent>>,
+    rx: Option<mpsc::Receiver<TimestampedMidiEvent>>,
     recorded: Vec<RecordedMidiNote>,
+    last_clock: Option<(Instant, f64, bool, f64)>,
 }
 
 impl Default for MidiRecorder {
@@ -54,6 +58,7 @@ impl MidiRecorder {
             router: None,
             rx: None,
             recorded: Vec::new(),
+            last_clock: None,
         }
     }
 
@@ -61,13 +66,14 @@ impl MidiRecorder {
     /// opens it via `midir`; otherwise arms cleanly in software/virtual mode.
     pub fn arm(&mut self, port_index: Option<usize>) -> Result<Option<String>, String> {
         self.recorded.clear();
+        self.last_clock = None;
         let ports = list_midi_input_ports();
         let chosen_idx = port_index.or(if ports.is_empty() { None } else { Some(0) });
         if let Some(idx) = chosen_idx {
             if let Some(name) = ports.get(idx).cloned() {
                 let mut router = MidiInputRouter::new();
                 let (tx, rx) = mpsc::channel();
-                router.connect_port_channel(&name, tx)?;
+                router.connect_port_timestamped_channel(&name, tx)?;
                 self.router = Some(router);
                 self.rx = Some(rx);
                 self.port_index = Some(idx);
@@ -84,11 +90,36 @@ impl MidiRecorder {
         Ok(None)
     }
 
-    /// Disarms MIDI recording, closes any open input port, and returns the captured notes.
+    /// Disarms MIDI recording after draining any queued MIDI events using the last observed clock.
     pub fn disarm(&mut self) -> Vec<RecordedMidiNote> {
+        if let Some((last_now, last_pos, last_playing, last_speed)) = self.last_clock {
+            let now = Instant::now();
+            let elapsed_ms = if last_playing {
+                now.saturating_duration_since(last_now).as_secs_f64() * 1000.0 * last_speed
+            } else {
+                0.0
+            };
+            let _ = self.poll_with_clock(last_pos + elapsed_ms, last_playing, last_speed, now);
+        }
         self.armed = false;
         self.router = None;
         self.rx = None;
+        self.last_clock = None;
+        std::mem::take(&mut self.recorded)
+    }
+
+    /// Disarms MIDI recording after draining queued events against the exact current playback clock.
+    pub fn disarm_with_clock(
+        &mut self,
+        position_ms: f64,
+        playing: bool,
+        speed: f64,
+    ) -> Vec<RecordedMidiNote> {
+        let _ = self.poll_with_clock(position_ms, playing, speed, Instant::now());
+        self.armed = false;
+        self.router = None;
+        self.rx = None;
+        self.last_clock = None;
         std::mem::take(&mut self.recorded)
     }
 
@@ -96,26 +127,60 @@ impl MidiRecorder {
         self.recorded.len()
     }
 
-    /// Drains live MIDI input events. Captures `NoteOn` timestamps when `armed && playing`.
+    /// Drains live MIDI input events at `1.0×` playback speed.
     pub fn poll(&mut self, position_ms: f64, playing: bool) -> Vec<MidiInputEvent> {
+        self.poll_with_clock(position_ms, playing, 1.0, Instant::now())
+    }
+
+    /// Drains live MIDI input events, mapping each hardware capture `Instant` onto exact song time
+    /// so multiple hits arriving between UI ticks never collapse onto one poll timestamp.
+    pub fn poll_with_clock(
+        &mut self,
+        position_ms: f64,
+        playing: bool,
+        speed: f64,
+        now: Instant,
+    ) -> Vec<MidiInputEvent> {
+        let eff_speed = if speed.is_finite() && speed > 0.0 {
+            speed
+        } else {
+            1.0
+        };
+        let prev_clock = self.last_clock;
+        self.last_clock = Some((now, position_ms.max(0.0), playing, eff_speed));
+
         let Some(rx) = self.rx.as_ref() else {
             return Vec::new();
         };
-        let mut events = Vec::new();
+        let mut stamped_events = Vec::new();
         while let Ok(ev) = rx.try_recv() {
-            events.push(ev);
+            stamped_events.push(ev);
         }
-        if self.armed && playing {
-            for &ev in &events {
+        let mut events = Vec::with_capacity(stamped_events.len());
+        for stamped in stamped_events {
+            events.push(stamped.event);
+            if self.armed && playing {
                 if let MidiInputEvent::NoteOn {
                     channel,
                     pitch,
                     velocity,
-                } = ev
+                } = stamped.event
                 {
                     if velocity > 0 {
+                        let age_ms = now
+                            .saturating_duration_since(stamped.received_at)
+                            .as_secs_f64()
+                            * 1000.0
+                            * eff_speed;
+                        let mut event_ms = (position_ms - age_ms).max(0.0);
+                        // If playback started since the previous poll, don't project before the previous anchor.
+                        if let Some((prev_instant, prev_pos, prev_playing, _)) = prev_clock {
+                            if !prev_playing && stamped.received_at >= prev_instant {
+                                event_ms = event_ms.max(prev_pos);
+                            }
+                        }
                         self.recorded.push(RecordedMidiNote {
-                            time_ms: position_ms.max(0.0),
+                            time_ms: event_ms,
                             pitch,
                             velocity,
                             channel,
@@ -334,5 +399,57 @@ mod tests {
         let tid = ks.document.add_track("Piano", 0, false);
         assert_eq!(commit_to_keysounds(&captured, &mut ks, tid, 200.0), 2);
         assert_eq!(ks.document.tracks[0].notes.len(), 2);
+    }
+
+    #[test]
+    fn poll_preserves_distinct_capture_timestamps_and_disarm_drains_tail() {
+        use std::time::Duration;
+
+        let (tx, rx) = mpsc::channel();
+        let mut rec = MidiRecorder::new();
+        rec.armed = true;
+        rec.rx = Some(rx);
+
+        let poll_now = Instant::now();
+        // Two hits arrived 80 ms and 20 ms BEFORE this poll at song time 1000 ms (1.0x speed).
+        tx.send(TimestampedMidiEvent {
+            received_at: poll_now - Duration::from_millis(80),
+            event: MidiInputEvent::NoteOn {
+                channel: 0,
+                pitch: 60,
+                velocity: 100,
+            },
+        })
+        .unwrap();
+        tx.send(TimestampedMidiEvent {
+            received_at: poll_now - Duration::from_millis(20),
+            event: MidiInputEvent::NoteOn {
+                channel: 0,
+                pitch: 64,
+                velocity: 95,
+            },
+        })
+        .unwrap();
+
+        let drained = rec.poll_with_clock(1000.0, true, 1.0, poll_now);
+        assert_eq!(drained.len(), 2);
+
+        // A final hit arrives right before disarming with no intermediate poll.
+        tx.send(TimestampedMidiEvent {
+            received_at: Instant::now(),
+            event: MidiInputEvent::NoteOn {
+                channel: 0,
+                pitch: 67,
+                velocity: 110,
+            },
+        })
+        .unwrap();
+
+        let notes = rec.disarm_with_clock(1050.0, true, 1.0);
+        assert_eq!(notes.len(), 3, "final queued hit must be drained before closing port");
+        assert!((notes[0].time_ms - 920.0).abs() < 2.0, "got {}", notes[0].time_ms);
+        assert!((notes[1].time_ms - 980.0).abs() < 2.0, "got {}", notes[1].time_ms);
+        assert!((notes[2].time_ms - 1050.0).abs() < 25.0, "got {}", notes[2].time_ms);
+        assert!(notes[1].time_ms - notes[0].time_ms > 50.0, "burst timestamps must stay distinct");
     }
 }

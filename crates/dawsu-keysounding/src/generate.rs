@@ -28,9 +28,9 @@ pub enum SyncTarget {
 
 /// A candidate gameplay object position extracted from the reference beatmap.
 #[derive(Debug, Clone, Copy, PartialEq)]
-struct MapSlot {
-    time_ms: f64,
-    target: SyncTarget,
+pub(crate) struct MapSlot {
+    pub(crate) time_ms: f64,
+    pub(crate) target: SyncTarget,
 }
 
 /// A single keysound note matched to a reference beatmap object.
@@ -488,7 +488,7 @@ fn format_existing_sample(s: &HitSample) -> String {
 
 /// Extracts syncable object times from `file` (circles, slider head/repeats/tail, spinner ends,
 /// and mania hold note heads).
-fn extract_map_slots(file: &OsuFile) -> Vec<MapSlot> {
+pub(crate) fn extract_map_slots(file: &OsuFile) -> Vec<MapSlot> {
     let slider_multiplier = file
         .value("Difficulty", "SliderMultiplier")
         .and_then(|s| s.trim().parse::<f64>().ok())

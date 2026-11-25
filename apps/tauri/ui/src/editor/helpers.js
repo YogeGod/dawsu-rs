@@ -268,22 +268,47 @@ function closestObjectTime(moments, ms) {
   return found;
 }
 
+// Mirrors Rust's `TempoMap::snap` (`crates/dawsu-editor/src/tempo.rs`): snaps within the active
+// section (clamped non-negative, away-from-zero midpoint rounding), unless the next tempo
+// section's red line is closer.
+export function snapToActiveGridInScene(scene, ms) {
+  const clamped = Math.max(0, ms);
+  if (!scene?.snap || !scene.sections?.length) return clamped;
+  const sections = scene.sections;
+  let activeIdx = 0;
+  let afterIdx = -1;
+  for (let i = 0; i < sections.length; i++) {
+    if (sections[i][0] <= clamped) {
+      activeIdx = i;
+    } else {
+      afterIdx = i;
+      break;
+    }
+  }
+  const [origin, beatLen] = sections[activeIdx];
+  if (!(beatLen > 0)) return clamped;
+  const beats = Math.max(1, scene.beats || 1);
+  const divisor = Math.max(1, scene.divisor || 4);
+  const step = (beatLen * beats) / divisor;
+  if (!(step > 0)) return clamped;
+  const gridPos = (clamped - origin) / step;
+  const rounded = gridPos < 0 ? -Math.round(-gridPos) : Math.round(gridPos);
+  let snapped = origin + rounded * step;
+  if (snapped < 0) snapped += step;
+  if (afterIdx >= 0) {
+    const nextStart = sections[afterIdx][0];
+    if (Math.abs(clamped - nextStart) <= Math.abs(clamped - snapped)) return nextStart;
+  }
+  return snapped;
+}
+
 export function snapTimeInScene(scene, ms) {
   const clamped = Math.max(0, ms);
   if (!scene?.snap) return clamped;
   if (scene.snapMode === "objects") {
     return closestObjectTime(scene.moments, clamped) ?? clamped;
   }
-  const section = activeSectionFor(scene.sections, clamped);
-  if (!section || !(section[1] > 0)) return clamped;
-  const beats = Math.max(1, scene.beats || 1);
-  const divisor = Math.max(1, scene.divisor || 4);
-  const step = (section[1] * beats) / divisor;
-  if (!(step > 0)) return clamped;
-  const origin = section[0];
-  let snapped = origin + Math.round((clamped - origin) / step) * step;
-  if (snapped < 0) snapped += step;
-  return snapped;
+  return snapToActiveGridInScene(scene, clamped);
 }
 
 function nextGridStepInScene(scene, curMs, dir) {
