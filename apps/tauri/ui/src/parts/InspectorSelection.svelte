@@ -1,10 +1,11 @@
 <script>
   import { untrack } from "svelte";
-  import { bridge } from "../lib/bridge.svelte.js";
+  import { act, bridge } from "../lib/bridge.svelte.js";
   import {
     additionPills, emptyInspector, fieldHold, inspectorHandlers, parseVolumeDisplay, sampleSetPills, shownValue,
     sliderBodyFields, startingAmount, syncChecked, volumeLabel, volumeSliderPercent,
   } from "../lib/inspector.js";
+  import { activeBarMs, rhythmPresets, rhythmStampAction } from "../lib/rhythmGallery.js";
   import { osuVolumeToMidiVelocity, velocityTier } from "../lib/velocityLane.js";
   import InspectorHead from "./InspectorHead.svelte";
 
@@ -21,6 +22,12 @@
   const addPills = $derived(additionPills(selection));
   const drumVel = $derived(osuVolumeToMidiVelocity(sliderVal));
   const drumTier = $derived(velocityTier(drumVel));
+  const rhythmStrip = $derived(rhythmPresets(activeBarMs(bridge.scene)));
+
+  function stampPreset(preset) {
+    if (model.busy) return;
+    act(rhythmStampAction(preset));
+  }
 
   $effect(() => {
     // Discard any in-flight drag draft if selection changes externally (undo, click elsewhere).
@@ -140,6 +147,18 @@
         <button type="button" onclick={() => on.command("duplicate")} disabled={model.busy}>Duplicate</button>
         <button type="button" onclick={() => on.command("delete")} disabled={model.busy}>Delete</button>
       </div>
+      <div class="insp-group insp-rhythm" role="group" aria-label="Rhythm gallery">
+        <div class="insp-rhythm-head">
+          <p class="insp-caption">Rhythm gallery</p>
+          <button type="button" class="insp-small" onclick={() => on.command("patternStamp")} disabled={model.busy}>Custom…</button>
+        </div>
+        <div class="insp-rhythm-grid">
+          {#each rhythmStrip as preset (preset.id)}
+            <button type="button" class="insp-rhythm-chip" title={preset.title} disabled={model.busy}
+              onclick={() => stampPreset(preset)}>{preset.label}</button>
+          {/each}
+        </div>
+      </div>
     {/if}
     <div class="insp-actions">
       <button type="button" onclick={() => on.command("editRange")} disabled={model.busy || !model.range}>Edit range…</button>
@@ -193,3 +212,41 @@
     </div>
   </div>
 </div>
+
+<style>
+  .insp-rhythm {
+    display: grid;
+    gap: 6px;
+  }
+  .insp-rhythm-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .insp-rhythm-head .insp-caption {
+    margin: 0;
+  }
+  .insp-rhythm-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 4px;
+  }
+  .insp-rhythm-chip {
+    min-height: 24px;
+    padding: 2px 6px;
+    border: 1px solid var(--editor-border);
+    border-radius: var(--radius-6, 6px);
+    background: var(--editor-control);
+    color: var(--editor-text);
+    font: inherit;
+    font-size: 11px;
+    font-weight: 600;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .insp-rhythm-chip:hover:not(:disabled) {
+    border-color: var(--editor-accent);
+    background: var(--editor-hover);
+  }
+</style>

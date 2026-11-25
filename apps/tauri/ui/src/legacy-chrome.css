@@ -367,3 +367,7 @@ aside section > :last-child { margin-bottom:0; }
 #sound-set-choice option{color:var(--text);padding:3px 8px;border-radius:4px}
 #sound-set-choice option:checked{background:linear-gradient(var(--hi),var(--hi));color:var(--on-accent)}
 #sound-set-choice option:disabled{color:var(--muted)}
+.rhythm-preset-strip{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:4px}
+.rhythm-preset-chip{height:26px;padding:0 10px;border:1px solid var(--border);border-radius:999px;background:var(--control);color:var(--text);font-size:12px;font-weight:500;cursor:pointer}
+.rhythm-preset-chip:hover{border-color:var(--accent);background:var(--hover)}
+.rhythm-preset-chip[aria-pressed="true"]{border-color:var(--accent);background:var(--accent-soft,rgba(74,214,207,.16));color:var(--accent)}

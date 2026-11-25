@@ -253,6 +253,32 @@ export function targetCounts(preview, path) {
   return { changed: counts.changed, items };
 }
 
+export function targetCoveragePct(preview, path) {
+  const counts = preview?.targets?.find(item => item.path === path);
+  if (!counts) return null;
+  const total = (counts.matched ?? 0) + (counts.unmatched ?? 0);
+  return total > 0 ? Math.round(((counts.matched ?? 0) / total) * 100) : null;
+}
+
+export function exportSummary(preview, targets, choices) {
+  const includedTargets = included(targets, choices);
+  const count = includedTargets.length + (choices?.base ? 1 : 0);
+  if (!preview) return { count, matched: 0, unmatched: 0, changed: 0, coveragePct: null };
+  let matched = 0;
+  let unmatched = 0;
+  let changed = 0;
+  for (const path of includedTargets) {
+    const row = preview.targets?.find(item => item.path === path);
+    if (!row) continue;
+    matched += row.matched ?? 0;
+    unmatched += row.unmatched ?? 0;
+    changed += row.changed ?? 0;
+  }
+  const total = matched + unmatched;
+  const coveragePct = total > 0 ? Math.round((matched / total) * 100) : null;
+  return { count, matched, unmatched, changed, coveragePct };
+}
+
 // What the base row says once previewed: Generate makes a new difficulty or replaces its earlier one.
 export function baseStatus(preview) {
   const base = preview?.base;

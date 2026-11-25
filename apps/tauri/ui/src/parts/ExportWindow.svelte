@@ -4,7 +4,7 @@
   import { forwardSpace } from "../lib/space.js";
   import {
     adoptChoices, afterPoll, baseDiff, baseStatus, blockDrops, choicesFrom, clampFallbackVolume, difficultyName,
-    divisorPresetFrom, exportLabel, exportState, fileName,
+    divisorPresetFrom, exportLabel, exportState, exportSummary, fileName,
     laneSwatches, matchWithinValid, minBeatsValid, openWarnings, optionsKey, ownWriteError, pollDelay,
     previewRequest, statusLine, warningsLabel,
   } from "../lib/export.js";
@@ -52,6 +52,7 @@
   const baseOsuDiff = $derived(choices.base ? baseDiff(status.preview) : null);
   // Which .wav files the export creates or reuses, and how volumes are written.
   const mixInfo = $derived(reviewMixSections(status.preview));
+  const summary = $derived(exportSummary(status.preview, view?.targets, choices));
   const line = $derived(statusLine({
     view, pollError, actionError, writeError: ownWriteError(lastRun, view),
     stale: status.stale, running: !!run, problems,
@@ -280,7 +281,7 @@
     {/if}
   </div>
 
-  <ExportReviewPane {choices} {mixInfo} />
+  <ExportReviewPane {choices} {mixInfo} {summary} />
 
   <footer class="actions">
     <div class="status" role="status">
