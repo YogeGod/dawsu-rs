@@ -27,6 +27,9 @@
   let lastRun = $state(null);
   // The footer's "N warnings", opened into the list of them.
   let showWarnings = $state(false);
+  let dryRunFiles = $state.raw(null);
+  let dryRunBusy = $state(false);
+  let listeningTarget = $state(null);
   let adoptedFor = initialView?.source?.path;
   let pollTimer;
   let previewTimer = null;
@@ -133,8 +136,42 @@
     }
   }
 
+  async function runUnusedDryRun() {
+    if (dryRunBusy) return;
+    dryRunBusy = true;
+    try {
+      dryRunFiles = await invoke("export_unused_dry_run");
+      actionError = null;
+    } catch (error) {
+      actionError = String(error);
+    } finally {
+      dryRunBusy = false;
+    }
+  }
+
+  function stopListen() {
+    if (!listeningTarget) return;
+    listeningTarget = null;
+    invoke("export_stop_listen").catch(() => {});
+  }
+
+  async function toggleListenTarget(path) {
+    if (listeningTarget === path) {
+      stopListen();
+      return;
+    }
+    listeningTarget = path;
+    try {
+      await invoke("export_listen_target", { targetPath: path });
+    } catch (error) {
+      listeningTarget = null;
+      actionError = String(error);
+    }
+  }
+
   async function close() {
     closed = true;
+    stopListen();
     clearTimeout(pollTimer);
     // A choice still waiting for its preview is sent first, so the editor keeps it with the map.
     if (previewTimer !== null) await preview();
@@ -162,6 +199,7 @@
   });
   onDestroy(() => {
     closed = true;
+    stopListen();
     clearTimeout(pollTimer);
     clearTimeout(previewTimer);
     release?.();
@@ -348,6 +386,13 @@
                   <span class="pill" title={fileName(path)}>{difficultyName(path)}</span>
                   <span class="role">Copy target</span>
                   <span class="spacer"></span>
+                  {#if on}
+                    <button type="button" class="listen-btn" aria-pressed={listeningTarget === path}
+                      title={listeningTarget === path ? "Stop preview" : "Preview this target difficulty"}
+                      onclick={() => toggleListenTarget(path)}>
+                      {listeningTarget === path ? "■ Stop" : "▶ Listen"}
+                    </button>
+                  {/if}
                   {#if counts}<span class="changed">{counts.changed} changed</span>{/if}
                   <button type="button" class="switch" role="switch" aria-checked={on}
                     aria-label={"Include " + difficultyName(path)} onclick={() => toggle(path)}></button>
@@ -391,6 +436,31 @@
       {#if !view.targets?.length}
         <p class="empty">This mapset has no other difficulties to copy into.</p>
       {/if}
+      <details class="dry-run-box">
+        <summary onclick={() => { if (dryRunFiles === null) runUnusedDryRun(); }}>
+          Unused files dry-run
+          {#if dryRunFiles !== null}
+            ({dryRunFiles.length} removable)
+          {/if}
+        </summary>
+        <div class="dry-run-body">
+          <button type="button" class="listen-btn" disabled={dryRunBusy} onclick={runUnusedDryRun}>
+            {dryRunBusy ? "Checking…" : "Refresh dry-run"}
+          </button>
+          {#if dryRunFiles && dryRunFiles.length === 0}
+            <p class="dry-run-empty">No unused dawsu! sample files found.</p>
+          {:else if dryRunFiles}
+            <ul class="dry-run-list">
+              {#each dryRunFiles as item (item.name)}
+                <li>
+                  <span>{item.name}</span>
+                  <small>{Math.max(1, Math.round(item.sizeBytes / 1024))} KB · {item.reason}</small>
+                </li>
+              {/each}
+            </ul>
+          {/if}
+        </div>
+      </details>
     {/if}
   </div>
 

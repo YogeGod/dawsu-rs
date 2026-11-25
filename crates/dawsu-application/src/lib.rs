@@ -95,6 +95,7 @@ pub use sample_checks::{FixedWav, SampleHealthIssue, SampleHealthReport};
 pub use sound_sets::{LibrarySet, PlacementView, SaveSetError, SetUpdatePrompt, SoundSetLibrary};
 pub use waveform::WaveBin;
 pub use edit_workflows::{PatternStampOptions, RangeOperation, TimelineEdit, VolumeScope};
+pub use sweep::UnusedSampleCandidate;
 
 use dawsu_audio::{AudioClip, AudioEngine, ScheduledSound};
 use dawsu_editor::tempo::{SnapSpacing, TempoMap, TimingSection};

@@ -8,6 +8,9 @@
     "allow-export-view",
     "allow-export-preview",
     "allow-export-run",
+    "allow-export-unused-dry-run",
+    "allow-export-listen-target",
+    "allow-export-stop-listen",
     "allow-close-export-window",
     "allow-show-in-editor"
   ]

@@ -947,9 +947,9 @@ impl Action {
             }
             Self::ToggleSelectionAddition { addition } => {
                 let sound = match addition.to_ascii_lowercase().as_str() {
-                    "whistle" => Some(Hitsound::Whistle),
-                    "finish" => Some(Hitsound::Finish),
-                    "clap" => Some(Hitsound::Clap),
+                    "whistle" => Some(dawsu_foundation::Hitsound::Whistle),
+                    "finish" => Some(dawsu_foundation::Hitsound::Finish),
+                    "clap" => Some(dawsu_foundation::Hitsound::Clap),
                     _ => None,
                 };
                 if let Some(sound) = sound {
@@ -2274,6 +2274,9 @@ enum Request {
     /// The difficulty the window showed, and its options.
     ExportPreview(PathBuf, ExportOptions, mpsc::Sender<Result<u64, String>>),
     ExportRun(u64, mpsc::Sender<Result<u64, String>>),
+    ExportUnusedDryRun(mpsc::Sender<Result<Vec<dawsu_application::UnusedSampleCandidate>, String>>),
+    ExportListenTarget(String, mpsc::Sender<Result<(), String>>),
+    ExportStopListen(mpsc::Sender<Result<(), String>>),
     /// The Export window closed: its preview stops and is forgotten. Needs no answer.
     ExportClose,
     /// The drum detection window's requests, answered with its view.
@@ -2515,6 +2518,29 @@ fn answer_export(app: &mut Application, fault: &mut Option<String>, cache: &mut 
         }
         Request::ExportRun(preview_id, response) => {
             let result = guard(app, fault, |app| app.run_export(preview_id)).and_then(|result| result);
+            let _ = response.send(result);
+        }
+        Request::ExportUnusedDryRun(response) => {
+            let result = guard(app, fault, |app| app.plan_sweep()).and_then(|result| result);
+            let _ = response.send(result);
+        }
+        Request::ExportListenTarget(target_path, response) => {
+            let result = guard(app, fault, |app| {
+                if target_path.trim().is_empty() {
+                    return Err("Choose a target difficulty to preview.".to_owned());
+                }
+                app.audition_selection();
+                Ok(())
+            })
+            .and_then(|result| result);
+            let _ = response.send(result);
+        }
+        Request::ExportStopListen(response) => {
+            let result = guard(app, fault, |app| {
+                if app.is_playing() {
+                    app.stop();
+                }
+            });
             let _ = response.send(result);
         }
         _ => unreachable!("only Export requests reach answer_export"),
@@ -3036,7 +3062,7 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                     }
                     let _ = response.send(result);
                 }
-                Ok(request @ (Request::ExportView(_) | Request::ExportPreview(..) | Request::ExportRun(..))) => {
+                Ok(request @ (Request::ExportView(_) | Request::ExportPreview(..) | Request::ExportRun(..) | Request::ExportUnusedDryRun(_) | Request::ExportListenTarget(..) | Request::ExportStopListen(_))) => {
                     if matches!(request, Request::ExportRun(..)) {
                         tick_cache.invalidate();
                     }
@@ -3375,6 +3401,23 @@ fn export_preview(state: State<'_, Editor>, options: ExportOptionsJson) -> Resul
 #[tauri::command]
 fn export_run(state: State<'_, Editor>, preview_id: u64) -> Result<u64, String> {
     ask(&state, |tx| Request::ExportRun(preview_id, tx))?
+}
+
+#[tauri::command]
+fn export_unused_dry_run(
+    state: State<'_, Editor>,
+) -> Result<Vec<dawsu_application::UnusedSampleCandidate>, String> {
+    ask(&state, Request::ExportUnusedDryRun)?
+}
+
+#[tauri::command]
+fn export_listen_target(state: State<'_, Editor>, target_path: String) -> Result<(), String> {
+    ask(&state, |tx| Request::ExportListenTarget(target_path, tx))?
+}
+
+#[tauri::command]
+fn export_stop_listen(state: State<'_, Editor>) -> Result<(), String> {
+    ask(&state, Request::ExportStopListen)?
 }
 
 /// Opens the Export window beside the editor, or brings it forward when it is open.
@@ -4936,6 +4979,9 @@ fn main() {
             export_view,
             export_preview,
             export_run,
+            export_unused_dry_run,
+            export_listen_target,
+            export_stop_listen,
             open_export_window,
             close_export_window,
             show_in_editor,

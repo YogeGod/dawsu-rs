@@ -347,7 +347,96 @@ fn clean_up(request: &mut Request, outcome: &mut Outcome, entry: &pending::Pendi
     Step::Drop
 }
 
+/// One removable ledger or legacy-mix file reported by a read-only `plan_sweep()` dry-run.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnusedSampleCandidate {
+    pub name: String,
+    pub size_bytes: u64,
+    pub sha256: String,
+    pub reason: String,
+}
+
 impl Application {
+    /// Read-only dry-run listing ledger/mix files safe to quarantine to `removed-samples`.
+    /// Honors `DECISIONS.md` (undo-reachable files, active hits, recovery copies, sibling projects,
+    /// other-mode indexes, and byte-hash ownership) without moving or deleting any file.
+    pub fn plan_sweep(&self) -> Result<Vec<UnusedSampleCandidate>, String> {
+        let Some(document) = self.document.as_ref() else {
+            return Ok(Vec::new());
+        };
+        let Some(ledger) = document.pending.ledger() else {
+            return Ok(Vec::new());
+        };
+        let Some(root) = document.path.parent() else {
+            return Ok(Vec::new());
+        };
+        let mut entries = ledger.entries().map_err(|e| e.to_string())?;
+        let listed: BTreeSet<String> = entries
+            .iter()
+            .map(|e| e.name.to_ascii_lowercase())
+            .collect();
+        entries.extend(
+            old_mixes(root)
+                .into_iter()
+                .filter(|m| !listed.contains(&m.name.to_ascii_lowercase())),
+        );
+        if entries.is_empty() {
+            return Ok(Vec::new());
+        }
+        let (used, other_mode_indexes) = folder_uses(root)?;
+        let copies = recovery::copies_play(&self.data_root, root)?;
+        let projects = project_texts(self.project_root.as_deref(), root, Some(&document.path));
+        let hit_files = pending::hit_files(document.composer.hitsounds());
+        let undo_files: BTreeSet<String> = document
+            .composer
+            .history
+            .states()
+            .flat_map(pending::hit_files)
+            .filter(|name| !hit_files.contains(name))
+            .collect();
+        let mut candidates = Vec::new();
+        for entry in entries {
+            let lower = entry.name.to_ascii_lowercase();
+            let Ok(path) = safe_child(root, &entry.name) else {
+                continue;
+            };
+            let Ok(bytes) = std::fs::read(&path) else {
+                continue;
+            };
+            if sha256_hex(&bytes) != entry.sha256 {
+                continue;
+            }
+            let index = match read_sample_file_name(&entry.name) {
+                Some(SampleIdentity::Standard { index, .. }) => Some(index.get()),
+                _ => None,
+            };
+            let stem = lower.rsplit_once('.').map_or(lower.as_str(), |(s, _)| s);
+            if used.contains(&lower)
+                || hit_files.contains(&lower)
+                || undo_files.contains(&lower)
+                || index.is_some_and(|i| other_mode_indexes.contains(&i))
+                || projects.iter().any(|text| text.contains(stem))
+                || in_a_copy(&copies, &entry.name)
+            {
+                continue;
+            }
+            let reason = if lower.starts_with(mixes::PREFIX) {
+                "Unused dawsu! mix file".to_string()
+            } else {
+                "Unused dawsu!-generated sample".to_string()
+            };
+            candidates.push(UnusedSampleCandidate {
+                name: entry.name,
+                size_bytes: bytes.len() as u64,
+                sha256: entry.sha256,
+                reason,
+            });
+        }
+        candidates.sort_by(|a, b| a.name.to_ascii_lowercase().cmp(&b.name.to_ascii_lowercase()));
+        Ok(candidates)
+    }
+
     /// Starts cleaning up the ledger's files nothing in the mapset plays, in a job. With
     /// `closing`, the open difficulty's hits no longer count: only the saved files and the
     /// projects do. Does nothing while another dawsu! session has the mapset open.

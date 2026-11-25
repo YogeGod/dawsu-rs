@@ -1,6 +1,7 @@
 <script>
   import { bridge } from "../lib/bridge.svelte.js";
   import { invoke } from "../lib/ipc.js";
+  import MapsetIntakeCard from "./MapsetIntakeCard.svelte";
   import {
     dismissSetupChecklist,
     isHitsoundVersion,
@@ -35,6 +36,7 @@
   let songsTotal = $state(0);
   let songsLoading = $state(false);
   let songsError = $state("");
+  let intakeMapset = $state(null);
   let searchSeq = 0;
   let debounceTimer = null;
 
@@ -191,7 +193,10 @@
         {#each songsMatches as set (set.folder)}
           <div class="home-song-set">
             <div class="home-song-meta">
-              <strong>{mapsetHeading(set)}</strong>
+              <button type="button" class="home-song-heading" disabled={busy}
+                onclick={() => { intakeMapset = { ...set, difficulties: set.diffs ?? [] }; }}>
+                <strong>{mapsetHeading(set)}</strong>
+              </button>
               {#if set.creator}
                 <span class="home-song-creator">by {set.creator}</span>
               {/if}
@@ -238,6 +243,13 @@
       {/each}
     </div>
   </section>
+  <MapsetIntakeCard
+    mapset={intakeMapset}
+    {busy}
+    onopen={path => { intakeMapset = null; send("openPath", path); }}
+    oncreatehs={refPath => { intakeMapset = null; send("createHsDiff", refPath); }}
+    onclose={() => { intakeMapset = null; }}
+  />
 </div>
 
 <style>
