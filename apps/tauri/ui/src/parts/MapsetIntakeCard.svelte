@@ -121,7 +121,7 @@
               <button type="button" class="intake-path" disabled={isBusy || !selectedRefPath}
                 onclick={() => handleCreateHs(selectedRefPath, "custom_only")}>
                 <strong>Custom samples only</strong>
-                <small>Blank [Hitsounds] diff with 0 lanes — add your own .wav files.</small>
+                <small>Blank [Hitsounds] diff with 0 lanes. Add or drop your own .wav files.</small>
               </button>
               <button type="button" class="intake-path" disabled={isBusy || !selectedRefPath}
                 onclick={() => handleCreateHs(selectedRefPath, "default_12")}>
@@ -152,7 +152,7 @@
             <button type="button" class="intake-path intake-path-primary" disabled={isBusy || !selectedRefPath}
               onclick={() => handleCreateHs(selectedRefPath, "custom_only")}>
               <strong>Custom samples only</strong>
-              <small>Starts with 0 lanes — add your own .wav files or drop them onto the timeline.</small>
+              <small>Starts with 0 lanes. Add your own .wav files or drop them onto the timeline.</small>
             </button>
             <button type="button" class="intake-path" disabled={isBusy || !selectedRefPath}
               onclick={() => handleCreateHs(selectedRefPath, "default_12")}>
@@ -246,15 +246,14 @@
   }
   .intake-eyebrow {
     margin: 0 0 2px;
-    font-size: 11px;
+    font-size: 12px;
     color: var(--editor-muted);
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
   }
   .intake-title {
     margin: 0;
-    font-size: 16px;
-    font-weight: 600;
+    font-size: 18px;
+    font-weight: 700;
+    letter-spacing: -0.02em;
     overflow-wrap: anywhere;
   }
   .intake-close {
@@ -308,11 +307,9 @@
   }
   .intake-section-label {
     margin: 0;
-    font-size: 11px;
+    font-size: 13px;
     font-weight: 600;
-    color: var(--editor-secondary);
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
+    color: var(--editor-text);
   }
   .intake-paths {
     display: flex;
@@ -349,43 +346,52 @@
   }
   .intake-diffs {
     display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
+    flex-direction: column;
+    border-top: 1px solid var(--editor-border);
   }
   .intake-diff {
-    display: inline-flex;
+    display: flex;
     align-items: center;
-    gap: 6px;
-    padding: 5px 10px;
-    border: 1px solid var(--editor-border);
-    border-radius: 999px;
-    background: var(--editor-chrome);
+    justify-content: space-between;
+    gap: 8px;
+    width: 100%;
+    padding: 8px 6px;
+    border: 0;
+    border-bottom: 1px solid rgba(43, 43, 48, 0.7);
+    border-radius: 0;
+    background: transparent;
     color: var(--editor-text);
-    font-size: 12px;
+    font-size: 13px;
+    font-weight: 500;
+    text-align: left;
     cursor: pointer;
+    transition: background 0.12s ease, color 0.12s ease;
   }
   .intake-diff:hover:not(:disabled) {
-    border-color: var(--editor-accent);
+    background: var(--editor-hover);
+    color: var(--editor-accent);
   }
   .intake-diff.unsupported {
     opacity: 0.45;
     cursor: not-allowed;
   }
+  .intake-diff-name {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
   .intake-badge-hs {
-    padding: 1px 5px;
-    border-radius: 999px;
-    background: rgba(52, 199, 89, 0.18);
-    color: #34c759;
-    font-size: 10px;
+    color: var(--editor-accent);
+    font-size: 11px;
     font-weight: 600;
+    flex: none;
   }
   .intake-badge-mode {
-    padding: 1px 5px;
-    border-radius: 999px;
-    background: rgba(148, 163, 184, 0.18);
-    color: var(--editor-secondary);
-    font-size: 10px;
+    color: var(--editor-muted);
+    font-size: 11px;
     font-weight: 500;
+    flex: none;
   }
   .intake-ref {
     display: flex;
@@ -402,11 +408,10 @@
     border-radius: 6px;
   }
   .intake-shield {
-    margin: 0;
-    padding: 8px 10px;
-    border-radius: 8px;
-    background: rgba(52, 199, 89, 0.1);
-    color: #86efac;
-    font-size: 11px;
+    margin: 2px 0 0;
+    padding: 10px 0 0;
+    border-top: 1px solid var(--editor-border);
+    color: var(--editor-muted);
+    font-size: 12px;
   }
 </style>

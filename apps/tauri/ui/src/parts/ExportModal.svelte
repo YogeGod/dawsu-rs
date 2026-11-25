@@ -57,11 +57,11 @@
     box-sizing: border-box;
   }
   .export-dialog {
-    width: min(920px, 100%);
-    height: min(680px, 100%);
-    border-radius: 10px;
+    width: min(1140px, 94vw);
+    height: min(760px, 90vh);
+    border-radius: 12px;
     border: 1px solid var(--editor-border);
-    background: var(--editor-panel);
+    background: var(--editor-canvas);
     box-shadow: var(--shadow-pop);
     overflow: hidden;
     display: flex;

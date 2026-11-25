@@ -208,12 +208,12 @@
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: 10px 16px;
-    min-height: 84px;
-    padding: 12px 20px;
+    gap: 12px 18px;
+    min-height: 76px;
+    padding: 14px 18px;
     border-radius: 10px;
-    background: var(--editor-tealtint);
-    box-shadow: inset 0 0 0 1px rgba(98, 214, 207, .35), var(--shadow-card);
+    background: rgba(90, 200, 250, 0.06);
+    box-shadow: inset 0 0 0 1px rgba(90, 200, 250, 0.28), var(--shadow-card);
   }
   .source strong { font-size: 14px; font-weight: 600; }
   .who { margin-right: 8px; }
@@ -243,7 +243,7 @@
   }
   .field input:focus { outline: none; }
   .field:focus-within { box-shadow: inset 0 0 0 1px var(--editor-focus); }
-  .divider { width: 1px; height: 24px; background: var(--editor-border); }
+  .divider { display: none; }
   .switch-label { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
   .format { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
   select.field {

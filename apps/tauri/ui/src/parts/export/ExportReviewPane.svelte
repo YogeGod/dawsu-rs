@@ -70,10 +70,27 @@
     box-shadow: inset 0 0 0 1px var(--editor-accent);
   }
   .write-card p { margin: 4px 0 0; color: var(--editor-muted); }
-  .write-details { margin-top: 12px; padding: 0 4px; }
-  .write-details strong { display: block; margin-top: 10px; }
-  .write-details ul { margin: 4px 0 0; padding-left: 18px; color: var(--editor-muted); }
-  .write-details p { margin: 4px 0 0; color: var(--editor-muted); }
+  .write-details { margin-top: 14px; display: grid; gap: 6px; }
+  .write-details strong { display: block; margin-top: 8px; font-size: 12px; color: var(--editor-secondary); }
+  .write-details ul {
+    list-style: none;
+    margin: 4px 0 0;
+    padding: 0;
+    display: grid;
+    gap: 5px;
+  }
+  .write-details li {
+    padding: 7px 10px;
+    border-radius: 7px;
+    background: var(--editor-chrome);
+    border: 1px solid var(--editor-border);
+    color: var(--editor-text);
+    font-size: 12px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .write-details p { margin: 4px 0 0; color: var(--editor-muted); font-size: 12px; }
   .review-summary {
     margin-bottom: 16px;
     padding: 12px 14px;

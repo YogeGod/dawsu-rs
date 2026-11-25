@@ -15,7 +15,7 @@
 
   function diffLabel(path) {
     const file = String(path ?? "").split(/[\\/]/).pop() ?? "";
-    return file.match(/\[([^\]]+)\]\.osu$/i)?.[1] || file;
+    return file.match(/\[([^\]]+)\]\.osu$/i)?.[1] || file.replace(/\.osu$/i, "");
   }
 
   function fileNameOf(path) {
@@ -193,11 +193,11 @@
     display: flex;
     align-items: center;
     gap: 6px;
-    min-height: 28px;
-    padding: 3px 8px;
-    border-bottom: 1px solid var(--editor-border, #262b33);
-    background: var(--editor-chrome, #16191f);
-    color: var(--editor-text, #e6edf3);
+    min-height: 26px;
+    padding: 2px 10px;
+    border-bottom: 1px solid var(--editor-border);
+    background: var(--editor-panel);
+    color: var(--editor-text);
     font: 11px/1 var(--font-ui, sans-serif);
     overflow: hidden;
   }

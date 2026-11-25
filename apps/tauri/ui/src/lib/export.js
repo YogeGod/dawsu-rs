@@ -260,6 +260,32 @@ export function targetCoveragePct(preview, path) {
   return total > 0 ? Math.round(((counts.matched ?? 0) / total) * 100) : null;
 }
 
+export function targetCoverageBins(preview, path, binCount = 36) {
+  const counts = preview?.targets?.find(item => item.path === path);
+  if (!counts) return [];
+  const matched = counts.matched ?? 0;
+  const unmatched = counts.unmatched ?? 0;
+  const warn = (counts.collisions ?? 0) + (counts.muted ?? 0);
+  const total = matched + unmatched;
+  if (total <= 0) return [];
+  const missBins = unmatched > 0 ? Math.max(1, Math.round((unmatched / total) * binCount)) : 0;
+  const warnBins = warn > 0 ? Math.max(1, Math.min(binCount - missBins, Math.round((warn / total) * binCount))) : 0;
+  const bins = new Array(binCount).fill("ok");
+  for (let i = 0; i < missBins; i++) {
+    const idx = Math.min(binCount - 1, Math.floor(((i + 0.5) * binCount) / Math.max(1, missBins)));
+    bins[idx] = "miss";
+  }
+  let placedWarn = 0;
+  for (let i = 0; i < binCount && placedWarn < warnBins; i++) {
+    const idx = Math.min(binCount - 1, Math.floor(((placedWarn + 0.35) * binCount) / Math.max(1, warnBins)));
+    if (bins[idx] === "ok") {
+      bins[idx] = "warn";
+      placedWarn++;
+    }
+  }
+  return bins;
+}
+
 export function exportSummary(preview, targets, choices) {
   const includedTargets = included(targets, choices);
   const count = includedTargets.length + (choices?.base ? 1 : 0);

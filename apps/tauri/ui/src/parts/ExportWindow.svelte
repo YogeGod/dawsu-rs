@@ -322,12 +322,18 @@
 
   .export {
     display: grid;
-    grid-template-columns: 1fr 360px;
-    grid-template-rows: 1fr 64px;
+    grid-template-columns: minmax(0, 1fr) 390px;
+    grid-template-rows: minmax(0, 1fr) 64px;
+    width: 100%;
+    height: 100%;
+    flex: 1 1 auto;
+    min-height: 0;
+  }
+  :global(body.export-page) .export {
     height: 100vh;
   }
-  .routing { padding: 28px 40px; overflow: auto; min-width: 0; }
-  h1 { margin: 0 0 20px; font-size: 22px; font-weight: 600; }
+  .routing { padding: 24px 36px; overflow: auto; min-width: 0; }
+  h1 { margin: 0 0 16px; font-size: 22px; font-weight: 700; letter-spacing: -0.02em; }
   .empty { color: var(--editor-muted); }
 
   .actions {

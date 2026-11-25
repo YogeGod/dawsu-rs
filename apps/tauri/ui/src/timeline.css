@@ -230,9 +230,9 @@
   overflow: hidden;
 }
 
-/* The overview strip's head (timeline-spec "Overview strip": 30 px). */
+/* The overview strip's head (expanded to 44 px so multi-lane hitsound minimap tracks read cleanly). */
 .overview .ruler-controls {
-  height: 30px;
+  height: 44px;
   font-size: 12px;
   color: var(--editor-secondary);
 }

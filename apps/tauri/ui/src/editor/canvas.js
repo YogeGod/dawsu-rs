@@ -752,6 +752,67 @@ export function attachCanvas(ctx) {
     context2d.closePath();
   }
 
+  function overviewVolumeHex(volume) {
+    if (volume >= 75) return "#ff6b81";
+    if (volume >= 45) return "#b388ff";
+    return "#64b5f6";
+  }
+
+  function paintOverviewBase(targetCtx, width, height, duration) {
+    targetCtx.fillStyle = slateTimeline.overview;
+    targetCtx.fillRect(0, 0, width, height);
+    const moments = state.scene?.moments ?? [];
+    // Collect active lane indices so the multi-lane minimap spreads across the vertical strip cleanly.
+    const activeLanes = [];
+    const laneSlot = new Map();
+    for (const moment of moments) {
+      const hits = moment?.[3];
+      if (!Array.isArray(hits)) continue;
+      for (const hit of hits) {
+        const laneIndex = hit?.[0];
+        if (typeof laneIndex === "number" && !laneSlot.has(laneIndex)) {
+          laneSlot.set(laneIndex, activeLanes.length);
+          activeLanes.push(laneIndex);
+        }
+      }
+    }
+    const multiLane = activeLanes.length > 0 && height >= 28;
+    const objY = multiLane ? 7 : height / 2;
+    for (const [x, strength] of overviewBins(state.scene.gameplay, width, duration)) {
+      targetCtx.fillStyle = "rgba(196,196,196," + strength.toFixed(2) + ")";
+      diamond(targetCtx, x, objY, multiLane ? 2.5 : 3.5);
+      targetCtx.fill();
+    }
+    if (multiLane) {
+      const bandTop = 14;
+      const bandHeight = Math.max(10, height - bandTop - 4);
+      const laneCount = Math.min(activeLanes.length, 16);
+      const step = laneCount > 1 ? bandHeight / (laneCount - 1) : 0;
+      const drawn = new Set();
+      for (const moment of moments) {
+        const time = moment?.[0];
+        if (!(time >= 0 && time <= duration)) continue;
+        const volume = moment?.[1] ?? 100;
+        const hits = moment?.[3];
+        if (!Array.isArray(hits) || !hits.length) continue;
+        const x = Math.round((time / duration) * width);
+        const colour = overviewVolumeHex(volume);
+        for (const hit of hits) {
+          const slot = laneSlot.get(hit?.[0]);
+          if (slot === undefined) continue;
+          const row = laneCount > 1 ? Math.floor((slot * (laneCount - 1)) / Math.max(1, activeLanes.length - 1)) : 0;
+          const key = (row << 14) | x;
+          if (drawn.has(key)) continue;
+          drawn.add(key);
+          const y = laneCount > 1 ? bandTop + row * step : bandTop + bandHeight / 2;
+          targetCtx.fillStyle = colour;
+          diamond(targetCtx, x, y, 2);
+          targetCtx.fill();
+        }
+      }
+    }
+  }
+
   function drawOverview({ ctx: context2d, width, height, scale = 1 }, start, visible) {
     const duration = state.view.duration;
     if (!(duration > 0) || width <= 0) {
@@ -760,11 +821,11 @@ export function attachCanvas(ctx) {
       return;
     }
     const middle = height / 2;
-    // Cache the static overview background + density diamonds separately from `viewStart` so
+    // Cache the static overview background + multi-lane minimap separately from `viewStart` so
     // Centre-mode playback scrolling blits it in one drawImage call instead of redrawing 200+ diamonds.
     let blittedBase = false;
     if (state.view.playing && typeof context2d.drawImage === "function" && height > 0) {
-      const baseKey = [state.scene.gameplay, width, height, duration, scale];
+      const baseKey = [state.scene.gameplay, state.scene.moments, width, height, duration, scale];
       if (!state.overviewBaseCache || !sameKey(state.overviewBaseCache.key, baseKey)) {
         try {
           const off = state.overviewBaseCache?.canvas ?? env.document.createElement("canvas");
@@ -775,13 +836,7 @@ export function attachCanvas(ctx) {
           const octx = off.getContext?.("2d");
           if (octx && typeof octx.fillRect === "function") {
             octx.setTransform?.(scale, 0, 0, scale, 0, 0);
-            octx.fillStyle = slateTimeline.overview;
-            octx.fillRect(0, 0, width, height);
-            for (const [x, strength] of overviewBins(state.scene.gameplay, width, duration)) {
-              octx.fillStyle = "rgba(196,196,196," + strength.toFixed(2) + ")";
-              diamond(octx, x, middle, 3.5);
-              octx.fill();
-            }
+            paintOverviewBase(octx, width, height, duration);
             state.overviewBaseCache = { key: baseKey, canvas: off };
           }
         } catch {
@@ -794,13 +849,7 @@ export function attachCanvas(ctx) {
       }
     }
     if (!blittedBase) {
-      context2d.fillStyle = slateTimeline.overview;
-      context2d.fillRect(0, 0, width, height);
-      for (const [x, strength] of overviewBins(state.scene.gameplay, width, duration)) {
-        context2d.fillStyle = "rgba(196,196,196," + strength.toFixed(2) + ")";
-        diamond(context2d, x, middle, 3.5);
-        context2d.fill();
-      }
+      paintOverviewBase(context2d, width, height, duration);
     }
     // The viewport box: 1 px --editor-text, radius 2, at least 8 px wide.
     // The box stays inside the strip: its 1 px edge is drawn within its width.

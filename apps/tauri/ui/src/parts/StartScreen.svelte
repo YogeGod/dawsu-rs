@@ -105,6 +105,13 @@
     return title || artist || set.folder;
   }
 
+  function coverTone(folder) {
+    const text = String(folder ?? "");
+    let hash = 0;
+    for (let i = 0; i < text.length; i++) hash = ((hash * 31) + text.charCodeAt(i)) | 0;
+    return `home-art-${Math.abs(hash) % 6}`;
+  }
+
   async function relinkRecent(missingPath, pickFolder = false) {
     if (busy) return;
     try {
@@ -134,11 +141,17 @@
 
 <div class="home-panel" class:has-right-intake={Boolean(selectedMapset)}>
   <div class="home-main">
-  <img class="home-logo" src="studio-assets/dawsu.png" alt="dawsu!">
-  <h1>Open a map to start hitsounding</h1>
-  <p>Every sample in the mapset becomes a lane you draw hits on, over the song.</p>
-  <button id="home-resume" type="button" class="primary" hidden={!view?.showHome || !view?.hasDocument}
-    disabled={busy} onclick={() => send("resume")}>Resume editing</button>
+  <div class="home-hero">
+    <div class="home-hero-copy">
+      <img class="home-logo" src="studio-assets/dawsu.png" alt="dawsu!">
+      <div>
+        <h1>Open a map to start hitsounding</h1>
+        <p>Every sample in the mapset becomes a lane you draw hits on, over the song.</p>
+      </div>
+    </div>
+    <button id="home-resume" type="button" class="primary" hidden={!view?.showHome || !view?.hasDocument}
+      disabled={busy} onclick={() => send("resume")}>Resume editing</button>
+  </div>
   <div class="home-actions" role="group" aria-label="Open a map">
     <button id="home-open" type="button" class="home-action" disabled={busy} onclick={() => send("open")}>
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6.5h6l2 2h10V19H3z"/></svg>
@@ -236,36 +249,39 @@
       {:else}
         {#each songsMatches as set (set.folder)}
           <div class="home-song-set" class:selected={selectedMapset?.folder === set.folder}>
-            <div class="home-song-meta">
-              <button type="button" class="home-song-heading" disabled={busy}
-                onclick={() => openIntakeForSet(set)}>
-                <strong>{mapsetHeading(set)}</strong>
-              </button>
-              {#if set.creator}
-                <span class="home-song-creator">by {set.creator}</span>
-              {/if}
-            </div>
-            <div class="home-song-diffs">
-              {#each set.diffs as diff (diff.path)}
-                <button type="button" class="home-song-diff" title={diff.path} disabled={busy}
-                  onclick={() => send("openPath", diff.path)}>
-                  <span>{diff.version}</span>
-                  {#if isHitsoundVersion(diff.version)}
-                    <span class="home-song-hs">HS</span>
-                  {/if}
-                  {#if MODE_LABELS[diff.mode]}
-                    <small>{MODE_LABELS[diff.mode]}</small>
-                  {/if}
+            <div class="home-song-banner {coverTone(set.folder)}" aria-hidden="true"></div>
+            <div class="home-song-body">
+              <div class="home-song-meta">
+                <button type="button" class="home-song-heading" disabled={busy}
+                  onclick={() => openIntakeForSet(set)}>
+                  <strong>{mapsetHeading(set)}</strong>
                 </button>
-              {/each}
-              {#if set.diffs?.length}
-                <button type="button" class="home-song-diff home-song-create-hs"
-                  title="Choose how to start hitsounding this mapset"
-                  disabled={busy}
-                  onclick={() => send("openMapsetIntake", { ...set, difficulties: set.diffs ?? [] })}>
-                  + Hitsounds
-                </button>
-              {/if}
+                {#if set.creator}
+                  <span class="home-song-creator">by {set.creator}</span>
+                {/if}
+              </div>
+              <div class="home-song-diffs">
+                {#each set.diffs as diff (diff.path)}
+                  <button type="button" class="home-song-diff" title={diff.path} disabled={busy}
+                    onclick={() => send("openPath", diff.path)}>
+                    <span>{diff.version}</span>
+                    {#if isHitsoundVersion(diff.version)}
+                      <span class="home-song-hs">HS</span>
+                    {/if}
+                    {#if MODE_LABELS[diff.mode]}
+                      <small>{MODE_LABELS[diff.mode]}</small>
+                    {/if}
+                  </button>
+                {/each}
+                {#if set.diffs?.length}
+                  <button type="button" class="home-song-diff home-song-create-hs"
+                    title="Choose how to start hitsounding this mapset"
+                    disabled={busy}
+                    onclick={() => send("openMapsetIntake", { ...set, difficulties: set.diffs ?? [] })}>
+                    + Hitsounds
+                  </button>
+                {/if}
+              </div>
             </div>
           </div>
         {/each}
@@ -308,19 +324,101 @@
 </div>
 
 <style>
-  .home-panel.has-right-intake {
+  :global(#home) .home-panel {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    width: min(1040px, 100%);
+    margin: 0 auto;
+    padding: 8px 0 24px;
+    text-align: left;
+    gap: 16px;
+  }
+  :global(#home) .home-panel.has-right-intake {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) 360px;
-    gap: 20px;
+    grid-template-columns: minmax(0, 1fr) 380px;
+    gap: 24px;
     align-items: start;
-    max-width: 1180px;
+    width: min(1340px, 100%);
+    max-width: 1340px;
   }
   .home-main {
     display: flex;
     flex-direction: column;
-    align-items: center;
+    align-items: stretch;
     gap: 16px;
     min-width: 0;
+  }
+  .home-hero {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding-bottom: 4px;
+  }
+  .home-hero-copy {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    min-width: 0;
+  }
+  .home-hero-copy .home-logo {
+    width: 40px;
+    height: 40px;
+    margin: 0;
+    flex: none;
+  }
+  .home-hero-copy h1 {
+    margin: 0;
+    font-size: 20px;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    color: var(--editor-text);
+  }
+  .home-hero-copy p {
+    margin: 2px 0 0;
+    font-size: 13px;
+    color: var(--editor-muted);
+  }
+  :global(#home .home-main .home-actions) {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 10px;
+    width: 100%;
+  }
+  @media (max-width: 1120px) {
+    :global(#home .home-main .home-actions) {
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    }
+  }
+  :global(#home .home-main .home-action) {
+    min-height: 68px;
+    padding: 10px 12px;
+    border-radius: var(--radius-8);
+    border: 1px solid var(--editor-border);
+    background: var(--editor-panel);
+    transition: border-color 0.14s ease, background 0.14s ease;
+  }
+  :global(#home .home-main .home-action:hover:not(:disabled)) {
+    border-color: var(--editor-accent);
+    background: var(--editor-chrome);
+  }
+  :global(#home .home-main .home-drop) {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    width: 100%;
+    padding: 12px 16px;
+    border-radius: var(--radius-8);
+    border: 1px dashed var(--editor-border);
+    background: var(--editor-panel);
+    color: var(--editor-muted);
+    font-size: 12px;
+  }
+  :global(#home .home-main .home-drop svg) {
+    width: 16px;
+    height: 16px;
   }
   .home-right-intake {
     min-width: 0;
@@ -329,7 +427,7 @@
   }
   .home-song-set.selected {
     border-color: var(--editor-accent);
-    box-shadow: inset 0 0 0 1px rgba(74, 214, 207, 0.35);
+    box-shadow: 0 0 0 1px var(--editor-accent);
     background: var(--editor-panel);
   }
   @media (max-width: 1019px) {
@@ -514,9 +612,9 @@
   }
   .home-songs-list {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
-    gap: 10px;
-    max-height: 360px;
+    grid-template-columns: repeat(auto-fill, minmax(225px, 1fr));
+    gap: 12px;
+    max-height: 400px;
     overflow-y: auto;
     padding-right: 2px;
   }
@@ -529,16 +627,34 @@
   .home-song-set {
     display: flex;
     flex-direction: column;
-    justify-content: space-between;
-    gap: 8px;
-    padding: 10px 12px;
+    overflow: hidden;
     border: 1px solid var(--editor-border);
-    border-radius: var(--radius-8);
+    border-radius: 10px;
     background: var(--editor-chrome);
-    transition: border-color 0.12s ease, background 0.12s ease;
+    transition: border-color 0.14s ease, background 0.14s ease;
   }
   .home-song-set:hover {
     border-color: var(--editor-muted);
+  }
+  .home-song-banner {
+    height: 44px;
+    width: 100%;
+    flex: none;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  }
+  .home-art-0 { background: linear-gradient(135deg, #112332 0%, #1d445c 65%, #111c24 100%); }
+  .home-art-1 { background: linear-gradient(135deg, #241932 0%, #4a2a54 65%, #191420 100%); }
+  .home-art-2 { background: linear-gradient(135deg, #2a1d18 0%, #583524 65%, #1c1513 100%); }
+  .home-art-3 { background: linear-gradient(135deg, #132527 0%, #224b4d 65%, #111c1e 100%); }
+  .home-art-4 { background: linear-gradient(135deg, #181c30 0%, #2e3762 65%, #141621 100%); }
+  .home-art-5 { background: linear-gradient(135deg, #18231c 0%, #2d4935 65%, #131a16 100%); }
+  .home-song-body {
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 10px 12px 12px;
+    flex: 1;
   }
   .home-song-meta {
     display: flex;
@@ -616,6 +732,21 @@
   .home-song-create-hs {
     border-style: dashed;
     color: var(--editor-accent);
+  }
+  .home-recent {
+    width: 100%;
+    text-align: left;
+  }
+  .home-recent h2 {
+    margin: 0 0 10px;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--editor-text);
+  }
+  .home-recent :global(#recent) {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    gap: 8px;
   }
   .home-recent-row {
     display: flex;

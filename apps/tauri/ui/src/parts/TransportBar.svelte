@@ -113,9 +113,9 @@
   .transport {
     display: flex;
     align-items: center;
-    gap: 12px;
-    height: 44px;
-    padding: 0 6px;
+    gap: 8px;
+    height: 40px;
+    padding: 0 5px;
     border-radius: 8px;
     background: var(--editor-panel);
     font-family: Inter, system-ui, sans-serif;
@@ -125,7 +125,7 @@
   .bar {
     display: flex;
     gap: 1px;
-    height: 34px;
+    height: 32px;
     padding: 1px;
     box-sizing: border-box;
     border-radius: 6px;
@@ -137,8 +137,8 @@
     display: grid;
     place-items: center;
     flex: none;
-    width: 38px;
-    height: 32px;
+    width: 34px;
+    height: 30px;
     min-height: 0;
     padding: 0;
     border: 0;
@@ -202,30 +202,31 @@
   .readout {
     display: flex;
     align-items: center;
-    height: 40px;
-    border-radius: 8px;
+    height: 34px;
+    border-radius: 7px;
     background: var(--editor-ink);
     box-shadow: var(--shadow-readout);
     white-space: nowrap;
   }
   .time {
-    padding: 0 16px 0 12px;
-    font-size: 21px;
+    padding: 0 12px 0 10px;
+    font-size: 18px;
+    font-weight: 600;
     color: var(--readout-value);
   }
   .divider {
     flex: none;
     width: 1px;
-    height: 27px;
+    height: 22px;
     background: var(--editor-border);
   }
   .cell {
     display: grid;
     justify-items: start;
-    gap: 2px;
-    padding: 0 12px;
-    font-size: 13px;
-    line-height: 15px;
+    gap: 1px;
+    padding: 0 10px;
+    font-size: 12px;
+    line-height: 14px;
   }
   .value {
     color: var(--readout-value);

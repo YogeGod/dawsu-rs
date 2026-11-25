@@ -242,6 +242,9 @@
   align-items: center;
   gap: 6px;
   height: 30px;
+  padding: 0 6px;
+  border-radius: var(--radius-6);
+  background: var(--editor-canvas);
 }
 .browser-play {
   display: grid;
@@ -252,16 +255,17 @@
   min-height: 0;
   padding: 0;
   border: 0;
-  border-radius: var(--radius-4);
-  background: transparent;
-  color: var(--editor-clap);
+  border-radius: 50%;
+  background: rgba(90, 200, 250, 0.16);
+  color: var(--editor-accent);
 }
 .browser-play:hover:not(:disabled) {
-  background: var(--editor-hover);
+  background: var(--editor-accent);
+  color: var(--editor-accentink);
 }
 .browser-play svg {
-  width: 12px;
-  height: 12px;
+  width: 11px;
+  height: 11px;
 }
 .browser-wave svg {
   flex: 1;
@@ -269,11 +273,31 @@
   height: 100%;
 }
 .browser-wave rect {
-  fill: var(--editor-clap);
+  fill: var(--editor-accent);
 }
 .browser-actions {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 6px;
   padding: 8px 0;
+  min-width: 0;
+}
+.browser-actions button {
+  min-width: 0;
+  height: 28px;
+  padding: 0 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border-radius: var(--radius-6);
+  font-size: 11.5px;
+}
+.browser-actions #browser-add-lane:not(:disabled) {
+  border-color: rgba(90, 200, 250, 0.45);
+  background: rgba(90, 200, 250, 0.12);
+  color: var(--editor-accent);
+  font-weight: 600;
+}
+.browser-actions button:last-child {
+  grid-column: 1 / -1;
 }
