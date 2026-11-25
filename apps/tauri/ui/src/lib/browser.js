@@ -3,7 +3,7 @@
 // What the parts show before the first hand-over: nothing to pick, every control greyed out.
 export const emptyBrowser = Object.freeze({
   source: "mapset", classic: false, filter: "", busy: true, root: null, rootTitle: null, chooseLibrary: false,
-  folder: null, rows: [], preview: null, canAssign: false, canPick: false, target: null,
+  folder: null, rows: [], preview: null, canAssign: false, canPick: false, canAddAsLane: false, canBrowseAdd: false, target: null,
 });
 
 // A key on a sample row. ArrowUp and ArrowDown move to the next sample row and play it; Enter uses

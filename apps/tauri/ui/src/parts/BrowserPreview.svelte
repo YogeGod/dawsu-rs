@@ -28,6 +28,7 @@
   </div>
 {/if}
 <div class="browser-actions">
+  <button type="button" id="browser-add-lane" disabled={off || !model.canAddAsLane} onclick={() => send("addLane")}>+ Add as lane</button>
   <button type="button" disabled={off || !model.canAssign} onclick={() => send("assign")}>{model.target ? "Use in " + model.target : "Use in active lane"}</button>
-  <button type="button" disabled={off || !model.canPick} onclick={() => send("browse")}>Browse…</button>
+  <button type="button" disabled={off || !(model.canPick || model.canBrowseAdd)} onclick={() => send("browse")}>Browse…</button>
 </div>

@@ -284,7 +284,7 @@ export function attachEditDialogs(ctx) {
     const choices = env.document.createElement("select");
     choices.id = "difficulty-choice";
     const diffOptions = [...ribbon.options].filter(
-      option => option.value !== "__create_hs__" && option.value !== "__toggle_hs__",
+      option => !option.value.startsWith("__"),
     );
     choices.size = Math.min(8, diffOptions.length);
     choices.setAttribute("aria-label", "Difficulty in the current mapset");

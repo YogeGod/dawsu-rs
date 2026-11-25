@@ -18,6 +18,19 @@
   const group = $derived(bridge.snapGroup ?? COMMON);
   const colour = $derived(local !== null ? divisorColour(STOPS[local]) : scene ? snapColour(scene.beats, scene.divisor) : undefined);
   const value = $derived(local !== null ? "1/" + STOPS[local] : scene ? scene.beats + "/" + scene.divisor : "–");
+  const isObjectsSnap = $derived(scene?.snapMode === "objects");
+
+  function toggleSnapMode() {
+    if (disabled || !scene) return;
+    const nextMode = isObjectsSnap ? "grid" : "objects";
+    act({
+      kind: "snap",
+      on: true,
+      mode: nextMode,
+      beats: scene.beats ?? 1,
+      divisor: scene.divisor ?? 4,
+    });
+  }
 
   function choose(target) {
     const snap = currentSnap(local, scene);
@@ -88,6 +101,16 @@
       <span class="tick" class:lit={k <= index} class:dim={!group.presets.includes(stop)} style:--tick={divisorColour(stop)}>{#if k === index}<span class="thumb"></span>{/if}</span>
     {/each}
   </div>
+  <button
+    type="button"
+    id="snap-mode-toggle"
+    class="mode-pill"
+    class:objects={isObjectsSnap}
+    aria-pressed={isObjectsSnap}
+    title={isObjectsSnap ? "Snapping to beatmap objects — click to switch to beat grid" : "Snapping to beat grid — click to snap to beatmap objects"}
+    {disabled}
+    onclick={toggleSnapMode}
+  >{isObjectsSnap ? "Objects" : "Grid"}</button>
   <span class="chip">{value}</span>
 </div>
 
@@ -116,6 +139,26 @@
   .label {
     color: var(--editor-secondary);
     font-weight: 500;
+  }
+  .mode-pill {
+    height: 22px;
+    padding: 0 8px;
+    border: 1px solid var(--editor-border);
+    border-radius: 999px;
+    background: var(--editor-chrome);
+    color: var(--editor-secondary);
+    font-size: 11px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .mode-pill.objects {
+    border-color: var(--editor-accent);
+    background: rgba(56, 189, 248, 0.16);
+    color: var(--editor-text);
+  }
+  .mode-pill:hover:not(:disabled) {
+    color: var(--editor-text);
+    border-color: var(--editor-accent);
   }
   .track {
     display: flex;

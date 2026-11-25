@@ -100,6 +100,12 @@
   {/if}
 {/each}
 
+{#if headers && rows.length === 0 && !headers.drum}
+  <div class="empty-lanes-drop" role="status">
+    <p>No lanes yet — click a sample on the left to hear it, click <strong>+ Add as lane</strong>, or drop .wav files here.</p>
+  </div>
+{/if}
+
 <!-- v3 f1: the last row adds a lane. It keeps the id menus.js presses; no command binds a key to it. -->
 {#if headers}
   {#if headers.drum}
@@ -117,6 +123,14 @@
         <span>{names ? (drumView.hideUnassigned ? "Show unassigned rows" : "Hide unassigned rows") : (drumView.hideUnassigned ? "Show" : "Hide")}</span>
       </button>
     {/if}
+  {/if}
+  {#if !headers.drum && (headers.hiddenSkinCount ?? 0) > 0}
+    <button type="button" id="show-default-skin-lanes" class="add-lane-row" class:compact={!names}
+      aria-label="Show 12 default lanes"
+      title="Reveal osu!'s 12 default skin lanes in one undoable step"
+      disabled={headers.busy} onclick={() => globalThis.laneHeaderAction?.("showDefaultSkinLanes")}>
+      {@html Plus}{#if names}<span>Show 12 default lanes</span>{/if}
+    </button>
   {/if}
   <button type="button" id="add-lane" class="add-lane-row" class:compact={!names} aria-label="Add lane" title={names ? undefined : "Add lane"}
     disabled={headers.busy} onclick={() => globalThis.openAddLane?.()}>{@html Plus}{#if names}<span>Add lane</span>{/if}</button>
@@ -150,6 +164,19 @@
   }
   .lane.lane-selected {
     box-shadow: inset 0 0 0 1px var(--editor-accent);
+  }
+  .empty-lanes-drop {
+    margin: 10px 8px;
+    padding: 14px 12px;
+    border: 1px dashed var(--editor-border);
+    border-radius: 8px;
+    background: rgba(56, 189, 248, 0.05);
+    color: var(--editor-secondary);
+    font-size: 12px;
+    line-height: 1.45;
+  }
+  .empty-lanes-drop p {
+    margin: 0;
   }
   .add-lane-row {
     display: flex;

@@ -203,6 +203,7 @@ export function createEditor(env = globalThis, { ui = null, autoStart = true, ex
         if (!state.scene || state.drag) return;
         ctx.renderLanes();
         ctx.paintSoon();
+        ctx.saveLaneLayout?.(true);
         return;
       }
     }
@@ -290,6 +291,25 @@ export function createEditor(env = globalThis, { ui = null, autoStart = true, ex
     }
     if (value === "__create_hs__") {
       await ctx.createAndOpenHitsoundDiff(state.scene.path, false);
+      return;
+    }
+    if (value === "__create_hs_from_current__") {
+      try {
+        const created = await invoke("create_hitsound_diff_from_current");
+        if (created) await ctx.act({ kind: "open", path: created });
+      } catch (error) {
+        env.window?.showToast?.({ tone: "error", title: "Could not create [Hitsounds] diff", body: String(error) });
+      }
+      return;
+    }
+    if (value === "__capture_shared_base__") {
+      try {
+        await invoke("shared_base_capture");
+        env.window?.showToast?.({ tone: "success", title: "Shared Base captured", body: "Captured hitsounds from this difficulty as the mapset's Shared Base." });
+        if (typeof env.window?.openSharedBaseModal === "function") env.window.openSharedBaseModal();
+      } catch (error) {
+        env.window?.showToast?.({ tone: "error", title: "Could not capture Shared Base", body: String(error) });
+      }
       return;
     }
     ctx.openSiblingDifficulty(value);
@@ -414,19 +434,27 @@ export function createEditor(env = globalThis, { ui = null, autoStart = true, ex
   });
 
   // Native Tauri window events.
-  env.window.__TAURI__.event.listen("tauri://drag-drop", ({ payload }) => {
+  env.window.__TAURI__.event.listen("tauri://drag-drop", async ({ payload }) => {
     const map = payload.paths.find((path) => /\.(osu|osz)$/i.test(path));
     if (map) {
       ctx.act({ kind: "open", path: map });
       return;
     }
-    const target = ctx.sampleTarget();
-    const path = payload.paths.find((path) => /\.(wav|ogg|mp3)$/i.test(path));
-    if (target && path) {
-      ctx.act({ kind: "replace_sample", target, path, mapset: false });
+    const audioPaths = payload.paths.filter((path) => /\.(wav|ogg|mp3)$/i.test(path));
+    if (audioPaths.length && state.scene?.path) {
+      const zeroLanes = (state.scene.laneOrder ?? state.scene.lanes ?? []).length === 0;
+      const target = ctx.sampleTarget();
+      if (!zeroLanes && audioPaths.length === 1 && target) {
+        ctx.act({ kind: "replace_sample", target, path: audioPaths[0], mapset: false });
+        return;
+      }
+      const mapPath = state.scene.path;
+      for (const audioPath of audioPaths) {
+        await ctx.act({ kind: "add_lane_from_file", map: mapPath, path: audioPath });
+      }
       return;
     }
-    if (payload.paths.length && !path) {
+    if (payload.paths.length && !audioPaths.length) {
       ctx.openMapFolderPath?.(payload.paths[0]);
     }
   });

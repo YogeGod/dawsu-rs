@@ -338,9 +338,22 @@ export function attachIpc(ctx) {
         if (state.selectionLanesOnly) ctx.act({ kind: "volume_scope", path: state.view.scene.path, lanes: null }, false);
         state.selectionLanesOnly = false;
         state.laneFilterText = "";
-        ctx.ui()?.laneOptions?.(false, "");
       }
       if (loaded || !state.layoutWrites) ctx.hydrateLaneLayout(state.view.scene.laneLayout);
+      if (loaded) {
+        ctx.ui()?.laneOptions?.(false, "", state.groupBySampleSet !== false);
+        const zeroLanes = (state.view.scene.laneOrder ?? state.view.scene.lanes ?? []).length === 0;
+        if (state.view.scene.starterMode === "custom_only" && zeroLanes && state.autoOpenedBrowserFor !== state.view.scene.path) {
+          state.autoOpenedBrowserFor = state.view.scene.path;
+          const hasMapsetSamples = (state.view.scene.lanes ?? []).some(l => Boolean(l?.sample));
+          if (!hasMapsetSamples && state.view.hitsoundLibrary) {
+            state.browserSource = "library";
+          }
+          if (state.view.panels?.browser === false) {
+            ctx.togglePanel?.("browser");
+          }
+        }
+      }
       // A lane that starts showing (a new layer from +, Ctrl+L or the lane menu, one Add lane shows
       // again, an Undo of −) shows at once: its family unfolds.
       const shownRows = incoming => incoming.laneOrder ?? incoming.lanes?.map((_, row) => row) ?? [];

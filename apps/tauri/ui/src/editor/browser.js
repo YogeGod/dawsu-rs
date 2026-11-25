@@ -192,6 +192,8 @@ export function attachBrowser(ctx) {
       preview,
       canAssign: !!sampleTarget() && visibleSamples.has(state.browserSample),
       canPick: !!sampleTarget(),
+      canAddAsLane: !state.drag && !state.view.busy && Boolean(state.scene?.path) && visibleSamples.has(state.browserSample),
+      canBrowseAdd: !state.drag && !state.view.busy && Boolean(state.scene?.path),
       // The lane Use replaces, by the name its header shows.
       target: sampleTarget() ? ctx.laneTitle(state.scene.lanes[state.view.activeLane]) : null,
     };
@@ -271,7 +273,24 @@ export function attachBrowser(ctx) {
         state.browserPreview = { path, source, ms: null, peaks: null };
       }
       audition({ path, source, action: samplePreviewAction(path) });
+    } else if (kind === "addLane") {
+      if (!state.browserSample || !state.browserModel?.canAddAsLane) return;
+      if (state.browserSource === "library") {
+        ctx.act({ kind: "add_lane_from_library", map: state.scene.path, location: { root: state.browserLibrary, path: state.browserSample } });
+      } else {
+        const row = mapsetSamples().get(state.browserSample);
+        const lane = row != null ? state.scene.lanes[row] : null;
+        if (lane) {
+          ctx.act({ kind: "show_lane", target: { map: state.scene.path, lane: lane.sourceKey } });
+        }
+      }
+      return;
     } else if (kind === "assign") {
+      const zeroLanes = (state.scene.laneOrder ?? state.scene.lanes ?? []).length === 0;
+      if (zeroLanes && state.browserSample && state.browserModel?.canAddAsLane) {
+        sampleBrowserAction("addLane");
+        return;
+      }
       const target = sampleTarget();
       if (!target || !state.browserSample || !state.browserModel?.canAssign) return;
       if (state.browserSource === "library") {
@@ -282,7 +301,11 @@ export function attachBrowser(ctx) {
       return;
     } else if (kind === "browse") {
       const target = sampleTarget();
-      if (target) pickSample(target);
+      if (target) {
+        pickSample(target);
+      } else if (state.scene?.path && !state.view.busy) {
+        ctx.run(async () => ctx.show(await invoke("pick_lane_sample", { map: state.scene.path })));
+      }
       return;
     } else if (kind === "drag") {
       // Where the dragged sample comes from, kept until it drops (sampleDrop) or the drag ends.
@@ -343,11 +366,12 @@ export function attachBrowser(ctx) {
       const lane = row === -1 ? null : state.scene.lanes[row];
       return sampleDropAction(state.sampleDrag, state.scene?.path, lane) ? row : -1;
     };
+    const canAddOnDrop = () => Boolean(state.sampleDrag?.path && state.scene?.path && !state.drag && !state.view.busy && (state.scene.laneOrder ?? state.scene.lanes ?? []).length === 0);
     node.addEventListener("dragover", (event) => {
       if (!carriesSample(event)) return;
       const row = droppable(event);
       showSampleDropTarget(surface, row);
-      if (row === -1) return;
+      if (row === -1 && !canAddOnDrop()) return;
       event.preventDefault();
       event.dataTransfer.dropEffect = "copy";
     });
@@ -358,11 +382,23 @@ export function attachBrowser(ctx) {
       if (!carriesSample(event)) return;
       const row = droppable(event);
       const drag = state.sampleDrag;
+      const addEmpty = row === -1 && canAddOnDrop();
       clearSampleDropTarget();
       state.sampleDrag = null;
-      if (row === -1 || event.dataTransfer.getData(sampleDragType) !== drag.path) return;
+      if ((!addEmpty && row === -1) || event.dataTransfer.getData(sampleDragType) !== drag?.path) return;
       event.preventDefault();
-      const map = state.scene.path, key = state.scene.lanes[row].sourceKey;
+      const map = state.scene.path;
+      if (addEmpty) {
+        if (drag.source === "library" && drag.root) {
+          ctx.act({ kind: "add_lane_from_library", map, location: { root: drag.root, path: drag.path } });
+        } else {
+          const mapRow = mapsetSamples().get(drag.path);
+          const lane = mapRow != null ? state.scene.lanes[mapRow] : null;
+          if (lane) ctx.act({ kind: "show_lane", target: { map, lane: lane.sourceKey } });
+        }
+        return;
+      }
+      const key = state.scene.lanes[row].sourceKey;
       // Rust replaces the active lane's sample only, so the lane under the drop is made active first
       // (without audition, as the lane menu does); a lane that moved or left meanwhile takes nothing.
       ctx.run(async () => {
