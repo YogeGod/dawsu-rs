@@ -10,6 +10,7 @@
 
 use crate::compile::{compile, mix_problem, Compiled, Placement, SaveProblem};
 use crate::decompile::{decompile, Decompiled};
+use crate::index_packing::AdditionOnlyNormal;
 use crate::lazer::control_points::{offset_for, ControlPoints};
 use crate::model::{Hitsounds, LaneSource, Moment, MomentId, ObjectId, Place};
 use crate::rules::{played_volume, MINIMUM_PLAYED_VOLUME};
@@ -209,6 +210,10 @@ pub struct CopyOptions {
     pub slider_end_mute: SliderEndMuteOptions,
     /// Optional fallback sound for target gameplay object edges that did not match any source moment.
     pub fallback_sound: Option<FallbackSound>,
+    /// What hitnormal accompanies addition-only moments (whistle, finish, or clap without a normal).
+    pub addition_only_normal: AdditionOnlyNormal,
+    /// Pre-reserved custom index holding the 44-byte silent hitnormal when `addition_only_normal == Silent`.
+    pub silent_normal_index: Option<u32>,
 }
 
 impl Default for CopyOptions {
@@ -237,6 +242,8 @@ impl Default for CopyOptions {
             muted_sample_set: None,
             slider_end_mute: SliderEndMuteOptions::default(),
             fallback_sound: None,
+            addition_only_normal: AdditionOnlyNormal::Difficulty,
+            silent_normal_index: None,
         }
     }
 }
@@ -486,6 +493,60 @@ fn hitnormal(set: SampleSet, index: u32) -> SampleIdentity {
     SampleIdentity::Standard { set, sound: Sound::Hit(Hitsound::Normal), index: CustomIndex::new(index) }
 }
 
+/// Applies `AdditionOnlyNormal` when a matched moment carries only additions (whistle/finish/clap)
+/// and no hitnormal or custom sample file.
+fn apply_addition_only_normal(
+    lanes: &mut Vec<SampleIdentity>,
+    target_set: SampleSet,
+    policy: AdditionOnlyNormal,
+    silent_index: Option<u32>,
+) {
+    if policy == AdditionOnlyNormal::Difficulty || lanes.is_empty() {
+        return;
+    }
+    let has_normal_or_file = lanes.iter().any(|l| {
+        matches!(
+            l,
+            SampleIdentity::File(_)
+                | SampleIdentity::Standard {
+                    sound: Sound::Hit(Hitsound::Normal),
+                    ..
+                }
+        )
+    });
+    if has_normal_or_file {
+        return;
+    }
+    let first_addition = lanes.iter().find_map(|l| match l {
+        SampleIdentity::Standard {
+            set,
+            sound: Sound::Hit(Hitsound::Whistle | Hitsound::Finish | Hitsound::Clap),
+            index,
+        } => Some((*set, index.get())),
+        _ => None,
+    });
+    let Some((addition_set, add_index)) = first_addition else {
+        return;
+    };
+    match policy.resolve_normal_set(target_set, addition_set) {
+        Some(resolved_set) => {
+            lanes.insert(0, hitnormal(resolved_set, add_index));
+        }
+        None => {
+            if let Some(silent_idx) = silent_index {
+                for lane in lanes.iter_mut() {
+                    if let SampleIdentity::Standard { index, .. } = lane
+                        && index.get() == 0
+                    {
+                        *index = CustomIndex::new(silent_idx);
+                    }
+                }
+                lanes.insert(0, hitnormal(SampleSet::Normal, silent_idx));
+            }
+        }
+    }
+}
+
 /// The same sounds in another set and index, as the target's own green lines give them; additions
 /// in a set of their own (not the hitnormal's) keep it, and other lanes stay (old `Retarget`).
 fn retarget(lanes: &[SampleIdentity], set: SampleSet, index: u32) -> Vec<SampleIdentity> {
@@ -610,12 +671,25 @@ fn plan_target(source: &Hitsounds, source_file: &OsuFile, target: &OsuFile, fold
                 } else {
                     m.volume()
                 };
-                (lanes.into_iter().collect::<Vec<_>>(), volume)
+                let mut lanes_vec = lanes.into_iter().collect::<Vec<_>>();
+                apply_addition_only_normal(
+                    &mut lanes_vec,
+                    target_state.set,
+                    options.addition_only_normal,
+                    options.silent_normal_index,
+                );
+                (lanes_vec, volume)
             }
             Some(sources) => {
                 let s = from[sources[0]];
                 let own: Vec<SampleIdentity> = s.hits().cloned().collect();
-                let lanes = if options.copy_sample_sets { own } else { retarget(&own, target_state.set, target_state.index) };
+                let mut lanes = if options.copy_sample_sets { own } else { retarget(&own, target_state.set, target_state.index) };
+                apply_addition_only_normal(
+                    &mut lanes,
+                    target_state.set,
+                    options.addition_only_normal,
+                    options.silent_normal_index,
+                );
                 let volume = if !options.copy_volumes || preserve_volume {
                     m.volume()
                 } else if s.has_hit_volume_overrides() {

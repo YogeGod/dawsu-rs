@@ -24,11 +24,122 @@ pub const MAX_SHA256SUMS_BYTES: u64 = 1024 * 1024;
 
 static PART_COUNTER: AtomicU64 = AtomicU64::new(1);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UpdatePackageKind {
+    Installer,
+    PortableZip,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerifiedDownload {
     pub version: String,
     pub path: PathBuf,
     pub expected_sha256: String,
+    pub kind: UpdatePackageKind,
+}
+
+/// Returns `true` when the running executable appears to be a portable ZIP install rather than an
+/// Inno Setup installation (e.g. `portable.marker` exists next to the exe or no `unins000.exe`
+/// uninstaller is present in the exe directory and it is outside Program Files).
+pub fn is_portable_install(exe_path: &Path) -> bool {
+    let Some(dir) = exe_path.parent() else {
+        return false;
+    };
+    if dir.join("portable.marker").is_file() {
+        return true;
+    }
+    if is_installed_copy_at(exe_path) {
+        return false;
+    }
+    let dir_lower = dir.to_string_lossy().to_ascii_lowercase();
+    !dir_lower.contains("\\program files") && !dir_lower.contains("/applications")
+}
+
+/// Validates a portable ZIP archive's Central Directory in pure Rust (zero extra crates):
+/// verifies valid ZIP signatures, enforces the flat-archive safety rule (no `..`, no drive/root
+/// prefixes, no backslashes escaping the install root, no Unix symlinks), and rejects ZIP64.
+pub fn validate_flat_portable_zip(bytes: &[u8]) -> Result<Vec<String>, String> {
+    if bytes.len() < 22 || &bytes[0..4] != b"PK\x03\x04" {
+        return Err("Portable update archive is not a valid ZIP file.".into());
+    }
+    // Locate End of Central Directory (EOCD) signature 0x06054b50 scanning backward.
+    let search_start = bytes.len().saturating_sub(65_557);
+    let eocd_pos = (search_start..=bytes.len() - 22)
+        .rev()
+        .find(|&i| &bytes[i..i + 4] == b"PK\x05\x06")
+        .ok_or("Portable ZIP is missing End of Central Directory record.")?;
+    let raw_entries = u16::from_le_bytes([bytes[eocd_pos + 10], bytes[eocd_pos + 11]]);
+    let raw_cd_size = u32::from_le_bytes([
+        bytes[eocd_pos + 12],
+        bytes[eocd_pos + 13],
+        bytes[eocd_pos + 14],
+        bytes[eocd_pos + 15],
+    ]);
+    let raw_cd_offset = u32::from_le_bytes([
+        bytes[eocd_pos + 16],
+        bytes[eocd_pos + 17],
+        bytes[eocd_pos + 18],
+        bytes[eocd_pos + 19],
+    ]);
+    if raw_entries == u16::MAX || raw_cd_size == u32::MAX || raw_cd_offset == u32::MAX {
+        return Err("ZIP64 portable update archives are not supported.".into());
+    }
+    let entry_count = raw_entries as usize;
+    let cd_size = raw_cd_size as usize;
+    let cd_offset = raw_cd_offset as usize;
+    if cd_offset.saturating_add(cd_size) > eocd_pos || entry_count == 0 {
+        return Err("Portable ZIP has an invalid or empty Central Directory.".into());
+    }
+
+    let mut pos = cd_offset;
+    let end = cd_offset + cd_size;
+    let mut names = Vec::with_capacity(entry_count);
+    for _ in 0..entry_count {
+        if pos + 46 > end || &bytes[pos..pos + 4] != b"PK\x01\x02" {
+            return Err("Corrupt entry in portable ZIP Central Directory.".into());
+        }
+        let version_made_by_os = bytes[pos + 5];
+        let ext_attr = u32::from_le_bytes([
+            bytes[pos + 38],
+            bytes[pos + 39],
+            bytes[pos + 40],
+            bytes[pos + 41],
+        ]);
+        if version_made_by_os == 3 && ((ext_attr >> 16) & 0o170000) == 0o120000 {
+            return Err("Unsafe symlink entry inside portable ZIP.".into());
+        }
+        let name_len = u16::from_le_bytes([bytes[pos + 28], bytes[pos + 29]]) as usize;
+        let extra_len = u16::from_le_bytes([bytes[pos + 30], bytes[pos + 31]]) as usize;
+        let comment_len = u16::from_le_bytes([bytes[pos + 32], bytes[pos + 33]]) as usize;
+        let name_start = pos + 46;
+        let name_end = name_start + name_len;
+        if name_end > end {
+            return Err("Truncated filename in portable ZIP.".into());
+        }
+        let name = std::str::from_utf8(&bytes[name_start..name_end])
+            .map_err(|_| "Non-UTF-8 filename in portable ZIP.")?;
+        if name.is_empty()
+            || name.starts_with('/')
+            || name.starts_with('\\')
+            || name.contains(':')
+            || name.contains("..")
+            || name.contains('\\')
+            || name.contains('\0')
+        {
+            return Err(format!("Unsafe path inside portable ZIP: {name}"));
+        }
+        // Flat-archive rule: entries must not be nested more than 1 subfolder deep.
+        if name.matches('/').count() > 1 {
+            return Err(format!("Unexpected deep nesting in portable ZIP: {name}"));
+        }
+        names.push(name.to_owned());
+        pos = name_end + extra_len + comment_len;
+    }
+    if pos != end {
+        return Err("Portable ZIP Central Directory size mismatch.".into());
+    }
+    Ok(names)
 }
 
 #[derive(Default)]
@@ -102,8 +213,12 @@ impl StagedUpdate {
             let _ = fs::remove_file(&verified_path);
             return;
         }
-        if let Err(e) = spawn_installer(&verified_path) {
-            eprintln!("[dawsu updater] failed to launch installer: {e}");
+        let launch_res = match download.kind {
+            UpdatePackageKind::Installer => spawn_installer(&verified_path),
+            UpdatePackageKind::PortableZip => spawn_portable_swap(&verified_path),
+        };
+        if let Err(e) = launch_res {
+            eprintln!("[dawsu updater] failed to launch update: {e}");
         }
     }
 }
@@ -837,20 +952,31 @@ pub fn download_and_verify_release(
     data_root: &Path,
     release: &ParsedRelease,
 ) -> Result<(DownloadedUpdate, VerifiedDownload), String> {
-    let installer_url = release
-        .installer_url
-        .as_deref()
-        .ok_or_else(|| "This release does not include an installer.".to_string())?;
+    let prefer_portable = std::env::current_exe()
+        .ok()
+        .is_some_and(|exe| is_portable_install(&exe));
+    let (package_url, kind) = if prefer_portable && release.portable_url.is_some() {
+        (
+            release.portable_url.as_deref().unwrap(),
+            UpdatePackageKind::PortableZip,
+        )
+    } else if let Some(url) = release.installer_url.as_deref() {
+        (url, UpdatePackageKind::Installer)
+    } else if let Some(url) = release.portable_url.as_deref() {
+        (url, UpdatePackageKind::PortableZip)
+    } else {
+        return Err("This release does not include an installer or portable ZIP.".to_string());
+    };
     let sha256sums_url = release
         .sha256sums_url
         .as_deref()
         .ok_or_else(|| "This release does not include SHA256SUMS.txt.".to_string())?;
-    let installer_url = require_release_asset_url(installer_url, "installer")?;
+    let installer_url = require_release_asset_url(package_url, "update package")?;
     let sha256sums_url = require_release_asset_url(sha256sums_url, "SHA256SUMS.txt")?;
 
     let safe_version = sanitize_semver_dir(&release.version)?;
     let filename = asset_filename_from_url(&installer_url)
-        .ok_or_else(|| "Installer URL does not end with a valid filename.".to_string())?;
+        .ok_or_else(|| "Update URL does not end with a valid filename.".to_string())?;
     let sums_bytes = curl_https_bytes(
         &sha256sums_url,
         "SHA256SUMS.txt download",
@@ -873,7 +999,7 @@ pub fn download_and_verify_release(
     curl_https_to_file(
         &installer_url,
         &tmp,
-        "Installer download",
+        "Update package download",
         180,
         MAX_INSTALLER_BYTES,
     )?;
@@ -882,17 +1008,27 @@ pub fn download_and_verify_release(
         let _ = fs::remove_file(&tmp);
         return Err(e);
     }
+    if kind == UpdatePackageKind::PortableZip {
+        let zip_bytes = fs::read(&tmp).map_err(|e| {
+            let _ = fs::remove_file(&tmp);
+            format!("Could not read downloaded portable ZIP: {e}")
+        })?;
+        if let Err(e) = validate_flat_portable_zip(&zip_bytes) {
+            let _ = fs::remove_file(&tmp);
+            return Err(e);
+        }
+    }
     let size_bytes = fs::metadata(&tmp).map(|m| m.len()).unwrap_or(0);
     let dest = target_dir.join(&filename);
     if dest.exists() {
         fs::remove_file(&dest).map_err(|e| {
             let _ = fs::remove_file(&tmp);
-            format!("Could not replace previous installer file: {e}")
+            format!("Could not replace previous update file: {e}")
         })?;
     }
     if let Err(e) = fs::rename(&tmp, &dest) {
         let _ = fs::remove_file(&tmp);
-        return Err(format!("Could not finalize downloaded installer: {e}"));
+        return Err(format!("Could not finalize downloaded update: {e}"));
     }
 
     let ui_result = DownloadedUpdate {
@@ -905,6 +1041,7 @@ pub fn download_and_verify_release(
         version: safe_version,
         path: dest,
         expected_sha256: expected_hex,
+        kind,
     };
     Ok((ui_result, verified))
 }
@@ -993,6 +1130,73 @@ fn spawn_installer(installer_path: &Path) -> Result<(), String> {
             .arg(installer_path)
             .spawn()
             .map_err(|e| format!("Could not open update package: {e}"))?;
+        Ok(())
+    }
+}
+
+/// Strips Windows extended-length UNC prefixes (`\\?\` / `\\?\UNC\`) before passing paths to
+/// external shell helpers like PowerShell `Expand-Archive`.
+fn strip_unc_prefix(path: &Path) -> String {
+    let raw = path.to_string_lossy();
+    if let Some(rest) = raw.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{rest}")
+    } else if let Some(rest) = raw.strip_prefix(r"\\?\") {
+        rest.to_string()
+    } else {
+        raw.into_owned()
+    }
+}
+
+/// Spawns a detached helper that waits for this portable process to exit, extracts the verified
+/// flat portable ZIP over the portable install directory, and relaunches `dawsu!`.
+fn spawn_portable_swap(zip_path: &Path) -> Result<(), String> {
+    let exe = std::env::current_exe()
+        .map_err(|e| format!("Could not resolve running exe path: {e}"))?;
+    let install_dir = exe
+        .parent()
+        .ok_or("Could not resolve portable install directory.")?;
+    let pid = std::process::id();
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        const SCRIPT: &str = "$pidToWait = [int]$env:DAWSU_PID; \
+            while (Get-Process -Id $pidToWait -ErrorAction SilentlyContinue) { Start-Sleep -Milliseconds 200 }; \
+            Start-Sleep -Milliseconds 300; \
+            Expand-Archive -LiteralPath $env:DAWSU_ZIP -DestinationPath $env:DAWSU_DIR -Force -ErrorAction Stop; \
+            Start-Process -FilePath $env:DAWSU_EXE";
+        Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-WindowStyle",
+                "Hidden",
+                "-Command",
+                SCRIPT,
+            ])
+            .env("DAWSU_PID", pid.to_string())
+            .env("DAWSU_ZIP", strip_unc_prefix(zip_path))
+            .env("DAWSU_DIR", strip_unc_prefix(install_dir))
+            .env("DAWSU_EXE", strip_unc_prefix(&exe))
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()
+            .map_err(|e| format!("Could not spawn portable update helper: {e}"))?;
+        Ok(())
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let script = format!(
+            "while kill -0 {pid} 2>/dev/null; do sleep 0.2; done; unzip -o \"$1\" -d \"$2\" && \"$3\" &"
+        );
+        Command::new("sh")
+            .arg("-c")
+            .arg(script)
+            .arg("--")
+            .arg(zip_path)
+            .arg(install_dir)
+            .arg(&exe)
+            .spawn()
+            .map_err(|e| format!("Could not spawn portable update helper: {e}"))?;
         Ok(())
     }
 }
@@ -1184,6 +1388,7 @@ mod tests {
             version: ok.version.clone(),
             path: PathBuf::from(&ok.installer_path),
             expected_sha256: ok.sha256.clone(),
+            kind: UpdatePackageKind::Installer,
         });
         // Not armed yet -> take_armed is None.
         assert!(staged.take_armed().is_none());
@@ -1211,5 +1416,76 @@ mod tests {
             assert!(is_installed_copy_at(&installed_exe));
         }
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn flat_portable_zip_validator_accepts_flat_and_rejects_traversal() {
+        fn build_minimal_zip(entries: &[&str]) -> Vec<u8> {
+            let mut out = Vec::new();
+            let mut cd = Vec::new();
+            for &name in entries {
+                let offset = out.len() as u32;
+                let nb = name.as_bytes();
+                // Local file header
+                out.extend_from_slice(b"PK\x03\x04");
+                out.extend_from_slice(&[20, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+                out.extend_from_slice(&[0; 12]);
+                out.extend_from_slice(&(nb.len() as u16).to_le_bytes());
+                out.extend_from_slice(&0u16.to_le_bytes());
+                out.extend_from_slice(nb);
+                // Central directory header
+                cd.extend_from_slice(b"PK\x01\x02");
+                cd.extend_from_slice(&[20, 0, 20, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+                cd.extend_from_slice(&[0; 12]);
+                cd.extend_from_slice(&(nb.len() as u16).to_le_bytes());
+                cd.extend_from_slice(&0u16.to_le_bytes());
+                cd.extend_from_slice(&0u16.to_le_bytes());
+                cd.extend_from_slice(&[0; 8]);
+                cd.extend_from_slice(&offset.to_le_bytes());
+                cd.extend_from_slice(nb);
+            }
+            let cd_offset = out.len() as u32;
+            let cd_size = cd.len() as u32;
+            out.extend_from_slice(&cd);
+            // EOCD
+            out.extend_from_slice(b"PK\x05\x06");
+            out.extend_from_slice(&[0; 4]);
+            out.extend_from_slice(&(entries.len() as u16).to_le_bytes());
+            out.extend_from_slice(&(entries.len() as u16).to_le_bytes());
+            out.extend_from_slice(&cd_size.to_le_bytes());
+            out.extend_from_slice(&cd_offset.to_le_bytes());
+            out.extend_from_slice(&0u16.to_le_bytes());
+            out
+        }
+
+        let good = build_minimal_zip(&["dawsu-tauri.exe", "README.txt"]);
+        assert_eq!(
+            validate_flat_portable_zip(&good).unwrap(),
+            vec!["dawsu-tauri.exe", "README.txt"]
+        );
+
+        let evil = build_minimal_zip(&["../evil.exe"]);
+        assert!(validate_flat_portable_zip(&evil).is_err());
+
+        let deep = build_minimal_zip(&["a/b/c.dll"]);
+        assert!(validate_flat_portable_zip(&deep).is_err());
+
+        // Unix symlink (version_made_by OS=3, external attrs S_IFLNK = 0o120000 << 16) must be refused.
+        let mut symlink_zip = build_minimal_zip(&["link"]);
+        let cd_pos = symlink_zip
+            .windows(4)
+            .position(|w| w == b"PK\x01\x02")
+            .unwrap();
+        symlink_zip[cd_pos + 5] = 3;
+        let sym_attr = (0o120777u32) << 16;
+        symlink_zip[cd_pos + 38..cd_pos + 42].copy_from_slice(&sym_attr.to_le_bytes());
+        assert!(
+            validate_flat_portable_zip(&symlink_zip)
+                .unwrap_err()
+                .contains("symlink")
+        );
+
+        assert_eq!(strip_unc_prefix(Path::new(r"\\?\C:\Tools\dawsu.exe")), r"C:\Tools\dawsu.exe");
+        assert_eq!(strip_unc_prefix(Path::new(r"\\?\UNC\server\share\dawsu.exe")), r"\\server\share\dawsu.exe");
     }
 }

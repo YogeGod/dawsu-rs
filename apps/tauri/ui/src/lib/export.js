@@ -1,6 +1,12 @@
 // Plain logic for the Export window, tested under node without a webview.
 
 export const mixFormats = Object.freeze(["wav16", "wav32f", "ogg_vorbis"]);
+export const writeModes = Object.freeze(["direct", "hitsound_only"]);
+export const singleFormats = Object.freeze(["source", "match_mix_format"]);
+export const additionOnlyPolicies = Object.freeze([
+  "difficulty", "additions_set", "skin_normal", "skin_soft", "skin_drum", "silent",
+]);
+export const tickPolicies = Object.freeze(["ignore", "render"]);
 export const fallbackSets = Object.freeze(["normal", "soft", "drum"]);
 
 export function clampFallbackVolume(value) {
@@ -52,6 +58,10 @@ export function divisorsFromPreset(id) {
 export const defaultChoices = Object.freeze({
   leftOut: [], matchWithin: 5, copyVolumes: true, base: false, sliderAudio: false, laterWins: false,
   mixFormat: "wav16", sliderEndMute: defaultSliderEndMute, fallbackSound: null,
+  autoFixStagedMixes: false, writeMode: "direct", hitsoundOnlyDir: null,
+  singleFormat: "source", additionOnlyNormal: "difficulty", tickPolicy: "ignore",
+  allowSchemaGrowth: true, autoCleanupStale: true, takeOverSamples: false,
+  applyVolumeEnvelope: true,
 });
 
 // Generate's name for the difficulty it makes (HITSOUNDS_VERSION in dawsu-hitsounding).
@@ -133,6 +143,18 @@ export function choicesFrom(view) {
     mixFormat: mixFormats.includes(stored.mixFormat) ? stored.mixFormat : defaultChoices.mixFormat,
     sliderEndMute: sliderEndMuteFrom(stored.sliderEndMute),
     fallbackSound: normalizeFallbackSound(stored.fallbackSound),
+    autoFixStagedMixes: stored.autoFixStagedMixes === true,
+    writeMode: writeModes.includes(stored.writeMode) ? stored.writeMode : defaultChoices.writeMode,
+    hitsoundOnlyDir: typeof stored.hitsoundOnlyDir === "string" && stored.hitsoundOnlyDir ? stored.hitsoundOnlyDir : null,
+    singleFormat: singleFormats.includes(stored.singleFormat) ? stored.singleFormat : defaultChoices.singleFormat,
+    additionOnlyNormal: additionOnlyPolicies.includes(stored.additionOnlyNormal)
+      ? stored.additionOnlyNormal
+      : defaultChoices.additionOnlyNormal,
+    tickPolicy: tickPolicies.includes(stored.tickPolicy) ? stored.tickPolicy : defaultChoices.tickPolicy,
+    allowSchemaGrowth: stored.allowSchemaGrowth !== false,
+    autoCleanupStale: stored.autoCleanupStale !== false,
+    takeOverSamples: stored.takeOverSamples === true,
+    applyVolumeEnvelope: stored.applyVolumeEnvelope !== false,
   };
 }
 
@@ -154,16 +176,30 @@ export function exportLabel(count) {
 export function optionsKey(view, choices) {
   const targets = included(view?.targets, choices);
   const mixFormat = mixFormats.includes(choices.mixFormat) ? choices.mixFormat : defaultChoices.mixFormat;
+  const writeMode = writeModes.includes(choices.writeMode) ? choices.writeMode : defaultChoices.writeMode;
+  const singleFormat = singleFormats.includes(choices.singleFormat) ? choices.singleFormat : defaultChoices.singleFormat;
+  const additionOnlyNormal = additionOnlyPolicies.includes(choices.additionOnlyNormal)
+    ? choices.additionOnlyNormal
+    : defaultChoices.additionOnlyNormal;
+  const tickPolicy = tickPolicies.includes(choices.tickPolicy) ? choices.tickPolicy : defaultChoices.tickPolicy;
   const mute = choices.sliderEndMute;
   const fallback = normalizeFallbackSound(choices.fallbackSound);
   return JSON.stringify([view?.source?.path ?? null, targets, choices.matchWithin, choices.copyVolumes,
     choices.base, choices.sliderAudio, choices.laterWins === true, mixFormat,
     mute?.enabled === true ? [mute.minBeats, mute.muteSpinnerEnds === true, mute.onlyUnhit !== false, mute.divisors ?? []] : false,
-    fallback]);
+    fallback, choices.autoFixStagedMixes === true, writeMode, choices.hitsoundOnlyDir ?? null,
+    singleFormat, additionOnlyNormal, tickPolicy, choices.allowSchemaGrowth !== false,
+    choices.autoCleanupStale !== false, choices.takeOverSamples === true, choices.applyVolumeEnvelope !== false]);
 }
 
 export function previewRequest(view, choices) {
   const mixFormat = mixFormats.includes(choices.mixFormat) ? choices.mixFormat : defaultChoices.mixFormat;
+  const writeMode = writeModes.includes(choices.writeMode) ? choices.writeMode : defaultChoices.writeMode;
+  const singleFormat = singleFormats.includes(choices.singleFormat) ? choices.singleFormat : defaultChoices.singleFormat;
+  const additionOnlyNormal = additionOnlyPolicies.includes(choices.additionOnlyNormal)
+    ? choices.additionOnlyNormal
+    : defaultChoices.additionOnlyNormal;
+  const tickPolicy = tickPolicies.includes(choices.tickPolicy) ? choices.tickPolicy : defaultChoices.tickPolicy;
   return {
     options: {
       source: view.source.path,
@@ -171,7 +207,17 @@ export function previewRequest(view, choices) {
       options: copyOptions(choices),
       base: choices.base === true,
       sliderAudio: choices.sliderAudio === true,
+      autoFixStagedMixes: choices.autoFixStagedMixes === true,
       mixFormat,
+      writeMode,
+      hitsoundOnlyDir: writeMode === "hitsound_only" ? (choices.hitsoundOnlyDir ?? null) : null,
+      singleFormat,
+      additionOnlyNormal,
+      tickPolicy,
+      allowSchemaGrowth: choices.allowSchemaGrowth !== false,
+      autoCleanupStale: choices.autoCleanupStale !== false,
+      takeOverSamples: choices.takeOverSamples === true,
+      applyVolumeEnvelope: choices.applyVolumeEnvelope !== false,
     },
   };
 }

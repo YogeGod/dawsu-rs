@@ -27,6 +27,7 @@
   let lastRun = $state(null);
   // The footer's "N warnings", opened into the list of them.
   let showWarnings = $state(false);
+  let showAdvanced = $state(false);
   let dryRunFiles = $state.raw(null);
   let dryRunBusy = $state(false);
   let listeningTarget = $state(null);
@@ -133,6 +134,15 @@
       actionError = null;
     } catch (error) {
       run = null;
+      actionError = String(error);
+    }
+  }
+
+  async function pickHitsoundOnlyDir() {
+    try {
+      const picked = await invoke("export_pick_hitsound_only_dir");
+      if (picked) choices.hitsoundOnlyDir = picked;
+    } catch (error) {
       actionError = String(error);
     }
   }
@@ -280,6 +290,27 @@
           </select>
         </label>
         <span class="divider" aria-hidden="true"></span>
+        <label class="switch-label" title="Trim leading silence and pad samples shorter than 25 ms to meet osu! Ranking Criteria.">
+          Auto-fix samples
+          <button type="button" class="switch" role="switch" aria-checked={choices.autoFixStagedMixes}
+            aria-label="Auto-fix ranking criteria sample issues"
+            onclick={() => (choices.autoFixStagedMixes = !choices.autoFixStagedMixes)}></button>
+        </label>
+        <span class="divider" aria-hidden="true"></span>
+        <label class="format" title="Write straight into the mapset (with backups) or into a separate hitsound-only folder.">
+          Write to
+          <select class="field select" aria-label="Export destination" bind:value={choices.writeMode}>
+            <option value="direct">Mapset (with backups)</option>
+            <option value="hitsound_only">Hitsound-only folder</option>
+          </select>
+        </label>
+        {#if choices.writeMode === "hitsound_only"}
+          <button type="button" class="adv-btn" onclick={pickHitsoundOnlyDir}
+            title={choices.hitsoundOnlyDir || "Default: dawsu! exports folder"}>
+            {choices.hitsoundOnlyDir ? "Change folder…" : "Choose folder…"}
+          </button>
+        {/if}
+        <span class="divider" aria-hidden="true"></span>
         <label class="switch-label" title="Set un-hit slider ends to 5% volume. Ends with a matched hitsound are never muted.">
           Mute un-hit slider ends
           <button type="button" class="switch" role="switch" aria-checked={choices.sliderEndMute.enabled}
@@ -317,7 +348,60 @@
             </span>
           </label>
         {/if}
+        <span class="divider" aria-hidden="true"></span>
+        <button type="button" class="adv-btn" aria-expanded={showAdvanced}
+          onclick={() => (showAdvanced = !showAdvanced)}>
+          {showAdvanced ? "Hide advanced" : "Advanced…"}
+        </button>
       </section>
+
+      {#if showAdvanced}
+        <section class="mute-options" aria-label="Advanced export rules">
+          <label class="mute-field" title="How unchanged custom sample files are copied alongside mixed samples.">
+            Single samples
+            <select class="select" aria-label="Single sample format" bind:value={choices.singleFormat}>
+              <option value="source">Keep original file</option>
+              <option value="match_mix_format">Match mix format</option>
+            </select>
+          </label>
+          <label class="mute-field" title="Which hitnormal plays when a moment only has whistle, finish, or clap.">
+            Addition-only hitnormal
+            <select class="select" aria-label="Addition-only hitnormal policy" bind:value={choices.additionOnlyNormal}>
+              <option value="difficulty">Difficulty set</option>
+              <option value="additions_set">Addition set</option>
+              <option value="skin_normal">Skin Normal</option>
+              <option value="skin_soft">Skin Soft</option>
+              <option value="skin_drum">Skin Drum</option>
+              <option value="silent">Silent (44 B WAV)</option>
+            </select>
+          </label>
+          <label class="mute-field" title="Write short green lines with custom slidertick indices on matched slider ticks.">
+            Slider ticks
+            <select class="select" aria-label="Slider tick rendering" bind:value={choices.tickPolicy}>
+              <option value="ignore">Ignore</option>
+              <option value="render">Render green lines (+5 ms revert)</option>
+            </select>
+          </label>
+          <label class="check" title="Apply the mapset's or difficulty's green-line-only master volume curve on export.">
+            <input type="checkbox" bind:checked={choices.applyVolumeEnvelope}>
+            Apply volume curve
+          </label>
+          <label class="check" title="Allow allocating new custom sample indices when new combinations appear.">
+            <input type="checkbox" bind:checked={choices.allowSchemaGrowth}>
+            Allow schema growth
+          </label>
+          <label class="check" title="Automatically archive stale dawsu!-created sample mixes on repeat direct exports.">
+            <input type="checkbox" bind:checked={choices.autoCleanupStale}>
+            Auto-clean stale mixes
+          </label>
+          {#if choices.autoCleanupStale && choices.writeMode === "direct"}
+            <label class="check" title="Also archive existing unused samples in the mapset (backed up first).">
+              <input type="checkbox" bind:checked={choices.takeOverSamples}>
+              Take over existing samples
+            </label>
+          {/if}
+        </section>
+      {/if}
 
       {#if choices.sliderEndMute.enabled}
         <section class="mute-options" aria-label="Slider-end muting options">
@@ -488,8 +572,13 @@
   <aside class="panel">
     <h2>Write to</h2>
     <div class="write-card">
-      <strong>Into the mapset</strong>
-      <p>Updates every included difficulty in place. Each changed file is backed up first.</p>
+      {#if choices.writeMode === "hitsound_only"}
+        <strong>Hitsound-only folder</strong>
+        <p>Writes a separate folder ({choices.hitsoundOnlyDir || "dawsu! exports folder"}) with the song, samples, and hitsound <code>.osu</code> files. Your mapset folder stays untouched.</p>
+      {:else}
+        <strong>Into the mapset</strong>
+        <p>Updates every included difficulty in place. Each changed file is backed up first.</p>
+      {/if}
     </div>
     {#if mixInfo.sections.length || mixInfo.volumes.length}
       <div class="write-details" aria-label="Sample files and volumes">
@@ -886,5 +975,16 @@
   .secondary { background: var(--editor-control); color: var(--editor-text); }
   .primary { background: var(--editor-accent); color: var(--editor-accentink); }
   .primary:disabled { background: var(--editor-selected); color: var(--editor-disabled); cursor: default; }
+  .adv-btn {
+    height: 26px;
+    padding: 0 10px;
+    border: 1px solid var(--editor-border);
+    border-radius: 6px;
+    background: var(--editor-control);
+    color: var(--editor-text);
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .adv-btn:hover { border-color: var(--editor-accent); }
   button:focus-visible { outline: 2px solid var(--editor-focus); outline-offset: 2px; }
 </style>

@@ -169,6 +169,10 @@ struct CopyOptionsJson {
     slider_end_mute: dawsu_hitsounding::copy::SliderEndMuteOptions,
     #[serde(default)]
     fallback_sound: Option<FallbackSound>,
+    #[serde(default)]
+    addition_only_normal: dawsu_hitsounding::index_packing::AdditionOnlyNormal,
+    #[serde(default)]
+    silent_normal_index: Option<u32>,
 }
 
 fn default_copy_start_index() -> u32 {
@@ -379,6 +383,9 @@ enum Action {
     PlaybackStart { value: PlaybackStart },
     ReturnOnStop { on: bool },
     CleanRedundantGreenlines { on: bool },
+    KeepPitch { on: bool },
+    AutoCheckUpdates { on: bool },
+    StepPadsMode { on: bool },
     Stop,
     Start,
     Seek {
@@ -413,6 +420,10 @@ enum Action {
         row: usize,
         start_ms: f64,
         end_ms: f64,
+    },
+    ToggleStepHit {
+        row: usize,
+        ms: f64,
     },
     History {
         position: usize,
@@ -758,6 +769,9 @@ impl Action {
                 app.preferences.clean_redundant_greenlines = on;
                 app.save_preferences();
             }
+            Self::KeepPitch { on } => app.set_keep_pitch(on),
+            Self::AutoCheckUpdates { on } => app.set_auto_check_updates(on),
+            Self::StepPadsMode { on } => app.set_step_pads_mode(on),
             Self::Stop => app.command("stop"),
             Self::Start => app.command("start"),
             Self::Seek { ms } => app.seek(ms),
@@ -868,6 +882,9 @@ impl Action {
                 end_ms,
             } => {
                 app.paint_hits_on_lane(row, start_ms, end_ms);
+            }
+            Self::ToggleStepHit { row, ms } => {
+                app.toggle_step_hit(row, ms);
             }
             Self::History { position } => app.go_to_history(position),
             Self::Lane { row, operation } => {
@@ -1758,6 +1775,7 @@ struct SoundSetPromptSnapshot {
 struct ViewSnapshot {
     active_lane: usize,
     audition: bool,
+    auto_check_updates: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     bookmark_step: Option<Option<f64>>,
     busy: bool,
@@ -1783,6 +1801,7 @@ struct ViewSnapshot {
     hitsounds_muted: bool,
     hitsounds_solo: bool,
     hs_mode: bool,
+    keep_pitch: bool,
     key_preset: String,
     lane_count: usize,
     left: f64,
@@ -1840,6 +1859,7 @@ struct ViewSnapshot {
     stem_loading: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     stem_name: Option<String>,
+    step_pads_mode: bool,
     tab_routes: Vec<(bool, bool, bool, bool)>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tick_rev: Option<u64>,
@@ -2195,6 +2215,9 @@ fn snapshot_with_static(app: &Application, include_scene: bool, include_static: 
         recovery,
         return_on_stop: app.preferences.return_on_stop,
         clean_redundant_greenlines: app.preferences.clean_redundant_greenlines,
+        keep_pitch: app.preferences.keep_pitch,
+        auto_check_updates: app.preferences.auto_check_updates,
+        step_pads_mode: app.preferences.step_pads_mode,
         revert: app.revert_requested,
         review,
         right: app.locator_right,
@@ -2329,6 +2352,13 @@ enum Request {
     ),
     SharedBaseClearOverrides(mpsc::Sender<Result<dawsu_application::SharedBaseStatus, String>>),
     SharedBaseClear(mpsc::Sender<Result<dawsu_application::SharedBaseStatus, String>>),
+    SharedBaseRules(Option<String>, mpsc::Sender<Result<Vec<dawsu_application::BaseRule>, String>>),
+    SharedBaseAddRule(Option<String>, dawsu_application::BaseRule, mpsc::Sender<Result<Vec<dawsu_application::BaseRule>, String>>),
+    SharedBaseRemoveRule(Option<String>, usize, mpsc::Sender<Result<Vec<dawsu_application::BaseRule>, String>>),
+    SharedBaseDiffProjections(f64, mpsc::Sender<Result<Vec<dawsu_application::DiffProjectionTab>, String>>),
+    SharedBaseVolumeEnvelope(Option<String>, mpsc::Sender<Result<dawsu_application::VolumeEnvelope, String>>),
+    SharedBaseSetVolumeEnvelope(Option<String>, dawsu_application::VolumeEnvelope, mpsc::Sender<Result<dawsu_application::VolumeEnvelope, String>>),
+    RelinkMovedMapset(PathBuf, Option<PathBuf>, mpsc::Sender<Result<dawsu_application::RelinkMapsetResult, String>>),
     StemSeparationStatus(mpsc::Sender<Result<dawsu_application::StemSeparationStatus, String>>),
     StemSeparationStart(
         dawsu_application::StemSeparationStartOptions,
@@ -2430,23 +2460,35 @@ fn export_snapshot(app: &Application, cache: &mut ExportCache) -> Value {
         "requested": status.requested,
         "previewing": status.running || status.waiting,
         "progress": status.progress.map(|(done, total)| json!({ "kind": "preview", "done": done, "total": total })),
-        "choices": document.and_then(|d| d.export_choices()).map(|choices| json!({
-            "leftOut": choices.left_out,
-            "matchWithin": choices.match_within,
-            "copyVolumes": choices.copy_volumes,
-            "base": choices.base,
-            "sliderAudio": choices.slider_audio,
-            "laterWins": choices.later_wins,
-            "mixFormat": choices.mix_format,
-            "sliderEndMute": {
-                "enabled": choices.slider_end_mute.enabled,
-                "minBeats": choices.slider_end_mute.min_beats,
-                "muteSpinnerEnds": choices.slider_end_mute.mute_spinner_ends,
-                "onlyUnhit": choices.slider_end_mute.only_unhit,
-                "divisors": choices.slider_end_mute.divisors,
-            },
-            "fallbackSound": choices.fallback_sound,
-        })),
+        "choices": document.and_then(|d| d.export_choices()).map(|choices| {
+            let mut c = json!({
+                "leftOut": choices.left_out,
+                "matchWithin": choices.match_within,
+                "copyVolumes": choices.copy_volumes,
+                "base": choices.base,
+                "sliderAudio": choices.slider_audio,
+                "laterWins": choices.later_wins,
+                "mixFormat": choices.mix_format,
+                "sliderEndMute": {
+                    "enabled": choices.slider_end_mute.enabled,
+                    "minBeats": choices.slider_end_mute.min_beats,
+                    "muteSpinnerEnds": choices.slider_end_mute.mute_spinner_ends,
+                    "onlyUnhit": choices.slider_end_mute.only_unhit,
+                    "divisors": choices.slider_end_mute.divisors,
+                },
+                "fallbackSound": choices.fallback_sound,
+            });
+            c["autoFixStagedMixes"] = json!(choices.auto_fix_staged_mixes);
+            c["writeMode"] = json!(choices.write_mode);
+            c["singleFormat"] = json!(choices.single_format);
+            c["additionOnlyNormal"] = json!(choices.addition_only_normal);
+            c["tickPolicy"] = json!(choices.tick_policy);
+            c["allowSchemaGrowth"] = json!(choices.allow_schema_growth);
+            c["autoCleanupStale"] = json!(choices.auto_cleanup_stale);
+            c["takeOverSamples"] = json!(choices.take_over_samples);
+            c["applyVolumeEnvelope"] = json!(choices.apply_volume_envelope);
+            c
+        }),
         "error": status.error,
         "writing": status.writing,
         "writeId": status.write_id,
@@ -2616,6 +2658,9 @@ fn non_playback_signature(
     app.preferences.follow.hash(&mut hasher);
     app.preferences.return_on_stop.hash(&mut hasher);
     app.preferences.clean_redundant_greenlines.hash(&mut hasher);
+    app.preferences.keep_pitch.hash(&mut hasher);
+    app.preferences.auto_check_updates.hash(&mut hasher);
+    app.preferences.step_pads_mode.hash(&mut hasher);
     app.preferences.audition.hash(&mut hasher);
     app.preferences.object_lines.hash(&mut hasher);
     app.preferences.classic_browser.hash(&mut hasher);
@@ -3192,6 +3237,56 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                     tick_cache.invalidate();
                     let _ = response.send(result);
                 }
+                Ok(Request::SharedBaseRules(diff_file, response)) => {
+                    let result = guard(&mut app, &mut fault, |app| {
+                        app.shared_base_rules(diff_file.as_deref())
+                    });
+                    let _ = response.send(result);
+                }
+                Ok(Request::SharedBaseAddRule(diff_file, rule, response)) => {
+                    let result = guard(&mut app, &mut fault, |app| {
+                        app.shared_base_add_rule(diff_file.as_deref(), rule)
+                    })
+                    .and_then(|r| r);
+                    tick_cache.invalidate();
+                    let _ = response.send(result);
+                }
+                Ok(Request::SharedBaseRemoveRule(diff_file, index, response)) => {
+                    let result = guard(&mut app, &mut fault, |app| {
+                        app.shared_base_remove_rule(diff_file.as_deref(), index)
+                    })
+                    .and_then(|r| r);
+                    tick_cache.invalidate();
+                    let _ = response.send(result);
+                }
+                Ok(Request::SharedBaseDiffProjections(leniency_ms, response)) => {
+                    let result = guard(&mut app, &mut fault, |app| {
+                        app.shared_base_diff_projections(leniency_ms)
+                    });
+                    let _ = response.send(result);
+                }
+                Ok(Request::SharedBaseVolumeEnvelope(diff_file, response)) => {
+                    let result = guard(&mut app, &mut fault, |app| {
+                        app.shared_base_volume_envelope(diff_file.as_deref())
+                    });
+                    let _ = response.send(result);
+                }
+                Ok(Request::SharedBaseSetVolumeEnvelope(diff_file, envelope, response)) => {
+                    let result = guard(&mut app, &mut fault, |app| {
+                        app.shared_base_set_volume_envelope(diff_file.as_deref(), envelope)
+                    })
+                    .and_then(|r| r);
+                    tick_cache.invalidate();
+                    let _ = response.send(result);
+                }
+                Ok(Request::RelinkMovedMapset(missing, explicit_dir, response)) => {
+                    let result = guard(&mut app, &mut fault, |app| {
+                        app.relink_moved_mapset(&missing, explicit_dir.as_deref())
+                    })
+                    .and_then(|r| r);
+                    tick_cache.invalidate();
+                    let _ = response.send(result);
+                }
                 Ok(Request::StemSeparationStatus(response)) => {
                     let result = guard(&mut app, &mut fault, |app| app.stem_separation_status());
                     tick_cache.invalidate();
@@ -3372,6 +3467,10 @@ fn editor_export_settings(state: State<'_, Editor>) -> Result<Option<(PathBuf, E
     ask(&state, Request::ExportSettings)
 }
 
+fn default_export_true() -> bool {
+    true
+}
+
 #[derive(Deserialize)]
 struct ExportOptionsJson {
     source: PathBuf,
@@ -3387,6 +3486,24 @@ struct ExportOptionsJson {
     auto_fix_staged_mixes: bool,
     #[serde(default, rename = "mixFormat")]
     mix_format: MixFormat,
+    #[serde(default, rename = "writeMode")]
+    write_mode: dawsu_application::ExportWriteMode,
+    #[serde(default, rename = "hitsoundOnlyDir")]
+    hitsound_only_dir: Option<PathBuf>,
+    #[serde(default, rename = "singleFormat")]
+    single_format: dawsu_application::SingleSampleFormat,
+    #[serde(default, rename = "additionOnlyNormal")]
+    addition_only_normal: dawsu_application::AdditionOnlyNormal,
+    #[serde(default, rename = "tickPolicy")]
+    tick_policy: dawsu_application::TickPolicy,
+    #[serde(default = "default_export_true", rename = "allowSchemaGrowth")]
+    allow_schema_growth: bool,
+    #[serde(default = "default_export_true", rename = "autoCleanupStale")]
+    auto_cleanup_stale: bool,
+    #[serde(default, rename = "takeOverSamples")]
+    take_over_samples: bool,
+    #[serde(default = "default_export_true", rename = "applyVolumeEnvelope")]
+    apply_volume_envelope: bool,
 }
 
 /// "Export · <map title> [<difficulty>]", or "Export" with no map open.
@@ -3421,6 +3538,15 @@ fn export_preview(state: State<'_, Editor>, options: ExportOptionsJson) -> Resul
         slider_audio: options.slider_audio,
         auto_fix_staged_mixes: options.auto_fix_staged_mixes,
         mix_format: options.mix_format,
+        write_mode: options.write_mode,
+        hitsound_only_dir: options.hitsound_only_dir,
+        single_format: options.single_format,
+        addition_only_normal: options.addition_only_normal,
+        tick_policy: options.tick_policy,
+        allow_schema_growth: options.allow_schema_growth,
+        auto_cleanup_stale: options.auto_cleanup_stale,
+        take_over_samples: options.take_over_samples,
+        apply_volume_envelope: options.apply_volume_envelope,
     };
     ask(&state, |tx| Request::ExportPreview(source, options, tx))?
 }
@@ -4593,6 +4719,91 @@ fn shared_base_clear(
 }
 
 #[tauri::command]
+fn shared_base_rules(
+    diff_file: Option<String>,
+    state: State<'_, Editor>,
+) -> Result<Vec<dawsu_application::BaseRule>, String> {
+    ask(&state, |tx| Request::SharedBaseRules(diff_file, tx))?
+}
+
+#[tauri::command]
+fn shared_base_add_rule(
+    diff_file: Option<String>,
+    rule: dawsu_application::BaseRule,
+    state: State<'_, Editor>,
+) -> Result<Vec<dawsu_application::BaseRule>, String> {
+    ask(&state, |tx| Request::SharedBaseAddRule(diff_file, rule, tx))?
+}
+
+#[tauri::command]
+fn shared_base_remove_rule(
+    diff_file: Option<String>,
+    index: usize,
+    state: State<'_, Editor>,
+) -> Result<Vec<dawsu_application::BaseRule>, String> {
+    ask(&state, |tx| Request::SharedBaseRemoveRule(diff_file, index, tx))?
+}
+
+#[tauri::command]
+fn shared_base_diff_projections(
+    leniency_ms: Option<f64>,
+    state: State<'_, Editor>,
+) -> Result<Vec<dawsu_application::DiffProjectionTab>, String> {
+    ask(&state, |tx| {
+        Request::SharedBaseDiffProjections(leniency_ms.unwrap_or(5.0), tx)
+    })?
+}
+
+#[tauri::command]
+fn shared_base_volume_envelope(
+    diff_file: Option<String>,
+    state: State<'_, Editor>,
+) -> Result<dawsu_application::VolumeEnvelope, String> {
+    ask(&state, |tx| Request::SharedBaseVolumeEnvelope(diff_file, tx))?
+}
+
+#[tauri::command]
+fn shared_base_set_volume_envelope(
+    diff_file: Option<String>,
+    envelope: dawsu_application::VolumeEnvelope,
+    state: State<'_, Editor>,
+) -> Result<dawsu_application::VolumeEnvelope, String> {
+    ask(&state, |tx| {
+        Request::SharedBaseSetVolumeEnvelope(diff_file, envelope, tx)
+    })?
+}
+
+#[tauri::command]
+fn relink_moved_mapset(
+    missing_path: String,
+    pick_folder: Option<bool>,
+    state: State<'_, Editor>,
+) -> Result<dawsu_application::RelinkMapsetResult, String> {
+    let explicit = if pick_folder.unwrap_or(false) {
+        let picked = rfd::FileDialog::new()
+            .set_title("Locate moved mapset folder")
+            .pick_folder();
+        let Some(folder) = picked else {
+            return Err("Folder selection cancelled.".into());
+        };
+        Some(folder)
+    } else {
+        None
+    };
+    ask(&state, |tx| {
+        Request::RelinkMovedMapset(PathBuf::from(missing_path), explicit, tx)
+    })?
+}
+
+#[tauri::command]
+fn export_pick_hitsound_only_dir() -> Option<String> {
+    rfd::FileDialog::new()
+        .set_title("Choose standalone hitsound-only export folder")
+        .pick_folder()
+        .map(|p| p.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
 fn stem_separation_status(
     state: State<'_, Editor>,
 ) -> Result<dawsu_application::StemSeparationStatus, String> {
@@ -5158,6 +5369,14 @@ fn main() {
             shared_base_apply_all,
             shared_base_clear_overrides,
             shared_base_clear,
+            shared_base_rules,
+            shared_base_add_rule,
+            shared_base_remove_rule,
+            shared_base_diff_projections,
+            shared_base_volume_envelope,
+            shared_base_set_volume_envelope,
+            relink_moved_mapset,
+            export_pick_hitsound_only_dir,
             stem_separation_status,
             stem_separation_start,
             stem_separation_cancel,

@@ -1767,6 +1767,8 @@ fn copy_review_uses_the_exact_requested_options() {
         muted_sample_set: Some(SampleSet::Drum),
         slider_end_mute: Default::default(),
         fallback_sound: None,
+        addition_only_normal: Default::default(),
+        silent_normal_index: None,
     });
 
     let mut app = Application::headless();
@@ -2701,6 +2703,15 @@ fn export_requests_answer_with_the_export_view_and_errors_after_a_fault() {
         "leftOut": [], "matchWithin": 5.0, "copyVolumes": true, "base": false, "sliderAudio": false, "laterWins": false, "mixFormat": "wav16",
         "sliderEndMute": { "enabled": false, "minBeats": 0.5, "divisors": [], "onlyUnhit": true, "muteSpinnerEnds": false },
         "fallbackSound": null,
+        "autoFixStagedMixes": false,
+        "writeMode": "direct",
+        "singleFormat": "source",
+        "additionOnlyNormal": "difficulty",
+        "tickPolicy": "ignore",
+        "allowSchemaGrowth": true,
+        "autoCleanupStale": true,
+        "takeOverSamples": false,
+        "applyVolumeEnvelope": true,
     }));
     assert!(view["preview"]["base"].is_null(), "no base difficulty without the base choice");
     assert_eq!((&view["writing"], &view["written"], &view["writeError"]), (&serde_json::json!(false), &serde_json::Value::Null, &serde_json::Value::Null));
@@ -3448,6 +3459,9 @@ fn typed_scene_matches_legacy_json_bytes_exactly() {
             })
         }).collect::<Vec<_>>();
         result["tabRoutes"] = json!(tab_routes);
+        result["keepPitch"] = json!(app.preferences.keep_pitch);
+        result["autoCheckUpdates"] = json!(app.preferences.auto_check_updates);
+        result["stepPadsMode"] = json!(app.preferences.step_pads_mode);
         result
     }
 
@@ -3741,4 +3755,56 @@ fn scene_lane_exposes_vst_routed_and_bypassed_and_toggle_lane_switches_them() {
     let restored = serde_json::to_value(super::snapshot_view(&app, true)).unwrap();
     assert_eq!(restored["scene"]["lanes"][normal_row]["vstRouted"], true);
     assert_eq!(restored["scene"]["lanes"][normal_row]["vstBypassed"], false);
+}
+
+#[test]
+fn toggle_step_hit_works_regardless_of_active_tool() {
+    let fixture = Fixture::new("toggle-step-hit");
+    let map = fixture.0.join("Map.osu");
+    fs::write(
+        &map,
+        b"osu file format v14\n\n[Metadata]\nVersion:Hard\n\n[TimingPoints]\n0,500,4,2,0,80,1,0\n\n[HitObjects]\n256,192,0,1,0,0:0:0:0:\n",
+    )
+    .unwrap();
+
+    let mut app = Application::headless();
+    open(&mut app, &map);
+    let clap_row = snapshot(&app, true)["scene"]["lanes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .position(|lane| lane["name"] == "soft-hitclap" && lane["index"] == 0)
+        .unwrap();
+
+    // Even with Select or Ramp tool active, toggle_step_hit adds and removes the hit cleanly.
+    for tool in ["Select", "Ramp"] {
+        Action::Tool { name: tool.into() }.run(&mut app);
+        let add: Action = serde_json::from_value(serde_json::json!({
+            "kind": "toggle_step_hit",
+            "row": clap_row,
+            "ms": 500.0
+        }))
+        .unwrap();
+        add.run(&mut app);
+        let after_add = snapshot(&app, true)["scene"]["moments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|m| (m[0].as_f64().unwrap() - 500.0).abs() < 1.0 && m[3].as_array().unwrap().iter().any(|h| h[0] == clap_row));
+        assert!(after_add, "toggle_step_hit should add hit while {tool} tool is active");
+
+        let remove: Action = serde_json::from_value(serde_json::json!({
+            "kind": "toggle_step_hit",
+            "row": clap_row,
+            "ms": 500.0
+        }))
+        .unwrap();
+        remove.run(&mut app);
+        let after_remove = snapshot(&app, true)["scene"]["moments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|m| (m[0].as_f64().unwrap() - 500.0).abs() < 1.0 && m[3].as_array().unwrap().iter().any(|h| h[0] == clap_row));
+        assert!(!after_remove, "toggle_step_hit should remove hit while {tool} tool is active");
+    }
 }

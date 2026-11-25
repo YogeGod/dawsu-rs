@@ -7,12 +7,14 @@
   import Folder from "../icons/Folder.svg?raw";
   import FolderOpen from "../icons/FolderOpen.svg?raw";
   import Plus from "../icons/Plus.svg?raw";
+  import StepPadsRow from "./StepPadsRow.svelte";
 
   // app.js keeps the lane state and builds these rows in renderLanes(); this part only draws them
   // and hands each click back through laneHeaderAction().
   const headers = $derived(bridge.lanes);
   const rows = $derived(headers?.rows ?? []);
   const names = $derived(headers?.names !== false);
+  const stepPadsOn = $derived(Boolean(bridge.view?.stepPadsMode));
   // The drum map's switches (Rust sends them with the view while the drum view is on).
   const drumView = $derived(headers?.drum ? bridge.view?.drumView ?? null : null);
   const folder = folderShades();
@@ -82,6 +84,9 @@
           onclick={() => on.toggleVst(row.row)}>VST</button>
       {/if}
       {#if names && row.tag}<span class="tag-slot"><span class="tag">{row.tag}</span></span>{/if}
+      {#if names && stepPadsOn}
+        <StepPadsRow laneRow={row.row} laneName={row.display} />
+      {/if}
       {#if row.addLayer}
         <button type="button" class="lane-add-layer" aria-label={row.addLayer} title={row.addLayer}
           disabled={headers.busy} onclick={() => on.addLayer(row.row)}>+</button>

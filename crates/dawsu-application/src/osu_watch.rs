@@ -1,11 +1,13 @@
 use crate::sample_watch::file_stamp;
-use std::path::Path;
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
 const DEFAULT_CHECK_INTERVAL: Duration = Duration::from_millis(250);
 const DEFAULT_DEBOUNCE: Duration = Duration::from_millis(300);
 
-/// Lightweight, cross-platform debounced watcher for the currently open `.osu` file.
+/// Lightweight, cross-platform debounced watcher for the currently open `.osu` file and its
+/// sibling `.osu` difficulties inside the same mapset folder.
 ///
 /// Uses metadata `(size, mtime)` polling on `Application::poll()` so it adds zero OS
 /// handle overhead or extra crates, waits for the file stamp to stay stable across the
@@ -18,6 +20,8 @@ pub(crate) struct OsuWatch {
     last_stamp: Option<(u64, SystemTime)>,
     pending_since: Option<(Instant, (u64, SystemTime))>,
     dismissed_bytes: Option<Vec<u8>>,
+    sibling_stamps: BTreeMap<PathBuf, (u64, SystemTime)>,
+    siblings_dirty: bool,
 }
 
 impl Default for OsuWatch {
@@ -29,6 +33,8 @@ impl Default for OsuWatch {
             last_stamp: None,
             pending_since: None,
             dismissed_bytes: None,
+            sibling_stamps: BTreeMap::new(),
+            siblings_dirty: false,
         }
     }
 }
@@ -45,6 +51,8 @@ impl OsuWatch {
         self.last_stamp = None;
         self.pending_since = None;
         self.dismissed_bytes = None;
+        self.sibling_stamps.clear();
+        self.siblings_dirty = false;
         self.next_check = Instant::now() + self.check_interval;
     }
 
@@ -52,7 +60,15 @@ impl OsuWatch {
         self.last_stamp = file_stamp(path);
         self.pending_since = None;
         self.dismissed_bytes = None;
+        self.sibling_stamps = snapshot_sibling_stamps(path);
+        self.siblings_dirty = false;
         self.next_check = Instant::now() + self.check_interval;
+    }
+
+    /// Returns `true` once if any sibling `.osu` file in the mapset folder changed since the
+    /// last reset or check, clearing the flag so live difficulty tabs can re-project cleanly.
+    pub(crate) fn take_siblings_changed(&mut self) -> bool {
+        std::mem::take(&mut self.siblings_dirty)
     }
 
     /// Remember the on-disk bytes the mapper chose to ignore ("Keep my edits") so we don't
@@ -72,6 +88,16 @@ impl OsuWatch {
             return false;
         }
         self.next_check = now + self.check_interval;
+
+        // Also watch sibling `.osu` difficulties in the same mapset folder so live difficulty tabs
+        // re-project automatically when the mapper edits another difficulty in osu!.
+        let current_siblings = snapshot_sibling_stamps(path);
+        if !self.sibling_stamps.is_empty() && current_siblings != self.sibling_stamps {
+            self.sibling_stamps = current_siblings;
+            self.siblings_dirty = true;
+        } else if self.sibling_stamps.is_empty() {
+            self.sibling_stamps = current_siblings;
+        }
 
         let Some(current_stamp) = file_stamp(path) else {
             // File may be mid-rename (e.g. osu! temp-file swap); wait for next tick.
@@ -119,4 +145,27 @@ impl OsuWatch {
         }
         true
     }
+}
+
+fn snapshot_sibling_stamps(active_path: &Path) -> BTreeMap<PathBuf, (u64, SystemTime)> {
+    let mut out = BTreeMap::new();
+    let Some(dir) = active_path.parent() else {
+        return out;
+    };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return out;
+    };
+    for entry in entries.flatten() {
+        let p = entry.path();
+        if p == active_path {
+            continue;
+        }
+        if p.extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("osu"))
+            && let Some(stamp) = file_stamp(&p)
+        {
+            out.insert(p, stamp);
+        }
+    }
+    out
 }

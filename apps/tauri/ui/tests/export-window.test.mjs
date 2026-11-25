@@ -25,14 +25,20 @@ const view = {
 test("a map without stored choices starts with Copy's defaults and every difficulty included", () => {
   const choices = choicesFrom(view);
   const muteOff = { enabled: false, minBeats: 0.5, muteSpinnerEnds: false, onlyUnhit: true, divisors: [] };
-  assert.deepEqual(choices, { leftOut: [], matchWithin: 5, copyVolumes: true, base: false, sliderAudio: false, laterWins: false, mixFormat: "wav16", sliderEndMute: muteOff, fallbackSound: null });
+  const advDefaults = {
+    autoFixStagedMixes: false, writeMode: "direct", hitsoundOnlyDir: null,
+    singleFormat: "source", additionOnlyNormal: "difficulty", tickPolicy: "ignore",
+    allowSchemaGrowth: true, autoCleanupStale: true, takeOverSamples: false,
+    applyVolumeEnvelope: true,
+  };
+  assert.deepEqual(choices, { leftOut: [], matchWithin: 5, copyVolumes: true, base: false, sliderAudio: false, laterWins: false, mixFormat: "wav16", sliderEndMute: muteOff, fallbackSound: null, ...advDefaults });
   assert.notEqual(choices.leftOut, defaultChoices.leftOut, "choices never share the frozen defaults' list");
   assert.notEqual(choices.sliderEndMute, defaultSliderEndMute, "sliderEndMute never shares the frozen default");
   assert.deepEqual(choicesFrom({ choices: { leftOut: ["a.osu"], matchWithin: 3, copyVolumes: false } }),
-    { leftOut: ["a.osu"], matchWithin: 3, copyVolumes: false, base: false, sliderAudio: false, laterWins: false, mixFormat: "wav16", sliderEndMute: muteOff, fallbackSound: null },
+    { leftOut: ["a.osu"], matchWithin: 3, copyVolumes: false, base: false, sliderAudio: false, laterWins: false, mixFormat: "wav16", sliderEndMute: muteOff, fallbackSound: null, ...advDefaults },
     "choices stored before the base difficulty read it as off");
   assert.deepEqual(choicesFrom({ choices: { leftOut: [], matchWithin: 3, copyVolumes: true, base: true, sliderAudio: true, laterWins: true, mixFormat: "ogg_vorbis", fallbackSound: { set: "soft", sound: "normal", volume: 60 } } }),
-    { leftOut: [], matchWithin: 3, copyVolumes: true, base: true, sliderAudio: true, laterWins: true, mixFormat: "ogg_vorbis", sliderEndMute: muteOff, fallbackSound: { set: "soft", sound: "normal", volume: 60 } });
+    { leftOut: [], matchWithin: 3, copyVolumes: true, base: true, sliderAudio: true, laterWins: true, mixFormat: "ogg_vorbis", sliderEndMute: muteOff, fallbackSound: { set: "soft", sound: "normal", volume: 60 }, ...advDefaults });
   assert.deepEqual(included(view.targets, { leftOut: ["Artist - Song (Mapper) [Hard].osu"] }), [insane]);
 });
 

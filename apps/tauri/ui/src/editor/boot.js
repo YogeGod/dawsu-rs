@@ -238,6 +238,10 @@ export function createEditor(env = globalThis, { ui = null, autoStart = true, ex
     switch (kind) {
       case "speed":
         return ctx.act({ kind: "speed", value: args[0] });
+      case "keepPitch":
+        return ctx.act({ kind: "keep_pitch", on: Boolean(args[0]) });
+      case "stepPadsMode":
+        return ctx.act({ kind: "step_pads_mode", on: Boolean(args[0]) });
       case "nextOutputProblem":
         return ctx.showOutputProblem(state.outputProblemIndex + 1);
       case "warnings":
