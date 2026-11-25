@@ -80,9 +80,9 @@ export const items = [
 
   // Map
   { id: "difficulty", label: "Difficulty", choices: "difficulty", close: true },
-  { id: "newDifficulty", label: "New hitsound difficulty…", icon: "FilePlus", command: "newDiff", run: ["click", "new"] },
-  { id: "generate", label: "Generate hitsound difficulty…", icon: "Package", command: "generate", run: ["click", "generate"] },
-  { id: "copyHitsounds", label: "Copy hitsounds…", icon: "Copy", run: ["click", "copy"] },
+  { id: "newDifficulty", label: "New hitsound difficulty…", icon: "FilePlus", command: "newDiff", run: ["call", "openNewDifficulty"] },
+  { id: "generate", label: "Generate hitsound difficulty…", icon: "Package", command: "generate", run: ["call", "openGenerate"] },
+  { id: "copyHitsounds", label: "Copy hitsounds…", icon: "Copy", run: ["call", "openCopy"] },
   { id: "sharedBase", label: "Shared Base layer…", icon: "Layers", run: ["call", "openSharedBase"], enabled: "document" },
   { id: "drumDetection", label: "Drum hit detection…", icon: "Drum", run: ["call", "openDrumWindow"] },
   { id: "nodeGraph", label: "Node graph…", icon: "Layers", run: ["call", "openNodeGraphWindow"] },
@@ -133,8 +133,8 @@ export const items = [
   { id: "laneRename", label: "Rename…", run: ["lane", "rename"], enabled: "laneRename" },
   { id: "laneMoveUp", label: "Move up", run: ["lane", "up"], enabled: "laneUp" },
   { id: "laneMoveDown", label: "Move down", run: ["lane", "down"], enabled: "laneDown" },
-  { id: "laneReplaceSample", label: "Replace sample…", icon: "FolderOpen", run: ["onLane", "click", "replace-sample"], enabled: "laneReplace" },
-  { id: "laneColour", label: "Lane colour…", run: ["onLane", "click", "lane-colour"], enabled: "laneColour" },
+  { id: "laneReplaceSample", label: "Replace sample…", icon: "FolderOpen", run: ["onLane", "call", "openReplaceSample"], enabled: "laneReplace" },
+  { id: "laneColour", label: "Lane colour…", run: ["onLane", "call", "openLaneColour"], enabled: "laneColour" },
   { id: "laneAddLayer", label: "Add numbered layer", icon: "Layers", command: "addNumberedLayer", run: ["onLane", "layer"], enabled: "laneLayer" },
   { id: "laneCloneVariant", label: "Clone as next numbered variant", icon: "CopyPlus", run: ["onLane", "clone"], enabled: "laneClone" },
   { id: "laneAlternate", label: "Alternate selected hits with next lane", icon: "Repeat2", run: ["onLane", "alternate"], enabled: "laneAlternate" },

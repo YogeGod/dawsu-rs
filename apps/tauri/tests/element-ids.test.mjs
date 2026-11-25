@@ -57,6 +57,6 @@ test("every element the editor scripts bind a listener to by id exists in index.
 test("every button the command list presses exists in index.html or a Svelte part", () => {
   const ids = new Set([read("dist/index.html"), ...svelteSources()].flatMap(declaredIds));
   const pressed = [...read("ui/src/lib/commands.js").matchAll(/\["(?:onLane", ")?click", "([\w-]+)"\]/g)].map(match => match[1]);
-  assert.ok(pressed.length > 10, "commands.js presses no buttons; the pattern no longer matches its rows");
+  assert.ok(pressed.length >= 5, "commands.js presses no buttons; the pattern no longer matches its rows");
   assert.deepEqual(pressed.filter(id => !ids.has(id)), [], "commands.js presses ids that no markup declares");
 });

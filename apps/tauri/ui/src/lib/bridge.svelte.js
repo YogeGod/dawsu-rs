@@ -42,6 +42,7 @@ export class Bridge {
   // Lane popover filter state owned by app.js's renderLanes() / map-load reset.
   usedOnly = $state(false);
   laneFilter = $state("");
+  groupBySampleSet = $state(true);
   // Active viewer overlay pushed from the dedicated Node Graph window.
   nodeGraphViewer = $state.raw(null);
   // The map preview is open in its own window (Rust's preview-window event).
@@ -93,9 +94,10 @@ export class Bridge {
     this.rowHeight = rowHeight;
   }
 
-  setLaneOptions(usedOnly, laneFilter) {
+  setLaneOptions(usedOnly, laneFilter, groupBySampleSet = true) {
     this.usedOnly = !!usedOnly;
     this.laneFilter = laneFilter ?? "";
+    this.groupBySampleSet = groupBySampleSet !== false;
   }
 
   setHint(zone) {

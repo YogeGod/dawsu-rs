@@ -4,12 +4,27 @@
   import {
     emptyInspector, fieldHold, inspectorHandlers, shownValue, sliderBodyFields, startingAmount, syncChecked, volumeLabel,
   } from "../lib/inspector.js";
+  import { additionPills, parseVolumeDisplay, sampleSetPills, volumeSliderPercent } from "../lib/inspectorV2.js";
   import InspectorHead from "./InspectorHead.svelte";
 
   const on = inspectorHandlers((...args) => globalThis.inspectorAction(...args));
   const model = $derived(bridge.inspector ?? emptyInspector);
   const selection = $derived(model.selection);
   let open = $state(true);
+
+  const parsedVol = $derived(parseVolumeDisplay(selection?.volume));
+  let sliderDraft = $state(null);
+  const sliderVal = $derived(sliderDraft ?? parsedVol.value);
+  const sliderPct = $derived(volumeSliderPercent(sliderVal));
+  const setPills = $derived(sampleSetPills(selection));
+  const addPills = $derived(additionPills(selection));
+
+  function commitSlider() {
+    if (sliderDraft == null) return;
+    const target = sliderDraft;
+    sliderDraft = null;
+    globalThis.inspectorAction?.("volume", target, false);
+  }
 
   // Start and Insert volume keep what is typed until they lose focus (lib/inspector.js).
   let startHeld = $state(null);
@@ -48,6 +63,30 @@
           <button type="submit" class="insp-small" disabled={model.busy}>Move</button>
         </form>
         <div class="insp-row"><span class="insp-label">Volume</span><output>{selection.volume}</output></div>
+        <div class="insp-slider-row">
+          <input type="range" class="insp-vol-slider" min="5" max="100" step="1"
+            aria-label="Selection volume slider" value={sliderVal} disabled={model.busy}
+            style:--pct="{sliderPct}%"
+            oninput={event => { sliderDraft = Number(event.currentTarget.value); }}
+            onpointerup={commitSlider}
+            onchange={commitSlider}>
+          <button type="button" class="insp-audition-btn" aria-label="Audition selection" title="Audition selected hits"
+            disabled={model.busy} onclick={() => globalThis.inspectorAction?.("auditionSelection")}>▶</button>
+        </div>
+        <div class="insp-pill-bar" role="group" aria-label="Sample set">
+          {#each setPills as pill (pill.id)}
+            <button type="button" class="insp-pill" class:insp-pill-on={pill.active} class:insp-pill-mixed={pill.mixed}
+              aria-pressed={pill.active} disabled={model.busy || pill.disabled} title={pill.title}
+              onclick={() => globalThis.inspectorAction?.("sampleSet", pill.id)}>{pill.label}</button>
+          {/each}
+        </div>
+        <div class="insp-pill-bar" role="group" aria-label="Additions">
+          {#each addPills as pill (pill.id)}
+            <button type="button" class="insp-pill" class:insp-pill-on={pill.active} class:insp-pill-mixed={pill.mixed}
+              aria-pressed={pill.active} disabled={model.busy || pill.disabled} title={pill.title}
+              onclick={() => globalThis.inspectorAction?.("addition", pill.id)}>{pill.label}</button>
+          {/each}
+        </div>
         <div class="insp-row"><span class="insp-label">On object</span><output>{selection.object}</output></div>
       </div>
       <form class="insp-group" aria-label="Change volume" onsubmit={event => on.volume(event, mode, amount)}>

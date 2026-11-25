@@ -24,5 +24,10 @@
     onchange={event => send("usedOnly", event.currentTarget.checked)}>
   Used only
 </label>
+<label class="toggle" title="Group standard lanes under Normal, Soft, and Drum folders">
+  <input id="group-by-sample-set" type="checkbox" checked={bridge.groupBySampleSet} {disabled}
+    onchange={event => send("groupBySampleSet", event.currentTarget.checked)}>
+  Group by sample set
+</label>
 <input id="lane-filter" type="search" aria-label="Filter lanes" placeholder="Filter lanes" size="13"
   value={bridge.laneFilter} {disabled} oninput={event => send("laneFilter", event.currentTarget.value)}>

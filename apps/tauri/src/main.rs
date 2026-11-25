@@ -443,6 +443,16 @@ enum Action {
         value: i32,
         relative: bool,
     },
+    SetSelectionSampleSet {
+        set: String,
+    },
+    ToggleSelectionAddition {
+        addition: String,
+    },
+    AuditionSelection,
+    AutoFixProblem {
+        time_ms: f64,
+    },
     VolumeScope {
         path: PathBuf,
         lanes: Option<Vec<String>>,
@@ -924,6 +934,32 @@ impl Action {
                 }
             }
             Self::Volume { value, relative } => app.selection_volume(value, relative),
+            Self::SetSelectionSampleSet { set } => {
+                let parsed = match set.to_ascii_lowercase().as_str() {
+                    "normal" => Some(SampleSet::Normal),
+                    "soft" => Some(SampleSet::Soft),
+                    "drum" => Some(SampleSet::Drum),
+                    _ => None,
+                };
+                if let Some(sample_set) = parsed {
+                    app.set_selection_sample_set(sample_set);
+                }
+            }
+            Self::ToggleSelectionAddition { addition } => {
+                let sound = match addition.to_ascii_lowercase().as_str() {
+                    "whistle" => Some(Hitsound::Whistle),
+                    "finish" => Some(Hitsound::Finish),
+                    "clap" => Some(Hitsound::Clap),
+                    _ => None,
+                };
+                if let Some(sound) = sound {
+                    app.toggle_selection_addition(sound);
+                }
+            }
+            Self::AuditionSelection => app.audition_selection(),
+            Self::AutoFixProblem { time_ms } => {
+                app.auto_fix_problem(time_ms);
+            }
             Self::VolumeScope { path, lanes } => {
                 if let Err(error) = set_volume_lane_scope(app, &path, lanes) {
                     app.error = Some(error);

@@ -41,6 +41,7 @@ import KeysoundsModal from "./parts/KeysoundsModal.svelte";
 import MapPreview from "./parts/MapPreview.svelte";
 import MidiImportModal from "./parts/MidiImportModal.svelte";
 import NodeGraphWindow from "./parts/NodeGraphWindow.svelte";
+import OverviewDiagnostics from "./parts/OverviewDiagnostics.svelte";
 import PreferencesModal from "./parts/PreferencesModal.svelte";
 import PreviewWindow from "./parts/PreviewWindow.svelte";
 import QuickStartTour from "./parts/QuickStartTour.svelte";
@@ -77,6 +78,7 @@ const parts = {
   menu: EditorMenu,
   "inspector-selection": InspectorSelection, "inspector-lane": InspectorLane, "inspector-difficulty": InspectorDifficulty,
   "inspector-bookmarks": InspectorBookmarks, "inspector-history": InspectorHistory,
+  "overview-diagnostics": OverviewDiagnostics,
   // The map preview, at the top of the Inspector while View › Map preview is on.
   "map-preview": MapPreview,
   // The whole page of the node graph window (node-graph.html).
@@ -213,8 +215,8 @@ export function viewport(zoom, rowHeight) {
   bridge.setViewport(zoom, rowHeight);
 }
 
-export function laneOptions(usedOnly, filter) {
-  bridge.setLaneOptions(usedOnly, filter);
+export function laneOptions(usedOnly, filter, groupBySampleSet = true) {
+  bridge.setLaneOptions(usedOnly, filter, groupBySampleSet);
 }
 
 // Active coverage review filter and focus time shared with boot.js for N / Shift+N stepping.

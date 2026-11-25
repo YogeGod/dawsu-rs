@@ -191,7 +191,15 @@ export function createEditor(env = globalThis, { ui = null, autoStart = true, ex
         } else {
           state.usedLaneKeys = null;
         }
-        ctx.ui()?.laneOptions?.(state.usedLaneKeys !== null, state.laneFilterText);
+        ctx.ui()?.laneOptions?.(state.usedLaneKeys !== null, state.laneFilterText, state.groupBySampleSet !== false);
+        ctx.renderLanes();
+        ctx.paintSoon();
+        return;
+      }
+      case "groupBySampleSet": {
+        state.groupBySampleSet = !!args[0];
+        ctx.ui()?.laneOptions?.(state.usedLaneKeys !== null, state.laneFilterText, state.groupBySampleSet);
+        if (!state.scene || state.drag) return;
         ctx.renderLanes();
         ctx.paintSoon();
         return;

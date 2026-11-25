@@ -3,8 +3,8 @@
 use dawsu_editor::tempo::{Snap, SnapMode, SnapSpacing, TempoMap};
 use dawsu_editor::tools::{PointerInput, TimeRange, ToolPreview, ToolTarget};
 use dawsu_editor::{Clipboard, EditHistory, Selection};
-use dawsu_foundation::{Hitsound, SampleIdentity, SongTime, Sound};
-use dawsu_hitsounding::{Hitsounds, MomentId};
+use dawsu_foundation::{CustomIndex, Hitsound, SampleIdentity, SampleSet, SongTime, Sound};
+use dawsu_hitsounding::{Hitsounds, MomentId, Place};
 use std::{collections::BTreeSet, convert::Infallible};
 
 mod batch;
@@ -353,6 +353,199 @@ impl Composer {
             }
         });
         true
+    }
+
+    /// Moves all selected standard hits to `target_set`, leaving custom file lanes untouched.
+    pub fn set_selection_sample_set(&mut self, target_set: SampleSet) -> bool {
+        let hits = self.hitsounds();
+        let mut moves = Vec::new();
+        for key in self.selected.items() {
+            let Some(moment) = hits.moments().get(key.moment) else {
+                continue;
+            };
+            if !moment.has_hit(&key.lane) {
+                continue;
+            }
+            if let SampleIdentity::Standard { set, sound, index } = key.lane
+                && set != target_set
+            {
+                let next_lane = SampleIdentity::Standard {
+                    set: target_set,
+                    sound,
+                    index,
+                };
+                let vol = moment.hit_volume(&key.lane);
+                moves.push((key.moment, key.lane.clone(), next_lane, vol));
+            }
+        }
+        if moves.is_empty() {
+            return false;
+        }
+        let mut next_selected: Vec<HitKey> = self.selected.items().iter().cloned().collect();
+        self.apply("Change sample set", |hits| {
+            for (moment_idx, old_lane, new_lane, vol) in &moves {
+                let id = MomentId(*moment_idx);
+                hits.remove_hit(id, old_lane);
+                hits.add_hit_with_volume(id, new_lane.clone(), *vol);
+            }
+        });
+        for key in &mut next_selected {
+            if let Some((_, _, new_lane, _)) = moves
+                .iter()
+                .find(|(m, old, _, _)| *m == key.moment && old == &key.lane)
+            {
+                key.lane = new_lane.clone();
+            }
+        }
+        self.selected.replace(next_selected);
+        true
+    }
+
+    /// Toggles an addition (`Whistle`, `Finish`, or `Clap`) across all selected moments.
+    pub fn toggle_selection_addition(&mut self, addition: Hitsound) -> bool {
+        if !matches!(addition, Hitsound::Whistle | Hitsound::Finish | Hitsound::Clap) {
+            return false;
+        }
+        let hits = self.hitsounds();
+        let moments: BTreeSet<usize> = self
+            .selected
+            .items()
+            .iter()
+            .filter_map(|key| {
+                hits.moments()
+                    .get(key.moment)?
+                    .has_hit(&key.lane)
+                    .then_some(key.moment)
+            })
+            .collect();
+        if moments.is_empty() {
+            return false;
+        }
+        let target_sound = Sound::Hit(addition);
+        let all_have = moments.iter().all(|&idx| {
+            hits.moments()[idx].hits().any(|lane| {
+                matches!(lane, SampleIdentity::Standard { sound, .. } if *sound == target_sound)
+            })
+        });
+        let mut removals = Vec::new();
+        let mut additions_to_add = Vec::new();
+        for &idx in &moments {
+            let moment = &hits.moments()[idx];
+            if all_have {
+                for lane in moment.hits() {
+                    if matches!(lane, SampleIdentity::Standard { sound, .. } if *sound == target_sound) {
+                        removals.push((MomentId(idx), lane.clone()));
+                    }
+                }
+            } else {
+                let already = moment.hits().any(|lane| {
+                    matches!(lane, SampleIdentity::Standard { sound, .. } if *sound == target_sound)
+                });
+                if !already {
+                    let chosen_set = moment
+                        .hits()
+                        .find_map(|lane| match lane {
+                            SampleIdentity::Standard {
+                                set,
+                                sound: Sound::Hit(Hitsound::Normal),
+                                ..
+                            } => Some(*set),
+                            _ => None,
+                        })
+                        .or_else(|| {
+                            moment.hits().find_map(|lane| match lane {
+                                SampleIdentity::Standard { set, .. } => Some(*set),
+                                _ => None,
+                            })
+                        })
+                        .unwrap_or(SampleSet::Normal);
+                    let new_lane = SampleIdentity::Standard {
+                        set: chosen_set,
+                        sound: target_sound,
+                        index: CustomIndex::default(),
+                    };
+                    additions_to_add.push((MomentId(idx), new_lane, moment.volume()));
+                }
+            }
+        }
+        if removals.is_empty() && additions_to_add.is_empty() {
+            return false;
+        }
+        self.apply("Toggle addition", |hits| {
+            for (id, lane) in &removals {
+                hits.remove_hit(*id, lane);
+            }
+            for (id, lane, vol) in &additions_to_add {
+                hits.add_hit_with_volume(*id, lane.clone(), *vol);
+            }
+        });
+        true
+    }
+
+    /// Plain-English single-click auto-fix for a coverage or orphan issue at `time_ms`.
+    pub fn auto_fix_at(&mut self, time_ms: f64) -> Option<String> {
+        if !time_ms.is_finite() {
+            return None;
+        }
+        let hits = self.hitsounds();
+        let (target_idx, moment) = hits
+            .moments()
+            .iter()
+            .enumerate()
+            .min_by(|(_, a), (_, b)| {
+                (a.time().ms() - time_ms)
+                    .abs()
+                    .total_cmp(&(b.time().ms() - time_ms).abs())
+            })?;
+        if (moment.time().ms() - time_ms).abs() > 2.0 {
+            return None;
+        }
+        if moment.place() == Place::NoObject && moment.hits().next().is_some() {
+            let orphaned: Vec<(SampleIdentity, i32)> = moment
+                .hits()
+                .map(|lane| (lane.clone(), moment.hit_volume(lane)))
+                .collect();
+            let nearest_obj = hits
+                .moments()
+                .iter()
+                .enumerate()
+                .filter(|(_, m)| m.place() != Place::NoObject)
+                .map(|(i, m)| (i, (m.time().ms() - moment.time().ms()).abs()))
+                .filter(|(_, dist)| *dist <= 50.0)
+                .min_by(|a, b| a.1.total_cmp(&b.1))
+                .map(|(i, _)| i);
+            if let Some(dest_idx) = nearest_obj {
+                self.apply("Snap orphaned hits to object", |h| {
+                    let src = MomentId(target_idx);
+                    let dst = MomentId(dest_idx);
+                    for (lane, vol) in &orphaned {
+                        h.remove_hit(src, lane);
+                        h.add_hit_with_volume(dst, lane.clone(), *vol);
+                    }
+                });
+                return Some("Snapped orphaned hits to nearest object".into());
+            }
+            self.apply("Remove orphaned hits", |h| {
+                let src = MomentId(target_idx);
+                for (lane, _) in &orphaned {
+                    h.remove_hit(src, lane);
+                }
+            });
+            return Some("Removed orphaned hits".into());
+        }
+        if moment.place() != Place::NoObject && moment.hits().next().is_none() {
+            let default_lane = SampleIdentity::Standard {
+                set: SampleSet::Normal,
+                sound: Sound::Hit(Hitsound::Normal),
+                index: CustomIndex::default(),
+            };
+            let vol = self.insert_volume.clamp(dawsu_hitsounding::rules::SAVED_VOLUME_FLOOR, 100);
+            self.apply("Add default hitnormal", |h| {
+                h.add_hit_with_volume(MomentId(target_idx), default_lane.clone(), vol);
+            });
+            return Some("Added default hitnormal".into());
+        }
+        None
     }
     pub fn select_all(&mut self) {
         self.selected.replace(

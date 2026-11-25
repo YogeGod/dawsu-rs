@@ -766,7 +766,7 @@ fn build_verify_expected(
             ));
         }
         for (i, m) in mix_target.moments().iter().enumerate() {
-            if m.is_changed() {
+            if m.is_changed() || effective.moments().get(i).is_some_and(|em| em.is_changed()) {
                 let hits: Vec<_> = m
                     .hits()
                     .map(|lane| (lane.clone(), m.hit_volume(lane)))
@@ -3849,6 +3849,84 @@ impl Application {
             d.composer.volume_for_lanes(v, relative, self.selection_lane_scope.as_ref());
         }
         self.refresh_recovery_edit();
+    }
+
+    pub fn set_selection_sample_set(&mut self, set: SampleSet) -> bool {
+        if self.busy || self.is_stroke_open() {
+            return false;
+        }
+        let changed = self
+            .document
+            .as_mut()
+            .is_some_and(|d| d.composer.set_selection_sample_set(set));
+        if changed {
+            self.refresh_recovery_edit();
+        }
+        changed
+    }
+
+    pub fn toggle_selection_addition(&mut self, addition: Hitsound) -> bool {
+        if self.busy || self.is_stroke_open() {
+            return false;
+        }
+        let changed = self
+            .document
+            .as_mut()
+            .is_some_and(|d| d.composer.toggle_selection_addition(addition));
+        if changed {
+            self.refresh_recovery_edit();
+        }
+        changed
+    }
+
+    pub fn audition_selection(&mut self) {
+        let hits: Vec<(SampleIdentity, f32)> = {
+            let Some(d) = self.document.as_ref() else {
+                return;
+            };
+            let model = d.composer.hitsounds();
+            let Some(first_moment) = d
+                .composer
+                .selected
+                .items()
+                .iter()
+                .filter_map(|key| {
+                    model
+                        .moments()
+                        .get(key.moment)?
+                        .has_hit(&key.lane)
+                        .then_some(key.moment)
+                })
+                .min()
+            else {
+                return;
+            };
+            let moment = &model.moments()[first_moment];
+            moment
+                .hits()
+                .map(|lane| (lane.clone(), moment.hit_volume(lane) as f32 / 100.0))
+                .collect()
+        };
+        for (lane, gain) in hits {
+            self.audition_lane(&lane, gain);
+        }
+    }
+
+    pub fn auto_fix_problem(&mut self, time_ms: f64) -> bool {
+        if self.busy || self.is_stroke_open() {
+            return false;
+        }
+        let outcome = self
+            .document
+            .as_mut()
+            .and_then(|d| d.composer.auto_fix_at(time_ms));
+        if let Some(msg) = outcome {
+            self.status = msg;
+            self.refresh_recovery_edit();
+            true
+        } else {
+            false
+        }
     }
     pub fn set_hs_mode(&mut self, hs: bool) {
         if self.busy {

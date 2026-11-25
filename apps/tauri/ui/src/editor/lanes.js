@@ -207,6 +207,10 @@ export function attachLanes(ctx) {
       }
     }
 
+    if (state.groupBySampleSet === false) {
+      state.laneRows = eligible.filter(row => !state.previewParents.has(row));
+      return;
+    }
     const rowsByFolder = new Map(state.sampleFolderOrder.map(group => [group, []]));
     const looseRows = [];
     for (const row of eligible) {
@@ -259,7 +263,7 @@ export function attachLanes(ctx) {
     lanePanel.style.setProperty("--lane-row-height", state.scene.rowHeight + "px");
     const laneKey = JSON.stringify([state.laneRows, drumNames, state.scene.lanes, state.view.activeLane, [...state.selectionLaneKeys],
       [...state.familyParents], state.view.panels?.laneNames !== false, state.showLaneInfo, [...state.laneColours], [...state.renamedLanes], !!state.view.busy,
-      !!state.view.drumView?.enabled, state.view.drumView?.name ?? null]);
+      !!state.view.drumView?.enabled, state.view.drumView?.name ?? null, state.groupBySampleSet !== false, state.scene.rowHeight >= 40]);
     if (lanePanel.dataset.state !== laneKey) {
       lanePanel.dataset.state = laneKey;
       state.laneHeaders = laneHeaderModel(drumNames, drumRowIndices);
@@ -339,6 +343,7 @@ export function attachLanes(ctx) {
         type: "lane", key: drum ? "drum:" + position : "lane:" + row, row,
         number: drum ? position + 1 : numbers.get(row),
         name: !state.showLaneInfo && !drum && !state.renamedLanes.has(lane.colourKey) ? sound.name : label, label, display: displayName,
+        ...(state.scene.rowHeight >= 40 && !drum && lane.sample && lane.sample !== sound.name ? { caption: lane.sample } : {}),
         title: (lane.sample ?? label) + ". Click to select and audition; Ctrl/Cmd toggles; Shift selects a range",
         tag: drum ? null : sound.set, icon: sound.icon,
         // Yoge, 2026-11-20 (ADR 0068): a lane is grey unless the mapper picked a colour.

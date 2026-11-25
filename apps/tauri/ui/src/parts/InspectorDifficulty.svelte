@@ -3,7 +3,6 @@
   import { emptyInspector, inspectorHandlers } from "../lib/inspector.js";
   import CoverageReview from "./CoverageReview.svelte";
   import InspectorHead from "./InspectorHead.svelte";
-  import ProblemMap from "./ProblemMap.svelte";
 
   const on = inspectorHandlers((...args) => globalThis.inspectorAction(...args));
   const model = $derived(bridge.inspector ?? emptyInspector);
@@ -13,9 +12,8 @@
 
 <div class="insp">
   <InspectorHead title="Difficulty" body="inspector-difficulty-body" bind:open />
-  <!-- Folded, the buttons stay in the page: the Map menu and the New difficulty shortcut click them by id. -->
+  <!-- Folded, the buttons stay in the page for backwards compatibility; menus use direct menuCalls. -->
   <div id="inspector-difficulty-body" hidden={!open}>
-    <ProblemMap />
     <CoverageReview />
     <div class="insp-actions">
       <button id="generate" type="button" disabled={!model.doc} onclick={() => on.open("generate")}>Generate…</button>
