@@ -132,20 +132,23 @@ impl StemSeparationManager {
             .map_err(|e| format!("Could not read song metadata for stem cache key: {e}"))?;
         let len = meta.len();
         let modified = meta.modified().ok();
-        if let Ok(guard) = self.cached_song_hash.lock()
-            && let Some(entry) = guard.as_ref()
-            && entry.path == song_path
-            && entry.len == len
-            && entry.modified == modified
-        {
-            return Ok(entry.sha256.clone());
+        if let Some(mtime) = modified {
+            let guard = self.cached_song_hash.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(entry) = guard.as_ref()
+                && entry.path == song_path
+                && entry.len == len
+                && entry.modified == Some(mtime)
+            {
+                return Ok(entry.sha256.clone());
+            }
         }
         let sha256 = file_sha256_hex(song_path)?;
-        if let Ok(mut guard) = self.cached_song_hash.lock() {
+        if let Some(mtime) = modified {
+            let mut guard = self.cached_song_hash.lock().unwrap_or_else(|e| e.into_inner());
             *guard = Some(CachedSongHash {
                 path: song_path.to_path_buf(),
                 len,
-                modified,
+                modified: Some(mtime),
                 sha256: sha256.clone(),
             });
         }

@@ -114,24 +114,15 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 
-#[derive(Clone, Debug, PartialEq, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CoverageIssue {
-    pub id: String,
-    pub kind: &'static str,
-    pub time: f64,
-    pub hit_count: usize,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, serde::Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CoverageSummary {
     pub matched: usize,
     pub empty: usize,
+    pub fallback_covered: usize,
     pub orphaned: usize,
     pub total_objects: usize,
     pub fallback_active: bool,
-    pub issues: Vec<CoverageIssue>,
 }
 
 pub struct Document {
@@ -285,9 +276,9 @@ impl Document {
         self.export_choices.as_ref()
     }
 
-    /// Classifies every moment in this difficulty into Covered / Empty / Orphaned.
+    /// Lightweight per-difficulty coverage counts computed in Rust.
     /// When an export Fallback sound is configured, gameplay objects with no explicit
-    /// hitsounds count as Covered because export will fill them automatically.
+    /// hitsounds count as `fallback_covered` (and are included in `matched`, not `empty`).
     pub fn coverage_summary(&self) -> CoverageSummary {
         let fallback_active = self
             .export_choices
@@ -296,41 +287,31 @@ impl Document {
             .is_some();
         let mut matched = 0usize;
         let mut empty = 0usize;
+        let mut fallback_covered = 0usize;
         let mut orphaned = 0usize;
-        let mut issues = Vec::new();
-        for (index, moment) in self.composer.hitsounds().moments().iter().enumerate() {
+        for moment in self.composer.hitsounds().moments() {
             let on_object = moment.place() != dawsu_hitsounding::Place::NoObject;
             let hit_count = moment.hits().count();
             if on_object {
-                if hit_count > 0 || fallback_active {
+                if hit_count > 0 {
                     matched += 1;
+                } else if fallback_active {
+                    matched += 1;
+                    fallback_covered += 1;
                 } else {
                     empty += 1;
-                    issues.push(CoverageIssue {
-                        id: format!("empty:{index}"),
-                        kind: "empty",
-                        time: moment.time().ms(),
-                        hit_count: 0,
-                    });
                 }
             } else if hit_count > 0 {
                 orphaned += 1;
-                issues.push(CoverageIssue {
-                    id: format!("orphaned:{index}"),
-                    kind: "orphaned",
-                    time: moment.time().ms(),
-                    hit_count,
-                });
             }
         }
-        issues.sort_by(|a, b| a.time.total_cmp(&b.time));
         CoverageSummary {
             matched,
             empty,
+            fallback_covered,
             orphaned,
             total_objects: matched + empty,
             fallback_active,
-            issues,
         }
     }
     pub fn editor_bars(&self) -> &[EditorBarSection] {

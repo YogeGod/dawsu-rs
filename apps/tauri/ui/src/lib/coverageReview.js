@@ -67,27 +67,27 @@ export function analyzeCoverage(moments) {
 }
 
 /**
- * Normalize Rust's `scene.coverage` summary (attaching formatted clock labels),
- * falling back to local `analyzeCoverage(moments)` only when Rust coverage is absent.
+ * Combine Rust's lightweight `scene.coverage` counts (including `fallbackActive` / `fallbackCovered`)
+ * with the locally derived issue jump list from `scene.moments` (avoiding large IPC arrays on edits).
  */
 export function normalizeCoverage(rustCoverage, moments) {
-  if (rustCoverage && typeof rustCoverage === "object" && Array.isArray(rustCoverage.issues)) {
+  const local = analyzeCoverage(moments);
+  if (rustCoverage && typeof rustCoverage === "object") {
+    const fallbackActive = Boolean(rustCoverage.fallbackActive);
+    const issues = fallbackActive
+      ? local.issues.filter(item => item.kind !== "empty")
+      : local.issues;
     return {
       matched: Number(rustCoverage.matched) || 0,
       empty: Number(rustCoverage.empty) || 0,
+      fallbackCovered: Number(rustCoverage.fallbackCovered) || 0,
       orphaned: Number(rustCoverage.orphaned) || 0,
       totalObjects: Number(rustCoverage.totalObjects) || 0,
-      fallbackActive: Boolean(rustCoverage.fallbackActive),
-      issues: rustCoverage.issues.map(item => ({
-        id: String(item.id ?? ""),
-        kind: item.kind === "orphaned" ? "orphaned" : "empty",
-        time: Number(item.time) || 0,
-        clock: formatTime(Number(item.time) || 0),
-        hitCount: Number(item.hitCount) || 0,
-      })),
+      fallbackActive,
+      issues,
     };
   }
-  return { ...analyzeCoverage(moments), fallbackActive: false };
+  return { ...local, fallbackCovered: 0, fallbackActive: false };
 }
 
 /**

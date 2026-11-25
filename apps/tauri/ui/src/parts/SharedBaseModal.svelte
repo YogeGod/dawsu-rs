@@ -247,6 +247,9 @@
               {busy ? "Working…" : "Apply Base to all diffs"}
             </button>
           </div>
+          <p class="sb-hint">
+            "Apply Base to all diffs" saves sibling <code>.osu</code> files directly to disk (with backups); Ctrl+Z only undoes the currently open diff.
+          </p>
         </div>
 
         <div class="sb-section sb-divider sb-actions-row">

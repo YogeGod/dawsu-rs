@@ -436,7 +436,7 @@ impl WritePlan {
             .collect();
         for mix in self.mixes.iter().filter(|mix| !mix.is_reused()) {
             let trimmed_ms = mix.trimmed_leading_silence_ms();
-            if trimmed_ms > 0.0 {
+            if trimmed_ms >= 0.05 {
                 let name = mix
                     .path
                     .file_name()

@@ -66,11 +66,11 @@
   <div id="inspector-coverage-body" class="cov-body" hidden={!open}>
     <div class="cov-stats" aria-label="Coverage counts">
       <div class="cov-stat cov-stat-matched">
-        <span class="cov-stat-label">Covered</span>
+        <span class="cov-stat-label">Covered{summary.fallbackCovered > 0 ? ` (+${summary.fallbackCovered} fallback)` : ""}</span>
         <span class="cov-stat-value">{summary.matched}</span>
       </div>
       <div class="cov-stat cov-stat-empty">
-        <span class="cov-stat-label">Empty{summary.fallbackActive ? " (fallback)" : ""}</span>
+        <span class="cov-stat-label">Empty</span>
         <span class="cov-stat-value">{summary.empty}</span>
       </div>
       <div class="cov-stat cov-stat-orphaned">

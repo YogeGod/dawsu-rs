@@ -504,14 +504,17 @@ impl Application {
             .ok_or_else(|| "No Shared Base captured for this mapset yet.".to_string())?;
         let leniency = clamp_leniency(leniency_ms);
 
-        let (current_path, siblings, folder_files) = {
+        let (current_path, siblings) = {
             let document = self.document.as_ref().ok_or("Open a difficulty first.")?;
-            (
-                document.path.clone(),
-                document.difficulties.clone(),
-                document.files.clone(),
-            )
+            (document.path.clone(), document.difficulties.clone())
         };
+        let current_canon = current_path
+            .canonicalize()
+            .unwrap_or_else(|_| current_path.clone());
+        let folder_files = current_path
+            .parent()
+            .and_then(|p| dawsu_osu_format::list_folder(p).ok())
+            .unwrap_or_default();
 
         let mut updated_diffs = usize::from(current_result.applied_moments > 0);
         let mut skipped_diffs = usize::from(current_result.applied_moments == 0);
@@ -522,7 +525,17 @@ impl Application {
         let policy = dawsu_foundation::safe_write::BackupPolicy::new(self.backups_folder(), 20);
 
         for sibling_path in siblings {
-            if sibling_path == current_path {
+            let sibling_canon = sibling_path
+                .canonicalize()
+                .unwrap_or_else(|_| sibling_path.clone());
+            let is_same_file = if cfg!(windows) {
+                sibling_canon
+                    .to_string_lossy()
+                    .eq_ignore_ascii_case(&current_canon.to_string_lossy())
+            } else {
+                sibling_canon == current_canon
+            };
+            if is_same_file {
                 continue;
             }
             let diff_name = sibling_path
@@ -539,6 +552,11 @@ impl Application {
                 }
             };
             let parsed = dawsu_osu_format::OsuFile::read(original_bytes.clone());
+            // Skip dedicated [Hitsounds] template diffs (no real gameplay objects or named [Hitsounds]).
+            if sibling_key.contains("[hitsounds]") || parsed.file.hit_objects().is_empty() {
+                skipped_diffs += 1;
+                continue;
+            }
             let mut hits = match dawsu_hitsounding::decompile(
                 &parsed.file,
                 &folder_files,
@@ -557,8 +575,11 @@ impl Application {
             };
 
             let diff_overrides = layer.overrides_by_diff.get(&sibling_key);
-            let mut planned: Vec<(MomentId, i64, i64, Vec<(SampleIdentity, i32)>)> = Vec::new();
-            let mut sibling_skipped = 0usize;
+            // Deduplicate per MomentId: keep only the closest base moment within leniency.
+            let mut best_by_moment: BTreeMap<usize, (MomentId, f64, i64, i64, Vec<(SampleIdentity, i32)>)> =
+                BTreeMap::new();
+            let mut skipped_moment_ids: BTreeSet<usize> = BTreeSet::new();
+            let mut unresolved_moments = 0usize;
 
             for base_moment in &layer.moments {
                 let Some((moment_id, matched_ms)) =
@@ -570,7 +591,7 @@ impl Application {
                     set.contains(&matched_ms) || set.contains(&base_moment.time_ms)
                 });
                 if is_overridden && !overwrite_overrides {
-                    sibling_skipped += 1;
+                    skipped_moment_ids.insert(moment_id.0);
                     continue;
                 }
                 let mut resolved_hits = Vec::with_capacity(base_moment.hits.len());
@@ -579,14 +600,38 @@ impl Application {
                         resolved_hits.push((identity, i32::from(hit.volume.min(100))));
                     }
                 }
-                planned.push((moment_id, matched_ms, base_moment.time_ms, resolved_hits));
+                // Never wipe an existing sibling moment if Base had hits that failed to resolve.
+                if !base_moment.hits.is_empty() && resolved_hits.is_empty() {
+                    unresolved_moments += 1;
+                    continue;
+                }
+                let dist = (matched_ms - base_moment.time_ms).abs() as f64;
+                let replace = best_by_moment
+                    .get(&moment_id.0)
+                    .is_none_or(|(_, prev_dist, _, _, _)| dist < *prev_dist);
+                if replace {
+                    best_by_moment.insert(
+                        moment_id.0,
+                        (moment_id, dist, matched_ms, base_moment.time_ms, resolved_hits),
+                    );
+                }
             }
 
-            total_skipped_overrides += sibling_skipped;
-            if planned.is_empty() {
+            if unresolved_moments > 0 {
+                failed_diffs.push(format!(
+                    "{diff_name}: skipped {unresolved_moments} moment(s) with unresolved sample names"
+                ));
+            }
+            total_skipped_overrides += skipped_moment_ids.len();
+            if best_by_moment.is_empty() {
                 skipped_diffs += 1;
                 continue;
             }
+
+            let planned: Vec<(MomentId, i64, i64, Vec<(SampleIdentity, i32)>)> = best_by_moment
+                .into_values()
+                .map(|(id, _, matched_ms, base_ms, new_hits)| (id, matched_ms, base_ms, new_hits))
+                .collect();
 
             for (moment_id, _, _, new_hits) in &planned {
                 let existing: Vec<SampleIdentity> =
@@ -620,7 +665,29 @@ impl Application {
                 continue;
             }
             let out_bytes = out_file.to_bytes();
+            let clear_sibling_overrides = |layer: &mut SharedBaseLayer| -> bool {
+                if !overwrite_overrides {
+                    return false;
+                }
+                if let Some(set) = layer.overrides_by_diff.get_mut(&sibling_key) {
+                    let before = set.len();
+                    for (_, matched_ms, base_ms, _) in &planned {
+                        set.remove(matched_ms);
+                        set.remove(base_ms);
+                    }
+                    let changed = set.len() != before;
+                    if set.is_empty() {
+                        layer.overrides_by_diff.remove(&sibling_key);
+                    }
+                    changed
+                } else {
+                    false
+                }
+            };
             if out_bytes == original_bytes {
+                if clear_sibling_overrides(&mut layer) {
+                    layer_dirty = true;
+                }
                 skipped_diffs += 1;
                 continue;
             }
@@ -636,20 +703,14 @@ impl Application {
                 Ok(dawsu_osu_format::SaveOutcome::Saved { .. }) => {
                     updated_diffs += 1;
                     total_applied_moments += planned.len();
-                    if overwrite_overrides
-                        && let Some(set) = layer.overrides_by_diff.get_mut(&sibling_key)
-                    {
-                        for (_, matched_ms, base_ms, _) in &planned {
-                            set.remove(matched_ms);
-                            set.remove(base_ms);
-                        }
-                        if set.is_empty() {
-                            layer.overrides_by_diff.remove(&sibling_key);
-                        }
+                    if clear_sibling_overrides(&mut layer) {
                         layer_dirty = true;
                     }
                 }
                 Ok(dawsu_osu_format::SaveOutcome::NothingToSave) => {
+                    if clear_sibling_overrides(&mut layer) {
+                        layer_dirty = true;
+                    }
                     skipped_diffs += 1;
                 }
                 Ok(other) => {
@@ -664,8 +725,10 @@ impl Application {
             }
         }
 
-        if layer_dirty {
-            let _ = save_base(&path, &layer);
+        if layer_dirty
+            && let Err(e) = save_base(&path, &layer)
+        {
+            failed_diffs.push(format!("Shared Base metadata could not be saved: {e}"));
         }
 
         let status = self
@@ -673,9 +736,16 @@ impl Application {
             .as_ref()
             .map(|doc| build_status(doc, Some(&layer)))
             .unwrap_or_default();
-        self.status = format!(
-            "Applied Shared Base across {updated_diffs} diff(s) ({total_applied_moments} moments, {total_skipped_overrides} overrides kept)."
-        );
+        self.status = if failed_diffs.is_empty() {
+            format!(
+                "Applied Shared Base across {updated_diffs} diff(s) ({total_applied_moments} moments, {total_skipped_overrides} overrides kept)."
+            )
+        } else {
+            format!(
+                "Applied Shared Base across {updated_diffs} diff(s) ({total_applied_moments} moments, {} issue(s)).",
+                failed_diffs.len()
+            )
+        };
         Ok(SharedBaseApplyAllResult {
             updated_diffs,
             skipped_diffs,
@@ -1158,7 +1228,7 @@ mod tests {
         let with_fallback = doc.coverage_summary();
         assert!(with_fallback.fallback_active);
         assert_eq!(with_fallback.empty, 0);
+        assert_eq!(with_fallback.fallback_covered, 1);
         assert_eq!(with_fallback.matched, 1);
-        assert!(with_fallback.issues.is_empty());
     }
 }
