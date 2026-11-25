@@ -4,6 +4,7 @@ import { render } from "svelte/server";
 import { bridge } from "../src/lib/bridge.svelte.js";
 import { emptyInspector, problemMarkHandlers, problemStrip, signedClock } from "../src/lib/inspector.js";
 import InspectorDifficulty from "../src/parts/InspectorDifficulty.svelte";
+import ProblemMap from "../src/parts/ProblemMap.svelte";
 
 // What app.js's inspectorModel() hands over as problemStrip.
 const input = (more = {}) => ({
@@ -15,7 +16,7 @@ function shown(strip) {
   bridge.inspector = { ...emptyInspector, doc: !!strip, problemStrip: strip };
   bridge.view = strip ? { busy: false } : null;
   bridge.scene = strip ? { path: "a.osu" } : null;
-  return render(InspectorDifficulty).body;
+  return render(ProblemMap).body + "\n" + render(InspectorDifficulty).body;
 }
 const marks = html => [...html.matchAll(/<button type="button" class="pm-mark pm-(\w+)"[^>]*>/g)].map(match => ({
   kind: match[1], tag: match[0], label: match[0].match(/aria-label="([^"]+)"/)?.[1],

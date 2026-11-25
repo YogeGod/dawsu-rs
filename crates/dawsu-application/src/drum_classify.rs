@@ -176,6 +176,7 @@ pub fn auto_detect_drum_map(
                     lane: None,
                     slot: None,
                     midi_note: Some(role.midi_note()),
+                    choke_group: None,
                 });
                 row_num += 1;
             }
@@ -194,6 +195,7 @@ pub fn auto_detect_drum_map(
                 lane: Some(lane_key(lane)),
                 slot: None,
                 midi_note: Some(role.midi_note()),
+                choke_group: None,
             });
             row_num += 1;
         }

@@ -169,6 +169,77 @@ pub struct ExportStatus<'a> {
 }
 
 impl Application {
+    /// Previews one Export target difficulty's planned hitsounds over the song without writing files.
+    pub fn listen_export_target(&mut self, target_path: &std::path::Path) -> Result<(), String> {
+        let targets = self.export_targets();
+        let canonical_target = targets
+            .into_iter()
+            .find(|p| p == target_path)
+            .ok_or_else(|| "Choose a target difficulty in this mapset to preview.".to_string())?;
+        let osu = if let Some(planned) = self
+            .export
+            .preview
+            .as_ref()
+            .and_then(|p| p.plan.files.iter().find(|f| f.path == canonical_target))
+        {
+            planned.file.clone()
+        } else {
+            let bytes = std::fs::read(&canonical_target).map_err(|e| e.to_string())?;
+            dawsu_osu_format::OsuFile::read(bytes).file
+        };
+        let folder_files = self
+            .document
+            .as_ref()
+            .map(|d| d.files.clone())
+            .unwrap_or_default();
+        let hits = match dawsu_hitsounding::decompile(&osu, &folder_files, &|| false, &mut |_, _| {}) {
+            dawsu_hitsounding::Decompiled::Done(h) => h,
+            other => return Err(crate::refusals::open(&other)),
+        };
+        let raw_cues = dawsu_hitsounding::cue_list_filtered(&hits, &[], &[], |_, _| false);
+        let mut staged_clips: std::collections::HashMap<String, Arc<dawsu_audio::AudioClip>> =
+            std::collections::HashMap::new();
+        if let Some(preview) = self.export.preview.as_ref() {
+            for mix in preview.plan.mixes.iter().chain(preview.plan.pending.iter()) {
+                if let Some(name) = mix.path.file_name().and_then(|n| n.to_str()) {
+                    staged_clips.insert(name.to_ascii_lowercase(), Arc::new(mix.clip()));
+                }
+            }
+        }
+        let mut sounds = Vec::with_capacity(raw_cues.len());
+        for cue in raw_cues {
+            let staged = match cue.sample() {
+                dawsu_foundation::SampleIdentity::File(name) => {
+                    staged_clips.get(&name.to_ascii_lowercase()).cloned()
+                }
+                _ => None,
+            };
+            if let Some(clip) = staged.or_else(|| self.samples.get(cue.sample()).cloned()) {
+                sounds.push(dawsu_audio::ScheduledSound {
+                    at_ms: cue.time().ms(),
+                    end_ms: cue.loop_end().map(|t| t.ms()),
+                    clip,
+                    gain: cue.gain() as f32,
+                });
+            }
+        }
+        if let Some(a) = &self.audio {
+            a.load_at_speed(self.active_song_clip(), sounds, self.playback_speed);
+            a.gains(self.playback_song_gain(), self.preferences.master_gain);
+            a.hitsound_gain(self.playback_hitsound_gain());
+        }
+        self.play_from(self.position_ms());
+        Ok(())
+    }
+
+    /// Stops Export target preview playback and restores the open difficulty's audio cues.
+    pub fn stop_export_listen(&mut self) {
+        if self.is_playing() {
+            self.stop();
+        }
+        self.sync_audio();
+    }
+
     /// Queues a preview and answers at once with its id. A newer request drops the
     /// finished preview and any running one, so Export is never run on old options.
     pub fn request_export_preview(&mut self, options: ExportOptions) -> Result<u64, String> {

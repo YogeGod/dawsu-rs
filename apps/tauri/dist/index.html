@@ -75,6 +75,7 @@
     <div class="row lane-mode" role="group" aria-label="Lane view">
       <button id="samples-view" type="button" aria-pressed="true" aria-label="Hitsounds" data-doc><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 13a2 2 0 0 0 2-2V7a2 2 0 0 1 4 0v13a2 2 0 0 0 4 0V4a2 2 0 0 1 4 0v13a2 2 0 0 0 4 0v-4a2 2 0 0 1 2-2"/></svg><span class="lane-mode-label">Hitsounds</span></button>
       <button id="drums-view" type="button" aria-pressed="false" aria-label="Drums" data-doc><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m2 2 8 8M22 2l-8 8"/><ellipse cx="12" cy="9" rx="10" ry="5"/><path d="M7 13.4v7.9M12 14v8M17 13.4v7.9M2 9v8a10 5 0 0 0 20 0V9"/></svg><span class="lane-mode-label">Drums</span></button>
+      <button id="keysounds-view" type="button" aria-pressed="false" aria-label="Keysounds" title="Melodic Keysounding (Piano Roll)" data-doc><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 4v10M11 4v10M15 4v10M19 4v10"/></svg><span class="lane-mode-label">Keysounds</span></button>
       <button id="drums-vst3-toggle" type="button" aria-pressed="false" aria-label="Drum VST3" title="Play mapped drum lanes through a VST3 instrument" data-doc hidden><span class="lane-mode-label">VST3</span></button>
       <button id="drums-vst3-menu" type="button" aria-label="Drums VST settings" title="Drums VST3 instrument, editor, state & render…" data-doc hidden>▾</button>
     </div>
@@ -156,7 +157,7 @@
         <div class="mixer-host" data-ui-mount="mixer"></div>
       </div>
       <div class="overview">
-        <div class="lane-title ruler-controls"><span>Objects overview</span></div>
+        <div class="lane-title ruler-controls" data-ui-mount="overview-diagnostics"><span>Objects overview</span></div>
         <canvas id="overview" aria-label="Song overview" data-hint-zone="overview"></canvas>
       </div>
 
@@ -182,10 +183,12 @@
 </section>
 <div id="statusbar" data-ui-mount="status-bar"><span id="status" role="status"></span></div>
 <div data-ui-mount="hit-card"></div>
+<div data-ui-mount="micro-hud"></div>
 <div data-ui-mount="preferences"></div>
 <div data-ui-mount="export-modal"></div>
 <div data-ui-mount="midi-import"></div>
 <div data-ui-mount="keysounds"></div>
+<div data-ui-mount="drum-studio"></div>
 <div data-ui-mount="shared-base"></div>
 <div data-ui-mount="stem-separation"></div>
 <div data-ui-mount="toasts"></div>

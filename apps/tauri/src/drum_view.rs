@@ -231,6 +231,42 @@ impl DrumView {
         Ok(())
     }
 
+    pub(super) fn set_row_choke_group(
+        &mut self,
+        app: &Application,
+        expected_map: &Path,
+        row_index: usize,
+        choke_group: Option<u8>,
+    ) -> Result<(), String> {
+        let folder = current_mapset(app, expected_map)?;
+        let kit = self.mapsets.get_mut(folder).ok_or("Open a drum map first.")?;
+        let row = kit.preset.rows.get_mut(row_index).ok_or("That drum row does not exist.")?;
+        row.choke_group = choke_group.filter(|&g| g > 0);
+        Ok(())
+    }
+
+    /// Collects `midi_note -> choke_group` from the active drum map's rows for live VST3 choking.
+    pub(super) fn choke_groups(&self, app: &Application) -> HashMap<u8, u8> {
+        let mut groups = HashMap::new();
+        let Some(document) = app.document() else {
+            return groups;
+        };
+        let Some(folder) = document.path.parent() else {
+            return groups;
+        };
+        let Some(kit) = self.mapsets.get(folder) else {
+            return groups;
+        };
+        for row in &kit.preset.rows {
+            if let (Some(note), Some(gid)) = (row.midi_note, row.choke_group)
+                && gid > 0
+            {
+                groups.insert(note.min(127), gid);
+            }
+        }
+        groups
+    }
+
     /// Computes the lane -> MIDI note routing table matching v3.1.4 `MainWindow.DrumVst.cs:35-54`:
     /// skin defaults (`hitnormal=36, hitclap=38, hitwhistle=42, hitfinish=49`) overridden by the
     /// active drum map's assigned rows (`Some(n)` maps, `None` explicitly keeps sample playback).
@@ -326,6 +362,7 @@ impl DrumView {
                         .map(|i| lane_key(&visible_lanes[i]));
                     DrumSetupRow {
                         assigned: matched.is_some(),
+                        choke_group: row.choke_group,
                         index,
                         lane_key: matched.or_else(|| row.lane.clone()),
                         midi_note: row.midi_note,
@@ -373,6 +410,7 @@ impl DrumView {
                 DrumViewRow::Instrument { row, lane } if rows.contains_key(&lane.identity) => {
                     DrumSetupRow {
                         assigned: true,
+                        choke_group: row.choke_group,
                         index,
                         lane_key: Some(lane_key(lane)),
                         midi_note: row.midi_note,
@@ -382,6 +420,7 @@ impl DrumView {
                 DrumViewRow::Instrument { row, .. } | DrumViewRow::Unassigned(row) => {
                     DrumSetupRow {
                         assigned: false,
+                        choke_group: row.choke_group,
                         index,
                         lane_key: row.lane.clone(),
                         midi_note: row.midi_note,
@@ -455,6 +494,8 @@ pub(super) struct AssignableLane {
 #[serde(rename_all = "camelCase")]
 pub(super) struct DrumSetupRow {
     assigned: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    choke_group: Option<u8>,
     index: usize,
     lane_key: Option<String>,
     midi_note: Option<u8>,

@@ -5,6 +5,7 @@
 //! matching osu!lazer-compatible hit object field (never using storyboard samples or custom
 //! sample indices), and produces a deduplicated sample manifest for the instrument renderer.
 
+use crate::chords::chord_voicing_key;
 use crate::model::{ExportSettings, InstrumentSettings, KeysoundDocument, KeysoundNote, KeysoundTrack};
 use dawsu_hitsounding::generate::file_name_for;
 use dawsu_osu_format::{HitObject, HitSample, LineId, ObjectKind, OsuFile};
@@ -72,6 +73,8 @@ pub struct SampleManifestEntry {
     pub track_id: u64,
     pub instrument: InstrumentSettings,
     pub pitch: u8,
+    /// All pitches rendered together for this sample (1 pitch for single notes, 2+ for flattened chords).
+    pub chord_pitches: Vec<u8>,
     /// Representative quantized MIDI velocity (`1..=127`).
     pub velocity: u8,
     /// Representative quantized note duration in milliseconds.
@@ -112,6 +115,52 @@ pub fn quantize_duration_ms(duration_ms: f64, step_ms: f64) -> u32 {
     let dur = if duration_ms.is_finite() && duration_ms > 0.0 { duration_ms } else { step };
     let steps = (dur / step).round().max(1.0);
     (steps * step).round().clamp(1.0, 99_999.0) as u32
+}
+
+/// Builds a deterministic, filesystem-safe custom sample filename for a flattened polyphonic chord.
+pub fn chord_sample_filename(
+    track_id: u64,
+    pitches: &[u8],
+    velocity: u8,
+    duration_ms: f64,
+    settings: &ExportSettings,
+) -> (String, u8, u32) {
+    let q_vel = quantize_velocity(velocity, settings.velocity_buckets);
+    let q_dur = quantize_duration_ms(duration_ms, settings.duration_bucket_ms);
+    let prefix = sanitize_token(&settings.sample_prefix, "ks");
+    let ext = sanitize_token(&settings.sample_extension, "wav");
+    let voicing = chord_voicing_key(pitches);
+    let name = format!("{prefix}_t{track_id}_{voicing}_v{q_vel:03}_d{q_dur:05}.{ext}");
+    (name, q_vel, q_dur)
+}
+
+/// Collects all pitches belonging to a flattened chord (`split_group`) on `track` near `note.start_ms`.
+fn flattened_chord_pitches(
+    track: &KeysoundTrack,
+    note: &KeysoundNote,
+    tolerance_ms: f64,
+    flatten_chords: bool,
+) -> Vec<u8> {
+    if !flatten_chords {
+        return vec![note.pitch];
+    }
+    let Some(gid) = note.split_group else {
+        return vec![note.pitch];
+    };
+    let tol = tolerance_ms.max(0.0);
+    let mut pitches: Vec<u8> = track
+        .notes
+        .iter()
+        .filter(|n| n.split_group == Some(gid) && (n.start_ms - note.start_ms).abs() <= tol)
+        .map(|n| n.pitch)
+        .collect();
+    pitches.sort_unstable();
+    pitches.dedup();
+    if pitches.is_empty() {
+        vec![note.pitch]
+    } else {
+        pitches
+    }
 }
 
 /// Builds a deterministic, filesystem-safe custom sample filename for a note's bucketed identity.
@@ -194,8 +243,23 @@ pub fn preview_sync(
             Some((slot_idx, _)) => {
                 used_slots[slot_idx] = true;
                 let slot = slots[slot_idx];
-                let (filename, _, _) =
-                    sample_filename(track.id, note.pitch, note.velocity, note.duration_ms(), settings);
+                let chord_pitches = flattened_chord_pitches(
+                    track,
+                    note,
+                    settings.sync_tolerance_ms,
+                    settings.flatten_chords,
+                );
+                let (filename, _, _) = if chord_pitches.len() > 1 {
+                    chord_sample_filename(
+                        track.id,
+                        &chord_pitches,
+                        note.velocity,
+                        note.duration_ms(),
+                        settings,
+                    )
+                } else {
+                    sample_filename(track.id, note.pitch, note.velocity, note.duration_ms(), settings)
+                };
                 synced.push(SyncedNote {
                     track_id: track.id,
                     note_index,
@@ -262,10 +326,31 @@ pub fn plan_generate_keysounds(
             entry.usage_count += 1;
             continue;
         }
-        let (_, q_vel, q_dur) =
-            sample_filename(placed.track_id, placed.pitch, placed.velocity, placed.duration_ms, settings);
-        let instrument = tracks_by_id
-            .get(&placed.track_id)
+        let track_ref = tracks_by_id.get(&placed.track_id).copied();
+        let chord_pitches = track_ref
+            .and_then(|t| {
+                t.notes.get(placed.note_index).map(|note| {
+                    flattened_chord_pitches(
+                        t,
+                        note,
+                        settings.sync_tolerance_ms,
+                        settings.flatten_chords,
+                    )
+                })
+            })
+            .unwrap_or_else(|| vec![placed.pitch]);
+        let (_, q_vel, q_dur) = if chord_pitches.len() > 1 {
+            chord_sample_filename(
+                placed.track_id,
+                &chord_pitches,
+                placed.velocity,
+                placed.duration_ms,
+                settings,
+            )
+        } else {
+            sample_filename(placed.track_id, placed.pitch, placed.velocity, placed.duration_ms, settings)
+        };
+        let instrument = track_ref
             .map(|t| t.instrument.clone())
             .unwrap_or_default();
         seen_filenames.insert(placed.filename.clone());
@@ -276,6 +361,7 @@ pub fn plan_generate_keysounds(
                 track_id: placed.track_id,
                 instrument,
                 pitch: placed.pitch,
+                chord_pitches,
                 velocity: q_vel,
                 duration_ms: f64::from(q_dur),
                 usage_count: 1,
@@ -631,5 +717,34 @@ SliderMultiplier:1.4
         let (f2, _, _) = sample_filename(1, 60, 100, 260.0, &settings);
         assert_eq!(f1, f2);
         assert!(f1.ends_with(".wav"));
+    }
+
+    #[test]
+    fn flatten_polyphonic_chord_generates_polyphonic_manifest_entry_distinct_from_top_note_only() {
+        use crate::chords::{ChordResolution, resolve_all_chords};
+        let reference = parse_sample_map();
+
+        let make_doc = || {
+            let mut doc = KeysoundDocument::default();
+            doc.add_track("Piano", 0, false);
+            doc.tracks[0].notes.push(KeysoundNote::new(1000.0, 1250.0, 60, 100));
+            doc.tracks[0].notes.push(KeysoundNote::new(1000.0, 1250.0, 64, 100));
+            doc.tracks[0].notes.push(KeysoundNote::new(1000.0, 1250.0, 67, 100));
+            doc
+        };
+
+        let mut flat_doc = make_doc();
+        assert_eq!(resolve_all_chords(&mut flat_doc, &reference, 10.0, ChordResolution::FlattenPolyphonic), 1);
+        let flat_plan = plan_generate_keysounds(&flat_doc, &reference, "ref.osu", &ExportSettings::default());
+        assert_eq!(flat_plan.manifest.len(), 1);
+        assert_eq!(flat_plan.manifest[0].chord_pitches, vec![60, 64, 67]);
+        assert!(flat_plan.manifest[0].filename.contains("chord_c4_e4_g4"));
+
+        let mut top_doc = make_doc();
+        assert_eq!(resolve_all_chords(&mut top_doc, &reference, 10.0, ChordResolution::TopNoteOnly), 1);
+        let top_plan = plan_generate_keysounds(&top_doc, &reference, "ref.osu", &ExportSettings::default());
+        assert_eq!(top_plan.manifest.len(), 1);
+        assert_eq!(top_plan.manifest[0].chord_pitches, vec![67]);
+        assert!(top_plan.manifest[0].filename.contains("_p067_"));
     }
 }

@@ -207,6 +207,10 @@ export function attachLanes(ctx) {
       }
     }
 
+    if (state.groupBySampleSet === false) {
+      state.laneRows = eligible.filter(row => !state.previewParents.has(row));
+      return;
+    }
     const rowsByFolder = new Map(state.sampleFolderOrder.map(group => [group, []]));
     const looseRows = [];
     for (const row of eligible) {
@@ -259,7 +263,7 @@ export function attachLanes(ctx) {
     lanePanel.style.setProperty("--lane-row-height", state.scene.rowHeight + "px");
     const laneKey = JSON.stringify([state.laneRows, drumNames, state.scene.lanes, state.view.activeLane, [...state.selectionLaneKeys],
       [...state.familyParents], state.view.panels?.laneNames !== false, state.showLaneInfo, [...state.laneColours], [...state.renamedLanes], !!state.view.busy,
-      !!state.view.drumView?.enabled, state.view.drumView?.name ?? null]);
+      !!state.view.drumView?.enabled, state.view.drumView?.name ?? null, state.groupBySampleSet !== false, state.scene.rowHeight >= 40]);
     if (lanePanel.dataset.state !== laneKey) {
       lanePanel.dataset.state = laneKey;
       state.laneHeaders = laneHeaderModel(drumNames, drumRowIndices);
@@ -339,6 +343,7 @@ export function attachLanes(ctx) {
         type: "lane", key: drum ? "drum:" + position : "lane:" + row, row,
         number: drum ? position + 1 : numbers.get(row),
         name: !state.showLaneInfo && !drum && !state.renamedLanes.has(lane.colourKey) ? sound.name : label, label, display: displayName,
+        ...(state.scene.rowHeight >= 40 && !drum && lane.sample && lane.sample !== sound.name ? { caption: lane.sample } : {}),
         title: (lane.sample ?? label) + ". Click to select and audition; Ctrl/Cmd toggles; Shift selects a range",
         tag: drum ? null : sound.set, icon: sound.icon,
         // Yoge, 2026-11-20 (ADR 0068): a lane is grey unless the mapper picked a colour.
@@ -1152,23 +1157,35 @@ export function attachLanes(ctx) {
   }
 
   function bindLanes() {
+    globalThis.openDrumVstModal = openDrumVstModal;
     $("samples-view").addEventListener("click", () => {
       if (state.scene && !state.view.busy && !state.drag && state.view.drumView?.enabled) {
         setDrumView(false);
       }
+      ctx.ui()?.setMode?.("hitsounds");
     });
     $("drums-view").addEventListener("click", () => {
       if (!state.scene || state.view.busy || state.drag) return;
+      ctx.ui()?.setMode?.("drums");
       if (state.view.drumView?.enabled) openDrumMapSetup();
       else setDrumView(true);
     });
+    const keysoundsBtn = $("keysounds-view");
+    if (keysoundsBtn) {
+      keysoundsBtn.addEventListener("click", () => {
+        if (!state.scene || state.view.busy || state.drag) return;
+        ctx.ui()?.setMode?.("keysounds");
+        globalThis.openKeysounds?.();
+      });
+    }
     const vst3Btn = $("drums-vst3-toggle");
     if (vst3Btn) {
       vst3Btn.addEventListener("click", () => {
         if (!state.scene || state.view.busy || state.drag) return;
         const live = state.view.drumVst;
         if (!live?.loaded) {
-          openDrumVstModal();
+          if (globalThis.openDrumStudio) globalThis.openDrumStudio();
+          else openDrumVstModal();
           return;
         }
         ctx.run(async () => {
@@ -1182,7 +1199,8 @@ export function attachLanes(ctx) {
     if (vst3MenuBtn) {
       vst3MenuBtn.addEventListener("click", () => {
         if (!state.scene || state.view.busy || state.drag) return;
-        openDrumVstModal();
+        if (globalThis.openDrumStudio) globalThis.openDrumStudio();
+        else openDrumVstModal();
       });
     }
   }

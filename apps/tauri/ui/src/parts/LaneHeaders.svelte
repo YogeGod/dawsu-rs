@@ -71,9 +71,9 @@
         <button type="button" class="lane-disclosure" aria-expanded={!row.family.collapsed} aria-label={row.family.label}
           onclick={() => on.family(row.row)}>{row.family.collapsed ? "▸" : "▾"}</button>
       {/if}
-      <button type="button" class="name" data-lane-row={row.row} aria-haspopup="menu" aria-expanded="false"
+      <button type="button" class="name" class:two-line={names && !!row.caption} data-lane-row={row.row} aria-haspopup="menu" aria-expanded="false"
         aria-label={"Select and audition " + row.label} aria-pressed={row.selected} title={row.title}
-        onclick={event => on.select(event, row.row)}>{names ? row.name : "▶"}</button>
+        onclick={event => on.select(event, row.row)}>{#if names && row.caption}<span class="name-main">{row.name}</span><span class="name-caption">{row.caption}</span>{:else}{names ? row.name : "▶"}{/if}</button>
       {#if names && (row.vstRouted || row.vstBypassed)}
         <button type="button" class="vst-tag" class:bypassed={!!row.vstBypassed}
           aria-pressed={!!row.vstRouted}
@@ -270,6 +270,38 @@
   }
   button.name:hover {
     background: transparent;
+  }
+  .name.two-line {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    line-height: 1.15;
+  }
+  .name-main {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .name-caption {
+    overflow: hidden;
+    color: var(--editor-muted);
+    font-size: 10px;
+    font-weight: 400;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  @media (max-width: 1360px) {
+    .lane {
+      gap: 3px;
+      padding-right: 4px;
+    }
+    .ms {
+      width: 20px;
+      font-size: 11px;
+    }
+    .name-caption {
+      display: none;
+    }
   }
   /* A layer's guide: a quiet line under its main lane's chevron, so a family reads as one block. */
   .layer-guide {

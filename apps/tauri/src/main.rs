@@ -1,16 +1,23 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
+mod bounce_commands;
 mod crash;
 mod drum_view;
 mod drum_window;
 mod folders;
 mod home;
 mod keyboard;
+mod keysound_commands;
 mod library;
 mod osu_link;
+mod preview_diff_commands;
 mod selection;
 mod skin_textures;
 mod updater;
+
+use bounce_commands::bounce_osz_budget;
+use keysound_commands::keysounds_dedup_report;
+use preview_diff_commands::preview_diff_ribbon;
 
 use dawsu_application::{Application, OutputBackend, ExportOptions, ExportSettings, MixFormat, PlatformRequest, EditorTimeSignature, LaneLayout, PointerPhase, RangeOperation, TimelineEdit, VolumeScope, lane_name};
 use dawsu_editor::{
@@ -442,6 +449,16 @@ enum Action {
     Volume {
         value: i32,
         relative: bool,
+    },
+    SetSelectionSampleSet {
+        set: String,
+    },
+    ToggleSelectionAddition {
+        addition: String,
+    },
+    AuditionSelection,
+    AutoFixProblem {
+        time_ms: f64,
     },
     VolumeScope {
         path: PathBuf,
@@ -924,6 +941,32 @@ impl Action {
                 }
             }
             Self::Volume { value, relative } => app.selection_volume(value, relative),
+            Self::SetSelectionSampleSet { set } => {
+                let parsed = match set.to_ascii_lowercase().as_str() {
+                    "normal" => Some(SampleSet::Normal),
+                    "soft" => Some(SampleSet::Soft),
+                    "drum" => Some(SampleSet::Drum),
+                    _ => None,
+                };
+                if let Some(sample_set) = parsed {
+                    app.set_selection_sample_set(sample_set);
+                }
+            }
+            Self::ToggleSelectionAddition { addition } => {
+                let sound = match addition.to_ascii_lowercase().as_str() {
+                    "whistle" => Some(dawsu_foundation::Hitsound::Whistle),
+                    "finish" => Some(dawsu_foundation::Hitsound::Finish),
+                    "clap" => Some(dawsu_foundation::Hitsound::Clap),
+                    _ => None,
+                };
+                if let Some(sound) = sound {
+                    app.toggle_selection_addition(sound);
+                }
+            }
+            Self::AuditionSelection => app.audition_selection(),
+            Self::AutoFixProblem { time_ms } => {
+                app.auto_fix_problem(time_ms);
+            }
             Self::VolumeScope { path, lanes } => {
                 if let Err(error) = set_volume_lane_scope(app, &path, lanes) {
                     app.error = Some(error);
@@ -1645,10 +1688,10 @@ struct PanelsSnapshot {
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct RecentMetaSnapshot {
-    path: PathBuf,
     #[serde(skip_serializing_if = "Option::is_none")]
     background: Option<String>,
     is_hs: bool,
+    path: PathBuf,
 }
 
 #[derive(serde::Serialize)]
@@ -2238,6 +2281,10 @@ enum Request {
     /// The difficulty the window showed, and its options.
     ExportPreview(PathBuf, ExportOptions, mpsc::Sender<Result<u64, String>>),
     ExportRun(u64, mpsc::Sender<Result<u64, String>>),
+    ExportUnusedDryRun(mpsc::Sender<Result<Vec<dawsu_application::UnusedSampleCandidate>, String>>),
+    ExportListenTarget(String, mpsc::Sender<Result<(), String>>),
+    ExportStopListen(mpsc::Sender<Result<(), String>>),
+    OpenMapsetRoot(mpsc::Sender<Option<PathBuf>>),
     /// The Export window closed: its preview stops and is forgotten. Needs no answer.
     ExportClose,
     /// The drum detection window's requests, answered with its view.
@@ -2375,7 +2422,7 @@ fn export_snapshot(app: &Application, cache: &mut ExportCache) -> Value {
         }
         None => Vec::new(),
     };
-    json!({
+    let mut out = json!({
         "source": source,
         "targets": targets,
         "backups": app.backups_folder(),
@@ -2458,7 +2505,9 @@ fn export_snapshot(app: &Application, cache: &mut ExportCache) -> Value {
                 entry
             }).collect::<Vec<_>>(),
         })),
-    })
+    });
+    out["playing"] = json!(app.is_playing());
+    out
 }
 
 /// Answers the Export window. Never touches main's one-shot view state.
@@ -2479,6 +2528,35 @@ fn answer_export(app: &mut Application, fault: &mut Option<String>, cache: &mut 
         }
         Request::ExportRun(preview_id, response) => {
             let result = guard(app, fault, |app| app.run_export(preview_id)).and_then(|result| result);
+            let _ = response.send(result);
+        }
+        Request::ExportUnusedDryRun(response) => {
+            match guard(app, fault, |app| app.plan_sweep_snapshot()) {
+                Ok(Some(snapshot)) => {
+                    std::thread::spawn(move || {
+                        let _ = response.send(dawsu_application::run_plan_sweep(snapshot));
+                    });
+                }
+                Ok(None) => {
+                    let _ = response.send(Ok(Vec::new()));
+                }
+                Err(error) => {
+                    let _ = response.send(Err(error));
+                }
+            }
+        }
+        Request::ExportListenTarget(target_path, response) => {
+            let result = guard(app, fault, |app| {
+                if target_path.trim().is_empty() {
+                    return Err("Choose a target difficulty to preview.".to_owned());
+                }
+                app.listen_export_target(Path::new(&target_path))
+            })
+            .and_then(|result| result);
+            let _ = response.send(result);
+        }
+        Request::ExportStopListen(response) => {
+            let result = guard(app, fault, Application::stop_export_listen);
             let _ = response.send(result);
         }
         _ => unreachable!("only Export requests reach answer_export"),
@@ -2921,6 +2999,7 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                             None => drums.toggle(app, &map, on),
                         }.map(|()| {
                             app.set_drum_vst_routing(drums.routed_midi_notes(app));
+                            app.set_drum_vst_choke_groups(drums.choke_groups(app));
                             tick_cache.drums_rev += 1;
                             decorate_and_stamp_view(app, &home, &drums, playback_start, &mut tick_cache, !home.visible())
                         })
@@ -2954,6 +3033,7 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                             }
                         }.map(|()| {
                             app.set_drum_vst_routing(drums.routed_midi_notes(app));
+                            app.set_drum_vst_choke_groups(drums.choke_groups(app));
                             tick_cache.drums_rev += 1;
                             decorate_and_stamp_view(app, &home, &drums, playback_start, &mut tick_cache, !home.visible())
                         })
@@ -3000,7 +3080,7 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                     }
                     let _ = response.send(result);
                 }
-                Ok(request @ (Request::ExportView(_) | Request::ExportPreview(..) | Request::ExportRun(..))) => {
+                Ok(request @ (Request::ExportView(_) | Request::ExportPreview(..) | Request::ExportRun(..) | Request::ExportUnusedDryRun(_) | Request::ExportListenTarget(..) | Request::ExportStopListen(_))) => {
                     if matches!(request, Request::ExportRun(..)) {
                         tick_cache.invalidate();
                     }
@@ -3008,8 +3088,17 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                 }
                 Ok(Request::ExportClose) => {
                     if fault.is_none() {
-                        let _ = guard(&mut app, &mut fault, Application::cancel_export_preview);
+                        let _ = guard(&mut app, &mut fault, |app| {
+                            app.stop_export_listen();
+                            app.cancel_export_preview();
+                        });
                     }
+                }
+                Ok(Request::OpenMapsetRoot(response)) => {
+                    let root = app
+                        .document()
+                        .and_then(|d| d.path.parent().map(Path::to_path_buf));
+                    let _ = response.send(root);
                 }
                 Ok(Request::Drum(request, response)) => {
                     let result = guard(&mut app, &mut fault, |app| drum_window::answer(app, request)).and_then(|result| result);
@@ -3143,7 +3232,7 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                 }
                 Ok(Request::DrumVstAction(payload, response)) => {
                     let result = guard(&mut app, &mut fault, |app| {
-                        handle_drum_vst_action(app, &drums, &payload)
+                        handle_drum_vst_action(app, &mut drums, &payload)
                     })
                     .and_then(|r| r);
                     tick_cache.drums_rev += 1;
@@ -3339,6 +3428,23 @@ fn export_preview(state: State<'_, Editor>, options: ExportOptionsJson) -> Resul
 #[tauri::command]
 fn export_run(state: State<'_, Editor>, preview_id: u64) -> Result<u64, String> {
     ask(&state, |tx| Request::ExportRun(preview_id, tx))?
+}
+
+#[tauri::command]
+fn export_unused_dry_run(
+    state: State<'_, Editor>,
+) -> Result<Vec<dawsu_application::UnusedSampleCandidate>, String> {
+    ask(&state, Request::ExportUnusedDryRun)?
+}
+
+#[tauri::command]
+fn export_listen_target(state: State<'_, Editor>, target_path: String) -> Result<(), String> {
+    ask(&state, |tx| Request::ExportListenTarget(target_path, tx))?
+}
+
+#[tauri::command]
+fn export_stop_listen(state: State<'_, Editor>) -> Result<(), String> {
+    ask(&state, Request::ExportStopListen)?
 }
 
 /// Opens the Export window beside the editor, or brings it forward when it is open.
@@ -4546,7 +4652,7 @@ fn drum_vst_action(payload: Value, state: State<'_, Editor>) -> Result<Value, St
 
 fn handle_drum_vst_action(
     app: &mut Application,
-    drums: &drum_view::DrumView,
+    drums: &mut drum_view::DrumView,
     payload: &Value,
 ) -> Result<Value, String> {
     let kind = payload
@@ -4607,11 +4713,13 @@ fn handle_drum_vst_action(
             app.load_drum_vst(PathBuf::from(path), uid)
                 .map_err(|e| e.to_string())?;
             app.set_drum_vst_routing(drums.routed_midi_notes(app));
+            app.set_drum_vst_choke_groups(drums.choke_groups(app));
             Ok(drum_vst_status_json(app))
         }
         "toggle" => {
             let on = payload.get("enabled").and_then(Value::as_bool).unwrap_or(false);
             app.set_drum_vst_routing(drums.routed_midi_notes(app));
+            app.set_drum_vst_choke_groups(drums.choke_groups(app));
             app.set_drum_vst_enabled(on);
             Ok(drum_vst_status_json(app))
         }
@@ -4621,8 +4729,28 @@ fn handle_drum_vst_action(
                 .and_then(Value::as_u64)
                 .ok_or("Missing lane row")? as usize;
             app.set_drum_vst_routing(drums.routed_midi_notes(app));
+            app.set_drum_vst_choke_groups(drums.choke_groups(app));
             app.toggle_drum_vst_lane(row)?;
             Ok(drum_vst_status_json(app))
+        }
+        "set_choke_group" => {
+            let row_index = payload
+                .get("rowIndex")
+                .and_then(Value::as_u64)
+                .ok_or("Missing rowIndex")? as usize;
+            let choke_group = payload
+                .get("chokeGroup")
+                .and_then(Value::as_u64)
+                .map(|v| v.min(255) as u8)
+                .filter(|&g| g > 0);
+            let map = app
+                .document()
+                .ok_or("Open a difficulty first.")?
+                .path
+                .clone();
+            drums.set_row_choke_group(app, &map, row_index, choke_group)?;
+            app.set_drum_vst_choke_groups(drums.choke_groups(app));
+            Ok(json!({ "ok": true, "rowIndex": row_index, "chokeGroup": choke_group }))
         }
         "unload" => {
             app.unload_drum_vst();
@@ -4697,6 +4825,42 @@ fn handle_drum_vst_action(
                 Ok(json!({ "loaded": false }))
             }
         }
+        "import_dawsudrum" => {
+            let map = app
+                .document()
+                .ok_or("Open a difficulty first.")?
+                .path
+                .clone();
+            let picked = rfd::FileDialog::new()
+                .set_title("Import drum map")
+                .add_filter("Drum maps", &["dawsudrum", "drm"])
+                .pick_file();
+            if let Some(path) = picked {
+                drums.load(app, &map, &path)?;
+                app.set_drum_vst_routing(drums.routed_midi_notes(app));
+                app.set_drum_vst_choke_groups(drums.choke_groups(app));
+                Ok(json!({ "imported": true, "path": path.to_string_lossy() }))
+            } else {
+                Ok(json!({ "imported": false }))
+            }
+        }
+        "export_dawsudrum" => {
+            let map_kit = drums
+                .active_map(app)
+                .ok_or("Open a drum map first.")?;
+            let text = dawsu_hitsounding::drums::write_dawsudrum(map_kit).map_err(|e| e.to_string())?;
+            let picked = rfd::FileDialog::new()
+                .set_title("Save drum map")
+                .set_file_name(format!("{}.dawsudrum", map_kit.name))
+                .add_filter("dawsu! drum map", &["dawsudrum"])
+                .save_file();
+            if let Some(path) = picked {
+                std::fs::write(&path, text.as_bytes()).map_err(|e| e.to_string())?;
+                Ok(json!({ "exported": true, "path": path.to_string_lossy() }))
+            } else {
+                Ok(json!({ "exported": false }))
+            }
+        }
         "plan_render" => {
             let exact = payload.get("exact").and_then(Value::as_bool).unwrap_or(false);
             let mode = if exact {
@@ -4705,9 +4869,22 @@ fn handle_drum_vst_action(
                 dawsu_application::VelocityExportMode::Tiered { max_interval: 20 }
             };
             app.set_drum_vst_routing(drums.routed_midi_notes(app));
+            app.set_drum_vst_choke_groups(drums.choke_groups(app));
             let plan = app.plan_drum_vst_render(mode)?;
+            let base_bytes: u64 = app
+                .document()
+                .and_then(|d| d.path.parent())
+                .and_then(|dir| std::fs::read_dir(dir).ok())
+                .into_iter()
+                .flatten()
+                .filter_map(|e| e.ok())
+                .filter_map(|e| e.metadata().ok())
+                .filter(|m| m.is_file())
+                .map(|m| m.len())
+                .fold(0u64, u64::saturating_add);
             Ok(json!({
                 "exact": exact,
+                "baseBytes": base_bytes,
                 "hitCount": plan.assignments.len(),
                 "jobCount": plan.jobs.len(),
                 "jobs": plan.jobs.iter().map(|j| json!({
@@ -4719,16 +4896,23 @@ fn handle_drum_vst_action(
         }
         "render_wavs" => {
             let exact = payload.get("exact").and_then(Value::as_bool).unwrap_or(false);
+            let format = match payload.get("format").and_then(Value::as_str) {
+                Some("ogg_vorbis" | "ogg") => dawsu_application::bounce_plan::BounceAudioFormat::OggVorbis,
+                _ => dawsu_application::bounce_plan::BounceAudioFormat::Wav16,
+            };
+            let normalize = payload.get("normalize").and_then(Value::as_bool).unwrap_or(false);
             let mode = if exact {
                 dawsu_application::VelocityExportMode::ExactPerVolume
             } else {
                 dawsu_application::VelocityExportMode::Tiered { max_interval: 20 }
             };
             app.set_drum_vst_routing(drums.routed_midi_notes(app));
-            let (plan, outputs) = app.render_drum_vst_to_wavs(mode)?;
+            app.set_drum_vst_choke_groups(drums.choke_groups(app));
+            let (plan, outputs) = app.render_drum_vst_with_options(mode, format, normalize)?;
             Ok(json!({
                 "renderedCount": outputs.len(),
                 "hitCount": plan.assignments.len(),
+                "format": format,
                 "files": outputs.iter().map(|o| o.path.file_name().and_then(|n| n.to_str()).unwrap_or("")).collect::<Vec<_>>(),
             }))
         }
@@ -4900,6 +5084,12 @@ fn main() {
             export_view,
             export_preview,
             export_run,
+            export_unused_dry_run,
+            export_listen_target,
+            export_stop_listen,
+            preview_diff_ribbon,
+            bounce_osz_budget,
+            keysounds_dedup_report,
             open_export_window,
             close_export_window,
             show_in_editor,

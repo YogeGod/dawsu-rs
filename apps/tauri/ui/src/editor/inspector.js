@@ -138,6 +138,9 @@ export function attachInspector(ctx) {
         volume: !volumes.length ? ""
           : volumes.length === 1 ? volumes[0] + "%" : volumes[0] + "–" + volumes[volumes.length - 1] + "%",
         object: selection.object,
+        ...(selection.sampleSet !== undefined ? { sampleSet: selection.sampleSet } : {}),
+        ...(selection.additions !== undefined ? { additions: selection.additions } : {}),
+        ...(selection.hasCustomFile ? { hasCustomFile: true } : {}),
         // The fields re-seed only when the difficulty or the slider body changes.
         sliderBody: body ? {
           key: JSON.stringify([state.scene.path, body]), set: body.set ?? "", whistle: !!body.whistle,
@@ -195,6 +198,22 @@ export function attachInspector(ctx) {
       }
       case "nudge":
         ctx.act({ kind: "volume", relative: true, value: args[0] });
+        return true;
+      case "sampleSet":
+        if (!state.scene.selection || typeof args[0] !== "string") return false;
+        ctx.act({ kind: "set_selection_sample_set", set: args[0] });
+        return true;
+      case "addition":
+        if (!state.scene.selection || typeof args[0] !== "string") return false;
+        ctx.act({ kind: "toggle_selection_addition", addition: args[0] });
+        return true;
+      case "auditionSelection":
+        if (!state.scene.selection) return false;
+        ctx.act({ kind: "audition_selection" }, false);
+        return true;
+      case "autoFix":
+        if (!Number.isFinite(args[0])) return false;
+        ctx.act({ kind: "auto_fix_problem", time_ms: args[0] });
         return true;
       case "scope":
         if (state.drag) return false;

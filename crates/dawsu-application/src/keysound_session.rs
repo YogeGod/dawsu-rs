@@ -2,33 +2,165 @@
 //! `[Keysounds]` difficulty generation.
 
 use crate::pending::{Ledger, PendingSample};
+use crate::bounce_plan::{
+    BounceAudioFormat, calculate_osz_budget, encode_vorbis_ogg, uniform_batch_normalize,
+};
 use crate::{Application, MidiPreviewNote};
 use dawsu_audio::AudioClip;
 use dawsu_foundation::digest::sha256_hex;
 use dawsu_foundation::safe_write::{self, BackupPolicy, replace};
+use dawsu_keysounding::chords::{
+    ChordResolution, detect_chords, resolve_all_chords, resolve_chord,
+};
 use dawsu_keysounding::generate::{GeneratePlan, plan_generate_keysounds};
-use dawsu_keysounding::model::ExportSettings;
+use dawsu_keysounding::model::{ExportSettings, KeysoundDocument};
 use dawsu_keysounding::{KeysoundNote, editing};
 use dawsu_osu_format::{check_map_path, find_case_insensitive, list_folder};
 use serde_json::{Value, json};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-fn synth_note_clip(pitch: u8, velocity: u8, duration_ms: f64) -> Arc<AudioClip> {
+const MAX_KEYSOUND_UNDO: usize = 100;
+const MAX_DAWSUKS_BYTES: u64 = 16 * 1024 * 1024;
+
+/// Bounded Undo/Redo, revision counter, dirty guard, and active-track scope for Keysounding.
+pub struct KeysoundUndoHistory {
+    undo_stack: VecDeque<KeysoundDocument>,
+    redo_stack: Vec<KeysoundDocument>,
+    pub revision: u64,
+    /// Monotonic edit cursor relative to the last save/load (`Some(0)` means clean).
+    saved_cursor: Option<i64>,
+    cursor: i64,
+    pub dirty: bool,
+    pub active_track_id: Option<u64>,
+    pub project_path: Option<PathBuf>,
+}
+
+impl Default for KeysoundUndoHistory {
+    fn default() -> Self {
+        Self {
+            undo_stack: VecDeque::new(),
+            redo_stack: Vec::new(),
+            revision: 0,
+            saved_cursor: Some(0),
+            cursor: 0,
+            dirty: false,
+            active_track_id: None,
+            project_path: None,
+        }
+    }
+}
+
+impl KeysoundUndoHistory {
+    pub fn record(&mut self, before: KeysoundDocument) {
+        if let Some(saved) = self.saved_cursor
+            && saved > self.cursor
+        {
+            // Redo branch containing the saved state is being discarded.
+            self.saved_cursor = None;
+        }
+        if self.undo_stack.len() >= MAX_KEYSOUND_UNDO {
+            self.undo_stack.pop_front();
+        }
+        self.undo_stack.push_back(before);
+        self.redo_stack.clear();
+        self.cursor += 1;
+        self.revision = self.revision.saturating_add(1);
+        self.dirty = self.saved_cursor != Some(self.cursor);
+    }
+
+    pub fn undo(&mut self, current: &mut KeysoundDocument) -> bool {
+        let Some(prev) = self.undo_stack.pop_back() else {
+            return false;
+        };
+        let now = std::mem::replace(current, prev);
+        self.redo_stack.push(now);
+        self.cursor -= 1;
+        self.revision = self.revision.saturating_add(1);
+        self.dirty = self.saved_cursor != Some(self.cursor);
+        true
+    }
+
+    pub fn redo(&mut self, current: &mut KeysoundDocument) -> bool {
+        let Some(next) = self.redo_stack.pop() else {
+            return false;
+        };
+        let now = std::mem::replace(current, next);
+        self.undo_stack.push_back(now);
+        self.cursor += 1;
+        self.revision = self.revision.saturating_add(1);
+        self.dirty = self.saved_cursor != Some(self.cursor);
+        true
+    }
+
+    pub fn mark_saved(&mut self, path: PathBuf) {
+        self.project_path = Some(path);
+        self.saved_cursor = Some(self.cursor);
+        self.dirty = false;
+    }
+
+    pub fn can_undo(&self) -> bool {
+        !self.undo_stack.is_empty()
+    }
+
+    pub fn can_redo(&self) -> bool {
+        !self.redo_stack.is_empty()
+    }
+}
+
+fn validate_dawsuks_path(path: &Path) -> Result<(), String> {
+    if path.as_os_str().is_empty() {
+        return Err("Choose a .dawsuks file path first.".to_string());
+    }
+    if !path.is_absolute() {
+        return Err("Keysound project path must be an absolute path.".to_string());
+    }
+    if path
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return Err("Project path may not contain parent directory segments (..).".to_string());
+    }
+    let is_dawsuks = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("dawsuks"));
+    if !is_dawsuks {
+        return Err("Keysound projects must use the .dawsuks file extension.".to_string());
+    }
+    Ok(())
+}
+
+fn default_dawsuks_path(app: &Application) -> Option<PathBuf> {
+    let doc = app.document.as_ref()?;
+    let key = sha256_hex(doc.path.to_string_lossy().as_bytes());
+    let dir = app.data_root.join("keysounds-projects");
+    let _ = std::fs::create_dir_all(&dir);
+    Some(dir.join(format!("{}.dawsuks", &key[..16])))
+}
+
+fn synth_chord_clip(pitches: &[u8], velocity: u8, duration_ms: f64) -> Arc<AudioClip> {
+    let notes: &[u8] = if pitches.is_empty() { &[60] } else { pitches };
     let sample_rate = 48_000u32;
     let frames = ((duration_ms.clamp(40.0, 500.0) / 1000.0) * f64::from(sample_rate)) as usize;
-    let freq = 440.0 * 2.0_f64.powf((f64::from(pitch) - 69.0) / 12.0);
-    let amp = (f64::from(velocity.clamp(1, 127)) / 127.0) * 0.28;
+    let amp = (f64::from(velocity.clamp(1, 127)) / 127.0) * (0.28 / (notes.len() as f64).sqrt());
+    let freqs: Vec<f64> = notes
+        .iter()
+        .map(|&p| 440.0 * 2.0_f64.powf((f64::from(p.min(127)) - 69.0) / 12.0))
+        .collect();
     let mut samples = Vec::with_capacity(frames * 2);
     for i in 0..frames {
         let t = i as f64 / f64::from(sample_rate);
         let attack = (t / 0.005).min(1.0);
         let decay = (-t * 10.0).exp();
         let env = attack * decay;
-        let phase = 2.0 * std::f64::consts::PI * freq * t;
-        let s = (phase.sin() * 0.75 + (phase * 2.0).sin() * 0.25) * amp * env;
-        let v = s as f32;
+        let mut sum = 0.0f64;
+        for &freq in &freqs {
+            let phase = 2.0 * std::f64::consts::PI * freq * t;
+            sum += phase.sin() * 0.75 + (phase * 2.0).sin() * 0.25;
+        }
+        let v = (sum * amp * env).clamp(-1.0, 1.0) as f32;
         samples.push(v);
         samples.push(v);
     }
@@ -39,28 +171,57 @@ fn synth_note_clip(pitch: u8, velocity: u8, duration_ms: f64) -> Arc<AudioClip> 
     })
 }
 
+fn synth_note_clip(pitch: u8, velocity: u8, duration_ms: f64) -> Arc<AudioClip> {
+    synth_chord_clip(&[pitch], velocity, duration_ms)
+}
+
 pub(crate) fn summary(app: &mut Application) -> Value {
     let loaded = app.vst3.list_loaded();
+    let active_id = app
+        .keysound_history
+        .active_track_id
+        .filter(|id| app.keysounds.document.tracks.iter().any(|t| t.id == *id))
+        .or_else(|| app.keysounds.document.tracks.first().map(|t| t.id));
+    app.keysound_history.active_track_id = active_id;
+    let chord_conflicts = app
+        .document
+        .as_ref()
+        .map(|d| detect_chords(&app.keysounds.document, &d.file, 10.0))
+        .unwrap_or_default();
     json!({
         "targetDifficulty": app.keysounds.target_difficulty,
         "sidecarAvailable": app.vst3.is_sidecar_available(),
-        "tracks": app.keysounds.document.tracks.iter().map(|t| json!({
-            "id": t.id,
-            "name": t.name,
-            "channel": t.channel,
-            "isDrum": t.is_drum,
-            "muted": t.muted,
-            "noteCount": t.notes.len(),
-            "instrument": t.instrument.name,
-            "notes": t.notes.iter().enumerate().map(|(index, n)| json!({
-                "index": index,
-                "startMs": n.start_ms,
-                "endMs": n.end_ms,
-                "pitch": n.pitch,
-                "velocity": n.velocity,
-                "muted": n.muted,
-            })).collect::<Vec<_>>(),
-        })).collect::<Vec<_>>(),
+        "revision": app.keysound_history.revision,
+        "canUndo": app.keysound_history.can_undo(),
+        "canRedo": app.keysound_history.can_redo(),
+        "dirty": app.keysound_history.dirty,
+        "activeTrackId": active_id,
+        "chordConflicts": chord_conflicts,
+        "tracks": app.keysounds.document.tracks.iter().map(|t| {
+            let is_active = Some(t.id) == active_id;
+            json!({
+                "id": t.id,
+                "name": t.name,
+                "channel": t.channel,
+                "isDrum": t.is_drum,
+                "muted": t.muted,
+                "noteCount": t.notes.len(),
+                "instrument": t.instrument.name,
+                "sustainSpans": if is_active { json!(t.sustain_spans) } else { json!([]) },
+                "notes": if is_active {
+                    t.notes.iter().enumerate().map(|(index, n)| json!({
+                        "index": index,
+                        "startMs": n.start_ms,
+                        "endMs": n.end_ms,
+                        "pitch": n.pitch,
+                        "velocity": n.velocity,
+                        "muted": n.muted,
+                    })).collect::<Vec<_>>()
+                } else {
+                    Vec::new()
+                },
+            })
+        }).collect::<Vec<_>>(),
         "vst3Plugins": app.vst3.scanned_plugins().iter().map(|p| json!({
             "id": p.uid,
             "name": p.name,
@@ -76,15 +237,191 @@ pub(crate) fn handle(app: &mut Application, payload: &Value) -> Result<Value, St
     let kind = payload.get("kind").and_then(|v| v.as_str()).unwrap_or("view");
     let track_id = payload.get("trackId").and_then(|v| v.as_u64());
 
+    let mutating = matches!(
+        kind,
+        "add_track"
+            | "delete_track"
+            | "add_note"
+            | "move_note"
+            | "resize_note"
+            | "delete_note"
+            | "set_velocity"
+            | "quantize_notes"
+            | "transpose_notes"
+            | "resolve_chord"
+            | "resolve_all_chords"
+    );
+    let snapshot_before = mutating.then(|| app.keysounds.document.clone());
+
     match kind {
         "view" => {}
+        "select_track" => {
+            app.keysound_history.active_track_id = track_id;
+        }
+        "undo" => {
+            app.keysound_history.undo(&mut app.keysounds.document);
+        }
+        "redo" => {
+            app.keysound_history.redo(&mut app.keysounds.document);
+        }
+        "save_dawsuks" => {
+            let path = match payload.get("path").and_then(|v| v.as_str()) {
+                Some(raw) => {
+                    let p = PathBuf::from(raw);
+                    validate_dawsuks_path(&p)?;
+                    p
+                }
+                None => app
+                    .keysound_history
+                    .project_path
+                    .clone()
+                    .or_else(|| default_dawsuks_path(app))
+                    .ok_or("Open a difficulty or choose a .dawsuks path first.")?,
+            };
+            validate_dawsuks_path(&path)?;
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            }
+            let json_text = app.keysounds.to_json().map_err(|e| e.to_string())?;
+            if path.exists() {
+                let prev = std::fs::read(&path).map_err(|e| e.to_string())?;
+                let policy = BackupPolicy::new(app.data_root.join("backups"), 10);
+                let _ = replace(&path, &prev, json_text.as_bytes(), &policy).map_err(|e| e.to_string())?;
+            } else {
+                safe_write::create(&path, json_text.as_bytes()).map_err(|e| e.to_string())?;
+            }
+            app.keysound_history.mark_saved(path);
+        }
+        "load_dawsuks" => {
+            let path = payload
+                .get("path")
+                .and_then(|v| v.as_str())
+                .map(PathBuf::from)
+                .ok_or("Missing .dawsuks path")?;
+            validate_dawsuks_path(&path)?;
+            let meta = std::fs::metadata(&path).map_err(|e| e.to_string())?;
+            if !meta.is_file() {
+                return Err("Project path must be a regular .dawsuks file.".to_string());
+            }
+            if meta.len() > MAX_DAWSUKS_BYTES {
+                return Err(format!(
+                    "Project file is too large ({} bytes, limit {} bytes).",
+                    meta.len(),
+                    MAX_DAWSUKS_BYTES
+                ));
+            }
+            let text = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+            let loaded = dawsu_keysounding::KeysoundProject::from_json(&text).map_err(|e| e.to_string())?;
+            app.keysounds = loaded;
+            app.keysound_history = KeysoundUndoHistory {
+                project_path: Some(path),
+                active_track_id: app.keysounds.document.tracks.first().map(|t| t.id),
+                ..KeysoundUndoHistory::default()
+            };
+        }
+        "resolve_chord" => {
+            let policy = match payload.get("policy").and_then(|v| v.as_str()).unwrap_or("flatten_polyphonic") {
+                "top_note_only" | "top_only" => ChordResolution::TopNoteOnly,
+                _ => ChordResolution::FlattenPolyphonic,
+            };
+            let target_time = payload.get("timeMs").and_then(|v| v.as_f64());
+            let target_track = track_id;
+            if let Some(doc) = app.document.as_ref() {
+                let conflicts = detect_chords(&app.keysounds.document, &doc.file, 10.0);
+                if let Some(conflict) = conflicts.iter().find(|c| {
+                    target_time.is_none_or(|t| (c.time_ms - t).abs() <= 2.0)
+                        && target_track.is_none_or(|tid| c.track_id == tid)
+                }) && resolve_chord(&mut app.keysounds.document, conflict, policy)
+                {
+                    app.status = format!("Resolved chord {}.", conflict.suggested_name);
+                }
+            }
+        }
+        "resolve_all_chords" => {
+            let policy = match payload.get("policy").and_then(|v| v.as_str()).unwrap_or("flatten_polyphonic") {
+                "top_note_only" | "top_only" => ChordResolution::TopNoteOnly,
+                _ => ChordResolution::FlattenPolyphonic,
+            };
+            if let Some(doc) = app.document.as_ref() {
+                let count = resolve_all_chords(&mut app.keysounds.document, &doc.file, 10.0, policy);
+                if count > 0 {
+                    app.status = format!("Resolved {count} chord conflict(s).");
+                }
+            }
+        }
+        "preview_bounce" => {
+            let document = app.document.as_ref().ok_or("Open a difficulty first.")?;
+            let settings = export_settings_from_payload(payload);
+            let file_name = document
+                .path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("map.osu");
+            let plan = plan_generate_keysounds(&app.keysounds.document, &document.file, file_name, &settings);
+            let base_bytes = document
+                .path
+                .parent()
+                .map(mapset_disk_bytes)
+                .unwrap_or(0);
+            let is_ogg = settings.sample_extension.eq_ignore_ascii_case("ogg");
+            let target_dbfs = if is_ogg {
+                BounceAudioFormat::OggVorbis.target_peak_dbfs()
+            } else {
+                BounceAudioFormat::Wav16.target_peak_dbfs()
+            };
+            let mut raw_clips: Vec<Vec<f32>> = plan
+                .manifest
+                .iter()
+                .map(|entry| synth_chord_clip(&entry.chord_pitches, entry.velocity, entry.duration_ms).samples.clone())
+                .collect();
+            let norm = uniform_batch_normalize(&mut raw_clips, target_dbfs);
+            let mut bounced_bytes = 0u64;
+            let mut samples_json = Vec::with_capacity(plan.manifest.len());
+            // Encode exact Ogg bytes for small manifests; estimate bitrate cleanly for large sets
+            // so preview never stalls the editor thread.
+            let exact_ogg_preview = is_ogg && plan.manifest.len() <= 8;
+            for (idx, entry) in plan.manifest.iter().enumerate() {
+                let bytes = if exact_ogg_preview {
+                    encode_vorbis_ogg(&raw_clips[idx], 48_000).map(|b| b.len() as u64).unwrap_or(0)
+                } else if is_ogg {
+                    ((entry.duration_ms / 1000.0) * 16_000.0).round().max(1_400.0) as u64
+                } else {
+                    44 + (raw_clips[idx].len() as u64) * 2
+                };
+                bounced_bytes = bounced_bytes.saturating_add(bytes);
+                let silent = norm.silent_clip_indices.contains(&idx);
+                let peak = raw_clips[idx].iter().fold(0.0f32, |a, &b| a.max(b.abs()));
+                let peak_dbfs = if peak > 1e-6 { 20.0 * peak.log10() } else { -99.0 };
+                samples_json.push(json!({
+                    "filename": entry.filename,
+                    "durationMs": entry.duration_ms.round() as u32,
+                    "peakDbfs": peak_dbfs,
+                    "usageCount": entry.usage_count,
+                    "silent": silent,
+                    "bytes": bytes,
+                    "pitches": entry.chord_pitches,
+                }));
+            }
+            let budget = calculate_osz_budget(base_bytes, bounced_bytes);
+            let mut out = summary(app);
+            out["bouncePreview"] = json!({
+                "sourceNotes": plan.sync.synced.len(),
+                "unsyncedNotes": plan.sync.unsynced.len(),
+                "baseBytes": base_bytes,
+                "bouncedBytes": bounced_bytes,
+                "budget": budget,
+                "samples": samples_json,
+            });
+            return Ok(out);
+        }
         "add_track" => {
             let name = payload
                 .get("name")
                 .and_then(|v| v.as_str())
                 .unwrap_or("Keysound Track");
             let plugin = payload.get("vst3Plugin").and_then(|v| v.as_str());
-            app.keysounds_add_track(name, plugin);
+            let new_id = app.keysounds_add_track(name, plugin);
+            app.keysound_history.active_track_id = Some(new_id);
         }
         "delete_track" => {
             if let Some(id) = track_id {
@@ -264,11 +601,12 @@ pub(crate) fn handle(app: &mut Application, payload: &Value) -> Result<Value, St
                     .parent()
                     .ok_or("Active beatmap has no parent folder.")?
                     .to_path_buf();
+                let settings = export_settings_from_payload(payload);
                 let plan = plan_generate_keysounds(
                     &app.keysounds.document,
                     &document.file,
                     &file_name,
-                    &ExportSettings::default(),
+                    &settings,
                 );
                 (
                     open_path,
@@ -284,10 +622,24 @@ pub(crate) fn handle(app: &mut Application, payload: &Value) -> Result<Value, St
             if out_path == open_path {
                 return Err("Cannot overwrite the currently open difficulty with [Keysounds].".into());
             }
-            // Render and write each manifest WAV before writing [Keysounds].osu so no dangling
+            let apply_batch_norm = payload
+                .get("normalize")
+                .and_then(|v| v.as_bool())
+                .unwrap_or_else(|| {
+                    payload
+                        .get("format")
+                        .and_then(|v| v.as_str())
+                        .is_some_and(|f| f == "ogg_vorbis" || f == "ogg")
+                });
+            // Render and write each manifest sample before writing [Keysounds].osu so no dangling
             // sample references are ever emitted.
-            let (written_names, guard) =
-                prepare_and_write_wavs(&folder, &mut plan, &pending_taken, ledger.as_ref())?;
+            let (written_names, guard) = prepare_and_write_wavs(
+                &folder,
+                &mut plan,
+                &pending_taken,
+                ledger.as_ref(),
+                apply_batch_norm,
+            )?;
             let bytes = plan.file.to_bytes();
             let backed_up = if out_path.exists() {
                 let previous = std::fs::read(&out_path).map_err(|e| e.to_string())?;
@@ -342,7 +694,49 @@ pub(crate) fn handle(app: &mut Application, payload: &Value) -> Result<Value, St
         other => return Err(format!("Unknown keysounds action: {other}")),
     }
 
+    if let Some(before) = snapshot_before
+        && app.keysounds.document != before
+    {
+        app.keysound_history.record(before);
+    }
+
     Ok(summary(app))
+}
+
+fn export_settings_from_payload(payload: &Value) -> ExportSettings {
+    let mut settings = ExportSettings::default();
+    if let Some(v) = payload.get("velocityBuckets").and_then(|v| v.as_u64()) {
+        settings.velocity_buckets = v.clamp(1, 16) as u8;
+    }
+    if let Some(d) = payload.get("durationBucketMs").and_then(|v| v.as_f64())
+        && d.is_finite()
+        && d >= 10.0
+    {
+        settings.duration_bucket_ms = d.clamp(10.0, 2000.0);
+    }
+    if let Some(fc) = payload.get("flattenChords").and_then(|v| v.as_bool()) {
+        settings.flatten_chords = fc;
+    }
+    if let Some(fmt) = payload.get("format").and_then(|v| v.as_str()) {
+        settings.sample_extension = if fmt == "ogg_vorbis" || fmt == "ogg" {
+            "ogg".to_string()
+        } else {
+            "wav".to_string()
+        };
+    }
+    settings
+}
+
+fn mapset_disk_bytes(folder: &Path) -> u64 {
+    std::fs::read_dir(folder)
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(|e| e.ok())
+        .filter_map(|e| e.metadata().ok())
+        .filter(|m| m.is_file())
+        .map(|m| m.len())
+        .fold(0u64, u64::saturating_add)
 }
 
 fn encode_clip_wav(clip: &AudioClip) -> Vec<u8> {
@@ -456,15 +850,47 @@ fn prepare_and_write_wavs(
     plan: &mut GeneratePlan,
     pending_taken: &BTreeSet<String>,
     ledger: Option<&Ledger>,
+    apply_batch_norm: bool,
 ) -> Result<(Vec<String>, CreatedKeysoundsGuard), String> {
     let disk_files = list_folder(folder).map_err(|e| e.to_string())?;
     let mut reserved_names = pending_taken.clone();
     let mut renames: BTreeMap<String, String> = BTreeMap::new();
     let mut to_write: Vec<(String, Vec<u8>, String)> = Vec::new();
 
-    for entry in &plan.manifest {
-        let clip = synth_note_clip(entry.pitch, entry.velocity, entry.duration_ms);
-        let wav_bytes = encode_clip_wav(&clip);
+    let mut raw_clips: Vec<Vec<f32>> = plan
+        .manifest
+        .iter()
+        .map(|entry| {
+            synth_chord_clip(&entry.chord_pitches, entry.velocity, entry.duration_ms)
+                .samples
+                .clone()
+        })
+        .collect();
+    if apply_batch_norm {
+        let is_ogg_batch = plan
+            .manifest
+            .first()
+            .is_some_and(|e| e.filename.to_ascii_lowercase().ends_with(".ogg"));
+        let target_dbfs = if is_ogg_batch {
+            BounceAudioFormat::OggVorbis.target_peak_dbfs()
+        } else {
+            BounceAudioFormat::Wav16.target_peak_dbfs()
+        };
+        let _ = uniform_batch_normalize(&mut raw_clips, target_dbfs);
+    }
+
+    for (entry, samples) in plan.manifest.iter().zip(raw_clips.into_iter()) {
+        let is_ogg = entry.filename.to_ascii_lowercase().ends_with(".ogg");
+        let wav_bytes = if is_ogg {
+            encode_vorbis_ogg(&samples, 48_000)?
+        } else {
+            let clip = AudioClip {
+                samples,
+                channels: 2,
+                sample_rate: 48_000,
+            };
+            encode_clip_wav(&clip)
+        };
         let digest = sha256_hex(&wav_bytes);
 
         let chosen = (1u32..)

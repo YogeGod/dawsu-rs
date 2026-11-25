@@ -271,6 +271,31 @@ enum Step {
     Drop,
 }
 
+/// Shared retention decision used by both `clean_up()` and read-only `plan_sweep()`.
+fn is_kept_by_rules(
+    name: &str,
+    lower: &str,
+    used: &BTreeSet<String>,
+    other_mode_indexes: &BTreeSet<u32>,
+    projects: &[String],
+    own_project: Option<&str>,
+    copies: &[SampleIdentity],
+    undo_only: bool,
+    closing: bool,
+) -> bool {
+    let index = match read_sample_file_name(name) {
+        Some(SampleIdentity::Standard { index, .. }) => Some(index.get()),
+        _ => None,
+    };
+    let stem = lower.rsplit_once('.').map_or(lower, |(stem, _)| stem);
+    used.contains(lower)
+        || index.is_some_and(|index| other_mode_indexes.contains(&index))
+        || projects.iter().any(|text| text.contains(stem))
+        || (!undo_only && own_project.is_some_and(|text| text.contains(stem)))
+        || in_a_copy(copies, name)
+        || (undo_only && !closing)
+}
+
 fn clean_up(request: &mut Request, outcome: &mut Outcome, entry: &pending::PendingSample, keep: &Keep) -> Step {
     let name = entry.name.as_str();
     let lower = name.to_ascii_lowercase();
@@ -283,21 +308,20 @@ fn clean_up(request: &mut Request, outcome: &mut Outcome, entry: &pending::Pendi
         // Changed by someone else: not dawsu!'s file any more.
         return Step::Drop;
     }
-    let index = match read_sample_file_name(name) {
-        Some(SampleIdentity::Standard { index, .. }) => Some(index.get()),
-        _ => None,
-    };
-    let stem = lower.rsplit_once('.').map_or(lower.as_str(), |(stem, _)| stem);
     // While open, Undo may still play it. At close the open project may still name it (a replaced
     // lane's slot), but only the undo history played it.
     let undo_only = request.undo_files.contains(&lower);
-    if keep.used.contains(&lower)
-        || index.is_some_and(|index| keep.other_mode_indexes.contains(&index))
-        || keep.projects.iter().any(|text| text.contains(stem))
-        || (!undo_only && keep.own_project.as_ref().is_some_and(|text| text.contains(stem)))
-        || in_a_copy(&keep.copies, name)
-        || (undo_only && !request.closing)
-    {
+    if is_kept_by_rules(
+        name,
+        &lower,
+        &keep.used,
+        &keep.other_mode_indexes,
+        &keep.projects,
+        keep.own_project.as_deref(),
+        &keep.copies,
+        undo_only,
+        request.closing,
+    ) {
         return Step::Kept;
     }
     // A hit of the open difficulty still plays it: it can wait outside the mapset only where a
@@ -347,7 +371,137 @@ fn clean_up(request: &mut Request, outcome: &mut Outcome, entry: &pending::Pendi
     Step::Drop
 }
 
+/// One removable ledger or legacy-mix file reported by a read-only `plan_sweep()` dry-run.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnusedSampleCandidate {
+    pub name: String,
+    pub size_bytes: u64,
+    pub sha256: String,
+    pub reason: String,
+}
+
+/// Immutable inputs captured on the editor thread so the dry-run SHA-256 scan can run off-thread.
+pub struct SweepDryRunSnapshot {
+    root: PathBuf,
+    open_path: PathBuf,
+    data_root: PathBuf,
+    project_root: Option<PathBuf>,
+    ledger: pending::Ledger,
+    hit_files: BTreeSet<String>,
+    undo_files: BTreeSet<String>,
+    presence: Option<std::sync::Arc<pending::Presence>>,
+}
+
+/// Runs the read-only dry-run SHA-256 scan off the editor thread using `snapshot`.
+pub fn run_plan_sweep(snapshot: SweepDryRunSnapshot) -> Result<Vec<UnusedSampleCandidate>, String> {
+    if snapshot
+        .presence
+        .as_deref()
+        .is_some_and(pending::Presence::others_live)
+    {
+        return Ok(Vec::new());
+    }
+    let mut entries = snapshot.ledger.entries().map_err(|e| e.to_string())?;
+    let listed: BTreeSet<String> = entries
+        .iter()
+        .map(|e| e.name.to_ascii_lowercase())
+        .collect();
+    entries.extend(
+        old_mixes(&snapshot.root)
+            .into_iter()
+            .filter(|m| !listed.contains(&m.name.to_ascii_lowercase())),
+    );
+    if entries.is_empty() {
+        return Ok(Vec::new());
+    }
+    let (used, other_mode_indexes) = folder_uses(&snapshot.root)?;
+    let copies = recovery::copies_play(&snapshot.data_root, &snapshot.root)?;
+    let projects = project_texts(
+        snapshot.project_root.as_deref(),
+        &snapshot.root,
+        Some(&snapshot.open_path),
+    );
+    let mut candidates = Vec::new();
+    for entry in entries {
+        let lower = entry.name.to_ascii_lowercase();
+        let Ok(path) = safe_child(&snapshot.root, &entry.name) else {
+            continue;
+        };
+        let Ok(bytes) = std::fs::read(&path) else {
+            continue;
+        };
+        if sha256_hex(&bytes) != entry.sha256 {
+            continue;
+        }
+        let undo_only = snapshot.undo_files.contains(&lower);
+        if snapshot.hit_files.contains(&lower)
+            || is_kept_by_rules(
+                &entry.name,
+                &lower,
+                &used,
+                &other_mode_indexes,
+                &projects,
+                None,
+                &copies,
+                undo_only,
+                false,
+            )
+        {
+            continue;
+        }
+        let reason = if lower.starts_with(mixes::PREFIX) {
+            "Unused dawsu! mix file".to_string()
+        } else {
+            "Unused dawsu!-generated sample".to_string()
+        };
+        candidates.push(UnusedSampleCandidate {
+            name: entry.name,
+            size_bytes: bytes.len() as u64,
+            sha256: entry.sha256,
+            reason,
+        });
+    }
+    candidates.sort_by(|a, b| a.name.to_ascii_lowercase().cmp(&b.name.to_ascii_lowercase()));
+    Ok(candidates)
+}
+
 impl Application {
+    /// Captures a lightweight snapshot so `run_plan_sweep` can scan files off the editor thread.
+    pub fn plan_sweep_snapshot(&self) -> Option<SweepDryRunSnapshot> {
+        let document = self.document.as_ref()?;
+        let ledger = document.pending.ledger()?;
+        let root = document.path.parent()?.to_path_buf();
+        let hit_files = pending::hit_files(document.composer.hitsounds());
+        let undo_files: BTreeSet<String> = document
+            .composer
+            .history
+            .states()
+            .flat_map(pending::hit_files)
+            .filter(|name| !hit_files.contains(name))
+            .collect();
+        Some(SweepDryRunSnapshot {
+            root,
+            open_path: document.path.clone(),
+            data_root: self.data_root.clone(),
+            project_root: self.project_root.clone(),
+            ledger,
+            hit_files,
+            undo_files,
+            presence: document.presence.clone(),
+        })
+    }
+
+    /// Read-only dry-run listing ledger/mix files safe to quarantine to `removed-samples`.
+    /// Honors `DECISIONS.md` (undo-reachable files, active hits, recovery copies, sibling projects,
+    /// other-mode indexes, multi-session lock, and byte-hash ownership) without modifying files.
+    pub fn plan_sweep(&self) -> Result<Vec<UnusedSampleCandidate>, String> {
+        let Some(snapshot) = self.plan_sweep_snapshot() else {
+            return Ok(Vec::new());
+        };
+        run_plan_sweep(snapshot)
+    }
+
     /// Starts cleaning up the ledger's files nothing in the mapset plays, in a job. With
     /// `closing`, the open difficulty's hits no longer count: only the saved files and the
     /// projects do. Does nothing while another dawsu! session has the mapset open.

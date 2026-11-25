@@ -27,6 +27,7 @@ import PlayheadGroup from "./parts/PlayheadGroup.svelte";
 import ExportWindow from "./parts/ExportWindow.svelte";
 import ExportModal from "./parts/ExportModal.svelte";
 import DrumDetectWindow from "./parts/DrumDetectWindow.svelte";
+import DrumStudioHost from "./parts/DrumStudioHost.svelte";
 import EditorMenu from "./parts/EditorMenu.svelte";
 import GridOptions from "./parts/GridOptions.svelte";
 import HitCard from "./parts/HitCard.svelte";
@@ -39,8 +40,10 @@ import LaneOptions from "./parts/LaneOptions.svelte";
 import LoadingOverlay from "./parts/LoadingOverlay.svelte";
 import KeysoundsModal from "./parts/KeysoundsModal.svelte";
 import MapPreview from "./parts/MapPreview.svelte";
+import MicroHud from "./parts/MicroHud.svelte";
 import MidiImportModal from "./parts/MidiImportModal.svelte";
 import NodeGraphWindow from "./parts/NodeGraphWindow.svelte";
+import OverviewDiagnostics from "./parts/OverviewDiagnostics.svelte";
 import PreferencesModal from "./parts/PreferencesModal.svelte";
 import PreviewWindow from "./parts/PreviewWindow.svelte";
 import QuickStartTour from "./parts/QuickStartTour.svelte";
@@ -60,10 +63,12 @@ const parts = {
   "grid-options": GridOptions, "lane-options": LaneOptions, "start-screen": StartScreen,
   // The timeline's hit hover card, preferences modal, and toast stack, at body level.
   "hit-card": HitCard,
+  "micro-hud": MicroHud,
   preferences: PreferencesModal,
   // File › Import MIDI… and Map › Keysounds & VST3…, at body level.
   "midi-import": MidiImportModal,
   keysounds: KeysoundsModal,
+  "drum-studio": DrumStudioHost,
   "shared-base": SharedBaseModal,
   "stem-separation": StemSeparationModal,
   toasts: ToastStack,
@@ -77,6 +82,7 @@ const parts = {
   menu: EditorMenu,
   "inspector-selection": InspectorSelection, "inspector-lane": InspectorLane, "inspector-difficulty": InspectorDifficulty,
   "inspector-bookmarks": InspectorBookmarks, "inspector-history": InspectorHistory,
+  "overview-diagnostics": OverviewDiagnostics,
   // The map preview, at the top of the Inspector while View › Map preview is on.
   "map-preview": MapPreview,
   // The whole page of the node graph window (node-graph.html).
@@ -213,8 +219,8 @@ export function viewport(zoom, rowHeight) {
   bridge.setViewport(zoom, rowHeight);
 }
 
-export function laneOptions(usedOnly, filter) {
-  bridge.setLaneOptions(usedOnly, filter);
+export function laneOptions(usedOnly, filter, groupBySampleSet = true) {
+  bridge.setLaneOptions(usedOnly, filter, groupBySampleSet);
 }
 
 // Active coverage review filter and focus time shared with boot.js for N / Shift+N stepping.
@@ -227,11 +233,22 @@ export function hint(zone) {
   bridge.setHint(zone);
 }
 
+export function setMode(mode) {
+  bridge.mode = mode === "drums" || mode === "keysounds" ? mode : "hitsounds";
+}
+
+export function setMicroHud(hud) {
+  bridge.microHud = hud ?? null;
+}
+
 // Boot the main editor runtime only on the editor window (never on export.html or drum.html).
 const uiBridge = {
-  update, lanes, inspector, browser, mixer, toggleMapPreview, mapPreviewOn, setNodeGraphViewer, nodeGraphViewer, bottomTab, hitCard, commands, menu, centre, wheelSnap, snapGroup, statusNotice, viewport, laneOptions, coverageFilter, setCoverageFocus, hint,
+  update, lanes, inspector, browser, mixer, toggleMapPreview, mapPreviewOn, setNodeGraphViewer, nodeGraphViewer, bottomTab, hitCard, commands, menu, centre, wheelSnap, snapGroup, statusNotice, viewport, laneOptions, coverageFilter, setCoverageFocus, hint, setMode, setMicroHud,
 };
 if (document.getElementById("grid")) {
+  globalThis.showMicroHud = (x, y, extra = {}) => {
+    bridge.microHud = { x, y, mode: bridge.mode, ...extra };
+  };
   createEditor(globalThis, { ui: uiBridge });
   const workspace = document.getElementById("workspace");
   workspace?.addEventListener("pointerover", event => {

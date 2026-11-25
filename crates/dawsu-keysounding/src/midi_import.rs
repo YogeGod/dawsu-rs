@@ -6,7 +6,7 @@
 
 use crate::model::{
     EditorTimeSignature, InstrumentSettings, KeysoundDocument, KeysoundNote, KeysoundTrack,
-    TempoPoint, DEFAULT_TICKS_PER_QUARTER,
+    SustainSpan, TempoPoint, DEFAULT_TICKS_PER_QUARTER,
 };
 use dawsu_foundation::{TimeDivision, TimedMidi};
 use std::collections::BTreeMap;
@@ -19,10 +19,41 @@ pub const MIDI_DRUM_CHANNEL: u8 = 9;
 pub fn import_midi_tracks(timed: &TimedMidi) -> Vec<KeysoundTrack> {
     let mut grouped: BTreeMap<(usize, u8), Vec<KeysoundNote>> = BTreeMap::new();
     let mut first_program: BTreeMap<(usize, u8), u8> = BTreeMap::new();
+    let mut sustain_by_track: BTreeMap<(usize, u8), Vec<SustainSpan>> = BTreeMap::new();
 
     for track in &timed.tracks {
         for pc in &track.program_changes {
             first_program.entry((track.index, pc.channel & 0x0F)).or_insert(pc.program);
+        }
+        // Pair CC64 sustain press/release events per channel into display spans.
+        let mut active_down: BTreeMap<u8, f64> = BTreeMap::new();
+        for ev in &track.sustain_events {
+            let ch = ev.channel & 0x0F;
+            if ev.pressed {
+                active_down.entry(ch).or_insert(ev.time_ms);
+            } else if let Some(start_ms) = active_down.remove(&ch) {
+                if ev.time_ms > start_ms {
+                    sustain_by_track.entry((track.index, ch)).or_default().push(SustainSpan {
+                        start_ms,
+                        end_ms: ev.time_ms,
+                    });
+                }
+            }
+        }
+        // Close any CC64 sustain held until end-of-track at that channel's last note end.
+        for (ch, start_ms) in active_down {
+            let max_end_ms = track
+                .notes
+                .iter()
+                .filter(|n| (n.channel & 0x0F) == ch)
+                .map(|n| n.end_ms)
+                .fold(start_ms, f64::max);
+            if max_end_ms > start_ms {
+                sustain_by_track.entry((track.index, ch)).or_default().push(SustainSpan {
+                    start_ms,
+                    end_ms: max_end_ms,
+                });
+            }
         }
         for note in &track.notes {
             let ch = note.channel & 0x0F;
@@ -85,6 +116,7 @@ pub fn import_midi_tracks(timed: &TimedMidi) -> Vec<KeysoundTrack> {
                 gain_db: 0.0,
             },
             notes,
+            sustain_spans: sustain_by_track.remove(&(track_idx, channel)).unwrap_or_default(),
         });
     }
 

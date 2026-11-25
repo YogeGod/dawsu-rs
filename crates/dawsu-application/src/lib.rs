@@ -29,6 +29,8 @@ pub mod midi_import;
 pub mod midi_record;
 pub mod vst3;
 mod keysound_session;
+pub mod bounce_plan;
+pub mod preview_diff;
 mod project;
 pub use base_layer::{
     BaseHit, BaseMoment, SharedBaseApplyAllResult, SharedBaseApplyResult, SharedBaseLayer, SharedBaseStatus,
@@ -95,6 +97,7 @@ pub use sample_checks::{FixedWav, SampleHealthIssue, SampleHealthReport};
 pub use sound_sets::{LibrarySet, PlacementView, SaveSetError, SetUpdatePrompt, SoundSetLibrary};
 pub use waveform::WaveBin;
 pub use edit_workflows::{PatternStampOptions, RangeOperation, TimelineEdit, VolumeScope};
+pub use sweep::{SweepDryRunSnapshot, UnusedSampleCandidate, run_plan_sweep};
 
 use dawsu_audio::{AudioClip, AudioEngine, ScheduledSound};
 use dawsu_editor::tempo::{SnapSpacing, TempoMap, TimingSection};
@@ -117,12 +120,12 @@ use std::sync::{Arc, Mutex, mpsc};
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CoverageSummary {
-    pub matched: usize,
     pub empty: usize,
+    pub fallback_active: bool,
     pub fallback_covered: usize,
+    pub matched: usize,
     pub orphaned: usize,
     pub total_objects: usize,
-    pub fallback_active: bool,
 }
 
 pub struct Document {
@@ -766,7 +769,7 @@ fn build_verify_expected(
             ));
         }
         for (i, m) in mix_target.moments().iter().enumerate() {
-            if m.is_changed() {
+            if m.is_changed() || effective.moments().get(i).is_some_and(|em| em.is_changed()) {
                 let hits: Vec<_> = m
                     .hits()
                     .map(|lane| (lane.clone(), m.hit_volume(lane)))
@@ -1330,6 +1333,7 @@ pub struct Application {
     node_graph: node_graph::NodeGraphState,
     pub midi_recorder: midi_record::MidiRecorder,
     pub keysounds: dawsu_keysounding::KeysoundProject,
+    pub keysound_history: keysound_session::KeysoundUndoHistory,
     pub vst3: vst3::Vst3Manager,
     pub drum_vst: Option<drum_vst::DrumVstLiveHandle>,
     pub drum_vst_loading: bool,
@@ -1513,6 +1517,7 @@ impl Application {
             node_graph: Default::default(),
             midi_recorder: midi_record::MidiRecorder::new(),
             keysounds: dawsu_keysounding::KeysoundProject::new("", "Keysounds"),
+            keysound_history: keysound_session::KeysoundUndoHistory::default(),
             vst3: vst3::Vst3Manager::new(),
             drum_vst: None,
             drum_vst_loading: false,
@@ -3850,6 +3855,84 @@ impl Application {
         }
         self.refresh_recovery_edit();
     }
+
+    pub fn set_selection_sample_set(&mut self, set: SampleSet) -> bool {
+        if self.busy || self.is_stroke_open() {
+            return false;
+        }
+        let changed = self
+            .document
+            .as_mut()
+            .is_some_and(|d| d.composer.set_selection_sample_set(set));
+        if changed {
+            self.refresh_recovery_edit();
+        }
+        changed
+    }
+
+    pub fn toggle_selection_addition(&mut self, addition: Hitsound) -> bool {
+        if self.busy || self.is_stroke_open() {
+            return false;
+        }
+        let changed = self
+            .document
+            .as_mut()
+            .is_some_and(|d| d.composer.toggle_selection_addition(addition));
+        if changed {
+            self.refresh_recovery_edit();
+        }
+        changed
+    }
+
+    pub fn audition_selection(&mut self) {
+        let hits: Vec<(SampleIdentity, f32)> = {
+            let Some(d) = self.document.as_ref() else {
+                return;
+            };
+            let model = d.composer.hitsounds();
+            let Some(first_moment) = d
+                .composer
+                .selected
+                .items()
+                .iter()
+                .filter_map(|key| {
+                    model
+                        .moments()
+                        .get(key.moment)?
+                        .has_hit(&key.lane)
+                        .then_some(key.moment)
+                })
+                .min()
+            else {
+                return;
+            };
+            let moment = &model.moments()[first_moment];
+            moment
+                .hits()
+                .map(|lane| (lane.clone(), moment.hit_volume(lane) as f32 / 100.0))
+                .collect()
+        };
+        for (lane, gain) in hits {
+            self.audition_lane(&lane, gain);
+        }
+    }
+
+    pub fn auto_fix_problem(&mut self, time_ms: f64) -> bool {
+        if self.busy || self.is_stroke_open() {
+            return false;
+        }
+        let outcome = self
+            .document
+            .as_mut()
+            .and_then(|d| d.composer.auto_fix_at(time_ms));
+        if let Some(msg) = outcome {
+            self.status = msg;
+            self.refresh_recovery_edit();
+            true
+        } else {
+            false
+        }
+    }
     pub fn set_hs_mode(&mut self, hs: bool) {
         if self.busy {
             return;
@@ -4604,6 +4687,13 @@ impl Application {
         }
     }
 
+    /// Updates lock-free MIDI choke groups (e.g. Hi-Hat Closed/Pedal/Open) on the live drum VST3.
+    pub fn set_drum_vst_choke_groups(&self, groups: HashMap<u8, u8>) {
+        if let Some(vst) = &self.drum_vst {
+            vst.set_choke_groups(groups);
+        }
+    }
+
     /// Toggles per-lane VST3 routing on/off; bypassed lanes fall back to sample playback.
     pub fn toggle_drum_vst_lane(&mut self, row: usize) -> Result<bool, String> {
         let lane = self
@@ -4708,12 +4798,24 @@ impl Application {
         &mut self,
         mode: VelocityExportMode,
     ) -> Result<(Vst3DrumExportPlan, Vec<BounceOutput>), String> {
-        self.render_drum_vst_to_wavs_with(mode, |vst3, instance_id, plan, staging_dir| {
+        self.render_drum_vst_with_options(mode, bounce_plan::BounceAudioFormat::Wav16, false)
+    }
+
+    /// Renders routed VST3 drum hits with optional uniform batch peak normalisation and Ogg Vorbis
+    /// or 16-bit WAV output, staging them as pending mapset samples in one Undo step.
+    pub fn render_drum_vst_with_options(
+        &mut self,
+        mode: VelocityExportMode,
+        format: bounce_plan::BounceAudioFormat,
+        normalize: bool,
+    ) -> Result<(Vst3DrumExportPlan, Vec<BounceOutput>), String> {
+        self.render_drum_vst_to_wavs_formatted(mode, format, normalize, |vst3, instance_id, plan, staging_dir| {
             vst3.execute_vst3_drum_export(instance_id, plan, staging_dir, 44_100)
                 .map_err(|e| e.to_string())
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn render_drum_vst_to_wavs_with<F>(
         &mut self,
         mode: VelocityExportMode,
@@ -4722,10 +4824,28 @@ impl Application {
     where
         F: FnOnce(&mut Vst3Manager, &str, &Vst3DrumExportPlan, &Path) -> Result<Vec<BounceOutput>, String>,
     {
+        self.render_drum_vst_to_wavs_formatted(
+            mode,
+            bounce_plan::BounceAudioFormat::Wav16,
+            false,
+            render_export,
+        )
+    }
+
+    fn render_drum_vst_to_wavs_formatted<F>(
+        &mut self,
+        mode: VelocityExportMode,
+        format: bounce_plan::BounceAudioFormat,
+        normalize: bool,
+        render_export: F,
+    ) -> Result<(Vst3DrumExportPlan, Vec<BounceOutput>), String>
+    where
+        F: FnOnce(&mut Vst3Manager, &str, &Vst3DrumExportPlan, &Path) -> Result<Vec<BounceOutput>, String>,
+    {
         if self.busy || self.is_stroke_open() {
             return Err("Finish the current operation before rendering drums.".into());
         }
-        let (plan, hit_sources) = self.plan_drum_vst_render_with_sources(mode)?;
+        let (mut plan, hit_sources) = self.plan_drum_vst_render_with_sources(mode)?;
         if plan.jobs.is_empty() {
             return Err("No hits found on mapped VST3 drum lanes.".into());
         }
@@ -4743,7 +4863,7 @@ impl Application {
             .data_root
             .join("renders")
             .join(pending::mapset_key(&mapset_root));
-        let outputs = render_export(&mut self.vst3, &instance_id, &plan, &staging_dir)?;
+        let mut outputs = render_export(&mut self.vst3, &instance_id, &plan, &staging_dir)?;
 
         let mut staged_samples = Vec::with_capacity(outputs.len());
         let read_result = (|| -> Result<(), String> {
@@ -4765,6 +4885,82 @@ impl Application {
             let _ = std::fs::remove_file(&output.path);
         }
         read_result?;
+
+        let want_ogg = matches!(format, bounce_plan::BounceAudioFormat::OggVorbis);
+        if normalize || want_ogg {
+            let mut buffers: Vec<Vec<f32>> = staged_samples
+                .iter()
+                .map(|(_, _, clip)| {
+                    if clip.channels == 1 {
+                        let mut stereo = Vec::with_capacity(clip.samples.len() * 2);
+                        for &s in &clip.samples {
+                            stereo.push(s);
+                            stereo.push(s);
+                        }
+                        stereo
+                    } else {
+                        clip.samples.clone()
+                    }
+                })
+                .collect();
+            if normalize {
+                let _ = bounce_plan::uniform_batch_normalize(&mut buffers, format.target_peak_dbfs());
+            }
+            let mut rename_map: HashMap<String, String> = HashMap::new();
+            for (idx, ((name, bytes, clip), stereo)) in staged_samples.iter_mut().zip(buffers.into_iter()).enumerate() {
+                let sr = clip.sample_rate.max(8_000);
+                if want_ogg {
+                    let ogg_bytes = bounce_plan::encode_vorbis_ogg(&stereo, sr)?;
+                    let new_name = match name.rsplit_once('.') {
+                        Some((stem, _)) => format!("{stem}.ogg"),
+                        None => format!("{name}.ogg"),
+                    };
+                    rename_map.insert(name.clone(), new_name.clone());
+                    *name = new_name.clone();
+                    *bytes = ogg_bytes;
+                    if let Some(out) = outputs.get_mut(idx) {
+                        out.path = out.path.with_file_name(&new_name);
+                    }
+                } else {
+                    let data_bytes = (stereo.len() * 2) as u32;
+                    let mut wav = Vec::with_capacity(44 + data_bytes as usize);
+                    wav.extend_from_slice(b"RIFF");
+                    wav.extend_from_slice(&(36 + data_bytes).to_le_bytes());
+                    wav.extend_from_slice(b"WAVEfmt ");
+                    wav.extend_from_slice(&16u32.to_le_bytes());
+                    wav.extend_from_slice(&1u16.to_le_bytes());
+                    wav.extend_from_slice(&2u16.to_le_bytes());
+                    wav.extend_from_slice(&sr.to_le_bytes());
+                    wav.extend_from_slice(&(sr * 4).to_le_bytes());
+                    wav.extend_from_slice(&4u16.to_le_bytes());
+                    wav.extend_from_slice(&16u16.to_le_bytes());
+                    wav.extend_from_slice(b"data");
+                    wav.extend_from_slice(&data_bytes.to_le_bytes());
+                    for &s in &stereo {
+                        let pcm = (s.clamp(-1.0, 1.0) * 32767.0).round() as i16;
+                        wav.extend_from_slice(&pcm.to_le_bytes());
+                    }
+                    *bytes = wav;
+                }
+                *clip = Arc::new(AudioClip {
+                    samples: stereo,
+                    channels: 2,
+                    sample_rate: sr,
+                });
+            }
+            if !rename_map.is_empty() {
+                for job in &mut plan.jobs {
+                    if let Some(next) = rename_map.get(&job.filename) {
+                        job.filename = next.clone();
+                    }
+                }
+                for assignment in &mut plan.assignments {
+                    if let Some(next) = rename_map.get(&assignment.filename) {
+                        assignment.filename = next.clone();
+                    }
+                }
+            }
+        }
 
         let mut added_names: Vec<String> = Vec::with_capacity(staged_samples.len());
         let mut additions = Vec::with_capacity(staged_samples.len());

@@ -8,6 +8,12 @@ const COMMANDS: &[&str] = &[
     "export_view",
     "export_preview",
     "export_run",
+    "export_unused_dry_run",
+    "export_listen_target",
+    "export_stop_listen",
+    "preview_diff_ribbon",
+    "bounce_osz_budget",
+    "keysounds_dedup_report",
     "open_export_window",
     "close_export_window",
     "show_in_editor",
@@ -73,6 +79,7 @@ const COMMANDS: &[&str] = &[
     "shared_base_set_enabled",
     "shared_base_capture",
     "shared_base_apply",
+    "shared_base_apply_all",
     "shared_base_clear_overrides",
     "shared_base_clear",
     "stem_separation_status",
@@ -88,6 +95,9 @@ const COMMANDS: &[&str] = &[
     "revert_mapset_to_original",
     "undo_mapset_revert",
     "check_for_updates",
+    "download_update",
+    "install_update_on_close",
+    "cancel_staged_update",
 ];
 
 fn main() {

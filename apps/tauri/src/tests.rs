@@ -368,6 +368,7 @@ fn drum_view_uses_a_preset_without_changing_the_mapset_and_follows_sibling_diffi
         lane: lane.map(str::to_owned),
         slot: None,
         midi_note: None,
+        choke_group: None,
     };
     let kit = DrumMap {
         id: "bbbbbbbb-0000-4000-8000-000000000001".into(),
@@ -450,7 +451,7 @@ fn drum_view_rows_follow_a_replaced_lane_and_leave_hidden_lanes_hidden() {
             id: "bbbbbbbb-0000-4000-8000-000000000002".into(),
             name: "Kit".into(),
             rows: rows.into_iter().enumerate().map(|(id, (name, lane))| DrumRow {
-                id: format!("aaaaaaaa-0000-4000-8000-{id:012}"), name: name.into(), lane, slot: None, midi_note: None,
+                id: format!("aaaaaaaa-0000-4000-8000-{id:012}"), name: name.into(), lane, slot: None, midi_note: None, choke_group: None,
             }).collect(),
             audio: Vec::new(),
         };
@@ -525,7 +526,7 @@ fn drum_view_rows_find_a_sample_under_another_spelling_and_keep_hidden_ones_hidd
             .into_iter()
             .enumerate()
             .map(|(id, (name, lane))| DrumRow {
-                id: format!("aaaaaaaa-0000-4000-8000-{id:012}"), name: name.into(), lane: Some(lane.into()), slot: None, midi_note: None,
+                id: format!("aaaaaaaa-0000-4000-8000-{id:012}"), name: name.into(), lane: Some(lane.into()), slot: None, midi_note: None, choke_group: None,
             })
             .collect(),
         audio: Vec::new(),
@@ -579,7 +580,7 @@ fn a_drum_view_row_on_a_hidden_lane_never_names_another_spelling_of_its_file() {
         id: "bbbbbbbb-0000-4000-8000-000000000004".into(),
         name: "Kick".into(),
         rows: vec![DrumRow {
-            id: "aaaaaaaa-0000-4000-8000-000000000000".into(), name: "Kick".into(), lane: Some("BeatmapFile|kick.wav".into()), slot: None, midi_note: Some(36),
+            id: "aaaaaaaa-0000-4000-8000-000000000000".into(), name: "Kick".into(), lane: Some("BeatmapFile|kick.wav".into()), slot: None, midi_note: Some(36), choke_group: None,
         }],
         audio: Vec::new(),
     };
@@ -2698,6 +2699,8 @@ fn export_requests_answer_with_the_export_view_and_errors_after_a_fault() {
     }
     assert_eq!(view["choices"], serde_json::json!({
         "leftOut": [], "matchWithin": 5.0, "copyVolumes": true, "base": false, "sliderAudio": false, "laterWins": false, "mixFormat": "wav16",
+        "sliderEndMute": { "enabled": false, "minBeats": 0.5, "divisors": [], "onlyUnhit": true, "muteSpinnerEnds": false },
+        "fallbackSound": null,
     }));
     assert!(view["preview"]["base"].is_null(), "no base difficulty without the base choice");
     assert_eq!((&view["writing"], &view["written"], &view["writeError"]), (&serde_json::json!(false), &serde_json::Value::Null, &serde_json::Value::Null));
@@ -3345,7 +3348,7 @@ fn typed_scene_matches_legacy_json_bytes_exactly() {
                 }
                 let mut scene = json!({
                     "title": d.title, "mapTitle": d.map_title(), "version": d.version(),
-                    "path": d.path, "difficulties": d.difficulties,
+                    "path": d.path, "difficulties": d.difficulties, "coverage": d.coverage_summary(),
                     "lanes": lanes, "laneOrder": lane_order, "moments": moments,
                     "previewKey": app.document_generation(),
                     "orphanedHits": dawsu_application::orphaned_hit_times(model, d.hs_mode),
@@ -3354,6 +3357,7 @@ fn typed_scene_matches_legacy_json_bytes_exactly() {
                     "snap": c.snap_enabled, "snapMode": match c.snap_mode { SnapMode::Grid => "grid", SnapMode::GridRelative => "relative", SnapMode::Objects => "objects" },
                     "beats": c.spacing.beats(), "divisor": c.spacing.divisions(),
                     "insertVolume": c.insert_volume, "protect": c.protect_normals, "hs": d.hs_mode,
+                    "hsDifficulties": d.difficulties.iter().filter(|p| super::is_osu_hs_diff(p)).cloned().collect::<Vec<_>>(),
                     "viewStart": c.view_start, "zoom": app.zoom, "rowHeight": app.row_height,
                     "range": c.range.map(|r| [r.from.ms(), r.to.ms()]),
                     "repeatGap": app.requested_edit().filter(|&id| id == "repeat").and_then(|_| c.repeat_gap()),
@@ -3402,6 +3406,9 @@ fn typed_scene_matches_legacy_json_bytes_exactly() {
             },
             "recent": app.preferences.recent, "firstLaunch": app.first_launch,
         });
+        if document.is_none() || include_scene {
+            result["recentMeta"] = json!(app.preferences.recent.iter().map(|p| super::cached_recent_meta(p)).collect::<Vec<_>>());
+        }
         result["hsMode"] = json!(document.is_some_and(|d| d.hs_mode));
         result["hasOriginalSnapshot"] = json!(app.has_original_snapshot());
         result["canUndoRevert"] = json!(app.can_undo_revert());
@@ -3684,7 +3691,7 @@ fn scene_lane_exposes_vst_routed_and_bypassed_and_toggle_lane_switches_them() {
     .unwrap();
     let mut app = Application::headless();
     open(&mut app, &map);
-    let drums = super::drum_view::DrumView::for_editor();
+    let mut drums = super::drum_view::DrumView::for_editor();
 
     // Before loading a Drum VST3, vstRouted/vstBypassed are omitted from SceneLane JSON.
     let without_vst = serde_json::to_value(super::snapshot_view(&app, true)).unwrap();
@@ -3716,7 +3723,7 @@ fn scene_lane_exposes_vst_routed_and_bypassed_and_toggle_lane_switches_them() {
     // Toggling the lane off sets vstRouted=false, vstBypassed=true.
     super::handle_drum_vst_action(
         &mut app,
-        &drums,
+        &mut drums,
         &serde_json::json!({ "kind": "toggle_lane", "row": normal_row }),
     )
     .unwrap();
@@ -3727,7 +3734,7 @@ fn scene_lane_exposes_vst_routed_and_bypassed_and_toggle_lane_switches_them() {
     // Toggling it back on restores vstRouted=true, vstBypassed=false.
     super::handle_drum_vst_action(
         &mut app,
-        &drums,
+        &mut drums,
         &serde_json::json!({ "kind": "toggle_lane", "row": normal_row }),
     )
     .unwrap();

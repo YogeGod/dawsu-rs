@@ -111,7 +111,7 @@ export function attachIpc(ctx) {
           break;
         }
         case "newDiff":
-          $("new")?.click();
+          ctx.openNewDifficulty();
           break;
         case "openFolder":
           await invoke("open_editor_folder", { folder: "map" });
