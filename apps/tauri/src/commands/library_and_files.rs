@@ -163,21 +163,77 @@ pub(crate) fn inspect_mapset_folder(path: PathBuf) -> Result<Value, String> {
     if diffs.is_empty() {
         return Err("This folder contains no .osu difficulty files.".into());
     }
-    if diffs.len() == 1 {
-        return Ok(json!({ "kind": "open", "path": diffs[0] }));
-    }
+    let mut artist = String::new();
+    let mut title = String::new();
+    let mut creator = String::new();
     let entries: Vec<Value> = diffs
         .iter()
         .map(|p| {
+            let file_name = p.file_name().and_then(|s| s.to_str()).unwrap_or("").to_string();
+            let fallback_name = p.file_stem().and_then(|s| s.to_str()).unwrap_or("").to_string();
+            let mut version = String::new();
+            let mut mode: u8 = 0;
+            if let Ok(bytes) = std::fs::read(p) {
+                let text = String::from_utf8_lossy(&bytes);
+                let mut section = "";
+                for raw in text.lines() {
+                    let line = raw.trim().trim_start_matches('\u{feff}');
+                    if line.starts_with('[') && line.ends_with(']') {
+                        section = &line[1..line.len() - 1];
+                        if section.eq_ignore_ascii_case("HitObjects")
+                            || section.eq_ignore_ascii_case("TimingPoints")
+                        {
+                            break;
+                        }
+                        continue;
+                    }
+                    if section.eq_ignore_ascii_case("General") {
+                        if let Some(rest) = line.strip_prefix("Mode:")
+                            && let Ok(parsed) = rest.trim().parse::<u8>()
+                        {
+                            mode = parsed;
+                        }
+                    } else if section.eq_ignore_ascii_case("Metadata") {
+                        if artist.is_empty()
+                            && let Some(rest) = line.strip_prefix("Artist:")
+                        {
+                            artist = rest.trim().to_string();
+                        } else if title.is_empty()
+                            && let Some(rest) = line.strip_prefix("Title:")
+                        {
+                            title = rest.trim().to_string();
+                        } else if creator.is_empty()
+                            && let Some(rest) = line.strip_prefix("Creator:")
+                        {
+                            creator = rest.trim().to_string();
+                        } else if version.is_empty()
+                            && let Some(rest) = line.strip_prefix("Version:")
+                        {
+                            version = rest.trim().to_string();
+                        }
+                    }
+                }
+            }
+            let version = if version.is_empty() { fallback_name.clone() } else { version };
             let is_hs = is_osu_hs_diff(p);
-            let name = p.file_stem().and_then(|s| s.to_str()).unwrap_or("").to_string();
-            json!({ "path": p, "name": name, "isHs": is_hs })
+            json!({
+                "path": p,
+                "name": fallback_name,
+                "version": version,
+                "fileName": file_name,
+                "isHs": is_hs,
+                "mode": mode,
+            })
         })
         .collect();
-    if let Some(hs_path) = diffs.iter().find(|p| is_osu_hs_diff(p)) {
-        return Ok(json!({ "kind": "open", "path": hs_path }));
-    }
-    Ok(json!({ "kind": "choose", "folder": path, "difficulties": entries }))
+    Ok(json!({
+        "kind": "choose",
+        "folder": path,
+        "artist": artist,
+        "title": title,
+        "creator": creator,
+        "difficulties": entries,
+    }))
 }
 
 #[tauri::command]

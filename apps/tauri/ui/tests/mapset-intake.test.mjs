@@ -3,37 +3,82 @@ import { test } from "node:test";
 import { render } from "svelte/server";
 import MapsetIntakeCard from "../src/parts/MapsetIntakeCard.svelte";
 
-test("MapsetIntakeCard detects existing [Hitsounds] diff and offers 1-click open", () => {
+test("MapsetIntakeCard pins existing [Hitsounds] diff at top and folds creation options", () => {
   const html = render(MapsetIntakeCard, {
     props: {
       mapset: {
         artist: "Camellia",
         title: "Exit This Earth's Atomosphere",
+        creator: "Kylix",
         folder: "12345 Camellia",
         difficulties: [
-          { path: "/m/insane.osu", version: "Insane" },
-          { path: "/m/hs.osu", version: "Hitsounds" },
+          { path: "/m/insane.osu", version: "Insane", mode: 0, isHs: false },
+          { path: "/m/hs.osu", version: "Hitsounds", mode: 0, isHs: true },
         ],
       },
     },
   }).body;
   assert.match(html, /Camellia - Exit This Earth's Atomosphere/);
-  assert.match(html, /Open \[Hitsounds\] →/);
+  assert.match(html, /Mapped by Kylix/);
+  assert.match(html, /Continue \[Hitsounds\] →/);
+  assert.match(html, /Create another hitsound diff…/);
   assert.match(html, /Auto-backup stays on/);
 });
 
-test("MapsetIntakeCard offers Create [Hitsounds] when none exists", () => {
+test("MapsetIntakeCard offers Path 1, Path 2, and Path 3 when no [Hitsounds] diff exists", () => {
   const html = render(MapsetIntakeCard, {
     props: {
       mapset: {
         artist: "xi",
         title: "FREEDOM DiVE",
         folder: "999 xi",
-        difficulties: [{ path: "/m/4d.osu", version: "FOUR DIMENSIONS" }],
+        difficulties: [
+          { path: "/m/4d.osu", version: "FOUR DIMENSIONS", mode: 0, isHs: false },
+          { path: "/m/another.osu", version: "Another", mode: 0, isHs: false },
+        ],
       },
     },
   }).body;
-  assert.match(html, /Create \[Hitsounds\] &amp; Start Editing →/);
+  assert.match(html, /Custom samples only/);
+  assert.match(html, /12 osu! default lanes/);
+  assert.match(html, /Or edit a difficulty directly/);
+  assert.match(html, /FOUR DIMENSIONS/);
+  assert.match(html, /Timing reference/);
+});
+
+test("MapsetIntakeCard disables non-standard difficulties and guards timing reference", () => {
+  const html = render(MapsetIntakeCard, {
+    props: {
+      mapset: {
+        artist: "Test",
+        title: "Mixed Modes",
+        folder: "mixed",
+        difficulties: [
+          { path: "/m/taiko.osu", version: "Oni", mode: 1, isHs: false },
+          { path: "/m/mania.osu", version: "4K MX", mode: 3, isHs: false },
+        ],
+      },
+    },
+  }).body;
+  assert.match(html, /taiko/);
+  assert.match(html, /mania/);
+  assert.match(html, /No osu!standard difficulty found to copy timing from/);
+});
+
+test("MapsetIntakeCard renders inline mode for the Start Screen right panel", () => {
+  const html = render(MapsetIntakeCard, {
+    props: {
+      inline: true,
+      mapset: {
+        artist: "Camellia",
+        title: "Ghost",
+        folder: "ghost",
+        difficulties: [{ path: "/m/extra.osu", version: "Extra", mode: 0, isHs: false }],
+      },
+    },
+  }).body;
+  assert.match(html, /intake-card-inline/);
+  assert.doesNotMatch(html, /intake-backdrop/);
 });
 
 test("MapsetIntakeCard guards against empty or corrupt mapset folders", () => {

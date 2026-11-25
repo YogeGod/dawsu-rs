@@ -208,7 +208,7 @@ export function createEditor(env = globalThis, { ui = null, autoStart = true, ex
     }
   }
 
-  function startScreenAction(kind, arg) {
+  function startScreenAction(kind, arg, extra) {
     switch (kind) {
       case "resume":
         if (!state.view.busy) return ctx.act({ kind: "resume" });
@@ -218,7 +218,11 @@ export function createEditor(env = globalThis, { ui = null, autoStart = true, ex
       case "openFolder":
         return ctx.openMapFolder();
       case "createHsDiff":
-        return arg ? ctx.createAndOpenHitsoundDiff(arg, true) : ctx.pickAndCreateHitsoundDiff();
+        return arg
+          ? ctx.createAndOpenHitsoundDiff(arg, extra ? false : true, extra || null)
+          : ctx.pickAndCreateHitsoundDiff();
+      case "openMapsetIntake":
+        return ctx.ui()?.openMapsetIntake?.(arg);
       case "openFromOsu":
         return ctx.openFromOsu();
       case "importOsz":

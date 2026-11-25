@@ -124,24 +124,32 @@ export function attachEditDialogs(ctx) {
     return ctx.run(async () => ctx.show(await invoke("pick_map")));
   }
 
-  function createAndOpenHitsoundDiff(siblingPath, reuseExisting = false) {
+  async function createAndOpenHitsoundDiff(siblingPath, reuseExisting = false, starterMode = null) {
     if (!siblingPath || state.view.busy) return;
-    return ctx.run(async () => {
+    try {
       const created = await invoke("create_hitsound_diff", {
         siblingPath,
         reuseExisting: Boolean(reuseExisting),
+        starterMode: starterMode || null,
       });
       if (created) {
         await ctx.act({ kind: "open", path: created });
-        await ctx.act({ kind: "hs_mode", on: true });
       }
-    });
+    } catch (error) {
+      ctx.modal("error", "Could not create Hitsound diff", [paragraph(String(error))], [["OK", () => ctx.closeModal(), true]]);
+    }
   }
 
   async function pickAndCreateHitsoundDiff() {
     if (state.view.busy) return;
     const picked = await invoke("pick_map_for_hitsound_diff");
-    if (picked) await createAndOpenHitsoundDiff(picked, true);
+    if (!picked) return;
+    const parent = picked.replace(/[\\/][^\\/]+$/, "");
+    if (parent && parent !== picked) {
+      await openMapFolderPath(parent);
+    } else {
+      await createAndOpenHitsoundDiff(picked, true, null);
+    }
   }
 
   async function openMapFolderPath(folderPath) {
@@ -154,25 +162,7 @@ export function attachEditDialogs(ctx) {
         return;
       }
       if (res.kind === "choose" && Array.isArray(res.difficulties) && res.difficulties.length) {
-        const list = env.document.createElement("div");
-        list.className = "diff-picker-list";
-        const createBtn = makeButton("+ Create Hitsound diff", () => {
-          ctx.closeModal();
-          createAndOpenHitsoundDiff(res.difficulties[0].path, false);
-        });
-        createBtn.className = "primary";
-        list.append(createBtn);
-        for (const diff of res.difficulties) {
-          const btn = makeButton(diff.isHs ? `${diff.name} [HS]` : diff.name, () => {
-            ctx.closeModal();
-            ctx.act({ kind: "open", path: diff.path });
-          });
-          list.append(btn);
-        }
-        ctx.modal("difficulty-chooser", "Choose a difficulty", [
-          paragraph("No Hitsound difficulty found yet. Create one or pick a difficulty to edit:"),
-          list,
-        ], [["Cancel", () => ctx.closeModal()]]);
+        ctx.ui()?.openMapsetIntake?.(res);
       }
     } catch (error) {
       ctx.modal("error", "Could not open folder", [paragraph(String(error))], [["OK", () => ctx.closeModal(), true]]);
