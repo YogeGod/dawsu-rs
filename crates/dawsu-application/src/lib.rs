@@ -117,7 +117,7 @@ pub use export::{ExportChoices, ExportOptions, ExportPreview, ExportStatus, Prev
 pub use export_settings::{ExportCombination, ExportSettings};
 pub use mixes::MixFormat;
 pub use original_snapshot::SnapshotPreview;
-pub use project::LaneLayout;
+pub use project::{HsStarterMode, LaneLayout};
 pub use recovery::RecoveryOffer;
 pub use sample_checks::{FixedWav, SampleHealthIssue, SampleHealthReport};
 pub use sound_sets::{LibrarySet, PlacementView, SaveSetError, SetUpdatePrompt, SoundSetLibrary};
@@ -328,6 +328,10 @@ struct ReloadPreserve {
     song_path: Option<PathBuf>,
     forced: bool,
     status_note: &'static str,
+    snap_mode: dawsu_editor::tempo::SnapMode,
+    snap_enabled: bool,
+    spacing: dawsu_editor::tempo::SnapSpacing,
+    hidden_lanes: BTreeSet<SampleIdentity>,
 }
 struct PendingSave {
     version: u64,
@@ -594,6 +598,25 @@ impl Application {
         let mut app = Self::create(Preferences::default(), false, None, None, false, data_root.clone());
         app.project_root = Some(data_root.join("projects"));
         app
+    }
+    /// Resets first-open Path 3 view defaults (Objects snap + hidden empty lanes) back to Grid
+    /// snap with all lanes visible and a clean undo stack. Used by integration tests that open
+    /// fixtures expecting the legacy Grid + all-12-lanes baseline.
+    #[doc(hidden)]
+    pub fn reset_fresh_open_for_tests(&mut self) {
+        if let Some(doc) = self.document.as_mut() {
+            doc.composer.snap_mode = dawsu_editor::tempo::SnapMode::Grid;
+            doc.composer.history.update_external(|hits| {
+                hits.restore_hidden_lanes(std::iter::empty());
+            });
+            doc.composer.lanes = doc
+                .composer
+                .hitsounds()
+                .lanes()
+                .iter()
+                .map(|lane| lane.identity.clone())
+                .collect();
+        }
     }
     fn create(
         preferences: Preferences,

@@ -1649,6 +1649,11 @@ pub(crate) mod tests {
         app.request_open(map.to_path_buf());
         wait(app);
         assert!(app.document().is_some(), "{:?}", app.error);
+        // Sound-set placement tests seek to arbitrary beat-grid times (e.g. 1500 ms, 2000 ms)
+        // on a 1-circle fixture; use Grid snap explicitly rather than Path 3's Objects default.
+        if let Some(doc) = app.document.as_mut() {
+            doc.composer.snap_mode = dawsu_editor::tempo::SnapMode::Grid;
+        }
         app.document().unwrap().path.clone()
     }
 

@@ -144,10 +144,15 @@ impl Application {
             hidden_lanes: {
                 let items: std::collections::BTreeSet<_> = document.composer.hitsounds()
                     .hidden_lanes().map(project::lane_key).collect();
-                (!items.is_empty() || self.project.as_ref().is_some_and(|p| p.settings.hidden_lanes.is_some()))
-                    .then_some(items)
+                (!items.is_empty()
+                    || self.project.as_ref().is_some_and(|p| {
+                        p.has_saved_file || p.settings.hidden_lanes.is_some()
+                    }))
+                .then_some(items)
             },
             hs_mode: Some(document.hs_mode),
+            starter_mode: document.starter_mode,
+            snap_mode: Some(document.composer.snap_mode.into()),
             hs_circle_ownership: saved_ownership.unwrap_or_else(|| {
                 self.project.as_ref().and_then(|p| p.settings.hs_circle_ownership.clone())
             }),
@@ -598,6 +603,10 @@ impl Application {
             song_path,
             forced,
             status_note,
+            snap_mode: d.composer.snap_mode,
+            snap_enabled: d.composer.snap_enabled,
+            spacing: d.composer.spacing,
+            hidden_lanes: d.composer.hitsounds().hidden_lanes().cloned().collect(),
         };
         self.external_osu_changed = false;
         self.start_open_inner(OpenSource::Map(path), false, Some(preserve));
@@ -910,6 +919,14 @@ impl Application {
                     self.osu_watch.reset_for(&path);
                     if let Some(d) = self.document.as_mut() {
                         d.composer.protect_normals = self.preferences.protect_hitnormals;
+                        if let Some(keep_view) = &preserve {
+                            d.composer.snap_mode = keep_view.snap_mode;
+                            d.composer.snap_enabled = keep_view.snap_enabled;
+                            d.composer.spacing = keep_view.spacing;
+                            d.composer.history.update_external(|hits| {
+                                hits.restore_hidden_lanes(keep_view.hidden_lanes.iter().cloned());
+                            });
+                        }
                     }
                     let keep_song = preserve.as_ref().is_some_and(|p| {
                         p.song_path == loaded.song_path && (self.song.is_some() || self.song_loading)
@@ -1885,6 +1902,53 @@ pub(crate) fn load(
     }
     document.lane_layout = project.as_ref().and_then(|p| p.settings.lane_layout.clone());
     document.hs_mode = project.as_ref().and_then(|p| p.settings.hs_mode).unwrap_or(false);
+    document.starter_mode = project.as_ref().and_then(|p| p.settings.starter_mode);
+    if let Some(mode) = project.as_ref().and_then(|p| p.settings.snap_mode) {
+        document.composer.snap_mode = mode.into();
+    }
+    let has_saved_file = project.as_ref().is_some_and(|p| p.has_saved_file);
+    if recovery.is_none()
+        && !has_saved_file
+        && !document.hs_mode
+        && !document.composer.hitsounds().moments().is_empty()
+    {
+        // Path 3 first open (editing an existing gameplay difficulty directly):
+        // default to Objects snap and show only lanes that currently have hits
+        // (keeping normal-hitnormal Index 0 visible if no lane has hits yet).
+        document.composer.snap_mode = dawsu_editor::tempo::SnapMode::Objects;
+        let used: std::collections::BTreeSet<SampleIdentity> = document
+            .composer
+            .hitsounds()
+            .moments()
+            .iter()
+            .flat_map(|moment| moment.hits())
+            .cloned()
+            .collect();
+        let fallback_lane = SampleIdentity::Standard {
+            set: dawsu_foundation::SampleSet::Normal,
+            sound: dawsu_foundation::Sound::Hit(dawsu_foundation::Hitsound::Normal),
+            index: dawsu_foundation::CustomIndex::new(0),
+        };
+        let to_hide: Vec<SampleIdentity> = document
+            .composer
+            .hitsounds()
+            .lanes()
+            .iter()
+            .map(|lane| lane.identity.clone())
+            .filter(|id| {
+                if used.is_empty() {
+                    id != &fallback_lane
+                } else {
+                    !used.contains(id)
+                }
+            })
+            .collect();
+        if !to_hide.is_empty() {
+            document.composer.history.update_external(|hits| {
+                hits.restore_hidden_lanes(to_hide.iter().cloned());
+            });
+        }
+    }
     if let Some(ownership) = project.as_ref().and_then(|p| p.settings.hs_circle_ownership.as_ref()) {
         document.owned_hs_circles = ownership.verified_lines(&document.compile_base);
     }

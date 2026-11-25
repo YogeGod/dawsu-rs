@@ -343,6 +343,8 @@ pub(crate) struct SceneLaneLayout {
     lane_names: std::collections::BTreeMap<String, String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     lane_order: Vec<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    plain_list: bool,
 }
 
 impl From<&LaneLayout> for SceneLaneLayout {
@@ -354,6 +356,7 @@ impl From<&LaneLayout> for SceneLaneLayout {
             lane_colours: layout.lane_colours.clone(),
             lane_names: layout.lane_names.clone(),
             lane_order: layout.lane_order.clone(),
+            plain_list: layout.plain_list,
         }
     }
 }
@@ -399,6 +402,8 @@ pub(crate) struct SceneSnapshot {
     pub(crate) selection: Option<selection::SelectionSummary>,
     pub(crate) snap: bool,
     pub(crate) snap_mode: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) starter_mode: Option<&'static str>,
     pub(crate) time_signatures: Vec<SceneTimeSignature>,
     pub(crate) title: String,
     pub(crate) version: String,
@@ -618,7 +623,11 @@ pub(crate) fn musical_position_text(app: &Application, position: f64) -> Option<
         let (beat, (numerator, denominator)) = document.editor_bar_at(time);
         let tick = (beat.beat_fraction * 480.0 + 1e-9).floor() as u32;
         let snap = if composer.snap_enabled {
-            format!("{}/{}", composer.spacing.beats(), composer.spacing.divisions())
+            if composer.snap_mode == SnapMode::Objects {
+                "Objects".into()
+            } else {
+                format!("{}/{}", composer.spacing.beats(), composer.spacing.divisions())
+            }
         } else {
             "Snap off".into()
         };
@@ -794,6 +803,7 @@ pub(crate) fn snapshot_with_static(app: &Application, include_scene: bool, inclu
                 selection,
                 snap: c.snap_enabled,
                 snap_mode: match c.snap_mode { SnapMode::Grid => "grid", SnapMode::GridRelative => "relative", SnapMode::Objects => "objects" },
+                starter_mode: d.starter_mode.map(dawsu_application::HsStarterMode::as_str),
                 time_signatures: d.time_signatures().iter().map(Into::into).collect(),
                 title: d.title.clone(),
                 version: d.version(),
@@ -1039,6 +1049,7 @@ pub(crate) fn non_playback_signature(
         d.composer.lanes.len().hash(&mut hasher);
         d.hs_mode.hash(&mut hasher);
         d.composer.snap_enabled.hash(&mut hasher);
+        std::mem::discriminant(&d.composer.snap_mode).hash(&mut hasher);
         d.composer.spacing.beats().hash(&mut hasher);
         d.composer.spacing.divisions().hash(&mut hasher);
         d.path.hash(&mut hasher);

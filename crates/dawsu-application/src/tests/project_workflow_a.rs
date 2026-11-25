@@ -1234,21 +1234,93 @@ fn add_lane_registers_a_new_sample_before_the_watcher_runs() {
     std::fs::write(fixture.path("late.WAV"), wav).unwrap();
     std::fs::write(fixture.path("song.wav"), wav).unwrap();
     assert!(!app.document().unwrap().composer.lanes.contains(&lane));
-    assert_eq!(app.scan_lane_add_candidates(&path).unwrap(), std::slice::from_ref(&lane));
+    assert!(app.scan_lane_add_candidates(&path).unwrap().contains(&lane));
     // No poll occurs between copy and explicit Add.
     app.show_lane(&path, &lane).unwrap();
     let doc = app.document().unwrap();
     assert_eq!(doc.composer.lanes[app.active_lane], lane);
     assert!(app.samples.contains_key(&lane));
     assert!(!app.is_dirty());
-    assert!(app.scan_lane_add_candidates(&path).unwrap().is_empty());
+    assert!(!app.scan_lane_add_candidates(&path).unwrap().contains(&lane));
     app.command("undo");
     assert!(app.document().unwrap().composer.hitsounds().is_lane_hidden(&lane));
-    assert_eq!(app.scan_lane_add_candidates(&path).unwrap(), std::slice::from_ref(&lane));
+    assert!(app.scan_lane_add_candidates(&path).unwrap().contains(&lane));
     app.command("redo");
     assert!(!app.document().unwrap().composer.hitsounds().is_lane_hidden(&lane));
     assert_eq!(std::fs::read(&path).unwrap(), map);
     assert_eq!(std::fs::read(fixture.path("late.WAV")).unwrap(), wav);
+}
+
+#[test]
+fn fresh_gameplay_diff_opens_with_objects_snap_and_used_lanes_only_and_persists_overrides() {
+    let fixture = Scratch::new("task1-path3-defaults");
+    let path = fixture.path("map.osu");
+    let map = b"osu file format v14\n[TimingPoints]\n0,500,4,1,0,80,1,0\n[HitObjects]\n256,192,1000,1,8,0:0:0:0:\n";
+    std::fs::write(&path, map).unwrap();
+    let projects = fixture.path("projects");
+    let mut app = Application::headless();
+    app.project_root = Some(projects);
+    open(&mut app, path.clone());
+
+    let doc = app.document().unwrap();
+    assert_eq!(doc.composer.snap_mode, dawsu_editor::tempo::SnapMode::Objects);
+    let visible: Vec<_> = doc
+        .composer
+        .hitsounds()
+        .lanes()
+        .iter()
+        .filter(|l| !doc.composer.hitsounds().is_lane_hidden(&l.identity))
+        .map(|l| crate::lane_name(&l.identity))
+        .collect();
+    assert_eq!(visible, vec!["normal-hitnormal", "normal-hitclap"]);
+
+    // Switch to Grid snap and unhide every lane, then save session and reopen:
+    // both Grid snap and the empty hidden_lanes list must persist.
+    let doc = app.document.as_mut().unwrap();
+    doc.composer.snap_mode = dawsu_editor::tempo::SnapMode::Grid;
+    doc.composer.history.update_external(|hits| {
+        hits.restore_hidden_lanes(std::iter::empty());
+    });
+    app.save_session().unwrap();
+
+    open(&mut app, path.clone());
+    let doc = app.document().unwrap();
+    assert_eq!(doc.composer.snap_mode, dawsu_editor::tempo::SnapMode::Grid);
+    assert_eq!(doc.composer.hitsounds().hidden_lanes().count(), 0);
+}
+
+#[test]
+fn live_reload_preserves_unsaved_snap_mode_and_unhidden_lanes() {
+    let fixture = Scratch::new("task1-live-reload-preserve");
+    let path = fixture.path("map.osu");
+    let map_v1 = b"osu file format v14\n[TimingPoints]\n0,500,4,1,0,80,1,0\n[HitObjects]\n256,192,1000,1,0,0:0:0:0:\n";
+    let map_v2 = b"osu file format v14\n[TimingPoints]\n0,500,4,1,0,80,1,0\n[HitObjects]\n256,192,1000,1,0,0:0:0:0:\n256,192,2000,1,0,0:0:0:0:\n";
+    std::fs::write(&path, map_v1).unwrap();
+    let projects = fixture.path("projects");
+    let mut app = Application::headless();
+    app.project_root = Some(projects);
+    open(&mut app, path.clone());
+
+    // Change snap_mode to Grid and unhide all lanes without saving the session first.
+    {
+        let doc = app.document.as_mut().unwrap();
+        doc.composer.snap_mode = dawsu_editor::tempo::SnapMode::Grid;
+        doc.composer.snap_enabled = false;
+        doc.composer.history.update_external(|hits| {
+            hits.restore_hidden_lanes(std::iter::empty());
+        });
+    }
+
+    // External tool updates .osu on disk; trigger a live reload.
+    std::fs::write(&path, map_v2).unwrap();
+    app.reload_from_disk();
+    wait(&mut app);
+
+    let doc = app.document().unwrap();
+    assert_eq!(doc.composer.hitsounds().moments().len(), 2);
+    assert_eq!(doc.composer.snap_mode, dawsu_editor::tempo::SnapMode::Grid);
+    assert!(!doc.composer.snap_enabled);
+    assert_eq!(doc.composer.hitsounds().hidden_lanes().count(), 0);
 }
 
 #[test]
@@ -1348,6 +1420,7 @@ fn lane_layout_is_read_per_difficulty_without_writing_the_map() {
         lane_colours: [("Skin|normal-hitclap".into(), "#e65420".into())].into(),
         lane_names: [("Skin|normal-hitclap".into(), "Backup snare".into())].into(),
         lane_order: vec!["Skin|normal-hitclap".into(), "Skin|normal-hitnormal".into()],
+        plain_list: false,
     };
     app.set_lane_layout(updated.clone()).unwrap();
     app.save_session().unwrap();

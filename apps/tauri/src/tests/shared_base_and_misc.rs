@@ -472,6 +472,34 @@ fn typed_scene_matches_legacy_json_bytes_exactly() {
 }
 
 #[test]
+fn fresh_gameplay_diff_scene_reports_objects_snap_and_updates_signature() {
+    let fixture = Fixture::new("task1-objects-snap-scene");
+    let path = fixture.0.join("map.osu");
+    std::fs::write(
+        &path,
+        "osu file format v14\n[TimingPoints]\n0,500,4,1,0,80,1,0\n[HitObjects]\n256,192,1000,1,8,0:0:0:0:\n",
+    )
+    .unwrap();
+    let mut app = Application::headless();
+    super::helpers::open_raw(&mut app, &path);
+
+    let view = snapshot(&app, true);
+    assert_eq!(view["scene"]["snapMode"], "objects");
+    assert!(
+        view["musicalPosition"].as_str().unwrap().ends_with(" · Objects"),
+        "expected Objects snap label, got {:?}",
+        view["musicalPosition"]
+    );
+    assert_eq!(view["scene"]["laneOrder"].as_array().unwrap().len(), 2);
+
+    let home = crate::home::Route::default();
+    let sig_objects = crate::non_playback_signature(&app, &home, PlaybackStart::Cursor, 0);
+    Action::Snap { on: true, mode: "grid".into(), beats: 1, divisor: 4 }.run(&mut app);
+    let sig_grid = crate::non_playback_signature(&app, &home, PlaybackStart::Cursor, 0);
+    assert_ne!(sig_objects, sig_grid);
+}
+
+#[test]
 fn slim_tick_polls_return_tick_when_unchanged_and_full_view_on_status_warning_or_job_change() {
     let fixture = Fixture::new("slim-tick");
     let map = fixture.0.join("map.osu");
