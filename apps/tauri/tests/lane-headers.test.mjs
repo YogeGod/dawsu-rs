@@ -6,7 +6,7 @@ import { bootEditor, readEditorSource } from "./editor-runtime.mjs";
 
 const read = name => readFile(new URL("../dist/" + name, import.meta.url), "utf8");
 const app = readEditorSource();
-const css = await read("style.css");
+const css = await readFile(new URL("../ui/src/legacy-chrome.css", import.meta.url), "utf8");
 
 async function frontend() {
   const controls = new Map();

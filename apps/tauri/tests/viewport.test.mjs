@@ -537,7 +537,7 @@ test("the lane toolbar holds zoom, Fit all and lane height; the Song row holds t
   // v3 §4 (Yoge): no Delete lane or lane names button; the lane menu, Edit and View rows stay,
   // and none of them presses a removed button.
   const commands = await readFile(new URL("../ui/src/lib/commands.js", import.meta.url), "utf8");
-  const menus = await readFile(new URL("../dist/menus.js", import.meta.url), "utf8");
+  const menus = await readFile(new URL("../ui/src/editor/menus.js", import.meta.url), "utf8");
   assert.doesNotMatch(html + app + commands + menus, /id="delete-lane"|\$\("delete-lane"\)|"click", "delete-lane"|toggle-lane-names/);
   assert.match(commands, /id: "deleteActiveLane"[^}]*run: \["call", "deleteActiveLane"\]/);
   assert.match(commands, /id: "laneDelete"[^}]*run: \["onLane", "call", "deleteActiveLane"\]/);
@@ -604,7 +604,7 @@ test("a lane toolbar button at its limit shows disabled", async () => {
 });
 test("the song overview sits at the bottom of the timeline, below the volume lane, with the ruler on top", async () => {
   const docking = await readFile(new URL("../dist/docking.js", import.meta.url), "utf8");
-  const style = await readFile(new URL("../dist/style.css", import.meta.url), "utf8");
+  const style = await readFile(new URL("../ui/src/legacy-chrome.css", import.meta.url), "utf8");
   const arrange = html.slice(html.indexOf('id="editor-arrange"'), html.indexOf('id="editor-inspector"'));
   const order = ['class="ruler"', 'id="scroll"', 'id="volume-controller-panel"', 'class="overview"'].map(mark => arrange.indexOf(mark));
   assert.ok(order.every((at, i) => at > 0 && (i === 0 || at > order[i - 1])), `timeline rows in order: ${order}`);

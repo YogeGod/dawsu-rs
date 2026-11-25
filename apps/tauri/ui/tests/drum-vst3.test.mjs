@@ -216,7 +216,10 @@ test("DrumDetectWindow, KeysoundsModal, and Drum Map Setup expose the Use VST3 s
   assert.match(body, /Use VST3 sounds for drum map/);
   assert.match(body, /aria-label="VST3 drum instrument"/);
 
-  const keysounds = readFileSync(new URL("../src/parts/KeysoundsModal.svelte", import.meta.url), "utf8");
+  const keysounds = [
+    "../src/parts/KeysoundsModal.svelte",
+    "../src/parts/keysounds/KeysoundTrackBar.svelte",
+  ].map(file => readFileSync(new URL(file, import.meta.url), "utf8")).join("\n");
   assert.match(keysounds, /Use VST3 sounds for drum map/);
   assert.match(keysounds, /syncDrumVst3Track/);
 

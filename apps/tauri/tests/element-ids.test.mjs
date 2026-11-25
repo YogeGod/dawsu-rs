@@ -35,7 +35,7 @@ test("every id the editor scripts look up by name exists in index.html or a Svel
   const ids = new Set([read("dist/index.html"), ...svelteSources()].flatMap(declaredIds));
   const scripts = [
     ["ui/src/editor/", readEditorSource(), true],
-    ["menus.js", read("dist/menus.js"), false],
+    ["menus.js", read("ui/src/editor/menus.js"), false],
     ["docking.js", read("dist/docking.js"), false],
   ];
   for (const [label, source, checkAppIds] of scripts) {

@@ -1,3 +1,4 @@
+import { modals, openModal, registerModal } from "../lib/registry.js";
 // Lane ordering, folders, numbered families, drum view, lane headers, and Mixer strip models.
 import { laneSounds, sampleFolderNames } from "./helpers.js";
 import {
@@ -1157,6 +1158,7 @@ export function attachLanes(ctx) {
   }
 
   function bindLanes() {
+    registerModal("openDrumVstModal", openDrumVstModal);
     globalThis.openDrumVstModal = openDrumVstModal;
     $("samples-view").addEventListener("click", () => {
       if (state.scene && !state.view.busy && !state.drag && state.view.drumView?.enabled) {
@@ -1175,7 +1177,7 @@ export function attachLanes(ctx) {
       keysoundsBtn.addEventListener("click", () => {
         if (!state.scene || state.view.busy || state.drag) return;
         ctx.ui()?.setMode?.("keysounds");
-        globalThis.openKeysounds?.();
+        openModal("openKeysounds");
       });
     }
     const vst3Btn = $("drums-vst3-toggle");
@@ -1184,7 +1186,7 @@ export function attachLanes(ctx) {
         if (!state.scene || state.view.busy || state.drag) return;
         const live = state.view.drumVst;
         if (!live?.loaded) {
-          if (globalThis.openDrumStudio) globalThis.openDrumStudio();
+          if (modals.openDrumStudio ?? globalThis.openDrumStudio) openModal("openDrumStudio");
           else openDrumVstModal();
           return;
         }
@@ -1199,7 +1201,7 @@ export function attachLanes(ctx) {
     if (vst3MenuBtn) {
       vst3MenuBtn.addEventListener("click", () => {
         if (!state.scene || state.view.busy || state.drag) return;
-        if (globalThis.openDrumStudio) globalThis.openDrumStudio();
+        if (modals.openDrumStudio ?? globalThis.openDrumStudio) openModal("openDrumStudio");
         else openDrumVstModal();
       });
     }

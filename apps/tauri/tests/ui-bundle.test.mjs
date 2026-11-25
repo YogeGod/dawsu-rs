@@ -31,9 +31,10 @@ test("parts use none of the selectors the editor runtime wires and no static sty
   }
 });
 
-test("v3 tokens never redefine a custom property style.css already sets", () => {
-  const old = definedProperties(read(new URL("dist/style.css", tauri)));
-  for (const { name, text } of sources().filter(file => /\.(css|svelte)$/.test(file.name))) {
+test("v3 tokens never redefine a custom property legacy-chrome.css already sets", () => {
+  const legacyPath = fileURLToPath(new URL("ui/src/legacy-chrome.css", tauri));
+  const old = definedProperties(read(new URL("ui/src/legacy-chrome.css", tauri)));
+  for (const { name, text } of sources().filter(file => /\.(css|svelte)$/.test(file.name) && file.name !== legacyPath)) {
     assert.deepEqual([...definedProperties(text)].filter(property => old.has(property)), [], name);
   }
 });
@@ -68,13 +69,14 @@ test("index.html loads the bundle without legacy app.js", () => {
   assert.ok(!existsSync(new URL("dist/app.js", tauri)), "dist/app.js has been deleted");
   const head = read(new URL("dist/index.html", tauri)).match(/<head>(.*?)<\/head>/s)[1];
   const order = [...head.matchAll(/(?:href|src)="([^"]+\.(?:css|js))"/g)].map(match => match[1]);
-  assert.deepEqual(order, ["fonts.css", "style.css", "ui/ui.css", "docking.js", "ui/ui.js", "menus.js"]);
+  assert.ok(!existsSync(new URL("dist/menus.js", tauri)), "dist/menus.js has been folded into ui/src/editor/menus.js");
+  assert.ok(!existsSync(new URL("dist/style.css", tauri)), "dist/style.css has been folded into ui/src/legacy-chrome.css");
+  assert.deepEqual(order, ["fonts.css", "ui/ui.css", "docking.js", "ui/ui.js"]);
   assert.match(head, /<script defer src="ui\/ui\.js"><\/script>/);
 });
 
 test("dist/ui/ui.js boots the editor with menus.js on index.html and stays idle on secondary windows", async () => {
   const uiBundle = read(new URL("ui.js", bundle));
-  const menusScript = read(new URL("dist/menus.js", tauri));
   const makeNode = () => ({
     dataset: {}, style: { setProperty() {} }, children: [], attributes: {},
     classList: { add() {}, remove() {}, toggle() {}, contains: () => false },
@@ -123,7 +125,6 @@ test("dist/ui/ui.js boots the editor with menus.js on index.html and stays idle 
   mainContext.globalThis = mainContext;
   runInContext(uiBundle, mainContext);
   mainContext.window.dawsuUi = mainContext.dawsuUi;
-  runInContext(menusScript, mainContext);
   await mainContext.pending;
   assert.deepEqual(mainCalls, ["editor_view"]);
   assert.equal(typeof mainContext.window.openEditorMenu, "function");

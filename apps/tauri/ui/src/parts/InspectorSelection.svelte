@@ -2,9 +2,9 @@
   import { untrack } from "svelte";
   import { bridge } from "../lib/bridge.svelte.js";
   import {
-    emptyInspector, fieldHold, inspectorHandlers, shownValue, sliderBodyFields, startingAmount, syncChecked, volumeLabel,
+    additionPills, emptyInspector, fieldHold, inspectorHandlers, parseVolumeDisplay, sampleSetPills, shownValue,
+    sliderBodyFields, startingAmount, syncChecked, volumeLabel, volumeSliderPercent,
   } from "../lib/inspector.js";
-  import { additionPills, parseVolumeDisplay, sampleSetPills, volumeSliderPercent } from "../lib/inspectorV2.js";
   import { osuVolumeToMidiVelocity, velocityTier } from "../lib/velocityLane.js";
   import InspectorHead from "./InspectorHead.svelte";
 

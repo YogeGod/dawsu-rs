@@ -10,7 +10,7 @@ const read = path => readFileSync(new URL(path, tauri), "utf8");
 test("the slice-1 dialogs are gone: the editor page no longer loads drum-detect.js", () => {
   assert.ok(!existsSync(new URL("dist/drum-detect.js", tauri)));
   assert.doesNotMatch(read("dist/index.html"), /drum-detect/);
-  assert.doesNotMatch(readEditorSource() + read("dist/menus.js"), /openDrumDetection|drum_detect_start|drumDetect/);
+  assert.doesNotMatch(readEditorSource() + read("ui/src/editor/menus.js"), /openDrumDetection|drum_detect_start|drumDetect/);
 });
 
 test("drum.html loads only the fonts and the Svelte bundle, with no inline code", () => {

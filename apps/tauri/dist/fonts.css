@@ -1,2 +1,9 @@
 /* Inter, the v3 UI font. Loaded first by index.html and export.html. */
 @font-face { font-family: Inter; src: url("studio-assets/fonts/Inter-Variable.ttf") format("truetype"); font-weight: 100 900; font-display: swap; }
+@font-face{font-family:Nunito;src:url("studio-assets/fonts/Nunito-Regular.ttf") format("truetype");font-weight:400;font-display:swap}
+@font-face{font-family:Nunito;src:url("studio-assets/fonts/Nunito-Bold.ttf") format("truetype");font-weight:700 900;font-display:swap}
+@font-face{font-family:"Roboto Mono";src:url("studio-assets/fonts/RobotoMono-Regular.ttf") format("truetype");font-weight:400;font-display:swap}
+:root {
+  --cursor-draw:url("studio-assets/icons/cursor-draw.svg") 3 3,crosshair;
+  --cursor-erase:url("studio-assets/icons/cursor-erase.svg") 5 27,crosshair;
+}

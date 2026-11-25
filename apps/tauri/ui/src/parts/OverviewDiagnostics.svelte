@@ -2,8 +2,7 @@
   import { act, bridge } from "../lib/bridge.svelte.js";
   import { normalizeCoverage } from "../lib/coverageReview.js";
   import { ribbonRowRects, ribbonRowSummary } from "../lib/diffRibbon.js";
-  import { emptyInspector } from "../lib/inspector.js";
-  import { consolidateDiagnostics, stepDiagnostic } from "../lib/inspectorV2.js";
+  import { consolidateDiagnostics, emptyInspector, stepDiagnostic } from "../lib/inspector.js";
   import { invoke } from "../lib/ipc.js";
 
   const problemStrip = $derived((bridge.inspector ?? emptyInspector).problemStrip);

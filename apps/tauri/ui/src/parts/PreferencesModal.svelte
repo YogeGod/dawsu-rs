@@ -2,12 +2,18 @@
   import { onMount } from "svelte";
   import { bridge } from "../lib/bridge.svelte.js";
   import { invoke } from "../lib/ipc.js";
-  import { keyInput, playbackStartChoices, shortcutName } from "../editor/helpers.js";
-  import { readPort, scanSummary, writePort } from "../lib/midi.js";
+  import { keyInput } from "../editor/helpers.js";
+  import { readPort, writePort } from "../lib/midi.js";
   import {
-    COLOR_ROWS, SCHEMES, applyColorConfig, defaultColorConfig, hexToHsb, hsbToHex,
-    readColorConfig, resolvePalette, rowStartHsb, writeColorConfig,
+    applyColorConfig, defaultColorConfig, readColorConfig, writeColorConfig,
   } from "../lib/theme.js";
+  import "./preferences/preferences.css";
+  import GeneralTab from "./preferences/GeneralTab.svelte";
+  import AudioTab from "./preferences/AudioTab.svelte";
+  import ColoursTab from "./preferences/ColoursTab.svelte";
+  import ShortcutsTab from "./preferences/ShortcutsTab.svelte";
+  import MidiVstTab from "./preferences/MidiVstTab.svelte";
+  import UpdatesTab from "./preferences/UpdatesTab.svelte";
 
   const SCALES = [90, 100, 110, 125, 150, 175, 200];
   const TABS = [
@@ -21,7 +27,6 @@
     { id: "updates", label: "Updates" },
   ];
 
-  const COLOR_GROUPS = ["Custom Colors", "Grid Colors", "Ruler Colors"];
   let colorConfig = $state(readColorConfig());
   let expandedColorRow = $state(null);
 
@@ -29,39 +34,6 @@
     colorConfig = next;
     writeColorConfig(next);
     applyColorConfig(next);
-  }
-
-  function pickScheme(schemeId) {
-    updateColorConfig({ ...colorConfig, scheme: schemeId });
-  }
-
-  function toggleColorRow(row, enabled) {
-    const rows = { ...(colorConfig.rows ?? {}) };
-    if (enabled) {
-      rows[row.id] = rowStartHsb(row, colorConfig.scheme);
-    } else {
-      delete rows[row.id];
-      for (const child of COLOR_ROWS) {
-        if (child.requires === row.id) delete rows[child.id];
-      }
-      if (expandedColorRow === row.id) expandedColorRow = null;
-    }
-    updateColorConfig({ ...colorConfig, rows });
-  }
-
-  function setColorRowChannel(row, channel, value) {
-    const rows = { ...(colorConfig.rows ?? {}) };
-    const current = rows[row.id] ?? rowStartHsb(row, colorConfig.scheme);
-    rows[row.id] = { ...current, [channel]: value };
-    updateColorConfig({ ...colorConfig, rows });
-  }
-
-  function shownRowHex(row) {
-    const hsb = colorConfig.rows?.[row.id];
-    if (!hsb) return null;
-    if (row.hasHue) return hsbToHex(hsb);
-    const schemeHue = colorConfig.rows?.scheme?.h ?? hexToHsb(resolvePalette({ scheme: colorConfig.scheme, rows: {} }).panel).h;
-    return hsbToHex({ h: schemeHue, s: hsb.s, b: hsb.b });
   }
 
   function resetColours() {
@@ -327,18 +299,6 @@
     }
   }
 
-  // Rust sends each key as its formatted name ("Ctrl+O"); an older shape may still be a chord object.
-  function keyLabel(key) {
-    if (typeof key === "string") return key;
-    if (key && typeof key.code === "string") return shortcutName(key) || key.key || "";
-    return "";
-  }
-
-  function keysLabel(keys) {
-    const names = (keys ?? []).map(keyLabel).filter(Boolean);
-    return names.length ? names.join(", ") : "Unbound";
-  }
-
   function onShortcutKeydown(event, entry) {
     if (capturingId !== entry.id) return;
     if (["Control", "Shift", "Alt", "Meta"].includes(event.key) || event.repeat) return;
@@ -391,15 +351,6 @@
       globalThis.showToast?.({ tone: "error", title: "Shortcuts", body: String(err) });
     }
   }
-
-  const filteredShortcuts = $derived.by(() => {
-    const q = shortcutQuery.trim().toLowerCase();
-    if (!q) return shortcuts;
-    return shortcuts.filter(s =>
-      (s.label || s.id || "").toLowerCase().includes(q) ||
-      (s.keys || []).map(keyLabel).join(" ").toLowerCase().includes(q)
-    );
-  });
 
   function applyReturnedView(next) {
     if (!next) return;
@@ -528,64 +479,18 @@
 
         <section class="pref-pane">
           {#if tab === "general"}
-            <div class="pref-group">
-              <div class="pref-row-head">
-                <span class="pref-label">Interface scale</span>
-                <span class="pref-hint">Ctrl + = / Ctrl + -, Ctrl + 0 resets</span>
-              </div>
-              <div class="pref-seg pref-seg-wide">
-                {#each SCALES as pct (pct)}
-                  <button type="button" class:active={scale === pct} onclick={() => applyScale(pct)}>{pct}%</button>
-                {/each}
-              </div>
-            </div>
-
-            <hr class="pref-divider" />
-
-            <div class="pref-group">
-              <span class="pref-label">Controls</span>
-              <div class="pref-seg">
-                <button type="button" class:active={preset === "osu!"} onclick={() => pickPreset("osu!")}>osu! editor controls</button>
-                <button type="button" class:active={preset !== "osu!"} onclick={() => pickPreset("DAW")}>DAW-like keys</button>
-              </div>
-              <p class="pref-caption">
-                {preset === "osu!"
-                  ? "Wheel scrolls time, Alt+wheel zooms, osu! editor shortcuts active."
-                  : "Wheel scrolls the lanes, Ctrl+wheel zooms in time, 1-4 pick tools."}
-              </p>
-            </div>
-
-            <hr class="pref-divider" />
-
-            <div class="pref-group">
-              <span class="pref-label">osu! Songs folder</span>
-              <p class="pref-caption">Used to browse mapsets and resolve default hitsounds.</p>
-              <div class="pref-path-row">
-                <input type="text" readonly value={view.songsFolder || "Not configured"} />
-                <button type="button" disabled={busy} onclick={pickSongsFolder}>Change…</button>
-              </div>
-            </div>
-
-            <div class="pref-group">
-              <span class="pref-label">Sample library folder</span>
-              <div class="pref-path-row">
-                <input type="text" readonly value={view.hitsoundLibrary || "No library folder selected"} />
-                <button type="button" disabled={busy} onclick={pickLibraryFolder}>Add folder…</button>
-              </div>
-            </div>
-
-            <hr class="pref-divider" />
-
-            <div class="pref-group">
-              <span class="pref-label">Save & Export</span>
-              <label class="pref-check">
-                <input type="checkbox" checked={Boolean(view.cleanRedundantGreenlines)}
-                  onchange={(e) => sendAction({ kind: "clean_redundant_greenlines", on: e.currentTarget.checked })} />
-                <span>Clean redundant greenlines on Save & Export</span>
-              </label>
-              <p class="pref-caption">Removes extra green timing lines that don't change sample set, volume, slider velocity, or kiai. Off by default so untouched .osu lines stay identical.</p>
-            </div>
-
+            <GeneralTab
+              scales={SCALES}
+              {scale}
+              {preset}
+              {view}
+              {busy}
+              onapplyscale={applyScale}
+              onpickpreset={pickPreset}
+              onpicksongs={pickSongsFolder}
+              onpicklibrary={pickLibraryFolder}
+              onsendaction={sendAction}
+            />
           {:else if tab === "folders"}
             <div class="pref-group">
               <span class="pref-label">Songs folder</span>
@@ -614,78 +519,19 @@
                 </div>
               </div>
             {/if}
-
           {:else if tab === "audio"}
-            <div class="pref-group">
-              <span class="pref-label">Output device</span>
-              {#if audioConfig?.current}
-                <p class="pref-caption">Active: {audioConfig.current}{audioConfig.effectiveBufferMs != null ? ` (${audioConfig.effectiveBufferMs} ms)` : ""}</p>
-              {/if}
-              <div class="pref-grid">
-                <label class="pref-field">
-                  <span>Backend</span>
-                  <select bind:value={selectedBackend} disabled={audioLocked} onchange={() => loadAudio(selectedBackend)}>
-                    {#each audioConfig?.available ?? [] as b (b.id)}
-                      <option value={b.id}>{b.label}</option>
-                    {/each}
-                  </select>
-                </label>
-                <label class="pref-field">
-                  <span>Device</span>
-                  <select bind:value={selectedDevice} disabled={audioLocked || Boolean(audioError)}>
-                    <option value="">{selectedBackend === "asio" ? "Choose an ASIO driver" : "Device default"}</option>
-                    {#each audioConfig?.devices ?? [] as d (d.id)}
-                      <option value={d.id}>{d.name}</option>
-                    {/each}
-                  </select>
-                </label>
-                <label class="pref-field">
-                  <span>Buffer (ms)</span>
-                  <input type="number" min="10" max="500" placeholder="Device default" bind:value={bufferMs} disabled={audioLocked} />
-                </label>
-              </div>
-              {#if audioError}
-                <p class="pref-error">{audioError}</p>
-              {/if}
-              <div class="pref-actions-inline">
-                <button type="button" disabled={audioLocked || Boolean(audioError)} onclick={applyAudioOutput}>Apply output</button>
-                {#if view.playing}
-                  <span class="pref-hint">Stop playback to switch output device.</span>
-                {/if}
-              </div>
-            </div>
-
-            <hr class="pref-divider" />
-
-            <div class="pref-group">
-              <span class="pref-label">Playback</span>
-              <div class="pref-grid">
-                <label class="pref-field">
-                  <span>Start playing from</span>
-                  <select value={view.playbackStart ?? "cursor"} onchange={(e) => sendAction({ kind: "playback_start", value: e.currentTarget.value })}>
-                    {#each playbackStartChoices as [val, lbl] (val)}
-                      <option value={val}>{lbl}</option>
-                    {/each}
-                  </select>
-                </label>
-                <label class="pref-field">
-                  <span>Song offset (ms)</span>
-                  <input type="number" min="-60000" max="60000" value={view.offset ?? 0}
-                    onchange={(e) => sendAction({ kind: "offset", ms: Number(e.currentTarget.value) || 0 })} />
-                </label>
-              </div>
-              <label class="pref-check">
-                <input type="checkbox" checked={Boolean(view.returnOnStop)}
-                  onchange={(e) => sendAction({ kind: "return_on_stop", on: e.currentTarget.checked })} />
-                <span>Return playhead to start position on Stop</span>
-              </label>
-              <label class="pref-check">
-                <input type="checkbox" checked={view.keepPitch !== false}
-                  onchange={(e) => sendAction({ kind: "keep_pitch", on: e.currentTarget.checked })} />
-                <span>Keep song pitch when playback speed is slowed or sped up</span>
-              </label>
-            </div>
-
+            <AudioTab
+              {audioConfig}
+              bind:selectedBackend
+              bind:selectedDevice
+              bind:bufferMs
+              {audioError}
+              {audioLocked}
+              {view}
+              onloadaudio={loadAudio}
+              onapplyaudio={applyAudioOutput}
+              onsendaction={sendAction}
+            />
           {:else if tab === "view"}
             <div class="pref-group">
               <span class="pref-label">Panels and overlays</span>
@@ -705,195 +551,49 @@
                 <span>Show beat step-sequencer pads on lane rows</span>
               </label>
             </div>
-
           {:else if tab === "colours"}
-            <div class="pref-group">
-              <span class="pref-label">Default Color Schemes</span>
-              <div class="colour-schemes" role="group" aria-label="Default Color Schemes">
-                {#each SCHEMES as scheme (scheme.id)}
-                  <button type="button" class="scheme-swatch" class:active={colorConfig.scheme === scheme.id}
-                    title={scheme.name} aria-label={scheme.name + " colour scheme"} aria-pressed={colorConfig.scheme === scheme.id}
-                    onclick={() => pickScheme(scheme.id)}>
-                    <span class="scheme-chip" style:background={scheme.swatch}></span>
-                  </button>
-                {/each}
-              </div>
-              <p class="pref-caption">Changes show immediately across the editor and timeline. Press Defaults to restore Obsidian.</p>
-            </div>
-
-            {#each COLOR_GROUPS as group (group)}
-              <div class="pref-group colour-group">
-                <span class="pref-label">{group}</span>
-                {#each COLOR_ROWS.filter(r => r.group === group) as row (row.id)}
-                  {@const enabled = Boolean(colorConfig.rows?.[row.id])}
-                  {@const parentMissing = Boolean(row.requires && !colorConfig.rows?.[row.requires])}
-                  {@const current = colorConfig.rows?.[row.id] ?? rowStartHsb(row, colorConfig.scheme)}
-                  {@const hex = shownRowHex(row)}
-                  <div class="colour-row">
-                    <label class="pref-check colour-check">
-                      <input type="checkbox" checked={enabled} disabled={parentMissing}
-                        onchange={(e) => toggleColorRow(row, e.currentTarget.checked)} />
-                      <span>{row.label}</span>
-                    </label>
-                    <button type="button" class="colour-swatch-btn" disabled={!enabled}
-                      aria-label={row.group + " " + row.label + " colour"}
-                      aria-expanded={expandedColorRow === row.id}
-                      onclick={() => (expandedColorRow = expandedColorRow === row.id ? null : row.id)}>
-                      <span class="colour-swatch-fill" style:background={hex ?? "transparent"}></span>
-                      <span class="colour-swatch-caret" aria-hidden="true">▾</span>
-                    </button>
-                  </div>
-                  {#if enabled && expandedColorRow === row.id}
-                    <div class="colour-sliders">
-                      {#if row.hasHue}
-                        <label class="colour-slider-row">
-                          <span>Hue</span>
-                          <input type="range" min="0" max="360" step="1" value={Math.round(current.h)}
-                            oninput={(e) => setColorRowChannel(row, "h", Number(e.currentTarget.value))} />
-                          <span class="colour-val">{Math.round(current.h)}</span>
-                        </label>
-                      {/if}
-                      <label class="colour-slider-row">
-                        <span>Saturation</span>
-                        <input type="range" min="0" max="100" step="1" value={Math.round(current.s * 100)}
-                          oninput={(e) => setColorRowChannel(row, "s", Number(e.currentTarget.value) / 100)} />
-                        <span class="colour-val">{Math.round(current.s * 100)}</span>
-                      </label>
-                      <label class="colour-slider-row">
-                        <span>Brightness</span>
-                        <input type="range" min="0" max="100" step="1" value={Math.round(current.b * 100)}
-                          oninput={(e) => setColorRowChannel(row, "b", Number(e.currentTarget.value) / 100)} />
-                        <span class="colour-val">{Math.round(current.b * 100)}</span>
-                      </label>
-                    </div>
-                  {/if}
-                {/each}
-              </div>
-            {/each}
-
+            <ColoursTab
+              {colorConfig}
+              bind:expandedColorRow
+              onupdate={updateColorConfig}
+            />
           {:else if tab === "shortcuts"}
-            <div class="pref-group pref-shortcuts">
-              <div class="pref-shortcut-bar">
-                <div class="pref-seg">
-                  <button type="button" class:active={preset === "osu!"} onclick={() => pickPreset("osu!")}>osu!</button>
-                  <button type="button" class:active={preset === "DAW"} onclick={() => pickPreset("DAW")}>DAW-like</button>
-                </div>
-                <input type="search" class="pref-search" placeholder="Search commands or keys" bind:value={shortcutQuery} />
-                <button type="button" onclick={resetAllShortcuts}>Reset all</button>
-              </div>
-              <div class="pref-shortcut-list">
-                {#each filteredShortcuts as entry (entry.id)}
-                  <div class="pref-shortcut-row" class:capturing={capturingId === entry.id}
-                    role="group" onkeydown={(e) => onShortcutKeydown(e, entry)}>
-                    <span class="pref-shortcut-name">{entry.label || entry.id}</span>
-                    <button type="button" class="pref-key-chip" class:capturing={capturingId === entry.id}
-                      onclick={() => (capturingId = capturingId === entry.id ? null : entry.id)}>
-                      {capturingId === entry.id ? "Press keys… · Esc cancels" : keysLabel(entry.keys)}
-                    </button>
-                    <button type="button" class="pref-reset-btn" title="Clear shortcut" onclick={() => resetShortcut(entry)}>Clear</button>
-                  </div>
-                {/each}
-              </div>
-            </div>
-
+            <ShortcutsTab
+              {shortcuts}
+              {preset}
+              bind:shortcutQuery
+              bind:capturingId
+              onpickpreset={pickPreset}
+              onresetall={resetAllShortcuts}
+              onshortcutkeydown={onShortcutKeydown}
+              onresetshortcut={resetShortcut}
+            />
           {:else if tab === "midi"}
-            <div class="pref-group">
-              <div class="pref-row-head">
-                <span class="pref-label">MIDI input</span>
-                <button type="button" onclick={loadMidiPorts}>Refresh</button>
-              </div>
-              <p class="pref-caption">MIDI Record in the transport bar listens on this port.</p>
-              {#if midiPorts.length}
-                <label class="pref-field">
-                  <span>Input port</span>
-                  <select value={midiPort} onchange={(e) => pickMidiPort(e.currentTarget.value)}>
-                    <option value="">First available port</option>
-                    {#each midiPorts as name, index (index)}
-                      <option value={String(index)}>{name}</option>
-                    {/each}
-                  </select>
-                </label>
-              {:else}
-                <p class="pref-caption">No MIDI input ports found. Connect a MIDI keyboard or drum pad, then press Refresh.</p>
-              {/if}
-              {#if midiError}
-                <p class="pref-error">{midiError}</p>
-              {/if}
-            </div>
-
-            <hr class="pref-divider" />
-
-            <div class="pref-group">
-              <div class="pref-row-head">
-                <span class="pref-label">VST3 plug-ins</span>
-                <button type="button" disabled={vst3Scanning} onclick={scanVst3}>{vst3Scanning ? "Scanning…" : "Scan VST3 plug-ins"}</button>
-              </div>
-              <p class="pref-caption">Scans the system VST3 folder. Keysound tracks can use the instruments found (Map › Keysounds & VST3…).</p>
-              {#if vst3Error}
-                <p class="pref-error">{vst3Error}</p>
-              {:else if vst3Report}
-                <p class="pref-caption">{scanSummary(vst3Report)}</p>
-                {#if vst3Report.plugins?.length}
-                  <ul class="pref-plugin-list">
-                    {#each vst3Report.plugins as plugin (plugin.uid ?? plugin.name)}
-                      <li><span>{plugin.name}</span><span class="pref-hint">{plugin.vendor}{plugin.is_instrument ? " · Instrument" : plugin.is_effect ? " · Effect" : ""}</span></li>
-                    {/each}
-                  </ul>
-                {/if}
-              {/if}
-            </div>
-
+            <MidiVstTab
+              {midiPorts}
+              {midiPort}
+              {midiError}
+              {vst3Scanning}
+              {vst3Report}
+              {vst3Error}
+              onloadmidi={loadMidiPorts}
+              onpickmidi={pickMidiPort}
+              onscanvst3={scanVst3}
+            />
           {:else if tab === "updates"}
-            <div class="pref-group">
-              <div class="pref-row-head">
-                <span class="pref-label">dawsu! Desktop</span>
-                <button type="button" disabled={updateChecking} onclick={checkForUpdates}>
-                  {updateChecking ? "Checking…" : "Check for updates"}
-                </button>
-              </div>
-              <label class="pref-check">
-                <input type="checkbox" checked={view.autoCheckUpdates !== false}
-                  onchange={(e) => sendAction({ kind: "auto_check_updates", on: e.currentTarget.checked })} />
-                <span>Check GitHub Releases automatically when dawsu! starts</span>
-              </label>
-              <p class="pref-caption">
-                Always verifies downloaded installers and portable ZIP archives against <code>SHA256SUMS.txt</code> before installing on exit.
-              </p>
-              {#if updateError}
-                <p class="pref-error">{updateError}</p>
-              {:else if updateResult}
-                {#if updateResult.updateAvailable}
-                  <p class="pref-label">Update available: v{updateResult.latestVersion}</p>
-                  <p class="pref-caption">Installed version: v{updateResult.currentVersion}</p>
-                  {#if (updateResult.installerUrl || updateResult.portableUrl) && updateResult.sha256sumsUrl}
-                    <div class="pref-row-head">
-                      <button type="button" class="pref-primary" disabled={updateDownloading} onclick={downloadAndInstallUpdate}>
-                        {updateDownloading ? "Downloading…" : `Update to v${updateResult.latestVersion} and restart`}
-                      </button>
-                    </div>
-                    <p class="pref-caption">
-                      {updateResult.isInstalled
-                        ? "Downloads the installer, checks its SHA-256 hash, asks about unsaved work, and installs on close."
-                        : "Downloads the portable ZIP, checks its SHA-256 hash and flat archive safety, and swaps files on close."}
-                    </p>
-                  {/if}
-                {:else}
-                  <p class="pref-caption">You are up to date (v{updateResult.currentVersion}; latest release v{updateResult.latestVersion}).</p>
-                {/if}
-                {#if updateStatus}
-                  <p class="pref-caption">{updateStatus}</p>
-                {/if}
-                {#if updateResult.notes}
-                  <p class="pref-caption">{updateResult.notes}</p>
-                {/if}
-                {#if updateResult.releaseUrl}
-                  <div class="pref-path-row">
-                    <input type="text" readonly value={updateResult.releaseUrl} aria-label="Release page URL" />
-                    <button type="button" onclick={copyReleaseUrl}>{updateCopied ? "Copied" : "Copy link"}</button>
-                  </div>
-                {/if}
-              {/if}
-            </div>
+            <UpdatesTab
+              {view}
+              {updateChecking}
+              {updateDownloading}
+              {updateStatus}
+              {updateResult}
+              {updateError}
+              {updateCopied}
+              oncheck={checkForUpdates}
+              ondownload={downloadAndInstallUpdate}
+              oncopyurl={copyReleaseUrl}
+              onsendaction={sendAction}
+            />
           {/if}
         </section>
         {/if}
@@ -908,397 +608,3 @@
     </div>
   </div>
 {/if}
-
-<style>
-  .pref-backdrop {
-    position: fixed;
-    inset: 0;
-    z-index: 60;
-    display: grid;
-    place-items: center;
-    background: rgba(6, 8, 13, 0.68);
-    backdrop-filter: blur(4px);
-  }
-  .pref-modal {
-    display: flex;
-    flex-direction: column;
-    width: min(900px, calc(100vw - 48px));
-    height: min(640px, calc(100vh - 48px));
-    border: 1px solid var(--editor-border);
-    border-radius: 10px;
-    background: var(--editor-panel);
-    color: var(--editor-text);
-    box-shadow: 0 24px 64px rgba(0, 0, 0, 0.62);
-    overflow: hidden;
-  }
-  .pref-head {
-    display: flex;
-    align-items: center;
-    gap: 16px;
-    height: 56px;
-    padding: 0 20px;
-    border-bottom: 1px solid var(--editor-border);
-    background: var(--editor-chrome);
-  }
-  .pref-title {
-    font-size: 14px;
-    font-weight: 600;
-  }
-  .pref-close {
-    margin-left: auto;
-    width: 28px;
-    height: 28px;
-    padding: 0;
-    border: 0;
-    background: transparent;
-    color: var(--editor-muted);
-    font-size: 18px;
-    line-height: 1;
-  }
-  .pref-close:hover {
-    color: var(--editor-white);
-    background: var(--editor-hover);
-  }
-  .pref-seg {
-    display: inline-flex;
-    align-items: center;
-    gap: 2px;
-    height: 30px;
-    padding: 3px;
-    border-radius: 7px;
-    background: var(--editor-canvas);
-    border: 1px solid var(--editor-border);
-  }
-  .pref-seg button {
-    height: 24px;
-    min-height: 24px;
-    padding: 0 12px;
-    border: 0;
-    border-radius: 5px;
-    background: transparent;
-    color: var(--editor-secondary);
-    font-size: 12px;
-  }
-  .pref-seg button.active {
-    background: var(--editor-selected);
-    color: var(--editor-accent);
-    font-weight: 600;
-  }
-  .pref-body {
-    display: flex;
-    flex: 1;
-    min-height: 0;
-  }
-  .pref-nav {
-    display: flex;
-    flex-direction: column;
-    gap: 3px;
-    width: 184px;
-    padding: 14px 10px;
-    border-right: 1px solid var(--editor-border);
-    background: rgba(11, 14, 20, 0.45);
-  }
-  .pref-nav-item {
-    position: relative;
-    height: 32px;
-    padding: 0 12px;
-    border: 0;
-    border-radius: 6px;
-    background: transparent;
-    color: var(--editor-secondary);
-    text-align: left;
-    font-size: 12px;
-  }
-  .pref-nav-item:hover {
-    background: var(--editor-hover);
-    color: var(--editor-white);
-  }
-  .pref-nav-item.active {
-    background: var(--editor-selected);
-    color: var(--editor-white);
-    font-weight: 600;
-  }
-  .pref-nav-item.active::before {
-    content: "";
-    position: absolute;
-    left: 2px;
-    top: 6px;
-    bottom: 6px;
-    width: 3px;
-    border-radius: 2px;
-    background: var(--editor-accent);
-  }
-  .pref-pane {
-    flex: 1;
-    padding: 22px 28px;
-    overflow-y: auto;
-    display: flex;
-    flex-direction: column;
-    gap: 18px;
-  }
-  .pref-group {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-  }
-  .pref-row-head {
-    display: flex;
-    align-items: baseline;
-    gap: 12px;
-  }
-  .pref-label {
-    font-size: 13px;
-    font-weight: 600;
-    color: var(--editor-text);
-  }
-  .pref-hint,
-  .pref-caption {
-    margin: 0;
-    font-size: 12px;
-    color: var(--editor-muted);
-  }
-  .pref-divider {
-    border: 0;
-    border-top: 1px solid var(--editor-border);
-    margin: 2px 0;
-  }
-  .pref-path-row {
-    display: flex;
-    gap: 8px;
-    align-items: center;
-  }
-  .pref-path-row input {
-    flex: 1;
-    height: 30px;
-    padding: 0 10px;
-    border: 1px solid var(--editor-border);
-    border-radius: 6px;
-    background: var(--editor-canvas);
-    color: var(--editor-readout);
-    font-size: 12px;
-  }
-  .pref-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-    gap: 12px;
-  }
-  .pref-field {
-    display: flex;
-    flex-direction: column;
-    gap: 5px;
-    font-size: 12px;
-    color: var(--editor-secondary);
-  }
-  .pref-check {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    font-size: 12px;
-    color: var(--editor-text);
-  }
-  .pref-actions-inline {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-  }
-  .pref-error {
-    margin: 0;
-    font-size: 12px;
-    color: var(--editor-error);
-  }
-  .pref-shortcuts {
-    flex: 1;
-    min-height: 0;
-  }
-  .pref-shortcut-bar {
-    display: flex;
-    gap: 10px;
-    align-items: center;
-  }
-  .pref-search {
-    flex: 1;
-    height: 30px;
-    padding: 0 10px;
-    border: 1px solid var(--editor-border);
-    border-radius: 6px;
-    background: var(--editor-canvas);
-    color: var(--editor-text);
-    font-size: 12px;
-  }
-  .pref-shortcut-list {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    max-height: 360px;
-    overflow-y: auto;
-    padding-right: 4px;
-  }
-  .pref-shortcut-row {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    height: 36px;
-    padding: 0 10px;
-    border-radius: 6px;
-    background: rgba(255, 255, 255, 0.02);
-  }
-  .pref-shortcut-row.capturing {
-    background: var(--editor-selected);
-  }
-  .pref-shortcut-name {
-    flex: 1;
-    font-size: 12px;
-  }
-  .pref-key-chip {
-    min-width: 72px;
-    height: 24px;
-    min-height: 24px;
-    padding: 0 10px;
-    border: 1px solid var(--editor-border);
-    border-radius: 5px;
-    background: var(--editor-canvas);
-    color: var(--editor-readout);
-    font-size: 11px;
-    font-variant-numeric: tabular-nums;
-  }
-  .pref-key-chip.capturing {
-    border-color: var(--editor-accent);
-    color: var(--editor-accent);
-  }
-  .pref-reset-btn {
-    height: 24px;
-    min-height: 24px;
-    padding: 0 8px;
-    font-size: 11px;
-    color: var(--editor-muted);
-    background: transparent;
-  }
-  .pref-foot {
-    display: flex;
-    justify-content: flex-end;
-    align-items: center;
-    gap: 10px;
-    height: 54px;
-    padding: 0 20px;
-    border-top: 1px solid var(--editor-border);
-    background: var(--editor-chrome);
-  }
-  .pref-reset-tab {
-    margin-right: auto;
-  }
-  .pref-primary {
-    background: var(--editor-accent);
-    color: var(--editor-accentink);
-    font-weight: 600;
-  }
-  .pref-primary:hover {
-    background: var(--editor-focus);
-  }
-  .pref-plugin-list {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    max-height: 220px;
-    margin: 0;
-    padding: 0;
-    overflow-y: auto;
-    list-style: none;
-  }
-  .pref-plugin-list li {
-    display: flex;
-    justify-content: space-between;
-    gap: 12px;
-    padding: 6px 10px;
-    border-radius: 6px;
-    background: rgba(255, 255, 255, 0.025);
-    font-size: 12px;
-  }
-  .colour-schemes {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
-  }
-  .scheme-swatch {
-    width: 52px;
-    height: 30px;
-    padding: 3px;
-    border-radius: 4px;
-    border: 2px solid transparent;
-    background: var(--editor-control);
-    cursor: pointer;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-  }
-  .scheme-swatch.active {
-    border-color: var(--editor-accent);
-  }
-  .scheme-chip {
-    width: 100%;
-    height: 100%;
-    border-radius: 2px;
-    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.14);
-  }
-  .colour-group {
-    margin-top: 10px;
-  }
-  .colour-row {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 10px;
-    max-width: 300px;
-  }
-  .colour-check {
-    flex: 1;
-  }
-  .colour-swatch-btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    height: 24px;
-    padding: 2px 6px;
-    border-radius: 4px;
-    border: 1px solid var(--editor-border);
-    background: var(--editor-control);
-    color: var(--editor-text);
-    cursor: pointer;
-  }
-  .colour-swatch-btn:disabled {
-    opacity: 0.4;
-    cursor: default;
-  }
-  .colour-swatch-fill {
-    width: 20px;
-    height: 14px;
-    border-radius: 2px;
-    border: 1px solid rgba(255, 255, 255, 0.18);
-  }
-  .colour-swatch-caret {
-    font-size: 10px;
-  }
-  .colour-sliders {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    margin: 4px 0 8px 22px;
-    padding: 8px 10px;
-    max-width: 320px;
-    border-radius: 6px;
-    background: var(--editor-chrome);
-    border: 1px solid var(--editor-border);
-  }
-  .colour-slider-row {
-    display: grid;
-    grid-template-columns: 72px 1fr 30px;
-    align-items: center;
-    gap: 8px;
-    font-size: 11px;
-    color: var(--editor-secondary);
-  }
-  .colour-val {
-    text-align: right;
-    font-variant-numeric: tabular-nums;
-    color: var(--editor-text);
-  }
-</style>

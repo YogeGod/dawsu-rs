@@ -4,3 +4,4 @@
 /tools/lazer-oracle/bin/
 /tools/lazer-oracle/obj/
 /apps/tauri/ui/node_modules/
+/apps/tauri/dist/ui/

@@ -1,3 +1,4 @@
+import { actions, modals, registerAction, callAction, registerModal, openModal } from "./registry.js";
 import { flushSync } from "svelte";
 import { followGroup } from "./snap.js";
 import { samePlayhead, sameUiView } from "./view.js";
@@ -110,6 +111,13 @@ export class Bridge {
     if (this.hint !== next) this.hint = next;
   }
 
+  actions = actions;
+  modals = modals;
+  registerAction = registerAction;
+  callAction = callAction;
+  registerModal = registerModal;
+  openModal = openModal;
+
   set(view, scene) {
     this.latestView = view;
     if (scene !== this.scene) {
@@ -126,5 +134,5 @@ export class Bridge {
 
 export const bridge = new Bridge();
 
-// app.js declares act() at the top level of a classic script, so it is a global.
-export const act = action => globalThis.act(action);
+// Routes editor actions through the bridge registry (falling back to globalThis for isolated tests).
+export const act = action => bridge.callAction("act", action);

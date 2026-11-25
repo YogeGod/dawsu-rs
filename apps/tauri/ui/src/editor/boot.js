@@ -1,3 +1,4 @@
+import { registerAction } from "../lib/registry.js";
 // Main editor runtime entry point: composes the modular editor subsystems, wires top-level
 // controls, keyboard and Tauri listeners, and exposes the globals that menus.js and Svelte parts call.
 import { attachBrowser } from "./browser.js";
@@ -538,6 +539,11 @@ export function createEditor(env = globalThis, { ui = null, autoStart = true, ex
       };
     }
     Object.defineProperties(env, descriptors);
+    if (env === globalThis) {
+      for (const name of exportedMethods) {
+        registerAction(name, (...args) => ctx[name]?.(...args));
+      }
+    }
   }
 
   if (autoStart) {

@@ -89,5 +89,5 @@ test("export.html loads only the fonts and the Svelte bundle, with no inline cod
 
 test("fonts.css holds the Inter face that both windows load", () => {
   assert.match(read("dist/fonts.css"), /@font-face\s*\{\s*font-family:\s*Inter;/);
-  assert.doesNotMatch(read("dist/style.css"), /Inter-Variable/);
+  assert.doesNotMatch(read("ui/src/legacy-chrome.css"), /Inter-Variable/);
 });

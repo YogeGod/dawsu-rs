@@ -45,12 +45,6 @@ jobs:
           cache: npm
           cache-dependency-path: apps/tauri/ui/package-lock.json
 
-      # First, while dist/ui/ still holds the committed bundle: ui-bundle.test.mjs checks it
-      # matches the Svelte sources.
-      - name: Frontend integration tests
-        shell: bash
-        run: node --test apps/tauri/tests/*.test.mjs
-
       - name: Install Svelte UI packages
         working-directory: apps/tauri/ui
         run: npm ci
@@ -62,6 +56,10 @@ jobs:
       - name: Svelte UI unit tests
         working-directory: apps/tauri/ui
         run: npm test
+
+      - name: Frontend integration tests
+        shell: bash
+        run: node --test apps/tauri/tests/*.test.mjs
 
       # The Rust steps run even when a step above failed, so one run reports everything.
       # Installs the version in rust-toolchain.toml.
