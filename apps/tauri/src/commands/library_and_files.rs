@@ -1,0 +1,523 @@
+use dawsu_application::Application;
+use serde::Deserialize;
+use serde_json::{Value, json};
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+use tauri::State;
+
+use crate::action::{Action, SampleTarget};
+use crate::scene::{RecentMetaSnapshot, ViewResponse};
+use crate::{Editor, Request, ask, ask_within, folders, library, skin_textures};
+
+#[tauri::command]
+pub(crate) fn pick_map(
+    window: tauri::WebviewWindow,
+    state: State<'_, Editor>,
+    archive_only: Option<bool>,
+) -> Result<ViewResponse, String> {
+    let dialog = songs_dialog(&window, &state)?;
+    let selected = if archive_only == Some(true) {
+        dialog.set_title("Import an .osz")
+            .add_filter("osu! beatmap archive", &["osz"])
+            .pick_file()
+            .filter(|path| path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("osz")))
+    } else {
+        dialog.add_filter("osu! difficulty or mapset", &["osu", "osz"]).pick_file()
+    };
+    ask(&state, |tx| {
+        Request::View(true, selected.map(|path| Action::Open { path }), false, None, tx)
+    })
+}
+
+pub(crate) fn is_osu_hs_diff(path: &Path) -> bool {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return false;
+    };
+    let mut section = "";
+    let mut version = String::new();
+    let mut has_objects = false;
+    for raw in text.lines() {
+        let line = raw.trim();
+        if line.starts_with('[') && line.ends_with(']') {
+            section = &line[1..line.len() - 1];
+            continue;
+        }
+        if section.eq_ignore_ascii_case("Metadata") {
+            if let Some(rest) = line.strip_prefix("Version:") {
+                version = rest.trim().to_ascii_lowercase();
+            }
+        } else if section.eq_ignore_ascii_case("HitObjects") && !line.is_empty() && !line.starts_with("//") {
+            has_objects = true;
+            break;
+        }
+    }
+    version.contains("hitsound")
+        || version == "hs"
+        || version.ends_with(" hs")
+        || version.contains("[hs]")
+        || (!has_objects && !version.is_empty())
+}
+
+pub(crate) fn recent_osu_meta(path: &Path) -> (Option<String>, bool) {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return (None, false);
+    };
+    let mut section = "";
+    let mut bg: Option<PathBuf> = None;
+    let mut version = String::new();
+    let mut has_objects = false;
+    for raw in text.lines() {
+        let line = raw.trim();
+        if line.starts_with('[') && line.ends_with(']') {
+            section = &line[1..line.len() - 1];
+            continue;
+        }
+        if section.eq_ignore_ascii_case("Events") && bg.is_none() && line.starts_with("0,0,") {
+            if let Some(first_quote) = line.find('"')
+                && let Some(end_quote) = line[first_quote + 1..].find('"') {
+                    let rel = &line[first_quote + 1..first_quote + 1 + end_quote];
+                    if let Some(parent) = path.parent() {
+                        let candidate = parent.join(rel);
+                        if candidate.is_file() {
+                            bg = Some(candidate);
+                        }
+                    }
+                }
+        } else if section.eq_ignore_ascii_case("Metadata") {
+            if let Some(rest) = line.strip_prefix("Version:") {
+                version = rest.trim().to_ascii_lowercase();
+            }
+        } else if section.eq_ignore_ascii_case("HitObjects") && !line.is_empty() && !line.starts_with("//") {
+            has_objects = true;
+        }
+    }
+    let is_hs = version.contains("hitsound")
+        || version == "hs"
+        || version.ends_with(" hs")
+        || version.contains("[hs]")
+        || (!has_objects && !version.is_empty());
+    let background = bg.as_deref().and_then(skin_textures::image_data_url);
+    (background, is_hs)
+}
+
+pub(crate) fn cached_recent_meta(path: &Path) -> RecentMetaSnapshot {
+    type RecentMetaCache = std::collections::HashMap<PathBuf, (Option<String>, bool)>;
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<RecentMetaCache>> =
+        std::sync::OnceLock::new();
+    let cache = CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+    if let Ok(guard) = cache.lock()
+        && let Some((background, is_hs)) = guard.get(path) {
+            return RecentMetaSnapshot {
+                path: path.to_path_buf(),
+                background: background.clone(),
+                is_hs: *is_hs,
+            };
+        }
+    let (background, is_hs) = recent_osu_meta(path);
+    if let Ok(mut guard) = cache.lock() {
+        if guard.len() >= 64 {
+            guard.clear();
+        }
+        guard.insert(path.to_path_buf(), (background.clone(), is_hs));
+    }
+    RecentMetaSnapshot {
+        path: path.to_path_buf(),
+        background,
+        is_hs,
+    }
+}
+
+#[tauri::command]
+pub(crate) fn pick_map_folder(window: tauri::WebviewWindow, state: State<'_, Editor>) -> Result<Option<PathBuf>, String> {
+    let dialog = songs_dialog(&window, &state)?;
+    Ok(dialog.set_title("Open mapset folder").pick_folder())
+}
+
+#[tauri::command]
+pub(crate) fn pick_map_for_hitsound_diff(
+    window: tauri::WebviewWindow,
+    state: State<'_, Editor>,
+) -> Result<Option<PathBuf>, String> {
+    let dialog = songs_dialog(&window, &state)?;
+    Ok(dialog
+        .set_title("Pick a difficulty in the mapset")
+        .add_filter("osu! beatmap difficulty", &["osu"])
+        .pick_file())
+}
+
+#[tauri::command]
+pub(crate) fn inspect_mapset_folder(path: PathBuf) -> Result<Value, String> {
+    if path.is_file() {
+        return Ok(json!({ "kind": "open", "path": path }));
+    }
+    if !path.is_dir() {
+        return Err("That folder does not exist.".into());
+    }
+    let mut diffs: Vec<PathBuf> = std::fs::read_dir(&path)
+        .map_err(|e| e.to_string())?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|p| p.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("osu")))
+        .collect();
+    diffs.sort();
+    if diffs.is_empty() {
+        return Err("This folder contains no .osu difficulty files.".into());
+    }
+    if diffs.len() == 1 {
+        return Ok(json!({ "kind": "open", "path": diffs[0] }));
+    }
+    let entries: Vec<Value> = diffs
+        .iter()
+        .map(|p| {
+            let is_hs = is_osu_hs_diff(p);
+            let name = p.file_stem().and_then(|s| s.to_str()).unwrap_or("").to_string();
+            json!({ "path": p, "name": name, "isHs": is_hs })
+        })
+        .collect();
+    if let Some(hs_path) = diffs.iter().find(|p| is_osu_hs_diff(p)) {
+        return Ok(json!({ "kind": "open", "path": hs_path }));
+    }
+    Ok(json!({ "kind": "choose", "folder": path, "difficulties": entries }))
+}
+
+#[tauri::command]
+pub(crate) fn create_hitsound_diff(sibling_path: PathBuf, reuse_existing: Option<bool>) -> Result<PathBuf, String> {
+    let (folder, resolved_sibling) = if sibling_path.is_dir() {
+        let mut diffs: Vec<PathBuf> = std::fs::read_dir(&sibling_path)
+            .map_err(|e| e.to_string())?
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|p| p.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("osu")))
+            .collect();
+        diffs.sort();
+        let first = diffs
+            .into_iter()
+            .next()
+            .ok_or_else(|| "This folder contains no .osu difficulty files.".to_string())?;
+        (sibling_path, first)
+    } else {
+        let parent = sibling_path
+            .parent()
+            .ok_or_else(|| "Difficulty has no parent folder.".to_string())?
+            .to_path_buf();
+        (parent, sibling_path)
+    };
+
+    if reuse_existing == Some(true) {
+        let mut diffs: Vec<PathBuf> = std::fs::read_dir(&folder)
+            .map_err(|e| e.to_string())?
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|p| p.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("osu")))
+            .collect();
+        diffs.sort();
+        if let Some(existing_hs) = diffs.into_iter().find(|p| is_osu_hs_diff(p)) {
+            return Ok(existing_hs);
+        }
+    }
+
+    let text = std::fs::read_to_string(&resolved_sibling).map_err(|e| e.to_string())?;
+    let mut version_name = "Hitsounds".to_string();
+    let mut suffix = 2;
+    let stem_prefix = resolved_sibling
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .map(|s| s.split('[').next().unwrap_or(s).trim())
+        .filter(|s| !s.is_empty())
+        .unwrap_or("Map");
+    let mut target = folder.join(format!("{stem_prefix} [{version_name}].osu"));
+    while target.exists() {
+        version_name = format!("Hitsounds {suffix}");
+        target = folder.join(format!("{stem_prefix} [{version_name}].osu"));
+        suffix += 1;
+    }
+
+    let mut out = String::new();
+    let mut section = String::new();
+    let mut wrote_version = false;
+    for raw in text.lines() {
+        let trimmed = raw.trim();
+        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            section = trimmed[1..trimmed.len() - 1].to_string();
+            out.push_str(raw);
+            out.push('\n');
+            continue;
+        }
+        if section.eq_ignore_ascii_case("HitObjects") {
+            continue;
+        }
+        if section.eq_ignore_ascii_case("Metadata") && trimmed.starts_with("Version:") {
+            out.push_str(&format!("Version:{version_name}\n"));
+            wrote_version = true;
+            continue;
+        }
+        if section.eq_ignore_ascii_case("Metadata") && trimmed.starts_with("BeatmapID:") {
+            out.push_str("BeatmapID:0\n");
+            continue;
+        }
+        out.push_str(raw);
+        out.push('\n');
+    }
+    if !wrote_version {
+        out.push_str(&format!("\n[Metadata]\nVersion:{version_name}\n"));
+    }
+    std::fs::write(&target, out).map_err(|e| e.to_string())?;
+    Ok(target)
+}
+
+#[tauri::command]
+pub(crate) fn pick_sample(window: tauri::WebviewWindow, state: State<'_, Editor>, target: SampleTarget) -> Result<ViewResponse, String> {
+    let mut dialog = rfd::FileDialog::new().set_parent(&window)
+        .set_title("Choose replacement sample")
+        .add_filter("Audio sample", &["wav", "ogg", "mp3"]);
+    if let Ok(Ok(folder)) = ask(&state, |tx| Request::Folder(folders::Folder::Map, tx)) {
+        dialog = dialog.set_directory(folder);
+    }
+    let selected = dialog.pick_file();
+    ask(&state, |tx| Request::View(true, selected.map(|path| Action::ReplaceSample { target, path, mapset: false }), false, None, tx))
+}
+
+#[tauri::command]
+pub(crate) fn pick_drum_stem(window: tauri::WebviewWindow, state: State<'_, Editor>) -> Result<ViewResponse, String> {
+    let mut dialog = rfd::FileDialog::new().set_parent(&window)
+        .set_title("Attach drum stem")
+        .add_filter("Audio", &["wav", "ogg", "mp3", "flac"]);
+    if let Ok(Ok(folder)) = ask(&state, |tx| Request::Folder(folders::Folder::Map, tx)) {
+        dialog = dialog.set_directory(folder);
+    }
+    let selected = dialog.pick_file();
+    ask(&state, |tx| Request::View(true, selected.map(|path| Action::LoadDrumStem { path }), false, None, tx))
+}
+
+/// The library list for Edit > Place sound set: names, ids and counts only.
+pub(crate) fn sound_set_library_view(app: &Application) -> Value {
+    let library = match app.sound_set_library() {
+        Ok(library) => library,
+        Err(error) => return json!({ "configured": true, "error": error, "sets": [], "unreadable": [], "reading": false }),
+    };
+    json!({
+        "configured": library.configured,
+        "sets": library.sets.iter().map(|set| json!({
+            "id": set.id, "name": set.name, "sounds": set.sounds, "inMap": set.in_map, "duplicate": set.duplicate,
+            "missing": set.missing,
+        })).collect::<Vec<_>>(),
+        "unreadable": library.unreadable,
+        "reading": library.reading,
+    })
+}
+
+#[tauri::command]
+pub(crate) fn sound_set_library(state: State<'_, Editor>) -> Result<Value, String> {
+    ask(&state, Request::SoundSetLibrary)?
+}
+
+/// What Edit > Sound set placement shows of one placement. Reads the library, so it is asked
+/// for when the dialog opens, never on the poll.
+pub(crate) fn sound_set_placement_view(app: &Application, map: &Path, id: u64) -> Result<Value, String> {
+    if app.document().is_none_or(|d| d.path != map) {
+        return Err("The difficulty changed.".into());
+    }
+    let view = app.sound_set_placement(id)?;
+    Ok(json!({
+        "id": view.id, "setId": view.set_id, "name": view.name, "edited": view.edited, "sounds": view.sounds,
+        "gain": view.gain, "frozen": view.frozen, "newer": view.newer,
+    }))
+}
+
+#[tauri::command]
+pub(crate) fn sound_set_placement(state: State<'_, Editor>, map: PathBuf, id: u64) -> Result<Value, String> {
+    ask(&state, |tx| Request::SoundSetPlacement(map, id, tx))?
+}
+
+/// Saving reads every selected sample and the library, so it gets its own longer wait, off the
+/// window's thread; a 7 s timeout while the editor still saves would make a retry look like a
+/// name clash.
+#[tauri::command]
+pub(crate) async fn save_sound_set(state: State<'_, Editor>, map: PathBuf, name: String) -> Result<ViewResponse, String> {
+    let editor = state.0.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        ask_within(&editor, Duration::from_secs(120), |tx| Request::SaveSoundSet(map, name, tx))
+    }).await.map_err(|e| e.to_string())??
+}
+
+#[tauri::command]
+pub(crate) fn pick_sound_set(window: tauri::WebviewWindow, state: State<'_, Editor>, map: PathBuf) -> Result<ViewResponse, String> {
+    let selected = rfd::FileDialog::new().set_parent(&window)
+        .set_title("Place sound set")
+        .add_filter("dawsu! sound set", &["dawsuset"])
+        .pick_file();
+    ask(&state, |tx| Request::View(true, selected.map(|path| Action::PlaceSoundSet { map, path }), false, None, tx))
+}
+
+pub(crate) fn songs_dialog(window: &tauri::WebviewWindow, state: &Editor) -> Result<rfd::FileDialog, String> {
+    let dialog = rfd::FileDialog::new().set_parent(window);
+    Ok(match ask(state, Request::SongsDirectory)? {
+        Some(folder) => dialog.set_directory(folder),
+        None => dialog,
+    })
+}
+
+pub(crate) type SongsIndexEntry = (PathBuf, &'static str, Vec<dawsu_application::songs_index::SongMapsetEntry>);
+pub(crate) struct SongsIndexCache(pub(crate) std::sync::Arc<std::sync::Mutex<Option<SongsIndexEntry>>>);
+
+#[tauri::command]
+pub(crate) async fn songs_index_search(
+    query: String,
+    refresh: bool,
+    state: State<'_, Editor>,
+    cache: State<'_, SongsIndexCache>,
+) -> Result<dawsu_application::songs_index::SongsSearchResult, String> {
+    let Some(songs_dir) = ask(&state, Request::SongsDirectory)? else {
+        return Ok(dawsu_application::songs_index::SongsSearchResult {
+            total_mapsets: 0,
+            total_diffs: 0,
+            source: "none",
+            matches: Vec::new(),
+        });
+    };
+    let cache_arc = std::sync::Arc::clone(&cache.0);
+    tauri::async_runtime::spawn_blocking(move || {
+        const SEARCH_LIMIT: usize = 50;
+        if !refresh
+            && let Ok(guard) = cache_arc.lock()
+                && let Some((cached_dir, source, entries)) = guard.as_ref()
+                    && cached_dir == &songs_dir {
+                        let total_diffs = entries.iter().map(|m| m.diffs.len()).sum();
+                        let matches = dawsu_application::songs_index::search_songs_index(
+                            entries,
+                            &query,
+                            SEARCH_LIMIT,
+                        );
+                        return Ok(dawsu_application::songs_index::SongsSearchResult {
+                            total_mapsets: entries.len(),
+                            total_diffs,
+                            source,
+                            matches,
+                        });
+                    }
+        let (entries, source) =
+            dawsu_application::songs_index::build_songs_index_with_source(&songs_dir);
+        let total_mapsets = entries.len();
+        let total_diffs = entries.iter().map(|m| m.diffs.len()).sum();
+        let matches =
+            dawsu_application::songs_index::search_songs_index(&entries, &query, SEARCH_LIMIT);
+        if let Ok(mut guard) = cache_arc.lock() {
+            *guard = Some((songs_dir, source, entries));
+        }
+        Ok(dawsu_application::songs_index::SongsSearchResult {
+            total_mapsets,
+            total_diffs,
+            source,
+            matches,
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub(crate) fn pick_songs_folder(
+    window: tauri::WebviewWindow,
+    state: State<'_, Editor>,
+) -> Result<Option<ViewResponse>, String> {
+    let Some(folder) = songs_dialog(&window, &state)?.set_title("Choose Songs folder").pick_folder() else {
+        return Ok(None);
+    };
+    ask(&state, |tx| Request::SetSongsDirectory(folder, tx))?.map(Some)
+}
+
+#[tauri::command]
+pub(crate) fn pick_hitsound_library(
+    window: tauri::WebviewWindow,
+    state: State<'_, Editor>,
+) -> Result<Option<ViewResponse>, String> {
+    let mut dialog = rfd::FileDialog::new().set_parent(&window).set_title("Choose hitsound library folder");
+    if let Some(folder) = ask(&state, Request::LibraryDirectory)? {
+        dialog = dialog.set_directory(folder);
+    }
+    let Some(folder) = dialog.pick_folder() else { return Ok(None) };
+    ask(&state, |tx| Request::SetLibraryDirectory(folder, tx))?.map(Some)
+}
+
+#[tauri::command]
+pub(crate) fn list_library(location: library::Location, state: State<'_, Editor>) -> Result<Vec<(String, bool)>, String> {
+    ask(&state, |tx| Request::LibraryEntries(location, tx))?
+}
+
+/// Bars in the Browser's sample preview outline.
+pub(crate) const PREVIEW_BARS: usize = 40;
+
+/// The sample a Browser row stands for: a map folder sample by the lane that plays it, or a
+/// library file.
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(crate) enum PreviewSource {
+    Lane { row: usize },
+    Library { location: library::Location },
+}
+
+/// The Browser's sample preview: the sample's length in ms and its outline.
+pub(crate) fn sample_outline(app: &mut Application, source: PreviewSource) -> Result<Value, String> {
+    let (ms, peaks) = match source {
+        PreviewSource::Lane { row } => {
+            let lane = app.document().and_then(|d| d.composer.lanes.get(row)).ok_or("No such lane.")?;
+            app.lane_sample_outline(lane, PREVIEW_BARS).ok_or("The sample isn't loaded.")?
+        }
+        PreviewSource::Library { location } => {
+            let sample = location.sample(app.preferences.hitsound_library.as_deref())?;
+            app.sample_file_outline(&sample, PREVIEW_BARS)?
+        }
+    };
+    Ok(json!({ "ms": ms, "peaks": peaks }))
+}
+
+#[tauri::command]
+pub(crate) fn sample_preview(source: PreviewSource, state: State<'_, Editor>) -> Result<Value, String> {
+    ask(&state, |tx| Request::SamplePreview(source, tx))?
+}
+
+#[tauri::command]
+pub(crate) fn lane_add_candidates(map: PathBuf, state: State<'_, Editor>) -> Result<Value, String> {
+    ask(&state, |tx| Request::LaneAddCandidates(map, tx))?
+}
+
+#[tauri::command]
+pub(crate) fn map_preview_objects(map: PathBuf, state: State<'_, Editor>) -> Result<Value, String> {
+    ask(&state, |tx| Request::MapPreview(map, tx))?
+}
+
+
+#[tauri::command]
+pub(crate) fn skin_textures() -> Value {
+    skin_textures::load_skin_textures_json()
+}
+
+#[tauri::command]
+pub(crate) fn preview_skins(state: State<'_, Editor>) -> Result<Value, String> {
+    let songs = ask(&state, Request::SongsDirectory)?;
+    Ok(skin_textures::list_available_skins(songs.as_deref()))
+}
+
+#[tauri::command]
+pub(crate) fn preview_skin_load(skin_id: String) -> Result<Value, String> {
+    if skin_id == "argon" || skin_id.is_empty() {
+        return Ok(Value::Null);
+    }
+    if skin_id == "classic" {
+        return Ok(skin_textures::load_skin_textures_json());
+    }
+    if let Some(dir) = skin_id.strip_prefix("dir:") {
+        return skin_textures::load_skin_from_dir(Path::new(dir));
+    }
+    Err(format!("Unknown preview skin: {skin_id}"))
+}
+
+#[tauri::command]
+pub(crate) fn pick_skin_folder(window: tauri::WebviewWindow) -> Option<String> {
+    rfd::FileDialog::new()
+        .set_parent(&window)
+        .set_title("Choose osu! skin folder")
+        .pick_folder()
+        .map(|path| path.to_string_lossy().into_owned())
+}
+

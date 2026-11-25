@@ -30,7 +30,7 @@ const nodeGraphCommands = ["node_graph_view", "node_graph_action", "node_graph_e
   "node_graph_pick_open", "node_graph_pick_save", "node_graph_pick_audio", "close_node_graph_window", "show_in_editor"];
 
 test("build.rs lists exactly the commands main.rs registers", () => {
-  const handler = read("src/main.rs").match(/generate_handler!\[([^\]]*)\]/)[1].match(/\w+/g);
+  const handler = read("src/main.rs").match(/generate_handler!\[([^\]]*)\]/)[1].match(/[\w:]+/g).map(entry => entry.split("::").at(-1));
   const manifest = [...read("build.rs").match(/COMMANDS: &\[&str\] = &\[([^\]]*)\]/)[1].matchAll(/"(\w+)"/g)]
     .map(match => match[1]);
   assert.deepEqual([...manifest].sort(), [...handler].sort());
