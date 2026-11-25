@@ -16,6 +16,7 @@ import { nextGroup, stepInGroup } from "./lib/snap.js";
 import { applyColorConfig, readColorConfig } from "./lib/theme.js";
 import Boundary from "./lib/Boundary.svelte";
 import AuditionPill from "./parts/AuditionPill.svelte";
+import BaseDiffStrip from "./parts/BaseDiffStrip.svelte";
 import BrowserHead from "./parts/BrowserHead.svelte";
 import BrowserList from "./parts/BrowserList.svelte";
 import BrowserPreview from "./parts/BrowserPreview.svelte";
@@ -55,14 +56,17 @@ import StatusBar from "./parts/StatusBar.svelte";
 import ToastStack from "./parts/ToastStack.svelte";
 import ToolPills from "./parts/ToolPills.svelte";
 import TransportBar from "./parts/TransportBar.svelte";
+import VolumeBubble from "./parts/VolumeBubble.svelte";
 
 // Each part replaces the children of its [data-ui-mount="name"] host in index.html.
 const parts = {
   tools: ToolPills, snap: SnapSlider, audition: AuditionPill, transport: TransportBar,
   playhead: PlayheadGroup, lanes: LaneHeaders, "status-bar": StatusBar,
   "grid-options": GridOptions, "lane-options": LaneOptions, "start-screen": StartScreen,
-  // The timeline's hit hover card, preferences modal, and toast stack, at body level.
+  // The timeline's hit hover card, volume typing bubble, preferences modal, and toast stack, at body level.
+  "base-diff-strip": BaseDiffStrip,
   "hit-card": HitCard,
+  "volume-bubble": VolumeBubble,
   "micro-hud": MicroHud,
   preferences: PreferencesModal,
   // File › Import MIDI… and Map › Keysounds & VST3…, at body level.
@@ -241,9 +245,14 @@ export function setMicroHud(hud) {
   bridge.microHud = hud ?? null;
 }
 
+export function volumeBubble(next) {
+  if (bridge.volumeBubble?.editing && next && !next.editing) return;
+  bridge.volumeBubble = next ?? null;
+}
+
 // Boot the main editor runtime only on the editor window (never on export.html or drum.html).
 const uiBridge = {
-  update, lanes, inspector, browser, mixer, toggleMapPreview, mapPreviewOn, setNodeGraphViewer, nodeGraphViewer, bottomTab, hitCard, commands, menu, centre, wheelSnap, snapGroup, statusNotice, viewport, laneOptions, coverageFilter, setCoverageFocus, hint, setMode, setMicroHud,
+  update, lanes, inspector, browser, mixer, toggleMapPreview, mapPreviewOn, setNodeGraphViewer, nodeGraphViewer, bottomTab, hitCard, volumeBubble, commands, menu, centre, wheelSnap, snapGroup, statusNotice, viewport, laneOptions, coverageFilter, setCoverageFocus, hint, setMode, setMicroHud,
 };
 if (document.getElementById("grid")) {
   globalThis.showMicroHud = (x, y, extra = {}) => {

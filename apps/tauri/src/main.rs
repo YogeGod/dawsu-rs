@@ -461,6 +461,10 @@ enum Action {
         value: i32,
         relative: bool,
     },
+    MomentVolume {
+        ms: f64,
+        value: i32,
+    },
     SetSelectionSampleSet {
         set: String,
     },
@@ -958,6 +962,9 @@ impl Action {
                 }
             }
             Self::Volume { value, relative } => app.selection_volume(value, relative),
+            Self::MomentVolume { ms, value } => {
+                app.set_moment_volume_at(ms, value);
+            }
             Self::SetSelectionSampleSet { set } => {
                 let parsed = match set.to_ascii_lowercase().as_str() {
                     "normal" => Some(SampleSet::Normal),

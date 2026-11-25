@@ -46,6 +46,8 @@ Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern
 ChangesAssociations=yes
+CloseApplications=force
+RestartApplications=no
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
@@ -82,3 +84,14 @@ Root: HKA; Subkey: "Software\Classes\dawsu.Mapset\shell\open\command"; ValueType
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
+; Silent auto-update relaunch triggered by apps/tauri/src/updater.rs when /relaunch=1 is passed.
+Filename: "{app}\{#MyAppExeName}"; Flags: nowait; Check: Relaunch
+
+[UninstallDelete]
+Type: files; Name: "{app}\*.old"
+
+[Code]
+function Relaunch: Boolean;
+begin
+  Result := WizardSilent and (ExpandConstant('{param:relaunch|0}') = '1');
+end;

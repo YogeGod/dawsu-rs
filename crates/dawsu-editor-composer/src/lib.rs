@@ -355,6 +355,71 @@ impl Composer {
         true
     }
 
+    /// Sets the volume of the single moment nearest `ms` (within 5 ms) directly,
+    /// without requiring it to be selected first. Respects `lanes` when scoped.
+    pub fn set_moment_volume_at(
+        &mut self,
+        ms: f64,
+        value: i32,
+        lanes: Option<&BTreeSet<SampleIdentity>>,
+    ) -> bool {
+        if !ms.is_finite() {
+            return false;
+        }
+        let target = value.clamp(dawsu_hitsounding::rules::SAVED_VOLUME_FLOOR, 100);
+        let hits = self.hitsounds();
+        let best = hits
+            .moments()
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, moment)| {
+                let d = (moment.time().ms() - ms).abs();
+                (d <= 5.0 && moment.hits().next().is_some()).then_some((d, MomentId(idx)))
+            })
+            .min_by(|a, b| a.0.total_cmp(&b.0))
+            .map(|(_, id)| id);
+        let Some(id) = best else {
+            return false;
+        };
+        let moment = hits.moment(id);
+        if let Some(lanes) = lanes {
+            let changes: Vec<_> = moment
+                .hits()
+                .filter(|lane| {
+                    lanes.contains(hits.lane_slot(lane).unwrap_or(lane))
+                        && moment.hit_volume(lane) != target
+                })
+                .cloned()
+                .collect();
+            if changes.is_empty() {
+                return false;
+            }
+            self.apply("Change volume", |hits| {
+                for lane in changes {
+                    hits.set_hit_volume(id, &lane, target);
+                }
+            });
+            return true;
+        }
+        if moment.reference_volume() == target && !moment.has_hit_volume_overrides() {
+            return false;
+        }
+        self.apply("Change volume", |hits| {
+            hits.move_volume(id, target);
+            let floor = dawsu_hitsounding::rules::SAVED_VOLUME_FLOOR;
+            let quiet: Vec<_> = hits
+                .moment(id)
+                .hits()
+                .filter(|lane| hits.moment(id).hit_volume(lane) < floor)
+                .cloned()
+                .collect();
+            for lane in quiet {
+                hits.set_hit_volume(id, &lane, floor);
+            }
+        });
+        true
+    }
+
     /// Moves all selected standard hits to `target_set`, leaving custom file lanes untouched.
     pub fn set_selection_sample_set(&mut self, target_set: SampleSet) -> bool {
         let hits = self.hitsounds();
@@ -1186,5 +1251,28 @@ mod tests {
         tools.up(&mut composer, ev(15.0));
 
         assert_eq!(composer.hitsounds().moments().len(), 3);
+    }
+
+    #[test]
+    fn set_moment_volume_at_updates_nearest_moment_and_supports_undo() {
+        let mut composer = empty_composer();
+        let normal = lane_normal();
+        composer.add(1000.0, normal.clone(), 80, 5.0);
+        composer.add(2000.0, normal, 80, 5.0);
+
+        // Updates the nearest moment within 5 ms without requiring selection, clamping to 5..100.
+        assert!(composer.set_moment_volume_at(1002.0, 42, None));
+        assert_eq!(composer.hitsounds().moments()[0].reference_volume(), 42);
+        assert_eq!(composer.hitsounds().moments()[1].reference_volume(), 80);
+
+        assert!(composer.set_moment_volume_at(2000.0, 1, None));
+        assert_eq!(composer.hitsounds().moments()[1].reference_volume(), 5);
+
+        // Undo reverts the last inline volume edit cleanly.
+        composer.undo();
+        assert_eq!(composer.hitsounds().moments()[1].reference_volume(), 80);
+
+        // Missing moment returns false cleanly.
+        assert!(!composer.set_moment_volume_at(9999.0, 50, None));
     }
 }

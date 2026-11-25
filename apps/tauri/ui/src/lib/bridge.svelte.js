@@ -20,6 +20,8 @@ export class Bridge {
   menu = $state.raw(null);
   // The hovered timeline hit app.js last handed over (hitCardAt), or null.
   hitCard = $state.raw(null);
+  // The floating volume bubble over the Hit volume lane (hover readout or inline typing), or null.
+  volumeBubble = $state.raw(null);
   // Playhead group's Centre: kept in this window only, never saved; app.js reads it to follow.
   centre = $state(false);
   // The snap group the slider and the wheel step through (lazer's Common, Triplets or a custom one).
