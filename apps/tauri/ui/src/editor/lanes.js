@@ -1157,6 +1157,7 @@ export function attachLanes(ctx) {
   }
 
   function bindLanes() {
+    globalThis.openDrumVstModal = openDrumVstModal;
     $("samples-view").addEventListener("click", () => {
       if (state.scene && !state.view.busy && !state.drag && state.view.drumView?.enabled) {
         setDrumView(false);

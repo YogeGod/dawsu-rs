@@ -31,6 +31,34 @@
     ribbonOpen = false;
   });
 
+  const previewKey = $derived(bridge.scene?.previewKey ?? 0);
+
+  async function fetchRibbon() {
+    if (disabled || !siblings.length) return;
+    try {
+      const hitTimes = (bridge.scene?.moments ?? [])
+        .filter(([, , , hits]) => Array.isArray(hits) && hits.length > 0)
+        .map(([time]) => time);
+      const durationMs = bridge.latestView?.duration ?? bridge.view?.duration ?? 180000;
+      ribbonRows = await invoke("preview_diff_ribbon", {
+        siblings,
+        sourceHitTimesMs: hitTimes,
+        durationMs,
+        toleranceMs: 5.0,
+        bins: 64,
+      });
+    } catch {
+      ribbonRows = [];
+    }
+  }
+
+  $effect(() => {
+    if (!ribbonOpen) return;
+    void previewKey;
+    const timer = setTimeout(() => { fetchRibbon(); }, 150);
+    return () => clearTimeout(timer);
+  });
+
   function step(direction) {
     if (disabled || !diag.points.length) return;
     const now = bridge.latestView?.position ?? bridge.view?.position ?? 0;
@@ -51,21 +79,7 @@
     if (disabled || !siblings.length) return;
     ribbonOpen = !ribbonOpen;
     if (!ribbonOpen) return;
-    try {
-      const hitTimes = (bridge.scene?.moments ?? [])
-        .filter(([, , , hits]) => Array.isArray(hits) && hits.length > 0)
-        .map(([time]) => time);
-      const durationMs = bridge.latestView?.duration ?? bridge.view?.duration ?? 180000;
-      ribbonRows = await invoke("preview_diff_ribbon", {
-        siblings,
-        sourceHitTimesMs: hitTimes,
-        durationMs,
-        toleranceMs: 5.0,
-        bins: 64,
-      });
-    } catch {
-      ribbonRows = [];
-    }
+    await fetchRibbon();
   }
 
   const fixLabel = $derived(fixTarget?.kind === "empty" ? "Add normal" : "Fix orphan");
@@ -76,46 +90,53 @@
   );
 </script>
 
-<div class="ov-diag">
-  <span class="ov-title">Objects overview</span>
-  {#if bridge.scene}
-    <span class="ov-badge" class:ov-badge-warn={diag.total > 0} class:ov-badge-ok={diag.total === 0}
-      title="{diag.problemCount} conflicts, {diag.orphanedCount} orphaned, {diag.emptyCount} empty">
-      {diag.total === 0 ? "All clear" : `${diag.total} ${diag.total === 1 ? "issue" : "issues"}`}
-    </span>
-    {#if siblings.length > 0}
-      <button type="button" class="ov-btn" aria-pressed={ribbonOpen} title="Preview coverage across up to 4 sibling difficulties"
-        {disabled} onclick={toggleRibbon}>Diffs ({siblings.length})</button>
-    {/if}
-    {#if diag.total > 0}
-      <button type="button" class="ov-btn" aria-label="Previous issue" title="Previous issue (Shift+F8)"
-        {disabled} onclick={() => step(-1)}>◀</button>
-      <button type="button" class="ov-btn" aria-label="Next issue" title="Next issue (F8)"
-        {disabled} onclick={() => step(1)}>▶</button>
-      {#if fixTarget}
-        <button type="button" class="ov-fix" title={fixTitle}
-          {disabled} onclick={autoFix}>{fixLabel}</button>
+<div class="ov-wrap">
+  <div class="ov-diag">
+    <span class="ov-title">Objects overview</span>
+    {#if bridge.scene}
+      <span class="ov-badge" class:ov-badge-warn={diag.total > 0} class:ov-badge-ok={diag.total === 0}
+        title="{diag.problemCount} conflicts, {diag.orphanedCount} orphaned, {diag.emptyCount} empty">
+        {diag.total === 0 ? "All clear" : `${diag.total} ${diag.total === 1 ? "issue" : "issues"}`}
+      </span>
+      {#if siblings.length > 0}
+        <button type="button" class="ov-btn ov-pill-btn" aria-pressed={ribbonOpen} title="Preview coverage across up to 4 sibling difficulties"
+          {disabled} onclick={toggleRibbon}>Diffs ({siblings.length})</button>
+      {/if}
+      {#if diag.total > 0}
+        <button type="button" class="ov-btn" aria-label="Previous issue" title="Previous issue (Shift+F8)"
+          {disabled} onclick={() => step(-1)}>◀</button>
+        <button type="button" class="ov-btn" aria-label="Next issue" title="Next issue (F8)"
+          {disabled} onclick={() => step(1)}>▶</button>
+        {#if fixTarget}
+          <button type="button" class="ov-fix" title={fixTitle}
+            {disabled} onclick={autoFix}>{fixLabel}</button>
+        {/if}
       {/if}
     {/if}
+  </div>
+  {#if ribbonOpen && ribbonRows.length > 0}
+    <div class="ov-ribbon" role="list" aria-label="Sibling difficulty coverage">
+      {#each ribbonRows as row, idx (row.path)}
+        <div class="ov-ribbon-row" role="listitem" title={ribbonRowSummary(row)}
+          style:min-height="{ribbonRects[idx]?.height ?? 6}px">
+          <span class="ov-ribbon-name">{row.version}</span>
+          <span class="ov-ribbon-meta">{ribbonRowSummary(row)}</span>
+        </div>
+      {/each}
+    </div>
   {/if}
 </div>
-{#if ribbonOpen && ribbonRows.length > 0}
-  <div class="ov-ribbon" role="list" aria-label="Sibling difficulty coverage">
-    {#each ribbonRows as row, idx (row.path)}
-      <div class="ov-ribbon-row" role="listitem" title={ribbonRowSummary(row)}
-        style:min-height="{ribbonRects[idx]?.height ?? 6}px">
-        <span class="ov-ribbon-name">{row.version}</span>
-        <span class="ov-ribbon-meta">{ribbonRowSummary(row)}</span>
-      </div>
-    {/each}
-  </div>
-{/if}
 
 <style>
+  .ov-wrap {
+    position: relative;
+    width: 100%;
+    min-width: 0;
+  }
   .ov-diag {
     display: flex;
     align-items: center;
-    gap: 5px;
+    gap: 4px;
     width: 100%;
     min-width: 0;
     font-size: 11px;
@@ -142,8 +163,13 @@
     background: rgba(245, 158, 11, 0.18);
     color: #fbbf24;
   }
-  .ov-btn,
-  .ov-fix {
+  .ov-diag :is(.ov-btn, .ov-fix) {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: auto;
+    height: auto;
+    min-width: 18px;
     min-height: 18px;
     padding: 0 5px;
     border: 1px solid var(--editor-border);
@@ -152,24 +178,31 @@
     color: var(--editor-text);
     font-size: 10px;
     line-height: 1;
+    white-space: nowrap;
     cursor: pointer;
   }
-  .ov-fix {
+  .ov-diag .ov-fix {
     border-color: rgba(245, 158, 11, 0.45);
     color: #fbbf24;
   }
-  .ov-btn:hover:not(:disabled),
-  .ov-fix:hover:not(:disabled) {
+  .ov-diag :is(.ov-btn, .ov-fix):hover:not(:disabled) {
     background: var(--editor-hover);
   }
   .ov-ribbon {
+    position: absolute;
+    left: 0;
+    bottom: calc(100% + 4px);
+    z-index: 28;
+    min-width: 260px;
+    max-width: 420px;
     display: flex;
     flex-direction: column;
-    gap: 2px;
-    margin-top: 4px;
-    padding: 4px 6px;
-    border-top: 1px solid var(--editor-border);
-    background: var(--editor-chrome);
+    gap: 3px;
+    padding: 6px 8px;
+    border: 1px solid var(--editor-border);
+    border-radius: 8px;
+    background: var(--editor-panel);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
     font-size: 10px;
   }
   .ov-ribbon-row {

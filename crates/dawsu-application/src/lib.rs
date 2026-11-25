@@ -4798,12 +4798,24 @@ impl Application {
         &mut self,
         mode: VelocityExportMode,
     ) -> Result<(Vst3DrumExportPlan, Vec<BounceOutput>), String> {
-        self.render_drum_vst_to_wavs_with(mode, |vst3, instance_id, plan, staging_dir| {
+        self.render_drum_vst_with_options(mode, bounce_plan::BounceAudioFormat::Wav16, false)
+    }
+
+    /// Renders routed VST3 drum hits with optional uniform batch peak normalisation and Ogg Vorbis
+    /// or 16-bit WAV output, staging them as pending mapset samples in one Undo step.
+    pub fn render_drum_vst_with_options(
+        &mut self,
+        mode: VelocityExportMode,
+        format: bounce_plan::BounceAudioFormat,
+        normalize: bool,
+    ) -> Result<(Vst3DrumExportPlan, Vec<BounceOutput>), String> {
+        self.render_drum_vst_to_wavs_formatted(mode, format, normalize, |vst3, instance_id, plan, staging_dir| {
             vst3.execute_vst3_drum_export(instance_id, plan, staging_dir, 44_100)
                 .map_err(|e| e.to_string())
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn render_drum_vst_to_wavs_with<F>(
         &mut self,
         mode: VelocityExportMode,
@@ -4812,10 +4824,28 @@ impl Application {
     where
         F: FnOnce(&mut Vst3Manager, &str, &Vst3DrumExportPlan, &Path) -> Result<Vec<BounceOutput>, String>,
     {
+        self.render_drum_vst_to_wavs_formatted(
+            mode,
+            bounce_plan::BounceAudioFormat::Wav16,
+            false,
+            render_export,
+        )
+    }
+
+    fn render_drum_vst_to_wavs_formatted<F>(
+        &mut self,
+        mode: VelocityExportMode,
+        format: bounce_plan::BounceAudioFormat,
+        normalize: bool,
+        render_export: F,
+    ) -> Result<(Vst3DrumExportPlan, Vec<BounceOutput>), String>
+    where
+        F: FnOnce(&mut Vst3Manager, &str, &Vst3DrumExportPlan, &Path) -> Result<Vec<BounceOutput>, String>,
+    {
         if self.busy || self.is_stroke_open() {
             return Err("Finish the current operation before rendering drums.".into());
         }
-        let (plan, hit_sources) = self.plan_drum_vst_render_with_sources(mode)?;
+        let (mut plan, hit_sources) = self.plan_drum_vst_render_with_sources(mode)?;
         if plan.jobs.is_empty() {
             return Err("No hits found on mapped VST3 drum lanes.".into());
         }
@@ -4833,7 +4863,7 @@ impl Application {
             .data_root
             .join("renders")
             .join(pending::mapset_key(&mapset_root));
-        let outputs = render_export(&mut self.vst3, &instance_id, &plan, &staging_dir)?;
+        let mut outputs = render_export(&mut self.vst3, &instance_id, &plan, &staging_dir)?;
 
         let mut staged_samples = Vec::with_capacity(outputs.len());
         let read_result = (|| -> Result<(), String> {
@@ -4855,6 +4885,82 @@ impl Application {
             let _ = std::fs::remove_file(&output.path);
         }
         read_result?;
+
+        let want_ogg = matches!(format, bounce_plan::BounceAudioFormat::OggVorbis);
+        if normalize || want_ogg {
+            let mut buffers: Vec<Vec<f32>> = staged_samples
+                .iter()
+                .map(|(_, _, clip)| {
+                    if clip.channels == 1 {
+                        let mut stereo = Vec::with_capacity(clip.samples.len() * 2);
+                        for &s in &clip.samples {
+                            stereo.push(s);
+                            stereo.push(s);
+                        }
+                        stereo
+                    } else {
+                        clip.samples.clone()
+                    }
+                })
+                .collect();
+            if normalize {
+                let _ = bounce_plan::uniform_batch_normalize(&mut buffers, format.target_peak_dbfs());
+            }
+            let mut rename_map: HashMap<String, String> = HashMap::new();
+            for (idx, ((name, bytes, clip), stereo)) in staged_samples.iter_mut().zip(buffers.into_iter()).enumerate() {
+                let sr = clip.sample_rate.max(8_000);
+                if want_ogg {
+                    let ogg_bytes = bounce_plan::encode_vorbis_ogg(&stereo, sr)?;
+                    let new_name = match name.rsplit_once('.') {
+                        Some((stem, _)) => format!("{stem}.ogg"),
+                        None => format!("{name}.ogg"),
+                    };
+                    rename_map.insert(name.clone(), new_name.clone());
+                    *name = new_name.clone();
+                    *bytes = ogg_bytes;
+                    if let Some(out) = outputs.get_mut(idx) {
+                        out.path = out.path.with_file_name(&new_name);
+                    }
+                } else {
+                    let data_bytes = (stereo.len() * 2) as u32;
+                    let mut wav = Vec::with_capacity(44 + data_bytes as usize);
+                    wav.extend_from_slice(b"RIFF");
+                    wav.extend_from_slice(&(36 + data_bytes).to_le_bytes());
+                    wav.extend_from_slice(b"WAVEfmt ");
+                    wav.extend_from_slice(&16u32.to_le_bytes());
+                    wav.extend_from_slice(&1u16.to_le_bytes());
+                    wav.extend_from_slice(&2u16.to_le_bytes());
+                    wav.extend_from_slice(&sr.to_le_bytes());
+                    wav.extend_from_slice(&(sr * 4).to_le_bytes());
+                    wav.extend_from_slice(&4u16.to_le_bytes());
+                    wav.extend_from_slice(&16u16.to_le_bytes());
+                    wav.extend_from_slice(b"data");
+                    wav.extend_from_slice(&data_bytes.to_le_bytes());
+                    for &s in &stereo {
+                        let pcm = (s.clamp(-1.0, 1.0) * 32767.0).round() as i16;
+                        wav.extend_from_slice(&pcm.to_le_bytes());
+                    }
+                    *bytes = wav;
+                }
+                *clip = Arc::new(AudioClip {
+                    samples: stereo,
+                    channels: 2,
+                    sample_rate: sr,
+                });
+            }
+            if !rename_map.is_empty() {
+                for job in &mut plan.jobs {
+                    if let Some(next) = rename_map.get(&job.filename) {
+                        job.filename = next.clone();
+                    }
+                }
+                for assignment in &mut plan.assignments {
+                    if let Some(next) = rename_map.get(&assignment.filename) {
+                        assignment.filename = next.clone();
+                    }
+                }
+            }
+        }
 
         let mut added_names: Vec<String> = Vec::with_capacity(staged_samples.len());
         let mut additions = Vec::with_capacity(staged_samples.len());

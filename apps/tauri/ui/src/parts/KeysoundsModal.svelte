@@ -147,8 +147,7 @@
       });
       if (result?.summary) summary = result.summary;
       if (result?.trackId != null) {
-        trackId = result.trackId;
-        selected = null;
+        await selectTrack(result.trackId);
       }
     } catch (err) {
       error = String(err);
@@ -315,7 +314,13 @@
     if (!open) return;
     if (event.key === "Escape") {
       event.stopPropagation();
-      closeModal();
+      if (bounceOpen) {
+        bounceOpen = false;
+      } else if (chordPopoverOpen) {
+        chordPopoverOpen = false;
+      } else {
+        closeModal();
+      }
       return;
     }
     const typing = /^(INPUT|SELECT|TEXTAREA)$/.test(event.target?.tagName ?? "");
@@ -378,15 +383,8 @@
 
       <div class="ks-bar">
         <div class="ks-group">
-          <select aria-label="Keysound track" value={trackId ?? ""} disabled={!tracks.length}
-            onchange={(e) => { selectTrack(Number(e.currentTarget.value)); }}>
-            {#if !tracks.length}<option value="">No tracks</option>{/if}
-            {#each tracks as t (t.id)}
-              <option value={t.id}>{t.name} · {t.noteCount} notes</option>
-            {/each}
-          </select>
           <button type="button" aria-label={track ? `Delete ${track.name}` : "Delete track"} disabled={loading || !track}
-            onclick={() => send(keysoundsDelete(trackId))}>Delete</button>
+            onclick={() => send(keysoundsDelete(trackId))}>Delete track</button>
           <input type="text" placeholder="Keysound Track" aria-label="Track name" bind:value={name}
             onkeydown={(e) => { if (e.key === "Enter") addTrack(); }} />
           <button type="button" disabled={loading} onclick={addTrack}>Add track</button>
@@ -501,16 +499,21 @@
         <button type="button" class="ks-gold" disabled={loading || !tracks.some(t => t.noteCount)} onclick={() => generate()}>Generate [Keysounds]</button>
         <button type="button" disabled={loading} onclick={closeModal}>Close</button>
       </footer>
-      <ChordResolverPopover
-        open={chordPopoverOpen && chordConflicts.length > 0}
-        conflict={chordConflicts[0] ?? null}
-        totalConflicts={chordConflicts.length}
-        bind:policy={chordPolicy}
-        onaudition={c => { for (const p of c.pitches ?? []) preview(p); }}
-        onapplyone={(c, pol) => send({ kind: "resolve_chord", trackId: c.trackId, timeMs: c.timeMs, policy: pol })}
-        onapplyall={pol => { chordPopoverOpen = false; send({ kind: "resolve_all_chords", policy: pol }); }}
-        onclose={() => { chordPopoverOpen = false; }}
-      />
+      {#if chordPopoverOpen && chordConflicts.length > 0}
+        <div class="ks-chord-layer" role="presentation"
+          onclick={e => { if (e.target === e.currentTarget) chordPopoverOpen = false; }}>
+          <ChordResolverPopover
+            open={true}
+            conflict={chordConflicts[0] ?? null}
+            totalConflicts={chordConflicts.length}
+            bind:policy={chordPolicy}
+            onaudition={c => { for (const p of c.pitches ?? []) preview(p); }}
+            onapplyone={(c, pol) => send({ kind: "resolve_chord", trackId: c.trackId, timeMs: c.timeMs, policy: pol })}
+            onapplyall={pol => { chordPopoverOpen = false; send({ kind: "resolve_all_chords", policy: pol }); }}
+            onclose={() => { chordPopoverOpen = false; }}
+          />
+        </div>
+      {/if}
       <KeysoundBounceModal
         open={bounceOpen}
         busy={loading}
@@ -539,6 +542,14 @@
     display: grid;
     place-items: center;
     background: rgba(0, 0, 0, 0.68);
+  }
+  .ks-chord-layer {
+    position: fixed;
+    inset: 0;
+    z-index: 66;
+    display: grid;
+    place-items: center;
+    background: rgba(0, 0, 0, 0.45);
   }
   .ks-modal {
     display: flex;

@@ -12,6 +12,7 @@
     onscan = null,
     onopenmap = null,
     onopenbounce = null,
+    onadvanced = null,
     onclose = null,
   } = $props();
 
@@ -26,6 +27,9 @@
       <span class="dib-status">{sidecarAvailable ? `Host ready · ${latencyText}` : "Built-in mode"}</span>
       <button type="button" class="dib-btn" onclick={() => onscan?.()}>Scan VST3</button>
       <button type="button" class="dib-btn" onclick={() => onopenmap?.()}>Drum Map…</button>
+      {#if onadvanced}
+        <button type="button" class="dib-btn" onclick={() => onadvanced?.()}>VST3 Settings &amp; State…</button>
+      {/if}
       <button type="button" class="dib-btn primary" onclick={() => onopenbounce?.()}>Bounce VST3 Kit…</button>
       <button type="button" class="dib-close" aria-label="Hide drum instrument bar" onclick={() => onclose?.()}>✕</button>
     </div>

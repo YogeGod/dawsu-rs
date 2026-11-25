@@ -197,13 +197,28 @@ impl Application {
             other => return Err(crate::refusals::open(&other)),
         };
         let raw_cues = dawsu_hitsounding::cue_list_filtered(&hits, &[], &[], |_, _| false);
+        let mut staged_clips: std::collections::HashMap<String, Arc<dawsu_audio::AudioClip>> =
+            std::collections::HashMap::new();
+        if let Some(preview) = self.export.preview.as_ref() {
+            for mix in preview.plan.mixes.iter().chain(preview.plan.pending.iter()) {
+                if let Some(name) = mix.path.file_name().and_then(|n| n.to_str()) {
+                    staged_clips.insert(name.to_ascii_lowercase(), Arc::new(mix.clip()));
+                }
+            }
+        }
         let mut sounds = Vec::with_capacity(raw_cues.len());
         for cue in raw_cues {
-            if let Some(clip) = self.samples.get(cue.sample()) {
+            let staged = match cue.sample() {
+                dawsu_foundation::SampleIdentity::File(name) => {
+                    staged_clips.get(&name.to_ascii_lowercase()).cloned()
+                }
+                _ => None,
+            };
+            if let Some(clip) = staged.or_else(|| self.samples.get(cue.sample()).cloned()) {
                 sounds.push(dawsu_audio::ScheduledSound {
                     at_ms: cue.time().ms(),
                     end_ms: cue.loop_end().map(|t| t.ms()),
-                    clip: clip.clone(),
+                    clip,
                     gain: cue.gain() as f32,
                 });
             }

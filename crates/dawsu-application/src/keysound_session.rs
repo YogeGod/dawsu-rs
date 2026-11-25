@@ -113,6 +113,9 @@ fn validate_dawsuks_path(path: &Path) -> Result<(), String> {
     if path.as_os_str().is_empty() {
         return Err("Choose a .dawsuks file path first.".to_string());
     }
+    if !path.is_absolute() {
+        return Err("Keysound project path must be an absolute path.".to_string());
+    }
     if path
         .components()
         .any(|c| matches!(c, std::path::Component::ParentDir))
@@ -374,9 +377,14 @@ pub(crate) fn handle(app: &mut Application, payload: &Value) -> Result<Value, St
             let norm = uniform_batch_normalize(&mut raw_clips, target_dbfs);
             let mut bounced_bytes = 0u64;
             let mut samples_json = Vec::with_capacity(plan.manifest.len());
+            // Encode exact Ogg bytes for small manifests; estimate bitrate cleanly for large sets
+            // so preview never stalls the editor thread.
+            let exact_ogg_preview = is_ogg && plan.manifest.len() <= 8;
             for (idx, entry) in plan.manifest.iter().enumerate() {
-                let bytes = if is_ogg {
+                let bytes = if exact_ogg_preview {
                     encode_vorbis_ogg(&raw_clips[idx], 48_000).map(|b| b.len() as u64).unwrap_or(0)
+                } else if is_ogg {
+                    ((entry.duration_ms / 1000.0) * 16_000.0).round().max(1_400.0) as u64
                 } else {
                     44 + (raw_clips[idx].len() as u64) * 2
                 };
@@ -412,7 +420,8 @@ pub(crate) fn handle(app: &mut Application, payload: &Value) -> Result<Value, St
                 .and_then(|v| v.as_str())
                 .unwrap_or("Keysound Track");
             let plugin = payload.get("vst3Plugin").and_then(|v| v.as_str());
-            app.keysounds_add_track(name, plugin);
+            let new_id = app.keysounds_add_track(name, plugin);
+            app.keysound_history.active_track_id = Some(new_id);
         }
         "delete_track" => {
             if let Some(id) = track_id {

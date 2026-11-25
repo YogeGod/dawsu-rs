@@ -30,6 +30,7 @@
   let dryRunFiles = $state.raw(null);
   let dryRunBusy = $state(false);
   let listeningTarget = $state(null);
+  let listenSawPlaying = $state(false);
   let adoptedFor = initialView?.source?.path;
   let pollTimer;
   let previewTimer = null;
@@ -152,6 +153,7 @@
   function stopListen() {
     if (!listeningTarget) return;
     listeningTarget = null;
+    listenSawPlaying = false;
     invoke("export_stop_listen").catch(() => {});
   }
 
@@ -161,10 +163,12 @@
       return;
     }
     listeningTarget = path;
+    listenSawPlaying = false;
     try {
       await invoke("export_listen_target", { targetPath: path });
     } catch (error) {
       listeningTarget = null;
+      listenSawPlaying = false;
       actionError = String(error);
     }
   }
@@ -173,6 +177,16 @@
     // If the user untoggles the currently listening target, stop preview playback cleanly.
     if (listeningTarget && choices.leftOut.includes(fileName(listeningTarget))) {
       stopListen();
+    }
+  });
+
+  $effect(() => {
+    if (!listeningTarget || !view) return;
+    if (view.playing) {
+      listenSawPlaying = true;
+    } else if (listenSawPlaying) {
+      listeningTarget = null;
+      listenSawPlaying = false;
     }
   });
 

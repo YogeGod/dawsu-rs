@@ -73,8 +73,8 @@
             </optgroup>
           {/if}
         </select>
-        <button type="button" onclick={() => onimport?.()}>Import…</button>
-        <button type="button" onclick={() => onexport?.()}>Save .dawsudrum…</button>
+        <button type="button" disabled={!onimport} onclick={() => onimport?.()}>Import…</button>
+        <button type="button" disabled={!onexport} onclick={() => onexport?.()}>Save .dawsudrum…</button>
         <button type="button" aria-label="Close" onclick={closeModal}>✕</button>
       </header>
       <div class="dme-table">
@@ -83,7 +83,10 @@
             <span class="dme-name">{row.name}</span>
             <span class="dme-note">{formatMidiNoteLabel(row.midiNote)}</span>
             <button type="button" onclick={() => ontest?.(index)}>▶ Test</button>
-            <button type="button" class:listening={learningRow === index} onclick={() => startLearn(index)}>
+            <button type="button" class:listening={learningRow === index}
+              disabled={!onmidilearn}
+              title={onmidilearn ? "Listen for next MIDI pad hit" : "Connect a MIDI controller to use MIDI Learn"}
+              onclick={() => startLearn(index)}>
               {learningRow === index ? "Listening…" : "MIDI Learn"}
             </button>
             <select aria-label={"Choke group for " + row.name} value={row.chokeGroup ?? ""}

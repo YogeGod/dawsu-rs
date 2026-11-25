@@ -25,6 +25,19 @@
   const presets = $derived((drumView?.presets ?? []).map(name => ({ id: name, name })));
   const rows = $derived(drumView?.rows ?? []);
 
+  // Pause timeline shortcuts while a Drum Studio modal is open.
+  $effect(() => {
+    if (!mapEditorOpen && !bounceOpen) return;
+    globalThis.dawsuModalOpen = true;
+    return () => {
+      if (!mapEditorOpen && !bounceOpen) globalThis.dawsuModalOpen = false;
+    };
+  });
+
+  function reportError(title, err) {
+    globalThis.showToast?.({ tone: "error", title, body: String(err) });
+  }
+
   async function scanPlugins() {
     try {
       const res = await invoke("drum_vst_action", { payload: { kind: "list_installed" } });
@@ -35,16 +48,21 @@
         path: p.path,
         uid: p.uid ?? null,
       }));
-    } catch {
+    } catch (err) {
       plugins = [];
+      reportError("Scan VST3", err);
     }
   }
 
   async function selectInstrument(choice) {
     if (!choice) return;
     if (choice.kind === "builtin") {
-      await invoke("drum_vst_action", { payload: { kind: "toggle", enabled: false } }).catch(() => {});
-      globalThis.act?.(null, true);
+      try {
+        await invoke("drum_vst_action", { payload: { kind: "toggle", enabled: false } });
+        globalThis.act?.(null, true);
+      } catch (err) {
+        reportError("Drum Instrument", err);
+      }
       return;
     }
     if (!choice.path) return;
@@ -54,6 +72,8 @@
         payload: { kind: "load", pluginPath: choice.path, pluginUid: choice.uid ?? null },
       });
       globalThis.act?.(null, true);
+    } catch (err) {
+      reportError("Load Drum VST3", err);
     } finally {
       busy = false;
     }
@@ -62,8 +82,12 @@
   async function selectPreset(name) {
     const map = bridge.scene?.path;
     if (!map || !name) return;
-    await invoke("drum_map_action", { map, action: { kind: "load_builtin", name } }).catch(() => {});
-    globalThis.act?.(null, true);
+    try {
+      await invoke("drum_map_action", { map, action: { kind: "load_builtin", name } });
+      globalThis.act?.(null, true);
+    } catch (err) {
+      reportError("Drum Map Preset", err);
+    }
   }
 
   async function testRow(index) {
@@ -72,10 +96,34 @@
   }
 
   async function setChoke(index, group) {
-    await invoke("drum_vst_action", {
-      payload: { kind: "set_choke_group", rowIndex: index, chokeGroup: group },
-    }).catch(() => {});
-    globalThis.act?.(null, true);
+    try {
+      await invoke("drum_vst_action", {
+        payload: { kind: "set_choke_group", rowIndex: index, chokeGroup: group },
+      });
+      globalThis.act?.(null, true);
+    } catch (err) {
+      reportError("Choke Group", err);
+    }
+  }
+
+  async function importDrumMap() {
+    try {
+      const res = await invoke("drum_vst_action", { payload: { kind: "import_dawsudrum" } });
+      if (res?.imported) globalThis.act?.(null, true);
+    } catch (err) {
+      reportError("Import Drum Map", err);
+    }
+  }
+
+  async function exportDrumMap() {
+    try {
+      const res = await invoke("drum_vst_action", { payload: { kind: "export_dawsudrum" } });
+      if (res?.exported) {
+        globalThis.showToast?.({ tone: "success", title: "Saved drum map", body: res.path });
+      }
+    } catch (err) {
+      reportError("Save Drum Map", err);
+    }
   }
 
   async function previewBounce({ mode, format }) {
@@ -96,10 +144,14 @@
         pitch: j.pitch,
         velocity: j.midiVelocity,
       }));
+      const realBase = Number(plan?.baseBytes) || 0;
       const estBounced = bounceSamples.length * avgBytes;
-      const budget = await invoke("bounce_osz_budget", { baseBytes: 0, bouncedBytes: estBounced }).catch(() => null);
-      baseBytes = budget?.baseBytes ?? 0;
+      const budget = await invoke("bounce_osz_budget", { baseBytes: realBase, bouncedBytes: estBounced }).catch(() => null);
+      baseBytes = budget?.baseBytes ?? realBase;
       bouncedBytes = budget?.bouncedBytes ?? estBounced;
+    } catch (err) {
+      bounceSamples = [];
+      reportError("Bounce Preview", err);
     } finally {
       busy = false;
     }
@@ -108,11 +160,24 @@
   async function commitBounce() {
     busy = true;
     try {
-      await invoke("drum_vst_action", {
-        payload: { kind: "render_wavs", exact: bounceMode === "exact" },
+      const res = await invoke("drum_vst_action", {
+        payload: {
+          kind: "render_wavs",
+          exact: bounceMode === "exact",
+          format: bounceFormat,
+          normalize: bounceNormalize,
+          autoTrim: bounceAutoTrim,
+        },
       });
       bounceOpen = false;
+      globalThis.showToast?.({
+        tone: "success",
+        title: "Bounced VST3 drums",
+        body: `Staged ${res?.renderedCount ?? 0} samples across ${res?.hitCount ?? 0} hits.`,
+      });
       globalThis.act?.(null, true);
+    } catch (err) {
+      reportError("Bounce VST3 Kit", err);
     } finally {
       busy = false;
     }
@@ -152,6 +217,7 @@
       onselect={selectInstrument}
       onscan={scanPlugins}
       onopenmap={openMapEditor}
+      onadvanced={() => globalThis.openDrumVstModal?.()}
       onopenbounce={openBounce}
       onclose={() => { barOpen = false; }}
     />
@@ -165,6 +231,8 @@
   onselectpreset={selectPreset}
   ontest={testRow}
   onsetchoke={setChoke}
+  onimport={importDrumMap}
+  onexport={exportDrumMap}
   onclose={() => { mapEditorOpen = false; }}
 />
 

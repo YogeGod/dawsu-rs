@@ -2422,7 +2422,7 @@ fn export_snapshot(app: &Application, cache: &mut ExportCache) -> Value {
         }
         None => Vec::new(),
     };
-    json!({
+    let mut out = json!({
         "source": source,
         "targets": targets,
         "backups": app.backups_folder(),
@@ -2505,7 +2505,9 @@ fn export_snapshot(app: &Application, cache: &mut ExportCache) -> Value {
                 entry
             }).collect::<Vec<_>>(),
         })),
-    })
+    });
+    out["playing"] = json!(app.is_playing());
+    out
 }
 
 /// Answers the Export window. Never touches main's one-shot view state.
@@ -4823,6 +4825,42 @@ fn handle_drum_vst_action(
                 Ok(json!({ "loaded": false }))
             }
         }
+        "import_dawsudrum" => {
+            let map = app
+                .document()
+                .ok_or("Open a difficulty first.")?
+                .path
+                .clone();
+            let picked = rfd::FileDialog::new()
+                .set_title("Import drum map")
+                .add_filter("Drum maps", &["dawsudrum", "drm"])
+                .pick_file();
+            if let Some(path) = picked {
+                drums.load(app, &map, &path)?;
+                app.set_drum_vst_routing(drums.routed_midi_notes(app));
+                app.set_drum_vst_choke_groups(drums.choke_groups(app));
+                Ok(json!({ "imported": true, "path": path.to_string_lossy() }))
+            } else {
+                Ok(json!({ "imported": false }))
+            }
+        }
+        "export_dawsudrum" => {
+            let map_kit = drums
+                .active_map(app)
+                .ok_or("Open a drum map first.")?;
+            let text = dawsu_hitsounding::drums::write_dawsudrum(map_kit).map_err(|e| e.to_string())?;
+            let picked = rfd::FileDialog::new()
+                .set_title("Save drum map")
+                .set_file_name(format!("{}.dawsudrum", map_kit.name))
+                .add_filter("dawsu! drum map", &["dawsudrum"])
+                .save_file();
+            if let Some(path) = picked {
+                std::fs::write(&path, text.as_bytes()).map_err(|e| e.to_string())?;
+                Ok(json!({ "exported": true, "path": path.to_string_lossy() }))
+            } else {
+                Ok(json!({ "exported": false }))
+            }
+        }
         "plan_render" => {
             let exact = payload.get("exact").and_then(Value::as_bool).unwrap_or(false);
             let mode = if exact {
@@ -4831,9 +4869,22 @@ fn handle_drum_vst_action(
                 dawsu_application::VelocityExportMode::Tiered { max_interval: 20 }
             };
             app.set_drum_vst_routing(drums.routed_midi_notes(app));
+            app.set_drum_vst_choke_groups(drums.choke_groups(app));
             let plan = app.plan_drum_vst_render(mode)?;
+            let base_bytes: u64 = app
+                .document()
+                .and_then(|d| d.path.parent())
+                .and_then(|dir| std::fs::read_dir(dir).ok())
+                .into_iter()
+                .flatten()
+                .filter_map(|e| e.ok())
+                .filter_map(|e| e.metadata().ok())
+                .filter(|m| m.is_file())
+                .map(|m| m.len())
+                .fold(0u64, u64::saturating_add);
             Ok(json!({
                 "exact": exact,
+                "baseBytes": base_bytes,
                 "hitCount": plan.assignments.len(),
                 "jobCount": plan.jobs.len(),
                 "jobs": plan.jobs.iter().map(|j| json!({
@@ -4845,16 +4896,23 @@ fn handle_drum_vst_action(
         }
         "render_wavs" => {
             let exact = payload.get("exact").and_then(Value::as_bool).unwrap_or(false);
+            let format = match payload.get("format").and_then(Value::as_str) {
+                Some("ogg_vorbis" | "ogg") => dawsu_application::bounce_plan::BounceAudioFormat::OggVorbis,
+                _ => dawsu_application::bounce_plan::BounceAudioFormat::Wav16,
+            };
+            let normalize = payload.get("normalize").and_then(Value::as_bool).unwrap_or(false);
             let mode = if exact {
                 dawsu_application::VelocityExportMode::ExactPerVolume
             } else {
                 dawsu_application::VelocityExportMode::Tiered { max_interval: 20 }
             };
             app.set_drum_vst_routing(drums.routed_midi_notes(app));
-            let (plan, outputs) = app.render_drum_vst_to_wavs(mode)?;
+            app.set_drum_vst_choke_groups(drums.choke_groups(app));
+            let (plan, outputs) = app.render_drum_vst_with_options(mode, format, normalize)?;
             Ok(json!({
                 "renderedCount": outputs.len(),
                 "hitCount": plan.assignments.len(),
+                "format": format,
                 "files": outputs.iter().map(|o| o.path.file_name().and_then(|n| n.to_str()).unwrap_or("")).collect::<Vec<_>>(),
             }))
         }
