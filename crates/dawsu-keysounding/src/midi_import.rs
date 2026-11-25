@@ -40,6 +40,21 @@ pub fn import_midi_tracks(timed: &TimedMidi) -> Vec<KeysoundTrack> {
                 }
             }
         }
+        // Close any CC64 sustain held until end-of-track at that channel's last note end.
+        for (ch, start_ms) in active_down {
+            let max_end_ms = track
+                .notes
+                .iter()
+                .filter(|n| (n.channel & 0x0F) == ch)
+                .map(|n| n.end_ms)
+                .fold(start_ms, f64::max);
+            if max_end_ms > start_ms {
+                sustain_by_track.entry((track.index, ch)).or_default().push(SustainSpan {
+                    start_ms,
+                    end_ms: max_end_ms,
+                });
+            }
+        }
         for note in &track.notes {
             let ch = note.channel & 0x0F;
             grouped.entry((track.index, ch)).or_default().push(KeysoundNote {

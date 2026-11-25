@@ -36,14 +36,14 @@ test("MapsetIntakeCard offers Create [Hitsounds] when none exists", () => {
   assert.match(html, /Create \[Hitsounds\] &amp; Start Editing →/);
 });
 
-test("MapsetIntakeCard guards against empty or corrupt beatmap folders", () => {
+test("MapsetIntakeCard guards against empty or corrupt mapset folders", () => {
   const emptyHtml = render(MapsetIntakeCard, {
     props: { mapset: { folder: "empty", difficulties: [] } },
   }).body;
   assert.match(emptyHtml, /No readable \.osu difficulties found/);
 
   const corruptHtml = render(MapsetIntakeCard, {
-    props: { mapset: { folder: "bad", corrupt: true, error: "Could not parse beatmap folder." } },
+    props: { mapset: { folder: "bad", corrupt: true, error: "Could not parse mapset folder." } },
   }).body;
-  assert.match(corruptHtml, /Could not parse beatmap folder\./);
+  assert.match(corruptHtml, /Could not parse mapset folder\./);
 });

@@ -169,6 +169,13 @@
     }
   }
 
+  $effect(() => {
+    // If the user untoggles the currently listening target, stop preview playback cleanly.
+    if (listeningTarget && choices.leftOut.includes(fileName(listeningTarget))) {
+      stopListen();
+    }
+  });
+
   async function close() {
     closed = true;
     stopListen();

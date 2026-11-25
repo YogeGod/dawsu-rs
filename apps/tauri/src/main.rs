@@ -2284,6 +2284,7 @@ enum Request {
     ExportUnusedDryRun(mpsc::Sender<Result<Vec<dawsu_application::UnusedSampleCandidate>, String>>),
     ExportListenTarget(String, mpsc::Sender<Result<(), String>>),
     ExportStopListen(mpsc::Sender<Result<(), String>>),
+    OpenMapsetRoot(mpsc::Sender<Option<PathBuf>>),
     /// The Export window closed: its preview stops and is forgotten. Needs no answer.
     ExportClose,
     /// The drum detection window's requests, answered with its view.
@@ -2528,26 +2529,32 @@ fn answer_export(app: &mut Application, fault: &mut Option<String>, cache: &mut 
             let _ = response.send(result);
         }
         Request::ExportUnusedDryRun(response) => {
-            let result = guard(app, fault, |app| app.plan_sweep()).and_then(|result| result);
-            let _ = response.send(result);
+            match guard(app, fault, |app| app.plan_sweep_snapshot()) {
+                Ok(Some(snapshot)) => {
+                    std::thread::spawn(move || {
+                        let _ = response.send(dawsu_application::run_plan_sweep(snapshot));
+                    });
+                }
+                Ok(None) => {
+                    let _ = response.send(Ok(Vec::new()));
+                }
+                Err(error) => {
+                    let _ = response.send(Err(error));
+                }
+            }
         }
         Request::ExportListenTarget(target_path, response) => {
             let result = guard(app, fault, |app| {
                 if target_path.trim().is_empty() {
                     return Err("Choose a target difficulty to preview.".to_owned());
                 }
-                app.audition_selection();
-                Ok(())
+                app.listen_export_target(Path::new(&target_path))
             })
             .and_then(|result| result);
             let _ = response.send(result);
         }
         Request::ExportStopListen(response) => {
-            let result = guard(app, fault, |app| {
-                if app.is_playing() {
-                    app.stop();
-                }
-            });
+            let result = guard(app, fault, Application::stop_export_listen);
             let _ = response.send(result);
         }
         _ => unreachable!("only Export requests reach answer_export"),
@@ -2990,6 +2997,7 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                             None => drums.toggle(app, &map, on),
                         }.map(|()| {
                             app.set_drum_vst_routing(drums.routed_midi_notes(app));
+                            app.set_drum_vst_choke_groups(drums.choke_groups(app));
                             tick_cache.drums_rev += 1;
                             decorate_and_stamp_view(app, &home, &drums, playback_start, &mut tick_cache, !home.visible())
                         })
@@ -3023,6 +3031,7 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                             }
                         }.map(|()| {
                             app.set_drum_vst_routing(drums.routed_midi_notes(app));
+                            app.set_drum_vst_choke_groups(drums.choke_groups(app));
                             tick_cache.drums_rev += 1;
                             decorate_and_stamp_view(app, &home, &drums, playback_start, &mut tick_cache, !home.visible())
                         })
@@ -3077,8 +3086,17 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                 }
                 Ok(Request::ExportClose) => {
                     if fault.is_none() {
-                        let _ = guard(&mut app, &mut fault, Application::cancel_export_preview);
+                        let _ = guard(&mut app, &mut fault, |app| {
+                            app.stop_export_listen();
+                            app.cancel_export_preview();
+                        });
                     }
+                }
+                Ok(Request::OpenMapsetRoot(response)) => {
+                    let root = app
+                        .document()
+                        .and_then(|d| d.path.parent().map(Path::to_path_buf));
+                    let _ = response.send(root);
                 }
                 Ok(Request::Drum(request, response)) => {
                     let result = guard(&mut app, &mut fault, |app| drum_window::answer(app, request)).and_then(|result| result);
@@ -3212,7 +3230,7 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                 }
                 Ok(Request::DrumVstAction(payload, response)) => {
                     let result = guard(&mut app, &mut fault, |app| {
-                        handle_drum_vst_action(app, &drums, &payload)
+                        handle_drum_vst_action(app, &mut drums, &payload)
                     })
                     .and_then(|r| r);
                     tick_cache.drums_rev += 1;
@@ -4632,7 +4650,7 @@ fn drum_vst_action(payload: Value, state: State<'_, Editor>) -> Result<Value, St
 
 fn handle_drum_vst_action(
     app: &mut Application,
-    drums: &drum_view::DrumView,
+    drums: &mut drum_view::DrumView,
     payload: &Value,
 ) -> Result<Value, String> {
     let kind = payload
@@ -4693,11 +4711,13 @@ fn handle_drum_vst_action(
             app.load_drum_vst(PathBuf::from(path), uid)
                 .map_err(|e| e.to_string())?;
             app.set_drum_vst_routing(drums.routed_midi_notes(app));
+            app.set_drum_vst_choke_groups(drums.choke_groups(app));
             Ok(drum_vst_status_json(app))
         }
         "toggle" => {
             let on = payload.get("enabled").and_then(Value::as_bool).unwrap_or(false);
             app.set_drum_vst_routing(drums.routed_midi_notes(app));
+            app.set_drum_vst_choke_groups(drums.choke_groups(app));
             app.set_drum_vst_enabled(on);
             Ok(drum_vst_status_json(app))
         }
@@ -4707,8 +4727,28 @@ fn handle_drum_vst_action(
                 .and_then(Value::as_u64)
                 .ok_or("Missing lane row")? as usize;
             app.set_drum_vst_routing(drums.routed_midi_notes(app));
+            app.set_drum_vst_choke_groups(drums.choke_groups(app));
             app.toggle_drum_vst_lane(row)?;
             Ok(drum_vst_status_json(app))
+        }
+        "set_choke_group" => {
+            let row_index = payload
+                .get("rowIndex")
+                .and_then(Value::as_u64)
+                .ok_or("Missing rowIndex")? as usize;
+            let choke_group = payload
+                .get("chokeGroup")
+                .and_then(Value::as_u64)
+                .map(|v| v.min(255) as u8)
+                .filter(|&g| g > 0);
+            let map = app
+                .document()
+                .ok_or("Open a difficulty first.")?
+                .path
+                .clone();
+            drums.set_row_choke_group(app, &map, row_index, choke_group)?;
+            app.set_drum_vst_choke_groups(drums.choke_groups(app));
+            Ok(json!({ "ok": true, "rowIndex": row_index, "chokeGroup": choke_group }))
         }
         "unload" => {
             app.unload_drum_vst();

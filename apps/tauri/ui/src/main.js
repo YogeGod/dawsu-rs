@@ -27,6 +27,7 @@ import PlayheadGroup from "./parts/PlayheadGroup.svelte";
 import ExportWindow from "./parts/ExportWindow.svelte";
 import ExportModal from "./parts/ExportModal.svelte";
 import DrumDetectWindow from "./parts/DrumDetectWindow.svelte";
+import DrumStudioHost from "./parts/DrumStudioHost.svelte";
 import EditorMenu from "./parts/EditorMenu.svelte";
 import GridOptions from "./parts/GridOptions.svelte";
 import HitCard from "./parts/HitCard.svelte";
@@ -67,6 +68,7 @@ const parts = {
   // File › Import MIDI… and Map › Keysounds & VST3…, at body level.
   "midi-import": MidiImportModal,
   keysounds: KeysoundsModal,
+  "drum-studio": DrumStudioHost,
   "shared-base": SharedBaseModal,
   "stem-separation": StemSeparationModal,
   toasts: ToastStack,
@@ -231,11 +233,22 @@ export function hint(zone) {
   bridge.setHint(zone);
 }
 
+export function setMode(mode) {
+  bridge.mode = mode === "drums" || mode === "keysounds" ? mode : "hitsounds";
+}
+
+export function setMicroHud(hud) {
+  bridge.microHud = hud ?? null;
+}
+
 // Boot the main editor runtime only on the editor window (never on export.html or drum.html).
 const uiBridge = {
-  update, lanes, inspector, browser, mixer, toggleMapPreview, mapPreviewOn, setNodeGraphViewer, nodeGraphViewer, bottomTab, hitCard, commands, menu, centre, wheelSnap, snapGroup, statusNotice, viewport, laneOptions, coverageFilter, setCoverageFocus, hint,
+  update, lanes, inspector, browser, mixer, toggleMapPreview, mapPreviewOn, setNodeGraphViewer, nodeGraphViewer, bottomTab, hitCard, commands, menu, centre, wheelSnap, snapGroup, statusNotice, viewport, laneOptions, coverageFilter, setCoverageFocus, hint, setMode, setMicroHud,
 };
 if (document.getElementById("grid")) {
+  globalThis.showMicroHud = (x, y, extra = {}) => {
+    bridge.microHud = { x, y, mode: bridge.mode, ...extra };
+  };
   createEditor(globalThis, { ui: uiBridge });
   const workspace = document.getElementById("workspace");
   workspace?.addEventListener("pointerover", event => {

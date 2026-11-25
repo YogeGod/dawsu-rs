@@ -26,20 +26,30 @@
     const artist = mapset.artist?.trim();
     const title = mapset.title?.trim();
     if (artist && title) return `${artist} - ${title}`;
-    return title || artist || mapset.folder || "Beatmap folder";
+    return title || artist || mapset.folder || "Mapset folder";
   });
 
   const folderError = $derived.by(() => {
     if (!mapset) return "";
-    if (mapset.corrupt || mapset.error) return mapset.error || "This beatmap folder could not be read.";
+    if (mapset.corrupt || mapset.error) return mapset.error || "This mapset folder could not be read.";
     if (diffs.length === 0) return "No readable .osu difficulties found in this folder.";
     return "";
   });
+
+  function onKeydown(event) {
+    if (event.key === "Escape" && mapset) {
+      event.stopPropagation();
+      onclose?.();
+    }
+  }
 </script>
 
+<svelte:window onkeydown={onKeydown} />
+
 {#if mapset}
-  <div class="intake-backdrop" role="dialog" aria-modal="true" aria-label="Open mapset">
-    <div class="intake-card">
+  <div class="intake-backdrop" role="presentation"
+    onclick={e => { if (e.target === e.currentTarget) onclose?.(); }}>
+    <div class="intake-card" role="dialog" aria-modal="true" aria-label="Open mapset">
       <header class="intake-head">
         <div>
           <p class="intake-eyebrow">Mapset</p>

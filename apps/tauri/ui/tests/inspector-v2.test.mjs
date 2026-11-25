@@ -92,5 +92,5 @@ test("OverviewDiagnostics renders consolidated issue count and Fix button", () =
   const html = render(OverviewDiagnostics).body;
   assert.match(html, /Objects overview/);
   assert.match(html, /1 issue/);
-  assert.match(html, />Fix</);
+  assert.match(html, />Add normal</);
 });

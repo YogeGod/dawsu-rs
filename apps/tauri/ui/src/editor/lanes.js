@@ -1161,19 +1161,30 @@ export function attachLanes(ctx) {
       if (state.scene && !state.view.busy && !state.drag && state.view.drumView?.enabled) {
         setDrumView(false);
       }
+      ctx.ui()?.setMode?.("hitsounds");
     });
     $("drums-view").addEventListener("click", () => {
       if (!state.scene || state.view.busy || state.drag) return;
+      ctx.ui()?.setMode?.("drums");
       if (state.view.drumView?.enabled) openDrumMapSetup();
       else setDrumView(true);
     });
+    const keysoundsBtn = $("keysounds-view");
+    if (keysoundsBtn) {
+      keysoundsBtn.addEventListener("click", () => {
+        if (!state.scene || state.view.busy || state.drag) return;
+        ctx.ui()?.setMode?.("keysounds");
+        globalThis.openKeysounds?.();
+      });
+    }
     const vst3Btn = $("drums-vst3-toggle");
     if (vst3Btn) {
       vst3Btn.addEventListener("click", () => {
         if (!state.scene || state.view.busy || state.drag) return;
         const live = state.view.drumVst;
         if (!live?.loaded) {
-          openDrumVstModal();
+          if (globalThis.openDrumStudio) globalThis.openDrumStudio();
+          else openDrumVstModal();
           return;
         }
         ctx.run(async () => {
@@ -1187,7 +1198,8 @@ export function attachLanes(ctx) {
     if (vst3MenuBtn) {
       vst3MenuBtn.addEventListener("click", () => {
         if (!state.scene || state.view.busy || state.drag) return;
-        openDrumVstModal();
+        if (globalThis.openDrumStudio) globalThis.openDrumStudio();
+        else openDrumVstModal();
       });
     }
   }

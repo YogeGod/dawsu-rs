@@ -76,17 +76,24 @@ pub struct BatchNormReport {
 
 /// Normalizes all clips in `clips` by ONE shared linear gain factor so the loudest clip hits
 /// `target_dbfs` while quieter velocity tiers preserve their exact relative loudness.
+/// Non-finite (`NaN`/`Inf`) samples are sanitized to `0.0` so a misbehaving plugin cannot zero out the kit.
 pub fn uniform_batch_normalize(clips: &mut [Vec<f32>], target_dbfs: f32) -> BatchNormReport {
     let mut batch_peak = 0.0f32;
     let mut silent_clip_indices = Vec::new();
-    for (idx, clip) in clips.iter().enumerate() {
-        let clip_peak = clip.iter().fold(0.0f32, |acc, &s| acc.max(s.abs()));
+    for (idx, clip) in clips.iter_mut().enumerate() {
+        let mut clip_peak = 0.0f32;
+        for sample in clip.iter_mut() {
+            if !sample.is_finite() {
+                *sample = 0.0;
+            }
+            clip_peak = clip_peak.max(sample.abs());
+        }
         if clip_peak < SILENT_PEAK_THRESHOLD {
             silent_clip_indices.push(idx);
         }
         batch_peak = batch_peak.max(clip_peak);
     }
-    if batch_peak < SILENT_PEAK_THRESHOLD {
+    if batch_peak < SILENT_PEAK_THRESHOLD || !batch_peak.is_finite() {
         return BatchNormReport {
             applied_gain_linear: 1.0,
             applied_gain_db: 0.0,
@@ -114,6 +121,9 @@ pub fn uniform_batch_normalize(clips: &mut [Vec<f32>], target_dbfs: f32) -> Batc
 /// Truncates an interleaved stereo clip to `choke_duration_ms` with a 10 ms anti-click fade-out.
 pub fn apply_choke_fade(interleaved_stereo: &mut Vec<f32>, sample_rate: u32, choke_duration_ms: u32) {
     let channels = 2usize;
+    if interleaved_stereo.len() % channels != 0 {
+        interleaved_stereo.pop();
+    }
     let max_frames = ((f64::from(choke_duration_ms) / 1000.0) * f64::from(sample_rate.max(1))).round() as usize;
     let current_frames = interleaved_stereo.len() / channels;
     if max_frames == 0 || max_frames >= current_frames {
@@ -167,15 +177,23 @@ pub fn extract_waveform_peaks(interleaved_stereo: &[f32], bars: usize) -> Vec<f3
 
 /// Encodes interleaved stereo f32 PCM into Ogg Vorbis bytes reusing `vorbis_rs`.
 pub fn encode_vorbis_ogg(interleaved_stereo: &[f32], sample_rate: u32) -> Result<Vec<u8>, String> {
+    if !(8_000..=192_000).contains(&sample_rate) {
+        return Err(format!("Unsupported Ogg Vorbis sample rate: {sample_rate} Hz (expected 8000–192000 Hz)"));
+    }
     let frames = interleaved_stereo.len() / 2;
+    if frames == 0 {
+        return Err("Cannot encode empty audio clip to Ogg Vorbis".to_string());
+    }
     let mut left = Vec::with_capacity(frames);
     let mut right = Vec::with_capacity(frames);
     for pair in interleaved_stereo.chunks_exact(2) {
-        left.push(pair[0].clamp(-1.0, 1.0));
-        right.push(pair[1].clamp(-1.0, 1.0));
+        let l = if pair[0].is_finite() { pair[0].clamp(-1.0, 1.0) } else { 0.0 };
+        let r = if pair[1].is_finite() { pair[1].clamp(-1.0, 1.0) } else { 0.0 };
+        left.push(l);
+        right.push(r);
     }
     let mut out = Vec::new();
-    let sr = NonZeroU32::new(sample_rate.max(8_000)).ok_or("Invalid sample rate")?;
+    let sr = NonZeroU32::new(sample_rate).ok_or("Invalid sample rate")?;
     let ch = NonZeroU8::new(2).ok_or("Invalid channel count")?;
     let mut encoder = VorbisEncoderBuilder::new_with_serial(sr, ch, &mut out, 0)
         .bitrate_management_strategy(VorbisBitrateManagementStrategy::QualityVbr {
@@ -270,5 +288,20 @@ mod tests {
         assert_eq!(safe.status, BudgetStatus::Safe);
         let over = calculate_osz_budget(9 * 1024 * 1024, 2 * 1024 * 1024);
         assert_eq!(over.status, BudgetStatus::OverLimit);
+    }
+
+    #[test]
+    fn guards_non_finite_samples_odd_buffers_and_empty_ogg() {
+        let mut clips = vec![vec![f32::NAN, f32::INFINITY, 0.25, -0.25]];
+        let report = uniform_batch_normalize(&mut clips, -1.0);
+        assert!(report.applied_gain_linear.is_finite() && report.applied_gain_linear > 1.0);
+        assert!(clips[0].iter().all(|s| s.is_finite()));
+
+        let mut odd = vec![0.5f32; 48_000 * 2 + 1];
+        apply_choke_fade(&mut odd, 48_000, 100);
+        assert_eq!(odd.len(), 4_800 * 2);
+
+        assert!(encode_vorbis_ogg(&[], 48_000).is_err());
+        assert!(encode_vorbis_ogg(&[0.1; 1000], 4_000).is_err());
     }
 }

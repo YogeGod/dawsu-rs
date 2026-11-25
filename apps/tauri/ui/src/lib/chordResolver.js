@@ -1,4 +1,4 @@
-// Pure helpers for the osu!standard Chord & Polyphony Resolver (NO Storyboard .osb option).
+// Pure helpers for the osu!standard Chord & Polyphony Resolver (no storyboard .osb option).
 
 const NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
 

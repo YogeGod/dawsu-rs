@@ -374,8 +374,9 @@ impl Composer {
                     sound,
                     index,
                 };
+                let existing_target = moment.has_hit(&next_lane);
                 let vol = moment.hit_volume(&key.lane);
-                moves.push((key.moment, key.lane.clone(), next_lane, vol));
+                moves.push((key.moment, key.lane.clone(), next_lane, vol, existing_target));
             }
         }
         if moves.is_empty() {
@@ -383,21 +384,29 @@ impl Composer {
         }
         let mut next_selected: Vec<HitKey> = self.selected.items().iter().cloned().collect();
         self.apply("Change sample set", |hits| {
-            for (moment_idx, old_lane, new_lane, vol) in &moves {
+            for (moment_idx, old_lane, new_lane, vol, existing_target) in &moves {
                 let id = MomentId(*moment_idx);
                 hits.remove_hit(id, old_lane);
-                hits.add_hit_with_volume(id, new_lane.clone(), *vol);
+                if !existing_target {
+                    hits.add_hit_with_volume(id, new_lane.clone(), *vol);
+                }
             }
         });
         for key in &mut next_selected {
-            if let Some((_, _, new_lane, _)) = moves
+            if let Some((_, _, new_lane, _, _)) = moves
                 .iter()
-                .find(|(m, old, _, _)| *m == key.moment && old == &key.lane)
+                .find(|(m, old, _, _, _)| *m == key.moment && old == &key.lane)
             {
                 key.lane = new_lane.clone();
             }
         }
-        self.selected.replace(next_selected);
+        let mut deduped = Vec::with_capacity(next_selected.len());
+        for key in next_selected {
+            if !deduped.contains(&key) {
+                deduped.push(key);
+            }
+        }
+        self.selected.replace(deduped);
         true
     }
 
@@ -442,27 +451,37 @@ impl Composer {
                     matches!(lane, SampleIdentity::Standard { sound, .. } if *sound == target_sound)
                 });
                 if !already {
-                    let chosen_set = moment
+                    let (chosen_set, chosen_index) = moment
                         .hits()
                         .find_map(|lane| match lane {
                             SampleIdentity::Standard {
                                 set,
-                                sound: Sound::Hit(Hitsound::Normal),
-                                ..
-                            } => Some(*set),
+                                sound: Sound::Hit(Hitsound::Whistle | Hitsound::Finish | Hitsound::Clap),
+                                index,
+                            } => Some((*set, *index)),
                             _ => None,
                         })
                         .or_else(|| {
                             moment.hits().find_map(|lane| match lane {
-                                SampleIdentity::Standard { set, .. } => Some(*set),
+                                SampleIdentity::Standard {
+                                    set,
+                                    sound: Sound::Hit(Hitsound::Normal),
+                                    index,
+                                } => Some((*set, *index)),
                                 _ => None,
                             })
                         })
-                        .unwrap_or(SampleSet::Normal);
+                        .or_else(|| {
+                            moment.hits().find_map(|lane| match lane {
+                                SampleIdentity::Standard { set, index, .. } => Some((*set, *index)),
+                                _ => None,
+                            })
+                        })
+                        .unwrap_or((SampleSet::Normal, CustomIndex::default()));
                     let new_lane = SampleIdentity::Standard {
                         set: chosen_set,
                         sound: target_sound,
-                        index: CustomIndex::default(),
+                        index: chosen_index,
                     };
                     additions_to_add.push((MomentId(idx), new_lane, moment.volume()));
                 }
@@ -479,6 +498,20 @@ impl Composer {
                 hits.add_hit_with_volume(*id, lane.clone(), *vol);
             }
         });
+        if !removals.is_empty() {
+            let kept: Vec<HitKey> = self
+                .selected
+                .items()
+                .iter()
+                .filter(|key| {
+                    !removals
+                        .iter()
+                        .any(|(id, lane)| id.0 == key.moment && lane == &key.lane)
+                })
+                .cloned()
+                .collect();
+            self.selected.replace(kept);
+        }
         true
     }
 
@@ -488,18 +521,20 @@ impl Composer {
             return None;
         }
         let hits = self.hitsounds();
+        let is_fixable = |m: &dawsu_hitsounding::Moment| {
+            (m.place() == Place::NoObject && m.hits().next().is_some())
+                || (m.place() != Place::NoObject && m.hits().next().is_none())
+        };
         let (target_idx, moment) = hits
             .moments()
             .iter()
             .enumerate()
+            .filter(|(_, m)| (m.time().ms() - time_ms).abs() <= 2.0 && is_fixable(m))
             .min_by(|(_, a), (_, b)| {
                 (a.time().ms() - time_ms)
                     .abs()
                     .total_cmp(&(b.time().ms() - time_ms).abs())
             })?;
-        if (moment.time().ms() - time_ms).abs() > 2.0 {
-            return None;
-        }
         if moment.place() == Place::NoObject && moment.hits().next().is_some() {
             let orphaned: Vec<(SampleIdentity, i32)> = moment
                 .hits()

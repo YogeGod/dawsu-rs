@@ -15,6 +15,12 @@
       : { left: 0, top: 0 },
   );
 
+  $effect(() => {
+    if (!selection && bridge.microHud) {
+      bridge.microHud = null;
+    }
+  });
+
   function dismiss() {
     bridge.microHud = null;
   }

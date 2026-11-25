@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 /// Deterministic chord resolution policy for osu!standard hit circles.
-/// Intentionally omits any Storyboard `.osb` policy (`tdd-keysounding.md:42`).
+/// Intentionally omits any storyboard `.osb` policy (`tdd-keysounding.md:42`).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ChordResolution {
@@ -50,14 +50,18 @@ pub fn chord_voicing_key(pitches: &[u8]) -> String {
 }
 
 /// Detects every osu!standard hit object where 2+ unmuted notes on a track land within `tolerance_ms`.
+/// Runs in $O(N \log M)$ via sorted binary search over object timestamps.
 pub fn detect_chords(doc: &KeysoundDocument, osu: &OsuFile, tolerance_ms: f64) -> Vec<ChordConflict> {
     let tol = tolerance_ms.max(0.0);
-    let object_times: Vec<(usize, f64)> = osu
+    let mut object_times: Vec<(usize, f64)> = osu
         .hit_objects()
         .iter()
         .enumerate()
         .map(|(i, obj)| (i, obj.time()))
         .collect();
+    let raw_times: Vec<f64> = object_times.iter().map(|&(_, t)| t).collect();
+    object_times.sort_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+
     let mut conflicts = Vec::new();
     for track in &doc.tracks {
         if track.muted {
@@ -68,11 +72,18 @@ pub fn detect_chords(doc: &KeysoundDocument, osu: &OsuFile, tolerance_ms: f64) -
             if note.muted {
                 continue;
             }
-            if let Some(&(obj_idx, _)) = object_times
-                .iter()
-                .filter(|&&(_, t)| (t - note.start_ms).abs() <= tol)
-                .min_by(|a, b| (a.1 - note.start_ms).abs().total_cmp(&(b.1 - note.start_ms).abs()))
-            {
+            let lo = object_times.partition_point(|&(_, t)| t < note.start_ms - tol);
+            let mut best: Option<(usize, f64)> = None;
+            for &(obj_idx, obj_time) in &object_times[lo..] {
+                if obj_time > note.start_ms + tol {
+                    break;
+                }
+                let dist = (obj_time - note.start_ms).abs();
+                if best.is_none_or(|(_, best_dist)| dist < best_dist) {
+                    best = Some((obj_idx, dist));
+                }
+            }
+            if let Some((obj_idx, _)) = best {
                 by_object.entry(obj_idx).or_default().push((note_idx, note.pitch));
             }
         }
@@ -80,7 +91,7 @@ pub fn detect_chords(doc: &KeysoundDocument, osu: &OsuFile, tolerance_ms: f64) -
             if group.len() < 2 {
                 continue;
             }
-            let time_ms = object_times[obj_idx].1;
+            let time_ms = raw_times[obj_idx];
             let note_indices: Vec<usize> = group.iter().map(|&(i, _)| i).collect();
             let mut pitches: Vec<u8> = group.iter().map(|&(_, p)| p).collect();
             pitches.sort_unstable();

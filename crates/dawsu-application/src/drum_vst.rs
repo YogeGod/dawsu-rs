@@ -2,7 +2,7 @@
 //! and lane-to-MIDI routing (parity with v3.1.4 `DrumInstrumentPlayback` / `MainWindow.DrumVst`).
 
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, RwLock, mpsc};
 
 use dawsu_audio::LiveAudioSource;
@@ -59,7 +59,8 @@ pub struct DrumVstLiveHandle {
     pub plugin_uid: Option<String>,
     enabled: Arc<AtomicBool>,
     schedule: Arc<RwLock<Vec<DrumMidiCue>>>,
-    choke_groups: Arc<RwLock<HashMap<u8, u8>>>,
+    /// Lock-free 128-note choke group table (`0` = no choke group, `1..=255` = choke group ID).
+    choke_groups: Arc<[AtomicU8; 128]>,
     preview_tx: mpsc::SyncSender<(u8, u8)>,
     routed_notes: HashMap<SampleIdentity, u8>,
     muted_vst_lanes: HashSet<SampleIdentity>,
@@ -76,7 +77,7 @@ impl DrumVstLiveHandle {
     ) -> (Self, DrumVstLiveSource) {
         let enabled_flag = Arc::new(AtomicBool::new(enabled));
         let schedule = Arc::new(RwLock::new(Vec::new()));
-        let choke_groups = Arc::new(RwLock::new(HashMap::new()));
+        let choke_groups: Arc<[AtomicU8; 128]> = Arc::new(std::array::from_fn(|_| AtomicU8::new(0)));
         let (preview_tx, preview_rx) = mpsc::sync_channel(128);
         let handle = Self {
             instance_id,
@@ -119,10 +120,11 @@ impl DrumVstLiveHandle {
         }
     }
 
-    /// Maps MIDI note numbers (`0..=127`) to a choke group ID (e.g. `1` = Hi-Hat Choke Group A).
+    /// Maps MIDI note numbers (`0..=127`) to a choke group ID (`1..=255`, `0` clears).
     pub fn set_choke_groups(&self, groups: HashMap<u8, u8>) {
-        if let Ok(mut guard) = self.choke_groups.write() {
-            *guard = groups;
+        for note in 0..128u8 {
+            let gid = groups.get(&note).copied().unwrap_or(0);
+            self.choke_groups[note as usize].store(gid, Ordering::Relaxed);
         }
     }
 
@@ -172,7 +174,7 @@ pub struct DrumVstLiveSource {
     processor: Box<dyn DrumBlockProcessor>,
     enabled: Arc<AtomicBool>,
     schedule: Arc<RwLock<Vec<DrumMidiCue>>>,
-    choke_groups: Arc<RwLock<HashMap<u8, u8>>>,
+    choke_groups: Arc<[AtomicU8; 128]>,
     preview_rx: mpsc::Receiver<(u8, u8)>,
     events: Vec<ShmEvent>,
     /// `(midi_note, frames_remaining_until_note_off)` — 100 ms release window like v3.1.4.
@@ -194,28 +196,33 @@ impl DrumVstLiveSource {
         }
     }
 
-    fn trigger_note(&mut self, offset: usize, note: u8, velocity: u8, release_frames: usize) {
+    fn trigger_note(
+        &mut self,
+        offset: usize,
+        note: u8,
+        velocity: u8,
+        release_frames: usize,
+        sample_rate: u32,
+    ) {
         let note = note & 0x7F;
         let velocity = velocity.clamp(1, 127);
-        // Choke group lookup: notes in a choke group hold open longer (up to 4 s) so a later
-        // peer trigger (e.g. closed hat after open hat) emits `NOTE_OFF_CH10` to cut it cleanly.
-        let choke_groups = Arc::clone(&self.choke_groups);
-        let effective_release = if let Ok(guard) = choke_groups.try_read() {
-            if let Some(&gid) = guard.get(&note) {
-                let mut i = 0;
-                while i < self.active_releases.len() {
-                    let (active_note, _) = self.active_releases[i];
-                    if active_note != note && guard.get(&active_note) == Some(&gid) {
-                        self.push_event(offset, NOTE_OFF_CH10, active_note, 0);
-                        self.active_releases.swap_remove(i);
-                    } else {
-                        i += 1;
-                    }
+        // Lock-free choke group lookup on the real-time audio thread: notes in a choke group hold
+        // open for 4 s so a later peer trigger (e.g. closed hat after open hat) cuts it cleanly.
+        let gid = self.choke_groups[note as usize].load(Ordering::Relaxed);
+        let effective_release = if gid != 0 {
+            let mut i = 0;
+            while i < self.active_releases.len() {
+                let (active_note, _) = self.active_releases[i];
+                if active_note != note
+                    && self.choke_groups[(active_note & 0x7F) as usize].load(Ordering::Relaxed) == gid
+                {
+                    self.push_event(offset, NOTE_OFF_CH10, active_note, 0);
+                    self.active_releases.swap_remove(i);
+                } else {
+                    i += 1;
                 }
-                release_frames.saturating_mul(40)
-            } else {
-                release_frames
             }
+            (sample_rate.max(1) as usize).saturating_mul(4).max(release_frames)
         } else {
             release_frames
         };
@@ -294,7 +301,7 @@ impl LiveAudioSource for DrumVstLiveSource {
 
         // Live preview / audition hits (work both while playing and while stopped).
         while let Ok((note, velocity)) = self.preview_rx.try_recv() {
-            self.trigger_note(0, note, velocity, release_frames);
+            self.trigger_note(0, note, velocity, release_frames, sample_rate);
         }
 
         // Timeline playback triggers inside `[window_start, window_end)`.
@@ -318,7 +325,7 @@ impl LiveAudioSource for DrumVstLiveSource {
                     let rel_ms = (cue.at_ms - window_start).max(0.0);
                     let offset = ((rel_ms * rate / (eff_speed * 1000.0)).round() as usize)
                         .min(frames.saturating_sub(1));
-                    self.trigger_note(offset, cue.note, cue.velocity, release_frames);
+                    self.trigger_note(offset, cue.note, cue.velocity, release_frames, sample_rate);
                 }
             }
         } else {

@@ -5,6 +5,7 @@
     emptyInspector, fieldHold, inspectorHandlers, shownValue, sliderBodyFields, startingAmount, syncChecked, volumeLabel,
   } from "../lib/inspector.js";
   import { additionPills, parseVolumeDisplay, sampleSetPills, volumeSliderPercent } from "../lib/inspectorV2.js";
+  import { osuVolumeToMidiVelocity, velocityTier } from "../lib/velocityLane.js";
   import InspectorHead from "./InspectorHead.svelte";
 
   const on = inspectorHandlers((...args) => globalThis.inspectorAction(...args));
@@ -18,12 +19,27 @@
   const sliderPct = $derived(volumeSliderPercent(sliderVal));
   const setPills = $derived(sampleSetPills(selection));
   const addPills = $derived(additionPills(selection));
+  const drumVel = $derived(osuVolumeToMidiVelocity(sliderVal));
+  const drumTier = $derived(velocityTier(drumVel));
+
+  $effect(() => {
+    // Discard any in-flight drag draft if selection changes externally (undo, click elsewhere).
+    void selection?.start;
+    void selection?.count;
+    void selection?.volume;
+    sliderDraft = null;
+  });
 
   function commitSlider() {
     if (sliderDraft == null) return;
     const target = sliderDraft;
     sliderDraft = null;
-    globalThis.inspectorAction?.("volume", target, false);
+    if (parsedVol.mixed) {
+      const delta = target - parsedVol.value;
+      if (delta !== 0) globalThis.inspectorAction?.("volume", delta, true);
+    } else {
+      globalThis.inspectorAction?.("volume", target, false);
+    }
   }
 
   // Start and Insert volume keep what is typed until they lose focus (lib/inspector.js).
@@ -62,13 +78,12 @@
             onblur={event => { startHeld = null; startHold.release(event.currentTarget, selection?.start); }}>
           <button type="submit" class="insp-small" disabled={model.busy}>Move</button>
         </form>
-        <div class="insp-row"><span class="insp-label">Volume</span><output>{selection.volume}</output></div>
+        <div class="insp-row"><span class="insp-label">Volume</span><output>{bridge.mode === "drums" ? `${selection.volume} · Vel ${drumVel} (${drumTier})` : selection.volume}</output></div>
         <div class="insp-slider-row">
           <input type="range" class="insp-vol-slider" min="5" max="100" step="1"
             aria-label="Selection volume slider" value={sliderVal} disabled={model.busy}
             style:--pct="{sliderPct}%"
             oninput={event => { sliderDraft = Number(event.currentTarget.value); }}
-            onpointerup={commitSlider}
             onchange={commitSlider}>
           <button type="button" class="insp-audition-btn" aria-label="Audition selection" title="Audition selected hits"
             disabled={model.busy} onclick={() => globalThis.inspectorAction?.("auditionSelection")}>▶</button>

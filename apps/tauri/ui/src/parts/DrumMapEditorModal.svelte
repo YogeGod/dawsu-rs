@@ -9,7 +9,7 @@
     onselectpreset = null,
     ontest = null,
     onmidilearn = null,
-    oncancelleam = null,
+    oncancellearn = null,
     onsetchoke = null,
     onimport = null,
     onexport = null,
@@ -22,7 +22,7 @@
   function cancelLearn() {
     if (learningRow !== null) {
       learningRow = null;
-      oncancelleam?.();
+      oncancellearn?.();
     }
   }
 

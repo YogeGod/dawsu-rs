@@ -11,6 +11,11 @@
   import {
     readDrumVst3, sceneDrumHitsToNotes, syncDrumVst3Track, writeDrumVst3,
   } from "../lib/drumVst3.js";
+  import { sustainSpanAt } from "../lib/pianoRoll.js";
+  import ChordResolverPopover from "./ChordResolverPopover.svelte";
+  import KeysoundBounceModal from "./KeysoundBounceModal.svelte";
+  import KeysoundSetupBar from "./KeysoundSetupBar.svelte";
+  import PianoKeyboard from "./PianoKeyboard.svelte";
 
   // Map › Keysounds & VST3…: the keysound tracks Rust keeps for this map as a piano roll, each
   // optionally played by a scanned VST3 instrument. menus.js calls globalThis.openKeysounds.
@@ -28,6 +33,14 @@
   let velDrag = $state(null);
   let rollScroll = $state(null);
   let velScroll = $state(null);
+  let chordPopoverOpen = $state(false);
+  let chordPolicy = $state("flatten_polyphonic");
+  let bounceOpen = $state(false);
+  let bouncePreview = $state(null);
+  let bounceVelBuckets = $state(4);
+  let bounceDurMs = $state(50);
+  let bounceFlatten = $state(true);
+  let bounceFormat = $state("ogg_vorbis");
   const storage = () => { try { return typeof window !== "undefined" ? window.localStorage : null; } catch { return null; } };
   let drumVst3 = $state(readDrumVst3(storage()));
 
@@ -37,6 +50,8 @@
   const instruments = $derived(instrumentChoices(summary?.vst3Plugins));
   const track = $derived(tracks.find(t => t.id === trackId) ?? null);
   const notes = $derived(track?.notes ?? []);
+  const sustainSpans = $derived(track?.sustainSpans ?? []);
+  const chordConflicts = $derived(summary?.chordConflicts ?? []);
   const spanPx = $derived(rollSpanMs(notes) * PX_PER_MS);
   const beats = $derived(Array.from({ length: Math.ceil(rollSpanMs(notes) / 500) }, (_, i) => i * 500));
 
@@ -47,7 +62,11 @@
     try {
       summary = await invoke("keysounds_action", { payload });
       if (pluginId && !instrumentChoices(summary?.vst3Plugins).some(choice => choice.id === pluginId)) pluginId = "";
-      if (!summary?.tracks?.some(t => t.id === trackId)) trackId = summary?.tracks?.[0]?.id ?? null;
+      if (summary?.activeTrackId != null && summary?.tracks?.some(t => t.id === summary.activeTrackId)) {
+        trackId = summary.activeTrackId;
+      } else if (!summary?.tracks?.some(t => t.id === trackId)) {
+        trackId = summary?.tracks?.[0]?.id ?? null;
+      }
       const current = summary?.tracks?.find(t => t.id === trackId);
       if (selected != null && !(selected < (current?.notes?.length ?? 0))) selected = null;
       return true;
@@ -57,6 +76,37 @@
     } finally {
       loading = false;
     }
+  }
+
+  async function selectTrack(nextId) {
+    if (!Number.isFinite(nextId)) return;
+    trackId = nextId;
+    selected = null;
+    await send({ kind: "select_track", trackId: nextId });
+  }
+
+  async function refreshBouncePreview(opts = {}) {
+    const req = {
+      kind: "preview_bounce",
+      velocityBuckets: opts.velocityBuckets ?? bounceVelBuckets,
+      durationBucketMs: opts.durationBucketMs ?? bounceDurMs,
+      flattenChords: opts.flattenChords ?? bounceFlatten,
+      format: opts.format ?? bounceFormat,
+    };
+    if (await send(req) && summary?.bouncePreview) {
+      bouncePreview = summary.bouncePreview;
+      await invoke("keysounds_dedup_report", {
+        sourceNotes: bouncePreview.sourceNotes ?? 0,
+        uniqueSamples: bouncePreview.samples?.length ?? 0,
+        baseBytes: bouncePreview.baseBytes ?? 0,
+        bouncedBytes: bouncePreview.bouncedBytes ?? 0,
+      }).catch(() => {});
+    }
+  }
+
+  async function openBounceModal() {
+    bounceOpen = true;
+    await refreshBouncePreview();
   }
 
   // Auditions a pitch; it does not go through send() so the buttons don't flicker per key.
@@ -130,6 +180,31 @@
     error = "";
     try {
       summary = await invoke("keysounds_action", { payload: keysoundsGenerate() });
+      const toast = generateToast(summary?.generated);
+      if (toast) globalThis.showToast?.(toast);
+      globalThis.act?.(null, true);
+    } catch (err) {
+      error = String(err);
+      globalThis.showToast?.({ tone: "error", title: "Generate [Keysounds]", body: String(err) });
+    } finally {
+      loading = false;
+    }
+  }
+
+  async function generateWithBounceOpts(opts) {
+    if (loading) return;
+    loading = true;
+    error = "";
+    try {
+      const payload = {
+        ...keysoundsGenerate(),
+        velocityBuckets: opts.velocityBuckets ?? bounceVelBuckets,
+        durationBucketMs: opts.durationBucketMs ?? bounceDurMs,
+        flattenChords: opts.flattenChords ?? bounceFlatten,
+        format: opts.format ?? bounceFormat,
+      };
+      summary = await invoke("keysounds_action", { payload });
+      bounceOpen = false;
       const toast = generateToast(summary?.generated);
       if (toast) globalThis.showToast?.(toast);
       globalThis.act?.(null, true);
@@ -259,6 +334,15 @@
 
   onMount(() => {
     globalThis.openKeysounds = openKeysounds;
+    globalThis.keysoundsMicroAction = (action, value) => {
+      if (action === "chordPolicy") {
+        chordPolicy = value === "top_only" ? "top_note_only" : "flatten_polyphonic";
+        send({ kind: "resolve_all_chords", policy: chordPolicy });
+      } else if (action === "previewNote") {
+        const note = selected != null ? notes[selected] : notes[0];
+        if (note) preview(note.pitch, note.velocity);
+      }
+    };
   });
 </script>
 
@@ -275,10 +359,27 @@
         <button type="button" class="ks-close" aria-label="Close" onclick={closeModal}>×</button>
       </header>
 
+      <KeysoundSetupBar
+        open={true}
+        {tracks}
+        activeTrackId={trackId}
+        chordCount={chordConflicts.length}
+        canUndo={Boolean(summary?.canUndo)}
+        canRedo={Boolean(summary?.canRedo)}
+        dirty={Boolean(summary?.dirty)}
+        onselecttrack={selectTrack}
+        onimportmidi={() => { closeModal(); globalThis.openMidiImport?.(); }}
+        onundo={() => send({ kind: "undo" })}
+        onredo={() => send({ kind: "redo" })}
+        onsave={() => send({ kind: "save_dawsuks" })}
+        onopenchords={() => { chordPopoverOpen = !chordPopoverOpen; }}
+        onopenbounce={openBounceModal}
+      />
+
       <div class="ks-bar">
         <div class="ks-group">
           <select aria-label="Keysound track" value={trackId ?? ""} disabled={!tracks.length}
-            onchange={(e) => { trackId = Number(e.currentTarget.value); selected = null; }}>
+            onchange={(e) => { selectTrack(Number(e.currentTarget.value)); }}>
             {#if !tracks.length}<option value="">No tracks</option>{/if}
             {#each tracks as t (t.id)}
               <option value={t.id}>{t.name} · {t.noteCount} notes</option>
@@ -340,6 +441,9 @@
         <p class="ks-caption">Loading…</p>
       {:else if !track}
         <p class="ks-caption">No keysound tracks yet. Add one above; MIDI Record fills the first track.</p>
+        <div class="ks-empty-keys">
+          <PianoKeyboard lowPitch={60} highPitch={72} rowHeight={18} onpreview={pitch => preview(pitch)} />
+        </div>
       {:else}
         <div class="ks-roll" bind:this={rollScroll} onscroll={syncScroll} style:--ks-row={ROW_PX + "px"}
           style:--ks-roll-h={pitches.length * ROW_PX + "px"} style:--ks-span={spanPx + "px"}>
@@ -357,7 +461,8 @@
                 style:--ks-top={pitchRow(pitch) + "px"}></div>
             {/each}
             {#each beats as beat (beat)}
-              <div class="ks-beat" class:bar={beat % 2000 === 0} style:--ks-left={beat * PX_PER_MS + "px"}></div>
+              <div class="ks-beat" class:bar={beat % 2000 === 0} class:sustained={Boolean(sustainSpanAt(sustainSpans, beat))}
+                style:--ks-left={beat * PX_PER_MS + "px"}></div>
             {/each}
             {#each notes as note (note.index)}
               <div class="ks-note" class:selected={selected === note.index} class:muted={note.muted}
@@ -393,9 +498,35 @@
 
       <footer class="ks-foot">
         <span class="ks-hint">Click to place · drag to move · drag the right edge to resize · right-click or Delete to remove</span>
-        <button type="button" class="ks-gold" disabled={loading || !tracks.some(t => t.noteCount)} onclick={generate}>Generate [Keysounds]</button>
+        <button type="button" class="ks-gold" disabled={loading || !tracks.some(t => t.noteCount)} onclick={() => generate()}>Generate [Keysounds]</button>
         <button type="button" disabled={loading} onclick={closeModal}>Close</button>
       </footer>
+      <ChordResolverPopover
+        open={chordPopoverOpen && chordConflicts.length > 0}
+        conflict={chordConflicts[0] ?? null}
+        totalConflicts={chordConflicts.length}
+        bind:policy={chordPolicy}
+        onaudition={c => { for (const p of c.pitches ?? []) preview(p); }}
+        onapplyone={(c, pol) => send({ kind: "resolve_chord", trackId: c.trackId, timeMs: c.timeMs, policy: pol })}
+        onapplyall={pol => { chordPopoverOpen = false; send({ kind: "resolve_all_chords", policy: pol }); }}
+        onclose={() => { chordPopoverOpen = false; }}
+      />
+      <KeysoundBounceModal
+        open={bounceOpen}
+        busy={loading}
+        sourceNotes={bouncePreview?.sourceNotes ?? notes.length}
+        baseBytes={bouncePreview?.baseBytes ?? 0}
+        bouncedBytes={bouncePreview?.bouncedBytes ?? 0}
+        samples={bouncePreview?.samples ?? []}
+        bind:velocityBuckets={bounceVelBuckets}
+        bind:durationBucketMs={bounceDurMs}
+        bind:flattenChords={bounceFlatten}
+        bind:format={bounceFormat}
+        onrender={refreshBouncePreview}
+        onaudition={sample => { for (const p of sample.pitches ?? [60]) preview(p); }}
+        oncommit={() => generateWithBounceOpts({ velocityBuckets: bounceVelBuckets, durationBucketMs: bounceDurMs, flattenChords: bounceFlatten, format: bounceFormat })}
+        onclose={() => { bounceOpen = false; }}
+      />
     </div>
   </div>
 {/if}

@@ -3691,7 +3691,7 @@ fn scene_lane_exposes_vst_routed_and_bypassed_and_toggle_lane_switches_them() {
     .unwrap();
     let mut app = Application::headless();
     open(&mut app, &map);
-    let drums = super::drum_view::DrumView::for_editor();
+    let mut drums = super::drum_view::DrumView::for_editor();
 
     // Before loading a Drum VST3, vstRouted/vstBypassed are omitted from SceneLane JSON.
     let without_vst = serde_json::to_value(super::snapshot_view(&app, true)).unwrap();
@@ -3723,7 +3723,7 @@ fn scene_lane_exposes_vst_routed_and_bypassed_and_toggle_lane_switches_them() {
     // Toggling the lane off sets vstRouted=false, vstBypassed=true.
     super::handle_drum_vst_action(
         &mut app,
-        &drums,
+        &mut drums,
         &serde_json::json!({ "kind": "toggle_lane", "row": normal_row }),
     )
     .unwrap();
@@ -3734,7 +3734,7 @@ fn scene_lane_exposes_vst_routed_and_bypassed_and_toggle_lane_switches_them() {
     // Toggling it back on restores vstRouted=true, vstBypassed=false.
     super::handle_drum_vst_action(
         &mut app,
-        &drums,
+        &mut drums,
         &serde_json::json!({ "kind": "toggle_lane", "row": normal_row }),
     )
     .unwrap();

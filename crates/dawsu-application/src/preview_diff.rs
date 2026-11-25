@@ -8,7 +8,13 @@ use dawsu_osu_format::{OsuFile, ObjectKind};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::time::SystemTime;
+
+/// Maximum cached sibling `.osu` entries so repeated opens never leak memory unboundedly.
+pub const MAX_PREVIEW_DIFF_CACHE_ENTRIES: usize = 64;
+/// Maximum readable `.osu` size for ribbon projection (32 MiB).
+const MAX_SIBLING_OSU_BYTES: u64 = 32 * 1024 * 1024;
 
 /// Which difficulty playback audio focuses on while a Live Preview Diff overlay is active.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -59,20 +65,12 @@ pub struct PreviewDiffCache {
 }
 
 impl PreviewDiffCache {
-    pub fn load_sibling(&mut self, path: &Path) -> Result<(String, PreviewDiffStatus, Vec<f64>), String> {
+    fn parse_sibling(path: &Path) -> Result<CachedDiff, String> {
         let meta = std::fs::metadata(path).map_err(|e| e.to_string())?;
         let mtime = meta.modified().ok();
         let len = meta.len();
-        if let Some(hit) = self.entries.get(path)
-            && hit.mtime == mtime
-            && hit.len == len
-        {
-            let status = if hit.mode == 0 {
-                PreviewDiffStatus::Ready
-            } else {
-                PreviewDiffStatus::UnsupportedMode { mode: hit.mode }
-            };
-            return Ok((hit.version.clone(), status, hit.object_times_ms.clone()));
+        if len > MAX_SIBLING_OSU_BYTES {
+            return Err(format!("Difficulty file is too large to preview ({len} bytes)"));
         }
         let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
         let osu = OsuFile::read(bytes).file;
@@ -102,22 +100,175 @@ impl PreviewDiffCache {
         } else {
             Vec::new()
         };
-        let status = if mode == 0 {
+        Ok(CachedDiff {
+            mtime,
+            len,
+            version,
+            mode,
+            object_times_ms,
+        })
+    }
+
+    fn insert_bounded(&mut self, path: PathBuf, diff: CachedDiff) {
+        if self.entries.len() >= MAX_PREVIEW_DIFF_CACHE_ENTRIES && !self.entries.contains_key(&path) {
+            self.entries.clear();
+        }
+        self.entries.insert(path, diff);
+    }
+
+    pub fn load_sibling(&mut self, path: &Path) -> Result<(String, PreviewDiffStatus, Vec<f64>), String> {
+        let meta = std::fs::metadata(path).map_err(|e| e.to_string())?;
+        let mtime = meta.modified().ok();
+        let len = meta.len();
+        if let Some(hit) = self.entries.get(path)
+            && hit.mtime == mtime
+            && hit.len == len
+        {
+            let status = if hit.mode == 0 {
+                PreviewDiffStatus::Ready
+            } else {
+                PreviewDiffStatus::UnsupportedMode { mode: hit.mode }
+            };
+            return Ok((hit.version.clone(), status, hit.object_times_ms.clone()));
+        }
+        let parsed = Self::parse_sibling(path)?;
+        let status = if parsed.mode == 0 {
             PreviewDiffStatus::Ready
         } else {
-            PreviewDiffStatus::UnsupportedMode { mode }
+            PreviewDiffStatus::UnsupportedMode { mode: parsed.mode }
         };
-        self.entries.insert(
-            path.to_path_buf(),
-            CachedDiff {
-                mtime,
-                len,
-                version: version.clone(),
-                mode,
-                object_times_ms: object_times_ms.clone(),
-            },
-        );
-        Ok((version, status, object_times_ms))
+        let result = (parsed.version.clone(), status, parsed.object_times_ms.clone());
+        self.insert_bounded(path.to_path_buf(), parsed);
+        Ok(result)
+    }
+
+    /// Validates that `path` is a `.osu` file inside `allowed_root` (preventing path traversal).
+    pub fn validate_sibling_path(allowed_root: &Path, path: &Path) -> Result<PathBuf, String> {
+        let is_osu = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| e.eq_ignore_ascii_case("osu"));
+        if !is_osu {
+            return Err("Only .osu difficulties can be previewed.".to_string());
+        }
+        let root_canon = std::fs::canonicalize(allowed_root).map_err(|e| e.to_string())?;
+        let path_canon = std::fs::canonicalize(path).map_err(|e| e.to_string())?;
+        if path_canon.parent() != Some(root_canon.as_path()) {
+            return Err("Sibling difficulty must reside inside the open mapset folder.".to_string());
+        }
+        Ok(path_canon)
+    }
+
+    /// Projects up to 4 sibling difficulties without holding `cache` across disk reads or parsing.
+    pub fn project_ribbon_with_lock(
+        cache: &Mutex<Self>,
+        allowed_root: &Path,
+        siblings: &[PathBuf],
+        source_hit_times_ms: &[f64],
+        duration_ms: f64,
+        tolerance_ms: f64,
+        bin_count: usize,
+    ) -> Vec<DiffRibbonRow> {
+        let bins = bin_count.clamp(16, 256);
+        let span = duration_ms.max(1.0);
+        let tol = tolerance_ms.max(0.0);
+        let mut sorted_hits = source_hit_times_ms.to_vec();
+        sorted_hits.sort_by(f64::total_cmp);
+
+        siblings
+            .iter()
+            .take(4)
+            .map(|raw_path| {
+                let canon = match Self::validate_sibling_path(allowed_root, raw_path) {
+                    Ok(p) => p,
+                    Err(message) => {
+                        return DiffRibbonRow {
+                            path: raw_path.clone(),
+                            version: raw_path
+                                .file_stem()
+                                .and_then(|s| s.to_str())
+                                .unwrap_or("Difficulty")
+                                .to_string(),
+                            status: PreviewDiffStatus::Unreadable { message },
+                            buckets: Vec::new(),
+                        };
+                    }
+                };
+                let meta = match std::fs::metadata(&canon) {
+                    Ok(m) => m,
+                    Err(e) => {
+                        return DiffRibbonRow {
+                            path: raw_path.clone(),
+                            version: raw_path
+                                .file_stem()
+                                .and_then(|s| s.to_str())
+                                .unwrap_or("Difficulty")
+                                .to_string(),
+                            status: PreviewDiffStatus::Unreadable { message: e.to_string() },
+                            buckets: Vec::new(),
+                        };
+                    }
+                };
+                let mtime = meta.modified().ok();
+                let len = meta.len();
+                let cached = cache.lock().ok().and_then(|guard| {
+                    guard
+                        .entries
+                        .get(&canon)
+                        .filter(|hit| hit.mtime == mtime && hit.len == len)
+                        .cloned()
+                });
+                let loaded = match cached {
+                    Some(hit) => Ok(hit),
+                    None => match Self::parse_sibling(&canon) {
+                        Ok(parsed) => {
+                            if let Ok(mut guard) = cache.lock() {
+                                guard.insert_bounded(canon.clone(), parsed.clone());
+                            }
+                            Ok(parsed)
+                        }
+                        Err(e) => Err(e),
+                    },
+                };
+                match loaded {
+                    Ok(diff) if diff.mode == 0 => {
+                        let mut buckets = vec![RibbonBucket::default(); bins];
+                        for t in diff.object_times_ms {
+                            let idx = ((t / span) * (bins as f64))
+                                .floor()
+                                .clamp(0.0, (bins - 1) as f64) as usize;
+                            if has_hit_near(&sorted_hits, t, tol) {
+                                buckets[idx].matched = buckets[idx].matched.saturating_add(1);
+                            } else {
+                                buckets[idx].unmatched = buckets[idx].unmatched.saturating_add(1);
+                            }
+                        }
+                        DiffRibbonRow {
+                            path: raw_path.clone(),
+                            version: diff.version,
+                            status: PreviewDiffStatus::Ready,
+                            buckets,
+                        }
+                    }
+                    Ok(diff) => DiffRibbonRow {
+                        path: raw_path.clone(),
+                        version: diff.version,
+                        status: PreviewDiffStatus::UnsupportedMode { mode: diff.mode },
+                        buckets: Vec::new(),
+                    },
+                    Err(message) => DiffRibbonRow {
+                        path: raw_path.clone(),
+                        version: raw_path
+                            .file_stem()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or("Difficulty")
+                            .to_string(),
+                        status: PreviewDiffStatus::Unreadable { message },
+                        buckets: Vec::new(),
+                    },
+                }
+            })
+            .collect()
     }
 
     /// Projects up to 4 sibling difficulties into `bin_count` coverage buckets against `source_hit_times_ms`.

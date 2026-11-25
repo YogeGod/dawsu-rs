@@ -97,7 +97,7 @@ pub use sample_checks::{FixedWav, SampleHealthIssue, SampleHealthReport};
 pub use sound_sets::{LibrarySet, PlacementView, SaveSetError, SetUpdatePrompt, SoundSetLibrary};
 pub use waveform::WaveBin;
 pub use edit_workflows::{PatternStampOptions, RangeOperation, TimelineEdit, VolumeScope};
-pub use sweep::UnusedSampleCandidate;
+pub use sweep::{SweepDryRunSnapshot, UnusedSampleCandidate, run_plan_sweep};
 
 use dawsu_audio::{AudioClip, AudioEngine, ScheduledSound};
 use dawsu_editor::tempo::{SnapSpacing, TempoMap, TimingSection};
@@ -4684,6 +4684,13 @@ impl Application {
         }
         if changed {
             self.sync_audio();
+        }
+    }
+
+    /// Updates lock-free MIDI choke groups (e.g. Hi-Hat Closed/Pedal/Open) on the live drum VST3.
+    pub fn set_drum_vst_choke_groups(&self, groups: HashMap<u8, u8>) {
+        if let Some(vst) = &self.drum_vst {
+            vst.set_choke_groups(groups);
         }
     }
 

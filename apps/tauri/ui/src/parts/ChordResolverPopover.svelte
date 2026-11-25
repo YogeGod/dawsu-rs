@@ -14,13 +14,13 @@
 </script>
 
 {#if open && conflict}
-  <aside class="cr-pop" role="dialog" aria-label="Chord resolver">
+  <div class="cr-pop" role="dialog" aria-label="Chord resolver">
     <header class="cr-head">
       <strong>Chord: {formatChordPitches(conflict.pitches)}</strong>
       <button type="button" aria-label="Close" onclick={() => onclose?.()}>✕</button>
     </header>
     <p class="cr-note">
-      osu!standard plays one sample per hit circle (Storyboard samples are not used so notes never go silent when Storyboards are off).
+      osu!standard plays one sample per hit circle (storyboard samples are not used so notes never go silent when storyboards are off).
     </p>
     <div class="cr-options">
       {#each CHORD_STRATEGIES as strat (strat.id)}
@@ -37,7 +37,7 @@
         Apply to All {totalConflicts} {totalConflicts === 1 ? "Chord" : "Chords"}
       </button>
     </footer>
-  </aside>
+  </div>
 {/if}
 
 <style>
