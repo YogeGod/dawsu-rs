@@ -4,9 +4,9 @@
   import {
     MAX_VISIBLE_ROWS,
     activeCoverageIssueId,
-    analyzeCoverage,
     coverageIssueLabel,
     filterCoverageIssues,
+    normalizeCoverage,
     stepCoverageIssue,
     visibleCoverageIssues,
   } from "../lib/coverageReview.js";
@@ -15,7 +15,7 @@
   let open = $state(false);
 
   const moments = $derived(bridge.scene?.moments ?? []);
-  const summary = $derived(analyzeCoverage(moments));
+  const summary = $derived(normalizeCoverage(bridge.scene?.coverage, moments));
   const filter = $derived(bridge.coverageFilter ?? "all");
   const filtered = $derived(filterCoverageIssues(summary.issues, filter));
   const visible = $derived(visibleCoverageIssues(filtered, MAX_VISIBLE_ROWS));
@@ -66,7 +66,7 @@
   <div id="inspector-coverage-body" class="cov-body" hidden={!open}>
     <div class="cov-stats" aria-label="Coverage counts">
       <div class="cov-stat cov-stat-matched">
-        <span class="cov-stat-label">Covered</span>
+        <span class="cov-stat-label">Covered{summary.fallbackCovered > 0 ? ` (+${summary.fallbackCovered} fallback)` : ""}</span>
         <span class="cov-stat-value">{summary.matched}</span>
       </div>
       <div class="cov-stat cov-stat-empty">

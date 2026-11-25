@@ -427,12 +427,27 @@ impl WritePlan {
         lines
     }
 
-    /// Plain-English osu! Ranking Criteria warnings for newly staged sample mixes.
+    /// Plain-English osu! Ranking Criteria warnings and auto-fix notes for newly staged sample mixes.
     pub fn sample_warning_lines(&self) -> Vec<String> {
-        self.sample_warnings
+        let mut lines: Vec<String> = self
+            .sample_warnings
             .iter()
             .flat_map(crate::sample_checks::SampleHealthReport::warnings)
-            .collect()
+            .collect();
+        for mix in self.mixes.iter().filter(|mix| !mix.is_reused()) {
+            let trimmed_ms = mix.trimmed_leading_silence_ms();
+            if trimmed_ms >= 0.05 {
+                let name = mix
+                    .path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| mix.path.display().to_string());
+                lines.push(format!(
+                    "{name}: auto-fix trimmed {trimmed_ms:.1} ms of leading silence (layered sounds inside this mix moved earlier)."
+                ));
+            }
+        }
+        lines
     }
 
     /// Inspects newly staged mixes in this plan and records any RC health warnings.

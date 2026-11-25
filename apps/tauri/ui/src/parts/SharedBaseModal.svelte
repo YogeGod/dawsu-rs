@@ -6,6 +6,7 @@
     DEFAULT_LENIENCY_MS,
     MAX_LENIENCY_MS,
     applyArgs,
+    formatApplyAllSummary,
     formatApplySummary,
     formatStatusLine,
   } from "../lib/sharedBase.js";
@@ -93,6 +94,26 @@
       const result = await invoke("shared_base_apply", applyArgs({ leniencyMs, overwriteOverrides }));
       if (result?.status) status = result.status;
       notice = formatApplySummary(result);
+      await act(null);
+    } catch (err) {
+      error = String(err);
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function applyBaseAll() {
+    if (busy || !status.hasBase) return;
+    busy = true;
+    error = "";
+    notice = "";
+    try {
+      const result = await invoke("shared_base_apply_all", applyArgs({ leniencyMs, overwriteOverrides }));
+      if (result?.status) status = result.status;
+      notice = formatApplyAllSummary(result);
+      if (Array.isArray(result?.failedDiffs) && result.failedDiffs.length > 0) {
+        error = result.failedDiffs.join(" | ");
+      }
       await act(null);
     } catch (err) {
       error = String(err);
@@ -218,7 +239,17 @@
             >
               {busy ? "Working…" : "Apply Base to this diff"}
             </button>
+            <button
+              type="button"
+              disabled={busy || !status.hasBase}
+              onclick={applyBaseAll}
+            >
+              {busy ? "Working…" : "Apply Base to all diffs"}
+            </button>
           </div>
+          <p class="sb-hint">
+            "Apply Base to all diffs" saves sibling <code>.osu</code> files directly to disk (with backups); Ctrl+Z only undoes the currently open diff.
+          </p>
         </div>
 
         <div class="sb-section sb-divider sb-actions-row">
