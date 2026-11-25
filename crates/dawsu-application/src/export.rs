@@ -7,7 +7,7 @@ use dawsu_hitsounding::tick_render::TickPolicy;
 use dawsu_hitsounding::volume_envelope::{VolumeEnvelope, apply_envelope_to_osu};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread::JoinHandle;
@@ -189,6 +189,18 @@ struct Running {
     progress: Arc<Mutex<Option<(usize, usize)>>>,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct PendingManifestCommit {
+    pub(crate) mapset_root: PathBuf,
+    pub(crate) backups: PathBuf,
+    pub(crate) staged_manifest_entries: Vec<(String, String)>,
+    pub(crate) tick_writes: BTreeMap<String, Vec<dawsu_hitsounding::tick_render::TickWrite>>,
+    pub(crate) active_sample_names: BTreeSet<String>,
+    pub(crate) retained_names: BTreeSet<String>,
+    pub(crate) auto_cleanup_stale: bool,
+    pub(crate) take_over_samples: bool,
+}
+
 #[derive(Default)]
 pub(crate) struct Slot {
     last_id: u64,
@@ -202,6 +214,8 @@ pub(crate) struct Slot {
     error: Option<String>,
     /// An Export write is running on main's job.
     pub(crate) writing: bool,
+    /// Manifest & stale-cleanup metadata deferred until the background Direct write succeeds.
+    pub(crate) pending_manifest: Option<PendingManifestCommit>,
     /// The id of the last Export write started; `written` and `write_error` belong to it.
     write_id: Option<u64>,
     /// The last Export write's result: files written, or why nothing was.
@@ -225,8 +239,53 @@ impl Slot {
         self.problems.clear();
         self.error = None;
         self.writing = false;
+        self.pending_manifest = None;
         self.written = None;
         self.write_error = None;
+    }
+
+    /// Commits ownership manifest entries and archives stale dawsu!-owned samples AFTER the
+    /// background Direct export write has succeeded.
+    pub(crate) fn commit_pending_manifest(&mut self, data_root: &Path) {
+        let Some(commit) = self.pending_manifest.take() else {
+            return;
+        };
+        let mut manifest = export_manifest::load_manifest(data_root, &commit.mapset_root);
+        for (name, digest) in commit.staged_manifest_entries {
+            manifest.owned_samples.insert(name, digest);
+        }
+        for (diff_name, writes) in commit.tick_writes {
+            manifest.slider_history.record_ticks(&diff_name, &writes);
+        }
+        let mut retained = commit.retained_names;
+        if let Ok(files) = dawsu_osu_format::list_folder(&commit.mapset_root)
+            && let Ok((used_indexes, used_names)) =
+                crate::layers::reservations(&commit.mapset_root, &files)
+        {
+            retained.extend(used_names);
+            for file in &files {
+                let base = file.rsplit(['/', '\\']).next().unwrap_or(file);
+                if let Some(dawsu_foundation::SampleIdentity::Standard { index, .. }) =
+                    dawsu_hitsounding::rules::read_sample_file_name(base)
+                    && used_indexes.contains(&index.get())
+                {
+                    retained.insert(base.to_ascii_lowercase());
+                }
+            }
+        }
+        if commit.auto_cleanup_stale {
+            let _ = export_manifest::cleanup_stale_samples(
+                &commit.mapset_root,
+                data_root,
+                &commit.backups,
+                &mut manifest,
+                &commit.active_sample_names,
+                &retained,
+                commit.take_over_samples,
+                &BTreeSet::new(),
+            );
+        }
+        let _ = export_manifest::save_manifest(data_root, &commit.mapset_root, &manifest);
     }
 
     /// Takes a finished write's result for the Export window. False when the window closed
@@ -527,7 +586,7 @@ impl Application {
             return Ok(id);
         }
 
-        // Direct write: record owned mixes in ExportOwnershipManifest and archive stale ones if enabled.
+        // Direct write: defer ownership manifest commit & stale cleanup until the write succeeds.
         let mapset_root = preview.plan.source.parent().map(PathBuf::from);
         let staged_manifest_entries: Vec<(String, String)> = preview
             .plan
@@ -538,39 +597,32 @@ impl Application {
                 Some((name, m.digest()))
             })
             .collect();
-        let active_sample_names: BTreeSet<String> = staged_manifest_entries
+        let mut active_sample_names: BTreeSet<String> = staged_manifest_entries
             .iter()
             .map(|(n, _)| n.clone())
             .collect();
+        for p in &preview.plan.pending {
+            if let Some(name) = p.path.file_name().and_then(|n| n.to_str()) {
+                active_sample_names.insert(name.to_ascii_lowercase());
+            }
+        }
         let retained_names: BTreeSet<String> = self
             .document
             .as_ref()
             .map(|d| d.pending.taken_names())
             .unwrap_or_default();
         let tick_writes = std::mem::take(&mut preview.plan.tick_writes);
-        self.write_reviewed(preview.plan, backups.clone());
-        if let Some(root) = mapset_root {
-            let mut manifest = export_manifest::load_manifest(&self.data_root, &root);
-            for (name, digest) in staged_manifest_entries {
-                manifest.owned_samples.insert(name, digest);
-            }
-            for (diff_name, writes) in tick_writes {
-                manifest.slider_history.record_ticks(&diff_name, &writes);
-            }
-            if export_options.auto_cleanup_stale {
-                let _ = export_manifest::cleanup_stale_samples(
-                    &root,
-                    &self.data_root,
-                    &backups,
-                    &mut manifest,
-                    &active_sample_names,
-                    &retained_names,
-                    export_options.take_over_samples,
-                    &BTreeSet::new(),
-                );
-            }
-            let _ = export_manifest::save_manifest(&self.data_root, &root, &manifest);
-        }
+        self.export.pending_manifest = mapset_root.map(|root| PendingManifestCommit {
+            mapset_root: root,
+            backups: backups.clone(),
+            staged_manifest_entries,
+            tick_writes,
+            active_sample_names,
+            retained_names,
+            auto_cleanup_stale: export_options.auto_cleanup_stale,
+            take_over_samples: export_options.take_over_samples,
+        });
+        self.write_reviewed(preview.plan, backups);
         self.export.writing = true;
         self.export.written = None;
         self.export.write_error = None;
@@ -2084,5 +2136,75 @@ mod tests {
             .filter(|tp| (tp.time() - 1500.0).abs() <= 1.0 && tp.sample_index().unwrap_or(0) >= 100)
             .count();
         assert_eq!(tick_lines_count, 1, "repeat export must restore prior ticks instead of stacking duplicates (id2={id2})");
+    }
+
+    #[test]
+    fn failed_direct_export_keeps_previously_owned_samples_and_unselected_diff_samples() {
+        let map = mapset("export-manifest-deferred");
+        let stale_path = map.scratch.path("dawsu-mix-old.wav");
+        let sibling_used_path = map.scratch.path("dawsu-mix-sibling.wav");
+        std::fs::write(&stale_path, b"RIFFold").unwrap();
+        std::fs::write(&sibling_used_path, b"RIFFsib").unwrap();
+        let sibling_osu = map.scratch.path("Sibling.osu");
+        std::fs::write(
+            &sibling_osu,
+            MAP.replace("DIFF", "Sibling")
+                .replace("EVENTS", "Sample,1000,0,\"dawsu-mix-sibling.wav\",80"),
+        )
+        .unwrap();
+
+        let mut app = opened(&map.source);
+        let root = map.source.parent().unwrap().to_path_buf();
+        let manifest = export_manifest::ExportOwnershipManifest {
+            version: export_manifest::MANIFEST_VERSION,
+            owned_samples: BTreeMap::from([
+                (
+                    "dawsu-mix-old.wav".into(),
+                    dawsu_foundation::digest::sha256_hex(b"RIFFold"),
+                ),
+                (
+                    "dawsu-mix-sibling.wav".into(),
+                    dawsu_foundation::digest::sha256_hex(b"RIFFsib"),
+                ),
+            ]),
+            ..Default::default()
+        };
+        export_manifest::save_manifest(&app.data_root, &root, &manifest).unwrap();
+
+        // 1. If Target is modified externally before write completes, Export fails and MUST NOT delete owned samples.
+        let id = app
+            .request_export_preview(ExportOptions {
+                targets: vec![map.target.clone()],
+                ..ExportOptions::default()
+            })
+            .unwrap();
+        wait_preview(&mut app);
+        let modified_target = format!("{}// external edit\n", map.target_bytes);
+        std::fs::write(&map.target, &modified_target).unwrap();
+        app.run_export(id).unwrap();
+        wait_main(&mut app);
+        assert!(app.export_status().write_error.is_some());
+        assert!(
+            stale_path.is_file(),
+            "failed export must not clean up previously owned samples"
+        );
+        assert!(sibling_used_path.is_file());
+
+        // 2. Re-preview and succeed: stale owned sample is removed, while unselected sibling sample is kept!
+        let id2 = app
+            .request_export_preview(ExportOptions {
+                targets: vec![map.target.clone()],
+                ..ExportOptions::default()
+            })
+            .unwrap();
+        wait_preview(&mut app);
+        app.run_export(id2).unwrap();
+        wait_main(&mut app);
+        assert_eq!(app.export_status().write_error, None);
+        assert!(!stale_path.is_file(), "stale unused dawsu-mix should be archived");
+        assert!(
+            sibling_used_path.is_file(),
+            "sample still referenced by unselected sibling diff must be preserved"
+        );
     }
 }

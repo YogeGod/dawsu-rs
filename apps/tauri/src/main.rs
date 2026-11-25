@@ -421,6 +421,10 @@ enum Action {
         start_ms: f64,
         end_ms: f64,
     },
+    ToggleStepHit {
+        row: usize,
+        ms: f64,
+    },
     History {
         position: usize,
     },
@@ -878,6 +882,9 @@ impl Action {
                 end_ms,
             } => {
                 app.paint_hits_on_lane(row, start_ms, end_ms);
+            }
+            Self::ToggleStepHit { row, ms } => {
+                app.toggle_step_hit(row, ms);
             }
             Self::History { position } => app.go_to_history(position),
             Self::Lane { row, operation } => {

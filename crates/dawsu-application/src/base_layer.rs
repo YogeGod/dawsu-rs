@@ -272,9 +272,9 @@ fn diff_key(document: &Document) -> String {
     document
         .path
         .file_name()
-        .map(|name| name.to_string_lossy().to_string())
+        .map(|name| name.to_string_lossy().to_ascii_lowercase())
         .filter(|name| !name.is_empty())
-        .unwrap_or_else(|| document.version())
+        .unwrap_or_else(|| document.version().to_ascii_lowercase())
 }
 
 fn diff_label(document: &Document) -> String {
@@ -289,13 +289,46 @@ fn diff_label(document: &Document) -> String {
         .unwrap_or_else(|| "Current difficulty".to_string())
 }
 
+fn normalize_layer_keys(layer: &mut SharedBaseLayer) {
+    let mut normalized_overrides: BTreeMap<String, BTreeSet<i64>> = BTreeMap::new();
+    for (k, times) in std::mem::take(&mut layer.overrides_by_diff) {
+        normalized_overrides
+            .entry(k.to_ascii_lowercase())
+            .or_default()
+            .extend(times);
+    }
+    layer.overrides_by_diff = normalized_overrides;
+
+    let mut normalized_rules: BTreeMap<String, Vec<BaseRule>> = BTreeMap::new();
+    for (k, rules) in std::mem::take(&mut layer.rules_by_diff) {
+        let entry = normalized_rules.entry(k.to_ascii_lowercase()).or_default();
+        for rule in rules {
+            if !entry.contains(&rule) {
+                entry.push(rule);
+            }
+        }
+    }
+    layer.rules_by_diff = normalized_rules;
+
+    let mut normalized_envelopes: BTreeMap<String, VolumeEnvelope> = BTreeMap::new();
+    for (k, env) in std::mem::take(&mut layer.volume_envelopes_by_diff) {
+        if env.is_empty() {
+            continue;
+        }
+        normalized_envelopes
+            .entry(k.to_ascii_lowercase())
+            .or_insert(env);
+    }
+    layer.volume_envelopes_by_diff = normalized_envelopes;
+}
+
 fn load_base(path: &Path) -> Result<Option<SharedBaseLayer>, String> {
     let bytes = match fs::read(path) {
         Ok(bytes) => bytes,
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(err) => return Err(format!("Could not read Shared Base file: {err}")),
     };
-    let layer: SharedBaseLayer = serde_json::from_slice(&bytes)
+    let mut layer: SharedBaseLayer = serde_json::from_slice(&bytes)
         .map_err(|err| format!("Could not parse Shared Base file: {err}"))?;
     if layer.version != SHARED_BASE_VERSION {
         return Err(format!(
@@ -303,6 +336,7 @@ fn load_base(path: &Path) -> Result<Option<SharedBaseLayer>, String> {
             layer.version
         ));
     }
+    normalize_layer_keys(&mut layer);
     Ok(Some(layer))
 }
 
@@ -581,10 +615,12 @@ impl Application {
             .unwrap_or(&[]);
         let effective_moments = apply_base_rules(&layer.moments, diff_rules);
 
-        let mut planned: Vec<(MomentId, i64, i64, Vec<(SampleIdentity, i32)>)> = Vec::new();
-        let mut skipped_overrides = 0usize;
+        let mut best_by_moment: BTreeMap<
+            usize,
+            (MomentId, f64, i64, i64, Vec<(SampleIdentity, i32)>),
+        > = BTreeMap::new();
+        let mut skipped_moment_ids: BTreeSet<usize> = BTreeSet::new();
         let mut unmatched_base_moments = 0usize;
-        let mut touched_lanes: BTreeSet<SampleIdentity> = BTreeSet::new();
 
         {
             let hitsounds = document.composer.hitsounds();
@@ -600,18 +636,42 @@ impl Application {
                     set.contains(&matched_ms) || set.contains(&base_moment.time_ms)
                 });
                 if is_overridden && !overwrite_overrides {
-                    skipped_overrides += 1;
+                    skipped_moment_ids.insert(moment_id.0);
                     continue;
                 }
 
                 let mut resolved_hits = Vec::with_capacity(base_moment.hits.len());
                 for hit in &base_moment.hits {
                     if let Some(identity) = resolve_sample(&hit.sample) {
-                        touched_lanes.insert(identity.clone());
                         resolved_hits.push((identity, i32::from(hit.volume.min(100))));
                     }
                 }
-                planned.push((moment_id, matched_ms, base_moment.time_ms, resolved_hits));
+                if !base_moment.hits.is_empty() && resolved_hits.is_empty() {
+                    continue;
+                }
+                let dist =
+                    (hitsounds.moment(moment_id).time().ms() - base_moment.time_ms as f64).abs();
+                let replace = best_by_moment
+                    .get(&moment_id.0)
+                    .is_none_or(|(_, prev_dist, _, _, _)| dist < *prev_dist);
+                if replace {
+                    best_by_moment.insert(
+                        moment_id.0,
+                        (moment_id, dist, matched_ms, base_moment.time_ms, resolved_hits),
+                    );
+                }
+            }
+        }
+
+        let skipped_overrides = skipped_moment_ids.len();
+        let planned: Vec<(MomentId, i64, i64, Vec<(SampleIdentity, i32)>)> = best_by_moment
+            .into_values()
+            .map(|(id, _, matched_ms, base_ms, hits)| (id, matched_ms, base_ms, hits))
+            .collect();
+        let mut touched_lanes: BTreeSet<SampleIdentity> = BTreeSet::new();
+        for (_, _, _, hits) in &planned {
+            for (lane, _) in hits {
+                touched_lanes.insert(lane.clone());
             }
         }
 
@@ -802,7 +862,8 @@ impl Application {
                     unresolved_moments += 1;
                     continue;
                 }
-                let dist = (matched_ms - base_moment.time_ms).abs() as f64;
+                let dist =
+                    (hits.moment(moment_id).time().ms() - base_moment.time_ms as f64).abs();
                 let replace = best_by_moment
                     .get(&moment_id.0)
                     .is_none_or(|(_, prev_dist, _, _, _)| dist < *prev_dist);
@@ -861,6 +922,13 @@ impl Application {
                 ));
                 continue;
             }
+            let compiled_bytes = out_file.to_bytes();
+            if let Err(mismatch) =
+                dawsu_hitsounding::verify_compiled_osu(&compiled_bytes, &hits, &folder_files)
+            {
+                failed_diffs.push(format!("{diff_name}: verification failed ({mismatch})"));
+                continue;
+            }
             let effective_env = layer
                 .volume_envelopes_by_diff
                 .get(&sibling_key)
@@ -869,6 +937,16 @@ impl Application {
                 .unwrap_or(&layer.volume_envelope);
             let (out_file, _) = apply_envelope_to_osu(&out_file, effective_env);
             let out_bytes = out_file.to_bytes();
+            if dawsu_osu_format::OsuFile::read(out_bytes.clone())
+                .file
+                .format_version()
+                .is_none()
+            {
+                failed_diffs.push(format!(
+                    "{diff_name}: volume envelope verification failed (missing osu file format header)"
+                ));
+                continue;
+            }
             let clear_sibling_overrides = |layer: &mut SharedBaseLayer| -> bool {
                 if !overwrite_overrides {
                     return false;
@@ -893,12 +971,6 @@ impl Application {
                     layer_dirty = true;
                 }
                 skipped_diffs += 1;
-                continue;
-            }
-            if let Err(mismatch) =
-                dawsu_hitsounding::verify_compiled_osu(&out_bytes, &hits, &folder_files)
-            {
-                failed_diffs.push(format!("{diff_name}: verification failed ({mismatch})"));
                 continue;
             }
             match out_file
@@ -1867,5 +1939,218 @@ mod tests {
         let relinked = app.relink_moved_mapset(&hard, None).unwrap();
         assert!(relinked.new_path.contains("Moved"));
         assert!(relinked.migrated_base);
+    }
+
+    #[test]
+    fn apply_base_to_all_diffs_succeeds_with_volume_envelope() {
+        let scratch = dawsu_test_support::Scratch::new("shared-base-all-diffs-envelope");
+        let mapset = scratch.path("mapset");
+        fs::create_dir_all(&mapset).unwrap();
+
+        let insane = mapset.join("Map - Test (Author) [Insane].osu");
+        let hard = mapset.join("Map - Test (Author) [Hard].osu");
+        fs::write(&insane, sample_osu("Insane", &["256,192,1000,1,8,0:0:0:85:"])).unwrap();
+        fs::write(&hard, sample_osu("Hard", &["256,192,1000,1,0,0:0:0:100:"])).unwrap();
+
+        let mut app = app_with_temp_data(&scratch);
+        open_map(&mut app, &insane);
+        app.shared_base_capture_current().unwrap();
+        app.shared_base_set_volume_envelope(
+            None,
+            VolumeEnvelope::new(vec![dawsu_hitsounding::volume_envelope::VolumePoint {
+                time_ms: 0,
+                volume: 60,
+                curve: dawsu_hitsounding::volume_envelope::CurveKind::Step,
+            }]),
+        )
+        .unwrap();
+
+        let res = app.shared_base_apply_to_all_diffs(5.0, false).unwrap();
+        assert!(
+            res.failed_diffs.is_empty(),
+            "volume envelope must verify pre-envelope hits and succeed: {:?}",
+            res.failed_diffs
+        );
+        let parsed_hard = dawsu_osu_format::OsuFile::read(fs::read(&hard).unwrap()).file;
+        assert!(
+            parsed_hard
+                .timing_points()
+                .iter()
+                .any(|tp| tp.volume() == Some(60)),
+            "expected Hard green/timing point volume scaled to 60%"
+        );
+    }
+
+    fn save_map(app: &mut Application) {
+        app.save();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while app.busy {
+            app.poll();
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(
+            !app.save_review_pending(),
+            "unexpected save review during test"
+        );
+        assert!(app.error.is_none(), "{:?}", app.error);
+    }
+
+    #[test]
+    fn apply_base_to_all_keeps_overrides_recorded_by_editing_mixed_case_diff() {
+        let scratch = dawsu_test_support::Scratch::new("base-layer-case-overrides");
+        let mapset = scratch.path("mapset");
+        fs::create_dir_all(&mapset).unwrap();
+
+        let insane = mapset.join("Map - Test (Author) [Insane].osu");
+        let hard = mapset.join("Map - Test (Author) [Hard].osu");
+        let normal = mapset.join("Map - Test (Author) [Normal].osu");
+
+        fs::write(
+            &insane,
+            sample_osu(
+                "Insane",
+                &[
+                    "256,192,1000,1,8,0:0:0:85:",
+                    "256,192,2000,1,4,0:0:0:75:",
+                ],
+            ),
+        )
+        .unwrap();
+        fs::write(
+            &hard,
+            sample_osu(
+                "Hard",
+                &[
+                    "256,192,1000,1,0,0:0:0:100:",
+                    "256,192,2000,1,0,0:0:0:100:",
+                ],
+            ),
+        )
+        .unwrap();
+        fs::write(
+            &normal,
+            sample_osu(
+                "Normal",
+                &[
+                    "256,192,1000,1,2,0:0:0:90:",
+                    "256,192,2000,1,0,0:0:0:100:",
+                ],
+            ),
+        )
+        .unwrap();
+
+        let mut app = app_with_temp_data(&scratch);
+        open_map(&mut app, &insane);
+        app.shared_base_capture_current().unwrap();
+
+        // Edit Hard via the real composer and save so Hard has its overridden 1000ms whistle.
+        open_map(&mut app, &hard);
+        let whistle = resolve_sample("Skin|normal-hitwhistle").unwrap();
+        app.document
+            .as_mut()
+            .unwrap()
+            .composer
+            .add(1000.0, whistle, 90, 5.0);
+        app.refresh_recovery_edit();
+        save_map(&mut app);
+
+        let projects_dir = scratch.path("appdata").join("projects");
+        let base_path = storage_path(&projects_dir, &insane).unwrap();
+        let raw_layer: SharedBaseLayer =
+            serde_json::from_slice(&fs::read(&base_path).unwrap()).unwrap();
+        assert!(
+            raw_layer
+                .overrides_by_diff
+                .contains_key("map - test (author) [hard].osu"),
+            "overrides must be recorded under lowercase key: {:?}",
+            raw_layer.overrides_by_diff
+        );
+
+        // Also seed a legacy mixed-case override key on Normal to prove load_base migrates it.
+        let mut seeded = raw_layer;
+        seeded
+            .overrides_by_diff
+            .entry("Map - Test (Author) [Normal].osu".into())
+            .or_default()
+            .insert(1000);
+        save_base(&base_path, &seeded).unwrap();
+
+        // Switch back to Insane and apply to all difficulties with overwrite disabled.
+        open_map(&mut app, &insane);
+        let res = app.shared_base_apply_to_all_diffs(5.0, false).unwrap();
+        assert!(res.failed_diffs.is_empty(), "failures: {:?}", res.failed_diffs);
+        assert_eq!(res.total_skipped_overrides, 2);
+
+        let hard_text = fs::read_to_string(&hard).unwrap();
+        assert!(
+            hard_text.contains("256,192,1000,1,2,"),
+            "Hard's overridden 1000ms whistle should stay untouched: {hard_text}"
+        );
+        assert!(
+            hard_text.contains("256,192,2000,1,4,"),
+            "Hard's 2000ms moment should receive finish from Base: {hard_text}"
+        );
+
+        let normal_text = fs::read_to_string(&normal).unwrap();
+        assert!(
+            normal_text.contains("256,192,1000,1,2,"),
+            "Normal's legacy mixed-case 1000ms override should stay untouched: {normal_text}"
+        );
+        assert!(
+            normal_text.contains("256,192,2000,1,4,"),
+            "Normal's 2000ms moment should receive finish from Base: {normal_text}"
+        );
+    }
+
+    #[test]
+    fn apply_base_to_current_keeps_closest_match_when_multiple_base_moments_hit_same_object() {
+        let scratch = dawsu_test_support::Scratch::new("base-layer-closest-current");
+        let mapset = scratch.path("mapset");
+        fs::create_dir_all(&mapset).unwrap();
+
+        let insane = mapset.join("Map - Test (Author) [Insane].osu");
+        let hard = mapset.join("Map - Test (Author) [Hard].osu");
+        fs::write(
+            &insane,
+            sample_osu(
+                "Insane",
+                &[
+                    "256,192,1000,1,8,0:0:0:85:",
+                    "256,192,1004,1,2,0:0:0:70:",
+                ],
+            ),
+        )
+        .unwrap();
+        fs::write(
+            &hard,
+            sample_osu("Hard", &["256,192,1000,1,0,0:0:0:100:"]),
+        )
+        .unwrap();
+
+        let mut app = app_with_temp_data(&scratch);
+        open_map(&mut app, &insane);
+        app.shared_base_capture_current().unwrap();
+
+        open_map(&mut app, &hard);
+        let result = app.shared_base_apply_to_current(5.0, false).unwrap();
+        assert_eq!(result.applied_moments, 1);
+
+        let clap = resolve_sample("Skin|normal-hitclap").unwrap();
+        let whistle = resolve_sample("Skin|normal-hitwhistle").unwrap();
+        let m1000 = app
+            .document()
+            .unwrap()
+            .composer
+            .hitsounds()
+            .moments()
+            .iter()
+            .find(|m| m.time().ms().round() as i64 == 1000)
+            .unwrap();
+        assert!(m1000.has_hit(&clap), "exact 1000ms clap should win");
+        assert!(
+            !m1000.has_hit(&whistle),
+            "farther 1004ms whistle must not overwrite exact 1000ms match"
+        );
     }
 }

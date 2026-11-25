@@ -49,7 +49,7 @@ pub fn is_portable_install(exe_path: &Path) -> bool {
     if dir.join("portable.marker").is_file() {
         return true;
     }
-    if dir.join("unins000.exe").is_file() {
+    if is_installed_copy_at(exe_path) {
         return false;
     }
     let dir_lower = dir.to_string_lossy().to_ascii_lowercase();
@@ -58,7 +58,7 @@ pub fn is_portable_install(exe_path: &Path) -> bool {
 
 /// Validates a portable ZIP archive's Central Directory in pure Rust (zero extra crates):
 /// verifies valid ZIP signatures, enforces the flat-archive safety rule (no `..`, no drive/root
-/// prefixes, no backslashes escaping the install root), and ensures the archive is non-empty.
+/// prefixes, no backslashes escaping the install root, no Unix symlinks), and rejects ZIP64.
 pub fn validate_flat_portable_zip(bytes: &[u8]) -> Result<Vec<String>, String> {
     if bytes.len() < 22 || &bytes[0..4] != b"PK\x03\x04" {
         return Err("Portable update archive is not a valid ZIP file.".into());
@@ -69,20 +69,26 @@ pub fn validate_flat_portable_zip(bytes: &[u8]) -> Result<Vec<String>, String> {
         .rev()
         .find(|&i| &bytes[i..i + 4] == b"PK\x05\x06")
         .ok_or("Portable ZIP is missing End of Central Directory record.")?;
-    let entry_count = u16::from_le_bytes([bytes[eocd_pos + 10], bytes[eocd_pos + 11]]) as usize;
-    let cd_size = u32::from_le_bytes([
+    let raw_entries = u16::from_le_bytes([bytes[eocd_pos + 10], bytes[eocd_pos + 11]]);
+    let raw_cd_size = u32::from_le_bytes([
         bytes[eocd_pos + 12],
         bytes[eocd_pos + 13],
         bytes[eocd_pos + 14],
         bytes[eocd_pos + 15],
-    ]) as usize;
-    let cd_offset = u32::from_le_bytes([
+    ]);
+    let raw_cd_offset = u32::from_le_bytes([
         bytes[eocd_pos + 16],
         bytes[eocd_pos + 17],
         bytes[eocd_pos + 18],
         bytes[eocd_pos + 19],
-    ]) as usize;
-    if cd_offset.saturating_add(cd_size) > bytes.len() || entry_count == 0 {
+    ]);
+    if raw_entries == u16::MAX || raw_cd_size == u32::MAX || raw_cd_offset == u32::MAX {
+        return Err("ZIP64 portable update archives are not supported.".into());
+    }
+    let entry_count = raw_entries as usize;
+    let cd_size = raw_cd_size as usize;
+    let cd_offset = raw_cd_offset as usize;
+    if cd_offset.saturating_add(cd_size) > eocd_pos || entry_count == 0 {
         return Err("Portable ZIP has an invalid or empty Central Directory.".into());
     }
 
@@ -92,6 +98,16 @@ pub fn validate_flat_portable_zip(bytes: &[u8]) -> Result<Vec<String>, String> {
     for _ in 0..entry_count {
         if pos + 46 > end || &bytes[pos..pos + 4] != b"PK\x01\x02" {
             return Err("Corrupt entry in portable ZIP Central Directory.".into());
+        }
+        let version_made_by_os = bytes[pos + 5];
+        let ext_attr = u32::from_le_bytes([
+            bytes[pos + 38],
+            bytes[pos + 39],
+            bytes[pos + 40],
+            bytes[pos + 41],
+        ]);
+        if version_made_by_os == 3 && ((ext_attr >> 16) & 0o170000) == 0o120000 {
+            return Err("Unsafe symlink entry inside portable ZIP.".into());
         }
         let name_len = u16::from_le_bytes([bytes[pos + 28], bytes[pos + 29]]) as usize;
         let extra_len = u16::from_le_bytes([bytes[pos + 30], bytes[pos + 31]]) as usize;
@@ -109,6 +125,7 @@ pub fn validate_flat_portable_zip(bytes: &[u8]) -> Result<Vec<String>, String> {
             || name.contains(':')
             || name.contains("..")
             || name.contains('\\')
+            || name.contains('\0')
         {
             return Err(format!("Unsafe path inside portable ZIP: {name}"));
         }
@@ -118,6 +135,9 @@ pub fn validate_flat_portable_zip(bytes: &[u8]) -> Result<Vec<String>, String> {
         }
         names.push(name.to_owned());
         pos = name_end + extra_len + comment_len;
+    }
+    if pos != end {
+        return Err("Portable ZIP Central Directory size mismatch.".into());
     }
     Ok(names)
 }
@@ -1114,6 +1134,19 @@ fn spawn_installer(installer_path: &Path) -> Result<(), String> {
     }
 }
 
+/// Strips Windows extended-length UNC prefixes (`\\?\` / `\\?\UNC\`) before passing paths to
+/// external shell helpers like PowerShell `Expand-Archive`.
+fn strip_unc_prefix(path: &Path) -> String {
+    let raw = path.to_string_lossy();
+    if let Some(rest) = raw.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{rest}")
+    } else if let Some(rest) = raw.strip_prefix(r"\\?\") {
+        rest.to_string()
+    } else {
+        raw.into_owned()
+    }
+}
+
 /// Spawns a detached helper that waits for this portable process to exit, extracts the verified
 /// flat portable ZIP over the portable install directory, and relaunches `dawsu!`.
 fn spawn_portable_swap(zip_path: &Path) -> Result<(), String> {
@@ -1125,14 +1158,13 @@ fn spawn_portable_swap(zip_path: &Path) -> Result<(), String> {
     let pid = std::process::id();
     #[cfg(target_os = "windows")]
     {
-        let script = format!(
-            "$pidToWait = {pid}; while (Get-Process -Id $pidToWait -ErrorAction SilentlyContinue) {{ Start-Sleep -Milliseconds 200 }}; \
-             Expand-Archive -LiteralPath '{}' -DestinationPath '{}' -Force; \
-             Start-Process -FilePath '{}'",
-            zip_path.to_string_lossy().replace('\'', "''"),
-            install_dir.to_string_lossy().replace('\'', "''"),
-            exe.to_string_lossy().replace('\'', "''"),
-        );
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        const SCRIPT: &str = "$pidToWait = [int]$env:DAWSU_PID; \
+            while (Get-Process -Id $pidToWait -ErrorAction SilentlyContinue) { Start-Sleep -Milliseconds 200 }; \
+            Start-Sleep -Milliseconds 300; \
+            Expand-Archive -LiteralPath $env:DAWSU_ZIP -DestinationPath $env:DAWSU_DIR -Force -ErrorAction Stop; \
+            Start-Process -FilePath $env:DAWSU_EXE";
         Command::new("powershell")
             .args([
                 "-NoProfile",
@@ -1140,8 +1172,13 @@ fn spawn_portable_swap(zip_path: &Path) -> Result<(), String> {
                 "-WindowStyle",
                 "Hidden",
                 "-Command",
-                &script,
+                SCRIPT,
             ])
+            .env("DAWSU_PID", pid.to_string())
+            .env("DAWSU_ZIP", strip_unc_prefix(zip_path))
+            .env("DAWSU_DIR", strip_unc_prefix(install_dir))
+            .env("DAWSU_EXE", strip_unc_prefix(&exe))
+            .creation_flags(CREATE_NO_WINDOW)
             .spawn()
             .map_err(|e| format!("Could not spawn portable update helper: {e}"))?;
         Ok(())
@@ -1432,5 +1469,23 @@ mod tests {
 
         let deep = build_minimal_zip(&["a/b/c.dll"]);
         assert!(validate_flat_portable_zip(&deep).is_err());
+
+        // Unix symlink (version_made_by OS=3, external attrs S_IFLNK = 0o120000 << 16) must be refused.
+        let mut symlink_zip = build_minimal_zip(&["link"]);
+        let cd_pos = symlink_zip
+            .windows(4)
+            .position(|w| w == b"PK\x01\x02")
+            .unwrap();
+        symlink_zip[cd_pos + 5] = 3;
+        let sym_attr = (0o120777u32) << 16;
+        symlink_zip[cd_pos + 38..cd_pos + 42].copy_from_slice(&sym_attr.to_le_bytes());
+        assert!(
+            validate_flat_portable_zip(&symlink_zip)
+                .unwrap_err()
+                .contains("symlink")
+        );
+
+        assert_eq!(strip_unc_prefix(Path::new(r"\\?\C:\Tools\dawsu.exe")), r"C:\Tools\dawsu.exe");
+        assert_eq!(strip_unc_prefix(Path::new(r"\\?\UNC\server\share\dawsu.exe")), r"\\server\share\dawsu.exe");
     }
 }

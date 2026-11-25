@@ -2774,10 +2774,17 @@ impl Application {
                         }
                     }
                 }                JobResult::Output(result) => match result {
-                    Err(e) if self.export.take_write(&Err(e.clone())) => {
-                        self.status = "Output did not complete".into();
+                    Err(e) => {
+                        self.export.pending_manifest = None;
+                        if self.export.take_write(&Err(e.clone())) {
+                            self.status = "Output did not complete".into();
+                        } else {
+                            self.error = Some(e);
+                            self.status = "Output did not complete".into();
+                        }
                     }
                     Ok((count, tracking_warning, published, index_schema)) => {
+                        self.export.commit_pending_manifest(&self.data_root);
                         self.export.take_write(&Ok(count));
                         self.pending_published(&published, &[]);
                         self.status = format!("Wrote {count} reviewed files with backups");
@@ -2800,10 +2807,6 @@ impl Application {
                                     .collect();
                             }
                         }
-                    }
-                    Err(e) => {
-                        self.error = Some(e);
-                        self.status = "Output did not complete".into();
                     }
                 },
                 JobResult::Save {
@@ -3899,6 +3902,24 @@ impl Application {
             self.refresh_recovery_edit();
         }
         placed
+    }
+
+    /// Toggles a hit on `row` at `ms` for beat step-sequencer pads regardless of active tool.
+    pub fn toggle_step_hit(&mut self, row: usize, ms: f64) -> bool {
+        if self.busy || self.is_stroke_open() {
+            return false;
+        }
+        let Some(d) = self.document.as_mut() else {
+            return false;
+        };
+        if !d.composer.toggle_step_hit(row, ms) {
+            return false;
+        }
+        self.active_lane = row;
+        self.record_shared_base_overrides_if_needed();
+        self.sync_audio();
+        self.refresh_recovery_edit();
+        true
     }
     pub fn set_selection_lane_scope(&mut self, lanes: Option<BTreeSet<SampleIdentity>>) -> Result<(), String> {
         if self.busy || self.is_stroke_open() {

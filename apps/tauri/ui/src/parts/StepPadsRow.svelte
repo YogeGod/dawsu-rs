@@ -44,28 +44,9 @@
   async function toggleStep(step) {
     if (bridge.disabled) return;
     await act({
-      kind: "pointer",
-      phase: "down",
-      ms: step.time,
+      kind: "toggle_step_hit",
       row: laneRow,
-      x: 0,
-      y: 0,
-      button: 0,
-      shift: false,
-      ctrl: false,
-      alt: false,
-    });
-    await act({
-      kind: "pointer",
-      phase: "up",
       ms: step.time,
-      row: laneRow,
-      x: 0,
-      y: 0,
-      button: 0,
-      shift: false,
-      ctrl: false,
-      alt: false,
     });
   }
 </script>

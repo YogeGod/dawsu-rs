@@ -590,8 +590,15 @@
               <circle cx={cx} cy={cy} r={selectedPointIdx === idx ? 5.5 : 4.5}
                 fill={pt.curve === "step" ? "#f59e0b" : "var(--editor-accent, #4a9eff)"}
                 stroke="#0f1216" stroke-width="1.5"
-                onclick={(e) => { e.stopPropagation(); togglePointCurve(idx); }}>
-                <title>{pt.timeMs} ms · {pt.volume}% · {pt.curve === "step" ? "Step" : "Linear"} (click to toggle)</title>
+                onclick={(e) => {
+                  e.stopPropagation();
+                  if (selectedPointIdx !== idx) {
+                    selectedPointIdx = idx;
+                  } else {
+                    togglePointCurve(idx);
+                  }
+                }}>
+                <title>{pt.timeMs} ms · {pt.volume}% · {pt.curve === "step" ? "Step" : "Linear"} (click to select; click again to flip Linear/Step)</title>
               </circle>
             {/each}
           </svg>

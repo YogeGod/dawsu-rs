@@ -779,6 +779,48 @@ impl Composer {
         }
         placed
     }
+
+    /// Toggles a single hit on `row` near `ms` (within 4 ms) as one Undo step, regardless of which
+    /// timeline tool is selected. Returns `true` if a hit was added or removed.
+    pub fn toggle_step_hit(&mut self, row: usize, ms: f64) -> bool {
+        if !ms.is_finite() || ms < 0.0 {
+            return false;
+        }
+        let Some(lane) = self.lanes.get(row).cloned() else {
+            return false;
+        };
+        let existing_id = nearest_moment(self.hitsounds(), ms, 4.0);
+        if let Some(id) = existing_id
+            && self.hitsounds().moments()[id.0].has_hit(&lane)
+        {
+            self.history.begin("Remove step hit");
+            let _ = self.history.edit(true, |h| {
+                h.remove_hit(id, &lane);
+                Ok::<_, Infallible>(())
+            });
+            self.history.commit();
+            return true;
+        }
+        let target = if self.snap_mode == SnapMode::Objects {
+            SongTime::from_ms(ms)
+        } else {
+            self.snap(SongTime::from_ms(ms))
+        };
+        let volume = self
+            .insert_volume
+            .clamp(dawsu_hitsounding::rules::SAVED_VOLUME_FLOOR, 100);
+        self.history.begin("Add step hit");
+        let _ = self.history.edit(true, |h| {
+            let id = nearest_moment(h, target.ms(), 4.0)
+                .or_else(|| nearest_moment(h, ms, 4.0))
+                .unwrap_or_else(|| h.add_moment(target, volume));
+            h.add_hit_with_volume(id, lane.clone(), volume);
+            Ok::<_, Infallible>(())
+        });
+        self.history.commit();
+        self.audition_requests.push(lane);
+        true
+    }
 }
 
 impl ToolTarget for Composer {

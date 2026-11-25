@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { render } from "svelte/server";
 import { bridge } from "../src/lib/bridge.svelte.js";
@@ -175,4 +176,8 @@ test("StepPadsRow renders 8 beat-snapped pads and highlights active hits on its 
   assert.equal(activeMatches.length, 2, "steps 1 (0 ms) and 3 (200 ms) are active on lane 0");
   assert.match(body, /aria-label="Kick step 1 at 0 ms"/);
   assert.match(body, /aria-label="Kick step 3 at 200 ms"/);
+
+  const src = readFileSync(new URL("../src/parts/StepPadsRow.svelte", import.meta.url), "utf8");
+  assert.match(src, /kind:\s*"toggle_step_hit"/);
+  assert.doesNotMatch(src, /kind:\s*"pointer"/);
 });
