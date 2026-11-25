@@ -511,13 +511,13 @@ fn slim_tick_polls_return_tick_when_unchanged_and_full_view_on_status_warning_or
     let mut app = Application::headless();
     open(&mut app, &map);
     let mut home = crate::home::Route::default();
-    let drums = crate::drum_view::DrumView::for_editor();
+    let mut drums = crate::drum_view::DrumView::for_editor();
     let mut playback_start = PlaybackStart::default();
     let mut cache = crate::ViewTickCache::default();
     let mut pending = None;
 
     let initial = serde_json::to_value(crate::next_view_response(
-        &mut app, &mut home, &drums, &mut playback_start, &mut cache, &mut pending,
+        &mut app, &mut home, &mut drums, &mut playback_start, &mut cache, &mut pending,
         true, None, false, None,
     ))
     .unwrap();
@@ -526,7 +526,7 @@ fn slim_tick_polls_return_tick_when_unchanged_and_full_view_on_status_warning_or
     let rev1 = initial["tickRev"].as_u64().unwrap();
 
     let tick1 = serde_json::to_value(crate::next_view_response(
-        &mut app, &mut home, &drums, &mut playback_start, &mut cache, &mut pending,
+        &mut app, &mut home, &mut drums, &mut playback_start, &mut cache, &mut pending,
         false, None, false, Some(rev1),
     ))
     .unwrap();
@@ -539,7 +539,7 @@ fn slim_tick_polls_return_tick_when_unchanged_and_full_view_on_status_warning_or
     // Status change invalidates the non-playback signature -> returns full view with bumped tickRev.
     app.status = "Saved map".into();
     let after_status = serde_json::to_value(crate::next_view_response(
-        &mut app, &mut home, &drums, &mut playback_start, &mut cache, &mut pending,
+        &mut app, &mut home, &mut drums, &mut playback_start, &mut cache, &mut pending,
         false, None, false, Some(rev1),
     ))
     .unwrap();
@@ -549,7 +549,7 @@ fn slim_tick_polls_return_tick_when_unchanged_and_full_view_on_status_warning_or
     assert!(rev2 > rev1);
 
     let tick2 = serde_json::to_value(crate::next_view_response(
-        &mut app, &mut home, &drums, &mut playback_start, &mut cache, &mut pending,
+        &mut app, &mut home, &mut drums, &mut playback_start, &mut cache, &mut pending,
         false, None, false, Some(rev2),
     ))
     .unwrap();
@@ -559,7 +559,7 @@ fn slim_tick_polls_return_tick_when_unchanged_and_full_view_on_status_warning_or
     // Warning change invalidates the signature -> returns full view.
     app.warnings.push("Missing sample".into());
     let after_warning = serde_json::to_value(crate::next_view_response(
-        &mut app, &mut home, &drums, &mut playback_start, &mut cache, &mut pending,
+        &mut app, &mut home, &mut drums, &mut playback_start, &mut cache, &mut pending,
         false, None, false, Some(rev2),
     ))
     .unwrap();
@@ -569,7 +569,7 @@ fn slim_tick_polls_return_tick_when_unchanged_and_full_view_on_status_warning_or
     assert!(rev3 > rev2);
 
     let tick3 = serde_json::to_value(crate::next_view_response(
-        &mut app, &mut home, &drums, &mut playback_start, &mut cache, &mut pending,
+        &mut app, &mut home, &mut drums, &mut playback_start, &mut cache, &mut pending,
         false, None, false, Some(rev3),
     ))
     .unwrap();
@@ -578,7 +578,7 @@ fn slim_tick_polls_return_tick_when_unchanged_and_full_view_on_status_warning_or
     // Job busy flag change invalidates the signature -> returns full view.
     app.busy = true;
     let after_busy = serde_json::to_value(crate::next_view_response(
-        &mut app, &mut home, &drums, &mut playback_start, &mut cache, &mut pending,
+        &mut app, &mut home, &mut drums, &mut playback_start, &mut cache, &mut pending,
         false, None, false, Some(rev3),
     ))
     .unwrap();
@@ -590,7 +590,7 @@ fn slim_tick_polls_return_tick_when_unchanged_and_full_view_on_status_warning_or
     // song_loading change invalidates the signature -> returns full view.
     app.song_loading = true;
     let while_loading = serde_json::to_value(crate::next_view_response(
-        &mut app, &mut home, &drums, &mut playback_start, &mut cache, &mut pending,
+        &mut app, &mut home, &mut drums, &mut playback_start, &mut cache, &mut pending,
         false, None, false, Some(rev4),
     ))
     .unwrap();
@@ -601,7 +601,7 @@ fn slim_tick_polls_return_tick_when_unchanged_and_full_view_on_status_warning_or
 
     app.song_loading = false;
     let after_loading = serde_json::to_value(crate::next_view_response(
-        &mut app, &mut home, &drums, &mut playback_start, &mut cache, &mut pending,
+        &mut app, &mut home, &mut drums, &mut playback_start, &mut cache, &mut pending,
         false, None, false, Some(rev5),
     ))
     .unwrap();

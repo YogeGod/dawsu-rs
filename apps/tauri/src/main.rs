@@ -404,7 +404,7 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                         next_view_response(
                             app,
                             &mut home,
-                            &drums,
+                            &mut drums,
                             &mut playback_start,
                             &mut tick_cache,
                             &mut pending_initial_open,
@@ -981,6 +981,7 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                         let _ = guard(&mut app, &mut fault, |app| {
                             app.poll();
                             home.settle(app);
+                            drums.sync_on_document_open(app, &mut tick_cache);
                         });
                     }
                 }

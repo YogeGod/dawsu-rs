@@ -425,6 +425,7 @@ pub const BUILT_IN_DRUM_MAPS: &[(&str, &str)] = &[
     ("Kick and snare on claps.dawsudrum", include_str!("../drum-map-presets/Kick and snare on claps.dawsudrum")),
     ("Kick on whistle (older maps).dawsudrum", include_str!("../drum-map-presets/Kick on whistle (older maps).dawsudrum")),
     ("Net0 hitsound kit.dawsudrum", include_str!("../drum-map-presets/Net0 hitsound kit.dawsudrum")),
+    ("Default osu! kit (12 skin sounds).dawsudrum", include_str!("../drum-map-presets/Default osu! kit (12 skin sounds).dawsudrum")),
 ];
 
 /// The built-in drum maps ([`BUILT_IN_DRUM_MAPS`]), read, in that order.

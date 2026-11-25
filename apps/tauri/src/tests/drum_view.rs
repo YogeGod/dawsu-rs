@@ -299,7 +299,7 @@ fn drum_view_loads_builtin_presets_and_assigns_rows() {
     let shown = read(&drums, &app);
     assert_eq!(shown["drumView"]["enabled"], true);
     assert_eq!(shown["drumView"]["name"], "Two kicks");
-    assert_eq!(shown["drumView"]["presets"].as_array().unwrap().len(), 10);
+    assert_eq!(shown["drumView"]["presets"].as_array().unwrap().len(), 11);
     let setup_rows = shown["drumView"]["rows"].as_array().unwrap();
     assert!(!setup_rows.is_empty());
 
@@ -648,4 +648,97 @@ fn toggle_step_hit_works_regardless_of_active_tool() {
             .any(|m| (m[0].as_f64().unwrap() - 500.0).abs() < 1.0 && m[3].as_array().unwrap().iter().any(|h| h[0] == clap_row));
         assert!(!after_remove, "toggle_step_hit should remove hit while {tool} tool is active");
     }
+}
+
+#[test]
+fn task3_path2_auto_activates_default_osu_kit_shows_other_lanes_survives_replace_undo_and_never_bleeds() {
+    let fixture = Fixture::new("task3-path2-drum-kit");
+    let mapset = fixture.0.join("mapset");
+    fs::create_dir_all(&mapset).unwrap();
+    let insane = mapset.join("Artist - Song (Mapper) [Insane].osu");
+    let wav = b"RIFF\x26\0\0\0WAVEfmt \x10\0\0\0\x01\0\x01\0\x80\xbb\0\0\0w\x01\0\x02\0\x10\0data\x02\0\0\0\x00\x40";
+    // Pre-existing normal-hitnormal.wav in mapset folder must not hijack Path 2's 12 Skin|* rows.
+    fs::write(mapset.join("normal-hitnormal.wav"), wav).unwrap();
+    fs::write(
+        &insane,
+        b"osu file format v14\n[General]\nMode: 0\n[Metadata]\nTitle:Song\nArtist:Artist\nCreator:Mapper\nVersion:Insane\n[TimingPoints]\n0,500,4,1,0,80,1,0\n[HitObjects]\n256,192,1000,1,0,0:0:0:0:\n",
+    )
+    .unwrap();
+    let ext_kick = fixture.0.join("custom-kick.wav");
+    let ext_extra = fixture.0.join("extra-fx.wav");
+    fs::write(&ext_kick, wav).unwrap();
+    fs::write(&ext_extra, wav).unwrap();
+
+    let mut app = Application::headless_with_projects(fixture.0.join("data"));
+    let hs_path2 = app
+        .create_hitsound_diff(&insane, false, Some(dawsu_application::HsStarterMode::Default12))
+        .unwrap();
+
+    let mut drums = crate::drum_view::DrumView::for_editor();
+    let mut cache = crate::ViewTickCache::default();
+    let read = |drums: &crate::drum_view::DrumView, app: &Application| {
+        let mut shown = snapshot_view(app, true);
+        drums.decorate(app, &mut shown);
+        serde_json::to_value(shown).unwrap()
+    };
+
+    // Open Path 2 diff -> auto-activates Default osu! kit with all 12 Skin|* rows.
+    super::helpers::open_raw(&mut app, &hs_path2);
+    assert!(drums.sync_on_document_open(&mut app, &mut cache));
+    let view = read(&drums, &app);
+    assert_eq!(view["drumView"]["enabled"], true);
+    assert_eq!(view["drumView"]["name"], crate::drum_view::DEFAULT_OSU_KIT_NAME);
+    let drum_rows = view["scene"]["drumRows"].as_array().unwrap();
+    assert_eq!(drum_rows.len(), 12, "All 12 Skin|* rows must be bound in Path 2");
+    assert_eq!(drum_rows[0]["name"], "Drum Kick");
+    assert!(drum_rows.iter().all(|r| r["row"].is_number()));
+
+    // Toggle to raw folders and back to Drum Map cleanly.
+    let doc_path = app.document().unwrap().path.clone();
+    drums.toggle(&app, &doc_path, false).unwrap();
+    assert_eq!(read(&drums, &app)["drumView"]["enabled"], false);
+    drums.toggle(&app, &doc_path, true).unwrap();
+    assert_eq!(read(&drums, &app)["drumView"]["enabled"], true);
+
+    // Adding a custom lane (+ Add as lane) appears immediately below row 12 even with hide_unassigned=true.
+    let extra_id = app.add_lane_from_file(&doc_path, &ext_extra).unwrap();
+    let after_add = read(&drums, &app);
+    let rows_after_add = after_add["scene"]["drumRows"].as_array().unwrap();
+    assert_eq!(rows_after_add.len(), 13, "DrumViewRow::Other must be visible below row 12");
+    assert!(rows_after_add[12]["drumRowIndex"].is_null());
+    assert!(rows_after_add[12]["row"].is_number());
+    let _ = extra_id;
+
+    // Replacing a skin lane (Drum Kick = Skin|drum-hitnormal) stays bound across Replace AND Undo.
+    let drum_normal = dawsu_foundation::SampleIdentity::Standard {
+        set: dawsu_foundation::SampleSet::Drum,
+        sound: dawsu_foundation::Sound::Hit(dawsu_foundation::Hitsound::Normal),
+        index: dawsu_foundation::CustomIndex::new(0),
+    };
+    app.active_lane = app
+        .document()
+        .unwrap()
+        .composer
+        .lanes
+        .iter()
+        .position(|l| l == &drum_normal)
+        .unwrap();
+    app.replace_lane_sample(&doc_path, &drum_normal, &ext_kick).unwrap();
+    let after_replace = read(&drums, &app);
+    assert_eq!(after_replace["scene"]["drumRows"][0]["name"], "Drum Kick");
+    assert!(after_replace["scene"]["drumRows"][0]["row"].is_number());
+
+    app.command("undo");
+    let after_undo = read(&drums, &app);
+    assert_eq!(after_undo["scene"]["drumRows"][0]["name"], "Drum Kick");
+    assert!(after_undo["scene"]["drumRows"][0]["row"].is_number());
+
+    // Switching to sibling [Insane] diff must NOT inherit Path 2's auto-activated Default osu! kit.
+    super::helpers::open_raw(&mut app, &insane);
+    assert!(drums.sync_on_document_open(&mut app, &mut cache));
+    let sibling_view = read(&drums, &app);
+    assert!(
+        sibling_view.get("drumView").is_none() || sibling_view["drumView"].is_null(),
+        "Path 2 per-diff drum kit must not bleed into sibling gameplay diffs"
+    );
 }

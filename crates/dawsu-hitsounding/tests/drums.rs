@@ -595,7 +595,7 @@ fn another_spelling_names_the_file_osu_plays_for_the_sample() {
 
 #[test]
 fn every_built_in_drum_map_reads_and_is_saved_as_dawsu_writes_it() {
-    assert_eq!(BUILT_IN_DRUM_MAPS.len(), 10, "the built-in drum maps");
+    assert_eq!(BUILT_IN_DRUM_MAPS.len(), 11, "the built-in drum maps");
     for (file, text) in BUILT_IN_DRUM_MAPS {
         let m = read_dawsudrum(text).unwrap_or_else(|e| panic!("{file}: {e}"));
         assert_eq!(*file, format!("{}.dawsudrum", m.name), "a file is named after its map");
@@ -610,7 +610,11 @@ fn every_built_in_drum_map_reads_and_is_saved_as_dawsu_writes_it() {
 fn built_in_drum_maps_name_unnumbered_hit_samples_with_drum_notes_and_carry_no_audio() {
     let slots: Vec<String> = ["soft", "normal", "drum"]
         .iter()
-        .flat_map(|set| ["hitnormal", "hitclap", "hitwhistle", "hitfinish"].map(|sound| format!("BeatmapFile|{set}-{sound}.wav")))
+        .flat_map(|set| {
+            ["hitnormal", "hitclap", "hitwhistle", "hitfinish"].into_iter().flat_map(move |sound| {
+                [format!("BeatmapFile|{set}-{sound}.wav"), format!("Skin|{set}-{sound}")]
+            })
+        })
         .collect();
     let (mut map_ids, mut names, mut row_ids) = (HashSet::new(), HashSet::new(), HashSet::new());
     for m in built_in_drum_maps() {

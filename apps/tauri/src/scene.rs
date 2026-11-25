@@ -1161,7 +1161,7 @@ pub(crate) fn decorate_and_stamp_view(
 pub(crate) fn next_view_response(
     app: &mut Application,
     home: &mut home::Route,
-    drums: &drum_view::DrumView,
+    drums: &mut drum_view::DrumView,
     playback_start: &mut PlaybackStart,
     cache: &mut ViewTickCache,
     pending_initial_open: &mut Option<PathBuf>,
@@ -1191,6 +1191,7 @@ pub(crate) fn next_view_response(
     }
     app.poll();
     home.settle(app);
+    drums.sync_on_document_open(app, cache);
 
     if !had_action && !scene && !fresh && tick_rev == Some(cache.rev) {
         let sig = non_playback_signature(app, home, *playback_start, cache.drums_rev);

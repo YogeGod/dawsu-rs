@@ -26,11 +26,17 @@ pub(super) enum DrumMapAction {
     MoveRow { from_index: usize, to_index: usize },
 }
 
-/// The 10 built-in drum map presets bundled into every release.
+pub(super) const DEFAULT_OSU_KIT_NAME: &str = "Default osu! kit (12 skin sounds)";
+
+/// The 11 built-in drum map presets bundled into every release.
 pub(super) const BUILTIN_DRUM_MAPS: &[(&str, &str)] = &[
     (
         "Full kit, all 12 samples",
         include_str!("../../../crates/dawsu-hitsounding/drum-map-presets/Full kit, all 12 samples.dawsudrum"),
+    ),
+    (
+        DEFAULT_OSU_KIT_NAME,
+        include_str!("../../../crates/dawsu-hitsounding/drum-map-presets/Default osu! kit (12 skin sounds).dawsudrum"),
     ),
     (
         "Drum kit, kick on drum-hitnormal",
@@ -72,6 +78,10 @@ pub(super) const BUILTIN_DRUM_MAPS: &[(&str, &str)] = &[
 
 pub(super) struct DrumView {
     mapsets: HashMap<PathBuf, Kit>,
+    /// Per-difficulty auto-activated kits (e.g. Path 2 `Default osu! kit`), kept separate from
+    /// mapset-wide user presets so Path 2 never bleeds into sibling gameplay or Path 1 diffs.
+    per_diff: HashMap<PathBuf, Kit>,
+    last_generation: u64,
     auto_detect: bool,
     hide_unassigned: bool,
 }
@@ -80,6 +90,8 @@ impl Default for DrumView {
     fn default() -> Self {
         Self {
             mapsets: HashMap::new(),
+            per_diff: HashMap::new(),
+            last_generation: 0,
             auto_detect: true,
             hide_unassigned: false,
         }
@@ -93,17 +105,78 @@ struct Kit {
 }
 
 impl DrumView {
+    fn kit_for(&self, document: &dawsu_application::Document) -> Option<&Kit> {
+        self.per_diff
+            .get(&document.path)
+            .or_else(|| document.path.parent().and_then(|folder| self.mapsets.get(folder)))
+    }
+
+    fn kit_for_mut(&mut self, expected_map: &Path, folder: &Path) -> Option<&mut Kit> {
+        if self.per_diff.contains_key(expected_map) {
+            self.per_diff.get_mut(expected_map)
+        } else {
+            self.mapsets.get_mut(folder)
+        }
+    }
+
+    /// Runs whenever the open document generation changes: auto-activates Path 2's per-diff
+    /// `Default osu! kit (12 skin sounds)` without bleeding into sibling diffs, syncs Drum VST
+    /// routing, and bumps `tick_cache.drums_rev`.
+    pub(super) fn sync_on_document_open(
+        &mut self,
+        app: &mut Application,
+        tick_cache: &mut super::ViewTickCache,
+    ) -> bool {
+        let generation = app.document_generation();
+        if generation == 0 || generation == self.last_generation {
+            return false;
+        }
+        self.last_generation = generation;
+        if let Some(doc) = app.document() {
+            let path = doc.path.clone();
+            let has_mapset_preset = doc
+                .path
+                .parent()
+                .is_some_and(|folder| self.mapsets.contains_key(folder));
+            if doc.starter_mode == Some(dawsu_application::HsStarterMode::Default12)
+                && !self.per_diff.contains_key(&path)
+                && !has_mapset_preset
+                && let Some((_, text)) = BUILTIN_DRUM_MAPS
+                    .iter()
+                    .find(|(name, _)| *name == DEFAULT_OSU_KIT_NAME)
+                && let Ok(mut preset) = read_dawsudrum(text)
+            {
+                preset.audio = Vec::new();
+                self.per_diff.insert(
+                    path,
+                    Kit {
+                        preset,
+                        enabled: true,
+                        auto_detected: false,
+                    },
+                );
+            }
+            app.set_drum_vst_routing(self.routed_midi_notes(app));
+            app.set_drum_vst_choke_groups(self.choke_groups(app));
+            tick_cache.drums_rev += 1;
+            tick_cache.invalidate();
+            return true;
+        }
+        false
+    }
+
     /// Editor startup configuration: automatically detects kits from sounds and hides unassigned lanes.
     pub(super) fn active_map(&self, app: &Application) -> Option<&DrumMap> {
         let document = app.document()?;
-        let folder = document.path.parent()?;
-        let kit = self.mapsets.get(folder)?;
+        let kit = self.kit_for(document)?;
         kit.enabled.then_some(&kit.preset)
     }
 
     pub(super) fn for_editor() -> Self {
         Self {
             mapsets: HashMap::new(),
+            per_diff: HashMap::new(),
+            last_generation: 0,
             auto_detect: true,
             hide_unassigned: true,
         }
@@ -123,6 +196,7 @@ impl DrumView {
         let mut preset = read_dawsudrum(&text).map_err(|error| error.to_string())?;
         // This view uses only the instrument order and settings. Embedded audio stays in the selected file.
         preset.audio = Vec::new();
+        self.per_diff.remove(expected_map);
         self.mapsets.insert(folder.into(), Kit { preset, enabled: true, auto_detected: false });
         Ok(())
     }
@@ -133,6 +207,7 @@ impl DrumView {
         let folder = current_mapset(app, expected_map)?;
         let lanes = visible_lanes(app);
         let preset = read_and_bind_builtin(name, &lanes)?;
+        self.per_diff.remove(expected_map);
         self.mapsets.insert(folder.into(), Kit { preset, enabled: true, auto_detected: false });
         Ok(())
     }
@@ -143,6 +218,7 @@ impl DrumView {
         let folder = current_mapset(app, expected_map)?;
         let lanes = visible_lanes(app);
         let preset = dawsu_application::drum_classify::auto_detect_drum_map(&lanes, |id| app.lane_clip(id));
+        self.per_diff.remove(expected_map);
         self.mapsets.insert(folder.into(), Kit { preset, enabled: true, auto_detected: true });
         Ok(())
     }
@@ -171,8 +247,8 @@ impl DrumView {
     pub(super) fn move_row(
         &mut self, app: &Application, expected_map: &Path, from_index: usize, to_index: usize,
     ) -> Result<(), String> {
-        let folder = current_mapset(app, expected_map)?;
-        let kit = self.mapsets.get_mut(folder).ok_or("Open a drum map first.")?;
+        let folder = current_mapset(app, expected_map)?.to_path_buf();
+        let kit = self.kit_for_mut(expected_map, &folder).ok_or("Open a drum map first.")?;
         let len = kit.preset.rows.len();
         if from_index >= len || to_index >= len {
             return Err("That drum row does not exist.".into());
@@ -191,7 +267,7 @@ impl DrumView {
         row_index: usize,
         target_lane_key: Option<&str>,
     ) -> Result<(), String> {
-        let folder = current_mapset(app, expected_map)?;
+        let folder = current_mapset(app, expected_map)?.to_path_buf();
         let document = app.document().ok_or("Open a difficulty first.")?;
         let model = document.composer.hitsounds();
         let resolved = match target_lane_key.map(str::trim).filter(|s| !s.is_empty()) {
@@ -206,7 +282,7 @@ impl DrumView {
                 }
             }
         };
-        let kit = self.mapsets.get_mut(folder).ok_or("Open a drum map first.")?;
+        let kit = self.kit_for_mut(expected_map, &folder).ok_or("Open a drum map first.")?;
         let row = kit.preset.rows.get_mut(row_index).ok_or("That drum row does not exist.")?;
         let previous = row.lane.clone();
         row.lane = resolved;
@@ -224,8 +300,8 @@ impl DrumView {
         row_index: usize,
         midi_note: Option<u8>,
     ) -> Result<(), String> {
-        let folder = current_mapset(app, expected_map)?;
-        let kit = self.mapsets.get_mut(folder).ok_or("Open a drum map first.")?;
+        let folder = current_mapset(app, expected_map)?.to_path_buf();
+        let kit = self.kit_for_mut(expected_map, &folder).ok_or("Open a drum map first.")?;
         let row = kit.preset.rows.get_mut(row_index).ok_or("That drum row does not exist.")?;
         row.midi_note = midi_note.map(|n| n.min(127));
         Ok(())
@@ -238,8 +314,8 @@ impl DrumView {
         row_index: usize,
         choke_group: Option<u8>,
     ) -> Result<(), String> {
-        let folder = current_mapset(app, expected_map)?;
-        let kit = self.mapsets.get_mut(folder).ok_or("Open a drum map first.")?;
+        let folder = current_mapset(app, expected_map)?.to_path_buf();
+        let kit = self.kit_for_mut(expected_map, &folder).ok_or("Open a drum map first.")?;
         let row = kit.preset.rows.get_mut(row_index).ok_or("That drum row does not exist.")?;
         row.choke_group = choke_group.filter(|&g| g > 0);
         Ok(())
@@ -251,10 +327,7 @@ impl DrumView {
         let Some(document) = app.document() else {
             return groups;
         };
-        let Some(folder) = document.path.parent() else {
-            return groups;
-        };
-        let Some(kit) = self.mapsets.get(folder) else {
+        let Some(kit) = self.kit_for(document) else {
             return groups;
         };
         for row in &kit.preset.rows {
@@ -283,10 +356,7 @@ impl DrumView {
                 notes.insert(lane.clone(), note);
             }
         }
-        let Some(folder) = document.path.parent() else {
-            return notes;
-        };
-        let Some(kit) = self.mapsets.get(folder) else {
+        let Some(kit) = self.kit_for(document) else {
             return notes;
         };
         let lanes = visible_lanes(app);
@@ -315,7 +385,7 @@ impl DrumView {
         &mut self, app: &Application, expected_map: &Path, on: bool,
     ) -> Result<(), String> {
         let folder = current_mapset(app, expected_map)?.to_path_buf();
-        if let Some(kit) = self.mapsets.get_mut(&folder) {
+        if let Some(kit) = self.kit_for_mut(expected_map, &folder) {
             kit.enabled = on;
         } else if on {
             if self.auto_detect {
@@ -331,7 +401,7 @@ impl DrumView {
 
     pub(super) fn decorate(&self, app: &Application, view: &mut super::ViewSnapshot) {
         let Some(document) = app.document() else { return };
-        let Some(kit) = document.path.parent().and_then(|mapset| self.mapsets.get(mapset)) else {
+        let Some(kit) = self.kit_for(document) else {
             return;
         };
         let composer = &document.composer;
@@ -458,9 +528,6 @@ impl DrumView {
                 row: None,
             }),
             DrumViewRow::Other(lane) => {
-                if self.hide_unassigned {
-                    return None;
-                }
                 let row = *rows.get(&lane.identity)?;
                 shown_rows.insert(row).then_some(DrumRowSnapshot {
                     drum_row_index: None,
