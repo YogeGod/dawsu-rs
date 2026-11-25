@@ -23,8 +23,8 @@ pub fn decompile(file: &OsuFile, folder_files: &[String], cancel: &dyn Fn() -> b
     if cancel() {
         return Decompiled::Cancelled;
     }
-    // The rules' answer takes no stop check of its own (an open item in todo.md section 3,
-    // "Errors subsections"), so the checks are made while its objects are grouped.
+    // `rules::answer` runs without an internal cancel hook, so cancellation is checked before it
+    // starts and again while grouping the returned objects.
     let objects = match rules::answer(file, folder_files) {
         Answer::Objects(objects) => objects,
         Answer::UnsupportedMode { mode } => return Decompiled::UnsupportedMode { mode },
@@ -182,9 +182,8 @@ pub(crate) fn identity(s: &Sample) -> SampleIdentity {
     let set = match l.bank.as_str() {
         "soft" => SampleSet::Soft,
         "drum" => SampleSet::Drum,
-        // A timing line's out-of-range set keeps its number as lazer's bank name (rules invariant
-        // 9(b)). The model's three sets have no place for it, so its hits sit on the Normal lanes
-        // (todo.md section 4, "odd sets in the model").
+        // An out-of-range sample set keeps its numeric bank name from lazer, which does not map to
+        // Soft or Drum, so its hits fall back to the Normal lanes in the model.
         _ => SampleSet::Normal,
     };
     SampleIdentity::Standard { set, sound, index: CustomIndex::new(l.custom_sample_bank().max(0) as u32) }

@@ -69,7 +69,7 @@ impl Composer {
             selected: Selection::new(),
             lanes,
             tempo: TempoMap::default(),
-            spacing: SnapSpacing::fraction(4).unwrap(),
+            spacing: SnapSpacing::fraction(4).expect("1/4 beat is a valid snap spacing"),
             snap_enabled: true,
             snap_mode: SnapMode::Grid,
             object_times,

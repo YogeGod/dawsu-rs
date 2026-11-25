@@ -308,9 +308,11 @@ pub(crate) fn legacy_key(labels: &[String]) -> String {
                 0x0d => json.push_str(r"\r"),
                 0x5c => json.push_str(r"\\"),
                 0x20..=0x7e if !matches!(unit, 0x22 | 0x26 | 0x27 | 0x2b | 0x3c | 0x3e | 0x60) => {
-                    json.push(char::from_u32(u32::from(unit)).unwrap());
+                    json.push(char::from(unit as u8));
                 }
-                _ => write!(json, "\\u{unit:04X}").unwrap(),
+                _ => {
+                    let _ = write!(json, "\\u{unit:04X}");
+                }
             }
         }
         json.push('"');

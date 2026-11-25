@@ -658,16 +658,16 @@ impl OsuFile {
             Some(i) => {
                 let before = i.checked_sub(1);
                 let id = self.insert_after(before, &header);
-                let h = self.index_of(id).unwrap();
+                let h = self.index_of(id).expect("newly inserted section header must exist");
                 self.insert_after(Some(h), "");
                 h
             }
             None => {
                 let last = self.lines.len().checked_sub(1);
                 let blank = self.insert_after(last, "");
-                let b = self.index_of(blank).unwrap();
+                let b = self.index_of(blank).expect("newly inserted blank line must exist");
                 let id = self.insert_after(Some(b), &header);
-                self.index_of(id).unwrap()
+                self.index_of(id).expect("newly inserted section header must exist")
             }
         }
     }
@@ -778,7 +778,9 @@ impl OsuFile {
     }
 
     fn remove_line(&mut self, id: LineId, section: &str) {
-        let i = self.index_of(id).unwrap();
+        let Some(i) = self.index_of(id) else {
+            return;
+        };
         let line = self.lines.remove(i);
         if line.ending == LineEnding::None && i > 0 {
             // The new last line takes over "no final newline".

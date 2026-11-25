@@ -75,11 +75,11 @@ pub(super) fn summary<'a>(
     }
     let sample_set = match sets.len() {
         0 => None,
-        1 => match sets.into_iter().next().unwrap() {
-            SampleSet::Normal => Some("normal"),
-            SampleSet::Soft => Some("soft"),
-            SampleSet::Drum => Some("drum"),
-        },
+        1 => sets.into_iter().next().map(|set| match set {
+            SampleSet::Normal => "normal",
+            SampleSet::Soft => "soft",
+            SampleSet::Drum => "drum",
+        }),
         _ => Some("mixed"),
     };
     let addition_state = |kind: Hitsound| -> &'static str {
@@ -108,23 +108,27 @@ pub(super) fn summary<'a>(
     let object = match anchored.len() {
         0 => "No object".into(),
         1 => {
-            let moment = &hits.moments()[*anchored.iter().next().unwrap()];
-            match moment.place() {
-                Place::Circle(_) => "Circle",
-                Place::SpinnerEnd(_) => "Spinner end",
-                Place::SliderNode { node: 0, .. } => "Slider head",
-                Place::SliderNode { object, .. }
-                    if hits.bodies().iter().any(|body| {
-                        body.object() == object
-                            && (body.end().ms() - moment.time().ms()).abs() < 0.001
-                    }) =>
-                {
-                    "Slider end"
+            if let Some(&idx) = anchored.iter().next() {
+                let moment = &hits.moments()[idx];
+                match moment.place() {
+                    Place::Circle(_) => "Circle",
+                    Place::SpinnerEnd(_) => "Spinner end",
+                    Place::SliderNode { node: 0, .. } => "Slider head",
+                    Place::SliderNode { object, .. }
+                        if hits.bodies().iter().any(|body| {
+                            body.object() == object
+                                && (body.end().ms() - moment.time().ms()).abs() < 0.001
+                        }) =>
+                    {
+                        "Slider end"
+                    }
+                    Place::SliderNode { .. } => "Slider repeat",
+                    Place::NoObject => "No object",
                 }
-                Place::SliderNode { .. } => "Slider repeat",
-                Place::NoObject => "No object",
+                .into()
+            } else {
+                "No object".into()
             }
-            .into()
         }
         count => format!("{count} object moments"),
     };

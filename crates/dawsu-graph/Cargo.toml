@@ -8,5 +8,5 @@ publish.workspace = true
 # UI-free, audio-free offline node-graph engine (Layer 4 · Engines).
 [dependencies]
 dawsu-foundation = { path = "../dawsu-foundation" }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
+serde = { workspace = true }
+serde_json = { workspace = true }

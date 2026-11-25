@@ -4,6 +4,8 @@ version = "0.1.0"
 edition.workspace = true
 
 [features]
+default = ["stem-separation"]
+stem-separation = ["dep:ort", "dep:reqwest", "dep:sha2", "dep:zip"]
 asio-local = ["dawsu-audio/asio-local"]
 
 [dependencies]
@@ -18,13 +20,13 @@ dawsu-keysounding = { path = "../dawsu-keysounding" }
 dawsu-graph = { path = "../dawsu-graph" }
 dawsu-graph-audio = { path = "../dawsu-graph-audio" }
 dawsu-editor-nodal = { path = "../dawsu-editor-nodal" }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-vorbis_rs = { version = "0.5.6", default-features = false }
-ort = { version = "2.0.0-rc.10", default-features = false, features = ["load-dynamic", "std"] }
-reqwest = { version = "0.13", default-features = false, features = ["blocking", "default-tls"] }
-sha2 = "0.10"
-zip = { version = "9.6", default-features = false, features = ["deflate"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+vorbis_rs = { workspace = true }
+ort = { workspace = true, optional = true }
+reqwest = { workspace = true, optional = true }
+sha2 = { workspace = true, optional = true }
+zip = { workspace = true, optional = true }
 
 [dev-dependencies]
 dawsu-test-support = { path = "../dawsu-test-support" }

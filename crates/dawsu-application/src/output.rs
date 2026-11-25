@@ -615,6 +615,11 @@ impl WritePlan {
         Ok(written.len())
     }
 }
+fn display_file_name(path: &Path) -> String {
+    path.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.display().to_string())
+}
 fn folder(source: &Source) -> Result<Vec<(String, Option<String>)>, String> {
     let root = source.path.parent().ok_or("Missing mapset folder")?;
     let mut result = Vec::new();
@@ -626,7 +631,7 @@ fn folder(source: &Source) -> Result<Vec<(String, Option<String>)>, String> {
         {
             let file = OsuFile::read(std::fs::read(&path).map_err(|e| e.to_string())?).file;
             result.push((
-                path.file_name().unwrap().to_string_lossy().to_string(),
+                display_file_name(&path),
                 file.value("Metadata", "Version"),
             ));
         }
@@ -818,9 +823,9 @@ pub(super) fn generate_report_with_options_and_format(
     }
 }
 pub fn new_diff(source: &Source, name: &str) -> Result<WritePlan, String> {
-    match dawsu_hitsounding::generate::new_hitsound_diff(&source.file,&source.path.file_name().unwrap().to_string_lossy(),name,&folder(source)?){
+    match dawsu_hitsounding::generate::new_hitsound_diff(&source.file, &display_file_name(&source.path), name, &folder(source)?) {
         NewDiff::Planned{file,file_name}=>{
-            let target_path = source.path.parent().unwrap().join(file_name);
+            let target_path = source.path.parent().ok_or_else(|| "Missing mapset folder".to_string())?.join(file_name);
             Ok(WritePlan{label:"New hitsound difficulty".into(),mixes:Vec::new(),pending:Vec::new(),ledger:None,combinations:Vec::new(),targets:Vec::new(),generation:None,generated:None,include_slider_audio:false,files:vec![PlannedFile::new(target_path.clone(),file,None)],details:vec!["All gameplay objects are removed in the new difficulty; the source stays unchanged.".into()],hs_mode_targets:vec![target_path],sample_warnings:Vec::new(),export_index_schema:Default::default(),tick_writes:Default::default(),source:source.path.clone(),version:source.version})
         },other=>Err(crate::refusals::new_difficulty(&other))
     }
@@ -1014,7 +1019,7 @@ fn copy_after(
                 });
                 plan.details.push(format!(
                     "{}: {} matched, {} unmatched source moments",
-                    path.file_name().unwrap().to_string_lossy(),
+                    display_file_name(&path),
                     target.matched,
                     target.dropped.len()
                 ));
@@ -1024,7 +1029,7 @@ fn copy_after(
                         .collect::<Vec<_>>().join(", ");
                     plan.details.push(format!(
                         "{} · {} ms: source at {} ms won; replaced {displaced}.",
-                        path.file_name().unwrap().to_string_lossy(),
+                        display_file_name(&path),
                         collision.target_time.ms(),
                         collision.winning_source_time.ms(),
                     ));
@@ -1033,13 +1038,13 @@ fn copy_after(
                     let noun = if target.merged == 1 { "hit point" } else { "hit points" };
                     plan.details.push(format!(
                         "{}: {} {noun} merged nearby source hits.",
-                        path.file_name().unwrap().to_string_lossy(), target.merged,
+                        display_file_name(&path), target.merged,
                     ));
                 }
                 if target.kept_from_silent > 0 {
                     plan.details.push(format!(
                         "{}: {} hit points kept their own sound to avoid a silent hitnormal.",
-                        path.file_name().unwrap().to_string_lossy(), target.kept_from_silent,
+                        display_file_name(&path), target.kept_from_silent,
                     ));
                 }
                 plan.mixes.extend(mixes.staged);
