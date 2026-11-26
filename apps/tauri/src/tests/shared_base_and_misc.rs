@@ -44,10 +44,15 @@ fn rejected_output_settings_keep_the_device_preferences_and_transport() {
 
     let sent = json!({"kind": "output_settings", "backend": "system", "device_id": "system:test", "ms": 0});
     serde_json::from_value::<Action>(sent).unwrap().run(&mut app);
-    assert!(app.error().unwrap().contains("10 and 500"));
+    assert!(app.error().unwrap().contains("2 and 500"));
     assert_eq!(app.position_ms(), 350.0);
     assert_eq!((app.locator_left(), app.locator_right(), app.cycle_enabled()), (200.0, 450.0, true));
     assert_eq!(app.song_offset(), -17.0);
+    assert_eq!(serde_json::to_vec(app.preferences()).unwrap(), saved);
+
+    let sent_mme = json!({"kind": "output_settings", "backend": "mme", "device_id": "mme:test", "ms": 5});
+    serde_json::from_value::<Action>(sent_mme).unwrap().run(&mut app);
+    assert!(app.error().unwrap().contains("10 and 500"));
     assert_eq!(serde_json::to_vec(app.preferences()).unwrap(), saved);
 
     let restored: dawsu_application::Preferences = serde_json::from_slice(&saved).unwrap();

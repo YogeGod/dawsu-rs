@@ -75,13 +75,15 @@ test("Audio configures backend, qualified device and buffer together when transp
   await runInContext("pending", context);
   const backend = control("Output backend");
   assert.deepEqual(backend.children.map(option => option.textContent), ["WASAPI", "MME", "ASIO"]);
+  const buffer = control("Requested buffer (ms)");
+  assert.equal(buffer.min, "2");
   backend.value = "mme";
   backend.listeners.get("change")();
   await runInContext("pending", context);
   assert.deepEqual(calls.at(-1), ["audio_outputs", {backend: "mme"}]);
+  assert.equal(buffer.min, "10");
   assert.deepEqual(choice().children.map(option => option.textContent), ["Device default", "Speakers"]);
   choice().value = "mme:speakers";
-  const buffer = control("Requested buffer (ms)");
   assert.equal(buffer.value, 30);
   buffer.value = "40";
   apply().listeners.get("click")();
@@ -92,6 +94,7 @@ test("Audio configures backend, qualified device and buffer together when transp
   backend.value = "asio";
   backend.listeners.get("change")();
   await runInContext("pending", context);
+  assert.equal(buffer.min, "2");
   assert.equal(choice().children[0].textContent, "Choose an ASIO driver");
   assert.equal(apply().disabled, true);
   choice().value = "asio:speakers";

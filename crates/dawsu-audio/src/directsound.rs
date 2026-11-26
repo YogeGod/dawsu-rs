@@ -91,7 +91,7 @@ pub(super) fn open(
     errors: Arc<AtomicU64>,
 ) -> Result<NativeStream, String> {
     let buffer_ms = buffer_ms.unwrap_or(DEFAULT_BUFFER_MS);
-    validate_buffer_ms(buffer_ms)?;
+    validate_buffer_ms(crate::OutputBackend::DirectSound, buffer_ms)?;
     let (guid, name) = match device {
         Some(id) => {
             let device = enumerate_devices()?
@@ -117,6 +117,7 @@ pub(super) fn open(
                 }
             };
             if ready.send(Ok(())).is_ok() {
+                let _rt = crate::rt_thread::promote_current_thread();
                 run(
                     &buffer.buffer,
                     &mut scratch,

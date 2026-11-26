@@ -304,9 +304,10 @@
 
   async function applyAudioOutput() {
     if (audioLocked || !audioConfig || audioError) return;
+    const minMs = selectedBackend === "mme" || selectedBackend === "direct_sound" ? 10 : 2;
     const ms = bufferMs === "" ? null : Number(bufferMs);
-    if (ms !== null && (!Number.isInteger(ms) || ms < 10 || ms > 500)) {
-      audioError = "Buffer must be between 10 and 500 ms.";
+    if (ms !== null && (!Number.isInteger(ms) || ms < minMs || ms > 500)) {
+      audioError = `Buffer must be between ${minMs} and 500 ms.`;
       return;
     }
     try {

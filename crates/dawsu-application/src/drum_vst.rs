@@ -3,9 +3,9 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
-use std::sync::{Arc, RwLock, mpsc};
+use std::sync::{Arc, Mutex, RwLock};
 
-use dawsu_audio::LiveAudioSource;
+use dawsu_audio::{LiveAudioSource, SpscConsumer, SpscProducer, spsc_ring};
 use dawsu_audio_instruments::{MAX_EVENTS, ShmChannel};
 pub use dawsu_audio_instruments::ShmEvent;
 use dawsu_foundation::{Hitsound, SampleIdentity, Sound};
@@ -49,6 +49,9 @@ impl DrumBlockProcessor for ShmChannel {
     }
 }
 
+const PREVIEW_RING_CAPACITY: usize = 256;
+const MAX_ACTIVE_RELEASES: usize = 128;
+
 /// UI/Application-side handle for controlling a live VST3 drum instrument without locking
 /// the audio thread.
 #[derive(Debug)]
@@ -61,7 +64,7 @@ pub struct DrumVstLiveHandle {
     schedule: Arc<RwLock<Vec<DrumMidiCue>>>,
     /// Lock-free 128-note choke group table (`0` = no choke group, `1..=255` = choke group ID).
     choke_groups: Arc<[AtomicU8; 128]>,
-    preview_tx: mpsc::SyncSender<(u8, u8)>,
+    preview_tx: Mutex<SpscProducer<(u8, u8), PREVIEW_RING_CAPACITY>>,
     routed_notes: HashMap<SampleIdentity, u8>,
     muted_vst_lanes: HashSet<SampleIdentity>,
 }
@@ -78,7 +81,7 @@ impl DrumVstLiveHandle {
         let enabled_flag = Arc::new(AtomicBool::new(enabled));
         let schedule = Arc::new(RwLock::new(Vec::new()));
         let choke_groups: Arc<[AtomicU8; 128]> = Arc::new(std::array::from_fn(|_| AtomicU8::new(0)));
-        let (preview_tx, preview_rx) = mpsc::sync_channel(128);
+        let (preview_tx, preview_rx) = spsc_ring::<(u8, u8), PREVIEW_RING_CAPACITY>();
         let handle = Self {
             instance_id,
             plugin_name,
@@ -87,7 +90,7 @@ impl DrumVstLiveHandle {
             enabled: enabled_flag.clone(),
             schedule: schedule.clone(),
             choke_groups: choke_groups.clone(),
-            preview_tx,
+            preview_tx: Mutex::new(preview_tx),
             routed_notes: HashMap::new(),
             muted_vst_lanes: HashSet::new(),
         };
@@ -97,8 +100,8 @@ impl DrumVstLiveHandle {
             schedule,
             choke_groups,
             preview_rx,
-            events: Vec::with_capacity(128),
-            active_releases: Vec::with_capacity(32),
+            events: Vec::with_capacity(MAX_EVENTS),
+            active_releases: Vec::with_capacity(MAX_ACTIVE_RELEASES),
             needs_reset: false,
             last_block_end_ms: None,
         };
@@ -164,7 +167,8 @@ impl DrumVstLiveHandle {
 
     pub fn preview(&self, note: u8, velocity: u8) {
         if self.is_enabled() {
-            let _ = self.preview_tx.try_send((note & 0x7F, velocity.clamp(1, 127)));
+            let mut tx = self.preview_tx.lock().unwrap_or_else(|e| e.into_inner());
+            let _ = tx.try_push((note & 0x7F, velocity.clamp(1, 127)));
         }
     }
 }
@@ -175,7 +179,7 @@ pub struct DrumVstLiveSource {
     enabled: Arc<AtomicBool>,
     schedule: Arc<RwLock<Vec<DrumMidiCue>>>,
     choke_groups: Arc<[AtomicU8; 128]>,
-    preview_rx: mpsc::Receiver<(u8, u8)>,
+    preview_rx: SpscConsumer<(u8, u8), PREVIEW_RING_CAPACITY>,
     events: Vec<ShmEvent>,
     /// `(midi_note, frames_remaining_until_note_off)` — 100 ms release window like v3.1.4.
     active_releases: Vec<(u8, usize)>,
@@ -230,7 +234,7 @@ impl DrumVstLiveSource {
         if let Some(existing) = self.active_releases.iter_mut().find(|(n, _)| *n == note) {
             existing.1 = offset + effective_release;
             self.push_event(offset, NOTE_OFF_CH10, note, 0);
-        } else {
+        } else if self.active_releases.len() < self.active_releases.capacity() {
             self.active_releases.push((note, offset + effective_release));
         }
         self.push_event(offset, NOTE_ON_CH10, note, velocity);
@@ -263,7 +267,7 @@ impl LiveAudioSource for DrumVstLiveSource {
         }
         if !self.enabled.load(Ordering::Relaxed) {
             // Drain any stale preview events while disabled and return silence immediately.
-            while self.preview_rx.try_recv().is_ok() {}
+            while self.preview_rx.try_pop().is_some() {}
             if !self.active_releases.is_empty() || self.needs_reset {
                 self.active_releases.clear();
                 self.needs_reset = false;
@@ -300,7 +304,7 @@ impl LiveAudioSource for DrumVstLiveSource {
         }
 
         // Live preview / audition hits (work both while playing and while stopped).
-        while let Ok((note, velocity)) = self.preview_rx.try_recv() {
+        while let Some((note, velocity)) = self.preview_rx.try_pop() {
             self.trigger_note(0, note, velocity, release_frames, sample_rate);
         }
 

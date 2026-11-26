@@ -4,17 +4,25 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use std::fs::File;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, mpsc};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 use symphonia::core::codecs::audio::AudioDecoderOptions;
 use symphonia::core::formats::probe::Hint;
 use symphonia::core::formats::{FormatOptions, TrackType};
 use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
 
+pub mod denormal;
 #[cfg(windows)]
 mod directsound;
 #[cfg(windows)]
 mod mme;
+pub mod ring;
+mod rt_thread;
+#[cfg(windows)]
+mod wasapi_low_latency;
+
+pub use ring::{CachePadded, SpscConsumer, SpscProducer, spsc_ring};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -417,9 +425,21 @@ impl MasterLimiter {
     }
 }
 
+const MIN_PLAYBACK_SPEED: f64 = 0.25;
+const MAX_PLAYBACK_SPEED: f64 = 2.0;
+
+#[inline]
+fn clamp_speed(speed: f64) -> f64 {
+    if speed.is_finite() && speed > 0.0 {
+        speed.clamp(MIN_PLAYBACK_SPEED, MAX_PLAYBACK_SPEED)
+    } else {
+        1.0
+    }
+}
+
 struct SongStretcher {
     sample_rate: u32,
-    stretch: Option<signalsmith_stretch::Stretch>,
+    stretch: signalsmith_stretch::Stretch,
     in_buf: Vec<f32>,
     out_buf: Vec<f32>,
     discard_buf: Vec<f32>,
@@ -438,20 +458,28 @@ impl SongStretcher {
 
     fn new(sample_rate: u32) -> Self {
         let rate = sample_rate.max(1);
-        let stretch = signalsmith_stretch::Stretch::preset_default(2, rate);
+        let mut stretch = signalsmith_stretch::Stretch::preset_default(2, rate);
         let in_lat = stretch.input_latency();
         let out_lat = stretch.output_latency();
         // Pre-allocate worst-case buffers off the audio thread (up to 2.0x speed).
         let max_in_frames = in_lat
             .max(out_lat.saturating_mul(2))
-            .max(Self::CHUNK_OUT.saturating_mul(2))
-            .max(1);
+            .max(Self::CHUNK_OUT.saturating_mul(2) + 4)
+            .max(128);
+        let in_buf = vec![0.0; max_in_frames * 2];
+        let mut out_buf = vec![0.0; Self::CHUNK_OUT * 2];
+        let discard_buf = vec![0.0; out_lat.max(1) * 2];
+        // Pre-warm Signalsmith internal processing off-thread so the first callback allocates nothing.
+        let warm_frames = Self::CHUNK_OUT.min(128);
+        stretch.process(&in_buf[..warm_frames * 2], &mut out_buf[..warm_frames * 2]);
+        stretch.reset();
+        out_buf.fill(0.0);
         Self {
             sample_rate: rate,
-            stretch: Some(stretch),
-            in_buf: vec![0.0; max_in_frames * 2],
-            out_buf: vec![0.0; Self::CHUNK_OUT * 2],
-            discard_buf: vec![0.0; out_lat.max(1) * 2],
+            stretch,
+            in_buf,
+            out_buf,
+            discard_buf,
             out_pos: 0,
             out_len: 0,
             primed: false,
@@ -470,27 +498,28 @@ impl SongStretcher {
         self.in_frac = 0.0;
     }
 
-    fn fill_input(&mut self, song: &AudioClip, start_frame: f64, count: usize) {
-        let needed = count * 2;
-        if self.in_buf.len() < needed {
-            self.in_buf.resize(needed, 0.0);
-        }
+    fn fill_input(&mut self, song: &AudioClip, start_frame: f64, count: usize) -> usize {
+        let cap_frames = self.in_buf.len() / 2;
+        debug_assert!(
+            count <= cap_frames,
+            "SongStretcher::in_buf capacity exceeded ({count} > {cap_frames})"
+        );
+        let frames = count.min(cap_frames);
         let ratio = song.sample_rate as f64 / self.sample_rate as f64;
-        for i in 0..count {
+        for i in 0..frames {
             let src_frame = (start_frame + i as f64) * ratio;
             self.in_buf[i * 2] = song.sample(src_frame, 0);
             self.in_buf[i * 2 + 1] = song.sample(src_frame, 1);
         }
+        frames
     }
 
     fn prime(&mut self, song: &AudioClip, song_time_ms: f64, speed: f64) {
+        let speed = clamp_speed(speed);
         let sample_rate = self.sample_rate;
-        let stretch = self
-            .stretch
-            .get_or_insert_with(|| signalsmith_stretch::Stretch::preset_default(2, sample_rate));
-        stretch.reset();
-        let in_lat = stretch.input_latency();
-        let out_lat = stretch.output_latency();
+        self.stretch.reset();
+        let in_lat = self.stretch.input_latency();
+        let out_lat = self.stretch.output_latency();
 
         let base_frame = song_time_ms * sample_rate as f64 / 1000.0;
         // Discarding `out_lat` output frames below aligns output frame 0 directly to `base_frame`
@@ -498,26 +527,25 @@ impl SongStretcher {
         let start_in = base_frame;
 
         if in_lat > 0 {
-            self.fill_input(song, start_in, in_lat);
-            if let Some(stretch) = self.stretch.as_mut() {
-                stretch.seek(&self.in_buf[..in_lat * 2], speed);
-            }
+            let in_frames = self.fill_input(song, start_in, in_lat);
+            self.stretch.seek(&self.in_buf[..in_frames * 2], speed);
+            self.read_frame = start_in + in_frames as f64;
+        } else {
+            self.read_frame = start_in;
         }
-        self.read_frame = start_in + in_lat as f64;
 
         if out_lat > 0 {
-            let discard_in = (out_lat as f64 * speed).round() as usize;
-            self.fill_input(song, self.read_frame, discard_in);
-            let discard_samples = out_lat * 2;
-            if self.discard_buf.len() < discard_samples {
-                self.discard_buf.resize(discard_samples, 0.0);
-            }
-            if let Some(stretch) = self.stretch.as_mut() {
-                stretch.process(
-                    &self.in_buf[..discard_in * 2],
-                    &mut self.discard_buf[..discard_samples],
-                );
-            }
+            let discard_frames = out_lat.min(self.discard_buf.len() / 2);
+            debug_assert!(
+                out_lat <= self.discard_buf.len() / 2,
+                "SongStretcher::discard_buf capacity exceeded"
+            );
+            let req_discard_in = (discard_frames as f64 * speed).round() as usize;
+            let discard_in = self.fill_input(song, self.read_frame, req_discard_in);
+            self.stretch.process(
+                &self.in_buf[..discard_in * 2],
+                &mut self.discard_buf[..discard_frames * 2],
+            );
             self.read_frame += discard_in as f64;
         }
 
@@ -531,6 +559,7 @@ impl SongStretcher {
     }
 
     fn next_frame(&mut self, song: &AudioClip, song_time_ms: f64, speed: f64) -> [f32; 2] {
+        let speed = clamp_speed(speed);
         let song_ptr = song as *const AudioClip as usize;
         if !self.primed
             || self.primed_song_ptr != song_ptr
@@ -542,16 +571,14 @@ impl SongStretcher {
 
         if self.out_pos >= self.out_len {
             let in_exact = self.in_frac + Self::CHUNK_OUT as f64 * speed;
-            let in_frames = in_exact.floor() as usize;
-            self.in_frac = in_exact - in_frames as f64;
-            self.fill_input(song, self.read_frame, in_frames);
+            let req_in = in_exact.floor() as usize;
+            self.in_frac = in_exact - req_in as f64;
+            let in_frames = self.fill_input(song, self.read_frame, req_in);
             self.read_frame += in_frames as f64;
-            if let Some(stretch) = self.stretch.as_mut() {
-                stretch.process(
-                    &self.in_buf[..in_frames * 2],
-                    &mut self.out_buf[..Self::CHUNK_OUT * 2],
-                );
-            }
+            self.stretch.process(
+                &self.in_buf[..in_frames * 2],
+                &mut self.out_buf[..Self::CHUNK_OUT * 2],
+            );
             self.out_pos = 0;
             self.out_len = Self::CHUNK_OUT;
         }
@@ -713,11 +740,7 @@ impl Mixer {
         let block_samples = Self::LIVE_BLOCK_FRAMES * out_channels;
         for block in out.chunks_mut(block_samples) {
             let block_frames = block.len() / out_channels;
-            let block_speed = if self.speed.is_finite() && self.speed > 0.0 {
-                self.speed
-            } else {
-                1.0
-            };
+            let block_speed = clamp_speed(self.speed);
             let has_live = if block_frames > 0 {
                 if let Some(source) = self.live_source.as_mut() {
                     let left = &mut self.live_left[..block_frames];
@@ -775,15 +798,11 @@ impl Mixer {
                     }
                     let position = self.position_ms;
                     let cues = &self.cues;
-                    let speed = self.speed;
+                    let speed = clamp_speed(self.speed);
                     self.active_cues
                         .retain(|i| position < cue_end(&cues[*i], speed));
                 }
-                let speed = if self.speed.is_finite() && self.speed > 0.0 {
-                    self.speed
-                } else {
-                    1.0
-                };
+                let speed = clamp_speed(self.speed);
                 let stretched_song_frame = if self.playing && self.keep_pitch && (speed - 1.0).abs() > 1e-6 {
                     self.song.as_ref().map(|song| {
                         self.stretcher.next_frame(
@@ -807,6 +826,10 @@ impl Mixer {
                     1.0
                 };
                 for (channel, value) in frame.iter_mut().enumerate() {
+                    if out_channels > 2 && channel >= 2 {
+                        *value = 0.0;
+                        continue;
+                    }
                     let mut song_mix = 0.0;
                     let mut hs_mix = 0.0;
                     if self.playing {
@@ -836,7 +859,7 @@ impl Mixer {
                                 continue;
                             }
                             let mut source =
-                                elapsed / self.speed * cue.clip.sample_rate as f64 / 1000.0;
+                                elapsed / speed * cue.clip.sample_rate as f64 / 1000.0;
                             if let Some(end) = cue.end_ms {
                                 if self.position_ms >= end {
                                     continue;
@@ -859,10 +882,8 @@ impl Mixer {
                             (live_l + live_r) * 0.5
                         } else if channel == 0 {
                             live_l
-                        } else if channel == 1 {
-                            live_r
                         } else {
-                            0.0
+                            live_r
                         };
                         hs_mix += live_sample * self.hitsound_gain;
                     }
@@ -906,6 +927,7 @@ struct Schedule {
 
 impl Schedule {
     fn prepare(song: Option<Arc<AudioClip>>, mut cues: Vec<ScheduledSound>, speed: f64) -> Self {
+        let speed = clamp_speed(speed);
         cues.sort_by(|a, b| a.at_ms.total_cmp(&b.at_ms));
         let active = Vec::with_capacity(cues.len());
         let index = CueIndex::build(&cues, speed);
@@ -978,22 +1000,34 @@ fn collect_retired(slots: &mut Vec<Retired>) -> bool {
     !slots.is_empty()
 }
 
-const MAX_COMMANDS_PER_BUFFER: usize = 16;
+const CMD_RING_CAPACITY: usize = 256;
+const RETIRE_LIVE_CAPACITY: usize = 64;
+const MAX_COMMANDS_PER_BUFFER: usize = 64;
 
-fn validate_buffer_ms(ms: u32) -> Result<(), String> {
-    if (10..=500).contains(&ms) {
+/// Inclusive `[min, max]` requested buffer bounds (in milliseconds) per backend.
+pub fn buffer_ms_range(backend: OutputBackend) -> (u32, u32) {
+    match backend {
+        OutputBackend::System | OutputBackend::Asio => (2, 500),
+        OutputBackend::Mme | OutputBackend::DirectSound => (10, 500),
+    }
+}
+
+pub fn validate_buffer_ms(backend: OutputBackend, ms: u32) -> Result<(), String> {
+    let (min, max) = buffer_ms_range(backend);
+    if (min..=max).contains(&ms) {
         Ok(())
     } else {
-        Err("Enter an audio buffer between 10 and 500 ms.".into())
+        Err(format!("Enter an audio buffer between {min} and {max} ms."))
     }
 }
 
 fn buffer_request(
+    backend: OutputBackend,
     ms: u32,
     rate: cpal::SampleRate,
     supported: &cpal::SupportedBufferSize,
 ) -> Result<cpal::BufferSize, String> {
-    validate_buffer_ms(ms)?;
+    validate_buffer_ms(backend, ms)?;
     let frames = ((u64::from(ms) * u64::from(rate) + 500) / 1000) as u32;
     if let cpal::SupportedBufferSize::Range { min, max } = *supported
         && !(min..=max).contains(&frames)
@@ -1003,6 +1037,12 @@ fn buffer_request(
         ));
     }
     Ok(cpal::BufferSize::Fixed(frames))
+}
+
+#[doc(hidden)]
+pub struct PreparedLoad {
+    schedule: Schedule,
+    slot: Retired,
 }
 
 enum Command {
@@ -1018,22 +1058,67 @@ enum Command {
     Offset(f64),
     KeepPitch(bool),
 }
+
+#[derive(Default)]
+pub(crate) struct AudioTelemetry {
+    pub(crate) position: CachePadded<AtomicU64>,
+    pub(crate) playing: CachePadded<AtomicBool>,
+    pub(crate) command_seq: CachePadded<AtomicU64>,
+    pub(crate) peak: CachePadded<AtomicU32>,
+    pub(crate) master_peak_lr: CachePadded<AtomicU64>,
+    pub(crate) master_rms_lr: CachePadded<AtomicU64>,
+    pub(crate) phase_corr: CachePadded<AtomicU32>,
+    pub(crate) bus_peaks: CachePadded<AtomicU64>,
+    pub(crate) underruns: CachePadded<AtomicU64>,
+    pub(crate) observed_buffer_frames: CachePadded<AtomicU32>,
+}
+
+struct EngineHandles {
+    cmd_tx: SpscProducer<Command, CMD_RING_CAPACITY>,
+    retire_live_rx: SpscConsumer<Box<dyn LiveAudioSource>, RETIRE_LIVE_CAPACITY>,
+    telemetry: Arc<AudioTelemetry>,
+}
+
+fn build_render_parts(
+    sample_rate: u32,
+    channels: usize,
+    rt_promotion: bool,
+    telemetry: Option<Arc<AudioTelemetry>>,
+) -> (StreamRender, EngineHandles) {
+    let (cmd_tx, cmd_rx) = spsc_ring::<Command, CMD_RING_CAPACITY>();
+    let (retire_live_tx, retire_live_rx) =
+        spsc_ring::<Box<dyn LiveAudioSource>, RETIRE_LIVE_CAPACITY>();
+    let telemetry = telemetry.unwrap_or_else(|| Arc::new(AudioTelemetry::default()));
+    let render = StreamRender::new(
+        sample_rate,
+        channels,
+        cmd_rx,
+        retire_live_tx,
+        Arc::clone(&telemetry),
+    )
+    .with_rt_promotion(rt_promotion);
+    (
+        render,
+        EngineHandles {
+            cmd_tx,
+            retire_live_rx,
+            telemetry,
+        },
+    )
+}
+
 pub struct AudioEngine {
     _stream: OutputStream,
     backend: OutputBackend,
     sample_rate: u32,
     effective_buffer_ms: Option<u32>,
-    send: mpsc::Sender<Command>,
+    cmd_tx: Mutex<SpscProducer<Command, CMD_RING_CAPACITY>>,
     retirements: Mutex<Vec<Retired>>,
-    retired_live_sources: Mutex<mpsc::Receiver<Box<dyn LiveAudioSource>>>,
+    retired_live_sources: Mutex<SpscConsumer<Box<dyn LiveAudioSource>, RETIRE_LIVE_CAPACITY>>,
     auditions: Mutex<Vec<Arc<AudioClip>>>,
     listen: ListenSlot,
-    position: Arc<AtomicU64>,
-    playing: Arc<AtomicBool>,
-    command_seq: Arc<AtomicU64>,
+    telemetry: Arc<AudioTelemetry>,
     pub errors: Arc<AtomicU64>,
-    pub peak: Arc<AtomicU32>,
-    pub bus_peaks: Arc<AtomicU64>,
     pub device_name: String,
     device_id: Option<String>,
 }
@@ -1044,20 +1129,14 @@ impl AudioEngine {
 
     /// Requests a device buffer in milliseconds. The host chooses the actual callback size.
     pub fn open_with_buffer(device_name: Option<&str>, buffer_ms: Option<u32>) -> Result<Self, String> {
-        Self::open_cpal(
-            OutputBackend::System,
-            cpal::default_host(),
-            device_name,
-            None,
-            buffer_ms,
-        )
+        Self::open_system(device_name, None, buffer_ms)
     }
 
     pub fn open_output(
         backend: OutputBackend, device_id: Option<&str>, buffer_ms: Option<u32>,
     ) -> Result<Self, String> {
         if backend == OutputBackend::System {
-            return Self::open_cpal(backend, cpal::default_host(), None, device_id, buffer_ms);
+            return Self::open_system(None, device_id, buffer_ms);
         }
         if backend == OutputBackend::Asio {
             #[cfg(all(windows, feature = "asio-local"))]
@@ -1076,20 +1155,10 @@ impl AudioEngine {
         #[cfg(windows)]
         {
             if let Some(ms) = buffer_ms {
-                validate_buffer_ms(ms)?;
+                validate_buffer_ms(backend, ms)?;
             }
-            let (send, receive) = mpsc::channel();
-            let (retire_live_tx, retire_live_rx) = mpsc::sync_channel(16);
-            let position = Arc::new(AtomicU64::new(0));
-            let playing = Arc::new(AtomicBool::new(false));
-            let command_seq = Arc::new(AtomicU64::new(0));
             let errors = Arc::new(AtomicU64::new(0));
-            let peak = Arc::new(AtomicU32::new(0));
-            let bus_peaks = Arc::new(AtomicU64::new(0));
-            let mut state = StreamRender::new(NATIVE_SAMPLE_RATE, 2, receive, retire_live_tx,
-                position.clone(), playing.clone(), peak.clone())
-                .with_bus_peaks(bus_peaks.clone())
-                .with_command_seq(command_seq.clone());
+            let (mut state, handles) = build_render_parts(NATIVE_SAMPLE_RATE, 2, false, None);
             let render = move |out: &mut [i16]| state.fill(out);
             let stream = match backend {
                 OutputBackend::Mme => mme::open(device_id, buffer_ms, render, errors.clone()),
@@ -1103,15 +1172,80 @@ impl AudioEngine {
                 device_name: stream.name.clone(),
                 device_id: device_id.map(str::to_owned),
                 _stream: OutputStream::Native { _stream: stream },
-                send, position, playing, command_seq, errors, peak, bus_peaks,
+                cmd_tx: Mutex::new(handles.cmd_tx),
                 retirements: Mutex::new(Vec::new()),
-                retired_live_sources: Mutex::new(retire_live_rx),
+                retired_live_sources: Mutex::new(handles.retire_live_rx),
                 auditions: Mutex::new(Vec::new()),
                 listen: ListenSlot::default(),
+                telemetry: handles.telemetry,
+                errors,
             })
         }
         #[cfg(not(windows))]
         Err(format!("{} output is available only on Windows", backend.label()))
+    }
+
+    fn open_system(
+        device_name: Option<&str>,
+        device_id: Option<&str>,
+        buffer_ms: Option<u32>,
+    ) -> Result<Self, String> {
+        if let Some(ms) = buffer_ms {
+            validate_buffer_ms(OutputBackend::System, ms)?;
+        }
+        #[cfg(windows)]
+        if let Ok(engine) = Self::open_wasapi_low_latency(device_name, device_id, buffer_ms) {
+            return Ok(engine);
+        }
+        Self::open_cpal(
+            OutputBackend::System,
+            cpal::default_host(),
+            device_name,
+            device_id,
+            buffer_ms,
+        )
+    }
+
+    #[cfg(windows)]
+    fn open_wasapi_low_latency(
+        device_name: Option<&str>,
+        device_id: Option<&str>,
+        buffer_ms: Option<u32>,
+    ) -> Result<Self, String> {
+        let errors = Arc::new(AtomicU64::new(0));
+        let telemetry = Arc::new(AudioTelemetry::default());
+        let opened = wasapi_low_latency::open(
+            device_name,
+            device_id,
+            buffer_ms,
+            Arc::clone(&errors),
+            Arc::clone(&telemetry),
+            {
+                let telemetry_for_render = Arc::clone(&telemetry);
+                move |sample_rate, channels| {
+                    build_render_parts(sample_rate, channels, true, Some(telemetry_for_render))
+                }
+            },
+        )?;
+        let effective_ms = opened.stream.buffer_ms;
+        let device_name_out = opened.stream.name.clone();
+        Ok(Self {
+            _stream: OutputStream::Native {
+                _stream: opened.stream,
+            },
+            backend: OutputBackend::System,
+            sample_rate: opened.sample_rate,
+            effective_buffer_ms: Some(effective_ms),
+            cmd_tx: Mutex::new(opened.payload.cmd_tx),
+            retirements: Mutex::new(Vec::new()),
+            retired_live_sources: Mutex::new(opened.payload.retire_live_rx),
+            auditions: Mutex::new(Vec::new()),
+            listen: ListenSlot::default(),
+            telemetry,
+            errors,
+            device_name: device_name_out,
+            device_id: opened.device_id,
+        })
     }
 
     pub fn output_devices(backend: OutputBackend) -> Result<Vec<OutputDevice>, String> {
@@ -1147,7 +1281,15 @@ impl AudioEngine {
     }
 
     pub fn effective_buffer_ms(&self) -> Option<u32> {
-        self.effective_buffer_ms
+        if let Some(ms) = self.effective_buffer_ms {
+            return Some(ms);
+        }
+        let observed = self.telemetry.observed_buffer_frames.load(Ordering::Relaxed);
+        (observed > 0 && self.sample_rate > 0).then(|| {
+            ((u64::from(observed) * 1000 + u64::from(self.sample_rate) / 2)
+                / u64::from(self.sample_rate))
+            .max(1) as u32
+        })
     }
 
     pub fn device_id(&self) -> Option<&str> {
@@ -1162,7 +1304,7 @@ impl AudioEngine {
         buffer_ms: Option<u32>,
     ) -> Result<Self, String> {
         if let Some(ms) = buffer_ms {
-            validate_buffer_ms(ms)?;
+            validate_buffer_ms(backend, ms)?;
         }
         let device = if let Some(id) = device_id {
             let id = id.parse::<cpal::DeviceId>().map_err(|error| error.to_string())?;
@@ -1183,24 +1325,21 @@ impl AudioEngine {
         let device_id = device.id().ok().map(|id| id.to_string());
         let supported = device.default_output_config().map_err(|e| e.to_string())?;
         let mut config = supported.config();
-        if let Some(ms) = buffer_ms {
-            config.buffer_size = buffer_request(ms, config.sample_rate, supported.buffer_size())?;
-        }
-        let (send, receive) = mpsc::channel();
-        let (retire_live_tx, retire_live_rx) = mpsc::sync_channel(16);
-        let position = Arc::new(AtomicU64::new(0));
-        let playing = Arc::new(AtomicBool::new(false));
-        let command_seq = Arc::new(AtomicU64::new(0));
-        let errors = Arc::new(AtomicU64::new(0));
-        let peak = Arc::new(AtomicU32::new(0));
-        let bus_peaks = Arc::new(AtomicU64::new(0));
         let sample_rate = config.sample_rate;
-        let render = StreamRender::new(
-            sample_rate, config.channels as usize, receive, retire_live_tx,
-            position.clone(), playing.clone(), peak.clone(),
-        )
-        .with_bus_peaks(bus_peaks.clone())
-        .with_command_seq(command_seq.clone());
+        let mut fixed_buffer_ms = None;
+        if let Some(ms) = buffer_ms {
+            let req = buffer_request(backend, ms, sample_rate, supported.buffer_size())?;
+            if let cpal::BufferSize::Fixed(frames) = req {
+                fixed_buffer_ms = Some(
+                    ((u64::from(frames) * 1000 + u64::from(sample_rate.max(1)) / 2)
+                        / u64::from(sample_rate.max(1)))
+                    .max(1) as u32,
+                );
+            }
+            config.buffer_size = req;
+        }
+        let errors = Arc::new(AtomicU64::new(0));
+        let (render, handles) = build_render_parts(sample_rate, config.channels as usize, true, None);
         let stream = match supported.sample_format() {
             cpal::SampleFormat::F32 => stream::<f32>(&device, config, render, errors.clone()),
             cpal::SampleFormat::F64 => stream::<f64>(&device, config, render, errors.clone()),
@@ -1215,22 +1354,31 @@ impl AudioEngine {
             _stream: OutputStream::System { _stream: stream },
             backend,
             sample_rate,
-            effective_buffer_ms: None,
+            effective_buffer_ms: fixed_buffer_ms,
             retirements: Mutex::new(Vec::new()),
-            retired_live_sources: Mutex::new(retire_live_rx),
+            retired_live_sources: Mutex::new(handles.retire_live_rx),
             auditions: Mutex::new(Vec::new()),
             listen: ListenSlot::default(),
-            send,
-            position,
-            playing,
-            command_seq,
+            cmd_tx: Mutex::new(handles.cmd_tx),
+            telemetry: handles.telemetry,
             errors,
-            peak,
-            bus_peaks,
             device_name: name,
             device_id,
         })
     }
+
+    fn drain_retired_live_sources(&self) {
+        let mut live_rx = self
+            .retired_live_sources
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        while live_rx.try_pop().is_some() {}
+    }
+
+    fn send_command(&self, cmd: Command, critical: bool) {
+        send_command_with_retry(&self.cmd_tx, &self.retired_live_sources, cmd, critical);
+    }
+
     pub fn devices() -> Vec<String> {
         cpal::default_host()
             .output_devices()
@@ -1256,17 +1404,14 @@ impl AudioEngine {
         let mut retirements = self.retirements.lock().unwrap_or_else(|e| e.into_inner());
         collect_retired(&mut retirements);
         retirements.push(slot.clone());
-        let _ = self.send.send(Command::Load(schedule, slot));
+        drop(retirements);
+        self.send_command(Command::Load(schedule, slot), true);
     }
     /// Release completed schedules on the caller thread; request another poll
     /// if a callback has yet to hand one back.
     pub fn collect_retired(&self) -> bool {
         let mut slots = self.retirements.lock().unwrap_or_else(|e| e.into_inner());
-        let live_rx = self
-            .retired_live_sources
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        while live_rx.try_recv().is_ok() {}
+        self.drain_retired_live_sources();
         let listening = self.listen.collect();
         let mut auditions = self.auditions.lock().unwrap_or_else(|e| e.into_inner());
         auditions.retain(|clip| Arc::strong_count(clip) > 1);
@@ -1276,16 +1421,11 @@ impl AudioEngine {
 
     /// Installs or replaces the live audio source mixed ahead of the master limiter.
     ///
-    /// The previous source is sent back over a bounded non-blocking channel so it is
+    /// The previous source is sent back over a bounded SPSC retirement ring so it is
     /// dropped on the caller's thread rather than the real-time audio thread.
     pub fn set_live_source(&self, source: Option<Box<dyn LiveAudioSource>>) {
-        let live_rx = self
-            .retired_live_sources
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        while live_rx.try_recv().is_ok() {}
-        drop(live_rx);
-        let _ = self.send.send(Command::SetLiveSource(source));
+        self.drain_retired_live_sources();
+        self.send_command(Command::SetLiveSource(source), true);
     }
 
     /// Detaches any active live audio source.
@@ -1296,7 +1436,7 @@ impl AudioEngine {
     /// Plays `clip` in place of the current Listen clip; `None` stops Listen.
     pub fn listen(&self, clip: Option<Arc<AudioClip>>) {
         let clip = self.listen.start(clip);
-        let _ = self.send.send(Command::Listen(clip));
+        self.send_command(Command::Listen(clip), true);
     }
     /// Whether a Listen clip is still playing.
     pub fn is_listening(&self) -> bool {
@@ -1304,51 +1444,62 @@ impl AudioEngine {
     }
 
     pub fn play(&self, on: bool) {
-        let seq = self.command_seq.fetch_add(1, Ordering::AcqRel) + 1;
-        self.playing.store(on, Ordering::Release);
-        let _ = self.send.send(Command::Play(on, seq));
+        let seq = self.telemetry.command_seq.fetch_add(1, Ordering::AcqRel) + 1;
+        self.telemetry.playing.store(on, Ordering::Release);
+        self.send_command(Command::Play(on, seq), true);
     }
     pub fn seek(&self, ms: f64) {
         let clamped = if ms.is_finite() { ms.max(0.0) } else { 0.0 };
-        let seq = self.command_seq.fetch_add(1, Ordering::AcqRel) + 1;
-        self.position.store(clamped.to_bits(), Ordering::Release);
-        let _ = self.send.send(Command::Seek(clamped, seq));
+        let seq = self.telemetry.command_seq.fetch_add(1, Ordering::AcqRel) + 1;
+        self.telemetry.position.store(clamped.to_bits(), Ordering::Release);
+        self.send_command(Command::Seek(clamped, seq), true);
     }
     pub fn audition(&self, clip: Arc<AudioClip>, gain: f32) {
         let mut auditions = self.auditions.lock().unwrap_or_else(|e| e.into_inner());
         auditions.retain(|held| Arc::strong_count(held) > 1);
         auditions.push(clip.clone());
         drop(auditions);
-        let _ = self.send.send(Command::Audition(clip, gain));
+        self.send_command(Command::Audition(clip, gain), false);
     }
     pub fn gains(&self, song: f32, master: f32) {
-        let _ = self
-            .send
-            .send(Command::Gains(song.clamp(0.0, 1.0), master.clamp(0.2, 1.0)));
+        self.send_command(
+            Command::Gains(song.clamp(0.0, 1.0), master.clamp(0.2, 1.0)),
+            false,
+        );
     }
     pub fn hitsound_gain(&self, hitsound: f32) {
-        let _ = self
-            .send
-            .send(Command::HitsoundGain(hitsound.clamp(0.0, 2.0)));
+        self.send_command(Command::HitsoundGain(hitsound.clamp(0.0, 2.0)), false);
     }
     pub fn cycle(&self, range: Option<(f64, f64)>) {
-        let _ = self.send.send(Command::Cycle(range));
+        self.send_command(Command::Cycle(range), true);
     }
     pub fn offset(&self, ms: f64) {
-        let _ = self.send.send(Command::Offset(ms));
+        self.send_command(Command::Offset(ms), true);
     }
     pub fn keep_pitch(&self, enabled: bool) {
-        let _ = self.send.send(Command::KeepPitch(enabled));
+        self.send_command(Command::KeepPitch(enabled), true);
     }
     pub fn peaks(&self) -> (f32, f32, f32) {
-        let master = f32::from_bits(self.peak.load(Ordering::Relaxed));
-        let packed = self.bus_peaks.load(Ordering::Relaxed);
+        let master = f32::from_bits(self.telemetry.peak.load(Ordering::Relaxed));
+        let packed = self.telemetry.bus_peaks.load(Ordering::Relaxed);
         let song = f32::from_bits((packed >> 32) as u32);
         let hitsounds = f32::from_bits(packed as u32);
         (master, song, hitsounds)
     }
+    pub fn stereo_peaks(&self) -> (f32, f32) {
+        unpack_f32_pair(self.telemetry.master_peak_lr.load(Ordering::Relaxed))
+    }
+    pub fn stereo_rms(&self) -> (f32, f32) {
+        unpack_f32_pair(self.telemetry.master_rms_lr.load(Ordering::Relaxed))
+    }
+    pub fn phase_correlation(&self) -> f32 {
+        f32::from_bits(self.telemetry.phase_corr.load(Ordering::Relaxed))
+    }
+    pub fn underruns(&self) -> u64 {
+        self.telemetry.underruns.load(Ordering::Relaxed)
+    }
     pub fn position_ms(&self) -> f64 {
-        f64::from_bits(self.position.load(Ordering::Relaxed))
+        f64::from_bits(self.telemetry.position.load(Ordering::Relaxed))
     }
     pub fn is_playing(&self) -> bool {
         #[cfg(windows)]
@@ -1357,62 +1508,130 @@ impl AudioEngine {
         {
             return false;
         }
-        self.playing.load(Ordering::Relaxed)
+        self.telemetry.playing.load(Ordering::Relaxed)
     }
 }
+
+#[inline]
+fn pack_f32_pair(a: f32, b: f32) -> u64 {
+    let a = if a.is_finite() { a } else { 0.0 };
+    let b = if b.is_finite() { b } else { 0.0 };
+    ((a.to_bits() as u64) << 32) | (b.to_bits() as u64)
+}
+
+#[inline]
+fn unpack_f32_pair(packed: u64) -> (f32, f32) {
+    (
+        f32::from_bits((packed >> 32) as u32),
+        f32::from_bits(packed as u32),
+    )
+}
+
+fn send_command_with_retry(
+    cmd_tx: &Mutex<SpscProducer<Command, CMD_RING_CAPACITY>>,
+    retire_live_rx: &Mutex<SpscConsumer<Box<dyn LiveAudioSource>, RETIRE_LIVE_CAPACITY>>,
+    mut cmd: Command,
+    critical: bool,
+) {
+    if let Ok(mut live_rx) = retire_live_rx.lock() {
+        while live_rx.try_pop().is_some() {}
+    }
+    for attempt in 0..32 {
+        let pushed = {
+            let mut tx = cmd_tx.lock().unwrap_or_else(|e| e.into_inner());
+            tx.try_push(cmd)
+        };
+        match pushed {
+            Ok(()) => return,
+            Err(rejected) => {
+                if !critical {
+                    return;
+                }
+                cmd = rejected;
+                if attempt < 8 {
+                    std::thread::yield_now();
+                } else {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+            }
+        }
+    }
+}
+
 struct StreamRender {
     mixer: Mixer,
-    receive: mpsc::Receiver<Command>,
-    retire_live: mpsc::SyncSender<Box<dyn LiveAudioSource>>,
-    position: Arc<AtomicU64>,
-    playing: Arc<AtomicBool>,
-    peak: Arc<AtomicU32>,
-    bus_peaks: Option<Arc<AtomicU64>>,
-    command_seq: Option<Arc<AtomicU64>>,
+    receive: SpscConsumer<Command, CMD_RING_CAPACITY>,
+    retire_live: SpscProducer<Box<dyn LiveAudioSource>, RETIRE_LIVE_CAPACITY>,
+    telemetry: Arc<AudioTelemetry>,
     applied_seq: u64,
     channels: usize,
     scratch: Vec<f32>,
+    rt_promotion: bool,
+    rt_promoted: bool,
+    last_callback: Option<Instant>,
 }
 
 impl StreamRender {
     fn new(
         rate: u32,
         channels: usize,
-        receive: mpsc::Receiver<Command>,
-        retire_live: mpsc::SyncSender<Box<dyn LiveAudioSource>>,
-        position: Arc<AtomicU64>,
-        playing: Arc<AtomicBool>,
-        peak: Arc<AtomicU32>,
+        receive: SpscConsumer<Command, CMD_RING_CAPACITY>,
+        retire_live: SpscProducer<Box<dyn LiveAudioSource>, RETIRE_LIVE_CAPACITY>,
+        telemetry: Arc<AudioTelemetry>,
     ) -> Self {
+        let channels = channels.max(1);
         // Reused, frame-aligned scratch space. Callbacks never allocate sample buffers.
         let samples = (262144 / channels).max(1) * channels;
         Self {
             mixer: Mixer::new(rate),
             receive,
             retire_live,
-            position,
-            playing,
-            peak,
-            bus_peaks: None,
-            command_seq: None,
+            telemetry,
             applied_seq: 0,
             channels,
             scratch: vec![0.0; samples],
+            rt_promotion: false,
+            rt_promoted: false,
+            last_callback: None,
         }
     }
 
-    fn with_bus_peaks(mut self, bus_peaks: Arc<AtomicU64>) -> Self {
-        self.bus_peaks = Some(bus_peaks);
-        self
-    }
-
-    fn with_command_seq(mut self, command_seq: Arc<AtomicU64>) -> Self {
-        self.command_seq = Some(command_seq);
+    fn with_rt_promotion(mut self, enabled: bool) -> Self {
+        self.rt_promotion = enabled;
         self
     }
 
     fn fill<T: cpal::SizedSample + cpal::FromSample<f32>>(&mut self, out: &mut [T]) {
-        for command in self.receive.try_iter().take(MAX_COMMANDS_PER_BUFFER) {
+        let _denormal = denormal::DenormalGuard::enter();
+        if self.rt_promotion && !self.rt_promoted {
+            self.rt_promoted = true;
+            rt_thread::promote_callback_thread();
+        }
+        let total_frames = out.len() / self.channels;
+        if total_frames > 0 {
+            let _ = self.telemetry.observed_buffer_frames.compare_exchange(
+                0,
+                total_frames as u32,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            );
+            if self.rt_promotion {
+                let now = Instant::now();
+                let period_secs = total_frames as f64 / self.mixer.sample_rate.max(1) as f64;
+                if period_secs >= 0.002
+                    && let Some(prev) = self.last_callback
+                    && now.duration_since(prev).as_secs_f64() > period_secs * 1.8
+                {
+                    self.telemetry.underruns.fetch_add(1, Ordering::Relaxed);
+                }
+                self.last_callback = Some(now);
+            }
+        }
+
+        for _ in 0..MAX_COMMANDS_PER_BUFFER {
+            let Some(command) = self.receive.try_pop() else {
+                break;
+            };
             match command {
                 Command::Load(schedule, slot) => {
                     let old = schedule.swap_into(&mut self.mixer);
@@ -1420,7 +1639,7 @@ impl StreamRender {
                 }
                 Command::SetLiveSource(source) => {
                     if let Some(old) = self.mixer.set_live_source(source) {
-                        let _ = self.retire_live.try_send(old);
+                        let _ = self.retire_live.try_push(old);
                     }
                 }
                 Command::Play(on, seq) => {
@@ -1461,7 +1680,13 @@ impl StreamRender {
                 }
             }
         }
-        let mut highest = 0.0_f32;
+
+        let mut peak_l = 0.0_f32;
+        let mut peak_r = 0.0_f32;
+        let mut sum_l2 = 0.0_f64;
+        let mut sum_r2 = 0.0_f64;
+        let mut sum_lr = 0.0_f64;
+        let mut rendered_frames = 0_usize;
         self.mixer.song_peak = 0.0;
         self.mixer.hitsound_peak = 0.0;
         for chunk in out.chunks_mut(self.scratch.len()) {
@@ -1469,23 +1694,143 @@ impl StreamRender {
             self.mixer.render(buffer, self.channels);
             for (sample, value) in chunk.iter_mut().zip(buffer.iter()) {
                 *sample = T::from_sample(*value);
-                highest = highest.max(value.abs());
+            }
+            for frame in buffer.chunks_exact(self.channels) {
+                let l = frame[0];
+                let r = if self.channels >= 2 { frame[1] } else { l };
+                peak_l = peak_l.max(l.abs());
+                peak_r = peak_r.max(r.abs());
+                let lf = f64::from(l);
+                let rf = f64::from(r);
+                sum_l2 += lf * lf;
+                sum_r2 += rf * rf;
+                sum_lr += lf * rf;
+                rendered_frames += 1;
             }
         }
-        self.peak.store(highest.to_bits(), Ordering::Relaxed);
-        if let Some(bus) = &self.bus_peaks {
-            let packed = ((self.mixer.song_peak.to_bits() as u64) << 32)
-                | (self.mixer.hitsound_peak.to_bits() as u64);
-            bus.store(packed, Ordering::Relaxed);
-        }
-        let synced = self
-            .command_seq
-            .as_ref()
-            .is_none_or(|seq| self.applied_seq >= seq.load(Ordering::Acquire));
+        let highest = peak_l.max(peak_r);
+        self.telemetry.peak.store(highest.to_bits(), Ordering::Relaxed);
+        self.telemetry
+            .master_peak_lr
+            .store(pack_f32_pair(peak_l, peak_r), Ordering::Relaxed);
+        let frames_denom = rendered_frames.max(1) as f64;
+        let rms_l = (sum_l2 / frames_denom).sqrt() as f32;
+        let rms_r = (sum_r2 / frames_denom).sqrt() as f32;
+        self.telemetry
+            .master_rms_lr
+            .store(pack_f32_pair(rms_l, rms_r), Ordering::Relaxed);
+        let corr_denom = (sum_l2 * sum_r2).sqrt();
+        let phase_corr = if corr_denom > 1e-12 {
+            (sum_lr / corr_denom).clamp(-1.0, 1.0) as f32
+        } else {
+            0.0
+        };
+        let phase_corr = if phase_corr.is_finite() { phase_corr } else { 0.0 };
+        self.telemetry
+            .phase_corr
+            .store(phase_corr.to_bits(), Ordering::Relaxed);
+        let bus_packed = pack_f32_pair(self.mixer.song_peak, self.mixer.hitsound_peak);
+        self.telemetry.bus_peaks.store(bus_packed, Ordering::Relaxed);
+
+        let synced = self.applied_seq >= self.telemetry.command_seq.load(Ordering::Acquire);
         if synced {
-            self.position.store(self.mixer.position_ms.to_bits(), Ordering::Relaxed);
-            self.playing.store(self.mixer.playing, Ordering::Relaxed);
+            self.telemetry
+                .position
+                .store(self.mixer.position_ms.to_bits(), Ordering::Relaxed);
+            self.telemetry
+                .playing
+                .store(self.mixer.playing, Ordering::Relaxed);
         }
+    }
+}
+
+#[doc(hidden)]
+pub struct RtBenchHarness {
+    handles: EngineHandles,
+    retirements: Vec<Retired>,
+    render: StreamRender,
+}
+
+impl RtBenchHarness {
+    pub fn new(sample_rate: u32, channels: usize) -> Self {
+        let (render, handles) = build_render_parts(sample_rate, channels, false, None);
+        Self {
+            handles,
+            retirements: Vec::with_capacity(16),
+            render,
+        }
+    }
+
+    pub fn prepare_load(
+        &mut self,
+        song: Option<Arc<AudioClip>>,
+        cues: Vec<ScheduledSound>,
+        speed: f64,
+    ) -> PreparedLoad {
+        let slot = Arc::new(OnceLock::new());
+        self.retirements.push(slot.clone());
+        PreparedLoad {
+            schedule: Schedule::prepare(song, cues, speed),
+            slot,
+        }
+    }
+
+    pub fn push_prepared_load(&mut self, load: PreparedLoad) {
+        let _ = self
+            .handles
+            .cmd_tx
+            .try_push(Command::Load(load.schedule, load.slot));
+    }
+
+    pub fn play(&mut self, on: bool) {
+        let seq = self.handles.telemetry.command_seq.fetch_add(1, Ordering::AcqRel) + 1;
+        let _ = self.handles.cmd_tx.try_push(Command::Play(on, seq));
+    }
+
+    pub fn seek(&mut self, ms: f64) {
+        let seq = self.handles.telemetry.command_seq.fetch_add(1, Ordering::AcqRel) + 1;
+        let _ = self.handles.cmd_tx.try_push(Command::Seek(ms, seq));
+    }
+
+    pub fn cycle(&mut self, range: Option<(f64, f64)>) {
+        let _ = self.handles.cmd_tx.try_push(Command::Cycle(range));
+    }
+
+    pub fn keep_pitch(&mut self, on: bool) {
+        let _ = self.handles.cmd_tx.try_push(Command::KeepPitch(on));
+    }
+
+    pub fn audition(&mut self, clip: Arc<AudioClip>, gain: f32) {
+        let _ = self.handles.cmd_tx.try_push(Command::Audition(clip, gain));
+    }
+
+    pub fn listen(&mut self, clip: Option<Arc<AudioClip>>) {
+        let _ = self.handles.cmd_tx.try_push(Command::Listen(clip));
+    }
+
+    pub fn set_live_source(&mut self, source: Option<Box<dyn LiveAudioSource>>) {
+        let _ = self.handles.cmd_tx.try_push(Command::SetLiveSource(source));
+    }
+
+    pub fn fill(&mut self, out: &mut [f32]) {
+        self.render.fill(out);
+    }
+
+    pub fn drain_retired(&mut self) {
+        while self.handles.retire_live_rx.try_pop().is_some() {}
+        self.retirements.clear();
+    }
+
+    pub fn stereo_peaks(&self) -> (f32, f32) {
+        unpack_f32_pair(self.handles.telemetry.master_peak_lr.load(Ordering::Relaxed))
+    }
+
+    pub fn stereo_rms(&self) -> (f32, f32) {
+        unpack_f32_pair(self.handles.telemetry.master_rms_lr.load(Ordering::Relaxed))
+    }
+
+    pub fn phase_correlation(&self) -> f32 {
+        f32::from_bits(self.handles.telemetry.phase_corr.load(Ordering::Relaxed))
     }
 }
 
@@ -1557,21 +1902,77 @@ mod callback_benchmark {
 
     #[test]
     fn shared_renderer_produces_native_stereo_pcm_and_updates_telemetry() {
-        let (send, receive) = mpsc::channel();
-        let (retire_live_tx, _retire_live_rx) = mpsc::sync_channel(16);
-        let position = Arc::new(AtomicU64::new(0));
-        let playing = Arc::new(AtomicBool::new(false));
-        let peak = Arc::new(AtomicU32::new(0));
-        let mut render = StreamRender::new(48_000, 2, receive, retire_live_tx, position.clone(), playing, peak.clone());
-        send.send(Command::Seek(400.0, 1)).unwrap();
-        send.send(Command::Audition(Arc::new(AudioClip {
-            samples: vec![0.25; 2], channels: 1, sample_rate: 48_000,
-        }), 1.0)).unwrap();
+        let (mut send, receive) = spsc_ring::<Command, CMD_RING_CAPACITY>();
+        let (retire_live_tx, _retire_live_rx) =
+            spsc_ring::<Box<dyn LiveAudioSource>, RETIRE_LIVE_CAPACITY>();
+        let telemetry = Arc::new(AudioTelemetry::default());
+        let mut render = StreamRender::new(48_000, 2, receive, retire_live_tx, telemetry.clone());
+        assert!(send.try_push(Command::Seek(400.0, 1)).is_ok());
+        assert!(
+            send.try_push(Command::Audition(
+                Arc::new(AudioClip {
+                    samples: vec![0.25; 2],
+                    channels: 1,
+                    sample_rate: 48_000,
+                }),
+                1.0,
+            ))
+            .is_ok()
+        );
         let mut pcm = [0_i16; 4];
         render.fill(&mut pcm);
         assert_eq!(pcm, [8192; 4]);
-        assert_eq!(f32::from_bits(peak.load(Ordering::Relaxed)), 0.25);
-        assert_eq!(f64::from_bits(position.load(Ordering::Relaxed)), 400.0);
+        assert_eq!(
+            f32::from_bits(telemetry.peak.load(Ordering::Relaxed)),
+            0.25
+        );
+        assert_eq!(
+            unpack_f32_pair(telemetry.master_peak_lr.load(Ordering::Relaxed)),
+            (0.25, 0.25)
+        );
+        assert_eq!(
+            unpack_f32_pair(telemetry.master_rms_lr.load(Ordering::Relaxed)),
+            (0.25, 0.25)
+        );
+        assert!(
+            (f32::from_bits(telemetry.phase_corr.load(Ordering::Relaxed)) - 1.0).abs() < 1e-6
+        );
+        assert_eq!(
+            f64::from_bits(telemetry.position.load(Ordering::Relaxed)),
+            400.0
+        );
+    }
+
+    #[test]
+    fn send_command_never_drops_critical_stop_or_unload_under_full_ring() {
+        let (tx, mut rx) = spsc_ring::<Command, CMD_RING_CAPACITY>();
+        let (_retire_tx, retire_rx) =
+            spsc_ring::<Box<dyn LiveAudioSource>, RETIRE_LIVE_CAPACITY>();
+        let tx = Arc::new(Mutex::new(tx));
+        let retire_rx = Mutex::new(retire_rx);
+        {
+            let mut guard = tx.lock().unwrap();
+            for i in 0..CMD_RING_CAPACITY {
+                assert!(guard.try_push(Command::HitsoundGain(1.0)).is_ok(), "slot {i}");
+            }
+        }
+        let seen_stop = Arc::new(AtomicBool::new(false));
+        let seen_stop_reader = Arc::clone(&seen_stop);
+        let reader = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(5));
+            while let Some(cmd) = rx.try_pop() {
+                if let Command::Play(false, 99) = cmd {
+                    seen_stop_reader.store(true, Ordering::Release);
+                    break;
+                }
+                if rx.is_empty() {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+            }
+        });
+        send_command_with_retry(&tx, &retire_rx, Command::Play(false, 99), true);
+        reader.join().unwrap();
+        assert!(seen_stop.load(Ordering::Acquire));
     }
 
     #[cfg(windows)]
@@ -1606,12 +2007,45 @@ mod callback_benchmark {
                 wait_for(|| audio.position_ms() == 1000.0);
                 audio.play(true);
                 wait_for(|| audio.is_playing() && audio.position_ms() > 1000.0);
-                assert_eq!(audio.peak.load(Ordering::Relaxed), 0);
+                assert_eq!(audio.peaks().0.to_bits(), 0);
                 audio.play(false);
                 wait_for(|| !audio.is_playing());
                 assert_eq!(audio.errors.load(Ordering::Relaxed), 0, "{} stream errored", backend.label());
             }
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "opens Windows audio devices"]
+    fn wasapi_low_latency_shared_mode_negotiates_low_latency_without_underruns() {
+        use std::time::{Duration, Instant};
+
+        fn wait_for(condition: impl Fn() -> bool) {
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while !condition() {
+                assert!(Instant::now() < deadline, "WASAPI worker did not process command");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+
+        let audio = AudioEngine::open_output(OutputBackend::System, None, None)
+            .expect("default WASAPI output opens");
+        let eff = audio.effective_buffer_ms();
+        eprintln!(
+            "WASAPI default device '{}' ({} Hz) effective_buffer_ms={eff:?}",
+            audio.device_name,
+            audio.sample_rate()
+        );
+        assert!(eff.is_some_and(|ms| ms <= 10), "expected low-latency WASAPI buffer, got {eff:?}");
+        audio.seek(500.0);
+        wait_for(|| audio.position_ms() == 500.0);
+        audio.play(true);
+        wait_for(|| audio.is_playing() && audio.position_ms() > 500.0);
+        audio.play(false);
+        wait_for(|| !audio.is_playing());
+        assert_eq!(audio.errors.load(Ordering::Relaxed), 0);
+        assert_eq!(audio.underruns(), 0);
     }
 
     #[test]
@@ -1724,11 +2158,36 @@ mod buffer_tests {
     fn buffer_requests_use_frames_and_respect_reported_device_limits() {
         use cpal::{BufferSize, SupportedBufferSize};
         let limited = SupportedBufferSize::Range { min: 128, max: 512 };
-        assert_eq!(buffer_request(10, 48_000, &limited), Ok(BufferSize::Fixed(480)));
-        assert_eq!(buffer_request(11, 44_100, &SupportedBufferSize::Unknown), Ok(BufferSize::Fixed(485)));
-        assert!(buffer_request(30, 48_000, &limited).unwrap_err().contains("1440 frames"));
-        assert!(buffer_request(0, 48_000, &SupportedBufferSize::Unknown).is_err());
-        assert!(buffer_request(501, 48_000, &SupportedBufferSize::Unknown).is_err());
+        assert_eq!(
+            buffer_request(OutputBackend::System, 2, 48_000, &SupportedBufferSize::Unknown),
+            Ok(BufferSize::Fixed(96))
+        );
+        assert!(
+            buffer_request(OutputBackend::Mme, 5, 48_000, &SupportedBufferSize::Unknown)
+                .unwrap_err()
+                .contains("10 and 500")
+        );
+        assert_eq!(
+            buffer_request(OutputBackend::System, 10, 48_000, &limited),
+            Ok(BufferSize::Fixed(480))
+        );
+        assert_eq!(
+            buffer_request(OutputBackend::System, 11, 44_100, &SupportedBufferSize::Unknown),
+            Ok(BufferSize::Fixed(485))
+        );
+        assert!(
+            buffer_request(OutputBackend::System, 30, 48_000, &limited)
+                .unwrap_err()
+                .contains("1440 frames")
+        );
+        assert!(
+            buffer_request(OutputBackend::System, 1, 48_000, &SupportedBufferSize::Unknown)
+                .is_err()
+        );
+        assert!(
+            buffer_request(OutputBackend::System, 501, 48_000, &SupportedBufferSize::Unknown)
+                .is_err()
+        );
     }
 }
 #[cfg(test)]
@@ -2025,39 +2484,38 @@ mod live_source_tests {
 
     #[test]
     fn stream_render_swaps_and_retires_live_source_without_audio_thread_drop() {
-        let (send, receive) = mpsc::channel();
-        let (retire_live_tx, retire_live_rx) = mpsc::sync_channel(16);
-        let position = Arc::new(AtomicU64::new(0));
-        let playing = Arc::new(AtomicBool::new(false));
-        let peak = Arc::new(AtomicU32::new(0));
+        let (mut send, receive) = spsc_ring::<Command, CMD_RING_CAPACITY>();
+        let (retire_live_tx, mut retire_live_rx) =
+            spsc_ring::<Box<dyn LiveAudioSource>, RETIRE_LIVE_CAPACITY>();
+        let telemetry = Arc::new(AudioTelemetry::default());
         let mut render = StreamRender::new(
             48_000,
             2,
             receive,
             retire_live_tx,
-            position,
-            playing,
-            peak.clone(),
+            telemetry.clone(),
         );
 
-        send.send(Command::SetLiveSource(Some(Box::new(ConstantLiveSource {
-            left_value: 0.5,
-            right_value: 0.5,
-            last_sample_rate: Arc::new(AtomicU32::new(0)),
-            last_playing: Arc::new(AtomicBool::new(false)),
-        }))))
-        .unwrap();
+        assert!(
+            send.try_push(Command::SetLiveSource(Some(Box::new(ConstantLiveSource {
+                left_value: 0.5,
+                right_value: 0.5,
+                last_sample_rate: Arc::new(AtomicU32::new(0)),
+                last_playing: Arc::new(AtomicBool::new(false)),
+            }))))
+            .is_ok()
+        );
 
         let mut pcm = [0_i16; 8];
         render.fill(&mut pcm);
-        assert!(retire_live_rx.try_recv().is_err());
-        assert_eq!(f32::from_bits(peak.load(Ordering::Relaxed)), 0.5);
+        assert!(retire_live_rx.try_pop().is_none());
+        assert_eq!(f32::from_bits(telemetry.peak.load(Ordering::Relaxed)), 0.5);
 
-        // Replacing with None hands the previous source back over the retirement channel.
-        send.send(Command::SetLiveSource(None)).unwrap();
+        // Replacing with None hands the previous source back over the retirement ring.
+        assert!(send.try_push(Command::SetLiveSource(None)).is_ok());
         render.fill(&mut pcm);
-        assert!(retire_live_rx.try_recv().is_ok());
-        assert!(retire_live_rx.try_recv().is_err());
+        assert!(retire_live_rx.try_pop().is_some());
+        assert!(retire_live_rx.try_pop().is_none());
     }
 }
 

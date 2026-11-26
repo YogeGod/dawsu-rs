@@ -49,7 +49,8 @@ export function attachSettingsDialogs(ctx) {
       const settings = await invoke("audio_outputs", { backend: null });
       const backend = env.document.createElement("select");
       const output = env.document.createElement("select");
-      const buffer = input("number", settings.bufferMs ?? "", 10, 500);
+      const minBufferFor = (id) => (id === "mme" || id === "direct_sound" ? 10 : 2);
+      const buffer = input("number", settings.bufferMs ?? "", minBufferFor(settings.backend), 500);
       const current = paragraph("");
       const outputError = paragraph("");
       const locked = () => Boolean(state.view.playing || state.view.busy);
@@ -62,6 +63,8 @@ export function attachSettingsDialogs(ctx) {
         select.append(option);
       }
       function showDevices(config) {
+        buffer.min = String(minBufferFor(config.backend));
+        buffer.setCustomValidity?.("");
         output.replaceChildren();
         addOption(output, "", config.backend === "asio" ? "Choose an ASIO driver" : "Device default");
         for (const device of config.devices) addOption(output, device.id, device.name);
@@ -79,11 +82,14 @@ export function attachSettingsDialogs(ctx) {
 
       const applyOutput = makeButton("Apply output", () => {
         if (locked() || applyOutput.disabled || loadedBackend !== backend.value) return;
+        const minMs = minBufferFor(backend.value);
         const ms = buffer.value === "" ? null : Number(buffer.value);
-        if (ms !== null && (!Number.isInteger(ms) || ms < 10 || ms > 500)) {
+        if (ms !== null && (!Number.isInteger(ms) || ms < minMs || ms > 500)) {
+          buffer.setCustomValidity?.(`Enter an audio buffer between ${minMs} and 500 ms.`);
           buffer.reportValidity();
           return;
         }
+        buffer.setCustomValidity?.("");
         const action = { kind: "output_settings", backend: backend.value, device_id: output.value || null, ms };
         applyOutput.disabled = true;
         ctx.run(async () => {

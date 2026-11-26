@@ -98,7 +98,7 @@ impl LegacyPreferences {
         }
         preferences.key_overrides = shortcuts::migrate(self.key_overrides.unwrap_or_default());
         preferences.classic_browser = self.classic_browser;
-        preferences.audio_buffer_ms = self.buffer_ms.filter(|ms| (10..=500).contains(ms));
+        preferences.audio_buffer_ms = self.buffer_ms.filter(|ms| (2..=500).contains(ms));
         preferences.show_browser = self.browser_open.unwrap_or(preferences.show_browser);
         preferences.show_inspector = self.inspector_open.unwrap_or(preferences.show_inspector);
         preferences.audition = self.audition_on_placement.unwrap_or(preferences.audition);

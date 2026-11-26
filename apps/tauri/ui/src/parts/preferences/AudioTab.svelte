@@ -13,6 +13,10 @@
     onapplyaudio,
     onsendaction,
   } = $props();
+
+  const minBufferMs = $derived(
+    selectedBackend === "mme" || selectedBackend === "direct_sound" ? 10 : 2
+  );
 </script>
 
 <div class="pref-group">
@@ -40,9 +44,12 @@
     </label>
     <label class="pref-field">
       <span>Buffer (ms)</span>
-      <input type="number" min="10" max="500" placeholder="Device default" bind:value={bufferMs} disabled={audioLocked} />
+      <input type="number" min={minBufferMs} max="500" placeholder="Device default" bind:value={bufferMs} disabled={audioLocked} />
     </label>
   </div>
+  {#if selectedBackend === "mme"}
+    <p class="pref-hint">MME enforces a 60 ms (3 × 20 ms) minimum hardware queue.</p>
+  {/if}
   {#if audioError}
     <p class="pref-error">{audioError}</p>
   {/if}

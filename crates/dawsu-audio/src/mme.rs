@@ -134,7 +134,7 @@ pub(super) fn open(
     errors: Arc<AtomicU64>,
 ) -> Result<NativeStream, String> {
     if let Some(ms) = buffer_ms {
-        crate::validate_buffer_ms(ms)?;
+        crate::validate_buffer_ms(crate::OutputBackend::Mme, ms)?;
     }
     let (index, name) = match device {
         Some(id) => device_entries()
@@ -161,6 +161,7 @@ pub(super) fn open(
             if ready.send(Ok(())).is_err() {
                 return;
             }
+            let _rt = crate::rt_thread::promote_current_thread();
             if device
                 .run(&worker_stop, &mut render, &errors, buffer_ms)
                 .is_err()
