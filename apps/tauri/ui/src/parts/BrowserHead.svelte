@@ -1,6 +1,7 @@
 <script>
   import { bridge } from "../lib/bridge.svelte.js";
-  import { emptyBrowser } from "../lib/browser.js";
+  import { BROWSER_TAGS, emptyBrowser } from "../lib/browser.js";
+  import { nameOf } from "../editor/helpers.js";
   import { invoke } from "../lib/ipc.js";
   import Search from "../icons/Search.svg?raw";
   import Folder from "../icons/Folder.svg?raw";
@@ -32,7 +33,17 @@
     <button type="button" id="sample-browser-library" aria-pressed={model.source === "library"}
       aria-controls="sample-browser-entries" disabled={off} onclick={() => send("source", "library")}>Library</button>
   </div>
-  {#if model.folder}
+  <div class="browser-tags" role="group" aria-label="Filter by instrument tag">
+    {#each BROWSER_TAGS as tag (tag)}
+      <button type="button" class="browser-tag-chip" aria-pressed={model.activeTag === tag}
+        disabled={off} onclick={() => send("tag", tag)}>{tag}</button>
+    {/each}
+    {#if model.similarTo}
+      <button type="button" class="browser-tag-chip active-sim" aria-pressed="true"
+        disabled={off} onclick={() => send("clearSimilar")}>Similar: {nameOf(model.similarTo)} ×</button>
+    {/if}
+  </div>
+  {#if model.folder && !model.activeTag && !model.similarTo}
     <div class="browser-folder">
       <button type="button" disabled={off || !model.folder.canUp} onclick={() => send("up")}>Up</button>
       <output aria-label="Current sample folder" title={model.folder.title}>{model.folder.label}</output>

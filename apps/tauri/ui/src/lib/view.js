@@ -135,6 +135,9 @@ export function samePlayhead(a, b) {
   return (
     Object.is(a.position, b.position) &&
     (a.musicalPosition ?? null) === (b.musicalPosition ?? null) &&
+    (a.bpmCenti ?? null) === (b.bpmCenti ?? null) &&
+    (a.meterNum ?? null) === (b.meterNum ?? null) &&
+    (a.meterDen ?? null) === (b.meterDen ?? null) &&
     Object.is(a.duration, b.duration) &&
     Object.is(a.speed, b.speed)
   );

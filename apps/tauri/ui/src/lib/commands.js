@@ -220,4 +220,5 @@ export const paletteOnly = [
   { id: "paletteSnapModeRelative", label: "Snap mode: Relative Grid", group: "View", icon: "Grid2x2", paletteAction: "snapModeRelative", enabled: "edit" },
   { id: "paletteSnapModeObjects", label: "Snap mode: Objects", group: "View", icon: "Scan", paletteAction: "snapModeObjects", enabled: "edit" },
   { id: "paletteShowDefaultLanes", label: "Show 12 default lanes", group: "Lane", icon: "Plus", paletteAction: "showDefaultLanes", enabled: "edit" },
+  { id: "paletteToggleSpectrum", label: "View: Toggle Spectrum & Pitch analyzer", group: "View", icon: "AudioWaveform", paletteAction: "toggleSpectrum", enabled: "document" },
 ];

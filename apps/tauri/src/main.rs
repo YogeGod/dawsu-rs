@@ -24,7 +24,7 @@ use serde_json::{Value, json};
 use std::{
     panic::{AssertUnwindSafe, catch_unwind},
     path::{Path, PathBuf},
-    sync::mpsc,
+    sync::{Arc, mpsc},
     time::Duration,
 };
 use tauri::{Emitter, Manager};
@@ -111,7 +111,11 @@ pub(crate) enum Request {
         mpsc::Sender<Result<dawsu_application::StemSeparationStatus, String>>,
     ),
 }
-pub(crate) struct Editor(pub(crate) mpsc::Sender<Request>, pub(crate) dawsu_application::bounce_plan::BounceCancelToken);
+pub(crate) struct Editor(
+    pub(crate) mpsc::Sender<Request>,
+    pub(crate) dawsu_application::bounce_plan::BounceCancelToken,
+    pub(crate) Arc<TelemetryHub>,
+);
 
 fn guard<T>(
     app: &mut Application,
@@ -394,6 +398,8 @@ fn editor_thread_with_cache(
     let (send, receive) = mpsc::channel();
     let bounce_cancel = dawsu_application::bounce_plan::BounceCancelToken::new();
     let thread_cancel = bounce_cancel.clone();
+    let telemetry = Arc::new(TelemetryHub::default());
+    let thread_telemetry = Arc::clone(&telemetry);
     std::thread::spawn(move || {
         let mut app = Application::for_desktop(data_root);
         app.bounce_cancel = thread_cancel;
@@ -411,7 +417,7 @@ fn editor_thread_with_cache(
             match receive.recv_timeout(Duration::from_millis(25)) {
                 Ok(Request::View(scene, action, fresh, tick_rev, response)) => {
                     let view = guard(&mut app, &mut fault, |app| {
-                        next_view_response(
+                        let mut view = next_view_response(
                             app,
                             &mut home,
                             &mut drums,
@@ -422,13 +428,16 @@ fn editor_thread_with_cache(
                             action,
                             fresh,
                             tick_rev,
-                        )
+                        );
+                        let rev = thread_telemetry.sync(app, &home, playback_start, tick_cache.drums_rev);
+                        view.stamp_state_rev(rev);
+                        view
                     })
                     .unwrap_or_else(|message| ViewResponse::Fault { fault: message });
                     let _ = response.send(view);
                 }
                 Ok(Request::Waveform(response)) => {
-                    let result = guard(&mut app, &mut fault, |app| encode_waveform_bytes(app.active_waveform()));
+                    let result = guard(&mut app, &mut fault, |app| encode_waveform_pyramid_bytes(app.active_waveform()));
                     let _ = response.send(result);
                 }
                 // After a fault, a request without an error channel gets no answer.
@@ -914,14 +923,20 @@ fn editor_thread_with_cache(
                             app.poll();
                             home.settle(app);
                             drums.sync_on_document_open(app, &mut tick_cache);
+                            thread_telemetry.sync(app, &home, playback_start, tick_cache.drums_rev);
                         });
                     }
                 }
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
             }
+            if fault.is_none() {
+                let _ = guard(&mut app, &mut fault, |app| {
+                    thread_telemetry.sync(app, &home, playback_start, tick_cache.drums_rev);
+                });
+            }
         }
     });
-    Editor(send, bounce_cancel)
+    Editor(send, bounce_cancel, telemetry)
 }
 
 pub(crate) fn ask<T>(state: &Editor, request: impl FnOnce(mpsc::Sender<T>) -> Request) -> Result<T, String> {
@@ -977,11 +992,15 @@ fn main() {
     let initial = std::env::args_os().nth(1).map(PathBuf::from);
     let data_root = resolve_data_root();
     let songs_cache = SongsIndexCache::new(data_root.clone());
+    let fp_cache = commands::library_and_files::SampleFingerprintCache::new(
+        data_root.join("sample-fingerprints"),
+    );
     let editor = editor_thread_with_cache(initial, data_root, songs_cache.clone());
     let setup_cache = songs_cache.clone();
     tauri::Builder::default()
         .manage(editor)
         .manage(songs_cache)
+        .manage(fp_cache)
         .manage(updater::StagedUpdate::default())
         .setup(move |app| {
             let editor_tx = app.state::<Editor>().0.clone();
@@ -1036,6 +1055,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             commands::editor::editor_view,
             commands::editor::editor_waveform,
+            commands::editor::subscribe_telemetry,
             commands::editor::editor_help,
             commands::editor::editor_export_settings,
             commands::export::export_view,
@@ -1091,6 +1111,7 @@ fn main() {
             commands::library_and_files::mapset_background,
             commands::library_and_files::pick_hitsound_library,
             commands::library_and_files::list_library,
+            commands::library_and_files::sample_library_action,
             commands::library_and_files::sample_preview,
             commands::library_and_files::lane_add_candidates,
             commands::library_and_files::map_preview_objects,

@@ -3,6 +3,7 @@
 const COMMANDS: &[&str] = &[
     "editor_view",
     "editor_waveform",
+    "subscribe_telemetry",
     "editor_help",
     "editor_export_settings",
     "export_view",
@@ -57,6 +58,7 @@ const COMMANDS: &[&str] = &[
     "mapset_background",
     "pick_hitsound_library",
     "list_library",
+    "sample_library_action",
     "sample_preview",
     "lane_add_candidates",
     "map_preview_objects",

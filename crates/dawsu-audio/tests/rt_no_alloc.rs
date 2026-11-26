@@ -131,6 +131,7 @@ fn audio_callback_performs_zero_rust_allocations_over_1000_buffers() {
     for i in 0..1000 {
         match i {
             100 => harness.seek(500.0),
+            150 => harness.set_spectrum_tap_enabled(true),
             200 => {
                 if let Some(clip) = audition_clip.clone() {
                     harness.audition(clip, 0.8);
@@ -148,6 +149,7 @@ fn audio_callback_performs_zero_rust_allocations_over_1000_buffers() {
                 }
             }
             600 => harness.set_live_source(None),
+            700 => harness.set_spectrum_tap_enabled(false),
             750 => harness.keep_pitch(true),
             900 => harness.play(false),
             _ => {}

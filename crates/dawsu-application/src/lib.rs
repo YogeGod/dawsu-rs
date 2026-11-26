@@ -102,8 +102,10 @@ mod recovery;
 mod refusals;
 mod roll_back;
 pub mod sample_checks;
+pub mod sample_fingerprint;
 pub mod songs_index;
 mod sound_sets;
+pub mod spectrum;
 mod unwritten;
 mod osu_watch;
 mod sample_watch;
@@ -123,7 +125,9 @@ pub use project::{HsStarterMode, LaneLayout};
 pub use recovery::RecoveryOffer;
 pub use sample_checks::{FixedWav, SampleHealthIssue, SampleHealthReport};
 pub use sound_sets::{LibrarySet, PlacementView, SaveSetError, SetUpdatePrompt, SoundSetLibrary};
-pub use waveform::WaveBin;
+pub use app_playback::{MusicalSample, MusicalTimingSnapshot};
+pub use dawsu_audio::{AudioTelemetryHandle, SpectrumTap};
+pub use waveform::{WaveBin, build_pyramid_levels, pool_wave_bins_r4};
 pub use edit_workflows::{PatternStampOptions, RangeOperation, TimelineEdit, VolumeScope};
 pub use sweep::{SweepDryRunSnapshot, UnusedSampleCandidate, run_plan_sweep};
 
@@ -425,6 +429,7 @@ pub struct Application {
     pub(crate) external_osu_changed: bool,
     document: Option<Document>,
     audio: Option<AudioEngine>,
+    spectrum_enabled: bool,
     samples: HashMap<SampleIdentity, Arc<AudioClip>>,
     song: Option<Arc<AudioClip>>,
     /// The sample file last auditioned or outlined from the Browser, kept while the file is unchanged
@@ -645,6 +650,7 @@ impl Application {
             osu_watch: osu_watch::OsuWatch::default(),
             external_osu_changed: false,
             audio,
+            spectrum_enabled: false,
             samples: HashMap::new(),
             song: None,
             playback_speed: 1.0,

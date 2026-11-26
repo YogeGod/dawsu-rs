@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { reviewMixSections } from "../src/lib/review.js";
+import { reviewMixSections, reviewSampleWarnings } from "../src/lib/review.js";
 
 test("the review lists new and reused .wav files apart and keeps each mix's audition index", () => {
   const review = {
@@ -27,4 +27,12 @@ test("a review without the split lists every mix under one heading, and nothing 
   });
   assert.deepEqual(reviewMixSections({ details: [], mixes: [], createdMixes: [], reusedMixes: [] }),
     { sections: [], volumes: [], details: [] });
+});
+
+test("reviewSampleWarnings returns true-peak and RC sample warnings without changing reviewMixSections shape", () => {
+  const sampleWarnings = [
+    "hot-cymbal.wav reaches +0.5 dBTP (above -0.3 dBTP) — inter-sample clipping risk in lossy decode or playback.",
+  ];
+  assert.deepEqual(reviewSampleWarnings({ sampleWarnings }), sampleWarnings);
+  assert.deepEqual(reviewSampleWarnings({}), []);
 });

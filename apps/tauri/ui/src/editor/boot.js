@@ -87,6 +87,7 @@ const exportedMethods = [
   "openFolders", "openAudioOutput", "openViewSettings", "openPreferences", "showHelp", "showShortcutEditor",
   "clampSnapInput", "popoverAction", "startScreenAction", "statusBarAction",
   "setQuasimodeShortcuts", "notifyStrokeStart", "notifyStrokeEnd",
+  "startTelemetry", "parseTelemetryFrame",
 ];
 
 export function createEditor(env = globalThis, { ui = null, autoStart = true, exposeGlobals = true } = {}) {
@@ -582,6 +583,8 @@ export function createEditor(env = globalThis, { ui = null, autoStart = true, ex
   const startInterval = env.setInterval ?? setInterval;
   startInterval(async () => {
     const now = perf().now();
+    // Skip 85 ms fallback polling while binary push telemetry channel is actively delivering frames.
+    if (state.telemetryConnected && now - state.lastTelemetryAt < 2000 && !state.quitAfterSave) return;
     // While playing or busy, every tick asks; a gate at the timer's own 85 ms skipped every other tick.
     if (state.view.fault || state.requests || state.refreshing || (!state.view.playing && !state.view.busy && !state.view.songLoading && !state.view.stemLoading && now - state.lastRefresh < 1000)) return;
     state.refreshing = true;
@@ -667,7 +670,9 @@ export function createEditor(env = globalThis, { ui = null, autoStart = true, ex
   }
 
   if (autoStart) {
-    ctx.act(null);
+    ctx.act(null).then(() => {
+      ctx.startTelemetry?.();
+    });
     const ImageCtor = env.Image ?? env.window?.Image;
     if (typeof ImageCtor === "function") {
       invoke("skin_textures").then((payload) => {

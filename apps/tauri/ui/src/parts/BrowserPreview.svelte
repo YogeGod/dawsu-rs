@@ -13,7 +13,11 @@
 
 {#if preview}
   <div class="browser-preview">
-    <span class="browser-preview-name" title={preview.title}>{preview.name}</span>
+    <div class="browser-preview-head">
+      <span class="browser-preview-name" title={preview.title}>{preview.name}</span>
+      <button type="button" class="browser-similar-btn" disabled={off || model.busy}
+        onclick={() => send("similar", preview.title)}>Find similar sound</button>
+    </div>
     <!-- The line keeps its place while the length loads, so the outline doesn't jump. -->
     <span class="browser-preview-length">{#if preview.ms !== null}Sample preview · {previewLength(preview.ms)}{/if}</span>
     <div class="browser-wave">

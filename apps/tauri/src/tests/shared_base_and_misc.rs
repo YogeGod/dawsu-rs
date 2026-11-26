@@ -393,6 +393,88 @@ fn slim_tick_polls_return_tick_when_unchanged_and_full_view_on_status_warning_or
 }
 
 #[test]
+fn telemetry_frame_packs_v1_layout_and_hub_bumps_state_rev_on_idle_timeout_poll() {
+    let bytes = crate::pack_telemetry_frame_v1(&crate::TelemetryFrameInput {
+        flags: crate::TELEMETRY_FLAG_PLAYING | crate::TELEMETRY_FLAG_HAS_DOCUMENT,
+        meter_num: 3,
+        meter_den: 4,
+        sub_tick: 240,
+        state_rev: 42,
+        position_ms: 12_345.5,
+        bpm_centi: 18_500,
+        bar: 9,
+        beat: 2,
+        master_l: 0.75,
+        master_r: 0.5,
+        song_peak: 0.625,
+        hitsounds_peak: 0.375,
+        rms_l: 0.25,
+        rms_r: 0.125,
+        phase_corr: 0.875,
+    });
+    assert_eq!(bytes.len(), crate::TELEMETRY_FRAME_BYTES);
+    assert_eq!(bytes[0], 0x01);
+    assert_eq!(bytes[1], crate::TELEMETRY_FLAG_PLAYING | crate::TELEMETRY_FLAG_HAS_DOCUMENT);
+    assert_eq!(u16::from_le_bytes(bytes[2..4].try_into().unwrap()), 3);
+    assert_eq!(u16::from_le_bytes(bytes[4..6].try_into().unwrap()), 4);
+    assert_eq!(u16::from_le_bytes(bytes[6..8].try_into().unwrap()), 240);
+    assert_eq!(u64::from_le_bytes(bytes[8..16].try_into().unwrap()), 42);
+    assert_eq!(f64::from_le_bytes(bytes[16..24].try_into().unwrap()), 12_345.5);
+    assert_eq!(u32::from_le_bytes(bytes[24..28].try_into().unwrap()), 18_500);
+    assert_eq!(i32::from_le_bytes(bytes[28..32].try_into().unwrap()), 9);
+    assert_eq!(u32::from_le_bytes(bytes[32..36].try_into().unwrap()), 2);
+    assert_eq!(f32::from_le_bytes(bytes[36..40].try_into().unwrap()), 0.75);
+    assert_eq!(f32::from_le_bytes(bytes[40..44].try_into().unwrap()), 0.5);
+    assert_eq!(f32::from_le_bytes(bytes[44..48].try_into().unwrap()), 0.625);
+    assert_eq!(f32::from_le_bytes(bytes[48..52].try_into().unwrap()), 0.375);
+    assert_eq!(f32::from_le_bytes(bytes[52..56].try_into().unwrap()), 0.25);
+    assert_eq!(f32::from_le_bytes(bytes[56..60].try_into().unwrap()), 0.125);
+    assert_eq!(f32::from_le_bytes(bytes[60..64].try_into().unwrap()), 0.875);
+
+    let mut app = Application::headless();
+    let home = crate::home::Route::default();
+    let hub = crate::TelemetryHub::default();
+    let rev0 = hub.sync(&app, &home, crate::PlaybackStart::default(), 0);
+    app.set_song_loading_for_test(true);
+    let rev1 = hub.sync(&app, &home, crate::PlaybackStart::default(), 0);
+    assert!(rev1 > rev0, "expected state_rev bump when song_loading flips");
+    let rev1_same = hub.sync(&app, &home, crate::PlaybackStart::default(), 0);
+    assert_eq!(rev1_same, rev1, "unchanged state must not bump state_rev");
+
+    // Verify background editor_thread Timeout path syncs TelemetryHub without a Request::View poll.
+    let editor = crate::editor_thread(None);
+    std::thread::sleep(std::time::Duration::from_millis(60));
+    let before = editor.2.state_rev();
+    let rev_from_cmd = crate::ask(&editor, crate::Request::Help).is_ok();
+    assert!(rev_from_cmd);
+    assert!(before >= 1);
+
+    let mut bins = [-120.0_f32; dawsu_application::spectrum::SPECTRUM_BINS];
+    bins[0] = -18.5;
+    bins[127] = -42.25;
+    let spec = crate::pack_spectrum_frame_v2(
+        &dawsu_application::spectrum::SpectrumFrame {
+            bins_db: bins,
+            peak_hz: 440.0,
+            peak_db: -3.5,
+            midi_note: Some(69),
+            cents: -4,
+        },
+        true,
+    );
+    assert_eq!(spec.len(), crate::SPECTRUM_FRAME_BYTES);
+    assert_eq!(spec[0], 0x02);
+    assert_eq!(spec[1], crate::SPECTRUM_FLAG_ACTIVE | crate::SPECTRUM_FLAG_HAS_PITCH);
+    assert_eq!(u16::from_le_bytes(spec[2..4].try_into().unwrap()), 128);
+    assert_eq!(f32::from_le_bytes(spec[4..8].try_into().unwrap()), 440.0);
+    assert_eq!(f32::from_le_bytes(spec[8..12].try_into().unwrap()), -3.5);
+    assert_eq!(i16::from_le_bytes(spec[12..14].try_into().unwrap()), 69);
+    assert_eq!(i16::from_le_bytes(spec[14..16].try_into().unwrap()), -4);
+    assert_eq!(i16::from_le_bytes(spec[16..18].try_into().unwrap()), -1850);
+    assert_eq!(i16::from_le_bytes(spec[270..272].try_into().unwrap()), -4225);
+}
+
+#[test]
 fn open_practice_mapset_respects_first_launch_and_works_from_cold_start_and_parked() {
     const CHILD_PROFILE: &str = "DAWSU_PRACTICE_ACTION_TEST_PROFILE";
     if let Some(profile) = std::env::var_os(CHILD_PROFILE) {

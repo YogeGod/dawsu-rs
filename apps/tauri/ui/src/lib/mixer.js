@@ -29,6 +29,25 @@ export function faderPosition(gain) {
   return 1;
 }
 
+// Nonlinear EBU/REAPER-style meter scale mapping peak level in [0..1+] to bar fraction [0..1].
+export const meterStops = [[0, 1], [-6, 0.85], [-12, 0.70], [-18, 0.55], [-24, 0.42], [-36, 0.24], [-48, 0.10], [-60, 0]];
+
+export function meterPosition(level) {
+  if (!(level > 0)) return 0;
+  const db = toDb(level);
+  if (db >= meterStops[0][0]) return 1;
+  for (let k = 1; k < meterStops.length; k++) {
+    const [db1, pos1] = meterStops[k];
+    const [db0, pos0] = meterStops[k - 1];
+    if (db >= db1) return pos1 + ((db - db1) / (db0 - db1)) * (pos0 - pos1);
+  }
+  return 0;
+}
+
+export function meterPct(level) {
+  return level != null && level > 0.0005 ? Math.round(meterPosition(level) * 100) : 0;
+}
+
 // The gain at a place on the fader, held to the editor's range for that gain.
 export function positionGain(position, min, max) {
   if (position >= 1) return clamp(0, min, max);

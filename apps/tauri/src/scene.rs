@@ -1,4 +1,8 @@
-use dawsu_application::{Application, EditorTimeSignature, LaneLayout, lane_name};
+use dawsu_application::{
+    Application, AudioTelemetryHandle, EditorTimeSignature, LaneLayout, MusicalTimingSnapshot,
+    SpectrumTap, ViewStateToken, build_pyramid_levels, lane_name,
+    spectrum::{SPECTRUM_BINS, SpectrumAnalyzer, SpectrumFrame},
+};
 use dawsu_editor::{
     keys::{Key, KeyCombination, Mods},
     tempo::SnapMode,
@@ -9,6 +13,11 @@ use dawsu_foundation::{CustomIndex, SampleIdentity, SongTime, Sound};
 use dawsu_hitsounding::{LaneSource, Place};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
+use std::sync::{
+    Arc, Condvar, Mutex,
+    atomic::{AtomicBool, AtomicU64, Ordering},
+};
+use std::time::{Duration, Instant};
 
 use crate::action::{
     Action, PlaybackStart, lane_header_rows, map_path, sample_set_name, scene_lane_key,
@@ -192,6 +201,8 @@ pub(crate) fn map_preview(app: &Application, map: &Path) -> Result<Value, String
 pub(crate) struct ViewTickSnapshot {
     tick: bool,
     rev: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) state_rev: Option<u64>,
     position: f64,
     playing: bool,
     busy: bool,
@@ -206,6 +217,16 @@ pub(crate) enum ViewResponse {
     Tick(ViewTickSnapshot),
     Fault { fault: String },
     NameTaken { #[serde(rename = "nameTaken")] name_taken: String },
+}
+
+impl ViewResponse {
+    pub(crate) fn stamp_state_rev(&mut self, rev: u64) {
+        match self {
+            Self::View(view) => view.state_rev = Some(rev),
+            Self::Tick(tick) => tick.state_rev = Some(rev),
+            Self::Fault { .. } | Self::NameTaken { .. } => {}
+        }
+    }
 }
 
 #[derive(serde::Serialize)]
@@ -595,6 +616,8 @@ pub(crate) struct ViewSnapshot {
     pub(crate) songs_folder: Option<PathBuf>,
     pub(crate) sound_set_prompts: Vec<SoundSetPromptSnapshot>,
     pub(crate) speed: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) state_rev: Option<u64>,
     pub(crate) status: String,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub(crate) stem_active: bool,
@@ -1013,6 +1036,7 @@ pub(crate) fn snapshot_with_static(app: &Application, include_scene: bool, inclu
             }
         }).collect(),
         speed: app.playback_speed(),
+        state_rev: None,
         status: app.status().to_owned(),
         stem_active: app.is_monitoring_stem(),
         stem_loaded: app.has_drum_stem(),
@@ -1026,6 +1050,7 @@ pub(crate) fn snapshot_with_static(app: &Application, include_scene: bool, inclu
     }
 }
 
+#[cfg(test)]
 pub(crate) fn encode_waveform_bytes(bins: &[dawsu_application::WaveBin]) -> Vec<u8> {
     let mut out = Vec::with_capacity(bins.len() * 6 * 4);
     for bin in bins {
@@ -1034,6 +1059,414 @@ pub(crate) fn encode_waveform_bytes(bins: &[dawsu_application::WaveBin]) -> Vec<
         }
     }
     out
+}
+
+/// Binary "DWFP" R=4 mipmap pyramid payload:
+/// Header (12B): `DWFP` | version: u16 (1) | levels: u16 | stride_floats: u32 (6)
+/// Level table (levels * 8B): per level `bin_count: u32`, `stride_bins: u32` (4^level)
+/// Level payloads (4B-aligned): `bin_count * 6 * f32` LE `[peak, low, mid, high, amp_l, amp_r]`
+/// followed by `ceil(bin_count / 8)` padded to 4B clip-mask bits (`1` iff `true_peak > 1.0`).
+pub(crate) fn encode_waveform_pyramid_bytes(bins: &[dawsu_application::WaveBin]) -> Vec<u8> {
+    if bins.is_empty() {
+        return Vec::new();
+    }
+    let levels = build_pyramid_levels(bins);
+    let total_bins: usize = levels.iter().map(Vec::len).sum();
+    let total_mask: usize = levels
+        .iter()
+        .map(|lvl| lvl.len().div_ceil(8).next_multiple_of(4))
+        .sum();
+    let mut out = Vec::with_capacity(12 + levels.len() * 8 + total_bins * 24 + total_mask);
+    out.extend_from_slice(b"DWFP");
+    out.extend_from_slice(&1u16.to_le_bytes());
+    out.extend_from_slice(&(levels.len() as u16).to_le_bytes());
+    out.extend_from_slice(&6u32.to_le_bytes());
+    for (idx, lvl) in levels.iter().enumerate() {
+        let stride_bins = 1u32 << (idx * 2);
+        out.extend_from_slice(&(lvl.len() as u32).to_le_bytes());
+        out.extend_from_slice(&stride_bins.to_le_bytes());
+    }
+    for lvl in &levels {
+        for bin in lvl {
+            for value in [bin.peak, bin.low, bin.mid, bin.high, bin.amp_l, bin.amp_r] {
+                out.extend_from_slice(&value.to_le_bytes());
+            }
+        }
+        let padded_mask_bytes = lvl.len().div_ceil(8).next_multiple_of(4);
+        let mask_start = out.len();
+        out.resize(mask_start + padded_mask_bytes, 0);
+        for (i, bin) in lvl.iter().enumerate() {
+            if bin.true_peak > 1.0 {
+                out[mask_start + (i >> 3)] |= 1u8 << (i & 7);
+            }
+        }
+    }
+    out
+}
+
+pub(crate) const TELEMETRY_FRAME_BYTES: usize = 64;
+pub(crate) const TELEMETRY_FRAME_VERSION: u8 = 0x01;
+pub(crate) const SPECTRUM_FRAME_BYTES: usize = 272;
+pub(crate) const SPECTRUM_FRAME_VERSION: u8 = 0x02;
+pub(crate) const SPECTRUM_FLAG_ACTIVE: u8 = 1 << 0;
+pub(crate) const SPECTRUM_FLAG_HAS_PITCH: u8 = 1 << 1;
+
+pub(crate) fn pack_spectrum_frame_v2(
+    frame: &SpectrumFrame,
+    active: bool,
+) -> [u8; SPECTRUM_FRAME_BYTES] {
+    let mut buf = [0u8; SPECTRUM_FRAME_BYTES];
+    buf[0] = SPECTRUM_FRAME_VERSION;
+    let mut flags = 0u8;
+    if active {
+        flags |= SPECTRUM_FLAG_ACTIVE;
+    }
+    if frame.midi_note.is_some() {
+        flags |= SPECTRUM_FLAG_HAS_PITCH;
+    }
+    buf[1] = flags;
+    buf[2..4].copy_from_slice(&(SPECTRUM_BINS as u16).to_le_bytes());
+    let peak_hz = if frame.peak_hz.is_finite() { frame.peak_hz } else { 0.0 };
+    let peak_db = if frame.peak_db.is_finite() { frame.peak_db } else { -120.0 };
+    buf[4..8].copy_from_slice(&peak_hz.to_le_bytes());
+    buf[8..12].copy_from_slice(&peak_db.to_le_bytes());
+    let midi = frame.midi_note.map_or(-1_i16, i16::from);
+    buf[12..14].copy_from_slice(&midi.to_le_bytes());
+    buf[14..16].copy_from_slice(&frame.cents.to_le_bytes());
+    for (i, &db) in frame.bins_db.iter().enumerate() {
+        let clamped = if db.is_finite() {
+            (db * 100.0).round().clamp(-12_000.0, 2_400.0) as i16
+        } else {
+            -12_000_i16
+        };
+        let off = 16 + i * 2;
+        buf[off..off + 2].copy_from_slice(&clamped.to_le_bytes());
+    }
+    buf
+}
+pub(crate) const TELEMETRY_FLAG_PLAYING: u8 = 1 << 0;
+pub(crate) const TELEMETRY_FLAG_BUSY: u8 = 1 << 1;
+pub(crate) const TELEMETRY_FLAG_HAS_DOCUMENT: u8 = 1 << 2;
+pub(crate) const TELEMETRY_FLAG_SONG_LOADING: u8 = 1 << 3;
+pub(crate) const TELEMETRY_FLAG_STEM_LOADING: u8 = 1 << 4;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct TelemetryFrameInput {
+    pub(crate) flags: u8,
+    pub(crate) meter_num: u16,
+    pub(crate) meter_den: u16,
+    pub(crate) sub_tick: u16,
+    pub(crate) state_rev: u64,
+    pub(crate) position_ms: f64,
+    pub(crate) bpm_centi: u32,
+    pub(crate) bar: i64,
+    pub(crate) beat: u32,
+    pub(crate) master_l: f32,
+    pub(crate) master_r: f32,
+    pub(crate) song_peak: f32,
+    pub(crate) hitsounds_peak: f32,
+    pub(crate) rms_l: f32,
+    pub(crate) rms_r: f32,
+    pub(crate) phase_corr: f32,
+}
+
+pub(crate) fn pack_telemetry_frame_v1(input: &TelemetryFrameInput) -> [u8; TELEMETRY_FRAME_BYTES] {
+    let mut buf = [0u8; TELEMETRY_FRAME_BYTES];
+    buf[0] = TELEMETRY_FRAME_VERSION;
+    buf[1] = input.flags;
+    buf[2..4].copy_from_slice(&input.meter_num.to_le_bytes());
+    buf[4..6].copy_from_slice(&input.meter_den.to_le_bytes());
+    buf[6..8].copy_from_slice(&input.sub_tick.to_le_bytes());
+    buf[8..16].copy_from_slice(&input.state_rev.to_le_bytes());
+    let pos = if input.position_ms.is_finite() { input.position_ms } else { 0.0 };
+    buf[16..24].copy_from_slice(&pos.to_le_bytes());
+    buf[24..28].copy_from_slice(&input.bpm_centi.to_le_bytes());
+    let bar_i32 = input.bar.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32;
+    buf[28..32].copy_from_slice(&bar_i32.to_le_bytes());
+    buf[32..36].copy_from_slice(&input.beat.to_le_bytes());
+    let f = |v: f32| if v.is_finite() { v } else { 0.0 }.to_le_bytes();
+    buf[36..40].copy_from_slice(&f(input.master_l));
+    buf[40..44].copy_from_slice(&f(input.master_r));
+    buf[44..48].copy_from_slice(&f(input.song_peak));
+    buf[48..52].copy_from_slice(&f(input.hitsounds_peak));
+    buf[52..56].copy_from_slice(&f(input.rms_l));
+    buf[56..60].copy_from_slice(&f(input.rms_r));
+    buf[60..64].copy_from_slice(&f(input.phase_corr));
+    buf
+}
+
+#[derive(Default)]
+struct TelemetryShared {
+    audio: Option<AudioTelemetryHandle>,
+    spectrum_tap: Option<Arc<SpectrumTap>>,
+    timing: Option<MusicalTimingSnapshot>,
+    meta_flags: u8,
+    fallback_position_ms: f64,
+    last_key: Option<(ViewStateToken, bool, bool, PlaybackStart, u64)>,
+    timing_key: Option<(u64, ViewStateToken)>,
+    channel: Option<tauri::ipc::Channel<tauri::ipc::InvokeResponseBody>>,
+}
+
+/// Lock-free bridge between editor mutations / audio telemetry atomics and the 16 ms push channel.
+pub(crate) struct TelemetryHub {
+    state_rev: AtomicU64,
+    spectrum_enabled: AtomicBool,
+    thread_started: AtomicBool,
+    shared: Mutex<TelemetryShared>,
+    wake: Condvar,
+}
+
+impl Default for TelemetryHub {
+    fn default() -> Self {
+        Self {
+            state_rev: AtomicU64::new(1),
+            spectrum_enabled: AtomicBool::new(false),
+            thread_started: AtomicBool::new(false),
+            shared: Mutex::new(TelemetryShared::default()),
+            wake: Condvar::new(),
+        }
+    }
+}
+
+impl TelemetryHub {
+    pub(crate) fn state_rev(&self) -> u64 {
+        self.state_rev.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn notify_state_changed(&self) -> u64 {
+        let rev = self.state_rev.fetch_add(1, Ordering::AcqRel) + 1;
+        self.wake.notify_one();
+        rev
+    }
+
+    pub(crate) fn sync(
+        &self,
+        app: &Application,
+        home: &home::Route,
+        playback_start: PlaybackStart,
+        drums_rev: u64,
+    ) -> u64 {
+        let key = view_tick_key(app, home, playback_start, drums_rev);
+        let view_token = key.0;
+        let doc_gen = app.document_generation();
+        let has_doc = app.document().is_some();
+        let mut meta_flags = 0u8;
+        if app.is_busy() {
+            meta_flags |= TELEMETRY_FLAG_BUSY;
+        }
+        if has_doc {
+            meta_flags |= TELEMETRY_FLAG_HAS_DOCUMENT;
+        }
+        if app.is_song_loading() {
+            meta_flags |= TELEMETRY_FLAG_SONG_LOADING;
+        }
+        if app.is_drum_stem_loading() {
+            meta_flags |= TELEMETRY_FLAG_STEM_LOADING;
+        }
+        let fallback_pos = app.position_ms();
+        let spectrum_on = app.spectrum_enabled();
+        let prev_spectrum_on = self.spectrum_enabled.swap(spectrum_on, Ordering::AcqRel);
+
+        let mut shared = self.shared.lock().unwrap_or_else(|e| e.into_inner());
+        let changed = shared.last_key != Some(key)
+            || shared.meta_flags != meta_flags
+            || prev_spectrum_on != spectrum_on;
+        shared.fallback_position_ms = fallback_pos;
+        if changed {
+            shared.last_key = Some(key);
+            shared.meta_flags = meta_flags;
+            shared.audio = app.audio_telemetry();
+            shared.spectrum_tap = app.spectrum_tap();
+            let timing_key = has_doc.then_some((doc_gen, view_token));
+            if shared.timing_key != timing_key {
+                shared.timing_key = timing_key;
+                shared.timing = app.musical_timing_snapshot();
+            }
+            drop(shared);
+            return self.notify_state_changed();
+        }
+        if shared.audio.is_none()
+            && let Some(handle) = app.audio_telemetry()
+        {
+            shared.audio = Some(handle);
+        }
+        if shared.spectrum_tap.is_none()
+            && let Some(tap) = app.spectrum_tap()
+        {
+            shared.spectrum_tap = Some(tap);
+        }
+        drop(shared);
+        self.state_rev()
+    }
+
+    pub(crate) fn sample_frame(&self) -> ([u8; TELEMETRY_FRAME_BYTES], u8, u64) {
+        let (audio, timing, meta_flags, fallback_pos) = {
+            let shared = self.shared.lock().unwrap_or_else(|e| e.into_inner());
+            (
+                shared.audio.clone(),
+                shared.timing.clone(),
+                shared.meta_flags,
+                shared.fallback_position_ms,
+            )
+        };
+        let state_rev = self.state_rev();
+        let (position_ms, playing, master_l, master_r, song_peak, hitsounds_peak, rms_l, rms_r, phase_corr) =
+            if let Some(audio) = audio {
+                let (ml, mr) = audio.stereo_peaks();
+                let (_m, song, hs) = audio.peaks();
+                let (rl, rr) = audio.stereo_rms();
+                (
+                    audio.position_ms(),
+                    audio.is_playing(),
+                    ml,
+                    mr,
+                    song,
+                    hs,
+                    rl,
+                    rr,
+                    audio.phase_correlation(),
+                )
+            } else {
+                (fallback_pos, false, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+            };
+        let musical = timing.as_ref().map(|t| t.at(position_ms));
+        let flags = meta_flags | if playing { TELEMETRY_FLAG_PLAYING } else { 0 };
+        let frame = pack_telemetry_frame_v1(&TelemetryFrameInput {
+            flags,
+            meter_num: musical.as_ref().map_or(0, |m| m.meter_num),
+            meter_den: musical.as_ref().map_or(0, |m| m.meter_den),
+            sub_tick: musical.as_ref().map_or(0, |m| m.tick),
+            state_rev,
+            position_ms,
+            bpm_centi: musical.as_ref().map_or(0, |m| m.bpm_centi),
+            bar: musical.as_ref().map_or(0, |m| m.bar),
+            beat: musical.as_ref().map_or(0, |m| m.beat),
+            master_l,
+            master_r,
+            song_peak,
+            hitsounds_peak,
+            rms_l,
+            rms_r,
+            phase_corr,
+        });
+        (frame, flags, state_rev)
+    }
+
+    pub(crate) fn subscribe(
+        self: &Arc<Self>,
+        channel: tauri::ipc::Channel<tauri::ipc::InvokeResponseBody>,
+    ) {
+        {
+            let mut shared = self.shared.lock().unwrap_or_else(|e| e.into_inner());
+            shared.channel = Some(channel);
+        }
+        self.wake.notify_one();
+        if self
+            .thread_started
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            let hub = Arc::clone(self);
+            let _ = std::thread::Builder::new()
+                .name("dawsu-telemetry".into())
+                .spawn(move || hub.run_push_loop());
+        }
+    }
+
+    fn run_push_loop(self: Arc<Self>) {
+        let mut last_sent_rev = 0u64;
+        let mut last_sent_flags = u8::MAX;
+        let mut last_emit = Instant::now() - Duration::from_secs(2);
+        let mut last_spectrum_emit = Instant::now() - Duration::from_secs(1);
+        let mut was_spectrum_on = false;
+        let mut analyzer = SpectrumAnalyzer::new();
+        let mut tap_buf = Vec::with_capacity(8192);
+        loop {
+            let channel = {
+                let mut shared = self.shared.lock().unwrap_or_else(|e| e.into_inner());
+                while shared.channel.is_none() {
+                    shared = self.wake.wait(shared).unwrap_or_else(|e| e.into_inner());
+                }
+                shared.channel.clone()
+            };
+            let Some(channel) = channel else { continue };
+            let (frame, flags, state_rev) = self.sample_frame();
+            let active = flags
+                & (TELEMETRY_FLAG_PLAYING
+                    | TELEMETRY_FLAG_BUSY
+                    | TELEMETRY_FLAG_SONG_LOADING
+                    | TELEMETRY_FLAG_STEM_LOADING)
+                != 0;
+            let due = active
+                || state_rev != last_sent_rev
+                || flags != last_sent_flags
+                || last_emit.elapsed() >= Duration::from_secs(1);
+            if due {
+                if channel
+                    .send(tauri::ipc::InvokeResponseBody::Raw(frame.to_vec()))
+                    .is_err()
+                {
+                    let mut shared = self.shared.lock().unwrap_or_else(|e| e.into_inner());
+                    shared.channel = None;
+                    continue;
+                }
+                last_sent_rev = state_rev;
+                last_sent_flags = flags;
+                last_emit = Instant::now();
+            }
+
+            let spectrum_on = self.spectrum_enabled.load(Ordering::Acquire);
+            if !spectrum_on && was_spectrum_on {
+                analyzer.reset();
+                was_spectrum_on = false;
+            } else if spectrum_on {
+                if !was_spectrum_on {
+                    analyzer.reset();
+                    was_spectrum_on = true;
+                }
+                let tap = {
+                    let shared = self.shared.lock().unwrap_or_else(|e| e.into_inner());
+                    shared.spectrum_tap.clone()
+                };
+                if let Some(tap) = tap {
+                    tap_buf.clear();
+                    let (count, sample_rate) = tap.drain_into(&mut tap_buf, 8192);
+                    let mut latest = None;
+                    if count > 0 {
+                        latest = analyzer.push_samples(&tap_buf[..count], sample_rate);
+                    }
+                    if last_spectrum_emit.elapsed() >= Duration::from_millis(32)
+                        && (latest.is_some() || active)
+                    {
+                        let spec_frame = latest.as_ref().unwrap_or(&analyzer.last_frame);
+                        let packed = pack_spectrum_frame_v2(spec_frame, active);
+                        if channel
+                            .send(tauri::ipc::InvokeResponseBody::Raw(packed.to_vec()))
+                            .is_err()
+                        {
+                            let mut shared = self.shared.lock().unwrap_or_else(|e| e.into_inner());
+                            shared.channel = None;
+                            continue;
+                        }
+                        last_spectrum_emit = Instant::now();
+                    }
+                }
+            }
+
+            let wait_dur = if active || spectrum_on {
+                Duration::from_millis(16)
+            } else {
+                Duration::from_millis(1000)
+            };
+            let shared = self.shared.lock().unwrap_or_else(|e| e.into_inner());
+            if self.state_rev() == state_rev
+                && self.spectrum_enabled.load(Ordering::Relaxed) == spectrum_on
+                && shared.channel.is_some()
+            {
+                let _ = self.wake.wait_timeout(shared, wait_dur);
+            }
+        }
+    }
 }
 
 #[derive(Default)]
@@ -1130,6 +1563,7 @@ pub(crate) fn next_view_response(
             return ViewResponse::Tick(ViewTickSnapshot {
                 tick: true,
                 rev: cache.rev,
+                state_rev: None,
                 position,
                 playing: app.is_playing(),
                 busy: app.is_busy(),

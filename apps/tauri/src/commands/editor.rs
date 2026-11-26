@@ -67,6 +67,15 @@ pub(crate) fn editor_waveform(state: State<'_, Editor>) -> Result<tauri::ipc::Re
 }
 
 #[tauri::command]
+pub(crate) fn subscribe_telemetry(
+    state: State<'_, Editor>,
+    channel: tauri::ipc::Channel<tauri::ipc::InvokeResponseBody>,
+) -> Result<(), String> {
+    state.2.subscribe(channel);
+    Ok(())
+}
+
+#[tauri::command]
 pub(crate) fn editor_help(state: State<'_, Editor>) -> Result<Value, String> {
     ask(&state, Request::Help)?
 }

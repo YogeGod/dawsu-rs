@@ -54,6 +54,49 @@ export function attachBrowser(ctx) {
     state.browserSample = null;
     state.browserPreview = null;
     state.browserExpanded.clear();
+    state.browserTag = null;
+    state.browserSimilarTo = null;
+    state.browserTagResults = null;
+    state.browserTagIndexing = false;
+  }
+
+  async function requestSampleTagQuery(attempt = 0) {
+    if (!state.browserTag && !state.browserSimilarTo) {
+      state.browserTagResults = null;
+      state.browserTagIndexing = false;
+      return;
+    }
+    const reqId = ++state.browserTagRequest;
+    const source = state.browserSource;
+    const tag = state.browserTag;
+    const similarTo = state.browserSimilarTo;
+    const filter = state.browserFilter;
+    try {
+      const answer = await invoke("sample_library_action", {
+        action: { kind: "query", source, tag, similarTo, filter, limit: browserRowLimit },
+      });
+      if (reqId !== state.browserTagRequest || state.browserSource !== source ||
+          state.browserTag !== tag || state.browserSimilarTo !== similarTo) {
+        return;
+      }
+      state.browserTagIndexing = Boolean(answer?.scanning);
+      state.browserTagResults = Array.isArray(answer?.entries) ? answer.entries : [];
+      if (state.scene) ctx.renderSampleBrowser();
+      if (answer?.scanning && attempt < 15) {
+        const delay = env.setTimeout ?? setTimeout;
+        delay(() => {
+          if (reqId === state.browserTagRequest && (state.browserTag || state.browserSimilarTo)) {
+            requestSampleTagQuery(attempt + 1);
+          }
+        }, 180);
+      }
+    } catch {
+      if (reqId === state.browserTagRequest) {
+        state.browserTagIndexing = false;
+        state.browserTagResults = [];
+        if (state.scene) ctx.renderSampleBrowser();
+      }
+    }
   }
 
   // The map folder samples (path to lane row) and their folder tree, built and sorted once per scene.
@@ -104,7 +147,9 @@ export function attachBrowser(ctx) {
       state.browserPreview = null;
     }
     const key = JSON.stringify([classic, state.browserSource, state.browserLibrary, state.browserFolder,
-      state.browserSample, state.browserFilter, [...state.browserExpanded], state.view.busy, state.view.activeLane, state.browserPreview]);
+      state.browserSample, state.browserFilter, state.browserTag, state.browserSimilarTo,
+      state.browserTagIndexing, state.browserTagResults,
+      [...state.browserExpanded], state.view.busy, state.view.activeLane, state.browserPreview]);
     if (state.browserScene === state.scene && state.browserState === key) return;
     state.browserScene = state.scene;
     state.browserState = key;
@@ -165,11 +210,46 @@ export function attachBrowser(ctx) {
         if (directory && open) addRows(path, depth + 1);
       }
     };
-    addRows(classic ? state.browserFolder : "", 0);
-    if (full) note("Search to see more samples.", 0);
-    const unopened = rows.some(row => row.kind === "folder" && !row.open);
-    if (!rows.length || filter && !visibleSamples.size && !unopened && !loading) {
-      note(filter ? "No matching samples." : "No samples in this folder.", 0);
+    const semanticActive = Boolean(state.browserTag || state.browserSimilarTo);
+    if (semanticActive) {
+      if (library && !state.browserLibrary) {
+        note("No library folder chosen yet.", 0);
+      } else if (state.browserTagIndexing && !(state.browserTagResults?.length)) {
+        note("Analyzing samples…", 0);
+      } else {
+        for (const item of state.browserTagResults ?? []) {
+          if (rows.length >= browserRowLimit) {
+            full = true;
+            break;
+          }
+          const relPath = item.relPath;
+          if (!library && !mapset.has(relPath)) continue;
+          const label = nameOf(relPath);
+          if (filter && !label.toLowerCase().includes(filter)) continue;
+          visibleSamples.add(relPath);
+          rows.push({
+            kind: "sample",
+            key: relPath,
+            label,
+            title: relPath,
+            depth: 0,
+            selected: state.browserSample === relPath,
+            tag: item.tag ?? null,
+            similarity: typeof item.similarity === "number" ? Math.round(item.similarity * 100) : null,
+          });
+        }
+        if (full) note("Search to see more samples.", 0);
+        if (!rows.length && !state.browserTagIndexing) {
+          note("No matching samples.", 0);
+        }
+      }
+    } else {
+      addRows(classic ? state.browserFolder : "", 0);
+      if (full) note("Search to see more samples.", 0);
+      const unopened = rows.some(row => row.kind === "folder" && !row.open);
+      if (!rows.length || filter && !visibleSamples.size && !unopened && !loading) {
+        note(filter ? "No matching samples." : "No samples in this folder.", 0);
+      }
     }
     const preview = state.browserSample && state.browserPreview?.path === state.browserSample && state.browserPreview.source === state.browserSource
       ? { name: nameOf(state.browserSample), title: state.browserSample, ms: state.browserPreview.ms, peaks: state.browserPreview.peaks } : null;
@@ -177,6 +257,9 @@ export function attachBrowser(ctx) {
       source: state.browserSource,
       classic,
       filter: state.browserFilter,
+      activeTag: state.browserTag,
+      similarTo: state.browserSimilarTo,
+      indexing: state.browserTagIndexing,
       busy: !!state.view.busy,
       // The tree's top row: the map folder, or the library folder by its name (full path in the tooltip).
       root: classic ? null : !library ? "Mapset samples" : state.browserLibrary ? nameOf(state.browserLibrary.replace(/[\\/]+$/, "")) : null,
@@ -256,6 +339,37 @@ export function attachBrowser(ctx) {
       if (state.browserSource === "library") state.browserLibraryFolders = new Map();
     } else if (kind === "filter") {
       state.browserFilter = String(value ?? "");
+      if (state.browserTag || state.browserSimilarTo) requestSampleTagQuery();
+    } else if (kind === "tag") {
+      const next = state.browserTag === value ? null : (value || null);
+      state.browserTag = next;
+      state.browserTagResults = null;
+      if (state.browserTag || state.browserSimilarTo) {
+        state.browserTagIndexing = true;
+        requestSampleTagQuery();
+      } else {
+        state.browserTagIndexing = false;
+      }
+    } else if (kind === "similar") {
+      const target = value || state.browserSample;
+      if (!target) return;
+      state.browserSimilarTo = state.browserSimilarTo === target ? null : target;
+      state.browserTagResults = null;
+      if (state.browserTag || state.browserSimilarTo) {
+        state.browserTagIndexing = true;
+        requestSampleTagQuery();
+      } else {
+        state.browserTagIndexing = false;
+      }
+    } else if (kind === "clearSimilar") {
+      state.browserSimilarTo = null;
+      state.browserTagResults = null;
+      if (state.browserTag) {
+        state.browserTagIndexing = true;
+        requestSampleTagQuery();
+      } else {
+        state.browserTagIndexing = false;
+      }
     } else if (kind === "toggle") {
       if (state.view.classicBrowser) {
         state.browserFolder = value;

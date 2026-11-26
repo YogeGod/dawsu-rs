@@ -1,14 +1,21 @@
 <script>
-  import { dbText, faderKey, faderPosition, faderReach, faderSender, positionGain, releaseFader, scaleMarks } from "../lib/mixer.js";
+  import {
+    dbText, faderKey, faderPosition, faderReach, faderSender, meterPct, positionGain, releaseFader, scaleMarks,
+  } from "../lib/mixer.js";
   import { attachAltWheelFader } from "../lib/wheelGuard.js";
 
   // v3 §6 fader block: slot, dB scale and meter. A gain of null means the editor has no level for
-  // this channel yet: the slot shows greyed out with no cap. `peak` (0..1+) drives the live meter.
+  // this channel yet: the slot shows greyed out with no cap. `peak` / `peakL` / `peakR` drive the live meter.
   // The cap and the scale share one 138 px travel; the part the gain can't reach is dimmed.
-  let { gain = null, min = 0, max = 1, label, disabled = false, peak = null, onchange } = $props();
-  const meterPct = $derived(peak != null && peak > 0.0005 ? Math.round((1 - faderPosition(peak)) * 100) : 0);
-  const meterClip = $derived(peak != null && peak >= 0.98);
-  const meterHot = $derived(peak != null && peak >= 0.5 && peak < 0.98);
+  let { gain = null, min = 0, max = 1, label, disabled = false, peak = null, peakL = null, peakR = null, onchange } = $props();
+  const effectiveL = $derived(peakL ?? peak);
+  const effectiveR = $derived(peakR ?? peak);
+  const meterPctL = $derived(meterPct(effectiveL));
+  const meterPctR = $derived(meterPct(effectiveR));
+  const meterClipL = $derived(effectiveL != null && effectiveL >= 0.98);
+  const meterClipR = $derived(effectiveR != null && effectiveR >= 0.98);
+  const meterHotL = $derived(effectiveL != null && effectiveL >= 0.5 && effectiveL < 0.98);
+  const meterHotR = $derived(effectiveR != null && effectiveR >= 0.5 && effectiveR < 0.98);
 
   let slot = $state();
   // The value under the pointer while dragging. After a release the cap keeps it until the last
@@ -85,9 +92,9 @@
   <div class="scale" aria-hidden="true">
     {#each scaleMarks as [mark, at] (mark)}<span style:--fader-at={at}>{mark}</span>{/each}
   </div>
-  <div class="meter" class:off={peak === null} aria-hidden="true">
-    <div class="meter-ch"><span class="meter-bar" class:hot={meterHot} class:clip={meterClip} style:height={meterPct + "%"}></span></div>
-    <div class="meter-ch"><span class="meter-bar" class:hot={meterHot} class:clip={meterClip} style:height={meterPct + "%"}></span></div>
+  <div class="meter" class:off={effectiveL === null && effectiveR === null} aria-hidden="true">
+    <div class="meter-ch"><span class="meter-bar" class:hot={meterHotL} class:clip={meterClipL} style:height={meterPctL + "%"}></span></div>
+    <div class="meter-ch"><span class="meter-bar" class:hot={meterHotR} class:clip={meterClipR} style:height={meterPctR + "%"}></span></div>
   </div>
 </div>
 
@@ -198,7 +205,6 @@
     width: 100%;
     background: var(--editor-meter, #34c759);
     border-radius: 1px;
-    transition: height 55ms linear;
   }
   .meter-bar.hot {
     background: var(--editor-warning, #ffd60a);

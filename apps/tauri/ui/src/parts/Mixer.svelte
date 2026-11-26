@@ -1,9 +1,10 @@
 <script>
   import { bridge } from "../lib/bridge.svelte.js";
-  import { dbText, faderPosition, gainsAction, hitsoundColour, songColour } from "../lib/mixer.js";
+  import { dbText, gainsAction, hitsoundColour, meterPct, songColour } from "../lib/mixer.js";
   import { laneIcons } from "../lib/lanes.js";
   import Fader from "./Fader.svelte";
   import MixerStrip from "./MixerStrip.svelte";
+  import SpectrumPanel from "./SpectrumPanel.svelte";
 
   // The bottom panel's Mixer tab (v3 F3): the Song bus, the Hitsounds bus, one strip per lane
   // with hits (lanes.js builds them in mixerModel()), and the master output. Every strip has a
@@ -13,6 +14,7 @@
   const scene = $derived(bridge.scene);
   const strips = $derived(bridge.mixer ?? []);
   const disabled = $derived(bridge.disabled);
+  const spectrumOpen = $derived(bridge.spectrumOpen);
   const song = $derived(typeof view?.song === "number" ? view.song : null);
   const hitsounds = $derived(typeof view?.hitsounds === "number" ? view.hitsounds : 1);
   const main = $derived(typeof view?.main === "number" ? view.main : null);
@@ -21,7 +23,12 @@
   const songPeak = $derived(peaks ? (peaks.song ?? 0) : null);
   const hitsoundsPeak = $derived(peaks ? (peaks.hitsounds ?? 0) : null);
   const masterPeak = $derived(peaks ? (peaks.master ?? 0) : null);
-  const masterPct = $derived(masterPeak != null && masterPeak > 0.0005 ? Math.round((1 - faderPosition(masterPeak)) * 100) : 0);
+  const masterPeakL = $derived(peaks ? (peaks.masterL ?? peaks.master ?? 0) : null);
+  const masterPeakR = $derived(peaks ? (peaks.masterR ?? peaks.master ?? 0) : null);
+  const masterPctL = $derived(meterPct(masterPeakL));
+  const masterPctR = $derived(meterPct(masterPeakR));
+  const phaseCorr = $derived(peaks && Number.isFinite(peaks.phaseCorr) ? peaks.phaseCorr : null);
+  const phasePct = $derived(phaseCorr != null ? Math.round(((Math.min(1, Math.max(-1, phaseCorr)) + 1) * 0.5) * 100) : 50);
   const songIcon = '<path d="M2 8h1M4.5 5.5v5M7 3v10M9.5 5v6M12 6.5v3M14 8h.5"/>';
   const hitsoundIcon = '<circle cx="8" cy="8" r="5"/><circle cx="8" cy="8" r="2"/>';
 
@@ -30,13 +37,22 @@
     if (!peaks) return null;
     const out = new Map();
     if (!playhead?.playing || !scene?.moments?.length || view?.hitsoundsMuted) return out;
+    const moments = scene.moments;
     const pos = playhead.position ?? 0;
     const hsGain = typeof view?.hitsounds === "number" ? view.hitsounds : 1;
     const decayMs = 200;
-    for (const [time, vol, , hits] of scene.moments) {
+    const windowStart = pos - decayMs;
+    let lo = 0;
+    let hi = moments.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >>> 1;
+      if (moments[mid][0] < windowStart) lo = mid + 1;
+      else hi = mid;
+    }
+    for (let i = lo; i < moments.length; i++) {
+      const [time, vol, , hits] = moments[i];
       const dt = pos - time;
       if (dt < 0) break;
-      if (dt > decayMs) continue;
       const env = 1 - dt / decayMs;
       for (const [row, , , hitVol] of hits) {
         const level = ((hitVol ?? vol ?? 100) / 100) * env * hsGain;
@@ -94,20 +110,29 @@
         onlevel={laneLevel(strip.row)} />
     {/each}
   </div>
+  {#if spectrumOpen}
+    <SpectrumPanel />
+  {/if}
   <section class="master" aria-label="Master output">
     <h3>Master output</h3>
     {#if device}<p class="device" title={device}>{device}</p>{/if}
     <div class="body">
-      <Fader gain={main} min={0.2} max={1} label="Master volume" {disabled} peak={masterPeak} onchange={level("main")} />
+      <Fader gain={main} min={0.2} max={1} label="Master volume" {disabled} peak={masterPeak} peakL={masterPeakL} peakR={masterPeakR} onchange={level("main")} />
       <div class="readouts">
         <span class="caption">Level</span>
         <span class="box level {main === null ? 'off' : ''}">{main === null ? "" : dbText(main)}</span>
         <span class="caption">Peak</span>
         <span class="box peak {masterPeak === null ? 'off' : ''}">{masterPeak != null && masterPeak > 0.001 ? dbText(masterPeak) : ""}</span>
         <div class="peak-bars {masterPeak === null ? 'off' : ''}" aria-hidden="true">
-          <div><span class="peak-fill" class:hot={masterPeak >= 0.5 && masterPeak < 0.98} class:clip={masterPeak >= 0.98} style:width={masterPct + "%"}></span></div>
-          <div><span class="peak-fill" class:hot={masterPeak >= 0.5 && masterPeak < 0.98} class:clip={masterPeak >= 0.98} style:width={masterPct + "%"}></span></div>
+          <div><span class="peak-fill" class:hot={masterPeakL >= 0.5 && masterPeakL < 0.98} class:clip={masterPeakL >= 0.98} style:width={masterPctL + "%"}></span></div>
+          <div><span class="peak-fill" class:hot={masterPeakR >= 0.5 && masterPeakR < 0.98} class:clip={masterPeakR >= 0.98} style:width={masterPctR + "%"}></span></div>
         </div>
+        <div class="phase-bar {phaseCorr === null ? 'off' : ''}" aria-hidden="true">
+          <span class="phase-mid"></span>
+          <span class="phase-dot" class:neg={phaseCorr != null && phaseCorr < 0} style:left={phasePct + "%"}></span>
+        </div>
+        <button type="button" class="spectrum-btn" aria-pressed={spectrumOpen} {disabled}
+          onclick={() => bridge.toggleSpectrum()}>Spectrum</button>
       </div>
     </div>
   </section>
@@ -205,7 +230,6 @@
     height: 100%;
     background: var(--editor-meter, #34c759);
     border-radius: 2px;
-    transition: width 55ms linear;
   }
   .peak-fill.hot {
     background: var(--editor-warning, #ffd60a);
@@ -215,5 +239,54 @@
   }
   .peak-bars.off {
     opacity: 0.45;
+  }
+  .phase-bar {
+    position: relative;
+    height: 4px;
+    border-radius: 2px;
+    background: rgba(0, 0, 0, 0.45);
+    margin-top: 2px;
+  }
+  .phase-bar.off {
+    opacity: 0.45;
+  }
+  .phase-mid {
+    position: absolute;
+    left: 50%;
+    top: 0;
+    bottom: 0;
+    width: 1px;
+    background: rgba(255, 255, 255, 0.16);
+  }
+  .phase-dot {
+    position: absolute;
+    top: -1px;
+    width: 4px;
+    height: 6px;
+    margin-left: -2px;
+    border-radius: 1px;
+    background: var(--editor-meter, #34c759);
+  }
+  .phase-dot.neg {
+    background: var(--editor-error, #ff453a);
+  }
+  .spectrum-btn {
+    margin-top: 4px;
+    height: 20px;
+    min-height: 20px;
+    border: 0;
+    border-radius: 3px;
+    background: var(--editor-control);
+    color: var(--editor-secondary);
+    font: 600 10px var(--font-ui);
+    cursor: pointer;
+  }
+  .spectrum-btn[aria-pressed="true"] {
+    background: var(--editor-accent);
+    color: var(--editor-ink);
+  }
+  .spectrum-btn:disabled {
+    opacity: 0.45;
+    cursor: default;
   }
 </style>

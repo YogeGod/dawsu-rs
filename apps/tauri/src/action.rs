@@ -580,6 +580,7 @@ pub(crate) enum Action {
         apply: bool,
     },
     AuditionOutputMix { index: usize },
+    SetSpectrum { enabled: bool },
     DismissError,
     CancelJob,
 }
@@ -1133,6 +1134,7 @@ impl Action {
                     app.set_error(Some(error));
                 }
             }
+            Self::SetSpectrum { enabled } => app.set_spectrum_tap_enabled(enabled),
             Self::DismissError => app.clear_error(),
             Self::CancelJob => app.cancel_job(),
         }

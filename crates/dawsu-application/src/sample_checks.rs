@@ -23,6 +23,10 @@ pub const TRIM_SILENCE_THRESHOLD: f32 = 1.0e-3;
 /// Short pre-transient margin preserved when trimming leading silence so attacks never click.
 pub const ANTI_CLICK_MARGIN_MS: f64 = 0.5;
 
+/// Minimum peak/true-peak warning threshold: -0.3 dBTP (`10^(-0.3/20)`).
+pub const MAX_TRUE_PEAK_DBTP: f32 = -0.3;
+const MAX_TRUE_PEAK_LINEAR: f32 = 0.966_050_86;
+
 /// A single Ranking Criteria or osu! playback health issue found on a hitsound sample.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -35,6 +39,8 @@ pub enum SampleHealthIssue {
     TooSmallForStable { bytes: usize },
     /// Completely silent audio (peak < -90 dBFS) that is not a compact 44-byte blank WAV.
     NonStandardSilence { bytes: usize },
+    /// BS.1770 4x oversampled true peak exceeds -0.3 dBTP.
+    TruePeakHot { true_peak_dbtp: f32 },
 }
 
 impl SampleHealthIssue {
@@ -52,6 +58,9 @@ impl SampleHealthIssue {
             ),
             Self::NonStandardSilence { bytes } => format!(
                 "{name} is silent audio ({bytes} bytes) — replace with a standard 44-byte blank WAV."
+            ),
+            Self::TruePeakHot { true_peak_dbtp } => format!(
+                "{name} reaches {true_peak_dbtp:+.1} dBTP (above -0.3 dBTP) — inter-sample clipping risk in lossy decode or playback."
             ),
         }
     }
@@ -146,6 +155,14 @@ pub fn inspect_pcm(
     }
     if file_bytes < MIN_STABLE_BYTES {
         issues.push(SampleHealthIssue::TooSmallForStable { bytes: file_bytes });
+    }
+    if peak >= 0.65 {
+        let true_peak = crate::waveform::true_peak_4x_interleaved(usable, channels, 0, frames);
+        if true_peak > MAX_TRUE_PEAK_LINEAR {
+            issues.push(SampleHealthIssue::TruePeakHot {
+                true_peak_dbtp: 20.0 * true_peak.log10(),
+            });
+        }
     }
 
     SampleHealthReport {
@@ -719,5 +736,32 @@ mod tests {
             "auto-fixed staged mix should be healthy, got {:?}",
             plan_fixed.sample_warnings
         );
+    }
+
+    #[test]
+    fn true_peak_hot_triggers_for_intersample_overshoot_but_not_healthy_hits() {
+        // +0.5 dBTP fs/4 cosine at pi/4 phase: discrete samples sit near +-0.749, below 0 dBFS,
+        // while 4x BS.1770 reconstruction peaks near 1.059 (+0.5 dBTP > -0.3 dBTP).
+        let frames = (RATE as usize / 10).max(2048); // ~100 ms >= 25 ms
+        let amp = 10.0_f32.powf(0.5 / 20.0);
+        let samples: Vec<f32> = (0..frames)
+            .map(|n| amp * (std::f32::consts::FRAC_PI_2 * n as f32 - std::f32::consts::FRAC_PI_4).cos())
+            .collect();
+        let report = inspect_pcm("hot-cymbal.wav", &samples, RATE, 1, 64_000, true);
+        assert!(
+            report.peak < 0.80,
+            "discrete sample peak should stay well below 0 dBFS, got {}",
+            report.peak
+        );
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|i| matches!(i, SampleHealthIssue::TruePeakHot { true_peak_dbtp } if *true_peak_dbtp > 0.0)),
+            "expected TruePeakHot > 0 dBTP, got {:?}",
+            report.issues
+        );
+        let msg = report.warnings().join(" ");
+        assert!(msg.contains("dBTP") && msg.contains("hot-cymbal.wav"), "{msg}");
     }
 }

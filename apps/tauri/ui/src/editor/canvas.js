@@ -136,12 +136,17 @@ export function attachCanvas(ctx) {
   // The three bands are quantized to 1/16 so each colour string is built once and reused.
   const waveLevels = 16;
   const waveColours = new Array((waveLevels + 1) ** 3);
-  function lazerWaveColour(low, mid, high) {
+  function lazerWaveColourIndex(low, mid, high) {
     const ql = Math.round(limit(low, 0, 1) * waveLevels);
     const qm = Math.round(limit(mid, 0, 1) * waveLevels);
     const qh = Math.round(limit(high, 0, 1) * waveLevels);
     const index = (ql * (waveLevels + 1) + qm) * (waveLevels + 1) + qh;
-    return waveColours[index] ??= blendWaveColour(ql / waveLevels, qm / waveLevels, qh / waveLevels);
+    waveColours[index] ??= blendWaveColour(ql / waveLevels, qm / waveLevels, qh / waveLevels);
+    return index;
+  }
+
+  function lazerWaveColour(low, mid, high) {
+    return waveColours[lazerWaveColourIndex(low, mid, high)];
   }
 
   function blendWaveColour(low, mid, high) {
@@ -159,58 +164,154 @@ export function attachCanvas(ctx) {
     return `rgba(${Math.round(r)},${Math.round(g)},${Math.round(b)},${a.toFixed(3)})`;
   }
 
+  const WAVE_POOL_SIZE = 32768;
+  const WAVE_POOL_MASK = WAVE_POOL_SIZE - 1;
+
   function waveform(context2d, width, center, height, start, span) {
-    const bins = state.scene.waveform;
-    const isTyped = bins instanceof Float32Array || Object.prototype.toString.call(bins) === "[object Float32Array]";
-    const binCount = isTyped ? Math.floor(bins.length / 6) : (bins?.length ?? 0);
+    const pyramid = state.scene.waveformPyramid;
+    const legacyBins = state.scene.waveform;
     const duration = state.view.duration;
-    if (!binCount || !duration || width <= 0) return;
+    if (!duration || width <= 0) return;
+
+    const msPerPx = span / width;
+    let bins = legacyBins;
+    let isTyped = !Array.isArray(bins) && (bins instanceof Float32Array || Object.prototype.toString.call(bins) === "[object Float32Array]");
+    let binCount = isTyped ? Math.floor(bins.length / 6) : (bins?.length ?? 0);
+    let clipMask = null;
+    let strideBins = 1;
+
+    if (pyramid?.levels?.length && pyramid.baseCount > 0) {
+      const binsPerPx = msPerPx * (pyramid.baseCount / duration);
+      let chosen = pyramid.levels[0];
+      for (let li = 1; li < pyramid.levels.length; li++) {
+        const cand = pyramid.levels[li];
+        if (binsPerPx / cand.strideBins >= 1) chosen = cand;
+        else break;
+      }
+      bins = chosen.bins;
+      binCount = chosen.count;
+      clipMask = chosen.clipMask ?? null;
+      strideBins = chosen.strideBins;
+      isTyped = true;
+    }
+    if (!binCount) return;
+
     // Playback reads the song at position - offset, so the drawn song moves by the same offset.
     const songStart = start - (state.view.offset ?? 0);
     const cols = Math.ceil(width);
     const binScale = binCount / duration;
-    const msPerPx = span / width;
     if (!state.waveCoreTops || state.waveCoreTops.length < cols) {
       state.waveCoreTops = new Float32Array(cols);
       state.waveCoreHeights = new Float32Array(cols);
+      state.wavePeakL = new Float32Array(cols);
+      state.wavePeakR = new Float32Array(cols);
+      state.waveClip = new Uint8Array(cols);
     }
     const coreTops = state.waveCoreTops;
     const coreHeights = state.waveCoreHeights;
+    const colPeakL = state.wavePeakL;
+    const colPeakR = state.wavePeakR;
+    const colClip = state.waveClip;
     coreHeights.fill(0, 0, cols);
+    colClip.fill(0, 0, cols);
 
-    // Cache computed waveform columns keyed by absolute song-time pixel column so Centre-mode
-    // playback scrolling reuses 98%+ of columns without re-scanning bins or computing colours.
-    let cache = state.waveColCache;
-    if (!cache || cache.bins !== bins || cache.duration !== duration ||
-        cache.msPerPx !== msPerPx || cache.height !== height) {
-      cache = { bins, duration, msPerPx, height, map: new Map() };
-      state.waveColCache = cache;
+    // Zero-GC typed-array column cache keyed by absolute song-time pixel column.
+    let pool = state.wavePool;
+    if (!pool) {
+      pool = {
+        bins: null,
+        duration: 0,
+        msPerPx: 0,
+        height: 0,
+        strideBins: 0,
+        gen: 1,
+        count: 0,
+        keys: new Int32Array(WAVE_POOL_SIZE),
+        slotGen: new Uint32Array(WAVE_POOL_SIZE),
+        valid: new Uint8Array(WAVE_POOL_SIZE),
+        peakL: new Float32Array(WAVE_POOL_SIZE),
+        peakR: new Float32Array(WAVE_POOL_SIZE),
+        rmsL: new Float32Array(WAVE_POOL_SIZE),
+        rmsR: new Float32Array(WAVE_POOL_SIZE),
+        colourIdx: new Int32Array(WAVE_POOL_SIZE),
+        clipped: new Uint8Array(WAVE_POOL_SIZE),
+      };
+      state.wavePool = pool;
     }
+    if (pool.bins !== bins || pool.duration !== duration || pool.msPerPx !== msPerPx ||
+        pool.height !== height || pool.strideBins !== strideBins || pool.count > 20000) {
+      pool.bins = bins;
+      pool.duration = duration;
+      pool.msPerPx = msPerPx;
+      pool.height = height;
+      pool.strideBins = strideBins;
+      pool.gen = (pool.gen + 1) >>> 0;
+      if (pool.gen === 0) {
+        pool.slotGen.fill(0);
+        pool.gen = 1;
+      }
+      pool.count = 0;
+    }
+
     const absCol0 = Math.floor(songStart / msPerPx);
     const subPx = songStart - absCol0 * msPerPx;
     const useCache = Math.abs(subPx) < msPerPx * 0.5 || state.view.playing;
     let lastColour = "";
+    let hasClip = false;
 
     for (let x = 0; x < cols; x++) {
       const absCol = absCol0 + x;
-      let entry = useCache ? cache.map.get(absCol) : undefined;
-      if (entry === undefined) {
+      let hit = false;
+      let empty = false;
+      let peakL = 0, peakR = 0, rmsL = 0, rmsR = 0, colourIdx = 0, clipped = 0;
+      let emptySlot = -1;
+
+      if (useCache) {
+        let idx = (Math.imul(absCol, 2654435761) >>> 0) & WAVE_POOL_MASK;
+        for (let probe = 0; probe < 64; probe++) {
+          if (pool.slotGen[idx] !== pool.gen) {
+            emptySlot = idx;
+            break;
+          }
+          if (pool.keys[idx] === absCol) {
+            hit = true;
+            if (!pool.valid[idx]) {
+              empty = true;
+            } else {
+              peakL = pool.peakL[idx];
+              peakR = pool.peakR[idx];
+              rmsL = pool.rmsL[idx];
+              rmsR = pool.rmsR[idx];
+              colourIdx = pool.colourIdx[idx];
+              clipped = pool.clipped[idx];
+            }
+            break;
+          }
+          idx = (idx + 1) & WAVE_POOL_MASK;
+        }
+      }
+
+      if (!hit) {
         const t0 = useCache ? absCol * msPerPx : songStart + x * msPerPx;
         const t1 = t0 + msPerPx;
         if (t1 < 0) {
-          if (useCache) cache.map.set(absCol, null);
+          if (useCache && emptySlot >= 0) {
+            pool.keys[emptySlot] = absCol;
+            pool.slotGen[emptySlot] = pool.gen;
+            pool.valid[emptySlot] = 0;
+            pool.count++;
+          }
           continue;
         }
         const a = Math.max(0, Math.floor(t0 * binScale));
         if (a >= binCount) break;
         const b = Math.min(binCount, Math.max(a + 1, Math.ceil(t1 * binScale)));
-        const innerStep = b - a > 12 ? Math.floor((b - a) / 8) : 1;
 
         let maxL = 0, maxR = 0, sumSqL = 0, sumSqR = 0;
         let wLow = 0, wMid = 0, wHigh = 0, wAmp = 0;
         let sumLow = 0, sumMid = 0, sumHigh = 0, count = 0;
         if (isTyped) {
-          for (let i = a; i < b; i += innerStep) {
+          for (let i = a; i < b; i++) {
             const base = i * 6;
             const l = bins[base + 4];
             const r = bins[base + 5];
@@ -229,10 +330,11 @@ export function attachCanvas(ctx) {
             sumLow += low;
             sumMid += mid;
             sumHigh += high;
+            if (clipMask && (clipMask[i >> 3] & (1 << (i & 7))) !== 0) clipped = 1;
             count++;
           }
         } else {
-          for (let i = a; i < b; i += innerStep) {
+          for (let i = a; i < b; i++) {
             const bin = bins[i];
             const l = bin[4] ?? bin[0];
             const r = bin[5] ?? bin[0];
@@ -252,32 +354,51 @@ export function attachCanvas(ctx) {
           }
         }
         if (!count) {
-          if (useCache) cache.map.set(absCol, null);
+          if (useCache && emptySlot >= 0) {
+            pool.keys[emptySlot] = absCol;
+            pool.slotGen[emptySlot] = pool.gen;
+            pool.valid[emptySlot] = 0;
+            pool.count++;
+          }
           continue;
         }
 
-        const peakL = limit(maxL, 0, 1) * height + 0.5;
-        const peakR = limit(maxR, 0, 1) * height + 0.5;
+        peakL = limit(maxL, 0, 1) * height + 0.5;
+        peakR = limit(maxR, 0, 1) * height + 0.5;
         const colLow = wAmp > 1e-4 ? wLow / wAmp : sumLow / count;
         const colMid = wAmp > 1e-4 ? wMid / wAmp : sumMid / count;
         const colHigh = wAmp > 1e-4 ? wHigh / wAmp : sumHigh / count;
-        const colour = lazerWaveColour(colLow, colMid, colHigh);
-        const rmsL = limit(Math.sqrt(sumSqL / count), 0, 1) * height * 0.72;
-        const rmsR = limit(Math.sqrt(sumSqR / count), 0, 1) * height * 0.72;
-        entry = [peakL, peakR, colour, rmsL, rmsR];
-        if (useCache) {
-          if (cache.map.size > 12000) cache.map.clear();
-          cache.map.set(absCol, entry);
+        colourIdx = lazerWaveColourIndex(colLow, colMid, colHigh);
+        rmsL = limit(Math.sqrt(sumSqL / count), 0, 1) * height * 0.72;
+        rmsR = limit(Math.sqrt(sumSqR / count), 0, 1) * height * 0.72;
+        if (useCache && emptySlot >= 0) {
+          pool.keys[emptySlot] = absCol;
+          pool.slotGen[emptySlot] = pool.gen;
+          pool.valid[emptySlot] = 1;
+          pool.peakL[emptySlot] = peakL;
+          pool.peakR[emptySlot] = peakR;
+          pool.rmsL[emptySlot] = rmsL;
+          pool.rmsR[emptySlot] = rmsR;
+          pool.colourIdx[emptySlot] = colourIdx;
+          pool.clipped[emptySlot] = clipped;
+          pool.count++;
         }
       }
-      if (!entry) continue;
+      if (empty) continue;
 
-      const [peakL, peakR, colour, rmsL, rmsR] = entry;
+      const colour = waveColours[colourIdx];
       if (colour !== lastColour) {
         context2d.fillStyle = colour;
         lastColour = colour;
       }
       context2d.fillRect(x, center - peakL, 1, Math.max(1, peakL + peakR));
+
+      colPeakL[x] = peakL;
+      colPeakR[x] = peakR;
+      if (clipped) {
+        colClip[x] = 1;
+        hasClip = true;
+      }
 
       const coreH = rmsL + rmsR;
       if (coreH >= 1.5) {
@@ -291,6 +412,15 @@ export function attachCanvas(ctx) {
     for (let x = 0; x < cols; x++) {
       const h = coreHeights[x];
       if (h > 0) context2d.fillRect(x, coreTops[x], 1, h);
+    }
+
+    if (hasClip) {
+      context2d.fillStyle = "#ff453a";
+      for (let x = 0; x < cols; x++) {
+        if (!colClip[x]) continue;
+        context2d.fillRect(x, center - colPeakL[x], 1, 2);
+        context2d.fillRect(x, Math.max(center, center + colPeakR[x] - 2), 1, 2);
+      }
     }
   }
 

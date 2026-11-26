@@ -221,6 +221,7 @@ export function initMenus(env = globalThis, { ui: uiOverride = null, bridge: bri
     setModeHitsounds: () => ui()?.setMode?.("hitsounds"),
     setModeDrums: () => ui()?.setMode?.("drums"),
     setModeKeysounds: () => ui()?.setMode?.("keysounds"),
+    toggleSpectrum: () => ui()?.toggleSpectrum?.(),
     createHsDiff: () => {
       const path = getScene()?.path;
       if (path) createAndOpenHitsoundDiff(path, false);

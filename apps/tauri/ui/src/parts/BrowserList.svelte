@@ -38,7 +38,7 @@
       ondragend={() => send("dragEnd")}
       onclick={() => send("pick", row.key)} ondblclick={() => send("assign")}
       onkeydown={event => sampleKey(event, row, send)}>
-      <span class="browser-icon">{@html Volume1}</span><span class="browser-name">{row.label}</span>
+      <span class="browser-icon">{@html Volume1}</span><span class="browser-name">{row.label}</span>{#if row.similarity != null}<span class="browser-sim">{row.similarity}%</span>{:else if row.tag}<span class="browser-row-tag">{row.tag}</span>{/if}
     </button>
   {/if}
 {/each}

@@ -14,6 +14,8 @@ import { samePlayhead, sameUiView } from "./view.js";
 export class Bridge {
   _previewLink = false;
   _lastSent = "";
+  _lastPreviewAt = 0;
+  _lastPreviewMeta = "";
 
   view = $state.raw(null);
   playhead = $state.raw(null);
@@ -69,6 +71,8 @@ export class Bridge {
   // Active editor workflow mode ("hitsounds" | "drums" | "keysounds") and floating Micro-HUD anchor.
   mode = $state("hitsounds");
   microHud = $state.raw(null);
+  spectrumOpen = $state(false);
+  spectrum = $state.raw(null);
   // Top-level 3-path Mapset Intake Card payload (shown outside #home so folder drops work while editing).
   intakeMapset = $state.raw(null);
 
@@ -183,6 +187,25 @@ export class Bridge {
     this.intakeMapset = mapset ?? null;
   }
 
+  setSpectrum(frame) {
+    this.spectrum = frame ?? null;
+  }
+
+  toggleSpectrum() {
+    const next = !this.spectrumOpen;
+    this.spectrumOpen = next;
+    if (next) {
+      this.bottomTab = "mixer";
+      this.callAction("renderPanelLayout");
+      if (this.view?.panels?.controller === false) {
+        this.callAction("togglePanel", "controller");
+      }
+    } else {
+      this.spectrum = null;
+    }
+    this.callAction("act", { kind: "set_spectrum", enabled: next }, false);
+  }
+
   closeMapsetIntake() {
     this.intakeMapset = null;
   }
@@ -220,10 +243,17 @@ export class Bridge {
       path: scene?.path ?? null,
       previewKey: scene?.previewKey ?? null,
     };
-    // Only what changed goes: paused and unmoved, the 1 s updates send nothing.
+    // Only what changed goes: paused and unmoved, the updates send nothing; steady playback is <= 30 Hz.
     const sent = JSON.stringify(payload);
     if (sent === this._lastSent && !force) return;
+    const now = globalThis.performance?.now?.() ?? Date.now();
+    const keyMeta = `${!!view?.playing}|${view?.speed}|${view?.duration}|${payload.path}|${payload.previewKey}`;
+    if (!force && view?.playing && keyMeta === this._lastPreviewMeta && now - this._lastPreviewAt < 33) {
+      return;
+    }
     this._lastSent = sent;
+    this._lastPreviewMeta = keyMeta;
+    this._lastPreviewAt = now;
     globalThis.window?.__TAURI__?.event.emitTo("preview", "preview-view", payload).catch(() => {});
   }
 
@@ -279,6 +309,8 @@ export class Bridge {
     setMicroHud: hud => this.setMicroHud(hud),
     openMapsetIntake: mapset => this.openMapsetIntake(mapset),
     closeMapsetIntake: () => this.closeMapsetIntake(),
+    setSpectrum: frame => this.setSpectrum(frame),
+    toggleSpectrum: () => this.toggleSpectrum(),
   };
 
   set(view, scene) {

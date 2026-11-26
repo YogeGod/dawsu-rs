@@ -4,12 +4,61 @@ use crate::{
     Application, Document, JobResult, OutputBackend, OutputDevice, Preferences,
     open_preferred_audio, sample_watch, toggle, waveform,
 };
-use dawsu_audio::{AudioClip, AudioEngine, ScheduledSound};
+use dawsu_audio::{AudioClip, AudioEngine, AudioTelemetryHandle, ScheduledSound};
+use dawsu_editor::tempo::{SnapMode, TempoMap};
 use dawsu_foundation::{SampleIdentity, SongTime};
 use dawsu_hitsounding::cue_list_filtered;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
+
+/// Musical position/tempo/meter snapshot evaluated at a given song timestamp (ms).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MusicalSample {
+    pub bpm_centi: u32,
+    pub meter_num: u16,
+    pub meter_den: u16,
+    pub bar: i64,
+    pub beat: u32,
+    pub tick: u16,
+}
+
+/// Lock-free snapshot of document timing so push telemetry computes live red-line transitions
+/// identically to `Document::editor_bar_at` without touching `Application`.
+#[derive(Clone, Debug)]
+pub struct MusicalTimingSnapshot {
+    tempo: TempoMap,
+    editor_bars: Vec<crate::editor_meter::EditorBarSection>,
+    pub snap_label: String,
+}
+
+impl MusicalTimingSnapshot {
+    pub fn at(&self, position_ms: f64) -> MusicalSample {
+        let time = SongTime::from_ms(position_ms);
+        let section = self.tempo.section_at(time);
+        let bpm = if section.beat_length_ms > 0.0 && section.beat_length_ms.is_finite() {
+            (60_000.0 / section.beat_length_ms).clamp(0.0, 4_000_000.0)
+        } else {
+            0.0
+        };
+        let bpm_centi = (bpm * 100.0).round() as u32;
+        let index = self.editor_bars.partition_point(|bar| bar.start <= time.ms());
+        let (bar_beat, (num, den)) = if let Some(bar_sec) = self.editor_bars.get(index.saturating_sub(1)) {
+            (bar_sec.position(time.ms()), (bar_sec.numerator, bar_sec.denominator))
+        } else {
+            (self.tempo.bar_beat_at(time), (section.beats_per_bar, 4))
+        };
+        let tick = ((bar_beat.beat_fraction * 480.0 + 1e-9).floor() as u32).min(479) as u16;
+        MusicalSample {
+            bpm_centi,
+            meter_num: num.min(u16::MAX as u32) as u16,
+            meter_den: den.min(u16::MAX as u32) as u16,
+            bar: bar_beat.bar,
+            beat: bar_beat.beat,
+            tick,
+        }
+    }
+}
 
 impl Application {
     pub fn is_playing(&self) -> bool {
@@ -112,6 +161,9 @@ impl Application {
             preferences.device = Some(audio.device_name.clone());
         }
         self.audio = Some(audio);
+        if let Some(engine) = &self.audio {
+            engine.set_spectrum_tap_enabled(self.spectrum_enabled);
+        }
         self.preferences = preferences;
         self.error = None;
         self.sync_audio();
@@ -615,6 +667,46 @@ impl Application {
 
     pub fn audio_peaks(&self) -> (f32, f32, f32) {
         self.audio.as_ref().map_or((0.0, 0.0, 0.0), |a| a.peaks())
+    }
+
+    pub fn audio_telemetry(&self) -> Option<AudioTelemetryHandle> {
+        self.audio.as_ref().map(AudioEngine::telemetry_handle)
+    }
+
+    pub fn spectrum_tap(&self) -> Option<Arc<dawsu_audio::SpectrumTap>> {
+        self.audio.as_ref().map(AudioEngine::spectrum_tap)
+    }
+
+    pub fn spectrum_enabled(&self) -> bool {
+        self.spectrum_enabled
+    }
+
+    pub fn set_spectrum_tap_enabled(&mut self, enabled: bool) {
+        self.spectrum_enabled = enabled;
+        if let Some(engine) = &self.audio {
+            engine.set_spectrum_tap_enabled(enabled);
+        }
+        self.bump_view_revision();
+    }
+
+    pub fn musical_timing_snapshot(&self) -> Option<MusicalTimingSnapshot> {
+        self.document.as_ref().map(|document| {
+            let composer = &document.composer;
+            let snap_label = if composer.snap_enabled {
+                if composer.snap_mode == SnapMode::Objects {
+                    "Objects".into()
+                } else {
+                    format!("{}/{}", composer.spacing.beats(), composer.spacing.divisions())
+                }
+            } else {
+                "Snap off".into()
+            };
+            MusicalTimingSnapshot {
+                tempo: composer.tempo.clone(),
+                editor_bars: document.editor_bars.clone(),
+                snap_label,
+            }
+        })
     }
     pub fn set_hitsounds_solo(&mut self, on: bool) {
         if self.document.is_some() && self.hitsounds_solo != on {

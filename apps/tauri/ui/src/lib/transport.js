@@ -18,11 +18,17 @@ export const osuTimestamp = ms => parts(ms).join(":") + " -";
 
 // The backend sends "bar.beat.tick · 190.0 BPM · 4/4 · snap" and no separate fields.
 export function readout(view, scene) {
-  const [, tempo, meter] = (scene && view?.musicalPosition?.split(" · ")) || [];
+  const [, textTempo, textMeter] = (scene && view?.musicalPosition?.split(" · ")) || [];
+  const bpm = scene && Number.isFinite(view?.bpmCenti) && view.bpmCenti > 0
+    ? (view.bpmCenti / 100).toFixed(1)
+    : (textTempo?.replace(/ BPM$/, "") ?? "–");
+  const meter = scene && Number.isFinite(view?.meterNum) && view.meterNum > 0 && Number.isFinite(view?.meterDen) && view.meterDen > 0
+    ? `${view.meterNum}/${view.meterDen}`
+    : (textMeter ?? "–");
   return {
     time: scene && Number.isFinite(view?.position) ? clock(view.position) : "00:00.000",
-    bpm: tempo?.replace(/ BPM$/, "") ?? "–",
-    meter: meter ?? "–",
+    bpm,
+    meter,
   };
 }
 

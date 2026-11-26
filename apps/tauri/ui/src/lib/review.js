@@ -15,3 +15,7 @@ export function reviewMixSections(review) {
   ] : [{ title: "Sample mixes", rows: rows(mixes) }]).filter(section => section.rows.length);
   return { sections, volumes, details };
 }
+
+export function reviewSampleWarnings(review) {
+  return Array.isArray(review?.sampleWarnings) ? review.sampleWarnings.filter(Boolean) : [];
+}

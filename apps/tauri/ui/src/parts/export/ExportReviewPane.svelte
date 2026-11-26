@@ -4,6 +4,7 @@
   let {
     choices,
     mixInfo,
+    sampleWarnings = [],
     summary = null,
     diffSummary = null,
     verification = null,
@@ -111,6 +112,14 @@
         {#each mixInfo.volumes as message, index (index)}<p>{message}</p>{/each}
       {/if}
     </div>
+  {/if}
+  {#if sampleWarnings.length}
+    <section class="sample-warnings" aria-label="Sample warnings">
+      <strong>Sample warnings</strong>
+      <ul>
+        {#each sampleWarnings as warning, index (index)}<li>{warning}</li>{/each}
+      </ul>
+    </section>
   {/if}
 </aside>
 
@@ -261,4 +270,16 @@
   .verify-check-label { color: var(--editor-secondary); font-weight: 600; }
   .verify-check-detail { min-width: 0; overflow-wrap: anywhere; }
   .verify-error-summary { margin: 0; font-size: 11px; color: var(--editor-error); overflow-wrap: anywhere; }
+  .sample-warnings {
+    margin-top: 14px;
+    padding: 10px 12px;
+    border-radius: 8px;
+    background: rgba(239, 193, 106, .08);
+    border: 1px solid rgba(239, 193, 106, .35);
+    display: grid;
+    gap: 6px;
+  }
+  .sample-warnings strong { font-size: 12px; color: var(--editor-warning); }
+  .sample-warnings ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+  .sample-warnings li { font-size: 11px; line-height: 1.4; color: var(--editor-text); overflow-wrap: anywhere; }
 </style>

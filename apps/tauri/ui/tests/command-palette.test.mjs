@@ -247,4 +247,6 @@ test("Command Palette includes Lane menu, paletteOnly actions, and accurate KEY_
   assert.equal(evaluateEnabledRule("sharedBaseEnabled", { scene: openMapScene, view: { sharedBaseEnabled: true } }), true);
   assert.equal(evaluateEnabledRule("lane", { scene: openMapScene, view: { activeLane: 0 } }), true);
   assert.equal(evaluateEnabledRule("lane", { scene: openMapScene, view: { activeLane: 99 } }), false);
+  const specMatches = filterAndRank(entries, "spectrum");
+  assert.equal(specMatches[0]?.id, "paletteToggleSpectrum");
 });

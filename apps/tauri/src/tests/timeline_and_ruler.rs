@@ -484,6 +484,7 @@ fn encode_waveform_bytes_round_trips_exact_f32_bins() {
             high: 0.789_012_3,
             amp_l: 0.812_5,
             amp_r: 0.637_5,
+            true_peak: 0.912_345_6,
         },
         WaveBin {
             peak: 0.0,
@@ -492,6 +493,7 @@ fn encode_waveform_bytes_round_trips_exact_f32_bins() {
             high: 0.25,
             amp_l: 0.000_976_562_5,
             amp_r: 0.999_999_9,
+            true_peak: 0.999_999_9,
         },
     ];
     let bytes = encode_waveform_bytes(&app.waveform);
@@ -511,6 +513,7 @@ fn encode_waveform_bytes_round_trips_exact_f32_bins() {
                 high: f(12),
                 amp_l: f(16),
                 amp_r: f(20),
+                true_peak: f(0),
             }
         })
         .collect();
@@ -523,4 +526,52 @@ fn encode_waveform_bytes_round_trips_exact_f32_bins() {
         assert_eq!(got.amp_l.to_bits(), expected.amp_l.to_bits());
         assert_eq!(got.amp_r.to_bits(), expected.amp_r.to_bits());
     }
+}
+
+#[test]
+fn encode_waveform_pyramid_bytes_packs_dwfp_r4_levels_and_clip_mask() {
+    use crate::encode_waveform_pyramid_bytes;
+    assert!(encode_waveform_pyramid_bytes(&[]).is_empty());
+    let mut bins = vec![
+        WaveBin {
+            peak: 0.4,
+            low: 0.5,
+            mid: 0.3,
+            high: 0.2,
+            amp_l: 0.4,
+            amp_r: 0.35,
+            true_peak: 0.4,
+        };
+        1024
+    ];
+    bins[500].peak = 1.0;
+    bins[500].amp_l = 1.0;
+    bins[500].true_peak = 1.06;
+
+    let bytes = encode_waveform_pyramid_bytes(&bins);
+    assert_eq!(&bytes[0..4], b"DWFP");
+    let version = u16::from_le_bytes(bytes[4..6].try_into().unwrap());
+    let levels = u16::from_le_bytes(bytes[6..8].try_into().unwrap());
+    let stride = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
+    assert_eq!(version, 1);
+    assert_eq!(levels, 2); // 1024 -> 256 (<= 256 stops)
+    assert_eq!(stride, 6);
+
+    let l0_count = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+    let l0_stride = u32::from_le_bytes(bytes[16..20].try_into().unwrap());
+    let l1_count = u32::from_le_bytes(bytes[20..24].try_into().unwrap()) as usize;
+    let l1_stride = u32::from_le_bytes(bytes[24..28].try_into().unwrap());
+    assert_eq!((l0_count, l0_stride), (1024, 1));
+    assert_eq!((l1_count, l1_stride), (256, 4));
+
+    let l0_mask_offset = 12 + 2 * 8 + l0_count * 24;
+    let l0_mask_len = l0_count.div_ceil(8).next_multiple_of(4);
+    assert_ne!(bytes[l0_mask_offset + (500 >> 3)] & (1u8 << (500 & 7)), 0);
+    assert_eq!(bytes[l0_mask_offset + (10 >> 3)] & (1u8 << (10 & 7)), 0);
+
+    let l1_offset = l0_mask_offset + l0_mask_len;
+    let l1_peak_125 = f32::from_le_bytes(bytes[l1_offset + 125 * 24..l1_offset + 125 * 24 + 4].try_into().unwrap());
+    assert_eq!(l1_peak_125, 1.0);
+    let l1_mask_offset = l1_offset + l1_count * 24;
+    assert_ne!(bytes[l1_mask_offset + (125 >> 3)] & (1u8 << (125 & 7)), 0);
 }

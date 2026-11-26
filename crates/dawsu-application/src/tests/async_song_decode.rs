@@ -150,7 +150,7 @@ fn opening_a_second_map_cancels_first_decode_and_drops_late_song_ready() {
     app.apply_song_job_result(JobResult::SongReady {
         generation: gen1,
         song: Some(stale_clip.clone()),
-        waveform: vec![WaveBin { peak: 0.9, low: 0.1, mid: 0.2, high: 0.3, amp_l: 0.9, amp_r: 0.9 }; 3],
+        waveform: vec![WaveBin { peak: 0.9, low: 0.1, mid: 0.2, high: 0.3, amp_l: 0.9, amp_r: 0.9, true_peak: 0.9 }; 3],
         warning: Some("stale warning".into()),
     });
     assert_eq!(app.waveform.len(), second_wf_len);

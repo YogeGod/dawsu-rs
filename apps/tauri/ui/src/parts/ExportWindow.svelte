@@ -10,7 +10,7 @@
     openWarnings, optionsKey, ownWriteError, pollDelay, previewRequest, statusLine,
     verificationSummary, warningsLabel,
   } from "../lib/export.js";
-  import { reviewMixSections } from "../lib/review.js";
+  import { reviewMixSections, reviewSampleWarnings } from "../lib/review.js";
   import ExportOptionsForm from "./export/ExportOptionsForm.svelte";
   import ExportTargetsList from "./export/ExportTargetsList.svelte";
   import ExportReviewPane from "./export/ExportReviewPane.svelte";
@@ -57,6 +57,7 @@
   const baseLineEndings = $derived(choices.base ? baseLineEndingsOnly(status.preview) : false);
   // Which .wav files the export creates or reuses, and how volumes are written.
   const mixInfo = $derived(reviewMixSections(status.preview));
+  const sampleWarnings = $derived(reviewSampleWarnings(status.preview));
   const summary = $derived(exportSummary(status.preview, view?.targets, choices));
   const diffSummary = $derived(exportDiffSummary(status.preview, view?.targets, choices));
   const verification = $derived(verificationSummary(status.preview));
@@ -292,7 +293,7 @@
     {/if}
   </div>
 
-  <ExportReviewPane {choices} {mixInfo} {summary} {diffSummary} {verification} />
+  <ExportReviewPane {choices} {mixInfo} {sampleWarnings} {summary} {diffSummary} {verification} />
 
   <footer class="actions">
     <div class="status" role="status">

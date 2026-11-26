@@ -180,7 +180,17 @@ pub fn decode(path: &Path) -> Result<Arc<AudioClip>, String> {
     decode_with_cancel(path, &|| false)
 }
 pub fn decode_bytes(bytes: Vec<u8>, extension: Option<&str>) -> Result<Arc<AudioClip>, String> {
-    decode_source(Box::new(std::io::Cursor::new(bytes)), extension, "memory", &|| false)
+    decode_source(Box::new(std::io::Cursor::new(bytes)), extension, "memory", &|| false, None)
+}
+pub fn decode_prefix(path: &Path, max_frames: usize) -> Result<Arc<AudioClip>, String> {
+    let source = File::open(path).map_err(|e| format!("Opening {}: {e}", path.display()))?;
+    decode_source(
+        Box::new(source),
+        path.extension().and_then(|s| s.to_str()),
+        &path.display().to_string(),
+        &|| false,
+        Some(max_frames.max(1)),
+    )
 }
 pub fn decode_with_cancel(
     path: &Path,
@@ -192,6 +202,7 @@ pub fn decode_with_cancel(
         path.extension().and_then(|s| s.to_str()),
         &path.display().to_string(),
         cancel,
+        None,
     )
 }
 fn decode_source(
@@ -199,6 +210,7 @@ fn decode_source(
     extension: Option<&str>,
     label: &str,
     cancel: &dyn Fn() -> bool,
+    max_frames: Option<usize>,
 ) -> Result<Arc<AudioClip>, String> {
     let mut hint = Hint::new();
     if let Some(ext) = extension {
@@ -236,9 +248,11 @@ fn decode_source(
         .map_err(|e| e.to_string())?;
     let mut samples = Vec::new();
     let reserve = decode_pre_reserve_samples(track.num_frames, channels);
+    let reserve = max_frames.map_or(reserve, |limit| reserve.min(limit.saturating_mul(channels)));
     if reserve > 0 {
         samples.reserve(reserve);
     }
+    let max_samples = max_frames.map(|limit| limit.saturating_mul(channels));
     while let Some(packet) = reader.next_packet().map_err(|e| e.to_string())? {
         if cancel() {
             return Err("Audio decoding cancelled".into());
@@ -252,6 +266,12 @@ fn decode_source(
         let old = samples.len();
         samples.resize(old + buffer.samples_interleaved(), 0.0);
         buffer.copy_to_slice_interleaved(&mut samples[old..]);
+        if let Some(limit) = max_samples
+            && samples.len() >= limit
+        {
+            samples.truncate(limit);
+            break;
+        }
     }
     if samples.is_empty() {
         return Err("Audio file contains no samples".into());
@@ -1073,10 +1093,51 @@ pub(crate) struct AudioTelemetry {
     pub(crate) observed_buffer_frames: CachePadded<AtomicU32>,
 }
 
+const SPECTRUM_TAP_CAP: usize = 16_384;
+
+/// Lock-free mono sample tap fed by the real-time audio callback only when `enabled` is true.
+pub struct SpectrumTap {
+    enabled: AtomicBool,
+    sample_rate: AtomicU32,
+    push_count: AtomicU64,
+    consumer: Mutex<SpscConsumer<f32, SPECTRUM_TAP_CAP>>,
+}
+
+impl SpectrumTap {
+    pub fn set_enabled(&self, enabled: bool) {
+        self.enabled.store(enabled, Ordering::Release);
+    }
+
+    pub fn is_enabled(&self) -> bool {
+        self.enabled.load(Ordering::Acquire)
+    }
+
+    pub fn push_count(&self) -> u64 {
+        self.push_count.load(Ordering::Relaxed)
+    }
+
+    pub fn sample_rate(&self) -> u32 {
+        self.sample_rate.load(Ordering::Relaxed)
+    }
+
+    /// Drains pending mono samples into `dst` (up to `max_samples`), returning `(count, sample_rate)`.
+    pub fn drain_into(&self, dst: &mut Vec<f32>, max_samples: usize) -> (usize, u32) {
+        let mut rx = self.consumer.lock().unwrap_or_else(|e| e.into_inner());
+        let mut drained = 0usize;
+        while drained < max_samples {
+            let Some(sample) = rx.try_pop() else { break };
+            dst.push(sample);
+            drained += 1;
+        }
+        (drained, self.sample_rate())
+    }
+}
+
 struct EngineHandles {
     cmd_tx: SpscProducer<Command, CMD_RING_CAPACITY>,
     retire_live_rx: SpscConsumer<Box<dyn LiveAudioSource>, RETIRE_LIVE_CAPACITY>,
     telemetry: Arc<AudioTelemetry>,
+    spectrum_tap: Arc<SpectrumTap>,
 }
 
 fn build_render_parts(
@@ -1088,13 +1149,22 @@ fn build_render_parts(
     let (cmd_tx, cmd_rx) = spsc_ring::<Command, CMD_RING_CAPACITY>();
     let (retire_live_tx, retire_live_rx) =
         spsc_ring::<Box<dyn LiveAudioSource>, RETIRE_LIVE_CAPACITY>();
+    let (tap_tx, tap_rx) = spsc_ring::<f32, SPECTRUM_TAP_CAP>();
     let telemetry = telemetry.unwrap_or_else(|| Arc::new(AudioTelemetry::default()));
+    let spectrum_tap = Arc::new(SpectrumTap {
+        enabled: AtomicBool::new(false),
+        sample_rate: AtomicU32::new(sample_rate.max(1)),
+        push_count: AtomicU64::new(0),
+        consumer: Mutex::new(tap_rx),
+    });
     let render = StreamRender::new(
         sample_rate,
         channels,
         cmd_rx,
         retire_live_tx,
         Arc::clone(&telemetry),
+        Arc::clone(&spectrum_tap),
+        tap_tx,
     )
     .with_rt_promotion(rt_promotion);
     (
@@ -1103,6 +1173,7 @@ fn build_render_parts(
             cmd_tx,
             retire_live_rx,
             telemetry,
+            spectrum_tap,
         },
     )
 }
@@ -1118,6 +1189,7 @@ pub struct AudioEngine {
     auditions: Mutex<Vec<Arc<AudioClip>>>,
     listen: ListenSlot,
     telemetry: Arc<AudioTelemetry>,
+    spectrum_tap: Arc<SpectrumTap>,
     pub errors: Arc<AtomicU64>,
     pub device_name: String,
     device_id: Option<String>,
@@ -1178,6 +1250,7 @@ impl AudioEngine {
                 auditions: Mutex::new(Vec::new()),
                 listen: ListenSlot::default(),
                 telemetry: handles.telemetry,
+                spectrum_tap: handles.spectrum_tap,
                 errors,
             })
         }
@@ -1242,6 +1315,7 @@ impl AudioEngine {
             auditions: Mutex::new(Vec::new()),
             listen: ListenSlot::default(),
             telemetry,
+            spectrum_tap: opened.payload.spectrum_tap,
             errors,
             device_name: device_name_out,
             device_id: opened.device_id,
@@ -1361,6 +1435,7 @@ impl AudioEngine {
             listen: ListenSlot::default(),
             cmd_tx: Mutex::new(handles.cmd_tx),
             telemetry: handles.telemetry,
+            spectrum_tap: handles.spectrum_tap,
             errors,
             device_name: name,
             device_id,
@@ -1510,6 +1585,56 @@ impl AudioEngine {
         }
         self.telemetry.playing.load(Ordering::Relaxed)
     }
+
+    pub fn telemetry_handle(&self) -> AudioTelemetryHandle {
+        AudioTelemetryHandle(Arc::clone(&self.telemetry))
+    }
+
+    pub fn spectrum_tap(&self) -> Arc<SpectrumTap> {
+        Arc::clone(&self.spectrum_tap)
+    }
+
+    pub fn set_spectrum_tap_enabled(&self, enabled: bool) {
+        self.spectrum_tap.set_enabled(enabled);
+    }
+}
+
+/// Cloneable lock-free handle to an [`AudioEngine`]'s real-time telemetry atomics.
+#[derive(Clone)]
+pub struct AudioTelemetryHandle(Arc<AudioTelemetry>);
+
+impl AudioTelemetryHandle {
+    pub fn position_ms(&self) -> f64 {
+        f64::from_bits(self.0.position.load(Ordering::Relaxed))
+    }
+
+    pub fn is_playing(&self) -> bool {
+        self.0.playing.load(Ordering::Relaxed)
+    }
+
+    pub fn peaks(&self) -> (f32, f32, f32) {
+        let master = f32::from_bits(self.0.peak.load(Ordering::Relaxed));
+        let packed = self.0.bus_peaks.load(Ordering::Relaxed);
+        let song = f32::from_bits((packed >> 32) as u32);
+        let hitsounds = f32::from_bits(packed as u32);
+        (master, song, hitsounds)
+    }
+
+    pub fn stereo_peaks(&self) -> (f32, f32) {
+        unpack_f32_pair(self.0.master_peak_lr.load(Ordering::Relaxed))
+    }
+
+    pub fn stereo_rms(&self) -> (f32, f32) {
+        unpack_f32_pair(self.0.master_rms_lr.load(Ordering::Relaxed))
+    }
+
+    pub fn phase_correlation(&self) -> f32 {
+        f32::from_bits(self.0.phase_corr.load(Ordering::Relaxed))
+    }
+
+    pub fn underruns(&self) -> u64 {
+        self.0.underruns.load(Ordering::Relaxed)
+    }
 }
 
 #[inline]
@@ -1563,6 +1688,8 @@ struct StreamRender {
     receive: SpscConsumer<Command, CMD_RING_CAPACITY>,
     retire_live: SpscProducer<Box<dyn LiveAudioSource>, RETIRE_LIVE_CAPACITY>,
     telemetry: Arc<AudioTelemetry>,
+    spectrum_tap: Arc<SpectrumTap>,
+    tap_tx: SpscProducer<f32, SPECTRUM_TAP_CAP>,
     applied_seq: u64,
     channels: usize,
     scratch: Vec<f32>,
@@ -1578,6 +1705,8 @@ impl StreamRender {
         receive: SpscConsumer<Command, CMD_RING_CAPACITY>,
         retire_live: SpscProducer<Box<dyn LiveAudioSource>, RETIRE_LIVE_CAPACITY>,
         telemetry: Arc<AudioTelemetry>,
+        spectrum_tap: Arc<SpectrumTap>,
+        tap_tx: SpscProducer<f32, SPECTRUM_TAP_CAP>,
     ) -> Self {
         let channels = channels.max(1);
         // Reused, frame-aligned scratch space. Callbacks never allocate sample buffers.
@@ -1587,6 +1716,8 @@ impl StreamRender {
             receive,
             retire_live,
             telemetry,
+            spectrum_tap,
+            tap_tx,
             applied_seq: 0,
             channels,
             scratch: vec![0.0; samples],
@@ -1695,6 +1826,7 @@ impl StreamRender {
             for (sample, value) in chunk.iter_mut().zip(buffer.iter()) {
                 *sample = T::from_sample(*value);
             }
+            let tap_on = self.spectrum_tap.enabled.load(Ordering::Relaxed);
             for frame in buffer.chunks_exact(self.channels) {
                 let l = frame[0];
                 let r = if self.channels >= 2 { frame[1] } else { l };
@@ -1706,6 +1838,14 @@ impl StreamRender {
                 sum_r2 += rf * rf;
                 sum_lr += lf * rf;
                 rendered_frames += 1;
+                if tap_on {
+                    let _ = self.tap_tx.try_push(0.5 * (l + r));
+                }
+            }
+            if tap_on {
+                self.spectrum_tap
+                    .push_count
+                    .fetch_add((buffer.len() / self.channels) as u64, Ordering::Relaxed);
             }
         }
         let highest = peak_l.max(peak_r);
@@ -1832,6 +1972,14 @@ impl RtBenchHarness {
     pub fn phase_correlation(&self) -> f32 {
         f32::from_bits(self.handles.telemetry.phase_corr.load(Ordering::Relaxed))
     }
+
+    pub fn spectrum_tap(&self) -> Arc<SpectrumTap> {
+        Arc::clone(&self.handles.spectrum_tap)
+    }
+
+    pub fn set_spectrum_tap_enabled(&self, enabled: bool) {
+        self.handles.spectrum_tap.set_enabled(enabled);
+    }
 }
 
 fn stream<T: cpal::SizedSample + cpal::FromSample<f32>>(
@@ -1902,11 +2050,9 @@ mod callback_benchmark {
 
     #[test]
     fn shared_renderer_produces_native_stereo_pcm_and_updates_telemetry() {
-        let (mut send, receive) = spsc_ring::<Command, CMD_RING_CAPACITY>();
-        let (retire_live_tx, _retire_live_rx) =
-            spsc_ring::<Box<dyn LiveAudioSource>, RETIRE_LIVE_CAPACITY>();
-        let telemetry = Arc::new(AudioTelemetry::default());
-        let mut render = StreamRender::new(48_000, 2, receive, retire_live_tx, telemetry.clone());
+        let (mut render, mut handles) = build_render_parts(48_000, 2, false, None);
+        let send = &mut handles.cmd_tx;
+        let telemetry = &handles.telemetry;
         assert!(send.try_push(Command::Seek(400.0, 1)).is_ok());
         assert!(
             send.try_push(Command::Audition(
@@ -2484,17 +2630,10 @@ mod live_source_tests {
 
     #[test]
     fn stream_render_swaps_and_retires_live_source_without_audio_thread_drop() {
-        let (mut send, receive) = spsc_ring::<Command, CMD_RING_CAPACITY>();
-        let (retire_live_tx, mut retire_live_rx) =
-            spsc_ring::<Box<dyn LiveAudioSource>, RETIRE_LIVE_CAPACITY>();
-        let telemetry = Arc::new(AudioTelemetry::default());
-        let mut render = StreamRender::new(
-            48_000,
-            2,
-            receive,
-            retire_live_tx,
-            telemetry.clone(),
-        );
+        let (mut render, mut handles) = build_render_parts(48_000, 2, false, None);
+        let send = &mut handles.cmd_tx;
+        let retire_live_rx = &mut handles.retire_live_rx;
+        let telemetry = &handles.telemetry;
 
         assert!(
             send.try_push(Command::SetLiveSource(Some(Box::new(ConstantLiveSource {
@@ -2638,5 +2777,54 @@ mod decode_tests {
             zc_pitched > zc_direct + 8,
             "keep_pitch=true ({zc_pitched} cycles) should preserve ~440Hz vs direct 0.5x ({zc_direct} cycles)"
         );
+    }
+
+    #[test]
+    fn decode_prefix_stops_at_max_frames_on_sixty_second_wav() {
+        let rate = 48_000u32;
+        let channels = 2u16;
+        let frames = rate as usize * 10; // 10 s WAV (~1.9 MB) capped cleanly at 72,000 frames (1.5 s)
+        let path = std::env::temp_dir().join(format!(
+            "dawsu_audio_prefix_{}.wav",
+            std::process::id()
+        ));
+        write_test_pcm16_wav(&path, rate, channels, frames);
+        let clip = decode_prefix(&path, 72_000).unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(clip.sample_rate, rate);
+        assert_eq!(clip.channels, usize::from(channels));
+        assert_eq!(clip.samples.len() / clip.channels, 72_000);
+    }
+
+    #[test]
+    fn spectrum_tap_zero_pushes_when_disabled_and_phase_corr_negative_one_on_inverted_tone() {
+        struct InvertedTone;
+        impl LiveAudioSource for InvertedTone {
+            fn process_block(&mut self, left: &mut [f32], right: &mut [f32], _rate: u32, _playing: bool) {
+                for (i, (l, r)) in left.iter_mut().zip(right.iter_mut()).enumerate() {
+                    let s = (i as f32 * 0.1).sin() * 0.5;
+                    *l = s;
+                    *r = -s;
+                }
+            }
+        }
+        let mut harness = RtBenchHarness::new(48_000, 2);
+        harness.set_live_source(Some(Box::new(InvertedTone)));
+        harness.play(true);
+        let mut out = vec![0.0_f32; 512 * 2];
+        for _ in 0..4 {
+            harness.fill(&mut out);
+        }
+        assert_eq!(harness.spectrum_tap().push_count(), 0);
+        assert!(harness.phase_correlation() <= -0.99, "phase={}", harness.phase_correlation());
+
+        harness.set_spectrum_tap_enabled(true);
+        harness.fill(&mut out);
+        assert_eq!(harness.spectrum_tap().push_count(), 512);
+        let mut drained = Vec::new();
+        let (n, sr) = harness.spectrum_tap().drain_into(&mut drained, 1024);
+        assert_eq!((n, sr), (512, 48_000));
+        // Inverted L + (-L) sums cleanly to zero mono signal.
+        assert!(drained.iter().all(|v| v.abs() < 1e-6));
     }
 }

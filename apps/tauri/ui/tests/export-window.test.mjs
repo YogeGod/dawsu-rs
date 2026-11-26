@@ -698,4 +698,16 @@ test("filterDiffGroups, exportDiffSummary, and read-back verification gating wor
   assert.match(sparseHtml, /Compact failure summary/);
   assert.match(sparseHtml, /450 ms — Hitsounds &amp; volumes/);
   assert.doesNotMatch(sparseHtml, /undefined/);
+
+  const truePeakPreview = {
+    ...passingPreview,
+    sampleWarnings: [
+      "hot-cymbal.wav reaches +0.5 dBTP (above -0.3 dBTP) — inter-sample clipping risk in lossy decode or playback.",
+    ],
+  };
+  const warnHtml = render(ExportWindow, {
+    props: { initialView: { ...view, preview: truePeakPreview }, initialSent: { id: 11, key } },
+  }).body;
+  assert.match(warnHtml, /Sample warnings/);
+  assert.match(warnHtml, /hot-cymbal\.wav reaches \+0\.5 dBTP/);
 });

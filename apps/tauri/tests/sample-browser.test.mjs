@@ -11,7 +11,7 @@ const enabled = { browser: true, inspector: true, controller: true, laneNames: t
 
 // app.js builds the Browser as a plain model and hands it to the Svelte parts; they answer through
 // sampleBrowserAction(). The fake bundle keeps the last model.
-async function browserPage() {
+async function browserPage({ onLibraryQuery } = {}) {
   const elements = new Map();
   const calls = [];
   const invoked = [];
@@ -62,6 +62,9 @@ async function browserPage() {
             const answer = previews[kind === "lane" ? "lane:" + row : "library:" + location.path];
             if (!answer) throw "Decoding failed";
             return answer;
+          }
+          if (command === "sample_library_action" && onLibraryQuery) {
+            return onLibraryQuery(args.action);
           }
           return {busy: false, activeLane: 0, hasDocument: true, panels: {...enabled},
             classicBrowser, hitsoundLibrary: "C:/fixtures/library"};
@@ -431,4 +434,68 @@ test("a sample dragged from the Browser onto a lane row replaces that lane's sam
   const below = { ...drag("kick.wav"), clientX: 50, clientY: 70 };
   grid.get("dragover")(below);
   assert.equal(below.prevented, false);
+});
+
+test("tag chips and Find similar sound query sample_library_action, cap rows at 500, and clear cleanly", async () => {
+  let queryReply = { scanning: false, entries: [] };
+  const { invoked, model, labels, action } = await browserPage({
+    onLibraryQuery: () => queryReply,
+  });
+  const flushMicrotasks = () => new Promise(resolve => setTimeout(resolve, 0));
+
+  // Selecting a tag chip queries sample_library_action with kind "query", active tag, and limit 500.
+  queryReply = {
+    scanning: false,
+    entries: [{ relPath: "kick.wav", tag: "Kick", similarity: null }],
+  };
+  action("tag", "Kick");
+  await flushMicrotasks();
+  const tagCalls = invoked.filter(([cmd]) => cmd === "sample_library_action");
+  assert.equal(tagCalls.length, 1);
+  assert.deepEqual(tagCalls[0][1], {
+    action: { kind: "query", source: "mapset", tag: "Kick", similarTo: null, filter: "", limit: 500 },
+  });
+  assert.equal(model().activeTag, "Kick");
+  assert.deepEqual(model().rows, [{
+    kind: "sample", key: "kick.wav", label: "kick.wav", title: "kick.wav",
+    depth: 0, selected: false, tag: "Kick", similarity: null,
+  }]);
+
+  // Clicking the active tag chip again clears it back to normal tree rows.
+  action("tag", "Kick");
+  assert.equal(model().activeTag, null);
+  assert.deepEqual(labels(), ["percussion", "kick.wav"]);
+
+  // Selecting a sample and invoking "similar" requests similarity scores in library mode and caps at 500 rows.
+  action("source", "library");
+  await flushMicrotasks();
+  action("pick", "Drums/snare.wav");
+  await flushMicrotasks();
+  queryReply = {
+    scanning: false,
+    entries: Array.from({ length: 505 }, (_, i) => ({
+      relPath: i === 0 ? "Drums/snare.wav" : `Drums/extra_${i}.wav`,
+      tag: "Snare",
+      similarity: i === 0 ? 1.0 : 0.874,
+    })),
+  };
+  action("similar");
+  await flushMicrotasks();
+  const simCall = invoked.filter(([cmd]) => cmd === "sample_library_action").pop();
+  assert.deepEqual(simCall[1], {
+    action: { kind: "query", source: "library", tag: null, similarTo: "Drums/snare.wav", filter: "", limit: 500 },
+  });
+  assert.equal(model().similarTo, "Drums/snare.wav");
+  assert.equal(model().rows.filter(r => r.kind === "sample").length, 500);
+  assert.equal(model().rows[0].tag, "Snare");
+  assert.equal(model().rows[0].similarity, 100);
+  assert.equal(model().rows[1].similarity, 87);
+  assert.equal(model().rows.at(-1).kind, "note");
+
+  // Clearing similarity restores normal folder browsing without re-querying when no tag is active.
+  const countBeforeClear = invoked.filter(([cmd]) => cmd === "sample_library_action").length;
+  action("clearSimilar");
+  await flushMicrotasks();
+  assert.equal(model().similarTo, null);
+  assert.equal(invoked.filter(([cmd]) => cmd === "sample_library_action").length, countBeforeClear);
 });

@@ -3,6 +3,7 @@ import { nameOf, recentMapName } from "./helpers.js";
 import { callAction, showToast } from "../lib/registry.js";
 import { markPracticeTried } from "../lib/startScreen.js";
 import { sameSoundSetPrompts, sameUiView } from "../lib/view.js";
+import { parseSpectrumFrame } from "../lib/spectrum.js";
 
 function folderOfPath(path) {
   const normalized = String(path ?? "");
@@ -52,6 +53,22 @@ export function attachIpc(ctx) {
   let lastActionKind = null;
   let waveformFetchKey = null;
 
+  function toUint8View(buf) {
+    if (!buf) return null;
+    if (buf instanceof Uint8Array) return buf;
+    if (ArrayBuffer.isView(buf)) {
+      return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+    }
+    if (typeof buf.byteLength === "number" &&
+        (buf instanceof ArrayBuffer || Object.prototype.toString.call(buf) === "[object ArrayBuffer]")) {
+      return new Uint8Array(buf, 0, buf.byteLength);
+    }
+    if (Array.isArray(buf) && buf.length >= 64) {
+      return Uint8Array.from(buf);
+    }
+    return null;
+  }
+
   function toFloat32Waveform(buf) {
     if (!buf) return new Float32Array(0);
     if (ArrayBuffer.isView(buf)) {
@@ -64,6 +81,202 @@ export function attachIpc(ctx) {
     return new Float32Array(0);
   }
 
+  function decodeWaveformPayload(buf) {
+    const bytes = toUint8View(buf);
+    if (bytes && bytes.byteLength >= 12 &&
+        bytes[0] === 0x44 && bytes[1] === 0x57 && bytes[2] === 0x46 && bytes[3] === 0x50) {
+      const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+      const version = dv.getUint16(4, true);
+      const levelCount = dv.getUint16(6, true);
+      const strideFloats = dv.getUint32(8, true);
+      if (version === 1 && strideFloats === 6 && levelCount > 0 && bytes.byteLength >= 12 + levelCount * 8) {
+        const metas = [];
+        for (let i = 0; i < levelCount; i++) {
+          const off = 12 + i * 8;
+          metas.push({ count: dv.getUint32(off, true), strideBins: dv.getUint32(off + 4, true) });
+        }
+        let cursor = 12 + levelCount * 8;
+        const aligned = (bytes.byteOffset % 4) === 0;
+        const levels = [];
+        for (const meta of metas) {
+          const floatLen = meta.count * 6;
+          const floatBytes = floatLen * 4;
+          const maskBytes = ((Math.ceil(meta.count / 8) + 3) >> 2) << 2;
+          if (cursor + floatBytes + maskBytes > bytes.byteLength) break;
+          let bins;
+          if (aligned) {
+            bins = new Float32Array(bytes.buffer, bytes.byteOffset + cursor, floatLen);
+          } else {
+            const copy = bytes.slice(cursor, cursor + floatBytes);
+            bins = new Float32Array(copy.buffer, 0, floatLen);
+          }
+          const clipMask = bytes.subarray(cursor + floatBytes, cursor + floatBytes + maskBytes);
+          cursor += floatBytes + maskBytes;
+          levels.push({ count: meta.count, strideBins: meta.strideBins, bins, clipMask });
+        }
+        if (levels.length > 0) {
+          return {
+            waveform: levels[0].bins,
+            pyramid: { baseCount: levels[0].count, levels },
+          };
+        }
+      }
+    }
+    return { waveform: toFloat32Waveform(buf), pyramid: null };
+  }
+
+  function parseTelemetryFrame(payload) {
+    const bytes = toUint8View(payload);
+    if (!bytes || bytes.byteLength < 64 || bytes[0] !== 0x01) return null;
+    const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const flags = dv.getUint8(1);
+    const meterNum = dv.getUint16(2, true);
+    const meterDen = dv.getUint16(4, true);
+    const subTick = dv.getUint16(6, true);
+    const stateRev = typeof dv.getBigUint64 === "function"
+      ? Number(dv.getBigUint64(8, true))
+      : dv.getUint32(8, true) + dv.getUint32(12, true) * 4294967296;
+    const position = dv.getFloat64(16, true);
+    const bpmCenti = dv.getUint32(24, true);
+    const bar = dv.getInt32(28, true);
+    const beat = dv.getUint32(32, true);
+    const masterL = dv.getFloat32(36, true);
+    const masterR = dv.getFloat32(40, true);
+    const song = dv.getFloat32(44, true);
+    const hitsounds = dv.getFloat32(48, true);
+    const rmsL = dv.getFloat32(52, true);
+    const rmsR = dv.getFloat32(56, true);
+    const phaseCorr = dv.getFloat32(60, true);
+    return {
+      version: 1,
+      playing: (flags & 1) !== 0,
+      busy: (flags & 2) !== 0,
+      hasDocument: (flags & 4) !== 0,
+      songLoading: (flags & 8) !== 0,
+      stemLoading: (flags & 16) !== 0,
+      meterNum,
+      meterDen,
+      subTick,
+      stateRev,
+      position,
+      bpmCenti,
+      bar,
+      beat,
+      masterL,
+      masterR,
+      master: Math.max(masterL, masterR),
+      song,
+      hitsounds,
+      rmsL,
+      rmsR,
+      phaseCorr,
+    };
+  }
+
+  function applyTelemetryFrame(frame) {
+    const perf = env.window?.performance ?? env.performance ?? performance;
+    state.telemetryConnected = true;
+    state.lastTelemetryAt = perf.now();
+    if (state.view.fault) return;
+
+    const before = state.view;
+    const needsStatePull =
+      (state.lastTelemetryStateRev !== null && frame.stateRev !== state.lastTelemetryStateRev) ||
+      Boolean(before.playing) !== frame.playing ||
+      Boolean(before.busy) !== frame.busy ||
+      Boolean(before.songLoading) !== frame.songLoading ||
+      Boolean(before.stemLoading) !== frame.stemLoading ||
+      Boolean(before.hasDocument) !== frame.hasDocument;
+
+    if (state.scene && frame.hasDocument) {
+      const drawn = ctx.playheadPosition();
+      let position = frame.position;
+      let heldPendingSeek = false;
+      if (state.pendingSeek && state.pendingSeek.path === state.scene.path) {
+        const scrubbing = state.rulerDrag?.mode === "scrub" || Boolean(state.rulerSeekTarget || state.rulerSeekDrain);
+        const tolerance = frame.playing ? 250 : 1;
+        const arrived = Number.isFinite(position) && Math.abs(position - state.pendingSeek.ms) <= tolerance;
+        const expired = perf.now() - state.pendingSeek.at > 400;
+        if (!scrubbing && (arrived || expired)) {
+          state.pendingSeek = null;
+        } else {
+          position = state.pendingSeek.ms;
+          heldPendingSeek = true;
+        }
+      }
+      const prevMusical = before.musicalPosition;
+      const snapSuffix = prevMusical ? prevMusical.split(" · ")[3] : null;
+      const subStr = String(Math.min(479, Math.max(0, frame.subTick))).padStart(3, "0");
+      const bpmText = frame.bpmCenti > 0 ? (frame.bpmCenti / 100).toFixed(1) : null;
+      const musicalPosition = (bpmText && frame.meterNum > 0 && frame.meterDen > 0)
+        ? `${frame.bar}.${frame.beat}.${subStr} · ${bpmText} BPM · ${frame.meterNum}/${frame.meterDen}${snapSuffix ? ` · ${snapSuffix}` : ""}`
+        : prevMusical;
+
+      state.view = {
+        ...before,
+        position,
+        playing: frame.playing,
+        busy: frame.busy,
+        bpmCenti: frame.bpmCenti,
+        meterNum: frame.meterNum,
+        meterDen: frame.meterDen,
+        bar: frame.bar,
+        beat: frame.beat,
+        subTick: frame.subTick,
+        musicalPosition,
+        peaks: {
+          master: frame.master,
+          masterL: frame.masterL,
+          masterR: frame.masterR,
+          song: frame.song,
+          hitsounds: frame.hitsounds,
+          rmsL: frame.rmsL,
+          rmsR: frame.rmsR,
+          phaseCorr: frame.phaseCorr,
+        },
+      };
+      if (!heldPendingSeek) ctx.anchorPlayhead(drawn);
+      ctx.followBookmarkPick();
+      ctx.followPlayhead();
+      ctx.paintSoon(true);
+      if (state.view.playing) ctx.animatePlayback();
+      try { ctx.ui()?.update?.(state.view, state.scene); } catch (error) { (env.console ?? console).error(error); }
+    }
+
+    if (needsStatePull && !state.requests && !state.refreshing && !state.telemetryPullPending) {
+      state.telemetryPullPending = true;
+      ctx.run(() => ctx.update(null, false)).finally(() => {
+        state.telemetryPullPending = false;
+        if (state.quitAfterSave && !state.view.busy && !state.view.saveProblemReview) {
+          state.quitAfterSave = false;
+          if (!state.view.dirty && !state.view.error) ctx.run(() => invoke("close_editor", { discard: false }));
+        }
+      });
+    }
+  }
+
+  function startTelemetry() {
+    const ChannelCtor = env.window?.__TAURI__?.core?.Channel;
+    if (typeof ChannelCtor !== "function") return null;
+    const channel = new ChannelCtor();
+    channel.onmessage = (payload) => {
+      const bytes = toUint8View(payload);
+      if (!bytes || bytes.byteLength < 4) return;
+      if (bytes[0] === 0x01) {
+        const frame = parseTelemetryFrame(bytes);
+        if (frame) applyTelemetryFrame(frame);
+      } else if (bytes[0] === 0x02) {
+        const spec = parseSpectrumFrame(bytes);
+        if (spec) ctx.ui()?.setSpectrum?.(spec);
+      }
+    };
+    invoke("subscribe_telemetry", { channel }).catch((error) => {
+      state.telemetryConnected = false;
+      (env.console ?? console).error(error);
+    });
+    return channel;
+  }
+
   function ensureWaveform(scene) {
     if (!scene || scene.waveform != null || !scene.path || scene.previewKey == null) return;
     const rev = state.view?.waveformRevision ?? 0;
@@ -72,10 +285,11 @@ export function attachIpc(ctx) {
     if (waveformFetchKey === key) return;
     waveformFetchKey = key;
     invoke("editor_waveform").then((buf) => {
-      const bins = toFloat32Waveform(buf);
+      const { waveform, pyramid } = decodeWaveformPayload(buf);
       if (state.scene && state.scene.path === scene.path && state.scene.previewKey === scene.previewKey &&
           (state.view?.waveformRevision ?? 0) === rev && (state.view?.stemActive ? 1 : 0) === stem) {
-        state.scene.waveform = bins;
+        state.scene.waveform = waveform;
+        state.scene.waveformPyramid = pyramid;
         ctx.paintSoon();
       }
     }).catch((error) => {
@@ -361,6 +575,7 @@ export function attachIpc(ctx) {
       (Boolean(before.stemActive) !== Boolean(next.stemActive)) ||
       ((before.waveformRevision ?? 0) !== (next.waveformRevision ?? 0));
     if (waveformChanged) waveformFetchKey = null;
+    if (typeof next.stateRev === "number") state.lastTelemetryStateRev = next.stateRev;
     state.view = next;
     if (!heldPendingSeek) ctx.anchorPlayhead(drawn);
     if (state.view.tool !== previousTool) ctx.refreshToolCursor();
@@ -413,7 +628,10 @@ export function attachIpc(ctx) {
       // the "Difficulty loaded" frame too: the editor sent it once, in the frame before.
       if (state.scene && state.view.scene.path === state.scene.path &&
           state.view.scene.previewKey === state.scene.previewKey) {
-        if (!waveformChanged) state.view.scene.waveform ??= state.scene.waveform;
+        if (!waveformChanged) {
+          state.view.scene.waveform ??= state.scene.waveform;
+          state.view.scene.waveformPyramid ??= state.scene.waveformPyramid;
+        }
         state.view.scene.gameplay ??= state.scene.gameplay;
         state.view.scene.combos ??= state.scene.combos;
         state.view.scene.sections ??= state.scene.sections;
@@ -423,6 +641,7 @@ export function attachIpc(ctx) {
       if (unfolded.length) ctx.saveLaneLayout();
     } else if (waveformChanged && state.scene) {
       state.scene.waveform = undefined;
+      state.scene.waveformPyramid = undefined;
       ensureWaveform(state.scene);
     }
     const pollBase = samePollBase(before, next);
@@ -585,6 +804,6 @@ export function attachIpc(ctx) {
 
   Object.assign(ctx, {
     invoke, setStatusNotice, run, update, act, command, toggle,
-    missingUiParts, renderFrame, show,
+    missingUiParts, renderFrame, show, startTelemetry, parseTelemetryFrame,
   });
 }

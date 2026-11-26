@@ -101,6 +101,7 @@ fn dense_scene_and_dirty_switch_use_the_real_editor_state() {
             high: 0.1,
             amp_l: 0.8,
             amp_r: 0.8,
+            true_peak: 0.8,
         };
         4_000
     ];
@@ -524,7 +525,11 @@ fn home_save_with_left_out_moments_goes_home_after_the_summarys_save() {
 fn only_closing_the_main_window_closes_the_editor() {
     use crate::{CloseDecision, Editor, Request, close_requested, closed_with_main};
     let (send, receive) = std::sync::mpsc::channel();
-    let editor = Editor(send, dawsu_application::bounce_plan::BounceCancelToken::new());
+    let editor = Editor(
+        send,
+        dawsu_application::bounce_plan::BounceCancelToken::new(),
+        std::sync::Arc::new(crate::TelemetryHub::default()),
+    );
     assert_eq!(close_requested("drum", &editor), CloseDecision::Allow);
     assert!(matches!(receive.try_recv(), Ok(Request::DrumClose)), "closing drum detection stops its run and Listen");
     assert!(receive.try_recv().is_err());

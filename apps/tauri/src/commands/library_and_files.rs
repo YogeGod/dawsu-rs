@@ -1,9 +1,13 @@
 use dawsu_application::Application;
+use dawsu_application::sample_fingerprint::{
+    MAX_QUERY_RESULTS, SampleFingerprintIndex,
+};
 use dawsu_application::songs_index::{
     SongsIndex, SongsSearchResult, build_songs_index_from_cache,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
@@ -957,6 +961,167 @@ pub(crate) fn pick_skin_folder(window: tauri::WebviewWindow) -> Option<String> {
         .set_title("Choose osu! skin folder")
         .pick_folder()
         .map(|path| path.to_string_lossy().into_owned())
+}
+
+const MAX_INDEXED_SAMPLES: usize = 4_000;
+
+#[derive(Clone)]
+pub(crate) struct SampleFingerprintCache {
+    cache_dir: PathBuf,
+    inner: Arc<Mutex<FingerprintCacheState>>,
+}
+
+#[derive(Default)]
+struct FingerprintCacheState {
+    indices: HashMap<PathBuf, Arc<SampleFingerprintIndex>>,
+    scanning: HashSet<PathBuf>,
+}
+
+impl SampleFingerprintCache {
+    pub(crate) fn new(cache_dir: PathBuf) -> Self {
+        Self {
+            cache_dir,
+            inner: Arc::new(Mutex::new(FingerprintCacheState::default())),
+        }
+    }
+
+    pub(crate) fn snapshot(&self, root: &Path) -> (Option<Arc<SampleFingerprintIndex>>, bool) {
+        let state = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let idx = state.indices.get(root).cloned();
+        let scanning = state.scanning.contains(root);
+        (idx, scanning)
+    }
+
+    pub(crate) fn ensure_scan(&self, root: PathBuf) -> bool {
+        {
+            let mut state = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+            if state.scanning.contains(&root) {
+                return true;
+            }
+            if state.indices.contains_key(&root) {
+                return false;
+            }
+            state.scanning.insert(root.clone());
+        }
+        let cache = self.clone();
+        std::thread::Builder::new()
+            .name("dawsu-fp-scan".into())
+            .spawn(move || {
+                let idx = Arc::new(SampleFingerprintIndex::load_or_update(
+                    &root,
+                    &cache.cache_dir,
+                    MAX_INDEXED_SAMPLES,
+                ));
+                let mut state = cache.inner.lock().unwrap_or_else(|e| e.into_inner());
+                state.indices.insert(root.clone(), idx);
+                state.scanning.remove(&root);
+            })
+            .ok();
+        true
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(crate) enum SampleLibraryAction {
+    Status {
+        source: String,
+    },
+    Scan {
+        source: String,
+        force: Option<bool>,
+    },
+    #[serde(rename_all = "camelCase")]
+    Query {
+        source: String,
+        tag: Option<String>,
+        similar_to: Option<String>,
+        filter: Option<String>,
+        limit: Option<usize>,
+    },
+}
+
+fn resolve_sample_root(state: &State<'_, Editor>, source: &str) -> Result<Option<PathBuf>, String> {
+    if source == "library" {
+        ask(state, Request::LibraryDirectory)
+    } else {
+        Ok(ask(state, Request::CurrentDocumentPath)?
+            .and_then(|p| p.parent().map(Path::to_path_buf)))
+    }
+}
+
+#[tauri::command]
+pub(crate) async fn sample_library_action(
+    action: SampleLibraryAction,
+    state: State<'_, Editor>,
+    fp_cache: State<'_, SampleFingerprintCache>,
+) -> Result<Value, String> {
+    let source = match &action {
+        SampleLibraryAction::Status { source }
+        | SampleLibraryAction::Scan { source, .. }
+        | SampleLibraryAction::Query { source, .. } => source.as_str(),
+    };
+    let Some(root) = resolve_sample_root(&state, source)? else {
+        return Ok(json!({
+            "scanning": false,
+            "totalIndexed": 0,
+            "tags": [],
+            "entries": [],
+        }));
+    };
+    match action {
+        SampleLibraryAction::Status { .. } => {
+            let (idx, scanning) = fp_cache.snapshot(&root);
+            Ok(json!({
+                "scanning": scanning,
+                "totalIndexed": idx.as_ref().map_or(0, |i| i.len()),
+            }))
+        }
+        SampleLibraryAction::Scan { force, .. } => {
+            if force == Some(true) {
+                let mut guard = fp_cache.inner.lock().unwrap_or_else(|e| e.into_inner());
+                guard.indices.remove(&root);
+            }
+            let scanning = fp_cache.ensure_scan(root.clone());
+            let (idx, still_scanning) = fp_cache.snapshot(&root);
+            Ok(json!({
+                "scanning": scanning || still_scanning,
+                "totalIndexed": idx.as_ref().map_or(0, |i| i.len()),
+            }))
+        }
+        SampleLibraryAction::Query {
+            tag,
+            similar_to,
+            filter,
+            limit,
+            ..
+        } => {
+            let (idx_opt, scanning_now) = fp_cache.snapshot(&root);
+            let idx = if let Some(idx) = idx_opt {
+                idx
+            } else {
+                let is_scanning = fp_cache.ensure_scan(root.clone());
+                return Ok(json!({
+                    "scanning": scanning_now || is_scanning,
+                    "totalIndexed": 0,
+                    "tags": [],
+                    "entries": [],
+                }));
+            };
+            let result = idx.query(
+                tag.as_deref(),
+                similar_to.as_deref(),
+                filter.as_deref(),
+                limit.unwrap_or(MAX_QUERY_RESULTS),
+            );
+            Ok(json!({
+                "scanning": scanning_now,
+                "totalIndexed": result.total_indexed,
+                "tags": result.tags,
+                "entries": result.entries,
+            }))
+        }
+    }
 }
 
 #[cfg(test)]

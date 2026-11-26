@@ -77,18 +77,19 @@ enum ClassifiedRole {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct AcousticFeatures {
-    decay_ms: f32,
-    sub_low: f32,
-    low_mid: f32,
-    mid: f32,
-    high_mid: f32,
-    high: f32,
-    centroid_hz: f32,
-    peak_hz: f32,
-    flatness: f32,
-    zcr: f32,
-    clap_peaks: usize,
+pub(crate) struct AcousticFeatures {
+    pub(crate) decay_ms: f32,
+    pub(crate) sub_low: f32,
+    pub(crate) low_mid: f32,
+    pub(crate) mid: f32,
+    pub(crate) high_mid: f32,
+    pub(crate) high: f32,
+    pub(crate) centroid_hz: f32,
+    pub(crate) peak_hz: f32,
+    pub(crate) flatness: f32,
+    pub(crate) zcr: f32,
+    pub(crate) clap_peaks: usize,
+    pub(crate) crest_factor: f32,
 }
 
 /// Automatically builds a kit `DrumMap` from `lanes` by inspecting custom filenames and
@@ -218,6 +219,10 @@ fn filename_hint(identity: &SampleIdentity) -> Option<ClassifiedRole> {
         SampleIdentity::File(name) => name.as_str(),
         SampleIdentity::Standard { .. } => return None,
     };
+    filename_hint_for_name(raw, true)
+}
+
+fn filename_hint_for_name(raw: &str, ignore_generic_osu: bool) -> Option<ClassifiedRole> {
     let stem = raw
         .rsplit(['/', '\\'])
         .next()
@@ -227,7 +232,7 @@ fn filename_hint(identity: &SampleIdentity) -> Option<ClassifiedRole> {
         .unwrap_or(raw)
         .to_ascii_lowercase();
 
-    if stem.starts_with("dawsu-mix") || is_generic_osu_sample(&stem) {
+    if stem.starts_with("dawsu-mix") || (ignore_generic_osu && is_generic_osu_sample(&stem)) {
         return None;
     }
 
@@ -332,7 +337,7 @@ fn standard_fallback_role(identity: &SampleIdentity) -> Option<DrumRole> {
     }
 }
 
-fn extract_features(clip: &AudioClip) -> Option<AcousticFeatures> {
+pub(crate) fn extract_features(clip: &AudioClip) -> Option<AcousticFeatures> {
     let channels = clip.channels.max(1);
     let sample_rate = clip.sample_rate.max(8000) as f32;
     let total_frames = clip.samples.len() / channels;
@@ -360,6 +365,16 @@ fn extract_features(clip: &AudioClip) -> Option<AcousticFeatures> {
         .iter()
         .position(|s| s.abs() >= peak * 0.1)
         .unwrap_or(0);
+
+    let crest_end = mono.len().min(onset + (sample_rate * 0.250) as usize);
+    let crest_slice = &mono[onset..crest_end.max(onset + 1).min(mono.len())];
+    let crest_mean_sq =
+        crest_slice.iter().map(|s| s * s).sum::<f32>() / crest_slice.len().max(1) as f32;
+    let crest_factor = if crest_mean_sq > 1.0e-12 {
+        (peak / crest_mean_sq.sqrt()).clamp(1.0, 30.0)
+    } else {
+        1.0
+    };
 
     // Measure effective -20 dB decay time via 10 ms hop RMS envelope.
     let win_10ms = ((sample_rate * 0.010) as usize).max(16);
@@ -525,6 +540,7 @@ fn extract_features(clip: &AudioClip) -> Option<AcousticFeatures> {
         flatness,
         zcr,
         clap_peaks,
+        crest_factor,
     })
 }
 
@@ -573,6 +589,21 @@ fn classify_audio(f: AcousticFeatures) -> ClassifiedRole {
         ClassifiedRole::Fixed(DrumRole::ClosedHat)
     } else {
         ClassifiedRole::Fixed(DrumRole::Perc)
+    }
+}
+
+pub(crate) fn classify_sample_tag(filename: &str, features: Option<AcousticFeatures>) -> &'static str {
+    let role = filename_hint_for_name(filename, false).or_else(|| features.map(classify_audio));
+    match role {
+        Some(ClassifiedRole::Fixed(DrumRole::Kick)) => "Kick",
+        Some(ClassifiedRole::Fixed(DrumRole::Snare)) => "Snare",
+        Some(ClassifiedRole::Fixed(DrumRole::Clap)) => "Clap",
+        Some(ClassifiedRole::Fixed(DrumRole::ClosedHat | DrumRole::OpenHat)) => "Hat",
+        Some(ClassifiedRole::Fixed(DrumRole::HighTom | DrumRole::MidTom | DrumRole::FloorTom)
+            | ClassifiedRole::GenericTom { .. }) => "Tom",
+        Some(ClassifiedRole::Fixed(DrumRole::Crash | DrumRole::Ride)) => "Cymbal",
+        Some(ClassifiedRole::Fixed(DrumRole::Perc)) => "Perc",
+        None => "Other",
     }
 }
 
