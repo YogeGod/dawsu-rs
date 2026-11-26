@@ -129,6 +129,10 @@ export const keysoundsTranspose = (trackId, semitones) => ({ kind: "transpose_no
 export const keysoundsPreview = (trackId, pitch, velocity = 100, durationMs = 200) =>
   ({ kind: "preview_note", trackId, pitch: whole(pitch, 0, 127), velocity: whole(velocity, 1, 127), durationMs: ms(durationMs) });
 export const keysoundsGenerate = () => ({ kind: "generate_keysounds" });
+export const keysoundsToggleMute = trackId => ({ kind: "toggle_mute", trackId });
+export const keysoundsToggleSolo = trackId => ({ kind: "toggle_solo", trackId });
+export const keysoundsSyncToObjects = (trackId, maxShiftMs = 50) => ({ kind: "sync_to_objects", trackId, maxShiftMs: ms(maxShiftMs) });
+export const keysoundsTrimOverlaps = trackId => ({ kind: "trim_overlaps", trackId });
 // load_vst3 takes the scanned plug-in's file and id (summary.vst3Plugins), or null when none is picked.
 export function keysoundsLoadVst3(trackId, plugin) {
   if (trackId == null || !plugin?.path) return null;

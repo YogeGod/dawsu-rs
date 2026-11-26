@@ -275,3 +275,26 @@
   background: rgba(56, 189, 248, 0.22);
   box-shadow: inset 2px 0 0 var(--editor-accent);
 }
+
+/* Inline Keysounding Piano Roll workspace inside .arrange */
+.keysounds-workspace {
+  display: none;
+}
+#editor-arrange.keysounds-active,
+#editor-arrange.keysounds-active[data-controller="false"] {
+  grid-template-rows: auto var(--ruler-row) minmax(0, 1fr);
+}
+.arrange.keysounds-active > #scroll,
+.arrange.keysounds-active > #volume-controller-panel,
+.arrange.keysounds-active > .overview {
+  display: none;
+}
+.arrange.keysounds-active > .keysounds-workspace {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}

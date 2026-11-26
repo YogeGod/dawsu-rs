@@ -5,9 +5,12 @@
   import {
     NO_PLUGINS, PX_PER_MS, findNoteIndex, generateToast, instrumentChoices,
     keysoundsAdd, keysoundsAddNote, keysoundsDelete, keysoundsDeleteNote, keysoundsGenerate, keysoundsLoadVst3,
-    keysoundsPreview, keysoundsSetVelocity, keysoundsView,
+    keysoundsPreview, keysoundsSetVelocity, keysoundsSyncToObjects, keysoundsView,
     rollPitches, rollSpanMs, sidecarStatus,
   } from "../lib/midi.js";
+  import {
+    createMusicalTypingState, handleMusicalTypingKeyDown, handleMusicalTypingKeyUp,
+  } from "../lib/musicalTyping.js";
   import {
     readDrumVst3, sceneDrumHitsToNotes, syncDrumVst3Track, writeDrumVst3,
   } from "../lib/drumVst3.js";
@@ -41,12 +44,31 @@
   let bounceFormat = $state("ogg_vorbis");
   const storage = () => { try { return typeof window !== "undefined" ? window.localStorage : null; } catch { return null; } };
   let drumVst3 = $state(readDrumVst3(storage()));
+  let showGhosts = $state(true);
+  let showObjectLines = $state(true);
+  let typingState = $state(createMusicalTypingState());
+  const heldTypingKeys = new Set();
 
   const pitches = rollPitches();
   const tracks = $derived(summary?.tracks ?? []);
   const instruments = $derived(instrumentChoices(summary?.vst3Plugins));
   const track = $derived(tracks.find(t => t.id === trackId) ?? null);
   const notes = $derived(track?.notes ?? []);
+  const anySolo = $derived(tracks.some(t => t.solo));
+  const ghostNotes = $derived(
+    showGhosts
+      ? tracks
+          .filter(t => t.id !== trackId && !t.muted && (!anySolo || t.solo))
+          .flatMap(t => (t.notes ?? []).map(n => ({ ...n, trackId: t.id })))
+      : []
+  );
+  const objectTimes = $derived(
+    showObjectLines
+      ? (bridge.scene?.moments ?? [])
+          .map(m => (Array.isArray(m) ? m[0] : m?.time))
+          .filter(t => Number.isFinite(t))
+      : []
+  );
   const sustainSpans = $derived(track?.sustainSpans ?? []);
   const chordConflicts = $derived(summary?.chordConflicts ?? []);
   const spanPx = $derived(rollSpanMs(notes) * PX_PER_MS);
@@ -141,11 +163,37 @@
   async function openKeysounds() {
     if (!bridge.scene) return;
     open = true;
+    if (bridge.mode !== "keysounds") {
+      bridge.mode = "keysounds";
+      if (typeof document !== "undefined") {
+        const arrange = document.getElementById("editor-arrange") ?? document.querySelector(".arrange");
+        arrange?.classList.add("keysounds-active");
+        document.getElementById("keysounds-view")?.setAttribute("aria-pressed", "true");
+        document.getElementById("samples-view")?.setAttribute("aria-pressed", "false");
+        document.getElementById("drums-view")?.setAttribute("aria-pressed", "false");
+      }
+    }
     name = "";
     selected = null;
     drumVst3 = readDrumVst3(storage());
     if (drumVst3.pluginId) pluginId = drumVst3.pluginId;
     await send(keysoundsView());
+  }
+
+  async function syncToObjects() {
+    if (loading || trackId == null) return;
+    if (await send(keysoundsSyncToObjects(trackId))) {
+      const res = summary?.syncResult;
+      if (res) {
+        const synced = res.syncedCount ?? 0;
+        const unsynced = res.unsyncedCount ?? 0;
+        bridge.showToast({
+          tone: "success",
+          title: "Synced to beatmap objects",
+          body: `${synced} ${synced === 1 ? "note" : "notes"} synced` + (unsynced ? ` (${unsynced} not near an object).` : "."),
+        });
+      }
+    }
   }
 
   function onPluginChange() {
@@ -303,13 +351,59 @@
     if (rollScroll && velScroll) velScroll.scrollLeft = rollScroll.scrollLeft;
   }
 
+  function closeKeysounds() {
+    open = false;
+    typingState = { ...typingState, enabled: false };
+    heldTypingKeys.clear();
+  }
+
   function closeModal() {
     if (loading) return;
-    open = false;
+    closeKeysounds();
+    if (bridge.mode === "keysounds") {
+      const returnMode = bridge.view?.drumView?.enabled ? "drums" : "hitsounds";
+      bridge.mode = returnMode;
+      if (typeof document !== "undefined") {
+        const arrange = document.getElementById("editor-arrange") ?? document.querySelector(".arrange");
+        arrange?.classList.remove("keysounds-active");
+        document.getElementById("keysounds-view")?.setAttribute("aria-pressed", "false");
+        document.getElementById("samples-view")?.setAttribute("aria-pressed", String(returnMode === "hitsounds"));
+        document.getElementById("drums-view")?.setAttribute("aria-pressed", String(returnMode === "drums"));
+      }
+    }
+  }
+
+  function toggleMusicalTyping() {
+    const nextEnabled = !typingState.enabled;
+    if (!nextEnabled) heldTypingKeys.clear();
+    typingState = { ...typingState, enabled: nextEnabled };
   }
 
   function onKeydown(event) {
     if (!open) return;
+    const typingInput = /^(INPUT|SELECT|TEXTAREA)$/.test(event.target?.tagName ?? "");
+    if (event.altKey && !event.ctrlKey && !event.metaKey && (event.code === "KeyK" || event.key?.toLowerCase() === "k")) {
+      event.preventDefault();
+      event.stopPropagation();
+      toggleMusicalTyping();
+      return;
+    }
+    if (!typingInput && typingState.enabled) {
+      const result = handleMusicalTypingKeyDown(typingState, heldTypingKeys, event);
+      if (result.action) {
+        event.preventDefault();
+        event.stopPropagation();
+        typingState = result.state;
+        if (result.action === "note") {
+          preview(result.pitch, result.velocity);
+          if (bridge.view?.midiRecord?.armed && trackId != null) {
+            const playheadMs = Number(bridge.view?.playheadMs ?? bridge.view?.timeMs ?? 0);
+            send(keysoundsAddNote(trackId, playheadMs, result.pitch, result.velocity));
+          }
+        }
+        return;
+      }
+    }
     if (event.key === "Escape") {
       event.stopPropagation();
       if (bounceOpen) {
@@ -321,12 +415,20 @@
       }
       return;
     }
-    const typing = /^(INPUT|SELECT|TEXTAREA)$/.test(event.target?.tagName ?? "");
-    if (!typing && (event.key === "Delete" || event.key === "Backspace") && selected != null) {
+    if (!typingInput && (event.key === "Delete" || event.key === "Backspace") && selected != null) {
       event.preventDefault();
       event.stopPropagation();
       deleteNote(selected);
     }
+  }
+
+  function onKeyup(event) {
+    if (!open) return;
+    handleMusicalTypingKeyUp(heldTypingKeys, event.code);
+  }
+
+  function onBlur() {
+    heldTypingKeys.clear();
   }
 
   // The editor's timeline shortcuts stay off while this is open (boot.js reads the flag).
@@ -337,6 +439,7 @@
 
   onMount(() => {
     const disposeModal = bridge.registerModal("openKeysounds", openKeysounds);
+    const disposeClose = bridge.registerAction("closeKeysounds", closeKeysounds);
     const disposeAction = bridge.registerAction("keysoundsMicroAction", (action, value) => {
       if (action === "chordPolicy") {
         chordPolicy = value === "top_only" ? "top_note_only" : "flatten_polyphonic";
@@ -348,23 +451,23 @@
     });
     return () => {
       disposeModal();
+      disposeClose();
       disposeAction();
     };
   });
 </script>
 
-<svelte:window onkeydown={onKeydown} />
+<svelte:window onkeydown={onKeydown} onkeyup={onKeyup} onblur={onBlur} />
 
 {#if open}
-  <div class="ks-backdrop" role="presentation" onclick={(e) => { if (e.target === e.currentTarget) closeModal(); }}>
-    <div class="ks-modal" role="dialog" aria-modal="true" aria-label="Keysounds and VST3">
-      <header class="ks-head">
-        <span class="ks-title">Keysounding Piano Roll</span>
-        {#if summary?.targetDifficulty}
-          <span class="ks-sub">{summary.targetDifficulty}</span>
-        {/if}
-        <button type="button" class="ks-close" aria-label="Close" onclick={closeModal}>×</button>
-      </header>
+  <section class="ks-workspace" aria-label="Keysounds and VST3">
+    <header class="ks-head">
+      <span class="ks-title">Keysounding Piano Roll</span>
+      {#if summary?.targetDifficulty}
+        <span class="ks-sub">{summary.targetDifficulty}</span>
+      {/if}
+      <button type="button" class="ks-back" disabled={loading} onclick={closeModal}>Back to Hitsounds</button>
+    </header>
 
       <KeysoundSetupBar
         open={true}
@@ -393,6 +496,9 @@
         sidecarAvailable={Boolean(summary?.sidecarAvailable)}
         {drumVst3}
         notesCount={notes.length}
+        {showGhosts}
+        {showObjectLines}
+        {typingState}
         ondeletetrack={() => send(keysoundsDelete(trackId))}
         onaddtrack={addTrack}
         onpluginchange={onPluginChange}
@@ -402,6 +508,10 @@
         onsend={send}
         ontoggledrumvst3={toggleDrumVst3}
         ontrackaction={trackAction}
+        onsynctoobjects={syncToObjects}
+        ontoggleghosts={() => { showGhosts = !showGhosts; }}
+        ontoggleobjectlines={() => { showObjectLines = !showObjectLines; }}
+        ontoggletyping={toggleMusicalTyping}
       />
 
       <div class="ks-status">
@@ -432,6 +542,8 @@
           {beats}
           {sustainSpans}
           {notes}
+          {ghostNotes}
+          {objectTimes}
           bind:selected
           {loading}
           {trackId}
@@ -452,9 +564,9 @@
       {/if}
 
       <footer class="ks-foot">
-        <span class="ks-hint">Click to place · drag to move · drag the right edge to resize · right-click or Delete to remove</span>
+        <span class="ks-hint">Click to place · drag to move · drag right edge to resize · right-click or Delete to remove · Alt+K typing</span>
         <button type="button" class="ks-gold" disabled={loading || !tracks.some(t => t.noteCount)} onclick={() => generate()}>Generate [Keysounds]</button>
-        <button type="button" disabled={loading} onclick={closeModal}>Close</button>
+        <button type="button" disabled={loading} onclick={closeModal}>Back to Hitsounds</button>
       </footer>
       {#if chordPopoverOpen && chordConflicts.length > 0}
         <div class="ks-chord-layer" role="presentation"
@@ -488,18 +600,20 @@
         oncommit={() => generateWithBounceOpts({ velocityBuckets: bounceVelBuckets, durationBucketMs: bounceDurMs, flattenChords: bounceFlatten, format: bounceFormat })}
         onclose={() => { bounceOpen = false; }}
       />
-    </div>
-  </div>
+  </section>
 {/if}
 
 <style>
-  .ks-backdrop {
-    position: fixed;
-    inset: 0;
-    z-index: 62;
-    display: grid;
-    place-items: center;
-    background: rgba(0, 0, 0, 0.68);
+  .ks-workspace {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    width: 100%;
+    height: 100%;
+    min-height: 0;
+    background: var(--editor-panel);
+    color: var(--editor-text);
+    overflow: hidden;
   }
   .ks-chord-layer {
     position: fixed;
@@ -509,29 +623,17 @@
     place-items: center;
     background: rgba(0, 0, 0, 0.45);
   }
-  .ks-modal {
-    display: flex;
-    flex-direction: column;
-    width: min(1100px, calc(100vw - 40px));
-    height: min(760px, calc(100vh - 48px));
-    border: 1px solid var(--editor-border);
-    border-radius: 10px;
-    background: var(--editor-panel);
-    color: var(--editor-text);
-    box-shadow: 0 24px 64px rgba(0, 0, 0, 0.62);
-    overflow: hidden;
-  }
   .ks-head {
     display: flex;
     align-items: center;
     gap: 12px;
-    height: 46px;
-    padding: 0 18px;
+    height: 38px;
+    padding: 0 14px;
     border-bottom: 1px solid var(--editor-border);
     background: var(--editor-chrome);
   }
   .ks-title {
-    font-size: 14px;
+    font-size: 13px;
     font-weight: 600;
   }
   .ks-sub {
@@ -541,15 +643,8 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .ks-close {
+  .ks-back {
     margin-left: auto;
-    width: 28px;
-    height: 28px;
-    padding: 0;
-    border: 0;
-    background: transparent;
-    color: var(--editor-muted);
-    font-size: 18px;
   }
   .ks-status {
     display: flex;

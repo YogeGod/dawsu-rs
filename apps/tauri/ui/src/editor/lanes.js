@@ -1204,8 +1204,14 @@ export function attachLanes(ctx) {
     if (keysoundsBtn) {
       keysoundsBtn.addEventListener("click", () => {
         if (!state.scene || state.view.busy || state.drag) return;
-        ctx.ui()?.setMode?.("keysounds");
-        openModal("openKeysounds");
+        const arrange = $("editor-arrange");
+        const active = Boolean(arrange?.classList?.contains?.("keysounds-active")) || keysoundsBtn.getAttribute?.("aria-pressed") === "true";
+        if (active) {
+          ctx.ui()?.setMode?.(state.view.drumView?.enabled ? "drums" : "hitsounds");
+        } else {
+          ctx.ui()?.setMode?.("keysounds");
+          openModal("openKeysounds");
+        }
       });
     }
     const vst3Btn = $("drums-vst3-toggle");

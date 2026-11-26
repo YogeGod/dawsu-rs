@@ -151,7 +151,24 @@ export class Bridge {
   }
 
   setMode(mode) {
-    this.mode = mode === "drums" || mode === "keysounds" ? mode : "hitsounds";
+    const next = mode === "drums" || mode === "keysounds" ? mode : "hitsounds";
+    const prev = this.mode;
+    this.mode = next;
+    if (typeof document !== "undefined") {
+      const arrange = document.getElementById("editor-arrange") ?? document.querySelector(".arrange");
+      const isKeysounds = next === "keysounds";
+      arrange?.classList?.toggle?.("keysounds-active", isKeysounds);
+      const ksBtn = document.getElementById("keysounds-view");
+      if (ksBtn) ksBtn.setAttribute?.("aria-pressed", String(isKeysounds));
+      if (isKeysounds) {
+        document.getElementById("samples-view")?.setAttribute?.("aria-pressed", "false");
+        document.getElementById("drums-view")?.setAttribute?.("aria-pressed", "false");
+      } else if (prev === "keysounds") {
+        document.getElementById("samples-view")?.setAttribute?.("aria-pressed", String(next === "hitsounds"));
+        document.getElementById("drums-view")?.setAttribute?.("aria-pressed", String(next === "drums"));
+        this.callAction("closeKeysounds");
+      }
+    }
   }
 
   setMicroHud(hud) {
