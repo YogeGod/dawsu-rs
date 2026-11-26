@@ -253,21 +253,23 @@ function nearestPitchIndex(visiblePitches, pitch) {
 
 // What a finished note drag sends: a move snaps start and pitch to the grid, a resize the end.
 // Null when the note did not change (a plain click selects it).
-export function noteDragPayload(trackId, note, mode, dx, dy, stepMs = QUANTIZE_MS, visiblePitches = null) {
+// `pxPerMs` and `rowPx` are the roll's scale: the editor's zoom and the roll's row height.
+export function noteDragPayload(trackId, note, mode, dx, dy, stepMs = QUANTIZE_MS, visiblePitches = null,
+  pxPerMs = PX_PER_MS, rowPx = ROW_PX) {
   if (mode === "resize") {
     if (!dx) return null;
-    const endMs = Math.max(note.startMs + stepMs, Math.round((note.endMs + dx / PX_PER_MS) / stepMs) * stepMs);
+    const endMs = Math.max(note.startMs + stepMs, Math.round((note.endMs + dx / pxPerMs) / stepMs) * stepMs);
     return endMs === note.endMs ? null : keysoundsResizeNote(trackId, note.index, endMs);
   }
   if (!dx && !dy) return null;
-  const startMs = Math.max(0, Math.round((note.startMs + dx / PX_PER_MS) / stepMs) * stepMs);
+  const startMs = Math.max(0, Math.round((note.startMs + dx / pxPerMs) / stepMs) * stepMs);
   let pitch;
   if (Array.isArray(visiblePitches) && visiblePitches.length) {
     const curIdx = nearestPitchIndex(visiblePitches, note.pitch);
-    const nextIdx = whole(curIdx + Math.round(dy / ROW_PX), 0, visiblePitches.length - 1);
+    const nextIdx = whole(curIdx + Math.round(dy / rowPx), 0, visiblePitches.length - 1);
     pitch = visiblePitches[nextIdx];
   } else {
-    pitch = whole(note.pitch - Math.round(dy / ROW_PX), ROLL_LOW, ROLL_HIGH);
+    pitch = whole(note.pitch - Math.round(dy / rowPx), ROLL_LOW, ROLL_HIGH);
   }
   if (startMs === note.startMs && pitch === note.pitch) return null;
   return keysoundsMoveNote(trackId, note.index, startMs, pitch);

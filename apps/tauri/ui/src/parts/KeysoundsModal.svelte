@@ -1,12 +1,12 @@
 <script>
-  import { onMount } from "svelte";
+  import { onMount, untrack } from "svelte";
   import { bridge } from "../lib/bridge.svelte.js";
   import { invoke } from "../lib/ipc.js";
   import {
-    NO_PLUGINS, PX_PER_MS, QUANTIZE_MS, findNoteIndex, generateToast, instrumentChoices,
+    NO_PLUGINS, findNoteIndex, generateToast, instrumentChoices,
     keysoundsAdd, keysoundsAddNote, keysoundsDelete, keysoundsDeleteNote, keysoundsGenerate,
     keysoundsHumanise, keysoundsLoadVst3, keysoundsPreview, keysoundsSetVelocity, keysoundsStrum,
-    keysoundsSyncToObjects, keysoundsVelocityRamp, keysoundsView, rollSpanMs, scalePitchMask,
+    keysoundsSyncToObjects, keysoundsVelocityRamp, keysoundsView, scalePitchMask,
     sidecarStatus, visibleRollPitches,
   } from "../lib/midi.js";
   import {
@@ -20,11 +20,11 @@
   import KeysoundSetupBar from "./KeysoundSetupBar.svelte";
   import PianoKeyboard from "./PianoKeyboard.svelte";
   import KeysoundTrackBar from "./keysounds/KeysoundTrackBar.svelte";
-  import KeysoundPianoRoll from "./keysounds/KeysoundPianoRoll.svelte";
-  import KeysoundVelocityLane from "./keysounds/KeysoundVelocityLane.svelte";
+  import KeysoundRollSurface from "./keysounds/KeysoundRollSurface.svelte";
 
-  // Map › Keysounds & VST3…: the keysound tracks Rust keeps for this map as a piano roll, each
-  // optionally played by a scanned VST3 instrument. menus.js opens it via bridge modal registry.
+  // Keysounds mode: the keysound tracks Rust keeps for this map as a piano roll, each optionally
+  // played by a scanned VST3 instrument. It covers the hitsound lanes inside #scroll, under the
+  // editor's own ruler; the roll and the velocity lane are painted by the editor's paint().
   let open = $state(false);
   let loading = $state(false);
   let error = $state("");
@@ -33,8 +33,6 @@
   let pluginId = $state("");
   let trackId = $state(null);
   let selected = $state(null);
-  let rollScroll = $state(null);
-  let velScroll = $state(null);
   let chordPopoverOpen = $state(false);
   let chordPolicy = $state("flatten_polyphonic");
   let bounceOpen = $state(false);
@@ -82,8 +80,6 @@
   );
   const sustainSpans = $derived(track?.sustainSpans ?? []);
   const chordConflicts = $derived(summary?.chordConflicts ?? []);
-  const spanPx = $derived(rollSpanMs(notes) * PX_PER_MS);
-  const beats = $derived(Array.from({ length: Math.ceil(rollSpanMs(notes) / 500) }, (_, i) => i * 500));
 
   async function send(payload) {
     if (!payload) return false;
@@ -358,30 +354,17 @@
     send(keysoundsSetVelocity(trackId, index, velocity));
   }
 
-  function syncScroll() {
-    if (rollScroll && velScroll) velScroll.scrollLeft = rollScroll.scrollLeft;
-  }
-
   function closeKeysounds() {
     open = false;
     typingState = { ...typingState, enabled: false };
     heldTypingKeys.clear();
   }
 
+  // Leaves Keysounds mode for the mode it came from; the bridge then closes this part.
   function closeModal() {
     if (loading) return;
-    closeKeysounds();
-    if (bridge.mode === "keysounds") {
-      const returnMode = bridge.view?.drumView?.enabled ? "drums" : "hitsounds";
-      bridge.mode = returnMode;
-      if (typeof document !== "undefined") {
-        const arrange = document.getElementById("editor-arrange") ?? document.querySelector(".arrange");
-        arrange?.classList.remove("keysounds-active");
-        document.getElementById("keysounds-view")?.setAttribute("aria-pressed", "false");
-        document.getElementById("samples-view")?.setAttribute("aria-pressed", String(returnMode === "hitsounds"));
-        document.getElementById("drums-view")?.setAttribute("aria-pressed", String(returnMode === "drums"));
-      }
-    }
+    if (bridge.mode === "keysounds") bridge.setMode(bridge.view?.drumView?.enabled ? "drums" : "hitsounds");
+    else closeKeysounds();
   }
 
   function toggleMusicalTyping() {
@@ -421,8 +404,6 @@
         bounceOpen = false;
       } else if (chordPopoverOpen) {
         chordPopoverOpen = false;
-      } else {
-        closeModal();
       }
       return;
     }
@@ -483,6 +464,12 @@
     heldTypingKeys.clear();
   }
 
+  // Whatever switched to Keysounds mode, the roll opens with it: with the mode on and this part
+  // closed, the hitsound lanes would show through and take edits.
+  $effect(() => {
+    if (bridge.mode === "keysounds" && bridge.scene && !open) untrack(() => openKeysounds());
+  });
+
   // The editor's timeline shortcuts stay off while this is open (boot.js reads the flag).
   $effect(() => {
     bridge.setModalOpen("keysounds", open);
@@ -501,10 +488,23 @@
         if (note) preview(note.pitch, note.velocity);
       }
     });
+    // The velocity lane sits in the bottom panel, outside this part: it reports here.
+    const disposeRoll = bridge.registerAction("keysoundsRoll", (action, first, second) => {
+      if (loading || trackId == null) return;
+      if (action === "select") {
+        selected = first;
+      } else if (action === "velocity") {
+        const note = notes.find(n => n.index === first);
+        if (note && note.velocity !== second) setVelocity(first, second);
+      } else if (action === "ramp") {
+        send(keysoundsVelocityRamp(trackId, first.startMs, first.endMs, first.startVel, first.endVel, first.curve));
+      }
+    });
     return () => {
       disposeModal();
       disposeClose();
       disposeAction();
+      disposeRoll();
     };
   });
 </script>
@@ -513,14 +513,6 @@
 
 {#if open}
   <section class="ks-workspace" aria-label="Keysounds and VST3">
-    <header class="ks-head">
-      <span class="ks-title">Keysounding Piano Roll</span>
-      {#if summary?.targetDifficulty}
-        <span class="ks-sub">{summary.targetDifficulty}</span>
-      {/if}
-      <button type="button" class="ks-back" disabled={loading} onclick={closeModal}>Back to Hitsounds</button>
-    </header>
-
       <KeysoundSetupBar
         open={true}
         {tracks}
@@ -587,20 +579,19 @@
       </div>
 
       {#if !summary && loading}
-        <p class="ks-caption">Loading…</p>
+        <div class="ks-fill"><p class="ks-caption">Loading…</p></div>
       {:else if !track}
-        <p class="ks-caption">No keysound tracks yet. Add one above; MIDI Record fills the first track.</p>
-        <div class="ks-empty-keys">
-          <PianoKeyboard lowPitch={60} highPitch={72} rowHeight={18} onpreview={pitch => preview(pitch)} />
+        <div class="ks-fill">
+          <p class="ks-caption">No keysound tracks yet. Add one above; MIDI Record fills the first track.</p>
+          <div class="ks-empty-keys">
+            <PianoKeyboard lowPitch={60} highPitch={72} rowHeight={18} onpreview={pitch => preview(pitch)} />
+          </div>
         </div>
       {:else}
-        <KeysoundPianoRoll
-          bind:rollScroll
+        <KeysoundRollSurface
           {pitches}
           {scaleMask}
           {foldToScale}
-          {spanPx}
-          {beats}
           {sustainSpans}
           {notes}
           {ghostNotes}
@@ -608,28 +599,16 @@
           bind:selected
           {loading}
           {trackId}
-          onsyncscroll={syncScroll}
           {preview}
           onaddnote={addNote}
           ondragnote={dragNote}
           {deleteNote}
         />
-        <KeysoundVelocityLane
-          bind:velScroll
-          {spanPx}
-          {notes}
-          bind:selected
-          {loading}
-          onsetvelocity={setVelocity}
-          onvelocityramp={(startMs, endMs, startVel, endVel, curve) =>
-            send(keysoundsVelocityRamp(trackId, startMs, endMs, startVel, endVel, curve))}
-        />
       {/if}
 
       <footer class="ks-foot">
-        <span class="ks-hint">Click to place · drag to move · drag right edge to resize · Shift+drag velocity ramp · right-click or Delete to remove · Alt+K typing</span>
+        <span class="ks-hint">Click to place · drag to move · drag right edge to resize · right-click or Delete to remove · velocity in the bottom panel · Alt+K typing</span>
         <button type="button" class="ks-gold" disabled={loading || !tracks.some(t => t.noteCount)} onclick={() => generate()}>Generate [Keysounds]</button>
-        <button type="button" disabled={loading} onclick={closeModal}>Back to Hitsounds</button>
       </footer>
       {#if chordPopoverOpen && chordConflicts.length > 0}
         <div class="ks-chord-layer" role="presentation"
@@ -674,9 +653,13 @@
     width: 100%;
     height: 100%;
     min-height: 0;
-    background: var(--editor-panel);
     color: var(--editor-text);
     overflow: hidden;
+  }
+  .ks-fill {
+    flex: 1;
+    min-height: 0;
+    background: var(--editor-panel);
   }
   .ks-chord-layer {
     position: fixed;
@@ -685,29 +668,6 @@
     display: grid;
     place-items: center;
     background: rgba(0, 0, 0, 0.45);
-  }
-  .ks-head {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    height: 38px;
-    padding: 0 14px;
-    border-bottom: 1px solid var(--editor-border);
-    background: var(--editor-chrome);
-  }
-  .ks-title {
-    font-size: 13px;
-    font-weight: 600;
-  }
-  .ks-sub {
-    font-size: 12px;
-    color: var(--editor-muted);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .ks-back {
-    margin-left: auto;
   }
   .ks-status {
     display: flex;
@@ -718,6 +678,7 @@
     font-size: 11px;
     color: var(--editor-muted);
     border-bottom: 1px solid var(--editor-border);
+    background: var(--editor-panel);
   }
   .ks-ready {
     color: #0a84ff;

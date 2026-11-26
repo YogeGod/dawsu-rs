@@ -7,6 +7,7 @@ import {
   trackShade, visibleVolumeLanes, visibleWarningMarkers, volumeColour,
 } from "./helpers.js";
 import { visibleViewerOverlay } from "../lib/node-graph.js";
+import { paintRoll, paintVelocity } from "../lib/rollPaint.js";
 
 export function attachCanvas(ctx) {
   const { env, state, dom, elements } = ctx;
@@ -444,7 +445,7 @@ export function attachCanvas(ctx) {
       scroll.scrollTop, scroll.clientHeight, elements.grid.clientWidth, elements.ruler.clientWidth,
       elements.ruler.clientHeight, elements.overview.clientWidth, elements.controller.clientHeight,
       env.window.devicePixelRatio || 1, env.document?.documentElement?.dataset?.uiScale ?? "100",
-      state.laneRows, state.waveformShown, state.waveformHeight, state.soundFirst];
+      state.laneRows, state.waveformShown, state.waveformHeight, state.soundFirst, ctx.ui()?.keysoundRoll?.() ?? null];
   }
 
   function sameKey(a, b) {
@@ -549,7 +550,8 @@ export function attachCanvas(ctx) {
   // The playhead on the grid, the ruler, the volume lane and the overview strip.
   function drawPlayheads(g, r, v, o) {
     const position = playheadPosition();
-    if (g) drawPlaybackHitLighting(g, position);
+    // The glow belongs to hit diamonds; in Keysounds mode the piano roll has that canvas.
+    if (g && !ctx.ui()?.keysoundRoll?.()) drawPlaybackHitLighting(g, position);
     const playhead = (position - state.scene.viewStart) * state.scene.zoom;
     if (g) line(g.ctx, slateTimeline.playhead, playhead, 0, playhead, g.height);
     if (r) line(r.ctx, slateTimeline.playhead, playhead, 0, playhead, r.height);
@@ -1128,6 +1130,8 @@ export function attachCanvas(ctx) {
     const xOf = (time) => (time - start) * zoom;
     const end = start + g.width / zoom;
     const range = state.scene.range;
+    // Keysounds mode with a track open: the piano roll is drawn on the lanes' canvas instead.
+    const roll = ctx.ui()?.keysoundRoll?.() ?? null;
     if (v) {
       v.ctx.fillStyle = slateTimeline.volume;
       v.ctx.fillRect(0, 0, v.width, v.height);
@@ -1207,6 +1211,9 @@ export function attachCanvas(ctx) {
       if (moments[mid][0] < minVisibleTime) firstMoment = mid + 1;
       else hiMoment = mid;
     }
+    // No hit diamonds, guide lines or volume bars in Keysounds mode: skip every moment. That holds
+    // with no track open too, when the lanes are covered and the volume lane is out of reach.
+    if (roll || ctx.ui()?.mode?.() === "keysounds") firstMoment = moments.length;
     // Batch all visible object vertical guide lines into one Canvas stroke.
     if (state.view.objectLines) {
       let lastObjectPixel = null;
@@ -1423,6 +1430,14 @@ export function attachCanvas(ctx) {
         else v.ctx.lineTo(x, y);
       }
       v.ctx.stroke();
+    }
+    if (roll) {
+      // Over whatever the lanes drew: the roll on the same time axis, and its velocity lane.
+      g.ctx.fillStyle = slateTimeline.arrange;
+      g.ctx.fillRect(0, 0, g.width, g.height);
+      paintRoll(g.ctx, g.width, { start, zoom }, roll, roll,
+        (context2d, top, bottom) => drawTimingGrid(context2d, start, end, zoom, top, bottom));
+      if (v) paintVelocity(v.ctx, v.width, v.height, { start, zoom }, roll);
     }
     r.ctx.fillStyle = slateTimeline.waveform;
     r.ctx.fillRect(0, 0, r.width, r.height);
