@@ -917,6 +917,7 @@ impl Application {
     }
 
     pub fn keymap_mut(&mut self) -> &mut KeyMap {
+        self.bump_view_revision();
         &mut self.keymap
     }
 

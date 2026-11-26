@@ -222,10 +222,9 @@ pub(crate) fn drum_vst_action(
                 Ok(json!({ "picked": false }))
             }
         }
+        // These four read or write only a file the user picked in the dialog below: a `path` the
+        // page sends is replaced, so the webview never names a file to write.
         Some("save_state") => {
-            if payload.get("path").and_then(Value::as_str).is_some() {
-                return ask(&state, |tx| Request::DrumVstAction(payload, tx))?;
-            }
             ask(&state, |tx| {
                 Request::DrumVstAction(json!({ "kind": "sync_state" }), tx)
             })??;
@@ -243,9 +242,6 @@ pub(crate) fn drum_vst_action(
             }
         }
         Some("load_state") => {
-            if payload.get("path").and_then(Value::as_str).is_some() {
-                return ask(&state, |tx| Request::DrumVstAction(payload, tx))?;
-            }
             let picked = rfd::FileDialog::new()
                 .set_parent(&window)
                 .set_title("Load Drum VST3 state")
@@ -259,12 +255,9 @@ pub(crate) fn drum_vst_action(
             }
         }
         Some("import_dawsudrum") => {
-            if payload.get("path").and_then(Value::as_str).is_some() {
-                return ask(&state, |tx| Request::DrumVstAction(payload, tx))?;
-            }
-            if ask(&state, Request::CurrentDocumentPath)?.is_none() {
+            let Some(expected_map) = ask(&state, Request::CurrentDocumentPath)? else {
                 return Err("Open a difficulty first.".into());
-            }
+            };
             let picked = rfd::FileDialog::new()
                 .set_parent(&window)
                 .set_title("Import drum map")
@@ -272,15 +265,13 @@ pub(crate) fn drum_vst_action(
                 .pick_file();
             if let Some(path) = picked {
                 payload["path"] = json!(path.to_string_lossy());
+                payload["expectedMap"] = json!(expected_map.to_string_lossy());
                 ask(&state, |tx| Request::DrumVstAction(payload, tx))?
             } else {
                 Ok(json!({ "imported": false }))
             }
         }
         Some("export_dawsudrum") => {
-            if payload.get("path").and_then(Value::as_str).is_some() {
-                return ask(&state, |tx| Request::DrumVstAction(payload, tx))?;
-            }
             let kit = ask(&state, |tx| {
                 Request::DrumVstAction(json!({ "kind": "active_kit_info" }), tx)
             })??;
@@ -448,12 +439,18 @@ pub(crate) fn handle_drum_vst_action(
                 .and_then(Value::as_str)
                 .filter(|s| !s.is_empty())
                 .ok_or("Choose a drum map file first.")?;
-            let map = app
+            let current_map = app
                 .document()
                 .ok_or("Open a difficulty first.")?
                 .path
                 .clone();
-            drums.0.load_and_sync(app, &map, Path::new(path))?;
+            let expected_map = payload
+                .get("expectedMap")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+                .map(PathBuf::from)
+                .unwrap_or(current_map);
+            drums.0.load_and_sync(app, &expected_map, Path::new(path))?;
             Ok(json!({ "imported": true, "path": path }))
         }
         "export_dawsudrum" => {

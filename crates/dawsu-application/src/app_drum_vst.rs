@@ -90,7 +90,6 @@ impl Application {
     }
 
     pub fn spawn_load_drum_vst(&mut self, plugin_path: PathBuf, plugin_uid: Option<String>) {
-        self.drum_vst_generation += 1;
         let saved = project::DrumVstSession {
             plugin_path: plugin_path.to_string_lossy().into_owned(),
             plugin_uid,
@@ -106,6 +105,7 @@ impl Application {
         write_session_on_attach: bool,
     ) {
         self.drum_vst_cancel.store(true, Ordering::Relaxed);
+        self.drum_vst_generation = self.drum_vst_generation.wrapping_add(1);
         let cancel = Arc::new(AtomicBool::new(false));
         self.drum_vst_cancel = cancel.clone();
         let (send, receive) = mpsc::channel();
@@ -188,6 +188,9 @@ impl Application {
         }
         self.drum_vst_loading = false;
         self.bump_view_revision();
+        // An explicit load (`spawn_load_drum_vst`) writes the session once attached and, like
+        // `load_drum_vst`, leaves the saved session alone when it fails; a restore keeps it.
+        let explicit = std::mem::take(&mut self.async_jobs.drum_vst_write_session_on_attach);
         match result {
             Ok(session) => {
                 let plugin_path = PathBuf::from(&saved.plugin_path);
@@ -213,19 +216,23 @@ impl Application {
                         self.drum_vst_saved = None;
                         self.sync_audio();
                         self.clear_drum_vst_loading_status();
-                        if std::mem::take(&mut self.async_jobs.drum_vst_write_session_on_attach) {
+                        if explicit {
                             let _ = self.write_session(None, None, None, None);
                         }
                     }
                     Err(err) => {
                         let _ = self.vst3.unload_plugin(&summary.id);
-                        self.drum_vst_saved = Some(saved);
+                        if !explicit {
+                            self.drum_vst_saved = Some(saved);
+                        }
                         self.set_drum_vst_unavailable_status(&err.to_string());
                     }
                 }
             }
             Err(err) => {
-                self.drum_vst_saved = Some(saved);
+                if !explicit {
+                    self.drum_vst_saved = Some(saved);
+                }
                 self.set_drum_vst_unavailable_status(&err);
             }
         }

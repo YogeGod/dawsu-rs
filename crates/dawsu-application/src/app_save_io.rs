@@ -128,6 +128,9 @@ impl Application {
             self.sweep_detached = true;
             self.busy = false;
         }
+        // As `close_document` does when its sweep outlives the wait: the records on disk say
+        // which pending names to keep, so the unused numbers free up.
+        self.forget_unneeded_pending(None);
         self.document = None;
         self.base_layer_track = None;
         self.checkpoint = None;
@@ -1435,7 +1438,7 @@ impl Application {
                         }
                     }
                     if !keep_mixer_fx {
-                        self.restore_mixer_fx_from_session(settings.mixer_fx.clone());
+                        self.spawn_restore_mixer_fx_from_session(settings.mixer_fx.clone());
                     }
                     self.sync_audio();
                     if !keep_song && let Some(song_path) = loaded.song_path {

@@ -77,6 +77,7 @@ type RestoreSlotOutcome = (
 type Vst3ScanResult = Result<(Vst3ScanReport, Vst3Blacklist, bool), Vst3Error>;
 
 struct MixerFxRestoreWorkerOutput {
+    seq: u64,
     generation: u64,
     outcomes: Vec<RestoreSlotOutcome>,
 }
@@ -94,6 +95,7 @@ pub(crate) struct AsyncJobsState {
     keysounds_bounce_result: Option<Result<Value, String>>,
     mixer_fx_add: Option<mpsc::Receiver<MixerFxAddWorkerOutput>>,
     mixer_fx_restore: Option<mpsc::Receiver<MixerFxRestoreWorkerOutput>>,
+    mixer_fx_restore_seq: u64,
     mixer_fx_result: Option<Result<MixerFxSnapshot, String>>,
     sound_set_save: Option<mpsc::Receiver<Result<(String, usize), SaveSetError>>>,
     sound_set_save_result: Option<Result<(), SaveSetError>>,
@@ -108,6 +110,15 @@ impl AsyncJobsState {
             || self.mixer_fx_add.is_some()
             || self.mixer_fx_restore.is_some()
             || self.sound_set_save.is_some()
+    }
+
+    /// Both bounces share `Application::bounce_cancel`: a second one would reset a pending
+    /// cancel and replace the first one's receiver, dropping its result.
+    fn refuse_second_bounce(&self) -> Result<(), String> {
+        if self.drum_vst_bounce.is_some() || self.keysounds_bounce.is_some() {
+            return Err("Wait for the current bounce to finish or cancel it first.".into());
+        }
+        Ok(())
     }
 }
 
@@ -128,6 +139,9 @@ fn try_take_channel<T>(slot: &mut Option<mpsc::Receiver<T>>) -> Option<Result<T,
 
 impl Application {
     pub fn spawn_vst3_scan(&mut self, retry_blocked: bool) {
+        if self.async_jobs.vst3_scan.is_some() {
+            return;
+        }
         let host_exe_res = self.vst3.host_executable();
         let dirs = self.vst3.search_dirs().to_vec();
         let (blacklist, reset_dirty) = self.vst3.blacklist_snapshot(retry_blocked);
@@ -154,6 +168,7 @@ impl Application {
         auto_trim: bool,
         preview_only: bool,
     ) -> Result<(), String> {
+        self.async_jobs.refuse_second_bounce()?;
         if !preview_only && (self.busy || self.is_stroke_open()) {
             return Err("Finish the current operation before rendering drums.".into());
         }
@@ -268,6 +283,9 @@ impl Application {
         plugin_uid: Option<String>,
         plugin_name: String,
     ) -> Result<(), String> {
+        if self.async_jobs.keysounds_vst3_load.is_some() {
+            return Err("Wait for the current VST3 instrument to finish loading.".into());
+        }
         if !self.keysounds.document.tracks.iter().any(|t| t.id == track_id) {
             return Err("Keysound track not found".into());
         }
@@ -317,10 +335,18 @@ impl Application {
         payload: Value,
         preview_only: bool,
     ) -> Result<(), String> {
-        self.bounce_cancel.reset();
-        let cancel = self.bounce_cancel.clone();
+        self.async_jobs.refuse_second_bounce()?;
         if !preview_only {
-            self.poll_sweep(true);
+            if self.busy || self.is_stroke_open() {
+                return Err("Finish the current operation before generating keysounds.".into());
+            }
+            self.poll_sweep(false);
+            if self.sweep.is_some() {
+                return Err(
+                    "Wait for the current unused sample cleanup to finish before generating keysounds."
+                        .into(),
+                );
+            }
         }
         let settings = export_settings_from_payload_pub(&payload);
         let apply_batch_norm = resolve_apply_batch_norm_pub(&payload);
@@ -367,6 +393,8 @@ impl Application {
         };
         let backup_root = self.data_root.join("backups");
         let render_job = prepare_sound_manifest_job_safe(self, &plan)?;
+        self.bounce_cancel.reset();
+        let cancel = self.bounce_cancel.clone();
         let (send, recv) = mpsc::channel();
         self.async_jobs.keysounds_bounce = Some(recv);
         self.async_jobs.keysounds_bounce_result = None;
@@ -437,6 +465,9 @@ impl Application {
         plugin_uid: Option<String>,
         name: Option<String>,
     ) -> Result<(), String> {
+        if self.async_jobs.mixer_fx_add.is_some() || self.async_jobs.mixer_fx_restore.is_some() {
+            return Err("Wait for the current mixer FX operation to finish.".into());
+        }
         if self.mixer_fx.has_test_host() {
             let res = self.mixer_fx_add_insert(strip, plugin_path, plugin_uid, name);
             self.async_jobs.mixer_fx_result = Some(res.clone());
@@ -477,6 +508,9 @@ impl Application {
     }
 
     pub fn spawn_restore_mixer_fx_from_session(&mut self, saved: Option<MixerFxSession>) {
+        self.async_jobs.mixer_fx_restore_seq =
+            self.async_jobs.mixer_fx_restore_seq.wrapping_add(1);
+        self.async_jobs.mixer_fx_restore = None;
         if self.mixer_fx.has_test_host() {
             self.restore_mixer_fx_from_session(saved);
             return;
@@ -485,11 +519,21 @@ impl Application {
         if desired_slots.is_empty() {
             return;
         }
-        let Ok(host_exe) = self.vst3.host_executable() else {
-            return;
+        let host_exe = match self.vst3.host_executable() {
+            Ok(path) => path,
+            Err(err) => {
+                let reason = err.to_string();
+                let outcomes = desired_slots
+                    .into_iter()
+                    .map(|slot| (slot, Err(reason.clone())))
+                    .collect();
+                self.finish_spawned_restore_slots(outcomes);
+                return;
+            }
         };
         let sr = self.live_sample_rate();
         let generation = self.document_generation;
+        let seq = self.async_jobs.mixer_fx_restore_seq;
         let pid = std::process::id();
         let specs: Vec<(FxSlotConfig, String)> = desired_slots
             .into_iter()
@@ -524,6 +568,7 @@ impl Application {
                 outcomes.push((slot, res));
             }
             let _ = send.send(MixerFxRestoreWorkerOutput {
+                seq,
                 generation,
                 outcomes,
             });
@@ -539,6 +584,11 @@ impl Application {
         map: PathBuf,
         name: String,
     ) -> Result<(), SaveSetError> {
+        if self.async_jobs.sound_set_save.is_some() {
+            return Err(SaveSetError::Refused(
+                "Wait for the current sound set save to finish.".into(),
+            ));
+        }
         let prepared = self.prepare_save_sound_set_from_selection(&map, &name)?;
         let (send, recv) = mpsc::channel();
         self.async_jobs.sound_set_save = Some(recv);
@@ -719,7 +769,10 @@ impl Application {
 
         if let Some(msg) = try_take_channel(&mut self.async_jobs.mixer_fx_restore) {
             if let Ok(done) = msg {
-                if done.generation != self.document_generation || self.document.is_none() {
+                if done.seq != self.async_jobs.mixer_fx_restore_seq
+                    || done.generation != self.document_generation
+                    || self.document.is_none()
+                {
                     for (_, res) in done.outcomes {
                         if let Ok((mut session, _)) = res {
                             let _ = session.quit();
@@ -938,6 +991,27 @@ Version: Normal
     }
 
     #[test]
+    fn a_failed_explicit_drum_vst_load_keeps_the_saved_session_as_the_sync_load_does() {
+        let scratch = Scratch::new("slice0-drum-vst-load-fail");
+        let map = scratch.path("Normal.osu");
+        std::fs::write(&map, MINIMAL_MAP).unwrap();
+        let mut app = Application::headless_with_projects(scratch.path("data"));
+        app.open_now(crate::OpenSource::Map(map));
+        poll_until(&mut app, |a| a.document().is_some() && !a.is_busy());
+        assert!(app.drum_vst_saved.is_none());
+
+        app.spawn_load_drum_vst(scratch.path("missing.vst3"), None);
+        assert!(app.has_active_background_jobs());
+        poll_until(&mut app, |a| !a.has_active_background_jobs());
+        assert!(app.drum_vst().is_none());
+        assert!(
+            app.drum_vst_saved.is_none(),
+            "a plug-in that never loaded must not become the session's drum VST3"
+        );
+        assert!(!app.async_jobs.drum_vst_write_session_on_attach);
+    }
+
+    #[test]
     fn is_listening_and_has_active_background_jobs_report_accurately() {
         let mut app = Application::headless();
         assert!(!app.is_listening());
@@ -1054,6 +1128,17 @@ Version: Normal
             .expect("preview ok");
         assert!(preview.get("bouncePreview").is_some());
 
+        // A second bounce while one runs is refused: both share `bounce_cancel`, so starting
+        // another would un-cancel the first and drop its result.
+        app.spawn_keysounds_bounce(json!({}), true).unwrap();
+        let second = app.spawn_keysounds_bounce(json!({}), true);
+        assert!(second.is_err(), "a second bounce must be refused while one runs");
+        app.bounce_cancel.cancel();
+        assert!(app.spawn_keysounds_bounce(json!({}), true).is_err());
+        assert!(app.bounce_cancel.is_cancelled(), "a refused spawn leaves the cancel standing");
+        poll_until(&mut app, |a| !a.has_active_background_jobs());
+        let _ = app.take_keysounds_bounce_result().expect("first bounce result");
+
         app.spawn_keysounds_bounce(json!({}), false).unwrap();
         app.bounce_cancel.cancel();
         poll_until(&mut app, |a| !a.has_active_background_jobs());
@@ -1080,5 +1165,239 @@ Version: Normal
         app.close_document_nonblocking();
         assert!(app.document().is_none());
         poll_until(&mut app, |a| !a.has_active_background_jobs());
+    }
+
+    #[test]
+    fn open_restores_persisted_mixer_fx_nonblockingly_and_reports_unavailable_without_hanging() {
+        let scratch = Scratch::new("slice0-mixer-fx-open-restore");
+        let projects = scratch.path("projects");
+        let map = scratch.path("Normal.osu");
+        std::fs::write(&map, MINIMAL_MAP).unwrap();
+
+        let missing_vst = scratch.path("missing-reverb.vst3");
+        let mut proj = crate::project::Project::load(&projects, None, &map).unwrap();
+        let mut settings = proj.settings.clone();
+        let mut session = MixerFxSession::default();
+        session.strips.insert(
+            "master".into(),
+            vec![FxSlotConfig {
+                slot_id: "fx-1".into(),
+                plugin_path: missing_vst.to_string_lossy().into_owned(),
+                plugin_uid: None,
+                name: "Missing Reverb".into(),
+                bypassed: false,
+                wet_dry: 1.0,
+                active_bank: crate::mixer_fx::AbBank::A,
+                state_a_b64: None,
+                state_b_b64: None,
+                pinned: false,
+            }],
+        );
+        settings.mixer_fx = Some(session);
+        proj.save(settings).unwrap();
+
+        let mut app = Application::headless_with_projects(scratch.path("data"));
+        app.project_root = Some(projects.clone());
+        app.vst3 = crate::vst3::Vst3Manager::with_search_dirs(Vec::new())
+            .with_host_executable(scratch.path("missing-dawsu-vst3-host.exe"));
+
+        app.open_now(crate::OpenSource::Map(map.clone()));
+        poll_until(&mut app, |a| a.document().is_some() && !a.is_busy());
+        assert!(app.document().is_some());
+        poll_until(&mut app, |a| !a.has_active_background_jobs());
+
+        let snap = app.mixer_fx_snapshot();
+        let slots = snap.strips.get("master").expect("master slot restored");
+        assert_eq!(slots.len(), 1);
+        assert!(!slots[0].available);
+        assert!(
+            slots[0]
+                .unavailable_reason
+                .as_deref()
+                .is_some_and(|r| !r.is_empty() && r != "Not initialized"),
+            "unexpected reason: {:?}",
+            slots[0].unavailable_reason
+        );
+        app.close_document_nonblocking();
+        poll_until(&mut app, |a| !a.has_active_background_jobs());
+
+        // Also test async worker restore path when `host_executable` exists on disk.
+        let dummy_host = scratch.path("dummy-restore-host.exe");
+        std::fs::write(&dummy_host, b"").unwrap();
+        let mut async_app = Application::headless_with_projects(scratch.path("data2"));
+        async_app.project_root = Some(projects);
+        async_app.vst3 = crate::vst3::Vst3Manager::with_search_dirs(Vec::new())
+            .with_host_executable(dummy_host);
+        async_app.open_now(crate::OpenSource::Map(map));
+        poll_until(&mut async_app, |a| a.document().is_some() && !a.is_busy());
+        poll_until(&mut async_app, |a| !a.has_active_background_jobs());
+        let snap2 = async_app.mixer_fx_snapshot();
+        let slots2 = snap2.strips.get("master").expect("worker restore slot");
+        assert_eq!(slots2.len(), 1);
+        assert!(!slots2[0].available);
+        assert!(
+            slots2[0]
+                .unavailable_reason
+                .as_deref()
+                .is_some_and(|r| !r.is_empty() && r != "Not initialized"),
+            "unexpected worker reason: {:?}",
+            slots2[0].unavailable_reason
+        );
+    }
+
+    #[test]
+    fn async_mixer_fx_add_insert_single_flight_and_missing_plugin_error() {
+        let scratch = Scratch::new("slice0-mixer-fx-add-async");
+        let map = scratch.path("Normal.osu");
+        std::fs::write(&map, MINIMAL_MAP).unwrap();
+
+        let dummy_host = scratch.path("dummy-vst3-host.exe");
+        std::fs::write(&dummy_host, b"").unwrap();
+        let mut app = Application::headless_with_projects(scratch.path("data"));
+        app.vst3 = crate::vst3::Vst3Manager::with_search_dirs(Vec::new())
+            .with_host_executable(dummy_host);
+        app.open_now(crate::OpenSource::Map(map));
+        poll_until(&mut app, |a| a.document().is_some() && !a.is_busy());
+
+        let missing = scratch.path("missing-eq.vst3").to_string_lossy().into_owned();
+        app.spawn_mixer_fx_add_insert("master", missing.clone(), None, Some("EQ".into()))
+            .unwrap();
+        assert!(app.has_active_background_jobs());
+        assert!(
+            app.spawn_mixer_fx_add_insert("master", missing, None, Some("EQ2".into()))
+                .is_err(),
+            "concurrent mixer FX add must be refused while one is in flight"
+        );
+        poll_until(&mut app, |a| !a.has_active_background_jobs());
+        let err = app
+            .take_mixer_fx_job_result()
+            .expect("mixer FX add outcome")
+            .unwrap_err();
+        assert!(!err.is_empty());
+    }
+
+    #[test]
+    fn task04_guards_sweep_keysounds_vst3_drum_bounce_scan_saveset_and_keymap() {
+        let scratch = Scratch::new("slice0-task04-guards");
+        let map = scratch.path("Normal.osu");
+        std::fs::write(&map, MINIMAL_MAP).unwrap();
+
+        let dummy_host = scratch.path("dummy-vst3-host.exe");
+        std::fs::write(&dummy_host, b"").unwrap();
+        let mut app = Application::headless_with_projects(scratch.path("data"));
+        app.vst3 = crate::vst3::Vst3Manager::with_search_dirs(Vec::new())
+            .with_host_executable(dummy_host);
+        app.open_now(crate::OpenSource::Map(map.clone()));
+        poll_until(&mut app, |a| a.document().is_some() && !a.is_busy());
+
+        // 1. keymap_mut bumps ViewStateToken
+        let before = app.view_state_token();
+        let _ = app.keymap_mut();
+        assert_ne!(before, app.view_state_token());
+
+        // 2. Non-preview spawn_keysounds_bounce refuses active sweep immediately without blocking
+        //    and leaves a standing bounce_cancel untouched.
+        let (sweep_tx, sweep_rx) = mpsc::channel();
+        app.sweep = Some(sweep_rx);
+        app.bounce_cancel.cancel();
+        let t0 = Instant::now();
+        let refused = app.spawn_keysounds_bounce(json!({}), false);
+        assert!(refused.is_err(), "must refuse while sweep is running");
+        assert!(
+            t0.elapsed() < Duration::from_secs(1),
+            "must not block waiting on sweep"
+        );
+        assert!(app.bounce_cancel.is_cancelled());
+        drop(sweep_tx);
+        app.sweep = None;
+        app.bounce_cancel.reset();
+
+        // 3. spawn_drum_vst_bounce refuses missing drum instrument and concurrent keysounds bounce
+        assert!(
+            app.spawn_drum_vst_bounce(
+                VelocityExportMode::ExactPerVolume,
+                BounceAudioFormat::Wav16,
+                true,
+                true,
+                true
+            )
+            .is_err()
+        );
+        let (bounce_tx, bounce_rx) = mpsc::channel();
+        app.async_jobs.keysounds_bounce = Some(bounce_rx);
+        assert!(
+            app.spawn_drum_vst_bounce(
+                VelocityExportMode::ExactPerVolume,
+                BounceAudioFormat::Wav16,
+                true,
+                true,
+                true
+            )
+            .is_err()
+        );
+        drop(bounce_tx);
+        app.async_jobs.keysounds_bounce = None;
+
+        // 4. spawn_keysounds_load_vst3 validates track, blocks concurrent loads, and settles error
+        assert!(
+            app.spawn_keysounds_load_vst3(
+                999_999,
+                scratch.path("missing.vst3"),
+                None,
+                "Missing".into()
+            )
+            .is_err()
+        );
+        let tid = app.keysounds_add_track("Lead", None);
+        app.spawn_keysounds_load_vst3(tid, scratch.path("missing.vst3"), None, "Missing".into())
+            .unwrap();
+        assert!(
+            app.spawn_keysounds_load_vst3(
+                tid,
+                scratch.path("missing2.vst3"),
+                None,
+                "Missing2".into()
+            )
+            .is_err()
+        );
+        poll_until(&mut app, |a| !a.has_active_background_jobs());
+        let err = app
+            .take_keysounds_vst3_load_result()
+            .expect("keysounds vst3 load result")
+            .unwrap_err();
+        assert!(!err.is_empty());
+
+        // 5. spawn_vst3_scan skips when a scan is already active
+        let (scan_tx, scan_rx) = mpsc::channel();
+        app.async_jobs.vst3_scan = Some(scan_rx);
+        app.spawn_vst3_scan(false);
+        assert!(
+            scan_tx
+                .send(Ok((
+                    Vst3ScanReport {
+                        discovered_paths: Vec::new(),
+                        plugins: Vec::new(),
+                        skipped: Vec::new(),
+                        blocked: Vec::new(),
+                        sidecar_available: false,
+                    },
+                    Vst3Blacklist::default(),
+                    false
+                )))
+                .is_ok(),
+            "existing scan channel must remain intact when duplicate spawn_vst3_scan is ignored"
+        );
+        poll_until(&mut app, |a| !a.has_active_background_jobs());
+        assert!(app.take_vst3_scan_result().is_some());
+
+        // 6. spawn_save_sound_set_from_selection refuses when already saving
+        let (ss_tx, ss_rx) = mpsc::channel();
+        app.async_jobs.sound_set_save = Some(ss_rx);
+        let save_err = app
+            .spawn_save_sound_set_from_selection(map, "DupSet".into())
+            .unwrap_err();
+        assert!(matches!(save_err, SaveSetError::Refused(_)));
+        drop(ss_tx);
+        app.async_jobs.sound_set_save = None;
     }
 }

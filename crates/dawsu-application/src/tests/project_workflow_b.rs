@@ -297,6 +297,31 @@ fn closing_forgets_the_pending_files_nothing_needs_and_frees_their_numbers() {
 }
 
 #[test]
+fn closing_without_waiting_also_frees_the_numbers_nothing_needs() {
+    let scratch = Scratch::new("pending-close-nonblocking");
+    let (mut app, map, folder) = two_layers(&scratch, true);
+    app.document.as_mut().unwrap().composer.add(5000.0, hitnormal(2), 100, 0.0);
+    save_through_summary(&mut app, scratch.path("backups"));
+    assert_eq!(claims(&app, &folder), ["normal-hitnormal2.wav", "normal-hitnormal3.wav"]);
+    app.close_document_nonblocking();
+    assert_eq!(claims(&app, &folder), ["normal-hitnormal2.wav"]);
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while app.has_active_background_jobs() {
+        app.poll();
+        assert!(std::time::Instant::now() < deadline, "detached cleanup did not finish");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(claims(&app, &folder), ["normal-hitnormal2.wav"], "after the detached cleanup");
+    // Reopening keeps layer 2 and gives the next new layer the freed number 3.
+    let mut reopened = reopen(&app, &map);
+    reopened.preferences.default_samples = app.preferences.default_samples.clone();
+    reopened.active_lane = reopened.document().unwrap().composer.lanes.iter().position(|lane| lane == &hitnormal(0)).unwrap();
+    reopened.command("addNumberedLayer");
+    assert!(reopened.error.is_none(), "{:?}", reopened.error);
+    assert!(reopened.document().unwrap().pending.get("normal-hitnormal3.wav").is_some());
+}
+
+#[test]
 fn opening_releases_claims_a_closed_or_crashed_session_left_behind() {
     let scratch = Scratch::new("pending-stale-claims");
     let (app, map, folder) = two_layers(&scratch, true);
