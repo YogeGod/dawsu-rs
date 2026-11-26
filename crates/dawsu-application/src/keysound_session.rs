@@ -15,8 +15,11 @@ use dawsu_keysounding::chords::{
     ChordResolution, detect_chords, resolve_all_chords, resolve_chord,
 };
 use dawsu_keysounding::generate::{
-    GeneratePlan, SampleManifestEntry, plan_generate_keysounds, preview_sync,
+    GeneratePlan, SampleManifestEntry, plan_generate_keysounds, preview_sync, sync_flags,
 };
+use dawsu_editor::tempo::Snap;
+use dawsu_foundation::SongTime;
+use dawsu_hitsounding::Place;
 use dawsu_keysounding::model::{ExportSettings, KeysoundDocument, KeysoundTrack};
 use dawsu_keysounding::{KeysoundNote, KeysoundProject, StrumDirection, editing};
 use dawsu_osu_format::{check_map_path, find_case_insensitive, list_folder};
@@ -1029,6 +1032,12 @@ pub(crate) fn summary(app: &mut Application) -> Value {
         .filter(|id| app.keysounds.document.tracks.iter().any(|t| t.id == *id))
         .or_else(|| app.keysounds.document.tracks.first().map(|t| t.id));
     app.keysound_history.active_track_id = active_id;
+    // Which notes Generate would place on an object, so the roll can show the rest as left out.
+    let synced = app
+        .document
+        .as_ref()
+        .map(|d| sync_flags(&app.keysounds.document, &d.file, &ExportSettings::default()))
+        .unwrap_or_default();
     let chord_conflicts = app
         .document
         .as_ref()
@@ -1082,6 +1091,8 @@ pub(crate) fn summary(app: &mut Application) -> Value {
                         "pitch": n.pitch,
                         "velocity": n.velocity,
                         "muted": n.muted,
+                        // true or false; null when Generate never considers the note.
+                        "synced": synced.get(&(t.id, index)),
                     })).collect::<Vec<_>>()
                 } else {
                     Vec::new()
@@ -1107,6 +1118,8 @@ pub(crate) fn handle(app: &mut Application, payload: &Value) -> Result<Value, St
         kind,
         "add_track"
             | "delete_track"
+            | "rename_track"
+            | "snap_notes_to_grid"
             | "sync_drum_track"
             | "add_note"
             | "move_note"
@@ -1311,6 +1324,52 @@ pub(crate) fn handle(app: &mut Application, payload: &Value) -> Result<Value, St
                 }
                 app.keysounds.document.delete_track(id);
             }
+        }
+        "rename_track" => {
+            let id = track_id.ok_or("Missing trackId")?;
+            let name = payload.get("name").and_then(|v| v.as_str()).unwrap_or("").trim();
+            if name.is_empty() {
+                return Err("Track name is empty".to_string());
+            }
+            let track = app
+                .keysounds
+                .document
+                .tracks
+                .iter_mut()
+                .find(|t| t.id == id)
+                .ok_or("Keysound track not found")?;
+            track.name = name.to_string();
+        }
+        "snap_notes_to_grid" => {
+            let id = track_id.ok_or("Missing trackId")?;
+            let composer = &app.document.as_ref().ok_or("Open a difficulty first")?.composer;
+            if !composer.snap_enabled {
+                return Err("Snap is off".to_string());
+            }
+            let snap = Snap { on: true, mode: composer.snap_mode, spacing: composer.spacing };
+            let mut objects: Vec<SongTime> = composer
+                .hitsounds()
+                .moments()
+                .iter()
+                .filter(|moment| moment.place() != Place::NoObject)
+                .map(|moment| moment.time())
+                .collect();
+            objects.sort_by(|a, b| a.ms().total_cmp(&b.ms()));
+            let tempo = composer.tempo.clone();
+            let track = app
+                .keysounds
+                .document
+                .tracks
+                .iter_mut()
+                .find(|t| t.id == id)
+                .ok_or("Keysound track not found")?;
+            for note in &mut track.notes {
+                let length = note.duration_ms();
+                // Whole milliseconds, as the roll's own drag results are.
+                note.start_ms = snap.time(&tempo, &objects, SongTime::from_ms(note.start_ms)).ms().round();
+                note.end_ms = note.start_ms + length;
+            }
+            track.sort_notes();
         }
         "sync_drum_track" => {
             let track_name = payload
@@ -1815,7 +1874,7 @@ pub(crate) fn handle(app: &mut Application, payload: &Value) -> Result<Value, St
             if let Some(tid) = target_track_id
                 && !is_track_audible(&app.keysounds.document, tid)
             {
-                return Ok(summary(app));
+                return Ok(json!({ "previewed": true }));
             }
             let live_id = target_track_id
                 .and_then(|tid| app.keysound_history.track_instances.get(&tid).cloned());
@@ -1857,7 +1916,7 @@ pub(crate) fn handle(app: &mut Application, payload: &Value) -> Result<Value, St
                             0.9,
                         );
                     }
-                    return Ok(summary(app));
+                    return Ok(json!({ "previewed": true }));
                 }
             }
             let channel = track_meta.as_ref().map_or(0, |m| m.0);
@@ -1919,6 +1978,8 @@ pub(crate) fn handle(app: &mut Application, payload: &Value) -> Result<Value, St
                     audio.audition(synth_note_clip(pitch, velocity, duration_ms), 0.8);
                 }
             }
+            // The caller only wants the sound; building the whole summary per key press is waste.
+            return Ok(json!({ "previewed": true }));
         }
         "generate_keysounds" => {
             app.bounce_cancel.reset();
@@ -2364,12 +2425,16 @@ mod tests {
     }
 
     fn setup_mapset(name: &str, hit_objects: &str) -> (Scratch, PathBuf, Application) {
+        setup_mapset_with_timing(name, "0,500,4,1,0,100,1,0", hit_objects)
+    }
+
+    fn setup_mapset_with_timing(name: &str, timing: &str, hit_objects: &str) -> (Scratch, PathBuf, Application) {
         let scratch = Scratch::new(name);
         let map_dir = scratch.path("mapset");
         fs::create_dir_all(&map_dir).unwrap();
         let map_path = map_dir.join("Artist - Song (Mapper) [Hard].osu");
         let osu = format!(
-            "osu file format v14\r\n[General]\r\nMode:0\r\n[Metadata]\r\nArtist:Artist\r\nTitle:Song\r\nCreator:Mapper\r\nVersion:Hard\r\n[Difficulty]\r\nSliderMultiplier:1.4\r\nSliderTickRate:1\r\n[TimingPoints]\r\n0,500,4,1,0,100,1,0\r\n[HitObjects]\r\n{hit_objects}"
+            "osu file format v14\r\n[General]\r\nMode:0\r\n[Metadata]\r\nArtist:Artist\r\nTitle:Song\r\nCreator:Mapper\r\nVersion:Hard\r\n[Difficulty]\r\nSliderMultiplier:1.4\r\nSliderTickRate:1\r\n[TimingPoints]\r\n{timing}\r\n[HitObjects]\r\n{hit_objects}"
         );
         fs::write(&map_path, osu.as_bytes()).unwrap();
 
@@ -2408,6 +2473,9 @@ mod tests {
             &json!({ "kind": "preview_note", "trackId": tid, "pitch": 62, "velocity": 100 }),
         )
         .unwrap();
+        // An audition answers with a small acknowledgement, not the whole summary.
+        assert_eq!(res, json!({ "previewed": true }));
+        let res = handle(&mut app, &json!({ "kind": "view" })).unwrap();
         assert_eq!(res["tracks"][0]["notes"][0]["pitch"], 62);
         assert_eq!(res["tracks"][0]["notes"][0]["startMs"], 1000.0);
 
@@ -3120,5 +3188,93 @@ mod tests {
             undone_strum["tracks"][0]["notes"][2]["startMs"],
             json!(1000.0)
         );
+    }
+
+    fn add_test_note(app: &mut Application, tid: u64, start_ms: f64, end_ms: f64) -> Value {
+        handle(
+            app,
+            &json!({ "kind": "add_note", "trackId": tid, "startMs": start_ms, "endMs": end_ms, "pitch": 60, "velocity": 100 }),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn summary_marks_each_note_synced_unsynced_or_not_considered() {
+        let (_scratch, _map_dir, mut app) =
+            setup_mapset("keysound-synced-flag", "256,192,1000,1,0,0:0:0:0:\r\n");
+        let res = handle(&mut app, &json!({ "kind": "add_track", "name": "Lead" })).unwrap();
+        let tid = res["tracks"][0]["id"].as_u64().unwrap();
+        add_test_note(&mut app, tid, 1000.0, 1100.0);
+        let res = add_test_note(&mut app, tid, 1500.0, 1600.0);
+        assert_eq!(res["tracks"][0]["notes"][0]["synced"], json!(true), "a note on an object");
+        assert_eq!(res["tracks"][0]["notes"][1]["synced"], json!(false), "a note 500 ms from any object");
+
+        // The flags are what Generate then does.
+        let result = handle(&mut app, &json!({ "kind": "generate_keysounds" })).unwrap();
+        poll_until_idle(&mut app);
+        assert_eq!(result["generated"]["syncedCount"], 1);
+        assert_eq!(result["generated"]["unsyncedCount"], 1);
+
+        // Generate never considers a muted track, so its notes are neither synced nor unsynced.
+        let res = handle(&mut app, &json!({ "kind": "toggle_mute", "trackId": tid })).unwrap();
+        assert_eq!(res["tracks"][0]["notes"][0]["synced"], Value::Null);
+        assert_eq!(res["tracks"][0]["notes"][1]["synced"], Value::Null);
+    }
+
+    #[test]
+    fn rename_track_changes_the_name_rejects_an_empty_one_and_undoes() {
+        let (_scratch, _map_dir, mut app) =
+            setup_mapset("keysound-rename-track", "256,192,1000,1,0,0:0:0:0:\r\n");
+        let res = handle(&mut app, &json!({ "kind": "add_track", "name": "Lead" })).unwrap();
+        let tid = res["tracks"][0]["id"].as_u64().unwrap();
+
+        let res = handle(&mut app, &json!({ "kind": "rename_track", "trackId": tid, "name": "  Bass  " })).unwrap();
+        assert_eq!(res["tracks"][0]["name"], "Bass");
+
+        let err = handle(&mut app, &json!({ "kind": "rename_track", "trackId": tid, "name": "   " })).unwrap_err();
+        assert_eq!(err, "Track name is empty");
+        let err = handle(&mut app, &json!({ "kind": "rename_track", "trackId": tid + 99, "name": "X" })).unwrap_err();
+        assert_eq!(err, "Keysound track not found");
+
+        let res = handle(&mut app, &json!({ "kind": "undo" })).unwrap();
+        assert_eq!(res["tracks"][0]["name"], "Lead");
+    }
+
+    #[test]
+    fn snap_notes_to_grid_follows_each_tempo_section_and_keeps_lengths() {
+        // Second red line at 2150 ms with a 400 ms beat: its 1/4 grid is 2150, 2250, 2350, ...
+        let (_scratch, _map_dir, mut app) = setup_mapset_with_timing(
+            "keysound-snap-grid",
+            "0,500,4,1,0,100,1,0\r\n2150,400,4,1,0,100,1,0",
+            "256,192,1000,1,0,0:0:0:0:\r\n256,192,2150,1,0,0:0:0:0:\r\n",
+        );
+        let res = handle(&mut app, &json!({ "kind": "add_track", "name": "Lead" })).unwrap();
+        let tid = res["tracks"][0]["id"].as_u64().unwrap();
+        add_test_note(&mut app, tid, 1040.0, 1240.0);
+        add_test_note(&mut app, tid, 2330.0, 2500.5);
+
+        app.set_snap_options(true, 1, 4, dawsu_editor::tempo::SnapMode::Grid);
+        let res = handle(&mut app, &json!({ "kind": "snap_notes_to_grid", "trackId": tid })).unwrap();
+        let notes = &res["tracks"][0]["notes"];
+        assert_eq!(notes[0]["startMs"], json!(1000.0), "first section: 125 ms grid from 0");
+        assert_eq!(notes[0]["endMs"], json!(1200.0));
+        assert_eq!(notes[1]["startMs"], json!(2350.0), "second section: 100 ms grid from 2150");
+        assert_eq!(notes[1]["endMs"], json!(2520.5), "the length is kept");
+
+        // One Undo puts both notes back.
+        let res = handle(&mut app, &json!({ "kind": "undo" })).unwrap();
+        assert_eq!(res["tracks"][0]["notes"][0]["startMs"], json!(1040.0));
+        assert_eq!(res["tracks"][0]["notes"][1]["startMs"], json!(2330.0));
+
+        // Objects mode snaps to the nearest object.
+        app.set_snap_options(true, 1, 4, dawsu_editor::tempo::SnapMode::Objects);
+        let res = handle(&mut app, &json!({ "kind": "snap_notes_to_grid", "trackId": tid })).unwrap();
+        assert_eq!(res["tracks"][0]["notes"][0]["startMs"], json!(1000.0));
+        assert_eq!(res["tracks"][0]["notes"][1]["startMs"], json!(2150.0));
+
+        // With Snap off there is nothing to snap to.
+        app.set_snap_options(false, 1, 4, dawsu_editor::tempo::SnapMode::Grid);
+        let err = handle(&mut app, &json!({ "kind": "snap_notes_to_grid", "trackId": tid })).unwrap_err();
+        assert_eq!(err, "Snap is off");
     }
 }
