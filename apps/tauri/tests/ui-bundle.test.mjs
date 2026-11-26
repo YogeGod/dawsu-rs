@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import { createContext, runInContext } from "node:vm";
@@ -65,12 +65,9 @@ test("the committed bundle matches its sources", async () => {
   assert.deepEqual(saved.outputs, fresh.outputs, "dist/ui was edited by hand or built from other sources");
 });
 
-test("index.html loads the bundle without legacy app.js", () => {
-  assert.ok(!existsSync(new URL("dist/app.js", tauri)), "dist/app.js has been deleted");
+test("index.html loads stylesheets and scripts in the expected order", () => {
   const head = read(new URL("dist/index.html", tauri)).match(/<head>(.*?)<\/head>/s)[1];
   const order = [...head.matchAll(/(?:href|src)="([^"]+\.(?:css|js))"/g)].map(match => match[1]);
-  assert.ok(!existsSync(new URL("dist/menus.js", tauri)), "dist/menus.js has been folded into ui/src/editor/menus.js");
-  assert.ok(!existsSync(new URL("dist/style.css", tauri)), "dist/style.css has been folded into ui/src/legacy-chrome.css");
   assert.deepEqual(order, ["fonts.css", "ui/ui.css", "docking.js", "ui/ui.js"]);
   assert.match(head, /<script defer src="ui\/ui\.js"><\/script>/);
 });

@@ -12,7 +12,7 @@ pub(crate) use editor::audio_output_settings;
 #[cfg(test)]
 pub(crate) use export::export_title;
 #[cfg(test)]
-pub(crate) use library_and_files::{PREVIEW_BARS, cached_recent_meta, is_osu_hs_diff};
+pub(crate) use library_and_files::PREVIEW_BARS;
 pub(crate) use library_and_files::{
     PreviewSource, SongsIndexCache, sample_outline, sound_set_library_view,
     sound_set_placement_view,

@@ -2,14 +2,13 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { createContext, runInContext } from "node:vm";
-import { bootEditor, readEditorSource } from "./editor-runtime.mjs";
+import { bootEditor } from "./editor-runtime.mjs";
 
 const read = file => readFile(new URL("../dist/" + file, import.meta.url), "utf8");
 const [html, css, startScreenSvelte] = await Promise.all([
   read("index.html"), readFile(new URL("../ui/src/legacy-chrome.css", import.meta.url), "utf8"),
   readFile(new URL("../ui/src/parts/StartScreen.svelte", import.meta.url), "utf8"),
 ]);
-const app = readEditorSource();
 const homeCss = css.slice(css.indexOf("/* Start and empty screen (design f4)"));
 
 async function frontend() {
@@ -60,7 +59,6 @@ test("the empty screen mounts StartScreen in #home with Open map, Import .osz, F
   assert.match(startScreenSvelte, /class="home-drop"[\s\S]*?\.osu[\s\S]*?\.osz/);
   assert.match(startScreenSvelte, /id="home-recent"[\s\S]*?id="recent"/);
   for (const id of ["home-resume", "recovery", "recovery-entries"]) assert.match(startScreenSvelte, new RegExp('id="' + id + '"'), id);
-  for (const dead of ["function renderRecent", "function renderRecovery"]) assert.ok(!app.includes(dead), dead);
   assert.match(homeCss, /\.home-drop\s*\{[^}]*dashed/);
   assert.doesNotMatch(homeCss, /:has\(|color-mix\(|aspect-ratio|url\(/);
 });

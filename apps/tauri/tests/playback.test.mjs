@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 
 test("transport speed buttons offer the C# editor's supported pitch-preserving speeds", async () => {
