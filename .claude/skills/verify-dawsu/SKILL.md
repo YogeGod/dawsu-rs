@@ -16,11 +16,13 @@ Run from the Rust checkout root with the toolchain in `rust-toolchain.toml`. Use
 
 ## Checks
 
-1. `cargo check --workspace --all-targets --locked`
-2. `cargo test --workspace --locked -- --show-output`
-3. `cargo build --workspace --locked`
-4. If `apps/tauri/Cargo.toml` defines a separate workspace, also run `cargo test --manifest-path apps/tauri/Cargo.toml --locked -- --show-output` and `cargo build --manifest-path apps/tauri/Cargo.toml --locked`. Check the workspace members with Cargo metadata when the layout is unclear.
-5. For an editor UI or workflow change, use the plan's runnable checks and copied map inputs. Record any actual native window, picker, playback, audio listening, or osu! import checks separately.
+1. **UI bundle & unit tests:** `npm --prefix apps/tauri/ui run build` and `npm --prefix apps/tauri/ui test`.
+2. **Frontend integration & capability checks:** on POSIX, `node --test apps/tauri/tests/*.test.mjs`; on Windows `pwsh`, expand first with `$tests = @(Get-ChildItem apps/tauri/tests/*.test.mjs | Sort-Object Name | ForEach-Object { $_.FullName }); node --test @tests`. Chain native commands directly with `&&` — never wrap them inside `& { ... } && ...` (masks non-zero exit codes).
+3. **Rust Clippy (CI gate):** `cargo clippy --workspace --all-targets --locked -- -D warnings`.
+4. **Rust workspace tests:** `cargo test --workspace --locked` (add `-- --show-output` when auditing skipped corpus tests).
+5. **Built-editor smoke check (UI/IPC/workflow changes):** build `cargo build -p dawsu-tauri --locked` (or `--release`), then run `node tools/everyday-check.mjs --exe target/<profile>/dawsu-tauri.exe`. Respect provenance freshness (exe mtime >= `HEAD` and `build-stamp.json`; run against a fresh build before amending test-only commits, or rebuild after Rust/UI edits) and delete temporary `target/everyday-check/` afterwards.
+6. If `apps/tauri/Cargo.toml` defines a separate workspace, also run `cargo test --manifest-path apps/tauri/Cargo.toml --locked -- --show-output` and `cargo build --manifest-path apps/tauri/Cargo.toml --locked`.
+7. Record any actual native window, picker, playback, audio listening, or osu! import checks separately.
 
 Run long commands in the background when supported and collect their final exit codes. Use `--offline` when the required dependencies are already cached and the session calls for an offline run.
 
