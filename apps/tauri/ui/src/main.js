@@ -40,6 +40,7 @@ import InspectorSelection from "./parts/InspectorSelection.svelte";
 import LaneOptions from "./parts/LaneOptions.svelte";
 import LoadingOverlay from "./parts/LoadingOverlay.svelte";
 import KeysoundsModal from "./parts/KeysoundsModal.svelte";
+import KeysoundVelocitySurface from "./parts/keysounds/KeysoundVelocitySurface.svelte";
 import MapPreview from "./parts/MapPreview.svelte";
 import MapsetIntakeCard from "./parts/MapsetIntakeCard.svelte";
 import MicroHud from "./parts/MicroHud.svelte";
@@ -73,6 +74,7 @@ const parts = {
   // File › Import MIDI… and Map › Keysounds & VST3…, at body level.
   "midi-import": MidiImportModal,
   keysounds: KeysoundsModal,
+  "keysounds-velocity": KeysoundVelocitySurface,
   "drum-studio": DrumStudioHost,
   "shared-base": SharedBaseModal,
   "stem-separation": StemSeparationModal,

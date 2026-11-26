@@ -278,15 +278,17 @@ test("the Keysounds modal wires every piano roll gesture to its keysounds_action
   const keysounds = [
     "KeysoundsModal.svelte",
     "keysounds/KeysoundTrackBar.svelte",
-    "keysounds/KeysoundPianoRoll.svelte",
-    "keysounds/KeysoundVelocityLane.svelte",
+    "keysounds/KeysoundRollSurface.svelte",
+    "keysounds/KeysoundVelocitySurface.svelte",
   ].map(source).join("\n");
   for (const wiring of [
     /send\(keysoundsAddNote\(trackId, startMs, pitch\)\)[\s\S]*?preview\(pitch\)/, // empty cell: add then play
-    /noteDragPayload\(trackId, note, mode, dx, dy, QUANTIZE_MS, pitches\)/, // pointerup on a dragged body or edge
-    /onNoteDown\(e, note, "move"\)/,
-    /onNoteDown\(e, note, "resize"\)/,
-    /oncontextmenu=\{\(e\) => \{ e\.preventDefault\(\); e\.stopPropagation\(\); deleteNote\(note\.index\)/,
+    // A dragged body or edge, at the editor's zoom and the roll's row height.
+    /noteDragPayload\(trackId, note, mode, dx, dy, QUANTIZE_MS, pitches, view\(\)\.zoom, rowHeight\)/,
+    /mode: hit\.edge \? "resize" : "move"/,
+    /await ondragnote\(note, mode, payload\.action\)/,
+    /oncontextmenu=\{onContextMenu\}/,
+    /if \(hit\) deleteNote\(hit\.note\.index\)/,
     /event\.key === "Delete" \|\| event\.key === "Backspace"/,
     /send\(keysoundsSetVelocity\(trackId, index, velocity\)\)/,
     /onpointerdown=\{\(\) => preview\(pitch\)\}/, // the keyboard plays
@@ -300,13 +302,19 @@ test("the Keysounds modal wires every piano roll gesture to its keysounds_action
     /keysoundsTrimOverlaps\(id\)/,
     /keysoundsSyncToObjects\(trackId\)/,
     /class="ks-workspace"/,
-    /class="ks-ghost-note"/,
-    /class="ks-object-line"/,
+    // The roll is painted by the editor's paint() from the model handed to the bridge.
+    /bridge\.keysoundRoll = \{[\s\S]*?ghosts: ghostNotes, objectTimes, sustainSpans, selected/,
+    // The velocity lane reports a bar drag and a Shift+drag ramp to the host.
+    /bridge\.callAction\("keysoundsRoll", "velocity", done\.index, done\.velocity\)/,
+    /bridge\.callAction\("keysoundsRoll", "ramp", drawn\)/,
+    /send\(keysoundsVelocityRamp\(trackId, first\.startMs, first\.endMs, first\.startVel, first\.endVel, first\.curve\)\)/,
   ]) assert.match(keysounds, wiring);
   // Inline workspace must not wrap the piano roll in a floating modal backdrop.
   assert.doesNotMatch(source("KeysoundsModal.svelte"), /class="ks-backdrop"/);
-  // A press that lands on a note must not fall through to the grid and add another.
-  assert.match(keysounds, /event\.target !== event\.currentTarget/);
+  // A press that lands on a note drags it and returns before a new note is placed.
+  assert.match(keysounds, /if \(hit\) \{[\s\S]*?setPointerCapture[\s\S]*?return;\s*\}[\s\S]*?await onaddnote\(/);
+  // Leaving the mode is the mode switch's job: no title row, no Back buttons, and Esc stays.
+  assert.doesNotMatch(source("KeysoundsModal.svelte"), /Back to Hitsounds|class="ks-head"/);
   // Previews skip send() so the bar does not flicker; preview_note's summary is not applied.
   assert.match(keysounds, /invoke\("keysounds_action", \{ payload: keysoundsPreview\(/);
 });
@@ -347,10 +355,9 @@ test("scale helpers, fold-to-scale pitch mapping, strum/humanise/velocity ramp p
 
   // Inline 1b21edb structural defect fixes:
   const timelineCss = readFileSync(new URL("../src/timeline.css", import.meta.url), "utf8");
-  assert.match(timelineCss, /#editor-arrange\.keysounds-active[\s\S]*?grid-template-rows:\s*auto minmax\(0,\s*1fr\);/);
-  assert.match(timelineCss, /#editor-arrange\.keysounds-active\s*>\s*#base-diff-strip\s*\{\s*grid-row:\s*1;/);
-  assert.match(timelineCss, /#editor-arrange\.keysounds-active\s*>\s*#keysounds-workspace\s*\{\s*grid-row:\s*2;/);
-  assert.match(timelineCss, /\.arrange\.keysounds-active\s*>\s*\.ruler/);
+  // The roll covers only the lanes; the ruler, bottom panel and overview are never hidden.
+  assert.match(timelineCss, /#editor-arrange\.keysounds-active #keysounds-workspace\s*\{[^}]*position:\s*sticky;/);
+  assert.doesNotMatch(timelineCss, /keysounds-active[^{]*(\.ruler|\.overview|#volume-controller-panel)[^{]*\{[^}]*display:\s*none/);
 
   const modalSrc = source("KeysoundsModal.svelte");
   assert.doesNotMatch(modalSrc, /bridge\.playhead/, "KeysoundsModal must use bridge.currentPositionMs(), not reactive bridge.playhead");
@@ -360,6 +367,6 @@ test("scale helpers, fold-to-scale pitch mapping, strum/humanise/velocity ramp p
   assert.match(modalSrc, /bridge\.callAction\("command",\s*"play"\)/);
   assert.match(modalSrc, /send\(\{\s*kind:\s*"undo"\s*\}\)/);
   assert.match(modalSrc, /send\(\{\s*kind:\s*"redo"\s*\}\)/);
-  assert.match(source("keysounds/KeysoundPianoRoll.svelte"), /\.ks-beat\.sustained/);
-  assert.match(source("keysounds/KeysoundVelocityLane.svelte"), /onvelocityramp/);
+  assert.match(readFileSync(new URL("../src/lib/rollPaint.js", import.meta.url), "utf8"), /model\.sustainSpans/);
+  assert.match(source("keysounds/KeysoundVelocitySurface.svelte"), /event\.shiftKey/);
 });

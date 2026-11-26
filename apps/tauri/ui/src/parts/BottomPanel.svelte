@@ -6,6 +6,8 @@
   // Open or folded is the saved Volume and Mixer preference; the tab is kept in this window only.
   const folded = $derived(bridge.view?.panels?.controller === false);
   const tab = $derived(bridge.bottomTab);
+  // The value lane shows hit volume, or note velocity in Keysounds mode.
+  const valueLane = $derived(bridge.mode === "keysounds" ? "Velocity" : "Volume");
   const disabled = $derived(bridge.disabled);
 
   function choose(name) {
@@ -46,13 +48,13 @@
   <button type="button" class="folded" aria-label="Volume and Mixer" aria-expanded="false" {disabled}
     onclick={click} onpointerdown={down} onpointermove={move} onpointerup={up} onpointercancel={up}>
     <span class="chevron" aria-hidden="true">{@html ChevronRight}</span>
-    <span class:on={tab === "volume"}>Volume</span>
+    <span class:on={tab === "volume"}>{valueLane}</span>
     <span class:on={tab === "mixer"}>Mixer</span>
     <span class="hint">Drag up to open</span>
   </button>
 {:else}
   <div class="seg" role="group" aria-label="Bottom panel">
-    <button type="button" aria-pressed={tab === "volume"} onclick={() => choose("volume")}>Volume</button>
+    <button type="button" aria-pressed={tab === "volume"} onclick={() => choose("volume")}>{valueLane}</button>
     <button type="button" aria-pressed={tab === "mixer"} onclick={() => choose("mixer")}>Mixer</button>
   </div>
 {/if}

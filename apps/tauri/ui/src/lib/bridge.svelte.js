@@ -70,6 +70,9 @@ export class Bridge {
   commandPaletteShortcuts = $state.raw(null);
   // Active editor workflow mode ("hitsounds" | "drums" | "keysounds") and floating Micro-HUD anchor.
   mode = $state("hitsounds");
+  // The keysound roll that paint() draws while Keysounds mode shows a track, else null. Plain data:
+  // the roll's parts replace or patch it and then ask for a paint; nothing renders from it.
+  keysoundRoll = null;
   microHud = $state.raw(null);
   spectrumOpen = $state(false);
   spectrum = $state.raw(null);
@@ -178,6 +181,8 @@ export class Bridge {
         this.callAction("closeKeysounds");
       }
     }
+    // The lanes' canvas and the volume lane show different things in Keysounds mode.
+    if (next !== prev) this.callAction("paintSoon");
   }
 
   setMicroHud(hud) {
@@ -297,6 +302,8 @@ export class Bridge {
     setNodeGraphViewer: viewer => this.setNodeGraphViewer(viewer),
     nodeGraphViewer: () => this.nodeGraphViewer,
     bottomTab: () => this.bottomTab,
+    keysoundRoll: () => this.keysoundRoll,
+    mode: () => this.mode,
     hitCard: card => this.setHitCard(card),
     volumeBubble: next => this.setVolumeBubble(next),
     centre: () => this.centre,
