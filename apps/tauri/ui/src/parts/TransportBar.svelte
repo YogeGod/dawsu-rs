@@ -63,10 +63,10 @@
       });
       armed = !!status?.armed;
       const toast = tapAwareRecordToast(status);
-      if (toast) globalThis.showToast?.(toast);
+      if (toast) bridge.showToast(toast);
       await act(null, !armed && !!status?.committedNotes);
     } catch (error) {
-      globalThis.showToast?.({ tone: "error", title: "MIDI Record", body: String(error) });
+      bridge.showToast({ tone: "error", title: "MIDI Record", body: String(error) });
     } finally {
       arming = false;
     }

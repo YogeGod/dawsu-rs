@@ -20,7 +20,7 @@
   import KeysoundVelocityLane from "./keysounds/KeysoundVelocityLane.svelte";
 
   // Map › Keysounds & VST3…: the keysound tracks Rust keeps for this map as a piano roll, each
-  // optionally played by a scanned VST3 instrument. menus.js calls globalThis.openKeysounds.
+  // optionally played by a scanned VST3 instrument. menus.js opens it via bridge modal registry.
   let open = $state(false);
   let loading = $state(false);
   let error = $state("");
@@ -111,7 +111,7 @@
         summary = res;
         trackId = res.activeTrackId ?? res.tracks?.[0]?.id ?? null;
         selected = null;
-        globalThis.showToast?.({ tone: "success", title: "Opened Keysound project", body: res.loadedPath ?? "" });
+        bridge.showToast({ tone: "success", title: "Opened Keysound project", body: res.loadedPath ?? "" });
       }
     } catch (err) {
       error = String(err);
@@ -212,7 +212,7 @@
       const res = await invoke("keysounds_action", { payload: { kind: "browse_soundfont", trackId } });
       if (res?.picked) {
         summary = res;
-        globalThis.showToast?.({ tone: "success", title: "SoundFont loaded", body: res.loadedPath ?? "" });
+        bridge.showToast({ tone: "success", title: "SoundFont loaded", body: res.loadedPath ?? "" });
       }
     } catch (err) {
       error = String(err);
@@ -233,11 +233,11 @@
     try {
       summary = await invoke("keysounds_action", { payload: keysoundsGenerate() });
       const toast = generateToast(summary?.generated);
-      if (toast) globalThis.showToast?.(toast);
-      globalThis.act?.(null, true);
+      if (toast) bridge.showToast(toast);
+      bridge.callAction("act", null, true);
     } catch (err) {
       error = String(err);
-      globalThis.showToast?.({ tone: "error", title: "Generate [Keysounds]", body: String(err) });
+      bridge.showToast({ tone: "error", title: "Generate [Keysounds]", body: String(err) });
     } finally {
       loading = false;
     }
@@ -258,11 +258,11 @@
       summary = await invoke("keysounds_action", { payload });
       bounceOpen = false;
       const toast = generateToast(summary?.generated);
-      if (toast) globalThis.showToast?.(toast);
-      globalThis.act?.(null, true);
+      if (toast) bridge.showToast(toast);
+      bridge.callAction("act", null, true);
     } catch (err) {
       error = String(err);
-      globalThis.showToast?.({ tone: "error", title: "Generate [Keysounds]", body: String(err) });
+      bridge.showToast({ tone: "error", title: "Generate [Keysounds]", body: String(err) });
     } finally {
       loading = false;
     }
@@ -331,13 +331,13 @@
 
   // The editor's timeline shortcuts stay off while this is open (boot.js reads the flag).
   $effect(() => {
-    globalThis.dawsuModalOpen = open;
-    return () => { globalThis.dawsuModalOpen = false; };
+    bridge.setModalOpen("keysounds", open);
+    return () => { bridge.setModalOpen("keysounds", false); };
   });
 
   onMount(() => {
-    globalThis.openKeysounds = openKeysounds;
-    globalThis.keysoundsMicroAction = (action, value) => {
+    const disposeModal = bridge.registerModal("openKeysounds", openKeysounds);
+    const disposeAction = bridge.registerAction("keysoundsMicroAction", (action, value) => {
       if (action === "chordPolicy") {
         chordPolicy = value === "top_only" ? "top_note_only" : "flatten_polyphonic";
         send({ kind: "resolve_all_chords", policy: chordPolicy });
@@ -345,6 +345,10 @@
         const note = selected != null ? notes[selected] : notes[0];
         if (note) preview(note.pitch, note.velocity);
       }
+    });
+    return () => {
+      disposeModal();
+      disposeAction();
     };
   });
 </script>
@@ -371,7 +375,7 @@
         canRedo={Boolean(summary?.canRedo)}
         dirty={Boolean(summary?.dirty)}
         onselecttrack={selectTrack}
-        onimportmidi={() => { closeModal(); globalThis.openMidiImport?.(); }}
+        onimportmidi={() => { closeModal(); bridge.openModal("openMidiImport"); }}
         onopen={openDawsuks}
         onundo={() => send({ kind: "undo" })}
         onredo={() => send({ kind: "redo" })}

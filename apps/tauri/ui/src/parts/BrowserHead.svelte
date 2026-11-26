@@ -9,7 +9,7 @@
   const model = $derived(bridge.browser ?? emptyBrowser);
   // No map open, or nothing handed over yet: the head shows but takes no input.
   const off = $derived(!bridge.scene || !bridge.browser);
-  const send = (...args) => globalThis.sampleBrowserAction?.(...args);
+  const send = (...args) => bridge.callAction("sampleBrowserAction", ...args);
   // One click to the mapset's or the sample library's folder in the file manager (Rust resolves it).
   const openFolder = folder => invoke("open_editor_folder", { folder }).catch(() => {});
 </script>

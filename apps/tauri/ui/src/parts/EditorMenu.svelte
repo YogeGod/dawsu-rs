@@ -4,7 +4,7 @@
   // menus.js builds the rows from the command list (lib/commands.js), works out what is enabled and
   // checked, and runs a row when it is pressed. The classes are the ones style.css already styles.
   const rows = $derived(bridge.menu?.rows ?? []);
-  const press = index => globalThis.menuAction?.(index);
+  const press = index => bridge.callAction("menuAction", index);
 </script>
 
 {#snippet button(row)}

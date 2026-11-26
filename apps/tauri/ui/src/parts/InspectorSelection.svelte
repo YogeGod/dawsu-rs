@@ -9,7 +9,7 @@
   import { osuVolumeToMidiVelocity, velocityTier } from "../lib/velocityLane.js";
   import InspectorHead from "./InspectorHead.svelte";
 
-  const on = inspectorHandlers((...args) => globalThis.inspectorAction(...args));
+  const on = inspectorHandlers((...args) => bridge.callAction("inspectorAction", ...args));
   const model = $derived(bridge.inspector ?? emptyInspector);
   const selection = $derived(model.selection);
   let open = $state(true);
@@ -43,9 +43,9 @@
     sliderDraft = null;
     if (parsedVol.mixed) {
       const delta = target - parsedVol.value;
-      if (delta !== 0) globalThis.inspectorAction?.("volume", delta, true);
+      if (delta !== 0) bridge.callAction("inspectorAction", "volume", delta, true);
     } else {
-      globalThis.inspectorAction?.("volume", target, false);
+      bridge.callAction("inspectorAction", "volume", target, false);
     }
   }
 
@@ -93,20 +93,20 @@
             oninput={event => { sliderDraft = Number(event.currentTarget.value); }}
             onchange={commitSlider}>
           <button type="button" class="insp-audition-btn" aria-label="Audition selection" title="Audition selected hits"
-            disabled={model.busy} onclick={() => globalThis.inspectorAction?.("auditionSelection")}>▶</button>
+            disabled={model.busy} onclick={() => bridge.callAction("inspectorAction", "auditionSelection")}>▶</button>
         </div>
         <div class="insp-pill-bar" role="group" aria-label="Sample set">
           {#each setPills as pill (pill.id)}
             <button type="button" class="insp-pill" class:insp-pill-on={pill.active} class:insp-pill-mixed={pill.mixed}
               aria-pressed={pill.active} disabled={model.busy || pill.disabled} title={pill.title}
-              onclick={() => globalThis.inspectorAction?.("sampleSet", pill.id)}>{pill.label}</button>
+              onclick={() => bridge.callAction("inspectorAction", "sampleSet", pill.id)}>{pill.label}</button>
           {/each}
         </div>
         <div class="insp-pill-bar" role="group" aria-label="Additions">
           {#each addPills as pill (pill.id)}
             <button type="button" class="insp-pill" class:insp-pill-on={pill.active} class:insp-pill-mixed={pill.mixed}
               aria-pressed={pill.active} disabled={model.busy || pill.disabled} title={pill.title}
-              onclick={() => globalThis.inspectorAction?.("addition", pill.id)}>{pill.label}</button>
+              onclick={() => bridge.callAction("inspectorAction", "addition", pill.id)}>{pill.label}</button>
           {/each}
         </div>
         <div class="insp-row"><span class="insp-label">On object</span><output>{selection.object}</output></div>

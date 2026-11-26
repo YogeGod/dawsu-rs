@@ -26,7 +26,7 @@
   const recovery = $derived(recoveryState(view, scene));
   const songsFolder = $derived(view?.songsFolder || "");
   const hasSongsFolder = $derived(Boolean(songsFolder));
-  const send = (...args) => globalThis.startScreenAction?.(...args);
+  const send = (...args) => bridge.callAction("startScreenAction", ...args);
 
   let checklistDismissed = $state(isSetupChecklistDismissed(storage()));
   const checklist = $derived(setupChecklistState(view, checklistDismissed));
@@ -152,7 +152,7 @@
     try {
       const res = await invoke("relink_moved_mapset", { missingPath, pickFolder });
       if (res?.newPath) {
-        globalThis.showToast?.({
+        bridge.showToast({
           tone: "success",
           title: "Mapset relinked",
           body: res.migratedBase
@@ -168,7 +168,7 @@
       }
       const msg = String(err || "");
       if (!msg.toLowerCase().includes("cancelled")) {
-        globalThis.showToast?.({ tone: "error", title: "Could not relink mapset", body: msg });
+        bridge.showToast({ tone: "error", title: "Could not relink mapset", body: msg });
       }
     }
   }

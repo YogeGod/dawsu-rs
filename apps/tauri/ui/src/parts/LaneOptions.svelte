@@ -4,7 +4,7 @@
   const scene = $derived(bridge.scene);
   const disabled = $derived(bridge.disabled);
   const rowHeight = $derived(bridge.rowHeight ?? scene?.rowHeight ?? 30);
-  const send = (...args) => globalThis.popoverAction?.(...args);
+  const send = (...args) => bridge.callAction("popoverAction", ...args);
 </script>
 
 <div class="row" role="group" aria-label="Lane zoom">

@@ -1,5 +1,6 @@
 <script>
   import { onMount } from "svelte";
+  import { bridge } from "../lib/bridge.svelte.js";
   import ExportWindow from "./ExportWindow.svelte";
 
   // In-editor Export modal: embeds ExportWindow.svelte inside the main editor window instead of
@@ -22,15 +23,12 @@
   }
 
   $effect(() => {
-    globalThis.dawsuExportModalOpen = open;
-    return () => { globalThis.dawsuExportModalOpen = false; };
+    bridge.setModalOpen("export", open);
+    return () => { bridge.setModalOpen("export", false); };
   });
 
   onMount(() => {
-    globalThis.openExportModal = show;
-    return () => {
-      if (globalThis.openExportModal === show) delete globalThis.openExportModal;
-    };
+    return bridge.registerModal("openExportModal", show);
   });
 </script>
 

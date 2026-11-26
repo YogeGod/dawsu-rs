@@ -40,31 +40,31 @@
       <div class="hud-group">
         {#each setPills as pill (pill.id)}
           <button type="button" class="hud-btn" class:on={pill.active} disabled={pill.disabled}
-            title={pill.title} onclick={() => globalThis.inspectorAction?.("sampleSet", pill.id)}>{pill.label[0]}</button>
+            title={pill.title} onclick={() => bridge.callAction("inspectorAction", "sampleSet", pill.id)}>{pill.label[0]}</button>
         {/each}
       </div>
       <div class="hud-group">
         {#each addPills as pill (pill.id)}
           <button type="button" class="hud-btn" class:on={pill.active} disabled={pill.disabled}
-            title={pill.title} onclick={() => globalThis.inspectorAction?.("addition", pill.id)}>{pill.label}</button>
+            title={pill.title} onclick={() => bridge.callAction("inspectorAction", "addition", pill.id)}>{pill.label}</button>
         {/each}
       </div>
       <button type="button" class="hud-btn" aria-label="Audition" title="Audition selected hits"
-        onclick={() => globalThis.inspectorAction?.("auditionSelection")}>▶</button>
+        onclick={() => bridge.callAction("inspectorAction", "auditionSelection")}>▶</button>
     {:else if mode === "drums"}
       <span class="hud-val">Vel {Math.max(1, Math.min(127, Math.round(vol * 1.27)))}</span>
       <button type="button" class="hud-btn" aria-label="Audition drum hit"
-        onclick={() => globalThis.inspectorAction?.("auditionSelection")}>▶</button>
+        onclick={() => bridge.callAction("inspectorAction", "auditionSelection")}>▶</button>
     {:else}
       <span class="hud-val">{hud.noteLabel || "Note"}</span>
       <div class="hud-group">
         {#each KEYSOUND_CHORD_POLICIES as policy (policy.id)}
           <button type="button" class="hud-btn" class:on={hud.chordPolicy === policy.id}
-            onclick={() => globalThis.keysoundsMicroAction?.("chordPolicy", policy.id)}>{policy.label}</button>
+            onclick={() => bridge.callAction("keysoundsMicroAction", "chordPolicy", policy.id)}>{policy.label}</button>
         {/each}
       </div>
       <button type="button" class="hud-btn" aria-label="Audition note"
-        onclick={() => globalThis.keysoundsMicroAction?.("previewNote")}>▶</button>
+        onclick={() => bridge.callAction("keysoundsMicroAction", "previewNote")}>▶</button>
     {/if}
   </div>
 {/if}

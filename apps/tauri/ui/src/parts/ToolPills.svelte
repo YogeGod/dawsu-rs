@@ -44,7 +44,7 @@
   // The fourth pill shows an off-toolbar tool by its icon only; pressing it opens the right-click tool picker.
   function openPicker(event) {
     const box = event.currentTarget.getBoundingClientRect();
-    window.openEditorMenu?.("tool", false, {
+    bridge.callAction("openEditorMenu", "tool", false, {
       x: box.left, y: box.bottom, trigger: event.currentTarget, label: "Timeline tools",
     });
   }

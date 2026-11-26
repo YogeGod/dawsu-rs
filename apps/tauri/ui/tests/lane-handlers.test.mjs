@@ -104,6 +104,8 @@ test("new lane rows reach the page before lanes() returns, so app.js can scroll 
   const order = [];
   bridge.handOverLanes({ rows: [] }, () => order.push(bridge.lanes ? "flushed with rows" : "flushed empty"));
   assert.deepEqual(order, ["flushed with rows"]);
+  const bridgeSource = readFileSync(new URL("../src/lib/bridge.svelte.js", import.meta.url), "utf8");
   const main = readFileSync(new URL("../src/main.js", import.meta.url), "utf8");
-  assert.match(main, /export function lanes\(headers\) \{\s*bridge\.handOverLanes\(headers\);/);
+  assert.match(bridgeSource, /lanes:\s*headers => this\.handOverLanes\(headers\),/);
+  assert.match(main, /ui:\s*bridge\.editorApi/);
 });

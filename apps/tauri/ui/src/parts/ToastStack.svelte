@@ -1,5 +1,6 @@
 <script>
   import { onMount } from "svelte";
+  import { bridge } from "../lib/bridge.svelte.js";
 
   let toasts = $state([]);
   let nextId = 1;
@@ -26,11 +27,12 @@
   }
 
   onMount(() => {
-    globalThis.showToast = pushToast;
+    const disposeToast = bridge.registerToast(pushToast);
     const events = globalThis.window?.__TAURI__?.event;
     if (events?.listen) {
       events.listen("toast://show", ({ payload }) => pushToast(payload)).catch(() => {});
     }
+    return disposeToast;
   });
 </script>
 

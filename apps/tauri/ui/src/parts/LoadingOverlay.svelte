@@ -21,7 +21,7 @@
   onDestroy(() => clearTimeout(timer));
 
   function cancelJob() {
-    globalThis.statusBarAction?.("cancelJob");
+    bridge.callAction("statusBarAction", "cancelJob");
   }
 </script>
 

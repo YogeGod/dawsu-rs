@@ -305,7 +305,7 @@ test("Drum Map Setup switches Auto-detect and Hide unassigned, detects now, and 
 
 test("the drum lane column shows a one-click Hide unassigned switch that sends the drum map action", async () => {
   const part = await readFile(new URL("../ui/src/parts/LaneHeaders.svelte", import.meta.url), "utf8");
-  assert.match(part, /drumMapAction\?\.\(\{ kind: "set_hide_unassigned", on: !drumView\.hideUnassigned \}\)/);
+  assert.match(part, /bridge\.callAction\("drumMapAction", \{ kind: "set_hide_unassigned", on: !drumView\.hideUnassigned \}\)/);
   assert.match(part, /aria-pressed=\{!!drumView\.hideUnassigned\}/);
 });
 

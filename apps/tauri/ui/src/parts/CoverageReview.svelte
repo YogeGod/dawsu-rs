@@ -30,7 +30,7 @@
   function jumpTo(time) {
     if (disabled || !Number.isFinite(time)) return;
     bridge.coverageFocusTime = time;
-    globalThis.inspectorAction?.("jump", time);
+    bridge.callAction("inspectorAction", "jump", time);
   }
 
   function step(direction) {

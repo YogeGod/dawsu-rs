@@ -4,7 +4,7 @@
   import { emptyInspector, problemMarkHandlers, problemStrip } from "../lib/inspector.js";
   import "./problem-map.css";
 
-  const on = problemMarkHandlers((...args) => globalThis.inspectorAction(...args));
+  const on = problemMarkHandlers((...args) => bridge.callAction("inspectorAction", ...args));
   // app.js keeps the data until it changes, so the strip doesn't rebuild on every update.
   const data = $derived((bridge.inspector ?? emptyInspector).problemStrip);
   let width = $state(0);

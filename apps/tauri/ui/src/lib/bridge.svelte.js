@@ -1,12 +1,20 @@
-import { actions, modals, registerAction, callAction, registerModal, openModal } from "./registry.js";
+import {
+  actions, modals, registerAction, callAction, registerModal, openModal,
+  setModalOpen, hasOpenModal, setShortcutCapturing, isShortcutCapturing,
+  registerToast, showToast, registerPaletteMenu, getPaletteMenu,
+} from "./registry.js";
 import { flushSync } from "svelte";
-import { followGroup } from "./snap.js";
+import * as commandList from "./commands.js";
+import { followGroup, nextGroup, stepInGroup } from "./snap.js";
 import { samePlayhead, sameUiView } from "./view.js";
 
 // The editor state app.js last showed. show() sends view and scene on every update (every 85 ms
 // during playback); playhead isolates ~85 ms playback/time updates from view so unrelated parts
 // keep their reference and do not re-render.
 export class Bridge {
+  _previewLink = false;
+  _lastSent = "";
+
   view = $state.raw(null);
   playhead = $state.raw(null);
   latestView = null;
@@ -113,12 +121,146 @@ export class Bridge {
     if (this.hint !== next) this.hint = next;
   }
 
+  toggleMapPreview() {
+    this.mapPreview = !this.mapPreview;
+  }
+
+  openQuickStart() {
+    this.quickStart = 1;
+  }
+
+  setNodeGraphViewer(viewer) {
+    this.nodeGraphViewer = viewer ?? null;
+  }
+
+  setHitCard(card) {
+    this.hitCard = card;
+  }
+
+  setVolumeBubble(next) {
+    if (this.volumeBubble?.editing && next && !next.editing) return;
+    this.volumeBubble = next ?? null;
+  }
+
+  setStatusNotice(text) {
+    this.statusNotice = text || "";
+  }
+
+  setCoverageFocus(time) {
+    this.coverageFocusTime = Number.isFinite(time) ? time : null;
+  }
+
+  setMode(mode) {
+    this.mode = mode === "drums" || mode === "keysounds" ? mode : "hitsounds";
+  }
+
+  setMicroHud(hud) {
+    this.microHud = hud ?? null;
+  }
+
+  showMicroHud(x, y, extra = {}) {
+    this.microHud = { x, y, mode: this.mode, ...extra };
+  }
+
+  openMapsetIntake(mapset) {
+    this.intakeMapset = mapset ?? null;
+  }
+
+  closeMapsetIntake() {
+    this.intakeMapset = null;
+  }
+
+  wheelSnap(finer) {
+    const scene = this.scene;
+    if (!scene) return null;
+    return stepInGroup(nextGroup(this.snapGroup, scene.beats, scene.divisor), scene.beats, scene.divisor, finer);
+  }
+
+  _linkPreviewWindow() {
+    this._previewLink = true;
+    const events = globalThis.window?.__TAURI__?.event;
+    if (!events) return;
+    events.listen("preview-window", ({ payload }) => {
+      this.previewWindow = payload === true;
+      // With the window open the Inspector panel is on too, so its "Show it here" can be reached
+      // (View › Map preview is not remembered, but the window is).
+      if (this.previewWindow) this.mapPreview = true;
+      if (this.previewWindow) this._sendPreview(true);
+    });
+    // The page being ready also says the window is open, should its open event have come too soon.
+    events.listen("preview-ready", () => {
+      this.previewWindow = true;
+      this.mapPreview = true;
+      this._sendPreview(true);
+    });
+  }
+
+  _sendPreview(force = false) {
+    const view = this.latestView ?? this.view;
+    const scene = this.scene;
+    const payload = {
+      view: view && { position: view.position, playing: view.playing, speed: view.speed, duration: view.duration },
+      path: scene?.path ?? null,
+      previewKey: scene?.previewKey ?? null,
+    };
+    // Only what changed goes: paused and unmoved, the 1 s updates send nothing.
+    const sent = JSON.stringify(payload);
+    if (sent === this._lastSent && !force) return;
+    this._lastSent = sent;
+    globalThis.window?.__TAURI__?.event.emitTo("preview", "preview-view", payload).catch(() => {});
+  }
+
+  update(view, scene) {
+    this.set(view, scene);
+    if (!this._previewLink) this._linkPreviewWindow();
+    if (this.previewWindow) this._sendPreview();
+  }
+
   actions = actions;
   modals = modals;
   registerAction = registerAction;
   callAction = callAction;
   registerModal = registerModal;
   openModal = openModal;
+  setModalOpen = setModalOpen;
+  hasOpenModal = hasOpenModal;
+  setShortcutCapturing = setShortcutCapturing;
+  isShortcutCapturing = isShortcutCapturing;
+  registerToast = registerToast;
+  showToast = showToast;
+  registerPaletteMenu = registerPaletteMenu;
+  getPaletteMenu = getPaletteMenu;
+
+  editorApi = {
+    commands: commandList,
+    update: (view, scene) => this.update(view, scene),
+    lanes: headers => this.handOverLanes(headers),
+    inspector: model => this.handOverInspector(model),
+    browser: model => this.handOverBrowser(model),
+    mixer: strips => this.handOverMixer(strips),
+    menu: model => this.handOverMenu(model),
+    toggleMapPreview: () => this.toggleMapPreview(),
+    mapPreviewOn: () => this.mapPreview,
+    openQuickStart: () => this.openQuickStart(),
+    setNodeGraphViewer: viewer => this.setNodeGraphViewer(viewer),
+    nodeGraphViewer: () => this.nodeGraphViewer,
+    bottomTab: () => this.bottomTab,
+    hitCard: card => this.setHitCard(card),
+    volumeBubble: next => this.setVolumeBubble(next),
+    centre: () => this.centre,
+    wheelSnap: finer => this.wheelSnap(finer),
+    snapGroup: () => this.snapGroup?.name,
+    statusNotice: text => this.setStatusNotice(text),
+    viewport: (zoom, rowHeight) => this.setViewport(zoom, rowHeight),
+    laneOptions: (usedOnly, filter, groupBySampleSet = true) => this.setLaneOptions(usedOnly, filter, groupBySampleSet),
+    coverageFilter: () => this.coverageFilter,
+    setCoverageFocus: time => this.setCoverageFocus(time),
+    hint: zone => this.setHint(zone),
+    setMode: mode => this.setMode(mode),
+    setMicroHud: hud => this.setMicroHud(hud),
+    openMapsetIntake: mapset => this.openMapsetIntake(mapset),
+    closeMapsetIntake: () => this.closeMapsetIntake(),
+  };
 
   set(view, scene) {
     this.latestView = view;

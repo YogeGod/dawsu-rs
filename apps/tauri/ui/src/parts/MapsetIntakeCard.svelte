@@ -80,7 +80,7 @@
     if (onopen) onopen(path);
     else {
       bridge.intakeMapset = null;
-      globalThis.startScreenAction?.("openPath", path);
+      bridge.callAction("startScreenAction", "openPath", path);
     }
   }
 
@@ -89,7 +89,7 @@
     if (oncreatehs) oncreatehs(refPath, starterMode);
     else {
       bridge.intakeMapset = null;
-      globalThis.startScreenAction?.("createHsDiff", refPath, starterMode);
+      bridge.callAction("startScreenAction", "createHsDiff", refPath, starterMode);
     }
   }
 

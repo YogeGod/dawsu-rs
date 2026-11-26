@@ -5,7 +5,7 @@
   const scene = $derived(bridge.scene);
   const disabled = $derived(bridge.disabled);
   const triplets = $derived(bridge.snapGroup?.name === "triplets");
-  const send = (...args) => globalThis.popoverAction?.(...args);
+  const send = (...args) => bridge.callAction("popoverAction", ...args);
 </script>
 
 <label class="toggle">

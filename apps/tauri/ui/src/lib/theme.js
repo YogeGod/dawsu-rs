@@ -1,5 +1,6 @@
 // v3.1.4-style Color Scheme & Custom Colors engine (ported from Dialogs.Colours.cs / ThemeColors.cs / UiTheme.cs).
 // Pure HSB conversion + 6 built-in presets (Obsidian default + the 5 v3.1.4 Cubase-style schemes) + 9 custom rows.
+import { callAction, getTimelineTheme } from "./registry.js";
 
 export const STORAGE_KEY = "dawsu.colorScheme";
 
@@ -238,7 +239,7 @@ export function applyColorConfig(config, doc = null) {
     set("--editor-error", palette.reverse);
     set("--transport-seg", palette.chrome);
   }
-  const tl = globalThis.slateTimeline;
+  const tl = getTimelineTheme();
   if (tl) {
     tl.arrange = palette.canvas;
     tl.alternateRow = palette.alternateRow;
@@ -257,6 +258,6 @@ export function applyColorConfig(config, doc = null) {
     tl.locator = palette.locator;
     tl.playhead = palette.text;
   }
-  globalThis.paintSoon?.();
+  callAction("paintSoon");
   return palette;
 }

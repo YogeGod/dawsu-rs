@@ -1,11 +1,13 @@
 // Editing, lane, bookmark, difficulty switching, and time-signature dialogs.
 import { clock, laneGrey } from "./helpers.js";
+import { showToast } from "../lib/registry.js";
 import { activeBarMs, rhythmPresets } from "../lib/rhythmGallery.js";
 
 export function attachEditDialogs(ctx) {
   const { env, state, dom, elements } = ctx;
   const { $, makeButton, paragraph, input, labeled } = dom;
   const { invoke } = env.window.__TAURI__.core;
+  const notifyToast = toast => (env !== globalThis ? env.window?.showToast?.(toast) : showToast(toast));
 
   // The Inspector's Lane colour (and the lane menu, by its id): opens on grey until the mapper picks a colour.
   function openLaneColour() {
@@ -207,7 +209,7 @@ export function attachEditDialogs(ctx) {
       try {
         preview = await invoke("mapset_revert_action", { action: { kind: "preview" } });
       } catch (reason) {
-        env.window?.showToast?.({
+        notifyToast({
           tone: "warning",
           title: "Revert mapset to original",
           body: String(reason),
@@ -240,7 +242,7 @@ export function attachEditDialogs(ctx) {
               await invoke("mapset_revert_action", { action: { kind: "revert", includeDeleted } });
               await ctx.update();
             } catch (reason) {
-              env.window?.showToast?.({
+              notifyToast({
                 tone: "error",
                 title: "Revert mapset to original",
                 body: String(reason),
@@ -262,7 +264,7 @@ export function attachEditDialogs(ctx) {
         await invoke("mapset_revert_action", { action: { kind: "undo" } });
         await ctx.update();
       } catch (reason) {
-        env.window?.showToast?.({
+        notifyToast({
           tone: "error",
           title: "Undo revert",
           body: String(reason),

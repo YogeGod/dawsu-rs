@@ -79,9 +79,9 @@
     try {
       status = await invoke("shared_base_action", { action: { kind: "capture" } });
       await refreshBase();
-      globalThis.showToast?.({ tone: "success", title: "Shared Base captured", body: `${status?.momentCount ?? 0} moments saved to Base.` });
+      bridge.showToast({ tone: "success", title: "Shared Base captured", body: `${status?.momentCount ?? 0} moments saved to Base.` });
     } catch (err) {
-      globalThis.showToast?.({ tone: "error", title: "Shared Base", body: String(err) });
+      bridge.showToast({ tone: "error", title: "Shared Base", body: String(err) });
     } finally {
       busy = false;
     }
@@ -95,22 +95,22 @@
       const res = all
         ? await invoke("shared_base_action", { action: { kind: "apply_all", ...args } })
         : await invoke("shared_base_action", { action: { kind: "apply", ...args } });
-      await globalThis.update?.(null, true);
+      await bridge.callAction("update", null, true);
       await refreshBase();
-      globalThis.showToast?.({
+      bridge.showToast({
         tone: "success",
         title: all ? "Applied Base to all diffs" : "Applied Base to difficulty",
         body: res?.summary ?? "Shared Base applied.",
       });
     } catch (err) {
-      globalThis.showToast?.({ tone: "error", title: "Apply Base", body: String(err) });
+      bridge.showToast({ tone: "error", title: "Apply Base", body: String(err) });
     } finally {
       busy = false;
     }
   }
 
   function openStudio() {
-    globalThis.openSharedBase?.();
+    bridge.openModal("openSharedBase");
   }
 
   const showStrip = $derived(!!scene && (difficulties.length > 1 || !!status?.enabled));

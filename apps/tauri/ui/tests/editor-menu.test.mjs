@@ -76,7 +76,8 @@ test("the command list places every row once per menu and names each catalogue c
 test("a pressed row calls menus.js's menuAction with its index", async () => {
   const part = await readFile(new URL("../src/parts/EditorMenu.svelte", import.meta.url), "utf8");
   const menus = await readFile(new URL("../src/editor/menus.js", import.meta.url), "utf8");
-  assert.match(part, /const press = index => globalThis\.menuAction\?\.\(index\);/);
+  assert.match(part, /const press = index => bridge\.callAction\("menuAction", index\);/);
   assert.match(part, /onclick=\{\(\) => press\(row\.index\)\}/);
-  assert.match(menus, /^\s*function menuAction\(index\) \{$/m, "menus.js defines menuAction and exposes it on env/window");
+  assert.match(menus, /^\s*function menuAction\(index\) \{$/m, "menus.js defines menuAction");
+  assert.match(menus, /registerAction\("menuAction", menuAction\)/, "menus.js registers menuAction on bridge");
 });

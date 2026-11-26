@@ -64,7 +64,7 @@
     const next = stepDiagnostic(diag.points, now, direction);
     if (!next) return;
     activeSelection = { path: scenePath, time: next.time, kind: next.kind };
-    globalThis.inspectorAction?.("jump", next.time);
+    bridge.callAction("inspectorAction", "jump", next.time);
   }
 
   function autoFix() {

@@ -1,6 +1,7 @@
 // Shared modal dialog frame and backend-driven dialogs (Save review, Save problems,
 // Output review, Pending open/home, Revert, Key preset, Error, Sound-set prompts).
 import { describeOutputProblem, nameOf, outputProblemTime } from "./helpers.js";
+import { callAction } from "../lib/registry.js";
 import { reviewMixSections } from "../lib/review.js";
 
 export function attachModal(ctx) {
@@ -164,8 +165,14 @@ export function attachModal(ctx) {
         [["Cancel", () => answer(false)], ...choices, ["Write files", () => answer(true), true]], () => answer(false));
     } else if (state.view.editDialog && state.scene) {
       ctx.showTimelineEdit(state.view.editDialog);
-    } else if (state.scene && state.view.soundSetPrompts?.length && env.pendingSoundSetPrompt?.()) {
-      env.showSoundSetPrompt?.(env.pendingSoundSetPrompt());
+    } else if (state.scene && state.view.soundSetPrompts?.length) {
+      const prompt = env !== globalThis ? env.pendingSoundSetPrompt?.() : callAction("pendingSoundSetPrompt");
+      if (prompt) {
+        if (env !== globalThis) env.showSoundSetPrompt?.(prompt);
+        else callAction("showSoundSetPrompt", prompt);
+      } else if (state.modalKind === "sound-set-update") {
+        ctx.closeModal();
+      }
     } else if (state.view.firstLaunch) {
       const choose = (name) => ctx.act({ kind: "key_preset", name });
       ctx.modal("key-preset", "Choose your keyboard preset", [

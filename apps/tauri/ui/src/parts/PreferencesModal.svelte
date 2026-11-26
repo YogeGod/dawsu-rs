@@ -105,7 +105,7 @@
     // so no stretched frame or empty strip shows until the next resize.
     globalThis.requestAnimationFrame?.(() => {
       try { globalThis.dispatchEvent?.(new Event("resize")); } catch {}
-      globalThis.paintSoon?.();
+      bridge.callAction("paintSoon");
     });
   }
 
@@ -113,7 +113,7 @@
     const idx = SCALES.indexOf(scale);
     const next = SCALES[Math.max(0, Math.min(SCALES.length - 1, (idx < 0 ? 1 : idx) + delta))];
     applyScale(next);
-    globalThis.showToast?.({
+    bridge.showToast({
       tone: "info",
       title: `Interface scale ${next}%`,
       body: "Press Ctrl + 0 to reset to 100%.",
@@ -261,14 +261,14 @@
 
   // The editor's timeline shortcuts stay off while this is open (boot.js reads the flag).
   $effect(() => {
-    globalThis.dawsuPreferencesOpen = open;
-    return () => { globalThis.dawsuPreferencesOpen = false; };
+    bridge.setModalOpen("preferences", open);
+    return () => { bridge.setModalOpen("preferences", false); };
   });
 
   // Command Palette stays out of the way while capturing a custom shortcut binding.
   $effect(() => {
-    globalThis.dawsuShortcutCapturing = Boolean(open && capturingId);
-    return () => { globalThis.dawsuShortcutCapturing = false; };
+    bridge.setShortcutCapturing(Boolean(open && capturingId));
+    return () => { bridge.setShortcutCapturing(false); };
   });
 
   // The tabs with something to put back: General's interface scale, Colours, and Shortcuts.
@@ -288,17 +288,17 @@
       const next = await invoke("editor_view", { scene: false, action: { kind: "key_preset", name: nextPreset } });
       applyReturnedView(next);
       if (next?.error) {
-        globalThis.showToast?.({ tone: "error", title: "Controls", body: next.error });
+        bridge.showToast({ tone: "error", title: "Controls", body: next.error });
         return;
       }
       await loadShortcuts();
-      globalThis.showToast?.({
+      bridge.showToast({
         tone: "success",
         title: "Controls updated",
         body: nextPreset === "osu!" ? "Switched to osu! editor controls." : "Switched to DAW-like keys.",
       });
     } catch (err) {
-      globalThis.showToast?.({ tone: "error", title: "Controls", body: String(err) });
+      bridge.showToast({ tone: "error", title: "Controls", body: String(err) });
     }
   }
 
@@ -317,11 +317,11 @@
       applyReturnedView(next);
       if (next?.error) {
         audioError = next.error;
-        globalThis.showToast?.({ tone: "error", title: "Audio output", body: next.error });
+        bridge.showToast({ tone: "error", title: "Audio output", body: next.error });
         return;
       }
       await loadAudio(selectedBackend);
-      globalThis.showToast?.({
+      bridge.showToast({
         tone: "success",
         title: "Audio output updated",
         body: audioConfig?.current || "Active device applied.",
@@ -346,13 +346,13 @@
       .then(async next => {
         applyReturnedView(next);
         if (next?.error) {
-          globalThis.showToast?.({ tone: "error", title: "Shortcut", body: next.error });
+          bridge.showToast({ tone: "error", title: "Shortcut", body: next.error });
           return;
         }
         await loadShortcuts();
       })
       .catch(err => {
-        globalThis.showToast?.({ tone: "error", title: "Shortcut", body: String(err) });
+        bridge.showToast({ tone: "error", title: "Shortcut", body: String(err) });
       });
   }
 
@@ -361,12 +361,12 @@
       const next = await invoke("editor_view", { scene: false, action: { kind: "change_shortcut", id: entry.id, chord: null } });
       applyReturnedView(next);
       if (next?.error) {
-        globalThis.showToast?.({ tone: "error", title: "Shortcut", body: next.error });
+        bridge.showToast({ tone: "error", title: "Shortcut", body: next.error });
         return;
       }
       await loadShortcuts();
     } catch (err) {
-      globalThis.showToast?.({ tone: "error", title: "Shortcut", body: String(err) });
+      bridge.showToast({ tone: "error", title: "Shortcut", body: String(err) });
     }
   }
 
@@ -375,18 +375,18 @@
       const next = await invoke("editor_view", { scene: false, action: { kind: "reset_shortcuts" } });
       applyReturnedView(next);
       if (next?.error) {
-        globalThis.showToast?.({ tone: "error", title: "Shortcuts", body: next.error });
+        bridge.showToast({ tone: "error", title: "Shortcuts", body: next.error });
         return;
       }
       await loadShortcuts();
     } catch (err) {
-      globalThis.showToast?.({ tone: "error", title: "Shortcuts", body: String(err) });
+      bridge.showToast({ tone: "error", title: "Shortcuts", body: String(err) });
     }
   }
 
   function applyReturnedView(next) {
     if (!next) return;
-    if (typeof globalThis.show === "function") globalThis.show(next);
+    if (typeof bridge.actions.show === "function") bridge.callAction("show", next);
     else bridge.set(next, next.scene ?? bridge.scene);
   }
 
@@ -429,7 +429,7 @@
     applyScale(scale);
     // dialogs-settings.js's openPreferences (the menus' Preferences…) calls this; it is never the
     // global openPreferences itself, so the two cannot call each other forever.
-    globalThis.openPreferencesModal = openModal;
+    const disposeModal = bridge.registerModal("openPreferencesModal", openModal);
     globalThis.addEventListener("keydown", onGlobalKey);
     let startupTimer = null;
     const isDesktop = typeof window !== "undefined" && Boolean(window.__TAURI__?.core?.invoke) && !globalThis.navigator?.webdriver;
@@ -440,7 +440,7 @@
           const res = await invoke("check_for_updates");
           if (res?.updateAvailable) {
             updateResult = res;
-            globalThis.showToast?.({
+            bridge.showToast({
               tone: "info",
               title: `dawsu! v${res.latestVersion} is available`,
               body: "Open Preferences › Updates to download and install.",
@@ -453,7 +453,7 @@
     }
     return () => {
       if (startupTimer !== null) clearTimeout(startupTimer);
-      if (globalThis.openPreferencesModal === openModal) delete globalThis.openPreferencesModal;
+      disposeModal();
       globalThis.removeEventListener("keydown", onGlobalKey);
     };
   });

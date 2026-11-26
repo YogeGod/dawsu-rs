@@ -1,11 +1,13 @@
 // Core backend RPC loop, top-level view synchronization, frame chrome, and Home lists.
 import { nameOf, recentMapName } from "./helpers.js";
+import { callAction, showToast } from "../lib/registry.js";
 import { sameSoundSetPrompts, sameUiView } from "../lib/view.js";
 
 export function attachIpc(ctx) {
   const { env, state, dom, elements } = ctx;
   const { $, makeButton, paragraph } = dom;
   const { invoke } = env.window.__TAURI__.core;
+  const notifyToast = toast => (env !== globalThis ? env.window?.showToast?.(toast) : showToast(toast));
 
   let lastStatusNotice = "";
 
@@ -259,7 +261,7 @@ export function attachIpc(ctx) {
     state.announcedWrite = status;
     if (title === "Saved" && after.isLazerExternalEdit) {
       try {
-        env.window.showToast?.({
+        notifyToast({
           tone: "success",
           title: "Saved to osu!lazer",
           body: `${status} Click Finish in osu!lazer to apply your changes.`,
@@ -271,13 +273,13 @@ export function attachIpc(ctx) {
       invoke("reload_osu_editor").then((res) => {
         const toastTitle = res?.status === "reloaded_stable" ? "Saved & reloaded in osu!" : title;
         const body = res?.status === "reloaded_stable" ? `${status} ${res.message}` : status;
-        env.window.showToast?.({ tone: "success", title: toastTitle, body });
+        notifyToast({ tone: "success", title: toastTitle, body });
       }).catch(() => {
-        env.window.showToast?.({ tone: "success", title, body: status });
+        notifyToast({ tone: "success", title, body: status });
       });
       return;
     }
-    try { env.window.showToast?.({ tone: "success", title, body: status }); } catch (error) { (env.console ?? console).error(error); }
+    try { notifyToast({ tone: "success", title, body: status }); } catch (error) { (env.console ?? console).error(error); }
   }
 
   function samePollBase(before, next) {
@@ -538,7 +540,10 @@ export function attachIpc(ctx) {
       before.offset === state.view.offset;
     lastActionKind = null;
     if (!toolOnlyUpdate && !playheadOnlyUpdate) {
-      try { env.window.refreshEditorMenu?.(); } catch (error) { (env.console ?? console).error(error); }
+      try {
+        if (env !== globalThis) env.window.refreshEditorMenu?.();
+        else callAction("refreshEditorMenu");
+      } catch (error) { (env.console ?? console).error(error); }
     }
     // A playback poll or playhead-only seek without a scene moved only the playhead: the cached canvas layers still hold.
     ctx.paintSoon(Boolean((state.view.playing && !next.scene) || playheadOnlyUpdate));

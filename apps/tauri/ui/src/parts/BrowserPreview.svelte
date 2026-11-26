@@ -8,7 +8,7 @@
   const preview = $derived(model.preview);
   // The outline is the sample's own loudness, decoded by the backend; without it no bars are drawn.
   const bars = $derived(outlineBars(preview?.peaks));
-  const send = (...args) => globalThis.sampleBrowserAction?.(...args);
+  const send = (...args) => bridge.callAction("sampleBrowserAction", ...args);
 </script>
 
 {#if preview}

@@ -1,6 +1,8 @@
-import { registerAction } from "../lib/registry.js";
+import {
+  actions, hasOpenModal, modals, openModal, registerAction, registerTimelineTheme, showToast,
+} from "../lib/registry.js";
 // Main editor runtime entry point: composes the modular editor subsystems, wires top-level
-// controls, keyboard and Tauri listeners, and exposes the globals that menus.js and Svelte parts call.
+// controls, keyboard and Tauri listeners, and registers runtime actions on the bridge registry.
 import { attachBrowser } from "./browser.js";
 import { attachCanvas } from "./canvas.js";
 import { attachCopyDialogs } from "./dialogs-copy.js";
@@ -105,7 +107,8 @@ export function createEditor(env = globalThis, { ui = null, autoStart = true, ex
     elements,
     dock,
     labeled,
-    ui: () => env.window?.dawsuUi ?? ui,
+    playbackStartChoices,
+    ui: () => ui ?? env.window?.dawsuUi,
   };
   // The window crossing 1180 px changes what the panel switches show.
   if (dock) dock.onChange = () => ctx.renderPanelLayout();
@@ -275,6 +278,10 @@ export function createEditor(env = globalThis, { ui = null, autoStart = true, ex
 
   Object.assign(ctx, { clampSnapInput, popoverAction, startScreenAction, statusBarAction });
 
+  const notifyToast = toast => (env !== globalThis ? env.window?.showToast?.(toast) : showToast(toast));
+  const modalOpen = () => (env === globalThis && hasOpenModal()) ||
+    Boolean(env.window?.dawsuPreferencesOpen || env.window?.dawsuModalOpen || env.window?.dawsuCommandPaletteOpen);
+
   // Bind remaining top-level controls.
   $("ramp-shape").addEventListener("change", () => {
     ctx.act({ kind: "ramp_shape", value: $("ramp-shape").value }, false);
@@ -299,17 +306,18 @@ export function createEditor(env = globalThis, { ui = null, autoStart = true, ex
         const created = await invoke("create_hitsound_diff_from_current");
         if (created) await ctx.act({ kind: "open", path: created });
       } catch (error) {
-        env.window?.showToast?.({ tone: "error", title: "Could not create [Hitsounds] diff", body: String(error) });
+        notifyToast({ tone: "error", title: "Could not create [Hitsounds] diff", body: String(error) });
       }
       return;
     }
     if (value === "__capture_shared_base__") {
       try {
         await invoke("shared_base_action", { action: { kind: "capture" } });
-        env.window?.showToast?.({ tone: "success", title: "Shared Base captured", body: "Captured hitsounds from this difficulty as the mapset's Shared Base." });
-        if (typeof env.window?.openSharedBaseModal === "function") env.window.openSharedBaseModal();
+        notifyToast({ tone: "success", title: "Shared Base captured", body: "Captured hitsounds from this difficulty as the mapset's Shared Base." });
+        if (env !== globalThis) env.window?.openSharedBaseModal?.();
+        else openModal("openSharedBase");
       } catch (error) {
-        env.window?.showToast?.({ tone: "error", title: "Could not capture Shared Base", body: String(error) });
+        notifyToast({ tone: "error", title: "Could not capture Shared Base", body: String(error) });
       }
       return;
     }
@@ -322,7 +330,8 @@ export function createEditor(env = globalThis, { ui = null, autoStart = true, ex
   });
   // Export opens inside the editor as a modal dialog (falling back to the standalone window if not mounted).
   $("export-entry").addEventListener("click", () => {
-    if (typeof env.window.openExportModal === "function") env.window.openExportModal();
+    const opener = env !== globalThis ? env.window?.openExportModal : modals.openExportModal;
+    if (typeof opener === "function") opener();
     else invoke("open_export_window").catch((error) => { ctx.setStatusNotice(String(error)); });
   });
   $("song-mute").addEventListener("click", () => ctx.act({ kind: "song_muted", on: !state.view.songMuted }, false));
@@ -364,7 +373,7 @@ export function createEditor(env = globalThis, { ui = null, autoStart = true, ex
         event.target.closest("input, select, textarea, [contenteditable]")) return;
     // An open menu, Preferences or a Svelte modal (MIDI import, Keysounds, Command Palette) owns the keyboard:
     // no timeline shortcut runs behind it.
-    if ($("editor-menu")?.hidden === false || env.window.dawsuPreferencesOpen || env.window.dawsuModalOpen || env.window.dawsuCommandPaletteOpen) return;
+    if ($("editor-menu")?.hidden === false || modalOpen()) return;
     const { key, code, ctrl, shift, alt } = keyInput(event);
     if (state.rulerDrag) {
       if (key === "Escape" && !ctrl && !shift && !alt) {
@@ -417,10 +426,11 @@ export function createEditor(env = globalThis, { ui = null, autoStart = true, ex
     // Plain "4" opens the hidden-tools drop menu right under the More tools button.
     if (key === "4" && !ctrl && !shift && !alt && state.scene) {
       const trigger = env.document.querySelector?.("[data-more-tools]");
-      if (trigger && env.window.openEditorMenu) {
+      const openMenu = env !== globalThis ? env.window?.openEditorMenu : actions.openEditorMenu;
+      if (trigger && typeof openMenu === "function") {
         event.preventDefault();
         const box = trigger.getBoundingClientRect();
-        env.window.openEditorMenu("tool", false, { x: box.left, y: box.bottom, trigger, label: "Timeline tools" });
+        openMenu("tool", false, { x: box.left, y: box.bottom, trigger, label: "Timeline tools" });
         return;
       }
     }
@@ -484,8 +494,7 @@ export function createEditor(env = globalThis, { ui = null, autoStart = true, ex
 
   // Space in the map preview window plays and stops here, through the same key route as the editor's own.
   env.window.__TAURI__.event.listen("preview-space", () => {
-    if (!state.scene || state.view.busy || elements.dialog.open || $("editor-menu")?.hidden === false ||
-        env.window.dawsuPreferencesOpen || env.window.dawsuModalOpen || env.window.dawsuCommandPaletteOpen) return;
+    if (!state.scene || state.view.busy || elements.dialog.open || $("editor-menu")?.hidden === false || modalOpen()) return;
     ctx.act({ kind: "key", key: " ", code: "Space", ctrl: false, shift: false, alt: false });
   });
 
@@ -533,6 +542,13 @@ export function createEditor(env = globalThis, { ui = null, autoStart = true, ex
       if (!state.view.dirty && !state.view.error) ctx.run(() => invoke("close_editor", { discard: false }));
     }
   }, 85);
+
+  if (env === globalThis) {
+    registerTimelineTheme(slateTimeline);
+    for (const name of exportedMethods) {
+      registerAction(name, (...args) => ctx[name]?.(...args));
+    }
+  }
 
   if (exposeGlobals) {
     const descriptors = {
@@ -589,11 +605,13 @@ export function createEditor(env = globalThis, { ui = null, autoStart = true, ex
       };
     }
     Object.defineProperties(env, descriptors);
-    if (env === globalThis) {
-      for (const name of exportedMethods) {
-        registerAction(name, (...args) => ctx[name]?.(...args));
-      }
-    }
+  } else if (env === globalThis) {
+    Object.defineProperties(env, {
+      scene: { get: () => state.scene, set: (value) => { state.scene = value; }, configurable: true },
+      view: { get: () => state.view, set: (value) => { state.view = value; }, configurable: true },
+      pending: { get: () => state.pending, set: (value) => { state.pending = value; }, configurable: true },
+      act: { get: () => ctx.act, set: (fn) => { ctx.act = fn; }, configurable: true },
+    });
   }
 
   if (autoStart) {

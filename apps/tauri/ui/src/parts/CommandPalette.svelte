@@ -34,7 +34,7 @@
 
   const allEntries = $derived.by(() => {
     if (!open) return [];
-    const paletteMenu = globalThis.dawsuPaletteMenu;
+    const paletteMenu = bridge.getPaletteMenu();
     return buildEntries({
       items,
       menus,
@@ -61,11 +61,11 @@
     }
   });
 
-  // Expose open flag so boot.js keeps timeline shortcuts off while the palette is open.
+  // Track open state so boot.js keeps timeline shortcuts off while the palette is open.
   $effect(() => {
-    globalThis.dawsuCommandPaletteOpen = open;
+    bridge.setModalOpen("command-palette", open);
     return () => {
-      globalThis.dawsuCommandPaletteOpen = false;
+      bridge.setModalOpen("command-palette", false);
     };
   });
 
@@ -81,7 +81,7 @@
   async function openPalette() {
     if (open) return;
     previouslyFocused = globalThis.document?.activeElement ?? null;
-    globalThis.closeEditorMenu?.(false);
+    bridge.callAction("closeEditorMenu", false);
     query = "";
     recentIds = readRecent(storage());
     bridge.commandPaletteOpen = true;
@@ -127,17 +127,16 @@
     closePalette(false);
 
     if (entry.source === "menu" && entry.item) {
-      globalThis.dawsuPaletteMenu?.runItem?.(entry.item);
+      bridge.getPaletteMenu()?.runItem?.(entry.item);
     } else if (entry.source === "keyOnly" && entry.command) {
-      globalThis.command?.(entry.command);
+      bridge.callAction("command", entry.command);
     }
 
     // If the command did not open a dialog or focus another input, return focus cleanly to the editor.
     queueMicrotask(() => {
       const active = globalThis.document?.activeElement;
       const inDialog = Boolean(
-        globalThis.dawsuPreferencesOpen ||
-        globalThis.dawsuModalOpen ||
+        bridge.hasOpenModal() ||
         globalThis.document?.getElementById?.("dialog")?.open ||
         active?.closest?.("input, textarea, select, [role=dialog], dialog"),
       );
@@ -200,7 +199,7 @@
 
   function onGlobalKeydown(event) {
     if (event.isComposing || event.repeat) return;
-    if (globalThis.dawsuShortcutCapturing) return;
+    if (bridge.isShortcutCapturing()) return;
 
     if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "k") {
       event.preventDefault();
@@ -217,12 +216,12 @@
   }
 
   onMount(() => {
-    globalThis.openCommandPalette = openPalette;
-    globalThis.toggleCommandPalette = togglePalette;
+    const disposeOpen = bridge.registerModal("openCommandPalette", openPalette);
+    const disposeToggle = bridge.registerAction("toggleCommandPalette", togglePalette);
     globalThis.addEventListener("keydown", onGlobalKeydown, true);
     return () => {
-      if (globalThis.openCommandPalette === openPalette) delete globalThis.openCommandPalette;
-      if (globalThis.toggleCommandPalette === togglePalette) delete globalThis.toggleCommandPalette;
+      disposeOpen();
+      disposeToggle();
       globalThis.removeEventListener("keydown", onGlobalKeydown, true);
     };
   });

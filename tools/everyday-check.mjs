@@ -738,7 +738,7 @@ try {
   await step("Open and close the map preview window", async () => {
     // The preview sits in the Inspector: show it first if a step before folded it.
     if (await read(() => document.getElementById("view-inspector").getAttribute("aria-pressed") !== "true")) await page().click("#view-inspector");
-    if (await read(() => !window.dawsuUi?.mapPreviewOn?.())) await fromMenu("View", "Map preview");
+    if (await read(() => !window.dawsuUi?.bridge?.mapPreview)) await fromMenu("View", "Map preview");
     const popOut = page().getByRole("button", { name: "Open in its own window" });
     await popOut.waitFor({ timeout: 5000 });
     await popOut.click();
@@ -746,8 +746,8 @@ try {
     await page().getByRole("button", { name: "Show it here" }).click();
     await windowClosed(window, "map preview");
     await fromMenu("View", "Map preview");
-    expect(await read(() => typeof window.dawsuUi?.mapPreviewOn === "function"), "the page no longer has dawsuUi.mapPreviewOn to ask");
-    await until(() => !window.dawsuUi.mapPreviewOn(), null, "View › Map preview did not switch the preview off", 4000);
+    expect(await read(() => typeof window.dawsuUi?.bridge?.mapPreview === "boolean"), "the page no longer has dawsuUi.bridge.mapPreview to ask");
+    await until(() => !window.dawsuUi.bridge.mapPreview, null, "View › Map preview did not switch the preview off", 4000);
   });
 
   await step("Open and close the node graph window", async () => {

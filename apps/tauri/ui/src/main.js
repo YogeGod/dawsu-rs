@@ -10,11 +10,9 @@ import "./timeline.css";
 import { mount } from "svelte";
 import { createEditor } from "./editor/boot.js";
 import { initMenus } from "./editor/menus.js";
-import { invoke } from "./lib/ipc.js";
 import { bridge } from "./lib/bridge.svelte.js";
 import * as commandList from "./lib/commands.js";
 import { hintZoneFromTarget } from "./lib/hints.js";
-import { nextGroup, stepInGroup } from "./lib/snap.js";
 import { applyColorConfig, readColorConfig } from "./lib/theme.js";
 import Boundary from "./lib/Boundary.svelte";
 import AuditionPill from "./parts/AuditionPill.svelte";
@@ -109,172 +107,15 @@ const parts = {
   "preview-window": PreviewWindow,
 };
 
-export function update(view, scene) {
-  bridge.set(view, scene);
-  if (!previewLink) linkPreviewWindow(view);
-  if (bridge.previewWindow) sendPreview();
-}
-
-// The map preview's own window: only the editor window calls update(), so it alone listens. It
-// sends the playhead and the open difficulty on each update, when the window opens and when its
-// page is ready, and opens it again at launch if it was open at the last close (view.previewWindow).
-let previewLink = false;
-function linkPreviewWindow(view) {
-  previewLink = true;
-  const events = globalThis.window?.__TAURI__?.event;
-  if (!events) return;
-  events.listen("preview-window", ({ payload }) => {
-    bridge.previewWindow = payload === true;
-    // With the window open the Inspector panel is on too, so its "Show it here" can be reached
-    // (View › Map preview is not remembered, but the window is).
-    if (bridge.previewWindow) bridge.mapPreview = true;
-    if (bridge.previewWindow) sendPreview(true);
-  });
-  // The page being ready also says the window is open, should its open event have come too soon.
-  events.listen("preview-ready", () => {
-    bridge.previewWindow = true;
-    bridge.mapPreview = true;
-    sendPreview(true);
-  });
-}
-let lastSent = "";
-function sendPreview(force = false) {
-  const view = bridge.latestView ?? bridge.view;
-  const scene = bridge.scene;
-  const payload = {
-    view: view && { position: view.position, playing: view.playing, speed: view.speed, duration: view.duration },
-    path: scene?.path ?? null,
-    previewKey: scene?.previewKey ?? null,
-  };
-  // Only what changed goes: paused and unmoved, the 1 s updates send nothing.
-  const sent = JSON.stringify(payload);
-  if (sent === lastSent && !force) return;
-  lastSent = sent;
-  globalThis.window?.__TAURI__?.event.emitTo("preview", "preview-view", payload).catch(() => {});
-}
-
-// The editor runtime hands over the lane and folder header rows each time renderLanes() changes them.
-export function lanes(headers) {
-  bridge.handOverLanes(headers);
-}
-
-// The editor runtime hands over the Inspector's model each time renderSelection() or renderActiveLane() runs,
-// and when a bookmark row is picked.
-export function inspector(model) {
-  bridge.handOverInspector(model);
-}
-
-// The editor runtime hands over the Browser's model each time renderSampleBrowser() changes it.
-export function browser(model) {
-  bridge.handOverBrowser(model);
-}
-
-// The editor runtime hands over the Mixer's lane strips each time renderLanes() changes them.
-export function mixer(strips) {
-  bridge.handOverMixer(strips);
-}
-
-// View › Map preview: menus.js flips it and reads it for the row's switch.
-export function toggleMapPreview() {
-  bridge.mapPreview = !bridge.mapPreview;
-}
-export const mapPreviewOn = () => bridge.mapPreview;
-
-// View › Quick start tour: opens the tour at step 1, done or not.
-export function openQuickStart() {
-  bridge.quickStart = 1;
-}
-
-// Synced timeline preview pushed from the dedicated Node Graph window.
-export function setNodeGraphViewer(viewer) {
-  bridge.nodeGraphViewer = viewer ?? null;
-}
-export const nodeGraphViewer = () => bridge.nodeGraphViewer;
-
-// The bottom panel's tab, read by renderPanelLayout() and paint().
-export const bottomTab = () => bridge.bottomTab;
-
-// The editor runtime hands over the hovered timeline hit, or null, each time it changes.
-export function hitCard(card) {
-  bridge.hitCard = card;
-}
-
 // The one command list menus.js builds every menu from.
 export const commands = commandList;
-
-// menus.js hands over the open menu's rows (null when it closes).
-export function menu(model) {
-  bridge.handOverMenu(model);
-}
-
-// The Playhead group's Centre, read by followPlayhead().
-export const centre = () => bridge.centre;
-
-// Ctrl+wheel (Alt+wheel in the DAW preset): the next 1/x in the snap group, or null at its end.
-export function wheelSnap(finer) {
-  const scene = bridge.scene;
-  if (!scene) return null;
-  return stepInGroup(nextGroup(bridge.snapGroup, scene.beats, scene.divisor), scene.beats, scene.divisor, finer);
-}
-
-// The Triplets box in the Snap menu shows the group.
-export const snapGroup = () => bridge.snapGroup?.name;
-
-export function statusNotice(text) {
-  bridge.statusNotice = text || "";
-}
-
-export function viewport(zoom, rowHeight) {
-  bridge.setViewport(zoom, rowHeight);
-}
-
-export function laneOptions(usedOnly, filter, groupBySampleSet = true) {
-  bridge.setLaneOptions(usedOnly, filter, groupBySampleSet);
-}
-
-// Active coverage review filter and focus time shared with boot.js for N / Shift+N stepping.
-export const coverageFilter = () => bridge.coverageFilter;
-export function setCoverageFocus(time) {
-  bridge.coverageFocusTime = Number.isFinite(time) ? time : null;
-}
-
-export function hint(zone) {
-  bridge.setHint(zone);
-}
-
-export function setMode(mode) {
-  bridge.mode = mode === "drums" || mode === "keysounds" ? mode : "hitsounds";
-}
-
-export function setMicroHud(hud) {
-  bridge.microHud = hud ?? null;
-}
-
-export function openMapsetIntake(mapset) {
-  bridge.intakeMapset = mapset ?? null;
-}
-
-export function closeMapsetIntake() {
-  bridge.intakeMapset = null;
-}
-
-export function volumeBubble(next) {
-  if (bridge.volumeBubble?.editing && next && !next.editing) return;
-  bridge.volumeBubble = next ?? null;
-}
+export { bridge };
 
 // Boot the main editor runtime only on the editor window (never on export.html or drum.html).
-const uiBridge = {
-  update, lanes, inspector, browser, mixer, toggleMapPreview, mapPreviewOn, setNodeGraphViewer, nodeGraphViewer, bottomTab, hitCard, volumeBubble, commands, menu, centre, wheelSnap, snapGroup, statusNotice, viewport, laneOptions, coverageFilter, setCoverageFocus, hint, setMode, setMicroHud, openMapsetIntake, closeMapsetIntake,
-};
 if (document.getElementById("grid")) {
-  const showMicroHud = (x, y, extra = {}) => {
-    bridge.microHud = { x, y, mode: bridge.mode, ...extra };
-  };
-  bridge.registerAction("showMicroHud", showMicroHud);
-  globalThis.showMicroHud = showMicroHud;
-  createEditor(globalThis, { ui: uiBridge });
-  initMenus(globalThis, { ui: uiBridge });
+  bridge.registerAction("showMicroHud", (x, y, extra = {}) => bridge.showMicroHud(x, y, extra));
+  const session = createEditor(globalThis, { ui: bridge.editorApi, exposeGlobals: false });
+  initMenus(globalThis, { ui: bridge.editorApi, session });
   const workspace = document.getElementById("workspace");
   workspace?.addEventListener("pointerover", event => {
     bridge.setHint(hintZoneFromTarget(event.target));

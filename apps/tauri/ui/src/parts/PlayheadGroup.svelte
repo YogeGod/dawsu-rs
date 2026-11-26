@@ -9,11 +9,11 @@
   const returns = $derived(!!bridge.view?.returnOnStop);
   const disabled = $derived(bridge.disabled);
   // Light updates, as the old Follow and Return sent them.
-  const send = name => globalThis.act(playheadActions(bridge.view)[name], false);
+  const send = name => bridge.callAction("act", playheadActions(bridge.view)[name], false);
 
   function centre() {
     bridge.centre = !bridge.centre;
-    globalThis.followPlayhead?.();
+    bridge.callAction("followPlayhead");
   }
 </script>
 

@@ -14,7 +14,7 @@
 
   // Map › Shared Base layer…: per-mapset Shared Base score, live difficulty tabs,
   // non-destructive per-difficulty lane rules, and green-line-only volume curve.
-  // menus.js calls globalThis.openSharedBase.
+  // menus.js opens it via bridge modal registry.
   let open = $state(false);
   let tab = $state("overview"); // "overview" | "rules" | "volume"
   let busy = $state(false);
@@ -226,7 +226,7 @@
 
   function openDiffInEditor(path) {
     closeModal();
-    globalThis.openSiblingDifficulty?.(path);
+    bridge.callAction("openSiblingDifficulty", path);
   }
 
   async function addRule() {
@@ -399,12 +399,12 @@
   }
 
   $effect(() => {
-    globalThis.dawsuModalOpen = open;
-    return () => { globalThis.dawsuModalOpen = false; };
+    bridge.setModalOpen("shared-base", open);
+    return () => { bridge.setModalOpen("shared-base", false); };
   });
 
   onMount(() => {
-    globalThis.openSharedBase = openSharedBase;
+    return bridge.registerModal("openSharedBase", openSharedBase);
   });
 </script>
 

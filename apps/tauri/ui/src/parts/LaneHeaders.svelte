@@ -18,7 +18,7 @@
   // The drum map's switches (Rust sends them with the view while the drum view is on).
   const drumView = $derived(headers?.drum ? bridge.view?.drumView ?? null : null);
   const folder = folderShades();
-  const on = laneHandlers((...args) => globalThis.laneHeaderAction?.(...args), tick);
+  const on = laneHandlers((...args) => bridge.callAction("laneHeaderAction", ...args), tick);
 </script>
 
 {#each rows as row (row.key)}
@@ -46,8 +46,8 @@
   {:else if row.type === "drum"}
     <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
     <div class="lane unassigned-drum-row" class:compact={!names}
-      onclick={() => globalThis.openDrumMapSetup?.(row.drumRowIndex)}
-      ondblclick={() => globalThis.openDrumMapSetup?.(row.drumRowIndex)}>
+      onclick={() => bridge.callAction("openDrumMapSetup", row.drumRowIndex)}
+      ondblclick={() => bridge.callAction("openDrumMapSetup", row.drumRowIndex)}>
       <span class="name unassigned-drum" title={row.title}>{names ? row.name : "–"}</span>
     </div>
   {:else}
@@ -59,7 +59,7 @@
       style:--lh-hover={shade.hover} style:--lh-selected={shade.selected}
       style:--lh-spine={row.folder ? folder.strip : undefined}
       onclick={event => on.rowClick(event, row.row)}
-      ondblclick={() => { if (headers?.drum) globalThis.openDrumMapSetup?.(row.drumRowIndex); }}>
+      ondblclick={() => { if (headers?.drum) bridge.callAction("openDrumMapSetup", row.drumRowIndex); }}>
       <span class="spine"></span>
       <span class="num">{row.number}</span>
       <!-- A numbered layer hangs under its main lane, which folds it like a folder. -->
@@ -111,7 +111,7 @@
   {#if headers.drum}
     <button type="button" id="drum-map-setup" class="add-lane-row drum-setup-row" class:compact={!names}
       aria-label="Drum map setup" title={headers.drumName ? headers.drumName + " (Presets and Setup)" : "Drum map setup"}
-      disabled={headers.busy} onclick={() => globalThis.openDrumMapSetup?.()}>
+      disabled={headers.busy} onclick={() => bridge.callAction("openDrumMapSetup")}>
       {#if names}<span>{headers.drumName ? headers.drumName + " (Setup…)" : "Drum map setup…"}</span>{:else}<span>Setup</span>{/if}
     </button>
     {#if drumView}
@@ -119,7 +119,7 @@
       <button type="button" id="drum-hide-unassigned" class="add-lane-row drum-setup-row" class:compact={!names}
         aria-pressed={!!drumView.hideUnassigned} disabled={headers.busy}
         title={drumView.hideUnassigned ? "Show the drum rows no sample fills" : "Hide the drum rows no sample fills"}
-        onclick={() => globalThis.drumMapAction?.({ kind: "set_hide_unassigned", on: !drumView.hideUnassigned })}>
+        onclick={() => bridge.callAction("drumMapAction", { kind: "set_hide_unassigned", on: !drumView.hideUnassigned })}>
         <span>{names ? (drumView.hideUnassigned ? "Show unassigned rows" : "Hide unassigned rows") : (drumView.hideUnassigned ? "Show" : "Hide")}</span>
       </button>
     {/if}
@@ -128,12 +128,12 @@
     <button type="button" id="show-default-skin-lanes" class="add-lane-row" class:compact={!names}
       aria-label="Show 12 default lanes"
       title="Reveal osu!'s 12 default skin lanes in one undoable step"
-      disabled={headers.busy} onclick={() => globalThis.laneHeaderAction?.("showDefaultSkinLanes")}>
+      disabled={headers.busy} onclick={() => bridge.callAction("laneHeaderAction", "showDefaultSkinLanes")}>
       {@html Plus}{#if names}<span>Show 12 default lanes</span>{/if}
     </button>
   {/if}
   <button type="button" id="add-lane" class="add-lane-row" class:compact={!names} aria-label="Add lane" title={names ? undefined : "Add lane"}
-    disabled={headers.busy} onclick={() => globalThis.openAddLane?.()}>{@html Plus}{#if names}<span>Add lane</span>{/if}</button>
+    disabled={headers.busy} onclick={() => bridge.callAction("openAddLane")}>{@html Plus}{#if names}<span>Add lane</span>{/if}</button>
 {/if}
 
 <style>

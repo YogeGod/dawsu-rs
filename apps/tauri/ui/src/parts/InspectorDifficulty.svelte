@@ -4,7 +4,7 @@
   import CoverageReview from "./CoverageReview.svelte";
   import InspectorHead from "./InspectorHead.svelte";
 
-  const on = inspectorHandlers((...args) => globalThis.inspectorAction(...args));
+  const on = inspectorHandlers((...args) => bridge.callAction("inspectorAction", ...args));
   const model = $derived(bridge.inspector ?? emptyInspector);
   // Hitsounding mode lives in Preferences › This map, which keeps this section to the map's actions.
   let open = $state(true);

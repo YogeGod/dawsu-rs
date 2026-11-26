@@ -24,7 +24,7 @@
   const counts = $derived(hitLaneCounts(scene));
   const zoomValue = $derived(zoomSliderValue(bridge.zoom ?? scene?.zoom));
   const audio = $derived(audioLabel(view?.outputDevice));
-  const send = (...args) => globalThis.statusBarAction?.(...args);
+  const send = (...args) => bridge.callAction("statusBarAction", ...args);
 </script>
 
 <div id="playback-rates" class="playback-rates" role="group" aria-label="Playback speed"

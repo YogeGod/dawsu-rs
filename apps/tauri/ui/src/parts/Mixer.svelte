@@ -48,8 +48,8 @@
   });
 
   // Light updates, as the song row and the Audio dialog send them.
-  const act = action => globalThis.act?.(action, false);
-  const lane = (...args) => globalThis.laneHeaderAction?.(...args);
+  const act = action => bridge.callAction("act", action, false);
+  const lane = (...args) => bridge.callAction("laneHeaderAction", ...args);
   // Each fader's last value until the editor answers it, so moving one never sends the other back.
   const pending = {};
   const level = which => async value => {
@@ -64,7 +64,7 @@
     await act({ kind: "hitsound_gain", gain: value });
   };
   const laneLevel = row => async value => {
-    await globalThis.act?.({ kind: "lane_gain", row, gain: value }, true);
+    await bridge.callAction("act", { kind: "lane_gain", row, gain: value }, true);
   };
 </script>
 

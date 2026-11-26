@@ -12,12 +12,12 @@
     if (bridge.bottomTab === name) return;
     bridge.bottomTab = name;
     // app.js lays the panel out from the tab and draws the volume canvas only on the Volume tab.
-    globalThis.renderPanelLayout?.();
-    globalThis.paintSoon?.();
+    bridge.callAction("renderPanelLayout");
+    bridge.callAction("paintSoon");
   }
 
   // A click or a drag up of 12 px opens the folded panel.
-  const open = () => globalThis.togglePanel?.("controller");
+  const open = () => bridge.callAction("togglePanel", "controller");
   let from = null;
   let dragged = false;
   function down(event) {

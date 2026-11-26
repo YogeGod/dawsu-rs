@@ -596,8 +596,11 @@ test("every command a menu runs or shows a key for is in the editor's command ca
   assert.doesNotMatch(code, /command\("\w+"\)/, "menus.js names no command of its own; commands.js does");
 });
 
+const toolPillsPart = await readFile(new URL("../ui/src/parts/ToolPills.svelte", import.meta.url), "utf8");
+
 test("the tool picker can be opened by the Svelte tool pills", () => {
-  assert.match(code, /win\.openEditorMenu = openEditorMenu;/);
+  assert.match(code, /bridgeOverride\.registerAction\("openEditorMenu", openEditorMenu\)/);
+  assert.match(toolPillsPart, /bridge\.callAction\("openEditorMenu",\s*"tool"/);
 });
 
 test("Sound set placement needs a selected placement and shows its set, edits, volume, reset and unlink", async () => {
@@ -871,7 +874,7 @@ test("a refresh with nothing changed hands the rows over only once", async () =>
 
 test("the editor keeps a failing menu refresh from stopping the rest of show()", async () => {
   const { readEditorSource } = await import("./editor-runtime.mjs");
-  assert.match(readEditorSource(), /try \{ env\.window\.refreshEditorMenu\?\.\(\); \} catch \(error\) \{/);
+  assert.match(readEditorSource(), /try \{\s*if \(env !== globalThis\) env\.window\.refreshEditorMenu\?\.\(\);\s*else callAction\("refreshEditorMenu"\);\s*\} catch \(error\) \{/);
 });
 
 test("the menu popup grows to fit a row with a long key hint instead of wrapping its label", () => {

@@ -9,22 +9,22 @@
 
   $effect(() => {
     const current = bubble;
-    if (current?.editing) {
+    const editing = Boolean(current?.editing);
+    bridge.setModalOpen("volume-bubble", editing);
+    if (editing) {
       draft = String(current.volume);
-      if (typeof globalThis !== "undefined") globalThis.dawsuModalOpen = true;
       tick().then(() => {
         inputEl?.focus();
         inputEl?.select();
       });
-    } else if (typeof globalThis !== "undefined" && globalThis.dawsuModalOpen && !document.querySelector('[role="dialog"]')) {
-      globalThis.dawsuModalOpen = false;
     }
+    return () => {
+      bridge.setModalOpen("volume-bubble", false);
+    };
   });
 
   function closeBubble() {
-    if (typeof globalThis !== "undefined" && !document.querySelector('[role="dialog"]')) {
-      globalThis.dawsuModalOpen = false;
-    }
+    bridge.setModalOpen("volume-bubble", false);
     bridge.volumeBubble = null;
   }
 

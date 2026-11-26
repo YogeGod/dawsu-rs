@@ -113,12 +113,11 @@ test("both modals start closed and register their opener for menus.js", () => {
   bridge.set({ busy: false }, { path: "Hard.osu" });
   assert.equal(render(MidiImportModal).body.replace(/<!--[^>]*-->/g, "").trim(), "");
   assert.equal(render(KeysoundsModal).body.replace(/<!--[^>]*-->/g, "").trim(), "");
-  assert.match(source("MidiImportModal.svelte"), /globalThis\.openMidiImport = openMidiImport/);
-  assert.match(source("KeysoundsModal.svelte"), /globalThis\.openKeysounds = openKeysounds/);
+  assert.match(source("MidiImportModal.svelte"), /bridge\.registerModal\("openMidiImport", openMidiImport\)/);
+  assert.match(source("KeysoundsModal.svelte"), /bridge\.registerModal\("openKeysounds", openKeysounds\)/);
   // Both hold the timeline's keys while open, as Preferences does.
-  for (const name of ["MidiImportModal.svelte", "KeysoundsModal.svelte"]) {
-    assert.match(source(name), /globalThis\.dawsuModalOpen = open/, name);
-  }
+  assert.match(source("MidiImportModal.svelte"), /bridge\.setModalOpen\("midi-import", open\)/);
+  assert.match(source("KeysoundsModal.svelte"), /bridge\.setModalOpen\("keysounds", open\)/);
 });
 
 test("Keysounds shows the no-plug-ins message, Preferences lists MIDI ports and scans VST3", () => {
@@ -241,7 +240,7 @@ test("the Keysounds modal wires every piano roll gesture to its keysounds_action
     /keysoundsQuantize\(id, QUANTIZE_MS\)/,
     /keysoundsTranspose\(id, -12\)/, /keysoundsTranspose\(id, -1\)/, /keysoundsTranspose\(id, 1\)/, /keysoundsTranspose\(id, 12\)/,
     /send\(keysoundsLoadVst3\(trackId, plugin\)\)/,
-    /payload: keysoundsGenerate\(\)[\s\S]*?showToast\?\.\(toast\)/,
+    /payload: keysoundsGenerate\(\)[\s\S]*?showToast\(toast\)/,
     /Generate \[Keysounds\]/,
   ]) assert.match(keysounds, wiring);
   // A press that lands on a note must not fall through to the grid and add another.

@@ -1,39 +1,51 @@
 import * as registry from "../lib/registry.js";
 
-export function initMenus(env = globalThis, { ui: uiOverride = null, bridge: bridgeOverride = registry } = {}) {
+export function initMenus(env = globalThis, { ui: uiOverride = null, bridge: bridgeOverride = registry, session = null } = {}) {
   const doc = env.document;
   const win = env.window;
   const ui = () => uiOverride ?? win?.dawsuUi;
-  const $ = (...args) => env.$(...args);
-  const show = (...args) => env.show?.(...args);
-  const act = (...args) => env.act(...args);
-  const command = (...args) => env.command(...args);
-  const run = (...args) => env.run(...args);
-  const update = (...args) => env.update(...args);
-  const modal = (...args) => env.modal(...args);
-  const closeModal = (...args) => env.closeModal(...args);
-  const paragraph = (...args) => env.paragraph(...args);
-  const input = (...args) => env.input(...args);
-  const labeled = (...args) => env.labeled(...args);
-  const openSiblingDifficulty = (...args) => env.openSiblingDifficulty(...args);
-  const deletableLane = (...args) => env.deletableLane(...args);
-  const deleteActiveLane = (...args) => env.deleteActiveLane(...args);
-  const adjacentLaneForMove = (...args) => env.adjacentLaneForMove(...args);
-  const panelOn = (...args) => env.panelOn(...args);
-  const togglePanel = (...args) => env.togglePanel(...args);
-  const openMap = (...args) => env.openMap(...args);
-  const openFromOsu = (...args) => env.openFromOsu(...args);
-  const goHome = (...args) => env.goHome(...args);
-  const openFolders = (...args) => env.openFolders(...args);
-  const openViewSettings = (...args) => env.openViewSettings(...args);
-  const openPreferences = (...args) => env.openPreferences(...args);
-  const showHelp = (...args) => env.showHelp(...args);
-  const confirmRevertToOriginal = (...args) => env.confirmRevertToOriginal(...args);
-  const undoMapsetRevert = (...args) => env.undoMapsetRevert(...args);
-  const pickDrumStem = (...args) => env.pickDrumStem(...args);
-  const requestDrumMap = (...args) => env.requestDrumMap(...args);
-  const renameLane = (...args) => env.renameLane(...args);
-  const moveLane = (...args) => env.moveLane(...args);
+  const fromSession = name => (session ? (...args) => session[name]?.(...args) : (...args) => env[name]?.(...args));
+  const $ = session ? session.dom.$ : (...args) => env.$(...args);
+  const paragraph = session ? session.dom.paragraph : (...args) => env.paragraph(...args);
+  const input = session ? session.dom.input : (...args) => env.input(...args);
+  const labeled = session ? session.dom.labeled : (...args) => env.labeled(...args);
+  const invoke = (cmd, args) => (session ? session.invoke : env.invoke)?.(cmd, args);
+  const getView = () => (session ? session.state.view : env.view);
+  const getScene = () => (session ? session.state.scene : env.scene);
+  const getDrag = () => (session ? session.state.drag : env.drag);
+  const getDialog = () => (session ? session.elements.dialog : env.dialog);
+  const getLanePositions = () => (session ? session.state.lanePositions : env.lanePositions);
+  const getSpeedButtons = () => (session ? session.elements.speedButtons : env.speedButtons);
+  const getPlaybackStartChoices = () => (session ? session.playbackStartChoices : env.playbackStartChoices);
+  const getDock = () => (session ? session.dock : env.dock);
+  const notifyToast = toast => (env !== globalThis ? win?.showToast?.(toast) : bridgeOverride.showToast(toast));
+
+  const show = fromSession("show");
+  const act = fromSession("act");
+  const command = fromSession("command");
+  const run = fromSession("run");
+  const update = fromSession("update");
+  const modal = fromSession("modal");
+  const closeModal = fromSession("closeModal");
+  const openSiblingDifficulty = fromSession("openSiblingDifficulty");
+  const deletableLane = fromSession("deletableLane");
+  const deleteActiveLane = fromSession("deleteActiveLane");
+  const adjacentLaneForMove = fromSession("adjacentLaneForMove");
+  const panelOn = fromSession("panelOn");
+  const togglePanel = fromSession("togglePanel");
+  const openMap = fromSession("openMap");
+  const openFromOsu = fromSession("openFromOsu");
+  const goHome = fromSession("goHome");
+  const openFolders = fromSession("openFolders");
+  const openViewSettings = fromSession("openViewSettings");
+  const openPreferences = fromSession("openPreferences");
+  const showHelp = fromSession("showHelp");
+  const confirmRevertToOriginal = fromSession("confirmRevertToOriginal");
+  const undoMapsetRevert = fromSession("undoMapsetRevert");
+  const pickDrumStem = fromSession("pickDrumStem");
+  const requestDrumMap = fromSession("requestDrumMap");
+  const renameLane = fromSession("renameLane");
+  const moveLane = fromSession("moveLane");
   const openModal = (name, ...args) => (env !== globalThis
     ? env[name]?.(...args)
     : bridgeOverride.openModal(name, ...args));
@@ -48,64 +60,64 @@ export function initMenus(env = globalThis, { ui: uiOverride = null, bridge: bri
   let menuOpens = 0;
 
   function canEditFromMenu() {
-    return !!env.scene && !env.view.busy && !env.drag;
+    return !!getScene() && !getView().busy && !getDrag();
   }
 
   // Rules a row's `enabled` or `checked` names in ui/src/lib/commands.js; `target` is the right-clicked lane.
   const laneAllowed = predicate => target => {
     const row = laneMenuRow(target);
-    return row !== -1 && predicate(env.scene.lanes[row], row);
+    return row !== -1 && predicate(getScene().lanes[row], row);
   };
   const menuRules = {
     edit: canEditFromMenu,
-    idle: () => !env.view.busy && !env.drag,
-    document: () => !!env.scene && !env.view.busy,
-    selection: () => canEditFromMenu() && !!env.scene.selection?.count,
-    range: () => canEditFromMenu() && !!env.scene.range,
-    placement: () => canEditFromMenu() && env.scene.placement != null,
-    undo: () => canEditFromMenu() && env.scene.historyPosition !== 0,
-    redo: () => canEditFromMenu() && env.scene.historyPosition !== env.scene.history?.length,
+    idle: () => !getView().busy && !getDrag(),
+    document: () => !!getScene() && !getView().busy,
+    selection: () => canEditFromMenu() && !!getScene().selection?.count,
+    range: () => canEditFromMenu() && !!getScene().range,
+    placement: () => canEditFromMenu() && getScene().placement != null,
+    undo: () => canEditFromMenu() && getScene().historyPosition !== 0,
+    redo: () => canEditFromMenu() && getScene().historyPosition !== getScene().history?.length,
     deleteLane: () => canEditFromMenu() && !!deletableLane(),
     // File › Revert mapset to original…: only once dawsu! has a first-open copy of this mapset.
-    originalSnapshot: () => !!env.scene && !!env.view.hasDocument && !!env.view.hasOriginalSnapshot && !env.view.busy && !env.drag,
+    originalSnapshot: () => !!getScene() && !!getView().hasDocument && !!getView().hasOriginalSnapshot && !getView().busy && !getDrag(),
     // File › Undo revert: enabled while a pre-revert backup exists for this mapset.
-    undoRevert: () => !!env.scene && !!env.view.hasDocument && !!env.view.canUndoRevert && !env.view.busy && !env.drag,
+    undoRevert: () => !!getScene() && !!getView().hasDocument && !!getView().canUndoRevert && !getView().busy && !getDrag(),
     never: () => false,
     lane: laneAllowed(() => true),
-    laneRename: laneAllowed(lane => !!lane.colourKey && !env.view.drumView?.enabled),
+    laneRename: laneAllowed(lane => !!lane.colourKey && !getView().drumView?.enabled),
     laneUp: laneAllowed((_, row) => adjacentLaneForMove(row, -1) !== null),
     laneDown: laneAllowed((_, row) => adjacentLaneForMove(row, 1) !== null),
     laneReplace: laneAllowed(lane => lane.canReplace),
     laneColour: laneAllowed(lane => lane.colourKey),
     laneLayer: laneAllowed(lane => lane.canAddLayer),
     laneClone: laneAllowed(lane => lane.canReplace),
-    laneAlternate: laneAllowed((_, row) => row + 1 < (env.view.laneCount ?? env.scene.lanes.length) && (env.scene.selection?.count ?? 0) >= 2),
+    laneAlternate: laneAllowed((_, row) => row + 1 < (getView().laneCount ?? getScene().lanes.length) && (getScene().selection?.count ?? 0) >= 2),
     laneDelete: laneAllowed(lane => lane.canDelete),
     waveform: () => $("ruler-waveform").getAttribute("aria-pressed") === "true",
     soundFirst: () => $("ruler-sound-first").getAttribute("aria-pressed") === "true",
     usedOnly: () => !!$("used-only").checked,
     mapPreview: () => !!ui()?.mapPreviewOn?.(),
-    stemLoaded: () => canEditFromMenu() && !!env.view.stemLoaded,
-    stemActive: () => !!env.view.stemActive,
-    tapRecordingArmed: () => !!env.view.tapRecordingArmed,
-    tool: (_, item) => env.view.tool === item.run[1],
+    stemLoaded: () => canEditFromMenu() && !!getView().stemLoaded,
+    stemActive: () => !!getView().stemActive,
+    tapRecordingArmed: () => !!getView().tapRecordingArmed,
+    tool: (_, item) => getView().tool === item.run[1],
   };
 
   // The segmented choice rows, filled when their menu opens.
   const menuChoiceSources = {
     difficulty: {
-      list: () => env.scene?.path ? Array.from($("difficulty").options ?? [], option => [option.value, option.text]) : [],
-      current: () => env.scene?.path,
+      list: () => getScene()?.path ? Array.from($("difficulty").options ?? [], option => [option.value, option.text]) : [],
+      current: () => getScene()?.path,
       choose: path => openSiblingDifficulty(path),
     },
     playbackStart: {
-      list: () => env.playbackStartChoices,
-      current: () => env.view.playbackStart ?? "cursor",
+      list: () => getPlaybackStartChoices(),
+      current: () => getView().playbackStart ?? "cursor",
       choose: value => act({ kind: "playback_start", value }, false),
     },
     speed: {
-      list: () => env.speedButtons.map(button => [Number(button.dataset.playbackSpeed), button.textContent.replace("%", "")]),
-      current: () => env.view.speed,
+      list: () => getSpeedButtons().map(button => [Number(button.dataset.playbackSpeed), button.textContent.replace("%", "")]),
+      current: () => getView().speed,
       choose: value => act({ kind: "speed", value }),
     },
     exportStyle: { list: () => [["objects", "Per-object"]], current: () => "objects", choose: () => {} },
@@ -113,22 +125,22 @@ export function initMenus(env = globalThis, { ui: uiOverride = null, bridge: bri
 
   // File › Export MIDI…: Rust asks where to save and writes the open difficulty's hits as a .mid.
   function exportMidi() {
-    return env.invoke("export_midi_file").then(written => {
+    return invoke("export_midi_file").then(written => {
       if (written == null) return;
-      win.showToast?.({ tone: "success", title: "MIDI exported", body: `Wrote ${written} note${written === 1 ? "" : "s"}.` });
+      notifyToast({ tone: "success", title: "MIDI exported", body: `Wrote ${written} note${written === 1 ? "" : "s"}.` });
     }).catch(error => { $("status").textContent = String(error); });
   }
 
   // File › Import mania hitsounds…: Rust asks for a Mode 3 .osu file and imports its hitsounds in one Undo step.
   function importManiaHitsounds() {
-    return env.invoke("import_mania_hitsounds").then(report => {
+    return invoke("import_mania_hitsounds").then(report => {
       if (report == null) return;
-      if (typeof env.invoke === "function" && typeof show === "function") {
-        env.invoke("editor_view").then(show).catch(() => {});
+      if (typeof invoke === "function" && typeof show === "function") {
+        invoke("editor_view").then(show).catch(() => {});
       }
       const hits = report.hitsImported ?? 0;
       const lanes = report.lanesTouched ?? 0;
-      win.showToast?.({
+      notifyToast({
         tone: "success",
         title: "Mania hitsounds imported",
         body: `Imported ${hits} hit${hits === 1 ? "" : "s"} across ${lanes} lane${lanes === 1 ? "" : "s"}.`,
@@ -141,14 +153,14 @@ export function initMenus(env = globalThis, { ui: uiOverride = null, bridge: bri
     placeSoundSet: () => placeSoundSet(),
     saveSoundSet: () => saveSoundSet(),
     openSoundSetPlacement: () => openSoundSetPlacement(),
-    goToEnd: () => act({ kind: "seek", ms: env.view.duration }),
-    openDrumWindow: () => env.invoke("drum_window_open").catch(error => { $("status").textContent = String(error); }),
-    openNodeGraphWindow: () => env.invoke("open_node_graph_window").catch(error => { $("status").textContent = String(error); }),
+    goToEnd: () => act({ kind: "seek", ms: getView().duration }),
+    openDrumWindow: () => invoke("drum_window_open").catch(error => { $("status").textContent = String(error); }),
+    openNodeGraphWindow: () => invoke("open_node_graph_window").catch(error => { $("status").textContent = String(error); }),
     requestDrumMap: () => requestDrumMap(),
-    editLayout: () => env.dock?.editLayout(),
+    editLayout: () => getDock()?.editLayout(),
     openMap: () => openMap(),
     openFromOsu: () => openFromOsu(),
-    reloadInOsu: () => env.invoke("reload_osu_editor").then((res) => {
+    reloadInOsu: () => invoke("reload_osu_editor").then((res) => {
       if (!res) return;
       const tone = res.status === "reloaded_stable" ? "success" : "info";
       const title = res.status === "reloaded_stable"
@@ -156,7 +168,7 @@ export function initMenus(env = globalThis, { ui: uiOverride = null, bridge: bri
         : res.status === "lazer_external_edit"
           ? "osu!lazer external edit"
           : "Reload in osu!";
-      win.showToast?.({ tone, title, body: res.message });
+      notifyToast({ tone, title, body: res.message });
       $("status").textContent = res.message;
     }).catch((error) => { $("status").textContent = String(error); }),
     goHome: () => goHome(),
@@ -183,7 +195,7 @@ export function initMenus(env = globalThis, { ui: uiOverride = null, bridge: bri
     pickDrumStem: () => pickDrumStem(),
   };
 
-  const menuField = path => path.split(".").reduce((value, key) => value?.[key], { view: env.view, scene: env.scene });
+  const menuField = path => path.split(".").reduce((value, key) => value?.[key], { view: getView(), scene: getScene() });
 
   function runMenuEntry({ item, target, value, source }) {
     if (source) {
@@ -197,7 +209,7 @@ export function initMenus(env = globalThis, { ui: uiOverride = null, bridge: bri
     else if (kind === "toggle" && third) act({ kind: first, on: !menuField(second) }, false);
     else if (kind === "toggle") act({ kind: first, on: !menuField(second) });
     else if (kind === "panel" && first !== "lane_names") togglePanel(first);
-    else if (kind === "panel") act({ kind: "panel", panel: first, on: !env.view.panels?.[second ?? first] });
+    else if (kind === "panel") act({ kind: "panel", panel: first, on: !getView().panels?.[second ?? first] });
     else if (kind === "tool") act({ kind: "tool", name: first });
     else if (kind === "call") menuCalls[first]();
     else if (kind === "lane" && first === "rename") renameLane(laneMenuRow(target));
@@ -217,7 +229,7 @@ export function initMenus(env = globalThis, { ui: uiOverride = null, bridge: bri
     const [kind, first, second] = item.run ?? [];
     if (kind === "toggle") return !!menuField(second);
     if (kind === "panel" && first !== "lane_names") return panelOn(first);
-    if (kind === "panel") return !!env.view.panels?.[second ?? first];
+    if (kind === "panel") return !!getView().panels?.[second ?? first];
     return undefined;
   }
 
@@ -238,7 +250,7 @@ export function initMenus(env = globalThis, { ui: uiOverride = null, bridge: bri
       entries.push(added);
       return added;
     };
-    const step = offset => env.scene?.history?.[env.scene.historyPosition + offset];
+    const step = offset => getScene()?.history?.[getScene().historyPosition + offset];
     for (const id of list.menus[name]) {
       if (id === "-") {
         if (rows.length && rows[rows.length - 1].type !== "separator") rows.push({ type: "separator" });
@@ -300,9 +312,9 @@ export function initMenus(env = globalThis, { ui: uiOverride = null, bridge: bri
   }
 
   function laneMenuRow(target) {
-    if (!canEditFromMenu() || env.scene.path !== target.map) return -1;
-    const row = env.scene.lanes.findIndex(lane => lane.sourceKey === target.key);
-    return env.lanePositions.has(row) ? row : -1;
+    if (!canEditFromMenu() || getScene().path !== target.map) return -1;
+    const row = getScene().lanes.findIndex(lane => lane.sourceKey === target.key);
+    return getLanePositions().has(row) ? row : -1;
   }
 
   function laneMenuAction(target, invokeAction) {
@@ -310,19 +322,19 @@ export function initMenus(env = globalThis, { ui: uiOverride = null, bridge: bri
       const row = laneMenuRow(target);
       if (row === -1) return;
       await update({ kind: "lane", row, operation: "activate" }, false);
-      if (laneMenuRow(target) === env.view.activeLane) invokeAction(row);
+      if (laneMenuRow(target) === getView().activeLane) invokeAction(row);
     });
   }
 
   function soundSetsUsable(map) {
-    return env.scene?.path === map && !env.view.busy && !env.drag;
+    return getScene()?.path === map && !getView().busy && !getDrag();
   }
 
   function chooseSoundSetLibrary(map, then) {
     closeModal();
     run(async () => {
       if (!soundSetsUsable(map)) return;
-      const next = await env.invoke("pick_hitsound_library");
+      const next = await invoke("pick_hitsound_library");
       if (!next) return;
       show(next);
       if (soundSetsUsable(map)) then();
@@ -333,7 +345,7 @@ export function initMenus(env = globalThis, { ui: uiOverride = null, bridge: bri
     closeModal();
     run(async () => {
       if (!soundSetsUsable(map)) return;
-      const next = await env.invoke("pick_sound_set", { map });
+      const next = await invoke("pick_sound_set", { map });
       if (next) show(next);
     });
   }
@@ -408,10 +420,10 @@ export function initMenus(env = globalThis, { ui: uiOverride = null, bridge: bri
   }
 
   function placeSoundSet() {
-    const map = env.scene.path;
+    const map = getScene().path;
     run(async () => {
       if (!soundSetsUsable(map)) return;
-      const library = await env.invoke("sound_set_action", { action: { kind: "library" } });
+      const library = await invoke("sound_set_action", { action: { kind: "library" } });
       if (soundSetsUsable(map)) showSoundSetLibrary(map, library);
     });
   }
@@ -452,11 +464,11 @@ export function initMenus(env = globalThis, { ui: uiOverride = null, bridge: bri
   }
 
   function openSoundSetPlacement() {
-    const map = env.scene.path;
-    const id = env.scene.placement;
+    const map = getScene().path;
+    const id = getScene().placement;
     run(async () => {
       if (!soundSetsUsable(map) || id == null) return;
-      const placement = await env.invoke("sound_set_action", { action: { kind: "placement", map, id } });
+      const placement = await invoke("sound_set_action", { action: { kind: "placement", map, id } });
       if (soundSetsUsable(map)) showSoundSetPlacement(map, placement);
     });
   }
@@ -466,7 +478,7 @@ export function initMenus(env = globalThis, { ui: uiOverride = null, bridge: bri
   const soundSetPromptKey = prompt => prompt.open + ":" + prompt.setId;
 
   function pendingSoundSetPrompt() {
-    return (env.view.soundSetPrompts ?? []).find(prompt => !dismissedSoundSetPrompts.has(soundSetPromptKey(prompt)));
+    return (getView().soundSetPrompts ?? []).find(prompt => !dismissedSoundSetPrompts.has(soundSetPromptKey(prompt)));
   }
 
   function showSoundSetPrompt(prompt) {
@@ -483,9 +495,9 @@ export function initMenus(env = globalThis, { ui: uiOverride = null, bridge: bri
   }
 
   function saveSoundSet() {
-    const map = env.scene.path;
+    const map = getScene().path;
     const title = "Save selection as sound set";
-    if (!env.view.hitsoundLibrary) {
+    if (!getView().hitsoundLibrary) {
       modal("save-sound-set", title, [paragraph("Sound sets are kept in your hitsound library.")],
         [["Cancel", closeModal], ["Choose library folder…", () => chooseSoundSetLibrary(map, saveSoundSet), true]]);
       return;
@@ -514,7 +526,7 @@ export function initMenus(env = globalThis, { ui: uiOverride = null, bridge: bri
       run(async () => {
         try {
           if (!soundSetsUsable(map)) return;
-          const next = await env.invoke("sound_set_action", { action: { kind: "save", map, name } });
+          const next = await invoke("sound_set_action", { action: { kind: "save", map, name } });
           if (next.nameTaken) {
             message.textContent = next.nameTaken;
             field.select?.();
@@ -552,7 +564,7 @@ export function initMenus(env = globalThis, { ui: uiOverride = null, bridge: bri
 
   function refreshEditorMenu() {
     if (!editorMenu) return;
-    if (env.dialog?.open) {
+    if (getDialog()?.open) {
       closeEditorMenu(false);
       return;
     }
@@ -595,7 +607,7 @@ export function initMenus(env = globalThis, { ui: uiOverride = null, bridge: bri
     const buttons = menuButtons();
     (last ? buttons[buttons.length - 1] : buttons[0])?.focus();
 
-    env.invoke("editor_shortcuts").then(({ entries }) => {
+    invoke("editor_shortcuts").then(({ entries }) => {
       if (editorMenu !== menu) return;
       const bindings = new Map(entries.map(([id, , keys]) => [id, keys]));
       for (const entry of menu.entries) {
@@ -612,16 +624,16 @@ export function initMenus(env = globalThis, { ui: uiOverride = null, bridge: bri
 
   function openLaneMenu(event, keyboard = false) {
     const trigger = event.target.closest("[data-lane-row]");
-    if (!trigger || !canEditFromMenu() || env.dialog?.open) return;
+    if (!trigger || !canEditFromMenu() || getDialog()?.open) return;
     const row = Number(trigger.dataset.laneRow);
-    const lane = env.scene.lanes[row];
-    if (!lane?.sourceKey || !env.lanePositions.has(row)) return;
+    const lane = getScene().lanes[row];
+    if (!lane?.sourceKey || !getLanePositions().has(row)) return;
     event.preventDefault();
     const bounds = trigger.getBoundingClientRect();
     openEditorMenu("lane", false, {
       x: keyboard ? bounds.left : event.clientX,
       y: keyboard ? bounds.bottom : event.clientY,
-      trigger, label: "Lane actions", target: { map: env.scene.path, key: lane.sourceKey },
+      trigger, label: "Lane actions", target: { map: getScene().path, key: lane.sourceKey },
     });
   }
 
@@ -689,24 +701,28 @@ export function initMenus(env = globalThis, { ui: uiOverride = null, bridge: bri
     },
   };
 
-  env.menuAction = menuAction;
-  env.refreshEditorMenu = refreshEditorMenu;
-  env.openEditorMenu = openEditorMenu;
-  env.closeEditorMenu = closeEditorMenu;
-  env.pendingSoundSetPrompt = pendingSoundSetPrompt;
-  env.showSoundSetPrompt = showSoundSetPrompt;
-  if (win) {
-    win.menuAction = menuAction;
-    win.refreshEditorMenu = refreshEditorMenu;
-    win.openEditorMenu = openEditorMenu;
-    win.closeEditorMenu = closeEditorMenu;
-    win.dawsuPaletteMenu = paletteMenu;
-  }
-  if (env === globalThis && bridgeOverride) {
+  if (env !== globalThis) {
+    env.menuAction = menuAction;
+    env.refreshEditorMenu = refreshEditorMenu;
+    env.openEditorMenu = openEditorMenu;
+    env.closeEditorMenu = closeEditorMenu;
+    env.pendingSoundSetPrompt = pendingSoundSetPrompt;
+    env.showSoundSetPrompt = showSoundSetPrompt;
+    if (win) {
+      win.menuAction = menuAction;
+      win.refreshEditorMenu = refreshEditorMenu;
+      win.openEditorMenu = openEditorMenu;
+      win.closeEditorMenu = closeEditorMenu;
+      win.dawsuPaletteMenu = paletteMenu;
+    }
+  } else if (bridgeOverride) {
     bridgeOverride.registerAction("menuAction", menuAction);
     bridgeOverride.registerAction("openEditorMenu", openEditorMenu);
     bridgeOverride.registerAction("refreshEditorMenu", refreshEditorMenu);
     bridgeOverride.registerAction("closeEditorMenu", closeEditorMenu);
+    bridgeOverride.registerAction("pendingSoundSetPrompt", pendingSoundSetPrompt);
+    bridgeOverride.registerAction("showSoundSetPrompt", showSoundSetPrompt);
+    bridgeOverride.registerPaletteMenu(paletteMenu);
   }
   return { openEditorMenu, refreshEditorMenu, closeEditorMenu, menuAction, paletteMenu, menuRules, menuCalls, menuChoiceSources };
 }

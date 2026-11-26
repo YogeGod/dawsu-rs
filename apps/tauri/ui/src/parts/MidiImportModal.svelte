@@ -5,7 +5,7 @@
   import { importArgs, importToast } from "../lib/midi.js";
 
   // File › Import MIDI…: pick a .mid, choose its tracks and options, and Rust adds the hits
-  // (one undo step). menus.js calls globalThis.openMidiImport.
+  // (one undo step). menus.js opens it via bridge modal registry.
   let open = $state(false);
   let loading = $state(false);
   let error = $state("");
@@ -62,7 +62,7 @@
         },
       });
       open = false;
-      globalThis.showToast?.(importToast(outcome));
+      bridge.showToast(importToast(outcome));
       await act(null);
     } catch (err) {
       error = String(err);
@@ -85,12 +85,12 @@
 
   // The editor's timeline shortcuts stay off while this is open (boot.js reads the flag).
   $effect(() => {
-    globalThis.dawsuModalOpen = open;
-    return () => { globalThis.dawsuModalOpen = false; };
+    bridge.setModalOpen("midi-import", open);
+    return () => { bridge.setModalOpen("midi-import", false); };
   });
 
   onMount(() => {
-    globalThis.openMidiImport = openMidiImport;
+    return bridge.registerModal("openMidiImport", openMidiImport);
   });
 </script>
 

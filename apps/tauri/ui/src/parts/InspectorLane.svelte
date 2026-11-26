@@ -3,7 +3,7 @@
   import { emptyInspector, inspectorHandlers, laneTint } from "../lib/inspector.js";
   import InspectorHead from "./InspectorHead.svelte";
 
-  const on = inspectorHandlers((...args) => globalThis.inspectorAction(...args));
+  const on = inspectorHandlers((...args) => bridge.callAction("inspectorAction", ...args));
   const model = $derived(bridge.inspector ?? emptyInspector);
   const lane = $derived(model.lane);
   const tint = $derived(laneTint(lane));

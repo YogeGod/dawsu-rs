@@ -27,15 +27,13 @@
 
   // Pause timeline shortcuts while a Drum Studio modal is open.
   $effect(() => {
-    if (!mapEditorOpen && !bounceOpen) return;
-    globalThis.dawsuModalOpen = true;
-    return () => {
-      if (!mapEditorOpen && !bounceOpen) globalThis.dawsuModalOpen = false;
-    };
+    const modalOpen = mapEditorOpen || bounceOpen;
+    bridge.setModalOpen("drum-studio", modalOpen);
+    return () => bridge.setModalOpen("drum-studio", false);
   });
 
   function reportError(title, err) {
-    globalThis.showToast?.({ tone: "error", title, body: String(err) });
+    bridge.showToast({ tone: "error", title, body: String(err) });
   }
 
   async function scanPlugins() {
@@ -59,7 +57,7 @@
     if (choice.kind === "builtin") {
       try {
         await invoke("drum_vst_action", { payload: { kind: "toggle", enabled: false } });
-        globalThis.act?.(null, true);
+        bridge.callAction("act", null, true);
       } catch (err) {
         reportError("Drum Instrument", err);
       }
@@ -71,7 +69,7 @@
       await invoke("drum_vst_action", {
         payload: { kind: "load", pluginPath: choice.path, pluginUid: choice.uid ?? null },
       });
-      globalThis.act?.(null, true);
+      bridge.callAction("act", null, true);
     } catch (err) {
       reportError("Load Drum VST3", err);
     } finally {
@@ -84,7 +82,7 @@
     if (!map || !name) return;
     try {
       await invoke("drum_map_action", { map, action: { kind: "load_builtin", name } });
-      globalThis.act?.(null, true);
+      bridge.callAction("act", null, true);
     } catch (err) {
       reportError("Drum Map Preset", err);
     }
@@ -100,7 +98,7 @@
       await invoke("drum_vst_action", {
         payload: { kind: "set_choke_group", rowIndex: index, chokeGroup: group },
       });
-      globalThis.act?.(null, true);
+      bridge.callAction("act", null, true);
     } catch (err) {
       reportError("Choke Group", err);
     }
@@ -109,7 +107,7 @@
   async function importDrumMap() {
     try {
       const res = await invoke("drum_vst_action", { payload: { kind: "import_dawsudrum" } });
-      if (res?.imported) globalThis.act?.(null, true);
+      if (res?.imported) bridge.callAction("act", null, true);
     } catch (err) {
       reportError("Import Drum Map", err);
     }
@@ -119,7 +117,7 @@
     try {
       const res = await invoke("drum_vst_action", { payload: { kind: "export_dawsudrum" } });
       if (res?.exported) {
-        globalThis.showToast?.({ tone: "success", title: "Saved drum map", body: res.path });
+        bridge.showToast({ tone: "success", title: "Saved drum map", body: res.path });
       }
     } catch (err) {
       reportError("Save Drum Map", err);
@@ -181,12 +179,12 @@
       });
       if (seq !== bounceReqSeq) return;
       bounceOpen = false;
-      globalThis.showToast?.({
+      bridge.showToast({
         tone: "success",
         title: "Bounced VST3 drums",
         body: `Staged ${res?.renderedCount ?? 0} samples across ${res?.hitCount ?? 0} hits.`,
       });
-      globalThis.act?.(null, true);
+      bridge.callAction("act", null, true);
     } catch (err) {
       if (seq !== bounceReqSeq) return;
       if (!String(err).toLowerCase().includes("cancelled")) {
@@ -215,9 +213,12 @@
   }
 
   onMount(() => {
-    globalThis.openDrumStudio = openStudio;
-    globalThis.openDrumMapEditor = openMapEditor;
-    globalThis.openVst3Bounce = openBounce;
+    const disposers = [
+      bridge.registerModal("openDrumStudio", openStudio),
+      bridge.registerModal("openDrumMapEditor", openMapEditor),
+      bridge.registerModal("openVst3Bounce", openBounce),
+    ];
+    return () => disposers.forEach(dispose => dispose());
   });
 </script>
 
@@ -231,7 +232,7 @@
       onselect={selectInstrument}
       onscan={scanPlugins}
       onopenmap={openMapEditor}
-      onadvanced={() => globalThis.openDrumVstModal?.()}
+      onadvanced={() => bridge.openModal("openDrumVstModal")}
       onopenbounce={openBounce}
       onclose={() => { barOpen = false; }}
     />

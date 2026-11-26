@@ -11,7 +11,7 @@
   } from "../lib/stemSeparation.js";
 
   // Playback › Separate drums (AI)…: optional on-demand CPU HT-Demucs drum separation.
-  // menus.js calls globalThis.openStemSeparation.
+  // menus.js opens it via bridge modal registry.
   let open = $state(false);
   let busy = $state(false);
   let error = $state("");
@@ -155,7 +155,7 @@
 
   function loadOwnStemFile() {
     closeModal();
-    globalThis.pickDrumStem?.();
+    bridge.callAction("pickDrumStem");
   }
 
   function closeModal() {
@@ -171,12 +171,12 @@
   }
 
   $effect(() => {
-    globalThis.dawsuModalOpen = open;
-    return () => { globalThis.dawsuModalOpen = false; };
+    bridge.setModalOpen("stem-separation", open);
+    return () => { bridge.setModalOpen("stem-separation", false); };
   });
 
   onMount(() => {
-    globalThis.openStemSeparation = openStemSeparation;
+    return bridge.registerModal("openStemSeparation", openStemSeparation);
   });
 
   onDestroy(() => {

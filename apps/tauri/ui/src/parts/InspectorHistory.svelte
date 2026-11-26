@@ -3,7 +3,7 @@
   import { emptyInspector, historyRows, inspectorHandlers, scrollNearest } from "../lib/inspector.js";
   import InspectorHead from "./InspectorHead.svelte";
 
-  const on = inspectorHandlers((...args) => globalThis.inspectorAction(...args));
+  const on = inspectorHandlers((...args) => bridge.callAction("inspectorAction", ...args));
   const model = $derived(bridge.inspector ?? emptyInspector);
   // app.js keeps the list the same array while it does not change, so polls rebuild no rows.
   const list = $derived(model.history);

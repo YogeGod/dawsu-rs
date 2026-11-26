@@ -8,7 +8,7 @@
   const model = $derived(bridge.browser ?? emptyBrowser);
   // Rows sit one step in under the tree's top row (Mapset samples or the library folder).
   const nest = $derived(model.root ? 1 : 0);
-  const send = (...args) => globalThis.sampleBrowserAction?.(...args);
+  const send = (...args) => bridge.callAction("sampleBrowserAction", ...args);
   // Drag a sample onto a lane row (lane column or timeline) to make it that lane's sample.
   function dragStart(event, row) {
     if (model.busy || !event.dataTransfer) return;
