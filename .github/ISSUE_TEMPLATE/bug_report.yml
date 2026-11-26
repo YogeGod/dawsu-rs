@@ -1,0 +1,92 @@
+name: Bug Report
+description: Report a crash, audio issue, export problem, or unexpected behavior in dawsu!
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting an issue! Please check the [FAQ](https://github.com/YogeGod/dawsu-rs/blob/main/docs/wiki/FAQ.md) and [Reporting Bugs guide](https://github.com/YogeGod/dawsu-rs/blob/main/docs/wiki/Reporting-Bugs.md) first.
+        If dawsu! crashed, you can open your crash logs directly in the app via **Help → Open crash log folder**.
+
+  - type: input
+    id: version
+    attributes:
+      label: dawsu! version
+      description: Found in Preferences → Updates or the installer/ZIP filename (for example `1.2.0-alpha.1`).
+      placeholder: "v1.2.0-alpha.1"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install_type
+    attributes:
+      label: Installation method
+      options:
+        - Windows Setup Installer (`-setup.exe`)
+        - Windows Portable ZIP (`-portable.zip`)
+        - Built from source
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Start screen / Map opening / osu! Songs folder
+        - Timeline editing / Selection / Tools / Snap
+        - Audio playback / Output device / Waveform
+        - Shared Base layer / Export / Read-back check
+        - Drums / Drum detection / Node Graph / AI Stem separation
+        - Keysounds / Piano roll / VST3 / SF2-SFZ / MIDI
+        - osu! connection (Open from osu! / Reload in osu!)
+        - Crash / Installer / Auto-updater
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: environment
+    attributes:
+      label: OS and osu! client
+      description: Include your Windows version and whether you use osu!stable, osu!lazer, or both.
+      placeholder: "Windows 11 24H2, osu!lazer + osu!stable"
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened? (Expected vs. Actual)
+      description: Describe clearly what went wrong and what you expected to happen instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: |
+        Numbered steps from opening dawsu!. Does it also happen on the built-in **Try practice mapset** sandbox?
+      placeholder: |
+        1. Open dawsu! and click Try practice mapset
+        2. ...
+        3. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Crash log or error message (if any)
+      description: |
+        Open **Help → Open crash log folder** and paste the most recent `=== dawsu! crash report ===` block from `crash.log`, or any exact error text from a toast/dialog. Feel free to redact your Windows username in file paths.
+      render: text
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context (Audio / VST3 / Map info)
+      description: |
+        Optional: audio backend & buffer ms, VST3 plugin name or MIDI device, screenshots, or a small `.osu` `[HitObjects]`/`[TimingPoints]` snippet. Please do not upload copyrighted song audio.

@@ -1,52 +1,60 @@
-# dawsu! v1.1 (Alpha)
+# dawsu!
 
-dawsu! is a desktop editor for osu! hitsounds. It is a Tauri app with a Rust core and a Svelte 5 UI. This is an **Alpha**. Test it on copies of your mapsets. Downloads are on the [releases page](https://github.com/YogeGod/dawsu-rs/releases).
+A desktop hitsound and keysound editor built for osu! mappers. **dawsu!** turns every sample in your mapset into a timeline lane right under the song waveform and gameplay objects so you can draw, balance, share across difficulties, and export safely.
 
-## What it does
+> [!NOTE]
+> **v1.2 Alpha** — Available for Windows 10/11 (x64). Downloads are on the [GitHub Releases page](https://github.com/YogeGod/dawsu-rs/releases) as a Setup installer and Portable ZIP (always verified against `SHA256SUMS.txt`).
 
-- **Hitsound timeline editor.** Open a `.osu` or `.osz`. Edit hits on real sample lanes with seven tools, selection and clipboard, undo/redo, snap modes, volume editing, lane mute/solo/audition, bookmarks, cycle and pitch-preserving playback speed.
-- **Shared Base Layer across diffs.** Hitsounds you place once can carry over to the other difficulties of the mapset.
-- **Drum VST3 and Keysounding Piano Roll.** Host a drum VST3, and play it live from the timeline. Write keysounds in a piano roll with live MIDI recording.
-- **Node Graph and Drum Detection.** Detect kick and snare hits and turn them into hitsounds you can review before they are applied.
-- **Optional drum stem separation.** An on-demand CPU ONNX model splits the drums from the song. It is off until you ask for it.
-- **Safe export.** Save, Generate, Copy, `.osz` and Hitsound-only export write byte-identical output where nothing changed, keep backups outside the mapset, and show a plain-English review first.
-- **Auto-updater.** Downloads are checked against a SHA-256 hash before they install.
+![dawsu! hitsound timeline editor](docs/screenshots/timeline-editor.png)
 
-See [the feature ledger](FEATURE-COVERAGE.md) for what is verified and what is still open, and [NOW.md](NOW.md) for the current sprint.
+## Quick Start
 
-## Build and test
+1. Download the Setup installer or Portable ZIP from the [Releases page](https://github.com/YogeGod/dawsu-rs/releases) and open **dawsu!**.
+2. Complete the **Ready** checklist on the Start screen (**Audio**, **Songs folder**, and **Shortcuts** — pick **osu! editor controls** or **DAW-like keys**).
+3. Click **Try practice mapset** to explore a built-in 2-difficulty sandbox without touching any of your maps, or pick any mapset from your **Songs folder** search.
 
-Use the toolchain pinned by `rust-toolchain.toml` and the versions in `Cargo.lock`. The root workspace builds the Tauri editor from `apps/tauri` (ADR 0063 in the design vault).
+New to dawsu!? Read [Setting Up](docs/wiki/Setting-Up.md) and walk through [First Project](docs/wiki/First-Project.md).
 
-- `npm --prefix apps/tauri/ui run build`
-- `npm --prefix apps/tauri/ui test`
-- `node --test apps/tauri/tests/*.test.mjs`
-- `cargo clippy --workspace --all-targets --locked -- -D warnings`
-- `cargo test --workspace --locked`
-- `cargo build -p dawsu-tauri --locked`
-- `cargo run -p dawsu-tauri --locked -- "path/to/a/copied-difficulty.osu"`
+## What You Can Do
 
-The Windows binary is `dawsu-tauri.exe`. macOS and Linux build and runtime checks remain open.
+- **Start fast with 3 mapset paths:** Search your osu! Songs folder right from the Start screen, drag and drop a `.osu`, `.osz`, or mapset folder, use **Open from osu!**, or click **Try practice mapset**. Start a blank `[Hitsounds]` difficulty with **Custom samples only** or **12 osu! default lanes**, or edit any difficulty directly.
+- **Hitsound timeline editing:** Draw, select, erase, mute, grab, range-edit, and ramp hits across real sample lanes synced to the song waveform and gameplay objects. Switch between **Grid**, **Grid relative**, and **Objects** snap, stamp patterns with **Rhythm gallery**, tap hits live with `Numpad 1–9` or `A–L`, or use beat step-sequencer **Pads**.
+- **Volume, Mixer & playback speed:** Shape per-hit loudness in the **Volume** lane, balance individual lanes in the **Mixer**, audition or solo lanes, loop between L/R locators, and slow passages down to **50%** or **75%** with pitch preservation.
+- **Shared Base Layer across difficulties:** Capture a difficulty as the mapset's **Shared Base** and project it across your spread with live `matched`, `empty`, and `orphaned` counts, non-destructive per-difficulty **Lane rules**, and green-line-only **Volume curves** that create zero extra sample mixes.
+- **Drums, AI Drum Stems & Keysounding:**
+  - Switch to **Drums** mode with 11 built-in drum map presets, host Drum VST3 instruments, and bounce kits with a `.osz` 10 MB ranking-size gauge.
+  - Detect kicks and snares with **Drum hit detection…** or customize detection stages visually in **Node graph…**.
+  - Optionally isolate drums locally on your CPU with **Separate drums (AI)…** (`T` flips between Song and Drums; no audio is ever uploaded).
+  - Compose melodic keysounds in the inline **Keysounding Piano Roll** using the built-in `.sf2` / `.sfz` sampler, VST3 instruments, musical typing (`Alt+K`), live MIDI recording, MIDI import/export, mania hitsound import, and deduplicated bouncing.
+- **Verified Save & Export Review:** Untouched `.osu` lines stay byte-identical on **Save** (`Ctrl+S`), backups are saved outside your mapset folder (with **Revert mapset to original…** and **Undo revert**), and **Export…** (`Ctrl+E`) gives you target coverage bars, **▶ Listen** auditioning, line-by-line `.osu` diffs, Ranking Criteria sample auto-fix, and a 4-part pre-write read-back check.
 
-signalsmith-stretch needs a C++ compiler and libclang at build time. On this machine, set `LIBCLANG_PATH` to `E:/Claude/drum-onnx/venv311/Lib/site-packages/clang/native`. Cargo is `C:/Users/yogem/.cargo/bin/cargo.exe`. The isolated dependency cache for the unified workspace is `E:/dawsu-mixed-save-20261117/asio-local/cargo-home`. Keep build and temporary files on E:.
+![dawsu! Export review](docs/screenshots/export-review.png)
 
-### Local ASIO build on Windows
+- **osu! integration & auto-updates:** Open your active map with **Open from osu!**, keep edits safe when osu! saves externally, reload osu!stable (`Ctrl+L`) or osu!lazer after saving, and update safely with `SHA256SUMS.txt` verification.
 
-ASIO is available in the optional Tauri development build with `--features asio-local`. Set `CPAL_ASIO_DIR` to the extracted Steinberg ASIO SDK, set `LIBCLANG_PATH`, and load the MSVC x64 developer environment before running Cargo. Use a separate target directory for this build. The standard Windows build uses WASAPI, DirectSound and MME.
+## Guides & Documentation
 
-The ASIO driver is loaded when selected. While it is active, switch to WASAPI before changing the ASIO driver or buffer. Publication of an ASIO build requires the agreement and attribution recorded in the vault's ASIO decision.
+| Guide | What it covers |
+| --- | --- |
+| [Setting Up](docs/wiki/Setting-Up.md) | Installing on Windows, audio output, Songs folder, shortcuts, and connecting with osu! |
+| [First Project](docs/wiki/First-Project.md) | Using the built-in practice mapset, navigating the timeline, placing hits, and saving |
+| [Shared Base & Export](docs/wiki/Shared-Base-and-Export.md) | Multi-difficulty Shared Base, Lane rules, green-line Volume curves, and Export Review |
+| [Drums, Stems & Keysounds](docs/wiki/Drums-Stems-and-Keysounds.md) | Drum VST3 kits, AI drum stems, Drum Hit Detection, Node Graph, Piano Roll, and MIDI |
+| [FAQ](docs/wiki/FAQ.md) | File safety, backups, osu!lazer/osu!stable rules, updates, and common questions |
+| [Reporting Bugs](docs/wiki/Reporting-Bugs.md) | Finding crash logs, writing clear bug reports, and requesting features |
 
-## Tools
+## Platform Support & Alpha Status
 
-- `node tools/everyday-check.mjs --exe target/debug/dawsu-tauri.exe`: runs against a built exe. It uses the real editor like a mapper on a copy of a fixture map and reports one line per step ([AGENTS.md](AGENTS.md#verification)). Options: `--map`, `--shots`, `--json`, `--keep-profile`.
-- `node tools/ui-screenshot.mjs`: screenshots the built editor on a copied map.
-- `node tools/perf-measure.mjs`: measures load and playhead timings.
-- `tools/lazer-oracle`: checks osu! behaviour against osu!lazer ([its README](tools/lazer-oracle/README.md)).
+- **Windows 10/11 (x64):** Supported today (Setup installer and Portable ZIP).
+- **macOS & Linux:** Planned; builds and runtime checks are not yet available.
 
-These need Windows (WebView2), except the oracle.
+See [FEATURE-COVERAGE.md](FEATURE-COVERAGE.md) for the detailed capability and verification status of every feature.
 
-## User data and assets
+## Your Files & Credits
 
-dawsu! uses its own `dawsu-rs` app-data folder. Backups go there, outside the mapset. dawsu! never changes an original mapset unless you press Save.
+- **Mapset safety:** Opening a mapset never edits its files. Backups, Shared Base data, cached stems, projects, and crash logs are stored in `%LOCALAPPDATA%\dawsu-rs`, outside your osu! Songs folder.
+- **Default sounds:** dawsu! ships osu!'s 21 default hit and slider sounds unchanged from `ppy/osu-resources` under the **CC BY-NC 4.0** licence (non-commercial — no build of dawsu! may be sold). See [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
 
-dawsu! ships osu!'s 21 default hit and slider sounds, unchanged from ppy/osu-resources. They are CC BY-NC 4.0, so no build of dawsu! may be sold ([THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)). A default sounds folder chosen in Preferences comes first, and the shipped sounds fill in what it lacks.
+---
+
+*Building from source or contributing? See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).*

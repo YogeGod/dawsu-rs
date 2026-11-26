@@ -1,0 +1,47 @@
+name: Feature Request
+description: Suggest a new feature or workflow improvement for osu! hitsounding or keysounding
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Have an idea that would speed up your hitsounding or keysounding workflow? You can also check [FEATURE-COVERAGE.md](https://github.com/YogeGod/dawsu-rs/blob/main/FEATURE-COVERAGE.md) to see what is already planned or built.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Timeline editing / Tools / Shortcuts
+        - Start screen / Browser / Workflow
+        - Shared Base layer / Multi-diff export
+        - Drums / Drum detection / Node Graph / AI Stems
+        - Keysounds / Piano roll / Instruments / MIDI
+        - Audio / Mixer / Playback
+        - osu! integration
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What mapping problem does this solve?
+      description: Describe the friction or missing capability in your mapping workflow.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: How would you like it to work?
+      description: Describe the behavior, UI controls, or options you have in mind.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Current workaround or references
+      description: Optional — how do you handle this today (for example in the osu! editor, Mapping Tools, or a DAW)?

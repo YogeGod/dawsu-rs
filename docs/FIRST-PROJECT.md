@@ -1,45 +1,34 @@
 # First Project Walkthrough
 
-This guide walks you through a complete hitsounding session in **dawsu!**, from opening a mapset to checking coverage and exporting safely.
+This guide walks you through a complete hitsounding session in **dawsu!**, from opening the built-in practice mapset (or your own map) to balancing volumes and saving safely. See the full [wiki](wiki/First-Project.md) for all guides.
 
-## 1. Create a practice mapset (optional)
-
-If you want a safe practice mapset with two difficulties and built-in samples, run:
-
-```sh
-node tools/make-demo-mapset.mjs demo-mapset
-```
-
-This creates `[Hard].osu`, `[Normal].osu`, a short synthetic song, and three hitsound samples.
-
-## 2. Open a difficulty
+## 1. Open the Practice Mapset or Your Own Map
 
 1. Launch **dawsu!**.
-2. On the Start screen, either search your osu! Songs folder, drop a `.osu` or `.osz` file into the window, or click **Open map…** and choose `[Hard].osu`.
-3. Every sample in the mapset appears as a lane on the timeline over the song's waveform.
+2. To experiment with zero risk, click **Try practice mapset** on the Start screen. This opens a temporary 2-difficulty sandbox (`dawsu! Studio - dawsu! Demo Track [Hard]` and `[Normal]`) with a backing song and three samples (`drum-hitnormal.wav`, `drum-hitclap.wav`, `soft-hitwhistle.wav`) — it never touches your real maps, recent list, or backups.
+3. To work on your own mapset instead:
+   - Click any mapset in **Songs folder** on the Start screen to open the intake card, or drag and drop a `.osu`, `.osz`, or mapset folder anywhere onto the window, or use **Open map…** / **Import .osz…** / **Open from osu!**.
+   - Choose one of the three intake paths:
+     - **Start a dedicated `[Hitsounds]` diff → Custom samples only:** Starts blank with `0` lanes so you only see the `.wav` files you add or drop in.
+     - **Start a dedicated `[Hitsounds]` diff → 12 osu! default lanes:** Starts blank with osu!'s 12 default skin sounds pre-organized in Drum Map order.
+     - **Or edit a difficulty directly:** Opens an existing osu!standard difficulty with **Objects** snap and its existing sample lanes.
 
-## 3. Listen, slow down, or isolate drums
+## 2. Navigate the Timeline & Listen
 
-- Press **Space** to play or pause.
-- Use the playback speed buttons in the bottom bar (**50%**, **75%**, **100%**) to slow tricky passages down. Click **Pitch** to toggle pitch preservation on or off.
-- Open **Audio → Separate drum stem…** to isolate the song's drum stem on your CPU. Clicking the button downloads the verified model automatically, and pressing **T** switches between the song and the drum stem.
+![dawsu! hitsound timeline editor](screenshots/timeline-editor.png)
 
-## 4. Place and balance hits
+- **Play & seek:** Press `Space` to play or pause, click the timeline ruler to move the playhead, or drag across the upper ruler to set **L/R locators** and toggle **Cycle** looping.
+- **Slow down tricky passages:** Use the bottom-left speed buttons (**50%**, **75%**, **100%**, **125%**, **150%**) to slow down or speed up playback. Toggle **Pitch** to keep the song's original pitch while slowed down.
+- **Isolate drums while listening:** Click **+ Stem** on the `Song · objects` row (or **Playback → Separate drums (AI)…**) to generate a local CPU drum stem, then press `T` anytime to flip between the full song and drums only.
+- **Overview & snap:** Drag across the **Objects overview** strip at the bottom to jump anywhere in the song, and switch **Snap** between **Grid** and **Objects** on the top ribbon.
 
-- Pick **Draw** (or turn on **Pads** in the bottom bar for compact beat-step pads) and click a lane to place hits on the beat snap grid.
-- Drag a bar in the **volume controller** below the timeline to adjust loudness, or use the **Selection** card in the Inspector to change sample sets (`Soft | Normal | Drum`) and additions (`W | F | C`).
-- Every write dawsu! makes is a **byte-identical save**: lines you did not edit stay untouched byte for byte.
+## 3. Place, Tap & Balance Hits
 
-## 5. Share hitsounds across difficulties
+- **Draw hits:** Pick **Draw** (`2` in DAW-like keys, or hold `Alt` while using **Select**) and click or drag across a lane to place hits on the grid or objects.
+- **Step-sequencer Pads & Live Tapping:** Toggle **Pads** in the bottom status bar for beat-step pads on each lane, press `Numpad 1–9` to trigger lanes live, or arm **Tap record (`A–L / Numpad 1–9`)** via **Playback** to record taps in one Undo step.
+- **Volume, Mixer & Inspector:** Drag bars in the **Volume** lane (or switch to **Mixer** for per-lane Mute/Solo/faders), and use the **Selection** card in the Inspector to adjust sample sets (`Normal | Soft | Drum`), additions (`W | F | C`), slider body sounds, and **Rhythm gallery** presets.
 
-1. Open **Map → Shared Base layer…** and click **Capture current difficulty as Base**.
-2. Switch to the **Live diff tabs** list to inspect how `[Hard]`'s hits project onto `[Normal]` (`Matched`, `Empty`, and `Orphaned` counts).
-3. In the **Lane rules** tab, add per-difficulty rules (for example, mute a clap lane during a quiet section on `[Normal]` without changing the Base).
-4. In the **Volume curve** tab, draw a green-line-only volume curve (linear ramps or flat steps) to shape loudness across sections without creating extra sample mixes.
+## 4. Save Safely & Export Across Difficulties
 
-## 6. Review and export
-
-1. Press **Ctrl+E** (or **File → Export…**) to open the Export window.
-2. Check **Auto-fix samples** if you want dawsu! to trim leading silence and pad samples under 25 ms for osu! Ranking Criteria.
-3. Click **▶ Listen** on any target difficulty to audition its planned hitsounds before writing.
-4. Choose **Write to: Mapset (with backups)** to write directly with automatic backups, or **Hitsound-only folder** to export a separate standalone folder without touching your mapset.
+- Press `Ctrl+S` (**File → Save**) at any time — untouched `.osu` lines stay byte-identical and backups are kept outside your mapset folder.
+- Use **Map → Shared Base layer…** and **File → Export…** (`Ctrl+E`) to project hitsounds across difficulties, apply non-destructive lane rules or green-line volume curves, audition targets with **▶ Listen**, and verify every `.osu` file with the pre-write read-back check. See [Shared Base & Export](wiki/Shared-Base-and-Export.md) for the full walkthrough.
