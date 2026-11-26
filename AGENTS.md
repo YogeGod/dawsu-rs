@@ -32,9 +32,9 @@ GitHub runs first three on Windows for every PR changing more than `.md` files, 
 
 **Merge gate (Yoge, 2026-11-21):** nothing merges into `main`, by person or agent, unless everyday check passes on build of that exact commit. Paste its last line (`everyday check: N of M steps passed`) and commit id in PR. Never merge in same step that opens PR.
 
-**Git & docs hygiene:** Run `git fetch origin` before committing or pushing to `main`. After merging, delete the merged branch and refresh both `NOW.md` and `E:/Obsidian/Workspace/dawsu-rewrite/now.md`. Keep `AGENTS.md` and `NOW.md` in `caveman-compress` terse format.
+**Git & docs hygiene:** Run `git fetch origin` before committing or pushing to `main`. Commit `NOW.md` refresh on feature branch after code commit, `--ff-only` merge in `dawsu-rs-main`, push, then `checkout --detach origin/main` in feature worktree before `git branch -d`. Also refresh `E:/Obsidian/Workspace/dawsu-rewrite/now.md` and keep `AGENTS.md` + `NOW.md` in `caveman-compress` terse format.
 
-**Windows build note:** `signalsmith-stretch` requires `LIBCLANG_PATH` (this machine: `E:/Claude/drum-onnx/venv311/Lib/site-packages/clang/native`). Keep build and temp artifacts on `E:`.
+**Windows notes:** `signalsmith-stretch` requires `LIBCLANG_PATH` (this machine: `E:/Claude/drum-onnx/venv311/Lib/site-packages/clang/native`); keep build/temp artifacts on `E:`. NTFS dir mtime: never trust `DirEntry::metadata()` (`FindNextFileW` reads stale parent `$I30` cache) — filter with `entry.file_type()` and call `fs::metadata(&path)` for live mtime; sleep `>=30 ms` in mtime-mutation tests (~15.6 ms Windows clock tick).
 
 ## Context pointers
 
