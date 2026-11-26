@@ -61,6 +61,7 @@ pub(crate) struct MixFiles {
     pub(super) staged: Vec<StagedMix>,
     pub(super) combinations: Vec<export_settings::ExportCombination>,
     pub(super) index_schema: BTreeMap<String, u32>,
+    pub(super) verified_hits: Option<Hitsounds>,
 }
 
 #[derive(Clone)]
@@ -329,6 +330,7 @@ pub(super) fn stage_in_file_with_options(
             after_listing.dedup();
             dawsu_hitsounding::verify_compiled_osu(&file.to_bytes(), &hits, &after_listing)
                 .map_err(|mismatch| mismatch.to_string())?;
+            files.verified_hits = Some(hits);
             Ok((file, files))
         }
         Compiled::Done { problems, .. } => Err(format!(

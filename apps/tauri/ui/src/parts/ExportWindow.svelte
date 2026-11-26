@@ -3,10 +3,12 @@
   import { invoke } from "../lib/ipc.js";
   import { forwardSpace } from "../lib/space.js";
   import {
-    adoptChoices, afterPoll, baseDiff, baseStatus, blockDrops, choicesFrom, clampFallbackVolume, difficultyName,
-    divisorPresetFrom, exportLabel, exportState, exportSummary, fileName,
-    laneSwatches, matchWithinValid, minBeatsValid, openWarnings, optionsKey, ownWriteError, pollDelay,
-    previewRequest, statusLine, warningsLabel,
+    adoptChoices, afterPoll, baseByteIdentical, baseDiff, baseLineEndingsOnly, baseStatus,
+    baseVerification, blockDrops, choicesFrom, clampFallbackVolume, difficultyName,
+    divisorPresetFrom, exportDiffSummary, exportLabel, exportState, exportSummary,
+    exportVerificationError, fileName, laneSwatches, matchWithinValid, minBeatsValid,
+    openWarnings, optionsKey, ownWriteError, pollDelay, previewRequest, statusLine,
+    verificationSummary, warningsLabel,
   } from "../lib/export.js";
   import { reviewMixSections } from "../lib/review.js";
   import ExportOptionsForm from "./export/ExportOptionsForm.svelte";
@@ -50,12 +52,18 @@
   const divisorPreset = $derived(divisorPresetFrom(choices.sliderEndMute.divisors));
   const baseText = $derived(baseStatus(status.preview));
   const baseOsuDiff = $derived(choices.base ? baseDiff(status.preview) : null);
+  const baseVerify = $derived(choices.base ? baseVerification(status.preview) : null);
+  const baseIdentical = $derived(choices.base ? baseByteIdentical(status.preview) : false);
+  const baseLineEndings = $derived(choices.base ? baseLineEndingsOnly(status.preview) : false);
   // Which .wav files the export creates or reuses, and how volumes are written.
   const mixInfo = $derived(reviewMixSections(status.preview));
   const summary = $derived(exportSummary(status.preview, view?.targets, choices));
+  const diffSummary = $derived(exportDiffSummary(status.preview, view?.targets, choices));
+  const verification = $derived(verificationSummary(status.preview));
+  const verificationError = $derived(exportVerificationError(status.preview, view?.targets, choices));
   const line = $derived(statusLine({
     view, pollError, actionError, writeError: ownWriteError(lastRun, view),
-    stale: status.stale, running: !!run, problems,
+    verificationError, stale: status.stale, running: !!run, problems,
   }));
   const warnings = $derived(openWarnings(showWarnings, line, problems));
 
@@ -271,6 +279,9 @@
         {status}
         {baseText}
         {baseOsuDiff}
+        baseVerification={baseVerify}
+        baseByteIdentical={baseIdentical}
+        baseLineEndingsOnly={baseLineEndings}
         {listeningTarget}
         {dryRunFiles}
         {dryRunBusy}
@@ -281,7 +292,7 @@
     {/if}
   </div>
 
-  <ExportReviewPane {choices} {mixInfo} {summary} />
+  <ExportReviewPane {choices} {mixInfo} {summary} {diffSummary} {verification} />
 
   <footer class="actions">
     <div class="status" role="status">

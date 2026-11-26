@@ -1,7 +1,9 @@
 <script>
   import {
-    baseName, difficultyName, fileName, targetCounts, targetCoverageBins, targetCoveragePct, targetDiff,
+    baseName, difficultyName, fileName, targetByteIdentical, targetCounts,
+    targetCoverageBins, targetCoveragePct, targetDiff, targetLineEndingsOnly, targetVerification,
   } from "../../lib/export.js";
+  import OsuDiffDrawer from "./OsuDiffDrawer.svelte";
 
   let {
     view,
@@ -9,6 +11,9 @@
     status,
     baseText = "",
     baseOsuDiff = null,
+    baseVerification = null,
+    baseByteIdentical = false,
+    baseLineEndingsOnly = false,
     listeningTarget = null,
     dryRunFiles = null,
     dryRunBusy = false,
@@ -16,6 +21,28 @@
     ontogglelisten,
     onrundryrun,
   } = $props();
+
+  let openDiffs = $state({});
+
+  function toggleDiff(key) {
+    openDiffs = { ...openDiffs, [key]: !openDiffs[key] };
+  }
+
+  function setDiffOpen(key, next) {
+    if (!!openDiffs[key] !== next) {
+      openDiffs = { ...openDiffs, [key]: next };
+    }
+  }
+
+  function failureText(report) {
+    if (!report) return "";
+    const failed = report.checks?.find(check => check.passed === false);
+    const detail = report.failureMessage
+      || (failed ? (failed.detail ? `${failed.label}: ${failed.detail}` : failed.label) : "Read-back check failed.");
+    const ms = Number.isFinite(report.failureTimeMs) ? Math.round(report.failureTimeMs) : null;
+    const hasTime = ms !== null && new RegExp(`\\b${ms}\\s*ms\\b`, "i").test(detail);
+    return ms !== null && !hasTime ? `${ms} ms — ${detail}` : detail;
+  }
 </script>
 
 <ul class="targets">
@@ -26,6 +53,27 @@
         <span class="pill">{baseName}</span>
         <span class="role">Base difficulty</span>
         <span class="spacer"></span>
+        {#if choices.base}
+          {#if baseOsuDiff}
+            <button type="button" class="diff-btn"
+              aria-label="Toggle .osu diff for base difficulty"
+              aria-expanded={!!openDiffs.__base}
+              aria-controls="osu-diff-base"
+              onclick={() => toggleDiff("__base")}>
+              Diff <span class="osu-diff-add">+{baseOsuDiff.added}</span> / <span class="osu-diff-rem">-{baseOsuDiff.removed}</span>
+            </button>
+          {:else if baseByteIdentical}
+            <span class="unchanged-pill">No .osu changes</span>
+          {:else if baseLineEndingsOnly}
+            <span class="unchanged-pill">Line endings only</span>
+          {/if}
+          {#if baseVerification}
+            <span class="verify-badge" class:ok={baseVerification.passed} class:fail={!baseVerification.passed}>
+              <span aria-hidden="true">{baseVerification.passed ? "✓" : "✕"}</span>
+              {baseVerification.passed ? "Verified" : "Check failed"}
+            </span>
+          {/if}
+        {/if}
         <button type="button" class="switch" role="switch" aria-checked={choices.base}
           aria-label="Include the base hitsound difficulty"
           onclick={() => (choices.base = !choices.base)}></button>
@@ -42,37 +90,28 @@
           Slider slide, whistle and tick audio
         </label>
       </div>
-      {#if baseOsuDiff}
-        <details class="osu-diff">
-          <summary class="osu-diff-toggle">
-            Compare <code>.osu</code>
-            (<span class="osu-diff-add">+{baseOsuDiff.added}</span> / <span class="osu-diff-rem">-{baseOsuDiff.removed}</span> lines)
-          </summary>
-          <div class="osu-diff-body">
-            {#each baseOsuDiff.groups as group, gi (gi)}
-              {#if group.section}<div class="osu-diff-section">{group.section}</div>{/if}
-              {#each group.entries as entry, ei (ei)}
-                <div class="osu-diff-line {entry.kind}">
-                  <span class="osu-diff-ln">{entry.line}</span>
-                  <span class="osu-diff-sign">{entry.kind === "added" ? "+" : "-"}</span>
-                  <span class="osu-diff-text">{entry.text}</span>
-                </div>
-              {/each}
-            {/each}
-            {#if baseOsuDiff.truncated > 0}
-              <div class="osu-diff-more">… {baseOsuDiff.truncated} more changed {baseOsuDiff.truncated === 1 ? "line" : "lines"}</div>
-            {/if}
-          </div>
-        </details>
+      {#if choices.base && baseVerification && !baseVerification.passed}
+        <div class="verify-alert" role="status">{failureText(baseVerification)}</div>
+      {/if}
+      {#if choices.base && baseOsuDiff}
+        <OsuDiffDrawer
+          diff={baseOsuDiff}
+          open={!!openDiffs.__base}
+          onopenchange={next => setDiffOpen("__base", next)}
+          id="osu-diff-base"
+        />
       {/if}
     </div>
   </li>
-  {#each view.targets ?? [] as path (path)}
+  {#each view.targets ?? [] as path, idx (path)}
     {@const on = !choices.leftOut.includes(fileName(path))}
     {@const counts = on ? targetCounts(status.preview, path) : null}
     {@const coveragePct = on ? targetCoveragePct(status.preview, path) : null}
     {@const coverageBins = on ? targetCoverageBins(status.preview, path) : []}
     {@const diff = on ? targetDiff(status.preview, path) : null}
+    {@const verification = on ? targetVerification(status.preview, path) : null}
+    {@const byteIdentical = on ? targetByteIdentical(status.preview, path) : false}
+    {@const lineEndingsOnly = on ? targetLineEndingsOnly(status.preview, path) : false}
     <li class="target" class:off={!on}>
       <span class="port" aria-hidden="true"></span>
       <div class="card">
@@ -86,6 +125,25 @@
               onclick={() => ontogglelisten(path)}>
               {listeningTarget === path ? "■ Stop" : "▶ Listen"}
             </button>
+            {#if diff}
+              <button type="button" class="diff-btn"
+                aria-label={`Toggle .osu diff for ${difficultyName(path)}`}
+                aria-expanded={!!openDiffs[path]}
+                aria-controls={`osu-diff-${idx}`}
+                onclick={() => toggleDiff(path)}>
+                Diff <span class="osu-diff-add">+{diff.added}</span> / <span class="osu-diff-rem">-{diff.removed}</span>
+              </button>
+            {:else if byteIdentical}
+              <span class="unchanged-pill">No .osu changes</span>
+            {:else if lineEndingsOnly}
+              <span class="unchanged-pill">Line endings only</span>
+            {/if}
+            {#if verification}
+              <span class="verify-badge" class:ok={verification.passed} class:fail={!verification.passed}>
+                <span aria-hidden="true">{verification.passed ? "✓" : "✕"}</span>
+                {verification.passed ? "Verified" : "Check failed"}
+              </span>
+            {/if}
           {/if}
           {#if counts}<span class="changed">{counts.changed} changed</span>{/if}
           <button type="button" class="switch" role="switch" aria-checked={on}
@@ -114,28 +172,16 @@
             <span class="coverage-fill" style:width={`${coveragePct}%`}></span>
           </div>
         {/if}
+        {#if on && verification && !verification.passed}
+          <div class="verify-alert" role="status">{failureText(verification)}</div>
+        {/if}
         {#if diff}
-          <details class="osu-diff">
-            <summary class="osu-diff-toggle">
-              Compare <code>.osu</code>
-              (<span class="osu-diff-add">+{diff.added}</span> / <span class="osu-diff-rem">-{diff.removed}</span> lines)
-            </summary>
-            <div class="osu-diff-body">
-              {#each diff.groups as group, gi (gi)}
-                {#if group.section}<div class="osu-diff-section">{group.section}</div>{/if}
-                {#each group.entries as entry, ei (ei)}
-                  <div class="osu-diff-line {entry.kind}">
-                    <span class="osu-diff-ln">{entry.line}</span>
-                    <span class="osu-diff-sign">{entry.kind === "added" ? "+" : "-"}</span>
-                    <span class="osu-diff-text">{entry.text}</span>
-                  </div>
-                {/each}
-              {/each}
-              {#if diff.truncated > 0}
-                <div class="osu-diff-more">… {diff.truncated} more changed {diff.truncated === 1 ? "line" : "lines"}</div>
-              {/if}
-            </div>
-          </details>
+          <OsuDiffDrawer
+            {diff}
+            open={!!openDiffs[path]}
+            onopenchange={next => setDiffOpen(path, next)}
+            id={`osu-diff-${idx}`}
+          />
         {/if}
       </div>
     </li>
@@ -216,9 +262,14 @@
     box-shadow: var(--shadow-card);
   }
   .off .card { opacity: .52; }
-  .line { display: flex; align-items: center; gap: 10px; }
-  .spacer { flex: 1; }
+  .line { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; }
+  .spacer { flex: 1; min-width: 8px; }
   .pill {
+    min-width: 0;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
     padding: 2px 8px;
     border-radius: 6px;
     background: var(--editor-selected);
@@ -252,78 +303,9 @@
   .count.unmatched::before { background: var(--editor-error); }
   .count.replaced::before, .count.kept::before, .count.muted::before { background: var(--editor-warning); }
 
-  .osu-diff {
-    margin-top: 10px;
-    border-top: 1px solid var(--editor-border);
-    padding-top: 8px;
-  }
-  .osu-diff-toggle {
-    cursor: pointer;
-    color: var(--editor-secondary);
-    font-size: 12px;
-    user-select: none;
-    list-style-position: outside;
-  }
-  .osu-diff-toggle code {
-    font-family: var(--font-mono);
-    font-size: 11px;
-  }
   .osu-diff-add { color: var(--editor-play); font-variant-numeric: tabular-nums; }
   .osu-diff-rem { color: var(--editor-error); font-variant-numeric: tabular-nums; }
-  .osu-diff-body {
-    margin-top: 8px;
-    max-height: 220px;
-    overflow: auto;
-    border-radius: 6px;
-    background: var(--editor-ink);
-    box-shadow: var(--shadow-well);
-    font-family: var(--font-mono);
-    font-size: 11px;
-    line-height: 1.45;
-  }
-  .osu-diff-section {
-    padding: 4px 10px 2px;
-    color: var(--editor-accent);
-    font-weight: 600;
-    background: rgba(255, 255, 255, .03);
-    border-top: 1px solid var(--editor-border);
-  }
-  .osu-diff-section:first-child { border-top: 0; }
-  .osu-diff-line {
-    display: grid;
-    grid-template-columns: 44px 16px 1fr;
-    padding: 1px 10px 1px 6px;
-    white-space: pre;
-  }
-  .osu-diff-line.added {
-    background: rgba(52, 199, 89, .10);
-    color: var(--editor-text);
-  }
-  .osu-diff-line.removed {
-    background: rgba(255, 69, 58, .10);
-    color: var(--editor-text);
-  }
-  .osu-diff-ln {
-    text-align: right;
-    padding-right: 8px;
-    color: var(--editor-disabled);
-    font-variant-numeric: tabular-nums;
-    user-select: none;
-  }
-  .osu-diff-sign {
-    text-align: center;
-    font-weight: 600;
-    user-select: none;
-  }
-  .osu-diff-line.added .osu-diff-sign { color: var(--editor-play); }
-  .osu-diff-line.removed .osu-diff-sign { color: var(--editor-error); }
-  .osu-diff-text { min-width: 0; }
-  .osu-diff-more {
-    padding: 5px 10px;
-    color: var(--editor-muted);
-    border-top: 1px solid var(--editor-border);
-    font-style: italic;
-  }
+  .diff-btn,
   .listen-btn {
     height: 26px;
     padding: 0 11px;
@@ -334,17 +316,61 @@
     font: inherit;
     font-size: 11px;
     font-weight: 600;
+    font-variant-numeric: tabular-nums;
     cursor: pointer;
     white-space: nowrap;
   }
+  .diff-btn:hover:not(:disabled),
   .listen-btn:hover:not(:disabled) {
     border-color: var(--editor-accent);
     background: var(--editor-hover);
   }
+  .diff-btn[aria-expanded="true"],
   .listen-btn[aria-pressed="true"] {
     border-color: var(--editor-accent);
     background: var(--editor-accent);
     color: var(--editor-accentink);
+  }
+  .diff-btn[aria-expanded="true"] .osu-diff-add,
+  .diff-btn[aria-expanded="true"] .osu-diff-rem {
+    color: inherit;
+  }
+  .unchanged-pill,
+  .verify-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    height: 24px;
+    padding: 0 8px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+  .unchanged-pill {
+    background: var(--editor-chrome);
+    border: 1px solid var(--editor-border);
+    color: var(--editor-muted);
+  }
+  .verify-badge.ok {
+    background: rgba(52, 199, 89, .14);
+    border: 1px solid rgba(52, 199, 89, .38);
+    color: var(--editor-play);
+  }
+  .verify-badge.fail {
+    background: rgba(255, 69, 58, .16);
+    border: 1px solid rgba(255, 69, 58, .45);
+    color: var(--editor-error);
+  }
+  .verify-alert {
+    margin-top: 10px;
+    padding: 8px 10px;
+    border-radius: 6px;
+    background: rgba(255, 69, 58, .12);
+    border: 1px solid rgba(255, 69, 58, .4);
+    color: var(--editor-error);
+    font-size: 12px;
+    line-height: 1.4;
   }
   .coverage-pct {
     margin-left: auto;

@@ -292,6 +292,8 @@ pub struct TargetPlan {
     pub muted: usize,
     /// Unmatched target gameplay object edges given the optional fallback sound.
     pub fallback_applied: usize,
+    /// Intended post-Copy hitsound state used for pre-write read-back verification.
+    pub expected_hitsounds: Hitsounds,
 }
 
 #[derive(Debug, Clone)]
@@ -818,6 +820,7 @@ fn plan_target(ctx: &CopyContext<'_>, target: &OsuFile, is_silent: &mut dyn FnMu
         kept_from_silent,
         merged,
         fallback_applied,
+        expected_hitsounds: to,
     })))
 }
 

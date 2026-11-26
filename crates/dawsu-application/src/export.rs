@@ -537,6 +537,40 @@ impl Application {
         if !matches {
             return Err("The map or the options changed since this preview. Preview again.".into());
         }
+        if !self.export.preview.as_ref().is_some_and(|p| p.plan.verification.passed) {
+            let reason = self
+                .export
+                .preview
+                .as_ref()
+                .and_then(|p| {
+                    p.plan.verification.first_error.clone().or_else(|| {
+                        p.plan.verification.files.iter().find(|f| !f.passed).and_then(|f| {
+                            f.checks.iter().find(|c| !c.passed).map(|c| {
+                                if c.detail.is_empty() {
+                                    format!("{} ({})", f.file_name, c.label)
+                                } else {
+                                    format!("{} ({}: {})", f.file_name, c.label, c.detail)
+                                }
+                            })
+                        })
+                    })
+                })
+                .unwrap_or_else(|| "Read-back verification failed.".into());
+            return Err(format!("Read-back check failed before writing: {reason}"));
+        }
+        let is_hitsound_only = self
+            .export
+            .preview
+            .as_ref()
+            .is_some_and(|p| p.options.write_mode == ExportWriteMode::HitsoundOnly);
+        if is_hitsound_only {
+            self.export
+                .preview
+                .as_ref()
+                .expect("checked above")
+                .plan
+                .verify_planned_files_for_export(true)?;
+        }
         let mut preview = self.export.preview.take().expect("checked above");
         let export_options = preview.options.clone();
         if export_options.write_mode == ExportWriteMode::HitsoundOnly {
@@ -749,8 +783,11 @@ impl Application {
                             .into(),
                     );
                 }
+                let mut pre_envelope_errors: std::collections::HashMap<PathBuf, (Option<f64>, String)> =
+                    std::collections::HashMap::new();
                 if thread_options.apply_volume_envelope {
                     let mut total_env_changes = 0usize;
+                    let folder_with_writes = plan.folder_listing_after_writes();
                     for planned_file in &mut plan.files {
                         let key = planned_file
                             .path
@@ -763,8 +800,73 @@ impl Application {
                             .unwrap_or(&shared_envelope);
                         if !env.is_empty() {
                             let (patched, changed) = apply_envelope_to_osu(&planned_file.file, env);
-                            planned_file.file = patched;
-                            total_env_changes += changed;
+                            if changed > 0 {
+                                let pre_bytes = planned_file.file.to_bytes();
+                                let pre_expected = planned_file.expected_hitsounds().cloned();
+                                if let Some(ref pre_exp) = pre_expected
+                                    && let Err(mismatch) = dawsu_hitsounding::verify_compiled_osu(
+                                        &pre_bytes,
+                                        pre_exp,
+                                        &folder_with_writes,
+                                    )
+                                {
+                                    let msg = mismatch.time_ms.map_or_else(
+                                        || mismatch.detail.clone(),
+                                        |t| format!("Pre-curve mismatch at {t:.0} ms: {}", mismatch.detail),
+                                    );
+                                    pre_envelope_errors
+                                        .insert(planned_file.path.clone(), (mismatch.time_ms, msg));
+                                }
+                                planned_file.replace_file(patched);
+                                total_env_changes += changed;
+                                let post_bytes = planned_file.file.to_bytes();
+                                let post_read = dawsu_osu_format::OsuFile::read(post_bytes);
+                                match dawsu_hitsounding::decompile(
+                                    &post_read.file,
+                                    &folder_with_writes,
+                                    &|| cancel.load(Ordering::Relaxed),
+                                    &mut |_, _| {},
+                                ) {
+                                    dawsu_hitsounding::Decompiled::Done(post_hits) => {
+                                        if let Some(ref pre_exp) = pre_expected
+                                            && let Err(mismatch) =
+                                                dawsu_hitsounding::verify_envelope_preserved(
+                                                    pre_exp,
+                                                    &post_hits,
+                                                )
+                                        {
+                                            let msg = mismatch.time_ms.map_or_else(
+                                                || mismatch.detail.clone(),
+                                                |t| {
+                                                    format!(
+                                                        "Volume curve mismatch at {t:.0} ms: {}",
+                                                        mismatch.detail
+                                                    )
+                                                },
+                                            );
+                                            pre_envelope_errors
+                                                .entry(planned_file.path.clone())
+                                                .or_insert((mismatch.time_ms, msg));
+                                        }
+                                        planned_file.set_verify_hitsounds(post_hits);
+                                    }
+                                    dawsu_hitsounding::Decompiled::UnsupportedMode { mode } => {
+                                        pre_envelope_errors
+                                            .entry(planned_file.path.clone())
+                                            .or_insert_with(|| {
+                                                (
+                                                    None,
+                                                    format!(
+                                                        "Volume curve output parsed as unsupported game mode {mode}."
+                                                    ),
+                                                )
+                                            });
+                                    }
+                                    dawsu_hitsounding::Decompiled::Cancelled => {
+                                        return Err("Export preview cancelled.".into());
+                                    }
+                                }
+                            }
                         }
                     }
                     if total_env_changes > 0 {
@@ -808,7 +910,7 @@ impl Application {
                             .unwrap_or_default();
                         let (restored, _) =
                             manifest_history.restore_ticks(&diff_name, &planned_file.file);
-                        planned_file.file = restored;
+                        planned_file.replace_file(restored);
 
                         let target_hits = match dawsu_hitsounding::decompile(
                             &planned_file.file,
@@ -906,7 +1008,7 @@ impl Application {
                                     &planned_file.file,
                                     &writes,
                                 );
-                            planned_file.file = patched;
+                            planned_file.replace_file(patched);
                             total_ticks += applied;
                             plan.tick_writes.insert(diff_name, writes);
                         }
@@ -924,17 +1026,8 @@ impl Application {
                 if clean_redundant_greenlines {
                     plan.clean_redundant_greenlines();
                 }
-                // Read-back verification check: ensure every planned `.osu` parses cleanly.
-                for planned_file in &plan.files {
-                    let bytes = planned_file.file.to_bytes();
-                    let reparsed = dawsu_osu_format::OsuFile::read(bytes);
-                    if reparsed.file.format_version().is_none() {
-                        return Err(format!(
-                            "Read-back verification failed for {}: missing osu file format header.",
-                            planned_file.path.display()
-                        ));
-                    }
-                }
+                let is_hitsound_only = thread_options.write_mode == ExportWriteMode::HitsoundOnly;
+                let _ = plan.verify_and_finalize(&source, &pre_envelope_errors, is_hitsound_only);
                 Ok(plan)
             });
             let _ = send.send((result, problems));
@@ -2224,5 +2317,240 @@ mod tests {
             sibling_used_path.is_file(),
             "sample still referenced by unselected sibling diff must be preserved"
         );
+    }
+
+    #[test]
+    fn export_preview_volume_envelope_and_lt5_untouched_pass_verification() {
+        let scratch = Scratch::new("export-envelope-verify");
+        let source_path = scratch.path("Source.osu").canonicalize().unwrap_or_else(|_| scratch.path("Source.osu"));
+        let target_path = scratch.path("Target.osu");
+        let src_bytes = "osu file format v14\n\n[General]\nMode:0\nAudioFilename:a.mp3\n\n[Metadata]\nVersion:Source\n\n[Events]\n\n[TimingPoints]\n0,500,4,1,0,100,1,0\n\n[HitObjects]\n256,192,1000,1,2,0:0:0:80:\n256,192,2000,1,0,0:0:0:3:\n";
+        let dst_bytes = "osu file format v14\n\n[General]\nMode:0\nAudioFilename:a.mp3\n\n[Metadata]\nVersion:Target\n\n[Events]\n\n[TimingPoints]\n0,500,4,1,0,100,1,0\n\n[HitObjects]\n256,192,1000,1,0,0:0:0:0:\n256,192,2000,1,0,0:0:0:3:\n";
+        std::fs::write(&source_path, src_bytes).unwrap();
+        std::fs::write(&target_path, dst_bytes).unwrap();
+        let source_canon = source_path.canonicalize().unwrap();
+        let target_canon = target_path.canonicalize().unwrap();
+
+        let mut app = opened(&source_canon);
+        app.shared_base_set_volume_envelope(
+            None,
+            VolumeEnvelope {
+                points: vec![dawsu_hitsounding::volume_envelope::VolumePoint {
+                    time_ms: 0,
+                    volume: 75,
+                    curve: dawsu_hitsounding::volume_envelope::CurveKind::Step,
+                }],
+            },
+        )
+        .unwrap();
+        let id = app
+            .request_export_preview(ExportOptions {
+                targets: vec![target_canon],
+                apply_volume_envelope: true,
+                ..ExportOptions::default()
+            })
+            .unwrap();
+        wait_preview(&mut app);
+        let preview = app.export.preview.as_ref().expect("preview should finish");
+        assert!(
+            preview.plan.verification.passed,
+            "expected envelope preview to verify cleanly, got: {:?}",
+            preview.plan.verification.files
+        );
+        let diff = preview.plan.files[0].diff_summary();
+        assert!(diff.added > 0);
+        assert!(preview.plan.files[0].verification().is_some_and(|v| v.passed));
+        app.run_export(id).unwrap();
+        wait_main(&mut app);
+        assert_eq!(app.export_status().write_error, None);
+    }
+
+    #[test]
+    fn export_preview_tick_render_and_clean_greenlines_pass_verification() {
+        let scratch = Scratch::new("export-tick-clean-verify");
+        let source_path = scratch.path("Source.osu");
+        let target_path = scratch.path("Target.osu");
+        let mut wav = Vec::from(dawsu_hitsounding::index_packing::STANDARD_SILENT_WAV);
+        let samples = [0i16, 10000, -10000, 5000, -5000, 0];
+        let data_bytes = (samples.len() * 2) as u32;
+        wav[4..8].copy_from_slice(&(36 + data_bytes).to_le_bytes());
+        wav[40..44].copy_from_slice(&data_bytes.to_le_bytes());
+        for s in samples {
+            wav.extend_from_slice(&s.to_le_bytes());
+        }
+        std::fs::write(scratch.path("normal-hitclap.wav"), &wav).unwrap();
+        std::fs::write(scratch.path("normal-hitnormal.wav"), &wav).unwrap();
+        let src_bytes = "osu file format v14\n\n[General]\nMode:0\nAudioFilename:a.mp3\n\n[Metadata]\nVersion:Source\n\n[Difficulty]\nSliderTickRate:1\nSliderMultiplier:1.4\n\n[Events]\n\n[TimingPoints]\n0,500,4,1,0,100,1,0\n500,-100,4,1,0,100,0,0\n500,-100,4,1,0,100,0,0\n\n[HitObjects]\n256,192,1000,1,2,0:0:0:80:\n256,192,1250,1,2,0:0:0:80:\n";
+        let dst_bytes = "osu file format v14\n\n[General]\nMode:0\nAudioFilename:a.mp3\n\n[Metadata]\nVersion:Target\n\n[Difficulty]\nSliderTickRate:1\nSliderMultiplier:1.4\n\n[Events]\n\n[TimingPoints]\n0,500,4,1,0,100,1,0\n\n[HitObjects]\n256,192,1000,2,0,B|356:192,1,280\n";
+        std::fs::write(&source_path, src_bytes).unwrap();
+        std::fs::write(&target_path, dst_bytes).unwrap();
+        let source_canon = source_path.canonicalize().unwrap();
+        let target_canon = target_path.canonicalize().unwrap();
+
+        let mut app = opened(&source_canon);
+        let id = app
+            .request_export_preview(ExportOptions {
+                targets: vec![target_canon],
+                tick_policy: dawsu_hitsounding::tick_render::TickPolicy::Render,
+                ..ExportOptions::default()
+            })
+            .unwrap();
+        wait_preview(&mut app);
+        let preview = app.export.preview.as_ref().expect("preview should exist");
+        assert!(
+            preview.plan.verification.passed,
+            "tick render + cleanup should pass read-back verification: {:?}",
+            preview.plan.verification.files
+        );
+        app.run_export(id).unwrap();
+        wait_main(&mut app);
+        assert_eq!(app.export_status().write_error, None);
+    }
+
+    #[test]
+    fn export_preview_preserves_legacy_map_warnings_and_blocks_corrupted_write() {
+        let scratch = Scratch::new("export-legacy-warn-and-gate");
+        let source_path = scratch.path("Source.osu");
+        let target_path = scratch.path("Target.osu");
+        let src_bytes = "osu file format v14\n\n[General]\nMode:0\nAudioFilename:a.mp3\n\n[Metadata]\nVersion:Source\n\n[Events]\n\n[TimingPoints]\n0,500,4,1,0,100,1,0\n\n[HitObjects]\n256,192,1000,1,2,0:0:0:0:\n";
+        // Include a pre-existing malformed line in [Events] so baseline has a legacy ReadWarning.
+        let dst_bytes = "osu file format v14\n\n[General]\nMode:0\nAudioFilename:a.mp3\n\n[Metadata]\nVersion:Target\n\n[Events]\nmalformed_legacy_event\n\n[TimingPoints]\n0,500,4,1,0,100,1,0\n\n[HitObjects]\n256,192,1000,1,0,0:0:0:0:\n";
+        std::fs::write(&source_path, src_bytes).unwrap();
+        std::fs::write(&target_path, dst_bytes).unwrap();
+        let source_canon = source_path.canonicalize().unwrap();
+        let target_canon = target_path.canonicalize().unwrap();
+
+        let mut app = opened(&source_canon);
+        let id = app
+            .request_export_preview(ExportOptions {
+                targets: vec![target_canon],
+                ..ExportOptions::default()
+            })
+            .unwrap();
+        wait_preview(&mut app);
+        {
+            let preview = app.export.preview.as_mut().expect("preview should finish");
+            assert!(
+                preview.plan.verification.passed,
+                "legacy baseline warning must not fail verification: {:?}",
+                preview.plan.verification.files
+            );
+            // Simulate a failed verification check to test hard pre-write gate & modal preservation.
+            preview.plan.verification.passed = false;
+            preview.plan.verification.failed_files = 1;
+            if let Some(first) = preview.plan.verification.files.first_mut() {
+                first.passed = false;
+                first.checks[2].passed = false;
+                first.checks[2].detail = "Injected read-back mismatch".into();
+            }
+        }
+        let err = app
+            .run_export_in(id, scratch.path("backups"))
+            .expect_err("export must block write when verification fails");
+        assert!(err.contains("Read-back check failed"), "unexpected error: {err}");
+        assert!(
+            app.export.preview.is_some(),
+            "failed export must preserve preview so modal keeps diagnostics"
+        );
+    }
+
+    #[test]
+    fn export_preview_hitsound_only_with_custom_wav_passes_verification() {
+        let scratch = Scratch::new("export-hsonly-custom-wav");
+        let source_path = scratch.path("Source.osu");
+        let target_path = scratch.path("Target.osu");
+        std::fs::write(
+            scratch.path("drum-hitclap5.wav"),
+            dawsu_hitsounding::index_packing::STANDARD_SILENT_WAV,
+        )
+        .unwrap();
+        let src_bytes = "osu file format v14\n\n[General]\nMode:0\nAudioFilename:a.mp3\n\n[Metadata]\nVersion:Source\n\n[Events]\n\n[TimingPoints]\n0,500,4,3,5,100,1,0\n\n[HitObjects]\n256,192,1000,1,2,0:0:0:0:\n";
+        let dst_bytes = "osu file format v14\n\n[General]\nMode:0\nAudioFilename:a.mp3\n\n[Metadata]\nVersion:Target\n\n[Events]\n\n[TimingPoints]\n0,500,4,1,0,100,1,0\n\n[HitObjects]\n256,192,1000,1,0,0:0:0:0:\n";
+        std::fs::write(&source_path, src_bytes).unwrap();
+        std::fs::write(&target_path, dst_bytes).unwrap();
+        let source_canon = source_path.canonicalize().unwrap();
+        let target_canon = target_path.canonicalize().unwrap();
+
+        let out_dir = scratch.path("isolated-out");
+        let mut app = opened(&source_canon);
+        let id = app
+            .request_export_preview(ExportOptions {
+                targets: vec![target_canon.clone()],
+                write_mode: export_manifest::ExportWriteMode::HitsoundOnly,
+                hitsound_only_dir: Some(out_dir.clone()),
+                ..ExportOptions::default()
+            })
+            .unwrap();
+        wait_preview(&mut app);
+        let preview = app.export.preview.as_ref().expect("preview should finish");
+        assert!(
+            preview.plan.verification.passed,
+            "HitsoundOnly with existing mapset sample must verify cleanly: {:?}",
+            preview.plan.verification.files
+        );
+        let samples_check = preview.plan.verification.files[0]
+            .checks
+            .iter()
+            .find(|c| c.id == "samples")
+            .unwrap();
+        assert!(samples_check.detail.contains("hitsound-only"));
+        app.run_export_in(id, scratch.path("backups")).unwrap();
+        assert!(out_dir.join("Target.osu").is_file());
+
+        // Also confirm HitsoundOnly blocks run_export_in if read-back verification fails.
+        let blocked_dir = scratch.path("blocked-out");
+        let blocked_id = app
+            .request_export_preview(ExportOptions {
+                targets: vec![target_canon.clone()],
+                write_mode: export_manifest::ExportWriteMode::HitsoundOnly,
+                hitsound_only_dir: Some(blocked_dir.clone()),
+                ..ExportOptions::default()
+            })
+            .unwrap();
+        wait_preview(&mut app);
+        if let Some(preview) = app.export.preview.as_mut() {
+            preview.plan.verification.passed = false;
+            preview.plan.verification.failed_files = 1;
+            if let Some(first) = preview.plan.verification.files.first_mut() {
+                first.passed = false;
+                first.checks[0].passed = false;
+                first.checks[0].detail = "Injected HitsoundOnly header failure".into();
+            }
+        }
+        let err = app
+            .run_export_in(blocked_id, scratch.path("backups"))
+            .expect_err("HitsoundOnly must also block writes when verification fails");
+        assert!(err.contains("Read-back check failed"), "unexpected error: {err}");
+        assert!(
+            !blocked_dir.exists(),
+            "blocked HitsoundOnly export must not create the output folder"
+        );
+        assert!(
+            app.export.preview.is_some(),
+            "blocked HitsoundOnly export must preserve preview diagnostics"
+        );
+
+        // Post-preview tampering of HitsoundOnly PlannedFile (valid header, wrong hitsound)
+        // must be caught by run_export_in even if cached plan.verification.passed is true.
+        let tampered_dir = scratch.path("tampered-out");
+        let tampered_id = app
+            .request_export_preview(ExportOptions {
+                targets: vec![target_canon.clone()],
+                write_mode: export_manifest::ExportWriteMode::HitsoundOnly,
+                hitsound_only_dir: Some(tampered_dir.clone()),
+                ..ExportOptions::default()
+            })
+            .unwrap();
+        wait_preview(&mut app);
+        if let Some(preview) = app.export.preview.as_mut() {
+            let tampered_osu = b"osu file format v14\n\n[General]\nMode:0\nAudioFilename:a.mp3\n\n[Metadata]\nVersion:Target\n\n[Events]\n\n[TimingPoints]\n0,500,4,1,0,100,1,0\n\n[HitObjects]\n256,192,1000,1,0,0:0:0:0:\n";
+            preview.plan.files[0].replace_file(dawsu_osu_format::OsuFile::read(tampered_osu.to_vec()).file);
+        }
+        let err = app
+            .run_export_in(tampered_id, scratch.path("backups"))
+            .expect_err("HitsoundOnly must block post-preview hitsound tampering");
+        assert!(err.contains("Save verification stopped"), "unexpected error: {err}");
+        assert!(!tampered_dir.exists(), "tampered HitsoundOnly must not write directory");
+        assert!(app.export.preview.is_some(), "tampered HitsoundOnly must preserve preview");
     }
 }

@@ -154,7 +154,24 @@ pub fn verify_compiled_osu(
         }
         Decompiled::Cancelled => unreachable!("read-back verification does not cancel"),
     };
+    compare_hitsounds(expected, &actual, false)
+}
 
+/// Confirms that applying a green-line volume envelope kept every non-loose hit moment's
+/// timestamp, place kind, and sample identities and every slider body's slide/whistle unchanged,
+/// while allowing scaled volumes in `5..=100` (or the untouched pre-envelope explicit volume).
+pub fn verify_envelope_preserved(
+    pre: &Hitsounds,
+    post: &Hitsounds,
+) -> Result<(), VerificationMismatch> {
+    compare_hitsounds(pre, post, true)
+}
+
+fn compare_hitsounds(
+    expected: &Hitsounds,
+    actual: &Hitsounds,
+    allow_envelope_volume: bool,
+) -> Result<(), VerificationMismatch> {
     let body_volume_overrides: HashMap<ObjectId, i32> = expected
         .bodies()
         .iter()
@@ -206,12 +223,18 @@ pub fn verify_compiled_osu(
         }
         let exp_vol = expected_moment_volume(exp, &body_volume_overrides);
         let act_vol = act.volume();
-        if exp_vol != act_vol {
+        let volume_ok = exp_vol == act_vol
+            || (allow_envelope_volume && (5..=100).contains(&act_vol));
+        if !volume_ok {
             return Err(VerificationMismatch {
                 time_ms: Some(exp.time().ms()),
-                detail: format!(
-                    "expected volume {exp_vol}%, but re-reading produced {act_vol}%",
-                ),
+                detail: if allow_envelope_volume {
+                    format!(
+                        "expected scaled volume in 5..=100% (or {exp_vol}%), but re-reading produced {act_vol}%",
+                    )
+                } else {
+                    format!("expected volume {exp_vol}%, but re-reading produced {act_vol}%")
+                },
             });
         }
     }
@@ -281,12 +304,20 @@ pub fn verify_compiled_osu(
         }
         let exp_vol = expected_body_volume(exp);
         let act_vol = act.volume();
-        if exp_vol != act_vol {
+        let volume_ok = exp_vol == act_vol
+            || (allow_envelope_volume && (5..=100).contains(&act_vol));
+        if !volume_ok {
             return Err(VerificationMismatch {
                 time_ms: Some(exp.start().ms()),
-                detail: format!(
-                    "expected slider body volume {exp_vol}%, but re-reading produced {act_vol}%",
-                ),
+                detail: if allow_envelope_volume {
+                    format!(
+                        "expected scaled slider body volume in 5..=100% (or {exp_vol}%), but re-reading produced {act_vol}%",
+                    )
+                } else {
+                    format!(
+                        "expected slider body volume {exp_vol}%, but re-reading produced {act_vol}%"
+                    )
+                },
             });
         }
     }
@@ -423,5 +454,82 @@ SliderTickRate:1\r\n\
         let err = verify_compiled_osu(b"not an osu file", &hits, &[]).unwrap_err();
         assert_eq!(err.time_ms, None);
         assert!(err.to_string().contains("format header"));
+    }
+
+    #[test]
+    fn envelope_preservation_accepts_scaled_volumes_and_untouched_low_object_volume() {
+        let raw = "\
+osu file format v14\r\n\
+[General]\r\nSampleSet: Normal\r\n\
+[Difficulty]\r\nSliderMultiplier:1.4\r\nSliderTickRate:1\r\n\
+[TimingPoints]\r\n0,500,4,1,0,70,1,0\r\n1000,-100,4,1,0,35,0,0\r\n\
+[HitObjects]\r\n256,192,1000,1,4,0:0:0:2:\r\n256,192,2000,1,8,0:0:0:50:\r\n";
+        let pre_file = OsuFile::read(raw.as_bytes().to_vec()).file;
+        let pre_hits = decompile_ok(&pre_file, &[]);
+        let env = crate::volume_envelope::VolumeEnvelope::new(vec![
+            crate::volume_envelope::VolumePoint {
+                time_ms: 1000,
+                volume: 50,
+                curve: crate::volume_envelope::CurveKind::Step,
+            },
+        ]);
+        let (post_file, changed) = crate::volume_envelope::apply_envelope_to_osu(&pre_file, &env);
+        assert!(changed > 0);
+        let post_hits = decompile_ok(&post_file, &[]);
+        assert_eq!(verify_envelope_preserved(&pre_hits, &post_hits), Ok(()));
+    }
+
+    #[test]
+    fn envelope_preservation_catches_changed_sample_with_timestamp() {
+        let base = OsuFile::read(SAMPLE_MAP.as_bytes().to_vec()).file;
+        let mut pre_hits = decompile_ok(&base, &[]);
+        pre_hits.add_hit(MomentId(0), skin(SampleSet::Normal, Hitsound::Clap));
+        let mut post_hits = pre_hits.clone();
+        post_hits.remove_hit(MomentId(0), &skin(SampleSet::Normal, Hitsound::Clap));
+        post_hits.add_hit(MomentId(0), skin(SampleSet::Normal, Hitsound::Finish));
+
+        let err = verify_envelope_preserved(&pre_hits, &post_hits).unwrap_err();
+        assert_eq!(err.time_ms, Some(1000.0));
+        assert!(err.detail.contains("normal-hitclap"));
+        assert!(err.detail.contains("normal-hitfinish"));
+    }
+
+    #[test]
+    fn envelope_preservation_rejects_below_5_percent_and_simultaneous_sample_change() {
+        let raw_bad_vol = "\
+osu file format v14\r\n\
+[General]\r\nSampleSet: Normal\r\n\
+[Difficulty]\r\nSliderMultiplier:1.4\r\nSliderTickRate:1\r\n\
+[TimingPoints]\r\n0,500,4,1,0,70,1,0\r\n\
+[HitObjects]\r\n256,192,1000,1,4,0:0:0:50:\r\n";
+        let pre_hits = decompile_ok(&OsuFile::read(raw_bad_vol.as_bytes().to_vec()).file, &[]);
+        let raw_lt5 = "\
+osu file format v14\r\n\
+[General]\r\nSampleSet: Normal\r\n\
+[Difficulty]\r\nSliderMultiplier:1.4\r\nSliderTickRate:1\r\n\
+[TimingPoints]\r\n0,500,4,1,0,70,1,0\r\n\
+[HitObjects]\r\n256,192,1000,1,4,0:0:0:3:\r\n";
+        let bad_vol_hits = decompile_ok(&OsuFile::read(raw_lt5.as_bytes().to_vec()).file, &[]);
+        let vol_err = verify_envelope_preserved(&pre_hits, &bad_vol_hits).unwrap_err();
+        assert_eq!(vol_err.time_ms, Some(1000.0));
+        assert!(vol_err.detail.contains("5..=100%"));
+
+        // Simultaneous valid envelope scaling (70 -> 80) AND altered slider whistle sound must still fail.
+        let raw_slider = "\
+osu file format v14\r\n\
+[General]\r\nSampleSet: Normal\r\n\
+[Difficulty]\r\nSliderMultiplier:1.4\r\nSliderTickRate:1\r\n\
+[TimingPoints]\r\n0,500,4,1,0,70,1,0\r\n\
+[HitObjects]\r\n256,192,1000,2,4,B|356:192,1,70\r\n";
+        let pre_slider = decompile_ok(&OsuFile::read(raw_slider.as_bytes().to_vec()).file, &[]);
+        let raw_slider_mut = "\
+osu file format v14\r\n\
+[General]\r\nSampleSet: Normal\r\n\
+[Difficulty]\r\nSliderMultiplier:1.4\r\nSliderTickRate:1\r\n\
+[TimingPoints]\r\n0,500,4,1,0,80,1,0\r\n\
+[HitObjects]\r\n256,192,1000,2,2,B|356:192,1,70\r\n";
+        let post_slider = decompile_ok(&OsuFile::read(raw_slider_mut.as_bytes().to_vec()).file, &[]);
+        let sim_err = verify_envelope_preserved(&pre_slider, &post_slider).unwrap_err();
+        assert_eq!(sim_err.time_ms, Some(1000.0));
     }
 }

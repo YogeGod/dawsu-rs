@@ -8,7 +8,7 @@ use crate::{
 use dawsu_audio::{AudioClip, ScheduledSound, decode_with_cancel};
 use dawsu_foundation::SampleIdentity;
 use dawsu_hitsounding::{
-    Compiled, Decompiled, MomentId, Place, Placement, compile, decompile,
+    Compiled, Decompiled, Hitsounds, MomentId, Place, Placement, compile, decompile,
     lazer::control_points::offset_for, rules::played_volume,
 };
 use dawsu_osu_format::OsuFile;
@@ -34,7 +34,7 @@ pub(super) fn stage(
     input: &StageInput<'_>,
     file: &mut OsuFile,
     cancel: &dyn Fn() -> bool,
-) -> Result<Vec<StagedMix>, String> {
+) -> Result<(Vec<StagedMix>, Option<Hitsounds>), String> {
     let StageInput { source, root, defaults, previous, already_staged, format } = *input;
     let offset = offset_for(file.format_version());
     let mut groups = BTreeMap::<i64, Vec<Layer>>::new();
@@ -61,7 +61,7 @@ pub(super) fn stage(
         }
     }
     if groups.is_empty() {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), None));
     }
 
     let previous_file = OsuFile::read(previous.to_vec()).file;
@@ -170,7 +170,7 @@ pub(super) fn stage(
             problems,
         } if problems.is_empty() => {
             *file = compiled;
-            Ok(staged)
+            Ok((staged, Some(hits)))
         }
         Compiled::Done { problems, .. } => Err(format!(
             "Slider audio could not be placed on {} circles",
@@ -223,7 +223,7 @@ mod tests {
         assert_eq!(native.len(), 2);
         let mut file = plain.clone();
         let defaults = scratch.path("defaults");
-        let assets = stage(
+        let (assets, _) = stage(
             &StageInput {
                 source: &source,
                 root: &root,
@@ -277,7 +277,7 @@ mod tests {
         mixes::publish(&assets, None, &|| false).unwrap().keep();
         let mut repeat = plain.clone();
         let prev_bytes = file.to_bytes();
-        let reused = stage(
+        let (reused, _) = stage(
             &StageInput {
                 source: &source,
                 root: &root,

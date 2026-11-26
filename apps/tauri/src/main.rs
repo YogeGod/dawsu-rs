@@ -240,39 +240,34 @@ fn export_snapshot(app: &Application, cache: &mut ExportCache) -> Value {
             "target": problem.target, "timeline": problem.timeline,
             "time": problem.time, "message": problem.message,
         })).collect::<Vec<_>>(),
-        "preview": status.preview.map(|preview| json!({
-            "id": preview.id,
-            "origin": "export",
-            "stale": status.stale,
-            "staleReason": status.stale_reason.map(|reason| match reason {
-                dawsu_application::Stale::Map => "map",
-                dawsu_application::Stale::MergeSettings => "mergeSettings",
-            }),
-            "source": preview.plan.source,
-            "version": preview.plan.version,
-            "label": preview.plan.label,
-            "details": preview.plan.details,
-            "files": preview.plan.files.iter().map(|file| &file.path).collect::<Vec<_>>(),
-            // The base hitsound difficulty, and whether it replaces the one Generate made before.
-            "base": preview.plan.generated_file().and_then(|path| preview.plan.files.iter().find(|file| file.path == path))
-                .map(|file| {
-                    let diff = file.diff_summary();
-                    let mut entry = json!({ "path": file.path, "replaces": file.expected.is_some() });
-                    if !diff.is_empty() {
-                        entry["diff"] = json!(diff);
-                    }
-                    entry
-                }),
-            "mixes": preview.plan.mix_paths().collect::<Vec<_>>(),
-            "createdMixes": preview.plan.created_mix_paths().collect::<Vec<_>>(),
-            "reusedMixes": preview.plan.reused_mix_paths().collect::<Vec<_>>(),
-            "sampleWarnings": preview.plan.sample_warning_lines(),
-            "volumeSummary": preview.plan.volume_clarity_lines(),
-            "targets": preview.plan.targets.iter().map(|counts| {
-                let diff = preview.plan.files.iter()
-                    .find(|file| file.path == counts.path)
-                    .map(|file| file.diff_summary())
-                    .filter(|diff| !diff.is_empty());
+    });
+    out["preview"] = json!(status.preview.map(|preview| {
+        let base_entry = preview
+            .plan
+            .generated_file()
+            .and_then(|path| preview.plan.files.iter().find(|file| file.path == path))
+            .map(|file| {
+                let diff = file.diff_summary();
+                let mut entry = json!({
+                    "path": file.path,
+                    "replaces": file.expected.is_some(),
+                    "byteIdentical": diff.byte_identical,
+                });
+                if !diff.is_empty() {
+                    entry["diff"] = json!(diff);
+                }
+                if let Some(report) = file.verification() {
+                    entry["verification"] = json!(report);
+                }
+                entry
+            });
+        let target_entries: Vec<serde_json::Value> = preview
+            .plan
+            .targets
+            .iter()
+            .map(|counts| {
+                let planned = preview.plan.files.iter().find(|file| file.path == counts.path);
+                let diff = planned.map(|file| file.diff_summary());
                 let mut entry = json!({
                     "path": counts.path,
                     "matched": counts.matched,
@@ -283,13 +278,41 @@ fn export_snapshot(app: &Application, cache: &mut ExportCache) -> Value {
                     "muted": counts.muted,
                     "fallbackApplied": counts.fallback_applied,
                 });
-                if let Some(diff) = diff {
+                entry["byteIdentical"] = json!(diff.is_some_and(|d| d.byte_identical));
+                if let Some(diff) = diff.filter(|d| !d.is_empty()) {
                     entry["diff"] = json!(diff);
                 }
+                if let Some(report) = planned.and_then(|file| file.verification()) {
+                    entry["verification"] = json!(report);
+                }
                 entry
-            }).collect::<Vec<_>>(),
-        })),
-    });
+            })
+            .collect();
+        let stale_reason = status.stale_reason.map(|reason| match reason {
+            dawsu_application::Stale::Map => "map",
+            dawsu_application::Stale::MergeSettings => "mergeSettings",
+        });
+        let mut p = json!({
+            "id": preview.id,
+            "origin": "export",
+            "stale": status.stale,
+            "staleReason": stale_reason,
+            "source": preview.plan.source,
+            "version": preview.plan.version,
+            "label": preview.plan.label,
+            "details": preview.plan.details,
+        });
+        p["files"] = json!(preview.plan.files.iter().map(|file| &file.path).collect::<Vec<_>>());
+        p["base"] = json!(base_entry);
+        p["verification"] = json!(&preview.plan.verification);
+        p["mixes"] = json!(preview.plan.mix_paths().collect::<Vec<_>>());
+        p["createdMixes"] = json!(preview.plan.created_mix_paths().collect::<Vec<_>>());
+        p["reusedMixes"] = json!(preview.plan.reused_mix_paths().collect::<Vec<_>>());
+        p["sampleWarnings"] = json!(preview.plan.sample_warning_lines());
+        p["volumeSummary"] = json!(preview.plan.volume_clarity_lines());
+        p["targets"] = json!(target_entries);
+        p
+    }));
     out["playing"] = json!(app.is_playing());
     out
 }

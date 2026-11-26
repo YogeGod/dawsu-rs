@@ -26,4 +26,4 @@ pub use cues::{cue_list, cue_list_filtered};
 pub use decompile::{decompile, Decompiled};
 pub use error::Error;
 pub use model::{BodyState, Hitsounds, Lane, LaneSource, Moment, MomentId, ObjectId, Place, SliderBody};
-pub use verify::{verify_compiled_osu, VerificationMismatch};
+pub use verify::{verify_compiled_osu, verify_envelope_preserved, VerificationMismatch};

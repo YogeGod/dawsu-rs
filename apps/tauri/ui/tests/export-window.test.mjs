@@ -5,9 +5,10 @@ import { render } from "svelte/server";
 import {
   adoptChoices, afterPoll, baseDiff, baseStatus, ownWriteError, blockDrops, choicesFrom, diffView,
   divisorPresetFrom, divisorsFromPreset, minBeatsValid, runOutcome, statusLine, copyOptions,
-  defaultChoices, defaultSliderEndMute, difficultyName, exportLabel, exportState, exportSummary, included,
-  laneSwatches, matchWithinValid, openWarnings, optionsKey, pollDelay, previewRequest, targetCounts,
-  targetCoverageBins, targetCoveragePct, targetDiff, warningsLabel,
+  defaultChoices, defaultSliderEndMute, difficultyName, exportDiffSummary, exportLabel, exportState,
+  exportSummary, exportVerificationError, filterDiffGroups, included, laneSwatches, matchWithinValid,
+  openWarnings, optionsKey, pollDelay, previewRequest, targetCounts, targetCoverageBins,
+  targetCoveragePct, targetDiff, warningsLabel,
 } from "../src/lib/export.js";
 import ExportWindow from "../src/parts/ExportWindow.svelte";
 
@@ -481,4 +482,220 @@ test("targetCoveragePct and exportSummary compute per-target and overall match c
   assert.equal(bins.length, 20);
   assert.ok(bins.includes("miss"), "unmatched hits produce red miss bins");
   assert.ok(bins.includes("ok"), "matched hits produce green ok bins");
+});
+
+test("filterDiffGroups, exportDiffSummary, and read-back verification gating work across pass, fail, and unchanged states", () => {
+  const richDiff = diffView({
+    byteIdentical: false,
+    added: 12,
+    removed: 4,
+    truncated: 12,
+    sections: [
+      { section: "[TimingPoints]", added: 10, removed: 0 },
+      { section: "[HitObjects]", added: 2, removed: 4 },
+    ],
+    entries: [
+      { section: "[TimingPoints]", line: 2, kind: "added", text: "500,-100,4,2,1,80,0,0" },
+      { section: "[TimingPoints]", line: 3, kind: "added", text: "750,-100,4,2,1,80,0,0" },
+      { section: "[HitObjects]", line: 10, kind: "removed", text: "256,192,1000,1,0,0:0:0:0:" },
+      { section: "[HitObjects]", line: 12, kind: "added", text: "256,192,1000,1,8,0:0:0:80:" },
+    ],
+  });
+  assert.equal(richDiff.sections.length, 2);
+  assert.deepEqual(filterDiffGroups(richDiff, "all").truncated, 12);
+  const tpFiltered = filterDiffGroups(richDiff, "[TimingPoints]");
+  assert.equal(tpFiltered.groups.length, 1);
+  assert.equal(tpFiltered.truncated, 8);
+  const hoFiltered = filterDiffGroups(richDiff, "[HitObjects]");
+  assert.equal(hoFiltered.groups.length, 1);
+  assert.equal(hoFiltered.truncated, 4);
+
+  const choices = choicesFrom(view);
+  const key = optionsKey(view, choices);
+  const passingReport = {
+    passed: true,
+    momentsChecked: 196,
+    bodiesChecked: 2,
+    checks: [
+      { id: "parse", label: "Valid .osu file", passed: true, detail: "Parsed v14 cleanly." },
+      { id: "structure", label: "Hit objects & red lines", passed: true, detail: "200 objects verified." },
+      { id: "hitsounds", label: "Hitsounds & volumes", passed: true, detail: "Matched 196 moments." },
+      { id: "samples", label: "Sample files", passed: true, detail: "Verified all sample references." },
+    ],
+  };
+  const passingPreview = {
+    id: 11,
+    stale: false,
+    source: view.source.path,
+    version: view.source.version,
+    verification: {
+      passed: true,
+      checkedFiles: 2,
+      failedFiles: 0,
+      momentsChecked: 392,
+      bodiesChecked: 4,
+      files: [],
+    },
+    targets: [
+      {
+        path: insane, matched: 10, unmatched: 0, changed: 3, collisions: 0, keptFromSilent: 0, muted: 0,
+        byteIdentical: false, verification: passingReport,
+        diff: {
+          byteIdentical: false,
+          added: 2,
+          removed: 1,
+          truncated: 0,
+          sections: [
+            { section: "[TimingPoints]", added: 1, removed: 0 },
+            { section: "[HitObjects]", added: 1, removed: 1 },
+          ],
+          entries: [
+            { section: "[TimingPoints]", line: 3, kind: "added", text: "1500,-100,4,2,1,80,0,0" },
+            { section: "[HitObjects]", line: 5, kind: "removed", text: "256,192,1000,1,0,0:0:0:0:" },
+            { section: "[HitObjects]", line: 6, kind: "added", text: "256,192,1000,1,4,0:0:0:80:" },
+          ],
+        },
+      },
+      {
+        path: hard, matched: 5, unmatched: 0, changed: 0, collisions: 0, keptFromSilent: 0, muted: 0,
+        byteIdentical: true, verification: passingReport,
+      },
+    ],
+  };
+  assert.deepEqual(exportDiffSummary(passingPreview, view.targets, choices), {
+    added: 2, removed: 1, changedFiles: 1, totalFiles: 2, byteIdentical: false, anyByteChanged: false,
+  });
+  assert.equal(exportVerificationError(passingPreview, view.targets, choices), null);
+  assert.equal(exportState({ ...view, preview: passingPreview }, { id: 11, key }, choices).canExport, true);
+
+  const passHtml = render(ExportWindow, {
+    props: { initialView: { ...view, preview: passingPreview }, initialSent: { id: 11, key } },
+  }).body;
+  assert.match(passHtml, /Read-back check passed/);
+  assert.match(passHtml, /aria-label="Pre-write read-back check"/);
+  assert.match(passHtml, /Verified/);
+  assert.match(passHtml, /No \.osu changes/);
+  assert.match(passHtml, /class="diff-btn/);
+  assert.match(passHtml, /Filter diff by section/);
+
+  // CRLF vs LF-only target diff shows "Line endings only", never "+0 / -0 lines".
+  const crlfPreview = {
+    ...passingPreview,
+    targets: [
+      { ...passingPreview.targets[1], path: insane, byteIdentical: false, diff: null },
+      passingPreview.targets[1],
+    ],
+  };
+  const crlfSummary = exportDiffSummary(crlfPreview, view.targets, choices);
+  assert.equal(crlfSummary.anyByteChanged, true);
+  assert.equal(crlfSummary.byteIdentical, false);
+  const crlfHtml = render(ExportWindow, {
+    props: { initialView: { ...view, preview: crlfPreview }, initialSent: { id: 11, key } },
+  }).body;
+  assert.match(crlfHtml, /Line endings only/);
+  assert.doesNotMatch(crlfHtml, /\+0.*-0/);
+
+  const failingPreview = {
+    ...passingPreview,
+    verification: {
+      passed: false,
+      checkedFiles: 2,
+      failedFiles: 1,
+      momentsChecked: 392,
+      bodiesChecked: 4,
+      firstError: "Hard: Hitsounds & volumes: Mismatch at 1200 ms",
+      files: [
+        {
+          path: hard, fileName: "Artist - Song (Mapper) [Hard].osu", isBase: false, passed: false,
+          momentsChecked: 196, bodiesChecked: 2, byteIdentical: true, failureTimeMs: 1200,
+          failureMessage: "Hitsounds & volumes: Mismatch at 1200 ms",
+          checks: [
+            ...passingReport.checks.slice(0, 2),
+            { id: "hitsounds", label: "Hitsounds & volumes", passed: false, detail: "Mismatch at 1200 ms" },
+            passingReport.checks[3],
+          ],
+        },
+      ],
+    },
+    targets: [
+      passingPreview.targets[0],
+      {
+        ...passingPreview.targets[1],
+        verification: {
+          ...passingReport,
+          passed: false,
+          failureTimeMs: 1200,
+          failureMessage: "Hitsounds & volumes: Mismatch at 1200 ms",
+          checks: [
+            ...passingReport.checks.slice(0, 2),
+            { id: "hitsounds", label: "Hitsounds & volumes", passed: false, detail: "Mismatch at 1200 ms" },
+            passingReport.checks[3],
+          ],
+        },
+      },
+    ],
+  };
+  const failErr = exportVerificationError(failingPreview, view.targets, choices);
+  assert.match(failErr, /Mismatch at 1200 ms/);
+  assert.equal(exportState({ ...view, preview: failingPreview }, { id: 11, key }, choices).canExport, false);
+  assert.equal(statusLine({ view, verificationError: failErr }).tone, "error");
+  assert.equal(statusLine({ view, verificationError: failErr }).again, true);
+
+  // Split-brain failure: summary verification fails for an included file even when row.verification is missing.
+  const splitBrainPreview = {
+    ...failingPreview,
+    targets: [passingPreview.targets[0], passingPreview.targets[1]],
+  };
+  assert.match(exportVerificationError(splitBrainPreview, view.targets, choices), /Mismatch at 1200 ms/);
+  assert.equal(exportState({ ...view, preview: splitBrainPreview }, { id: 11, key }, choices).canExport, false);
+
+  // Excluding the failing target clears the UI gate and re-enables Export for remaining included files.
+  const onlyInsane = { ...choices, leftOut: [hard.split("\\").pop()] };
+  assert.equal(exportVerificationError(failingPreview, view.targets, onlyInsane), null);
+  assert.equal(
+    exportState({ ...view, preview: failingPreview }, { id: 11, key: optionsKey(view, onlyInsane) }, onlyInsane).canExport,
+    true,
+  );
+
+  const failHtml = render(ExportWindow, {
+    props: { initialView: { ...view, preview: failingPreview }, initialSent: { id: 11, key } },
+  }).body;
+  assert.match(failHtml, /Read-back check failed — Export blocked/);
+  assert.match(failHtml, /Check failed/);
+  assert.match(failHtml, /1200 ms/);
+  assert.doesNotMatch(failHtml, /1200 ms\s*[—-]\s*.*1200 ms/);
+  assert.match(failHtml, /<button type="button" class="primary[^>]*disabled/);
+
+  // Empty verification.files or omitted check.detail renders cleanly without throwing or printing "undefined".
+  const sparseFailPreview = {
+    ...passingPreview,
+    verification: {
+      passed: false,
+      checkedFiles: 1,
+      failedFiles: 1,
+      momentsChecked: 0,
+      bodiesChecked: 0,
+      firstError: "Compact failure summary",
+      files: [],
+    },
+    targets: [
+      {
+        ...passingPreview.targets[0],
+        verification: {
+          passed: false,
+          momentsChecked: 0,
+          bodiesChecked: 0,
+          failureTimeMs: 450,
+          checks: [{ id: "hitsounds", label: "Hitsounds & volumes", passed: false }],
+        },
+      },
+      passingPreview.targets[1],
+    ],
+  };
+  const sparseHtml = render(ExportWindow, {
+    props: { initialView: { ...view, preview: sparseFailPreview }, initialSent: { id: 11, key } },
+  }).body;
+  assert.match(sparseHtml, /Compact failure summary/);
+  assert.match(sparseHtml, /450 ms — Hitsounds &amp; volumes/);
+  assert.doesNotMatch(sparseHtml, /undefined/);
 });

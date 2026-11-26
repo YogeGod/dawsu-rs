@@ -318,7 +318,12 @@ const expect = (ok, message) => {
 // Close any open dialog and menu.
 async function tidy() {
   for (let i = 0; i < 3; i++) {
-    const open = await read(() => document.getElementById("dialog")?.open || !document.getElementById("editor-menu")?.hidden).catch(() => false);
+    const open = await read(() =>
+      document.getElementById("dialog")?.open
+      || Array.from(document.querySelectorAll('[role="dialog"]')).some(
+        el => !el.hidden && getComputedStyle(el).display !== "none",
+      )
+      || !document.getElementById("editor-menu")?.hidden).catch(() => false);
     if (!open) return;
     await page().keyboard.press("Escape");
     await sleep(250);
@@ -724,8 +729,52 @@ try {
     await page().click("#export-entry");
     const dialog = page().getByRole("dialog", { name: "Export" });
     await dialog.waitFor({ state: "visible" });
-    await dialog.getByRole("button", { name: "Cancel" }).click();
-    await dialog.waitFor({ state: "hidden" });
+    const toggledOff = [];
+    try {
+      const switches = dialog.locator('button[role="switch"]');
+      const switchCount = await switches.count();
+      for (let i = 0; i < switchCount; i++) {
+        const sw = switches.nth(i);
+        const label = (await sw.getAttribute("aria-label")) || "";
+        const checked = await sw.getAttribute("aria-checked");
+        if (
+          checked === "true" &&
+          label.startsWith("Include ") &&
+          !/base hitsound difficulty|bom-crlf-v14|custom-samples-and-edges/i.test(label)
+        ) {
+          await sw.click();
+          toggledOff.push(sw);
+        }
+      }
+      await until(
+        () => {
+          const el = document.querySelector('[aria-label="Pre-write read-back check"]');
+          return !!el
+            && el.textContent.includes("Read-back check passed")
+            && document.querySelectorAll(".verify-badge.ok").length >= 2;
+        },
+        null,
+        "Export preview did not reach Read-back check passed",
+        15000,
+      );
+      expect((await dialog.locator(".verify-badge.ok").count()) >= 2, "expected at least two Verified badges");
+      expect((await dialog.locator(".listen-btn").count()) >= 2, "expected at least two Listen buttons");
+      expect((await dialog.locator(".diff-btn").count()) >= 1, "expected at least one Diff button");
+      await dialog.locator(".diff-btn").first().click();
+      await dialog.locator(".osu-diff-body").first().waitFor({ state: "visible", timeout: 5000 });
+      expect(await dialog.locator(".listen-btn").first().isEnabled(), "Listen button must stay usable with diff open");
+      await page().screenshot({ path: join(shots, "26-export-review-verified.png") });
+    } finally {
+      for (const sw of toggledOff) {
+        if ((await sw.getAttribute("aria-checked").catch(() => null)) === "false") {
+          await sw.click().catch(() => {});
+        }
+      }
+      if (await dialog.isVisible().catch(() => false)) {
+        await dialog.getByRole("button", { name: "Cancel" }).click();
+        await dialog.waitFor({ state: "hidden" });
+      }
+    }
   });
 
   await step("Open and close the drum window", async () => {

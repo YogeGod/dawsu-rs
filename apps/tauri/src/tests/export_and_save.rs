@@ -611,6 +611,18 @@ fn export_requests_answer_with_the_export_view_and_errors_after_a_fault() {
     for field in ["matched", "unmatched", "changed", "collisions", "keptFromSilent", "muted"] {
         assert!(counts[field].is_u64(), "{field}: {counts}");
     }
+    assert_eq!(view["preview"]["verification"]["passed"], true);
+    assert_eq!(view["preview"]["verification"]["checkedFiles"], 1);
+    assert_eq!(view["preview"]["verification"]["failedFiles"], 0);
+    assert_eq!(counts["verification"]["passed"], true);
+    let checks = counts["verification"]["checks"].as_array().expect("4 checks");
+    let check_ids: Vec<&str> = checks.iter().filter_map(|c| c["id"].as_str()).collect();
+    assert_eq!(check_ids, vec!["parse", "structure", "hitsounds", "samples"]);
+    assert!(counts["byteIdentical"].is_boolean());
+    assert!(
+        counts["byteIdentical"] == true || counts["diff"]["sections"].is_array(),
+        "expected byteIdentical or diff.sections: {counts}"
+    );
     assert_eq!(view["choices"], serde_json::json!({
         "leftOut": [], "matchWithin": 5.0, "copyVolumes": true, "base": false, "sliderAudio": false, "laterWins": false, "mixFormat": "wav16",
         "sliderEndMute": { "enabled": false, "minBeats": 0.5, "divisors": [], "onlyUnhit": true, "muteSpinnerEnds": false },

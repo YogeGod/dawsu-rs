@@ -25,7 +25,12 @@ pub const HITSOUNDS_VERSION: &str = "Hitsounds";
 pub enum GenerateOutcome {
     /// The planned difficulty, its file name in the source's folder, and the groups compile could
     /// not write (each circle stays a bare hitnormal; the app decides whether to write anyway).
-    Planned { file: OsuFile, file_name: String, problems: Vec<SaveProblem> },
+    Planned {
+        file: OsuFile,
+        file_name: String,
+        problems: Vec<SaveProblem>,
+        expected_hitsounds: Option<Box<Hitsounds>>,
+    },
     /// A file with the hitsound difficulty's name is already in the folder. Replacing an earlier
     /// output comes with the app (M3); in M2 it is refused (plan decision C).
     NameTaken,
@@ -95,7 +100,14 @@ pub fn generate_with_version(
         Decompiled::Done(h) => h,
         Decompiled::Cancelled => return GenerateOutcome::Cancelled,
         // The copy keeps the source's mode, which the source's decompile already accepted.
-        Decompiled::UnsupportedMode { .. } => return GenerateOutcome::Planned { file, file_name, problems: Vec::new() },
+        Decompiled::UnsupportedMode { .. } => {
+            return GenerateOutcome::Planned {
+                file,
+                file_name,
+                problems: Vec::new(),
+                expected_hitsounds: None,
+            }
+        }
     };
 
     let mut problems = Vec::new();
@@ -120,7 +132,12 @@ pub fn generate_with_version(
         Compiled::Done { file, problems: more } => {
             problems.extend(more);
             problems.sort_by(|a, b| a.time.ms().total_cmp(&b.time.ms()));
-            GenerateOutcome::Planned { file, file_name, problems }
+            GenerateOutcome::Planned {
+                file,
+                file_name,
+                problems,
+                expected_hitsounds: Some(Box::new(circles)),
+            }
         }
         Compiled::Cancelled => GenerateOutcome::Cancelled,
     }

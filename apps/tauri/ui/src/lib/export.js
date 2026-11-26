@@ -230,12 +230,14 @@ export function exportState(view, sent, choices) {
   const source = view?.source;
   const mine = !!(preview && sent && preview.id === sent.id && sent.key === optionsKey(view, choices));
   const stale = mine && (preview.stale || preview.version !== source?.version || preview.source !== source?.path);
+  const activePreview = mine && !stale ? preview : null;
   // The base hitsound difficulty is one more difficulty written.
   const count = included(view?.targets, choices).length + (choices.base ? 1 : 0);
   const muteValid = !choices.sliderEndMute?.enabled || minBeatsValid(choices.sliderEndMute.minBeats);
   const canExport = mine && !stale && count > 0 && !!source && !view.busy && !view.writing
-    && matchWithinValid(choices.matchWithin) && muteValid;
-  return { canExport, stale, count, preview: mine && !stale ? preview : null };
+    && matchWithinValid(choices.matchWithin) && muteValid
+    && !exportVerificationError(activePreview, view?.targets, choices);
+  return { canExport, stale, count, preview: activePreview };
 }
 
 // The counts of one target, from the preview Copy planned. Zero counts that need no action stay hidden.
@@ -329,8 +331,138 @@ export function diffView(diff) {
     added: diff.added ?? 0,
     removed: diff.removed ?? 0,
     truncated: diff.truncated ?? 0,
+    byteIdentical: diff.byteIdentical === true,
+    sections: Array.isArray(diff.sections) ? diff.sections : [],
     groups,
   };
+}
+
+export function filterDiffGroups(diff, activeSection = "all") {
+  if (!diff) return { groups: [], truncated: 0 };
+  if (!activeSection || activeSection === "all") {
+    return { groups: diff.groups ?? [], truncated: diff.truncated ?? 0 };
+  }
+  const groups = (diff.groups ?? []).filter(group => (group.section ?? "Header") === activeSection);
+  const shown = groups.reduce((acc, group) => acc + (group.entries?.length ?? 0), 0);
+  const sectionMeta = (diff.sections ?? []).find(item => item.section === activeSection);
+  const totalInSection = sectionMeta ? (sectionMeta.added ?? 0) + (sectionMeta.removed ?? 0) : shown;
+  const truncated = typeof sectionMeta?.truncated === "number"
+    ? sectionMeta.truncated
+    : Math.max(0, totalInSection - shown);
+  return {
+    groups,
+    truncated,
+  };
+}
+
+export function exportDiffSummary(preview, targets, choices) {
+  if (!preview) return null;
+  let added = 0;
+  let removed = 0;
+  let changedFiles = 0;
+  let totalFiles = 0;
+  let allByteIdentical = true;
+  let anyByteChanged = false;
+
+  if (choices?.base && preview.base) {
+    totalFiles++;
+    const diff = preview.base.diff;
+    if (diff && (diff.added || diff.removed)) {
+      changedFiles++;
+      added += diff.added ?? 0;
+      removed += diff.removed ?? 0;
+    }
+    if (preview.base.byteIdentical !== true) allByteIdentical = false;
+    if (preview.base.byteIdentical === false) anyByteChanged = true;
+  }
+
+  for (const path of included(targets, choices)) {
+    const row = preview.targets?.find(item => item.path === path);
+    if (!row) continue;
+    totalFiles++;
+    const diff = row.diff;
+    if (diff && (diff.added || diff.removed)) {
+      changedFiles++;
+      added += diff.added ?? 0;
+      removed += diff.removed ?? 0;
+    }
+    if (row.byteIdentical !== true) allByteIdentical = false;
+    if (row.byteIdentical === false) anyByteChanged = true;
+  }
+
+  return {
+    added,
+    removed,
+    changedFiles,
+    totalFiles,
+    byteIdentical: totalFiles > 0 && added === 0 && removed === 0 && allByteIdentical,
+    anyByteChanged: totalFiles > 0 && added === 0 && removed === 0 && anyByteChanged,
+  };
+}
+
+export const verificationSummary = preview => preview?.verification ?? null;
+
+export const targetVerification = (preview, path) =>
+  preview?.targets?.find(item => item.path === path)?.verification ?? null;
+
+export const baseVerification = preview => preview?.base?.verification ?? null;
+
+export const targetByteIdentical = (preview, path) =>
+  preview?.targets?.find(item => item.path === path)?.byteIdentical === true;
+
+export const baseByteIdentical = preview => preview?.base?.byteIdentical === true;
+
+export const targetLineEndingsOnly = (preview, path) => {
+  const row = preview?.targets?.find(item => item.path === path);
+  return !!(row && !row.diff && row.byteIdentical === false);
+};
+
+export const baseLineEndingsOnly = preview =>
+  !!(preview?.base && !preview.base.diff && preview.base.byteIdentical === false);
+
+function firstFailedCheckDetail(report) {
+  if (!report) return "Verification check failed.";
+  if (report.failureMessage) return report.failureMessage;
+  const failed = report.checks?.find(check => check.passed === false);
+  return failed ? (failed.detail ? `${failed.label}: ${failed.detail}` : failed.label) : "Verification check failed.";
+}
+
+export function exportVerificationError(preview, targets, choices) {
+  if (!preview) return null;
+  let sawPerFileReport = false;
+  const includedList = included(targets, choices);
+  const includedPaths = new Set(includedList);
+
+  if (choices?.base && preview.base?.verification) {
+    sawPerFileReport = true;
+    if (preview.base.verification.passed === false) {
+      const label = preview.base.path ? fileName(preview.base.path) : "Base difficulty";
+      return `Read-back check failed for ${label}: ${firstFailedCheckDetail(preview.base.verification)}`;
+    }
+  }
+
+  for (const path of includedList) {
+    const row = preview.targets?.find(item => item.path === path);
+    if (!row?.verification) continue;
+    sawPerFileReport = true;
+    if (row.verification.passed === false) {
+      return `Read-back check failed for ${fileName(path)}: ${firstFailedCheckDetail(row.verification)}`;
+    }
+  }
+
+  if (preview.verification?.passed === false) {
+    const files = Array.isArray(preview.verification.files) ? preview.verification.files : [];
+    const failedIncluded = files.find(
+      file => file?.passed === false && ((file.isBase && choices?.base) || includedPaths.has(file.path)),
+    );
+    if (failedIncluded) {
+      return `Read-back check failed for ${failedIncluded.fileName || fileName(failedIncluded.path)}: ${firstFailedCheckDetail(failedIncluded)}`;
+    }
+    if (!sawPerFileReport) {
+      return `Read-back check failed: ${preview.verification.firstError || "Export blocked."}`;
+    }
+  }
+  return null;
 }
 
 export const baseDiff = preview => diffView(preview?.base?.diff ?? null);
@@ -388,7 +520,7 @@ export function afterPoll(run, view) {
 
 // The action bar's message. again: show "Preview again" (or Refresh) beside it. writeError is the
 // failed write of this window's own last run: an older one, or one from before a reload, is not shown.
-export function statusLine({ view, pollError, actionError, writeError, stale, running, problems }) {
+export function statusLine({ view, pollError, actionError, writeError, verificationError, stale, running, problems }) {
   if (pollError) return { tone: "error", text: pollError, again: false };
   if (actionError) return { tone: "error", text: actionError, again: actionError.endsWith("Preview again.") };
   if (writeError) return { tone: "error", text: writeError, again: false };
@@ -397,6 +529,7 @@ export function statusLine({ view, pollError, actionError, writeError, stale, ru
     const text = view?.preview?.staleReason === "mergeSettings" ? "Merge settings changed since preview" : "Map changed since preview";
     return { tone: "stale", text, again: true };
   }
+  if (verificationError) return { tone: "error", text: verificationError, again: true };
   if (running || view?.writing) return { tone: "busy", text: "Writing…", again: false };
   if (view?.previewing) {
     const progress = view.progress ? ` ${view.progress.done}/${view.progress.total}` : "";
