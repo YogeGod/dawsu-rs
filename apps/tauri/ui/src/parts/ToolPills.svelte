@@ -12,7 +12,7 @@
   const icons = { Select, Draw, Erase, Mute, Grab, Range, Ramp };
   let altHeld = $state(false);
   const actualTool = $derived(bridge.view?.tool ?? null);
-  const tool = $derived(altHeld && actualTool === "Select" ? "Draw" : actualTool);
+  const tool = $derived(altHeld ? "Draw" : actualTool);
   const disabled = $derived(bridge.disabled);
   const pills = $derived(toolPills(tool));
   const buttons = {};

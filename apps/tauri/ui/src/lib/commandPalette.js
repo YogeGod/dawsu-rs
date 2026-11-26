@@ -5,7 +5,7 @@
 export const RECENT_STORAGE_KEY = "dawsu.commandPalette.recent";
 export const MAX_RECENT = 8;
 
-export const PALETTE_MENUS = ["file", "edit", "playback", "map", "view", "help", "tool"];
+export const PALETTE_MENUS = ["file", "edit", "playback", "map", "view", "lane", "help", "tool"];
 
 export const GROUP_LABELS = {
   file: "File",
@@ -13,9 +13,29 @@ export const GROUP_LABELS = {
   playback: "Playback",
   map: "Map",
   view: "View",
+  lane: "Lane",
   help: "Help",
   tool: "Tools",
   keyOnly: "Shortcuts",
+};
+
+export const KEY_ONLY_ENABLED_RULES = {
+  quantize: "selection",
+  volumeUp: "selection",
+  volumeDown: "selection",
+  volumeUpFine: "selection",
+  volumeDownFine: "selection",
+  jumpToSelection: "selection",
+  nudgeLeft: "selection",
+  nudgeRight: "selection",
+  nudgeLeft1ms: "selection",
+  nudgeRight1ms: "selection",
+  gridLeft: "selection",
+  gridRight: "selection",
+  navUp: "selection",
+  navDown: "selection",
+  deselect: "selectionOrRange",
+  reviewOutput: "document",
 };
 
 // Menu rows that are segmented choice controls (not single runnable actions) or layout-editor chrome.
@@ -99,6 +119,9 @@ export function evaluateEnabledRule(ruleName, { scene = null, view = null } = {}
   const busy = Boolean(view?.busy || view?.fault);
   const hasScene = Boolean(scene);
   const canEdit = hasScene && !busy;
+  const lanes = scene?.lanes ?? [];
+  const activeIndex = view?.activeLane ?? 0;
+  const activeLane = activeIndex >= 0 && activeIndex < lanes.length ? lanes[activeIndex] : null;
   switch (ruleName ?? "edit") {
     case "idle":
       return !busy;
@@ -106,6 +129,8 @@ export function evaluateEnabledRule(ruleName, { scene = null, view = null } = {}
       return hasScene && !busy;
     case "selection":
       return canEdit && Boolean(scene?.selection?.count);
+    case "selectionOrRange":
+      return canEdit && (Boolean(scene?.selection?.count) || Boolean(scene?.range));
     case "range":
       return canEdit && Boolean(scene?.range);
     case "placement":
@@ -115,7 +140,31 @@ export function evaluateEnabledRule(ruleName, { scene = null, view = null } = {}
     case "redo":
       return canEdit && scene?.historyPosition !== scene?.history?.length;
     case "deleteLane":
-      return canEdit && Boolean(scene?.lanes?.[view?.activeLane ?? 0]?.canDelete);
+      return canEdit && Boolean(activeLane?.canDelete);
+    case "lane":
+      return canEdit && Boolean(activeLane);
+    case "laneRename":
+      return canEdit && Boolean(activeLane?.colourKey) && !view?.drumView?.enabled;
+    case "laneUp":
+      return canEdit && activeIndex > 0;
+    case "laneDown":
+      return canEdit && activeIndex >= 0 && activeIndex + 1 < lanes.length;
+    case "laneReplace":
+      return canEdit && Boolean(activeLane?.canReplace);
+    case "laneColour":
+      return canEdit && Boolean(activeLane?.colourKey);
+    case "laneLayer":
+      return canEdit && Boolean(activeLane?.canAddLayer);
+    case "laneClone":
+      return canEdit && Boolean(activeLane?.canReplace);
+    case "laneAlternate":
+      return canEdit && activeIndex >= 0 && activeIndex + 1 < (view?.laneCount ?? lanes.length) && (scene?.selection?.count ?? 0) >= 2;
+    case "laneDelete":
+      return canEdit && Boolean(activeLane?.canDelete);
+    case "stemLoaded":
+      return canEdit && Boolean(view?.stemLoaded);
+    case "sharedBaseEnabled":
+      return hasScene && !busy && Boolean(view?.sharedBaseEnabled);
     case "originalSnapshot":
       return hasScene && Boolean(view?.hasDocument && view?.hasOriginalSnapshot) && !busy;
     case "undoRevert":
@@ -132,6 +181,7 @@ export function buildEntries({
   items = [],
   menus = {},
   keyOnly = [],
+  paletteOnly = [],
   shortcuts = null,
   scene = null,
   view = null,
@@ -185,7 +235,8 @@ export function buildEntries({
     const shortcutInfo = shortcutMap.get(commandId);
     if (!shortcutInfo?.label) continue;
     const keys = shortcutInfo.keys ?? [];
-    const enabled = Boolean(scene) && !Boolean(view?.busy || view?.fault);
+    const rule = KEY_ONLY_ENABLED_RULES[commandId] ?? "edit";
+    const enabled = evaluateEnabledRule(rule, { scene, view });
     entries.push({
       id: `cmd:${commandId}`,
       label: shortcutInfo.label,
@@ -198,6 +249,27 @@ export function buildEntries({
       checked: undefined,
       source: "keyOnly",
       item: null,
+    });
+  }
+
+  for (const item of paletteOnly) {
+    if (!item?.id) continue;
+    const enabled = typeof isEnabled === "function"
+      ? Boolean(isEnabled(item))
+      : evaluateEnabledRule(item.enabled, { scene, view });
+    const checked = typeof isChecked === "function" ? isChecked(item) : undefined;
+    entries.push({
+      id: item.id,
+      label: item.label,
+      group: item.group ?? "Actions",
+      icon: item.icon ?? null,
+      command: null,
+      keys: [],
+      shortcutText: "",
+      enabled,
+      checked,
+      source: "paletteOnly",
+      item,
     });
   }
 

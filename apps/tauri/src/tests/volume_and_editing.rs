@@ -90,7 +90,7 @@ fn grab_and_mute_are_view_only_and_erasing_a_stroke_is_one_undo_step() {
     let point = |app: &mut Application, phase: &str, ms| {
         Action::Pointer {
             phase: phase.into(), ms, row, x: ms, y: 0.0,
-            value: None, button: None, shift: false, ctrl: false, alt: false,
+            value: None, volume_lanes: None, button: None, shift: false, ctrl: false, alt: false,
         }.run(app);
     };
     let clap_count = |app: &Application| app.document().unwrap().composer.hitsounds()
@@ -186,7 +186,7 @@ fn ctrl_drag_spreads_and_squeezes_volumes_with_different_effective_gains() {
     for phase in ["down", "up"] {
         Action::Pointer {
             phase: phase.into(), ms: 1000.0, row: clap as i32, x: 120.0, y: 12.0,
-            value: None, button: None, shift: false, ctrl: false, alt: false,
+            value: None, volume_lanes: None, button: None, shift: false, ctrl: false, alt: false,
         }.run(&mut app);
     }
     let set_scope = |app: &mut Application, lanes: serde_json::Value| {
@@ -207,7 +207,7 @@ fn ctrl_drag_spreads_and_squeezes_volumes_with_different_effective_gains() {
     let drag = |app: &mut Application, phase: &str, y: f64| {
         Action::Pointer {
             phase: phase.into(), ms: 1000.0, row: 0, x: 120.0, y,
-            value: Some(100.0-y), button: None, shift: false, ctrl: true, alt: false,
+            value: Some(100.0-y), volume_lanes: None, button: None, shift: false, ctrl: true, alt: false,
         }.run(app);
     };
     let originals = [[60,40],[80,80]];
@@ -250,7 +250,7 @@ fn protect_normals_keeps_noop_deletes_clean_and_still_removes_additions() {
     let click = |app: &mut Application| {
         for phase in ["down","up"] {
             Action::Pointer {
-                phase:phase.into(), ms:1000.0, row, x:120.0, y:12.0, value:None, button:None,
+                phase:phase.into(), ms:1000.0, row, x:120.0, y:12.0, value:None, volume_lanes:None, button:None,
                 shift:false, ctrl:false, alt:false,
             }.run(app);
         }
@@ -291,7 +291,7 @@ fn controller_drags_paint_shared_moments_and_undo_as_one_gesture() {
     let send = |app: &mut Application, phase: &str, ms, value, alt| {
         Action::Pointer {
             phase: phase.into(), ms, row: 0, x: ms, y: 100.0 - value,
-            value: Some(value), button: None, shift: false, ctrl: false, alt,
+            value: Some(value), volume_lanes: None, button: None, shift: false, ctrl: false, alt,
         }.run(app);
     };
     let levels = |app: &Application| -> Vec<i64> {
@@ -350,7 +350,7 @@ fn selection_volume_scope_applies_to_the_chosen_lane_and_shortcut() {
     for phase in ["down", "up"] {
         Action::Pointer {
             phase: phase.into(), ms: 1000.0, row: normal as i32, x: 0.0, y: 0.0,
-            value: None, button: None, shift: false, ctrl: false, alt: false,
+            value: None, volume_lanes: None, button: None, shift: false, ctrl: false, alt: false,
         }.run(&mut app);
     }
     let apply_scope = |app: &mut Application, path: &Value, lanes: Value| {
@@ -402,7 +402,7 @@ fn a_volume_bar_shows_where_its_hits_play_when_none_plays_at_the_moment_s_own_vo
     for phase in ["down", "up"] {
         Action::Pointer {
             phase: phase.into(), ms: 1000.0, row: normal as i32, x: 0.0, y: 0.0,
-            value: None, button: None, shift: false, ctrl: false, alt: false,
+            value: None, volume_lanes: None, button: None, shift: false, ctrl: false, alt: false,
         }.run(&mut app);
     }
     let action: Action = serde_json::from_value(json!({
@@ -448,7 +448,7 @@ fn ramp_shape_action_applies_curves_through_the_volume_controller() {
         for (phase, (ms, value)) in [("down", start), ("move", end), ("up", end)] {
             Action::Pointer {
                 phase: phase.into(), ms, row: 0, x: ms, y: 100.0 - value,
-                value: Some(value), button: None, shift, ctrl: false, alt: false,
+                value: Some(value), volume_lanes: None, button: None, shift, ctrl: false, alt: false,
             }.run(&mut app);
             if phase == "move" {
                 let scene = snapshot(&app, true)["scene"].clone();
@@ -678,7 +678,7 @@ fn shortcut_adds_the_nearest_hit_in_the_next_eligible_visible_lane() {
     for phase in ["down", "up"] {
         Action::Pointer {
             phase: phase.into(), ms: 1000.0, row: anchor as i32, x: 10.0, y: 10.0,
-            value: None, button: None, shift: false, ctrl: false, alt: false,
+            value: None, volume_lanes: None, button: None, shift: false, ctrl: false, alt: false,
         }.run(&mut app);
     }
 
@@ -764,7 +764,7 @@ fn timeline_edit_actions_quantize_repeat_edit_the_range_and_scale_once() {
     let point = |app: &mut Application, phase: &str, ms: f64| {
         Action::Pointer {
             phase: phase.into(), ms, row: clap_row, x: ms, y: 12.0,
-            value: None, button: None, shift: false, ctrl: false, alt: false,
+            value: None, volume_lanes: None, button: None, shift: false, ctrl: false, alt: false,
         }.run(app);
     };
     let apply = |app: &mut Application, edit| {
@@ -861,7 +861,7 @@ fn selection_start_moves_the_chosen_hits_together_and_undoes_once() {
     for (index, (ms, row)) in [1120.0, 1295.0].into_iter().zip(rows).enumerate() {
         for phase in ["down", "up"] {
             Action::Pointer {
-                phase: phase.into(), ms, row, x: ms, y: 12.0, value: None, button: None,
+                phase: phase.into(), ms, row, x: ms, y: 12.0, value: None, volume_lanes: None, button: None,
                 shift: false, ctrl: index > 0, alt: false,
             }.run(&mut app);
         }
@@ -975,7 +975,7 @@ fn removing_a_lane_takes_its_hits_in_one_step_and_keeps_its_layers() {
     for phase in ["down", "up"] {
         Action::Pointer {
             phase: phase.into(), ms: 1500.0, row: clap, x: 12.0, y: 12.0,
-            value: None, button: None, shift: false, ctrl: false, alt: false,
+            value: None, volume_lanes: None, button: None, shift: false, ctrl: false, alt: false,
         }.run(&mut app);
     }
     assert!(app.error().is_none(), "{:?}", app.error());

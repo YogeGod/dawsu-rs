@@ -578,6 +578,8 @@ pub(crate) struct ViewSnapshot {
     pub(crate) save_problem_review: bool,
     pub(crate) save_review: Option<Vec<(&'static str, PathBuf)>>,
     pub(crate) scene: Option<SceneSnapshot>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) shared_base_enabled: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) shortcut_action: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -990,6 +992,7 @@ pub(crate) fn snapshot_with_static(app: &Application, include_scene: bool, inclu
             files.into_iter().map(|(label, path)| (label, path.to_path_buf())).collect()
         }),
         scene,
+        shared_base_enabled: app.shared_base_enabled(),
         shortcut_action: None,
         shortcut_help: None,
         shortcut_open: None,

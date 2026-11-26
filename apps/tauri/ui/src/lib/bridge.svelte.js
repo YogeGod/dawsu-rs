@@ -274,6 +274,8 @@ export class Bridge {
     setCoverageFocus: time => this.setCoverageFocus(time),
     hint: zone => this.setHint(zone),
     setMode: mode => this.setMode(mode),
+    setBottomTab: tab => { this.bottomTab = tab === "mixer" ? "mixer" : "volume"; },
+    toggleCentre: () => { this.centre = !this.centre; },
     setMicroHud: hud => this.setMicroHud(hud),
     openMapsetIntake: mapset => this.openMapsetIntake(mapset),
     closeMapsetIntake: () => this.closeMapsetIntake(),

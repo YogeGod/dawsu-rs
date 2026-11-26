@@ -301,17 +301,23 @@ test("cursors follow the current editing tool, Alt and cycle ruler geometry", as
   assert.equal(cursors.grid.cursor, "default");
   windowEvents.get("keyup")(mouse);
 
-  evaluate('view.tool = "Erase"; refreshToolCursor()');
-  assert.equal(cursors.grid.cursor, "var(--cursor-erase)");
+  evaluate('view.tool = "Grab"; refreshToolCursor()');
+  assert.equal(cursors.grid.cursor, "pointer");
+  windowEvents.get("keydown")({ ...mouse, key: "Alt", altKey: true });
+  assert.equal(cursors.grid.cursor, "var(--cursor-draw)", "Alt-draw unifies Grab on the timeline grid");
+  windowEvents.get("blur")();
+  assert.equal(cursors.grid.cursor, "pointer", "blur clears held Alt modifier on grid");
+
   gridEvents.get("pointerleave")();
   barEvents.get("pointerenter")(mouse);
+  evaluate('view.tool = "Erase"; refreshToolCursor()');
   assert.equal(cursors.controller.cursor, "var(--cursor-erase)");
   evaluate('view.tool = "Grab"; refreshToolCursor()');
   assert.equal(cursors.controller.cursor, "pointer");
-  windowEvents.get("keydown")({ ...mouse, key: "Alt", altKey: true });
-  assert.equal(cursors.controller.cursor, "pointer", "Grab keeps the legacy hand");
   evaluate('view.tool = "Mute"; refreshToolCursor()');
-  assert.equal(cursors.controller.cursor, "var(--cursor-draw)");
+  assert.equal(cursors.controller.cursor, "crosshair");
+  windowEvents.get("keydown")({ ...mouse, key: "Alt", altKey: true });
+  assert.equal(cursors.controller.cursor, "crosshair", "Alt paints volumes on controller instead of Draw cursor");
   const css = await readFile(new URL("../dist/fonts.css", import.meta.url), "utf8");
   assert.match(css, /--cursor-draw:url\("studio-assets\/icons\/cursor-draw\.svg"\) 3 3,crosshair/);
   assert.match(css, /--cursor-erase:url\("studio-assets\/icons\/cursor-erase\.svg"\) 5 27,crosshair/);

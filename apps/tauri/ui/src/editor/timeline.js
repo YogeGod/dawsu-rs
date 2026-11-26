@@ -4,7 +4,7 @@ import {
   bookmarkFlagHeight, bookmarkHalfWidth, clock, computeDrawStrokeSteps, defaultWaveformHeight,
   describeOutputProblem, findNearestMoment, hitHalfWidth, limit, locatorFlagHeight, locatorFlagWidth,
   minZoom, nameOf, objectReach, objectSize, rulerBandHeight, sampleFolderNames, snapTimeInScene,
-  snapToActiveGridInScene,
+  snapToActiveGridInScene, visibleVolumeLanes,
 } from "./helpers.js";
 import { volumeBubbleAtMoment } from "../lib/volumeBubble.js";
 
@@ -41,7 +41,7 @@ export function attachTimeline(ctx) {
     }
   }
 
-  // Pick the nearest hit on `row` (or any moment when `row === null`, e.g. the volume lane)
+  // Pick the nearest hit on `row` (or matching a Set of rows, or any moment when `row === null`),
   // within a zoom-independent pixel half-width (`hitHalfWidth`), so targets stay easy to click
   // and sweep at every zoom level.
   function nearestHitTime(ms, row, zoom) {
@@ -49,7 +49,14 @@ export function attachTimeline(ctx) {
       state.scene.moments,
       ms,
       hitHalfWidth / zoom,
-      ([time, , , hits]) => ((row === null ? hits.length > 0 : hits.some(([laneRow]) => row === laneRow)) ? time : undefined),
+      ([time, , , hits]) => {
+        const matches = row === null
+          ? hits.length > 0
+          : row instanceof Set
+            ? hits.some(([laneRow]) => row.has(laneRow))
+            : hits.some(([laneRow]) => row === laneRow);
+        return matches ? time : undefined;
+      },
     );
   }
 
@@ -92,8 +99,11 @@ export function attachTimeline(ctx) {
     }
     const row = valueLane || gesture.panning ? state.view.activeLane : gesture.lastRow;
     let ms = gesture.start + x / gesture.zoom;
-    const tool = state.view.tool;
+    const tool = !valueLane && event.altKey ? "Draw" : state.view.tool;
     const rightClick = gesture.button === "right";
+    const volumeLanes = valueLane
+      ? visibleVolumeLanes(state.scene, state.view, state.selectionLaneKeys)
+      : null;
     if (!valueLane && typeof lane === "number" && (
       ((phase === "down" || phase === "double_click") && (rightClick || ["Select", "Erase", "Mute", "Ramp"].includes(tool))) ||
       (phase === "move" && (rightClick || ["Erase", "Mute"].includes(tool)))
@@ -104,7 +114,8 @@ export function attachTimeline(ctx) {
         ms = hit;
       }
     } else if (valueLane && phase === "down" && !event.altKey) {
-      const hit = nearestHitTime(ms, null, gesture.zoom);
+      const hitScope = volumeLanes?.length ? new Set(volumeLanes) : null;
+      const hit = nearestHitTime(ms, hitScope, gesture.zoom);
       if (hit != null) {
         gesture.hit = hit;
         ms = hit;
@@ -113,6 +124,7 @@ export function attachTimeline(ctx) {
     return {
       kind: "pointer", phase, ms, row, x, y,
       value: valueLane ? limit((height - y) / Math.max(1, height - 3) * 100, 1, 100) : null,
+      ...(volumeLanes?.length ? { volume_lanes: volumeLanes } : {}),
       shift: event.shiftKey, ctrl: event.ctrlKey || event.metaKey, alt: event.altKey,
       ...(rightClick ? { button: "right" } : {}),
     };
@@ -157,7 +169,7 @@ export function attachTimeline(ctx) {
 
   function refreshToolCursor() {
     if (!state.cursorSurface) return;
-    const tool = state.view.tool === "Grab" || !state.cursorAltDraw ? state.view.tool : "Draw";
+    const tool = state.cursorAltDraw && state.cursorSurface === grid ? "Draw" : state.view.tool;
     const cursor = {
       Select: "default",
       Grab: "pointer",
@@ -167,7 +179,21 @@ export function attachTimeline(ctx) {
     if (state.cursorSurface.style.cursor !== cursor) state.cursorSurface.style.cursor = cursor;
   }
 
+  function syncDragShiftRelative(shiftKey) {
+    if (!state.drag || state.drag.surface !== grid) return;
+    if (!shiftKey) state.drag.startedWithShift = false;
+    const moving = !state.drag.panning && !state.drag.marquee && !state.drag.markingRange && !state.drag.drawPaint &&
+      state.drag.button !== "right" && state.drag.hit != null && state.view?.tool === "Select" && !state.cursorAltDraw;
+    const next = Boolean(moving && shiftKey && !state.drag.startedWithShift &&
+      state.scene?.snap && state.scene.snapMode !== "objects");
+    if (Boolean(state.drag.shiftRelative) !== next) {
+      state.drag.shiftRelative = next;
+      ctx.paintSoon();
+    }
+  }
+
   function updateCursorModifiers(event) {
+    syncDragShiftRelative(Boolean(event.shiftKey));
     const altDraw = event.altKey && !event.ctrlKey && !event.metaKey && !event.getModifierState?.("AltGraph");
     if (altDraw === state.cursorAltDraw) return;
     state.cursorAltDraw = altDraw;
@@ -719,7 +745,8 @@ export function attachTimeline(ctx) {
       const rect = controller.getBoundingClientRect();
       const { x } = pointerIn(controller, event);
       const ms = state.scene.viewStart + x / state.scene.zoom;
-      const target = nearestHitTime(ms, null, state.scene.zoom);
+      const volumeLanes = visibleVolumeLanes(state.scene, state.view, state.selectionLaneKeys);
+      const target = nearestHitTime(ms, volumeLanes?.length ? new Set(volumeLanes) : null, state.scene.zoom);
       if (target == null) return;
       const bubble = volumeBubbleAtMoment(state.scene, target, rect, {
         editing: true,
@@ -736,6 +763,8 @@ export function attachTimeline(ctx) {
         if (surface === grid) handOverHitCard(null);
         const rightClick = surface === grid && event.button === 2;
         if (!state.scene || state.view.busy || state.drag || state.rulerDrag || (event.button !== 0 && !rightClick)) return;
+        // Activate held dual quasimodes (e.g. holding "4" for Erase) before classifying tool gestures.
+        ctx.notifyStrokeStart?.();
         const panning = !rightClick && surface === grid && state.view.tool === "Grab" && !event.altKey;
         const marqueeCapable = !rightClick && surface === grid && !panning && !event.altKey
           && (state.view.tool === "Select" || state.view.tool === "Range");
@@ -763,6 +792,8 @@ export function attachTimeline(ctx) {
           start: state.scene.viewStart, zoom: state.scene.zoom,
           rows: state.laneRows, last: 0, panning, scrollTop: $("scroll").scrollTop,
           startNumericRow: typeof startLaneRow === "number" ? startLaneRow : null,
+          startedWithShift: Boolean(event.shiftKey),
+          shiftRelative: false,
         };
         state.drag.firstPoint = pointer(event, "down");
         state.drag.firstVisualRow = state.drag.lastVisualRow;
@@ -816,7 +847,8 @@ export function attachTimeline(ctx) {
         if (surface === controller && state.scene && !state.view.busy) {
           const { x } = pointerIn(controller, event);
           const ms = state.scene.viewStart + x / state.scene.zoom;
-          const hovered = nearestHitTime(ms, null, state.scene.zoom);
+          const volumeLanes = visibleVolumeLanes(state.scene, state.view, state.selectionLaneKeys);
+          const hovered = nearestHitTime(ms, volumeLanes?.length ? new Set(volumeLanes) : null, state.scene.zoom);
           if (hovered !== state.volumeHoverTime) {
             state.volumeHoverTime = hovered;
             const bubble = hovered != null
@@ -859,6 +891,7 @@ export function attachTimeline(ctx) {
         }
         if (perf().now() - state.drag.last < 32 || state.requests > 2) return;
         state.drag.last = perf().now();
+        syncDragShiftRelative(Boolean(event.shiftKey));
         state.drag.lastPoint = pointer(event, "move");
         scrollGrab(state.drag.lastPoint);
         ctx.act(state.drag.lastPoint);
@@ -908,6 +941,7 @@ export function attachTimeline(ctx) {
               }
             }
             ctx.paintSoon();
+            ctx.notifyStrokeEnd?.();
             return;
           }
           const end = pointer(event, released ? "up" : "cancel");
@@ -931,6 +965,7 @@ export function attachTimeline(ctx) {
                 end_ms: end.ms,
               });
               state.drag = null;
+              ctx.notifyStrokeEnd?.();
               return;
             }
           }
@@ -950,6 +985,7 @@ export function attachTimeline(ctx) {
           }
           ctx.act(end);
           state.drag = null;
+          ctx.notifyStrokeEnd?.();
         });
       }
     }

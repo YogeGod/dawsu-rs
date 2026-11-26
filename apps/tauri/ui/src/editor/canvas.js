@@ -4,7 +4,7 @@ import {
   bookmarkFlagHeight, gridLines, limit, locatorFlagHeight, locatorFlagWidth,
   objectReach, objectSize, objectWhite, overviewColumns, reducedDivisor,
   rulerBandHeight, slateTimeline, snapColour, snapColours, snapTickHeights,
-  trackShade, visibleWarningMarkers, volumeColour,
+  trackShade, visibleVolumeLanes, visibleWarningMarkers, volumeColour,
 } from "./helpers.js";
 import { visibleViewerOverlay } from "../lib/node-graph.js";
 
@@ -1095,33 +1095,9 @@ export function attachCanvas(ctx) {
       }
       g.ctx.stroke();
     }
-    // Determine which lanes appear in the volume editor lane:
-    // if hits are selected, show only the lanes with selected hits;
-    // otherwise if multiple lanes are selected in the lane headers, show those;
-    // otherwise show only the active/highlighted lane.
-    let volumeLanes = null;
-    if (v) {
-      const selectedLanes = new Set();
-      for (let i = 0; i < moments.length; i++) {
-        const mHits = moments[i][3];
-        for (let j = 0; j < mHits.length; j++) {
-          if (mHits[j][1]) selectedLanes.add(mHits[j][0]);
-        }
-      }
-      if (selectedLanes.size > 0) {
-        volumeLanes = selectedLanes;
-      } else if ((state.selectionLaneKeys?.size ?? 0) > 1 && state.scene.lanes) {
-        volumeLanes = new Set();
-        for (let row = 0; row < state.scene.lanes.length; row++) {
-          if (state.selectionLaneKeys.has(state.scene.lanes[row]?.key)) volumeLanes.add(row);
-        }
-        if (volumeLanes.size === 0 && state.view.activeLane != null) volumeLanes.add(state.view.activeLane);
-      } else if (state.view.activeLane != null) {
-        volumeLanes = new Set([state.view.activeLane]);
-      } else {
-        volumeLanes = new Set();
-      }
-    }
+    const volumeLanes = v
+      ? new Set(visibleVolumeLanes(state.scene, state.view, state.selectionLaneKeys) ?? [])
+      : null;
     let liveMarquee = null;
     if (state.drag?.marquee && state.drag.lastPoint) {
       const fx = state.drag.firstPoint.x, fy = state.drag.firstPoint.y;
@@ -1134,6 +1110,20 @@ export function attachCanvas(ctx) {
           hiVis: Math.floor(Math.max(fy, ly) / rowHeight),
           additive: !!state.drag.additive,
         };
+      }
+    }
+    let prevVolumePt = null;
+    if (v && volumeLanes.size > 0 && firstMoment > 0) {
+      for (let i = firstMoment - 1; i >= 0; i--) {
+        const [time, volume, , mHits] = moments[i];
+        const vHits = mHits.filter(([row]) => volumeLanes.has(row));
+        if (vHits.length > 0) {
+          const primary = vHits.find(([row]) => row === state.view.activeLane) ?? vHits[0];
+          const barVolume = primary[3] ?? volume;
+          const volH = limit(barVolume, 0, 100) / 100 * (v.height - 3);
+          prevVolumePt = [xOf(time), v.height - volH];
+          break;
+        }
       }
     }
     for (let mIdx = firstMoment; mIdx < moments.length; mIdx++) {
@@ -1150,6 +1140,16 @@ export function attachCanvas(ctx) {
           const volumeHeight = limit(barVolume, 0, 100) / 100 * (v.height - 3);
           const anySelected = volumeHits.some(([, selected]) => selected);
           const topY = v.height - volumeHeight;
+          if (prevVolumePt) {
+            v.ctx.strokeStyle = "rgba(255, 255, 255, 0.22)";
+            v.ctx.lineWidth = 1.25;
+            v.ctx.beginPath();
+            v.ctx.moveTo(prevVolumePt[0], prevVolumePt[1]);
+            v.ctx.lineTo(x, topY);
+            v.ctx.stroke();
+            v.ctx.lineWidth = 1;
+          }
+          prevVolumePt = [x, topY];
           v.ctx.fillStyle = barColour;
           v.ctx.fillRect(x - 2.5, topY, 5, volumeHeight);
           // Bright 5x5 top cap (white when selected), matching 3.1.4 VolumeLane.
@@ -1261,6 +1261,27 @@ export function attachCanvas(ctx) {
         }
         g.ctx.restore();
       }
+    }
+    if (state.drag?.shiftRelative && g.width >= 120 && g.height >= 28) {
+      g.ctx.save();
+      g.ctx.font = "600 11px Inter, system-ui, sans-serif";
+      const label = state.scene?.snapMode === "relative" ? "Grid Snap" : "Relative Grid";
+      const tw = g.ctx.measureText(label).width;
+      const bw = tw + 16;
+      const bx = Math.max(8, g.width - bw - 10);
+      const by = 8;
+      g.ctx.fillStyle = "rgba(18, 22, 28, 0.88)";
+      g.ctx.strokeStyle = "rgba(98, 214, 207, 0.7)";
+      g.ctx.lineWidth = 1;
+      g.ctx.beginPath();
+      g.ctx.roundRect?.(bx, by, bw, 22, 5);
+      if (!g.ctx.roundRect) g.ctx.rect(bx, by, bw, 22);
+      g.ctx.fill();
+      g.ctx.stroke();
+      g.ctx.fillStyle = "#e6edf3";
+      g.ctx.textBaseline = "middle";
+      g.ctx.fillText(label, bx + 8, by + 11);
+      g.ctx.restore();
     }
     if (v && state.scene.rampPreview?.length) {
       v.ctx.strokeStyle = "#62d6cf";

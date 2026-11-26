@@ -162,6 +162,11 @@ impl Composer {
         self.move_to(destination, tolerance, |_, time| (time + delta).max(0.0));
     }
 
+    /// Moves selected hits by `delta_ms` without grid-snapping and with exact (`tolerance = 0.0`) placement.
+    pub fn nudge_ms(&mut self, delta_ms: f64) {
+        self.move_selected(delta_ms, None, 0.0);
+    }
+
     pub fn nudge(&mut self, direction: i32) {
         let spacing = self.spacing;
         self.move_to(None, 5.0, |tempo, time| {
@@ -996,6 +1001,14 @@ impl ToolTarget for Composer {
         }
         .offset(&self.tempo, &self.object_times, from, raw)
     }
+    fn snap_offset_relative(&self, from: SongTime, raw: f64) -> f64 {
+        Snap {
+            on: self.snap_enabled,
+            mode: self.snap_mode,
+            spacing: self.spacing,
+        }
+        .offset_with_relative_flip(&self.tempo, &self.object_times, from, raw, true)
+    }
     fn begin(&mut self, label: &str) {
         self.move_stroke = None;
         self.history.begin(label);
@@ -1274,5 +1287,24 @@ mod tests {
 
         // Missing moment returns false cleanly.
         assert!(!composer.set_moment_volume_at(9999.0, 50, None));
+    }
+
+    #[test]
+    fn nudge_ms_moves_by_exact_one_millisecond_without_merging_nearby_hits() {
+        let mut composer = empty_composer();
+        let normal = lane_normal();
+        composer.add(1000.0, normal.clone(), 80, 0.0);
+        composer.add(1002.0, normal.clone(), 80, 0.0);
+        assert_eq!(composer.hitsounds().moments().len(), 2);
+        composer.selected.replace([HitKey { moment: 0, lane: normal.clone() }]);
+
+        composer.nudge_ms(1.0);
+        assert!(composer.hitsounds().moments().iter().any(|m| (m.time().ms() - 1001.0).abs() < 1e-6 && m.has_hit(&normal)));
+        assert!(composer.hitsounds().moments().iter().any(|m| (m.time().ms() - 1002.0).abs() < 1e-6 && m.has_hit(&normal)));
+
+        composer.nudge_ms(-2.0);
+        assert!(composer.hitsounds().moments().iter().any(|m| (m.time().ms() - 999.0).abs() < 1e-6 && m.has_hit(&normal)));
+        composer.undo();
+        assert!(composer.hitsounds().moments().iter().any(|m| (m.time().ms() - 1001.0).abs() < 1e-6 && m.has_hit(&normal)));
     }
 }

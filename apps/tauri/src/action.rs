@@ -400,6 +400,8 @@ pub(crate) enum Action {
         y: f64,
         value: Option<f64>,
         #[serde(default)]
+        volume_lanes: Option<Vec<usize>>,
+        #[serde(default)]
         button: Option<String>,
         shift: bool,
         ctrl: bool,
@@ -869,6 +871,7 @@ impl Action {
                 x,
                 y,
                 value,
+                volume_lanes,
                 button,
                 shift,
                 ctrl,
@@ -887,7 +890,7 @@ impl Action {
                         mods = mods.union(flag);
                     }
                 }
-                app.pointer(
+                app.pointer_scoped(
                     phase,
                     PointerInput {
                         time: SongTime::from_ms(ms.max(0.0)),
@@ -908,6 +911,7 @@ impl Action {
                         x,
                         y,
                     },
+                    volume_lanes.as_deref(),
                 );
             }
             Self::PaintDrawStroke {

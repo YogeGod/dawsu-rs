@@ -164,6 +164,8 @@ pub trait ToolTarget {
     }
     /// The snapped offset for dragging an item at `from` by `raw_ms`.
     fn snap_offset(&self, from: SongTime, raw_ms: f64) -> f64;
+    /// Like [`Self::snap_offset`], flipping between `Grid` and `GridRelative`.
+    fn snap_offset_relative(&self, from: SongTime, raw_ms: f64) -> f64;
 
     /// The edit history's transaction calls.
     fn begin(&mut self, label: &str);
@@ -318,6 +320,7 @@ enum Stroke<I> {
         applied_rows: i32,
         moved: bool,
         select_only: Option<I>,
+        started_with_shift: bool,
     },
     Marquee {
         start: PointerInput,
@@ -602,6 +605,7 @@ impl<I: Clone + Eq + Hash> ToolBox<I> {
                     applied_rows: 0,
                     moved: false,
                     select_only,
+                    started_with_shift: e.mods.shift(),
                 });
             }
             None => {
@@ -629,9 +633,18 @@ impl<I: Clone + Eq + Hash> ToolBox<I> {
                 applied_ms,
                 applied_rows,
                 moved,
+                started_with_shift,
                 ..
             } => {
-                let delta_ms = target.snap_offset(*anchor, e.time.ms() - start.time.ms());
+                if !e.mods.shift() {
+                    *started_with_shift = false;
+                }
+                let raw_ms = e.time.ms() - start.time.ms();
+                let delta_ms = if e.mods.shift() && !*started_with_shift {
+                    target.snap_offset_relative(*anchor, raw_ms)
+                } else {
+                    target.snap_offset(*anchor, raw_ms)
+                };
                 let delta_rows = e.row - start.row;
                 if !*moved {
                     if delta_ms == 0.0 && delta_rows == 0 {

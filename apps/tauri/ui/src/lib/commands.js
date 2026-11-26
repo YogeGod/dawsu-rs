@@ -191,10 +191,33 @@ export const menus = {
 // only; the shortcut editor lists them all under their Rust description.
 export const keyOnly = [
   "quantize", "volumeUp", "volumeDown", "volumeUpFine", "volumeDownFine", "jumpToSelection",
-  "nudgeLeft", "nudgeRight", "gridLeft", "gridRight", "navUp", "navDown", "selectPrevious", "selectNext",
+  "nudgeLeft", "nudgeRight", "nudgeLeft1ms", "nudgeRight1ms", "gridLeft", "gridRight", "navUp", "navDown", "selectPrevious", "selectNext",
   "addPrevious", "addNext", "navAddUp", "navAddDown",
   "openHitsoundFolder", "reviewOutput", "first", "last", "deselect", "snap",
   "jumpLeft", "jumpRight", "setLeft", "setRight", "removeBookmark",
   "seekBack", "seekBackFar", "seekForward", "seekForwardFar",
   "snap1", "snap2", "snap3", "snap4", "snap5", "snap6", "snap7", "snap8", "snap9",
+];
+
+// Additional Command Palette actions outside top menus (never use `command:` here so catalogue
+// 1:1 parity tests cover menu + keyOnly exclusively; menus.js handles `paletteAction`).
+export const paletteOnly = [
+  { id: "paletteModeHitsounds", label: "Mode: Hitsounds view", group: "Mode", icon: "AudioWaveform", paletteAction: "setModeHitsounds", enabled: "idle" },
+  { id: "paletteModeDrums", label: "Mode: Drum detection view", group: "Mode", icon: "Drum", paletteAction: "setModeDrums", enabled: "document" },
+  { id: "paletteModeKeysounds", label: "Mode: Keysounds view", group: "Mode", icon: "Music", paletteAction: "setModeKeysounds", enabled: "document" },
+  { id: "paletteCreateHsDiff", label: "Create [Hitsounds] difficulty", group: "Difficulty", icon: "FilePlus", paletteAction: "createHsDiff", enabled: "edit" },
+  { id: "paletteCreateHsFromCurrent", label: "Create [Hitsounds] from current difficulty", group: "Difficulty", icon: "CopyPlus", paletteAction: "createHsDiffFromCurrent", enabled: "edit" },
+  { id: "paletteCaptureSharedBase", label: "Shared Base: Capture current difficulty", group: "Shared Base", icon: "Layers", paletteAction: "captureSharedBase", enabled: "edit" },
+  { id: "paletteToggleSharedBase", label: "Shared Base: Toggle enabled", group: "Shared Base", icon: "Layers", paletteAction: "toggleSharedBase", enabled: "document", checked: "sharedBaseEnabled" },
+  { id: "paletteApplySharedBaseAll", label: "Shared Base: Apply to all difficulties…", group: "Shared Base", icon: "Layers", paletteAction: "applySharedBaseAll", enabled: "sharedBaseEnabled" },
+  { id: "paletteToggleCentrePlayhead", label: "Playback: Toggle centre playhead", group: "Playback", icon: "LocateFixed", paletteAction: "toggleCentrePlayhead", enabled: "document", checked: "centrePlayhead" },
+  { id: "paletteShowBottomVolume", label: "View: Switch bottom panel to Volume", group: "View", icon: "ChartNoAxesColumn", paletteAction: "showBottomVolume", enabled: "idle" },
+  { id: "paletteShowBottomMixer", label: "View: Switch bottom panel to Mixer", group: "View", icon: "SlidersHorizontal", paletteAction: "showBottomMixer", enabled: "idle" },
+  { id: "paletteToggleStepPads", label: "View: Toggle beat step pads", group: "View", icon: "Grid2x2", run: ["toggle", "step_pads_mode", "view.stepPadsMode"], paletteAction: "toggleStepPads", enabled: "edit" },
+  { id: "paletteToggleKeepPitch", label: "Playback: Keep song pitch when speed changes", group: "Playback", icon: "AudioWaveform", run: ["toggle", "keep_pitch", "view.keepPitch", true], paletteAction: "toggleKeepPitch", enabled: "idle" },
+  { id: "paletteToggleCleanGreenlines", label: "Preferences: Clean redundant green lines", group: "Preferences", icon: "SlidersHorizontal", run: ["toggle", "clean_redundant_greenlines", "view.cleanRedundantGreenlines", true], paletteAction: "toggleCleanGreenlines", enabled: "idle" },
+  { id: "paletteSnapModeGrid", label: "Snap mode: Grid", group: "View", icon: "Grid2x2", paletteAction: "snapModeGrid", enabled: "edit" },
+  { id: "paletteSnapModeRelative", label: "Snap mode: Relative Grid", group: "View", icon: "Grid2x2", paletteAction: "snapModeRelative", enabled: "edit" },
+  { id: "paletteSnapModeObjects", label: "Snap mode: Objects", group: "View", icon: "Scan", paletteAction: "snapModeObjects", enabled: "edit" },
+  { id: "paletteShowDefaultLanes", label: "Show 12 default lanes", group: "Lane", icon: "Plus", paletteAction: "showDefaultLanes", enabled: "edit" },
 ];

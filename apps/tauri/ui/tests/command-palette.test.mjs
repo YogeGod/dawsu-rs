@@ -2,11 +2,12 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { render } from "svelte/server";
 import { bridge } from "../src/lib/bridge.svelte.js";
-import { items, keyOnly, menus } from "../src/lib/commands.js";
+import { items, keyOnly, menus, paletteOnly } from "../src/lib/commands.js";
 import {
   MAX_RECENT,
   RECENT_STORAGE_KEY,
   buildEntries,
+  evaluateEnabledRule,
   filterAndRank,
   firstEnabledIndex,
   nextEnabledIndex,
@@ -216,4 +217,34 @@ test("CommandPalette.svelte hides when closed and renders entries with active sh
   // Clean up shared bridge state for other tests.
   bridge.commandPaletteOpen = false;
   bridge.commandPaletteShortcuts = null;
+});
+
+test("Command Palette includes Lane menu, paletteOnly actions, and accurate KEY_ONLY / stem / sharedBase enabled rules", () => {
+  const entries = buildEntries({
+    items,
+    menus,
+    keyOnly,
+    paletteOnly,
+    shortcuts: {
+      entries: [
+        ...sampleShortcuts.entries,
+        ["nudgeLeft1ms", "Nudge selected hits left by 1 ms", ["Alt+Shift+Left"]],
+        ["quantize", "Quantize selected hits", ["Q"]],
+      ],
+    },
+    scene: { ...openMapScene, selection: null },
+    view: { ...openMapView, stemLoaded: false, sharedBaseEnabled: false },
+  });
+
+  assert.ok(entries.some(e => e.group === "Lane" && e.id === "laneAdd"));
+  assert.ok(entries.some(e => e.source === "paletteOnly" && e.id === "paletteShowDefaultLanes"));
+  assert.equal(entries.find(e => e.id === "cmd:quantize")?.enabled, false, "selection-only keyOnly disabled with empty selection");
+  assert.equal(entries.find(e => e.id === "cmd:nudgeLeft1ms")?.enabled, false);
+  assert.equal(entries.find(e => e.id === "toggleStemMonitor")?.enabled, false, "stemLoaded false disables monitor");
+  assert.equal(entries.find(e => e.id === "paletteApplySharedBaseAll")?.enabled, false);
+
+  assert.equal(evaluateEnabledRule("stemLoaded", { scene: openMapScene, view: { stemLoaded: true } }), true);
+  assert.equal(evaluateEnabledRule("sharedBaseEnabled", { scene: openMapScene, view: { sharedBaseEnabled: true } }), true);
+  assert.equal(evaluateEnabledRule("lane", { scene: openMapScene, view: { activeLane: 0 } }), true);
+  assert.equal(evaluateEnabledRule("lane", { scene: openMapScene, view: { activeLane: 99 } }), false);
 });

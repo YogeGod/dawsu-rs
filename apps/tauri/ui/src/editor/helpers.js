@@ -401,3 +401,28 @@ export function computeDrawStrokeSteps(scene, startMs, endMs, row = null, maxSte
   }
   return { steps, newSteps };
 }
+
+/// Returns the data-lane indices shown/targeted in the bottom Volume controller (`null` if no
+/// scene or no active lane resolved). Mirrors the canvas bar filter so Alt+paint & segment-grab
+/// act strictly on the currently visible volume lane(s).
+export function visibleVolumeLanes(scene, view, selectionLaneKeys) {
+  if (!scene?.lanes?.length) return null;
+  const selected = new Set();
+  for (const [, , , hits] of scene.moments ?? []) {
+    for (const [row, isSelected] of hits ?? []) {
+      if (isSelected) selected.add(row);
+    }
+  }
+  if (selected.size > 0) return [...selected];
+  if ((selectionLaneKeys?.size ?? 0) > 1) {
+    const out = [];
+    for (let row = 0; row < scene.lanes.length; row++) {
+      if (selectionLaneKeys.has(scene.lanes[row]?.key)) out.push(row);
+    }
+    if (out.length > 0) return out;
+  }
+  if (view?.activeLane != null && view.activeLane >= 0 && view.activeLane < scene.lanes.length) {
+    return [view.activeLane];
+  }
+  return null;
+}

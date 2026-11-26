@@ -1,7 +1,7 @@
 //! The mouse tools driven by scripted pointer input against a fake editor (Responsibility 6).
 
 use dawsu_editor::keys::Mods;
-use dawsu_editor::tempo::{Snap, SnapSpacing, TempoMap, TimingSection};
+use dawsu_editor::tempo::{Snap, SnapMode, SnapSpacing, TempoMap, TimingSection};
 use dawsu_editor::tools::{
     PointerButton, PointerInput, PointerSurface, TimeRange, ToolBox, ToolKind, ToolPreview,
     ToolTarget,
@@ -142,6 +142,11 @@ impl ToolTarget for Fake {
 
     fn snap_offset(&self, from: SongTime, raw_ms: f64) -> f64 {
         self.snap.offset(&self.tempo, &[], from, raw_ms)
+    }
+
+    fn snap_offset_relative(&self, from: SongTime, raw_ms: f64) -> f64 {
+        self.snap
+            .offset_with_relative_flip(&self.tempo, &[], from, raw_ms, true)
     }
 
     fn begin(&mut self, label: &str) {
@@ -810,4 +815,30 @@ fn esc_on_an_erase_stroke_or_a_marquee_puts_the_selection_back() {
     tb.down(&mut f, p(3000.0, 0));
     tb.cancel(&mut f);
     assert_eq!(f.selection.items(), &HashSet::from([0, 1]));
+}
+
+#[test]
+fn holding_shift_mid_drag_temporarily_engages_relative_grid() {
+    // Fake default: 120 BPM, divisor 1/4 -> 125 ms grid steps. Hit starts off-grid at 140 ms (+15 ms).
+    let mut f = Fake::new(&[(140.0, 0)]);
+    f.snap = Snap {
+        on: true,
+        mode: SnapMode::Grid,
+        spacing: SnapSpacing::fraction(4).unwrap(),
+    };
+    let mut tb = ToolBox::new();
+    tb.select_tool(ToolKind::Select, &mut f);
+    tb.down(&mut f, PointerInput::at(140.0, 0));
+    // Holding Shift mid-drag preserves the +15 ms grid offset.
+    let mut shifted = PointerInput::at(265.0, 0);
+    shifted.mods = Mods::SHIFT;
+    tb.moved(&mut f, shifted);
+    assert_eq!(f.hits(), vec![(265.0, 0)]);
+    // Releasing Shift before mouse-up snaps to the grid line instead.
+    tb.moved(&mut f, PointerInput::at(265.0, 0));
+    assert_eq!(f.hits(), vec![(250.0, 0)]);
+    // Re-engaging Shift switches back to Relative Grid cleanly.
+    tb.moved(&mut f, shifted);
+    tb.up(&mut f, shifted);
+    assert_eq!(f.hits(), vec![(265.0, 0)]);
 }

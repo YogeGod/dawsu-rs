@@ -307,6 +307,19 @@ pub fn catalogue() -> CommandCatalog<Application> {
         d,
         { d.composer.nudge(1) }
     );
+    let fine_mods = Mods::ALT.union(Mods::SHIFT);
+    doc!(
+        CommandDefinition::new("nudgeLeft1ms", "Nudge selected hits left by 1 ms")
+            .keys(&[K::new(Key::Left, fine_mods)]),
+        d,
+        { d.composer.nudge_ms(-1.0) }
+    );
+    doc!(
+        CommandDefinition::new("nudgeRight1ms", "Nudge selected hits right by 1 ms")
+            .keys(&[K::new(Key::Right, fine_mods)]),
+        d,
+        { d.composer.nudge_ms(1.0) }
+    );
     let align_mods = Mods::CTRL.union(Mods::ALT);
     registry.bind(
         &CommandDefinition::new("gridLeft", "Align selection to the previous grid line")

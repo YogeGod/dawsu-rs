@@ -533,6 +533,10 @@ impl Application {
         storage_path(&self.shared_base_projects_root(), &document.path)
     }
 
+    pub fn shared_base_enabled(&self) -> bool {
+        self.base_layer_track.is_some()
+    }
+
     pub fn shared_base_status(&self) -> SharedBaseStatus {
         let Some(document) = self.document.as_ref() else {
             return SharedBaseStatus::default();

@@ -26,7 +26,7 @@ fn switching_dirty_difficulties_respects_all_three_choices_and_stale_save() {
         for phase in ["down", "up"] {
             Action::Pointer {
                 phase: phase.into(), ms: 1000.0, row, x: 100.0, y: 0.0,
-                value: None, button: None, shift: false, ctrl: false, alt: false,
+                value: None, volume_lanes: None, button: None, shift: false, ctrl: false, alt: false,
             }.run(app);
         }
         assert!(app.is_dirty());
@@ -202,6 +202,7 @@ fn dense_scene_and_dirty_switch_use_the_real_editor_state() {
             x: 10.0,
             y: 10.0,
             value: None,
+            volume_lanes: None,
             button: None,
             shift: false,
             ctrl: false,
@@ -221,6 +222,7 @@ fn dense_scene_and_dirty_switch_use_the_real_editor_state() {
             x: 10.0,
             y: 10.0,
             value: None,
+            volume_lanes: None,
             button: None,
             shift: false,
             ctrl: false,
@@ -374,7 +376,7 @@ fn home_route_preserves_cancel_and_failed_save_and_reloads_after_discard() {
     for phase in ["down", "up"] {
         Action::Pointer {
             phase: phase.into(), ms: 1000.0, row, x: 12.0, y: 12.0,
-            value: None, button: None, shift: false, ctrl: false, alt: false,
+            value: None, volume_lanes: None, button: None, shift: false, ctrl: false, alt: false,
         }.run(&mut app);
     }
     assert!(app.is_dirty());
@@ -446,7 +448,7 @@ fn save_applies_volume_floor_only_to_the_edited_hit() {
     for phase in ["down", "up"] {
         Action::Pointer {
             phase: phase.into(), ms: 1000.0, row, x: 12.0, y: 12.0,
-            value: None, button: None, shift: false, ctrl: false, alt: false,
+            value: None, volume_lanes: None, button: None, shift: false, ctrl: false, alt: false,
         }.run(&mut app);
     }
     assert_eq!(snapshot(&app, true)["scene"]["selection"]["count"], 1);
@@ -483,7 +485,7 @@ fn home_save_with_left_out_moments_goes_home_after_the_summarys_save() {
             for phase in ["down", "up"] {
                 Action::Pointer {
                     phase: phase.into(), ms: 2500.0, row, x: 12.0, y: 12.0,
-                    value: None, button: None, shift: false, ctrl: false, alt: false,
+                    value: None, volume_lanes: None, button: None, shift: false, ctrl: false, alt: false,
                 }.run(app);
             }
         }
@@ -676,7 +678,7 @@ fn export_preview_waits_without_an_error_while_a_drag_is_open() {
     let send = |app: &mut Application, phase: &str| {
         Action::Pointer {
             phase: phase.into(), ms: 1000.0, row: 0, x: 1000.0, y: 70.0,
-            value: Some(30.0), button: None, shift: false, ctrl: false, alt: false,
+            value: Some(30.0), volume_lanes: None, button: None, shift: false, ctrl: false, alt: false,
         }.run(app);
     };
     send(&mut app, "down");

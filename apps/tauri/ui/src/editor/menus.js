@@ -46,6 +46,9 @@ export function initMenus(env = globalThis, { ui: uiOverride = null, bridge: bri
   const requestDrumMap = fromSession("requestDrumMap");
   const renameLane = fromSession("renameLane");
   const moveLane = fromSession("moveLane");
+  const createAndOpenHitsoundDiff = fromSession("createAndOpenHitsoundDiff");
+  const laneHeaderAction = fromSession("laneHeaderAction");
+  const setQuasimodeShortcuts = fromSession("setQuasimodeShortcuts");
   const openModal = (name, ...args) => (env !== globalThis
     ? env[name]?.(...args)
     : bridgeOverride.openModal(name, ...args));
@@ -100,6 +103,8 @@ export function initMenus(env = globalThis, { ui: uiOverride = null, bridge: bri
     stemLoaded: () => canEditFromMenu() && !!getView().stemLoaded,
     stemActive: () => !!getView().stemActive,
     tapRecordingArmed: () => !!getView().tapRecordingArmed,
+    sharedBaseEnabled: () => !!getScene() && !getView().busy && !!getView().sharedBaseEnabled,
+    centrePlayhead: () => !!ui()?.centre?.(),
     tool: (_, item) => getView().tool === item.run[1],
   };
 
@@ -194,7 +199,7 @@ export function initMenus(env = globalThis, { ui: uiOverride = null, bridge: bri
     openMidiImport: () => openModal("openMidiImport"),
     importManiaHitsounds: () => importManiaHitsounds(),
     exportMidi: () => exportMidi(),
-    openKeysounds: () => { ui?.setMode?.("keysounds"); openModal("openKeysounds"); },
+    openKeysounds: () => { ui()?.setMode?.("keysounds"); openModal("openKeysounds"); },
     openSharedBase: () => openModal("openSharedBase"),
     openStemSeparation: () => openModal("openStemSeparation"),
     openNewDifficulty: () => callAction("inspectorAction", "new"),
@@ -213,6 +218,84 @@ export function initMenus(env = globalThis, { ui: uiOverride = null, bridge: bri
     revertMapsetToOriginal: () => confirmRevertToOriginal(),
     undoMapsetRevert: () => undoMapsetRevert(),
     pickDrumStem: () => pickDrumStem(),
+    setModeHitsounds: () => ui()?.setMode?.("hitsounds"),
+    setModeDrums: () => ui()?.setMode?.("drums"),
+    setModeKeysounds: () => ui()?.setMode?.("keysounds"),
+    createHsDiff: () => {
+      const path = getScene()?.path;
+      if (path) createAndOpenHitsoundDiff(path, false);
+    },
+    createHsDiffFromCurrent: () => run(async () => {
+      try {
+        const created = await invoke("create_hitsound_diff_from_current");
+        if (created) await act({ kind: "open", path: created });
+      } catch (error) {
+        notifyToast({ tone: "error", title: "Could not create [Hitsounds] diff", body: String(error) });
+      }
+    }),
+    captureSharedBase: () => run(async () => {
+      try {
+        await invoke("shared_base_action", { action: { kind: "capture" } });
+        notifyToast({ tone: "success", title: "Shared Base captured", body: "Captured hitsounds from this difficulty as the mapset's Shared Base." });
+        openModal("openSharedBase");
+        await act(null, false);
+      } catch (error) {
+        notifyToast({ tone: "error", title: "Could not capture Shared Base", body: String(error) });
+      }
+    }),
+    toggleSharedBase: () => run(async () => {
+      const next = !getView()?.sharedBaseEnabled;
+      try {
+        await invoke("shared_base_action", { action: { kind: "set_enabled", enabled: next } });
+        await act(null, false);
+      } catch (error) {
+        notifyToast({ tone: "error", title: "Could not toggle Shared Base", body: String(error) });
+      }
+    }),
+    applySharedBaseAll: () => {
+      modal(
+        "shared-base-apply-all",
+        "Apply Shared Base to all difficulties?",
+        [paragraph("Writes the Shared Base onto every difficulty in the mapset within 5 ms, preserving existing per-difficulty overrides.")],
+        [
+          ["Cancel", closeModal],
+          ["Apply to all", () => {
+            closeModal();
+            run(async () => {
+              try {
+                const res = await invoke("shared_base_action", {
+                  action: { kind: "apply_all", leniencyMs: 5, overwriteOverrides: false },
+                });
+                await act(null, true);
+                notifyToast({
+                  tone: "success",
+                  title: "Shared Base applied",
+                  body: `Updated ${res?.updatedDiffs ?? 0} ${res?.updatedDiffs === 1 ? "difficulty" : "difficulties"}.`,
+                });
+              } catch (error) {
+                notifyToast({ tone: "error", title: "Could not apply Shared Base", body: String(error) });
+              }
+            });
+          }, true],
+        ],
+      );
+    },
+    toggleCentrePlayhead: () => ui()?.toggleCentre?.(),
+    showBottomVolume: () => ui()?.setBottomTab?.("volume"),
+    showBottomMixer: () => ui()?.setBottomTab?.("mixer"),
+    snapModeGrid: () => {
+      const s = getScene();
+      if (s) act({ kind: "snap", on: true, mode: "grid", beats: s.beats ?? 1, divisor: s.divisor ?? 4 });
+    },
+    snapModeRelative: () => {
+      const s = getScene();
+      if (s) act({ kind: "snap", on: true, mode: "relative", beats: s.beats ?? 1, divisor: s.divisor ?? 4 });
+    },
+    snapModeObjects: () => {
+      const s = getScene();
+      if (s) act({ kind: "snap", on: true, mode: "objects", beats: s.beats ?? 1, divisor: s.divisor ?? 4 });
+    },
+    showDefaultLanes: () => laneHeaderAction("showDefaultSkinLanes"),
   };
 
   const menuField = path => path.split(".").reduce((value, key) => value?.[key], { view: getView(), scene: getScene() });
@@ -220,6 +303,10 @@ export function initMenus(env = globalThis, { ui: uiOverride = null, bridge: bri
   function runMenuEntry({ item, target, value, source }) {
     if (source) {
       source.choose(value);
+      return;
+    }
+    if (!item.run && item.paletteAction) {
+      menuCalls[item.paletteAction]?.();
       return;
     }
     const [kind, first, second, third] = item.run ?? ["command", item.command];
@@ -332,9 +419,17 @@ export function initMenus(env = globalThis, { ui: uiOverride = null, bridge: bri
   }
 
   function laneMenuRow(target) {
-    if (!canEditFromMenu() || getScene().path !== target.map) return -1;
+    if (!target || !canEditFromMenu() || getScene()?.path !== target.map) return -1;
     const row = getScene().lanes.findIndex(lane => lane.sourceKey === target.key);
     return getLanePositions().has(row) ? row : -1;
+  }
+
+  function activeLaneTarget() {
+    const scene = getScene();
+    const active = getView()?.activeLane ?? 0;
+    const lane = scene?.lanes?.[active];
+    if (!scene?.path || !lane?.sourceKey) return null;
+    return { map: scene.path, key: lane.sourceKey };
   }
 
   function laneMenuAction(target, invokeAction) {
@@ -627,8 +722,10 @@ export function initMenus(env = globalThis, { ui: uiOverride = null, bridge: bri
     const buttons = menuButtons();
     (last ? buttons[buttons.length - 1] : buttons[0])?.focus();
 
-    invoke("editor_shortcuts").then(({ entries }) => {
-      if (editorMenu !== menu) return;
+    invoke("editor_shortcuts").then((res) => {
+      const entries = res?.entries;
+      setQuasimodeShortcuts?.(res);
+      if (editorMenu !== menu || !Array.isArray(entries)) return;
       const bindings = new Map(entries.map(([id, , keys]) => [id, keys]));
       for (const entry of menu.entries) {
         // A menu shows a command's first key; the Shortcuts list shows them all (Cycle has three).
@@ -710,12 +807,15 @@ export function initMenus(env = globalThis, { ui: uiOverride = null, bridge: bri
     if (editorMenu && !menuPopup.contains(event.target) && !menuNames.some(name => $("menu-" + name).contains(event.target))) closeEditorMenu(false);
   }, true);
   win.addEventListener("resize", () => closeEditorMenu(false));
+  const paletteTarget = item => (item?.enabled?.startsWith("lane") ? activeLaneTarget() : null);
+
   const paletteMenu = {
-    isEnabled: item => !!menuRules[item.enabled ?? "edit"](null, item),
-    isChecked: item => menuChecked({ item, target: null }),
+    isEnabled: item => !!menuRules[item.enabled ?? "edit"](paletteTarget(item), item),
+    isChecked: item => menuChecked({ item, target: paletteTarget(item) }),
     runItem: item => {
-      if (!menuRules[item.enabled ?? "edit"](null, item)) return false;
-      runMenuEntry({ item, target: null });
+      const target = paletteTarget(item);
+      if (!menuRules[item.enabled ?? "edit"](target, item)) return false;
+      runMenuEntry({ item, target });
       refreshEditorMenu();
       return true;
     },

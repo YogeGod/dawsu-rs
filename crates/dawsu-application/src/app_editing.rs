@@ -75,7 +75,11 @@ impl Application {
         }
     }
     pub fn pointer(&mut self, phase: PointerPhase, input: PointerInput) {
-        self.pointer_input(phase, input);
+        self.pointer_scoped(phase, input, None);
+    }
+
+    pub fn pointer_scoped(&mut self, phase: PointerPhase, input: PointerInput, volume_lanes: Option<&[usize]>) {
+        self.pointer_input(phase, input, volume_lanes);
         self.refresh_recovery_edit();
         self.bump_view_revision();
     }
@@ -134,7 +138,12 @@ impl Application {
         }
         self.bump_view_revision();
     }
-    pub(crate) fn pointer_input(&mut self, phase: PointerPhase, input: PointerInput) {
+    pub(crate) fn pointer_input(
+        &mut self,
+        phase: PointerPhase,
+        input: PointerInput,
+        volume_lanes: Option<&[usize]>,
+    ) {
         if self.busy {
             return;
         }
@@ -168,7 +177,26 @@ impl Application {
                 self.active_lane = input.row.max(0) as usize;
             } else if !input.mods.shift() && self.tools.active() != ToolKind::Ramp {
                 if !self.tools.is_stroke_open() {
-                    self.controller_stroke = controller::ControllerStroke::start(&mut d.composer, input, self.zoom);
+                    let scope = volume_lanes
+                        .filter(|rows| !rows.is_empty())
+                        .map(|rows| {
+                            let hits = d.composer.hitsounds();
+                            rows.iter()
+                                .filter_map(|&row| d.composer.lanes.get(row))
+                                .map(|lane| hits.lane_slot(lane).unwrap_or(lane).clone())
+                                .collect::<BTreeSet<_>>()
+                        })
+                        .or_else(|| self.selection_lane_scope.clone());
+                    let active_slot = d.composer.lanes.get(self.active_lane).map(|lane| {
+                        d.composer.hitsounds().lane_slot(lane).unwrap_or(lane).clone()
+                    });
+                    self.controller_stroke = controller::ControllerStroke::start(
+                        &mut d.composer,
+                        input,
+                        self.zoom,
+                        scope.as_ref(),
+                        active_slot.as_ref(),
+                    );
                 }
                 return;
             }

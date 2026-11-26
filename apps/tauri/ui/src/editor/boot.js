@@ -21,7 +21,9 @@ import { attachModal } from "./modal.js";
 import { attachPanels } from "./panels.js";
 import { createState } from "./state.js";
 import { attachTimeline } from "./timeline.js";
+import { createQuasimodeController } from "../lib/quasimode.js";
 import { resolveVisibleTapRow, tapLaneSlotForKey } from "../lib/tapRecord.js";
+import { attachGlobalWheelGuard } from "../lib/wheelGuard.js";
 
 const mutableStateFields = [
   "view", "scene", "drag", "rulerDrag", "overviewDrag", "overviewTarget", "overviewNavigation",
@@ -84,6 +86,7 @@ const exportedMethods = [
   "editBookmark", "openTimeSignatures",
   "openFolders", "openAudioOutput", "openViewSettings", "openPreferences", "showHelp", "showShortcutEditor",
   "clampSnapInput", "popoverAction", "startScreenAction", "statusBarAction",
+  "setQuasimodeShortcuts", "notifyStrokeStart", "notifyStrokeEnd",
 ];
 
 export function createEditor(env = globalThis, { ui = null, autoStart = true, exposeGlobals = true } = {}) {
@@ -133,6 +136,30 @@ export function createEditor(env = globalThis, { ui = null, autoStart = true, ex
   ctx.bindBrowser();
   ctx.bindTimeline();
   ctx.bindModal();
+  attachGlobalWheelGuard(env.document);
+
+  const openMoreToolsPicker = () => {
+    const trigger = env.document.querySelector?.("[data-more-tools]");
+    const openMenu = env !== globalThis ? env.window?.openEditorMenu : actions.openEditorMenu;
+    if (trigger && typeof openMenu === "function") {
+      const box = trigger.getBoundingClientRect();
+      openMenu("tool", false, { x: box.left, y: box.bottom, trigger, label: "Timeline tools" });
+    }
+  };
+  const quasimode = createQuasimodeController({
+    getTool: () => state.view?.tool ?? "Select",
+    setTool: (name) => {
+      if (state.scene && !state.view?.busy && state.view?.tool !== name) {
+        ctx.act({ kind: "tool", name }, false);
+      }
+    },
+    isDragging: () => Boolean(state.drag || state.rulerDrag),
+    openMoreTools: openMoreToolsPicker,
+  });
+  ctx.notifyStrokeStart = () => quasimode.notifyStrokeStart();
+  ctx.notifyStrokeEnd = () => quasimode.notifyStrokeEnd();
+  ctx.setQuasimodeShortcuts = (shortcuts) => quasimode.setShortcuts(shortcuts);
+  ctx.setQuasimodePreset = (preset) => quasimode.setPreset(preset);
 
   function clampSnapInput(value, fallback) {
     const numeric = typeof value === "string" ? (value.trim() === "" ? NaN : Number(value)) : Number(value);
@@ -373,16 +400,26 @@ export function createEditor(env = globalThis, { ui = null, autoStart = true, ex
 
   // Global keyboard handler.
   env.document.addEventListener("keydown", (event) => {
-    if (event.defaultPrevented || event.repeat || event.isComposing || elements.dialog.open ||
+    if (event.defaultPrevented || event.isComposing || elements.dialog.open ||
         event.target.closest("input, select, textarea, [contenteditable]")) return;
     // An open menu, Preferences or a Svelte modal (MIDI import, Keysounds, Command Palette) owns the keyboard:
     // no timeline shortcut runs behind it.
-    if ($("editor-menu")?.hidden === false || modalOpen()) return;
+    if ($("editor-menu")?.hidden === false || modalOpen()) {
+      quasimode.cancel(true);
+      return;
+    }
     const { key, code, ctrl, shift, alt } = keyInput(event);
+    if (event.repeat) {
+      if (state.scene && !state.drag && !state.rulerDrag && quasimode.handleKeyDown({ key, ctrl, shift, alt, repeat: true })) {
+        event.preventDefault();
+      }
+      return;
+    }
     if (state.rulerDrag) {
       if (key === "Escape" && !ctrl && !shift && !alt) {
         event.preventDefault();
         ctx.endRulerDrag(event);
+        quasimode.cancel(true);
       }
       return;
     }
@@ -396,6 +433,8 @@ export function createEditor(env = globalThis, { ui = null, autoStart = true, ex
       }
       if (surface.hasPointerCapture(id)) surface.releasePointerCapture(id);
       ctx.act({ ...(lastPoint ?? firstPoint), phase: "cancel" });
+      ctx.notifyStrokeEnd?.();
+      quasimode.cancel(true);
       return;
     }
     if (key === "Escape" && state.view.showHome && state.view.hasDocument && !state.view.busy && !ctrl && !shift && !alt) {
@@ -427,16 +466,11 @@ export function createEditor(env = globalThis, { ui = null, autoStart = true, ex
         }
       }
     }
-    // Plain "4" opens the hidden-tools drop menu right under the More tools button.
-    if (key === "4" && !ctrl && !shift && !alt && state.scene) {
-      const trigger = env.document.querySelector?.("[data-more-tools]");
-      const openMenu = env !== globalThis ? env.window?.openEditorMenu : actions.openEditorMenu;
-      if (trigger && typeof openMenu === "function") {
-        event.preventDefault();
-        const box = trigger.getBoundingClientRect();
-        openMenu("tool", false, { x: box.left, y: box.bottom, trigger, label: "Timeline tools" });
-        return;
-      }
+    // Quasimodes: tap (< 180 ms) switches tools or opens More Tools on "4"; hold reverts on release.
+    if (state.scene && !state.drag && !state.rulerDrag &&
+        quasimode.handleKeyDown({ key, ctrl, shift, alt, repeat: false })) {
+      event.preventDefault();
+      return;
     }
     // N / Shift+N steps to the next / previous coverage issue in the active Inspector filter.
     if ((key === "n" || key === "N") && !ctrl && !alt && state.scene) {
@@ -463,6 +497,20 @@ export function createEditor(env = globalThis, { ui = null, autoStart = true, ex
       };
     }
     ctx.act(action);
+  });
+
+  env.window.addEventListener?.("keyup", (event) => {
+    ctx.updateCursorModifiers?.(event);
+    const { key } = keyInput(event);
+    quasimode.handleKeyUp({ key });
+  });
+  env.window.addEventListener?.("blur", () => {
+    state.cursorAltDraw = false;
+    ctx.refreshToolCursor?.();
+    quasimode.cancel(true);
+  });
+  env.document.addEventListener?.("visibilitychange", () => {
+    if (env.document.hidden) quasimode.cancel(true);
   });
 
   // Native Tauri window events.

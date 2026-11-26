@@ -375,9 +375,28 @@ impl Snap {
         from: SongTime,
         raw_ms: f64,
     ) -> f64 {
+        self.offset_with_relative_flip(tempo, objects, from, raw_ms, false)
+    }
+
+    /// Like [`Self::offset`], flipping between `Grid` and `GridRelative` while `flip_relative` is true.
+    pub fn offset_with_relative_flip(
+        &self,
+        tempo: &TempoMap,
+        objects: &[SongTime],
+        from: SongTime,
+        raw_ms: f64,
+        flip_relative: bool,
+    ) -> f64 {
         let moved = SongTime::from_ms(from.ms() + raw_ms);
-        if self.on && self.mode == SnapMode::GridRelative {
-            return tempo.snap(moved, self.spacing).ms() - tempo.snap(from, self.spacing).ms();
+        if self.on {
+            let use_relative = match self.mode {
+                SnapMode::Grid => flip_relative,
+                SnapMode::GridRelative => !flip_relative,
+                SnapMode::Objects => false,
+            };
+            if use_relative {
+                return tempo.snap(moved, self.spacing).ms() - tempo.snap(from, self.spacing).ms();
+            }
         }
         self.time(tempo, objects, moved).ms() - from.ms()
     }
@@ -394,5 +413,31 @@ fn closest_object(objects: &[SongTime], time: SongTime) -> Option<SongTime> {
             a
         }),
         (b, a) => b.or(a),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn offset_with_relative_flip_toggles_grid_and_grid_relative() {
+        let tempo = TempoMap::new(vec![TimingSection {
+            start: SongTime::from_ms(0.0),
+            beat_length_ms: 500.0,
+            beats_per_bar: 4,
+        }]);
+        let spacing = SnapSpacing::fraction(4).unwrap(); // 125 ms steps
+        let off_grid = SongTime::from_ms(140.0); // nearest grid line is 125 ms (+15 ms)
+
+        let grid_snap = Snap { on: true, mode: SnapMode::Grid, spacing };
+        // Without flip: snaps moved (265 ms -> 250 ms), losing the +15 ms offset.
+        assert_eq!(grid_snap.offset_with_relative_flip(&tempo, &[], off_grid, 125.0, false), 110.0);
+        // With flip: acts as GridRelative (250 - 125 = 125 ms), preserving +15 ms -> 265 ms.
+        assert_eq!(grid_snap.offset_with_relative_flip(&tempo, &[], off_grid, 125.0, true), 125.0);
+
+        let rel_snap = Snap { on: true, mode: SnapMode::GridRelative, spacing };
+        assert_eq!(rel_snap.offset_with_relative_flip(&tempo, &[], off_grid, 125.0, false), 125.0);
+        assert_eq!(rel_snap.offset_with_relative_flip(&tempo, &[], off_grid, 125.0, true), 110.0);
     }
 }

@@ -936,3 +936,24 @@ test("View › Lane names switches the lane names", () => {
   row.click();
   assert.deepEqual(calls.at(-1), { kind: "panel", panel: "lane_names", on: false });
 });
+
+test("paletteMenu handles null target safely for lane actions and asks confirmation before applySharedBaseAll", async () => {
+  const { menusApi, modals, calls, context, scene, view } = fixture();
+  const { paletteMenu } = menusApi;
+  const laneReplaceItem = commandList.items.find(item => item.id === "laneReplaceSample");
+  assert.equal(paletteMenu.isEnabled(laneReplaceItem), false, "lane 0 has canReplace undefined");
+  view.activeLane = 1;
+  assert.equal(paletteMenu.isEnabled(laneReplaceItem), true, "lane 1 has canReplace true");
+  context.lanePositions.delete(1);
+  assert.equal(paletteMenu.isEnabled(laneReplaceItem), false, "hidden active lane returns disabled cleanly");
+
+  const applyAllItem = commandList.paletteOnly.find(item => item.id === "paletteApplySharedBaseAll");
+  assert.equal(paletteMenu.isEnabled(applyAllItem), false);
+  view.sharedBaseEnabled = true;
+  assert.equal(paletteMenu.isEnabled(applyAllItem), true);
+  paletteMenu.runItem(applyAllItem);
+  assert.equal(modals.length, 1);
+  assert.equal(modals[0].kind, "shared-base-apply-all");
+  assert.equal(calls.some(c => Array.isArray(c) && c[0] === "shared_base_action"), false, "no apply_all IPC before confirm");
+  assert.ok(scene);
+});

@@ -364,6 +364,7 @@ export function attachIpc(ctx) {
     state.view = next;
     if (!heldPendingSeek) ctx.anchorPlayhead(drawn);
     if (state.view.tool !== previousTool) ctx.refreshToolCursor();
+    ctx.setQuasimodePreset?.(state.view.keyPreset);
     if (!state.view.hasDocument || state.view.showHome) {
       state.scene = null;
       waveformFetchKey = null;

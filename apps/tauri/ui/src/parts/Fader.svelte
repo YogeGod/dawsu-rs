@@ -1,5 +1,6 @@
 <script>
   import { dbText, faderKey, faderPosition, faderReach, faderSender, positionGain, releaseFader, scaleMarks } from "../lib/mixer.js";
+  import { attachAltWheelFader } from "../lib/wheelGuard.js";
 
   // v3 §6 fader block: slot, dB scale and meter. A gain of null means the editor has no level for
   // this channel yet: the slot shows greyed out with no cap. `peak` (0..1+) drives the live meter.
@@ -73,6 +74,7 @@
     <div class="slot" bind:this={slot} role="slider" tabindex={disabled ? -1 : 0} aria-label={label}
       aria-orientation="vertical" aria-valuemin={Math.round(min * 100)} aria-valuemax={Math.round(max * 100)}
       aria-valuenow={Math.round(shown * 100)} aria-valuetext={dbText(shown) + " dB"} aria-disabled={disabled}
+      {@attach attachAltWheelFader(() => ({ shown, min, max, disabled, send }))}
       onpointerdown={down} onpointermove={move} onpointerup={up} onpointercancel={up} onkeydown={key}>
       {#if reach.top > 0}<div class="reach top" style:--fader-at={reach.top}></div>{/if}
       {#if reach.bottom < 1}<div class="reach bottom" style:--fader-at={reach.bottom}></div>{/if}

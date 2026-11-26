@@ -164,7 +164,7 @@ fn typed_scene_serializes_hit_shapes_and_static_overlay_fields() {
     for phase in ["down", "up"] {
         Action::Pointer {
             phase: phase.into(), ms: 1500.0, row: clap_row, x: 12.0, y: 12.0,
-            value: None, button: None, shift: false, ctrl: false, alt: false,
+            value: None, volume_lanes: None, button: None, shift: false, ctrl: false, alt: false,
         }.run(&mut app);
     }
 
@@ -173,7 +173,7 @@ fn typed_scene_serializes_hit_shapes_and_static_overlay_fields() {
     for phase in ["down", "up"] {
         Action::Pointer {
             phase: phase.into(), ms: 0.0, row: clap_row, x: 12.0, y: 12.0,
-            value: None, button: None, shift: false, ctrl: false, alt: false,
+            value: None, volume_lanes: None, button: None, shift: false, ctrl: false, alt: false,
         }.run(&mut app);
     }
 
@@ -182,7 +182,7 @@ fn typed_scene_serializes_hit_shapes_and_static_overlay_fields() {
     for phase in ["down", "up"] {
         Action::Pointer {
             phase: phase.into(), ms: 500.0, row: custom_row, x: 12.0, y: 12.0,
-            value: None, button: None, shift: false, ctrl: false, alt: false,
+            value: None, volume_lanes: None, button: None, shift: false, ctrl: false, alt: false,
         }.run(&mut app);
     }
     Action::VolumeScope { path: doc_path.clone(), lanes: Some(vec![custom_key]) }.run(&mut app);
@@ -192,7 +192,7 @@ fn typed_scene_serializes_hit_shapes_and_static_overlay_fields() {
     for phase in ["down", "up"] {
         Action::Pointer {
             phase: phase.into(), ms: 1500.0, row: clap_row, x: 12.0, y: 12.0,
-            value: None, button: None, shift: false, ctrl: true, alt: false,
+            value: None, volume_lanes: None, button: None, shift: false, ctrl: true, alt: false,
         }.run(&mut app);
     }
 

@@ -1,7 +1,7 @@
 <script>
   import { onMount, tick } from "svelte";
   import { bridge } from "../lib/bridge.svelte.js";
-  import { items, keyOnly, menus } from "../lib/commands.js";
+  import { items, keyOnly, menus, paletteOnly } from "../lib/commands.js";
   import { invoke } from "../lib/ipc.js";
   import {
     buildEntries,
@@ -39,6 +39,7 @@
       items,
       menus,
       keyOnly,
+      paletteOnly,
       shortcuts,
       scene,
       view,
@@ -72,7 +73,10 @@
   async function refreshShortcuts() {
     try {
       const res = await invoke("editor_shortcuts");
-      if (res) bridge.commandPaletteShortcuts = res;
+      if (res) {
+        bridge.commandPaletteShortcuts = res;
+        bridge.callAction("setQuasimodeShortcuts", res);
+      }
     } catch {
       // Palette remains usable even if shortcuts IPC is unavailable.
     }
@@ -126,7 +130,7 @@
     recentIds = recordRecent(storage(), entry.id, recentIds);
     closePalette(false);
 
-    if (entry.source === "menu" && entry.item) {
+    if ((entry.source === "menu" || entry.source === "paletteOnly") && entry.item) {
       bridge.getPaletteMenu()?.runItem?.(entry.item);
     } else if (entry.source === "keyOnly" && entry.command) {
       bridge.callAction("command", entry.command);
