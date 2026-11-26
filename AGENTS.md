@@ -32,13 +32,15 @@ GitHub runs first three on Windows for every PR changing more than `.md` files, 
 
 **Merge gate (Yoge, 2026-11-21):** nothing merges into `main`, by person or agent, unless everyday check passes on build of that exact commit. Paste its last line (`everyday check: N of M steps passed`) and commit id in PR. Never merge in same step that opens PR.
 
+**Git & docs hygiene:** Run `git fetch origin` before committing or pushing to `main`. After merging, delete the merged branch and refresh both `NOW.md` and `E:/Obsidian/Workspace/dawsu-rewrite/now.md`. Keep `AGENTS.md` and `NOW.md` in `caveman-compress` terse format.
+
 **Windows build note:** `signalsmith-stretch` requires `LIBCLANG_PATH` (this machine: `E:/Claude/drum-onnx/venv311/Lib/site-packages/clang/native`). Keep build and temp artifacts on `E:`.
 
 ## Context pointers
 
 Read only reference matching task:
 
-- **Current repo sprint & `app.js` retirement state:** [NOW.md](NOW.md)
+- **Current repo sprint:** [NOW.md](NOW.md)
 - **Feature parity matrix & testing notes:** [FEATURE-COVERAGE.md](FEATURE-COVERAGE.md), [README.md](README.md)
 - **Oracle tool & `--audio` mode:** [tools/lazer-oracle/README.md](tools/lazer-oracle/README.md)
 - **Design vault (ADRs, active sprint, UI spec, module map):** `E:/Obsidian/Workspace/dawsu-rewrite/` (`DECISIONS.md`, `now.md`, `design/ui-spec.md`, `architecture/module-map.md`) — read when changing architecture, UI layout, or domain rules.
