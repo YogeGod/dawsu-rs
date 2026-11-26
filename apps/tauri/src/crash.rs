@@ -238,6 +238,7 @@ where
     F: Fn(&str) -> Option<OsString>,
 {
     if is_truthy_env(get_env("DAWSU_NO_CRASH_DIALOG"))
+        || is_truthy_env(get_env("DAWSU_SMOKE_WINDOW"))
         || is_truthy_env(get_env("CI"))
         || get_env("DAWSU_RECOVERY_SMOKE_DATA").is_some_and(|v| !v.is_empty())
         || get_env("RUST_TEST_THREADS").is_some_and(|v| !v.is_empty())
@@ -418,6 +419,10 @@ mod tests {
         assert!(!should_show_dialog(), "tests must never pop a crash dialog");
         assert!(!should_show_dialog_from_env(env_from(&[(
             "DAWSU_NO_CRASH_DIALOG",
+            "1"
+        )])));
+        assert!(!should_show_dialog_from_env(env_from(&[(
+            "DAWSU_SMOKE_WINDOW",
             "1"
         )])));
         assert!(!should_show_dialog_from_env(env_from(&[("CI", "true")])));

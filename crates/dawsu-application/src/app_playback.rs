@@ -484,6 +484,7 @@ impl Application {
             if self.pending_play_on_song && start.is_none() {
                 self.pending_play_on_song = false;
                 self.status = "Loading song…".into();
+                self.bump_view_revision();
                 return;
             }
             if let Some(start) = start {
@@ -494,6 +495,7 @@ impl Application {
             self.return_position = self.playback_start;
             self.pending_play_on_song = true;
             self.status = "Loading song…".into();
+            self.bump_view_revision();
             return;
         }
         if let Some(start) = start {
@@ -520,6 +522,7 @@ impl Application {
         if self.song_loading {
             self.pending_play_on_song = true;
             self.status = "Loading song…".into();
+            self.bump_view_revision();
             return;
         }
         if let Some(a) = &self.audio {

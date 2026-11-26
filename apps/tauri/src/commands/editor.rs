@@ -87,37 +87,7 @@ pub(crate) fn editor_export_settings(state: State<'_, Editor>) -> Result<Option<
 
 
 pub(crate) fn audio_output_settings(app: &Application, requested: Option<OutputBackend>) -> Value {
-    let available = OutputBackend::available();
-    let prefs = app.preferences();
-    let preferred = prefs.audio_backend;
-    let backend = requested.unwrap_or_else(|| {
-        if available.contains(&preferred) { preferred } else { OutputBackend::System }
-    });
-    let (mut devices, error) = match app.output_devices(backend) {
-        Ok(devices) => (devices, None),
-        Err(error) => (Vec::new(), Some(error)),
-    };
-    devices.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.id.cmp(&b.id)));
-    let qualified_id = (preferred == backend).then_some(prefs.audio_device_id.as_deref()).flatten();
-    let device = if let Some(id) = qualified_id {
-        devices.iter().find(|device| device.id == id)
-    } else if backend == OutputBackend::System {
-        prefs.device.as_ref().and_then(|name| devices.iter().find(|device| &device.name == name))
-    } else {
-        None
-    };
-
-    json!({
-        "backend": backend,
-        "available": available.iter().map(|choice| json!({"id": choice, "label": choice.label()})).collect::<Vec<_>>(),
-        "current": app.device_name(),
-        "currentBackend": app.active_output_backend().map(OutputBackend::label),
-        "devices": devices,
-        "device": device.map(|device| &device.id),
-        "bufferMs": prefs.audio_buffer_ms,
-        "effectiveBufferMs": app.effective_output_buffer_ms(),
-        "error": error,
-    })
+    json!(dawsu_application::desktop_services::audio_output_settings(app, requested))
 }
 
 #[tauri::command]

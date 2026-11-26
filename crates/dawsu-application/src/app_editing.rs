@@ -360,6 +360,7 @@ impl Application {
         }
         self.document.as_ref().ok_or("Open a difficulty first")?;
         self.selection_lane_scope = lanes;
+        self.bump_view_revision();
         Ok(())
     }
 
@@ -652,7 +653,7 @@ impl Application {
         Ok(())
     }
 
-    pub(crate) fn add_numbered_layer(&mut self) -> Result<(), String> {
+    pub fn add_numbered_layer(&mut self) -> Result<(), String> {
         if self.busy || self.is_stroke_open() {
             return Err("Finish the current operation before adding a sample layer.".into());
         }

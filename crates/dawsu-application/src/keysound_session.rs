@@ -113,6 +113,7 @@ impl KeysoundUndoHistory {
         self.saved_bytes = Some(bytes);
         self.saved_cursor = Some(self.cursor);
         self.dirty = false;
+        self.revision = self.revision.saturating_add(1);
     }
 
     pub fn can_undo(&self) -> bool {
@@ -421,7 +422,417 @@ fn synth_chord_clip(pitches: &[u8], velocity: u8, duration_ms: f64) -> Arc<Audio
     })
 }
 
-fn synth_note_clip(pitch: u8, velocity: u8, duration_ms: f64) -> Arc<AudioClip> {
+pub(crate) enum PreparedKeysoundTrack {
+    SoundFont {
+        path: PathBuf,
+        cached: Option<Arc<SampleInstrument>>,
+        preset_index: usize,
+    },
+    Vst3 {
+        host_exe: PathBuf,
+        shm_name: String,
+        plugin_path: PathBuf,
+        plugin_uid: Option<String>,
+        saved_state: Option<String>,
+        channel: u8,
+    },
+    Synth,
+}
+
+pub(crate) struct PreparedKeysoundRenderJob {
+    pub(crate) manifest: Vec<SampleManifestEntry>,
+    pub(crate) track_targets: BTreeMap<u64, (Vec<usize>, PreparedKeysoundTrack)>,
+}
+
+pub(crate) fn prepare_keysound_render_job(
+    app: &mut Application,
+    manifest: &[SampleManifestEntry],
+) -> Result<PreparedKeysoundRenderJob, String> {
+    let mut by_track: BTreeMap<u64, Vec<usize>> = BTreeMap::new();
+    for (idx, entry) in manifest.iter().enumerate() {
+        by_track.entry(entry.track_id).or_default().push(idx);
+    }
+    let mut track_targets = BTreeMap::new();
+    for (tid, indices) in by_track {
+        let live_id = app.keysound_history.track_instances.get(&tid).cloned();
+        let track_meta = app
+            .keysounds
+            .document
+            .tracks
+            .iter()
+            .find(|t| t.id == tid)
+            .map(|t| {
+                (
+                    t.channel,
+                    t.instrument.soundfont_path.clone(),
+                    t.instrument.vst3_plugin_uid.clone(),
+                    t.instrument.vst3_state_b64.clone(),
+                    t.instrument.program.unwrap_or(0) as usize,
+                )
+            });
+
+        let target = if let Some(sf_path_str) = track_meta.as_ref().and_then(|m| m.1.as_deref())
+            && SampleInstrument::is_soundfont_path(Path::new(sf_path_str))
+            && Path::new(sf_path_str).is_file()
+        {
+            let path = PathBuf::from(sf_path_str);
+            let cached = app.keysound_history.soundfont_cache.get(&path).cloned();
+            let preset_index = track_meta.as_ref().map_or(0, |m| m.4);
+            PreparedKeysoundTrack::SoundFont {
+                path,
+                cached,
+                preset_index,
+            }
+        } else {
+            let vst3_info = live_id
+                .as_deref()
+                .and_then(|id| app.vst3.instance_info(id))
+                .or_else(|| {
+                    track_meta.as_ref().and_then(|(_, path, uid, _, _)| {
+                        let raw = path.as_deref()?;
+                        if raw.to_ascii_lowercase().ends_with(".vst3") || Path::new(raw).exists() {
+                            Some((PathBuf::from(raw), uid.clone()))
+                        } else {
+                            None
+                        }
+                    })
+                });
+            if let Some((plugin_path, plugin_uid)) = vst3_info
+                && let Ok(host_exe) = app.vst3.host_executable()
+            {
+                let channel = track_meta.as_ref().map_or(0, |m| m.0);
+                let live_state = live_id
+                    .as_deref()
+                    .and_then(|id| app.vst3.get_plugin_state(id).ok())
+                    .filter(|s| !s.is_empty())
+                    .or_else(|| {
+                        track_meta
+                            .as_ref()
+                            .and_then(|m| m.3.as_deref())
+                            .filter(|s| !s.is_empty())
+                            .map(str::to_owned)
+                    });
+                PreparedKeysoundTrack::Vst3 {
+                    host_exe,
+                    shm_name: app.vst3.next_shm_name(),
+                    plugin_path,
+                    plugin_uid,
+                    saved_state: live_state,
+                    channel,
+                }
+            } else {
+                PreparedKeysoundTrack::Synth
+            }
+        };
+        track_targets.insert(tid, (indices, target));
+    }
+    Ok(PreparedKeysoundRenderJob {
+        manifest: manifest.to_vec(),
+        track_targets,
+    })
+}
+
+pub(crate) type RenderedManifestClips = (Vec<Vec<f32>>, Vec<(PathBuf, Arc<SampleInstrument>)>);
+
+pub(crate) fn render_manifest_clips_standalone(
+    job: &PreparedKeysoundRenderJob,
+    cancel: &BounceCancelToken,
+) -> Result<RenderedManifestClips, String> {
+    let mut clips: Vec<Option<Vec<f32>>> = vec![None; job.manifest.len()];
+    let mut newly_loaded_sf = Vec::new();
+    for (indices, target) in job.track_targets.values() {
+        if cancel.is_cancelled() {
+            return Err("Render cancelled.".into());
+        }
+        match target {
+            PreparedKeysoundTrack::SoundFont {
+                path,
+                cached,
+                preset_index,
+            } => {
+                let instrument = match cached {
+                    Some(inst) => inst.clone(),
+                    None => {
+                        let loaded = Arc::new(SampleInstrument::load(path)?);
+                        newly_loaded_sf.push((path.clone(), loaded.clone()));
+                        loaded
+                    }
+                };
+                for &idx in indices {
+                    if cancel.is_cancelled() {
+                        return Err("Render cancelled.".into());
+                    }
+                    let entry = &job.manifest[idx];
+                    let samples = render_soundfont_chord(
+                        &instrument,
+                        *preset_index,
+                        &entry.chord_pitches,
+                        entry.velocity,
+                        entry.duration_ms,
+                        KEYSOUND_RENDER_RATE,
+                    )?;
+                    clips[idx] = Some(if samples.is_empty() {
+                        synth_chord_clip(&entry.chord_pitches, entry.velocity, entry.duration_ms)
+                            .samples
+                            .clone()
+                    } else {
+                        samples
+                    });
+                }
+            }
+            PreparedKeysoundTrack::Vst3 {
+                host_exe,
+                shm_name,
+                plugin_path,
+                plugin_uid,
+                saved_state,
+                channel,
+            } => {
+                let batches: Vec<Vec<MidiEvent>> = indices
+                    .iter()
+                    .map(|&idx| {
+                        let entry = &job.manifest[idx];
+                        chord_midi_events(
+                            *channel,
+                            &entry.chord_pitches,
+                            entry.velocity,
+                            entry.duration_ms,
+                            KEYSOUND_RENDER_RATE,
+                        )
+                    })
+                    .collect();
+                let tmp_dir = std::env::temp_dir().join(format!(
+                    "dawsu-ks-vst3-{}-{}",
+                    std::process::id(),
+                    shm_name
+                ));
+                let rendered = crate::vst3::render_midi_batches_standalone(
+                    host_exe.clone(),
+                    shm_name.clone(),
+                    tmp_dir,
+                    plugin_path.clone(),
+                    plugin_uid.clone(),
+                    saved_state.clone(),
+                    &batches,
+                    KEYSOUND_RENDER_RATE,
+                    Some(cancel),
+                )
+                .map_err(|e| e.to_string())?;
+                for (&idx, buf) in indices.iter().zip(rendered) {
+                    clips[idx] = Some(buf);
+                }
+            }
+            PreparedKeysoundTrack::Synth => {
+                for &idx in indices {
+                    if cancel.is_cancelled() {
+                        return Err("Render cancelled.".into());
+                    }
+                    let entry = &job.manifest[idx];
+                    clips[idx] = Some(
+                        synth_chord_clip(&entry.chord_pitches, entry.velocity, entry.duration_ms)
+                            .samples
+                            .clone(),
+                    );
+                }
+            }
+        }
+    }
+    Ok((
+        clips.into_iter().map(|c| c.unwrap_or_default()).collect(),
+        newly_loaded_sf,
+    ))
+}
+
+pub(crate) fn build_keysounds_preview_value(
+    plan: &GeneratePlan,
+    mut raw_clips: Vec<Vec<f32>>,
+    base_bytes: u64,
+    apply_batch_norm: bool,
+    is_ogg: bool,
+    cancel: &BounceCancelToken,
+) -> Result<Value, String> {
+    let target_dbfs = if is_ogg {
+        BounceAudioFormat::OggVorbis.target_peak_dbfs()
+    } else {
+        BounceAudioFormat::Wav16.target_peak_dbfs()
+    };
+    let silent_indices = if apply_batch_norm {
+        uniform_batch_normalize(&mut raw_clips, target_dbfs).silent_clip_indices
+    } else {
+        raw_clips
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| {
+                c.iter().fold(0.0f32, |a, &b| a.max(b.abs()))
+                    < crate::bounce_plan::SILENT_PEAK_THRESHOLD
+            })
+            .map(|(i, _)| i)
+            .collect()
+    };
+    let mut bounced_bytes = 0u64;
+    let mut samples_json = Vec::with_capacity(plan.manifest.len());
+    let exact_ogg_preview = is_ogg && plan.manifest.len() <= 8;
+    for (idx, entry) in plan.manifest.iter().enumerate() {
+        if cancel.is_cancelled() {
+            return Err("Render cancelled.".into());
+        }
+        let bytes = if exact_ogg_preview {
+            encode_vorbis_ogg(&raw_clips[idx], KEYSOUND_RENDER_RATE)
+                .map(|b| b.len() as u64)
+                .unwrap_or(0)
+        } else if is_ogg {
+            let dur_sec = raw_clips[idx].len() as f64 / (2.0 * f64::from(KEYSOUND_RENDER_RATE));
+            (dur_sec * 16_000.0).round().max(1_400.0) as u64
+        } else {
+            44 + (raw_clips[idx].len() as u64) * 2
+        };
+        bounced_bytes = bounced_bytes.saturating_add(bytes);
+        let silent = silent_indices.contains(&idx);
+        let peak = raw_clips[idx].iter().fold(0.0f32, |a, &b| a.max(b.abs()));
+        let peak_dbfs = if peak > 1e-6 { 20.0 * peak.log10() } else { -99.0 };
+        let dur_ms = ((raw_clips[idx].len() as f64 / (2.0 * f64::from(KEYSOUND_RENDER_RATE))) * 1000.0)
+            .round() as u32;
+        samples_json.push(json!({
+            "filename": entry.filename,
+            "durationMs": dur_ms,
+            "peakDbfs": peak_dbfs,
+            "usageCount": entry.usage_count,
+            "silent": silent,
+            "bytes": bytes,
+            "pitches": entry.chord_pitches,
+        }));
+    }
+    let budget = calculate_osz_budget(base_bytes, bounced_bytes);
+    Ok(json!({
+        "sourceNotes": plan.sync.synced.len(),
+        "unsyncedNotes": plan.sync.unsynced.len(),
+        "baseBytes": base_bytes,
+        "bouncedBytes": bounced_bytes,
+        "budget": budget,
+        "samples": samples_json,
+        "normalized": apply_batch_norm,
+    }))
+}
+
+pub(crate) struct StagedKeysoundGenerate {
+    pub(crate) doc_generation: u64,
+    pub(crate) open_path: PathBuf,
+    pub(crate) out_path: PathBuf,
+    pub(crate) plan: GeneratePlan,
+    pub(crate) written_names: Vec<String>,
+    pub(crate) guard: CreatedKeysoundsGuard,
+    pub(crate) newly_loaded_sf: Vec<(PathBuf, Arc<SampleInstrument>)>,
+}
+
+pub(crate) fn commit_staged_keysounds(
+    app: &mut Application,
+    stage: StagedKeysoundGenerate,
+) -> Result<Value, String> {
+    let StagedKeysoundGenerate {
+        doc_generation,
+        open_path,
+        out_path,
+        plan,
+        written_names,
+        guard,
+        newly_loaded_sf,
+    } = stage;
+    for (path, inst) in newly_loaded_sf {
+        app.keysound_history.soundfont_cache.entry(path).or_insert(inst);
+    }
+    let still_valid = app.document_generation == doc_generation
+        && app.document.as_ref().is_some_and(|d| d.path == open_path);
+    if !still_valid {
+        drop(guard);
+        return Err("Active difficulty changed while generating keysounds.".into());
+    }
+    let bytes = plan.file.to_bytes();
+    let backed_up = if out_path.exists() {
+        let previous = std::fs::read(&out_path).map_err(|e| e.to_string())?;
+        let policy = BackupPolicy::new(app.data_root.join("backups"), 20);
+        match replace(&out_path, &previous, &bytes, &policy).map_err(|e| e.to_string())? {
+            dawsu_foundation::safe_write::WriteOutcome::Saved { .. } => true,
+            dawsu_foundation::safe_write::WriteOutcome::ChangedOnDisk => {
+                drop(guard);
+                return Err(format!(
+                    "{} changed on disk during write. Try again.",
+                    plan.file_name
+                ));
+            }
+        }
+    } else {
+        safe_write::create(&out_path, &bytes).map_err(|e| e.to_string())?;
+        false
+    };
+    guard.keep();
+    if let Some(doc) = app.document.as_mut() {
+        if !doc.difficulties.iter().any(|p| p == &out_path) {
+            doc.difficulties.push(out_path.clone());
+            doc.difficulties.sort();
+        }
+        if !written_names.is_empty() {
+            doc.files.extend(written_names);
+            doc.files.sort();
+            doc.files.dedup();
+        }
+    }
+    let synced_count = plan.sync.synced.len();
+    let unsynced_count = plan.sync.unsynced.len();
+    app.status = format!(
+        "Generated {} ({} synced notes, {} manifest samples).",
+        plan.file_name,
+        synced_count,
+        plan.manifest.len()
+    );
+    if !app.busy {
+        app.start_sweep(false);
+    }
+    let mut out = summary(app);
+    out["generated"] = json!({
+        "fileName": plan.file_name,
+        "path": out_path.to_string_lossy(),
+        "syncedCount": synced_count,
+        "unsyncedCount": unsynced_count,
+        "manifestCount": plan.manifest.len(),
+        "backedUp": backed_up,
+    });
+    app.bump_view_revision();
+    Ok(out)
+}
+
+pub(crate) fn export_settings_from_payload_pub(payload: &Value) -> ExportSettings {
+    export_settings_from_payload(payload)
+}
+
+pub(crate) fn resolve_apply_batch_norm_pub(payload: &Value) -> bool {
+    resolve_apply_batch_norm(payload)
+}
+
+pub(crate) fn mapset_disk_bytes_pub(folder: &Path) -> u64 {
+    mapset_disk_bytes(folder)
+}
+
+pub(crate) fn prepare_and_write_wavs_pub(
+    folder: &Path,
+    backup_root: &Path,
+    plan: &mut GeneratePlan,
+    raw_clips: Vec<Vec<f32>>,
+    pending_taken: &BTreeSet<String>,
+    ledger: Option<&Ledger>,
+    apply_batch_norm: bool,
+) -> Result<(Vec<String>, CreatedKeysoundsGuard), String> {
+    prepare_and_write_wavs(
+        folder,
+        backup_root,
+        plan,
+        raw_clips,
+        pending_taken,
+        ledger,
+        apply_batch_norm,
+    )
+}
+
+pub(crate) fn synth_note_clip(pitch: u8, velocity: u8, duration_ms: f64) -> Arc<AudioClip> {
     synth_chord_clip(&[pitch], velocity, duration_ms)
 }
 
@@ -727,13 +1138,21 @@ pub(crate) fn handle(app: &mut Application, payload: &Value) -> Result<Value, St
             return Ok(json!({ "cancelled": true }));
         }
         "select_track" => {
-            app.keysound_history.active_track_id = track_id;
+            if app.keysound_history.active_track_id != track_id {
+                app.keysound_history.active_track_id = track_id;
+                app.keysound_history.revision = app.keysound_history.revision.saturating_add(1);
+                app.bump_view_revision();
+            }
         }
         "undo" => {
-            app.keysound_history.undo(&mut app.keysounds.document);
+            if app.keysound_history.undo(&mut app.keysounds.document) {
+                app.bump_view_revision();
+            }
         }
         "redo" => {
-            app.keysound_history.redo(&mut app.keysounds.document);
+            if app.keysound_history.redo(&mut app.keysounds.document) {
+                app.bump_view_revision();
+            }
         }
         "save_dawsuks" => {
             let explicit_path = payload.get("path").and_then(|v| v.as_str()).map(PathBuf::from);
@@ -743,6 +1162,7 @@ pub(crate) fn handle(app: &mut Application, payload: &Value) -> Result<Value, St
                 .unwrap_or(false);
             let saved = save_dawsuks_to(app, explicit_path, allow_overwrite)?;
             app.status = format!("Saved Keysound project ({}).", saved.display());
+            app.bump_view_revision();
         }
         "load_dawsuks" => {
             let path = payload
@@ -752,6 +1172,8 @@ pub(crate) fn handle(app: &mut Application, payload: &Value) -> Result<Value, St
                 .ok_or("Missing .dawsuks path")?;
             let loaded_path = load_dawsuks_from(app, path)?;
             app.status = format!("Opened Keysound project ({}).", loaded_path.display());
+            app.keysound_history.revision = app.keysound_history.revision.saturating_add(1);
+            app.bump_view_revision();
         }
         "resolve_chord" => {
             let policy = match payload.get("policy").and_then(|v| v.as_str()).unwrap_or("flatten_polyphonic") {
@@ -1603,6 +2025,7 @@ pub(crate) fn handle(app: &mut Application, payload: &Value) -> Result<Value, St
                 "manifestCount": plan.manifest.len(),
                 "backedUp": backed_up,
             });
+            app.bump_view_revision();
             return Ok(out);
         }
         other => return Err(format!("Unknown keysounds action: {other}")),
@@ -1612,6 +2035,9 @@ pub(crate) fn handle(app: &mut Application, payload: &Value) -> Result<Value, St
         && app.keysounds.document != before
     {
         app.keysound_history.record(before);
+        app.bump_view_revision();
+    } else if matches!(kind, "load_vst3" | "load_soundfont" | "set_soundfont_preset" | "sync_to_objects" | "resolve_chord" | "resolve_all_chords" | "preview_bounce") {
+        app.bump_view_revision();
     }
 
     let mut out = summary(app);
@@ -1685,7 +2111,7 @@ fn encode_clip_wav(clip: &AudioClip) -> Vec<u8> {
     wav
 }
 
-struct CreatedKeysoundsGuard {
+pub(crate) struct CreatedKeysoundsGuard {
     created: Vec<(PathBuf, Vec<u8>, Option<Vec<u8>>)>,
     ledger: Option<(Ledger, Vec<String>, Vec<PendingSample>)>,
 }

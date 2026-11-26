@@ -89,6 +89,54 @@ impl Application {
         self.tap_recording_armed = false;
         self.tap_recorded_hits.clear();
         keysound_session::reset_for_map(self, None);
+        self.bump_view_revision();
+    }
+
+    /// Closes the difficulty without waiting synchronously for the unused-sample cleanup sweep;
+    /// any started sweep runs detached in the background and finishes in [`Self::poll`].
+    pub fn close_document_nonblocking(&mut self) {
+        self.song_cancel.store(true, Ordering::Relaxed);
+        self.song_job = None;
+        self.song_loading = false;
+        self.pending_play_on_song = false;
+        self.pending_locator_right = None;
+        self.song_generation += 1;
+        self.song = None;
+        self.drum_stem_cancel.store(true, Ordering::Relaxed);
+        self.drum_stem_job = None;
+        self.drum_stem_loading = false;
+        self.drum_stem_auto_monitor = false;
+        self.drum_stem_generation += 1;
+        self.drum_stem_path = None;
+        self.drum_stem = None;
+        self.drum_stem_waveform = None;
+        self.monitor_stem = false;
+        self.drum_vst_cancel.store(true, Ordering::Relaxed);
+        self.drum_vst_job = None;
+        self.drum_vst_loading = false;
+        self.drum_vst_generation += 1;
+        self.drum_vst_saved = None;
+        self.clear_live_drum_vst();
+        self.unload_all_mixer_fx();
+        self.waveform.clear();
+        self.waveform_revision += 1;
+        self.poll_sweep(false);
+        if self.sweep.is_none() {
+            self.start_sweep(true);
+        }
+        if self.sweep.is_some() {
+            self.sweep_detached = true;
+            self.busy = false;
+        }
+        self.document = None;
+        self.base_layer_track = None;
+        self.checkpoint = None;
+        self.osu_watch.clear();
+        self.external_osu_changed = false;
+        self.tap_recording_armed = false;
+        self.tap_recorded_hits.clear();
+        keysound_session::reset_for_map(self, None);
+        self.bump_view_revision();
     }
 
     /// Forgets the pending files no record lists. `keep` are the listed names when a job read them.
@@ -113,6 +161,7 @@ impl Application {
         let doc = self.document.as_mut().ok_or("Open a difficulty first.")?;
         doc.export_settings = Some(settings);
         self.output_review = None;
+        self.bump_view_revision();
         Ok(())
     }
 
@@ -211,6 +260,7 @@ impl Application {
     }
 
     pub fn save_preferences(&mut self) {
+        self.bump_view_revision();
         if !self.persist_preferences {
             return;
         }
@@ -263,6 +313,7 @@ impl Application {
         let hits = dawsu_hitsounding::mania_import::parse_mania_hitsounds_bytes(&bytes)?;
         if hits.is_empty() {
             self.status = "No hitsounds found in that mania difficulty.".into();
+            self.bump_view_revision();
             return Ok(ManiaImportReport {
                 hits_imported: 0,
                 lanes_touched: 0,
@@ -347,6 +398,7 @@ impl Application {
             lanes_touched,
             if lanes_touched == 1 { "lane" } else { "lanes" },
         );
+        self.bump_view_revision();
         Ok(ManiaImportReport {
             hits_imported,
             lanes_touched,
@@ -753,6 +805,14 @@ impl Application {
         }
     }
 
+    pub fn revert_document(&mut self) {
+        if self.busy || self.document.is_none() {
+            return;
+        }
+        self.revert_requested = true;
+        self.confirm_revert();
+    }
+
     pub fn has_original_snapshot(&self) -> bool {
         self.document.is_some() && self.has_original_snapshot.load(Ordering::Relaxed)
     }
@@ -888,6 +948,7 @@ impl Application {
         self.cancel_timeline_edit();
         if keep_settings && let Err(error) = self.save_session() {
             self.error = Some(error);
+            self.bump_view_revision();
             return;
         }
         let is_live_reload = preserve.is_some();
@@ -942,6 +1003,7 @@ impl Application {
         if self.sweep_detached {
             self.status = sweep::with_note(&self.status, sweep::STILL_RUNNING);
         }
+        self.bump_view_revision();
         std::thread::spawn(move || {
             let result = (|| {
                 let (path, recovery) = match source {
@@ -1066,6 +1128,7 @@ impl Application {
         self.check_set_versions_when_read();
         self.poll_drum_detection();
         self.poll_node_graph();
+        self.poll_async_jobs();
         let clock_snap = self.clock_snapshot();
         let midi_events = self.midi_recorder.poll_with_snapshot(
             clock_snap,
@@ -1888,6 +1951,7 @@ impl Application {
         }
         if self.is_stroke_open() {
             self.error = Some("Finish or cancel the current drag before preparing output.".into());
+            self.bump_view_revision();
             return;
         }
         let Some(d) = self.document.as_ref() else {
@@ -2213,12 +2277,10 @@ impl Application {
 }
 
 fn is_existing_hs_diff(file: &dawsu_osu_format::OsuFile, version: Option<&str>) -> bool {
-    let lower = version.unwrap_or("").trim().to_ascii_lowercase();
-    lower.contains("hitsound")
-        || lower == "hs"
-        || lower.ends_with(" hs")
-        || lower.contains("[hs]")
-        || (file.hit_objects().is_empty() && !lower.is_empty())
+    crate::desktop_services::is_hs_version_name(
+        version.unwrap_or(""),
+        !file.hit_objects().is_empty(),
+    )
 }
 
 impl Application {

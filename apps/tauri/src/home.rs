@@ -1,99 +1,45 @@
 use super::{Action, ViewSnapshot, map_path};
-use dawsu_application::Application;
+use dawsu_application::{Application, home_route::HomeRoute};
 
 #[derive(Default)]
-pub(super) enum Route {
-    #[default]
-    Editor,
-    Review,
-    Leaving,
-    Parked,
-    Opening,
-}
+pub(super) struct Route(HomeRoute);
 
 impl Route {
     pub(super) fn handle(&mut self, action: Action, app: &mut Application) -> Option<Action> {
         match action {
-            Action::Home if matches!(self, Self::Editor) && !app.is_busy() && app.document().is_some() => {
-                if app.is_dirty() {
-                    *self = Self::Review;
-                } else if let Err(error) = app.save_session() {
-                    app.set_error(Some(error));
-                } else {
-                    self.park(app);
-                }
+            Action::Home => self.0.request_home(app),
+            Action::HomeChoice { choice } => self.0.resolve_review(app, &choice),
+            Action::Resume => self.0.resume(app),
+            Action::Open { path } if matches!(self.0, HomeRoute::Parked) => {
+                let valid = map_path(&path);
+                self.0.open_map(app, path, valid);
             }
-            Action::HomeChoice { choice } if matches!(self, Self::Review) && !app.is_busy() => {
-                *self = Self::Editor;
-                match choice.as_str() {
-                    "save" => app.save(),
-                    "discard" => {
-                        app.command("revert");
-                        app.confirm_revert();
-                    }
-                    _ => {}
-                }
-                if app.is_busy() {
-                    *self = Self::Leaving;
-                }
-            }
-            Action::Resume if matches!(self, Self::Parked) && !app.is_busy() => {
-                *self = Self::Editor;
-            }
-            Action::Open { path } if matches!(self, Self::Parked) => {
-                if map_path(&path) {
-                    app.request_open(path);
-                    if app.is_busy() {
-                        *self = Self::Opening;
-                    }
-                }
-            }
-            Action::OpenPracticeMapset if matches!(self, Self::Parked) => {
-                app.request_open_practice_mapset();
-                if app.is_busy() {
-                    *self = Self::Opening;
-                }
+            Action::OpenPracticeMapset if matches!(self.0, HomeRoute::Parked) => {
+                self.0.open_practice(app);
             }
             action @ Action::Key { .. } if self.visible() || app.document().is_none() => {
                 if let Action::Key { key, code, ctrl, shift, alt, .. } = &action
                     && let Some(chord) = super::keyboard::chord(key, code, *ctrl, *shift, *alt)
-                    && matches!(app.keymap.command_for(chord.combination()), Some("open" | "help" | "importOsz" | "openHitsoundFolder"))
+                    && HomeRoute::allows_home_shortcut(app.keymap().command_for(chord.combination()))
                 {
                     return Some(action);
                 }
             }
-            Action::Home | Action::HomeChoice { .. } | Action::Resume => {}
             action => return Some(action),
         }
         None
     }
 
     pub(super) fn settle(&mut self, app: &mut Application) {
-        if app.is_busy() {
-            return;
-        }
-        match self {
-            Self::Leaving if app.error().is_none() && !app.is_dirty() && !app.has_pending_open() => self.park(app),
-            // The Save hitsounds summary is open: its Save goes on Home, its Cancel stays here.
-            Self::Leaving if app.error().is_none() && app.save_review_pending() => {}
-            Self::Leaving => *self = Self::Editor,
-            Self::Opening if app.error().is_none() => *self = Self::Editor,
-            Self::Opening => *self = Self::Parked,
-            _ => {}
-        }
-    }
-
-    fn park(&mut self, app: &mut Application) {
-        app.stop();
-        *self = Self::Parked;
+        self.0.settle(app);
     }
 
     pub(super) fn visible(&self) -> bool {
-        matches!(self, Self::Parked | Self::Opening)
+        self.0.visible()
     }
 
     pub(super) fn pending(&self) -> bool {
-        matches!(self, Self::Review)
+        self.0.pending()
     }
 
     pub(super) fn add_status(&self, view: &mut ViewSnapshot) {

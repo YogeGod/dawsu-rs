@@ -410,6 +410,17 @@ impl MixerFxManager {
         format!("fx-{}", self.next_slot_seq)
     }
 
+    pub(crate) fn has_test_host(&self) -> bool {
+        #[cfg(test)]
+        {
+            self.test_host.is_some()
+        }
+        #[cfg(not(test))]
+        {
+            false
+        }
+    }
+
     fn strip_own_latency(&self, strip_key: &str) -> u32 {
         self.session
             .strips
@@ -625,6 +636,68 @@ impl MixerFxManager {
                         processor: None,
                     },
                 );
+            }
+        }
+    }
+
+    pub(crate) fn attach_spawned_slot(
+        &mut self,
+        slot: &FxSlotConfig,
+        vst3: &mut Vst3Manager,
+        result: Result<
+            (
+                dawsu_audio_instruments::HostSession<dawsu_audio_instruments::ProcessTransport>,
+                Option<String>,
+            ),
+            String,
+        >,
+    ) -> Result<Option<String>, String> {
+        let runtime = FxSlotRuntime::new(slot.bypassed, slot.wet_dry, 0);
+        match result {
+            Ok((session, initial_state)) => {
+                let summary = vst3.insert_loaded_session(
+                    PathBuf::from(&slot.plugin_path),
+                    slot.plugin_uid.clone(),
+                    crate::vst3::PluginRole::Effect,
+                    session,
+                );
+                let processor = vst3
+                    .take_shm(&summary.id)
+                    .ok()
+                    .flatten()
+                    .map(|shm| {
+                        let proc_box: Box<dyn AudioEffectProcessor> =
+                            Box::new(ShmEffectProcessor::new(shm, Arc::clone(&runtime)));
+                        Arc::new(Mutex::new(proc_box))
+                    });
+                self.live.insert(
+                    slot.slot_id.clone(),
+                    LiveSlotState {
+                        plugin_path: slot.plugin_path.clone(),
+                        plugin_uid: slot.plugin_uid.clone(),
+                        backend: LiveBackend::Vst3 {
+                            instance_id: summary.id,
+                        },
+                        runtime,
+                        processor,
+                    },
+                );
+                Ok(initial_state)
+            }
+            Err(reason) => {
+                self.live.insert(
+                    slot.slot_id.clone(),
+                    LiveSlotState {
+                        plugin_path: slot.plugin_path.clone(),
+                        plugin_uid: slot.plugin_uid.clone(),
+                        backend: LiveBackend::Unavailable {
+                            reason: reason.clone(),
+                        },
+                        runtime,
+                        processor: None,
+                    },
+                );
+                Err(reason)
             }
         }
     }
@@ -919,6 +992,53 @@ pub fn normalize_strip_key(strip: &str) -> Option<String> {
     }
 }
 
+pub(crate) type SpawnedEffectResult = Result<
+    (
+        dawsu_audio_instruments::HostSession<dawsu_audio_instruments::ProcessTransport>,
+        Option<String>,
+    ),
+    String,
+>;
+
+pub(crate) type SpawnedSlotOutcome = (FxSlotConfig, SpawnedEffectResult);
+
+pub(crate) struct SpawnEffectParams {
+    pub(crate) host_executable: PathBuf,
+    pub(crate) shm_name: String,
+    pub(crate) parent_pid: u32,
+    pub(crate) plugin_path: PathBuf,
+    pub(crate) plugin_uid: Option<String>,
+    pub(crate) sample_rate_hz: u32,
+    pub(crate) active_state: Option<String>,
+    pub(crate) bypassed: bool,
+}
+
+pub(crate) fn spawn_effect_session(params: SpawnEffectParams) -> SpawnedEffectResult {
+    let config = dawsu_audio_instruments::Vst3HostConfig {
+        host_executable: params.host_executable,
+        shm_name: params.shm_name,
+        parent_pid: params.parent_pid,
+        plugin_path: params.plugin_path,
+        plugin_uid: params.plugin_uid,
+        offline: false,
+        sample_rate_hz: if params.sample_rate_hz > 0 {
+            params.sample_rate_hz
+        } else {
+            44_100
+        },
+    };
+    let mut session =
+        dawsu_audio_instruments::HostSession::spawn(&config).map_err(|e| e.to_string())?;
+    if let Some(saved) = params.active_state.as_deref()
+        && !saved.is_empty()
+    {
+        let _ = session.set_state(saved);
+    }
+    let _ = session.set_bypass(params.bypassed);
+    let initial_state = session.get_state().ok();
+    Ok((session, initial_state))
+}
+
 fn find_slot_mut<'a>(
     session: &'a mut MixerFxSession,
     strip_key: &str,
@@ -1001,7 +1121,14 @@ impl Application {
         self.bump_view_revision();
     }
 
-    fn finish_mixer_fx_mutation(&mut self, rebuild_graph: bool, resync_cues: bool) -> MixerFxSnapshot {
+    pub(crate) fn bump_revision_and_push_graph(&mut self) {
+        self.mixer_fx.rebuild_lane_strip_ids();
+        self.mixer_fx.revision = self.mixer_fx.revision.wrapping_add(1);
+        self.push_mixer_fx_graph();
+        self.bump_view_revision();
+    }
+
+    pub(crate) fn finish_mixer_fx_mutation(&mut self, rebuild_graph: bool, resync_cues: bool) -> MixerFxSnapshot {
         self.mixer_fx.revision = self.mixer_fx.revision.wrapping_add(1);
         if rebuild_graph {
             self.push_mixer_fx_graph();
@@ -1014,7 +1141,7 @@ impl Application {
         self.mixer_fx_snapshot()
     }
 
-    fn ensure_fx_doc_ready(&self) -> Result<(), String> {
+    pub(crate) fn ensure_fx_doc_ready(&self) -> Result<(), String> {
         if self.busy {
             return Err("Wait for the current job before editing mixer effects.".into());
         }
@@ -1024,6 +1151,106 @@ impl Application {
         Ok(())
     }
 
+    pub(crate) fn finish_spawned_add_insert(
+        &mut self,
+        strip_key: String,
+        mut config: FxSlotConfig,
+        spawn_result: SpawnedEffectResult,
+    ) -> Result<MixerFxSnapshot, String> {
+        self.ensure_fx_doc_ready()?;
+        let count = self
+            .mixer_fx
+            .session
+            .strips
+            .get(&strip_key)
+            .map_or(0, Vec::len);
+        if count >= MAX_INSERTS_PER_STRIP {
+            if let Ok((mut session, _)) = spawn_result {
+                let _ = session.quit();
+            }
+            return Err(format!(
+                "A mixer strip supports at most {MAX_INSERTS_PER_STRIP} insert effects."
+            ));
+        }
+        let initial_state = self
+            .mixer_fx
+            .attach_spawned_slot(&config, &mut self.vst3, spawn_result)
+            .inspect_err(|_| {
+                self.mixer_fx.live.remove(&config.slot_id);
+            })?;
+        config.state_a_b64 = initial_state;
+        let before = self.mixer_fx.session.clone();
+        self.mixer_fx.push_undo(before);
+        self.mixer_fx
+            .session
+            .strips
+            .entry(strip_key)
+            .or_default()
+            .push(config);
+        self.mixer_fx.rebuild_lane_strip_ids();
+        Ok(self.finish_mixer_fx_mutation(true, true))
+    }
+
+    pub(crate) fn begin_mixer_fx_restore_session(&mut self, saved: Option<MixerFxSession>) -> Vec<FxSlotConfig> {
+        if let Some(a) = &self.audio {
+            a.clear_fx_graph();
+        }
+        self.mixer_fx.unload_all(&mut self.vst3);
+        let Some(mut session) = saved else {
+            self.push_mixer_fx_graph();
+            self.bump_view_revision();
+            return Vec::new();
+        };
+        session.normalize();
+        let mut max_seq = self.mixer_fx.next_slot_seq;
+        let mut desired_slots = Vec::new();
+        for slots in session.strips.values() {
+            for slot in slots {
+                if let Some(n) = slot
+                    .slot_id
+                    .strip_prefix("fx-")
+                    .and_then(|s| s.parse::<u64>().ok())
+                {
+                    max_seq = max_seq.max(n);
+                }
+                desired_slots.push(slot.clone());
+            }
+        }
+        self.mixer_fx.next_slot_seq = max_seq;
+        self.mixer_fx.session = session;
+        self.mixer_fx.rebuild_lane_strip_ids();
+        self.mixer_fx.revision = self.mixer_fx.revision.wrapping_add(1);
+        self.push_mixer_fx_graph();
+        self.bump_view_revision();
+        desired_slots
+    }
+
+    pub(crate) fn finish_spawned_restore_slots(
+        &mut self,
+        outcomes: Vec<SpawnedSlotOutcome>,
+    ) {
+        let mut any_attached = false;
+        for (slot, result) in outcomes {
+            let still_present = self
+                .mixer_fx
+                .session
+                .strips
+                .values()
+                .any(|slots| slots.iter().any(|s| s.slot_id == slot.slot_id));
+            if !still_present {
+                if let Ok((mut session, _)) = result {
+                    let _ = session.quit();
+                }
+                continue;
+            }
+            let _ = self.mixer_fx.attach_spawned_slot(&slot, &mut self.vst3, result);
+            any_attached = true;
+        }
+        if any_attached {
+            self.bump_revision_and_push_graph();
+        }
+    }
+
     pub fn mixer_fx_add_insert(
         &mut self,
         strip: &str,
@@ -1031,6 +1258,40 @@ impl Application {
         plugin_uid: Option<String>,
         name: Option<String>,
     ) -> Result<MixerFxSnapshot, String> {
+        let (strip_key, config) = self.prepare_mixer_fx_add_insert(strip, plugin_path, plugin_uid, name)?;
+        let sr = self.live_sample_rate();
+        self.mixer_fx.spawn_slot_live(&config, &mut self.vst3, sr);
+        let unavailable_err = self.mixer_fx.live.get(&config.slot_id).and_then(|live| match &live.backend {
+            LiveBackend::Unavailable { reason } => Some(reason.clone()),
+            _ => None,
+        });
+        if let Some(reason) = unavailable_err {
+            self.mixer_fx.live.remove(&config.slot_id);
+            return Err(reason);
+        }
+        let initial_state = self.mixer_fx.capture_live_state(&config.slot_id, &mut self.vst3);
+        let mut stored = config;
+        stored.state_a_b64 = initial_state;
+
+        let before = self.mixer_fx.session.clone();
+        self.mixer_fx.push_undo(before);
+        self.mixer_fx
+            .session
+            .strips
+            .entry(strip_key)
+            .or_default()
+            .push(stored);
+        self.mixer_fx.rebuild_lane_strip_ids();
+        Ok(self.finish_mixer_fx_mutation(true, true))
+    }
+
+    pub(crate) fn prepare_mixer_fx_add_insert(
+        &mut self,
+        strip: &str,
+        plugin_path: String,
+        plugin_uid: Option<String>,
+        name: Option<String>,
+    ) -> Result<(String, FxSlotConfig), String> {
         self.ensure_fx_doc_ready()?;
         let strip_key = normalize_strip_key(strip)
             .ok_or_else(|| format!("Unknown mixer strip '{strip}'."))?;
@@ -1050,7 +1311,7 @@ impl Application {
         let slot_id = self.mixer_fx.next_slot_id();
         let display_name = default_plugin_name(&plugin_path, name);
         let config = FxSlotConfig {
-            slot_id: slot_id.clone(),
+            slot_id,
             plugin_path,
             plugin_uid,
             name: display_name,
@@ -1061,30 +1322,7 @@ impl Application {
             state_b_b64: None,
             pinned: false,
         };
-        let sr = self.live_sample_rate();
-        self.mixer_fx.spawn_slot_live(&config, &mut self.vst3, sr);
-        let unavailable_err = self.mixer_fx.live.get(&slot_id).and_then(|live| match &live.backend {
-            LiveBackend::Unavailable { reason } => Some(reason.clone()),
-            _ => None,
-        });
-        if let Some(reason) = unavailable_err {
-            self.mixer_fx.live.remove(&slot_id);
-            return Err(reason);
-        }
-        let initial_state = self.mixer_fx.capture_live_state(&slot_id, &mut self.vst3);
-        let mut stored = config;
-        stored.state_a_b64 = initial_state;
-
-        let before = self.mixer_fx.session.clone();
-        self.mixer_fx.push_undo(before);
-        self.mixer_fx
-            .session
-            .strips
-            .entry(strip_key)
-            .or_default()
-            .push(stored);
-        self.mixer_fx.rebuild_lane_strip_ids();
-        Ok(self.finish_mixer_fx_mutation(true, true))
+        Ok((strip_key, config))
     }
 
     pub fn mixer_fx_remove_insert(

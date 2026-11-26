@@ -1,9 +1,18 @@
 //! Documents, playback, storage and background jobs.
 
 pub mod base_layer;
+pub mod desktop_services;
+pub mod drum_view;
 pub mod export_manifest;
+pub mod folders;
+pub mod home_route;
+pub mod library;
 pub mod mixer_fx;
+pub mod osu_link;
 pub mod practice;
+pub mod presentation;
+pub mod selection;
+pub mod skin_textures;
 pub mod stem_separation;
 mod bookmarks;
 mod default_sounds;
@@ -35,6 +44,7 @@ mod keysound_session;
 pub mod bounce_plan;
 pub mod preview_diff;
 mod project;
+mod async_jobs;
 mod app_drum_vst;
 mod app_editing;
 mod app_playback;
@@ -69,6 +79,7 @@ pub use stem_separation::{
     StemSeparationJobState, StemSeparationStartOptions, StemSeparationStatus,
 };
 pub use project::lane_key as lane_layout_key;
+pub use app_drum_vst::DrumVstBounceOutcome;
 pub use node_graph::{NodeGraphAction, NodeGraphView, ViewerOverlay};
 pub use dawsu_audio::{OutputBackend, OutputDevice};
 pub use dawsu_audio_instruments::midi_in::{
@@ -115,7 +126,8 @@ mod unwritten;
 mod osu_watch;
 mod sample_watch;
 pub mod waveform;
-use dawsu_editor::commands::{CommandCatalog, KeyMap};
+use dawsu_editor::commands::CommandCatalog;
+pub use dawsu_editor::commands::KeyMap;
 #[cfg(test)]
 use dawsu_editor::keys::KeyChord;
 pub use problems::{OutputProblem, orphaned_hit_times};
@@ -216,6 +228,34 @@ pub struct Preferences {
     /// The map preview's own window: where it was, and whether it was open when the editor closed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub preview_window: Option<WindowPlace>,
+    /// UI scale percentage (`90..=200`, default `100`).
+    #[serde(default = "default_ui_scale_pct")]
+    pub ui_scale_pct: u16,
+    /// Active UI colour scheme preset name and optional 9-token HSB overrides.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color_scheme: Option<ColorSchemePreference>,
+    /// Last chosen MIDI input port name for hardware keyboard/controller input.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub midi_input_port: Option<String>,
+    /// Whether the start-screen onboarding checklist card has been dismissed.
+    #[serde(default)]
+    pub setup_checklist_dismissed: bool,
+    /// Whether the user has opened the bundled practice mapset at least once.
+    #[serde(default)]
+    pub practice_tried: bool,
+    /// Optional osu! skin override id/path used by the native Map Preview.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview_skin: Option<String>,
+}
+
+/// Colour scheme preset and optional per-token HSB overrides stored in preferences.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ColorSchemePreference {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preset: Option<String>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub custom_hsb: std::collections::BTreeMap<String, [f32; 3]>,
 }
 
 /// A window's place and size in logical pixels, and whether it was open.
@@ -232,6 +272,9 @@ fn default_hitsound_gain() -> f32 {
 }
 fn default_true() -> bool {
     true
+}
+fn default_ui_scale_pct() -> u16 {
+    100
 }
 
 fn system_audio_backend(backend: &OutputBackend) -> bool {
@@ -290,6 +333,12 @@ impl Default for Preferences {
             step_pads_mode: false,
             reload_osu_after_save: false,
             preview_window: None,
+            ui_scale_pct: 100,
+            color_scheme: None,
+            midi_input_port: None,
+            setup_checklist_dismissed: false,
+            practice_tried: false,
+            preview_skin: None,
         }
     }
 }
@@ -553,6 +602,7 @@ pub struct Application {
     drum_vst_generation: u64,
     drum_vst_state_b64: Option<String>,
     drum_vst_saved: Option<project::DrumVstSession>,
+    async_jobs: async_jobs::AsyncJobsState,
     #[cfg(test)]
     drum_vst_restore_hold: Option<Arc<AtomicBool>>,
 }
@@ -763,6 +813,7 @@ impl Application {
             drum_vst_generation: 0,
             drum_vst_state_b64: None,
             drum_vst_saved: None,
+            async_jobs: Default::default(),
             #[cfg(test)]
             drum_vst_restore_hold: None,
         }
@@ -839,7 +890,34 @@ impl Application {
             hs_mode: doc.is_some_and(|d| d.hs_mode),
             dirty: self.is_dirty(),
             mixer_fx_revision: self.mixer_fx_revision(),
+            keysound_history_revision: self.keysound_history.revision,
         }
+    }
+
+    pub fn is_listening(&self) -> bool {
+        self.drum_listening()
+    }
+
+    pub fn has_active_background_jobs(&self) -> bool {
+        self.busy
+            || self.song_loading
+            || self.drum_stem_loading
+            || self.drum_vst_loading
+            || self.sweep.is_some()
+            || self.sound_set_check_pending
+            || self.export.has_active_work()
+            || self.drum.has_active_work()
+            || self.node_graph.is_running()
+            || self.stem_separation.is_running()
+            || self.async_jobs.is_active()
+    }
+
+    pub fn keymap(&self) -> &KeyMap {
+        &self.keymap
+    }
+
+    pub fn keymap_mut(&mut self) -> &mut KeyMap {
+        &mut self.keymap
     }
 
     pub fn external_osu_changed(&self) -> bool {
@@ -946,6 +1024,49 @@ impl Application {
     pub fn update_preferences(&mut self, f: impl FnOnce(&mut Preferences)) {
         f(&mut self.preferences);
         self.bump_view_revision();
+    }
+    pub fn set_ui_scale_pct(&mut self, pct: u16) {
+        let clamped = pct.clamp(90, 200);
+        if self.preferences.ui_scale_pct == clamped {
+            return;
+        }
+        self.preferences.ui_scale_pct = clamped;
+        self.save_preferences();
+    }
+    pub fn set_color_scheme(&mut self, scheme: Option<ColorSchemePreference>) {
+        if self.preferences.color_scheme == scheme {
+            return;
+        }
+        self.preferences.color_scheme = scheme;
+        self.save_preferences();
+    }
+    pub fn set_midi_input_port(&mut self, port: Option<String>) {
+        if self.preferences.midi_input_port == port {
+            return;
+        }
+        self.preferences.midi_input_port = port;
+        self.save_preferences();
+    }
+    pub fn set_setup_checklist_dismissed(&mut self, dismissed: bool) {
+        if self.preferences.setup_checklist_dismissed == dismissed {
+            return;
+        }
+        self.preferences.setup_checklist_dismissed = dismissed;
+        self.save_preferences();
+    }
+    pub fn set_practice_tried(&mut self, tried: bool) {
+        if self.preferences.practice_tried == tried {
+            return;
+        }
+        self.preferences.practice_tried = tried;
+        self.save_preferences();
+    }
+    pub fn set_preview_skin(&mut self, skin: Option<String>) {
+        if self.preferences.preview_skin == skin {
+            return;
+        }
+        self.preferences.preview_skin = skin;
+        self.save_preferences();
     }
     pub fn set_active_lane(&mut self, lane: usize) {
         if self.active_lane != lane {
@@ -1075,6 +1196,7 @@ pub struct ViewStateToken {
     hs_mode: bool,
     dirty: bool,
     mixer_fx_revision: u64,
+    keysound_history_revision: u64,
 }
 impl Default for Application {
     fn default() -> Self {

@@ -180,6 +180,12 @@ pub(crate) struct NodeGraphState {
     cached_song: Option<(u64, u64, Arc<DecodedAudio>)>,
 }
 
+impl NodeGraphState {
+    pub(crate) fn is_running(&self) -> bool {
+        self.job.is_some()
+    }
+}
+
 impl Default for NodeGraphState {
     fn default() -> Self {
         let mut registry = NodeRegistry::new();

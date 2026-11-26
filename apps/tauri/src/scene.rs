@@ -9,9 +9,9 @@ use dawsu_editor::{
     tools::ToolPreview,
     volume_ramp::ramp_at,
 };
-use dawsu_foundation::{CustomIndex, SampleIdentity, SongTime, Sound};
+use dawsu_foundation::{CustomIndex, SampleIdentity, Sound};
 use dawsu_hitsounding::{LaneSource, Place};
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::sync::{
     Arc, Condvar, Mutex,
@@ -25,175 +25,13 @@ use crate::action::{
 use crate::commands::library_and_files::{cached_recent_meta, is_osu_hs_diff};
 use crate::{drum_view, home, selection};
 
-#[derive(serde::Serialize)]
-pub(crate) struct GameplayOverlay {
-    points: Vec<(&'static str, f64, usize)>,
-    spans: Vec<(&'static str, f64, f64, usize)>,
-}
+pub(crate) use dawsu_application::presentation::{
+    ComboOverlay, GameplayOverlay, combo_overlay, gameplay_overlay,
+};
 
-pub(crate) fn gameplay_overlay(document: &dawsu_application::Document) -> GameplayOverlay {
-    let model = document.composer.hitsounds();
-    let objects = document.file.hit_objects();
-    let index_by_line: std::collections::HashMap<_, _> = objects.iter().enumerate()
-        .map(|(index, object)| (object.line(), index)).collect();
-    let mut points = Vec::new();
-    let mut spans: Vec<_> = model.bodies().iter().filter_map(|body| {
-        let &index = index_by_line.get(&body.object().line())?;
-        Some(("slider", body.start().ms(), body.end().ms(), index))
-    }).collect();
-    for moment in model.moments() {
-        let time = moment.time().ms();
-        match moment.place() {
-            Place::Circle(object) | Place::SliderNode { object, .. } => {
-                if let Some(&index) = index_by_line.get(&object.line()) {
-                    let kind = if matches!(moment.place(), Place::Circle(_)) { "circle" } else { "slider" };
-                    points.push((kind, time, index));
-                }
-            }
-            Place::SpinnerEnd(object) => {
-                if let Some(&index) = index_by_line.get(&object.line()) {
-                    let raw = &objects[index];
-                    let end = raw.spinner_end().or_else(|| raw.hold_end()).unwrap_or(raw.time());
-                    // Keep the rendered start aligned with the decoded end.
-                    spans.push(("spinner", time - (end - raw.time()).max(0.0), time, index));
-                }
-            }
-            Place::NoObject => {
-                // In HS mode (hitsound diff), every drawn hit moment immediately appears as a
-                // circle on the Song · objects row so the blueprint is visible before Save.
-                if document.hs_mode && moment.hits().next().is_some() {
-                    points.push(("circle", time, objects.len() + points.len()));
-                }
-            }
-        }
-    }
-    GameplayOverlay { points, spans }
-}
-
-/// Each object's combo number and colour, as osu!lazer works them out at 131fe72:
-/// `ConvertHitObjectParser.cs:458-525` (an offset counts only with the new-combo bit and never on a
-/// spinner), then `OsuHitObject.cs:193-196` on the objects sorted by time (a spinner never starts a
-/// combo, even flagged or first; the first object and one after a spinner do), and the colour from the map's
-/// `[Colours]` by the index with offsets (`LegacyBeatmapSkin.cs:90`), or else the default skin's four
-/// by the plain index (`SkinConfiguration.cs:46-52`). `objects` is `[number, colour]` per object in
-/// file order, the order of the gameplay overlay's object indices.
-/// Each object's combo number, combo index and combo index with offsets (lazer's
-/// `IHasComboInformation.UpdateComboInformation`), in file order, and the map's own combo colours.
-pub(crate) fn combo_info(document: &dawsu_application::Document) -> (Vec<(u32, usize, usize)>, Vec<String>) {
-    let objects = document.file.hit_objects();
-    let map_colours: Vec<String> = document.file.section_values("Colours").into_iter()
-        .filter(|(key, _)| key.strip_prefix("Combo").and_then(|n| n.parse::<u8>().ok()).is_some_and(|n| (1..=8).contains(&n)))
-        .filter_map(|(_, value)| {
-            let parts: Vec<_> = value.split(',').map(str::trim).collect();
-            if !(3..=4).contains(&parts.len()) {
-                return None;
-            }
-            // Combo colours take no alpha; only the first three parts count.
-            let rgb: Vec<u8> = parts[..3].iter().map(|part| part.parse::<u8>()).collect::<Result<_, _>>().ok()?;
-            Some(format!("#{:02x}{:02x}{:02x}", rgb[0], rgb[1], rgb[2]))
-        })
-        .collect();
-    let spinner = |index: usize| objects[index].spinner_end().is_some();
-    // The parser's pass, in file order: the new-combo bit, and the offset that counts only with it.
-    let mut starts = Vec::with_capacity(objects.len());
-    for (index, object) in objects.iter().enumerate() {
-        let bit = object.type_bits() & 4 != 0;
-        let offset = if bit && !spinner(index) { (object.type_bits() >> 4) & 7 } else { 0 };
-        starts.push((bit, offset));
-    }
-    let mut order: Vec<usize> = (0..objects.len()).collect();
-    order.sort_by(|&a, &b| objects[a].time().total_cmp(&objects[b].time()));
-    let mut combos = vec![(0u32, 0usize, 0usize); objects.len()];
-    let (mut combo, mut with_offsets, mut number) = (0usize, 0usize, 0u32);
-    let mut last: Option<usize> = None;
-    for &index in &order {
-        let (new_combo, offset) = starts[index];
-        if !spinner(index) && (new_combo || last.is_none_or(spinner)) {
-            number = 0;
-            combo += 1;
-            with_offsets += offset as usize + 1;
-        }
-        number += 1;
-        combos[index] = (number, combo, with_offsets);
-        last = Some(index);
-    }
-    (combos, map_colours)
-}
-
-#[derive(serde::Serialize)]
-pub(crate) struct ComboOverlay {
-    colours: Vec<String>,
-    objects: Vec<(u32, usize)>,
-}
-
-/// The timeline's combo overlay: `colours`, and `objects` as `[number, colour]` per object (see `combo_info`).
-pub(crate) fn combo_overlay(document: &dawsu_application::Document) -> ComboOverlay {
-    let (combos, map_colours) = combo_info(document);
-    let objects: Vec<(u32, usize)> = combos.iter().map(|&(number, combo, with_offsets)| {
-        (number, if map_colours.is_empty() { combo % 4 } else { with_offsets % map_colours.len() })
-    }).collect();
-    let colours = if map_colours.is_empty() {
-        ["#ffc000", "#00ca00", "#127cff", "#f21839"].map(String::from).to_vec()
-    } else {
-        map_colours
-    };
-    ComboOverlay { colours, objects }
-}
-
-/// What the map preview draws for the open difficulty (`map`): circle size, approach time and each
-/// object's stacked place, times, path and combo, as osu!lazer works them out at 131fe72
-/// (`dawsu_hitsounding::playfield`). A taiko, catch or mania difficulty answers
-/// `unsupported`; the editor refuses to open those today, so this is only a safeguard.
-/// A slider's path is flat `[x0, y0, x1, y1, …]` on the playfield, stack offset included.
 pub(crate) fn map_preview(app: &Application, map: &Path) -> Result<Value, String> {
-    let document = app.document().ok_or("Open a difficulty first.")?;
-    if document.path != map {
-        return Err("The open difficulty changed.".into());
-    }
-    let key = app.document_generation();
-    let Some(field) = dawsu_hitsounding::playfield::playfield(&document.file) else {
-        return Ok(json!({ "path": document.path, "key": key, "unsupported": true }));
-    };
-    // With no colours of its own a map takes lazer's default skin's (Argon, ArgonSkin.cs:51-71) by the
-    // plain combo index; its own go by the index with offsets, as in the timeline.
-    let (combos, map_colours) = combo_info(document);
-    let colours: Vec<String> = if map_colours.is_empty() {
-        ["#f17400", "#00f135", "#0052f1", "#f10000", "#e8eb00", "#5c00f1"].map(String::from).to_vec()
-    } else {
-        map_colours.clone()
-    };
-    let colour_of = |(_, combo, with_offsets): (u32, usize, usize)| {
-        if map_colours.is_empty() { combo % colours.len() } else { with_offsets % colours.len() }
-    };
-    let file_index: std::collections::HashMap<_, _> =
-        document.file.hit_objects().iter().enumerate().map(|(index, object)| (object.line(), index)).collect();
-    let round = |value: f32| (f64::from(value) * 100.0).round() / 100.0;
-    let objects: Vec<Value> = field.objects.iter().map(|object| {
-        let offset = object.stack_offset(field.scale);
-        let at = object.position + offset;
-        let combo = file_index.get(&object.line).and_then(|&index| combos.get(index).copied()).unwrap_or((0, 0, 0));
-        let kind = match object.kind {
-            dawsu_hitsounding::rules::Kind::Circle => "circle",
-            dawsu_hitsounding::rules::Kind::Slider => "slider",
-            dawsu_hitsounding::rules::Kind::Spinner => "spinner",
-        };
-        let mut value = json!({
-            "kind": kind, "time": object.start_time, "end": object.end_time,
-            "x": round(at.x), "y": round(at.y), "combo": combo.0, "colour": colour_of(combo),
-        });
-        if let Some(path) = &object.path {
-            let points: Vec<f64> = path.points.iter().flat_map(|point| [round(at.x + point.x), round(at.y + point.y)]).collect();
-            value["path"] = json!(points);
-            value["lengths"] = json!(path.cumulative.iter().map(|length| (length * 100.0).round() / 100.0).collect::<Vec<_>>());
-            value["spans"] = json!(object.span_count);
-            value["ticks"] = json!(object.ticks);
-        }
-        value
-    }).collect();
-    Ok(json!({
-        "path": document.path, "key": key, "radius": field.radius, "preempt": field.preempt, "fadeIn": field.fade_in,
-        "colours": colours, "objects": objects,
-    }))
+    let preview = dawsu_application::presentation::map_preview_data(app, map)?;
+    serde_json::to_value(preview).map_err(|e| e.to_string())
 }
 
 #[derive(serde::Serialize)]
@@ -650,28 +488,7 @@ pub(crate) fn snapshot(app: &Application, include_scene: bool) -> Value {
     serde_json::to_value(snapshot_view(app, include_scene)).unwrap()
 }
 
-pub(crate) fn musical_position_text(app: &Application, position: f64) -> Option<String> {
-    app.document().map(|document| {
-        let composer = &document.composer;
-        let time = SongTime::from_ms(position);
-        let tempo = composer.tempo.section_at(time);
-        let (beat, (numerator, denominator)) = document.editor_bar_at(time);
-        let tick = (beat.beat_fraction * 480.0 + 1e-9).floor() as u32;
-        let snap = if composer.snap_enabled {
-            if composer.snap_mode == SnapMode::Objects {
-                "Objects".into()
-            } else {
-                format!("{}/{}", composer.spacing.beats(), composer.spacing.divisions())
-            }
-        } else {
-            "Snap off".into()
-        };
-        format!(
-            "{}.{}.{:03} · {:.1} BPM · {numerator}/{denominator} · {snap}",
-            beat.bar, beat.beat, tick.min(479), 60_000.0 / tempo.beat_length_ms,
-        )
-    })
-}
+pub(crate) use dawsu_application::presentation::musical_position_text;
 
 pub(crate) fn snapshot_with_static(app: &Application, include_scene: bool, include_static: bool) -> ViewSnapshot {
     let document = app.document();

@@ -706,14 +706,83 @@ impl Application {
         if lanes.len() > 128 {
             return Err(refused("A sound set holds at most 128 sounds.".into()));
         }
-        let lower = name.to_lowercase();
-        if library_sets(&library).0.iter().any(|(_, s)| s.name.trim().to_lowercase() == lower) {
-            return Err(SaveSetError::NameTaken(format!("The library already has a sound set named \"{name}\". Choose another name.")));
+        let prepared = self.prepare_save_sound_set_checked(document, library, name, silent, &lanes)?;
+        let (saved_name, silent) = execute_save_sound_set(prepared)?;
+        self.apply_save_sound_set_success(&saved_name, silent);
+        Ok(())
+    }
+
+    pub(crate) fn prepare_save_sound_set_from_selection(
+        &self,
+        map: &Path,
+        name: &str,
+    ) -> Result<PreparedSaveSoundSet, SaveSetError> {
+        let refused = |why: String| SaveSetError::Refused(why);
+        if self.busy || self.is_stroke_open() {
+            return Err(refused("Finish the current operation before saving a sound set.".into()));
         }
+        let document = self.document.as_ref().ok_or_else(|| refused("Open a difficulty first.".into()))?;
+        if document.path != map {
+            return Err(refused("The difficulty changed while naming the sound set.".into()));
+        }
+        let library = self.preferences.hitsound_library.clone().ok_or_else(|| refused("Choose a hitsound library folder first: sound sets are kept there.".into()))?;
+        if !library.is_dir() {
+            return Err(refused(format!("Hitsound library folder not found: {}", library.display())));
+        }
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(refused("Name the sound set.".into()));
+        }
+        if name.encode_utf16().count() > 128 {
+            return Err(refused("A sound set name can have at most 128 characters.".into()));
+        }
+        let hits = document.composer.hitsounds();
+        let mut keys: Vec<_> = document.composer.selected.items().iter().collect();
+        if keys.is_empty() {
+            return Err(refused("Select the sounds to save as a sound set.".into()));
+        }
+        keys.sort_by(|a, b| (a.moment, &a.lane).cmp(&(b.moment, &b.lane)));
+        let times: std::collections::BTreeSet<u64> = keys.iter().map(|k| hits.moment(dawsu_hitsounding::MomentId(k.moment)).time().ms().to_bits()).collect();
+        if times.len() != 1 {
+            return Err(refused("Select sounds at one time to save a sound set.".into()));
+        }
+        let mut lanes: Vec<(&SampleIdentity, i32)> = Vec::new();
+        let mut silent = 0;
+        for key in keys {
+            let volume = hits.moment(dawsu_hitsounding::MomentId(key.moment)).hit_volume(&key.lane);
+            if volume == 0 {
+                silent += 1;
+                continue;
+            }
+            match lanes.iter().find(|(lane, _)| *lane == &key.lane) {
+                Some((_, v)) if *v == volume => {}
+                Some(_) => return Err(refused(format!("{} is selected twice at this time.", crate::lane_name(&key.lane)))),
+                None => lanes.push((&key.lane, volume)),
+            }
+        }
+        if lanes.is_empty() {
+            return Err(refused("Every selected sound is silent. Select sounds you can hear.".into()));
+        }
+        if lanes.len() > 128 {
+            return Err(refused("A sound set holds at most 128 sounds.".into()));
+        }
+        self.prepare_save_sound_set_checked(document, library, name, silent, &lanes)
+    }
+
+    fn prepare_save_sound_set_checked(
+        &self,
+        document: &crate::Document,
+        library: PathBuf,
+        name: &str,
+        silent: usize,
+        lanes: &[(&SampleIdentity, i32)],
+    ) -> Result<PreparedSaveSoundSet, SaveSetError> {
+        let refused = |why: String| SaveSetError::Refused(why);
+        let hits = document.composer.hitsounds();
         let root = document.path.parent().ok_or_else(|| refused("The difficulty's folder was not found.".into()))?;
         let defaults = &self.preferences.default_samples;
         let defaults_list = crate::pending::sample_folder(defaults);
-        let mut captured = Vec::new();
+        let mut items = Vec::with_capacity(lanes.len());
         let mut total = 0u64;
         for (identity, volume) in lanes {
             let lane_name = crate::lane_name(identity);
@@ -737,32 +806,78 @@ impl Application {
             if total > 64 * 1024 * 1024 {
                 return Err(refused("The selected sounds are over 64 MB together, so they can't be one sound set.".into()));
             }
-            let audio = std::fs::read(&path).map_err(|_| unreadable())?;
             let lane = dawsu_hitsounding::sound_sets::SetLane { source, name: file, missing: false, kept: Default::default() };
-            captured.push(dawsu_hitsounding::sound_sets::CapturedHit {
+            items.push(PreparedSaveSoundSetItem {
                 // The old app's key of the captured lane (`ProjectStore.KeyOf`).
                 original_key: lane.key(),
                 lane,
-                volume,
-                audio,
+                volume: *volume,
+                path,
+                lane_name,
             });
         }
-        let set = dawsu_hitsounding::sound_sets::capture(&mut || new_id(name), name, captured).map_err(|e| refused(format!("{name}: {e}")))?;
-        let text = dawsu_hitsounding::sound_sets::write_dawsuset(&set).map_err(|e| refused(format!("{name}: {e}")))?;
-        let folder = library.join(LIBRARY_FOLDER);
-        let file_name = set_file_name(name, &set.id);
-        std::fs::create_dir_all(&folder).map_err(|_| refused(format!("Could not create the library's {LIBRARY_FOLDER} folder. Check that the library folder can be written to.")))?;
-        if let Err(error) = safe_write::create(&folder.join(&file_name), text.as_bytes()) {
-            return Err(refused(save_failure(name, &error)));
-        }
-        index_written(&folder.join(&file_name), text.as_bytes());
+        Ok(PreparedSaveSoundSet {
+            library,
+            name: name.to_string(),
+            silent,
+            items,
+        })
+    }
+
+    pub(crate) fn apply_save_sound_set_success(&mut self, name: &str, silent: usize) {
         self.status = format!("Saved sound set \"{name}\".");
         if silent > 0 {
             self.status += &format!(" Left out {silent} silent {}.", if silent == 1 { "sound" } else { "sounds" });
         }
         self.bump_view_revision();
-        Ok(())
     }
+}
+
+pub(crate) struct PreparedSaveSoundSetItem {
+    original_key: String,
+    lane: dawsu_hitsounding::sound_sets::SetLane,
+    volume: i32,
+    path: PathBuf,
+    lane_name: String,
+}
+
+pub(crate) struct PreparedSaveSoundSet {
+    pub(crate) library: PathBuf,
+    pub(crate) name: String,
+    pub(crate) silent: usize,
+    pub(crate) items: Vec<PreparedSaveSoundSetItem>,
+}
+
+pub(crate) fn execute_save_sound_set(
+    prepared: PreparedSaveSoundSet,
+) -> Result<(String, usize), SaveSetError> {
+    let refused = |why: String| SaveSetError::Refused(why);
+    let PreparedSaveSoundSet { library, name, silent, items } = prepared;
+    let lower = name.to_lowercase();
+    if library_sets(&library).0.iter().any(|(_, s)| s.name.trim().to_lowercase() == lower) {
+        return Err(SaveSetError::NameTaken(format!("The library already has a sound set named \"{name}\". Choose another name.")));
+    }
+    let mut captured = Vec::with_capacity(items.len());
+    for item in items {
+        let unreadable = || refused(format!("Could not read {}. Check that another program is not using it.", item.lane_name));
+        let audio = std::fs::read(&item.path).map_err(|_| unreadable())?;
+        captured.push(dawsu_hitsounding::sound_sets::CapturedHit {
+            original_key: item.original_key,
+            lane: item.lane,
+            volume: item.volume,
+            audio,
+        });
+    }
+    let set = dawsu_hitsounding::sound_sets::capture(&mut || new_id(&name), &name, captured).map_err(|e| refused(format!("{name}: {e}")))?;
+    let text = dawsu_hitsounding::sound_sets::write_dawsuset(&set).map_err(|e| refused(format!("{name}: {e}")))?;
+    let folder = library.join(LIBRARY_FOLDER);
+    let file_name = set_file_name(&name, &set.id);
+    std::fs::create_dir_all(&folder).map_err(|_| refused(format!("Could not create the library's {LIBRARY_FOLDER} folder. Check that the library folder can be written to.")))?;
+    if let Err(error) = safe_write::create(&folder.join(&file_name), text.as_bytes()) {
+        return Err(refused(save_failure(&name, &error)));
+    }
+    index_written(&folder.join(&file_name), text.as_bytes());
+    Ok((name, silent))
 }
 
 /// The message for a failed library write. Only a hard link the drive can't make (FAT and exFAT:

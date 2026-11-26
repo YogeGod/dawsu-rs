@@ -94,6 +94,55 @@ const MAX_MAPS: usize = 64;
 const MAX_MAPSET_ROWS: usize = 16384;
 /// A portable `.dawsudrum` file's limit (old `DrumMapStore.Export`/`Import`).
 pub const MAX_DAWSUDRUM_BYTES: usize = 96 * 1024 * 1024;
+/// Default bundled osu! kit preset name used by Path 2 (`default_12`).
+pub const DEFAULT_OSU_KIT_NAME: &str = "Default osu! kit (12 skin sounds)";
+/// The 11 built-in drum map presets bundled into every release.
+pub const BUILTIN_DRUM_MAPS: &[(&str, &str)] = &[
+    (
+        "Full kit, all 12 samples",
+        include_str!("../drum-map-presets/Full kit, all 12 samples.dawsudrum"),
+    ),
+    (
+        DEFAULT_OSU_KIT_NAME,
+        include_str!("../drum-map-presets/Default osu! kit (12 skin sounds).dawsudrum"),
+    ),
+    (
+        "Drum kit, kick on drum-hitnormal",
+        include_str!("../drum-map-presets/Drum kit, kick on drum-hitnormal.dawsudrum"),
+    ),
+    (
+        "Drum kit, kick on normal-hitnormal",
+        include_str!("../drum-map-presets/Drum kit, kick on normal-hitnormal.dawsudrum"),
+    ),
+    (
+        "Kick and snare on claps",
+        include_str!("../drum-map-presets/Kick and snare on claps.dawsudrum"),
+    ),
+    (
+        "Kick and snare on hitnormals",
+        include_str!("../drum-map-presets/Kick and snare on hitnormals.dawsudrum"),
+    ),
+    (
+        "Kick on drum-hitnormal",
+        include_str!("../drum-map-presets/Kick on drum-hitnormal.dawsudrum"),
+    ),
+    (
+        "Kick on normal-hitnormal",
+        include_str!("../drum-map-presets/Kick on normal-hitnormal.dawsudrum"),
+    ),
+    (
+        "Kick on whistle (older maps)",
+        include_str!("../drum-map-presets/Kick on whistle (older maps).dawsudrum"),
+    ),
+    (
+        "Net0 hitsound kit",
+        include_str!("../drum-map-presets/Net0 hitsound kit.dawsudrum"),
+    ),
+    (
+        "Two kicks",
+        include_str!("../drum-map-presets/Two kicks.dawsudrum"),
+    ),
+];
 
 impl DrumMap {
     /// The old app's `DrumMapPreset.Validate`: a GUID id, a name of 1 to 128 UTF-16 units, at most

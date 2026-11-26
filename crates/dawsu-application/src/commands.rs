@@ -583,6 +583,7 @@ pub fn catalogue() -> CommandCatalog<Application> {
         areas::HS_MAP_FILES,
         |app| {
             app.revert_requested = true;
+            app.bump_view_revision();
             Ok(())
         },
         Some(|app| app.document.is_some() && !app.busy && app.is_dirty()),

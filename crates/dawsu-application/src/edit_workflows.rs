@@ -27,6 +27,14 @@ impl Application {
         self.edit_dialog
     }
 
+    pub fn take_requested_edit(&mut self) -> Option<&'static str> {
+        let taken = self.edit_dialog.take();
+        if taken.is_some() {
+            self.bump_view_revision();
+        }
+        taken
+    }
+
     pub fn quantize_strength(&self) -> f64 {
         self.quantize_strength
     }

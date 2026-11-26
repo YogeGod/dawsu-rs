@@ -149,6 +149,10 @@ impl DrumDetect {
         self.ready = None;
         self.error = None;
     }
+
+    pub(crate) fn has_active_work(&self) -> bool {
+        self.job.is_some() || self.listen_build.is_some()
+    }
 }
 
 /// The object a hit lands on.
@@ -278,6 +282,7 @@ impl Application {
             return Err("Enter the stem's offset in ms.".into());
         }
         self.drum.options = Some(options);
+        self.bump_view_revision();
         Ok(())
     }
 
@@ -331,6 +336,7 @@ impl Application {
             });
         }
         self.drum.job = Some(Job { result, cancel, progress, stamp: self.drum.song, run: self.drum.runs, source });
+        self.bump_view_revision();
         Ok(())
     }
 
@@ -341,27 +347,41 @@ impl Application {
 
     /// Everything drum hit detection holds goes: the run, its result and Listen.
     pub(crate) fn clear_drum_detection(&mut self) {
+        let had_state = self.drum.job.is_some()
+            || self.drum.ready.is_some()
+            || self.drum.error.is_some()
+            || self.drum.listen_build.is_some();
         self.drum.clear();
         self.stop_drum_listen();
+        if had_state {
+            self.bump_view_revision();
+        }
     }
 
     /// Called from `poll`: collects a finished analysis and re-plans after edits or new options.
     pub(crate) fn poll_drum_detection(&mut self) {
         // Frees Listen clips (and schedules) the audio thread let go of, also after the window closed.
         self.collect_retired_audio();
+        let mut changed = false;
         if let Some(build) = &self.drum.listen_build {
             match build.try_recv() {
                 Ok(clip) => {
                     self.drum.listen_build = None;
                     self.listen_sink(Some(clip));
+                    changed = true;
                 }
-                Err(mpsc::TryRecvError::Disconnected) => self.drum.listen_build = None,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.drum.listen_build = None;
+                    changed = true;
+                }
                 Err(mpsc::TryRecvError::Empty) => {}
             }
         }
         if self.document.is_none() {
             if self.drum.job.is_some() || self.drum.ready.is_some() {
                 self.clear_drum_detection();
+            } else if changed {
+                self.bump_view_revision();
             }
             return;
         }
@@ -374,7 +394,12 @@ impl Application {
                 Ok(outcome) => outcome,
                 // The thread ended without an answer: it never does when it works.
                 Err(mpsc::TryRecvError::Disconnected) => Outcome::Failed("Drum detection stopped unexpectedly.".into()),
-                Err(mpsc::TryRecvError::Empty) => return,
+                Err(mpsc::TryRecvError::Empty) => {
+                    if changed {
+                        self.bump_view_revision();
+                    }
+                    return;
+                }
             };
             let job = self.drum.job.take().expect("checked");
             match outcome {
@@ -387,8 +412,14 @@ impl Application {
                 Outcome::Failed(error) => self.drum.error = Some(error),
                 Outcome::Cancelled => {}
             }
+            changed = true;
         }
-        let Some(ready) = &self.drum.ready else { return };
+        let Some(ready) = &self.drum.ready else {
+            if changed {
+                self.bump_view_revision();
+            }
+            return;
+        };
         if ready.stamp != self.drum.song {
             self.clear_drum_detection();
             return;
@@ -396,6 +427,9 @@ impl Application {
         let options = self.drum_options();
         let stamp = self.drum_review_stamp(ready, &options);
         if ready.review.as_ref().is_some_and(|review| review.stamp == stamp) {
+            if changed {
+                self.bump_view_revision();
+            }
             return;
         }
         let replanned = ready.review.is_some();
@@ -405,6 +439,7 @@ impl Application {
         if replanned {
             self.stop_drum_listen();
         }
+        self.bump_view_revision();
     }
 
     /// Adds the checked hits (`ticked`, by row id) as one undo step. `review` is the stamp the
@@ -529,7 +564,7 @@ impl Application {
         }
     }
 
-    fn drum_listening(&self) -> bool {
+    pub(crate) fn drum_listening(&self) -> bool {
         #[cfg(test)]
         if let Some(sink) = &self.drum.sink {
             return self.drum.listen_build.is_some() || sink.last() == Some(&true);

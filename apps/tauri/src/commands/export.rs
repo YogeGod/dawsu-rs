@@ -52,13 +52,10 @@ pub(crate) struct ExportOptionsJson {
 
 /// "Export · <map title> [<difficulty>]", or "Export" with no map open.
 pub(crate) fn export_title(view: &Value) -> String {
-    match (view["source"]["title"].as_str(), view["source"]["difficulty"].as_str()) {
-        (Some(title), Some(difficulty)) if !title.ends_with(&format!("[{difficulty}]")) => {
-            format!("Export · {title} [{difficulty}]")
-        }
-        (Some(title), _) => format!("Export · {title}"),
-        _ => "Export".into(),
-    }
+    dawsu_application::desktop_services::export_title_from_parts(
+        view["source"]["title"].as_str(),
+        view["source"]["difficulty"].as_str(),
+    )
 }
 
 #[tauri::command]

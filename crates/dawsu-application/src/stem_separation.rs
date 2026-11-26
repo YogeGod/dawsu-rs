@@ -170,7 +170,7 @@ mod enabled {
             }
         }
 
-        fn is_running(&self) -> bool {
+        pub(crate) fn is_running(&self) -> bool {
             self.current_state().is_running()
         }
 

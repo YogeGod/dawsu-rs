@@ -1,6 +1,6 @@
 use dawsu_application::Application;
 use serde_json::{Value, json};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tauri::{Emitter, State};
 
 use crate::scene::ViewResponse;
@@ -176,46 +176,35 @@ pub(crate) fn drum_map_action(
 
 
 #[tauri::command]
-pub(crate) fn drum_vst_action(payload: Value, state: State<'_, Editor>) -> Result<Value, String> {
-    if payload.get("kind").and_then(Value::as_str) == Some("cancel_bounce") {
+pub(crate) fn drum_vst_action(
+    window: tauri::WebviewWindow,
+    mut payload: Value,
+    state: State<'_, Editor>,
+) -> Result<Value, String> {
+    let kind = payload.get("kind").and_then(Value::as_str);
+    if kind == Some("cancel_bounce") {
         state.1.cancel();
         return Ok(json!({ "cancelled": true }));
     }
-    ask(&state, |tx| Request::DrumVstAction(payload, tx))?
-}
-
-pub(crate) fn handle_drum_vst_action(
-    app: &mut Application,
-    drums: &mut drum_view::DrumView,
-    payload: &Value,
-) -> Result<Value, String> {
-    let kind = payload
-        .get("kind")
-        .and_then(Value::as_str)
-        .ok_or("Missing drum_vst_action kind")?;
     match kind {
-        "status" => Ok(drum_vst_status_json(app)),
-        "list_installed" => {
-            let plugins = dawsu_application::vst3::list_installed_vst3_in(app.vst3.search_dirs());
-            let folders: Vec<String> = app
-                .vst3
-                .search_dirs()
-                .iter()
-                .map(|p| p.to_string_lossy().into_owned())
-                .collect();
-            Ok(json!({
-                "plugins": plugins.into_iter().map(|p| json!({
-                    "name": p.label,
-                    "path": p.path.to_string_lossy(),
-                })).collect::<Vec<_>>(),
-                "folders": folders,
-            }))
-        }
-        "browse" => {
+        Some("browse") => {
+            let dirs_val = ask(&state, |tx| {
+                Request::DrumVstAction(json!({ "kind": "search_dirs" }), tx)
+            })??;
             let mut dialog = rfd::FileDialog::new()
+                .set_parent(&window)
                 .set_title("Choose a VST3 instrument")
                 .add_filter("VST3 plug-in", &["vst3"]);
-            if let Some(dir) = app.vst3.search_dirs().iter().find(|d| d.is_dir()) {
+            if let Some(dir) = dirs_val
+                .get("folders")
+                .and_then(Value::as_array)
+                .and_then(|arr| {
+                    arr.iter()
+                        .filter_map(Value::as_str)
+                        .map(PathBuf::from)
+                        .find(|d| d.is_dir())
+                })
+            {
                 dialog = dialog.set_directory(dir);
             }
             if let Some(path) = dialog.pick_file() {
@@ -233,6 +222,127 @@ pub(crate) fn handle_drum_vst_action(
                 Ok(json!({ "picked": false }))
             }
         }
+        Some("save_state") => {
+            if payload.get("path").and_then(Value::as_str).is_some() {
+                return ask(&state, |tx| Request::DrumVstAction(payload, tx))?;
+            }
+            ask(&state, |tx| {
+                Request::DrumVstAction(json!({ "kind": "sync_state" }), tx)
+            })??;
+            let picked = rfd::FileDialog::new()
+                .set_parent(&window)
+                .set_title("Save Drum VST3 state")
+                .set_file_name("drums-state.bin")
+                .add_filter("VST3 state", &["bin", "vststate"])
+                .save_file();
+            if let Some(path) = picked {
+                payload["path"] = json!(path.to_string_lossy());
+                ask(&state, |tx| Request::DrumVstAction(payload, tx))?
+            } else {
+                Ok(json!({ "saved": false }))
+            }
+        }
+        Some("load_state") => {
+            if payload.get("path").and_then(Value::as_str).is_some() {
+                return ask(&state, |tx| Request::DrumVstAction(payload, tx))?;
+            }
+            let picked = rfd::FileDialog::new()
+                .set_parent(&window)
+                .set_title("Load Drum VST3 state")
+                .add_filter("VST3 state", &["bin", "vststate"])
+                .pick_file();
+            if let Some(path) = picked {
+                payload["path"] = json!(path.to_string_lossy());
+                ask(&state, |tx| Request::DrumVstAction(payload, tx))?
+            } else {
+                Ok(json!({ "loaded": false }))
+            }
+        }
+        Some("import_dawsudrum") => {
+            if payload.get("path").and_then(Value::as_str).is_some() {
+                return ask(&state, |tx| Request::DrumVstAction(payload, tx))?;
+            }
+            if ask(&state, Request::CurrentDocumentPath)?.is_none() {
+                return Err("Open a difficulty first.".into());
+            }
+            let picked = rfd::FileDialog::new()
+                .set_parent(&window)
+                .set_title("Import drum map")
+                .add_filter("Drum maps", &["dawsudrum", "drm"])
+                .pick_file();
+            if let Some(path) = picked {
+                payload["path"] = json!(path.to_string_lossy());
+                ask(&state, |tx| Request::DrumVstAction(payload, tx))?
+            } else {
+                Ok(json!({ "imported": false }))
+            }
+        }
+        Some("export_dawsudrum") => {
+            if payload.get("path").and_then(Value::as_str).is_some() {
+                return ask(&state, |tx| Request::DrumVstAction(payload, tx))?;
+            }
+            let kit = ask(&state, |tx| {
+                Request::DrumVstAction(json!({ "kind": "active_kit_info" }), tx)
+            })??;
+            let name = kit
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or("drum-map");
+            let picked = rfd::FileDialog::new()
+                .set_parent(&window)
+                .set_title("Save drum map")
+                .set_file_name(format!("{name}.dawsudrum"))
+                .add_filter("dawsu! drum map", &["dawsudrum"])
+                .save_file();
+            if let Some(path) = picked {
+                payload["path"] = json!(path.to_string_lossy());
+                ask(&state, |tx| Request::DrumVstAction(payload, tx))?
+            } else {
+                Ok(json!({ "exported": false }))
+            }
+        }
+        _ => ask(&state, |tx| Request::DrumVstAction(payload, tx))?,
+    }
+}
+
+pub(crate) fn handle_drum_vst_action(
+    app: &mut Application,
+    drums: &mut drum_view::DrumView,
+    payload: &Value,
+) -> Result<Value, String> {
+    let kind = payload
+        .get("kind")
+        .and_then(Value::as_str)
+        .ok_or("Missing drum_vst_action kind")?;
+    match kind {
+        "status" => Ok(drum_vst_status_json(app)),
+        "search_dirs" => {
+            let folders: Vec<String> = app
+                .drum_vst_search_dirs()
+                .iter()
+                .map(|p| p.to_string_lossy().into_owned())
+                .collect();
+            Ok(json!({ "folders": folders }))
+        }
+        "active_kit_info" => {
+            let map_kit = drums.active_map(app).ok_or("Open a drum map first.")?;
+            Ok(json!({ "name": map_kit.name }))
+        }
+        "list_installed" => {
+            let dirs = app.drum_vst_search_dirs();
+            let plugins = dawsu_application::vst3::list_installed_vst3_in(dirs);
+            let folders: Vec<String> = dirs
+                .iter()
+                .map(|p| p.to_string_lossy().into_owned())
+                .collect();
+            Ok(json!({
+                "plugins": plugins.into_iter().map(|p| json!({
+                    "name": p.label,
+                    "path": p.path.to_string_lossy(),
+                })).collect::<Vec<_>>(),
+                "folders": folders,
+            }))
+        }
         "load" => {
             let path = payload
                 .get("pluginPath")
@@ -246,14 +356,12 @@ pub(crate) fn handle_drum_vst_action(
                 .map(str::to_owned);
             app.load_drum_vst(PathBuf::from(path), uid)
                 .map_err(|e| e.to_string())?;
-            app.set_drum_vst_routing(drums.routed_midi_notes(app));
-            app.set_drum_vst_choke_groups(drums.choke_groups(app));
+            drums.0.sync_vst(app);
             Ok(drum_vst_status_json(app))
         }
         "toggle" => {
             let on = payload.get("enabled").and_then(Value::as_bool).unwrap_or(false);
-            app.set_drum_vst_routing(drums.routed_midi_notes(app));
-            app.set_drum_vst_choke_groups(drums.choke_groups(app));
+            drums.0.sync_vst(app);
             app.set_drum_vst_enabled(on);
             Ok(drum_vst_status_json(app))
         }
@@ -262,8 +370,7 @@ pub(crate) fn handle_drum_vst_action(
                 .get("row")
                 .and_then(Value::as_u64)
                 .ok_or("Missing lane row")? as usize;
-            app.set_drum_vst_routing(drums.routed_midi_notes(app));
-            app.set_drum_vst_choke_groups(drums.choke_groups(app));
+            drums.0.sync_vst(app);
             app.toggle_drum_vst_lane(row)?;
             Ok(drum_vst_status_json(app))
         }
@@ -282,8 +389,7 @@ pub(crate) fn handle_drum_vst_action(
                 .ok_or("Open a difficulty first.")?
                 .path
                 .clone();
-            drums.set_row_choke_group(app, &map, row_index, choke_group)?;
-            app.set_drum_vst_choke_groups(drums.choke_groups(app));
+            drums.0.set_row_choke_group_and_sync(app, &map, row_index, choke_group)?;
             Ok(json!({ "ok": true, "rowIndex": row_index, "chokeGroup": choke_group }))
         }
         "unload" => {
@@ -291,22 +397,11 @@ pub(crate) fn handle_drum_vst_action(
             Ok(drum_vst_status_json(app))
         }
         "open_editor" => {
-            let id = app
-                .drum_vst()
-                .as_ref()
-                .map(|v| v.instance_id.clone())
-                .ok_or("Load a Drum VST3 instrument first.")?;
-            app.vst3.open_editor(&id).map_err(|e| e.to_string())?;
+            app.open_drum_vst_editor()?;
             Ok(drum_vst_status_json(app))
         }
         "close_editor" => {
-            let id = app
-                .drum_vst()
-                .as_ref()
-                .map(|v| v.instance_id.clone())
-                .ok_or("Load a Drum VST3 instrument first.")?;
-            app.vst3.close_editor(&id).map_err(|e| e.to_string())?;
-            let _ = app.save_drum_vst_session_state();
+            app.close_drum_vst_editor()?;
             Ok(drum_vst_status_json(app))
         }
         "preview_note" => {
@@ -318,11 +413,7 @@ pub(crate) fn handle_drum_vst_action(
             Ok(json!({ "ok": true }))
         }
         "note_names" => {
-            let id = app
-                .drum_vst()
-                .map(|v| v.instance_id.clone())
-                .ok_or("Load a Drum VST3 instrument first.")?;
-            let names = app.vst3.note_names(&id).map_err(|e| e.to_string())?;
+            let names = app.drum_vst_note_names()?;
             Ok(json!({
                 "notes": names.into_iter().map(|(note, name)| json!({ "note": note, "name": name })).collect::<Vec<_>>()
             }))
@@ -332,67 +423,51 @@ pub(crate) fn handle_drum_vst_action(
             Ok(drum_vst_status_json(app))
         }
         "save_state" => {
+            let path = payload
+                .get("path")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+                .ok_or("Choose a destination path first.")?;
             let b64 = app.save_drum_vst_session_state().map_err(|e| e.to_string())?;
-            let picked = rfd::FileDialog::new()
-                .set_title("Save Drum VST3 state")
-                .set_file_name("drums-state.bin")
-                .add_filter("VST3 state", &["bin", "vststate"])
-                .save_file();
-            if let Some(path) = picked {
-                std::fs::write(&path, b64.as_bytes()).map_err(|e| e.to_string())?;
-                Ok(json!({ "saved": true, "path": path.to_string_lossy() }))
-            } else {
-                Ok(json!({ "saved": false }))
-            }
+            std::fs::write(path, b64.as_bytes()).map_err(|e| e.to_string())?;
+            Ok(json!({ "saved": true, "path": path }))
         }
         "load_state" => {
-            let picked = rfd::FileDialog::new()
-                .set_title("Load Drum VST3 state")
-                .add_filter("VST3 state", &["bin", "vststate"])
-                .pick_file();
-            if let Some(path) = picked {
-                let raw = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
-                app.restore_drum_vst_state_b64(raw.trim()).map_err(|e| e.to_string())?;
-                Ok(json!({ "loaded": true, "path": path.to_string_lossy() }))
-            } else {
-                Ok(json!({ "loaded": false }))
-            }
+            let path = payload
+                .get("path")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+                .ok_or("Choose a state file first.")?;
+            let raw = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+            app.restore_drum_vst_state_b64(raw.trim()).map_err(|e| e.to_string())?;
+            Ok(json!({ "loaded": true, "path": path }))
         }
         "import_dawsudrum" => {
+            let path = payload
+                .get("path")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+                .ok_or("Choose a drum map file first.")?;
             let map = app
                 .document()
                 .ok_or("Open a difficulty first.")?
                 .path
                 .clone();
-            let picked = rfd::FileDialog::new()
-                .set_title("Import drum map")
-                .add_filter("Drum maps", &["dawsudrum", "drm"])
-                .pick_file();
-            if let Some(path) = picked {
-                drums.load(app, &map, &path)?;
-                app.set_drum_vst_routing(drums.routed_midi_notes(app));
-                app.set_drum_vst_choke_groups(drums.choke_groups(app));
-                Ok(json!({ "imported": true, "path": path.to_string_lossy() }))
-            } else {
-                Ok(json!({ "imported": false }))
-            }
+            drums.0.load_and_sync(app, &map, Path::new(path))?;
+            Ok(json!({ "imported": true, "path": path }))
         }
         "export_dawsudrum" => {
+            let path = payload
+                .get("path")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+                .ok_or("Choose a destination path first.")?;
             let map_kit = drums
                 .active_map(app)
                 .ok_or("Open a drum map first.")?;
             let text = dawsu_hitsounding::drums::write_dawsudrum(map_kit).map_err(|e| e.to_string())?;
-            let picked = rfd::FileDialog::new()
-                .set_title("Save drum map")
-                .set_file_name(format!("{}.dawsudrum", map_kit.name))
-                .add_filter("dawsu! drum map", &["dawsudrum"])
-                .save_file();
-            if let Some(path) = picked {
-                std::fs::write(&path, text.as_bytes()).map_err(|e| e.to_string())?;
-                Ok(json!({ "exported": true, "path": path.to_string_lossy() }))
-            } else {
-                Ok(json!({ "exported": false }))
-            }
+            std::fs::write(path, text.as_bytes()).map_err(|e| e.to_string())?;
+            Ok(json!({ "exported": true, "path": path }))
         }
         "plan_render" => {
             let exact = payload.get("exact").and_then(Value::as_bool).unwrap_or(false);
@@ -401,8 +476,7 @@ pub(crate) fn handle_drum_vst_action(
             } else {
                 dawsu_application::VelocityExportMode::Tiered { max_interval: 20 }
             };
-            app.set_drum_vst_routing(drums.routed_midi_notes(app));
-            app.set_drum_vst_choke_groups(drums.choke_groups(app));
+            drums.0.sync_vst(app);
             let plan = app.plan_drum_vst_render(mode)?;
             let base_bytes: u64 = app
                 .document()
@@ -441,8 +515,7 @@ pub(crate) fn handle_drum_vst_action(
             } else {
                 dawsu_application::VelocityExportMode::Tiered { max_interval: 20 }
             };
-            app.set_drum_vst_routing(drums.routed_midi_notes(app));
-            app.set_drum_vst_choke_groups(drums.choke_groups(app));
+            drums.0.sync_vst(app);
             app.preview_drum_vst_render_with_options(mode, format, normalize, auto_trim)
         }
         "render_wavs" => {
@@ -458,8 +531,7 @@ pub(crate) fn handle_drum_vst_action(
             } else {
                 dawsu_application::VelocityExportMode::Tiered { max_interval: 20 }
             };
-            app.set_drum_vst_routing(drums.routed_midi_notes(app));
-            app.set_drum_vst_choke_groups(drums.choke_groups(app));
+            drums.0.sync_vst(app);
             let (plan, outputs) =
                 app.render_drum_vst_with_options(mode, format, normalize, auto_trim)?;
             Ok(json!({

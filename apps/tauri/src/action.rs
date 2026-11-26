@@ -1,18 +1,15 @@
 use dawsu_application::{
     Application, EditorTimeSignature, ExportSettings, LaneLayout, OutputBackend, PointerPhase,
-    RangeOperation, TimelineEdit, VolumeScope, lane_name,
+    RangeOperation, TimelineEdit, VolumeScope,
 };
 use dawsu_editor::{
     keys::Mods,
     tempo::SnapMode,
-    tools::{PointerButton, PointerInput, PointerSurface, ToolKind, ToolTarget},
+    tools::{PointerButton, PointerInput, PointerSurface, ToolKind},
     volume_ramp::RampShape,
 };
-use dawsu_foundation::{SampleIdentity, SampleSet, SongTime};
-use dawsu_hitsounding::{
-    LaneSource,
-    copy::{CopyCollisionPolicy, CopyMode, CopyOptions, FallbackSound},
-};
+use dawsu_foundation::{SampleSet, SongTime};
+use dawsu_hitsounding::copy::{CopyCollisionPolicy, CopyMode, CopyOptions, FallbackSound};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
@@ -20,34 +17,12 @@ use std::path::{Path, PathBuf};
 
 use crate::{keyboard, library};
 
-#[derive(Clone, Copy, Default, PartialEq, Eq, Hash, Deserialize, serde::Serialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum PlaybackStart {
-    #[default]
-    Cursor,
-    Left,
-    Selection,
-    SelectionOrLeft,
-}
-
-impl PlaybackStart {
-    fn position(self, app: &Application) -> Option<f64> {
-        let start = || {
-            let composer = &app.document()?.composer;
-            let moments = composer.hitsounds().moments();
-            composer.selected.items().iter()
-                .filter_map(|hit| moments.get(hit.moment))
-                .map(|moment| moment.time().ms())
-                .min_by(f64::total_cmp)
-        };
-        match self {
-            Self::Cursor => None,
-            Self::Left => Some(app.locator_left()),
-            Self::Selection => start(),
-            Self::SelectionOrLeft => start().or(Some(app.locator_left())),
-        }
-    }
-}
+pub(crate) use dawsu_application::presentation::{
+    PlaybackStart, RulerGesture, group_mix, lane_by_key, lane_header_rows, map_path, mix_lanes,
+    sample_set_name, scene_lane_key,
+};
+#[cfg(test)]
+pub(crate) use dawsu_application::presentation::family_order;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -205,58 +180,6 @@ impl TimelineEditRequest {
 pub(crate) struct SampleTarget {
     map: PathBuf,
     lane: String,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum RulerGesture {
-    Left,
-    Right,
-    Draw,
-    Move,
-    Seek,
-}
-
-impl RulerGesture {
-    pub(crate) fn apply(self, app: &mut Application, path: &Path, from: f64, to: f64) {
-        if app.is_busy() || !from.is_finite() || !to.is_finite() {
-            return;
-        }
-        let Some(document) = app.document().filter(|document| document.path == path) else {
-            return;
-        };
-        let duration = app.duration_ms();
-        let snap = |ms: f64| {
-            document.composer.snap(SongTime::from_ms(ms.clamp(0.0, duration)))
-                .ms().clamp(0.0, duration)
-        };
-        let (mut left, mut right, mut enabled) = (app.locator_left(), app.locator_right(), app.cycle_enabled());
-        // A drag stops on the other locator; a Ctrl- or Alt-click (from == to) sets it where it lands.
-        let dragged = from != to;
-        match self {
-            Self::Left => left = if dragged && left <= right { snap(to).min(right) } else { snap(to) },
-            Self::Right => right = if dragged && left <= right { snap(to).max(left) } else { snap(to) },
-            Self::Draw => {
-                let (first, last) = (snap(from), snap(to));
-                if first == last {
-                    return;
-                }
-                (left, right, enabled) = (first.min(last), first.max(last), true);
-            }
-            Self::Move => {
-                let requested = snap(left + (to - from)) - left;
-                let shift = requested.clamp(-left.min(right), (duration - left.max(right)).max(0.0));
-                left += shift;
-                right += shift;
-            }
-            // A click without a drag moves the playhead to the snapped time and leaves L, R and Cycle.
-            Self::Seek => {
-                app.seek(snap(to));
-                return;
-            }
-        }
-        app.set_locators(left, right, enabled);
-    }
 }
 
 #[derive(Deserialize)]
@@ -1141,49 +1064,6 @@ impl Action {
     }
 }
 
-pub(crate) fn map_path(path: &std::path::Path) -> bool {
-    path.extension()
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("osu") || ext.eq_ignore_ascii_case("osz"))
-}
-
-pub(crate) fn sample_set_name(set: SampleSet) -> &'static str {
-    match set {
-        SampleSet::Normal => "normal",
-        SampleSet::Soft => "soft",
-        SampleSet::Drum => "drum",
-    }
-}
-
-pub(crate) fn mix_lanes(app: &mut Application, lanes: Vec<SampleIdentity>, operation: &str, clicked: Option<SampleIdentity>) {
-    type LanePredicate = fn(&Application, &SampleIdentity) -> bool;
-    type LaneToggle = fn(&mut Application, SampleIdentity);
-    let (enabled, toggle): (LanePredicate, LaneToggle) =
-        match operation {
-            "mute" => (Application::is_muted, Application::mute),
-            "solo" => (Application::is_solo, Application::solo),
-            _ => return,
-        };
-    let on = match &clicked {
-        Some(lane) => !enabled(app, lane),
-        None => lanes.iter().any(|lane| !enabled(app, lane)),
-    };
-    for lane in lanes {
-        if enabled(app, &lane) != on {
-            toggle(app, lane);
-        }
-    }
-}
-
-pub(crate) fn group_mix(app: &mut Application, set: &str, operation: &str) {
-    let Some(document) = app.document().filter(|_| !app.is_busy()) else {
-        return;
-    };
-    let lanes = document.composer.lanes.iter().filter(|lane| {
-        matches!(lane, SampleIdentity::Standard { set: lane_set, .. } if sample_set_name(*lane_set) == set)
-    }).cloned().collect();
-    mix_lanes(app, lanes, operation, None);
-}
-
 pub(crate) fn lane_selection_mix(app: &mut Application, target: &SampleTarget, operation: &str, lanes: Vec<String>) {
     let Some(document) = app.document().filter(|doc| !app.is_busy() && doc.path == target.map) else {
         return;
@@ -1205,82 +1085,6 @@ pub(crate) fn lane_selection_mix(app: &mut Application, target: &SampleTarget, o
     }
 }
 
-/// The difficulty's lane rows (composer lanes) that get a lane header, in order, and the slots that rows stand in for:
-/// an unused slot lane is shown on its source's row. Hidden lanes get no header. `used` says
-/// whether a lane has hits. The scene's `laneOrder` and the drum window's lane numbers share it.
-pub(crate) fn lane_header_rows<'a>(
-    document: &'a dawsu_application::Document,
-    used: &dyn Fn(&SampleIdentity) -> bool,
-) -> (Vec<usize>, std::collections::HashMap<usize, &'a SampleIdentity>) {
-    let c = &document.composer;
-    let model = c.hitsounds();
-    let row_by_lane: std::collections::HashMap<_, _> = c.lanes.iter().enumerate().map(|(row, lane)| (lane, row)).collect();
-    let mut slot_rows = std::collections::HashMap::new();
-    let mut backing_slots = std::collections::HashMap::new();
-    for (source, slot) in model.lane_slots() {
-        if !used(slot) && let (Some(&from), Some(&to)) = (row_by_lane.get(source), row_by_lane.get(slot))
-            && let std::collections::hash_map::Entry::Vacant(entry) = slot_rows.entry(to)
-        {
-            entry.insert(from);
-            backing_slots.insert(from, slot);
-        }
-    }
-    let lane_order = (0..c.lanes.len()).filter(|row| !backing_slots.contains_key(row))
-        .map(|row| slot_rows.get(&row).copied().unwrap_or(row))
-        .filter(|&row| !model.is_lane_hidden(&c.lanes[row]))
-        .collect();
-    (lane_order, backing_slots)
-}
-
-/// Puts each numbered layer directly under its family's main lane, by number. A family is one set
-/// and sound; its main lane is the shown lane at custom index 1, else the skin sample (index 0).
-/// Without either, its layers stay ordinary lanes where they are. This order is for display only:
-/// the scene's `laneOrder` and the saved lane order never take it. app.js's `familyOrder` applies it
-/// after the saved order, as `header_numbers` does here.
-pub(crate) fn family_order<'a>(rows: Vec<usize>, lane: impl Fn(usize) -> &'a SampleIdentity) -> Vec<usize> {
-    let family = |row: usize| match lane(row) {
-        SampleIdentity::Standard { set, sound, index } => Some(((*set, *sound), index.get())),
-        SampleIdentity::File(_) => None,
-    };
-    let mut mains = std::collections::HashMap::new();
-    for &row in &rows {
-        if let Some((key, index @ (0 | 1))) = family(row) && (index == 1 || !mains.contains_key(&key)) {
-            mains.insert(key, row);
-        }
-    }
-    let mut layers: std::collections::HashMap<usize, Vec<(u32, usize)>> = std::collections::HashMap::new();
-    for &row in &rows {
-        if let Some((key, index)) = family(row) && let Some(&main) = mains.get(&key) && main != row {
-            layers.entry(main).or_default().push((index, row));
-        }
-    }
-    let children: std::collections::HashSet<usize> = layers.values().flatten().map(|&(_, row)| row).collect();
-    let mut ordered = Vec::with_capacity(rows.len());
-    for row in rows {
-        if children.contains(&row) {
-            continue;
-        }
-        ordered.push(row);
-        if let Some(mut family) = layers.remove(&row) {
-            family.sort_unstable();
-            ordered.extend(family.into_iter().map(|(_, row)| row));
-        }
-    }
-    ordered
-}
-
-/// A lane's key in the scene: the text the front end holds for a lane and sends back to name it.
-pub(crate) fn scene_lane_key(lane: &SampleIdentity) -> String {
-    format!("{lane:?}")
-}
-
-pub(crate) fn lane_by_key(app: &Application, key: &str) -> Result<SampleIdentity, String> {
-    app.document()
-        .and_then(|document| document.composer.lanes.iter().find(|lane| scene_lane_key(lane) == key))
-        .cloned()
-        .ok_or_else(|| "The lane changed. Choose a lane again.".into())
-}
-
 pub(crate) fn set_volume_lane_scope(app: &mut Application, path: &Path, lanes: Option<Vec<String>>) -> Result<(), String> {
     let document = app.document().filter(|document| document.path == path)
         .ok_or("The open difficulty changed. Select the volume lanes again.")?;
@@ -1293,36 +1097,15 @@ pub(crate) fn set_volume_lane_scope(app: &mut Application, path: &Path, lanes: O
 }
 
 pub(crate) fn lane_add_choices(app: &Application, map: &Path) -> Result<Value, String> {
-    let candidates = app.scan_lane_add_candidates(map)?;
-    let model = app.document().ok_or("Open a difficulty first.")?.composer.hitsounds();
-    Ok(json!(candidates.iter().map(|lane| json!({
-        "key": scene_lane_key(lane),
-        "name": lane_name(model.lane_slot(lane).unwrap_or(lane)),
-    })).collect::<Vec<_>>()))
+    let candidates = dawsu_application::presentation::lane_add_candidate_list(app, map)?;
+    Ok(json!(
+        candidates
+            .into_iter()
+            .map(|(_lane, key, name)| json!({ "key": key, "name": name }))
+            .collect::<Vec<_>>()
+    ))
 }
 
 pub(crate) fn assign_sample(app: &mut Application, target: SampleTarget, path: PathBuf, mapset: bool) -> Result<(), String> {
-    let document = app.document().ok_or("Open a difficulty first.")?;
-    let lane = document.composer.lanes.get(app.active_lane()).ok_or("Choose an active lane.")?;
-    if document.path != target.map || scene_lane_key(lane) != target.lane {
-        return Err("The active lane changed while choosing a sample.".into());
-    }
-    let lane = lane.clone();
-    let path = if mapset {
-        let name = path.to_str().ok_or("Invalid sample filename.")?;
-        if !document.composer.hitsounds().lanes().iter().any(|lane| {
-            matches!(&lane.source, LaneSource::File(sample) if sample == name)
-        }) {
-            return Err("The selected mapset sample is unavailable.".into());
-        }
-        let root = document.path.parent().ok_or("Missing mapset folder.")?;
-        let file = root.join(&path).canonicalize().map_err(|e| e.to_string())?;
-        if !file.starts_with(root) {
-            return Err("The selected sample leaves the map folder.".into());
-        }
-        file
-    } else {
-        path
-    };
-    app.replace_lane_sample(&target.map, &lane, &path)
+    dawsu_application::presentation::assign_sample(app, &target.map, &target.lane, path, mapset)
 }

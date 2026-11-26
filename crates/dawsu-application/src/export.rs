@@ -224,6 +224,13 @@ pub(crate) struct Slot {
 }
 
 impl Slot {
+    pub(crate) fn has_active_work(&self) -> bool {
+        self.running.is_some()
+            || self.waiting.is_some()
+            || self.writing
+            || self.ending.iter().any(|handle| !handle.is_finished())
+    }
+
     fn stop(&mut self) {
         if let Some(running) = self.running.take() {
             running.cancel.store(true, Ordering::Relaxed);
@@ -672,6 +679,7 @@ impl Application {
 
     /// Collects a finished preview and starts waiting options once main is free.
     pub(crate) fn poll_export(&mut self) {
+        let mut changed = false;
         if let Some(running) = &self.export.running {
             match running.receive.try_recv() {
                 Ok((result, problems)) => {
@@ -691,13 +699,18 @@ impl Application {
                         }
                         Err(error) => self.export.error = Some(error),
                     }
+                    changed = true;
                 }
                 Err(mpsc::TryRecvError::Empty) => {}
                 Err(mpsc::TryRecvError::Disconnected) => {
                     self.export.running = None;
                     self.export.error = Some("The preview stopped unexpectedly. Preview again.".into());
+                    changed = true;
                 }
             }
+        }
+        if changed {
+            self.bump_view_revision();
         }
         self.start_export_preview();
     }
@@ -715,6 +728,7 @@ impl Application {
         };
         if asked_for != document.path {
             self.export.error = Some("Another difficulty was opened. Preview again.".into());
+            self.bump_view_revision();
             return;
         }
         let source = output::Source::from_document(document);
@@ -1036,6 +1050,7 @@ impl Application {
         self.export.running = Some(Running {
             id, options, generation, hs_mode, settings, clean_redundant_greenlines, handle, cancel, receive, progress,
         });
+        self.bump_view_revision();
     }
 }
 

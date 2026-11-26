@@ -520,6 +520,27 @@ impl Vst3Manager {
         }
     }
 
+    pub(crate) fn blacklist_snapshot(&self, reset: bool) -> (Vst3Blacklist, bool) {
+        if reset {
+            (Vst3Blacklist::default(), true)
+        } else {
+            (self.blacklist.clone(), false)
+        }
+    }
+
+    pub(crate) fn apply_scan_result(
+        &mut self,
+        report: &Vst3ScanReport,
+        blacklist: Vst3Blacklist,
+        blacklist_dirty: bool,
+    ) {
+        self.blacklist = blacklist;
+        if blacklist_dirty {
+            self.save_blacklist();
+        }
+        self.scanned_plugins = report.plugins.clone();
+    }
+
     pub fn search_dirs(&self) -> &[PathBuf] {
         &self.search_dirs
     }
@@ -578,75 +599,11 @@ impl Vst3Manager {
     /// where a matching inner platform binary exists, skipping known blacklisted binaries, and
     /// querying unknown plug-ins via the sidecar.
     pub fn scan_in_dirs(&mut self, dirs: &[PathBuf]) -> Result<Vst3ScanReport, Vst3Error> {
-        let discovered_paths = discover_vst3_paths_in(dirs);
-        if discovered_paths.is_empty() {
-            self.scanned_plugins.clear();
-            return Ok(Vst3ScanReport {
-                discovered_paths,
-                plugins: Vec::new(),
-                skipped: Vec::new(),
-                blocked: Vec::new(),
-                sidecar_available: self.is_sidecar_available(),
-            });
-        }
-
-        let mut host_exe_cache: Option<PathBuf> = None;
-        let mut plugins = Vec::new();
-        let mut skipped = Vec::new();
-        let mut blocked = Vec::new();
-        let mut blacklist_dirty = false;
-
-        for path in &discovered_paths {
-            if resolve_vst3_binary(path).is_none() {
-                skipped.push(ScanSkip {
-                    path: path.clone(),
-                    reason: "No compatible platform binary found in VST3 bundle.".to_string(),
-                });
-                continue;
-            }
-            if let Some(entry) = self.blacklist.is_blocked(path) {
-                blocked.push(ScanSkip {
-                    path: path.clone(),
-                    reason: entry.reason.clone(),
-                });
-                continue;
-            }
-            if let Some(found) = try_scan_moduleinfo(path) {
-                plugins.extend(found);
-                continue;
-            }
-            let host_exe = match &host_exe_cache {
-                Some(exe) => exe.clone(),
-                None => {
-                    let exe = self.host_executable()?;
-                    host_exe_cache = Some(exe.clone());
-                    exe
-                }
-            };
-            match scan_plugin(&host_exe, path) {
-                Ok(found) => plugins.extend(found),
-                Err(err) => {
-                    let reason = err.to_string();
-                    self.blacklist.record_failure(path, reason.clone());
-                    blacklist_dirty = true;
-                    skipped.push(ScanSkip {
-                        path: path.clone(),
-                        reason,
-                    });
-                }
-            }
-        }
-        if blacklist_dirty {
-            self.save_blacklist();
-        }
-        self.scanned_plugins = plugins.clone();
-        Ok(Vst3ScanReport {
-            discovered_paths,
-            plugins,
-            skipped,
-            blocked,
-            sidecar_available: self.is_sidecar_available(),
-        })
+        let host_exe_res = self.host_executable();
+        let (report, blacklist, blacklist_dirty) =
+            scan_dirs_with_blacklist(host_exe_res, dirs, self.blacklist.clone())?;
+        self.apply_scan_result(&report, blacklist, blacklist_dirty);
+        Ok(report)
     }
 
     /// Clears all persisted blacklist entries and re-scans the configured search directories.
@@ -1010,57 +967,24 @@ impl Vst3Manager {
         auto_trim: bool,
         cancel: Option<&crate::bounce_plan::BounceCancelToken>,
     ) -> Result<Vec<BounceOutput>, Vst3Error> {
-        let _ = self.host_executable()?;
+        let host_executable = self.host_executable()?;
         let (plugin_path, plugin_uid) = self
             .instance_info(instance_id)
             .ok_or_else(|| Vst3Error::PluginNotFound(instance_id.to_string()))?;
         let state_b64 = self.get_plugin_state(instance_id).ok();
-
-        let offline_summary = self.load_plugin_at_rate(
+        let shm_name = self.next_shm_name();
+        run_offline_drum_export(
+            host_executable,
+            shm_name,
             plugin_path,
             plugin_uid,
-            PluginRole::Instrument,
-            true,
-            sample_rate,
-        )?;
-        let offline_id = offline_summary.id.clone();
-        if let Some(state) = state_b64.as_deref()
-            && !state.is_empty()
-        {
-            let _ = self.set_plugin_state(&offline_id, state);
-        }
-
-        let result = execute_vst3_drum_export_with_options(
+            state_b64,
             plan,
             out_dir.as_ref(),
             sample_rate,
             auto_trim,
             cancel,
-            |events, raw_path, options| {
-                let instance = self
-                    .instances
-                    .get_mut(&offline_id)
-                    .ok_or_else(|| Vst3Error::PluginNotFound(offline_id.clone()))?;
-                let request = RenderRequest {
-                    out_path: raw_path.to_path_buf(),
-                    max_frames: options.max_frames,
-                    quiet_frames: options.quiet_frames,
-                    threshold: f64::from(if options.silence_threshold > 0.0 {
-                        options.silence_threshold
-                    } else {
-                        1e-5
-                    }),
-                    events,
-                };
-                instance
-                    .session
-                    .render(&request)
-                    .map(|rendered| rendered.truncated)
-                    .map_err(Vst3Error::from)
-            },
-        );
-        let _ = self.unload_plugin(&offline_id);
-        result
+        )
     }
 
     /// Renders a batch of MIDI event lists through an isolated `--offline` VST3 host and returns
@@ -1074,79 +998,28 @@ impl Vst3Manager {
         cancel: Option<&crate::bounce_plan::BounceCancelToken>,
     ) -> Result<Vec<Vec<f32>>, Vst3Error> {
         let Vst3RenderTarget { live_instance_id, plugin_path, plugin_uid, saved_state_b64 } = target;
-        let _ = self.host_executable()?;
+        let host_executable = self.host_executable()?;
         let state_b64 = live_instance_id
             .and_then(|id| self.get_plugin_state(id).ok())
             .filter(|s| !s.is_empty())
             .or_else(|| saved_state_b64.filter(|s| !s.is_empty()).map(str::to_owned));
-
-        let offline_summary = self.load_plugin_at_rate(
-            plugin_path.to_path_buf(),
-            plugin_uid,
-            PluginRole::Instrument,
-            true,
-            sample_rate,
-        )?;
-        let offline_id = offline_summary.id.clone();
-        if let Some(state) = state_b64.as_deref()
-            && !state.is_empty()
-        {
-            let _ = self.set_plugin_state(&offline_id, state);
-        }
-
+        let shm_name = self.next_shm_name();
         let tmp_dir = std::env::temp_dir().join(format!(
             "dawsu-ks-vst3-{}-{}",
             std::process::id(),
-            self.next_shm_seq
+            shm_name
         ));
-        let _ = std::fs::create_dir_all(&tmp_dir);
-
-        let result = (|| -> Result<Vec<Vec<f32>>, Vst3Error> {
-            let mut clips = Vec::with_capacity(batches.len());
-            let sr = u64::from(sample_rate.max(8_000));
-            for (idx, events) in batches.iter().enumerate() {
-                if cancel.is_some_and(|c| c.is_cancelled()) {
-                    return Err(Vst3Error::Bounce("Render cancelled.".into()));
-                }
-                let last_frame = events.iter().map(|e| e.frame).max().unwrap_or(0);
-                let max_frames = (last_frame + sr * 6).max(sr * 10);
-                let raw_path = tmp_dir.join(format!("clip-{idx}.f32.tmp"));
-                let instance = self
-                    .instances
-                    .get_mut(&offline_id)
-                    .ok_or_else(|| Vst3Error::PluginNotFound(offline_id.clone()))?;
-                let mut batch_events = events.clone();
-                Self::ensure_closed_midi_events(&mut batch_events);
-                let request = RenderRequest {
-                    out_path: raw_path.clone(),
-                    max_frames,
-                    quiet_frames: sr / 2,
-                    threshold: f64::from(AUTO_TRIM_MINUS_60_DBFS),
-                    events: batch_events,
-                };
-                let _ = instance.session.render(&request)?;
-                let raw_bytes = std::fs::read(&raw_path).map_err(|err| {
-                    Vst3Error::Bounce(format!("read raw VST3 render failed: {err}"))
-                })?;
-                let _ = std::fs::remove_file(&raw_path);
-                let mut interleaved = Vec::with_capacity(raw_bytes.len() / 4);
-                for chunk in raw_bytes.as_chunks::<4>().0 {
-                    interleaved.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
-                }
-                let trimmed = trim_and_fade_tail(
-                    &interleaved,
-                    AUTO_TRIM_MINUS_60_DBFS,
-                    sample_rate,
-                    DEFAULT_TAIL_FADE_MS,
-                );
-                clips.push(trimmed);
-            }
-            Ok(clips)
-        })();
-
-        let _ = std::fs::remove_dir_all(&tmp_dir);
-        let _ = self.unload_plugin(&offline_id);
-        result
+        render_midi_batches_standalone(
+            host_executable,
+            shm_name,
+            tmp_dir,
+            plugin_path.to_path_buf(),
+            plugin_uid,
+            state_b64,
+            batches,
+            sample_rate,
+            cancel,
+        )
     }
 
     /// Bounces interleaved stereo `f32` audio directly to a WAV file using `bounce.rs`.
@@ -1277,6 +1150,205 @@ where
     }
     result?;
     Ok(outputs)
+}
+
+pub(crate) fn scan_dirs_with_blacklist(
+    host_exe_result: Result<PathBuf, Vst3Error>,
+    dirs: &[PathBuf],
+    mut blacklist: Vst3Blacklist,
+) -> Result<(Vst3ScanReport, Vst3Blacklist, bool), Vst3Error> {
+    let sidecar_available = host_exe_result.is_ok();
+    let discovered_paths = discover_vst3_paths_in(dirs);
+    if discovered_paths.is_empty() {
+        return Ok((
+            Vst3ScanReport {
+                discovered_paths,
+                plugins: Vec::new(),
+                skipped: Vec::new(),
+                blocked: Vec::new(),
+                sidecar_available,
+            },
+            blacklist,
+            false,
+        ));
+    }
+
+    let mut plugins = Vec::new();
+    let mut skipped = Vec::new();
+    let mut blocked = Vec::new();
+    let mut blacklist_dirty = false;
+
+    for path in &discovered_paths {
+        if resolve_vst3_binary(path).is_none() {
+            skipped.push(ScanSkip {
+                path: path.clone(),
+                reason: "No compatible platform binary found in VST3 bundle.".to_string(),
+            });
+            continue;
+        }
+        if let Some(entry) = blacklist.is_blocked(path) {
+            blocked.push(ScanSkip {
+                path: path.clone(),
+                reason: entry.reason.clone(),
+            });
+            continue;
+        }
+        if let Some(found) = try_scan_moduleinfo(path) {
+            plugins.extend(found);
+            continue;
+        }
+        let host_exe = host_exe_result.clone()?;
+        match scan_plugin(&host_exe, path) {
+            Ok(found) => plugins.extend(found),
+            Err(err) => {
+                let reason = err.to_string();
+                blacklist.record_failure(path, reason.clone());
+                blacklist_dirty = true;
+                skipped.push(ScanSkip {
+                    path: path.clone(),
+                    reason,
+                });
+            }
+        }
+    }
+    Ok((
+        Vst3ScanReport {
+            discovered_paths,
+            plugins,
+            skipped,
+            blocked,
+            sidecar_available,
+        },
+        blacklist,
+        blacklist_dirty,
+    ))
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn run_offline_drum_export(
+    host_executable: PathBuf,
+    shm_name: String,
+    plugin_path: PathBuf,
+    plugin_uid: Option<String>,
+    state_b64: Option<String>,
+    plan: &Vst3DrumExportPlan,
+    out_dir: &Path,
+    sample_rate: u32,
+    auto_trim: bool,
+    cancel: Option<&crate::bounce_plan::BounceCancelToken>,
+) -> Result<Vec<BounceOutput>, Vst3Error> {
+    let config = Vst3HostConfig {
+        host_executable,
+        shm_name,
+        parent_pid: std::process::id(),
+        plugin_path,
+        plugin_uid,
+        offline: true,
+        sample_rate_hz: if sample_rate > 0 { sample_rate } else { 44_100 },
+    };
+    let mut session = HostSession::spawn(&config)?;
+    if let Some(state) = state_b64.as_deref()
+        && !state.is_empty()
+    {
+        let _ = session.set_state(state);
+    }
+    let result = execute_vst3_drum_export_with_options(
+        plan,
+        out_dir,
+        sample_rate,
+        auto_trim,
+        cancel,
+        |events, raw_path, options| {
+            let request = RenderRequest {
+                out_path: raw_path.to_path_buf(),
+                max_frames: options.max_frames,
+                quiet_frames: options.quiet_frames,
+                threshold: f64::from(if options.silence_threshold > 0.0 {
+                    options.silence_threshold
+                } else {
+                    1e-5
+                }),
+                events,
+            };
+            session
+                .render(&request)
+                .map(|rendered| rendered.truncated)
+                .map_err(Vst3Error::from)
+        },
+    );
+    let _ = session.quit();
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn render_midi_batches_standalone(
+    host_executable: PathBuf,
+    shm_name: String,
+    tmp_dir: PathBuf,
+    plugin_path: PathBuf,
+    plugin_uid: Option<String>,
+    state_b64: Option<String>,
+    batches: &[Vec<MidiEvent>],
+    sample_rate: u32,
+    cancel: Option<&crate::bounce_plan::BounceCancelToken>,
+) -> Result<Vec<Vec<f32>>, Vst3Error> {
+    let config = Vst3HostConfig {
+        host_executable,
+        shm_name,
+        parent_pid: std::process::id(),
+        plugin_path,
+        plugin_uid,
+        offline: true,
+        sample_rate_hz: if sample_rate > 0 { sample_rate } else { 44_100 },
+    };
+    let mut session = HostSession::spawn(&config)?;
+    if let Some(state) = state_b64.as_deref()
+        && !state.is_empty()
+    {
+        let _ = session.set_state(state);
+    }
+    let _ = std::fs::create_dir_all(&tmp_dir);
+    let result = (|| -> Result<Vec<Vec<f32>>, Vst3Error> {
+        let mut clips = Vec::with_capacity(batches.len());
+        let sr = u64::from(sample_rate.max(8_000));
+        for (idx, events) in batches.iter().enumerate() {
+            if cancel.is_some_and(|c| c.is_cancelled()) {
+                return Err(Vst3Error::Bounce("Render cancelled.".into()));
+            }
+            let last_frame = events.iter().map(|e| e.frame).max().unwrap_or(0);
+            let max_frames = (last_frame + sr * 6).max(sr * 10);
+            let raw_path = tmp_dir.join(format!("clip-{idx}.f32.tmp"));
+            let mut batch_events = events.clone();
+            Vst3Manager::ensure_closed_midi_events(&mut batch_events);
+            let request = RenderRequest {
+                out_path: raw_path.clone(),
+                max_frames,
+                quiet_frames: sr / 2,
+                threshold: f64::from(AUTO_TRIM_MINUS_60_DBFS),
+                events: batch_events,
+            };
+            let _ = session.render(&request)?;
+            let raw_bytes = std::fs::read(&raw_path).map_err(|err| {
+                Vst3Error::Bounce(format!("read raw VST3 render failed: {err}"))
+            })?;
+            let _ = std::fs::remove_file(&raw_path);
+            let mut interleaved = Vec::with_capacity(raw_bytes.len() / 4);
+            for chunk in raw_bytes.as_chunks::<4>().0 {
+                interleaved.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
+            }
+            let trimmed = trim_and_fade_tail(
+                &interleaved,
+                AUTO_TRIM_MINUS_60_DBFS,
+                sample_rate,
+                DEFAULT_TAIL_FADE_MS,
+            );
+            clips.push(trimmed);
+        }
+        Ok(clips)
+    })();
+    let _ = std::fs::remove_dir_all(&tmp_dir);
+    let _ = session.quit();
+    result
 }
 
 fn sidecar_binary_names() -> &'static [&'static str] {

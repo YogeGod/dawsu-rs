@@ -145,63 +145,28 @@ fn guard<T>(
     })
 }
 
-/// What the Export view reads from disk or from every hit, kept until the map changes:
-/// polls come every 100-250 ms and must not re-read the receipt or walk every hit.
-#[derive(Default)]
-struct ExportCache {
-    /// Path, load or Save, and the mapset's difficulties.
-    targets_for: Option<(PathBuf, u64, Vec<PathBuf>)>,
-    targets: Vec<PathBuf>,
-    /// Path, load or Save, history version and lane count.
-    counts_for: Option<(PathBuf, u64, u64, usize)>,
-    /// Hits per lane, in lane order.
-    counts: Vec<usize>,
-    /// How often either was read, for tests.
-    reads: usize,
-}
+pub(crate) use dawsu_application::desktop_services::ExportCache;
 
 fn export_snapshot(app: &Application, cache: &mut ExportCache) -> Value {
     let status = app.export_status();
     let document = app.document();
-    let generation = app.document_generation();
-    let source = document.map(|d| {
-        let key = (d.path.clone(), generation, d.composer.history.version(), d.composer.lanes.len());
-        if cache.counts_for.as_ref() != Some(&key) {
-            let mut hit_counts = std::collections::HashMap::new();
-            for lane in d.composer.hitsounds().moments().iter().flat_map(|moment| moment.hits()) {
-                *hit_counts.entry(lane).or_insert(0_usize) += 1;
-            }
-            cache.counts = d.composer.lanes.iter().map(|lane| hit_counts.get(lane).copied().unwrap_or(0)).collect();
-            cache.counts_for = Some(key);
-            cache.reads += 1;
-        }
-        let lanes = d.composer.lanes.iter().zip(&cache.counts).map(|(lane, count)| json!({
+    let source = document.and_then(|d| {
+        let counts = cache.refresh_lane_counts(app)?;
+        let lanes = d.composer.lanes.iter().zip(counts).map(|(lane, count)| json!({
             "name": lane_name(lane),
             "colourKey": dawsu_application::lane_layout_key(lane),
             "hitCount": count,
         })).collect::<Vec<_>>();
-        json!({
+        Some(json!({
             "path": d.path, "title": d.title,
             "difficulty": d.file.value("Metadata", "Version"),
             "version": d.composer.history.version(),
-            "hits": cache.counts.iter().sum::<usize>(),
+            "hits": counts.iter().sum::<usize>(),
             "lanes": lanes,
             "laneColours": d.lane_layout().map(|layout| json!(layout.lane_colours)).unwrap_or_else(|| json!({})),
-        })
+        }))
     });
-    let targets = match document {
-        Some(d) => {
-            let fresh = cache.targets_for.as_ref()
-                .is_some_and(|(path, read, list)| *path == d.path && *read == generation && *list == d.difficulties);
-            if !fresh {
-                cache.targets = app.export_targets();
-                cache.targets_for = Some((d.path.clone(), generation, d.difficulties.clone()));
-                cache.reads += 1;
-            }
-            cache.targets.clone()
-        }
-        None => Vec::new(),
-    };
+    let targets = cache.refresh_targets(app).to_vec();
     let mut out = json!({
         "source": source,
         "targets": targets,
@@ -846,11 +811,8 @@ fn editor_thread_with_cache(
                 }
                 Ok(Request::KeysoundsAction(payload, response)) => {
                     let result = guard(&mut app, &mut fault, |app| {
-                        if payload.get("kind").and_then(Value::as_str) == Some("browse_dawsuks") {
-                            let mut dialog = rfd::FileDialog::new()
-                                .set_title("Open Keysound project")
-                                .add_filter("dawsu! Keysound project", &["dawsuks"]);
-                            if let Some(dir) = app
+                        if payload.get("kind").and_then(Value::as_str) == Some("browse_dawsuks_dir") {
+                            let dir = app
                                 .keysound_history
                                 .project_path
                                 .as_ref()
@@ -859,39 +821,8 @@ fn editor_thread_with_cache(
                                     let d = dawsu_application::data_folder().join("keysounds-projects");
                                     d.is_dir().then_some(d)
                                 })
-                                .or_else(|| app.document().and_then(|d| d.path.parent().map(Path::to_path_buf)))
-                            {
-                                dialog = dialog.set_directory(dir);
-                            }
-                            if let Some(path) = dialog.pick_file() {
-                                let mut res = app.keysounds_action(&json!({
-                                    "kind": "load_dawsuks",
-                                    "path": path.to_string_lossy(),
-                                }))?;
-                                res["picked"] = json!(true);
-                                res["loadedPath"] = json!(path.to_string_lossy());
-                                Ok(res)
-                            } else {
-                                Ok(json!({ "picked": false }))
-                            }
-                        } else if payload.get("kind").and_then(Value::as_str) == Some("browse_soundfont") {
-                            let track_id = payload.get("trackId").and_then(Value::as_u64);
-                            let dialog = rfd::FileDialog::new()
-                                .set_title("Choose SoundFont or SFZ instrument")
-                                .add_filter("SoundFont / SFZ", &["sf2", "sfz"]);
-                            if let Some(path) = dialog.pick_file() {
-                                let mut res = app.keysounds_action(&json!({
-                                    "kind": "load_soundfont",
-                                    "trackId": track_id,
-                                    "path": path.to_string_lossy(),
-                                    "presetIndex": 0,
-                                }))?;
-                                res["picked"] = json!(true);
-                                res["loadedPath"] = json!(path.to_string_lossy());
-                                Ok(res)
-                            } else {
-                                Ok(json!({ "picked": false }))
-                            }
+                                .or_else(|| app.document().and_then(|d| d.path.parent().map(Path::to_path_buf)));
+                            Ok(json!({ "dir": dir }))
                         } else {
                             app.keysounds_action(&payload)
                         }

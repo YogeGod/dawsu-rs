@@ -1,5 +1,5 @@
 use dawsu_application::Application;
-use dawsu_application::bounce_plan::{OszBudgetSummary, calculate_osz_budget};
+pub use dawsu_application::desktop_services::KeysoundDedupReport;
 use dawsu_hitsounding::drums::DrumMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -204,22 +204,75 @@ pub(crate) fn pick_soundfont_file(window: tauri::WebviewWindow) -> Option<String
 
 
 #[tauri::command]
-pub(crate) fn keysounds_action(payload: Value, state: State<'_, Editor>) -> Result<Value, String> {
-    if payload.get("kind").and_then(Value::as_str) == Some("cancel_bounce") {
+pub(crate) fn keysounds_action(
+    window: tauri::WebviewWindow,
+    payload: Value,
+    state: State<'_, Editor>,
+) -> Result<Value, String> {
+    let kind = payload.get("kind").and_then(Value::as_str);
+    if kind == Some("cancel_bounce") {
         state.1.cancel();
         return Ok(json!({ "cancelled": true }));
     }
+    if kind == Some("browse_dawsuks") {
+        let mut dialog = rfd::FileDialog::new()
+            .set_parent(&window)
+            .set_title("Open Keysound project")
+            .add_filter("dawsu! Keysound project", &["dawsuks"]);
+        if let Some(dir) = ask(&state, |tx| {
+            Request::KeysoundsAction(json!({ "kind": "browse_dawsuks_dir" }), tx)
+        })?
+        .ok()
+        .and_then(|v| {
+            v.get("dir")
+                .and_then(Value::as_str)
+                .map(std::path::PathBuf::from)
+        })
+        .filter(|p| p.is_dir())
+        {
+            dialog = dialog.set_directory(dir);
+        }
+        if let Some(path) = dialog.pick_file() {
+            let mut res = ask(&state, |tx| {
+                Request::KeysoundsAction(
+                    json!({
+                        "kind": "load_dawsuks",
+                        "path": path.to_string_lossy(),
+                    }),
+                    tx,
+                )
+            })??;
+            res["picked"] = json!(true);
+            res["loadedPath"] = json!(path.to_string_lossy());
+            return Ok(res);
+        }
+        return Ok(json!({ "picked": false }));
+    }
+    if kind == Some("browse_soundfont") {
+        let track_id = payload.get("trackId").and_then(Value::as_u64);
+        let dialog = rfd::FileDialog::new()
+            .set_parent(&window)
+            .set_title("Choose SoundFont or SFZ instrument")
+            .add_filter("SoundFont / SFZ", &["sf2", "sfz"]);
+        if let Some(path) = dialog.pick_file() {
+            let mut res = ask(&state, |tx| {
+                Request::KeysoundsAction(
+                    json!({
+                        "kind": "load_soundfont",
+                        "trackId": track_id,
+                        "path": path.to_string_lossy(),
+                        "presetIndex": 0,
+                    }),
+                    tx,
+                )
+            })??;
+            res["picked"] = json!(true);
+            res["loadedPath"] = json!(path.to_string_lossy());
+            return Ok(res);
+        }
+        return Ok(json!({ "picked": false }));
+    }
     ask(&state, |tx| Request::KeysoundsAction(payload, tx))?
-}
-
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct KeysoundDedupReport {
-    pub source_notes: usize,
-    pub unique_samples: usize,
-    pub dedup_percent: u8,
-    pub budget: OszBudgetSummary,
 }
 
 #[tauri::command]
@@ -229,17 +282,10 @@ pub fn keysounds_dedup_report(
     base_bytes: u64,
     bounced_bytes: u64,
 ) -> KeysoundDedupReport {
-    let dedup_percent = if source_notes == 0 {
-        0
-    } else {
-        (((source_notes.saturating_sub(unique_samples)) as f64 / source_notes as f64) * 100.0)
-            .round()
-            .clamp(0.0, 100.0) as u8
-    };
-    KeysoundDedupReport {
+    dawsu_application::desktop_services::keysounds_dedup_report(
         source_notes,
         unique_samples,
-        dedup_percent,
-        budget: calculate_osz_budget(base_bytes, bounced_bytes),
-    }
+        base_bytes,
+        bounced_bytes,
+    )
 }
