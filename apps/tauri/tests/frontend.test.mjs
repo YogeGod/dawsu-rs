@@ -256,12 +256,20 @@ test("a changed lane count refreshes the scene in the background", async () => {
   assert.deepEqual(calls.map(call => call.args.scene), [false, true]);
 });
 
-test("inline keysounds CSS collapses the ruler row and pins workspace without modifying docking.js", async () => {
+test("Keysounds mode covers only the lanes: the ruler, bottom panel and overview stay, docking.js untouched", async () => {
   const css = await readFile(new URL("../ui/src/timeline.css", import.meta.url), "utf8");
-  assert.match(css, /#editor-arrange\.keysounds-active[\s\S]*?grid-template-rows:\s*auto minmax\(0,\s*1fr\);/);
-  assert.match(css, /#editor-arrange\.keysounds-active\s*>\s*#base-diff-strip\s*\{\s*grid-row:\s*1;/);
-  assert.match(css, /#editor-arrange\.keysounds-active\s*>\s*#keysounds-workspace\s*\{\s*grid-row:\s*2;/);
-  assert.match(css, /\.arrange\.keysounds-active\s*>\s*\.ruler/);
+  const page = await readFile(new URL("../dist/index.html", import.meta.url), "utf8");
+  // The workspace is mounted inside #scroll, beside the lanes' canvas it is painted on.
+  assert.match(page, /<div class="scroll" id="scroll">.*<canvas id="grid"[^>]*><\/canvas><div id="keysounds-workspace"[^>]*data-ui-mount="keysounds"><\/div><\/div>/);
+  // Sticky like #grid and as tall as #scroll, whatever the lanes' scroll position was.
+  assert.match(css, /#editor-arrange\.keysounds-active > #scroll\s*\{[^}]*container-type:\s*size;[^}]*overflow:\s*hidden;/);
+  assert.match(css, /#editor-arrange\.keysounds-active #keysounds-workspace\s*\{[^}]*grid-column:\s*1 \/ -1;[^}]*position:\s*sticky;[^}]*height:\s*100cqh;/);
+  // Nothing of the timeline is hidden, and no grid row of #editor-arrange is overridden.
+  assert.doesNotMatch(css, /keysounds-active[^{]*(\.ruler|\.overview|#volume-controller-panel)[^{]*\{[^}]*display:\s*none/);
+  assert.doesNotMatch(css, /keysounds-active[^{]*\{[^}]*grid-template-rows/);
+  // The velocity surface lies over the volume canvas, so no pointer event reaches the hit volume lane.
+  assert.match(page, /<div id="keysounds-velocity" data-ui-mount="keysounds-velocity"><\/div>\s*<canvas id="controller"/);
+  assert.match(css, /#volume-controller-panel\[data-bottom="volume"\] > #keysounds-velocity\s*\{[^}]*position:\s*absolute;[^}]*z-index:\s*2;/);
 });
 
 test("Tab follows the active bindings and remains focus navigation when unbound", async () => {
@@ -548,14 +556,6 @@ test("finishing background song decoding refreshes the scene to pull the wavefor
   );
   await evaluate("update(null, false)");
   assert.deepEqual(calls.map(call => call.args.scene), [false, true]);
-});
-
-test("inline keysounds CSS collapses the ruler row and pins workspace without modifying docking.js", async () => {
-  const css = await readFile(new URL("../ui/src/timeline.css", import.meta.url), "utf8");
-  assert.match(css, /#editor-arrange\.keysounds-active[\s\S]*?grid-template-rows:\s*auto minmax\(0,\s*1fr\);/);
-  assert.match(css, /#editor-arrange\.keysounds-active\s*>\s*#base-diff-strip\s*\{\s*grid-row:\s*1;/);
-  assert.match(css, /#editor-arrange\.keysounds-active\s*>\s*#keysounds-workspace\s*\{\s*grid-row:\s*2;/);
-  assert.match(css, /\.arrange\.keysounds-active\s*>\s*\.ruler/);
 });
 
 test("tick: true telemetry pull updates stateRev before early return so steady telemetry does not repoll", async () => {

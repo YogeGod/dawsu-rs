@@ -1093,6 +1093,88 @@ try {
     return `${state2.name} (${state2.rows} rows)`;
   });
 
+  // After every save check, so the keysound track it adds reaches no saved file compared above.
+  await step("Keysounds mode: the roll sits under the ruler, takes a note, zooms with the ruler, undoes it and leaves the hits alone", async () => {
+    const hitsBefore = (await hits()).length;
+    const lanesTop = await read(() => document.getElementById("scroll").scrollTop);
+    await page().click("#keysounds-view");
+    await until(() => window.dawsuUi.bridge.mode === "keysounds" && !!document.querySelector(".ks-workspace"), null,
+      "Keysounds mode did not open");
+    await page().getByRole("button", { name: "Add track", exact: true }).click();
+    await until(() => window.dawsuUi.bridge.keysoundRoll?.notes.length === 0 && !!document.querySelector(".ks-surface"), null,
+      "Add track showed no empty roll");
+    const shown = await read(() => {
+      const rect = element => element.getBoundingClientRect().toJSON();
+      const box = id => rect(document.getElementById(id));
+      return {
+        ruler: box("ruler"), overview: box("overview"), controller: box("controller"), grid: box("grid"),
+        scroll: box("scroll"), workspace: box("keysounds-workspace"), surface: rect(document.querySelector(".ks-surface")),
+        velocity: rect(document.querySelector(".ks-velocity")),
+      };
+    });
+    for (const name of ["ruler", "overview", "controller"]) {
+      expect(shown[name].width > 0 && shown[name].height > 0, `the ${name} is hidden in Keysounds mode`);
+    }
+    expect(Math.abs(shown.workspace.y - shown.scroll.y) < 1 && Math.abs(shown.workspace.height - shown.scroll.height) < 1,
+      `the roll does not cover the lanes: ${JSON.stringify([shown.workspace, shown.scroll])}`);
+    expect(Math.abs(shown.surface.x - shown.grid.x) < 1 && Math.abs(shown.grid.y - shown.scroll.y) < 1,
+      `the roll surface is not on the lanes' canvas: ${JSON.stringify([shown.surface, shown.grid])}`);
+    expect(Math.abs(shown.velocity.x - shown.controller.x) < 1 && shown.velocity.height >= shown.controller.height - 1,
+      `the velocity surface does not cover the volume canvas: ${JSON.stringify([shown.velocity, shown.controller])}`);
+
+    await page().mouse.click(shown.surface.x + 200, shown.surface.y + 40);
+    await until(() => window.dawsuUi.bridge.keysoundRoll?.notes.length === 1, null, "a click on the roll placed no note");
+    // The colour on the canvas where the note should be, from its time on the editor's own axis.
+    const noteIsDrawn = () => {
+      const roll = window.dawsuUi.bridge.keysoundRoll;
+      const scene = window.dawsuUi.bridge.scene;
+      const note = roll?.notes[0];
+      const canvas = document.getElementById("grid");
+      if (!note || !canvas.clientWidth) return false;
+      const scale = canvas.width / canvas.clientWidth;
+      // Just inside the note's top right corner, clear of its border and of the note name.
+      const x = ((note.endMs - scene.viewStart) * scene.zoom - 3) * scale;
+      const y = (roll.top + roll.pitches.indexOf(note.pitch) * roll.rowHeight - roll.scrollY + 2.5) * scale;
+      const [red, green, blue] = canvas.getContext("2d").getImageData(Math.round(x), Math.round(y), 1, 1).data;
+      // The selected note's gold, not a dark lane.
+      return red > 150 && green > 110 && blue < 170 && red - blue > 60;
+    };
+    await until(noteIsDrawn, null, "the placed note is not drawn at its time on the lanes' canvas");
+
+    // The plain wheel scrolls the roll's pitch rows and nothing else.
+    const before = await read(() => ({
+      scrollY: window.dawsuUi.bridge.keysoundRoll.scrollY, start: window.dawsuUi.bridge.scene.viewStart,
+      position: window.dawsuUi.bridge.currentPositionMs(),
+    }));
+    await page().mouse.move(shown.surface.x + 300, shown.surface.y + 60);
+    await page().mouse.wheel(0, before.scrollY > 0 ? -28 : 28);
+    await until(y => window.dawsuUi.bridge.keysoundRoll.scrollY !== y, before.scrollY, "the wheel did not scroll the roll's pitch rows");
+    const after = await read(() => ({
+      start: window.dawsuUi.bridge.scene.viewStart, position: window.dawsuUi.bridge.currentPositionMs(),
+      lanesTop: document.getElementById("scroll").scrollTop,
+    }));
+    expect(after.start === before.start && after.position === before.position && after.lanesTop === lanesTop,
+      `the plain wheel over the roll also moved the editor: ${JSON.stringify([before, after])}`);
+    await until(noteIsDrawn, null, "the note is not drawn at its row after the pitch scroll");
+
+    // Zooming the time axis from the ruler moves the note with the ruler.
+    await page().click("#ruler-zoom-in");
+    await until(zoom => window.dawsuUi.bridge.scene.zoom > zoom, await read(() => window.dawsuUi.bridge.scene.zoom) - 1e-9,
+      "Zoom in did not zoom in").catch(() => {});
+    await until(noteIsDrawn, null, "the note is not drawn at its time after a zoom");
+    await page().click("#ruler-fit");
+    await until(noteIsDrawn, null, "the note is not drawn at its time after Fit all");
+
+    await page().keyboard.press("Control+z");
+    await until(() => window.dawsuUi.bridge.keysoundRoll?.notes.length === 0, null, "Ctrl+Z did not undo the note");
+
+    await page().click("#keysounds-view");
+    await until(() => window.dawsuUi.bridge.mode !== "keysounds" && !document.querySelector(".ks-workspace"), null,
+      "the mode switch did not leave Keysounds mode");
+    expect((await hits()).length === hitsBefore, "Keysounds mode changed the hits");
+    expect(await read(() => document.getElementById("scroll").scrollTop) === lanesTop, "the lanes' scroll position changed");
+  });
+
   await step("No errors after the last step", async () => {
     await sleep(500);
   }, true);
