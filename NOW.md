@@ -1,6 +1,6 @@
 # NOW.md — Current Sprint (`dawsu-rs`)
 
-`origin/main` is `aecf0b5` (`PR #93`–`#99` merged, incl **`v1.1.0-alpha.3`**, Draw/marquee fix, repo cleanup, 3 core-seam refactorings, agent rules refresh, inline keysounding piano roll, compressed docs, cached `osu!.db` Songs scanner, Export Review .osu diff + read-back verification). Full sprint archive in `E:/Obsidian/Workspace/dawsu-rewrite/now.md`.
+`origin/main` is `93829a7` (`v1.2.0-alpha.1` **"V1.2 alpha"** prep after `PR #93`–`#99`, Draw/marquee fix, repo cleanup, 3 core-seam refactorings, agent rules refresh, inline keysounding piano roll, compressed docs, cached `osu!.db` Songs scanner, Export Review .osu diff + read-back verification). Full sprint archive in `E:/Obsidian/Workspace/dawsu-rewrite/now.md`.
 
 ## Recent Landed Milestones
 

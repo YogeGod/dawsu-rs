@@ -2,10 +2,10 @@
 ;
 ; Installs into %LOCALAPPDATA%\Programs\dawsu by default — no admin rights required.
 ; Override defaults from tools/package-release.ps1 via:
-;   ISCC.exe /DMyAppVersion=1.1.0-alpha.2 /DSourceDir=..\dist\stage\windows-x64 /DOutputDir=..\dist\release installer\dawsu.iss
+;   ISCC.exe /DMyAppVersion=1.2.0-alpha.1 /DSourceDir=..\dist\stage\windows-x64 /DOutputDir=..\dist\release installer\dawsu.iss
 
 #ifndef MyAppVersion
-  #define MyAppVersion "1.1.0-alpha.2"
+  #define MyAppVersion "1.2.0-alpha.1"
 #endif
 
 #ifndef SourceDir
