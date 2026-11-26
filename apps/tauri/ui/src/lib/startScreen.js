@@ -16,6 +16,19 @@ export function isHitsoundVersion(version) {
   );
 }
 
+export function songsSourceTooltip(source) {
+  switch (source) {
+    case "osu!.db":
+      return "Indexed from osu! database";
+    case "cache":
+      return "Loaded from local Songs cache";
+    case "folder-scan":
+      return "Scanned from Songs folder";
+    default:
+      return "";
+  }
+}
+
 export function recentItems(view) {
   const metaByPath = new Map((view?.recentMeta ?? []).map(entry => [entry.path, entry]));
   return (view?.recent ?? []).map(path => {

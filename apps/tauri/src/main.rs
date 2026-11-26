@@ -100,7 +100,12 @@ pub(crate) enum Request {
     KeysoundsAction(Value, mpsc::Sender<Result<Value, String>>),
     MapsetRevert(MapsetRevertAction, mpsc::Sender<Result<Value, String>>),
     SharedBase(SharedBaseAction, mpsc::Sender<Result<Value, String>>),
-    RelinkMovedMapset(PathBuf, Option<PathBuf>, mpsc::Sender<Result<dawsu_application::RelinkMapsetResult, String>>),
+    RelinkMovedMapset(
+        PathBuf,
+        Option<PathBuf>,
+        Option<PathBuf>,
+        mpsc::Sender<Result<dawsu_application::RelinkMapsetResult, String>>,
+    ),
     StemSeparation(
         StemSeparationAction,
         mpsc::Sender<Result<dawsu_application::StemSeparationStatus, String>>,
@@ -342,16 +347,31 @@ fn answer_export(app: &mut Application, fault: &mut Option<String>, cache: &mut 
     }
 }
 
+pub(crate) fn resolve_data_root() -> PathBuf {
+    let data_root = dawsu_application::data_folder();
+    #[cfg(feature = "recovery-smoke")]
+    let data_root = std::env::var_os(RECOVERY_SMOKE_DATA)
+        .filter(|path| !path.is_empty())
+        .map_or(data_root, PathBuf::from);
+    data_root
+}
+
+#[cfg(test)]
 fn editor_thread(initial: Option<PathBuf>) -> Editor {
+    let data_root = resolve_data_root();
+    let cache = SongsIndexCache::new(data_root.clone());
+    editor_thread_with_cache(initial, data_root, cache)
+}
+
+fn editor_thread_with_cache(
+    initial: Option<PathBuf>,
+    data_root: PathBuf,
+    songs_cache: SongsIndexCache,
+) -> Editor {
     let (send, receive) = mpsc::channel();
     let bounce_cancel = dawsu_application::bounce_plan::BounceCancelToken::new();
     let thread_cancel = bounce_cancel.clone();
     std::thread::spawn(move || {
-        let data_root = dawsu_application::data_folder();
-        #[cfg(feature = "recovery-smoke")]
-        let data_root = std::env::var_os(RECOVERY_SMOKE_DATA)
-            .filter(|path| !path.is_empty())
-            .map_or(data_root, PathBuf::from);
         let mut app = Application::for_desktop(data_root);
         app.bounce_cancel = thread_cancel;
         let mut fault = None;
@@ -474,8 +494,11 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                         } else if !folder.is_dir() {
                             Err("The selected Songs folder is unavailable.".into())
                         } else {
+                            let warm_dir = folder.clone();
                             app.update_preferences(|p| p.songs_folder = folder);
                             app.save_preferences();
+                            songs_cache.invalidate();
+                            songs_cache.warm_up(warm_dir);
                             Ok(decorate_and_stamp_view(app, &home, &drums, playback_start, &mut tick_cache, false))
                         }
                     })
@@ -727,9 +750,10 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                     };
                     let _ = response.send(reply);
                 }
-                Ok(Request::RelinkMovedMapset(missing, explicit_dir, response)) => {
-                    let result = guard(&mut app, &mut fault, |app| {
-                        app.relink_moved_mapset(&missing, explicit_dir.as_deref())
+                Ok(Request::RelinkMovedMapset(missing, explicit_dir, resolved_osu, response)) => {
+                    let result = guard(&mut app, &mut fault, |app| match resolved_osu {
+                        Some(path) => app.relink_moved_mapset_to_osu_path(&missing, &path),
+                        None => app.relink_moved_mapset(&missing, explicit_dir.as_deref()),
                     })
                     .and_then(|r| r);
                     tick_cache.invalidate();
@@ -928,10 +952,26 @@ fn close_requested(label: &str, editor: &Editor) -> CloseDecision {
 fn main() {
     crash::install();
     let initial = std::env::args_os().nth(1).map(PathBuf::from);
+    let data_root = resolve_data_root();
+    let songs_cache = SongsIndexCache::new(data_root.clone());
+    let editor = editor_thread_with_cache(initial, data_root, songs_cache.clone());
+    let setup_cache = songs_cache.clone();
     tauri::Builder::default()
-        .manage(editor_thread(initial))
-        .manage(SongsIndexCache(std::sync::Arc::new(std::sync::Mutex::new(None))))
+        .manage(editor)
+        .manage(songs_cache)
         .manage(updater::StagedUpdate::default())
+        .setup(move |app| {
+            let editor_tx = app.state::<Editor>().0.clone();
+            let cache = setup_cache.clone();
+            std::thread::spawn(move || {
+                if let Ok(Some(songs_dir)) =
+                    ask_within(&editor_tx, Duration::from_secs(5), Request::SongsDirectory)
+                {
+                    cache.warm_up(songs_dir);
+                }
+            });
+            Ok(())
+        })
         .on_window_event(|window, event| {
             let app = window.app_handle();
             match (window.label(), event) {
@@ -1064,7 +1104,7 @@ fn main() {
         .expect("start the dawsu! Tauri editor")
         .run(|app_handle, event| {
             if let tauri::RunEvent::Exit = event {
-                let data_root = dawsu_application::data_folder();
+                let data_root = resolve_data_root();
                 app_handle
                     .state::<updater::StagedUpdate>()
                     .launch_if_staged(&data_root);

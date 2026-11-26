@@ -183,24 +183,55 @@ pub(crate) fn reload_osu_editor(state: State<'_, Editor>) -> Result<osu_link::Os
 
 
 #[tauri::command]
-pub(crate) fn relink_moved_mapset(
+pub(crate) async fn relink_moved_mapset(
     missing_path: String,
     pick_folder: Option<bool>,
     state: State<'_, Editor>,
+    cache: State<'_, crate::commands::SongsIndexCache>,
 ) -> Result<dawsu_application::RelinkMapsetResult, String> {
-    let explicit = if pick_folder.unwrap_or(false) {
-        let picked = rfd::FileDialog::new()
-            .set_title("Locate moved mapset folder")
-            .pick_folder();
+    let missing = PathBuf::from(&missing_path);
+    if pick_folder.unwrap_or(false) {
+        let picked = tauri::async_runtime::spawn_blocking(|| {
+            rfd::FileDialog::new()
+                .set_title("Locate moved mapset folder")
+                .pick_folder()
+        })
+        .await
+        .map_err(|e| e.to_string())?;
         let Some(folder) = picked else {
             return Err("Folder selection cancelled.".into());
         };
-        Some(folder)
-    } else {
-        None
+        return ask(&state, |tx| {
+            Request::RelinkMovedMapset(missing, Some(folder), None, tx)
+        })?;
+    }
+
+    let missing_file = missing
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or("Missing difficulty filename.")?
+        .to_string();
+    let Some(songs_dir) = ask(&state, Request::SongsDirectory)? else {
+        return Err(
+            "Set your osu! Songs folder in Preferences or pick the moved folder directly.".into(),
+        );
+    };
+    let cache = cache.inner().clone();
+    let missing_clone = missing.clone();
+    let resolved = tauri::async_runtime::spawn_blocking(move || {
+        cache
+            .entries_for(&songs_dir)
+            .find_relink_candidate(&missing_clone)
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    let Some(candidate) = resolved else {
+        return Err(format!(
+            "Could not locate {missing_file} in the Songs folder."
+        ));
     };
     ask(&state, |tx| {
-        Request::RelinkMovedMapset(PathBuf::from(missing_path), explicit, tx)
+        Request::RelinkMovedMapset(missing, None, Some(candidate), tx)
     })?
 }
 

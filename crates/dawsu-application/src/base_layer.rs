@@ -1320,10 +1320,6 @@ impl Application {
         let old_folder = missing_osu_path
             .parent()
             .ok_or("Missing old mapset folder.")?;
-        let old_folder_name = old_folder
-            .file_name()
-            .map(|n| n.to_string_lossy().to_ascii_lowercase())
-            .unwrap_or_default();
 
         let new_osu_path = if let Some(folder) = explicit_new_folder {
             let direct = folder.join(missing_file);
@@ -1347,26 +1343,47 @@ impl Application {
             if !songs_dir.is_dir() {
                 return Err("Set your osu! Songs folder in Preferences or pick the moved folder directly.".into());
             }
-            let entries = songs_index::build_songs_index(songs_dir);
-            let mut best: Option<(u32, PathBuf)> = None;
-            for set in entries {
-                let folder_matches = set.folder.to_ascii_lowercase() == old_folder_name;
-                for diff in &set.diffs {
-                    let candidate = PathBuf::from(&diff.path);
-                    let file_matches = candidate
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .is_some_and(|n| n.eq_ignore_ascii_case(missing_file));
-                    let score = u32::from(folder_matches) * 2 + u32::from(file_matches) * 3;
-                    if score > 0 && candidate.is_file() && best.as_ref().is_none_or(|(s, _)| score > *s) {
-                        best = Some((score, candidate));
-                    }
-                }
-            }
-            best.map(|(_, p)| p)
+            let index = songs_index::load_or_build_songs_index(songs_dir, &self.data_root, false);
+            index
+                .find_relink_candidate(missing_osu_path)
                 .ok_or_else(|| format!("Could not locate {missing_file} in the Songs folder."))?
         };
 
+        Ok(self.finish_relink_moved_mapset(missing_osu_path, old_folder, new_osu_path))
+    }
+
+    /// Relinks a moved mapset directly to an already-resolved `.osu` difficulty path
+    /// (used by the Tauri command after searching `SongsIndexCache` off the editor thread).
+    pub fn relink_moved_mapset_to_osu_path(
+        &mut self,
+        missing_osu_path: &Path,
+        new_osu_path: &Path,
+    ) -> Result<RelinkMapsetResult, String> {
+        let missing_file = missing_osu_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or("Missing difficulty filename.")?;
+        let old_folder = missing_osu_path
+            .parent()
+            .ok_or("Missing old mapset folder.")?;
+        if !new_osu_path.is_file() {
+            return Err(format!(
+                "Could not locate {missing_file} in the Songs folder."
+            ));
+        }
+        Ok(self.finish_relink_moved_mapset(
+            missing_osu_path,
+            old_folder,
+            new_osu_path.to_path_buf(),
+        ))
+    }
+
+    fn finish_relink_moved_mapset(
+        &mut self,
+        missing_osu_path: &Path,
+        old_folder: &Path,
+        new_osu_path: PathBuf,
+    ) -> RelinkMapsetResult {
         let projects_root = self.shared_base_projects_root();
         let mut migrated_base = false;
         let old_base_path = projects_root.join(format!("base-{}.json", path_digest(old_folder)));
@@ -1374,18 +1391,21 @@ impl Application {
             && old_base_path.is_file()
             && old_base_path != new_base_path
             && let Ok(Some(layer)) = load_base(&old_base_path)
-                && save_base(&new_base_path, &layer).is_ok()
-            {
-                migrated_base = true;
-            }
+            && save_base(&new_base_path, &layer).is_ok()
+        {
+            migrated_base = true;
+        }
 
         let mut migrated_project = false;
         let old_proj_path = projects_root.join(format!("{}.json", path_digest(missing_osu_path)));
         let new_proj_path = projects_root.join(format!("{}.json", path_digest(&new_osu_path)));
-        if old_proj_path.is_file() && old_proj_path != new_proj_path && !new_proj_path.exists()
-            && fs::copy(&old_proj_path, &new_proj_path).is_ok() {
-                migrated_project = true;
-            }
+        if old_proj_path.is_file()
+            && old_proj_path != new_proj_path
+            && !new_proj_path.exists()
+            && fs::copy(&old_proj_path, &new_proj_path).is_ok()
+        {
+            migrated_project = true;
+        }
 
         // Replace missing path in recent maps list if present.
         for recent in &mut self.preferences.recent {
@@ -1395,12 +1415,12 @@ impl Application {
         }
         self.save_preferences();
 
-        Ok(RelinkMapsetResult {
+        RelinkMapsetResult {
             old_path: missing_osu_path.to_string_lossy().into_owned(),
             new_path: new_osu_path.to_string_lossy().into_owned(),
             migrated_base,
             migrated_project,
-        })
+        }
     }
 
     pub(crate) fn sync_shared_base_track(&mut self) {
@@ -1947,6 +1967,60 @@ mod tests {
         let relinked = app.relink_moved_mapset(&hard, None).unwrap();
         assert!(relinked.new_path.contains("Moved"));
         assert!(relinked.migrated_base);
+
+        // Verify candidate scoring (folder+file = 5, file = 3, folder = 2, none = None)
+        // and `relink_moved_mapset_to_osu_path` choosing exact diff on folder-only match.
+        let renamed_dir = songs.join("99999 Renamed - Set");
+        fs::create_dir_all(&renamed_dir).unwrap();
+        let renamed_diff_a = renamed_dir.join("Alpha [Easy].osu");
+        let renamed_diff_b = renamed_dir.join("Map [Hard].osu");
+        fs::write(&renamed_diff_a, sample_osu("Easy", &["256,192,1000,1,0,0:0:0:100:"])).unwrap();
+        fs::write(&renamed_diff_b, sample_osu("Hard", &["256,192,1000,1,0,0:0:0:100:"])).unwrap();
+
+        let entries = vec![
+            songs_index::SongMapsetEntry {
+                set_id: 1,
+                artist: "A".into(),
+                title: "T".into(),
+                creator: "C".into(),
+                tags: String::new(),
+                folder: "12345 Artist - Title (Moved)".into(),
+                diffs: vec![songs_index::SongDiffEntry {
+                    version: "Normal".into(),
+                    path: moved_dir.join("Map [Normal].osu").to_string_lossy().into_owned(),
+                    mode: 0,
+                }],
+            },
+            songs_index::SongMapsetEntry {
+                set_id: 2,
+                artist: "A".into(),
+                title: "T".into(),
+                creator: "C".into(),
+                tags: String::new(),
+                folder: "99999 Renamed - Set".into(),
+                diffs: vec![songs_index::SongDiffEntry {
+                    version: "Hard".into(),
+                    path: renamed_diff_b.to_string_lossy().into_owned(),
+                    mode: 0,
+                }],
+            },
+        ];
+        // `file_matches` (score 3) beats `folder_matches` (score 2) when exact folder moved.
+        assert_eq!(
+            songs_index::find_relink_candidate(&entries, &hard),
+            Some(renamed_diff_b.clone())
+        );
+        // Folder-only match (score 2) when folder name matches but diff filename differs.
+        let missing_same_folder_other_diff = moved_dir.join("DifferentName [Insane].osu");
+        let folder_only =
+            songs_index::find_relink_candidate(&entries[..1], &missing_same_folder_other_diff);
+        assert_eq!(folder_only, Some(moved_dir.join("Map [Normal].osu")));
+        // Direct relink to exact `.osu` path succeeds cleanly.
+        let exact = app
+            .relink_moved_mapset_to_osu_path(&missing_same_folder_other_diff, &renamed_diff_b)
+            .unwrap();
+        assert_eq!(exact.new_path, renamed_diff_b.to_string_lossy());
+        assert!(songs_index::find_relink_candidate(&[], &hard).is_none());
     }
 
     #[test]

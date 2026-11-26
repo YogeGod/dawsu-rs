@@ -11,6 +11,7 @@ import {
   recentMapName,
   recoveryState,
   setupChecklistState,
+  songsSourceTooltip,
 } from "../src/lib/startScreen.js";
 import { detectImageMime } from "../src/lib/mapsetBackground.js";
 import StartScreen from "../src/parts/StartScreen.svelte";
@@ -46,6 +47,10 @@ test("startScreen helpers format recent map names and gate recovery offers", () 
   assert.equal(isHitsoundVersion("HS"), true);
   assert.equal(isHitsoundVersion("Normal HS"), true);
   assert.equal(isHitsoundVersion("Insane"), false);
+  assert.equal(songsSourceTooltip("osu!.db"), "Indexed from osu! database");
+  assert.equal(songsSourceTooltip("cache"), "Loaded from local Songs cache");
+  assert.equal(songsSourceTooltip("folder-scan"), "Scanned from Songs folder");
+  assert.equal(songsSourceTooltip("none"), "");
 
   const recovery = { error: "", offers: [{ id: "rec-1", mapset: "Song", difficulty: "Hard", created_ms: 1700000000000 }] };
   assert.equal(recoveryState({ hasDocument: true, recovery }, null).visible, false);

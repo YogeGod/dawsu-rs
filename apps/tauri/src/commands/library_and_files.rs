@@ -1,7 +1,11 @@
 use dawsu_application::Application;
+use dawsu_application::songs_index::{
+    SongsIndex, SongsSearchResult, build_songs_index_from_cache,
+};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 use tauri::State;
 
@@ -387,8 +391,10 @@ pub(crate) fn create_hitsound_diff(
     let created = ask(&state, |tx| {
         Request::CreateHitsoundDiff(sibling_path, reuse_existing.unwrap_or(false), parsed_mode, tx)
     })??;
-    if let Ok(mut guard) = cache.0.lock() {
-        *guard = None;
+    if let Ok(Some(songs_dir)) = ask(&state, Request::SongsDirectory)
+        && let Some(folder) = created.parent()
+    {
+        cache.patch_mapset_folder(&songs_dir, folder);
     }
     Ok(created)
 }
@@ -399,8 +405,10 @@ pub(crate) fn create_hitsound_diff_from_current(
     cache: State<'_, SongsIndexCache>,
 ) -> Result<PathBuf, String> {
     let created = ask(&state, Request::CreateHitsoundDiffFromCurrent)??;
-    if let Ok(mut guard) = cache.0.lock() {
-        *guard = None;
+    if let Ok(Some(songs_dir)) = ask(&state, Request::SongsDirectory)
+        && let Some(folder) = created.parent()
+    {
+        cache.patch_mapset_folder(&songs_dir, folder);
     }
     Ok(created)
 }
@@ -532,8 +540,268 @@ pub(crate) fn songs_dialog(window: &tauri::WebviewWindow, state: &Editor) -> Res
     })
 }
 
-pub(crate) type SongsIndexEntry = (PathBuf, &'static str, Vec<dawsu_application::songs_index::SongMapsetEntry>);
-pub(crate) struct SongsIndexCache(pub(crate) std::sync::Arc<std::sync::Mutex<Option<SongsIndexEntry>>>);
+#[derive(Default)]
+struct CacheState {
+    ready: Option<Arc<SongsIndex>>,
+    ready_gen: u64,
+    generation: u64,
+    in_flight: Option<(u64, PathBuf)>,
+}
+
+/// Thread-safe, generation-guarded single-flight cache for the Start Screen Songs index.
+#[derive(Clone)]
+pub(crate) struct SongsIndexCache {
+    data_root: PathBuf,
+    inner: Arc<(Mutex<CacheState>, Condvar)>,
+    write_lock: Arc<Mutex<()>>,
+}
+
+struct BuildGuard<'a> {
+    inner: &'a (Mutex<CacheState>, Condvar),
+    my_gen: u64,
+}
+
+impl Drop for BuildGuard<'_> {
+    fn drop(&mut self) {
+        let Ok(mut state) = self.inner.0.lock() else {
+            self.inner.1.notify_all();
+            return;
+        };
+        if state
+            .in_flight
+            .as_ref()
+            .is_some_and(|(g, _)| *g == self.my_gen)
+        {
+            state.in_flight = None;
+        }
+        self.inner.1.notify_all();
+    }
+}
+
+impl SongsIndexCache {
+    pub(crate) fn new(data_root: PathBuf) -> Self {
+        Self {
+            data_root,
+            inner: Arc::new((Mutex::new(CacheState::default()), Condvar::new())),
+            write_lock: Arc::new(Mutex::new(())),
+        }
+    }
+
+    pub(crate) fn invalidate(&self) {
+        let mut state = self.inner.0.lock().unwrap_or_else(|e| e.into_inner());
+        state.generation = state.generation.wrapping_add(1);
+        state.ready = None;
+        state.ready_gen = 0;
+        state.in_flight = None;
+        self.inner.1.notify_all();
+    }
+
+    pub(crate) fn warm_up(&self, songs_dir: PathBuf) {
+        if !songs_dir.is_dir() {
+            return;
+        }
+        let cache = self.clone();
+        std::thread::spawn(move || {
+            let _ = cache.entries_for(&songs_dir);
+        });
+    }
+
+    pub(crate) fn entries_for(&self, songs_dir: &Path) -> Arc<SongsIndex> {
+        self.get_or_build_with(songs_dir, false, build_songs_index_from_cache)
+    }
+
+    pub(crate) fn search(
+        &self,
+        songs_dir: &Path,
+        query: &str,
+        limit: usize,
+        refresh: bool,
+    ) -> SongsSearchResult {
+        self.search_with(songs_dir, query, limit, refresh, build_songs_index_from_cache)
+    }
+
+    fn search_with<F>(
+        &self,
+        songs_dir: &Path,
+        query: &str,
+        limit: usize,
+        refresh: bool,
+        builder: F,
+    ) -> SongsSearchResult
+    where
+        F: FnOnce(&Path, &Path, bool) -> (SongsIndex, bool),
+    {
+        let index = self.get_or_build_with(songs_dir, refresh, builder);
+        SongsSearchResult {
+            total_mapsets: index.mapsets.len(),
+            total_diffs: index.total_diffs,
+            source: index.source,
+            matches: index.search(query, limit),
+        }
+    }
+
+    fn get_or_build_with<F>(
+        &self,
+        songs_dir: &Path,
+        refresh: bool,
+        builder: F,
+    ) -> Arc<SongsIndex>
+    where
+        F: FnOnce(&Path, &Path, bool) -> (SongsIndex, bool),
+    {
+        if !refresh {
+            let candidate = {
+                let state = self.inner.0.lock().unwrap_or_else(|e| e.into_inner());
+                state
+                    .ready
+                    .as_ref()
+                    .filter(|idx| idx.songs_dir == songs_dir)
+                    .cloned()
+            };
+            if let Some(idx) = candidate
+                && idx.is_fresh()
+            {
+                return idx;
+            }
+        }
+
+        let mut waited_for_gen: Option<u64> = None;
+        let (my_gen, _guard) = loop {
+            let mut state = self.inner.0.lock().unwrap_or_else(|e| e.into_inner());
+            if !refresh
+                && let Some(expected) = waited_for_gen
+                && state.ready_gen >= expected
+                && let Some(idx) = state
+                    .ready
+                    .as_ref()
+                    .filter(|idx| idx.songs_dir == songs_dir)
+            {
+                return Arc::clone(idx);
+            }
+            if !refresh
+                && let Some((in_flight_gen, ref dir)) = state.in_flight
+                && dir == songs_dir
+            {
+                waited_for_gen = Some(in_flight_gen);
+                state = self.inner.1.wait(state).unwrap_or_else(|e| e.into_inner());
+                continue;
+            }
+            state.generation = state.generation.wrapping_add(1);
+            let my_gen = state.generation;
+            state.in_flight = Some((my_gen, songs_dir.to_path_buf()));
+            break (
+                my_gen,
+                BuildGuard {
+                    inner: &self.inner,
+                    my_gen,
+                },
+            );
+        };
+
+        let (index, needs_save) = builder(songs_dir, &self.data_root, refresh);
+        let arc = Arc::new(index);
+        let should_save = {
+            let mut state = self.inner.0.lock().unwrap_or_else(|e| e.into_inner());
+            if state.generation != my_gen {
+                return Arc::clone(&arc);
+            }
+            state.ready = Some(Arc::clone(&arc));
+            state.ready_gen = my_gen;
+            if state
+                .in_flight
+                .as_ref()
+                .is_some_and(|(g, _)| *g == my_gen)
+            {
+                state.in_flight = None;
+            }
+            self.inner.1.notify_all();
+            needs_save
+        };
+        if should_save {
+            self.save_if_current(&arc, my_gen);
+        }
+        arc
+    }
+
+    pub(crate) fn patch_mapset_folder(&self, songs_dir: &Path, mapset_folder: &Path) -> bool {
+        self.patch_mapset_folder_with(songs_dir, mapset_folder, |idx, folder| {
+            idx.patch_folder(folder)
+        })
+    }
+
+    fn patch_mapset_folder_with<F>(
+        &self,
+        songs_dir: &Path,
+        mapset_folder: &Path,
+        patcher: F,
+    ) -> bool
+    where
+        F: FnOnce(&mut SongsIndex, &Path) -> bool,
+    {
+        let (base, base_gen) = {
+            let mut state = self.inner.0.lock().unwrap_or_else(|e| e.into_inner());
+            let matching = state
+                .ready
+                .as_ref()
+                .filter(|idx| idx.songs_dir == songs_dir)
+                .cloned();
+            let Some(base) = matching else {
+                if state
+                    .in_flight
+                    .as_ref()
+                    .is_some_and(|(_, dir)| dir == songs_dir)
+                {
+                    state.generation = state.generation.wrapping_add(1);
+                    state.in_flight = None;
+                    self.inner.1.notify_all();
+                }
+                return false;
+            };
+            (base, state.generation)
+        };
+        let mut updated = (*base).clone();
+        if !patcher(&mut updated, mapset_folder) {
+            return false;
+        }
+        let updated_arc = Arc::new(updated);
+        let my_gen = {
+            let mut state = self.inner.0.lock().unwrap_or_else(|e| e.into_inner());
+            if state.generation != base_gen
+                || state
+                    .ready
+                    .as_ref()
+                    .is_none_or(|r| r.songs_dir != songs_dir)
+            {
+                return false;
+            }
+            state.generation = state.generation.wrapping_add(1);
+            let g = state.generation;
+            state.ready = Some(Arc::clone(&updated_arc));
+            state.ready_gen = g;
+            state.in_flight = None;
+            self.inner.1.notify_all();
+            g
+        };
+        let cache_clone = self.clone();
+        std::thread::spawn(move || {
+            cache_clone.save_if_current(&updated_arc, my_gen);
+        });
+        true
+    }
+
+    fn save_if_current(&self, index: &SongsIndex, expected_gen: u64) {
+        let _write_guard = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
+        let current_gen = self
+            .inner
+            .0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .generation;
+        if current_gen == expected_gen {
+            let _ = index.save_to_cache(&self.data_root);
+        }
+    }
+}
 
 #[tauri::command]
 pub(crate) async fn songs_index_search(
@@ -541,50 +809,19 @@ pub(crate) async fn songs_index_search(
     refresh: bool,
     state: State<'_, Editor>,
     cache: State<'_, SongsIndexCache>,
-) -> Result<dawsu_application::songs_index::SongsSearchResult, String> {
+) -> Result<SongsSearchResult, String> {
     let Some(songs_dir) = ask(&state, Request::SongsDirectory)? else {
-        return Ok(dawsu_application::songs_index::SongsSearchResult {
+        return Ok(SongsSearchResult {
             total_mapsets: 0,
             total_diffs: 0,
             source: "none",
             matches: Vec::new(),
         });
     };
-    let cache_arc = std::sync::Arc::clone(&cache.0);
+    let cache = cache.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         const SEARCH_LIMIT: usize = 50;
-        if !refresh
-            && let Ok(guard) = cache_arc.lock()
-                && let Some((cached_dir, source, entries)) = guard.as_ref()
-                    && cached_dir == &songs_dir {
-                        let total_diffs = entries.iter().map(|m| m.diffs.len()).sum();
-                        let matches = dawsu_application::songs_index::search_songs_index(
-                            entries,
-                            &query,
-                            SEARCH_LIMIT,
-                        );
-                        return Ok(dawsu_application::songs_index::SongsSearchResult {
-                            total_mapsets: entries.len(),
-                            total_diffs,
-                            source,
-                            matches,
-                        });
-                    }
-        let (entries, source) =
-            dawsu_application::songs_index::build_songs_index_with_source(&songs_dir);
-        let total_mapsets = entries.len();
-        let total_diffs = entries.iter().map(|m| m.diffs.len()).sum();
-        let matches =
-            dawsu_application::songs_index::search_songs_index(&entries, &query, SEARCH_LIMIT);
-        if let Ok(mut guard) = cache_arc.lock() {
-            *guard = Some((songs_dir, source, entries));
-        }
-        Ok(dawsu_application::songs_index::SongsSearchResult {
-            total_mapsets,
-            total_diffs,
-            source,
-            matches,
-        })
+        Ok(cache.search(&songs_dir, &query, SEARCH_LIMIT, refresh))
     })
     .await
     .map_err(|e| e.to_string())?
@@ -767,4 +1004,325 @@ mod background_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
+
+#[cfg(test)]
+mod songs_index_cache_tests {
+    use super::*;
+    use dawsu_application::songs_index::{
+        SongDiffEntry, SongMapsetEntry, SongsIndex, build_songs_index_from_cache,
+        load_or_build_songs_index,
+    };
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Barrier, mpsc};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn scratch_dir(label: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("dawsu_sidx_cache_{label}_{nanos}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn single_flight_coalesces_concurrent_cold_searches_to_one_build() {
+        let root = scratch_dir("single-flight");
+        let songs = root.join("Songs");
+        let map_dir = songs.join("1 Artist - Title");
+        std::fs::create_dir_all(&map_dir).unwrap();
+        std::fs::write(
+            map_dir.join("Map.osu"),
+            "[Metadata]\nArtist:Artist\nTitle:Title\nVersion:Hard\n",
+        )
+        .unwrap();
+
+        let cache = SongsIndexCache::new(root.join("data"));
+        let builds = Arc::new(AtomicUsize::new(0));
+        let entered = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+
+        let c1 = cache.clone();
+        let s1 = songs.clone();
+        let b1 = Arc::clone(&builds);
+        let entered1 = Arc::clone(&entered);
+        let release1 = Arc::clone(&release);
+        let t1 = std::thread::spawn(move || {
+            c1.search_with(&s1, "", 50, false, |dir, data, force| {
+                b1.fetch_add(1, Ordering::SeqCst);
+                entered1.wait();
+                release1.wait();
+                build_songs_index_from_cache(dir, data, force)
+            })
+        });
+
+        entered.wait();
+        let c2 = cache.clone();
+        let s2 = songs.clone();
+        let b2 = Arc::clone(&builds);
+        let t2 = std::thread::spawn(move || {
+            c2.search_with(&s2, "", 50, false, |dir, data, force| {
+                b2.fetch_add(1, Ordering::SeqCst);
+                build_songs_index_from_cache(dir, data, force)
+            })
+        });
+
+        // Give t2 a moment to block on Condvar, then release builder 1.
+        std::thread::sleep(Duration::from_millis(30));
+        release.wait();
+
+        let r1 = t1.join().unwrap();
+        let r2 = t2.join().unwrap();
+        assert_eq!(builds.load(Ordering::SeqCst), 1);
+        assert_eq!(r1.total_mapsets, 1);
+        assert_eq!(r2.total_mapsets, 1);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn panic_during_build_releases_waiters_and_allows_recovery() {
+        let root = scratch_dir("panic-recover");
+        let songs = root.join("Songs");
+        let map_dir = songs.join("1 Artist - Title");
+        std::fs::create_dir_all(&map_dir).unwrap();
+        std::fs::write(
+            map_dir.join("Map.osu"),
+            "[Metadata]\nArtist:Artist\nTitle:Title\nVersion:Hard\n",
+        )
+        .unwrap();
+
+        let cache = SongsIndexCache::new(root.join("data"));
+        let entered = Arc::new(Barrier::new(2));
+        let release_panic = Arc::new(Barrier::new(2));
+
+        let c1 = cache.clone();
+        let s1 = songs.clone();
+        let e1 = Arc::clone(&entered);
+        let r1 = Arc::clone(&release_panic);
+        let t1 = std::thread::spawn(move || {
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                c1.search_with(&s1, "", 50, false, |_dir, _data, _force| -> (SongsIndex, bool) {
+                    e1.wait();
+                    r1.wait();
+                    panic!("simulated scan panic");
+                })
+            }));
+        });
+
+        entered.wait();
+        let (done_tx, done_rx) = mpsc::channel();
+        let c2 = cache.clone();
+        let s2 = songs.clone();
+        let t2 = std::thread::spawn(move || {
+            let res = c2.search(&s2, "", 50, false);
+            let _ = done_tx.send(res);
+        });
+
+        std::thread::sleep(Duration::from_millis(30));
+        release_panic.wait();
+
+        let recovered = done_rx
+            .recv_timeout(Duration::from_secs(3))
+            .expect("waiter must not deadlock after builder panic");
+        assert_eq!(recovered.total_mapsets, 1);
+        t1.join().unwrap();
+        t2.join().unwrap();
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn invalidate_mid_build_discards_stale_ram_and_disk_commit() {
+        let root = scratch_dir("invalidate-mid");
+        let songs_a = root.join("SongsA");
+        let songs_b = root.join("SongsB");
+        let data = root.join("data");
+        std::fs::create_dir_all(songs_a.join("1 A - Song")).unwrap();
+        std::fs::write(
+            songs_a.join("1 A - Song/a.osu"),
+            "[Metadata]\nArtist:OldA\nTitle:SongA\nVersion:Normal\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(songs_b.join("2 B - Song")).unwrap();
+        std::fs::write(
+            songs_b.join("2 B - Song/b.osu"),
+            "[Metadata]\nArtist:NewB\nTitle:SongB\nVersion:Hard\n",
+        )
+        .unwrap();
+
+        let cache = SongsIndexCache::new(data.clone());
+        let entered = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+
+        let c1 = cache.clone();
+        let sa = songs_a.clone();
+        let e1 = Arc::clone(&entered);
+        let r1 = Arc::clone(&release);
+        let t1 = std::thread::spawn(move || {
+            c1.search_with(&sa, "", 50, false, |dir, d, force| {
+                e1.wait();
+                r1.wait();
+                build_songs_index_from_cache(dir, d, force)
+            })
+        });
+
+        entered.wait();
+        cache.invalidate();
+        release.wait();
+        let _ = t1.join().unwrap();
+
+        // Stale build must NOT have committed to `state.ready` or written `.sidx`.
+        {
+            let guard = cache.inner.0.lock().unwrap();
+            assert!(guard.ready.is_none());
+        }
+        let entries_in_cache_dir = std::fs::read_dir(data.join("songs-index"))
+            .map(|rd| rd.count())
+            .unwrap_or(0);
+        assert_eq!(entries_in_cache_dir, 0);
+
+        let b_res = cache.search(&songs_b, "", 50, false);
+        assert_eq!(b_res.total_mapsets, 1);
+        assert_eq!(b_res.matches[0].artist, "NewB");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn patch_mapset_folder_and_auto_reload_work_and_ignore_outside_paths() {
+        let root = scratch_dir("patch-and-reload");
+        let songs = root.join("Songs");
+        let map_dir = songs.join("10 Artist - Track");
+        let outside = root.join("DesktopMap");
+        let data = root.join("data");
+        std::fs::create_dir_all(&map_dir).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(
+            map_dir.join("Track [Hard].osu"),
+            "[Metadata]\nArtist:Artist\nTitle:Track\nVersion:Hard\n",
+        )
+        .unwrap();
+        std::fs::write(
+            outside.join("Out.osu"),
+            "[Metadata]\nArtist:Out\nTitle:Side\nVersion:Normal\n",
+        )
+        .unwrap();
+
+        let cache = SongsIndexCache::new(data.clone());
+        let initial = cache.search(&songs, "", 50, false);
+        assert_eq!(initial.total_diffs, 1);
+
+        // Out-of-Songs folder patch must be a safe no-op.
+        assert!(!cache.patch_mapset_folder(&songs, &outside));
+
+        // Add `[Hitsounds].osu` inside Songs and patch in place.
+        std::fs::write(
+            map_dir.join("Track [Hitsounds].osu"),
+            "[Metadata]\nArtist:Artist\nTitle:Track\nVersion:Hitsounds\n",
+        )
+        .unwrap();
+        assert!(cache.patch_mapset_folder(&songs, &map_dir));
+
+        let updated = cache.search(&songs, "Hitsounds", 50, false);
+        assert_eq!(updated.total_diffs, 2);
+        assert_eq!(updated.matches.len(), 1);
+
+        // Give async `.sidx` write a moment, then verify persisted on disk via fresh load.
+        std::thread::sleep(Duration::from_millis(80));
+        let disk = load_or_build_songs_index(&songs, &data, false);
+        assert_eq!(disk.total_diffs, 2);
+
+        // External folder addition bumps `songs_dir` mtime and auto-reloads on `refresh=false`.
+        std::thread::sleep(Duration::from_millis(25));
+        let added = songs.join("20 Another - Song");
+        std::fs::create_dir_all(&added).unwrap();
+        std::fs::write(
+            added.join("Another.osu"),
+            "[Metadata]\nArtist:Another\nTitle:Song\nVersion:Normal\n",
+        )
+        .unwrap();
+        let reloaded = cache.search(&songs, "", 50, false);
+        assert_eq!(reloaded.total_mapsets, 2);
+
+        // Smoke type assertions so imports are verified used in test builds too.
+        let _: fn(&[SongMapsetEntry], &Path) -> Option<PathBuf> =
+            dawsu_application::songs_index::find_relink_candidate;
+        let _ = SongDiffEntry {
+            version: String::new(),
+            path: String::new(),
+            mode: 0,
+        };
+        let _ = SongMapsetEntry {
+            set_id: -1,
+            artist: String::new(),
+            title: String::new(),
+            creator: String::new(),
+            tags: String::new(),
+            folder: String::new(),
+            diffs: Vec::new(),
+        };
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn patch_mapset_folder_discards_stale_commit_when_invalidated_mid_patch() {
+        let root = scratch_dir("patch-mid-invalidate");
+        let songs = root.join("Songs");
+        let map_dir = songs.join("10 Artist - Track");
+        let data = root.join("data");
+        std::fs::create_dir_all(&map_dir).unwrap();
+        std::fs::write(
+            map_dir.join("Track [Hard].osu"),
+            "[Metadata]\nArtist:Artist\nTitle:Track\nVersion:Hard\n",
+        )
+        .unwrap();
+
+        let cache = SongsIndexCache::new(data.clone());
+        let seeded = cache.search(&songs, "", 50, false);
+        assert_eq!(seeded.total_diffs, 1);
+
+        let _ = std::fs::remove_dir_all(data.join("songs-index"));
+        std::fs::write(
+            map_dir.join("Track [Hitsounds].osu"),
+            "[Metadata]\nArtist:Artist\nTitle:Track\nVersion:Hitsounds\n",
+        )
+        .unwrap();
+
+        let entered = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        let c1 = cache.clone();
+        let s1 = songs.clone();
+        let m1 = map_dir.clone();
+        let e1 = Arc::clone(&entered);
+        let r1 = Arc::clone(&release);
+        let t1 = std::thread::spawn(move || {
+            c1.patch_mapset_folder_with(&s1, &m1, |idx, folder| {
+                e1.wait();
+                r1.wait();
+                idx.patch_folder(folder)
+            })
+        });
+
+        entered.wait();
+        cache.invalidate();
+        release.wait();
+        assert!(!t1.join().unwrap());
+
+        {
+            let guard = cache.inner.0.lock().unwrap();
+            assert!(guard.ready.is_none());
+        }
+        std::thread::sleep(Duration::from_millis(50));
+        let entries_in_cache_dir = std::fs::read_dir(data.join("songs-index"))
+            .map(|rd| rd.count())
+            .unwrap_or(0);
+        assert_eq!(entries_in_cache_dir, 0);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
 

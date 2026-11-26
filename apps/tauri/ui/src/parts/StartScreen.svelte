@@ -14,6 +14,7 @@
     recentItems,
     recoveryState,
     setupChecklistState,
+    songsSourceTooltip,
   } from "../lib/startScreen.js";
 
   const MODE_LABELS = { 1: "taiko", 2: "catch", 3: "mania" };
@@ -39,6 +40,7 @@
   let songsQuery = $state("");
   let songsMatches = $state.raw([]);
   let songsTotal = $state(0);
+  let songsSource = $state("");
   let songsLoading = $state(false);
   let songsError = $state("");
   let selectedMapsetFolder = $state("");
@@ -97,6 +99,7 @@
     if (!songsFolder) {
       songsMatches = [];
       songsTotal = 0;
+      songsSource = "";
       songsError = "";
       return;
     }
@@ -108,6 +111,7 @@
       if (seq !== searchSeq) return;
       songsMatches = res?.matches ?? [];
       songsTotal = res?.totalMapsets ?? 0;
+      songsSource = res?.source ?? "";
     } catch (err) {
       if (seq !== searchSeq) return;
       songsError = String(err || "Could not read Songs folder.");
@@ -123,6 +127,7 @@
     if (!folder) {
       songsMatches = [];
       songsTotal = 0;
+      songsSource = "";
       songsError = "";
       return;
     }
@@ -258,7 +263,7 @@
     <div class="home-songs-head">
       <h2 id="home-songs-title">Songs folder</h2>
       {#if songsTotal > 0}
-        <span class="home-songs-count">{songsTotal.toLocaleString()} mapsets</span>
+        <span class="home-songs-count" title={songsSourceTooltip(songsSource) || undefined}>{songsTotal.toLocaleString()} mapsets</span>
       {/if}
       <button id="home-songs-refresh" type="button" class="home-songs-refresh"
         disabled={busy || songsLoading} onclick={() => runSongsSearch(songsQuery, true)}>
