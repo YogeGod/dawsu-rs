@@ -3,8 +3,12 @@
     QUANTIZE_MS,
     keysoundsQuantize,
     keysoundsScan,
+    keysoundsToggleMute,
+    keysoundsToggleSolo,
     keysoundsTranspose,
+    keysoundsTrimOverlaps,
   } from "../../lib/midi.js";
+  import { octaveLabel } from "../../lib/musicalTyping.js";
 
   let {
     track = null,
@@ -15,6 +19,9 @@
     sidecarAvailable = false,
     drumVst3,
     notesCount = 0,
+    showGhosts = true,
+    showObjectLines = true,
+    typingState = { enabled: false, basePitch: 60, velocity: 100 },
     ondeletetrack,
     onaddtrack,
     onpluginchange,
@@ -24,11 +31,21 @@
     onsend,
     ontoggledrumvst3,
     ontrackaction,
+    onsynctoobjects = null,
+    ontoggleghosts = null,
+    ontoggleobjectlines = null,
+    ontoggletyping = null,
   } = $props();
 </script>
 
 <div class="ks-bar">
   <div class="ks-group">
+    <button type="button" class="ks-ms" class:active={Boolean(track?.muted)} aria-label="Mute track"
+      aria-pressed={Boolean(track?.muted)} disabled={loading || !track}
+      onclick={() => ontrackaction(id => keysoundsToggleMute(id))}>M</button>
+    <button type="button" class="ks-ms ks-solo" class:active={Boolean(track?.solo)} aria-label="Solo track"
+      aria-pressed={Boolean(track?.solo)} disabled={loading || !track}
+      onclick={() => ontrackaction(id => keysoundsToggleSolo(id))}>S</button>
     <button type="button" aria-label={track ? `Delete ${track.name}` : "Delete track"} disabled={loading || !track}
       onclick={ondeletetrack}>Delete track</button>
     <input type="text" placeholder="Keysound Track" aria-label="Track name" bind:value={name}
@@ -65,10 +82,31 @@
   </div>
   <div class="ks-group">
     <button type="button" disabled={loading || !notesCount} onclick={() => ontrackaction(id => keysoundsQuantize(id, QUANTIZE_MS))}>Quantize 125 ms</button>
+    <button type="button" disabled={loading || !notesCount} onclick={() => ontrackaction(id => keysoundsTrimOverlaps(id))}>Trim overlaps</button>
+    {#if onsynctoobjects}
+      <button type="button" disabled={loading || !notesCount} onclick={onsynctoobjects}>Sync to objects</button>
+    {/if}
     <button type="button" aria-label="Transpose down an octave" disabled={loading || !notesCount} onclick={() => ontrackaction(id => keysoundsTranspose(id, -12))}>−12</button>
     <button type="button" aria-label="Transpose down a semitone" disabled={loading || !notesCount} onclick={() => ontrackaction(id => keysoundsTranspose(id, -1))}>−1</button>
     <button type="button" aria-label="Transpose up a semitone" disabled={loading || !notesCount} onclick={() => ontrackaction(id => keysoundsTranspose(id, 1))}>+1</button>
     <button type="button" aria-label="Transpose up an octave" disabled={loading || !notesCount} onclick={() => ontrackaction(id => keysoundsTranspose(id, 12))}>+12</button>
+  </div>
+  <div class="ks-group">
+    {#if ontoggleghosts}
+      <button type="button" class="ks-toggle" class:active={showGhosts} aria-pressed={showGhosts}
+        onclick={ontoggleghosts}>Ghosts</button>
+    {/if}
+    {#if ontoggleobjectlines}
+      <button type="button" class="ks-toggle" class:active={showObjectLines} aria-pressed={showObjectLines}
+        onclick={ontoggleobjectlines}>Object lines</button>
+    {/if}
+    {#if ontoggletyping}
+      <button type="button" class="ks-toggle" class:active={typingState.enabled} aria-pressed={typingState.enabled}
+        title="Play notes with your computer keyboard (Alt+K). Z/X octave, C/V velocity."
+        onclick={ontoggletyping}>
+        {typingState.enabled ? `Typing · ${octaveLabel(typingState.basePitch)} · v${typingState.velocity}` : "Typing (Alt+K)"}
+      </button>
+    {/if}
   </div>
 </div>
 
@@ -77,7 +115,7 @@
     display: flex;
     flex-wrap: wrap;
     gap: 8px 16px;
-    padding: 10px 14px;
+    padding: 8px 14px;
     border-bottom: 1px solid var(--editor-border);
     background: var(--editor-chrome);
   }
@@ -88,6 +126,26 @@
   }
   .ks-group input {
     width: 130px;
+  }
+  .ks-ms {
+    min-width: 24px;
+    padding: 2px 6px;
+    font-weight: 600;
+  }
+  .ks-ms.active {
+    background: rgba(239, 68, 68, 0.24);
+    border-color: #ef4444;
+    color: #fecaca;
+  }
+  .ks-ms.ks-solo.active {
+    background: rgba(239, 193, 106, 0.24);
+    border-color: #efc16a;
+    color: #fde68a;
+  }
+  .ks-toggle.active {
+    background: rgba(56, 189, 248, 0.22);
+    border-color: var(--editor-accent);
+    color: var(--editor-text);
   }
   .ks-drum-vst3 {
     display: inline-flex;

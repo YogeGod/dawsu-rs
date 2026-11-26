@@ -14,7 +14,9 @@ use dawsu_foundation::safe_write::{self, BackupPolicy, WriteOutcome, replace};
 use dawsu_keysounding::chords::{
     ChordResolution, detect_chords, resolve_all_chords, resolve_chord,
 };
-use dawsu_keysounding::generate::{GeneratePlan, SampleManifestEntry, plan_generate_keysounds};
+use dawsu_keysounding::generate::{
+    GeneratePlan, SampleManifestEntry, plan_generate_keysounds, preview_sync,
+};
 use dawsu_keysounding::model::{ExportSettings, KeysoundDocument, KeysoundTrack};
 use dawsu_keysounding::{KeysoundNote, KeysoundProject, editing};
 use dawsu_osu_format::{check_map_path, find_case_insensitive, list_folder};
@@ -597,6 +599,17 @@ fn render_manifest_clips(
     Ok(clips.into_iter().map(|c| c.unwrap_or_default()).collect())
 }
 
+fn is_track_audible(doc: &KeysoundDocument, track_id: u64) -> bool {
+    let Some(track) = doc.tracks.iter().find(|t| t.id == track_id) else {
+        return false;
+    };
+    if track.muted {
+        return false;
+    }
+    let any_solo = doc.tracks.iter().any(|t| t.solo);
+    !any_solo || track.solo
+}
+
 pub(crate) fn summary(app: &mut Application) -> Value {
     let loaded = app.vst3.list_loaded();
     let active_id = app
@@ -641,6 +654,7 @@ pub(crate) fn summary(app: &mut Application) -> Value {
                 "isDrum": t.is_drum,
                 "isDrumSync": t.is_drum_sync,
                 "muted": t.muted,
+                "solo": t.solo,
                 "noteCount": t.notes.len(),
                 "instrument": t.instrument.name,
                 "vst3Path": t.instrument.soundfont_path,
@@ -689,12 +703,17 @@ pub(crate) fn handle(app: &mut Application, payload: &Value) -> Result<Value, St
             | "set_velocity"
             | "quantize_notes"
             | "transpose_notes"
+            | "trim_overlaps"
+            | "sync_to_objects"
+            | "toggle_mute"
+            | "toggle_solo"
             | "resolve_chord"
             | "resolve_all_chords"
             | "load_soundfont"
             | "set_soundfont_preset"
     );
     let snapshot_before = mutating.then(|| app.keysounds.document.clone());
+    let mut sync_result_json: Option<Value> = None;
 
     match kind {
         "view" => {}
@@ -1080,6 +1099,99 @@ pub(crate) fn handle(app: &mut Application, payload: &Value) -> Result<Value, St
                 .ok_or("Keysound track not found")?;
             track.notes = editing::transpose_notes(&track.notes, None, semitones);
         }
+        "toggle_mute" => {
+            let id = track_id.ok_or("Missing trackId")?;
+            let track = app
+                .keysounds
+                .document
+                .tracks
+                .iter_mut()
+                .find(|t| t.id == id)
+                .ok_or("Keysound track not found")?;
+            track.muted = !track.muted;
+        }
+        "toggle_solo" => {
+            let id = track_id.ok_or("Missing trackId")?;
+            let track = app
+                .keysounds
+                .document
+                .tracks
+                .iter_mut()
+                .find(|t| t.id == id)
+                .ok_or("Keysound track not found")?;
+            track.solo = !track.solo;
+        }
+        "trim_overlaps" => {
+            let id = track_id.ok_or("Missing trackId")?;
+            let track = app
+                .keysounds
+                .document
+                .tracks
+                .iter_mut()
+                .find(|t| t.id == id)
+                .ok_or("Keysound track not found")?;
+            track.notes = editing::trim_overlaps(&track.notes);
+            track.sort_notes();
+        }
+        "sync_to_objects" => {
+            let document = app.document.as_ref().ok_or("Open a difficulty first.")?;
+            let mut settings = export_settings_from_payload(payload);
+            if let Some(max_shift) = payload.get("maxShiftMs").and_then(|v| v.as_f64())
+                && max_shift.is_finite()
+                && max_shift >= 0.0
+            {
+                settings.sync_tolerance_ms = max_shift;
+            }
+            let sync = if let Some(id) = track_id {
+                let mut track = app
+                    .keysounds
+                    .document
+                    .tracks
+                    .iter()
+                    .find(|t| t.id == id)
+                    .cloned()
+                    .ok_or("Keysound track not found")?;
+                track.muted = false;
+                track.solo = false;
+                let mut scoped = app.keysounds.document.clone();
+                scoped.tracks = vec![track];
+                preview_sync(&scoped, &document.file, &settings)
+            } else {
+                preview_sync(&app.keysounds.document, &document.file, &settings)
+            };
+            let mut touched_tracks = BTreeSet::new();
+            for placed in &sync.synced {
+                if let Some(track) = app
+                    .keysounds
+                    .document
+                    .tracks
+                    .iter_mut()
+                    .find(|t| t.id == placed.track_id)
+                    && let Some(note) = track.notes.get_mut(placed.note_index)
+                {
+                    let dur = note.duration_ms();
+                    let new_start = placed.target_time_ms.max(0.0);
+                    note.start_ms = new_start;
+                    note.end_ms = new_start + dur;
+                    touched_tracks.insert(placed.track_id);
+                }
+            }
+            for tid in touched_tracks {
+                if let Some(track) = app
+                    .keysounds
+                    .document
+                    .tracks
+                    .iter_mut()
+                    .find(|t| t.id == tid)
+                {
+                    track.sort_notes();
+                }
+            }
+            sync_result_json = Some(json!({
+                "syncedCount": sync.synced.len(),
+                "unsyncedCount": sync.unsynced.len(),
+            }));
+        }
         "scan_vst3" => {
             app.scan_vst3_plugins(&[])?;
         }
@@ -1160,6 +1272,11 @@ pub(crate) fn handle(app: &mut Application, payload: &Value) -> Result<Value, St
             let velocity = payload.get("velocity").and_then(|v| v.as_u64()).unwrap_or(100).clamp(1, 127) as u8;
             let duration_ms = payload.get("durationMs").and_then(|v| v.as_f64()).unwrap_or(140.0);
             let target_track_id = track_id.or(app.keysound_history.active_track_id);
+            if let Some(tid) = target_track_id
+                && !is_track_audible(&app.keysounds.document, tid)
+            {
+                return Ok(summary(app));
+            }
             let live_id = target_track_id
                 .and_then(|tid| app.keysound_history.track_instances.get(&tid).cloned());
             let track_meta = target_track_id.and_then(|tid| {
@@ -1379,7 +1496,11 @@ pub(crate) fn handle(app: &mut Application, payload: &Value) -> Result<Value, St
         app.keysound_history.record(before);
     }
 
-    Ok(summary(app))
+    let mut out = summary(app);
+    if let Some(sync_result) = sync_result_json {
+        out["syncResult"] = sync_result;
+    }
+    Ok(out)
 }
 
 fn export_settings_from_payload(payload: &Value) -> ExportSettings {
@@ -2131,5 +2252,169 @@ mod tests {
 
         app.command("undo");
         assert_eq!(app.document().unwrap().composer.hitsounds().moments().len(), before);
+    }
+
+    #[test]
+    fn toggle_mute_and_toggle_solo_control_audibility_and_undo() {
+        let (_scratch, _map_dir, mut app) = setup_mapset(
+            "keysound-mute-solo",
+            "256,192,1000,1,0,0:0:0:0:\r\n256,192,2000,1,0,0:0:0:0:\r\n",
+        );
+
+        let r1 = handle(&mut app, &json!({ "kind": "add_track", "name": "Lead" })).unwrap();
+        let t1 = r1["tracks"][0]["id"].as_u64().unwrap();
+        let r2 = handle(&mut app, &json!({ "kind": "add_track", "name": "Pad" })).unwrap();
+        let t2 = r2["tracks"][1]["id"].as_u64().unwrap();
+
+        assert_eq!(r2["tracks"][0]["muted"], json!(false));
+        assert_eq!(r2["tracks"][0]["solo"], json!(false));
+        assert_eq!(r2["tracks"][1]["muted"], json!(false));
+        assert_eq!(r2["tracks"][1]["solo"], json!(false));
+
+        handle(
+            &mut app,
+            &json!({ "kind": "add_note", "trackId": t1, "startMs": 1000.0, "endMs": 1200.0, "pitch": 60, "velocity": 100 }),
+        )
+        .unwrap();
+        handle(
+            &mut app,
+            &json!({ "kind": "add_note", "trackId": t2, "startMs": 2000.0, "endMs": 2200.0, "pitch": 64, "velocity": 100 }),
+        )
+        .unwrap();
+
+        // Mute track 1 -> only track 2 is audible in preview_bounce.
+        let muted = handle(&mut app, &json!({ "kind": "toggle_mute", "trackId": t1 })).unwrap();
+        assert_eq!(muted["tracks"][0]["muted"], json!(true));
+        assert_eq!(muted["tracks"][0]["solo"], json!(false));
+        assert!(!is_track_audible(&app.keysounds.document, t1));
+        assert!(is_track_audible(&app.keysounds.document, t2));
+        let preview = handle(&mut app, &json!({ "kind": "preview_bounce", "format": "wav16" })).unwrap();
+        assert_eq!(preview["bouncePreview"]["sourceNotes"], json!(1));
+
+        // Undo unmutes track 1.
+        let unmuted = handle(&mut app, &json!({ "kind": "undo" })).unwrap();
+        assert_eq!(unmuted["tracks"][0]["muted"], json!(false));
+        assert!(is_track_audible(&app.keysounds.document, t1));
+
+        // Solo track 1 -> only track 1 is audible.
+        let soloed = handle(&mut app, &json!({ "kind": "toggle_solo", "trackId": t1 })).unwrap();
+        assert_eq!(soloed["tracks"][0]["solo"], json!(true));
+        assert_eq!(soloed["tracks"][1]["solo"], json!(false));
+        assert!(is_track_audible(&app.keysounds.document, t1));
+        assert!(!is_track_audible(&app.keysounds.document, t2));
+        let preview = handle(&mut app, &json!({ "kind": "preview_bounce", "format": "wav16" })).unwrap();
+        assert_eq!(preview["bouncePreview"]["sourceNotes"], json!(1));
+
+        // Muting the only soloed track silences everything (soloed && !muted).
+        handle(&mut app, &json!({ "kind": "toggle_mute", "trackId": t1 })).unwrap();
+        assert!(!is_track_audible(&app.keysounds.document, t1));
+        assert!(!is_track_audible(&app.keysounds.document, t2));
+        let preview = handle(&mut app, &json!({ "kind": "preview_bounce", "format": "wav16" })).unwrap();
+        assert_eq!(preview["bouncePreview"]["sourceNotes"], json!(0));
+
+        // Two undos restore both mute and solo.
+        let after_undo1 = handle(&mut app, &json!({ "kind": "undo" })).unwrap();
+        assert_eq!(after_undo1["tracks"][0]["muted"], json!(false));
+        assert_eq!(after_undo1["tracks"][0]["solo"], json!(true));
+        let after_undo2 = handle(&mut app, &json!({ "kind": "undo" })).unwrap();
+        assert_eq!(after_undo2["tracks"][0]["solo"], json!(false));
+        assert!(is_track_audible(&app.keysounds.document, t1));
+        assert!(is_track_audible(&app.keysounds.document, t2));
+    }
+
+    #[test]
+    fn sync_to_objects_moves_notes_preserving_duration_and_supports_undo() {
+        let (_scratch, _map_dir, mut app) = setup_mapset(
+            "keysound-sync-to-objects",
+            "256,192,1000,1,0,0:0:0:0:\r\n256,192,2000,1,0,0:0:0:0:\r\n",
+        );
+
+        let r = handle(&mut app, &json!({ "kind": "add_track", "name": "Piano" })).unwrap();
+        let tid = r["tracks"][0]["id"].as_u64().unwrap();
+
+        handle(
+            &mut app,
+            &json!({ "kind": "add_note", "trackId": tid, "startMs": 1015.0, "endMs": 1265.0, "pitch": 60, "velocity": 100 }),
+        )
+        .unwrap();
+        handle(
+            &mut app,
+            &json!({ "kind": "add_note", "trackId": tid, "startMs": 1980.0, "endMs": 2130.0, "pitch": 64, "velocity": 100 }),
+        )
+        .unwrap();
+        handle(
+            &mut app,
+            &json!({ "kind": "add_note", "trackId": tid, "startMs": 3500.0, "endMs": 3700.0, "pitch": 67, "velocity": 100 }),
+        )
+        .unwrap();
+
+        let synced = handle(
+            &mut app,
+            &json!({ "kind": "sync_to_objects", "trackId": tid, "maxShiftMs": 30.0 }),
+        )
+        .unwrap();
+        assert_eq!(synced["syncResult"]["syncedCount"], json!(2));
+        assert_eq!(synced["syncResult"]["unsyncedCount"], json!(1));
+        assert_eq!(synced["dirty"], json!(true));
+        assert_eq!(synced["canUndo"], json!(true));
+
+        let notes = synced["tracks"][0]["notes"].as_array().unwrap();
+        assert_eq!(notes[0]["startMs"], json!(1000.0));
+        assert_eq!(notes[0]["endMs"], json!(1250.0));
+        assert_eq!(notes[1]["startMs"], json!(2000.0));
+        assert_eq!(notes[1]["endMs"], json!(2150.0));
+        assert_eq!(notes[2]["startMs"], json!(3500.0));
+        assert_eq!(notes[2]["endMs"], json!(3700.0));
+
+        // Undo reverts all synced note positions in one step.
+        let undone = handle(&mut app, &json!({ "kind": "undo" })).unwrap();
+        let undone_notes = undone["tracks"][0]["notes"].as_array().unwrap();
+        assert_eq!(undone_notes[0]["startMs"], json!(1015.0));
+        assert_eq!(undone_notes[0]["endMs"], json!(1265.0));
+        assert_eq!(undone_notes[1]["startMs"], json!(1980.0));
+        assert_eq!(undone_notes[1]["endMs"], json!(2130.0));
+    }
+
+    #[test]
+    fn trim_overlaps_shortens_overlapping_same_pitch_notes_and_supports_undo() {
+        let (_scratch, _map_dir, mut app) = setup_mapset(
+            "keysound-trim-overlaps",
+            "256,192,1000,1,0,0:0:0:0:\r\n",
+        );
+
+        let r = handle(&mut app, &json!({ "kind": "add_track", "name": "Synth" })).unwrap();
+        let tid = r["tracks"][0]["id"].as_u64().unwrap();
+
+        handle(
+            &mut app,
+            &json!({ "kind": "add_note", "trackId": tid, "startMs": 1000.0, "endMs": 1500.0, "pitch": 60, "velocity": 100 }),
+        )
+        .unwrap();
+        handle(
+            &mut app,
+            &json!({ "kind": "add_note", "trackId": tid, "startMs": 1100.0, "endMs": 1400.0, "pitch": 64, "velocity": 100 }),
+        )
+        .unwrap();
+        handle(
+            &mut app,
+            &json!({ "kind": "add_note", "trackId": tid, "startMs": 1250.0, "endMs": 1600.0, "pitch": 60, "velocity": 100 }),
+        )
+        .unwrap();
+
+        let trimmed = handle(&mut app, &json!({ "kind": "trim_overlaps", "trackId": tid })).unwrap();
+        assert_eq!(trimmed["dirty"], json!(true));
+        assert_eq!(trimmed["canUndo"], json!(true));
+        let notes = trimmed["tracks"][0]["notes"].as_array().unwrap();
+        assert_eq!(notes[0]["startMs"], json!(1000.0));
+        assert_eq!(notes[0]["endMs"], json!(1250.0));
+        assert_eq!(notes[1]["startMs"], json!(1100.0));
+        assert_eq!(notes[1]["endMs"], json!(1400.0));
+        assert_eq!(notes[2]["startMs"], json!(1250.0));
+        assert_eq!(notes[2]["endMs"], json!(1600.0));
+
+        let undone = handle(&mut app, &json!({ "kind": "undo" })).unwrap();
+        let undone_notes = undone["tracks"][0]["notes"].as_array().unwrap();
+        assert_eq!(undone_notes[0]["startMs"], json!(1000.0));
+        assert_eq!(undone_notes[0]["endMs"], json!(1500.0));
     }
 }

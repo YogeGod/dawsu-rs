@@ -7,9 +7,13 @@ import {
   NO_PLUGINS, PORT_KEY, PX_PER_MS, ROLL_HIGH, ROLL_LOW, ROW_PX, findNoteIndex, generateToast, importArgs,
   importToast, instrumentChoices, isBlackKey, keysoundsAdd, keysoundsAddNote, keysoundsDelete, keysoundsDeleteNote,
   keysoundsGenerate, keysoundsLoadVst3, keysoundsMoveNote, keysoundsPreview, keysoundsQuantize, keysoundsResizeNote,
-  keysoundsScan, keysoundsSetVelocity, keysoundsTranspose, keysoundsView, msAtX, noteDragPayload, pitchAtY, pitchName,
+  keysoundsScan, keysoundsSetVelocity, keysoundsSyncToObjects, keysoundsToggleMute, keysoundsToggleSolo,
+  keysoundsTranspose, keysoundsTrimOverlaps, keysoundsView, msAtX, noteDragPayload, pitchAtY, pitchName,
   pitchRow, readPort, recordArgs, recordToast, rollPitches, rollSpanMs, scanSummary, sidecarStatus, velocityAtY, writePort,
 } from "../src/lib/midi.js";
+import {
+  createMusicalTypingState, handleMusicalTypingKeyDown, handleMusicalTypingKeyUp, octaveLabel, pitchForKeyCode,
+} from "../src/lib/musicalTyping.js";
 import KeysoundsModal from "../src/parts/KeysoundsModal.svelte";
 import MidiImportModal from "../src/parts/MidiImportModal.svelte";
 
@@ -145,6 +149,50 @@ test("piano roll note payloads match keysound_session.rs and send whole numbers"
   assert.deepEqual(keysoundsTranspose(3, -12), { kind: "transpose_notes", trackId: 3, semitones: -12 });
   assert.deepEqual(keysoundsPreview(3, 60), { kind: "preview_note", trackId: 3, pitch: 60, velocity: 100, durationMs: 200 });
   assert.deepEqual(keysoundsGenerate(), { kind: "generate_keysounds" });
+  assert.deepEqual(keysoundsToggleMute(3), { kind: "toggle_mute", trackId: 3 });
+  assert.deepEqual(keysoundsToggleSolo(3), { kind: "toggle_solo", trackId: 3 });
+  assert.deepEqual(keysoundsSyncToObjects(3), { kind: "sync_to_objects", trackId: 3, maxShiftMs: 50 });
+  assert.deepEqual(keysoundsSyncToObjects(3, 75.4), { kind: "sync_to_objects", trackId: 3, maxShiftMs: 75 });
+  assert.deepEqual(keysoundsTrimOverlaps(3), { kind: "trim_overlaps", trackId: 3 });
+});
+
+test("musicalTyping maps QWERTY keys to pitches, clamps octave/velocity, and deduplicates held keys", () => {
+  let state = { ...createMusicalTypingState(), enabled: true };
+  const held = new Set();
+  assert.equal(octaveLabel(state.basePitch), "C4");
+  assert.equal(pitchForKeyCode("KeyA", 60), 60);
+  assert.equal(pitchForKeyCode("KeyW", 60), 61);
+  assert.equal(pitchForKeyCode("KeyK", 60), 72);
+  assert.equal(pitchForKeyCode("Quote", 60), 77);
+  assert.equal(pitchForKeyCode("Digit1", 60), null);
+
+  const first = handleMusicalTypingKeyDown(state, held, { code: "KeyA", key: "a", repeat: false });
+  assert.equal(first.action, "note");
+  assert.equal(first.pitch, 60);
+  assert.equal(first.velocity, 100);
+
+  // Held key repeat is ignored until keyup.
+  const repeat = handleMusicalTypingKeyDown(state, held, { code: "KeyA", key: "a", repeat: true });
+  assert.equal(repeat.action, "repeat");
+  handleMusicalTypingKeyUp(held, "KeyA");
+  const again = handleMusicalTypingKeyDown(state, held, { code: "KeyA", key: "a", repeat: false });
+  assert.equal(again.action, "note");
+
+  // Z/X shift octave and clamp to C1..C7; C/V shift velocity and clamp to 1..127.
+  for (let i = 0; i < 6; i++) state = handleMusicalTypingKeyDown(state, held, { code: "KeyZ", key: "z" }).state;
+  assert.equal(state.basePitch, 24);
+  for (let i = 0; i < 10; i++) state = handleMusicalTypingKeyDown(state, held, { code: "KeyX", key: "x" }).state;
+  assert.equal(state.basePitch, 96);
+  for (let i = 0; i < 20; i++) state = handleMusicalTypingKeyDown(state, held, { code: "KeyC", key: "c" }).state;
+  assert.equal(state.velocity, 1);
+  for (let i = 0; i < 20; i++) state = handleMusicalTypingKeyDown(state, held, { code: "KeyV", key: "v" }).state;
+  assert.equal(state.velocity, 127);
+
+  // Escape turns musical typing off and clears held keys.
+  const off = handleMusicalTypingKeyDown(state, held, { code: "Escape", key: "Escape" });
+  assert.equal(off.action, "off");
+  assert.equal(off.state.enabled, false);
+  assert.equal(held.size, 0);
 });
 
 test("Load VST3 sends the scanned plug-in's file and id, or nothing without a track or file", () => {
@@ -242,7 +290,16 @@ test("the Keysounds modal wires every piano roll gesture to its keysounds_action
     /send\(keysoundsLoadVst3\(trackId, plugin\)\)/,
     /payload: keysoundsGenerate\(\)[\s\S]*?showToast\(toast\)/,
     /Generate \[Keysounds\]/,
+    /keysoundsToggleMute\(id\)/,
+    /keysoundsToggleSolo\(id\)/,
+    /keysoundsTrimOverlaps\(id\)/,
+    /keysoundsSyncToObjects\(trackId\)/,
+    /class="ks-workspace"/,
+    /class="ks-ghost-note"/,
+    /class="ks-object-line"/,
   ]) assert.match(keysounds, wiring);
+  // Inline workspace must not wrap the piano roll in a floating modal backdrop.
+  assert.doesNotMatch(source("KeysoundsModal.svelte"), /class="ks-backdrop"/);
   // A press that lands on a note must not fall through to the grid and add another.
   assert.match(keysounds, /event\.target !== event\.currentTarget/);
   // Previews skip send() so the bar does not flicker; preview_note's summary is not applied.

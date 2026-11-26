@@ -11,6 +11,8 @@
     beats = [],
     sustainSpans = [],
     notes = [],
+    ghostNotes = [],
+    objectTimes = [],
     selected = $bindable(null),
     loading = false,
     trackId = null,
@@ -87,6 +89,15 @@
     {#each beats as beat (beat)}
       <div class="ks-beat" class:bar={beat % 2000 === 0} class:sustained={Boolean(sustainSpanAt(sustainSpans, beat))}
         style:--ks-left={beat * PX_PER_MS + "px"}></div>
+    {/each}
+    {#each objectTimes as timeMs, idx (`obj-${idx}-${timeMs}`)}
+      <div class="ks-object-line" aria-hidden="true" style:--ks-left={timeMs * PX_PER_MS + "px"}></div>
+    {/each}
+    {#each ghostNotes as ghost, idx (`ghost-${ghost.trackId}-${idx}`)}
+      <div class="ks-ghost-note" aria-hidden="true"
+        style:--ks-left={ghost.startMs * PX_PER_MS + "px"}
+        style:--ks-top={pitchRow(ghost.pitch) + "px"}
+        style:--ks-width={Math.max(4, (ghost.endMs - ghost.startMs) * PX_PER_MS) + "px"}></div>
     {/each}
     {#each notes as note (note.index)}
       <div class="ks-note" class:selected={selected === note.index} class:muted={note.muted}
@@ -177,6 +188,28 @@
   }
   .ks-beat.bar {
     background: rgba(255, 255, 255, 0.14);
+  }
+  .ks-object-line {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: var(--ks-left);
+    width: 1px;
+    pointer-events: none;
+    background: rgba(239, 193, 106, 0.28);
+  }
+  .ks-ghost-note {
+    position: absolute;
+    z-index: 0;
+    left: var(--ks-left);
+    top: var(--ks-top);
+    width: var(--ks-width);
+    height: calc(var(--ks-row) - 1px);
+    box-sizing: border-box;
+    border: 1px solid rgba(148, 163, 184, 0.22);
+    border-radius: 3px;
+    background: rgba(148, 163, 184, 0.22);
+    pointer-events: none;
   }
   .ks-note {
     position: absolute;

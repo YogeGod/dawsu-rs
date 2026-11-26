@@ -178,7 +178,7 @@ export function initMenus(env = globalThis, { ui: uiOverride = null, bridge: bri
     openMidiImport: () => openModal("openMidiImport"),
     importManiaHitsounds: () => importManiaHitsounds(),
     exportMidi: () => exportMidi(),
-    openKeysounds: () => openModal("openKeysounds"),
+    openKeysounds: () => { ui?.setMode?.("keysounds"); openModal("openKeysounds"); },
     openSharedBase: () => openModal("openSharedBase"),
     openStemSeparation: () => openModal("openStemSeparation"),
     openNewDifficulty: () => callAction("inspectorAction", "new"),

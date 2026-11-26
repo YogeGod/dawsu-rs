@@ -492,8 +492,11 @@ export function attachIpc(ctx) {
     for (const button of env.document.querySelectorAll("[data-doc]")) {
       if (button.disabled !== docDisabled) button.disabled = docDisabled;
     }
-    $("samples-view").ariaPressed = String(!state.view.drumView?.enabled);
-    $("drums-view").ariaPressed = String(!!state.view.drumView?.enabled);
+    const keysoundsActive = Boolean($("editor-arrange")?.classList?.contains?.("keysounds-active"));
+    $("samples-view").ariaPressed = String(!keysoundsActive && !state.view.drumView?.enabled);
+    $("drums-view").ariaPressed = String(!keysoundsActive && !!state.view.drumView?.enabled);
+    const keysoundsViewBtn = $("keysounds-view");
+    if (keysoundsViewBtn) keysoundsViewBtn.ariaPressed = String(keysoundsActive);
     $("drums-view").title = state.view.drumView?.name ?? "Open a drum map";
     ctx.syncDrumVst3Button?.();
     $("ramp-shape").value = state.view.rampShape ?? "Linear";
