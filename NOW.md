@@ -1,6 +1,6 @@
 # NOW.md — Current Sprint (`dawsu-rs`)
 
-`origin/main` is `86f15f4` (`PR #93`–`#99` merged, incl **`v1.1.0-alpha.3`**, Draw/marquee fix, repo cleanup, 3 core-seam refactorings, agent rules refresh, inline keysounding piano roll, compressed docs, cached `osu!.db` Songs scanner). Full sprint archive in `E:/Obsidian/Workspace/dawsu-rewrite/now.md`.
+`origin/main` is `aecf0b5` (`PR #93`–`#99` merged, incl **`v1.1.0-alpha.3`**, Draw/marquee fix, repo cleanup, 3 core-seam refactorings, agent rules refresh, inline keysounding piano roll, compressed docs, cached `osu!.db` Songs scanner, Export Review .osu diff + read-back verification). Full sprint archive in `E:/Obsidian/Workspace/dawsu-rewrite/now.md`.
 
 ## Recent Landed Milestones
 
@@ -13,6 +13,7 @@
 - **Repo Cleanup, Core-Seam Refactorings & Agent Rules** (`b466a62`–`b629e01`, `f80592b`): dropped obsolete migration tests/artifacts; encapsulated 25 `Application` fields behind O(1) `ViewStateToken` (`761cb38`); collapsed 29 Tauri commands → 5 domain action seams (`835010a`, `112 → 88` cmds, `96 → 72` perms); collapsed 27 `main.js` wrappers & 169 globals into `Bridge`/`registry` w/ `exposeGlobals: false` (`283396a`, `41/41` `everyday-check.mjs` PASS); updated/compressed `AGENTS.md`, `NOW.md`, `verify-dawsu`, `.agents/skills.json`.
 - **Inline Keysounding Piano Roll & v3.1.4 Parity** (`1b21edb`): inline `#editor-arrange` piano roll swap (`keysounds-active`), track mute/solo + `sync_to_objects` + `trim_overlaps`, audible-track ghost notes & beatmap object lines, v3.1.4 musical typing (`Alt+K`, `Z`/`X` octave, `C`/`V` velocity).
 - **Cached `osu!.db` Songs Folder Scanner** (`86f15f4`): parent/canonical + `osu!.*.cfg` `BeatmapDirectory` discovery, atomic `DWSIDX01` `.sidx` disk cache w/ live `fs::metadata` delta reconciliation, bounded parallel header-only fallback, panic-safe generation-guarded single-flight `SongsIndexCache` w/ startup warm-up & in-place HS diff patch, non-blocking `relink_moved_mapset`, subtle Start Screen source tooltip (`261 ms` cold DB / `769 ms` warm `.sidx` on 5k NTFS folders; `41/41` `everyday-check.mjs` PASS).
+- **Export Review `.osu` Diff Preview & Pre-Write Read-Back Verification** (`aecf0b5`): section-scoped Patience + O(N) equal-length `[HitObjects]` diff engine w/ fair 200-line per-section budget & `byteIdentical` / line-endings-only flags; 4-part pre-write read-back check (re-parse/round-trip + warning delta, structure, `verify_compiled_osu` + `verify_envelope_preserved`, post-write sample resolution) gating Direct & HitsoundOnly writes in UI & Rust; `OsuDiffDrawer` w/ section filter chips, `Diff +N/-M` & `✓ Verified`/`✕ Check failed` card badges beside `▶ Listen`, sidebar `Read-back check` card (0 Clippy warnings, 1,184 Rust, 329 UI, 348 JS tests, `41/41` `everyday-check.mjs` PASS).
 
 ## Still Open Next
 
