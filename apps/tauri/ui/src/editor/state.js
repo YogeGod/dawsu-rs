@@ -19,6 +19,7 @@ export function createState() {
     waveformDrag: null,
     markedRange: null,
     drawStrokePreview: null,
+    pendingDrawHits: [],
 
     browserMap: "",
     browserFolder: "",
@@ -68,6 +69,7 @@ export function createState() {
     inspectorState: null,
     inspectorLists: new Map(),
     problemStripKept: null,
+    problemStripObjectsCache: null,
 
     sectionBarCache: null,
     sliderEndCache: null,
@@ -95,6 +97,7 @@ export function createState() {
 
     pending: Promise.resolve(),
     requests: 0,
+    pendingFullRequests: 0,
     refreshing: false,
     lastRefresh: 0,
     frame: 0,

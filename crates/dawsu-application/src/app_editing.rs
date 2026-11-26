@@ -74,6 +74,60 @@ impl Application {
         self.pointer_input(phase, input);
         self.refresh_recovery_edit();
     }
+    /// Replaces or extends selection with every hit in `from_ms..=to_ms` on the explicit
+    /// visible data-lane indices in `rows`, so visual folder/custom lane ordering matches
+    /// the on-screen marquee box.
+    pub fn select_box(
+        &mut self,
+        from_ms: f64,
+        to_ms: f64,
+        rows: &[usize],
+        additive: bool,
+        active_lane: Option<usize>,
+    ) {
+        if self.busy {
+            return;
+        }
+        self.cancel_controller_stroke();
+        let Some(d) = self.document.as_mut() else {
+            return;
+        };
+        if self.tools.is_stroke_open() {
+            self.tools.cancel(&mut d.composer);
+        }
+        if let Some(lane) = active_lane.filter(|&row| row < d.composer.lanes.len()) {
+            self.active_lane = lane;
+        }
+        let (lo, hi) = if to_ms < from_ms { (to_ms, from_ms) } else { (from_ms, to_ms) };
+        let lane_set: std::collections::HashSet<&SampleIdentity> = rows
+            .iter()
+            .filter_map(|&row| d.composer.lanes.get(row))
+            .collect();
+        let mut inside = Vec::new();
+        if !lane_set.is_empty() && lo.is_finite() && hi.is_finite() {
+            for (i, moment) in d.composer.hitsounds().moments().iter().enumerate() {
+                let t = moment.time().ms();
+                if t < lo || t > hi {
+                    continue;
+                }
+                for lane in moment.hits() {
+                    if lane_set.contains(lane) {
+                        inside.push(HitKey {
+                            moment: i,
+                            lane: lane.clone(),
+                        });
+                    }
+                }
+            }
+        }
+        if additive {
+            for item in inside {
+                d.composer.selected.add(item);
+            }
+        } else {
+            d.composer.selected.replace(inside);
+        }
+    }
     pub(crate) fn pointer_input(&mut self, phase: PointerPhase, input: PointerInput) {
         if self.busy {
             return;

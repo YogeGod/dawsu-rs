@@ -263,8 +263,17 @@ export function attachLanes(ctx) {
       state.laneVisualPositions.get(row).push(position);
     }
     const lanePanel = $("lanes");
-    lanePanel.style.setProperty("--lane-row-height", state.scene.rowHeight + "px");
-    const laneKey = JSON.stringify([state.laneRows, drumNames, state.scene.lanes, state.view.activeLane, [...state.selectionLaneKeys],
+    const nextRowHeight = state.scene.rowHeight + "px";
+    if (lanePanel.dataset.rowHeight !== nextRowHeight) {
+      lanePanel.dataset.rowHeight = nextRowHeight;
+      lanePanel.style.setProperty("--lane-row-height", nextRowHeight);
+    }
+    // Lane headers display whether a lane has hits (for folder used counts), not raw hitCount or gain.
+    const laneHeaderProjection = state.scene.lanes.map(l => l ? [
+      l.key, l.colourKey, l.name, l.sample, l.group, l.index, l.family,
+      l.muted, l.solo, l.canAddLayer, l.canDelete, l.vstRouted, l.vstBypassed, l.hitCount > 0,
+    ] : null);
+    const laneKey = JSON.stringify([state.laneRows, drumNames, laneHeaderProjection, state.view.activeLane, [...state.selectionLaneKeys],
       [...state.familyParents], state.view.panels?.laneNames !== false, state.showLaneInfo, [...state.laneColours], [...state.renamedLanes], !!state.view.busy,
       !!state.view.drumView?.enabled, state.view.drumView?.name ?? null, state.groupBySampleSet !== false, state.scene.rowHeight >= 40]);
     if (lanePanel.dataset.state !== laneKey) {

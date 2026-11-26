@@ -995,3 +995,79 @@ fn removing_a_lane_takes_its_hits_in_one_step_and_keeps_its_layers() {
     remove(&mut app, &now, layer);
     assert_eq!(app.status, "Removed Crash and 1 hit. Undo restores them.");
 }
+
+#[test]
+fn select_box_selects_only_requested_non_contiguous_visual_rows() {
+    let fixture = Fixture::new("select-box-visual-rows");
+    let map = fixture.0.join("VisualRows.osu");
+    let content = "osu file format v14\n\n[TimingPoints]\n0,500,4,1,0,100,1,0\n\n[HitObjects]\n\
+        256,192,1000,1,14,0:0:0:100:\n\
+        256,192,1500,1,14,0:0:0:100:\n";
+    fs::write(&map, content).unwrap();
+    let mut app = Application::headless();
+    open(&mut app, &map);
+    let s = snapshot(&app, true)["scene"].clone();
+    let row_of = |name: &str| {
+        s["lanes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .position(|l| l["name"] == name)
+            .unwrap()
+    };
+    let normal = row_of("normal-hitnormal");
+    let whistle = row_of("normal-hitwhistle");
+    let finish = row_of("normal-hitfinish");
+    let clap = row_of("normal-hitclap");
+    assert!(normal < whistle && whistle < finish && finish < clap);
+
+    // Select only normal and clap (skipping whistle & finish numerically in between!).
+    Action::SelectBox {
+        from_ms: 900.0,
+        to_ms: 1600.0,
+        rows: vec![clap, normal],
+        additive: false,
+        active_lane: Some(clap),
+    }
+    .run(&mut app);
+
+    let after = snapshot(&app, true)["scene"].clone();
+    assert_eq!(after["selection"]["count"], 4, "2 moments x 2 lanes = 4 hits");
+    let selected_rows: std::collections::BTreeSet<usize> = after["moments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|m| m[3].as_array().unwrap().iter())
+        .filter(|h| h[1].as_bool() == Some(true))
+        .map(|h| h[0].as_u64().unwrap() as usize)
+        .collect();
+    assert_eq!(
+        selected_rows,
+        [normal, clap].into_iter().collect(),
+        "must not select intermediate lanes whistle/finish"
+    );
+
+    // Additive select adds whistle without losing normal/clap.
+    Action::SelectBox {
+        from_ms: 1400.0,
+        to_ms: 1600.0,
+        rows: vec![whistle],
+        additive: true,
+        active_lane: None,
+    }
+    .run(&mut app);
+    let added = snapshot(&app, true)["scene"].clone();
+    assert_eq!(added["selection"]["count"], 5);
+
+    // Empty rows with additive=false clears selection cleanly.
+    Action::SelectBox {
+        from_ms: 0.0,
+        to_ms: 0.0,
+        rows: vec![],
+        additive: false,
+        active_lane: None,
+    }
+    .run(&mut app);
+    let cleared = snapshot(&app, true)["scene"].clone();
+    assert!(cleared["selection"].is_null());
+}

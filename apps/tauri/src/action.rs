@@ -410,6 +410,14 @@ pub(crate) enum Action {
         start_ms: f64,
         end_ms: f64,
     },
+    SelectBox {
+        from_ms: f64,
+        to_ms: f64,
+        rows: Vec<usize>,
+        additive: bool,
+        #[serde(default)]
+        active_lane: Option<usize>,
+    },
     ToggleStepHit {
         row: usize,
         ms: f64,
@@ -902,6 +910,15 @@ impl Action {
                 end_ms,
             } => {
                 app.paint_hits_on_lane(row, start_ms, end_ms);
+            }
+            Self::SelectBox {
+                from_ms,
+                to_ms,
+                rows,
+                additive,
+                active_lane,
+            } => {
+                app.select_box(from_ms, to_ms, &rows, additive, active_lane);
             }
             Self::ToggleStepHit { row, ms } => {
                 app.toggle_step_hit(row, ms);

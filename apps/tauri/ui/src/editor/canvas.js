@@ -1122,6 +1122,20 @@ export function attachCanvas(ctx) {
         volumeLanes = new Set();
       }
     }
+    let liveMarquee = null;
+    if (state.drag?.marquee && state.drag.lastPoint) {
+      const fx = state.drag.firstPoint.x, fy = state.drag.firstPoint.y;
+      const lx = state.drag.lastPoint.x, ly = state.drag.lastPoint.y;
+      if (Math.hypot(lx - fx, ly - fy) > 3) {
+        liveMarquee = {
+          minMs: Math.min(Math.max(0, state.drag.firstPoint.ms), state.drag.lastPoint.ms),
+          maxMs: Math.max(Math.max(0, state.drag.firstPoint.ms), state.drag.lastPoint.ms),
+          loVis: Math.floor(Math.min(fy, ly) / rowHeight),
+          hiVis: Math.floor(Math.max(fy, ly) / rowHeight),
+          additive: !!state.drag.additive,
+        };
+      }
+    }
     for (let mIdx = firstMoment; mIdx < moments.length; mIdx++) {
       const [time, volume, , hits] = moments[mIdx];
       if (time > maxVisibleTime) break;
@@ -1157,11 +1171,17 @@ export function attachCanvas(ctx) {
         for (const visibleRow of state.laneVisualPositions.get(row) ?? []) {
           const y = (visibleRow + 0.5) * rowHeight - scrollTop;
           if (y < -8 || y > g.height + 8) continue;
+          const inLiveBox = liveMarquee !== null
+            && time >= liveMarquee.minMs && time <= liveMarquee.maxMs
+            && visibleRow >= liveMarquee.loVis && visibleRow <= liveMarquee.hiVis;
+          const isSelected = liveMarquee !== null
+            ? (liveMarquee.additive ? (selected || inLiveBox) : inLiveBox)
+            : selected;
           g.ctx.fillStyle = listenMuted ? "#858585" : volumeColour(hitVolume ?? volume);
           fillHitDiamond(g.ctx, x, y);
-          if (selected || hasProblem) {
+          if (isSelected || hasProblem) {
             g.ctx.lineWidth = 2;
-            g.ctx.strokeStyle = selected ? "#ffffff" : "#e86b72";
+            g.ctx.strokeStyle = isSelected ? "#ffffff" : "#e86b72";
             g.ctx.stroke();
             g.ctx.lineWidth = 1;
           }
@@ -1203,6 +1223,20 @@ export function attachCanvas(ctx) {
         g.ctx.fillRect(x, y, width, height);
         g.ctx.strokeStyle = "#77bdfa";
         g.ctx.strokeRect(x, y, width, height);
+      }
+    }
+    if (state.pendingDrawHits?.length) {
+      for (const hit of state.pendingDrawHits) {
+        if (hit.time < minVisibleTime || hit.time > maxVisibleTime) continue;
+        const px = xOf(hit.time);
+        if (px < -8 || px > g.width + 8) continue;
+        const visibleRows = state.laneVisualPositions.get(hit.row) ?? [];
+        g.ctx.fillStyle = volumeColour(hit.volume ?? 100);
+        for (const visibleRow of visibleRows) {
+          const py = (visibleRow + 0.5) * rowHeight - scrollTop;
+          if (py < -8 || py > g.height + 8) continue;
+          fillHitDiamond(g.ctx, px, py);
+        }
       }
     }
     if (state.drawStrokePreview?.steps?.length) {

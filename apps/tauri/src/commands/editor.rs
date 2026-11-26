@@ -7,6 +7,8 @@ use crate::action::Action;
 use crate::scene::ViewResponse;
 use crate::{Editor, Request, ask, folders, osu_link};
 
+static LAST_MAIN_WINDOW_TITLE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
 #[tauri::command]
 pub(crate) fn editor_view(
     window: tauri::WebviewWindow,
@@ -18,7 +20,7 @@ pub(crate) fn editor_view(
 ) -> Result<ViewResponse, String> {
     let view = ask(&state, |tx| Request::View(scene, action, fresh.unwrap_or(false), tick_rev, tx))?;
     if let ViewResponse::View(snapshot) = &view {
-        if let Some(scene_val) = &snapshot.scene {
+        let next_title = if let Some(scene_val) = &snapshot.scene {
             let map_title = scene_val.title.as_str();
             let version = scene_val.version.as_str();
             let file_stem = scene_val
@@ -26,16 +28,33 @@ pub(crate) fn editor_view(
                 .file_stem()
                 .and_then(|s| s.to_str())
                 .unwrap_or("");
-            let title = if !version.is_empty() && !map_title.is_empty() {
+            Some(if !version.is_empty() && !map_title.is_empty() {
                 format!("{map_title} [{version}] — dawsu!")
             } else if !file_stem.is_empty() {
                 format!("{file_stem} — dawsu!")
             } else {
                 "dawsu!".to_string()
-            };
-            let _ = window.set_title(&title);
+            })
         } else if !snapshot.has_document {
-            let _ = window.set_title("dawsu!");
+            Some("dawsu!".to_string())
+        } else {
+            None
+        };
+        if let Some(title) = next_title {
+            let changed = LAST_MAIN_WINDOW_TITLE
+                .lock()
+                .map(|mut last| {
+                    if last.as_deref() == Some(title.as_str()) {
+                        false
+                    } else {
+                        *last = Some(title.clone());
+                        true
+                    }
+                })
+                .unwrap_or(true);
+            if changed {
+                let _ = window.set_title(&title);
+            }
         }
     }
     Ok(view)

@@ -102,18 +102,45 @@ export function attachInspector(ctx) {
     return list;
   }
 
-  // Difficulty's problem strip data, kept until the scene, the problems, the song length or the view
-  // change, so the strip doesn't rebuild on every update while playing.
+  function cachedObjectTimes() {
+    const key = [state.scene.path, state.scene.previewKey, state.scene.hs ? state.scene.laneRevision : 0];
+    if (state.problemStripObjectsCache?.key.every((value, index) => Object.is(value, key[index]))) {
+      return state.problemStripObjectsCache.objects;
+    }
+    const objects = (state.scene.moments ?? []).filter(moment => moment[2]).map(moment => moment[0]);
+    state.problemStripObjectsCache = { key, objects };
+    return objects;
+  }
+
+  // Difficulty's problem strip data, kept until the map's objects, problems, orphaned hits,
+  // song length or viewport actually change, so edits don't rebuild the strip on every click.
   function problemStripData() {
     if (!state.scene) return null;
-    const viewWidth = (elements.grid.clientWidth || 0) / state.scene.zoom;
-    const key = [state.scene, JSON.stringify(state.view?.outputProblems ?? []), state.view?.duration, state.scene.viewStart, viewWidth];
+    const gridWidth = state.gridClientWidth || elements.grid.clientWidth || 0;
+    const viewWidth = gridWidth / state.scene.zoom;
+    const objects = cachedObjectTimes();
+    const orphaned = state.scene.orphanedHits ?? [];
+    const orphanedKey = orphaned.length === 0
+      ? "0"
+      : `${orphaned.length}:${orphaned[0]}:${orphaned[orphaned.length - 1]}:${state.scene.laneRevision ?? 0}`;
+    const problems = state.view?.outputProblems ?? [];
+    const problemsKey = problems.length === 0 ? "0" : (state.outputProblemList ?? JSON.stringify(problems));
+    const key = [
+      state.scene.path,
+      state.scene.version ?? "",
+      problemsKey,
+      orphanedKey,
+      objects,
+      state.view?.duration ?? 0,
+      state.scene.viewStart,
+      viewWidth,
+    ];
     if (state.problemStripKept?.key.every((value, index) => Object.is(value, key[index]))) return state.problemStripKept.strip;
     const strip = {
       path: state.scene.path, name: state.scene.version ?? "", duration: state.view?.duration ?? 0,
-      problems: state.view?.outputProblems ?? [],
-      orphaned: state.scene.orphanedHits ?? [],
-      objects: (state.scene.moments ?? []).filter(moment => moment[2]).map(moment => moment[0]),
+      problems,
+      orphaned,
+      objects,
       viewStart: state.scene.viewStart, viewWidth,
     };
     state.problemStripKept = { key, strip };

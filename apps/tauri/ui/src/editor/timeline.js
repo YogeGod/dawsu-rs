@@ -84,17 +84,17 @@ export function attachTimeline(ctx) {
     const valueLane = gesture.surface === controller;
     const y = localY + (valueLane || gesture.panning ? 0 : $("scroll").scrollTop);
     const rowUnderPointer = Math.floor(y / state.scene.rowHeight);
-    const visibleRow = phase === "double_click" ? rowUnderPointer : limit(rowUnderPointer, 0, gesture.rows.length - 1);
+    const visibleRow = phase === "double_click" ? rowUnderPointer : limit(rowUnderPointer, 0, Math.max(0, gesture.rows.length - 1));
     const lane = gesture.rows[visibleRow];
+    gesture.lastVisualRow = visibleRow;
     if (typeof lane === "number") {
       gesture.lastRow = lane;
-      gesture.lastVisualRow = visibleRow;
     }
     const row = valueLane || gesture.panning ? state.view.activeLane : gesture.lastRow;
     let ms = gesture.start + x / gesture.zoom;
     const tool = state.view.tool;
     const rightClick = gesture.button === "right";
-    if (!valueLane && (
+    if (!valueLane && typeof lane === "number" && (
       ((phase === "down" || phase === "double_click") && (rightClick || ["Select", "Erase", "Mute", "Ramp"].includes(tool))) ||
       (phase === "move" && (rightClick || ["Erase", "Mute"].includes(tool)))
     )) {
@@ -737,16 +737,22 @@ export function attachTimeline(ctx) {
         const rightClick = surface === grid && event.button === 2;
         if (!state.scene || state.view.busy || state.drag || state.rulerDrag || (event.button !== 0 && !rightClick)) return;
         const panning = !rightClick && surface === grid && state.view.tool === "Grab" && !event.altKey;
+        const marqueeCapable = !rightClick && surface === grid && !panning && !event.altKey
+          && (state.view.tool === "Select" || state.view.tool === "Range");
+        let startLaneRow;
         if (surface === grid && !panning) {
           const { x, y } = pointerIn(grid, event);
-          const row = state.laneRows[Math.floor((y + $("scroll").scrollTop) / state.scene.rowHeight)];
-          if (row === undefined) return;
-          const time = state.scene.viewStart + x / state.scene.zoom;
-          if (!rightClick && revealLayerPreview(row, time, y)) {
-            event.preventDefault();
-            return;
+          const rawVisual = Math.floor((y + $("scroll").scrollTop) / state.scene.rowHeight);
+          const row = state.laneRows[rawVisual];
+          startLaneRow = row;
+          if (row !== undefined) {
+            const time = state.scene.viewStart + x / state.scene.zoom;
+            if (!rightClick && revealLayerPreview(row, time, y)) {
+              event.preventDefault();
+              return;
+            }
           }
-          if (typeof row !== "number") return;
+          if (!marqueeCapable && typeof row !== "number") return;
         }
         event.preventDefault();
         const HtmlElement = env.HTMLElement;
@@ -756,14 +762,24 @@ export function attachTimeline(ctx) {
           surface, id: event.pointerId, button: rightClick ? "right" : "left",
           start: state.scene.viewStart, zoom: state.scene.zoom,
           rows: state.laneRows, last: 0, panning, scrollTop: $("scroll").scrollTop,
+          startNumericRow: typeof startLaneRow === "number" ? startLaneRow : null,
         };
         state.drag.firstPoint = pointer(event, "down");
         state.drag.firstVisualRow = state.drag.lastVisualRow;
-        state.drag.markingRange = !rightClick && surface === grid && state.view.tool === "Range";
+        state.drag.markingRange = !rightClick && surface === grid && !event.altKey && state.view.tool === "Range";
+        // Select on empty space (or on a folder header / past last lane): handle marquee locally
+        // at 144 Hz with zero per-move IPCs, then commit exact visual rows via select_box on pointerup.
+        if (marqueeCapable && state.view.tool === "Select" && state.drag.hit == null) {
+          state.drag.marquee = true;
+          state.drag.additive = Boolean(event.ctrlKey || event.metaKey || event.shiftKey);
+          if (typeof startLaneRow === "number") ctx.act(state.drag.firstPoint, false);
+          return;
+        }
         const drawingStroke = !rightClick && surface === grid && !panning
           && (state.view.tool === "Draw" || event.altKey)
           && state.scene.snap
           && typeof state.drag.firstPoint.row === "number";
+        let optimisticDraw = false;
         if (drawingStroke) {
           const snappedStart = snapTimeInScene(state.scene, state.drag.firstPoint.ms);
           const startsOnHit = !!findNearestMoment(
@@ -774,6 +790,7 @@ export function attachTimeline(ctx) {
             { strict: false },
           );
           if (!startsOnHit) {
+            optimisticDraw = true;
             state.drag.drawPaint = {
               row: state.drag.firstPoint.row,
               startMs: state.drag.firstPoint.ms,
@@ -782,9 +799,17 @@ export function attachTimeline(ctx) {
               steps: [],
               newSteps: [],
             };
+            state.pendingDrawHits.push({
+              row: state.drag.firstPoint.row,
+              time: snappedStart,
+              volume: state.scene.insertVolume ?? 100,
+            });
+            ctx.paintSoon();
           }
         }
-        ctx.act(state.drag.firstPoint);
+        // Optimistic draw clicks and Range drags skip the redundant full-scene reload on pointerdown;
+        // pointerup fetches the authoritative scene once the gesture finishes.
+        ctx.act(state.drag.firstPoint, !(optimisticDraw || state.drag.markingRange));
       });
       surface.addEventListener("pointermove", (event) => {
         if (surface === grid) handOverHitCard(hitCardAt(event));
@@ -804,6 +829,15 @@ export function attachTimeline(ctx) {
           }
         }
         if (event.pointerId !== state.drag?.id) return;
+        if ((state.drag.marquee || state.drag.markingRange) && state.scene) {
+          const { x, y: localY } = pointerIn(grid, event);
+          const y = localY + $("scroll").scrollTop;
+          const ms = Math.max(0, state.drag.start + x / state.drag.zoom);
+          state.drag.lastPoint = { x, y, ms };
+          state.drag.lastVisualRow = limit(Math.floor(y / state.scene.rowHeight), 0, Math.max(0, state.drag.rows.length - 1));
+          ctx.paintSoon();
+          return;
+        }
         if (state.drag.drawPaint && state.scene) {
           const dp = state.drag.drawPaint;
           const { x } = pointerIn(grid, event);
@@ -833,6 +867,49 @@ export function attachTimeline(ctx) {
         surface.addEventListener(type, (event) => {
           if (event.pointerId !== state.drag?.id) return;
           const released = type === "pointerup";
+          if (state.drag.marquee) {
+            const drag = state.drag;
+            state.drag = null;
+            if (released && state.scene) {
+              const { x, y: localY } = pointerIn(grid, event);
+              const endY = localY + $("scroll").scrollTop;
+              const endMs = Math.max(0, drag.start + x / drag.zoom);
+              const first = drag.firstPoint;
+              const moved = Math.hypot(x - first.x, endY - first.y) > 3;
+              const activePatch = drag.startNumericRow != null ? { active_lane: drag.startNumericRow } : {};
+              if (moved) {
+                const rowHeight = state.scene.rowHeight || 30;
+                const minY = Math.min(first.y, endY);
+                const maxY = Math.max(first.y, endY);
+                const loVis = Math.max(0, Math.floor(minY / rowHeight));
+                const hiVis = Math.min(drag.rows.length - 1, Math.floor(maxY / rowHeight));
+                const rows = loVis <= hiVis
+                  ? [...new Set(drag.rows.slice(loVis, hiVis + 1).filter(row => typeof row === "number"))]
+                  : [];
+                ctx.act({
+                  kind: "select_box",
+                  from_ms: Math.min(Math.max(0, first.ms), endMs),
+                  to_ms: Math.max(Math.max(0, first.ms), endMs),
+                  rows,
+                  additive: drag.additive,
+                  ...activePatch,
+                });
+              } else if (drag.startNumericRow != null) {
+                const end = pointer(event, "up", drag);
+                ctx.act(end, Boolean(state.scene.selection || state.view.activeLane !== drag.startNumericRow));
+              } else if (!drag.additive && state.scene.selection) {
+                ctx.act({
+                  kind: "select_box",
+                  from_ms: 0,
+                  to_ms: 0,
+                  rows: [],
+                  additive: false,
+                });
+              }
+            }
+            ctx.paintSoon();
+            return;
+          }
           const end = pointer(event, released ? "up" : "cancel");
           const dp = state.drag.drawPaint;
           if (state.drawStrokePreview) {
@@ -840,9 +917,13 @@ export function attachTimeline(ctx) {
             ctx.paintSoon();
           }
           if (released && dp?.active) {
-            const { steps } = computeDrawStrokeSteps(state.scene, dp.startMs, end.ms, dp.row);
+            const { steps, newSteps } = computeDrawStrokeSteps(state.scene, dp.startMs, end.ms, dp.row);
             if (steps.length > 1) {
-              ctx.act({ ...end, phase: "cancel" });
+              for (const stepTime of newSteps) {
+                state.pendingDrawHits.push({ row: dp.row, time: stepTime, volume: state.scene.insertVolume ?? 100 });
+              }
+              ctx.paintSoon();
+              ctx.act({ ...end, phase: "cancel" }, false);
               ctx.act({
                 kind: "paint_draw_stroke",
                 row: dp.row,
@@ -865,7 +946,7 @@ export function attachTimeline(ctx) {
           }
           if (moved) {
             scrollGrab(end);
-            ctx.act({ ...end, phase: "move" });
+            ctx.act({ ...end, phase: "move" }, false);
           }
           ctx.act(end);
           state.drag = null;
@@ -889,7 +970,10 @@ export function attachTimeline(ctx) {
       ctx.paintSoon();
     });
     const ResizeObserverCtor = env.ResizeObserver ?? ResizeObserver;
-    new ResizeObserverCtor(() => ctx.paintSoon()).observe($("scroll"));
+    new ResizeObserverCtor(() => {
+      state.gridClientWidth = grid.clientWidth || 0;
+      ctx.paintSoon();
+    }).observe($("scroll"));
 
     waveformGrip.addEventListener("pointerdown", event => {
       if (event.button !== 0 || state.drag || state.rulerDrag || state.waveformDrag) return;

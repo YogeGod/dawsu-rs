@@ -29,6 +29,10 @@ export function attachIpc(ctx) {
       (env.console ?? console).error(error);
     }).finally(() => {
       state.requests--;
+      if (state.requests === 0 && state.pendingDrawHits?.length) {
+        state.pendingDrawHits = [];
+        ctx.paintSoon?.();
+      }
       // A wheel zoom or pan held back while the editor answered goes now.
       ctx.flushWheel?.();
     });
@@ -205,7 +209,18 @@ export function attachIpc(ctx) {
       try { ctx.ui()?.update?.(state.view, state.scene); } catch (error) { (env.console ?? console).error(error); }
     }
     const requestFull = action?.kind === "tool" ? false : full;
-    return ctx.run(() => ctx.update(action, requestFull));
+    if (requestFull) state.pendingFullRequests = (state.pendingFullRequests ?? 0) + 1;
+    return ctx.run(async () => {
+      let effectiveFull = requestFull;
+      if (requestFull) {
+        const remaining = state.pendingFullRequests;
+        state.pendingFullRequests = Math.max(0, remaining - 1);
+        // When another full-scene action is already queued behind a rapid pointer edit,
+        // skip building and parsing a full 174 KB+ scene for this intermediate step.
+        if (remaining > 1 && action?.kind === "pointer") effectiveFull = false;
+      }
+      await ctx.update(action, effectiveFull);
+    });
   }
 
   const command = (id) => ctx.act({ kind: "command", id });
@@ -471,7 +486,10 @@ export function attachIpc(ctx) {
     save.dataset.dirty = String(!!state.scene && !!state.view.dirty);
     save.setAttribute("aria-label", saveName);
     save.title = saveName;
-    for (const button of env.document.querySelectorAll("[data-doc]")) button.disabled = !state.scene || !!state.view.busy;
+    const docDisabled = !state.scene || !!state.view.busy;
+    for (const button of env.document.querySelectorAll("[data-doc]")) {
+      if (button.disabled !== docDisabled) button.disabled = docDisabled;
+    }
     $("samples-view").ariaPressed = String(!state.view.drumView?.enabled);
     $("drums-view").ariaPressed = String(!!state.view.drumView?.enabled);
     $("drums-view").title = state.view.drumView?.name ?? "Open a drum map";

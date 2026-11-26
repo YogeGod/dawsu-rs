@@ -705,10 +705,18 @@ pub(crate) fn snapshot_with_static(app: &Application, include_scene: bool, inclu
                     vst_routed,
                 }
             }).collect::<Vec<_>>();
-            let selected: std::collections::HashSet<_> = c.selected.items().iter()
-                .map(|key| (key.moment, &key.lane)).collect();
-            let listen_muted: std::collections::HashSet<_> = c.listen_muted.iter()
-                .map(|key| (key.moment, &key.lane)).collect();
+            let has_selected = !c.selected.items().is_empty();
+            let selected: std::collections::HashSet<_> = if has_selected {
+                c.selected.items().iter().map(|key| (key.moment, &key.lane)).collect()
+            } else {
+                std::collections::HashSet::new()
+            };
+            let has_listen_muted = !c.listen_muted.is_empty();
+            let listen_muted: std::collections::HashSet<_> = if has_listen_muted {
+                c.listen_muted.iter().map(|key| (key.moment, &key.lane)).collect()
+            } else {
+                std::collections::HashSet::new()
+            };
             let source_moments = c.hitsounds().moments();
             let mut moment_entries = Vec::with_capacity(source_moments.len());
             let mut hit_entries = Vec::with_capacity(source_moments.len());
@@ -717,8 +725,8 @@ pub(crate) fn snapshot_with_static(app: &Application, include_scene: bool, inclu
                 let moment_vol = moment.volume();
                 for lane in moment.hits() {
                     let Some(&row) = row_by_lane.get(lane) else { continue };
-                    let is_selected = selected.contains(&(i, lane));
-                    let muted = listen_muted.contains(&(i, lane));
+                    let is_selected = has_selected && selected.contains(&(i, lane));
+                    let muted = has_listen_muted && listen_muted.contains(&(i, lane));
                     let gain = moment.hit_volume(lane);
                     hit_entries.push(SceneHit {
                         row,
@@ -954,7 +962,7 @@ pub(crate) fn snapshot_with_static(app: &Application, include_scene: bool, inclu
         quantize_strength: app.quantize_strength(),
         ramp_shape: format!("{:?}", app.ramp_shape()),
         recent: app.preferences.recent.clone(),
-        recent_meta: (document.is_none() || include_scene).then(|| {
+        recent_meta: (document.is_none() || include_static).then(|| {
             app.preferences
                 .recent
                 .iter()

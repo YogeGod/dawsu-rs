@@ -320,7 +320,7 @@ fn typed_scene_matches_legacy_json_bytes_exactly() {
             },
             "recent": app.preferences.recent, "firstLaunch": app.first_launch,
         });
-        if document.is_none() || include_scene {
+        if document.is_none() || include_static {
             result["recentMeta"] = json!(app.preferences.recent.iter().map(|p| crate::cached_recent_meta(p)).collect::<Vec<_>>());
         }
         result["hsMode"] = json!(document.is_some_and(|d| d.hs_mode));
