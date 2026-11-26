@@ -10,7 +10,7 @@ fn keyboard_and_help_share_the_catalogue_and_missing_documents_disable_edits() {
             .any(|g| g.entries.iter().any(|e| e.description == "Undo"))
     );
     app.key(KeyChord::new(Key::O, Mods::CTRL));
-    assert_eq!(app.requests.len(), 1);
+    assert_eq!(app.requests().len(), 1);
     app.command("undo");
     assert!(!app.is_dirty());
 }
@@ -41,7 +41,7 @@ fn legacy_map_and_filter_shortcuts_request_existing_editor_controls() {
     let mut app = Application::headless();
     app.request_open(map);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    while app.busy {
+    while app.is_busy() {
         app.poll();
         assert!(std::time::Instant::now() < deadline);
         std::thread::sleep(std::time::Duration::from_millis(5));
@@ -80,7 +80,7 @@ fn imported_legacy_archive_library_and_export_keys_route_to_their_actions() {
     std::fs::write(&map, include_bytes!("project-fixture.osu")).unwrap();
     app.request_open(map);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    while app.busy {
+    while app.is_busy() {
         app.poll();
         assert!(std::time::Instant::now() < deadline);
         std::thread::sleep(std::time::Duration::from_millis(5));

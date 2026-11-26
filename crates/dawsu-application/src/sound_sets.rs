@@ -591,6 +591,7 @@ impl Application {
             self.status = format!("{} {note}", self.status);
         }
         self.sync_audio();
+        self.bump_view_revision();
         Ok(())
     }
 
@@ -759,6 +760,7 @@ impl Application {
         if silent > 0 {
             self.status += &format!(" Left out {silent} silent {}.", if silent == 1 { "sound" } else { "sounds" });
         }
+        self.bump_view_revision();
         Ok(())
     }
 }
@@ -929,6 +931,7 @@ impl Application {
                 0
             };
             self.sound_set_prompts.push(SetUpdatePrompt { set_id: id, name, digest, placements: placements.len(), edited_keep_files });
+            self.view_revision = self.view_revision.wrapping_add(1);
         }
     }
 
@@ -961,6 +964,7 @@ impl Application {
         if update {
             self.update_sound_set(set_id)?;
             self.sound_set_prompts.retain(|p| p.set_id != set_id);
+            self.bump_view_revision();
             return Ok(());
         }
         let prompt = self.sound_set_prompts.remove(index);
@@ -981,6 +985,7 @@ impl Application {
             project.save(settings).map_err(|e| format!("Saving session settings: {e}"))?;
         }
         self.status = format!("Kept this version of \"{}\".", prompt.name);
+        self.bump_view_revision();
         Ok(())
     }
 
@@ -1271,6 +1276,7 @@ impl Application {
         });
         let (set, note) = self.rerender_set(set_id, |name| format!("Update sound set {name}"), None)?;
         self.status = format!("Updated {count} {} of \"{}\".{note}", if count == 1 { "placement" } else { "placements" }, set.name);
+        self.bump_view_revision();
         Ok(())
     }
 
@@ -1312,6 +1318,7 @@ impl Application {
         }
         let (set, note) = self.rerender_set(&p.set_id, |_| "Set sound set volume".into(), Some((id, gain)))?;
         self.status = format!("{} set to {gain}%.{note}", set.name);
+        self.bump_view_revision();
         Ok(())
     }
 
@@ -1336,6 +1343,7 @@ impl Application {
         composer.reset_placement(id, current.as_ref().map(|(d, h)| (d.as_str(), h.as_slice())));
         self.status = "Sound set edits reset.".into();
         self.sync_audio();
+        self.bump_view_revision();
         Ok(())
     }
 
@@ -1347,6 +1355,7 @@ impl Application {
         self.placement(id)?;
         self.document.as_mut().expect("open document").composer.unlink_placement(id);
         self.status = "Sound set unlinked. Its hits stay.".into();
+        self.bump_view_revision();
         Ok(())
     }
 }

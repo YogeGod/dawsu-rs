@@ -552,6 +552,7 @@ impl Application {
         layer.enabled = enabled;
         save_base(&path, &layer)?;
         self.sync_shared_base_track();
+        self.bump_view_revision();
         let document = self.document.as_ref().ok_or("Open a difficulty first.")?;
         Ok(build_status(document, Some(&layer)))
     }
@@ -589,6 +590,7 @@ impl Application {
             },
             label,
         );
+        self.bump_view_revision();
         Ok(status)
     }
 
@@ -730,6 +732,7 @@ impl Application {
             skipped_overrides,
             unmatched_base_moments,
         );
+        self.bump_view_revision();
         Ok(SharedBaseApplyResult {
             applied_moments,
             skipped_overrides,
@@ -1023,6 +1026,7 @@ impl Application {
                 failed_diffs.len()
             )
         };
+        self.bump_view_revision();
         Ok(SharedBaseApplyAllResult {
             updated_diffs,
             skipped_diffs,
@@ -1044,6 +1048,7 @@ impl Application {
         };
         if layer.overrides_by_diff.remove(&key).is_some() {
             save_base(&path, &layer)?;
+            self.bump_view_revision();
         }
         self.sync_shared_base_track();
         let document = self.document.as_ref().ok_or("Open a difficulty first.")?;
@@ -1055,6 +1060,7 @@ impl Application {
         delete_base(&path)?;
         self.base_layer_track = None;
         self.status = "Cleared Shared Base for this mapset.".into();
+        self.bump_view_revision();
         Ok(SharedBaseStatus::default())
     }
 
@@ -1104,6 +1110,7 @@ impl Application {
         let result = rules.clone();
         save_base(&path, &layer)?;
         self.status = format!("Added per-difficulty lane rule ({} total).", result.len());
+        self.bump_view_revision();
         Ok(result)
     }
 
@@ -1136,6 +1143,7 @@ impl Application {
             Vec::new()
         };
         save_base(&path, &layer)?;
+        self.bump_view_revision();
         Ok(remaining)
     }
 
@@ -1190,6 +1198,7 @@ impl Application {
         } else {
             format!("Saved master volume curve ({} point(s)).", normalized.points.len())
         };
+        self.bump_view_revision();
         Ok(normalized)
     }
 

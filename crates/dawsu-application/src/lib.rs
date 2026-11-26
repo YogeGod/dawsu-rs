@@ -420,7 +420,7 @@ impl JobProgress {
 pub struct Application {
     sample_watch: sample_watch::Watch,
     osu_watch: osu_watch::OsuWatch,
-    pub external_osu_changed: bool,
+    pub(crate) external_osu_changed: bool,
     document: Option<Document>,
     audio: Option<AudioEngine>,
     samples: HashMap<SampleIdentity, Arc<AudioClip>>,
@@ -428,21 +428,21 @@ pub struct Application {
     /// The sample file last auditioned or outlined from the Browser, kept while the file is unchanged
     /// so a pick decodes it once for both.
     sample_file: Option<(PathBuf, (u64, std::time::SystemTime), Arc<AudioClip>)>,
-    pub playback_speed: f64,
+    pub(crate) playback_speed: f64,
     pub waveform: Vec<WaveBin>,
-    pub preferences: Preferences,
-    pub status: String,
-    pub error: Option<String>,
-    pub warnings: Vec<String>,
-    pub requests: Vec<PlatformRequest>,
-    pub pending_open: Option<PathBuf>,
+    pub(crate) preferences: Preferences,
+    pub(crate) status: String,
+    pub(crate) error: Option<String>,
+    pub(crate) warnings: Vec<String>,
+    pub(crate) requests: Vec<PlatformRequest>,
+    pub(crate) pending_open: Option<PathBuf>,
     edit_dialog: Option<&'static str>,
     quantize_strength: f64,
-    pub revert_requested: bool,
+    pub(crate) revert_requested: bool,
     has_original_snapshot: Arc<AtomicBool>,
     can_undo_revert: Arc<AtomicBool>,
-    pub busy: bool,
-    pub song_loading: bool,
+    pub(crate) busy: bool,
+    pub(crate) song_loading: bool,
     pending_play_on_song: bool,
     song_job: Option<mpsc::Receiver<JobResult>>,
     song_cancel: Arc<AtomicBool>,
@@ -450,7 +450,7 @@ pub struct Application {
     drum_stem_path: Option<PathBuf>,
     drum_stem: Option<Arc<AudioClip>>,
     drum_stem_waveform: Option<Arc<Vec<WaveBin>>>,
-    pub drum_stem_loading: bool,
+    pub(crate) drum_stem_loading: bool,
     monitor_stem: bool,
     drum_stem_auto_monitor: bool,
     drum_stem_job: Option<mpsc::Receiver<JobResult>>,
@@ -458,12 +458,13 @@ pub struct Application {
     drum_stem_generation: u64,
     stem_separation: stem_separation::StemSeparationManager,
     waveform_revision: u64,
+    view_revision: u64,
     pending_locator_right: Option<(f64, Option<f64>, bool)>,
     #[cfg(test)]
     song_decode_hold: Option<Arc<AtomicBool>>,
     #[cfg(test)]
     started_play_count: usize,
-    pub output_review: Option<output::WritePlan>,
+    pub(crate) output_review: Option<output::WritePlan>,
     export: export::Slot,
     /// Counts loads and Saves of the open difficulty, for the Export preview's identity.
     document_generation: u64,
@@ -491,27 +492,27 @@ pub struct Application {
     hitsounds_solo: bool,
     cached_version: u64,
     cached_listen_version: u64,
-    pub zoom: f64,
-    pub row_height: f32,
+    pub(crate) zoom: f64,
+    pub(crate) row_height: f32,
     project_root: Option<PathBuf>,
     project: Option<project::Project>,
     base_layer_track: Option<base_layer::BaseLayerTrack>,
-    pub locator_left: f64,
-    pub locator_right: f64,
-    pub cycle: bool,
-    pub song_offset: f64,
-    pub active_lane: usize,
+    pub(crate) locator_left: f64,
+    pub(crate) locator_right: f64,
+    pub(crate) cycle: bool,
+    pub(crate) song_offset: f64,
+    pub(crate) active_lane: usize,
     selection_lane_scope: Option<BTreeSet<SampleIdentity>>,
     playback_start: f64,
     return_position: f64,
     last_endpoint_jump: Option<(bool, std::time::Instant)>,
     key_lane_view: Option<(PathBuf, Vec<usize>, f64)>,
-    pub first_launch: bool,
+    pub(crate) first_launch: bool,
     catalogue: Arc<CommandCatalog<Application>>,
     pub keymap: KeyMap,
-    pub help_requested: bool,
+    pub(crate) help_requested: bool,
     /// The bookmark Previous or Next bookmark last jumped to, until the Tauri view takes it.
-    pub bookmark_step: Option<f64>,
+    pub(crate) bookmark_step: Option<f64>,
     persist_preferences: bool,
     data_root: PathBuf,
     checkpoint: Option<recovery::Checkpoint>,
@@ -532,8 +533,8 @@ pub struct Application {
     pub keysound_history: keysound_session::KeysoundUndoHistory,
     pub bounce_cancel: bounce_plan::BounceCancelToken,
     pub vst3: vst3::Vst3Manager,
-    pub drum_vst: Option<drum_vst::DrumVstLiveHandle>,
-    pub drum_vst_loading: bool,
+    pub(crate) drum_vst: Option<drum_vst::DrumVstLiveHandle>,
+    pub(crate) drum_vst_loading: bool,
     drum_vst_job: Option<mpsc::Receiver<JobResult>>,
     drum_vst_cancel: Arc<AtomicBool>,
     drum_vst_generation: u64,
@@ -624,6 +625,7 @@ impl Application {
                 .map(|lane| lane.identity.clone())
                 .collect();
         }
+        self.bump_view_revision();
     }
     fn create(
         preferences: Preferences,
@@ -738,6 +740,7 @@ impl Application {
             keysound_history: keysound_session::KeysoundUndoHistory::default(),
             bounce_cancel: bounce_plan::BounceCancelToken::new(),
             vst3: vst3::Vst3Manager::new(),
+            view_revision: 0,
             drum_vst: None,
             drum_vst_loading: false,
             drum_vst_job: None,
@@ -776,6 +779,285 @@ impl Application {
     pub fn waveform_revision(&self) -> u64 {
         self.waveform_revision
     }
+
+    pub(crate) fn bump_view_revision(&mut self) {
+        self.view_revision = self.view_revision.wrapping_add(1);
+    }
+
+    pub fn view_state_token(&self) -> ViewStateToken {
+        let doc = self.document.as_ref();
+        ViewStateToken {
+            view_revision: self.view_revision,
+            document_generation: self.document_generation,
+            history_version: doc.map_or(0, |d| d.composer.history.version()),
+            listen_version: doc.map_or(0, |d| d.composer.listen_version),
+            waveform_revision: self.waveform_revision,
+            waveform_len: self.active_waveform().len(),
+            duration_bits: self.duration_ms().to_bits(),
+            playing: self.is_playing(),
+            busy: self.busy,
+            song_loading: self.song_loading,
+            drum_stem_loading: self.drum_stem_loading,
+            has_drum_stem: self.has_drum_stem(),
+            monitoring_stem: self.is_monitoring_stem(),
+            drum_vst_loading: self.drum_vst_loading,
+            drum_vst_state: self.drum_vst.as_ref().map(|v| {
+                (
+                    v.is_enabled(),
+                    v.routed_notes().len(),
+                    v.muted_vst_lanes().len(),
+                )
+            }),
+            external_osu_changed: self.external_osu_changed,
+            has_original_snapshot: self.has_original_snapshot(),
+            can_undo_revert: self.can_undo_revert(),
+            tap_recording_armed: self.tap_recording_armed,
+            tap_recorded_count: self.tap_recorded_hits.len(),
+            output_problems_len: self.output_problems.len(),
+            output_problem_revision: self.output_problem_revision,
+            save_problem_review: self.save_problem_review,
+            save_review_pending: self.save_review_pending(),
+            has_output_review: self.output_review.is_some(),
+            sound_set_prompts_len: self.sound_set_prompts.len(),
+            sound_set_prompt_open: self.sound_set_prompt_open(),
+            has_document: doc.is_some(),
+            hs_mode: doc.is_some_and(|d| d.hs_mode),
+            dirty: self.is_dirty(),
+        }
+    }
+
+    pub fn external_osu_changed(&self) -> bool {
+        self.external_osu_changed
+    }
+    pub fn playback_speed(&self) -> f64 {
+        self.playback_speed
+    }
+    pub fn preferences(&self) -> &Preferences {
+        &self.preferences
+    }
+    pub fn status(&self) -> &str {
+        &self.status
+    }
+    pub fn error(&self) -> Option<&str> {
+        self.error.as_deref()
+    }
+    pub fn warnings(&self) -> &[String] {
+        &self.warnings
+    }
+    pub fn requests(&self) -> &[PlatformRequest] {
+        &self.requests
+    }
+    pub fn has_pending_open(&self) -> bool {
+        self.pending_open.is_some()
+    }
+    pub fn revert_requested(&self) -> bool {
+        self.revert_requested
+    }
+    pub fn is_busy(&self) -> bool {
+        self.busy
+    }
+    pub fn is_song_loading(&self) -> bool {
+        self.song_loading
+    }
+    pub fn is_drum_stem_loading(&self) -> bool {
+        self.drum_stem_loading
+    }
+    pub fn output_review(&self) -> Option<&output::WritePlan> {
+        self.output_review.as_ref()
+    }
+    pub fn zoom(&self) -> f64 {
+        self.zoom
+    }
+    pub fn row_height(&self) -> f32 {
+        self.row_height
+    }
+    pub fn locator_left(&self) -> f64 {
+        self.locator_left
+    }
+    pub fn locator_right(&self) -> f64 {
+        self.locator_right
+    }
+    pub fn cycle_enabled(&self) -> bool {
+        self.cycle
+    }
+    pub fn song_offset(&self) -> f64 {
+        self.song_offset
+    }
+    pub fn active_lane(&self) -> usize {
+        self.active_lane
+    }
+    pub fn first_launch(&self) -> bool {
+        self.first_launch
+    }
+    pub fn help_requested(&self) -> bool {
+        self.help_requested
+    }
+    pub fn bookmark_step(&self) -> Option<f64> {
+        self.bookmark_step
+    }
+    pub fn drum_vst(&self) -> Option<&drum_vst::DrumVstLiveHandle> {
+        self.drum_vst.as_ref()
+    }
+    pub fn is_drum_vst_loading(&self) -> bool {
+        self.drum_vst_loading
+    }
+
+    pub fn set_status(&mut self, status: impl Into<String>) {
+        self.status = status.into();
+        self.bump_view_revision();
+    }
+    pub fn set_error(&mut self, error: Option<String>) {
+        self.error = error;
+        self.bump_view_revision();
+    }
+    pub fn take_error(&mut self) -> Option<String> {
+        let err = self.error.take();
+        if err.is_some() {
+            self.bump_view_revision();
+        }
+        err
+    }
+    pub fn clear_error(&mut self) {
+        if self.error.is_some() {
+            self.error = None;
+            self.bump_view_revision();
+        }
+    }
+    pub fn push_warning(&mut self, warning: impl Into<String>) {
+        self.warnings.push(warning.into());
+        self.bump_view_revision();
+    }
+    pub fn update_preferences(&mut self, f: impl FnOnce(&mut Preferences)) {
+        f(&mut self.preferences);
+        self.bump_view_revision();
+    }
+    pub fn set_active_lane(&mut self, lane: usize) {
+        if self.active_lane != lane {
+            self.active_lane = lane;
+            self.bump_view_revision();
+        }
+    }
+    pub fn set_viewport(&mut self, start_ms: f64, zoom: f64, row_height: f32) {
+        let bound = self.duration_ms().max(600_000.0) * 10.0;
+        self.set_view_start(start_ms.clamp(-bound, bound));
+        self.zoom = zoom.clamp(MIN_ZOOM, 3.0);
+        self.row_height = row_height.clamp(20.0, 65.0);
+        self.bump_view_revision();
+    }
+    pub fn set_locators(&mut self, left: f64, right: f64, cycle: bool) {
+        self.locator_left = left;
+        self.locator_right = right;
+        self.cycle = cycle;
+        self.cycle_changed();
+    }
+    pub fn set_locator_left(&mut self, left: f64) {
+        self.locator_left = left;
+        self.cycle_changed();
+    }
+    pub fn set_locator_right(&mut self, right: f64) {
+        self.locator_right = right;
+        self.cycle_changed();
+    }
+    pub fn set_cycle(&mut self, enabled: bool) {
+        self.cycle = enabled;
+        self.cycle_changed();
+    }
+    pub fn set_song_offset(&mut self, offset_ms: f64) {
+        self.song_offset = offset_ms.clamp(-60_000.0, 60_000.0);
+        self.cycle_changed();
+    }
+    pub fn cancel_revert(&mut self) {
+        if self.revert_requested {
+            self.revert_requested = false;
+            self.bump_view_revision();
+        }
+    }
+    pub fn clear_output_review(&mut self) {
+        if self.output_review.is_some() {
+            self.output_review = None;
+            self.bump_view_revision();
+        }
+    }
+    pub fn clear_pending_open(&mut self) {
+        if self.pending_open.is_some() {
+            self.pending_open = None;
+            self.bump_view_revision();
+        }
+    }
+    pub fn take_shortcut_help(&mut self) -> bool {
+        let taken = std::mem::take(&mut self.help_requested);
+        if taken {
+            self.bump_view_revision();
+        }
+        taken
+    }
+    pub fn take_bookmark_step(&mut self) -> Option<f64> {
+        let taken = self.bookmark_step.take();
+        if taken.is_some() {
+            self.bump_view_revision();
+        }
+        taken
+    }
+    pub fn take_shortcut_open_request(&mut self) -> bool {
+        let had = !self.requests.is_empty();
+        let taken = std::mem::take(&mut self.requests)
+            .iter()
+            .any(|request| matches!(request, PlatformRequest::OpenMap));
+        if had {
+            self.bump_view_revision();
+        }
+        taken
+    }
+    #[doc(hidden)]
+    pub fn set_busy_for_test(&mut self, busy: bool) {
+        self.busy = busy;
+        self.bump_view_revision();
+    }
+    #[doc(hidden)]
+    pub fn set_song_loading_for_test(&mut self, loading: bool) {
+        self.song_loading = loading;
+        self.bump_view_revision();
+    }
+    #[doc(hidden)]
+    pub fn install_drum_vst_for_test(&mut self, handle: drum_vst::DrumVstLiveHandle) {
+        self.drum_vst = Some(handle);
+        self.bump_view_revision();
+    }
+}
+
+/// O(1) snapshot token of all non-playback UI state observed by the desktop view.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ViewStateToken {
+    view_revision: u64,
+    document_generation: u64,
+    history_version: u64,
+    listen_version: u64,
+    waveform_revision: u64,
+    waveform_len: usize,
+    duration_bits: u64,
+    playing: bool,
+    busy: bool,
+    song_loading: bool,
+    drum_stem_loading: bool,
+    has_drum_stem: bool,
+    monitoring_stem: bool,
+    drum_vst_loading: bool,
+    drum_vst_state: Option<(bool, usize, usize)>,
+    external_osu_changed: bool,
+    has_original_snapshot: bool,
+    can_undo_revert: bool,
+    tap_recording_armed: bool,
+    tap_recorded_count: usize,
+    output_problems_len: usize,
+    output_problem_revision: Option<(u64, bool)>,
+    save_problem_review: bool,
+    save_review_pending: bool,
+    has_output_review: bool,
+    sound_set_prompts_len: usize,
+    sound_set_prompt_open: u64,
+    has_document: bool,
+    hs_mode: bool,
+    dirty: bool,
 }
 impl Default for Application {
     fn default() -> Self {

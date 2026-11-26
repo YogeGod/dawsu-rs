@@ -109,7 +109,10 @@ impl Application {
                 Ok(clip) => {
                     self.samples.insert(source, clip);
                 }
-                Err(error) if !self.warnings.contains(&error) => self.warnings.push(error),
+                Err(error) if !self.warnings.contains(&error) => {
+                    self.warnings.push(error);
+                    self.view_revision = self.view_revision.wrapping_add(1);
+                }
                 Err(_) => {}
             }
         }

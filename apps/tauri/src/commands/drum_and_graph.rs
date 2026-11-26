@@ -292,7 +292,7 @@ pub(crate) fn handle_drum_vst_action(
         }
         "open_editor" => {
             let id = app
-                .drum_vst
+                .drum_vst()
                 .as_ref()
                 .map(|v| v.instance_id.clone())
                 .ok_or("Load a Drum VST3 instrument first.")?;
@@ -301,7 +301,7 @@ pub(crate) fn handle_drum_vst_action(
         }
         "close_editor" => {
             let id = app
-                .drum_vst
+                .drum_vst()
                 .as_ref()
                 .map(|v| v.instance_id.clone())
                 .ok_or("Load a Drum VST3 instrument first.")?;
@@ -312,15 +312,14 @@ pub(crate) fn handle_drum_vst_action(
         "preview_note" => {
             let note = payload.get("note").and_then(Value::as_u64).unwrap_or(36).min(127) as u8;
             let velocity = payload.get("velocity").and_then(Value::as_u64).unwrap_or(100).clamp(1, 127) as u8;
-            if let Some(vst) = &app.drum_vst {
+            if let Some(vst) = app.drum_vst() {
                 vst.preview(note, velocity);
             }
             Ok(json!({ "ok": true }))
         }
         "note_names" => {
             let id = app
-                .drum_vst
-                .as_ref()
+                .drum_vst()
                 .map(|v| v.instance_id.clone())
                 .ok_or("Load a Drum VST3 instrument first.")?;
             let names = app.vst3.note_names(&id).map_err(|e| e.to_string())?;
@@ -475,7 +474,7 @@ pub(crate) fn handle_drum_vst_action(
 }
 
 pub(crate) fn drum_vst_status_json(app: &Application) -> Value {
-    match &app.drum_vst {
+    match app.drum_vst() {
         Some(v) => json!({
             "loaded": true,
             "instanceId": v.instance_id,

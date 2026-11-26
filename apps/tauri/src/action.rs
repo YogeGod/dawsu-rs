@@ -42,9 +42,9 @@ impl PlaybackStart {
         };
         match self {
             Self::Cursor => None,
-            Self::Left => Some(app.locator_left),
+            Self::Left => Some(app.locator_left()),
             Self::Selection => start(),
-            Self::SelectionOrLeft => start().or(Some(app.locator_left)),
+            Self::SelectionOrLeft => start().or(Some(app.locator_left())),
         }
     }
 }
@@ -219,7 +219,7 @@ pub(crate) enum RulerGesture {
 
 impl RulerGesture {
     pub(crate) fn apply(self, app: &mut Application, path: &Path, from: f64, to: f64) {
-        if app.busy || !from.is_finite() || !to.is_finite() {
+        if app.is_busy() || !from.is_finite() || !to.is_finite() {
             return;
         }
         let Some(document) = app.document().filter(|document| document.path == path) else {
@@ -230,7 +230,7 @@ impl RulerGesture {
             document.composer.snap(SongTime::from_ms(ms.clamp(0.0, duration)))
                 .ms().clamp(0.0, duration)
         };
-        let (mut left, mut right, mut enabled) = (app.locator_left, app.locator_right, app.cycle);
+        let (mut left, mut right, mut enabled) = (app.locator_left(), app.locator_right(), app.cycle_enabled());
         // A drag stops on the other locator; a Ctrl- or Alt-click (from == to) sets it where it lands.
         let dragged = from != to;
         match self {
@@ -255,8 +255,7 @@ impl RulerGesture {
                 return;
             }
         }
-        (app.locator_left, app.locator_right, app.cycle) = (left, right, enabled);
-        app.cycle_changed();
+        app.set_locators(left, right, enabled);
     }
 }
 
@@ -600,7 +599,7 @@ impl Action {
                     app.change_shortcut(&id, None)
                 };
                 if let Err(error) = result {
-                    app.error = Some(error);
+                    app.set_error(Some(error));
                 }
             }
             Self::ResetShortcuts => app.reset_shortcuts(),
@@ -611,7 +610,7 @@ impl Action {
             }
             Self::RestoreRecovery { id } => {
                 if let Err(error) = app.restore_recovery(&id) {
-                    app.error = Some(error);
+                    app.set_error(Some(error));
                 }
             }
             #[cfg(feature = "recovery-smoke")]
@@ -619,28 +618,30 @@ impl Action {
                 if std::env::var_os(RECOVERY_SMOKE_DATA).is_some_and(|path| !path.is_empty()) {
                     panic!("Controlled crash recovery smoke test");
                 }
-                app.error = Some("The smoke test needs an isolated app data folder.".into());
+                app.set_error(Some("The smoke test needs an isolated app data folder.".into()));
             }
             Self::BrowserStyle { classic } => {
-                app.preferences.classic_browser = classic;
-                if classic && app.preferences.show_browser {
-                    app.preferences.show_inspector = true;
-                }
+                app.update_preferences(|p| {
+                    p.classic_browser = classic;
+                    if classic && p.show_browser {
+                        p.show_inspector = true;
+                    }
+                });
                 app.save_preferences();
             }
             Self::PlaceSoundSet { map, path } => {
                 if let Err(error) = app.place_sound_set_file(&map, &path) {
-                    app.error = Some(error);
+                    app.set_error(Some(error));
                 }
             }
             Self::PlaceLibrarySoundSet { map, id } => {
                 if let Err(error) = app.place_library_sound_set(&map, &id) {
-                    app.error = Some(error);
+                    app.set_error(Some(error));
                 }
             }
             Self::SoundSetPrompt { set_id, update } => {
                 if let Err(error) = app.answer_sound_set_prompt(&set_id, update) {
-                    app.error = Some(error);
+                    app.set_error(Some(error));
                 }
             }
             Self::SoundSetPlacement { map, id, op, gain } => {
@@ -658,50 +659,53 @@ impl Action {
                     _ => Err("Unknown sound set action.".into()),
                 };
                 if let Err(error) = result {
-                    app.error = Some(error);
+                    app.set_error(Some(error));
                 }
             }
             Self::ReplaceSample { target, path, mapset } => {
                 if let Err(error) = assign_sample(app, target, path, mapset) {
-                    app.error = Some(error);
+                    app.set_error(Some(error));
                 }
             }
             Self::PreviewLibrarySample { location } => {
-                if let Err(error) = location.sample(app.preferences.hitsound_library.as_deref())
+                let library = app.preferences().hitsound_library.clone();
+                if let Err(error) = location.sample(library.as_deref())
                     .and_then(|sample| app.audition_sample_file(&sample))
                 {
-                    app.error = Some(error);
+                    app.set_error(Some(error));
                 }
             }
             Self::ReplaceLibrarySample { target, location } => {
-                if let Err(error) = location.sample(app.preferences.hitsound_library.as_deref())
+                let library = app.preferences().hitsound_library.clone();
+                if let Err(error) = location.sample(library.as_deref())
                     .and_then(|sample| assign_sample(app, target, sample, false))
                 {
-                    app.error = Some(error);
+                    app.set_error(Some(error));
                 }
             }
             Self::AddLaneFromFile { map, path } => {
                 if let Err(error) = app.add_lane_from_file(&map, &path) {
-                    app.error = Some(error);
+                    app.set_error(Some(error));
                 }
             }
             Self::AddLaneFromLibrary { map, location } => {
+                let library = app.preferences().hitsound_library.clone();
                 if let Err(error) = location
-                    .sample(app.preferences.hitsound_library.as_deref())
+                    .sample(library.as_deref())
                     .and_then(|sample| app.add_lane_from_file(&map, &sample))
                 {
-                    app.error = Some(error);
+                    app.set_error(Some(error));
                 }
             }
             Self::ShowDefaultSkinLanes { map } => {
                 if let Err(error) = app.show_default_skin_lanes(&map) {
-                    app.error = Some(error);
+                    app.set_error(Some(error));
                 }
             }
             Self::Pending { choice } => match choice.as_str() {
                 "save" => app.save(),
                 "discard" => app.discard_and_open(),
-                _ => app.pending_open = None,
+                _ => app.clear_pending_open(),
             },
             Self::Command { id } => app.command(&id),
             Self::TimelineEdit { path, edit } => {
@@ -725,12 +729,12 @@ impl Action {
             }
             Self::CloneSampleVariant { lane } => {
                 if let Err(error) = app.clone_sample_variant(lane) {
-                    app.error = Some(error);
+                    app.set_error(Some(error));
                 }
             }
             Self::AlternateVariants { from_lane, to_lane } => {
                 if let Err(error) = app.alternate_variants(from_lane, to_lane) {
-                    app.error = Some(error);
+                    app.set_error(Some(error));
                 }
             }
             Self::CancelTimelineEdit => app.cancel_timeline_edit(),
@@ -756,36 +760,36 @@ impl Action {
             Self::ReviewSave => app.review_save(),
             Self::AnswerSaveReview { apply } => app.answer_save_review(apply),
             Self::Panel { panel, on } => {
-                match panel {
+                app.update_preferences(|p| match panel {
                     EditorPanel::Browser => {
-                        app.preferences.show_browser = on;
-                        if on && app.preferences.classic_browser {
-                            app.preferences.show_inspector = true;
+                        p.show_browser = on;
+                        if on && p.classic_browser {
+                            p.show_inspector = true;
                         }
                     }
-                    EditorPanel::Inspector => app.preferences.show_inspector = on,
-                    EditorPanel::Controller => app.preferences.show_controller = on,
-                    EditorPanel::LaneNames => app.preferences.lane_names = on,
-                }
+                    EditorPanel::Inspector => p.show_inspector = on,
+                    EditorPanel::Controller => p.show_controller = on,
+                    EditorPanel::LaneNames => p.lane_names = on,
+                });
                 app.save_preferences();
             }
             Self::ObjectLines { on } => {
-                app.preferences.object_lines = on;
+                app.update_preferences(|p| p.object_lines = on);
                 app.save_preferences();
             }
             Self::DismissSaveProblemReview => app.dismiss_save_problem_review(),
             Self::ConfirmRevert => app.confirm_revert(),
-            Self::CancelRevert => app.revert_requested = false,
+            Self::CancelRevert => app.cancel_revert(),
             Self::ReloadFromDisk => app.reload_from_disk(),
             Self::DismissExternalOsuChange => app.dismiss_external_osu_change(),
             Self::Play => app.play_pause_from(playback_start.position(app)),
             Self::PlaybackStart { value } => *playback_start = value,
             Self::ReturnOnStop { on } => {
-                app.preferences.return_on_stop = on;
+                app.update_preferences(|p| p.return_on_stop = on);
                 app.save_preferences();
             }
             Self::CleanRedundantGreenlines { on } => {
-                app.preferences.clean_redundant_greenlines = on;
+                app.update_preferences(|p| p.clean_redundant_greenlines = on);
                 app.save_preferences();
             }
             Self::KeepPitch { on } => app.set_keep_pitch(on),
@@ -797,7 +801,7 @@ impl Action {
             }
             Self::TapRecordToggle => {
                 if let Err(error) = app.toggle_tap_recording() {
-                    app.error = Some(error);
+                    app.set_error(Some(error));
                 }
             }
             Self::Stop => app.command("stop"),
@@ -807,7 +811,7 @@ impl Action {
                 if app.document().is_some_and(|doc| doc.path == path)
                     && let Err(error) = app.add_bookmark_at(time, Some(label))
                 {
-                    app.error = Some(error);
+                    app.set_error(Some(error));
                 }
             }
             Self::BookmarkEdit { path, time, label } => {
@@ -817,7 +821,7 @@ impl Action {
                         None => app.remove_bookmark(time),
                     };
                     if let Err(error) = result {
-                        app.error = Some(error);
+                        app.set_error(Some(error));
                     }
                 }
             }
@@ -933,16 +937,16 @@ impl Action {
                     match operation.as_str() {
                         "mute" => app.mute(lane),
                         "solo" => app.solo(lane),
-                        "add_layer" if !app.busy => {
-                            app.active_lane = row;
+                        "add_layer" if !app.is_busy() => {
+                            app.set_active_lane(row);
                             app.command("addNumberedLayer");
                         }
                         "add_layer" => {}
                         "preview_sample" => app.audition(&lane),
-                        "activate" if !app.busy => app.active_lane = row,
+                        "activate" if !app.is_busy() => app.set_active_lane(row),
                         "activate" => {},
                         _ => {
-                            app.active_lane = row;
+                            app.set_active_lane(row);
                             app.audition(&lane);
                         }
                     }
@@ -957,14 +961,14 @@ impl Action {
                     })
                     .and_then(|lane| app.show_lane(&target.map, &lane))
                 {
-                    app.error = Some(error);
+                    app.set_error(Some(error));
                 }
             }
             Self::DeleteLane { target, revision } => {
                 if let Err(error) = lane_by_key(app, &target.lane)
                     .and_then(|lane| app.delete_lane(&target.map, &lane, revision))
                 {
-                    app.error = Some(error);
+                    app.set_error(Some(error));
                 }
             }
             Self::LaneSelectionMix { target, operation, lanes } => {
@@ -973,25 +977,25 @@ impl Action {
             Self::GroupMix { set, operation } => group_mix(app, &set, &operation),
             Self::LaneLayout { path, persist, value } => {
                 if path.as_ref().is_some_and(|path| app.document().is_none_or(|doc| &doc.path != path)) {
-                    app.error = Some("The difficulty changed. Edit the lane layout again.".into());
+                    app.set_error(Some("The difficulty changed. Edit the lane layout again.".into()));
                     return;
                 }
                 if let Err(error) = app.set_lane_layout(value).and_then(|()| if persist { app.save_session() } else { Ok(()) }) {
-                    app.error = Some(error);
+                    app.set_error(Some(error));
                 }
             }
             Self::TimeSignatures { map, value } => {
                 if !app.document().is_some_and(|document| document.path == map) {
-                    app.error = Some("The open difficulty changed. Reopen Time signatures to try again.".into());
+                    app.set_error(Some("The open difficulty changed. Reopen Time signatures to try again.".into()));
                 } else if let Err(error) = app.set_time_signatures(value) {
-                    app.error = Some(error);
+                    app.set_error(Some(error));
                 }
             }
             Self::ExportSettings { map, value } => {
                 if !app.document().is_some_and(|document| document.path == map) {
-                    app.error = Some("The open difficulty changed. Reopen Merge settings to try again.".into());
+                    app.set_error(Some("The open difficulty changed. Reopen Merge settings to try again.".into()));
                 } else if let Err(error) = app.set_export_settings(value) {
-                    app.error = Some(error);
+                    app.set_error(Some(error));
                 }
             }
             Self::Volume { value, relative } => app.selection_volume(value, relative),
@@ -1026,7 +1030,7 @@ impl Action {
             }
             Self::VolumeScope { path, lanes } => {
                 if let Err(error) = set_volume_lane_scope(app, &path, lanes) {
-                    app.error = Some(error);
+                    app.set_error(Some(error));
                 }
             }
             Self::InsertVolume { value } => app.set_insert_volume(value),
@@ -1034,23 +1038,25 @@ impl Action {
                 if app.document().is_some_and(|doc| doc.path == path)
                     && let Err(error) = app.edit_slider_body(index, set, whistle_set.map(WhistleSetJson::sample_set), whistle, volume)
                 {
-                    app.error = Some(error);
+                    app.set_error(Some(error));
                 }
             }
             Self::Gains { song, main, hitsounds } => {
-                app.preferences.song_gain = song.clamp(0.0, 1.0);
-                app.preferences.master_gain = main.clamp(0.2, 1.0);
-                if let Some(hs) = hitsounds {
-                    app.preferences.hitsound_gain = hs.clamp(0.0, 2.0);
-                }
+                app.update_preferences(|p| {
+                    p.song_gain = song.clamp(0.0, 1.0);
+                    p.master_gain = main.clamp(0.2, 1.0);
+                    if let Some(hs) = hitsounds {
+                        p.hitsound_gain = hs.clamp(0.0, 2.0);
+                    }
+                });
                 app.gains_changed();
             }
             Self::HitsoundGain { gain } => {
-                app.preferences.hitsound_gain = gain.clamp(0.0, 2.0);
+                app.update_preferences(|p| p.hitsound_gain = gain.clamp(0.0, 2.0));
                 app.gains_changed();
             }
             Self::HitsoundsMuted { on } => {
-                app.preferences.hitsounds_muted = on;
+                app.update_preferences(|p| p.hitsounds_muted = on);
                 app.gains_changed();
             }
             Self::HitsoundsSolo { on } => app.set_hitsounds_solo(on),
@@ -1071,11 +1077,11 @@ impl Action {
             }
             Self::OutputSettings { backend, device_id, ms } => {
                 if let Err(error) = app.set_output_settings(backend, device_id, ms) {
-                    app.error = Some(error);
+                    app.set_error(Some(error));
                 }
             }
             Self::SongMuted { on } => {
-                app.preferences.song_muted = on;
+                app.update_preferences(|p| p.song_muted = on);
                 app.gains_changed();
             }
             Self::SongSolo { on } => app.set_song_solo(on),
@@ -1084,36 +1090,25 @@ impl Action {
             }
             Self::LoadDrumStem { path } => app.load_drum_stem(path),
             Self::ClearDrumStem => app.clear_drum_stem(),
-            Self::Audition { on } => app.preferences.audition = on,
-            Self::Offset { ms } => {
-                app.song_offset = ms.clamp(-60_000.0, 60_000.0);
-                app.cycle_changed();
-            }
+            Self::Audition { on } => app.update_preferences(|p| p.audition = on),
+            Self::Offset { ms } => app.set_song_offset(ms),
             Self::Speed { value } => app.set_speed(value),
             Self::HsMode { on } => app.set_hs_mode(on),
             Self::Protect { on } => app.set_normal_protection(on),
             Self::Locator { end } => {
-                app.seek(if end == "left" { app.locator_left } else { app.locator_right });
+                app.seek(if end == "left" { app.locator_left() } else { app.locator_right() });
             }
             Self::RulerLocators { path, gesture, from, to } => gesture.apply(app, &path, from, to),
-            Self::Cycle { on } => {
-                app.cycle = on;
-                app.cycle_changed();
-            }
+            Self::Cycle { on } => app.set_cycle(on),
             Self::Follow { on } => {
-                app.preferences.follow = on;
+                app.update_preferences(|p| p.follow = on);
                 app.save_preferences();
             }
             Self::View {
                 start,
                 zoom,
                 row_height,
-            } => {
-                let bound = app.duration_ms().max(600_000.0) * 10.0;
-                app.set_view_start(start.clamp(-bound, bound));
-                app.zoom = zoom.clamp(dawsu_application::MIN_ZOOM, 3.0);
-                app.row_height = row_height.clamp(20.0, 65.0);
-            }
+            } => app.set_viewport(start, zoom, row_height),
             Self::KeyPreset { name } => {
                 app.choose_key_preset(if name == "osu!" { "osu!" } else { "DAW" })
             }
@@ -1124,15 +1119,15 @@ impl Action {
                 if apply {
                     app.apply_output();
                 } else {
-                    app.output_review = None;
+                    app.clear_output_review();
                 }
             }
             Self::AuditionOutputMix { index } => {
                 if let Err(error) = app.audition_output_mix(index) {
-                    app.error = Some(error);
+                    app.set_error(Some(error));
                 }
             }
-            Self::DismissError => app.error = None,
+            Self::DismissError => app.clear_error(),
             Self::CancelJob => app.cancel_job(),
         }
     }
@@ -1172,7 +1167,7 @@ pub(crate) fn mix_lanes(app: &mut Application, lanes: Vec<SampleIdentity>, opera
 }
 
 pub(crate) fn group_mix(app: &mut Application, set: &str, operation: &str) {
-    let Some(document) = app.document().filter(|_| !app.busy) else {
+    let Some(document) = app.document().filter(|_| !app.is_busy()) else {
         return;
     };
     let lanes = document.composer.lanes.iter().filter(|lane| {
@@ -1182,7 +1177,7 @@ pub(crate) fn group_mix(app: &mut Application, set: &str, operation: &str) {
 }
 
 pub(crate) fn lane_selection_mix(app: &mut Application, target: &SampleTarget, operation: &str, lanes: Vec<String>) {
-    let Some(document) = app.document().filter(|doc| !app.busy && doc.path == target.map) else {
+    let Some(document) = app.document().filter(|doc| !app.is_busy() && doc.path == target.map) else {
         return;
     };
     let mut keys: std::collections::HashSet<_> = lanes.into_iter().collect();
@@ -1300,7 +1295,7 @@ pub(crate) fn lane_add_choices(app: &Application, map: &Path) -> Result<Value, S
 
 pub(crate) fn assign_sample(app: &mut Application, target: SampleTarget, path: PathBuf, mapset: bool) -> Result<(), String> {
     let document = app.document().ok_or("Open a difficulty first.")?;
-    let lane = document.composer.lanes.get(app.active_lane).ok_or("Choose an active lane.")?;
+    let lane = document.composer.lanes.get(app.active_lane()).ok_or("Choose an active lane.")?;
     if document.path != target.map || scene_lane_key(lane) != target.lane {
         return Err("The active lane changed while choosing a sample.".into());
     }

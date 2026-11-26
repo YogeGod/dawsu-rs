@@ -1580,6 +1580,7 @@ impl Application {
             "Applied {} node graph hits ({} on objects, {} loose).",
             c.added, c.on_objects, c.loose
         );
+        self.bump_view_revision();
         Ok(())
     }
 
@@ -1597,6 +1598,7 @@ impl Application {
             selected.len(),
             record.graph_name
         );
+        self.bump_view_revision();
         Ok(())
     }
 }

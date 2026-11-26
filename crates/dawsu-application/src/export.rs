@@ -586,6 +586,7 @@ impl Application {
                 "Exported {count} hitsound-only file(s) to {} (mapset untouched).",
                 result.output_dir.display()
             );
+            self.bump_view_revision();
             return Ok(id);
         }
 

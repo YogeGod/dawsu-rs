@@ -69,6 +69,7 @@ impl Application {
         preferences.device = Some(name);
         if let Err(error) = self.configure_audio_output(preferences) {
             self.error = Some(error);
+            self.bump_view_revision();
         }
     }
 
@@ -118,6 +119,7 @@ impl Application {
         self.cycle_changed();
         self.gains_changed();
         self.save_preferences();
+        self.bump_view_revision();
         Ok(())
     }
 
@@ -214,6 +216,7 @@ impl Application {
         } else if self.status == "Loading song…" {
             self.status = "Difficulty loaded".into();
         }
+        self.bump_view_revision();
     }
 
     pub fn active_song_clip(&self) -> Option<Arc<AudioClip>> {
@@ -271,6 +274,7 @@ impl Application {
         self.status = "Loading drum stem…".into();
         self.spawn_drum_stem_decode(path, true);
         let _ = self.save_session();
+        self.bump_view_revision();
     }
 
     pub fn clear_drum_stem(&mut self) {
@@ -293,6 +297,7 @@ impl Application {
             self.status = "Drum stem cleared".into();
             let _ = self.save_session();
         }
+        self.bump_view_revision();
     }
 
     pub fn toggle_monitor_stem(&mut self) -> bool {
@@ -305,6 +310,7 @@ impl Application {
             } else {
                 "No drum stem attached — click + Stem to load one".into()
             };
+            self.bump_view_revision();
             return false;
         }
         self.monitor_stem = !self.monitor_stem;
@@ -316,6 +322,7 @@ impl Application {
         } else {
             "Monitoring song".into()
         };
+        self.bump_view_revision();
         self.monitor_stem
     }
 
@@ -402,6 +409,7 @@ impl Application {
                 self.status = "Drum stem unavailable".into();
             }
         }
+        self.bump_view_revision();
     }
 
     pub fn play_pause(&mut self) {
@@ -505,6 +513,7 @@ impl Application {
             a.gains(self.playback_song_gain(), self.preferences.master_gain);
             a.hitsound_gain(self.playback_hitsound_gain());
         }
+        self.bump_view_revision();
     }
     pub fn cycle_changed(&mut self) {
         if let Some(a) = &self.audio {
@@ -514,6 +523,7 @@ impl Application {
             );
             a.offset(self.song_offset);
         }
+        self.bump_view_revision();
     }
     pub fn lane_clip(&self, lane: &SampleIdentity) -> Option<Arc<AudioClip>> {
         self.clip_for_lane(lane).cloned()
@@ -580,10 +590,12 @@ impl Application {
     pub fn mute(&mut self, lane: SampleIdentity) {
         toggle(&mut self.muted, lane);
         self.sync_audio();
+        self.bump_view_revision();
     }
     pub fn solo(&mut self, lane: SampleIdentity) {
         toggle(&mut self.solo, lane);
         self.sync_audio();
+        self.bump_view_revision();
     }
     pub fn song_solo(&self) -> bool {
         self.song_solo
@@ -593,6 +605,7 @@ impl Application {
         if self.document.is_some() && self.song_solo != on {
             self.song_solo = on;
             self.sync_audio();
+            self.bump_view_revision();
         }
     }
 
@@ -607,6 +620,7 @@ impl Application {
         if self.document.is_some() && self.hitsounds_solo != on {
             self.hitsounds_solo = on;
             self.sync_audio();
+            self.bump_view_revision();
         }
     }
 
@@ -625,6 +639,7 @@ impl Application {
             self.lane_gains.insert(lane, clamped);
         }
         self.sync_audio();
+        self.bump_view_revision();
     }
 
     pub fn set_speed(&mut self, speed: f64) {
@@ -633,12 +648,14 @@ impl Application {
         }
         if !speed.is_finite() || !(0.25..=1.5).contains(&speed) {
             self.error = Some("Playback speed must be between 25% and 150%".into());
+            self.bump_view_revision();
             return;
         }
         let speed = if (speed - 1.0).abs() < 0.001 { 1.0 } else { speed };
         self.playback_speed = speed;
         self.sync_audio();
         self.status = format!("Playback speed: {:.0}%", speed * 100.0);
+        self.bump_view_revision();
     }
 
     pub fn set_keep_pitch(&mut self, enabled: bool) {
@@ -655,6 +672,7 @@ impl Application {
         } else {
             "Keep pitch during speed changes: Off".into()
         };
+        self.bump_view_revision();
     }
 
 

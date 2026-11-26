@@ -33,10 +33,10 @@ fn lane_actions_hide_restore_and_undo_without_removing_the_sample() {
         })).unwrap().run(app);
     };
     remove(&mut app, revision + 1);
-    assert!(app.error.take().is_some());
+    assert!(app.take_error().is_some());
     assert!(visible(&scene(&app)));
     remove(&mut app, revision);
-    assert!(app.error.is_none(), "{:?}", app.error);
+    assert!(app.error().is_none(), "{:?}", app.error());
     let after = scene(&app);
     assert!(!visible(&after));
     assert_eq!(after["lanes"][row]["hitCount"], 0);
@@ -51,7 +51,7 @@ fn lane_actions_hide_restore_and_undo_without_removing_the_sample() {
     serde_json::from_value::<Action>(serde_json::json!({
         "kind": "show_lane", "target": target,
     })).unwrap().run(&mut app);
-    assert!(app.error.is_none(), "{:?}", app.error);
+    assert!(app.error().is_none(), "{:?}", app.error());
     let restored = scene(&app);
     assert!(visible(&restored));
     assert_eq!(restored["lanes"][row]["hitCount"], 0);
@@ -62,7 +62,7 @@ fn lane_actions_hide_restore_and_undo_without_removing_the_sample() {
     serde_json::from_value::<Action>(serde_json::json!({
         "kind": "show_lane", "target": {"map": map, "lane": fresh["key"]},
     })).unwrap().run(&mut app);
-    assert!(app.error.is_none(), "{:?}", app.error);
+    assert!(app.error().is_none(), "{:?}", app.error());
     let state = scene(&app);
     assert!(state["laneOrder"].as_array().unwrap().iter().any(|index| {
         state["lanes"][index.as_u64().unwrap() as usize]["sourceKey"] == fresh["key"]
@@ -378,7 +378,7 @@ fn selection_volume_scope_applies_to_the_chosen_lane_and_shortcut() {
     levels(&app, 60, 40);
 
     apply_scope(&mut app, &json!("Stale.osu"), Value::Null);
-    assert!(app.error.is_some());
+    assert!(app.error().is_some());
     apply_scope(&mut app, &scene["path"], json!([]));
     Action::Volume { value: 90, relative: false }.run(&mut app);
     levels(&app, 60, 40);
@@ -641,7 +641,7 @@ fn slider_body_selection_exposes_its_slide_whistle_and_ticked_set() {
             "whistle_set": choice, "whistle": true, "volume": 80,
         })).unwrap();
         action.run(&mut app);
-        assert!(app.error.is_none(), "{:?}", app.error);
+        assert!(app.error().is_none(), "{:?}", app.error());
         let state = snapshot(&app, true);
         assert_eq!(state["scene"]["selection"]["sliderBody"]["whistleSet"], choice);
         assert_eq!(state["scene"]["selection"]["sliderBody"]["set"], "drum");
@@ -719,7 +719,7 @@ fn shortcut_change_routes_the_new_f1_alternative_on_home() {
         "chord": {"key":"F5", "code":"F5", "ctrl":false, "shift":false, "alt":false},
     })).unwrap();
     change.run(&mut app);
-    assert!(app.error.is_none());
+    assert!(app.error().is_none());
 
     let key = |name: &str| Action::Key {
         key: name.into(), code: name.into(), ctrl: false, shift: false, alt: false, lane_view: None,
@@ -727,17 +727,17 @@ fn shortcut_change_routes_the_new_f1_alternative_on_home() {
     assert!(route.handle(key("F1"), &mut app).is_none());
     let action = route.handle(key("F5"), &mut app).unwrap();
     action.run(&mut app);
-    assert!(app.help_requested);
+    assert!(app.help_requested());
 
-    app.help_requested = false;
+    app.take_shortcut_help();
     serde_json::from_value::<Action>(serde_json::json!({ "kind": "reset_shortcuts" }))
         .unwrap()
         .run(&mut app);
-    assert!(app.error.is_none());
+    assert!(app.error().is_none());
     assert!(route.handle(key("F5"), &mut app).is_none());
     let restored = route.handle(key("F1"), &mut app).unwrap();
     restored.run(&mut app);
-    assert!(app.help_requested);
+    assert!(app.help_requested());
 }
 
 #[test]
@@ -909,12 +909,12 @@ fn displayed_tab_and_plain_home_shortcuts_reach_the_command_resolver() {
         key: "Tab".into(), code: "Tab".into(), ctrl: true, shift: false, alt: false, lane_view: None,
     };
     route.handle(tab, &mut app).unwrap().run(&mut app);
-    assert!(app.help_requested);
+    assert!(app.help_requested());
     let open = Action::Key {
         key: "h".into(), code: "KeyH".into(), ctrl: false, shift: false, alt: false, lane_view: None,
     };
     route.handle(open, &mut app).unwrap().run(&mut app);
-    assert!(matches!(app.requests.last(), Some(dawsu_application::PlatformRequest::OpenMap)));
+    assert!(matches!(app.requests().last(), Some(dawsu_application::PlatformRequest::OpenMap)));
 }
 
 #[test]
@@ -928,9 +928,9 @@ fn removing_a_lane_takes_its_hits_in_one_step_and_keeps_its_layers() {
     let original = "osu file format v14\n[General]\nMode:0\n[TimingPoints]\n0,500,4,1,0,100,1,0\n[HitObjects]\n256,192,500,1,4,1:0:1:60:\n256,192,1000,1,4,1:0:1:40:\n256,192,1500,1,4,1:0:2:0:\n256,192,2000,1,2,2:0:0:0:\n";
     fs::write(&map, original).unwrap();
     let mut app = Application::with_data_root(fixture.0.join("data"));
-    app.error = None;
+    app.clear_error();
     let skin = skin_sounds("remove-lane-skin", tone);
-    app.preferences.default_samples = skin.0.clone();
+    app.update_preferences(|p| p.default_samples = skin.0.clone());
     open(&mut app, &map);
     let scene = |app: &Application| snapshot(app, true)["scene"].clone();
     let model = |app: &Application| app.document().unwrap().composer.hitsounds().clone();
@@ -948,11 +948,11 @@ fn removing_a_lane_takes_its_hits_in_one_step_and_keeps_its_layers() {
             "kind": "delete_lane", "target": {"map": scene["path"], "lane": scene["lanes"][row]["sourceKey"]},
             "revision": scene["laneRevision"],
         })).unwrap().run(app);
-        assert!(app.error.is_none(), "{:?}", app.error);
+        assert!(app.error().is_none(), "{:?}", app.error());
     };
     remove(&mut app, &before, main);
     let hits_after = model(&app);
-    assert_eq!(app.status, "Removed Finish and 2 hits. Undo restores them.");
+    assert_eq!(app.status(), "Removed Finish and 2 hits. Undo restores them.");
     let after = scene(&app);
     assert!(!shown(&after, main));
     assert_eq!(after["lanes"][main]["hitCount"], 0);
@@ -978,7 +978,7 @@ fn removing_a_lane_takes_its_hits_in_one_step_and_keeps_its_layers() {
             value: None, button: None, shift: false, ctrl: false, alt: false,
         }.run(&mut app);
     }
-    assert!(app.error.is_none(), "{:?}", app.error);
+    assert!(app.error().is_none(), "{:?}", app.error());
     Action::Command { id: "save".into() }.run(&mut app);
     wait_for_job(&mut app);
     let saved = fs::read_to_string(&map).unwrap();
@@ -993,7 +993,7 @@ fn removing_a_lane_takes_its_hits_in_one_step_and_keeps_its_layers() {
     let key = now["lanes"][layer]["colourKey"].as_str().unwrap().to_owned();
     app.set_lane_layout(dawsu_application::LaneLayout { lane_names: [(key, "Crash".into())].into(), ..Default::default() }).unwrap();
     remove(&mut app, &now, layer);
-    assert_eq!(app.status, "Removed Crash and 1 hit. Undo restores them.");
+    assert_eq!(app.status(), "Removed Crash and 1 hit. Undo restores them.");
 }
 
 #[test]

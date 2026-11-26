@@ -471,6 +471,7 @@ impl Application {
             status.push_str(&format!(" Shows hidden lane: {name}."));
         }
         self.status = status;
+        self.bump_view_revision();
         Ok(())
     }
 

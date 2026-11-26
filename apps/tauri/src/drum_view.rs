@@ -659,7 +659,7 @@ fn bind_builtin_preset(preset: &mut DrumMap, lanes: &[Lane]) {
 }
 
 fn current_mapset<'a>(app: &'a Application, expected_map: &Path) -> Result<&'a Path, String> {
-    if app.busy {
+    if app.is_busy() {
         return Err("Wait for the current job before changing the drum view.".into());
     }
     let document = app.document().ok_or("Open a difficulty first.")?;

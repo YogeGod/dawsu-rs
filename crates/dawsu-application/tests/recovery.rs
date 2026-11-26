@@ -33,18 +33,18 @@ impl TestMap {
     fn app(&self) -> Application {
         let mut app = Application::with_data_root(self.data.clone());
         // A machine without an audio device can still edit a difficulty.
-        app.error = None;
+        app.clear_error();
         app
     }
 }
 
 fn finish_job(app: &mut Application) {
     let deadline = Instant::now() + Duration::from_secs(5);
-    while app.busy {
+    while app.is_busy() {
         assert!(
             Instant::now() < deadline,
             "Job did not finish: {}",
-            app.status
+            app.status()
         );
         app.poll();
         thread::sleep(Duration::from_millis(2));
@@ -54,7 +54,7 @@ fn finish_job(app: &mut Application) {
 fn open(app: &mut Application, path: &Path) {
     app.request_open(path.to_owned());
     finish_job(app);
-    assert!(app.document().is_some(), "{:?}", app.error);
+    assert!(app.document().is_some(), "{:?}", app.error());
 }
 
 fn draw(app: &mut Application, time: f64, row: i32, phase: PointerPhase) {
@@ -121,8 +121,8 @@ fn recovery_restores_a_complete_unplaced_hit_and_leaves_an_open_stroke_out() {
     // Save keeps an unplaced hit in the editor project, so the difficulty bytes stay the same.
     restarted.save();
     finish_job(&mut restarted);
-    assert_eq!(restarted.error, None);
-    assert_eq!(restarted.status, "Saved with backup");
+    assert_eq!(restarted.error(), None);
+    assert_eq!(restarted.status(), "Saved with backup");
     assert!(!restarted.is_dirty());
     assert_eq!(fs::read(&map.path).unwrap(), FIXTURE);
     assert!(restarted.recovery_offers().unwrap().is_empty());
@@ -148,7 +148,7 @@ fn recovery_keeps_the_saved_baseline_and_can_save_a_recovered_undo() {
     change_volume(&mut editor, 63);
     editor.save();
     finish_job(&mut editor);
-    assert!(!editor.is_dirty(), "{:?}", editor.error);
+    assert!(!editor.is_dirty(), "{:?}", editor.error());
     let saved = fs::read(&map.path).unwrap();
     assert_ne!(saved, FIXTURE);
     editor.command("undo");
@@ -160,7 +160,7 @@ fn recovery_keeps_the_saved_baseline_and_can_save_a_recovered_undo() {
 
     let mut restarted = map.app();
     restore(&mut restarted, &copy.id);
-    assert!(restarted.document().is_some(), "{:?}", restarted.error);
+    assert!(restarted.document().is_some(), "{:?}", restarted.error());
     assert_eq!(volume(&restarted), 100);
     assert!(restarted.is_dirty());
     assert_eq!(fs::read(&map.path).unwrap(), saved);
@@ -173,7 +173,7 @@ fn recovery_keeps_the_saved_baseline_and_can_save_a_recovered_undo() {
     assert!(restarted.is_dirty());
     restarted.save();
     finish_job(&mut restarted);
-    assert_eq!(restarted.error, None);
+    assert_eq!(restarted.error(), None);
     assert!(!restarted.is_dirty());
     assert_eq!(fs::read(&map.path).unwrap(), FIXTURE);
     assert_eq!(restarted.recovery_offers().unwrap(), [other]);
@@ -196,7 +196,7 @@ fn changed_or_missing_source_keeps_the_offer_available_for_retry() {
     fs::write(&map.path, &changed).unwrap();
     restore(&mut restarted, &copy.id);
     assert!(restarted.document().is_none());
-    assert!(restarted.error.take().unwrap().contains("changed on disk"));
+    assert!(restarted.take_error().unwrap().contains("changed on disk"));
     assert_eq!(restarted.recovery_offers().unwrap(), std::slice::from_ref(&copy));
     assert_eq!(fs::read(&map.path).unwrap(), changed);
 
@@ -204,12 +204,12 @@ fn changed_or_missing_source_keeps_the_offer_available_for_retry() {
     fs::rename(&map.path, &moved).unwrap();
     restore(&mut restarted, &copy.id);
     assert!(restarted.document().is_none());
-    assert!(restarted.error.take().unwrap().contains("missing or moved"));
+    assert!(restarted.take_error().unwrap().contains("missing or moved"));
     assert_eq!(restarted.recovery_offers().unwrap(), std::slice::from_ref(&copy));
 
     fs::write(&map.path, FIXTURE).unwrap();
     restore(&mut restarted, &copy.id);
-    assert_eq!(restarted.error, None);
+    assert_eq!(restarted.error(), None);
     assert_eq!(volume(&restarted), 63);
     assert!(restarted.is_dirty());
     assert_eq!(restarted.recovery_offers().unwrap(), [copy]);
@@ -230,16 +230,16 @@ fn archive_failure_keeps_the_copy_and_reports_the_successful_save_separately() {
     fs::write(&archive, b"blocking the archive directory").unwrap();
     restarted.save();
     finish_job(&mut restarted);
-    assert!(!restarted.is_dirty(), "{:?}", restarted.error);
-    assert!(restarted.status.contains("Difficulty saved"));
-    assert!(restarted.error.take().unwrap().contains("archive"));
+    assert!(!restarted.is_dirty(), "{:?}", restarted.error());
+    assert!(restarted.status().contains("Difficulty saved"));
+    assert!(restarted.take_error().unwrap().contains("archive"));
     assert_ne!(fs::read(&map.path).unwrap(), FIXTURE);
     assert_eq!(restarted.recovery_offers().unwrap(), std::slice::from_ref(&copy));
 
     fs::remove_file(&archive).unwrap();
     restarted.save();
     finish_job(&mut restarted);
-    assert_eq!(restarted.error, None);
+    assert_eq!(restarted.error(), None);
     assert!(restarted.recovery_offers().unwrap().is_empty());
     assert!(archive.join(copy.id).is_file());
 }

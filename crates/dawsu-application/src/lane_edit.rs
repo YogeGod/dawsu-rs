@@ -193,6 +193,7 @@ impl Application {
         doc.composer.show_lane(&identity);
         self.restore_active_lane(Some(identity.clone()));
         self.status = format!("Added {original_stem}.{extension}");
+        self.bump_view_revision();
         Ok(identity)
     }
 
@@ -223,6 +224,7 @@ impl Application {
             .show_lanes("Show 12 default lanes", &skin_lanes);
         if shown > 0 {
             self.status = format!("Shown {shown} default skin lanes.");
+            self.bump_view_revision();
         }
         Ok(shown)
     }
@@ -261,6 +263,7 @@ impl Application {
             status.push_str(" Undo restores them.");
         }
         self.status = status;
+        self.bump_view_revision();
         Ok(())
     }
 
@@ -340,6 +343,7 @@ impl Application {
         doc.composer.lanes.insert(insert_at, variant_identity.clone());
         self.active_lane = insert_at;
         self.status = format!("Cloned {source_name} as {variant_name}.");
+        self.bump_view_revision();
         Ok(variant_identity)
     }
 
@@ -372,6 +376,7 @@ impl Application {
         let from_name = lane_label(doc, &from_id);
         let to_name = lane_label(doc, &to_id);
         self.status = format!("Alternated {moved} hits from {from_name} to {to_name}.");
+        self.bump_view_revision();
         Ok(moved)
     }
 }

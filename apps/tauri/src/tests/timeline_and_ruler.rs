@@ -19,7 +19,7 @@ fn ruler_gestures_snap_and_move_locators_without_seeking_or_dirtying_the_map() {
             "kind": "ruler_locators", "path": path, "gesture": gesture, "from": from, "to": to,
         })).expect("Tauri must accept ruler locator gestures").run(app);
     };
-    let range = |app: &Application| (app.locator_left, app.locator_right, app.cycle);
+    let range = |app: &Application| (app.locator_left(), app.locator_right(), app.cycle_enabled());
     drag(&mut app, map_path, "left", 0.0, 1115.0);
     drag(&mut app, map_path, "right", 0.0, 2390.0);
     assert_eq!(range(&app), (1125.0, 2375.0, false));
@@ -77,7 +77,7 @@ fn a_ruler_click_moves_the_playhead_to_the_snapped_time_and_leaves_the_locators(
             "kind": "ruler_locators", "path": path, "gesture": "seek", "from": at, "to": at,
         })).expect("Tauri must accept a ruler click").run(app);
     };
-    let range = |app: &Application| (app.locator_left, app.locator_right, app.cycle);
+    let range = |app: &Application| (app.locator_left(), app.locator_right(), app.cycle_enabled());
     let before = range(&app);
     click(&mut app, &map_path, 1115.0);
     assert_eq!(app.position_ms(), 1125.0);
@@ -305,7 +305,7 @@ fn view_keeps_the_fit_zoom_of_a_30_minute_song() {
     let fit = 1000.0 / (30.0 * 60_000.0);
     serde_json::from_value::<Action>(serde_json::json!({"kind": "view", "start": 0.0, "zoom": fit, "row_height": 30.0}))
         .unwrap().run(&mut app);
-    assert_eq!(app.zoom, fit);
+    assert_eq!(app.zoom(), fit);
 }
 
 #[test]
@@ -372,7 +372,7 @@ fn legacy_transport_keys_share_the_toolbar_behaviour_and_playback_start() {
             assert_eq!(app.position_ms(), 0.0, "{preset}: {code}");
         }
     }
-    app.locator_left = 750.0;
+    app.set_locator_left(750.0);
     for (key, code) in [("x", "KeyX"), ("c", "KeyC"), (" ", "Space")] {
         app.seek(100.0);
         press(&mut app, key, code, &mut mode);

@@ -222,6 +222,7 @@ impl Application {
         if let Err(e) = result {
             self.error = Some(e);
         }
+        self.bump_view_revision();
     }
     /// Imports selected MIDI tracks into the active document as one undo step.
     pub fn apply_midi_import(
@@ -239,6 +240,7 @@ impl Application {
             "Imported {} MIDI hits ({} skipped).",
             outcome.added, outcome.skipped
         );
+        self.bump_view_revision();
         Ok(outcome)
     }
 
@@ -426,6 +428,7 @@ impl Application {
             } else {
                 self.status = "Recording stopped.".into();
             }
+            self.bump_view_revision();
             return Ok(midi_record::MidiRecordStatus {
                 armed: false,
                 port_name,
@@ -440,6 +443,7 @@ impl Application {
             Some(name) => format!("MIDI recording armed ({name}). Press Space to play and record."),
             None => "Tap recording armed. Press Space and tap A–L or Numpad 1–9.".into(),
         };
+        self.bump_view_revision();
         Ok(midi_record::MidiRecordStatus {
             armed: true,
             port_name,
@@ -471,7 +475,10 @@ impl Application {
         }) else {
             return false;
         };
-        self.active_lane = row;
+        if self.active_lane != row {
+            self.active_lane = row;
+            self.bump_view_revision();
+        }
         self.audition_lane(&lane, volume as f32 / 100.0);
         if self.tap_recording_armed() {
             self.tap_recorded_hits.push(midi_record::RecordedTap {
@@ -479,6 +486,7 @@ impl Application {
                 lane,
                 volume,
             });
+            self.bump_view_revision();
         }
         true
     }
@@ -514,6 +522,7 @@ impl Application {
             } else {
                 "Tap recording stopped.".into()
             };
+            self.bump_view_revision();
             return Ok(midi_record::TapRecordStatus {
                 armed: false,
                 buffered_taps: 0,
@@ -523,6 +532,7 @@ impl Application {
         self.tap_recording_armed = true;
         self.tap_recorded_hits.clear();
         self.status = "Tap recording armed. Press Space and tap A–L or Numpad 1–9.".into();
+        self.bump_view_revision();
         Ok(midi_record::TapRecordStatus {
             armed: true,
             buffered_taps: 0,
@@ -612,6 +622,7 @@ impl Application {
         }
         if self.is_dirty() {
             self.pending_open = Some(path);
+            self.bump_view_revision();
             return;
         }
         self.open_now(OpenSource::Map(path));
@@ -620,6 +631,7 @@ impl Application {
         if self.busy || !std::mem::take(&mut self.revert_requested) {
             return;
         }
+        self.bump_view_revision();
         if let Some(path) = self.document.as_ref().map(|d| d.path.clone()) {
             self.pending_open = None;
             self.start_open(OpenSource::Map(path), false);
@@ -664,6 +676,7 @@ impl Application {
             Ordering::Relaxed,
         );
         self.status = format!("Reverted {restored} mapset file(s) to original snapshot (pre-revert backup saved).");
+        self.bump_view_revision();
         Ok(restored)
     }
 
@@ -683,6 +696,7 @@ impl Application {
         self.start_open(OpenSource::Map(path), false);
         self.sweep_after_open = true;
         self.status = format!("Restored {restored} mapset file(s) from pre-revert backup.");
+        self.bump_view_revision();
         Ok(restored)
     }
 
@@ -691,6 +705,7 @@ impl Application {
             return;
         }
         if let Some(path) = self.pending_open.take() {
+            self.bump_view_revision();
             self.open_now(OpenSource::Map(path));
         }
     }
@@ -708,6 +723,7 @@ impl Application {
             self.osu_watch.dismiss(&d.path);
         }
         self.status = "Kept your edits. Save will still check for conflicts.".into();
+        self.bump_view_revision();
     }
 
     pub(crate) fn start_reload_from_disk(&mut self, status_note: &'static str, forced: bool) {
@@ -881,6 +897,7 @@ impl Application {
             self.pending_locator_right = None;
         }
         self.status = "Cancelling…".into();
+        self.bump_view_revision();
     }
     pub fn collect_retired_audio(&self) -> bool {
         self.audio
@@ -892,6 +909,7 @@ impl Application {
         let progress = JobProgress { label, current: Arc::new(Mutex::new(None)) };
         self.status = label.into();
         self.job_progress = Some(progress.clone());
+        self.bump_view_revision();
         progress
     }
 
@@ -923,6 +941,7 @@ impl Application {
                 self.song_loading = false;
                 self.pending_play_on_song = false;
                 self.pending_locator_right = None;
+                self.bump_view_revision();
                 None
             }
             _ => None,
@@ -939,6 +958,7 @@ impl Application {
                 self.drum_stem_job = None;
                 self.drum_stem_loading = false;
                 self.drum_stem_auto_monitor = false;
+                self.bump_view_revision();
                 None
             }
             _ => None,
@@ -955,19 +975,23 @@ impl Application {
                 self.drum_vst_job = None;
                 self.drum_vst_loading = false;
                 self.set_drum_vst_unavailable_status("background load stopped");
+                self.bump_view_revision();
                 None
             }
             _ => None,
         };
         if let Some(result) = drum_vst_result {
             self.apply_drum_vst_job_result(result);
+            self.bump_view_revision();
         }
         if !self.cancel.load(Ordering::Relaxed)
-            && let Some(progress) = &self.job_progress
-            && let Ok(mut current) = progress.current.try_lock()
-            && let Some((done, total)) = current.take()
+            && let Some((done, total, label)) = self
+                .job_progress
+                .as_ref()
+                .and_then(|progress| progress.current.try_lock().ok().and_then(|mut c| c.take()).map(|(d, t)| (d, t, progress.label)))
         {
-            self.status = format!("{} {done} / {total} objects", progress.label);
+            self.status = format!("{label} {done} / {total} objects");
+            self.bump_view_revision();
         }
         let result = match self.jobs.as_ref().map(|r| r.try_recv()) {
             Some(Ok(result)) => Some(result),
@@ -978,6 +1002,7 @@ impl Application {
                 self.error = Some(
                     "The background job stopped unexpectedly. Your open edits are kept.".into(),
                 );
+                self.bump_view_revision();
                 None
             }
             _ => None,
@@ -986,6 +1011,7 @@ impl Application {
             self.job_progress = None;
             self.jobs = None;
             self.busy = false;
+            self.bump_view_revision();
             match result {
                 JobResult::Open(outgoing, keep_settings, preserve, Ok(loaded)) => {
                     let loaded = *loaded;
@@ -1468,6 +1494,7 @@ impl Application {
     pub fn dismiss_save_problem_review(&mut self) {
         self.save_problem_review = false;
         self.pending_save_review = None;
+        self.bump_view_revision();
     }
 
     pub fn review_save(&mut self) {
@@ -1506,6 +1533,7 @@ impl Application {
         self.save_problem_review = false;
         if !apply {
             self.status = "Save review cancelled".into();
+            self.bump_view_revision();
             return;
         }
         if self.is_stroke_open() || !self.document.as_ref().is_some_and(|doc| {
@@ -1513,6 +1541,7 @@ impl Application {
                 && doc.hs_mode == review.hs
         }) {
             self.error = Some("The difficulty changed. Review Save again.".into());
+            self.bump_view_revision();
             return;
         }
         let (send, receive) = mpsc::channel();
@@ -1521,6 +1550,7 @@ impl Application {
         self.status = "Writing reviewed Save…".into();
         let cancel = Arc::new(AtomicBool::new(false));
         self.cancel = cancel.clone();
+        self.bump_view_revision();
         std::thread::spawn(move || {
             let _ = send.send(review.finish(&|| cancel.load(Ordering::Relaxed)));
         });
@@ -1540,15 +1570,18 @@ impl Application {
         }
         if self.is_stroke_open() {
             self.error = Some("Finish or cancel the current drag before saving.".into());
+            self.bump_view_revision();
             return;
         }
         if self.has_dirty_keysounds() {
             if let Err(err) = keysound_session::save_dawsuks_to(self, None, false) {
                 self.error = Some(err);
+                self.bump_view_revision();
                 return;
             }
             if !self.has_dirty_beatmap() {
                 self.status = "Saved Keysound project.".into();
+                self.bump_view_revision();
                 if let Some(path) = self.pending_open.take() {
                     self.open_now(OpenSource::Map(path));
                 }
@@ -1587,6 +1620,7 @@ impl Application {
         let progress = self.track_progress(label);
         let cancel = Arc::new(AtomicBool::new(false));
         self.cancel = cancel.clone();
+        self.bump_view_revision();
         std::thread::spawn(move || {
             let cancelled = || cancel.load(Ordering::Relaxed);
             let mut diagnostics = Vec::new();
@@ -2039,6 +2073,7 @@ impl Application {
         {
             self.error =
                 Some("The source changed since this review. Prepare the output again.".into());
+            self.bump_view_revision();
             return;
         }
         self.write_reviewed(plan, backups);
@@ -2051,6 +2086,7 @@ impl Application {
         self.jobs = Some(receive);
         self.busy = true;
         self.status = "Writing reviewed output…".into();
+        self.bump_view_revision();
         let project_root = self.project_root.clone();
         std::thread::spawn(move || {
             let result = plan.apply(&backups, &|| cancel.load(Ordering::Relaxed))
@@ -2095,6 +2131,7 @@ impl Application {
         }).collect();
         if !differing.is_empty() {
             self.status = format!("Another program wrote {} in the mapset. dawsu!'s new sample of that name keeps playing; rename or remove the other file before saving.", differing.join(", "));
+            self.bump_view_revision();
         }
         self.register_added_samples(additions);
     }
@@ -2117,6 +2154,7 @@ impl Application {
         } else {
             self.external_osu_changed = true;
             self.status = "Map changed on disk. Reload or keep your edits.".into();
+            self.bump_view_revision();
         }
     }
 
@@ -2133,6 +2171,7 @@ impl Application {
         if let Err(error) = self.record_written_sets(&[names, kept].concat()) {
 
             self.error = Some(format!("The files were written. The sound set record could not be updated: {error}"));
+            self.bump_view_revision();
         }
     }
 
@@ -2167,6 +2206,7 @@ impl Application {
                 composer.lanes.push(lane.identity.clone());
             }
         }
+        self.bump_view_revision();
     }
 }
 

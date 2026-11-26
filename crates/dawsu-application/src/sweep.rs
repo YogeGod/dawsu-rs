@@ -538,6 +538,7 @@ impl Application {
         });
         self.sweep = Some(receive);
         self.busy = true;
+        self.bump_view_revision();
     }
 
     /// Applies the cleanup job once it finished; `wait` waits up to `sweep_wait` for it. A job
@@ -554,6 +555,7 @@ impl Application {
                     self.sweep_detached = true;
                     self.busy = false;
                     self.status = with_note(&self.status, STILL_RUNNING);
+                    self.bump_view_revision();
                     return None;
                 }
                 Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => None,
@@ -573,6 +575,7 @@ impl Application {
         } else {
             self.busy = false;
         }
+        self.bump_view_revision();
         let Some(outcome) = outcome else {
             // The job is gone: a file it was moving goes back now, unless another session's may be running.
             if let Some(document) = &self.document
@@ -582,6 +585,7 @@ impl Application {
                 put_back_stopped_moves(root);
             }
             self.error = Some("The unused sample cleanup stopped unexpectedly. A file it removed is kept in removed-samples; one it was moving stays in the mapset.".into());
+            self.bump_view_revision();
             return Some(None);
         };
         Some(self.apply_sweep(outcome))
@@ -658,6 +662,7 @@ impl Application {
         } else if let Some(removed) = removed_status(left.len() + removed.len()) {
             self.status = format!("{}. {removed}", self.status.trim_end_matches('.'));
         }
+        self.bump_view_revision();
         keep
     }
 }

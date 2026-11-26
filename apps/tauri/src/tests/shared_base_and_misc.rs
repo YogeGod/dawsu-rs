@@ -7,23 +7,23 @@ use std::fs;
 fn output_device_change_is_refused_during_a_job_without_changing_transport() {
     let mut app = Application::headless();
     app.seek(350.0);
-    app.locator_left = 200.0;
-    app.locator_right = 450.0;
-    app.cycle = true;
-    app.song_offset = -17.0;
-    app.preferences.master_gain = 0.45;
-    app.preferences.device = Some("Original device".into());
-    app.busy = true;
+    app.set_locators(200.0, 450.0, true);
+    app.set_song_offset(-17.0);
+    app.update_preferences(|p| {
+        p.master_gain = 0.45;
+        p.device = Some("Original device".into());
+    });
+    app.set_busy_for_test(true);
     let action = serde_json::from_value::<Action>(serde_json::json!({
         "kind": "output_settings", "backend": "mme", "device_id": "mme:other", "ms": 30,
     })).unwrap();
     action.run(&mut app);
-    assert!(app.error.as_deref().unwrap().contains("finish the current job"));
+    assert!(app.error().unwrap().contains("finish the current job"));
     assert_eq!(app.position_ms(), 350.0);
-    assert_eq!((app.locator_left, app.locator_right, app.cycle), (200.0, 450.0, true));
-    assert_eq!(app.song_offset, -17.0);
-    assert_eq!(app.preferences.master_gain, 0.45);
-    assert_eq!(app.preferences.device.as_deref(), Some("Original device"));
+    assert_eq!((app.locator_left(), app.locator_right(), app.cycle_enabled()), (200.0, 450.0, true));
+    assert_eq!(app.song_offset(), -17.0);
+    assert_eq!(app.preferences().master_gain, 0.45);
+    assert_eq!(app.preferences().device.as_deref(), Some("Original device"));
 }
 
 #[test]
@@ -33,22 +33,22 @@ fn rejected_output_settings_keep_the_device_preferences_and_transport() {
 
     let mut app = Application::headless();
     app.seek(350.0);
-    app.locator_left = 200.0;
-    app.locator_right = 450.0;
-    app.cycle = true;
-    app.song_offset = -17.0;
-    app.preferences.master_gain = 0.45;
-    app.preferences.device = Some("Original device".into());
-    app.preferences.audio_buffer_ms = Some(40);
-    let saved = serde_json::to_vec(&app.preferences).unwrap();
+    app.set_locators(200.0, 450.0, true);
+    app.set_song_offset(-17.0);
+    app.update_preferences(|p| {
+        p.master_gain = 0.45;
+        p.device = Some("Original device".into());
+        p.audio_buffer_ms = Some(40);
+    });
+    let saved = serde_json::to_vec(app.preferences()).unwrap();
 
     let sent = json!({"kind": "output_settings", "backend": "system", "device_id": "system:test", "ms": 0});
     serde_json::from_value::<Action>(sent).unwrap().run(&mut app);
-    assert!(app.error.as_deref().unwrap().contains("10 and 500"));
+    assert!(app.error().unwrap().contains("10 and 500"));
     assert_eq!(app.position_ms(), 350.0);
-    assert_eq!((app.locator_left, app.locator_right, app.cycle), (200.0, 450.0, true));
-    assert_eq!(app.song_offset, -17.0);
-    assert_eq!(serde_json::to_vec(&app.preferences).unwrap(), saved);
+    assert_eq!((app.locator_left(), app.locator_right(), app.cycle_enabled()), (200.0, 450.0, true));
+    assert_eq!(app.song_offset(), -17.0);
+    assert_eq!(serde_json::to_vec(app.preferences()).unwrap(), saved);
 
     let restored: dawsu_application::Preferences = serde_json::from_slice(&saved).unwrap();
     assert_eq!(restored.audio_buffer_ms, Some(40));
@@ -270,11 +270,10 @@ fn fresh_gameplay_diff_scene_reports_objects_snap_and_updates_signature() {
     );
     assert_eq!(view["scene"]["laneOrder"].as_array().unwrap().len(), 2);
 
-    let home = crate::home::Route::default();
-    let sig_objects = crate::non_playback_signature(&app, &home, PlaybackStart::Cursor, 0);
+    let tok_objects = app.view_state_token();
     Action::Snap { on: true, mode: "grid".into(), beats: 1, divisor: 4 }.run(&mut app);
-    let sig_grid = crate::non_playback_signature(&app, &home, PlaybackStart::Cursor, 0);
-    assert_ne!(sig_objects, sig_grid);
+    let tok_grid = app.view_state_token();
+    assert_ne!(tok_objects, tok_grid);
 }
 
 #[test]
@@ -314,8 +313,8 @@ fn slim_tick_polls_return_tick_when_unchanged_and_full_view_on_status_warning_or
     assert!(tick1["peaks"]["master"].is_number());
     assert!(tick1["musicalPosition"].is_string());
 
-    // Status change invalidates the non-playback signature -> returns full view with bumped tickRev.
-    app.status = "Saved map".into();
+    // Status change invalidates the view token -> returns full view with bumped tickRev.
+    app.set_status("Saved map");
     let after_status = serde_json::to_value(crate::next_view_response(
         &mut app, &mut home, &mut drums, &mut playback_start, &mut cache, &mut pending,
         false, None, false, Some(rev1),
@@ -334,8 +333,8 @@ fn slim_tick_polls_return_tick_when_unchanged_and_full_view_on_status_warning_or
     assert_eq!(tick2["tick"], true);
     assert_eq!(tick2["rev"], rev2);
 
-    // Warning change invalidates the signature -> returns full view.
-    app.warnings.push("Missing sample".into());
+    // Warning change invalidates the view token -> returns full view.
+    app.push_warning("Missing sample");
     let after_warning = serde_json::to_value(crate::next_view_response(
         &mut app, &mut home, &mut drums, &mut playback_start, &mut cache, &mut pending,
         false, None, false, Some(rev2),
@@ -353,8 +352,8 @@ fn slim_tick_polls_return_tick_when_unchanged_and_full_view_on_status_warning_or
     .unwrap();
     assert_eq!(tick3["tick"], true);
 
-    // Job busy flag change invalidates the signature -> returns full view.
-    app.busy = true;
+    // Job busy flag change invalidates the view token -> returns full view.
+    app.set_busy_for_test(true);
     let after_busy = serde_json::to_value(crate::next_view_response(
         &mut app, &mut home, &mut drums, &mut playback_start, &mut cache, &mut pending,
         false, None, false, Some(rev3),
@@ -365,8 +364,8 @@ fn slim_tick_polls_return_tick_when_unchanged_and_full_view_on_status_warning_or
     let rev4 = after_busy["tickRev"].as_u64().unwrap();
     assert!(rev4 > rev3);
 
-    // song_loading change invalidates the signature -> returns full view.
-    app.song_loading = true;
+    // song_loading change invalidates the view token -> returns full view.
+    app.set_song_loading_for_test(true);
     let while_loading = serde_json::to_value(crate::next_view_response(
         &mut app, &mut home, &mut drums, &mut playback_start, &mut cache, &mut pending,
         false, None, false, Some(rev4),
@@ -377,7 +376,7 @@ fn slim_tick_polls_return_tick_when_unchanged_and_full_view_on_status_warning_or
     let rev5 = while_loading["tickRev"].as_u64().unwrap();
     assert!(rev5 > rev4);
 
-    app.song_loading = false;
+    app.set_song_loading_for_test(false);
     let after_loading = serde_json::to_value(crate::next_view_response(
         &mut app, &mut home, &mut drums, &mut playback_start, &mut cache, &mut pending,
         false, None, false, Some(rev5),

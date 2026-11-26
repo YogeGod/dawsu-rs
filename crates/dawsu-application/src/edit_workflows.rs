@@ -32,7 +32,9 @@ impl Application {
     }
 
     pub fn cancel_timeline_edit(&mut self) {
-        self.edit_dialog = None;
+        if self.edit_dialog.take().is_some() {
+            self.bump_view_revision();
+        }
     }
 
     pub fn apply_timeline_edit(&mut self, path: &Path, edit: TimelineEdit) {
@@ -69,6 +71,7 @@ impl Application {
         if !changed {
             self.status = "No matching hits changed".into();
         }
+        self.bump_view_revision();
     }
 
     pub fn pattern_stamp(&mut self, options: PatternStampOptions) -> usize {
@@ -83,6 +86,7 @@ impl Application {
         if count == 0 {
             self.status = "No matching hits changed".into();
         }
+        self.bump_view_revision();
         count
     }
 }

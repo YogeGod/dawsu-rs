@@ -655,7 +655,7 @@ pub(crate) fn sample_outline(app: &mut Application, source: PreviewSource) -> Re
             app.lane_sample_outline(lane, PREVIEW_BARS).ok_or("The sample isn't loaded.")?
         }
         PreviewSource::Library { location } => {
-            let sample = location.sample(app.preferences.hitsound_library.as_deref())?;
+            let sample = location.sample(app.preferences().hitsound_library.as_deref())?;
             app.sample_file_outline(&sample, PREVIEW_BARS)?
         }
     };

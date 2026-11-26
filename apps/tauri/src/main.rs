@@ -229,7 +229,7 @@ fn export_snapshot(app: &Application, cache: &mut ExportCache) -> Value {
         "source": source,
         "targets": targets,
         "backups": app.backups_folder(),
-        "busy": app.busy,
+        "busy": app.is_busy(),
         "requested": status.requested,
         "previewing": status.running || status.waiting,
         "progress": status.progress.map(|(done, total)| json!({ "kind": "preview", "done": done, "total": total })),
@@ -397,7 +397,7 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
         let mut drums = drum_view::DrumView::for_editor();
         let mut tick_cache = ViewTickCache::default();
         let mut pending_initial_open = initial.filter(|path| map_path(path));
-        if !app.first_launch && let Some(path) = pending_initial_open.take() {
+        if !app.first_launch() && let Some(path) = pending_initial_open.take() {
             let _ = guard(&mut app, &mut fault, |app| app.request_open(path));
         }
         loop {
@@ -427,7 +427,7 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                 // After a fault, a request without an error channel gets no answer.
                 Ok(Request::Shortcuts(response)) => {
                     if let Ok(value) = guard(&mut app, &mut fault, |app| json!({
-                        "preset": app.preferences.key_preset, "entries": app.shortcuts(),
+                        "preset": app.preferences().key_preset, "entries": app.shortcuts(),
                     })) {
                         let _ = response.send(value);
                     }
@@ -476,7 +476,7 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                 }
                 Ok(Request::SongsDirectory(response)) => {
                     if let Ok(value) = guard(&mut app, &mut fault, |app| {
-                        let folder = &app.preferences.songs_folder;
+                        let folder = &app.preferences().songs_folder;
                         folder.is_dir().then(|| folder.clone())
                     }) {
                         let _ = response.send(value);
@@ -505,12 +505,12 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                 }
                 Ok(Request::SetSongsDirectory(folder, response)) => {
                     let result = guard(&mut app, &mut fault, |app| {
-                        if app.first_launch {
+                        if app.first_launch() {
                             Err("Choose a keyboard preset first.".into())
                         } else if !folder.is_dir() {
                             Err("The selected Songs folder is unavailable.".into())
                         } else {
-                            app.preferences.songs_folder = folder;
+                            app.update_preferences(|p| p.songs_folder = folder);
                             app.save_preferences();
                             Ok(decorate_and_stamp_view(app, &home, &drums, playback_start, &mut tick_cache, false))
                         }
@@ -520,21 +520,21 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                 }
                 Ok(Request::LibraryDirectory(response)) => {
                     if let Ok(value) = guard(&mut app, &mut fault, |app| {
-                        app.preferences.hitsound_library.as_ref().filter(|path| path.is_dir()).cloned()
+                        app.preferences().hitsound_library.as_ref().filter(|path| path.is_dir()).cloned()
                     }) {
                         let _ = response.send(value);
                     }
                 }
                 Ok(Request::SetLibraryDirectory(folder, response)) => {
                     let result = guard(&mut app, &mut fault, |app| {
-                        if app.first_launch {
+                        if app.first_launch() {
                             return Err("Choose a keyboard preset first.".into());
                         }
                         let folder = folder.canonicalize().map_err(|e| format!("Opening hitsound library: {e}"))?;
                         if !folder.is_dir() {
                             return Err("The selected hitsound library folder is unavailable.".into());
                         }
-                        app.preferences.hitsound_library = Some(folder);
+                        app.update_preferences(|p| p.hitsound_library = Some(folder));
                         app.save_preferences();
                         Ok(decorate_and_stamp_view(app, &home, &drums, playback_start, &mut tick_cache, false))
                     })
@@ -543,7 +543,7 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                 }
                 Ok(Request::LibraryEntries(location, response)) => {
                     let result = guard(&mut app, &mut fault, |app| {
-                        location.entries(app.preferences.hitsound_library.as_deref())
+                        location.entries(app.preferences().hitsound_library.as_deref())
                     })
                     .and_then(|result| result);
                     let _ = response.send(result);
@@ -583,21 +583,23 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                     let _ = response.send(result);
                 }
                 Ok(Request::PreviewPlace(place, save)) => {
-                    app.preferences.preview_window = Some(place);
-                    if save && !app.first_launch {
+                    app.update_preferences(|p| p.preview_window = Some(place));
+                    if save && !app.first_launch() {
                         app.save_preferences();
                     }
                 }
                 Ok(Request::PreviewOpen(open, save)) => {
-                    if let Some(place) = app.preferences.preview_window.as_mut() {
-                        place.open = open;
-                    }
-                    if save && !app.first_launch {
+                    app.update_preferences(|p| {
+                        if let Some(place) = p.preview_window.as_mut() {
+                            place.open = open;
+                        }
+                    });
+                    if save && !app.first_launch() {
                         app.save_preferences();
                     }
                 }
                 Ok(Request::PreviewPlaceGet(response)) => {
-                    let _ = response.send(app.preferences.preview_window);
+                    let _ = response.send(app.preferences().preview_window);
                 }
                 Ok(Request::DrumView(map, preset, on, response)) => {
                     let result = guard(&mut app, &mut fault, |app| {
@@ -652,7 +654,7 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                     let result = guard(&mut app, &mut fault, |app| {
                         folder.resolve(
                             app.document().map(|d| d.path.as_path()),
-                            app.preferences.hitsound_library.as_deref(),
+                            app.preferences().hitsound_library.as_deref(),
                             &dawsu_application::data_folder(),
                         )
                     })
@@ -664,7 +666,7 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                         Ok(())
                     } else {
                         guard(&mut app, &mut fault, |app| {
-                            if app.busy {
+                            if app.is_busy() {
                                 Err("Wait for the current job to finish.".into())
                             } else if app.is_dirty() && !discard {
                                 if app.has_dirty_beatmap() {
@@ -678,7 +680,7 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                                     app.cancel_export_preview();
                                     // Frees the numbers of new samples nothing keeps.
                                     app.close_document();
-                                    if !app.first_launch {
+                                    if !app.first_launch() {
                                         app.save_preferences();
                                     }
                                 })

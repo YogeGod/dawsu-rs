@@ -40,6 +40,7 @@ impl Application {
         }
         let doc = self.editable_bookmarks()?;
         doc.bookmark_override |= doc.bookmarks.add(SongTime::from_ms(time), label.and_then(label_text));
+        self.bump_view_revision();
         Ok(())
     }
 
@@ -53,6 +54,7 @@ impl Application {
             doc.bookmarks.remove_at(at);
             doc.bookmarks.add(at, label);
             doc.bookmark_override = true;
+            self.bump_view_revision();
         }
         Ok(())
     }
@@ -63,6 +65,7 @@ impl Application {
         }
         let doc = self.editable_bookmarks()?;
         doc.bookmark_override |= doc.bookmarks.remove_at(SongTime::from_ms(time));
+        self.bump_view_revision();
         Ok(())
     }
 
@@ -81,6 +84,7 @@ impl Application {
         if let Some(time) = next {
             self.jump_to_bookmark(time.ms());
             self.bookmark_step = Some(time.ms());
+            self.bump_view_revision();
         }
     }
 }

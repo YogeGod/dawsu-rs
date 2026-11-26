@@ -66,12 +66,12 @@ fn switching_dirty_difficulties_respects_all_three_choices_and_stale_save() {
     fs::write(&expert, &external).unwrap();
     switch(&mut app, &hard, "save");
     let deadline = Instant::now() + Duration::from_secs(10);
-    while app.busy {
+    while app.is_busy() {
         app.poll();
         assert!(Instant::now() < deadline);
         std::thread::sleep(Duration::from_millis(5));
     }
-    assert!(app.error.as_deref().is_some_and(|error| error.contains("changed on disk")));
+    assert!(app.error().is_some_and(|error| error.contains("changed on disk")));
     assert!(app.document().unwrap().title.contains("Expert"));
     assert!(app.is_dirty());
     assert_eq!(fs::read_to_string(&expert).unwrap(), external);
@@ -124,7 +124,7 @@ fn dense_scene_and_dirty_switch_use_the_real_editor_state() {
     app.seek(1200.0);
     Action::Start.run(&mut app);
     assert_eq!(app.position_ms(), 0.0);
-    app.locator_left = 1000.0;
+    app.set_locator_left(1000.0);
     let mut start_mode = PlaybackStart::Cursor;
     Action::PlaybackStart {
         value: PlaybackStart::Left,
@@ -167,10 +167,10 @@ fn dense_scene_and_dirty_switch_use_the_real_editor_state() {
     assert_ne!(app.document().unwrap().composer.snap_enabled, initial_snap);
     send_key(&mut app, "!", "Digit1", false, true);
     assert_eq!(app.document().unwrap().composer.spacing.divisions(), 1);
-    let row_height = app.row_height;
+    let row_height = app.row_height();
     send_key(&mut app, "ArrowDown", "ArrowDown", true, false);
-    assert!(app.row_height > row_height);
-    app.locator_right = 1200.0;
+    assert!(app.row_height() > row_height);
+    app.set_locator_right(1200.0);
     send_key(&mut app, "2", "Numpad2", false, false);
     assert_eq!(app.position_ms(), 1200.0);
     app.choose_key_preset("osu!");
@@ -343,7 +343,7 @@ fn copy_review_uses_the_exact_requested_options() {
     open(&mut app, &source);
     action.run(&mut app);
     wait_for_job(&mut app);
-    assert!(app.output_review.is_some());
+    assert!(app.output_review().is_some());
     assert_eq!(fs::read_to_string(&target).unwrap(), target_bytes);
 
     Action::Output { apply: true }.run(&mut app);
@@ -396,13 +396,13 @@ fn home_route_preserves_cancel_and_failed_save_and_reloads_after_discard() {
     send(&mut route, &mut app, Action::Home);
     send(&mut route, &mut app, confirm("save"));
     let deadline = Instant::now() + Duration::from_secs(10);
-    while app.busy {
+    while app.is_busy() {
         app.poll();
         assert!(Instant::now() < deadline);
         std::thread::sleep(Duration::from_millis(5));
     }
     route.settle(&mut app);
-    assert!(app.error.is_some());
+    assert!(app.error().is_some());
     assert!(app.is_dirty());
     assert!(!route.visible());
     assert_eq!(fs::read_to_string(&map).unwrap(), edited_on_disk);
@@ -472,7 +472,7 @@ fn home_save_with_left_out_moments_goes_home_after_the_summarys_save() {
     fs::write(&map, "osu file format v14\r\n\r\n[General]\r\nMode: 0\r\n\r\n[Difficulty]\r\nSliderMultiplier:1.4\r\nSliderTickRate:1\r\n\r\n[TimingPoints]\r\n0,500,4,1,0,70,1,0\r\n\r\n[HitObjects]\r\n256,192,1000,1,8,2:0:0:0:\r\n256,192,1500,1,8,3:0:0:0:\r\n100,100,2000,2,0,L|200:100,1,140\r\n").unwrap();
     // A data folder of its own gives the difficulty an editor project to keep left-out moments.
     let mut app = Application::with_data_root(fixture.0.join("data"));
-    app.error = None;
+    app.clear_error();
     open(&mut app, &map);
     Action::HsMode { on: true }.run(&mut app);
     let draw_claps = |app: &mut Application| {
@@ -628,7 +628,7 @@ fn export_requests_answer_with_the_export_view_and_errors_after_a_fault() {
     assert!(view["preview"]["base"].is_null(), "no base difficulty without the base choice");
     assert_eq!((&view["writing"], &view["written"], &view["writeError"]), (&serde_json::json!(false), &serde_json::Value::Null, &serde_json::Value::Null));
     assert!(view.get("review").is_none() && view.get("shortcutAction").is_none());
-    assert!(app.output_review.is_none());
+    assert!(app.output_review().is_none());
 
     let (tx, rx) = channel();
     answer_export(&mut app, &mut fault, &mut cache, Request::ExportRun(id + 1, tx));
@@ -675,7 +675,7 @@ fn export_preview_waits_without_an_error_while_a_drag_is_open() {
     let status = app.export_status();
     assert!(status.waiting && !status.running, "the preview waits for the drag");
     assert_eq!(status.error, None);
-    assert!(app.error.is_none(), "{:?}", app.error);
+    assert!(app.error().is_none(), "{:?}", app.error());
     send(&mut app, "up");
     let deadline = Instant::now() + Duration::from_secs(10);
     while app.export_status().preview.is_none() {

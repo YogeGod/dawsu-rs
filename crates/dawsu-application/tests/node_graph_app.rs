@@ -79,8 +79,8 @@ Version: Hard
     std::fs::write(&osu_path, osu).unwrap();
     let mut app = Application::headless_with_projects(scratch.path("data"));
     app.request_open(osu_path.clone());
-    wait_until(&mut app, |a| !a.busy && !a.song_loading && a.document().is_some());
-    assert!(app.error.is_none(), "{:?}", app.error);
+    wait_until(&mut app, |a| !a.is_busy() && !a.is_song_loading() && a.document().is_some());
+    assert!(app.error().is_none(), "{:?}", app.error());
     (app, osu_path)
 }
 
@@ -149,7 +149,7 @@ fn node_graph_lifecycle_run_viewer_cancel_stale_apply_undo_and_json_round_trip()
     })
     .unwrap();
     app.node_graph_action(NodeGraphAction::Run).unwrap();
-    assert!(!app.busy);
+    assert!(!app.is_busy());
     wait_until(&mut app, |a| a.node_graph_view().status == "ready");
 
     let ready_view = app.node_graph_view();
@@ -226,7 +226,7 @@ fn node_graph_lifecycle_run_viewer_cancel_stale_apply_undo_and_json_round_trip()
     app.save_session().unwrap();
     let mut reopened = Application::headless_with_projects(scratch.path("data"));
     reopened.request_open(osu_path);
-    wait_until(&mut reopened, |a| !a.busy && a.document().is_some());
+    wait_until(&mut reopened, |a| !a.is_busy() && a.document().is_some());
     let reopened_slots = reopened.node_graph_view().slots;
     assert_eq!(
         reopened_slots.iter().find(|s| s.slot == "kick").and_then(|s| s.bound_lane_key.as_deref()),
@@ -268,8 +268,8 @@ fn range_change_stales_batch_map_edit_cancels_run_viewer_clears_and_placeholder_
     assert!(app.node_graph_view().viewer.is_none());
 
     // 2. Switching to locator range marks the batch stale (`Range`) and refuses Apply.
-    app.locator_left = 100.0;
-    app.locator_right = 1500.0;
+    app.set_locator_left(100.0);
+    app.set_locator_right(1500.0);
     app.node_graph_action(NodeGraphAction::SetRangeMode {
         use_locator_range: true,
     })

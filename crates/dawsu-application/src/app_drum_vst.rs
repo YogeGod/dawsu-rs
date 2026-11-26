@@ -20,6 +20,7 @@ impl Application {
             let _ = self.vst3.unload_plugin(&vst.instance_id);
         }
         self.drum_vst_state_b64 = None;
+        self.bump_view_revision();
     }
 
     pub(crate) fn attach_drum_vst_instance(
@@ -59,6 +60,7 @@ impl Application {
         }
         self.drum_vst = Some(handle);
         self.drum_vst_state_b64 = state_b64;
+        self.bump_view_revision();
         Ok(())
     }
 
@@ -68,6 +70,7 @@ impl Application {
         } else if self.status == "Loading drum kit…" {
             self.status = "Difficulty loaded".into();
         }
+        self.bump_view_revision();
     }
 
     pub(crate) fn set_drum_vst_unavailable_status(&mut self, err: &str) {
@@ -79,6 +82,7 @@ impl Application {
         } else {
             self.status = note;
         }
+        self.bump_view_revision();
     }
 
     pub(crate) fn spawn_drum_vst_restore(&mut self, saved: project::DrumVstSession) {
@@ -88,6 +92,7 @@ impl Application {
         let (send, receive) = mpsc::channel();
         self.drum_vst_job = Some(receive);
         self.drum_vst_loading = true;
+        self.bump_view_revision();
         let generation = self.document_generation();
         let host_exe = self.vst3.host_executable();
         let shm_name = self.vst3.next_shm_name();
@@ -162,6 +167,7 @@ impl Application {
             return;
         }
         self.drum_vst_loading = false;
+        self.bump_view_revision();
         match result {
             Ok(session) => {
                 let plugin_path = PathBuf::from(&saved.plugin_path);
@@ -230,6 +236,7 @@ impl Application {
         self.drum_vst_saved = None;
         self.sync_audio();
         let _ = self.write_session(None, None, None, None);
+        self.bump_view_revision();
         Ok(summary)
     }
     /// Instant ON/OFF toggle for live VST3 drum routing (keeps plugin loaded in memory).
@@ -239,6 +246,7 @@ impl Application {
         }
         self.sync_audio();
         let _ = self.write_session(None, None, None, None);
+        self.bump_view_revision();
     }
 
     /// Updates the lane -> MIDI note routing map (from `DrumView` + skin defaults).
@@ -252,6 +260,7 @@ impl Application {
         }
         if changed {
             self.sync_audio();
+            self.bump_view_revision();
         }
     }
 
@@ -279,6 +288,7 @@ impl Application {
             .ok_or("Load a Drum VST3 instrument first.")?;
         let routed = vst.toggle_lane_vst(&lane);
         self.sync_audio();
+        self.bump_view_revision();
         Ok(routed)
     }
 
@@ -292,6 +302,7 @@ impl Application {
         self.clear_live_drum_vst();
         self.sync_audio();
         let _ = self.write_session(None, None, None, Some(None));
+        self.bump_view_revision();
     }
 
     /// Refreshes the cached VST3 component state chunk and saves it into the map's session.
@@ -755,6 +766,7 @@ impl Application {
             plan.assignments.len(),
             if plan.assignments.len() == 1 { "hit" } else { "hits" },
         );
+        self.bump_view_revision();
         Ok((plan, outputs))
     }
 }

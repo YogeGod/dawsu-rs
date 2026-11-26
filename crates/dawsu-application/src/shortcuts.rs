@@ -487,6 +487,7 @@ impl Application {
             }
             Err(error) => return Err(format!("Exporting shortcuts: {error}")),
         };
+        self.bump_view_revision();
         Ok(())
     }
 
@@ -505,6 +506,7 @@ impl Application {
         self.keymap = map;
         self.status = status;
         self.save_preferences();
+        self.bump_view_revision();
     }
 }
 #[cfg(test)]

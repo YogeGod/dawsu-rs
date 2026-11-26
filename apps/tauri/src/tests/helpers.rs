@@ -23,12 +23,12 @@ impl Drop for Fixture {
 
 pub(super) fn wait_for_job(app: &mut Application) {
     let deadline = Instant::now() + Duration::from_secs(10);
-    while app.busy {
+    while app.is_busy() {
         app.poll();
         assert!(Instant::now() < deadline, "editor job did not finish");
         std::thread::sleep(Duration::from_millis(5));
     }
-    assert!(app.error.is_none(), "{:?}", app.error);
+    assert!(app.error().is_none(), "{:?}", app.error());
 }
 
 /// A default sounds folder, outside any mapset folder, with the skin's twelve hitsounds, all
@@ -48,7 +48,7 @@ pub(super) fn open_raw(app: &mut Application, path: &Path) {
     Action::Open { path: path.into() }.run(app);
     wait_for_job(app);
     let deadline = Instant::now() + Duration::from_secs(10);
-    while app.song_loading {
+    while app.is_song_loading() {
         app.poll();
         assert!(Instant::now() < deadline, "song decode job did not finish");
         std::thread::sleep(Duration::from_millis(5));

@@ -1,4 +1,4 @@
-use dawsu_application::{Application, EditorTimeSignature, LaneLayout, PlatformRequest, lane_name};
+use dawsu_application::{Application, EditorTimeSignature, LaneLayout, lane_name};
 use dawsu_editor::{
     keys::{Key, KeyCombination, Mods},
     tempo::SnapMode,
@@ -676,7 +676,7 @@ pub(crate) fn snapshot_with_static(app: &Application, include_scene: bool, inclu
                 let protected = c.protect_normals && hit_count > 0
                     && matches!(slot, SampleIdentity::Standard { sound: Sound::Hit(dawsu_foundation::Hitsound::Normal), .. });
                 let plays_as = model.lane(lane).map(|m| m.plays_as()).unwrap_or_else(|| lane.clone());
-                let (vst_routed, vst_bypassed) = match &app.drum_vst {
+                let (vst_routed, vst_bypassed) = match app.drum_vst() {
                     Some(vst) if vst.is_enabled() => {
                         let has_note = vst.routed_notes().contains_key(lane);
                         let bypassed = has_note && vst.is_lane_vst_muted(lane);
@@ -811,7 +811,7 @@ pub(crate) fn snapshot_with_static(app: &Application, include_scene: bool, inclu
                 ramp_preview,
                 range: c.range.map(|r| [r.from.ms(), r.to.ms()]),
                 repeat_gap: app.requested_edit().filter(|&id| id == "repeat").and_then(|_| c.repeat_gap()),
-                row_height: f64::from(app.row_height),
+                row_height: f64::from(app.row_height()),
                 sections,
                 selection,
                 snap: c.snap_enabled,
@@ -821,13 +821,13 @@ pub(crate) fn snapshot_with_static(app: &Application, include_scene: bool, inclu
                 title: d.title.clone(),
                 version: d.version(),
                 view_start: c.view_start,
-                zoom: app.zoom,
+                zoom: app.zoom(),
             }
         })
     } else {
         None
     };
-    let review = app.output_review.as_ref().map(|plan| {
+    let review = app.output_review().map(|plan| {
         let files = plan.files.iter().map(|file| {
             let summary = file.file.change_summary();
             let diff = file.diff_summary();
@@ -899,17 +899,18 @@ pub(crate) fn snapshot_with_static(app: &Application, include_scene: bool, inclu
     } else {
         None
     };
+    let prefs = app.preferences();
     ViewSnapshot {
-        active_lane: app.active_lane,
-        audition: app.preferences.audition,
+        active_lane: app.active_lane(),
+        audition: prefs.audition,
         bookmark_step: None,
-        busy: app.busy,
+        busy: app.is_busy(),
         can_undo_revert: app.can_undo_revert(),
-        classic_browser: app.preferences.classic_browser,
-        cycle: app.cycle,
+        classic_browser: prefs.classic_browser,
+        cycle: app.cycle_enabled(),
         dirty: app.is_dirty(),
         drum_view: None,
-        drum_vst: app.drum_vst.as_ref().map(|v| DrumVstSnapshot {
+        drum_vst: app.drum_vst().map(|v| DrumVstSnapshot {
             enabled: v.is_enabled(),
             instance_id: v.instance_id.clone(),
             loaded: true,
@@ -920,32 +921,32 @@ pub(crate) fn snapshot_with_static(app: &Application, include_scene: bool, inclu
         }),
         duration: app.duration_ms(),
         edit_dialog: app.requested_edit(),
-        error: app.error.clone(),
-        external_osu_changed: app.external_osu_changed,
-        first_launch: app.first_launch,
-        follow: app.preferences.follow,
+        error: app.error().map(str::to_owned),
+        external_osu_changed: app.external_osu_changed(),
+        first_launch: app.first_launch(),
+        follow: prefs.follow,
         has_document: document.is_some(),
         has_original_snapshot: app.has_original_snapshot(),
-        hitsound_library: app.preferences.hitsound_library.clone(),
-        hitsounds: f64::from(app.preferences.hitsound_gain),
-        hitsounds_muted: app.preferences.hitsounds_muted,
+        hitsound_library: prefs.hitsound_library.clone(),
+        hitsounds: f64::from(prefs.hitsound_gain),
+        hitsounds_muted: prefs.hitsounds_muted,
         hitsounds_solo: app.hitsounds_solo(),
         hs_mode: document.is_some_and(|d| d.hs_mode),
         is_lazer_external_edit: document.is_some_and(|d| crate::osu_link::is_lazer_external_edit_path(&d.path)),
-        key_preset: app.preferences.key_preset.clone(),
+        key_preset: prefs.key_preset.clone(),
         lane_count: document.map_or(0, |d| d.composer.lanes.len()),
-        left: app.locator_left,
-        main: f64::from(app.preferences.master_gain),
+        left: app.locator_left(),
+        main: f64::from(prefs.master_gain),
         musical_position,
-        object_lines: app.preferences.object_lines,
-        offset: app.song_offset,
+        object_lines: prefs.object_lines,
+        offset: app.song_offset(),
         output_device: app.device_name().to_owned(),
         output_problems,
         panels: PanelsSnapshot {
-            browser: app.preferences.show_browser,
-            controller: app.preferences.show_controller,
-            inspector: app.preferences.show_inspector,
-            lane_names: app.preferences.lane_names,
+            browser: prefs.show_browser,
+            controller: prefs.show_controller,
+            inspector: prefs.show_inspector,
+            lane_names: prefs.lane_names,
         },
         peaks: PeaksSnapshot {
             hitsounds: f64::from(hitsound_peak),
@@ -953,34 +954,34 @@ pub(crate) fn snapshot_with_static(app: &Application, include_scene: bool, inclu
             song: f64::from(song_peak),
         },
         pending_home: None,
-        pending_open: app.pending_open.is_some(),
+        pending_open: app.has_pending_open(),
         playback_start: None,
         playing: app.is_playing(),
         position,
         // The map preview was in its own window when the editor last closed: main opens it again.
-        preview_window: app.preferences.preview_window.is_some_and(|place| place.open),
+        preview_window: prefs.preview_window.is_some_and(|place| place.open),
         quantize_strength: app.quantize_strength(),
         ramp_shape: format!("{:?}", app.ramp_shape()),
-        recent: app.preferences.recent.clone(),
+        recent: prefs.recent.clone(),
         recent_meta: (document.is_none() || include_static).then(|| {
-            app.preferences
+            prefs
                 .recent
                 .iter()
                 .map(|path| cached_recent_meta(path))
                 .collect()
         }),
         recovery,
-        return_on_stop: app.preferences.return_on_stop,
-        reload_osu_after_save: app.preferences.reload_osu_after_save,
-        clean_redundant_greenlines: app.preferences.clean_redundant_greenlines,
-        keep_pitch: app.preferences.keep_pitch,
-        auto_check_updates: app.preferences.auto_check_updates,
-        step_pads_mode: app.preferences.step_pads_mode,
+        return_on_stop: prefs.return_on_stop,
+        reload_osu_after_save: prefs.reload_osu_after_save,
+        clean_redundant_greenlines: prefs.clean_redundant_greenlines,
+        keep_pitch: prefs.keep_pitch,
+        auto_check_updates: prefs.auto_check_updates,
+        step_pads_mode: prefs.step_pads_mode,
         tap_recorded_count: app.tap_recorded_count(),
         tap_recording_armed: app.tap_recording_armed(),
-        revert: app.revert_requested,
+        revert: app.revert_requested(),
         review,
-        right: app.locator_right,
+        right: app.locator_right(),
         save_problem_review,
         save_review: app.save_review_files().map(|files| {
             files.into_iter().map(|(label, path)| (label, path.to_path_buf())).collect()
@@ -990,12 +991,12 @@ pub(crate) fn snapshot_with_static(app: &Application, include_scene: bool, inclu
         shortcut_help: None,
         shortcut_open: None,
         show_home: None,
-        song: f64::from(app.preferences.song_gain),
-        song_loading: app.song_loading,
-        song_muted: app.preferences.song_muted,
+        song: f64::from(prefs.song_gain),
+        song_loading: app.is_song_loading(),
+        song_muted: prefs.song_muted,
         song_solo: app.song_solo(),
-        songs_folder: (!app.preferences.songs_folder.as_os_str().is_empty())
-            .then(|| app.preferences.songs_folder.clone()),
+        songs_folder: (!prefs.songs_folder.as_os_str().is_empty())
+            .then(|| prefs.songs_folder.clone()),
         sound_set_prompts: document.map(|_| app.sound_set_prompts()).unwrap_or_default().iter().map(|p| {
             SoundSetPromptSnapshot {
                 edited_keep_files: p.edited_keep_files,
@@ -1005,16 +1006,16 @@ pub(crate) fn snapshot_with_static(app: &Application, include_scene: bool, inclu
                 set_id: p.set_id.clone(),
             }
         }).collect(),
-        speed: app.playback_speed,
-        status: app.status.clone(),
+        speed: app.playback_speed(),
+        status: app.status().to_owned(),
         stem_active: app.is_monitoring_stem(),
         stem_loaded: app.has_drum_stem(),
-        stem_loading: app.drum_stem_loading,
+        stem_loading: app.is_drum_stem_loading(),
         stem_name: app.drum_stem_name(),
         tab_routes,
         tick_rev: None,
         tool: format!("{:?}", app.tool()),
-        warnings: app.warnings.clone(),
+        warnings: app.warnings().to_vec(),
         waveform_revision: app.waveform_revision(),
     }
 }
@@ -1032,7 +1033,7 @@ pub(crate) fn encode_waveform_bytes(bins: &[dawsu_application::WaveBin]) -> Vec<
 #[derive(Default)]
 pub(crate) struct ViewTickCache {
     pub(crate) rev: u64,
-    pub(crate) last_non_playback_sig: Option<u64>,
+    pub(crate) last_view_key: Option<(dawsu_application::ViewStateToken, bool, bool, PlaybackStart, u64)>,
     pub(crate) drums_rev: u64,
     pub(crate) static_scene_key: Option<(u64, u64, usize)>,
     pub(crate) last_hs_mode: bool,
@@ -1041,122 +1042,23 @@ pub(crate) struct ViewTickCache {
 impl ViewTickCache {
     pub(crate) fn invalidate(&mut self) {
         self.rev += 1;
-        self.last_non_playback_sig = None;
+        self.last_view_key = None;
     }
 }
 
-pub(crate) fn non_playback_signature(
+pub(crate) fn view_tick_key(
     app: &Application,
     home: &home::Route,
     playback_start: PlaybackStart,
     drums_rev: u64,
-) -> u64 {
-    use std::hash::{Hash, Hasher};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    app.status.hash(&mut hasher);
-    app.error.hash(&mut hasher);
-    app.warnings.hash(&mut hasher);
-    app.busy.hash(&mut hasher);
-    app.is_playing().hash(&mut hasher);
-    let doc = app.document();
-    doc.is_some().hash(&mut hasher);
-    if let Some(d) = doc {
-        app.document_generation().hash(&mut hasher);
-        d.composer.history.version().hash(&mut hasher);
-        d.composer.lanes.len().hash(&mut hasher);
-        d.hs_mode.hash(&mut hasher);
-        d.composer.snap_enabled.hash(&mut hasher);
-        std::mem::discriminant(&d.composer.snap_mode).hash(&mut hasher);
-        d.composer.spacing.beats().hash(&mut hasher);
-        d.composer.spacing.divisions().hash(&mut hasher);
-        d.path.hash(&mut hasher);
-    }
-    home.visible().hash(&mut hasher);
-    home.pending().hash(&mut hasher);
-    app.is_dirty().hash(&mut hasher);
-    std::mem::discriminant(&app.tool()).hash(&mut hasher);
-    std::mem::discriminant(&app.ramp_shape()).hash(&mut hasher);
-    app.active_lane.hash(&mut hasher);
-    app.locator_left.to_bits().hash(&mut hasher);
-    app.locator_right.to_bits().hash(&mut hasher);
-    app.cycle.hash(&mut hasher);
-    app.preferences.follow.hash(&mut hasher);
-    app.preferences.return_on_stop.hash(&mut hasher);
-    app.preferences.clean_redundant_greenlines.hash(&mut hasher);
-    app.preferences.keep_pitch.hash(&mut hasher);
-    app.preferences.auto_check_updates.hash(&mut hasher);
-    app.preferences.step_pads_mode.hash(&mut hasher);
-    app.preferences.reload_osu_after_save.hash(&mut hasher);
-    app.tap_recording_armed().hash(&mut hasher);
-    app.tap_recorded_count().hash(&mut hasher);
-    app.preferences.audition.hash(&mut hasher);
-    app.preferences.object_lines.hash(&mut hasher);
-    app.preferences.classic_browser.hash(&mut hasher);
-    app.song_offset.to_bits().hash(&mut hasher);
-    app.playback_speed.to_bits().hash(&mut hasher);
-    app.preferences.song_gain.to_bits().hash(&mut hasher);
-    app.preferences.master_gain.to_bits().hash(&mut hasher);
-    app.preferences.hitsound_gain.to_bits().hash(&mut hasher);
-    app.preferences.song_muted.hash(&mut hasher);
-    app.preferences.hitsounds_muted.hash(&mut hasher);
-    app.song_solo().hash(&mut hasher);
-    app.hitsounds_solo().hash(&mut hasher);
-    app.duration_ms().to_bits().hash(&mut hasher);
-    app.song_loading.hash(&mut hasher);
-    app.drum_stem_loading.hash(&mut hasher);
-    app.has_drum_stem().hash(&mut hasher);
-    app.is_monitoring_stem().hash(&mut hasher);
-    app.waveform_revision().hash(&mut hasher);
-    app.active_waveform().len().hash(&mut hasher);
-    let problems = app.output_problems();
-    problems.len().hash(&mut hasher);
-    for problem in &problems {
-        problem.target.hash(&mut hasher);
-        problem.timeline.hash(&mut hasher);
-        problem.time.to_bits().hash(&mut hasher);
-        problem.message.hash(&mut hasher);
-    }
-    (app.save_problem_review_requested() && !problems.is_empty()).hash(&mut hasher);
-    app.save_review_files().as_ref().map(Vec::len).hash(&mut hasher);
-    app.sound_set_prompt_open().hash(&mut hasher);
-    let prompts = app.sound_set_prompts();
-    prompts.len().hash(&mut hasher);
-    for prompt in prompts {
-        prompt.set_id.hash(&mut hasher);
-        prompt.placements.hash(&mut hasher);
-        prompt.edited_keep_files.hash(&mut hasher);
-    }
-    app.drum_vst
-        .as_ref()
-        .map(|v| (&v.instance_id, v.is_enabled(), v.routed_notes().len(), v.muted_vst_lanes().len()))
-        .hash(&mut hasher);
-    app.drum_vst_loading.hash(&mut hasher);
-    app.revert_requested.hash(&mut hasher);
-    app.external_osu_changed.hash(&mut hasher);
-    app.output_review.as_ref().map(|p| (&p.label, p.files.len(), p.details.len())).hash(&mut hasher);
-    app.requested_edit().hash(&mut hasher);
-    app.bookmark_step.map(f64::to_bits).hash(&mut hasher);
-    app.help_requested.hash(&mut hasher);
-    app.requests.iter().any(|request| matches!(request, PlatformRequest::OpenMap)).hash(&mut hasher);
-    app.pending_open.is_some().hash(&mut hasher);
-    app.first_launch.hash(&mut hasher);
-    app.has_original_snapshot().hash(&mut hasher);
-    app.can_undo_revert().hash(&mut hasher);
-    app.device_name().hash(&mut hasher);
-    app.quantize_strength().to_bits().hash(&mut hasher);
-    app.preferences.key_preset.hash(&mut hasher);
-    app.preferences.hitsound_library.hash(&mut hasher);
-    app.preferences.songs_folder.hash(&mut hasher);
-    app.preferences.show_browser.hash(&mut hasher);
-    app.preferences.show_inspector.hash(&mut hasher);
-    app.preferences.show_controller.hash(&mut hasher);
-    app.preferences.lane_names.hash(&mut hasher);
-    app.preferences.recent.len().hash(&mut hasher);
-    app.preferences.recent.first().hash(&mut hasher);
-    app.preferences.preview_window.map(|p| p.open).hash(&mut hasher);
-    playback_start.hash(&mut hasher);
-    drums_rev.hash(&mut hasher);
-    hasher.finish()
+) -> (dawsu_application::ViewStateToken, bool, bool, PlaybackStart, u64) {
+    (
+        app.view_state_token(),
+        home.visible(),
+        home.pending(),
+        playback_start,
+        drums_rev,
+    )
 }
 
 pub(crate) fn decorate_and_stamp_view(
@@ -1172,7 +1074,7 @@ pub(crate) fn decorate_and_stamp_view(
     drums.decorate(app, &mut view);
     view.playback_start = Some(playback_start);
     cache.rev += 1;
-    cache.last_non_playback_sig = Some(non_playback_signature(app, home, playback_start, cache.drums_rev));
+    cache.last_view_key = Some(view_tick_key(app, home, playback_start, cache.drums_rev));
     view.tick_rev = Some(cache.rev);
     ViewResponse::View(Box::new(view))
 }
@@ -1192,7 +1094,7 @@ pub(crate) fn next_view_response(
 ) -> ViewResponse {
     let had_action = action.is_some();
     match action {
-        Some(Action::Open { path }) if app.first_launch => {
+        Some(Action::Open { path }) if app.first_launch() => {
             if map_path(&path) {
                 *pending_initial_open = Some(path);
             }
@@ -1204,7 +1106,7 @@ pub(crate) fn next_view_response(
         }
         None => {}
     }
-    if !app.first_launch
+    if !app.first_launch()
         && let Some(path) = pending_initial_open.take()
     {
         app.request_open(path);
@@ -1214,8 +1116,8 @@ pub(crate) fn next_view_response(
     drums.sync_on_document_open(app, cache);
 
     if !had_action && !scene && !fresh && tick_rev == Some(cache.rev) {
-        let sig = non_playback_signature(app, home, *playback_start, cache.drums_rev);
-        if cache.last_non_playback_sig == Some(sig) {
+        let key = view_tick_key(app, home, *playback_start, cache.drums_rev);
+        if cache.last_view_key == Some(key) {
             let position = app.position_ms();
             let (master_peak, song_peak, hitsound_peak) = app.audio_peaks();
             return ViewResponse::Tick(ViewTickSnapshot {
@@ -1223,7 +1125,7 @@ pub(crate) fn next_view_response(
                 rev: cache.rev,
                 position,
                 playing: app.is_playing(),
-                busy: app.busy,
+                busy: app.is_busy(),
                 peaks: PeaksSnapshot {
                     hitsounds: f64::from(hitsound_peak),
                     master: f64::from(master_peak),
@@ -1258,13 +1160,12 @@ pub(crate) fn next_view_response(
         view.edit_dialog = None;
         app.cancel_timeline_edit();
     }
-    view.shortcut_help = Some(std::mem::take(&mut app.help_requested));
+    view.shortcut_help = Some(app.take_shortcut_help());
     // The Inspector's bookmark pick follows Previous and Next, from a button, menu or key.
-    view.bookmark_step = Some(app.bookmark_step.take());
-    view.shortcut_open = Some(std::mem::take(&mut app.requests).iter()
-        .any(|request| matches!(request, PlatformRequest::OpenMap)));
+    view.bookmark_step = Some(app.take_bookmark_step());
+    view.shortcut_open = Some(app.take_shortcut_open_request());
     cache.rev += 1;
-    cache.last_non_playback_sig = Some(non_playback_signature(app, home, *playback_start, cache.drums_rev));
+    cache.last_view_key = Some(view_tick_key(app, home, *playback_start, cache.drums_rev));
     view.tick_rev = Some(cache.rev);
     ViewResponse::View(Box::new(view))
 }

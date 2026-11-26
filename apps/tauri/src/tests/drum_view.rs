@@ -121,9 +121,10 @@ fn drum_view_rows_follow_a_replaced_lane_and_leave_hidden_lanes_hidden() {
         ("Snare", Some(key(&app, &clap))), ("Ride", Some(key(&app, &whistle))), ("Ghost notes", None),
     ]);
 
-    app.active_lane = app.document().unwrap().composer.lanes.iter().position(|lane| lane == &clap).unwrap();
+    let lane_idx = app.document().unwrap().composer.lanes.iter().position(|lane| lane == &clap).unwrap();
+    app.set_active_lane(lane_idx);
     app.replace_lane_sample(&map, &clap, &external).unwrap();
-    let replacement = app.document().unwrap().composer.lanes[app.active_lane].clone();
+    let replacement = app.document().unwrap().composer.lanes[app.active_lane()].clone();
     let revision = app.document().unwrap().composer.history.version();
     app.delete_lane(&map, &whistle, revision).unwrap();
 
@@ -420,7 +421,7 @@ fn drum_window_requests_answer_with_its_view_and_never_touch_main_errors() {
     assert!(answer(&mut app, other).unwrap_err().contains("difficulty changed"));
     let apply = DrumRequest::Apply { map: path.clone(), review: "1".into(), ticked: Vec::new() };
     assert_eq!(answer(&mut app, apply).unwrap_err(), "Detect drum hits first.");
-    assert!(app.error.is_none(), "drum requests answer the drum window, not main");
+    assert!(app.error().is_none(), "drum requests answer the drum window, not main");
 
     // A drum stem (the detector's test pattern at half level): the rows come once per review, and
     // Apply adds the checked ones.
@@ -463,7 +464,7 @@ fn drum_window_requests_answer_with_its_view_and_never_touch_main_errors() {
     let ticked = vec![rows[0]["id"].as_str().unwrap().to_owned()];
     let view = answer(&mut app, DrumRequest::Apply { map: path, review, ticked }).unwrap();
     assert_eq!(view["state"], "idle");
-    assert!(app.status.starts_with("Added 1 drum hits: 1 on objects"), "{}", app.status);
+    assert!(app.status().starts_with("Added 1 drum hits: 1 on objects"), "{}", app.status());
 }
 
 #[test]
@@ -584,7 +585,7 @@ fn a_folded_family_survives_saving_and_reopening_the_difficulty() {
     let map = fixture.0.join("map.osu");
     fs::write(&map, "osu file format v14\n[General]\nMode:0\n[TimingPoints]\n0,500,4,1,0,100,1,0\n[HitObjects]\n256,192,500,1,4,0:0:0:0:\n").unwrap();
     let mut app = Application::with_data_root(fixture.0.join("data"));
-    app.error = None;
+    app.clear_error();
     open(&mut app, &map);
     let path = app.document().unwrap().path.clone();
     serde_json::from_value::<Action>(serde_json::json!({
@@ -592,7 +593,7 @@ fn a_folded_family_survives_saving_and_reopening_the_difficulty() {
         "value": { "folder_order": ["normal", "soft", "drum"], "collapsed_folders": [],
             "collapsed_families": ["normal-hitfinish"], "lane_colours": {} },
     })).unwrap().run(&mut app);
-    assert!(app.error.is_none(), "{:?}", app.error);
+    assert!(app.error().is_none(), "{:?}", app.error());
     open(&mut app, &map);
     let scene = snapshot(&app, true)["scene"].clone();
     assert_eq!(scene["laneLayout"]["collapsed_families"], serde_json::json!(["normal-hitfinish"]));
@@ -715,7 +716,7 @@ fn task3_path2_auto_activates_default_osu_kit_shows_other_lanes_survives_replace
         sound: dawsu_foundation::Sound::Hit(dawsu_foundation::Hitsound::Normal),
         index: dawsu_foundation::CustomIndex::new(0),
     };
-    app.active_lane = app
+    let drum_row = app
         .document()
         .unwrap()
         .composer
@@ -723,6 +724,7 @@ fn task3_path2_auto_activates_default_osu_kit_shows_other_lanes_survives_replace
         .iter()
         .position(|l| l == &drum_normal)
         .unwrap();
+    app.set_active_lane(drum_row);
     app.replace_lane_sample(&doc_path, &drum_normal, &ext_kick).unwrap();
     let after_replace = read(&drums, &app);
     assert_eq!(after_replace["scene"]["drumRows"][0]["name"], "Drum Kick");

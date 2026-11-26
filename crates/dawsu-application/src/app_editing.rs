@@ -21,6 +21,7 @@ impl Application {
         let document = self.document.as_mut().ok_or("No difficulty is open")?;
         layout.normalise();
         document.lane_layout = Some(layout);
+        self.bump_view_revision();
         Ok(())
     }
 
@@ -33,6 +34,7 @@ impl Application {
         }
         let document = self.document.as_mut().ok_or("Open a difficulty first")?;
         document.update_time_signatures(signatures);
+        self.bump_view_revision();
         Ok(())
     }
 
@@ -50,6 +52,7 @@ impl Application {
             self.tools.select_tool(tool, &mut d.composer);
         }
         self.refresh_recovery_edit();
+        self.bump_view_revision();
     }
     pub fn tool(&self) -> ToolKind {
         self.tools.active()
@@ -60,6 +63,7 @@ impl Application {
     pub fn set_ramp_shape(&mut self, shape: RampShape) {
         if self.document.is_some() && !self.busy && !self.is_stroke_open() {
             self.tools.ramp_shape = shape;
+            self.bump_view_revision();
         }
     }
     pub(crate) fn is_stroke_open(&self) -> bool {
@@ -73,6 +77,7 @@ impl Application {
     pub fn pointer(&mut self, phase: PointerPhase, input: PointerInput) {
         self.pointer_input(phase, input);
         self.refresh_recovery_edit();
+        self.bump_view_revision();
     }
     /// Replaces or extends selection with every hit in `from_ms..=to_ms` on the explicit
     /// visible data-lane indices in `rows`, so visual folder/custom lane ordering matches
@@ -127,6 +132,7 @@ impl Application {
         } else {
             d.composer.selected.replace(inside);
         }
+        self.bump_view_revision();
     }
     pub(crate) fn pointer_input(&mut self, phase: PointerPhase, input: PointerInput) {
         if self.busy {
@@ -194,6 +200,7 @@ impl Application {
             self.tools.down(composer, input);
             self.tools.up(composer, input);
         }
+        self.bump_view_revision();
     }
 
     pub fn go_to_history(&mut self, position: usize) {
@@ -207,6 +214,7 @@ impl Application {
         }
         self.restore_active_lane(slot);
         self.refresh_recovery_edit();
+        self.bump_view_revision();
     }
 
     pub(crate) fn active_lane_slot(&self) -> Option<SampleIdentity> {
@@ -231,18 +239,21 @@ impl Application {
             composer.lanes.iter().enumerate().filter(|(_, lane)| visible(lane))
                 .min_by_key(|(row, _)| row.abs_diff(self.active_lane)).map(|(row, _)| row)
         }).unwrap_or(composer.lanes.len());
+        self.bump_view_revision();
     }
 
     pub fn set_view_start(&mut self, ms: f64) {
         if let Some(d) = self.document.as_mut()
             && ms.is_finite() {
                 d.composer.view_start = ms;
+                self.bump_view_revision();
             }
     }
     pub fn set_snap(&mut self, enabled: bool, division: u32) {
         if let Some(d) = self.document.as_mut() {
             d.composer.snap_enabled = enabled;
             d.composer.spacing = SnapSpacing::fraction(division.max(1)).unwrap();
+            self.bump_view_revision();
         }
     }
     pub fn set_normal_protection(&mut self, on: bool) {
@@ -268,12 +279,14 @@ impl Application {
                 }
                 Err(error) => self.error = Some(refusals::snap(beats, divisions, error)),
             }
+            self.bump_view_revision();
         }
     }
     pub fn set_insert_volume(&mut self, v: i32) {
         if let Some(d) = self.document.as_mut() {
             // New hits are never drawn under 5% (see `Composer::volume_for_lanes`).
             d.composer.insert_volume = v.clamp(dawsu_hitsounding::rules::SAVED_VOLUME_FLOOR, 100);
+            self.bump_view_revision();
         }
     }
     /// Paints hits onto `row` at every snapped step between `start_ms` and `end_ms`
@@ -290,6 +303,7 @@ impl Application {
         if placed > 0 {
             self.active_lane = row;
             self.refresh_recovery_edit();
+            self.bump_view_revision();
         }
         placed
     }
@@ -309,6 +323,7 @@ impl Application {
         self.record_shared_base_overrides_if_needed();
         self.sync_audio();
         self.refresh_recovery_edit();
+        self.bump_view_revision();
         true
     }
     pub fn set_selection_lane_scope(&mut self, lanes: Option<BTreeSet<SampleIdentity>>) -> Result<(), String> {
@@ -416,6 +431,7 @@ impl Application {
         if let Some(msg) = outcome {
             self.status = msg;
             self.refresh_recovery_edit();
+            self.bump_view_revision();
             true
         } else {
             false
@@ -429,6 +445,7 @@ impl Application {
             d.hs_mode = hs;
         }
         self.refresh_recovery_edit();
+        self.bump_view_revision();
     }
     /// Selects the hits attached to one waveform object or one of its nodes.
     pub fn select_waveform_object(&mut self, map: &Path, object: usize, time: f64, node: bool, preview: bool) {
@@ -473,6 +490,7 @@ impl Application {
                 self.audition_lane(&hit.lane, gain);
             }
         }
+        self.bump_view_revision();
     }
 
     pub fn select_hit(&mut self, key: HitKey, add: bool) {
@@ -482,6 +500,7 @@ impl Application {
             } else {
                 d.composer.selected.replace([key]);
             }
+            self.bump_view_revision();
         }
     }
 
@@ -491,6 +510,7 @@ impl Application {
             self.error = Some(message);
         }
         self.refresh_recovery_edit();
+        self.bump_view_revision();
     }
     pub fn key(&mut self, chord: KeyChord) {
         let catalogue = self.catalogue.clone();
@@ -503,6 +523,7 @@ impl Application {
             self.error = Some(message);
         }
         self.refresh_recovery_edit();
+        self.bump_view_revision();
     }
     pub fn key_with_lane_view(&mut self, chord: KeyChord, path: PathBuf, rows: Vec<usize>, span: f64) {
         self.key_lane_view = Some((path, rows, span));
@@ -518,6 +539,7 @@ impl Application {
         self.keymap = shortcuts::keymap(self.catalogue.definitions(), &self.preferences);
         self.first_launch = false;
         self.save_preferences();
+        self.bump_view_revision();
     }
     /// Replaces the active lane's editable hits, retaining its logical slot.
     pub fn replace_lane_sample(
@@ -598,6 +620,7 @@ impl Application {
             .expect("the backing lane is registered before replacing hits");
         self.status = format!("Assigned {}", source.file_name().unwrap_or_default().to_string_lossy());
         self.sync_audio();
+        self.bump_view_revision();
         Ok(())
     }
 
@@ -618,6 +641,7 @@ impl Application {
             self.active_lane = row;
         }
         self.status = format!("Added {name} with the default family sound.");
+        self.bump_view_revision();
         Ok(())
     }
 }

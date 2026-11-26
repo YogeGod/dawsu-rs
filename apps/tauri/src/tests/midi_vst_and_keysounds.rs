@@ -25,9 +25,9 @@ fn library_sample_actions_scope_paths_and_preserve_the_assignment_target() {
     let original = b"osu file format v14\n\n[General]\nMode:0\n\n[TimingPoints]\n0,500,4,1,0,100,1,0\n\n[HitObjects]\n256,192,1000,1,8,0:0:0:0:\n";
     fs::write(&path, original).unwrap();
     let mut app = Application::headless();
-    app.preferences.hitsound_library = Some(library.clone());
+    app.update_preferences(|p| p.hitsound_library = Some(library.clone()));
     open(&mut app, &path);
-    let active = app.active_lane;
+    let active = app.active_lane();
     let target = serde_json::json!({
         "map": app.document().unwrap().path,
         "lane": format!("{:?}", app.document().unwrap().composer.lanes[active]),
@@ -38,21 +38,21 @@ fn library_sample_actions_scope_paths_and_preserve_the_assignment_target() {
         })).unwrap()
     };
     action("preview_library_sample", "drums/snare.WAV", &target).run(&mut app);
-    assert!(app.error.is_none(), "{:?}", app.error);
-    assert_eq!(app.active_lane, active);
+    assert!(app.error().is_none(), "{:?}", app.error());
+    assert_eq!(app.active_lane(), active);
     for path in ["../outside.wav", "drums/text.txt"] {
         action("replace_library_sample", path, &target).run(&mut app);
-        assert!(app.error.take().is_some());
+        assert!(app.take_error().is_some());
     }
     let absolute = fixture.0.join("outside.wav");
     action("replace_library_sample", absolute.to_str().unwrap(), &target).run(&mut app);
-    assert!(app.error.take().is_some());
+    assert!(app.take_error().is_some());
     let wrong = serde_json::json!({"map": mapset.join("Other.osu"), "lane": target["lane"]});
     action("replace_library_sample", "drums/snare.WAV", &wrong).run(&mut app);
-    assert!(app.error.take().is_some());
+    assert!(app.take_error().is_some());
     assert_eq!(fs::read_dir(&mapset).unwrap().count(), 1);
     action("replace_library_sample", "drums/snare.WAV", &target).run(&mut app);
-    assert!(app.error.is_none(), "{:?}", app.error);
+    assert!(app.error().is_none(), "{:?}", app.error());
     assert!(app.is_dirty());
     // The new backing sample waits in dawsu!'s data folder until a Save plays it.
     assert_eq!(fs::read_dir(&mapset).unwrap().count(), 1);
@@ -79,19 +79,19 @@ fn place_sound_set_action_places_the_picked_set_at_the_playhead_or_reports_why_n
     let file = fixture.0.join("Clap.dawsuset");
     fs::write(&file, write_dawsuset(&set).unwrap()).unwrap();
     let mut app = Application::with_data_root(fixture.0.join("data"));
-    app.error = None;
+    app.clear_error();
     open(&mut app, &path);
     let map = snapshot(&app, true)["scene"]["path"].clone();
     let place = |app: &mut Application| serde_json::from_value::<Action>(serde_json::json!({
         "kind": "place_sound_set", "map": map, "path": file,
     })).unwrap().run(app);
-    app.preferences.hitsound_library = None;
+    app.update_preferences(|p| p.hitsound_library = None);
     place(&mut app);
-    assert!(app.error.take().is_some_and(|e| e.contains("hitsound library")));
-    app.preferences.hitsound_library = Some(fixture.0.join("library"));
+    assert!(app.take_error().is_some_and(|e| e.contains("hitsound library")));
+    app.update_preferences(|p| p.hitsound_library = Some(fixture.0.join("library")));
     app.seek(2000.0);
     place(&mut app);
-    assert!(app.error.is_none(), "{:?}", app.error);
+    assert!(app.error().is_none(), "{:?}", app.error());
     let hits = app.document().unwrap().composer.hitsounds();
     assert_eq!(hits.placements().len(), 1);
     // The set's copy waits in dawsu!'s data folder until a Save plays it.
@@ -119,8 +119,8 @@ fn the_library_list_names_each_set_and_places_one_by_its_id() {
     fs::create_dir_all(&folder).unwrap();
     fs::write(folder.join("Clap.dawsuset"), write_dawsuset(&set).unwrap()).unwrap();
     let mut app = Application::with_data_root(fixture.0.join("data"));
-    app.error = None;
-    app.preferences.hitsound_library = Some(fixture.0.join("library"));
+    app.clear_error();
+    app.update_preferences(|p| p.hitsound_library = Some(fixture.0.join("library")));
     open(&mut app, &path);
     let deadline = Instant::now() + Duration::from_secs(10);
     while sound_set_library_view(&app)["reading"] == true {
@@ -132,13 +132,13 @@ fn the_library_list_names_each_set_and_places_one_by_its_id() {
         "sets": [{ "id": set.id, "name": "Clap", "sounds": 1, "inMap": false, "duplicate": false, "missing": false }],
         "unreadable": [], "reading": false,
     }), "names, ids and counts only");
-    app.preferences.hitsound_library = Some(fixture.0.join("gone"));
+    app.update_preferences(|p| p.hitsound_library = Some(fixture.0.join("gone")));
     assert!(sound_set_library_view(&app)["error"].as_str().is_some_and(|e| e.starts_with("Hitsound library folder not found")));
-    app.preferences.hitsound_library = Some(fixture.0.join("library"));
+    app.update_preferences(|p| p.hitsound_library = Some(fixture.0.join("library")));
     let map = snapshot(&app, true)["scene"]["path"].clone();
     app.seek(2000.0);
     serde_json::from_value::<Action>(serde_json::json!({ "kind": "place_library_sound_set", "map": map, "id": set.id })).unwrap().run(&mut app);
-    assert!(app.error.is_none(), "{:?}", app.error);
+    assert!(app.error().is_none(), "{:?}", app.error());
     assert_eq!(app.document().unwrap().composer.hitsounds().placements().len(), 1);
     assert_eq!(sound_set_library_view(&app)["sets"][0]["inMap"], true);
 }
@@ -157,7 +157,7 @@ fn the_sample_preview_gives_the_length_and_outline_of_a_library_sample_or_a_lane
     let path = mapset.join("Hard.osu");
     fs::write(&path, b"osu file format v14\n\n[General]\nMode:0\n\n[TimingPoints]\n0,500,4,1,0,100,1,0\n\n[HitObjects]\n256,192,1000,1,8,0:0:0:0:\n").unwrap();
     let mut app = Application::headless();
-    app.preferences.hitsound_library = Some(library.clone());
+    app.update_preferences(|p| p.hitsound_library = Some(library.clone()));
     open(&mut app, &path);
     let source = |value: serde_json::Value| -> crate::PreviewSource { serde_json::from_value(value).unwrap() };
     let library_sample = |path: &str| source(serde_json::json!({ "kind": "library", "location": { "root": library, "path": path } }));
@@ -168,7 +168,7 @@ fn the_sample_preview_gives_the_length_and_outline_of_a_library_sample_or_a_lane
     assert_eq!(peaks.iter().copied().fold(0.0, f64::max), 1.0);
     assert!(crate::sample_outline(&mut app, library_sample("../outside.wav")).is_err());
 
-    let active = app.active_lane;
+    let active = app.active_lane();
     let target = serde_json::json!({
         "map": app.document().unwrap().path,
         "lane": format!("{:?}", app.document().unwrap().composer.lanes[active]),
@@ -178,8 +178,8 @@ fn the_sample_preview_gives_the_length_and_outline_of_a_library_sample_or_a_lane
     })).unwrap();
     assign.run(&mut app);
     wait_for_job(&mut app);
-    assert!(app.error.is_none(), "{:?}", app.error);
-    let row = app.active_lane;
+    assert!(app.error().is_none(), "{:?}", app.error());
+    let row = app.active_lane();
     let preview = crate::sample_outline(&mut app, source(serde_json::json!({ "kind": "lane", "row": row }))).unwrap();
     assert!((preview["ms"].as_f64().unwrap() - 4000.0 / 48000.0).abs() < 1e-9, "{preview}");
     assert!(crate::sample_outline(&mut app, source(serde_json::json!({ "kind": "lane", "row": 999 }))).is_err());
@@ -227,7 +227,7 @@ fn scene_lane_exposes_vst_routed_and_bypassed_and_toggle_lane_switches_them() {
         true,
         Box::new(NoopProcessor),
     );
-    app.drum_vst = Some(handle);
+    app.install_drum_vst_for_test(handle);
     app.set_drum_vst_routing(drums.routed_midi_notes(&app));
 
     let with_vst = serde_json::to_value(crate::snapshot_view(&app, true)).unwrap();
