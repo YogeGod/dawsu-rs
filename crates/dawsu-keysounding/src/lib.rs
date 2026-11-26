@@ -21,6 +21,7 @@ pub use editing::{
 };
 pub use generate::{
     plan_generate_keysounds, preview_sync, quantize_duration_ms, quantize_velocity,
+    sync_flags,
     sample_filename, GeneratePlan, SampleManifestEntry, SyncPreview, SyncTarget, SyncedNote,
     UnsyncedNote, KEYSOUNDS_VERSION,
 };

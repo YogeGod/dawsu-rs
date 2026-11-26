@@ -193,17 +193,17 @@ fn sanitize_token(raw: &str, fallback: &str) -> String {
     }
 }
 
-/// Computes gameplay sync between unmuted notes in `doc` and hit objects in `reference_map`,
-/// returning a [`SyncPreview`] without modifying any beatmap.
-pub fn preview_sync(
-    doc: &KeysoundDocument,
-    reference_map: &OsuFile,
-    settings: &ExportSettings,
-) -> SyncPreview {
-    let slots = extract_map_slots(reference_map);
-    let mut used_slots = vec![false; slots.len()];
-    let tolerance = settings.sync_tolerance_ms.max(0.0);
+/// One audible note and the object slot it was matched to, if any.
+type NoteMatch<'a> = (&'a KeysoundTrack, usize, &'a KeysoundNote, Option<usize>);
 
+/// Matches every unmuted note of an audible track to the nearest free slot within `tolerance`
+/// ms, earliest note first; among equally near slots the first in `slots` order wins. Also
+/// returns how many slots were looked at, which a test bounds.
+fn match_notes<'a>(
+    doc: &'a KeysoundDocument,
+    slots: &[MapSlot],
+    tolerance: f64,
+) -> (Vec<NoteMatch<'a>>, usize) {
     // Collect all unmuted notes from unmuted tracks in deterministic time order.
     let mut candidates: Vec<(&KeysoundTrack, usize, &KeysoundNote)> = Vec::new();
     let any_solo = doc.tracks.iter().any(|t| t.solo);
@@ -224,24 +224,75 @@ pub fn preview_sync(
             .then_with(|| a.2.pitch.cmp(&b.2.pitch))
     });
 
+    // Slots in time order, so each note looks only at the slots near it. The window is 1 ms
+    // wider than the tolerance on each side; the exact test below decides.
+    let mut by_time: Vec<usize> = (0..slots.len()).collect();
+    by_time.sort_by(|a, b| slots[*a].time_ms.total_cmp(&slots[*b].time_ms));
+    let mut used_slots = vec![false; slots.len()];
+    let mut comparisons = 0;
+
+    let matches = candidates
+        .into_iter()
+        .map(|(track, note_index, note)| {
+            let first = by_time.partition_point(|i| slots[*i].time_ms < note.start_ms - tolerance - 1.0);
+            let mut best: Option<(usize, f64)> = None;
+            for &slot_idx in &by_time[first..] {
+                if slots[slot_idx].time_ms > note.start_ms + tolerance + 1.0 {
+                    break;
+                }
+                comparisons += 1;
+                if used_slots[slot_idx] {
+                    continue;
+                }
+                let diff = (slots[slot_idx].time_ms - note.start_ms).abs();
+                let nearer = best.is_none_or(|(best_idx, best_diff)| {
+                    diff < best_diff || (diff == best_diff && slot_idx < best_idx)
+                });
+                if diff <= tolerance && nearer {
+                    best = Some((slot_idx, diff));
+                }
+            }
+            if let Some((slot_idx, _)) = best {
+                used_slots[slot_idx] = true;
+            }
+            (track, note_index, note, best.map(|(slot_idx, _)| slot_idx))
+        })
+        .collect();
+    (matches, comparisons)
+}
+
+/// Whether Generate would place each note on an object: `true` or `false` for every unmuted
+/// note of an audible track, keyed by `(track id, note index)`. Muted notes and notes of muted
+/// or non-soloed tracks are left out, because Generate never considers them.
+pub fn sync_flags(
+    doc: &KeysoundDocument,
+    reference_map: &OsuFile,
+    settings: &ExportSettings,
+) -> BTreeMap<(u64, usize), bool> {
+    let slots = extract_map_slots(reference_map);
+    let (matches, _) = match_notes(doc, &slots, settings.sync_tolerance_ms.max(0.0));
+    matches
+        .into_iter()
+        .map(|(track, note_index, _, slot)| ((track.id, note_index), slot.is_some()))
+        .collect()
+}
+
+/// Computes gameplay sync between unmuted notes in `doc` and hit objects in `reference_map`,
+/// returning a [`SyncPreview`] without modifying any beatmap.
+pub fn preview_sync(
+    doc: &KeysoundDocument,
+    reference_map: &OsuFile,
+    settings: &ExportSettings,
+) -> SyncPreview {
+    let slots = extract_map_slots(reference_map);
+    let (matches, _) = match_notes(doc, &slots, settings.sync_tolerance_ms.max(0.0));
+
     let mut synced = Vec::new();
     let mut unsynced = Vec::new();
 
-    for (track, note_index, note) in candidates {
-        let mut best: Option<(usize, f64)> = None;
-        for (slot_idx, slot) in slots.iter().enumerate() {
-            if used_slots[slot_idx] {
-                continue;
-            }
-            let diff = (slot.time_ms - note.start_ms).abs();
-            if diff <= tolerance && best.is_none_or(|(_, best_diff)| diff < best_diff) {
-                best = Some((slot_idx, diff));
-            }
-        }
-
+    for (track, note_index, note, best) in matches {
         match best {
-            Some((slot_idx, _)) => {
-                used_slots[slot_idx] = true;
+            Some(slot_idx) => {
                 let slot = slots[slot_idx];
                 let chord_pitches = flattened_chord_pitches(
                     track,
@@ -746,5 +797,147 @@ SliderMultiplier:1.4
         assert_eq!(top_plan.manifest.len(), 1);
         assert_eq!(top_plan.manifest[0].chord_pitches, vec![67]);
         assert!(top_plan.manifest[0].filename.contains("_p067_"));
+    }
+
+    /// The matcher as it was before the windowed search: every note scans every slot.
+    fn naive_match(doc: &KeysoundDocument, slots: &[MapSlot], tolerance: f64) -> Vec<(u64, usize, Option<usize>)> {
+        let mut used = vec![false; slots.len()];
+        let any_solo = doc.tracks.iter().any(|t| t.solo);
+        let mut candidates = Vec::new();
+        for track in &doc.tracks {
+            if track.muted || (any_solo && !track.solo) {
+                continue;
+            }
+            for (note_index, note) in track.notes.iter().enumerate() {
+                if !note.muted {
+                    candidates.push((track, note_index, note));
+                }
+            }
+        }
+        candidates.sort_by(|a, b| {
+            a.2.start_ms
+                .total_cmp(&b.2.start_ms)
+                .then_with(|| a.0.id.cmp(&b.0.id))
+                .then_with(|| a.2.pitch.cmp(&b.2.pitch))
+        });
+        candidates
+            .into_iter()
+            .map(|(track, note_index, note)| {
+                let mut best: Option<(usize, f64)> = None;
+                for (slot_idx, slot) in slots.iter().enumerate() {
+                    if used[slot_idx] {
+                        continue;
+                    }
+                    let diff = (slot.time_ms - note.start_ms).abs();
+                    if diff <= tolerance && best.is_none_or(|(_, best_diff)| diff < best_diff) {
+                        best = Some((slot_idx, diff));
+                    }
+                }
+                if let Some((slot_idx, _)) = best {
+                    used[slot_idx] = true;
+                }
+                (track.id, note_index, best.map(|(slot_idx, _)| slot_idx))
+            })
+            .collect()
+    }
+
+    /// A small deterministic generator, so the randomised tests need no extra crate.
+    struct Lcg(u64);
+    impl Lcg {
+        fn next(&mut self, bound: u64) -> u64 {
+            self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (self.0 >> 33) % bound
+        }
+    }
+
+    fn map_with_objects(lines: &[String]) -> OsuFile {
+        let head = SAMPLE_OSU.split("[HitObjects]").next().unwrap();
+        OsuFile::read(format!("{head}[HitObjects]\n{}\n", lines.join("\n")).into_bytes()).file
+    }
+
+    #[test]
+    fn windowed_matcher_picks_the_same_slots_as_the_full_scan() {
+        let mut rng = Lcg(7);
+        for round in 0..60 {
+            // Circles and repeating sliders on a coarse grid: equal times, and slider nodes that
+            // land after later objects, both happen often.
+            let mut time = 0u64;
+            let lines: Vec<String> = (0..40)
+                .map(|_| {
+                    time += rng.next(4) * 5;
+                    if rng.next(4) == 0 {
+                        format!("256,192,{time},2,0,L|396:192,{},140", 1 + rng.next(3))
+                    } else {
+                        format!("256,192,{time},1,0,0:0:0:0:")
+                    }
+                })
+                .collect();
+            let slots = extract_map_slots(&map_with_objects(&lines));
+
+            let mut doc = KeysoundDocument::default();
+            for t in 0..3 {
+                doc.add_track(format!("T{t}"), 0, false);
+                for _ in 0..30 {
+                    let start = rng.next(time + 600) as f64 + rng.next(4) as f64 * 2.5;
+                    let mut note = KeysoundNote::new(start, start + 100.0, 48 + rng.next(24) as u8, 100);
+                    note.muted = rng.next(10) == 0;
+                    doc.tracks[t].notes.push(note);
+                }
+                doc.tracks[t].sort_notes();
+            }
+            doc.tracks[1].muted = round % 5 == 0;
+            doc.tracks[2].solo = round % 7 == 0;
+
+            for tolerance in [0.0, 2.5, 10.0, 40.0] {
+                let (matches, _) = match_notes(&doc, &slots, tolerance);
+                let got: Vec<(u64, usize, Option<usize>)> =
+                    matches.iter().map(|m| (m.0.id, m.1, m.3)).collect();
+                assert_eq!(got, naive_match(&doc, &slots, tolerance), "round {round}, tolerance {tolerance}");
+            }
+        }
+    }
+
+    #[test]
+    fn sync_flags_agree_with_the_generate_plan_and_leave_out_unconsidered_notes() {
+        let reference = parse_sample_map();
+        let mut doc = KeysoundDocument::default();
+        let lead = doc.add_track("Lead", 0, false);
+        let muted_track = doc.add_track("Muted", 1, false);
+        doc.tracks[0].notes.push(KeysoundNote::new(1000.0, 1250.0, 60, 100)); // on an object
+        doc.tracks[0].notes.push(KeysoundNote::new(1700.0, 1800.0, 62, 100)); // 200 ms from any object
+        let mut silent = KeysoundNote::new(1500.0, 1600.0, 64, 100);
+        silent.muted = true;
+        doc.tracks[0].notes.push(silent);
+        doc.tracks[1].muted = true;
+        doc.tracks[1].notes.push(KeysoundNote::new(2000.0, 2100.0, 60, 100));
+
+        let settings = ExportSettings::default();
+        let flags = sync_flags(&doc, &reference, &settings);
+        assert_eq!(flags.get(&(lead, 0)), Some(&true));
+        assert_eq!(flags.get(&(lead, 1)), Some(&false));
+        assert_eq!(flags.get(&(lead, 2)), None, "a muted note is never considered");
+        assert_eq!(flags.get(&(muted_track, 0)), None, "a muted track is never considered");
+
+        let plan = plan_generate_keysounds(&doc, &reference, "ref.osu", &settings);
+        let synced: Vec<(u64, usize)> = plan.sync.synced.iter().map(|s| (s.track_id, s.note_index)).collect();
+        let flagged: Vec<(u64, usize)> = flags.iter().filter(|(_, on)| **on).map(|(key, _)| *key).collect();
+        assert_eq!(flagged, synced);
+    }
+
+    #[test]
+    fn matching_five_thousand_notes_to_five_thousand_objects_stays_near_linear() {
+        let lines: Vec<String> = (0..5000).map(|i| format!("256,192,{},1,0,0:0:0:0:", i * 100)).collect();
+        let slots = extract_map_slots(&map_with_objects(&lines));
+        assert_eq!(slots.len(), 5000);
+        let mut doc = KeysoundDocument::default();
+        doc.add_track("Lead", 0, false);
+        for i in 0..5000 {
+            let start = i as f64 * 100.0 + 3.0;
+            doc.tracks[0].notes.push(KeysoundNote::new(start, start + 50.0, 60, 100));
+        }
+        let (matches, comparisons) = match_notes(&doc, &slots, 10.0);
+        assert_eq!(matches.iter().filter(|m| m.3.is_some()).count(), 5000);
+        // The full scan made 25,000,000 comparisons here.
+        assert!(comparisons <= 5000 * 8, "{comparisons} slot comparisons");
     }
 }
