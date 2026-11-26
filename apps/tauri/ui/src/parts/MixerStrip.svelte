@@ -6,6 +6,7 @@
   // so they show greyed out and empty; a strip without a gain has a fader without a cap and no level.
   let { label, name, set = "", number = "", icon, colour = null, selected = false, quiet = false,
     muted = false, solo = false, muteLabel, soloLabel, disabled = false, onmute, onsolo, onselect,
+    fxCount = 0, fxOpen = false, onfx = null,
     gain = null, min = 0, max = 1, gainLabel, readout = null, peak = null, onlevel } = $props();
   const peakText = $derived(peak != null && peak > 0.001 ? dbText(peak) : "");
 
@@ -25,6 +26,12 @@
     <button type="button" class="ms" aria-label={muteLabel} aria-pressed={muted} {disabled} onclick={onmute}>M</button>
     <button type="button" class="ms solo" aria-label={soloLabel} aria-pressed={solo} {disabled} onclick={onsolo}>S</button>
   </div>
+  {#if onfx}
+    <button type="button" class="fx-pill" class:has-fx={fxCount > 0} aria-label={"FX inserts for " + name}
+      aria-pressed={fxOpen} {disabled} onclick={() => onfx?.()}>
+      {fxCount > 0 ? "FX " + fxCount : "FX"}
+    </button>
+  {/if}
   <div class="box pan off" aria-hidden="true"></div>
   <Fader {gain} {min} {max} label={gainLabel} {disabled} {peak} onchange={onlevel} />
   <div class="row">
@@ -84,6 +91,30 @@
     background: var(--solo-on);
   }
   .ms:disabled {
+    cursor: default;
+  }
+  .fx-pill {
+    height: 15px;
+    min-height: 15px;
+    padding: 0 4px;
+    border: 0;
+    border-radius: 3px;
+    background: var(--ms-idle);
+    box-shadow: inset 0 0 0 1px var(--ms-edge);
+    color: var(--editor-secondary);
+    font: 600 9px var(--font-ui);
+    cursor: pointer;
+    letter-spacing: 0.03em;
+  }
+  .fx-pill.has-fx {
+    color: var(--editor-accent);
+  }
+  .fx-pill[aria-pressed="true"] {
+    background: var(--editor-accent);
+    color: var(--editor-ink);
+  }
+  .fx-pill:disabled {
+    opacity: 0.45;
     cursor: default;
   }
   .box {

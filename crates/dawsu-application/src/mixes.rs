@@ -528,6 +528,7 @@ impl MixFiles {
                         end_ms: None,
                         clip: inputs[lane].1.clone(),
                         gain: *volume as f32 / object_volume as f32,
+                        strip_id: 0,
                     });
                 }
                 let roles: Vec<_> = components
@@ -853,6 +854,7 @@ fn render_layers(
             end_ms: None,
             clip: load_clip(source, target, identity, root, pending, defaults, defaults_list, clips, silent_normal_index, cancel)?,
             gain: *volume as f32 / 100.0,
+            strip_id: 0,
         });
     }
     render_with_options(cues, format, auto_fix, cancel)
@@ -945,6 +947,7 @@ fn render_roles(
                     channels: CHANNELS,
                     sample_rate: SAMPLE_RATE,
                 }),
+                strip_id: 0,
             });
         }
         let rendered = render_with_options(cues, format, auto_fix, cancel)?;
@@ -1132,6 +1135,7 @@ impl Assets<'_> {
                 end_ms: None,
                 clip: load_clip(self.source, Some(target), identity, self.root, self.pending, self.defaults, &self.defaults_list, clips, None, cancel)?,
                 gain: *v as f32 / volume,
+                strip_id: 0,
             })).collect::<Result<Vec<_>, String>>()
         };
         // Peaks are measured at a gain that cannot reach full scale, since the mixer clamps.
@@ -1962,6 +1966,7 @@ mod tests {
                 end_ms: None,
                 clip: std::sync::Arc::new(clip),
                 gain: 0.5,
+                strip_id: 0,
             }],
             &|| false,
         )

@@ -2,6 +2,7 @@
 
 pub mod base_layer;
 pub mod export_manifest;
+pub mod mixer_fx;
 pub mod practice;
 pub mod stem_separation;
 mod bookmarks;
@@ -94,6 +95,10 @@ pub use vst3::{
     BounceFormat, BounceOptions, BounceOutput, LoadedPluginSummary, MidiPreviewNote, PluginRole,
     ScanSkip, VelocityExportMode, Vst3BounceJob, Vst3DrumExportPlan, Vst3DrumHit, Vst3Error,
     Vst3HitAssignment, Vst3Manager, Vst3ScanReport, plan_vst3_drum_export,
+};
+pub use mixer_fx::{
+    AbBank, AvailableEffectView, FxSlotConfig, FxSlotView, MAX_INSERTS_PER_STRIP, MixerFxManager,
+    MixerFxSession, MixerFxSnapshot, normalize_strip_key,
 };
 mod preferences;
 mod shortcuts;
@@ -540,6 +545,7 @@ pub struct Application {
     pub keysound_history: keysound_session::KeysoundUndoHistory,
     pub bounce_cancel: bounce_plan::BounceCancelToken,
     pub vst3: vst3::Vst3Manager,
+    pub mixer_fx: mixer_fx::MixerFxManager,
     pub(crate) drum_vst: Option<drum_vst::DrumVstLiveHandle>,
     pub(crate) drum_vst_loading: bool,
     drum_vst_job: Option<mpsc::Receiver<JobResult>>,
@@ -732,6 +738,7 @@ impl Application {
             persist_preferences,
             project_root: persist_preferences.then(|| data_root.join("projects")),
             vst3: vst3::Vst3Manager::new().with_blacklist_path(data_root.join("vst3-blacklist.json")),
+            mixer_fx: mixer_fx::MixerFxManager::default(),
             data_root,
             project: None,
             base_layer_track: None,
@@ -831,6 +838,7 @@ impl Application {
             has_document: doc.is_some(),
             hs_mode: doc.is_some_and(|d| d.hs_mode),
             dirty: self.is_dirty(),
+            mixer_fx_revision: self.mixer_fx_revision(),
         }
     }
 
@@ -1066,6 +1074,7 @@ pub struct ViewStateToken {
     has_document: bool,
     hs_mode: bool,
     dirty: bool,
+    mixer_fx_revision: u64,
 }
 impl Default for Application {
     fn default() -> Self {

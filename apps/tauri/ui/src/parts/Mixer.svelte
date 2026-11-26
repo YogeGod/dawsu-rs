@@ -1,9 +1,11 @@
 <script>
   import { bridge } from "../lib/bridge.svelte.js";
   import { dbText, gainsAction, hitsoundColour, meterPct, songColour } from "../lib/mixer.js";
+  import { stripFxKey } from "../lib/mixerFx.js";
   import { laneIcons } from "../lib/lanes.js";
   import Fader from "./Fader.svelte";
   import MixerStrip from "./MixerStrip.svelte";
+  import PluginWrapperBar from "./PluginWrapperBar.svelte";
   import SpectrumPanel from "./SpectrumPanel.svelte";
 
   // The bottom panel's Mixer tab (v3 F3): the Song bus, the Hitsounds bus, one strip per lane
@@ -15,6 +17,33 @@
   const strips = $derived(bridge.mixer ?? []);
   const disabled = $derived(bridge.disabled);
   const spectrumOpen = $derived(bridge.spectrumOpen);
+  let openFxStrip = $state(null);
+  let fxOverride = $state.raw(null);
+  let lastFxDocPath = "";
+  $effect(() => {
+    const docPath = scene?.path ?? "";
+    if (docPath !== lastFxDocPath) {
+      lastFxDocPath = docPath;
+      openFxStrip = null;
+      fxOverride = null;
+    }
+  });
+  const fxState = $derived.by(() => {
+    const fromView = view?.mixerFx ?? null;
+    if (fxOverride && (!fromView || (fxOverride.revision ?? 0) >= (fromView.revision ?? 0))) {
+      return fxOverride;
+    }
+    return fromView;
+  });
+  const toggleFxStrip = (key, stripLabel) => {
+    if (!key) return;
+    if (openFxStrip?.key === key) {
+      openFxStrip = null;
+    } else {
+      openFxStrip = { key, label: stripLabel };
+    }
+  };
+  const fxSlotCount = key => (key && fxState?.strips?.[key]?.length) || 0;
   const song = $derived(typeof view?.song === "number" ? view.song : null);
   const hitsounds = $derived(typeof view?.hitsounds === "number" ? view.hitsounds : 1);
   const main = $derived(typeof view?.main === "number" ? view.main : null);
@@ -88,6 +117,7 @@
   <div class="strips" role="group" aria-label="Channels">
     <MixerStrip label="Song" name="Song" icon={songIcon} colour={songColour} muted={!!view?.songMuted} solo={!!view?.songSolo}
       muteLabel="Mute song" soloLabel="Solo song" {disabled}
+      fxCount={fxSlotCount("song")} fxOpen={openFxStrip?.key === "song"} onfx={() => toggleFxStrip("song", "Song")}
       onmute={() => act({ kind: "song_muted", on: !view?.songMuted })}
       onsolo={() => act({ kind: "song_solo", on: !view?.songSolo })}
       gain={song} min={0} max={1} gainLabel="Song volume" readout={song === null ? null : dbText(song)}
@@ -95,14 +125,17 @@
     <MixerStrip label="Hitsounds" name="Hitsounds" icon={hitsoundIcon} colour={hitsoundColour}
       muted={!!view?.hitsoundsMuted} solo={!!view?.hitsoundsSolo}
       muteLabel="Mute all hitsounds" soloLabel="Solo all hitsounds" {disabled}
+      fxCount={fxSlotCount("hitsounds")} fxOpen={openFxStrip?.key === "hitsounds"} onfx={() => toggleFxStrip("hitsounds", "Hitsounds")}
       onmute={() => act({ kind: "hitsounds_muted", on: !view?.hitsoundsMuted })}
       onsolo={() => act({ kind: "hitsounds_solo", on: !view?.hitsoundsSolo })}
       gain={hitsounds} min={0} max={2} gainLabel="Hitsounds bus volume" readout={dbText(hitsounds)}
       peak={hitsoundsPeak} onlevel={hitsoundLevel} />
     {#each strips as strip (strip.key)}
+      {@const fxKey = stripFxKey("lane", scene?.lanes?.[strip.row])}
       <MixerStrip label={strip.name + ", lane " + strip.number} name={strip.name} set={strip.set} number={strip.number}
         icon={laneIcons[strip.icon] ?? laneIcons.file} colour={strip.colour} selected={strip.selected} quiet={strip.quiet}
         muted={strip.muted} solo={strip.solo} muteLabel={"Mute " + strip.name + " (" + strip.set + ")"} soloLabel={"Solo " + strip.name + " (" + strip.set + ")"} {disabled}
+        fxCount={fxSlotCount(fxKey)} fxOpen={openFxStrip?.key === fxKey} onfx={fxKey ? () => toggleFxStrip(fxKey, strip.name) : null}
         onmute={() => lane("mix", strip.row, "mute")} onsolo={() => lane("mix", strip.row, "solo")}
         onselect={event => lane("select", strip.row, event)}
         gain={strip.gain ?? 1} min={0} max={2} gainLabel={strip.name + " volume"} readout={dbText(strip.gain ?? 1)}
@@ -110,6 +143,11 @@
         onlevel={laneLevel(strip.row)} />
     {/each}
   </div>
+  {#if openFxStrip}
+    <PluginWrapperBar stripKey={openFxStrip.key} stripLabel={openFxStrip.label} {fxState} {disabled}
+      onclose={() => { openFxStrip = null; }}
+      onupdate={next => { fxOverride = next; }} />
+  {/if}
   {#if spectrumOpen}
     <SpectrumPanel />
   {/if}
@@ -131,8 +169,13 @@
           <span class="phase-mid"></span>
           <span class="phase-dot" class:neg={phaseCorr != null && phaseCorr < 0} style:left={phasePct + "%"}></span>
         </div>
-        <button type="button" class="spectrum-btn" aria-pressed={spectrumOpen} {disabled}
-          onclick={() => bridge.toggleSpectrum()}>Spectrum</button>
+        <div class="master-tools">
+          <button type="button" class="spectrum-btn" class:has-fx={fxSlotCount("master") > 0}
+            aria-label="FX inserts for Master" aria-pressed={openFxStrip?.key === "master"} {disabled}
+            onclick={() => toggleFxStrip("master", "Master")}>{fxSlotCount("master") > 0 ? "FX " + fxSlotCount("master") : "FX"}</button>
+          <button type="button" class="spectrum-btn" aria-pressed={spectrumOpen} {disabled}
+            onclick={() => bridge.toggleSpectrum()}>Spectrum</button>
+        </div>
       </div>
     </div>
   </section>
@@ -270,6 +313,15 @@
   .phase-dot.neg {
     background: var(--editor-error, #ff453a);
   }
+  .master-tools {
+    display: flex;
+    gap: 4px;
+    margin-top: 4px;
+  }
+  .master-tools .spectrum-btn {
+    flex: 1;
+    margin-top: 0;
+  }
   .spectrum-btn {
     margin-top: 4px;
     height: 20px;
@@ -280,6 +332,9 @@
     color: var(--editor-secondary);
     font: 600 10px var(--font-ui);
     cursor: pointer;
+  }
+  .spectrum-btn.has-fx {
+    color: var(--editor-accent);
   }
   .spectrum-btn[aria-pressed="true"] {
     background: var(--editor-accent);

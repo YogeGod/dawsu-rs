@@ -143,6 +143,50 @@ fn node_graph_tauri_actions_round_trip_and_export_json() {
 }
 
 #[test]
+fn mixer_fx_action_handles_state_validation_and_empty_undo_redo() {
+    let mut app = Application::headless();
+    let state_act: crate::MixerFxAction =
+        serde_json::from_value(serde_json::json!({ "kind": "state" })).unwrap();
+    let (val, mutated) = crate::handle_mixer_fx_action(&mut app, state_act).unwrap();
+    assert!(!mutated);
+    assert_eq!(val["totalPdcSamples"], 0);
+    assert_eq!(val["canUndo"], false);
+
+    // Mutation without an open document refuses cleanly.
+    let undo_act: crate::MixerFxAction =
+        serde_json::from_value(serde_json::json!({ "kind": "undo" })).unwrap();
+    assert!(crate::handle_mixer_fx_action(&mut app, undo_act).is_err());
+
+    let fixture = Fixture::new("mixer-fx-ipc");
+    let path = fixture.0.join("Test.osu");
+    fs::write(
+        &path,
+        b"osu file format v14\n\n[Metadata]\nTitle:FX\nVersion:Hard\n\n[TimingPoints]\n0,500,4,2,0,80,1,0\n\n[HitObjects]\n256,192,1000,1,8,0:0:0:0:\n",
+    )
+    .unwrap();
+    open(&mut app, &path);
+
+    let bad_strip: crate::MixerFxAction = serde_json::from_value(serde_json::json!({
+        "kind": "remove_insert",
+        "strip": "unknown-strip",
+        "slot_id": "fx-1"
+    }))
+    .unwrap();
+    assert!(crate::handle_mixer_fx_action(&mut app, bad_strip).is_err());
+
+    let undo_ok: crate::MixerFxAction =
+        serde_json::from_value(serde_json::json!({ "kind": "undo" })).unwrap();
+    let (after_undo, mutated) = crate::handle_mixer_fx_action(&mut app, undo_ok).unwrap();
+    assert!(mutated);
+    assert_eq!(after_undo["canRedo"], false);
+
+    let snap = snapshot(&app, true);
+    assert!(snap["mixerFx"].is_object());
+    let lanes = snap["scene"]["lanes"].as_array().unwrap();
+    assert!(lanes.iter().all(|lane| lane["fxKey"].as_str().unwrap().starts_with("lane:")));
+}
+
+#[test]
 fn typed_scene_serializes_hit_shapes_and_static_overlay_fields() {
     let fixture = Fixture::new("typed-scene-parity");
     let path = fixture.0.join("Parity.osu");

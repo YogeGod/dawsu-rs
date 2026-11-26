@@ -74,6 +74,7 @@
     "allow-vst3-scan",
     "allow-pick-soundfont-file",
     "allow-drum-vst-action",
+    "allow-mixer-fx-action",
     "allow-keysounds-action",
     "allow-mapset-revert-action",
     "allow-check-for-updates",

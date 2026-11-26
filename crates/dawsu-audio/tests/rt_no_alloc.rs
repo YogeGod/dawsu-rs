@@ -6,7 +6,11 @@
 //! C++ `signalsmith-stretch` STL buffers are pre-warmed off-thread in `SongStretcher::new` and
 //! capped at `2.0x` playback speed (verified separately by source audit).
 
-use dawsu_audio::{AudioClip, LiveAudioSource, RtBenchHarness, ScheduledSound};
+use dawsu_audio::{
+    AudioClip, AudioEffectProcessor, FxInsertSpec, FxStripSpec, LiveAudioSource, MixerFxGraph,
+    RtBenchHarness, STRIP_DRY, STRIP_HITSOUNDS, STRIP_LANE_BASE, STRIP_MASTER, STRIP_SONG,
+    ScheduledSound,
+};
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -98,6 +102,7 @@ fn audio_callback_performs_zero_rust_allocations_over_1000_buffers() {
             end_ms: None,
             clip: cue_clip.clone(),
             gain: 0.7,
+            strip_id: 0,
         })
         .collect();
 
@@ -166,4 +171,123 @@ fn audio_callback_performs_zero_rust_allocations_over_1000_buffers() {
 
     assert_eq!(allocs, 0, "expected 0 Rust heap allocations inside RT callback, observed {allocs}");
     assert_eq!(deallocs, 0, "expected 0 Rust heap deallocations inside RT callback, observed {deallocs}");
+}
+
+struct RtFxDelayPlugin {
+    latency: u32,
+    latency_dirty: Arc<AtomicBool>,
+}
+
+impl AudioEffectProcessor for RtFxDelayPlugin {
+    fn process_block(
+        &mut self,
+        left: &mut [f32],
+        right: &mut [f32],
+        _sample_rate: u32,
+        _is_playing: bool,
+        _position_ms: f64,
+        _speed: f64,
+        bypassed: bool,
+    ) {
+        if !bypassed {
+            for (l, r) in left.iter_mut().zip(right.iter_mut()) {
+                *l *= 0.9;
+                *r *= 0.9;
+            }
+        }
+    }
+
+    fn latency_samples(&self) -> u32 {
+        self.latency
+    }
+
+    fn take_latency_changed(&mut self) -> bool {
+        if self.latency_dirty.swap(false, Ordering::AcqRel) {
+            self.latency = if self.latency == 512 { 256 } else { 512 };
+            true
+        } else {
+            false
+        }
+    }
+}
+
+#[test]
+fn audio_callback_with_fx_graph_and_dynamic_pdc_performs_zero_rust_allocations() {
+    let sample_rate = 48_000;
+    let channels = 2;
+    let song = sine_clip(sample_rate, sample_rate as usize * 4, channels, 440.0);
+    let cue_clip = sine_clip(sample_rate, 1024, 1, 880.0);
+    let cues: Vec<ScheduledSound> = (0..32)
+        .map(|i| ScheduledSound {
+            at_ms: i as f64 * 100.0,
+            end_ms: None,
+            clip: cue_clip.clone(),
+            gain: 0.7,
+            strip_id: if i % 2 == 0 { STRIP_LANE_BASE } else { STRIP_DRY },
+        })
+        .collect();
+
+    let latency_dirty = Arc::new(AtomicBool::new(false));
+    let graph = MixerFxGraph::new(
+        sample_rate,
+        vec![
+            FxStripSpec {
+                id: STRIP_DRY,
+                inserts: vec![],
+                outputs: vec![(STRIP_HITSOUNDS, 1.0)],
+            },
+            FxStripSpec {
+                id: STRIP_LANE_BASE,
+                inserts: vec![FxInsertSpec::new(Box::new(RtFxDelayPlugin {
+                    latency: 512,
+                    latency_dirty: Arc::clone(&latency_dirty),
+                }))],
+                outputs: vec![(STRIP_HITSOUNDS, 1.0)],
+            },
+            FxStripSpec {
+                id: STRIP_HITSOUNDS,
+                inserts: vec![],
+                outputs: vec![(STRIP_MASTER, 1.0)],
+            },
+            FxStripSpec {
+                id: STRIP_SONG,
+                inserts: vec![],
+                outputs: vec![(STRIP_MASTER, 1.0)],
+            },
+            FxStripSpec {
+                id: STRIP_MASTER,
+                inserts: vec![],
+                outputs: vec![],
+            },
+        ],
+    )
+    .unwrap();
+
+    let mut harness = RtBenchHarness::new(sample_rate, channels);
+    let load = harness.prepare_load(Some(song), cues, 1.0);
+    harness.push_prepared_load(load);
+    harness.set_fx_graph(Some(Box::new(graph)));
+    harness.play(true);
+    let mut out = vec![0.0_f32; 512 * channels];
+    harness.fill(&mut out);
+
+    ALLOC_COUNT.store(0, Ordering::SeqCst);
+    DEALLOC_COUNT.store(0, Ordering::SeqCst);
+    COUNT_ACTIVE.store(true, Ordering::SeqCst);
+
+    for i in 0..500 {
+        if i == 250 {
+            latency_dirty.store(true, Ordering::Release);
+        }
+        harness.fill(&mut out);
+    }
+
+    COUNT_ACTIVE.store(false, Ordering::SeqCst);
+    let allocs = ALLOC_COUNT.load(Ordering::SeqCst);
+    let deallocs = DEALLOC_COUNT.load(Ordering::SeqCst);
+    harness.drain_retired();
+
+    assert_eq!(harness.pdc_latency_samples(), 256);
+    assert_eq!(allocs, 0, "expected 0 allocs with MixerFxGraph + kLatencyChanged, got {allocs}");
+    assert_eq!(deallocs, 0, "expected 0 deallocs with MixerFxGraph + kLatencyChanged, got {deallocs}");
 }

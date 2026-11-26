@@ -86,6 +86,7 @@ const COMMANDS: &[&str] = &[
     "vst3_scan",
     "pick_soundfont_file",
     "drum_vst_action",
+    "mixer_fx_action",
     "keysounds_action",
     "mapset_revert_action",
     "check_for_updates",

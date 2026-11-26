@@ -385,6 +385,7 @@ impl Application {
                     end_ms: cue.loop_end().map(|t| t.ms()),
                     clip,
                     gain: cue.gain() as f32,
+                    strip_id: cue.strip_id(),
                 });
             }
         }

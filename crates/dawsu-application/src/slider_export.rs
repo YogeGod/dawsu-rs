@@ -120,6 +120,7 @@ pub(super) fn stage(
                     end_ms: duration.map(f64::from_bits),
                     gain: *volume as f32 / 100.0,
                     clip: clip.clone(),
+                    strip_id: 0,
                 });
             }
             let bytes = mixes::render_format(cues, format, cancel)?;

@@ -100,6 +100,7 @@ pub(crate) enum Request {
         response: mpsc::Sender<Result<dawsu_application::Vst3ScanReport, String>>,
     },
     DrumVstAction(Value, mpsc::Sender<Result<Value, String>>),
+    MixerFx(MixerFxAction, mpsc::Sender<Result<Value, String>>),
     KeysoundsAction(Value, mpsc::Sender<Result<Value, String>>),
     MapsetRevert(MapsetRevertAction, mpsc::Sender<Result<Value, String>>),
     SharedBase(SharedBaseAction, mpsc::Sender<Result<Value, String>>),
@@ -829,6 +830,20 @@ fn editor_thread_with_cache(
                     tick_cache.invalidate();
                     let _ = response.send(result);
                 }
+                Ok(Request::MixerFx(action, response)) => {
+                    let reply = match guard(&mut app, &mut fault, |app| {
+                        handle_mixer_fx_action(app, action)
+                    }) {
+                        Ok(Ok((value, invalidate))) => {
+                            if invalidate {
+                                tick_cache.invalidate();
+                            }
+                            Ok(value)
+                        }
+                        Ok(Err(err)) | Err(err) => Err(err),
+                    };
+                    let _ = response.send(reply);
+                }
                 Ok(Request::KeysoundsAction(payload, response)) => {
                     let result = guard(&mut app, &mut fault, |app| {
                         if payload.get("kind").and_then(Value::as_str) == Some("browse_dawsuks") {
@@ -1147,6 +1162,7 @@ fn main() {
             commands::midi_keysounds::vst3_scan,
             commands::midi_keysounds::pick_soundfont_file,
             commands::drum_and_graph::drum_vst_action,
+            commands::mixer::mixer_fx_action,
             commands::midi_keysounds::keysounds_action,
             commands::editor::mapset_revert_action,
             commands::stem_and_updater::check_for_updates,

@@ -68,6 +68,7 @@ impl Application {
         self.drum_vst_generation += 1;
         self.drum_vst_saved = None;
         self.clear_live_drum_vst();
+        self.unload_all_mixer_fx();
         self.waveform.clear();
         self.waveform_revision += 1;
         // A cleanup still running after a Save finishes first. One still running past the wait
@@ -185,6 +186,8 @@ impl Application {
                             .and_then(|p| p.settings.drum_vst.clone())
                     })
             }),
+            mixer_fx: (!self.mixer_fx.session().is_empty())
+                .then(|| self.mixer_fx.session().clone()),
             drum_stem_path: self
                 .drum_stem_path
                 .as_ref()
@@ -1299,6 +1302,10 @@ impl Application {
                     } else {
                         self.restore_active_lane(None);
                     }
+                    let keep_mixer_fx = preserve.is_some() && !self.mixer_fx.session().is_empty();
+                    if !keep_mixer_fx {
+                        self.unload_all_mixer_fx();
+                    }
                     if !is_practice {
                         self.preferences.recent.retain(|p| p != &path);
                         self.preferences.recent.insert(0, path);
@@ -1363,6 +1370,9 @@ impl Application {
                                 self.clear_live_drum_vst();
                             }
                         }
+                    }
+                    if !keep_mixer_fx {
+                        self.restore_mixer_fx_from_session(settings.mixer_fx.clone());
                     }
                     self.sync_audio();
                     if !keep_song && let Some(song_path) = loaded.song_path {

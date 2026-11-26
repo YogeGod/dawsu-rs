@@ -845,6 +845,7 @@ impl Application {
                     end_ms: cue.loop_end().map(|t| t.ms()),
                     clip: clip.clone(),
                     gain: cue.gain() as f32 * lane_gain,
+                    strip_id: self.mixer_fx.strip_id_for_sample(cue.sample()),
                 });
             }
         }

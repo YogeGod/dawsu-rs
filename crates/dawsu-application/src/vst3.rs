@@ -692,7 +692,23 @@ impl Vst3Manager {
         plugin_path: impl Into<PathBuf>,
         plugin_uid: Option<String>,
     ) -> Result<LoadedPluginSummary, Vst3Error> {
-        self.load_plugin_at_rate(plugin_path, plugin_uid, PluginRole::Effect, false, 44_100)
+        self.load_effect_at_rate(plugin_path, plugin_uid, 44_100)
+    }
+
+    /// Loads a VST3 audio effect in a dedicated sidecar process at `sample_rate_hz`.
+    pub fn load_effect_at_rate(
+        &mut self,
+        plugin_path: impl Into<PathBuf>,
+        plugin_uid: Option<String>,
+        sample_rate_hz: u32,
+    ) -> Result<LoadedPluginSummary, Vst3Error> {
+        self.load_plugin_at_rate(
+            plugin_path,
+            plugin_uid,
+            PluginRole::Effect,
+            false,
+            sample_rate_hz,
+        )
     }
 
     /// Allocates a unique shared-memory channel name for spawning a sidecar off-thread.
@@ -797,6 +813,20 @@ impl Vst3Manager {
         Ok(())
     }
 
+    /// Sets soft bypass on a loaded VST3 plug-in instance.
+    pub fn set_plugin_bypass(
+        &mut self,
+        instance_id: &str,
+        bypassed: bool,
+    ) -> Result<(), Vst3Error> {
+        let instance = self
+            .instances
+            .get_mut(instance_id)
+            .ok_or_else(|| Vst3Error::PluginNotFound(instance_id.to_string()))?;
+        instance.session.set_bypass(bypassed)?;
+        Ok(())
+    }
+
     /// Reads the base64-encoded preset/component state from a loaded plug-in.
     pub fn get_plugin_state(&mut self, instance_id: &str) -> Result<String, Vst3Error> {
         let instance = self
@@ -847,6 +877,11 @@ impl Vst3Manager {
         self.instances
             .get(instance_id)
             .map(|inst| (inst.plugin_path.clone(), inst.plugin_uid.clone()))
+    }
+
+    /// Returns `Some(editor_open)` when `instance_id` is currently loaded, or `None`.
+    pub fn instance_editor_open(&self, instance_id: &str) -> Option<bool> {
+        self.instances.get(instance_id).map(|inst| inst.editor_open)
     }
 
     /// Records a MIDI preview note for a loaded VST3 instance after verifying it is alive.

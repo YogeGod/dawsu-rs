@@ -18,12 +18,14 @@ mod directsound;
 pub mod dll;
 #[cfg(windows)]
 mod mme;
+pub mod pdc;
 pub mod ring;
 mod rt_thread;
 #[cfg(windows)]
 mod wasapi_low_latency;
 
 pub use dll::{AudioClockDll, ClockSnapshot, ClockSnapshotSlot, monotonic_rel_ns};
+pub use pdc::{DelayLine, PdcEdgeDelay, PdcNode, PdcPlan, compute_pdc};
 pub use ring::{CachePadded, SpscConsumer, SpscProducer, spsc_ring};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -309,12 +311,19 @@ pub fn stretch(audio: &AudioClip, speed: f64) -> Result<Arc<AudioClip>, String> 
     }))
 }
 
+pub const STRIP_DRY: u32 = 0;
+pub const STRIP_SONG: u32 = 1;
+pub const STRIP_HITSOUNDS: u32 = 2;
+pub const STRIP_MASTER: u32 = 3;
+pub const STRIP_LANE_BASE: u32 = 16;
+
 #[derive(Clone)]
 pub struct ScheduledSound {
     pub at_ms: f64,
     pub end_ms: Option<f64>,
     pub clip: Arc<AudioClip>,
     pub gain: f32,
+    pub strip_id: u32,
 }
 struct Voice {
     clip: Arc<AudioClip>,
@@ -646,6 +655,460 @@ fn sanitize_live_sample(sample: f32) -> f32 {
     if sample.is_finite() { sample } else { 0.0 }
 }
 
+const MAX_DYNAMIC_PDC_DELAY: usize = 8192;
+
+/// Real-time stereo audio effect processor inserted on a mixer strip or bus.
+///
+/// Implementations run on the audio output thread and must not block, lock, or allocate.
+pub trait AudioEffectProcessor: Send {
+    #[allow(clippy::too_many_arguments)]
+    fn process_block(
+        &mut self,
+        left: &mut [f32],
+        right: &mut [f32],
+        sample_rate: u32,
+        is_playing: bool,
+        position_ms: f64,
+        speed: f64,
+        bypassed: bool,
+    );
+
+    fn latency_samples(&self) -> u32 {
+        0
+    }
+
+    fn wet_dry(&self) -> f32 {
+        1.0
+    }
+
+    fn is_bypassed(&self) -> bool {
+        false
+    }
+
+    /// Returns `true` once after the plug-in reports a dynamic latency change (`kLatencyChanged`).
+    fn take_latency_changed(&mut self) -> bool {
+        false
+    }
+
+    /// Called on stop, seek, or cycle wrap to flush effect tail buffers.
+    fn reset(&mut self) {}
+}
+
+/// Specification for one insert effect slot built off the audio thread.
+pub struct FxInsertSpec {
+    pub processor: Box<dyn AudioEffectProcessor>,
+}
+
+impl FxInsertSpec {
+    pub fn new(processor: Box<dyn AudioEffectProcessor>) -> Self {
+        Self { processor }
+    }
+}
+
+/// Specification for one strip/bus node in a [`MixerFxGraph`].
+pub struct FxStripSpec {
+    pub id: u32,
+    pub inserts: Vec<FxInsertSpec>,
+    /// Directed routing outputs `(target_strip_id, linear_gain)`.
+    pub outputs: Vec<(u32, f32)>,
+}
+
+struct FxInsertSlot {
+    processor: Box<dyn AudioEffectProcessor>,
+    dry_l: Vec<f32>,
+    dry_r: Vec<f32>,
+    wet_l: Vec<f32>,
+    wet_r: Vec<f32>,
+    dry_delay: pdc::DelayLine,
+    latency: u32,
+}
+
+impl FxInsertSlot {
+    fn new(mut spec: FxInsertSpec, sample_rate: u32) -> Self {
+        let initial_lat = spec.processor.latency_samples();
+        let _ = spec.processor.take_latency_changed();
+        let cap = (initial_lat as usize).max(MAX_DYNAMIC_PDC_DELAY);
+        let mut dry_delay = pdc::DelayLine::new(cap, sample_rate);
+        dry_delay.set_delay_immediate(initial_lat as usize);
+        Self {
+            processor: spec.processor,
+            dry_l: vec![0.0; Mixer::LIVE_BLOCK_FRAMES],
+            dry_r: vec![0.0; Mixer::LIVE_BLOCK_FRAMES],
+            wet_l: vec![0.0; Mixer::LIVE_BLOCK_FRAMES],
+            wet_r: vec![0.0; Mixer::LIVE_BLOCK_FRAMES],
+            dry_delay,
+            latency: initial_lat,
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn process_block(
+        &mut self,
+        left: &mut [f32],
+        right: &mut [f32],
+        sample_rate: u32,
+        is_playing: bool,
+        position_ms: f64,
+        speed: f64,
+    ) -> bool {
+        let frames = left.len().min(right.len()).min(self.dry_l.len());
+        let bypassed = self.processor.is_bypassed();
+        let wet_dry = {
+            let w = self.processor.wet_dry();
+            if w.is_finite() { w.clamp(0.0, 1.0) } else { 1.0 }
+        };
+
+        self.dry_l[..frames].copy_from_slice(&left[..frames]);
+        self.dry_r[..frames].copy_from_slice(&right[..frames]);
+        self.dry_delay
+            .process_block(&mut self.dry_l[..frames], &mut self.dry_r[..frames]);
+
+        if bypassed {
+            self.wet_l[..frames].copy_from_slice(&left[..frames]);
+            self.wet_r[..frames].copy_from_slice(&right[..frames]);
+            self.processor.process_block(
+                &mut self.wet_l[..frames],
+                &mut self.wet_r[..frames],
+                sample_rate,
+                is_playing,
+                position_ms,
+                speed,
+                true,
+            );
+            left[..frames].copy_from_slice(&self.dry_l[..frames]);
+            right[..frames].copy_from_slice(&self.dry_r[..frames]);
+        } else {
+            self.processor.process_block(
+                &mut left[..frames],
+                &mut right[..frames],
+                sample_rate,
+                is_playing,
+                position_ms,
+                speed,
+                false,
+            );
+            if (wet_dry - 1.0).abs() > 1e-6 {
+                let dry_gain = 1.0 - wet_dry;
+                for i in 0..frames {
+                    let wl = sanitize_live_sample(left[i]);
+                    let wr = sanitize_live_sample(right[i]);
+                    left[i] = self.dry_l[i] * dry_gain + wl * wet_dry;
+                    right[i] = self.dry_r[i] * dry_gain + wr * wet_dry;
+                }
+            } else {
+                for i in 0..frames {
+                    left[i] = sanitize_live_sample(left[i]);
+                    right[i] = sanitize_live_sample(right[i]);
+                }
+            }
+        }
+
+        if self.processor.take_latency_changed() {
+            let new_lat = self.processor.latency_samples();
+            if new_lat != self.latency {
+                self.latency = new_lat;
+                self.dry_delay.set_delay_crossfade(new_lat as usize);
+                return true;
+            }
+        }
+        false
+    }
+}
+
+struct FxStripNode {
+    id: u32,
+    buf_l: Vec<f32>,
+    buf_r: Vec<f32>,
+    inserts: Vec<FxInsertSlot>,
+    first_edge: usize,
+    edge_count: usize,
+}
+
+struct FxEdge {
+    to_idx: usize,
+    gain: f32,
+    delay: pdc::DelayLine,
+}
+
+/// Pre-allocated, lock-free multi-strip audio routing & PDC graph executed by [`Mixer::render`].
+pub struct MixerFxGraph {
+    sample_rate: u32,
+    nodes: Vec<FxStripNode>,
+    edges: Vec<FxEdge>,
+    edge_pairs: Vec<(usize, usize)>,
+    own_latencies: Vec<u32>,
+    topo_order: Vec<usize>,
+    in_degree_scratch: Vec<usize>,
+    arrival_scratch: Vec<u32>,
+    edge_delay_scratch: Vec<u32>,
+    edge_tmp_l: Vec<f32>,
+    edge_tmp_r: Vec<f32>,
+    strip_lookup: Vec<(u32, usize)>,
+    dry_idx: usize,
+    song_idx: usize,
+    master_idx: usize,
+    total_latency: u32,
+}
+
+impl MixerFxGraph {
+    /// Builds a validated, acyclic multi-strip FX graph with pre-allocated delay lines and
+    /// scratch buffers so RT callbacks perform zero allocations (even on dynamic PDC changes).
+    pub fn new(sample_rate: u32, strips: Vec<FxStripSpec>) -> Result<Self, String> {
+        let pdc_nodes: Vec<pdc::PdcNode> = strips
+            .iter()
+            .map(|strip| pdc::PdcNode {
+                id: strip.id,
+                own_latency: strip
+                    .inserts
+                    .iter()
+                    .fold(0u32, |acc, ins| acc.saturating_add(ins.processor.latency_samples())),
+                outputs: strip.outputs.iter().map(|&(target, _)| target).collect(),
+            })
+            .collect();
+        let plan = pdc::compute_pdc(&pdc_nodes)?;
+
+        let find_req = |id: u32, label: &str| -> Result<usize, String> {
+            strips
+                .iter()
+                .position(|strip| strip.id == id)
+                .ok_or_else(|| format!("MixerFxGraph requires {label} strip ({id})"))
+        };
+        let dry_idx = find_req(STRIP_DRY, "DRY")?;
+        let song_idx = find_req(STRIP_SONG, "SONG")?;
+        let _hitsounds_idx = find_req(STRIP_HITSOUNDS, "HITSOUNDS")?;
+        let master_idx = find_req(STRIP_MASTER, "MASTER")?;
+
+        let mut strip_lookup: Vec<(u32, usize)> = strips
+            .iter()
+            .enumerate()
+            .map(|(idx, strip)| (strip.id, idx))
+            .collect();
+        strip_lookup.sort_unstable_by_key(|&(id, _)| id);
+
+        let index_of = |id: u32| -> usize {
+            strip_lookup
+                .binary_search_by_key(&id, |&(key, _)| key)
+                .map_or(dry_idx, |pos| strip_lookup[pos].1)
+        };
+
+        let mut nodes = Vec::with_capacity(strips.len());
+        let mut own_latencies = Vec::with_capacity(strips.len());
+        let mut edges = Vec::new();
+        let mut edge_pairs = Vec::new();
+
+        for strip in strips {
+            let first_edge = edges.len();
+            let edge_count = strip.outputs.len();
+            for (target_id, gain) in strip.outputs {
+                let to_idx = index_of(target_id);
+                let delay_samples = plan.delay_for_edge(strip.id, target_id);
+                let cap = (delay_samples as usize).max(MAX_DYNAMIC_PDC_DELAY);
+                let mut delay = pdc::DelayLine::new(cap, sample_rate);
+                delay.set_delay_immediate(delay_samples as usize);
+                edges.push(FxEdge {
+                    to_idx,
+                    gain: if gain.is_finite() { gain } else { 1.0 },
+                    delay,
+                });
+                let from_idx = nodes.len();
+                edge_pairs.push((from_idx, to_idx));
+            }
+            let mut own_lat = 0u32;
+            let mut inserts = Vec::with_capacity(strip.inserts.len());
+            for ins in strip.inserts {
+                let slot = FxInsertSlot::new(ins, sample_rate);
+                own_lat = own_lat.saturating_add(slot.latency);
+                inserts.push(slot);
+            }
+            own_latencies.push(own_lat);
+            nodes.push(FxStripNode {
+                id: strip.id,
+                buf_l: vec![0.0; Mixer::LIVE_BLOCK_FRAMES],
+                buf_r: vec![0.0; Mixer::LIVE_BLOCK_FRAMES],
+                inserts,
+                first_edge,
+                edge_count,
+            });
+        }
+
+        let topo_order: Vec<usize> = plan
+            .topo_order
+            .iter()
+            .map(|&id| index_of(id))
+            .collect();
+        let node_count = nodes.len();
+        let edge_count = edges.len();
+
+        Ok(Self {
+            sample_rate: sample_rate.max(1),
+            nodes,
+            edges,
+            edge_pairs,
+            own_latencies,
+            topo_order,
+            in_degree_scratch: vec![0; node_count],
+            arrival_scratch: vec![0; node_count],
+            edge_delay_scratch: vec![0; edge_count],
+            edge_tmp_l: vec![0.0; Mixer::LIVE_BLOCK_FRAMES],
+            edge_tmp_r: vec![0.0; Mixer::LIVE_BLOCK_FRAMES],
+            strip_lookup,
+            dry_idx,
+            song_idx,
+            master_idx,
+            total_latency: plan.total_latency,
+        })
+    }
+
+    pub fn total_latency_samples(&self) -> u32 {
+        self.total_latency
+    }
+
+    fn strip_index(&self, strip_id: u32) -> usize {
+        if strip_id == STRIP_DRY {
+            return self.dry_idx;
+        }
+        self.strip_lookup
+            .binary_search_by_key(&strip_id, |&(id, _)| id)
+            .map_or(self.dry_idx, |pos| self.strip_lookup[pos].1)
+    }
+
+    fn clear_buffers(&mut self, frames: usize) {
+        for node in &mut self.nodes {
+            node.buf_l[..frames].fill(0.0);
+            node.buf_r[..frames].fill(0.0);
+        }
+    }
+
+    fn reset(&mut self) {
+        for node in &mut self.nodes {
+            node.buf_l.fill(0.0);
+            node.buf_r.fill(0.0);
+            for slot in &mut node.inserts {
+                slot.dry_delay.reset();
+                slot.processor.reset();
+            }
+        }
+        for edge in &mut self.edges {
+            edge.delay.reset();
+        }
+    }
+
+    #[inline]
+    fn add_song_frame(&mut self, frame_idx: usize, l: f32, r: f32) {
+        let node = &mut self.nodes[self.song_idx];
+        node.buf_l[frame_idx] += l;
+        node.buf_r[frame_idx] += r;
+    }
+
+    #[inline]
+    fn add_dry_frame(&mut self, frame_idx: usize, l: f32, r: f32) {
+        let node = &mut self.nodes[self.dry_idx];
+        node.buf_l[frame_idx] += l;
+        node.buf_r[frame_idx] += r;
+    }
+
+    #[inline]
+    fn add_strip_frame(&mut self, strip_id: u32, frame_idx: usize, l: f32, r: f32) {
+        let idx = self.strip_index(strip_id);
+        let node = &mut self.nodes[idx];
+        node.buf_l[frame_idx] += l;
+        node.buf_r[frame_idx] += r;
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn process_block(
+        &mut self,
+        frames: usize,
+        is_playing: bool,
+        position_ms: f64,
+        speed: f64,
+        hitsound_gain: f32,
+        song_peak: &mut f32,
+        hitsound_peak: &mut f32,
+    ) {
+        let mut any_latency_changed = false;
+        let sample_rate = self.sample_rate;
+
+        for topo_pos in 0..self.topo_order.len() {
+            let u = self.topo_order[topo_pos];
+            let (first_edge, edge_count, node_id) = {
+                let node = &mut self.nodes[u];
+                let mut strip_latency = 0u32;
+                for slot in &mut node.inserts {
+                    if slot.process_block(
+                        &mut node.buf_l[..frames],
+                        &mut node.buf_r[..frames],
+                        sample_rate,
+                        is_playing,
+                        position_ms,
+                        speed,
+                    ) {
+                        any_latency_changed = true;
+                    }
+                    strip_latency = strip_latency.saturating_add(slot.latency);
+                }
+                self.own_latencies[u] = strip_latency;
+
+                if node.id == STRIP_HITSOUNDS {
+                    for i in 0..frames {
+                        node.buf_l[i] *= hitsound_gain;
+                        node.buf_r[i] *= hitsound_gain;
+                        let p = node.buf_l[i].abs().max(node.buf_r[i].abs());
+                        *hitsound_peak = hitsound_peak.max(p);
+                    }
+                } else if node.id == STRIP_SONG {
+                    for i in 0..frames {
+                        let p = node.buf_l[i].abs().max(node.buf_r[i].abs());
+                        *song_peak = song_peak.max(p);
+                    }
+                }
+                (node.first_edge, node.edge_count, node.id)
+            };
+            let _ = node_id;
+
+            for edge_offset in 0..edge_count {
+                let edge_idx = first_edge + edge_offset;
+                self.edge_tmp_l[..frames].copy_from_slice(&self.nodes[u].buf_l[..frames]);
+                self.edge_tmp_r[..frames].copy_from_slice(&self.nodes[u].buf_r[..frames]);
+                let edge = &mut self.edges[edge_idx];
+                edge.delay
+                    .process_block(&mut self.edge_tmp_l[..frames], &mut self.edge_tmp_r[..frames]);
+                let gain = edge.gain;
+                let to_idx = edge.to_idx;
+                let target = &mut self.nodes[to_idx];
+                for i in 0..frames {
+                    target.buf_l[i] += self.edge_tmp_l[i] * gain;
+                    target.buf_r[i] += self.edge_tmp_r[i] * gain;
+                }
+            }
+        }
+
+        if any_latency_changed
+            && let Ok(new_total) = pdc::solve_dag_delays_in_place(
+                &self.own_latencies,
+                &self.edge_pairs,
+                &mut self.edge_delay_scratch,
+                &mut self.in_degree_scratch,
+                &mut self.topo_order,
+                &mut self.arrival_scratch,
+            )
+        {
+            self.total_latency = new_total;
+            for (edge_idx, &delay_samples) in self.edge_delay_scratch.iter().enumerate() {
+                self.edges[edge_idx]
+                    .delay
+                    .set_delay_crossfade(delay_samples as usize);
+            }
+        }
+    }
+
+    #[inline]
+    fn master_channels(&self) -> (&[f32], &[f32]) {
+        let master = &self.nodes[self.master_idx];
+        (&master.buf_l, &master.buf_r)
+    }
+}
+
 pub struct Mixer {
     pub song: Option<Arc<AudioClip>>,
     pub cues: Vec<ScheduledSound>,
@@ -676,6 +1139,7 @@ pub struct Mixer {
     live_source: Option<Box<dyn LiveAudioSource>>,
     live_left: Vec<f32>,
     live_right: Vec<f32>,
+    fx_graph: Option<Box<MixerFxGraph>>,
     seek_fade_pos: usize,
     seek_fade_frames: usize,
     seek_fade_active: bool,
@@ -712,6 +1176,7 @@ impl Mixer {
             live_source: None,
             live_left: vec![0.0; Self::LIVE_BLOCK_FRAMES],
             live_right: vec![0.0; Self::LIVE_BLOCK_FRAMES],
+            fx_graph: None,
             seek_fade_pos: 0,
             seek_fade_frames: (sample_rate as usize / 200).max(1),
             seek_fade_active: false,
@@ -726,6 +1191,15 @@ impl Mixer {
     ) -> Option<Box<dyn LiveAudioSource>> {
         std::mem::replace(&mut self.live_source, source)
     }
+    /// Replaces the active multi-strip FX graph, returning the previous graph for off-thread drop.
+    pub fn set_fx_graph(&mut self, graph: Option<Box<MixerFxGraph>>) -> Option<Box<MixerFxGraph>> {
+        std::mem::replace(&mut self.fx_graph, graph)
+    }
+    pub fn pdc_latency_samples(&self) -> u32 {
+        self.fx_graph
+            .as_ref()
+            .map_or(0, |graph| graph.total_latency_samples())
+    }
     pub fn seek(&mut self, ms: f64) {
         self.seek_internal(ms, true);
     }
@@ -737,6 +1211,9 @@ impl Mixer {
         self.stretcher.reset();
         if let Some(source) = self.live_source.as_mut() {
             source.reset();
+        }
+        if let Some(graph) = self.fx_graph.as_mut() {
+            graph.reset();
         }
         if declick_song && self.playing {
             self.seek_fade_pos = 0;
@@ -801,6 +1278,180 @@ impl Mixer {
             } else {
                 false
             };
+
+            if self.fx_graph.is_some() && block_frames > 0 {
+                let block_pos_ms = self.position_ms;
+                if let Some(graph) = self.fx_graph.as_mut() {
+                    graph.clear_buffers(block_frames);
+                }
+                for frame_idx in 0..block_frames {
+                    if self.playing {
+                        if !self.indexed {
+                            self.active_cues.clear();
+                            self.next_cue = self
+                                .cues
+                                .partition_point(|cue| cue.at_ms <= self.position_ms);
+                            if self.cue_index.leaves == 0 {
+                                self.active_cues.extend((0..self.next_cue).filter(|i| {
+                                    self.position_ms < cue_end(&self.cues[*i], self.speed)
+                                }));
+                            } else {
+                                self.cue_index.overlaps(
+                                    &self.cues,
+                                    self.next_cue,
+                                    self.position_ms,
+                                    self.speed,
+                                    &mut self.active_cues,
+                                );
+                            }
+                            self.indexed = true;
+                        }
+                        while self.next_cue < self.cues.len()
+                            && self.cues[self.next_cue].at_ms <= self.position_ms
+                        {
+                            self.active_cues.push(self.next_cue);
+                            self.next_cue += 1;
+                        }
+                        let position = self.position_ms;
+                        let cues = &self.cues;
+                        let speed = clamp_speed(self.speed);
+                        self.active_cues
+                            .retain(|i| position < cue_end(&cues[*i], speed));
+                    }
+                    let speed = clamp_speed(self.speed);
+                    let stretched_song_frame =
+                        if self.playing && self.keep_pitch && (speed - 1.0).abs() > 1e-6 {
+                            self.song.as_ref().map(|song| {
+                                self.stretcher.next_frame(
+                                    song,
+                                    self.position_ms - self.song_offset,
+                                    speed,
+                                )
+                            })
+                        } else {
+                            None
+                        };
+                    let song_fade = if self.seek_fade_active {
+                        self.seek_fade_pos += 1;
+                        let factor =
+                            (self.seek_fade_pos as f32 / self.seek_fade_frames as f32).min(1.0);
+                        if self.seek_fade_pos >= self.seek_fade_frames {
+                            self.seek_fade_active = false;
+                        }
+                        factor
+                    } else {
+                        1.0
+                    };
+
+                    if let Some(graph) = self.fx_graph.as_mut() {
+                        if self.playing {
+                            if let Some([sl, sr]) = stretched_song_frame {
+                                let g = self.song_gain * song_fade;
+                                graph.add_song_frame(frame_idx, sl * g, sr * g);
+                            } else if let Some(song) = &self.song {
+                                let src = (self.position_ms - self.song_offset)
+                                    * song.sample_rate as f64
+                                    / 1000.0;
+                                let g = self.song_gain * song_fade;
+                                graph.add_song_frame(
+                                    frame_idx,
+                                    song.sample(src, 0) * g,
+                                    song.sample(src, 1) * g,
+                                );
+                            }
+                            for index in &self.active_cues {
+                                let cue = &self.cues[*index];
+                                let elapsed = self.position_ms - cue.at_ms;
+                                if elapsed < 0.0 {
+                                    continue;
+                                }
+                                let mut source =
+                                    elapsed / speed * cue.clip.sample_rate as f64 / 1000.0;
+                                if let Some(end) = cue.end_ms {
+                                    if self.position_ms >= end {
+                                        continue;
+                                    }
+                                    let len = cue.clip.samples.len() / cue.clip.channels;
+                                    if len > 0 {
+                                        source %= len as f64;
+                                    }
+                                }
+                                graph.add_strip_frame(
+                                    cue.strip_id,
+                                    frame_idx,
+                                    cue.clip.sample(source, 0) * cue.gain,
+                                    cue.clip.sample(source, 1) * cue.gain,
+                                );
+                            }
+                        }
+                        for voice in self.voices.iter().chain(&self.listen) {
+                            graph.add_dry_frame(
+                                frame_idx,
+                                voice.clip.sample(voice.frame, 0) * voice.gain,
+                                voice.clip.sample(voice.frame, 1) * voice.gain,
+                            );
+                        }
+                        if has_live {
+                            graph.add_dry_frame(
+                                frame_idx,
+                                sanitize_live_sample(self.live_left[frame_idx]),
+                                sanitize_live_sample(self.live_right[frame_idx]),
+                            );
+                        }
+                    }
+
+                    for voice in self.voices.iter_mut().chain(&mut self.listen) {
+                        voice.frame += voice.clip.sample_rate as f64 / self.sample_rate as f64;
+                    }
+                    self.voices
+                        .retain(|v| v.frame < (v.clip.samples.len() / v.clip.channels) as f64);
+                    if self.listen.as_ref().is_some_and(|v| {
+                        v.frame >= (v.clip.samples.len() / v.clip.channels.max(1)) as f64
+                    }) {
+                        self.listen = None;
+                    }
+                    if self.playing {
+                        self.position_ms += self.speed * 1000.0 / self.sample_rate as f64;
+                    }
+                }
+
+                if let Some(graph) = self.fx_graph.as_mut() {
+                    graph.process_block(
+                        block_frames,
+                        self.playing,
+                        block_pos_ms,
+                        block_speed,
+                        self.hitsound_gain,
+                        &mut self.song_peak,
+                        &mut self.hitsound_peak,
+                    );
+                    let (master_l, master_r) = graph.master_channels();
+                    for (frame_idx, frame) in block.chunks_mut(out_channels).enumerate() {
+                        let l = master_l[frame_idx] * self.master_gain;
+                        let r = master_r[frame_idx] * self.master_gain;
+                        for (channel, value) in frame.iter_mut().enumerate() {
+                            if out_channels == 1 {
+                                *value = 0.5 * (l + r);
+                            } else if channel == 0 {
+                                *value = l;
+                            } else if channel == 1 {
+                                *value = r;
+                            } else {
+                                *value = 0.0;
+                            }
+                        }
+                        if self.limiter_enabled {
+                            self.limiter.process_frame(frame);
+                        } else {
+                            for value in frame.iter_mut() {
+                                *value = value.clamp(-1.0, 1.0);
+                            }
+                        }
+                    }
+                }
+                offset_frames += sub_frames;
+                continue;
+            }
             for (frame_idx, frame) in block.chunks_mut(out_channels).enumerate() {
                 if self.playing {
                     if !self.indexed {
@@ -1038,6 +1689,7 @@ fn collect_retired(slots: &mut Vec<Retired>) -> bool {
 
 const CMD_RING_CAPACITY: usize = 256;
 const RETIRE_LIVE_CAPACITY: usize = 64;
+const RETIRE_FX_CAPACITY: usize = 16;
 const MAX_COMMANDS_PER_BUFFER: usize = 64;
 
 /// Inclusive `[min, max]` requested buffer bounds (in milliseconds) per backend.
@@ -1084,6 +1736,7 @@ pub struct PreparedLoad {
 enum Command {
     Load(Schedule, Retired),
     SetLiveSource(Option<Box<dyn LiveAudioSource>>),
+    SetFxGraph(Option<Box<MixerFxGraph>>),
     Play(bool, u64),
     Seek(f64, u64),
     Audition(Arc<AudioClip>, f32),
@@ -1107,6 +1760,7 @@ pub(crate) struct AudioTelemetry {
     pub(crate) bus_peaks: CachePadded<AtomicU64>,
     pub(crate) underruns: CachePadded<AtomicU64>,
     pub(crate) observed_buffer_frames: CachePadded<AtomicU32>,
+    pub(crate) pdc_latency_samples: CachePadded<AtomicU32>,
 }
 
 const SPECTRUM_TAP_CAP: usize = 16_384;
@@ -1152,6 +1806,7 @@ impl SpectrumTap {
 struct EngineHandles {
     cmd_tx: SpscProducer<Command, CMD_RING_CAPACITY>,
     retire_live_rx: SpscConsumer<Box<dyn LiveAudioSource>, RETIRE_LIVE_CAPACITY>,
+    retire_fx_rx: SpscConsumer<Box<MixerFxGraph>, RETIRE_FX_CAPACITY>,
     telemetry: Arc<AudioTelemetry>,
     spectrum_tap: Arc<SpectrumTap>,
     clock_slot: Arc<ClockSnapshotSlot>,
@@ -1167,6 +1822,8 @@ fn build_render_parts(
     let (cmd_tx, cmd_rx) = spsc_ring::<Command, CMD_RING_CAPACITY>();
     let (retire_live_tx, retire_live_rx) =
         spsc_ring::<Box<dyn LiveAudioSource>, RETIRE_LIVE_CAPACITY>();
+    let (retire_fx_tx, retire_fx_rx) =
+        spsc_ring::<Box<MixerFxGraph>, RETIRE_FX_CAPACITY>();
     let (tap_tx, tap_rx) = spsc_ring::<f32, SPECTRUM_TAP_CAP>();
     let telemetry = telemetry.unwrap_or_else(|| Arc::new(AudioTelemetry::default()));
     let spectrum_tap = Arc::new(SpectrumTap {
@@ -1181,6 +1838,7 @@ fn build_render_parts(
         channels,
         cmd_rx,
         retire_live_tx,
+        retire_fx_tx,
         Arc::clone(&telemetry),
         Arc::clone(&spectrum_tap),
         tap_tx,
@@ -1192,6 +1850,7 @@ fn build_render_parts(
         EngineHandles {
             cmd_tx,
             retire_live_rx,
+            retire_fx_rx,
             telemetry,
             spectrum_tap,
             clock_slot,
@@ -1207,6 +1866,7 @@ pub struct AudioEngine {
     cmd_tx: Mutex<SpscProducer<Command, CMD_RING_CAPACITY>>,
     retirements: Mutex<Vec<Retired>>,
     retired_live_sources: Mutex<SpscConsumer<Box<dyn LiveAudioSource>, RETIRE_LIVE_CAPACITY>>,
+    retired_fx_graphs: Mutex<SpscConsumer<Box<MixerFxGraph>, RETIRE_FX_CAPACITY>>,
     auditions: Mutex<Vec<Arc<AudioClip>>>,
     listen: ListenSlot,
     telemetry: Arc<AudioTelemetry>,
@@ -1269,6 +1929,7 @@ impl AudioEngine {
                 cmd_tx: Mutex::new(handles.cmd_tx),
                 retirements: Mutex::new(Vec::new()),
                 retired_live_sources: Mutex::new(handles.retire_live_rx),
+                retired_fx_graphs: Mutex::new(handles.retire_fx_rx),
                 auditions: Mutex::new(Vec::new()),
                 listen: ListenSlot::default(),
                 telemetry: handles.telemetry,
@@ -1335,6 +1996,7 @@ impl AudioEngine {
             cmd_tx: Mutex::new(opened.payload.cmd_tx),
             retirements: Mutex::new(Vec::new()),
             retired_live_sources: Mutex::new(opened.payload.retire_live_rx),
+            retired_fx_graphs: Mutex::new(opened.payload.retire_fx_rx),
             auditions: Mutex::new(Vec::new()),
             listen: ListenSlot::default(),
             telemetry,
@@ -1455,6 +2117,7 @@ impl AudioEngine {
             effective_buffer_ms: fixed_buffer_ms,
             retirements: Mutex::new(Vec::new()),
             retired_live_sources: Mutex::new(handles.retire_live_rx),
+            retired_fx_graphs: Mutex::new(handles.retire_fx_rx),
             auditions: Mutex::new(Vec::new()),
             listen: ListenSlot::default(),
             cmd_tx: Mutex::new(handles.cmd_tx),
@@ -1473,10 +2136,15 @@ impl AudioEngine {
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         while live_rx.try_pop().is_some() {}
+        let mut fx_rx = self
+            .retired_fx_graphs
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        while fx_rx.try_pop().is_some() {}
     }
 
     fn send_command(&self, cmd: Command, critical: bool) {
-        send_command_with_retry(&self.cmd_tx, &self.retired_live_sources, cmd, critical);
+        send_command_with_retry(&self.cmd_tx, &self.retired_live_sources, &self.retired_fx_graphs, cmd, critical);
     }
 
     pub fn devices() -> Vec<String> {
@@ -1531,6 +2199,23 @@ impl AudioEngine {
     /// Detaches any active live audio source.
     pub fn clear_live_source(&self) {
         self.set_live_source(None);
+    }
+
+    /// Installs or replaces the multi-strip FX/PDC routing graph.
+    ///
+    /// Previous graphs are returned over a bounded SPSC retirement ring and dropped off-thread.
+    pub fn set_fx_graph(&self, graph: Option<Box<MixerFxGraph>>) {
+        self.drain_retired_live_sources();
+        self.send_command(Command::SetFxGraph(graph), true);
+    }
+
+    /// Detaches the active multi-strip FX/PDC routing graph.
+    pub fn clear_fx_graph(&self) {
+        self.set_fx_graph(None);
+    }
+
+    pub fn pdc_latency_samples(&self) -> u32 {
+        self.telemetry.pdc_latency_samples.load(Ordering::Relaxed)
     }
 
     /// Plays `clip` in place of the current Listen clip; `None` stops Listen.
@@ -1664,6 +2349,10 @@ impl AudioTelemetryHandle {
     pub fn underruns(&self) -> u64 {
         self.0.underruns.load(Ordering::Relaxed)
     }
+
+    pub fn pdc_latency_samples(&self) -> u32 {
+        self.0.pdc_latency_samples.load(Ordering::Relaxed)
+    }
 }
 
 #[inline]
@@ -1684,11 +2373,15 @@ fn unpack_f32_pair(packed: u64) -> (f32, f32) {
 fn send_command_with_retry(
     cmd_tx: &Mutex<SpscProducer<Command, CMD_RING_CAPACITY>>,
     retire_live_rx: &Mutex<SpscConsumer<Box<dyn LiveAudioSource>, RETIRE_LIVE_CAPACITY>>,
+    retire_fx_rx: &Mutex<SpscConsumer<Box<MixerFxGraph>, RETIRE_FX_CAPACITY>>,
     mut cmd: Command,
     critical: bool,
 ) {
     if let Ok(mut live_rx) = retire_live_rx.lock() {
         while live_rx.try_pop().is_some() {}
+    }
+    if let Ok(mut fx_rx) = retire_fx_rx.lock() {
+        while fx_rx.try_pop().is_some() {}
     }
     for attempt in 0..32 {
         let pushed = {
@@ -1716,6 +2409,7 @@ struct StreamRender {
     mixer: Mixer,
     receive: SpscConsumer<Command, CMD_RING_CAPACITY>,
     retire_live: SpscProducer<Box<dyn LiveAudioSource>, RETIRE_LIVE_CAPACITY>,
+    retire_fx: SpscProducer<Box<MixerFxGraph>, RETIRE_FX_CAPACITY>,
     telemetry: Arc<AudioTelemetry>,
     spectrum_tap: Arc<SpectrumTap>,
     tap_tx: SpscProducer<f32, SPECTRUM_TAP_CAP>,
@@ -1737,6 +2431,7 @@ impl StreamRender {
         channels: usize,
         receive: SpscConsumer<Command, CMD_RING_CAPACITY>,
         retire_live: SpscProducer<Box<dyn LiveAudioSource>, RETIRE_LIVE_CAPACITY>,
+        retire_fx: SpscProducer<Box<MixerFxGraph>, RETIRE_FX_CAPACITY>,
         telemetry: Arc<AudioTelemetry>,
         spectrum_tap: Arc<SpectrumTap>,
         tap_tx: SpscProducer<f32, SPECTRUM_TAP_CAP>,
@@ -1749,6 +2444,7 @@ impl StreamRender {
             mixer: Mixer::new(rate),
             receive,
             retire_live,
+            retire_fx,
             telemetry,
             spectrum_tap,
             tap_tx,
@@ -1815,6 +2511,11 @@ impl StreamRender {
                         let _ = self.retire_live.try_push(old);
                     }
                 }
+                Command::SetFxGraph(graph) => {
+                    if let Some(old) = self.mixer.set_fx_graph(graph) {
+                        let _ = self.retire_fx.try_push(old);
+                    }
+                }
                 Command::Play(on, seq) => {
                     self.applied_seq = self.applied_seq.max(seq);
                     let was_playing = self.mixer.playing;
@@ -1825,10 +2526,14 @@ impl StreamRender {
                     if on && !was_playing {
                         self.mixer.seek_fade_pos = 0;
                         self.mixer.seek_fade_active = true;
-                    } else if !on && was_playing
-                        && let Some(source) = self.mixer.live_source.as_mut() {
+                    } else if !on && was_playing {
+                        if let Some(source) = self.mixer.live_source.as_mut() {
                             source.reset();
                         }
+                        if let Some(graph) = self.mixer.fx_graph.as_mut() {
+                            graph.reset();
+                        }
+                    }
                 }
                 Command::Seek(ms, seq) => {
                     self.applied_seq = self.applied_seq.max(seq);
@@ -1949,6 +2654,9 @@ impl StreamRender {
             .store(phase_corr.to_bits(), Ordering::Relaxed);
         let bus_packed = pack_f32_pair(self.mixer.song_peak, self.mixer.hitsound_peak);
         self.telemetry.bus_peaks.store(bus_packed, Ordering::Relaxed);
+        self.telemetry
+            .pdc_latency_samples
+            .store(self.mixer.pdc_latency_samples(), Ordering::Relaxed);
 
         let synced = self.applied_seq >= self.telemetry.command_seq.load(Ordering::Acquire);
         if synced {
@@ -2030,13 +2738,25 @@ impl RtBenchHarness {
         let _ = self.handles.cmd_tx.try_push(Command::SetLiveSource(source));
     }
 
+    pub fn set_fx_graph(&mut self, graph: Option<Box<MixerFxGraph>>) {
+        let _ = self.handles.cmd_tx.try_push(Command::SetFxGraph(graph));
+    }
+
     pub fn fill(&mut self, out: &mut [f32]) {
         self.render.fill(out);
     }
 
     pub fn drain_retired(&mut self) {
         while self.handles.retire_live_rx.try_pop().is_some() {}
+        while self.handles.retire_fx_rx.try_pop().is_some() {}
         self.retirements.clear();
+    }
+
+    pub fn pdc_latency_samples(&self) -> u32 {
+        self.handles
+            .telemetry
+            .pdc_latency_samples
+            .load(Ordering::Relaxed)
     }
 
     pub fn stereo_peaks(&self) -> (f32, f32) {
@@ -2176,8 +2896,11 @@ mod callback_benchmark {
         let (tx, mut rx) = spsc_ring::<Command, CMD_RING_CAPACITY>();
         let (_retire_tx, retire_rx) =
             spsc_ring::<Box<dyn LiveAudioSource>, RETIRE_LIVE_CAPACITY>();
+        let (_retire_fx_tx, retire_fx_rx) =
+            spsc_ring::<Box<MixerFxGraph>, RETIRE_FX_CAPACITY>();
         let tx = Arc::new(Mutex::new(tx));
         let retire_rx = Mutex::new(retire_rx);
+        let retire_fx_rx = Mutex::new(retire_fx_rx);
         {
             let mut guard = tx.lock().unwrap();
             for i in 0..CMD_RING_CAPACITY {
@@ -2198,7 +2921,7 @@ mod callback_benchmark {
                 }
             }
         });
-        send_command_with_retry(&tx, &retire_rx, Command::Play(false, 99), true);
+        send_command_with_retry(&tx, &retire_rx, &retire_fx_rx, Command::Play(false, 99), true);
         reader.join().unwrap();
         assert!(seen_stop.load(Ordering::Acquire));
     }
@@ -2309,6 +3032,7 @@ mod callback_benchmark {
                 end_ms: (i % 69 == 0).then_some(i as f64 + 92.0),
                 clip: clip.clone(),
                 gain: 1.0,
+                strip_id: 0,
             })
             .collect();
         let index = CueIndex::build(&cues, 0.75);
@@ -2338,6 +3062,7 @@ mod callback_benchmark {
                 end_ms: None,
                 clip: clip.clone(),
                 gain: 1.0,
+                strip_id: 0,
             })
             .collect();
         let cues = std::mem::take(&mut mixer.cues);
@@ -2535,6 +3260,7 @@ mod limiter_tests {
                 sample_rate: 1000,
             }),
             gain: 1.0,
+            strip_id: 0,
         }];
         let mut out = vec![0.0; 600];
         mixer.render(&mut out, 2);
@@ -2990,5 +3716,188 @@ mod decode_tests {
         assert_eq!((n, sr), (512, 48_000));
         // Inverted L + (-L) sums cleanly to zero mono signal.
         assert!(drained.iter().all(|v| v.abs() < 1e-6));
+    }
+
+    #[test]
+    fn mixer_fx_graph_pdc_aligns_512_sample_insert_with_dry_cue_and_supports_bypass_wet_and_latency_change() {
+        use std::sync::atomic::AtomicU32;
+
+        struct DelayedGainEffect {
+            delay: pdc::DelayLine,
+            latency: u32,
+            pending_latency: Arc<AtomicU32>,
+            latency_dirty: Arc<AtomicBool>,
+            changed_notify: bool,
+            bypassed: Arc<AtomicBool>,
+            wet_bits: Arc<AtomicU32>,
+            gain: f32,
+        }
+
+        impl AudioEffectProcessor for DelayedGainEffect {
+            fn process_block(
+                &mut self,
+                left: &mut [f32],
+                right: &mut [f32],
+                _sample_rate: u32,
+                _is_playing: bool,
+                _position_ms: f64,
+                _speed: f64,
+                bypassed: bool,
+            ) {
+                if self.latency_dirty.swap(false, Ordering::AcqRel) {
+                    let next = self.pending_latency.load(Ordering::Acquire);
+                    if next != self.latency {
+                        self.latency = next;
+                        self.delay.set_delay_crossfade(next as usize);
+                        self.changed_notify = true;
+                    }
+                }
+                self.delay.process_block(left, right);
+                if !bypassed {
+                    for (l, r) in left.iter_mut().zip(right.iter_mut()) {
+                        *l *= self.gain;
+                        *r *= self.gain;
+                    }
+                }
+            }
+
+            fn latency_samples(&self) -> u32 {
+                self.latency
+            }
+
+            fn wet_dry(&self) -> f32 {
+                f32::from_bits(self.wet_bits.load(Ordering::Relaxed))
+            }
+
+            fn is_bypassed(&self) -> bool {
+                self.bypassed.load(Ordering::Relaxed)
+            }
+
+            fn take_latency_changed(&mut self) -> bool {
+                std::mem::take(&mut self.changed_notify)
+            }
+
+            fn reset(&mut self) {
+                self.delay.reset();
+            }
+        }
+
+        let sr = 48_000;
+        let bypassed = Arc::new(AtomicBool::new(false));
+        let wet_bits = Arc::new(AtomicU32::new(1.0_f32.to_bits()));
+        let pending_latency = Arc::new(AtomicU32::new(512));
+        let latency_dirty = Arc::new(AtomicBool::new(false));
+        let mut init_dl = pdc::DelayLine::new(2048, sr);
+        init_dl.set_delay_immediate(512);
+        let fx = DelayedGainEffect {
+            delay: init_dl,
+            latency: 512,
+            pending_latency: Arc::clone(&pending_latency),
+            latency_dirty: Arc::clone(&latency_dirty),
+            changed_notify: false,
+            bypassed: Arc::clone(&bypassed),
+            wet_bits: Arc::clone(&wet_bits),
+            gain: 0.5,
+        };
+
+        let graph = MixerFxGraph::new(
+            sr,
+            vec![
+                FxStripSpec {
+                    id: STRIP_DRY,
+                    inserts: vec![],
+                    outputs: vec![(STRIP_HITSOUNDS, 1.0)],
+                },
+                FxStripSpec {
+                    id: STRIP_LANE_BASE,
+                    inserts: vec![FxInsertSpec::new(Box::new(fx))],
+                    outputs: vec![(STRIP_HITSOUNDS, 1.0)],
+                },
+                FxStripSpec {
+                    id: STRIP_HITSOUNDS,
+                    inserts: vec![],
+                    outputs: vec![(STRIP_MASTER, 1.0)],
+                },
+                FxStripSpec {
+                    id: STRIP_SONG,
+                    inserts: vec![],
+                    outputs: vec![(STRIP_MASTER, 1.0)],
+                },
+                FxStripSpec {
+                    id: STRIP_MASTER,
+                    inserts: vec![],
+                    outputs: vec![],
+                },
+            ],
+        )
+        .unwrap();
+        assert_eq!(graph.total_latency_samples(), 512);
+
+        let mut impulse = vec![0.0_f32; 2048];
+        impulse[0] = 0.4;
+        let clip = Arc::new(AudioClip {
+            samples: impulse,
+            channels: 1,
+            sample_rate: sr,
+        });
+
+        let mut mixer = Mixer::new(sr);
+        mixer.limiter_enabled = false;
+        mixer.set_fx_graph(Some(Box::new(graph)));
+        mixer.cues = vec![
+            ScheduledSound {
+                at_ms: 0.0,
+                end_ms: None,
+                clip: clip.clone(),
+                gain: 1.0,
+                strip_id: STRIP_DRY,
+            },
+            ScheduledSound {
+                at_ms: 0.0,
+                end_ms: None,
+                clip: clip.clone(),
+                gain: 1.0,
+                strip_id: STRIP_LANE_BASE,
+            },
+        ];
+        mixer.playing = true;
+        let mut out = vec![0.0_f32; 1024 * 2];
+        mixer.render(&mut out, 2);
+
+        // Dry (0.4) + 0.5x wet (0.2) both arrive at exact sample 512 => 0.6!
+        let peak_sample = (0..1024)
+            .find(|&i| out[i * 2] > 0.1)
+            .expect("aligned impulse at 512");
+        assert_eq!(peak_sample, 512);
+        assert!((out[512 * 2] - 0.6).abs() < 1e-5, "got {}", out[512 * 2]);
+
+        // Soft bypass: keeps sample 512 alignment while restoring unity dry gain (0.4 + 0.4 = 0.8).
+        bypassed.store(true, Ordering::Relaxed);
+        mixer.seek(0.0);
+        out.fill(0.0);
+        mixer.render(&mut out, 2);
+        assert!((out[512 * 2] - 0.8).abs() < 1e-5, "bypassed got {}", out[512 * 2]);
+
+        // 50% wet/dry blend: 0.4 (dry cue) + (0.5*0.4 + 0.5*0.2) = 0.4 + 0.3 = 0.7 at sample 512.
+        bypassed.store(false, Ordering::Relaxed);
+        wet_bits.store(0.5_f32.to_bits(), Ordering::Relaxed);
+        mixer.seek(0.0);
+        out.fill(0.0);
+        mixer.render(&mut out, 2);
+        assert!((out[512 * 2] - 0.7).abs() < 1e-5, "wet50 got {}", out[512 * 2]);
+
+        // Dynamic latency change 512 -> 256 crossfades without NaNs and settles at 256.
+        wet_bits.store(1.0_f32.to_bits(), Ordering::Relaxed);
+        pending_latency.store(256, Ordering::Release);
+        latency_dirty.store(true, Ordering::Release);
+        let mut warm = vec![0.0_f32; 1024 * 2];
+        mixer.render(&mut warm, 2);
+        assert!(warm.iter().all(|s| s.is_finite()));
+        assert_eq!(mixer.pdc_latency_samples(), 256);
+
+        mixer.seek(0.0);
+        out.fill(0.0);
+        mixer.render(&mut out, 2);
+        assert!((out[256 * 2] - 0.6).abs() < 1e-5, "relocated got {}", out[256 * 2]);
     }
 }

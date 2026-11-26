@@ -17,6 +17,7 @@ fn audio_clock_pause_seek_and_a_cue_use_output_frames() {
         end_ms: None,
         clip: clip(vec![0.3, 0.4]),
         gain: 1.0,
+        strip_id: 0,
     }];
     m.playing = true;
     let mut output = [0.0; 4];
@@ -52,12 +53,14 @@ fn seeking_into_overlapping_and_looped_samples_reconstructs_active_audio() {
             end_ms: None,
             clip: clip(vec![0.1; 10]),
             gain: 1.0,
+            strip_id: 0,
         },
         ScheduledSound {
             at_ms: 2.0,
             end_ms: Some(8.0),
             clip: clip(vec![0.2, 0.3]),
             gain: 1.0,
+            strip_id: 0,
         },
     ];
     m.seek(5.0);

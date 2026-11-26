@@ -106,6 +106,7 @@ export function sameUiView(a, b) {
     !!a.drumVst?.enabled === !!b.drumVst?.enabled &&
     (a.drumVst?.pluginName || "") === (b.drumVst?.pluginName || "") &&
     (a.drumVst?.mappedLanes ?? 0) === (b.drumVst?.mappedLanes ?? 0) &&
+    (a.mixerFx?.revision ?? 0) === (b.mixerFx?.revision ?? 0) &&
     sameStrings(a.warnings, b.warnings) &&
     sameProblems(a.outputProblems, b.outputProblems) &&
     sameStrings(a.recent, b.recent) &&
