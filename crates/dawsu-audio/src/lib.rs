@@ -1293,14 +1293,14 @@ impl Mixer {
                                 .partition_point(|cue| cue.at_ms <= self.position_ms);
                             if self.cue_index.leaves == 0 {
                                 self.active_cues.extend((0..self.next_cue).filter(|i| {
-                                    self.position_ms < cue_end(&self.cues[*i], self.speed)
+                                    self.position_ms < cue_end(&self.cues[*i], block_speed)
                                 }));
                             } else {
                                 self.cue_index.overlaps(
                                     &self.cues,
                                     self.next_cue,
                                     self.position_ms,
-                                    self.speed,
+                                    block_speed,
                                     &mut self.active_cues,
                                 );
                             }
@@ -1411,7 +1411,7 @@ impl Mixer {
                         self.listen = None;
                     }
                     if self.playing {
-                        self.position_ms += self.speed * 1000.0 / self.sample_rate as f64;
+                        self.position_ms += block_speed * 1000.0 / self.sample_rate.max(1) as f64;
                     }
                 }
 
@@ -1463,14 +1463,14 @@ impl Mixer {
                             // Direct mixer users may supply their own cue vector.
                             self.active_cues
                                 .extend((0..self.next_cue).filter(|i| {
-                                    self.position_ms < cue_end(&self.cues[*i], self.speed)
+                                    self.position_ms < cue_end(&self.cues[*i], block_speed)
                                 }));
                         } else {
                             self.cue_index.overlaps(
                                 &self.cues,
                                 self.next_cue,
                                 self.position_ms,
-                                self.speed,
+                                block_speed,
                                 &mut self.active_cues,
                             );
                         }
@@ -1596,7 +1596,7 @@ impl Mixer {
                     self.listen = None;
                 }
                 if self.playing {
-                    self.position_ms += self.speed * 1000.0 / self.sample_rate as f64;
+                    self.position_ms += block_speed * 1000.0 / self.sample_rate.max(1) as f64;
                 }
             }
             offset_frames += sub_frames;
@@ -3899,5 +3899,99 @@ mod decode_tests {
         out.fill(0.0);
         mixer.render(&mut out, 2);
         assert!((out[256 * 2] - 0.6).abs() < 1e-5, "relocated got {}", out[256 * 2]);
+    }
+
+    #[test]
+    fn mixer_render_clamps_out_of_range_and_nan_speed() {
+        struct UnityFx;
+        impl AudioEffectProcessor for UnityFx {
+            fn process_block(
+                &mut self,
+                _left: &mut [f32],
+                _right: &mut [f32],
+                _sample_rate: u32,
+                _is_playing: bool,
+                _position_ms: f64,
+                _speed: f64,
+                _bypassed: bool,
+            ) {
+            }
+        }
+
+        let sr = 48_000u32;
+        let frames = 480usize; // 10.0 ms at 48 kHz
+        let mut out = vec![0.0_f32; frames * 2];
+
+        // Direct path: out-of-range high speed clamps to 2.0x; NaN falls back to 1.0x.
+        let mut direct = Mixer::new(sr);
+        direct.playing = true;
+        direct.speed = 4.0;
+        direct.render(&mut out, 2);
+        assert!(
+            (direct.position_ms - 20.0).abs() < 1e-6,
+            "expected clamped 2.0x advance (20.0 ms), got {}",
+            direct.position_ms
+        );
+
+        direct.seek(0.0);
+        direct.speed = f64::NAN;
+        out.fill(0.0);
+        direct.render(&mut out, 2);
+        assert!(
+            (direct.position_ms - 10.0).abs() < 1e-6,
+            "expected NaN fallback 1.0x advance (10.0 ms), got {}",
+            direct.position_ms
+        );
+        assert!(out.iter().all(|s| s.is_finite()));
+
+        // MixerFxGraph path: identical clamped position advance and finite output.
+        let graph = MixerFxGraph::new(
+            sr,
+            vec![
+                FxStripSpec {
+                    id: STRIP_DRY,
+                    inserts: vec![],
+                    outputs: vec![(STRIP_HITSOUNDS, 1.0)],
+                },
+                FxStripSpec {
+                    id: STRIP_SONG,
+                    inserts: vec![],
+                    outputs: vec![(STRIP_MASTER, 1.0)],
+                },
+                FxStripSpec {
+                    id: STRIP_HITSOUNDS,
+                    inserts: vec![],
+                    outputs: vec![(STRIP_MASTER, 1.0)],
+                },
+                FxStripSpec {
+                    id: STRIP_MASTER,
+                    inserts: vec![FxInsertSpec::new(Box::new(UnityFx))],
+                    outputs: vec![],
+                },
+            ],
+        )
+        .unwrap();
+        let mut fx_mixer = Mixer::new(sr);
+        fx_mixer.set_fx_graph(Some(Box::new(graph)));
+        fx_mixer.playing = true;
+        fx_mixer.speed = 4.0;
+        out.fill(0.0);
+        fx_mixer.render(&mut out, 2);
+        assert!(
+            (fx_mixer.position_ms - 20.0).abs() < 1e-6,
+            "expected FX clamped 2.0x advance (20.0 ms), got {}",
+            fx_mixer.position_ms
+        );
+
+        fx_mixer.seek(0.0);
+        fx_mixer.speed = f64::NAN;
+        out.fill(0.0);
+        fx_mixer.render(&mut out, 2);
+        assert!(
+            (fx_mixer.position_ms - 10.0).abs() < 1e-6,
+            "expected FX NaN fallback 1.0x advance (10.0 ms), got {}",
+            fx_mixer.position_ms
+        );
+        assert!(out.iter().all(|s| s.is_finite()));
     }
 }

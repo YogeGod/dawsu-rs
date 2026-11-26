@@ -557,3 +557,83 @@ test("inline keysounds CSS collapses the ruler row and pins workspace without mo
   assert.match(css, /#editor-arrange\.keysounds-active\s*>\s*#keysounds-workspace\s*\{\s*grid-row:\s*2;/);
   assert.match(css, /\.arrange\.keysounds-active\s*>\s*\.ruler/);
 });
+
+test("tick: true telemetry pull updates stateRev before early return so steady telemetry does not repoll", async () => {
+  const calls = [];
+  let createdChannel = null;
+  let editorViewCount = 0;
+  class FakeChannel {
+    constructor() {
+      this.onmessage = null;
+      createdChannel = this;
+    }
+  }
+  const element = () => ({
+    clientWidth: 200, clientHeight: 80, scrollTop: 0, dataset: {},
+    style: { setProperty() {} }, children: [],
+    addEventListener() {}, append() {}, prepend() {}, setAttribute() {}, replaceChildren() {},
+    matches: () => false, closest: () => null,
+    getContext: () => new Proxy({}, { get: () => () => {} }),
+  });
+  const elements = new Map();
+  const get = id => (elements.has(id) ? elements : elements.set(id, element())).get(id);
+  const context = createContext({
+    document: { getElementById: get, createElement: element, querySelectorAll: () => [], addEventListener() {} },
+    window: {
+      devicePixelRatio: 1,
+      dawsuUi: { update() {}, lanes() {}, inspector() {}, browser() {}, mixer() {}, menu() {}, viewport() {}, laneOptions() {} },
+      __TAURI__: {
+        core: {
+          Channel: FakeChannel,
+          invoke: async (name) => {
+            calls.push(name);
+            if (name === "editor_view") {
+              editorViewCount++;
+              if (editorViewCount === 1) {
+                return {
+                  busy: false, hasDocument: true, playing: true, position: 1000, duration: 5000,
+                  stateRev: 6, tickRev: 4,
+                  scene: { path: "Map.osu", previewKey: 1, viewStart: 0, zoom: 0.2, rowHeight: 30, lanes: [], moments: [], sections: [] },
+                };
+              }
+              return {
+                tick: true, rev: 4, stateRev: 7, playing: true, busy: false, position: 1100,
+              };
+            }
+            return {};
+          },
+        },
+        event: { listen() {} },
+      },
+    },
+    ResizeObserver: class { observe() {} },
+    requestAnimationFrame() {},
+    setInterval() {},
+    performance: { now: () => 1000 },
+    console,
+  });
+  bootEditor(context, { autoStart: true });
+  await context.pending;
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.ok(createdChannel && typeof createdChannel.onmessage === "function");
+
+  const frame = new ArrayBuffer(64);
+  const dv = new DataView(frame);
+  dv.setUint8(0, 0x01);
+  dv.setUint8(1, 0x01 | 0x04); // playing + has_document
+  dv.setUint16(2, 4, true);
+  dv.setUint16(4, 4, true);
+  dv.setUint16(6, 0, true);
+  dv.setBigUint64(8, 7n, true);
+  dv.setFloat64(16, 1100, true);
+
+  createdChannel.onmessage(frame);
+  await new Promise(resolve => setTimeout(resolve, 15));
+  assert.equal(editorViewCount, 2, "stateRev 6 -> 7 triggers one sync pull");
+  assert.equal(context.view.tick, undefined);
+
+  dv.setFloat64(16, 1150, true);
+  createdChannel.onmessage(frame);
+  await new Promise(resolve => setTimeout(resolve, 15));
+  assert.equal(editorViewCount, 2, "subsequent frame with stateRev 7 must not re-poll after tick response");
+});

@@ -554,6 +554,7 @@ export function attachIpc(ctx) {
     } else if (state.pendingSeek && next.scene && next.scene.path !== state.pendingSeek.path) {
       state.pendingSeek = null;
     }
+    if (typeof next.stateRev === "number") state.lastTelemetryStateRev = next.stateRev;
     if (next.tick === true) {
       const { tick: _tick, ...tickFields } = next;
       const merged = { ...state.view, ...tickFields };
@@ -575,7 +576,6 @@ export function attachIpc(ctx) {
       (Boolean(before.stemActive) !== Boolean(next.stemActive)) ||
       ((before.waveformRevision ?? 0) !== (next.waveformRevision ?? 0));
     if (waveformChanged) waveformFetchKey = null;
-    if (typeof next.stateRev === "number") state.lastTelemetryStateRev = next.stateRev;
     state.view = next;
     if (!heldPendingSeek) ctx.anchorPlayhead(drawn);
     if (state.view.tool !== previousTool) ctx.refreshToolCursor();

@@ -171,6 +171,7 @@ impl Application {
         self.preferences = preferences;
         self.error = None;
         self.sync_audio();
+        self.push_mixer_fx_graph();
         self.seek(cursor);
         self.cycle_changed();
         self.gains_changed();

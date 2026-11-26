@@ -647,6 +647,12 @@ impl MixerFxManager {
         }
     }
 
+    pub(crate) fn unload_slots_live(&mut self, ids: &[String], vst3: &mut Vst3Manager) {
+        for id in ids {
+            self.unload_slot_live(id, vst3);
+        }
+    }
+
     fn sync_live_slot_params(
         &mut self,
         slot: &FxSlotConfig,
@@ -757,7 +763,7 @@ impl MixerFxManager {
         vst3: &mut Vst3Manager,
         sample_rate_hz: u32,
         restore_state: bool,
-    ) {
+    ) -> Vec<String> {
         let mut desired: BTreeMap<String, FxSlotConfig> = BTreeMap::new();
         for slots in self.session.strips.values() {
             for slot in slots {
@@ -766,6 +772,7 @@ impl MixerFxManager {
         }
 
         let existing_ids: Vec<String> = self.live.keys().cloned().collect();
+        let mut stale_ids = Vec::new();
         for id in existing_ids {
             let keep = desired.get(&id).is_some_and(|slot| {
                 self.live.get(&id).is_some_and(|live| {
@@ -773,18 +780,24 @@ impl MixerFxManager {
                 })
             });
             if !keep {
-                self.unload_slot_live(&id, vst3);
+                stale_ids.push(id);
             }
         }
 
         for slot in desired.values() {
-            if self.live.contains_key(&slot.slot_id) {
+            let is_stale_replacement = stale_ids.iter().any(|s| s == &slot.slot_id);
+            if self.live.contains_key(&slot.slot_id) && !is_stale_replacement {
                 self.sync_live_slot_params(slot, vst3, restore_state);
             } else {
+                if is_stale_replacement {
+                    self.unload_slot_live(&slot.slot_id, vst3);
+                    stale_ids.retain(|s| s != &slot.slot_id);
+                }
                 self.spawn_slot_live(slot, vst3, sample_rate_hz);
             }
         }
         self.rebuild_lane_strip_ids();
+        stale_ids
     }
 
     pub(crate) fn unload_all(&mut self, vst3: &mut Vst3Manager) {
@@ -956,6 +969,9 @@ impl Application {
     }
 
     pub(crate) fn restore_mixer_fx_from_session(&mut self, saved: Option<MixerFxSession>) {
+        if let Some(a) = &self.audio {
+            a.clear_fx_graph();
+        }
         self.mixer_fx.unload_all(&mut self.vst3);
         let Some(mut session) = saved else {
             self.push_mixer_fx_graph();
@@ -978,15 +994,18 @@ impl Application {
         self.mixer_fx.next_slot_seq = max_seq;
         self.mixer_fx.session = session;
         let sr = self.live_sample_rate();
-        self.mixer_fx.reconcile_live(&mut self.vst3, sr, true);
+        let stale = self.mixer_fx.reconcile_live(&mut self.vst3, sr, true);
         self.mixer_fx.revision = self.mixer_fx.revision.wrapping_add(1);
         self.push_mixer_fx_graph();
+        self.mixer_fx.unload_slots_live(&stale, &mut self.vst3);
         self.bump_view_revision();
     }
 
-    fn finish_mixer_fx_mutation(&mut self, resync_cues: bool) -> MixerFxSnapshot {
+    fn finish_mixer_fx_mutation(&mut self, rebuild_graph: bool, resync_cues: bool) -> MixerFxSnapshot {
         self.mixer_fx.revision = self.mixer_fx.revision.wrapping_add(1);
-        self.push_mixer_fx_graph();
+        if rebuild_graph {
+            self.push_mixer_fx_graph();
+        }
         if resync_cues {
             self.sync_audio();
         }
@@ -1065,7 +1084,7 @@ impl Application {
             .or_default()
             .push(stored);
         self.mixer_fx.rebuild_lane_strip_ids();
-        Ok(self.finish_mixer_fx_mutation(true))
+        Ok(self.finish_mixer_fx_mutation(true, true))
     }
 
     pub fn mixer_fx_remove_insert(
@@ -1091,9 +1110,10 @@ impl Application {
                 self.mixer_fx.session.strips.remove(&strip_key);
             }
         }
-        self.mixer_fx.unload_slot_live(slot_id, &mut self.vst3);
         self.mixer_fx.rebuild_lane_strip_ids();
-        Ok(self.finish_mixer_fx_mutation(true))
+        self.push_mixer_fx_graph();
+        self.mixer_fx.unload_slot_live(slot_id, &mut self.vst3);
+        Ok(self.finish_mixer_fx_mutation(false, true))
     }
 
     pub fn mixer_fx_move_insert(
@@ -1128,7 +1148,7 @@ impl Application {
             let item = slots.remove(from_idx);
             slots.insert(dest, item);
         }
-        Ok(self.finish_mixer_fx_mutation(false))
+        Ok(self.finish_mixer_fx_mutation(true, false))
     }
 
     pub fn mixer_fx_set_bypass(
@@ -1152,7 +1172,7 @@ impl Application {
         self.mixer_fx.push_undo(before);
         self.mixer_fx
             .sync_live_slot_params(&updated, &mut self.vst3, false);
-        Ok(self.finish_mixer_fx_mutation(false))
+        Ok(self.finish_mixer_fx_mutation(false, false))
     }
 
     pub fn mixer_fx_set_wet_dry(
@@ -1181,7 +1201,7 @@ impl Application {
         self.mixer_fx.push_undo(before);
         self.mixer_fx
             .sync_live_slot_params(&updated, &mut self.vst3, false);
-        Ok(self.finish_mixer_fx_mutation(false))
+        Ok(self.finish_mixer_fx_mutation(false, false))
     }
 
     pub fn mixer_fx_switch_ab(
@@ -1221,7 +1241,7 @@ impl Application {
         self.mixer_fx.push_undo(before);
         self.mixer_fx
             .sync_live_slot_params(&updated, &mut self.vst3, true);
-        Ok(self.finish_mixer_fx_mutation(false))
+        Ok(self.finish_mixer_fx_mutation(false, false))
     }
 
     pub fn mixer_fx_copy_ab(
@@ -1250,7 +1270,7 @@ impl Application {
             }
         }
         self.mixer_fx.push_undo(before);
-        Ok(self.finish_mixer_fx_mutation(false))
+        Ok(self.finish_mixer_fx_mutation(false, false))
     }
 
     pub fn mixer_fx_open_editor(
@@ -1324,7 +1344,7 @@ impl Application {
         }
         slot.pinned = pinned;
         self.mixer_fx.push_undo(before);
-        Ok(self.finish_mixer_fx_mutation(false))
+        Ok(self.finish_mixer_fx_mutation(false, false))
     }
 
     pub fn mixer_fx_undo(&mut self) -> Result<MixerFxSnapshot, String> {
@@ -1335,8 +1355,10 @@ impl Application {
         let current = std::mem::replace(&mut self.mixer_fx.session, prev);
         self.mixer_fx.redo_stack.push(current);
         let sr = self.live_sample_rate();
-        self.mixer_fx.reconcile_live(&mut self.vst3, sr, true);
-        Ok(self.finish_mixer_fx_mutation(true))
+        let stale = self.mixer_fx.reconcile_live(&mut self.vst3, sr, true);
+        self.push_mixer_fx_graph();
+        self.mixer_fx.unload_slots_live(&stale, &mut self.vst3);
+        Ok(self.finish_mixer_fx_mutation(false, true))
     }
 
     pub fn mixer_fx_redo(&mut self) -> Result<MixerFxSnapshot, String> {
@@ -1350,8 +1372,10 @@ impl Application {
         }
         self.mixer_fx.undo_stack.push_back(current);
         let sr = self.live_sample_rate();
-        self.mixer_fx.reconcile_live(&mut self.vst3, sr, true);
-        Ok(self.finish_mixer_fx_mutation(true))
+        let stale = self.mixer_fx.reconcile_live(&mut self.vst3, sr, true);
+        self.push_mixer_fx_graph();
+        self.mixer_fx.unload_slots_live(&stale, &mut self.vst3);
+        Ok(self.finish_mixer_fx_mutation(false, true))
     }
 
     #[cfg(test)]
@@ -1665,6 +1689,58 @@ Version: Diff
         assert_eq!(restored.strips["master"][0].slot_id, id3);
         assert!(restored.strips["master"][1].pinned);
         assert_eq!(restored.total_pdc_samples, 1536);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn mixer_fx_param_edits_avoid_respawn_and_remove_undo_unload_stale_slots() {
+        let (root, osu) = make_temp_mapset("lifecycle");
+        let mock = Arc::new(Mutex::new(MockHostState::new(256)));
+        let mut app = open_test_app(&root, &osu, Arc::clone(&mock));
+
+        let s1 = app
+            .mixer_fx_add_insert("master", "C:/Plugins/Eq.vst3".into(), None, Some("EQ".into()))
+            .unwrap();
+        let id1 = s1.strips["master"][0].slot_id.clone();
+        let s2 = app
+            .mixer_fx_add_insert("master", "C:/Plugins/Lim.vst3".into(), None, Some("Lim".into()))
+            .unwrap();
+        let id2 = s2.strips["master"][1].slot_id.clone();
+
+        let count_events = |prefix: &str| {
+            mock.lock()
+                .unwrap()
+                .events
+                .iter()
+                .filter(|ev| ev.starts_with(prefix))
+                .count()
+        };
+        assert_eq!(count_events("spawn:"), 2);
+        assert_eq!(count_events("unload:"), 0);
+
+        // Parameter/pin/AB mutations keep live slots running without respawning or unloading.
+        app.mixer_fx_set_bypass("master", &id1, true).unwrap();
+        app.mixer_fx_set_wet_dry("master", &id1, 0.5).unwrap();
+        app.mixer_fx_copy_ab("master", &id1).unwrap();
+        app.mixer_fx_switch_ab("master", &id1).unwrap();
+        app.mixer_fx_set_pinned("master", &id1, true).unwrap();
+        assert_eq!(count_events("spawn:"), 2);
+        assert_eq!(count_events("unload:"), 0);
+        assert_eq!(mock.lock().unwrap().plugins.len(), 2);
+
+        // Removing slot 2 unloads only its live instance cleanly; undo respawns it; redo unloads it again.
+        app.mixer_fx_remove_insert("master", &id2).unwrap();
+        assert_eq!(count_events("unload:"), 1);
+        assert_eq!(mock.lock().unwrap().plugins.len(), 1);
+
+        // Undo remove_insert restores id2; Redo remove_insert detaches graph then unloads stale id2.
+        app.mixer_fx_undo().unwrap();
+        assert_eq!(count_events("spawn:"), 3);
+        assert_eq!(mock.lock().unwrap().plugins.len(), 2);
+        app.mixer_fx_redo().unwrap();
+        assert_eq!(count_events("unload:"), 2);
+        assert_eq!(mock.lock().unwrap().plugins.len(), 1);
 
         let _ = std::fs::remove_dir_all(&root);
     }

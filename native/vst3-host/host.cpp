@@ -769,7 +769,13 @@ struct Block
         }
         for (int32 b = 0; b < data.numOutputs; b++)
         {
-            data.outputs[b].silenceFlags = 0;
+            auto& bus = data.outputs[b];
+            for (int32 c = 0; c < bus.numChannels; c++)
+            {
+                if (bus.channelBuffers32 && bus.channelBuffers32[c])
+                    memset(bus.channelBuffers32[c], 0, frames * sizeof(float));
+            }
+            bus.silenceFlags = 0;
         }
         data.inputEvents = &events;
         data.inputParameterChanges = &params;
@@ -777,13 +783,26 @@ struct Block
         bool ok = processor->process(data) == kResultOk && data.numOutputs > 0 && data.outputs[0].numChannels > 0;
         if (ok)
         {
-            const float* l = data.outputs[0].channelBuffers32[0];
-            const float* r = data.outputs[0].numChannels > 1 ? data.outputs[0].channelBuffers32[1] : l;
-            for (int i = 0; i < frames && ok; i++) ok = std::isfinite(l[i]) && std::isfinite(r[i]);
+            const uint64 outSilence = data.outputs[0].silenceFlags;
+            const bool silentL = (outSilence & 1ULL) != 0;
+            const bool silentR = data.outputs[0].numChannels > 1 ? ((outSilence & 2ULL) != 0) : silentL;
+            const float* l = data.outputs[0].channelBuffers32 ? data.outputs[0].channelBuffers32[0] : nullptr;
+            const float* r = data.outputs[0].numChannels > 1
+                ? (data.outputs[0].channelBuffers32 ? data.outputs[0].channelBuffers32[1] : nullptr)
+                : l;
+            if (!silentL && !l) ok = false;
+            if (!silentR && !r) ok = false;
+            for (int i = 0; i < frames && ok; i++)
+            {
+                if (!silentL && !std::isfinite(l[i])) ok = false;
+                if (!silentR && !std::isfinite(r[i])) ok = false;
+            }
             if (ok)
             {
-                memcpy(left, l, frames * sizeof(float));
-                memcpy(right, r, frames * sizeof(float));
+                if (silentL) memset(left, 0, frames * sizeof(float));
+                else memcpy(left, l, frames * sizeof(float));
+                if (silentR) memset(right, 0, frames * sizeof(float));
+                else memcpy(right, r, frames * sizeof(float));
             }
         }
         if (!ok)
