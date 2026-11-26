@@ -150,6 +150,12 @@ pub(crate) fn open_editor_folder(folder: folders::Folder, state: State<'_, Edito
     folder.open(&path)
 }
 
+/// Sync command: Windows `ShellExecuteW` relies on Tauri's STA-initialized UI thread.
+#[tauri::command]
+pub(crate) fn open_help_link(link: folders::HelpLink) -> Result<(), String> {
+    folders::open_external_url(link.url())
+}
+
 #[tauri::command]
 pub(crate) fn close_editor(
     app: tauri::AppHandle,

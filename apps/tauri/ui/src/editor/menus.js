@@ -55,7 +55,7 @@ export function initMenus(env = globalThis, { ui: uiOverride = null, bridge: bri
 
   const menuPopup = $("editor-menu");
   // The bar's order; a test checks it against menuBar in ui/src/lib/commands.js and index.html.
-  const menuNames = ["file", "edit", "playback", "map", "view"];
+  const menuNames = ["file", "edit", "playback", "map", "view", "help"];
   let editorMenu = null;
   let menuOpens = 0;
 
@@ -148,6 +148,22 @@ export function initMenus(env = globalThis, { ui: uiOverride = null, bridge: bri
     }).catch(error => { $("status").textContent = String(error); });
   }
 
+  function openHelpLink(link, label) {
+    return invoke("open_help_link", { link }).catch((error) => {
+      const msg = String(error);
+      $("status").textContent = msg;
+      notifyToast({ tone: "error", title: `Could not open ${label}`, body: msg });
+    });
+  }
+
+  function openCrashLogs() {
+    return invoke("open_editor_folder", { folder: "crash_logs" }).catch((error) => {
+      const msg = String(error);
+      $("status").textContent = msg;
+      notifyToast({ tone: "error", title: "Could not open crash log folder", body: msg });
+    });
+  }
+
   // What ["call", name] rows run.
   const menuCalls = {
     placeSoundSet: () => placeSoundSet(),
@@ -190,6 +206,10 @@ export function initMenus(env = globalThis, { ui: uiOverride = null, bridge: bri
     deleteActiveLane: () => deleteActiveLane(),
     toggleMapPreview: () => ui()?.toggleMapPreview?.(),
     openQuickStart: () => ui()?.openQuickStart?.(),
+    openHelpWiki: () => openHelpLink("wiki", "Wiki"),
+    openHelpFaq: () => openHelpLink("faq", "FAQ"),
+    openHelpBugReport: () => openHelpLink("bug_report", "Bug Report"),
+    openCrashLogs: () => openCrashLogs(),
     revertMapsetToOriginal: () => confirmRevertToOriginal(),
     undoMapsetRevert: () => undoMapsetRevert(),
     pickDrumStem: () => pickDrumStem(),

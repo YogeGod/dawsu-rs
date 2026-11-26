@@ -106,5 +106,6 @@ export function createState() {
     centreSentStart: null,
     followQueued: false,
     quitAfterSave: false,
+    announcedPracticeFolder: null,
   };
 }

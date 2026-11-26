@@ -100,6 +100,15 @@ test("buildEntries pulls menu commands and keyOnly shortcuts with active binding
   assert.equal(startEntries.find(e => e.id === "preferences").enabled, true);
   assert.equal(startEntries.find(e => e.id === "save").enabled, false);
   assert.equal(startEntries.find(e => e.id === "cmd:volumeUp").enabled, false);
+  assert.equal(startEntries.find(e => e.id === "quickStart").enabled, false);
+  for (const id of ["shortcuts", "helpWiki", "helpFaq", "helpBugReport", "openCrashLogs"]) {
+    const entry = startEntries.find(e => e.id === id);
+    assert.ok(entry, id);
+    assert.equal(entry.group, "Help");
+    assert.equal(entry.enabled, true, id);
+  }
+  assert.equal(entries.find(e => e.id === "quickStart").group, "Help");
+  assert.equal(entries.find(e => e.id === "quickStart").enabled, true);
 });
 
 test("fuzzy search matches labels, groups, and shortcuts in ranked order", () => {

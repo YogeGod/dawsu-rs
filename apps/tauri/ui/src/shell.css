@@ -532,8 +532,8 @@ aside[data-folded] {
     padding: 0 10px;
   }
   #editor-header #editor-menus {
-    gap: 14px;
-    padding: 0 10px;
+    gap: 10px;
+    padding: 0 8px;
   }
   #editor-header .top-transport {
     flex: 1 1 auto;
@@ -570,6 +570,10 @@ aside[data-folded] {
   #editor-ribbon.tools.chrome {
     gap: 8px;
     padding: 0 10px;
+  }
+  #editor-header #editor-menus {
+    gap: 8px;
+    padding: 0 6px;
   }
   #editor-header .map-chip {
     max-width: 120px;

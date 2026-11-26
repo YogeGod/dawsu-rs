@@ -8,6 +8,7 @@ pub(super) enum Folder {
     Map,
     Library,
     Project,
+    CrashLogs,
 }
 
 impl Folder {
@@ -22,13 +23,18 @@ impl Folder {
             Self::Project => Ok(data.join("projects")),
             Self::Library => library.map(Path::to_path_buf)
                 .ok_or_else(|| "Choose a hitsound library folder first.".into()),
+            Self::CrashLogs => Ok(data.to_path_buf()),
         }
     }
 
     pub(super) fn open(self, folder: &Path) -> Result<(), String> {
-        if matches!(self, Self::Project) {
+        if let Some(label) = match self {
+            Self::Project => Some("project folder"),
+            Self::CrashLogs => Some("crash log folder"),
+            Self::Map | Self::Library => None,
+        } {
             std::fs::create_dir_all(folder).map_err(|error| {
-                format!("Creating project folder {}: {error}", folder.display())
+                format!("Creating {label} {}: {error}", folder.display())
             })?;
         }
         if !folder.is_dir() {
@@ -67,6 +73,97 @@ fn explorer_path(folder: &Path) -> PathBuf {
     folder.into()
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum HelpLink {
+    Wiki,
+    Faq,
+    BugReport,
+}
+
+impl HelpLink {
+    pub(crate) const fn url(self) -> &'static str {
+        match self {
+            Self::Wiki => "https://github.com/YogeGod/dawsu-rs/wiki",
+            Self::Faq => "https://github.com/YogeGod/dawsu-rs/blob/main/docs/FAQ.md",
+            Self::BugReport => "https://github.com/YogeGod/dawsu-rs/issues/new",
+        }
+    }
+}
+
+pub(crate) fn validate_external_url(url: &str) -> Result<(), String> {
+    let rest = url
+        .strip_prefix("https://")
+        .ok_or_else(|| format!("External links must use https://: {url}"))?;
+    if rest.is_empty() || url.chars().any(|c| c.is_control() || c.is_whitespace()) {
+        return Err(format!("Invalid external link URL: {url}"));
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn to_wide_null(value: &str) -> Vec<u16> {
+    use std::os::windows::ffi::OsStrExt;
+    std::ffi::OsStr::new(value)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect()
+}
+
+pub(crate) fn open_external_url(url: &str) -> Result<(), String> {
+    validate_external_url(url)?;
+
+    #[cfg(target_os = "windows")]
+    {
+        // ShellExecuteW delegates to Shell handlers that expect Windows STA COM initialization,
+        // so callers invoke this synchronously on Tauri's main UI thread without shell escaping.
+        #[link(name = "shell32")]
+        unsafe extern "system" {
+            fn ShellExecuteW(
+                hwnd: *mut core::ffi::c_void,
+                lp_operation: *const u16,
+                lp_file: *const u16,
+                lp_parameters: *const u16,
+                lp_directory: *const u16,
+                n_show_cmd: i32,
+            ) -> isize;
+        }
+        const SW_SHOWNORMAL: i32 = 1;
+        let verb = to_wide_null("open");
+        let target = to_wide_null(url);
+        let result = unsafe {
+            ShellExecuteW(
+                core::ptr::null_mut(),
+                verb.as_ptr(),
+                target.as_ptr(),
+                core::ptr::null(),
+                core::ptr::null(),
+                SW_SHOWNORMAL,
+            )
+        };
+        if result <= 32 {
+            return Err(format!("Opening {url} failed with ShellExecuteW code {result}."));
+        }
+        Ok(())
+    }
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("open")
+            .arg(url)
+            .spawn()
+            .map(|_| ())
+            .map_err(|error| format!("Opening {url}: {error}"))
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        Command::new("xdg-open")
+            .arg(url)
+            .spawn()
+            .map(|_| ())
+            .map_err(|error| format!("Opening {url}: {error}"))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -87,6 +184,36 @@ mod tests {
             Folder::Project.resolve(Some(map), None, data).unwrap(),
             Path::new("EditorData/projects")
         );
+        assert_eq!(Folder::CrashLogs.resolve(None, None, data).unwrap(), data);
+    }
+
+    #[test]
+    fn help_links_are_allowlisted_and_non_https_urls_are_rejected() {
+        assert_eq!(
+            serde_json::from_str::<HelpLink>("\"wiki\"").unwrap().url(),
+            "https://github.com/YogeGod/dawsu-rs/wiki"
+        );
+        assert_eq!(
+            serde_json::from_str::<HelpLink>("\"faq\"").unwrap().url(),
+            "https://github.com/YogeGod/dawsu-rs/blob/main/docs/FAQ.md"
+        );
+        assert_eq!(
+            serde_json::from_str::<HelpLink>("\"bug_report\"").unwrap().url(),
+            "https://github.com/YogeGod/dawsu-rs/issues/new"
+        );
+        for link in [HelpLink::Wiki, HelpLink::Faq, HelpLink::BugReport] {
+            assert!(validate_external_url(link.url()).is_ok());
+        }
+        for rejected in [
+            "http://github.com/YogeGod/dawsu-rs/wiki",
+            "file:///C:/Windows/System32/cmd.exe",
+            "javascript:alert(1)",
+            "https://",
+            "https://github.com/YogeGod/dawsu-rs/wiki with space",
+            "https://github.com/YogeGod/dawsu-rs/wiki\r\n",
+        ] {
+            assert!(open_external_url(rejected).is_err(), "expected rejection for {rejected}");
+        }
     }
 
     #[cfg(target_os = "windows")]

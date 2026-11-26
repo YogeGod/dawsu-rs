@@ -63,6 +63,7 @@ export function recoveryState(view, scene) {
 }
 
 export const SETUP_CHECKLIST_DISMISSED_KEY = "dawsu.setupChecklistDismissed";
+export const PRACTICE_TRIED_KEY = "dawsu.practiceTried";
 
 export function isSetupChecklistDismissed(storage) {
   try {
@@ -80,34 +81,65 @@ export function dismissSetupChecklist(storage) {
   }
 }
 
-export function setupChecklistState(view, dismissed = false) {
+export function isPracticeTried(storage) {
+  try {
+    return storage?.getItem?.(PRACTICE_TRIED_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+export function markPracticeTried(storage) {
+  try {
+    storage?.setItem?.(PRACTICE_TRIED_KEY, "1");
+  } catch {
+    // Ignore storage errors in restricted environments.
+  }
+}
+
+export function isAudioOutputReady(outputDevice) {
+  const name = String(outputDevice ?? "").trim();
+  return Boolean(name) && name.toLowerCase() !== "audio unavailable";
+}
+
+export function setupChecklistState(view, dismissed = false, { practiceTried = false } = {}) {
+  const hasAudioOutput = isAudioOutputReady(view?.outputDevice);
   const hasSongsFolder = Boolean(view?.songsFolder && String(view.songsFolder).trim());
   const hasShortcutStyle = Boolean(view?.keyPreset) && !view?.firstLaunch;
-  const hasOpenedMap = (view?.recent?.length ?? 0) > 0;
+  const hasFirstMap =
+    (view?.recent?.length ?? 0) > 0 || Boolean(view?.hasDocument) || Boolean(practiceTried);
   const steps = [
     {
+      id: "audio",
+      label: "Audio",
+      done: hasAudioOutput,
+      stateLabel: hasAudioOutput ? "Ready" : "Set output",
+      detail: hasAudioOutput ? `Output: ${view.outputDevice}` : "Choose an audio output device",
+      action: "audio",
+    },
+    {
       id: "songs-folder",
-      label: "Set your Songs folder",
-      detail: "Search and open maps straight from osu! Songs",
+      label: "Songs folder",
       done: hasSongsFolder,
+      stateLabel: hasSongsFolder ? "Set" : "Choose",
+      detail: hasSongsFolder ? `Songs: ${view.songsFolder}` : "Point to your osu! Songs folder",
       action: "folders",
-      actionLabel: "Open Folders",
     },
     {
       id: "shortcut-style",
-      label: "Pick your shortcut style",
-      detail: "Choose DAW-like or osu! keyboard shortcuts",
+      label: "Shortcuts",
       done: hasShortcutStyle,
+      stateLabel: hasShortcutStyle ? String(view.keyPreset) : "Choose",
+      detail: hasShortcutStyle ? `Preset: ${view.keyPreset}` : "Pick osu! or DAW-like keys",
       action: "shortcuts",
-      actionLabel: "Open Shortcuts",
     },
     {
       id: "first-map",
-      label: "Open your first map",
-      detail: "Open an .osu difficulty or .osz mapset",
-      done: hasOpenedMap,
-      action: "open",
-      actionLabel: "Open map",
+      label: "First map",
+      done: hasFirstMap,
+      stateLabel: hasFirstMap ? "Ready" : "Try practice",
+      detail: hasFirstMap ? "Map opened" : "Open a map or try the bundled practice mapset",
+      action: "tryPractice",
     },
   ];
   const completedCount = steps.filter(step => step.done).length;

@@ -66,6 +66,7 @@ const COMMANDS: &[&str] = &[
     "set_drum_view",
     "drum_map_action",
     "open_editor_folder",
+    "open_help_link",
     "close_editor",
     "skin_textures",
     "preview_skins",

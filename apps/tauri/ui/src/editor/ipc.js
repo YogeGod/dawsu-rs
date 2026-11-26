@@ -1,7 +1,14 @@
 // Core backend RPC loop, top-level view synchronization, frame chrome, and Home lists.
 import { nameOf, recentMapName } from "./helpers.js";
 import { callAction, showToast } from "../lib/registry.js";
+import { markPracticeTried } from "../lib/startScreen.js";
 import { sameSoundSetPrompts, sameUiView } from "../lib/view.js";
+
+function folderOfPath(path) {
+  const normalized = String(path ?? "");
+  const cut = Math.max(normalized.lastIndexOf("/"), normalized.lastIndexOf("\\"));
+  return cut > 0 ? normalized.slice(0, cut) : "";
+}
 
 export function attachIpc(ctx) {
   const { env, state, dom, elements } = ctx;
@@ -551,6 +558,25 @@ export function attachIpc(ctx) {
     // A playback poll or playhead-only seek without a scene moved only the playhead: the cached canvas layers still hold.
     ctx.paintSoon(Boolean((state.view.playing && !next.scene) || playheadOnlyUpdate));
     if (state.scene && state.view.playing) ctx.animatePlayback();
+    if (state.view?.isPracticeMapset && state.scene?.path) {
+      const folder = folderOfPath(state.scene.path);
+      if (folder && folder !== state.announcedPracticeFolder) {
+        state.announcedPracticeFolder = folder;
+        const storage = (() => {
+          try {
+            return env !== globalThis ? env.localStorage : globalThis.localStorage;
+          } catch {
+            return null;
+          }
+        })();
+        markPracticeTried(storage);
+        notifyToast({
+          tone: "info",
+          title: "Practice mapset opened",
+          body: "Editing a safe temporary 2-diff sandbox — your osu! Songs folder is untouched.",
+        });
+      }
+    }
     try { ctx.ui()?.update?.(state.view, state.scene); } catch (error) { (env.console ?? console).error(error); }
     setStatusNotice(missingUiParts());
     announceWrite(before, state.view, hadMap);

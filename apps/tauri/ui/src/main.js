@@ -77,7 +77,7 @@ const parts = {
   "shared-base": SharedBaseModal,
   "stem-separation": StemSeparationModal,
   toasts: ToastStack,
-  // The Quick start tour card (View › Quick start tour), at body level.
+  // The Quick start tour card (Help › Quick start tour), at body level.
   "quick-start": QuickStartTour,
   // Centred loading overlay shown if a map/audio load takes >300 ms.
   "loading-overlay": LoadingOverlay,

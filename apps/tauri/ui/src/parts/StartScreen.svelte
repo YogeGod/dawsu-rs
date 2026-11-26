@@ -10,6 +10,7 @@
   import {
     dismissSetupChecklist,
     isHitsoundVersion,
+    isPracticeTried,
     isSetupChecklistDismissed,
     recentItems,
     recoveryState,
@@ -30,7 +31,8 @@
   const send = (...args) => bridge.callAction("startScreenAction", ...args);
 
   let checklistDismissed = $state(isSetupChecklistDismissed(storage()));
-  const checklist = $derived(setupChecklistState(view, checklistDismissed));
+  const practiceTried = $derived(Boolean(view?.isPracticeMapset) || isPracticeTried(storage()));
+  const checklist = $derived(setupChecklistState(view, checklistDismissed, { practiceTried }));
 
   function dismissChecklist() {
     dismissSetupChecklist(storage());
@@ -213,34 +215,38 @@
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4.5h5l1.5 1.5H21v9H6zM3 8v11h14"/></svg>
       <span><strong>Folders…</strong><small>Songs folder and hitsound library</small></span>
     </button>
+    <button id="home-practice" type="button" class="home-action" disabled={busy} onclick={() => send("tryPractice")}>
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5.5 19 12 5 18.5z"/></svg>
+      <span><strong>Try practice mapset</strong><small>Safe temporary 2-diff sandbox — won't touch your maps</small></span>
+    </button>
   </div>
   <section id="home-setup" class="home-setup" aria-labelledby="home-setup-title" hidden={!checklist.visible}>
     <div class="home-setup-head">
-      <h2 id="home-setup-title">Get set up</h2>
-      <span class="home-setup-progress">{checklist.completedCount} of {checklist.totalCount} done</span>
+      <h2 id="home-setup-title">Ready</h2>
+      <span class="home-setup-progress">{checklist.completedCount} of {checklist.totalCount} ready</span>
       <button id="home-setup-dismiss" type="button" class="home-setup-dismiss" onclick={dismissChecklist}>Dismiss</button>
     </div>
-    <ul class="home-setup-list">
+    <div class="home-setup-list" role="list">
       {#each checklist.steps as step (step.id)}
-        <li class="home-setup-item" class:done={step.done} data-step={step.id}>
+        <button
+          type="button"
+          class="home-setup-pill"
+          class:done={step.done}
+          data-step={step.id}
+          title={step.detail}
+          disabled={busy || (step.id === "first-map" && step.done)}
+          onclick={() => send(step.action)}
+        >
           <span class="home-setup-check" aria-hidden="true">
             {#if step.done}
               <svg viewBox="0 0 16 16"><path d="M3.5 8.5 6.5 11.5 12.5 4.5"/></svg>
             {/if}
           </span>
-          <span class="home-setup-copy">
-            <strong>{step.label}</strong>
-            <small>{step.detail}</small>
-          </span>
-          {#if step.done}
-            <span class="home-setup-done">Done</span>
-          {:else}
-            <button type="button" class="home-setup-action" disabled={busy}
-              onclick={() => send(step.action)}>{step.actionLabel}</button>
-          {/if}
-        </li>
+          <span class="home-setup-label">{step.label}</span>
+          <span class="home-setup-state">{step.stateLabel}</span>
+        </button>
       {/each}
-    </ul>
+    </div>
   </section>
   <section id="recovery" aria-labelledby="recovery-title" hidden={!recovery.visible}>
     <h2 id="recovery-title">Recovery copies</h2>
@@ -434,16 +440,23 @@
   }
   :global(#home .home-main .home-actions) {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(152px, 1fr));
+    grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 8px;
     width: 100%;
   }
-  :global(#home .home-panel:not(.has-right-intake) .home-main .home-actions) {
-    grid-template-columns: repeat(5, minmax(0, 1fr));
-  }
   @media (max-width: 1120px) {
-    :global(#home .home-panel:not(.has-right-intake) .home-main .home-actions) {
-      grid-template-columns: repeat(auto-fit, minmax(175px, 1fr));
+    :global(#home) .home-panel.has-right-intake .home-main .home-actions {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+  @media (max-width: 900px) {
+    :global(#home .home-main .home-actions) {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+  @media (max-width: 540px) {
+    :global(#home .home-main .home-actions) {
+      grid-template-columns: minmax(0, 1fr);
     }
   }
   :global(#home .home-main .home-action) {
@@ -507,8 +520,8 @@
     width: 100%;
     text-align: left;
     display: grid;
-    gap: 10px;
-    padding: 12px 14px;
+    gap: 8px;
+    padding: 9px 12px;
     border: 1px solid var(--editor-border);
     border-radius: var(--radius-8);
     background: var(--editor-panel);
@@ -520,23 +533,27 @@
   }
   .home-setup-head h2 {
     margin: 0;
-    font-size: 13px;
+    font-size: 12.5px;
     font-weight: 600;
     color: var(--editor-text);
   }
   .home-setup-progress {
-    font-size: 12px;
+    font-size: 11.5px;
     color: var(--editor-muted);
+    padding: 1px 7px;
+    border-radius: 999px;
+    border: 1px solid var(--editor-border);
+    background: var(--editor-chrome);
   }
   .home-setup-dismiss {
     margin-left: auto;
-    min-height: 24px;
+    min-height: 22px;
     padding: 0 8px;
     border: 0;
     border-radius: var(--radius-6);
     background: transparent;
     color: var(--editor-muted);
-    font-size: 12px;
+    font-size: 11.5px;
     cursor: pointer;
   }
   .home-setup-dismiss:hover {
@@ -544,24 +561,53 @@
     color: var(--editor-text);
   }
   .home-setup-list {
-    list-style: none;
-    margin: 0;
-    padding: 0;
     display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: 6px;
   }
-  .home-setup-item {
+  @media (max-width: 1240px) {
+    :global(#home) .home-panel.has-right-intake .home-setup-list {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+  @media (max-width: 860px) {
+    .home-setup-list {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+  @media (max-width: 480px) {
+    .home-setup-list {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+  .home-setup-pill {
     display: flex;
     align-items: center;
-    gap: 10px;
-    padding: 8px 10px;
+    gap: 7px;
+    min-width: 0;
+    min-height: 32px;
+    padding: 0 9px;
+    border: 1px solid var(--editor-border);
     border-radius: var(--radius-6);
     background: var(--editor-chrome);
+    color: var(--editor-text);
+    font-size: 12px;
+    text-align: left;
+    cursor: pointer;
+    transition: border-color 0.14s ease, background 0.14s ease;
+  }
+  .home-setup-pill:hover:not(:disabled) {
+    border-color: var(--editor-accent);
+    background: var(--editor-hover);
+  }
+  .home-setup-pill.done:disabled {
+    cursor: default;
+    opacity: 0.92;
   }
   .home-setup-check {
     flex: none;
-    width: 18px;
-    height: 18px;
+    width: 14px;
+    height: 14px;
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -569,57 +615,42 @@
     border-radius: 999px;
     color: var(--editor-text);
   }
-  .home-setup-item.done .home-setup-check {
+  .home-setup-pill.done .home-setup-check {
     border-color: var(--editor-accent);
     background: var(--editor-accent);
     color: #111111;
   }
   .home-setup-check svg {
-    width: 12px;
-    height: 12px;
+    width: 10px;
+    height: 10px;
     fill: none;
     stroke: currentColor;
     stroke-width: 2.2;
     stroke-linecap: round;
     stroke-linejoin: round;
   }
-  .home-setup-copy {
-    flex: 1;
-    min-width: 0;
-    display: grid;
-    gap: 2px;
-  }
-  .home-setup-copy strong {
-    font-size: 13px;
+  .home-setup-label {
     font-weight: 600;
     color: var(--editor-text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
-  .home-setup-item.done .home-setup-copy strong {
+  .home-setup-pill.done .home-setup-label {
     color: var(--editor-muted);
   }
-  .home-setup-copy small {
-    font-size: 12px;
-    color: var(--editor-muted);
-  }
-  .home-setup-action {
-    flex: none;
-    min-height: 26px;
-    padding: 0 10px;
-    border: 1px solid var(--editor-border);
-    border-radius: var(--radius-6);
-    background: var(--editor-control);
-    color: var(--editor-text);
-    font-size: 12px;
-    cursor: pointer;
-  }
-  .home-setup-action:hover:not(:disabled) {
-    border-color: var(--editor-accent);
-    background: var(--editor-hover);
-  }
-  .home-setup-done {
-    flex: none;
-    font-size: 12px;
+  .home-setup-state {
+    margin-left: auto;
+    min-width: 0;
+    max-width: 52%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 11px;
     font-weight: 500;
+    color: var(--editor-accent);
+  }
+  .home-setup-pill.done .home-setup-state {
     color: var(--editor-muted);
   }
   .home-songs {

@@ -3,16 +3,21 @@ import { test } from "node:test";
 import { render } from "svelte/server";
 import { bridge } from "../src/lib/bridge.svelte.js";
 import {
+  PRACTICE_TRIED_KEY,
   SETUP_CHECKLIST_DISMISSED_KEY,
   dismissSetupChecklist,
+  isAudioOutputReady,
   isHitsoundVersion,
+  isPracticeTried,
   isSetupChecklistDismissed,
+  markPracticeTried,
   recentItems,
   recentMapName,
   recoveryState,
   setupChecklistState,
   songsSourceTooltip,
 } from "../src/lib/startScreen.js";
+import { sameUiView } from "../src/lib/view.js";
 import { detectImageMime } from "../src/lib/mapsetBackground.js";
 import StartScreen from "../src/parts/StartScreen.svelte";
 
@@ -74,7 +79,7 @@ test("StartScreen renders actions, drop zone, resume, recent maps and recovery c
     },
   }, null);
   let html = render(StartScreen).body;
-  for (const id of ["home-resume", "home-open", "home-create-hs", "home-open-osu", "home-import", "home-folders", "recovery", "recovery-entries", "home-recent", "recent"]) {
+  for (const id of ["home-resume", "home-open", "home-create-hs", "home-open-osu", "home-import", "home-folders", "home-practice", "recovery", "recovery-entries", "home-recent", "recent"]) {
     assert.match(html, new RegExp('id="' + id + '"'), id);
   }
   assert.match(html, /Create Hitsound diff…/);
@@ -104,6 +109,7 @@ test("StartScreen renders actions, drop zone, resume, recent maps and recovery c
   assert.match(html, /id="home-open"[^>]*disabled/);
   assert.match(html, /id="home-import"[^>]*disabled/);
   assert.match(html, /id="home-folders"[^>]*disabled/);
+  assert.match(html, /id="home-practice"[^>]*disabled/);
   assert.doesNotMatch(html, /\sstyle=/);
 });
 
@@ -142,6 +148,8 @@ test("Songs folder grid uses max-content rows and never collapses 50+ cards insi
   assert.match(svelte, /\.home-songs\s*\{[^}]*display:\s*flex;\s*flex-direction:\s*column;/);
   assert.match(svelte, /\.home-songs-list\s*\{[^}]*grid-auto-rows:\s*max-content;[^}]*align-content:\s*start;/);
   assert.doesNotMatch(svelte, /\.home-song-set\s*\{[^}]*overflow:\s*hidden/);
+  assert.match(svelte, /\.home-panel\.has-right-intake\s*\.home-main\s*\.home-actions/);
+  assert.match(svelte, /\.home-panel\.has-right-intake\s*\.home-setup-list/);
   assert.match(svelte, /home-song-backdrop/);
   assert.match(svelte, /home-song-bg/);
   assert.match(intake, /\.intake-path\s*\{[^}]*white-space:\s*normal;/);
@@ -157,7 +165,7 @@ test("detectImageMime recognizes PNG, JPEG, WebP, GIF, and BMP magic headers", (
   assert.equal(detectImageMime(new Uint8Array([])), "");
 });
 
-test("setupChecklistState tracks live progress, completion, and dismissal", () => {
+test("setupChecklistState tracks 4-step live progress, practice completion, audio check, and dismissal", () => {
   const store = new Map();
   const storage = {
     getItem: key => store.get(key) ?? null,
@@ -165,37 +173,73 @@ test("setupChecklistState tracks live progress, completion, and dismissal", () =
   };
 
   assert.equal(isSetupChecklistDismissed(storage), false);
+  assert.equal(isPracticeTried(storage), false);
+  assert.equal(isAudioOutputReady(""), false);
+  assert.equal(isAudioOutputReady("Audio unavailable"), false);
+  assert.equal(isAudioOutputReady("AUDIO UNAVAILABLE"), false);
+  assert.equal(isAudioOutputReady("Speakers (Realtek)"), true);
 
-  const empty = setupChecklistState({ songsFolder: "", keyPreset: null, firstLaunch: true, recent: [] }, false);
+  const empty = setupChecklistState(
+    { outputDevice: "Audio unavailable", songsFolder: "", keyPreset: null, firstLaunch: true, recent: [] },
+    false
+  );
   assert.equal(empty.visible, true);
   assert.equal(empty.allDone, false);
   assert.equal(empty.completedCount, 0);
-  assert.deepEqual(empty.steps.map(s => [s.id, s.done]), [
-    ["songs-folder", false],
-    ["shortcut-style", false],
-    ["first-map", false],
+  assert.equal(empty.totalCount, 4);
+  assert.deepEqual(empty.steps.map(s => [s.id, s.done, s.stateLabel, s.action]), [
+    ["audio", false, "Set output", "audio"],
+    ["songs-folder", false, "Choose", "folders"],
+    ["shortcut-style", false, "Choose", "shortcuts"],
+    ["first-map", false, "Try practice", "tryPractice"],
   ]);
 
-  const partial = setupChecklistState({ songsFolder: "C:\\osu!\\Songs", keyPreset: "DAW", firstLaunch: false, recent: [] }, false);
+  const partial = setupChecklistState(
+    { outputDevice: "Speakers (Realtek)", songsFolder: "C:\\osu!\\Songs", keyPreset: "DAW", firstLaunch: false, recent: [] },
+    false
+  );
   assert.equal(partial.visible, true);
-  assert.equal(partial.completedCount, 2);
-  assert.deepEqual(partial.steps.map(s => [s.id, s.done]), [
-    ["songs-folder", true],
-    ["shortcut-style", true],
-    ["first-map", false],
+  assert.equal(partial.completedCount, 3);
+  assert.deepEqual(partial.steps.map(s => [s.id, s.done, s.stateLabel]), [
+    ["audio", true, "Ready"],
+    ["songs-folder", true, "Set"],
+    ["shortcut-style", true, "DAW"],
+    ["first-map", false, "Try practice"],
   ]);
 
-  const complete = setupChecklistState({ songsFolder: "C:\\osu!\\Songs", keyPreset: "osu!", firstLaunch: false, recent: [mapPath] }, false);
+  markPracticeTried(storage);
+  assert.equal(store.get(PRACTICE_TRIED_KEY), "1");
+  assert.equal(isPracticeTried(storage), true);
+  const completedByPractice = setupChecklistState(
+    { outputDevice: "Speakers (Realtek)", songsFolder: "C:\\osu!\\Songs", keyPreset: "osu!", firstLaunch: false, recent: [] },
+    false,
+    { practiceTried: isPracticeTried(storage) }
+  );
+  assert.equal(completedByPractice.allDone, true);
+  assert.equal(completedByPractice.visible, false);
+
+  const complete = setupChecklistState(
+    { outputDevice: "Speakers (Realtek)", songsFolder: "C:\\osu!\\Songs", keyPreset: "osu!", firstLaunch: false, recent: [mapPath] },
+    false
+  );
   assert.equal(complete.allDone, true);
   assert.equal(complete.visible, false);
 
   dismissSetupChecklist(storage);
   assert.equal(store.get(SETUP_CHECKLIST_DISMISSED_KEY), "1");
   assert.equal(isSetupChecklistDismissed(storage), true);
-  assert.equal(setupChecklistState({ songsFolder: "", keyPreset: null, recent: [] }, true).visible, false);
+  assert.equal(setupChecklistState({ outputDevice: "", songsFolder: "", keyPreset: null, recent: [] }, true).visible, false);
 });
 
-test("StartScreen renders Get set up checklist when incomplete and hides when dismissed or complete", () => {
+test("sameUiView detects keyPreset, firstLaunch, and isPracticeMapset transitions", () => {
+  const base = { busy: false, songsFolder: "", hitsoundLibrary: "", outputDevice: "", keyPreset: "", firstLaunch: true, isPracticeMapset: false, recent: [], warnings: [], outputProblems: [] };
+  assert.equal(sameUiView(base, { ...base }), true);
+  assert.equal(sameUiView(base, { ...base, keyPreset: "DAW" }), false);
+  assert.equal(sameUiView(base, { ...base, firstLaunch: false }), false);
+  assert.equal(sameUiView(base, { ...base, isPracticeMapset: true }), false);
+});
+
+test("StartScreen renders compact Ready checklist when incomplete and hides when dismissed or complete", () => {
   const previousStorage = globalThis.localStorage;
   const store = new Map();
   globalThis.localStorage = {
@@ -204,11 +248,12 @@ test("StartScreen renders Get set up checklist when incomplete and hides when di
   };
 
   try {
-    // Incomplete: visible with action buttons for remaining steps and Done for completed ones.
+    // Incomplete: visible with compact 4-pill Ready strip and disables first-map once done.
     bridge.set({
       busy: false,
       hasDocument: false,
       showHome: true,
+      outputDevice: "Speakers (Realtek)",
       songsFolder: "C:\\osu!\\Songs",
       keyPreset: null,
       firstLaunch: true,
@@ -217,33 +262,43 @@ test("StartScreen renders Get set up checklist when incomplete and hides when di
     let html = render(StartScreen).body;
     assert.match(html, /id="home-setup"/);
     assert.doesNotMatch(html, /id="home-setup"[^>]*hidden/);
-    assert.match(html, /Get set up/);
-    assert.match(html, /1 of 3 done/);
-    assert.match(html, /data-step="songs-folder"[^>]*>[\s\S]*?Done/);
-    assert.match(html, /data-step="shortcut-style"[^>]*>[\s\S]*?Open Shortcuts/);
-    assert.match(html, /data-step="first-map"[^>]*>[\s\S]*?Open map/);
+    assert.match(html, /Ready/);
+    assert.match(html, /2 of 4 ready/);
+    assert.match(html, /data-step="audio"[^>]*>[\s\S]*?Ready/);
+    assert.match(html, /data-step="songs-folder"[^>]*>[\s\S]*?Set/);
+    assert.match(html, /data-step="shortcut-style"[^>]*>[\s\S]*?Choose/);
+    assert.match(html, /data-step="first-map"[^>]*>[\s\S]*?Try practice/);
     assert.match(html, /id="home-setup-dismiss"/);
     assert.doesNotMatch(html, /\sstyle=/);
 
-    // All 3 complete: automatically hidden.
+    // Practice tried via localStorage flips first-map to done + disabled when checklist stays open.
+    store.set(PRACTICE_TRIED_KEY, "1");
+    html = render(StartScreen).body;
+    assert.match(html, /3 of 4 ready/);
+    assert.match(html, /data-step="first-map"[^>]*disabled/);
+
+    // All 4 complete: automatically hidden.
     bridge.set({
       busy: false,
       hasDocument: false,
       showHome: true,
+      outputDevice: "Speakers (Realtek)",
       songsFolder: "C:\\osu!\\Songs",
       keyPreset: "DAW",
       firstLaunch: false,
-      recent: [mapPath],
+      recent: [],
     }, null);
     html = render(StartScreen).body;
     assert.match(html, /id="home-setup"[^>]*hidden/);
 
     // Dismissed in localStorage: stays hidden even when incomplete.
+    store.clear();
     store.set(SETUP_CHECKLIST_DISMISSED_KEY, "1");
     bridge.set({
       busy: false,
       hasDocument: false,
       showHome: true,
+      outputDevice: "Audio unavailable",
       songsFolder: "",
       keyPreset: null,
       firstLaunch: true,

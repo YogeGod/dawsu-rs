@@ -62,6 +62,9 @@ export function sameUiView(a, b) {
     !!a.stepPadsMode === !!b.stepPadsMode &&
     !!a.reloadOsuAfterSave === !!b.reloadOsuAfterSave &&
     !!a.isLazerExternalEdit === !!b.isLazerExternalEdit &&
+    !!a.isPracticeMapset === !!b.isPracticeMapset &&
+    (a.keyPreset || "") === (b.keyPreset || "") &&
+    !!a.firstLaunch === !!b.firstLaunch &&
     !!a.tapRecordingArmed === !!b.tapRecordingArmed &&
     (a.tapRecordedCount ?? 0) === (b.tapRecordedCount ?? 0) &&
     !!a.audition === !!b.audition &&

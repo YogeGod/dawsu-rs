@@ -21,10 +21,10 @@ test("the sibling difficulty picker is available from the top header bar with th
   assert.equal([...html.matchAll(/id="difficulty"/g)].length, 1);
 });
 
-test("the window exposes Map, Edit, View and Playback pop-up menu triggers", () => {
+test("the window exposes Map, Edit, View, Playback and Help pop-up menu triggers", () => {
   const menus = html.match(/<nav id="editor-menus"[^>]*>(.*?)<\/nav>/s)?.[1];
   assert.ok(menus);
-  for (const name of ["map", "edit", "view", "playback"]) {
+  for (const name of ["map", "edit", "view", "playback", "help"]) {
     assert.match(menus, new RegExp('id="menu-' + name + '"[^>]*aria-haspopup="menu"'));
   }
   assert.match(html, /id="editor-menu"[^>]*role="menu"[^>]*hidden/);

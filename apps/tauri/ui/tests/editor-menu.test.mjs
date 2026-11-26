@@ -65,7 +65,7 @@ test("the command list places every row once per menu and names each catalogue c
   }
   const placed = new Set(Object.values(menus).flat());
   assert.deepEqual(ids.filter(id => !placed.has(id)), [], "every row sits in a menu");
-  assert.deepEqual(menuBar, ["file", "edit", "playback", "map", "view"]);
+  assert.deepEqual(menuBar, ["file", "edit", "playback", "map", "view", "help"]);
   for (const name of menuBar) assert.ok(menus[name], name);
   const named = items.map(item => item.command).filter(Boolean);
   for (const id of keyOnly) assert.ok(!named.includes(id), id + " is on a menu row and in keyOnly");

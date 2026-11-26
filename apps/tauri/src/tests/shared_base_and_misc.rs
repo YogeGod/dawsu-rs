@@ -386,3 +386,130 @@ fn slim_tick_polls_return_tick_when_unchanged_and_full_view_on_status_warning_or
     assert_eq!(after_loading["songLoading"], false);
     assert!(after_loading["tickRev"].as_u64().unwrap() > rev5);
 }
+
+#[test]
+fn open_practice_mapset_respects_first_launch_and_works_from_cold_start_and_parked() {
+    const CHILD_PROFILE: &str = "DAWSU_PRACTICE_ACTION_TEST_PROFILE";
+    if let Some(profile) = std::env::var_os(CHILD_PROFILE) {
+        assert_eq!(std::env::var_os("LOCALAPPDATA").as_ref(), Some(&profile));
+        let editor = crate::editor_thread(None);
+
+        // Blocked while first_launch == true until a keyboard preset is chosen.
+        let blocked = serde_json::to_value(
+            crate::ask(&editor, |tx| {
+                crate::Request::View(false, Some(Action::OpenPracticeMapset), false, None, tx)
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(blocked["firstLaunch"], true);
+        assert_eq!(blocked["busy"], false);
+        assert_eq!(blocked["hasDocument"], false);
+
+        // Choose preset, then open practice mapset from cold start.
+        let chosen = serde_json::to_value(
+            crate::ask(&editor, |tx| {
+                crate::Request::View(
+                    false,
+                    Some(Action::KeyPreset {
+                        name: "osu!".into(),
+                    }),
+                    false,
+                    None,
+                    tx,
+                )
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(chosen["firstLaunch"], false);
+
+        crate::ask(&editor, |tx| {
+            crate::Request::View(false, Some(Action::OpenPracticeMapset), false, None, tx)
+        })
+        .unwrap();
+
+        let wait_loaded = |label: &str| {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            loop {
+                let view = serde_json::to_value(
+                    crate::ask(&editor, |tx| crate::Request::View(true, None, false, None, tx))
+                        .unwrap(),
+                )
+                .unwrap();
+                if view["busy"] == false && view["hasDocument"] == true && view["showHome"] == false {
+                    return view;
+                }
+                assert!(std::time::Instant::now() < deadline, "{label}: {view}");
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        };
+
+        let cold_open = wait_loaded("cold open");
+        assert_eq!(cold_open["isPracticeMapset"], true);
+        assert_eq!(cold_open["recent"], serde_json::json!([]));
+        let first_path = std::path::PathBuf::from(cold_open["scene"]["path"].as_str().unwrap());
+        let first_dir = first_path.parent().unwrap().to_path_buf();
+        assert!(dawsu_application::practice::is_practice_mapset_path(&first_path));
+
+        // Park via Action::Home -> Route::Parked, then open practice mapset again from Parked.
+        let parked = serde_json::to_value(
+            crate::ask(&editor, |tx| {
+                crate::Request::View(false, Some(Action::Home), false, None, tx)
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(parked["showHome"], true);
+
+        let opening = serde_json::to_value(
+            crate::ask(&editor, |tx| {
+                crate::Request::View(false, Some(Action::OpenPracticeMapset), false, None, tx)
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(opening["showHome"], true);
+
+        let parked_open = wait_loaded("parked open");
+        assert_eq!(parked_open["isPracticeMapset"], true);
+        assert_eq!(parked_open["recent"], serde_json::json!([]));
+        let second_path = std::path::PathBuf::from(parked_open["scene"]["path"].as_str().unwrap());
+        let second_dir = second_path.parent().unwrap().to_path_buf();
+        assert_ne!(second_dir, first_dir);
+
+        crate::ask(&editor, |tx| crate::Request::Close(true, tx))
+            .unwrap()
+            .unwrap();
+        drop(editor);
+        for dir in [&first_dir, &second_dir] {
+            if let Some(name) = dir.file_name() {
+                let root = dawsu_application::practice::practice_temp_root();
+                let _ = fs::remove_dir_all(root.join("projects").join(name));
+                let _ = fs::remove_dir_all(root.join("backups").join(name));
+            }
+            let _ = fs::remove_dir_all(dir);
+        }
+        return;
+    }
+
+    let profile = std::env::temp_dir().join(format!("dawsu-tauri-practice-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&profile);
+    fs::create_dir(&profile).unwrap();
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "tests::shared_base_and_misc::open_practice_mapset_respects_first_launch_and_works_from_cold_start_and_parked",
+        ])
+        .env(CHILD_PROFILE, &profile)
+        .env("LOCALAPPDATA", &profile)
+        .output()
+        .unwrap();
+    let _ = fs::remove_dir_all(&profile);
+    assert!(
+        output.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}

@@ -321,6 +321,7 @@ pub(crate) enum Action {
     Open {
         path: PathBuf,
     },
+    OpenPracticeMapset,
     RestoreRecovery {
         id: String,
     },
@@ -608,6 +609,7 @@ impl Action {
                     app.request_open(path);
                 }
             }
+            Self::OpenPracticeMapset => app.request_open_practice_mapset(),
             Self::RestoreRecovery { id } => {
                 if let Err(error) = app.restore_recovery(&id) {
                     app.set_error(Some(error));

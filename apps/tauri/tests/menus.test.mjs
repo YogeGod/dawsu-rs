@@ -94,7 +94,7 @@ function fixture() {
     if (!elements.has(id)) elements.set(id, Object.assign(element("div"), { id }));
     return elements.get(id);
   }
-  get("editor-menus").append(...["file", "edit", "playback", "map", "view"].map(name => get("menu-" + name)));
+  get("editor-menus").append(...["file", "edit", "playback", "map", "view", "help"].map(name => get("menu-" + name)));
   get("editor-menu").offsetWidth = 330;
   get("editor-menu").offsetHeight = 220;
   const speedButtons = [.25, .5, .75, 1, 1.25, 1.5].map(value => ({
@@ -279,10 +279,10 @@ const menuLabels = popup => popup.children.map(child => child.className === "men
   ? child.attributes["aria-label"] + ": " + child.children[1].children.map(choice => choice.textContent).join(" | ")
   : child.attributes.role === "separator" ? "—" : child.textContent);
 
-test("the menu bar runs File, Edit, Playback, Map and View in the design's order", () => {
+test("the menu bar runs File, Edit, Playback, Map, View and Help in the design's order", () => {
   const menus = html.match(/<nav id="editor-menus"[^>]*>(.*?)<\/nav>/s)?.[1];
   assert.deepEqual([...menus.matchAll(/id="menu-(\w+)"/g)].map(match => match[1]), commandList.menuBar);
-  assert.deepEqual(commandList.menuBar, ["file", "edit", "playback", "map", "view"]);
+  assert.deepEqual(commandList.menuBar, ["file", "edit", "playback", "map", "view", "help"]);
   assert.ok(code.includes("const menuNames = " + JSON.stringify(commandList.menuBar).replaceAll(",", ", ") + ";"),
     "menus.js wires the bar's buttons in the list's order");
   const { document, get, key } = fixture();
@@ -292,8 +292,8 @@ test("the menu bar runs File, Edit, Playback, Map and View in the design's order
   key("ArrowRight", get("menu-edit").events.get("keydown"));
   assert.equal(document.activeElement, get("menu-playback"));
   key("ArrowLeft", get("menu-file").events.get("keydown"));
-  assert.equal(document.activeElement, get("menu-view"));
-  key("ArrowRight", get("menu-view").events.get("keydown"));
+  assert.equal(document.activeElement, get("menu-help"));
+  key("ArrowRight", get("menu-help").events.get("keydown"));
   assert.equal(document.activeElement, get("menu-file"));
 });
 
@@ -335,10 +335,14 @@ test("each menu groups the editor's existing commands like the design, with no s
     "Song waveform", "Sound-first · hide missing-object warnings", "Object lines", "Used lanes only", "Collapse sample layers", "Filter lanes…", "Taller lanes",
     "Shorter lanes", "—",
     "Zoom in", "Zoom out", "Fit difficulty", "—",
-    "Time signatures…", "Open drum map…", "Edit layout…", "View settings…", "—",
-    "Quick start tour", "Shortcuts",
+    "Time signatures…", "Open drum map…", "Edit layout…", "View settings…",
   ]);
-  for (const name of ["file", "edit", "playback", "map", "view"]) {
+  assert.deepEqual(open("help"), [
+    "Quick start tour", "Shortcuts", "—",
+    "Wiki", "FAQ", "Report a bug…", "—",
+    "Open crash log folder",
+  ]);
+  for (const name of ["file", "edit", "playback", "map", "view", "help"]) {
     get("menu-" + name).click();
     for (const button of menuButtons(popup)) assert.notEqual(button.attributes["aria-haspopup"], "menu");
   }
@@ -880,6 +884,45 @@ test("the editor keeps a failing menu refresh from stopping the rest of show()",
 test("the menu popup grows to fit a row with a long key hint instead of wrapping its label", () => {
   assert.match(css, /#editor-menu\{[^}]*width:max-content;min-width:min\(330px,calc\(100vw - 8px\)\);max-width:calc\(100vw - 8px\)/);
   assert.match(css, /\.menu-choice-group\{contain:inline-size;/, "choice buttons still wrap instead of widening the menu");
+});
+
+test("Help menu enables Shortcuts, Wiki, FAQ, Report a bug and Open crash log folder on Start Screen and invokes allowlisted targets", async () => {
+  const { get, window, calls, responses, context } = fixture();
+  const toasts = [];
+  window.showToast = toast => toasts.push(toast);
+  context.scene = null;
+
+  get("menu-help").click();
+  const buttons = menuButtons(get("editor-menu"));
+  const byLabel = new Map(buttons.map(button => [button.textContent, button]));
+  assert.equal(byLabel.get("Quick start tour").disabled, true);
+  for (const label of ["Shortcuts", "Wiki", "FAQ", "Report a bug…", "Open crash log folder"]) {
+    assert.equal(byLabel.get(label).disabled, false, `${label} should be enabled on Start Screen`);
+  }
+
+  const clickHelp = label => {
+    if (get("editor-menu").hidden !== false) get("menu-help").click();
+    const btn = menuButtons(get("editor-menu")).find(button => button.textContent === label);
+    assert.ok(btn, `${label} button`);
+    btn.click();
+  };
+  clickHelp("Wiki");
+  clickHelp("FAQ");
+  clickHelp("Report a bug…");
+  clickHelp("Open crash log folder");
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.deepEqual(calls.slice(-4), [
+    ["open_help_link", { link: "wiki" }],
+    ["open_help_link", { link: "faq" }],
+    ["open_help_link", { link: "bug_report" }],
+    ["open_editor_folder", { folder: "crash_logs" }],
+  ]);
+
+  responses.open_help_link = () => Promise.reject(new Error("boom"));
+  clickHelp("Wiki");
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.match(get("status").textContent, /boom/);
+  assert.equal(toasts.at(-1)?.tone, "error");
 });
 
 // v3: the lane toolbar has no lane names button; View › Lane names switches them.

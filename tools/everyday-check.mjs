@@ -428,6 +428,7 @@ let hitsBeforeEdits = 0;
 let withPlaced = [];
 let withoutPlaced = [];
 let placed = null;
+let practiceFolder = null;
 const keys = {};
 let savedHits = null;
 let mixFiles = [];
@@ -436,15 +437,42 @@ try {
   await step("Start with no map and see the start screen", async () => {
     await launch(null);
     await until(() => !document.getElementById("home").hidden && document.getElementById("workspace").hidden &&
-      !!document.getElementById("home-open"), null, "the start screen with Open map… did not show", 15000);
+      !!document.getElementById("home-open") && !!document.getElementById("home-practice") && !!document.getElementById("home-setup"),
+      null, "the start screen with Open map…, Try practice mapset, and Ready checklist did not show", 15000);
     // A fresh profile asks for a key preset once: answer it as a mapper would.
     const preset = page().getByRole("button", { name: "DAW-like" });
     if (await preset.count() && await preset.first().isVisible()) {
       await preset.first().click();
       await until(() => window.view.keyPreset === "DAW", null, "choosing DAW-like did not set the key preset", 4000);
+      await until(() => document.querySelector('#home-setup [data-step="shortcut-style"].done') !== null,
+        null, "the Ready checklist Shortcuts pill did not turn done live", 4000);
     }
     const text = await read(() => document.getElementById("home").innerText);
     expect(text.includes("Open a map"), `the start screen reads: ${text.slice(0, 80)}`);
+  });
+
+  await step("Try the bundled practice mapset from the start screen", async () => {
+    await page().click("#home-practice");
+    await until(() => window.scene?.lanes?.length > 0 && window.view?.isPracticeMapset === true && !window.view?.songLoading,
+      null, "the bundled practice mapset did not open", 20000);
+    await sleep(300);
+    const info = await read(() => ({
+      path: window.scene?.path || "",
+      lanes: window.scene?.lanes?.length ?? 0,
+      recentCount: window.view?.recent?.length ?? 0,
+      waveformRevision: window.view?.waveformRevision ?? 0,
+      waveformLength: window.scene?.waveform?.length ?? 0,
+      practiceTried: (() => { try { return localStorage.getItem("dawsu.practiceTried"); } catch { return null; } })(),
+    }));
+    practiceFolder = dirname(info.path);
+    expect(basename(dirname(practiceFolder)).toLowerCase() === "dawsu-practice",
+      `practice mapset path was not in dawsu-practice: ${info.path}`);
+    expect(info.recentCount === 0, `practice mapset polluted recent (${info.recentCount})`);
+    expect(info.practiceTried === "1", `expected dawsu.practiceTried === "1", got ${info.practiceTried}`);
+    expect(info.waveformLength > 0 || info.waveformRevision > 0, "practice song waveform missing");
+    const hitCount = (await hits()).length;
+    expect(hitCount > 0, "practice mapset has no hits");
+    return `${info.lanes} lanes, ${hitCount} hits`;
   });
   await quit();
 
@@ -467,11 +495,16 @@ try {
     return `${await read(() => window.scene.lanes.length)} lanes, ${hitsBeforeEdits} hits`;
   });
 
-  for (const menu of ["File", "Edit", "Playback", "Map", "View"]) {
+  for (const menu of ["File", "Edit", "Playback", "Map", "View", "Help"]) {
     await step(`Open the ${menu} menu and see its items`, async () => {
       await openMenu(menu);
       const rows = await read(() => Array.from(document.querySelectorAll("#editor-menu [role^=menuitem]"), row => row.textContent.trim()));
       expect(rows.length >= 3, `the ${menu} menu lists ${rows.length} items`);
+      if (menu === "Help") {
+        for (const label of ["Quick start tour", "Shortcuts", "Wiki", "FAQ", "Report a bug…", "Open crash log folder"]) {
+          expect(rows.some(row => row.startsWith(label)), `the Help menu missed ${label}: ${JSON.stringify(rows)}`);
+        }
+      }
       await page().keyboard.press("Escape");
       await until(() => document.getElementById("editor-menu").hidden, null, `Escape did not close the ${menu} menu`, 3000);
       return `${rows.length} items`;
@@ -712,7 +745,7 @@ try {
   });
 
   await step("Open and close the shortcut editor", async () => {
-    await fromMenu("View", "Shortcuts");
+    await fromMenu("Help", "Shortcuts");
     await dialogShown("Shortcuts and mouse actions");
     await dialogButton("Customise shortcuts").click();
     await dialogShown("Customise shortcuts");
@@ -1074,6 +1107,15 @@ try {
     writeFileSync(resolve(args.json), JSON.stringify({ exe, map: original, profile, passed, total: results.length, seconds, steps: results }, null, 2) + "\n");
   }
   if (failed || !results.length) process.exitCode = 1;
+  if (practiceFolder && basename(dirname(practiceFolder)).toLowerCase() === "dawsu-practice") {
+    const practiceRoot = dirname(practiceFolder);
+    const sessionName = basename(practiceFolder);
+    for (const dir of [practiceFolder, join(practiceRoot, "projects", sessionName), join(practiceRoot, "backups", sessionName)]) {
+      try {
+        rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 150 });
+      } catch {}
+    }
+  }
   if (!args["keep-profile"]) {
     for (const name of readdirSync(profile)) {
       const folder = join(profile, name);

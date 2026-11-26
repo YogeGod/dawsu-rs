@@ -541,6 +541,8 @@ pub(crate) struct ViewSnapshot {
     pub(crate) hs_mode: bool,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub(crate) is_lazer_external_edit: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) is_practice_mapset: bool,
     pub(crate) keep_pitch: bool,
     pub(crate) key_preset: String,
     pub(crate) lane_count: usize,
@@ -933,6 +935,7 @@ pub(crate) fn snapshot_with_static(app: &Application, include_scene: bool, inclu
         hitsounds_solo: app.hitsounds_solo(),
         hs_mode: document.is_some_and(|d| d.hs_mode),
         is_lazer_external_edit: document.is_some_and(|d| crate::osu_link::is_lazer_external_edit_path(&d.path)),
+        is_practice_mapset: document.is_some_and(|d| dawsu_application::practice::is_practice_mapset_path(&d.path)),
         key_preset: prefs.key_preset.clone(),
         lane_count: document.map_or(0, |d| d.composer.lanes.len()),
         left: app.locator_left(),
@@ -1099,6 +1102,7 @@ pub(crate) fn next_view_response(
                 *pending_initial_open = Some(path);
             }
         }
+        Some(Action::OpenPracticeMapset) if app.first_launch() => {}
         Some(action) => {
             if let Some(action) = home.handle(action, app) {
                 action.run_with_start(app, playback_start);

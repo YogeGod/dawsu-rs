@@ -627,6 +627,20 @@ impl Application {
         }
         self.open_now(OpenSource::Map(path));
     }
+
+    /// Opens the bundled synthetic practice mapset inside an isolated temp directory without
+    /// touching `preferences.recent` or user files.
+    pub fn request_open_practice_mapset(&mut self) {
+        if self.busy || self.is_stroke_open() {
+            return;
+        }
+        if self.is_dirty() {
+            self.error = Some("Save or discard your changes before opening the practice mapset.".into());
+            self.bump_view_revision();
+            return;
+        }
+        self.start_open(OpenSource::Practice, true);
+    }
     pub fn confirm_revert(&mut self) {
         if self.busy || !std::mem::take(&mut self.revert_requested) {
             return;
@@ -835,6 +849,10 @@ impl Application {
                         let copy = recovery::read_copy(&path)?;
                         (copy.source().to_owned(), Some(copy))
                     }
+                    OpenSource::Practice => (
+                        crate::practice::materialize_practice_mapset(outgoing_mapset.as_deref())?,
+                        None,
+                    ),
                 };
                 let path = if path
                     .extension()
@@ -865,16 +883,40 @@ impl Application {
                 } else {
                     path
                 };
+                let is_practice = crate::practice::is_practice_mapset_path(&path);
+                let practice_project_root = is_practice
+                    .then(|| crate::practice::practice_project_root_for(&path))
+                    .flatten();
+                let effective_project_root = if is_practice {
+                    practice_project_root.as_deref()
+                } else {
+                    project_root.as_deref()
+                };
+                let effective_legacy_root = if is_practice {
+                    None
+                } else {
+                    legacy_root.as_deref()
+                };
                 let mut loaded = load(
                     &path,
                     &defaults,
                     &data_root,
                     &cancel,
-                    project_root.as_deref(),
-                    legacy_root.as_deref(),
+                    effective_project_root,
+                    effective_legacy_root,
                     recovery,
                 )?;
-                loaded.outgoing_keep = outgoing_mapset.and_then(|mapset| recorded_pending(project_root.as_deref(), &data_root, &mapset));
+                loaded.outgoing_keep = outgoing_mapset.and_then(|mapset| {
+                    let outgoing_practice_root = crate::practice::is_practice_mapset_path(&mapset)
+                        .then(|| crate::practice::practice_project_root_for(&mapset))
+                        .flatten();
+                    let outgoing_project_root = if outgoing_practice_root.is_some() {
+                        outgoing_practice_root.as_deref()
+                    } else {
+                        project_root.as_deref()
+                    };
+                    recorded_pending(outgoing_project_root, &data_root, &mapset)
+                });
                 Ok(loaded)
             })();
             let _ = send.send(JobResult::Open(outgoing, keep_settings, preserve, result.map(Box::new)));
@@ -1036,13 +1078,15 @@ impl Application {
                         return;
                     }
                     let path = loaded.document.path.clone();
+                    let is_practice = crate::practice::is_practice_mapset_path(&path);
                     let snap_flag = Arc::new(AtomicBool::new(false));
                     self.has_original_snapshot = snap_flag.clone();
-                    let has_undo = path
-                        .parent()
-                        .is_some_and(|folder| original_snapshot::has_pre_revert_backup(&self.data_root, folder));
+                    let has_undo = !is_practice
+                        && path
+                            .parent()
+                            .is_some_and(|folder| original_snapshot::has_pre_revert_backup(&self.data_root, folder));
                     self.can_undo_revert = Arc::new(AtomicBool::new(has_undo));
-                    if let Some(folder) = path.parent().map(Path::to_path_buf) {
+                    if !is_practice && let Some(folder) = path.parent().map(Path::to_path_buf) {
                         let data_root = self.data_root.clone();
                         std::thread::spawn(move || {
                             let _ = original_snapshot::capture_once(&data_root, &folder);
@@ -1054,8 +1098,12 @@ impl Application {
                     // The outgoing difficulty closes here.
                     let keep = loaded.outgoing_keep;
                     self.forget_unneeded_pending(keep);
-                    let mut checkpoint = recovery::Checkpoint::new(&loaded.document);
-                    let restored_id = loaded.recovery.map(|copy| copy.resume(&mut checkpoint));
+                    let mut checkpoint = (!is_practice || loaded.recovery.is_some())
+                        .then(|| recovery::Checkpoint::new(&loaded.document));
+                    let restored_id = match (loaded.recovery, checkpoint.as_mut()) {
+                        (Some(copy), Some(checkpoint)) => Some(copy.resume(checkpoint)),
+                        _ => None,
+                    };
                     self.document = Some(loaded.document);
                     self.sync_shared_base_track();
                     // Reviews of the outgoing load must not match this one: history versions restart.
@@ -1134,9 +1182,11 @@ impl Application {
                     } else {
                         self.restore_active_lane(None);
                     }
-                    self.preferences.recent.retain(|p| p != &path);
-                    self.preferences.recent.insert(0, path);
-                    self.preferences.recent.truncate(20);
+                    if !is_practice {
+                        self.preferences.recent.retain(|p| p != &path);
+                        self.preferences.recent.insert(0, path);
+                        self.preferences.recent.truncate(20);
+                    }
                     self.project = loaded.project;
                     let settings = self
                         .project
@@ -1219,8 +1269,10 @@ impl Application {
                     if self.sweep_detached {
                         self.status = sweep::with_note(&self.status, sweep::STILL_RUNNING);
                     }
-                    self.save_preferences();
-                    self.checkpoint = Some(checkpoint);
+                    if !is_practice {
+                        self.save_preferences();
+                    }
+                    self.checkpoint = checkpoint;
                     self.restored_recovery = restored_id;
                     self.ask_about_set_versions();
                     if std::mem::take(&mut self.sweep_after_open) {
@@ -1357,8 +1409,8 @@ impl Application {
                                 d.written = last_written(&compiled, hs_mode);
                                 d.left_out = report.left_out;
                                 // The difficulty is written, even when a step below returns early.
-                                self.checkpoint =
-                                    Some(recovery::Checkpoint::after_save(d, &compiled, &drawn, hs_mode));
+                                self.checkpoint = (!crate::practice::is_practice_mapset_path(&path))
+                                    .then(|| recovery::Checkpoint::after_save(d, &compiled, &drawn, hs_mode));
                                 if let Some(id) = &self.restored_recovery {
                                     match recovery::archive(&self.data_root, id) {
                                         Ok(()) => self.restored_recovery = None,
@@ -1404,8 +1456,8 @@ impl Application {
                             }
                             let document = self.document.as_mut().unwrap();
                             document.composer.mark_saved();
-                            self.checkpoint =
-                                Some(recovery::Checkpoint::after_save(document, &compiled, &drawn, hs_mode));
+                            self.checkpoint = (!crate::practice::is_practice_mapset_path(&path))
+                                .then(|| recovery::Checkpoint::after_save(document, &compiled, &drawn, hs_mode));
                             let left_out = document.left_out.len();
                             let cleaned = report.cleaned_greenlines;
                             self.status = if archive_error.is_some() {
@@ -1498,7 +1550,8 @@ impl Application {
     }
 
     pub fn review_save(&mut self) {
-        self.begin_save(self.data_root.join("backups"), true);
+        let backups = self.default_save_backups_dir();
+        self.begin_save(backups, true);
     }
 
     pub fn save_review_files(&self) -> Option<Vec<(&'static str, &Path)>> {
@@ -1557,7 +1610,18 @@ impl Application {
     }
 
     pub fn save(&mut self) {
-        self.save_with_backups(self.data_root.join("backups"));
+        let backups = self.default_save_backups_dir();
+        self.save_with_backups(backups);
+    }
+
+    fn default_save_backups_dir(&self) -> PathBuf {
+        if let Some(doc) = &self.document
+            && crate::practice::is_practice_mapset_path(&doc.path)
+            && let Some(dir) = crate::practice::practice_backups_dir_for(&doc.path)
+        {
+            return dir;
+        }
+        self.data_root.join("backups")
     }
 
     pub(crate) fn save_with_backups(&mut self, backups: PathBuf) {

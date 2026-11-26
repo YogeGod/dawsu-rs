@@ -19,7 +19,7 @@
 // - choices: a row of segmented choices; menus.js fills the source when the menu opens.
 
 // The menu bar, left to right; index.html has a #menu-<name> button for each (Layout… moves them).
-export const menuBar = ["file", "edit", "playback", "map", "view"];
+export const menuBar = ["file", "edit", "playback", "map", "view", "help"];
 
 export const items = [
   // File
@@ -119,8 +119,14 @@ export const items = [
   { id: "drumMap", label: "Open drum map…", icon: "Drum", run: ["call", "requestDrumMap"] },
   { id: "editLayout", label: "Edit layout…", icon: "LayoutPanelLeft", run: ["call", "editLayout"] },
   { id: "viewSettings", label: "View settings…", icon: "Settings", run: ["call", "openViewSettings"] },
+
+  // Help
   { id: "quickStart", label: "Quick start tour", run: ["call", "openQuickStart"] },
   { id: "shortcuts", label: "Shortcuts", icon: "Keyboard", command: "help", run: ["call", "showHelp"], enabled: "idle" },
+  { id: "helpWiki", label: "Wiki", run: ["call", "openHelpWiki"], enabled: "idle" },
+  { id: "helpFaq", label: "FAQ", run: ["call", "openHelpFaq"], enabled: "idle" },
+  { id: "helpBugReport", label: "Report a bug…", run: ["call", "openHelpBugReport"], enabled: "idle" },
+  { id: "openCrashLogs", label: "Open crash log folder", icon: "Folder", run: ["call", "openCrashLogs"], enabled: "idle" },
 
   // Right-click on the timeline (and the fourth tool pill): the seven tools, in TOOLS' order (tools.js).
   { id: "toolSelect", label: "Select", icon: "MousePointer2", command: "toolSelect", run: ["tool", "Select"], radio: true, close: true, checked: "tool" },
@@ -174,9 +180,9 @@ export const menus = {
     "browser", "inspector", "volumePanel", "mapPreview", "laneNames", "-",
     "songWaveform", "soundFirst", "objectLines", "usedOnly", "collapseLayers", "filterLanes", "tallerLanes", "shorterLanes", "-",
     "zoomIn", "zoomOut", "fit", "-",
-    "timeSignatures", "drumMap", "editLayout", "viewSettings", "-",
-    "quickStart", "shortcuts",
+    "timeSignatures", "drumMap", "editLayout", "viewSettings",
   ],
+  help: ["quickStart", "shortcuts", "-", "helpWiki", "helpFaq", "helpBugReport", "-", "openCrashLogs"],
   tool: ["toolSelect", "toolDraw", "toolErase", "toolMute", "toolGrab", "toolRange", "toolRamp"],
   lane: ["laneRename", "laneMoveUp", "laneMoveDown", "laneReplaceSample", "laneColour", "laneAddLayer", "laneCloneVariant", "laneAlternate", "laneAdd", "laneDelete"],
 };

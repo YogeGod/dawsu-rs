@@ -2,6 +2,7 @@
 
 pub mod base_layer;
 pub mod export_manifest;
+pub mod practice;
 pub mod stem_separation;
 mod bookmarks;
 mod default_sounds;
@@ -322,6 +323,7 @@ struct Loaded {
 enum OpenSource {
     Map(PathBuf),
     Recovery(PathBuf),
+    Practice,
 }
 struct ReloadPreserve {
     position_ms: f64,

@@ -5,7 +5,7 @@
 export const RECENT_STORAGE_KEY = "dawsu.commandPalette.recent";
 export const MAX_RECENT = 8;
 
-export const PALETTE_MENUS = ["file", "edit", "playback", "map", "view", "tool"];
+export const PALETTE_MENUS = ["file", "edit", "playback", "map", "view", "help", "tool"];
 
 export const GROUP_LABELS = {
   file: "File",
@@ -13,6 +13,7 @@ export const GROUP_LABELS = {
   playback: "Playback",
   map: "Map",
   view: "View",
+  help: "Help",
   tool: "Tools",
   keyOnly: "Shortcuts",
 };

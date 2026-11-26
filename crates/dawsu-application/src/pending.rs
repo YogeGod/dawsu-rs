@@ -483,6 +483,9 @@ impl Drop for Presence {
     fn drop(&mut self) {
         drop(self.file.take());
         let _ = std::fs::remove_file(&self.path);
+        if let Some(parent) = self.path.parent() {
+            let _ = std::fs::remove_dir(parent);
+        }
     }
 }
 
