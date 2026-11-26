@@ -471,9 +471,12 @@ pub(crate) fn sound_set_library_view(app: &Application) -> Value {
     })
 }
 
-#[tauri::command]
-pub(crate) fn sound_set_library(state: State<'_, Editor>) -> Result<Value, String> {
-    ask(&state, Request::SoundSetLibrary)?
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(crate) enum SoundSetAction {
+    Library,
+    Placement { map: PathBuf, id: u64 },
+    Save { map: PathBuf, name: String },
 }
 
 /// What Edit > Sound set placement shows of one placement. Reads the library, so it is asked
@@ -489,20 +492,27 @@ pub(crate) fn sound_set_placement_view(app: &Application, map: &Path, id: u64) -
     }))
 }
 
-#[tauri::command]
-pub(crate) fn sound_set_placement(state: State<'_, Editor>, map: PathBuf, id: u64) -> Result<Value, String> {
-    ask(&state, |tx| Request::SoundSetPlacement(map, id, tx))?
-}
-
 /// Saving reads every selected sample and the library, so it gets its own longer wait, off the
 /// window's thread; a 7 s timeout while the editor still saves would make a retry look like a
 /// name clash.
 #[tauri::command]
-pub(crate) async fn save_sound_set(state: State<'_, Editor>, map: PathBuf, name: String) -> Result<ViewResponse, String> {
-    let editor = state.0.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        ask_within(&editor, Duration::from_secs(120), |tx| Request::SaveSoundSet(map, name, tx))
-    }).await.map_err(|e| e.to_string())??
+pub(crate) async fn sound_set_action(
+    state: State<'_, Editor>,
+    action: SoundSetAction,
+) -> Result<Value, String> {
+    match action {
+        SoundSetAction::Save { .. } => {
+            let editor = state.0.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                ask_within(&editor, Duration::from_secs(120), |tx| {
+                    Request::SoundSet(action, tx)
+                })
+            })
+            .await
+            .map_err(|e| e.to_string())??
+        }
+        other => ask(&state, |tx| Request::SoundSet(other, tx))?,
+    }
 }
 
 #[tauri::command]

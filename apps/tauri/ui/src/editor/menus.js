@@ -411,7 +411,7 @@ export function initMenus(env = globalThis, { ui: uiOverride = null, bridge: bri
     const map = env.scene.path;
     run(async () => {
       if (!soundSetsUsable(map)) return;
-      const library = await env.invoke("sound_set_library");
+      const library = await env.invoke("sound_set_action", { action: { kind: "library" } });
       if (soundSetsUsable(map)) showSoundSetLibrary(map, library);
     });
   }
@@ -456,7 +456,7 @@ export function initMenus(env = globalThis, { ui: uiOverride = null, bridge: bri
     const id = env.scene.placement;
     run(async () => {
       if (!soundSetsUsable(map) || id == null) return;
-      const placement = await env.invoke("sound_set_placement", { map, id });
+      const placement = await env.invoke("sound_set_action", { action: { kind: "placement", map, id } });
       if (soundSetsUsable(map)) showSoundSetPlacement(map, placement);
     });
   }
@@ -514,7 +514,7 @@ export function initMenus(env = globalThis, { ui: uiOverride = null, bridge: bri
       run(async () => {
         try {
           if (!soundSetsUsable(map)) return;
-          const next = await env.invoke("save_sound_set", { map, name });
+          const next = await env.invoke("sound_set_action", { action: { kind: "save", map, name } });
           if (next.nameTaken) {
             message.textContent = next.nameTaken;
             field.select?.();

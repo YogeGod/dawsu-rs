@@ -221,7 +221,7 @@ test("Revert mapset to original previews snapshot date and deleted diffs, asks w
     window: { __TAURI__: {
       core: { invoke: async (name, args) => {
         calls.push({ name, args });
-        if (name === "preview_revert_mapset_to_original") {
+        if (name === "mapset_revert_action" && args?.action?.kind === "preview") {
           return {
             snapshotDate: "2026-11-24",
             existingFiles: ["Easy.osu"],
@@ -229,7 +229,7 @@ test("Revert mapset to original previews snapshot date and deleted diffs, asks w
             canUndoRevert: false,
           };
         }
-        return name === "revert_mapset_to_original" ? 1 : { busy: false, hasDocument: false };
+        return name === "mapset_revert_action" && args?.action?.kind === "revert" ? 1 : { busy: false, hasDocument: false };
       } },
       event: { listen() {} },
     } },
@@ -278,8 +278,8 @@ test("Revert mapset to original previews snapshot date and deleted diffs, asks w
   assert.deepEqual(
     calls.map(call => [call.name, call.args]),
     [
-      ["preview_revert_mapset_to_original", undefined],
-      ["revert_mapset_to_original", { includeDeleted: [] }],
+      ["mapset_revert_action", { action: { kind: "preview" } }],
+      ["mapset_revert_action", { action: { kind: "revert", includeDeleted: [] } }],
       ["editor_view", { action: null, scene: true }],
     ]
   );

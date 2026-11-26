@@ -1,39 +1,49 @@
+use dawsu_application::Application;
+use serde::Deserialize;
 use tauri::State;
 
 use crate::{Editor, Request, ask, updater};
 
-#[tauri::command]
-pub(crate) fn stem_separation_status(
-    state: State<'_, Editor>,
-) -> Result<dawsu_application::StemSeparationStatus, String> {
-    ask(&state, Request::StemSeparationStatus)?
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(crate) enum StemSeparationAction {
+    Status,
+    #[serde(rename_all = "camelCase")]
+    Start {
+        force_rerun: Option<bool>,
+        custom_model_path: Option<String>,
+    },
+    Cancel,
+    DeleteCache,
+}
+
+pub(crate) fn handle_stem_separation_action(
+    app: &mut Application,
+    action: StemSeparationAction,
+) -> (Result<dawsu_application::StemSeparationStatus, String>, bool) {
+    match action {
+        StemSeparationAction::Status => (Ok(app.stem_separation_status()), true),
+        StemSeparationAction::Start {
+            force_rerun,
+            custom_model_path,
+        } => {
+            let options = dawsu_application::StemSeparationStartOptions {
+                force_rerun: force_rerun.unwrap_or(false),
+                custom_model_path,
+            };
+            (app.stem_separation_start(options), true)
+        }
+        StemSeparationAction::Cancel => (Ok(app.stem_separation_cancel()), false),
+        StemSeparationAction::DeleteCache => (app.stem_separation_delete_cache(), false),
+    }
 }
 
 #[tauri::command]
-pub(crate) fn stem_separation_start(
-    force_rerun: Option<bool>,
-    custom_model_path: Option<String>,
+pub(crate) fn stem_separation_action(
+    action: StemSeparationAction,
     state: State<'_, Editor>,
 ) -> Result<dawsu_application::StemSeparationStatus, String> {
-    let options = dawsu_application::StemSeparationStartOptions {
-        force_rerun: force_rerun.unwrap_or(false),
-        custom_model_path,
-    };
-    ask(&state, |tx| Request::StemSeparationStart(options, tx))?
-}
-
-#[tauri::command]
-pub(crate) fn stem_separation_cancel(
-    state: State<'_, Editor>,
-) -> Result<dawsu_application::StemSeparationStatus, String> {
-    ask(&state, Request::StemSeparationCancel)?
-}
-
-#[tauri::command]
-pub(crate) fn stem_separation_delete_cache(
-    state: State<'_, Editor>,
-) -> Result<dawsu_application::StemSeparationStatus, String> {
-    ask(&state, Request::StemSeparationDeleteCache)?
+    ask(&state, |tx| Request::StemSeparation(action, tx))?
 }
 
 

@@ -305,7 +305,7 @@ export function createEditor(env = globalThis, { ui = null, autoStart = true, ex
     }
     if (value === "__capture_shared_base__") {
       try {
-        await invoke("shared_base_capture");
+        await invoke("shared_base_action", { action: { kind: "capture" } });
         env.window?.showToast?.({ tone: "success", title: "Shared Base captured", body: "Captured hitsounds from this difficulty as the mapset's Shared Base." });
         if (typeof env.window?.openSharedBaseModal === "function") env.window.openSharedBaseModal();
       } catch (error) {

@@ -27,7 +27,7 @@
       loading = true;
       open = true;
       info = null;
-      const result = await invoke("inspect_midi_file", { path });
+      const result = await invoke("midi_action", { action: { kind: "inspect_file", path } });
       info = result;
       selectedTracks = (result?.tracks ?? []).map(t => t.index);
       useBeatmapTempo = true;
@@ -55,8 +55,12 @@
     loading = true;
     error = "";
     try {
-      const outcome = await invoke("apply_midi_import",
-        importArgs(info, selectedTracks, { useBeatmapTempo, offsetMs, snap, followVolume }));
+      const outcome = await invoke("midi_action", {
+        action: {
+          kind: "apply_import",
+          ...importArgs(info, selectedTracks, { useBeatmapTempo, offsetMs, snap, followVolume }),
+        },
+      });
       open = false;
       globalThis.showToast?.(importToast(outcome));
       await act(null);

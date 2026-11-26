@@ -205,25 +205,45 @@ pub(crate) fn relink_moved_mapset(
 }
 
 
-#[tauri::command]
-pub(crate) fn preview_revert_mapset_to_original(
-    state: State<'_, Editor>,
-) -> Result<dawsu_application::SnapshotPreview, String> {
-    ask(&state, Request::PreviewRevertMapsetToOriginal)?
+#[derive(serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(crate) enum MapsetRevertAction {
+    Preview,
+    #[serde(rename_all = "camelCase")]
+    Revert {
+        include_deleted: Option<Vec<String>>,
+    },
+    Undo,
+}
+
+pub(crate) fn handle_mapset_revert_action(
+    app: &mut Application,
+    action: MapsetRevertAction,
+) -> (Result<Value, String>, bool) {
+    match action {
+        MapsetRevertAction::Preview => (
+            app.preview_revert_mapset_to_original()
+                .and_then(|value| serde_json::to_value(value).map_err(|e| e.to_string())),
+            false,
+        ),
+        MapsetRevertAction::Revert { include_deleted } => (
+            app.revert_mapset_to_original(&include_deleted.unwrap_or_default())
+                .and_then(|value| serde_json::to_value(value).map_err(|e| e.to_string())),
+            true,
+        ),
+        MapsetRevertAction::Undo => (
+            app.undo_mapset_revert()
+                .and_then(|value| serde_json::to_value(value).map_err(|e| e.to_string())),
+            true,
+        ),
+    }
 }
 
 #[tauri::command]
-pub(crate) fn revert_mapset_to_original(
-    include_deleted: Option<Vec<String>>,
+pub(crate) fn mapset_revert_action(
+    action: MapsetRevertAction,
     state: State<'_, Editor>,
-) -> Result<usize, String> {
-    ask(&state, |tx| {
-        Request::RevertMapsetToOriginal(include_deleted.unwrap_or_default(), tx)
-    })?
-}
-
-#[tauri::command]
-pub(crate) fn undo_mapset_revert(state: State<'_, Editor>) -> Result<usize, String> {
-    ask(&state, Request::UndoMapsetRevert)?
+) -> Result<Value, String> {
+    ask(&state, |tx| Request::MapsetRevert(action, tx))?
 }
 

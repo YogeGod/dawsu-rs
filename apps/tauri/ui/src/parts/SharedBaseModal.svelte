@@ -65,8 +65,8 @@
 
   async function refreshAll() {
     const [nextStatus, nextTabs] = await Promise.all([
-      invoke("shared_base_status"),
-      invoke("shared_base_diff_projections", { leniencyMs }),
+      invoke("shared_base_action", { action: { kind: "status" } }),
+      invoke("shared_base_action", { action: { kind: "diff_projections", leniencyMs } }),
     ]);
     if (nextStatus) status = nextStatus;
     if (Array.isArray(nextTabs)) {
@@ -79,13 +79,13 @@
   }
 
   async function refreshRules() {
-    const res = await invoke("shared_base_rules", { diffFile: activeDiffFile });
+    const res = await invoke("shared_base_action", { action: { kind: "rules", diffFile: activeDiffFile } });
     rules = Array.isArray(res) ? res : [];
   }
 
   async function refreshEnvelope() {
     const diffFile = volumeScope === "diff" ? activeDiffFile : null;
-    const env = await invoke("shared_base_volume_envelope", { diffFile });
+    const env = await invoke("shared_base_action", { action: { kind: "volume_envelope", diffFile } });
     envelopePoints = Array.isArray(env?.points) ? env.points : [];
     selectedPointIdx = envelopePoints.length ? 0 : null;
   }
@@ -114,7 +114,7 @@
     error = "";
     notice = "";
     try {
-      const next = await invoke("shared_base_set_enabled", { enabled });
+      const next = await invoke("shared_base_action", { action: { kind: "set_enabled", enabled } });
       if (next) status = next;
       notice = enabled
         ? "Shared Base is on for this mapset. Edits on this difficulty are tracked as overrides."
@@ -132,7 +132,7 @@
     error = "";
     notice = "";
     try {
-      const next = await invoke("shared_base_capture");
+      const next = await invoke("shared_base_action", { action: { kind: "capture" } });
       if (next) status = next;
       await refreshAll();
       notice = `Captured ${next?.baseMomentCount ?? 0} moments as the mapset Shared Base.`;
@@ -149,7 +149,9 @@
     error = "";
     notice = "";
     try {
-      const result = await invoke("shared_base_apply", applyArgs({ leniencyMs, overwriteOverrides }));
+      const result = await invoke("shared_base_action", {
+        action: { kind: "apply", ...applyArgs({ leniencyMs, overwriteOverrides }) },
+      });
       if (result?.status) status = result.status;
       notice = formatApplySummary(result);
       await act(null);
@@ -167,7 +169,9 @@
     error = "";
     notice = "";
     try {
-      const result = await invoke("shared_base_apply_all", applyArgs({ leniencyMs, overwriteOverrides }));
+      const result = await invoke("shared_base_action", {
+        action: { kind: "apply_all", ...applyArgs({ leniencyMs, overwriteOverrides }) },
+      });
       if (result?.status) status = result.status;
       notice = formatApplyAllSummary(result);
       if (Array.isArray(result?.failedDiffs) && result.failedDiffs.length > 0) {
@@ -188,7 +192,7 @@
     error = "";
     notice = "";
     try {
-      const next = await invoke("shared_base_clear_overrides");
+      const next = await invoke("shared_base_action", { action: { kind: "clear_overrides" } });
       if (next) status = next;
       notice = "Cleared per-difficulty overrides for this difficulty.";
     } catch (err) {
@@ -204,7 +208,7 @@
     error = "";
     notice = "";
     try {
-      const next = await invoke("shared_base_clear");
+      const next = await invoke("shared_base_action", { action: { kind: "clear" } });
       if (next) status = next;
       await refreshAll();
       notice = "Cleared Shared Base for this mapset.";
@@ -253,7 +257,7 @@
     busy = true;
     error = "";
     try {
-      rules = (await invoke("shared_base_add_rule", { diffFile: activeDiffFile, rule })) ?? [];
+      rules = (await invoke("shared_base_action", { action: { kind: "add_rule", diffFile: activeDiffFile, rule } })) ?? [];
       await refreshAll();
       notice = "Saved per-difficulty lane rule.";
     } catch (err) {
@@ -268,7 +272,7 @@
     busy = true;
     error = "";
     try {
-      rules = (await invoke("shared_base_remove_rule", { diffFile: activeDiffFile, index })) ?? [];
+      rules = (await invoke("shared_base_action", { action: { kind: "remove_rule", diffFile: activeDiffFile, index } })) ?? [];
       await refreshAll();
     } catch (err) {
       error = String(err);
@@ -298,9 +302,12 @@
     busy = true;
     error = "";
     try {
-      const saved = await invoke("shared_base_set_volume_envelope", {
-        diffFile,
-        envelope: { points: sorted },
+      const saved = await invoke("shared_base_action", {
+        action: {
+          kind: "set_volume_envelope",
+          diffFile,
+          envelope: { points: sorted },
+        },
       });
       envelopePoints = saved?.points ?? [];
       notice = envelopePoints.length

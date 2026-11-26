@@ -364,7 +364,7 @@ function editItem(get, label) {
 
 test("Place sound set lists this map's sets, then the library, and places one by its id", async () => {
   const { get, calls, modals, responses } = fixture();
-  responses.sound_set_library = { configured: true, sets: [
+  responses.sound_set_action = { configured: true, sets: [
     { id: "a", name: "Kick", sounds: 2, inMap: true, duplicate: false },
     { id: "b", name: "Bell", sounds: 1, inMap: false, duplicate: false },
     { id: "c", name: "Crash", sounds: 3, inMap: false, duplicate: true },
@@ -402,7 +402,7 @@ test("Place sound set lists this map's sets, then the library, and places one by
 
 test("Place sound set with an empty library says so and still offers Browse", async () => {
   const { get, modals, responses } = fixture();
-  responses.sound_set_library = { configured: true, sets: [] };
+  responses.sound_set_action = { configured: true, sets: [] };
   editItem(get, "Place sound set…").click();
   await settle();
   assert.deepEqual(plain(modals[0].content.map(node => node.textContent)),
@@ -412,21 +412,21 @@ test("Place sound set with an empty library says so and still offers Browse", as
 
 test("Place sound set says when the library is still being read or its folder is gone", async () => {
   const { get, calls, modals, responses } = fixture();
-  responses.sound_set_library = { configured: true, sets: [], unreadable: [], reading: true };
+  responses.sound_set_action = { configured: true, sets: [], unreadable: [], reading: true };
   editItem(get, "Place sound set…").click();
   await settle();
   assert.deepEqual(plain(modals[0].content.map(node => node.textContent)), ["Still reading the sound set library. Try again."]);
-  responses.sound_set_library = { configured: true, error: "Hitsound library folder not found: D:/Library", sets: [], unreadable: [] };
+  responses.sound_set_action = { configured: true, error: "Hitsound library folder not found: D:/Library", sets: [], unreadable: [] };
   button(modals[0], "Try again")[1]();
   await settle();
-  assert.equal(calls.filter(call => Array.isArray(call) && call[0] === "sound_set_library").length, 2);
+  assert.equal(calls.filter(call => Array.isArray(call) && call[0] === "sound_set_action" && call[1]?.action?.kind === "library").length, 2);
   assert.deepEqual(plain(modals[1].content.map(node => node.textContent)), ["Hitsound library folder not found: D:/Library"]);
   assert.deepEqual(plain(modals[1].buttons.map(([label]) => label)), ["Cancel", "Browse…", "Choose library folder…"]);
 });
 
 test("a list with only sets that can't be placed says so", async () => {
   const { get, modals, responses } = fixture();
-  responses.sound_set_library = { configured: true, sets: [{ id: "c", name: "Crash", sounds: 3, inMap: false, duplicate: true }],
+  responses.sound_set_action = { configured: true, sets: [{ id: "c", name: "Crash", sounds: 3, inMap: false, duplicate: true }],
     unreadable: [], reading: false };
   editItem(get, "Place sound set…").click();
   await settle();
@@ -435,13 +435,13 @@ test("a list with only sets that can't be placed says so", async () => {
 
 test("without a hitsound library, both sound set items ask for one first", async () => {
   const { get, calls, view, modals, responses } = fixture();
-  responses.sound_set_library = { configured: false, sets: [] };
+  responses.sound_set_action = { configured: false, sets: [] };
   responses.pick_hitsound_library = { hitsoundLibrary: "Library" };
   editItem(get, "Place sound set…").click();
   await settle();
   assert.deepEqual(plain(modals[0].content.map(node => node.textContent)), ["Sound sets are kept in your hitsound library."]);
   assert.deepEqual(plain(modals[0].buttons.map(([label]) => label)), ["Cancel", "Browse…", "Choose library folder…"]);
-  responses.sound_set_library = { configured: true, sets: [{ id: "a", name: "Kick", sounds: 2, inMap: false, duplicate: false }] };
+  responses.sound_set_action = { configured: true, sets: [{ id: "a", name: "Kick", sounds: 2, inMap: false, duplicate: false }] };
   button(modals[0], "Choose library folder…")[1]();
   await settle();
   await settle();
@@ -466,28 +466,28 @@ test("Save selection as sound set asks for a name and asks again when the librar
   const [label, message] = dialog.content;
   const field = label.children[1];
   assert.equal(label.children[0], "Name");
-  responses.save_sound_set = { nameTaken: "The library already has a sound set named \"Kick\". Choose another name." };
+  responses.sound_set_action = { nameTaken: "The library already has a sound set named \"Kick\". Choose another name." };
   field.value = "  ";
   button(dialog, "Save")[1]();
   await settle();
-  assert.ok(!calls.some(call => Array.isArray(call) && call[0] === "save_sound_set"), "a blank name is not sent");
+  assert.ok(!calls.some(call => Array.isArray(call) && call[0] === "sound_set_action" && call[1]?.action?.kind === "save"), "a blank name is not sent");
   assert.equal(message.textContent, "Name the sound set.");
   field.value = "Kick";
   button(dialog, "Save")[1]();
   await settle();
-  assert.deepEqual(JSON.parse(JSON.stringify(calls.at(-1))), ["save_sound_set", { map: "Test.osu", name: "Kick" }]);
+  assert.deepEqual(JSON.parse(JSON.stringify(calls.at(-1))), ["sound_set_action", { action: { kind: "save", map: "Test.osu", name: "Kick" } }]);
   assert.match(message.textContent, /already has a sound set named "Kick"/);
   assert.ok(!calls.includes("closeModal"), "the name prompt stays open");
-  responses.save_sound_set = () => { throw "Select sounds at one time to save a set."; };
+  responses.sound_set_action = () => { throw "Select sounds at one time to save a set."; };
   button(dialog, "Save")[1]();
   await settle();
   assert.equal(message.textContent, "Select sounds at one time to save a set.");
-  responses.save_sound_set = { status: "Saved sound set \"Kicks\"." };
+  responses.sound_set_action = { status: "Saved sound set \"Kicks\"." };
   field.value = "Kicks";
   button(dialog, "Save")[1]();
   button(dialog, "Save")[1]();
   await settle();
-  assert.equal(calls.filter(call => Array.isArray(call) && call[0] === "save_sound_set" && call[1].name === "Kicks").length, 1,
+  assert.equal(calls.filter(call => Array.isArray(call) && call[0] === "sound_set_action" && call[1]?.action?.kind === "save" && call[1].action.name === "Kicks").length, 1,
     "a second click while saving saves nothing more");
   assert.deepEqual(JSON.parse(JSON.stringify(calls.slice(-2))), ["closeModal", { show: { status: "Saved sound set \"Kicks\"." } }]);
 });
@@ -606,10 +606,10 @@ test("Sound set placement needs a selected placement and shows its set, edits, v
   assert.equal(editItem(get, "Sound set placement…").disabled, true, "needs a selected placement");
   get("menu-edit").click();
   scene.placement = 7;
-  responses.sound_set_placement = { id: 7, name: "Kick stack", edited: 2, sounds: 3, gain: 100, frozen: null, newer: false };
+  responses.sound_set_action = { id: 7, name: "Kick stack", edited: 2, sounds: 3, gain: 100, frozen: null, newer: false };
   editItem(get, "Sound set placement…").click();
   await settle();
-  assert.deepEqual(plain(calls.find(call => Array.isArray(call) && call[0] === "sound_set_placement")), ["sound_set_placement", { map: "Test.osu", id: 7 }]);
+  assert.deepEqual(plain(calls.find(call => Array.isArray(call) && call[0] === "sound_set_action")), ["sound_set_action", { action: { kind: "placement", map: "Test.osu", id: 7 } }]);
   const dialog = modals.at(-1);
   assert.equal(dialog.kind, "sound-set-placement");
   assert.equal(dialog.title, "Sound set placement");
@@ -641,14 +641,14 @@ test("Sound set placement needs a selected placement and shows its set, edits, v
 test("a placement not in the library can be unlinked but not set louder, and one on an older version offers Update", async () => {
   const { get, scene, calls, modals, responses } = fixture();
   scene.placement = 3;
-  responses.sound_set_placement = { id: 3, setId: "9e7b1d18", name: null, edited: 0, sounds: 2, gain: 80, frozen: "Not in library", newer: false };
+  responses.sound_set_action = { id: 3, setId: "9e7b1d18", name: null, edited: 0, sounds: 2, gain: 80, frozen: "Not in library", newer: false };
   editItem(get, "Sound set placement…").click();
   await settle();
   let dialog = modals.at(-1);
   assert.deepEqual(plain(dialog.content.map(node => node.textContent)), ["Not in library", "0 of 2 sounds edited"]);
   assert.equal(dialog.content[0].title, "9e7b1d18", "the id is a tooltip, never the name");
   assert.deepEqual(plain(dialog.buttons.map(([text]) => text)), ["Close", "Unlink"]);
-  responses.sound_set_placement = { id: 3, name: "Kick stack", edited: 1, sounds: 2, gain: 80, frozen: "The library has another version of this set.", newer: true };
+  responses.sound_set_action = { id: 3, name: "Kick stack", edited: 1, sounds: 2, gain: 80, frozen: "The library has another version of this set.", newer: true };
   editItem(get, "Sound set placement…").click();
   await settle();
   dialog = modals.at(-1);
@@ -687,7 +687,7 @@ test("the open-time question answers Update or Keep, and Escape closes it until 
 
 test("Place sound set lists a set this map uses that the library lacks under In this map, greyed out", async () => {
   const { get, modals, responses } = fixture();
-  responses.sound_set_library = { configured: true, sets: [
+  responses.sound_set_action = { configured: true, sets: [
     { id: "9e7b1d18", name: "", sounds: 0, inMap: true, duplicate: false, missing: true },
   ], unreadable: [], reading: false };
   editItem(get, "Place sound set…").click();
@@ -820,7 +820,7 @@ test("File › Revert mapset to original… opens only with a first-open copy of
   assert.equal(revert().disabled, false);
   revert().click();
   assert.equal(asked, 1);
-  assert.equal(calls.some(call => Array.isArray(call) && call[0] === "revert_mapset_to_original"), false,
+  assert.equal(calls.some(call => Array.isArray(call) && call[0] === "mapset_revert_action" && call[1]?.action?.kind === "revert"), false,
     "the menu row only asks; the dialog's Revert button invokes");
 
   const undoRevert = () => menuButtons(popup).find(button => button.textContent === "Undo revert")

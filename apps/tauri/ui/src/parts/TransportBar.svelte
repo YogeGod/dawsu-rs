@@ -58,7 +58,9 @@
     if (arming) return;
     arming = true;
     try {
-      const status = await invoke("midi_record_toggle", recordArgs(readPort(storage()), bridge.scene));
+      const status = await invoke("midi_action", {
+        action: { kind: "record_toggle", ...recordArgs(readPort(storage()), bridge.scene) },
+      });
       armed = !!status?.armed;
       const toast = tapAwareRecordToast(status);
       if (toast) globalThis.showToast?.(toast);

@@ -46,8 +46,8 @@
     }
     try {
       const [nextStatus, nextProj] = await Promise.all([
-        invoke("shared_base_status"),
-        invoke("shared_base_diff_projections", { leniencyMs: 5 }).catch(() => []),
+        invoke("shared_base_action", { action: { kind: "status" } }),
+        invoke("shared_base_action", { action: { kind: "diff_projections", leniencyMs: 5 } }).catch(() => []),
       ]);
       status = nextStatus ?? null;
       projections = Array.isArray(nextProj) ? nextProj : [];
@@ -77,7 +77,7 @@
     if (busy || disabled) return;
     busy = true;
     try {
-      status = await invoke("shared_base_capture");
+      status = await invoke("shared_base_action", { action: { kind: "capture" } });
       await refreshBase();
       globalThis.showToast?.({ tone: "success", title: "Shared Base captured", body: `${status?.momentCount ?? 0} moments saved to Base.` });
     } catch (err) {
@@ -93,8 +93,8 @@
     try {
       const args = applyArgs({ leniencyMs: 5, overwriteOverrides: false });
       const res = all
-        ? await invoke("shared_base_apply_all", args)
-        : await invoke("shared_base_apply", args);
+        ? await invoke("shared_base_action", { action: { kind: "apply_all", ...args } })
+        : await invoke("shared_base_action", { action: { kind: "apply", ...args } });
       await globalThis.update?.(null, true);
       await refreshBase();
       globalThis.showToast?.({

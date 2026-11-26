@@ -56,9 +56,7 @@ pub(crate) enum Request {
     SetLibraryDirectory(PathBuf, mpsc::Sender<Result<ViewResponse, String>>),
     LibraryEntries(library::Location, mpsc::Sender<Result<Vec<(String, bool)>, String>>),
     SamplePreview(PreviewSource, mpsc::Sender<Result<Value, String>>),
-    SoundSetLibrary(mpsc::Sender<Result<Value, String>>),
-    SoundSetPlacement(PathBuf, u64, mpsc::Sender<Result<Value, String>>),
-    SaveSoundSet(PathBuf, String, mpsc::Sender<Result<ViewResponse, String>>),
+    SoundSet(SoundSetAction, mpsc::Sender<Result<Value, String>>),
     LaneAddCandidates(PathBuf, mpsc::Sender<Result<Value, String>>),
     MapPreview(PathBuf, mpsc::Sender<Result<Value, String>>),
     /// The map preview window's place, kept for the next open; `true` also saves the preferences.
@@ -91,54 +89,20 @@ pub(crate) enum Request {
     NodeGraphExportJson(mpsc::Sender<Result<String, String>>),
     NodeGraphClose,
     /// MIDI import, export, live MIDI recording, VST3 scan, and Keysounding actions.
-    InspectMidiFile(String, mpsc::Sender<Result<dawsu_application::MidiInspectResult, String>>),
-    ApplyMidiImport(
-        dawsu_application::MidiImportOptions,
-        mpsc::Sender<Result<dawsu_application::MidiImportOutcome, String>>,
-    ),
+    Midi(MidiAction, mpsc::Sender<Result<Value, String>>),
     ExportMidiFile(PathBuf, mpsc::Sender<Result<usize, String>>),
     ImportManiaHitsounds(
         PathBuf,
         mpsc::Sender<Result<dawsu_application::ManiaImportReport, String>>,
     ),
-    MidiRecordToggle(Option<usize>, Option<u32>, mpsc::Sender<Result<dawsu_application::MidiRecordStatus, String>>),
     Vst3Scan(mpsc::Sender<Result<dawsu_application::Vst3ScanReport, String>>),
-    InspectSoundfontFile(PathBuf, mpsc::Sender<Result<dawsu_application::SamplerSummary, String>>),
-    AuditionSoundfontNote(PathBuf, usize, u8, u8, f64, mpsc::Sender<Result<(), String>>),
     DrumVstAction(Value, mpsc::Sender<Result<Value, String>>),
     KeysoundsAction(Value, mpsc::Sender<Result<Value, String>>),
-    PreviewRevertMapsetToOriginal(mpsc::Sender<Result<dawsu_application::SnapshotPreview, String>>),
-    RevertMapsetToOriginal(Vec<String>, mpsc::Sender<Result<usize, String>>),
-    UndoMapsetRevert(mpsc::Sender<Result<usize, String>>),
-    SharedBaseStatus(mpsc::Sender<Result<dawsu_application::SharedBaseStatus, String>>),
-    SharedBaseSetEnabled(bool, mpsc::Sender<Result<dawsu_application::SharedBaseStatus, String>>),
-    SharedBaseCapture(mpsc::Sender<Result<dawsu_application::SharedBaseStatus, String>>),
-    SharedBaseApply(
-        f64,
-        bool,
-        mpsc::Sender<Result<dawsu_application::SharedBaseApplyResult, String>>,
-    ),
-    SharedBaseApplyAll(
-        f64,
-        bool,
-        mpsc::Sender<Result<dawsu_application::SharedBaseApplyAllResult, String>>,
-    ),
-    SharedBaseClearOverrides(mpsc::Sender<Result<dawsu_application::SharedBaseStatus, String>>),
-    SharedBaseClear(mpsc::Sender<Result<dawsu_application::SharedBaseStatus, String>>),
-    SharedBaseRules(Option<String>, mpsc::Sender<Result<Vec<dawsu_application::BaseRule>, String>>),
-    SharedBaseAddRule(Option<String>, dawsu_application::BaseRule, mpsc::Sender<Result<Vec<dawsu_application::BaseRule>, String>>),
-    SharedBaseRemoveRule(Option<String>, usize, mpsc::Sender<Result<Vec<dawsu_application::BaseRule>, String>>),
-    SharedBaseDiffProjections(f64, mpsc::Sender<Result<Vec<dawsu_application::DiffProjectionTab>, String>>),
-    SharedBaseVolumeEnvelope(Option<String>, mpsc::Sender<Result<dawsu_application::VolumeEnvelope, String>>),
-    SharedBaseSetVolumeEnvelope(Option<String>, dawsu_application::VolumeEnvelope, mpsc::Sender<Result<dawsu_application::VolumeEnvelope, String>>),
+    MapsetRevert(MapsetRevertAction, mpsc::Sender<Result<Value, String>>),
+    SharedBase(SharedBaseAction, mpsc::Sender<Result<Value, String>>),
     RelinkMovedMapset(PathBuf, Option<PathBuf>, mpsc::Sender<Result<dawsu_application::RelinkMapsetResult, String>>),
-    StemSeparationStatus(mpsc::Sender<Result<dawsu_application::StemSeparationStatus, String>>),
-    StemSeparationStart(
-        dawsu_application::StemSeparationStartOptions,
-        mpsc::Sender<Result<dawsu_application::StemSeparationStatus, String>>,
-    ),
-    StemSeparationCancel(mpsc::Sender<Result<dawsu_application::StemSeparationStatus, String>>),
-    StemSeparationDeleteCache(
+    StemSeparation(
+        StemSeparationAction,
         mpsc::Sender<Result<dawsu_application::StemSeparationStatus, String>>,
     ),
 }
@@ -553,22 +517,20 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                         .and_then(|result| result);
                     let _ = response.send(result);
                 }
-                Ok(Request::SoundSetLibrary(response)) => {
-                    let result = guard(&mut app, &mut fault, |app| sound_set_library_view(app));
-                    let _ = response.send(result);
-                }
-                Ok(Request::SoundSetPlacement(map, id, response)) => {
-                    let result = guard(&mut app, &mut fault, |app| sound_set_placement_view(app, &map, id))
-                        .and_then(|result| result);
-                    let _ = response.send(result);
-                }
-                Ok(Request::SaveSoundSet(map, name, response)) => {
-                    let result = guard(&mut app, &mut fault, |app| match app.save_sound_set_from_selection(&map, &name) {
-                        Ok(()) => Ok(decorate_and_stamp_view(app, &home, &drums, playback_start, &mut tick_cache, !home.visible())),
-                        Err(dawsu_application::SaveSetError::NameTaken(message)) => {
-                            Ok(ViewResponse::NameTaken { name_taken: message })
+                Ok(Request::SoundSet(action, response)) => {
+                    let result = guard(&mut app, &mut fault, |app| match action {
+                        SoundSetAction::Library => Ok(sound_set_library_view(app)),
+                        SoundSetAction::Placement { map, id } => sound_set_placement_view(app, &map, id),
+                        SoundSetAction::Save { map, name } => {
+                            let view = match app.save_sound_set_from_selection(&map, &name) {
+                                Ok(()) => decorate_and_stamp_view(app, &home, &drums, playback_start, &mut tick_cache, !home.visible()),
+                                Err(dawsu_application::SaveSetError::NameTaken(message)) => {
+                                    ViewResponse::NameTaken { name_taken: message }
+                                }
+                                Err(dawsu_application::SaveSetError::Refused(message)) => return Err(message),
+                            };
+                            serde_json::to_value(view).map_err(|e| e.to_string())
                         }
-                        Err(dawsu_application::SaveSetError::Refused(message)) => Err(message),
                     })
                     .and_then(|result| result);
                     let _ = response.send(result);
@@ -723,27 +685,20 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                         let _ = guard(&mut app, &mut fault, Application::cancel_drum_detection);
                     }
                 }
-                Ok(Request::InspectMidiFile(path, response)) => {
-                    let result = guard(&mut app, &mut fault, |app| {
-                        let document = app.document().ok_or("Open a difficulty first.")?;
-                        let lanes = document.composer.hitsounds().lanes();
-                        dawsu_application::inspect_midi_file(
-                            Path::new(&path),
-                            lanes,
-                            drums.active_map(app),
-                        )
-                    })
-                    .and_then(|r| r);
-                    let _ = response.send(result);
-                }
-                Ok(Request::ApplyMidiImport(options, response)) => {
-                    let result = guard(&mut app, &mut fault, |app| {
+                Ok(Request::Midi(action, response)) => {
+                    let reply = match guard(&mut app, &mut fault, |app| {
                         let drum_map = drums.active_map(app).cloned();
-                        app.apply_midi_import(&options, drum_map.as_ref())
-                    })
-                    .and_then(|r| r);
-                    tick_cache.invalidate();
-                    let _ = response.send(result);
+                        handle_midi_action(app, drum_map.as_ref(), action)
+                    }) {
+                        Ok((result, invalidate)) => {
+                            if invalidate {
+                                tick_cache.invalidate();
+                            }
+                            result
+                        }
+                        Err(err) => Err(err),
+                    };
+                    let _ = response.send(reply);
                 }
                 Ok(Request::ExportMidiFile(path, response)) => {
                     let result = guard(&mut app, &mut fault, |app| app.export_midi(&path))
@@ -758,94 +713,19 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                     tick_cache.invalidate();
                     let _ = response.send(result);
                 }
-                Ok(Request::SharedBaseStatus(response)) => {
-                    let result = guard(&mut app, &mut fault, |app| app.shared_base_status());
-                    let _ = response.send(result);
-                }
-                Ok(Request::SharedBaseSetEnabled(enabled, response)) => {
-                    let result = guard(&mut app, &mut fault, |app| {
-                        app.shared_base_set_enabled(enabled)
-                    })
-                    .and_then(|r| r);
-                    let _ = response.send(result);
-                }
-                Ok(Request::SharedBaseCapture(response)) => {
-                    let result =
-                        guard(&mut app, &mut fault, |app| app.shared_base_capture_current())
-                            .and_then(|r| r);
-                    tick_cache.invalidate();
-                    let _ = response.send(result);
-                }
-                Ok(Request::SharedBaseApply(leniency_ms, overwrite_overrides, response)) => {
-                    let result = guard(&mut app, &mut fault, |app| {
-                        app.shared_base_apply_to_current(leniency_ms, overwrite_overrides)
-                    })
-                    .and_then(|r| r);
-                    tick_cache.invalidate();
-                    let _ = response.send(result);
-                }
-                Ok(Request::SharedBaseApplyAll(leniency_ms, overwrite_overrides, response)) => {
-                    let result = guard(&mut app, &mut fault, |app| {
-                        app.shared_base_apply_to_all_diffs(leniency_ms, overwrite_overrides)
-                    })
-                    .and_then(|r| r);
-                    tick_cache.invalidate();
-                    let _ = response.send(result);
-                }
-                Ok(Request::SharedBaseClearOverrides(response)) => {
-                    let result = guard(&mut app, &mut fault, |app| {
-                        app.shared_base_clear_current_overrides()
-                    })
-                    .and_then(|r| r);
-                    let _ = response.send(result);
-                }
-                Ok(Request::SharedBaseClear(response)) => {
-                    let result = guard(&mut app, &mut fault, |app| app.shared_base_clear())
-                        .and_then(|r| r);
-                    tick_cache.invalidate();
-                    let _ = response.send(result);
-                }
-                Ok(Request::SharedBaseRules(diff_file, response)) => {
-                    let result = guard(&mut app, &mut fault, |app| {
-                        app.shared_base_rules(diff_file.as_deref())
-                    });
-                    let _ = response.send(result);
-                }
-                Ok(Request::SharedBaseAddRule(diff_file, rule, response)) => {
-                    let result = guard(&mut app, &mut fault, |app| {
-                        app.shared_base_add_rule(diff_file.as_deref(), rule)
-                    })
-                    .and_then(|r| r);
-                    tick_cache.invalidate();
-                    let _ = response.send(result);
-                }
-                Ok(Request::SharedBaseRemoveRule(diff_file, index, response)) => {
-                    let result = guard(&mut app, &mut fault, |app| {
-                        app.shared_base_remove_rule(diff_file.as_deref(), index)
-                    })
-                    .and_then(|r| r);
-                    tick_cache.invalidate();
-                    let _ = response.send(result);
-                }
-                Ok(Request::SharedBaseDiffProjections(leniency_ms, response)) => {
-                    let result = guard(&mut app, &mut fault, |app| {
-                        app.shared_base_diff_projections(leniency_ms)
-                    });
-                    let _ = response.send(result);
-                }
-                Ok(Request::SharedBaseVolumeEnvelope(diff_file, response)) => {
-                    let result = guard(&mut app, &mut fault, |app| {
-                        app.shared_base_volume_envelope(diff_file.as_deref())
-                    });
-                    let _ = response.send(result);
-                }
-                Ok(Request::SharedBaseSetVolumeEnvelope(diff_file, envelope, response)) => {
-                    let result = guard(&mut app, &mut fault, |app| {
-                        app.shared_base_set_volume_envelope(diff_file.as_deref(), envelope)
-                    })
-                    .and_then(|r| r);
-                    tick_cache.invalidate();
-                    let _ = response.send(result);
+                Ok(Request::SharedBase(action, response)) => {
+                    let reply = match guard(&mut app, &mut fault, |app| {
+                        handle_shared_base_action(app, action)
+                    }) {
+                        Ok((result, invalidate)) => {
+                            if invalidate {
+                                tick_cache.invalidate();
+                            }
+                            result
+                        }
+                        Err(err) => Err(err),
+                    };
+                    let _ = response.send(reply);
                 }
                 Ok(Request::RelinkMovedMapset(missing, explicit_dir, response)) => {
                     let result = guard(&mut app, &mut fault, |app| {
@@ -855,54 +735,24 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                     tick_cache.invalidate();
                     let _ = response.send(result);
                 }
-                Ok(Request::StemSeparationStatus(response)) => {
-                    let result = guard(&mut app, &mut fault, |app| app.stem_separation_status());
-                    tick_cache.invalidate();
-                    let _ = response.send(result);
-                }
-                Ok(Request::StemSeparationStart(options, response)) => {
-                    let result =
-                        guard(&mut app, &mut fault, |app| app.stem_separation_start(options))
-                            .and_then(|r| r);
-                    tick_cache.invalidate();
-                    let _ = response.send(result);
-                }
-                Ok(Request::StemSeparationCancel(response)) => {
-                    let result = guard(&mut app, &mut fault, |app| app.stem_separation_cancel());
-                    let _ = response.send(result);
-                }
-                Ok(Request::StemSeparationDeleteCache(response)) => {
-                    let result = guard(&mut app, &mut fault, |app| {
-                        app.stem_separation_delete_cache()
-                    })
-                    .and_then(|r| r);
-                    let _ = response.send(result);
-                }
-                Ok(Request::MidiRecordToggle(port_index, snap, response)) => {
-                    let result = guard(&mut app, &mut fault, |app| {
-                        let drum_map = drums.active_map(app).cloned();
-                        app.toggle_midi_recording(port_index, drum_map.as_ref(), snap)
-                    })
-                    .and_then(|r| r);
-                    tick_cache.invalidate();
-                    let _ = response.send(result);
+                Ok(Request::StemSeparation(action, response)) => {
+                    let reply = match guard(&mut app, &mut fault, |app| {
+                        handle_stem_separation_action(app, action)
+                    }) {
+                        Ok((result, invalidate)) => {
+                            if invalidate {
+                                tick_cache.invalidate();
+                            }
+                            result
+                        }
+                        Err(err) => Err(err),
+                    };
+                    let _ = response.send(reply);
                 }
                 Ok(Request::Vst3Scan(response)) => {
                     let result = guard(&mut app, &mut fault, |app| app.scan_vst3_plugins(&[]))
                         .and_then(|r| r);
                     tick_cache.invalidate();
-                    let _ = response.send(result);
-                }
-                Ok(Request::InspectSoundfontFile(path, response)) => {
-                    let result = guard(&mut app, &mut fault, |app| app.inspect_soundfont_file(&path))
-                        .and_then(|r| r);
-                    let _ = response.send(result);
-                }
-                Ok(Request::AuditionSoundfontNote(path, preset, pitch, velocity, dur, response)) => {
-                    let result = guard(&mut app, &mut fault, |app| {
-                        app.audition_soundfont_note(&path, preset, pitch, velocity, dur)
-                    })
-                    .and_then(|r| r);
                     let _ = response.send(result);
                 }
                 Ok(Request::DrumVstAction(payload, response)) => {
@@ -970,26 +820,19 @@ fn editor_thread(initial: Option<PathBuf>) -> Editor {
                     tick_cache.invalidate();
                     let _ = response.send(result);
                 }
-                Ok(Request::PreviewRevertMapsetToOriginal(response)) => {
-                    let result = guard(&mut app, &mut fault, |app| {
-                        app.preview_revert_mapset_to_original()
-                    })
-                    .and_then(|r| r);
-                    let _ = response.send(result);
-                }
-                Ok(Request::RevertMapsetToOriginal(include_deleted, response)) => {
-                    let result = guard(&mut app, &mut fault, |app| {
-                        app.revert_mapset_to_original(&include_deleted)
-                    })
-                    .and_then(|r| r);
-                    tick_cache.invalidate();
-                    let _ = response.send(result);
-                }
-                Ok(Request::UndoMapsetRevert(response)) => {
-                    let result = guard(&mut app, &mut fault, |app| app.undo_mapset_revert())
-                        .and_then(|r| r);
-                    tick_cache.invalidate();
-                    let _ = response.send(result);
+                Ok(Request::MapsetRevert(action, response)) => {
+                    let reply = match guard(&mut app, &mut fault, |app| {
+                        handle_mapset_revert_action(app, action)
+                    }) {
+                        Ok((result, invalidate)) => {
+                            if invalidate {
+                                tick_cache.invalidate();
+                            }
+                            result
+                        }
+                        Err(err) => Err(err),
+                    };
+                    let _ = response.send(reply);
                 }
                 Ok(Request::NodeGraphView(response)) => {
                     let result = guard(&mut app, &mut fault, |app| {
@@ -1179,9 +1022,7 @@ fn main() {
             commands::library_and_files::pick_lane_sample,
             commands::library_and_files::pick_drum_stem,
             commands::library_and_files::pick_sound_set,
-            commands::library_and_files::sound_set_library,
-            commands::library_and_files::sound_set_placement,
-            commands::library_and_files::save_sound_set,
+            commands::library_and_files::sound_set_action,
             commands::library_and_files::pick_songs_folder,
             commands::library_and_files::songs_index_search,
             commands::library_and_files::mapset_background,
@@ -1202,40 +1043,18 @@ fn main() {
             commands::editor::open_from_osu,
             commands::editor::reload_osu_editor,
             commands::midi_keysounds::pick_midi_file,
-            commands::midi_keysounds::inspect_midi_file,
-            commands::midi_keysounds::apply_midi_import,
             commands::midi_keysounds::export_midi_file,
             commands::midi_keysounds::import_mania_hitsounds,
-            commands::shared_base::shared_base_status,
-            commands::shared_base::shared_base_set_enabled,
-            commands::shared_base::shared_base_capture,
-            commands::shared_base::shared_base_apply,
-            commands::shared_base::shared_base_apply_all,
-            commands::shared_base::shared_base_clear_overrides,
-            commands::shared_base::shared_base_clear,
-            commands::shared_base::shared_base_rules,
-            commands::shared_base::shared_base_add_rule,
-            commands::shared_base::shared_base_remove_rule,
-            commands::shared_base::shared_base_diff_projections,
-            commands::shared_base::shared_base_volume_envelope,
-            commands::shared_base::shared_base_set_volume_envelope,
+            commands::shared_base::shared_base_action,
             commands::editor::relink_moved_mapset,
             commands::export::export_pick_hitsound_only_dir,
-            commands::stem_and_updater::stem_separation_status,
-            commands::stem_and_updater::stem_separation_start,
-            commands::stem_and_updater::stem_separation_cancel,
-            commands::stem_and_updater::stem_separation_delete_cache,
-            commands::midi_keysounds::midi_input_ports,
-            commands::midi_keysounds::midi_record_toggle,
+            commands::stem_and_updater::stem_separation_action,
+            commands::midi_keysounds::midi_action,
             commands::midi_keysounds::vst3_scan,
             commands::midi_keysounds::pick_soundfont_file,
-            commands::midi_keysounds::inspect_soundfont_file,
-            commands::midi_keysounds::audition_soundfont_note,
             commands::drum_and_graph::drum_vst_action,
             commands::midi_keysounds::keysounds_action,
-            commands::editor::preview_revert_mapset_to_original,
-            commands::editor::revert_mapset_to_original,
-            commands::editor::undo_mapset_revert,
+            commands::editor::mapset_revert_action,
             commands::stem_and_updater::check_for_updates,
             commands::stem_and_updater::download_update,
             commands::stem_and_updater::install_update_on_close,

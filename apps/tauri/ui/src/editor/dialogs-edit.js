@@ -205,7 +205,7 @@ export function attachEditDialogs(ctx) {
     return ctx.run(async () => {
       let preview;
       try {
-        preview = await invoke("preview_revert_mapset_to_original");
+        preview = await invoke("mapset_revert_action", { action: { kind: "preview" } });
       } catch (reason) {
         env.window?.showToast?.({
           tone: "warning",
@@ -237,7 +237,7 @@ export function attachEditDialogs(ctx) {
           ctx.run(async () => {
             if (state.scene?.path !== map || state.view.busy) return;
             try {
-              await invoke("revert_mapset_to_original", { includeDeleted });
+              await invoke("mapset_revert_action", { action: { kind: "revert", includeDeleted } });
               await ctx.update();
             } catch (reason) {
               env.window?.showToast?.({
@@ -259,7 +259,7 @@ export function attachEditDialogs(ctx) {
     return ctx.run(async () => {
       if (state.scene?.path !== map || state.view.busy) return;
       try {
-        await invoke("undo_mapset_revert");
+        await invoke("mapset_revert_action", { action: { kind: "undo" } });
         await ctx.update();
       } catch (reason) {
         env.window?.showToast?.({

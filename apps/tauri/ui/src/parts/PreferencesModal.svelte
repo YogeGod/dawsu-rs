@@ -145,7 +145,7 @@
 
   async function loadMidiPorts() {
     try {
-      midiPorts = (await invoke("midi_input_ports")) ?? [];
+      midiPorts = (await invoke("midi_action", { action: { kind: "input_ports" } })) ?? [];
       midiError = "";
       const saved = readPort(storage());
       midiPort = saved != null && saved < midiPorts.length ? String(saved) : "";
@@ -180,7 +180,7 @@
     try {
       const path = await invoke("pick_soundfont_file");
       if (path) {
-        soundfontSummary = await invoke("inspect_soundfont_file", { path });
+        soundfontSummary = await invoke("midi_action", { action: { kind: "inspect_soundfont", path } });
       }
     } catch (err) {
       soundfontError = String(err);
@@ -194,7 +194,9 @@
     if (!path) return;
     soundfontError = "";
     try {
-      await invoke("audition_soundfont_note", { path, presetIndex: 0, pitch: 60, velocity: 100, durationMs: 300 });
+      await invoke("midi_action", {
+        action: { kind: "audition_soundfont", path, presetIndex: 0, pitch: 60, velocity: 100, durationMs: 300 },
+      });
     } catch (err) {
       soundfontError = String(err);
     }

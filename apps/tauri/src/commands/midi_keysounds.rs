@@ -1,9 +1,112 @@
+use dawsu_application::Application;
 use dawsu_application::bounce_plan::{OszBudgetSummary, calculate_osz_budget};
-use serde::Serialize;
+use dawsu_hitsounding::drums::DrumMap;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::path::Path;
 use tauri::State;
 
 use crate::{Editor, Request, ask, folders};
+
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(crate) enum MidiAction {
+    InspectFile {
+        path: String,
+    },
+    #[serde(rename_all = "camelCase")]
+    ApplyImport {
+        path: String,
+        tracks: Vec<usize>,
+        use_beatmap_tempo: Option<bool>,
+        offset_ms: Option<f64>,
+        snap: Option<bool>,
+        follow_volume: Option<bool>,
+    },
+    InputPorts,
+    #[serde(rename_all = "camelCase")]
+    RecordToggle {
+        port_index: Option<usize>,
+        snap_divisor: Option<u32>,
+    },
+    InspectSoundfont {
+        path: String,
+    },
+    #[serde(rename_all = "camelCase")]
+    AuditionSoundfont {
+        path: String,
+        preset_index: Option<usize>,
+        pitch: Option<u8>,
+        velocity: Option<u8>,
+        duration_ms: Option<f64>,
+    },
+}
+
+fn to_json<T: Serialize>(result: Result<T, String>) -> Result<Value, String> {
+    result.and_then(|value| serde_json::to_value(value).map_err(|e| e.to_string()))
+}
+
+pub(crate) fn handle_midi_action(
+    app: &mut Application,
+    drum_map: Option<&DrumMap>,
+    action: MidiAction,
+) -> (Result<Value, String>, bool) {
+    match action {
+        MidiAction::InspectFile { path } => {
+            let res = (|| {
+                let document = app.document().ok_or("Open a difficulty first.")?;
+                let lanes = document.composer.hitsounds().lanes();
+                dawsu_application::inspect_midi_file(Path::new(&path), lanes, drum_map)
+            })();
+            (to_json(res), false)
+        }
+        MidiAction::ApplyImport {
+            path,
+            tracks,
+            use_beatmap_tempo,
+            offset_ms,
+            snap,
+            follow_volume,
+        } => {
+            let options = dawsu_application::MidiImportOptions {
+                path,
+                tracks,
+                use_beatmap_tempo: use_beatmap_tempo.unwrap_or(true),
+                offset_ms: offset_ms.unwrap_or(0.0),
+                snap: snap.unwrap_or(true),
+                follow_volume: follow_volume.unwrap_or(false),
+            };
+            (to_json(app.apply_midi_import(&options, drum_map)), true)
+        }
+        MidiAction::InputPorts => (to_json(Ok(dawsu_application::list_midi_input_ports())), false),
+        MidiAction::RecordToggle {
+            port_index,
+            snap_divisor,
+        } => (
+            to_json(app.toggle_midi_recording(port_index, drum_map, snap_divisor)),
+            true,
+        ),
+        MidiAction::InspectSoundfont { path } => {
+            (to_json(app.inspect_soundfont_file(Path::new(&path))), false)
+        }
+        MidiAction::AuditionSoundfont {
+            path,
+            preset_index,
+            pitch,
+            velocity,
+            duration_ms,
+        } => (
+            to_json(app.audition_soundfont_note(
+                Path::new(&path),
+                preset_index.unwrap_or(0),
+                pitch.unwrap_or(60),
+                velocity.unwrap_or(100),
+                duration_ms.unwrap_or(280.0),
+            )),
+            false,
+        ),
+    }
+}
 
 #[tauri::command]
 pub(crate) fn pick_midi_file(window: tauri::WebviewWindow) -> Option<String> {
@@ -16,32 +119,11 @@ pub(crate) fn pick_midi_file(window: tauri::WebviewWindow) -> Option<String> {
 }
 
 #[tauri::command]
-pub(crate) fn inspect_midi_file(
-    path: String,
-    state: State<'_, Editor>,
-) -> Result<dawsu_application::MidiInspectResult, String> {
-    ask(&state, |tx| Request::InspectMidiFile(path, tx))?
-}
-
-#[tauri::command]
-pub(crate) fn apply_midi_import(
-    path: String,
-    tracks: Vec<usize>,
-    use_beatmap_tempo: Option<bool>,
-    offset_ms: Option<f64>,
-    snap: Option<bool>,
-    follow_volume: Option<bool>,
-    state: State<'_, Editor>,
-) -> Result<dawsu_application::MidiImportOutcome, String> {
-    let options = dawsu_application::MidiImportOptions {
-        path,
-        tracks,
-        use_beatmap_tempo: use_beatmap_tempo.unwrap_or(true),
-        offset_ms: offset_ms.unwrap_or(0.0),
-        snap: snap.unwrap_or(true),
-        follow_volume: follow_volume.unwrap_or(false),
-    };
-    ask(&state, |tx| Request::ApplyMidiImport(options, tx))?
+pub(crate) fn midi_action(action: MidiAction, state: State<'_, Editor>) -> Result<Value, String> {
+    if matches!(action, MidiAction::InputPorts) {
+        return to_json(Ok(dawsu_application::list_midi_input_ports()));
+    }
+    ask(&state, |tx| Request::Midi(action, tx))?
 }
 
 #[tauri::command]
@@ -84,21 +166,6 @@ pub(crate) fn import_mania_hitsounds(
     ask(&state, |tx| Request::ImportManiaHitsounds(path, tx))?.map(Some)
 }
 
-
-#[tauri::command]
-pub(crate) fn midi_input_ports() -> Vec<String> {
-    dawsu_application::list_midi_input_ports()
-}
-
-#[tauri::command]
-pub(crate) fn midi_record_toggle(
-    port_index: Option<usize>,
-    snap_divisor: Option<u32>,
-    state: State<'_, Editor>,
-) -> Result<dawsu_application::MidiRecordStatus, String> {
-    ask(&state, |tx| Request::MidiRecordToggle(port_index, snap_divisor, tx))?
-}
-
 #[tauri::command]
 pub(crate) fn vst3_scan(state: State<'_, Editor>) -> Result<dawsu_application::Vst3ScanReport, String> {
     ask(&state, Request::Vst3Scan)?
@@ -112,35 +179,6 @@ pub(crate) fn pick_soundfont_file(window: tauri::WebviewWindow) -> Option<String
         .add_filter("SoundFont / SFZ", &["sf2", "sfz"])
         .pick_file()
         .map(|path| path.to_string_lossy().into_owned())
-}
-
-#[tauri::command]
-pub(crate) fn inspect_soundfont_file(
-    path: String,
-    state: State<'_, Editor>,
-) -> Result<dawsu_application::SamplerSummary, String> {
-    ask(&state, |tx| Request::InspectSoundfontFile(std::path::PathBuf::from(path), tx))?
-}
-
-#[tauri::command]
-pub(crate) fn audition_soundfont_note(
-    path: String,
-    preset_index: Option<usize>,
-    pitch: Option<u8>,
-    velocity: Option<u8>,
-    duration_ms: Option<f64>,
-    state: State<'_, Editor>,
-) -> Result<(), String> {
-    ask(&state, |tx| {
-        Request::AuditionSoundfontNote(
-            std::path::PathBuf::from(path),
-            preset_index.unwrap_or(0),
-            pitch.unwrap_or(60),
-            velocity.unwrap_or(100),
-            duration_ms.unwrap_or(280.0),
-            tx,
-        )
-    })?
 }
 
 

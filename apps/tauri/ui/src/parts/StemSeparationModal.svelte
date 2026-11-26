@@ -52,7 +52,7 @@
 
   async function pollStatus() {
     try {
-      const next = await invoke("stem_separation_status");
+      const next = await invoke("stem_separation_action", { action: { kind: "status" } });
       if (!next) return;
       const prevState = lastJobState;
       const nextState = next.job?.state ?? "idle";
@@ -81,7 +81,7 @@
     open = true;
     busy = true;
     try {
-      const next = await invoke("stem_separation_status");
+      const next = await invoke("stem_separation_action", { action: { kind: "status" } });
       if (next) {
         status = next;
         lastJobState = next.job?.state ?? "idle";
@@ -101,7 +101,7 @@
     busy = true;
     try {
       const forceRerun = Boolean(status.cachedStemPath);
-      const next = await invoke("stem_separation_start", { forceRerun });
+      const next = await invoke("stem_separation_action", { action: { kind: "start", forceRerun } });
       if (next) {
         status = next;
         lastJobState = next.job?.state ?? "idle";
@@ -123,7 +123,7 @@
     if (!running) return;
     error = "";
     try {
-      const next = await invoke("stem_separation_cancel");
+      const next = await invoke("stem_separation_action", { action: { kind: "cancel" } });
       if (next) {
         status = next;
         lastJobState = next.job?.state ?? "idle";
@@ -140,7 +140,7 @@
     notice = "";
     busy = true;
     try {
-      const next = await invoke("stem_separation_delete_cache");
+      const next = await invoke("stem_separation_action", { action: { kind: "delete_cache" } });
       if (next) {
         status = next;
         lastJobState = next.job?.state ?? "idle";
