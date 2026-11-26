@@ -19,7 +19,7 @@ When dawsu! encounters an unexpected error, it writes a timestamped report (with
 
 ## 3. What to Include in a Bug Report
 
-- **dawsu! version:** Found in **Preferences → Updates** or the installer/ZIP filename (for example `v1.2.0-alpha.1`).
+- **dawsu! version:** Found in **Preferences → Updates** or the installer/ZIP filename (for example `v1.3.0-alpha.1`).
 - **Install method & OS:** Windows Setup Installer or Portable ZIP, plus your Windows version and osu! client (**osu!stable**, **osu!lazer**, or both).
 - **Exact steps to reproduce:** Numbered steps from opening dawsu!. Let us know if the bug also happens on **Try practice mapset** — that makes reproducing it instant.
 - **Expected vs. actual behaviour:** What you expected to happen vs. what happened instead (include exact text from any red error toast, status bar notice, or **Read-back check failed** card).

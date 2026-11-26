@@ -3,7 +3,7 @@
 A desktop hitsound and keysound editor built for osu! mappers. **dawsu!** turns every sample in your mapset into a timeline lane right under the song waveform and gameplay objects so you can draw, balance, share across difficulties, and export safely.
 
 > [!NOTE]
-> **v1.2 Alpha** — Available for Windows 10/11 (x64). Downloads are on the [GitHub Releases page](https://github.com/YogeGod/dawsu-rs/releases) as a Setup installer and Portable ZIP (always verified against `SHA256SUMS.txt`).
+> **v1.3 Alpha** — Available for Windows 10/11 (x64). Downloads are on the [GitHub Releases page](https://github.com/YogeGod/dawsu-rs/releases) as a Setup installer and Portable ZIP (always verified against `SHA256SUMS.txt`).
 
 ![dawsu! hitsound timeline editor](docs/screenshots/timeline-editor.png)
 

@@ -14,7 +14,7 @@ osu! mappers editing hitsounds across difficulties, authoring custom drum kits, 
 
 Edit, audition, share across difficulties, verify, and safely export osu! map audio in a familiar DAW-style arrangement while matching osu!lazer timing, slider, combo, and format semantics.
 
-Shipped in `v1.2.0-alpha.1` (Alpha):
+Shipped in `v1.3.0-alpha.1` (Alpha):
 
 - Hitsound timeline editor with 3-path mapset intake, bundled synthetic practice mapset, fast `osu!.db`-cached Songs browser, seven editing tools, Rhythm Gallery presets, live tap recording (`Numpad 1–9` / `A–L`), Volume and Mixer panel, and pitch-preserving playback speed (`50%`, `75%`, `100%`).
 - Shared Base Layer across difficulties with live `Matched / Empty / Orphaned` counts, non-destructive per-difficulty lane rules, and green-line-only volume curves.

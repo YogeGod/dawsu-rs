@@ -13,8 +13,8 @@ body:
     id: version
     attributes:
       label: dawsu! version
-      description: Found in Preferences → Updates or the installer/ZIP filename (for example `1.2.0-alpha.1`).
-      placeholder: "v1.2.0-alpha.1"
+      description: Found in Preferences → Updates or the installer/ZIP filename (for example `1.3.0-alpha.1`).
+      placeholder: "v1.3.0-alpha.1"
     validations:
       required: true
 

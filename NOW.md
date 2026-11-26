@@ -1,6 +1,6 @@
 # NOW.md — Current Sprint (`dawsu-rs`)
 
-`origin/main` includes `v1.2.0-alpha.1` (`8279a56`), `9165831` (Bundled Practice Mapset, Compact Ready Checklist & Help Menu), and `a4c9841` (**Mapper README, 6-Page Wiki, Screenshots & Issue Templates**; earlier `PR #93`–`#99`, Draw/marquee fix, repo cleanup, 3 core-seam refactorings, agent rules refresh, inline keysounding piano roll, compressed docs, cached `osu!.db` Songs scanner, Export Review .osu diff + read-back verification). Full sprint archive in `E:/Obsidian/Workspace/dawsu-rewrite/now.md`.
+`origin/main` includes `v1.3.0-alpha.1` (**V1.3 alpha**: `9165831` Bundled Practice Mapset, Compact Ready Checklist & Help Menu; `a4c9841` Mapper README, 6-Page Wiki, Screenshots & Issue Templates; earlier `v1.2.0-alpha.1` at `8279a56`, `PR #93`–`#99`, Draw/marquee fix, repo cleanup, 3 core-seam refactorings, agent rules refresh, inline keysounding piano roll, compressed docs, cached `osu!.db` Songs scanner, Export Review .osu diff + read-back verification). Full sprint archive in `E:/Obsidian/Workspace/dawsu-rewrite/now.md`.
 
 ## Recent Landed Milestones
 

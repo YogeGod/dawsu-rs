@@ -1,6 +1,6 @@
 {
   "productName": "dawsu! Tauri",
-  "version": "1.2.0-alpha.1",
+  "version": "1.3.0-alpha.1",
   "identifier": "dev.dawsu.editor.tauri",
   "build": { "beforeBuildCommand": "npm --prefix ui run build", "frontendDist": "dist" },
   "app": {
