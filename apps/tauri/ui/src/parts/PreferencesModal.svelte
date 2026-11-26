@@ -173,6 +173,19 @@
     }
   }
 
+  async function retryBlockedVst3() {
+    if (vst3Scanning) return;
+    vst3Scanning = true;
+    vst3Error = "";
+    try {
+      vst3Report = await invoke("vst3_scan", { retryBlocked: true });
+    } catch (err) {
+      vst3Error = String(err);
+    } finally {
+      vst3Scanning = false;
+    }
+  }
+
   async function pickSoundfont() {
     if (soundfontLoading) return;
     soundfontLoading = true;
@@ -615,6 +628,7 @@
               onloadmidi={loadMidiPorts}
               onpickmidi={pickMidiPort}
               onscanvst3={scanVst3}
+              onretryblocked={retryBlockedVst3}
               onpicksoundfont={pickSoundfont}
               onauditionsoundfont={auditionSoundfont}
             />

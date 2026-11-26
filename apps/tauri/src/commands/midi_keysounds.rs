@@ -182,8 +182,14 @@ pub(crate) fn import_mania_hitsounds(
 }
 
 #[tauri::command]
-pub(crate) fn vst3_scan(state: State<'_, Editor>) -> Result<dawsu_application::Vst3ScanReport, String> {
-    ask(&state, Request::Vst3Scan)?
+pub(crate) fn vst3_scan(
+    retry_blocked: Option<bool>,
+    state: State<'_, Editor>,
+) -> Result<dawsu_application::Vst3ScanReport, String> {
+    ask(&state, |tx| Request::Vst3Scan {
+        retry_blocked: retry_blocked.unwrap_or(false),
+        response: tx,
+    })?
 }
 
 #[tauri::command]

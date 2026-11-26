@@ -651,6 +651,11 @@ impl Application {
         self.vst3.scan_plugins().map_err(|e| e.to_string())
     }
 
+    /// Clears the persistent VST3 scan blacklist and re-scans all discovered plug-ins.
+    pub fn retry_blocked_vst3_plugins(&mut self) -> Result<vst3::Vst3ScanReport, String> {
+        self.vst3.retry_blocked_plugins().map_err(|e| e.to_string())
+    }
+
     /// Parses and inspects an `.sfz` or `.sf2` SoundFont file, caching it for fast playback.
     pub fn inspect_soundfont_file(
         &mut self,

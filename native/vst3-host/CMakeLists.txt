@@ -1,4 +1,4 @@
-# dawsu! isolated VST3 instrument & effect host (Protocol v3; see host.cpp).
+# dawsu! isolated VST3 instrument & effect host (Protocol v4; see host.cpp).
 # Built on the Steinberg VST 3 SDK, MIT-licensed since 3.8. Configure with -DVST3_SDK_ROOT=<vst3sdk checkout>.
 cmake_minimum_required(VERSION 3.22)
 
@@ -30,7 +30,7 @@ add_executable(dawsu_vst3_host
 )
 target_compile_features(dawsu_vst3_host PRIVATE cxx_std_17)
 target_compile_definitions(dawsu_vst3_host PRIVATE UNICODE _UNICODE)
-target_link_libraries(dawsu_vst3_host PRIVATE sdk_hosting ole32 crypt32)
+target_link_libraries(dawsu_vst3_host PRIVATE sdk_hosting ole32 crypt32 avrt)
 target_compile_options(dawsu_vst3_host PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/utf-8>) # the sources are UTF-8
 if(MSVC)
     target_link_options(dawsu_vst3_host PRIVATE /ENTRY:wmainCRTStartup)

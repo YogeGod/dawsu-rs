@@ -14,6 +14,7 @@
     onloadmidi,
     onpickmidi,
     onscanvst3,
+    onretryblocked = null,
     onpicksoundfont = null,
     onauditionsoundfont = null,
   } = $props();
@@ -55,6 +56,14 @@
     <p class="pref-error">{vst3Error}</p>
   {:else if vst3Report}
     <p class="pref-caption">{scanSummary(vst3Report)}</p>
+    {#if vst3Report.blocked?.length}
+      <p class="pref-caption">
+        {vst3Report.blocked.length} {vst3Report.blocked.length === 1 ? "plug-in" : "plug-ins"} skipped after an earlier scan crash or timeout.
+        {#if onretryblocked}
+          <button type="button" disabled={vst3Scanning} onclick={onretryblocked}>Retry blocked plug-ins</button>
+        {/if}
+      </p>
+    {/if}
     {#if vst3Report.plugins?.length}
       <ul class="pref-plugin-list">
         {#each vst3Report.plugins as plugin (plugin.uid ?? plugin.name)}

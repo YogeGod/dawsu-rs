@@ -1,21 +1,20 @@
-// dawsu! isolated VST3 instrument & effect host (Protocol v3).
+// dawsu! isolated VST3 instrument & effect host (Protocol v4).
 //
 // One process hosts one VST3 plug-in (instrument or effect), so a crashing plug-in only takes down its own track/node.
 // Built directly on the Steinberg VST 3 SDK (MIT licence since 3.8); no JUCE.
 //
 //   dawsu_vst3_host --scan <plugin.vst3>
-//       Prints one line per instrument or effect class: CLASS \t <uid> \t <name> \t <vendor> \t <subcategories>; exits 0.
-//   dawsu_vst3_host --host <name> <parentPid> <plugin.vst3> [<uid>] [--offline]
+//       Prints one line per instrument or effect class (canonical cross-OS TUID):
+//       CLASS \t <uid> \t <name> \t <vendor> \t <subcategories>; exits 0.
+//   dawsu_vst3_host --host <name> <parentPid> <plugin.vst3> [<uid>] [--offline] [--sample-rate <hz>]
 //       Loads the plug-in and prints READY \t <name> \t <protocol> (or ERROR \t <message>) on stdout. Then:
-//       - Audio: the shared memory "Local\<name>" (layout below, Magic "DVH3", Protocol 3). dawsu! fills events,
-//         optional stereo audio input (inLeft/inRight + hasAudioIn=1), and frames, bumps requestSeq and signals
-//         "Local\<name>-req"; the host renders, sets doneSeq and signals "Local\<name>-done".
+//       - Audio: the shared memory "Local\<name>" (Magic "DVH4", Protocol 4, atomic header + ProcessContext).
+//         dawsu! fills events, optional stereo audio input (inLeft/inRight + ShmFlagHasAudioIn), and frames,
+//         bumps requestSeq (release) and signals "Local\<name>-req"; the host renders, updates latency/tail,
+//         sets doneSeq (release) and signals "Local\<name>-done".
 //       - Control: "<id> \t <command>" per stdin line, "<id> \t <reply>" per stdout line:
-//         SHOW / HIDE (the plug-in's editor window), GETSTATE -> STATE \t <base64>, SETSTATE \t <base64> -> OK,
-//         NOTENAMES -> NAMES \t <pitch>=<name> ... (VST 3 program pitch names, if the plug-in has any),
-//         RENDER \t <file> \t <max> \t <quiet> \t <threshold> \t <events> (offline mode), QUIT.
-//         Errors reply ERROR \t <message>. The state is a format byte (1), then component and controller state.
-//       The host exits when dawsu! (parentPid) exits.
+//         SHOW / HIDE, GETSTATE -> STATE \t <base64>, SETSTATE \t <base64> -> OK,
+//         SET_BYPASS \t <0|1> -> OK, NOTENAMES -> NAMES \t ..., RENDER \t ..., QUIT.
 
 #include "public.sdk/source/vst/hosting/module.h"
 #include "public.sdk/source/vst/hosting/plugprovider.h"
@@ -25,6 +24,7 @@
 #include "public.sdk/source/vst/hosting/processdata.h"
 #include "public.sdk/source/common/memorystream.h"
 #include "pluginterfaces/gui/iplugview.h"
+#include "pluginterfaces/gui/iplugviewcontentscalesupport.h"
 #include "pluginterfaces/vst/ivstaudioprocessor.h"
 #include "pluginterfaces/vst/ivsteditcontroller.h"
 #include "pluginterfaces/vst/ivstmidicontrollers.h"
@@ -33,12 +33,16 @@
 
 #define NOMINMAX
 #include <windows.h>
+#include <avrt.h>
 #include <wincrypt.h>
 #include <algorithm>
+#include <array>
 #include <atomic>
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <iostream>
 #include <mutex>
 #include <string>
@@ -51,32 +55,60 @@ using namespace Steinberg::Vst;
 namespace {
 
 // ---- Shared memory: mirrored by dawsu-audio-instruments (keep the two in step) ----
-constexpr uint32_t Magic = 0x33485644; // "DVH3"
+constexpr uint32_t Magic = 0x34485644; // "DVH4"
+constexpr int Protocol = 4;
 constexpr int MaxEvents = 1024, MaxFrames = 4096;
+constexpr uint32_t ShmFlagHasAudioIn = 1u << 0;
+constexpr uint32_t ShmFlagBypassed = 1u << 1;
+
 struct ShmEvent { int32_t offset; uint8_t status, data1, data2, pad; };
+struct ShmProcessContext
+{
+    uint32_t stateFlags;
+    int32_t timeSigNum;
+    int32_t timeSigDen;
+    uint32_t pad;
+    double sampleRate;
+    double tempo;
+    int64_t projectTimeSamples;
+    double projectTimeMusic;
+    double barPositionMusic;
+    double cycleStartMusic;
+    double cycleEndMusic;
+};
 struct Shm
 {
     uint32_t magic, version;
     int32_t frames, eventCount;
-    uint32_t requestSeq, doneSeq;
-    int32_t status, hasAudioIn;  // status: 0 rendered, 1 not rendered (silence); hasAudioIn: 1 when inLeft/inRight are valid
-    double sampleRate;
+    std::atomic<uint32_t> requestSeq, doneSeq;
+    std::atomic<uint32_t> status, flags;
+    std::atomic<uint32_t> latencySamples, tailSamples;
+    std::atomic<uint32_t> restartFlags;
+    uint32_t reserved;
+    ShmProcessContext context;
     ShmEvent events[MaxEvents];
     float inLeft[MaxFrames], inRight[MaxFrames];
     float left[MaxFrames], right[MaxFrames];
 };
+static_assert(sizeof(std::atomic<uint32_t>) == 4, "atomic u32 size");
 static_assert(sizeof(ShmEvent) == 8, "event layout");
+static_assert(sizeof(ShmProcessContext) == 72, "context layout");
 static_assert(
-    offsetof(Shm, events) == 40 &&
-    offsetof(Shm, inLeft) == 40 + MaxEvents * 8 &&
-    offsetof(Shm, inRight) == 40 + MaxEvents * 8 + MaxFrames * sizeof(float) &&
-    offsetof(Shm, left) == 40 + MaxEvents * 8 + MaxFrames * sizeof(float) * 2 &&
-    offsetof(Shm, right) == 40 + MaxEvents * 8 + MaxFrames * sizeof(float) * 3,
+    offsetof(Shm, requestSeq) == 16 &&
+    offsetof(Shm, doneSeq) == 20 &&
+    offsetof(Shm, status) == 24 &&
+    offsetof(Shm, flags) == 28 &&
+    offsetof(Shm, latencySamples) == 32 &&
+    offsetof(Shm, tailSamples) == 36 &&
+    offsetof(Shm, restartFlags) == 40 &&
+    offsetof(Shm, context) == 48 &&
+    offsetof(Shm, events) == 120 &&
+    offsetof(Shm, inLeft) == 120 + MaxEvents * 8 &&
+    offsetof(Shm, inRight) == 120 + MaxEvents * 8 + MaxFrames * sizeof(float) &&
+    offsetof(Shm, left) == 120 + MaxEvents * 8 + MaxFrames * sizeof(float) * 2 &&
+    offsetof(Shm, right) == 120 + MaxEvents * 8 + MaxFrames * sizeof(float) * 3,
     "shared memory layout");
 
-// Replies go to the real stdout handle only. The process's stdout is pointed at NUL so a plug-in that prints (some do)
-// can't corrupt the protocol.
-constexpr int Protocol = 3; // 3: instruments + Fx, stereo audio input bus (inLeft/inRight + hasAudioIn)
 constexpr size_t MaxStateBytes = 64u * 1024 * 1024;
 std::mutex outLock;
 HANDLE protocolOut = INVALID_HANDLE_VALUE;
@@ -91,7 +123,6 @@ void Reply(const std::string& line)
 
 void IsolateStdout()
 {
-    // A duplicate: reopening stdout below closes the original handle.
     DuplicateHandle(GetCurrentProcess(), GetStdHandle(STD_OUTPUT_HANDLE), GetCurrentProcess(), &protocolOut, 0, FALSE, DUPLICATE_SAME_ACCESS);
     HANDLE nul = CreateFileW(L"NUL", GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
     SetStdHandle(STD_OUTPUT_HANDLE, nul);
@@ -103,6 +134,25 @@ std::string Clean(std::string s)
 {
     for (auto& c : s) if (c == '\t' || c == '\n' || c == '\r') c = ' ';
     return s;
+}
+
+std::string NormalizeHexUid(const std::string& s)
+{
+    std::string out;
+    out.reserve(32);
+    for (unsigned char c : s)
+    {
+        if (std::isxdigit(c)) out.push_back((char)std::toupper(c));
+    }
+    return out;
+}
+
+bool UidMatches(const VST3::UID& cid, const std::string& wanted)
+{
+    std::string normWanted = NormalizeHexUid(wanted);
+    if (normWanted.empty()) return false;
+    return NormalizeHexUid(cid.toString(false)) == normWanted ||
+           NormalizeHexUid(cid.toString(true)) == normWanted;
 }
 
 // ---- Base64 for state blobs on the text control channel (Windows' crypt32) ----
@@ -129,11 +179,73 @@ bool FromBase64(const std::string& in, size_t from, std::vector<uint8_t>& out)
     return CryptStringToBinaryA(text, length, CRYPT_STRING_BASE64, out.data(), &n, nullptr, nullptr) && (out.resize(n), true);
 }
 
-// ---- Host-side interfaces the plug-in calls ----
+// ---- Hosted plug-in globals & state ----
+VST3::Hosting::Module::Ptr module;
+IPtr<PlugProvider> provider;
+IPtr<IComponent> component;
+IPtr<IAudioProcessor> processor;
+IPtr<IEditController> controller;
+IPtr<IMidiMapping> midiMapping;
+HostApplication hostApp;
+std::string pluginName;
+std::mutex processLock;
+Shm* globalShm = nullptr;
 
-// Parameter edits made in the plug-in's editor reach its processor through the next block's parameter changes.
-// All of them land at offset 0 of that block, so only the latest value per parameter matters: keeping that one means a
-// long drag while no block runs never loses its final value.
+std::array<std::atomic<ParamID>, 16 * kCountCtrlNumber> midiMap;
+ParamID bypassParamId = kNoParamId;
+std::atomic<bool> hostBypassed{false};
+std::atomic<bool> pendingLatencyReactivate{false};
+
+bool IsSingleComponent()
+{
+    if (!component || !controller) return false;
+    FUnknown* compUnk = nullptr;
+    FUnknown* ctrlUnk = nullptr;
+    if (component->queryInterface(FUnknown::iid, (void**)&compUnk) == kResultOk && compUnk) compUnk->release();
+    if (controller->queryInterface(FUnknown::iid, (void**)&ctrlUnk) == kResultOk && ctrlUnk) ctrlUnk->release();
+    return compUnk && compUnk == ctrlUnk;
+}
+
+void ReadMidiMap()
+{
+    for (auto& slot : midiMap) slot.store(kNoParamId, std::memory_order_relaxed);
+    if (!midiMapping) return;
+    for (int16 channel = 0; channel < 16; channel++)
+        for (int16 cc = 0; cc < kCountCtrlNumber; cc++)
+        {
+            ParamID id = kNoParamId;
+            if (midiMapping->getMidiControllerAssignment(0, channel, (CtrlNumber)cc, id) == kResultTrue)
+                midiMap[channel * kCountCtrlNumber + cc].store(id, std::memory_order_relaxed);
+        }
+}
+
+void DiscoverBypassParam()
+{
+    bypassParamId = kNoParamId;
+    if (!controller) return;
+    int32 count = controller->getParameterCount();
+    for (int32 i = 0; i < count; i++)
+    {
+        ParameterInfo info{};
+        if (controller->getParameterInfo(i, info) == kResultOk &&
+            (info.flags & ParameterInfo::kIsBypass) != 0)
+        {
+            bypassParamId = info.id;
+            break;
+        }
+    }
+}
+
+void RefreshLatencyAndTail()
+{
+    if (!globalShm || !processor) return;
+    uint32_t lat = processor->getLatencySamples();
+    uint32_t tail = processor->getTailSamples();
+    globalShm->latencySamples.store(lat, std::memory_order_release);
+    globalShm->tailSamples.store(tail, std::memory_order_release);
+}
+
+// ---- Host-side interfaces the plug-in calls ----
 constexpr size_t MaxPendingEdits = 4096;
 
 class ComponentHandler : public IComponentHandler
@@ -142,7 +254,7 @@ public:
     std::mutex lock;
     std::vector<std::pair<ParamID, ParamValue>> pending;
 
-    ComponentHandler() { pending.reserve(MaxPendingEdits); } // never reallocates under the lock the audio thread takes
+    ComponentHandler() { pending.reserve(MaxPendingEdits); }
 
     tresult PLUGIN_API beginEdit(ParamID) override { return kResultOk; }
     tresult PLUGIN_API performEdit(ParamID id, ParamValue value) override
@@ -154,7 +266,16 @@ public:
         return kResultOk;
     }
     tresult PLUGIN_API endEdit(ParamID) override { return kResultOk; }
-    tresult PLUGIN_API restartComponent(int32) override { return kResultOk; }
+    tresult PLUGIN_API restartComponent(int32 flags) override
+    {
+        if (globalShm)
+            globalShm->restartFlags.fetch_or((uint32_t)flags, std::memory_order_acq_rel);
+        if (flags & kLatencyChanged)
+            pendingLatencyReactivate.store(true, std::memory_order_release);
+        if (flags & kMidiCCAssignmentChanged)
+            ReadMidiMap();
+        return kResultOk;
+    }
     tresult PLUGIN_API queryInterface(const TUID iid, void** obj) override
     {
         if (FUnknownPrivate::iidEqual(iid, IComponentHandler::iid) || FUnknownPrivate::iidEqual(iid, FUnknown::iid))
@@ -197,35 +318,8 @@ public:
     uint32 PLUGIN_API release() override { return 1; }
 };
 
-// ---- The hosted plug-in (instrument or effect) ----
-VST3::Hosting::Module::Ptr module;
-IPtr<PlugProvider> provider;
-IPtr<IComponent> component;
-IPtr<IAudioProcessor> processor;
-IPtr<IEditController> controller;
-IPtr<IMidiMapping> midiMapping;
 ComponentHandler handler;
 PlugFrame frame;
-HostApplication hostApp;
-std::string pluginName;
-std::mutex processLock; // state access and processing don't overlap
-
-// (channel, controller) -> parameter, read once on the main thread at load. IMidiMapping belongs to the edit
-// controller, which VST 3 only allows on the UI thread, so the audio thread only looks this table up.
-std::vector<ParamID> midiMap(16 * kCountCtrlNumber, kNoParamId);
-
-void ReadMidiMap()
-{
-    if (!midiMapping) return;
-    for (int16 channel = 0; channel < 16; channel++)
-        for (int16 cc = 0; cc < kCountCtrlNumber; cc++)
-        {
-            ParamID id = kNoParamId;
-            // Only an assigned controller's id counts: a plug-in may write to id and still answer kResultFalse.
-            if (midiMapping->getMidiControllerAssignment(0, channel, (CtrlNumber)cc, id) == kResultTrue)
-                midiMap[channel * kCountCtrlNumber + cc] = id;
-        }
-}
 
 bool IsSupportedAudioClass(const VST3::Hosting::ClassInfo& c)
 {
@@ -241,11 +335,11 @@ int Scan(const std::string& path)
     if (!m) { Reply("ERROR\t" + Clean(error)); return 2; }
     for (auto& c : m->getFactory().classInfos())
         if (IsSupportedAudioClass(c))
-            Reply("CLASS\t" + c.ID().toString() + "\t" + Clean(c.name()) + "\t" + Clean(c.vendor()) + "\t" + Clean(c.subCategoriesString()));
+            Reply("CLASS\t" + c.ID().toString(false) + "\t" + Clean(c.name()) + "\t" + Clean(c.vendor()) + "\t" + Clean(c.subCategoriesString()));
     return 0;
 }
 
-bool offline = false; // --offline: a render host for Generate (no deadline; plug-ins may load samples synchronously)
+bool offline = false;
 double configuredSampleRate = 44100.0;
 
 bool ConfigureProcessing(double sampleRate, std::string& error)
@@ -260,6 +354,7 @@ bool ConfigureProcessing(double sampleRate, std::string& error)
     if (component->setActive(true) != kResultOk) { error = "The plug-in couldn't be activated."; return false; }
     processor->setProcessing(true);
     configuredSampleRate = sampleRate;
+    RefreshLatencyAndTail();
     return true;
 }
 
@@ -271,7 +366,7 @@ bool Load(const std::string& path, const std::string& uid, double initialSampleR
     for (auto& c : factory.classInfos())
     {
         if (c.category() != kVstAudioEffectClass) continue;
-        if (uid.empty() ? !IsSupportedAudioClass(c) : c.ID().toString() != uid) continue;
+        if (uid.empty() ? !IsSupportedAudioClass(c) : !UidMatches(c.ID(), uid)) continue;
         provider = owned(new PlugProvider(factory, c, true));
         if (!provider->initialize()) { provider = nullptr; continue; }
         pluginName = c.name();
@@ -289,7 +384,6 @@ bool Load(const std::string& path, const std::string& uid, double initialSampleR
         midiMapping = FUnknownPtr<IMidiMapping>(controller);
     }
 
-    // Stereo main output, stereo main input (when present, for Fx), and the first event input; everything else off.
     int32 outputs = component->getBusCount(kAudio, kOutput), inputs = component->getBusCount(kAudio, kInput);
     if (outputs < 1) { error = "The plug-in has no audio output."; return false; }
     std::vector<SpeakerArrangement> outArr(outputs, SpeakerArr::kStereo), inArr(inputs, SpeakerArr::kStereo);
@@ -300,6 +394,7 @@ bool Load(const std::string& path, const std::string& uid, double initialSampleR
 
     if (!ConfigureProcessing(initialSampleRate, error)) return false;
     ReadMidiMap();
+    DiscoverBypassParam();
     return true;
 }
 
@@ -307,7 +402,6 @@ bool Load(const std::string& path, const std::string& uid, double initialSampleR
 bool ReadStream(MemoryStream& s, std::vector<uint8_t>& out)
 {
     int64 size = 0;
-    // Refuse an unreadable or oversized stream before allocating for it; a short read is a failure.
     if (s.seek(0, IBStream::kIBSeekEnd, &size) != kResultOk || size < 0 || size > (int64)MaxStateBytes) return false;
     s.seek(0, IBStream::kIBSeekSet, nullptr);
     out.resize((size_t)size);
@@ -318,18 +412,17 @@ bool ReadStream(MemoryStream& s, std::vector<uint8_t>& out)
 std::string GetState()
 {
     std::vector<uint8_t> a, b, all;
+    bool singleComp = IsSingleComponent();
     {
-        // Only reading the plug-in holds up its audio; encoding happens after.
         std::lock_guard<std::mutex> g(processLock);
         MemoryStream comp, ctrl;
         if (component->getState(&comp) != kResultOk || !ReadStream(comp, a)) return "ERROR\tThe plug-in didn't save its state.";
-        // A controller without state of its own (kNotImplemented) is fine; one whose state can't be read is not.
-        if (controller && controller->getState(&ctrl) == kResultOk && !ReadStream(ctrl, b))
+        if (controller && !singleComp && controller->getState(&ctrl) == kResultOk && !ReadStream(ctrl, b))
             return "ERROR\tThe plug-in's editor state couldn't be read.";
     }
     if (a.size() + b.size() > MaxStateBytes) return "ERROR\tThe plug-in's state is larger than 64 MB.";
     all.reserve(1 + 8 + a.size() + b.size());
-    all.push_back(1); // format
+    all.push_back(1);
     for (auto* part : {&a, &b})
     {
         uint32_t n = (uint32_t)part->size();
@@ -355,24 +448,80 @@ std::string SetState(const std::string& line, size_t from)
         pos += n;
     }
 
+    bool singleComp = IsSingleComponent();
     std::lock_guard<std::mutex> g(processLock);
+    processor->setProcessing(false);
+    component->setActive(false);
+
     MemoryStream comp((void*)parts[0].data(), (TSize)parts[0].size()), ctrl((void*)parts[1].data(), (TSize)parts[1].size());
-    if (component->setState(&comp) != kResultOk) return "ERROR\tThe plug-in rejected its saved state.";
-    if (controller)
+    if (component->setState(&comp) != kResultOk)
+    {
+        component->setActive(true);
+        processor->setProcessing(true);
+        return "ERROR\tThe plug-in rejected its saved state.";
+    }
+    if (controller && !singleComp)
     {
         comp.seek(0, IBStream::kIBSeekSet, nullptr);
         controller->setComponentState(&comp);
         if (!parts[1].empty()) controller->setState(&ctrl);
     }
+
+    component->setActive(true);
+    processor->setProcessing(true);
+    RefreshLatencyAndTail();
     return "OK";
 }
 
-// ---- Editor window (on the main thread) ----
+// ---- DPI Scaling + Editor window (on the main thread) ----
+float GetWindowScale(HWND hwnd)
+{
+    using GetDpiForWindowFn = UINT(WINAPI*)(HWND);
+    using GetDpiForSystemFn = UINT(WINAPI*)();
+    HMODULE user32 = GetModuleHandleW(L"user32.dll");
+    if (hwnd && user32)
+    {
+        auto fn = reinterpret_cast<GetDpiForWindowFn>(GetProcAddress(user32, "GetDpiForWindow"));
+        if (fn)
+        {
+            UINT dpi = fn(hwnd);
+            if (dpi > 0) return (float)dpi / 96.0f;
+        }
+    }
+    if (user32)
+    {
+        auto fnSys = reinterpret_cast<GetDpiForSystemFn>(GetProcAddress(user32, "GetDpiForSystem"));
+        if (fnSys)
+        {
+            UINT dpi = fnSys();
+            if (dpi > 0) return (float)dpi / 96.0f;
+        }
+    }
+    return 1.0f;
+}
+
+void ApplyViewScaleFactor(float scale)
+{
+    if (!view || !(scale > 0.0f) || !std::isfinite(scale)) return;
+    FUnknownPtr<IPlugViewContentScaleSupport> scaleSupport(view);
+    if (scaleSupport) scaleSupport->setContentScaleFactor(scale);
+}
+
 LRESULT CALLBACK EditorProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
     if (msg == WM_CLOSE)
     {
         ShowWindow(hwnd, SW_HIDE);
+        return 0;
+    }
+    if (msg == WM_DPICHANGED && lp)
+    {
+        float scale = (float)HIWORD(wp) / 96.0f;
+        ApplyViewScaleFactor(scale);
+        auto* suggested = reinterpret_cast<const RECT*>(lp);
+        SetWindowPos(hwnd, nullptr, suggested->left, suggested->top,
+            suggested->right - suggested->left, suggested->bottom - suggested->top,
+            SWP_NOZORDER | SWP_NOACTIVATE);
         return 0;
     }
     return DefWindowProcW(hwnd, msg, wp, lp);
@@ -385,18 +534,21 @@ std::string ShowEditor()
     {
         view = owned(controller->createView(ViewType::kEditor));
         if (!view || view->isPlatformTypeSupported(kPlatformTypeHWND) != kResultTrue) { view = nullptr; return "ERROR\tThe plug-in has no editor window."; }
+        float initialScale = GetWindowScale(nullptr);
+        ApplyViewScaleFactor(initialScale);
         ViewRect r{0, 0, 800, 600};
         view->getSize(&r);
         RECT rect{0, 0, r.getWidth(), r.getHeight()};
         DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
         AdjustWindowRect(&rect, style, FALSE);
-        // The plug-in's name is UTF-8.
         std::wstring title(MultiByteToWideChar(CP_UTF8, 0, pluginName.data(), (int)pluginName.size(), nullptr, 0), L'\0');
         MultiByteToWideChar(CP_UTF8, 0, pluginName.data(), (int)pluginName.size(), title.data(), (int)title.size());
         title += L" — dawsu!";
         editorWindow = CreateWindowW(L"DawsuVst3Editor", title.c_str(), style, CW_USEDEFAULT, CW_USEDEFAULT,
             rect.right - rect.left, rect.bottom - rect.top, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
         view->setFrame(&frame);
+        float windowScale = GetWindowScale(editorWindow);
+        if (std::fabs(windowScale - initialScale) > 0.01f) ApplyViewScaleFactor(windowScale);
         if (view->attached(editorWindow, kPlatformTypeHWND) != kResultTrue)
         {
             DestroyWindow(editorWindow);
@@ -412,8 +564,6 @@ std::string ShowEditor()
 
 std::string Render(const std::string& line);
 
-// The plug-in's names for its MIDI notes (VST 3 program pitch names, as DAWs use for drum maps):
-// NAMES \t <pitch>=<name> \t ... for the first program that has them; NAMES alone when it has none.
 std::string NoteNames()
 {
     std::string reply = "NAMES";
@@ -431,7 +581,7 @@ std::string NoteNames()
                 String128 name{};
                 if (units->getProgramPitchName(list.id, program, pitch, name) != kResultOk || !name[0]) continue;
                 int length = 0;
-                while (length < 128 && name[length]) length++; // a String128 needn't end with a NUL
+                while (length < 128 && name[length]) length++;
                 auto* wide = reinterpret_cast<LPCWCH>(name);
                 int bytes = WideCharToMultiByte(CP_UTF8, 0, wide, length, nullptr, 0, nullptr, nullptr);
                 std::string utf8(bytes > 0 ? bytes : 0, '\0');
@@ -451,13 +601,15 @@ std::string Run(const std::string& line)
     if (line == "GETSTATE") return GetState();
     if (line == "NOTENAMES") return NoteNames();
     if (line.rfind("SETSTATE\t", 0) == 0) return SetState(line, 9);
+    if (line.rfind("SET_BYPASS\t", 0) == 0)
+    {
+        hostBypassed.store(line.size() > 11 && line[11] == '1', std::memory_order_release);
+        return "OK";
+    }
     if (line.rfind("RENDER\t", 0) == 0) return offline ? Render(line) : "ERROR\tThis host plays live; start one with --offline to render.";
     return "ERROR\tUnknown command.";
 }
 
-// Commands that touch the plug-in run on the main thread: the reader thread hands each one over and waits. They go to
-// a message-only window, not to the thread itself, because modal loops (dragging the editor window, a plug-in's menu
-// or file dialog) dispatch window messages but silently drop thread messages, which left the reader waiting forever.
 constexpr UINT WM_RUN_COMMAND = WM_APP + 1, WM_STOP_HOST = WM_APP + 2;
 struct Pending { std::string id, line, reply; HANDLE ready; };
 HWND commandWindow = nullptr;
@@ -486,17 +638,20 @@ struct Block
     EventList events{MaxEvents};
     ParameterChanges params{64};
     ProcessContext context{};
+    bool hasBypassParamState = false;
+    bool lastBypassParamValue = false;
 
     Block()
     {
         data.prepare(*component, MaxFrames, kSample32);
         context.sampleRate = configuredSampleRate;
         context.tempo = 120;
-        context.state = ProcessContext::kPlaying | ProcessContext::kTempoValid;
+        context.timeSigNumerator = 4;
+        context.timeSigDenominator = 4;
+        context.state = ProcessContext::kPlaying | ProcessContext::kTempoValid | ProcessContext::kTimeSigValid;
     }
 
-    // channel is 0-15 and cc is 0-127 or kPitchBend (129), all inside the table.
-    static ParamID Map(int channel, int cc) { return midiMap[channel * kCountCtrlNumber + cc]; }
+    static ParamID Map(int channel, int cc) { return midiMap[channel * kCountCtrlNumber + cc].load(std::memory_order_relaxed); }
 
     void Change(ParamID id, int offset, ParamValue value)
     {
@@ -505,7 +660,30 @@ struct Block
         if (auto* queue = params.addParameterData(id, index)) queue->addPoint(offset, value, index);
     }
 
-    // Starts a block: no events yet, plus the edits made in the plug-in's window.
+    void ApplyBypass(bool bypassed)
+    {
+        if (bypassParamId != kNoParamId && (!hasBypassParamState || lastBypassParamValue != bypassed))
+        {
+            Change(bypassParamId, 0, bypassed ? 1.0 : 0.0);
+            hasBypassParamState = true;
+            lastBypassParamValue = bypassed;
+        }
+    }
+
+    void SyncContext(const ShmProcessContext& src)
+    {
+        if (src.sampleRate > 0.0 && std::isfinite(src.sampleRate)) context.sampleRate = src.sampleRate;
+        if (src.tempo > 0.0 && std::isfinite(src.tempo)) context.tempo = src.tempo;
+        if (src.timeSigNum > 0) context.timeSigNumerator = src.timeSigNum;
+        if (src.timeSigDen > 0) context.timeSigDenominator = src.timeSigDen;
+        context.projectTimeSamples = src.projectTimeSamples;
+        context.projectTimeMusic = src.projectTimeMusic;
+        context.barPositionMusic = src.barPositionMusic;
+        context.cycleStartMusic = src.cycleStartMusic;
+        context.cycleEndMusic = src.cycleEndMusic;
+        if (src.stateFlags != 0) context.state = src.stateFlags;
+    }
+
     void Begin()
     {
         events.clear();
@@ -517,7 +695,6 @@ struct Block
 
     void Add(int offset, uint8_t status, uint8_t data1, uint8_t data2)
     {
-        // The shared memory isn't checked by its writer: keep the data bytes MIDI-legal.
         data1 &= 0x7F;
         data2 &= 0x7F;
         int kind = status & 0xF0, channel = status & 0x0F;
@@ -545,30 +722,54 @@ struct Block
         else if (kind == 0xE0) Change(Map(channel, kPitchBend), offset, (data2 << 7 | data1) / 16383.0);
     }
 
-    // Renders the block into left/right, feeding optional stereo inLeft/inRight to the plug-in's main audio input bus.
-    // Returns false when the plug-in failed (the output is then silence).
-    bool Process(int frames, const float* inLeft, const float* inRight, float* left, float* right)
+    static bool IsBufferSilent(const float* buf, int frames)
     {
+        for (int i = 0; i < frames; i++)
+            if (buf[i] != 0.0f) return false;
+        return true;
+    }
+
+    bool Process(int frames, const float* inLeft, const float* inRight, float* left, float* right, bool hardBypassFallback)
+    {
+        if (hardBypassFallback)
+        {
+            if (inLeft) memcpy(left, inLeft, frames * sizeof(float));
+            else memset(left, 0, frames * sizeof(float));
+            if (inRight) memcpy(right, inRight, frames * sizeof(float));
+            else if (inLeft) memcpy(right, inLeft, frames * sizeof(float));
+            else memset(right, 0, frames * sizeof(float));
+            context.projectTimeSamples += frames;
+            return true;
+        }
+
         std::lock_guard<std::mutex> g(processLock);
         data.numSamples = frames;
-        if (data.numInputs > 0 && data.inputs[0].numChannels > 0)
+        for (int32 b = 0; b < data.numInputs; b++)
         {
-            float* dstL = data.inputs[0].channelBuffers32[0];
-            if (inLeft)
-                memcpy(dstL, inLeft, frames * sizeof(float));
-            else
-                memset(dstL, 0, frames * sizeof(float));
-
-            if (data.inputs[0].numChannels > 1)
+            auto& bus = data.inputs[b];
+            uint64 silence = 0;
+            for (int32 c = 0; c < bus.numChannels; c++)
             {
-                float* dstR = data.inputs[0].channelBuffers32[1];
-                if (inRight)
-                    memcpy(dstR, inRight, frames * sizeof(float));
-                else if (inLeft)
-                    memcpy(dstR, inLeft, frames * sizeof(float));
+                float* dst = bus.channelBuffers32 ? bus.channelBuffers32[c] : nullptr;
+                if (!dst)
+                {
+                    if (c < 64) silence |= (1ULL << c);
+                    continue;
+                }
+                if (b == 0 && c == 0 && inLeft)
+                    memcpy(dst, inLeft, frames * sizeof(float));
+                else if (b == 0 && c == 1 && (inRight || inLeft))
+                    memcpy(dst, inRight ? inRight : inLeft, frames * sizeof(float));
                 else
-                    memset(dstR, 0, frames * sizeof(float));
+                    memset(dst, 0, frames * sizeof(float));
+
+                if (c < 64 && IsBufferSilent(dst, frames)) silence |= (1ULL << c);
             }
+            bus.silenceFlags = silence;
+        }
+        for (int32 b = 0; b < data.numOutputs; b++)
+        {
+            data.outputs[b].silenceFlags = 0;
         }
         data.inputEvents = &events;
         data.inputParameterChanges = &params;
@@ -578,7 +779,6 @@ struct Block
         {
             const float* l = data.outputs[0].channelBuffers32[0];
             const float* r = data.outputs[0].numChannels > 1 ? data.outputs[0].channelBuffers32[1] : l;
-            // A NaN or infinity would poison dawsu!'s whole mix: such a block counts as failed.
             for (int i = 0; i < frames && ok; i++) ok = std::isfinite(l[i]) && std::isfinite(r[i]);
             if (ok)
             {
@@ -597,11 +797,6 @@ struct Block
 };
 
 // ---- Offline rendering of one note (Generate) ----
-// RENDER \t <out file> \t <max frames> \t <quiet frames> \t <threshold> \t <frame>:<status>:<d1>:<d2>;...
-// Silences the plug-in first (note-offs on every key, then render until quiet), then renders the events from frame 0
-// until the output stays below the threshold for <quiet frames> after the last event, or <max frames>. Writes the
-// stereo float32 frames (interleaved, little-endian) to the file, cut where the sound fell quiet.
-// Reply: RENDERED \t <frames> \t <1 when it hit max frames> \t <peak>.
 std::string Render(const std::string& line)
 {
     std::vector<std::string> f;
@@ -633,40 +828,47 @@ std::string Render(const std::string& line)
     long long lastEvent = evs.empty() ? 0 : evs.back().frame;
 
     constexpr int Chunk = 512;
-    static Block block; // one per host: the render host renders nothing else
+    static Block block;
     std::vector<float> l(Chunk), r(Chunk);
     auto Peak = [&](int n) { float p = 0; for (int i = 0; i < n; i++) p = std::max(p, std::max(std::fabs(l[i]), std::fabs(r[i]))); return p; };
 
-    // Silence what the previous note left: every key up, the pedal up (it may still hold voices), modulation off and
-    // the bend centred, so nothing carries into this note's render.
-    auto Reset = [&] {
+    // 16-channel full MIDI reset processed in 4-channel batches so `events` (MaxEvents = 1024) never overflows.
+    auto FlushAll16Channels = [&] {
+        for (int chBase = 0; chBase < 16; chBase += 4)
+        {
+            block.Begin();
+            for (int ch = chBase; ch < chBase + 4; ch++)
+            {
+                for (int pitch = 0; pitch < 128; pitch++) block.Add(0, (uint8_t)(0x80 | ch), (uint8_t)pitch, 0);
+                block.Add(0, (uint8_t)(0xB0 | ch), 64, 0);
+                block.Add(0, (uint8_t)(0xB0 | ch), 1, 0);
+                block.Add(0, (uint8_t)(0xB0 | ch), 120, 0);
+                block.Add(0, (uint8_t)(0xB0 | ch), 123, 0);
+                block.Add(0, (uint8_t)(0xE0 | ch), 0, 64);
+            }
+            block.Process(64, nullptr, nullptr, l.data(), r.data(), false);
+        }
         block.Begin();
-        for (int pitch = 0; pitch < 128; pitch++) block.Add(0, 0x80, (uint8_t)pitch, 0);
-        block.Add(0, 0xB0, 64, 0);
-        block.Add(0, 0xB0, 1, 0);
-        block.Add(0, 0xE0, 0, 64);
     };
 
-    // A plug-in with a noise or hum floor never falls below a fixed level: the first render measures the floor of the
-    // idle plug-in (the loudest it gets over half a second) and quiet means below twice that from then on.
     static float idleFloor = -1;
     if (idleFloor < 0)
     {
-        Reset();
+        FlushAll16Channels();
         idleFloor = 0;
         for (long long done = 0; done < sr; done += Chunk)
         {
-            block.Process(Chunk, nullptr, nullptr, l.data(), r.data());
+            block.Process(Chunk, nullptr, nullptr, l.data(), r.data(), false);
             if (done >= sr / 2) idleFloor = std::max(idleFloor, Peak(Chunk));
             block.Begin();
         }
     }
     threshold = std::max(threshold, (double)idleFloor * 2);
 
-    Reset();
+    FlushAll16Channels();
     for (long long done = 0, quiet = 0; done < sr * 5 && quiet < quietFrames; done += Chunk)
     {
-        block.Process(Chunk, nullptr, nullptr, l.data(), r.data());
+        block.Process(Chunk, nullptr, nullptr, l.data(), r.data(), false);
         quiet = Peak(Chunk) < threshold ? quiet + Chunk : 0;
         block.Begin();
     }
@@ -685,7 +887,7 @@ std::string Render(const std::string& line)
             block.Add((int)(evs[next].frame - frame), evs[next].s, evs[next].d1, evs[next].d2);
             next++;
         }
-        if (!block.Process(n, nullptr, nullptr, l.data(), r.data())) return "ERROR\tThe plug-in failed while rendering.";
+        if (!block.Process(n, nullptr, nullptr, l.data(), r.data(), false)) return "ERROR\tThe plug-in failed while rendering.";
         for (int i = 0; i < n; i++)
         {
             out.push_back(l[i]);
@@ -712,23 +914,39 @@ std::string Render(const std::string& line)
     return reply;
 }
 
-// ---- Audio: one block per request ----
+// ---- Audio: one block per request (MMCSS Pro Audio) ----
 std::atomic<bool> quitting{false};
 
 void AudioThread(Shm* shm, HANDLE req, HANDLE done, HANDLE parent)
 {
-    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
+    DWORD taskIndex = 0;
+    HANDLE mmcss = AvSetMmThreadCharacteristicsW(L"Pro Audio", &taskIndex);
+    if (!mmcss) SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
+
     Block block;
     HANDLE waits[2] = {req, parent};
     while (!quitting)
     {
         DWORD w = WaitForMultipleObjects(2, waits, FALSE, 500);
-        if (w == WAIT_OBJECT_0 + 1) ExitProcess(0); // dawsu! is gone
+        if (w == WAIT_OBJECT_0 + 1) ExitProcess(0);
         if (w != WAIT_OBJECT_0) continue;
+
+        uint32_t reqSeq = shm->requestSeq.load(std::memory_order_acquire);
+        if (pendingLatencyReactivate.exchange(false, std::memory_order_acq_rel))
+        {
+            std::lock_guard<std::mutex> g(processLock);
+            processor->setProcessing(false);
+            component->setActive(false);
+            component->setActive(true);
+            processor->setProcessing(true);
+            RefreshLatencyAndTail();
+        }
 
         int frames = shm->frames < 1 ? 0 : shm->frames > MaxFrames ? MaxFrames : shm->frames;
         int count = shm->eventCount < 0 ? 0 : shm->eventCount > MaxEvents ? MaxEvents : shm->eventCount;
-        double requestedRate = (shm->sampleRate > 0 && std::isfinite(shm->sampleRate)) ? shm->sampleRate : configuredSampleRate;
+        double requestedRate = (shm->context.sampleRate > 0 && std::isfinite(shm->context.sampleRate))
+            ? shm->context.sampleRate
+            : configuredSampleRate;
         if (std::fabs(requestedRate - configuredSampleRate) > 0.5)
         {
             std::lock_guard<std::mutex> g(processLock);
@@ -737,12 +955,18 @@ void AudioThread(Shm* shm, HANDLE req, HANDLE done, HANDLE parent)
             std::string reconfigErr;
             if (!ConfigureProcessing(requestedRate, reconfigErr))
             {
-                // Keep the previous valid rate active if the plug-in rejects the new rate.
                 ConfigureProcessing(configuredSampleRate, reconfigErr);
             }
         }
+
+        uint32_t shmFlags = shm->flags.load(std::memory_order_relaxed);
+        bool hasAudioIn = (shmFlags & ShmFlagHasAudioIn) != 0;
+        bool bypassed = hostBypassed.load(std::memory_order_acquire) || ((shmFlags & ShmFlagBypassed) != 0);
+
+        block.SyncContext(shm->context);
         block.context.sampleRate = configuredSampleRate;
         block.Begin();
+        block.ApplyBypass(bypassed);
         for (int i = 0; i < count; i++)
         {
             auto& e = shm->events[i];
@@ -750,15 +974,18 @@ void AudioThread(Shm* shm, HANDLE req, HANDLE done, HANDLE parent)
             block.Add(offset, e.status, e.data1, e.data2);
         }
 
-        const float* inL = shm->hasAudioIn ? shm->inLeft : nullptr;
-        const float* inR = shm->hasAudioIn ? shm->inRight : nullptr;
-        int status = 1;
-        if (frames > 0 && block.Process(frames, inL, inR, shm->left, shm->right)) status = 0;
-        shm->status = status;
-        MemoryBarrier();
-        shm->doneSeq = shm->requestSeq;
+        const float* inL = hasAudioIn ? shm->inLeft : nullptr;
+        const float* inR = hasAudioIn ? shm->inRight : nullptr;
+        bool hardBypass = bypassed && (bypassParamId == kNoParamId);
+        uint32_t status = 1;
+        if (frames > 0 && block.Process(frames, inL, inR, shm->left, shm->right, hardBypass)) status = 0;
+        RefreshLatencyAndTail();
+        shm->status.store(status, std::memory_order_release);
+        shm->doneSeq.store(reqSeq, std::memory_order_release);
         SetEvent(done);
     }
+
+    if (mmcss) AvRevertMmThreadCharacteristics(mmcss);
 }
 
 } // namespace
@@ -795,8 +1022,9 @@ int wmain(int argc, wchar_t** argv)
     auto* shm = mapping ? (Shm*)MapViewOfFile(mapping, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(Shm)) : nullptr;
     if (!shm || !req || !done || shm->magic != Magic) { Reply("ERROR\tThe shared audio buffer is missing."); return 1; }
     if (shm->version != Protocol) { Reply("ERROR\tdawsu_vst3_host.exe doesn't match this version of dawsu!; reinstall dawsu!."); return 1; }
+    globalShm = shm;
 
-    OleInitialize(nullptr); // some plug-ins need COM/OLE on their UI thread
+    OleInitialize(nullptr);
     PluginContextFactory::instance().setPluginContext(&hostApp);
     WNDCLASSW wc{};
     wc.lpfnWndProc = EditorProc;
@@ -810,13 +1038,12 @@ int wmain(int argc, wchar_t** argv)
     commands.hInstance = wc.hInstance;
     commands.lpszClassName = L"DawsuVst3Commands";
     RegisterClassW(&commands);
-    // Creating it also gives this thread its message queue, so no command posted before the loop starts is lost.
     commandWindow = CreateWindowExW(0, commands.lpszClassName, nullptr, 0, 0, 0, 0, 0, HWND_MESSAGE, nullptr, wc.hInstance, nullptr);
     if (!commandWindow) { Reply("ERROR\tThe VST3 host couldn't start its command window."); return 1; }
 
     double initialSampleRate = requestedSampleRate > 0.0
         ? requestedSampleRate
-        : (shm->sampleRate > 0.0 && std::isfinite(shm->sampleRate) ? shm->sampleRate : 44100.0);
+        : (shm->context.sampleRate > 0.0 && std::isfinite(shm->context.sampleRate) ? shm->context.sampleRate : 44100.0);
     std::string error;
     if (!Load(Arg(4), uid, initialSampleRate, error)) { Reply("ERROR\t" + Clean(error)); return 2; }
     Reply("READY\t" + Clean(pluginName) + "\t" + std::to_string(Protocol));
@@ -828,19 +1055,18 @@ int wmain(int argc, wchar_t** argv)
         {
             if (!line.empty() && line.back() == '\r') line.pop_back();
             size_t tab = line.find('\t');
-            if (tab == std::string::npos) continue; // every command is "<id> \t <command>"
+            if (tab == std::string::npos) continue;
             std::string id = line.substr(0, tab), command = line.substr(tab + 1);
             if (command == "QUIT") break;
-            // The reader waits for each command before taking the next, so commands never run inside one another.
             Pending p{id, command, "", CreateEventW(nullptr, TRUE, FALSE, nullptr)};
             if (!p.ready || !PostMessageW(commandWindow, WM_RUN_COMMAND, reinterpret_cast<WPARAM>(&p), 0))
-                p.reply = "ERROR\tThe VST3 host couldn't run the command."; // answered now, never waited on
+                p.reply = "ERROR\tThe VST3 host couldn't run the command.";
             else
                 WaitForSingleObject(p.ready, INFINITE);
             if (p.ready) CloseHandle(p.ready);
             Reply(p.id + "\t" + p.reply);
         }
-        PostMessageW(commandWindow, WM_STOP_HOST, 0, 0); // a window message, so a modal loop can't swallow it either
+        PostMessageW(commandWindow, WM_STOP_HOST, 0, 0);
     });
 
     MSG msg;
@@ -853,11 +1079,10 @@ int wmain(int argc, wchar_t** argv)
     quitting = true;
     audio.join();
     reader.detach();
+    globalShm = nullptr;
     if (view) { view->removed(); view = nullptr; }
     if (processor) processor->setProcessing(false);
     if (component) component->setActive(false);
-    // Every reference into the plug-in goes before its module unloads: a global left holding one (midiMapping is a
-    // second reference to the controller) is released by the exit-time destructors through a vtable that is gone.
     midiMapping = nullptr;
     controller = nullptr;
     processor = nullptr;

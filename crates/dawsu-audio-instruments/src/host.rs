@@ -1,21 +1,46 @@
-//! Protocol v3 isolated VST3 sidecar host controller (`dawsu_vst3_host`).
+//! Protocol v4 isolated VST3 sidecar host controller (`dawsu_vst3_host`).
 //!
-//! Mirrors `native/vst3-host/host.cpp` (Magic `"DVH3"`, Protocol 3).
+//! Mirrors `native/vst3-host/host.cpp` (Magic `"DVH4"`, Protocol 4).
 
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::atomic::AtomicU32;
+use std::sync::mpsc;
+use std::time::Duration;
 
-/// Shared-memory magic `"DVH3"` (little-endian).
-pub const PROTOCOL_MAGIC: u32 = 0x3348_5644;
-/// Sidecar protocol version 3 (instruments + Fx, stereo audio input bus).
-pub const PROTOCOL_VERSION: u32 = 3;
+/// Shared-memory magic `"DVH4"` (little-endian).
+pub const PROTOCOL_MAGIC: u32 = 0x3448_5644;
+/// Sidecar protocol version 4 (atomic SHM header, hybrid wait, Fx inputs, ProcessContext, DPI, bypass).
+pub const PROTOCOL_VERSION: u32 = 4;
 /// Maximum MIDI events per shared-memory audio block.
 pub const MAX_EVENTS: usize = 1024;
 /// Maximum stereo frames per shared-memory audio block.
 pub const MAX_FRAMES: usize = 4096;
+
+/// `ShmBlock::flags`: `in_left`/`in_right` carry stereo audio input (for Fx).
+pub const SHM_FLAG_HAS_AUDIO_IN: u32 = 1 << 0;
+/// `ShmBlock::flags`: host requests plug-in bypass (preferring `ParameterInfo::kIsBypass`).
+pub const SHM_FLAG_BYPASSED: u32 = 1 << 1;
+
+/// `ShmProcessContext::state_flags` (matches Steinberg `Vst::ProcessContext::StatesAndFlags`).
+pub const CTX_FLAG_PLAYING: u32 = 1 << 1;
+pub const CTX_FLAG_CYCLE_ACTIVE: u32 = 1 << 2;
+pub const CTX_FLAG_PROJECT_TIME_MUSIC_VALID: u32 = 1 << 9;
+pub const CTX_FLAG_BAR_POSITION_VALID: u32 = 1 << 11;
+pub const CTX_FLAG_CYCLE_VALID: u32 = 1 << 12;
+pub const CTX_FLAG_TEMPO_VALID: u32 = 1 << 10;
+pub const CTX_FLAG_TIME_SIG_VALID: u32 = 1 << 13;
+
+/// `ShmBlock::restart_flags` (matches Steinberg `Vst::RestartFlags`).
+pub const RESTART_RELOAD_COMPONENT: u32 = 1 << 0;
+pub const RESTART_IO_CHANGED: u32 = 1 << 1;
+pub const RESTART_PARAM_VALUES_CHANGED: u32 = 1 << 2;
+pub const RESTART_LATENCY_CHANGED: u32 = 1 << 3;
+pub const RESTART_PARAM_TITLES_CHANGED: u32 = 1 << 4;
+pub const RESTART_MIDI_CC_CHANGED: u32 = 1 << 5;
 
 /// Single MIDI-style event inside the shared-memory audio block.
 #[repr(C)]
@@ -28,6 +53,41 @@ pub struct ShmEvent {
     pub pad: u8,
 }
 
+/// Transport & musical timing context mirrored per block into `native/vst3-host/host.cpp`.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ShmProcessContext {
+    pub state_flags: u32,
+    pub time_sig_num: i32,
+    pub time_sig_den: i32,
+    pub _pad: u32,
+    pub sample_rate: f64,
+    pub tempo: f64,
+    pub project_time_samples: i64,
+    pub project_time_music: f64,
+    pub bar_position_music: f64,
+    pub cycle_start_music: f64,
+    pub cycle_end_music: f64,
+}
+
+impl Default for ShmProcessContext {
+    fn default() -> Self {
+        Self {
+            state_flags: CTX_FLAG_TEMPO_VALID | CTX_FLAG_TIME_SIG_VALID,
+            time_sig_num: 4,
+            time_sig_den: 4,
+            _pad: 0,
+            sample_rate: 44_100.0,
+            tempo: 120.0,
+            project_time_samples: 0,
+            project_time_music: 0.0,
+            bar_position_music: 0.0,
+            cycle_start_music: 0.0,
+            cycle_end_music: 0.0,
+        }
+    }
+}
+
 /// Shared-memory audio exchange layout (must match `Shm` in `native/vst3-host/host.cpp`).
 #[repr(C)]
 pub struct ShmBlock {
@@ -35,13 +95,20 @@ pub struct ShmBlock {
     pub version: u32,
     pub frames: i32,
     pub event_count: i32,
-    pub request_seq: u32,
-    pub done_seq: u32,
+    pub request_seq: AtomicU32,
+    pub done_seq: AtomicU32,
     /// `0` when rendered, `1` when not rendered (silence).
-    pub status: i32,
-    /// `1` when `in_left`/`in_right` carry stereo audio input (for Fx), `0` otherwise.
-    pub has_audio_in: i32,
-    pub sample_rate: f64,
+    pub status: AtomicU32,
+    /// Bitset of `SHM_FLAG_*`.
+    pub flags: AtomicU32,
+    /// Plug-in latency in samples reported by `IAudioProcessor::getLatencySamples`.
+    pub latency_samples: AtomicU32,
+    /// Plug-in tail length in samples reported by `IAudioProcessor::getTailSamples`.
+    pub tail_samples: AtomicU32,
+    /// Accumulated `RestartFlags` OR-ed by `IComponentHandler::restartComponent`.
+    pub restart_flags: AtomicU32,
+    pub _reserved: u32,
+    pub context: ShmProcessContext,
     pub events: [ShmEvent; MAX_EVENTS],
     pub in_left: [f32; MAX_FRAMES],
     pub in_right: [f32; MAX_FRAMES],
@@ -133,6 +200,7 @@ pub enum HostCommand {
     Hide,
     GetState,
     SetState(String),
+    SetBypass(bool),
     NoteNames,
     Render(RenderRequest),
     Quit,
@@ -146,6 +214,7 @@ impl HostCommand {
             Self::Hide => format!("{id}\tHIDE"),
             Self::GetState => format!("{id}\tGETSTATE"),
             Self::SetState(b64) => format!("{id}\tSETSTATE\t{}", sanitize_field(b64)),
+            Self::SetBypass(on) => format!("{id}\tSET_BYPASS\t{}", u8::from(*on)),
             Self::NoteNames => format!("{id}\tNOTENAMES"),
             Self::Render(req) => {
                 let events: Vec<String> = req
@@ -222,15 +291,31 @@ pub trait HostTransport {
     fn write_line(&mut self, line: &str) -> Result<(), HostError>;
     /// Reads the next line (without trailing `\r`/`\n`), or `Ok(None)` on EOF.
     fn read_line(&mut self) -> Result<Option<String>, HostError>;
+    /// Reads the next line enforcing `timeout`, killing the child process on hang.
+    fn read_line_timeout(&mut self, _timeout: Duration) -> Result<Option<String>, HostError> {
+        self.read_line()
+    }
+    fn default_timeout(&self) -> Duration {
+        Duration::from_secs(15)
+    }
+    fn render_timeout(&self) -> Duration {
+        Duration::from_secs(120)
+    }
     fn is_alive(&mut self) -> bool;
     fn kill(&mut self);
 }
 
-/// Real child-process transport backed by `dawsu_vst3_host`'s stdin/stdout pipes.
+const DEFAULT_CONTROL_TIMEOUT: Duration = Duration::from_secs(15);
+const DEFAULT_RENDER_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// Real child-process transport backed by `dawsu_vst3_host`'s stdin/stdout pipes and a
+/// reader thread enabling bounded `recv_timeout` + kill-on-timeout recovery.
 pub struct ProcessTransport {
     child: Child,
     stdin: ChildStdin,
-    stdout: BufReader<ChildStdout>,
+    line_rx: mpsc::Receiver<Result<Option<String>, String>>,
+    read_timeout: Duration,
+    render_timeout: Duration,
 }
 
 impl ProcessTransport {
@@ -246,6 +331,10 @@ impl ProcessTransport {
             const CREATE_NO_WINDOW: u32 = 0x0800_0000;
             cmd.creation_flags(CREATE_NO_WINDOW);
         }
+        Self::from_command(cmd)
+    }
+
+    fn from_command(mut cmd: Command) -> Result<Self, HostError> {
         let mut child = cmd
             .spawn()
             .map_err(|err| HostError::SpawnFailed(err.to_string()))?;
@@ -259,11 +348,49 @@ impl ProcessTransport {
             .take()
             .ok_or_else(|| HostError::SpawnFailed("child stdout pipe unavailable".to_string()))?;
 
+        let (line_tx, line_rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let mut reader = BufReader::new(stdout);
+            loop {
+                let mut buf = String::new();
+                match reader.read_line(&mut buf) {
+                    Ok(0) => {
+                        let _ = line_tx.send(Ok(None));
+                        break;
+                    }
+                    Ok(_) => {
+                        let line = buf.trim_end_matches(['\r', '\n']).to_string();
+                        if line_tx.send(Ok(Some(line))).is_err() {
+                            break;
+                        }
+                    }
+                    Err(err) => {
+                        let _ = line_tx.send(Err(err.to_string()));
+                        break;
+                    }
+                }
+            }
+        });
+
         Ok(Self {
             child,
             stdin,
-            stdout: BufReader::new(stdout),
+            line_rx,
+            read_timeout: DEFAULT_CONTROL_TIMEOUT,
+            render_timeout: DEFAULT_RENDER_TIMEOUT,
         })
+    }
+
+    /// Overrides the timeout applied to interactive control reads (and `read_line`).
+    pub fn with_read_timeout(mut self, timeout: Duration) -> Self {
+        self.read_timeout = timeout;
+        self
+    }
+
+    /// Overrides the timeout applied to offline `RENDER` reads.
+    pub fn with_render_timeout(mut self, timeout: Duration) -> Self {
+        self.render_timeout = timeout;
+        self
     }
 }
 
@@ -277,15 +404,30 @@ impl HostTransport for ProcessTransport {
     }
 
     fn read_line(&mut self) -> Result<Option<String>, HostError> {
-        let mut buf = String::new();
-        let bytes = self
-            .stdout
-            .read_line(&mut buf)
-            .map_err(|err| HostError::Io(err.to_string()))?;
-        if bytes == 0 {
-            return Ok(None);
+        self.read_line_timeout(self.read_timeout)
+    }
+
+    fn read_line_timeout(&mut self, timeout: Duration) -> Result<Option<String>, HostError> {
+        match self.line_rx.recv_timeout(timeout) {
+            Ok(Ok(line)) => Ok(line),
+            Ok(Err(err)) => Err(HostError::Io(err)),
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                self.kill();
+                Err(HostError::Crashed(format!(
+                    "VST3 host control command timed out after {} ms",
+                    timeout.as_millis()
+                )))
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => Ok(None),
         }
-        Ok(Some(buf.trim_end_matches(['\r', '\n']).to_string()))
+    }
+
+    fn default_timeout(&self) -> Duration {
+        self.read_timeout
+    }
+
+    fn render_timeout(&self) -> Duration {
+        self.render_timeout
     }
 
     fn is_alive(&mut self) -> bool {
@@ -338,7 +480,14 @@ impl HostSession<ProcessTransport> {
 impl<T: HostTransport> HostSession<T> {
     /// Attaches to an already-created transport and performs the `READY` handshake.
     pub fn from_transport(mut transport: T) -> Result<Self, HostError> {
-        let Some(banner) = transport.read_line()? else {
+        let ready_timeout = transport.default_timeout();
+        let Some(banner) = (match transport.read_line_timeout(ready_timeout) {
+            Ok(line) => line,
+            Err(err) => {
+                transport.kill();
+                return Err(err);
+            }
+        }) else {
             return Err(HostError::Crashed(
                 "host exited before sending READY".to_string(),
             ));
@@ -418,7 +567,12 @@ impl<T: HostTransport> HostSession<T> {
             return Ok(HostReply::Ok);
         }
 
-        let line = match self.transport.read_line() {
+        let reply_timeout = if matches!(command, HostCommand::Render(_)) {
+            self.transport.render_timeout()
+        } else {
+            self.transport.default_timeout()
+        };
+        let line = match self.transport.read_line_timeout(reply_timeout) {
             Ok(Some(line)) => line,
             Ok(None) => {
                 self.crashed = true;
@@ -456,6 +610,10 @@ impl<T: HostTransport> HostSession<T> {
 
     pub fn set_state(&mut self, base64_state: &str) -> Result<(), HostError> {
         expect_ok(self.send(&HostCommand::SetState(base64_state.to_string()))?)
+    }
+
+    pub fn set_bypass(&mut self, bypassed: bool) -> Result<(), HostError> {
+        expect_ok(self.send(&HostCommand::SetBypass(bypassed))?)
     }
 
     pub fn note_names(&mut self) -> Result<Vec<(u8, String)>, HostError> {
@@ -645,44 +803,56 @@ mod tests {
 
     #[test]
     fn shm_layout_matches_cpp_host() {
-        assert_eq!(PROTOCOL_MAGIC, u32::from_le_bytes(*b"DVH3"));
+        assert_eq!(PROTOCOL_MAGIC, u32::from_le_bytes(*b"DVH4"));
+        assert_eq!(PROTOCOL_VERSION, 4);
         assert_eq!(size_of::<ShmEvent>(), 8);
-        assert_eq!(offset_of!(ShmBlock, events), 40);
-        assert_eq!(offset_of!(ShmBlock, in_left), 40 + MAX_EVENTS * 8);
+        assert_eq!(size_of::<ShmProcessContext>(), 72);
+        assert_eq!(offset_of!(ShmBlock, request_seq), 16);
+        assert_eq!(offset_of!(ShmBlock, done_seq), 20);
+        assert_eq!(offset_of!(ShmBlock, status), 24);
+        assert_eq!(offset_of!(ShmBlock, flags), 28);
+        assert_eq!(offset_of!(ShmBlock, latency_samples), 32);
+        assert_eq!(offset_of!(ShmBlock, tail_samples), 36);
+        assert_eq!(offset_of!(ShmBlock, restart_flags), 40);
+        assert_eq!(offset_of!(ShmBlock, context), 48);
+        assert_eq!(offset_of!(ShmBlock, events), 120);
+        assert_eq!(offset_of!(ShmBlock, in_left), 120 + MAX_EVENTS * 8);
         assert_eq!(
             offset_of!(ShmBlock, in_right),
-            40 + MAX_EVENTS * 8 + MAX_FRAMES * 4
+            120 + MAX_EVENTS * 8 + MAX_FRAMES * 4
         );
         assert_eq!(
             offset_of!(ShmBlock, left),
-            40 + MAX_EVENTS * 8 + MAX_FRAMES * 8
+            120 + MAX_EVENTS * 8 + MAX_FRAMES * 8
         );
         assert_eq!(
             offset_of!(ShmBlock, right),
-            40 + MAX_EVENTS * 8 + MAX_FRAMES * 12
+            120 + MAX_EVENTS * 8 + MAX_FRAMES * 12
         );
     }
 
     #[test]
     fn tagged_command_framing_and_replies() {
         let transport = MockTransport::new([
-            Some("READY\tVital\t3"),
+            Some("READY\tVital\t4"),
             Some("1\tOK"),
             Some("2\tOK"),
             Some("3\tSTATE\tAQAAAA=="),
             Some("4\tOK"),
-            Some("5\tNAMES\t36=Kick\t38=Snare"),
-            Some("6\tRENDERED\t22050\t0\t0.850000"),
+            Some("5\tOK"),
+            Some("6\tNAMES\t36=Kick\t38=Snare"),
+            Some("7\tRENDERED\t22050\t0\t0.850000"),
         ]);
 
         let mut session = HostSession::from_transport(transport).unwrap();
         assert_eq!(session.plugin_name(), "Vital");
-        assert_eq!(session.protocol_version(), 3);
+        assert_eq!(session.protocol_version(), 4);
 
         session.show().unwrap();
         session.hide().unwrap();
         assert_eq!(session.get_state().unwrap(), "AQAAAA==");
         session.set_state("AQAAAA==").unwrap();
+        session.set_bypass(true).unwrap();
         assert_eq!(
             session.note_names().unwrap(),
             vec![(36, "Kick".to_string()), (38, "Snare".to_string())]
@@ -728,35 +898,70 @@ mod tests {
                 "2\tHIDE",
                 "3\tGETSTATE",
                 "4\tSETSTATE\tAQAAAA==",
-                "5\tNOTENAMES",
-                "6\tRENDER\tout.f32\t44100\t2048\t0.0005\t0:144:60:100;4410:128:60:0",
-                "7\tQUIT",
+                "5\tSET_BYPASS\t1",
+                "6\tNOTENAMES",
+                "7\tRENDER\tout.f32\t44100\t2048\t0.0005\t0:144:60:100;4410:128:60:0",
+                "8\tQUIT",
             ]
         );
     }
 
     #[test]
     fn rejects_wrong_protocol_version() {
-        let transport = MockTransport::new([Some("READY\tOldHost\t2")]);
+        let transport = MockTransport::new([Some("READY\tOldHost\t3")]);
         let err = HostSession::from_transport(transport).err().unwrap();
         assert_eq!(
             err,
             HostError::ProtocolMismatch {
-                expected: 3,
-                actual: 2
+                expected: 4,
+                actual: 3
             }
         );
     }
 
     #[test]
     fn detects_crash_on_unexpected_eof() {
-        let transport = MockTransport::new([Some("READY\tCrashy\t3"), None]);
+        let transport = MockTransport::new([Some("READY\tCrashy\t4"), None]);
         let mut session = HostSession::from_transport(transport).unwrap();
         let err = session.show().unwrap_err();
         assert!(matches!(err, HostError::Crashed(_)));
         assert!(session.is_crashed());
         // Subsequent calls also report Crashed without hanging.
         assert!(matches!(session.hide(), Err(HostError::Crashed(_))));
+    }
+
+    #[test]
+    fn process_transport_kills_wedged_child_on_read_timeout() {
+        #[cfg(windows)]
+        let mut cmd = {
+            let mut c = Command::new("powershell");
+            c.args(["-NoProfile", "-Command", "Start-Sleep -Seconds 30"]);
+            c
+        };
+        #[cfg(unix)]
+        let mut cmd = {
+            let mut c = Command::new("sh");
+            c.args(["-c", "sleep 30"]);
+            c
+        };
+        cmd.stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+
+        let mut transport =
+            ProcessTransport::from_command(cmd)
+                .unwrap()
+                .with_read_timeout(Duration::from_millis(120));
+        assert!(transport.is_alive());
+        let err = transport.read_line().unwrap_err();
+        assert!(
+            matches!(err, HostError::Crashed(ref msg) if msg.contains("timed out")),
+            "expected timeout crash error, got {err:?}"
+        );
+        assert!(
+            !transport.is_alive(),
+            "wedged child must be terminated after read_line timeout"
+        );
     }
 
     #[test]

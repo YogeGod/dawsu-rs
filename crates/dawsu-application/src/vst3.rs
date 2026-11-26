@@ -13,8 +13,9 @@ use dawsu_audio_instruments::host::{
     HostError, HostSession, MidiEvent, ProcessTransport, RenderRequest, Vst3HostConfig,
 };
 pub use dawsu_audio_instruments::scanner::{
-    InstalledVst3, ScanError, Vst3PluginInfo, default_vst3_dirs, discover_vst3_paths_in,
-    list_installed_vst3, list_installed_vst3_in, scan_plugin,
+    BlacklistEntry, InstalledVst3, ScanError, Vst3Blacklist, Vst3PluginInfo, default_vst3_dirs,
+    discover_vst3_paths_in, list_installed_vst3, list_installed_vst3_in, resolve_vst3_binary,
+    scan_plugin, try_scan_moduleinfo, uids_equivalent,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -76,6 +77,8 @@ pub struct Vst3ScanReport {
     pub discovered_paths: Vec<PathBuf>,
     pub plugins: Vec<Vst3PluginInfo>,
     pub skipped: Vec<ScanSkip>,
+    #[serde(default)]
+    pub blocked: Vec<ScanSkip>,
     pub sidecar_available: bool,
 }
 
@@ -446,6 +449,8 @@ impl LoadedInstance {
 pub struct Vst3Manager {
     host_executable: Option<PathBuf>,
     search_dirs: Vec<PathBuf>,
+    blacklist_path: Option<PathBuf>,
+    blacklist: Vst3Blacklist,
     scanned_plugins: Vec<Vst3PluginInfo>,
     instances: BTreeMap<String, LoadedInstance>,
     next_instance_id: u64,
@@ -480,6 +485,8 @@ impl Vst3Manager {
         Self {
             host_executable: None,
             search_dirs: dirs,
+            blacklist_path: None,
+            blacklist: Vst3Blacklist::default(),
             scanned_plugins: Vec::new(),
             instances: BTreeMap::new(),
             next_instance_id: 1,
@@ -491,6 +498,26 @@ impl Vst3Manager {
     pub fn with_host_executable(mut self, path: impl Into<PathBuf>) -> Self {
         self.host_executable = Some(path.into());
         self
+    }
+
+    /// Configures and loads a persistent `vst3-blacklist.json` path.
+    pub fn with_blacklist_path(mut self, path: impl Into<PathBuf>) -> Self {
+        let p = path.into();
+        self.blacklist = Vst3Blacklist::load(&p);
+        self.blacklist_path = Some(p);
+        self
+    }
+
+    /// Updates the persistent blacklist path and reloads its entries.
+    pub fn set_blacklist_path(&mut self, path: PathBuf) {
+        self.blacklist = Vst3Blacklist::load(&path);
+        self.blacklist_path = Some(path);
+    }
+
+    fn save_blacklist(&self) {
+        if let Some(path) = &self.blacklist_path {
+            let _ = self.blacklist.save(path);
+        }
     }
 
     pub fn search_dirs(&self) -> &[PathBuf] {
@@ -547,11 +574,9 @@ impl Vst3Manager {
         self.scan_in_dirs(&dirs)
     }
 
-    /// Discovers `.vst3` bundles/files in `dirs` and queries their classes via the sidecar.
-    ///
-    /// If no `.vst3` files exist in `dirs`, returns an empty report even when the sidecar
-    /// binary is not built yet. If `.vst3` files are found but the sidecar is missing,
-    /// returns [`Vst3Error::SidecarNotBuilt`].
+    /// Discovers `.vst3` bundles/files in `dirs`, using verified `moduleinfo.json` pre-scans
+    /// where a matching inner platform binary exists, skipping known blacklisted binaries, and
+    /// querying unknown plug-ins via the sidecar.
     pub fn scan_in_dirs(&mut self, dirs: &[PathBuf]) -> Result<Vst3ScanReport, Vst3Error> {
         let discovered_paths = discover_vst3_paths_in(dirs);
         if discovered_paths.is_empty() {
@@ -560,29 +585,75 @@ impl Vst3Manager {
                 discovered_paths,
                 plugins: Vec::new(),
                 skipped: Vec::new(),
+                blocked: Vec::new(),
                 sidecar_available: self.is_sidecar_available(),
             });
         }
 
-        let host_exe = self.host_executable()?;
+        let mut host_exe_cache: Option<PathBuf> = None;
         let mut plugins = Vec::new();
         let mut skipped = Vec::new();
+        let mut blocked = Vec::new();
+        let mut blacklist_dirty = false;
+
         for path in &discovered_paths {
+            if resolve_vst3_binary(path).is_none() {
+                skipped.push(ScanSkip {
+                    path: path.clone(),
+                    reason: "No compatible platform binary found in VST3 bundle.".to_string(),
+                });
+                continue;
+            }
+            if let Some(entry) = self.blacklist.is_blocked(path) {
+                blocked.push(ScanSkip {
+                    path: path.clone(),
+                    reason: entry.reason.clone(),
+                });
+                continue;
+            }
+            if let Some(found) = try_scan_moduleinfo(path) {
+                plugins.extend(found);
+                continue;
+            }
+            let host_exe = match &host_exe_cache {
+                Some(exe) => exe.clone(),
+                None => {
+                    let exe = self.host_executable()?;
+                    host_exe_cache = Some(exe.clone());
+                    exe
+                }
+            };
             match scan_plugin(&host_exe, path) {
                 Ok(found) => plugins.extend(found),
-                Err(err) => skipped.push(ScanSkip {
-                    path: path.clone(),
-                    reason: err.to_string(),
-                }),
+                Err(err) => {
+                    let reason = err.to_string();
+                    self.blacklist.record_failure(path, reason.clone());
+                    blacklist_dirty = true;
+                    skipped.push(ScanSkip {
+                        path: path.clone(),
+                        reason,
+                    });
+                }
             }
+        }
+        if blacklist_dirty {
+            self.save_blacklist();
         }
         self.scanned_plugins = plugins.clone();
         Ok(Vst3ScanReport {
             discovered_paths,
             plugins,
             skipped,
-            sidecar_available: true,
+            blocked,
+            sidecar_available: self.is_sidecar_available(),
         })
+    }
+
+    /// Clears all persisted blacklist entries and re-scans the configured search directories.
+    pub fn retry_blocked_plugins(&mut self) -> Result<Vst3ScanReport, Vst3Error> {
+        self.blacklist.clear();
+        self.save_blacklist();
+        self.scan_plugins()
     }
 
     /// Returns the plug-ins cached from the most recent scan.
@@ -1722,5 +1793,87 @@ mod tests {
         Vst3Manager::ensure_closed_midi_events(&mut dangling);
         assert!(dangling.iter().any(|e| e.frame == 21 && e.status == 0xB2 && e.data1 == 64 && e.data2 == 0));
         assert!(dangling.iter().any(|e| e.frame == 21 && e.status == 0x82 && e.data1 == 64));
+    }
+
+    #[test]
+    fn moduleinfo_fast_scan_and_blacklist_retry_work_without_sidecar() {
+        let root = make_temp_dir("moduleinfo-blacklist");
+        let missing_sidecar = root.join("dawsu-vst3-host.exe");
+        let blacklist_file = root.join("vst3-blacklist.json");
+
+        // Bundle 1: valid moduleinfo.json + matching inner binary.
+        let good = root.join("GoodSynth.vst3");
+        fs::create_dir_all(good.join("Contents").join("Resources")).unwrap();
+        #[cfg(target_os = "windows")]
+        let good_inner = good.join("Contents").join("x86_64-win").join("GoodSynth.vst3");
+        #[cfg(target_os = "macos")]
+        let good_inner = good.join("Contents").join("MacOS").join("GoodSynth");
+        #[cfg(all(unix, not(target_os = "macos")))]
+        let good_inner = good.join("Contents").join("x86_64-linux").join("GoodSynth.so");
+        fs::create_dir_all(good_inner.parent().unwrap()).unwrap();
+        fs::write(&good_inner, b"good-bin").unwrap();
+        fs::write(
+            good.join("Contents").join("Resources").join("moduleinfo.json"),
+            serde_json::json!({
+                "Factory Info": { "Vendor": "GoodAudio" },
+                "Classes": [{
+                    "CID": "0123456789ABCDEF0123456789ABCDEF",
+                    "Category": "Audio Module Class",
+                    "Name": "GoodSynth",
+                    "Sub Categories": ["Instrument"]
+                }]
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        // Bundle 2: moduleinfo.json present, but missing current arch binary -> skipped!
+        let wrong_arch = root.join("WrongArch.vst3");
+        fs::create_dir_all(wrong_arch.join("Contents").join("Resources")).unwrap();
+        fs::write(
+            wrong_arch.join("Contents").join("Resources").join("moduleinfo.json"),
+            serde_json::json!({
+                "Factory Info": { "Vendor": "Other" },
+                "Classes": [{
+                    "CID": "11111111111111111111111111111111",
+                    "Category": "Audio Module Class",
+                    "Name": "WrongArch",
+                    "Sub Categories": ["Fx"]
+                }]
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let mut manager = Vst3Manager::with_search_dirs(vec![root.clone()])
+            .with_host_executable(&missing_sidecar)
+            .with_blacklist_path(&blacklist_file);
+
+        let report = manager.scan_plugins().unwrap();
+        assert_eq!(report.plugins.len(), 1);
+        assert_eq!(report.plugins[0].name, "GoodSynth");
+        assert_eq!(report.skipped.len(), 1);
+        assert_eq!(report.skipped[0].path, wrong_arch);
+        assert!(report.blocked.is_empty());
+
+        // Blacklist GoodSynth, persist it, verify report.blocked catches it, then retry_blocked_plugins clears it.
+        let mut bl = Vst3Blacklist::load(&blacklist_file);
+        bl.record_failure(&good, "Previous crash".to_string());
+        bl.save(&blacklist_file).unwrap();
+
+        let mut reloaded = Vst3Manager::with_search_dirs(vec![root.clone()])
+            .with_host_executable(&missing_sidecar)
+            .with_blacklist_path(&blacklist_file);
+        let blocked_report = reloaded.scan_plugins().unwrap();
+        assert!(blocked_report.plugins.is_empty());
+        assert_eq!(blocked_report.blocked.len(), 1);
+        assert_eq!(blocked_report.blocked[0].path, good);
+
+        let retried = reloaded.retry_blocked_plugins().unwrap();
+        assert_eq!(retried.plugins.len(), 1);
+        assert!(retried.blocked.is_empty());
+        assert!(Vst3Blacklist::load(&blacklist_file).entries.is_empty());
+
+        let _ = fs::remove_dir_all(&root);
     }
 }

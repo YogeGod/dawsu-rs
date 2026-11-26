@@ -1,4 +1,4 @@
-//! VST3 plug-in discovery, isolated Protocol v3 sidecar host control, pure-Rust SFZ/SF2
+//! VST3 plug-in discovery, isolated Protocol v4 sidecar host control, pure-Rust SFZ/SF2
 //! sampler engines, and WAV bouncing.
 //!
 //! Zero osu!/hitsounding domain types: this crate only knows about instruments,
@@ -22,17 +22,25 @@ pub use bounce::{
     write_wav_i16_with_fade,
 };
 pub use host::{
-    HostCommand, HostError, HostReply, HostSession, HostTransport, MAX_EVENTS, MAX_FRAMES,
-    MidiEvent, PROTOCOL_MAGIC, PROTOCOL_VERSION, ProcessTransport, RenderRequest, RenderResult,
-    ShmBlock, ShmEvent, Vst3HostConfig,
+    CTX_FLAG_BAR_POSITION_VALID, CTX_FLAG_CYCLE_ACTIVE, CTX_FLAG_CYCLE_VALID, CTX_FLAG_PLAYING,
+    CTX_FLAG_PROJECT_TIME_MUSIC_VALID, CTX_FLAG_TEMPO_VALID, CTX_FLAG_TIME_SIG_VALID, HostCommand,
+    HostError, HostReply, HostSession, HostTransport, MAX_EVENTS, MAX_FRAMES, MidiEvent,
+    PROTOCOL_MAGIC, PROTOCOL_VERSION, ProcessTransport, RESTART_IO_CHANGED,
+    RESTART_LATENCY_CHANGED, RESTART_MIDI_CC_CHANGED, RESTART_PARAM_TITLES_CHANGED,
+    RESTART_PARAM_VALUES_CHANGED, RESTART_RELOAD_COMPONENT, RenderRequest, RenderResult,
+    SHM_FLAG_BYPASSED, SHM_FLAG_HAS_AUDIO_IN, ShmBlock, ShmEvent, ShmProcessContext,
+    Vst3HostConfig,
 };
 pub use midi_in::{
     MidiInputEvent, MidiInputRouter, TimestampedMidiEvent, decode_midi_bytes, list_midi_input_ports,
 };
 pub use midi_state::MidiStateTracker;
 pub use scanner::{
-    ScanError, Vst3PluginInfo, default_vst3_dirs, discover_vst3_paths, discover_vst3_paths_in,
-    parse_scan_line, parse_scan_output, scan_plugin,
+    BlacklistEntry, ScanError, Vst3Blacklist, Vst3PluginInfo, binary_fingerprint,
+    canonical_hex_to_com_guid_hex, canonicalize_vst3_uid, com_guid_hex_to_canonical_hex,
+    default_vst3_dirs, discover_vst3_paths, discover_vst3_paths_in, parse_scan_line,
+    parse_scan_output, resolve_vst3_binary, scan_plugin, try_scan_moduleinfo,
+    tuid_bytes_to_canonical_hex, uids_equivalent,
 };
 pub use sf2::{Sf2Instrument, Sf2Preset, Sf2Zone};
 pub use sfz::{

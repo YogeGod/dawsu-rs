@@ -95,7 +95,10 @@ pub(crate) enum Request {
         PathBuf,
         mpsc::Sender<Result<dawsu_application::ManiaImportReport, String>>,
     ),
-    Vst3Scan(mpsc::Sender<Result<dawsu_application::Vst3ScanReport, String>>),
+    Vst3Scan {
+        retry_blocked: bool,
+        response: mpsc::Sender<Result<dawsu_application::Vst3ScanReport, String>>,
+    },
     DrumVstAction(Value, mpsc::Sender<Result<Value, String>>),
     KeysoundsAction(Value, mpsc::Sender<Result<Value, String>>),
     MapsetRevert(MapsetRevertAction, mpsc::Sender<Result<Value, String>>),
@@ -805,9 +808,15 @@ fn editor_thread_with_cache(
                     };
                     let _ = response.send(reply);
                 }
-                Ok(Request::Vst3Scan(response)) => {
-                    let result = guard(&mut app, &mut fault, |app| app.scan_vst3_plugins(&[]))
-                        .and_then(|r| r);
+                Ok(Request::Vst3Scan { retry_blocked, response }) => {
+                    let result = guard(&mut app, &mut fault, |app| {
+                        if retry_blocked {
+                            app.retry_blocked_vst3_plugins()
+                        } else {
+                            app.scan_vst3_plugins(&[])
+                        }
+                    })
+                    .and_then(|r| r);
                     tick_cache.invalidate();
                     let _ = response.send(result);
                 }

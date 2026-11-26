@@ -135,6 +135,8 @@ test("Keysounds shows the no-plug-ins message, Preferences lists MIDI ports and 
   assert.match(preferences, /\{ id: "midi", label: "MIDI Input & VST3" \}/);
   assert.match(preferences, /invoke\("midi_action", \{ action: \{ kind: "input_ports" \} \}\)/);
   assert.match(preferences, /invoke\("vst3_scan"\)/);
+  assert.match(preferences, /invoke\("vst3_scan",\s*\{\s*retryBlocked:\s*true\s*\}\)/);
+  assert.match(preferences, /Retry blocked plug-ins/);
   assert.match(preferences, /Scan VST3 plug-ins/);
   assert.match(source("TransportBar.svelte"), /invoke\("midi_action", \{[\s\S]*?kind: "record_toggle"[\s\S]*?recordArgs\(/);
 });
