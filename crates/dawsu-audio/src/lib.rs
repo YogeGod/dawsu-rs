@@ -15,6 +15,7 @@ use symphonia::core::meta::MetadataOptions;
 pub mod denormal;
 #[cfg(windows)]
 mod directsound;
+pub mod dll;
 #[cfg(windows)]
 mod mme;
 pub mod ring;
@@ -22,6 +23,7 @@ mod rt_thread;
 #[cfg(windows)]
 mod wasapi_low_latency;
 
+pub use dll::{AudioClockDll, ClockSnapshot, ClockSnapshotSlot, monotonic_rel_ns};
 pub use ring::{CachePadded, SpscConsumer, SpscProducer, spsc_ring};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -677,6 +679,7 @@ pub struct Mixer {
     seek_fade_pos: usize,
     seek_fade_frames: usize,
     seek_fade_active: bool,
+    cycle_wraps: u64,
 }
 impl Mixer {
     const LIVE_BLOCK_FRAMES: usize = 512;
@@ -712,6 +715,7 @@ impl Mixer {
             seek_fade_pos: 0,
             seek_fade_frames: (sample_rate as usize / 200).max(1),
             seek_fade_active: false,
+            cycle_wraps: 0,
         }
     }
     /// Replaces the live audio source, returning the previous source so callers
@@ -757,10 +761,25 @@ impl Mixer {
     }
     pub fn render(&mut self, out: &mut [f32], channels: usize) {
         let out_channels = channels.max(1);
-        let block_samples = Self::LIVE_BLOCK_FRAMES * out_channels;
-        for block in out.chunks_mut(block_samples) {
-            let block_frames = block.len() / out_channels;
+        let total_frames = out.len() / out_channels;
+        let mut offset_frames = 0usize;
+        while offset_frames < total_frames {
             let block_speed = clamp_speed(self.speed);
+            let ms_per_frame = block_speed * 1000.0 / self.sample_rate.max(1) as f64;
+            let mut sub_frames = (total_frames - offset_frames).min(Self::LIVE_BLOCK_FRAMES);
+            if self.playing
+                && let Some((left, right)) = self.cycle
+                && right > left
+            {
+                if self.position_ms >= right || (right - self.position_ms) <= ms_per_frame * 1e-4 {
+                    self.seek_internal(left, false);
+                    self.cycle_wraps = self.cycle_wraps.wrapping_add(1);
+                }
+                let frames_to_right = ((right - self.position_ms) / ms_per_frame).ceil().max(1.0) as usize;
+                sub_frames = sub_frames.min(frames_to_right);
+            }
+            let block = &mut out[offset_frames * out_channels..(offset_frames + sub_frames) * out_channels];
+            let block_frames = sub_frames;
             let has_live = if block_frames > 0 {
                 if let Some(source) = self.live_source.as_mut() {
                     let left = &mut self.live_left[..block_frames];
@@ -783,10 +802,6 @@ impl Mixer {
                 false
             };
             for (frame_idx, frame) in block.chunks_mut(out_channels).enumerate() {
-                if let Some((left, right)) = self.cycle
-                    && self.playing && right > left && self.position_ms >= right {
-                        self.seek_internal(left, false);
-                    }
                 if self.playing {
                     if !self.indexed {
                         self.active_cues.clear();
@@ -933,6 +948,7 @@ impl Mixer {
                     self.position_ms += self.speed * 1000.0 / self.sample_rate as f64;
                 }
             }
+            offset_frames += sub_frames;
         }
     }
 }
@@ -1138,6 +1154,7 @@ struct EngineHandles {
     retire_live_rx: SpscConsumer<Box<dyn LiveAudioSource>, RETIRE_LIVE_CAPACITY>,
     telemetry: Arc<AudioTelemetry>,
     spectrum_tap: Arc<SpectrumTap>,
+    clock_slot: Arc<ClockSnapshotSlot>,
 }
 
 fn build_render_parts(
@@ -1146,6 +1163,7 @@ fn build_render_parts(
     rt_promotion: bool,
     telemetry: Option<Arc<AudioTelemetry>>,
 ) -> (StreamRender, EngineHandles) {
+    let _ = monotonic_rel_ns(Instant::now());
     let (cmd_tx, cmd_rx) = spsc_ring::<Command, CMD_RING_CAPACITY>();
     let (retire_live_tx, retire_live_rx) =
         spsc_ring::<Box<dyn LiveAudioSource>, RETIRE_LIVE_CAPACITY>();
@@ -1157,6 +1175,7 @@ fn build_render_parts(
         push_count: AtomicU64::new(0),
         consumer: Mutex::new(tap_rx),
     });
+    let clock_slot = Arc::new(ClockSnapshotSlot::new());
     let render = StreamRender::new(
         sample_rate,
         channels,
@@ -1165,6 +1184,7 @@ fn build_render_parts(
         Arc::clone(&telemetry),
         Arc::clone(&spectrum_tap),
         tap_tx,
+        Arc::clone(&clock_slot),
     )
     .with_rt_promotion(rt_promotion);
     (
@@ -1174,6 +1194,7 @@ fn build_render_parts(
             retire_live_rx,
             telemetry,
             spectrum_tap,
+            clock_slot,
         },
     )
 }
@@ -1190,6 +1211,7 @@ pub struct AudioEngine {
     listen: ListenSlot,
     telemetry: Arc<AudioTelemetry>,
     spectrum_tap: Arc<SpectrumTap>,
+    clock_slot: Arc<ClockSnapshotSlot>,
     pub errors: Arc<AtomicU64>,
     pub device_name: String,
     device_id: Option<String>,
@@ -1251,6 +1273,7 @@ impl AudioEngine {
                 listen: ListenSlot::default(),
                 telemetry: handles.telemetry,
                 spectrum_tap: handles.spectrum_tap,
+                clock_slot: handles.clock_slot,
                 errors,
             })
         }
@@ -1316,6 +1339,7 @@ impl AudioEngine {
             listen: ListenSlot::default(),
             telemetry,
             spectrum_tap: opened.payload.spectrum_tap,
+            clock_slot: opened.payload.clock_slot,
             errors,
             device_name: device_name_out,
             device_id: opened.device_id,
@@ -1436,6 +1460,7 @@ impl AudioEngine {
             cmd_tx: Mutex::new(handles.cmd_tx),
             telemetry: handles.telemetry,
             spectrum_tap: handles.spectrum_tap,
+            clock_slot: handles.clock_slot,
             errors,
             device_name: name,
             device_id,
@@ -1597,6 +1622,10 @@ impl AudioEngine {
     pub fn set_spectrum_tap_enabled(&self, enabled: bool) {
         self.spectrum_tap.set_enabled(enabled);
     }
+
+    pub fn clock_snapshot(&self) -> Option<ClockSnapshot> {
+        self.clock_slot.load()
+    }
 }
 
 /// Cloneable lock-free handle to an [`AudioEngine`]'s real-time telemetry atomics.
@@ -1690,6 +1719,9 @@ struct StreamRender {
     telemetry: Arc<AudioTelemetry>,
     spectrum_tap: Arc<SpectrumTap>,
     tap_tx: SpscProducer<f32, SPECTRUM_TAP_CAP>,
+    clock_slot: Arc<ClockSnapshotSlot>,
+    clock_dll: AudioClockDll,
+    clock_generation: u64,
     applied_seq: u64,
     channels: usize,
     scratch: Vec<f32>,
@@ -1699,6 +1731,7 @@ struct StreamRender {
 }
 
 impl StreamRender {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         rate: u32,
         channels: usize,
@@ -1707,6 +1740,7 @@ impl StreamRender {
         telemetry: Arc<AudioTelemetry>,
         spectrum_tap: Arc<SpectrumTap>,
         tap_tx: SpscProducer<f32, SPECTRUM_TAP_CAP>,
+        clock_slot: Arc<ClockSnapshotSlot>,
     ) -> Self {
         let channels = channels.max(1);
         // Reused, frame-aligned scratch space. Callbacks never allocate sample buffers.
@@ -1718,6 +1752,9 @@ impl StreamRender {
             telemetry,
             spectrum_tap,
             tap_tx,
+            clock_slot,
+            clock_dll: AudioClockDll::new(0.1),
+            clock_generation: 0,
             applied_seq: 0,
             channels,
             scratch: vec![0.0; samples],
@@ -1738,6 +1775,7 @@ impl StreamRender {
             self.rt_promoted = true;
             rt_thread::promote_callback_thread();
         }
+        let cb_now = Instant::now();
         let total_frames = out.len() / self.channels;
         if total_frames > 0 {
             let _ = self.telemetry.observed_buffer_frames.compare_exchange(
@@ -1747,26 +1785,30 @@ impl StreamRender {
                 Ordering::Relaxed,
             );
             if self.rt_promotion {
-                let now = Instant::now();
                 let period_secs = total_frames as f64 / self.mixer.sample_rate.max(1) as f64;
                 if period_secs >= 0.002
                     && let Some(prev) = self.last_callback
-                    && now.duration_since(prev).as_secs_f64() > period_secs * 1.8
+                    && cb_now.duration_since(prev).as_secs_f64() > period_secs * 1.8
                 {
                     self.telemetry.underruns.fetch_add(1, Ordering::Relaxed);
                 }
-                self.last_callback = Some(now);
+                self.last_callback = Some(cb_now);
             }
         }
 
+        let mut reset_dll = false;
         for _ in 0..MAX_COMMANDS_PER_BUFFER {
             let Some(command) = self.receive.try_pop() else {
                 break;
             };
             match command {
                 Command::Load(schedule, slot) => {
+                    let prev_speed = self.mixer.speed;
                     let old = schedule.swap_into(&mut self.mixer);
                     let _ = slot.set(old);
+                    if (prev_speed - self.mixer.speed).abs() > 1e-6 {
+                        reset_dll = true;
+                    }
                 }
                 Command::SetLiveSource(source) => {
                     if let Some(old) = self.mixer.set_live_source(source) {
@@ -1777,6 +1819,9 @@ impl StreamRender {
                     self.applied_seq = self.applied_seq.max(seq);
                     let was_playing = self.mixer.playing;
                     self.mixer.playing = on;
+                    if on != was_playing {
+                        reset_dll = true;
+                    }
                     if on && !was_playing {
                         self.mixer.seek_fade_pos = 0;
                         self.mixer.seek_fade_active = true;
@@ -1788,6 +1833,7 @@ impl StreamRender {
                 Command::Seek(ms, seq) => {
                     self.applied_seq = self.applied_seq.max(seq);
                     self.mixer.seek(ms);
+                    reset_dll = true;
                 }
                 Command::Audition(clip, gain) => self.mixer.audition(clip, gain),
                 Command::Listen(clip) => self.mixer.listen(clip),
@@ -1811,6 +1857,10 @@ impl StreamRender {
                 }
             }
         }
+
+        let wraps_before = self.mixer.cycle_wraps;
+        let song_pos_before = self.mixer.position_ms;
+        let speed_for_dll = clamp_speed(self.mixer.speed);
 
         let mut peak_l = 0.0_f32;
         let mut peak_r = 0.0_f32;
@@ -1847,6 +1897,34 @@ impl StreamRender {
                     .push_count
                     .fetch_add((buffer.len() / self.channels) as u64, Ordering::Relaxed);
             }
+        }
+
+        if self.mixer.cycle_wraps != wraps_before {
+            reset_dll = true;
+        }
+        if reset_dll {
+            self.clock_generation = self.clock_generation.wrapping_add(1);
+            self.clock_dll.reset(self.clock_generation);
+        }
+        if total_frames > 0 {
+            let anchor_song_ms = if self.mixer.playing {
+                if self.mixer.cycle_wraps == wraps_before {
+                    song_pos_before
+                } else {
+                    self.mixer.cycle.map_or(self.mixer.position_ms, |(l, _)| l)
+                }
+            } else {
+                self.mixer.position_ms
+            };
+            let snap = self.clock_dll.update(
+                monotonic_rel_ns(cb_now),
+                total_frames as u32,
+                self.mixer.sample_rate,
+                anchor_song_ms,
+                speed_for_dll,
+                self.mixer.playing,
+            );
+            self.clock_slot.store(snap);
         }
         let highest = peak_l.max(peak_r);
         self.telemetry.peak.store(highest.to_bits(), Ordering::Relaxed);
@@ -1979,6 +2057,10 @@ impl RtBenchHarness {
 
     pub fn set_spectrum_tap_enabled(&self, enabled: bool) {
         self.handles.spectrum_tap.set_enabled(enabled);
+    }
+
+    pub fn clock_snapshot(&self) -> Option<ClockSnapshot> {
+        self.handles.clock_slot.load()
     }
 }
 
@@ -2655,6 +2737,88 @@ mod live_source_tests {
         render.fill(&mut pcm);
         assert!(retire_live_rx.try_pop().is_some());
         assert!(retire_live_rx.try_pop().is_none());
+    }
+
+    #[test]
+    fn mixer_cycle_wrap_splits_live_block_and_resets_once() {
+        struct WrapRecorder {
+            resets: usize,
+            was_reset: bool,
+            calls: Vec<(usize, f64, bool)>,
+        }
+        impl LiveAudioSource for WrapRecorder {
+            fn process_block(
+                &mut self,
+                left: &mut [f32],
+                right: &mut [f32],
+                _sample_rate: u32,
+                _is_playing: bool,
+            ) {
+                left.fill(0.0);
+                right.fill(0.0);
+            }
+            fn process_timeline_block(
+                &mut self,
+                left: &mut [f32],
+                right: &mut [f32],
+                _sample_rate: u32,
+                _is_playing: bool,
+                position_ms: f64,
+                _speed: f64,
+            ) {
+                let post_reset = self.was_reset;
+                self.was_reset = false;
+                self.calls.push((left.len(), position_ms, post_reset));
+                if post_reset {
+                    // Simulate re-trigger at cycle.left sounding immediately in sub-block 2.
+                    left.fill(0.5);
+                    right.fill(0.5);
+                } else {
+                    left.fill(0.1);
+                    right.fill(0.1);
+                }
+            }
+            fn reset(&mut self) {
+                self.resets += 1;
+                self.was_reset = true;
+            }
+        }
+
+        let rate = 48_000u32;
+        let ms_per_frame = 1000.0 / f64::from(rate);
+        let cycle_left = 100.0;
+        let cycle_right = 500.0;
+        let mut mixer = Mixer::new(rate);
+        mixer.playing = true;
+        mixer.limiter_enabled = false;
+        mixer.cycle = Some((cycle_left, cycle_right));
+        mixer.seek(cycle_right - 64.0 * ms_per_frame);
+        let calls_box = Box::new(WrapRecorder {
+            resets: 0,
+            was_reset: false,
+            calls: Vec::new(),
+        });
+        mixer.set_live_source(Some(calls_box));
+
+        let mut out = vec![0.0_f32; 256 * 2];
+        mixer.render(&mut out, 2);
+
+        // Pre-wrap (frames 0..64) has 0.1; post-wrap (frames 64..256) has re-triggered 0.5 at cycle.left.
+        assert!((out[0] - 0.1).abs() < 1e-6);
+        assert!((out[63 * 2] - 0.1).abs() < 1e-6);
+        assert!((out[64 * 2] - 0.5).abs() < 1e-6);
+        assert!((out[255 * 2] - 0.5).abs() < 1e-6);
+        assert_eq!(mixer.cycle_wraps, 1);
+
+        // Retrieve source via set_live_source(None)? Box<dyn LiveAudioSource> can't downcast directly,
+        // so also inspect cycle_wraps == 1 and position_ms == cycle_left + 192 * ms_per_frame.
+        let expected_pos = cycle_left + 192.0 * ms_per_frame;
+        assert!(
+            (mixer.position_ms - expected_pos).abs() < 1e-6,
+            "expected {}, got {}",
+            expected_pos,
+            mixer.position_ms
+        );
     }
 }
 

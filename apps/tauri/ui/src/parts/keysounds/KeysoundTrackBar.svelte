@@ -1,6 +1,8 @@
 <script>
   import {
     QUANTIZE_MS,
+    SCALE_DEFS,
+    SCALE_ROOTS,
     keysoundsQuantize,
     keysoundsScan,
     keysoundsToggleMute,
@@ -15,6 +17,9 @@
     loading = false,
     name = $bindable(""),
     pluginId = $bindable(""),
+    scaleRoot = $bindable(0),
+    scaleKind = $bindable("chromatic"),
+    foldToScale = false,
     instruments = [],
     sidecarAvailable = false,
     drumVst3,
@@ -35,6 +40,10 @@
     ontoggleghosts = null,
     ontoggleobjectlines = null,
     ontoggletyping = null,
+    ontogglefold = null,
+    onscalechange = null,
+    onstrum = null,
+    onhumanise = null,
   } = $props();
 </script>
 
@@ -83,6 +92,14 @@
   <div class="ks-group">
     <button type="button" disabled={loading || !notesCount} onclick={() => ontrackaction(id => keysoundsQuantize(id, QUANTIZE_MS))}>Quantize 125 ms</button>
     <button type="button" disabled={loading || !notesCount} onclick={() => ontrackaction(id => keysoundsTrimOverlaps(id))}>Trim overlaps</button>
+    {#if onstrum}
+      <button type="button" disabled={loading || notesCount < 2}
+        title="Strum simultaneous chord notes (+20 ms per voice)" onclick={onstrum}>Strum</button>
+    {/if}
+    {#if onhumanise}
+      <button type="button" disabled={loading || !notesCount}
+        title="Subtly humanise timing (±10 ms) and velocity (±12)" onclick={onhumanise}>Humanise</button>
+    {/if}
     {#if onsynctoobjects}
       <button type="button" disabled={loading || !notesCount} onclick={onsynctoobjects}>Sync to objects</button>
     {/if}
@@ -92,6 +109,24 @@
     <button type="button" aria-label="Transpose up an octave" disabled={loading || !notesCount} onclick={() => ontrackaction(id => keysoundsTranspose(id, 12))}>+12</button>
   </div>
   <div class="ks-group">
+    <select aria-label="Scale root" bind:value={scaleRoot} disabled={loading}>
+      {#each SCALE_ROOTS as rootName, idx (idx)}
+        <option value={idx}>{rootName}</option>
+      {/each}
+    </select>
+    <select aria-label="Scale" bind:value={scaleKind} disabled={loading}
+      onchange={() => onscalechange?.(scaleKind)}>
+      {#each SCALE_DEFS as def (def.id)}
+        <option value={def.id}>{def.label}</option>
+      {/each}
+    </select>
+    {#if ontogglefold}
+      <button type="button" class="ks-toggle" class:active={foldToScale && scaleKind !== "chromatic"}
+        aria-pressed={foldToScale && scaleKind !== "chromatic"}
+        disabled={loading || scaleKind === "chromatic"}
+        title="Fold rows to the selected scale"
+        onclick={ontogglefold}>Fold</button>
+    {/if}
     {#if ontoggleghosts}
       <button type="button" class="ks-toggle" class:active={showGhosts} aria-pressed={showGhosts}
         onclick={ontoggleghosts}>Ghosts</button>

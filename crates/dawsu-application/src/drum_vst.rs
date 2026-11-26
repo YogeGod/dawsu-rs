@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
 use dawsu_audio::{LiveAudioSource, SpscConsumer, SpscProducer, spsc_ring};
-use dawsu_audio_instruments::{MAX_EVENTS, ShmChannel};
+use dawsu_audio_instruments::{MAX_EVENTS, MidiStateTracker, ShmChannel};
 pub use dawsu_audio_instruments::ShmEvent;
 use dawsu_foundation::{Hitsound, SampleIdentity, Sound};
 
@@ -102,6 +102,8 @@ impl DrumVstLiveHandle {
             preview_rx,
             events: Vec::with_capacity(MAX_EVENTS),
             active_releases: Vec::with_capacity(MAX_ACTIVE_RELEASES),
+            midi_state: MidiStateTracker::new(),
+            was_enabled: enabled,
             needs_reset: false,
             last_block_end_ms: None,
         };
@@ -183,18 +185,23 @@ pub struct DrumVstLiveSource {
     events: Vec<ShmEvent>,
     /// `(midi_note, frames_remaining_until_note_off)` — 100 ms release window like v3.1.4.
     active_releases: Vec<(u8, usize)>,
+    midi_state: MidiStateTracker,
+    was_enabled: bool,
     needs_reset: bool,
     last_block_end_ms: Option<f64>,
 }
 
 impl DrumVstLiveSource {
     fn push_event(&mut self, offset: usize, status: u8, data1: u8, data2: u8) {
+        let d1 = data1 & 0x7F;
+        let d2 = data2 & 0x7F;
+        self.midi_state.track_event(status, d1, d2);
         if self.events.len() < MAX_EVENTS {
             self.events.push(ShmEvent {
                 offset: offset as i32,
                 status,
-                data1: data1 & 0x7F,
-                data2: data2 & 0x7F,
+                data1: d1,
+                data2: d2,
                 pad: 0,
             });
         }
@@ -265,9 +272,23 @@ impl LiveAudioSource for DrumVstLiveSource {
         if frames == 0 {
             return;
         }
+        let rate = sample_rate.max(1) as f64;
         if !self.enabled.load(Ordering::Relaxed) {
-            // Drain any stale preview events while disabled and return silence immediately.
+            // Drain any stale preview events while disabled and flush active notes cleanly once.
             while self.preview_rx.try_pop().is_some() {}
+            if self.was_enabled {
+                self.was_enabled = false;
+                self.events.clear();
+                self.midi_state.flush_channel(9, 0, &mut self.events, MAX_EVENTS);
+                if !self.events.is_empty() {
+                    let _ = self.processor.process_block(
+                        rate,
+                        &self.events,
+                        &mut left[..frames],
+                        &mut right[..frames],
+                    );
+                }
+            }
             if !self.active_releases.is_empty() || self.needs_reset {
                 self.active_releases.clear();
                 self.needs_reset = false;
@@ -277,17 +298,16 @@ impl LiveAudioSource for DrumVstLiveSource {
             right[..frames].fill(0.0);
             return;
         }
+        self.was_enabled = true;
 
         self.events.clear();
-        let rate = sample_rate.max(1) as f64;
         let release_frames = ((sample_rate / 10) as usize).max(1); // 100 ms like v3.1.4
 
         if self.needs_reset {
             self.needs_reset = false;
             self.active_releases.clear();
             self.last_block_end_ms = None;
-            self.push_event(0, CC_CH10, CC_ALL_SOUND_OFF, 0);
-            self.push_event(0, CC_CH10, CC_ALL_NOTES_OFF, 0);
+            self.midi_state.flush_channel(9, 0, &mut self.events, MAX_EVENTS);
         }
 
         // Advance pending Note Offs due inside this block.
@@ -619,5 +639,48 @@ mod tests {
             index: CustomIndex::new(2),
         };
         assert_eq!(default_skin_midi_note(&custom), None);
+    }
+
+    #[test]
+    fn bypass_and_cycle_reset_flush_active_notes_before_next_trigger() {
+        let (proc, calls) = RecordingProcessor::new(0.25);
+        let (handle, mut source) = DrumVstLiveHandle::new(
+            "vst3-flush".into(),
+            "Test Kit".into(),
+            "kit.vst3".into(),
+            None,
+            true,
+            Box::new(proc),
+        );
+        handle.set_schedule(vec![DrumMidiCue { at_ms: 100.0, note: 36, velocity: 110 }]);
+        let mut l = [0.0f32; 512];
+        let mut r = [0.0f32; 512];
+
+        // Trigger note 36 at 100 ms (cycle.left), then reset right before wrapping back to 100 ms.
+        source.process_timeline_block(&mut l, &mut r, 48_000, true, 100.0, 1.0);
+        source.reset();
+        source.process_timeline_block(&mut l, &mut r, 48_000, true, 100.0, 1.0);
+
+        // Now mute live VST while note 36 is active -> emits explicit Note Off + CC 123/120 once, then goes idle.
+        handle.set_enabled(false);
+        source.process_timeline_block(&mut l, &mut r, 48_000, true, 110.0, 1.0);
+        assert_eq!(l[0], 0.0);
+        source.process_timeline_block(&mut l, &mut r, 48_000, true, 120.0, 1.0);
+
+        let recorded = calls.lock().unwrap();
+        assert_eq!(recorded.len(), 3, "second muted block must not call processor");
+        // Block 1 (after reset + retrigger at 100 ms): NoteOff(36), CC 123, CC 120, then NoteOn(36).
+        let wrap_block = &recorded[1];
+        assert_eq!(wrap_block[0].status, NOTE_OFF_CH10);
+        assert_eq!(wrap_block[0].data1, 36);
+        assert!(wrap_block.iter().any(|e| e.status == CC_CH10 && e.data1 == CC_ALL_NOTES_OFF));
+        assert!(wrap_block.iter().any(|e| e.status == CC_CH10 && e.data1 == CC_ALL_SOUND_OFF));
+        assert_eq!(wrap_block.last().unwrap().status, NOTE_ON_CH10);
+        assert_eq!(wrap_block.last().unwrap().data1, 36);
+
+        // Block 2 (mute flush): NoteOff(36) before CC 123 / CC 120.
+        let mute_block = &recorded[2];
+        assert_eq!(mute_block[0].status, NOTE_OFF_CH10);
+        assert_eq!(mute_block[0].data1, 36);
     }
 }

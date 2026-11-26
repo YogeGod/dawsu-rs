@@ -1,12 +1,14 @@
 <script>
   import {
-    PX_PER_MS, ROW_PX, isBlackKey, msAtX, noteDragPayload, pitchAtY, pitchName, pitchRow,
+    PX_PER_MS, QUANTIZE_MS, ROW_PX, isBlackKey, msAtX, noteDragPayload, pitchAtY, pitchName, pitchRow,
   } from "../../lib/midi.js";
   import { sustainSpanAt } from "../../lib/pianoRoll.js";
 
   let {
     rollScroll = $bindable(null),
     pitches = [],
+    scaleMask = 0xfff,
+    foldToScale = false,
     spanPx = 0,
     beats = [],
     sustainSpans = [],
@@ -26,12 +28,23 @@
   // The note being dragged: { note, mode, x0, y0, dx, dy } (a local ghost until pointerup).
   let drag = $state(null);
 
+  const visibleGhosts = $derived(
+    foldToScale ? ghostNotes.filter(g => pitchRow(g.pitch, pitches) >= 0) : ghostNotes
+  );
+  const visibleNotes = $derived(
+    foldToScale ? notes.filter(n => pitchRow(n.pitch, pitches) >= 0) : notes
+  );
+
+  function inScale(pitch) {
+    return ((scaleMask >> (((pitch % 12) + 12) % 12)) & 1) === 1;
+  }
+
   // A press on an empty cell places a note there and plays it.
   async function onGridDown(event) {
     if (event.button !== 0 || event.target !== event.currentTarget || loading || trackId == null) return;
     const box = event.currentTarget.getBoundingClientRect();
     const startMs = msAtX(event.clientX - box.left);
-    const pitch = pitchAtY(event.clientY - box.top);
+    const pitch = pitchAtY(event.clientY - box.top, pitches);
     await onaddnote(startMs, pitch);
   }
 
@@ -54,7 +67,7 @@
     const { note, mode, dx, dy } = drag;
     drag = null;
     if (Math.abs(dx) < 2 && Math.abs(dy) < 2) return;
-    const payload = noteDragPayload(trackId, note, mode, dx, dy);
+    const payload = noteDragPayload(trackId, note, mode, dx, dy, QUANTIZE_MS, pitches);
     if (!payload) return;
     await ondragnote(note, mode, payload);
   }
@@ -63,11 +76,11 @@
   function noteBox(note) {
     let start = note.startMs, end = note.endMs, pitch = note.pitch;
     if (drag && drag.note.index === note.index) {
-      const payload = noteDragPayload(trackId, note, drag.mode, drag.dx, drag.dy);
+      const payload = noteDragPayload(trackId, note, drag.mode, drag.dx, drag.dy, QUANTIZE_MS, pitches);
       if (payload?.kind === "move_note") { end = payload.startMs + (end - start); start = payload.startMs; pitch = payload.pitch; }
       if (payload?.kind === "resize_note") end = payload.endMs;
     }
-    return { left: start * PX_PER_MS + "px", top: pitchRow(pitch) + "px", width: Math.max(4, (end - start) * PX_PER_MS) + "px" };
+    return { left: start * PX_PER_MS + "px", top: pitchRow(pitch, pitches) + "px", width: Math.max(4, (end - start) * PX_PER_MS) + "px" };
   }
 </script>
 
@@ -76,6 +89,7 @@
   <div class="ks-keys">
     {#each pitches as pitch (pitch)}
       <button type="button" class="ks-key" class:black={isBlackKey(pitch)} class:c={pitch % 12 === 0}
+        class:out-of-scale={!foldToScale && !inScale(pitch)}
         aria-label={`Play ${pitchName(pitch)}`}
         onpointerdown={() => preview(pitch)}>{pitch % 12 === 0 ? pitchName(pitch) : ""}</button>
     {/each}
@@ -84,7 +98,8 @@
     onpointerdown={onGridDown} oncontextmenu={(e) => e.preventDefault()}>
     {#each pitches as pitch (pitch)}
       <div class="ks-lane" class:black={isBlackKey(pitch)} class:c={pitch % 12 === 0}
-        style:--ks-top={pitchRow(pitch) + "px"}></div>
+        class:out-of-scale={!foldToScale && !inScale(pitch)}
+        style:--ks-top={pitchRow(pitch, pitches) + "px"}></div>
     {/each}
     {#each beats as beat (beat)}
       <div class="ks-beat" class:bar={beat % 2000 === 0} class:sustained={Boolean(sustainSpanAt(sustainSpans, beat))}
@@ -93,13 +108,13 @@
     {#each objectTimes as timeMs, idx (`obj-${idx}-${timeMs}`)}
       <div class="ks-object-line" aria-hidden="true" style:--ks-left={timeMs * PX_PER_MS + "px"}></div>
     {/each}
-    {#each ghostNotes as ghost, idx (`ghost-${ghost.trackId}-${idx}`)}
+    {#each visibleGhosts as ghost, idx (`ghost-${ghost.trackId}-${idx}`)}
       <div class="ks-ghost-note" aria-hidden="true"
         style:--ks-left={ghost.startMs * PX_PER_MS + "px"}
-        style:--ks-top={pitchRow(ghost.pitch) + "px"}
+        style:--ks-top={pitchRow(ghost.pitch, pitches) + "px"}
         style:--ks-width={Math.max(4, (ghost.endMs - ghost.startMs) * PX_PER_MS) + "px"}></div>
     {/each}
-    {#each notes as note (note.index)}
+    {#each visibleNotes as note (note.index)}
       <div class="ks-note" class:selected={selected === note.index} class:muted={note.muted}
         role="gridcell" tabindex="-1" aria-label={`${pitchName(note.pitch)} at ${Math.round(note.startMs)} ms`}
         style:--ks-left={noteBox(note).left} style:--ks-top={noteBox(note).top}
@@ -150,6 +165,9 @@
     background: #151517;
     color: var(--editor-muted);
   }
+  .ks-key.out-of-scale {
+    opacity: 0.45;
+  }
   .ks-key:active {
     background: #0a84ff;
   }
@@ -174,6 +192,9 @@
   .ks-lane.black {
     background: #151517;
   }
+  .ks-lane.out-of-scale {
+    background: #101012;
+  }
   .ks-lane.c {
     border-bottom-color: rgba(255, 255, 255, 0.1);
   }
@@ -188,6 +209,10 @@
   }
   .ks-beat.bar {
     background: rgba(255, 255, 255, 0.14);
+  }
+  .ks-beat.sustained {
+    width: 2px;
+    background: rgba(56, 189, 248, 0.35);
   }
   .ks-object-line {
     position: absolute;

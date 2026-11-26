@@ -256,6 +256,14 @@ test("a changed lane count refreshes the scene in the background", async () => {
   assert.deepEqual(calls.map(call => call.args.scene), [false, true]);
 });
 
+test("inline keysounds CSS collapses the ruler row and pins workspace without modifying docking.js", async () => {
+  const css = await readFile(new URL("../ui/src/timeline.css", import.meta.url), "utf8");
+  assert.match(css, /#editor-arrange\.keysounds-active[\s\S]*?grid-template-rows:\s*auto minmax\(0,\s*1fr\);/);
+  assert.match(css, /#editor-arrange\.keysounds-active\s*>\s*#base-diff-strip\s*\{\s*grid-row:\s*1;/);
+  assert.match(css, /#editor-arrange\.keysounds-active\s*>\s*#keysounds-workspace\s*\{\s*grid-row:\s*2;/);
+  assert.match(css, /\.arrange\.keysounds-active\s*>\s*\.ruler/);
+});
+
 test("Tab follows the active bindings and remains focus navigation when unbound", async () => {
   const { listeners, calls, evaluate, settle } = await frontend();
   const handle = listeners.get("keydown");
@@ -540,4 +548,12 @@ test("finishing background song decoding refreshes the scene to pull the wavefor
   );
   await evaluate("update(null, false)");
   assert.deepEqual(calls.map(call => call.args.scene), [false, true]);
+});
+
+test("inline keysounds CSS collapses the ruler row and pins workspace without modifying docking.js", async () => {
+  const css = await readFile(new URL("../ui/src/timeline.css", import.meta.url), "utf8");
+  assert.match(css, /#editor-arrange\.keysounds-active[\s\S]*?grid-template-rows:\s*auto minmax\(0,\s*1fr\);/);
+  assert.match(css, /#editor-arrange\.keysounds-active\s*>\s*#base-diff-strip\s*\{\s*grid-row:\s*1;/);
+  assert.match(css, /#editor-arrange\.keysounds-active\s*>\s*#keysounds-workspace\s*\{\s*grid-row:\s*2;/);
+  assert.match(css, /\.arrange\.keysounds-active\s*>\s*\.ruler/);
 });

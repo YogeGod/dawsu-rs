@@ -4,7 +4,95 @@
 //! without mutating its input.
 
 use crate::model::KeysoundNote;
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
+
+/// Musical scales supported for Piano Roll scale highlighting and fold-to-scale.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScaleKind {
+    #[default]
+    Chromatic,
+    Major,
+    NaturalMinor,
+    HarmonicMinor,
+    MelodicMinor,
+    Dorian,
+    Mixolydian,
+    PentatonicMajor,
+    PentatonicMinor,
+    Blues,
+}
+
+impl ScaleKind {
+    /// Parses a UI/JSON scale identifier into a [`ScaleKind`].
+    pub fn from_id(id: &str) -> Self {
+        match id.trim().to_ascii_lowercase().as_str() {
+            "major" => Self::Major,
+            "natural_minor" | "minor" => Self::NaturalMinor,
+            "harmonic_minor" => Self::HarmonicMinor,
+            "melodic_minor" => Self::MelodicMinor,
+            "dorian" => Self::Dorian,
+            "mixolydian" => Self::Mixolydian,
+            "pentatonic_major" => Self::PentatonicMajor,
+            "pentatonic_minor" => Self::PentatonicMinor,
+            "blues" => Self::Blues,
+            _ => Self::Chromatic,
+        }
+    }
+
+    const fn intervals(self) -> &'static [u8] {
+        match self {
+            Self::Chromatic => &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
+            Self::Major => &[0, 2, 4, 5, 7, 9, 11],
+            Self::NaturalMinor => &[0, 2, 3, 5, 7, 8, 10],
+            Self::HarmonicMinor => &[0, 2, 3, 5, 7, 8, 11],
+            Self::MelodicMinor => &[0, 2, 3, 5, 7, 9, 11],
+            Self::Dorian => &[0, 2, 3, 5, 7, 9, 10],
+            Self::Mixolydian => &[0, 2, 4, 5, 7, 9, 10],
+            Self::PentatonicMajor => &[0, 2, 4, 7, 9],
+            Self::PentatonicMinor => &[0, 3, 5, 7, 10],
+            Self::Blues => &[0, 3, 5, 6, 7, 10],
+        }
+    }
+}
+
+/// Returns a 12-bit pitch-class mask (`bit pc` set iff `(root + interval) % 12 == pc`).
+pub fn scale_pitch_mask(root: u8, scale: ScaleKind) -> u16 {
+    let root_pc = root % 12;
+    let mut mask = 0u16;
+    for &interval in scale.intervals() {
+        mask |= 1u16 << ((root_pc + interval) % 12);
+    }
+    mask
+}
+
+/// Returns `true` when MIDI `pitch` belongs to `scale` rooted at `root`.
+pub fn is_pitch_in_scale(pitch: u8, root: u8, scale: ScaleKind) -> bool {
+    let pc = pitch % 12;
+    (scale_pitch_mask(root, scale) & (1u16 << pc)) != 0
+}
+
+/// Direction to spread simultaneous chord notes when strumming.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StrumDirection {
+    #[default]
+    Up,
+    Down,
+    Alternate,
+}
+
+impl StrumDirection {
+    /// Parses a UI/JSON direction identifier into a [`StrumDirection`].
+    pub fn from_id(id: &str) -> Self {
+        match id.trim().to_ascii_lowercase().as_str() {
+            "down" => Self::Down,
+            "alternate" => Self::Alternate,
+            _ => Self::Up,
+        }
+    }
+}
 
 /// Splits the note at `index` at `split_ms` into two contiguous notes sharing a `split_group`.
 ///
@@ -248,6 +336,176 @@ pub fn deduplicate_notes(notes: &[KeysoundNote], tolerance_ms: f64) -> Vec<Keyso
     kept
 }
 
+/// Strums simultaneous chord notes in `notes` (or only `indices` when `Some`), offsetting each
+/// chord voice progressively by `spread_ms` while preserving note durations (`>= 20 ms`).
+pub fn strum_notes(
+    notes: &[KeysoundNote],
+    indices: Option<&[usize]>,
+    spread_ms: f64,
+    direction: StrumDirection,
+    chord_tolerance_ms: f64,
+) -> Vec<KeysoundNote> {
+    if !spread_ms.is_finite() || spread_ms <= 0.0 {
+        return notes.to_vec();
+    }
+    let tol = chord_tolerance_ms.max(0.0);
+    let selected: Option<BTreeSet<usize>> = indices.map(|s| s.iter().copied().collect());
+    let mut target_indices: Vec<usize> = (0..notes.len())
+        .filter(|i| selected.as_ref().is_none_or(|s| s.contains(i)))
+        .collect();
+    target_indices.sort_by(|&a, &b| {
+        notes[a]
+            .start_ms
+            .total_cmp(&notes[b].start_ms)
+            .then_with(|| notes[a].pitch.cmp(&notes[b].pitch))
+            .then_with(|| a.cmp(&b))
+    });
+
+    let mut out = notes.to_vec();
+    let mut cursor = 0usize;
+    let mut chord_num = 0usize;
+    while cursor < target_indices.len() {
+        let anchor_start = out[target_indices[cursor]].start_ms;
+        let mut end = cursor + 1;
+        while end < target_indices.len()
+            && (out[target_indices[end]].start_ms - anchor_start) <= tol
+        {
+            end += 1;
+        }
+        if end - cursor >= 2 {
+            let mut chord: Vec<usize> = target_indices[cursor..end].to_vec();
+            let descending = match direction {
+                StrumDirection::Up => false,
+                StrumDirection::Down => true,
+                StrumDirection::Alternate => chord_num % 2 == 1,
+            };
+            chord.sort_by(|&a, &b| {
+                if descending {
+                    out[b].pitch.cmp(&out[a].pitch)
+                } else {
+                    out[a].pitch.cmp(&out[b].pitch)
+                }
+                .then_with(|| a.cmp(&b))
+            });
+            for (step, &idx) in chord.iter().enumerate() {
+                let dur = out[idx].duration_ms().max(20.0);
+                let new_start = (anchor_start + step as f64 * spread_ms).max(0.0);
+                out[idx].start_ms = new_start;
+                out[idx].end_ms = new_start + dur;
+            }
+            chord_num += 1;
+        }
+        cursor = end;
+    }
+
+    sort_notes(&mut out);
+    out
+}
+
+/// Deterministic zero-dependency SplitMix64 step returning `[0.0, 1.0)`.
+fn splitmix64_unit(state: &mut u64) -> f64 {
+    *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    let mut z = *state;
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^= z >> 31;
+    // Top 53 bits to uniform f64 in [0.0, 1.0).
+    ((z >> 11) as f64) * (1.0 / ((1u64 << 53) as f64))
+}
+
+/// Applies deterministic timing (`+-timing_ms`) and velocity (`+-velocity_range`) humanisation
+/// to selected notes (or all notes when `indices` is `None`), preserving note durations.
+pub fn humanise_notes(
+    notes: &[KeysoundNote],
+    indices: Option<&[usize]>,
+    timing_ms: f64,
+    velocity_range: u8,
+    seed: u64,
+) -> Vec<KeysoundNote> {
+    let timing = if timing_ms.is_finite() && timing_ms > 0.0 {
+        timing_ms
+    } else {
+        0.0
+    };
+    let selected: Option<BTreeSet<usize>> = indices.map(|s| s.iter().copied().collect());
+    let mut rng_state = seed;
+    let mut out = Vec::with_capacity(notes.len());
+
+    for (i, note) in notes.iter().enumerate() {
+        let apply = selected.as_ref().is_none_or(|s| s.contains(&i));
+        if !apply {
+            out.push(note.clone());
+            continue;
+        }
+        let mut updated = note.clone();
+        if timing > 0.0 {
+            let u = splitmix64_unit(&mut rng_state);
+            let jitter = (u * 2.0 - 1.0) * timing;
+            let dur = note.duration_ms().max(20.0);
+            updated.start_ms = (note.start_ms + jitter).max(0.0);
+            updated.end_ms = updated.start_ms + dur;
+        }
+        if velocity_range > 0 {
+            let u = splitmix64_unit(&mut rng_state);
+            let span = i16::from(velocity_range) * 2 + 1;
+            let delta = ((u * f64::from(span)).floor() as i16) - i16::from(velocity_range);
+            updated.velocity = (i16::from(note.velocity) + delta).clamp(1, 127) as u8;
+        }
+        out.push(updated);
+    }
+
+    sort_notes(&mut out);
+    out
+}
+
+/// Interpolates velocities of notes whose `start_ms` falls within `[min(start_ms, end_ms), max(start_ms, end_ms)]`
+/// using an exponential ramp controlled by `curve` (`0.0` linear, `> 0` ease-in, `< 0` ease-out).
+pub fn apply_velocity_ramp(
+    notes: &[KeysoundNote],
+    start_ms: f64,
+    end_ms: f64,
+    start_vel: u8,
+    end_vel: u8,
+    curve: f64,
+) -> Vec<KeysoundNote> {
+    if !start_ms.is_finite() || !end_ms.is_finite() {
+        return notes.to_vec();
+    }
+    let (t0, t1, v0, v1) = if start_ms <= end_ms {
+        (start_ms, end_ms, start_vel.clamp(1, 127), end_vel.clamp(1, 127))
+    } else {
+        (end_ms, start_ms, end_vel.clamp(1, 127), start_vel.clamp(1, 127))
+    };
+    let clamped_curve = if curve.is_finite() {
+        curve.clamp(-4.0, 4.0)
+    } else {
+        0.0
+    };
+    let exponent = 2.0_f64.powf(clamped_curve);
+    let span = t1 - t0;
+
+    notes
+        .iter()
+        .map(|note| {
+            if note.start_ms < t0 || note.start_ms > t1 {
+                return note.clone();
+            }
+            let t = if span.abs() < 1e-6 {
+                1.0
+            } else {
+                ((note.start_ms - t0) / span).clamp(0.0, 1.0)
+            };
+            let shaped = t.powf(exponent);
+            let vel = (f64::from(v0) + (f64::from(v1) - f64::from(v0)) * shaped)
+                .round()
+                .clamp(1.0, 127.0) as u8;
+            let mut updated = note.clone();
+            updated.velocity = vel;
+            updated
+        })
+        .collect()
+}
+
 fn sort_notes(notes: &mut [KeysoundNote]) {
     notes.sort_by(|a, b| {
         a.start_ms
@@ -367,5 +625,89 @@ mod tests {
         assert_eq!(deduped[0].velocity, 110);
         assert_eq!(deduped[1].pitch, 64);
         assert_eq!(deduped[2].start_ms, 500.0);
+    }
+
+    #[test]
+    fn scale_pitch_mask_identifies_diatonic_and_pentatonic_pitches() {
+        let c_major = scale_pitch_mask(0, ScaleKind::Major);
+        // C major: 7 pitch classes
+        assert_eq!(c_major.count_ones(), 7);
+        assert!(is_pitch_in_scale(60, 0, ScaleKind::Major)); // C4
+        assert!(!is_pitch_in_scale(61, 0, ScaleKind::Major)); // C#4
+        assert!(is_pitch_in_scale(64, 0, ScaleKind::Major)); // E4
+        // D minor pentatonic: D(2), F(5), G(7), A(9), C(0)
+        assert!(is_pitch_in_scale(62, 2, ScaleKind::PentatonicMinor));
+        assert!(is_pitch_in_scale(60, 2, ScaleKind::PentatonicMinor));
+        assert!(!is_pitch_in_scale(64, 2, ScaleKind::PentatonicMinor));
+    }
+
+    #[test]
+    fn strum_notes_offsets_chords_and_preserves_durations() {
+        let notes = vec![
+            note(100.0, 300.0, 60, 100),
+            note(102.0, 302.0, 64, 100),
+            note(104.0, 304.0, 67, 100),
+            note(500.0, 700.0, 60, 100),
+            note(500.0, 700.0, 67, 100),
+            note(900.0, 1000.0, 72, 100), // single note untouched
+        ];
+        let up = strum_notes(&notes, None, 15.0, StrumDirection::Up, 10.0);
+        assert_eq!(up[0].start_ms, 100.0);
+        assert_eq!(up[0].pitch, 60);
+        assert_eq!(up[1].start_ms, 115.0);
+        assert_eq!(up[1].pitch, 64);
+        assert_eq!(up[1].duration_ms(), 200.0);
+        assert_eq!(up[2].start_ms, 130.0);
+        assert_eq!(up[2].pitch, 67);
+        assert_eq!(up[5].start_ms, 900.0);
+
+        let alt = strum_notes(&notes, None, 10.0, StrumDirection::Alternate, 10.0);
+        // Second chord alternates to Down (pitch 67 first at 500, pitch 60 second at 510).
+        let second_chord: Vec<_> = alt.iter().filter(|n| n.start_ms >= 500.0 && n.start_ms < 600.0).collect();
+        assert_eq!(second_chord[0].pitch, 67);
+        assert_eq!(second_chord[0].start_ms, 500.0);
+        assert_eq!(second_chord[1].pitch, 60);
+        assert_eq!(second_chord[1].start_ms, 510.0);
+    }
+
+    #[test]
+    fn humanise_notes_is_deterministic_bounded_and_preserves_duration() {
+        let notes = vec![
+            note(10.0, 210.0, 60, 100),
+            note(200.0, 400.0, 64, 5),
+            note(400.0, 600.0, 67, 125),
+        ];
+        let h1 = humanise_notes(&notes, None, 20.0, 15, 42);
+        let h2 = humanise_notes(&notes, None, 20.0, 15, 42);
+        assert_eq!(h1, h2);
+        for orig in &notes {
+            let matching = h1.iter().find(|n| n.pitch == orig.pitch).unwrap();
+            assert!((matching.duration_ms() - 200.0).abs() < 1e-6);
+            assert!(matching.start_ms >= 0.0);
+            assert!(matching.velocity >= 1 && matching.velocity <= 127);
+        }
+    }
+
+    #[test]
+    fn apply_velocity_ramp_interpolates_linear_curved_and_reverse_drags() {
+        let notes = vec![
+            note(0.0, 100.0, 60, 50),
+            note(500.0, 600.0, 62, 50),
+            note(1000.0, 1100.0, 64, 50),
+            note(1500.0, 1600.0, 67, 99),
+        ];
+        let linear = apply_velocity_ramp(&notes, 0.0, 1000.0, 20, 120, 0.0);
+        assert_eq!(linear[0].velocity, 20);
+        assert_eq!(linear[1].velocity, 70);
+        assert_eq!(linear[2].velocity, 120);
+        assert_eq!(linear[3].velocity, 99, "outside range untouched");
+
+        let ease_in = apply_velocity_ramp(&notes, 0.0, 1000.0, 20, 120, 1.0);
+        assert_eq!(ease_in[1].velocity, 45); // t^2 at 0.5 -> 0.25 * 100 + 20
+
+        let reverse = apply_velocity_ramp(&notes, 1000.0, 0.0, 120, 20, 0.0);
+        assert_eq!(reverse[0].velocity, 20);
+        assert_eq!(reverse[1].velocity, 70);
+        assert_eq!(reverse[2].velocity, 120);
     }
 }

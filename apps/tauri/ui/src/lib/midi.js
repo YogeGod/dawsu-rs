@@ -133,6 +133,32 @@ export const keysoundsToggleMute = trackId => ({ kind: "toggle_mute", trackId })
 export const keysoundsToggleSolo = trackId => ({ kind: "toggle_solo", trackId });
 export const keysoundsSyncToObjects = (trackId, maxShiftMs = 50) => ({ kind: "sync_to_objects", trackId, maxShiftMs: ms(maxShiftMs) });
 export const keysoundsTrimOverlaps = trackId => ({ kind: "trim_overlaps", trackId });
+export const keysoundsStrum = (trackId, spreadMs = 20, direction = "up", chordToleranceMs = 15) => ({
+  kind: "strum_notes",
+  trackId,
+  spreadMs: Math.max(1, Math.round(Number(spreadMs) || 20)),
+  direction: direction === "down" || direction === "alternate" ? direction : "up",
+  chordToleranceMs: Math.max(0, Math.round(Number(chordToleranceMs) || 15)),
+});
+export const keysoundsHumanise = (trackId, timingMs = 10, velocityRange = 12, seed = null) => {
+  const payload = {
+    kind: "humanise_notes",
+    trackId,
+    timingMs: Math.max(0, Math.round(Number(timingMs) || 0)),
+    velocityRange: whole(velocityRange, 0, 64),
+  };
+  if (seed != null && Number.isFinite(Number(seed))) payload.seed = Math.max(0, Math.round(Number(seed)));
+  return payload;
+};
+export const keysoundsVelocityRamp = (trackId, startMs, endMs, startVelocity, endVelocity, curve = 0) => ({
+  kind: "velocity_ramp",
+  trackId,
+  startMs: ms(startMs),
+  endMs: ms(endMs),
+  startVelocity: whole(startVelocity, 1, 127),
+  endVelocity: whole(endVelocity, 1, 127),
+  curve: Number.isFinite(Number(curve)) ? Math.max(-4, Math.min(4, Number(curve))) : 0,
+});
 // load_vst3 takes the scanned plug-in's file and id (summary.vst3Plugins), or null when none is picked.
 export function keysoundsLoadVst3(trackId, plugin) {
   if (trackId == null || !plugin?.path) return null;
@@ -156,11 +182,53 @@ export const ROLL_HIGH = 84;
 export const ROW_PX = 14;
 export const PX_PER_MS = 0.16;
 const NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+export const SCALE_ROOTS = NAMES;
+export const SCALE_DEFS = [
+  { id: "chromatic", label: "Chromatic", intervals: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11] },
+  { id: "major", label: "Major", intervals: [0, 2, 4, 5, 7, 9, 11] },
+  { id: "natural_minor", label: "Minor", intervals: [0, 2, 3, 5, 7, 8, 10] },
+  { id: "harmonic_minor", label: "Harmonic Minor", intervals: [0, 2, 3, 5, 7, 8, 11] },
+  { id: "melodic_minor", label: "Melodic Minor", intervals: [0, 2, 3, 5, 7, 9, 11] },
+  { id: "dorian", label: "Dorian", intervals: [0, 2, 3, 5, 7, 9, 10] },
+  { id: "mixolydian", label: "Mixolydian", intervals: [0, 2, 4, 5, 7, 9, 10] },
+  { id: "pentatonic_major", label: "Pentatonic Major", intervals: [0, 2, 4, 7, 9] },
+  { id: "pentatonic_minor", label: "Pentatonic Minor", intervals: [0, 3, 5, 7, 10] },
+  { id: "blues", label: "Blues", intervals: [0, 3, 5, 6, 7, 10] },
+];
+export function scalePitchMask(root = 0, scaleId = "chromatic") {
+  const def = SCALE_DEFS.find(s => s.id === scaleId) ?? SCALE_DEFS[0];
+  const r = ((Math.round(Number(root) || 0) % 12) + 12) % 12;
+  let mask = 0;
+  for (const interval of def.intervals) mask |= 1 << ((r + interval) % 12);
+  return mask;
+}
+export function isPitchInScale(pitch, root = 0, scaleId = "chromatic") {
+  const pc = ((pitch % 12) + 12) % 12;
+  return ((scalePitchMask(root, scaleId) >> pc) & 1) === 1;
+}
+export function visibleRollPitches(root = 0, scaleId = "chromatic", fold = false) {
+  const base = rollPitches();
+  if (!fold || scaleId === "chromatic") return base;
+  const mask = scalePitchMask(root, scaleId);
+  return base.filter(p => ((mask >> (((p % 12) + 12) % 12)) & 1) === 1);
+}
 export const pitchName = pitch => `${NAMES[pitch % 12]}${Math.floor(pitch / 12) - 1}`;
 export const isBlackKey = pitch => NAMES[pitch % 12].length > 1;
 export const rollPitches = () => Array.from({ length: ROLL_HIGH - ROLL_LOW + 1 }, (_, i) => ROLL_HIGH - i);
-export const pitchRow = pitch => (ROLL_HIGH - pitch) * ROW_PX;
-export const pitchAtY = y => whole(ROLL_HIGH - Math.floor(y / ROW_PX), ROLL_LOW, ROLL_HIGH);
+export function pitchRow(pitch, visiblePitches = null) {
+  if (Array.isArray(visiblePitches) && visiblePitches.length) {
+    const idx = visiblePitches.indexOf(pitch);
+    return idx >= 0 ? idx * ROW_PX : -1;
+  }
+  return (ROLL_HIGH - pitch) * ROW_PX;
+}
+export function pitchAtY(y, visiblePitches = null) {
+  if (Array.isArray(visiblePitches) && visiblePitches.length) {
+    const idx = whole(Math.floor(y / ROW_PX), 0, visiblePitches.length - 1);
+    return visiblePitches[idx];
+  }
+  return whole(ROLL_HIGH - Math.floor(y / ROW_PX), ROLL_LOW, ROLL_HIGH);
+}
 // The time under x, snapped down to the grid step.
 export const msAtX = (x, stepMs = QUANTIZE_MS) => Math.max(0, Math.floor(x / PX_PER_MS / stepMs) * stepMs);
 // The roll's width in ms: past the last note's end by two seconds, at least eight seconds.
@@ -168,9 +236,24 @@ export const rollSpanMs = notes => Math.max(8000, ...(notes ?? []).map(note => n
 // Velocity from a point in the velocity lane (top = 127).
 export const velocityAtY = (y, height) => whole(127 * (1 - y / Math.max(1, height)), 1, 127);
 
+function nearestPitchIndex(visiblePitches, pitch) {
+  const exact = visiblePitches.indexOf(pitch);
+  if (exact >= 0) return exact;
+  let best = 0;
+  let bestDist = Infinity;
+  for (let i = 0; i < visiblePitches.length; i++) {
+    const dist = Math.abs(visiblePitches[i] - pitch);
+    if (dist < bestDist) {
+      bestDist = dist;
+      best = i;
+    }
+  }
+  return best;
+}
+
 // What a finished note drag sends: a move snaps start and pitch to the grid, a resize the end.
 // Null when the note did not change (a plain click selects it).
-export function noteDragPayload(trackId, note, mode, dx, dy, stepMs = QUANTIZE_MS) {
+export function noteDragPayload(trackId, note, mode, dx, dy, stepMs = QUANTIZE_MS, visiblePitches = null) {
   if (mode === "resize") {
     if (!dx) return null;
     const endMs = Math.max(note.startMs + stepMs, Math.round((note.endMs + dx / PX_PER_MS) / stepMs) * stepMs);
@@ -178,7 +261,14 @@ export function noteDragPayload(trackId, note, mode, dx, dy, stepMs = QUANTIZE_M
   }
   if (!dx && !dy) return null;
   const startMs = Math.max(0, Math.round((note.startMs + dx / PX_PER_MS) / stepMs) * stepMs);
-  const pitch = whole(note.pitch - Math.round(dy / ROW_PX), ROLL_LOW, ROLL_HIGH);
+  let pitch;
+  if (Array.isArray(visiblePitches) && visiblePitches.length) {
+    const curIdx = nearestPitchIndex(visiblePitches, note.pitch);
+    const nextIdx = whole(curIdx + Math.round(dy / ROW_PX), 0, visiblePitches.length - 1);
+    pitch = visiblePitches[nextIdx];
+  } else {
+    pitch = whole(note.pitch - Math.round(dy / ROW_PX), ROLL_LOW, ROLL_HIGH);
+  }
   if (startMs === note.startMs && pitch === note.pitch) return null;
   return keysoundsMoveNote(trackId, note.index, startMs, pitch);
 }

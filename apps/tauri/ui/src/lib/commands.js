@@ -197,6 +197,7 @@ export const keyOnly = [
   "jumpLeft", "jumpRight", "setLeft", "setRight", "removeBookmark",
   "seekBack", "seekBackFar", "seekForward", "seekForwardFar",
   "snap1", "snap2", "snap3", "snap4", "snap5", "snap6", "snap7", "snap8", "snap9",
+  "captureRetrospectiveTaps",
 ];
 
 // Additional Command Palette actions outside top menus (never use `command:` here so catalogue

@@ -111,6 +111,10 @@ impl Application {
         self.audio.as_ref().and_then(AudioEngine::effective_buffer_ms)
     }
 
+    pub fn clock_snapshot(&self) -> Option<dawsu_audio::ClockSnapshot> {
+        self.audio.as_ref().and_then(AudioEngine::clock_snapshot)
+    }
+
     pub fn select_device(&mut self, name: String) {
         let mut preferences = self.preferences.clone();
         preferences.audio_backend = OutputBackend::System;

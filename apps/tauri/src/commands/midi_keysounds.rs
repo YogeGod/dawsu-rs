@@ -25,8 +25,16 @@ pub(crate) enum MidiAction {
     },
     InputPorts,
     #[serde(rename_all = "camelCase")]
+    SelectPort {
+        port_index: Option<usize>,
+    },
+    #[serde(rename_all = "camelCase")]
     RecordToggle {
         port_index: Option<usize>,
+        snap_divisor: Option<u32>,
+    },
+    #[serde(rename_all = "camelCase")]
+    CaptureRetrospective {
         snap_divisor: Option<u32>,
     },
     InspectSoundfont {
@@ -79,11 +87,18 @@ pub(crate) fn handle_midi_action(
             (to_json(app.apply_midi_import(&options, drum_map)), true)
         }
         MidiAction::InputPorts => (to_json(Ok(dawsu_application::list_midi_input_ports())), false),
+        MidiAction::SelectPort { port_index } => {
+            (to_json(app.select_midi_input_port(port_index)), false)
+        }
         MidiAction::RecordToggle {
             port_index,
             snap_divisor,
         } => (
             to_json(app.toggle_midi_recording(port_index, drum_map, snap_divisor)),
+            true,
+        ),
+        MidiAction::CaptureRetrospective { snap_divisor } => (
+            to_json(app.capture_retrospective(drum_map, snap_divisor)),
             true,
         ),
         MidiAction::InspectSoundfont { path } => {

@@ -624,7 +624,7 @@ impl SfzInstrument {
 
         // Gentle soft clip so multi-voice chords never exceed [-1.0, 1.0] harshly.
         for s in &mut out {
-            *s = s.clamp(-1.0, 1.0);
+            *s = soft_clip_sample(*s);
         }
 
         Ok(SamplerAudio {
@@ -632,6 +632,20 @@ impl SfzInstrument {
             channels: 2,
             sample_rate: sr,
         })
+    }
+}
+
+fn soft_clip_sample(x: f32) -> f32 {
+    if !x.is_finite() {
+        return 0.0;
+    }
+    const KNEE: f32 = 0.95;
+    const HEADROOM: f32 = 1.0 - KNEE;
+    let ax = x.abs();
+    if ax <= KNEE {
+        x
+    } else {
+        (KNEE + HEADROOM * ((ax - KNEE) / HEADROOM).tanh()).copysign(x)
     }
 }
 
@@ -972,5 +986,17 @@ lokey=c4 hikey=c5 pitch_keycenter=a4
         );
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn soft_clip_passes_below_knee_and_saturates_smoothly_above_095() {
+        assert_eq!(soft_clip_sample(0.5), 0.5);
+        assert_eq!(soft_clip_sample(-0.95), -0.95);
+        let over = soft_clip_sample(1.2);
+        let extreme = soft_clip_sample(3.0);
+        assert!(over > 0.95 && over < 1.0, "over={over}");
+        assert!(extreme > over && extreme <= 1.0, "extreme={extreme}");
+        assert_eq!(soft_clip_sample(-1.2), -over);
+        assert_eq!(soft_clip_sample(f32::NAN), 0.0);
     }
 }

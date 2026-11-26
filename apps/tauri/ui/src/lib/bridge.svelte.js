@@ -81,6 +81,11 @@ export class Bridge {
     return !this.scene || !!this.view?.busy || !!this.view?.fault;
   }
 
+  // Imperative non-reactive read of live playback cursor for modal event handlers.
+  currentPositionMs() {
+    return Number(this.latestView?.position ?? this.playhead?.position ?? 0);
+  }
+
   // app.js may scroll to a row right after renderLanes(), so the rows are written before this returns.
   handOverLanes(headers, flush = flushSync) {
     this.lanes = headers;

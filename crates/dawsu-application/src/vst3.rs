@@ -5,7 +5,10 @@
 //! and WAV bouncing with graceful fallback when the `dawsu-vst3-host` sidecar
 //! binary has not been built yet.
 
-use dawsu_audio_instruments::bounce::{trim_silence_tail, write_wav_f32, write_wav_i16};
+use dawsu_audio_instruments::bounce::{
+    DEFAULT_TAIL_FADE_MS, trim_and_fade_tail, write_wav_f32, write_wav_i16,
+};
+use dawsu_audio_instruments::MidiStateTracker;
 use dawsu_audio_instruments::host::{
     HostError, HostSession, MidiEvent, ProcessTransport, RenderRequest, Vst3HostConfig,
 };
@@ -85,6 +88,10 @@ pub enum BounceFormat {
     Float32,
 }
 
+fn default_tail_fade_ms() -> f32 {
+    DEFAULT_TAIL_FADE_MS
+}
+
 /// Options controlling offline VST3 rendering and WAV bouncing.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BounceOptions {
@@ -93,6 +100,8 @@ pub struct BounceOptions {
     pub quiet_frames: u64,
     pub silence_threshold: f32,
     pub format: BounceFormat,
+    #[serde(default = "default_tail_fade_ms")]
+    pub tail_fade_ms: f32,
 }
 
 impl Default for BounceOptions {
@@ -103,6 +112,7 @@ impl Default for BounceOptions {
             quiet_frames: 48_000 / 2,
             silence_threshold: 1e-4,
             format: BounceFormat::Pcm16,
+            tail_fade_ms: DEFAULT_TAIL_FADE_MS,
         }
     }
 }
@@ -808,14 +818,47 @@ impl Vst3Manager {
         ]
     }
 
+    /// Closes any unclosed `NoteOn` or held sustain pedal events after the final MIDI event
+    /// so offline bounce tails never hang when `NoteOff` was omitted.
+    pub fn ensure_closed_midi_events(events: &mut Vec<MidiEvent>) {
+        if events.is_empty() {
+            return;
+        }
+        let mut tracker = MidiStateTracker::new();
+        let mut max_frame = 0u64;
+        for ev in events.iter() {
+            max_frame = max_frame.max(ev.frame);
+            tracker.track_event(ev.status, ev.data1, ev.data2);
+        }
+        let has_open_pedal = (0..16u8).any(|ch| tracker.is_sustain_held(ch));
+        if tracker.active_note_count() == 0 && !has_open_pedal {
+            return;
+        }
+        let close_frame = max_frame.saturating_add(1);
+        let mut closing = Vec::new();
+        tracker.flush_all_notes(0, &mut closing, usize::MAX);
+        for ev in closing {
+            if (ev.status & 0xF0) == 0xB0 && (ev.data1 == 120 || ev.data1 == 123) {
+                continue;
+            }
+            events.push(MidiEvent {
+                frame: close_frame,
+                status: ev.status,
+                data1: ev.data1,
+                data2: ev.data2,
+            });
+        }
+    }
+
     /// Renders a MIDI event sequence through a loaded VST3 instance to a WAV file via the sidecar.
     pub fn bounce_midi_to_wav(
         &mut self,
         instance_id: &str,
-        events: Vec<MidiEvent>,
+        mut events: Vec<MidiEvent>,
         out_path: impl AsRef<Path>,
         options: &BounceOptions,
     ) -> Result<BounceOutput, Vst3Error> {
+        Self::ensure_closed_midi_events(&mut events);
         let instance = self
             .instances
             .get_mut(instance_id)
@@ -966,12 +1009,14 @@ impl Vst3Manager {
                     .instances
                     .get_mut(&offline_id)
                     .ok_or_else(|| Vst3Error::PluginNotFound(offline_id.clone()))?;
+                let mut batch_events = events.clone();
+                Self::ensure_closed_midi_events(&mut batch_events);
                 let request = RenderRequest {
                     out_path: raw_path.clone(),
                     max_frames,
                     quiet_frames: sr / 2,
                     threshold: f64::from(AUTO_TRIM_MINUS_60_DBFS),
-                    events: events.clone(),
+                    events: batch_events,
                 };
                 let _ = instance.session.render(&request)?;
                 let raw_bytes = std::fs::read(&raw_path).map_err(|err| {
@@ -982,7 +1027,12 @@ impl Vst3Manager {
                 for chunk in raw_bytes.as_chunks::<4>().0 {
                     interleaved.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
                 }
-                let trimmed = trim_silence_tail(&interleaved, AUTO_TRIM_MINUS_60_DBFS).to_vec();
+                let trimmed = trim_and_fade_tail(
+                    &interleaved,
+                    AUTO_TRIM_MINUS_60_DBFS,
+                    sample_rate,
+                    DEFAULT_TAIL_FADE_MS,
+                );
                 clips.push(trimmed);
             }
             Ok(clips)
@@ -1000,11 +1050,13 @@ impl Vst3Manager {
         options: &BounceOptions,
     ) -> Result<BounceOutput, Vst3Error> {
         let path = out_path.as_ref().to_path_buf();
-        let threshold = (options.silence_threshold > 0.0).then_some(options.silence_threshold);
-        let trimmed = match threshold {
-            Some(t) => trim_silence_tail(interleaved_stereo, t),
-            None => &interleaved_stereo[..(interleaved_stereo.len() & !1)],
-        };
+        let threshold = options.silence_threshold.max(0.0);
+        let trimmed = trim_and_fade_tail(
+            interleaved_stereo,
+            threshold,
+            options.sample_rate,
+            options.tail_fade_ms,
+        );
         let peak = trimmed
             .iter()
             .copied()
@@ -1012,8 +1064,8 @@ impl Vst3Manager {
             .fold(0.0_f32, |acc, s| acc.max(s.abs()));
 
         let frames = match options.format {
-            BounceFormat::Pcm16 => write_wav_i16(&path, trimmed, options.sample_rate, None),
-            BounceFormat::Float32 => write_wav_f32(&path, trimmed, options.sample_rate, None),
+            BounceFormat::Pcm16 => write_wav_i16(&path, &trimmed, options.sample_rate, None),
+            BounceFormat::Float32 => write_wav_f32(&path, &trimmed, options.sample_rate, None),
         }
         .map_err(|err| Vst3Error::Bounce(err.to_string()))?;
 
@@ -1636,5 +1688,39 @@ mod tests {
         assert!(cancelled.is_err(), "pre-cancelled bounce token must abort drum export");
 
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn ensure_closed_midi_events_closes_dangling_notes_and_keeps_closed_pairs() {
+        let mut closed = Vst3Manager::preview_note_to_midi_events(
+            MidiPreviewNote {
+                channel: 0,
+                note: 60,
+                velocity: 100,
+                duration_ms: 100,
+            },
+            48_000,
+        )
+        .to_vec();
+        Vst3Manager::ensure_closed_midi_events(&mut closed);
+        assert_eq!(closed.len(), 2);
+
+        let mut dangling = vec![
+            MidiEvent {
+                frame: 10,
+                status: 0x92,
+                data1: 64,
+                data2: 110,
+            },
+            MidiEvent {
+                frame: 20,
+                status: 0xB2,
+                data1: 64,
+                data2: 127,
+            },
+        ];
+        Vst3Manager::ensure_closed_midi_events(&mut dangling);
+        assert!(dangling.iter().any(|e| e.frame == 21 && e.status == 0xB2 && e.data1 == 64 && e.data2 == 0));
+        assert!(dangling.iter().any(|e| e.frame == 21 && e.status == 0x82 && e.data1 == 64));
     }
 }

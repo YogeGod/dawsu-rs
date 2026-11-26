@@ -367,6 +367,134 @@ impl Application {
         midi_import::export_midi_file(path, &document.composer, bpm, ks)
     }
 
+    fn commit_captured_midi_and_taps(
+        &mut self,
+        notes: Vec<midi_record::RecordedMidiNote>,
+        taps: Vec<midi_record::RecordedTap>,
+        drum_map: Option<&dawsu_hitsounding::drums::DrumMap>,
+        snap_divisor: Option<u32>,
+        retrospective: bool,
+    ) -> Result<midi_record::RetrospectiveCaptureStatus, String> {
+        let mut committed_hits = 0usize;
+        let mut committed_keysounds = 0usize;
+        if retrospective {
+            if (!notes.is_empty() || !taps.is_empty())
+                && let Some(doc) = self.document.as_mut()
+            {
+                committed_hits = midi_record::commit_retrospective_to_composer(
+                    &notes,
+                    &taps,
+                    &mut doc.composer,
+                    drum_map,
+                    snap_divisor,
+                )?;
+            }
+        } else {
+            if !notes.is_empty()
+                && let Some(doc) = self.document.as_mut()
+            {
+                committed_hits += midi_record::commit_to_composer(
+                    &notes,
+                    &mut doc.composer,
+                    drum_map,
+                    snap_divisor,
+                )?;
+            }
+            if !taps.is_empty()
+                && let Some(doc) = self.document.as_mut()
+            {
+                committed_hits += midi_record::commit_taps_to_composer(&taps, &mut doc.composer)?;
+            }
+        }
+
+        if committed_hits > 0 {
+            self.refresh_recovery_edit();
+            self.sync_audio();
+        }
+
+        if !notes.is_empty() {
+            let target_tid = self
+                .keysound_history
+                .active_track_id
+                .filter(|id| self.keysounds.document.tracks.iter().any(|t| t.id == *id))
+                .or_else(|| self.keysounds.document.tracks.first().map(|t| t.id));
+            if let Some(tid) = target_tid {
+                let before = self.keysounds.document.clone();
+                let ks_added =
+                    midi_record::commit_to_keysounds(&notes, &mut self.keysounds, tid, 200.0);
+                if ks_added > 0 {
+                    self.keysound_history.record(before);
+                    self.keysound_history.active_track_id = Some(tid);
+                    committed_keysounds = ks_added;
+                }
+            }
+        }
+
+        Ok(midi_record::RetrospectiveCaptureStatus {
+            committed_hits,
+            committed_keysounds,
+        })
+    }
+
+    fn monitor_live_midi_note(&self, pitch: u8, velocity: u8) {
+        if let Some(vst) = &self.drum_vst
+            && vst.is_enabled()
+        {
+            vst.preview(pitch, velocity);
+            return;
+        }
+        let Some(doc) = &self.document else {
+            return;
+        };
+        let map = midi_record::build_pitch_to_lane_map(&doc.composer, None);
+        if let Some(lane) = map.get(&pitch) {
+            self.audition_lane(lane, (f32::from(velocity) / 127.0).clamp(0.05, 1.0));
+        }
+    }
+
+    /// Selects a persistent hardware MIDI input port without arming recording.
+    pub fn select_midi_input_port(&mut self, port_index: Option<usize>) -> Result<Option<String>, String> {
+        let name = self.midi_recorder.select_port(port_index)?;
+        self.bump_view_revision();
+        Ok(name)
+    }
+
+    /// Captures buffered unarmed MIDI notes and keyboard taps into the active difficulty /
+    /// keysound track in one Undo step.
+    pub fn capture_retrospective(
+        &mut self,
+        drum_map: Option<&dawsu_hitsounding::drums::DrumMap>,
+        snap_divisor: Option<u32>,
+    ) -> Result<midi_record::RetrospectiveCaptureStatus, String> {
+        if self.document.is_none() {
+            return Err("Open a difficulty first.".into());
+        }
+        if self.busy {
+            return Err("Wait for the current job before capturing retrospective taps.".into());
+        }
+        let (notes, taps) = self.midi_recorder.take_retrospective();
+        if notes.is_empty() && taps.is_empty() {
+            self.status = "Nothing recent in retrospective buffer.".into();
+            self.bump_view_revision();
+            return Ok(midi_record::RetrospectiveCaptureStatus {
+                committed_hits: 0,
+                committed_keysounds: 0,
+            });
+        }
+        let summary = self.commit_captured_midi_and_taps(notes, taps, drum_map, snap_divisor, true)?;
+        let total = summary.committed_hits.max(summary.committed_keysounds);
+        self.status = if total > 0 {
+            format!(
+                "Captured {total} retrospective hit{}. Press Ctrl+Z to undo.",
+                if total == 1 { "" } else { "s" }
+            )
+        } else {
+            "No matching lanes for buffered retrospective events.".into()
+        };
+        self.bump_view_revision();
+        Ok(summary)
+    }
+
     /// Arms or disarms live MIDI recording (and keyboard tap-recording on the timeline);
     /// disarming commits any captured MIDI notes and keyboard taps cleanly.
     pub fn toggle_midi_recording(
@@ -377,57 +505,23 @@ impl Application {
     ) -> Result<midi_record::MidiRecordStatus, String> {
         if self.midi_recorder.armed {
             let port_name = self.midi_recorder.port_name.clone();
-            let notes = self.midi_recorder.disarm_with_clock(
+            let snap = self.clock_snapshot();
+            let notes = self.midi_recorder.disarm_with_snapshot(
+                snap,
                 self.position_ms(),
                 self.is_playing(),
                 self.playback_speed,
             );
             self.tap_recording_armed = false;
             let taps = std::mem::take(&mut self.tap_recorded_hits);
-            let mut committed = 0usize;
-            if !notes.is_empty() {
-                if let Some(doc) = self.document.as_mut() {
-                    committed = midi_record::commit_to_composer(
-                        &notes,
-                        &mut doc.composer,
-                        drum_map,
-                        snap_divisor,
-                    )?;
-                    self.refresh_recovery_edit();
-                }
-                let target_tid = self
-                    .keysound_history
-                    .active_track_id
-                    .filter(|id| self.keysounds.document.tracks.iter().any(|t| t.id == *id))
-                    .or_else(|| self.keysounds.document.tracks.first().map(|t| t.id));
-                if let Some(tid) = target_tid {
-                    let before = self.keysounds.document.clone();
-                    let ks_added =
-                        midi_record::commit_to_keysounds(&notes, &mut self.keysounds, tid, 200.0);
-                    if ks_added > 0 {
-                        self.keysound_history.record(before);
-                        self.keysound_history.active_track_id = Some(tid);
-                        if committed == 0 {
-                            committed = ks_added;
-                        }
-                    }
-                }
-            }
-            if !taps.is_empty()
-                && let Some(doc) = self.document.as_mut()
-            {
-                let tap_added = midi_record::commit_taps_to_composer(&taps, &mut doc.composer)?;
-                committed += tap_added;
-                if tap_added > 0 {
-                    self.refresh_recovery_edit();
-                    self.sync_audio();
-                }
-            }
-            if committed > 0 {
-                self.status = format!("Recorded {committed} hits.");
+            let summary =
+                self.commit_captured_midi_and_taps(notes, taps, drum_map, snap_divisor, false)?;
+            let committed = summary.committed_hits.max(summary.committed_keysounds);
+            self.status = if committed > 0 {
+                format!("Recorded {committed} hits.")
             } else {
-                self.status = "Recording stopped.".into();
-            }
+                "Recording stopped.".into()
+            };
             self.bump_view_revision();
             return Ok(midi_record::MidiRecordStatus {
                 armed: false,
@@ -463,7 +557,7 @@ impl Application {
     }
 
     /// Plays `row`'s sample live immediately; if tap-recording is armed, records the tap at the
-    /// current playhead time so disarming commits the whole take as one Undo step.
+    /// current playhead time (otherwise records into the retrospective buffer).
     pub fn tap_lane(&mut self, row: usize) -> bool {
         if self.busy {
             return false;
@@ -480,40 +574,39 @@ impl Application {
             self.bump_view_revision();
         }
         self.audition_lane(&lane, volume as f32 / 100.0);
+        let tap = midi_record::RecordedTap {
+            time_ms: self.position_ms().max(0.0),
+            lane,
+            volume,
+        };
         if self.tap_recording_armed() {
-            self.tap_recorded_hits.push(midi_record::RecordedTap {
-                time_ms: self.position_ms().max(0.0),
-                lane,
-                volume,
-            });
+            self.tap_recorded_hits.push(tap);
             self.bump_view_revision();
+        } else {
+            self.midi_recorder.record_retrospective_tap(tap);
         }
         true
     }
 
     /// Arms or disarms live keyboard tap-recording on the timeline; disarming commits all
-    /// buffered taps in one single `"Record taps"` Undo step.
+    /// buffered taps (and any armed MIDI notes) cleanly.
     pub fn toggle_tap_recording(&mut self) -> Result<midi_record::TapRecordStatus, String> {
         if self.tap_recording_armed() {
             self.tap_recording_armed = false;
-            if self.midi_recorder.armed {
-                let _ = self.midi_recorder.disarm_with_clock(
+            let notes = if self.midi_recorder.armed {
+                let snap = self.clock_snapshot();
+                self.midi_recorder.disarm_with_snapshot(
+                    snap,
                     self.position_ms(),
                     self.is_playing(),
                     self.playback_speed,
-                );
-            }
+                )
+            } else {
+                Vec::new()
+            };
             let taps = std::mem::take(&mut self.tap_recorded_hits);
-            let mut committed = 0usize;
-            if !taps.is_empty()
-                && let Some(doc) = self.document.as_mut()
-            {
-                committed = midi_record::commit_taps_to_composer(&taps, &mut doc.composer)?;
-                if committed > 0 {
-                    self.refresh_recovery_edit();
-                    self.sync_audio();
-                }
-            }
+            let summary = self.commit_captured_midi_and_taps(notes, taps, None, None, false)?;
+            let committed = summary.committed_hits.max(summary.committed_keysounds);
             self.status = if committed > 0 {
                 format!(
                     "Recorded {committed} tap{}. Press Ctrl+Z to undo.",
@@ -965,12 +1058,31 @@ impl Application {
         self.check_set_versions_when_read();
         self.poll_drum_detection();
         self.poll_node_graph();
-        let _ = self.midi_recorder.poll_with_clock(
+        let clock_snap = self.clock_snapshot();
+        let midi_events = self.midi_recorder.poll_with_snapshot(
+            clock_snap,
             self.position_ms(),
             self.is_playing(),
             self.playback_speed,
             std::time::Instant::now(),
         );
+        if let Some(err) = self.midi_recorder.listener.last_error.take() {
+            self.status = err;
+            self.bump_view_revision();
+        }
+        if !self.busy {
+            for ev in midi_events {
+                if let dawsu_audio_instruments::MidiInputEvent::NoteOn {
+                    pitch,
+                    velocity,
+                    ..
+                } = ev
+                    && velocity > 0
+                {
+                    self.monitor_live_midi_note(pitch, velocity);
+                }
+            }
+        }
         // Before main's job: its arms can return early.
         self.poll_export();
         let song_result = match self.song_job.as_ref().map(|r| r.try_recv()) {

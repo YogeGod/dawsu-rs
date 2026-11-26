@@ -65,9 +65,10 @@ pub fn detect_chords(doc: &KeysoundDocument, osu: &OsuFile, tolerance_ms: f64) -
         .collect();
     sorted_slots.sort_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
 
+    let any_solo = doc.tracks.iter().any(|t| t.solo);
     let mut conflicts = Vec::new();
     for track in &doc.tracks {
-        if track.muted {
+        if track.muted || (any_solo && !track.solo) {
             continue;
         }
         // Match unmuted notes (sorted by time, then highest pitch first) against free slots,
@@ -298,5 +299,30 @@ mod tests {
         let unmuted_at_2000: Vec<u8> = doc.tracks[0].notes.iter().filter(|n| n.start_ms == 2000.0 && !n.muted).map(|n| n.pitch).collect();
         assert_eq!(unmuted_at_1000, vec![60, 64, 67]);
         assert_eq!(unmuted_at_2000, vec![67, 72]);
+    }
+
+    #[test]
+    fn detect_chords_respects_track_solo() {
+        let osu = OsuFile::read(
+            b"osu file format v14\n[General]\nMode:0\n[HitObjects]\n256,192,1000,1,0,0:0:0:0:\n256,192,2000,1,0,0:0:0:0:\n".to_vec(),
+        )
+        .file;
+        let mut doc = KeysoundDocument::default();
+        let mut soloed = KeysoundTrack::new(1, "Soloed", 0, false);
+        soloed.solo = true;
+        soloed.notes.push(KeysoundNote::new(1000.0, 1200.0, 60, 100));
+        soloed.notes.push(KeysoundNote::new(1000.0, 1200.0, 64, 100));
+
+        let mut other = KeysoundTrack::new(2, "Other", 1, false);
+        other.notes.push(KeysoundNote::new(2000.0, 2200.0, 62, 100));
+        other.notes.push(KeysoundNote::new(2000.0, 2200.0, 65, 100));
+
+        doc.tracks.push(soloed);
+        doc.tracks.push(other);
+
+        let conflicts = detect_chords(&doc, &osu, 10.0);
+        assert_eq!(conflicts.len(), 1);
+        assert_eq!(conflicts[0].track_id, 1);
+        assert_eq!(conflicts[0].time_ms, 1000.0);
     }
 }

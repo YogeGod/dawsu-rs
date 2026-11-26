@@ -282,8 +282,15 @@
 }
 #editor-arrange.keysounds-active,
 #editor-arrange.keysounds-active[data-controller="false"] {
-  grid-template-rows: auto var(--ruler-row) minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
 }
+#editor-arrange.keysounds-active > #base-diff-strip {
+  grid-row: 1;
+}
+#editor-arrange.keysounds-active > #keysounds-workspace {
+  grid-row: 2;
+}
+.arrange.keysounds-active > .ruler,
 .arrange.keysounds-active > #scroll,
 .arrange.keysounds-active > #volume-controller-panel,
 .arrange.keysounds-active > .overview {

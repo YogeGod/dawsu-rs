@@ -4,13 +4,16 @@ import { test } from "node:test";
 import { render } from "svelte/server";
 import { bridge } from "../src/lib/bridge.svelte.js";
 import {
-  NO_PLUGINS, PORT_KEY, PX_PER_MS, ROLL_HIGH, ROLL_LOW, ROW_PX, findNoteIndex, generateToast, importArgs,
-  importToast, instrumentChoices, isBlackKey, keysoundsAdd, keysoundsAddNote, keysoundsDelete, keysoundsDeleteNote,
-  keysoundsGenerate, keysoundsLoadVst3, keysoundsMoveNote, keysoundsPreview, keysoundsQuantize, keysoundsResizeNote,
-  keysoundsScan, keysoundsSetVelocity, keysoundsSyncToObjects, keysoundsToggleMute, keysoundsToggleSolo,
-  keysoundsTranspose, keysoundsTrimOverlaps, keysoundsView, msAtX, noteDragPayload, pitchAtY, pitchName,
-  pitchRow, readPort, recordArgs, recordToast, rollPitches, rollSpanMs, scanSummary, sidecarStatus, velocityAtY, writePort,
+  NO_PLUGINS, PORT_KEY, PX_PER_MS, QUANTIZE_MS, ROLL_HIGH, ROLL_LOW, ROW_PX, SCALE_DEFS, SCALE_ROOTS,
+  findNoteIndex, generateToast, importArgs, importToast, instrumentChoices, isBlackKey, isPitchInScale,
+  keysoundsAdd, keysoundsAddNote, keysoundsDelete, keysoundsDeleteNote, keysoundsGenerate, keysoundsHumanise,
+  keysoundsLoadVst3, keysoundsMoveNote, keysoundsPreview, keysoundsQuantize, keysoundsResizeNote,
+  keysoundsScan, keysoundsSetVelocity, keysoundsStrum, keysoundsSyncToObjects, keysoundsToggleMute,
+  keysoundsToggleSolo, keysoundsTranspose, keysoundsTrimOverlaps, keysoundsVelocityRamp, keysoundsView,
+  msAtX, noteDragPayload, pitchAtY, pitchName, pitchRow, readPort, recordArgs, recordToast, rollPitches,
+  rollSpanMs, scalePitchMask, scanSummary, sidecarStatus, velocityAtY, visibleRollPitches, writePort,
 } from "../src/lib/midi.js";
+import { sampleVelocityRamp } from "../src/lib/pianoRoll.js";
 import {
   createMusicalTypingState, handleMusicalTypingKeyDown, handleMusicalTypingKeyUp, octaveLabel, pitchForKeyCode,
 } from "../src/lib/musicalTyping.js";
@@ -278,7 +281,7 @@ test("the Keysounds modal wires every piano roll gesture to its keysounds_action
   ].map(source).join("\n");
   for (const wiring of [
     /send\(keysoundsAddNote\(trackId, startMs, pitch\)\)[\s\S]*?preview\(pitch\)/, // empty cell: add then play
-    /noteDragPayload\(trackId, note, mode, dx, dy\)/, // pointerup on a dragged body or edge
+    /noteDragPayload\(trackId, note, mode, dx, dy, QUANTIZE_MS, pitches\)/, // pointerup on a dragged body or edge
     /onNoteDown\(e, note, "move"\)/,
     /onNoteDown\(e, note, "resize"\)/,
     /oncontextmenu=\{\(e\) => \{ e\.preventDefault\(\); e\.stopPropagation\(\); deleteNote\(note\.index\)/,
@@ -304,4 +307,57 @@ test("the Keysounds modal wires every piano roll gesture to its keysounds_action
   assert.match(keysounds, /event\.target !== event\.currentTarget/);
   // Previews skip send() so the bar does not flicker; preview_note's summary is not applied.
   assert.match(keysounds, /invoke\("keysounds_action", \{ payload: keysoundsPreview\(/);
+});
+
+test("scale helpers, fold-to-scale pitch mapping, strum/humanise/velocity ramp payloads and layout fixes match contracts", () => {
+  assert.equal(SCALE_ROOTS.length, 12);
+  assert.ok(SCALE_DEFS.some(s => s.id === "major"));
+  assert.equal(scalePitchMask(0, "chromatic"), 0xfff);
+  assert.equal(isPitchInScale(60, 0, "major"), true);
+  assert.equal(isPitchInScale(61, 0, "major"), false);
+
+  const chromatic = visibleRollPitches(0, "chromatic", true);
+  assert.equal(chromatic.length, 49);
+  const cMajor = visibleRollPitches(0, "major", true);
+  assert.equal(cMajor.length, 29, "C2..=C6 contains 29 C-major pitches");
+  assert.equal(cMajor.includes(61), false);
+
+  // Folded coordinates map strictly across scale rows (never landing on out-of-scale pitches).
+  const rowC4 = pitchRow(60, cMajor);
+  assert.ok(rowC4 >= 0);
+  assert.equal(pitchAtY(rowC4 - ROW_PX + 2, cMajor), 62, "one row up from C4 lands on D4 in C major");
+  const e4 = { index: 0, startMs: 1000, endMs: 1250, pitch: 64, velocity: 90 };
+  assert.deepEqual(
+    noteDragPayload(3, e4, "move", 0, -ROW_PX, QUANTIZE_MS, cMajor),
+    { kind: "move_note", trackId: 3, noteIndex: 0, startMs: 1000, pitch: 65 },
+  );
+
+  // Strum, humanise, velocity ramp payloads & live curve preview mirror Rust.
+  assert.deepEqual(keysoundsStrum(4), { kind: "strum_notes", trackId: 4, spreadMs: 20, direction: "up", chordToleranceMs: 15 });
+  assert.deepEqual(keysoundsHumanise(4, 12, 8, 99), { kind: "humanise_notes", trackId: 4, timingMs: 12, velocityRange: 8, seed: 99 });
+  assert.deepEqual(keysoundsVelocityRamp(4, 100, 900, 30, 120, 1), {
+    kind: "velocity_ramp", trackId: 4, startMs: 100, endMs: 900, startVelocity: 30, endVelocity: 120, curve: 1,
+  });
+  assert.equal(sampleVelocityRamp(500, 0, 1000, 20, 120, 0), 70);
+  assert.equal(sampleVelocityRamp(500, 0, 1000, 20, 120, 1), 45);
+  assert.equal(sampleVelocityRamp(500, 1000, 0, 120, 20, 0), 70);
+  assert.equal(sampleVelocityRamp(1500, 0, 1000, 20, 120, 0), null);
+
+  // Inline 1b21edb structural defect fixes:
+  const timelineCss = readFileSync(new URL("../src/timeline.css", import.meta.url), "utf8");
+  assert.match(timelineCss, /#editor-arrange\.keysounds-active[\s\S]*?grid-template-rows:\s*auto minmax\(0,\s*1fr\);/);
+  assert.match(timelineCss, /#editor-arrange\.keysounds-active\s*>\s*#base-diff-strip\s*\{\s*grid-row:\s*1;/);
+  assert.match(timelineCss, /#editor-arrange\.keysounds-active\s*>\s*#keysounds-workspace\s*\{\s*grid-row:\s*2;/);
+  assert.match(timelineCss, /\.arrange\.keysounds-active\s*>\s*\.ruler/);
+
+  const modalSrc = source("KeysoundsModal.svelte");
+  assert.doesNotMatch(modalSrc, /bridge\.playhead/, "KeysoundsModal must use bridge.currentPositionMs(), not reactive bridge.playhead");
+  assert.match(modalSrc, /Boolean\(m\[2\]\)/);
+  assert.match(modalSrc, /tapRecordingArmed/);
+  assert.match(modalSrc, /bridge\.currentPositionMs\(\)/);
+  assert.match(modalSrc, /bridge\.callAction\("command",\s*"play"\)/);
+  assert.match(modalSrc, /send\(\{\s*kind:\s*"undo"\s*\}\)/);
+  assert.match(modalSrc, /send\(\{\s*kind:\s*"redo"\s*\}\)/);
+  assert.match(source("keysounds/KeysoundPianoRoll.svelte"), /\.ks-beat\.sustained/);
+  assert.match(source("keysounds/KeysoundVelocityLane.svelte"), /onvelocityramp/);
 });

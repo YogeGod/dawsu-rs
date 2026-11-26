@@ -725,6 +725,19 @@ pub fn catalogue() -> CommandCatalog<Application> {
         Some(|app| app.document.is_some() && !app.busy),
     );
     registry.bind(
+        &CommandDefinition::new(
+            "captureRetrospectiveTaps",
+            "Capture retrospective MIDI / taps",
+        )
+        .keys(&[K::new(Key::R, Mods::CTRL | Mods::SHIFT)]),
+        areas::HS_PLAYBACK,
+        |app| {
+            let _ = app.capture_retrospective(None, None)?;
+            Ok(())
+        },
+        Some(|app| app.document.is_some() && !app.busy),
+    );
+    registry.bind(
         &CommandDefinition::new("help", "Show shortcuts and mouse actions")
             .keys(&[K::plain(Key::F1)]),
         areas::HELP,

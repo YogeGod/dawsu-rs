@@ -3,10 +3,11 @@
   import { bridge } from "../lib/bridge.svelte.js";
   import { invoke } from "../lib/ipc.js";
   import {
-    NO_PLUGINS, PX_PER_MS, findNoteIndex, generateToast, instrumentChoices,
-    keysoundsAdd, keysoundsAddNote, keysoundsDelete, keysoundsDeleteNote, keysoundsGenerate, keysoundsLoadVst3,
-    keysoundsPreview, keysoundsSetVelocity, keysoundsSyncToObjects, keysoundsView,
-    rollPitches, rollSpanMs, sidecarStatus,
+    NO_PLUGINS, PX_PER_MS, QUANTIZE_MS, findNoteIndex, generateToast, instrumentChoices,
+    keysoundsAdd, keysoundsAddNote, keysoundsDelete, keysoundsDeleteNote, keysoundsGenerate,
+    keysoundsHumanise, keysoundsLoadVst3, keysoundsPreview, keysoundsSetVelocity, keysoundsStrum,
+    keysoundsSyncToObjects, keysoundsVelocityRamp, keysoundsView, rollSpanMs, scalePitchMask,
+    sidecarStatus, visibleRollPitches,
   } from "../lib/midi.js";
   import {
     createMusicalTypingState, handleMusicalTypingKeyDown, handleMusicalTypingKeyUp,
@@ -46,10 +47,15 @@
   let drumVst3 = $state(readDrumVst3(storage()));
   let showGhosts = $state(true);
   let showObjectLines = $state(true);
+  let scaleRoot = $state(0);
+  let scaleKind = $state("chromatic");
+  let foldToScale = $state(false);
   let typingState = $state(createMusicalTypingState());
   const heldTypingKeys = new Set();
 
-  const pitches = rollPitches();
+  const scaleMask = $derived(scalePitchMask(scaleRoot, scaleKind));
+  const pitches = $derived(visibleRollPitches(scaleRoot, scaleKind, foldToScale));
+  const visiblePitchSet = $derived(new Set(pitches));
   const tracks = $derived(summary?.tracks ?? []);
   const instruments = $derived(instrumentChoices(summary?.vst3Plugins));
   const track = $derived(tracks.find(t => t.id === trackId) ?? null);
@@ -59,12 +65,17 @@
     showGhosts
       ? tracks
           .filter(t => t.id !== trackId && !t.muted && (!anySolo || t.solo))
-          .flatMap(t => (t.notes ?? []).map(n => ({ ...n, trackId: t.id })))
+          .flatMap(t =>
+            (t.notes ?? [])
+              .filter(n => !foldToScale || visiblePitchSet.has(n.pitch))
+              .map(n => ({ ...n, trackId: t.id }))
+          )
       : []
   );
   const objectTimes = $derived(
     showObjectLines
       ? (bridge.scene?.moments ?? [])
+          .filter(m => (Array.isArray(m) ? Boolean(m[2]) : Boolean(m?.hasObject ?? m?.place)))
           .map(m => (Array.isArray(m) ? m[0] : m?.time))
           .filter(t => Number.isFinite(t))
       : []
@@ -396,8 +407,8 @@
         typingState = result.state;
         if (result.action === "note") {
           preview(result.pitch, result.velocity);
-          if (bridge.view?.midiRecord?.armed && trackId != null) {
-            const playheadMs = Number(bridge.view?.playheadMs ?? bridge.view?.timeMs ?? 0);
+          if ((bridge.view?.tapRecordingArmed ?? bridge.latestView?.tapRecordingArmed) && trackId != null) {
+            const playheadMs = bridge.currentPositionMs();
             send(keysoundsAddNote(trackId, playheadMs, result.pitch, result.velocity));
           }
         }
@@ -414,6 +425,47 @@
         closeModal();
       }
       return;
+    }
+    if (!typingInput && (event.ctrlKey || event.metaKey) && !event.altKey) {
+      const k = event.key?.toLowerCase();
+      if (k === "z" && !event.shiftKey) {
+        event.preventDefault();
+        event.stopPropagation();
+        send({ kind: "undo" });
+        return;
+      }
+      if (k === "y" || (k === "z" && event.shiftKey)) {
+        event.preventDefault();
+        event.stopPropagation();
+        send({ kind: "redo" });
+        return;
+      }
+    }
+    if (!typingInput && !event.ctrlKey && !event.metaKey && !event.altKey) {
+      if (event.code === "Space") {
+        event.preventDefault();
+        event.stopPropagation();
+        bridge.callAction("command", "play");
+        return;
+      }
+      if (event.code === "Numpad0") {
+        event.preventDefault();
+        event.stopPropagation();
+        bridge.callAction("command", "stop");
+        return;
+      }
+      if (event.code === "Home") {
+        event.preventDefault();
+        event.stopPropagation();
+        bridge.callAction("command", "start");
+        return;
+      }
+      if (event.code === "KeyL" && !typingState.enabled) {
+        event.preventDefault();
+        event.stopPropagation();
+        bridge.callAction("command", "cycle");
+        return;
+      }
     }
     if (!typingInput && (event.key === "Delete" || event.key === "Backspace") && selected != null) {
       event.preventDefault();
@@ -492,6 +544,9 @@
         {loading}
         bind:name
         bind:pluginId
+        bind:scaleRoot
+        bind:scaleKind
+        {foldToScale}
         {instruments}
         sidecarAvailable={Boolean(summary?.sidecarAvailable)}
         {drumVst3}
@@ -512,6 +567,10 @@
         ontoggleghosts={() => { showGhosts = !showGhosts; }}
         ontoggleobjectlines={() => { showObjectLines = !showObjectLines; }}
         ontoggletyping={toggleMusicalTyping}
+        ontogglefold={() => { if (scaleKind !== "chromatic") foldToScale = !foldToScale; }}
+        onscalechange={nextScale => { if (nextScale === "chromatic") foldToScale = false; }}
+        onstrum={() => trackAction(id => keysoundsStrum(id))}
+        onhumanise={() => trackAction(id => keysoundsHumanise(id))}
       />
 
       <div class="ks-status">
@@ -538,6 +597,8 @@
         <KeysoundPianoRoll
           bind:rollScroll
           {pitches}
+          {scaleMask}
+          {foldToScale}
           {spanPx}
           {beats}
           {sustainSpans}
@@ -560,11 +621,13 @@
           bind:selected
           {loading}
           onsetvelocity={setVelocity}
+          onvelocityramp={(startMs, endMs, startVel, endVel, curve) =>
+            send(keysoundsVelocityRamp(trackId, startMs, endMs, startVel, endVel, curve))}
         />
       {/if}
 
       <footer class="ks-foot">
-        <span class="ks-hint">Click to place · drag to move · drag right edge to resize · right-click or Delete to remove · Alt+K typing</span>
+        <span class="ks-hint">Click to place · drag to move · drag right edge to resize · Shift+drag velocity ramp · right-click or Delete to remove · Alt+K typing</span>
         <button type="button" class="ks-gold" disabled={loading || !tracks.some(t => t.noteCount)} onclick={() => generate()}>Generate [Keysounds]</button>
         <button type="button" disabled={loading} onclick={closeModal}>Back to Hitsounds</button>
       </footer>

@@ -15,8 +15,9 @@ pub use chords::{
     ChordResolution,
 };
 pub use editing::{
-    deduplicate_notes, glue_notes, quantize_notes, set_velocity, split_note_at, transpose_notes,
-    trim_overlaps,
+    apply_velocity_ramp, deduplicate_notes, glue_notes, humanise_notes, is_pitch_in_scale,
+    quantize_notes, scale_pitch_mask, set_velocity, split_note_at, strum_notes, transpose_notes,
+    trim_overlaps, ScaleKind, StrumDirection,
 };
 pub use generate::{
     plan_generate_keysounds, preview_sync, quantize_duration_ms, quantize_velocity,

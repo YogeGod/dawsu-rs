@@ -18,7 +18,7 @@ use dawsu_keysounding::generate::{
     GeneratePlan, SampleManifestEntry, plan_generate_keysounds, preview_sync,
 };
 use dawsu_keysounding::model::{ExportSettings, KeysoundDocument, KeysoundTrack};
-use dawsu_keysounding::{KeysoundNote, KeysoundProject, editing};
+use dawsu_keysounding::{KeysoundNote, KeysoundProject, StrumDirection, editing};
 use dawsu_osu_format::{check_map_path, find_case_insensitive, list_folder};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -634,6 +634,7 @@ pub(crate) fn summary(app: &mut Application) -> Value {
         "chordConflicts": chord_conflicts,
         "tracks": app.keysounds.document.tracks.iter().map(|t| {
             let is_active = Some(t.id) == active_id;
+            let is_audible = is_track_audible(&app.keysounds.document, t.id);
             let sf_presets: Vec<String> = t
                 .instrument
                 .soundfont_path
@@ -662,7 +663,7 @@ pub(crate) fn summary(app: &mut Application) -> Value {
                 "soundfontPreset": t.instrument.program.unwrap_or(0),
                 "soundfontPresets": sf_presets,
                 "sustainSpans": if is_active { json!(t.sustain_spans) } else { json!([]) },
-                "notes": if is_active {
+                "notes": if is_active || is_audible {
                     t.notes.iter().enumerate().map(|(index, n)| json!({
                         "index": index,
                         "startMs": n.start_ms,
@@ -703,12 +704,16 @@ pub(crate) fn handle(app: &mut Application, payload: &Value) -> Result<Value, St
             | "set_velocity"
             | "quantize_notes"
             | "transpose_notes"
+            | "strum_notes"
+            | "humanise_notes"
+            | "velocity_ramp"
             | "trim_overlaps"
             | "sync_to_objects"
             | "toggle_mute"
             | "toggle_solo"
             | "resolve_chord"
             | "resolve_all_chords"
+            | "load_vst3"
             | "load_soundfont"
             | "set_soundfont_preset"
     );
@@ -1132,6 +1137,119 @@ pub(crate) fn handle(app: &mut Application, payload: &Value) -> Result<Value, St
                 .ok_or("Keysound track not found")?;
             track.notes = editing::trim_overlaps(&track.notes);
             track.sort_notes();
+        }
+        "strum_notes" => {
+            let id = track_id.ok_or("Missing trackId")?;
+            let spread_ms = payload
+                .get("spreadMs")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(20.0)
+                .clamp(1.0, 250.0);
+            let direction = payload
+                .get("direction")
+                .and_then(|v| v.as_str())
+                .map(StrumDirection::from_id)
+                .unwrap_or_default();
+            let tolerance_ms = payload
+                .get("chordToleranceMs")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(15.0)
+                .clamp(0.0, 100.0);
+            let indices: Option<Vec<usize>> = payload
+                .get("noteIndices")
+                .and_then(|v| v.as_array())
+                .map(|arr| arr.iter().filter_map(|n| n.as_u64().map(|i| i as usize)).collect());
+            let track = app
+                .keysounds
+                .document
+                .tracks
+                .iter_mut()
+                .find(|t| t.id == id)
+                .ok_or("Keysound track not found")?;
+            track.notes = editing::strum_notes(
+                &track.notes,
+                indices.as_deref(),
+                spread_ms,
+                direction,
+                tolerance_ms,
+            );
+            track.sort_notes();
+        }
+        "humanise_notes" => {
+            let id = track_id.ok_or("Missing trackId")?;
+            let timing_ms = payload
+                .get("timingMs")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(10.0)
+                .clamp(0.0, 100.0);
+            let velocity_range = payload
+                .get("velocityRange")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(12)
+                .min(64) as u8;
+            let seed = payload
+                .get("seed")
+                .and_then(|v| v.as_u64())
+                .unwrap_or_else(|| app.keysound_history.revision.wrapping_add(1));
+            let indices: Option<Vec<usize>> = payload
+                .get("noteIndices")
+                .and_then(|v| v.as_array())
+                .map(|arr| arr.iter().filter_map(|n| n.as_u64().map(|i| i as usize)).collect());
+            let track = app
+                .keysounds
+                .document
+                .tracks
+                .iter_mut()
+                .find(|t| t.id == id)
+                .ok_or("Keysound track not found")?;
+            track.notes = editing::humanise_notes(
+                &track.notes,
+                indices.as_deref(),
+                timing_ms,
+                velocity_range,
+                seed,
+            );
+            track.sort_notes();
+        }
+        "velocity_ramp" => {
+            let id = track_id.ok_or("Missing trackId")?;
+            let start_ms = payload
+                .get("startMs")
+                .and_then(|v| v.as_f64())
+                .ok_or("Missing startMs")?;
+            let end_ms = payload
+                .get("endMs")
+                .and_then(|v| v.as_f64())
+                .ok_or("Missing endMs")?;
+            let start_vel = payload
+                .get("startVelocity")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(64)
+                .clamp(1, 127) as u8;
+            let end_vel = payload
+                .get("endVelocity")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(110)
+                .clamp(1, 127) as u8;
+            let curve = payload
+                .get("curve")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0);
+            let track = app
+                .keysounds
+                .document
+                .tracks
+                .iter_mut()
+                .find(|t| t.id == id)
+                .ok_or("Keysound track not found")?;
+            track.notes = editing::apply_velocity_ramp(
+                &track.notes,
+                start_ms,
+                end_ms,
+                start_vel,
+                end_vel,
+                curve,
+            );
         }
         "sync_to_objects" => {
             let document = app.document.as_ref().ok_or("Open a difficulty first.")?;
@@ -2255,6 +2373,51 @@ mod tests {
     }
 
     #[test]
+    fn toggle_tap_disarm_commits_armed_midi_and_unarmed_taps_capture_retrospectively() {
+        let (_scratch, _map_dir, mut app) =
+            setup_mapset("retro-and-disarm", "256,192,1000,1,0,0:0:0:0:\r\n");
+        app.reset_fresh_open_for_tests();
+        let before = app.document().unwrap().composer.hitsounds().moments().len();
+
+        // 1. Disarming via toggle_tap_recording when midi_recorder is armed commits armed MIDI notes.
+        app.toggle_midi_recording(None, None, None).unwrap();
+        app.midi_recorder.record_event(
+            1122.0,
+            dawsu_audio_instruments::MidiInputEvent::NoteOn {
+                channel: 9,
+                pitch: 36,
+                velocity: 100,
+            },
+        );
+        let done = app.toggle_tap_recording().unwrap();
+        assert!(!done.armed);
+        assert_eq!(done.committed_taps, 1);
+        assert_eq!(app.document().unwrap().composer.hitsounds().moments().len(), before + 1);
+        app.command("undo");
+        assert_eq!(app.document().unwrap().composer.hitsounds().moments().len(), before);
+
+        // Drain anything already in retrospective from step 1, then test unarmed capture.
+        let _ = app.midi_recorder.take_retrospective();
+        app.seek(1495.0);
+        assert!(app.tap_lane(1));
+        app.midi_recorder.record_retrospective_event(
+            1998.0,
+            dawsu_audio_instruments::MidiInputEvent::NoteOn {
+                channel: 9,
+                pitch: 36,
+                velocity: 110,
+            },
+        );
+        let captured = app.capture_retrospective(None, None).unwrap();
+        assert_eq!(captured.committed_hits, 2);
+        assert_eq!(app.document().unwrap().composer.hitsounds().moments().len(), before + 2);
+
+        // Single Undo removes both the retrospective tap and MIDI hit together.
+        app.command("undo");
+        assert_eq!(app.document().unwrap().composer.hitsounds().moments().len(), before);
+    }
+
+    #[test]
     fn toggle_mute_and_toggle_solo_control_audibility_and_undo() {
         let (_scratch, _map_dir, mut app) = setup_mapset(
             "keysound-mute-solo",
@@ -2416,5 +2579,120 @@ mod tests {
         let undone_notes = undone["tracks"][0]["notes"].as_array().unwrap();
         assert_eq!(undone_notes[0]["startMs"], json!(1000.0));
         assert_eq!(undone_notes[0]["endMs"], json!(1500.0));
+    }
+
+    #[test]
+    fn summary_emits_audible_sibling_track_notes_for_ghosts() {
+        let (_scratch, _map_dir, mut app) = setup_mapset(
+            "keysound-ghost-notes",
+            "256,192,1000,1,0,0:0:0:0:\r\n",
+        );
+
+        let r1 = handle(&mut app, &json!({ "kind": "add_track", "name": "Lead" })).unwrap();
+        let t1 = r1["tracks"][0]["id"].as_u64().unwrap();
+        handle(
+            &mut app,
+            &json!({ "kind": "add_note", "trackId": t1, "startMs": 500.0, "endMs": 750.0, "pitch": 60, "velocity": 100 }),
+        )
+        .unwrap();
+
+        let r2 = handle(&mut app, &json!({ "kind": "add_track", "name": "Pad" })).unwrap();
+        let t2 = r2["tracks"][1]["id"].as_u64().unwrap();
+        handle(
+            &mut app,
+            &json!({ "kind": "add_note", "trackId": t2, "startMs": 1000.0, "endMs": 1500.0, "pitch": 64, "velocity": 90 }),
+        )
+        .unwrap();
+
+        // Active track is t2, but t1 is audible so summary includes t1's notes too.
+        let view = handle(&mut app, &json!({ "kind": "view" })).unwrap();
+        assert_eq!(view["activeTrackId"], json!(t2));
+        assert_eq!(view["tracks"][0]["notes"].as_array().unwrap().len(), 1);
+        assert_eq!(view["tracks"][1]["notes"].as_array().unwrap().len(), 1);
+
+        // Muting t1 suppresses its notes in summary.
+        let muted = handle(&mut app, &json!({ "kind": "toggle_mute", "trackId": t1 })).unwrap();
+        assert!(muted["tracks"][0]["notes"].as_array().unwrap().is_empty());
+        assert_eq!(muted["tracks"][1]["notes"].as_array().unwrap().len(), 1);
+
+        // Unmute t1, then solo t2 (active): sibling t1 is excluded by solo while active t2 stays visible.
+        handle(&mut app, &json!({ "kind": "toggle_mute", "trackId": t1 })).unwrap();
+        let solo = handle(&mut app, &json!({ "kind": "toggle_solo", "trackId": t2 })).unwrap();
+        assert!(solo["tracks"][0]["notes"].as_array().unwrap().is_empty());
+        assert_eq!(solo["tracks"][1]["notes"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn strum_humanise_and_velocity_ramp_mutate_with_single_undo_steps() {
+        let (_scratch, _map_dir, mut app) = setup_mapset(
+            "keysound-strum-humanise-ramp",
+            "256,192,1000,1,0,0:0:0:0:\r\n",
+        );
+
+        let r = handle(&mut app, &json!({ "kind": "add_track", "name": "Keys" })).unwrap();
+        let tid = r["tracks"][0]["id"].as_u64().unwrap();
+
+        for pitch in [60u8, 64, 67] {
+            handle(
+                &mut app,
+                &json!({ "kind": "add_note", "trackId": tid, "startMs": 1000.0, "endMs": 1250.0, "pitch": pitch, "velocity": 80 }),
+            )
+            .unwrap();
+        }
+
+        // 1. Strum
+        let strummed = handle(
+            &mut app,
+            &json!({ "kind": "strum_notes", "trackId": tid, "spreadMs": 20.0, "direction": "up" }),
+        )
+        .unwrap();
+        let notes = strummed["tracks"][0]["notes"].as_array().unwrap();
+        assert_eq!(notes[0]["startMs"], json!(1000.0));
+        assert_eq!(notes[1]["startMs"], json!(1020.0));
+        assert_eq!(notes[2]["startMs"], json!(1040.0));
+
+        // 2. Velocity ramp across [1000, 1040]
+        let ramped = handle(
+            &mut app,
+            &json!({
+                "kind": "velocity_ramp",
+                "trackId": tid,
+                "startMs": 1000.0,
+                "endMs": 1040.0,
+                "startVelocity": 40,
+                "endVelocity": 120,
+                "curve": 0.0
+            }),
+        )
+        .unwrap();
+        let rnotes = ramped["tracks"][0]["notes"].as_array().unwrap();
+        assert_eq!(rnotes[0]["velocity"], json!(40));
+        assert_eq!(rnotes[1]["velocity"], json!(80));
+        assert_eq!(rnotes[2]["velocity"], json!(120));
+
+        // Undo velocity ramp cleanly in one step.
+        let undone_ramp = handle(&mut app, &json!({ "kind": "undo" })).unwrap();
+        assert_eq!(undone_ramp["tracks"][0]["notes"][0]["velocity"], json!(80));
+        assert_eq!(undone_ramp["tracks"][0]["notes"][2]["velocity"], json!(80));
+
+        // 3. Humanise with fixed seed & undo in one step.
+        let humanised = handle(
+            &mut app,
+            &json!({ "kind": "humanise_notes", "trackId": tid, "timingMs": 5.0, "velocityRange": 10, "seed": 77 }),
+        )
+        .unwrap();
+        let hnotes = humanised["tracks"][0]["notes"].as_array().unwrap();
+        assert_ne!(hnotes, undone_ramp["tracks"][0]["notes"].as_array().unwrap());
+
+        let undone_humanise = handle(&mut app, &json!({ "kind": "undo" })).unwrap();
+        assert_eq!(
+            undone_humanise["tracks"][0]["notes"][1]["startMs"],
+            json!(1020.0)
+        );
+        let undone_strum = handle(&mut app, &json!({ "kind": "undo" })).unwrap();
+        assert_eq!(
+            undone_strum["tracks"][0]["notes"][2]["startMs"],
+            json!(1000.0)
+        );
     }
 }
