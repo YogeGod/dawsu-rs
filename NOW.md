@@ -1,9 +1,10 @@
 # NOW.md — Current Sprint (`dawsu-rs`)
 
-`origin/main` includes DAW prior-art Slices 1–5B (`34484c1`–`d23d2cd`) on top of `v1.3.0-alpha.1` (**V1.3 alpha**: `9165831` Bundled Practice Mapset, Compact Ready Checklist & Help Menu; `a4c9841` Mapper README, 6-Page Wiki, Screenshots & Issue Templates; earlier `v1.2.0-alpha.1` at `8279a56`, `PR #93`–`#99`, Draw/marquee fix, repo cleanup, 3 core-seam refactorings, agent rules refresh, inline keysounding piano roll, compressed docs, cached `osu!.db` Songs scanner, Export Review .osu diff + read-back verification). Full sprint archive in `E:/Obsidian/Workspace/dawsu-rewrite/now.md`.
+`origin/main` includes **Native Rust Shell Slice 0** (`71cbba0`–`9228bfe`) + DAW prior-art Slices 1–5B (`34484c1`–`d23d2cd`) on top of `v1.3.0-alpha.1` (**V1.3 alpha**: `9165831` Bundled Practice Mapset, Compact Ready Checklist & Help Menu; `a4c9841` Mapper README, 6-Page Wiki, Screenshots & Issue Templates; earlier `v1.2.0-alpha.1` at `8279a56`, `PR #93`–`#99`, Draw/marquee fix, repo cleanup, 3 core-seam refactorings, agent rules refresh, inline keysounding piano roll, compressed docs, cached `osu!.db` Songs scanner, Export Review .osu diff + read-back verification). Full sprint archive in `E:/Obsidian/Workspace/dawsu-rewrite/now.md`.
 
 ## Recent Landed Milestones
 
+- **Native Rust Shell Slice 0 — Shared Desktop Core (`71cbba0`, `9228bfe`):** extracted `BUILTIN_DRUM_MAPS`/`DEFAULT_OSU_KIT_NAME` (`dawsu-hitsounding`), `DrumView` w/ revision + auto VST3 sync, `HomeRoute`, `SelectionSummary`, pure presentation (`gameplay_overlay`, `combo_overlay`, `map_preview_data`, lane ordering/headers), `osu_link`/`folders`/`library`/raw `skin_textures`, and Layer-6 `desktop_services` caches into framework-free `dawsu-application` (`0` new deps); thinned `apps/tauri/src/` & hoisted `rfd` dialogs (no webview path bypass; `expectedMap` guard preserved); closed `ViewStateToken`, legacy v1.3 `Preferences` (`#[serde(default)]`), `keymap_mut()`, non-blocking `spawn_restore_mixer_fx_from_session` on open, non-blocking/single-flight `spawn_*` + sweep/cancel guards, `close_document_nonblocking` pending-claim release, and failed `spawn_load_drum_vst` session safety (`0` Clippy warnings, `1,264` Rust tests [6 ignored], `345/345` UI, `356/356` JS integration).
 - **Post-v1.1 tech-debt cleanup** (`PR #88`–`#92`): Clippy CI gate (0 warnings), `main.rs` + `dawsu-application/src/lib.rs` split into focused submodules, Vite-bundled frontend & split Svelte modals, feature-gated ONNX stems, consolidated workspace deps.
 - **Three Beginner Paths & Unified Mapset Intake** (`PR #93`): Path 1 (custom samples only), Path 2 (12 default osu! lanes w/ `Default osu! kit`), Path 3 (edit existing diff direct w/ Objects snap + used lanes), `MapsetIntakeCard`, safe lane additions, Shared Base shortcuts.
 - **Start Screen Hero Grid, Export Review Coverage & Rhythm Gallery** (`PR #94`): 2-column Hero Cards, Export per-target coverage strips, 1-click Rhythm Gallery presets.
@@ -20,6 +21,7 @@
 
 ## Still Open Next
 
+- **Native Rust Shell Slice 1 (`feat/native-shell-bootstrap`):** `apps/native` (`eframe` `0.37` `wgpu` DX12+Vulkan), Hardware Spike Gate, Obsidian Studio theme, Start Screen (`E:/Obsidian/Workspace/dawsu-rewrite/plans/2026-11-26-native-rust-egui-ui-shell.md`).
 - DAW prior-art Slices 5C (macOS/Linux native dawsu_vst3_host + POSIX SHM) & 5D (out-of-tree clack-host CLAP spike).
 - Mixer FX send/return buses & tempo-synced red-line BPM ProcessContext.
 - Licensed sound packs + online map search.
