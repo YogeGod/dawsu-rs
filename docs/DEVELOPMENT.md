@@ -23,7 +23,7 @@ Related project docs:
 ## Prerequisites
 
 - **Rust toolchain:** pinned by [rust-toolchain.toml](../rust-toolchain.toml) (`1.100.0`, Edition 2024) and [Cargo.lock](../Cargo.lock). Always pass `--locked` to Cargo commands.
-- **Node.js & npm:** Node.js 22+ for the Svelte 5 / Vite frontend (`apps/tauri/ui/`) and JS test suites.
+- **Node.js & npm:** Node.js 20.19+ or 22.12+ for the Svelte 5 / Vite frontend (`apps/tauri/ui/`) and JS test suites.
 - **C++ toolchain & `libclang`:** MSVC x64 build tools (on Windows) and LLVM `libclang` (`LIBCLANG_PATH`), required to build `signalsmith-stretch`.
 - **Optional:**
   - **CMake + Steinberg VST 3 SDK (`v3.8.1_build_84`):** to build `dawsu_vst3_host.exe` (`native/vst3-host`).
@@ -99,7 +99,7 @@ The standard Windows release build uses WASAPI, DirectSound, and MME. The ASIO d
   ```sh
   node tools/ui-screenshot.mjs --exe target/debug/dawsu-tauri.exe --map "path/to/copied.osu" --out shot.png
   ```
-  Screenshots the built editor on a temporary copy of a mapset. Options: `--width`, `--height`, `--eval`, `--wait`, `--preset`, `--csp`, `--window`, `--eval-window`, `--profile`, `--keep-profile`.
+  Screenshots the built editor on a temporary copy of a mapset. Options: `--width`, `--height`, `--eval`, `--wait`, `--preset`, `--csp`, `--window`, `--eval-window`, `--profile`, `--keep-profile`, `--timeout`.
 - **Synthetic demo mapset generator (`tools/make-demo-mapset.mjs`):**
   ```sh
   node tools/make-demo-mapset.mjs [output-dir]

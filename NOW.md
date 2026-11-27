@@ -4,7 +4,7 @@
 
 ## Recent Landed Milestones
 
-- **Native Rust Shell Slice 0 & DAW Prior-Art Slices 1–5B (`71cbba0`–`d23d2cd`):** extracted shared desktop core (`dawsu-application`, `ViewStateToken`, 5 typed action seams, single `Bridge` seam); RT audio safety (`IAudioClient3`, 60 Hz binary telemetry, `"DWFP"` waveform, `MidiStateTracker`, `RetrospectiveRing`, Win32 SHM VST3 host, multi-strip `MixerFxGraph` + PDC).
+- **Native Rust Shell Slice 0 & DAW Prior-Art Slices 1–5B (`71cbba0`–`d23d2cd`):** extracted shared desktop core (`dawsu-application`, `ViewStateToken`, typed domain action seams, single `Bridge` seam); RT audio safety (`IAudioClient3`, 60 Hz binary telemetry, `"DWFP"` waveform, `MidiStateTracker`, `RetrospectiveRing`, Win32 SHM VST3 host, multi-strip `MixerFxGraph` + PDC).
 - **`v1.3.0-alpha.1` & `v1.2.0-alpha.1` (`9165831`, `a4c9841`, `8279a56`, `aecf0b5`, `86f15f4`):** bundled practice mapset + `Ready` checklist + `Help` menu, mapper `README.md` + 6-page wiki + screenshots, Export Review `.osu` diff + 4-part read-back gate, cached `osu!.db` `.sidx` scanner, inline keysounding piano roll (`1b21edb`).
 - **v1.1 & UI Overhaul (`PR #88`–`#99`):** 3 beginner paths, Obsidian Studio UI + cached 44 px minimap, live tap recording + osu! reload + `.sf2`/`.sfz` sampler, post-v1.1 splits & Clippy CI gate (`0` warnings).
 - **Full sprint archive:** `E:/Obsidian/Workspace/dawsu-rewrite/now.md`.

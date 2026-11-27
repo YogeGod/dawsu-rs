@@ -24,7 +24,7 @@ On the Start screen, the **Ready** bar tracks four quick setup steps:
 
 ![dawsu! Start screen](../screenshots/start-screen.png)
 
-1. **Audio:** Click the **Audio** pill (or **Playback → Audio output…**, or the speaker button in the bottom-right status bar) to pick your output backend (**WASAPI**, **DirectSound**, or **MME**), audio device, and buffer size (`10`–`500` ms).
+1. **Audio:** Click the **Audio** pill (or **Playback → Audio output…**, or the speaker button in the bottom-right status bar) to pick your output backend (**WASAPI**, **DirectSound**, or **MME**), audio device, and buffer size (up to `500` ms; the minimum is `2` ms on WASAPI and `10` ms on DirectSound and MME).
    - Lower buffers feel tighter when auditioning or tapping hits live; increase the buffer if you hear clicks or dropouts on a busy project.
    - Stop playback before applying a new output device.
 2. **Songs folder:** Click **Songs folder** (or the **Folders…** card on the Start screen) and point dawsu! to your osu! `Songs` directory.

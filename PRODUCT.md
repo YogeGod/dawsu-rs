@@ -25,7 +25,7 @@ Still open: live VST3 effect mixer returns, licensed sound packs & online map se
 
 ## Stack
 
-- **Core & audio:** 14-crate Rust workspace (`crates/`) — beatmap format & byte-preserving writer, hitsounding, keysounding (`.sf2`/`.sfz`), composition, audio engine (`cpal`, `symphonia`, `signalsmith-stretch`, `vorbis_rs`), MIDI (`midir`), node graph & drum detection, and optional on-demand CPU ONNX stems (`ort`).
+- **Core & audio:** 13-crate Rust workspace (`crates/`, plus the `apps/tauri` app) — beatmap format & byte-preserving writer, hitsounding, keysounding (`.sf2`/`.sfz`), composition, audio engine (`cpal`, `symphonia`, `signalsmith-stretch`, `vorbis_rs`), MIDI (`midir`), node graph & drum detection, and optional on-demand CPU ONNX stems (`ort`).
 - **Desktop shell & UI:** `apps/tauri` (Tauri v2, O(1) `ViewStateToken` scene state, typed domain action seams), Vite-bundled Svelte 5 (runes) chrome, HTML5 `<canvas>` dense timeline surface, and a native C++ VST3 host sidecar (`native/vst3-host`).
 - **Oracle:** `tools/lazer-oracle` pinning osu!lazer (`ppy/osu` `131fe72`) as the behavioural reference.
 

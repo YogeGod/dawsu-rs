@@ -4,7 +4,7 @@
 
 ## Does dawsu! modify my `.osu` files when I open them?
 
-No. Opening a difficulty only reads it into memory. Nothing is written to your mapset until you press **Save** (`Ctrl+S`), apply changes across all difficulties in **Shared Base**, or run **Export** (`Ctrl+E`) with **Write to: Mapset (with backups)**. Before overwriting any `.osu` file, dawsu! snapshots/backs up originals outside your mapset folder and leaves unedited lines byte-identical.
+No. Opening a difficulty only reads it into memory. Nothing is written to your mapset until you press **Save** (`Ctrl+S`), apply changes across all difficulties in **Shared Base**, or run **Export** (**File → Export…**) with **Write to: Mapset (with backups)**. Before overwriting any `.osu` file, dawsu! snapshots/backs up originals outside your mapset folder and leaves unedited lines byte-identical.
 
 ## How can I try dawsu! without risking my maps?
 
