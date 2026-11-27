@@ -1214,6 +1214,8 @@ try {
       "the mode switch did not leave Keysounds mode");
     expect((await hits()).length === hitsBefore, "Keysounds mode changed the hits");
     expect(await read(() => document.getElementById("scroll").scrollTop) === lanesTop, "the lanes' scroll position changed");
+    return chrome.inspector?.width > 0 && chrome.inspector.height > 0
+      ? "Generate pinned at the Inspector's bottom edge" : "Inspector not shown, footer not measured";
   });
 
   await step("No errors after the last step", async () => {
