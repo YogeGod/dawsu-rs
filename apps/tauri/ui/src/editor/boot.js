@@ -22,7 +22,7 @@ import { attachModal } from "./modal.js";
 import { attachPanels } from "./panels.js";
 import { createState } from "./state.js";
 import { attachTimeline } from "./timeline.js";
-import { createQuasimodeController, toolKeyFor } from "../lib/quasimode.js";
+import { createQuasimodeController, toolDisplayKeyFor, toolKeyFor } from "../lib/quasimode.js";
 import { PREVIEW_SKIN_KEY, readPreviewSkin, timelineSkinSource } from "../lib/previewSkin.js";
 import { resolveVisibleTapRow, tapLaneSlotForKey } from "../lib/tapRecord.js";
 import { attachGlobalWheelGuard } from "../lib/wheelGuard.js";
@@ -88,7 +88,8 @@ const exportedMethods = [
   "editBookmark", "openTimeSignatures",
   "openFolders", "openAudioOutput", "openViewSettings", "openPreferences", "showHelp", "showShortcutEditor",
   "clampSnapInput", "popoverAction", "startScreenAction", "statusBarAction",
-  "setQuasimodeShortcuts", "notifyStrokeStart", "notifyStrokeEnd", "toolKey", "loadTimelineSkin",
+  "setQuasimodeShortcuts", "refreshShortcuts", "notifyStrokeStart", "notifyStrokeEnd", "toolKey", "toolDisplayKey",
+  "loadTimelineSkin",
   "startTelemetry", "parseTelemetryFrame",
 ];
 
@@ -228,7 +229,25 @@ export function createEditor(env = globalThis, { ui = null, autoStart = true, ex
   };
   ctx.notifyStrokeStart = () => quasimode.notifyStrokeStart();
   ctx.notifyStrokeEnd = () => quasimode.notifyStrokeEnd();
-  ctx.setQuasimodeShortcuts = (shortcuts) => quasimode.setShortcuts(shortcuts);
+  // The last editor_shortcuts answer, for the keys tooltips and the tour name.
+  let shownShortcuts = null;
+  let shortcutLoads = 0;
+  ctx.setQuasimodeShortcuts = (shortcuts) => {
+    if (!Array.isArray(shortcuts?.entries)) return;
+    quasimode.setShortcuts(shortcuts);
+    shownShortcuts = shortcuts;
+    ctx.ui()?.shortcutsChanged?.();
+  };
+  // Fetches the shortcuts again after the first view, a preset switch, a rebind or Import…; an
+  // answer a newer fetch overtook is not applied.
+  ctx.refreshShortcuts = async () => {
+    const load = ++shortcutLoads;
+    const res = await invoke("editor_shortcuts");
+    if (load === shortcutLoads) ctx.setQuasimodeShortcuts(res);
+    return res;
+  };
+  // The key tooltips and the tour name for `tool`, "4" (Erase) and chords included.
+  ctx.toolDisplayKey = tool => toolDisplayKeyFor(shownShortcuts, state.view?.keyPreset, tool);
   ctx.setQuasimodePreset = (preset) => quasimode.setPreset(preset);
 
   function clampSnapInput(value, fallback) {

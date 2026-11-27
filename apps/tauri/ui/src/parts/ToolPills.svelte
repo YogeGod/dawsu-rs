@@ -1,6 +1,7 @@
 <script>
   import { act, bridge } from "../lib/bridge.svelte.js";
   import { toolAction, toolPills } from "../lib/tools.js";
+  import { toolTitle } from "../lib/controls.js";
   import Select from "../icons/MousePointer2.svg?raw";
   import Draw from "../icons/Drumstick.svg?raw";
   import Erase from "../icons/Eraser.svg?raw";
@@ -64,7 +65,7 @@
 <div class="ui-well" role="toolbar" aria-label="Editing tools" bind:this={well}>
   {#each pills as name, index (name)}
     {#if index < 3}
-      <button type="button" class="ui-pill" aria-pressed={name === tool} title={`${name} (${index + 1})`} {disabled}
+      <button type="button" class="ui-pill" aria-pressed={name === tool} title={toolTitle(name, bridge.toolDisplayKey(name))} {disabled}
         bind:this={buttons[name]} onclick={() => pickTool(name)}>{@html icons[name]}{name}</button>
     {:else}
       <button data-more-tools type="button" class="ui-pill ui-pill-icon current" aria-haspopup="menu" aria-label={name} title={`${name}, More tools (4)`}

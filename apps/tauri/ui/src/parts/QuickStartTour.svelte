@@ -1,6 +1,6 @@
 <script>
   import { bridge } from "../lib/bridge.svelte.js";
-  import { STEPS, STEP_COUNT, backStep, clampStep, isLastStep, markDone, nextStep, shouldAutoOpen } from "../lib/quickStart.js";
+  import { STEP_COUNT, stepsFor, backStep, clampStep, isLastStep, markDone, nextStep, shouldAutoOpen } from "../lib/quickStart.js";
 
   const storage = () => { try { return globalThis.localStorage; } catch { return null; } };
 
@@ -15,7 +15,8 @@
   });
 
   const step = $derived(clampStep(bridge.quickStart));
-  const card = $derived(STEPS[step - 1]);
+  const steps = $derived(stepsFor({ drawKey: bridge.toolDisplayKey("Draw") }));
+  const card = $derived(steps[step - 1]);
   const last = $derived(isLastStep(step));
 
   function finish() {
@@ -35,7 +36,7 @@
     <div class="qs-head">
       <span class="qs-count">QUICK START · {step} OF {STEP_COUNT}</span>
       <span class="qs-pills" aria-hidden="true">
-        {#each STEPS as _, index (index)}
+        {#each steps as _, index (index)}
           <span class="qs-pill" class:on={index < step}></span>
         {/each}
       </span>

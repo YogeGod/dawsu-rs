@@ -123,7 +123,8 @@ test("dist/ui/ui.js boots the editor with menus.js on index.html and stays idle 
   runInContext(uiBundle, mainContext);
   mainContext.window.dawsuUi = mainContext.dawsuUi;
   await mainContext.pending;
-  assert.deepEqual(mainCalls, ["editor_view"]);
+  // The first view also fetches the shortcuts, so tool keys in tooltips match the preset.
+  assert.deepEqual(mainCalls, ["editor_view", "editor_shortcuts"]);
   assert.equal(typeof mainContext.dawsuUi?.bridge?.actions?.openEditorMenu, "function");
   assert.equal(typeof mainContext.dawsuUi?.bridge?.actions?.refreshEditorMenu, "function");
   assert.equal(typeof mainContext.dawsuUi?.bridge?.actions?.confirm, "function");

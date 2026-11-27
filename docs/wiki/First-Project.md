@@ -32,7 +32,7 @@ This walkthrough takes you through a complete hitsounding session in **dawsu!**,
 
 Every sample file in your mapset appears as a timeline lane grouped under `Normal set`, `Soft set`, and `Drum set`:
 
-- **Draw hits:** Pick **Draw** (`2` in DAW-like keys, or hold `Alt` while using **Select**) and click or drag across a lane to snap hits onto the grid or objects.
+- **Draw hits:** Pick **Draw** (`3` in DAW-like keys, `2` in osu! editor controls, or hold `Alt` while using **Select**) and click or drag across a lane to snap hits onto the grid or objects.
 - **Right-click / More tools (`▾`):** Switch among all seven tools — **Select**, **Draw**, **Erase**, **Mute**, **Grab**, **Range**, and **Ramp**.
 - **Step-sequencer Pads:** Toggle **Pads** in the bottom status bar for clickable beat-step pads right on each lane row.
 - **Tap hits live:** Press `Numpad 1–9` anytime to trigger visible lanes 1–9, or arm **Tap record (`A–L / Numpad 1–9`)** via **Playback** (or the round Record button in the transport bar) and tap along while playing — each take commits as a single `Ctrl+Z` Undo step.
