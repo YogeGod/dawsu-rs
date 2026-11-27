@@ -371,3 +371,5 @@ aside section > :last-child { margin-bottom:0; }
 .rhythm-preset-chip{height:26px;padding:0 10px;border:1px solid var(--border);border-radius:999px;background:var(--control);color:var(--text);font-size:12px;font-weight:500;cursor:pointer}
 .rhythm-preset-chip:hover{border-color:var(--accent);background:var(--hover)}
 .rhythm-preset-chip[aria-pressed="true"]{border-color:var(--accent);background:var(--accent-soft,rgba(74,214,207,.16));color:var(--accent)}
+#dialog-actions button.danger{background:var(--editor-error,#ff453a);border-color:var(--editor-error,#ff453a);color:#fff;font-weight:700}
+#dialog-actions button.danger:hover:not(:disabled){background:#e0352c;border-color:#e0352c;color:#fff}

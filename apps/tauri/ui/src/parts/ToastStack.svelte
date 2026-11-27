@@ -1,80 +1,179 @@
 <script>
-  import { onMount } from "svelte";
+  import { onMount, tick } from "svelte";
   import { bridge } from "../lib/bridge.svelte.js";
+  import { makeToast, pauseToast, pushToast as addToast, resumeToast } from "../lib/toasts.js";
 
   let toasts = $state([]);
   let nextId = 1;
+  let hovered = false;
+  let focused = false;
+  let stackEl = null;
+  let destroyed = false;
+  const timers = new Map();
+  const errors = $derived(toasts.filter(t => t.tone === "error"));
+  const others = $derived(toasts.filter(t => t.tone !== "error"));
+  const paused = () => hovered || focused;
+  const now = () => globalThis.performance?.now() ?? Date.now();
+
+  function clearTimer(id) {
+    clearTimeout(timers.get(id));
+    timers.delete(id);
+  }
+
+  function schedule(toast) {
+    clearTimer(toast.id);
+    if (toast.sticky || paused()) return;
+    timers.set(toast.id, setTimeout(() => dismiss(toast.id), toast.remainingMs));
+  }
 
   function dismiss(id) {
+    clearTimer(id);
     toasts = toasts.filter(t => t.id !== id);
+    // A focused button that is removed may never send focusout, and an empty stack stops
+    // taking the pointer, so a pointerleave may never come either.
+    setPaused(() => {
+      focused = false;
+      if (!toasts.length) hovered = false;
+    });
   }
 
   function pushToast(input) {
     const id = nextId++;
-    const item = {
-      id,
-      tone: input?.tone || "info",
-      title: input?.title || "Notice",
-      body: input?.body || "",
-      actions: input?.actions || [],
-      sticky: Boolean(input?.sticky || input?.actions?.length),
-    };
-    toasts = [item, ...toasts].slice(0, 3);
-    if (!item.sticky) {
-      setTimeout(() => dismiss(id), input?.durationMs ?? 5000);
+    let item = makeToast(input, id);
+    if (!paused()) item = resumeToast(item, now());
+    const prevIds = toasts.map(t => t.id);
+    toasts = addToast(toasts, item);
+    const evicted = prevIds.some(prevId => !toasts.some(t => t.id === prevId));
+    for (const key of [...timers.keys()]) if (!toasts.some(t => t.id === key)) clearTimer(key);
+    if (toasts.some(t => t.id === id)) schedule(item);
+    if (focused && evicted) {
+      tick().then(() => {
+        const active = globalThis.document?.activeElement;
+        if (!destroyed && focused && (!active || !stackEl?.contains(active))) {
+          setPaused(() => { focused = false; });
+        }
+      });
     }
     return id;
   }
 
+  function pause() {
+    const at = now();
+    for (const key of [...timers.keys()]) clearTimer(key);
+    toasts = toasts.map(t => pauseToast(t, at));
+  }
+
+  function resume() {
+    const at = now();
+    toasts = toasts.map(t => resumeToast(t, at));
+    for (const t of toasts) schedule(t);
+  }
+
+  function setPaused(update) {
+    const was = paused();
+    update();
+    if (was !== paused()) (paused() ? pause : resume)();
+  }
+
+  const onPointerEnter = () => setPaused(() => { hovered = true; });
+  const onPointerLeave = () => setPaused(() => { hovered = false; });
+  const onFocusIn = () => setPaused(() => { focused = true; });
+  function onFocusOut(event) {
+    if (event.currentTarget.contains(event.relatedTarget)) return;
+    setPaused(() => { focused = false; });
+  }
+
   onMount(() => {
+    destroyed = false;
     const disposeToast = bridge.registerToast(pushToast);
     const events = globalThis.window?.__TAURI__?.event;
+    let unlisten = null;
     if (events?.listen) {
-      events.listen("toast://show", ({ payload }) => pushToast(payload)).catch(() => {});
+      Promise.resolve(events.listen("toast://show", ({ payload }) => {
+        if (!destroyed) pushToast(payload);
+      }))
+        .then((stop) => {
+          if (destroyed) stop?.();
+          else unlisten = stop;
+        })
+        .catch(() => {});
     }
-    return disposeToast;
+    return () => {
+      destroyed = true;
+      disposeToast();
+      unlisten?.();
+      for (const key of [...timers.keys()]) clearTimer(key);
+    };
   });
 </script>
 
-{#if toasts.length}
-  <div class="toast-stack" role="region" aria-label="Notifications">
-    {#each toasts as t (t.id)}
-      <div class="toast-card" data-tone={t.tone}>
-        <div class="toast-bar" aria-hidden="true"></div>
-        <div class="toast-content">
-          <div class="toast-head">
-            <span class="toast-title">{t.title}</span>
-            <button type="button" class="toast-dismiss" aria-label="Dismiss" onclick={() => dismiss(t.id)}>×</button>
-          </div>
-          {#if t.body}
-            <p class="toast-body">{t.body}</p>
-          {/if}
-          {#if t.actions.length}
-            <div class="toast-actions">
-              {#each t.actions as act (act.label)}
-                <button type="button" class:primary={act.primary} onclick={() => { act.onClick?.(); dismiss(t.id); }}>
-                  {act.label}
-                </button>
-              {/each}
-            </div>
-          {/if}
-        </div>
+{#snippet card(t)}
+  <div class="toast-card" data-tone={t.tone}>
+    <div class="toast-bar" aria-hidden="true"></div>
+    <div class="toast-content">
+      <div class="toast-head">
+        <span class="toast-title">{t.title}</span>
+        <button type="button" class="toast-dismiss" aria-label="Dismiss" onclick={() => dismiss(t.id)}>×</button>
       </div>
-    {/each}
+      {#if t.body}
+        <p class="toast-body">{t.body}</p>
+      {/if}
+      {#if t.actions.length}
+        <div class="toast-actions">
+          {#each t.actions as act (act.label)}
+            <button type="button" class:primary={act.primary} onclick={() => { act.onClick?.(); dismiss(t.id); }}>
+              {act.label}
+            </button>
+          {/each}
+        </div>
+      {/if}
+    </div>
   </div>
-{/if}
+{/snippet}
+
+<div
+  bind:this={stackEl}
+  class="toast-stack"
+  class:has-toasts={toasts.length > 0}
+  role="region"
+  aria-label="Notifications"
+  onpointerenter={onPointerEnter}
+  onpointerleave={onPointerLeave}
+  onfocusin={onFocusIn}
+  onfocusout={onFocusOut}
+>
+  <div class="toast-group" role="alert">
+    {#each errors as t (t.id)}{@render card(t)}{/each}
+  </div>
+  <div class="toast-group" class:spaced={errors.length > 0 && others.length > 0} role="status" aria-live="polite">
+    {#each others as t (t.id)}{@render card(t)}{/each}
+  </div>
+</div>
 
 <style>
   .toast-stack {
     position: fixed;
     right: 16px;
     bottom: 46px;
-    z-index: 55;
+    z-index: var(--z-toast);
+    display: flex;
+    flex-direction: column;
+    width: min(380px, calc(100vw - 32px));
+    max-height: calc(100vh - 92px);
+    overflow-y: auto;
+    pointer-events: none;
+  }
+  /* Only a stack with cards takes the pointer, so its scrollbar and the gaps between cards stay live. */
+  .toast-stack.has-toasts {
+    pointer-events: auto;
+  }
+  .toast-group {
     display: flex;
     flex-direction: column;
     gap: 10px;
-    width: min(380px, calc(100vw - 32px));
-    pointer-events: none;
+  }
+  .toast-group.spaced {
+    margin-top: 10px;
   }
   .toast-card {
     display: flex;
@@ -85,7 +184,6 @@
     background: linear-gradient(180deg, #1e1e21 0%, #151517 100%);
     color: var(--editor-text);
     box-shadow: 0 14px 36px rgba(0, 0, 0, 0.52);
-    pointer-events: auto;
   }
   .toast-bar {
     width: 3px;

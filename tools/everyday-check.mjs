@@ -785,6 +785,33 @@ try {
     await dialogClosed();
   });
 
+  await step("An error toast stays above an open modal", async () => {
+    await fromMenu("File", "Preferences…");
+    const preferences = page().getByRole("dialog", { name: "Preferences" });
+    await preferences.waitFor({ state: "visible", timeout: 6000 });
+    const title = "everyday-check error toast";
+    await read(title => window.dawsuUi.bridge.showToast({ tone: "error", title, body: "Raised while Preferences is open." }), title);
+    // Visible: the card itself is what the page shows at its centre point.
+    const onTop = () => read(title => {
+      const card = Array.from(document.querySelectorAll(".toast-card")).find(card => card.textContent.includes(title));
+      if (!card) return "missing";
+      const box = card.getBoundingClientRect();
+      const top = document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2);
+      return card === top || card.contains(top) ? "visible" : `covered by ${top?.className || top?.tagName}`;
+    }, title);
+    let seen = "missing";
+    for (const end = Date.now() + 4000; Date.now() < end && seen !== "visible"; await sleep(100)) seen = await onTop();
+    expect(seen === "visible", `the error toast is not on top of Preferences: ${seen}`);
+    await sleep(6000);
+    seen = await onTop();
+    expect(seen === "visible", `the error toast did not stay 6 s above Preferences: ${seen}`);
+    await page().locator(".toast-card", { hasText: title }).getByRole("button", { name: "Dismiss" }).click();
+    await until(title => !Array.from(document.querySelectorAll(".toast-card")).some(card => card.textContent.includes(title)),
+      title, "Dismiss did not remove the error toast", 4000);
+    await page().getByRole("button", { name: "Close preferences" }).click();
+    await preferences.waitFor({ state: "hidden", timeout: 4000 });
+  });
+
   await step("Open and close Folders…", async () => {
     await fromMenu("File", "Folders…");
     await dialogShown("Folders");

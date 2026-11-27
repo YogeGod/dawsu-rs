@@ -163,8 +163,9 @@
     open = false;
   }
 
+  // A confirm opened above this modal takes the Escape for itself.
   function onKeydown(event) {
-    if (open && event.key === "Escape") {
+    if (open && event.key === "Escape" && bridge.onlyModalOpen("stem-separation")) {
       event.stopPropagation();
       closeModal();
     }

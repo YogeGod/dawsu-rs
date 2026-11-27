@@ -126,6 +126,7 @@ test("dist/ui/ui.js boots the editor with menus.js on index.html and stays idle 
   assert.deepEqual(mainCalls, ["editor_view"]);
   assert.equal(typeof mainContext.dawsuUi?.bridge?.actions?.openEditorMenu, "function");
   assert.equal(typeof mainContext.dawsuUi?.bridge?.actions?.refreshEditorMenu, "function");
+  assert.equal(typeof mainContext.dawsuUi?.bridge?.actions?.confirm, "function");
   assert.equal(typeof mainContext.act, "function");
   assert.equal(mainContext.renderLanes, undefined);
   assert.equal(mainContext.lanePositions, undefined);

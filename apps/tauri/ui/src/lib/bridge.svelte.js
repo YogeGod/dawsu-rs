@@ -1,6 +1,6 @@
 import {
   actions, modals, registerAction, callAction, registerModal, openModal,
-  setModalOpen, hasOpenModal, setShortcutCapturing, isShortcutCapturing,
+  setModalOpen, hasOpenModal, onlyModalOpen, setShortcutCapturing, isShortcutCapturing,
   registerToast, showToast, registerPaletteMenu, getPaletteMenu,
 } from "./registry.js";
 import { flushSync } from "svelte";
@@ -284,6 +284,7 @@ export class Bridge {
   openModal = openModal;
   setModalOpen = setModalOpen;
   hasOpenModal = hasOpenModal;
+  onlyModalOpen = onlyModalOpen;
   setShortcutCapturing = setShortcutCapturing;
   isShortcutCapturing = isShortcutCapturing;
   registerToast = registerToast;

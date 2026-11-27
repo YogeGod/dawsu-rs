@@ -79,7 +79,7 @@ const exportedMethods = [
   "locatorPreview", "locatorDragTo", "endRulerDrag", "drainOverviewNavigation",
   "panOverview", "timelineStart", "followPlayhead", "queueFollow", "resizeLaneHeaders",
   "refreshLaneToolbar", "changeView", "stepWheelSnap", "fitTimeline",
-  "modal", "closeModal", "showOutputProblem", "renderDialogs",
+  "modal", "closeModal", "confirm", "showOutputProblem", "renderDialogs",
   "openMergeSettings", "openGenerate", "openNewDifficulty", "openCopy",
   "openLaneColour", "openReplaceSample", "openMap", "openMapFolder", "openMapFolderPath",
   "createAndOpenHitsoundDiff", "pickAndCreateHitsoundDiff", "openFromOsu", "pickDrumStem", "goHome", "confirmRevertToOriginal", "undoMapsetRevert",

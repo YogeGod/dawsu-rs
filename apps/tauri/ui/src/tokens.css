@@ -51,6 +51,8 @@
   --shadow-tip: 0 8px 24px rgba(0,0,0,.5);
   --dock-width: 246px; --rail-width: 44px;
   --topbar-h: 52px; --toolbar-h: 43px; --statusbar-h: 32px;
+  /* Toasts sit above the command palette (950). */
+  --z-toast: 1000;
 }
 
 /* v3 ------------------------------------------------------------------ */

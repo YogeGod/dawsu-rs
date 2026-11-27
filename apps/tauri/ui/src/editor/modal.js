@@ -1,7 +1,7 @@
 // Shared modal dialog frame and backend-driven dialogs (Save review, Save problems,
 // Output review, Pending open/home, Revert, Key preset, Error, Sound-set prompts).
 import { describeOutputProblem, nameOf, outputProblemTime } from "./helpers.js";
-import { callAction } from "../lib/registry.js";
+import { callAction, setModalOpen } from "../lib/registry.js";
 import { reviewMixSections } from "../lib/review.js";
 
 export function attachModal(ctx) {
@@ -9,25 +9,51 @@ export function attachModal(ctx) {
   const { $, makeButton, paragraph } = dom;
   const { dialog, grid } = elements;
 
+  // Resolver of the open confirm(); every way the dialog closes or changes kind answers it.
+  let pendingConfirm = null;
+
+  function settleConfirm(answer) {
+    const resolve = pendingConfirm;
+    if (!resolve) return;
+    pendingConfirm = null;
+    setModalOpen("confirm", false);
+    resolve(answer);
+  }
+
   function modal(kind, title, content, buttons, cancel = null) {
-    if (state.modalKind === kind && dialog.open) return;
+    if (kind !== "confirm" && state.modalKind === kind && dialog.open) return;
+    settleConfirm(false);
     state.modalKind = kind;
     state.modalClose = cancel;
     dialog.className = "dialog-" + kind;
     $("dialog-title").textContent = title;
     $("dialog-body").replaceChildren(...content);
-    $("dialog-actions").replaceChildren(...buttons.map(([label, task, primary]) => {
+    $("dialog-actions").replaceChildren(...buttons.map(([label, task, primary, danger]) => {
       const button = makeButton(label, task);
       if (primary) button.className = "primary";
+      if (danger) button.classList.add("danger");
       return button;
     }));
     if (!dialog.open) dialog.showModal();
   }
 
   function closeModal() {
+    settleConfirm(false);
     state.modalKind = "";
     state.modalClose = null;
     dialog.close();
+  }
+
+  // Asks a yes/no question in the top-layer dialog, above every Svelte modal.
+  function confirm({ title = "Are you sure?", body = "", confirmLabel = "OK", danger = false } = {}) {
+    return new Promise((resolve) => {
+      modal("confirm", title, body ? [paragraph(body)] : [], [
+        ["Cancel", () => closeModal()],
+        [confirmLabel, () => { settleConfirm(true); closeModal(); }, true, danger],
+      ], () => closeModal());
+      pendingConfirm = resolve;
+      setModalOpen("confirm", true);
+    });
   }
 
   async function showOutputProblem(index) {
@@ -190,7 +216,25 @@ export function attachModal(ctx) {
       if (state.modalClose) state.modalClose();
       else ctx.closeModal();
     });
+    // Backdrop clicks land on the dialog itself but outside its box; padding clicks are inside it.
+    dialog.addEventListener("click", (event) => {
+      if (state.modalKind !== "confirm" || event.target !== dialog) return;
+      const box = dialog.getBoundingClientRect();
+      const outside = event.clientX < box.left || event.clientX > box.right ||
+        event.clientY < box.top || event.clientY > box.bottom;
+      if (outside) ctx.closeModal();
+    });
+    // Settle confirm if the browser closes <dialog> natively without going through closeModal().
+    // Guard on !dialog.open because HTML <dialog> dispatches "close" asynchronously.
+    dialog.addEventListener("close", () => {
+      if (dialog.open) return;
+      settleConfirm(false);
+      if (state.modalKind === "confirm") {
+        state.modalKind = "";
+        state.modalClose = null;
+      }
+    });
   }
 
-  Object.assign(ctx, { modal, closeModal, showOutputProblem, renderDialogs, bindModal });
+  Object.assign(ctx, { modal, closeModal, confirm, showOutputProblem, renderDialogs, bindModal });
 }
