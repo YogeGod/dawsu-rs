@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   RAMP_BEND_STEP, chordMarkTitle, chordMarks, drawChordMarks, hitTest, maxScrollY, noteIndex, noteRect, paintRoll,
-  paintVelocity, pointAt, rampBend, rampCurve, rollWheelAction, velocityColour, visibleNotes, visibleRows,
+  paintVelocity, pointAt, rampBend, rampCurve, rampMove, rollWheelAction, velocityColour, visibleNotes, visibleRows,
 } from "../src/lib/rollPaint.js";
 
 test("the roll takes only the plain wheel and Ctrl+Shift+wheel; every other turn is the editor's", () => {
@@ -239,4 +239,15 @@ test("an empty track shows one hint line in the roll, and only while it has no n
   assert.equal(hint({ notes: [note(0, 0, 100)] }), null);
   assert.equal(hint({ notes: [], loading: true }), null);
   assert.equal(hint({ notes: [], trackId: null }), null);
+});
+
+test("a wheel bend survives pointer moves while Alt or Ctrl stays held; pressing a key mid-drag sets its shape", () => {
+  const keys = (altKey, ctrlKey) => ({ altKey, ctrlKey });
+  // Shift+Alt press: ease in, then the wheel bends it to 1.25.
+  let ramp = { curve: rampCurve(keys(true, false)), keys: 1 };
+  ramp = { ...ramp, curve: rampBend(ramp.curve, 120) };
+  assert.deepEqual(rampMove(ramp, keys(true, false)), { curve: 1.25, keys: 1 }, "Alt still held: the bend stays");
+  assert.deepEqual(rampMove(ramp, keys(false, false)), { curve: 1.25, keys: 0 }, "Alt let go: the bend stays");
+  assert.deepEqual(rampMove({ curve: 1.25, keys: 0 }, keys(false, true)), { curve: -1, keys: -1 }, "Ctrl pressed: ease out");
+  assert.deepEqual(rampMove({ curve: 0.5, keys: 0 }, keys(false, false)), { curve: 0.5, keys: 0 }, "no key: the bend stays");
 });

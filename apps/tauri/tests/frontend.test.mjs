@@ -686,8 +686,8 @@ test("Keysounds mode hands every track's chord conflicts and the track's name to
 test("Keysounds mode's Shift+drag ramp takes its shape from the keys and the wheel, not the shape menu", async () => {
   const lane = await readFile(new URL("../ui/src/parts/keysounds/KeysoundVelocitySurface.svelte", import.meta.url), "utf8");
   // The press starts from the keys held (linear, Alt +1, Ctrl −1), a move keeps or changes it, the wheel bends it.
-  assert.match(lane, /if \(event\.shiftKey\) \{[^}]*ramp = \{[^}]*curve: rampCurve\(event\) \};/);
-  assert.match(lane, /ramp = \{[^}]*curve: rampCurve\(event, ramp\.curve\),[^}]*\};/);
+  assert.match(lane, /if \(event\.shiftKey\) \{[^}]*ramp = \{[^}]*curve: rampCurve\(event\), keys: rampCurve\(event\) \};/);
+  assert.match(lane, /ramp = \{[^}]*\.\.\.rampMove\(ramp, event\),[^}]*\};/);
   assert.match(lane, /function onWheel\(event\) \{[^]*?ramp = \{ \.\.\.ramp, curve: rampBend\(ramp\.curve, event\.deltaY \|\| event\.deltaX\) \};/);
   // What is drawn is what is sent.
   assert.match(lane, /bridge\.callAction\("keysoundsRoll", "ramp", drawn\)/);

@@ -67,6 +67,13 @@ function noteState(note) {
 // keeps `fallback` (0 at the press, so plain Shift+drag is linear).
 export const rampCurve = (event, fallback = 0) => (event.altKey ? 1 : event.ctrlKey ? -1 : fallback);
 
+// A pointer move during a ramp: only pressing Alt or Ctrl changes the shape, so a wheel bend made
+// while a key is held survives the moves after it. `keys` is the shape the keys gave last.
+export function rampMove(ramp, event) {
+  const keys = rampCurve(event);
+  return { curve: keys !== ramp.keys && keys !== 0 ? keys : ramp.curve, keys };
+}
+
 // A wheel turn while a ramp is drawn bends it one step, down for a turn towards the user. A turn
 // with no step (0) leaves it alone.
 export const rampBend = (curve, delta) => !delta ? curve

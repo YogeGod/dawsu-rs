@@ -1,14 +1,14 @@
 <script>
   import { bridge } from "../../lib/bridge.svelte.js";
   import { velocityAtY } from "../../lib/midi.js";
-  import { rampBend, rampCurve, visibleNotes } from "../../lib/rollPaint.js";
+  import { rampBend, rampCurve, rampMove, visibleNotes } from "../../lib/rollPaint.js";
 
   // Keysounds mode's velocity lane, in the bottom panel where the hit volume lane is. The bars are
   // painted by the editor's paint() onto the volume canvas (#controller); this part sits over that
   // canvas, so in Keysounds mode no pointer event reaches the hit volume handlers.
   // A press on a bar drags that note's velocity; Shift+drag draws a ramp (Alt or Ctrl bends it).
   let velocityDrag = null; // { index, velocity }
-  let ramp = null; // { startMs, endMs, startVel, endVel, curve }
+  let ramp = null; // { startMs, endMs, startVel, endVel, curve, keys }
   const BAR_REACH_PX = 6;
 
   const uiScale = () => (Number(document.documentElement.dataset.uiScale) || 100) / 100;
@@ -55,7 +55,7 @@
     if (event.shiftKey) {
       const ms = Math.max(0, view().start + x / view().zoom);
       const velocity = velocityAtY(y, height);
-      ramp = { startMs: ms, endMs: ms, startVel: velocity, endVel: velocity, curve: rampCurve(event) };
+      ramp = { startMs: ms, endMs: ms, startVel: velocity, endVel: velocity, curve: rampCurve(event), keys: rampCurve(event) };
     } else {
       const note = barAt(x);
       if (!note) return;
@@ -75,7 +75,7 @@
         ...ramp,
         endMs: Math.max(0, view().start + x / view().zoom),
         endVel: velocityAtY(y, height),
-        curve: rampCurve(event, ramp.curve),
+        ...rampMove(ramp, event),
       };
     }
     show();
