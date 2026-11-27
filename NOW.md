@@ -23,4 +23,4 @@
 ## Rules
 
 - **Single source of truth for sprint tasks:** `E:/Obsidian/Workspace/dawsu-rewrite/now.md`. Mirror changes there, not in competing lists.
-- **Real-app check:** run `node tools/verify-handoff.mjs --auto --with-everyday` (builds `target/debug/dawsu-tauri.exe` per `AGENTS.md`, checks UI/JS + `everyday-check.mjs`, skips local Clippy/`cargo test --workspace` on UI-only diffs since CI runs them on PR) before merging.
+- **Real-app check:** run `node tools/verify-handoff.mjs --auto --with-everyday` (builds `target/debug/dawsu-tauri.exe` per `AGENTS.md`, checks UI/JS + `everyday-check.mjs`, skips local Clippy/`cargo test --workspace` when no Rust inputs changed; run full Clippy + `cargo test` locally on any Rust/Cargo/config change because GitHub Windows checks are currently disabled) before merging.

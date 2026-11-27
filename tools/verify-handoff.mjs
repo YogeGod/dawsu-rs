@@ -282,7 +282,7 @@ function main() {
     const changedPaths = [...new Set([...committedFiles, ...dirtyPaths])];
     if (!changedPaths.some(isRustAffectingPath)) {
       skipRustChecks = true;
-      skipReason = "UI-only diff; GitHub Actions runs full Rust gate on PR";
+      skipReason = "no Rust/Cargo/Tauri-config files changed vs base";
     }
   }
 

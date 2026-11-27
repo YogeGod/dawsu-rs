@@ -18,7 +18,7 @@ Run from the Rust checkout root with the toolchain in `rust-toolchain.toml`. Use
 
 Run `node tools/verify-handoff.mjs --auto` (add `--with-everyday` on screen, UI, IPC, or workflow changes; `--nextest` uses `cargo-nextest`).
 
-- **UI-only fast-path:** When committed + working-tree diff touches zero `*.rs`, `Cargo.*`, `rust-toolchain.toml`, `apps/tauri/capabilities/*`, `apps/tauri/tauri.conf.json`, or `apps/tauri/icons/*`, skip local Clippy and `cargo test --workspace` (`.github/workflows/windows-checks.yml` runs full Rust gate on PR). UI build, UI unit tests, frontend integration tests, `cargo build -p dawsu-tauri --locked`, and `everyday-check.mjs` stay required.
+- **UI-only fast-path:** When committed + working-tree diff touches zero `*.rs`, `Cargo.*`, `rust-toolchain.toml`, `apps/tauri/capabilities/*`, `apps/tauri/tauri.conf.json`, or `apps/tauri/icons/*`, skip local Clippy and `cargo test --workspace` (no Rust inputs changed vs `origin/main`; `cargo build -p dawsu-tauri --locked` still compiles the binary). `.github/workflows/windows-checks.yml` is currently disabled on GitHub, so local Clippy and `cargo test --workspace` are mandatory whenever Rust, Cargo, capabilities, or config files change. UI build, UI unit tests, frontend integration tests, `cargo build -p dawsu-tauri --locked`, and `everyday-check.mjs` stay required.
 - **Single gate owner:** Implementer runs targeted tests during TDD plus the full gate once before handoff; `/ready-review` runs only touched tests unless editing code; orchestrator skips re-running an unchanged green gate.
 
 Individual commands (what `verify-handoff.mjs` wraps):

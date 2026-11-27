@@ -20,7 +20,7 @@ Rules for coding agents in this repo. Keep edits cross-platform (Windows, macOS,
 Run relevant checks while iterating, and handoff gate before PR/merge:
 
 - **One-command verifier:** `node tools/verify-handoff.mjs --auto` (add `--with-everyday` on screen/UI/IPC/workflow changes; `--nextest` uses `cargo-nextest`).
-- **UI-only fast-path:** when committed + working-tree diff touches zero `*.rs`, `Cargo.*`, `rust-toolchain.toml`, `apps/tauri/capabilities/*`, `apps/tauri/tauri.conf.json`, or `apps/tauri/icons/*`, skip local Clippy + `cargo test --workspace` (`.github/workflows/windows-checks.yml` runs full Rust gate on PR); UI build, UI unit tests, frontend integration tests, `cargo build -p dawsu-tauri --locked`, and `everyday-check.mjs` stay required.
+- **UI-only fast-path:** when committed + working-tree diff touches zero `*.rs`, `Cargo.*`, `rust-toolchain.toml`, `apps/tauri/capabilities/*`, `apps/tauri/tauri.conf.json`, or `apps/tauri/icons/*`, skip local Clippy + `cargo test --workspace` (no Rust inputs changed vs `origin/main`; `cargo build -p dawsu-tauri --locked` still compiles the binary); UI build, UI unit tests, frontend integration tests, `cargo build -p dawsu-tauri --locked`, and `everyday-check.mjs` stay required.
 - **Single gate owner:** implementer runs targeted tests during TDD + full gate once before handoff; `/ready-review` runs only touched tests unless editing code; orchestrator skips re-running an unchanged green gate.
 - **Rust Clippy (CI gate):** `cargo clippy --workspace --all-targets --locked -- -D warnings`
 - **Rust workspace:** `cargo test --workspace --locked`
@@ -29,7 +29,7 @@ Run relevant checks while iterating, and handoff gate before PR/merge:
 - **osu!lazer oracle** (when changing format/timing/hitsound rules or fixtures):
   `dotnet run -c Release --project tools/lazer-oracle -- tests/fixtures/lazer-oracle tests/fixtures/save-pack tests/fixtures/oracle-cases`
 
-GitHub runs first three on Windows for every PR changing more than `.md` files, and on `main` after each merge (`.github/workflows/windows-checks.yml`); run oracle yourself when it applies.
+`.github/workflows/windows-checks.yml` is currently disabled manually on GitHub, so run local Clippy + `cargo test --workspace` on every Rust/Cargo/capabilities/config change (and oracle when it applies).
 
 **Everyday check (Windows, against the built editor):** after screen change, build editor (`cargo build -p dawsu-tauri --locked`) and run `node tools/everyday-check.mjs --exe target/debug/dawsu-tauri.exe`. Opens real `dawsu-tauri.exe` on copy of fixture map, uses it like mapper ~1 min: menus, tools, snap, placing, moving and deleting hit, undo/redo, panels, dialogs and windows, Save, then checks files on disk. Verifies exe mtime against latest code commit (`crates`, `apps/tauri`, `Cargo.*`, `rust-toolchain.toml`) and `build-stamp.json`, writes temp artifacts to `target/everyday-check/` (remove when done), prints one `PASS`, `FAIL` or `SKIP` line per step, exits 1 on failed step. JS tests above run against fake page; this one catches screen that no longer starts or responds. Failing step showing app is wrong stays failing: fix app, not step.
 
