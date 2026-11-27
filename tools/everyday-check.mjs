@@ -903,6 +903,46 @@ try {
     });
   }
 
+  // The Song · objects row is skinned with the skin picked for the map preview (here a test skin
+  // whose overlay is a solid magenta disk); Argon keeps it as it was.
+  await step("The objects row draws the osu! skin picked for the map preview", async () => {
+    const pick = id => read(async id => {
+      try { localStorage.setItem("dawsu.previewSkin", id); } catch {}
+      await window.dawsuUi.bridge.callAction("loadTimelineSkin", id);
+      return true;
+    }, id);
+    const circle = await read(() => window.scene.gameplay?.points?.find(point => point[0] === "circle")?.[1] ?? null);
+    expect(circle !== null, "the map has no circle on the objects row");
+    await read(time => window.act({ kind: "view", start: Math.max(0, time - 300), zoom: window.scene.zoom,
+      row_height: window.scene.rowHeight }), circle);
+    // Beside the circle's middle, clear of its combo number.
+    const pixel = () => read(time => {
+      const canvas = document.getElementById("ruler");
+      const scale = canvas.width / canvas.clientWidth;
+      const x = (time - window.scene.viewStart) * window.scene.zoom + 10;
+      const y = (canvas.clientHeight + 40) / 2;
+      const [r, g, b] = canvas.getContext("2d").getImageData(Math.round(x * scale), Math.round(y * scale), 1, 1).data;
+      return { r, g, b };
+    }, circle);
+    const magenta = ({ r, g, b }) => r > 200 && g < 80 && b > 200;
+    // A copy, as with the map: the fixture folder stays read-only.
+    const skinCopy = join(profile, "skins", "flat-test");
+    cpSync(join(repo, "tests", "fixtures", "skins", "flat-test"), skinCopy, { recursive: true });
+    await pick(`dir:${skinCopy}`);
+    let seen = await pixel();
+    for (let i = 0; i < 20 && !magenta(seen); i++) {
+      await sleep(100);
+      seen = await pixel();
+    }
+    expect(magenta(seen), `the objects row did not draw the picked skin: ${JSON.stringify(seen)}`);
+    await pick("argon");
+    for (let i = 0; i < 20 && magenta(seen); i++) {
+      await sleep(100);
+      seen = await pixel();
+    }
+    expect(!magenta(seen), `picking Argon left the test skin on the objects row: ${JSON.stringify(seen)}`);
+  });
+
   await step("Save, through the save review", async () => {
     expect(await read(() => window.view.dirty), "the editor does not show unsaved changes");
     await page().click("#save");

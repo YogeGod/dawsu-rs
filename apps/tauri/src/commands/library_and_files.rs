@@ -371,11 +371,6 @@ pub(crate) fn map_preview_objects(map: PathBuf, state: State<'_, Editor>) -> Res
 
 
 #[tauri::command]
-pub(crate) fn skin_textures() -> Value {
-    skin_textures::load_skin_textures_json()
-}
-
-#[tauri::command]
 pub(crate) fn preview_skins(state: State<'_, Editor>) -> Result<Value, String> {
     let songs = ask(&state, Request::SongsDirectory)?;
     Ok(skin_textures::list_available_skins(songs.as_deref()))

@@ -22,6 +22,7 @@ import { attachPanels } from "./panels.js";
 import { createState } from "./state.js";
 import { attachTimeline } from "./timeline.js";
 import { createQuasimodeController, toolKeyFor } from "../lib/quasimode.js";
+import { PREVIEW_SKIN_KEY, readPreviewSkin, timelineSkinSource } from "../lib/previewSkin.js";
 import { resolveVisibleTapRow, tapLaneSlotForKey } from "../lib/tapRecord.js";
 import { attachGlobalWheelGuard } from "../lib/wheelGuard.js";
 
@@ -86,7 +87,7 @@ const exportedMethods = [
   "editBookmark", "openTimeSignatures",
   "openFolders", "openAudioOutput", "openViewSettings", "openPreferences", "showHelp", "showShortcutEditor",
   "clampSnapInput", "popoverAction", "startScreenAction", "statusBarAction",
-  "setQuasimodeShortcuts", "notifyStrokeStart", "notifyStrokeEnd", "toolKey",
+  "setQuasimodeShortcuts", "notifyStrokeStart", "notifyStrokeEnd", "toolKey", "loadTimelineSkin",
   "startTelemetry", "parseTelemetryFrame",
 ];
 
@@ -159,6 +160,71 @@ export function createEditor(env = globalThis, { ui = null, autoStart = true, ex
   });
   // The key that picks `tool` in the current preset and shortcuts, for hints that name it.
   ctx.toolKey = tool => toolKeyFor(quasimode.getKeyMap(), tool);
+  // Decodes a skin payload from preview_skin_load into the images the objects row draws, or null
+  // when its hitcircle or overlay will not load.
+  async function decodeSkinTextures(payload, ImageCtor) {
+    if (!payload?.hitcircle || !payload?.overlay) return null;
+    const loadImg = (src) => new Promise((resolve) => {
+      if (!src) { resolve(null); return; }
+      const img = new ImageCtor();
+      img.onload = () => resolve(img);
+      img.onerror = () => resolve(null);
+      img.src = src;
+    });
+    const [hitcircle, overlay, reverseArrow, digits] = await Promise.all([
+      loadImg(payload.hitcircle),
+      loadImg(payload.overlay),
+      loadImg(payload.reverseArrow),
+      Promise.all((payload.digits ?? []).map(loadImg)),
+    ]);
+    if (!hitcircle || !overlay) return null;
+    let circleFill = typeof payload.circleFill === "number" && payload.circleFill > 0 ? payload.circleFill : 0.92;
+    try {
+      const probe = env.document.createElement("canvas");
+      const w = hitcircle.naturalWidth || hitcircle.width;
+      const h = hitcircle.naturalHeight || hitcircle.height;
+      if (w > 0 && h > 0) {
+        probe.width = w;
+        probe.height = h;
+        const pctx = probe.getContext("2d");
+        if (pctx?.getImageData) {
+          pctx.drawImage(hitcircle, 0, 0);
+          const row = pctx.getImageData(0, Math.floor(h / 2), w, 1).data;
+          let first = -1, last = -1;
+          for (let x = 0; x < w; x++) {
+            if (row[x * 4 + 3] > 128) {
+              if (first < 0) first = x;
+              last = x;
+            }
+          }
+          if (first >= 0) circleFill = (last - first + 1) / w;
+        }
+      }
+    } catch {
+      // Keep default circleFill when canvas pixel readback is unavailable.
+    }
+    return { ready: true, hitcircle, overlay, reverseArrow, digits, circleFill, tinted: new Map() };
+  }
+
+  // Skins the objects row with the map preview's pick (lib/previewSkin.js): a skin folder as
+  // picked, lazer Classic for anything else or when the folder will not load, plain circles when
+  // neither does. A load that a newer pick overtook is dropped.
+  let skinLoads = 0;
+  ctx.loadTimelineSkin = async (skinId) => {
+    const ImageCtor = env.Image ?? env.window?.Image;
+    if (typeof ImageCtor !== "function") return null;
+    const load = ++skinLoads;
+    const fetchSkin = (source) => invoke("preview_skin_load", { skinId: source })
+      .then(payload => decodeSkinTextures(payload, ImageCtor))
+      .catch(() => null);
+    const source = timelineSkinSource(skinId);
+    let skin = await fetchSkin(source);
+    if (!skin && source !== "classic" && load === skinLoads) skin = await fetchSkin("classic");
+    if (load !== skinLoads) return null;
+    state.skinTextures = skin;
+    ctx.paintSoon();
+    return skin;
+  };
   ctx.notifyStrokeStart = () => quasimode.notifyStrokeStart();
   ctx.notifyStrokeEnd = () => quasimode.notifyStrokeEnd();
   ctx.setQuasimodeShortcuts = (shortcuts) => quasimode.setShortcuts(shortcuts);
@@ -692,62 +758,12 @@ export function createEditor(env = globalThis, { ui = null, autoStart = true, ex
     ctx.act(null).then(() => {
       ctx.startTelemetry?.();
     });
-    const ImageCtor = env.Image ?? env.window?.Image;
-    if (typeof ImageCtor === "function") {
-      invoke("skin_textures").then((payload) => {
-        if (!payload?.hitcircle || !payload?.overlay) return;
-        const loadImg = (src) => new Promise((resolve) => {
-          if (!src) { resolve(null); return; }
-          const img = new ImageCtor();
-          img.onload = () => resolve(img);
-          img.onerror = () => resolve(null);
-          img.src = src;
-        });
-        Promise.all([
-          loadImg(payload.hitcircle),
-          loadImg(payload.overlay),
-          loadImg(payload.reverseArrow),
-          Promise.all((payload.digits ?? []).map(loadImg)),
-        ]).then(([hitcircle, overlay, reverseArrow, digits]) => {
-          if (!hitcircle || !overlay) return;
-          let circleFill = typeof payload.circleFill === "number" && payload.circleFill > 0 ? payload.circleFill : 0.92;
-          try {
-            const probe = env.document.createElement("canvas");
-            const w = hitcircle.naturalWidth || hitcircle.width;
-            const h = hitcircle.naturalHeight || hitcircle.height;
-            if (w > 0 && h > 0) {
-              probe.width = w;
-              probe.height = h;
-              const pctx = probe.getContext("2d");
-              if (pctx?.getImageData) {
-                pctx.drawImage(hitcircle, 0, 0);
-                const row = pctx.getImageData(0, Math.floor(h / 2), w, 1).data;
-                let first = -1, last = -1;
-                for (let x = 0; x < w; x++) {
-                  if (row[x * 4 + 3] > 128) {
-                    if (first < 0) first = x;
-                    last = x;
-                  }
-                }
-                if (first >= 0) circleFill = (last - first + 1) / w;
-              }
-            }
-          } catch {
-            // Keep default circleFill when canvas pixel readback is unavailable.
-          }
-          state.skinTextures = {
-            ready: true,
-            hitcircle,
-            overlay,
-            reverseArrow,
-            digits,
-            circleFill,
-            tinted: new Map(),
-          };
-          ctx.paintSoon();
-        });
-      }).catch(() => null);
-    }
+    // The objects row's skin: the one picked for the map preview, then any pick made in the
+    // preview window (a storage event; this window's own picks call loadTimelineSkin directly).
+    ctx.loadTimelineSkin(readPreviewSkin(env.window?.localStorage));
+    env.window?.addEventListener?.("storage", (event) => {
+      if (event.key === PREVIEW_SKIN_KEY) ctx.loadTimelineSkin(event.newValue || "argon");
+    });
   }
   return ctx;
 }

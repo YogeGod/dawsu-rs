@@ -7,7 +7,7 @@ import { bootEditor } from "./editor-runtime.mjs";
 
 // Loads the editor with fake canvases that record every 2D call and the paint state it used.
 // `roundRect: false` fakes an older WebView whose canvas has no roundRect().
-async function canvases({ roundRect = true } = {}) {
+async function canvases({ roundRect = true, invoke = null, Image = undefined, storage = null, autoStart = false } = {}) {
   const elements = new Map();
   function element() {
     const calls = [];
@@ -31,14 +31,17 @@ async function canvases({ roundRect = true } = {}) {
   };
   const context = createContext({
     document: { getElementById: get, createElement: element, querySelectorAll: () => [], addEventListener() {} },
-    window: { devicePixelRatio: 1, __TAURI__: {
-      core: { invoke: async () => ({ hasDocument: false, busy: false }) },
-      event: { listen() {} },
-    } },
-    ResizeObserver: class { observe() {} }, requestAnimationFrame() {}, setInterval() {},
+    window: { devicePixelRatio: 1, localStorage: storage ?? undefined, Image,
+      listeners: {}, addEventListener(name, listener) { (this.listeners[name] ??= []).push(listener); },
+      __TAURI__: {
+        core: { invoke: invoke ?? (async () => ({ hasDocument: false, busy: false })) },
+        event: { listen() {} },
+      } },
+    ResizeObserver: class { observe() {} }, requestAnimationFrame() {}, setInterval() {}, setTimeout, clearTimeout,
     console,
   });
-  bootEditor(context, { autoStart: false });
+  const started = bootEditor(context, { autoStart });
+  if (autoStart) await started;
   get("volume-controller-panel").hidden = true;
   runInContext(`
     view = { hasDocument: true, duration: 4000, position: 0, left: 0, right: 0 };
@@ -686,4 +689,99 @@ test("Keysounds mode marks every chord conflict with a yellow ▼ on the ruler, 
   assert.equal(ruler.title, "", "the paint that drops the marks also drops their tooltip");
   assert.equal(marks().length, 0);
   assert.deepEqual(evaluate("rulerChordMarks"), []);
+});
+
+// An image that "loads" its source at once, 10 px square.
+class FakeImage {
+  set src(value) {
+    this._src = value;
+    this.naturalWidth = this.width = this.naturalHeight = this.height = 10;
+    queueMicrotask(() => (value ? this.onload : this.onerror)?.());
+  }
+  get src() { return this._src; }
+}
+
+// preview_skin_load as Rust answers it: lazer Classic, a good folder skin, one missing its overlay.
+function skinHost(calls, { classic = true } = {}) {
+  const answers = {
+    classic: classic ? { hitcircle: "classic-hit", overlay: "classic-over", digits: ["classic-0"] } : null,
+    "dir:good": { hitcircle: "good-hit", overlay: "good-over", reverseArrow: "good-arrow", digits: [] },
+    "dir:broken": { hitcircle: "broken-hit", overlay: null, digits: [] },
+  };
+  return async (name, args) => {
+    if (name === "preview_skin_load") {
+      calls.push(args.skinId);
+      if (args.skinId === "dir:gone") throw new Error("Skin folder not found");
+      return answers[args.skinId] ?? null;
+    }
+    if (name === "skin_textures") calls.push("skin_textures");
+    return { hasDocument: false, busy: false };
+  };
+}
+
+test("the objects row draws the skin folder picked for the map preview, lazer Classic for anything else", async () => {
+  const calls = [];
+  const { evaluate } = await canvases({ invoke: skinHost(calls), Image: FakeImage });
+  const hit = () => evaluate("skinTextures?.hitcircle?.src ?? null");
+  await evaluate('loadTimelineSkin("dir:good")');
+  assert.equal(hit(), "good-hit");
+  assert.equal(evaluate("skinTextures.reverseArrow.src"), "good-arrow");
+  // Argon has no legacy sprites: the row keeps lazer Classic, as it always had.
+  await evaluate('loadTimelineSkin("argon")');
+  assert.equal(hit(), "classic-hit");
+  // A folder missing its overlay, or gone, falls back to lazer Classic.
+  await evaluate('loadTimelineSkin("dir:broken")');
+  assert.equal(hit(), "classic-hit");
+  await evaluate('loadTimelineSkin("dir:gone")');
+  assert.equal(hit(), "classic-hit");
+  assert.deepEqual(calls, ["dir:good", "classic", "dir:broken", "classic", "dir:gone", "classic"]);
+});
+
+test("without osu!lazer a failed folder skin leaves plain circles, and a slow old load never wins", async () => {
+  const calls = [];
+  const { evaluate } = await canvases({ invoke: skinHost(calls, { classic: false }), Image: FakeImage });
+  await evaluate('loadTimelineSkin("dir:good")');
+  await evaluate('loadTimelineSkin("dir:broken")');
+  assert.equal(evaluate("skinTextures"), null, "plain circles");
+  // Two picks in a row: the first one's answer arrives last and is dropped.
+  await evaluate('Promise.all([loadTimelineSkin("dir:good"), loadTimelineSkin("dir:broken")])');
+  assert.equal(evaluate("skinTextures"), null);
+});
+
+test("a pick whose skin arrives after a newer pick's never replaces it", async () => {
+  const calls = [];
+  const host = skinHost(calls);
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  const invoke = async (name, args) => {
+    if (name === "preview_skin_load" && args.skinId === "dir:slow") {
+      calls.push(args.skinId);
+      await gate;
+      return { hitcircle: "slow-hit", overlay: null, digits: [] };
+    }
+    return host(name, args);
+  };
+  const { evaluate } = await canvases({ invoke, Image: FakeImage });
+  const slow = evaluate('loadTimelineSkin("dir:slow")');
+  await evaluate('loadTimelineSkin("dir:good")');
+  assert.equal(evaluate("skinTextures?.hitcircle?.src"), "good-hit");
+  release();
+  assert.equal(await slow, null, "the overtaken load is dropped");
+  assert.equal(evaluate("skinTextures?.hitcircle?.src"), "good-hit");
+  assert.deepEqual(calls, ["dir:slow", "dir:good"], "an overtaken load does not fall back to lazer Classic either");
+});
+
+test("at start the row loads the saved pick, and a pick made in the preview window reloads it", async () => {
+  const calls = [];
+  const storage = { getItem: key => (key === "dawsu.previewSkin" ? "dir:good" : null) };
+  const { evaluate } = await canvases({ invoke: skinHost(calls), Image: FakeImage, storage, autoStart: true });
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.ok(calls.includes("dir:good"), `start-up calls: ${calls}`);
+  assert.ok(!calls.includes("skin_textures"), "the old Classic-only command is not used");
+  assert.equal(evaluate("skinTextures?.hitcircle?.src"), "good-hit");
+  calls.length = 0;
+  evaluate('window.listeners.storage.forEach(listener => listener({ key: "dawsu.previewSkin", newValue: "classic" }))');
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.deepEqual(calls, ["classic"]);
+  assert.equal(evaluate("skinTextures?.hitcircle?.src"), "classic-hit");
 });

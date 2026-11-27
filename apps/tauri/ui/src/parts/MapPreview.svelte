@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import { bridge } from "../lib/bridge.svelte.js";
   import { invoke } from "../lib/ipc.js";
+  import { PREVIEW_SKIN_KEY, readPreviewSkin, writePreviewSkin } from "../lib/previewSkin.js";
   import InspectorHead from "./InspectorHead.svelte";
   import PreviewCanvas from "./PreviewCanvas.svelte";
 
@@ -10,22 +11,15 @@
   // nothing and offers to bring it back.
   let open = $state(true);
   let skins = $state([{ id: "argon", name: "Argon (osu!lazer)" }]);
-  let skinId = $state(readSavedSkin());
+  let skinId = $state(readPreviewSkin());
   const on = $derived(bridge.mapPreview);
 
-  function readSavedSkin() {
-    try {
-      return globalThis.localStorage?.getItem("dawsu.previewSkin") || "argon";
-    } catch {
-      return "argon";
-    }
-  }
-
+  // The pick also skins the timeline's objects row; a storage event only reaches other windows,
+  // so this window's editor is told directly.
   function saveSkin(next) {
     skinId = next || "argon";
-    try {
-      globalThis.localStorage?.setItem("dawsu.previewSkin", skinId);
-    } catch {}
+    writePreviewSkin(skinId);
+    bridge.callAction("loadTimelineSkin", skinId);
   }
 
   async function refreshSkins() {
@@ -57,7 +51,7 @@
   onMount(() => {
     refreshSkins();
     const onStorage = e => {
-      if (e.key === "dawsu.previewSkin") skinId = e.newValue || "argon";
+      if (e.key === PREVIEW_SKIN_KEY) skinId = e.newValue || "argon";
     };
     globalThis.window?.addEventListener?.("storage", onStorage);
     return () => globalThis.window?.removeEventListener?.("storage", onStorage);

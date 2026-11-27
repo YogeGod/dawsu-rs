@@ -729,3 +729,8 @@ test("a cancelled pointer gesture in the roll commits nothing", async () => {
   assert.ok(cancel, "onCancel exists");
   assert.doesNotMatch(cancel, /onaddnote|ondeletenotes|ondragnote/, "a cancel only clears the gesture");
 });
+
+test("picking a skin for the map preview reskins the timeline's objects row in the same window", async () => {
+  const picker = await readFile(new URL("../ui/src/parts/MapPreview.svelte", import.meta.url), "utf8");
+  assert.match(picker, /function saveSkin\(next\) \{[^}]*writePreviewSkin\(skinId\);\s*bridge\.callAction\("loadTimelineSkin", skinId\);/);
+});

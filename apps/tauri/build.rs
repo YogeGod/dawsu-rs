@@ -70,7 +70,6 @@ const COMMANDS: &[&str] = &[
     "open_editor_folder",
     "open_help_link",
     "close_editor",
-    "skin_textures",
     "preview_skins",
     "preview_skin_load",
     "pick_skin_folder",

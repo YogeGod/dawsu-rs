@@ -1,19 +1,18 @@
 <script>
   import { onMount } from "svelte";
   import PreviewCanvas from "./PreviewCanvas.svelte";
+  import { PREVIEW_SKIN_KEY, readPreviewSkin } from "../lib/previewSkin.js";
 
   // The whole page of the map preview's own window (preview.html). The editor window sends the
   // playhead and the open difficulty as "preview-view" events; this page asks for the objects
   // itself and draws them to fill the window. It says "preview-ready" once it listens, so the
   // editor sends the current state straight away.
   let shown = $state.raw({ view: null, path: null, previewKey: null });
-  let skinId = $state((() => {
-    try { return globalThis.localStorage?.getItem("dawsu.previewSkin") || "argon"; } catch { return "argon"; }
-  })());
+  let skinId = $state(readPreviewSkin());
 
   onMount(() => {
     const onStorage = e => {
-      if (e.key === "dawsu.previewSkin") skinId = e.newValue || "argon";
+      if (e.key === PREVIEW_SKIN_KEY) skinId = e.newValue || "argon";
     };
     globalThis.window?.addEventListener?.("storage", onStorage);
     const events = globalThis.window?.__TAURI__?.event;

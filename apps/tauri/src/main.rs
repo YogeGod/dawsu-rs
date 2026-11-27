@@ -1076,7 +1076,6 @@ fn main() {
             commands::editor::open_editor_folder,
             commands::editor::open_help_link,
             commands::editor::close_editor,
-            commands::library_and_files::skin_textures,
             commands::library_and_files::preview_skins,
             commands::library_and_files::preview_skin_load,
             commands::library_and_files::pick_skin_folder,
